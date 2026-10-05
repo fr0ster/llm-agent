@@ -8,14 +8,15 @@
 
 **Tech Stack:** TypeScript 6 (strict, ESM, NodeNext), Node ≥ 22, `node:test` via `tsx`, Biome, npm workspaces monorepo.
 
-**Spec:** `docs/superpowers/specs/2026-10-05-collection-profiles-design.md` (approved 2026-10-05, frozen; amended 2026-10-05 with the user's decisions on S1–S9, spec §17.4, and on probability vs relevance decisions, the reranker package, the caller's k, cleanup failures and provider text composition, spec §17.6; and on relevance comparability, the second seam and the seam rename, spec §17.7; and on the server filling a bound tools profile from ready clients, D31, spec §6.3, §17.8; and on filling following the store's lifecycle, D34–D35, spec §17.9; and on only complete fills memoized, single-flight worker construction, the startup fill on every path, the direct hot-reload test and runtime-removed tools, D36–D40, spec §6.6, §17.10 — D36 superseded and D37 moved out by the next amendment; and on a tools store filled once at instance creation, the fill source as an injected strategy, the offline corpus API, refill and single-flight out, D41–D45, spec §3.10, §6.3–§6.5, §17.11; and on fill sources filling once with no `toolsChanged` reaction for a bound store, D46–D47, spec §3.10, §6.3, §6.4, §13, §15, §17.12). **Goal:** `docs/superpowers/goals/2026-10-04-collection-profiles.md` (user-owned; never edited). Executors read the spec section each task cites.
+**Spec:** `docs/superpowers/specs/2026-10-05-collection-profiles-design.md` (approved 2026-10-05, frozen; amended 2026-10-05 with the user's decisions on S1–S9, spec §17.4, and on probability vs relevance decisions, the reranker package, the caller's k, cleanup failures and provider text composition, spec §17.6; and on relevance comparability, the second seam and the seam rename, spec §17.7; and on the server filling a bound tools profile from ready clients, D31, spec §6.3, §17.8; and on filling following the store's lifecycle, D34–D35, spec §17.9; and on only complete fills memoized, single-flight worker construction, the startup fill on every path, the direct hot-reload test and runtime-removed tools, D36–D40, spec §6.6, §17.10 — D36 superseded and D37 moved out by the next amendment; and on a tools store filled once at instance creation, the fill source as an injected strategy, the offline corpus API, refill and single-flight out, D41–D45, spec §3.10, §6.3–§6.5, §17.11; and on fill sources filling once with no `toolsChanged` reaction for a bound store, D46–D47, spec §3.10, §6.3, §6.4, §13, §15, §17.12; and on intents and companion stores removed entirely and the corpus deploy written in full, D50–D51, spec §17.15). **Goal:** `docs/superpowers/goals/2026-10-04-collection-profiles.md` (user-owned; never edited). Executors read the spec section each task cites.
 
 ## Global Constraints
 
 - **Nothing changes by default.** No profile set → 30.1.0 behaviour byte for byte: same records (golden test, Task 1), same stages, same k, same `RerankHandler` precedence, same YAML (spec §13).
 - **All contract changes additive or aliased.** `IRag`, `IReranker`, `IRetrievalStrategy`, `IMetrics` are not changed (spec §3). Renames (`IDecisionModel` → `IProbabilityDecision`, `DecisionReranker` → `ProbabilityReranker`, `wrapDecisionModel` → `wrapProbabilityDecision`, `DECISION_RERANK_DEFAULT_*`, `BuildAgentDeps.makeDecisionModel` → `makeProbabilityDecision`) keep the old names exported as **deprecated aliases** until the next major (the seam alias: both supplied → startup error naming both, spec §3.8, D30); moved rerankers stay importable from libs (spec §13). The only removal is the unexported `packages/llm-agent/src/rag/tool-indexing-strategy.ts` (spec §10.3).
 - **A probability and a relevance are different decisions.** A relevance score is never read as a probability: no [0, 1] check on it, no default threshold on it (spec §3.9, §5). It is comparable for the same query and model, also across calls, so `RelevanceReranker` batches by default like `ProbabilityReranker` (spec §3.9, §5.2, D28).
-- **Failure handling, not concurrency.** A failed stale delete is kept (`staleRecordIds`) and retried; no generations, no locks for RAG (spec §3.3, D13). Concurrent writes to a persistent store — in one process or across processes — are the backend's responsibility; nothing in this plan serializes them. The deploy step's write-ahead service record (Task 19A) is failure handling of one step, not a lock. Single-flight worker construction is **not** in this plan (D45: a separate issue, spec §15).
+- **Failure handling, not concurrency.** A failed stale delete is kept (`staleRecordIds`) and retried; no generations, no locks for RAG (spec §3.3, D13). Concurrent writes to a persistent store — in one process or across processes — are the backend's responsibility; nothing in this plan serializes them. The deploy step's write-ahead service record (Task 19A) is failure handling of one step, not a lock: unless the store already holds the same corpus finalized, the step deletes every id the old service record lists and then writes the whole corpus — no per-record diffing (D51). Single-flight worker construction is **not** in this plan (D45: a separate issue, spec §15).
+- **Records are built only from what the provider exports — no generated records, no companion stores (D50).** No intent records, intent sources or companion stores anywhere in this plan; Task 10 (intent sources and indexers) is withdrawn and its number is not reused.
 - **Owner in every physical id.** Every profile record id is `recordId(owner, itemId, kind, n)`; no code path addresses a record by the bare `itemId` (spec §3.1).
 - **Components carry no tuned number.** Pool sizes, k, `budgetTokens`, `maxValues` are required constructor arguments; tuned numbers live only in `mcpToolsVariants`, each next to its measurement (spec §7.1).
 - **`k` is the overall limit, in items.** The caller's k caps every cut: a retrieval never returns more than `min(k, cut.limit(k))` ≤ k items, with or without a decomposer; `FixedItemsCut(n)` is a ceiling (spec §4.5, §4.9, §17.6 F1).
@@ -27,7 +28,7 @@
 - **Workspace siblings only.** The new packages (`llm-agent-reranker`, `sap-aicore-decision`) are linked as workspace siblings during development; no `file:` / `link:` to anything outside this repo. After any `npm install`, `grep -n '"link": true' package-lock.json` must list only `packages/*` siblings.
 - **No version bumps, no `npm publish`, no tag** in this plan — the user publishes; release is a separate step. The new packages' `version` is the current lockstep `30.1.0` (not a bump) so the workspace resolves. Publish order (the release's job): `llm-agent` → `llm-agent-reranker` → `typesafe-decision`, `sap-aicore-decision`, … → `llm-agent-libs` → `llm-agent-server-libs` → `llm-agent-server`.
 - **Imports between packages resolve to `dist/`.** After editing a package another package imports, rebuild it before running the dependent's tests: `npx tsc -b packages/<pkg>` (or `npm run build`).
-- **Spec issues S1–S9 are decided** (spec §17.4), and so are D24–D27, F1, F3, F4 (spec §17.6) and D28–D30 (spec §17.7: relevance scores comparable per query and model → batching by default; the second seam `makeRelevanceDecision` approved; `makeDecisionModel` → `makeProbabilityDecision`) and D31–D33 (spec §17.8: the server fills a bound tools profile from the clients it uses, Task 23A) and D34–D35 (spec §17.9: the binding travels with the store; whoever creates a bound store fills it — Tasks 19, 23A) and D38–D40 (spec §17.10: startup fill on every path; the hot-reload test through the reload entry point; runtime-removed tools stay — Task 23A; D36 is superseded and D37 moved out, below) and D41–D45 (spec §17.11: filled once at instance creation, no memo, no retry — Task 23A; the fill source strategy — Tasks 19, 20, 23B; the offline corpus API and the `serviceRecord` key — Tasks 2, 11, 12, 19A; `toolsChanged` by source — Tasks 19, 19A, superseded by D46; single-flight construction out — Task 22A deleted, no task depends on it) and D46–D47 (spec §17.12: no `toolsChanged` reaction for a bound store, `IToolsFillSource` is `fill` only — Tasks 19, 19A, 20, 23A, 23B, 33, 34; the corpus fingerprint, the dropped cache entry and the worker refusal approved as written — Tasks 19A, 23A, 23B); all are written into the tasks below; no step waits on the user. A NEW gap found while executing goes to the user first — the rule is *fix the spec before the plan*.
+- **Spec issues S1–S9 are decided** (spec §17.4), and so are D24–D27, F1, F3, F4 (spec §17.6) and D28–D30 (spec §17.7: relevance scores comparable per query and model → batching by default; the second seam `makeRelevanceDecision` approved; `makeDecisionModel` → `makeProbabilityDecision`) and D31–D33 (spec §17.8: the server fills a bound tools profile from the clients it uses, Task 23A) and D34–D35 (spec §17.9: the binding travels with the store; whoever creates a bound store fills it — Tasks 19, 23A) and D38–D40 (spec §17.10: startup fill on every path; the hot-reload test through the reload entry point; runtime-removed tools stay — Task 23A; D36 is superseded and D37 moved out, below) and D41–D45 (spec §17.11: filled once at instance creation, no memo, no retry — Task 23A; the fill source strategy — Tasks 19, 20, 23B; the offline corpus API and the `serviceRecord` key — Tasks 2, 11, 12, 19A; `toolsChanged` by source — Tasks 19, 19A, superseded by D46; single-flight construction out — Task 22A deleted, no task depends on it) and D46–D47 (spec §17.12: no `toolsChanged` reaction for a bound store, `IToolsFillSource` is `fill` only — Tasks 19, 19A, 20, 23A, 23B, 33, 34; the corpus fingerprint, the dropped cache entry and the worker refusal approved as written — Tasks 19A, 23A, 23B) and D50–D51 (spec §17.15: intents and companion stores removed entirely — Tasks 2, 3, 9, 11–13, 15, 16, 19, 21–23A, 30, 32–35, Task 10 withdrawn; the corpus deploy deletes the listed ids and writes the whole corpus, no per-record hashes — Task 19A); all are written into the tasks below; no step waits on the user. A NEW gap found while executing goes to the user first — the rule is *fix the spec before the plan*.
 - Commits: Conventional Commits, each ending with
   ```
   Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
@@ -66,7 +67,7 @@ The eight inputs the spec implies, most likely to bite a user, each pinned by a 
 **`packages/llm-agent-libs/src/collections/`** (NEW directory, small modules)
 - `owner.ts` — owner ↔ metadata flattening, item keys.
 - `item-pool.ts`, `max-score-collapse.ts`, `cuts.ts`, `token-budget-cut.ts`, `size-estimators.ts` — generic strategies.
-- `tools/derive-tool-facets.ts`, `tools/tool-item.ts`, `tools/facets.ts`, `tools/tool-text.ts` (provider text composers, F4), `tools/faceted-tool-indexer.ts`, `tools/discriminators.ts`, `tools/enum-value-tool-indexer.ts`, `tools/intent-sources.ts`, `tools/intent-indexers.ts` — tools indexing.
+- `tools/derive-tool-facets.ts`, `tools/tool-item.ts`, `tools/facets.ts`, `tools/tool-text.ts` (provider text composers, F4), `tools/faceted-tool-indexer.ts`, `tools/discriminators.ts`, `tools/enum-value-tool-indexer.ts` — tools indexing (no intent files: Task 10 is withdrawn, D50).
 - `record-writer.ts` — id assignment, batch embed + write, replacement, `get`, `remove`.
 - `rerank-check.ts`, `staged-retrieval.ts` — the retrieval half.
 - `composed-tools-profile.ts`, `tools-binding.ts` (the binding, its target and its fill source travel with the store, Tasks 15, 19), `mcp-tools-variants.ts` — tools profile.
@@ -231,7 +232,7 @@ Claude-Session: https://claude.ai/code/session_012KjevEeQGZMkWMfnupJ7Yd"
 
 ## Task 2: Record contracts and `recordId` (llm-agent)
 
-Spec §3.1 (incl. the reserved keys `companionRecordIds` — S7 — and `staleRecordIds` / `staleCompanionRecordIds` — F3).
+Spec §3.1 (incl. the reserved key `staleRecordIds` — F3). No `generated`, `companionRecordIds` or `staleCompanionRecordIds` key: generated records and companion stores are removed (D50, spec §17.15).
 
 **Files:**
 - Create: `packages/llm-agent/src/interfaces/collection-profile.ts`
@@ -249,8 +250,8 @@ Spec §3.1 (incl. the reserved keys `companionRecordIds` — S7 — and `staleRe
     | { readonly scope: 'group'; readonly groupId: string }
     | { readonly scope: 'user'; readonly userId: string }
     | { readonly scope: 'session'; readonly sessionId: string; readonly userId?: string };
-  export type ReservedRecordKey = 'id' | 'itemId' | 'recordKind' | 'itemText' | 'profile' | 'generated' | 'recordIds' | 'companionRecordIds' | 'staleRecordIds' | 'staleCompanionRecordIds' | 'visibility' | 'userId' | 'groupId' | 'sessionId' | 'ttl' | 'serviceRecord';
-  export interface IndexedRecord { readonly id: string; readonly text: string; readonly itemId: string; readonly recordKind: string; readonly owner: RecordOwner; readonly generated?: true; readonly itemText?: string; readonly metadata?: Readonly<Record<string, RagJsonValue>> & { readonly [K in ReservedRecordKey]?: never } }
+  export type ReservedRecordKey = 'id' | 'itemId' | 'recordKind' | 'itemText' | 'profile' | 'recordIds' | 'staleRecordIds' | 'visibility' | 'userId' | 'groupId' | 'sessionId' | 'ttl' | 'serviceRecord';
+  export interface IndexedRecord { readonly id: string; readonly text: string; readonly itemId: string; readonly recordKind: string; readonly owner: RecordOwner; readonly itemText?: string; readonly metadata?: Readonly<Record<string, RagJsonValue>> & { readonly [K in ReservedRecordKey]?: never } }
   export type RecordDraft = Omit<IndexedRecord, 'id'>;
   export interface ItemRef { readonly itemId: string; readonly owner: RecordOwner }
   export function ownerKeyOf(owner: RecordOwner): string;
@@ -347,10 +348,8 @@ export type RecordOwner =
 
 /**
  * Keys the framework writes; a profile's or writer's extras can never set them.
- * `companionRecordIds` (canonical only): `{ <companion name>: string[] }` — the
- * item's records in each companion store, so remove and replacement reach them (S7).
- * `staleRecordIds` / `staleCompanionRecordIds` (canonical only): old ids a replacement
- * must still delete — this store / per companion; kept until a delete succeeds (F3).
+ * `staleRecordIds` (canonical only): old ids a replacement must still delete; kept
+ * until a delete succeeds (F3).
  * `serviceRecord`: a store's service record (`deployToolsCorpus`, spec §6.5) — never an
  * item; `StagedRetrieval` drops a hit that carries it (spec §4.3, D43).
  */
@@ -360,11 +359,8 @@ export type ReservedRecordKey =
   | 'recordKind'
   | 'itemText'
   | 'profile'
-  | 'generated'
   | 'recordIds'
-  | 'companionRecordIds'
   | 'staleRecordIds'
-  | 'staleCompanionRecordIds'
   | 'visibility'
   | 'userId'
   | 'groupId'
@@ -385,8 +381,6 @@ export interface IndexedRecord {
   readonly recordKind: string;
   /** Required: no record without an owner. */
   readonly owner: RecordOwner;
-  /** Set on records whose text was generated, never on provider records. */
-  readonly generated?: true;
   /** Non-canonical records in an items store: the item text, for the reranker. */
   readonly itemText?: string;
   /** Profile extras (e.g. `name` for tools). Reserved keys cannot be set here. */
@@ -482,12 +476,8 @@ export const _itemIdExtra: RecordDraft = { text: 't', itemId: 'i', recordKind: '
 export const _visibilityExtra: RecordDraft = { text: 't', itemId: 'i', recordKind: 'full', owner: { scope: 'global' }, metadata: { visibility: 'global' } };
 // @ts-expect-error a user owner needs its userId
 export const _userNoId: RecordDraft = { text: 't', itemId: 'i', recordKind: 'full', owner: { scope: 'user' } };
-// @ts-expect-error extras cannot set companionRecordIds (S7)
-export const _companionExtra: RecordDraft = { text: 't', itemId: 'i', recordKind: 'full', owner: { scope: 'global' }, metadata: { companionRecordIds: {} } };
 // @ts-expect-error extras cannot set staleRecordIds (F3)
 export const _staleExtra: RecordDraft = { text: 't', itemId: 'i', recordKind: 'full', owner: { scope: 'global' }, metadata: { staleRecordIds: [] } };
-// @ts-expect-error extras cannot set staleCompanionRecordIds (F3)
-export const _staleCompanionExtra: RecordDraft = { text: 't', itemId: 'i', recordKind: 'full', owner: { scope: 'global' }, metadata: { staleCompanionRecordIds: {} } };
 ```
 
 Add `"packages/llm-agent/src/interfaces/__tests__/collection-profile.typecheck.ts"` to `include` in `tsconfig.typecheck.json`. (Biome may reflow the one-line statements: run `npx biome check --write` on the file, then confirm each `@ts-expect-error` still sits directly above a single-line statement; if Biome splits one, add `// biome-ignore format: one statement per @ts-expect-error line` above that statement.)
@@ -537,7 +527,7 @@ Spec §3.2–§3.6, §3.8.
   export interface IIndexNoteSource<TItem> { notesFor(item: TItem): readonly IndexNote[] }        // S1, optional capability
   export function isIndexNoteSource<TItem>(x: unknown): x is IIndexNoteSource<TItem>;
   export interface BindTarget { readonly key: string }
-  export interface CollectionStore extends BindTarget { readonly rag: IRag; readonly companions?: Readonly<Record<string, IRag>> }
+  export interface CollectionStore extends BindTarget { readonly rag: IRag }   // no companions (D50)
   export interface IBoundCollection<TItem> { readonly key: string; readonly profileName: string; readonly rag: IRag; index(items: readonly TItem[], options?: CallOptions): Promise<Result<IndexReport, RagError>>; remove(refs: readonly ItemRef[], options?: CallOptions): Promise<Result<number, RagError>>; get(ref: ItemRef, options?: CallOptions): Promise<Result<RagResult | null, RagError>>; readonly retrieval: IRetrievalStrategy }
   export interface ICollectionProfile<TItem, TTarget extends BindTarget = CollectionStore> { readonly name: string; bind(target: TTarget): IBoundCollection<TItem> }
   export type SourcedHit = RagResult & { readonly source: string };
@@ -550,7 +540,7 @@ Spec §3.2–§3.6, §3.8.
   export function isSizeBoundedCut(cut: IItemCut): cut is IItemCut & ISizeBoundedCut;
   export interface SubQuery { readonly text: string; readonly k: number }
   export interface IQueryDecomposer { readonly name: string; decompose(text: string, budget: number, options?: CallOptions): Promise<Result<readonly SubQuery[], RagError>> }
-  export interface RetrievalSource { readonly name: string; readonly rag: IRag; readonly role: 'items' | 'variants'; readonly itemsOf?: string; readonly options?: CallOptions }
+  export interface RetrievalSource { readonly name: string; readonly rag: IRag; readonly options?: CallOptions }   // every source holds items (D50)
   export interface ISourceSelector { sources(options?: CallOptions): Promise<readonly RetrievalSource[]> }
   export interface IRetrievalMetrics { readonly retrievalOutcome: ICounter }
   export function isRetrievalMetrics(m: unknown): m is IRetrievalMetrics;
@@ -560,7 +550,6 @@ Spec §3.2–§3.6, §3.8.
   export interface IToolFacet { readonly kind: string; derive(tool: ToolItem): string | undefined }
   export interface IToolTextComposer { readonly name: string; compose(tool: ToolItem): string } // F4: the `full` text (spec §3.5, §7.3.1)
   export interface IDiscriminatorSelector { readonly name: string; select(tool: ToolItem): ToolParameter | undefined }
-  export interface IToolIntentSource { readonly name: string; intentsFor(tool: ToolItem, options?: CallOptions): Promise<Result<readonly string[], RagError>> }
   export type SharedItemVisibility = Exclude<RecordOwner, { scope: 'session' }>;
   export interface SharedItem { readonly itemId: string; readonly visibility: SharedItemVisibility; readonly text: string; readonly records?: readonly { readonly kind: string; readonly text: string }[]; readonly data?: RagJsonValue; readonly ttl?: number }
   export interface ISharedItemGroups { readable(options?: CallOptions): Promise<readonly { readonly groupId: string; readonly rag: IRag }[]>; writable(groupId: string, options?: CallOptions): Promise<IRag | undefined> }
@@ -641,8 +630,8 @@ export interface IItemIndexer<TItem> {
   readonly maxRecordsPerItem: number;
   /** The kind of the item's canonical record (`full` for tools, `item` for shared items). */
   readonly canonicalKind: string;
-  /** Pure mapping item → record drafts. An items-store indexer makes exactly one draft of
-   *  `canonicalKind`; a companion (`variants`) indexer makes none. The binding assigns ids. */
+  /** Pure mapping item → record drafts: exactly one draft of `canonicalKind`.
+   *  The binding assigns ids. */
   toRecords(
     item: TItem,
     options?: CallOptions,
@@ -703,10 +692,9 @@ export interface BindTarget {
   readonly key: string;
 }
 
-/** The tools profile's target: a primary store and optional companions. */
+/** The tools profile's target: one store (no companion stores, D50). */
 export interface CollectionStore extends BindTarget {
   readonly rag: IRag;
-  readonly companions?: Readonly<Record<string, IRag>>;
 }
 
 export interface IBoundCollection<TItem> {
@@ -840,13 +828,10 @@ export interface IQueryDecomposer {
 
 /** One store a retrieval queries. */
 export interface RetrievalSource {
-  /** Reported in telemetry: 'primary', 'intents', 'user', 'global', 'group:<id>'. */
+  /** Reported in telemetry: 'primary', 'user', 'global', 'group:<id>'. Every source holds
+   *  items (their canonical records); a hit belongs to the source it came from. */
   readonly name: string;
   readonly rag: IRag;
-  /** 'items': holds canonical records; 'variants': extra records of another source's items. */
-  readonly role: 'items' | 'variants';
-  /** For 'variants': the items source whose items these records belong to. */
-  readonly itemsOf?: string;
   /** The options this source is queried with (its identity filter). */
   readonly options?: CallOptions;
 }
@@ -873,7 +858,7 @@ export function isRetrievalMetrics(m: unknown): m is IRetrievalMetrics {
 }
 
 // ---------------------------------------------------------------------------
-// §3.5 Tool items and intents
+// §3.5 Tool items
 // ---------------------------------------------------------------------------
 
 /** Read from what ANY MCP server exports (`tools/list`): name, description, inputSchema. */
@@ -927,16 +912,6 @@ export interface IToolTextComposer {
 export interface IDiscriminatorSelector {
   readonly name: string;
   select(tool: ToolItem): ToolParameter | undefined;
-}
-
-/** Where a tool's intents come from: an LLM, a file generated at deploy, a consumer's own. */
-export interface IToolIntentSource {
-  readonly name: string;
-  /** English intents for one tool. Empty → no intent record. */
-  intentsFor(
-    tool: ToolItem,
-    options?: CallOptions,
-  ): Promise<Result<readonly string[], RagError>>;
 }
 
 // ---------------------------------------------------------------------------
@@ -1006,7 +981,6 @@ export {
   type ISharedItemGroups,
   type ISourceSelector,
   type IToolFacet,
-  type IToolIntentSource,
   type ItemRef,
   isRetrievalMetrics,
   ownerKeyOf,
@@ -2386,7 +2360,7 @@ export function ownerFromMetadata(meta: RagMetadata): RecordOwner | undefined {
   }
 }
 
-/** The owner-qualified item key within one items source (JSON, so no separator can collide). */
+/** The owner-qualified item key within one source (JSON, so no separator can collide). */
 export function itemKey(
   source: string,
   owner: RecordOwner,
@@ -2402,7 +2376,7 @@ import type { ICandidatePool } from '@mcp-abap-adt/llm-agent';
 import { assertPositiveInteger } from '../util/assert-positive-integer.js';
 
 /**
- * `n` items per items source (spec §4.4): every item has at most `m` records, so
+ * `n` items per source (spec §4.4): every item has at most `m` records, so
  * `n × m` records always hold at least `n` distinct items. `n` is required — the
  * library picks no pool size (spec §7.1).
  */
@@ -3235,7 +3209,6 @@ describe('FacetedToolIndexer', () => {
     for (const d of rest) {
       assert.equal(d.itemText, full.text);
       assert.equal(d.itemId, 'tool:listPullRequests');
-      assert.equal(d.generated, undefined);
     }
   });
   it('maxRecordsPerItem = 1 + facets, and bounds what it writes', async () => {
@@ -3608,7 +3581,6 @@ describe('EnumValueToolIndexer', () => {
     ]);
     for (const d of values) {
       assert.equal(d.itemId, 'tool:resource_create');
-      assert.equal(d.generated, undefined);
       assert.equal(d.itemText, r.value[0].text);
     }
     assert.deepEqual(values.map((d) => d.metadata?.value), ['BUCKET', 'QUEUE']);
@@ -3839,379 +3811,9 @@ Claude-Session: https://claude.ai/code/session_012KjevEeQGZMkWMfnupJ7Yd"
 ```
 
 ---
-
-## Task 10: Intent sources and intent indexers (libs)
-
-Spec §7.3.3, §3.5; D3; S2 (generated at indexing, no skip), S1 (notes forwarded).
-
-**Files:**
-- Create: `packages/llm-agent-libs/src/collections/tools/intent-sources.ts`
-- Create: `packages/llm-agent-libs/src/collections/tools/intent-indexers.ts`
-- Create: `packages/llm-agent-libs/src/collections/__tests__/intents.test.ts`
-- Modify: `packages/llm-agent-libs/src/collections/index.ts`
-
-**Interfaces:**
-- Consumes: `fullToolText`, `FacetedToolIndexer`, `toolItemFromTool`; `IToolIntentSource`, `ILlm` (`chat(messages, tools?, options?)`), `Message`, `shortHash` (`@mcp-abap-adt/llm-agent`).
-- Produces:
-  ```ts
-  export class StaticIntentSource implements IToolIntentSource { constructor(map: Readonly<Record<string, readonly string[]>>); readonly name: 'static' } // keyed by originalName
-  export const DEFAULT_INTENT_PROMPT: string;
-  export class LlmIntentSource implements IToolIntentSource { constructor(llm: ILlm, opts?: { prompt?: string }); readonly name: 'llm' }
-  export class IntentRecordIndexer implements IItemIndexer<ToolItem>, IIndexNoteSource<ToolItem> { constructor(inner: IItemIndexer<ToolItem>, source: IToolIntentSource); readonly name: 'intent-record'; notesFor(tool): readonly IndexNote[] } // maxRecordsPerItem = inner + 1; notes = inner's
-  export class IntentCompanionIndexer implements IItemIndexer<ToolItem> { constructor(source: IToolIntentSource); readonly name: 'intent-companion'; readonly maxRecordsPerItem: 1; readonly canonicalKind: 'full' }
-  // intent record: kind 'intent', text = intents one per line, generated: true, metadata { name, generatedFrom: shortHash(fullToolText(tool)) } — generatedFrom is provenance only (S2)
-  ```
-
-- [ ] **Step 1: Write the failing test**
-
-```ts
-// packages/llm-agent-libs/src/collections/__tests__/intents.test.ts
-import assert from 'node:assert/strict';
-import { describe, it } from 'node:test';
-import { type ILlm, shortHash } from '@mcp-abap-adt/llm-agent';
-import {
-  FacetedToolIndexer,
-  fullToolText,
-  IntentCompanionIndexer,
-  IntentRecordIndexer,
-  LlmIntentSource,
-  StaticIntentSource,
-  toolItemFromTool,
-} from '../index.js';
-
-const tool = toolItemFromTool(
-  { name: 'read_file', description: 'Read a file' },
-  { itemId: 'tool:read_file', originalName: 'read_file' },
-);
-const intents = new StaticIntentSource({ read_file: ['open my notes', 'show a file'] });
-
-describe('intent sources', () => {
-  it('StaticIntentSource is keyed by originalName; unknown → empty', async () => {
-    const r = await intents.intentsFor(tool);
-    assert.ok(r.ok);
-    assert.deepEqual(r.value, ['open my notes', 'show a file']);
-    const none = await intents.intentsFor({ ...tool, originalName: 'other' });
-    assert.ok(none.ok && none.value.length === 0);
-  });
-  it('LlmIntentSource: one intent per line, bullets stripped; a domain-neutral English prompt', async () => {
-    const seen: string[] = [];
-    const llm = {
-      chat: async (messages: Array<{ content: string | null }>) => {
-        seen.push(messages.map((m) => m.content ?? '').join('\n'));
-        return { ok: true, value: { content: '- open my notes\n\n2. show a file\n', finishReason: 'stop' } };
-      },
-      streamChat: async function* () {},
-    } as unknown as ILlm;
-    const r = await new LlmIntentSource(llm).intentsFor(tool);
-    assert.ok(r.ok);
-    assert.deepEqual(r.value, ['open my notes', 'show a file']);
-    assert.match(seen[0], /read_file/);
-    assert.doesNotMatch(seen[0], /ABAP|SAP/);
-  });
-  it('LlmIntentSource: an LLM error is returned', async () => {
-    const llm = {
-      chat: async () => ({ ok: false, error: new Error('down') }),
-      streamChat: async function* () {},
-    } as unknown as ILlm;
-    const r = await new LlmIntentSource(llm).intentsFor(tool);
-    assert.equal(r.ok, false);
-  });
-});
-
-describe('IntentRecordIndexer — record placement (default)', () => {
-  const indexer = new IntentRecordIndexer(new FacetedToolIndexer([]), intents);
-  it('ONE intent record per tool, generated, itemText = provider text', async () => {
-    const r = await indexer.toRecords(tool);
-    assert.ok(r.ok);
-    assert.deepEqual(r.value.map((d) => d.recordKind), ['full', 'intent']);
-    const intent = r.value[1];
-    assert.equal(intent.text, 'open my notes\nshow a file');
-    assert.equal(intent.generated, true);
-    assert.equal(intent.itemText, fullToolText(tool));
-    assert.equal(intent.metadata?.generatedFrom, shortHash(fullToolText(tool)));
-  });
-  it('no intent text in any provider record', async () => {
-    const r = await indexer.toRecords(tool);
-    assert.ok(r.ok);
-    for (const d of r.value.filter((x) => x.recordKind !== 'intent')) {
-      assert.doesNotMatch(d.text, /open my notes/);
-      assert.equal(d.generated, undefined);
-    }
-  });
-  it('no intents → no intent record; bound = inner + 1', async () => {
-    const r = await new IntentRecordIndexer(new FacetedToolIndexer([]), new StaticIntentSource({})).toRecords(tool);
-    assert.ok(r.ok);
-    assert.deepEqual(r.value.map((d) => d.recordKind), ['full']);
-    assert.equal(indexer.maxRecordsPerItem, 2);
-  });
-});
-
-describe('IntentCompanionIndexer — companion placement', () => {
-  it('the same ONE record, generated, without itemText, no canonical', async () => {
-    const c = new IntentCompanionIndexer(intents);
-    const r = await c.toRecords(tool);
-    assert.ok(r.ok);
-    assert.equal(r.value.length, 1);
-    assert.equal(r.value[0].recordKind, 'intent');
-    assert.equal(r.value[0].generated, true);
-    assert.equal(r.value[0].itemText, undefined);
-    assert.equal(c.maxRecordsPerItem, 1);
-  });
-});
-```
-
-- [ ] **Step 2: Run to see it fail**
-
-Run: `node --import tsx/esm --test packages/llm-agent-libs/src/collections/__tests__/intents.test.ts`
-Expected: FAIL — exports missing.
-
-- [ ] **Step 3: Implement**
-
-```ts
-// packages/llm-agent-libs/src/collections/tools/intent-sources.ts
-import {
-  type CallOptions,
-  type ILlm,
-  type IToolIntentSource,
-  RagError,
-  type Result,
-  type ToolItem,
-} from '@mcp-abap-adt/llm-agent';
-
-/** Intents generated at deploy (e.g. an intents file), keyed by the provider's tool name. */
-export class StaticIntentSource implements IToolIntentSource {
-  readonly name = 'static';
-  constructor(
-    private readonly byOriginalName: Readonly<Record<string, readonly string[]>>,
-  ) {}
-  async intentsFor(tool: ToolItem): Promise<Result<readonly string[], RagError>> {
-    return { ok: true, value: this.byOriginalName[tool.originalName] ?? [] };
-  }
-}
-
-/** English, domain-neutral: no server or domain words (spec §7.3.3). Overridable. */
-export const DEFAULT_INTENT_PROMPT =
-  'You write search phrases for a software tool. Given the tool below, list up to 8 short, ' +
-  'distinct English requests a user might type when they need this tool. Use only what the ' +
-  'name, description and parameters say; add no facts. One request per line, no numbering.';
-
-export class LlmIntentSource implements IToolIntentSource {
-  readonly name = 'llm';
-  private readonly prompt: string;
-  constructor(
-    private readonly llm: ILlm,
-    opts: { prompt?: string } = {},
-  ) {
-    this.prompt = opts.prompt ?? DEFAULT_INTENT_PROMPT;
-  }
-
-  async intentsFor(
-    tool: ToolItem,
-    options?: CallOptions,
-  ): Promise<Result<readonly string[], RagError>> {
-    const params = tool.parameters.map((p) => p.name).join(', ');
-    const r = await this.llm.chat(
-      [
-        { role: 'system', content: this.prompt },
-        {
-          role: 'user',
-          content: `Tool: ${tool.originalName}\nDescription: ${tool.description}\nParameters: ${params}`,
-        },
-      ],
-      undefined,
-      options,
-    );
-    if (!r.ok) {
-      return {
-        ok: false,
-        error: new RagError(`intent generation failed: ${r.error.message}`, 'INTENT_ERROR'),
-      };
-    }
-    const lines = r.value.content
-      .split('\n')
-      .map((l) => l.replace(/^\s*(?:[-*•]|\d+[.)])\s*/, '').trim())
-      .filter((l) => l.length > 0);
-    return { ok: true, value: lines };
-  }
-}
-```
-
-```ts
-// packages/llm-agent-libs/src/collections/tools/intent-indexers.ts
-import {
-  type CallOptions,
-  type IItemIndexer,
-  type IToolIntentSource,
-  type RagError,
-  type RecordDraft,
-  type Result,
-  shortHash,
-  type ToolItem,
-} from '@mcp-abap-adt/llm-agent';
-import { fullToolText } from './tool-text.js';
-
-/** `itemText`: the inner indexer's canonical text (its composer's, F4); undefined → companion (no itemText). */
-async function intentDraft(
-  source: IToolIntentSource,
-  tool: ToolItem,
-  itemText: string | undefined,
-  options?: CallOptions,
-): Promise<Result<RecordDraft | undefined, RagError>> {
-  const r = await source.intentsFor(tool, options);
-  if (!r.ok) return r;
-  if (r.value.length === 0) return { ok: true, value: undefined };
-  const provider = itemText ?? fullToolText(tool);
-  return {
-    ok: true,
-    value: {
-      text: r.value.join('\n'),
-      itemId: tool.itemId,
-      recordKind: 'intent',
-      owner: { scope: 'global' },
-      generated: true,
-      // The reranker reads provider text, never intents (spec §4.6).
-      ...(itemText !== undefined ? { itemText } : {}),
-      // Provenance: a hash of the provider text the intents came from (spec §7.3.3).
-      // The framework never reads it (S2: no skip; caching is the consumer's).
-      metadata: { name: tool.name, generatedFrom: shortHash(provider) },
-    },
-  };
-}
-
-/** Record placement (default): ONE `intent` record in the tool collection. */
-export class IntentRecordIndexer implements IItemIndexer<ToolItem> {
-  readonly name = 'intent-record';
-  readonly canonicalKind: string;
-  readonly maxRecordsPerItem: number;
-  constructor(
-    readonly inner: IItemIndexer<ToolItem>,
-    readonly source: IToolIntentSource,
-  ) {
-    this.canonicalKind = inner.canonicalKind;
-    this.maxRecordsPerItem = inner.maxRecordsPerItem + 1;
-  }
-  async toRecords(
-    tool: ToolItem,
-    options?: CallOptions,
-  ): Promise<Result<readonly RecordDraft[], RagError>> {
-    const base = await this.inner.toRecords(tool, options);
-    if (!base.ok) return base;
-    // itemText = the inner's canonical text, so a composer (F4) reaches the reranker too.
-    const canonical = base.value.find((d) => d.recordKind === this.inner.canonicalKind);
-    const intent = await intentDraft(
-      this.source,
-      tool,
-      canonical?.text ?? fullToolText(tool),
-      options,
-    );
-    if (!intent.ok) return intent;
-    return {
-      ok: true,
-      value: intent.value ? [...base.value, intent.value] : base.value,
-    };
-  }
-}
-
-/**
- * Companion placement: the same ONE record per tool, in its own store (a
- * `variants` source). Makes no canonical record — its hits hydrate from the
- * items source; `canonicalKind` names the items source's kind and is unused here.
- */
-export class IntentCompanionIndexer implements IItemIndexer<ToolItem> {
-  readonly name = 'intent-companion';
-  readonly canonicalKind = 'full';
-  readonly maxRecordsPerItem = 1;
-  constructor(readonly source: IToolIntentSource) {}
-  async toRecords(
-    tool: ToolItem,
-    options?: CallOptions,
-  ): Promise<Result<readonly RecordDraft[], RagError>> {
-    const intent = await intentDraft(this.source, tool, undefined, options);
-    if (!intent.ok) return intent;
-    return { ok: true, value: intent.value ? [intent.value] : [] };
-  }
-}
-```
-
-Append to `collections/index.ts`:
-```ts
-export {
-  IntentCompanionIndexer,
-  IntentRecordIndexer,
-} from './tools/intent-indexers.js';
-export {
-  DEFAULT_INTENT_PROMPT,
-  LlmIntentSource,
-  StaticIntentSource,
-} from './tools/intent-sources.js';
-```
-
-- [ ] **Step 4: Run**
-
-Run: `node --import tsx/esm --test packages/llm-agent-libs/src/collections/__tests__/intents.test.ts`
-Expected: PASS.
-
-- [ ] **Step 5: Generated at indexing, no skip (S2); `IntentRecordIndexer` forwards notes (S1)**
-
-Spec §7.3.3 (amended): every `index` asks the source; caching generated intents is the consumer's concern (e.g. `StaticIntentSource` over a file generated at deploy). Append to `intents.test.ts`:
-
-```ts
-describe('generated at indexing (S2); notes forwarded (S1)', () => {
-  it("every toRecords asks the source again — caching is the consumer's", async () => {
-    let asked = 0;
-    const counting = {
-      name: 'counting',
-      intentsFor: async () => {
-        asked++;
-        return { ok: true as const, value: ['open my notes'] };
-      },
-    };
-    const ix = new IntentRecordIndexer(new FacetedToolIndexer([]), counting);
-    await ix.toRecords(tool);
-    await ix.toRecords(tool);
-    assert.equal(asked, 2);
-  });
-  it("IntentRecordIndexer forwards the inner indexer's notes", () => {
-    const inner = Object.assign(new FacetedToolIndexer([]), { notesFor: () => [{ note: 'n' }] });
-    assert.deepEqual(new IntentRecordIndexer(inner, intents).notesFor(tool), [{ note: 'n' }]);
-    assert.deepEqual(new IntentRecordIndexer(new FacetedToolIndexer([]), intents).notesFor(tool), []);
-  });
-});
-```
-
-Run it: FAIL — `notesFor` is not a function (the S2 case already passes: there is no skip to remove).
-
-In `intent-indexers.ts`: add `type IIndexNoteSource`, `type IndexNote`, `isIndexNoteSource` to the `@mcp-abap-adt/llm-agent` import; `export class IntentRecordIndexer implements IItemIndexer<ToolItem>, IIndexNoteSource<ToolItem> {`; add after `toRecords`:
-```ts
-  /** S1: a decorator forwards the notes of the indexer it wraps. */
-  notesFor(tool: ToolItem): readonly IndexNote[] {
-    return isIndexNoteSource<ToolItem>(this.inner) ? this.inner.notesFor(tool) : [];
-  }
-```
-
-Run:
-```bash
-npx tsc -b packages/llm-agent-libs
-node --import tsx/esm --test packages/llm-agent-libs/src/collections/__tests__/intents.test.ts
-```
-Expected: PASS (`tsc -b` type-checks the task's sources and `collections/index.ts` and rebuilds `llm-agent` through the project references; the tsx run does not type-check).
-
-- [ ] **Step 6: Commit**
-
-```bash
-npx biome check --write packages/llm-agent-libs/src/collections
-git add packages/llm-agent-libs/src/collections
-git commit -m "feat(libs): intent sources and intent indexers (record and companion placement)
-
-Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_012KjevEeQGZMkWMfnupJ7Yd"
-```
-
----
-
 ## Task 11: Record writer — ids, batch write, replacement, `get`, `remove` (libs)
 
-Spec §3.1, §3.3 (incl. `companionRecordIds`, S7, and **cleanup failures kept for retry** — `staleRecordIds` / `staleCompanionRecordIds`, §17.6 F3), §4.4 (refusal), §7.6 (one batch pass), §8.2. Failure handling only — no generations, no locks (D13).
+Spec §3.1, §3.3 (incl. **cleanup failures kept for retry** — `staleRecordIds`, §17.6 F3), §4.4 (refusal), §7.6 (one batch pass), §8.2. Failure handling only — no generations, no locks (D13). One store per write: no companion stores, no companion ids, no `generated` key (spec §17.15, D50 — intents and companion stores removed).
 
 **A replacement replaces the record — on every backend.** Re-indexing writes the same ids again, and the backends differ on what a write to an existing id does with the old metadata (read in the repo, 2026-10-05):
 
@@ -4224,7 +3826,7 @@ Spec §3.1, §3.3 (incl. `companionRecordIds`, S7, and **cleanup failures kept f
 | HANA | **replaces**: `UPSERT … WITH PRIMARY KEY` (whole row, metadata as one JSON) | `hana-vector-rag.ts` `upsertKnown` |
 | `FallbackRag` | whatever its primary (and fallback) does — it delegates | `resilience/fallback-rag.ts` |
 
-So on a merging store a key the new record leaves out would **survive** the replacement (an old `data`, `itemText`, `generated`, `companionRecordIds`, a settled stale list…). The writer therefore:
+So on a merging store a key the new record leaves out would **survive** the replacement (an old `data`, `itemText`, a settled stale list…). The writer therefore:
 - writes **every** `ReservedRecordKey` except `id` on **every** record write, absent ones as `undefined` (`UNSET_RESERVED`, compile-checked against `ReservedRecordKey` with `satisfies`, so a new reserved key is a compile error until listed);
 - on the **canonical**, also writes `undefined` for every extra the OLD canonical had and the new one has not (the old record is already read for the stale set; `id`, `text`, `namespace` are the store's own and never cleared).
 
@@ -4241,15 +3843,13 @@ Correct on both kinds: a merging store overwrites the key with `undefined` (read
   ```ts
   export interface ItemWrite { readonly itemId: string; readonly drafts: readonly RecordDraft[]; readonly ttl?: number }
   export interface PreparedRecord { readonly id: string; readonly text: string; readonly metadata: RagMetadata }
-  export interface PreparedItem { readonly itemId: string; readonly owner: RecordOwner; readonly canonical?: PreparedRecord; readonly others: readonly PreparedRecord[] }
-  export type CompanionIds = Readonly<Record<string, readonly string[]>>;              // S7: companion name → record ids
-  export function prepareItem(w: ItemWrite, o: { canonicalKind: string | undefined; profile: string; maxRecordsPerItem: number; companionRecordIds?: CompanionIds }): { ok: true; item: PreparedItem } | { ok: false; reason: string };
-  // F3: stale deletes in the primary AND in the given companion stores, every Result checked;
-  // ids written ahead on the canonical (staleRecordIds / staleCompanionRecordIds), settled after.
-  export function storeItems(rag: IRag, items: readonly PreparedItem[], options?: CallOptions, companions?: Readonly<Record<string, IRag>>): Promise<{ indexed: boolean[]; records: number; failures: (string | undefined)[]; batchFailure?: string }>;
+  export interface PreparedItem { readonly itemId: string; readonly owner: RecordOwner; readonly canonical: PreparedRecord; readonly others: readonly PreparedRecord[] }
+  export function prepareItem(w: ItemWrite, o: { canonicalKind: string; profile: string; maxRecordsPerItem: number }): { ok: true; item: PreparedItem } | { ok: false; reason: string };
+  // F3: stale deletes in the store, every Result checked; ids written ahead on the
+  // canonical (staleRecordIds), settled after.
+  export function storeItems(rag: IRag, items: readonly PreparedItem[], options?: CallOptions): Promise<{ indexed: boolean[]; records: number; failures: (string | undefined)[]; batchFailure?: string }>;
   export function getItem(rag: IRag, canonicalId: string, filter: CallOptions | undefined, options?: CallOptions): Promise<Result<RagResult | null, RagError>>;
-  export function removeItem(rag: IRag, canonicalId: string, options?: CallOptions, companions?: Readonly<Record<string, IRag>>): Promise<Result<number, RagError>>; // S7 + F3: listed AND stale ids; a failed delete keeps the canonical and returns an error
-  export function listedCompanions(meta: RagMetadata | undefined, key?: 'companionRecordIds' | 'staleCompanionRecordIds'): CompanionIds;
+  export function removeItem(rag: IRag, canonicalId: string, options?: CallOptions): Promise<Result<number, RagError>>; // F3: listed AND stale ids; a failed delete keeps the canonical and returns an error
   export function asItem(canonical: RagResult, score: number, extra?: { matchedKinds?: string[]; source?: string }): RagResult; // metadata.id = itemId
   export function isExpired(meta: RagMetadata, nowSecs?: number): boolean;
   ```
@@ -4310,17 +3910,14 @@ describe('prepareItem', () => {
       userId: 'A',
       groupId: undefined,
       sessionId: undefined,
-      generated: undefined,
       itemText: undefined,
       ttl: 99,
       recordIds: others.map((r) => r.id),
-      companionRecordIds: undefined,
       staleRecordIds: undefined,
-      staleCompanionRecordIds: undefined,
       serviceRecord: undefined,
     });
     assert.equal(others[0].metadata.itemText, 'canon');
-    assert.ok('companionRecordIds' in others[0].metadata, 'non-canonical records write every reserved key too');
+    assert.ok('staleRecordIds' in others[0].metadata, 'non-canonical records write every reserved key too');
   });
   it('refusals: too many records, missing canonical, mixed owners', () => {
     assert.deepEqual(prep([draft('item', 'c'), draft('n', 'x')], 1), { ok: false, reason: 'too-many-records' });
@@ -4396,45 +3993,6 @@ describe('storeItems / getItem / removeItem', () => {
     const none = await removeItem(rag, recordId(U_A, 'case-42', 'item', 0));
     assert.ok(none.ok && none.value === 0);
   });
-
-  it('S7: the canonical lists companion ids; replacement deletes the unlisted ones; removeItem clears them', async () => {
-    const rag = new InMemoryRag();
-    const intents = new InMemoryRag();
-    const cid = recordId(U_A, 'case-42', 'intent', 0);
-    await intents.writer().upsertRaw(cid, 'open my notes', { visibility: 'user', userId: 'A' });
-    const p = prepareItem(
-      { itemId: 'case-42', drafts: [draft('item', 'c')] },
-      { canonicalKind: 'item', profile: 'p', maxRecordsPerItem: 5, companionRecordIds: { intents: [cid] } },
-    );
-    assert.ok(p.ok);
-    assert.deepEqual(p.item.canonical?.metadata.companionRecordIds, { intents: [cid] });
-    await storeItems(rag, [p.item], undefined, { intents });
-    const n = await removeItem(rag, recordId(U_A, 'case-42', 'item', 0), undefined, { intents });
-    assert.ok(n.ok && n.value === 2);
-    const gone = await intents.getById(cid);
-    assert.ok(gone.ok && gone.value === null);
-    // replacement with no companion record: the old one is a stale companion id, deleted
-    await intents.writer().upsertRaw(cid, 'open my notes', { visibility: 'user', userId: 'A' });
-    await storeItems(rag, [p.item], undefined, { intents });
-    const q = prepareItem({ itemId: 'case-42', drafts: [draft('item', 'c2')] }, { canonicalKind: 'item', profile: 'p', maxRecordsPerItem: 5 });
-    assert.ok(q.ok);
-    const r = await storeItems(rag, [q.item], undefined, { intents });
-    assert.deepEqual(r.indexed, [true]);
-    const gone2 = await intents.getById(cid);
-    assert.ok(gone2.ok && gone2.value === null);
-  });
-
-  it('S7: a listed companion the caller has no store for is left as is (unbound = cleared by the consumer)', async () => {
-    const rag = new InMemoryRag();
-    const p = prepareItem(
-      { itemId: 'case-42', drafts: [draft('item', 'c')] },
-      { canonicalKind: 'item', profile: 'p', maxRecordsPerItem: 5, companionRecordIds: { intents: ['x'] } },
-    );
-    assert.ok(p.ok);
-    await storeItems(rag, [p.item]);
-    const n = await removeItem(rag, recordId(U_A, 'case-42', 'item', 0));
-    assert.ok(n.ok && n.value === 1);
-  });
 });
 
 describe('replacement replaces the record on a store that merges metadata (spec §3.3)', () => {
@@ -4456,12 +4014,7 @@ describe('replacement replaces the record on a store that merges metadata (spec 
           // canonical: extra `data` + `itemText`; note: `itemText` (draft helper)
           drafts: [{ ...draft('item', 'v1'), itemText: 'old text' }, draft('note', 'n0')],
         },
-        {
-          canonicalKind: 'item',
-          profile: 'p',
-          maxRecordsPerItem: 5,
-          companionRecordIds: { intents: [recordId(U_A, 'case-42', 'intent', 0)] },
-        },
+        { canonicalKind: 'item', profile: 'p', maxRecordsPerItem: 5 },
       );
       const next = prepareItem(
         {
@@ -4479,14 +4032,13 @@ describe('replacement replaces the record on a store that merges metadata (spec 
       assert.ok(before.ok && before.value);
       assert.deepEqual(before.value.metadata.data, { n: 1 });
       assert.equal(before.value.metadata.itemText, 'old text');
-      assert.ok(before.value.metadata.companionRecordIds !== undefined);
 
       const r = await storeItems(rag, [next.item]);
       assert.deepEqual(r.indexed, [true]);
       const after = await rag.getById(canonId);
       assert.ok(after.ok && after.value);
       assert.equal(after.value.text, 'v2');
-      for (const k of ['data', 'itemText', 'companionRecordIds', 'staleRecordIds', 'staleCompanionRecordIds']) {
+      for (const k of ['data', 'itemText', 'staleRecordIds']) {
         assert.equal(after.value.metadata[k], undefined, k);
       }
       assert.equal(after.value.metadata.itemId, 'case-42', 'the framework keys are rewritten');
@@ -4574,35 +4126,6 @@ describe('cleanup failures are kept for retry (spec §3.3, F3)', () => {
       assert.ok(x.ok && x.value === null, id);
     }
   });
-
-  it('a failed companion stale delete is kept in staleCompanionRecordIds and retried', async () => {
-    const rag = new InMemoryRag();
-    const rawIntents = new InMemoryRag();
-    const cid = recordId(U_A, 'case-42', 'intent', 0);
-    const failing = new Set([cid]);
-    const intents = flakyDeletes(rawIntents, failing);
-    await rawIntents.writer().upsertRaw(cid, 'open my notes', { visibility: 'user', userId: 'A' });
-    const withIntent = prepareItem(
-      { itemId: 'case-42', drafts: [draft('item', 'c')] },
-      { canonicalKind: 'item', profile: 'p', maxRecordsPerItem: 5, companionRecordIds: { intents: [cid] } },
-    );
-    const without = prepareItem(
-      { itemId: 'case-42', drafts: [draft('item', 'c2')] },
-      { canonicalKind: 'item', profile: 'p', maxRecordsPerItem: 5 },
-    );
-    assert.ok(withIntent.ok && without.ok);
-    await storeItems(rag, [withIntent.item], undefined, { intents });
-    const r = await storeItems(rag, [without.item], undefined, { intents });
-    assert.deepEqual(r.indexed, [false]);
-    const canon = await rag.getById(canonId);
-    assert.ok(canon.ok);
-    assert.deepEqual(canon.value?.metadata.staleCompanionRecordIds, { intents: [cid] });
-    failing.clear();
-    const retry = await storeItems(rag, [without.item], undefined, { intents });
-    assert.deepEqual(retry.indexed, [true]);
-    const gone = await rawIntents.getById(cid);
-    assert.ok(gone.ok && gone.value === null);
-  });
 });
 
 ```
@@ -4655,11 +4178,8 @@ const UNSET_RESERVED = {
   recordKind: undefined,
   itemText: undefined,
   profile: undefined,
-  generated: undefined,
   recordIds: undefined,
-  companionRecordIds: undefined,
   staleRecordIds: undefined,
-  staleCompanionRecordIds: undefined,
   visibility: undefined,
   userId: undefined,
   groupId: undefined,
@@ -4688,26 +4208,16 @@ export interface PreparedRecord {
 export interface PreparedItem {
   readonly itemId: string;
   readonly owner: RecordOwner;
-  /** Absent for a companion write (no canonical in that store). */
-  readonly canonical?: PreparedRecord;
+  readonly canonical: PreparedRecord;
   readonly others: readonly PreparedRecord[];
 }
-
-/** S7: companion name → the item's record ids in that companion store. */
-export type CompanionIds = Readonly<Record<string, readonly string[]>>;
 
 const sameOwner = (a: RecordOwner, b: RecordOwner): boolean =>
   a.scope === b.scope && ownerKeyOf(a) === ownerKeyOf(b);
 
 export function prepareItem(
   w: ItemWrite,
-  o: {
-    canonicalKind: string | undefined;
-    profile: string;
-    maxRecordsPerItem: number;
-    /** S7: written on the canonical so remove/replacement reach companion records. */
-    companionRecordIds?: CompanionIds;
-  },
+  o: { canonicalKind: string; profile: string; maxRecordsPerItem: number },
 ): { ok: true; item: PreparedItem } | { ok: false; reason: string } {
   if (w.drafts.length > o.maxRecordsPerItem) {
     return { ok: false, reason: 'too-many-records' };
@@ -4718,11 +4228,9 @@ export function prepareItem(
     if (d.itemId !== w.itemId) return { ok: false, reason: 'item-id-mismatch' };
     if (!sameOwner(d.owner, owner)) return { ok: false, reason: 'owner-mismatch' };
   }
-  const canonicalDrafts =
-    o.canonicalKind === undefined
-      ? []
-      : w.drafts.filter((d) => d.recordKind === o.canonicalKind);
-  if (o.canonicalKind !== undefined && canonicalDrafts.length !== 1) {
+  const canonicalDrafts = w.drafts.filter((d) => d.recordKind === o.canonicalKind);
+  const canonicalDraft = canonicalDrafts[0];
+  if (canonicalDrafts.length !== 1 || !canonicalDraft) {
     return { ok: false, reason: 'missing-canonical' };
   }
   const positions = new Map<string, number>();
@@ -4739,31 +4247,18 @@ export function prepareItem(
         recordKind: d.recordKind,
         profile: o.profile,
         ...ownerMetadata(owner),
-        generated: d.generated ? true : undefined,
         itemText: d.itemText,
         ttl: w.ttl,
       },
     };
   };
-  const canonicalDraft = canonicalDrafts[0];
-  const canonicalBase = canonicalDraft ? build(canonicalDraft) : undefined;
+  const canonicalBase = build(canonicalDraft);
   const others = w.drafts.filter((d) => d !== canonicalDraft).map(build);
-  const companions = o.companionRecordIds;
-  const canonical = canonicalBase
-    ? {
-        ...canonicalBase,
-        metadata: {
-          ...canonicalBase.metadata,
-          recordIds: others.map((r) => r.id),
-          companionRecordIds:
-            companions && Object.keys(companions).length > 0 ? companions : undefined,
-        },
-      }
-    : undefined;
-  return {
-    ok: true,
-    item: { itemId: w.itemId, owner, ...(canonical ? { canonical } : {}), others },
+  const canonical: PreparedRecord = {
+    ...canonicalBase,
+    metadata: { ...canonicalBase.metadata, recordIds: others.map((r) => r.id) },
   };
+  return { ok: true, item: { itemId: w.itemId, owner, canonical, others } };
 }
 
 const message = (err: unknown): string =>
@@ -4845,30 +4340,6 @@ const listed = (
   return Array.isArray(raw) ? raw.filter((x): x is string => typeof x === 'string') : [];
 };
 
-/** S7 / F3: the companion ids a canonical record lists under `key` (malformed entries ignored). */
-export function listedCompanions(
-  meta: RagMetadata | undefined,
-  key: 'companionRecordIds' | 'staleCompanionRecordIds' = 'companionRecordIds',
-): CompanionIds {
-  const raw = meta?.[key];
-  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return {};
-  const out: Record<string, string[]> = {};
-  for (const [name, ids] of Object.entries(raw)) {
-    if (Array.isArray(ids)) out[name] = ids.filter((x): x is string => typeof x === 'string');
-  }
-  return out;
-}
-
-/** The stale ids still to delete: primary + per companion (F3). */
-interface Stale {
-  primary: string[];
-  companions: Record<string, string[]>;
-}
-
-const pendingCount = (st: Stale): number =>
-  st.primary.length +
-  Object.values(st.companions).reduce((n, ids) => n + ids.length, 0);
-
 /**
  * The new canonical, with `undefined` for every extra the OLD canonical had and the
  * new one has not — a merging store would otherwise keep it (reserved keys are
@@ -4886,31 +4357,26 @@ function clearingOld(c: PreparedRecord, old: RagMetadata | undefined): PreparedR
   };
 }
 
-/** The canonical with the stale lists written onto it (`undefined` when empty). */
-function withStale(c: PreparedRecord, st: Stale): PreparedRecord {
-  const { staleRecordIds: _a, staleCompanionRecordIds: _b, ...rest } = c.metadata;
-  const comp = Object.fromEntries(
-    Object.entries(st.companions).filter(([, ids]) => ids.length > 0),
-  );
+/** The canonical with the stale list written onto it (`undefined` when empty). */
+function withStale(c: PreparedRecord, stale: readonly string[]): PreparedRecord {
   return {
     ...c,
     metadata: {
-      ...rest,
+      ...c.metadata,
       // Always written, `undefined` once settled: InMemoryRag's upsert MERGES metadata
       // on the same id, so an omitted key would keep the previous list.
-      staleRecordIds: st.primary.length > 0 ? st.primary : undefined,
-      staleCompanionRecordIds: Object.keys(comp).length > 0 ? comp : undefined,
+      staleRecordIds: stale.length > 0 ? [...stale] : undefined,
     },
   };
 }
 
 /** Delete each id; `ok` (deleted or already absent) = done; `ok: false` or a throw = kept. */
 async function deleteAll(
-  rag: IRag | undefined,
+  rag: IRag,
   ids: readonly string[],
   options?: CallOptions,
 ): Promise<string[]> {
-  const w = rag?.writer?.();
+  const w = rag.writer?.();
   if (!w) return [...ids];
   const kept: string[] = [];
   for (const id of ids) {
@@ -4926,15 +4392,12 @@ async function deleteAll(
 
 /**
  * Write prepared items into ONE store (spec §3.3 order). `indexed[i]` = every
- * record of item i written AND its stale cleanup done (F3). `companions`: the
- * bound companion stores, for the item's stale companion records (S7); a
- * companion the caller does not pass is not carried (S7 rule).
+ * record of item i written AND its stale cleanup done (F3).
  */
 export async function storeItems(
   rag: IRag,
   items: readonly PreparedItem[],
   options?: CallOptions,
-  companions: Readonly<Record<string, IRag>> = {},
 ): Promise<{
   indexed: boolean[];
   records: number;
@@ -4942,11 +4405,10 @@ export async function storeItems(
   batchFailure?: string;
 }> {
   const failures: (string | undefined)[] = items.map(() => undefined);
-  const stale: Stale[] = items.map(() => ({ primary: [], companions: {} }));
+  const stale: string[][] = items.map(() => []);
   const olds: (RagMetadata | undefined)[] = items.map(() => undefined);
   await Promise.all(
     items.map(async (it, i) => {
-      if (!it.canonical) return;
       const r = await rag.getById(it.canonical.id, options);
       if (!r.ok) {
         failures[i] = `read-failed: ${r.error.message}`;
@@ -4955,65 +4417,38 @@ export async function storeItems(
       const old = r.value?.metadata;
       olds[i] = old;
       const keep = new Set([...it.others.map((x) => x.id), it.canonical.id]);
-      stale[i].primary = [
+      stale[i] = [
         ...new Set([...listed(old), ...listed(old, 'staleRecordIds')]),
       ].filter((id) => !keep.has(id));
-      const now = listedCompanions(it.canonical.metadata);
-      const was = listedCompanions(old);
-      const wasStale = listedCompanions(old, 'staleCompanionRecordIds');
-      for (const name of Object.keys(companions)) {
-        const keepC = new Set(now[name] ?? []);
-        const ids = [
-          ...new Set([...(was[name] ?? []), ...(wasStale[name] ?? [])]),
-        ].filter((id) => !keepC.has(id));
-        if (ids.length > 0) stale[i].companions[name] = ids;
-      }
     }),
   );
   // Write ahead (F3): the canonical carries what must still be deleted — and
   // clears the old extras it no longer has (merging stores).
-  const prepared = items.map((it, i) =>
-    it.canonical
-      ? { ...it, canonical: withStale(clearingOld(it.canonical, olds[i]), stale[i]) }
-      : it,
-  );
+  const prepared = items.map((it, i) => ({
+    ...it,
+    canonical: withStale(clearingOld(it.canonical, olds[i]), stale[i]),
+  }));
   const live = prepared.filter((_, i) => failures[i] === undefined);
-  const all = live.flatMap((it) => [
-    ...it.others,
-    ...(it.canonical ? [it.canonical] : []),
-  ]);
+  const all = live.flatMap((it) => [...it.others, it.canonical]);
   const { vectors, failure } = await embedAll(rag, all, options);
   const written = new Set<string>();
   await writeAll(rag, live.flatMap((it) => it.others), vectors, written, options);
-  await writeAll(
-    rag,
-    live.flatMap((it) => (it.canonical ? [it.canonical] : [])),
-    vectors,
-    written,
-    options,
-  );
+  await writeAll(rag, live.map((it) => it.canonical), vectors, written, options);
   const indexed = await Promise.all(
     prepared.map(async (it, i) => {
       if (failures[i] !== undefined) return false;
-      const ids = [...it.others, ...(it.canonical ? [it.canonical] : [])].map((r) => r.id);
+      const ids = [...it.others, it.canonical].map((r) => r.id);
       if (!ids.every((id) => written.has(id))) {
         failures[i] = 'write-failed';
         return false;
       }
-      if (!it.canonical || pendingCount(stale[i]) === 0) return true;
-      // Delete every stale id, each Result checked (primary and companions).
-      const left: Stale = {
-        primary: await deleteAll(rag, stale[i].primary, options),
-        companions: {},
-      };
-      for (const [name, cids] of Object.entries(stale[i].companions)) {
-        const k = await deleteAll(companions[name], cids, options);
-        if (k.length > 0) left.companions[name] = k;
-      }
+      if (stale[i].length === 0) return true;
+      // Delete every stale id, each Result checked.
+      const left = await deleteAll(rag, stale[i], options);
       // Settle: the canonical lists exactly what is still pending. If this write
       // fails, the written-ahead superset stays — retrying a deleted id is a no-op.
       await writeAll(rag, [withStale(it.canonical, left)], vectors, new Set<string>(), options);
-      const n = pendingCount(left);
+      const n = left.length;
       if (n > 0) {
         failures[i] = `cleanup-failed: ${n} stale record(s) kept for retry`;
         return false;
@@ -5076,17 +4511,14 @@ export async function getItem(
 }
 
 /**
- * Delete what the canonical lists AND what it still has pending (F3) — the
- * companion records in the given companion stores (S7), then its own store's
- * records — then the canonical. Every delete is tried; if any fails, the
- * canonical is KEPT (so a retry finds the list) and an error is returned.
- * A listed companion with no store here is left as is. Returns records deleted.
+ * Delete what the canonical lists AND what it still has pending (F3), then the
+ * canonical. Every delete is tried; if any fails, the canonical is KEPT (so a
+ * retry finds the list) and an error is returned. Returns records deleted.
  */
 export async function removeItem(
   rag: IRag,
   canonicalId: string,
   options?: CallOptions,
-  companions?: Readonly<Record<string, IRag>>,
 ): Promise<Result<number, RagError>> {
   const writer = rag.writer?.();
   if (!writer) {
@@ -5098,30 +4530,17 @@ export async function removeItem(
   const meta = r.value.metadata;
   let n = 0;
   let failed = 0;
-  const del = async (
-    w: ReturnType<NonNullable<IRag['writer']>> | undefined,
-    id: string,
-  ): Promise<void> => {
-    if (!w) return;
+  const del = async (id: string): Promise<void> => {
     try {
-      const d = await w.deleteByIdRaw(id, options);
+      const d = await writer.deleteByIdRaw(id, options);
       if (!d.ok) failed++;
       else if (d.value) n++;
     } catch {
       failed++;
     }
   };
-  const listedC = listedCompanions(meta);
-  const staleC = listedCompanions(meta, 'staleCompanionRecordIds');
-  for (const name of new Set([...Object.keys(listedC), ...Object.keys(staleC)])) {
-    const cw = companions?.[name]?.writer?.();
-    if (!cw) continue;
-    for (const id of new Set([...(listedC[name] ?? []), ...(staleC[name] ?? [])])) {
-      await del(cw, id);
-    }
-  }
   for (const id of new Set([...listed(meta), ...listed(meta, 'staleRecordIds')])) {
-    await del(writer, id);
+    await del(id);
   }
   if (failed > 0) {
     return {
@@ -5131,7 +4550,7 @@ export async function removeItem(
       ),
     };
   }
-  await del(writer, canonicalId);
+  await del(canonicalId);
   if (failed > 0) {
     return { ok: false, error: new RagError('remove: the canonical record delete failed') };
   }
@@ -5168,7 +4587,7 @@ Claude-Session: https://claude.ai/code/session_012KjevEeQGZMkWMfnupJ7Yd"
 
 ## Task 12: `StagedRetrieval` — sources, item pool, collapse, hydration, orphans (libs)
 
-Spec §4.1–§4.4 (incl. the service-record drop, D43), §4.6 (hydration), §4.9; D14, D15. The reranker (Task 13), decomposer (Task 14) and telemetry (Task 28) build on this file.
+Spec §4.1–§4.4 (incl. the service-record drop, D43), §4.6 (hydration), §4.9; D14, D15. Every source holds items — no `role` / `itemsOf`, no variants sources (D50, spec §17.15). The reranker (Task 13), decomposer (Task 14) and telemetry (Task 28) build on this file.
 
 **Files:**
 - Create: `packages/llm-agent-libs/src/collections/staged-retrieval.ts`
@@ -5298,7 +4717,7 @@ function staged(
   });
 }
 const primary = (rag: IRag) => (options?: CallOptions): RetrievalSource[] => [
-  { name: 'primary', rag, role: 'items', options },
+  { name: 'primary', rag, options },
 ];
 
 describe('StagedRetrieval — stage 1, collapse, hydration', () => {
@@ -5376,7 +4795,7 @@ describe('StagedRetrieval — stage 1, collapse, hydration', () => {
     });
     const rag = matchesOnly(raw);
     const r = await staged(() => [
-      { name: 'user', rag, role: 'items', options: { ragFilter: { userId: 'alice' } } },
+      { name: 'user', rag, options: { ragFilter: { userId: 'alice' } } },
     ]).retrieve(rag, q('needle'), 3);
     assert.deepEqual(ids(r), []);
   });
@@ -5426,24 +4845,22 @@ describe('StagedRetrieval — stage 1, collapse, hydration', () => {
     assert.ok(g.ok && g.value.length === 2);
   });
 
-  it('a variants source: its hits hydrate from the items source; skipped when the items source is not selected', async () => {
-    const items = new InMemoryRag();
-    await put(items, 'T', [['full', 'tango']]);
-    const intents = new InMemoryRag();
-    await intents.writer().upsertRaw(recordId(G, 'T', 'intent', 0), 'needle', {
-      itemId: 'T', recordKind: 'intent', visibility: 'global', generated: true,
-    });
+  it('every source holds items: a hit belongs to the source it came from; one itemId in two sources is two items (D50)', async () => {
+    const left = new InMemoryRag();
+    const right = new InMemoryRag();
+    await put(left, 'T', [['full', 'tango left'], ['summary', 'needle']]);
+    await put(right, 'T', [['full', 'tango right'], ['summary', 'needle']]);
     const both = (options?: CallOptions): RetrievalSource[] => [
-      { name: 'primary', rag: matchesOnly(items), role: 'items', options },
-      { name: 'intents', rag: matchesOnly(intents), role: 'variants', itemsOf: 'primary', options },
+      { name: 'left', rag: matchesOnly(left), options },
+      { name: 'right', rag: matchesOnly(right), options },
     ];
-    const r = await staged(both).retrieve(items, q('needle'), 3);
+    const r = await staged(both).retrieve(left, q('needle'), 3);
     assert.ok(r.ok);
-    assert.equal(r.value[0].text, 'tango');
-    assert.equal(r.value[0].metadata.source, 'primary');
-    assert.deepEqual(r.value[0].metadata.matchedKinds, ['intent']);
-    const onlyVariants = await staged((o) => both(o).slice(1)).retrieve(items, q('needle'), 3);
-    assert.deepEqual(ids(onlyVariants), []);
+    assert.deepEqual(
+      r.value.map((x) => [x.metadata.source, x.text]).sort(),
+      [['left', 'tango left'], ['right', 'tango right']],
+    );
+    assert.deepEqual(r.value[0].metadata.matchedKinds, ['summary']);
   });
 
   it('a store error is returned', async () => {
@@ -5536,7 +4953,7 @@ export interface StagedRetrievalOptions {
 export interface Unit {
   readonly key: string;
   readonly score: number;
-  /** The items source the unit belongs to. */
+  /** The source the unit belongs to (every source holds items, D50). */
   readonly source: RetrievalSource;
   readonly hits: readonly RagResult[];
   /** Set for a collapsed item; absent for a pass-through record. */
@@ -5643,35 +5060,25 @@ export class StagedRetrieval implements IRetrievalStrategy {
     for (const [i, answer] of answers.entries()) {
       if (!answer.ok) return answer;
       const s = sources[i];
-      const items =
-        s.role === 'items'
-          ? s
-          : s.itemsOf !== undefined
-            ? byName.get(s.itemsOf)
-            : undefined;
-      // A variants source whose items source this request may not read.
-      if (items?.role !== 'items') continue;
       ctx.stats.candidateRecords += answer.value.length;
       for (const h of answer.value) {
         // A store's service record (deployToolsCorpus, spec §4.3, D43) is never
         // an item: not passed through, not an orphan, not reranked.
         if (h.metadata.serviceRecord !== undefined) continue;
         if (typeof h.metadata.itemId !== 'string') {
-          if (s.role === 'items') {
-            units.push({
-              key: JSON.stringify(['record', s.name, String(h.metadata.id)]),
-              score: h.score,
-              source: s,
-              hits: [h],
-            });
-          }
+          units.push({
+            key: JSON.stringify(['record', s.name, String(h.metadata.id)]),
+            score: h.score,
+            source: s,
+            hits: [h],
+          });
           continue;
         }
         if (!ownerFromMetadata(h.metadata)) {
           ctx.stats.orphans++;
           continue;
         }
-        hits.push({ ...h, source: items.name });
+        hits.push({ ...h, source: s.name });
       }
     }
     const collapsed = o.collapse.collapse(hits);
@@ -5747,7 +5154,7 @@ export class StagedRetrieval implements IRetrievalStrategy {
 
   /**
    * The canonical record: a canonical hit among the candidates, else one
-   * getById on the items source — owner-checked against the source's filter.
+   * getById on the item's source — owner-checked against the source's filter.
    * Null = orphan, counted once per unit.
    */
   protected async canonicalOf(
@@ -5813,7 +5220,7 @@ Claude-Session: https://claude.ai/code/session_012KjevEeQGZMkWMfnupJ7Yd"
 
 ## Task 13: `StagedRetrieval` — reranker on provider text, output check, failure policy (libs)
 
-Spec §4.6 (reranker text), §4.7 (incl. F5: pinned items carry reranked scores; `keepStage1Top` / the `stage1` fallback never with `ScoreFloorCut`), §4.8, §9.1 (session step), §9.3.
+Spec §4.6 (reranker text: a canonical hit's text, else a non-canonical hit's `itemText`, else the canonical record read; D50), §4.7 (incl. F5: pinned items carry reranked scores; `keepStage1Top` / the `stage1` fallback never with `ScoreFloorCut`), §4.8, §9.1 (session step), §9.3.
 
 **Files:**
 - Create: `packages/llm-agent-libs/src/collections/rerank-check.ts`
@@ -5848,7 +5255,6 @@ import {
   type IReranker,
   RagError,
   type RagResult,
-  type RetrievalSource,
   recordId,
 } from '@mcp-abap-adt/llm-agent';
 import { ProbabilityReranker, RelevanceReranker } from '@mcp-abap-adt/llm-agent-reranker';
@@ -5865,7 +5271,6 @@ import { G, ids, matchesOnly, put, q } from './staged-retrieval-helpers.js';
 function staged(
   rag: IRag,
   rerank: StagedRetrievalOptions['rerank'],
-  extra: (o?: CallOptions) => RetrievalSource[] = () => [],
   cut?: IItemCut,
 ) {
   return new StagedRetrieval({
@@ -5874,7 +5279,7 @@ function staged(
     pool: new ItemPool(10),
     maxRecordsPerItem: 3,
     canonicalKind: 'full',
-    sources: { sources: async (options) => [{ name: 'primary', rag, role: 'items', options }, ...extra(options)] },
+    sources: { sources: async (options) => [{ name: 'primary', rag, options }] },
     collapse: new MaxScoreCollapse(),
     rerank,
     ...(cut ? { cut } : {}),
@@ -5933,33 +5338,31 @@ async function fixture() {
   const raw = new InMemoryRag();
   await put(raw, 'A', [['full', 'alpha provider text'], ['summary', 'needle needle']]);
   await put(raw, 'B', [['full', 'bravo needle provider']]);
-  await put(raw, 'C', [['full', 'charlie provider'], ['intent', 'needle generated words']]);
+  await put(raw, 'C', [['full', 'charlie provider'], ['parameters', 'needle own words']]);
   return matchesOnly(raw);
 }
 
 describe('StagedRetrieval — reranker', () => {
-  it('reranks items on their provider text — never intent text', async () => {
+  it('reranks items on their provider text — never a non-canonical record\'s own text', async () => {
     const rag = await fixture();
     const { reranker, seen } = spy(reversed);
     const r = await staged(rag, { reranker, onFailure: 'stage1' }).retrieve(rag, q('needle'), 3);
     assert.equal(seen[0].query, 'needle');
     assert.deepEqual(new Set(seen[0].texts), new Set(['alpha provider text', 'bravo needle provider', 'charlie provider']));
-    for (const t of seen[0].texts) assert.doesNotMatch(t, /generated/);
+    for (const t of seen[0].texts) assert.doesNotMatch(t, /own words/);
     assert.ok(r.ok);
     assert.equal(r.value[0].score, 1);
   });
 
-  it('a variants-only item: the canonical record is read for its text', async () => {
-    const items = new InMemoryRag();
-    await put(items, 'T', [['full', 'tango provider']]);
-    const intents = new InMemoryRag();
-    await intents.writer().upsertRaw(recordId(G, 'T', 'intent', 0), 'needle', {
-      itemId: 'T', recordKind: 'intent', visibility: 'global', generated: true,
+  it('a non-canonical hit without itemText: the canonical record is read for its text', async () => {
+    const raw = new InMemoryRag();
+    await put(raw, 'T', [['full', 'tango provider']]);
+    await raw.writer().upsertRaw(recordId(G, 'T', 'summary', 0), 'needle', {
+      itemId: 'T', recordKind: 'summary', visibility: 'global',
     });
+    const rag = matchesOnly(raw);
     const { reranker, seen } = spy((c) => c);
-    await staged(matchesOnly(items), { reranker, onFailure: 'stage1' }, (o) => [
-      { name: 'intents', rag: matchesOnly(intents), role: 'variants', itemsOf: 'primary', options: o },
-    ]).retrieve(items, q('needle'), 3);
+    await staged(rag, { reranker, onFailure: 'stage1' }).retrieve(rag, q('needle'), 3);
     assert.deepEqual(seen[0].texts, ['tango provider']);
   });
 
@@ -6041,7 +5444,7 @@ describe('StagedRetrieval — reranker', () => {
     const { reranker } = spy(reversed);
     for (const onFailure of ['stage1', 'error'] as const) {
       assert.throws(
-        () => staged(rag, { reranker, onFailure, keepStage1Top: 1 }, undefined, floor()),
+        () => staged(rag, { reranker, onFailure, keepStage1Top: 1 }, floor()),
         /^Error: StagedRetrieval: keepStage1Top cannot be combined with ScoreFloorCut — keepStage1Top is unmeasured \(D7\)/,
       );
     }
@@ -6053,11 +5456,11 @@ describe('StagedRetrieval — reranker', () => {
     const rag = await fixture();
     const { reranker } = spy(reversed);
     assert.throws(
-      () => staged(rag, { reranker, onFailure: 'stage1' }, undefined, floor()),
+      () => staged(rag, { reranker, onFailure: 'stage1' }, floor()),
       /^Error: StagedRetrieval: ScoreFloorCut with a reranker needs rerank\.onFailure 'error'/,
     );
-    assert.doesNotThrow(() => staged(rag, { reranker, onFailure: 'error' }, undefined, floor()));
-    assert.doesNotThrow(() => staged(rag, undefined, undefined, floor()), 'without a reranker the floor cuts stage-1 scores, calibrated on them');
+    assert.doesNotThrow(() => staged(rag, { reranker, onFailure: 'error' }, floor()));
+    assert.doesNotThrow(() => staged(rag, undefined, floor()), 'without a reranker the floor cuts stage-1 scores, calibrated on them');
   });
 });
 
@@ -6335,7 +5738,7 @@ function staged(rag: IRag, o: Partial<StagedRetrievalOptions>) {
     pool: new ItemPool(10),
     maxRecordsPerItem: 1,
     canonicalKind: 'full',
-    sources: { sources: async (options) => [{ name: 'primary', rag, role: 'items', options }] },
+    sources: { sources: async (options) => [{ name: 'primary', rag, options }] },
     collapse: new MaxScoreCollapse(),
     ...o,
   });
@@ -6575,7 +5978,7 @@ Claude-Session: https://claude.ai/code/session_012KjevEeQGZMkWMfnupJ7Yd"
 
 ## Task 15: `ComposedToolsProfile` and tools bindings (libs)
 
-Spec §3.3 (incl. `companionRecordIds`, S7), §6.1 (bind once, reuse), §7.2, §7.3.2 (notes, S1), §7.3.3 (companions), §7.7.
+Spec §3.3 (cleanup failures kept for retry, F3 — primary store only), §6.1 (bind once, reuse), §7.2, §7.3.2 (notes, S1), §7.7. No companion stores and no intent records (D50, spec §17.15).
 
 **Files:**
 - Create: `packages/llm-agent-libs/src/collections/composed-tools-profile.ts`
@@ -6584,15 +5987,15 @@ Spec §3.3 (incl. `companionRecordIds`, S7), §6.1 (bind once, reuse), §7.2, §
 - Modify: `packages/llm-agent-libs/src/collections/index.ts`
 
 **Interfaces:**
-- Consumes: `StagedRetrieval` (Tasks 12–14); `prepareItem`, `storeItems` (with the companion stores, F3), `getItem`, `removeItem` (Task 11); `isIndexNoteSource`, `IndexNote` (Task 3); `StrategyRag`, `hasRetrievalStrategy` (`src/retrieval/strategy-rag.ts`); indexers of Tasks 8–10.
+- Consumes: `StagedRetrieval` (Tasks 12–14); `prepareItem`, `storeItems` (F3: stale deletes checked, kept for retry), `getItem`, `removeItem` (Task 11); `isIndexNoteSource`, `IndexNote` (Task 3); `StrategyRag`, `hasRetrievalStrategy` (`src/retrieval/strategy-rag.ts`); indexers of Tasks 8–9.
 - Produces:
   ```ts
-  export interface ComposedToolsProfileOptions { readonly indexer: IItemIndexer<ToolItem>; readonly companions?: Readonly<Record<string, IItemIndexer<ToolItem>>>; readonly pool: ICandidatePool; readonly collapse: ICollapseRule; readonly rerank?: StagedRetrievalOptions['rerank']; readonly decompose?: StagedRetrievalOptions['decompose']; readonly cut?: IItemCut; readonly telemetry?: StagedRetrievalOptions['telemetry'] }
+  export interface ComposedToolsProfileOptions { readonly indexer: IItemIndexer<ToolItem>; readonly pool: ICandidatePool; readonly collapse: ICollapseRule; readonly rerank?: StagedRetrievalOptions['rerank']; readonly decompose?: StagedRetrievalOptions['decompose']; readonly cut?: IItemCut; readonly telemetry?: StagedRetrievalOptions['telemetry'] }
   export const TOOLS_PROFILE_NAME = 'mcp-tools';
   export class ComposedToolsProfile implements ICollectionProfile<ToolItem> { constructor(composition: ComposedToolsProfileOptions); readonly name: 'mcp-tools'; readonly composition: ComposedToolsProfileOptions }
-  // bind(): bound.rag = StrategyRag(target.rag, StagedRetrieval); a companion indexer without a same-named store → throws.
-  // index(): companions first; canonical carries companionRecordIds (S7); IndexReport.notes from IIndexNoteSource indexers (S1).
-  // remove(): also the listed companion records (S7).
+  // bind({ key, rag }): bound.rag = StrategyRag(target.rag, StagedRetrieval) over ONE source, 'primary'.
+  // index(): non-canonical → canonical → stale deletes (Task 11); IndexReport.notes from an IIndexNoteSource indexer (S1).
+  // remove(): the canonical's listed and stale ids, then the canonical (Task 11).
   export function bindToolsProfile(profile: ICollectionProfile<ToolItem>, target: CollectionStore): IBoundCollection<ToolItem>; // idempotent per store
   export function toolsBindingOf(rag: IRag): IBoundCollection<ToolItem> | undefined;         // walks IRagDecorator.inner
   ```
@@ -6606,7 +6009,6 @@ import { describe, it } from 'node:test';
 import {
   InMemoryRag,
   type IRag,
-  recordId,
   TextOnlyEmbedding,
   toolNameFromRecord,
 } from '@mcp-abap-adt/llm-agent';
@@ -6616,11 +6018,9 @@ import {
   ComposedToolsProfile,
   EnumValueToolIndexer,
   FacetedToolIndexer,
-  IntentCompanionIndexer,
   ItemPool,
   MaxScoreCollapse,
   RequiredEnumDiscriminator,
-  StaticIntentSource,
   SummaryFacet,
   toolItemFromTool,
   toolsBindingOf,
@@ -6677,23 +6077,6 @@ describe('ComposedToolsProfile', () => {
     assert.equal(r.value.indexedItems, 0);
   });
 
-  it('companions: records go only into the companion store; a missing store is refused at bind', async () => {
-    const rag = new InMemoryRag();
-    const intents = new InMemoryRag();
-    const p = profile({ companions: { intents: new IntentCompanionIndexer(new StaticIntentSource({ read_file: ['open my notes'] })) } });
-    assert.throws(() => p.bind({ key: 'tools', rag }), /companion "intents"/);
-    const bound = p.bind({ key: 'tools', rag, companions: { intents } });
-    const r = await bound.index(TOOLS);
-    assert.ok(r.ok && r.value.indexedItems === 2);
-    const inCompanion = await intents.getById(recordId(G, 'tool:read_file', 'intent', 0));
-    assert.ok(inCompanion.ok && inCompanion.value?.metadata.generated === true);
-    const inPrimary = await rag.getById(recordId(G, 'tool:read_file', 'intent', 0));
-    assert.ok(inPrimary.ok && inPrimary.value === null);
-    const q = await bound.rag.query(new TextOnlyEmbedding('open my notes'), 1);
-    assert.ok(q.ok);
-    assert.equal(q.value[0].text, 'Tool: read_file — Read a file from disk');
-  });
-
   it('remove deletes the item records', async () => {
     const rag = new InMemoryRag();
     const bound = profile().bind({ key: 'tools', rag });
@@ -6742,7 +6125,6 @@ import {
   type RagError,
   type RagResult,
   type Result,
-  type RetrievalSource,
   recordId,
   type ToolItem,
 } from '@mcp-abap-adt/llm-agent';
@@ -6763,10 +6145,8 @@ export const TOOLS_PROFILE_NAME = 'mcp-tools';
 
 /** A tools profile = a composition of strategies the consumer injects (spec §7.2). */
 export interface ComposedToolsProfileOptions {
-  /** Fills the primary store. */
+  /** Fills the store with records built only from what the provider exports. */
   readonly indexer: IItemIndexer<ToolItem>;
-  /** Each fills bind()'s companion store of that name (a `variants` source). */
-  readonly companions?: Readonly<Record<string, IItemIndexer<ToolItem>>>;
   readonly pool: ICandidatePool;
   readonly collapse: ICollapseRule;
   readonly rerank?: StagedRetrievalOptions['rerank'];
@@ -6774,8 +6154,6 @@ export interface ComposedToolsProfileOptions {
   readonly cut?: IItemCut;
   readonly telemetry?: StagedRetrievalOptions['telemetry'];
 }
-
-type Companion = readonly [name: string, indexer: IItemIndexer<ToolItem>, rag: IRag];
 
 const reasonOf = (e: RagError): string =>
   e.code === 'TOO_MANY_RECORDS' ? 'too-many-records' : e.message;
@@ -6785,7 +6163,6 @@ class ToolsBinding implements IBoundCollection<ToolItem> {
   constructor(
     private readonly target: CollectionStore,
     private readonly indexer: IItemIndexer<ToolItem>,
-    private readonly companions: readonly Companion[],
     readonly retrieval: StagedRetrieval,
     readonly profileName: string,
   ) {
@@ -6801,10 +6178,7 @@ class ToolsBinding implements IBoundCollection<ToolItem> {
     options?: CallOptions,
   ): Promise<Result<IndexReport, RagError>> {
     const failedItems: { itemId: string; reason: string }[] = [];
-    const primary: { at: number; item: PreparedItem }[] = [];
-    const side = this.companions.map(
-      () => [] as { at: number; item: PreparedItem }[],
-    );
+    const prepared: { at: number; item: PreparedItem }[] = [];
     for (const [at, tool] of items.entries()) {
       const fail = (reason: string) =>
         failedItems.push({ itemId: tool.itemId, reason });
@@ -6825,74 +6199,30 @@ class ToolsBinding implements IBoundCollection<ToolItem> {
         fail(p.reason);
         continue;
       }
-      const extra: (PreparedItem | undefined)[] = [];
-      let refused: string | undefined;
-      for (const [name, ci] of this.companions) {
-        const cd = await ci.toRecords(tool, options);
-        if (!cd.ok) {
-          refused = `${name}: ${reasonOf(cd.error)}`;
-          break;
-        }
-        if (cd.value.length === 0) {
-          extra.push(undefined);
-          continue;
-        }
-        const cp = prepareItem(
-          { itemId: tool.itemId, drafts: cd.value },
-          {
-            canonicalKind: undefined,
-            profile: this.profileName,
-            maxRecordsPerItem: ci.maxRecordsPerItem,
-          },
-        );
-        if (!cp.ok) {
-          refused = `${name}: ${cp.reason}`;
-          break;
-        }
-        extra.push(cp.item);
-      }
-      if (refused !== undefined) {
-        fail(refused);
-        continue;
-      }
-      primary.push({ at, item: p.item });
-      extra.forEach((e, j) => {
-        if (e) side[j].push({ at, item: e });
-      });
+      prepared.push({ at, item: p.item });
     }
+    // Write order (spec §3.3): non-canonical → canonical → stale deletes, every
+    // delete's Result checked (F3). NOT atomic (D13); readers stay safe through hydration.
     const main = await storeItems(
       this.target.rag,
-      primary.map((p) => p.item),
+      prepared.map((p) => p.item),
       options,
     );
-    const done = new Set<number>();
-    primary.forEach((p, i) => {
-      if (main.indexed[i]) done.add(p.at);
+    let indexedItems = 0;
+    prepared.forEach((p, i) => {
+      if (main.indexed[i]) indexedItems++;
       else
         failedItems.push({
           itemId: items[p.at].itemId,
           reason: main.failures[i] ?? 'write-failed',
         });
     });
-    let records = main.records;
-    for (const [j, [name, , rag]] of this.companions.entries()) {
-      const r = await storeItems(rag, side[j].map((s) => s.item), options);
-      records += r.records;
-      side[j].forEach((s, i) => {
-        if (!r.indexed[i] && done.delete(s.at)) {
-          failedItems.push({
-            itemId: items[s.at].itemId,
-            reason: `${name}: ${r.failures[i] ?? 'write-failed'}`,
-          });
-        }
-      });
-    }
     return {
       ok: true,
       value: {
         items: items.length,
-        indexedItems: done.size,
-        records,
+        indexedItems,
+        records: main.records,
         failedItems,
       },
     };
@@ -6926,39 +6256,12 @@ class ToolsBinding implements IBoundCollection<ToolItem> {
 /** The tools profile any composition is built with (spec §7.2). */
 export class ComposedToolsProfile implements ICollectionProfile<ToolItem> {
   readonly name = TOOLS_PROFILE_NAME;
-  constructor(readonly composition: ComposedToolsProfileOptions) {
-    if (composition.companions && 'primary' in composition.companions) {
-      throw new Error(
-        'ComposedToolsProfile: "primary" names the items source; name the companion otherwise',
-      );
-    }
-  }
+  constructor(readonly composition: ComposedToolsProfileOptions) {}
 
   bind(target: CollectionStore): IBoundCollection<ToolItem> {
     const c = this.composition;
-    const companions: Companion[] = [];
-    for (const [name, indexer] of Object.entries(c.companions ?? {})) {
-      const rag = target.companions?.[name];
-      if (!rag) {
-        throw new Error(
-          `ComposedToolsProfile: companion "${name}" has no store — bind({ companions: { ${name}: <IRag> } })`,
-        );
-      }
-      companions.push([name, indexer, rag]);
-    }
     const sources: ISourceSelector = {
-      sources: async (options) => [
-        { name: 'primary', rag: target.rag, role: 'items', options },
-        ...companions.map(
-          ([name, , rag]): RetrievalSource => ({
-            name,
-            rag,
-            role: 'variants',
-            itemsOf: 'primary',
-            options,
-          }),
-        ),
-      ],
+      sources: async (options) => [{ name: 'primary', rag: target.rag, options }],
     };
     const retrieval = new StagedRetrieval({
       name: this.name,
@@ -6973,7 +6276,7 @@ export class ComposedToolsProfile implements ICollectionProfile<ToolItem> {
       ...(c.cut ? { cut: c.cut } : {}),
       ...(c.telemetry ? { telemetry: c.telemetry } : {}),
     });
-    return new ToolsBinding(target, c.indexer, companions, retrieval, this.name);
+    return new ToolsBinding(target, c.indexer, retrieval, this.name);
   }
 }
 ```
@@ -7059,92 +6362,60 @@ node --import tsx/esm --test packages/llm-agent-libs/src/collections/__tests__/c
 ```
 Expected: PASS (`tsc -b` type-checks the edited sources; the tsx run does not, and `__tests__/**` is excluded from the package build).
 
-- [ ] **Step 5: Companion records on remove and replacement (S7); notes in the report (S1)**
+- [ ] **Step 5: Stale records on replacement (F3, primary store); notes in the report (S1)**
 
-Spec §3.3 (amended): the canonical record lists the item's companion records in `companionRecordIds`; `remove` and replacement delete them from the companion store — through Task 11's `storeItems` / `removeItem`, which check every delete and keep failures in `staleCompanionRecordIds` for retry (F3). Spec §7.3.2: the binding collects `IIndexNoteSource` notes into `IndexReport.notes`. Write order (spec §3.3): companion records → primary non-canonical → canonical → stale deletes in each store.
+Spec §3.3: a replacement deletes the old records its canonical no longer lists — through Task 11's `storeItems`, which checks every delete and keeps a failed one in `staleRecordIds` for retry (F3); `remove` deletes the listed and stale ids. Spec §7.3.2: the binding collects its indexer's `IIndexNoteSource` notes into `IndexReport.notes`.
 
 Append to `composed-tools-profile.test.ts`:
 
 ```ts
-describe('companion records (S7) and notes (S1) in the binding', () => {
-  const companionProfile = (m: Record<string, string[]>) =>
-    profile({ companions: { intents: new IntentCompanionIndexer(new StaticIntentSource(m)) } });
-
-  it('the canonical lists its companion records; remove deletes them too', async () => {
+describe('stale records (F3) and notes (S1) in the binding', () => {
+  it('re-indexing without a facet deletes the old facet record', async () => {
     const rag = new InMemoryRag();
-    const intents = new InMemoryRag();
-    const bound = companionProfile({ read_file: ['open my notes'] }).bind({ key: 'tools', rag, companions: { intents } });
-    await bound.index(TOOLS);
-    const cid = recordId(G, 'tool:read_file', 'intent', 0);
-    const canon = await rag.getById(recordId(G, 'tool:read_file', 'full', 0));
-    assert.ok(canon.ok);
-    assert.deepEqual(canon.value?.metadata.companionRecordIds, { intents: [cid] });
-    const n = await bound.remove([{ itemId: 'tool:read_file', owner: G }]);
-    assert.ok(n.ok && n.value === 3, 'full + summary + the companion intent');
-    const gone = await intents.getById(cid);
-    assert.ok(gone.ok && gone.value === null);
-  });
-
-  it('re-indexing without intents deletes the old companion record', async () => {
-    const rag = new InMemoryRag();
-    const intents = new InMemoryRag();
-    await companionProfile({ read_file: ['open my notes'] }).bind({ key: 'tools', rag, companions: { intents } }).index(TOOLS);
-    await companionProfile({}).bind({ key: 'tools', rag, companions: { intents } }).index(TOOLS);
-    const gone = await intents.getById(recordId(G, 'tool:read_file', 'intent', 0));
+    await profile().bind({ key: 'tools', rag }).index(TOOLS);
+    await profile({ indexer: new FacetedToolIndexer([]) }).bind({ key: 'tools', rag }).index(TOOLS);
+    const gone = await rag.getById(recordId(G, 'tool:read_file', 'summary', 0));
     assert.ok(gone.ok && gone.value === null);
     const canon = await rag.getById(recordId(G, 'tool:read_file', 'full', 0));
-    assert.ok(canon.ok && canon.value?.metadata.companionRecordIds === undefined);
+    assert.ok(canon.ok && canon.value?.metadata.staleRecordIds === undefined);
   });
 
-  it('F3: a failed stale companion delete is reported cleanup-failed and retried by the next index', async () => {
-    const rag = new InMemoryRag();
-    const rawIntents = new InMemoryRag();
-    const cid = recordId(G, 'tool:read_file', 'intent', 0);
+  it('F3: a failed stale delete is reported cleanup-failed and retried by the next index', async () => {
+    // InMemoryRag.writer() returns a FRESH object per call (in-memory-rag.ts `writer()`), so
+    // patching one writer instance changes nothing: wrap the store instead.
+    const raw = new InMemoryRag();
+    const sid = recordId(G, 'tool:read_file', 'summary', 0);
     let fail = true;
-    const w = rawIntents.writer();
-    const intents = {
-      ...rawIntents,
-      query: rawIntents.query.bind(rawIntents),
-      getById: rawIntents.getById.bind(rawIntents),
-      writer: () => ({ ...w, deleteByIdRaw: async (id: string, o?: CallOptions) => (fail && id === cid ? { ok: false as const, error: new RagError('down') } : w.deleteByIdRaw(id, o)) }),
+    const rag = {
+      query: raw.query.bind(raw),
+      healthCheck: raw.healthCheck.bind(raw),
+      getById: raw.getById.bind(raw),
+      writer: () => {
+        const w = raw.writer();
+        return { ...w, deleteByIdRaw: async (id: string, o?: CallOptions) => (fail && id === sid ? { ok: false as const, error: new RagError('down') } : w.deleteByIdRaw(id, o)) };
+      },
     } as IRag;
-    await companionProfile({ read_file: ['open my notes'] }).bind({ key: 'tools', rag, companions: { intents } }).index(TOOLS);
-    const again = companionProfile({}).bind({ key: 'tools', rag, companions: { intents } });
+    await profile().bind({ key: 'tools', rag }).index(TOOLS);
+    const again = profile({ indexer: new FacetedToolIndexer([]) }).bind({ key: 'tools', rag });
     const r1 = await again.index(TOOLS);
     assert.ok(r1.ok);
     assert.deepEqual(r1.value.failedItems.map((f) => f.itemId), ['tool:read_file']);
     assert.match(r1.value.failedItems[0].reason, /^cleanup-failed/);
+    const listed = await raw.getById(recordId(G, 'tool:read_file', 'full', 0));
+    assert.ok(listed.ok);
+    assert.deepEqual(listed.value?.metadata.staleRecordIds, [sid]);
     fail = false;
     const r2 = await again.index(TOOLS);
     assert.ok(r2.ok && r2.value.failedItems.length === 0);
-    const gone = await rawIntents.getById(cid);
+    const gone = await raw.getById(sid);
     assert.ok(gone.ok && gone.value === null);
     const n = await again.remove([{ itemId: 'tool:read_file', owner: G }]);
     assert.ok(n.ok);
-    const canon = await rag.getById(recordId(G, 'tool:read_file', 'full', 0));
+    const canon = await raw.getById(recordId(G, 'tool:read_file', 'full', 0));
     assert.ok(canon.ok && canon.value === null);
   });
 
-  it('a failed companion write fails the item before its primary records are written', async () => {
-    const rag = new InMemoryRag();
-    // InMemoryRag.writer() returns a FRESH object per call (in-memory-rag.ts `writer()`), so
-    // patching one writer instance changes nothing: wrap the store instead.
-    const raw = new InMemoryRag();
-    const broken = {
-      query: raw.query.bind(raw),
-      healthCheck: raw.healthCheck.bind(raw),
-      getById: raw.getById.bind(raw),
-      writer: () => ({ ...raw.writer(), upsertRaw: async () => ({ ok: false as const, error: new RagError('down') }) }),
-    } as IRag;
-    const bound = companionProfile({ read_file: ['open my notes'] }).bind({ key: 'tools', rag, companions: { intents: broken } });
-    const r = await bound.index(TOOLS);
-    assert.ok(r.ok);
-    assert.deepEqual(r.value.failedItems.map((f) => f.itemId), ['tool:read_file']);
-    const canon = await rag.getById(recordId(G, 'tool:read_file', 'full', 0));
-    assert.ok(canon.ok && canon.value === null);
-  });
-
-  it('notes from the indexers land in IndexReport.notes with the item id', async () => {
+  it('notes from the indexer land in IndexReport.notes with the item id', async () => {
     const coarse = toolItemFromTool(
       { name: 'make', description: 'Make', inputSchema: { properties: { kind: { enum: ['A', 'B'] }, region: { enum: ['EU', 'US'] } }, required: ['kind', 'region'] } },
       { itemId: 'tool:make', originalName: 'make' },
@@ -7159,7 +6430,7 @@ describe('companion records (S7) and notes (S1) in the binding', () => {
   });
 });
 ```
-Add `RagError` and `type CallOptions` to the test's `@mcp-abap-adt/llm-agent` import; the complete import is:
+Add `type CallOptions`, `RagError` and `recordId` to the test's `@mcp-abap-adt/llm-agent` import; the complete import is:
 ```ts
 import {
   type CallOptions,
@@ -7172,158 +6443,30 @@ import {
 } from '@mcp-abap-adt/llm-agent';
 ```
 
-Run it: FAIL — no `companionRecordIds`; `remove` leaves the intent; no `notes`.
+Run it: FAIL — no `notes` in the report (the stale tests already pass through Task 11's `storeItems`; they pin the binding's use of it).
 
-In `composed-tools-profile.ts`: add `type IndexNote`, `isIndexNoteSource` to the `@mcp-abap-adt/llm-agent` import. Replace `ToolsBinding.index` and `ToolsBinding.remove` with:
+In `composed-tools-profile.ts`: add `type IndexNote`, `isIndexNoteSource` to the `@mcp-abap-adt/llm-agent` import. In `ToolsBinding.index`, declare `const notes: ({ itemId: string } & IndexNote)[] = [];` beside `failedItems`, collect the notes right before `prepared.push({ at, item: p.item });`:
 
 ```ts
-  async index(
-    items: readonly ToolItem[],
-    options?: CallOptions,
-  ): Promise<Result<IndexReport, RagError>> {
-    const failedItems: { itemId: string; reason: string }[] = [];
-    const notes: ({ itemId: string } & IndexNote)[] = [];
-    const primary: { at: number; item: PreparedItem }[] = [];
-    const side = this.companions.map(
-      () => [] as { at: number; item: PreparedItem }[],
-    );
-    for (const [at, tool] of items.entries()) {
-      const fail = (reason: string) =>
-        failedItems.push({ itemId: tool.itemId, reason });
-      const drafts = await this.indexer.toRecords(tool, options);
-      if (!drafts.ok) {
-        fail(reasonOf(drafts.error));
-        continue;
+      // S1: what the indexer declined to guess, reported with the item's id.
+      if (isIndexNoteSource<ToolItem>(this.indexer)) {
+        for (const n of this.indexer.notesFor(tool)) notes.push({ itemId: tool.itemId, ...n });
       }
-      // Companions first: their record ids go on the canonical record (S7).
-      const extra: (PreparedItem | undefined)[] = [];
-      let refused: string | undefined;
-      for (const [name, ci] of this.companions) {
-        const cd = await ci.toRecords(tool, options);
-        if (!cd.ok) {
-          refused = `${name}: ${reasonOf(cd.error)}`;
-          break;
-        }
-        if (cd.value.length === 0) {
-          extra.push(undefined);
-          continue;
-        }
-        const cp = prepareItem(
-          { itemId: tool.itemId, drafts: cd.value },
-          {
-            canonicalKind: undefined,
-            profile: this.profileName,
-            maxRecordsPerItem: ci.maxRecordsPerItem,
-          },
-        );
-        if (!cp.ok) {
-          refused = `${name}: ${cp.reason}`;
-          break;
-        }
-        extra.push(cp.item);
-      }
-      if (refused !== undefined) {
-        fail(refused);
-        continue;
-      }
-      const companionRecordIds: Record<string, string[]> = {};
-      extra.forEach((e, j) => {
-        if (e) companionRecordIds[this.companions[j][0]] = e.others.map((r) => r.id);
-      });
-      const p = prepareItem(
-        { itemId: tool.itemId, drafts: drafts.value },
-        {
-          canonicalKind: this.indexer.canonicalKind,
-          profile: this.profileName,
-          maxRecordsPerItem: this.indexer.maxRecordsPerItem,
-          companionRecordIds,
-        },
-      );
-      if (!p.ok) {
-        fail(p.reason);
-        continue;
-      }
-      // S1: what any indexer declined to guess, reported with the item's id.
-      for (const ix of [this.indexer, ...this.companions.map(([, ci]) => ci)]) {
-        if (!isIndexNoteSource<ToolItem>(ix)) continue;
-        for (const n of ix.notesFor(tool)) notes.push({ itemId: tool.itemId, ...n });
-      }
-      primary.push({ at, item: p.item });
-      extra.forEach((e, j) => {
-        if (e) side[j].push({ at, item: e });
-      });
-    }
-    // Write order (spec §3.3): companion records → primary non-canonical →
-    // canonical → stale deletes. NOT atomic (D13); readers stay safe through hydration.
-    let records = 0;
-    const sideFailed = new Map<number, string>();
-    for (const [j, [name, , rag]] of this.companions.entries()) {
-      const r = await storeItems(rag, side[j].map((x) => x.item), options);
-      records += r.records;
-      side[j].forEach((x, i) => {
-        if (!r.indexed[i] && !sideFailed.has(x.at)) {
-          sideFailed.set(x.at, `${name}: ${r.failures[i] ?? 'write-failed'}`);
-        }
-      });
-    }
-    const live = primary.filter((x) => !sideFailed.has(x.at));
-    for (const x of primary) {
-      const why = sideFailed.get(x.at);
-      if (why) failedItems.push({ itemId: items[x.at].itemId, reason: why });
-    }
-    // S7 + F3: storeItems deletes the stale companion records too (every Result checked)
-    // and reports `cleanup-failed` when one is kept for retry.
-    const main = await storeItems(
-      this.target.rag,
-      live.map((x) => x.item),
-      options,
-      Object.fromEntries(this.companions.map(([name, , rag]) => [name, rag])),
-    );
-    records += main.records;
-    let indexedItems = 0;
-    for (const [i, x] of live.entries()) {
-      if (!main.indexed[i]) {
-        failedItems.push({
-          itemId: items[x.at].itemId,
-          reason: main.failures[i] ?? 'write-failed',
-        });
-        continue;
-      }
-      indexedItems++;
-    }
+```
+
+and return them only when there are any:
+
+```ts
     return {
       ok: true,
       value: {
         items: items.length,
         indexedItems,
-        records,
+        records: main.records,
         failedItems,
         ...(notes.length > 0 ? { notes } : {}),
       },
     };
-  }
-
-  async remove(
-    refs: readonly ItemRef[],
-    options?: CallOptions,
-  ): Promise<Result<number, RagError>> {
-    // S7: the canonical's companionRecordIds are deleted from these stores too.
-    const companions = Object.fromEntries(
-      this.companions.map(([name, , rag]) => [name, rag]),
-    );
-    let n = 0;
-    for (const ref of refs) {
-      const r = await removeItem(
-        this.target.rag,
-        this.canonicalId(ref),
-        options,
-        companions,
-      );
-      if (!r.ok) return r;
-      n += r.value;
-    }
-    return { ok: true, value: n };
-  }
 ```
 
 Run:
@@ -7331,7 +6474,7 @@ Run:
 npx tsc -b packages/llm-agent-libs
 node --import tsx/esm --test packages/llm-agent-libs/src/collections/__tests__/composed-tools-profile.test.ts packages/llm-agent-libs/src/collections/__tests__/record-writer.test.ts
 ```
-Expected: PASS; `tsc -b` type-checks the replaced `index` / `remove` and the added `IndexNote` / `isIndexNoteSource` imports (the earlier tests too: with no companions and no notes the report has no `notes` key and `companionRecordIds` is not written).
+Expected: PASS; `tsc -b` type-checks the edited `index` and the added `IndexNote` / `isIndexNoteSource` imports (the earlier tests too: with no notes the report has no `notes` key).
 
 - [ ] **Step 6: Commit**
 
@@ -7357,11 +6500,10 @@ Spec §7.1, §7.4 (the table — every tuned number cites it), §5.5 (`faceted-c
 - Modify: `packages/llm-agent-libs/src/collections/index.ts`, `tsconfig.typecheck.json`
 
 **Interfaces:**
-- Consumes: `ComposedToolsProfile` (Task 15); `FacetedToolIndexer`, `SummaryFacet`, `ParametersFacet`, `IntentRecordIndexer`, `IntentCompanionIndexer`, `ItemPool`, `MaxScoreCollapse`, `FixedItemsCut`; `ProbabilityReranker`, `RelevanceReranker`, `TOOL_QUESTION` (`@mcp-abap-adt/llm-agent-reranker`, Tasks 4B–4C); `IProbabilityDecision`, `IRelevanceDecision`, `IReranker`, `IToolIntentSource`. (Libs never imports a provider package: Cohere's `SapAiCoreRelevanceDecision` of Task 18 arrives as an `IRelevanceDecision`, Jev as an `IProbabilityDecision`.)
+- Consumes: `ComposedToolsProfile` (Task 15); `FacetedToolIndexer`, `SummaryFacet`, `ParametersFacet`, `ItemPool`, `MaxScoreCollapse`, `FixedItemsCut`; `ProbabilityReranker`, `RelevanceReranker`, `TOOL_QUESTION` (`@mcp-abap-adt/llm-agent-reranker`, Tasks 4B–4C); `IProbabilityDecision`, `IRelevanceDecision`, `IReranker`. (Libs never imports a provider package: Cohere's `SapAiCoreRelevanceDecision` of Task 18 arrives as an `IRelevanceDecision`, Jev as an `IProbabilityDecision`.)
 - Produces:
   ```ts
-  export type VariantIntents = { readonly record: IToolIntentSource } | { readonly companion: IToolIntentSource };
-  export interface VariantOptions { readonly intents?: VariantIntents; readonly decompose?: StagedRetrievalOptions['decompose']; readonly telemetry?: StagedRetrievalOptions['telemetry'] }
+  export interface VariantOptions { readonly decompose?: StagedRetrievalOptions['decompose']; readonly telemetry?: StagedRetrievalOptions['telemetry'] }
   export const mcpToolsVariants: {
     baseline(): undefined;
     faceted(o?: VariantOptions): ComposedToolsProfile;
@@ -7370,7 +6512,6 @@ Spec §7.1, §7.4 (the table — every tuned number cites it), §5.5 (`faceted-c
     smallSetJev(o: VariantOptions & { probabilityDecision: IProbabilityDecision; poolItems: number }): ComposedToolsProfile;
   };
   export const MCP_TOOLS_VARIANT_NAMES: readonly ['baseline', 'faceted', 'faceted-cohere', 'faceted-jev', 'small-set-jev'];
-  // companion placement binds with companions: { intents: <IRag> }
   ```
 
 - [ ] **Step 1: Write the failing test**
@@ -7391,15 +6532,12 @@ import {
   EnumValueToolIndexer,
   FacetedToolIndexer,
   FixedItemsCut,
-  IntentCompanionIndexer,
-  IntentRecordIndexer,
   ItemPool,
   MaxScoreCollapse,
   mcpToolsVariants,
   NameTailFacet,
   ParameterNamesToolText,
   ParametersFacet,
-  StaticIntentSource,
   SummaryFacet,
   TokenBudgetCut,
 } from '../index.js';
@@ -7419,9 +6557,8 @@ function shape(p: ComposedToolsProfile) {
   };
 }
 function facetsOf(indexer: IItemIndexer<ToolItem>): readonly object[] {
-  const base = indexer instanceof IntentRecordIndexer ? indexer.inner : indexer;
-  assert.ok(base instanceof FacetedToolIndexer);
-  return base.facets;
+  assert.ok(indexer instanceof FacetedToolIndexer);
+  return indexer.facets;
 }
 const all = () => [
   mcpToolsVariants.faceted(),
@@ -7466,8 +6603,8 @@ describe('mcpToolsVariants — the §7.4 table, exactly', () => {
   });
   it('the default provider text stays C0 (ParameterNamesToolText) in every variant (F4)', () => {
     for (const p of all()) {
-      const base = p.composition.indexer instanceof IntentRecordIndexer ? p.composition.indexer.inner : p.composition.indexer;
-      assert.ok(base instanceof FacetedToolIndexer && base.text instanceof ParameterNamesToolText);
+      const ix = p.composition.indexer;
+      assert.ok(ix instanceof FacetedToolIndexer && ix.text instanceof ParameterNamesToolText);
     }
   });
   it('no variant contains NameTailFacet, EnumValueToolIndexer or TokenBudgetCut', () => {
@@ -7476,13 +6613,6 @@ describe('mcpToolsVariants — the §7.4 table, exactly', () => {
       assert.ok(!facetsOf(p.composition.indexer).some((f) => f instanceof NameTailFacet));
       assert.ok(!(p.composition.cut instanceof TokenBudgetCut));
     }
-  });
-  it('intents: record placement wraps the indexer; companion placement adds a companion', () => {
-    const src = new StaticIntentSource({});
-    const rec = mcpToolsVariants.faceted({ intents: { record: src } });
-    assert.ok(rec.composition.indexer instanceof IntentRecordIndexer);
-    const comp = mcpToolsVariants.faceted({ intents: { companion: src } });
-    assert.ok(comp.composition.companions?.intents instanceof IntentCompanionIndexer);
   });
   it("the consumer's decomposer is passed through; none otherwise", () => {
     const decompose = { decomposer: { name: 'd', decompose: async () => ({ ok: true as const, value: [] }) }, queryEmbedder: { embedQuery: async () => ({ vector: [1] }) } };
@@ -7501,17 +6631,15 @@ describe('mcpToolsVariants — the §7.4 table, exactly', () => {
 import type {
   IProbabilityDecision,
   IRelevanceDecision,
-  IToolIntentSource,
 } from '@mcp-abap-adt/llm-agent';
 import { mcpToolsVariants } from '../mcp-tools-variants.js';
 
 declare const model: IProbabilityDecision;
 declare const cohere: IRelevanceDecision;
-declare const intents: IToolIntentSource;
 export const _ok = mcpToolsVariants.smallSetJev({ probabilityDecision: model, poolItems: 25 });
 export const _okCohere = mcpToolsVariants.facetedCohere({ relevanceDecision: cohere });
-// @ts-expect-error intents are refused on baseline
-export const _baselineIntents = mcpToolsVariants.baseline({ intents: { record: intents } });
+// @ts-expect-error baseline takes no options — a decomposer is refused on baseline (spec §6.2)
+export const _baselineOptions = mcpToolsVariants.baseline({});
 // @ts-expect-error small-set-jev needs poolItems
 export const _noPool = mcpToolsVariants.smallSetJev({ probabilityDecision: model });
 // @ts-expect-error faceted-jev needs a probability decision
@@ -7542,12 +6670,9 @@ Expected: FAIL — `mcpToolsVariants` not exported.
  * in-store scoring, measured on mcp-abap-adt (one consumer, one server).
  */
 import type {
-  IItemIndexer,
   IProbabilityDecision,
   IRelevanceDecision,
   IReranker,
-  IToolIntentSource,
-  ToolItem,
 } from '@mcp-abap-adt/llm-agent';
 // spec §5.5: Cohere = RelevanceReranker over an IRelevanceDecision (SapAiCoreRelevanceDecision);
 // Jev = ProbabilityReranker over an IProbabilityDecision (TypeSafeDecisionModel).
@@ -7564,18 +6689,9 @@ import { MaxScoreCollapse } from './max-score-collapse.js';
 import type { StagedRetrievalOptions } from './staged-retrieval.js';
 import { FacetedToolIndexer } from './tools/faceted-tool-indexer.js';
 import { ParametersFacet, SummaryFacet } from './tools/facets.js';
-import {
-  IntentCompanionIndexer,
-  IntentRecordIndexer,
-} from './tools/intent-indexers.js';
 
-/** Intents: their own record in the tool collection (default) or a companion collection. */
-export type VariantIntents =
-  | { readonly record: IToolIntentSource }
-  | { readonly companion: IToolIntentSource };
-
+/** Records come only from what the provider exports: no intents (D50, spec §17.15). */
 export interface VariantOptions {
-  readonly intents?: VariantIntents;
   /** The consumer's own decomposer (none ships, spec §4.5). */
   readonly decompose?: StagedRetrievalOptions['decompose'];
   readonly telemetry?: StagedRetrievalOptions['telemetry'];
@@ -7588,20 +6704,6 @@ export const MCP_TOOLS_VARIANT_NAMES = [
   'faceted-jev',
   'small-set-jev',
 ] as const;
-
-function indexing(
-  base: IItemIndexer<ToolItem>,
-  intents: VariantIntents | undefined,
-): Pick<ComposedToolsProfile['composition'], 'indexer' | 'companions'> {
-  if (!intents) return { indexer: base };
-  if ('record' in intents) {
-    return { indexer: new IntentRecordIndexer(base, intents.record) };
-  }
-  return {
-    indexer: base,
-    companions: { intents: new IntentCompanionIndexer(intents.companion) },
-  };
-}
 
 const facetedBase = () =>
   new FacetedToolIndexer([new SummaryFacet(), new ParametersFacet()]);
@@ -7635,7 +6737,7 @@ export const mcpToolsVariants = {
    *  ItemPool(15) = 30). The schema-derived layout is NOT yet measured (D16). */
   faceted(o: VariantOptions = {}): ComposedToolsProfile {
     return new ComposedToolsProfile({
-      ...indexing(facetedBase(), o.intents),
+      indexer: facetedBase(),
       pool: new ItemPool(15),
       collapse: new MaxScoreCollapse(),
       cut: new FixedItemsCut(8),
@@ -7648,7 +6750,7 @@ export const mcpToolsVariants = {
    *  under k). Not measured as one composition. ≤ 30 tools per query → one /rerank call. */
   facetedCohere(o: VariantOptions & { relevanceDecision: IRelevanceDecision }): ComposedToolsProfile {
     return new ComposedToolsProfile({
-      ...indexing(facetedBase(), o.intents),
+      indexer: facetedBase(),
       pool: new ItemPool(30),
       collapse: new MaxScoreCollapse(),
       rerank: { reranker: relevanceToolReranker(o.relevanceDecision), onFailure: 'stage1' },
@@ -7661,7 +6763,7 @@ export const mcpToolsVariants = {
    *  COMPOSITION ON FRESH CONSUMER QUERIES BEFORE PROMOTION (D11). */
   facetedJev(o: VariantOptions & { probabilityDecision: IProbabilityDecision }): ComposedToolsProfile {
     return new ComposedToolsProfile({
-      ...indexing(facetedBase(), o.intents),
+      indexer: facetedBase(),
       pool: new ItemPool(30),
       collapse: new MaxScoreCollapse(),
       rerank: { reranker: probabilityToolReranker(o.probabilityDecision), onFailure: 'stage1' },
@@ -7680,7 +6782,7 @@ export const mcpToolsVariants = {
   ): ComposedToolsProfile {
     assertPositiveInteger('smallSetJev', 'poolItems', o.poolItems);
     return new ComposedToolsProfile({
-      ...indexing(new FacetedToolIndexer([]), o.intents),
+      indexer: new FacetedToolIndexer([]),
       pool: new ItemPool(o.poolItems),
       collapse: new MaxScoreCollapse(),
       rerank: { reranker: probabilityToolReranker(o.probabilityDecision), onFailure: 'stage1' },
@@ -7696,7 +6798,6 @@ Append to `collections/index.ts`:
 export {
   MCP_TOOLS_VARIANT_NAMES,
   mcpToolsVariants,
-  type VariantIntents,
   type VariantOptions,
 } from './mcp-tools-variants.js';
 ```
@@ -7881,7 +6982,6 @@ import type {
   ICollectionProfile,
   IProbabilityDecision,
   IRelevanceDecision,
-  IToolIntentSource,
   ToolItem,
 } from '@mcp-abap-adt/llm-agent';
 import { ItemPool } from '../item-pool.js';
@@ -8023,15 +7123,14 @@ class SharedItemsBinding implements IBoundCollection<SharedItem> {
       out.push({
         name: 'user',
         rag: this.target.user,
-        role: 'items',
         options: { ...unfiltered(options), ragFilter: { userId } },
       });
     }
     if (this.target.global) {
-      out.push({ name: 'global', rag: this.target.global, role: 'items', options: unfiltered(options) });
+      out.push({ name: 'global', rag: this.target.global, options: unfiltered(options) });
     }
     for (const g of (await this.target.groups?.readable(options)) ?? []) {
-      out.push({ name: `group:${g.groupId}`, rag: g.rag, role: 'items', options: unfiltered(options) });
+      out.push({ name: `group:${g.groupId}`, rag: g.rag, options: unfiltered(options) });
     }
     return out;
   }
@@ -9491,7 +8590,8 @@ export interface IToolsFillSource {
 
 export interface ToolsFillContext {
   readonly binding: IBoundCollection<ToolItem>;
-  /** The stores the binding was made over (primary + companions). */
+  /** The raw store the binding was made over; a corpus is written into
+   *  `target.rag` with precomputed vectors (spec §3.10). */
   readonly target: CollectionStore;
   /** The live path: list the clients' tools (namespaced, keyed as tool
    *  selection reads them) and index them through `binding.index`. */
@@ -9589,9 +8689,9 @@ Claude-Session: https://claude.ai/code/session_012KjevEeQGZMkWMfnupJ7Yd"
 
 ## Task 19A: Offline tools corpus — `buildToolsCorpus`, `parseToolsCorpus`, `deployToolsCorpus`; the `corpus` and `prebuilt` fill sources (libs)
 
-Spec §6.5 (D43, D48, D49), §3.10 (`ToolsCorpusLoader`, `PrebuiltToolsStore`; compatibility checked at creation; D42, D46, D47, D48), §4.3 (the service record is dropped — Task 12), §3.1 (`serviceRecord` — Tasks 2, 11), §14.1 (offline corpus, fill sources).
+Spec §6.5 (D43, D49, D51 — §17.15), §3.10 (`ToolsCorpusLoader`, `PrebuiltToolsStore`; compatibility checked at creation; D42, D46, D47, D48), §4.3 (the service record is dropped — Task 12), §3.1 (`serviceRecord` — Tasks 2, 11), §14.1 (offline corpus, fill sources).
 
-**Why.** A tools store is filled once at instance creation (D41). Two of the four sources need the profile's indexer to run **outside** the process: the consumer's **build** step produces a corpus (records + vectors) with the same profile and an embedder; its **deploy** step writes that corpus into a persistent store with precomputed vectors — no embedding call — in place, idempotent, with a service record (fingerprint, corpus hash, record hashes, `state: 'pending' | 'final'`). A deploy after an unfinished one does not trust the record's hashes and rewrites the whole corpus; `PrebuiltToolsStore` refuses a store whose record is not `final` (D48). At instance creation `ToolsCorpusLoader` — one small class whose only job is this — checks a built corpus's fingerprint, writes its records with their precomputed vectors into the fresh in-memory store and reports the status (no service record, no diff, no refill, no memo, no retry, no watching); `PrebuiltToolsStore` only checks a deployed persistent store and never writes. A reconnect calls neither (D46: `IToolsFillSource` is `fill` only; a bound store is never written on `toolsChanged`). The fingerprint is the consumer-named `ToolsCorpusIdentity` plus the library's own checks (D47). **An empty corpus is valid** (D49): no items → zero records, no `dimensions`; its deploy deletes every listed and pending record and finalizes a zero-item manifest through the same pending → final protocol; both sources start from it with a complete catalog of 0 tools — so a consumer that removes every tool can replace the old corpus.
+**Why.** A tools store is filled once at instance creation (D41). Two of the four sources need the profile's indexer to run **outside** the process: the consumer's **build** step produces a corpus (records + vectors) with the same profile and an embedder; its **deploy** step writes that corpus into a persistent store with precomputed vectors — no embedding call — in place, idempotent, with a service record (fingerprint, corpus hash, the ids it lists, `state: 'pending' | 'final'`). **The deploy does no per-record diffing** (D51, spec §17.15): a final service record with the same corpus hash and identity → unchanged, nothing written; anything else → write ahead a `pending` record listing every id the store holds or may hold (the old record's ids ∪ the corpus's), **delete** every id the old record lists, **write** the whole corpus, finalize. Deleting first means every write lands in an empty slot, so on a merging store (`InMemoryRag`, `VectorRag`: an in-place upsert merges `{ ...old, ...new }`) no old metadata key (`ttl`, `data`, …) survives — verified in the repo: `VectorRag.writer().deleteByIdRaw` nulls the whole slot and a later write fills a free slot with a fresh `{ text, vector, metadata }`; `InMemoryRag`'s splices the record out; qdrant / pg-vector / HANA delete the whole point / row. An interruption anywhere after the write-ahead leaves `pending`, and a rerun restores the store; `PrebuiltToolsStore` refuses a store whose record is not `final` (D48). At instance creation `ToolsCorpusLoader` — one small class whose only job is this — checks a built corpus's fingerprint, writes its records with their precomputed vectors into the fresh in-memory store and reports the status (no service record, no diff, no refill, no memo, no retry, no watching); `PrebuiltToolsStore` only checks a deployed persistent store and never writes. A reconnect calls neither (D46: `IToolsFillSource` is `fill` only; a bound store is never written on `toolsChanged`). The fingerprint is the consumer-named `ToolsCorpusIdentity` plus the library's own checks (D47: the binding's `profileName`, the corpus format, one vector dimension). There are no companion stores (D50): a corpus is one store's records. **An empty corpus is valid** (D49): no items → zero records, no `dimensions`; its deploy deletes every listed record and finalizes a zero-item manifest through the same pending → final protocol; both sources start from it with a complete catalog of 0 tools — so a consumer that removes every tool can replace the old corpus.
 
 **Files:**
 - Create: `packages/llm-agent-libs/src/collections/tools/corpus-capture-rag.ts` (internal: the build step's capture store)
@@ -9601,21 +8701,22 @@ Spec §6.5 (D43, D48, D49), §3.10 (`ToolsCorpusLoader`, `PrebuiltToolsStore`; c
 - Create: `packages/llm-agent-libs/src/collections/__tests__/tools-corpus.test.ts`
 
 **Interfaces:**
-- Consumes: `bindToolsProfile`, `boundToolsOf` (Tasks 15, 19); `LiveToolsFill`'s module (Task 19); `vectorizeMcpTools` (Task 19, tests); `mcpToolsVariants` (Task 16, tests); `toolItemFromTool` (Task 7); `recordId`, `VectorRag`, `IRetrievalEmbedderOwner` (Tasks 2, 4); `StagedRetrieval` dropping `serviceRecord` hits (Task 12).
+- Consumes: `bindToolsProfile`, `boundToolsOf` (Tasks 15, 19); `LiveToolsFill`'s module (Task 19); `vectorizeMcpTools` (Task 19, tests); `mcpToolsVariants` (Task 16, tests); `toolItemFromTool` (Task 7); `recordId`, `VectorRag`, `IRetrievalEmbedderOwner` (Tasks 2, 4); `CollectionStore` = `{ key, rag }` (Task 3, no companions — D50); `StagedRetrieval` dropping `serviceRecord` hits (Task 12).
 - Produces (all exported from `@mcp-abap-adt/llm-agent-libs`):
   ```ts
   export interface ToolsCorpusIdentity { readonly profile: string; readonly embedder: string }
-  export interface ToolsCorpusManifest { readonly format: 1; readonly identity: ToolsCorpusIdentity; readonly profileName: string; readonly companions: readonly string[]; readonly dimensions?: number; readonly items: number; readonly records: number; readonly corpusHash: string }
-  export interface ToolsCorpusRecord { readonly store: string; readonly id: string; readonly text: string; readonly vector: readonly number[]; readonly metadata: RagMetadata }
+  export interface ToolsCorpusManifest { readonly format: 1; readonly identity: ToolsCorpusIdentity; readonly profileName: string; readonly dimensions?: number; readonly items: number; readonly records: number; readonly corpusHash: string }
+  export interface ToolsCorpusRecord { readonly id: string; readonly text: string; readonly vector: readonly number[]; readonly metadata: RagMetadata }
   export interface ToolsCorpus { readonly manifest: ToolsCorpusManifest; readonly records: readonly ToolsCorpusRecord[] }
-  export interface ToolsCorpusDeployReport { readonly unchanged: boolean; readonly upserted: number; readonly deleted: number }
+  export interface ToolsCorpusDeployReport { readonly unchanged: boolean; readonly written: number; readonly deleted: number }
   export const TOOLS_CORPUS_RECORD_ID = 'tools-corpus';
-  export function buildToolsCorpus(input: { readonly profile: ICollectionProfile<ToolItem>; readonly embedder: IRetrievalEmbedder; readonly identity: ToolsCorpusIdentity; readonly items: readonly ToolItem[]; readonly companions?: readonly string[] }, options?: CallOptions): Promise<ToolsCorpus>;
+  export function buildToolsCorpus(input: { readonly profile: ICollectionProfile<ToolItem>; readonly embedder: IRetrievalEmbedder; readonly identity: ToolsCorpusIdentity; readonly items: readonly ToolItem[] }, options?: CallOptions): Promise<ToolsCorpus>;
   export function parseToolsCorpus(json: string): ToolsCorpus;
   export function deployToolsCorpus(corpus: ToolsCorpus, target: CollectionStore, options?: CallOptions): Promise<ToolsCorpusDeployReport>;
   export class ToolsCorpusLoader implements IToolsFillSource { constructor(o: { corpus: ToolsCorpus; expect: ToolsCorpusIdentity }); readonly name: 'corpus' } // fill: check + precomputed writes + status
   export class PrebuiltToolsStore implements IToolsFillSource { constructor(o: { expect: ToolsCorpusIdentity }); readonly name: 'prebuilt' }
   ```
+  `ToolsCorpusDeployReport.written` = corpus records written (the service record not counted); `deleted` = deletes that returned `true` (the record existed).
 
 - [ ] **Step 1: Write the failing test**
 
@@ -9630,7 +8731,6 @@ import {
   type IRag,
   type IRagBackendWriter,
   type IRetrievalEmbedder,
-  type IToolIntentSource,
   type McpTool,
   RagError,
   recordId,
@@ -9696,23 +8796,18 @@ function countingEmbedder() {
   return { embedder, calls };
 }
 
-/** Intents in their own companion store, so the corpus carries companion records. */
-const intents: IToolIntentSource = {
-  name: 'walrus',
-  intentsFor: async (t) => ({ ok: true as const, value: [`walrus ${t.originalName}`] }),
-};
-const profile = () => mcpToolsVariants.faceted({ intents: { companion: intents } });
+const profile = () => mcpToolsVariants.faceted();
 
 async function build(tools: McpTool[] = TOOLS): Promise<{ corpus: ToolsCorpus; calls: { documents: number } }> {
   const { embedder, calls } = countingEmbedder();
-  const corpus = await buildToolsCorpus({ profile: profile(), embedder, identity: ID, items: items(tools), companions: ['intents'] });
+  const corpus = await buildToolsCorpus({ profile: profile(), embedder, identity: ID, items: items(tools) });
   return { corpus, calls };
 }
 
-/** A deploy target: VectorRag primary + companion, both accepting precomputed vectors. */
+/** A deploy target: a VectorRag, which accepts precomputed vectors and MERGES metadata on an in-place upsert. */
 function target() {
   const { embedder, calls } = countingEmbedder();
-  return { store: { key: 'tools', rag: new VectorRag(embedder), companions: { intents: new VectorRag(embedder) } }, calls };
+  return { store: { key: 'tools', rag: new VectorRag(embedder) }, calls };
 }
 
 /**
@@ -9755,19 +8850,25 @@ function spied(inner: IRag, opts: { failDeleteOnce?: boolean; failDeleteAt?: num
   return { rag, writes };
 }
 
+type Service = { state: string; ids: string[]; hashes?: unknown; manifest: { corpusHash: string; items: number; records: number } };
+async function serviceOf(rag: IRag): Promise<Service> {
+  const svc = await rag.getById(TOOLS_CORPUS_RECORD_ID);
+  assert.ok(svc.ok && svc.value, 'a service record');
+  return svc.value.metadata.serviceRecord as unknown as Service;
+}
+
 describe('buildToolsCorpus (build step)', () => {
-  it("records + vectors from the profile's own indexer: owner-scoped ids, one dimension, companion records, a manifest", async () => {
+  it("records + vectors from the profile's own indexer: owner-scoped ids, one dimension, a manifest", async () => {
     const { corpus, calls } = await build();
     const m = corpus.manifest;
     assert.deepEqual(
-      { format: m.format, identity: m.identity, profileName: m.profileName, companions: m.companions, dimensions: m.dimensions, items: m.items },
-      { format: 1, identity: ID, profileName: 'mcp-tools', companions: ['intents'], dimensions: 8, items: 2 },
+      { format: m.format, identity: m.identity, profileName: m.profileName, dimensions: m.dimensions, items: m.items },
+      { format: 1, identity: ID, profileName: 'mcp-tools', dimensions: 8, items: 2 },
     );
+    assert.equal('companions' in m, false, 'no companion stores (D50)');
     assert.equal(m.records, corpus.records.length);
     assert.ok(calls.documents > 0, 'the build step embeds');
-    const primary = corpus.records.filter((r) => r.store === '').map((r) => r.id);
-    assert.ok(primary.includes(recordId(G, 'tool:read_file', 'full', 0)));
-    assert.ok(corpus.records.some((r) => r.store === 'intents'), 'companion records under their store name');
+    assert.ok(corpus.records.some((r) => r.id === recordId(G, 'tool:read_file', 'full', 0)));
     assert.ok(corpus.records.every((r) => r.vector.length === 8));
   });
 
@@ -9787,8 +8888,8 @@ describe('buildToolsCorpus (build step)', () => {
     assert.deepEqual(corpus.records, []);
     const m = corpus.manifest;
     assert.deepEqual(
-      { items: m.items, records: m.records, companions: m.companions, hasDimensions: 'dimensions' in m },
-      { items: 0, records: 0, companions: ['intents'], hasDimensions: false },
+      { items: m.items, records: m.records, hasDimensions: 'dimensions' in m },
+      { items: 0, records: 0, hasDimensions: false },
     );
     const json = JSON.stringify(corpus);
     assert.deepEqual(parseToolsCorpus(json), JSON.parse(json));
@@ -9814,141 +8915,156 @@ describe('parseToolsCorpus', () => {
   });
 });
 
-describe('deployToolsCorpus (deploy step)', () => {
-  it('no embedding call; retrievable through the binding; the service record is never an item; a second deploy changes nothing', async () => {
+describe('deployToolsCorpus (deploy step, D51: no per-record diffing)', () => {
+  type Row = ToolsCorpus['records'][number];
+  type Store = ReturnType<typeof target>['store'];
+  /** The stored record equals `r`: its text and every metadata key the corpus gave it. */
+  async function holds(store: Store, r: Row): Promise<boolean> {
+    const got = await store.rag.getById(r.id);
+    if (!got.ok || !got.value || got.value.text !== r.text) return false;
+    const meta = got.value.metadata as Record<string, unknown>;
+    return Object.entries(r.metadata).every(([k, v]) => isDeepStrictEqual(meta[k], v));
+  }
+
+  /** Every record of `corpus` is stored as built, and the service record is final with its manifest and ids. */
+  async function assertHolds(corpus: ToolsCorpus, store: Store): Promise<void> {
+    for (const r of corpus.records) assert.ok(await holds(store, r), `${r.id} holds the requested corpus's record`);
+    const rec = await serviceOf(store.rag);
+    assert.equal(rec.state, 'final');
+    assert.equal(rec.hashes, undefined, 'no per-record hashes (D51)');
+    assert.deepEqual([...rec.ids].sort(), corpus.records.map((r) => r.id).sort());
+    assert.equal(rec.manifest.corpusHash, corpus.manifest.corpusHash);
+  }
+
+  it('no embedding call; retrievable through the binding; the service record is never an item; an unchanged redeploy writes nothing', async () => {
     const { corpus } = await build();
     const { store, calls } = target();
     const r = await deployToolsCorpus(corpus, store);
     assert.equal(calls.documents, 0, 'precomputed vectors only');
-    assert.equal(r.unchanged, false);
-    assert.equal(r.upserted, corpus.records.length);
+    assert.deepEqual(r, { unchanged: false, written: corpus.records.length, deleted: 0 });
+    await assertHolds(corpus, store);
     const b = bindToolsProfile(profile(), store, new PrebuiltToolsStore({ expect: ID }));
     const hits = await b.rag.query(new TextOnlyEmbedding('read file disk'), 5);
     assert.ok(hits.ok);
     assert.ok(hits.value.some((h) => toolNameFromRecord(h.metadata) === 'read_file'));
     assert.ok(hits.value.every((h) => h.metadata.serviceRecord === undefined), 'the service record is dropped');
     const watched = spied(store.rag);
-    const again = await deployToolsCorpus(corpus, { key: 'tools', rag: watched.rag, companions: store.companions });
-    assert.deepEqual(again, { unchanged: true, upserted: 0, deleted: 0 });
-    assert.deepEqual(watched.writes, [], 'a finalized redeploy of the same corpus writes nothing');
+    const again = await deployToolsCorpus(corpus, { key: 'tools', rag: watched.rag });
+    assert.deepEqual(again, { unchanged: true, written: 0, deleted: 0 });
+    assert.deepEqual(watched.writes, [], 'a finalized redeploy of the same corpus: no upsert, no delete');
   });
 
-  it('in place: a changed tool is upserted, a dropped tool deleted (primary and companion), the rest untouched', async () => {
+  it('a new corpus: pending first, then every listed id deleted, then the whole corpus written, then final', async () => {
     const { corpus: v1 } = await build();
     const { store } = target();
     await deployToolsCorpus(v1, store);
     const { corpus: v2 } = await build([{ ...TOOLS[0], description: 'Read a file from disk, v2' }]);
-    const spyPrimary = spied(store.rag);
-    const spyIntents = spied(store.companions.intents);
-    const r = await deployToolsCorpus(v2, { key: 'tools', rag: spyPrimary.rag, companions: { intents: spyIntents.rag } });
-    const dropped = v1.records.filter((x) => !v2.records.some((y) => y.store === x.store && y.id === x.id));
-    assert.equal(r.deleted, dropped.length);
-    assert.ok(spyIntents.writes.some((w) => w.startsWith('delete:')), "the dropped tool's companion record is deleted");
+    const spy = spied(store.rag);
+    const r = await deployToolsCorpus(v2, { key: 'tools', rag: spy.rag });
+    assert.deepEqual(r, { unchanged: false, written: v2.records.length, deleted: v1.records.length });
+    assert.deepEqual(spy.writes, [
+      `upsert:${TOOLS_CORPUS_RECORD_ID}`,
+      ...v1.records.map((x) => `delete:${x.id}`),
+      ...v2.records.map((y) => `upsert:${y.id}`),
+      `upsert:${TOOLS_CORPUS_RECORD_ID}`,
+    ], 'no per-record diffing: unchanged records are deleted and written again too');
     const gone = await store.rag.getById(recordId(G, 'tool:list_issues', 'full', 0));
-    assert.ok(gone.ok && gone.value === null);
-    const changed = v2.records.filter((y) => !v1.records.some((x) => x.store === y.store && x.id === y.id && x.text === y.text));
-    assert.equal(r.upserted, changed.length, 'only new or changed records are written');
+    assert.ok(gone.ok && gone.value === null, 'the dropped tool is gone');
+    await assertHolds(v2, store);
   });
 
-  it('a store without precomputed writes → throws; a failed delete → throws, and a rerun deletes it', async () => {
+  it('serialized replacement on a merging store (VectorRag): no old metadata key survives', async () => {
+    const { corpus: plain } = await build();
+    const xId = recordId(G, 'tool:read_file', 'full', 0);
+    // Corpus A: X carries extra `ttl` and `data`. deployToolsCorpus does not re-check the hash
+    // (parseToolsCorpus does), so a distinct corpusHash is enough to make A a different corpus.
+    const a: ToolsCorpus = {
+      manifest: { ...plain.manifest, corpusHash: `${plain.manifest.corpusHash}-a` },
+      records: plain.records.map((x) => (x.id === xId ? { ...x, metadata: { ...x.metadata, ttl: 4102444800, data: { stale: true } } } : x)),
+    };
+    const { store } = target();
+    await deployToolsCorpus(a, store);
+    const before = await store.rag.getById(xId);
+    assert.ok(before.ok && before.value?.metadata.ttl === 4102444800, 'A wrote ttl and data');
+    await deployToolsCorpus(plain, store); // B: X without ttl / data
+    const after = await store.rag.getById(xId);
+    assert.ok(after.ok && after.value);
+    assert.equal(after.value.metadata.ttl, undefined, 'old ttl gone — an in-place upsert would have merged it');
+    assert.equal(after.value.metadata.data, undefined, 'old data gone');
+    await assertHolds(plain, store);
+  });
+
+  it('a store without precomputed writes → throws, nothing written; a failed delete → throws, and a rerun deletes it', async () => {
     const { corpus } = await build();
-    await assert.rejects(deployToolsCorpus(corpus, { key: 'tools', rag: new InMemoryRag(), companions: { intents: new InMemoryRag() } }), /precomputed/);
+    await assert.rejects(deployToolsCorpus(corpus, { key: 'tools', rag: new InMemoryRag() }), /precomputed/);
     const { store } = target();
     await deployToolsCorpus(corpus, store);
     const { corpus: smaller } = await build([TOOLS[0]]);
     const flaky = spied(store.rag, { failDeleteOnce: true });
-    const t = { key: 'tools', rag: flaky.rag, companions: store.companions };
+    const t = { key: 'tools', rag: flaky.rag };
     await assert.rejects(deployToolsCorpus(smaller, t), /delete/);
     const rerun = await deployToolsCorpus(smaller, t);
     assert.equal(rerun.unchanged, false);
     const gone = await store.rag.getById(recordId(G, 'tool:list_issues', 'full', 0));
     assert.ok(gone.ok && gone.value === null, 'the rerun deleted what the failed run kept');
+    await assertHolds(smaller, store);
   });
 
-  type Row = ToolsCorpus['records'][number];
-  type Store = ReturnType<typeof target>['store'];
-  /** The stored record equals `r`: its text and every metadata key the corpus gave it. */
-  async function holds(store: Store, r: Row): Promise<boolean> {
-    const got = await (r.store === '' ? store.rag : store.companions.intents).getById(r.id);
-    if (!got.ok || !got.value || got.value.text !== r.text) return false;
-    const meta = got.value.metadata as Record<string, unknown>;
-    return Object.entries(r.metadata).every(([k, v]) => isDeepStrictEqual(meta[k], v));
-  }
-  const sameContent = (x: Row, y: Row): boolean => isDeepStrictEqual([x.store, x.id, x.text, x.metadata, x.vector], [y.store, y.id, y.text, y.metadata, y.vector]);
-
-  /** Every record of `corpus` is stored as built, and the service record is final with its manifest. */
-  async function assertHolds(corpus: ToolsCorpus, store: Store): Promise<void> {
-    for (const r of corpus.records) assert.ok(await holds(store, r), `${r.store || 'primary'}:${r.id} holds the requested corpus's record`);
-    const svc = await store.rag.getById(TOOLS_CORPUS_RECORD_ID);
-    assert.ok(svc.ok && svc.value);
-    const rec = svc.value.metadata.serviceRecord as unknown as { state: string; pending?: unknown; manifest: { corpusHash: string } };
-    assert.equal(rec.state, 'final');
-    assert.equal(rec.pending, undefined);
-    assert.equal(rec.manifest.corpusHash, corpus.manifest.corpusHash);
-  }
-
-  it('A ok → B interrupted after overwriting a record → redeploy A restores every record (D48)', async () => {
+  it('interrupted mid-write → pending (listing old ∪ new ids), prebuilt refuses; a redeploy restores', async () => {
     const { corpus: a } = await build();
     const { corpus: b } = await build([{ ...TOOLS[0], description: 'Read a file from disk, v2' }, TOOLS[1]]);
     const { store } = target();
     await deployToolsCorpus(a, store);
-    // upsert 1 = the write-ahead service record, 2 = B's first changed primary record (B's order), 3 fails
+    // upsert 1 = the write-ahead service record, 2 = B's first record, 3 fails
     const flaky = spied(store.rag, { failUpsertAt: 3 });
-    await assert.rejects(deployToolsCorpus(b, { key: 'tools', rag: flaky.rag, companions: store.companions }), /write/);
-    const overwritten = b.records.find((y) => y.store === '' && !a.records.some((x) => sameContent(x, y)));
-    assert.ok(overwritten, 'B changes a primary record');
-    const was = a.records.find((x) => x.store === '' && x.id === overwritten.id);
-    assert.ok(was, 'A holds the same id: an overwrite, not a new record');
-    assert.ok(await holds(store, overwritten), "B's record overwrote A's before the interruption");
-    assert.ok(!(await holds(store, was)), 'the store is mixed');
-    const r = await deployToolsCorpus(a, store);
-    assert.equal(r.unchanged, false);
-    assert.equal(r.upserted, a.records.length, 'an unfinished previous deploy → the whole corpus is rewritten');
-    await assertHolds(a, store);
+    await assert.rejects(deployToolsCorpus(b, { key: 'tools', rag: flaky.rag }), /write/);
+    const rec = await serviceOf(store.rag);
+    assert.equal(rec.state, 'pending');
+    assert.deepEqual([...rec.ids].sort(), [...new Set([...a.records, ...b.records].map((x) => x.id))].sort());
+    const bound = bindToolsProfile(profile(), store, new PrebuiltToolsStore({ expect: ID }));
+    await assert.rejects(vectorizeMcpTools([], bound.rag, new NoopRequestLogger(), undefined), /interrupted.*deployToolsCorpus/);
+    const r = await deployToolsCorpus(b, store);
+    assert.deepEqual(r.unchanged, false);
+    assert.equal(r.written, b.records.length);
+    await assertHolds(b, store);
   });
 
-  it('A ok → B interrupted after deleting a record → redeploy A recreates it (D48)', async () => {
+  it('interrupted mid-delete → a redeploy restores', async () => {
     const { corpus: a } = await build();
-    const { corpus: b } = await build([TOOLS[0]]); // list_issues dropped, read_file unchanged
+    const { corpus: b } = await build([TOOLS[0]]);
     const { store } = target();
     await deployToolsCorpus(a, store);
-    // the write-ahead record and the upserts pass, the deletes run; the final service record fails
-    const flaky = spied(store.rag, { failFinal: true });
-    await assert.rejects(deployToolsCorpus(b, { key: 'tools', rag: flaky.rag, companions: store.companions }), /write/);
-    const id = recordId(G, 'tool:list_issues', 'full', 0);
-    const gone = await store.rag.getById(id);
-    assert.ok(gone.ok && gone.value === null, 'B deleted it before the interruption');
-    await deployToolsCorpus(a, store);
-    const back = await store.rag.getById(id);
-    assert.ok(back.ok && back.value, 'the redeploy recreated it');
-    await assertHolds(a, store);
+    const flaky = spied(store.rag, { failDeleteAt: 2 }); // the first delete passes, the second fails
+    await assert.rejects(deployToolsCorpus(b, { key: 'tools', rag: flaky.rag }), /delete/);
+    assert.equal((await serviceOf(store.rag)).state, 'pending');
+    await deployToolsCorpus(b, store);
+    await assertHolds(b, store);
+    const gone = await store.rag.getById(recordId(G, 'tool:list_issues', 'full', 0));
+    assert.ok(gone.ok && gone.value === null);
   });
 
   /** None of `gone`'s records is stored, and the service record is final with `empty`'s zero-item manifest. */
   async function assertEmptied(gone: ToolsCorpus, empty: ToolsCorpus, store: Store): Promise<void> {
     for (const r of gone.records) {
-      const got = await (r.store === '' ? store.rag : store.companions.intents).getById(r.id);
-      assert.ok(got.ok && got.value === null, `${r.store || 'primary'}:${r.id} is deleted`);
+      const got = await store.rag.getById(r.id);
+      assert.ok(got.ok && got.value === null, `${r.id} is deleted`);
     }
-    const svc = await store.rag.getById(TOOLS_CORPUS_RECORD_ID);
-    assert.ok(svc.ok && svc.value);
-    const rec = svc.value.metadata.serviceRecord as unknown as { state: string; pending?: unknown; hashes: unknown; manifest: { corpusHash: string; items: number; records: number } };
+    const rec = await serviceOf(store.rag);
     assert.equal(rec.state, 'final');
-    assert.equal(rec.pending, undefined);
-    assert.deepEqual(rec.hashes, {});
+    assert.deepEqual(rec.ids, []);
     assert.deepEqual([rec.manifest.items, rec.manifest.records, rec.manifest.corpusHash], [0, 0, empty.manifest.corpusHash]);
   }
 
-  it('A ok → an empty corpus: every record deleted (primary and companion), a zero-item manifest finalized (D49)', async () => {
+  it('A ok → an empty corpus: every record deleted, a zero-item manifest finalized (D49)', async () => {
     const { corpus: a } = await build();
     const { corpus: empty } = await build([]);
     const { store, calls } = target();
     await deployToolsCorpus(a, store);
     const r = await deployToolsCorpus(empty, store);
-    assert.deepEqual(r, { unchanged: false, upserted: 0, deleted: a.records.length });
+    assert.deepEqual(r, { unchanged: false, written: 0, deleted: a.records.length });
     assert.equal(calls.documents, 0, 'precomputed vectors only');
     await assertEmptied(a, empty, store);
-    assert.deepEqual(await deployToolsCorpus(empty, store), { unchanged: true, upserted: 0, deleted: 0 });
+    assert.deepEqual(await deployToolsCorpus(empty, store), { unchanged: true, written: 0, deleted: 0 });
   });
 
   it('A ok → an empty deploy interrupted after some deletions → prebuilt refuses; a rerun finishes clean (D49)', async () => {
@@ -9956,16 +9072,15 @@ describe('deployToolsCorpus (deploy step)', () => {
     const { corpus: empty } = await build([]);
     const { store } = target();
     await deployToolsCorpus(a, store);
-    const flaky = spied(store.rag, { failDeleteAt: 2 }); // the first primary delete passes, the second fails
-    await assert.rejects(deployToolsCorpus(empty, { key: 'tools', rag: flaky.rag, companions: store.companions }), /delete/);
-    const primary = a.records.filter((x) => x.store === '');
-    const held = await Promise.all(primary.map((x) => holds(store, x)));
+    const flaky = spied(store.rag, { failDeleteAt: 2 }); // the first delete passes, the second fails
+    await assert.rejects(deployToolsCorpus(empty, { key: 'tools', rag: flaky.rag }), /delete/);
+    const held = await Promise.all(a.records.map((x) => holds(store, x)));
     assert.ok(held.includes(false) && held.includes(true), 'some records deleted, some left');
     const bound = bindToolsProfile(profile(), store, new PrebuiltToolsStore({ expect: ID }));
     await assert.rejects(vectorizeMcpTools([], bound.rag, new NoopRequestLogger(), undefined), /interrupted.*deployToolsCorpus/);
     const r = await deployToolsCorpus(empty, store);
     assert.equal(r.unchanged, false);
-    assert.equal(r.upserted, 0);
+    assert.equal(r.written, 0);
     await assertEmptied(a, empty, store);
   });
 
@@ -9973,7 +9088,7 @@ describe('deployToolsCorpus (deploy step)', () => {
     const { corpus: empty } = await build([]);
     const { store } = target();
     const spy = spied(store.rag);
-    await assert.rejects(deployToolsCorpus(empty, { key: 'tools', rag: spy.rag, companions: store.companions }), /dimension/);
+    await assert.rejects(deployToolsCorpus(empty, { key: 'tools', rag: spy.rag }), /dimension/);
     assert.deepEqual(spy.writes, []);
   });
 });
@@ -9983,7 +9098,7 @@ describe('fill sources: corpus and prebuilt (spec §3.10)', () => {
     const { corpus } = await build();
     const { store, calls } = target();
     const spy = spied(store.rag);
-    const b = bindToolsProfile(profile(), { key: 'tools', rag: spy.rag, companions: store.companions }, new ToolsCorpusLoader({ corpus, expect: ID }));
+    const b = bindToolsProfile(profile(), { key: 'tools', rag: spy.rag }, new ToolsCorpusLoader({ corpus, expect: ID }));
     const s = await vectorizeMcpTools([], b.rag, new NoopRequestLogger(), undefined);
     assert.deepEqual(s, { total: 2, vectorized: 2, failed: [], clientFailures: 0, complete: true, records: corpus.records.length, profile: 'mcp-tools' });
     assert.equal(calls.documents, 0);
@@ -9993,16 +9108,15 @@ describe('fill sources: corpus and prebuilt (spec §3.10)', () => {
     assert.ok(svc.ok && svc.value === null, 'the loader writes records only — no service record');
   });
 
-  it('corpus: a different embedder, profile or companion set → throws naming it', async () => {
+  it('corpus: a different embedder or profile → throws naming it', async () => {
     const { corpus } = await build();
-    const run = (expect: typeof ID, companions: Record<string, IRag>) => {
+    const run = (expect: typeof ID) => {
       const { embedder } = countingEmbedder();
-      const b = bindToolsProfile(profile(), { key: 'tools', rag: new VectorRag(embedder), companions }, new ToolsCorpusLoader({ corpus, expect }));
+      const b = bindToolsProfile(profile(), { key: 'tools', rag: new VectorRag(embedder) }, new ToolsCorpusLoader({ corpus, expect }));
       return vectorizeMcpTools([], b.rag, new NoopRequestLogger(), undefined);
     };
-    const { embedder } = countingEmbedder();
-    await assert.rejects(run({ ...ID, embedder: 'other' }, { intents: new VectorRag(embedder) }), /embedder/);
-    await assert.rejects(run({ ...ID, profile: 'other' }, { intents: new VectorRag(embedder) }), /profile/);
+    await assert.rejects(run({ ...ID, embedder: 'other' }), /embedder/);
+    await assert.rejects(run({ ...ID, profile: 'other' }), /profile/);
   });
 
   it('prebuilt: a deployed store is checked and NEVER written at creation', async () => {
@@ -10010,7 +9124,7 @@ describe('fill sources: corpus and prebuilt (spec §3.10)', () => {
     const { store } = target();
     await deployToolsCorpus(corpus, store);
     const spy = spied(store.rag);
-    const b = bindToolsProfile(profile(), { key: 'tools', rag: spy.rag, companions: store.companions }, new PrebuiltToolsStore({ expect: ID }));
+    const b = bindToolsProfile(profile(), { key: 'tools', rag: spy.rag }, new PrebuiltToolsStore({ expect: ID }));
     const s = await vectorizeMcpTools([], b.rag, new NoopRequestLogger(), undefined);
     assert.equal(s?.complete, true);
     assert.equal(s?.vectorized, 2);
@@ -10019,7 +9133,7 @@ describe('fill sources: corpus and prebuilt (spec §3.10)', () => {
 
   it('prebuilt: a store never deployed → throws pointing at the deploy step; a mismatching identity → throws', async () => {
     const { embedder } = countingEmbedder();
-    const empty = bindToolsProfile(profile(), { key: 'tools', rag: new VectorRag(embedder), companions: { intents: new VectorRag(embedder) } }, new PrebuiltToolsStore({ expect: ID }));
+    const empty = bindToolsProfile(profile(), { key: 'tools', rag: new VectorRag(embedder) }, new PrebuiltToolsStore({ expect: ID }));
     await assert.rejects(vectorizeMcpTools([], empty.rag, new NoopRequestLogger(), undefined), /deployToolsCorpus/);
     const { corpus } = await build();
     const { store } = target();
@@ -10034,7 +9148,7 @@ describe('fill sources: corpus and prebuilt (spec §3.10)', () => {
     const { store } = target();
     await deployToolsCorpus(a, store);
     const flaky = spied(store.rag, { failFinal: true });
-    await assert.rejects(deployToolsCorpus(b, { key: 'tools', rag: flaky.rag, companions: store.companions }), /write/);
+    await assert.rejects(deployToolsCorpus(b, { key: 'tools', rag: flaky.rag }), /write/);
     const bound = bindToolsProfile(profile(), store, new PrebuiltToolsStore({ expect: ID }));
     await assert.rejects(vectorizeMcpTools([], bound.rag, new NoopRequestLogger(), undefined), /interrupted.*deployToolsCorpus/);
   });
@@ -10043,14 +9157,14 @@ describe('fill sources: corpus and prebuilt (spec §3.10)', () => {
     const { corpus: empty } = await build([]);
     const zero = { total: 0, vectorized: 0, failed: [], clientFailures: 0, complete: true, records: 0, profile: 'mcp-tools' };
     const { embedder } = countingEmbedder();
-    const loaded = bindToolsProfile(profile(), { key: 'tools', rag: new VectorRag(embedder), companions: { intents: new VectorRag(embedder) } }, new ToolsCorpusLoader({ corpus: empty, expect: ID }));
+    const loaded = bindToolsProfile(profile(), { key: 'tools', rag: new VectorRag(embedder) }, new ToolsCorpusLoader({ corpus: empty, expect: ID }));
     assert.deepEqual(await vectorizeMcpTools([], loaded.rag, new NoopRequestLogger(), undefined), zero);
     const { corpus: a } = await build();
     const { store } = target();
     await deployToolsCorpus(a, store);
     await deployToolsCorpus(empty, store);
     const spy = spied(store.rag);
-    const pre = bindToolsProfile(profile(), { key: 'tools', rag: spy.rag, companions: store.companions }, new PrebuiltToolsStore({ expect: ID }));
+    const pre = bindToolsProfile(profile(), { key: 'tools', rag: spy.rag }, new PrebuiltToolsStore({ expect: ID }));
     assert.deepEqual(await vectorizeMcpTools([], pre.rag, new NoopRequestLogger(), undefined), zero);
     assert.deepEqual(spy.writes, [], 'the process never writes a prebuilt store');
   });
@@ -10165,16 +9279,14 @@ export interface ToolsCorpusManifest {
   readonly format: 1;
   readonly identity: ToolsCorpusIdentity;
   readonly profileName: string;
-  readonly companions: readonly string[];
   /** Every vector's length; absent exactly when the corpus has no records (D49). */
   readonly dimensions?: number;
   readonly items: number;
   readonly records: number;
+  /** sha256 over the identity and every record's hash (the record hashes are internal, never stored). */
   readonly corpusHash: string;
 }
 export interface ToolsCorpusRecord {
-  /** '' = the primary store; else the companion's name. */
-  readonly store: string;
   readonly id: string;
   readonly text: string;
   readonly vector: readonly number[];
@@ -10186,37 +9298,40 @@ export interface ToolsCorpus {
 }
 export interface ToolsCorpusDeployReport {
   readonly unchanged: boolean;
-  readonly upserted: number;
+  /** Corpus records written (the service record not counted). */
+  readonly written: number;
+  /** Deletes that removed a record (`deleteByIdRaw` → `true`). */
   readonly deleted: number;
 }
 
 /** The service record's id. `recordId` output always has `:` and `#` (or `h:`), so it never collides. */
 export const TOOLS_CORPUS_RECORD_ID = 'tools-corpus';
 
-/** What the service record's `serviceRecord` key holds (spec §6.5). */
+/**
+ * What the service record's `serviceRecord` key holds (spec §6.5, D51). The record's metadata
+ * holds only this key (+ the store's `id`), so an in-place merge on a merging store leaves
+ * nothing stale.
+ */
 export interface ToolsCorpusService {
   readonly kind: 'tools-corpus';
-  /**
-   * 'pending' from the write-ahead record (written before the first record write) until the final
-   * record; any interruption leaves 'pending'. Only a 'final' record's hashes are trusted (D48).
-   */
+  /** 'pending' from the write-ahead record until the final one; any interruption leaves 'pending' (D48). */
   readonly state: 'pending' | 'final';
-  /** Absent while a first deploy is in progress. */
-  readonly manifest?: ToolsCorpusManifest;
+  /** The corpus this record's deploy writes (pending) or wrote (final). */
+  readonly manifest: ToolsCorpusManifest;
   /**
    * This record's own vector length: the corpus's dimension, or — for an empty corpus, which has
    * none — the dimension of the service record already in the store (D49).
    */
   readonly dimensions: number;
-  /** Per store ('' = primary): record id → record hash. */
-  readonly hashes: Readonly<Record<string, Readonly<Record<string, string>>>>;
-  /** Write-ahead: ids an unfinished run may have written, per store. Absent on a 'final' record. */
-  readonly pending?: Readonly<Record<string, readonly string[]>>;
+  /**
+   * 'final': the ids the corpus wrote. 'pending': every id the store holds or may hold — the old
+   * record's ids ∪ the corpus's. The next deploy deletes every id listed here.
+   */
+  readonly ids: readonly string[];
 }
 
 const sha = (s: string): string => createHash('sha256').update(s).digest('hex');
-const recordHash = (r: ToolsCorpusRecord): string =>
-  sha(JSON.stringify([r.store, r.id, r.text, r.metadata, r.vector]));
+const recordHash = (r: ToolsCorpusRecord): string => sha(JSON.stringify([r.id, r.text, r.metadata, r.vector]));
 function corpusHashOf(identity: ToolsCorpusIdentity, records: readonly ToolsCorpusRecord[]): string {
   return sha(JSON.stringify([identity, records.map(recordHash).sort()]));
 }
@@ -10228,26 +9343,19 @@ export async function buildToolsCorpus(
     readonly embedder: IRetrievalEmbedder;
     readonly identity: ToolsCorpusIdentity;
     readonly items: readonly ToolItem[];
-    readonly companions?: readonly string[];
   },
   options?: CallOptions,
 ): Promise<ToolsCorpus> {
   // No items is a valid, empty corpus (D49): zero records, no dimensions.
-  const names = [...new Set(input.companions ?? [])].sort();
-  const primary = new CorpusCaptureRag(input.embedder);
-  const companions: Record<string, CorpusCaptureRag> = {};
-  for (const n of names) companions[n] = new CorpusCaptureRag(input.embedder);
-  const bound = input.profile.bind({ key: 'tools', rag: primary, companions });
+  const capture = new CorpusCaptureRag(input.embedder);
+  const bound = input.profile.bind({ key: 'tools', rag: capture });
   const r = await bound.index(input.items, options);
   if (!r.ok) throw new Error(`buildToolsCorpus: index failed: ${r.error.message}`);
   if (r.value.failedItems.length > 0) {
     const list = r.value.failedItems.map((f) => `${f.itemId} (${f.reason})`).join(', ');
     throw new Error(`buildToolsCorpus: ${r.value.failedItems.length} tool(s) failed — a corpus is complete or not built: ${list}`);
   }
-  const records: ToolsCorpusRecord[] = [
-    ...primary.records().map((x) => ({ store: '', ...x })),
-    ...names.flatMap((n) => companions[n].records().map((x) => ({ store: n, ...x }))),
-  ];
+  const records: ToolsCorpusRecord[] = [...capture.records()];
   const dims = new Set(records.map((x) => x.vector.length));
   if (records.length > 0 && dims.size !== 1) {
     throw new Error(`buildToolsCorpus: vectors of ${dims.size} dimensions — one embedder, one dimension`);
@@ -10257,7 +9365,6 @@ export async function buildToolsCorpus(
       format: 1,
       identity: input.identity,
       profileName: bound.profileName,
-      companions: names,
       ...(records.length > 0 ? { dimensions: [...dims][0] } : {}), // none to infer from an empty corpus
       items: input.items.length,
       records: records.length,
@@ -10286,11 +9393,8 @@ export function parseToolsCorpus(json: string): ToolsCorpus {
     throw new Error(`tools corpus: manifest.dimensions ${String(m.dimensions)} — a positive integer with records, absent without`);
   }
   for (const r of c.records) {
-    if (typeof r.store !== 'string' || typeof r.id !== 'string' || typeof r.text !== 'string') {
-      throw new Error('tools corpus: a record needs store, id and text');
-    }
-    if (r.store !== '' && !m.companions.includes(r.store)) {
-      throw new Error(`tools corpus: record ${r.id} in companion ${r.store}, which the manifest does not list`);
+    if (typeof r.id !== 'string' || typeof r.text !== 'string') {
+      throw new Error('tools corpus: a record needs id and text');
     }
     if (!Array.isArray(r.vector) || r.vector.length !== m.dimensions || !r.vector.every(Number.isFinite)) {
       throw new Error(`tools corpus: record ${r.id} — vector dimension ${String(r.vector?.length)}, expected ${m.dimensions}`);
@@ -10310,21 +9414,10 @@ export async function readToolsCorpusService(rag: IRag, options?: CallOptions): 
   return v?.kind === 'tools-corpus' ? v : undefined;
 }
 
-function storesOf(corpus: ToolsCorpus, target: CollectionStore): Map<string, IRag> {
-  const have = Object.keys(target.companions ?? {}).sort();
-  const want = [...corpus.manifest.companions].sort();
-  if (JSON.stringify(have) !== JSON.stringify(want)) {
-    throw new Error(`tools corpus: companion stores [${have.join(', ')}] ≠ the corpus's [${want.join(', ')}]`);
-  }
-  const m = new Map<string, IRag>([['', target.rag]]);
-  for (const n of want) m.set(n, (target.companions as Record<string, IRag>)[n]);
-  return m;
-}
-
-function precomputedWriter(name: string, rag: IRag): IRagBackendWriter {
+function precomputedWriter(rag: IRag): IRagBackendWriter {
   const w = rag.writer?.();
   if (!w || !(w.upsertManyPrecomputedRaw || w.upsertPrecomputedRaw)) {
-    throw new Error(`tools corpus: store '${name || 'primary'}' accepts no precomputed vectors — loading or deploying a corpus makes no embedding call`);
+    throw new Error('tools corpus: the store accepts no precomputed vectors — loading or deploying a corpus makes no embedding call');
   }
   return w;
 }
@@ -10352,18 +9445,15 @@ export async function writeToolsCorpusRecords(
   target: CollectionStore,
   options?: CallOptions,
 ): Promise<void> {
-  for (const [n, rag] of storesOf(corpus, target)) {
-    await upsertAll(precomputedWriter(n, rag), corpus.records.filter((r) => r.store === n), options);
-  }
+  await upsertAll(precomputedWriter(target.rag), corpus.records, options);
 }
 
 async function writeService(w: IRagBackendWriter, svc: ToolsCorpusService, options?: CallOptions): Promise<void> {
   const unit = new Array<number>(svc.dimensions).fill(0);
   unit[0] = 1;
   const row: ToolsCorpusRecord = {
-    store: '',
     id: TOOLS_CORPUS_RECORD_ID,
-    text: `tools corpus ${svc.manifest?.corpusHash ?? 'pending'}`,
+    text: `tools corpus ${svc.manifest.corpusHash}`,
     vector: unit,
     metadata: { serviceRecord: svc },
   };
@@ -10371,8 +9461,8 @@ async function writeService(w: IRagBackendWriter, svc: ToolsCorpusService, optio
 }
 
 /**
- * Deploy step (spec §6.5): a built corpus into a store and its companions —
- * precomputed vectors, in place, one current state, idempotent, write-ahead.
+ * Deploy step (spec §6.5, D51): a built corpus into a store — precomputed vectors, in place,
+ * one current state, idempotent. No per-record diffing: unchanged, or the whole corpus rewritten.
  */
 export async function deployToolsCorpus(
   corpus: ToolsCorpus,
@@ -10381,17 +9471,15 @@ export async function deployToolsCorpus(
 ): Promise<ToolsCorpusDeployReport> {
   const old = await readToolsCorpusService(target.rag, options);
   const m = corpus.manifest;
-  // Only a finalized record describes the store. After an unfinished deploy its
-  // hashes are what the last finished deploy wrote, not what the store holds:
-  // the interrupted run may have overwritten or deleted any of those records.
-  // So nothing is trusted and the whole corpus is rewritten (D48).
-  const finalized = old?.state === 'final' ? old : undefined;
+  // Only a finalized record with the same corpus hash and identity means "nothing to do".
+  // A pending record (an unfinished deploy) never answers unchanged (D48).
   if (
-    finalized?.manifest?.corpusHash === m.corpusHash &&
-    finalized.manifest.identity.profile === m.identity.profile &&
-    finalized.manifest.identity.embedder === m.identity.embedder
+    old?.state === 'final' &&
+    old.manifest.corpusHash === m.corpusHash &&
+    old.manifest.identity.profile === m.identity.profile &&
+    old.manifest.identity.embedder === m.identity.embedder
   ) {
-    return { unchanged: true, upserted: 0, deleted: 0 };
+    return { unchanged: true, written: 0, deleted: 0 };
   }
   // The service record's vector: the corpus's dimension; an empty corpus has none, so the
   // record already in the store gives it (D49). Neither → throw before any write.
@@ -10399,49 +9487,26 @@ export async function deployToolsCorpus(
   if (dimensions === undefined) {
     throw new Error('deployToolsCorpus: an empty corpus into a store with no service record — no vector dimension is known for the service record; deploy a corpus with tools first');
   }
-  const stores = storesOf(corpus, target);
-  const writers = new Map([...stores].map(([n, rag]) => [n, precomputedWriter(n, rag)] as const));
-  const hashes: Record<string, Record<string, string>> = {};
-  const byStore = new Map<string, ToolsCorpusRecord[]>();
-  for (const r of corpus.records) {
-    (hashes[r.store] ??= {})[r.id] = recordHash(r);
-    byStore.set(r.store, [...(byStore.get(r.store) ?? []), r]);
-  }
-  const changed = new Map<string, ToolsCorpusRecord[]>();
-  const pending: Record<string, string[]> = {};
-  for (const [n, rows] of byStore) {
-    const c = rows.filter((r) => finalized?.hashes[n]?.[r.id] !== hashes[n][r.id]); // all rows unless finalized
-    changed.set(n, c);
-    if (c.length > 0) pending[n] = c.map((r) => r.id);
-  }
-  const primaryWriter = writers.get('') as IRagBackendWriter;
-  // 1. write ahead, before the first record write: state 'pending' (any interruption
-  //    leaves it set) and every id this run may write, plus an earlier unfinished run's
-  const carried: Record<string, string[]> = {};
-  for (const [n, ids] of Object.entries(old?.pending ?? {})) carried[n] = [...ids];
-  for (const [n, ids] of Object.entries(pending)) carried[n] = [...new Set([...(carried[n] ?? []), ...ids])];
-  await writeService(primaryWriter, { kind: 'tools-corpus', state: 'pending', manifest: old?.manifest, dimensions, hashes: old?.hashes ?? {}, pending: carried }, options);
-  // 2. upsert the new and changed records — every record when the old one was not final
-  let upserted = 0;
-  for (const [n, rows] of changed) {
-    await upsertAll(writers.get(n) as IRagBackendWriter, rows, options);
-    upserted += rows.length;
-  }
-  // 3. delete what the corpus no longer holds (listed or pending), every Result checked —
-  //    for an empty corpus, everything listed or pending (D49)
+  const w = precomputedWriter(target.rag); // throws before any write
+  const ids = corpus.records.map((r) => r.id);
+  const listed = old?.ids ?? [];
+  // 1. write ahead, before any delete or record write: 'pending' (any interruption leaves it
+  //    set), listing every id the store holds or may hold — the old ids ∪ the corpus's.
+  await writeService(w, { kind: 'tools-corpus', state: 'pending', manifest: m, dimensions, ids: [...new Set([...listed, ...ids])] }, options);
+  // 2. delete every id the OLD record lists (pending ones included), every Result checked.
+  //    Deleting first means every write below lands in an empty slot: a merging store
+  //    (InMemoryRag, VectorRag) keeps no old metadata key (D51).
   let deleted = 0;
-  for (const [n, w] of writers) {
-    const before = new Set([...Object.keys(old?.hashes[n] ?? {}), ...(carried[n] ?? [])]);
-    for (const id of before) {
-      if (hashes[n]?.[id] !== undefined) continue;
-      const res = await w.deleteByIdRaw(id, options);
-      if (!res.ok) throw new Error(`deployToolsCorpus: delete of ${id} failed: ${res.error.message} — the service record still lists it; rerun the deploy step`);
-      if (res.value) deleted++;
-    }
+  for (const id of listed) {
+    const res = await w.deleteByIdRaw(id, options);
+    if (!res.ok) throw new Error(`deployToolsCorpus: delete of ${id} failed: ${res.error.message} — the service record still lists it; rerun the deploy step`);
+    if (res.value) deleted++;
   }
+  // 3. write the whole corpus — no per-record diffing (an empty corpus writes nothing, D49)
+  await upsertAll(w, corpus.records, options);
   // 4. the final service record: one current state
-  await writeService(primaryWriter, { kind: 'tools-corpus', state: 'final', manifest: m, dimensions, hashes }, options);
-  return { unchanged: false, upserted, deleted };
+  await writeService(w, { kind: 'tools-corpus', state: 'final', manifest: m, dimensions, ids }, options);
+  return { unchanged: false, written: corpus.records.length, deleted };
 }
 ```
 
@@ -10452,9 +9517,6 @@ function checkCompatible(m: ToolsCorpusManifest, expect: ToolsCorpusIdentity, ct
   if (m.identity.profile !== expect.profile) differs.push(`profile "${m.identity.profile}" ≠ expected "${expect.profile}"`);
   if (m.identity.embedder !== expect.embedder) differs.push(`embedder "${m.identity.embedder}" ≠ expected "${expect.embedder}"`);
   if (m.profileName !== ctx.binding.profileName) differs.push(`profileName "${m.profileName}" ≠ the binding's "${ctx.binding.profileName}"`);
-  const have = Object.keys(ctx.target.companions ?? {}).sort().join(', ');
-  const want = [...m.companions].sort().join(', ');
-  if (have !== want) differs.push(`companions [${want}] ≠ the store's [${have}]`);
   if (differs.length > 0) throw new Error(`${what}: incompatible — ${differs.join('; ')} (spec §3.10)`);
 }
 
@@ -10494,7 +9556,7 @@ export class PrebuiltToolsStore implements IToolsFillSource {
     if (!svc) {
       throw new Error(`prebuilt tools store '${ctx.binding.key}': no deployed corpus — run the deploy step (deployToolsCorpus) first`);
     }
-    if (svc.state !== 'final' || !svc.manifest) {
+    if (svc.state !== 'final') {
       throw new Error(`prebuilt tools store '${ctx.binding.key}': a deploy is in progress or was interrupted — rerun the deploy step (deployToolsCorpus)`);
     }
     checkCompatible(svc.manifest, this.o.expect, ctx, `prebuilt tools store '${ctx.binding.key}'`);
@@ -10528,14 +9590,14 @@ npx tsc -b packages/llm-agent-libs
 node --import tsx/esm --test packages/llm-agent-libs/src/collections/__tests__/tools-corpus.test.ts packages/llm-agent-libs/src/collections/__tests__/tools-fill-source.test.ts packages/llm-agent-libs/src/collections/__tests__/staged-retrieval.test.ts
 npm test --workspace @mcp-abap-adt/llm-agent-libs
 ```
-Expected: PASS. `tsc -b` proves the optional `manifest.dimensions` is never read as a number without its check (`writeService` takes the narrowed `dimensions`; `parseToolsCorpus` compares each vector only after the presence check). `tsc -b` with `noUnusedLocals` proves every import is used (`ToolsCorpusManifest` by `checkCompatible` / `statusOf`; `RagMetadata` by the record types; `ToolsFillContext` by the two `fill` methods and `checkCompatible`) and that no `warnUnchanged` / `toolsChanged` member is left (D46). The Task 12 suite passes with its service-record case.
+Expected: PASS. `tsc -b` proves the optional `manifest.dimensions` is never read as a number without its check (`writeService` takes the narrowed `dimensions`; `parseToolsCorpus` compares each vector only after the presence check). `tsc -b` with `noUnusedLocals` proves every import is used (`ToolsCorpusManifest` by `checkCompatible` / `statusOf`; `RagMetadata` by the record types; `ToolsFillContext` by the two `fill` methods and `checkCompatible`), that no companion code is left (`CollectionStore` has no `companions`, D50) and that no `warnUnchanged` / `toolsChanged` member is left (D46). The Task 12 suite passes with its service-record case.
 
 - [ ] **Step 5: Commit**
 
 ```bash
 npx biome check --write packages/llm-agent-libs/src/collections
 git add packages/llm-agent-libs/src
-git commit -m "feat(libs): offline tools corpus — build, parse, deploy in place; ToolsCorpusLoader and PrebuiltToolsStore fill sources
+git commit -m "feat(libs): offline tools corpus — build, parse, deploy in full; ToolsCorpusLoader and PrebuiltToolsStore fill sources
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_012KjevEeQGZMkWMfnupJ7Yd"
@@ -10979,19 +10041,17 @@ Spec §6.2 (all validation rules; only the key `tools`, S8; one `decision:` sect
 - Create: `packages/llm-agent-server-libs/src/smart-agent/__tests__/profiles-config.test.ts`
 
 **Interfaces:**
-- Consumes: `parseIntegerField` (`decision-config.ts`); `get` (`yaml-loader.ts`); `SmartServerRagStoreConfig` (`rag-config.ts`).
+- Consumes: `parseIntegerField` (`decision-config.ts`); `get` (`yaml-loader.ts`).
 - Produces:
   ```ts
   // decision-config.ts — one interface, additive (spec §17.5): a consumer's own probability seam (makeProbabilityDecision, or the deprecated makeDecisionModel) still compiles
   export interface SmartServerDecisionConfig { provider: 'typesafe' | 'sap-aicore'; model?: string; credentialRef?: string; baseUrl?: string; timeoutMs?: number; maxRetries?: number; deploymentId?: string; resourceGroup?: string }
   export type DecisionKind = 'probability' | 'relevance';
   export const DECISION_KINDS: Readonly<Record<SmartServerDecisionConfig['provider'], DecisionKind>>; // { typesafe: 'probability', 'sap-aicore': 'relevance' } — the one place (spec §6.2)
-  export type SmartServerIntentSourceConfig = { file: string } | { llm: string };
-  export type SmartServerProfileIntentsConfig = { record: SmartServerIntentSourceConfig } | { companion: { source: SmartServerIntentSourceConfig; store: SmartServerRagStoreConfig } };
   export type SmartServerIndexerConfig = { faceted: string[] } | { 'enum-values': { inner: { faceted: string[] }; discriminator: string | { named: string }; maxValues: number } };
   export type SmartServerCutConfig = 'top-items' | Readonly<Record<string, unknown>>; // { fixed-items: n } | { score-floor: {…} } | { token-budget: {…} } | { <registered>: args }
   export interface SmartServerComposeConfig { indexer: SmartServerIndexerConfig; text?: string /* provider text composer name, F4 */; pool: Readonly<Record<string, unknown>>; collapse?: string; reranker?: 'none' | 'decision' | 'llm'; question?: 'tool' | 'passage'; llm?: string; decomposer?: string; cut?: SmartServerCutConfig; onFailure?: 'stage1' | 'error' }
-  export interface SmartServerProfileConfig { variant?: string; compose?: SmartServerComposeConfig; intents?: SmartServerProfileIntentsConfig; decomposer?: string; smallSet?: { poolItems: number } }
+  export interface SmartServerProfileConfig { variant?: string; compose?: SmartServerComposeConfig; decomposer?: string; smallSet?: { poolItems: number } }
   export const PROFILE_STORE_KEYS: readonly ['tools'];   // S8: the only key bound from YAML in this PR
   export function resolveProfilesSection(raw: unknown): Record<string, SmartServerProfileConfig> | undefined;
   export function checkProfiles(yaml: YamlConfig, rag: Record<string, unknown>, llmKeys: ReadonlySet<string>, issues: string[]): void;
@@ -11011,7 +10071,7 @@ import { resolveSmartServerConfig } from '../config.js';
 import { DECISION_KINDS } from '../decision-config.js';
 import { loadYamlConfig } from '../yaml-loader.js';
 
-const LLM = 'llm:\n  main: { provider: openai, model: gpt-4o }\n  intents: { provider: openai, model: gpt-4o-mini }\n';
+const LLM = 'llm:\n  main: { provider: openai, model: gpt-4o }\n';
 const RAG = 'rag:\n  store: { type: in-memory }\n';
 const JEV = 'decision:\n  provider: typesafe\n';
 const COHERE = 'decision:\n  provider: sap-aicore\n  deploymentId: d1\n  model: cohere-rerank\n';
@@ -11030,11 +10090,17 @@ const resolveYaml = (yaml: string) =>
   resolveSmartServerConfig({}, parse(yaml), {}, { skipProviderRuntimeChecks: true });
 
 describe('rag.profiles resolution', () => {
-  it('a variant with intents and a decomposer name', () => {
-    const cfg = resolve('tools:\n  variant: faceted\n  intents: { record: { file: ./i.json } }\n  decomposer: my-splitter');
+  it('a variant with a decomposer name', () => {
+    const cfg = resolve('tools:\n  variant: faceted\n  decomposer: my-splitter');
     assert.deepEqual(cfg.rag?.profiles, {
-      tools: { variant: 'faceted', intents: { record: { file: './i.json' } }, decomposer: 'my-splitter' },
+      tools: { variant: 'faceted', decomposer: 'my-splitter' },
     });
+  });
+  it('a leftover intents key is refused at startup, naming the removal (spec D50, §17.15) — never ignored', () => {
+    refused(
+      'tools: { variant: faceted, intents: { record: { file: x.json } } }',
+      /rag\.profiles\.tools\.intents: intents were removed \(spec D50, §17\.15\) — delete this key; tool records come only from what the provider exports/,
+    );
   });
   it('small-set-jev with poolItems (string from ${VAR} counts)', () => {
     const cfg = resolve('tools: { variant: small-set-jev, smallSet: { poolItems: "25" } }', JEV);
@@ -11109,13 +10175,8 @@ describe('rag.profiles validation — startup errors, never a silent drop', () =
       /also under rag\.retrieval/,
     );
   });
-  it('intents or decomposer with baseline', () => {
-    refused('tools: { variant: baseline, intents: { record: { file: x.json } } }', /intents: not with variant baseline/);
+  it('a decomposer with baseline', () => {
     refused('tools: { variant: baseline, decomposer: x }', /decomposer: not with variant baseline/);
-  });
-  it('companion without store; an llm key not in llm:', () => {
-    refused('tools: { variant: faceted, intents: { companion: { source: { file: x.json } } } }', /companion\.store: required/);
-    refused('tools: { variant: faceted, intents: { record: { llm: nope } } }', /"nope" is not a key of the llm: map/);
   });
   it('small-set-jev: poolItems required and positive; a decision: section required', () => {
     refused('tools: { variant: small-set-jev }', /smallSet\.poolItems: required/, JEV);
@@ -11226,21 +10287,9 @@ export const DECISION_KINDS: Readonly<
  * `decision:` section (Jev or Cohere) — there is no reranker section here.
  */
 import { parseIntegerField } from './decision-config.js';
-import type { SmartServerRagStoreConfig } from './rag-config.js';
 
 /** S8: the only store key the server binds from YAML in this PR (its own tools store). */
 export const PROFILE_STORE_KEYS = ['tools'] as const;
-
-export type SmartServerIntentSourceConfig = { file: string } | { llm: string };
-
-export type SmartServerProfileIntentsConfig =
-  | { record: SmartServerIntentSourceConfig }
-  | {
-      companion: {
-        source: SmartServerIntentSourceConfig;
-        store: SmartServerRagStoreConfig;
-      };
-    };
 
 export type SmartServerIndexerConfig =
   | { faceted: string[] }
@@ -11275,7 +10324,6 @@ export interface SmartServerComposeConfig {
 export interface SmartServerProfileConfig {
   variant?: string;
   compose?: SmartServerComposeConfig;
-  intents?: SmartServerProfileIntentsConfig;
   decomposer?: string;
   smallSet?: { poolItems: number };
 }
@@ -11336,7 +10384,7 @@ const posInt = (v: unknown): boolean => {
 };
 const name = (v: unknown): boolean => typeof v === 'string' && v.trim().length > 0;
 
-const PROFILE_FIELDS = ['variant', 'compose', 'intents', 'decomposer', 'smallSet'];
+const PROFILE_FIELDS = ['variant', 'compose', 'decomposer', 'smallSet'];
 const COMPOSE_FIELDS = ['indexer', 'text', 'pool', 'collapse', 'reranker', 'question', 'llm', 'decomposer', 'cut', 'onFailure'];
 const COMPOSE_RERANKERS = ['none', 'decision', 'llm'];
 /** The kind of decision each named decision variant takes (spec §5.5, §6.2, D27). */
@@ -11351,40 +10399,6 @@ const kindOf = (provider: string | undefined): DecisionKind | undefined =>
     : undefined;
 const providerOf = (kind: DecisionKind): string =>
   Object.entries(DECISION_KINDS).find(([, k]) => k === kind)?.[0] ?? '?';
-
-function checkIntentSource(label: string, src: unknown, llmKeys: ReadonlySet<string>, issues: string[]): void {
-  const keys = isMap(src) ? Object.keys(src) : [];
-  if (!isMap(src) || keys.length !== 1 || (keys[0] !== 'file' && keys[0] !== 'llm')) {
-    issues.push(`${label}: must be exactly one of { file: <path> } or { llm: <key> }`);
-    return;
-  }
-  const v = src[keys[0]];
-  if (!name(v)) issues.push(`${label}.${keys[0]}: must be a non-empty string`);
-  else if (keys[0] === 'llm' && !llmKeys.has(String(v))) {
-    issues.push(`${label}.llm: "${String(v)}" is not a key of the llm: map`);
-  }
-}
-
-function checkIntents(label: string, v: unknown, llmKeys: ReadonlySet<string>, issues: string[]): void {
-  const keys = isMap(v) ? Object.keys(v) : [];
-  if (!isMap(v) || keys.length !== 1 || (keys[0] !== 'record' && keys[0] !== 'companion')) {
-    issues.push(`${label}: set exactly one of record or companion`);
-    return;
-  }
-  if (keys[0] === 'record') {
-    checkIntentSource(`${label}.record`, v.record, llmKeys, issues);
-    return;
-  }
-  const c = v.companion;
-  if (!isMap(c)) {
-    issues.push(`${label}.companion: must be { source, store }`);
-    return;
-  }
-  checkIntentSource(`${label}.companion.source`, c.source, llmKeys, issues);
-  if (!isMap(c.store) || !name(c.store.type)) {
-    issues.push(`${label}.companion.store: required (a store mapping with type:, like rag.store)`);
-  }
-}
 
 function checkCut(label: string, cut: unknown, issues: string[]): void {
   if (cut == null || cut === 'top-items') return;
@@ -11515,7 +10529,13 @@ export function checkProfiles(
       issues.push(`${label}: must be a mapping`);
       continue;
     }
-    for (const f of Object.keys(entry)) if (!PROFILE_FIELDS.includes(f)) issues.push(`${label}.${f}: unknown key`);
+    // D50 (spec §17.15): a leftover intents key from an earlier draft is refused by name, never ignored.
+    if ('intents' in entry) {
+      issues.push(`${label}.intents: intents were removed (spec D50, §17.15) — delete this key; tool records come only from what the provider exports`);
+    }
+    for (const f of Object.keys(entry)) {
+      if (f !== 'intents' && !PROFILE_FIELDS.includes(f)) issues.push(`${label}.${f}: unknown key`);
+    }
     if (key in retrieval) issues.push(`${label}: ${key} is also under rag.retrieval — one store, one owner of its ranking`);
     const hasVariant = entry.variant != null;
     const hasCompose = entry.compose != null;
@@ -11524,7 +10544,6 @@ export function checkProfiles(
     if (hasVariant && !name(entry.variant)) issues.push(`${label}.variant: must be a name`);
     const variant = entry.variant;
     if (variant === 'baseline') {
-      if (entry.intents != null) issues.push(`${label}.intents: not with variant baseline`);
       if (entry.decomposer != null) issues.push(`${label}.decomposer: not with variant baseline`);
     }
     if (variant === 'small-set-jev') {
@@ -11543,7 +10562,6 @@ export function checkProfiles(
       );
     }
     if (entry.decomposer != null && !name(entry.decomposer)) issues.push(`${label}.decomposer: must be a registered name`);
-    if (entry.intents != null) checkIntents(`${label}.intents`, entry.intents, llmKeys, issues);
     if (hasCompose) checkCompose(`${label}.compose`, entry.compose, { llmKeys, decisionProvider, hasDecision }, issues);
   }
 }
@@ -11619,7 +10637,7 @@ Wiring edits:
   }
   ```
 - `smart-server.ts`: **no change** in this task — the `decision:` section already exists; the relevance seam lands in Tasks 22–23.
-- `src/index.ts`: export `DECISION_KINDS`, type `DecisionKind` (from `./smart-agent/decision-config.js`), `PROFILE_STORE_KEYS` and the types `SmartServerProfileConfig`, `SmartServerComposeConfig`, `SmartServerProfileIntentsConfig`, `SmartServerIntentSourceConfig`, `SmartServerIndexerConfig`, `SmartServerCutConfig` from `./smart-agent/profiles-config.js` (`SmartServerDecisionConfig` is already exported).
+- `src/index.ts`: export `DECISION_KINDS`, type `DecisionKind` (from `./smart-agent/decision-config.js`), `PROFILE_STORE_KEYS` and the types `SmartServerProfileConfig`, `SmartServerComposeConfig`, `SmartServerIndexerConfig`, `SmartServerCutConfig` from `./smart-agent/profiles-config.js` (`SmartServerDecisionConfig` is already exported).
 
 - [ ] **Step 5: Run (new + existing config tests)**
 
@@ -11641,7 +10659,7 @@ Claude-Session: https://claude.ai/code/session_012KjevEeQGZMkWMfnupJ7Yd"
 
 ## Task 22: Names → instances — `resolve-collection-profiles.ts` (server-libs)
 
-Spec §6.2 (registries; ONE `decision:` section whose provider decides the kind — `makeProbabilityDecision` (Task 20A) builds the probability decision, the new optional `makeRelevanceDecision` the relevance one; `reranker: decision` builds the matching reranker in `rag.profiles` AND `rag.retrieval`; intents file; companion store **sections** kept for the server, which builds one companion store per primary binding — §7.3.3, D33), §3.8 (the seam row), §5.5, §7.3.1 (text composers, F4), §7.4 (D23 startup check); D27.
+Spec §6.2 (registries; ONE `decision:` section whose provider decides the kind — `makeProbabilityDecision` (Task 20A) builds the probability decision, the new optional `makeRelevanceDecision` the relevance one; `reranker: decision` builds the matching reranker in `rag.profiles` AND `rag.retrieval`), §3.8 (the seam row), §5.5, §7.3.1 (text composers, F4), §7.4 (D23 startup check); D27. No intents and no companion stores (spec D50, §17.15): a profile resolves to its strategy instances and nothing else.
 
 **Files:**
 - Create: `packages/llm-agent-server-libs/src/smart-agent/resolve-collection-profiles.ts`
@@ -11654,10 +10672,10 @@ Spec §6.2 (registries; ONE `decision:` section whose provider decides the kind 
 - Modify: `packages/llm-agent-server-libs/src/index.ts` (export the registry types and `BUILT_IN_TOOLS_VARIANTS`, `BUILT_IN_TOOLS_STRATEGIES`)
 
 **Interfaces:**
-- Consumes: Task 21 config types incl. `DECISION_KINDS`; libs exports (Tasks 5–17): `ComposedToolsProfile`, `mcpToolsVariants`, facets, text composers (`ParameterNamesToolText`, `EnumValuesToolText`, `SchemaToolText`), discriminators, `EnumValueToolIndexer`, `FacetedToolIndexer`, `IntentRecordIndexer`, `IntentCompanionIndexer`, `StaticIntentSource`, `LlmIntentSource`, `ItemPool`, `MaxScoreCollapse`, cuts, `ToolDefinitionSizeEstimator`, `wrapProbabilityDecision`, `wrapRelevanceDecision` (Task 4A); `@mcp-abap-adt/llm-agent-reranker` (Tasks 4B–4C): `ProbabilityReranker`, `RelevanceReranker`, `LlmReranker`, `TOOL_QUESTION`, `PASSAGE_QUESTION`.
+- Consumes: Task 21 config types incl. `DECISION_KINDS`; libs exports (Tasks 5–17): `ComposedToolsProfile`, `mcpToolsVariants`, facets, text composers (`ParameterNamesToolText`, `EnumValuesToolText`, `SchemaToolText`), discriminators, `EnumValueToolIndexer`, `FacetedToolIndexer`, `ItemPool`, `MaxScoreCollapse`, cuts, `ToolDefinitionSizeEstimator`, `wrapProbabilityDecision`, `wrapRelevanceDecision` (Task 4A); `@mcp-abap-adt/llm-agent-reranker` (Tasks 4B–4C): `ProbabilityReranker`, `RelevanceReranker`, `LlmReranker`, `TOOL_QUESTION`, `PASSAGE_QUESTION`.
 - Produces:
   ```ts
-  export interface ToolsVariantInput { readonly probabilityDecision?: IProbabilityDecision; readonly relevanceDecision?: IRelevanceDecision; readonly poolItems?: number; readonly intents?: VariantIntents; readonly decompose?: StagedRetrievalOptions['decompose'] } // the decision: section's decision, of its provider's kind
+  export interface ToolsVariantInput { readonly probabilityDecision?: IProbabilityDecision; readonly relevanceDecision?: IRelevanceDecision; readonly poolItems?: number; readonly decompose?: StagedRetrievalOptions['decompose'] } // the decision: section's decision, of its provider's kind
   // decision-seams.ts
   export interface DecisionSeams { decisionCfg?: SmartServerDecisionConfig; makeProbabilityDecision?: (cfg: SmartServerDecisionConfig) => Promise<IProbabilityDecision>; makeRelevanceDecision?: (cfg: SmartServerDecisionConfig) => Promise<IRelevanceDecision> }
   export function decisionBuilders(seams: DecisionSeams): { kind: DecisionKind | undefined; probability(): Promise<IProbabilityDecision>; relevance(): Promise<IRelevanceDecision> } // each built ONCE, wrapped once for usage logging
@@ -11666,8 +10684,8 @@ Spec §6.2 (registries; ONE `decision:` section whose provider decides the kind 
   export interface ToolsStrategyFactories { readonly facets?: Readonly<Record<string, () => IToolFacet>>; readonly texts?: Readonly<Record<string, () => IToolTextComposer>> /* F4 */; readonly discriminators?: Readonly<Record<string, () => IDiscriminatorSelector>>; readonly pools?: Readonly<Record<string, (args: unknown) => ICandidatePool>>; readonly collapse?: Readonly<Record<string, () => ICollapseRule>>; readonly cuts?: Readonly<Record<string, (args: unknown) => IItemCut>>; readonly estimators?: Readonly<Record<string, () => IItemSizeEstimator>>; readonly decomposers?: Readonly<Record<string, (deps: { queryEmbedder: IQueryEmbedder }) => IQueryDecomposer>> }
   export const BUILT_IN_TOOLS_VARIANTS: Readonly<Record<string, ToolsVariantFactory>>;
   export const BUILT_IN_TOOLS_STRATEGIES: ToolsStrategyFactories;
-  export interface ResolvedToolsProfile { readonly key: string; readonly profile?: ICollectionProfile<ToolItem>; readonly companionStores: Readonly<Record<string, SmartServerRagStoreConfig>>; readonly variant?: string; readonly poolItems?: number } // store SECTIONS: the server builds one companion store per primary binding (D33)
-  export interface ResolveCollectionProfilesInput extends DecisionSeams { profiles?: Record<string, SmartServerProfileConfig>; resolveLlm: (key: string) => Promise<ILlm>; queryEmbedder?: IQueryEmbedder; readFile?: (path: string) => string; variantFactories?: Readonly<Record<string, ToolsVariantFactory>>; strategyFactories?: ToolsStrategyFactories }
+  export interface ResolvedToolsProfile { readonly key: string; readonly profile?: ICollectionProfile<ToolItem>; readonly variant?: string; readonly poolItems?: number }
+  export interface ResolveCollectionProfilesInput extends DecisionSeams { profiles?: Record<string, SmartServerProfileConfig>; resolveLlm: (key: string) => Promise<ILlm>; queryEmbedder?: IQueryEmbedder; variantFactories?: Readonly<Record<string, ToolsVariantFactory>>; strategyFactories?: ToolsStrategyFactories }
   export function resolveCollectionProfiles(input: ResolveCollectionProfilesInput): Promise<Map<string, ResolvedToolsProfile>>;
   export function assertSmallSetPool(p: ResolvedToolsProfile | undefined, status: ToolCatalogStatus | undefined): void;
   ```
@@ -11686,8 +10704,6 @@ import {
   EnumValueToolIndexer,
   FacetedToolIndexer,
   FixedItemsCut,
-  IntentCompanionIndexer,
-  IntentRecordIndexer,
   ItemPool,
   MaxScoreCollapse,
   NamedDiscriminator,
@@ -11710,7 +10726,6 @@ function input(over: Partial<ResolveCollectionProfilesInput> = {}) {
     makeRelevanceDecision: async () => { seams.relevance++; return cohere; },
     resolveLlm: async () => ({}) as ILlm,
     queryEmbedder: { embedQuery: async () => ({ vector: [1] }) },
-    readFile: () => JSON.stringify({ read_file: ['open my notes'] }),
     ...over,
   };
   return { i, seams };
@@ -11772,21 +10787,6 @@ describe('resolveCollectionProfiles', () => {
     assert.ok(ix instanceof FacetedToolIndexer && ix.text instanceof EnumValuesToolText);
   });
 
-  it('intents: record from a file; companion keeps its store SECTION — no store is built here (D33)', async () => {
-    const { i } = input({
-      profiles: {
-        r: { variant: 'faceted', intents: { record: { file: './i.json' } } },
-        c: { variant: 'faceted', intents: { companion: { source: { file: './i.json' }, store: { type: 'in-memory' } } } },
-      },
-    });
-    const out = await resolveCollectionProfiles(i);
-    assert.ok(composed(out.get('r')?.profile).indexer instanceof IntentRecordIndexer);
-    assert.ok(composed(out.get('c')?.profile).companions?.intents instanceof IntentCompanionIndexer);
-    // The server builds one companion store per primary binding from this section (Task 23).
-    assert.deepEqual(out.get('c')?.companionStores, { intents: { type: 'in-memory' } });
-    assert.deepEqual(out.get('r')?.companionStores, {});
-  });
-
   it('compose: every value a name of a strategy', async () => {
     const { i } = input({
       profiles: {
@@ -11845,7 +10845,7 @@ describe('resolveCollectionProfiles', () => {
   });
 
   it('assertSmallSetPool: poolItems below the tool count fails startup (D23)', () => {
-    const p = { key: 'tools', companionStores: {}, variant: 'small-set-jev', poolItems: 20 };
+    const p = { key: 'tools', variant: 'small-set-jev', poolItems: 20 };
     const status = (total: number) => ({ total, vectorized: total, failed: [], clientFailures: 0, complete: true });
     assert.throws(() => assertSmallSetPool(p, status(25)), /smallSet\.poolItems \(20\) is below the 25 tools/);
     assert.doesNotThrow(() => assertSmallSetPool(p, status(20)));
@@ -12008,7 +11008,6 @@ and thread it exactly where `makeProbabilityDecision` is threaded (the `Pick<…
  * relevance, by `decision.provider`) comes from the composition root's seam of
  * that kind (decision-seams.ts); the library constructs none from config.
  */
-import { readFileSync } from 'node:fs';
 import type {
   ICandidatePool,
   ICollapseRule,
@@ -12024,7 +11023,6 @@ import type {
   IProbabilityDecision,
   IRelevanceDecision,
   IToolFacet,
-  IToolIntentSource,
   IToolTextComposer,
   ToolCatalogStatus,
   ToolItem,
@@ -12036,10 +11034,7 @@ import {
   EnumValueToolIndexer,
   FacetedToolIndexer,
   FixedItemsCut,
-  IntentCompanionIndexer,
-  IntentRecordIndexer,
   ItemPool,
-  LlmIntentSource,
   MaxScoreCollapse,
   mcpToolsVariants,
   NamedDiscriminator,
@@ -12050,21 +11045,16 @@ import {
   SchemaToolText,
   ScoreFloorCut,
   type StagedRetrievalOptions,
-  StaticIntentSource,
   SummaryFacet,
   TokenBudgetCut,
   ToolDefinitionSizeEstimator,
-  type VariantIntents,
 } from '@mcp-abap-adt/llm-agent-libs';
 import { type DecisionSeams, decisionBuilders, decisionRerankerFor } from './decision-seams.js';
 import type {
   SmartServerComposeConfig,
   SmartServerCutConfig,
-  SmartServerIntentSourceConfig,
   SmartServerProfileConfig,
-  SmartServerProfileIntentsConfig,
 } from './profiles-config.js';
-import type { SmartServerRagStoreConfig } from './rag-config.js';
 
 export interface ToolsVariantInput {
   /** The decision: section's decision when its provider is of kind probability (typesafe, Jev). */
@@ -12072,7 +11062,6 @@ export interface ToolsVariantInput {
   /** … when its provider is of kind relevance (sap-aicore, Cohere). */
   readonly relevanceDecision?: IRelevanceDecision;
   readonly poolItems?: number;
-  readonly intents?: VariantIntents;
   readonly decompose?: StagedRetrievalOptions['decompose'];
 }
 export type ToolsVariantFactory = (
@@ -12099,7 +11088,6 @@ const need = <T>(v: T | undefined, why: string): T => {
   return v;
 };
 const variantOptions = (i: ToolsVariantInput) => ({
-  ...(i.intents ? { intents: i.intents } : {}),
   ...(i.decompose ? { decompose: i.decompose } : {}),
 });
 
@@ -12145,13 +11133,6 @@ export interface ResolvedToolsProfile {
   readonly key: string;
   /** Undefined = baseline (no profile is bound). */
   readonly profile?: ICollectionProfile<ToolItem>;
-  /**
-   * The store SECTION of each companion the profile needs (`intents` for the companion
-   * placement) — never a built store. The profile instance may be shared by several
-   * bindings; companion storage may not (spec §7.3.3, D33): the server builds one store per
-   * primary binding from this section, with that primary's embedder.
-   */
-  readonly companionStores: Readonly<Record<string, SmartServerRagStoreConfig>>;
   readonly variant?: string;
   /** small-set-jev: checked against the tool count at startup (D23). */
   readonly poolItems?: number;
@@ -12164,27 +11145,12 @@ export interface ResolveCollectionProfilesInput extends DecisionSeams {
   resolveLlm: (key: string) => Promise<ILlm>;
   /** The store's query embedder (the one makeRag gives the store); for decomposers. */
   queryEmbedder?: IQueryEmbedder;
-  /** Test seam; default readFileSync(path, 'utf8'). */
-  readFile?: (path: string) => string;
   variantFactories?: Readonly<Record<string, ToolsVariantFactory>>;
   strategyFactories?: ToolsStrategyFactories;
 }
 
 type Obj = Record<string, unknown>;
 const isMap = (v: unknown): v is Obj => v !== null && typeof v === 'object' && !Array.isArray(v);
-
-function parseIntentsFile(text: string, path: string): Record<string, readonly string[]> {
-  const raw: unknown = JSON.parse(text);
-  if (!isMap(raw)) throw new Error(`intents file ${path}: must be { "<tool name>": ["intent", …] }`);
-  const out: Record<string, readonly string[]> = {};
-  for (const [k, v] of Object.entries(raw)) {
-    if (!Array.isArray(v) || !v.every((s) => typeof s === 'string')) {
-      throw new Error(`intents file ${path}: "${k}" must be a list of strings`);
-    }
-    out[k] = v;
-  }
-  return out;
-}
 
 export async function resolveCollectionProfiles(
   input: ResolveCollectionProfilesInput,
@@ -12203,7 +11169,6 @@ export async function resolveCollectionProfiles(
     estimators: { ...BUILT_IN_TOOLS_STRATEGIES.estimators, ...input.strategyFactories?.estimators },
     decomposers: { ...input.strategyFactories?.decomposers },
   };
-  const readFile = input.readFile ?? ((p: string) => readFileSync(p, 'utf8'));
 
   // ONE decision per server, of its provider's kind, built once (spec §6.2).
   const decisions = decisionBuilders(input);
@@ -12211,19 +11176,6 @@ export async function resolveCollectionProfiles(
     const f = reg?.[n];
     if (!f) throw new Error(`unknown ${kind} "${n}" (known: ${Object.keys(reg ?? {}).join(', ') || 'none'})`);
     return f;
-  };
-  const intentSource = async (src: SmartServerIntentSourceConfig): Promise<IToolIntentSource> =>
-    'file' in src
-      ? new StaticIntentSource(parseIntentsFile(readFile(src.file), src.file))
-      : new LlmIntentSource(await input.resolveLlm(src.llm));
-  const intentsOf = async (
-    cfg: SmartServerProfileIntentsConfig,
-    companionStores: Record<string, SmartServerRagStoreConfig>,
-  ): Promise<VariantIntents> => {
-    if ('record' in cfg) return { record: await intentSource(cfg.record) };
-    // The section only: one store per primary binding is built by the server (D33).
-    companionStores.intents = cfg.companion.store;
-    return { companion: await intentSource(cfg.companion.source) };
   };
   const decomposeOf = (n: string): StagedRetrievalOptions['decompose'] => {
     const f = s.decomposers?.[n];
@@ -12253,7 +11205,6 @@ export async function resolveCollectionProfiles(
   };
   const composeOf = async (
     c: SmartServerComposeConfig,
-    intents: VariantIntents | undefined,
     decompose: StagedRetrievalOptions['decompose'],
   ): Promise<ICollectionProfile<ToolItem>> => {
     const text = c.text ? { text: pick(s.texts, 'text composer', c.text)() } : {};
@@ -12267,11 +11218,6 @@ export async function resolveCollectionProfiles(
         maxValues: e.maxValues,
       });
     }
-    const indexing = !intents
-      ? { indexer: base }
-      : 'record' in intents
-        ? { indexer: new IntentRecordIndexer(base, intents.record) }
-        : { indexer: base, companions: { intents: new IntentCompanionIndexer(intents.companion) } };
     const [[poolKind, poolArgs]] = Object.entries(c.pool);
     const pool = poolKind === 'items' ? new ItemPool(Number(poolArgs)) : pick(s.pools, 'pool', poolKind)(poolArgs);
     const preset = (c.question ?? 'tool') === 'tool' ? TOOL_QUESTION : PASSAGE_QUESTION;
@@ -12292,7 +11238,7 @@ export async function resolveCollectionProfiles(
     }
     const cut = cutOf(c.cut);
     return new ComposedToolsProfile({
-      ...indexing,
+      indexer: base,
       pool,
       collapse: pick(s.collapse, 'collapse rule', c.collapse ?? 'max')(),
       ...(reranker ? { rerank: { reranker, onFailure: c.onFailure ?? 'stage1' } } : {}),
@@ -12303,8 +11249,6 @@ export async function resolveCollectionProfiles(
 
   for (const [key, cfg] of entries) {
     try {
-      const companionStores: Record<string, SmartServerRagStoreConfig> = {};
-      const intents = cfg.intents ? await intentsOf(cfg.intents, companionStores) : undefined;
       const decomposerName = cfg.decomposer ?? cfg.compose?.decomposer;
       const decompose = decomposerName && decomposerName !== 'none' ? decomposeOf(decomposerName) : undefined;
       if (cfg.variant !== undefined) {
@@ -12325,18 +11269,16 @@ export async function resolveCollectionProfiles(
           ...(wants === 'probability' ? { probabilityDecision: await decisions.probability() } : {}),
           ...(wants === 'relevance' ? { relevanceDecision: await decisions.relevance() } : {}),
           ...(cfg.smallSet ? { poolItems: cfg.smallSet.poolItems } : {}),
-          ...(intents ? { intents } : {}),
           ...(decompose ? { decompose } : {}),
         });
         out.set(key, {
           key,
           ...(profile ? { profile } : {}),
-          companionStores,
           variant: cfg.variant,
           ...(cfg.variant === 'small-set-jev' && cfg.smallSet ? { poolItems: cfg.smallSet.poolItems } : {}),
         });
       } else if (cfg.compose) {
-        out.set(key, { key, profile: await composeOf(cfg.compose, intents, decompose), companionStores });
+        out.set(key, { key, profile: await composeOf(cfg.compose, decompose) });
       }
     } catch (err) {
       throw new Error(`rag.profiles.${key}: ${err instanceof Error ? err.message : String(err)}`);
@@ -12398,15 +11340,15 @@ Claude-Session: https://claude.ai/code/session_012KjevEeQGZMkWMfnupJ7Yd"
 
 ## Task 23: SmartServer wiring — bind at creation, workers by key, startup check (server-libs)
 
-Spec §6.1 (server binds, builder reuses), §6.2 (only `rag.profiles.tools`, S8; workers' tools stores get the main config's profile; a persistent companion store with a worker's own `rag` refused), §7.3.3 (companion storage per primary binding, D33), §7.4 (D23).
+Spec §6.1 (server binds, builder reuses), §6.2 (only `rag.profiles.tools`, S8; workers' tools stores get the main config's profile, each its own binding), §7.4 (D23). No companion stores (D50, spec §17.15): a binding is the primary store only.
 
 **Files:**
 - Modify: `packages/llm-agent-server-libs/src/smart-agent/smart-server.ts` (field near `_retrievalStrategies` ~line 840; resolution after `resolvedEmbedder` ~line 1434; the `toolsRag` creation ~line 1550; the worker `makeToolsRag` ~line 2170; before `new HealthChecker(` ~line 1888)
 - Modify: `packages/llm-agent-server-libs/src/smart-agent/__tests__/mcp-yaml-vectorization.test.ts` (append tests; reuses its stub MCP server)
 
 **Interfaces:**
-- Consumes: `resolveCollectionProfiles`, `assertSmallSetPool`, `ResolvedToolsProfile` (Task 22); `bindToolsProfile` (`@mcp-abap-adt/llm-agent-libs`, Task 15); `toMakeRagInput` (`rag-config.ts`); `isToolCatalogReporter` (`@mcp-abap-adt/llm-agent`).
-- Produces: `rag.profiles.tools` binds the server's tools store (main and every worker store) at creation, each primary binding with companion stores of its own, built through `makeRag` with that primary's embedder (D33; a worker reading the main store shares the main binding, companions included); startup refuses a non-in-memory companion store when a worker declares its own `rag` (D33); startup fails when `small-set-jev`'s `poolItems` < the listed tool count; a `SmartServerConfig` built in code with a `rag.profiles` key other than `tools` is refused at start too (S8 — such a config skips the YAML validator of Task 21, so the server checks again: never a silent drop).
+- Consumes: `resolveCollectionProfiles`, `assertSmallSetPool`, `ResolvedToolsProfile` (Task 22); `bindToolsProfile` (`@mcp-abap-adt/llm-agent-libs`, Task 15); `isToolCatalogReporter` (`@mcp-abap-adt/llm-agent`).
+- Produces: `rag.profiles.tools` binds the server's tools store (main and every worker store) at creation, each store with a binding of its own (a worker reading the main store shares the main binding); startup fails when `small-set-jev`'s `poolItems` < the listed tool count; a `SmartServerConfig` built in code with a `rag.profiles` key other than `tools` is refused at start too (S8 — such a config skips the YAML validator of Task 21, so the server checks again: never a silent drop).
 
 - [ ] **Step 1: Write the failing tests (append to `mcp-yaml-vectorization.test.ts`)**
 
@@ -12479,90 +11421,13 @@ test('S8: a rag.profiles key other than tools in a config built in code is refus
   );
   await assert.rejects(server.start(), /rag\.profiles\.tools-coarse/);
 });
-
-/** A companion intents file (empty map: the companion stores are what these tests count). */
-function companionFile(t: { after: (fn: () => void) => void }): string {
-  const dir = mkdtempSync(join(tmpdir(), 'companion-'));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
-  const file = join(dir, 'intents.json');
-  writeFileSync(file, '{}');
-  return file;
-}
-
-test('D33: every primary binding gets companion stores of its own; a reader worker shares the main binding', async (t) => {
-  const file = companionFile(t);
-  const companions: IRag[] = [];
-  const server = new SmartServer(
-    {
-      port: 0,
-      llm: { model: 'test-model' },
-      skipModelValidation: true,
-      mode: 'smart',
-      rag: {
-        store: { type: 'in-memory' },
-        profiles: {
-          tools: {
-            variant: 'faceted',
-            intents: { companion: { source: { file }, store: { type: 'in-memory', collectionName: 'companion' } } },
-          },
-        },
-      },
-      mcpClients: [],
-      subAgentConfigs: [
-        { name: 'reader', config: { skipModelValidation: true } },
-        { name: 'own', config: { skipModelValidation: true, rag: { store: { type: 'in-memory' } } } },
-      ],
-    } as unknown as SmartServerConfig,
-    {
-      ...constructionSeams,
-      makeRag: async (input) => {
-        const rag = await constructionSeams.makeRag(input);
-        if (input.store.collectionName === 'companion') companions.push(rag);
-        return rag;
-      },
-    },
-  );
-  const handle = await server.start();
-  try {
-    assert.equal(companions.length, 2, 'main + the worker with its own store; the reader worker builds none');
-    assert.notEqual(companions[0], companions[1], 'two catalogs never share a companion store');
-  } finally {
-    await handle.close();
-  }
-});
-
-test('D33: a persistent companion store with a worker that has its own rag is refused at start', async (t) => {
-  const file = companionFile(t);
-  const server = new SmartServer(
-    {
-      port: 0,
-      llm: { model: 'test-model' },
-      skipModelValidation: true,
-      rag: {
-        store: { type: 'in-memory' },
-        profiles: {
-          tools: {
-            variant: 'faceted',
-            intents: {
-              companion: { source: { file }, store: { type: 'qdrant', url: 'http://127.0.0.1:9', collectionName: 'intents' } },
-            },
-          },
-        },
-      },
-      mcpClients: [],
-      subAgentConfigs: [{ name: 'own', config: { skipModelValidation: true, rag: { store: { type: 'in-memory' } } } }],
-    } as unknown as SmartServerConfig,
-    constructionSeams,
-  );
-  await assert.rejects(server.start(), /companion\.store: a qdrant companion .* worker 'own' has its own tools store/);
-});
 ```
-Add to the file's imports: `recordId` from `@mcp-abap-adt/llm-agent`, `toolsBindingOf` from `@mcp-abap-adt/llm-agent-libs`; `type SmartServerConfig` beside `SmartServer` (`'../smart-server.js'`); `import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';`, `import { tmpdir } from 'node:os';`, `import { join } from 'node:path';` (`IRag` is already imported).
+Add to the file's imports: `recordId` from `@mcp-abap-adt/llm-agent`, `toolsBindingOf` from `@mcp-abap-adt/llm-agent-libs`; `type SmartServerConfig` beside `SmartServer` (`'../smart-server.js'`) — the S8 test builds a config in code.
 
 - [ ] **Step 2: Run to see them fail**
 
 Run: `npx tsc -b packages/llm-agent-libs && node --import tsx/esm --test packages/llm-agent-server-libs/src/smart-agent/__tests__/mcp-yaml-vectorization.test.ts`
-Expected: FAIL — the store carries no binding; startup does not refuse; no companion store is built.
+Expected: FAIL — the store carries no binding; startup does not refuse.
 
 - [ ] **Step 3: Implement**
 
@@ -12577,7 +11442,7 @@ In `smart-server.ts`:
     type ToolsVariantFactory,
   } from './resolve-collection-profiles.js';
   ```
-  (`IRag`, `IRetrievalEmbedder` (type import, L11–48), `toMakeRagInput`, `SmartServerRagConfig` and `withStrategy` are already there; `withStrategy` keeps its `history` callers and the unbound arm of `withToolsStore`, so nothing becomes unused.)
+  (`IRag` and `withStrategy` are already there; `withStrategy` keeps its `history` callers and the unbound arm of `withToolsStore`, so nothing becomes unused. Nothing else is imported for the tools store: it has no companion stores to build, D50.)
 - field, after `private _retrievalStrategies …`:
   ```ts
   /** `rag.profiles`, resolved once, server-wide (spec §6.2). */
@@ -12586,9 +11451,8 @@ In `smart-server.ts`:
 - right after `const resolvedEmbedder = await resolveRetrievalEmbedder(…);` (~line 1434):
   ```ts
     // ---- Collection profiles (spec §6.2) ---------------------------------
-    // Resolved ONCE, server-wide, after the embedder: a companion store is
-    // built through makeRag with the primary's embedder, and a decomposer
-    // gets the store's query embedder.
+    // Resolved ONCE, server-wide, after the embedder: a decomposer gets the
+    // store's query embedder.
     this._toolsProfiles = await resolveCollectionProfiles({
       profiles: this.cfg.rag?.profiles,
       decisionCfg: this.cfg.decision,
@@ -12610,20 +11474,6 @@ In `smart-server.ts`:
         );
       }
     }
-    // D33 (spec §7.3.3): companion storage is per primary binding. A persistent
-    // companion section names ONE collection; a worker with its own tools store
-    // would need a second one the config does not name — refuse, never derive.
-    const ownStoreWorker = (this.cfg.subAgentConfigs ?? []).find((w) => w.config.rag);
-    if (ownStoreWorker) {
-      const sections = this._toolsProfiles.get('tools')?.companionStores ?? {};
-      for (const [companion, section] of Object.entries(sections)) {
-        if (section.type !== 'in-memory') {
-          throw new Error(
-            `rag.profiles.tools.intents.companion.store: a ${section.type} companion holds one catalog's ${companion} records, but worker '${ownStoreWorker.name}' has its own tools store and would share it — use an in-memory companion store, intents.record, or bind that worker's store in your composition root`,
-          );
-        }
-      }
-    }
   ```
 - add the method next to `withStrategy`:
   ```ts
@@ -12631,44 +11481,17 @@ In `smart-server.ts`:
    * The server-built tools store (main or worker) bound to `rag.profiles.tools`
    * when configured — a store per binding, one profile (goal 6) — else wrapped
    * in its `rag.retrieval` strategy as in 30.1.0. The builder reuses the binding.
-   *
-   * Each PRIMARY binding gets companion stores of its own (spec §7.3.3, D33),
-   * built here through makeRag with this primary's embedder: two catalogs that
-   * share one companion store would overwrite and delete each other's records
-   * (`recordId` has no binding in it). A worker reading the main store by
-   * reference never comes here — it shares the main binding, companions included.
+   * A worker reading the main store by reference never comes here — it shares
+   * the main binding. No companion stores (D50).
    */
-  private async withToolsStore(
-    store: IRag,
-    embedder: IRetrievalEmbedder | undefined,
-  ): Promise<IRag> {
+  private withToolsStore(store: IRag): IRag {
     const p = this._toolsProfiles.get('tools');
     if (!p?.profile) return this.withStrategy('tools', store);
-    const companions: Record<string, IRag> = {};
-    for (const [name, section] of Object.entries(p.companionStores)) {
-      companions[name] = await this._deps.makeRag(
-        toMakeRagInput(section, embedder, 'rag.profiles.tools.intents.companion'),
-      );
-    }
-    return bindToolsProfile(p.profile, { key: 'tools', rag: store, companions }).rag;
+    return bindToolsProfile(p.profile, { key: 'tools', rag: store }).rag;
   }
   ```
-- main store: replace `toolsRag = this.withStrategy('tools', await this._deps.makeRag(input));` with `toolsRag = await this.withToolsStore(await this._deps.makeRag(input), resolvedEmbedder);` (`resolvedEmbedder` is what `input` was built with, two lines above).
-- in the worker `makeToolsRag` closure, keep the worker's input so its embedder reaches the companions:
-  ```ts
-      makeToolsRag: subCfg.rag
-        ? async () => {
-            const input = await this._workerRagInput(
-              name,
-              subCfg.rag as SmartServerRagConfig,
-              subCfg.embedder,
-              embedderFactories,
-            );
-            return this.withToolsStore(await this._deps.makeRag(input), input.embedder);
-          }
-        : undefined,
-  ```
-  (`input.embedder` reads both `MakeRagInput` arms: optional on in-memory, required on the vector arm. `makeHistoryRag` is unchanged — `withStrategy` keeps it as a caller.)
+- main store: replace `toolsRag = this.withStrategy('tools', await this._deps.makeRag(input));` with `toolsRag = this.withToolsStore(await this._deps.makeRag(input));`.
+- in the worker `makeToolsRag` closure, replace its `this.withStrategy('tools', …)` over the worker's own store with `this.withToolsStore(…)` over the same store (the closure is otherwise unchanged; `makeHistoryRag` is unchanged — `withStrategy` keeps it as a caller).
 - immediately before `const healthChecker = new HealthChecker({`:
   ```ts
     // D23: small-set-jev reranks the whole set — refuse to serve when its pool is smaller.
@@ -12693,7 +11516,7 @@ Expected: PASS.
 ```bash
 npx biome check --write packages/llm-agent-server-libs/src
 git add packages/llm-agent-server-libs/src
-git commit -m "feat(server-libs): SmartServer binds rag.profiles.tools at store creation, companions per binding; small-set startup check
+git commit -m "feat(server-libs): SmartServer binds rag.profiles.tools at store creation; small-set startup check
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_012KjevEeQGZMkWMfnupJ7Yd"
@@ -12703,7 +11526,7 @@ Claude-Session: https://claude.ai/code/session_012KjevEeQGZMkWMfnupJ7Yd"
 
 ## Task 23A: The server fills a bound tools store once, when it is created — the main store at startup, a worker's store by the worker's construction (libs + server-libs)
 
-Spec §6.3 (D31; D32 — a worker's fill keeps the identity its agent dispatches by, §17.8; D34 — the binding travels with the store; D35 — whoever creates a bound store fills it, §17.9; D38 — workers on the shared clients filled at startup, on `yamlBuilderConnect` right after the harvest; D39 — the hot-reload test drives the reload entry point; §17.10; **D41 — filled once at creation, never refilled: no memo, no retry, a re-wire never fills; D42 — the store's fill source runs, §17.11**), §6.4 (rows 4–7, 5a), §6.6 (only `tools`), §6.1 (the builder keeps its limit), §7.3.3 (D33 — companion storage per primary binding, built in Task 23), §7.6 (the profile path, reused), §3.8 (`fillToolsBinding`, `HealthCheckerDeps.toolCatalog`; the two no-contract-change rows), §14.1. The YAML `fill` key arrives in Task 23B; until then every server-bound store carries the default `live` source.
+Spec §6.3 (D31; D32 — a worker's fill keeps the identity its agent dispatches by, §17.8; D34 — the binding travels with the store; D35 — whoever creates a bound store fills it, §17.9; D38 — workers on the shared clients filled at startup, on `yamlBuilderConnect` right after the harvest; D39 — the hot-reload test drives the reload entry point; §17.10; **D41 — filled once at creation, never refilled: no memo, no retry, a re-wire never fills; D42 — the store's fill source runs, §17.11**), §6.4 (rows 4–7, 5a), §6.6 (only `tools`), §6.1 (the builder keeps its limit), §7.6 (the profile path, reused), §3.8 (`fillToolsBinding`, `HealthCheckerDeps.toolCatalog`; the two no-contract-change rows), §14.1. The YAML `fill` key arrives in Task 23B; until then every server-bound store carries the default `live` source. A binding is the primary store only — no companion stores (D50, spec §17.15).
 
 **Why.** After Task 23 a YAML `rag.profiles.tools` is bound on every path, but filled only where the builder connects itself (`yamlBuilderConnect` in `smart-server.ts`). The other provisioning paths in `_buildInfra` hand the clients to the builder through `withMcpClients` (main: `buildBaseBuilder` → `builder.withMcpClients(parts.mcpClients)`; workers: `buildSubAgent` → `subBuilder.withMcpClients(...)`), and the builder does not vectorize there (spec §6.1). The paths, as they are in `smart-server.ts` today:
 
@@ -12991,7 +11814,6 @@ import {
   type ILlm,
   type IMcpClient,
   type IRag,
-  type IToolIntentSource,
   recordId,
   SimpleRagRegistry,
   TextOnlyEmbedding,
@@ -13001,7 +11823,6 @@ import {
   emptyLoadedPlugins,
   mcpToolsVariants,
   type SessionAgentParts,
-  toolItemFromTool,
   toolsBindingOf,
 } from '@mcp-abap-adt/llm-agent-libs';
 import type { ToolsVariantFactory } from '../resolve-collection-profiles.js';
@@ -13334,106 +12155,6 @@ test('(7) D32: a worker filled from the shared clients holds the names its agent
   );
 });
 
-/** Intents derived from the description: the two catalogs' `Lookup` get different intents. */
-const intentsByDescription: IToolIntentSource = {
-  name: 'by-description',
-  intentsFor: async (t) => ({
-    ok: true as const,
-    value: [t.description.includes('invoice') ? 'billing ledger question' : 'forklift stock question'],
-  }),
-};
-
-function describedClient(name: string, description: string): IMcpClient {
-  return {
-    async listTools() {
-      return { ok: true as const, value: [{ name, description, inputSchema: { type: 'object', properties: {} } }] };
-    },
-    async callTool() {
-      return { ok: true as const, value: { content: 'ok' } };
-    },
-  } as unknown as IMcpClient;
-}
-
-test('(8) D33: main + a worker with their own stores keep their own companion records — fill, replace, remove', async (t) => {
-  const dir = mkdtempSync(join(tmpdir(), 'companion-'));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
-  const file = join(dir, 'intents.json');
-  writeFileSync(file, '{}');
-  const config = {
-    port: 0,
-    llm: { model: 'test-model' },
-    skipModelValidation: true,
-    mode: 'smart',
-    rag: {
-      store: { type: 'in-memory' },
-      profiles: {
-        tools: {
-          variant: 'by-description',
-          // the store section is what matters here; the variant brings its own intent source
-          intents: { companion: { source: { file }, store: { type: 'in-memory' } } },
-        },
-      },
-    },
-    toolsVariantFactories: {
-      'by-description': () => mcpToolsVariants.faceted({ intents: { companion: intentsByDescription } }),
-    },
-    mcpClients: [describedClient('Lookup', 'Find a customer invoice')],
-    subAgentConfigs: [
-      {
-        name: 'own',
-        config: {
-          skipModelValidation: true,
-          rag: { store: { type: 'in-memory' } },
-          mcpClients: [describedClient('Lookup', 'Find a warehouse pallet')],
-        },
-      },
-    ],
-  } as unknown as SmartServerConfig;
-  await withServer(config, constructionSeams, async ({ toolsRag, server }) => {
-    const workerRag = (server as unknown as WorkerInternals)._workers.cache.get('own')?.toolsRag;
-    assert.ok(toolsRag && workerRag);
-    const main = toolsBindingOf(toolsRag);
-    const worker = toolsBindingOf(workerRag);
-    assert.ok(main && worker);
-    const ref = { itemId: 'tool:Lookup', owner: { scope: 'global' as const } };
-    /** `Lookup`'s score for a query; 0 = no shared word with any of its records. */
-    const score = async (rag: IRag, q: string) => {
-      const r = await rag.query(new TextOnlyEmbedding(q), 5);
-      assert.ok(r.ok);
-      return r.value.find((h) => toolNameFromRecord(h.metadata) === 'Lookup')?.score ?? 0;
-    };
-    const own = async (when: string) => {
-      assert.ok((await score(workerRag, 'forklift stock')) > 0, `${when}: the worker finds Lookup by its own intents`);
-      assert.equal(await score(workerRag, 'billing ledger'), 0, `${when}: never by the main's intents`);
-      const w = await worker.get(ref);
-      assert.ok(w.ok && w.value, `${when}: the worker's item is whole`);
-    };
-
-    // fill: each by its own intents only (a shared store would hold the LAST fill's intent for both)
-    assert.ok((await score(toolsRag, 'billing ledger')) > 0, 'the main finds Lookup by its own intents');
-    assert.equal(await score(toolsRag, 'forklift stock'), 0, "the main never by the worker's intents");
-    await own('after the fill');
-
-    // replace the main's item: its companion record is rewritten in ITS companion store only
-    const replaced = await main.index([
-      toolItemFromTool(
-        { name: 'Lookup', description: 'Find a customer invoice by number', inputSchema: { type: 'object', properties: {} } },
-        { itemId: 'tool:Lookup', originalName: 'Lookup' },
-      ),
-    ]);
-    assert.ok(replaced.ok && replaced.value.failedItems.length === 0);
-    assert.ok((await score(toolsRag, 'billing ledger')) > 0);
-    await own('after the main replaced its item');
-
-    // remove the main's item: its companion record goes, the worker's stays
-    const removed = await main.remove([ref]);
-    assert.ok(removed.ok);
-    const gone = await main.get(ref);
-    assert.ok(gone.ok && gone.value === null, "the main's item is gone");
-    await own('after the main removed its item');
-  });
-});
-
 // ---- D35: a worker's store is filled when the worker is built — also after a drain ----
 
 /** Two labelled servers, slot 1 of 3 down, `Search` on both (as in (7)). */
@@ -13448,23 +12169,8 @@ const labelledSeam = async () => ({
 const SHARED_CATALOG = ['Fetch', 'Lookup', 'alpha__Search', 'gamma__Search'];
 const SHARED_IDS = ['tool:0:Search', 'tool:0:Lookup', 'tool:2:Search', 'tool:2:Fetch'];
 
-/** Companion intents no primary record contains: `walrus <tool>`. */
-const walrusIntents: IToolIntentSource = {
-  name: 'walrus',
-  intentsFor: async (t) => ({ ok: true as const, value: [`walrus ${t.originalName.toLowerCase()}`] }),
-};
-
-function emptyIntentsFile(t: { after: (fn: () => void) => void }): string {
-  const dir = mkdtempSync(join(tmpdir(), 'companion-'));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
-  const file = join(dir, 'intents.json');
-  writeFileSync(file, '{}');
-  return file;
-}
-
-/** Main + two workers with their own in-memory primary and companion stores: one on the shared clients, one on DI clients. */
+/** Main + two workers with their own in-memory stores: one on the shared clients, one on DI clients. */
 function rebuildConfig(
-  file: string,
   calls: string[][],
   extra: Record<string, unknown> = {},
   binds?: string[],
@@ -13476,20 +12182,9 @@ function rebuildConfig(
     mode: 'smart',
     rag: {
       store: { type: 'in-memory' },
-      profiles: {
-        tools: {
-          variant: 'counting-walrus',
-          intents: { companion: { source: { file }, store: { type: 'in-memory' } } },
-        },
-      },
+      profiles: { tools: { variant: 'counting' } },
     },
-    toolsVariantFactories: {
-      'counting-walrus': countingVariant(
-        calls,
-        () => mcpToolsVariants.faceted({ intents: { companion: walrusIntents } }),
-        binds,
-      ),
-    },
+    toolsVariantFactories: { counting: countingVariant(calls, undefined, binds) },
     mcp: { type: 'http', url: 'http://127.0.0.1:9/never-connected' },
     subAgentConfigs: [
       { name: 'shared', config: { skipModelValidation: true, rag: { store: { type: 'in-memory' } } } },
@@ -13502,7 +12197,7 @@ function rebuildConfig(
   } as unknown as SmartServerConfig;
 }
 
-/** A rebuilt worker store: a new instance, bound, every item whole, retrievable by its primary AND its companion records, under the names its agent dispatches by. */
+/** A rebuilt worker store: a new instance, bound, every item whole, retrievable by its records, under the names its agent dispatches by. */
 async function assertRebuiltAndFilled(
   rag: IRag | undefined,
   before: IRag | undefined,
@@ -13517,18 +12212,13 @@ async function assertRebuiltAndFilled(
     const got = await b.get({ itemId, owner: { scope: 'global' } });
     assert.ok(got.ok && got.value, `${who}: ${itemId}`);
   }
-  for (const [q, via] of [
-    [expect.primaryQuery, 'primary'],
-    ['walrus', 'companion'],
-  ] as const) {
-    const hits = await rag.query(new TextOnlyEmbedding(q), 10);
-    assert.ok(hits.ok);
-    assert.deepEqual(
-      [...new Set(hits.value.map((h) => toolNameFromRecord(h.metadata)))].sort(),
-      [...expect.names].sort(),
-      `${who}: every name retrievable by its ${via} records`,
-    );
-  }
+  const hits = await rag.query(new TextOnlyEmbedding(expect.primaryQuery), 10);
+  assert.ok(hits.ok);
+  assert.deepEqual(
+    [...new Set(hits.value.map((h) => toolNameFromRecord(h.metadata)))].sort(),
+    [...expect.names].sort(),
+    `${who}: every name retrievable by its records`,
+  );
 }
 
 /** The next two sessions after a drain: the first constructs the workers (and fills), the second re-wires them (never fills, D41). */
@@ -13570,10 +12260,10 @@ function putConfig(port: number, body: unknown): Promise<number> {
   });
 }
 
-test('(9) PUT /v1/config: the next session rebuilds the drained workers and fills their new stores — shared and DI clients', async (t) => {
+test('(9) PUT /v1/config: the next session rebuilds the drained workers and fills their new stores — shared and DI clients', async () => {
   const calls: string[][] = [];
   await withServer(
-    rebuildConfig(emptyIntentsFile(t), calls),
+    rebuildConfig(calls),
     { ...constructionSeams, connectMcpWithDescriptors: labelledSeam },
     async ({ port, server }) => {
       const s = server as unknown as WorkerInternals;
@@ -13595,7 +12285,7 @@ test('(10) hot reload: the server reload entry point drains the workers; the nex
   writeFileSync(configFile, 'agent:\n  maxIterations: 10\n');
   const calls: string[][] = [];
   await withServer(
-    rebuildConfig(emptyIntentsFile(t), calls, { configFile }),
+    rebuildConfig(calls, { configFile }),
     { ...constructionSeams, connectMcpWithDescriptors: labelledSeam },
     async ({ server }) => {
       const s = server as unknown as WorkerInternals;
@@ -13724,7 +12414,7 @@ test('(12) D41: a construction whose fill throws leaves no cached worker — the
 - [ ] **Step 6: Run to see them fail**
 
 Run: `npx tsc -b packages/llm-agent-libs && node --import tsx/esm --test packages/llm-agent-server-libs/src/smart-agent/__tests__/profile-fill-ready-clients.test.ts`
-Expected: FAIL — (1), (2), (3), (5), (6) find the store empty (`calls` is `[]`, no `toolCatalog`); (7), (8) find the worker's store empty; (9) fails its startup precondition (`calls.length` is 0), and the rebuilt stores are empty too; (10) finds no `_configReload`; (12) fails its precondition (no startup fill); (4) passes already (it pins 30.1.0), and so does (11) (nothing fills a worker yet — it pins that a re-wire never will). In `mcp-yaml-vectorization.test.ts` the D38 test finds the worker's store empty after `start()`. `config-reload-entry.test.ts` passes already: it pins the existing link from the watcher's event to `_onReload`.
+Expected: FAIL — (1), (2), (3), (5), (6) find the store empty (`calls` is `[]`, no `toolCatalog`); (7) finds the worker's store empty; (9) fails its startup precondition (`calls.length` is 0), and the rebuilt stores are empty too; (10) finds no `_configReload`; (12) fails its precondition (no startup fill); (4) passes already (it pins 30.1.0), and so does (11) (nothing fills a worker yet — it pins that a re-wire never will). In `mcp-yaml-vectorization.test.ts` the D38 test finds the worker's store empty after `start()`. `config-reload-entry.test.ts` passes already: it pins the existing link from the watcher's event to `_onReload`.
 
 - [ ] **Step 7: Implement (server)**
 
@@ -14139,13 +12829,13 @@ Spec §6.2 (`fill`, its validation and resolution; `toolsFillFactories`), §3.10
 **Files:**
 - Modify: `packages/llm-agent-server-libs/src/smart-agent/profiles-config.ts` (`SmartServerFillConfig`; `SmartServerProfileConfig.fill?`)
 - Modify: `packages/llm-agent-server-libs/src/smart-agent/profiles-config-validator.ts` (`'fill'` in `PROFILE_FIELDS`; `checkFill`)
-- Modify: `packages/llm-agent-server-libs/src/smart-agent/resolve-collection-profiles.ts` (`ResolvedToolsProfile.fill?`; `ResolveCollectionProfilesInput.fillFactories?`; `resolveFill`)
-- Modify: `packages/llm-agent-server-libs/src/smart-agent/smart-server.ts` (`SmartServerConfig.toolsFillFactories?`; the resolver call; `withToolsStore` binds with the source; the worker check beside Task 23's D33 check)
+- Modify: `packages/llm-agent-server-libs/src/smart-agent/resolve-collection-profiles.ts` (`ResolvedToolsProfile.fill?`; `ResolveCollectionProfilesInput.fillFactories?` and `readFile?` — the file seam Task 22 no longer has since the intents file went, D50; `resolveFill`)
+- Modify: `packages/llm-agent-server-libs/src/smart-agent/smart-server.ts` (`SmartServerConfig.toolsFillFactories?`; the resolver call; `withToolsStore` binds with the source; the worker check right after Task 23's S8 check in `_buildInfra`)
 - Modify: `packages/llm-agent-server-libs/src/index.ts` (export `SmartServerFillConfig`)
 - Modify (append): `__tests__/profiles-config.test.ts`, `__tests__/resolve-collection-profiles.test.ts`, `__tests__/profile-fill-ready-clients.test.ts`
 
 **Interfaces:**
-- Consumes: `LiveToolsFill`, `ConsumerToolsFill` (Task 19); `ToolsCorpusLoader`, `PrebuiltToolsStore`, `parseToolsCorpus`, `buildToolsCorpus`, `deployToolsCorpus` (Task 19A); `bindToolsProfile`'s `source` (Task 19); Task 23's `withToolsStore` and D33 check; Task 23A's test helpers.
+- Consumes: `LiveToolsFill`, `ConsumerToolsFill` (Task 19); `ToolsCorpusLoader`, `PrebuiltToolsStore`, `parseToolsCorpus`, `buildToolsCorpus`, `deployToolsCorpus` (Task 19A); `bindToolsProfile`'s `source` (Task 19); Task 23's (synchronous) `withToolsStore` and its S8 check; Task 23A's test helpers.
 - Produces:
   ```ts
   // profiles-config.ts
@@ -14156,7 +12846,8 @@ Spec §6.2 (`fill`, its validation and resolution; `toolsFillFactories`), §3.10
   // SmartServerProfileConfig gains: fill?: SmartServerFillConfig
   // resolve-collection-profiles.ts
   // ResolvedToolsProfile gains: readonly fill?: IToolsFillSource   (absent → bindToolsProfile's default, live)
-  // ResolveCollectionProfilesInput gains: fillFactories?: Readonly<Record<string, () => IToolsFillSource>>
+  // ResolveCollectionProfilesInput gains: fillFactories?: Readonly<Record<string, () => IToolsFillSource>>;
+  //   readFile?: (path: string) => string   (test seam for the corpus file; absent → readFileSync(path, 'utf8'))
   // smart-server.ts — SmartServerConfig gains: toolsFillFactories?: Readonly<Record<string, () => IToolsFillSource>>
   ```
 
@@ -14307,7 +12998,7 @@ Expected: FAIL — `fill` is an unknown profile field; `ResolvedToolsProfile` ha
 
 `profiles-config.ts`: add `SmartServerFillConfig` (above) and `fill?: SmartServerFillConfig;` to `SmartServerProfileConfig`.
 
-`profiles-config-validator.ts`: `const PROFILE_FIELDS = ['variant', 'compose', 'intents', 'decomposer', 'smallSet', 'fill'];` and, called from `checkProfiles` for each profile entry `e` with `label = rag.profiles.<key>` (beside the `intents` check):
+`profiles-config-validator.ts`: `const PROFILE_FIELDS = ['variant', 'compose', 'decomposer', 'smallSet', 'fill'];` (no `intents` — removed, D50; Task 21 refuses a leftover `intents` key with its own message) and, called from `checkProfiles` for each profile entry `e` with `label = rag.profiles.<key>` (beside the `decomposer` check):
 ```ts
 function checkFill(label: string, v: unknown, storeType: unknown, issues: string[]): void {
   if (v == null) return;
@@ -14331,8 +13022,8 @@ function checkFill(label: string, v: unknown, storeType: unknown, issues: string
 (`storeType` = `isMap(rag.store) ? rag.store.type : undefined` — `checkProfiles` already receives `rag`.)
 
 `resolve-collection-profiles.ts`:
-- imports: `ConsumerToolsFill`, `LiveToolsFill`, `parseToolsCorpus`, `PrebuiltToolsStore`, `ToolsCorpusLoader` into the `@mcp-abap-adt/llm-agent-libs` value import; `IToolsFillSource` into the `@mcp-abap-adt/llm-agent` type import; `SmartServerFillConfig` into the `./profiles-config.js` type import.
-- `ResolvedToolsProfile` gains `readonly fill?: IToolsFillSource;` (doc: "where the store's records come from, spec §3.10; absent → live"); `ResolveCollectionProfilesInput` gains `fillFactories?: Readonly<Record<string, () => IToolsFillSource>>;`.
+- imports: `import { readFileSync } from 'node:fs';` (Task 22 has no file read any more — the intents file is gone, D50); `ConsumerToolsFill`, `LiveToolsFill`, `parseToolsCorpus`, `PrebuiltToolsStore`, `ToolsCorpusLoader` into the `@mcp-abap-adt/llm-agent-libs` value import; `IToolsFillSource` into the `@mcp-abap-adt/llm-agent` type import; `SmartServerFillConfig` into the `./profiles-config.js` type import.
+- `ResolvedToolsProfile` gains `readonly fill?: IToolsFillSource;` (doc: "where the store's records come from, spec §3.10; absent → live"); `ResolveCollectionProfilesInput` gains `fillFactories?: Readonly<Record<string, () => IToolsFillSource>>;` and `readFile?: (path: string) => string;` (doc: "reads `fill.corpus.file`; absent → `readFileSync(path, 'utf8')`"). At the top of `resolveCollectionProfiles`: `const readFile = input.readFile ?? ((p: string) => readFileSync(p, 'utf8'));`. Task 22's `ResolvedToolsProfile` is `{ key; profile?; variant?; poolItems? }`; this task adds `fill?`.
 - add:
   ```ts
   /** `fill` → ONE fill source instance, server-wide (spec §6.2, §3.10). Absent → undefined (live). */
@@ -14368,8 +13059,8 @@ function checkFill(label: string, v: unknown, storeType: unknown, issues: string
   ```
   (`IToolsFillSource` into the `@mcp-abap-adt/llm-agent` type import.)
 - the `resolveCollectionProfiles({ … })` call (Task 23) gains `fillFactories: this.cfg.toolsFillFactories,`.
-- in `withToolsStore`, the bind becomes `bindToolsProfile(p.profile, { key: 'tools', rag: store, companions }, p.fill).rag` — the main store and every worker store the server builds get the one configured source.
-- after Task 23's D33 check:
+- in `withToolsStore`, the bind becomes `bindToolsProfile(p.profile, { key: 'tools', rag: store }, p.fill).rag` — the main store and every worker store the server builds get the one configured source.
+- right after Task 23's S8 check in `_buildInfra`:
   ```ts
     // spec §6.2: a corpus / prebuilt store holds the SHARED catalog. A worker
     // with its own tools store AND its own clients has another catalog — refuse,
@@ -15042,8 +13733,8 @@ Expected: build and tests pass; the last grep prints nothing.
 git commit -m "refactor(llm-agent)!: delete the unexported, unwired IToolIndexingStrategy
 
 Replaced by collection profiles: OriginalToolIndexing → FacetedToolIndexer's full record;
-IntentToolIndexing → IntentRecordIndexer / IntentCompanionIndexer; SynonymToolIndexing is
-not ported (its verb synonyms are words the provider did not write).
+IntentToolIndexing is not ported (generated intents were measured and dropped, spec §2.1, D50);
+SynonymToolIndexing is not ported (its verb synonyms are words the provider did not write).
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_012KjevEeQGZMkWMfnupJ7Yd"
@@ -15107,7 +13798,7 @@ const outcomes = (m: InMemoryMetrics) => Object.fromEntries(m.snapshot().retriev
 function staged(rag: IRag, o: Partial<StagedRetrievalOptions>) {
   return new StagedRetrieval({
     name: 'test', storeKey: 'tools', pool: new ItemPool(10), maxRecordsPerItem: 3, canonicalKind: 'full',
-    sources: { sources: async (options) => [{ name: 'primary', rag, role: 'items', options }] },
+    sources: { sources: async (options) => [{ name: 'primary', rag, options }] },
     collapse: new MaxScoreCollapse(), ...o,
   });
 }
@@ -15782,7 +14473,6 @@ export const collectionProfileConformanceCases: readonly CollectionProfileConfor
         const g = await bound.get(ref, opts);
         assert.ok(g.ok && g.value);
         assert.equal(item.text, g.value.text, `${h.name}: ${ref.itemId} not hydrated from its canonical record`);
-        assert.notEqual(g.value.metadata.generated, true, `${h.name}: a generated record is canonical`);
       }
     },
   },
@@ -15920,7 +14610,6 @@ import {
   MaxScoreCollapse,
   mcpToolsVariants,
   SharedItemsProfile,
-  StaticIntentSource,
   SummaryFacet,
   TokenBudgetCut,
   ToolDefinitionSizeEstimator,
@@ -16007,7 +14696,6 @@ function toolsHarness(
   };
 }
 
-const intents = new StaticIntentSource({ read_file: ['open my notes needle'] });
 // Fakes for the shipped decision variants (F1: each is called with k below its default).
 const jev: IProbabilityDecision = {
   decide: async (req) => ({
@@ -16023,10 +14711,6 @@ const harnesses: CollectionProfileHarness<ToolItem>[] = [
   toolsHarness('variant faceted-cohere', 5, (o) => new ComposedToolsProfile({ ...mcpToolsVariants.facetedCohere({ relevanceDecision: cohere }).composition, ...o })),
   toolsHarness('variant faceted-jev', 5, (o) => new ComposedToolsProfile({ ...mcpToolsVariants.facetedJev({ probabilityDecision: jev }).composition, ...o })),
   toolsHarness('variant small-set-jev', 3, (o) => new ComposedToolsProfile({ ...mcpToolsVariants.smallSetJev({ probabilityDecision: jev, poolItems: 3 }).composition, ...o }), false),
-  toolsHarness('faceted + intent record', 8, (o) => {
-    const base = mcpToolsVariants.faceted({ intents: { record: intents } }).composition;
-    return new ComposedToolsProfile({ ...base, ...o });
-  }),
   toolsHarness('consumer-built (§7.9)', 5, (o) =>
     new ComposedToolsProfile({
       indexer: new FacetedToolIndexer([new SummaryFacet(), new ResourceFacet()]),
@@ -16084,7 +14768,7 @@ Run:
 npx tsc -b packages/llm-agent packages/llm-agent-libs
 node --import tsx/esm --test packages/llm-agent-libs/src/collections/__tests__/collection-profile-conformance.test.ts
 ```
-Expected: PASS for every harness (the four shipped variants, faceted + intents, the consumer-built one, shared items) — including "a caller k below the profile's own default cut" (F1) and the cleanup case (F3) where a harness supplies it. (Before Step 1's build the import fails — that is the red state.) If the token-budget case fails because a tool's definition exceeds 60 tokens, raise `budgetTokens` to just above the largest `definitionChars / 4` printed by the failure — the kit's bound is what is checked, not a number.
+Expected: PASS for every harness (the four shipped variants, the consumer-built one, shared items) — including "a caller k below the profile's own default cut" (F1) and the cleanup case (F3) where a harness supplies it. (Before Step 1's build the import fails — that is the red state.) If the token-budget case fails because a tool's definition exceeds 60 tokens, raise `budgetTokens` to just above the largest `definitionChars / 4` printed by the failure — the kit's bound is what is checked, not a number.
 
 - [ ] **Step 4: Commit**
 
@@ -16336,12 +15020,12 @@ Spec §14.3 (flags; any tools snapshot; the decision picked like `decision:` —
 - Modify: `tsconfig.typecheck.json` (`include`: `scripts/rag-eval/profile-arm.ts`, `test/repo/rag-eval-profile-arm.test.ts`)
 
 **Interfaces:**
-- Consumes: `mcpToolsVariants`, `ComposedToolsProfile`, facets, text composers, `EnumValueToolIndexer`, discriminators, `IntentRecordIndexer`, `IntentCompanionIndexer`, `StaticIntentSource`, `ItemPool`, `MaxScoreCollapse`, cuts (libs sources); `ProbabilityReranker`, `RelevanceReranker`, `TOOL_QUESTION` (`packages/llm-agent-reranker/src`); `vectorizeMcpTools` (the binding and its fill source read from the store, Task 19), `bindToolsProfile` (Tasks 15, 19 — every arm binds with the default `LiveToolsFill`: the harness measures retrieval over a store it fills itself, once per arm, so the live source is the right one; `ToolsCorpusLoader` / `PrebuiltToolsStore` are pinned by Task 19A, not measured here); `evaluateRetrieval` (Task 31); `TypeSafeDecisionModel` (constructed directly for `typesafe`, as `rag-eval.ts` does today), `buildCompositionDeps(…).makeRelevanceDecision` for `sap-aicore` (Task 24).
+- Consumes: `mcpToolsVariants`, `ComposedToolsProfile`, facets, text composers, `EnumValueToolIndexer`, discriminators, `ItemPool`, `MaxScoreCollapse`, cuts (libs sources); `ProbabilityReranker`, `RelevanceReranker`, `TOOL_QUESTION` (`packages/llm-agent-reranker/src`); `vectorizeMcpTools` (the binding and its fill source read from the store, Task 19), `bindToolsProfile` (Tasks 15, 19 — every arm binds with the default `LiveToolsFill`: the harness measures retrieval over a store it fills itself, once per arm, so the live source is the right one; `ToolsCorpusLoader` / `PrebuiltToolsStore` are pinned by Task 19A, not measured here); `evaluateRetrieval` (Task 31); `TypeSafeDecisionModel` (constructed directly for `typesafe`, as `rag-eval.ts` does today), `buildCompositionDeps(…).makeRelevanceDecision` for `sap-aicore` (Task 24).
 - Produces:
   ```ts
-  export interface ProfileArmFlags { variant?: string; indexer?: 'faceted' | 'enum-values'; facets?: string[]; text?: 'parameter-names' | 'enum-values' | 'schema'; discriminator?: string; maxValues?: number; intents?: 'off' | 'record' | 'companion'; intentsFile?: string; poolItems?: number; reranker?: 'none' | 'decision'; cut?: string; budgetTokens?: number }
-  export interface ProfileArmDeps { decisionProvider?: 'typesafe' | 'sap-aicore'; probabilityDecision?: () => Promise<IProbabilityDecision>; relevanceDecision?: () => Promise<IRelevanceDecision>; readFile?: (p: string) => string } // the decision --decision-provider built, of its kind
-  export function buildProfileArm(flags: ProfileArmFlags, deps: ProfileArmDeps): Promise<{ label: string; profile: ComposedToolsProfile | undefined; companions: string[] }>;
+  export interface ProfileArmFlags { variant?: string; indexer?: 'faceted' | 'enum-values'; facets?: string[]; text?: 'parameter-names' | 'enum-values' | 'schema'; discriminator?: string; maxValues?: number; poolItems?: number; reranker?: 'none' | 'decision'; cut?: string; budgetTokens?: number }
+  export interface ProfileArmDeps { decisionProvider?: 'typesafe' | 'sap-aicore'; probabilityDecision?: () => Promise<IProbabilityDecision>; relevanceDecision?: () => Promise<IRelevanceDecision> } // the decision --decision-provider built, of its kind
+  export function buildProfileArm(flags: ProfileArmFlags, deps: ProfileArmDeps): Promise<{ label: string; profile: ComposedToolsProfile | undefined }>;
   export function runProfileArm(arm: { label: string; profile: ComposedToolsProfile | undefined }, input: { tools: McpTool[]; cases: RetrievalCase[]; ks: number[]; makeStore: () => Promise<IRag>; queryEmbedder?: IQueryEmbedder }): Promise<RetrievalEvalReport & { label: string }>;
   ```
 
@@ -16429,7 +15113,6 @@ Expected: FAIL — module not found.
  * profile path as the server (vectorizeMcpTools on a store bound by bindToolsProfile) and measured by
  * evaluateRetrieval. Works on ANY tools snapshot — no server is special-cased.
  */
-import { readFileSync } from 'node:fs';
 import type {
   IItemCut,
   IItemIndexer,
@@ -16449,8 +15132,6 @@ import {
   EnumValueToolIndexer,
   FacetedToolIndexer,
   FixedItemsCut,
-  IntentCompanionIndexer,
-  IntentRecordIndexer,
   ItemPool,
   MaxScoreCollapse,
   mcpToolsVariants,
@@ -16460,7 +15141,6 @@ import {
   ParametersFacet,
   RequiredEnumDiscriminator,
   SchemaToolText,
-  StaticIntentSource,
   SummaryFacet,
   TokenBudgetCut,
 } from '../../packages/llm-agent-libs/src/collections/index.js';
@@ -16486,8 +15166,6 @@ export interface ProfileArmFlags {
   text?: 'parameter-names' | 'enum-values' | 'schema';
   discriminator?: string;
   maxValues?: number;
-  intents?: 'off' | 'record' | 'companion';
-  intentsFile?: string;
   poolItems?: number;
   /** decision = the reranker of --decision-provider's kind: ProbabilityReranker (Jev) or RelevanceReranker (Cohere). */
   reranker?: 'none' | 'decision';
@@ -16503,7 +15181,6 @@ export interface ProfileArmDeps {
   probabilityDecision?: () => Promise<IProbabilityDecision>;
   /** sap-aicore: SapAiCoreRelevanceDecision. */
   relevanceDecision?: () => Promise<IRelevanceDecision>;
-  readFile?: (path: string) => string;
 }
 
 type Kind = 'probability' | 'relevance';
@@ -16531,20 +15208,13 @@ const FACETS: Record<string, () => SummaryFacet | ParametersFacet | NameTailFace
 export async function buildProfileArm(
   f: ProfileArmFlags,
   deps: ProfileArmDeps,
-): Promise<{ label: string; profile: ComposedToolsProfile | undefined; companions: string[] }> {
-  const read = deps.readFile ?? ((p: string) => readFileSync(p, 'utf8'));
-  const intents =
-    f.intents && f.intents !== 'off'
-      ? new StaticIntentSource(JSON.parse(read(f.intentsFile ?? '')) as Record<string, string[]>)
-      : undefined;
-  const placement = intents ? (f.intents === 'record' ? { record: intents } : { companion: intents }) : undefined;
+): Promise<{ label: string; profile: ComposedToolsProfile | undefined }> {
   const need = async <T>(get: (() => Promise<T>) | undefined, what: string): Promise<T> => {
     if (!get) throw new Error(`${what} is not configured for this run`);
     return get();
   };
   if (f.variant) {
     const v = f.variant;
-    const opts = placement ? { intents: placement } : {};
     const wants = VARIANT_KIND[v];
     const have = deps.decisionProvider ? PROVIDER_KIND[deps.decisionProvider] : undefined;
     if (wants && have && have !== wants) {
@@ -16556,16 +15226,16 @@ export async function buildProfileArm(
       v === 'baseline'
         ? undefined
         : v === 'faceted'
-          ? mcpToolsVariants.faceted(opts)
+          ? mcpToolsVariants.faceted()
           : v === 'faceted-cohere'
-            ? mcpToolsVariants.facetedCohere({ ...opts, relevanceDecision: await relevance() })
+            ? mcpToolsVariants.facetedCohere({ relevanceDecision: await relevance() })
             : v === 'faceted-jev'
-              ? mcpToolsVariants.facetedJev({ ...opts, probabilityDecision: await probability() })
+              ? mcpToolsVariants.facetedJev({ probabilityDecision: await probability() })
               : v === 'small-set-jev'
-                ? mcpToolsVariants.smallSetJev({ ...opts, probabilityDecision: await probability(), poolItems: f.poolItems ?? 0 })
+                ? mcpToolsVariants.smallSetJev({ probabilityDecision: await probability(), poolItems: f.poolItems ?? 0 })
                 : undefined;
     if (profile === undefined && v !== 'baseline') throw new Error(`unknown variant "${v}"`);
-    return { label: `variant=${v}`, profile, companions: placement && 'companion' in placement ? ['intents'] : [] };
+    return { label: `variant=${v}`, profile };
   }
   const facets = (f.facets ?? []).map((n) => {
     const make = FACETS[n];
@@ -16583,11 +15253,6 @@ export async function buildProfileArm(
       maxValues: f.maxValues ?? 0,
     });
   }
-  const indexing = !placement
-    ? { indexer: base }
-    : 'record' in placement
-      ? { indexer: new IntentRecordIndexer(base, placement.record) }
-      : { indexer: base, companions: { intents: new IntentCompanionIndexer(placement.companion) } };
   let reranker: IReranker | undefined;
   if (f.reranker === 'decision') {
     // The reranker of --decision-provider's kind (spec §6.2): Jev → probability, Cohere → relevance.
@@ -16605,7 +15270,7 @@ export async function buildProfileArm(
   else if (kind === 'token-budget') cut = new TokenBudgetCut({ budgetTokens: Number(n ?? f.budgetTokens) });
   else if (kind !== 'top-items') throw new Error(`unknown cut "${f.cut}"`);
   const profile = new ComposedToolsProfile({
-    ...indexing,
+    indexer: base,
     pool: new ItemPool(f.poolItems ?? 30),
     collapse: new MaxScoreCollapse(),
     ...(reranker ? { rerank: { reranker, onFailure: 'stage1' as const } } : {}),
@@ -16617,13 +15282,12 @@ export async function buildProfileArm(
     `pool=${f.poolItems ?? 30}`,
     `reranker=${f.reranker ?? 'none'}`,
     `cut=${f.cut ?? 'top-items'}`,
-    `intents=${f.intents ?? 'off'}`,
   ].join(' ');
-  return { label, profile, companions: 'companions' in indexing ? ['intents'] : [] };
+  return { label, profile };
 }
 
 export async function runProfileArm(
-  arm: { label: string; profile: ComposedToolsProfile | undefined; companions?: string[] },
+  arm: { label: string; profile: ComposedToolsProfile | undefined },
   input: {
     tools: McpTool[];
     cases: RetrievalCase[];
@@ -16639,10 +15303,8 @@ export async function runProfileArm(
     },
   } as unknown as IMcpClient;
   const raw = await input.makeStore();
-  const companions: Record<string, IRag> = {};
-  for (const c of arm.companions ?? []) companions[c] = await input.makeStore();
   // bindToolsProfile attaches the binding to the store: vectorizeMcpTools reads it from there (spec §6.3 rule 1, D34).
-  const store = arm.profile ? bindToolsProfile(arm.profile, { key: 'tools', rag: raw, companions }).rag : raw;
+  const store = arm.profile ? bindToolsProfile(arm.profile, { key: 'tools', rag: raw }).rag : raw;
   await vectorizeMcpTools([client], store, new NoopRequestLogger(), undefined);
   const report = await evaluateRetrieval({
     store,
@@ -16658,7 +15320,7 @@ export async function runProfileArm(
 
 Edits to `rag-eval.ts`:
 - `interface Case { query: string; expect: string[]; required?: string[][] }` (an optional `required` field in the queries file — AND of OR-groups).
-- add to the `parseArgs` options: `variant`, `indexer`, `facets`, `text` (`parameter-names` | `enum-values` | `schema`), `discriminator`, `'max-values'`, `intents`, `'intents-file'`, `'pool-items'`, `cut`, `'budget-tokens'`, `'decision-provider'` (`typesafe` | `sap-aicore`, default `typesafe`), `'rerank-deployment'`, `'rerank-model'`, `'rerank-credential-ref'` (all `{ type: 'string' }`), and allow `--reranker none|decision` alongside the existing values (`decision` = Jev or Cohere by `--decision-provider`).
+- add to the `parseArgs` options: `variant`, `indexer`, `facets`, `text` (`parameter-names` | `enum-values` | `schema`), `discriminator`, `'max-values'`, `'pool-items'`, `cut`, `'budget-tokens'`, `'decision-provider'` (`typesafe` | `sap-aicore`, default `typesafe`), `'rerank-deployment'`, `'rerank-model'`, `'rerank-credential-ref'` (all `{ type: 'string' }`), and allow `--reranker none|decision` alongside the existing values (`decision` = Jev or Cohere by `--decision-provider`).
 - one decision per run, picked like the server's `decision:` section, and of its provider's kind: `--decision-provider typesafe` → the existing `TypeSafeDecisionModel` construction (`staticApiKey(process.env.DECISION_API_KEY ?? '')`), a probability decision; `--decision-provider sap-aicore` → `buildCompositionDeps(process.env).makeRelevanceDecision({ provider: 'sap-aicore', deploymentId: <--rerank-deployment>, model: <--rerank-model>, ...(credentialRef ? { credentialRef } : {}) })` (default ref `DECISION` → `DECISION_SERVICE_KEY`; a missing `--rerank-deployment` / `--rerank-model` skips the arm with a printed reason, like a missing key), a relevance decision. The existing `buildReranker` for `--reranker decision` arms builds `ProbabilityReranker` or `RelevanceReranker` by that kind (add `RelevanceReranker` to the `packages/llm-agent-reranker/src/index.js` import Task 4B already switched), so the 30.1.0 rerank arms can be measured with Cohere too.
 - when `--variant` or `--indexer` is given: build `ProfileArmDeps` — `decisionProvider` and the decision of its kind (`probabilityDecision` or `relevanceDecision`, lazily) — then, per matrix entry, call `runProfileArm(await buildProfileArm(flags, deps), { tools, cases, ks: [...REPORT_KS], makeStore: <the entry's existing makeRag path>, queryEmbedder: <the entry's resolved embedder> })` and print one row per k: `required-recall`, `avg items`, `avg prompt tokens`, `MRR`. The existing arms and their output are unchanged when no profile flag is given.
 
@@ -16741,10 +15403,8 @@ interface IBoundCollection<TItem> {
 - **Replacing an item is not atomic** (several writes, no locks): serialize concurrent writers of one
   item yourself. Readers stay safe through hydration.
 - **A failed cleanup is never reported as indexed:** if a stale record's delete fails, the item lands in
-  `failedItems` (`cleanup-failed: …`), the id stays on the canonical record (`staleRecordIds` /
-  `staleCompanionRecordIds`), and the next `index` or `remove` retries it.
-- **Companion records** (e.g. intents in their own store) are listed on the canonical record
-  (`companionRecordIds`), so `remove` and re-indexing clear them too.
+  `failedItems` (`cleanup-failed: …`), the id stays on the canonical record (`staleRecordIds`), and
+  the next `index` or `remove` retries it.
 - **`IndexReport.notes`** carries what an indexer declined to guess (e.g. `ambiguous-discriminator`);
   write your own through the optional `IIndexNoteSource` capability.
 
@@ -16764,10 +15424,8 @@ most 2. The provider text of the `full` record is a strategy too (`FacetedToolIn
 were within noise of the default on one coarse server (see PERFORMANCE.md).
 
 Each default cites its measurement in the source and in [PERFORMANCE.md](PERFORMANCE.md#collection-profiles).
-Intents are an add-on: `{ intents: { record: source } }` (own record kind) or `{ intents: { companion: source } }`
-(own store, bind with `companions: { intents: store }`). A companion store belongs to ONE binding: two
-catalogs that share one would overwrite and delete each other's intent records (ids carry no binding),
-so give every binding its own — the profile instance itself can be shared.
+Every record is built from what the tool provider exports (name, description, input schema) — no
+generated text. A weak description is fixed at its source.
 
 Compose your own — any strategy combines with any other:
 
@@ -16858,7 +15516,8 @@ builder.withToolsProfile(myTools);
   // build step (CI): the profile's own indexer + your document embedder
   const corpus = await buildToolsCorpus({ profile, embedder, identity: { profile: 'faceted@1', embedder: 'te3-small' }, items });
   writeFileSync('dist/tools-corpus.json', JSON.stringify(corpus));
-  // deploy step (persistent store): precomputed vectors, in place, idempotent
+  // deploy step (persistent store): precomputed vectors; an unchanged corpus writes nothing, any other
+  // deletes every record the store lists and writes the whole corpus (no per-record diffing)
   const report = await deployToolsCorpus(parseToolsCorpus(readFileSync('dist/tools-corpus.json', 'utf8')), { key: 'tools', rag: qdrantRag });
   ```
 
@@ -16872,8 +15531,7 @@ builder.withToolsProfile(myTools);
   store is filled **by its construction**: at startup, and for its new store when `PUT /v1/config`
   or a hot reload rebuilds the worker; a per-session re-wire never fills. It is filled from its own clients, or from
   the shared clients with the same slot descriptors and namespace as the main store, so its
-  records carry the names its agent can call. Each store with its own binding gets its own
-  companion store. A client that fails to list is counted, never a silent empty store: for the
+  records carry the names its agent can call. A client that fails to list is counted, never a silent empty store: for the
   main store, `/health` shows `toolCatalog.clientFailures` and `degraded`. `/health` reports the
   main catalog only; a worker's fill is logged.
 
@@ -16937,7 +15595,7 @@ it — that a failed stale delete is reported `cleanup-failed` and retried.
 
 The unexported, unwired `IToolIndexingStrategy` is deleted:
 `OriginalToolIndexing` → `FacetedToolIndexer`'s `full` record (or no profile at all);
-`IntentToolIndexing` → `IntentRecordIndexer` / `IntentCompanionIndexer` with `LlmIntentSource` or `StaticIntentSource`;
+`IntentToolIndexing` is not ported (generated intents were measured and dropped — see PERFORMANCE.md);
 `SynonymToolIndexing` is not ported (its synonyms were not the provider's words).
 ````
 
@@ -16967,11 +15625,11 @@ not a benchmark; measure your own catalog with `scripts/rag-eval` / `evaluateRet
 | per-value records on `compact`: worse (non-English 0.857 vs 1.000) | `EnumValueToolIndexer` in no default |
 | token budget as the main cut: 0.910 vs 0.970 for k=3 at equal tokens | `TokenBudgetCut` is a guard, not a main cut |
 | an LLM as reranker | no gain, 6–10k tokens per query |
+| LLM-generated intents (own record, inside `full`, or absent) | within noise without a reranker, no better with one; the reranker reads provider text better without them; they cost LLM generation and audits and can mislead (`CreateDdl` got "create database view", a different object type) — dropped: records come only from the provider |
 
 Knobs, all chosen by the strategies you inject: pool size (`ItemPool(n)`), cut (`TopItemsCut`,
 `FixedItemsCut`, `ScoreFloorCut`, `TokenBudgetCut` — every one capped by the caller's k), provider
-text (`ParameterNamesToolText` default), reranker, intents (add-on for stage 1 only — within noise
-once a reranker runs). The library picks no number for you.
+text (`ParameterNamesToolText` default), reranker. The library picks no number for you.
 ````
 
 Also in `docs/PERFORMANCE.md` `### Retrieval strategy per store (rag.retrieval)` (~line 105): add a final paragraph pointing to `rag.profiles` for multi-record tools stores and stating the two are exclusive per key.
@@ -16980,7 +15638,7 @@ Also in `docs/PERFORMANCE.md` `### Retrieval strategy per store (rag.retrieval)`
 
 - In `### 4. RAG Layer` core contracts, replace the `IToolIndexingStrategy` bullet with:
   `- ICollectionProfile, IBoundCollection, IItemIndexer, ICandidatePool, ICollapseRule, IItemCut, IItemSizeEstimator, IQueryDecomposer, ISourceSelector, IRetrievalMetrics, IRetrievalEmbedderOwner — collection profiles: how one kind of collection is filled and searched (see INTEGRATION.md#collection-profiles)`.
-- Replace the `Tool indexing strategies (IToolIndexingStrategy):` list with a `Collection profiles (llm-agent-libs, src/collections/):` list: `StagedRetrieval`, `ComposedToolsProfile` + `mcpToolsVariants` (baseline / faceted / faceted-cohere / faceted-jev / small-set-jev), `SharedItemsProfile`, the generic strategies (`ItemPool`, `MaxScoreCollapse`, the four cuts, size estimators, facets, discriminators, intent indexers).
+- Replace the `Tool indexing strategies (IToolIndexingStrategy):` list with a `Collection profiles (llm-agent-libs, src/collections/):` list: `StagedRetrieval`, `ComposedToolsProfile` + `mcpToolsVariants` (baseline / faceted / faceted-cohere / faceted-jev / small-set-jev), `SharedItemsProfile`, the generic strategies (`ItemPool`, `MaxScoreCollapse`, the four cuts, size estimators, facets, discriminators).
 - In the retrieval-strategy section (~lines 228–275): one paragraph — a profiled `tools` store is a `StrategyRag` like any explicit strategy, so `RerankHandler` skips it; `rag.profiles` is server-wide like `rag.retrieval`, rejected in worker configs, not hot-reloadable; the server binds at store creation and the builder reuses the binding.
 - In `## Architecture Principles` check (if the page keeps a per-feature compliance list): add the §16 summary of the spec in five lines (built on `IRetrievalStrategy`/`StrategyRag`; app is the example via YAML; interfaces; small new interfaces; everything a strategy; small modules).
 
@@ -17008,8 +15666,6 @@ rag:
   profiles:                       # only the key `tools` in this release
     tools:
       variant: faceted-cohere     # baseline | faceted | faceted-cohere | faceted-jev | small-set-jev | a registered name
-      intents:
-        record: { file: ./tool-intents.json }   # { "<tool name>": ["intent", …] }
 ```
 
 Coarse / small tool set (Jev over the whole set, 3 tools):
@@ -17063,11 +15719,8 @@ rag:
   A client whose `listTools()` fails shows in `/health` (`toolCatalog.clientFailures`, `degraded`).
   A worker with its own `rag:` gets its store filled when the worker is built, so after `PUT /v1/config`
   or a hot reload its rebuilt store is filled too; its result is logged, not in `/health`. When an MCP
-  connection reports changed tools, the bound store is re-indexed through the profile.
-- `intents.companion.store`: the server builds one companion store per tools store it binds (the main
-  one and each worker's own), so catalogs never share intent records. A persistent companion store
-  (`qdrant`, `pg-vector`, `hana`) names one collection, so with a worker that has its own `rag:` it is
-  refused at startup — use `in-memory`, `intents.record`, or bind that worker's store in code.
+  connection reports changed tools, a bound store is not written (spec D46) — a runtime-plugged MCP
+  server is your pipeline's to fill.
 - `rag.profiles` is server-wide; a worker config must not declare it. In this release only the key
   `tools` (the server's own tools store) is accepted; any other key is refused at startup — bind other
   stores in code (`profile.bind({ key, rag })` + `builder.withRetrievalStrategy(key, bound.retrieval)`).
@@ -17099,7 +15752,7 @@ And add a programmatic snippet (`builder.withToolsProfile(mcpToolsVariants.facet
 
 ### Switching a profile on a persistent tools store
 
-Turning a profile on, off, or changing its variant / intent placement on a persistent store (Qdrant,
+Turning a profile on, off, or changing its variant on a persistent store (Qdrant,
 pg-vector, HANA) needs a **fresh collection** (redeploy), like an embedder change: profile records and
 30.1.0 records sit side by side otherwise. Every record carries `metadata.profile` for diagnosis.
 In-memory stores are rebuilt every boot and need nothing.
@@ -17107,7 +15760,8 @@ In-memory stores are rebuilt every boot and need nothing.
 ### `prebuilt tools store …: no deployed corpus` / `… incompatible` at startup
 
 The store is bound with `fill: { prebuilt: … }` but your deploy step has not written it
-(`deployToolsCorpus`), was interrupted (`a deploy is in progress or was interrupted` — rerun it), or
+(`deployToolsCorpus`), was interrupted (`a deploy is in progress or was interrupted` — rerun it: a
+rerun deletes every record the store lists and writes the whole corpus again), or
 wrote a corpus built with another profile or embedder name (`incompatible — embedder "…" ≠ expected
 "…"`). Rerun the deploy step with the corpus your build step made, and use the same `profile` /
 `embedder` names in the YAML. `tools corpus: incompatible …` is the same check for `fill: { corpus: … }`.
@@ -17115,7 +15769,7 @@ wrote a corpus built with another profile or embedder name (`incompatible — em
 
 - [ ] **Step 6: `docs/DEPLOYMENT.md`, `docs/SECURITY_THREAT_MODEL.md`, `docs/QUICK_START.md`**
 
-- `DEPLOYMENT.md` `## Per-store reranking (rag.retrieval)` (~line 400): next to the TypeSafe paragraph, add Cohere on SAP AI Core — `decision.provider: sap-aicore` (a relevance decision; `reranker: decision` then builds a `RelevanceReranker`) with `deploymentId`, `model`, `resourceGroup?`; the credential is a SAP AI Core **service key** in `DECISION_SERVICE_KEY` (or `<REF>_SERVICE_KEY` with `decision.credentialRef`, e.g. `AICORE` to share the LLM's account), exchanged for a bearer token by `sap-aicore-auth`; one `/rerank` call per batch (48000 estimated tokens by default — ≤ 30 tools is one call); `question` / `task` are refused with it. Then a sub-section `### Collection profiles (rag.profiles)` — only the key `tools`, server-wide, not hot-reloadable, worker configs rejected, a named variant needs a decision of its kind, `small-set-jev` startup check, the fresh-collection rule for persistent stores, and one companion store per bound tools store (a persistent companion store with a worker that has its own `rag:` is refused). A custom composition root that serves Cohere supplies `BuildAgentDeps.makeRelevanceDecision`. Then `### The tools corpus — build step and deploy step`: TL;DR table (build → `buildToolsCorpus` in CI; deploy → `deployToolsCorpus` into the persistent store, idempotent, a service record `tools-corpus` with the fingerprint and corpus hash; run time → `fill: { prebuilt: … }`, or `fill: { corpus: { file } }` for an in-memory store), the two script sketches of spec §6.5, the rule that the `profile` / `embedder` names match across build, deploy and YAML, and that the process never writes a prebuilt store (a changed tool list waits for the next build / deploy).
+- `DEPLOYMENT.md` `## Per-store reranking (rag.retrieval)` (~line 400): next to the TypeSafe paragraph, add Cohere on SAP AI Core — `decision.provider: sap-aicore` (a relevance decision; `reranker: decision` then builds a `RelevanceReranker`) with `deploymentId`, `model`, `resourceGroup?`; the credential is a SAP AI Core **service key** in `DECISION_SERVICE_KEY` (or `<REF>_SERVICE_KEY` with `decision.credentialRef`, e.g. `AICORE` to share the LLM's account), exchanged for a bearer token by `sap-aicore-auth`; one `/rerank` call per batch (48000 estimated tokens by default — ≤ 30 tools is one call); `question` / `task` are refused with it. Then a sub-section `### Collection profiles (rag.profiles)` — only the key `tools`, server-wide, not hot-reloadable, worker configs rejected, a named variant needs a decision of its kind, `small-set-jev` startup check, the fresh-collection rule for persistent stores. A custom composition root that serves Cohere supplies `BuildAgentDeps.makeRelevanceDecision`. Then `### The tools corpus — build step and deploy step`: TL;DR table (build → `buildToolsCorpus` in CI; deploy → `deployToolsCorpus` into the persistent store: an unchanged corpus (finalized, same corpus hash) writes nothing; any other is written in full — a `pending` service record first, then every listed record deleted, the whole corpus written, the record finalized (`written`, `deleted` in the report; no per-record diffing); a service record `tools-corpus` with the fingerprint, the corpus hash and the ids; run time → `fill: { prebuilt: … }`, or `fill: { corpus: { file } }` for an in-memory store), the two script sketches of spec §6.5, the rule that the `profile` / `embedder` names match across build, deploy and YAML, and that the process never writes a prebuilt store (a changed tool list waits for the next build / deploy).
 - `SECURITY_THREAT_MODEL.md`, AS-7 (external rerankers): add Cohere on SAP AI Core — `decision.provider: sap-aicore` (for `faceted-cohere`, `compose` with `reranker: decision`, or `rag.retrieval` with `reranker: decision`) sends the query and the candidate tool texts to the SAP AI Core deployment named in `decision:`; opt-in. Add: shared items store whatever the writer puts in `text` / `data`; redaction is the writer's; user partitions are read with the request's `userId` and skipped without one.
 - `QUICK_START.md` "Optional: per-store reranking": one short paragraph + link to EXAMPLES `#collection-profiles-ragprofiles` for multi-record tools stores.
 
@@ -17130,7 +15784,7 @@ wrote a corpus built with another profile or embedder name (`incompatible — em
   and reword the `typesafe-decision` row: "Probability decision provider — TypeSafe Jev (`IProbabilityDecision`)".
 - `README.md` `### Decision models` (~line 148): two sentences + the YAML lines — a probability and a relevance are different decisions; ONE `decision:` section, the provider decides the kind: `typesafe` (Jev, probability → `ProbabilityReranker`) or `sap-aicore` (Cohere Rerank on SAP AI Core, relevance → `RelevanceReranker`; `deploymentId`, `model`, `resourceGroup?`; default ref `DECISION` → `DECISION_SERVICE_KEY`). Either serves `reranker: decision` in `rag.retrieval` and the decision variants of `rag.profiles`.
 - `packages/llm-agent/README.md`: list `IProbabilityDecision` (was `IDecisionModel`, kept as a deprecated alias) and `IRelevanceDecision` (+ `RelevanceRequest`, `RelevanceResult`, `RelevanceScore`), and the new contracts (`ICollectionProfile`, `IToolTextComposer`, `IBoundCollection`, `IItemIndexer`, `IIndexNoteSource`, `ISizeBoundedCut`, `recordId`, `RecordOwner`, `ToolItem`, `SharedItem`, `IRetrievalMetrics`, `IRetrievalEmbedderOwner`, `retrievalEmbedderOf`, `skillNameFromRecord`) and the `./testing/collection-profile-conformance` entry.
-- `packages/llm-agent-libs/README.md`: add to the export list `StagedRetrieval`, `ComposedToolsProfile`, `mcpToolsVariants`, `SharedItemsProfile`, `bindToolsProfile`, `toolsBindingOf`, `FacetedToolIndexer`, `SummaryFacet`, `ParametersFacet`, `NameTailFacet`, `EnumValueToolIndexer`, `RequiredEnumDiscriminator`, `NamedDiscriminator`, `IntentRecordIndexer`, `IntentCompanionIndexer`, `StaticIntentSource`, `LlmIntentSource`, `ItemPool`, `MaxScoreCollapse`, `TopItemsCut`, `FixedItemsCut`, `ScoreFloorCut`, `TokenBudgetCut`, `ToolDefinitionSizeEstimator`, `CharsPerTokenEstimator`, `ParameterNamesToolText`, `EnumValuesToolText`, `SchemaToolText`, `fullToolText`, `toolItemFromTool`, `fillToolsBinding`, `LiveToolsFill`, `ToolsCorpusLoader`, `PrebuiltToolsStore`, `ConsumerToolsFill`, `buildToolsCorpus`, `parseToolsCorpus`, `deployToolsCorpus`, `TOOLS_CORPUS_RECORD_ID`, `checkRerankOutput`, `wrapProbabilityDecision`, `wrapRelevanceDecision`; `SmartAgentBuilder.withToolsProfile`; `testing`: `evaluateRetrieval`. State that the rerankers moved to `@mcp-abap-adt/llm-agent-reranker` and the libs names (`DecisionReranker`, `LlmReranker`, …, `wrapDecisionModel`) are deprecated re-exports until the next major.
+- `packages/llm-agent-libs/README.md`: add to the export list `StagedRetrieval`, `ComposedToolsProfile`, `mcpToolsVariants`, `SharedItemsProfile`, `bindToolsProfile`, `toolsBindingOf`, `FacetedToolIndexer`, `SummaryFacet`, `ParametersFacet`, `NameTailFacet`, `EnumValueToolIndexer`, `RequiredEnumDiscriminator`, `NamedDiscriminator`, `ItemPool`, `MaxScoreCollapse`, `TopItemsCut`, `FixedItemsCut`, `ScoreFloorCut`, `TokenBudgetCut`, `ToolDefinitionSizeEstimator`, `CharsPerTokenEstimator`, `ParameterNamesToolText`, `EnumValuesToolText`, `SchemaToolText`, `fullToolText`, `toolItemFromTool`, `fillToolsBinding`, `LiveToolsFill`, `ToolsCorpusLoader`, `PrebuiltToolsStore`, `ConsumerToolsFill`, `buildToolsCorpus`, `parseToolsCorpus`, `deployToolsCorpus`, `TOOLS_CORPUS_RECORD_ID`, `checkRerankOutput`, `wrapProbabilityDecision`, `wrapRelevanceDecision`; `SmartAgentBuilder.withToolsProfile`; `testing`: `evaluateRetrieval`. State that the rerankers moved to `@mcp-abap-adt/llm-agent-reranker` and the libs names (`DecisionReranker`, `LlmReranker`, …, `wrapDecisionModel`) are deprecated re-exports until the next major.
 - `packages/llm-agent-server-libs/README.md`: `rag.profiles` (key `tools`, `compose.text`), `decision.provider: sap-aicore` (a relevance decision, built by the new optional `BuildAgentDeps.makeRelevanceDecision` seam — a custom composition root that serves Cohere supplies it), the probability seam `BuildAgentDeps.makeProbabilityDecision` (was `makeDecisionModel`, a deprecated alias until the next major; both supplied → startup error), `DECISION_KINDS`, `toolsVariantFactories` / `toolsStrategyFactories` (incl. `texts`), `resolveCollectionProfiles`.
 - `packages/llm-agent-server/README.md`: the binary supplies `makeProbabilityDecision` (TypeSafe, was `makeDecisionModel`) and `makeRelevanceDecision`; `makeRelevanceDecision` builds `SapAiCoreRelevanceDecision` for `decision.provider: sap-aicore` (default credential ref `DECISION` → `DECISION_SERVICE_KEY`, a SAP AI Core service key); it ships `@mcp-abap-adt/sap-aicore-decision` and `@mcp-abap-adt/llm-agent-reranker`.
 - `packages/typesafe-decision/README.md`: `TypeSafeDecisionModel` implements `IProbabilityDecision` (the old name `IDecisionModel` is a deprecated alias of the same type); Jev is the probability decision, Cohere on SAP AI Core (`@mcp-abap-adt/sap-aicore-decision`) the relevance one; the reranker is `ProbabilityReranker` from `@mcp-abap-adt/llm-agent-reranker`.
@@ -17158,8 +15812,9 @@ git grep -n "IToolIndexingStrategy\|OriginalToolIndexing\|SynonymToolIndexing\|I
 git grep -n "collection-profiles\|#collection-profiles" -- README.md docs | head
 git grep -n -w "IDecisionModel\|DecisionReranker\|DecisionRerankerOptions\|wrapDecisionModel\|DECISION_RERANK_DEFAULT_TASK\|DECISION_RERANK_DEFAULT_CRITERIA\|SapAiCoreDecisionModel\|makeDecisionModel\|createMakeDecisionModel" -- README.md CLAUDE.md docs examples scripts 'packages/*/README.md' ':!docs/superpowers' ':!**/CHANGELOG.md'
 git grep -n -i "within one call\|one call by default" -- README.md CLAUDE.md docs examples 'packages/*/README.md' ':!docs/superpowers'
+git grep -n "IntentRecordIndexer\|IntentCompanionIndexer\|IToolIntentSource\|StaticIntentSource\|LlmIntentSource\|companionRecordIds\|companionStores\|intents:" -- README.md CLAUDE.md docs examples scripts 'packages/*/README.md' ':!docs/superpowers'
 ```
-Expected: the first prints nothing outside `CHANGELOG.md` history; the second shows the new anchors are linked; the third prints only lines that say the name is a deprecated alias (and nothing for `SapAiCoreDecisionModel`, which was never released, or `createMakeDecisionModel`, which was internal); the fourth prints nothing (relevance scores are comparable for the same query and model, D28). Open each linked anchor once to confirm it resolves (`## Collection profiles` → `#collection-profiles`; `### Collection profiles (\`rag.profiles\`)` → `#collection-profiles-ragprofiles`).
+Expected: the first prints nothing outside `CHANGELOG.md` history and the `### Migrating from IToolIndexingStrategy` section of `docs/INTEGRATION.md`; the fifth prints nothing (intents and companion stores were removed, spec D50); the second shows the new anchors are linked; the third prints only lines that say the name is a deprecated alias (and nothing for `SapAiCoreDecisionModel`, which was never released, or `createMakeDecisionModel`, which was internal); the fourth prints nothing (relevance scores are comparable for the same query and model, D28). Open each linked anchor once to confirm it resolves (`## Collection profiles` → `#collection-profiles`; `### Collection profiles (\`rag.profiles\`)` → `#collection-profiles-ragprofiles`).
 
 - [ ] **Step 10: Commit**
 
@@ -17187,15 +15842,15 @@ Spec §13. No version heading and no bump — the entry goes under `## [Unreleas
 ```markdown
 ### Added
 
-- **Collection profiles** — how one kind of collection is filled AND searched, chosen by the consumer as injected strategies. `@mcp-abap-adt/llm-agent`: `ICollectionProfile`, `IBoundCollection`, `IItemIndexer`, `IndexReport`, `RecordDraft` / `IndexedRecord`, `RecordOwner`, `ItemRef`, `recordId` (owner-scoped physical ids, `h:`+sha256 above 200 characters), `ICandidatePool`, `ICollapseRule`, `IItemCut`, `IItemSizeEstimator`, `ISizeBoundedCut` (+ `isSizeBoundedCut`), `IIndexNoteSource` (+ `isIndexNoteSource`, `IndexNote`), `IQueryDecomposer`, `ISourceSelector`, `RetrievalSource`, `ToolItem`, `IToolFacet`, `IDiscriminatorSelector`, `IToolIntentSource`, `SharedItem`, `ISharedItemGroups`, `SharedItemsStores`, `IRetrievalMetrics` (+ `isRetrievalMetrics`), `IRetrievalEmbedderOwner` (+ `retrievalEmbedderOf`), `skillNameFromRecord`; conformance kit `@mcp-abap-adt/llm-agent/testing/collection-profile-conformance`. `@mcp-abap-adt/llm-agent-libs`: `StagedRetrieval` (an `IRetrievalStrategy`: candidates counted in items → collapse → reranker on provider text → hydration from the canonical record → one cut), `ComposedToolsProfile`, `mcpToolsVariants` (`baseline`, `faceted`, `faceted-cohere`, `faceted-jev`, `small-set-jev`), `SharedItemsProfile`, `bindToolsProfile` / `toolsBindingOf`, `fillToolsBinding` (the server fills a bound `rag.profiles.tools` from ready clients too, spec §6.3; a tools store is filled **once, when it is created** — at startup, or a worker's new store after `PUT /v1/config` or hot reload — and never refilled while running; every write reads the binding and its fill source from the store), the strategies (`ItemPool`, `MaxScoreCollapse`, `TopItemsCut`, `FixedItemsCut`, `ScoreFloorCut`, `TokenBudgetCut`, `ToolDefinitionSizeEstimator`, `CharsPerTokenEstimator`, `FacetedToolIndexer`, `SummaryFacet`, `ParametersFacet`, `NameTailFacet` (opt-in), `EnumValueToolIndexer`, `RequiredEnumDiscriminator`, `NamedDiscriminator`, `IntentRecordIndexer`, `IntentCompanionIndexer`, `StaticIntentSource`, `LlmIntentSource`), `checkRerankOutput`, `SmartAgentBuilder.withToolsProfile`, and `evaluateRetrieval` in `/testing`. See README "RAG is a composition", `docs/INTEGRATION.md#collection-profiles`, `docs/PERFORMANCE.md#collection-profiles`.
+- **Collection profiles** — how one kind of collection is filled AND searched, chosen by the consumer as injected strategies. `@mcp-abap-adt/llm-agent`: `ICollectionProfile`, `IBoundCollection`, `IItemIndexer`, `IndexReport`, `RecordDraft` / `IndexedRecord`, `RecordOwner`, `ItemRef`, `recordId` (owner-scoped physical ids, `h:`+sha256 above 200 characters), `ICandidatePool`, `ICollapseRule`, `IItemCut`, `IItemSizeEstimator`, `ISizeBoundedCut` (+ `isSizeBoundedCut`), `IIndexNoteSource` (+ `isIndexNoteSource`, `IndexNote`), `IQueryDecomposer`, `ISourceSelector`, `RetrievalSource`, `ToolItem`, `IToolFacet`, `IDiscriminatorSelector`, `SharedItem`, `ISharedItemGroups`, `SharedItemsStores`, `IRetrievalMetrics` (+ `isRetrievalMetrics`), `IRetrievalEmbedderOwner` (+ `retrievalEmbedderOf`), `skillNameFromRecord`; conformance kit `@mcp-abap-adt/llm-agent/testing/collection-profile-conformance`. `@mcp-abap-adt/llm-agent-libs`: `StagedRetrieval` (an `IRetrievalStrategy`: candidates counted in items → collapse → reranker on provider text → hydration from the canonical record → one cut), `ComposedToolsProfile`, `mcpToolsVariants` (`baseline`, `faceted`, `faceted-cohere`, `faceted-jev`, `small-set-jev`), `SharedItemsProfile`, `bindToolsProfile` / `toolsBindingOf`, `fillToolsBinding` (the server fills a bound `rag.profiles.tools` from ready clients too, spec §6.3; a tools store is filled **once, when it is created** — at startup, or a worker's new store after `PUT /v1/config` or hot reload — and never refilled while running; every write reads the binding and its fill source from the store), the strategies (`ItemPool`, `MaxScoreCollapse`, `TopItemsCut`, `FixedItemsCut`, `ScoreFloorCut`, `TokenBudgetCut`, `ToolDefinitionSizeEstimator`, `CharsPerTokenEstimator`, `FacetedToolIndexer`, `SummaryFacet`, `ParametersFacet`, `NameTailFacet` (opt-in), `EnumValueToolIndexer`, `RequiredEnumDiscriminator`, `NamedDiscriminator`), `checkRerankOutput`, `SmartAgentBuilder.withToolsProfile`, and `evaluateRetrieval` in `/testing`. See README "RAG is a composition", `docs/INTEGRATION.md#collection-profiles`, `docs/PERFORMANCE.md#collection-profiles`.
 - **Probability and relevance decisions** (`@mcp-abap-adt/llm-agent`): `IProbabilityDecision` (the renamed `IDecisionModel` — yes/no, choice and score questions answered with probabilities) and the new `IRelevanceDecision` (`RelevanceRequest` → `RelevanceResult`: one relevance score per passage — **not a probability**; comparable for the same query and model, also across calls; errors are `DecisionError` with the existing codes). Usage-logging wrappers `wrapProbabilityDecision` / `wrapRelevanceDecision` (libs).
 - **New package `@mcp-abap-adt/llm-agent-reranker`** — every reranker, vendor-neutral: `ProbabilityReranker` (was `DecisionReranker`), the new `RelevanceReranker` (batched by default like `ProbabilityReranker` — `maxBatchTokens` 48000, `concurrency` 4 — the batches' scores merged into one order; wrong count / duplicate / out-of-range / non-finite → `RERANK_ERROR`; `score` = the relevance score), `LlmReranker`, `NoopReranker`, `TOOL_QUESTION`, `PASSAGE_QUESTION`, `PROBABILITY_RERANK_DEFAULT_*`. Peer: `@mcp-abap-adt/llm-agent`. Published right after `llm-agent`.
 - **New package `@mcp-abap-adt/sap-aicore-decision`** — `SapAiCoreRelevanceDecision`, Cohere Rerank on an SAP AI Core deployment as an `IRelevanceDecision`: ONE `/rerank` call per `score`; a wrong / duplicate / out-of-range / non-finite answer is a `DecisionError`, never zero-filled. Credential injected (a SAP AI Core service key via `sap-aicore-auth`), no env, no timeout, no retries. Published at the same version, before the server.
-- **SmartServer:** `rag.profiles.tools` (`variant` or `compose` incl. `text`, `intents`, `decomposer`, `smallSet.poolItems`; only the key `tools` in this release) and `decision.provider: sap-aicore` (`deploymentId`, `model`, `resourceGroup?`; default credential ref `DECISION` → `DECISION_SERVICE_KEY`). ONE `decision:` section — the provider decides the kind (`typesafe` → probability, `sap-aicore` → relevance) and `reranker: decision` builds `ProbabilityReranker` or `RelevanceReranker` (in `rag.profiles` and `rag.retrieval`); the relevance decision is built by the new optional seam `BuildAgentDeps.makeRelevanceDecision`, the probability decision by `BuildAgentDeps.makeProbabilityDecision` (renamed from `makeDecisionModel`, see Migration). `SmartServerConfig.toolsVariantFactories` / `toolsStrategyFactories` for your own names. Startup refuses a `rag.profiles` key other than `tools`, a key under both `rag.retrieval` and `rag.profiles`, unknown names, a named variant whose decision is of the other kind, a question / task for a relevance decision, and `small-set-jev` whose `poolItems` is below the listed tool count.
-- **Where a tools store's records come from is a strategy** (`IToolsFillSource`, `ToolsFillContext` in `@mcp-abap-adt/llm-agent`): `LiveToolsFill` (default — the MCP tool list, indexed through the profile), `ToolsCorpusLoader` (an in-memory store loaded at creation from a corpus built at build time — no embedding call), `PrebuiltToolsStore` (a persistent store your deploy step filled — checked at creation, never written by the process), `ConsumerToolsFill` (you fill it; the library never writes). A store with a profile bound is filled once and **not re-indexed on `toolsChanged`** — a runtime-plugged MCP server is your pipeline's to fill; without a profile, 30.1.0's re-vectorize is unchanged. Offline corpus API: `buildToolsCorpus` (build step), `parseToolsCorpus`, `deployToolsCorpus` (deploy step: precomputed vectors, in place, idempotent, a `tools-corpus` service record with the fingerprint and corpus hash). YAML `rag.profiles.tools.fill`; `SmartServerConfig.toolsFillFactories`; `bindToolsProfile(profile, target, source?)`, `withToolsProfile(profile, source?)`.
+- **SmartServer:** `rag.profiles.tools` (`variant` or `compose` incl. `text`, `decomposer`, `smallSet.poolItems`; only the key `tools` in this release) and `decision.provider: sap-aicore` (`deploymentId`, `model`, `resourceGroup?`; default credential ref `DECISION` → `DECISION_SERVICE_KEY`). ONE `decision:` section — the provider decides the kind (`typesafe` → probability, `sap-aicore` → relevance) and `reranker: decision` builds `ProbabilityReranker` or `RelevanceReranker` (in `rag.profiles` and `rag.retrieval`); the relevance decision is built by the new optional seam `BuildAgentDeps.makeRelevanceDecision`, the probability decision by `BuildAgentDeps.makeProbabilityDecision` (renamed from `makeDecisionModel`, see Migration). `SmartServerConfig.toolsVariantFactories` / `toolsStrategyFactories` for your own names. Startup refuses a `rag.profiles` key other than `tools`, a key under both `rag.retrieval` and `rag.profiles`, unknown names, a named variant whose decision is of the other kind, a question / task for a relevance decision, and `small-set-jev` whose `poolItems` is below the listed tool count.
+- **Where a tools store's records come from is a strategy** (`IToolsFillSource`, `ToolsFillContext` in `@mcp-abap-adt/llm-agent`): `LiveToolsFill` (default — the MCP tool list, indexed through the profile), `ToolsCorpusLoader` (an in-memory store loaded at creation from a corpus built at build time — no embedding call), `PrebuiltToolsStore` (a persistent store your deploy step filled — checked at creation, never written by the process), `ConsumerToolsFill` (you fill it; the library never writes). A store with a profile bound is filled once and **not re-indexed on `toolsChanged`** — a runtime-plugged MCP server is your pipeline's to fill; without a profile, 30.1.0's re-vectorize is unchanged. Offline corpus API: `buildToolsCorpus` (build step), `parseToolsCorpus`, `deployToolsCorpus` (deploy step: precomputed vectors; an unchanged corpus writes nothing, any other deletes every record the store's `tools-corpus` service record lists and writes the whole corpus — no per-record diffing; the report gives `written` and `deleted`; the service record carries the fingerprint, the corpus hash and the ids). YAML `rag.profiles.tools.fill`; `SmartServerConfig.toolsFillFactories`; `bindToolsProfile(profile, target, source?)`, `withToolsProfile(profile, source?)`.
 - **Provider text is a strategy** (`IToolTextComposer`): `ParameterNamesToolText` (the default, unchanged), `EnumValuesToolText`, `SchemaToolText` — the latter two measured within noise on one coarse server, in no default.
 - **Observability:** `retrievalOutcome` counter (`ok`, `rerank_fallback`, `rerank_error`, `decompose_error`, `orphan`, `over_budget`, `empty`) on `InMemoryMetrics` / `NoopMetrics` and in `/health` metrics; a `retrieval` span per profiled retrieval; `/health` `components.toolCatalog.records` / `.profile` under a profile. `RerankedRetrieval` / `RerankAllRetrieval` accept an optional `telemetry` (additive).
-- `scripts/rag-eval`: profile arms (`--variant`, or `--indexer` / `--facets` / `--discriminator` / `--max-values` / `--intents` / `--pool-items` / `--reranker none|decision`, `--decision-provider typesafe|sap-aicore` + `--rerank-deployment` / `--rerank-model` / `--rerank-credential-ref` / `--cut` / `--budget-tokens`), required-recall (`required` in the queries file: an AND of OR-groups), average items and prompt tokens.
+- `scripts/rag-eval`: profile arms (`--variant`, or `--indexer` / `--facets` / `--discriminator` / `--max-values` / `--pool-items` / `--reranker none|decision`, `--decision-provider typesafe|sap-aicore` + `--rerank-deployment` / `--rerank-model` / `--rerank-credential-ref` / `--cut` / `--budget-tokens`), required-recall (`required` in the queries file: an AND of OR-groups), average items and prompt tokens.
 
 ### Fixed
 
@@ -17205,7 +15860,7 @@ Spec §13. No version heading and no bump — the entry goes under `## [Unreleas
 
 ### Removed
 
-- `packages/llm-agent/src/rag/tool-indexing-strategy.ts` (`IToolIndexingStrategy`, `OriginalToolIndexing`, `IntentToolIndexing`, `SynonymToolIndexing`) — never exported, never wired. Its docs described it as usable; they now describe collection profiles.
+- `packages/llm-agent/src/rag/tool-indexing-strategy.ts` (`IToolIndexingStrategy`, `OriginalToolIndexing`, `IntentToolIndexing`, `SynonymToolIndexing`) — never exported, never wired. Its docs described it as usable; they now describe collection profiles. Its LLM-generated intents are not ported: measured within noise without a reranker and no better with one, and a weak description is fixed at its source.
 
 ### Migration
 
@@ -17229,8 +15884,7 @@ Spec §13. No version heading and no bump — the entry goes under `## [Unreleas
 - **Shipping a tools corpus:** build it in your build step (`buildToolsCorpus`, serialized with `JSON.stringify`); for an in-memory store load it at start (`ToolsCorpusLoader`, YAML `fill: { corpus: … }`); for a persistent store write it in your deploy step (`deployToolsCorpus`) and bind it with `PrebuiltToolsStore` (YAML `fill: { prebuilt: … }`). The `profile` / `embedder` names must be the same in the build step and at run time — a mismatch fails at startup. A store is filled once; a changed tool list waits for the next instance (`live`) or the next build / deploy (`corpus` / `prebuilt`). **With a profile bound, `toolsChanged` re-indexes nothing**, whatever the source: if you plug an MCP server in at runtime, fill its tools in your own pipeline (`bound.index`). Without a profile, nothing changes.
 - **`ToolCatalogStatus` gains optional `records` / `profile`**, `MetricsSnapshot` optional `retrievalOutcome`, `HealthComponentStatus.toolCatalog` optional `records` / `profile` — an exhaustive object literal of these types needs no change.
 - **`SmartServerDecisionConfig.provider` gains `'sap-aicore'`** (plus optional `deploymentId`, `resourceGroup`). Your own composition root's probability seam compiles unchanged (under either name); to serve Cohere, supply the new `BuildAgentDeps.makeRelevanceDecision` that builds `SapAiCoreRelevanceDecision` from a bearer credential and `apiBaseUrl` (the shipped binary does).
-- **Intents are generated at every indexing** — the framework does not cache them; use a `StaticIntentSource` over a file generated at build time, a corpus built at build time (`buildToolsCorpus`), or your own caching `IToolIntentSource`.
-- If you imported `tool-indexing-strategy.ts` by deep path: use `FacetedToolIndexer` (`full` record) and `IntentRecordIndexer` / `IntentCompanionIndexer` with `LlmIntentSource` instead.
+- If you imported `tool-indexing-strategy.ts` by deep path: use `FacetedToolIndexer` (`full` record) instead; generated intents have no replacement — fix a weak tool description at its source.
 ```
 
 - [ ] **Step 1b: package CHANGELOGs (seam rename, D30)**
@@ -17239,7 +15893,7 @@ Spec §13. No version heading and no bump — the entry goes under `## [Unreleas
 ```markdown
 ## Unreleased
 
-`BuildAgentDeps.makeDecisionModel` is renamed **`makeProbabilityDecision`** (same type); `makeDecisionModel` stays a deprecated alias until the next major, and supplying both fails at startup naming both. New optional seam `BuildAgentDeps.makeRelevanceDecision` (`decision.provider: sap-aicore`); `rag.profiles.tools`, each bound tools store filled once at its creation by the configured `fill` source (`live` from the clients the server uses — ready clients, injected seam, plugin clients, YAML `mcp:` —, `corpus`, `prebuilt`, `consumer`, or `toolsFillFactories`), each with its own companion stores; workers on the shared clients now name tools as the main catalog does (fix); rerankers from `@mcp-abap-adt/llm-agent-reranker` (new peer). See the root CHANGELOG.
+`BuildAgentDeps.makeDecisionModel` is renamed **`makeProbabilityDecision`** (same type); `makeDecisionModel` stays a deprecated alias until the next major, and supplying both fails at startup naming both. New optional seam `BuildAgentDeps.makeRelevanceDecision` (`decision.provider: sap-aicore`); `rag.profiles.tools`, each bound tools store filled once at its creation by the configured `fill` source (`live` from the clients the server uses — ready clients, injected seam, plugin clients, YAML `mcp:` —, `corpus`, `prebuilt`, `consumer`, or `toolsFillFactories`); workers on the shared clients now name tools as the main catalog does (fix); rerankers from `@mcp-abap-adt/llm-agent-reranker` (new peer). See the root CHANGELOG.
 ```
 `packages/llm-agent-server/CHANGELOG.md`, above `## 30.1.0`:
 ```markdown
@@ -17299,8 +15953,10 @@ Expected: `"link": true` only for `node_modules/@mcp-abap-adt/<sibling>` entries
 
 - [ ] **Step 4: Gates and spec coverage**
 
-- Spec issues S1–S9 are decided (spec §17.4) and done in their tasks (Tasks 3, 6, 9, 10, 11, 15, 19, 21, 23, 28, 29, 30); D24–D27, F1, F3, F4 (spec §17.6) in Tasks 4A–4C, 6, 8, 11, 12, 14, 15, 16, 18, 21–24, 30, 32–34; D28–D30 (spec §17.7) in Tasks 4A, 4C, 20A, 22–24, 33, 34; D31–D35 (spec §17.8, §17.9) in Tasks 19, 20, 22, 23, 23A, 32–34; D38–D40 (spec §17.10) in Task 23A (D36 superseded, D37 moved out); D41–D45 (spec §17.11) in Tasks 2, 11, 12, 19, 19A, 20, 23A, 23B, 33, 34; a new gap found while executing was taken to the user before any code (fix the spec before the plan).
+- Spec issues S1–S9 are decided (spec §17.4) and done in their tasks (Tasks 3, 6, 9, 11, 15, 19, 21, 23, 28, 29, 30; S2 and S7 superseded by D50, spec §17.15); D24–D27, F1, F3, F4 (spec §17.6) in Tasks 4A–4C, 6, 8, 11, 12, 14, 15, 16, 18, 21–24, 30, 32–34; D28–D30 (spec §17.7) in Tasks 4A, 4C, 20A, 22–24, 33, 34; D31–D35 (spec §17.8, §17.9) in Tasks 19, 20, 22, 23, 23A, 32–34; D38–D40 (spec §17.10) in Task 23A (D36 superseded, D37 moved out); D41–D45 (spec §17.11) in Tasks 2, 11, 12, 19, 19A, 20, 23A, 23B, 33, 34; D46–D47 (spec §17.12) in Tasks 19, 19A, 20, 23A, 23B, 33, 34; D48–D49 (spec §17.13, §17.14) in Task 19A; D50–D51 (spec §17.15) in Tasks 2, 3, 9, 11–13, 15, 16, 19, 19A, 21–23A, 30, 32–35 (Task 10 withdrawn); a new gap found while executing was taken to the user before any code (fix the spec before the plan).
 - The renames left the old names as aliases only: `git grep -n -w "IDecisionModel\|DecisionReranker\|wrapDecisionModel\|makeDecisionModel" -- packages/*/src ':!**/__tests__/**'` prints only the alias declarations (`decision-model.ts`, libs `index.ts`, `usage-logging-decision-model.ts`, the `@deprecated` `BuildAgentDeps.makeDecisionModel` and `probabilityDecisionSeam` in `smart-server.ts`) and `typesafe-decision` (unchanged, it implements the same type); `git grep -n "createMakeDecisionModel\|make-decision-model" -- packages` prints nothing; `git grep -n "SapAiCoreDecisionModel" -- packages docs` prints nothing.
+- Intents and companion stores are gone (D50): `git grep -n -w "IntentRecordIndexer\|IntentCompanionIndexer\|IToolIntentSource\|StaticIntentSource\|LlmIntentSource\|companionRecordIds\|staleCompanionRecordIds\|companionStores\|CompanionIds\|listedCompanions" -- packages scripts` prints nothing; `git grep -n -i "companion" -- packages scripts` and `git grep -n "recordKind: 'intent'\|kind: 'intent'\|generated: true" -- packages scripts` print nothing (the existing query preprocessor's `name = 'intent'` in `rag/preprocessor.ts` is unrelated and stays); `git grep -n -i "intent" -- packages/*/src scripts` prints only unrelated words (e.g. a classifier's intent), never an indexer, a source or a record kind; `git grep -n -i "IntentRecordIndexer\|IntentCompanionIndexer\|StaticIntentSource\|LlmIntentSource\|IToolIntentSource\|companion store\|intents:" -- README.md CLAUDE.md docs examples 'packages/*/README.md' ':!docs/superpowers'` prints nothing — no doc describes them as usable (the only allowed mention is `IntentToolIndexing` in the `IToolIndexingStrategy` migration notes, marked not ported).
+- The corpus deploy has no per-record diffing (D51): `git grep -n "upserted\|hashes" -- packages/llm-agent-libs/src/collections` prints nothing; `ToolsCorpusDeployReport` is `{ unchanged, written, deleted }`.
 - No reference to the withdrawn design is left: `git grep -n -i "crossEncoder\|cross-encoder\|sap-aicore-reranker\|SapAiCoreReranker\|makeCrossEncoder\|CROSS_ENCODER" -- packages docs README.md CLAUDE.md examples scripts ':!docs/superpowers'` prints nothing (the pre-existing `### Example: Cross-encoder reranker via external API` heading in `docs/INTEGRATION.md` is the one allowed hit).
 - The spec's §14.3 acceptance runs are the consumer check (env-gated, not `npm test`); list them in the PR description as the next stage. Do **not** delete the spec or this plan: they stay until the work, consumer check included, is fully implemented (CLAUDE.md "Plans and Specs").
 - No version bump, no tag, no publish.
@@ -17319,13 +15975,13 @@ Found while planning; all decided (spec §17.4) and written into the tasks above
 
 | # | Issue | Decision | Done in |
 |---|---|---|---|
-| S1 | No channel from an indexer to `IndexReport.notes` | Optional capability `IIndexNoteSource` (`notesFor(item)`); the binding collects notes; the server logs them | Tasks 3, 9, 10, 15, 19 |
-| S2 | "Fill once" intents needed the store inside a pure indexer | Dropped: intents are generated at indexing; caching is the consumer's concern; `generatedFrom` stays as provenance | Task 10 |
+| S1 | No channel from an indexer to `IndexReport.notes` | Optional capability `IIndexNoteSource` (`notesFor(item)`); the binding collects notes; the server logs them | Tasks 3, 9, 15, 19 |
+| S2 | "Fill once" intents needed the store inside a pure indexer | *Superseded by D50 (spec §17.15): intents removed entirely, Task 10 withdrawn.* Was: dropped — intents generated at indexing; caching the consumer's concern; `generatedFrom` as provenance | — |
 | S3 | `ToolCatalogStatus` missing from spec §3.8 | Optional `records` / `profile` on `ToolCatalogStatus`, listed in §3.8 | Tasks 3, 19, 29 |
 | S4 | Output check on the 30.1.0 rerank strategies? | No — telemetry only, no 30.1.0 behaviour change | Task 29 |
 | S5 | Default `credentialRef` of `crossEncoder:` | Dropped with `crossEncoder:` — Cohere is `decision.provider: sap-aicore`, default ref `DECISION` → `DECISION_SERVICE_KEY` | Tasks 21, 24 |
 | S6 | `StagedRetrieval` could not learn a size cut's tokens | Optional capability `ISizeBoundedCut` (`budgetTokens`, `estimator`), implemented by `TokenBudgetCut` | Tasks 3, 6, 28 |
-| S7 | `remove` left companion records behind | Reserved key `companionRecordIds` on the canonical record; `remove` and replacement clear companion records | Tasks 2, 11, 15 |
+| S7 | `remove` left companion records behind | *Superseded by D50 (spec §17.15): companion stores removed, and with them `companionRecordIds`.* Was: reserved key `companionRecordIds` on the canonical record; `remove` and replacement cleared companion records | — (removed from Tasks 2, 11, 15) |
 | S8 | YAML keys other than `tools` had no store or filling path | Only `rag.profiles.tools`; any other key refused at config resolution (and at server start for a config built in code) | Tasks 21, 23 |
 | S9 | "At most k" contradicted `FixedItemsCut` | The kit checks at most `cut.limit(k)` items — amended by F1: `cut.limit(k)` ≤ k for every cut, so the kit checks ≤ k, also for k below each shipped profile's default | Tasks 6, 12, 14, 30 |
 | — | Spec header "Status" line | Updated: every decision is taken (D16, D18, D22, D23 included) | spec header |
@@ -17339,8 +15995,8 @@ Found while planning; all decided (spec §17.4) and written into the tasks above
 | D26 | All rerankers in the new `@mcp-abap-adt/llm-agent-reranker`; libs re-exports old names as deprecated aliases | Task 4B (4C adds `RelevanceReranker`) |
 | D27 | One `decision:` section; the provider decides the kind (`DECISION_KINDS`); `reranker: decision` builds the matching reranker; wording refused for relevance | Tasks 21, 22, 23, 24, 32 |
 | F1 | The caller's k caps every cut (`FixedItemsCut` is a ceiling), also after decomposition; the kit calls each shipped profile with k below its default | Tasks 6, 12, 14, 16, 30 |
-| F3 | Cleanup failures kept: every stale delete checked; `cleanup-failed`; `staleRecordIds` / `staleCompanionRecordIds` retried by `index` / `remove` | Tasks 2–3 (reserved keys), 11, 15, 30 |
-| F4 | Provider text composition is a strategy (`IToolTextComposer`); the default stays C0 (measured); C0e / C0s in no default | Tasks 3, 8, 10, 16, 21, 22, 32 |
+| F3 | Cleanup failures kept: every stale delete checked; `cleanup-failed`; `staleRecordIds` retried by `index` / `remove` (*the companion part, `staleCompanionRecordIds`, superseded by D50*) | Tasks 2–3 (reserved keys), 11, 15, 30 |
+| F4 | Provider text composition is a strategy (`IToolTextComposer`); the default stays C0 (measured); C0e / C0s in no default | Tasks 3, 8, 16, 21, 22, 32 |
 
 **Withdrawn:** `SapAiCoreDecisionModel` (Cohere behind `IDecisionModel`, amendment 3) — never built. Still gone from earlier: the `sap-aicore-reranker` package, `SapAiCoreReranker`, the `crossEncoder:` section and the `makeCrossEncoder` seam.
 
@@ -17360,7 +16016,7 @@ Found while planning; all decided (spec §17.4) and written into the tasks above
 |---|---|---|
 | D31 | The server fills a bound tools profile from the MCP clients it uses (ready clients, injected seam, plugin clients), once per store, before it reports ready, through `fillToolsBinding` (the profile path of `vectorizeMcpTools`); `/health` and the D23 check read its status (`HealthCheckerDeps.toolCatalog`); failures follow the 30.1.0 catalog policy; workers reading the main store are not filled again; no profile → 30.1.0. The builder keeps its `withMcpClients` / `withMcpServers` limit | Tasks 23A, 33, 34 |
 | D32 | A worker's fill keeps the identity its agent dispatches by: from the shared clients with the main fill's `_sharedMcpClientDescriptors` / `_configuredSlotCount` / `IToolNamespace`; own `mcpClients` in array order (no descriptors exist); the worker's builder gets the clients with their descriptors (`withMcpServers` + `connectedMcpServer`) and the server's `withToolNamespace`. No contract change; fixes 30.1.0 workers' `s<i>__` names. *For the user's review:* the adapter over a `withMcpClients` descriptors parameter | Tasks 23A, 33, 34 |
-| D33 | Companion storage per primary binding: `ResolvedToolsProfile.companionStores` (sections), the server builds one companion store per bound tools store with that store's embedder; readers share the main binding; no `recordId` change. *For the user's review:* a persistent companion store with a worker's own `rag` is refused at start (no derived collection names) — recommendation applied (spec §17.9) | Tasks 22, 23, 23A, 33, 34 |
+| D33 | *Superseded by D50 (spec §17.15): companion stores removed entirely; Task 23A's test (8) and Task 23's refusal are gone.* Was: companion storage per primary binding: `ResolvedToolsProfile.companionStores` (sections), the server builds one companion store per bound tools store with that store's embedder; readers share the main binding; no `recordId` change. *For the user's review:* a persistent companion store with a worker's own `rag` is refused at start (no derived collection names) — recommendation applied (spec §17.9) | Tasks 22, 23, 23A, 33, 34 |
 
 ## Review findings on 2026-10-05 — filling follows the store's lifecycle (spec §17.9)
 
@@ -17381,7 +16037,7 @@ Found while planning; all decided (spec §17.4) and written into the tasks above
 | D39 | The hot-reload test calls the server's reload entry point (`_configReload._onReload`, now awaitable) instead of `fs.watch` + debounce polling; `config-reload-entry.test.ts` pins that the watcher's `reload` event calls it | Task 23A |
 | D40 | Tools a server removes at runtime (`notifications/tools/list_changed` → `toolsChanged`) stay in the store, as in 30.1.0; removal out of scope (spec note only). Read with D46: a bound store is not written on `toolsChanged` at all | spec §6.3, §15 — no code |
 
-Recommendations applied to the earlier open choices (the user may still overrule): a persistent companion store with a worker-owned `rag` is refused at startup (Task 23); the internal `connectedMcpServer` adapter is kept — no `withMcpClients` change (Task 23A); the worker tool-naming fix is a CHANGELOG "Fixed" entry (Task 34).
+Recommendations applied to the earlier open choices (the user may still overrule): ~~a persistent companion store with a worker-owned `rag` is refused at startup (Task 23)~~ — superseded by D50 (no companion stores); the internal `connectedMcpServer` adapter is kept — no `withMcpClients` change (Task 23A); the worker tool-naming fix is a CHANGELOG "Fixed" entry (Task 34).
 
 ## Decided by the user on 2026-10-05 — fill once at creation; the fill source is a strategy; refill and single-flight out (spec §17.11)
 
@@ -17389,7 +16045,7 @@ Recommendations applied to the earlier open choices (the user may still overrule
 |---|---|---|
 | D41 | A tools store is filled once, when its instance is created; never refilled while running. The main store in `_buildInfra`; a worker's own store by its construction (`buildSubAgent` without `injected`); a per-session re-wire never fills. No refill API, no memo, no retry; an incomplete fill is reported and stays. A construction whose fill throws drops the worker's cache entry. Tests: (11) a re-wire never fills after a failed listing; (12) a throwing fill leaves no cached worker | Task 23A |
 | D42 | The fill source is a strategy: `IToolsFillSource` / `ToolsFillContext` (llm-agent), attached with the binding (`bindToolsProfile(profile, target, source?)`, default `LiveToolsFill`) and read from the store; `vectorizeMcpTools` dispatches to the source (`fill` only since D46): `fill` / `toolsChanged`; `LiveToolsFill`, `ConsumerToolsFill`, `ToolsCorpusLoader`, `PrebuiltToolsStore`; `withToolsProfile(profile, source?)`; YAML `fill` + `toolsFillFactories` | Tasks 19, 19A, 20, 23B, 33, 34 |
-| D43 | Offline corpus API: `buildToolsCorpus` (build step, the profile's own indexer over capture stores), `parseToolsCorpus`, `deployToolsCorpus` (deploy step: precomputed, in place, idempotent, write-ahead, a `tools-corpus` service record); reserved key `serviceRecord`, dropped by `StagedRetrieval`. `ToolsCorpusLoader` — the in-memory source — checks the fingerprint, writes the records precomputed and reports the status, nothing else | Tasks 2, 11, 12, 19A, 33, 34 |
+| D43 | Offline corpus API: `buildToolsCorpus` (build step, the profile's own indexer over capture stores), `parseToolsCorpus`, `deployToolsCorpus` (deploy step: precomputed, in place, idempotent, write-ahead, a `tools-corpus` service record — *its per-record hashes and hash-skip superseded by D51: the deploy writes the whole corpus*); reserved key `serviceRecord`, dropped by `StagedRetrieval`. `ToolsCorpusLoader` — the in-memory source — checks the fingerprint, writes the records precomputed and reports the status, nothing else | Tasks 2, 11, 12, 19A, 33, 34 |
 | D44 | *Superseded by D46.* `toolsChanged` is the source's answer: `live` / `consumer` re-index as 30.1.0; `corpus` / `prebuilt` write nothing and log a warning | — |
 | D45 | Single-flight worker construction and the drain ordering move out (a pre-existing 30.1.0 race; spec §15 describes it for a separate issue). Task 22A deleted; no remaining task depends on it — Task 23A goes back to `WorkerRegistry.build`'s existing lazy build-on-miss | Task 23A (references removed) |
 
@@ -17398,19 +16054,27 @@ Recommendations applied to the earlier open choices (the user may still overrule
 | # | Decision | Done in |
 |---|---|---|
 | D46 | No reaction to `toolsChanged` for a bound store: `IToolsFillSource` is `fill` only (its `toolsChanged` removed from the contract, `LiveToolsFill`, `ConsumerToolsFill`, `ToolsCorpusLoader`, `PrebuiltToolsStore`, and `warnUnchanged` gone); `vectorizeMcpTools` has no `event` and runs `fill` for a bound store; `McpToolRegistry.revectorizeTools` returns before writing when `toolsBindingOf(store)` finds a binding (one `DEBUG_MCP` line, no warning); an unbound store keeps the 30.1.0 re-vectorize. `ConsumerToolsFill`: the library never writes. Tests: a bound store is not written on `tools-changed` (no listing, no write, no source call, no warning); a bound store behind `FallbackRag` (initial fill + reconnect); an unbound store keeps 30.1.0; a consumer store unwritten on a reconnect; a reconnect never calls the source. Removed: the re-index-through-profile, companions-on-update, writerless-refresh-on-`toolsChanged` and source-`toolsChanged` tests | Tasks 19, 19A, 20, 23A, 23B, 33, 34 |
-| D47 | Approved as written: the fingerprint is the consumer-named `ToolsCorpusIdentity { profile, embedder }` plus the library's own checks; a worker construction whose fill throws drops that cache entry; a worker with its own `rag` and own clients is refused when the fill is `corpus` or `prebuilt` | Tasks 19A, 23A, 23B (no change) |
+| D47 | Approved as written: the fingerprint is the consumer-named `ToolsCorpusIdentity { profile, embedder }` plus the library's own checks (*the companion-set check superseded by D50*); a worker construction whose fill throws drops that cache entry; a worker with its own `rag` and own clients is refused when the fill is `corpus` or `prebuilt` | Tasks 19A, 23A, 23B (no change) |
 
 ## Review finding on 2026-10-05 — an unfinished corpus deploy is rewritten in full (spec §17.13)
 
 | # | Decision | Done in |
 |---|---|---|
-| D48 | The service record carries `state: 'pending' \| 'final'`, `pending` written ahead of the first record write. A deploy that reads a record not `final` (or none) trusts no hash and writes every record of the corpus, deletes listed and pending ids the corpus lacks, then finalizes; a `final` record keeps the hash-skip (and `unchanged`). `PrebuiltToolsStore` refuses a record not `final` at creation. Amends D43 | Task 19A |
+| D48 | The service record carries `state: 'pending' \| 'final'`, `pending` written ahead of the first record write. A deploy that reads a record not `final` (or none) trusts no hash and writes every record of the corpus, deletes listed and pending ids the corpus lacks, then finalizes; a `final` record keeps the hash-skip (and `unchanged`). `PrebuiltToolsStore` refuses a record not `final` at creation. Amends D43. *The hash-skip superseded by D51: every deploy that is not `unchanged` rewrites the whole corpus; `pending` and `PrebuiltToolsStore`'s refusal stand* | Task 19A |
+
+## Decided by the user on 2026-10-05 — intents and companion stores removed; the corpus deploy written in full (spec §17.15)
+
+| # | Decision | Done in |
+|---|---|---|
+| D50 | **Intents and companion stores removed entirely** (goal row "Intents are removed entirely"). Measured and dropped (spec §2.1): within noise without a reranker, no better with one; the reranker reads provider text better without them; LLM generation at build, regeneration and audits (one audit found poisoned intents); misleading (`CreateDdl`'s generated "create database view" names a different object type). Gone: the `intent` record kind, `IntentRecordIndexer`, `IntentCompanionIndexer`, `IToolIntentSource`, `StaticIntentSource`, `LlmIntentSource`, `IndexedRecord.generated` and the reserved keys `generated`, `companionRecordIds`, `staleCompanionRecordIds`; `CollectionStore.companions`; `RetrievalSource.role` / `itemsOf` (every source holds items); companion handling in the record writer (`CompanionIds`, `listedCompanions`, the `companions` parameters), in `ComposedToolsProfile`, `StagedRetrieval` and `ItemPool`; YAML `rag.profiles.tools.intents` (a leftover key refused), `ResolvedToolsProfile.companionStores`, the companion stores the server built and the persistent-companion refusal; the companion parts of the corpus (manifest `companions`, record `store`, `buildToolsCorpus`'s `companions`, the loader's companion-set check); rag-eval `--intents`; every intent / companion test, doc and CHANGELOG line. Records come only from what the provider exports. Supersedes S2, S7, D3, D33, the companion parts of F3 and D47 | Tasks 2, 3, 9, 11, 12, 13, 15, 16, 19, 19A, 21, 22, 23, 23A, 30, 32, 33, 34, 35; **Task 10 withdrawn** (numbers kept stable) |
+| D51 | **The corpus deploy writes the whole corpus — no per-record diffing.** A `final` service record with the same corpus hash and identity → `unchanged`, no write of any kind. Otherwise: write `pending` listing every id the store holds or may hold (the old record's ids ∪ the corpus's), delete every id the old record lists (pending ones included, each Result checked), write the whole corpus with its precomputed vectors, finalize with the corpus's ids. The service record drops per-record `hashes` (it lists `ids`); `ToolsCorpusDeployReport.upserted` → `written`. Delete-before-write means no old metadata survives on a merging store (`InMemoryRag`, `VectorRag` merge on an in-place upsert; their deletes remove the whole slot). Tests: a serialized replacement on `VectorRag` leaves no old `ttl` / `data`; an unchanged redeploy writes nothing; an interruption mid-write (or mid-delete) → redeploy restores; an empty corpus deletes everything (D49's dimension rule kept). Supersedes the hash-skip of D43 / D48 | Tasks 19A, 33, 34, 35 |
 
 ---
 
 ## Self-review (done while writing)
 
-- **Spec coverage.** §3 contracts → Tasks 2–4 (S1 / S6 capabilities and the S7 / F3 reserved keys in 2–3); §3.9 decision contracts → 4A; §4 `StagedRetrieval` → 12–14 (+28 telemetry, incl. `over_budget`; F1 cap in 12 and 14); §4.9/§4.10 cuts → 6 (F1); §5 rerankers → 4B (package, `ProbabilityReranker`), 4C (`RelevanceReranker`), 18 (`SapAiCoreRelevanceDecision`), 16 (the decision variants), 24 (`createMakeRelevanceDecision` + calls → `/rerank`); §6.1 builder → 20; the probability seam rename with its alias (§3.8, §13, D30) → 20A; §6.2 YAML → 21–23 (one `decision:` section, kind table, the `makeRelevanceDecision` seam); §6.3 server filling from ready clients (D31) → 23A, a worker's fill and dispatch keep one identity (D32) → 23A, the binding read from the store on every fill, and by the reconnect to leave a bound store unwritten (D34, D46) → 19 (+20, 23A, 32), workers filled by their construction — startup, lazy rebuild, `PUT /v1/config`, hot reload (D35, D41) → 23A; filled once, no memo, no retry, a re-wire never fills (D41) → 23A; startup fill on `yamlBuilderConnect` (D38), the hot reload through the reload entry point (D39) → 23A; §3.10 fill sources (D42, D46 — `fill` only) → 19 (contract, live, consumer, dispatch, the registry's no-write), 19A (corpus loader, prebuilt), 20 (builder), 23B (YAML); §6.5 offline corpus (D43) → 19A (+ `serviceRecord` in 2, 11, 12); single-flight construction (D37) → moved out (D45, spec §15), no task; only `tools` gets a fill source (§6.6) and runtime-removed tools stay (D40) → no code, spec notes; §6.4 fill-path audit → rows 1/3/10 in 19, rows 4–7 and 5a in 23A, rows 11–12 in 19A, row 9 in 33; §7.3.3 companion storage per primary binding (D33) → 22 (sections), 23 (a store per binding, persistent refusal), 23A (isolation through fill, replace, remove); §7.3.1 provider text composers → 8 (F4); §3.3 cleanup failures → 11, 15 (F3); §7.0–§7.5 tools strategies and variants → 7–10, 15, 16; §7.6 filling → 19 (notes logged); §7.7 skills pass-through → 12 (pass-through test), 26 (F3); §7.8 migration → 33/34 docs; §7.9 consumer-built profile → 30; §8 shared items → 17; §9 observability → 28–29 (S4: telemetry only on 30.1.0 strategies); §10 fixes → 25–27; §11 placement → File Structure, Task 18 wiring; §13 compatibility/docs → 1 (golden), 33–34; §14.1 unit tests → per task; §14.2 kit → 30 (S9); §14.3 harness → 31–32 (acceptance runs = consumer check, env-gated).
+- **Spec coverage.** §3 contracts → Tasks 2–4 (S1 / S6 capabilities and the F3 reserved key `staleRecordIds` in 2–3; no intent or companion contract, D50); §3.9 decision contracts → 4A; §4 `StagedRetrieval` → 12–14 (+28 telemetry, incl. `over_budget`; F1 cap in 12 and 14); §4.9/§4.10 cuts → 6 (F1); §5 rerankers → 4B (package, `ProbabilityReranker`), 4C (`RelevanceReranker`), 18 (`SapAiCoreRelevanceDecision`), 16 (the decision variants), 24 (`createMakeRelevanceDecision` + calls → `/rerank`); §6.1 builder → 20; the probability seam rename with its alias (§3.8, §13, D30) → 20A; §6.2 YAML → 21–23 (one `decision:` section, kind table, the `makeRelevanceDecision` seam); §6.3 server filling from ready clients (D31) → 23A, a worker's fill and dispatch keep one identity (D32) → 23A, the binding read from the store on every fill, and by the reconnect to leave a bound store unwritten (D34, D46) → 19 (+20, 23A, 32), workers filled by their construction — startup, lazy rebuild, `PUT /v1/config`, hot reload (D35, D41) → 23A; filled once, no memo, no retry, a re-wire never fills (D41) → 23A; startup fill on `yamlBuilderConnect` (D38), the hot reload through the reload entry point (D39) → 23A; §3.10 fill sources (D42, D46 — `fill` only) → 19 (contract, live, consumer, dispatch, the registry's no-write), 19A (corpus loader, prebuilt), 20 (builder), 23B (YAML); §6.5 offline corpus (D43; written in full, no per-record diffing, D51) → 19A (+ `serviceRecord` in 2, 11, 12); single-flight construction (D37) → moved out (D45, spec §15), no task; only `tools` gets a fill source (§6.6) and runtime-removed tools stay (D40) → no code, spec notes; §6.4 fill-path audit → rows 1/3/10 in 19, rows 4–7 and 5a in 23A, rows 11–12 in 19A, row 9 in 33; §7.3.3 (intents and companion stores, D3 / D33) → removed by D50: no task (Task 10 withdrawn), and Tasks 2, 3, 11–13, 15, 16, 19A, 21–23A, 30, 32–35 carry no intent or companion code, test or doc; §7.3.1 provider text composers → 8 (F4); §3.3 cleanup failures → 11, 15 (F3); §7.0–§7.5 tools strategies and variants → 7–9, 15, 16; §7.6 filling → 19 (notes logged); §7.7 skills pass-through → 12 (pass-through test), 26 (F3); §7.8 migration → 33/34 docs; §7.9 consumer-built profile → 30; §8 shared items → 17; §9 observability → 28–29 (S4: telemetry only on 30.1.0 strategies); §10 fixes → 25–27; §11 placement → File Structure, Task 18 wiring; §13 compatibility/docs → 1 (golden), 33–34; §14.1 unit tests → per task; §14.2 kit → 30 (S9); §14.3 harness → 31–32 (acceptance runs = consumer check, env-gated).
 - **Placeholders.** None; no gated step remains.
-- **Type consistency.** `StagedRetrievalOptions` (Task 12) is the shape Tasks 15–17, 22 and 30 pass; `ComposedToolsProfile.composition` (Task 15) is what Tasks 16, 22, 30 inspect; `IBoundCollection<ToolItem>` + `bindToolsProfile` / `toolsBindingOf` (Task 15; `source` and `boundToolsOf` from Task 19) are what Tasks 19, 19A, 20, 23, 23A, 23B and 32 use — every tools write reads the binding and its fill source from the store (D34, D42), and no task passes either beside its store; `IToolsFillSource` / `ToolsFillContext` (Task 19) are what Tasks 19A, 20, 23B implement or pass; `ToolsCorpus` / `ToolsCorpusIdentity` (Task 19A) are what Task 23B parses and constructs; `ResolvedToolsProfile.fill` (Task 23B) is what `withToolsStore` binds with; **cumulative compile:** Task 19 adds the contract (llm-agent) before libs uses it; 19A only appends to Task 19's module; 23A uses only Task 19's default source; 23B adds the config field, resolver output and server use in one task; `ToolCatalogStatus.records/profile` (Task 3) feed Tasks 19 and 29; `RunStats` (Task 12) is what Task 28 reports; `CompanionIds` / `listedCompanions` and `storeItems(rag, items, options, companions)` (Task 11) are what Tasks 15 and 17 use; `IProbabilityDecision` / `IRelevanceDecision` (Task 4A) are what Tasks 4B, 4C, 16, 18, 22, 24, 32 take; `SapAiCoreRelevanceConfig` (Task 18) is what Task 24 constructs; `SmartServerDecisionConfig` + `DECISION_KINDS` (Task 21) are what Tasks 22 and 24 read; `BuildAgentDeps.makeProbabilityDecision` and `createMakeProbabilityDecision` (Task 20A) are what Tasks 22–25 use (the alias `makeDecisionModel` is read only by Task 20A's `probabilityDecisionSeam`); `DecisionSeams` (Task 22) is what Task 23 threads; `ResolvedToolsProfile.companionStores` (store sections, Task 22) is what Task 23's `withToolsStore` builds one companion store per binding from; `mcpToolsVariants.facetedCohere({ relevanceDecision })` / `facetedJev({ probabilityDecision })` / `smallSetJev({ probabilityDecision, poolItems })` (Task 16) are what Tasks 22, 30 and 32 call.
+- **Type consistency.** `StagedRetrievalOptions` (Task 12) is the shape Tasks 15–17, 22 and 30 pass; `ComposedToolsProfile.composition` (Task 15) is what Tasks 16, 22, 30 inspect; `IBoundCollection<ToolItem>` + `bindToolsProfile` / `toolsBindingOf` (Task 15; `source` and `boundToolsOf` from Task 19) are what Tasks 19, 19A, 20, 23, 23A, 23B and 32 use — every tools write reads the binding and its fill source from the store (D34, D42), and no task passes either beside its store; `IToolsFillSource` / `ToolsFillContext` (Task 19) are what Tasks 19A, 20, 23B implement or pass; `ToolsCorpus` / `ToolsCorpusIdentity` (Task 19A) are what Task 23B parses and constructs; `ResolvedToolsProfile.fill` (Task 23B) is what `withToolsStore` binds with; **cumulative compile:** Task 19 adds the contract (llm-agent) before libs uses it; 19A only appends to Task 19's module; 23A uses only Task 19's default source; 23B adds the config field, resolver output and server use in one task; `ToolCatalogStatus.records/profile` (Task 3) feed Tasks 19 and 29; `RunStats` (Task 12) is what Task 28 reports; `prepareItem(w, { canonicalKind, profile, maxRecordsPerItem })`, `storeItems(rag, items, options?)` and `removeItem(rag, canonicalId, options?)` (Task 11 — no companion parameters, D50) are what Tasks 15 and 17 use; `ToolsCorpusDeployReport { unchanged, written, deleted }` (Task 19A, D51) is what Tasks 33–34 document; `IProbabilityDecision` / `IRelevanceDecision` (Task 4A) are what Tasks 4B, 4C, 16, 18, 22, 24, 32 take; `SapAiCoreRelevanceConfig` (Task 18) is what Task 24 constructs; `SmartServerDecisionConfig` + `DECISION_KINDS` (Task 21) are what Tasks 22 and 24 read; `BuildAgentDeps.makeProbabilityDecision` and `createMakeProbabilityDecision` (Task 20A) are what Tasks 22–25 use (the alias `makeDecisionModel` is read only by Task 20A's `probabilityDecisionSeam`); `DecisionSeams` (Task 22) is what Task 23 threads; Task 23's `withToolsStore(store): IRag` is synchronous and binds the primary only (`bindToolsProfile(p.profile, { key: 'tools', rag: store }, p.fill)` after 23B) — no companion stores, no `makeRag` for them; `mcpToolsVariants.facetedCohere({ relevanceDecision })` / `facetedJev({ probabilityDecision })` / `smallSetJev({ probabilityDecision, poolItems })` (Task 16) are what Tasks 22, 30 and 32 call.
 - **Review Focus.** Each of the eight lines has its test in the named task (Tasks 4C, 6, 11, 12, 13, 14, 17, 18, 21, 30).
+- **Rework for D50 / D51 (spec §17.15).** Task 10 withdrawn with no heading left, numbers kept stable (as Task 22A earlier); no remaining task imports an intent or companion symbol, every "Tasks 8–10" reference reads "8–9"; each changed task drops the imports, types and parameters it no longer uses (`strict` + `noUnusedLocals`) and keeps its gate; Task 35 Step 4 greps that no intent / companion symbol remains in `packages/` or `scripts/`, that no doc describes them as usable, and that the deploy report has `written` and no `hashes`; the trailing decision tables mark S2, S7, D33, the companion parts of F3 / D47 and the hash-skip of D43 / D48 as superseded.
