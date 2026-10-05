@@ -8,7 +8,7 @@
 
 **Tech Stack:** TypeScript 6 (strict, ESM, NodeNext), Node ≥ 22, `node:test` via `tsx`, Biome, npm workspaces monorepo.
 
-**Spec:** `docs/superpowers/specs/2026-10-05-collection-profiles-design.md` (approved 2026-10-05, frozen; amended 2026-10-05 with the user's decisions on S1–S9, spec §17.4, and on probability vs relevance decisions, the reranker package, the caller's k, cleanup failures and provider text composition, spec §17.6; and on relevance comparability, the second seam and the seam rename, spec §17.7; and on the server filling a bound tools profile from ready clients, D31, spec §6.3, §17.8; and on filling following the store's lifecycle, D34–D35, spec §17.9; and on only complete fills memoized, single-flight worker construction, the startup fill on every path, the direct hot-reload test and runtime-removed tools, D36–D40, spec §6.6, §17.10 — D36 superseded and D37 moved out by the next amendment; and on a tools store filled once at instance creation, the fill source as an injected strategy, the offline corpus API, refill and single-flight out, D41–D45, spec §3.10, §6.3–§6.5, §17.11; and on fill sources filling once with no `toolsChanged` reaction for a bound store, D46–D47, spec §3.10, §6.3, §6.4, §13, §15, §17.12; and on intents and companion stores removed entirely and the corpus deploy written in full, D50–D51, spec §17.15; and on the goal's three decisions of 2026-10-05 — the RAG implementations' home, the corpus loaded by the server at start with no deploy step, no tuned numbers in what ships — D53–D56, spec §11.3, §17.17; and on a major release without deprecated aliases or re-exports — the RAG implementations' files move now (S10 decided), no old names, no re-exports, the replicas' reload window accepted — D57–D60, spec §11.3, §11.4, §13, §17.18; and on S11, S12 and the search-strategy types — **all decided by the user on 2026-10-05** (spec §17.18): `OllamaRag` removed (S11, Task 1A Step 4); the pre-existing re-exports of spec §11.4 removed in this same major (S12, Task 4D; migration lines 52–69); `ISearchStrategy`, `ISearchCandidate`, `ISearchQuery`, `IScoredResult`, `ISearchContext` move with `VectorRag` to `llm-agent-rag` (Task 1A); and on the four questions spec §11.4 left open — **decided by the user on 2026-10-05** (spec §11.4, §17.18): `ITextLogger` removed, every use imports `ILogger` from `@mcp-abap-adt/interfaces-utils` (Task 4E; migration line 70), libs' two dead internal files `adapters/index.ts` and `interfaces/model-resolver.ts` deleted (Task 4E), `SmartAgentHandle` / libs' `IStageHandler` and libs' internal shims kept). **Goal:** `docs/superpowers/goals/2026-10-04-collection-profiles.md` (user-owned; never edited). Executors read the spec section each task cites.
+**Spec:** `docs/superpowers/specs/2026-10-05-collection-profiles-design.md` (approved 2026-10-05, frozen; amended 2026-10-05 with the user's decisions on S1–S9, spec §17.4, and on probability vs relevance decisions, the reranker package, the caller's k, cleanup failures and provider text composition, spec §17.6; and on relevance comparability, the second seam and the seam rename, spec §17.7; and on the server filling a bound tools profile from ready clients, D31, spec §6.3, §17.8; and on filling following the store's lifecycle, D34–D35, spec §17.9; and on only complete fills memoized, single-flight worker construction, the startup fill on every path, the direct hot-reload test and runtime-removed tools, D36–D40, spec §6.6, §17.10 — D36 superseded and D37 moved out by the next amendment; and on a tools store filled once at instance creation, the fill source as an injected strategy, the offline corpus API, refill and single-flight out, D41–D45, spec §3.10, §6.3–§6.5, §17.11; and on fill sources filling once with no `toolsChanged` reaction for a bound store, D46–D47, spec §3.10, §6.3, §6.4, §13, §15, §17.12; and on intents and companion stores removed entirely and the corpus deploy written in full, D50–D51, spec §17.15; and on the goal's three decisions of 2026-10-05 — the RAG implementations' home, the corpus loaded by the server at start with no deploy step, no tuned numbers in what ships — D53–D56, spec §11.3, §17.17; and on a major release without deprecated aliases or re-exports — the RAG implementations' files move now (S10 decided), no old names, no re-exports, the replicas' reload window accepted — D57–D60, spec §11.3, §11.4, §13, §17.18; and on S11, S12 and the search-strategy types — **all decided by the user on 2026-10-05** (spec §17.18): `OllamaRag` removed (S11, Task 1A Step 4); the pre-existing re-exports of spec §11.4 removed in this same major (S12, Task 4D; migration lines 52–69); `ISearchStrategy`, `ISearchCandidate`, `ISearchQuery`, `IScoredResult`, `ISearchContext` move with `VectorRag` to `llm-agent-rag` (Task 1A); and on the four questions spec §11.4 left open — **decided by the user on 2026-10-05** (spec §11.4, §17.18): `ITextLogger` removed, every use imports `ILogger` from `@mcp-abap-adt/interfaces-utils` (Task 4E; migration line 70), libs' two dead internal files `adapters/index.ts` and `interfaces/model-resolver.ts` deleted (Task 4E), `SmartAgentHandle` / libs' `IStageHandler` and libs' internal shims kept); and on the review findings and the user's decision of 2026-10-05 in spec §17.22 — D64 (an injected connection strategy is owned by the agent: `close()` and a failed `build()` dispose it), D65 (the corpus checked against every bound store's declared dimension before any store exists), D66 (a store filled before skills are vectorized into it), D67 (orphans never use up the pool). **Goal:** `docs/superpowers/goals/2026-10-04-collection-profiles.md` (user-owned; never edited). Executors read the spec section each task cites.
 
 ## Global Constraints
 
@@ -41,7 +41,7 @@
 The ten inputs the spec implies, most likely to bite a user, each pinned by a test in its owning task:
 
 1. **Identical `itemId`s across owners** (users A and B both write `case-42` into one `user` store) — two separate items: A's `get` returns A's text and `data`, B's re-index and `remove` leave A untouched, A's retrieval returns only A's item. → Task 17 (`identical item ids across users stay separate`), Task 12 (`collapse keys on the owner-qualified item`).
-2. **Canonical record missing** (deleted item, interrupted replacement) — the hit is dropped, never returned with its own text, does not use up k, and is counted. → Task 12 (`a hit without its canonical record is an orphan`), Task 28 (`orphan counted`).
+2. **Canonical record missing** (deleted item, interrupted replacement) — the hit is dropped, never returned with its own text, does not use up k — nor the candidate pool: the next fetched item replaces it (D67) — and is counted. → Task 12 (`a hit without its canonical record is an orphan`; `default pool, k=1: a top orphan does not use up the pool`), Task 28 (`orphan counted`).
 3. **Decomposer overrunning the budget** (Σk > budget, a `k < 1`, empty text, a thrown error) — `DECOMPOSE_ERROR` returned, never a silent fall-back, never more than `budget` items. → Task 14 (`budgets summing above the budget are a DECOMPOSE_ERROR`).
 4. **Reranker returning the wrong score count** (fewer/more results, a duplicate, a non-finite score) — `RERANK_ERROR`; `stage1` keeps the stage-1 order, `error` returns the error. → Task 13 (`a reranker that drops a candidate is a RERANK_ERROR`), Task 4C (`RelevanceReranker`: wrong count / duplicate / out-of-range / non-finite → `RERANK_ERROR`), Task 18 (`SapAiCoreRelevanceDecision`: a wrong `/rerank` result is a `DecisionError`, never zero-filled).
 5. **A tool definition larger than the token budget** (top item alone over budget) — empty result, never truncated, never replaced by a smaller lower-ranked tool. → Task 6 (`the top item alone over budget gives an empty result`).
@@ -5749,7 +5749,7 @@ Claude-Session: https://claude.ai/code/session_012KjevEeQGZMkWMfnupJ7Yd"
 
 ## Task 12: `StagedRetrieval` — sources, item pool, collapse, hydration, orphans (libs)
 
-Spec §4.1–§4.4, §4.6 (hydration), §4.9; D14, D15; D56 (`pool` optional, absent → `ItemPool()`: the caller's k; the pool is asked with each (sub-)query's k). No service-record drop: there is no service record in a store (D54, spec §17.17). Every source holds items — no `role` / `itemsOf`, no variants sources (D50, spec §17.15). The reranker (Task 13), decomposer (Task 14) and telemetry (Task 28) build on this file.
+Spec §4.1–§4.4, §4.6 (hydration), §4.9; D14, D15; D56 (`pool` optional, absent → `ItemPool()`: the caller's k; the pool is asked with each (sub-)query's k). D67 (orphans never use up the pool: what was fetched beyond it is kept, and an orphan is replaced by the next fetched unit — ranked like the pool, then hydrated — before the cut). No service-record drop: there is no service record in a store (D54, spec §17.17). Every source holds items — no `role` / `itemsOf`, no variants sources (D50, spec §17.15). The reranker (Task 13), decomposer (Task 14) and telemetry (Task 28) build on this file.
 
 **Files:**
 - Create: `packages/llm-agent-libs/src/collections/staged-retrieval.ts`
@@ -5928,6 +5928,20 @@ describe('StagedRetrieval — stage 1, collapse, hydration', () => {
     await put(raw, 'Z', [['full', 'needle zulu']]);
     const rag = matchesOnly(raw);
     const r = await staged(primary(rag)).retrieve(rag, q('needle'), 1);
+    assert.deepEqual(ids(r), ['Z']);
+  });
+
+  it('default pool, k=1: a top orphan does not use up the pool — the next fetched item replaces it (§4.6, D67)', async () => {
+    const raw = new InMemoryRag();
+    await put(raw, 'Y', [['full', 'yankee'], ['summary', 'needle']]);
+    await raw.writer().deleteByIdRaw(recordId(G, 'Y', 'full', 0));
+    await put(raw, 'Z', [['full', 'needle zulu xray whiskey']]);
+    const rag = matchesOnly(raw);
+    const top = await rag.query(q('needle'), 3);
+    assert.ok(top.ok);
+    assert.equal(top.value[0]?.metadata.itemId, 'Y', 'precondition: the orphan ranks first');
+    // pool omitted → ItemPool(): the pool is k = 1 item; Z is fetched (k × maxRecordsPerItem = 3 records) but outside it
+    const r = await staged(primary(rag), { pool: undefined }).retrieve(rag, q('needle'), 1);
     assert.deepEqual(ids(r), ['Z']);
   });
 
@@ -6161,14 +6175,21 @@ export function newRunContext(options?: CallOptions): RunContext {
   };
 }
 
-function keepPerSource(units: readonly Unit[], n: number): Unit[] {
+/** The first `n` units per source (the pool) and the rest of what was fetched (the overflow), both in stage-1 order. */
+function splitPerSource(units: readonly Unit[], n: number): { pooled: Unit[]; overflow: Unit[] } {
   const count = new Map<string, number>();
-  return units.filter((u) => {
+  const pooled: Unit[] = [];
+  const overflow: Unit[] = [];
+  for (const u of units) {
     const c = count.get(u.source.name) ?? 0;
-    if (c >= n) return false;
+    if (c >= n) {
+      overflow.push(u);
+      continue;
+    }
     count.set(u.source.name, c + 1);
-    return true;
-  });
+    pooled.push(u);
+  }
+  return { pooled, overflow };
 }
 
 const matchedKinds = (hits: readonly RagResult[]): string[] => [
@@ -6267,17 +6288,38 @@ export class StagedRetrieval implements IRetrievalStrategy {
       });
     }
     units.sort((a, b) => b.score - a.score);
-    const pooled = keepPerSource(units, this.pool.items(poolK));
-    const ranked = await this.rank(pooled, query.text, ctx);
+    // The pool is the first pool.items(k) units per source; the rest of what
+    // was fetched is KEPT, in stage-1 order (spec §4.4, §4.6, D67).
+    const { pooled, overflow } = splitPerSource(units, this.pool.items(poolK));
+    const ranked = await this.rank(pooled, query.text, ctx, true);
     if (!ranked.ok) return ranked;
-    return this.hydrate(ranked.value, keep, ctx);
+    const out = await this.hydrate(ranked.value, keep, ctx);
+    if (!out.ok) return out;
+    // Orphans never use up the pool, so they never use up k (spec §4.6, D67):
+    // each orphan of the pool is replaced by the next fetched unit, in stage-1
+    // order — ranked like the pool (a reranker scores it against the same
+    // query, D28; no keepStage1Top pins: those are the pool's stage-1 places)
+    // and hydrated — until `keep` items or the overflow is spent. No new query.
+    let next = 0;
+    while (out.value.length < keep && next < overflow.length) {
+      const batch = overflow.slice(next, next + keep - out.value.length);
+      next += batch.length;
+      const rankedMore = await this.rank(batch, query.text, ctx, false);
+      if (!rankedMore.ok) return rankedMore;
+      const more = await this.hydrate(rankedMore.value, keep - out.value.length, ctx);
+      if (!more.ok) return more;
+      out.value.push(...more.value);
+    }
+    return out;
   }
 
-  /** Stage-1 order; the reranker is added in Task 13. */
+  /** Stage-1 order; the reranker is added in Task 13. `pin` is false for the
+   *  replacements of orphans (Task 13: no keepStage1Top pins there). */
   protected async rank(
     pooled: Unit[],
     _text: string,
     _ctx: RunContext,
+    _pin: boolean,
   ): Promise<Result<Unit[], RagError>> {
     return { ok: true, value: pooled };
   }
@@ -6690,7 +6732,17 @@ export function checkRerankOutput(
 }
 ```
 
-In `staged-retrieval.ts`: add `RagError` as a value import (change `type RagError` to `RagError` in the import list), import `checkRerankOutput` from `./rerank-check.js`, change `import { TopItemsCut } from './cuts.js'` to `import { ScoreFloorCut, TopItemsCut } from './cuts.js'`, add `const MAX_THROWN_MESSAGE = 500;` at module level, append to the end of the constructor (after `this.cut = …`, so a consumer's `cut` is the one checked):
+In `staged-retrieval.ts`: add `RagError` as a value import (change `type RagError` to `RagError` in the import list), import `checkRerankOutput` from `./rerank-check.js`, change `import { TopItemsCut } from './cuts.js'` to `import { ScoreFloorCut, TopItemsCut } from './cuts.js'`, add `const MAX_THROWN_MESSAGE = 500;` at module level, and, beside it, the outcome recorder — one run can call `rank` more than once (the replacements of orphans, Task 12, D67), so a later call never hides an earlier fallback or error:
+
+```ts
+const OUTCOME_SEVERITY: Record<RunStats['rerankOutcome'], number> = { none: 0, ok: 1, fallback: 2, error: 3 };
+/** Keep the run's most severe rerank outcome across its `rank` calls. */
+function recordOutcome(ctx: RunContext, outcome: RunStats['rerankOutcome']): void {
+  if (OUTCOME_SEVERITY[outcome] > OUTCOME_SEVERITY[ctx.stats.rerankOutcome]) ctx.stats.rerankOutcome = outcome;
+}
+```
+
+Then append to the end of the constructor (after `this.cut = …`, so a consumer's `cut` is the one checked):
 
 ```ts
     // Spec §4.7 (F5): pinned items are unmeasured (D7), and a 'stage1' fallback
@@ -6739,6 +6791,7 @@ and replace the `rank` method with:
     pooled: Unit[],
     text: string,
     ctx: RunContext,
+    pin: boolean,
   ): Promise<Result<Unit[], RagError>> {
     const rr = this.options.rerank;
     if (!rr || pooled.length === 0) return { ok: true, value: pooled };
@@ -6780,23 +6833,25 @@ and replace the `rank` method with:
       });
       ctx.stats.rerankError = `${failure.code}: ${failure.message}`;
       if (rr.onFailure === 'error') {
-        ctx.stats.rerankOutcome = 'error';
+        recordOutcome(ctx, 'error');
         return {
           ok: false,
           error: new RagError(`rerank failed: ${failure.message}`, 'RERANK_ERROR'),
         };
       }
-      ctx.stats.rerankOutcome = 'fallback';
+      recordOutcome(ctx, 'fallback');
       return { ok: true, value: live };
     }
-    ctx.stats.rerankOutcome = 'ok';
+    recordOutcome(ctx, 'ok');
     const byKey = new Map(live.map((u) => [u.key, u] as const));
     const reranked: Unit[] = [];
     for (const r of out) {
       const u = byKey.get(String(r.metadata.id));
       if (u) reranked.push({ ...u, score: r.score });
     }
-    const keepTop = rr.keepStage1Top ?? 0;
+    // Pins are the POOL's stage-1 places; the replacements of orphans (Task 12,
+    // `pin` false) are reranked without them (spec §4.6, §4.7, D67).
+    const keepTop = pin ? (rr.keepStage1Top ?? 0) : 0;
     if (keepTop === 0) return { ok: true, value: reranked };
     // Pinned items keep their stage-1 PLACE but carry their RERANKED score
     // (spec §4.7, F5): one scale across the result. The output check above
@@ -12855,7 +12910,7 @@ Spec §6.3 (D31; D32 — a worker's fill keeps the identity its agent dispatches
 - Modify: `packages/llm-agent-libs/src/builder.ts` (`build()`'s failure path also disposes the connection strategy it resolved through — no handle owns it yet; spec §6.3, D47)
 - Modify: `packages/llm-agent-libs/src/__tests__/mcp-servers-di.test.ts` (append: a failed build disposes its connection strategy)
 - Create: `packages/llm-agent-libs/src/__tests__/fill-tools-binding.test.ts`
-- Modify: `packages/llm-agent-server-libs/src/smart-agent/smart-server.ts` (fields after Task 23's `_toolsProfiles`; methods after Task 23's `withToolsStore`; the fill block right after the `if (yamlBuilderConnect) { … buildToolsRagHandle … }` harvest block ~line 1782; `new HealthChecker({` ~line 1888)
+- Modify: `packages/llm-agent-server-libs/src/smart-agent/smart-server.ts` (fields after Task 23's `_toolsProfiles`; methods after Task 23's `withToolsStore`; the main fill inside the `if (!yamlBuilderConnect) { … buildSharedPipelineInfra … }` block ~line 1653 — before the workers' startup builds and the startup `builder.build()`, D66; the shared-worker pass right after the `if (yamlBuilderConnect) { … buildToolsRagHandle … }` harvest block ~line 1782; `new HealthChecker({` ~line 1888)
 - Create: `packages/llm-agent-server-libs/src/smart-agent/workers/connected-mcp-server.ts` (D32: an already-connected client as an `IMcpServer`, so a worker's builder gets clients WITH descriptors through the existing `withMcpServers`)
 - Modify: `packages/llm-agent-server-libs/src/smart-agent/workers/worker-registry.ts` (`WorkerLlmSet.mcpClientDescriptors?`, backfilled beside `mcpClients`; `BuildSubAgentFn`'s `injected.mcpClientDescriptors?` / `injected.configuredSlotCount?`; the per-session re-wire forwards the descriptors and slot count of the clients it hands over)
 - Modify: `packages/llm-agent-server-libs/src/smart-agent/smart-server.ts` `buildSubAgent` (`injected.mcpClientDescriptors?` / `configuredSlotCount?`; `withToolNamespace`; clients with descriptors → `withMcpServers`; **the worker's own bound store filled before `subBuilder.build()`**, D35)
@@ -12869,11 +12924,11 @@ Spec §6.3 (D31; D32 — a worker's fill keeps the identity its agent dispatches
 - Produces:
   ```ts
   // @mcp-abap-adt/llm-agent-libs
-  export interface FillToolsBindingOptions { readonly logger?: ILogger; readonly toolRecordKey?: IToolRecordKey; readonly toolNamespace?: IToolNamespace; readonly descriptors?: readonly McpClientDescriptor[]; readonly configuredSlotCount?: number; readonly callOptions?: CallOptions }
-  export function fillToolsBinding(clients: readonly IMcpClient[], binding: IBoundCollection<ToolItem>, options?: FillToolsBindingOptions): Promise<ToolCatalogStatus | undefined>; // runs the store's fill source at creation (D42); undefined when the source attempts nothing (consumer) or callOptions.signal is already aborted; rejects a binding its store does not carry (D34)
+  export interface FillToolsBindingOptions { readonly logger?: ILogger; readonly toolRecordKey?: IToolRecordKey; readonly toolNamespace?: IToolNamespace; readonly descriptors?: readonly McpClientDescriptor[]; readonly configuredSlotCount?: number; readonly callOptions?: CallOptions; readonly skills?: ISkillManager }
+  export function fillToolsBinding(clients: readonly IMcpClient[], binding: IBoundCollection<ToolItem>, options?: FillToolsBindingOptions): Promise<ToolCatalogStatus | undefined>; // runs the store's fill source at creation (D42), then vectorizes `skills` into the same store (D66); undefined when the source attempts nothing (consumer) or callOptions.signal is already aborted; rejects a binding its store does not carry (D34)
   // HealthCheckerDeps gains: toolCatalog?: IToolCatalogReporter  (absent → the agent's own status, 30.1.0)
   ```
-  The server: with a bound `tools` store, `_buildInfra` fills it once from `_sharedMcpClients` on every path except `yamlBuilderConnect` (there the builder filled it at its `build()`). The worker's construction (`buildSubAgent` without `injected`) fills a worker's OWN bound store (D35, D41), before `subBuilder.build()`, from the clients its re-wires will hand that worker — the worker's own `mcpClients` in array order (they carry no descriptors), or the shared clients with `_sharedMcpClientDescriptors` / `_configuredSlotCount` once they are known (D32); on `yamlBuilderConnect` `_buildInfra` fills those workers right after the harvest (`fillSharedClientWorkerStores`, D38). So startup, a lazy rebuild, `PUT /v1/config` and hot reload all fill it — once per store. A per-session re-wire never fills; nothing is memoized or retried (D41). A worker on its own `mcp:` is filled by its own builder on the construction's build. A construction that fails anywhere — the server's fill, `subBuilder.build()` (incl. the builder-driven fill of a worker on its own `mcp:`), or the backfill — drops the worker's cache entry and closes the handle it built; a failed `build()` disposes the connection strategy it resolved through (D47). `ConfigReloadWatcher._onReload` returns the drain + invalidation as one promise and the server keeps the watcher (`_configReload`), so tests drive a hot reload directly (D39). Every worker's builder dispatches by the identity its store was filled with (the clients' descriptors through `withMcpServers` + `connectedMcpServer`, the server's `withToolNamespace`). `/health` reads the main status; a worker's fill is logged only. Without a binding nothing new runs.
+  The server: with a bound `tools` store, `_buildInfra` fills it once from `_sharedMcpClients` on every path except `yamlBuilderConnect` (there the builder filled it at its `build()`, before its skills) — right after the clients are resolved and before the startup build, so the skills that build vectorizes into the store land after the fill (D66). The worker's construction (`buildSubAgent` without `injected`) fills a worker's OWN bound store (D35, D41), before `subBuilder.build()`, from the clients its re-wires will hand that worker — the worker's own `mcpClients` in array order (they carry no descriptors), or the shared clients with `_sharedMcpClientDescriptors` / `_configuredSlotCount` once they are known (D32); on `yamlBuilderConnect` `_buildInfra` fills those workers right after the harvest (`fillSharedClientWorkerStores`, D38) — their builds skipped the skills (`fillsAfterBuild`), which that pass vectorizes after the fill (`fillToolsBinding`'s `skills`, D66). On every path a store is filled before skills are vectorized into it. So startup, a lazy rebuild, `PUT /v1/config` and hot reload all fill it — once per store. A per-session re-wire never fills; nothing is memoized or retried (D41). A worker on its own `mcp:` is filled by its own builder on the construction's build. A construction that fails anywhere — the server's fill, `subBuilder.build()` (incl. the builder-driven fill of a worker on its own `mcp:`), or the backfill — drops the worker's cache entry and closes the handle it built; a failed `build()` disposes the connection strategy it resolved through (D47). `ConfigReloadWatcher._onReload` returns the drain + invalidation as one promise and the server keeps the watcher (`_configReload`), so tests drive a hot reload directly (D39). Every worker's builder dispatches by the identity its store was filled with (the clients' descriptors through `withMcpServers` + `connectedMcpServer`, the server's `withToolNamespace`). `/health` reads the main status; a worker's fill is logged only. Without a binding nothing new runs.
 
 - [ ] **Step 1: Write the failing libs test**
 
@@ -12883,18 +12938,23 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
   type IMcpClient,
+  type ISkill,
+  type ISkillManager,
   type McpTool,
   type ToolCatalogStatus,
 } from '@mcp-abap-adt/llm-agent';
-import { InMemoryRag } from '@mcp-abap-adt/llm-agent-rag';
+import { InMemoryRag, VectorRag } from '@mcp-abap-adt/llm-agent-rag';
 import type { SmartAgent } from '../agent.js';
 import {
   bindToolsProfile,
+  buildToolsCorpus,
   ComposedToolsProfile,
   FacetedToolIndexer,
   ItemPool,
   MaxScoreCollapse,
   SummaryFacet,
+  ToolsCorpusLoader,
+  toolItemFromTool,
 } from '../collections/index.js';
 import { HealthChecker } from '../health/health-checker.js';
 import { fillToolsBinding } from '../mcp/fill-tools-binding.js';
@@ -12948,6 +13008,35 @@ describe('fillToolsBinding', () => {
     const r = await loose.rag.getById('tool:read_file');
     assert.ok(r.ok && r.value === null, 'nothing written, not even a 30.1.0 record');
   });
+
+  it('skills are vectorized AFTER the fill source ran — a corpus clear never erases them (D66, spec §7.7)', async () => {
+    const embedder = {
+      embedDocument: async (t: string) => ({ vector: [t.length % 7, 1] }),
+      embedDocuments: async (ts: string[]) => ts.map((t) => ({ vector: [t.length % 7, 1] })),
+      embedQuery: async (t: string) => ({ vector: [t.length % 7, 1] }),
+    };
+    const identity = { profile: 'p@1', embedder: 'e' };
+    const corpus = await buildToolsCorpus({
+      profile: profile(),
+      embedder,
+      identity,
+      items: [toolItemFromTool(TOOLS[0], { itemId: 'tool:read_file', originalName: 'read_file' })],
+    });
+    const skill = { name: 'deploy', description: 'Deploy the app' } as unknown as ISkill;
+    const skills: ISkillManager = {
+      listSkills: async () => ({ ok: true, value: [skill] }),
+      getSkill: async () => ({ ok: true, value: skill }),
+      matchSkills: async () => ({ ok: true, value: [skill] }),
+    };
+    const rag = new VectorRag(embedder);
+    const b = bindToolsProfile(profile(), { key: 'tools', rag }, new ToolsCorpusLoader({ corpus, expect: identity }));
+    const s = await fillToolsBinding([], b, { skills });
+    assert.equal(s?.complete, true);
+    const sk = await rag.getById('skill:deploy');
+    assert.ok(sk.ok && sk.value, 'the skill record is there after the corpus load cleared the store');
+    const tool = await b.get({ itemId: 'tool:read_file', owner: { scope: 'global' } });
+    assert.ok(tool.ok && tool.value, 'and the corpus too');
+  });
 });
 
 describe('HealthCheckerDeps.toolCatalog', () => {
@@ -12979,7 +13068,7 @@ describe('HealthCheckerDeps.toolCatalog', () => {
 
 Append to the `describe` block of `packages/llm-agent-libs/src/__tests__/mcp-servers-di.test.ts` (its imports already carry `IMcpConnectionStrategy`, `IPipeline`, `stubLlm`, `stubMcpClient`) — a worker on its own `mcp:` is filled by its builder inside `build()`; when that build fails after connecting, no handle exists to close the connection, so `build()` must (spec §6.3, D47). A failing pipeline stands in for a throwing tools fill: both fail inside the same `try`, after `resolve`:
 ```ts
-  it('a build that fails after resolving its connection strategy disposes it, and rethrows the original error (spec §6.3, D47)', async () => {
+  it('a build that fails after resolving its connection strategy — an injected one too — disposes it, and rethrows the original error (spec §6.3, D47, D64)', async () => {
     const { SmartAgentBuilder } = await import('../builder.js');
     const log: string[] = [];
     const strategy: IMcpConnectionStrategy = {
@@ -13009,14 +13098,14 @@ Append to the `describe` block of `packages/llm-agent-libs/src/__tests__/mcp-ser
           .build(),
       /pipeline init failed/,
     );
-    assert.deepEqual(log, ['resolve', 'dispose'], 'no handle owns the connection: the failed build disposes it');
+    assert.deepEqual(log, ['resolve', 'dispose'], 'the agent owns an injected strategy (D64): the failed build disposes it');
   });
 ```
 
 - [ ] **Step 2: Run to see it fail**
 
 Run: `node --import tsx/esm --test packages/llm-agent-libs/src/__tests__/fill-tools-binding.test.ts packages/llm-agent-libs/src/__tests__/mcp-servers-di.test.ts`
-Expected: FAIL — `../mcp/fill-tools-binding.js` does not exist; `toolCatalog` is not read; the new `mcp-servers-di.test.ts` case finds `log` = `['resolve']` (a failed build leaves its connection strategy alive).
+Expected: FAIL — `../mcp/fill-tools-binding.js` does not exist (the skills case with it); `toolCatalog` is not read; the new `mcp-servers-di.test.ts` case finds `log` = `['resolve']` (a failed build leaves its connection strategy alive).
 
 - [ ] **Step 3: Implement (libs)**
 
@@ -13027,6 +13116,7 @@ import type {
   IBoundCollection,
   ILogger,
   IMcpClient,
+  ISkillManager,
   IToolNamespace,
   IToolRecordKey,
   McpClientDescriptor,
@@ -13035,7 +13125,7 @@ import type {
 } from '@mcp-abap-adt/llm-agent';
 import { toolsBindingOf } from '../collections/tools-binding.js';
 import { NoopRequestLogger } from '../logger/noop-request-logger.js';
-import { vectorizeMcpTools } from './vectorize-mcp-tools.js';
+import { vectorizeMcpTools, vectorizeSkills } from './vectorize-mcp-tools.js';
 
 export interface FillToolsBindingOptions {
   readonly logger?: ILogger;
@@ -13047,6 +13137,14 @@ export interface FillToolsBindingOptions {
   readonly descriptors?: readonly McpClientDescriptor[];
   readonly configuredSlotCount?: number;
   readonly callOptions?: CallOptions;
+  /**
+   * Skills to vectorize into the same store AFTER its fill source ran (spec
+   * §7.7, D66) — as the builder's build() does after its own fill. For a
+   * caller that fills a store after the build that would have vectorized them
+   * (that build then gets `withSkillManager(m, { vectorize: false })`): the
+   * `corpus` source clears the store, so skills written before it are gone.
+   */
+  readonly skills?: ISkillManager;
 }
 
 /**
@@ -13077,11 +13175,12 @@ export async function fillToolsBinding(
       `fillToolsBinding: the store does not carry this binding (profile ${binding.profileName}) — bind with bindToolsProfile(profile, target), not profile.bind(target), so every path that reads the store finds it`,
     );
   }
-  return vectorizeMcpTools(
+  // The profile path logs no embedding usage through the request logger (Task 19).
+  const requestLogger = new NoopRequestLogger();
+  const status = await vectorizeMcpTools(
     [...clients],
     binding.rag,
-    // The profile path logs no embedding usage through the request logger (Task 19).
-    new NoopRequestLogger(),
+    requestLogger,
     options.logger,
     options.toolRecordKey,
     options.callOptions,
@@ -13091,6 +13190,11 @@ export async function fillToolsBinding(
       toolNamespace: options.toolNamespace,
     },
   );
+  // After the fill, never before: a `corpus` source clears the store (D66).
+  if (options.skills) {
+    await vectorizeSkills(options.skills, binding.rag, requestLogger, options.logger);
+  }
+  return status;
 }
 ```
 (`toolRecordKey` `undefined` → `vectorizeMcpTools`' default parameter `defaultToolRecordKey` applies.)
@@ -13159,7 +13263,7 @@ with
       await stopAll(closeFns);
       throw err;
 ```
-(`connectionStrategy` and `log` are declared before the `try`, as `handle.close()` uses them. A build that fails before `resolve` disposes a strategy it never resolved through — idempotent for `makeConnectionStrategy`'s, whose `dispose` closes only connected slots; an injected one was handed to the build, as `handle.close()` already treats it.)
+(`connectionStrategy` and `log` are declared before the `try`, as `handle.close()` uses them. A build that fails before `resolve` disposes a strategy it never resolved through — idempotent for `makeConnectionStrategy`'s, whose `dispose` closes only connected slots. An injected one (`withMcpConnectionStrategy`) is owned by the agent / pipeline it was injected into — the user's decision, spec §17.22, D64: `handle.close()` disposes it, and so does a failed `build()`; the consumer must not reuse it after either. Task 33 states this in `docs/INTEGRATION.md` and in the `withMcpConnectionStrategy` doc comment.)
 
 - [ ] **Step 4: Run (libs)**
 
@@ -13954,6 +14058,7 @@ In `smart-server.ts`:
   - the `@mcp-abap-adt/llm-agent` **type** import (L11–48): add `ToolCatalogStatus` (`McpClientDescriptor` is already there).
   - the `@mcp-abap-adt/llm-agent-libs` **value** import (L74–91, which Task 23 extended with `bindToolsProfile`): add `fillToolsBinding`, `toolsBindingOf`.
   - the `@mcp-abap-adt/llm-agent` **value** import (L49–66): add `isToolCatalogReporter` (not imported today; used by `mainToolCatalogStatus` below).
+  - the local `./workers/worker-registry.js` import (L611–616, beside the re-export block, which does not bring names into scope): add `type WorkerLlmSet` (used by `fillsAfterBuild`). `ISkillManager` is already in the `@mcp-abap-adt/llm-agent` type import (`SmartServerConfig.skillManager`).
 - field, after Task 23's `_toolsProfiles`:
   ```ts
   /** The main tools store's catalog when the server filled it (spec §6.3); undefined → the startup agent's, as in 30.1.0. */
@@ -13974,6 +14079,9 @@ In `smart-server.ts`:
     slots: {
       descriptors?: readonly McpClientDescriptor[];
       configuredSlotCount?: number;
+      /** Only where the store is filled AFTER the build that would have
+       *  vectorized these skills (the deferred shared-worker pass, D66). */
+      skills?: ISkillManager;
     } = {},
   ): Promise<ToolCatalogStatus | undefined> {
     const binding = store ? toolsBindingOf(store) : undefined;
@@ -13983,7 +14091,31 @@ In `smart-server.ts`:
       toolNamespace: this._toolNamespace,
       descriptors: slots.descriptors,
       configuredSlotCount: slots.configuredSlotCount,
+      skills: slots.skills,
     });
+  }
+
+  /**
+   * True for the one construction whose store is filled AFTER its build
+   * (spec §6.3, §7.7, D38, D66): a worker's construction (no `injected`) with
+   * its own BOUND store, no own clients, no own `mcp:`, while the shared
+   * clients are not known yet — `yamlBuilderConnect` at startup. Its build
+   * then must not vectorize the worker's skills (a `corpus` fill would clear
+   * them); `fillSharedClientWorkerStores` vectorizes them after the fill.
+   */
+  private fillsAfterBuild(
+    subCfg: SmartServerWorkerConfig,
+    cached: WorkerLlmSet,
+    injected: unknown,
+  ): boolean {
+    return (
+      !injected &&
+      !!cached.toolsRag &&
+      toolsBindingOf(cached.toolsRag) !== undefined &&
+      !(cached.mcpClients && cached.mcpClients.length > 0) &&
+      !subCfg.mcp &&
+      this._sharedMcpClients === undefined
+    );
   }
 
   /**
@@ -14001,6 +14133,11 @@ In `smart-server.ts`:
       await this.fillBoundToolsStore(set.toolsRag, this._sharedMcpClients ?? [], {
         descriptors: this._sharedMcpClientDescriptors,
         configuredSlotCount: this._configuredSlotCount,
+        // This store was built before its fill (fillsAfterBuild): its build
+        // did not vectorize the worker's skills; they go in now, after the
+        // fill — a corpus clear never erases them (D66). An unbound store
+        // fills nothing and its build vectorized them, as in 30.1.0.
+        skills: sub.config.skillManager,
       });
     }
   }
@@ -14026,6 +14163,25 @@ In `smart-server.ts`:
     // One naming rule for every catalog (D32): the startup builder and the
     // authoritative snapshot use this namespace, so the worker's does too.
     subBuilder = subBuilder.withToolNamespace(this._toolNamespace);
+    ```
+  - replace the worker's skill-manager line
+    ```ts
+    if (subCfg.skillManager) {
+      subBuilder = subBuilder.withSkillManager(subCfg.skillManager);
+    }
+    ```
+    with (a store is filled before skills are vectorized into it, spec §7.7, D66):
+    ```ts
+    if (subCfg.skillManager) {
+      // Every construction fills its store BEFORE subBuilder.build() (below),
+      // and build() vectorizes the skills after — except a store filled after
+      // its build (fillsAfterBuild: yamlBuilderConnect at startup, D38). There
+      // the build skips them and fillSharedClientWorkerStores vectorizes them
+      // after the fill, so a corpus clear never erases them (D66).
+      subBuilder = subBuilder.withSkillManager(subCfg.skillManager, {
+        vectorize: !this.fillsAfterBuild(subCfg, cached, injected),
+      });
+    }
     ```
   - replace the MCP-clients priority block
     ```ts
@@ -14196,27 +14352,23 @@ In `smart-server.ts`:
           ...(injectedSlotCount !== undefined ? { configuredSlotCount: injectedSlotCount } : {}),
     ```
   - the lazy build-on-miss in `WorkerRegistry.build` (`if (!this.cache.has(sub.name)) await this.deps.buildSubAgent(…)` with no `injected`) is unchanged: it is the worker's construction, and `buildSubAgent` fills the new store there (D35, D41) — that is what makes `PUT /v1/config` and hot reload fill the rebuilt workers' stores. (Two sessions missing together may construct a worker twice, each filling its own store — the 30.1.0 race moved to a separate issue, spec §15, D45.)
-- in `_buildInfra`, immediately after the harvest block
+- in `_buildInfra`, the main fill goes right after the shared clients are resolved — the `if (!yamlBuilderConnect) { await this.buildSharedPipelineInfra({ … }); }` block — and BEFORE the workers' startup builds (`subAgentConfigs` loop) and the startup `builder.build()`, which vectorizes the server's skills into this store (`buildBaseBuilder` → `withSkillManager(this._skillManager, { vectorize: parts.applyServerExtras })`). Replace that block with:
   ```ts
-    if (yamlBuilderConnect) {
-      this._sharedMcpClients = globalMcpClients ?? [];
-      await this.buildToolsRagHandle({ toolsRag, resolvedEmbedder });
-    }
-  ```
-  insert:
-  ```ts
-    // ---- The main tools store, filled once where it was created (spec §6.3, D41) ----
-    // The builder fills it only on its own connect (yamlBuilderConnect: its
-    // build() ran the store's fill source); every other path handed it the
-    // clients through withMcpClients, which does not vectorize. Fill ONCE here
-    // — clients resolved, before /health and listen. No
-    // binding → nothing runs (30.1.0). Workers' own stores are filled by their
-    // construction (D35), so a rebuild after a drain is filled too — except, on
-    // yamlBuilderConnect, the workers on the shared clients: those clients are
-    // known only now, so their creation completes here, at startup (D38).
-    if (yamlBuilderConnect) {
-      await this.fillSharedClientWorkerStores();
-    } else {
+    if (!yamlBuilderConnect) {
+      await this.buildSharedPipelineInfra({
+        toolsRag,
+        resolvedEmbedder,
+        mcpClients,
+      });
+      // ---- The main tools store, filled once where it was created (spec §6.3, D41) ----
+      // The builder fills it only on its own connect (yamlBuilderConnect: its
+      // build() runs the store's fill source, then vectorizes the skills);
+      // every other path — ready clients, plugin clients, an injected seam, no
+      // MCP — hands it the clients through withMcpClients, which does not
+      // vectorize. Fill ONCE here: the clients are resolved (just above), and
+      // the store is filled BEFORE the startup build vectorizes the skills into
+      // it — a corpus clear never erases them (spec §7.7, D66). Before /health
+      // and listen. No binding → nothing runs (30.1.0).
       this._serverToolCatalog = await this.fillBoundToolsStore(
         toolsRag,
         this._sharedMcpClients ?? [],
@@ -14225,6 +14377,24 @@ In `smart-server.ts`:
           configuredSlotCount: this._configuredSlotCount,
         },
       );
+    }
+  ```
+  (`_sharedMcpClientDescriptors` / `_configuredSlotCount` are set by `_resolveMcpWithDescriptors` on the seam path, before this point; the startup handle sets them only on `yamlBuilderConnect`.) And immediately after the harvest block
+  ```ts
+    if (yamlBuilderConnect) {
+      this._sharedMcpClients = globalMcpClients ?? [];
+      await this.buildToolsRagHandle({ toolsRag, resolvedEmbedder });
+    }
+  ```
+  insert:
+  ```ts
+    // Workers' own stores are filled by their construction (D35), so a
+    // rebuild after a drain is filled too — except, on yamlBuilderConnect, the
+    // workers on the shared clients: those clients are known only now, so
+    // their creation completes here, at startup (D38), skills after the fill
+    // (D66). The main store was filled by the startup builder (row 1).
+    if (yamlBuilderConnect) {
+      await this.fillSharedClientWorkerStores();
     }
   ```
 - in `new HealthChecker({`, after `agent: smartAgent,`:
@@ -14359,7 +14529,7 @@ node --import tsx/esm --test packages/llm-agent-server-libs/src/smart-agent/__te
 npm test --workspace @mcp-abap-adt/llm-agent-libs
 npm test --workspace @mcp-abap-adt/llm-agent-server-libs
 ```
-Expected: PASS. `tsc -b` with `strict` + `noUnusedLocals` proves the cumulative imports and members: every added name is used (`ToolCatalogStatus` by the field and methods, `fillToolsBinding`/`toolsBindingOf` by `fillBoundToolsStore`, `fillBoundToolsStore` by `_buildInfra`, `buildSubAgent` and `fillSharedClientWorkerStores`, `fillSharedClientWorkerStores` by `_buildInfra`, `_configReload` read by the close function, `isToolCatalogReporter` by `mainToolCatalogStatus`, `connectedMcpServer` by `buildSubAgent`, `McpClientDescriptor` in `worker-registry.ts` by `WorkerLlmSet`, the handle type and `BuildSubAgentFn`); nothing named `fillWorkerToolsStores`, `_filledToolsBindings`, `_toolsFills` or `markToolsFilledByBuilder` exists (no memo, no refill — D41). The existing worker and reload tests (`retrieval-wiring.test.ts`, `worker-llm-keys.test.ts`, `worker-llm-cache.test.ts`, `smart-server-config-reload.test.ts`, `config-reload-weights.test.ts` — it calls `_onReload` and ignores the returned promise; the weights are still applied synchronously) pass unchanged: without a profile no store carries a binding, so the fill block does nothing; without descriptors a worker still gets `withMcpClients`, and the default namespace is what `withToolNamespace` threads when none is injected.
+Expected: PASS. `tsc -b` with `strict` + `noUnusedLocals` proves the cumulative imports and members: every added name is used (`ToolCatalogStatus` by the field and methods, `fillToolsBinding`/`toolsBindingOf` by `fillBoundToolsStore`, `fillBoundToolsStore` by `_buildInfra`, `buildSubAgent` and `fillSharedClientWorkerStores`, `fillSharedClientWorkerStores` by `_buildInfra`, `fillsAfterBuild` by `buildSubAgent` (and the local `type WorkerLlmSet` import by `fillsAfterBuild`), `_configReload` read by the close function, `isToolCatalogReporter` by `mainToolCatalogStatus`, `connectedMcpServer` by `buildSubAgent`, `McpClientDescriptor` in `worker-registry.ts` by `WorkerLlmSet`, the handle type and `BuildSubAgentFn`); nothing named `fillWorkerToolsStores`, `_filledToolsBindings`, `_toolsFills` or `markToolsFilledByBuilder` exists (no memo, no refill — D41). The existing worker and reload tests (`retrieval-wiring.test.ts`, `worker-llm-keys.test.ts`, `worker-llm-cache.test.ts`, `smart-server-config-reload.test.ts`, `config-reload-weights.test.ts` — it calls `_onReload` and ignores the returned promise; the weights are still applied synchronously) pass unchanged: without a profile no store carries a binding, so the fill block does nothing; without descriptors a worker still gets `withMcpClients`, and the default namespace is what `withToolNamespace` threads when none is injected.
 
 - [ ] **Step 9: Commit**
 
@@ -14376,7 +14546,7 @@ Claude-Session: https://claude.ai/code/session_012KjevEeQGZMkWMfnupJ7Yd"
 
 ## Task 23B: YAML `rag.profiles.tools.fill` → the store's fill source (server-libs)
 
-Spec §6.2 (`fill`, its validation and resolution; `toolsFillFactories`), §3.10 (the three sources — `live`, `corpus`, `consumer`; D42, D46 — `fill` only; D47 — the fingerprint, the worker refusal; **D54 — the server loads the corpus at start: the expectation is what the server is configured with, incl. the tools store config's `dimension`**), §6.5 (the load at start), §14.1 (server `fill`). After Task 23A every server-bound store carries the default `live` source; this task lets the YAML (or a config built in code) choose another one, server-wide: the main store and every worker store the server builds are bound with it (`withToolsStore`). There is no `prebuilt` source and no deploy step (D54): a leftover `prebuilt` is refused, naming `corpus`.
+Spec §6.2 (`fill`, its validation and resolution; `toolsFillFactories`), §3.10 (the three sources — `live`, `corpus`, `consumer`; D42, D46 — `fill` only; D47 — the fingerprint, the worker refusal; **D54 — the server loads the corpus at start: the expectation is what the server is configured with, incl. the tools store config's `dimension`**; **D65 — the corpus is checked against EVERY tools store the server binds with it — the main one and each worker's own — at resolution, before any store is created**), §6.5 (the load at start), §7.7 and D66 (the corpus is loaded before skills are vectorized into the store — Task 23A's order, tested here with a real `corpus` source), §14.1 (server `fill`). After Task 23A every server-bound store carries the default `live` source; this task lets the YAML (or a config built in code) choose another one, server-wide: the main store and every worker store the server builds are bound with it (`withToolsStore`). There is no `prebuilt` source and no deploy step (D54): a leftover `prebuilt` is refused, naming `corpus`.
 
 **Files:**
 - Modify: `packages/llm-agent-server-libs/src/smart-agent/profiles-config.ts` (`SmartServerFillConfig`; `SmartServerProfileConfig.fill?`)
@@ -14384,7 +14554,7 @@ Spec §6.2 (`fill`, its validation and resolution; `toolsFillFactories`), §3.10
 - Modify: `packages/llm-agent-server-libs/src/smart-agent/resolve-collection-profiles.ts` (`ResolvedToolsProfile.fill?`; `ResolveCollectionProfilesInput.fillFactories?`, `readFile?` — the file seam Task 22 no longer has since the intents file went, D50 — and `toolsStoreDimension?`; `resolveFill`)
 - Modify: `packages/llm-agent-server-libs/src/smart-agent/smart-server.ts` (`SmartServerConfig.toolsFillFactories?`; the resolver call; `withToolsStore` binds with the source; the worker check right after Task 23's S8 check in `_buildInfra`)
 - Modify: `packages/llm-agent-server-libs/src/index.ts` (export `SmartServerFillConfig`)
-- Modify (append): `__tests__/profiles-config.test.ts`, `__tests__/resolve-collection-profiles.test.ts`, `__tests__/profile-fill-ready-clients.test.ts`
+- Modify (append): `__tests__/profiles-config.test.ts`, `__tests__/resolve-collection-profiles.test.ts`, `__tests__/profile-fill-ready-clients.test.ts`, `__tests__/mcp-yaml-vectorization.test.ts` (the deferred shared-worker fill keeps the worker's skills, D66)
 
 **Interfaces:**
 - Consumes: `LiveToolsFill`, `ConsumerToolsFill` (Task 19); `ToolsCorpusLoader` (`new ToolsCorpusLoader({ corpus, expect: ToolsCorpusExpectation })`, name `'corpus'`), `parseToolsCorpus`, `buildToolsCorpus` (Task 19A); `bindToolsProfile`'s `source` (Task 19); Task 23's (synchronous) `withToolsStore` and its S8 check; Task 23A's test helpers.
@@ -14399,7 +14569,8 @@ Spec §6.2 (`fill`, its validation and resolution; `toolsFillFactories`), §3.10
   // ResolvedToolsProfile gains: readonly fill?: IToolsFillSource   (absent → bindToolsProfile's default, live)
   // ResolveCollectionProfilesInput gains: fillFactories?: Readonly<Record<string, () => IToolsFillSource>>;
   //   readFile?: (path: string) => string   (test seam for the corpus file; absent → readFileSync(path, 'utf8'))
-  //   toolsStoreDimension?: number          (the tools store config's declared `dimension` → expect.dimensions)
+  //   toolsStoreDimension?: number          (the main tools store config's declared `dimension` → expect.dimensions; checked at resolution too)
+  //   workerToolsStoreDimensions?: Readonly<Record<string, number>>   (worker name → its own tools store config's declared `dimension`; checked at resolution, D65)
   // smart-server.ts — SmartServerConfig gains: toolsFillFactories?: Readonly<Record<string, () => IToolsFillSource>>
   ```
 
@@ -14453,6 +14624,14 @@ describe('fill → the fill source (spec §6.2, D54)', () => {
     assert.ok(loader instanceof ToolsCorpusLoader);
     assert.equal(loader.name, 'corpus');
     assert.equal(reads, 1, 'the corpus file is read once, at startup');
+    // D65: every store bound with the corpus is checked at resolution — a worker's own declared dimension too
+    await assert.rejects(
+      run(
+        { corpus: { file: 'c.json', profile: 'faceted@1', embedder: 'e' } },
+        { readFile: () => JSON.stringify(corpus), toolsStoreDimension: 2, workerToolsStoreDimensions: { own: 3 } },
+      ),
+      /rag\.profiles\.tools: fill\.corpus: the corpus's vectors have dimension 2, but the tools store of worker 'own' declares dimension 3/,
+    );
     const own = { name: 'own', fill: async () => undefined };
     assert.equal(await run('own', { fillFactories: { own: () => own } }), own);
     await assert.rejects(run('nope'), /rag\.profiles\.tools: unknown fill source "nope"/);
@@ -14463,7 +14642,7 @@ describe('fill → the fill source (spec §6.2, D54)', () => {
 });
 ```
 
-Append to `profile-fill-ready-clients.test.ts` (imports: `buildToolsCorpus` into the `@mcp-abap-adt/llm-agent-libs` import; `VectorRag` from `@mcp-abap-adt/llm-agent-rag` (where it lives since Task 1A, D57); `type IRetrievalEmbedder`, `recordId` into the `@mcp-abap-adt/llm-agent` import):
+Append to `profile-fill-ready-clients.test.ts` (imports: `buildToolsCorpus`, `toolItemFromTool` into the `@mcp-abap-adt/llm-agent-libs` import; `VectorRag` from `@mcp-abap-adt/llm-agent-rag` (where it lives since Task 1A, D57); `type IRetrievalEmbedder`, `type ISkill`, `type ISkillManager` into the `@mcp-abap-adt/llm-agent` import — `recordId` and `TextOnlyEmbedding` are there since Task 23A):
 ```ts
 // ---- D42, D54: the fill source from config — corpus, loaded at start into any store ----
 
@@ -14558,6 +14737,91 @@ test('(16) fill: corpus — a declared store dimension that differs fails startu
   assert.ok(foreign.ok && foreign.value, 'checked before the clear: the store is untouched');
 });
 
+test('(16b) D65: fill: corpus — main declares dimension 2, a worker store 3, corpus 2 → startup fails naming the worker; no store cleared or written', async (t) => {
+  const { embedder } = docCounting();
+  const file = await corpusFile(t, embedder); // 2-dim vectors
+  const stores: VectorRag[] = [];
+  const server = new SmartServer(
+    {
+      ...cfg({ mcpClients: [client(['EchoTool'])] }),
+      rag: {
+        store: { type: 'pg-vector', collectionName: 'tools', dimension: 2 },
+        profiles: { tools: { variant: 'faceted', fill: { corpus: { file, ...FILL_ID } } } },
+      },
+      // shared clients (no own clients): a corpus is allowed for it — only its declared dimension differs
+      subAgentConfigs: [
+        { name: 'own', config: { skipModelValidation: true, rag: { store: { type: 'pg-vector', collectionName: 'own-tools', dimension: 3 } } } },
+      ],
+    } as unknown as SmartServerConfig,
+    {
+      ...constructionSeams,
+      makeRag: async () => {
+        const s = await storeWithForeignRecord();
+        stores.push(s);
+        return s;
+      },
+    },
+  );
+  await assert.rejects(server.start(), /dimension 2, but the tools store of worker 'own' declares dimension 3/);
+  for (const s of stores) {
+    const foreign = await s.getById('foreign');
+    assert.ok(foreign.ok && foreign.value, 'no store was cleared');
+    const full = await s.getById(recordId({ scope: 'global' }, 'tool:EchoTool', 'full', 0));
+    assert.ok(full.ok && full.value === null, 'no store was written');
+  }
+  assert.equal(stores.length, 0, 'refused at resolution — before any store was created');
+});
+
+/** A skill manager with one skill, `deploy`. */
+function oneSkill(): ISkillManager {
+  const skill = { name: 'deploy', description: 'Deploy the app' } as unknown as ISkill;
+  return {
+    listSkills: async () => ({ ok: true, value: [skill] }),
+    getSkill: async () => ({ ok: true, value: skill }),
+    matchSkills: async () => ({ ok: true, value: [skill] }),
+  };
+}
+
+test('(16c) D66: fill: corpus + a skill manager on ready clients — the corpus is loaded BEFORE the skills, so both are there after start', async (t) => {
+  const { embedder } = docCounting();
+  const file = await corpusFile(t, embedder); // holds EchoTool
+  await withServer(
+    {
+      // the client lists another tool: only the corpus can put EchoTool there
+      ...cfg({ mcpClients: [client(['LiveOnly'])], skillManager: oneSkill() }),
+      rag: { store: { type: 'in-memory' }, profiles: { tools: { variant: 'faceted', fill: { corpus: { file, ...FILL_ID } } } } },
+    } as unknown as SmartServerConfig,
+    { ...constructionSeams, makeRag: async () => new VectorRag(embedder) },
+    async ({ toolsRag }) => {
+      assert.ok(toolsRag);
+      const skill = await toolsRag.getById('skill:deploy');
+      assert.ok(skill.ok && skill.value, 'the skill record survived the corpus clear');
+      const b = toolsBindingOf(toolsRag);
+      assert.ok(b);
+      const echo = await b.get({ itemId: 'tool:EchoTool', owner: { scope: 'global' } });
+      assert.ok(echo.ok && echo.value, 'the corpus is there');
+      const live = await b.get({ itemId: 'tool:LiveOnly', owner: { scope: 'global' } });
+      assert.ok(live.ok && live.value === null, 'loaded from the corpus, not listed live');
+      const hits = await toolsRag.query(new TextOnlyEmbedding('Skill: deploy\nDeploy the app'), 10);
+      assert.ok(hits.ok && hits.value.some((h) => h.metadata.id === 'skill:deploy'), 'the skill is searchable');
+    },
+  );
+});
+
+test('(16d) D66: live fill + a skill manager — tools and skills both there, as before', async () => {
+  const calls: string[][] = [];
+  await withServer(
+    cfg({ mcpClients: [client(['EchoTool'])], skillManager: oneSkill() }, calls),
+    constructionSeams,
+    async ({ toolsRag }) => {
+      await assertFilled(toolsRag, ['EchoTool']);
+      const skill = await toolsRag?.getById('skill:deploy');
+      assert.ok(skill?.ok && skill.value, 'the skill record is there');
+      assert.deepEqual(calls, [['EchoTool']], 'the live fill ran once');
+    },
+  );
+});
+
 test('(17) fill: corpus with a worker that has its own rag AND its own clients → refused at start', async (t) => {
   const file = await corpusFile(t, docCounting().embedder);
   const server = new SmartServer(
@@ -14571,12 +14835,84 @@ test('(17) fill: corpus with a worker that has its own rag AND its own clients �
   await assert.rejects(server.start(), /fill: corpus .* worker 'own' has its own tools store and its own MCP clients/);
 });
 ```
-(`VectorRag.writer()` always carries `upsertPrecomputedRaw` and `clearAll`, so the loader's capability check passes on it. Test (16) relies on `ToolsCorpusLoader`'s step 1 — the dimension check runs before the clear (Task 19A); its message names the manifest's and the expected dimension.)
+(`VectorRag.writer()` always carries `upsertPrecomputedRaw` and `clearAll`, so the loader's capability check passes on it. Tests (16) and (16b) are refused at resolution — every declared dimension, the main store's and each worker store's, is checked against the corpus before any store is created (D65); its message names the corpus's and each differing store's dimension. `ToolsCorpusLoader`'s own step 1 (Task 19A) still checks `expect.dimensions` before its clear, for a builder consumer's composition root. Tests (16c) and (16d) pin the order of Task 23A (D66) with a real clearing source: the corpus is loaded before the startup build vectorizes the skills into the store; a live fill is unaffected.)
+
+Append to `mcp-yaml-vectorization.test.ts` (D66 on the one path whose store is filled after its build — a worker on the shared clients under `yamlBuilderConnect`, filled by `fillSharedClientWorkerStores` right after the harvest; imports gain `mkdtempSync`, `rmSync`, `writeFileSync` from `node:fs`, `tmpdir` from `node:os`, `join` from `node:path`; `buildToolsCorpus`, `toolItemFromTool` into the `@mcp-abap-adt/llm-agent-libs` import (Task 23A added `mcpToolsVariants`; `toolsBindingOf` is there since Task 23); `VectorRag` into the `@mcp-abap-adt/llm-agent-rag` import (Task 23A added it with `SimpleRagRegistry`); `type IRetrievalEmbedder`, `type ISkill`, `type ISkillManager` and the value `TextOnlyEmbedding` into the `@mcp-abap-adt/llm-agent` import — written `import { type IMcpClient, type IRag, …, TextOnlyEmbedding } from '@mcp-abap-adt/llm-agent';` once it carries a value):
+```ts
+test("D66: yamlBuilderConnect — a worker on the shared clients with fill: corpus and its own skill manager keeps its skills: the deferred fill loads the corpus, then the skills", async (t) => {
+  const stub = await startStubOrSkip(t, ['EchoTool', 'GetTable']);
+  if (!stub) return;
+  const v = (x: string) => ({ vector: [x.length % 7, 1] });
+  const embedder: IRetrievalEmbedder = {
+    embedDocument: async (x) => v(x),
+    embedDocuments: async (xs) => xs.map(v),
+    embedQuery: async (x) => v(x),
+  };
+  const identity = { profile: 'faceted@1', embedder: 'counting' };
+  const corpus = await buildToolsCorpus({
+    profile: mcpToolsVariants.faceted(),
+    embedder,
+    identity,
+    items: [
+      toolItemFromTool(
+        { name: 'CorpusTool', description: 'Tool CorpusTool', inputSchema: { type: 'object', properties: {} } },
+        { itemId: 'tool:CorpusTool', originalName: 'CorpusTool' },
+      ),
+    ],
+  });
+  const dir = mkdtempSync(join(tmpdir(), 'corpus-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const file = join(dir, 'tools-corpus.json');
+  writeFileSync(file, JSON.stringify(corpus));
+  const skill = { name: 'deploy', description: 'Deploy the app' } as unknown as ISkill;
+  const skillManager: ISkillManager = {
+    listSkills: async () => ({ ok: true, value: [skill] }),
+    getSkill: async () => ({ ok: true, value: skill }),
+    matchSkills: async () => ({ ok: true, value: [skill] }),
+  };
+  const server = new SmartServer(
+    {
+      port: 0,
+      llm: { model: 'test-model' },
+      skipModelValidation: true,
+      mode: 'smart',
+      rag: { store: { type: 'in-memory' }, profiles: { tools: { variant: 'faceted', fill: { corpus: { file, ...identity } } } } },
+      mcp: { type: 'http', url: stub.url },
+      subAgentConfigs: [
+        // own store, no own clients, no own mcp: → filled after its build, from the harvested clients
+        { name: 'shared', config: { skipModelValidation: true, rag: { store: { type: 'in-memory' } }, skillManager } },
+      ],
+    } as unknown as SmartServerConfig,
+    { ...constructionSeams, makeRag: async () => new VectorRag(embedder) },
+  );
+  let handle: Awaited<ReturnType<SmartServer['start']>> | undefined;
+  try {
+    handle = await server.start();
+    const workerRag = (server as unknown as { _workers: { cache: Map<string, { toolsRag?: IRag }> } })._workers.cache.get(
+      'shared',
+    )?.toolsRag;
+    assert.ok(workerRag, "the worker's own store");
+    const sk = await workerRag.getById('skill:deploy');
+    assert.ok(sk.ok && sk.value, "the worker's skill survived its store's corpus load");
+    const hits = await workerRag.query(new TextOnlyEmbedding('Skill: deploy\nDeploy the app'), 10);
+    assert.ok(hits.ok && hits.value.some((h) => h.metadata.id === 'skill:deploy'), 'and is searchable');
+    const b = toolsBindingOf(workerRag);
+    assert.ok(b, 'bound');
+    const fromCorpus = await b.get({ itemId: 'tool:CorpusTool', owner: { scope: 'global' } });
+    assert.ok(fromCorpus.ok && fromCorpus.value, 'the corpus was loaded into the worker store');
+    const listed = await b.get({ itemId: 'tool:EchoTool', owner: { scope: 'global' } });
+    assert.ok(listed.ok && listed.value === null, 'from the corpus, not from the live list');
+  } finally {
+    if (handle) await handle.close();
+    await stub.close();
+  }
+});
+```
 
 - [ ] **Step 2: Run to see them fail**
 
-Run: `npx tsc -b packages/llm-agent-libs && node --import tsx/esm --test packages/llm-agent-server-libs/src/smart-agent/__tests__/profiles-config.test.ts packages/llm-agent-server-libs/src/smart-agent/__tests__/resolve-collection-profiles.test.ts packages/llm-agent-server-libs/src/smart-agent/__tests__/profile-fill-ready-clients.test.ts`
-Expected: FAIL — `fill` is an unknown profile field; `ResolvedToolsProfile` has no `fill`; (14) indexes live (document calls > 0); (15) keeps the foreign record; (16) and (17) start.
+Run: `npx tsc -b packages/llm-agent-libs && node --import tsx/esm --test packages/llm-agent-server-libs/src/smart-agent/__tests__/profiles-config.test.ts packages/llm-agent-server-libs/src/smart-agent/__tests__/resolve-collection-profiles.test.ts packages/llm-agent-server-libs/src/smart-agent/__tests__/profile-fill-ready-clients.test.ts packages/llm-agent-server-libs/src/smart-agent/__tests__/mcp-yaml-vectorization.test.ts`
+Expected: FAIL — `fill` is an unknown profile field; `ResolvedToolsProfile` has no `fill` (and `workerToolsStoreDimensions` is not an input); (14) indexes live (document calls > 0); (15) keeps the foreign record; (16), (16b) and (17) start; (16c) finds no `EchoTool` (the live fill listed `LiveOnly`); the D66 test in `mcp-yaml-vectorization.test.ts` finds no `CorpusTool` in the worker store. (16d) passes already — it pins that a live fill keeps both tools and skills.
 
 - [ ] **Step 3: Implement**
 
@@ -14610,7 +14946,7 @@ function checkFill(label: string, v: unknown, issues: string[]): void {
 
 `resolve-collection-profiles.ts`:
 - imports: `import { readFileSync } from 'node:fs';` (Task 22 has no file read any more — the intents file is gone, D50); `ConsumerToolsFill`, `LiveToolsFill`, `parseToolsCorpus`, `ToolsCorpusLoader` into the `@mcp-abap-adt/llm-agent-libs` value import; `IToolsFillSource` into the `@mcp-abap-adt/llm-agent` type import; `SmartServerFillConfig` into the `./profiles-config.js` type import.
-- `ResolvedToolsProfile` gains `readonly fill?: IToolsFillSource;` (doc: "where the store's records come from, spec §3.10; absent → live"); `ResolveCollectionProfilesInput` gains `fillFactories?: Readonly<Record<string, () => IToolsFillSource>>;`, `readFile?: (path: string) => string;` (doc: "reads `fill.corpus.file`; absent → `readFileSync(path, 'utf8')`") and `toolsStoreDimension?: number;` (doc: "the tools store config's declared vector length — `ToolsCorpusLoader`'s `expect.dimensions`; absent → not checked by the library, spec §3.10"). At the top of `resolveCollectionProfiles`: `const readFile = input.readFile ?? ((p: string) => readFileSync(p, 'utf8'));`. Task 22's `ResolvedToolsProfile` is `{ key; profile?; variant? }`; this task adds `fill?`.
+- `ResolvedToolsProfile` gains `readonly fill?: IToolsFillSource;` (doc: "where the store's records come from, spec §3.10; absent → live"); `ResolveCollectionProfilesInput` gains `fillFactories?: Readonly<Record<string, () => IToolsFillSource>>;`, `readFile?: (path: string) => string;` (doc: "reads `fill.corpus.file`; absent → `readFileSync(path, 'utf8')`") `toolsStoreDimension?: number;` (doc: "the main tools store config's declared vector length — `ToolsCorpusLoader`'s `expect.dimensions`; absent → not checked by the library, spec §3.10") and `workerToolsStoreDimensions?: Readonly<Record<string, number>>;` (doc: "worker name → the declared vector length of that worker's own tools store config; every entry, and `toolsStoreDimension`, is checked against the corpus at resolution — before any store exists (spec §3.10, §6.2, D65)"). At the top of `resolveCollectionProfiles`: `const readFile = input.readFile ?? ((p: string) => readFileSync(p, 'utf8'));`. Task 22's `ResolvedToolsProfile` is `{ key; profile?; variant? }`; this task adds `fill?`.
 - add:
   ```ts
   /** `fill` → ONE fill source instance, server-wide (spec §6.2, §3.10). Absent → undefined (live). */
@@ -14618,7 +14954,7 @@ function checkFill(label: string, v: unknown, issues: string[]): void {
     fill: SmartServerFillConfig | undefined,
     readFile: (path: string) => string,
     factories: Readonly<Record<string, () => IToolsFillSource>> | undefined,
-    dimensions: number | undefined,
+    dimensions: { readonly main?: number; readonly workers?: Readonly<Record<string, number>> },
   ): IToolsFillSource | undefined {
     if (fill === undefined) return undefined;
     if (fill === 'live') return new LiveToolsFill();
@@ -14636,13 +14972,37 @@ function checkFill(label: string, v: unknown, issues: string[]): void {
     }
     const { file, profile, embedder } = fill.corpus;
     // Read ONCE at startup; checked against what the server is configured with (D54).
+    const corpus = parseToolsCorpus(readFile(file));
+    // ONE source binds the main store AND every worker store the server builds
+    // (withToolsStore), each from its own store config. The loader's expect
+    // carries one dimension, so every declared dimension is checked here, at
+    // resolution — before any store is created, let alone cleared (D65). The
+    // other identity checks are server-wide: `profile` / `embedder` come from
+    // this one `fill`, and every store is bound with the same profile, so the
+    // loader's step 1 checks them alike at each store's creation, before its
+    // clear. An empty corpus has no dimension: nothing to compare.
+    const have = corpus.manifest.dimensions;
+    if (have !== undefined) {
+      const declared: Array<[string, number]> = [
+        ...(dimensions.main !== undefined ? [['the main tools store', dimensions.main] as [string, number]] : []),
+        ...Object.entries(dimensions.workers ?? {}).map(
+          ([w, d]): [string, number] => [`the tools store of worker '${w}'`, d],
+        ),
+      ];
+      const differs = declared.filter(([, d]) => d !== have).map(([store, d]) => `${store} declares dimension ${d}`);
+      if (differs.length > 0) {
+        throw new Error(
+          `fill.corpus: the corpus's vectors have dimension ${have}, but ${differs.join('; ')} — every store bound with this corpus must match (spec §3.10, D65); no store was created or touched`,
+        );
+      }
+    }
     return new ToolsCorpusLoader({
-      corpus: parseToolsCorpus(readFile(file)),
-      expect: { profile, embedder, ...(dimensions !== undefined ? { dimensions } : {}) },
+      corpus,
+      expect: { profile, embedder, ...(dimensions.main !== undefined ? { dimensions: dimensions.main } : {}) },
     });
   }
   ```
-- in the loop, inside the `try` (so a failure is prefixed `rag.profiles.<key>: `), after `const decompose = …;`: `const fill = resolveFill(cfg.fill, readFile, input.fillFactories, input.toolsStoreDimension);`, and each `out.set(key, { … })` gains `...(fill ? { fill } : {}),`.
+- in the loop, inside the `try` (so a failure is prefixed `rag.profiles.<key>: `), after `const decompose = …;`: `const fill = resolveFill(cfg.fill, readFile, input.fillFactories, { main: input.toolsStoreDimension, workers: input.workerToolsStoreDimensions });`, and each `out.set(key, { … })` gains `...(fill ? { fill } : {}),`.
 
 `smart-server.ts`:
 - `SmartServerConfig`, after `toolsStrategyFactories?`:
@@ -14654,13 +15014,25 @@ function checkFill(label: string, v: unknown, issues: string[]): void {
 - the `resolveCollectionProfiles({ … })` call (Task 23) gains:
   ```ts
       fillFactories: this.cfg.toolsFillFactories,
-      // The tools store config's declared vector length (pg-vector / HANA `dimension`), D54.
-      toolsStoreDimension: (() => {
-        const store = this.cfg.rag?.store;
-        return store && 'dimension' in store ? store.dimension : undefined;
-      })(),
+      // The tools store configs' declared vector lengths (pg-vector / HANA
+      // `dimension`): the main one (D54) and each worker's own (D65) — every
+      // store bound with the fill source, checked before any store exists.
+      toolsStoreDimension: declaredDimension(this.cfg.rag?.store),
+      workerToolsStoreDimensions: Object.fromEntries(
+        (this.cfg.subAgentConfigs ?? []).flatMap((w) => {
+          const d = declaredDimension(w.config.rag?.store);
+          return d !== undefined ? [[w.name, d] as const] : [];
+        }),
+      ),
   ```
-  (`SmartServerRagStoreConfig` is a union; only the pg-vector and HANA arms carry `dimension?`, so the `in` check narrows it — no cast.)
+  with, at module level in `smart-server.ts`:
+  ```ts
+  /** A store config's declared vector length (pg-vector / HANA `dimension`); undefined when it declares none. */
+  function declaredDimension(store: SmartServerRagStoreConfig | undefined): number | undefined {
+    return store && 'dimension' in store ? store.dimension : undefined;
+  }
+  ```
+  (`SmartServerRagStoreConfig` is a union; only the pg-vector and HANA arms carry `dimension?`, so the `in` check narrows it — no cast. Add `type SmartServerRagStoreConfig` to the `./rag-config.js` type import if it is not there yet. A worker's `config.rag` is a `SmartServerRagConfig` — `SmartServerWorkerConfig` omits only `log`, `llm`, `subAgentConfigs`.)
 - in `withToolsStore`, the bind becomes `bindToolsProfile(p.profile, { key: 'tools', rag: store }, p.fill).rag` — the main store and every worker store the server builds get the one configured source.
 - right after Task 23's S8 check in `_buildInfra`:
   ```ts
@@ -16957,6 +17329,7 @@ Spec §13 (docs updated in the same PR; **a major release** — every page names
 - Modify: `README.md`, `docs/ARCHITECTURE.md`, `docs/INTEGRATION.md`, `docs/PERFORMANCE.md`, `docs/EXAMPLES.md`, `docs/TROUBLESHOOTING.md`, `docs/DEPLOYMENT.md`, `docs/SECURITY_THREAT_MODEL.md`, `docs/QUICK_START.md`
 - Modify: `packages/llm-agent/README.md`, `packages/llm-agent-rag/README.md` (the RAG implementations, D53, D57), `packages/ollama-embedder/README.md` (checked: `OllamaRag` removed in Task 1A), `packages/llm-agent-libs/README.md`, `packages/llm-agent-server-libs/README.md`, `packages/llm-agent-server/README.md`, `packages/typesafe-decision/README.md` (`IProbabilityDecision`; one of two decision kinds), `scripts/rag-eval/README.md` (already in Task 32 — check it)
 - Modify: `examples/docker-sap-ai-core/smart-server.yaml` (a commented `decision: { provider: sap-aicore … }` + `rag.profiles` block)
+- Modify: `packages/llm-agent-libs/src/builder.ts` — the `withMcpConnectionStrategy` doc comment only (who owns an injected strategy, spec §17.22, D64)
 - (`packages/sap-aicore-decision/README.md` was written in Task 18; `packages/llm-agent-reranker/README.md` in Tasks 4B–4C.)
 - Every page that names a renamed or moved symbol (`IDecisionModel`, `DecisionReranker`, `DecisionRerankerOptions`, `DECISION_RERANK_DEFAULT_*`, `wrapDecisionModel`, `makeDecisionModel` / `createMakeDecisionModel`, rerankers imported from libs, RAG implementations imported from `@mcp-abap-adt/llm-agent`, `OllamaRag`) uses the new name and the package it is imported from now; the old name is not described as working (no aliases — spec §13, D58). Found today: `README.md`, `CLAUDE.md`, `docs/ARCHITECTURE.md` (~207, ~1026), `docs/EXAMPLES.md` (~335–353), `docs/INTEGRATION.md` (~1044, ~1165, ~1221), `docs/PERFORMANCE.md`, `docs/TROUBLESHOOTING.md` (~295: the seam-missing message is now `BuildAgentDeps.makeProbabilityDecision is required: …`; a consumer still passing `makeDecisionModel` gets a compile error — rename the key), `packages/llm-agent/README.md`, `packages/llm-agent-libs/README.md`, `packages/typesafe-decision/README.md`, `scripts/rag-eval/README.md` — re-run the Step 9 grep for the full list.
 
@@ -17217,9 +17590,28 @@ The unexported, unwired `IToolIndexingStrategy` is deleted:
 ````
 
 Also in `docs/INTEGRATION.md`:
+- `## IMcpConnectionStrategy` → `### Builder usage` (~2130): replace the code comment `// Remember to call close() for cleanup (disposes strategy too)` with `// The agent owns the strategy now: close() disposes it`, and the sentence after the block ("`close()` calls `strategy.dispose()`, which clears timers and closes underlying transport connections.") with (spec §17.22, D64):
+  ```markdown
+  **An injected strategy is owned by the agent / pipeline it is injected into.** `handle.close()`
+  disposes it (`strategy.dispose()` clears timers and closes the underlying transport connections),
+  and so does a `build()` that fails — no handle exists then to close it. Do not reuse a strategy
+  after either: inject a new one into the next builder.
+  ```
+- the "**The server fills `rag.profiles.tools` itself, on every path**" bullet (Step 1 above): append — "With `fill: { corpus: … }` every tools store the server binds — the main one and each worker's own — must match the corpus's vector dimension when its config declares one (`dimension`); a mismatch fails startup before any store is created, naming the store (D65). A store is filled before skills are vectorized into it, on every path, so a corpus load never erases the skill records (D66)."
 - `## IReranker` (line ~1044): add one line under its intro — `Shipped implementations (@mcp-abap-adt/llm-agent-reranker): ProbabilityReranker (over an IProbabilityDecision — TypeSafe Jev), RelevanceReranker (over an IRelevanceDecision — Cohere on SAP AI Core), LlmReranker, NoopReranker.`; under `### Example: Cross-encoder reranker via external API` add one sentence: a cross-encoder is a relevance decision — implement `IRelevanceDecision` and use `RelevanceReranker`; for Cohere on SAP AI Core use the shipped `SapAiCoreRelevanceDecision`.
 - `## IDecisionModel` (~1165): rename the section `## IProbabilityDecision (was IDecisionModel)` — the old name is removed (a major release); add a sibling section `## IRelevanceDecision` (spec §3.9): request (query + passages), result (`{index, score}` per passage + `model`), errors (`DecisionError`, existing codes), "not a probability; comparable for the same query and model — a cross-encoder scores each (query, passage) pair independently, so `RelevanceReranker` batches (48000 tokens / call by default) and merges", the shipped `SapAiCoreRelevanceDecision`. At ~1221: `wrapDecisionModel` → `wrapProbabilityDecision` (+ `wrapRelevanceDecision`); at ~1222 the seam paragraph: "supply the model through the optional `BuildAgentDeps.makeProbabilityDecision` seam (renamed from `makeDecisionModel`, which is removed) … returns an `IProbabilityDecision`", plus one sentence for the relevance seam `BuildAgentDeps.makeRelevanceDecision` (`decision.provider: sap-aicore`).
 - `## IRetrievalStrategy` (~1096): add `StagedRetrieval` to the built-ins list with a link to `#collection-profiles`, plus the additive `telemetry` option of `RerankedRetrieval` / `RerankAllRetrieval` (telemetry only, no output check there).
+
+`packages/llm-agent-libs/src/builder.ts` — replace the doc comment of `withMcpConnectionStrategy` (`/** Set an MCP connection strategy for dynamic client management. */`) with:
+```ts
+  /**
+   * Set an MCP connection strategy for dynamic client management.
+   *
+   * The built agent OWNS the strategy (spec §17.22, D64): `handle.close()`
+   * disposes it, and so does a `build()` that fails (no handle exists to
+   * close it then). Do not reuse it after either — inject a new one.
+   */
+```
 
 - [ ] **Step 2: `docs/PERFORMANCE.md` — replace the `## Tool Indexing Strategies` section with `## Collection profiles`:**
 
@@ -17453,7 +17845,9 @@ Expected: the first prints nothing outside `CHANGELOG.md` history and the `### M
 - [ ] **Step 10: Commit**
 
 ```bash
-git add README.md docs packages/llm-agent/README.md packages/llm-agent-libs/README.md packages/llm-agent-server-libs/README.md packages/llm-agent-server/README.md packages/typesafe-decision/README.md packages/typesafe-decision/package.json scripts/rag-eval/README.md examples/docker-sap-ai-core/smart-server.yaml
+npx tsc -b packages/llm-agent-libs   # the builder doc comment changed (comment only — the build must stay green)
+npx biome check --write packages/llm-agent-libs/src/builder.ts
+git add README.md docs packages/llm-agent/README.md packages/llm-agent-libs/README.md packages/llm-agent-libs/src/builder.ts packages/llm-agent-server-libs/README.md packages/llm-agent-server/README.md packages/typesafe-decision/README.md packages/typesafe-decision/package.json scripts/rag-eval/README.md examples/docker-sap-ai-core/smart-server.yaml
 git commit -m "docs: collection profiles across README, architecture, integration, performance, examples, troubleshooting, deployment, security
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
@@ -17862,6 +18256,15 @@ Recommendations applied to the earlier open choices (the user may still overrule
 |---|---|---|
 | D63 | The merge of sub-query results never compares scores across sub-queries: union in sub-query order (each sub-query's own ranked list, its own k), a duplicate item kept at its **first** occurrence with that occurrence's score, then the one cut by position and the truncation to `budget` ≤ k. `StagedRetrieval` with a `decompose` and a `ScoreFloorCut` throws at construction; the YAML validator refuses `compose.cut: { score-floor }` with a profile-level `decomposer` or a `compose.decomposer` other than `none`. | Task 14 (constructor check; first-occurrence merge; tests: the same item from two sub-queries with different scores → once, at its first position and score, ≤ k; decomposer + floor → rejected at construction, also with `onFailure: 'error'`), Task 28 (the same merge in `run`; its two `runOne` calls now pass the pool's k — `k` and `s.k` — as Task 14 does, which the copy had dropped), Task 21 (validator rule + test), Task 30 (harness note: a floor-cut profile returns `undefined` for `{ decomposer }`) |
 | — (plan only) | `mcp-tools/rag-collection-tools.ts` imports `zod` and moves to `llm-agent-rag`, which did not declare it. `llm-agent-rag` declares `zod` `^4.6.5` (the range `llm-agent` declared); `llm-agent` drops it (no other importer). A scan of every moved file and moved test found no other third-party import (`node:crypto` is built in; `@mcp-abap-adt/llm-agent` is a declared peer). The lockfile is regenerated and checked for links; the packed tarball is installed and its root imported outside the repo, with the unpublished sibling `llm-agent` packed too. | Task 1A (Files, Step 5A, Step 10A, Step 11's `git add` and commit body) |
+
+## Review findings and a user decision on 2026-10-05 — per-store corpus checks, fill before skills, orphans and the pool, injected strategy ownership (spec §17.22)
+
+| # | Decision | Done in |
+|---|---|---|
+| D64 | An injected MCP connection strategy is owned by the agent / pipeline it is injected into: `handle.close()` disposes it, and so does a failed `build()`; the consumer must not reuse it after either (the user's decision) | Task 23A (the failed-build disposal, its test named for an injected strategy); Task 33 (`docs/INTEGRATION.md` `### Builder usage`, the `withMcpConnectionStrategy` doc comment) |
+| D65 | The corpus is checked against EVERY tools store the server binds with it — the main one and each worker's own — at resolution, before any store is created: `ResolveCollectionProfilesInput.workerToolsStoreDimensions` beside `toolsStoreDimension`; a differing declared dimension → startup error naming the store and both dimensions. Chosen over a per-store check at each store's creation, which would have cleared and loaded the main store before a worker's mismatch failed the start | Task 23B (`resolveFill`, `declaredDimension`, the resolver call; tests: resolver unit case, (16b) main 2 / worker 3 / corpus 2 → zero clears and writes, no store created) |
+| D66 | A store is filled before skills are vectorized into it, on every construction path. The main store: the server fills it right after the clients are resolved, before the startup build (which vectorizes the skills) — ready clients, plugin clients, an injected seam, no MCP; `yamlBuilderConnect`: the builder's own `build()` already fills (`vectorizeMcpTools`) before `vectorizeSkills`. A worker's construction fills before `subBuilder.build()`. The one store filled after its build — a worker on the shared clients under `yamlBuilderConnect` at startup — is built with `withSkillManager(m, { vectorize: false })` (`fillsAfterBuild`), and `fillSharedClientWorkerStores` vectorizes its skills right after the fill (`FillToolsBindingOptions.skills`) | Task 23A (`fillToolsBinding`'s `skills`; `fillsAfterBuild`; the main fill moved; libs test); Task 23B (tests (16c), (16d), the D66 `yamlBuilderConnect` worker test) |
+| D67 | Orphans never use up the candidate pool: `StagedRetrieval` keeps what it fetched beyond the pool (the overflow, stage-1 order); when the ranked pool hydrates to fewer than `keep` items, the next overflow units replace the orphans — ranked like the pool (the reranker on the same query, no `keepStage1Top` pins; the run's rerank outcome is its most severe), then hydrated — before the cut. No new query; the reranker's `itemText` shortcut keeps its zero-read ranking | Task 12 (`splitPerSource`, the replacement loop, `rank(…, pin)`; test: default pool, k=1, top orphan + valid second → the valid item); Task 13 (`pin`, `recordOutcome`) |
 
 ## Self-review (done while writing)
 
