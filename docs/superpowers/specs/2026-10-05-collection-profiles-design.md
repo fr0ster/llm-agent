@@ -321,6 +321,13 @@
 >   `failPolicy: 'abort'`, a failed step under `'continue'` (U5); `LazyInitError` keeps the
 >   factory error as `cause` (U6).
 >
+> **Amended 2026-10-06 (18)** for the user's rule "no fallback anywhere; all in #322" (§17.26,
+> D79): the **30.1.0** tools path (`vectorizeMcpTools` on an unbound store) no longer answers a
+> failed bulk write (`ok: false` or a throw) by writing tool by tool — the batch fails, the
+> catalog is reported incomplete with the reason (`complete: false`,
+> `ToolCatalogStatus.writeFailure`) and in the summary log line (§10.5.4 R14, §13 B16). U7's
+> batch → per-tool **embedding** retry stays, counted.
+>
 > Every path that creates or refreshes a tools store is audited in §6.4. Earlier open choices are
 > settled by the recommendations applied in §17.9; the user may still overrule them.
 
@@ -389,7 +396,7 @@
 - The retrieval half **is** a 30.1.0 `IRetrievalStrategy`, so every path that already honours
   per-store strategies gets it with no new wiring.
 - **Nothing changes by default** on the success path. No profile set → 30.1.0 behaviour, byte for
-  byte (golden test). Failure paths change everywhere: they fail loud (§10.5, §13 B1–B15).
+  byte (golden test). Failure paths change everywhere: they fail loud (§10.5, §13 B1–B16).
 - **Everything is a strategy (DI).** A profile is a **composition** of injected strategy
   instances: indexing, candidate pool, collapse, query decomposition (optional), reranker,
   final cut. No booleans where a strategy is the choice. YAML only maps names to instances, in the builder.
@@ -911,6 +918,7 @@ export interface ICollectionProfile<TItem, TTarget extends BindTarget = Collecti
   that stays is U7's, on the **embedding** (a failed batch embedding → per-record embedding by the
   store, counted in `batchFailures`) — never on a write. The settle write of step 4 below is a
   write too: when it fails the item is reported (`cleanup-failed: …`), never counted indexed.
+  The 30.1.0 tools path (an unbound store) follows the same rule (D79, §10.5.4 R14).
 
 **Cleanup failures are kept, never reported as success** (approved review finding — failure
 handling, not a concurrency protocol: no generations, no locks, D13 stands).
@@ -1203,6 +1211,7 @@ export function retrievalEmbedderOf(rag: IRag): IRetrievalEmbedder | undefined;
 | **`SkillLoadResult.carried?: { sourceId, reason }[]`** — new optional field | D74 S-9: a source whose `acquire` failed and whose prior data was carried forward (`strict: false`) is reported with its reason instead of discarded | `@mcp-abap-adt/llm-agent` (`interfaces/skills-rag.ts`, beside `SkillLoadResult`) |
 | `FallbackLlmCallStrategy` constructor gains an optional second argument `{ fallbackCount?: ICounter }` — additive (U1, §10.5.12) | the user's decision of 2026-10-05: the opt-in fallback stays, and each fallback must be countable. The log event is always there; a counter needs a metrics backend the strategy cannot build itself, so the consumer injects one (`ICounter` is the existing metrics contract — no new interface). The first argument (the logger) is unchanged, so every existing call compiles | `@mcp-abap-adt/llm-agent` (`policy/fallback-llm-call-strategy.ts`, where the class lives) |
 | `ToolCatalogStatus.batchFailures?: number`, `IndexReport.batchFailures?: number`, `HealthComponentStatus.toolCatalog.batchFailures?: number` — additive (U7, §10.5.12) | the user's decision of 2026-10-05: the batch → per-tool embedding retry stays, and a failed batch is counted instead of named only in a log line. `ToolCatalogStatus` carries it to the health checker, which copies it into `HealthComponentStatus.toolCatalog` beside `records` / `profile`; `IndexReport` carries it from a binding's `index` to the tools summary (the profile path writes through `storeItems`, whose `batchFailure` no caller could see). Absent = no batch failed | `@mcp-abap-adt/llm-agent` (`interfaces/tool-catalog.ts`, `interfaces/health.ts`; the collection-profile contracts beside `IndexReport`) |
+| `ToolCatalogStatus.writeFailure?: string` — additive (D79, §10.5.4 R14) | the user's rule of 2026-10-06 ("no fallback anywhere"): the 30.1.0 tools path no longer retries a failed bulk write tool by tool, so its catalog can now be incomplete because the store refused the batch. `failed` names the tools but not why, and a reporter's consumer (`IToolCatalogReporter`) sees only the status, not the log; the field carries the store's error (`bulk write failed: <error>`). `/health` is not widened: `complete: false` already answers 503 (D72). Absent = the bulk write did not fail (or none was made) | `@mcp-abap-adt/llm-agent` (`interfaces/tool-catalog.ts`, where `ToolCatalogStatus` lives) |
 | **`IToolAvailabilityPolicy`** + **`HeuristicToolAvailabilityPolicy`**, `SmartAgentDeps.toolAvailabilityPolicy?`, `SmartAgentBuilder.withToolAvailabilityPolicy(policy)`, `PipelineContext.toolAvailabilityPolicy?` — new; **`SmartAgentConfig.toolUnavailableTtlMs` removed** — **breaking** (U8, migration line 74) | the user's decision of 2026-10-05: blocking a tool on a text heuristic silently shrinks the tool set, so it is a strategy the consumer injects, and with none injected nothing is blocked. One method (`onToolError(toolName, errorText)` → a TTL or nothing) is the minimum: the per-session block state stays in the existing internal `ToolAvailabilityRegistry`. The 30.1.0 heuristic ships as `HeuristicToolAvailabilityPolicy({ ttlMs })` (ttl required — no tuned number, D55). The TTL lived in `SmartAgentConfig` only for this; config is the builder's, the TTL is the policy's | `@mcp-abap-adt/llm-agent-libs` — the only package that calls it (contract placement: where used); the server injects it from YAML |
 | `LazyOptions.fallback` removed — **breaking** (U6, migration line 73) | the user's decision of 2026-10-05: an init failure answered by a substitute instance is the pattern the goal removes; unused in the repo | `@mcp-abap-adt/llm-agent-libs` (`utils/lazy.ts`) |
 
@@ -3503,6 +3512,7 @@ empty answer now sees an error (§13, behaviour table row B1).
 | R11 | `qdrant-rag/src/qdrant-rag.ts` (~141) | reading the collection info fails → the dimension check is skipped and the collection is marked ensured for good | the read error is returned (`UPSERT_ERROR`); `collectionEnsured` is set only after a successful check; a missing / non-numeric `vectors.size` is an error too | framework (provider) |
 | R12 | `sap-aicore-embedder/src/foundation-embedder.ts` (~81, ~125, ~146) | a short batch returned short; a prediction without values → `[]` vector; missing `data` → `[]`; HTTP errors with the generic code | `RagError(…, 'EMBED_ERROR')` for a batch whose count differs from the texts, an empty vector, a missing `data`, and the HTTP failures (the code `openai-embedder` and `ollama-embedder` already use) | framework (provider) |
 | R13 | the `TextOnlyEmbedding` sites (`rag-query`, `tool-select`, `skill-select`, `tool-loop`, `agent.ts`, `rag-orchestrator`) | — | **kept**: no pipeline embedder is an absent capability; the store embeds (R1). Not a failure | — |
+| R14 | libs `mcp/vectorize-mcp-tools.ts` (~310–336), the **30.1.0** path (an unbound tools store) — added by D79 | a failed `upsertManyPrecomputedRaw` (`ok: false` or a throw) → the same records written again tool by tool; a store that refused the batch is asked again through another write path, and the bulk failure leaves no trace when the per-tool writes succeed | the batch fails: **no per-tool write**; every tool of the batch is in `failed`, `vectorized` excludes them, `complete: false` with `writeFailure: 'bulk write failed: <error>'` (§3.8), and the summary log line names the reason — `/health` answers 503 (D72). The per-tool write stays only where no bulk write is made (no `upsertManyPrecomputedRaw`, or no precomputed vectors — the store embeds). U7's batch → per-tool **embedding** retry is unchanged (counted, `batchFailures`). The rule of D76 (§3.3), on the path D76 did not cover | framework (libs) |
 
 #### 10.5.5 Reranker — incl. `onFailure` (D71)
 
@@ -3960,7 +3970,7 @@ again, written either way.
 
 - **No profile configured → no change on the success path.** Same records (golden test), same
   stages, same k semantics, same `RerankHandler` precedence, same YAML. A **failure** no longer
-  passes for a success anywhere (fail loud, the behaviour table B1–B15 below).
+  passes for a success anywhere (fail loud, the behaviour table B1–B16 below).
 - **This is a major release — breaking** (D57–D59, the goal's decision "No deprecated aliases").
   Old names are not kept; no package re-exports another package's names — neither the names
   this PR moves nor the pre-existing re-exports (S12, §11.4: lines 52–69); `ITextLogger`, a
@@ -4136,6 +4146,7 @@ again, written either way.
   | B13 | a coordinator step naming an agent the registry lacks, under `HybridDispatch` (U5) | silently run by the fallback dispatcher | a failed step naming the agent and the registered ones — `COORDINATOR_STEP_FAILED` under `failPolicy: 'abort'`, a reported failed step under `'continue'`; a step naming no agent still goes to the fallback | register the agent, or plan the step without an agent |
   | B14 | `lazy`'s factory fails while a `fallback` was given (U6) | calls went to the fallback instance | the init error reaches every call (the option is removed, migration line 73) | wrap the proxy in your own substitute if you want one |
   | B15 | a tool error whose text matches "not found", "permission", … (U8) | the tool blocked for the session for 10 min by default ("temporarily unavailable") | nothing blocked unless a policy is injected; the error reaches the LLM as the tool result, as every tool error does | inject `HeuristicToolAvailabilityPolicy({ ttlMs })` (or set `agent.toolUnavailableTtlMs` in the server YAML) for 30.1.0's blacklist; `PUT /v1/config` with `toolUnavailableTtlMs` now answers 400 (the key never changed a live agent) |
+  | B16 | a bulk write of the startup tool catalog into an unbound tools store (`upsertManyPrecomputedRaw` answers `ok: false` or throws, D79) | the tools written again one by one; the catalog complete when those writes succeeded | no per-tool write: the catalog is incomplete (`complete: false`, every tool of the batch in `failed`, `writeFailure: 'bulk write failed: <error>'`), the summary log line names it, `/health` answers 503 | fix the store the error names; a store that cannot take a bulk write does not implement `upsertManyPrecomputedRaw` (the per-record path is then the only one) |
 - **Named compositions carry no tuned numbers** (D55): `mcpToolsVariants` has `baseline`,
   `faceted` and `faceted-rerank`; pools and cuts default to the caller's k; `faceted-rerank`
   requires `poolItems`. New in this release, so nothing released changes.
@@ -4158,7 +4169,7 @@ again, written either way.
   `SmartAgentDeps.toolAvailabilityPolicy`, `PipelineContext.toolAvailabilityPolicy` (U8),
   `FallbackLlmCallStrategy`'s `{ fallbackCount }` option (U1),
   `ToolCatalogStatus.batchFailures` / `IndexReport.batchFailures` /
-  `HealthComponentStatus.toolCatalog.batchFailures` (U7).
+  `HealthComponentStatus.toolCatalog.batchFailures` (U7); from D79: `ToolCatalogStatus.writeFailure`.
 - **A consumer with its own composition root** that wants Cohere supplies `makeRelevanceDecision`
   (build `SapAiCoreRelevanceDecision` with a bearer credential and `apiBaseUrl`); its existing
   probability seam function compiles unchanged under the key `makeProbabilityDecision` (table line
@@ -4517,6 +4528,13 @@ again, written either way.
   `config_reload_applied` is not (D77). `process()` on a pipeline that fails → the root span's
   status is `error`; a consumer that reads the stream only to the error chunk and closes it
   (`return()` on the iterator) → the root span is `error` and ended (D78).
+- The 30.1.0 tools path's bulk write (D79): `vectorizeMcpTools` on an unbound store whose
+  `upsertManyPrecomputedRaw` answers `ok: false`, and one whose bulk write throws, while every
+  per-tool write would succeed → the bulk write called once, **no per-tool write** (neither
+  `upsertPrecomputedRaw` nor `upsertRaw`), `vectorized: 0`, every tool in `failed`,
+  `complete: false`, `writeFailure` `bulk write failed: <error>`, the summary log line naming it;
+  the 30.1.0 test that pinned the per-tool retry is replaced by these. A successful bulk write →
+  `writeFailure` absent. A failed batch **embedding** still takes the per-tool path (U7, counted).
 
 ### 14.2 Conformance kit
 
@@ -5058,3 +5076,13 @@ silent degradation); none changes a consumer-chosen mode.
 | D76 | **A failed bulk write fails its records; no per-record retry.** The record writer answered a failed `upsertManyPrecomputedRaw` by writing the same records one by one — a second write path the store was never asked to accept, hiding the bulk failure. Now every record of the failed batch is failed with the bulk error (`write-failed: bulk write failed: <error>`); the per-record write stays only where no bulk write is available. A failed settle write is reported (`cleanup-failed: …`), not counted indexed. U7's embedding retry is unchanged | §3.3, §14.1 |
 | D77 | **A failed reload keeps the previous config — and stays failed.** The plan's reload entry point (D39) caught the drain / invalidation rejection, logged it and resolved, undoing V6. Now `_onReload` restores the pre-reload agent config and the server's mirror, skips the RAG weights, and rejects; the watcher's `reload` listener is the one boundary that handles the rejection (`config_reload_failed`); `config_reload_applied` only on success. D39 stands: the entry point is still awaitable | §10.5.9 V6, §13 B10, §14.1 |
 | D78 | **The root span's `error` status is set before the error chunk is yielded.** Set after the stream ended, it never ran: `process()` returns on the first `ok: false` chunk, which closes `streamProcess`'s generator at that `yield`. The span is still ended in `finally` | §10.5.2, §13 B1, §14.1 |
+
+### 17.26 Decided by the user on 2026-10-06 — the 30.1.0 tool write path (D79)
+
+The plan's scan for D76's class (§17.25) found the same substitution on the 30.1.0 tools path,
+outside §10.5's inventory, and left it to the user. The user's rule: no fallback anywhere, all in
+this PR.
+
+| # | Decision | Where |
+|---|---|---|
+| D79 | **The 30.1.0 tools path does not retry a failed bulk write tool by tool.** `vectorizeMcpTools` on an unbound store answered a failed `upsertManyPrecomputedRaw` (`ok: false` or a throw) by writing the same tools one by one — D76's substitution, on the path D76 did not cover. Now the batch fails: no per-tool write, every tool of it in `failed`, `complete: false` with the reason in the new optional `ToolCatalogStatus.writeFailure` (`bulk write failed: <error>`) and in the summary log line; `/health` answers 503 (D72). The per-tool write stays only where no bulk write is made. U7's batch → per-tool embedding retry is unchanged (counted). Extends D76 | §3.3, §3.8, §10.5.4 R14, §13 B16, §14.1 |
