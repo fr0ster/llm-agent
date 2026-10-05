@@ -9589,9 +9589,9 @@ Claude-Session: https://claude.ai/code/session_012KjevEeQGZMkWMfnupJ7Yd"
 
 ## Task 19A: Offline tools corpus — `buildToolsCorpus`, `parseToolsCorpus`, `deployToolsCorpus`; the `corpus` and `prebuilt` fill sources (libs)
 
-Spec §6.5 (D43), §3.10 (`ToolsCorpusLoader`, `PrebuiltToolsStore`; compatibility checked at creation; D42, D46, D47), §4.3 (the service record is dropped — Task 12), §3.1 (`serviceRecord` — Tasks 2, 11), §14.1 (offline corpus, fill sources).
+Spec §6.5 (D43, D48), §3.10 (`ToolsCorpusLoader`, `PrebuiltToolsStore`; compatibility checked at creation; D42, D46, D47, D48), §4.3 (the service record is dropped — Task 12), §3.1 (`serviceRecord` — Tasks 2, 11), §14.1 (offline corpus, fill sources).
 
-**Why.** A tools store is filled once at instance creation (D41). Two of the four sources need the profile's indexer to run **outside** the process: the consumer's **build** step produces a corpus (records + vectors) with the same profile and an embedder; its **deploy** step writes that corpus into a persistent store with precomputed vectors — no embedding call — in place, idempotent, with a service record (fingerprint, corpus hash, record hashes). At instance creation `ToolsCorpusLoader` — one small class whose only job is this — checks a built corpus's fingerprint, writes its records with their precomputed vectors into the fresh in-memory store and reports the status (no service record, no diff, no refill, no memo, no retry, no watching); `PrebuiltToolsStore` only checks a deployed persistent store and never writes. A reconnect calls neither (D46: `IToolsFillSource` is `fill` only; a bound store is never written on `toolsChanged`). The fingerprint is the consumer-named `ToolsCorpusIdentity` plus the library's own checks (D47).
+**Why.** A tools store is filled once at instance creation (D41). Two of the four sources need the profile's indexer to run **outside** the process: the consumer's **build** step produces a corpus (records + vectors) with the same profile and an embedder; its **deploy** step writes that corpus into a persistent store with precomputed vectors — no embedding call — in place, idempotent, with a service record (fingerprint, corpus hash, record hashes, `state: 'pending' | 'final'`). A deploy after an unfinished one does not trust the record's hashes and rewrites the whole corpus; `PrebuiltToolsStore` refuses a store whose record is not `final` (D48). At instance creation `ToolsCorpusLoader` — one small class whose only job is this — checks a built corpus's fingerprint, writes its records with their precomputed vectors into the fresh in-memory store and reports the status (no service record, no diff, no refill, no memo, no retry, no watching); `PrebuiltToolsStore` only checks a deployed persistent store and never writes. A reconnect calls neither (D46: `IToolsFillSource` is `fill` only; a bound store is never written on `toolsChanged`). The fingerprint is the consumer-named `ToolsCorpusIdentity` plus the library's own checks (D47).
 
 **Files:**
 - Create: `packages/llm-agent-libs/src/collections/tools/corpus-capture-rag.ts` (internal: the build step's capture store)
@@ -9623,6 +9623,7 @@ Spec §6.5 (D43), §3.10 (`ToolsCorpusLoader`, `PrebuiltToolsStore`; compatibili
 // packages/llm-agent-libs/src/collections/__tests__/tools-corpus.test.ts
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
+import { isDeepStrictEqual } from 'node:util';
 import {
   type IEmbedResult,
   InMemoryRag,
@@ -9714,18 +9715,24 @@ function target() {
   return { store: { key: 'tools', rag: new VectorRag(embedder), companions: { intents: new VectorRag(embedder) } }, calls };
 }
 
-/** A store whose writer is spied (and whose delete can be made to fail once). */
-function spied(inner: IRag, opts: { failDeleteOnce?: boolean } = {}) {
+/**
+ * A store whose writer is spied. An interrupted deploy: the delete can fail once; the
+ * `failUpsertAt`-th upsert (1-based) fails; `failFinal` fails the final service-record write.
+ */
+function spied(inner: IRag, opts: { failDeleteOnce?: boolean; failUpsertAt?: number; failFinal?: boolean } = {}) {
   const writes: string[] = [];
   let failDelete = opts.failDeleteOnce ?? false;
+  let upserts = 0;
   const w = inner.writer?.() as IRagBackendWriter;
   const writer: IRagBackendWriter = {
     upsertRaw: (id, t, m, o) => {
       writes.push(`upsert:${id}`);
       return w.upsertRaw(id, t, m, o);
     },
-    upsertPrecomputedRaw: (id, t, v, m, o) => {
+    upsertPrecomputedRaw: async (id, t, v, m, o) => {
       writes.push(`upsert:${id}`);
+      const final = id === TOOLS_CORPUS_RECORD_ID && (m.serviceRecord as unknown as { state?: string } | undefined)?.state === 'final';
+      if (++upserts === opts.failUpsertAt || (opts.failFinal && final)) return { ok: false as const, error: new RagError('write down') };
       return (w.upsertPrecomputedRaw as NonNullable<IRagBackendWriter['upsertPrecomputedRaw']>)(id, t, v, m, o);
     },
     deleteByIdRaw: async (id, o) => {
@@ -9803,8 +9810,10 @@ describe('deployToolsCorpus (deploy step)', () => {
     assert.ok(hits.ok);
     assert.ok(hits.value.some((h) => toolNameFromRecord(h.metadata) === 'read_file'));
     assert.ok(hits.value.every((h) => h.metadata.serviceRecord === undefined), 'the service record is dropped');
-    const again = await deployToolsCorpus(corpus, store);
+    const watched = spied(store.rag);
+    const again = await deployToolsCorpus(corpus, { key: 'tools', rag: watched.rag, companions: store.companions });
     assert.deepEqual(again, { unchanged: true, upserted: 0, deleted: 0 });
+    assert.deepEqual(watched.writes, [], 'a finalized redeploy of the same corpus writes nothing');
   });
 
   it('in place: a changed tool is upserted, a dropped tool deleted (primary and companion), the rest untouched', async () => {
@@ -9837,6 +9846,65 @@ describe('deployToolsCorpus (deploy step)', () => {
     assert.equal(rerun.unchanged, false);
     const gone = await store.rag.getById(recordId(G, 'tool:list_issues', 'full', 0));
     assert.ok(gone.ok && gone.value === null, 'the rerun deleted what the failed run kept');
+  });
+
+  type Row = ToolsCorpus['records'][number];
+  type Store = ReturnType<typeof target>['store'];
+  /** The stored record equals `r`: its text and every metadata key the corpus gave it. */
+  async function holds(store: Store, r: Row): Promise<boolean> {
+    const got = await (r.store === '' ? store.rag : store.companions.intents).getById(r.id);
+    if (!got.ok || !got.value || got.value.text !== r.text) return false;
+    const meta = got.value.metadata as Record<string, unknown>;
+    return Object.entries(r.metadata).every(([k, v]) => isDeepStrictEqual(meta[k], v));
+  }
+  const sameContent = (x: Row, y: Row): boolean => isDeepStrictEqual([x.store, x.id, x.text, x.metadata, x.vector], [y.store, y.id, y.text, y.metadata, y.vector]);
+
+  /** Every record of `corpus` is stored as built, and the service record is final with its manifest. */
+  async function assertHolds(corpus: ToolsCorpus, store: Store): Promise<void> {
+    for (const r of corpus.records) assert.ok(await holds(store, r), `${r.store || 'primary'}:${r.id} holds the requested corpus's record`);
+    const svc = await store.rag.getById(TOOLS_CORPUS_RECORD_ID);
+    assert.ok(svc.ok && svc.value);
+    const rec = svc.value.metadata.serviceRecord as unknown as { state: string; pending?: unknown; manifest: { corpusHash: string } };
+    assert.equal(rec.state, 'final');
+    assert.equal(rec.pending, undefined);
+    assert.equal(rec.manifest.corpusHash, corpus.manifest.corpusHash);
+  }
+
+  it('A ok → B interrupted after overwriting a record → redeploy A restores every record (D48)', async () => {
+    const { corpus: a } = await build();
+    const { corpus: b } = await build([{ ...TOOLS[0], description: 'Read a file from disk, v2' }, TOOLS[1]]);
+    const { store } = target();
+    await deployToolsCorpus(a, store);
+    // upsert 1 = the write-ahead service record, 2 = B's first changed primary record (B's order), 3 fails
+    const flaky = spied(store.rag, { failUpsertAt: 3 });
+    await assert.rejects(deployToolsCorpus(b, { key: 'tools', rag: flaky.rag, companions: store.companions }), /write/);
+    const overwritten = b.records.find((y) => y.store === '' && !a.records.some((x) => sameContent(x, y)));
+    assert.ok(overwritten, 'B changes a primary record');
+    const was = a.records.find((x) => x.store === '' && x.id === overwritten.id);
+    assert.ok(was, 'A holds the same id: an overwrite, not a new record');
+    assert.ok(await holds(store, overwritten), "B's record overwrote A's before the interruption");
+    assert.ok(!(await holds(store, was)), 'the store is mixed');
+    const r = await deployToolsCorpus(a, store);
+    assert.equal(r.unchanged, false);
+    assert.equal(r.upserted, a.records.length, 'an unfinished previous deploy → the whole corpus is rewritten');
+    await assertHolds(a, store);
+  });
+
+  it('A ok → B interrupted after deleting a record → redeploy A recreates it (D48)', async () => {
+    const { corpus: a } = await build();
+    const { corpus: b } = await build([TOOLS[0]]); // list_issues dropped, read_file unchanged
+    const { store } = target();
+    await deployToolsCorpus(a, store);
+    // the write-ahead record and the upserts pass, the deletes run; the final service record fails
+    const flaky = spied(store.rag, { failFinal: true });
+    await assert.rejects(deployToolsCorpus(b, { key: 'tools', rag: flaky.rag, companions: store.companions }), /write/);
+    const id = recordId(G, 'tool:list_issues', 'full', 0);
+    const gone = await store.rag.getById(id);
+    assert.ok(gone.ok && gone.value === null, 'B deleted it before the interruption');
+    await deployToolsCorpus(a, store);
+    const back = await store.rag.getById(id);
+    assert.ok(back.ok && back.value, 'the redeploy recreated it');
+    await assertHolds(a, store);
   });
 });
 
@@ -9888,6 +9956,17 @@ describe('fill sources: corpus and prebuilt (spec §3.10)', () => {
     await deployToolsCorpus(corpus, store);
     const other = bindToolsProfile(profile(), store, new PrebuiltToolsStore({ expect: { ...ID, embedder: 'other' } }));
     await assert.rejects(vectorizeMcpTools([], other.rag, new NoopRequestLogger(), undefined), /embedder/);
+  });
+
+  it('prebuilt: a store whose last deploy did not finish → refused at creation (D48)', async () => {
+    const { corpus: a } = await build();
+    const { corpus: b } = await build([TOOLS[0]]);
+    const { store } = target();
+    await deployToolsCorpus(a, store);
+    const flaky = spied(store.rag, { failFinal: true });
+    await assert.rejects(deployToolsCorpus(b, { key: 'tools', rag: flaky.rag, companions: store.companions }), /write/);
+    const bound = bindToolsProfile(profile(), store, new PrebuiltToolsStore({ expect: ID }));
+    await assert.rejects(vectorizeMcpTools([], bound.rag, new NoopRequestLogger(), undefined), /interrupted.*deployToolsCorpus/);
   });
 
   it(`the service record lives under ${TOOLS_CORPUS_RECORD_ID}`, async () => {
@@ -10030,11 +10109,16 @@ export const TOOLS_CORPUS_RECORD_ID = 'tools-corpus';
 /** What the service record's `serviceRecord` key holds (spec §6.5). */
 export interface ToolsCorpusService {
   readonly kind: 'tools-corpus';
+  /**
+   * 'pending' from the write-ahead record (written before the first record write) until the final
+   * record; any interruption leaves 'pending'. Only a 'final' record's hashes are trusted (D48).
+   */
+  readonly state: 'pending' | 'final';
   /** Absent while a first deploy is in progress. */
   readonly manifest?: ToolsCorpusManifest;
   /** Per store ('' = primary): record id → record hash. */
   readonly hashes: Readonly<Record<string, Readonly<Record<string, string>>>>;
-  /** Write-ahead: ids an unfinished run may have written, per store. Absent once a deploy completed. */
+  /** Write-ahead: ids an unfinished run may have written, per store. Absent on a 'final' record. */
   readonly pending?: Readonly<Record<string, readonly string[]>>;
 }
 
@@ -10198,11 +10282,15 @@ export async function deployToolsCorpus(
 ): Promise<ToolsCorpusDeployReport> {
   const old = await readToolsCorpusService(target.rag, options);
   const m = corpus.manifest;
+  // Only a finalized record describes the store. After an unfinished deploy its
+  // hashes are what the last finished deploy wrote, not what the store holds:
+  // the interrupted run may have overwritten or deleted any of those records.
+  // So nothing is trusted and the whole corpus is rewritten (D48).
+  const finalized = old?.state === 'final' ? old : undefined;
   if (
-    old?.manifest?.corpusHash === m.corpusHash &&
-    old.manifest.identity.profile === m.identity.profile &&
-    old.manifest.identity.embedder === m.identity.embedder &&
-    !old.pending
+    finalized?.manifest?.corpusHash === m.corpusHash &&
+    finalized.manifest.identity.profile === m.identity.profile &&
+    finalized.manifest.identity.embedder === m.identity.embedder
   ) {
     return { unchanged: true, upserted: 0, deleted: 0 };
   }
@@ -10217,17 +10305,18 @@ export async function deployToolsCorpus(
   const changed = new Map<string, ToolsCorpusRecord[]>();
   const pending: Record<string, string[]> = {};
   for (const [n, rows] of byStore) {
-    const c = rows.filter((r) => old?.hashes[n]?.[r.id] !== hashes[n][r.id]);
+    const c = rows.filter((r) => finalized?.hashes[n]?.[r.id] !== hashes[n][r.id]); // all rows unless finalized
     changed.set(n, c);
     if (c.length > 0) pending[n] = c.map((r) => r.id);
   }
   const primaryWriter = writers.get('') as IRagBackendWriter;
-  // 1. write ahead: every id this run may write is listed before it is written
+  // 1. write ahead, before the first record write: state 'pending' (any interruption
+  //    leaves it set) and every id this run may write, plus an earlier unfinished run's
   const carried: Record<string, string[]> = {};
   for (const [n, ids] of Object.entries(old?.pending ?? {})) carried[n] = [...ids];
   for (const [n, ids] of Object.entries(pending)) carried[n] = [...new Set([...(carried[n] ?? []), ...ids])];
-  await writeService(primaryWriter, m.dimensions, { kind: 'tools-corpus', manifest: old?.manifest, hashes: old?.hashes ?? {}, pending: carried }, options);
-  // 2. upsert the new and changed records
+  await writeService(primaryWriter, m.dimensions, { kind: 'tools-corpus', state: 'pending', manifest: old?.manifest, hashes: old?.hashes ?? {}, pending: carried }, options);
+  // 2. upsert the new and changed records — every record when the old one was not final
   let upserted = 0;
   for (const [n, rows] of changed) {
     await upsertAll(writers.get(n) as IRagBackendWriter, rows, options);
@@ -10245,7 +10334,7 @@ export async function deployToolsCorpus(
     }
   }
   // 4. the final service record: one current state
-  await writeService(primaryWriter, m.dimensions, { kind: 'tools-corpus', manifest: m, hashes }, options);
+  await writeService(primaryWriter, m.dimensions, { kind: 'tools-corpus', state: 'final', manifest: m, hashes }, options);
   return { unchanged: false, upserted, deleted };
 }
 ```
@@ -10296,10 +10385,10 @@ export class PrebuiltToolsStore implements IToolsFillSource {
   constructor(private readonly o: { readonly expect: ToolsCorpusIdentity }) {}
   async fill(ctx: ToolsFillContext, options?: CallOptions): Promise<ToolCatalogStatus | undefined> {
     const svc = await readToolsCorpusService(ctx.target.rag, options);
-    if (!svc?.manifest) {
+    if (!svc) {
       throw new Error(`prebuilt tools store '${ctx.binding.key}': no deployed corpus — run the deploy step (deployToolsCorpus) first`);
     }
-    if (svc.pending) {
+    if (svc.state !== 'final' || !svc.manifest) {
       throw new Error(`prebuilt tools store '${ctx.binding.key}': a deploy is in progress or was interrupted — rerun the deploy step (deployToolsCorpus)`);
     }
     checkCompatible(svc.manifest, this.o.expect, ctx, `prebuilt tools store '${ctx.binding.key}'`);
@@ -17204,6 +17293,12 @@ Recommendations applied to the earlier open choices (the user may still overrule
 |---|---|---|
 | D46 | No reaction to `toolsChanged` for a bound store: `IToolsFillSource` is `fill` only (its `toolsChanged` removed from the contract, `LiveToolsFill`, `ConsumerToolsFill`, `ToolsCorpusLoader`, `PrebuiltToolsStore`, and `warnUnchanged` gone); `vectorizeMcpTools` has no `event` and runs `fill` for a bound store; `McpToolRegistry.revectorizeTools` returns before writing when `toolsBindingOf(store)` finds a binding (one `DEBUG_MCP` line, no warning); an unbound store keeps the 30.1.0 re-vectorize. `ConsumerToolsFill`: the library never writes. Tests: a bound store is not written on `tools-changed` (no listing, no write, no source call, no warning); a bound store behind `FallbackRag` (initial fill + reconnect); an unbound store keeps 30.1.0; a consumer store unwritten on a reconnect; a reconnect never calls the source. Removed: the re-index-through-profile, companions-on-update, writerless-refresh-on-`toolsChanged` and source-`toolsChanged` tests | Tasks 19, 19A, 20, 23A, 23B, 33, 34 |
 | D47 | Approved as written: the fingerprint is the consumer-named `ToolsCorpusIdentity { profile, embedder }` plus the library's own checks; a worker construction whose fill throws drops that cache entry; a worker with its own `rag` and own clients is refused when the fill is `corpus` or `prebuilt` | Tasks 19A, 23A, 23B (no change) |
+
+## Review finding on 2026-10-05 — an unfinished corpus deploy is rewritten in full (spec §17.13)
+
+| # | Decision | Done in |
+|---|---|---|
+| D48 | The service record carries `state: 'pending' \| 'final'`, `pending` written ahead of the first record write. A deploy that reads a record not `final` (or none) trusts no hash and writes every record of the corpus, deletes listed and pending ids the corpus lacks, then finalizes; a `final` record keeps the hash-skip (and `unchanged`). `PrebuiltToolsStore` refuses a record not `final` at creation. Amends D43 | Task 19A |
 
 ---
 
