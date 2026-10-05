@@ -3264,10 +3264,13 @@ writes its own `IRag` wrapper.
   `withCircuitBreaker(embedder, breaker)`): `CircuitBreakerEmbedder` throws
   `RagError('Embedder circuit breaker is open', 'CIRCUIT_OPEN')` without calling the provider, and
   the store's `query` returns that error (`VectorRag`: `{ ok: false, error }` from its catch) —
-  before, `FallbackRag` answered from its in-memory copy. What a stage does with a failed query is
-  unchanged: the 30.1.0 `rag-query` stage records no results for that store (`ragQueryCount` with
-  `hit: false`, `logRagQuery` with `resultCount: 0`) and the request continues (§15). Writes reach
-  only the store they are written to; nothing is mirrored into a copy.
+  before, `FallbackRag` answered from its in-memory copy. D68 does not change what a stage does
+  with a failed query: the 30.1.0 `rag-query` stage records no results for that store
+  (`ragQueryCount` with `hit: false`, `logRagQuery` with `resultCount: 0`) and the request
+  continues. That silent continuation is itself a fallback, which the goal's newer decision removes
+  ("No fallbacks anywhere in the pipeline", 2026-10-05 — the fail-loud sweep of this PR, not yet
+  written into this spec). Writes reach only the store they are written to; nothing is mirrored
+  into a copy.
 - **Effect on what the wrap touched** (each read, 2026-10-05):
   - a registry entry stays the store that was registered; `handle.ragStores.<key>` is that store,
     or a `StrategyRag` over it for an explicit strategy — never a `FallbackRag`;
@@ -3740,8 +3743,10 @@ again, written either way.
   registered store in `FallbackRag`, which answered from an in-memory copy while the embedder
   breaker was open. Now, with the circuit breaker on, an embedder outage makes retrieval fail with
   an error instead: the open breaker throws `CIRCUIT_OPEN` without calling the provider, and the
-  store's query returns that error. What a stage does with a failed query is unchanged — the
-  `rag-query` stage records no results for that store and the request continues. Registry entries
+  store's query returns that error. D68 does not change what a stage does with a failed query
+  (today the `rag-query` stage records no results for that store and the request continues; the
+  goal's fail-loud decision of 2026-10-05, not yet written into this spec, makes it an error).
+  Registry entries
   and `handle.ragStores` are the stores as registered; `withCircuitBreaker(config)`'s
   `handle.circuitBreakers` holds the main-LLM breaker only (the embedder breaker it added was never
   fed, the builder wraps no embedder). **Changelog** ("Breaking", "Removed"). **Migration note:**
@@ -4167,7 +4172,6 @@ estimator) and no item is truncated. A consumer runs it against its own profile.
 | A deploy-time corpus step, a record of the load in the store, resuming an interrupted load | not built (D54): the server loads the corpus at every start, from the start |
 | Tuned numbers for any shipped strategy or composition | the consumer's calibration (D55); measured with the harness in the consumer (§14.3) |
 | A degraded RAG mode — answering from a copy while the embedder is down | the consumer's own `IRag` wrapper (D68): the library ships none; `FallbackRag` is removed |
-| What a pipeline stage does with a failed store query (the 30.1.0 `rag-query` stage records no results for that store and continues) | unchanged by D68; whether a failed retrieval should fail or mark the request is a separate decision |
 
 ---
 
