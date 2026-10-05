@@ -8,7 +8,7 @@
 
 **Tech Stack:** TypeScript 6 (strict, ESM, NodeNext), Node ≥ 22, `node:test` via `tsx`, Biome, npm workspaces monorepo.
 
-**Spec:** `docs/superpowers/specs/2026-10-05-collection-profiles-design.md` (approved 2026-10-05, frozen; amended 2026-10-05 with the user's decisions on S1–S9, spec §17.4, and on probability vs relevance decisions, the reranker package, the caller's k, cleanup failures and provider text composition, spec §17.6; and on relevance comparability, the second seam and the seam rename, spec §17.7; and on the server filling a bound tools profile from ready clients, D31, spec §6.3, §17.8; and on filling following the store's lifecycle, D34–D35, spec §17.9; and on only complete fills memoized, single-flight worker construction, the startup fill on every path, the direct hot-reload test and runtime-removed tools, D36–D40, spec §6.6, §17.10 — D36 superseded and D37 moved out by the next amendment; and on a tools store filled once at instance creation, the fill source as an injected strategy, the offline corpus API, refill and single-flight out, D41–D45, spec §3.10, §6.3–§6.5, §17.11; and on fill sources filling once with no `toolsChanged` reaction for a bound store, D46–D47, spec §3.10, §6.3, §6.4, §13, §15, §17.12; and on intents and companion stores removed entirely and the corpus deploy written in full, D50–D51, spec §17.15; and on the goal's three decisions of 2026-10-05 — the RAG implementations' home, the corpus loaded by the server at start with no deploy step, no tuned numbers in what ships — D53–D56, spec §11.3, §17.17; and on a major release without deprecated aliases or re-exports — the RAG implementations' files move now (S10 decided), no old names, no re-exports, the replicas' reload window accepted — D57–D60, spec §11.3, §11.4, §13, §17.18; and on S11, S12 and the search-strategy types — **all decided by the user on 2026-10-05** (spec §17.18): `OllamaRag` removed (S11, Task 1A Step 4); the pre-existing re-exports of spec §11.4 removed in this same major (S12, Task 4D; migration lines 52–69); `ISearchStrategy`, `ISearchCandidate`, `ISearchQuery`, `IScoredResult`, `ISearchContext` move with `VectorRag` to `llm-agent-rag` (Task 1A); and on the four questions spec §11.4 left open — **decided by the user on 2026-10-05** (spec §11.4, §17.18): `ITextLogger` removed, every use imports `ILogger` from `@mcp-abap-adt/interfaces-utils` (Task 4E; migration line 70), libs' two dead internal files `adapters/index.ts` and `interfaces/model-resolver.ts` deleted (Task 4E), `SmartAgentHandle` / libs' `IStageHandler` and libs' internal shims kept); and on the review findings and the user's decision of 2026-10-05 in spec §17.22 — D64 (an injected connection strategy is owned by the agent: `close()` and a failed `build()` dispose it), D65 (the corpus checked against every bound store's declared dimension before any store exists), D66 (a store filled before skills are vectorized into it), D67 (orphans never use up the pool); and on the goal's decision of 2026-10-05 that `FallbackRag` is removed — D68 (spec §10.4, §13, §17.23): Task 0A removes it with the builder's store wrapping and what existed only for it; D52 and D62 are withdrawn; and on the goal's decisions of 2026-10-05 "No fallbacks anywhere in the pipeline" and "the fail-loud sweep is part of this PR" — D69–D74 (spec §10.5, §13 B1–B11, §17.24): Tasks 4F–4O sweep every fallback and silent degradation (pipeline errors reach the consumer first, Task 4F), and `onFailure` is removed where `StagedRetrieval` is built (Tasks 12, 13, 14, 16, 18, 21, 22, 28, 29, 32, 33); and on the user's decisions of 2026-10-05 on U1–U10 — every recommendation approved (spec §10.5.12, §13 B12–B15, migration lines 73–74, §17.24): Task 4J counts `FallbackLlmCallStrategy`'s fallbacks (U1), Task 4K fails a step naming an agent the registry lacks (U5), Task 4L defaults the skill plugin host to `strict: true` (U2), Task 4M logs a worker on the parent's clients (U10), new Task 4P removes `lazy`'s `fallback` (U6), new Task 4Q makes the tool availability blacklist an injected policy with no default (U8), new Task 19B counts failed batch embedding calls (U7); U3, U4 stay as they are; U9 is Task 0A, confirmed. **Goal:** `docs/superpowers/goals/2026-10-04-collection-profiles.md` (user-owned; never edited). Executors read the spec section each task cites.
+**Spec:** `docs/superpowers/specs/2026-10-05-collection-profiles-design.md` (approved 2026-10-05, frozen; amended 2026-10-05 with the user's decisions on S1–S9, spec §17.4, and on probability vs relevance decisions, the reranker package, the caller's k, cleanup failures and provider text composition, spec §17.6; and on relevance comparability, the second seam and the seam rename, spec §17.7; and on the server filling a bound tools profile from ready clients, D31, spec §6.3, §17.8; and on filling following the store's lifecycle, D34–D35, spec §17.9; and on only complete fills memoized, single-flight worker construction, the startup fill on every path, the direct hot-reload test and runtime-removed tools, D36–D40, spec §6.6, §17.10 — D36 superseded and D37 moved out by the next amendment; and on a tools store filled once at instance creation, the fill source as an injected strategy, the offline corpus API, refill and single-flight out, D41–D45, spec §3.10, §6.3–§6.5, §17.11; and on fill sources filling once with no `toolsChanged` reaction for a bound store, D46–D47, spec §3.10, §6.3, §6.4, §13, §15, §17.12; and on intents and companion stores removed entirely and the corpus deploy written in full, D50–D51, spec §17.15; and on the goal's three decisions of 2026-10-05 — the RAG implementations' home, the corpus loaded by the server at start with no deploy step, no tuned numbers in what ships — D53–D56, spec §11.3, §17.17; and on a major release without deprecated aliases or re-exports — the RAG implementations' files move now (S10 decided), no old names, no re-exports, the replicas' reload window accepted — D57–D60, spec §11.3, §11.4, §13, §17.18; and on S11, S12 and the search-strategy types — **all decided by the user on 2026-10-05** (spec §17.18): `OllamaRag` removed (S11, Task 1A Step 4); the pre-existing re-exports of spec §11.4 removed in this same major (S12, Task 4D; migration lines 52–69); `ISearchStrategy`, `ISearchCandidate`, `ISearchQuery`, `IScoredResult`, `ISearchContext` move with `VectorRag` to `llm-agent-rag` (Task 1A); and on the four questions spec §11.4 left open — **decided by the user on 2026-10-05** (spec §11.4, §17.18): `ITextLogger` removed, every use imports `ILogger` from `@mcp-abap-adt/interfaces-utils` (Task 4E; migration line 70), libs' two dead internal files `adapters/index.ts` and `interfaces/model-resolver.ts` deleted (Task 4E), `SmartAgentHandle` / libs' `IStageHandler` and libs' internal shims kept); and on the review findings and the user's decision of 2026-10-05 in spec §17.22 — D64 (an injected connection strategy is owned by the agent: `close()` and a failed `build()` dispose it), D65 (the corpus checked against every bound store's declared dimension before any store exists), D66 (a store filled before skills are vectorized into it), D67 (orphans never use up the pool); and on the goal's decision of 2026-10-05 that `FallbackRag` is removed — D68 (spec §10.4, §13, §17.23): Task 0A removes it with the builder's store wrapping and what existed only for it; D52 and D62 are withdrawn; and on the goal's decisions of 2026-10-05 "No fallbacks anywhere in the pipeline" and "the fail-loud sweep is part of this PR" — D69–D74 (spec §10.5, §13 B1–B11, §17.24): Tasks 4F–4O sweep every fallback and silent degradation (pipeline errors reach the consumer first, Task 4F), and `onFailure` is removed where `StagedRetrieval` is built (Tasks 12, 13, 14, 16, 18, 21, 22, 28, 29, 32, 33); and on the user's decisions of 2026-10-05 on U1–U10 — every recommendation approved (spec §10.5.12, §13 B12–B15, migration lines 73–74, §17.24): Task 4J counts `FallbackLlmCallStrategy`'s fallbacks (U1), Task 4K fails a step naming an agent the registry lacks (U5), Task 4L defaults the skill plugin host to `strict: true` (U2), Task 4M logs a worker on the parent's clients (U10), new Task 4P removes `lazy`'s `fallback` (U6), new Task 4Q makes the tool availability blacklist an injected policy with no default (U8), new Task 19B counts failed batch embedding calls (U7); U3, U4 stay as they are; U9 is Task 0A, confirmed; amended 2026-10-06 with the user's rule "no fallback anywhere; all in #322" for the 30.1.0 tool write path (spec §17.26, D79): Task 19B Steps 6–10 remove the per-tool write retry after a failed bulk write. **Goal:** `docs/superpowers/goals/2026-10-04-collection-profiles.md` (user-owned; never edited). Executors read the spec section each task cites.
 
 ## Global Constraints
 
@@ -75,7 +75,7 @@ The twelve inputs the spec implies, most likely to bite a user, each pinned by a
 
 **Fail loud (Tasks 4F–4O, spec §10.5)** — the files each task lists: libs `pipeline/{executor,default-pipeline,pipeline-to-stream}.ts`, `agent.ts`, `adapters/{parse-tool-arguments (NEW),llm-provider-bridge,llm-adapter}.ts`, `policy/pending-tool-results-registry.ts`, the tool-loop context strategies (4F); `llm-agent-mcp` `client.ts`, `adapter.ts`, `strategies/lazy-connection-strategy.ts`, libs `mcp/tool-registry.ts`, `pipeline/handlers/{tool-select,tool-loop}.ts`, server-libs `tools-rag-handle.ts`, `smart-server.ts` bridge and snapshot (4G); `llm-agent` `rag/query-embedding.ts`, `llm-agent-rag` `vector-rag.ts`, `in-memory-rag.ts`, `preprocessor.ts`, libs `pipeline/handlers/rag-query.ts`, `agent/rag-orchestrator.ts`, `builder.ts`, `subagent/default-context-builder.ts`, `rag/knowledge-rag.ts`, server-libs `jsonl-knowledge-backend.ts`, `qdrant-rag`, `sap-aicore-embedder` `foundation-embedder.ts` (4H); libs `retrieval/reranked-retrieval.ts`, `pipeline/handlers/rerank.ts` (4I); `pipeline/handlers/{translate,expand,summarize,history-upsert}.ts` (4J); `coordinator/stepper/*`, `coordinator/dag/llm-dag-planner.ts` (4K); skills files, `vectorize-mcp-tools.ts` `vectorizeSkills`, server-libs `config-validator.ts` (4L); server-libs session / controller / reload / models-route / stepper-root files, `llm-agent-server` `cli.ts` (4M); `sap-aicore-llm`, `openai-llm`, `anthropic-llm` providers (4N); libs `health/agent-health.ts`, server-libs `http/health-route-handler.ts` (4O). Each task adds its `*-fail-loud.test.ts`.
 
-**The user's U1–U10 decisions (spec §10.5.12)** — `llm-agent` `policy/fallback-llm-call-strategy.ts` (4J, U1); libs `coordinator/dispatch/hybrid.ts` (4K, U5); libs `skills/plugin-host/skill-plugin-host.ts`, server-libs `skill-plugins-config.ts` (4L, U2); server-libs `smart-server.ts` worker wiring (4M, U10); libs `utils/lazy.ts` (4P, U6); libs `policy/tool-availability-policy.ts` (NEW), `policy/tool-availability-registry.ts`, `agent.ts`, `builder.ts`, `pipeline/{context,default-pipeline}.ts`, `pipeline/handlers/{tool-loop-core,tool-loop}.ts`, `config/config-watcher.ts`, server-libs `resolve-config-sections.ts`, `smart-server.ts`, `config-reload-watcher.ts`, `http/config-route-handler.ts`, `yaml-loader.ts` (4Q, U8); `llm-agent` `interfaces/{tool-catalog,collection-profile,health}.ts`, libs `collections/{composed-tools-profile,shared-items-profile}.ts`, `mcp/{index-tools-through-profile,vectorize-mcp-tools}.ts`, `health/health-checker.ts` (19B, U7).
+**The user's U1–U10 decisions (spec §10.5.12)** — `llm-agent` `policy/fallback-llm-call-strategy.ts` (4J, U1); libs `coordinator/dispatch/hybrid.ts` (4K, U5); libs `skills/plugin-host/skill-plugin-host.ts`, server-libs `skill-plugins-config.ts` (4L, U2); server-libs `smart-server.ts` worker wiring (4M, U10); libs `utils/lazy.ts` (4P, U6); libs `policy/tool-availability-policy.ts` (NEW), `policy/tool-availability-registry.ts`, `agent.ts`, `builder.ts`, `pipeline/{context,default-pipeline}.ts`, `pipeline/handlers/{tool-loop-core,tool-loop}.ts`, `config/config-watcher.ts`, server-libs `resolve-config-sections.ts`, `smart-server.ts`, `config-reload-watcher.ts`, `http/config-route-handler.ts`, `yaml-loader.ts` (4Q, U8); `llm-agent` `interfaces/{tool-catalog,collection-profile,health}.ts`, libs `collections/{composed-tools-profile,shared-items-profile}.ts`, `mcp/{index-tools-through-profile,vectorize-mcp-tools}.ts`, `health/health-checker.ts` (19B, U7; `vectorize-mcp-tools.ts` also D79 — no per-tool write after a failed bulk write).
 
 **`packages/llm-agent-reranker/`** — NEW package (Tasks 4B–4C): `src/probability-reranker.ts` (moved from libs `reranker/decision-reranker.ts`), `src/relevance-reranker.ts`, `src/llm-reranker.ts`, `src/noop-reranker.ts` (moved), `src/assert-positive-integer.ts` (copy), `src/index.ts`, tests; `package.json`, `tsconfig.json`, `README.md`, `CHANGELOG.md`, `LICENSE`, `GPL-3.0.txt`. libs' `src/reranker/` is removed; libs exports none of the names (D59) and imports `NoopReranker` from the package for its own defaults.
 
@@ -3520,7 +3520,7 @@ Claude-Session: https://claude.ai/code/session_012KjevEeQGZMkWMfnupJ7Yd"
 
 ## Fail-loud tasks 4F–4O — overview
 
-Spec §10.5 (D69–D74, §17.24; §10.5.12 for the user's U1–U10 decisions), §13 (behaviour table B1–B15). The goal's decisions of 2026-10-05: "No fallbacks anywhere in the pipeline" and "the fail-loud sweep is part of this PR"; the user's decisions of 2026-10-05 on U1–U10. These twelve tasks (4F–4Q) run **after the moves and contract tasks** (Task 4E) and **before Task 5**, so every file they touch is already in its final package (`preprocessor.ts`, `vector-rag.ts`, `in-memory-rag.ts` in `llm-agent-rag` — Task 1A; `llm-reranker.ts` in `llm-agent-reranker` — Task 4B) and every later task starts from code that fails loud. Task 4F — pipeline errors reaching the consumer at all (N1, a bug fix) — is first: every later stage fix surfaces through it.
+Spec §10.5 (D69–D74, §17.24; §10.5.12 for the user's U1–U10 decisions), §13 (behaviour table B1–B16; B16 is D79, Task 19B). The goal's decisions of 2026-10-05: "No fallbacks anywhere in the pipeline" and "the fail-loud sweep is part of this PR"; the user's decisions of 2026-10-05 on U1–U10. These twelve tasks (4F–4Q) run **after the moves and contract tasks** (Task 4E) and **before Task 5**, so every file they touch is already in its final package (`preprocessor.ts`, `vector-rag.ts`, `in-memory-rag.ts` in `llm-agent-rag` — Task 1A; `llm-reranker.ts` in `llm-agent-reranker` — Task 4B) and every later task starts from code that fails loud. Task 4F — pipeline errors reaching the consumer at all (N1, a bug fix) — is first: every later stage fix surfaces through it.
 
 **The same discipline in every task (TDD per item):**
 1. a failing test that shows today's fake success — the empty stream, the `ok: true` with original text, the skipped store, the 200;
@@ -12209,12 +12209,14 @@ Claude-Session: https://claude.ai/code/session_012KjevEeQGZMkWMfnupJ7Yd"
 
 ---
 
-## Task 19B: Batch embedding failures are counted — `batchFailures` (U7) (llm-agent + libs)
+## Task 19B: Batch embedding failures are counted — `batchFailures` (U7); a failed bulk write is not retried per tool (D79) (llm-agent + libs)
 
 Spec §10.5.12 U7 (decided by the user on 2026-10-05), §3.8. The batch → per-record embedding retry stays as it is; each failed batch call is now **counted** where a consumer and `/health` can see it, on both paths: the 30.1.0 path (`vectorizeMcpTools` → `listAndIndexTools`) and the profile path (`storeItems` → a binding's `index` → `indexToolsThroughProfile`). Runs after Task 19A, so `listAndIndexTools`, `indexToolsThroughProfile`, `storeItems` (Task 11), `ComposedToolsProfile` (Task 15) and `SharedItemsProfile` (Task 17) exist. Every field is optional: every earlier object literal of these types still compiles.
 
+Steps 6–10 (spec §10.5.4 R14, §13 B16, §17.26 — D79, decided by the user on 2026-10-06): the 30.1.0 path's failed bulk write is no longer retried tool by tool — the rule D76 set for the record writer (Task 11). Its own TDD cycle, gate and commit, after Steps 1–5 in the same function and test file.
+
 **Files:**
-- Modify: `packages/llm-agent/src/interfaces/tool-catalog.ts` (`ToolCatalogStatus.batchFailures?`), `packages/llm-agent/src/interfaces/collection-profile.ts` (`IndexReport.batchFailures?`), `packages/llm-agent/src/interfaces/health.ts` (`HealthComponentStatus.toolCatalog.batchFailures?`)
+- Modify: `packages/llm-agent/src/interfaces/tool-catalog.ts` (`ToolCatalogStatus.batchFailures?`; `ToolCatalogStatus.writeFailure?`, Step 8), `packages/llm-agent/src/interfaces/collection-profile.ts` (`IndexReport.batchFailures?`), `packages/llm-agent/src/interfaces/health.ts` (`HealthComponentStatus.toolCatalog.batchFailures?`)
 - Modify: `packages/llm-agent-libs/src/collections/composed-tools-profile.ts`, `collections/shared-items-profile.ts` (map `storeItems`' `batchFailure` into the report), `mcp/index-tools-through-profile.ts`, `mcp/vectorize-mcp-tools.ts` (~304, ~310–336, ~397–430), `health/health-checker.ts` (~86: copy the field)
 - Extend: `packages/llm-agent-libs/src/collections/__tests__/composed-tools-profile.test.ts`, `collections/__tests__/shared-items-profile.test.ts`, `packages/llm-agent-libs/src/__tests__/vectorize-mcp-tools-profile.test.ts`, the existing 30.1.0 `vectorize-mcp-tools` test file (`git grep -l "sequential fallback" -- 'packages/llm-agent-libs/src/**/*.test.ts'`), `packages/llm-agent-libs/src/health/health-checker.test.ts`
 
@@ -12224,6 +12226,8 @@ Spec §10.5.12 U7 (decided by the user on 2026-10-05), §3.8. The batch → per-
   // ToolCatalogStatus.batchFailures?: number   — failed batch embedding calls during this fill
   // IndexReport.batchFailures?: number         — failed batch embedding calls during this index()
   // HealthComponentStatus.toolCatalog.batchFailures?: number — copied from the status
+  // ToolCatalogStatus.writeFailure?: string  — D79: the store's error when the bulk write failed
+  //                                             (`bulk write failed: <error>`); not copied to /health
   ```
 
 - [ ] **Step 1: Write the failing tests**
@@ -12257,6 +12261,113 @@ A test asserting the exact old summary line is updated to the counted wording. E
 npx biome check --write packages/llm-agent/src packages/llm-agent-libs/src
 git add packages/llm-agent packages/llm-agent-libs
 git commit -m "feat(libs): count failed batch embedding calls — batchFailures in the tools summary, index report and /health (U7)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_012KjevEeQGZMkWMfnupJ7Yd"
+```
+
+- [ ] **Step 6: Write the failing tests — no per-tool write after a failed bulk write (D79)**
+
+In `packages/llm-agent-libs/src/__tests__/vectorize-mcp-tools.test.ts`: give `makeWriter` a `throwBulk?: boolean` option — in `upsertManyPrecomputedRaw`, after `this.bulkCalls++; bulkSizes.push(items.length);`, add `if (opts?.throwBulk) throw new Error('bulk error');` (the option joins the `opts` type). **Delete** the test `'falls back to per-tool writes when the bulk call fails'` (it pins the retry D79 removes) and add, in the `describe('vectorizeMcpTools bulk upsert', …)` block:
+
+```ts
+  for (const mode of ['failBulk', 'throwBulk'] as const) {
+    it(`${mode}: the batch fails — no per-tool write, the catalog incomplete with the reason (D79)`, async () => {
+      // Every per-tool write WOULD succeed (no failUpsert): a retry would
+      // report a complete catalog and hide the bulk failure.
+      const writer = makeWriter({
+        hasBatchRaw: true,
+        hasBulk: true,
+        failBulk: mode === 'failBulk',
+        throwBulk: mode === 'throwBulk',
+      });
+      const rag = makeRagWithEmbedder(makeBatchEmbedder(), writer);
+      const logger = new CapturingLogger();
+      const summary = await vectorizeMcpTools(
+        [makeClient(['a', 'b'].map(makeTool))],
+        rag,
+        new CapturingRequestLogger(),
+        logger,
+      );
+      assert.equal(writer.bulkCalls, 1);
+      assert.equal(writer.precomputedCalls.length, 0); // no per-tool precomputed write
+      assert.equal(writer.upsertCalls.length, 0); // no per-tool embedding write
+      assert.equal(summary?.vectorized, 0);
+      assert.deepEqual(summary?.failed, ['a', 'b']);
+      assert.equal(summary?.complete, false);
+      assert.equal(summary?.writeFailure, 'bulk write failed: bulk error');
+      assert.match(
+        String(logger.events.at(-1)?.message),
+        /0\/2 MCP tools.*; bulk write failed: bulk error/,
+      );
+    });
+  }
+
+  it('a successful bulk write carries no writeFailure (D79)', async () => {
+    const writer = makeWriter({ hasBatchRaw: true, hasBulk: true });
+    const rag = makeRagWithEmbedder(makeBatchEmbedder(), writer);
+    const summary = await vectorizeMcpTools(
+      [makeClient(['a'].map(makeTool))],
+      rag,
+      new CapturingRequestLogger(),
+      undefined,
+    );
+    assert.equal(summary?.complete, true);
+    assert.equal(summary !== undefined && 'writeFailure' in summary, false);
+  });
+```
+
+The existing U7 test (a batch **embedding** that throws → every tool written through the per-tool path, `batchFailures === 1`, Step 1) stays as it is: no bulk write is made there (no vectors), so D79 does not apply.
+- [ ] **Step 7: Run to see them fail**
+
+```bash
+npx tsc -b packages/llm-agent packages/llm-agent-libs
+node --import tsx/esm --test packages/llm-agent-libs/src/__tests__/vectorize-mcp-tools.test.ts
+```
+Expected: `tsc` passes (the package `tsconfig` excludes tests; tsx runs the test file without type-checking); the two new D79 tests FAIL — `precomputedCalls.length` is 2 (the per-tool retry), `complete: true`, `writeFailure` undefined. The `writeFailure` test of a successful bulk write passes already (pinned).
+- [ ] **Step 8: Implement**
+  - `packages/llm-agent/src/interfaces/tool-catalog.ts`: in `ToolCatalogStatus`, after `complete`:
+    ```ts
+      /**
+       * The store's error when the catalog's bulk write failed
+       * (`bulk write failed: <error>`). The batch is not retried tool by tool
+       * (D79): every tool of it is in `failed` and `complete` is false.
+       * Absent when no bulk write failed.
+       */
+      writeFailure?: string;
+    ```
+    Update `complete`'s doc comment to `false when any client failed to list, any listed tool failed, or the bulk write failed.`
+  - `vectorize-mcp-tools.ts` (`listAndIndexTools`, the 30.1.0 part): replace the comment above the bulk call (`All-or-nothing, so on failure we fall through to the per-tool loop, …`) with `All-or-nothing: a failed bulk write fails every tool of the batch and is never retried tool by tool (D79) — a store that refused the batch is not asked again through another write path.`; replace `let bulkWritten = false;` with `let bulkFailure: string | undefined;`; replace the bulk result handling and the loop guard:
+    ```ts
+        if (bulk.ok) {
+          written.fill(true);
+        } else {
+          bulkFailure = `bulk write failed: ${bulk.error.message}`;
+          for (const t of tools) acc.failed.push(t.name);
+        }
+      } else {
+        // The per-tool write: only where no bulk write is made (no bulk method,
+        // or no precomputed vectors — the store embeds each text, U7).
+        for (let i = 0; i < tools.length; i++) {
+    ```
+    — i.e. the `if (!bulkWritten) { for … }` block becomes the `else` branch of `if (vectors && writer.upsertManyPrecomputedRaw)`; the loop body is unchanged. `written` stays all `false` after a failed bulk write, so the record count below gives `vectorized` 0 and adds no name twice.
+  - the summary: `complete: acc.clientFailures === 0 && acc.failed.length === 0` already reads `false` (the failed tools are in `acc.failed`); add `...(bulkFailure !== undefined ? { writeFailure: bulkFailure } : {})` after Step 3's `batchFailures` spread.
+  - the incomplete summary line: append ``(bulkFailure !== undefined ? `; ${bulkFailure}` : '')`` before `batchNote`.
+  - `health-checker.ts`: unchanged — `/health` keys off `complete` (D72); `writeFailure` is not copied.
+- [ ] **Step 9: The gate**
+
+```bash
+npx tsc -b packages/llm-agent packages/llm-agent-libs packages/llm-agent-server-libs
+npm test --workspace @mcp-abap-adt/llm-agent --workspace @mcp-abap-adt/llm-agent-libs --workspace @mcp-abap-adt/llm-agent-server-libs
+git grep -n "falls back to per-tool writes\|fall through to the per-tool loop" -- packages
+```
+Expected: PASS; the grep prints nothing (the old test and comment are gone). The golden test (Task 1) passes unchanged: the success path writes the same records.
+- [ ] **Step 10: Commit**
+
+```bash
+npx biome check --write packages/llm-agent/src packages/llm-agent-libs/src
+git add packages/llm-agent packages/llm-agent-libs
+git commit -m "fix(libs): a failed bulk write of the 30.1.0 tools path is not retried per tool (D79)
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_012KjevEeQGZMkWMfnupJ7Yd"
@@ -19220,7 +19331,9 @@ In `examples/docker-sap-ai-core/smart-server.yaml`, append a commented block (co
 #     tools: { variant: faceted-rerank, poolItems: 30 }   # poolItems: your number
 ```
 
-- [ ] **Step 8b: Fail loud — every page that describes a fallback as current (spec §10.5, §13 B1–B15)**
+- [ ] **Step 8b: Fail loud — every page that describes a fallback as current (spec §10.5, §13 B1–B16)**
+
+- `docs/INTEGRATION.md` (~347, `upsertManyPrecomputedRaw`): add that a failed bulk call fails the startup catalog — no per-tool retry; the status reports `complete: false` and `writeFailure` (D79, B16).
 
 - `docs/INTEGRATION.md`: a new `## Errors — fail loud` section (TL;DR first): a stage failure is the stream's last item `{ ok: false, error }` and `process()`'s result; the error carries the failing component's code (table of the codes a consumer meets: `PIPELINE_ERROR`, `MCP_UNAVAILABLE`, `CIRCUIT_OPEN`, `EMBED_ERROR`, `QUERY_ERROR`, `QUERY_EXPAND_ERROR`, `RERANK_ERROR`, `LLM_ERROR`, `SKILL_ERROR`, the `COORDINATOR_*` codes, and `PIPELINE_FAILURE_CODES`); **a degraded mode is your injected strategy** — an `IRag` wrapper (implement `IRagDecorator`), an `IReranker` that answers unranked, `agent.llmCallStrategy: fallback` — with one short example of an `IRag` wrapper; `FallbackQueryEmbedding` stands in only for a pipeline without an embedder. Every existing sentence that says a stage "continues", "skips", "falls back" or "keeps the original" on a failure is rewritten.
 - `docs/ARCHITECTURE.md`: the pipeline section states that a stage error reaches the consumer (executor → `ctx.error` → `pipelineToStream` → `{ ok: false }`).
@@ -19269,7 +19382,7 @@ Claude-Session: https://claude.ai/code/session_012KjevEeQGZMkWMfnupJ7Yd"
 
 ## Task 34: CHANGELOG, migration notes, `CLAUDE.md`
 
-Spec §13 (**a major release**: the Breaking section with the 74-line migration table, D57–D59, D68, U6, U8; the behaviour table B1–B15, incl. the user's U1–U10 decisions, §10.5.12; the corpus flow, D54; the replicas' reload window, D60). No version heading and no bump — the entry goes under `## [Unreleased]`, and its first line says the release is a **major** (breaking); the release step (the user's) picks the number.
+Spec §13 (**a major release**: the Breaking section with the 74-line migration table, D57–D59, D68, U6, U8; the behaviour table B1–B16, incl. the user's U1–U10 decisions and D79, §10.5.12; the corpus flow, D54; the replicas' reload window, D60). No version heading and no bump — the entry goes under `## [Unreleased]`, and its first line says the release is a **major** (breaking); the release step (the user's) picks the number.
 
 **Files:**
 - Modify: `CHANGELOG.md` (`## [Unreleased]`)
@@ -19427,6 +19540,7 @@ build as an injected strategy (an `IRag` wrapper, an `IReranker`, an LLM call st
 | B13 | a coordinator step naming an agent the registry lacks, under `HybridDispatch` | silently run by the fallback dispatcher | a failed step naming the agent — `COORDINATOR_STEP_FAILED` under `failPolicy: 'abort'`, a reported failed step under `'continue'`; a step naming no agent still goes to the fallback | register the agent, or plan the step without one |
 | B14 | `lazy`'s factory fails while a `fallback` was given | calls went to the fallback instance | the init error reaches every call (`LazyInitError` with `cause`); the option is removed (line 73) | wrap the proxy yourself for a substitute |
 | B15 | a tool error whose text matches "not found", "permission", … | the tool blocked for the session for 10 min by default | nothing blocked unless a policy is injected; the error reaches the LLM as the tool result | inject `HeuristicToolAvailabilityPolicy({ ttlMs })`, or set `agent.toolUnavailableTtlMs` in the server YAML; `PUT /v1/config` with that key now answers 400 |
+| B16 | a bulk write of the startup tool catalog into a tools store without a profile (`upsertManyPrecomputedRaw` answers `ok: false` or throws) | the tools written again one by one | no per-tool write: the catalog is incomplete (`complete: false`, `ToolCatalogStatus.writeFailure`), the summary log line names it, `/health` answers 503 | fix the store the error names; a store that cannot take a bulk write does not implement `upsertManyPrecomputedRaw` |
 
 New codes, in a set of their own: `PIPELINE_FAILURE_CODES` (`RAG_STORE_MISSING`, `STATE_CORRUPT`,
 `TOOL_ARGUMENTS_JSON_PARSE_FAILED`) from `@mcp-abap-adt/llm-agent`. Every other error carries the
@@ -19778,7 +19892,13 @@ The `closeFns` loop bug (spec §15) is tracked in fr0ster/llm-agent#330 — not 
 - Task 23A `buildSubAgent` `catch`: drops the cache entry and closes the built handle, then rethrows (D47); Task 23A builder failure path: disposing the connection strategy is best-effort cleanup, the ORIGINAL error rethrown.
 - `?? []` in Tasks 15–17, 23A, 23B, 30–32: an optional field or capability that is absent (no `records`, no `groups`, no workers) — absent by design; the vectorize writerless-store `return undefined` (Task 19) is the same, as in 30.1.0.
 - Test-only `catch`es (Task 4B's no-re-export guard skipping a directory a later task creates; a JSON `reject` in a test helper) and Task 31's `evaluateRetrieval` counting a failed query (a measurement harness reports it as `errors`).
-Not fixed here, for the user: the **30.1.0** `vectorizeMcpTools` path (unbound stores, `vectorize-mcp-tools.ts` ~310–336, existing code no task rewrites) answers a failed `upsertManyPrecomputedRaw` by writing tool by tool — the same pattern D76 removes from the record writer. It is not in the spec's §10.5 inventory, so changing it needs a decision (spec §17.25 records D76 for the record writer only).
+Left to the user by this scan, then decided (next section): the **30.1.0** `vectorizeMcpTools` path (unbound stores, `vectorize-mcp-tools.ts` ~310–336) answered a failed `upsertManyPrecomputedRaw` by writing tool by tool — the pattern D76 removes from the record writer.
+
+## Decided by the user on 2026-10-06 — the 30.1.0 tool write path (spec §17.26)
+
+| # | Decision | Done in |
+|---|---|---|
+| D79 | The 30.1.0 tools path does not retry a failed bulk write (`ok: false` or a throw) tool by tool: the batch fails, every tool of it in `failed`, `complete: false` with `ToolCatalogStatus.writeFailure` and the reason in the summary line; U7's embedding retry unchanged (spec §10.5.4 R14, §13 B16) | Task 19B Steps 6–10 (the contract field, `listAndIndexTools`, the tests replacing the retry test); Task 33 Step 8b (`docs/INTEGRATION.md`); Task 34 (B16) |
 
 ## Self-review (done while writing)
 
@@ -19796,3 +19916,4 @@ Not fixed here, for the user: the **30.1.0** `vectorizeMcpTools` path (unbound s
 - **Rework for D68 (spec §17.23 — `FallbackRag` removed).** New Task 0A, right after Task 0 and before Task 1A: it deletes `FallbackRag` and its test, `replaceRag`, `withCircuitBreakers` / `_sharedBreakers` / `isGuardedBy` and the builder's store-wrapping loop (keeping the main-LLM breaker), and the server's `withCircuitBreakers` call; it rewrites every test that built or expected a `FallbackRag` (a plain test decorator where a walk is tested), adds `open-breaker-query.test.ts` (the new behaviour) and fixes the docs that described the fallback — **in one commit, which builds** (`noUnusedLocals` proves the dropped imports: `FallbackRag`, `isRagDecorator` in `builder.ts`; `CircuitBreaker` / `FallbackRag` / `InMemoryRag` and the hydrated-collection test's imports in the tests). Supersedes the D52 / D62 work: Task 19A loses Steps 0a–0d (no `fix(llm-agent-rag)` commit), the five `FallbackRag` / claiming-decorator cases and `resolvedBackend` (its `isRagDecorator` import goes too; `corpusWriter` checks the store's writer); Task 1A moves no `fallback-rag.ts` (its counts: 27 tests, with `open-breaker-query.test.ts` in place of `fallback-rag.test.ts` — the re-check grep matches `../../rag/vector-rag`; 34 codemod files, since `strategy-rag.test.ts` imports no moved name any more; `fakes.ts` copies `makeLlm` only; the stay-target `resilience/circuit-breaker.js` is no longer imported by a moved file); Tasks 19 and 25 replace their `FallbackRag` wrapper with a plain decorator and drop the `CircuitBreaker` / `FallbackRag` / `InMemoryRag` imports they no longer use; Task 11's table loses its `FallbackRag` row. **Kept, checked:** `IRagDecorator` and `isRagDecorator` (`StrategyRag`; `hasRetrievalStrategy`, `ownBuiltInStore`, `retrievalEmbedderOf`, `toolsBindingOf` / `boundToolsOf`, `findWeightedStore` — a consumer's wrapper relies on them; the migration note tells a consumer who wants a degraded mode to write one); `CircuitBreakerEmbedder` / `withCircuitBreaker` and the server's `_embedderBreaker` (fails fast with an error). The Review Focus gains line 11 (an embedder outage with the breaker on); Task 34's table has 72 lines (lines 5, 71, 72 say *removed*, one note line); Task 35 greps that nothing of the removal is left.
 - **Rework for the fail-loud sweep (spec §10.5, §13 B1–B11, §17.24 — D69–D74).** Ten new tasks, 4F–4O, after Task 4E (every file they touch is in its final package: `preprocessor.ts`, `vector-rag.ts`, `in-memory-rag.ts` in `llm-agent-rag` since Task 1A; the rerankers in `llm-agent-reranker` since Task 4B) and before Task 5, so every later task builds on code that fails loud; 4F (N1) first, because no later stage error reaches a consumer without it. Each item: a failing test showing today's fake success, the fix, the gate; each task names the grep for existing tests that pinned the fallback. `onFailure` is removed **in place** (Tasks 12, 13, 14, 16, 18, 21, 22, 28, 29, 32, 33): no task introduces it to remove it later; Task 12's `Unit.reranked` and the two-scales branch of `mergeByScore` go with it (one scale per run); Task 29 counts `rerank_error` from `rerankOrError` (Task 4I's rename). The carriers keep signatures: `McpToolRegistry.resolve` throws (Task 4F's executor keeps a thrown `OrchestratorError`'s code) instead of growing an error branch; the only contract additions are `PIPELINE_FAILURE_CODES` and `SkillLoadResult.carried?` (spec §3.8). U1–U10 untouched (Global Constraints). Review Focus 12 added. Every commit builds: 4F adds the codes before any task uses them; 4G–4O touch disjoint files except `agent.ts` / `rag-orchestrator.ts` / `tool-loop.ts` / `smart-server.ts`, edited in different functions in task order.
 - **Rework for the user's U1–U10 decisions (spec §10.5.12, §13 B12–B15, migration lines 73–74, §17.24).** Extended in place: Task 4J (U1 — `FallbackLlmCallStrategy`'s second, optional constructor argument; the server's call compiles unchanged), Task 4K (U5 — `HybridDispatch`), Task 4L (U2 — the `strict` default in the host and the server's config), Task 4M (U10 — one event in the worker wire). New: Task 4P (U6 — `lazy` without `fallback`, after 4O), Task 4Q (U8 — `IToolAvailabilityPolicy`, after 4P and before Task 5), Task 19B (U7 — `batchFailures`, after 19A because it needs `storeItems`, both bindings and `indexToolsThroughProfile`). Each: failing tests first (incl. `@ts-expect-error` typechecks for the two removed members), the gate (`tsc -b` + the touched packages' suites), one commit. Compile order holds: 4P and 4Q touch files no earlier task leaves half-done; 4Q's `tool-loop-core.ts` / `tool-loop.ts` / `agent.ts` edits come after 4F–4G's in those files; every field 19B adds is optional, so the object literals of Tasks 3, 15, 17, 19 and 19A keep compiling. Task 33 Step 8b documents every mode as decided (and a new grep for `toolUnavailableTtlMs` / `fallback:` / `strict: false`); Task 34's Breaking table has 74 lines and the behaviour table B12–B15. U3, U4 untouched; U9 is Task 0A.
+- **Rework for D79 (spec §17.26 — decided by the user on 2026-10-06).** Task 19B gains Steps 6–10, its own TDD cycle after Steps 1–5 in the same function and test file: the failing tests (bulk write `ok: false` / throwing while per-tool writes would succeed → no per-tool write, `complete: false`, `writeFailure`), the optional contract field `ToolCatalogStatus.writeFailure` (every earlier object literal of `ToolCatalogStatus` still compiles; the test file is not type-checked by `tsc -b` — the package excludes tests —, so Step 7 fails on behaviour, not on compile, and Step 8's field makes the tests' `summary?.writeFailure` type-correct for the editor and Biome), the `else` branch in `listAndIndexTools`, the gate (`tsc -b` + the three suites, a grep that the retry test and comment are gone) and a `fix(libs)` commit. Task 19 (the rename to `listAndIndexTools`) and 19A touch no line Step 8 changes; Task 25 (F1) edits the embedder read (~168–171), above it. Task 33 Step 8b and Task 34 (B16) document it.
