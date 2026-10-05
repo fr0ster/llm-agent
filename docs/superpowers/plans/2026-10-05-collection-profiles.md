@@ -8,7 +8,7 @@
 
 **Tech Stack:** TypeScript 6 (strict, ESM, NodeNext), Node ≥ 22, `node:test` via `tsx`, Biome, npm workspaces monorepo.
 
-**Spec:** `docs/superpowers/specs/2026-10-05-collection-profiles-design.md` (approved 2026-10-05, frozen; amended 2026-10-05 with the user's decisions on S1–S9, spec §17.4, and on probability vs relevance decisions, the reranker package, the caller's k, cleanup failures and provider text composition, spec §17.6; and on relevance comparability, the second seam and the seam rename, spec §17.7; and on the server filling a bound tools profile from ready clients, D31, spec §6.3, §17.8; and on filling following the store's lifecycle, D34–D35, spec §17.9; and on only complete fills memoized, single-flight worker construction, the startup fill on every path, the direct hot-reload test and runtime-removed tools, D36–D40, spec §6.6, §17.10 — D36 superseded and D37 moved out by the next amendment; and on a tools store filled once at instance creation, the fill source as an injected strategy, the offline corpus API, refill and single-flight out, D41–D45, spec §3.10, §6.3–§6.5, §17.11). **Goal:** `docs/superpowers/goals/2026-10-04-collection-profiles.md` (user-owned; never edited). Executors read the spec section each task cites.
+**Spec:** `docs/superpowers/specs/2026-10-05-collection-profiles-design.md` (approved 2026-10-05, frozen; amended 2026-10-05 with the user's decisions on S1–S9, spec §17.4, and on probability vs relevance decisions, the reranker package, the caller's k, cleanup failures and provider text composition, spec §17.6; and on relevance comparability, the second seam and the seam rename, spec §17.7; and on the server filling a bound tools profile from ready clients, D31, spec §6.3, §17.8; and on filling following the store's lifecycle, D34–D35, spec §17.9; and on only complete fills memoized, single-flight worker construction, the startup fill on every path, the direct hot-reload test and runtime-removed tools, D36–D40, spec §6.6, §17.10 — D36 superseded and D37 moved out by the next amendment; and on a tools store filled once at instance creation, the fill source as an injected strategy, the offline corpus API, refill and single-flight out, D41–D45, spec §3.10, §6.3–§6.5, §17.11; and on fill sources filling once with no `toolsChanged` reaction for a bound store, D46–D47, spec §3.10, §6.3, §6.4, §13, §15, §17.12). **Goal:** `docs/superpowers/goals/2026-10-04-collection-profiles.md` (user-owned; never edited). Executors read the spec section each task cites.
 
 ## Global Constraints
 
@@ -19,7 +19,7 @@
 - **Owner in every physical id.** Every profile record id is `recordId(owner, itemId, kind, n)`; no code path addresses a record by the bare `itemId` (spec §3.1).
 - **Components carry no tuned number.** Pool sizes, k, `budgetTokens`, `maxValues` are required constructor arguments; tuned numbers live only in `mcpToolsVariants`, each next to its measurement (spec §7.1).
 - **`k` is the overall limit, in items.** The caller's k caps every cut: a retrieval never returns more than `min(k, cut.limit(k))` ≤ k items, with or without a decomposer; `FixedItemsCut(n)` is a ceiling (spec §4.5, §4.9, §17.6 F1).
-- **Filled once, at instance creation; the source is the consumer's strategy.** Every tools write reads the binding **and its fill source** from the store it writes (`boundToolsOf` / `toolsBindingOf`) — never from an option (spec §6.3 rule 1, D34, D42); whoever creates a bound store fills it, once — the main store in `_buildInfra`, a worker's own store by its construction (`buildSubAgent` without `injected`), so lazy rebuilds after `PUT /v1/config` / hot reload are filled too (rule 2, D35); workers on the shared clients are filled at startup on every path — on `yamlBuilderConnect` right after the harvest (D38). **Never refilled while running** (D41): no refill API, no fill memo, no retry, a per-session re-wire never fills; an incomplete fill is reported and stays. `toolsChanged` is the source's answer (D44): `live` / `consumer` re-index as 30.1.0, `corpus` / `prebuilt` write nothing. The four sources: `LiveToolsFill` (default), `ToolsCorpusLoader` (in-memory, a corpus built at build time, no embedding call), `PrebuiltToolsStore` (persistent, written by the consumer's deploy step, never by the process), `ConsumerToolsFill`. Every fill path is listed in spec §6.4; a new one must say which mechanism fills it.
+- **Filled once, at instance creation; the source is the consumer's strategy.** Every tools write reads the binding **and its fill source** from the store it writes (`boundToolsOf` / `toolsBindingOf`) — never from an option (spec §6.3 rule 1, D34, D42); whoever creates a bound store fills it, once — the main store in `_buildInfra`, a worker's own store by its construction (`buildSubAgent` without `injected`), so lazy rebuilds after `PUT /v1/config` / hot reload are filled too (rule 2, D35); workers on the shared clients are filled at startup on every path — on `yamlBuilderConnect` right after the harvest (D38). **Never refilled while running** (D41): no refill API, no fill memo, no retry, a per-session re-wire never fills; an incomplete fill is reported and stays. **A bound store is never written on `toolsChanged`** (D46, supersedes D44): `McpToolRegistry.revectorizeTools` finds the binding on the store and stops (one `mcp` debug line, no warning), for every source alike; an unbound store keeps 30.1.0's re-vectorize. `IToolsFillSource` is `fill` only. The four sources: `LiveToolsFill` (default), `ToolsCorpusLoader` (in-memory, a corpus built at build time, no embedding call), `PrebuiltToolsStore` (persistent, written by the consumer's deploy step, never by the process), `ConsumerToolsFill`. Every fill path is listed in spec §6.4; a new one must say which mechanism fills it.
 - **Never silent.** Reranker output errors, decomposer errors, orphans and over-budget cuts are returned or counted (spec §4.8, §4.5, §4.6, §4.10, §9).
 - **Shipped tools strategies read only what every MCP server exports** (name, description, input schema); `NameTailFacet` is opt-in and in no variant; `EnumValueToolIndexer` and `TokenBudgetCut` are in no variant (spec §7.0, §7.4).
 - **ESM only**, `.js` extensions in relative imports; Biome style (2 spaces, single quotes, semicolons); no `any` (Biome warns); no per-file licence header; every package `LGPL-3.0-only` (spec §11).
@@ -27,7 +27,7 @@
 - **Workspace siblings only.** The new packages (`llm-agent-reranker`, `sap-aicore-decision`) are linked as workspace siblings during development; no `file:` / `link:` to anything outside this repo. After any `npm install`, `grep -n '"link": true' package-lock.json` must list only `packages/*` siblings.
 - **No version bumps, no `npm publish`, no tag** in this plan — the user publishes; release is a separate step. The new packages' `version` is the current lockstep `30.1.0` (not a bump) so the workspace resolves. Publish order (the release's job): `llm-agent` → `llm-agent-reranker` → `typesafe-decision`, `sap-aicore-decision`, … → `llm-agent-libs` → `llm-agent-server-libs` → `llm-agent-server`.
 - **Imports between packages resolve to `dist/`.** After editing a package another package imports, rebuild it before running the dependent's tests: `npx tsc -b packages/<pkg>` (or `npm run build`).
-- **Spec issues S1–S9 are decided** (spec §17.4), and so are D24–D27, F1, F3, F4 (spec §17.6) and D28–D30 (spec §17.7: relevance scores comparable per query and model → batching by default; the second seam `makeRelevanceDecision` approved; `makeDecisionModel` → `makeProbabilityDecision`) and D31–D33 (spec §17.8: the server fills a bound tools profile from the clients it uses, Task 23A) and D34–D35 (spec §17.9: the binding travels with the store; whoever creates a bound store fills it — Tasks 19, 23A) and D38–D40 (spec §17.10: startup fill on every path; the hot-reload test through the reload entry point; runtime-removed tools stay — Task 23A; D36 is superseded and D37 moved out, below) and D41–D45 (spec §17.11: filled once at instance creation, no memo, no retry — Task 23A; the fill source strategy — Tasks 19, 20, 23B; the offline corpus API and the `serviceRecord` key — Tasks 2, 11, 12, 19A; `toolsChanged` by source — Tasks 19, 19A; single-flight construction out — Task 22A deleted, no task depends on it); all are written into the tasks below; no step waits on the user. A NEW gap found while executing goes to the user first — the rule is *fix the spec before the plan*.
+- **Spec issues S1–S9 are decided** (spec §17.4), and so are D24–D27, F1, F3, F4 (spec §17.6) and D28–D30 (spec §17.7: relevance scores comparable per query and model → batching by default; the second seam `makeRelevanceDecision` approved; `makeDecisionModel` → `makeProbabilityDecision`) and D31–D33 (spec §17.8: the server fills a bound tools profile from the clients it uses, Task 23A) and D34–D35 (spec §17.9: the binding travels with the store; whoever creates a bound store fills it — Tasks 19, 23A) and D38–D40 (spec §17.10: startup fill on every path; the hot-reload test through the reload entry point; runtime-removed tools stay — Task 23A; D36 is superseded and D37 moved out, below) and D41–D45 (spec §17.11: filled once at instance creation, no memo, no retry — Task 23A; the fill source strategy — Tasks 19, 20, 23B; the offline corpus API and the `serviceRecord` key — Tasks 2, 11, 12, 19A; `toolsChanged` by source — Tasks 19, 19A, superseded by D46; single-flight construction out — Task 22A deleted, no task depends on it) and D46–D47 (spec §17.12: no `toolsChanged` reaction for a bound store, `IToolsFillSource` is `fill` only — Tasks 19, 19A, 20, 23A, 23B, 33, 34; the corpus fingerprint, the dropped cache entry and the worker refusal approved as written — Tasks 19A, 23A, 23B); all are written into the tasks below; no step waits on the user. A NEW gap found while executing goes to the user first — the rule is *fix the spec before the plan*.
 - Commits: Conventional Commits, each ending with
   ```
   Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
@@ -76,7 +76,7 @@ The eight inputs the spec implies, most likely to bite a user, each pinned by a 
 - `index.ts` — exports; re-exported from `src/index.ts`.
 - `__tests__/*.test.ts`, `__tests__/collection-profile.typecheck.ts`.
 
-**Other libs files:** `mcp/fill-tools-binding.ts` (NEW, Task 23A: `fillToolsBinding`), `adapters/usage-logging-decision-model.ts` (`wrapProbabilityDecision`, `wrapRelevanceDecision`, deprecated `wrapDecisionModel`), `index.ts` (deprecated reranker re-exports), `mcp/vectorize-mcp-tools.ts` (dispatches to the store's fill source; the live profile path, the binding read from the store — D34, D42, Task 19; F1), `mcp/tool-registry.ts` (`event: 'tools-changed'`; `mcp/tool-registry-revectorize-profile.test.ts` NEW, Task 19), `builder.ts` (`withToolsProfile`), `metrics/in-memory-metrics.ts`, `metrics/noop-metrics.ts`, `retrieval/reranked-retrieval.ts` (telemetry), `health/health-checker.ts` (`HealthCheckerDeps.toolCatalog`, Task 23A; records/profile, Task 29), `pipeline/handlers/skill-select.ts` (F3), `testing/evaluate-retrieval.ts` + `testing/index.ts`.
+**Other libs files:** `mcp/fill-tools-binding.ts` (NEW, Task 23A: `fillToolsBinding`), `adapters/usage-logging-decision-model.ts` (`wrapProbabilityDecision`, `wrapRelevanceDecision`, deprecated `wrapDecisionModel`), `index.ts` (deprecated reranker re-exports), `mcp/vectorize-mcp-tools.ts` (dispatches to the store's fill source; the live profile path, the binding read from the store — D34, D42, Task 19; F1), `mcp/tool-registry.ts` (`revectorizeTools` writes nothing into a bound store, D46; `mcp/tool-registry-revectorize-profile.test.ts` NEW, Task 19), `builder.ts` (`withToolsProfile`), `metrics/in-memory-metrics.ts`, `metrics/noop-metrics.ts`, `retrieval/reranked-retrieval.ts` (telemetry), `health/health-checker.ts` (`HealthCheckerDeps.toolCatalog`, Task 23A; records/profile, Task 29), `pipeline/handlers/skill-select.ts` (F3), `testing/evaluate-retrieval.ts` + `testing/index.ts`.
 
 **`packages/sap-aicore-decision/`** — NEW package (`package.json`, `tsconfig.json`, `README.md`, `CHANGELOG.md`, `LICENSE`, `GPL-3.0.txt`, `src/index.ts`, `src/sap-aicore-relevance-decision.ts`, `src/map-rerank.ts`, `src/__tests__/fake-fetch.ts`, `src/__tests__/sap-aicore-relevance-decision.test.ts`).
 
@@ -8850,11 +8850,11 @@ Claude-Session: https://claude.ai/code/session_012KjevEeQGZMkWMfnupJ7Yd"
 
 ## Task 19: `vectorizeMcpTools` runs the store's fill source — the binding and its source read from the store; `live` fills through `bound.index` (llm-agent + libs)
 
-Spec §3.10 (`IToolsFillSource`, `ToolsFillContext`; D42, D44), §7.6 (incl. notes logged, S1), §6.3 rule 1 (D34 — the binding travels with the store, §17.9; D42 — so does its fill source), §6.4 rows 1, 3, 9, 10. The 30.1.0 path stays byte-for-byte (Task 1's golden test).
+Spec §3.10 (`IToolsFillSource`, `ToolsFillContext`; D42, D46), §7.6 (incl. notes logged, S1), §6.3 rule 1 (D34 — the binding travels with the store, §17.9; D42 — so does its fill source; D46 — a reconnect never writes a bound store, §17.12), §6.4 rows 1, 3, 9, 10. The 30.1.0 path stays byte-for-byte (Task 1's golden test).
 
-**Fill sources (D42).** A bound store carries its binding AND its `IToolsFillSource`, attached by `bindToolsProfile(profile, target, source?)` (absent → `LiveToolsFill`). `vectorizeMcpTools` becomes a thin dispatcher: no binding → the 30.1.0 records (unchanged); a binding → `source.fill(ctx)` at the store's creation (the builder's `build()`, `fillToolsBinding`), or `source.toolsChanged(ctx)` on a reconnect (`McpToolRegistry` passes `event: 'tools-changed'`). The live listing + `bound.index` path below is what `ctx.indexLiveTools` runs, so `live` is exactly the behaviour this task had before. `corpus` / `prebuilt` arrive in Task 19A.
+**Fill sources (D42).** A bound store carries its binding AND its `IToolsFillSource`, attached by `bindToolsProfile(profile, target, source?)` (absent → `LiveToolsFill`). `vectorizeMcpTools` becomes a thin dispatcher: no binding → the 30.1.0 records (unchanged); a binding → `source.fill(ctx)`, the store's creation (the builder's `build()`, `fillToolsBinding`). **A reconnect never writes a bound store** (D46): `McpToolRegistry.revectorizeTools` finds the binding (`toolsBindingOf`, through decorators) and returns before `vectorizeMcpTools` — one line under the `mcp` debug area, no warning; an unbound store goes on to 30.1.0's re-vectorize, unchanged. The source contract is `fill` only. The live listing + `bound.index` path below is what `ctx.indexLiveTools` runs, so `live` is exactly the behaviour this task had before. `corpus` / `prebuilt` arrive in Task 19A.
 
-**Why the binding is read from the store, not passed.** `vectorizeMcpTools` has two callers in libs today — the builder's fill at `build()` and `McpToolRegistry.revectorizeTools` (a reconnect that reports `toolsChanged`) — and Task 23A adds `fillToolsBinding`. The registry holds `ragStores`, never a binding: an option only the startup caller passes would refill a profiled store with 30.1.0 records on every reconnect and skip a writerless binding silently (review finding (a)). So no caller passes one: `vectorizeMcpTools` asks the store (`toolsBindingOf`, through `IRagDecorator.inner` — a `StrategyRag`, the circuit breaker's `FallbackRag`). Every binding in this plan is attached by `bindToolsProfile` (Tasks 20, 23, 32; the docs' snippet), so none is lost.
+**Why the binding is read from the store, not passed.** `vectorizeMcpTools` has two callers in libs today — the builder's fill at `build()` and `McpToolRegistry.revectorizeTools` (a reconnect that reports `toolsChanged`) — and Task 23A adds `fillToolsBinding`. The registry holds `ragStores`, never a binding: an option only the startup caller passes would refill a profiled store with 30.1.0 records on every reconnect (review finding (a)). So no caller passes one: the registry asks the store whether it is bound (and then writes nothing, D46), and `vectorizeMcpTools` asks the store (`toolsBindingOf`, through `IRagDecorator.inner` — a `StrategyRag`, the circuit breaker's `FallbackRag`). Every binding in this plan is attached by `bindToolsProfile` (Tasks 20, 23, 32; the docs' snippet), so none is lost.
 
 **Files:**
 - Create: `packages/llm-agent/src/interfaces/tools-fill-source.ts` (`IToolsFillSource`, `ToolsFillContext`; spec §3.10)
@@ -8863,8 +8863,8 @@ Spec §3.10 (`IToolsFillSource`, `ToolsFillContext`; D42, D44), §7.6 (incl. not
 - Modify: `packages/llm-agent-libs/src/collections/tools-binding.ts` (the registry keeps `{ binding, target, source }`; `boundToolsOf`; `bindToolsProfile`'s third parameter)
 - Modify: `packages/llm-agent-libs/src/collections/index.ts` (export the two sources)
 - Create: `packages/llm-agent-libs/src/mcp/index-tools-through-profile.ts`
-- Modify: `packages/llm-agent-libs/src/mcp/vectorize-mcp-tools.ts` (the existing function becomes the internal `listAndIndexTools`, with the profile branch below; the exported `vectorizeMcpTools` dispatches to the store's fill source; the inline `ns` type becomes `VectorizeNs` and gains `event?`)
-- Modify: `packages/llm-agent-libs/src/mcp/tool-registry.ts` (`revectorizeTools` passes `event: 'tools-changed'`)
+- Modify: `packages/llm-agent-libs/src/mcp/vectorize-mcp-tools.ts` (the existing function becomes the internal `listAndIndexTools`, with the profile branch below; the exported `vectorizeMcpTools` dispatches to the store's fill source; the inline `ns` type becomes `VectorizeNs`, same members)
+- Modify: `packages/llm-agent-libs/src/mcp/tool-registry.ts` (`revectorizeTools` returns before writing when the store carries a binding, D46)
 - Create: `packages/llm-agent-libs/src/__tests__/vectorize-mcp-tools-profile.test.ts`
 - Create: `packages/llm-agent-libs/src/mcp/tool-registry-revectorize-profile.test.ts`
 - Create: `packages/llm-agent-libs/src/collections/__tests__/tools-fill-source.test.ts`
@@ -8874,16 +8874,18 @@ Spec §3.10 (`IToolsFillSource`, `ToolsFillContext`; D42, D44), §7.6 (incl. not
 - Produces:
   ```ts
   // @mcp-abap-adt/llm-agent — interfaces/tools-fill-source.ts (spec §3.10)
-  export interface IToolsFillSource { readonly name: string; fill(ctx: ToolsFillContext, options?: CallOptions): Promise<ToolCatalogStatus | undefined>; toolsChanged(ctx: ToolsFillContext, options?: CallOptions): Promise<ToolCatalogStatus | undefined> }
+  export interface IToolsFillSource { readonly name: string; fill(ctx: ToolsFillContext, options?: CallOptions): Promise<ToolCatalogStatus | undefined> } // fill only (D46)
   export interface ToolsFillContext { readonly binding: IBoundCollection<ToolItem>; readonly target: CollectionStore; indexLiveTools(options?: CallOptions): Promise<ToolCatalogStatus | undefined>; readonly logger?: ILogger }
   // @mcp-abap-adt/llm-agent-libs
-  export class LiveToolsFill implements IToolsFillSource { readonly name: 'live' }        // fill = toolsChanged = ctx.indexLiveTools()
-  export class ConsumerToolsFill implements IToolsFillSource { readonly name: 'consumer' } // fill → undefined; toolsChanged = ctx.indexLiveTools()
+  export class LiveToolsFill implements IToolsFillSource { readonly name: 'live' }        // fill = ctx.indexLiveTools()
+  export class ConsumerToolsFill implements IToolsFillSource { readonly name: 'consumer' } // fill → undefined: the library never writes
   export function bindToolsProfile(profile: ICollectionProfile<ToolItem>, target: CollectionStore, source?: IToolsFillSource): IBoundCollection<ToolItem>; // absent → LiveToolsFill; an explicit different source on a bound store → throws
   // internal to libs: boundToolsOf(rag): { binding, target, source } | undefined
-  // vectorizeMcpTools(…) — same parameters; ns gains `event?: 'create' | 'tools-changed'` (default 'create'):
-  //   no binding → the 30.1.0 records; a binding → source.fill(ctx) / source.toolsChanged(ctx),
+  // vectorizeMcpTools(…) — same parameters (ns: VectorizeNs, the same members as today):
+  //   no binding → the 30.1.0 records; a binding → source.fill(ctx) (creation paths only),
   //   ctx.indexLiveTools = the listing + indexToolsThroughProfile.
+  // McpToolRegistry.revectorizeTools: toolsBindingOf(store) → return (mcp debug line, no write, D46);
+  //   unbound → vectorizeMcpTools, 30.1.0 unchanged.
   export function indexToolsThroughProfile(binding: IBoundCollection<ToolItem>, tools: readonly LlmTool[], originalNames: readonly string[], ids: readonly string[], seed: { total: number; clientFailures: number }, logger: ILogger | undefined, options?: CallOptions): Promise<ToolCatalogStatus>;
   // summary: vectorized = items with every record written; failed = tool names; records; profile
   // every IndexReport.notes entry is logged as a warning naming the tool (S1)
@@ -9034,163 +9036,138 @@ describe('vectorizeMcpTools with a tools profile', () => {
 });
 ```
 
-The reconnect path (spec §6.3 rule 1, §6.4 row 3) — a `toolsChanged` refill of a bound store goes through the profile:
+The reconnect path (spec §6.3 rule 1, §6.4 row 3; D46) — a `toolsChanged` never writes a bound store; an unbound store keeps 30.1.0:
 
 ```ts
 // packages/llm-agent-libs/src/mcp/tool-registry-revectorize-profile.test.ts
 /**
- * Spec §6.3 rule 1 (D34): a reconnect that reports toolsChanged refills a
- * bound store through its profile — vectorizeMcpTools reads the binding from
- * the store, so McpToolRegistry (which holds ragStores, never a binding) gets
- * the profile path without knowing about it. Unbound stores: the existing
- * tool-registry-revectorize.test.ts pins 30.1.0, unchanged.
+ * Spec §6.3 rule 1 (D46): a reconnect that reports toolsChanged writes NOTHING
+ * into a store bound to a tools profile — whatever its fill source. The store
+ * was filled once, at its creation. An unbound store keeps 30.1.0's
+ * re-vectorize (also pinned by tool-registry-revectorize.test.ts, unchanged).
  */
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
   CircuitBreaker,
   FallbackRag,
-  type IBoundCollection,
+  type ILogger,
   type IMcpClient,
   InMemoryRag,
   type IRag,
-  type IToolIntentSource,
+  type IToolsFillSource,
   type McpTool,
-  TextOnlyEmbedding,
-  type ToolItem,
-  toolNameFromRecord,
 } from '@mcp-abap-adt/llm-agent';
 import { bindToolsProfile, mcpToolsVariants } from '../collections/index.js';
 import type { IMcpConnectionStrategy } from '../interfaces/mcp-connection-strategy.js';
+import { NoopRequestLogger } from '../logger/noop-request-logger.js';
 import { McpToolRegistry } from './tool-registry.js';
+import { vectorizeMcpTools } from './vectorize-mcp-tools.js';
 
+const G = { scope: 'global' } as const;
 const tool = (name: string, description: string): McpTool => ({
   name,
   description,
   inputSchema: { type: 'object', properties: {} },
 });
+let listed = 0;
 const client = (tools: McpTool[]): IMcpClient =>
   ({
-    listTools: async () => ({ ok: true as const, value: tools }),
+    listTools: async () => {
+      listed++;
+      return { ok: true as const, value: tools };
+    },
     callTool: async () => ({ ok: true as const, value: { content: [] } }),
   }) as unknown as IMcpClient;
 
-/** Each resolve hands back the current clients with toolsChanged: a reconnect. */
-function reconnecting(first: IMcpClient[]) {
-  let clients = first;
-  const strategy = {
-    resolve: async () => ({ clients, toolsChanged: true }),
-  } as unknown as IMcpConnectionStrategy;
-  return {
-    strategy,
-    next(c: IMcpClient[]) {
-      clients = c;
+/** Each resolve hands back the given clients with toolsChanged: a reconnect. */
+const reconnecting = (clients: IMcpClient[]) =>
+  ({ resolve: async () => ({ clients, toolsChanged: true }) }) as unknown as IMcpConnectionStrategy;
+
+/** An InMemoryRag whose writer records every call. */
+function spied(inner: InMemoryRag) {
+  const writes: string[] = [];
+  const w = inner.writer();
+  assert.ok(w);
+  const writer = new Proxy(w, {
+    get(t, p, r) {
+      const v = Reflect.get(t, p, r);
+      return typeof v === 'function'
+        ? (...a: unknown[]) => {
+            writes.push(String(p));
+            return v.apply(t, a);
+          }
+        : v;
     },
+  });
+  const rag: IRag = {
+    query: (e, k, o) => inner.query(e, k, o),
+    healthCheck: (o) => inner.healthCheck(o),
+    getById: (id, o) => inner.getById(id, o),
+    writer: () => writer,
   };
+  return { rag, writes };
 }
 
-/** Intents follow the description: words no primary record contains. */
-const intentsFromDescription: IToolIntentSource = {
-  name: 'from-description',
-  intentsFor: async (t) => ({
-    ok: true as const,
-    value: [t.description.includes('v2') ? 'zebra crossing' : 'walrus colony'],
-  }),
-};
-
-/** `name`'s score for a query on `rag`; 0 = not retrieved. */
-async function score(rag: IRag, q: string, name: string): Promise<number> {
-  const r = await rag.query(new TextOnlyEmbedding(q), 10);
-  assert.ok(r.ok);
-  return r.value.find((h) => toolNameFromRecord(h.metadata) === name)?.score ?? 0;
-}
-
-describe('McpToolRegistry toolsChanged on a bound store (D34)', () => {
-  it('updated and newly added tools are re-indexed through the profile; companions follow; no 30.1.0 record', async () => {
-    const rag = new InMemoryRag();
-    const intents = new InMemoryRag();
-    const bound = bindToolsProfile(
-      mcpToolsVariants.faceted({ intents: { companion: intentsFromDescription } }),
-      { key: 'tools', rag, companions: { intents } },
-    );
-    const conn = reconnecting([client([tool('read_file', 'Read a file v1')])]);
-    const registry = new McpToolRegistry([], conn.strategy, { tools: bound.rag });
-
-    await registry.resolveActiveClients();
-    assert.ok((await score(bound.rag, 'walrus colony', 'read_file')) > 0, 'filled with its v1 intent');
-
-    conn.next([client([tool('read_file', 'Read a file v2'), tool('list_issues', 'List open issues')])]);
-    await registry.resolveActiveClients();
-
-    const item = await bound.get({ itemId: 'tool:read_file', owner: { scope: 'global' } });
-    assert.ok(item.ok && item.value, 'the updated item is whole');
-    assert.ok((await score(bound.rag, 'v2', 'read_file')) > 0, 'the primary records carry the new description');
-    assert.ok((await score(bound.rag, 'zebra crossing', 'read_file')) > 0, 'the companion record was rewritten');
-    assert.equal(await score(bound.rag, 'walrus colony', 'read_file'), 0, 'the old intent is gone');
-    const added = await bound.get({ itemId: 'tool:list_issues', owner: { scope: 'global' } });
-    assert.ok(added.ok && added.value, 'the new tool is indexed');
-    for (const id of ['tool:read_file', 'tool:list_issues']) {
-      const legacy = await rag.getById(id);
-      assert.ok(legacy.ok && legacy.value === null, `no 30.1.0 record ${id}`);
-    }
-  });
-
-  it('a binding over a writerless store is refreshed through its own index, not skipped', async () => {
-    const backend = new InMemoryRag();
-    const backendWriter = backend.writer();
-    assert.ok(backendWriter);
-    const facade: IRag = {
-      query: (e, k, o) => backend.query(e, k, o),
-      healthCheck: (o) => backend.healthCheck(o),
-      getById: (id, o) => backend.getById(id, o),
-    };
-    const indexed: string[][] = [];
-    const facadeBinding: IBoundCollection<ToolItem> = {
-      key: 'tools',
-      profileName: 'facade-profile',
-      rag: facade,
-      retrieval: { name: 'plain', retrieve: (store, q, k, o) => store.query(q, k, o) },
-      index: async (items, o) => {
-        indexed.push(items.map((i) => i.name));
-        for (const it of items) {
-          const w = await backendWriter.upsertRaw(`p:${it.itemId}`, `${it.name} ${it.description}`, { name: it.name }, o);
-          if (!w.ok) return w;
-        }
-        return { ok: true, value: { items: items.length, indexedItems: items.length, records: items.length, failedItems: [] } };
+describe('McpToolRegistry toolsChanged (D46)', () => {
+  it('a bound store is not written on tools-changed: no listing, no write, no fill-source call, no warning', async () => {
+    const spy = spied(new InMemoryRag());
+    const calls: string[] = [];
+    const source: IToolsFillSource = {
+      name: 'counting',
+      fill: async (ctx, o) => {
+        calls.push('fill');
+        return ctx.indexLiveTools(o);
       },
-      remove: async () => ({ ok: true, value: 0 }),
-      get: (ref, o) => backend.getById(`p:${ref.itemId}`, o),
     };
-    const bound = bindToolsProfile({ name: 'facade-profile', bind: () => facadeBinding }, { key: 'tools', rag: facade });
-    assert.equal(bound.rag.writer?.(), undefined, 'precondition: no raw writer');
-    const conn = reconnecting([client([tool('read_file', 'Read a file')])]);
-    const registry = new McpToolRegistry([], conn.strategy, { tools: bound.rag });
+    const bound = bindToolsProfile(mcpToolsVariants.faceted(), { key: 'tools', rag: spy.rag }, source);
+    const created = await vectorizeMcpTools([client([tool('read_file', 'Read a file v1')])], bound.rag, new NoopRequestLogger(), undefined);
+    assert.equal(created?.complete, true, 'filled once, at creation');
+    const written = spy.writes.length;
+    assert.ok(written > 0);
 
-    await registry.resolveActiveClients();
-    conn.next([client([tool('read_file', 'Read a file'), tool('list_issues', 'List open issues')])]);
-    await registry.resolveActiveClients();
+    listed = 0;
+    const messages: string[] = [];
+    const logger = { log: (e: { message: string }) => messages.push(e.message) } as unknown as ILogger;
+    const strategy = reconnecting([client([tool('read_file', 'Read a file v2'), tool('list_issues', 'List open issues')])]);
+    await new McpToolRegistry([], strategy, { tools: bound.rag }, { logger }).resolveActiveClients();
 
-    assert.deepEqual(indexed, [['read_file'], ['read_file', 'list_issues']]);
+    assert.equal(spy.writes.length, written, 'no write');
+    assert.deepEqual(calls, ['fill'], 'the fill source is not called again');
+    assert.equal(listed, 0, 'nothing listed');
+    assert.deepEqual(messages, [], 'no warning');
+    const added = await bound.get({ itemId: 'tool:list_issues', owner: G });
+    assert.ok(added.ok && added.value === null, 'the new tool is not indexed');
+    const legacy = await spy.rag.getById('tool:read_file');
+    assert.ok(legacy.ok && legacy.value === null, 'no 30.1.0 record');
   });
 
-  it('a bound store behind the circuit breaker (FallbackRag) is still found', async () => {
-    const rag = new InMemoryRag();
-    const bound = bindToolsProfile(mcpToolsVariants.faceted(), { key: 'tools', rag });
+  it('a bound store behind the circuit breaker (FallbackRag): the initial fill finds the binding, the reconnect finds it and writes nothing', async () => {
+    const spy = spied(new InMemoryRag());
+    const bound = bindToolsProfile(mcpToolsVariants.faceted(), { key: 'tools', rag: spy.rag });
     const guarded = new FallbackRag(bound.rag, new InMemoryRag(), new CircuitBreaker());
-    const conn = reconnecting([client([tool('read_file', 'Read a file')])]);
-    const registry = new McpToolRegistry([], conn.strategy, { tools: guarded });
+    const s = await vectorizeMcpTools([client([tool('read_file', 'Read a file')])], guarded, new NoopRequestLogger(), undefined);
+    assert.equal(s?.profile, 'mcp-tools', 'the initial fill ran through the profile');
+    const item = await bound.get({ itemId: 'tool:read_file', owner: G });
+    assert.ok(item.ok && item.value);
+    const written = spy.writes.length;
 
-    await registry.resolveActiveClients();
+    const strategy = reconnecting([client([tool('read_file', 'Read a file'), tool('list_issues', 'List open issues')])]);
+    await new McpToolRegistry([], strategy, { tools: guarded }).resolveActiveClients();
+    assert.equal(spy.writes.length, written, 'the reconnect writes nothing');
+  });
 
-    const item = await bound.get({ itemId: 'tool:read_file', owner: { scope: 'global' } });
-    assert.ok(item.ok && item.value, 'filled through the profile');
+  it('an unbound store keeps 30.1.0: the reconnect re-vectorizes with the 30.1.0 records', async () => {
+    const rag = new InMemoryRag();
+    const strategy = reconnecting([client([tool('read_file', 'Read a file')])]);
+    await new McpToolRegistry([], strategy, { tools: rag }).resolveActiveClients();
     const legacy = await rag.getById('tool:read_file');
-    assert.ok(legacy.ok && legacy.value === null, 'no 30.1.0 record');
+    assert.ok(legacy.ok && legacy.value, 'the 30.1.0 record is written');
   });
 });
 ```
 
-The fill sources themselves (spec §3.10, D42, D44):
+The fill sources themselves (spec §3.10, D42, D46):
 
 ```ts
 // packages/llm-agent-libs/src/collections/__tests__/tools-fill-source.test.ts
@@ -9233,7 +9210,7 @@ describe('tools fill sources (spec §3.10)', () => {
     assert.ok(boundToolsOf(b.rag)?.source instanceof LiveToolsFill);
   });
 
-  it('consumer: creation writes and lists nothing (status unknown); toolsChanged re-indexes through the profile', async () => {
+  it('consumer: the library never writes — creation lists and writes nothing (status unknown), a reconnect neither', async () => {
     const rag = new InMemoryRag();
     const b = bindToolsProfile(mcpToolsVariants.faceted(), { key: 'tools', rag }, new ConsumerToolsFill());
     listed = 0;
@@ -9241,9 +9218,10 @@ describe('tools fill sources (spec §3.10)', () => {
     assert.equal(s, undefined);
     assert.equal(listed, 0, 'nothing listed at creation');
     assert.equal(await has(rag), false, 'nothing written');
-    const t = await vectorizeMcpTools([client()], b.rag, new NoopRequestLogger(), undefined, undefined, undefined, { event: 'tools-changed' });
-    assert.equal(t?.complete, true);
-    assert.equal(await has(rag), true, 'a reconnect re-indexes, as 30.1.0');
+    const strategy = { resolve: async () => ({ clients: [client()], toolsChanged: true }) } as unknown as IMcpConnectionStrategy;
+    await new McpToolRegistry([], strategy, { tools: b.rag }).resolveActiveClients();
+    assert.equal(listed, 0, 'nothing listed on a reconnect');
+    assert.equal(await has(rag), false, 'a reconnect writes nothing (D46)');
   });
 
   it("a consumer's own source gets the binding, the target and the live path; its status is the catalog status", async () => {
@@ -9255,7 +9233,6 @@ describe('tools fill sources (spec §3.10)', () => {
         seen.push(ctx);
         return ctx.indexLiveTools(o);
       },
-      toolsChanged: async () => undefined,
     };
     const b = bindToolsProfile(mcpToolsVariants.faceted(), { key: 'tools', rag: raw }, own);
     const s = await vectorizeMcpTools([client()], b.rag, new NoopRequestLogger(), undefined);
@@ -9266,7 +9243,7 @@ describe('tools fill sources (spec §3.10)', () => {
     assert.equal(s?.profile, 'mcp-tools');
   });
 
-  it('a reconnect calls the source’s toolsChanged, never its fill', async () => {
+  it('a reconnect never calls the source (D46)', async () => {
     const calls: string[] = [];
     const own: IToolsFillSource = {
       name: 'own',
@@ -9274,15 +9251,11 @@ describe('tools fill sources (spec §3.10)', () => {
         calls.push('fill');
         return undefined;
       },
-      toolsChanged: async () => {
-        calls.push('toolsChanged');
-        return undefined;
-      },
     };
     const b = bindToolsProfile(mcpToolsVariants.faceted(), { key: 'tools', rag: new InMemoryRag() }, own);
     const strategy = { resolve: async () => ({ clients: [client()], toolsChanged: true }) } as unknown as IMcpConnectionStrategy;
     await new McpToolRegistry([], strategy, { tools: b.rag }).resolveActiveClients();
-    assert.deepEqual(calls, ['toolsChanged']);
+    assert.deepEqual(calls, []);
   });
 
   it('binding a bound store again: the same binding; a different explicit source → throws', () => {
@@ -9300,7 +9273,7 @@ describe('tools fill sources (spec §3.10)', () => {
 - [ ] **Step 2: Run to see it fail**
 
 Run: `node --import tsx/esm --test packages/llm-agent-libs/src/__tests__/vectorize-mcp-tools-profile.test.ts packages/llm-agent-libs/src/mcp/tool-registry-revectorize-profile.test.ts packages/llm-agent-libs/src/collections/__tests__/tools-fill-source.test.ts`
-Expected: FAIL — the 30.1.0 path runs on every caller, the registry's included (`legacy` records exist; no `records` / `profile` in the summary; the writerless binding is never indexed); `LiveToolsFill`, `ConsumerToolsFill` and `boundToolsOf` do not exist.
+Expected: FAIL — the 30.1.0 path runs on every caller (`legacy` records exist; no `records` / `profile` in the summary; the writerless binding is never indexed); the registry re-vectorizes a bound store on `toolsChanged` (writes, listing); `LiveToolsFill`, `ConsumerToolsFill` and `boundToolsOf` do not exist.
 
 - [ ] **Step 3: Implement**
 
@@ -9393,7 +9366,7 @@ export async function indexToolsThroughProfile(
 
 In `vectorize-mcp-tools.ts`:
 - add imports: `import { toolsBindingOf } from '../collections/tools-binding.js';` and `import { indexToolsThroughProfile } from './index-tools-through-profile.js';`. No new type import: the binding's type is inferred from `toolsBindingOf`, and `noUnusedLocals` would reject an unused one. (No cycle: `collections/tools-binding.ts` imports only `@mcp-abap-adt/llm-agent` and `retrieval/strategy-rag.ts`.)
-- extract the inline `ns?: { … }` parameter type into `type VectorizeNs = { descriptors?…; configuredSlotCount?…; toolNamespace?…; prebuiltView?…; /** What happened to the store (spec §3.10): its creation (default) or a reconnect's toolsChanged. Read only for a bound store. */ event?: 'create' | 'tools-changed' }` (same members otherwise) — still no `binding` option (D34): the binding is the store's.
+- extract the inline `ns?: { … }` parameter type into `type VectorizeNs = { descriptors?…; configuredSlotCount?…; toolNamespace?…; prebuiltView?… }` (the same members; both the internal `listAndIndexTools` and the exported dispatcher take it) — still no `binding` option (D34): the binding is the store's. No `event` member: a bound store is reached here only from creation paths (D46).
 - rename the existing `export async function vectorizeMcpTools(…)` to the module-internal `async function listAndIndexTools(…)` (same parameters, `ns?: VectorizeNs`); the edits below go INTO it. It is the 30.1.0 path for an unbound store and `ctx.indexLiveTools` for a bound one.
 - the writer guard (lines 144–148 today) applies ONLY to the 30.1.0 path. A bound profile indexes through `binding.index` — its own backend — so `binding.rag` may be a writerless query facade (allowed by `IRag`, preserved by `StrategyRag`); requiring a raw writer there would skip `index()` and leave the catalog empty and its status unknown. Replace:
   ```ts
@@ -9406,10 +9379,11 @@ In `vectorize-mcp-tools.ts`:
   with:
   ```ts
   const writer = toolsRag?.writer?.();
-  // The binding travels with the store (spec §6.3 rule 1, D34): every caller —
-  // the builder's fill, a reconnect's toolsChanged (McpToolRegistry), and
-  // fillToolsBinding — gets the profile path from the store it fills, found
-  // through IRagDecorator.inner (StrategyRag, the breaker's FallbackRag).
+  // The binding travels with the store (spec §6.3 rule 1, D34): every
+  // creation caller — the builder's fill and fillToolsBinding — gets the
+  // profile path from the store it fills, found through IRagDecorator.inner
+  // (StrategyRag, the breaker's FallbackRag). A reconnect never reaches here
+  // with a bound store (McpToolRegistry stops first, D46).
   const binding = toolsRag ? toolsBindingOf(toolsRag) : undefined;
   // No store: nothing is attempted. Without a binding (the 30.1.0 path) a
   // deliberately read-only store is skipped too, and the status stays unknown
@@ -9440,11 +9414,12 @@ In `vectorize-mcp-tools.ts`:
 Then add the exported dispatcher at the end of `vectorize-mcp-tools.ts` (imports: `boundToolsOf` from `'../collections/tools-binding.js'`; `ToolsFillContext` into the `@mcp-abap-adt/llm-agent` type import):
 ```ts
 /**
- * Tools vectorization (spec §3.10, §6.3 rule 1; D34, D42). An unbound store →
- * the 30.1.0 records, byte for byte. A bound store → its fill source decides:
- * `fill` when the store's instance is created (the builder's build(),
- * fillToolsBinding), `toolsChanged` on a reconnect (McpToolRegistry). The
- * source gets the live path as `indexLiveTools`; it needs no clients itself.
+ * Tools vectorization (spec §3.10, §6.3 rule 1; D34, D42, D46). An unbound
+ * store → the 30.1.0 records, byte for byte (also a reconnect's re-vectorize).
+ * A bound store → its fill source's `fill`, the store's creation (the
+ * builder's build(), fillToolsBinding); a reconnect never calls this for a
+ * bound store (McpToolRegistry stops first). The source gets the live path as
+ * `indexLiveTools`; it needs no clients itself.
  */
 export async function vectorizeMcpTools(
   clients: IMcpClient[],
@@ -9467,20 +9442,30 @@ export async function vectorizeMcpTools(
     indexLiveTools: (o) =>
       listAndIndexTools(clients, store, requestLogger, logger, toolRecordKey, o ?? options, ns),
   };
-  return ns?.event === 'tools-changed'
-    ? bound.source.toolsChanged(ctx, options)
-    : bound.source.fill(ctx, options);
+  return bound.source.fill(ctx, options);
 }
 ```
 (`listAndIndexTools` keeps its own `toolsBindingOf` branch: with a binding it runs `indexToolsThroughProfile`, which is what `indexLiveTools` means. `IRag` and `IToolRecordKey` are already imported there.)
 
-In `tool-registry.ts`, `revectorizeTools`: the `ns` object passed to `vectorizeMcpTools` gains `event: 'tools-changed',` after `toolNamespace: this.toolNamespace,`, and its comment (after "…an aborted reconnect stops promptly.") gains:
+In `tool-registry.ts` (D46): import `toolsBindingOf` from `'../collections/tools-binding.js'` (no cycle: `collections/tools-binding.ts` imports only `@mcp-abap-adt/llm-agent`, `retrieval/strategy-rag.ts` and `collections/tools/tools-fill-sources.ts`); in `revectorizeTools`, right after `if (!toolsRag) return;`, insert:
 ```ts
-    // A store bound to a tools profile is answered by its fill source
-    // (spec §3.10, D44): `live`/`corpus`/`consumer` re-index through the
-    // profile, `prebuilt` writes nothing. vectorizeMcpTools reads the binding
-    // and its source from the store, so this registry needs neither.
+    // A store bound to a tools profile is filled once, when it is created, and
+    // never written on a reconnect (spec §6.3 rule 1, D46): until it is filled
+    // the pipeline and its MCP do not work, so its tool list cannot change
+    // under a working pipeline. An MCP server plugged in at runtime is the
+    // consumer's pipeline's concern. Found through decorators (StrategyRag,
+    // the breaker's FallbackRag). Unbound: the 30.1.0 re-vectorize below.
+    const bound = toolsBindingOf(toolsRag);
+    if (bound) {
+      if (isDebugArea('mcp')) {
+        console.error(
+          `[mcp] tool-registry: tools changed; the tools store is bound to profile ${bound.profileName} — not re-indexed (filled once at creation)`,
+        );
+      }
+      return;
+    }
 ```
+The `vectorizeMcpTools` call below it is unchanged (no `event`; `isDebugArea` is already imported). A debug line, not a warning: a flapping connection must not spam the log.
 
 The contract (`packages/llm-agent/src/interfaces/tools-fill-source.ts`):
 ```ts
@@ -9492,8 +9477,9 @@ import type { CallOptions } from './types.js';
 /**
  * Where a bound tools store's records come from (spec §3.10, D42). Attached
  * with the binding (`bindToolsProfile(profile, target, source)`) and read from
- * the store by whatever writes it. A store is filled ONCE, when its instance
- * is created (D41) — never refilled while it runs.
+ * the store by whatever fills it. A store is filled ONCE, when its instance
+ * is created (D41) — never refilled while it runs; a reconnect's
+ * `toolsChanged` writes nothing into a bound store and calls no source (D46).
  */
 export interface IToolsFillSource {
   /** 'live' | 'corpus' | 'prebuilt' | 'consumer' | a consumer's own. */
@@ -9501,8 +9487,6 @@ export interface IToolsFillSource {
   /** Once, at the store's creation. `undefined` = nothing attempted. Throws on
    *  an incompatible corpus or store — never a silent empty store. */
   fill(ctx: ToolsFillContext, options?: CallOptions): Promise<ToolCatalogStatus | undefined>;
-  /** A reconnect reported `toolsChanged` (30.1.0's revectorizeTools; D44). */
-  toolsChanged(ctx: ToolsFillContext, options?: CallOptions): Promise<ToolCatalogStatus | undefined>;
 }
 
 export interface ToolsFillContext {
@@ -9521,25 +9505,19 @@ export interface ToolsFillContext {
 ```ts
 import type { CallOptions, IToolsFillSource, ToolCatalogStatus, ToolsFillContext } from '@mcp-abap-adt/llm-agent';
 
-/** The default (spec §3.10): the MCP tool list, indexed through the profile — 30.1.0's behaviour. */
+/** The default (spec §3.10): the MCP tool list, indexed through the profile at creation — 30.1.0's listing. */
 export class LiveToolsFill implements IToolsFillSource {
   readonly name = 'live';
   fill(ctx: ToolsFillContext, options?: CallOptions): Promise<ToolCatalogStatus | undefined> {
     return ctx.indexLiveTools(options);
   }
-  toolsChanged(ctx: ToolsFillContext, options?: CallOptions): Promise<ToolCatalogStatus | undefined> {
-    return ctx.indexLiveTools(options);
-  }
 }
 
-/** The consumer fills the store itself (`bound.index`, `fillToolsBinding`); a reconnect re-indexes as 30.1.0. */
+/** The consumer fills the store itself (`bound.index`, `fillToolsBinding`); the library never writes it. */
 export class ConsumerToolsFill implements IToolsFillSource {
   readonly name = 'consumer';
   async fill(): Promise<ToolCatalogStatus | undefined> {
     return undefined;
-  }
-  toolsChanged(ctx: ToolsFillContext, options?: CallOptions): Promise<ToolCatalogStatus | undefined> {
-    return ctx.indexLiveTools(options);
   }
 }
 ```
@@ -9611,9 +9589,9 @@ Claude-Session: https://claude.ai/code/session_012KjevEeQGZMkWMfnupJ7Yd"
 
 ## Task 19A: Offline tools corpus — `buildToolsCorpus`, `parseToolsCorpus`, `deployToolsCorpus`; the `corpus` and `prebuilt` fill sources (libs)
 
-Spec §6.5 (D43), §3.10 (`ToolsCorpusLoader`, `PrebuiltToolsStore`; compatibility checked at creation; D42, D44), §4.3 (the service record is dropped — Task 12), §3.1 (`serviceRecord` — Tasks 2, 11), §14.1 (offline corpus, fill sources).
+Spec §6.5 (D43), §3.10 (`ToolsCorpusLoader`, `PrebuiltToolsStore`; compatibility checked at creation; D42, D46, D47), §4.3 (the service record is dropped — Task 12), §3.1 (`serviceRecord` — Tasks 2, 11), §14.1 (offline corpus, fill sources).
 
-**Why.** A tools store is filled once at instance creation (D41). Two of the four sources need the profile's indexer to run **outside** the process: the consumer's **build** step produces a corpus (records + vectors) with the same profile and an embedder; its **deploy** step writes that corpus into a persistent store with precomputed vectors — no embedding call — in place, idempotent, with a service record (fingerprint, corpus hash, record hashes). At instance creation `ToolsCorpusLoader` — one small class whose only job is this — checks a built corpus's fingerprint, writes its records with their precomputed vectors into the fresh in-memory store and reports the status (no service record, no diff, no refill, no memo, no retry, no watching); `PrebuiltToolsStore` only checks a deployed persistent store and never writes. Neither writes on `toolsChanged` (D44).
+**Why.** A tools store is filled once at instance creation (D41). Two of the four sources need the profile's indexer to run **outside** the process: the consumer's **build** step produces a corpus (records + vectors) with the same profile and an embedder; its **deploy** step writes that corpus into a persistent store with precomputed vectors — no embedding call — in place, idempotent, with a service record (fingerprint, corpus hash, record hashes). At instance creation `ToolsCorpusLoader` — one small class whose only job is this — checks a built corpus's fingerprint, writes its records with their precomputed vectors into the fresh in-memory store and reports the status (no service record, no diff, no refill, no memo, no retry, no watching); `PrebuiltToolsStore` only checks a deployed persistent store and never writes. A reconnect calls neither (D46: `IToolsFillSource` is `fill` only; a bound store is never written on `toolsChanged`). The fingerprint is the consumer-named `ToolsCorpusIdentity` plus the library's own checks (D47).
 
 **Files:**
 - Create: `packages/llm-agent-libs/src/collections/tools/corpus-capture-rag.ts` (internal: the build step's capture store)
@@ -9635,7 +9613,7 @@ Spec §6.5 (D43), §3.10 (`ToolsCorpusLoader`, `PrebuiltToolsStore`; compatibili
   export function buildToolsCorpus(input: { readonly profile: ICollectionProfile<ToolItem>; readonly embedder: IRetrievalEmbedder; readonly identity: ToolsCorpusIdentity; readonly items: readonly ToolItem[]; readonly companions?: readonly string[] }, options?: CallOptions): Promise<ToolsCorpus>;
   export function parseToolsCorpus(json: string): ToolsCorpus;
   export function deployToolsCorpus(corpus: ToolsCorpus, target: CollectionStore, options?: CallOptions): Promise<ToolsCorpusDeployReport>;
-  export class ToolsCorpusLoader implements IToolsFillSource { constructor(o: { corpus: ToolsCorpus; expect: ToolsCorpusIdentity }); readonly name: 'corpus' } // fill: check + precomputed writes + status; toolsChanged: no write
+  export class ToolsCorpusLoader implements IToolsFillSource { constructor(o: { corpus: ToolsCorpus; expect: ToolsCorpusIdentity }); readonly name: 'corpus' } // fill: check + precomputed writes + status
   export class PrebuiltToolsStore implements IToolsFillSource { constructor(o: { expect: ToolsCorpusIdentity }); readonly name: 'prebuilt' }
   ```
 
@@ -9647,7 +9625,6 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
   type IEmbedResult,
-  type ILogger,
   InMemoryRag,
   type IRag,
   type IRagBackendWriter,
@@ -9864,7 +9841,7 @@ describe('deployToolsCorpus (deploy step)', () => {
 });
 
 describe('fill sources: corpus and prebuilt (spec §3.10)', () => {
-  it('corpus: loaded at creation with no embedding call; the catalog complete; toolsChanged writes nothing', async () => {
+  it('corpus: loaded at creation with no embedding call; the catalog complete', async () => {
     const { corpus } = await build();
     const { store, calls } = target();
     const spy = spied(store.rag);
@@ -9876,9 +9853,6 @@ describe('fill sources: corpus and prebuilt (spec §3.10)', () => {
     assert.ok(item.ok && item.value);
     const svc = await store.rag.getById(TOOLS_CORPUS_RECORD_ID);
     assert.ok(svc.ok && svc.value === null, 'the loader writes records only — no service record');
-    const written = spy.writes.length;
-    await vectorizeMcpTools([], b.rag, new NoopRequestLogger(), undefined, undefined, undefined, { event: 'tools-changed' });
-    assert.equal(spy.writes.length, written, 'a reconnect writes nothing: no refill');
   });
 
   it('corpus: a different embedder, profile or companion set → throws naming it', async () => {
@@ -9893,20 +9867,16 @@ describe('fill sources: corpus and prebuilt (spec §3.10)', () => {
     await assert.rejects(run({ ...ID, profile: 'other' }, { intents: new VectorRag(embedder) }), /profile/);
   });
 
-  it('prebuilt: a deployed store is checked and NEVER written — not at creation, not on toolsChanged', async () => {
+  it('prebuilt: a deployed store is checked and NEVER written at creation', async () => {
     const { corpus } = await build();
     const { store } = target();
     await deployToolsCorpus(corpus, store);
     const spy = spied(store.rag);
-    const messages: string[] = [];
-    const logger = { log: (e: { message: string }) => messages.push(e.message) } as unknown as ILogger;
     const b = bindToolsProfile(profile(), { key: 'tools', rag: spy.rag, companions: store.companions }, new PrebuiltToolsStore({ expect: ID }));
-    const s = await vectorizeMcpTools([], b.rag, new NoopRequestLogger(), logger);
+    const s = await vectorizeMcpTools([], b.rag, new NoopRequestLogger(), undefined);
     assert.equal(s?.complete, true);
     assert.equal(s?.vectorized, 2);
-    await vectorizeMcpTools([], b.rag, new NoopRequestLogger(), logger, undefined, undefined, { event: 'tools-changed' });
     assert.deepEqual(spy.writes, [], 'the process never writes a prebuilt store');
-    assert.ok(messages.some((m) => /prebuilt/.test(m)), 'the reconnect is logged, not written');
   });
 
   it('prebuilt: a store never deployed → throws pointing at the deploy step; a mismatching identity → throws', async () => {
@@ -10293,15 +10263,6 @@ function checkCompatible(m: ToolsCorpusManifest, expect: ToolsCorpusIdentity, ct
   if (differs.length > 0) throw new Error(`${what}: incompatible — ${differs.join('; ')} (spec §3.10)`);
 }
 
-/** A store built ahead is never written after its creation (D44): a reconnect is logged only. */
-function warnUnchanged(ctx: ToolsFillContext, what: string): void {
-  ctx.logger?.log({
-    type: 'warning',
-    traceId: 'builder',
-    message: `tools store '${ctx.binding.key}' is ${what}: the live tool list changed, nothing written — the next build / deploy brings it (spec §3.10, D44)`,
-  });
-}
-
 const statusOf = (m: ToolsCorpusManifest): ToolCatalogStatus => ({
   total: m.items,
   vectorized: m.items,
@@ -10317,7 +10278,7 @@ const statusOf = (m: ToolsCorpusManifest): ToolCatalogStatus => ({
  * build time, at instance creation — check the fingerprint, write the records
  * with their precomputed vectors (no embedding call), report the status.
  * Nothing else: no service record, no diff, no refill, no memo, no retry, no
- * watching — a reconnect writes nothing.
+ * watching. A reconnect calls no source (D46).
  */
 export class ToolsCorpusLoader implements IToolsFillSource {
   readonly name = 'corpus';
@@ -10326,10 +10287,6 @@ export class ToolsCorpusLoader implements IToolsFillSource {
     checkCompatible(this.o.corpus.manifest, this.o.expect, ctx, 'tools corpus');
     await writeToolsCorpusRecords(this.o.corpus, ctx.target, options);
     return statusOf(this.o.corpus.manifest);
-  }
-  async toolsChanged(ctx: ToolsFillContext): Promise<ToolCatalogStatus | undefined> {
-    warnUnchanged(ctx, 'loaded from a corpus built at build time');
-    return undefined;
   }
 }
 
@@ -10347,10 +10304,6 @@ export class PrebuiltToolsStore implements IToolsFillSource {
     }
     checkCompatible(svc.manifest, this.o.expect, ctx, `prebuilt tools store '${ctx.binding.key}'`);
     return statusOf(svc.manifest);
-  }
-  async toolsChanged(ctx: ToolsFillContext): Promise<ToolCatalogStatus | undefined> {
-    warnUnchanged(ctx, 'prebuilt by the deploy step');
-    return undefined;
   }
 }
 ```
@@ -10380,7 +10333,7 @@ npx tsc -b packages/llm-agent-libs
 node --import tsx/esm --test packages/llm-agent-libs/src/collections/__tests__/tools-corpus.test.ts packages/llm-agent-libs/src/collections/__tests__/tools-fill-source.test.ts packages/llm-agent-libs/src/collections/__tests__/staged-retrieval.test.ts
 npm test --workspace @mcp-abap-adt/llm-agent-libs
 ```
-Expected: PASS. `tsc -b` with `noUnusedLocals` proves every import is used (`ToolsCorpusManifest` by `checkCompatible` / `statusOf`; `RagMetadata` by the record types). The Task 12 suite passes with its service-record case.
+Expected: PASS. `tsc -b` with `noUnusedLocals` proves every import is used (`ToolsCorpusManifest` by `checkCompatible` / `statusOf`; `RagMetadata` by the record types; `ToolsFillContext` by the two `fill` methods and `checkCompatible`) and that no `warnUnchanged` / `toolsChanged` member is left (D46). The Task 12 suite passes with its service-record case.
 
 - [ ] **Step 5: Commit**
 
@@ -10590,7 +10543,7 @@ In `builder.ts`:
     const toolsRag: IRag | undefined =
       existingToolsBinding || !toolsBinding ? baseToolsRag : toolsBinding.rag;
   ```
-  `toolsRag` now carries the binding and its fill source (registered by `bindToolsProfile`, or found on the server-bound store — whose source the server chose, so the builder's `source` is not applied to it), so the existing `vectorizeMcpTools(…, toolsRag, …)` call runs the source's `fill` — the store's creation — and every later `toolsChanged` of the agent's `McpToolRegistry` (its `ragStores.tools` is this store, or the breaker's `FallbackRag` over it) runs the source's `toolsChanged`. Nothing is passed beside the store (D34, D42).
+  `toolsRag` now carries the binding and its fill source (registered by `bindToolsProfile`, or found on the server-bound store — whose source the server chose, so the builder's `source` is not applied to it), so the existing `vectorizeMcpTools(…, toolsRag, …)` call runs the source's `fill` — the store's creation — and a later `toolsChanged` of the agent's `McpToolRegistry` (its `ragStores.tools` is this store, or the breaker's `FallbackRag` over it) finds the binding and writes nothing (D46). Nothing is passed beside the store (D34, D42).
 
 - [ ] **Step 4: Run (new + existing builder/retrieval tests + golden + typecheck)**
 
@@ -12660,7 +12613,7 @@ describe('fillToolsBinding', () => {
     assert.ok(second.ok && second.value);
   });
 
-  it('refuses a binding its store does not carry — a later toolsChanged refill would miss it (D34)', async () => {
+  it('refuses a binding its store does not carry — a later reconnect would take the store for unbound (D34)', async () => {
     const loose = profile().bind({ key: 'tools', rag: new InMemoryRag() }); // not through bindToolsProfile
     await assert.rejects(fillToolsBinding([client(TOOLS)], loose), /bindToolsProfile/);
     const r = await loose.rag.getById('tool:read_file');
@@ -12743,8 +12696,9 @@ export interface FillToolsBindingOptions {
  * Resolves `undefined` when the source attempts nothing (`consumer`) or
  * `callOptions.signal` is already aborted.
  * Rejects a binding its store does not carry (made by `profile.bind()`, not
- * `bindToolsProfile`): this fill and every later `toolsChanged` refill would
- * write 30.1.0 records into it. Rejects as `vectorizeMcpTools` does too: an
+ * `bindToolsProfile`): this fill would miss it, and a later reconnect's
+ * `toolsChanged` would take the store for unbound and write 30.1.0 records
+ * into it (D34, D46). Rejects as `vectorizeMcpTools` does too: an
  * `IToolRecordKey` id without `tool:`, or descriptors that do not match the
  * clients.
  */
@@ -12755,7 +12709,7 @@ export async function fillToolsBinding(
 ): Promise<ToolCatalogStatus | undefined> {
   if (toolsBindingOf(binding.rag) !== binding) {
     throw new Error(
-      `fillToolsBinding: the store does not carry this binding (profile ${binding.profileName}) — bind with bindToolsProfile(profile, target), not profile.bind(target), so every refill of the store finds it`,
+      `fillToolsBinding: the store does not carry this binding (profile ${binding.profileName}) — bind with bindToolsProfile(profile, target), not profile.bind(target), so every path that reads the store finds it`,
     );
   }
   return vectorizeMcpTools(
@@ -13956,7 +13910,7 @@ In `smart-server.ts`:
   });
   ```
 
-Failure policy (spec §6.3) needs no extra code: `vectorizeMcpTools` counts a failing or throwing `listTools()` in `clientFailures`, sets `complete: false` and logs the summary through `this._fileLogger`; `HealthChecker` turns `complete: false` into `degraded` (main store); startup goes on. A thrown error (an `IToolRecordKey` id without `tool:`, mismatched descriptors, a binding its store does not carry) propagates: out of `_buildInfra` (main store, or a worker's startup build) and fails startup, as on the builder's path; out of `WorkerRegistry.build` on a lazy rebuild, failing that session's worker build like any worker build error — `buildSubAgent` drops the worker's cache entry first, so the next session constructs it again (and a configuration error stays loud). An incomplete fill is not retried (D41): it stays reported until a reconnect's `toolsChanged` re-indexes or a new instance is created. `/health` reports the main catalog only (spec §6.3); a worker's fill is the logged summary line.
+Failure policy (spec §6.3) needs no extra code: `vectorizeMcpTools` counts a failing or throwing `listTools()` in `clientFailures`, sets `complete: false` and logs the summary through `this._fileLogger`; `HealthChecker` turns `complete: false` into `degraded` (main store); startup goes on. A thrown error (an `IToolRecordKey` id without `tool:`, mismatched descriptors, a binding its store does not carry) propagates: out of `_buildInfra` (main store, or a worker's startup build) and fails startup, as on the builder's path; out of `WorkerRegistry.build` on a lazy rebuild, failing that session's worker build like any worker build error — `buildSubAgent` drops the worker's cache entry first, so the next session constructs it again (and a configuration error stays loud). An incomplete fill is not retried (D41): it stays reported until a new instance is created — a reconnect's `toolsChanged` never writes a bound store (D46). `/health` reports the main catalog only (spec §6.3); a worker's fill is the logged summary line.
 
 - [ ] **Step 8: Run (gate: build + the new and neighbouring tests)**
 
@@ -13985,7 +13939,7 @@ Claude-Session: https://claude.ai/code/session_012KjevEeQGZMkWMfnupJ7Yd"
 
 ## Task 23B: YAML `rag.profiles.tools.fill` → the store's fill source (server-libs)
 
-Spec §6.2 (`fill`, its validation and resolution; `toolsFillFactories`), §3.10 (the four sources; D42, D44), §6.5 (the recommended mapping), §14.1 (server `fill`). After Task 23A every server-bound store carries the default `live` source; this task lets the YAML (or a config built in code) choose another one, server-wide: the main store and every worker store the server builds are bound with it (`withToolsStore`).
+Spec §6.2 (`fill`, its validation and resolution; `toolsFillFactories`), §3.10 (the four sources; D42, D46 — `fill` only; D47 — the fingerprint, the worker refusal), §6.5 (the recommended mapping), §14.1 (server `fill`). After Task 23A every server-bound store carries the default `live` source; this task lets the YAML (or a config built in code) choose another one, server-wide: the main store and every worker store the server builds are bound with it (`withToolsStore`).
 
 **Files:**
 - Modify: `packages/llm-agent-server-libs/src/smart-agent/profiles-config.ts` (`SmartServerFillConfig`; `SmartServerProfileConfig.fill?`)
@@ -14052,7 +14006,7 @@ describe('fill → the fill source (spec §6.2)', () => {
     assert.ok((await run('consumer')) instanceof ConsumerToolsFill);
     assert.ok((await run({ corpus: { file: 'c.json', profile: 'faceted@1', embedder: 'e' } }, { readFile: () => JSON.stringify(corpus) })) instanceof ToolsCorpusLoader);
     assert.ok((await run({ prebuilt: { profile: 'faceted@1', embedder: 'e' } })) instanceof PrebuiltToolsStore);
-    const own = { name: 'own', fill: async () => undefined, toolsChanged: async () => undefined };
+    const own = { name: 'own', fill: async () => undefined };
     assert.equal(await run('own', { fillFactories: { own: () => own } }), own);
     await assert.rejects(run('nope'), /rag\.profiles\.tools: unknown fill source "nope"/);
     await assert.rejects(run({ corpus: { file: 'c.json', profile: 'p', embedder: 'e' } }, { readFile: () => '{"manifest":{"format":2}}' }), /format/);
@@ -16680,22 +16634,29 @@ builder.withToolsProfile(myTools);
   `toolsBindingOf(handle.ragStores.tools)?.index(items)` works too. With several clients, call
   `fillToolsBinding(clients, bound, { toolRecordKey, toolNamespace })` instead — the same filling
   path the builder and the server use (lists, namespaces, keys, `bound.index`).
-- **The binding and its fill source travel with the store.** Every later write reads them from the
-  store itself: a reconnect that reports `toolsChanged`, and `fillToolsBinding`. Bind with
-  `bindToolsProfile(profile, target, source?)`, never with `profile.bind()` alone. A binding the
-  store does not carry is invisible to those paths, and `fillToolsBinding` refuses it.
+- **The binding and its fill source travel with the store.** `fillToolsBinding` and the builder
+  read them from the store itself; a reconnect reads the binding to leave the store alone. Bind
+  with `bindToolsProfile(profile, target, source?)`, never with `profile.bind()` alone. A binding
+  the store does not carry is invisible to those paths (a reconnect would write 30.1.0 records
+  into the store), and `fillToolsBinding` refuses it.
 - **A tools store is filled once, when it is created — never refilled while running.** Where the
   records come from is the **fill source** you pass (spec §3.10):
 
-  | Source | At creation | On `toolsChanged` | For |
-  |---|---|---|---|
-  | `LiveToolsFill` (default) | lists the MCP tools, indexes them through the profile | re-indexes (a changed tool's records and companions replaced, a new tool added; a removed tool stays) | anything; 30.1.0's behaviour |
-  | `ToolsCorpusLoader({ corpus, expect })` | checks the corpus's fingerprint, writes its records with their precomputed vectors — **no embedding call** | nothing | an **in-memory** store |
-  | `PrebuiltToolsStore({ expect })` | checks the store's service record; **never writes** | nothing | a **persistent** store your deploy step filled |
-  | `ConsumerToolsFill` | nothing — you fill (`fillToolsBinding`, `bound.index`) | re-indexes | your own filling |
+  | Source | At creation | For |
+  |---|---|---|
+  | `LiveToolsFill` (default) | lists the MCP tools, indexes them through the profile | anything; 30.1.0's listing |
+  | `ToolsCorpusLoader({ corpus, expect })` | checks the corpus's fingerprint, writes its records with their precomputed vectors — **no embedding call** | an **in-memory** store |
+  | `PrebuiltToolsStore({ expect })` | checks the store's service record; **never writes** | a **persistent** store your deploy step filled |
+  | `ConsumerToolsFill` | nothing — you fill (`fillToolsBinding`, `bound.index`); the library never writes | your own filling |
 
   An incomplete fill (a client that failed to list) is reported (`complete: false`, `/health`
   `degraded`) and stays — no retry.
+- **No re-index on `toolsChanged` with a profile bound.** A reconnect that reports `toolsChanged`
+  writes nothing into a bound tools store, whatever its source (`DEBUG_MCP=1` shows one line).
+  Until the store is filled the pipeline and its MCP do not work, so the tool list cannot change
+  under a working pipeline. If you plug an MCP server in at runtime, check and fill its tools in
+  your own pipeline (`bound.index`). Without a profile, the re-vectorize on `toolsChanged` is
+  unchanged.
 - **Build and deploy a corpus** (spec §6.5):
 
   ```ts
@@ -17036,7 +16997,7 @@ Spec §13. No version heading and no bump — the entry goes under `## [Unreleas
 - **New package `@mcp-abap-adt/llm-agent-reranker`** — every reranker, vendor-neutral: `ProbabilityReranker` (was `DecisionReranker`), the new `RelevanceReranker` (batched by default like `ProbabilityReranker` — `maxBatchTokens` 48000, `concurrency` 4 — the batches' scores merged into one order; wrong count / duplicate / out-of-range / non-finite → `RERANK_ERROR`; `score` = the relevance score), `LlmReranker`, `NoopReranker`, `TOOL_QUESTION`, `PASSAGE_QUESTION`, `PROBABILITY_RERANK_DEFAULT_*`. Peer: `@mcp-abap-adt/llm-agent`. Published right after `llm-agent`.
 - **New package `@mcp-abap-adt/sap-aicore-decision`** — `SapAiCoreRelevanceDecision`, Cohere Rerank on an SAP AI Core deployment as an `IRelevanceDecision`: ONE `/rerank` call per `score`; a wrong / duplicate / out-of-range / non-finite answer is a `DecisionError`, never zero-filled. Credential injected (a SAP AI Core service key via `sap-aicore-auth`), no env, no timeout, no retries. Published at the same version, before the server.
 - **SmartServer:** `rag.profiles.tools` (`variant` or `compose` incl. `text`, `intents`, `decomposer`, `smallSet.poolItems`; only the key `tools` in this release) and `decision.provider: sap-aicore` (`deploymentId`, `model`, `resourceGroup?`; default credential ref `DECISION` → `DECISION_SERVICE_KEY`). ONE `decision:` section — the provider decides the kind (`typesafe` → probability, `sap-aicore` → relevance) and `reranker: decision` builds `ProbabilityReranker` or `RelevanceReranker` (in `rag.profiles` and `rag.retrieval`); the relevance decision is built by the new optional seam `BuildAgentDeps.makeRelevanceDecision`, the probability decision by `BuildAgentDeps.makeProbabilityDecision` (renamed from `makeDecisionModel`, see Migration). `SmartServerConfig.toolsVariantFactories` / `toolsStrategyFactories` for your own names. Startup refuses a `rag.profiles` key other than `tools`, a key under both `rag.retrieval` and `rag.profiles`, unknown names, a named variant whose decision is of the other kind, a question / task for a relevance decision, and `small-set-jev` whose `poolItems` is below the listed tool count.
-- **Where a tools store's records come from is a strategy** (`IToolsFillSource`, `ToolsFillContext` in `@mcp-abap-adt/llm-agent`): `LiveToolsFill` (default — the MCP tool list, indexed through the profile), `ToolsCorpusLoader` (an in-memory store loaded at creation from a corpus built at build time — no embedding call), `PrebuiltToolsStore` (a persistent store your deploy step filled — checked at creation, never written by the process), `ConsumerToolsFill` (you fill it). Offline corpus API: `buildToolsCorpus` (build step), `parseToolsCorpus`, `deployToolsCorpus` (deploy step: precomputed vectors, in place, idempotent, a `tools-corpus` service record with the fingerprint and corpus hash). YAML `rag.profiles.tools.fill`; `SmartServerConfig.toolsFillFactories`; `bindToolsProfile(profile, target, source?)`, `withToolsProfile(profile, source?)`.
+- **Where a tools store's records come from is a strategy** (`IToolsFillSource`, `ToolsFillContext` in `@mcp-abap-adt/llm-agent`): `LiveToolsFill` (default — the MCP tool list, indexed through the profile), `ToolsCorpusLoader` (an in-memory store loaded at creation from a corpus built at build time — no embedding call), `PrebuiltToolsStore` (a persistent store your deploy step filled — checked at creation, never written by the process), `ConsumerToolsFill` (you fill it; the library never writes). A store with a profile bound is filled once and **not re-indexed on `toolsChanged`** — a runtime-plugged MCP server is your pipeline's to fill; without a profile, 30.1.0's re-vectorize is unchanged. Offline corpus API: `buildToolsCorpus` (build step), `parseToolsCorpus`, `deployToolsCorpus` (deploy step: precomputed vectors, in place, idempotent, a `tools-corpus` service record with the fingerprint and corpus hash). YAML `rag.profiles.tools.fill`; `SmartServerConfig.toolsFillFactories`; `bindToolsProfile(profile, target, source?)`, `withToolsProfile(profile, source?)`.
 - **Provider text is a strategy** (`IToolTextComposer`): `ParameterNamesToolText` (the default, unchanged), `EnumValuesToolText`, `SchemaToolText` — the latter two measured within noise on one coarse server, in no default.
 - **Observability:** `retrievalOutcome` counter (`ok`, `rerank_fallback`, `rerank_error`, `decompose_error`, `orphan`, `over_budget`, `empty`) on `InMemoryMetrics` / `NoopMetrics` and in `/health` metrics; a `retrieval` span per profiled retrieval; `/health` `components.toolCatalog.records` / `.profile` under a profile. `RerankedRetrieval` / `RerankAllRetrieval` accept an optional `telemetry` (additive).
 - `scripts/rag-eval`: profile arms (`--variant`, or `--indexer` / `--facets` / `--discriminator` / `--max-values` / `--intents` / `--pool-items` / `--reranker none|decision`, `--decision-provider typesafe|sap-aicore` + `--rerank-deployment` / `--rerank-model` / `--rerank-credential-ref` / `--cut` / `--budget-tokens`), required-recall (`required` in the queries file: an AND of OR-groups), average items and prompt tokens.
@@ -17070,7 +17031,7 @@ Spec §13. No version heading and no bump — the entry goes under `## [Unreleas
 - **Under a profile, `rag.getById(itemId)` on the raw store finds nothing** — records are addressed by owner-scoped ids; use `bound.get({ itemId, owner })`. Returned items keep `metadata.id = itemId`, so name-based consumers are unaffected.
 - **k counts items under a profile, and the caller's k caps every cut:** a default composition's `FixedItemsCut(n)` is a ceiling — a larger caller's k does not undo the measured cut, a smaller one still wins.
 - **A failed stale-record cleanup is reported** (`failedItems` reason `cleanup-failed: …`) and retried by the next `index` / `remove` — not reported as indexed.
-- **Shipping a tools corpus:** build it in your build step (`buildToolsCorpus`, serialized with `JSON.stringify`); for an in-memory store load it at start (`ToolsCorpusLoader`, YAML `fill: { corpus: … }`); for a persistent store write it in your deploy step (`deployToolsCorpus`) and bind it with `PrebuiltToolsStore` (YAML `fill: { prebuilt: … }`). The `profile` / `embedder` names must be the same in the build step and at run time — a mismatch fails at startup. A store is filled once; a changed tool list on a `corpus` / `prebuilt` store waits for the next build / deploy.
+- **Shipping a tools corpus:** build it in your build step (`buildToolsCorpus`, serialized with `JSON.stringify`); for an in-memory store load it at start (`ToolsCorpusLoader`, YAML `fill: { corpus: … }`); for a persistent store write it in your deploy step (`deployToolsCorpus`) and bind it with `PrebuiltToolsStore` (YAML `fill: { prebuilt: … }`). The `profile` / `embedder` names must be the same in the build step and at run time — a mismatch fails at startup. A store is filled once; a changed tool list waits for the next instance (`live`) or the next build / deploy (`corpus` / `prebuilt`). **With a profile bound, `toolsChanged` re-indexes nothing**, whatever the source: if you plug an MCP server in at runtime, fill its tools in your own pipeline (`bound.index`). Without a profile, nothing changes.
 - **`ToolCatalogStatus` gains optional `records` / `profile`**, `MetricsSnapshot` optional `retrievalOutcome`, `HealthComponentStatus.toolCatalog` optional `records` / `profile` — an exhaustive object literal of these types needs no change.
 - **`SmartServerDecisionConfig.provider` gains `'sap-aicore'`** (plus optional `deploymentId`, `resourceGroup`). Your own composition root's probability seam compiles unchanged (under either name); to serve Cohere, supply the new `BuildAgentDeps.makeRelevanceDecision` that builds `SapAiCoreRelevanceDecision` from a bearer credential and `apiBaseUrl` (the shipped binary does).
 - **Intents are generated at every indexing** — the framework does not cache them; use a `StaticIntentSource` over a file generated at build time, a corpus built at build time (`buildToolsCorpus`), or your own caching `IToolIntentSource`.
@@ -17098,7 +17059,7 @@ Supplies `makeProbabilityDecision` (was `makeDecisionModel`; TypeSafe, default c
 - `### Key API notes`: add — `A probability and a relevance are different decisions: IProbabilityDecision (was IDecisionModel) vs IRelevanceDecision (scores, not probabilities). One decision: section; its provider decides the kind and reranker: decision builds ProbabilityReranker or RelevanceReranker.`
 - `### Key API notes`: add —
   `- Collection profiles: builder.withToolsProfile(profile) or YAML rag.profiles.<key> (variant | compose); a key is under rag.retrieval OR rag.profiles. Under a profile k counts items, every returned item is its canonical record, and records are addressed by recordId(owner, itemId, kind, n) — never by the bare itemId`.
-  `- A tools store is filled ONCE, when it is created (never refilled while running); where its records come from is an IToolsFillSource (live default | ToolsCorpusLoader for in-memory | PrebuiltToolsStore for persistent, written only by the consumer's deploy step via deployToolsCorpus | ConsumerToolsFill), attached with the binding (bindToolsProfile(profile, target, source)).`
+  `- A tools store is filled ONCE, when it is created (never refilled while running); where its records come from is an IToolsFillSource (live default | ToolsCorpusLoader for in-memory | PrebuiltToolsStore for persistent, written only by the consumer's deploy step via deployToolsCorpus | ConsumerToolsFill), attached with the binding (bindToolsProfile(profile, target, source)); IToolsFillSource is fill-only — a bound store is never written on toolsChanged (McpToolRegistry stops), an unbound one keeps the 30.1.0 re-vectorize.`
 - `### Key layers` table, `llm-agent-libs` row: append `, collection profiles (StagedRetrieval, ComposedToolsProfile, mcpToolsVariants, SharedItemsProfile)`.
 - `## Environment` table: add `| DECISION_SERVICE_KEY | SAP AI Core service key of the decision: section with provider: sap-aicore and no credentialRef (Cohere Rerank, a relevance decision); read only when a decision reranker builds it |`, and widen the `DECISION_API_KEY` row's wording to "provider: typesafe".
 
@@ -17212,7 +17173,7 @@ Found while planning; all decided (spec §17.4) and written into the tasks above
 
 | # | Decision | Done in |
 |---|---|---|
-| D34 | The binding travels with the store: `vectorizeMcpTools` reads it with `toolsBindingOf(toolsRag)` (through decorators) and has no `binding` option; every caller — the builder's fill, `revectorizeTools` on `toolsChanged`, `fillToolsBinding`, `rag-eval` — gets the profile path from the store (writer not required), an unbound store gets exactly 30.1.0. `fillToolsBinding` keeps its typed `binding` parameter and rejects a binding its store does not carry. Tests: `toolsChanged` with updated + new tools, companions updated, a writerless binding refreshed, a store behind `FallbackRag` | Tasks 19, 20, 23A, 32, 33, 34 |
+| D34 | The binding travels with the store: `vectorizeMcpTools` reads it with `toolsBindingOf(toolsRag)` (through decorators) and has no `binding` option; every creation caller — the builder's fill, `fillToolsBinding`, `rag-eval` — gets the profile path from the store (writer not required), an unbound store gets exactly 30.1.0; `revectorizeTools` on `toolsChanged` reads the binding and writes nothing into a bound store (D46). `fillToolsBinding` keeps its typed `binding` parameter and rejects a binding its store does not carry. Tests (amended by D46): a bound store not written on `tools-changed`; an unbound store keeps 30.1.0; a bound store behind `FallbackRag` found by the initial fill and by the reconnect | Tasks 19, 20, 23A, 32, 33, 34 |
 | D35 | Whoever creates a bound store fills it: the main store in `_buildInfra`; a worker's own store in `buildSubAgent`, before `subBuilder.build()`, from the clients that builder is handed (primary build: the shared clients with their descriptors once known) — so startup, a lazy rebuild, `PUT /v1/config` and hot reload all fill it. `fillWorkerToolsStores` is gone; *amended by D41: only the worker's construction fills — no memo, no retry, a re-wire never fills*; reader workers never filled; `/health` = the main catalog, a worker's fill logged. Tests (9) `PUT /v1/config`, (10) hot reload | Tasks 23A, 33 |
 
 ## Decided by the user on 2026-10-05 — fill memo, single-flight, startup fill, direct reload (spec §17.10)
@@ -17223,7 +17184,7 @@ Found while planning; all decided (spec §17.4) and written into the tasks above
 | D37 | *Moved out by D45 — Task 22A and test (13) deleted; a separate issue (spec §15).* Single-flight worker construction (`WorkerRegistry.resolve`; the construction builds into its own map and publishes once; drain rule: a construction publishes only into the generation it started in — one overtaken by a drain closes what it built, its waiters resolve in the current generation, and `drain()` awaits it). A pre-existing 30.1.0 in-process race, not a RAG protocol: concurrent persistent-store writes stay the backend's. Tests: the registry unit test (Task 22A); (13) two simultaneous first sessions after a drain → one construction, one fill | Tasks 22A, 23A, 34 |
 | D38 | Workers on the shared clients are filled at startup on every path; on `yamlBuilderConnect` one pass right after the harvest (`fillSharedClientWorkerStores`). Startup filling concerns only `tools` (S8); runtime-changing collections are written by pipeline elements during work or stay 30.1.0 (goal 8) | Task 23A (+ the D38 test in `mcp-yaml-vectorization.test.ts`) |
 | D39 | The hot-reload test calls the server's reload entry point (`_configReload._onReload`, now awaitable) instead of `fs.watch` + debounce polling; `config-reload-entry.test.ts` pins that the watcher's `reload` event calls it | Task 23A |
-| D40 | Tools a server removes at runtime (`notifications/tools/list_changed` → `toolsChanged`) stay in the store, as in 30.1.0; removal out of scope (spec note only) | spec §6.3, §15 — no code |
+| D40 | Tools a server removes at runtime (`notifications/tools/list_changed` → `toolsChanged`) stay in the store, as in 30.1.0; removal out of scope (spec note only). Read with D46: a bound store is not written on `toolsChanged` at all | spec §6.3, §15 — no code |
 
 Recommendations applied to the earlier open choices (the user may still overrule): a persistent companion store with a worker-owned `rag` is refused at startup (Task 23); the internal `connectedMcpServer` adapter is kept — no `withMcpClients` change (Task 23A); the worker tool-naming fix is a CHANGELOG "Fixed" entry (Task 34).
 
@@ -17232,16 +17193,23 @@ Recommendations applied to the earlier open choices (the user may still overrule
 | # | Decision | Done in |
 |---|---|---|
 | D41 | A tools store is filled once, when its instance is created; never refilled while running. The main store in `_buildInfra`; a worker's own store by its construction (`buildSubAgent` without `injected`); a per-session re-wire never fills. No refill API, no memo, no retry; an incomplete fill is reported and stays. A construction whose fill throws drops the worker's cache entry. Tests: (11) a re-wire never fills after a failed listing; (12) a throwing fill leaves no cached worker | Task 23A |
-| D42 | The fill source is a strategy: `IToolsFillSource` / `ToolsFillContext` (llm-agent), attached with the binding (`bindToolsProfile(profile, target, source?)`, default `LiveToolsFill`) and read from the store; `vectorizeMcpTools` dispatches `fill` / `toolsChanged`; `LiveToolsFill`, `ConsumerToolsFill`, `ToolsCorpusLoader`, `PrebuiltToolsStore`; `withToolsProfile(profile, source?)`; YAML `fill` + `toolsFillFactories` | Tasks 19, 19A, 20, 23B, 33, 34 |
+| D42 | The fill source is a strategy: `IToolsFillSource` / `ToolsFillContext` (llm-agent), attached with the binding (`bindToolsProfile(profile, target, source?)`, default `LiveToolsFill`) and read from the store; `vectorizeMcpTools` dispatches to the source (`fill` only since D46): `fill` / `toolsChanged`; `LiveToolsFill`, `ConsumerToolsFill`, `ToolsCorpusLoader`, `PrebuiltToolsStore`; `withToolsProfile(profile, source?)`; YAML `fill` + `toolsFillFactories` | Tasks 19, 19A, 20, 23B, 33, 34 |
 | D43 | Offline corpus API: `buildToolsCorpus` (build step, the profile's own indexer over capture stores), `parseToolsCorpus`, `deployToolsCorpus` (deploy step: precomputed, in place, idempotent, write-ahead, a `tools-corpus` service record); reserved key `serviceRecord`, dropped by `StagedRetrieval`. `ToolsCorpusLoader` — the in-memory source — checks the fingerprint, writes the records precomputed and reports the status, nothing else | Tasks 2, 11, 12, 19A, 33, 34 |
-| D44 | `toolsChanged` is the source's answer: `live` / `consumer` re-index as 30.1.0; `corpus` / `prebuilt` write nothing and log a warning | Tasks 19, 19A |
+| D44 | *Superseded by D46.* `toolsChanged` is the source's answer: `live` / `consumer` re-index as 30.1.0; `corpus` / `prebuilt` write nothing and log a warning | — |
 | D45 | Single-flight worker construction and the drain ordering move out (a pre-existing 30.1.0 race; spec §15 describes it for a separate issue). Task 22A deleted; no remaining task depends on it — Task 23A goes back to `WorkerRegistry.build`'s existing lazy build-on-miss | Task 23A (references removed) |
+
+## Decided by the user on 2026-10-05 — fill sources fill once; no `toolsChanged` reaction for bound profiles (spec §17.12)
+
+| # | Decision | Done in |
+|---|---|---|
+| D46 | No reaction to `toolsChanged` for a bound store: `IToolsFillSource` is `fill` only (its `toolsChanged` removed from the contract, `LiveToolsFill`, `ConsumerToolsFill`, `ToolsCorpusLoader`, `PrebuiltToolsStore`, and `warnUnchanged` gone); `vectorizeMcpTools` has no `event` and runs `fill` for a bound store; `McpToolRegistry.revectorizeTools` returns before writing when `toolsBindingOf(store)` finds a binding (one `DEBUG_MCP` line, no warning); an unbound store keeps the 30.1.0 re-vectorize. `ConsumerToolsFill`: the library never writes. Tests: a bound store is not written on `tools-changed` (no listing, no write, no source call, no warning); a bound store behind `FallbackRag` (initial fill + reconnect); an unbound store keeps 30.1.0; a consumer store unwritten on a reconnect; a reconnect never calls the source. Removed: the re-index-through-profile, companions-on-update, writerless-refresh-on-`toolsChanged` and source-`toolsChanged` tests | Tasks 19, 19A, 20, 23A, 23B, 33, 34 |
+| D47 | Approved as written: the fingerprint is the consumer-named `ToolsCorpusIdentity { profile, embedder }` plus the library's own checks; a worker construction whose fill throws drops that cache entry; a worker with its own `rag` and own clients is refused when the fill is `corpus` or `prebuilt` | Tasks 19A, 23A, 23B (no change) |
 
 ---
 
 ## Self-review (done while writing)
 
-- **Spec coverage.** §3 contracts → Tasks 2–4 (S1 / S6 capabilities and the S7 / F3 reserved keys in 2–3); §3.9 decision contracts → 4A; §4 `StagedRetrieval` → 12–14 (+28 telemetry, incl. `over_budget`; F1 cap in 12 and 14); §4.9/§4.10 cuts → 6 (F1); §5 rerankers → 4B (package, `ProbabilityReranker`), 4C (`RelevanceReranker`), 18 (`SapAiCoreRelevanceDecision`), 16 (the decision variants), 24 (`createMakeRelevanceDecision` + calls → `/rerank`); §6.1 builder → 20; the probability seam rename with its alias (§3.8, §13, D30) → 20A; §6.2 YAML → 21–23 (one `decision:` section, kind table, the `makeRelevanceDecision` seam); §6.3 server filling from ready clients (D31) → 23A, a worker's fill and dispatch keep one identity (D32) → 23A, the binding read from the store on every fill incl. `toolsChanged` (D34) → 19 (+20, 23A, 32), workers filled by their construction — startup, lazy rebuild, `PUT /v1/config`, hot reload (D35, D41) → 23A; filled once, no memo, no retry, a re-wire never fills (D41) → 23A; startup fill on `yamlBuilderConnect` (D38), the hot reload through the reload entry point (D39) → 23A; §3.10 fill sources (D42, D44) → 19 (contract, live, consumer, dispatch), 19A (corpus loader, prebuilt), 20 (builder), 23B (YAML); §6.5 offline corpus (D43) → 19A (+ `serviceRecord` in 2, 11, 12); single-flight construction (D37) → moved out (D45, spec §15), no task; only `tools` gets a fill source (§6.6) and runtime-removed tools stay (D40) → no code, spec notes; §6.4 fill-path audit → rows 1/3/10 in 19, rows 4–7 and 5a in 23A, rows 11–12 in 19A, row 9 in 33; §7.3.3 companion storage per primary binding (D33) → 22 (sections), 23 (a store per binding, persistent refusal), 23A (isolation through fill, replace, remove); §7.3.1 provider text composers → 8 (F4); §3.3 cleanup failures → 11, 15 (F3); §7.0–§7.5 tools strategies and variants → 7–10, 15, 16; §7.6 filling → 19 (notes logged); §7.7 skills pass-through → 12 (pass-through test), 26 (F3); §7.8 migration → 33/34 docs; §7.9 consumer-built profile → 30; §8 shared items → 17; §9 observability → 28–29 (S4: telemetry only on 30.1.0 strategies); §10 fixes → 25–27; §11 placement → File Structure, Task 18 wiring; §13 compatibility/docs → 1 (golden), 33–34; §14.1 unit tests → per task; §14.2 kit → 30 (S9); §14.3 harness → 31–32 (acceptance runs = consumer check, env-gated).
+- **Spec coverage.** §3 contracts → Tasks 2–4 (S1 / S6 capabilities and the S7 / F3 reserved keys in 2–3); §3.9 decision contracts → 4A; §4 `StagedRetrieval` → 12–14 (+28 telemetry, incl. `over_budget`; F1 cap in 12 and 14); §4.9/§4.10 cuts → 6 (F1); §5 rerankers → 4B (package, `ProbabilityReranker`), 4C (`RelevanceReranker`), 18 (`SapAiCoreRelevanceDecision`), 16 (the decision variants), 24 (`createMakeRelevanceDecision` + calls → `/rerank`); §6.1 builder → 20; the probability seam rename with its alias (§3.8, §13, D30) → 20A; §6.2 YAML → 21–23 (one `decision:` section, kind table, the `makeRelevanceDecision` seam); §6.3 server filling from ready clients (D31) → 23A, a worker's fill and dispatch keep one identity (D32) → 23A, the binding read from the store on every fill, and by the reconnect to leave a bound store unwritten (D34, D46) → 19 (+20, 23A, 32), workers filled by their construction — startup, lazy rebuild, `PUT /v1/config`, hot reload (D35, D41) → 23A; filled once, no memo, no retry, a re-wire never fills (D41) → 23A; startup fill on `yamlBuilderConnect` (D38), the hot reload through the reload entry point (D39) → 23A; §3.10 fill sources (D42, D46 — `fill` only) → 19 (contract, live, consumer, dispatch, the registry's no-write), 19A (corpus loader, prebuilt), 20 (builder), 23B (YAML); §6.5 offline corpus (D43) → 19A (+ `serviceRecord` in 2, 11, 12); single-flight construction (D37) → moved out (D45, spec §15), no task; only `tools` gets a fill source (§6.6) and runtime-removed tools stay (D40) → no code, spec notes; §6.4 fill-path audit → rows 1/3/10 in 19, rows 4–7 and 5a in 23A, rows 11–12 in 19A, row 9 in 33; §7.3.3 companion storage per primary binding (D33) → 22 (sections), 23 (a store per binding, persistent refusal), 23A (isolation through fill, replace, remove); §7.3.1 provider text composers → 8 (F4); §3.3 cleanup failures → 11, 15 (F3); §7.0–§7.5 tools strategies and variants → 7–10, 15, 16; §7.6 filling → 19 (notes logged); §7.7 skills pass-through → 12 (pass-through test), 26 (F3); §7.8 migration → 33/34 docs; §7.9 consumer-built profile → 30; §8 shared items → 17; §9 observability → 28–29 (S4: telemetry only on 30.1.0 strategies); §10 fixes → 25–27; §11 placement → File Structure, Task 18 wiring; §13 compatibility/docs → 1 (golden), 33–34; §14.1 unit tests → per task; §14.2 kit → 30 (S9); §14.3 harness → 31–32 (acceptance runs = consumer check, env-gated).
 - **Placeholders.** None; no gated step remains.
 - **Type consistency.** `StagedRetrievalOptions` (Task 12) is the shape Tasks 15–17, 22 and 30 pass; `ComposedToolsProfile.composition` (Task 15) is what Tasks 16, 22, 30 inspect; `IBoundCollection<ToolItem>` + `bindToolsProfile` / `toolsBindingOf` (Task 15; `source` and `boundToolsOf` from Task 19) are what Tasks 19, 19A, 20, 23, 23A, 23B and 32 use — every tools write reads the binding and its fill source from the store (D34, D42), and no task passes either beside its store; `IToolsFillSource` / `ToolsFillContext` (Task 19) are what Tasks 19A, 20, 23B implement or pass; `ToolsCorpus` / `ToolsCorpusIdentity` (Task 19A) are what Task 23B parses and constructs; `ResolvedToolsProfile.fill` (Task 23B) is what `withToolsStore` binds with; **cumulative compile:** Task 19 adds the contract (llm-agent) before libs uses it; 19A only appends to Task 19's module; 23A uses only Task 19's default source; 23B adds the config field, resolver output and server use in one task; `ToolCatalogStatus.records/profile` (Task 3) feed Tasks 19 and 29; `RunStats` (Task 12) is what Task 28 reports; `CompanionIds` / `listedCompanions` and `storeItems(rag, items, options, companions)` (Task 11) are what Tasks 15 and 17 use; `IProbabilityDecision` / `IRelevanceDecision` (Task 4A) are what Tasks 4B, 4C, 16, 18, 22, 24, 32 take; `SapAiCoreRelevanceConfig` (Task 18) is what Task 24 constructs; `SmartServerDecisionConfig` + `DECISION_KINDS` (Task 21) are what Tasks 22 and 24 read; `BuildAgentDeps.makeProbabilityDecision` and `createMakeProbabilityDecision` (Task 20A) are what Tasks 22–25 use (the alias `makeDecisionModel` is read only by Task 20A's `probabilityDecisionSeam`); `DecisionSeams` (Task 22) is what Task 23 threads; `ResolvedToolsProfile.companionStores` (store sections, Task 22) is what Task 23's `withToolsStore` builds one companion store per binding from; `mcpToolsVariants.facetedCohere({ relevanceDecision })` / `facetedJev({ probabilityDecision })` / `smallSetJev({ probabilityDecision, poolItems })` (Task 16) are what Tasks 22, 30 and 32 call.
 - **Review Focus.** Each of the eight lines has its test in the named task (Tasks 4C, 6, 11, 12, 13, 14, 17, 18, 21, 30).
