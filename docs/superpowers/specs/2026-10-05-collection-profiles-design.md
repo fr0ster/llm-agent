@@ -866,6 +866,8 @@ export function retrievalEmbedderOf(rag: IRag): IRetrievalEmbedder | undefined;
 | `IItemCut.limit()` — doc only: never above `requestedK` | approved review finding 1: the caller's k caps every cut (§4.5, §4.9). No signature change | — |
 | `fillToolsBinding(clients, binding, opts)` — new export of `llm-agent-libs` (D31) | the server fills a bound tools store from ready clients (§6.3) and lives in another package; `vectorizeMcpTools` is internal to libs and also carries the 30.1.0 record path. A thin wrapper that requires a binding exposes only the profile path and reuses `vectorizeMcpTools` unchanged — nothing duplicated | `llm-agent-libs` (`src/mcp/fill-tools-binding.ts`), beside `vectorizeMcpTools`; used by server-libs and builder consumers |
 | `HealthCheckerDeps.toolCatalog?: IToolCatalogReporter` (D31) | `/health` must reflect the server's own fill (§6.3); the builder's status holder is private to `build()`, so the server cannot publish into it. An optional reporter the checker reads instead of the agent's; absent → 30.1.0 | `llm-agent-libs` (`health/health-checker.ts`), where `HealthCheckerDeps` lives |
+| Worker builders receive the shared clients **with** their descriptors and the server's `IToolNamespace` (D32, §6.3) — **no contract change** | a worker's store must hold the names its agent dispatches by; the existing `withMcpServers` (+ `IMcpServer.descriptor`) already carries descriptors to the pipeline, and `withToolNamespace` already exists. An optional `descriptors` parameter on `withMcpClients` was the alternative — a public builder change this does not need | `llm-agent-server-libs` (`smart-server.ts` `buildSubAgent`, `workers/worker-registry.ts`), internal |
+| Companion storage per primary binding (D33, §7.3.3) — **no contract change** | two catalogs must not share companion records; separate stores isolate writes AND reads, a binding segment in `recordId` would isolate writes only. `recordId`, `CollectionStore`, `ReservedRecordKey` unchanged. Server-libs' new (unreleased) `ResolvedToolsProfile` carries the companion store **sections** (`companionStores`) instead of built stores | `llm-agent-server-libs` (`resolve-collection-profiles.ts`, `smart-server.ts`) |
 | `ToolCatalogStatus.records?`, `.profile?` (S3) | `/health` copies `toolCatalog` from the status `IToolCatalogReporter` returns (`vectorizeMcpTools`' summary), so the two fields must be carried there first (§7.6, §9.1). Additive, optional | `interfaces/tool-catalog.ts`, where `ToolCatalogStatus` lives |
 
 ### 3.9 Decision contracts — probability and relevance
@@ -1663,8 +1665,9 @@ rag:
   - `llm`: `LlmReranker` over a key of the `llm:` map (existing).
 - Provider text composers resolve through `toolsStrategyFactories` like facets: built-ins
   `parameter-names` (default), `enum-values`, `schema` (§7.3.1).
-- Stores are built through the existing `makeRag` seam, so a companion shares the primary's
-  embedder.
+- Stores are built through the existing `makeRag` seam. Resolution builds **no** companion store:
+  it keeps the companion's store section, and the server builds one companion store **per primary
+  binding** (main, and each worker with its own `rag`), with that primary's embedder (§7.3.3, D33).
 - `record: { file }` / `companion: { source: { file } }` is a JSON object
   `{ "<originalName>": ["intent", …] }` read at startup into a `StaticIntentSource`.
 
@@ -1689,10 +1692,15 @@ rag:
 - an explicit `question` (`rag.profiles` `compose`, `rag.retrieval`) or `task` (`rag.retrieval`)
   for a decision reranker when the provider's kind is relevance — a relevance decision reads no wording (§3.9);
 - an unknown `text` composer name;
-- a tools key whose variant is not a tools profile.
+- a tools key whose variant is not a tools profile;
+- an `intents.companion.store` that is not `in-memory` while a worker declares its own `rag`
+  (D33): the section names ONE physical collection, and the worker's binding would need a second
+  one the config does not name (§7.3.3). Checked by the server at start, so a config built in code
+  is refused too.
 
 - Server-wide like `rag.retrieval`: worker configs that declare `rag.profiles` are rejected;
-  workers' tools stores get the main config's binding.
+  workers' tools stores get the main config's profile (each its own binding and companion
+  storage, §7.3.3).
 - Shared items have **no YAML** in this PR (library API only). Decided — D6 (§17).
 
 ### 6.3 The server fills a bound tools store from the clients it uses (D31)
@@ -1725,7 +1733,8 @@ there. Under a profile that would leave a bound store empty: the server fills it
   configured slot count when the seam produced them (`_sharedMcpClientDescriptors`,
   `_configuredSlotCount`; array order otherwise), its `IToolNamespace` and its file logger — the
   same inputs its authoritative tool snapshot is built from, so the record ids match the names
-  tool selection reads. It is one more `listTools()` pass at startup on these paths.
+  tool selection reads. It is one more `listTools()` pass at startup on these paths. A worker's
+  store filled from the same shared clients gets the same inputs (D32, below).
 - **Once per store.** The server keeps the bindings it filled; a binding is never filled twice.
   On the builder-connect path it marks the main binding as filled by the builder.
 - **When.** In `_buildInfra`, after the startup agent is built and the shared clients are
@@ -1741,6 +1750,39 @@ there. Under a profile that would leave a bound store empty: the server fills it
   otherwise the server's shared clients (what its per-session re-wires receive). A worker that
   connects itself from its own `mcp:` (no own `mcpClients`) is filled by its own builder's
   auto-connect branch (§6.1); the server does not fill it again.
+
+**A worker's records carry the identity its agent dispatches by (D32).** A tool's exposed name
+(the namespace prefix on a collision: the slot's `label`, else `s<slotIndex>`) and its record id
+(`IToolRecordKey` over the stable `slotIndex` and the configured slot count) depend on the slot
+descriptors and the `IToolNamespace`. A store filled with one identity and searched by an agent
+whose catalog uses another drops the hits silently: tool selection keeps only retrieved names that
+are in the agent's catalog.
+
+| Worker's clients | Filled with | The worker's agent dispatches by |
+|---|---|---|
+| the server's shared clients (fallback) | `_sharedMcpClientDescriptors`, `_configuredSlotCount`, the server's `IToolNamespace` — exactly what the main fill passes | the same: the per-session re-wire hands the worker the session's clients **with** their descriptors (`SessionAgentParts.mcpClientDescriptors`, same slots and labels), and the worker's builder gets the server's `IToolNamespace` |
+| its own `mcpClients` | no descriptors — the worker config takes plain `IMcpClient[]`, so none exist: array order is the identity (`slotIndex` = position, no labels, slot count = the number of clients); the server's `IToolNamespace` | the same array order (the builder gets the clients without descriptors) and the server's `IToolNamespace` |
+| its own `mcp:` | its own builder's auto-connect: the descriptors its connection reports, the server's `IToolNamespace` | the same: the worker cache keeps those descriptors beside the clients it backfills from the worker's handle, and every per-session re-wire hands both to the worker's builder (in 30.1.0 the re-wire dropped them) |
+
+- How the descriptors reach a worker's builder — **no contract change:** `withMcpClients` takes no
+  descriptors, so the server hands the shared clients through the existing `withMcpServers`, one
+  already-connected `IMcpServer` per client (`descriptor` = the client's descriptor, `start()`
+  returns the client, `stop()` does nothing — the server owns those clients). The builder's
+  `withMcpServers` branch already forwards descriptors to the pipeline
+  (`PipelineDeps.mcpClientDescriptors`) and skips vectorization, exactly like `withMcpClients`.
+  Without descriptors (none were reported) the server keeps `withMcpClients`.
+- `withToolNamespace(server's IToolNamespace)` on every worker builder — as on the startup builder.
+- **This also changes workers without a profile** (a fix): in 30.1.0 a worker on the shared
+  clients built its catalog by array position with no labels and the default namespace, so on a
+  collision, or with a slot missing, it exposed `s<i>__<tool>` while the main store — which a
+  worker without its own `rag` searches — holds `<label>__<tool>` / `s<slotIndex>__<tool>`; those
+  hits were dropped. A worker on its own `mcp:` lost its connection's descriptors on every
+  per-session re-wire the same way. Now the worker exposes what the store it searches holds. No collision and no
+  custom `IToolNamespace` → exposed names are unchanged.
+- **Limit:** a session whose own connection set differs from startup's (a slot down at session
+  time) can change which names collide in that worker's catalog; the store keeps the startup
+  names. The main pipeline avoids this by rebinding the startup provenance; workers build their
+  catalog per session. Not changed here.
 
 **Status and failures — the existing tool-catalog policy.**
 
@@ -2034,6 +2076,34 @@ candidate search (§2.1) and never reach the reranker (§4.6).
   clear its store — the provider records are untouched). Rebuild = clear the companion (or the
   `intent` records) and re-index. While a companion is bound, `remove` and replacement delete its
   records through `companionRecordIds` (§3.3).
+
+**Companion storage belongs to one primary binding (D33).** A profile instance may be shared by
+several bindings; its companion **stores** may not.
+
+- **Why:** a companion record's id is `recordId(owner, itemId, 'intent', 0)` — no binding in it —
+  and every backend addresses records by id alone (§3.1). Two independent catalogs (the main store
+  and a worker's own store, each filled from its own clients) that share one companion store and
+  hold a tool of the same name write the SAME id: the later fill overwrites the other's intents,
+  and one catalog's `remove` or replacement deletes the other's record. Retrieval then hydrates
+  the other catalog's intent hit from its own canonical record — wrong intents lift an item,
+  missing ones drop it.
+- **Rule:** every **primary** binding gets companion stores of its own. The server builds them
+  when it binds the primary (§6.2, Task 23): one per companion name, through `makeRag`, with that
+  primary's embedder. A binding that **reads** another binding's primary (a worker without its own
+  `rag` reads the main store by reference) uses that binding's companions — it is the same
+  binding.
+- **Why separate stores, not a binding segment in the id:** a binding-scoped id would isolate
+  writes, but not reads — `IRag.query` filters only on `userId` / `sessionId`, so a shared
+  companion store would still return the other catalog's intent hits, and `StagedRetrieval`
+  would need a new filter on top. Separate stores isolate both with **no contract change**:
+  `recordId`, `CollectionStore` and the record keys stay as they are, and it is the isolation
+  model §3.1 already states (isolation is per store).
+- **Persistent companion stores:** an `intents.companion.store` section names one physical
+  collection (`collectionName`). With a worker that has its own `rag`, the server would need a
+  second collection the config does not name, so it refuses to start (§6.2) — no derived
+  collection names. In-memory companion stores are separate per instance and need nothing. A
+  deployment that needs persistent companions per worker binds the worker's store in its
+  composition root.
 
 ### 7.4 Default compositions (`mcpToolsVariants`)
 
@@ -2677,6 +2747,17 @@ new SharedItemsProfile({
   `/health` `degraded`, the good client's tools filled; main + a worker reading the main store +
   a worker with its own store and clients → each store's records written exactly once.
   `fillToolsBinding` and `HealthCheckerDeps.toolCatalog` unit-tested in libs.
+- Worker identity (D32): an injected `connectMcpWithDescriptors` seam with labelled servers, one
+  configured slot missing and a tool name on two servers + a worker with its own store and no
+  own clients → the worker's store holds the main catalog's names and slot-based ids
+  (`tool:<slotIndex>:<name>` over the configured count), and a worker run offers its LLM exactly
+  the colliding names the store retrieves (`<label>__<tool>`) — none dropped, no `s<i>__` name.
+- Companion isolation (D33): main + a worker with its own store → two companion stores, a reader
+  worker → none; main + a worker with their own stores and clients, the same tool name with
+  different descriptions and intents → each retrieves its own item by its own intents and not by
+  the other's; re-indexing and then removing the main's item leaves the worker's companion record
+  and retrieval intact; a non-in-memory companion store with a worker that has its own `rag` →
+  startup error naming the worker.
 - YAML: every validation rule of §6.2 through the real `resolveSmartServerConfig` (incl. a
   `rag.profiles` key other than `tools` refused, S8; a variant against the wrong kind of decision;
   `question` / `task` refused for a relevance provider; `decision.provider: sap-aicore` fields; an
@@ -2921,3 +3002,5 @@ them.
 | # | Decision | Where |
 |---|---|---|
 | D31 | **The server fills a bound tools profile from the MCP clients it uses, at startup.** Replaces the stated limit "the server inherits the builder's limit". On every path that hands clients to the builder through `withMcpClients` — ready clients (`BuildAgentDeps.mcpClients`, `cfg.mcpClients`, plugin clients) or an injected `connectMcp` / `connectMcpWithDescriptors` seam — the server lists the clients' tools and fills the bound store through the shipped profile path (`fillToolsBinding` → `vectorizeMcpTools` with `binding` → `toolItemFromTool` + `IToolRecordKey` → `bound.index`), once per store, before it reports ready; `/health` and the small-set check read that status; failures follow the 30.1.0 tool-catalog policy (counted, logged, `degraded` — never a silent empty store). Workers reading the main store are not filled again. Without a bound profile nothing changes. The builder keeps its limit for `withMcpClients` / `withMcpServers` (no startup phase). | §6.1, §6.3, §3.8, §14.1 |
+| D32 | **A worker's fill keeps the identity its agent dispatches by** (review finding on D31). Filled from the shared clients → the same `_sharedMcpClientDescriptors`, `_configuredSlotCount` and `IToolNamespace` as the main fill, and the worker's builder receives those clients with the same descriptors (existing `withMcpServers`, one already-connected `IMcpServer` per client) and the server's namespace (`withToolNamespace`), so the stored names are the names it can call. Own `mcpClients` → no descriptors exist: array order on both sides. Own `mcp:` → its own builder fills and dispatches from one connection. No contract change. Also fixes 30.1.0 workers on the shared clients exposing `s<i>__<tool>` where the main catalog has `<label>__<tool>`. *For the user's review:* the `withMcpServers` adapter over an optional `descriptors` parameter on `withMcpClients` (a public builder change) | §6.3, §3.8, §14.1 |
+| D33 | **Companion storage per primary binding** (review finding on Tasks 22–23). The profile instance may be shared; each primary binding (main, each worker with its own `rag`) gets companion stores of its own, built by the server through `makeRag` with that primary's embedder; a binding that reads another's primary shares its companions. Separate stores, not a binding segment in `recordId`: they isolate reads as well as writes, with no contract change. *For the user's review:* a persistent (non-in-memory) companion store with a worker that has its own `rag` is refused at start, rather than deriving a second collection name | §6.2, §7.3.3, §3.8, §14.1 |
