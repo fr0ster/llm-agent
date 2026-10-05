@@ -310,12 +310,13 @@ describe('the RAG implementations live in llm-agent-rag (spec §11.3, D57)', () 
  * Spec §11.3, D57: the RAG implementations live in @mcp-abap-adt/llm-agent-rag.
  * - no cycle: nothing in @mcp-abap-adt/llm-agent, and nothing llm-agent-rag depends on,
  *   imports or declares llm-agent-rag;
- * - no file imports a moved name from @mcp-abap-adt/llm-agent (it no longer exports them);
+ * - no file imports a moved name from @mcp-abap-adt/llm-agent (it no longer exports them),
+ *   except the intentional negative-import fixtures of NEGATIVE_IMPORT_FIXTURES;
  * - OllamaRag is gone (spec S11).
  */
 import assert from 'node:assert/strict';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname, join, relative, sep } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
@@ -361,9 +362,44 @@ test('nothing llm-agent-rag depends on imports or declares @mcp-abap-adt/llm-age
   assert.deepEqual(offenders, []);
 });
 
-test('no file imports a moved name from @mcp-abap-adt/llm-agent', () => {
-  const STMT = /(?:import|export)(?:\s+type)?\s*\{([^}]*)\}\s*from\s*'@mcp-abap-adt\/llm-agent';/g;
+/**
+ * The intentional negative-import fixtures: files that import a moved name from
+ * @mcp-abap-adt/llm-agent ON PURPOSE, each import under `// @ts-expect-error`, to prove the old
+ * path no longer compiles. Exact repo-relative paths — never a directory, glob or pattern (one
+ * would hide a real stale import placed next to a fixture). The guard skips only these files;
+ * `npm run typecheck` still checks each of them (last test below), so an import that compiled
+ * again would fail there with TS2578.
+ */
+const NEGATIVE_IMPORT_FIXTURES: ReadonlySet<string> = new Set([
+  'packages/llm-agent-rag/src/__typechecks__/rag-implementations-moved.ts', // Step 9
+]);
+
+const STMT = /(?:import|export)(?:\s+type)?\s*\{([^}]*)\}\s*from\s*'@mcp-abap-adt\/llm-agent';/g;
+
+/** The moved names that `text` imports (or re-exports) from @mcp-abap-adt/llm-agent. */
+function movedImports(text: string): string[] {
+  const names: string[] = [];
+  for (const m of text.matchAll(STMT)) {
+    for (const spec of m[1].split(',')) {
+      const name = spec.trim().replace(/^type\s+/, '').split(/\s+as\s+/)[0].trim();
+      if (MOVED.has(name)) names.push(name);
+    }
+  }
+  return names;
+}
+
+/** `<repo-relative path>: <name>` for every moved-name import outside the listed fixtures. */
+function staleImports(files: Iterable<readonly [rel: string, text: string]>): string[] {
   const offenders: string[] = [];
+  for (const [rel, text] of files) {
+    if (NEGATIVE_IMPORT_FIXTURES.has(rel)) continue;
+    for (const name of movedImports(text)) offenders.push(`${rel}: ${name}`);
+  }
+  return offenders;
+}
+
+/** Every package source file (tests and typechecks included), `scripts/` and `test/`. */
+function* repoFiles(): Generator<readonly [string, string]> {
   const dirs = [
     ...readdirSync(join(ROOT, 'packages')).map((p) => join(ROOT, 'packages', p, 'src')),
     join(ROOT, 'scripts'),
@@ -371,15 +407,46 @@ test('no file imports a moved name from @mcp-abap-adt/llm-agent', () => {
   ];
   for (const dir of dirs) {
     for (const f of tsFiles(dir)) {
-      for (const m of readFileSync(f, 'utf8').matchAll(STMT)) {
-        for (const spec of m[1].split(',')) {
-          const name = spec.trim().replace(/^type\s+/, '').split(/\s+as\s+/)[0].trim();
-          if (MOVED.has(name)) offenders.push(`${f}: ${name}`);
-        }
-      }
+      yield [relative(ROOT, f).split(sep).join('/'), readFileSync(f, 'utf8')] as const;
     }
   }
-  assert.deepEqual(offenders, []);
+}
+
+test('no file imports a moved name from @mcp-abap-adt/llm-agent', () => {
+  assert.deepEqual(staleImports(repoFiles()), []);
+});
+
+test('the guard still fails an ordinary stale import; only the listed paths are exempt', () => {
+  // built from OLD so this file's own text holds no import statement the scan of test/ would match
+  const OLD = '@mcp-abap-adt/llm-agent';
+  const stale = [
+    `import { VectorRag } from '${OLD}';`,
+    `import type { ISearchStrategy as Old } from '${OLD}';`,
+  ].join('\n');
+  const at = (rel: string) => [`${rel}: VectorRag`, `${rel}: ISearchStrategy`];
+  // an ordinary source file
+  assert.deepEqual(staleImports([['packages/llm-agent-libs/src/x.ts', stale]]), at('packages/llm-agent-libs/src/x.ts'));
+  // a typecheck file next to a fixture is not exempt: the list holds paths, not directories
+  const sibling = 'packages/llm-agent-rag/src/__typechecks__/another.ts';
+  assert.deepEqual(staleImports([[sibling, stale]]), at(sibling));
+  // a contract that stays in llm-agent is no offence
+  const kept = `import type { IRag, IQueryExpander } from '${OLD}';`;
+  assert.deepEqual(staleImports([['packages/llm-agent-libs/src/y.ts', kept]]), []);
+  // the listed fixtures pass with the very same content
+  for (const rel of NEGATIVE_IMPORT_FIXTURES) assert.deepEqual(staleImports([[rel, stale]]), []);
+});
+
+test('each listed fixture is a real negative fixture and npm run typecheck checks it', () => {
+  const typecheck = readFileSync(join(ROOT, 'tsconfig.typecheck.json'), 'utf8');
+  for (const rel of NEGATIVE_IMPORT_FIXTURES) {
+    const lines = readFileSync(join(ROOT, rel), 'utf8').split('\n');
+    const importLines = lines.flatMap((l, i) => (movedImports(l).length > 0 ? [i] : []));
+    assert.ok(importLines.length > 0, `${rel} imports no moved name — remove it from the list`);
+    for (const i of importLines) {
+      assert.match(lines[i - 1] ?? '', /^\s*\/\/ @ts-expect-error /, `${rel}:${i + 1} is not under @ts-expect-error`);
+    }
+    assert.ok(typecheck.includes(`"${rel}"`), `${rel} is missing from tsconfig.typecheck.json include`);
+  }
 });
 
 test('OllamaRag is removed (spec S11)', () => {
@@ -393,7 +460,7 @@ test('OllamaRag is removed (spec S11)', () => {
 - [ ] **Step 2: Run them to see them fail**
 
 Run: `node --import tsx/esm --test test/repo/rag-implementations-home.test.ts`
-Expected: the first test PASSES (nothing imports `llm-agent-rag` from below yet); the second FAILS listing the 35 importers of Step 7 (e.g. `packages/llm-agent-libs/src/builder.ts: InMemoryRag`), `packages/llm-agent-rag/src/rag-factories.ts: VectorRag`, `…: ISearchStrategy` and `packages/ollama-embedder/src/ollama.ts: VectorRag`; the third FAILS listing `packages/ollama-embedder/src/ollama.ts` and `src/index.ts`.
+Expected: the first test PASSES (nothing imports `llm-agent-rag` from below yet); the second FAILS listing the 35 importers of Step 7 (e.g. `packages/llm-agent-libs/src/builder.ts: InMemoryRag`), `packages/llm-agent-rag/src/rag-factories.ts: VectorRag`, `…: ISearchStrategy` and `packages/ollama-embedder/src/ollama.ts: VectorRag`; the third (the guard's own cases on fixture strings) PASSES; the fourth FAILS with `ENOENT` for `packages/llm-agent-rag/src/__typechecks__/rag-implementations-moved.ts` (Step 9 creates it); the fifth FAILS listing `packages/ollama-embedder/src/ollama.ts` and `src/index.ts`.
 
 Run: `npm run build && node --import tsx/esm --test packages/llm-agent-rag/src/__tests__/rag-implementations-home.test.ts`
 Expected: FAIL — `VectorRag missing from llm-agent-rag` (and the same for every name).
@@ -716,7 +783,7 @@ Expected: `35 file(s) rewritten`; Biome merges and sorts the new import lines; `
 - [ ] **Step 8: Run the tests to see them pass**
 
 Run: `npm run build && node --import tsx/esm --test test/repo/rag-implementations-home.test.ts test/repo/scoped-dependencies.test.ts packages/llm-agent-rag/src/__tests__/rag-implementations-home.test.ts`
-Expected: PASS — no cycle, no importer of a moved name from the old path, `OllamaRag` gone, every moved name exported by `llm-agent-rag` and none by `llm-agent`.
+Expected: PASS — no cycle, no importer of a moved name from the old path, `OllamaRag` gone, every moved name exported by `llm-agent-rag` and none by `llm-agent` — except `each listed fixture is a real negative fixture …`, which still FAILS with `ENOENT` until Step 9 creates the fixture.
 
 - [ ] **Step 9: Typecheck that the old path no longer compiles**
 
@@ -737,8 +804,10 @@ export type _Checked = [OldISearchStrategy, ISearchStrategy, IDocumentEnricher, 
 
 Add `packages/llm-agent-rag/src/__typechecks__/rag-implementations-moved.ts` to `tsconfig.typecheck.json` `include`.
 
-Run: `npm run typecheck`
-Expected: no errors — each `@ts-expect-error` is used (the old imports fail), the contracts still import from the root.
+This file imports `VectorRag` and `ISearchStrategy` from `@mcp-abap-adt/llm-agent` **on purpose**, so the repo guard of Step 1 (`no file imports a moved name from @mcp-abap-adt/llm-agent`, which scans `__typechecks__` too) would flag it; it is the one entry of the guard's `NEGATIVE_IMPORT_FIXTURES` (an exact path, already listed in Step 1). The exemption covers only the guard: `npm run typecheck` checks the file, and the guard's last test fails if the file leaves `tsconfig.typecheck.json`, stops importing a moved name, or has such an import without the `// @ts-expect-error` line directly above it. A new negative-import fixture is added to that list by its exact path, never by a pattern.
+
+Run: `npm run typecheck && node --import tsx/esm --test test/repo/rag-implementations-home.test.ts`
+Expected: no errors — each `@ts-expect-error` is used (the old imports fail), the contracts still import from the root; the repo guard PASSES all five tests (the fixture is exempt from the scan and is a real, type-checked negative fixture).
 
 - [ ] **Step 10: Full gate**
 
@@ -2365,7 +2434,7 @@ In `packages/llm-agent-libs/src/index.ts`, **delete** the Reranker block (the `/
 - `packages/llm-agent-server-libs/src/smart-agent/__tests__/resolve-retrieval.test.ts` (L11–17) and `retrieval-wiring.test.ts` (L25–26): move `PASSAGE_QUESTION`, `TOOL_QUESTION` out of the `@mcp-abap-adt/llm-agent-libs` import into `import { PASSAGE_QUESTION, TOOL_QUESTION } from '@mcp-abap-adt/llm-agent-reranker';`.
 - `test/integration/typesafe-decision/typesafe-decision.integration.test.ts`: L4 `import { DecisionReranker } from '@mcp-abap-adt/llm-agent-libs';` → `import { ProbabilityReranker } from '@mcp-abap-adt/llm-agent-reranker';`, L66 `new DecisionReranker(model)` → `new ProbabilityReranker(model)`.
 
-Verify: `git grep -n -w "DecisionReranker\|DecisionRerankerOptions\|DECISION_RERANK_DEFAULT_TASK\|DECISION_RERANK_DEFAULT_CRITERIA" -- packages scripts test ':!**/CHANGELOG.md' ':!**/README.md'` → empty, and the scan below lists no reranker name imported from `@mcp-abap-adt/llm-agent-libs`.
+Verify: `git grep -n -w "DecisionReranker\|DecisionRerankerOptions\|DECISION_RERANK_DEFAULT_TASK\|DECISION_RERANK_DEFAULT_CRITERIA" -- packages scripts test ':!**/CHANGELOG.md' ':!**/README.md'` prints only the string literals of the `REMOVED` table in `test/repo/no-old-names.test.ts` (created below — the guard names the removed runtime names on purpose; `DecisionReranker`, `DECISION_RERANK_DEFAULT_TASK`, `DECISION_RERANK_DEFAULT_CRITERIA`; nothing before the file exists) — no other file, in particular no source, test or typecheck under `packages/` — and the scan below lists no reranker name imported from `@mcp-abap-adt/llm-agent-libs`.
 
 ```ts
 // test/repo/no-old-names.test.ts
@@ -17363,12 +17432,12 @@ Expected: `"link": true` only for `node_modules/@mcp-abap-adt/<sibling>` entries
 - [ ] **Step 4: Gates and spec coverage**
 
 - Spec issues S1–S9 are decided (spec §17.4) and done in their tasks (Tasks 3, 6, 9, 11, 15, 19, 21, 23, 28, 29, 30; S2 and S7 superseded by D50, spec §17.15); D24–D27, F1, F3, F4 (spec §17.6) in Tasks 4A–4C, 6, 8, 11, 12, 14, 15, 16, 18, 21–24, 30, 32–34; D28–D30 (spec §17.7) in Tasks 4A, 4C, 20A, 22–24, 33, 34; D31–D35 (spec §17.8, §17.9) in Tasks 19, 20, 22, 23, 23A, 32–34; D38–D40 (spec §17.10) in Task 23A (D36 superseded, D37 moved out); D41–D45 (spec §17.11) in Tasks 2, 11, 12, 19, 19A, 20, 23A, 23B, 33, 34; D46–D47 (spec §17.12) in Tasks 19, 19A, 20, 23A, 23B, 33, 34; D48–D49 (spec §17.13, §17.14) in Task 19A; D50–D51 (spec §17.15) in Tasks 2, 3, 9, 11–13, 15, 16, 19, 19A, 21–23A, 30, 32–35 (Task 10 withdrawn; D51 withdrawn by D54); D53–D56 (spec §17.17) in Tasks 1A, 2, 3, 5, 12, 14–17, 19, 19A, 21–23B, 30, 32–34; D57–D60 (spec §17.18) in Tasks 1A, 4, 4A, 4B, 4D, 19A, 20A, 22, 25, 33–35 (S10 decided); S11 decided by the user (`OllamaRag` removed, Task 1A Step 4); S12 decided by the user (the pre-existing re-exports of spec §11.4 removed, Task 4D); §11.4's four questions decided by the user (`ITextLogger` removed and libs' two dead files deleted, Task 4E; `SmartAgentHandle` / libs' `IStageHandler` and the internal shims kept); the search-strategy types with `VectorRag` (the user's decision, Task 1A); a new gap found while executing was taken to the user before any code (fix the spec before the plan).
-- No old name is left (a major release, D58): `git grep -n -w "IDecisionModel\|DecisionReranker\|DecisionRerankerOptions\|DECISION_RERANK_DEFAULT_TASK\|DECISION_RERANK_DEFAULT_CRITERIA\|wrapDecisionModel\|makeDecisionModel\|OllamaRag" -- packages scripts test ':!**/CHANGELOG.md'` prints only the `@ts-expect-error` lines of `decision-model.typecheck.ts` and `construction-seams.ts`, `_removedSeam`, and the `'makeDecisionModel' in deps` / `no-old-names` assertions; `git grep -n "createMakeDecisionModel\|make-decision-model" -- packages` prints nothing; `git grep -n "SapAiCoreDecisionModel" -- packages docs` prints nothing; `node --import tsx/esm --test test/repo/no-old-names.test.ts` passes.
+- No old name is left (a major release, D58): `git grep -n -w "IDecisionModel\|DecisionReranker\|DecisionRerankerOptions\|DECISION_RERANK_DEFAULT_TASK\|DECISION_RERANK_DEFAULT_CRITERIA\|wrapDecisionModel\|makeDecisionModel\|OllamaRag" -- packages scripts test ':!**/CHANGELOG.md'` prints exactly the lines that name an old name on purpose, in these files and no other: `packages/llm-agent/src/interfaces/__tests__/decision-model.typecheck.ts` — 3 lines (the `// @ts-expect-error IDecisionModel is removed …` comment, its `import type { IDecisionModel }`, `export type _Removed = IDecisionModel;`); `packages/llm-agent-server-libs/src/__typechecks__/construction-seams.ts` — 2 lines (the `// @ts-expect-error makeDecisionModel was removed …` comment, `const _removedSeam …`); `packages/llm-agent-server/src/composition/__tests__/model-resolver.test.ts` — 1 line (`assert.equal('makeDecisionModel' in deps, false);`); `test/repo/no-old-names.test.ts` — only string literals of its `REMOVED` table (`DecisionReranker`, `DECISION_RERANK_DEFAULT_TASK`, `DECISION_RERANK_DEFAULT_CRITERIA`, `wrapDecisionModel`, `OllamaRag`); `test/repo/rag-implementations-home.test.ts` — 2 lines (the `OllamaRag is gone (spec S11)` doc line and the `'OllamaRag is removed (spec S11)'` test title; its `/\bOllamaRag\b/` regex is no `-w` match). Any other hit — a different file, or another line in these — is a stale use; `git grep -n "createMakeDecisionModel\|make-decision-model" -- packages` prints nothing; `git grep -n "SapAiCoreDecisionModel" -- packages docs` prints nothing; `node --import tsx/esm --test test/repo/no-old-names.test.ts` passes.
 - Intents and companion stores are gone (D50): `git grep -n -w "IntentRecordIndexer\|IntentCompanionIndexer\|IToolIntentSource\|StaticIntentSource\|LlmIntentSource\|companionRecordIds\|staleCompanionRecordIds\|companionStores\|CompanionIds\|listedCompanions" -- packages scripts` prints nothing; `git grep -n -i "companion" -- packages scripts` and `git grep -n "recordKind: 'intent'\|kind: 'intent'\|generated: true" -- packages scripts` print nothing (the existing query preprocessor's `name = 'intent'` in `packages/llm-agent-rag/src/preprocessor.ts` — moved there in Task 1A — is unrelated and stays); `git grep -n -i "intent" -- packages/*/src scripts` prints only unrelated words (e.g. a classifier's intent), never an indexer, a source or a record kind; `git grep -n -i "IntentRecordIndexer\|IntentCompanionIndexer\|StaticIntentSource\|LlmIntentSource\|IToolIntentSource\|companion store\|intents:" -- README.md CLAUDE.md docs examples 'packages/*/README.md' ':!docs/superpowers'` prints nothing — no doc describes them as usable (the only allowed mention is `IntentToolIndexing` in the `IToolIndexingStrategy` migration notes, marked not ported).
 - No deploy step, no service record, no `prebuilt` source (D54): `git grep -n "deployToolsCorpus\|ToolsCorpusDeployReport\|PrebuiltToolsStore\|TOOLS_CORPUS_RECORD_ID\|serviceRecord\|readToolsCorpusService" -- packages scripts` prints nothing; `git grep -n "'prebuilt'\|prebuilt:" -- packages/*/src` prints only the refusal of a leftover YAML key (and its test).
 - No tuned numbers, three named compositions (D55, D56): `git grep -n "facetedCohere\|facetedJev\|smallSetJev\|assertSmallSetPool\|smallSet" -- packages scripts` prints only the refusals of leftover YAML names (and their tests); `git grep -nE "new (ItemPool|FixedItemsCut|TopItemsCut|ScoreFloorCut|TokenBudgetCut)\(\s*[0-9]" -- 'packages/*/src' ':!**/__tests__/**' ':!**/*.test.ts'` prints nothing.
-- The RAG implementations live in `llm-agent-rag` (D53, D57): `node --import tsx/esm --test test/repo/rag-implementations-home.test.ts` passes (nothing in `packages/llm-agent` or a package `llm-agent-rag` depends on imports or declares `llm-agent-rag`; no file imports a moved name from `@mcp-abap-adt/llm-agent`; `OllamaRag` gone); `git grep -n "rag-implementations" -- packages ':!**/rag-implementations-home.test.ts' ':!**/rag-implementations-moved.ts'` prints nothing (no subpath); `ls packages/llm-agent/src/rag/vector-rag.ts packages/llm-agent/src/resilience/fallback-rag.ts` fails (moved); `npm run clean && npm run build` passes (no `tsc -b` reference cycle).
-- No re-exports (D59): `test/repo/no-old-names.test.ts` passes; `git grep -nE "export (type )?(\*|\{[^}]*\}) from '@mcp-abap-adt/" -- packages/llm-agent-reranker/src packages/sap-aicore-decision/src packages/llm-agent-rag/src packages/llm-agent-libs/src/index.ts packages/llm-agent-libs/src/collections` prints nothing (multi-line `export {` blocks and `import … ; export { … }`: the test's TypeScript guard covers them — no public entry point of any package exports a name declared in another package). The pre-existing re-exports of spec §11.4 are gone (S12): `git grep -n "legacy/flat" -- packages docs ':!docs/superpowers' ':!**/CHANGELOG.md'` prints nothing; `ls packages/llm-agent-server/src/index.ts` fails; `git grep -nE "export (type )?(\*|\{[^}]*\}) from '@mcp-abap-adt/" -- 'packages/*/src'` prints only libs' internal shims of spec §11.4 rule (a). `ITextLogger` is gone (Task 4E): `git grep -n -w ITextLogger -- packages scripts test docs ':!docs/superpowers' ':!docs/MIGRATION-v*.md' ':!**/CHANGELOG.md'` prints only the two lines of `text-logger-removed.typecheck.ts`; `ls packages/llm-agent/src/logger/text-logger.ts packages/llm-agent-libs/src/adapters/index.ts packages/llm-agent-libs/src/interfaces/model-resolver.ts` fails.
+- The RAG implementations live in `llm-agent-rag` (D53, D57): `node --import tsx/esm --test test/repo/rag-implementations-home.test.ts` passes (nothing in `packages/llm-agent` or a package `llm-agent-rag` depends on imports or declares `llm-agent-rag`; no file imports a moved name from `@mcp-abap-adt/llm-agent` outside the exact-path `NEGATIVE_IMPORT_FIXTURES` list, which holds only `packages/llm-agent-rag/src/__typechecks__/rag-implementations-moved.ts`, type-checked by `npm run typecheck`; `OllamaRag` gone); `git grep -n "rag-implementations" -- packages ':!packages/llm-agent-rag/src/__tests__/rag-implementations-home.test.ts' ':!packages/llm-agent-rag/src/__typechecks__/rag-implementations-moved.ts'` prints nothing (no subpath); `ls packages/llm-agent/src/rag/vector-rag.ts packages/llm-agent/src/resilience/fallback-rag.ts` fails (moved); `npm run clean && npm run build` passes (no `tsc -b` reference cycle).
+- No re-exports (D59): `test/repo/no-old-names.test.ts` passes; `git grep -nE "export (type )?(\*|\{[^}]*\}) from '@mcp-abap-adt/" -- packages/llm-agent-reranker/src packages/sap-aicore-decision/src packages/llm-agent-rag/src packages/llm-agent-libs/src/index.ts packages/llm-agent-libs/src/collections` prints nothing (multi-line `export {` blocks and `import … ; export { … }`: the test's TypeScript guard covers them — no public entry point of any package exports a name declared in another package). The pre-existing re-exports of spec §11.4 are gone (S12): `git grep -n "legacy/flat" -- packages docs ':!docs/superpowers' ':!**/CHANGELOG.md'` prints nothing; `ls packages/llm-agent-server/src/index.ts` fails; `git grep -nE "export (type )?(\*|\{[^}]*\}) from '@mcp-abap-adt/" -- 'packages/*/src'` prints only libs' internal shims of spec §11.4 rule (a). `ITextLogger` is gone (Task 4E): `git grep -n -w ITextLogger -- packages scripts test docs ':!docs/superpowers' ':!docs/MIGRATION-v*.md' ':!**/CHANGELOG.md'` prints only the three lines of `packages/llm-agent/src/logger/__tests__/text-logger-removed.typecheck.ts` (the `@ts-expect-error` comment, its `import type`, `_Removed` — as in Task 4E Step 6); `ls packages/llm-agent/src/logger/text-logger.ts packages/llm-agent-libs/src/adapters/index.ts packages/llm-agent-libs/src/interfaces/model-resolver.ts` fails.
 - No reference to the withdrawn design is left: `git grep -n -i "crossEncoder\|cross-encoder\|sap-aicore-reranker\|SapAiCoreReranker\|makeCrossEncoder\|CROSS_ENCODER" -- packages docs README.md CLAUDE.md examples scripts ':!docs/superpowers'` prints nothing (the pre-existing `### Example: Cross-encoder reranker via external API` heading in `docs/INTEGRATION.md` is the one allowed hit).
 - The spec's §14.3 acceptance runs are the consumer check (env-gated, not `npm test`); list them in the PR description as the next stage. Do **not** delete the spec or this plan: they stay until the work, consumer check included, is fully implemented (CLAUDE.md "Plans and Specs").
 - No version bump, no tag, no publish.
@@ -17555,3 +17624,4 @@ Recommendations applied to the earlier open choices (the user may still overrule
 - **Rework for D57–D60 (spec §17.18, amendment 13).** Task 1A is now the real move (git mv of the files and of the 27 tests + 2 typecheck files that test them, the import rule for moved files, `llm-agent`'s export lines deleted, `llm-agent-rag/src/index.ts` exporting its own files, the importer codemod, `OllamaRag` removed, a `@ts-expect-error` typecheck and a clean build proving no cycle). Tasks 4 (the contract test on fake stores in `llm-agent`, `VectorRag`'s test in `llm-agent-rag`), 19A Step 0 (`packages/llm-agent-rag/src/fallback-rag.ts`, its own `fix(llm-agent-rag)` commit) and 25 (already importing from `llm-agent-rag`) use the new paths. **Cumulative compile without aliases:** Task 4A switches every `IDecisionModel` / `wrapDecisionModel` use (llm-agent test, typesafe-decision, server-libs, server) in its commit; Task 4B switches every libs-root reranker import (server-libs `resolve-retrieval.ts` + two tests, `test/integration`, `scripts/rag-eval`) and gives server-libs its `llm-agent-reranker` peer in its commit (Task 22 no longer adds it); Task 20A removes `makeDecisionModel` and switches every key in its commit; Task 22's import edits start from the post-4A/4B names (`IProbabilityDecision`, `wrapProbabilityDecision`, `ProbabilityReranker`). No code block this plan adds re-exports another package (`no-old-names.test.ts` from Task 4B on). Task 34's CHANGELOG has the Breaking table (51 lines = spec §13 before S12) and package CHANGELOG paragraphs; it says the release is a major and bumps nothing.
 - **Rework for S12 (spec §11.4, §13, §17.18 — decided by the user).** New Task 4D, after 4B (which creates `no-old-names.test.ts`) and 4C: libs' root drops the 15 `llm-agent` names, server-libs' `./legacy/flat` file and subpath go, `./legacy/{linear,dag}` lose their libs re-export, the server's unreachable `src/index.ts` is deleted, and the five in-repo importers (server-libs `chat-route-handler.ts`, `response-helpers.ts`, `smart-server.ts`; server `server.ts`, `server.test.ts`) switch to `@mcp-abap-adt/llm-agent` **in the same commit** — the commit builds. libs' internal shims are untouched, so libs' own files compile unchanged. No later code block imports a removed name from libs or a `legacy/*` subpath (checked by grep over this plan), and none adds a re-export, so the guard stays green from Task 4D to Task 35; a package created later (`sap-aicore-decision`, Task 18) or a new entry point (`llm-agent/testing/collection-profile-conformance`, Task 30) is covered automatically. Task 34's table grows to 69 lines (52–69 are S12's; 70 with Task 4E, below) with two note lines and the libs / server-libs package paragraphs; Task 35 greps that `legacy/flat` and the server's `src/index.ts` are gone. Docs showing the old paths (`docs/INTEGRATION.md` plugin loader, `docs/PIPELINES.md` `legacy/dag`, libs README) are updated in Task 4D.
 - **Rework for spec §11.4's four questions (decided by the user on 2026-10-05).** New Task 4E, right after Task 4D: `ITextLogger` removed — `text-logger.ts` and the root line deleted and all 17 uses in 9 files switched to `ILogger` of `@mcp-abap-adt/interfaces-utils` **in the same commit** (the file that also uses llm-agent's event `ILogger` imports it under a file-local name, nothing exported under it), so the commit builds; the dependency is declared where used (`llm-agent`: existing peer; libs, mcp: dev dependency for their tests, lockfile checked for links); a `@ts-expect-error` typecheck pins the removal, and the four switched tests are already in `tsconfig.typecheck.json`. libs' `adapters/index.ts` and `interfaces/model-resolver.ts` are deleted after a grep that proves no importer and no `exports` path. Task 4D's guard is unaffected (llm-agent's root keeps only its own names); no later code block names `ITextLogger` or the dead files (grep over this plan). Task 34's table grows to 70 lines with one note line and the llm-agent package paragraph; Task 35 greps that `ITextLogger` and the three files are gone. `SmartAgentHandle` / libs' `IStageHandler` and libs' internal shims stay (questions 3 and 4: keep).
+- **Review finding on 2026-10-05 — guards vs the intentional negative fixtures.** Task 1A's repo guard (`no file imports a moved name from @mcp-abap-adt/llm-agent`) scans every package source file, `__typechecks__` included, so it would have failed Step 10's `npm test` on Step 9's `rag-implementations-moved.ts`, which imports `VectorRag` / `ISearchStrategy` from `@mcp-abap-adt/llm-agent` on purpose under `@ts-expect-error`. The guard now skips an **exact-path** allow-list `NEGATIVE_IMPORT_FIXTURES` (that one file — no directory or pattern), and gains two tests: an ordinary stale import (built from a string, also in a file beside the fixture) still fails while the listed path passes the same content; each listed fixture exists, still imports a moved name, has `// @ts-expect-error` directly above each such import, and is in `tsconfig.typecheck.json` (so `npm run typecheck` keeps checking it). Steps 2, 8 and 9 state when the fixture test fails (`ENOENT` before Step 9) and passes. Every other guard was checked against every negative fixture the plan creates (`rag-implementations-moved.ts`, `decision-model.typecheck.ts`, `collection-profile.typecheck.ts` of `llm-agent` (Tasks 2–3) and of libs (Task 16), the `@ts-expect-error` cases in the tests of Tasks 17 and 20 (`shared-items-profile.test.ts`, `builder-tools-profile.test.ts`), `text-logger-removed.typecheck.ts`, the `_removedSeam` of `construction-seams.ts`, the `'makeDecisionModel' in deps` assertion, the `REMOVED` table of `no-old-names.test.ts`, the `OllamaRag` test of `rag-implementations-home.test.ts`): Task 1A's "nothing below `llm-agent-rag` imports it" and "`OllamaRag` removed" scans and Task 4B/4D's `no-old-names` tests (runtime namespaces, the re-export scan, the checker over built `exports`) meet no fixture — none imports `llm-agent-rag` from below, names `OllamaRag` under `packages/`, re-exports a package, or reaches `dist/`; the line-exact greps of Tasks 4A, 4E and 20A already list their fixture lines. Fixed besides: Task 4B's reranker-name grep now expects the `REMOVED` literals of `no-old-names.test.ts` (created in the same step); Task 35's old-name grep lists every expected file and line (it missed `rag-implementations-home.test.ts`'s two `OllamaRag` lines, the `REMOVED` literals and the `import type` / `_Removed` lines of `decision-model.typecheck.ts`); Task 35's `ITextLogger` grep expects three lines, as Task 4E does (it said two); Task 35's `rag-implementations` grep excludes exact paths instead of `**/` patterns.
