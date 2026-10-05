@@ -4,27 +4,29 @@
 
 **Goal:** Give every kind of RAG collection an injected indexing + retrieval pair (a *collection profile*): several owner-scoped records per item, collapse back to items, an optional reranker on provider text, a final cut counted in items — with 30.1.0 behaviour unchanged when no profile is set.
 
-**Architecture:** Contracts land in `@mcp-abap-adt/llm-agent` (`src/interfaces/collection-profile.ts`); generic strategies, `StagedRetrieval` (an `IRetrievalStrategy`), `ComposedToolsProfile`, the default compositions (`mcpToolsVariants`) and `SharedItemsProfile` land in `@mcp-abap-adt/llm-agent-libs` (`src/collections/`); a new provider package `@mcp-abap-adt/sap-aicore-decision` ships `SapAiCoreDecisionModel` (Cohere Rerank on SAP AI Core as one more `IDecisionModel`, used by the existing `DecisionReranker`); `SmartAgentBuilder.withToolsProfile` and the server's `rag.profiles` YAML plus `decision.provider: sap-aicore` (server-libs) wire them; the binary's existing `createMakeDecisionModel` gains the `sap-aicore` arm.
+**Architecture:** Contracts land in `@mcp-abap-adt/llm-agent` (`src/interfaces/collection-profile.ts`); generic strategies, `StagedRetrieval` (an `IRetrievalStrategy`), `ComposedToolsProfile`, the default compositions (`mcpToolsVariants`) and `SharedItemsProfile` land in `@mcp-abap-adt/llm-agent-libs` (`src/collections/`); the decision contracts split — `IProbabilityDecision` (today's `IDecisionModel`, renamed, alias kept) and the new `IRelevanceDecision`; every reranker moves to the new vendor-neutral package `@mcp-abap-adt/llm-agent-reranker` (`ProbabilityReranker` = today's `DecisionReranker`, the new `RelevanceReranker`, `LlmReranker`, `NoopReranker`; libs keeps the old names as deprecated aliases); a new provider package `@mcp-abap-adt/sap-aicore-decision` ships `SapAiCoreRelevanceDecision` (Cohere Rerank on SAP AI Core as an `IRelevanceDecision`); `SmartAgentBuilder.withToolsProfile` and the server's `rag.profiles` YAML plus `decision.provider: sap-aicore` (server-libs; one `decision:` section, the provider decides the kind) wire them; the binary gains `createMakeRelevanceDecision`.
 
 **Tech Stack:** TypeScript 6 (strict, ESM, NodeNext), Node ≥ 22, `node:test` via `tsx`, Biome, npm workspaces monorepo.
 
-**Spec:** `docs/superpowers/specs/2026-10-05-collection-profiles-design.md` (approved 2026-10-05, frozen; amended 2026-10-05 with the user's decisions on Cohere and S1–S9, spec §17.4). **Goal:** `docs/superpowers/goals/2026-10-04-collection-profiles.md` (user-owned; never edited). Executors read the spec section each task cites.
+**Spec:** `docs/superpowers/specs/2026-10-05-collection-profiles-design.md` (approved 2026-10-05, frozen; amended 2026-10-05 with the user's decisions on S1–S9, spec §17.4, and on probability vs relevance decisions, the reranker package, the caller's k, cleanup failures and provider text composition, spec §17.6). **Goal:** `docs/superpowers/goals/2026-10-04-collection-profiles.md` (user-owned; never edited). Executors read the spec section each task cites.
 
 ## Global Constraints
 
 - **Nothing changes by default.** No profile set → 30.1.0 behaviour byte for byte: same records (golden test, Task 1), same stages, same k, same `RerankHandler` precedence, same YAML (spec §13).
-- **All contract changes additive.** `IRag`, `IReranker`, `IRetrievalStrategy`, `IMetrics` are not changed (spec §3). The only removal is the unexported `packages/llm-agent/src/rag/tool-indexing-strategy.ts` (spec §10.3).
+- **All contract changes additive or aliased.** `IRag`, `IReranker`, `IRetrievalStrategy`, `IMetrics` are not changed (spec §3). Renames (`IDecisionModel` → `IProbabilityDecision`, `DecisionReranker` → `ProbabilityReranker`, `wrapDecisionModel` → `wrapProbabilityDecision`, `DECISION_RERANK_DEFAULT_*`) keep the old names exported as **deprecated aliases** until the next major; moved rerankers stay importable from libs (spec §13). The only removal is the unexported `packages/llm-agent/src/rag/tool-indexing-strategy.ts` (spec §10.3).
+- **A probability and a relevance are different decisions.** A relevance score is never read as a probability: no [0, 1] check on it, no default threshold on it (spec §3.9, §5).
+- **Failure handling, not concurrency.** A failed stale delete is kept (`staleRecordIds`) and retried; no generations, no locks (spec §3.3, D13).
 - **Owner in every physical id.** Every profile record id is `recordId(owner, itemId, kind, n)`; no code path addresses a record by the bare `itemId` (spec §3.1).
 - **Components carry no tuned number.** Pool sizes, k, `budgetTokens`, `maxValues` are required constructor arguments; tuned numbers live only in `mcpToolsVariants`, each next to its measurement (spec §7.1).
-- **`k` is the overall limit, in items.** A retrieval never returns more than `cut.limit(k)` items, with or without a decomposer (spec §4.5).
+- **`k` is the overall limit, in items.** The caller's k caps every cut: a retrieval never returns more than `min(k, cut.limit(k))` ≤ k items, with or without a decomposer; `FixedItemsCut(n)` is a ceiling (spec §4.5, §4.9, §17.6 F1).
 - **Never silent.** Reranker output errors, decomposer errors, orphans and over-budget cuts are returned or counted (spec §4.8, §4.5, §4.6, §4.10, §9).
 - **Shipped tools strategies read only what every MCP server exports** (name, description, input schema); `NameTailFacet` is opt-in and in no variant; `EnumValueToolIndexer` and `TokenBudgetCut` are in no variant (spec §7.0, §7.4).
 - **ESM only**, `.js` extensions in relative imports; Biome style (2 spaces, single quotes, semicolons); no `any` (Biome warns); no per-file licence header; every package `LGPL-3.0-only` (spec §11).
 - **Library packages declare `@mcp-abap-adt/*` as peers** (`test/repo/scoped-dependencies.test.ts`); only `@mcp-abap-adt/llm-agent-server` takes regular deps.
-- **Workspace siblings only.** The new package is linked as a workspace sibling during development; no `file:` / `link:` to anything outside this repo. After any `npm install`, `grep -n '"link": true' package-lock.json` must list only `packages/*` siblings.
-- **No version bumps, no `npm publish`, no tag** in this plan — the user publishes; release is a separate step. The new package's `version` is the current lockstep `30.1.0` (not a bump) so the workspace resolves.
+- **Workspace siblings only.** The new packages (`llm-agent-reranker`, `sap-aicore-decision`) are linked as workspace siblings during development; no `file:` / `link:` to anything outside this repo. After any `npm install`, `grep -n '"link": true' package-lock.json` must list only `packages/*` siblings.
+- **No version bumps, no `npm publish`, no tag** in this plan — the user publishes; release is a separate step. The new packages' `version` is the current lockstep `30.1.0` (not a bump) so the workspace resolves. Publish order (the release's job): `llm-agent` → `llm-agent-reranker` → `typesafe-decision`, `sap-aicore-decision`, … → `llm-agent-libs` → `llm-agent-server-libs` → `llm-agent-server`.
 - **Imports between packages resolve to `dist/`.** After editing a package another package imports, rebuild it before running the dependent's tests: `npx tsc -b packages/<pkg>` (or `npm run build`).
-- **Spec issues S1–S9 are decided** (spec §17.4) and written into the tasks below; no step waits on the user. A NEW gap found while executing goes to the user first — the rule is *fix the spec before the plan*.
+- **Spec issues S1–S9 are decided** (spec §17.4), and so are D24–D27, F1, F3, F4 (spec §17.6); all are written into the tasks below; no step waits on the user. One choice stays open for the user's review (spec §17.5: `RelevanceReranker`'s one-call default vs batching) — the plan implements the spec's default. A NEW gap found while executing goes to the user first — the rule is *fix the spec before the plan*.
 - Commits: Conventional Commits, each ending with
   ```
   Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
@@ -33,18 +35,21 @@
 
 ## Review Focus
 
-The five inputs the spec implies, most likely to bite a user, each pinned by a test in its owning task:
+The seven inputs the spec implies, most likely to bite a user, each pinned by a test in its owning task:
 
 1. **Identical `itemId`s across owners** (users A and B both write `case-42` into one `user` store) — two separate items: A's `get` returns A's text and `data`, B's re-index and `remove` leave A untouched, A's retrieval returns only A's item. → Task 17 (`identical item ids across users stay separate`), Task 12 (`collapse keys on the owner-qualified item`).
 2. **Canonical record missing** (deleted item, interrupted replacement) — the hit is dropped, never returned with its own text, does not use up k, and is counted. → Task 12 (`a hit without its canonical record is an orphan`), Task 28 (`orphan counted`).
 3. **Decomposer overrunning the budget** (Σk > budget, a `k < 1`, empty text, a thrown error) — `DECOMPOSE_ERROR` returned, never a silent fall-back, never more than `budget` items. → Task 14 (`budgets summing above the budget are a DECOMPOSE_ERROR`).
-4. **Reranker returning the wrong score count** (fewer/more results, a duplicate, a non-finite score) — `RERANK_ERROR`; `stage1` keeps the stage-1 order, `error` returns the error. → Task 13 (`a reranker that drops a candidate is a RERANK_ERROR`), Task 18 (`SapAiCoreDecisionModel`: a wrong `/rerank` result count is a `DecisionError`, never zero-filled; `DecisionReranker` turns it into `RERANK_ERROR`).
+4. **Reranker returning the wrong score count** (fewer/more results, a duplicate, a non-finite score) — `RERANK_ERROR`; `stage1` keeps the stage-1 order, `error` returns the error. → Task 13 (`a reranker that drops a candidate is a RERANK_ERROR`), Task 4C (`RelevanceReranker`: wrong count / duplicate / out-of-range / non-finite → `RERANK_ERROR`), Task 18 (`SapAiCoreRelevanceDecision`: a wrong `/rerank` result is a `DecisionError`, never zero-filled).
 5. **A tool definition larger than the token budget** (top item alone over budget) — empty result, never truncated, never replaced by a smaller lower-ranked tool. → Task 6 (`the top item alone over budget gives an empty result`).
+6. **A caller's k below a profile's own cut** (k=2 against `FixedItemsCut(5)`) — at most 2 items, also after decomposition. → Task 6 (`FixedItemsCut is a ceiling`), Task 12 (`a consumer cut whose limit ignores k is still capped`), Task 14, Task 30 (`a caller k below the profile's own default cut`).
+7. **A stale-record delete that fails** during a replacement — the item is `cleanup-failed`, never indexed; the id stays listed and the next `index` / `remove` deletes it. → Task 11 (`replacement → failed stale delete → … → remove leaves nothing`), Task 15, Task 30.
 
 ## File Structure
 
 **`packages/llm-agent/src/`** (contracts)
 - `interfaces/collection-profile.ts` — NEW: every contract of spec §3.1–§3.6 + `recordId`, `isRetrievalMetrics`.
+- `interfaces/decision-model.ts` — `IProbabilityDecision` (+ deprecated `IDecisionModel` alias), `IRelevanceDecision`, `RelevanceRequest`, `RelevanceResult`, `RelevanceScore` (spec §3.9, Task 4A).
 - `interfaces/retrieval-embedder-owner.ts` — NEW: `IRetrievalEmbedderOwner`, `retrievalEmbedderOf` (spec §3.7).
 - `interfaces/index.ts` — export the above.
 - `interfaces/health.ts`, `interfaces/metrics.ts`, `interfaces/tool-catalog.ts` — additive optional fields (spec §3.8; `ToolCatalogStatus.records` / `.profile` per S3).
@@ -53,10 +58,12 @@ The five inputs the spec implies, most likely to bite a user, each pinned by a t
 - `rag/tool-indexing-strategy.ts` — DELETED.
 - `testing/collection-profile-conformance.ts` — NEW conformance kit; `package.json` `exports` entry.
 
+**`packages/llm-agent-reranker/`** — NEW package (Tasks 4B–4C): `src/probability-reranker.ts` (moved from libs `reranker/decision-reranker.ts`), `src/relevance-reranker.ts`, `src/llm-reranker.ts`, `src/noop-reranker.ts` (moved), `src/assert-positive-integer.ts` (copy), `src/index.ts`, tests; `package.json`, `tsconfig.json`, `README.md`, `CHANGELOG.md`, `LICENSE`, `GPL-3.0.txt`. libs' `src/reranker/` is removed; libs re-exports the names (deprecated).
+
 **`packages/llm-agent-libs/src/collections/`** (NEW directory, small modules)
 - `owner.ts` — owner ↔ metadata flattening, item keys.
 - `item-pool.ts`, `max-score-collapse.ts`, `cuts.ts`, `token-budget-cut.ts`, `size-estimators.ts` — generic strategies.
-- `tools/derive-tool-facets.ts`, `tools/tool-item.ts`, `tools/facets.ts`, `tools/faceted-tool-indexer.ts`, `tools/discriminators.ts`, `tools/enum-value-tool-indexer.ts`, `tools/intent-sources.ts`, `tools/intent-indexers.ts` — tools indexing.
+- `tools/derive-tool-facets.ts`, `tools/tool-item.ts`, `tools/facets.ts`, `tools/tool-text.ts` (provider text composers, F4), `tools/faceted-tool-indexer.ts`, `tools/discriminators.ts`, `tools/enum-value-tool-indexer.ts`, `tools/intent-sources.ts`, `tools/intent-indexers.ts` — tools indexing.
 - `record-writer.ts` — id assignment, batch embed + write, replacement, `get`, `remove`.
 - `rerank-check.ts`, `staged-retrieval.ts` — the retrieval half.
 - `composed-tools-profile.ts`, `tools-binding.ts`, `mcp-tools-variants.ts` — tools profile.
@@ -64,13 +71,13 @@ The five inputs the spec implies, most likely to bite a user, each pinned by a t
 - `index.ts` — exports; re-exported from `src/index.ts`.
 - `__tests__/*.test.ts`, `__tests__/collection-profile.typecheck.ts`.
 
-**Other libs files:** `mcp/vectorize-mcp-tools.ts` (profile path, F1), `builder.ts` (`withToolsProfile`), `metrics/in-memory-metrics.ts`, `metrics/noop-metrics.ts`, `retrieval/reranked-retrieval.ts` (telemetry), `health/health-checker.ts`, `pipeline/handlers/skill-select.ts` (F3), `testing/evaluate-retrieval.ts` + `testing/index.ts`.
+**Other libs files:** `adapters/usage-logging-decision-model.ts` (`wrapProbabilityDecision`, `wrapRelevanceDecision`, deprecated `wrapDecisionModel`), `index.ts` (deprecated reranker re-exports), `mcp/vectorize-mcp-tools.ts` (profile path, F1), `builder.ts` (`withToolsProfile`), `metrics/in-memory-metrics.ts`, `metrics/noop-metrics.ts`, `retrieval/reranked-retrieval.ts` (telemetry), `health/health-checker.ts`, `pipeline/handlers/skill-select.ts` (F3), `testing/evaluate-retrieval.ts` + `testing/index.ts`.
 
-**`packages/sap-aicore-decision/`** — NEW package (`package.json`, `tsconfig.json`, `README.md`, `CHANGELOG.md`, `LICENSE`, `GPL-3.0.txt`, `src/index.ts`, `src/sap-aicore-decision-model.ts`, `src/map-rerank.ts`, `src/__tests__/fake-fetch.ts`, `src/__tests__/sap-aicore-decision-model.test.ts`, `src/__tests__/decision-reranker-batches.test.ts`).
+**`packages/sap-aicore-decision/`** — NEW package (`package.json`, `tsconfig.json`, `README.md`, `CHANGELOG.md`, `LICENSE`, `GPL-3.0.txt`, `src/index.ts`, `src/sap-aicore-relevance-decision.ts`, `src/map-rerank.ts`, `src/__tests__/fake-fetch.ts`, `src/__tests__/sap-aicore-relevance-decision.test.ts`).
 
-**`packages/llm-agent-server-libs/src/smart-agent/`** — `profiles-config.ts` (NEW: YAML types), `profiles-config-validator.ts` (NEW), `decision-config.ts` (`provider: 'sap-aicore'`), `resolve-config-sections.ts`, `config.ts`, `config-validator.ts`, `resolve-collection-profiles.ts` (NEW), `smart-server.ts`, `tools-rag-handle.ts` (F2).
+**`packages/llm-agent-server-libs/src/smart-agent/`** — `profiles-config.ts` (NEW: YAML types), `profiles-config-validator.ts` (NEW), `decision-config.ts` (`provider: 'sap-aicore'`, `DECISION_KINDS`), `decision-seams.ts` (NEW: the decision of the provider's kind → its reranker), `resolve-retrieval.ts` (kind dispatch), `resolve-config-sections.ts`, `config.ts`, `config-validator.ts`, `resolve-collection-profiles.ts` (NEW), `smart-server.ts` (`makeRelevanceDecision` seam), `tools-rag-handle.ts` (F2); `package.json` (peer `llm-agent-reranker`).
 
-**`packages/llm-agent-server/src/composition/`** — `make-decision-model.ts` (the `sap-aicore` arm), `__tests__/make-decision-model-sap-aicore.test.ts` (NEW).
+**`packages/llm-agent-server/src/composition/`** — `make-relevance-decision.ts` (NEW: `createMakeRelevanceDecision`, the `sap-aicore` arm), `make-decision-model.ts` (names the other seam for `sap-aicore`), `index.ts`, `__tests__/make-relevance-decision.test.ts` (NEW).
 
 **Provider stores:** `packages/{qdrant-rag,pg-vector-rag,hana-vector-rag}/src/*-rag.ts` — implement `IRetrievalEmbedderOwner` (F1).
 
@@ -219,7 +226,7 @@ Claude-Session: https://claude.ai/code/session_012KjevEeQGZMkWMfnupJ7Yd"
 
 ## Task 2: Record contracts and `recordId` (llm-agent)
 
-Spec §3.1.
+Spec §3.1 (incl. the reserved keys `companionRecordIds` — S7 — and `staleRecordIds` / `staleCompanionRecordIds` — F3).
 
 **Files:**
 - Create: `packages/llm-agent/src/interfaces/collection-profile.ts`
@@ -237,7 +244,7 @@ Spec §3.1.
     | { readonly scope: 'group'; readonly groupId: string }
     | { readonly scope: 'user'; readonly userId: string }
     | { readonly scope: 'session'; readonly sessionId: string; readonly userId?: string };
-  export type ReservedRecordKey = 'id' | 'itemId' | 'recordKind' | 'itemText' | 'profile' | 'generated' | 'recordIds' | 'companionRecordIds' | 'visibility' | 'userId' | 'groupId' | 'sessionId' | 'ttl';
+  export type ReservedRecordKey = 'id' | 'itemId' | 'recordKind' | 'itemText' | 'profile' | 'generated' | 'recordIds' | 'companionRecordIds' | 'staleRecordIds' | 'staleCompanionRecordIds' | 'visibility' | 'userId' | 'groupId' | 'sessionId' | 'ttl';
   export interface IndexedRecord { readonly id: string; readonly text: string; readonly itemId: string; readonly recordKind: string; readonly owner: RecordOwner; readonly generated?: true; readonly itemText?: string; readonly metadata?: Readonly<Record<string, RagJsonValue>> & { readonly [K in ReservedRecordKey]?: never } }
   export type RecordDraft = Omit<IndexedRecord, 'id'>;
   export interface ItemRef { readonly itemId: string; readonly owner: RecordOwner }
@@ -337,6 +344,8 @@ export type RecordOwner =
  * Keys the framework writes; a profile's or writer's extras can never set them.
  * `companionRecordIds` (canonical only): `{ <companion name>: string[] }` — the
  * item's records in each companion store, so remove and replacement reach them (S7).
+ * `staleRecordIds` / `staleCompanionRecordIds` (canonical only): old ids a replacement
+ * must still delete — this store / per companion; kept until a delete succeeds (F3).
  */
 export type ReservedRecordKey =
   | 'id'
@@ -347,6 +356,8 @@ export type ReservedRecordKey =
   | 'generated'
   | 'recordIds'
   | 'companionRecordIds'
+  | 'staleRecordIds'
+  | 'staleCompanionRecordIds'
   | 'visibility'
   | 'userId'
   | 'groupId'
@@ -465,6 +476,10 @@ export const _visibilityExtra: RecordDraft = { text: 't', itemId: 'i', recordKin
 export const _userNoId: RecordDraft = { text: 't', itemId: 'i', recordKind: 'full', owner: { scope: 'user' } };
 // @ts-expect-error extras cannot set companionRecordIds (S7)
 export const _companionExtra: RecordDraft = { text: 't', itemId: 'i', recordKind: 'full', owner: { scope: 'global' }, metadata: { companionRecordIds: {} } };
+// @ts-expect-error extras cannot set staleRecordIds (F3)
+export const _staleExtra: RecordDraft = { text: 't', itemId: 'i', recordKind: 'full', owner: { scope: 'global' }, metadata: { staleRecordIds: [] } };
+// @ts-expect-error extras cannot set staleCompanionRecordIds (F3)
+export const _staleCompanionExtra: RecordDraft = { text: 't', itemId: 'i', recordKind: 'full', owner: { scope: 'global' }, metadata: { staleCompanionRecordIds: {} } };
 ```
 
 Add `"packages/llm-agent/src/interfaces/__tests__/collection-profile.typecheck.ts"` to `include` in `tsconfig.typecheck.json`. (Biome may reflow the one-line statements: run `npx biome check --write` on the file, then confirm each `@ts-expect-error` still sits directly above a single-line statement; if Biome splits one, add `// biome-ignore format: one statement per @ts-expect-error line` above that statement.)
@@ -534,6 +549,7 @@ Spec §3.2–§3.6, §3.8.
   export interface ToolParameter { readonly name: string; readonly description?: string; readonly required: boolean; readonly values: readonly ToolParameterValue[] }
   export interface ToolParameterValue { readonly value: string; readonly description?: string }
   export interface IToolFacet { readonly kind: string; derive(tool: ToolItem): string | undefined }
+  export interface IToolTextComposer { readonly name: string; compose(tool: ToolItem): string } // F4: the `full` text (spec §3.5, §7.3.1)
   export interface IDiscriminatorSelector { readonly name: string; select(tool: ToolItem): ToolParameter | undefined }
   export interface IToolIntentSource { readonly name: string; intentsFor(tool: ToolItem, options?: CallOptions): Promise<Result<readonly string[], RagError>> }
   export type SharedItemVisibility = Exclude<RecordOwner, { scope: 'session' }>;
@@ -756,8 +772,9 @@ export interface ICollapseRule {
 /** Final cut over the ranked, hydrated items. Applied once; returns a rank-order PREFIX. */
 export interface IItemCut {
   readonly name: string;
-  /** An UPPER BOUND, in items, on what `cut` returns for `requestedK` — the retrieval's
-   *  budget. A cut may stop earlier; it never returns more than this. */
+  /** An UPPER BOUND, in items, on what `cut` returns for `requestedK` — never above
+   *  `requestedK` (the caller's k caps every cut, spec §4.9). The retrieval's budget.
+   *  A cut may stop earlier; it never returns more than this. */
   limit(requestedK: number): number;
   cut(items: readonly RagResult[], requestedK: number): RagResult[];
 }
@@ -889,6 +906,14 @@ export interface IToolFacet {
   derive(tool: ToolItem): string | undefined;
 }
 
+/** Composes the provider text of a tool — the canonical `full` record's text, also the
+ *  reranker's item text and every non-canonical record's `itemText` (spec §3.5, §7.3.1).
+ *  Provider words only. Non-empty; pure. */
+export interface IToolTextComposer {
+  readonly name: string;
+  compose(tool: ToolItem): string;
+}
+
 /** Picks a coarse tool's discriminating parameter. Undefined → no per-value records. */
 export interface IDiscriminatorSelector {
   readonly name: string;
@@ -960,6 +985,7 @@ export {
   type IItemIndexer,
   type IItemSizeEstimator,
   type IIndexNoteSource,
+  type IToolTextComposer,
   type IndexedRecord,
   type IndexNote,
   type IndexReport,
@@ -1188,6 +1214,846 @@ Expected: all PASS.
 npx biome check --write packages/llm-agent/src
 git add packages/llm-agent/src
 git commit -m "feat(llm-agent): IRetrievalEmbedderOwner capability and retrievalEmbedderOf
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_012KjevEeQGZMkWMfnupJ7Yd"
+```
+
+---
+
+## Task 4A: Decision contracts — `IProbabilityDecision` (rename + alias) and `IRelevanceDecision` (llm-agent); usage-logging wrappers (libs)
+
+Spec §3.9, §3.8 (rows for the rename, `IRelevanceDecision`, reused `DecisionError`), §5.4 (`wrap*` stay in libs), §13 (aliases); D24.
+
+**Files:**
+- Modify: `packages/llm-agent/src/interfaces/decision-model.ts` (rename, alias, relevance types)
+- Modify: `packages/llm-agent/src/interfaces/index.ts` (export the new names; keep `IDecisionModel`)
+- Create: `packages/llm-agent/src/interfaces/__tests__/decision-model.typecheck.ts`
+- Modify: `packages/llm-agent-libs/src/adapters/usage-logging-decision-model.ts` (`wrapProbabilityDecision`, `wrapRelevanceDecision`, deprecated `wrapDecisionModel`)
+- Modify: `packages/llm-agent-libs/src/adapters/__tests__/usage-logging-decision-model.test.ts`
+- Modify: `packages/llm-agent-libs/src/index.ts`, `tsconfig.typecheck.json`
+
+**Interfaces:**
+- Produces (llm-agent):
+  ```ts
+  export interface IProbabilityDecision { readonly model?: string; decide(request: DecisionRequest, options?: CallOptions): Promise<Result<DecisionResult, DecisionError>> }
+  /** @deprecated Use IProbabilityDecision. Kept as an alias until the next major. */
+  export type IDecisionModel = IProbabilityDecision;
+  export interface RelevanceRequest { query: string; passages: readonly string[] }
+  export interface RelevanceScore { index: number; score: number }          // NOT a probability
+  export interface RelevanceResult { scores: readonly RelevanceScore[]; model: string; usage?: { inputTokens: number; outputTokens?: number } }
+  export interface IRelevanceDecision { readonly model?: string; score(request: RelevanceRequest, options?: CallOptions): Promise<Result<RelevanceResult, DecisionError>> }
+  ```
+  No new error code: `DecisionError` / `DecisionErrorCode` serve both (spec §3.8).
+- Produces (libs):
+  ```ts
+  export function wrapProbabilityDecision(inner: IProbabilityDecision): IProbabilityDecision; // ex-wrapDecisionModel, same behaviour
+  export function wrapRelevanceDecision(inner: IRelevanceDecision): IRelevanceDecision;       // component: 'decision'; idempotent
+  /** @deprecated Use wrapProbabilityDecision. */
+  export const wrapDecisionModel: typeof wrapProbabilityDecision;
+  ```
+
+- [ ] **Step 1: Write the failing checks**
+
+```ts
+// packages/llm-agent/src/interfaces/__tests__/decision-model.typecheck.ts
+// Compile-time only (tsconfig.typecheck.json → `npm run typecheck`).
+import type {
+  IDecisionModel,
+  IProbabilityDecision,
+  IRelevanceDecision,
+  RelevanceResult,
+} from '../decision-model.js';
+
+declare const oldName: IDecisionModel;
+declare const newName: IProbabilityDecision;
+// The alias is the same type both ways: no 30.1.0 implementation or caller breaks.
+export const _a: IProbabilityDecision = oldName;
+export const _b: IDecisionModel = newName;
+declare const relevance: IRelevanceDecision;
+// @ts-expect-error a relevance decision is not a probability decision (no decide)
+export const _c: IProbabilityDecision = relevance;
+// @ts-expect-error a probability decision is not a relevance decision (no score)
+export const _d: IRelevanceDecision = newName;
+// @ts-expect-error a relevance result has scores, not answers
+export const _e: RelevanceResult = { answers: {}, model: 'm' };
+```
+
+Add `"packages/llm-agent/src/interfaces/__tests__/decision-model.typecheck.ts"` to `tsconfig.typecheck.json` `include`.
+
+In `usage-logging-decision-model.test.ts`, keep every existing case (switch the import to `wrapProbabilityDecision`) and append:
+
+```ts
+import type { IRelevanceDecision } from '@mcp-abap-adt/llm-agent';
+import { wrapDecisionModel, wrapRelevanceDecision } from '../usage-logging-decision-model.js';
+
+describe('wrapRelevanceDecision', () => {
+  const relevance = (ok: boolean): IRelevanceDecision => ({
+    model: 'cohere-rerank',
+    score: async (r) =>
+      ok
+        ? { ok: true, value: { model: 'cohere-rerank', scores: r.passages.map((_, index) => ({ index, score: 0.5 })) } }
+        : { ok: false, error: new DecisionError('down', 'DECISION_UNAVAILABLE') },
+  });
+  it('logs a successful call as component decision, estimated tokens without usage', async () => {
+    const calls: unknown[] = [];
+    const r = await wrapRelevanceDecision(relevance(true)).score(
+      { query: 'q', passages: ['a', 'b'] },
+      { requestLogger: { logLlmCall: (c: unknown) => calls.push(c) } as never },
+    );
+    assert.ok(r.ok);
+    assert.equal(calls.length, 1);
+    assert.equal((calls[0] as { component: string }).component, 'decision');
+    assert.equal((calls[0] as { estimated?: boolean }).estimated, true);
+  });
+  it('no logger → no-op; a failure is not logged; idempotent', async () => {
+    const once = wrapRelevanceDecision(relevance(false));
+    assert.equal(wrapRelevanceDecision(once), once);
+    const r = await once.score({ query: 'q', passages: ['a'] });
+    assert.equal(r.ok, false);
+  });
+  it('wrapDecisionModel is the deprecated alias of wrapProbabilityDecision', () => {
+    assert.equal(wrapDecisionModel, wrapProbabilityDecision);
+  });
+});
+```
+(Merge the imports with the file's existing ones; `DecisionError` is already imported there.)
+
+Run: `npm run typecheck; node --import tsx/esm --test packages/llm-agent-libs/src/adapters/__tests__/usage-logging-decision-model.test.ts`
+Expected: FAIL — `IProbabilityDecision`, `wrapRelevanceDecision` do not exist.
+
+- [ ] **Step 2: Implement the contracts**
+
+In `decision-model.ts`, replace the `IDecisionModel` interface (keep its doc comment, first line changed) and append the relevance types:
+
+```ts
+/**
+ * A model that answers typed questions about a state with probabilities, not text
+ * (spec §3.9; 30.1.0's `IDecisionModel`, renamed — same members, same rules).
+ *
+ * - Returns `Result`; never throws for provider failures.
+ * - A question type the implementation cannot answer fails the whole request
+ *   with `DECISION_UNSUPPORTED_QUESTION`; answers are never dropped or faked.
+ * - Cancellation through `options.signal` yields `DECISION_ABORTED`.
+ * - On `ok: true` the numeric invariants documented on the answer types hold;
+ *   consumers may rely on them without re-checking.
+ */
+export interface IProbabilityDecision {
+  /** Configured model identifier, for logs. */
+  readonly model?: string;
+  decide(
+    request: DecisionRequest,
+    options?: CallOptions,
+  ): Promise<Result<DecisionResult, DecisionError>>;
+}
+
+/** @deprecated Use `IProbabilityDecision`. Kept as an alias until the next major. */
+export type IDecisionModel = IProbabilityDecision;
+
+/** What a relevance decision judges: passages against one query. */
+export interface RelevanceRequest {
+  /** Non-empty. */
+  query: string;
+  /** Non-empty; each a non-empty string. `RelevanceScore.index` points into it. */
+  passages: readonly string[];
+}
+
+/** One passage's relevance. */
+export interface RelevanceScore {
+  /** Index into `RelevanceRequest.passages`. */
+  index: number;
+  /** Finite. NOT a probability: higher = more relevant; comparable only within one call. */
+  score: number;
+}
+
+export interface RelevanceResult {
+  /** Exactly one entry per passage, each index once; any order. */
+  scores: readonly RelevanceScore[];
+  /** The model that actually answered. */
+  model: string;
+  usage?: { inputTokens: number; outputTokens?: number };
+}
+
+/**
+ * A model that scores how relevant each passage is to a query — a
+ * cross-encoder (spec §3.9).
+ *
+ * - Returns `Result`; never throws for provider failures. Errors are
+ *   `DecisionError` with the existing codes; `DECISION_UNSUPPORTED_QUESTION`
+ *   is never returned.
+ * - The score is NOT a probability: compare scores only among the passages of
+ *   ONE call — never across calls, models, or with a probability. A threshold
+ *   on it is the consumer's calibration.
+ * - Cancellation through `options.signal` yields `DECISION_ABORTED`.
+ */
+export interface IRelevanceDecision {
+  /** Configured model identifier, for logs. */
+  readonly model?: string;
+  score(
+    request: RelevanceRequest,
+    options?: CallOptions,
+  ): Promise<Result<RelevanceResult, DecisionError>>;
+}
+```
+
+In `interfaces/index.ts`, add to the `./decision-model.js` type export list: `IProbabilityDecision`, `IRelevanceDecision`, `RelevanceRequest`, `RelevanceResult`, `RelevanceScore` (keep `IDecisionModel`).
+
+- [ ] **Step 3: Implement the wrappers**
+
+In `usage-logging-decision-model.ts`: rename the class to `UsageLoggingProbabilityDecision` (type `IProbabilityDecision`), rename the function to `wrapProbabilityDecision`, and add:
+
+```ts
+const RELEVANCE_BRAND = Symbol.for('@mcp-abap-adt/usage-logging-relevance-decision');
+
+class UsageLoggingRelevanceDecision implements IRelevanceDecision {
+  readonly [RELEVANCE_BRAND] = true;
+  constructor(private readonly inner: IRelevanceDecision) {}
+
+  get model(): string | undefined {
+    return this.inner.model;
+  }
+
+  async score(
+    request: RelevanceRequest,
+    options?: CallOptions,
+  ): Promise<Result<RelevanceResult, DecisionError>> {
+    const started = Date.now();
+    const r = await this.inner.score(request, options);
+    const logger = options?.requestLogger;
+    if (!r.ok || !logger) return r;
+    const usage = r.value.usage;
+    const promptTokens = usage?.inputTokens ?? Math.ceil(JSON.stringify(request).length / 4);
+    const completionTokens = usage?.outputTokens ?? 0;
+    logger.logLlmCall({
+      component: 'decision',
+      model: r.value.model,
+      promptTokens,
+      completionTokens,
+      totalTokens: promptTokens + completionTokens,
+      durationMs: Date.now() - started,
+      scope: 'request',
+      requestId: options?.trace?.traceId,
+      ...(usage === undefined ? { estimated: true } : {}),
+    });
+    return r;
+  }
+}
+
+/** Account every successful relevance call to the request's logger
+ *  (`component: 'decision'`). No logger → no-op. Idempotent. */
+export function wrapRelevanceDecision(inner: IRelevanceDecision): IRelevanceDecision {
+  if ((inner as { [RELEVANCE_BRAND]?: boolean })[RELEVANCE_BRAND]) return inner;
+  return new UsageLoggingRelevanceDecision(inner);
+}
+
+/** @deprecated Use `wrapProbabilityDecision`. Kept as an alias until the next major. */
+export const wrapDecisionModel = wrapProbabilityDecision;
+```
+
+In `packages/llm-agent-libs/src/index.ts`, replace the `wrapDecisionModel` export line with:
+```ts
+export {
+  wrapDecisionModel,
+  wrapProbabilityDecision,
+  wrapRelevanceDecision,
+} from './adapters/usage-logging-decision-model.js';
+```
+
+Callers stay on the alias until their own task switches them (server-libs: Task 22).
+
+- [ ] **Step 4: Run**
+
+Run:
+```bash
+npx tsc -b packages/llm-agent packages/llm-agent-libs
+npm run typecheck
+node --import tsx/esm --test packages/llm-agent-libs/src/adapters/__tests__/usage-logging-decision-model.test.ts
+npm test --workspace @mcp-abap-adt/typesafe-decision
+```
+Expected: PASS; `TypeSafeDecisionModel` (typed `IDecisionModel`) still compiles — the alias is the same type.
+
+- [ ] **Step 5: Commit**
+
+```bash
+npx biome check --write packages/llm-agent/src/interfaces packages/llm-agent-libs/src/adapters packages/llm-agent-libs/src/index.ts
+git add packages/llm-agent/src/interfaces packages/llm-agent-libs/src/adapters packages/llm-agent-libs/src/index.ts tsconfig.typecheck.json
+git commit -m "feat(llm-agent): IProbabilityDecision (IDecisionModel renamed, alias kept) and IRelevanceDecision
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_012KjevEeQGZMkWMfnupJ7Yd"
+```
+
+---
+
+## Task 4B: New package `@mcp-abap-adt/llm-agent-reranker` — the rerankers move; `ProbabilityReranker` (rename + aliases)
+
+Spec §5.1, §5.4, §11, §13; D26 (goal decision 2026-10-05: one vendor-neutral reranker package). Retrieval strategies (`RerankedRetrieval`, `RerankAllRetrieval`, later `StagedRetrieval`) stay in libs and see rerankers only through `IReranker`.
+
+**Files:**
+- Create: `packages/llm-agent-reranker/package.json`, `tsconfig.json`, `README.md`, `CHANGELOG.md`, `LICENSE`, `GPL-3.0.txt` (copies from `packages/typesafe-decision/`)
+- Move (`git mv`): `packages/llm-agent-libs/src/reranker/decision-reranker.ts` → `packages/llm-agent-reranker/src/probability-reranker.ts`; `llm-reranker.ts`, `noop-reranker.ts` → `packages/llm-agent-reranker/src/`; `__tests__/decision-reranker.test.ts` → `src/__tests__/probability-reranker.test.ts`; `__tests__/decision-reranker-batching.test.ts` → `src/__tests__/probability-reranker-batching.test.ts`; `__tests__/reranker.test.ts` → `src/__tests__/reranker.test.ts`
+- Create: `packages/llm-agent-reranker/src/index.ts`, `src/assert-positive-integer.ts` (copy), `src/__tests__/fake-llm.ts`, `src/__tests__/aliases.test.ts` (in libs: `packages/llm-agent-libs/src/__tests__/reranker-aliases.test.ts`)
+- Delete: `packages/llm-agent-libs/src/reranker/` (`index.ts`, `types.ts` and the moved files)
+- Modify (libs): `src/index.ts` (re-exports + deprecated aliases), every internal `./reranker/…` import (`agent.ts`, `agent/rag-orchestrator-types.ts`, `builder.ts`, `interfaces/pipeline.ts`, `pipeline/context.ts`, `pipeline/default-pipeline.ts`, `testing/index.ts`), `package.json` (`peerDependencies`), `tsconfig.json` (`references`), `README.md`
+- Modify (repo): root `package.json` (`build`, `clean` — right after `packages/llm-agent`), `scripts/publish-all.sh` (`PACKAGES` — right after `llm-agent`), `packages/llm-agent-server/package.json` (`dependencies`), `packages/llm-agent-server/tsconfig.json` (`references`), `package-lock.json` (via `npm install`)
+
+**Interfaces:**
+- Produces (`@mcp-abap-adt/llm-agent-reranker`):
+  ```ts
+  export class ProbabilityReranker implements IReranker { constructor(decision: IProbabilityDecision, options?: ProbabilityRerankerOptions) } // ex-DecisionReranker, same behaviour
+  export interface ProbabilityRerankerOptions { task?: DecisionEntry; criteria?: {…}; maxBatchTokens?: number; concurrency?: number } // ex-DecisionRerankerOptions
+  export const PROBABILITY_RERANK_DEFAULT_TASK; export const PROBABILITY_RERANK_DEFAULT_CRITERIA; // ex-DECISION_RERANK_DEFAULT_*
+  export const TOOL_QUESTION; export const PASSAGE_QUESTION;
+  export class LlmReranker; export class NoopReranker;          // moved, unchanged
+  ```
+- Produces (libs root, deprecated until the next major): `DecisionReranker` (= `ProbabilityReranker`, value + type), `DecisionRerankerOptions` (= `ProbabilityRerankerOptions`), `DECISION_RERANK_DEFAULT_TASK`, `DECISION_RERANK_DEFAULT_CRITERIA`; re-exports of `ProbabilityReranker`, `ProbabilityRerankerOptions`, `PROBABILITY_RERANK_DEFAULT_*`, `LlmReranker`, `NoopReranker`, `TOOL_QUESTION`, `PASSAGE_QUESTION` (deprecated path — import from `@mcp-abap-adt/llm-agent-reranker`).
+
+- [ ] **Step 1: Scaffold the package**
+
+```json
+// packages/llm-agent-reranker/package.json
+{
+  "name": "@mcp-abap-adt/llm-agent-reranker",
+  "version": "30.1.0",
+  "description": "Vendor-neutral rerankers for @mcp-abap-adt/llm-agent: ProbabilityReranker, RelevanceReranker, LlmReranker, NoopReranker.",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": ["dist", "README.md", "LICENSE", "GPL-3.0.txt"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "clean": "tsc -p tsconfig.json --clean",
+    "test": "node --import tsx/esm --test --test-reporter=spec 'src/**/*.test.ts'"
+  },
+  "license": "LGPL-3.0-only",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/fr0ster/llm-agent.git"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "peerDependencies": {
+    "@mcp-abap-adt/llm-agent": "^30.1.0"
+  }
+}
+```
+(Peer `@mcp-abap-adt/llm-agent` only: nothing in the rerankers imports `interfaces-auth` — verify with `grep -rn "interfaces-auth" packages/llm-agent-reranker/src` → empty. `version` 30.1.0 = the lockstep version, not a bump.)
+
+```json
+// packages/llm-agent-reranker/tsconfig.json
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist",
+    "lib": ["ES2022"],
+    "types": ["node"]
+  },
+  "include": ["src/**/*"],
+  "exclude": ["**/__tests__/**", "**/*.test.ts", "dist"],
+  "references": [{ "path": "../llm-agent" }]
+}
+```
+
+Run:
+```bash
+mkdir -p packages/llm-agent-reranker/src/__tests__
+cp packages/typesafe-decision/LICENSE packages/typesafe-decision/GPL-3.0.txt packages/llm-agent-reranker/
+cp packages/llm-agent-libs/src/util/assert-positive-integer.ts packages/llm-agent-reranker/src/assert-positive-integer.ts
+git mv packages/llm-agent-libs/src/reranker/decision-reranker.ts packages/llm-agent-reranker/src/probability-reranker.ts
+git mv packages/llm-agent-libs/src/reranker/llm-reranker.ts packages/llm-agent-reranker/src/llm-reranker.ts
+git mv packages/llm-agent-libs/src/reranker/noop-reranker.ts packages/llm-agent-reranker/src/noop-reranker.ts
+git mv packages/llm-agent-libs/src/reranker/__tests__/decision-reranker.test.ts packages/llm-agent-reranker/src/__tests__/probability-reranker.test.ts
+git mv packages/llm-agent-libs/src/reranker/__tests__/decision-reranker-batching.test.ts packages/llm-agent-reranker/src/__tests__/probability-reranker-batching.test.ts
+git mv packages/llm-agent-libs/src/reranker/__tests__/reranker.test.ts packages/llm-agent-reranker/src/__tests__/reranker.test.ts
+git rm packages/llm-agent-libs/src/reranker/index.ts packages/llm-agent-libs/src/reranker/types.ts
+printf '# Changelog\n\n## [Unreleased]\n\n- New package: every reranker of the llm-agent family, vendor-neutral. `ProbabilityReranker` (was `DecisionReranker` in `llm-agent-libs`), `LlmReranker`, `NoopReranker`, `TOOL_QUESTION`, `PASSAGE_QUESTION` moved here; `RelevanceReranker` is new. `llm-agent-libs` re-exports the old names as deprecated aliases until the next major.\n' > packages/llm-agent-reranker/CHANGELOG.md
+```
+(The copy of `assertPositiveInteger` is deliberate, spec §5.4: libs keeps its own for `RerankedRetrieval`; the reranker package cannot import libs — libs depends on it — and a non-contract helper does not belong in `llm-agent`.)
+
+`packages/llm-agent-reranker/README.md` — badges and licence block as in `packages/typesafe-decision/README.md`; body:
+````markdown
+# @mcp-abap-adt/llm-agent-reranker
+
+**TL;DR** — every reranker of the llm-agent family, with no vendor code. A reranker **adapts a
+decision**; the decision comes from a provider package you inject.
+
+| Reranker | Adapts | Provider example | `score` it writes |
+|---|---|---|---|
+| `ProbabilityReranker` (was `DecisionReranker`) | `IProbabilityDecision` | `TypeSafeDecisionModel` (`@mcp-abap-adt/typesafe-decision`, Jev) | P(relevant), in [0, 1] |
+| `RelevanceReranker` | `IRelevanceDecision` | `SapAiCoreRelevanceDecision` (`@mcp-abap-adt/sap-aicore-decision`, Cohere) | relevance score — **not a probability** |
+| `LlmReranker` | `ILlm` | any LLM | 0–1 from the model |
+| `NoopReranker` | — | — | unchanged |
+
+- Wording presets for the probability reranker: `TOOL_QUESTION`, `PASSAGE_QUESTION`.
+- A relevance score is comparable only within one call; a threshold on it is your calibration.
+- **Moved from `@mcp-abap-adt/llm-agent-libs`** — the old imports still work there as deprecated
+  aliases until the next major. Migrate: `DecisionReranker` → `ProbabilityReranker`,
+  `DECISION_RERANK_DEFAULT_*` → `PROBABILITY_RERANK_DEFAULT_*`, import from this package.
+````
+
+- [ ] **Step 2: Rename inside the moved files**
+
+In `probability-reranker.ts`:
+- imports: `type IDecisionModel` → `type IProbabilityDecision`; `../util/assert-positive-integer.js` → `./assert-positive-integer.js`; `./types.js` (`IReranker`) → `type IReranker` from `@mcp-abap-adt/llm-agent`;
+- `DECISION_RERANK_DEFAULT_TASK` → `PROBABILITY_RERANK_DEFAULT_TASK`, `DECISION_RERANK_DEFAULT_CRITERIA` → `PROBABILITY_RERANK_DEFAULT_CRITERIA`, `DecisionRerankerOptions` → `ProbabilityRerankerOptions`, `class DecisionReranker` → `class ProbabilityReranker` (also inside the `assertPositiveInteger('…')` labels), constructor parameter `model: IDecisionModel` → `decision: IProbabilityDecision`;
+- class doc: "Rerank RAG results with a probability decision (spec §5.1): the query as the state, one yes/no question per passage, batched under a token budget. `score` becomes P(relevant). Any failed batch fails the whole call." Behaviour unchanged.
+
+In `llm-reranker.ts`: `../util/assert-positive-integer.js` → `./assert-positive-integer.js`; `./decision-reranker.js` → `./probability-reranker.js`; `./types.js` → `type IReranker` from `@mcp-abap-adt/llm-agent`. In `noop-reranker.ts`: `./types.js` → `@mcp-abap-adt/llm-agent`.
+
+In the moved tests: imports from `../probability-reranker.js`, `../llm-reranker.js`, `../noop-reranker.js`; `IDecisionModel` → `IProbabilityDecision`; new names. `reranker.test.ts` imported `makeLlm` from libs' testing — the reranker package must not import libs (a cycle, and `scoped-dependencies.test.ts` would demand a peer): create
+
+```ts
+// packages/llm-agent-reranker/src/__tests__/fake-llm.ts
+import type { ILlm, LlmResponse } from '@mcp-abap-adt/llm-agent';
+
+/** Scripted ILlm: answers `chat` with the queued responses in order (an Error is thrown). */
+export function makeLlm(responses: Array<{ content: string } | Error>): ILlm & { callCount: number } {
+  let callCount = 0;
+  const queue = [...responses];
+  return {
+    get callCount() {
+      return callCount;
+    },
+    async chat() {
+      callCount++;
+      const next = queue.shift();
+      if (!next) throw new Error('fake-llm: no response queued');
+      if (next instanceof Error) return { ok: false, error: next } as never;
+      return { ok: true, value: { content: next.content, finishReason: 'stop' } as LlmResponse };
+    },
+  } as ILlm & { callCount: number };
+}
+```
+(Match the shape `makeLlm` in `packages/llm-agent-libs/src/testing/index.ts` returns for the calls `LlmReranker` makes — copy its body if `ILlm` needs more members; keep it test-only.) Switch `reranker.test.ts` to `./fake-llm.js`.
+
+```ts
+// packages/llm-agent-reranker/src/index.ts
+export { LlmReranker } from './llm-reranker.js';
+export { NoopReranker } from './noop-reranker.js';
+export {
+  PASSAGE_QUESTION,
+  PROBABILITY_RERANK_DEFAULT_CRITERIA,
+  PROBABILITY_RERANK_DEFAULT_TASK,
+  ProbabilityReranker,
+  type ProbabilityRerankerOptions,
+  TOOL_QUESTION,
+} from './probability-reranker.js';
+```
+
+- [ ] **Step 3: libs depends on the package and keeps the old names (deprecated)**
+
+`packages/llm-agent-libs/package.json` `peerDependencies`: add `"@mcp-abap-adt/llm-agent-reranker": "^30.1.0"` (a workspace sibling — the repo's standing exception; no `file:` / `link:`). `tsconfig.json` `references`: add `{ "path": "../llm-agent-reranker" }`.
+
+Internal imports: `./reranker/types.js` / `../reranker/types.js` (`IReranker`) → `type IReranker` from `@mcp-abap-adt/llm-agent`; `./reranker/noop-reranker.js` / `../reranker/noop-reranker.js` (`NoopReranker`) → `@mcp-abap-adt/llm-agent-reranker`. Files: `agent.ts`, `agent/rag-orchestrator-types.ts`, `builder.ts`, `interfaces/pipeline.ts`, `pipeline/context.ts`, `pipeline/default-pipeline.ts`, `testing/index.ts`. Verify: `grep -rn "reranker/" packages/llm-agent-libs/src` → empty.
+
+In `packages/llm-agent-libs/src/index.ts`, replace the Reranker block with:
+
+```ts
+// ---------------------------------------------------------------------------
+// Reranker — moved to @mcp-abap-adt/llm-agent-reranker (spec §5.4). Re-exported
+// here for 30.1.0 imports; the whole block is deprecated until the next major.
+// ---------------------------------------------------------------------------
+import {
+  PROBABILITY_RERANK_DEFAULT_CRITERIA,
+  PROBABILITY_RERANK_DEFAULT_TASK,
+  ProbabilityReranker,
+  type ProbabilityRerankerOptions,
+} from '@mcp-abap-adt/llm-agent-reranker';
+
+export {
+  /** @deprecated Import from `@mcp-abap-adt/llm-agent-reranker`. */
+  LlmReranker,
+  /** @deprecated Import from `@mcp-abap-adt/llm-agent-reranker`. */
+  NoopReranker,
+  /** @deprecated Import from `@mcp-abap-adt/llm-agent-reranker`. */
+  PASSAGE_QUESTION,
+  /** @deprecated Import from `@mcp-abap-adt/llm-agent-reranker`. */
+  PROBABILITY_RERANK_DEFAULT_CRITERIA,
+  /** @deprecated Import from `@mcp-abap-adt/llm-agent-reranker`. */
+  PROBABILITY_RERANK_DEFAULT_TASK,
+  /** @deprecated Import from `@mcp-abap-adt/llm-agent-reranker`. */
+  ProbabilityReranker,
+  /** @deprecated Import from `@mcp-abap-adt/llm-agent-reranker`. */
+  type ProbabilityRerankerOptions,
+  /** @deprecated Import from `@mcp-abap-adt/llm-agent-reranker`. */
+  TOOL_QUESTION,
+} from '@mcp-abap-adt/llm-agent-reranker';
+
+/** @deprecated Use `ProbabilityReranker` from `@mcp-abap-adt/llm-agent-reranker`. */
+export const DecisionReranker = ProbabilityReranker;
+/** @deprecated Use `ProbabilityReranker` from `@mcp-abap-adt/llm-agent-reranker`. */
+export type DecisionReranker = ProbabilityReranker;
+/** @deprecated Use `ProbabilityRerankerOptions` from `@mcp-abap-adt/llm-agent-reranker`. */
+export type DecisionRerankerOptions = ProbabilityRerankerOptions;
+/** @deprecated Use `PROBABILITY_RERANK_DEFAULT_TASK` from `@mcp-abap-adt/llm-agent-reranker`. */
+export const DECISION_RERANK_DEFAULT_TASK = PROBABILITY_RERANK_DEFAULT_TASK;
+/** @deprecated Use `PROBABILITY_RERANK_DEFAULT_CRITERIA` from `@mcp-abap-adt/llm-agent-reranker`. */
+export const DECISION_RERANK_DEFAULT_CRITERIA = PROBABILITY_RERANK_DEFAULT_CRITERIA;
+```
+
+```ts
+// packages/llm-agent-libs/src/__tests__/reranker-aliases.test.ts
+import assert from 'node:assert/strict';
+import { describe, it } from 'node:test';
+import * as reranker from '@mcp-abap-adt/llm-agent-reranker';
+import {
+  DECISION_RERANK_DEFAULT_CRITERIA,
+  DECISION_RERANK_DEFAULT_TASK,
+  DecisionReranker,
+  type DecisionRerankerOptions,
+  LlmReranker,
+  NoopReranker,
+  PASSAGE_QUESTION,
+  TOOL_QUESTION,
+} from '../index.js';
+
+describe('30.1.0 reranker names stay available from libs (deprecated aliases, spec §13)', () => {
+  it('the aliases are the reranker package objects', () => {
+    assert.equal(DecisionReranker, reranker.ProbabilityReranker);
+    assert.equal(DECISION_RERANK_DEFAULT_TASK, reranker.PROBABILITY_RERANK_DEFAULT_TASK);
+    assert.equal(DECISION_RERANK_DEFAULT_CRITERIA, reranker.PROBABILITY_RERANK_DEFAULT_CRITERIA);
+    assert.equal(LlmReranker, reranker.LlmReranker);
+    assert.equal(NoopReranker, reranker.NoopReranker);
+    assert.equal(TOOL_QUESTION, reranker.TOOL_QUESTION);
+    assert.equal(PASSAGE_QUESTION, reranker.PASSAGE_QUESTION);
+  });
+  it('a 30.1.0-style construction still compiles and works', () => {
+    const opts: DecisionRerankerOptions = { maxBatchTokens: 1000 };
+    const r = new DecisionReranker({ decide: async () => ({ ok: true, value: { model: 'm', answers: {} } }) }, opts);
+    assert.ok(r instanceof reranker.ProbabilityReranker);
+  });
+});
+```
+
+- [ ] **Step 4: Wire the package into the repo**
+
+- root `package.json`: in `build` and `clean`, insert ` packages/llm-agent-reranker` right after `packages/llm-agent` (before `packages/typesafe-decision`).
+- `scripts/publish-all.sh` `PACKAGES`: add `  llm-agent-reranker` right after `  llm-agent` — publish order `llm-agent` → `llm-agent-reranker` → … → `llm-agent-libs` (libs peers on it). The list only; nothing is published here.
+- `packages/llm-agent-server/package.json` `dependencies`: `"@mcp-abap-adt/llm-agent-reranker": "^30.1.0"` (the binary provides every peer of the libraries it ships, `scoped-dependencies.test.ts`). `tsconfig.json` `references`: `{ "path": "../llm-agent-reranker" }`.
+- `packages/llm-agent-libs/README.md`: in the export list, replace `LlmReranker`, `NoopReranker`, `DecisionReranker`, `TOOL_QUESTION`, `PASSAGE_QUESTION`, `wrapDecisionModel` with "`wrapProbabilityDecision`, `wrapRelevanceDecision`; the rerankers (`LlmReranker`, `NoopReranker`, `DecisionReranker`, `TOOL_QUESTION`, `PASSAGE_QUESTION`) are deprecated re-exports of `@mcp-abap-adt/llm-agent-reranker`".
+
+Run:
+```bash
+npm install
+grep -n '"link": true' package-lock.json
+```
+Expected: only `packages/*` workspace siblings (the new one included); nothing outside the repo.
+
+- [ ] **Step 5: Run**
+
+Run:
+```bash
+npm run build
+npm test --workspace @mcp-abap-adt/llm-agent-reranker
+node --import tsx/esm --test packages/llm-agent-libs/src/__tests__/reranker-aliases.test.ts
+npm test --workspace @mcp-abap-adt/llm-agent-libs
+npm test --workspace @mcp-abap-adt/llm-agent-server-libs
+node --import tsx/esm --test --test-reporter=spec 'test/repo/*.test.ts'
+npm run typecheck
+```
+Expected: PASS — the moved tests pass under the new names; server-libs still compiles against the libs aliases (it switches in Task 22); `scoped-dependencies`, `licensing`, `readme-badges` accept the new package.
+
+- [ ] **Step 6: Commit**
+
+```bash
+npx biome check --write packages/llm-agent-reranker packages/llm-agent-libs/src
+git add -A packages/llm-agent-reranker packages/llm-agent-libs package.json package-lock.json scripts/publish-all.sh packages/llm-agent-server/package.json packages/llm-agent-server/tsconfig.json
+git commit -m "feat(llm-agent-reranker): new vendor-neutral reranker package; DecisionReranker → ProbabilityReranker (aliases kept in libs)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_012KjevEeQGZMkWMfnupJ7Yd"
+```
+
+---
+
+## Task 4C: `RelevanceReranker` (llm-agent-reranker)
+
+Spec §5.2 (behaviour, output check, batches), §3.9; D24. Adapts any `IRelevanceDecision`; Cohere's `SapAiCoreRelevanceDecision` arrives in Task 18.
+
+**Files:**
+- Create: `packages/llm-agent-reranker/src/relevance-reranker.ts`
+- Create: `packages/llm-agent-reranker/src/__tests__/relevance-reranker.test.ts`
+- Modify: `packages/llm-agent-reranker/src/index.ts`
+
+**Interfaces:**
+- Consumes: `IRelevanceDecision`, `RelevanceResult`, `IReranker`, `RagError`, `RagResult`, `CallOptions`, `Result` (Task 4A); `assertPositiveInteger` (Task 4B copy).
+- Produces:
+  ```ts
+  export interface RelevanceRerankerOptions { maxBatchTokens?: number /* absent → ONE call */; concurrency?: number /* default 4 */ }
+  export class RelevanceReranker implements IReranker { constructor(decision: IRelevanceDecision, options?: RelevanceRerankerOptions) }
+  // score := the relevance score (NOT a probability); wrong count / duplicate / out-of-range / non-finite → RERANK_ERROR
+  ```
+
+- [ ] **Step 1: Write the failing test**
+
+```ts
+// packages/llm-agent-reranker/src/__tests__/relevance-reranker.test.ts
+import assert from 'node:assert/strict';
+import { describe, it } from 'node:test';
+import {
+  DecisionError,
+  type IRelevanceDecision,
+  type RagResult,
+  type RelevanceRequest,
+  type RelevanceScore,
+} from '@mcp-abap-adt/llm-agent';
+import { RelevanceReranker } from '../index.js';
+
+const mk = (n: number, len = 8): RagResult[] =>
+  Array.from({ length: n }, (_, i) => ({ text: `p${i}`.padEnd(len, 'x'), metadata: { id: `p${i}` }, score: 0.5 }));
+const ids = (r: RagResult[]) => r.map((x) => x.metadata.id);
+
+function decision(answer: (req: RelevanceRequest) => readonly RelevanceScore[] | DecisionError) {
+  const calls: RelevanceRequest[] = [];
+  let inFlight = 0;
+  let peak = 0;
+  const d: IRelevanceDecision = {
+    model: 'fake',
+    score: async (req) => {
+      calls.push(req);
+      inFlight++;
+      peak = Math.max(peak, inFlight);
+      await new Promise((r) => setTimeout(r, 1));
+      inFlight--;
+      const a = answer(req);
+      return a instanceof DecisionError ? { ok: false, error: a } : { ok: true, value: { model: 'fake', scores: a } };
+    },
+  };
+  return { d, calls, peak: () => peak };
+}
+const byLength = (req: RelevanceRequest) => req.passages.map((p, index) => ({ index, score: p.length }));
+
+describe('RelevanceReranker (spec §5.2)', () => {
+  it('default: every candidate in ONE call; score = the relevance score; sorted, ties in input order', async () => {
+    const { d, calls } = decision((req) => req.passages.map((_, index) => ({ index, score: [0.2, 3.5, 0.2][index] })));
+    const r = await new RelevanceReranker(d).rerank('q', mk(3));
+    assert.equal(calls.length, 1);
+    assert.deepEqual(calls[0], { query: 'q', passages: mk(3).map((x) => x.text) });
+    assert.ok(r.ok);
+    assert.deepEqual(ids(r.value), ['p1', 'p0', 'p2']);
+    assert.equal(r.value[0].score, 3.5, 'not clamped: a relevance score is not a probability');
+  });
+  it('no candidates → no call', async () => {
+    const { d, calls } = decision(byLength);
+    const r = await new RelevanceReranker(d).rerank('q', []);
+    assert.ok(r.ok && r.value.length === 0);
+    assert.equal(calls.length, 0);
+  });
+  it('scores in any order are mapped by index', async () => {
+    const { d } = decision(() => [{ index: 1, score: 0.9 }, { index: 0, score: 0.1 }]);
+    const r = await new RelevanceReranker(d).rerank('q', mk(2));
+    assert.ok(r.ok);
+    assert.deepEqual(ids(r.value), ['p1', 'p0']);
+  });
+  const badAnswers: Array<[string, readonly RelevanceScore[]]> = [
+    ['a wrong count', [{ index: 0, score: 1 }]],
+    ['a duplicate index', [{ index: 0, score: 1 }, { index: 0, score: 1 }]],
+    ['an out-of-range index', [{ index: 0, score: 1 }, { index: 2, score: 1 }]],
+    ['a non-integer index', [{ index: 0, score: 1 }, { index: 0.5, score: 1 }]],
+    ['a non-finite score', [{ index: 0, score: 1 }, { index: 1, score: Number.NaN }]],
+  ];
+  for (const [name, answer] of badAnswers) {
+    it(`${name} → RERANK_ERROR`, async () => {
+      const { d } = decision(() => answer);
+      const r = await new RelevanceReranker(d).rerank('q', mk(2));
+      assert.ok(!r.ok && r.error.code === 'RERANK_ERROR');
+    });
+  }
+  it('a DecisionError → RERANK_ERROR naming its code', async () => {
+    const { d } = decision(() => new DecisionError('down', 'DECISION_UNAVAILABLE'));
+    const r = await new RelevanceReranker(d).rerank('q', mk(2));
+    assert.ok(!r.ok && r.error.code === 'RERANK_ERROR' && r.error.message.includes('DECISION_UNAVAILABLE'));
+  });
+  it('maxBatchTokens set → several calls, up to concurrency in flight, merged into one order', async () => {
+    const { d, calls, peak } = decision(byLength);
+    const results = mk(6, 40); // ~10 tokens each
+    const r = await new RelevanceReranker(d, { maxBatchTokens: 25, concurrency: 2 }).rerank('q', results);
+    assert.ok(r.ok && r.value.length === 6);
+    assert.ok(calls.length > 1);
+    assert.ok(peak() <= 2);
+    assert.deepEqual(calls.flatMap((c) => c.passages).sort(), results.map((x) => x.text).sort());
+  });
+  it('any failed batch fails the whole rerank', async () => {
+    let n = 0;
+    const { d } = decision((req) => (n++ === 1 ? new DecisionError('x') : byLength(req)));
+    const r = await new RelevanceReranker(d, { maxBatchTokens: 25 }).rerank('q', mk(6, 40));
+    assert.ok(!r.ok && r.error.code === 'RERANK_ERROR');
+  });
+  it('a non-positive option throws', () => {
+    const { d } = decision(byLength);
+    assert.throws(() => new RelevanceReranker(d, { maxBatchTokens: 0 }));
+    assert.throws(() => new RelevanceReranker(d, { concurrency: 1.5 }));
+  });
+});
+```
+
+Run: `node --import tsx/esm --test packages/llm-agent-reranker/src/__tests__/relevance-reranker.test.ts`
+Expected: FAIL — `RelevanceReranker` not exported.
+
+- [ ] **Step 2: Implement**
+
+```ts
+// packages/llm-agent-reranker/src/relevance-reranker.ts
+import {
+  type CallOptions,
+  type IRelevanceDecision,
+  type IReranker,
+  RagError,
+  type RagResult,
+  type RelevanceScore,
+  type Result,
+} from '@mcp-abap-adt/llm-agent';
+import { assertPositiveInteger } from './assert-positive-integer.js';
+
+const DEFAULT_CONCURRENCY = 4;
+const estimateTokens = (s: string): number => Math.ceil(s.length / 4);
+
+export interface RelevanceRerankerOptions {
+  /**
+   * Estimated-token budget per `score()` call (~4 chars/token, query + passages);
+   * a positive integer. ABSENT → every candidate in ONE call (the default).
+   * Setting it merges scores ACROSS calls, which `IRelevanceDecision` does not
+   * promise: sound only for a pairwise cross-encoder (e.g. Cohere), whose score
+   * depends on the (query, passage) pair alone. Setting it is your statement
+   * that the provider is pairwise (spec §5.2).
+   */
+  maxBatchTokens?: number;
+  /** Max `score()` calls in flight when batching; a positive integer. Default 4. */
+  concurrency?: number;
+}
+
+const rerankError = (message: string): Result<never, RagError> => ({
+  ok: false,
+  error: new RagError(`relevance rerank: ${message}`, 'RERANK_ERROR'),
+});
+
+/** One entry per passage of the call, each index once, every score finite (spec §5.2). */
+function checkScores(scores: readonly RelevanceScore[], n: number): string | undefined {
+  if (scores.length !== n) return `${scores.length} scores for ${n} passages`;
+  const seen = new Set<number>();
+  for (const s of scores) {
+    if (!Number.isInteger(s.index) || s.index < 0 || s.index >= n) return `out-of-range index ${s.index}`;
+    if (seen.has(s.index)) return `index ${s.index} twice`;
+    if (typeof s.score !== 'number' || !Number.isFinite(s.score)) return `non-finite score for index ${s.index}`;
+    seen.add(s.index);
+  }
+  return undefined;
+}
+
+/**
+ * Rerank RAG results with a relevance decision (a cross-encoder). `score`
+ * becomes the RELEVANCE SCORE — NOT a probability: comparable only within this
+ * rerank; a threshold on it is the consumer's calibration (no default uses one).
+ * Every candidate goes in ONE call unless `maxBatchTokens` is set. Any failed
+ * call or bad answer fails the whole rerank with RERANK_ERROR.
+ */
+export class RelevanceReranker implements IReranker {
+  private readonly concurrency: number;
+
+  /** @throws Error when `maxBatchTokens` or `concurrency` is not a positive integer. */
+  constructor(
+    private readonly decision: IRelevanceDecision,
+    private readonly options: RelevanceRerankerOptions = {},
+  ) {
+    if (options.maxBatchTokens !== undefined) {
+      assertPositiveInteger('RelevanceReranker', 'maxBatchTokens', options.maxBatchTokens);
+    }
+    this.concurrency = options.concurrency ?? DEFAULT_CONCURRENCY;
+    assertPositiveInteger('RelevanceReranker', 'concurrency', this.concurrency);
+  }
+
+  async rerank(
+    query: string,
+    results: RagResult[],
+    options?: CallOptions,
+  ): Promise<Result<RagResult[], RagError>> {
+    if (results.length === 0) return { ok: true, value: results };
+    const batches = this.batches(query, results);
+    const score = new Array<number>(results.length);
+    for (let b = 0; b < batches.length; b += this.concurrency) {
+      const slice = batches.slice(b, b + this.concurrency);
+      const settled = await Promise.all(
+        slice.map((idxs) =>
+          this.decision.score({ query, passages: idxs.map((i) => results[i].text) }, options),
+        ),
+      );
+      for (const [j, res] of settled.entries()) {
+        if (!res.ok) {
+          return rerankError(`failed: ${res.error.code}: ${res.error.message}`);
+        }
+        const idxs = slice[j];
+        const bad = checkScores(res.value.scores, idxs.length);
+        if (bad) return rerankError(bad);
+        for (const s of res.value.scores) score[idxs[s.index]] = s.score;
+      }
+    }
+    return {
+      ok: true,
+      value: results
+        .map((r, i) => ({ r: { ...r, score: score[i] }, i }))
+        .sort((x, y) => y.r.score - x.r.score || x.i - y.i)
+        .map((x) => x.r),
+    };
+  }
+
+  /** One batch of every index unless `maxBatchTokens` is set (spec §5.2). */
+  private batches(query: string, results: RagResult[]): number[][] {
+    const budget = this.options.maxBatchTokens;
+    if (budget === undefined) return [results.map((_, i) => i)];
+    const queryCost = estimateTokens(query);
+    const out: number[][] = [];
+    let cur: number[] = [];
+    let used = queryCost;
+    results.forEach((r, i) => {
+      const cost = estimateTokens(r.text);
+      if (cur.length > 0 && used + cost > budget) {
+        out.push(cur);
+        cur = [];
+        used = queryCost;
+      }
+      cur.push(i);
+      used += cost;
+    });
+    if (cur.length > 0) out.push(cur);
+    return out;
+  }
+}
+```
+
+Append to `packages/llm-agent-reranker/src/index.ts`:
+```ts
+export {
+  RelevanceReranker,
+  type RelevanceRerankerOptions,
+} from './relevance-reranker.js';
+```
+
+And to `packages/llm-agent-reranker/README.md`, under the table: a "`RelevanceReranker`" section — one call by default; `maxBatchTokens` opt-in only for a pairwise provider; output check (wrong count, duplicate, out-of-range, non-finite → `RERANK_ERROR`); the score is not a probability.
+
+- [ ] **Step 3: Run**
+
+Run:
+```bash
+node --import tsx/esm --test packages/llm-agent-reranker/src/__tests__/relevance-reranker.test.ts
+npx tsc -b packages/llm-agent-reranker
+```
+Expected: PASS.
+
+- [ ] **Step 4: Commit**
+
+```bash
+npx biome check --write packages/llm-agent-reranker
+git add packages/llm-agent-reranker
+git commit -m "feat(llm-agent-reranker): RelevanceReranker over an IRelevanceDecision — one call by default, output checked
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_012KjevEeQGZMkWMfnupJ7Yd"
@@ -1503,7 +2369,7 @@ Claude-Session: https://claude.ai/code/session_012KjevEeQGZMkWMfnupJ7Yd"
 
 ## Task 6: Item cuts and size estimators (libs)
 
-Spec §4.9, §4.10 (incl. `ISizeBoundedCut`, S6); D17, D19.
+Spec §4.9, §4.10 (incl. `ISizeBoundedCut`, S6); D17, D19; §17.6 F1 (the caller's k caps every cut).
 
 **Files:**
 - Create: `packages/llm-agent-libs/src/collections/cuts.ts`
@@ -1517,9 +2383,9 @@ Spec §4.9, §4.10 (incl. `ISizeBoundedCut`, S6); D17, D19.
 - Produces:
   ```ts
   export class TopItemsCut implements IItemCut { readonly name: 'top-items' }            // limit(k) = k
-  export class FixedItemsCut implements IItemCut { constructor(k: number); readonly name: 'fixed-items' } // limit = its k
-  export class ScoreFloorCut implements IItemCut { constructor(o: { minItems: number; maxItems: number; minScore: number }); readonly name: 'score-floor' } // limit = maxItems
-  export class TokenBudgetCut implements IItemCut, ISizeBoundedCut { constructor(o: { budgetTokens: number; maxItems?: number; estimator?: IItemSizeEstimator }); readonly name: 'token-budget'; readonly budgetTokens: number; readonly estimator: IItemSizeEstimator } // limit = maxItems ?? k
+  export class FixedItemsCut implements IItemCut { constructor(n: number); readonly name: 'fixed-items' } // a CEILING: limit(k) = min(k, n)
+  export class ScoreFloorCut implements IItemCut { constructor(o: { minItems: number; maxItems: number; minScore: number }); readonly name: 'score-floor' } // limit(k) = min(k, maxItems)
+  export class TokenBudgetCut implements IItemCut, ISizeBoundedCut { constructor(o: { budgetTokens: number; maxItems?: number; estimator?: IItemSizeEstimator }); readonly name: 'token-budget'; readonly budgetTokens: number; readonly estimator: IItemSizeEstimator } // limit(k) = min(k, maxItems ?? k)
   export class ToolDefinitionSizeEstimator implements IItemSizeEstimator { readonly name: 'tool-definition' } // ceil(definitionChars/4), else ceil(text.length/4)
   export class CharsPerTokenEstimator implements IItemSizeEstimator { constructor(charsPerToken: number); readonly name: 'chars-per-token' }
   ```
@@ -1554,20 +2420,22 @@ describe('count cuts', () => {
     assert.equal(c.limit(3), 3);
     assert.deepEqual(ids(c.cut(ranked, 2)), ['a', 'b']);
   });
-  it('FixedItemsCut ignores the caller k', () => {
+  it('FixedItemsCut is a ceiling under the caller k (spec §4.9, F1)', () => {
     const c = new FixedItemsCut(3);
     assert.equal(c.limit(20), 3);
     assert.deepEqual(ids(c.cut(ranked, 20)), ['a', 'b', 'c']);
+    assert.equal(c.limit(2), 2);
+    assert.deepEqual(ids(c.cut(ranked, 2)), ['a', 'b']);
     assert.throws(() => new FixedItemsCut(0));
   });
-  it('ScoreFloorCut: minItems, then up to maxItems while score ≥ minScore', () => {
+  it('ScoreFloorCut: minItems, then up to maxItems while score ≥ minScore — all capped by k', () => {
     const c = new ScoreFloorCut({ minItems: 1, maxItems: 3, minScore: 0.5 });
     assert.equal(c.limit(20), 3);
     assert.deepEqual(ids(c.cut(ranked, 20)), ['a', 'b']);
-    assert.deepEqual(
-      ids(new ScoreFloorCut({ minItems: 3, maxItems: 3, minScore: 0.95 }).cut(ranked, 20)),
-      ['a', 'b', 'c'],
-    );
+    const floor3 = new ScoreFloorCut({ minItems: 3, maxItems: 3, minScore: 0.95 });
+    assert.deepEqual(ids(floor3.cut(ranked, 20)), ['a', 'b', 'c']);
+    assert.equal(floor3.limit(2), 2);
+    assert.deepEqual(ids(floor3.cut(ranked, 2)), ['a', 'b']);
     assert.throws(() => new ScoreFloorCut({ minItems: 4, maxItems: 3, minScore: 0 }));
   });
 });
@@ -1586,12 +2454,15 @@ describe('TokenBudgetCut', () => {
     const c = new TokenBudgetCut({ budgetTokens: 50 });
     assert.deepEqual(c.cut(tools, 20), []);
   });
-  it('maxItems ?? requestedK is the ceiling and the limit', () => {
+  it('min(requestedK, maxItems ?? requestedK) is the ceiling and the limit', () => {
     assert.equal(new TokenBudgetCut({ budgetTokens: 999 }).limit(2), 2);
     assert.deepEqual(ids(new TokenBudgetCut({ budgetTokens: 999 }).cut(tools, 2)), ['a', 'b']);
     const c = new TokenBudgetCut({ budgetTokens: 999, maxItems: 1 });
     assert.equal(c.limit(20), 1);
     assert.deepEqual(ids(c.cut(tools, 20)), ['a']);
+    const wide = new TokenBudgetCut({ budgetTokens: 999, maxItems: 5 });
+    assert.equal(wide.limit(2), 2);
+    assert.deepEqual(ids(wide.cut(tools, 2)), ['a', 'b']);
   });
   it('returns items unchanged (never truncated)', () => {
     const out = new TokenBudgetCut({ budgetTokens: 999 }).cut(tools, 20);
@@ -1649,17 +2520,17 @@ export class TopItemsCut implements IItemCut {
   }
 }
 
-/** Ignores the caller's k — for a store whose profile owns k. */
+/** A ceiling: at most `n` items, never more than the caller's k (spec §4.9, F1). */
 export class FixedItemsCut implements IItemCut {
   readonly name = 'fixed-items';
-  constructor(readonly k: number) {
-    assertPositiveInteger('FixedItemsCut', 'k', k);
+  constructor(readonly n: number) {
+    assertPositiveInteger('FixedItemsCut', 'n', n);
   }
-  limit(): number {
-    return this.k;
+  limit(requestedK: number): number {
+    return Math.min(requestedK, this.n);
   }
-  cut(items: readonly RagResult[]): RagResult[] {
-    return items.slice(0, this.k);
+  cut(items: readonly RagResult[], requestedK: number): RagResult[] {
+    return items.slice(0, this.limit(requestedK));
   }
 }
 
@@ -1682,14 +2553,16 @@ export class ScoreFloorCut implements IItemCut {
       throw new Error('ScoreFloorCut: minScore must be a finite number');
     }
   }
-  limit(): number {
-    return this.opts.maxItems;
+  limit(requestedK: number): number {
+    return Math.min(requestedK, this.opts.maxItems);
   }
-  cut(items: readonly RagResult[]): RagResult[] {
+  cut(items: readonly RagResult[], requestedK: number): RagResult[] {
+    const max = this.limit(requestedK);
+    const min = Math.min(this.opts.minItems, max);
     const out: RagResult[] = [];
     for (const it of items) {
-      if (out.length >= this.opts.maxItems) break;
-      if (out.length >= this.opts.minItems && it.score < this.opts.minScore) {
+      if (out.length >= max) break;
+      if (out.length >= min && it.score < this.opts.minScore) {
         break;
       }
       out.push(it);
@@ -1704,7 +2577,7 @@ export class ScoreFloorCut implements IItemCut {
 import type { IItemSizeEstimator, RagResult } from '@mcp-abap-adt/llm-agent';
 import { assertPositiveInteger } from '../util/assert-positive-integer.js';
 
-/** ~4 chars per token — the unit DecisionReranker already budgets in. */
+/** ~4 chars per token — the unit the probability reranker (ex-DecisionReranker) already budgets in. */
 const CHARS_PER_TOKEN = 4;
 
 /** Tools: the definition the LLM receives (`metadata.definitionChars`), else the text. */
@@ -1750,7 +2623,7 @@ import { ToolDefinitionSizeEstimator } from './size-estimators.js';
 /**
  * A prompt-size GUARD (spec §4.10), in no default composition: whole items in
  * rank order while their summed size ≤ `budgetTokens`, at most
- * `maxItems ?? requestedK`. Stops at the first item that does not fit (D19);
+ * `min(requestedK, maxItems ?? requestedK)`. Stops at the first item that does not fit (D19);
  * never truncates; the top item alone over budget → empty (D17). Implements
  * ISizeBoundedCut (S6), so StagedRetrieval reports its tokens and over_budget.
  */
@@ -1775,7 +2648,7 @@ export class TokenBudgetCut implements IItemCut, ISizeBoundedCut {
   }
 
   limit(requestedK: number): number {
-    return this.maxItems ?? requestedK;
+    return Math.min(requestedK, this.maxItems ?? requestedK);
   }
 
   cut(items: readonly RagResult[], requestedK: number): RagResult[] {
@@ -2108,12 +2981,13 @@ Claude-Session: https://claude.ai/code/session_012KjevEeQGZMkWMfnupJ7Yd"
 
 ---
 
-## Task 8: Facets and `FacetedToolIndexer` (libs)
+## Task 8: Facets, provider text composers and `FacetedToolIndexer` (libs)
 
-Spec §7.3.1, §7.0.
+Spec §7.3.1 (incl. the provider text composer, §17.6 F4), §7.0.
 
 **Files:**
 - Create: `packages/llm-agent-libs/src/collections/tools/facets.ts`
+- Create: `packages/llm-agent-libs/src/collections/tools/tool-text.ts`
 - Create: `packages/llm-agent-libs/src/collections/tools/faceted-tool-indexer.ts`
 - Create: `packages/llm-agent-libs/src/collections/__tests__/faceted-tool-indexer.test.ts`
 - Modify: `packages/llm-agent-libs/src/collections/index.ts`
@@ -2125,8 +2999,11 @@ Spec §7.3.1, §7.0.
   export class SummaryFacet implements IToolFacet { readonly kind: 'summary' }
   export class ParametersFacet implements IToolFacet { readonly kind: 'parameters' }
   export class NameTailFacet implements IToolFacet { readonly kind: 'name-tail' } // opt-in, convention-dependent
-  export function fullToolText(tool: ToolItem): string; // `Tool: <name> — <description>` + `\nParameters: a, b`
-  export class FacetedToolIndexer implements IItemIndexer<ToolItem> { constructor(facets: readonly IToolFacet[]); readonly name: 'faceted'; readonly canonicalKind: 'full'; readonly maxRecordsPerItem: number /* 1 + facets */; readonly facets: readonly IToolFacet[] }
+  export function fullToolText(tool: ToolItem): string; // C0: `Tool: <name> — <description>` + `\nParameters: a, b`
+  export class ParameterNamesToolText implements IToolTextComposer { readonly name: 'parameter-names' } // C0, the default — = fullToolText
+  export class EnumValuesToolText implements IToolTextComposer { readonly name: 'enum-values' }         // C0e: C0 + `\n<param>: <values>` per parameter with string values
+  export class SchemaToolText implements IToolTextComposer { readonly name: 'schema' }                  // C0s: C0 + `\n<param>: <first clause>[; values: <values>]` per parameter
+  export class FacetedToolIndexer implements IItemIndexer<ToolItem> { constructor(facets: readonly IToolFacet[], opts?: { text?: IToolTextComposer }); readonly name: 'faceted'; readonly canonicalKind: 'full'; readonly maxRecordsPerItem: number /* 1 + facets */; readonly facets: readonly IToolFacet[]; readonly text: IToolTextComposer /* default ParameterNamesToolText */ }
   ```
 
 - [ ] **Step 1: Write the failing test**
@@ -2136,9 +3013,13 @@ Spec §7.3.1, §7.0.
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
+  EnumValuesToolText,
   FacetedToolIndexer,
+  fullToolText,
   NameTailFacet,
+  ParameterNamesToolText,
   ParametersFacet,
+  SchemaToolText,
   SummaryFacet,
   toolItemFromTool,
 } from '../index.js';
@@ -2224,6 +3105,33 @@ describe('FacetedToolIndexer', () => {
     assert.throws(() => new FacetedToolIndexer([new SummaryFacet(), new SummaryFacet()]));
   });
 });
+
+describe('provider text composers (F4) — the default stays C0', () => {
+  it('no text option → ParameterNamesToolText, byte-identical to fullToolText', async () => {
+    const i = new FacetedToolIndexer([new SummaryFacet()]);
+    assert.ok(i.text instanceof ParameterNamesToolText);
+    assert.equal(new ParameterNamesToolText().compose(tool), fullToolText(tool));
+  });
+  it('EnumValuesToolText (C0e): C0 + the string values of each parameter that has them', () => {
+    assert.equal(
+      new EnumValuesToolText().compose(tool),
+      `${fullToolText(tool)}\nstate: OPEN, MERGED_ALL`,
+    );
+  });
+  it('SchemaToolText (C0s): C0 + each parameter description first clause and values', () => {
+    assert.equal(
+      new SchemaToolText().compose(tool),
+      `${fullToolText(tool)}\nrepo_name: Repository\nstate: values OPEN, MERGED_ALL`,
+    );
+  });
+  it('the composer text is the full record text AND every facet itemText', async () => {
+    const r = await new FacetedToolIndexer([new SummaryFacet()], { text: new EnumValuesToolText() }).toRecords(tool);
+    assert.ok(r.ok);
+    const [full, summary] = r.value;
+    assert.equal(full.text, new EnumValuesToolText().compose(tool));
+    assert.equal(summary.itemText, full.text);
+  });
+});
 ```
 
 - [ ] **Step 2: Run to see it fail**
@@ -2284,32 +3192,32 @@ export class NameTailFacet implements IToolFacet {
 import type {
   IItemIndexer,
   IToolFacet,
+  IToolTextComposer,
   RagError,
   RecordDraft,
   Result,
   ToolItem,
 } from '@mcp-abap-adt/llm-agent';
+import { ParameterNamesToolText } from './tool-text.js';
 
 const GLOBAL = { scope: 'global' } as const;
 
-/** The canonical `full` text: the provider text (spec §7.3.1). */
-export function fullToolText(tool: ToolItem): string {
-  const head = `Tool: ${tool.name} — ${tool.description}`;
-  return tool.parameters.length > 0
-    ? `${head}\nParameters: ${tool.parameters.map((p) => p.name).join(', ')}`
-    : head;
-}
-
 /**
  * `full` (canonical, not a facet — it cannot be left out) + one record per
- * facet that yields text. Tool catalogs are global.
+ * facet that yields text. Tool catalogs are global. The `full` text comes from
+ * the injected provider text composer (F4); absent → C0 (measured default).
  */
 export class FacetedToolIndexer implements IItemIndexer<ToolItem> {
   readonly name = 'faceted';
   readonly canonicalKind = 'full';
   readonly maxRecordsPerItem: number;
+  readonly text: IToolTextComposer;
 
-  constructor(readonly facets: readonly IToolFacet[]) {
+  constructor(
+    readonly facets: readonly IToolFacet[],
+    opts: { text?: IToolTextComposer } = {},
+  ) {
+    this.text = opts.text ?? new ParameterNamesToolText();
     const kinds = new Set<string>();
     for (const f of facets) {
       if (f.kind === 'full' || kinds.has(f.kind)) {
@@ -2325,7 +3233,7 @@ export class FacetedToolIndexer implements IItemIndexer<ToolItem> {
   async toRecords(
     tool: ToolItem,
   ): Promise<Result<readonly RecordDraft[], RagError>> {
-    const full = fullToolText(tool);
+    const full = this.text.compose(tool);
     const drafts: RecordDraft[] = [
       {
         text: full,
@@ -2352,13 +3260,72 @@ export class FacetedToolIndexer implements IItemIndexer<ToolItem> {
 }
 ```
 
+```ts
+// packages/llm-agent-libs/src/collections/tools/tool-text.ts
+/**
+ * Provider text composers (spec §7.3.1, review finding 4). The default stays C0
+ * (measured). C0e / C0s are strategies in no default: on mcp-abap-adt `compact`
+ * with Jev over the whole set they were within noise of C0 (EN k3 C0 .970 / C0s
+ * .970 / C0e 1.000; non-ASCII k3 1.000 / 1.000 / .905; equal tokens). Provider
+ * words only — nothing is written over the provider's text.
+ */
+import type { IToolTextComposer, ToolItem } from '@mcp-abap-adt/llm-agent';
+import { firstClause } from './derive-tool-facets.js';
+
+/** C0: `Tool: <name> — <description>` + `\nParameters: a, b` (the 30.1.0-shaped text). */
+export function fullToolText(tool: ToolItem): string {
+  const head = `Tool: ${tool.name} — ${tool.description}`;
+  return tool.parameters.length > 0
+    ? `${head}\nParameters: ${tool.parameters.map((p) => p.name).join(', ')}`
+    : head;
+}
+
+/** C0 — the default. */
+export class ParameterNamesToolText implements IToolTextComposer {
+  readonly name = 'parameter-names';
+  compose(tool: ToolItem): string {
+    return fullToolText(tool);
+  }
+}
+
+/** C0e — C0 + one line per parameter with string values: `<param>: <v1>, <v2>`. */
+export class EnumValuesToolText implements IToolTextComposer {
+  readonly name = 'enum-values';
+  compose(tool: ToolItem): string {
+    const lines = tool.parameters
+      .filter((p) => p.values.length > 0)
+      .map((p) => `${p.name}: ${p.values.map((v) => v.value).join(', ')}`);
+    return [fullToolText(tool), ...lines].join('\n');
+  }
+}
+
+/** C0s — C0 + one line per parameter with a description or values:
+ *  `<param>: <first clause>` and/or `values <v1>, <v2>` (joined by `; `). */
+export class SchemaToolText implements IToolTextComposer {
+  readonly name = 'schema';
+  compose(tool: ToolItem): string {
+    const lines = tool.parameters.flatMap((p) => {
+      const parts = [
+        ...(p.description && firstClause(p.description) ? [firstClause(p.description)] : []),
+        ...(p.values.length > 0 ? [`values ${p.values.map((v) => v.value).join(', ')}`] : []),
+      ];
+      return parts.length > 0 ? [`${p.name}: ${parts.join('; ')}`] : [];
+    });
+    return [fullToolText(tool), ...lines].join('\n');
+  }
+}
+```
+
 Append to `collections/index.ts`:
 ```ts
-export {
-  FacetedToolIndexer,
-  fullToolText,
-} from './tools/faceted-tool-indexer.js';
+export { FacetedToolIndexer } from './tools/faceted-tool-indexer.js';
 export { NameTailFacet, ParametersFacet, SummaryFacet } from './tools/facets.js';
+export {
+  EnumValuesToolText,
+  fullToolText,
+  ParameterNamesToolText,
+  SchemaToolText,
+} from './tools/tool-text.js';
 ```
 
 - [ ] **Step 4: Run**
@@ -2371,7 +3338,7 @@ Expected: PASS.
 ```bash
 npx biome check --write packages/llm-agent-libs/src/collections
 git add packages/llm-agent-libs/src/collections
-git commit -m "feat(libs): schema-derived tool facets and FacetedToolIndexer
+git commit -m "feat(libs): schema-derived tool facets, provider text composers and FacetedToolIndexer
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_012KjevEeQGZMkWMfnupJ7Yd"
@@ -2920,18 +3887,19 @@ import {
   shortHash,
   type ToolItem,
 } from '@mcp-abap-adt/llm-agent';
-import { fullToolText } from './faceted-tool-indexer.js';
+import { fullToolText } from './tool-text.js';
 
+/** `itemText`: the inner indexer's canonical text (its composer's, F4); undefined → companion (no itemText). */
 async function intentDraft(
   source: IToolIntentSource,
   tool: ToolItem,
-  withItemText: boolean,
+  itemText: string | undefined,
   options?: CallOptions,
 ): Promise<Result<RecordDraft | undefined, RagError>> {
   const r = await source.intentsFor(tool, options);
   if (!r.ok) return r;
   if (r.value.length === 0) return { ok: true, value: undefined };
-  const provider = fullToolText(tool);
+  const provider = itemText ?? fullToolText(tool);
   return {
     ok: true,
     value: {
@@ -2941,7 +3909,7 @@ async function intentDraft(
       owner: { scope: 'global' },
       generated: true,
       // The reranker reads provider text, never intents (spec §4.6).
-      ...(withItemText ? { itemText: provider } : {}),
+      ...(itemText !== undefined ? { itemText } : {}),
       // Provenance: a hash of the provider text the intents came from (spec §7.3.3).
       // The framework never reads it (S2: no skip; caching is the consumer's).
       metadata: { name: tool.name, generatedFrom: shortHash(provider) },
@@ -2967,7 +3935,14 @@ export class IntentRecordIndexer implements IItemIndexer<ToolItem> {
   ): Promise<Result<readonly RecordDraft[], RagError>> {
     const base = await this.inner.toRecords(tool, options);
     if (!base.ok) return base;
-    const intent = await intentDraft(this.source, tool, true, options);
+    // itemText = the inner's canonical text, so a composer (F4) reaches the reranker too.
+    const canonical = base.value.find((d) => d.recordKind === this.inner.canonicalKind);
+    const intent = await intentDraft(
+      this.source,
+      tool,
+      canonical?.text ?? fullToolText(tool),
+      options,
+    );
     if (!intent.ok) return intent;
     return {
       ok: true,
@@ -2990,7 +3965,7 @@ export class IntentCompanionIndexer implements IItemIndexer<ToolItem> {
     tool: ToolItem,
     options?: CallOptions,
   ): Promise<Result<readonly RecordDraft[], RagError>> {
-    const intent = await intentDraft(this.source, tool, false, options);
+    const intent = await intentDraft(this.source, tool, undefined, options);
     if (!intent.ok) return intent;
     return { ok: true, value: intent.value ? [intent.value] : [] };
   }
@@ -3071,7 +4046,7 @@ Claude-Session: https://claude.ai/code/session_012KjevEeQGZMkWMfnupJ7Yd"
 
 ## Task 11: Record writer — ids, batch write, replacement, `get`, `remove` (libs)
 
-Spec §3.1, §3.3 (incl. `companionRecordIds`, S7), §4.4 (refusal), §7.6 (one batch pass), §8.2.
+Spec §3.1, §3.3 (incl. `companionRecordIds`, S7, and **cleanup failures kept for retry** — `staleRecordIds` / `staleCompanionRecordIds`, §17.6 F3), §4.4 (refusal), §7.6 (one batch pass), §8.2. Failure handling only — no generations, no locks (D13).
 
 **Files:**
 - Create: `packages/llm-agent-libs/src/collections/record-writer.ts`
@@ -3087,14 +4062,16 @@ Spec §3.1, §3.3 (incl. `companionRecordIds`, S7), §4.4 (refusal), §7.6 (one 
   export interface PreparedItem { readonly itemId: string; readonly owner: RecordOwner; readonly canonical?: PreparedRecord; readonly others: readonly PreparedRecord[] }
   export type CompanionIds = Readonly<Record<string, readonly string[]>>;              // S7: companion name → record ids
   export function prepareItem(w: ItemWrite, o: { canonicalKind: string | undefined; profile: string; maxRecordsPerItem: number; companionRecordIds?: CompanionIds }): { ok: true; item: PreparedItem } | { ok: false; reason: string };
-  export function storeItems(rag: IRag, items: readonly PreparedItem[], options?: CallOptions): Promise<{ indexed: boolean[]; records: number; failures: (string | undefined)[]; oldCompanions: CompanionIds[]; batchFailure?: string }>;
+  // F3: stale deletes in the primary AND in the given companion stores, every Result checked;
+  // ids written ahead on the canonical (staleRecordIds / staleCompanionRecordIds), settled after.
+  export function storeItems(rag: IRag, items: readonly PreparedItem[], options?: CallOptions, companions?: Readonly<Record<string, IRag>>): Promise<{ indexed: boolean[]; records: number; failures: (string | undefined)[]; batchFailure?: string }>;
   export function getItem(rag: IRag, canonicalId: string, filter: CallOptions | undefined, options?: CallOptions): Promise<Result<RagResult | null, RagError>>;
-  export function removeItem(rag: IRag, canonicalId: string, options?: CallOptions, companions?: Readonly<Record<string, IRag>>): Promise<Result<number, RagError>>; // S7: also the listed companion records
-  export function listedCompanions(meta: RagMetadata | undefined): CompanionIds;
+  export function removeItem(rag: IRag, canonicalId: string, options?: CallOptions, companions?: Readonly<Record<string, IRag>>): Promise<Result<number, RagError>>; // S7 + F3: listed AND stale ids; a failed delete keeps the canonical and returns an error
+  export function listedCompanions(meta: RagMetadata | undefined, key?: 'companionRecordIds' | 'staleCompanionRecordIds'): CompanionIds;
   export function asItem(canonical: RagResult, score: number, extra?: { matchedKinds?: string[]; source?: string }): RagResult; // metadata.id = itemId
   export function isExpired(meta: RagMetadata, nowSecs?: number): boolean;
   ```
-  Failure reasons: `'too-many-records'`, `'missing-canonical'`, `'owner-mismatch'`, `'item-id-mismatch'`, `'no-records'`, `'write-failed'`, `'read-failed: <message>'`.
+  Failure reasons: `'too-many-records'`, `'missing-canonical'`, `'owner-mismatch'`, `'item-id-mismatch'`, `'no-records'`, `'write-failed'`, `'read-failed: <message>'`, `'cleanup-failed: <n> stale record(s) kept for retry'` (F3).
 
 - [ ] **Step 1: Write the failing test**
 
@@ -3103,8 +4080,11 @@ Spec §3.1, §3.3 (incl. `companionRecordIds`, S7), §4.4 (refusal), §7.6 (one 
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
+  type CallOptions,
   type IEmbedder,
   InMemoryRag,
+  type IRag,
+  RagError,
   type RecordDraft,
   type RecordOwner,
   recordId,
@@ -3225,7 +4205,7 @@ describe('storeItems / getItem / removeItem', () => {
     assert.ok(none.ok && none.value === 0);
   });
 
-  it('S7: the canonical lists companion ids; storeItems reports the old lists; removeItem clears them', async () => {
+  it('S7: the canonical lists companion ids; replacement deletes the unlisted ones; removeItem clears them', async () => {
     const rag = new InMemoryRag();
     const intents = new InMemoryRag();
     const cid = recordId(U_A, 'case-42', 'intent', 0);
@@ -3236,14 +4216,20 @@ describe('storeItems / getItem / removeItem', () => {
     );
     assert.ok(p.ok);
     assert.deepEqual(p.item.canonical?.metadata.companionRecordIds, { intents: [cid] });
-    const first = await storeItems(rag, [p.item]);
-    assert.deepEqual(first.oldCompanions, [{}]);
-    const again = await storeItems(rag, [p.item]);
-    assert.deepEqual(again.oldCompanions, [{ intents: [cid] }]);
+    await storeItems(rag, [p.item], undefined, { intents });
     const n = await removeItem(rag, recordId(U_A, 'case-42', 'item', 0), undefined, { intents });
     assert.ok(n.ok && n.value === 2);
     const gone = await intents.getById(cid);
     assert.ok(gone.ok && gone.value === null);
+    // replacement with no companion record: the old one is a stale companion id, deleted
+    await intents.writer().upsertRaw(cid, 'open my notes', { visibility: 'user', userId: 'A' });
+    await storeItems(rag, [p.item], undefined, { intents });
+    const q = prepareItem({ itemId: 'case-42', drafts: [draft('item', 'c2')] }, { canonicalKind: 'item', profile: 'p', maxRecordsPerItem: 5 });
+    assert.ok(q.ok);
+    const r = await storeItems(rag, [q.item], undefined, { intents });
+    assert.deepEqual(r.indexed, [true]);
+    const gone2 = await intents.getById(cid);
+    assert.ok(gone2.ok && gone2.value === null);
   });
 
   it('S7: a listed companion the caller has no store for is left as is (unbound = cleared by the consumer)', async () => {
@@ -3258,6 +4244,114 @@ describe('storeItems / getItem / removeItem', () => {
     assert.ok(n.ok && n.value === 1);
   });
 });
+
+/** A store whose writer fails deleteByIdRaw for the ids in `failing` (F3 tests). */
+function flakyDeletes(inner: InMemoryRag, failing: Set<string>): IRag {
+  const w = inner.writer();
+  return {
+    ...inner,
+    query: inner.query.bind(inner),
+    getById: inner.getById.bind(inner),
+    writer: () => ({
+      ...w,
+      deleteByIdRaw: async (id: string, o?: CallOptions) =>
+        failing.has(id)
+          ? { ok: false as const, error: new RagError('delete down') }
+          : w.deleteByIdRaw(id, o),
+    }),
+  } as IRag;
+}
+
+describe('cleanup failures are kept for retry (spec §3.3, F3)', () => {
+  const canonId = recordId(U_A, 'case-42', 'item', 0);
+  const staleId = recordId(U_A, 'case-42', 'note', 1);
+
+  it('replacement → failed stale delete → not indexed, id kept → retry → gone → remove leaves nothing', async () => {
+    const raw = new InMemoryRag();
+    const failing = new Set([staleId]);
+    const rag = flakyDeletes(raw, failing);
+    const v1 = prep([draft('item', 'v1'), draft('note', 'a'), draft('note', 'b')]);
+    assert.ok(v1.ok);
+    await storeItems(rag, [v1.item]);
+    const v2 = prep([draft('item', 'v2'), draft('note', 'a2')]);
+    assert.ok(v2.ok);
+    const r = await storeItems(rag, [v2.item]);
+    assert.deepEqual(r.indexed, [false]);
+    assert.match(r.failures[0] ?? '', /^cleanup-failed: 1 stale record/);
+    const canon = await raw.getById(canonId);
+    assert.ok(canon.ok && canon.value?.text === 'v2', 'the new records are written');
+    assert.deepEqual(canon.value?.metadata.staleRecordIds, [staleId]);
+    const still = await raw.getById(staleId);
+    assert.ok(still.ok && still.value !== null);
+
+    failing.clear();
+    const retry = await storeItems(rag, [v2.item]);
+    assert.deepEqual(retry.indexed, [true]);
+    const gone = await raw.getById(staleId);
+    assert.ok(gone.ok && gone.value === null);
+    const settled = await raw.getById(canonId);
+    assert.ok(settled.ok && settled.value?.metadata.staleRecordIds === undefined);
+
+    const n = await removeItem(rag, canonId);
+    assert.ok(n.ok);
+    for (const id of [canonId, recordId(U_A, 'case-42', 'note', 0), staleId]) {
+      const x = await raw.getById(id);
+      assert.ok(x.ok && x.value === null, id);
+    }
+  });
+
+  it('remove retries the pending ids; a failed delete keeps the canonical and returns an error', async () => {
+    const raw = new InMemoryRag();
+    const failing = new Set([staleId]);
+    const rag = flakyDeletes(raw, failing);
+    const v1 = prep([draft('item', 'v1'), draft('note', 'a'), draft('note', 'b')]);
+    const v2 = prep([draft('item', 'v2'), draft('note', 'a2')]);
+    assert.ok(v1.ok && v2.ok);
+    await storeItems(rag, [v1.item]);
+    await storeItems(rag, [v2.item]);
+    const failed = await removeItem(rag, canonId);
+    assert.equal(failed.ok, false);
+    const kept = await raw.getById(canonId);
+    assert.ok(kept.ok && kept.value !== null, 'the canonical stays so a retry finds the list');
+    failing.clear();
+    const done = await removeItem(rag, canonId);
+    assert.ok(done.ok);
+    for (const id of [canonId, staleId]) {
+      const x = await raw.getById(id);
+      assert.ok(x.ok && x.value === null, id);
+    }
+  });
+
+  it('a failed companion stale delete is kept in staleCompanionRecordIds and retried', async () => {
+    const rag = new InMemoryRag();
+    const rawIntents = new InMemoryRag();
+    const cid = recordId(U_A, 'case-42', 'intent', 0);
+    const failing = new Set([cid]);
+    const intents = flakyDeletes(rawIntents, failing);
+    await rawIntents.writer().upsertRaw(cid, 'open my notes', { visibility: 'user', userId: 'A' });
+    const withIntent = prepareItem(
+      { itemId: 'case-42', drafts: [draft('item', 'c')] },
+      { canonicalKind: 'item', profile: 'p', maxRecordsPerItem: 5, companionRecordIds: { intents: [cid] } },
+    );
+    const without = prepareItem(
+      { itemId: 'case-42', drafts: [draft('item', 'c2')] },
+      { canonicalKind: 'item', profile: 'p', maxRecordsPerItem: 5 },
+    );
+    assert.ok(withIntent.ok && without.ok);
+    await storeItems(rag, [withIntent.item], undefined, { intents });
+    const r = await storeItems(rag, [without.item], undefined, { intents });
+    assert.deepEqual(r.indexed, [false]);
+    const canon = await rag.getById(canonId);
+    assert.ok(canon.ok);
+    assert.deepEqual(canon.value?.metadata.staleCompanionRecordIds, { intents: [cid] });
+    failing.clear();
+    const retry = await storeItems(rag, [without.item], undefined, { intents });
+    assert.deepEqual(retry.indexed, [true]);
+    const gone = await rawIntents.getById(cid);
+    assert.ok(gone.ok && gone.value === null);
+  });
+});
+
 ```
 
 - [ ] **Step 2: Run to see it fail**
@@ -3272,8 +4366,10 @@ Expected: FAIL — module not found.
 /**
  * The binding's write path (spec §3.1, §3.3, §7.6). Ids come from recordId only;
  * an item is written as: new non-canonical records → the canonical (with the
- * new `recordIds`) → deletes of the old ids it no longer lists. NOT atomic, no
- * locks, no generations (D13): readers stay safe through hydration (§4.6).
+ * new `recordIds` AND, written ahead, the stale ids still to delete) → deletes
+ * of those stale ids, each Result checked → the canonical settled to what is
+ * still pending (F3). NOT atomic, no locks, no generations (D13): readers stay
+ * safe through hydration (§4.6); a failed cleanup is kept, never reported indexed.
  */
 import {
   type CallOptions,
@@ -3457,14 +4553,20 @@ async function writeAll(
   }
 }
 
-const listed = (meta: RagMetadata | undefined): string[] =>
-  Array.isArray(meta?.recordIds)
-    ? meta.recordIds.filter((x): x is string => typeof x === 'string')
-    : [];
+const listed = (
+  meta: RagMetadata | undefined,
+  key: 'recordIds' | 'staleRecordIds' = 'recordIds',
+): string[] => {
+  const raw = meta?.[key];
+  return Array.isArray(raw) ? raw.filter((x): x is string => typeof x === 'string') : [];
+};
 
-/** S7: the companion ids a canonical record lists (malformed entries ignored). */
-export function listedCompanions(meta: RagMetadata | undefined): CompanionIds {
-  const raw = meta?.companionRecordIds;
+/** S7 / F3: the companion ids a canonical record lists under `key` (malformed entries ignored). */
+export function listedCompanions(
+  meta: RagMetadata | undefined,
+  key: 'companionRecordIds' | 'staleCompanionRecordIds' = 'companionRecordIds',
+): CompanionIds {
+  const raw = meta?.[key];
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return {};
   const out: Record<string, string[]> = {};
   for (const [name, ids] of Object.entries(raw)) {
@@ -3473,34 +4575,101 @@ export function listedCompanions(meta: RagMetadata | undefined): CompanionIds {
   return out;
 }
 
-/** Write prepared items into ONE store (spec §3.3 order). `indexed[i]` = every record of item i written. */
+/** The stale ids still to delete: primary + per companion (F3). */
+interface Stale {
+  primary: string[];
+  companions: Record<string, string[]>;
+}
+
+const pendingCount = (st: Stale): number =>
+  st.primary.length +
+  Object.values(st.companions).reduce((n, ids) => n + ids.length, 0);
+
+/** The canonical with the stale lists written onto it (keys absent when empty). */
+function withStale(c: PreparedRecord, st: Stale): PreparedRecord {
+  const { staleRecordIds: _a, staleCompanionRecordIds: _b, ...rest } = c.metadata;
+  const comp = Object.fromEntries(
+    Object.entries(st.companions).filter(([, ids]) => ids.length > 0),
+  );
+  return {
+    ...c,
+    metadata: {
+      ...rest,
+      ...(st.primary.length > 0 ? { staleRecordIds: st.primary } : {}),
+      ...(Object.keys(comp).length > 0 ? { staleCompanionRecordIds: comp } : {}),
+    },
+  };
+}
+
+/** Delete each id; `ok` (deleted or already absent) = done; `ok: false` or a throw = kept. */
+async function deleteAll(
+  rag: IRag | undefined,
+  ids: readonly string[],
+  options?: CallOptions,
+): Promise<string[]> {
+  const w = rag?.writer?.();
+  if (!w) return [...ids];
+  const kept: string[] = [];
+  for (const id of ids) {
+    try {
+      const d = await w.deleteByIdRaw(id, options);
+      if (!d.ok) kept.push(id);
+    } catch {
+      kept.push(id);
+    }
+  }
+  return kept;
+}
+
+/**
+ * Write prepared items into ONE store (spec §3.3 order). `indexed[i]` = every
+ * record of item i written AND its stale cleanup done (F3). `companions`: the
+ * bound companion stores, for the item's stale companion records (S7); a
+ * companion the caller does not pass is not carried (S7 rule).
+ */
 export async function storeItems(
   rag: IRag,
   items: readonly PreparedItem[],
   options?: CallOptions,
+  companions: Readonly<Record<string, IRag>> = {},
 ): Promise<{
   indexed: boolean[];
   records: number;
   failures: (string | undefined)[];
-  /** S7: what each item's previous canonical listed per companion ({} when new). */
-  oldCompanions: CompanionIds[];
   batchFailure?: string;
 }> {
   const failures: (string | undefined)[] = items.map(() => undefined);
-  const old: string[][] = items.map(() => []);
-  const oldCompanions: CompanionIds[] = items.map(() => ({}));
+  const stale: Stale[] = items.map(() => ({ primary: [], companions: {} }));
   await Promise.all(
     items.map(async (it, i) => {
       if (!it.canonical) return;
       const r = await rag.getById(it.canonical.id, options);
-      if (!r.ok) failures[i] = `read-failed: ${r.error.message}`;
-      else {
-        old[i] = listed(r.value?.metadata);
-        oldCompanions[i] = listedCompanions(r.value?.metadata);
+      if (!r.ok) {
+        failures[i] = `read-failed: ${r.error.message}`;
+        return;
+      }
+      const old = r.value?.metadata;
+      const keep = new Set([...it.others.map((x) => x.id), it.canonical.id]);
+      stale[i].primary = [
+        ...new Set([...listed(old), ...listed(old, 'staleRecordIds')]),
+      ].filter((id) => !keep.has(id));
+      const now = listedCompanions(it.canonical.metadata);
+      const was = listedCompanions(old);
+      const wasStale = listedCompanions(old, 'staleCompanionRecordIds');
+      for (const name of Object.keys(companions)) {
+        const keepC = new Set(now[name] ?? []);
+        const ids = [
+          ...new Set([...(was[name] ?? []), ...(wasStale[name] ?? [])]),
+        ].filter((id) => !keepC.has(id));
+        if (ids.length > 0) stale[i].companions[name] = ids;
       }
     }),
   );
-  const live = items.filter((_, i) => failures[i] === undefined);
+  // Write ahead (F3): the canonical carries what must still be deleted.
+  const prepared = items.map((it, i) =>
+    it.canonical ? { ...it, canonical: withStale(it.canonical, stale[i]) } : it,
+  );
+  const live = prepared.filter((_, i) => failures[i] === undefined);
   const all = live.flatMap((it) => [
     ...it.others,
     ...(it.canonical ? [it.canonical] : []),
@@ -3515,18 +4684,31 @@ export async function storeItems(
     written,
     options,
   );
-  const writer = rag.writer?.();
   const indexed = await Promise.all(
-    items.map(async (it, i) => {
+    prepared.map(async (it, i) => {
       if (failures[i] !== undefined) return false;
       const ids = [...it.others, ...(it.canonical ? [it.canonical] : [])].map((r) => r.id);
       if (!ids.every((id) => written.has(id))) {
         failures[i] = 'write-failed';
         return false;
       }
-      const keep = new Set(ids);
-      for (const stale of old[i].filter((id) => !keep.has(id))) {
-        await writer?.deleteByIdRaw(stale, options);
+      if (!it.canonical || pendingCount(stale[i]) === 0) return true;
+      // Delete every stale id, each Result checked (primary and companions).
+      const left: Stale = {
+        primary: await deleteAll(rag, stale[i].primary, options),
+        companions: {},
+      };
+      for (const [name, cids] of Object.entries(stale[i].companions)) {
+        const k = await deleteAll(companions[name], cids, options);
+        if (k.length > 0) left.companions[name] = k;
+      }
+      // Settle: the canonical lists exactly what is still pending. If this write
+      // fails, the written-ahead superset stays — retrying a deleted id is a no-op.
+      await writeAll(rag, [withStale(it.canonical, left)], vectors, new Set<string>(), options);
+      const n = pendingCount(left);
+      if (n > 0) {
+        failures[i] = `cleanup-failed: ${n} stale record(s) kept for retry`;
+        return false;
       }
       return true;
     }),
@@ -3535,7 +4717,6 @@ export async function storeItems(
     indexed,
     records: written.size,
     failures,
-    oldCompanions,
     ...(failure !== undefined ? { batchFailure: failure } : {}),
   };
 }
@@ -3582,8 +4763,10 @@ export async function getItem(
 }
 
 /**
- * Delete what the canonical lists — the listed companion records in the given
- * companion stores (S7), then its own store's records — then the canonical.
+ * Delete what the canonical lists AND what it still has pending (F3) — the
+ * companion records in the given companion stores (S7), then its own store's
+ * records — then the canonical. Every delete is tried; if any fails, the
+ * canonical is KEPT (so a retry finds the list) and an error is returned.
  * A listed companion with no store here is left as is. Returns records deleted.
  */
 export async function removeItem(
@@ -3599,20 +4782,45 @@ export async function removeItem(
   const r = await rag.getById(canonicalId, options);
   if (!r.ok) return r;
   if (!r.value) return { ok: true, value: 0 };
+  const meta = r.value.metadata;
   let n = 0;
-  for (const [name, ids] of Object.entries(listedCompanions(r.value.metadata))) {
+  let failed = 0;
+  const del = async (
+    w: ReturnType<NonNullable<IRag['writer']>> | undefined,
+    id: string,
+  ): Promise<void> => {
+    if (!w) return;
+    try {
+      const d = await w.deleteByIdRaw(id, options);
+      if (!d.ok) failed++;
+      else if (d.value) n++;
+    } catch {
+      failed++;
+    }
+  };
+  const listedC = listedCompanions(meta);
+  const staleC = listedCompanions(meta, 'staleCompanionRecordIds');
+  for (const name of new Set([...Object.keys(listedC), ...Object.keys(staleC)])) {
     const cw = companions?.[name]?.writer?.();
     if (!cw) continue;
-    for (const id of ids) {
-      const d = await cw.deleteByIdRaw(id, options);
-      if (!d.ok) return d;
-      if (d.value) n++;
+    for (const id of new Set([...(listedC[name] ?? []), ...(staleC[name] ?? [])])) {
+      await del(cw, id);
     }
   }
-  for (const id of [...listed(r.value.metadata), canonicalId]) {
-    const d = await writer.deleteByIdRaw(id, options);
-    if (!d.ok) return d;
-    if (d.value) n++;
+  for (const id of new Set([...listed(meta), ...listed(meta, 'staleRecordIds')])) {
+    await del(writer, id);
+  }
+  if (failed > 0) {
+    return {
+      ok: false,
+      error: new RagError(
+        `remove: ${failed} record delete(s) failed; the item is kept so a retry finds them`,
+      ),
+    };
+  }
+  await del(writer, canonicalId);
+  if (failed > 0) {
+    return { ok: false, error: new RagError('remove: the canonical record delete failed') };
   }
   return { ok: true, value: n };
 }
@@ -3741,6 +4949,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
   type CallOptions,
+  type IItemCut,
   type IRag,
   InMemoryRag,
   RagError,
@@ -3875,14 +5084,20 @@ describe('StagedRetrieval — stage 1, collapse, hydration', () => {
     assert.deepEqual(r.value.map((x) => x.metadata.userId).sort(), ['A', 'B']);
   });
 
-  it('the cut is applied once: at most cut.limit(k) items', async () => {
+  it('the cut is applied once: at most min(k, cut.limit(k)) items — the caller k caps every cut (F1)', async () => {
     const raw = new InMemoryRag();
     for (const id of ['a', 'b', 'c', 'd']) await put(raw, id, [['full', `needle ${id}x`]]);
     const rag = matchesOnly(raw);
     const fixed = await staged(primary(rag), { cut: new FixedItemsCut(2) }).retrieve(rag, q('needle'), 10);
     assert.ok(fixed.ok && fixed.value.length === 2);
+    const capped = await staged(primary(rag), { cut: new FixedItemsCut(3) }).retrieve(rag, q('needle'), 1);
+    assert.ok(capped.ok && capped.value.length === 1);
     const top = await staged(primary(rag)).retrieve(rag, q('needle'), 3);
     assert.ok(top.ok && top.value.length === 3);
+    // a consumer cut whose limit ignores k is still capped by StagedRetrieval
+    const greedy: IItemCut = { name: 'greedy', limit: () => 10, cut: (items) => [...items] };
+    const g = await staged(primary(rag), { cut: greedy }).retrieve(rag, q('needle'), 2);
+    assert.ok(g.ok && g.value.length === 2);
   });
 
   it('a variants source: its hits hydrate from the items source; skipped when the items source is not selected', async () => {
@@ -4075,7 +5290,8 @@ export class StagedRetrieval implements IRetrievalStrategy {
     k: number,
     callOptions?: CallOptions,
   ): Promise<Result<RagResult[], RagError>> {
-    const budget = this.cut.limit(k);
+    // The caller's k caps every cut, a consumer's included (spec §4.5, F1).
+    const budget = Math.min(k, this.cut.limit(k));
     const ctx = newRunContext(callOptions);
     const run = await this.runOne(query, budget, ctx);
     if (!run.ok) return run;
@@ -4590,7 +5806,7 @@ Spec §4.5, §2.4; goal decision 2026-10-05. No decomposer implementation ships.
 
 **Interfaces:**
 - Consumes: Tasks 12–13; `QueryEmbedding` (`@mcp-abap-adt/llm-agent`, `new QueryEmbedding(text, embedder, options)`); `IQueryDecomposer`, `SubQuery`.
-- Produces: decomposer errors and failed checks → `RagError(…, 'DECOMPOSE_ERROR')`; at most `cut.limit(k)` items in every case. Exported helper `resultKey(r: RagResult): string` (owner-qualified item key of a returned result) — used by Task 30's kit test.
+- Produces: decomposer errors and failed checks → `RagError(…, 'DECOMPOSE_ERROR')`; at most `min(k, cut.limit(k))` ≤ k items in every case. Exported helper `resultKey(r: RagResult): string` (owner-qualified item key of a returned result) — used by Task 30's kit test.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -4669,11 +5885,13 @@ describe('StagedRetrieval — query decomposition slot', () => {
     assert.ok(r.ok && r.value.length === 2);
   });
 
-  it('the budget handed to the decomposer is cut.limit(k)', async () => {
+  it('the budget handed to the decomposer is min(k, cut.limit(k)) (F1)', async () => {
     const seen: Array<[string, number]> = [];
     const rag = await fixture();
-    await staged(rag, { cut: new FixedItemsCut(3), decompose: { decomposer: decomposer([], seen), queryEmbedder: embedder } }).retrieve(rag, q('apple'), 20);
-    assert.deepEqual(seen, [['apple', 3]]);
+    const s = staged(rag, { cut: new FixedItemsCut(3), decompose: { decomposer: decomposer([], seen), queryEmbedder: embedder } });
+    await s.retrieve(rag, q('apple'), 20);
+    await s.retrieve(rag, q('apple'), 2);
+    assert.deepEqual(seen, [['apple', 3], ['apple', 2]]);
   });
 
   it('each sub-query is reranked against its own text and kept to its k; the union is de-duplicated', async () => {
@@ -4765,7 +5983,8 @@ Replace `retrieve` with:
     k: number,
     callOptions?: CallOptions,
   ): Promise<Result<RagResult[], RagError>> {
-    const budget = this.cut.limit(k);
+    // The caller's k caps every cut, also after decomposition (spec §4.5, F1).
+    const budget = Math.min(k, this.cut.limit(k));
     const finish = (items: RagResult[]): Result<RagResult[], RagError> => ({
       ok: true,
       value: this.cut.cut(items, k).slice(0, budget),
@@ -4875,7 +6094,7 @@ Spec §3.3 (incl. `companionRecordIds`, S7), §6.1 (bind once, reuse), §7.2, §
 - Modify: `packages/llm-agent-libs/src/collections/index.ts`
 
 **Interfaces:**
-- Consumes: `StagedRetrieval` (Tasks 12–14); `prepareItem`, `storeItems`, `getItem`, `removeItem`, `listedCompanions` (Task 11); `isIndexNoteSource`, `IndexNote` (Task 3); `StrategyRag`, `hasRetrievalStrategy` (`src/retrieval/strategy-rag.ts`); indexers of Tasks 8–10.
+- Consumes: `StagedRetrieval` (Tasks 12–14); `prepareItem`, `storeItems` (with the companion stores, F3), `getItem`, `removeItem` (Task 11); `isIndexNoteSource`, `IndexNote` (Task 3); `StrategyRag`, `hasRetrievalStrategy` (`src/retrieval/strategy-rag.ts`); indexers of Tasks 8–10.
 - Produces:
   ```ts
   export interface ComposedToolsProfileOptions { readonly indexer: IItemIndexer<ToolItem>; readonly companions?: Readonly<Record<string, IItemIndexer<ToolItem>>>; readonly pool: ICandidatePool; readonly collapse: ICollapseRule; readonly rerank?: StagedRetrievalOptions['rerank']; readonly decompose?: StagedRetrievalOptions['decompose']; readonly cut?: IItemCut; readonly telemetry?: StagedRetrievalOptions['telemetry'] }
@@ -5348,7 +6567,7 @@ Expected: PASS.
 
 - [ ] **Step 5: Companion records on remove and replacement (S7); notes in the report (S1)**
 
-Spec §3.3 (amended): the canonical record lists the item's companion records in `companionRecordIds`; `remove` and replacement delete them from the companion store. Spec §7.3.2: the binding collects `IIndexNoteSource` notes into `IndexReport.notes`. Write order (spec §3.3): companion records → primary non-canonical → canonical → stale deletes in each store.
+Spec §3.3 (amended): the canonical record lists the item's companion records in `companionRecordIds`; `remove` and replacement delete them from the companion store — through Task 11's `storeItems` / `removeItem`, which check every delete and keep failures in `staleCompanionRecordIds` for retry (F3). Spec §7.3.2: the binding collects `IIndexNoteSource` notes into `IndexReport.notes`. Write order (spec §3.3): companion records → primary non-canonical → canonical → stale deletes in each store.
 
 Append to `composed-tools-profile.test.ts`:
 
@@ -5383,6 +6602,35 @@ describe('companion records (S7) and notes (S1) in the binding', () => {
     assert.ok(canon.ok && canon.value?.metadata.companionRecordIds === undefined);
   });
 
+  it('F3: a failed stale companion delete is reported cleanup-failed and retried by the next index', async () => {
+    const rag = new InMemoryRag();
+    const rawIntents = new InMemoryRag();
+    const cid = recordId(G, 'tool:read_file', 'intent', 0);
+    let fail = true;
+    const w = rawIntents.writer();
+    const intents = {
+      ...rawIntents,
+      query: rawIntents.query.bind(rawIntents),
+      getById: rawIntents.getById.bind(rawIntents),
+      writer: () => ({ ...w, deleteByIdRaw: async (id: string, o?: CallOptions) => (fail && id === cid ? { ok: false as const, error: new RagError('down') } : w.deleteByIdRaw(id, o)) }),
+    } as IRag;
+    await companionProfile({ read_file: ['open my notes'] }).bind({ key: 'tools', rag, companions: { intents } }).index(TOOLS);
+    const again = companionProfile({}).bind({ key: 'tools', rag, companions: { intents } });
+    const r1 = await again.index(TOOLS);
+    assert.ok(r1.ok);
+    assert.deepEqual(r1.value.failedItems.map((f) => f.itemId), ['tool:read_file']);
+    assert.match(r1.value.failedItems[0].reason, /^cleanup-failed/);
+    fail = false;
+    const r2 = await again.index(TOOLS);
+    assert.ok(r2.ok && r2.value.failedItems.length === 0);
+    const gone = await rawIntents.getById(cid);
+    assert.ok(gone.ok && gone.value === null);
+    const n = await again.remove([{ itemId: 'tool:read_file', owner: G }]);
+    assert.ok(n.ok);
+    const canon = await rag.getById(recordId(G, 'tool:read_file', 'full', 0));
+    assert.ok(canon.ok && canon.value === null);
+  });
+
   it('a failed companion write fails the item before its primary records are written', async () => {
     const rag = new InMemoryRag();
     const broken = new InMemoryRag();
@@ -5411,11 +6659,11 @@ describe('companion records (S7) and notes (S1) in the binding', () => {
   });
 });
 ```
-Add `RagError` to the test's `@mcp-abap-adt/llm-agent` import. (If `InMemoryRag.writer()` returns a fresh object per call, wrap the store instead: `{ ...broken, writer: () => ({ ...broken.writer(), upsertRaw: async () => ({ ok: false, error: new RagError('down') }) }) }` cast to `IRag`, keeping `getById` / `query` delegating.)
+Add `RagError` and `type CallOptions` to the test's `@mcp-abap-adt/llm-agent` import. (If `InMemoryRag.writer()` returns a fresh object per call, wrap the store instead: `{ ...broken, writer: () => ({ ...broken.writer(), upsertRaw: async () => ({ ok: false, error: new RagError('down') }) }) }` cast to `IRag`, keeping `getById` / `query` delegating.)
 
 Run it: FAIL — no `companionRecordIds`; `remove` leaves the intent; no `notes`.
 
-In `composed-tools-profile.ts`: add `type IndexNote`, `isIndexNoteSource` to the `@mcp-abap-adt/llm-agent` import and `listedCompanions` to the `./record-writer.js` import. Replace `ToolsBinding.index` and `ToolsBinding.remove` with:
+In `composed-tools-profile.ts`: add `type IndexNote`, `isIndexNoteSource` to the `@mcp-abap-adt/llm-agent` import. Replace `ToolsBinding.index` and `ToolsBinding.remove` with:
 
 ```ts
   async index(
@@ -5512,10 +6760,13 @@ In `composed-tools-profile.ts`: add `type IndexNote`, `isIndexNoteSource` to the
       const why = sideFailed.get(x.at);
       if (why) failedItems.push({ itemId: items[x.at].itemId, reason: why });
     }
+    // S7 + F3: storeItems deletes the stale companion records too (every Result checked)
+    // and reports `cleanup-failed` when one is kept for retry.
     const main = await storeItems(
       this.target.rag,
       live.map((x) => x.item),
       options,
+      Object.fromEntries(this.companions.map(([name, , rag]) => [name, rag])),
     );
     records += main.records;
     let indexedItems = 0;
@@ -5528,15 +6779,6 @@ In `composed-tools-profile.ts`: add `type IndexNote`, `isIndexNoteSource` to the
         continue;
       }
       indexedItems++;
-      // S7: companion records the previous canonical listed and this one does not.
-      const now = listedCompanions(x.item.canonical?.metadata);
-      for (const [name, ids] of Object.entries(main.oldCompanions[i])) {
-        const keep = new Set(now[name] ?? []);
-        const w = this.companionStore(name)?.writer?.();
-        for (const id of ids) {
-          if (!keep.has(id)) await w?.deleteByIdRaw(id, options);
-        }
-      }
     }
     return {
       ok: true,
@@ -5548,10 +6790,6 @@ In `composed-tools-profile.ts`: add `type IndexNote`, `isIndexNoteSource` to the
         ...(notes.length > 0 ? { notes } : {}),
       },
     };
-  }
-
-  private companionStore(name: string): IRag | undefined {
-    return this.companions.find(([n]) => n === name)?.[2];
   }
 
   async remove(
@@ -5595,7 +6833,7 @@ Claude-Session: https://claude.ai/code/session_012KjevEeQGZMkWMfnupJ7Yd"
 
 ## Task 16: Default compositions — `mcpToolsVariants` (libs)
 
-Spec §7.1, §7.4 (the table — every tuned number cites it), §5.5 (both named rerankers are `DecisionReranker` over an injected `IDecisionModel`); D11, D16, D23.
+Spec §7.1, §7.4 (the table — every tuned number cites it), §5.5 (`faceted-cohere` = `RelevanceReranker` over an `IRelevanceDecision`; `faceted-jev`, `small-set-jev` = `ProbabilityReranker` over an `IProbabilityDecision`); §4.9 (every `FixedItemsCut` is a ceiling under k); D11, D16, D23, D24, D27.
 
 **Files:**
 - Create: `packages/llm-agent-libs/src/collections/mcp-tools-variants.ts`
@@ -5604,7 +6842,7 @@ Spec §7.1, §7.4 (the table — every tuned number cites it), §5.5 (both named
 - Modify: `packages/llm-agent-libs/src/collections/index.ts`, `tsconfig.typecheck.json`
 
 **Interfaces:**
-- Consumes: `ComposedToolsProfile` (Task 15); `FacetedToolIndexer`, `SummaryFacet`, `ParametersFacet`, `IntentRecordIndexer`, `IntentCompanionIndexer`, `ItemPool`, `MaxScoreCollapse`, `FixedItemsCut`; `DecisionReranker`, `TOOL_QUESTION` (`src/reranker/decision-reranker.ts`); `IDecisionModel`, `IReranker`, `IToolIntentSource`. (Libs never imports a provider package: the Cohere model `SapAiCoreDecisionModel` of Task 18 arrives as an `IDecisionModel`.)
+- Consumes: `ComposedToolsProfile` (Task 15); `FacetedToolIndexer`, `SummaryFacet`, `ParametersFacet`, `IntentRecordIndexer`, `IntentCompanionIndexer`, `ItemPool`, `MaxScoreCollapse`, `FixedItemsCut`; `ProbabilityReranker`, `RelevanceReranker`, `TOOL_QUESTION` (`@mcp-abap-adt/llm-agent-reranker`, Tasks 4B–4C); `IProbabilityDecision`, `IRelevanceDecision`, `IReranker`, `IToolIntentSource`. (Libs never imports a provider package: Cohere's `SapAiCoreRelevanceDecision` of Task 18 arrives as an `IRelevanceDecision`, Jev as an `IProbabilityDecision`.)
 - Produces:
   ```ts
   export type VariantIntents = { readonly record: IToolIntentSource } | { readonly companion: IToolIntentSource };
@@ -5612,9 +6850,9 @@ Spec §7.1, §7.4 (the table — every tuned number cites it), §5.5 (both named
   export const mcpToolsVariants: {
     baseline(): undefined;
     faceted(o?: VariantOptions): ComposedToolsProfile;
-    facetedCohere(o: VariantOptions & { decisionModel: IDecisionModel }): ComposedToolsProfile; // the Cohere model (SapAiCoreDecisionModel)
-    facetedJev(o: VariantOptions & { decisionModel: IDecisionModel }): ComposedToolsProfile;
-    smallSetJev(o: VariantOptions & { decisionModel: IDecisionModel; poolItems: number }): ComposedToolsProfile;
+    facetedCohere(o: VariantOptions & { relevanceDecision: IRelevanceDecision }): ComposedToolsProfile; // Cohere: SapAiCoreRelevanceDecision
+    facetedJev(o: VariantOptions & { probabilityDecision: IProbabilityDecision }): ComposedToolsProfile;
+    smallSetJev(o: VariantOptions & { probabilityDecision: IProbabilityDecision; poolItems: number }): ComposedToolsProfile;
   };
   export const MCP_TOOLS_VARIANT_NAMES: readonly ['baseline', 'faceted', 'faceted-cohere', 'faceted-jev', 'small-set-jev'];
   // companion placement binds with companions: { intents: <IRag> }
@@ -5626,8 +6864,13 @@ Spec §7.1, §7.4 (the table — every tuned number cites it), §5.5 (both named
 // packages/llm-agent-libs/src/collections/__tests__/mcp-tools-variants.test.ts
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import type { IDecisionModel, IItemIndexer, ToolItem } from '@mcp-abap-adt/llm-agent';
-import { DecisionReranker } from '../../reranker/decision-reranker.js';
+import type {
+  IItemIndexer,
+  IProbabilityDecision,
+  IRelevanceDecision,
+  ToolItem,
+} from '@mcp-abap-adt/llm-agent';
+import { ProbabilityReranker, RelevanceReranker } from '@mcp-abap-adt/llm-agent-reranker';
 import {
   type ComposedToolsProfile,
   EnumValueToolIndexer,
@@ -5639,21 +6882,22 @@ import {
   MaxScoreCollapse,
   mcpToolsVariants,
   NameTailFacet,
+  ParameterNamesToolText,
   ParametersFacet,
   StaticIntentSource,
   SummaryFacet,
   TokenBudgetCut,
 } from '../index.js';
 
-const model = { decide: async () => ({ ok: true, value: { model: 'm', answers: {} } }) } as unknown as IDecisionModel;
-const cohereModel = { model: 'cohere-rerank', decide: async () => ({ ok: true, value: { model: 'cohere-rerank', answers: {} } }) } as unknown as IDecisionModel;
+const model: IProbabilityDecision = { decide: async () => ({ ok: true, value: { model: 'm', answers: {} } }) };
+const cohere: IRelevanceDecision = { model: 'cohere-rerank', score: async () => ({ ok: true, value: { model: 'cohere-rerank', scores: [] } }) };
 
 function shape(p: ComposedToolsProfile) {
   const c = p.composition;
   return {
     pool: (c.pool as ItemPool).items,
     collapse: c.collapse instanceof MaxScoreCollapse,
-    cut: c.cut instanceof FixedItemsCut ? c.cut.k : undefined,
+    cut: c.cut instanceof FixedItemsCut ? c.cut.n : undefined,
     reranker: c.rerank?.reranker,
     onFailure: c.rerank?.onFailure,
     decompose: c.decompose,
@@ -5666,9 +6910,9 @@ function facetsOf(indexer: IItemIndexer<ToolItem>): readonly object[] {
 }
 const all = () => [
   mcpToolsVariants.faceted(),
-  mcpToolsVariants.facetedCohere({ decisionModel: cohereModel }),
-  mcpToolsVariants.facetedJev({ decisionModel: model }),
-  mcpToolsVariants.smallSetJev({ decisionModel: model, poolItems: 25 }),
+  mcpToolsVariants.facetedCohere({ relevanceDecision: cohere }),
+  mcpToolsVariants.facetedJev({ probabilityDecision: model }),
+  mcpToolsVariants.smallSetJev({ probabilityDecision: model, poolItems: 25 }),
 ];
 
 describe('mcpToolsVariants — the §7.4 table, exactly', () => {
@@ -5680,27 +6924,36 @@ describe('mcpToolsVariants — the §7.4 table, exactly', () => {
     assert.deepEqual(facetsOf(p.composition.indexer).map((f) => f.constructor), [SummaryFacet, ParametersFacet]);
     assert.deepEqual(shape(p), { pool: 15, collapse: true, cut: 8, reranker: undefined, onFailure: undefined, decompose: undefined });
   });
-  it('faceted-cohere: ItemPool(30) + DecisionReranker over the given (Cohere) model + FixedItemsCut(5)', () => {
-    const s = shape(mcpToolsVariants.facetedCohere({ decisionModel: cohereModel }));
-    assert.ok(s.reranker instanceof DecisionReranker);
+  it('faceted-cohere: ItemPool(30) + RelevanceReranker over the given relevance decision + FixedItemsCut(5)', () => {
+    const s = shape(mcpToolsVariants.facetedCohere({ relevanceDecision: cohere }));
+    assert.ok(s.reranker instanceof RelevanceReranker);
     assert.deepEqual({ ...s, reranker: undefined }, { pool: 30, collapse: true, cut: 5, reranker: undefined, onFailure: 'stage1', decompose: undefined });
   });
-  it('faceted-cohere and faceted-jev are the same composition with a different model (spec §5.5)', () => {
-    const c = shape(mcpToolsVariants.facetedCohere({ decisionModel: cohereModel }));
-    const j = shape(mcpToolsVariants.facetedJev({ decisionModel: model }));
+  it('faceted-cohere and faceted-jev share indexing, pool, collapse and cut; only the reranker differs (spec §5.5)', () => {
+    const c = shape(mcpToolsVariants.facetedCohere({ relevanceDecision: cohere }));
+    const j = shape(mcpToolsVariants.facetedJev({ probabilityDecision: model }));
     assert.deepEqual({ ...c, reranker: undefined }, { ...j, reranker: undefined });
   });
-  it('faceted-jev: ItemPool(30) + DecisionReranker + FixedItemsCut(5)', () => {
-    const s = shape(mcpToolsVariants.facetedJev({ decisionModel: model }));
-    assert.ok(s.reranker instanceof DecisionReranker);
+  it('faceted-jev: ItemPool(30) + ProbabilityReranker + FixedItemsCut(5)', () => {
+    const s = shape(mcpToolsVariants.facetedJev({ probabilityDecision: model }));
+    assert.ok(s.reranker instanceof ProbabilityReranker);
     assert.deepEqual([s.pool, s.cut], [30, 5]);
   });
-  it('small-set-jev: FacetedToolIndexer([]) + ItemPool(poolItems) + max + DecisionReranker + FixedItemsCut(3)', () => {
-    const p = mcpToolsVariants.smallSetJev({ decisionModel: model, poolItems: 25 });
+  it('small-set-jev: FacetedToolIndexer([]) + ItemPool(poolItems) + max + ProbabilityReranker + FixedItemsCut(3)', () => {
+    const p = mcpToolsVariants.smallSetJev({ probabilityDecision: model, poolItems: 25 });
     assert.deepEqual(facetsOf(p.composition.indexer), []);
     const s = shape(p);
-    assert.ok(s.reranker instanceof DecisionReranker);
+    assert.ok(s.reranker instanceof ProbabilityReranker);
     assert.deepEqual([s.pool, s.cut, s.collapse], [25, 3, true]);
+  });
+  it('every variant cut is a ceiling under the caller k (F1)', () => {
+    for (const p of all()) assert.equal(p.composition.cut?.limit(2), 2);
+  });
+  it('the default provider text stays C0 (ParameterNamesToolText) in every variant (F4)', () => {
+    for (const p of all()) {
+      const base = p.composition.indexer instanceof IntentRecordIndexer ? p.composition.indexer.inner : p.composition.indexer;
+      assert.ok(base instanceof FacetedToolIndexer && base.text instanceof ParameterNamesToolText);
+    }
   });
   it('no variant contains NameTailFacet, EnumValueToolIndexer or TokenBudgetCut', () => {
     for (const p of all()) {
@@ -5718,11 +6971,11 @@ describe('mcpToolsVariants — the §7.4 table, exactly', () => {
   });
   it("the consumer's decomposer is passed through; none otherwise", () => {
     const decompose = { decomposer: { name: 'd', decompose: async () => ({ ok: true as const, value: [] }) }, queryEmbedder: { embedQuery: async () => ({ vector: [1] }) } };
-    assert.equal(mcpToolsVariants.facetedJev({ decisionModel: model, decompose }).composition.decompose, decompose);
+    assert.equal(mcpToolsVariants.facetedJev({ probabilityDecision: model, decompose }).composition.decompose, decompose);
     for (const p of all()) assert.equal(p.composition.decompose, undefined);
   });
   it('poolItems must be a positive integer', () => {
-    assert.throws(() => mcpToolsVariants.smallSetJev({ decisionModel: model, poolItems: 0 }));
+    assert.throws(() => mcpToolsVariants.smallSetJev({ probabilityDecision: model, poolItems: 0 }));
   });
 });
 ```
@@ -5730,20 +6983,30 @@ describe('mcpToolsVariants — the §7.4 table, exactly', () => {
 ```ts
 // packages/llm-agent-libs/src/collections/__tests__/collection-profile.typecheck.ts
 // Compile-time assertions only: listed in tsconfig.typecheck.json, run by `npm run typecheck`.
-import type { IDecisionModel, IToolIntentSource } from '@mcp-abap-adt/llm-agent';
+import type {
+  IProbabilityDecision,
+  IRelevanceDecision,
+  IToolIntentSource,
+} from '@mcp-abap-adt/llm-agent';
 import { mcpToolsVariants } from '../mcp-tools-variants.js';
 
-declare const model: IDecisionModel;
+declare const model: IProbabilityDecision;
+declare const cohere: IRelevanceDecision;
 declare const intents: IToolIntentSource;
-export const _ok = mcpToolsVariants.smallSetJev({ decisionModel: model, poolItems: 25 });
+export const _ok = mcpToolsVariants.smallSetJev({ probabilityDecision: model, poolItems: 25 });
+export const _okCohere = mcpToolsVariants.facetedCohere({ relevanceDecision: cohere });
 // @ts-expect-error intents are refused on baseline
 export const _baselineIntents = mcpToolsVariants.baseline({ intents: { record: intents } });
 // @ts-expect-error small-set-jev needs poolItems
-export const _noPool = mcpToolsVariants.smallSetJev({ decisionModel: model });
-// @ts-expect-error faceted-jev needs a decision model
+export const _noPool = mcpToolsVariants.smallSetJev({ probabilityDecision: model });
+// @ts-expect-error faceted-jev needs a probability decision
 export const _noModel = mcpToolsVariants.facetedJev({});
-// @ts-expect-error faceted-cohere needs a decision model (Cohere: SapAiCoreDecisionModel)
+// @ts-expect-error faceted-cohere needs a relevance decision (Cohere: SapAiCoreRelevanceDecision)
 export const _noCohere = mcpToolsVariants.facetedCohere({});
+// @ts-expect-error faceted-cohere does not take a probability decision (spec §5.5)
+export const _wrongKind = mcpToolsVariants.facetedCohere({ relevanceDecision: model });
+// @ts-expect-error small-set-jev does not take a relevance decision
+export const _wrongKind2 = mcpToolsVariants.smallSetJev({ probabilityDecision: cohere, poolItems: 25 });
 ```
 
 Add `"packages/llm-agent-libs/src/collections/__tests__/collection-profile.typecheck.ts"` to `tsconfig.typecheck.json` `include`.
@@ -5764,15 +7027,20 @@ Expected: FAIL — `mcpToolsVariants` not exported.
  * in-store scoring, measured on mcp-abap-adt (one consumer, one server).
  */
 import type {
-  IDecisionModel,
   IItemIndexer,
+  IProbabilityDecision,
+  IRelevanceDecision,
   IReranker,
   IToolIntentSource,
   ToolItem,
 } from '@mcp-abap-adt/llm-agent';
-// Both named rerankers are DecisionReranker over an injected IDecisionModel (spec §5.5):
-// Cohere = SapAiCoreDecisionModel (@mcp-abap-adt/sap-aicore-decision), Jev = TypeSafeDecisionModel.
-import { DecisionReranker, TOOL_QUESTION } from '../reranker/decision-reranker.js';
+// spec §5.5: Cohere = RelevanceReranker over an IRelevanceDecision (SapAiCoreRelevanceDecision);
+// Jev = ProbabilityReranker over an IProbabilityDecision (TypeSafeDecisionModel).
+import {
+  ProbabilityReranker,
+  RelevanceReranker,
+  TOOL_QUESTION,
+} from '@mcp-abap-adt/llm-agent-reranker';
 import { assertPositiveInteger } from '../util/assert-positive-integer.js';
 import { ComposedToolsProfile } from './composed-tools-profile.js';
 import { FixedItemsCut } from './cuts.js';
@@ -5828,13 +7096,17 @@ const passThrough = (o: VariantOptions) => ({
   ...(o.telemetry ? { telemetry: o.telemetry } : {}),
 });
 
-/** DecisionReranker + TOOL_QUESTION over the model the composition names. Cohere reads
- *  neither task nor criteria (spec §5.2); Jev reads both. */
-const toolReranker = (model: IDecisionModel): IReranker =>
-  new DecisionReranker(model, {
+/** Jev: ProbabilityReranker + TOOL_QUESTION wording (spec §5.5). */
+const probabilityToolReranker = (decision: IProbabilityDecision): IReranker =>
+  new ProbabilityReranker(decision, {
     task: TOOL_QUESTION.task,
     criteria: TOOL_QUESTION.criteria,
   });
+
+/** Cohere: RelevanceReranker — no wording; every candidate in ONE call (spec §5.2).
+ *  Its scores are NOT probabilities; no default thresholds them. */
+const relevanceToolReranker = (decision: IRelevanceDecision): IReranker =>
+  new RelevanceReranker(decision);
 
 export const mcpToolsVariants = {
   /** No choice made: 30.1.0, one record per tool + top-k records. Binds nothing.
@@ -5856,15 +7128,15 @@ export const mcpToolsVariants = {
     });
   },
 
-  /** Fine-grained + Cohere on SAP AI Core: pass a SapAiCoreDecisionModel. Pool 30
-   *  ITEMS (non-English 0.962 vs 0.846–0.885 with 30 records), k=5. Not measured as
-   *  one composition. ≤ 30 tools per query → typically one /rerank call. */
-  facetedCohere(o: VariantOptions & { decisionModel: IDecisionModel }): ComposedToolsProfile {
+  /** Fine-grained + Cohere on SAP AI Core: pass a SapAiCoreRelevanceDecision. Pool 30
+   *  ITEMS (non-English 0.962 vs 0.846–0.885 with 30 records), at most 5 (a ceiling
+   *  under k). Not measured as one composition. ≤ 30 tools per query → one /rerank call. */
+  facetedCohere(o: VariantOptions & { relevanceDecision: IRelevanceDecision }): ComposedToolsProfile {
     return new ComposedToolsProfile({
       ...indexing(facetedBase(), o.intents),
       pool: new ItemPool(30),
       collapse: new MaxScoreCollapse(),
-      rerank: { reranker: toolReranker(o.decisionModel), onFailure: 'stage1' },
+      rerank: { reranker: relevanceToolReranker(o.relevanceDecision), onFailure: 'stage1' },
       cut: new FixedItemsCut(5),
       ...passThrough(o),
     });
@@ -5872,12 +7144,12 @@ export const mcpToolsVariants = {
 
   /** Fine-grained + TypeSafe Jev. Pool 30 items, k=5. TO BE MEASURED AS ONE
    *  COMPOSITION ON FRESH CONSUMER QUERIES BEFORE PROMOTION (D11). */
-  facetedJev(o: VariantOptions & { decisionModel: IDecisionModel }): ComposedToolsProfile {
+  facetedJev(o: VariantOptions & { probabilityDecision: IProbabilityDecision }): ComposedToolsProfile {
     return new ComposedToolsProfile({
       ...indexing(facetedBase(), o.intents),
       pool: new ItemPool(30),
       collapse: new MaxScoreCollapse(),
-      rerank: { reranker: toolReranker(o.decisionModel), onFailure: 'stage1' },
+      rerank: { reranker: probabilityToolReranker(o.probabilityDecision), onFailure: 'stage1' },
       cut: new FixedItemsCut(5),
       ...passThrough(o),
     });
@@ -5889,14 +7161,14 @@ export const mcpToolsVariants = {
    *  k=5 0.970). `poolItems` is the consumer's tool count, not a tuned number:
    *  the composition root checks poolItems ≥ the count at startup (D23). */
   smallSetJev(
-    o: VariantOptions & { decisionModel: IDecisionModel; poolItems: number },
+    o: VariantOptions & { probabilityDecision: IProbabilityDecision; poolItems: number },
   ): ComposedToolsProfile {
     assertPositiveInteger('smallSetJev', 'poolItems', o.poolItems);
     return new ComposedToolsProfile({
       ...indexing(new FacetedToolIndexer([]), o.intents),
       pool: new ItemPool(o.poolItems),
       collapse: new MaxScoreCollapse(),
-      rerank: { reranker: toolReranker(o.decisionModel), onFailure: 'stage1' },
+      rerank: { reranker: probabilityToolReranker(o.probabilityDecision), onFailure: 'stage1' },
       cut: new FixedItemsCut(3),
       ...passThrough(o),
     });
@@ -6405,30 +7677,30 @@ Claude-Session: https://claude.ai/code/session_012KjevEeQGZMkWMfnupJ7Yd"
 
 ---
 
-## Task 18: New package `@mcp-abap-adt/sap-aicore-decision` — `SapAiCoreDecisionModel`
+## Task 18: New package `@mcp-abap-adt/sap-aicore-decision` — `SapAiCoreRelevanceDecision`
 
-Spec §5 (all), §11; D2 (amended), D10; the goal decision of 2026-10-05 (Cohere reuses what exists). Same shape as `typesafe-decision`: one vendor, one role, peers only, plain `fetch`. Cohere Rerank on SAP AI Core becomes one more `IDecisionModel`; the existing `DecisionReranker` uses it (Tasks 16, 22, 24). No reranker contract, no cross-encoder abstraction.
+Spec §5.3, §5.4, §11; D2 (amended twice), D10, D25. Same shape as `typesafe-decision`: one vendor, one role, peers only, plain `fetch`. Cohere Rerank on SAP AI Core is an **`IRelevanceDecision`** (Task 4A) — a relevance score per passage, **not** a probability; `RelevanceReranker` (Task 4C) adapts it (Tasks 16, 22, 24). The withdrawn `SapAiCoreDecisionModel` (Cohere behind `IDecisionModel`) is not built.
 
 **Files:**
 - Create: `packages/sap-aicore-decision/package.json`, `tsconfig.json`, `README.md`, `CHANGELOG.md`
 - Create (copies): `packages/sap-aicore-decision/LICENSE`, `packages/sap-aicore-decision/GPL-3.0.txt` (from `packages/typesafe-decision/`)
-- Create: `packages/sap-aicore-decision/src/index.ts`, `src/sap-aicore-decision-model.ts`, `src/map-rerank.ts`, `src/__tests__/fake-fetch.ts`, `src/__tests__/sap-aicore-decision-model.test.ts`
+- Create: `packages/sap-aicore-decision/src/index.ts`, `src/sap-aicore-relevance-decision.ts`, `src/map-rerank.ts`, `src/__tests__/fake-fetch.ts`, `src/__tests__/sap-aicore-relevance-decision.test.ts`
 - Modify: root `package.json` (`build`, `clean` lists — after `packages/typesafe-decision`), `scripts/publish-all.sh` (`PACKAGES`, after `typesafe-decision` — the order list only; nothing is published here), `packages/llm-agent-server/package.json` (`dependencies`), `packages/llm-agent-server/tsconfig.json` (`references`), `package-lock.json` (via `npm install`)
 
 **Interfaces:**
-- Consumes: `IDecisionModel`, `DecisionRequest`, `DecisionResult`, `DecisionAnswer`, `DecisionError`, `DecisionErrorCode`, `CallOptions`, `Result` (`@mcp-abap-adt/llm-agent`, `src/interfaces/decision-model.ts` — the codes used all exist: `DECISION_UNSUPPORTED_QUESTION`, `DECISION_INVALID_REQUEST`, `DECISION_AUTH`, `DECISION_RATE_LIMITED`, `DECISION_UNAVAILABLE`, `DECISION_ABORTED`, `DECISION_ERROR`); `IBearerCredential` (`@mcp-abap-adt/interfaces-auth`, `token(): Promise<string>`).
-- No dependency on `@mcp-abap-adt/sap-aicore-auth`: the AI Core token exchange is reused through the composition root (`credential-for.ts` → `serviceKeyCredential` → `TokenProvider`), exactly as the AI Core embedder and LLM receive their injected `IBearerCredential` (spec §5.2, verified in the repo).
+- Consumes: `IRelevanceDecision`, `RelevanceRequest`, `RelevanceResult`, `RelevanceScore`, `DecisionError`, `DecisionErrorCode`, `CallOptions`, `Result` (`@mcp-abap-adt/llm-agent`, Task 4A — the codes used all exist: `DECISION_INVALID_REQUEST`, `DECISION_AUTH`, `DECISION_RATE_LIMITED`, `DECISION_UNAVAILABLE`, `DECISION_ABORTED`, `DECISION_ERROR`; `DECISION_UNSUPPORTED_QUESTION` is never returned); `IBearerCredential` (`@mcp-abap-adt/interfaces-auth`, `token(): Promise<string>`).
+- No dependency on `@mcp-abap-adt/sap-aicore-auth`: the AI Core token exchange is reused through the composition root (`credential-for.ts` → `serviceKeyCredential` → `TokenProvider`), exactly as the AI Core embedder and LLM receive their injected `IBearerCredential` (spec §5.3, verified in the repo).
 - Produces:
   ```ts
   export type FetchLike = (url: string, init: RequestInit) => Promise<Response>;
-  export interface SapAiCoreDecisionConfig { deploymentId: string; model: string; resourceGroup?: string; apiBaseUrl: string; credential: IBearerCredential; fetch?: FetchLike }
+  export interface SapAiCoreRelevanceConfig { deploymentId: string; model: string; resourceGroup?: string; apiBaseUrl: string; credential: IBearerCredential; fetch?: FetchLike }
   export const SAP_AICORE_DEFAULT_RESOURCE_GROUP = 'default';
-  export class SapAiCoreDecisionModel implements IDecisionModel { constructor(cfg: SapAiCoreDecisionConfig); readonly model: string }
-  // decide(): every question noul + string instructions.passage, string state → ONE
+  export class SapAiCoreRelevanceDecision implements IRelevanceDecision { constructor(cfg: SapAiCoreRelevanceConfig); readonly model: string }
+  // score({ query, passages }) → ONE
   //   POST {apiBaseUrl}/v2/inference/deployments/{deploymentId}/rerank
-  //   { model, query: state, documents: passages (question order), top_n: n }
-  //   → answers[key] = { type: 'noul', probability: relevance_score }
-  // otherwise DecisionError (codes above); never a zero-filled or dropped answer
+  //   { model, query, documents: passages, top_n: passages.length }
+  //   → scores: results.map(r => ({ index: r.index, score: r.relevance_score }))  — NOT a probability
+  // otherwise DecisionError (codes above); never a zero-filled or dropped score
   ```
 
 - [ ] **Step 1: Scaffold the package**
@@ -6438,7 +7710,7 @@ Spec §5 (all), §11; D2 (amended), D10; the goal decision of 2026-10-05 (Cohere
 {
   "name": "@mcp-abap-adt/sap-aicore-decision",
   "version": "30.1.0",
-  "description": "Cohere Rerank on an SAP AI Core deployment as a decision model (IDecisionModel) for @mcp-abap-adt/llm-agent.",
+  "description": "Cohere Rerank on an SAP AI Core deployment as a relevance decision (IRelevanceDecision) for @mcp-abap-adt/llm-agent.",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -6469,7 +7741,7 @@ Spec §5 (all), §11; D2 (amended), D10; the goal decision of 2026-10-05 (Cohere
   }
 }
 ```
-(`version` 30.1.0 is the current lockstep version so the workspace resolves — not a bump; the release step bumps every package together. The peer ranges are the ones `typesafe-decision` declares, as `scoped-dependencies.test.ts` requires.)
+(`version` 30.1.0 is the current lockstep version so the workspace resolves — not a bump; the release step bumps every package together and must raise the `llm-agent` peer floor to the release that first exports `IRelevanceDecision`. The peer ranges are the ones `typesafe-decision` declares, as `scoped-dependencies.test.ts` requires.)
 
 ```json
 // packages/sap-aicore-decision/tsconfig.json
@@ -6490,7 +7762,7 @@ Spec §5 (all), §11; D2 (amended), D10; the goal decision of 2026-10-05 (Cohere
 Run:
 ```bash
 cp packages/typesafe-decision/LICENSE packages/typesafe-decision/GPL-3.0.txt packages/sap-aicore-decision/
-printf '# Changelog\n\n## [Unreleased]\n\n- New package: `SapAiCoreDecisionModel`, Cohere Rerank on an SAP AI Core deployment as an `IDecisionModel` (yes/no questions with a passage; one `/rerank` call per decision request). Used by `DecisionReranker`.\n' > packages/sap-aicore-decision/CHANGELOG.md
+printf '# Changelog\n\n## [Unreleased]\n\n- New package: `SapAiCoreRelevanceDecision`, Cohere Rerank on an SAP AI Core deployment as an `IRelevanceDecision` (one relevance score per passage — not a probability; one `/rerank` call per `score`). Adapted by `RelevanceReranker` (`@mcp-abap-adt/llm-agent-reranker`).\n' > packages/sap-aicore-decision/CHANGELOG.md
 ```
 
 `packages/sap-aicore-decision/README.md`:
@@ -6500,20 +7772,24 @@ printf '# Changelog\n\n## [Unreleased]\n\n- New package: `SapAiCoreDecisionModel
 [![Stand With Ukraine](https://raw.githubusercontent.com/vshymanskyy/StandWithUkraine/main/badges/StandWithUkraine.svg)](https://stand-with-ukraine.pp.ua)
 [![License: LGPL v3](https://img.shields.io/badge/License-LGPL_v3-blue.svg)](https://www.gnu.org/licenses/lgpl-3.0)
 
-Cohere Rerank on **SAP AI Core** as a decision model (`IDecisionModel`) for `@mcp-abap-adt/llm-agent`.
+Cohere Rerank on **SAP AI Core** as a relevance decision (`IRelevanceDecision`) for `@mcp-abap-adt/llm-agent`.
 
-**TL;DR** — `SapAiCoreDecisionModel` answers yes/no questions about a passage with the passage's
-relevance score. Put it into the existing `DecisionReranker` and you have a Cohere reranker: in a
-collection profile (`faceted-cohere`), in `rag.retrieval` (`reranker: decision`) or anywhere an
-`IReranker` is taken.
+**TL;DR** — `SapAiCoreRelevanceDecision` scores how relevant each passage is to a query. Put it into
+`RelevanceReranker` (`@mcp-abap-adt/llm-agent-reranker`) and you have a Cohere reranker: in a
+collection profile (`faceted-cohere`), in `rag.retrieval` (`reranker: decision` with
+`decision.provider: sap-aicore`) or anywhere an `IReranker` is taken.
+
+> **A relevance score is not a probability.** Compare scores only within one call. A threshold on
+> them is your calibration for this provider; no default composition uses one.
 
 ```ts
-import { DecisionReranker, mcpToolsVariants, TOOL_QUESTION } from '@mcp-abap-adt/llm-agent-libs';
+import { RelevanceReranker } from '@mcp-abap-adt/llm-agent-reranker';
+import { mcpToolsVariants } from '@mcp-abap-adt/llm-agent-libs';
 import { serviceKeyCredential } from '@mcp-abap-adt/sap-aicore-auth';
-import { SapAiCoreDecisionModel } from '@mcp-abap-adt/sap-aicore-decision';
+import { SapAiCoreRelevanceDecision } from '@mcp-abap-adt/sap-aicore-decision';
 
 const { credential, apiBaseUrl } = serviceKeyCredential(process.env.AICORE_SERVICE_KEY ?? '');
-const cohere = new SapAiCoreDecisionModel({
+const cohere = new SapAiCoreRelevanceDecision({
   deploymentId: 'd1234567890',   // the AI Core deployment serving the rerank model
   model: 'cohere-rerank',        // sent as `model`
   resourceGroup: 'default',      // header AI-Resource-Group (default 'default')
@@ -6521,34 +7797,28 @@ const cohere = new SapAiCoreDecisionModel({
   credential,
 });
 
-const reranker = new DecisionReranker(cohere, { task: TOOL_QUESTION.task, criteria: TOOL_QUESTION.criteria });
-const profile = mcpToolsVariants.facetedCohere({ decisionModel: cohere });
+const reranker = new RelevanceReranker(cohere);                       // every candidate in one call
+const profile = mcpToolsVariants.facetedCohere({ relevanceDecision: cohere });
 ```
 
-## What it answers
+## What it does
 
-| Request | Result |
-|---|---|
-| a text `state`; every question `noul` with a text `instructions.passage` | one `noul` answer per question, `probability` = `relevance_score` |
-| a `choice` or `score` question, a `noul` without a passage, a non-text state | `DecisionError` `DECISION_UNSUPPORTED_QUESTION` — nothing is sent |
-
-- `instructions.task` and `criteria` are not read: a cross-encoder scores (query, passage) pairs only.
-- **One `/rerank` call per `decide`:** `POST {apiBaseUrl}/v2/inference/deployments/{deploymentId}/rerank`,
+- **One `/rerank` call per `score`:** `POST {apiBaseUrl}/v2/inference/deployments/{deploymentId}/rerank`,
   body `{ model, query, documents, top_n }`, header `AI-Resource-Group`.
-- `DecisionReranker` batches by `maxBatchTokens` (default 48 000 estimated tokens) → one call per
-  batch, up to 4 in flight. Tool profiles rerank ≤ 30 tools: typically one call.
+- Returns `scores: [{ index, score }]` — `score` = Cohere's `relevance_score`, one per passage.
+- No wording: a cross-encoder reads the query and the passages only.
 
-## Errors — never a zero-filled answer
+## Errors — never a zero-filled score
 
 | Failure | `DecisionError` code |
 |---|---|
-| no questions | `DECISION_INVALID_REQUEST` |
+| empty query, no passages, an empty passage | `DECISION_INVALID_REQUEST` (nothing sent) |
 | HTTP 401 / 403, or the credential gives no token | `DECISION_AUTH` |
 | HTTP 429 | `DECISION_RATE_LIMITED` |
 | HTTP 400 / 404 / 422 | `DECISION_INVALID_REQUEST` |
 | HTTP 5xx, network failure | `DECISION_UNAVAILABLE` |
 | `options.signal` aborted | `DECISION_ABORTED` |
-| a wrong result count; a missing, duplicated or out-of-range index; a score that is not a finite number in [0, 1]; a body that is not JSON | `DECISION_ERROR` |
+| a wrong result count; a missing, duplicated, non-integer or out-of-range index; a non-finite score; a body that is not JSON | `DECISION_ERROR` |
 
 Messages carry the HTTP status, never the token or the response body.
 
@@ -6572,7 +7842,7 @@ Full detail: [docs/LICENSING.md](https://github.com/fr0ster/llm-agent/blob/main/
 
 Wire the package in:
 - root `package.json`: in both `build` and `clean`, insert ` packages/sap-aicore-decision` right after `packages/typesafe-decision`.
-- `scripts/publish-all.sh`: add `  sap-aicore-decision` after `  typesafe-decision` in `PACKAGES` (published before `llm-agent-libs` / `llm-agent-server`, in dependency order: it depends only on `llm-agent`).
+- `scripts/publish-all.sh`: add `  sap-aicore-decision` after `  typesafe-decision` in `PACKAGES` (published after `llm-agent` and before `llm-agent-libs` / `llm-agent-server`, in dependency order: it depends only on `llm-agent`).
 - `packages/llm-agent-server/package.json` `dependencies`: `"@mcp-abap-adt/sap-aicore-decision": "^30.1.0",` (alphabetical: after `sap-aicore-auth`, before `sap-aicore-embedder`).
 - `packages/llm-agent-server/tsconfig.json` `references`: `{ "path": "../sap-aicore-decision" }`.
 
@@ -6583,7 +7853,7 @@ Expected: only `node_modules/@mcp-abap-adt/<workspace sibling>` entries resolvin
 
 ```ts
 // packages/sap-aicore-decision/src/__tests__/fake-fetch.ts
-/** A recorded request and a scripted response, for driving the model offline. */
+/** A recorded request and a scripted response, for driving the provider offline. */
 export interface Recorded {
   url: string;
   headers: Record<string, string>;
@@ -6632,11 +7902,15 @@ export function blockingFetch() {
 ```
 
 ```ts
-// packages/sap-aicore-decision/src/__tests__/sap-aicore-decision-model.test.ts
+// packages/sap-aicore-decision/src/__tests__/sap-aicore-relevance-decision.test.ts
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import type { DecisionQuestion, DecisionRequest, NoulQuestion } from '@mcp-abap-adt/llm-agent';
-import { type FetchLike, SapAiCoreDecisionModel, type SapAiCoreDecisionConfig } from '../index.js';
+import type { RelevanceRequest } from '@mcp-abap-adt/llm-agent';
+import {
+  type FetchLike,
+  type SapAiCoreRelevanceConfig,
+  SapAiCoreRelevanceDecision,
+} from '../index.js';
 import { blockingFetch, fakeFetch, type Recorded } from './fake-fetch.js';
 
 const TOKEN = 'SECRET-TOKEN';
@@ -6648,33 +7922,24 @@ const credential = {
     return TOKEN;
   },
 };
-const make = (fetch: FetchLike, extra: Partial<SapAiCoreDecisionConfig> = {}) =>
-  new SapAiCoreDecisionModel({ deploymentId: 'd1', model: 'cohere-rerank', apiBaseUrl: 'https://api.example/', credential, fetch, ...extra });
-// The shape DecisionReranker sends: the query as the state, one noul question per passage.
-const noul = (passage: string): NoulQuestion => ({
-  type: 'noul',
-  instructions: { task: 'Judge whether calling this tool would help.', passage },
-  criteria: { true: 'yes', false: 'no' },
-});
-const req = (...passages: string[]): DecisionRequest => ({
-  state: 'read a file',
-  questions: Object.fromEntries(passages.map((p, i) => [`r${i}`, noul(p)])),
-});
+const make = (fetch: FetchLike, extra: Partial<SapAiCoreRelevanceConfig> = {}) =>
+  new SapAiCoreRelevanceDecision({ deploymentId: 'd1', model: 'cohere-rerank', apiBaseUrl: 'https://api.example/', credential, fetch, ...extra });
+const req = (...passages: string[]): RelevanceRequest => ({ query: 'read a file', passages });
 const scored = (scores: number[]) => (rec: Recorded) => ({
   status: 200,
   body: { results: (rec.body.documents ?? []).map((_, index) => ({ index, relevance_score: scores[index] })) },
 });
-const codeOf = async (p: ReturnType<SapAiCoreDecisionModel['decide']>) => {
+const codeOf = async (p: ReturnType<SapAiCoreRelevanceDecision['score']>) => {
   const r = await p;
   assert.equal(r.ok, false);
   assert.ok(!r.ok && !r.error.message.includes(TOKEN), 'the token never appears in an error');
   return !r.ok ? r.error.code : undefined;
 };
 
-describe('SapAiCoreDecisionModel — wire (spec §5.2)', () => {
-  it('ONE POST per decide: URL, headers, body with the passages in question order', async () => {
+describe('SapAiCoreRelevanceDecision — wire (spec §5.3)', () => {
+  it('ONE POST per score: URL, headers, body with the passages in order', async () => {
     const { fetch, calls } = fakeFetch(scored([0.1, 0.9]));
-    await make(fetch).decide(req('read_file — read a file', 'list_issues — list issues'));
+    await make(fetch).score(req('read_file — read a file', 'list_issues — list issues'));
     assert.equal(calls.length, 1);
     assert.equal(calls[0].url, 'https://api.example/v2/inference/deployments/d1/rerank');
     assert.equal(calls[0].headers.authorization, `Bearer ${TOKEN}`);
@@ -6691,59 +7956,48 @@ describe('SapAiCoreDecisionModel — wire (spec §5.2)', () => {
     const { fetch, calls } = fakeFetch(scored([0.5]));
     const m = make(fetch, { resourceGroup: 'rg1' });
     const before = tokenCalls;
-    await m.decide(req('a'));
-    await m.decide(req('a'));
+    await m.score(req('a'));
+    await m.score(req('a'));
     assert.equal(calls[0].headers['ai-resource-group'], 'rg1');
     assert.equal(tokenCalls - before, 2);
   });
 });
 
-describe('SapAiCoreDecisionModel — mapping', () => {
-  it('answers by index to the question keys; probability = relevance_score; model = the configured one', async () => {
+describe('SapAiCoreRelevanceDecision — mapping (not a probability)', () => {
+  it('scores = results as {index, score}; model = the configured one; no usage', async () => {
     const { fetch } = fakeFetch(() => ({
       status: 200,
       body: { results: [{ index: 1, relevance_score: 0.9 }, { index: 0, relevance_score: 0.2 }] },
     }));
-    const r = await make(fetch).decide(req('a', 'b'));
+    const r = await make(fetch).score(req('a', 'b'));
     assert.ok(r.ok);
-    assert.deepEqual(r.value.answers, {
-      r0: { type: 'noul', probability: 0.2 },
-      r1: { type: 'noul', probability: 0.9 },
-    });
+    assert.deepEqual(r.value.scores, [{ index: 1, score: 0.9 }, { index: 0, score: 0.2 }]);
     assert.equal(r.value.model, 'cohere-rerank');
     assert.equal(r.value.usage, undefined);
   });
-  it('a question key such as __proto__ stays an answer', async () => {
-    const { fetch } = fakeFetch(scored([0.4]));
-    const r = await make(fetch).decide({ state: 'q', questions: Object.fromEntries([['__proto__', noul('a')]]) });
+  it('a score outside [0, 1] is accepted — a relevance score is not a probability', async () => {
+    const { fetch } = fakeFetch(scored([1.7, -0.3]));
+    const r = await make(fetch).score(req('a', 'b'));
     assert.ok(r.ok);
-    assert.deepEqual(Object.keys(r.value.answers), ['__proto__']);
+    assert.deepEqual(r.value.scores.map((s) => s.score), [1.7, -0.3]);
   });
 });
 
-describe('SapAiCoreDecisionModel — only yes/no questions with a passage', () => {
-  const unsupported: Array<[string, DecisionRequest]> = [
-    ['a choice question', { state: 'q', questions: { a: { type: 'choice', criteria: { x: null, y: null } } as DecisionQuestion } }],
-    ['a score question', { state: 'q', questions: { a: { type: 'score', criteria: [null, null] } as DecisionQuestion } }],
-    ['a noul question without a passage', { state: 'q', questions: { a: { type: 'noul', instructions: 'is it good?' } } }],
-    ['a passage that is not text', { state: 'q', questions: { a: { type: 'noul', instructions: { passage: { x: 1 } } } } }],
-    ['a state that is not text', { state: { q: 1 }, questions: { a: noul('p') } }],
-    ['one unsupported question among supported ones', { state: 'q', questions: { a: noul('p'), b: { type: 'score', criteria: [null, null] } as DecisionQuestion } }],
-  ];
-  for (const [name, request] of unsupported) {
-    it(`${name} → DECISION_UNSUPPORTED_QUESTION, nothing sent`, async () => {
+describe('SapAiCoreRelevanceDecision — invalid requests', () => {
+  for (const [name, request] of [
+    ['an empty query', { query: ' ', passages: ['a'] }],
+    ['no passages', { query: 'q', passages: [] }],
+    ['an empty passage', { query: 'q', passages: ['a', ''] }],
+  ] as const) {
+    it(`${name} → DECISION_INVALID_REQUEST, nothing sent`, async () => {
       const { fetch, calls } = fakeFetch(scored([1]));
-      assert.equal(await codeOf(make(fetch).decide(request)), 'DECISION_UNSUPPORTED_QUESTION');
+      assert.equal(await codeOf(make(fetch).score(request)), 'DECISION_INVALID_REQUEST');
       assert.equal(calls.length, 0);
     });
   }
-  it('no questions → DECISION_INVALID_REQUEST', async () => {
-    const { fetch } = fakeFetch(scored([]));
-    assert.equal(await codeOf(make(fetch).decide({ state: 'q', questions: {} })), 'DECISION_INVALID_REQUEST');
-  });
 });
 
-describe('SapAiCoreDecisionModel — a bad answer is a DecisionError, never zero-filled', () => {
+describe('SapAiCoreRelevanceDecision — a bad answer is a DecisionError, never zero-filled', () => {
   const bad: Array<[string, (rec: Recorded) => { status: number; body: unknown }]> = [
     ['fewer results than passages', () => ({ status: 200, body: { results: [{ index: 0, relevance_score: 1 }] } })],
     ['more results than passages', () => ({ status: 200, body: { results: [0, 1, 1].map((index) => ({ index, relevance_score: 1 })) } })],
@@ -6751,20 +8005,18 @@ describe('SapAiCoreDecisionModel — a bad answer is a DecisionError, never zero
     ['an out-of-range index', () => ({ status: 200, body: { results: [{ index: 0, relevance_score: 1 }, { index: 5, relevance_score: 1 }] } })],
     ['a non-integer index', () => ({ status: 200, body: { results: [{ index: 0, relevance_score: 1 }, { index: 0.5, relevance_score: 1 }] } })],
     ['a non-finite score', () => ({ status: 200, body: { results: [{ index: 0, relevance_score: 1 }, { index: 1, relevance_score: 'x' }] } })],
-    ['a score above 1', () => ({ status: 200, body: { results: [{ index: 0, relevance_score: 1 }, { index: 1, relevance_score: 1.5 }] } })],
-    ['a negative score', () => ({ status: 200, body: { results: [{ index: 0, relevance_score: 1 }, { index: 1, relevance_score: -0.1 }] } })],
     ['no results array', () => ({ status: 200, body: {} })],
     ['a body that is not JSON', () => ({ status: 200, body: 'not json' })],
   ];
   for (const [name, respond] of bad) {
     it(`${name} → DECISION_ERROR`, async () => {
       const { fetch } = fakeFetch(respond);
-      assert.equal(await codeOf(make(fetch).decide(req('a', 'b'))), 'DECISION_ERROR');
+      assert.equal(await codeOf(make(fetch).score(req('a', 'b'))), 'DECISION_ERROR');
     });
   }
 });
 
-describe('SapAiCoreDecisionModel — transport errors', () => {
+describe('SapAiCoreRelevanceDecision — transport errors', () => {
   const statuses: Array<[number, string]> = [
     [400, 'DECISION_INVALID_REQUEST'],
     [401, 'DECISION_AUTH'],
@@ -6779,7 +8031,7 @@ describe('SapAiCoreDecisionModel — transport errors', () => {
   for (const [status, code] of statuses) {
     it(`HTTP ${status} → ${code}, the status in the message, never the body`, async () => {
       const { fetch } = fakeFetch(() => ({ status, body: { error: `leak ${TOKEN}` } }));
-      const r = await make(fetch).decide(req('a'));
+      const r = await make(fetch).score(req('a'));
       assert.ok(!r.ok);
       assert.equal(r.error.code, code);
       assert.match(r.error.message, new RegExp(String(status)));
@@ -6790,25 +8042,25 @@ describe('SapAiCoreDecisionModel — transport errors', () => {
     const fetch: FetchLike = async () => {
       throw new TypeError('fetch failed');
     };
-    assert.equal(await codeOf(make(fetch).decide(req('a'))), 'DECISION_UNAVAILABLE');
+    assert.equal(await codeOf(make(fetch).score(req('a'))), 'DECISION_UNAVAILABLE');
   });
   it('a credential that gives no token → DECISION_AUTH, nothing sent', async () => {
     const { fetch, calls } = fakeFetch(scored([1]));
     const broken = { kind: 'bearer' as const, token: async () => { throw new Error(`no ${TOKEN}`); } };
-    assert.equal(await codeOf(make(fetch, { credential: broken }).decide(req('a'))), 'DECISION_AUTH');
+    assert.equal(await codeOf(make(fetch, { credential: broken }).score(req('a'))), 'DECISION_AUTH');
     assert.equal(calls.length, 0);
   });
   it('an already-aborted signal → DECISION_ABORTED, nothing sent', async () => {
     const { fetch, calls } = fakeFetch(scored([1]));
     const ac = new AbortController();
     ac.abort();
-    assert.equal(await codeOf(make(fetch).decide(req('a'), { signal: ac.signal })), 'DECISION_ABORTED');
+    assert.equal(await codeOf(make(fetch).score(req('a'), { signal: ac.signal })), 'DECISION_ABORTED');
     assert.equal(calls.length, 0);
   });
   it('an abort while the request is in flight → DECISION_ABORTED', async () => {
     const { fetch, entered } = blockingFetch();
     const ac = new AbortController();
-    const pending = make(fetch).decide(req('a'), { signal: ac.signal });
+    const pending = make(fetch).score(req('a'), { signal: ac.signal });
     await entered;
     ac.abort();
     assert.equal(await codeOf(pending), 'DECISION_ABORTED');
@@ -6825,7 +8077,7 @@ describe('SapAiCoreDecisionModel — transport errors', () => {
 
 - [ ] **Step 3: Run to see it fail**
 
-Run: `npx tsc -b packages/llm-agent && node --import tsx/esm --test packages/sap-aicore-decision/src/__tests__/sap-aicore-decision-model.test.ts`
+Run: `npx tsc -b packages/llm-agent && node --import tsx/esm --test packages/sap-aicore-decision/src/__tests__/sap-aicore-relevance-decision.test.ts`
 Expected: FAIL — `Cannot find module '../index.js'`.
 
 - [ ] **Step 4: Implement**
@@ -6835,10 +8087,11 @@ Expected: FAIL — `Cannot find module '../index.js'`.
 import {
   DecisionError,
   type DecisionErrorCode,
+  type RelevanceScore,
   type Result,
 } from '@mcp-abap-adt/llm-agent';
 
-/** HTTP status → DecisionError code (spec §5.2). Same split as typesafe-decision's mapError. */
+/** HTTP status → DecisionError code (spec §5.3). Same split as typesafe-decision's mapError. */
 export function codeForStatus(status: number): DecisionErrorCode {
   if (status === 401 || status === 403) return 'DECISION_AUTH';
   if (status === 429) return 'DECISION_RATE_LIMITED';
@@ -6855,21 +8108,22 @@ const bad = (message: string): Result<never, DecisionError> => ({
 });
 
 /**
- * `{ results: [{ index, relevance_score }] }` → one score per document, in
- * document order. Exactly one result per document, each a finite number in
- * [0, 1] (the NoulAnswer invariant). Anything else is an error — never a
- * zero-filled or dropped score.
+ * `{ results: [{ index, relevance_score }] }` → `RelevanceScore[]` (order as
+ * returned). Exactly one entry per document, each index once and in range,
+ * each score finite. NO [0, 1] check: a relevance score is not a probability
+ * (spec §3.9). Anything else is an error — never a zero-filled or dropped score.
  */
 export function mapRerankResults(
   body: unknown,
   documents: number,
-): Result<number[], DecisionError> {
+): Result<RelevanceScore[], DecisionError> {
   const list = (body as { results?: unknown } | null)?.results;
   if (!Array.isArray(list)) return bad('response has no results array');
   if (list.length !== documents) {
     return bad(`${list.length} results for ${documents} documents`);
   }
-  const scores = new Map<number, number>();
+  const seen = new Set<number>();
+  const out: RelevanceScore[] = [];
   for (const e of list) {
     const index = (e as { index?: unknown } | null)?.index;
     const score = (e as { relevance_score?: unknown } | null)?.relevance_score;
@@ -6881,48 +8135,37 @@ export function mapRerankResults(
     ) {
       return bad(`out-of-range index ${String(index)}`);
     }
-    if (scores.has(index)) return bad(`index ${index} twice`);
-    if (
-      typeof score !== 'number' ||
-      !Number.isFinite(score) ||
-      score < 0 ||
-      score > 1
-    ) {
-      return bad(`score for index ${index} is not a finite number in [0, 1]`);
+    if (seen.has(index)) return bad(`index ${index} twice`);
+    if (typeof score !== 'number' || !Number.isFinite(score)) {
+      return bad(`score for index ${index} is not a finite number`);
     }
-    scores.set(index, score);
-  }
-  const out: number[] = [];
-  for (let i = 0; i < documents; i++) {
-    const s = scores.get(i);
-    if (s === undefined) return bad(`no score for index ${i}`);
-    out.push(s);
+    seen.add(index);
+    out.push({ index, score });
   }
   return { ok: true, value: out };
 }
 ```
 
 ```ts
-// packages/sap-aicore-decision/src/sap-aicore-decision-model.ts
+// packages/sap-aicore-decision/src/sap-aicore-relevance-decision.ts
 import type { IBearerCredential } from '@mcp-abap-adt/interfaces-auth';
 import {
   type CallOptions,
-  type DecisionAnswer,
   DecisionError,
   type DecisionErrorCode,
-  type DecisionRequest,
-  type DecisionResult,
-  type IDecisionModel,
+  type IRelevanceDecision,
+  type RelevanceRequest,
+  type RelevanceResult,
   type Result,
 } from '@mcp-abap-adt/llm-agent';
 import { codeForStatus, mapRerankResults } from './map-rerank.js';
 
 export const SAP_AICORE_DEFAULT_RESOURCE_GROUP = 'default';
 
-/** The one fetch shape this model uses; a test seam (unset → global fetch). */
+/** The one fetch shape this provider uses; a test seam (unset → global fetch). */
 export type FetchLike = (url: string, init: RequestInit) => Promise<Response>;
 
-export interface SapAiCoreDecisionConfig {
+export interface SapAiCoreRelevanceConfig {
   /** The AI Core deployment that serves the rerank model (D10: an id, not a model name). */
   deploymentId: string;
   /** Sent as `model` in the body (e.g. the Cohere rerank model name). */
@@ -6946,7 +8189,7 @@ const fail = (
 
 const required = (v: string | undefined, field: string): string => {
   if (typeof v !== 'string' || v.trim().length === 0) {
-    throw new Error(`SapAiCoreDecisionModel: ${field} is required`);
+    throw new Error(`SapAiCoreRelevanceDecision: ${field} is required`);
   }
   return v;
 };
@@ -6954,60 +8197,20 @@ const required = (v: string | undefined, field: string): string => {
 const nameOf = (err: unknown): string =>
   err instanceof Error ? err.name : 'Error';
 
-/** The request as (keys, passages, query) — or why this model cannot answer it. */
-function passagesOf(
-  request: DecisionRequest,
-): Result<{ keys: string[]; passages: string[]; query: string }, DecisionError> {
-  const keys = Object.keys(request.questions);
-  if (keys.length === 0) {
-    return fail('decision request has no questions', 'DECISION_INVALID_REQUEST');
-  }
-  if (typeof request.state !== 'string') {
-    return fail(
-      'sap-aicore rerank reads a text state only',
-      'DECISION_UNSUPPORTED_QUESTION',
-    );
-  }
-  const passages: string[] = [];
-  for (const key of keys) {
-    const q = request.questions[key];
-    if (q.type !== 'noul') {
-      return fail(
-        `sap-aicore rerank answers yes/no (noul) questions only, not ${q.type}`,
-        'DECISION_UNSUPPORTED_QUESTION',
-      );
-    }
-    const ins = q.instructions;
-    const passage =
-      typeof ins === 'object' && ins !== null && !Array.isArray(ins)
-        ? (ins as { passage?: unknown }).passage
-        : undefined;
-    if (typeof passage !== 'string') {
-      return fail(
-        'sap-aicore rerank needs instructions.passage (text) in every question',
-        'DECISION_UNSUPPORTED_QUESTION',
-      );
-    }
-    passages.push(passage);
-  }
-  return { ok: true, value: { keys, passages, query: request.state } };
-}
-
 /**
- * Cohere Rerank on SAP AI Core as an IDecisionModel (spec §5.2). It answers
- * yes/no questions about a passage with the passage's relevance to the state;
- * `task` and `criteria` are not read (a cross-encoder has no question input).
- * ONE /rerank call per decide. No env, no timeout, no retries.
+ * Cohere Rerank on SAP AI Core as an IRelevanceDecision (spec §5.3): one
+ * relevance score per passage — NOT a probability, comparable only within this
+ * call. ONE /rerank call per score(). No env, no timeout, no retries.
  */
-export class SapAiCoreDecisionModel implements IDecisionModel {
+export class SapAiCoreRelevanceDecision implements IRelevanceDecision {
   readonly model: string;
   private readonly url: string;
   private readonly resourceGroup: string;
   private readonly fetchImpl: FetchLike;
 
-  constructor(private readonly cfg: SapAiCoreDecisionConfig) {
+  constructor(private readonly cfg: SapAiCoreRelevanceConfig) {
     if (!cfg?.credential) {
-      throw new Error('SapAiCoreDecisionModel requires a credential');
+      throw new Error('SapAiCoreRelevanceDecision requires a credential');
     }
     const base = required(cfg.apiBaseUrl, 'apiBaseUrl').replace(/\/+$/, '');
     const deployment = required(cfg.deploymentId, 'deploymentId');
@@ -7017,12 +8220,19 @@ export class SapAiCoreDecisionModel implements IDecisionModel {
     this.fetchImpl = cfg.fetch ?? ((url, init) => fetch(url, init));
   }
 
-  async decide(
-    request: DecisionRequest,
+  async score(
+    request: RelevanceRequest,
     options?: CallOptions,
-  ): Promise<Result<DecisionResult, DecisionError>> {
-    const p = passagesOf(request);
-    if (!p.ok) return p;
+  ): Promise<Result<RelevanceResult, DecisionError>> {
+    if (typeof request.query !== 'string' || request.query.trim().length === 0) {
+      return fail('relevance request has an empty query', 'DECISION_INVALID_REQUEST');
+    }
+    if (request.passages.length === 0) {
+      return fail('relevance request has no passages', 'DECISION_INVALID_REQUEST');
+    }
+    if (request.passages.some((p) => typeof p !== 'string' || p.length === 0)) {
+      return fail('relevance request has an empty passage', 'DECISION_INVALID_REQUEST');
+    }
     const aborted = () => fail('sap-aicore rerank aborted', 'DECISION_ABORTED');
     if (options?.signal?.aborted) return aborted();
     let token: string;
@@ -7045,9 +8255,9 @@ export class SapAiCoreDecisionModel implements IDecisionModel {
         },
         body: JSON.stringify({
           model: this.model,
-          query: p.value.query,
-          documents: p.value.passages,
-          top_n: p.value.passages.length,
+          query: request.query,
+          documents: request.passages,
+          top_n: request.passages.length,
         }),
         ...(options?.signal ? { signal: options.signal } : {}),
       });
@@ -7068,16 +8278,9 @@ export class SapAiCoreDecisionModel implements IDecisionModel {
       if (options?.signal?.aborted) return aborted();
       return fail('sap-aicore rerank: response is not JSON');
     }
-    const scores = mapRerankResults(body, p.value.passages.length);
+    const scores = mapRerankResults(body, request.passages.length);
     if (!scores.ok) return scores;
-    // fromEntries defines own properties: a key such as `__proto__` stays an answer.
-    const answers: Record<string, DecisionAnswer> = Object.fromEntries(
-      p.value.keys.map((key, i) => [
-        key,
-        { type: 'noul', probability: scores.value[i] } as DecisionAnswer,
-      ]),
-    );
-    return { ok: true, value: { answers, model: this.model } };
+    return { ok: true, value: { scores: scores.value, model: this.model } };
   }
 }
 ```
@@ -7088,27 +8291,27 @@ export { codeForStatus, mapRerankResults } from './map-rerank.js';
 export {
   type FetchLike,
   SAP_AICORE_DEFAULT_RESOURCE_GROUP,
-  type SapAiCoreDecisionConfig,
-  SapAiCoreDecisionModel,
-} from './sap-aicore-decision-model.js';
+  type SapAiCoreRelevanceConfig,
+  SapAiCoreRelevanceDecision,
+} from './sap-aicore-relevance-decision.js';
 ```
 
 - [ ] **Step 5: Run the package and repo tests**
 
 Run:
 ```bash
-node --import tsx/esm --test packages/sap-aicore-decision/src/__tests__/sap-aicore-decision-model.test.ts
+node --import tsx/esm --test packages/sap-aicore-decision/src/__tests__/sap-aicore-relevance-decision.test.ts
 npx tsc -b packages/sap-aicore-decision
 node --import tsx/esm --test --test-reporter=spec 'test/repo/*.test.ts'
 ```
-Expected: PASS — `licensing`, `readme-badges` and `scoped-dependencies` accept the new package. (How `DecisionReranker` batches map to `/rerank` calls is tested in Task 24, the one package that depends on both libs and this provider.)
+Expected: PASS — `licensing`, `readme-badges` and `scoped-dependencies` accept the new package. (How `RelevanceReranker` batches map to `/rerank` calls is tested in Task 24, the one package that depends on both the reranker package and this provider.)
 
 - [ ] **Step 6: Commit**
 
 ```bash
 npx biome check --write packages/sap-aicore-decision
 git add packages/sap-aicore-decision package.json package-lock.json scripts/publish-all.sh packages/llm-agent-server/package.json packages/llm-agent-server/tsconfig.json
-git commit -m "feat(sap-aicore-decision): SapAiCoreDecisionModel — Cohere Rerank on SAP AI Core as an IDecisionModel
+git commit -m "feat(sap-aicore-decision): SapAiCoreRelevanceDecision — Cohere Rerank on SAP AI Core as an IRelevanceDecision
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_012KjevEeQGZMkWMfnupJ7Yd"
@@ -7546,16 +8749,16 @@ Claude-Session: https://claude.ai/code/session_012KjevEeQGZMkWMfnupJ7Yd"
 
 ## Task 21: YAML `rag.profiles.tools` and `decision.provider: sap-aicore` — types, resolution, validation (server-libs)
 
-Spec §6.2 (all validation rules; only the key `tools`, S8), §5.2 (the Cohere decision model's fields), §13. Names only; instances come in Task 22. **No new section and no new seam:** Cohere is a value of the existing `decision.provider`, built by the existing `makeDecisionModel` seam (Task 24).
+Spec §6.2 (all validation rules; only the key `tools`, S8; one `decision:` section — the provider decides the kind), §5.3 (the Cohere provider's fields), §13; D27. Names only; instances come in Task 22. **No new section:** Cohere is a value of the existing `decision.provider`; the provider → kind table (`DECISION_KINDS`) is the one place that says `typesafe` → probability, `sap-aicore` → relevance. The relevance seam (`makeRelevanceDecision`) is Task 22/23's, its app arm Task 24's.
 
 **Files:**
 - Create: `packages/llm-agent-server-libs/src/smart-agent/profiles-config.ts` (types + resolution)
 - Create: `packages/llm-agent-server-libs/src/smart-agent/profiles-config-validator.ts`
-- Modify: `packages/llm-agent-server-libs/src/smart-agent/decision-config.ts` (`SmartServerDecisionConfig`: `provider: 'typesafe' | 'sap-aicore'`, optional `deploymentId`, `resourceGroup`)
+- Modify: `packages/llm-agent-server-libs/src/smart-agent/decision-config.ts` (`SmartServerDecisionConfig`: `provider: 'typesafe' | 'sap-aicore'`, optional `deploymentId`, `resourceGroup`; `DecisionKind`, `DECISION_KINDS`)
 - Modify: `packages/llm-agent-server-libs/src/smart-agent/rag-config.ts:161-167` (`SmartServerRagConfig.profiles?`)
 - Modify: `packages/llm-agent-server-libs/src/smart-agent/resolve-config-sections.ts` (`resolveRagSection`; `resolveDecisionSection` copies the two new fields)
 - Modify: `packages/llm-agent-server-libs/src/smart-agent/config.ts` (worker refusal)
-- Modify: `packages/llm-agent-server-libs/src/smart-agent/config-validator.ts` (`checkRag` allowed keys; `checkDecision` per provider; `checkRetrieval` refuses a question / task under Cohere; call `checkProfiles`)
+- Modify: `packages/llm-agent-server-libs/src/smart-agent/config-validator.ts` (`checkRag` allowed keys; `checkDecision` per provider; `checkRetrieval` refuses a question / task for a relevance decision; call `checkProfiles`)
 - Modify: `packages/llm-agent-server-libs/src/index.ts` (export the new config types)
 - Create: `packages/llm-agent-server-libs/src/smart-agent/__tests__/profiles-config.test.ts`
 
@@ -7565,11 +8768,13 @@ Spec §6.2 (all validation rules; only the key `tools`, S8), §5.2 (the Cohere d
   ```ts
   // decision-config.ts — one interface, additive (spec §17.5): a consumer's own makeDecisionModel still compiles
   export interface SmartServerDecisionConfig { provider: 'typesafe' | 'sap-aicore'; model?: string; credentialRef?: string; baseUrl?: string; timeoutMs?: number; maxRetries?: number; deploymentId?: string; resourceGroup?: string }
+  export type DecisionKind = 'probability' | 'relevance';
+  export const DECISION_KINDS: Readonly<Record<SmartServerDecisionConfig['provider'], DecisionKind>>; // { typesafe: 'probability', 'sap-aicore': 'relevance' } — the one place (spec §6.2)
   export type SmartServerIntentSourceConfig = { file: string } | { llm: string };
   export type SmartServerProfileIntentsConfig = { record: SmartServerIntentSourceConfig } | { companion: { source: SmartServerIntentSourceConfig; store: SmartServerRagStoreConfig } };
   export type SmartServerIndexerConfig = { faceted: string[] } | { 'enum-values': { inner: { faceted: string[] }; discriminator: string | { named: string }; maxValues: number } };
   export type SmartServerCutConfig = 'top-items' | Readonly<Record<string, unknown>>; // { fixed-items: n } | { score-floor: {…} } | { token-budget: {…} } | { <registered>: args }
-  export interface SmartServerComposeConfig { indexer: SmartServerIndexerConfig; pool: Readonly<Record<string, unknown>>; collapse?: string; reranker?: 'none' | 'decision' | 'llm'; question?: 'tool' | 'passage'; llm?: string; decomposer?: string; cut?: SmartServerCutConfig; onFailure?: 'stage1' | 'error' }
+  export interface SmartServerComposeConfig { indexer: SmartServerIndexerConfig; text?: string /* provider text composer name, F4 */; pool: Readonly<Record<string, unknown>>; collapse?: string; reranker?: 'none' | 'decision' | 'llm'; question?: 'tool' | 'passage'; llm?: string; decomposer?: string; cut?: SmartServerCutConfig; onFailure?: 'stage1' | 'error' }
   export interface SmartServerProfileConfig { variant?: string; compose?: SmartServerComposeConfig; intents?: SmartServerProfileIntentsConfig; decomposer?: string; smallSet?: { poolItems: number } }
   export const PROFILE_STORE_KEYS: readonly ['tools'];   // S8: the only key bound from YAML in this PR
   export function resolveProfilesSection(raw: unknown): Record<string, SmartServerProfileConfig> | undefined;
@@ -7587,6 +8792,7 @@ import path from 'node:path';
 import { describe, it } from 'node:test';
 import { parse } from 'yaml';
 import { resolveSmartServerConfig } from '../config.js';
+import { DECISION_KINDS } from '../decision-config.js';
 import { loadYamlConfig } from '../yaml-loader.js';
 
 const LLM = 'llm:\n  main: { provider: openai, model: gpt-4o }\n  intents: { provider: openai, model: gpt-4o-mini }\n';
@@ -7639,7 +8845,10 @@ describe('rag.profiles resolution', () => {
   });
 });
 
-describe('decision.provider: sap-aicore (Cohere, spec §5.2, §6.2)', () => {
+describe('decision.provider: sap-aicore (Cohere, a relevance decision — spec §5.3, §6.2)', () => {
+  it('the provider decides the kind: one table', () => {
+    assert.deepEqual(DECISION_KINDS, { typesafe: 'probability', 'sap-aicore': 'relevance' });
+  });
   it('named fields only; typesafe stays as it was', () => {
     const cfg = resolve('tools: { variant: faceted-cohere }', `${COHERE}  resourceGroup: rg\n  credentialRef: AICORE\n`);
     assert.deepEqual(cfg.decision, {
@@ -7657,10 +8866,14 @@ describe('decision.provider: sap-aicore (Cohere, spec §5.2, §6.2)', () => {
     assert.throws(() => resolveYaml(`${LLM}${RAG}decision:\n  provider: other\n`), /decision\.provider: must be 'typesafe' or 'sap-aicore'/);
     assert.throws(() => resolveYaml(`${LLM}${RAG}${COHERE}  apiKey: x\n`), /decision\.apiKey: secrets are no longer read/);
   });
-  it('rag.retrieval: a question or task for the decision reranker is refused under Cohere (it reads no wording)', () => {
+  it('rag.retrieval: a question or task for the decision reranker is refused for a relevance decision (it reads no wording)', () => {
     assert.throws(
       () => resolveYaml(`${LLM}${RAG}  retrieval:\n    tools: { strategy: rerank, reranker: decision, question: tool }\n${COHERE}`),
-      /rag\.retrieval\.tools: question \/ task do not apply with decision\.provider: sap-aicore/,
+      /rag\.retrieval\.tools: question \/ task apply to a probability decision only — decision\.provider sap-aicore is a relevance decision/,
+    );
+    assert.throws(
+      () => resolveYaml(`${LLM}${RAG}  retrieval:\n    tools: { strategy: rerank, reranker: decision, task: judge }\n${COHERE}`),
+      /question \/ task apply to a probability decision only/,
     );
     assert.doesNotThrow(() => resolveYaml(`${LLM}${RAG}  retrieval:\n    tools: { strategy: rerank, reranker: decision }\n${COHERE}`));
   });
@@ -7693,17 +8906,19 @@ describe('rag.profiles validation — startup errors, never a silent drop', () =
     refused('tools: { variant: small-set-jev, smallSet: { poolItems: 0 } }', /smallSet\.poolItems: required/, JEV);
     refused('tools: { variant: small-set-jev, smallSet: { poolItems: 25 } }', /small-set-jev requires a decision: section/);
   });
-  it('a decision variant without decision:, or with the other provider (spec §17.5)', () => {
+  it('a decision variant without decision:, or with a decision of the other kind (spec §6.2, D27)', () => {
     refused('tools: { variant: faceted-jev }', /faceted-jev requires a decision: section/);
     refused('tools: { variant: faceted-cohere }', /faceted-cohere requires a decision: section/);
-    refused('tools: { variant: faceted-cohere }', /faceted-cohere reranks with Cohere — needs decision\.provider: sap-aicore \(got "typesafe"\)/, JEV);
-    refused('tools: { variant: faceted-jev }', /faceted-jev reranks with Jev — needs decision\.provider: typesafe \(got "sap-aicore"\)/, COHERE);
-    refused('tools: { variant: small-set-jev, smallSet: { poolItems: 25 } }', /small-set-jev reranks with Jev/, COHERE);
+    refused('tools: { variant: faceted-cohere }', /faceted-cohere needs a relevance decision — decision\.provider: sap-aicore \(got "typesafe", a probability decision\)/, JEV);
+    refused('tools: { variant: faceted-jev }', /faceted-jev needs a probability decision — decision\.provider: typesafe \(got "sap-aicore", a relevance decision\)/, COHERE);
+    refused('tools: { variant: small-set-jev, smallSet: { poolItems: 25 } }', /small-set-jev needs a probability decision/, COHERE);
   });
-  it('compose: decision works with either provider; question refused under Cohere; cross-encoder is not a reranker name', () => {
+  it('compose: decision works with either kind; question refused for relevance; cross-encoder is not a reranker name; text is a name', () => {
     const base = 'indexer: { faceted: [] }, pool: { items: 3 }';
     assert.doesNotThrow(() => resolve(`tools: { compose: { ${base}, reranker: decision } }`, COHERE));
-    refused(`tools: { compose: { ${base}, reranker: decision, question: tool } }`, /question: Cohere \(decision\.provider: sap-aicore\) reads no question wording/, COHERE);
+    assert.doesNotThrow(() => resolve(`tools: { compose: { ${base}, text: enum-values } }`));
+    refused(`tools: { compose: { ${base}, text: 7 } }`, /compose\.text: must be a name/);
+    refused(`tools: { compose: { ${base}, reranker: decision, question: tool } }`, /question: a relevance decision \(decision\.provider: sap-aicore\) reads no wording — remove it/, COHERE);
     refused(`tools: { compose: { ${base}, reranker: cross-encoder } }`, /reranker: must be one of none \| decision \| llm/, COHERE);
     refused(`tools: { compose: { ${base}, reranker: decision } }`, /reranker: decision requires a decision: section/);
   });
@@ -7737,9 +8952,9 @@ Expected: FAIL — `rag.profiles: unknown key` (from `checkRag`), `decision.prov
 
 `decision-config.ts` — replace `SmartServerDecisionConfig` with (one interface; the validator enforces which fields each provider takes):
 ```ts
-/** `decision:` — a decision model (numbers, not text). Secrets never here. */
+/** `decision:` — ONE decision per server (numbers, not text); the provider decides its kind. Secrets never here. */
 export interface SmartServerDecisionConfig {
-  /** `typesafe` = TypeSafe Jev; `sap-aicore` = Cohere Rerank on SAP AI Core (spec §5). */
+  /** `typesafe` = TypeSafe Jev (probability); `sap-aicore` = Cohere Rerank on SAP AI Core (relevance) — spec §5. */
   provider: 'typesafe' | 'sap-aicore';
   /** typesafe: optional (unset → `jev-latest`). sap-aicore: required, sent as `model`. */
   model?: string;
@@ -7756,6 +8971,15 @@ export interface SmartServerDecisionConfig {
   /** sap-aicore only: header `AI-Resource-Group`; unset → 'default'. */
   resourceGroup?: string;
 }
+
+/** What a decision is based on (spec §3.9). */
+export type DecisionKind = 'probability' | 'relevance';
+
+/** The ONE place that maps a provider to its kind (spec §6.2): the resolver calls the seam of
+ *  that kind and builds the matching reranker; the validator checks variants and wording by it. */
+export const DECISION_KINDS: Readonly<
+  Record<SmartServerDecisionConfig['provider'], DecisionKind>
+> = Object.freeze({ typesafe: 'probability', 'sap-aicore': 'relevance' });
 ```
 
 `resolve-config-sections.ts` `resolveDecisionSection`, after the `baseUrl` block:
@@ -7812,7 +9036,10 @@ export interface SmartServerComposeConfig {
   /** { items: n } → ItemPool(n), or { <registered>: args }. */
   pool: Readonly<Record<string, unknown>>;
   collapse?: string;
-  /** `decision` = DecisionReranker over the `decision:` section's model (Jev or Cohere). */
+  /** Provider text composer name (F4): parameter-names (default) | enum-values | schema | a registered one. */
+  text?: string;
+  /** `decision` = the reranker of the `decision:` section's kind: ProbabilityReranker (typesafe)
+   *  or RelevanceReranker (sap-aicore). */
   reranker?: 'none' | 'decision' | 'llm';
   question?: 'tool' | 'passage';
   llm?: string;
@@ -7872,7 +9099,7 @@ export function resolveProfilesSection(
 
 ```ts
 // packages/llm-agent-server-libs/src/smart-agent/profiles-config-validator.ts
-import { parseIntegerField } from './decision-config.js';
+import { DECISION_KINDS, type DecisionKind, parseIntegerField } from './decision-config.js';
 import { PROFILE_STORE_KEYS } from './profiles-config.js';
 import { get, type YamlConfig } from './yaml-loader.js';
 
@@ -7886,14 +9113,20 @@ const posInt = (v: unknown): boolean => {
 const name = (v: unknown): boolean => typeof v === 'string' && v.trim().length > 0;
 
 const PROFILE_FIELDS = ['variant', 'compose', 'intents', 'decomposer', 'smallSet'];
-const COMPOSE_FIELDS = ['indexer', 'pool', 'collapse', 'reranker', 'question', 'llm', 'decomposer', 'cut', 'onFailure'];
+const COMPOSE_FIELDS = ['indexer', 'text', 'pool', 'collapse', 'reranker', 'question', 'llm', 'decomposer', 'cut', 'onFailure'];
 const COMPOSE_RERANKERS = ['none', 'decision', 'llm'];
-/** The decision provider each named decision variant was measured with (spec §5.5, §17.5). */
-const VARIANT_PROVIDER: Readonly<Record<string, { provider: string; model: string }>> = {
-  'faceted-cohere': { provider: 'sap-aicore', model: 'Cohere' },
-  'faceted-jev': { provider: 'typesafe', model: 'Jev' },
-  'small-set-jev': { provider: 'typesafe', model: 'Jev' },
+/** The kind of decision each named decision variant takes (spec §5.5, §6.2, D27). */
+const VARIANT_KIND: Readonly<Record<string, DecisionKind>> = {
+  'faceted-cohere': 'relevance',
+  'faceted-jev': 'probability',
+  'small-set-jev': 'probability',
 };
+const kindOf = (provider: string | undefined): DecisionKind | undefined =>
+  provider !== undefined && provider in DECISION_KINDS
+    ? DECISION_KINDS[provider as keyof typeof DECISION_KINDS]
+    : undefined;
+const providerOf = (kind: DecisionKind): string =>
+  Object.entries(DECISION_KINDS).find(([, k]) => k === kind)?.[0] ?? '?';
 
 function checkIntentSource(label: string, src: unknown, llmKeys: ReadonlySet<string>, issues: string[]): void {
   const keys = isMap(src) ? Object.keys(src) : [];
@@ -7988,6 +9221,7 @@ function checkCompose(label: string, c: unknown, ctx: DecisionCtx, issues: strin
   }
   for (const f of Object.keys(c)) if (!COMPOSE_FIELDS.includes(f)) issues.push(`${label}.${f}: unknown key`);
   checkIndexer(`${label}.indexer`, c.indexer, issues);
+  if (c.text != null && !name(c.text)) issues.push(`${label}.text: must be a name (parameter-names | enum-values | schema | a registered one)`);
   if (!isMap(c.pool)) issues.push(`${label}.pool: required — { items: <n> } or { <registered>: {…} }`);
   else if ('items' in c.pool && !posInt(c.pool.items)) issues.push(`${label}.pool.items: must be a positive integer`);
   if (c.collapse != null && !name(c.collapse)) issues.push(`${label}.collapse: must be a name (max or a registered one)`);
@@ -7998,8 +9232,10 @@ function checkCompose(label: string, c: unknown, ctx: DecisionCtx, issues: strin
   if (c.question != null) {
     if (rr !== 'decision' && rr !== 'llm') issues.push(`${label}.question: only applies to reranker decision | llm`);
     else if (c.question !== 'tool' && c.question !== 'passage') issues.push(`${label}.question: must be tool | passage`);
-    else if (rr === 'decision' && ctx.decisionProvider === 'sap-aicore') {
-      issues.push(`${label}.question: Cohere (decision.provider: sap-aicore) reads no question wording — remove it`);
+    else if (rr === 'decision' && kindOf(ctx.decisionProvider) === 'relevance') {
+      issues.push(
+        `${label}.question: a relevance decision (decision.provider: ${ctx.decisionProvider}) reads no wording — remove it`,
+      );
     }
   }
   if (rr === 'decision' && !ctx.hasDecision) issues.push(`${label}.reranker: decision requires a decision: section`);
@@ -8066,12 +9302,12 @@ export function checkProfiles(
     } else if (entry.smallSet != null) {
       issues.push(`${label}.smallSet: only applies to variant small-set-jev`);
     }
-    const wants = typeof variant === 'string' ? VARIANT_PROVIDER[variant] : undefined;
+    const wants = typeof variant === 'string' ? VARIANT_KIND[variant] : undefined;
     if (wants && !hasDecision) {
-      issues.push(`${label}.variant: ${variant} requires a decision: section (provider: ${wants.provider})`);
-    } else if (wants && decisionProvider !== wants.provider) {
+      issues.push(`${label}.variant: ${variant} requires a decision: section (provider: ${providerOf(wants)})`);
+    } else if (wants && kindOf(decisionProvider) !== wants) {
       issues.push(
-        `${label}.variant: ${variant} reranks with ${wants.model} — needs decision.provider: ${wants.provider} (got ${JSON.stringify(decisionProvider)}); for the other model use compose with reranker: decision`,
+        `${label}.variant: ${variant} needs a ${wants} decision — decision.provider: ${providerOf(wants)} (got ${JSON.stringify(decisionProvider)}, a ${kindOf(decisionProvider) ?? 'unknown'} decision); for the other kind use compose with reranker: decision`,
       );
     }
     if (entry.decomposer != null && !name(entry.decomposer)) issues.push(`${label}.decomposer: must be a registered name`);
@@ -8112,13 +9348,15 @@ export function checkProfiles(
   ```
 - `checkRetrieval`: after the `task` check add
   ```ts
+    const provider = get(yaml, 'decision', 'provider');
     if (
       e.reranker === 'decision' &&
-      get(yaml, 'decision', 'provider') === 'sap-aicore' &&
+      typeof provider === 'string' &&
+      DECISION_KINDS[provider as keyof typeof DECISION_KINDS] === 'relevance' &&
       (isSet('question') || isSet('task'))
     ) {
       issues.push(
-        `${label}: question / task do not apply with decision.provider: sap-aicore — Cohere reads only the query and the passage`,
+        `${label}: question / task apply to a probability decision only — decision.provider ${provider} is a relevance decision (it reads only the query and the passages)`,
       );
     }
   ```
@@ -8146,8 +9384,8 @@ Wiring edits:
     );
   }
   ```
-- `smart-server.ts`: **no change** in this task — the `decision:` section and `BuildAgentDeps.makeDecisionModel` already exist.
-- `src/index.ts`: export `PROFILE_STORE_KEYS` and the types `SmartServerProfileConfig`, `SmartServerComposeConfig`, `SmartServerProfileIntentsConfig`, `SmartServerIntentSourceConfig`, `SmartServerIndexerConfig`, `SmartServerCutConfig` from `./smart-agent/profiles-config.js` (`SmartServerDecisionConfig` is already exported).
+- `smart-server.ts`: **no change** in this task — the `decision:` section already exists; the relevance seam lands in Tasks 22–23.
+- `src/index.ts`: export `DECISION_KINDS`, type `DecisionKind` (from `./smart-agent/decision-config.js`), `PROFILE_STORE_KEYS` and the types `SmartServerProfileConfig`, `SmartServerComposeConfig`, `SmartServerProfileIntentsConfig`, `SmartServerIntentSourceConfig`, `SmartServerIndexerConfig`, `SmartServerCutConfig` from `./smart-agent/profiles-config.js` (`SmartServerDecisionConfig` is already exported).
 
 - [ ] **Step 5: Run (new + existing config tests)**
 
@@ -8169,25 +9407,33 @@ Claude-Session: https://claude.ai/code/session_012KjevEeQGZMkWMfnupJ7Yd"
 
 ## Task 22: Names → instances — `resolve-collection-profiles.ts` (server-libs)
 
-Spec §6.2 (registries, the existing `makeDecisionModel` seam for Jev AND Cohere, intents file, companion store via `makeRag`), §5.5, §7.4 (D23 startup check).
+Spec §6.2 (registries; ONE `decision:` section whose provider decides the kind — `makeDecisionModel` builds the probability decision, the new optional `makeRelevanceDecision` the relevance one; `reranker: decision` builds the matching reranker in `rag.profiles` AND `rag.retrieval`; intents file; companion store via `makeRag`), §3.8 (the seam row), §5.5, §7.3.1 (text composers, F4), §7.4 (D23 startup check); D27.
 
 **Files:**
 - Create: `packages/llm-agent-server-libs/src/smart-agent/resolve-collection-profiles.ts`
 - Create: `packages/llm-agent-server-libs/src/smart-agent/__tests__/resolve-collection-profiles.test.ts`
-- Modify: `packages/llm-agent-server-libs/src/smart-agent/smart-server.ts` (`SmartServerConfig.toolsVariantFactories?`, `.toolsStrategyFactories?`)
+- Create: `packages/llm-agent-server-libs/src/smart-agent/decision-seams.ts` (`decisionRerankerFor` — the one place a `decision:` section becomes a reranker, shared by both resolvers)
+- Modify: `packages/llm-agent-server-libs/src/smart-agent/resolve-retrieval.ts` (`reranker: decision` by kind through `decisionRerankerFor`; `makeRelevanceDecision?` input; imports from `@mcp-abap-adt/llm-agent-reranker`)
+- Modify: `packages/llm-agent-server-libs/src/smart-agent/__tests__/retrieval-*.test.ts` (the relevance arm)
+- Modify: `packages/llm-agent-server-libs/src/smart-agent/smart-server.ts` (`SmartServerConfig.toolsVariantFactories?`, `.toolsStrategyFactories?`; `BuildAgentDeps.makeRelevanceDecision?` beside `makeDecisionModel`, threaded wherever `makeDecisionModel` is — the `Pick<…>` at ~1061, the spread at ~1106, the `resolveRetrievalStrategies` call at ~1320)
+- Modify: `packages/llm-agent-server-libs/package.json` (`peerDependencies`: `"@mcp-abap-adt/llm-agent-reranker": "^30.1.0"`), `tsconfig.json` (`references`: `../llm-agent-reranker`)
 - Modify: `packages/llm-agent-server-libs/src/index.ts` (export the registry types and `BUILT_IN_TOOLS_VARIANTS`, `BUILT_IN_TOOLS_STRATEGIES`)
 
 **Interfaces:**
-- Consumes: Task 21 config types; libs exports (Tasks 5–17): `ComposedToolsProfile`, `mcpToolsVariants`, facets, discriminators, `EnumValueToolIndexer`, `FacetedToolIndexer`, `IntentRecordIndexer`, `IntentCompanionIndexer`, `StaticIntentSource`, `LlmIntentSource`, `ItemPool`, `MaxScoreCollapse`, cuts, `ToolDefinitionSizeEstimator`, `DecisionReranker`, `LlmReranker`, `TOOL_QUESTION`, `PASSAGE_QUESTION`, `wrapDecisionModel`.
+- Consumes: Task 21 config types incl. `DECISION_KINDS`; libs exports (Tasks 5–17): `ComposedToolsProfile`, `mcpToolsVariants`, facets, text composers (`ParameterNamesToolText`, `EnumValuesToolText`, `SchemaToolText`), discriminators, `EnumValueToolIndexer`, `FacetedToolIndexer`, `IntentRecordIndexer`, `IntentCompanionIndexer`, `StaticIntentSource`, `LlmIntentSource`, `ItemPool`, `MaxScoreCollapse`, cuts, `ToolDefinitionSizeEstimator`, `wrapProbabilityDecision`, `wrapRelevanceDecision` (Task 4A); `@mcp-abap-adt/llm-agent-reranker` (Tasks 4B–4C): `ProbabilityReranker`, `RelevanceReranker`, `LlmReranker`, `TOOL_QUESTION`, `PASSAGE_QUESTION`.
 - Produces:
   ```ts
-  export interface ToolsVariantInput { readonly decisionModel?: IDecisionModel; readonly poolItems?: number; readonly intents?: VariantIntents; readonly decompose?: StagedRetrievalOptions['decompose'] } // decisionModel = the decision: section's model (Jev or Cohere)
+  export interface ToolsVariantInput { readonly probabilityDecision?: IProbabilityDecision; readonly relevanceDecision?: IRelevanceDecision; readonly poolItems?: number; readonly intents?: VariantIntents; readonly decompose?: StagedRetrievalOptions['decompose'] } // the decision: section's decision, of its provider's kind
+  // decision-seams.ts
+  export interface DecisionSeams { decisionCfg?: SmartServerDecisionConfig; makeDecisionModel?: (cfg: SmartServerDecisionConfig) => Promise<IProbabilityDecision>; makeRelevanceDecision?: (cfg: SmartServerDecisionConfig) => Promise<IRelevanceDecision> }
+  export function decisionBuilders(seams: DecisionSeams): { kind: DecisionKind | undefined; probability(): Promise<IProbabilityDecision>; relevance(): Promise<IRelevanceDecision> } // each built ONCE, wrapped once for usage logging
+  export function decisionRerankerFor(b: ReturnType<typeof decisionBuilders>, wording: { task: DecisionEntry; criteria: …; explicit: boolean }): Promise<IReranker> // probability → ProbabilityReranker(wording); relevance → RelevanceReranker (explicit wording → error)
   export type ToolsVariantFactory = (input: ToolsVariantInput) => ICollectionProfile<ToolItem> | undefined;
-  export interface ToolsStrategyFactories { readonly facets?: Readonly<Record<string, () => IToolFacet>>; readonly discriminators?: Readonly<Record<string, () => IDiscriminatorSelector>>; readonly pools?: Readonly<Record<string, (args: unknown) => ICandidatePool>>; readonly collapse?: Readonly<Record<string, () => ICollapseRule>>; readonly cuts?: Readonly<Record<string, (args: unknown) => IItemCut>>; readonly estimators?: Readonly<Record<string, () => IItemSizeEstimator>>; readonly decomposers?: Readonly<Record<string, (deps: { queryEmbedder: IQueryEmbedder }) => IQueryDecomposer>> }
+  export interface ToolsStrategyFactories { readonly facets?: Readonly<Record<string, () => IToolFacet>>; readonly texts?: Readonly<Record<string, () => IToolTextComposer>> /* F4 */; readonly discriminators?: Readonly<Record<string, () => IDiscriminatorSelector>>; readonly pools?: Readonly<Record<string, (args: unknown) => ICandidatePool>>; readonly collapse?: Readonly<Record<string, () => ICollapseRule>>; readonly cuts?: Readonly<Record<string, (args: unknown) => IItemCut>>; readonly estimators?: Readonly<Record<string, () => IItemSizeEstimator>>; readonly decomposers?: Readonly<Record<string, (deps: { queryEmbedder: IQueryEmbedder }) => IQueryDecomposer>> }
   export const BUILT_IN_TOOLS_VARIANTS: Readonly<Record<string, ToolsVariantFactory>>;
   export const BUILT_IN_TOOLS_STRATEGIES: ToolsStrategyFactories;
   export interface ResolvedToolsProfile { readonly key: string; readonly profile?: ICollectionProfile<ToolItem>; readonly companions: Readonly<Record<string, IRag>>; readonly variant?: string; readonly poolItems?: number }
-  export interface ResolveCollectionProfilesInput { profiles?: Record<string, SmartServerProfileConfig>; decisionCfg?: SmartServerDecisionConfig; makeDecisionModel?: (cfg: SmartServerDecisionConfig) => Promise<IDecisionModel>; resolveLlm: (key: string) => Promise<ILlm>; queryEmbedder?: IQueryEmbedder; makeCompanionStore: (store: SmartServerRagStoreConfig) => Promise<IRag>; readFile?: (path: string) => string; variantFactories?: Readonly<Record<string, ToolsVariantFactory>>; strategyFactories?: ToolsStrategyFactories }
+  export interface ResolveCollectionProfilesInput extends DecisionSeams { profiles?: Record<string, SmartServerProfileConfig>; resolveLlm: (key: string) => Promise<ILlm>; queryEmbedder?: IQueryEmbedder; makeCompanionStore: (store: SmartServerRagStoreConfig) => Promise<IRag>; readFile?: (path: string) => string; variantFactories?: Readonly<Record<string, ToolsVariantFactory>>; strategyFactories?: ToolsStrategyFactories }
   export function resolveCollectionProfiles(input: ResolveCollectionProfilesInput): Promise<Map<string, ResolvedToolsProfile>>;
   export function assertSmallSetPool(p: ResolvedToolsProfile | undefined, status: ToolCatalogStatus | undefined): void;
   ```
@@ -8198,10 +9444,16 @@ Spec §6.2 (registries, the existing `makeDecisionModel` seam for Jev AND Cohere
 // packages/llm-agent-server-libs/src/smart-agent/__tests__/resolve-collection-profiles.test.ts
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { type IDecisionModel, type ILlm, InMemoryRag } from '@mcp-abap-adt/llm-agent';
+import {
+  type ILlm,
+  InMemoryRag,
+  type IProbabilityDecision,
+  type IRelevanceDecision,
+} from '@mcp-abap-adt/llm-agent';
+import { ProbabilityReranker, RelevanceReranker } from '@mcp-abap-adt/llm-agent-reranker';
 import {
   ComposedToolsProfile,
-  DecisionReranker,
+  EnumValuesToolText,
   EnumValueToolIndexer,
   FacetedToolIndexer,
   FixedItemsCut,
@@ -8219,12 +9471,14 @@ import {
   resolveCollectionProfiles,
 } from '../resolve-collection-profiles.js';
 
-const model = { decide: async () => ({ ok: true, value: { model: 'm', answers: {} } }) } as unknown as IDecisionModel;
+const model: IProbabilityDecision = { decide: async () => ({ ok: true, value: { model: 'm', answers: {} } }) };
+const cohere: IRelevanceDecision = { model: 'c', score: async () => ({ ok: true, value: { model: 'c', scores: [] } }) };
 function input(over: Partial<ResolveCollectionProfilesInput> = {}) {
-  const seams = { decision: 0, stores: 0 };
+  const seams = { decision: 0, relevance: 0, stores: 0 };
   const i: ResolveCollectionProfilesInput = {
     decisionCfg: { provider: 'typesafe' },
     makeDecisionModel: async () => { seams.decision++; return model; },
+    makeRelevanceDecision: async () => { seams.relevance++; return cohere; },
     resolveLlm: async () => ({}) as ILlm,
     queryEmbedder: { embedQuery: async () => ({ vector: [1] }) },
     makeCompanionStore: async () => { seams.stores++; return new InMemoryRag(); },
@@ -8252,23 +9506,42 @@ describe('resolveCollectionProfiles', () => {
     const out = await resolveCollectionProfiles(i);
     assert.equal(out.get('a')?.profile, undefined);
     assert.equal((composed(out.get('b')?.profile).pool as ItemPool).items, 15);
-    assert.ok(composed(out.get('c')?.profile).rerank?.reranker instanceof DecisionReranker);
+    assert.ok(composed(out.get('c')?.profile).rerank?.reranker instanceof ProbabilityReranker);
     assert.equal(out.get('d')?.poolItems, 25);
-    assert.deepEqual(seams, { decision: 1, stores: 0 });
+    assert.deepEqual(seams, { decision: 1, relevance: 0, stores: 0 });
   });
 
-  it('faceted-cohere: DecisionReranker over the model makeDecisionModel builds from decision: (provider sap-aicore)', async () => {
+  it('faceted-cohere: RelevanceReranker over the relevance decision makeRelevanceDecision builds (provider sap-aicore)', async () => {
     const seen: string[] = [];
-    const { i } = input({
+    const { i, seams } = input({
       decisionCfg: { provider: 'sap-aicore', deploymentId: 'd1', model: 'cohere-rerank' },
-      makeDecisionModel: async (cfg) => { seen.push(cfg.provider); return model; },
+      makeRelevanceDecision: async (cfg) => { seen.push(cfg.provider); return cohere; },
       profiles: { tools: { variant: 'faceted-cohere' } },
     });
     const out = await resolveCollectionProfiles(i);
     const c = composed(out.get('tools')?.profile);
-    assert.ok(c.rerank?.reranker instanceof DecisionReranker);
+    assert.ok(c.rerank?.reranker instanceof RelevanceReranker);
     assert.equal((c.pool as ItemPool).items, 30);
     assert.deepEqual(seen, ['sap-aicore']);
+    assert.equal(seams.decision, 0, 'the probability seam is not called for a relevance provider');
+  });
+
+  it('compose reranker: decision builds the reranker of the provider kind (D27)', async () => {
+    const base = { indexer: { faceted: [] }, pool: { items: 3 }, reranker: 'decision' as const };
+    const jev = await resolveCollectionProfiles(input({ profiles: { t: { compose: base } } }).i);
+    assert.ok(composed(jev.get('t')?.profile).rerank?.reranker instanceof ProbabilityReranker);
+    const coh = await resolveCollectionProfiles(
+      input({ decisionCfg: { provider: 'sap-aicore', deploymentId: 'd', model: 'm' }, profiles: { t: { compose: base } } }).i,
+    );
+    assert.ok(composed(coh.get('t')?.profile).rerank?.reranker instanceof RelevanceReranker);
+  });
+
+  it('compose text: a provider text composer by name (F4); absent → the C0 default', async () => {
+    const out = await resolveCollectionProfiles(
+      input({ profiles: { t: { compose: { indexer: { faceted: [] }, text: 'enum-values', pool: { items: 3 } } } } }).i,
+    );
+    const ix = composed(out.get('t')?.profile).indexer;
+    assert.ok(ix instanceof FacetedToolIndexer && ix.text instanceof EnumValuesToolText);
   });
 
   it('intents: record from a file; companion builds its store through the seam', async () => {
@@ -8312,7 +9585,7 @@ describe('resolveCollectionProfiles', () => {
     assert.ok(w.indexer instanceof FacetedToolIndexer);
     assert.deepEqual(w.indexer.facets.map((f) => f.constructor), [SummaryFacet, ParametersFacet]);
     assert.equal((w.pool as ItemPool).items, 30);
-    assert.ok(w.cut instanceof FixedItemsCut && w.cut.k === 5);
+    assert.ok(w.cut instanceof FixedItemsCut && w.cut.n === 5);
     assert.equal(w.rerank?.onFailure, 'error');
     const v = composed(out.get('v')?.profile);
     assert.ok(v.indexer instanceof EnumValueToolIndexer);
@@ -8334,7 +9607,12 @@ describe('resolveCollectionProfiles', () => {
     await assert.rejects(resolveCollectionProfiles(input({ profiles: { t: { variant: 'nope' } } }).i), /rag\.profiles\.t: unknown variant "nope"/);
     await assert.rejects(resolveCollectionProfiles(input({ profiles: { t: { compose: { indexer: { faceted: ['nope'] }, pool: { items: 3 } } } } }).i), /rag\.profiles\.t: unknown facet "nope"/);
     await assert.rejects(resolveCollectionProfiles(input({ profiles: { t: { variant: 'faceted', decomposer: 'nope' } } }).i), /unknown decomposer "nope" \(none is built in/);
-    await assert.rejects(resolveCollectionProfiles(input({ profiles: { t: { variant: 'faceted-cohere' } }, makeDecisionModel: undefined }).i), /makeDecisionModel is required/);
+    await assert.rejects(resolveCollectionProfiles(input({ profiles: { t: { variant: 'faceted-jev' } }, makeDecisionModel: undefined }).i), /makeDecisionModel is required/);
+    await assert.rejects(
+      resolveCollectionProfiles(input({ decisionCfg: { provider: 'sap-aicore', deploymentId: 'd', model: 'm' }, profiles: { t: { variant: 'faceted-cohere' } }, makeRelevanceDecision: undefined }).i),
+      /makeRelevanceDecision is required/,
+    );
+    await assert.rejects(resolveCollectionProfiles(input({ profiles: { t: { compose: { indexer: { faceted: [] }, text: 'nope', pool: { items: 3 } } } } }).i), /unknown text composer "nope"/);
   });
 
   it('assertSmallSetPool: poolItems below the tool count fails startup (D23)', () => {
@@ -8355,20 +9633,118 @@ Expected: FAIL — module not found.
 - [ ] **Step 3: Implement**
 
 ```ts
+// packages/llm-agent-server-libs/src/smart-agent/decision-seams.ts
+/**
+ * ONE decision: section → its decision, of the kind its provider names
+ * (DECISION_KINDS, spec §6.2), built ONCE through the seam of that kind and
+ * wrapped once for usage logging; and `reranker: decision` → the matching
+ * reranker. Shared by rag.retrieval and rag.profiles, so both agree.
+ */
+import type {
+  DecisionEntry,
+  IProbabilityDecision,
+  IRelevanceDecision,
+  IReranker,
+} from '@mcp-abap-adt/llm-agent';
+import { ProbabilityReranker, RelevanceReranker } from '@mcp-abap-adt/llm-agent-reranker';
+import { wrapProbabilityDecision, wrapRelevanceDecision } from '@mcp-abap-adt/llm-agent-libs';
+import { DECISION_KINDS, type DecisionKind, type SmartServerDecisionConfig } from './decision-config.js';
+
+export interface DecisionSeams {
+  decisionCfg?: SmartServerDecisionConfig;
+  /** Probability providers (typesafe). The existing seam. */
+  makeDecisionModel?: (cfg: SmartServerDecisionConfig) => Promise<IProbabilityDecision>;
+  /** Relevance providers (sap-aicore). New, optional (spec §3.8). */
+  makeRelevanceDecision?: (cfg: SmartServerDecisionConfig) => Promise<IRelevanceDecision>;
+}
+
+const missing = (seam: string) =>
+  `BuildAgentDeps.${seam} is required: the config asks for a decision of that kind, and the library constructs none from configuration. Supply it from your composition root.`;
+
+export function decisionBuilders(seams: DecisionSeams) {
+  const cfg = seams.decisionCfg;
+  const kind: DecisionKind | undefined = cfg ? DECISION_KINDS[cfg.provider] : undefined;
+  let p: IProbabilityDecision | undefined;
+  let r: IRelevanceDecision | undefined;
+  return {
+    kind,
+    async probability(): Promise<IProbabilityDecision> {
+      if (p) return p;
+      if (!cfg) throw new Error('reranker: decision requires a decision: section');
+      if (!seams.makeDecisionModel) throw new Error(missing('makeDecisionModel'));
+      p = wrapProbabilityDecision(await seams.makeDecisionModel(cfg));
+      return p;
+    },
+    async relevance(): Promise<IRelevanceDecision> {
+      if (r) return r;
+      if (!cfg) throw new Error('reranker: decision requires a decision: section');
+      if (!seams.makeRelevanceDecision) throw new Error(missing('makeRelevanceDecision'));
+      r = wrapRelevanceDecision(await seams.makeRelevanceDecision(cfg));
+      return r;
+    },
+  };
+}
+
+/** `reranker: decision` → ProbabilityReranker (with wording) or RelevanceReranker (no wording). */
+export async function decisionRerankerFor(
+  b: ReturnType<typeof decisionBuilders>,
+  wording: {
+    task: DecisionEntry;
+    criteria: { true?: DecisionEntry; false?: DecisionEntry };
+    /** The config set question / task explicitly (the validator already refused it for relevance). */
+    explicit: boolean;
+  },
+): Promise<IReranker> {
+  if (b.kind === 'relevance') {
+    if (wording.explicit) {
+      throw new Error('question / task apply to a probability decision only');
+    }
+    return new RelevanceReranker(await b.relevance());
+  }
+  return new ProbabilityReranker(await b.probability(), {
+    task: wording.task,
+    criteria: wording.criteria,
+  });
+}
+```
+
+In `resolve-retrieval.ts` (the 30.1.0 `rag.retrieval` resolver): `ResolveRetrievalInput` extends `DecisionSeams` (drops its own `decisionCfg` / `makeDecisionModel` fields — same names, same types for the probability seam, so `smart-server.ts` call sites compile); replace the `decisionModel` / `decisionReranker` closure with `const decisions = decisionBuilders(input);` and a cache keyed by `JSON.stringify([preset.criteria, task])` over `decisionRerankerFor(decisions, { task, criteria: preset.criteria, explicit: cfg.question !== undefined || cfg.task !== undefined })`; import `LlmReranker`, `PASSAGE_QUESTION`, `TOOL_QUESTION` from `@mcp-abap-adt/llm-agent-reranker` (libs keeps `EmbeddingRetrieval`, `RerankedRetrieval`, `RerankAllRetrieval`). Under `typesafe` nothing changes (golden: the existing `retrieval-*` tests pass untouched). Add to the retrieval tests:
+
+```ts
+it('reranker: decision under a relevance provider builds a RelevanceReranker over makeRelevanceDecision', async () => {
+  const out = await resolveRetrievalStrategies({
+    retrieval: { tools: { strategy: 'rerank', reranker: 'decision' } },
+    decisionCfg: { provider: 'sap-aicore', deploymentId: 'd', model: 'm' },
+    makeRelevanceDecision: async () => ({ score: async () => ({ ok: true, value: { model: 'm', scores: [] } }) }),
+    resolveLlm: async () => { throw new Error('unused'); },
+  });
+  assert.ok(out.get('tools'));   // a RerankedRetrieval whose reranker is a RelevanceReranker
+});
+```
+(Assert the reranker class through whatever accessor the existing retrieval tests use; add `rerankerOf` to the test helper if none exists.)
+
+`smart-server.ts` `BuildAgentDeps`, beside `makeDecisionModel` (now typed `IProbabilityDecision` — the same type as `IDecisionModel`):
+```ts
+  /** Builds the relevance decision for a `decision:` provider of kind relevance (sap-aicore).
+   *  Optional: a config that never asks for one needs none (spec §3.8, §6.2). */
+  makeRelevanceDecision?: (cfg: SmartServerDecisionConfig) => Promise<IRelevanceDecision>;
+```
+and thread it exactly where `makeDecisionModel` is threaded (the `Pick<…>` list, the conditional spread, the `resolveRetrievalStrategies` and `resolveCollectionProfiles` inputs).
+
+```ts
 // packages/llm-agent-server-libs/src/smart-agent/resolve-collection-profiles.ts
 /**
  * `rag.profiles` names → strategy instances (spec §6.2). The ONLY place the
  * server turns profile configuration into objects; components get instances.
- * Unknown name → startup error. The decision model (Jev or Cohere, by
- * `decision.provider`) comes from the composition root's existing
- * makeDecisionModel seam; the library constructs none from config.
+ * Unknown name → startup error. The decision (Jev = probability, Cohere =
+ * relevance, by `decision.provider`) comes from the composition root's seam of
+ * that kind (decision-seams.ts); the library constructs none from config.
  */
 import { readFileSync } from 'node:fs';
 import type {
   ICandidatePool,
   ICollapseRule,
   ICollectionProfile,
-  IDecisionModel,
   IDiscriminatorSelector,
   IItemCut,
   IItemIndexer,
@@ -8378,14 +9754,18 @@ import type {
   IQueryEmbedder,
   IRag,
   IReranker,
+  IProbabilityDecision,
+  IRelevanceDecision,
   IToolFacet,
   IToolIntentSource,
+  IToolTextComposer,
   ToolCatalogStatus,
   ToolItem,
 } from '@mcp-abap-adt/llm-agent';
+import { LlmReranker, PASSAGE_QUESTION, TOOL_QUESTION } from '@mcp-abap-adt/llm-agent-reranker';
 import {
   ComposedToolsProfile,
-  DecisionReranker,
+  EnumValuesToolText,
   EnumValueToolIndexer,
   FacetedToolIndexer,
   FixedItemsCut,
@@ -8393,25 +9773,23 @@ import {
   IntentRecordIndexer,
   ItemPool,
   LlmIntentSource,
-  LlmReranker,
   MaxScoreCollapse,
   mcpToolsVariants,
   NamedDiscriminator,
   NameTailFacet,
-  PASSAGE_QUESTION,
+  ParameterNamesToolText,
   ParametersFacet,
   RequiredEnumDiscriminator,
+  SchemaToolText,
   ScoreFloorCut,
   type StagedRetrievalOptions,
   StaticIntentSource,
   SummaryFacet,
-  TOOL_QUESTION,
   TokenBudgetCut,
   ToolDefinitionSizeEstimator,
   type VariantIntents,
-  wrapDecisionModel,
 } from '@mcp-abap-adt/llm-agent-libs';
-import type { SmartServerDecisionConfig } from './decision-config.js';
+import { type DecisionSeams, decisionBuilders, decisionRerankerFor } from './decision-seams.js';
 import type {
   SmartServerComposeConfig,
   SmartServerCutConfig,
@@ -8422,8 +9800,10 @@ import type {
 import type { SmartServerRagStoreConfig } from './rag-config.js';
 
 export interface ToolsVariantInput {
-  /** The decision: section's model — Jev (typesafe) or Cohere (sap-aicore). */
-  readonly decisionModel?: IDecisionModel;
+  /** The decision: section's decision when its provider is of kind probability (typesafe, Jev). */
+  readonly probabilityDecision?: IProbabilityDecision;
+  /** … when its provider is of kind relevance (sap-aicore, Cohere). */
+  readonly relevanceDecision?: IRelevanceDecision;
   readonly poolItems?: number;
   readonly intents?: VariantIntents;
   readonly decompose?: StagedRetrievalOptions['decompose'];
@@ -8434,6 +9814,8 @@ export type ToolsVariantFactory = (
 
 export interface ToolsStrategyFactories {
   readonly facets?: Readonly<Record<string, () => IToolFacet>>;
+  /** Provider text composers (F4); built-ins parameter-names (default), enum-values, schema. */
+  readonly texts?: Readonly<Record<string, () => IToolTextComposer>>;
   readonly discriminators?: Readonly<Record<string, () => IDiscriminatorSelector>>;
   readonly pools?: Readonly<Record<string, (args: unknown) => ICandidatePool>>;
   readonly collapse?: Readonly<Record<string, () => ICollapseRule>>;
@@ -8460,17 +9842,17 @@ export const BUILT_IN_TOOLS_VARIANTS: Readonly<Record<string, ToolsVariantFactor
   'faceted-cohere': (i) =>
     mcpToolsVariants.facetedCohere({
       ...variantOptions(i),
-      decisionModel: need(i.decisionModel, 'faceted-cohere needs the Cohere decision model (decision.provider: sap-aicore)'),
+      relevanceDecision: need(i.relevanceDecision, 'faceted-cohere needs a relevance decision (decision.provider: sap-aicore)'),
     }),
   'faceted-jev': (i) =>
     mcpToolsVariants.facetedJev({
       ...variantOptions(i),
-      decisionModel: need(i.decisionModel, 'faceted-jev needs a decision model'),
+      probabilityDecision: need(i.probabilityDecision, 'faceted-jev needs a probability decision (decision.provider: typesafe)'),
     }),
   'small-set-jev': (i) =>
     mcpToolsVariants.smallSetJev({
       ...variantOptions(i),
-      decisionModel: need(i.decisionModel, 'small-set-jev needs a decision model'),
+      probabilityDecision: need(i.probabilityDecision, 'small-set-jev needs a probability decision (decision.provider: typesafe)'),
       poolItems: need(i.poolItems, 'small-set-jev needs smallSet.poolItems'),
     }),
 };
@@ -8481,6 +9863,11 @@ export const BUILT_IN_TOOLS_STRATEGIES: ToolsStrategyFactories = {
     parameters: () => new ParametersFacet(),
     // opt-in, convention-dependent (spec §7.3.1)
     'name-tail': () => new NameTailFacet(),
+  },
+  texts: {
+    'parameter-names': () => new ParameterNamesToolText(),
+    'enum-values': () => new EnumValuesToolText(),
+    schema: () => new SchemaToolText(),
   },
   discriminators: { 'required-enum': () => new RequiredEnumDiscriminator() },
   collapse: { max: () => new MaxScoreCollapse() },
@@ -8498,11 +9885,9 @@ export interface ResolvedToolsProfile {
   readonly poolItems?: number;
 }
 
-export interface ResolveCollectionProfilesInput {
+/** decisionCfg + the seam of each kind (decision-seams.ts). */
+export interface ResolveCollectionProfilesInput extends DecisionSeams {
   profiles?: Record<string, SmartServerProfileConfig>;
-  decisionCfg?: SmartServerDecisionConfig;
-  /** The existing seam; builds TypeSafeDecisionModel or SapAiCoreDecisionModel by provider. */
-  makeDecisionModel?: (cfg: SmartServerDecisionConfig) => Promise<IDecisionModel>;
   /** Resolves a key of the `llm:` map (strict). */
   resolveLlm: (key: string) => Promise<ILlm>;
   /** The store's query embedder (the one makeRag gives the store); for decomposers. */
@@ -8514,9 +9899,6 @@ export interface ResolveCollectionProfilesInput {
   variantFactories?: Readonly<Record<string, ToolsVariantFactory>>;
   strategyFactories?: ToolsStrategyFactories;
 }
-
-const MISSING_DECISION_SEAM =
-  'BuildAgentDeps.makeDecisionModel is required: the config asks for a decision model, and the library constructs none from configuration. Supply it from your composition root.';
 
 type Obj = Record<string, unknown>;
 const isMap = (v: unknown): v is Obj => v !== null && typeof v === 'object' && !Array.isArray(v);
@@ -8543,6 +9925,7 @@ export async function resolveCollectionProfiles(
   const variants = { ...BUILT_IN_TOOLS_VARIANTS, ...input.variantFactories };
   const s: ToolsStrategyFactories = {
     facets: { ...BUILT_IN_TOOLS_STRATEGIES.facets, ...input.strategyFactories?.facets },
+    texts: { ...BUILT_IN_TOOLS_STRATEGIES.texts, ...input.strategyFactories?.texts },
     discriminators: { ...BUILT_IN_TOOLS_STRATEGIES.discriminators, ...input.strategyFactories?.discriminators },
     pools: { ...input.strategyFactories?.pools },
     collapse: { ...BUILT_IN_TOOLS_STRATEGIES.collapse, ...input.strategyFactories?.collapse },
@@ -8552,14 +9935,8 @@ export async function resolveCollectionProfiles(
   };
   const readFile = input.readFile ?? ((p: string) => readFileSync(p, 'utf8'));
 
-  let decision: IDecisionModel | undefined;
-  const decisionModel = async (): Promise<IDecisionModel> => {
-    if (decision) return decision;
-    const cfg = need(input.decisionCfg, 'a decision: section is required');
-    const make = need(input.makeDecisionModel, MISSING_DECISION_SEAM);
-    decision = wrapDecisionModel(await make(cfg));
-    return decision;
-  };
+  // ONE decision per server, of its provider's kind, built once (spec §6.2).
+  const decisions = decisionBuilders(input);
   const pick = <T>(reg: Readonly<Record<string, T>> | undefined, kind: string, n: string): T => {
     const f = reg?.[n];
     if (!f) throw new Error(`unknown ${kind} "${n}" (known: ${Object.keys(reg ?? {}).join(', ') || 'none'})`);
@@ -8608,12 +9985,13 @@ export async function resolveCollectionProfiles(
     intents: VariantIntents | undefined,
     decompose: StagedRetrievalOptions['decompose'],
   ): Promise<ICollectionProfile<ToolItem>> => {
+    const text = c.text ? { text: pick(s.texts, 'text composer', c.text)() } : {};
     let base: IItemIndexer<ToolItem>;
-    if ('faceted' in c.indexer) base = new FacetedToolIndexer(facetsOf(c.indexer.faceted));
+    if ('faceted' in c.indexer) base = new FacetedToolIndexer(facetsOf(c.indexer.faceted), text);
     else {
       const e = c.indexer['enum-values'];
       const d = e.discriminator;
-      base = new EnumValueToolIndexer(new FacetedToolIndexer(facetsOf(e.inner.faceted)), {
+      base = new EnumValueToolIndexer(new FacetedToolIndexer(facetsOf(e.inner.faceted), text), {
         discriminator: typeof d === 'string' ? pick(s.discriminators, 'discriminator', d)() : new NamedDiscriminator(d.named),
         maxValues: e.maxValues,
       });
@@ -8629,8 +10007,12 @@ export async function resolveCollectionProfiles(
     let reranker: IReranker | undefined;
     switch (c.reranker ?? 'none') {
       case 'decision':
-        // Jev or Cohere, whichever decision.provider names (spec §6.2).
-        reranker = new DecisionReranker(await decisionModel(), { task: preset.task, criteria: preset.criteria });
+        // The reranker of decision.provider's kind (spec §6.2, D27).
+        reranker = await decisionRerankerFor(decisions, {
+          task: preset.task,
+          criteria: preset.criteria,
+          explicit: c.question !== undefined,
+        });
         break;
       case 'llm':
         reranker = new LlmReranker(await input.resolveLlm(need(c.llm, 'reranker: llm needs llm:')), { question: { task: preset.task } });
@@ -8657,11 +10039,19 @@ export async function resolveCollectionProfiles(
         const factory = variants[cfg.variant];
         if (!factory) throw new Error(`unknown variant "${cfg.variant}" (known: ${Object.keys(variants).join(', ')})`);
         const builtIn = cfg.variant in BUILT_IN_TOOLS_VARIANTS;
-        const wantsDecision = builtIn
-          ? cfg.variant === 'faceted-cohere' || cfg.variant === 'faceted-jev' || cfg.variant === 'small-set-jev'
-          : input.decisionCfg !== undefined && input.makeDecisionModel !== undefined;
+        // A built-in decision variant gets the decision of the kind it takes (the validator
+        // already matched the provider's kind); a consumer's variant gets whatever the
+        // decision: section builds, if anything.
+        const wants: 'probability' | 'relevance' | undefined = builtIn
+          ? cfg.variant === 'faceted-cohere'
+            ? 'relevance'
+            : cfg.variant === 'faceted-jev' || cfg.variant === 'small-set-jev'
+              ? 'probability'
+              : undefined
+          : decisions.kind;
         const profile = factory({
-          ...(wantsDecision ? { decisionModel: await decisionModel() } : {}),
+          ...(wants === 'probability' ? { probabilityDecision: await decisions.probability() } : {}),
+          ...(wants === 'relevance' ? { relevanceDecision: await decisions.relevance() } : {}),
           ...(cfg.smallSet ? { poolItems: cfg.smallSet.poolItems } : {}),
           ...(intents ? { intents } : {}),
           ...(decompose ? { decompose } : {}),
@@ -8705,19 +10095,27 @@ export function assertSmallSetPool(
   toolsStrategyFactories?: ToolsStrategyFactories;
 ```
 
-Export from `src/index.ts`: `assertSmallSetPool`, `BUILT_IN_TOOLS_STRATEGIES`, `BUILT_IN_TOOLS_VARIANTS`, `resolveCollectionProfiles`, and types `ResolvedToolsProfile`, `ToolsStrategyFactories`, `ToolsVariantFactory`, `ToolsVariantInput`.
+Export from `src/index.ts`: `assertSmallSetPool`, `BUILT_IN_TOOLS_STRATEGIES`, `BUILT_IN_TOOLS_VARIANTS`, `resolveCollectionProfiles`, `decisionBuilders`, `decisionRerankerFor`, and types `DecisionSeams`, `ResolvedToolsProfile`, `ToolsStrategyFactories`, `ToolsVariantFactory`, `ToolsVariantInput`.
+
+`config-validator.ts` (Task 21's `checkRetrieval` rule) imports `DECISION_KINDS` from `./decision-config.js` — check it is there.
 
 - [ ] **Step 4: Run**
 
-Run: `node --import tsx/esm --test packages/llm-agent-server-libs/src/smart-agent/__tests__/resolve-collection-profiles.test.ts`
-Expected: PASS.
+Run:
+```bash
+npm install && grep -n '"link": true' package-lock.json
+npx tsc -b packages/llm-agent-server-libs
+node --import tsx/esm --test packages/llm-agent-server-libs/src/smart-agent/__tests__/resolve-collection-profiles.test.ts packages/llm-agent-server-libs/src/smart-agent/__tests__/retrieval-*.test.ts
+node --import tsx/esm --test --test-reporter=spec 'test/repo/*.test.ts'
+```
+Expected: PASS; only workspace siblings are linked; `scoped-dependencies` accepts the new peer.
 
 - [ ] **Step 5: Commit**
 
 ```bash
 npx biome check --write packages/llm-agent-server-libs/src
-git add packages/llm-agent-server-libs/src
-git commit -m "feat(server-libs): resolve rag.profiles names to strategy instances; small-set pool check
+git add packages/llm-agent-server-libs package-lock.json
+git commit -m "feat(server-libs): resolve rag.profiles names to strategy instances; decision: by kind; small-set pool check
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_012KjevEeQGZMkWMfnupJ7Yd"
@@ -8835,6 +10233,8 @@ In `smart-server.ts`:
       profiles: this.cfg.rag?.profiles,
       decisionCfg: this.cfg.decision,
       makeDecisionModel: this._deps.makeDecisionModel,
+      // the relevance seam (Task 22); the provider's kind picks which one is called
+      makeRelevanceDecision: this._deps.makeRelevanceDecision,
       resolveLlm: (key) => this.roleLlm().resolveNamed(key),
       queryEmbedder: resolvedEmbedder,
       makeCompanionStore: async (store) =>
@@ -8901,49 +10301,50 @@ Claude-Session: https://claude.ai/code/session_012KjevEeQGZMkWMfnupJ7Yd"
 
 ---
 
-## Task 24: Composition root — the `sap-aicore` arm of `createMakeDecisionModel` (server)
+## Task 24: Composition root — `createMakeRelevanceDecision` with the `sap-aicore` arm (server)
 
-Spec §5.2 (credential injected; the AI Core token exchange reused), §5.3 (batches → `/rerank` calls), §6.2 (`decision.provider: sap-aicore`, default ref `DECISION` → `DECISION_SERVICE_KEY`), §11. **No new seam:** the existing `BuildAgentDeps.makeDecisionModel` builds the Cohere model too.
+Spec §5.3 (credential injected; the AI Core token exchange reused), §5.2 (one call by default; batches → `/rerank` calls), §6.2 (`decision.provider: sap-aicore` is a relevance decision, default ref `DECISION` → `DECISION_SERVICE_KEY`), §3.8 (the `makeRelevanceDecision` seam row), §11; D25, D27. The probability seam (`makeDecisionModel`, `typesafe`) is unchanged; the relevance seam is the app's new `createMakeRelevanceDecision`.
 
 **Files:**
-- Modify: `packages/llm-agent-server/src/composition/make-decision-model.ts` (`DecisionProviderCtors`, `SHIPPED_DECISION_PROVIDERS`, the `sap-aicore` arm)
-- Create: `packages/llm-agent-server/src/composition/__tests__/make-decision-model-sap-aicore.test.ts`
+- Create: `packages/llm-agent-server/src/composition/make-relevance-decision.ts` (`RelevanceProviderCtors`, `SHIPPED_RELEVANCE_PROVIDERS`, `createMakeRelevanceDecision`)
+- Modify: `packages/llm-agent-server/src/composition/make-decision-model.ts` (an explicit `sap-aicore` case that names the other seam; types `IProbabilityDecision`)
+- Modify: `packages/llm-agent-server/src/composition/index.ts` (`makeRelevanceDecision: createMakeRelevanceDecision(lookup)` beside `makeDecisionModel`)
+- Create: `packages/llm-agent-server/src/composition/__tests__/make-relevance-decision.test.ts`
 
 **Interfaces:**
-- Consumes: `SapAiCoreDecisionModel`, `SapAiCoreDecisionConfig` (Task 18); `SmartServerDecisionConfig` with `provider: 'sap-aicore'`, `deploymentId`, `resourceGroup` (Task 21); `Lookup` (`lookup.ts`: `require('bearer')`, `requireApiBaseUrl()`); `DEFAULT_DECISION_REF` and `envCredentialEntries` (`credential-for.ts`: `<REF>_SERVICE_KEY` → `serviceKeyCredential` from `@mcp-abap-adt/sap-aicore-auth` → bearer + `apiBaseUrl` — already a dependency of the server); `DecisionReranker`, `TOOL_QUESTION` (`@mcp-abap-adt/llm-agent-libs`, for the batching test).
+- Consumes: `SapAiCoreRelevanceDecision`, `SapAiCoreRelevanceConfig` (Task 18); `SmartServerDecisionConfig` with `provider: 'sap-aicore'`, `deploymentId`, `resourceGroup` (Task 21); `BuildAgentDeps.makeRelevanceDecision` (Task 22); `Lookup` (`lookup.ts`: `require('bearer')`, `requireApiBaseUrl()`); `DEFAULT_DECISION_REF` and `envCredentialEntries` (`credential-for.ts`: `<REF>_SERVICE_KEY` → `serviceKeyCredential` from `@mcp-abap-adt/sap-aicore-auth` → bearer + `apiBaseUrl` — already a dependency of the server); `RelevanceReranker` (`@mcp-abap-adt/llm-agent-reranker`, for the batching test).
 - Produces:
   ```ts
-  export interface DecisionProviderCtors {
-    typesafe: new (cfg: TypeSafeDecisionConfig) => IDecisionModel;
-    'sap-aicore': new (cfg: SapAiCoreDecisionConfig) => IDecisionModel;
-  }
-  export const SHIPPED_DECISION_PROVIDERS: DecisionProviderCtors; // + 'sap-aicore': SapAiCoreDecisionModel
-  // createMakeDecisionModel(lookup, ctors?) — unchanged signature; new arm:
+  export interface RelevanceProviderCtors { 'sap-aicore': new (cfg: SapAiCoreRelevanceConfig) => IRelevanceDecision }
+  export const SHIPPED_RELEVANCE_PROVIDERS: RelevanceProviderCtors; // 'sap-aicore': SapAiCoreRelevanceDecision
+  export function createMakeRelevanceDecision(lookup: Lookup, ctors?: RelevanceProviderCtors): (cfg: SmartServerDecisionConfig) => Promise<IRelevanceDecision>;
   //   'sap-aicore' → lookup(cfg.credentialRef, DEFAULT_DECISION_REF, 'decision sap-aicore')
   //                  .require('bearer') + .requireApiBaseUrl(); deploymentId, model, resourceGroup? by name
+  //   a probability provider (typesafe) → error naming makeDecisionModel
   ```
 
 - [ ] **Step 1: Write the failing test**
 
 ```ts
-// packages/llm-agent-server/src/composition/__tests__/make-decision-model-sap-aicore.test.ts
+// packages/llm-agent-server/src/composition/__tests__/make-relevance-decision.test.ts
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { IBearerCredential } from '@mcp-abap-adt/interfaces-auth';
 import { type RagResult, staticApiKey } from '@mcp-abap-adt/llm-agent';
-import { DecisionReranker, TOOL_QUESTION } from '@mcp-abap-adt/llm-agent-libs';
-import { SapAiCoreDecisionModel } from '@mcp-abap-adt/sap-aicore-decision';
+import { RelevanceReranker } from '@mcp-abap-adt/llm-agent-reranker';
+import { SapAiCoreRelevanceDecision } from '@mcp-abap-adt/sap-aicore-decision';
 import {
   type CredentialEntry,
   envCredentialEntries,
   memoizeCredentials,
 } from '../credential-for.js';
 import { createLookup } from '../lookup.js';
+import { createMakeDecisionModel } from '../make-decision-model.js';
 import {
-  createMakeDecisionModel,
-  type DecisionProviderCtors,
-  SHIPPED_DECISION_PROVIDERS,
-} from '../make-decision-model.js';
+  createMakeRelevanceDecision,
+  type RelevanceProviderCtors,
+  SHIPPED_RELEVANCE_PROVIDERS,
+} from '../make-relevance-decision.js';
 
 const bearer: IBearerCredential = { kind: 'bearer', token: async () => 't' };
 
@@ -8953,17 +10354,17 @@ function harness(entries: Record<string, CredentialEntry>) {
     constructor(cfg: Record<string, unknown>) {
       seen.push(cfg);
     }
-    async decide() {
-      return { ok: true, value: { model: 'f', answers: {} } };
+    async score() {
+      return { ok: true, value: { model: 'f', scores: [] } };
     }
   };
-  const ctors = { typesafe: record, 'sap-aicore': record } as unknown as DecisionProviderCtors;
-  return { seen, make: createMakeDecisionModel(createLookup(memoizeCredentials((r) => entries[r])), ctors) };
+  const ctors = { 'sap-aicore': record } as unknown as RelevanceProviderCtors;
+  return { seen, make: createMakeRelevanceDecision(createLookup(memoizeCredentials((r) => entries[r])), ctors) };
 }
 
-describe('makeDecisionModel — provider sap-aicore (Cohere, spec §5.2, §6.2)', () => {
-  it('the shipped providers include SapAiCoreDecisionModel', () => {
-    assert.equal(SHIPPED_DECISION_PROVIDERS['sap-aicore'], SapAiCoreDecisionModel);
+describe('makeRelevanceDecision — provider sap-aicore (Cohere, spec §5.3, §6.2)', () => {
+  it('the shipped relevance providers include SapAiCoreRelevanceDecision', () => {
+    assert.equal(SHIPPED_RELEVANCE_PROVIDERS['sap-aicore'], SapAiCoreRelevanceDecision);
   });
   it('default ref DECISION: bearer + apiBaseUrl from the service-key entry; named fields only', async () => {
     const { seen, make } = harness({ DECISION: { credential: bearer, apiBaseUrl: 'https://api' } });
@@ -8991,15 +10392,23 @@ describe('makeDecisionModel — provider sap-aicore (Cohere, spec §5.2, §6.2)'
     const { make } = harness({ DECISION: { credential: bearer, apiBaseUrl: 'https://api' } });
     await assert.rejects(make({ provider: 'sap-aicore', model: 'm' }), /decision sap-aicore needs deploymentId and model/);
   });
-  it('DECISION_SERVICE_KEY through the shipped env rule builds a SapAiCoreDecisionModel (token exchange reused)', async () => {
+  it('each seam refuses the other kind, naming the right seam', async () => {
+    await assert.rejects(harness({}).make({ provider: 'typesafe' }), /typesafe is a probability decision — built by makeDecisionModel/);
+    const lookup = createLookup(memoizeCredentials(() => undefined));
+    await assert.rejects(
+      createMakeDecisionModel(lookup)({ provider: 'sap-aicore', deploymentId: 'd', model: 'm' }),
+      /sap-aicore is a relevance decision — built by makeRelevanceDecision/,
+    );
+  });
+  it('DECISION_SERVICE_KEY through the shipped env rule builds a SapAiCoreRelevanceDecision (token exchange reused)', async () => {
     const key = JSON.stringify({ clientid: 'c', clientsecret: 's', url: 'https://auth.example', serviceurls: { AI_API_URL: 'https://api.example/' } });
     const lookup = createLookup(memoizeCredentials(envCredentialEntries({ DECISION_SERVICE_KEY: key })));
-    const model = await createMakeDecisionModel(lookup)({ provider: 'sap-aicore', deploymentId: 'd1', model: 'cohere-rerank' });
-    assert.ok(model instanceof SapAiCoreDecisionModel);
+    const d = await createMakeRelevanceDecision(lookup)({ provider: 'sap-aicore', deploymentId: 'd1', model: 'cohere-rerank' });
+    assert.ok(d instanceof SapAiCoreRelevanceDecision);
   });
 });
 
-describe('DecisionReranker over SapAiCoreDecisionModel — batches → /rerank calls (spec §5.3)', () => {
+describe('RelevanceReranker over SapAiCoreRelevanceDecision — calls → /rerank (spec §5.2)', () => {
   const docs = (n: number): RagResult[] =>
     Array.from({ length: n }, (_, i) => ({ text: `tool ${i} ${'x'.repeat(40)}`, metadata: { id: `t${i}` }, score: 0 }));
   function cohere() {
@@ -9011,28 +10420,27 @@ describe('DecisionReranker over SapAiCoreDecisionModel — batches → /rerank c
       const results = body.documents.map((d, index) => ({ index, relevance_score: Number(d.split(' ')[1]) / 100 }));
       return new Response(JSON.stringify({ results }), { status: 200 });
     };
-    return { calls, model: new SapAiCoreDecisionModel({ deploymentId: 'd', model: 'm', apiBaseUrl: 'https://api', credential: bearer, fetch }) };
+    return { calls, decision: new SapAiCoreRelevanceDecision({ deploymentId: 'd', model: 'm', apiBaseUrl: 'https://api', credential: bearer, fetch }) };
   }
-  const tool = { task: TOOL_QUESTION.task, criteria: TOOL_QUESTION.criteria };
 
-  it('the default budget sends 30 tools in ONE call', async () => {
-    const { calls, model } = cohere();
-    const r = await new DecisionReranker(model, tool).rerank('q', docs(30));
+  it('by default, 30 tools go in ONE call', async () => {
+    const { calls, decision } = cohere();
+    const r = await new RelevanceReranker(decision).rerank('q', docs(30));
     assert.ok(r.ok);
     assert.deepEqual(calls, [30]);
   });
-  it('a small maxBatchTokens splits into several calls; the scores merge into one order', async () => {
-    const { calls, model } = cohere();
-    const r = await new DecisionReranker(model, { ...tool, maxBatchTokens: 200 }).rerank('q', docs(10));
+  it('maxBatchTokens (pairwise provider) splits into several calls; the scores merge into one order', async () => {
+    const { calls, decision } = cohere();
+    const r = await new RelevanceReranker(decision, { maxBatchTokens: 40 }).rerank('q', docs(10));
     assert.ok(r.ok);
     assert.ok(calls.length > 1, `expected several calls, got ${calls.length}`);
     assert.equal(calls.reduce((a, b) => a + b, 0), 10);
     assert.deepEqual(r.value.map((x) => x.metadata.id), ['t9', 't8', 't7', 't6', 't5', 't4', 't3', 't2', 't1', 't0']);
   });
-  it('a bad /rerank answer is a DecisionError, which DecisionReranker turns into RERANK_ERROR', async () => {
+  it('a bad /rerank answer is a DecisionError, which RelevanceReranker turns into RERANK_ERROR', async () => {
     const fetch = async () => new Response(JSON.stringify({ results: [] }), { status: 200 });
-    const model = new SapAiCoreDecisionModel({ deploymentId: 'd', model: 'm', apiBaseUrl: 'https://api', credential: bearer, fetch });
-    const r = await new DecisionReranker(model, tool).rerank('q', docs(2));
+    const decision = new SapAiCoreRelevanceDecision({ deploymentId: 'd', model: 'm', apiBaseUrl: 'https://api', credential: bearer, fetch });
+    const r = await new RelevanceReranker(decision).rerank('q', docs(2));
     assert.ok(!r.ok && r.error.code === 'RERANK_ERROR');
   });
 });
@@ -9040,39 +10448,50 @@ describe('DecisionReranker over SapAiCoreDecisionModel — batches → /rerank c
 
 - [ ] **Step 2: Run to see it fail**
 
-Run: `npx tsc -b packages/sap-aicore-decision packages/llm-agent-libs packages/llm-agent-server-libs && node --import tsx/esm --test packages/llm-agent-server/src/composition/__tests__/make-decision-model-sap-aicore.test.ts`
-Expected: FAIL — `SHIPPED_DECISION_PROVIDERS['sap-aicore']` is undefined; `unknown decision provider 'sap-aicore'`. (The batching cases pass already: they exercise Task 18's model through the unchanged `DecisionReranker`.)
+Run: `npx tsc -b packages/sap-aicore-decision packages/llm-agent-reranker packages/llm-agent-libs packages/llm-agent-server-libs && node --import tsx/esm --test packages/llm-agent-server/src/composition/__tests__/make-relevance-decision.test.ts`
+Expected: FAIL — `Cannot find module '../make-relevance-decision.js'`. (The reranker cases would pass already: they exercise Tasks 4C and 18.)
 
 - [ ] **Step 3: Implement**
 
-In `make-decision-model.ts`:
 ```ts
-import type { IDecisionModel } from '@mcp-abap-adt/llm-agent';
-import type { SmartServerDecisionConfig } from '@mcp-abap-adt/llm-agent-server-libs';
+// packages/llm-agent-server/src/composition/make-relevance-decision.ts
+import type { IRelevanceDecision } from '@mcp-abap-adt/llm-agent';
 import {
-  type SapAiCoreDecisionConfig,
-  SapAiCoreDecisionModel,
+  DECISION_KINDS,
+  type SmartServerDecisionConfig,
+} from '@mcp-abap-adt/llm-agent-server-libs';
+import {
+  type SapAiCoreRelevanceConfig,
+  SapAiCoreRelevanceDecision,
 } from '@mcp-abap-adt/sap-aicore-decision';
-import {
-  type TypeSafeDecisionConfig,
-  TypeSafeDecisionModel,
-} from '@mcp-abap-adt/typesafe-decision';
 import { DEFAULT_DECISION_REF } from './credential-for.js';
 import type { Lookup } from './lookup.js';
 
 /** Injectable so a test records what each constructor receives. */
-export interface DecisionProviderCtors {
-  typesafe: new (cfg: TypeSafeDecisionConfig) => IDecisionModel;
-  'sap-aicore': new (cfg: SapAiCoreDecisionConfig) => IDecisionModel;
+export interface RelevanceProviderCtors {
+  'sap-aicore': new (cfg: SapAiCoreRelevanceConfig) => IRelevanceDecision;
 }
 
-export const SHIPPED_DECISION_PROVIDERS: DecisionProviderCtors = {
-  typesafe: TypeSafeDecisionModel,
-  'sap-aicore': SapAiCoreDecisionModel,
+export const SHIPPED_RELEVANCE_PROVIDERS: RelevanceProviderCtors = {
+  'sap-aicore': SapAiCoreRelevanceDecision,
 };
-```
-and, in `createMakeDecisionModel`'s `switch`, before `default:`:
-```ts
+
+/**
+ * `BuildAgentDeps.makeRelevanceDecision` (spec §3.8, §6.2): the relevance
+ * providers of the ONE `decision:` section. The provider config is built from
+ * NAMED fields — nothing spreads `cfg` — so `credentialRef` cannot ride along.
+ */
+export function createMakeRelevanceDecision(
+  lookup: Lookup,
+  ctors: RelevanceProviderCtors = SHIPPED_RELEVANCE_PROVIDERS,
+): (cfg: SmartServerDecisionConfig) => Promise<IRelevanceDecision> {
+  return async (cfg) => {
+    if (DECISION_KINDS[cfg.provider] !== 'relevance') {
+      throw new Error(
+        `decision provider ${cfg.provider} is a ${DECISION_KINDS[cfg.provider]} decision — built by makeDecisionModel, not makeRelevanceDecision`,
+      );
+    }
+    switch (cfg.provider) {
       case 'sap-aicore': {
         // The validator requires both; a SmartServerConfig built in code skips it.
         if (cfg.deploymentId === undefined || cfg.model === undefined) {
@@ -9080,29 +10499,37 @@ and, in `createMakeDecisionModel`'s `switch`, before `default:`:
         }
         // A SAP AI Core service key (<REF>_SERVICE_KEY): bearer + apiBaseUrl,
         // exchanged by sap-aicore-auth's serviceKeyCredential (credential-for.ts).
-        const entry = lookup(
-          cfg.credentialRef,
-          DEFAULT_DECISION_REF,
-          'decision sap-aicore',
-        );
+        const entry = lookup(cfg.credentialRef, DEFAULT_DECISION_REF, 'decision sap-aicore');
         return new ctors['sap-aicore']({
           deploymentId: cfg.deploymentId,
           model: cfg.model,
           credential: entry.require('bearer'),
           apiBaseUrl: entry.requireApiBaseUrl(),
-          ...(cfg.resourceGroup !== undefined
-            ? { resourceGroup: cfg.resourceGroup }
-            : {}),
+          ...(cfg.resourceGroup !== undefined ? { resourceGroup: cfg.resourceGroup } : {}),
         });
       }
+      default:
+        throw new Error(`unknown relevance provider '${String(cfg.provider)}'`);
+    }
+  };
+}
 ```
-(The `typesafe` arm is unchanged. `composition/index.ts` needs no change: `makeDecisionModel: createMakeDecisionModel(lookup)` already serves both providers.)
+
+In `make-decision-model.ts`: `IDecisionModel` → `IProbabilityDecision` in the import, `DecisionProviderCtors` and the return type (the same type; the old name is a deprecated alias); in the `switch`, before `default:`:
+```ts
+      case 'sap-aicore':
+        throw new Error(
+          'decision provider sap-aicore is a relevance decision — built by makeRelevanceDecision, not makeDecisionModel',
+        );
+```
+
+In `composition/index.ts`: add `makeRelevanceDecision: NonNullable<BuildAgentDeps['makeRelevanceDecision']>;` to the deps type and `makeRelevanceDecision: createMakeRelevanceDecision(lookup),` beside `makeDecisionModel: createMakeDecisionModel(lookup),`.
 
 - [ ] **Step 4: Run**
 
 Run:
 ```bash
-node --import tsx/esm --test packages/llm-agent-server/src/composition/__tests__/make-decision-model-sap-aicore.test.ts packages/llm-agent-server/src/composition/__tests__/make-decision-model.test.ts
+node --import tsx/esm --test packages/llm-agent-server/src/composition/__tests__/make-relevance-decision.test.ts packages/llm-agent-server/src/composition/__tests__/make-decision-model.test.ts
 npm test --workspace @mcp-abap-adt/llm-agent-server
 ```
 Expected: PASS (the existing typesafe tests unchanged).
@@ -9112,7 +10539,7 @@ Expected: PASS (the existing typesafe tests unchanged).
 ```bash
 npx biome check --write packages/llm-agent-server/src
 git add packages/llm-agent-server/src
-git commit -m "feat(server): makeDecisionModel builds SapAiCoreDecisionModel for decision.provider sap-aicore
+git commit -m "feat(server): makeRelevanceDecision builds SapAiCoreRelevanceDecision for decision.provider sap-aicore
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_012KjevEeQGZMkWMfnupJ7Yd"
@@ -9971,7 +11398,7 @@ Claude-Session: https://claude.ai/code/session_012KjevEeQGZMkWMfnupJ7Yd"
 
 ## Task 30: Conformance kit `@mcp-abap-adt/llm-agent/testing/collection-profile-conformance`
 
-Spec §14.2 (at most `cut.limit(k)` items — S9), §7.9 (a consumer-built profile passes the same kit).
+Spec §14.2 (at most `min(k, cut.limit(k))` ≤ k items — S9 as amended by F1; every shipped profile called with a k below its default cut; a failed stale delete reported `cleanup-failed` and retried — F3), §7.9 (a consumer-built profile passes the same kit).
 
 **Files:**
 - Create: `packages/llm-agent/src/testing/collection-profile-conformance.ts`
@@ -9995,9 +11422,13 @@ Spec §14.2 (at most `cut.limit(k)` items — S9), §7.9 (a consumer-built profi
     readonly query: IQueryEmbedding;
     /** The binding's raw stores, queried unfiltered with a large k to inspect records. */
     rawStores(bound: IBoundCollection<TItem>): readonly IRag[];
-    /** The profile cut's limit for a caller's k (default: k) — the kit checks at most cut.limit(k) items (S9, decided). A FixedItemsCut owns k. */
+    /** The profile cut's own limit for a caller's k (default: k). The kit checks at most min(k, limit(k)) — never more than k (F1). */
     limit?(requestedK: number): number;
+    /** The profile's own default cut (e.g. 5 for faceted-jev): the kit also calls with every k below it and asserts ≤ k (F1). */
+    readonly defaultK?: number;
     readonly sizeBounded?: { readonly cut: IItemCut; readonly estimator: IItemSizeEstimator; readonly budgetTokens: number };
+    /** F3: a binding whose stores fail every delete while `control.failDeletes` is true; `before` → `after` drops records of `ref`'s item. Undefined → that case is skipped. */
+    readonly cleanup?: { bind(control: { failDeletes: boolean }): Promise<IBoundCollection<TItem>>; readonly before: readonly TItem[]; readonly after: readonly TItem[]; readonly ref: ItemRef; readonly options?: CallOptions };
   }
   export interface CollectionProfileConformanceCase { readonly name: string; run<TItem>(h: CollectionProfileHarness<TItem>): Promise<void> }
   export const collectionProfileConformanceCases: readonly CollectionProfileConformanceCase[];
@@ -10038,13 +11469,24 @@ export interface CollectionProfileHarness<TItem> {
   readonly reader: { readonly options?: CallOptions; readonly visible: readonly ItemRef[] };
   readonly query: IQueryEmbedding;
   rawStores(bound: IBoundCollection<TItem>): readonly IRag[];
-  /** The profile cut's limit for a caller's k (default: k). The kit checks at most
-   *  cut.limit(k) items (spec §14.2, S9) — a FixedItemsCut owns k. */
+  /** The profile cut's own limit for a caller's k (default: k). The kit checks at
+   *  most min(k, limit(k)) items — never more than k (spec §14.2, F1). */
   limit?(requestedK: number): number;
+  /** The profile's own default cut; the kit calls with every k below it (F1). */
+  readonly defaultK?: number;
   readonly sizeBounded?: {
     readonly cut: IItemCut;
     readonly estimator: IItemSizeEstimator;
     readonly budgetTokens: number;
+  };
+  /** F3: stores that fail every delete while `control.failDeletes`; `before` → `after`
+   *  leaves stale records of `ref`'s item. Undefined → the cleanup case is skipped. */
+  readonly cleanup?: {
+    bind(control: { failDeletes: boolean }): Promise<IBoundCollection<TItem>>;
+    readonly before: readonly TItem[];
+    readonly after: readonly TItem[];
+    readonly ref: ItemRef;
+    readonly options?: CallOptions;
   };
 }
 
@@ -10157,12 +11599,14 @@ export const collectionProfileConformanceCases: readonly CollectionProfileConfor
     },
   },
   {
-    name: 'at most cut.limit(k) distinct items, with or without a decomposer',
+    name: 'at most min(k, cut.limit(k)) ≤ k distinct items, with or without a decomposer',
     async run(h) {
       const bound = await filled(h);
       assert.ok(bound);
-      const limit = (k: number) => h.limit?.(k) ?? k;
-      for (const k of [1, 2, 3]) {
+      // F1: the caller's k caps every cut.
+      const limit = (k: number) => Math.min(k, h.limit?.(k) ?? k);
+      const ks = new Set([1, 2, 3, ...Array.from({ length: Math.max(0, (h.defaultK ?? 0) - 1) }, (_, i) => i + 1)]);
+      for (const k of ks) {
         const r = await bound.retrieval.retrieve(bound.rag, h.query, k, h.reader.options);
         assert.ok(r.ok && r.value.length <= limit(k), `${h.name}: more than ${limit(k)} items for k=${k}`);
         const keys = r.value.map((x) => JSON.stringify(refOf(x) ?? x.metadata.id));
@@ -10176,6 +11620,42 @@ export const collectionProfileConformanceCases: readonly CollectionProfileConfor
       if (!withSplit) return;
       const r = await withSplit.retrieval.retrieve(withSplit.rag, h.query, 2, h.reader.options);
       assert.ok(r.ok && r.value.length <= limit(2), `${h.name}: a decomposer exceeded the limit`);
+    },
+  },
+  {
+    name: "a caller k below the profile's own default cut caps the result (F1)",
+    async run(h) {
+      if (h.defaultK === undefined || h.defaultK < 2) return;
+      const bound = await filled(h);
+      assert.ok(bound);
+      const k = h.defaultK - 1;
+      const r = await bound.retrieval.retrieve(bound.rag, h.query, k, h.reader.options);
+      assert.ok(r.ok && r.value.length <= k, `${h.name}: ${r.ok ? r.value.length : 'error'} items for k=${k} (default ${h.defaultK})`);
+    },
+  },
+  {
+    name: 'a failed stale delete is reported cleanup-failed, kept, and retried; remove then leaves nothing (F3)',
+    async run(h) {
+      if (!h.cleanup) return;
+      const c = h.cleanup;
+      const control = { failDeletes: false };
+      const bound = await c.bind(control);
+      const first = await bound.index(c.before, c.options);
+      assert.ok(first.ok && first.value.failedItems.length === 0, `${h.name}: first index failed`);
+      control.failDeletes = true;
+      const second = await bound.index(c.after, c.options);
+      assert.ok(second.ok);
+      assert.ok(
+        second.value.failedItems.some((f) => f.itemId === c.ref.itemId && f.reason.startsWith('cleanup-failed')),
+        `${h.name}: a failed cleanup was not reported`,
+      );
+      control.failDeletes = false;
+      const retry = await bound.index(c.after, c.options);
+      assert.ok(retry.ok && retry.value.failedItems.length === 0, `${h.name}: the retry did not clean up`);
+      const removed = await bound.remove([c.ref], c.options);
+      assert.ok(removed.ok, `${h.name}: remove failed`);
+      const left = (await rawRecords(h.rawStores(bound), h.query)).filter((r) => r.metadata.itemId === c.ref.itemId);
+      assert.deepEqual(left, [], `${h.name}: records of ${c.ref.itemId} outlived remove`);
     },
   },
   {
@@ -10227,8 +11707,18 @@ export const collectionProfileConformanceCases: readonly CollectionProfileConfor
 ```ts
 // packages/llm-agent-libs/src/collections/__tests__/collection-profile-conformance.test.ts
 import { describe, it } from 'node:test';
-import type { IItemCut, IQueryDecomposer, IToolFacet, SharedItem, ToolItem } from '@mcp-abap-adt/llm-agent';
-import { InMemoryRag, TextOnlyEmbedding } from '@mcp-abap-adt/llm-agent';
+import type {
+  CallOptions,
+  IItemCut,
+  IProbabilityDecision,
+  IQueryDecomposer,
+  IRag,
+  IRelevanceDecision,
+  IToolFacet,
+  SharedItem,
+  ToolItem,
+} from '@mcp-abap-adt/llm-agent';
+import { InMemoryRag, RagError, TextOnlyEmbedding } from '@mcp-abap-adt/llm-agent';
 import {
   type CollectionProfileHarness,
   collectionProfileConformanceCases,
@@ -10272,7 +11762,27 @@ class ResourceFacet implements IToolFacet {
   }
 }
 
-function toolsHarness(name: string, limit: number, make: (o: ReturnType<typeof asProfileOptions>) => ComposedToolsProfile): CollectionProfileHarness<ToolItem> {
+/** A store whose deletes fail while control.failDeletes (F3). */
+function flaky(inner: InMemoryRag, control: { failDeletes: boolean }): IRag {
+  const w = inner.writer();
+  const base = matchesOnly(inner);
+  return {
+    ...base,
+    writer: () => ({
+      ...w,
+      deleteByIdRaw: async (id: string, o?: CallOptions) =>
+        control.failDeletes ? { ok: false as const, error: new RagError('delete down') } : w.deleteByIdRaw(id, o),
+    }),
+  } as IRag;
+}
+
+function toolsHarness(
+  name: string,
+  limit: number,
+  make: (o: ReturnType<typeof asProfileOptions>) => ComposedToolsProfile,
+  /** false for a profile with one record per item (nothing can go stale). */
+  cleanupCase = true,
+): CollectionProfileHarness<ToolItem> {
   const stores: InMemoryRag[] = [];
   return {
     name,
@@ -10282,7 +11792,23 @@ function toolsHarness(name: string, limit: number, make: (o: ReturnType<typeof a
       const p = make(asProfileOptions(opts));
       return p.bind({ key: 'tools', rag: matchesOnly(rag) });
     },
-    limit: () => limit,
+    limit: (k) => Math.min(k, limit),
+    defaultK: limit,
+    ...(cleanupCase
+      ? {
+          cleanup: {
+            bind: async (control: { failDeletes: boolean }) => {
+              const rag = new InMemoryRag();
+              stores.push(rag);
+              return make({}).bind({ key: 'tools', rag: flaky(rag, control) });
+            },
+            before: tools,
+            // no description and no parameters → its summary / parameters records go stale
+            after: tools.map((t) => (t.originalName === 'read_file' ? { ...t, description: '', parameters: [] } : t)),
+            ref: { itemId: 'tool:read_file', owner: G },
+          },
+        }
+      : {}),
     writes: [{ items: tools }],
     refs: tools.map((t) => ({ ref: { itemId: t.itemId, owner: G } })),
     reader: { visible: tools.map((t) => ({ itemId: t.itemId, owner: G })) },
@@ -10293,7 +11819,21 @@ function toolsHarness(name: string, limit: number, make: (o: ReturnType<typeof a
 }
 
 const intents = new StaticIntentSource({ read_file: ['open my notes needle'] });
+// Fakes for the shipped decision variants (F1: each is called with k below its default).
+const jev: IProbabilityDecision = {
+  decide: async (req) => ({
+    ok: true,
+    value: { model: 'fake', answers: Object.fromEntries(Object.keys(req.questions).map((k) => [k, { type: 'noul' as const, probability: 0.5 }])) },
+  }),
+};
+const cohere: IRelevanceDecision = {
+  score: async (req) => ({ ok: true, value: { model: 'fake', scores: req.passages.map((_, index) => ({ index, score: 1 })) } }),
+};
 const harnesses: CollectionProfileHarness<ToolItem>[] = [
+  toolsHarness('variant faceted', 8, (o) => new ComposedToolsProfile({ ...mcpToolsVariants.faceted().composition, ...o })),
+  toolsHarness('variant faceted-cohere', 5, (o) => new ComposedToolsProfile({ ...mcpToolsVariants.facetedCohere({ relevanceDecision: cohere }).composition, ...o })),
+  toolsHarness('variant faceted-jev', 5, (o) => new ComposedToolsProfile({ ...mcpToolsVariants.facetedJev({ probabilityDecision: jev }).composition, ...o })),
+  toolsHarness('variant small-set-jev', 3, (o) => new ComposedToolsProfile({ ...mcpToolsVariants.smallSetJev({ probabilityDecision: jev, poolItems: 3 }).composition, ...o }), false),
   toolsHarness('faceted + intent record', 8, (o) => {
     const base = mcpToolsVariants.faceted({ intents: { record: intents } }).composition;
     return new ComposedToolsProfile({ ...base, ...o });
@@ -10355,7 +11895,7 @@ Run:
 npx tsc -b packages/llm-agent packages/llm-agent-libs
 node --import tsx/esm --test packages/llm-agent-libs/src/collections/__tests__/collection-profile-conformance.test.ts
 ```
-Expected: PASS for all three harnesses. (Before Step 1's build the import fails — that is the red state.) If the token-budget case fails because a tool's definition exceeds 60 tokens, raise `budgetTokens` to just above the largest `definitionChars / 4` printed by the failure — the kit's bound is what is checked, not a number.
+Expected: PASS for every harness (the four shipped variants, faceted + intents, the consumer-built one, shared items) — including "a caller k below the profile's own default cut" (F1) and the cleanup case (F3) where a harness supplies it. (Before Step 1's build the import fails — that is the red state.) If the token-budget case fails because a tool's definition exceeds 60 tokens, raise `budgetTokens` to just above the largest `definitionChars / 4` printed by the failure — the kit's bound is what is checked, not a number.
 
 - [ ] **Step 4: Commit**
 
@@ -10593,7 +12133,7 @@ Claude-Session: https://claude.ai/code/session_012KjevEeQGZMkWMfnupJ7Yd"
 
 ## Task 32: `scripts/rag-eval` — profile arms, required-recall, prompt size
 
-Spec §14.3 (flags; any tools snapshot; the decision model picked like `decision:` — Jev or Cohere; the acceptance runs are env-gated and are the consumer check, not part of `npm test`).
+Spec §14.3 (flags; any tools snapshot; the decision picked like `decision:` — Jev = probability, Cohere = relevance — and with it the reranker kind; `--text` for the provider text composer, F4; the acceptance runs are env-gated and are the consumer check, not part of `npm test`).
 
 **Files:**
 - Create: `scripts/rag-eval/profile-arm.ts`
@@ -10603,11 +12143,11 @@ Spec §14.3 (flags; any tools snapshot; the decision model picked like `decision
 - Modify: `tsconfig.typecheck.json` (`include`: `scripts/rag-eval/profile-arm.ts`, `test/repo/rag-eval-profile-arm.test.ts`)
 
 **Interfaces:**
-- Consumes: `mcpToolsVariants`, `ComposedToolsProfile`, facets, `EnumValueToolIndexer`, discriminators, `IntentRecordIndexer`, `IntentCompanionIndexer`, `StaticIntentSource`, `ItemPool`, `MaxScoreCollapse`, cuts, `DecisionReranker`, `TOOL_QUESTION` (libs sources); `vectorizeMcpTools` (`ns.binding`); `evaluateRetrieval` (Task 31); `buildCompositionDeps` (`makeDecisionModel`, which builds `SapAiCoreDecisionModel` for `provider: 'sap-aicore'` — Task 24).
+- Consumes: `mcpToolsVariants`, `ComposedToolsProfile`, facets, text composers, `EnumValueToolIndexer`, discriminators, `IntentRecordIndexer`, `IntentCompanionIndexer`, `StaticIntentSource`, `ItemPool`, `MaxScoreCollapse`, cuts (libs sources); `ProbabilityReranker`, `RelevanceReranker`, `TOOL_QUESTION` (`packages/llm-agent-reranker/src`); `vectorizeMcpTools` (`ns.binding`); `evaluateRetrieval` (Task 31); `buildCompositionDeps` (`makeDecisionModel` for `typesafe`, `makeRelevanceDecision` for `sap-aicore` — Task 24).
 - Produces:
   ```ts
-  export interface ProfileArmFlags { variant?: string; indexer?: 'faceted' | 'enum-values'; facets?: string[]; discriminator?: string; maxValues?: number; intents?: 'off' | 'record' | 'companion'; intentsFile?: string; poolItems?: number; reranker?: 'none' | 'decision'; cut?: string; budgetTokens?: number }
-  export interface ProfileArmDeps { decisionModel?: () => Promise<IDecisionModel>; decisionProvider?: 'typesafe' | 'sap-aicore'; readFile?: (p: string) => string } // the model --decision-provider built (Jev or Cohere)
+  export interface ProfileArmFlags { variant?: string; indexer?: 'faceted' | 'enum-values'; facets?: string[]; text?: 'parameter-names' | 'enum-values' | 'schema'; discriminator?: string; maxValues?: number; intents?: 'off' | 'record' | 'companion'; intentsFile?: string; poolItems?: number; reranker?: 'none' | 'decision'; cut?: string; budgetTokens?: number }
+  export interface ProfileArmDeps { decisionProvider?: 'typesafe' | 'sap-aicore'; probabilityDecision?: () => Promise<IProbabilityDecision>; relevanceDecision?: () => Promise<IRelevanceDecision>; readFile?: (p: string) => string } // the decision --decision-provider built, of its kind
   export function buildProfileArm(flags: ProfileArmFlags, deps: ProfileArmDeps): Promise<{ label: string; profile: ComposedToolsProfile | undefined; companions: string[] }>;
   export function runProfileArm(arm: { label: string; profile: ComposedToolsProfile | undefined }, input: { tools: McpTool[]; cases: RetrievalCase[]; ks: number[]; makeStore: () => Promise<IRag>; queryEmbedder?: IQueryEmbedder }): Promise<RetrievalEvalReport & { label: string }>;
   ```
@@ -10618,7 +12158,12 @@ Spec §14.3 (flags; any tools snapshot; the decision model picked like `decision
 // test/repo/rag-eval-profile-arm.test.ts
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { type IDecisionModel, InMemoryRag, type McpTool } from '../../packages/llm-agent/src/index.js';
+import {
+  InMemoryRag,
+  type IProbabilityDecision,
+  type IRelevanceDecision,
+  type McpTool,
+} from '../../packages/llm-agent/src/index.js';
 import { buildProfileArm, runProfileArm } from '../../scripts/rag-eval/profile-arm.js';
 
 const tools: McpTool[] = [
@@ -10642,18 +12187,24 @@ describe('rag-eval profile arms', () => {
     await assert.rejects(buildProfileArm({ indexer: 'faceted', facets: ['nope'], poolItems: 10 }, {}), /unknown facet "nope"/);
     await assert.rejects(buildProfileArm({ variant: 'faceted-jev' }, {}), /decision/);
   });
-  it('a named decision variant needs the decision provider it was measured with (spec §6.2)', async () => {
-    const model = { decide: async () => ({ ok: true, value: { model: 'm', answers: {} } }) } as unknown as IDecisionModel;
-    const arm = await buildProfileArm({ variant: 'faceted-cohere' }, { decisionModel: async () => model, decisionProvider: 'sap-aicore' });
+  it('a named decision variant needs a decision of its kind (spec §6.2, D27)', async () => {
+    const jev: IProbabilityDecision = { decide: async () => ({ ok: true, value: { model: 'm', answers: {} } }) };
+    const cohere: IRelevanceDecision = { score: async () => ({ ok: true, value: { model: 'c', scores: [] } }) };
+    const arm = await buildProfileArm({ variant: 'faceted-cohere' }, { relevanceDecision: async () => cohere, decisionProvider: 'sap-aicore' });
     assert.ok(arm.profile);
     await assert.rejects(
-      buildProfileArm({ variant: 'faceted-cohere' }, { decisionModel: async () => model, decisionProvider: 'typesafe' }),
-      /faceted-cohere reranks with Cohere — needs --decision-provider sap-aicore/,
+      buildProfileArm({ variant: 'faceted-cohere' }, { probabilityDecision: async () => jev, decisionProvider: 'typesafe' }),
+      /faceted-cohere needs a relevance decision — --decision-provider sap-aicore/,
     );
     await assert.rejects(
-      buildProfileArm({ variant: 'small-set-jev', poolItems: 2 }, { decisionModel: async () => model, decisionProvider: 'sap-aicore' }),
-      /small-set-jev reranks with Jev — needs --decision-provider typesafe/,
+      buildProfileArm({ variant: 'small-set-jev', poolItems: 2 }, { relevanceDecision: async () => cohere, decisionProvider: 'sap-aicore' }),
+      /small-set-jev needs a probability decision — --decision-provider typesafe/,
     );
+  });
+  it('--text picks the provider text composer (F4)', async () => {
+    const arm = await buildProfileArm({ indexer: 'faceted', facets: [], text: 'enum-values', poolItems: 10 }, {});
+    assert.ok(arm.profile);
+    assert.match(arm.label, /text=enum-values/);
   });
   it('runs a snapshot through the profile path and reports required-recall and prompt size', async () => {
     const arm = await buildProfileArm({ variant: 'faceted' }, {});
@@ -10687,10 +12238,11 @@ Expected: FAIL — module not found.
  */
 import { readFileSync } from 'node:fs';
 import type {
-  IDecisionModel,
   IItemCut,
   IItemIndexer,
   IMcpClient,
+  IProbabilityDecision,
+  IRelevanceDecision,
   IQueryEmbedder,
   IRag,
   IReranker,
@@ -10699,6 +12251,7 @@ import type {
 } from '../../packages/llm-agent/src/index.js';
 import {
   ComposedToolsProfile,
+  EnumValuesToolText,
   EnumValueToolIndexer,
   FacetedToolIndexer,
   FixedItemsCut,
@@ -10709,15 +12262,21 @@ import {
   mcpToolsVariants,
   NamedDiscriminator,
   NameTailFacet,
+  ParameterNamesToolText,
   ParametersFacet,
   RequiredEnumDiscriminator,
+  SchemaToolText,
   StaticIntentSource,
   SummaryFacet,
   TokenBudgetCut,
 } from '../../packages/llm-agent-libs/src/collections/index.js';
 import { NoopRequestLogger } from '../../packages/llm-agent-libs/src/logger/noop-request-logger.js';
 import { vectorizeMcpTools } from '../../packages/llm-agent-libs/src/mcp/vectorize-mcp-tools.js';
-import { DecisionReranker, TOOL_QUESTION } from '../../packages/llm-agent-libs/src/reranker/index.js';
+import {
+  ProbabilityReranker,
+  RelevanceReranker,
+  TOOL_QUESTION,
+} from '../../packages/llm-agent-reranker/src/index.js';
 import { EmbeddingRetrieval } from '../../packages/llm-agent-libs/src/retrieval/index.js';
 import {
   evaluateRetrieval,
@@ -10729,12 +12288,14 @@ export interface ProfileArmFlags {
   variant?: string;
   indexer?: 'faceted' | 'enum-values';
   facets?: string[];
+  /** Provider text composer (F4); absent → parameter-names (C0, the default). */
+  text?: 'parameter-names' | 'enum-values' | 'schema';
   discriminator?: string;
   maxValues?: number;
   intents?: 'off' | 'record' | 'companion';
   intentsFile?: string;
   poolItems?: number;
-  /** decision = DecisionReranker over the model --decision-provider builds (Jev or Cohere). */
+  /** decision = the reranker of --decision-provider's kind: ProbabilityReranker (Jev) or RelevanceReranker (Cohere). */
   reranker?: 'none' | 'decision';
   /** top-items | fixed-items:<n> | token-budget:<n> */
   cut?: string;
@@ -10742,19 +12303,30 @@ export interface ProfileArmFlags {
 }
 
 export interface ProfileArmDeps {
-  /** Built from --decision-provider: TypeSafeDecisionModel or SapAiCoreDecisionModel. */
-  decisionModel?: () => Promise<IDecisionModel>;
-  /** Which provider decisionModel is; a named variant is checked against it (spec §6.2). */
+  /** Which provider --decision-provider names; its kind decides the reranker (spec §6.2). */
   decisionProvider?: 'typesafe' | 'sap-aicore';
+  /** typesafe: TypeSafeDecisionModel. */
+  probabilityDecision?: () => Promise<IProbabilityDecision>;
+  /** sap-aicore: SapAiCoreRelevanceDecision. */
+  relevanceDecision?: () => Promise<IRelevanceDecision>;
   readFile?: (path: string) => string;
 }
 
-/** The decision provider each named decision variant was measured with (spec §5.5). */
-const VARIANT_PROVIDER: Readonly<Record<string, { provider: 'typesafe' | 'sap-aicore'; model: string }>> = {
-  'faceted-cohere': { provider: 'sap-aicore', model: 'Cohere' },
-  'faceted-jev': { provider: 'typesafe', model: 'Jev' },
-  'small-set-jev': { provider: 'typesafe', model: 'Jev' },
+type Kind = 'probability' | 'relevance';
+/** As server-libs' DECISION_KINDS (spec §6.2). */
+const PROVIDER_KIND: Readonly<Record<'typesafe' | 'sap-aicore', Kind>> = { typesafe: 'probability', 'sap-aicore': 'relevance' };
+const KIND_PROVIDER: Readonly<Record<Kind, string>> = { probability: 'typesafe', relevance: 'sap-aicore' };
+/** The kind of decision each named decision variant takes (spec §5.5). */
+const VARIANT_KIND: Readonly<Record<string, Kind>> = {
+  'faceted-cohere': 'relevance',
+  'faceted-jev': 'probability',
+  'small-set-jev': 'probability',
 };
+const TEXTS = {
+  'parameter-names': () => new ParameterNamesToolText(),
+  'enum-values': () => new EnumValuesToolText(),
+  schema: () => new SchemaToolText(),
+} as const;
 
 const FACETS: Record<string, () => SummaryFacet | ParametersFacet | NameTailFacet> = {
   summary: () => new SummaryFacet(),
@@ -10779,22 +12351,24 @@ export async function buildProfileArm(
   if (f.variant) {
     const v = f.variant;
     const opts = placement ? { intents: placement } : {};
-    const wants = VARIANT_PROVIDER[v];
-    if (wants && deps.decisionModel && deps.decisionProvider !== wants.provider) {
-      throw new Error(`${v} reranks with ${wants.model} — needs --decision-provider ${wants.provider}`);
+    const wants = VARIANT_KIND[v];
+    const have = deps.decisionProvider ? PROVIDER_KIND[deps.decisionProvider] : undefined;
+    if (wants && have && have !== wants) {
+      throw new Error(`${v} needs a ${wants} decision — --decision-provider ${KIND_PROVIDER[wants]}`);
     }
-    const model = () => need(deps.decisionModel, 'decision model (--decision-provider: DECISION_API_KEY, or a sap-aicore deployment)');
+    const probability = () => need(deps.probabilityDecision, 'probability decision (--decision-provider typesafe: DECISION_API_KEY)');
+    const relevance = () => need(deps.relevanceDecision, 'relevance decision (--decision-provider sap-aicore: a deployment)');
     const profile =
       v === 'baseline'
         ? undefined
         : v === 'faceted'
           ? mcpToolsVariants.faceted(opts)
           : v === 'faceted-cohere'
-            ? mcpToolsVariants.facetedCohere({ ...opts, decisionModel: await model() })
+            ? mcpToolsVariants.facetedCohere({ ...opts, relevanceDecision: await relevance() })
             : v === 'faceted-jev'
-              ? mcpToolsVariants.facetedJev({ ...opts, decisionModel: await model() })
+              ? mcpToolsVariants.facetedJev({ ...opts, probabilityDecision: await probability() })
               : v === 'small-set-jev'
-                ? mcpToolsVariants.smallSetJev({ ...opts, decisionModel: await model(), poolItems: f.poolItems ?? 0 })
+                ? mcpToolsVariants.smallSetJev({ ...opts, probabilityDecision: await probability(), poolItems: f.poolItems ?? 0 })
                 : undefined;
     if (profile === undefined && v !== 'baseline') throw new Error(`unknown variant "${v}"`);
     return { label: `variant=${v}`, profile, companions: placement && 'companion' in placement ? ['intents'] : [] };
@@ -10804,7 +12378,8 @@ export async function buildProfileArm(
     if (!make) throw new Error(`unknown facet "${n}"`);
     return make();
   });
-  let base: IItemIndexer<ToolItem> = new FacetedToolIndexer(facets);
+  const text = f.text ? { text: TEXTS[f.text]() } : {};
+  let base: IItemIndexer<ToolItem> = new FacetedToolIndexer(facets, text);
   if (f.indexer === 'enum-values') {
     base = new EnumValueToolIndexer(base, {
       discriminator:
@@ -10821,11 +12396,14 @@ export async function buildProfileArm(
       : { indexer: base, companions: { intents: new IntentCompanionIndexer(placement.companion) } };
   let reranker: IReranker | undefined;
   if (f.reranker === 'decision') {
-    // Jev or Cohere, whichever --decision-provider built (Cohere ignores the wording).
-    reranker = new DecisionReranker(await need(deps.decisionModel, 'decision model (--decision-provider)'), {
-      task: TOOL_QUESTION.task,
-      criteria: TOOL_QUESTION.criteria,
-    });
+    // The reranker of --decision-provider's kind (spec §6.2): Jev → probability, Cohere → relevance.
+    reranker =
+      PROVIDER_KIND[deps.decisionProvider ?? 'typesafe'] === 'relevance'
+        ? new RelevanceReranker(await need(deps.relevanceDecision, 'relevance decision (--decision-provider sap-aicore)'))
+        : new ProbabilityReranker(await need(deps.probabilityDecision, 'probability decision (--decision-provider typesafe)'), {
+            task: TOOL_QUESTION.task,
+            criteria: TOOL_QUESTION.criteria,
+          });
   }
   let cut: IItemCut | undefined;
   const [kind, n] = (f.cut ?? 'top-items').split(':');
@@ -10841,6 +12419,7 @@ export async function buildProfileArm(
   });
   const label = [
     `indexer=${f.indexer ?? 'faceted'}[${(f.facets ?? []).join(',')}]`,
+    `text=${f.text ?? 'parameter-names'}`,
     `pool=${f.poolItems ?? 30}`,
     `reranker=${f.reranker ?? 'none'}`,
     `cut=${f.cut ?? 'top-items'}`,
@@ -10885,11 +12464,11 @@ export async function runProfileArm(
 
 Edits to `rag-eval.ts`:
 - `interface Case { query: string; expect: string[]; required?: string[][] }` (an optional `required` field in the queries file — AND of OR-groups).
-- add to the `parseArgs` options: `variant`, `indexer`, `facets`, `discriminator`, `'max-values'`, `intents`, `'intents-file'`, `'pool-items'`, `cut`, `'budget-tokens'`, `'decision-provider'` (`typesafe` | `sap-aicore`, default `typesafe`), `'rerank-deployment'`, `'rerank-model'`, `'rerank-credential-ref'` (all `{ type: 'string' }`), and allow `--reranker none|decision` alongside the existing values (`decision` = Jev or Cohere by `--decision-provider`).
-- one decision model per run, picked like the server's `decision:` section: `--decision-provider typesafe` → the existing `TypeSafeDecisionModel` construction (`staticApiKey(process.env.DECISION_API_KEY ?? '')`); `--decision-provider sap-aicore` → `buildCompositionDeps(process.env).makeDecisionModel({ provider: 'sap-aicore', deploymentId: <--rerank-deployment>, model: <--rerank-model>, ...(credentialRef ? { credentialRef } : {}) })` (default ref `DECISION` → `DECISION_SERVICE_KEY`; a missing `--rerank-deployment` / `--rerank-model` skips the arm with a printed reason, like a missing key). The existing `buildReranker` for `--reranker decision` arms takes the same model, so the 30.1.0 rerank arms can be measured with Cohere too.
-- when `--variant` or `--indexer` is given: build `ProfileArmDeps` — `decisionModel` (the model above, lazily) and `decisionProvider` — then, per matrix entry, call `runProfileArm(await buildProfileArm(flags, deps), { tools, cases, ks: [...REPORT_KS], makeStore: <the entry's existing makeRag path>, queryEmbedder: <the entry's resolved embedder> })` and print one row per k: `required-recall`, `avg items`, `avg prompt tokens`, `MRR`. The existing arms and their output are unchanged when no profile flag is given.
+- add to the `parseArgs` options: `variant`, `indexer`, `facets`, `text` (`parameter-names` | `enum-values` | `schema`), `discriminator`, `'max-values'`, `intents`, `'intents-file'`, `'pool-items'`, `cut`, `'budget-tokens'`, `'decision-provider'` (`typesafe` | `sap-aicore`, default `typesafe`), `'rerank-deployment'`, `'rerank-model'`, `'rerank-credential-ref'` (all `{ type: 'string' }`), and allow `--reranker none|decision` alongside the existing values (`decision` = Jev or Cohere by `--decision-provider`).
+- one decision per run, picked like the server's `decision:` section, and of its provider's kind: `--decision-provider typesafe` → the existing `TypeSafeDecisionModel` construction (`staticApiKey(process.env.DECISION_API_KEY ?? '')`), a probability decision; `--decision-provider sap-aicore` → `buildCompositionDeps(process.env).makeRelevanceDecision({ provider: 'sap-aicore', deploymentId: <--rerank-deployment>, model: <--rerank-model>, ...(credentialRef ? { credentialRef } : {}) })` (default ref `DECISION` → `DECISION_SERVICE_KEY`; a missing `--rerank-deployment` / `--rerank-model` skips the arm with a printed reason, like a missing key), a relevance decision. The existing `buildReranker` for `--reranker decision` arms builds `ProbabilityReranker` or `RelevanceReranker` by that kind (imports switch from libs' deprecated names to `packages/llm-agent-reranker/src`), so the 30.1.0 rerank arms can be measured with Cohere too.
+- when `--variant` or `--indexer` is given: build `ProfileArmDeps` — `decisionProvider` and the decision of its kind (`probabilityDecision` or `relevanceDecision`, lazily) — then, per matrix entry, call `runProfileArm(await buildProfileArm(flags, deps), { tools, cases, ks: [...REPORT_KS], makeStore: <the entry's existing makeRag path>, queryEmbedder: <the entry's resolved embedder> })` and print one row per k: `required-recall`, `avg items`, `avg prompt tokens`, `MRR`. The existing arms and their output are unchanged when no profile flag is given.
 
-`scripts/rag-eval/README.md`: add a "Profile arms" section listing the flags above (including `--decision-provider` and the three `--rerank-*` flags for Cohere on SAP AI Core), the `required` field (`"required": [["CreateClass"], ["Activate", "ActivateObjects"]]`), the prompt-size column, `evaluateRetrieval` from `@mcp-abap-adt/llm-agent-libs/testing` for consumers, and the four acceptance runs of spec §14.3 (each env-gated; the hub's consumer check).
+`scripts/rag-eval/README.md`: add a "Profile arms" section listing the flags above (including `--text` with the C0 / C0e / C0s `compact` figures as the caveat, `--decision-provider` and the three `--rerank-*` flags for Cohere on SAP AI Core — a relevance decision, its scores not probabilities), the `required` field (`"required": [["CreateClass"], ["Activate", "ActivateObjects"]]`), the prompt-size column, `evaluateRetrieval` from `@mcp-abap-adt/llm-agent-libs/testing` for consumers, and the four acceptance runs of spec §14.3 (each env-gated; the hub's consumer check).
 
 - [ ] **Step 4: Run (unit + typecheck)**
 
@@ -10919,9 +12498,10 @@ Spec §13 (docs updated in the same PR), §10.3 (rewrite the `IToolIndexingStrat
 
 **Files:**
 - Modify: `README.md`, `docs/ARCHITECTURE.md`, `docs/INTEGRATION.md`, `docs/PERFORMANCE.md`, `docs/EXAMPLES.md`, `docs/TROUBLESHOOTING.md`, `docs/DEPLOYMENT.md`, `docs/SECURITY_THREAT_MODEL.md`, `docs/QUICK_START.md`
-- Modify: `packages/llm-agent/README.md`, `packages/llm-agent-libs/README.md`, `packages/llm-agent-server-libs/README.md`, `packages/llm-agent-server/README.md`, `packages/typesafe-decision/README.md` (one line: the decision model is one of two providers)
+- Modify: `packages/llm-agent/README.md`, `packages/llm-agent-libs/README.md`, `packages/llm-agent-server-libs/README.md`, `packages/llm-agent-server/README.md`, `packages/typesafe-decision/README.md` (`IProbabilityDecision`; one of two decision kinds), `scripts/rag-eval/README.md` (already in Task 32 — check it)
 - Modify: `examples/docker-sap-ai-core/smart-server.yaml` (a commented `decision: { provider: sap-aicore … }` + `rag.profiles` block)
-- (`packages/sap-aicore-decision/README.md` was written in Task 18.)
+- (`packages/sap-aicore-decision/README.md` was written in Task 18; `packages/llm-agent-reranker/README.md` in Tasks 4B–4C.)
+- Every page that names a renamed or moved symbol (`IDecisionModel`, `DecisionReranker`, `DecisionRerankerOptions`, `DECISION_RERANK_DEFAULT_*`, `wrapDecisionModel`, rerankers imported from libs) uses the new name / package and says the old one is a deprecated alias (spec §13). Found today: `README.md`, `CLAUDE.md`, `docs/ARCHITECTURE.md` (~207, ~1026), `docs/EXAMPLES.md` (~335–353), `docs/INTEGRATION.md` (~1044, ~1165, ~1221), `docs/PERFORMANCE.md`, `docs/TROUBLESHOOTING.md`, `packages/llm-agent/README.md`, `packages/llm-agent-libs/README.md`, `packages/typesafe-decision/README.md`, `scripts/rag-eval/README.md` — re-run the Step 9 grep for the full list.
 
 - [ ] **Step 1: `docs/INTEGRATION.md` — replace the whole `## IToolIndexingStrategy` section (heading through the line before the next `## `) with:**
 
@@ -10966,6 +12546,9 @@ interface IBoundCollection<TItem> {
   canonical record is missing is dropped and counted (`outcome=orphan`).
 - **Replacing an item is not atomic** (several writes, no locks): serialize concurrent writers of one
   item yourself. Readers stay safe through hydration.
+- **A failed cleanup is never reported as indexed:** if a stale record's delete fails, the item lands in
+  `failedItems` (`cleanup-failed: …`), the id stays on the canonical record (`staleRecordIds` /
+  `staleCompanionRecordIds`), and the next `index` or `remove` retries it.
 - **Companion records** (e.g. intents in their own store) are listed on the canonical record
   (`companionRecordIds`), so `remove` and re-indexing clear them too.
 - **`IndexReport.notes`** carries what an indexer declined to guess (e.g. `ambiguous-discriminator`);
@@ -10977,9 +12560,14 @@ interface IBoundCollection<TItem> {
 |---|---|---|
 | `baseline()` | any | binds nothing — 30.1.0 |
 | `faceted()` | fine-grained | `full` + `summary` + `parameters` records, `ItemPool(15)`, max collapse, `FixedItemsCut(8)` |
-| `facetedCohere({ decisionModel })` | fine-grained | faceted + `ItemPool(30)` + `DecisionReranker(TOOL_QUESTION)` over your `SapAiCoreDecisionModel` (Cohere) + `FixedItemsCut(5)` |
-| `facetedJev({ decisionModel })` | fine-grained | the same over your `TypeSafeDecisionModel` (Jev) — *to be measured as one composition before promotion* |
-| `smallSetJev({ decisionModel, poolItems })` | coarse / small | one `full` record per tool + Jev over the whole set (`poolItems` ≥ your tool count) + `FixedItemsCut(3)` |
+| `facetedCohere({ relevanceDecision })` | fine-grained | faceted + `ItemPool(30)` + `RelevanceReranker` over your `SapAiCoreRelevanceDecision` (Cohere) + at most 5 |
+| `facetedJev({ probabilityDecision })` | fine-grained | faceted + `ItemPool(30)` + `ProbabilityReranker(TOOL_QUESTION)` over your `TypeSafeDecisionModel` (Jev) + at most 5 — *to be measured as one composition before promotion* |
+| `smallSetJev({ probabilityDecision, poolItems })` | coarse / small | one `full` record per tool + Jev over the whole set (`poolItems` ≥ your tool count) + at most 3 |
+
+**The caller's k caps every cut:** a `FixedItemsCut(n)` is a ceiling — a caller asking for 2 gets at
+most 2. The provider text of the `full` record is a strategy too (`FacetedToolIndexer(facets, { text })`):
+`ParameterNamesToolText` (default, measured), `EnumValuesToolText`, `SchemaToolText` — the latter two
+were within noise of the default on one coarse server (see PERFORMANCE.md).
 
 Each default cites its measurement in the source and in [PERFORMANCE.md](PERFORMANCE.md#collection-profiles).
 Intents are an add-on: `{ intents: { record: source } }` (own record kind) or `{ intents: { companion: source } }`
@@ -11037,20 +12625,23 @@ builder.withRetrievalStrategy('shared', shared.retrieval); // and register share
 
 ### Query decomposition — the `IQueryDecomposer` slot
 
-- `StagedRetrieval` calls your `decompose(text, budget)`; `budget = cut.limit(k)`.
+- `StagedRetrieval` calls your `decompose(text, budget)`; `budget = min(k, cut.limit(k))` — never above the caller's k.
 - Sub-query `k`s must be integers ≥ 1 summing to ≤ `budget`; texts non-empty. Anything else — or an
   error — is a `DECOMPOSE_ERROR`, returned, never a silent fall-back. `[]` = run the query as is.
 - **k stays the overall limit:** the merged union is cut once. None ships; you measure yours (§ rag-eval).
 
 ### Rerankers
 
-Both named rerankers are the existing `DecisionReranker`; the alternative is the `IDecisionModel` you
-put into it:
+**A decision and a reranker are different things; a probability and a relevance are different
+decisions.** Every reranker is in `@mcp-abap-adt/llm-agent-reranker`; the decision comes from a provider:
 
-| Reranker | Decision model | Package |
-|---|---|---|
-| Cohere Rerank on SAP AI Core | `SapAiCoreDecisionModel` (yes/no questions with a passage; one `/rerank` call per batch) | `@mcp-abap-adt/sap-aicore-decision` |
-| TypeSafe Jev | `TypeSafeDecisionModel` | `@mcp-abap-adt/typesafe-decision` |
+| Reranker | Decision (contract) | Provider (package) | `score` it writes |
+|---|---|---|---|
+| `ProbabilityReranker` (was `DecisionReranker`) | `IProbabilityDecision` (was `IDecisionModel`) | `TypeSafeDecisionModel` (`@mcp-abap-adt/typesafe-decision`, Jev) | P(relevant) in [0, 1] |
+| `RelevanceReranker` | `IRelevanceDecision` | `SapAiCoreRelevanceDecision` (`@mcp-abap-adt/sap-aicore-decision`, Cohere; one `/rerank` call) | relevance — **not a probability**, comparable only within one call |
+
+- A threshold (`ScoreFloorCut`) on relevance scores is your calibration for that provider; no default uses one.
+- The old names still import from `@mcp-abap-adt/llm-agent-libs` / `@mcp-abap-adt/llm-agent` as deprecated aliases until the next major.
 
 Any reranker composes with any indexing. Under a profile every reranker result is checked: wrong count,
 a duplicate or a non-finite score is a `RERANK_ERROR` (`onFailure: 'stage1'` keeps the stage-1 order,
@@ -11064,8 +12655,10 @@ import { collectionProfileConformanceCases } from '@mcp-abap-adt/llm-agent/testi
 for (const c of collectionProfileConformanceCases) it(c.name, () => c.run(myHarness));
 ```
 
-It checks owner keys on every record, owner-scoped ids, hydration, at most `cut.limit(k)` items with or
-without a decomposer, an overrunning decomposer refused, the identity filter, and a size-bounded cut's budget.
+It checks owner keys on every record, owner-scoped ids, hydration, at most `min(k, cut.limit(k))` ≤ k
+items with or without a decomposer (and with a k below the profile's own default cut), an overrunning
+decomposer refused, the identity filter, a size-bounded cut's budget, and — when your harness supplies
+it — that a failed stale delete is reported `cleanup-failed` and retried.
 
 ### Migrating from `IToolIndexingStrategy`
 
@@ -11076,8 +12669,8 @@ The unexported, unwired `IToolIndexingStrategy` is deleted:
 ````
 
 Also in `docs/INTEGRATION.md`:
-- `## IReranker` (line ~1044): add one line under its intro — `Shipped implementations: LlmReranker, DecisionReranker (over any IDecisionModel — TypeSafe Jev or Cohere on SAP AI Core).`; under `### Example: Cross-encoder reranker via external API` add one sentence: for Cohere on SAP AI Core there is a shipped decision model — use `DecisionReranker(new SapAiCoreDecisionModel(…))` instead of writing your own.
-- `## IDecisionModel` (~1165): add `SapAiCoreDecisionModel` (`@mcp-abap-adt/sap-aicore-decision`) beside `TypeSafeDecisionModel`, with its rule: only `noul` questions with `instructions.passage`; any other question type → `DECISION_UNSUPPORTED_QUESTION`; `task` / `criteria` are not read.
+- `## IReranker` (line ~1044): add one line under its intro — `Shipped implementations (@mcp-abap-adt/llm-agent-reranker): ProbabilityReranker (over an IProbabilityDecision — TypeSafe Jev), RelevanceReranker (over an IRelevanceDecision — Cohere on SAP AI Core), LlmReranker, NoopReranker.`; under `### Example: Cross-encoder reranker via external API` add one sentence: a cross-encoder is a relevance decision — implement `IRelevanceDecision` and use `RelevanceReranker`; for Cohere on SAP AI Core use the shipped `SapAiCoreRelevanceDecision`.
+- `## IDecisionModel` (~1165): rename the section `## IProbabilityDecision (was IDecisionModel)` — the old name is a deprecated alias; add a sibling section `## IRelevanceDecision` (spec §3.9): request (query + passages), result (`{index, score}` per passage + `model`), errors (`DecisionError`, existing codes), "not a probability, comparable only within one call", the shipped `SapAiCoreRelevanceDecision`. At ~1221: `wrapDecisionModel` → `wrapProbabilityDecision` (+ `wrapRelevanceDecision`).
 - `## IRetrievalStrategy` (~1096): add `StagedRetrieval` to the built-ins list with a link to `#collection-profiles`, plus the additive `telemetry` option of `RerankedRetrieval` / `RerankAllRetrieval` (telemetry only, no output check there).
 
 - [ ] **Step 2: `docs/PERFORMANCE.md` — replace the `## Tool Indexing Strategies` section with `## Collection profiles`:**
@@ -11095,15 +12688,17 @@ not a benchmark; measure your own catalog with `scripts/rag-eval` / `evaluateRet
 | `full` + operation + object records, collapse by max: 0.966 at k=5; 0.977 at k=8 (~13 tools) | `faceted` (schema-derived `parameters` replaces the name-derived record — not yet measured) |
 | collapse by count or RRF | worse than max — only `MaxScoreCollapse` ships |
 | pool of 30 **records** with several records per tool → non-English 0.846–0.885 | pool counted in **items**: 30 items → 0.962 (Cohere) / 1.000 (Jev) |
-| rerankers (one record per tool, pool 30 items, k=5): Cohere EN 0.931, Jev EN 0.977; non-English 0.962 / 1.000 | `faceted-cohere` (`DecisionReranker` over `SapAiCoreDecisionModel`), `faceted-jev` (over `TypeSafeDecisionModel`) |
+| rerankers (one record per tool, pool 30 items, k=5): Cohere EN 0.931, Jev EN 0.977; non-English 0.962 / 1.000 | `faceted-cohere` (`RelevanceReranker` over `SapAiCoreRelevanceDecision`), `faceted-jev` (`ProbabilityReranker` over `TypeSafeDecisionModel`) |
+| provider text on `compact` (Jev over the whole set; EN 67 / non-ASCII 21 rows; equal tokens ~1.6k at k=3): C0 names + description + parameter names EN .970 / .970 (k3 / k5), non-ASCII 1.000; C0s + property descriptions + enum values .970 / .985, 1.000; C0e + enum values 1.000 / 1.000, .905. Without a reranker schema text helps non-ASCII at k=5 (.667 → .857) but hurts EN at k=2–3 | within noise, no winner: the default stays C0 (`ParameterNamesToolText`); `EnumValuesToolText` / `SchemaToolText` are strategies to measure on your server. `compact` already names its objects in descriptions, so "objects only in an enum" is neither confirmed nor refuted |
 | coarse `compact` set (25 tools): one record + Jev over the whole set, k=3 → 0.970 at ~1.6k tokens (whole set ≈ 7.9k) | `small-set-jev` |
 | per-value records on `compact`: worse (non-English 0.857 vs 1.000) | `EnumValueToolIndexer` in no default |
 | token budget as the main cut: 0.910 vs 0.970 for k=3 at equal tokens | `TokenBudgetCut` is a guard, not a main cut |
 | an LLM as reranker | no gain, 6–10k tokens per query |
 
 Knobs, all chosen by the strategies you inject: pool size (`ItemPool(n)`), cut (`TopItemsCut`,
-`FixedItemsCut`, `ScoreFloorCut`, `TokenBudgetCut`), reranker, intents (add-on for stage 1 only —
-within noise once a reranker runs). The library picks no number for you.
+`FixedItemsCut`, `ScoreFloorCut`, `TokenBudgetCut` — every one capped by the caller's k), provider
+text (`ParameterNamesToolText` default), reranker, intents (add-on for stage 1 only — within noise
+once a reranker runs). The library picks no number for you.
 ````
 
 Also in `docs/PERFORMANCE.md` `### Retrieval strategy per store (rag.retrieval)` (~line 105): add a final paragraph pointing to `rag.profiles` for multi-record tools stores and stating the two are exclusive per key.
@@ -11124,11 +12719,12 @@ Also in `docs/PERFORMANCE.md` `### Retrieval strategy per store (rag.retrieval)`
 **TL;DR.** Pick a default composition by name, or compose one from strategy names. Absent → 30.1.0.
 A key may be under `rag.retrieval` **or** `rag.profiles`, not both.
 
-Cohere on SAP AI Core — the `decision:` section's provider picks the reranker's model:
+Cohere on SAP AI Core — the `decision:` section's provider decides the kind of decision, and with it
+the reranker (`typesafe` → probability → `ProbabilityReranker`; `sap-aicore` → relevance → `RelevanceReranker`):
 
 ```yaml
-decision:                         # ONE decision model per server
-  provider: sap-aicore            # Cohere Rerank on SAP AI Core (typesafe = TypeSafe Jev)
+decision:                         # ONE decision per server
+  provider: sap-aicore            # Cohere Rerank on SAP AI Core — a relevance decision (typesafe = TypeSafe Jev, a probability)
   deploymentId: ${RERANK_DEPLOYMENT_ID}
   model: cohere-rerank            # sent as `model`
   resourceGroup: default
@@ -11163,10 +12759,11 @@ rag:
     tools:
       compose:
         indexer: { faceted: [summary, parameters] }   # name-tail is opt-in (verb-first names)
+        # text: enum-values                           # provider text: parameter-names (default) | enum-values | schema
         pool: { items: 30 }
         collapse: max
-        reranker: decision                            # none | decision | llm — decision = the decision: model (Jev or Cohere)
-        question: tool                                # Jev / llm only; refused under Cohere (it reads no wording)
+        reranker: decision                            # none | decision | llm — decision = the reranker of the decision: kind
+        question: tool                                # probability (typesafe) / llm only; refused for relevance (no wording)
         cut: { fixed-items: 5 }                       # top-items | fixed-items | score-floor | token-budget
         onFailure: stage1                             # stage1 | error
 ```
@@ -11177,11 +12774,12 @@ rag:
 - `rag.profiles` is server-wide; a worker config must not declare it. In this release only the key
   `tools` (the server's own tools store) is accepted; any other key is refused at startup — bind other
   stores in code (`profile.bind({ key, rag })` + `builder.withRetrievalStrategy(key, bound.retrieval)`).
-- A named variant must match `decision.provider`: `faceted-cohere` ↔ `sap-aicore`; `faceted-jev`,
-  `small-set-jev` ↔ `typesafe`. `compose` with `reranker: decision` takes either.
+- A named variant needs a decision of its kind: `faceted-cohere` ↔ relevance (`sap-aicore`);
+  `faceted-jev`, `small-set-jev` ↔ probability (`typesafe`). `compose` with `reranker: decision` takes either.
+- A `score-floor` cut over relevance scores is your calibration for that provider — no default uses one.
 ````
 
-And add a programmatic snippet (`builder.withToolsProfile(mcpToolsVariants.facetedJev({ decisionModel }))`) next to the existing builder example.
+And add a programmatic snippet (`builder.withToolsProfile(mcpToolsVariants.facetedJev({ probabilityDecision }))`) next to the existing builder example. In the existing decision-model example (~line 335): `wrapDecisionModel` → `wrapProbabilityDecision`, `DecisionReranker` → `ProbabilityReranker` imported from `@mcp-abap-adt/llm-agent-reranker`, with a one-line note that the old names still work as deprecated aliases.
 
 - [ ] **Step 5: `docs/TROUBLESHOOTING.md` — under `## Reranking`, add:**
 
@@ -11200,6 +12798,7 @@ And add a programmatic snippet (`builder.withToolsProfile(mcpToolsVariants.facet
 | `outcome=over_budget` (with a `TokenBudgetCut`; span `cut.tokens` / `cut.budgetTokens`) | the top tool alone is larger than `budgetTokens` | size the budget ≥ your largest tool |
 | `IndexReport.notes` / a startup warning `tool <name>: ambiguous-discriminator (a, b)` | `RequiredEnumDiscriminator` found several required enums and picked none | name the parameter: `NamedDiscriminator('<parameter>')` |
 | `rerank_fallback` with `decision.provider: sap-aicore` | the `/rerank` call failed or answered wrongly (`DecisionError` → `RERANK_ERROR`): auth (`DECISION_SERVICE_KEY`), deployment id, resource group | check the service key and the deployment |
+| `failedItems` reason `cleanup-failed: <n> stale record(s) kept for retry` | a replacement wrote the new records but a stale record's delete failed | re-run `index` (or `remove`) once the store is healthy — the ids are kept on the canonical record and retried |
 
 ### Switching a profile on a persistent tools store
 
@@ -11211,7 +12810,7 @@ In-memory stores are rebuilt every boot and need nothing.
 
 - [ ] **Step 6: `docs/DEPLOYMENT.md`, `docs/SECURITY_THREAT_MODEL.md`, `docs/QUICK_START.md`**
 
-- `DEPLOYMENT.md` `## Per-store reranking (rag.retrieval)` (~line 400): next to the TypeSafe paragraph, add Cohere on SAP AI Core — `decision.provider: sap-aicore` with `deploymentId`, `model`, `resourceGroup?`; the credential is a SAP AI Core **service key** in `DECISION_SERVICE_KEY` (or `<REF>_SERVICE_KEY` with `decision.credentialRef`, e.g. `AICORE` to share the LLM's account), exchanged for a bearer token by `sap-aicore-auth`; one `/rerank` call per batch. Then a sub-section `### Collection profiles (rag.profiles)` — only the key `tools`, server-wide, not hot-reloadable, worker configs rejected, a named variant must match `decision.provider`, `small-set-jev` startup check, and the fresh-collection rule for persistent stores.
+- `DEPLOYMENT.md` `## Per-store reranking (rag.retrieval)` (~line 400): next to the TypeSafe paragraph, add Cohere on SAP AI Core — `decision.provider: sap-aicore` (a relevance decision; `reranker: decision` then builds a `RelevanceReranker`) with `deploymentId`, `model`, `resourceGroup?`; the credential is a SAP AI Core **service key** in `DECISION_SERVICE_KEY` (or `<REF>_SERVICE_KEY` with `decision.credentialRef`, e.g. `AICORE` to share the LLM's account), exchanged for a bearer token by `sap-aicore-auth`; one `/rerank` call per rerank; `question` / `task` are refused with it. Then a sub-section `### Collection profiles (rag.profiles)` — only the key `tools`, server-wide, not hot-reloadable, worker configs rejected, a named variant needs a decision of its kind, `small-set-jev` startup check, and the fresh-collection rule for persistent stores. A custom composition root that serves Cohere supplies `BuildAgentDeps.makeRelevanceDecision`.
 - `SECURITY_THREAT_MODEL.md`, AS-7 (external rerankers): add Cohere on SAP AI Core — `decision.provider: sap-aicore` (for `faceted-cohere`, `compose` with `reranker: decision`, or `rag.retrieval` with `reranker: decision`) sends the query and the candidate tool texts to the SAP AI Core deployment named in `decision:`; opt-in. Add: shared items store whatever the writer puts in `text` / `data`; redaction is the writer's; user partitions are read with the request's `userId` and skipped without one.
 - `QUICK_START.md` "Optional: per-store reranking": one short paragraph + link to EXAMPLES `#collection-profiles-ragprofiles` for multi-record tools stores.
 
@@ -11219,14 +12818,17 @@ In-memory stores are rebuilt every boot and need nothing.
 
 - `README.md` `### RAG is a composition, not a backend`: add a bullet —
   `- **Collection profiles** — per kind of collection, how it is filled and searched: several records per tool, collapse to items, a reranker on the provider text, a cut counted in items. Default compositions for fine-grained and small tool sets; compose your own from strategies. Off by default ([INTEGRATION.md](docs/INTEGRATION.md#collection-profiles)).`
-- `README.md` Packages table: add after `typesafe-decision`:
-  `| [`@mcp-abap-adt/sap-aicore-decision`](packages/sap-aicore-decision/README.md) | Decision model provider — Cohere Rerank on SAP AI Core (`SapAiCoreDecisionModel`, an `IDecisionModel`). |`
-- `README.md` `### Decision models` (~line 148): two sentences + the YAML lines — there are two providers: `typesafe` (Jev) and `sap-aicore` (Cohere Rerank on SAP AI Core: yes/no questions with a passage only; `deploymentId`, `model`, `resourceGroup?`; default ref `DECISION` → `DECISION_SERVICE_KEY`). Either serves `reranker: decision` in `rag.retrieval` and the decision variants of `rag.profiles`.
-- `packages/llm-agent/README.md`: list the new contracts (`ICollectionProfile`, `IBoundCollection`, `IItemIndexer`, `IIndexNoteSource`, `ISizeBoundedCut`, `recordId`, `RecordOwner`, `ToolItem`, `SharedItem`, `IRetrievalMetrics`, `IRetrievalEmbedderOwner`, `retrievalEmbedderOf`, `skillNameFromRecord`) and the `./testing/collection-profile-conformance` entry.
-- `packages/llm-agent-libs/README.md`: add to the export list `StagedRetrieval`, `ComposedToolsProfile`, `mcpToolsVariants`, `SharedItemsProfile`, `bindToolsProfile`, `toolsBindingOf`, `FacetedToolIndexer`, `SummaryFacet`, `ParametersFacet`, `NameTailFacet`, `EnumValueToolIndexer`, `RequiredEnumDiscriminator`, `NamedDiscriminator`, `IntentRecordIndexer`, `IntentCompanionIndexer`, `StaticIntentSource`, `LlmIntentSource`, `ItemPool`, `MaxScoreCollapse`, `TopItemsCut`, `FixedItemsCut`, `ScoreFloorCut`, `TokenBudgetCut`, `ToolDefinitionSizeEstimator`, `CharsPerTokenEstimator`, `toolItemFromTool`, `checkRerankOutput`; `SmartAgentBuilder.withToolsProfile`; `testing`: `evaluateRetrieval`.
-- `packages/llm-agent-server-libs/README.md`: `rag.profiles` (key `tools`), `decision.provider: sap-aicore` (the existing `BuildAgentDeps.makeDecisionModel` seam builds it — a custom composition root adds a `sap-aicore` arm), `toolsVariantFactories` / `toolsStrategyFactories`, `resolveCollectionProfiles`.
-- `packages/llm-agent-server/README.md`: the binary's `makeDecisionModel` builds `SapAiCoreDecisionModel` for `decision.provider: sap-aicore` (default credential ref `DECISION` → `DECISION_SERVICE_KEY`, a SAP AI Core service key) and ships `@mcp-abap-adt/sap-aicore-decision`.
-- `packages/typesafe-decision/README.md`: one line — TypeSafe Jev is one of two shipped decision models; the other is `@mcp-abap-adt/sap-aicore-decision` (Cohere on SAP AI Core).
+- `README.md` Packages table: add after `llm-agent`:
+  `| [`@mcp-abap-adt/llm-agent-reranker`](packages/llm-agent-reranker/README.md) | Vendor-neutral rerankers — `ProbabilityReranker`, `RelevanceReranker`, `LlmReranker`, `NoopReranker`. |`
+  and after `typesafe-decision`:
+  `| [`@mcp-abap-adt/sap-aicore-decision`](packages/sap-aicore-decision/README.md) | Relevance decision provider — Cohere Rerank on SAP AI Core (`SapAiCoreRelevanceDecision`, an `IRelevanceDecision`). |`
+  and reword the `typesafe-decision` row: "Probability decision provider — TypeSafe Jev (`IProbabilityDecision`)".
+- `README.md` `### Decision models` (~line 148): two sentences + the YAML lines — a probability and a relevance are different decisions; ONE `decision:` section, the provider decides the kind: `typesafe` (Jev, probability → `ProbabilityReranker`) or `sap-aicore` (Cohere Rerank on SAP AI Core, relevance → `RelevanceReranker`; `deploymentId`, `model`, `resourceGroup?`; default ref `DECISION` → `DECISION_SERVICE_KEY`). Either serves `reranker: decision` in `rag.retrieval` and the decision variants of `rag.profiles`.
+- `packages/llm-agent/README.md`: list `IProbabilityDecision` (was `IDecisionModel`, kept as a deprecated alias) and `IRelevanceDecision` (+ `RelevanceRequest`, `RelevanceResult`, `RelevanceScore`), and the new contracts (`ICollectionProfile`, `IToolTextComposer`, `IBoundCollection`, `IItemIndexer`, `IIndexNoteSource`, `ISizeBoundedCut`, `recordId`, `RecordOwner`, `ToolItem`, `SharedItem`, `IRetrievalMetrics`, `IRetrievalEmbedderOwner`, `retrievalEmbedderOf`, `skillNameFromRecord`) and the `./testing/collection-profile-conformance` entry.
+- `packages/llm-agent-libs/README.md`: add to the export list `StagedRetrieval`, `ComposedToolsProfile`, `mcpToolsVariants`, `SharedItemsProfile`, `bindToolsProfile`, `toolsBindingOf`, `FacetedToolIndexer`, `SummaryFacet`, `ParametersFacet`, `NameTailFacet`, `EnumValueToolIndexer`, `RequiredEnumDiscriminator`, `NamedDiscriminator`, `IntentRecordIndexer`, `IntentCompanionIndexer`, `StaticIntentSource`, `LlmIntentSource`, `ItemPool`, `MaxScoreCollapse`, `TopItemsCut`, `FixedItemsCut`, `ScoreFloorCut`, `TokenBudgetCut`, `ToolDefinitionSizeEstimator`, `CharsPerTokenEstimator`, `ParameterNamesToolText`, `EnumValuesToolText`, `SchemaToolText`, `fullToolText`, `toolItemFromTool`, `checkRerankOutput`, `wrapProbabilityDecision`, `wrapRelevanceDecision`; `SmartAgentBuilder.withToolsProfile`; `testing`: `evaluateRetrieval`. State that the rerankers moved to `@mcp-abap-adt/llm-agent-reranker` and the libs names (`DecisionReranker`, `LlmReranker`, …, `wrapDecisionModel`) are deprecated re-exports until the next major.
+- `packages/llm-agent-server-libs/README.md`: `rag.profiles` (key `tools`, `compose.text`), `decision.provider: sap-aicore` (a relevance decision, built by the new optional `BuildAgentDeps.makeRelevanceDecision` seam — a custom composition root that serves Cohere supplies it), `DECISION_KINDS`, `toolsVariantFactories` / `toolsStrategyFactories` (incl. `texts`), `resolveCollectionProfiles`.
+- `packages/llm-agent-server/README.md`: the binary's `makeRelevanceDecision` builds `SapAiCoreRelevanceDecision` for `decision.provider: sap-aicore` (default credential ref `DECISION` → `DECISION_SERVICE_KEY`, a SAP AI Core service key); it ships `@mcp-abap-adt/sap-aicore-decision` and `@mcp-abap-adt/llm-agent-reranker`.
+- `packages/typesafe-decision/README.md`: `TypeSafeDecisionModel` implements `IProbabilityDecision` (the old name `IDecisionModel` is a deprecated alias of the same type); Jev is the probability decision, Cohere on SAP AI Core (`@mcp-abap-adt/sap-aicore-decision`) the relevance one; the reranker is `ProbabilityReranker` from `@mcp-abap-adt/llm-agent-reranker`.
 
 - [ ] **Step 8: Example config**
 
@@ -11234,7 +12836,7 @@ In `examples/docker-sap-ai-core/smart-server.yaml`, append a commented block (co
 ```yaml
 # Collection profiles (optional) — see docs/EXAMPLES.md#collection-profiles-ragprofiles
 # decision:
-#   provider: sap-aicore            # Cohere Rerank on SAP AI Core
+#   provider: sap-aicore            # Cohere Rerank on SAP AI Core — a relevance decision
 #   deploymentId: ${RERANK_DEPLOYMENT_ID}
 #   model: cohere-rerank
 #   credentialRef: AICORE           # AICORE_SERVICE_KEY
@@ -11249,13 +12851,14 @@ Run:
 ```bash
 git grep -n "IToolIndexingStrategy\|OriginalToolIndexing\|SynonymToolIndexing\|IntentToolIndexing" -- README.md docs packages examples ':!docs/superpowers'
 git grep -n "collection-profiles\|#collection-profiles" -- README.md docs | head
+git grep -n -w "IDecisionModel\|DecisionReranker\|DecisionRerankerOptions\|wrapDecisionModel\|DECISION_RERANK_DEFAULT_TASK\|DECISION_RERANK_DEFAULT_CRITERIA\|SapAiCoreDecisionModel" -- README.md CLAUDE.md docs examples scripts 'packages/*/README.md' ':!docs/superpowers' ':!**/CHANGELOG.md'
 ```
-Expected: the first prints nothing outside `CHANGELOG.md` history; the second shows the new anchors are linked. Open each linked anchor once to confirm it resolves (`## Collection profiles` → `#collection-profiles`; `### Collection profiles (\`rag.profiles\`)` → `#collection-profiles-ragprofiles`).
+Expected: the first prints nothing outside `CHANGELOG.md` history; the second shows the new anchors are linked; the third prints only lines that say the name is a deprecated alias (and nothing for `SapAiCoreDecisionModel`, which was never released). Open each linked anchor once to confirm it resolves (`## Collection profiles` → `#collection-profiles`; `### Collection profiles (\`rag.profiles\`)` → `#collection-profiles-ragprofiles`).
 
 - [ ] **Step 10: Commit**
 
 ```bash
-git add README.md docs packages/llm-agent/README.md packages/llm-agent-libs/README.md packages/llm-agent-server-libs/README.md packages/llm-agent-server/README.md packages/typesafe-decision/README.md examples/docker-sap-ai-core/smart-server.yaml
+git add README.md docs packages/llm-agent/README.md packages/llm-agent-libs/README.md packages/llm-agent-server-libs/README.md packages/llm-agent-server/README.md packages/typesafe-decision/README.md scripts/rag-eval/README.md examples/docker-sap-ai-core/smart-server.yaml
 git commit -m "docs: collection profiles across README, architecture, integration, performance, examples, troubleshooting, deployment, security
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
@@ -11278,8 +12881,11 @@ Spec §13. No version heading and no bump — the entry goes under `## [Unreleas
 ### Added
 
 - **Collection profiles** — how one kind of collection is filled AND searched, chosen by the consumer as injected strategies. `@mcp-abap-adt/llm-agent`: `ICollectionProfile`, `IBoundCollection`, `IItemIndexer`, `IndexReport`, `RecordDraft` / `IndexedRecord`, `RecordOwner`, `ItemRef`, `recordId` (owner-scoped physical ids, `h:`+sha256 above 200 characters), `ICandidatePool`, `ICollapseRule`, `IItemCut`, `IItemSizeEstimator`, `ISizeBoundedCut` (+ `isSizeBoundedCut`), `IIndexNoteSource` (+ `isIndexNoteSource`, `IndexNote`), `IQueryDecomposer`, `ISourceSelector`, `RetrievalSource`, `ToolItem`, `IToolFacet`, `IDiscriminatorSelector`, `IToolIntentSource`, `SharedItem`, `ISharedItemGroups`, `SharedItemsStores`, `IRetrievalMetrics` (+ `isRetrievalMetrics`), `IRetrievalEmbedderOwner` (+ `retrievalEmbedderOf`), `skillNameFromRecord`; conformance kit `@mcp-abap-adt/llm-agent/testing/collection-profile-conformance`. `@mcp-abap-adt/llm-agent-libs`: `StagedRetrieval` (an `IRetrievalStrategy`: candidates counted in items → collapse → reranker on provider text → hydration from the canonical record → one cut), `ComposedToolsProfile`, `mcpToolsVariants` (`baseline`, `faceted`, `faceted-cohere`, `faceted-jev`, `small-set-jev`), `SharedItemsProfile`, `bindToolsProfile` / `toolsBindingOf`, the strategies (`ItemPool`, `MaxScoreCollapse`, `TopItemsCut`, `FixedItemsCut`, `ScoreFloorCut`, `TokenBudgetCut`, `ToolDefinitionSizeEstimator`, `CharsPerTokenEstimator`, `FacetedToolIndexer`, `SummaryFacet`, `ParametersFacet`, `NameTailFacet` (opt-in), `EnumValueToolIndexer`, `RequiredEnumDiscriminator`, `NamedDiscriminator`, `IntentRecordIndexer`, `IntentCompanionIndexer`, `StaticIntentSource`, `LlmIntentSource`), `checkRerankOutput`, `SmartAgentBuilder.withToolsProfile`, and `evaluateRetrieval` in `/testing`. See README "RAG is a composition", `docs/INTEGRATION.md#collection-profiles`, `docs/PERFORMANCE.md#collection-profiles`.
-- **New package `@mcp-abap-adt/sap-aicore-decision`** — `SapAiCoreDecisionModel`, Cohere Rerank on an SAP AI Core deployment as an `IDecisionModel`: yes/no (`noul`) questions with a passage, answered with the passage's `relevance_score` in ONE `/rerank` call per decision request; any other question type is `DECISION_UNSUPPORTED_QUESTION`; a wrong / duplicate / out-of-range answer is a `DecisionError`, never zero-filled. Used by the existing `DecisionReranker` — no new reranker contract. Credential injected (a SAP AI Core service key via `sap-aicore-auth`), no env, no timeout, no retries. Published at the same version, before the server.
-- **SmartServer:** `rag.profiles.tools` (`variant` or `compose`, `intents`, `decomposer`, `smallSet.poolItems`; only the key `tools` in this release) and `decision.provider: sap-aicore` (`deploymentId`, `model`, `resourceGroup?`; default credential ref `DECISION` → `DECISION_SERVICE_KEY`), built by the existing `makeDecisionModel` seam; `SmartServerConfig.toolsVariantFactories` / `toolsStrategyFactories` for your own names. Startup refuses a `rag.profiles` key other than `tools`, a key under both `rag.retrieval` and `rag.profiles`, unknown names, a named variant whose `decision.provider` is the other model, a question / task under Cohere, and `small-set-jev` whose `poolItems` is below the listed tool count.
+- **Probability and relevance decisions** (`@mcp-abap-adt/llm-agent`): `IProbabilityDecision` (the renamed `IDecisionModel` — yes/no, choice and score questions answered with probabilities) and the new `IRelevanceDecision` (`RelevanceRequest` → `RelevanceResult`: one relevance score per passage — **not a probability**, comparable only within one call; errors are `DecisionError` with the existing codes). Usage-logging wrappers `wrapProbabilityDecision` / `wrapRelevanceDecision` (libs).
+- **New package `@mcp-abap-adt/llm-agent-reranker`** — every reranker, vendor-neutral: `ProbabilityReranker` (was `DecisionReranker`), the new `RelevanceReranker` (one call by default; wrong count / duplicate / out-of-range / non-finite → `RERANK_ERROR`; `score` = the relevance score), `LlmReranker`, `NoopReranker`, `TOOL_QUESTION`, `PASSAGE_QUESTION`, `PROBABILITY_RERANK_DEFAULT_*`. Peer: `@mcp-abap-adt/llm-agent`. Published right after `llm-agent`.
+- **New package `@mcp-abap-adt/sap-aicore-decision`** — `SapAiCoreRelevanceDecision`, Cohere Rerank on an SAP AI Core deployment as an `IRelevanceDecision`: ONE `/rerank` call per `score`; a wrong / duplicate / out-of-range / non-finite answer is a `DecisionError`, never zero-filled. Credential injected (a SAP AI Core service key via `sap-aicore-auth`), no env, no timeout, no retries. Published at the same version, before the server.
+- **SmartServer:** `rag.profiles.tools` (`variant` or `compose` incl. `text`, `intents`, `decomposer`, `smallSet.poolItems`; only the key `tools` in this release) and `decision.provider: sap-aicore` (`deploymentId`, `model`, `resourceGroup?`; default credential ref `DECISION` → `DECISION_SERVICE_KEY`). ONE `decision:` section — the provider decides the kind (`typesafe` → probability, `sap-aicore` → relevance) and `reranker: decision` builds `ProbabilityReranker` or `RelevanceReranker` (in `rag.profiles` and `rag.retrieval`); the relevance decision is built by the new optional seam `BuildAgentDeps.makeRelevanceDecision`. `SmartServerConfig.toolsVariantFactories` / `toolsStrategyFactories` for your own names. Startup refuses a `rag.profiles` key other than `tools`, a key under both `rag.retrieval` and `rag.profiles`, unknown names, a named variant whose decision is of the other kind, a question / task for a relevance decision, and `small-set-jev` whose `poolItems` is below the listed tool count.
+- **Provider text is a strategy** (`IToolTextComposer`): `ParameterNamesToolText` (the default, unchanged), `EnumValuesToolText`, `SchemaToolText` — the latter two measured within noise on one coarse server, in no default.
 - **Observability:** `retrievalOutcome` counter (`ok`, `rerank_fallback`, `rerank_error`, `decompose_error`, `orphan`, `over_budget`, `empty`) on `InMemoryMetrics` / `NoopMetrics` and in `/health` metrics; a `retrieval` span per profiled retrieval; `/health` `components.toolCatalog.records` / `.profile` under a profile. `RerankedRetrieval` / `RerankAllRetrieval` accept an optional `telemetry` (additive).
 - `scripts/rag-eval`: profile arms (`--variant`, or `--indexer` / `--facets` / `--discriminator` / `--max-values` / `--intents` / `--pool-items` / `--reranker none|decision`, `--decision-provider typesafe|sap-aicore` + `--rerank-deployment` / `--rerank-model` / `--rerank-credential-ref` / `--cut` / `--budget-tokens`), required-recall (`required` in the queries file: an AND of OR-groups), average items and prompt tokens.
 
@@ -11295,22 +12901,35 @@ Spec §13. No version heading and no bump — the entry goes under `## [Unreleas
 ### Migration
 
 - **Nothing changes unless you opt in.** No profile → the same records (pinned by a golden test), stages, k and YAML as before.
+- **Renamed — old names kept as deprecated aliases until the next major:**
+
+  | Old (30.1.0) | New | Import from |
+  |---|---|---|
+  | `IDecisionModel` | `IProbabilityDecision` | `@mcp-abap-adt/llm-agent` |
+  | `DecisionReranker`, `DecisionRerankerOptions` | `ProbabilityReranker`, `ProbabilityRerankerOptions` | `@mcp-abap-adt/llm-agent-reranker` |
+  | `DECISION_RERANK_DEFAULT_TASK`, `DECISION_RERANK_DEFAULT_CRITERIA` | `PROBABILITY_RERANK_DEFAULT_TASK`, `PROBABILITY_RERANK_DEFAULT_CRITERIA` | `@mcp-abap-adt/llm-agent-reranker` |
+  | `wrapDecisionModel` | `wrapProbabilityDecision` | `@mcp-abap-adt/llm-agent-libs` |
+  | `LlmReranker`, `NoopReranker`, `TOOL_QUESTION`, `PASSAGE_QUESTION` from libs | same names | `@mcp-abap-adt/llm-agent-reranker` |
+
+  What to do: switch imports and names at your pace; a class implementing `IDecisionModel` needs no change (same type). Install `@mcp-abap-adt/llm-agent-reranker` next to `llm-agent-libs` (a new peer of libs). No behaviour changes.
 - **Opting in on a persistent tools store** (Qdrant, pg-vector, HANA) needs a fresh collection — profile records sit beside 30.1.0 records otherwise. In-memory stores need nothing.
 - **Under a profile, `rag.getById(itemId)` on the raw store finds nothing** — records are addressed by owner-scoped ids; use `bound.get({ itemId, owner })`. Returned items keep `metadata.id = itemId`, so name-based consumers are unaffected.
-- **k counts items under a profile**; a default composition with `FixedItemsCut` owns its k (the caller's k does not undo the measured cut).
+- **k counts items under a profile, and the caller's k caps every cut:** a default composition's `FixedItemsCut(n)` is a ceiling — a larger caller's k does not undo the measured cut, a smaller one still wins.
+- **A failed stale-record cleanup is reported** (`failedItems` reason `cleanup-failed: …`) and retried by the next `index` / `remove` — not reported as indexed.
 - **`ToolCatalogStatus` gains optional `records` / `profile`**, `MetricsSnapshot` optional `retrievalOutcome`, `HealthComponentStatus.toolCatalog` optional `records` / `profile` — an exhaustive object literal of these types needs no change.
-- **`SmartServerDecisionConfig.provider` gains `'sap-aicore'`** (plus optional `deploymentId`, `resourceGroup`). Your own composition root's `makeDecisionModel` compiles unchanged; to serve Cohere, add a `sap-aicore` arm that builds `SapAiCoreDecisionModel` from a bearer credential and `apiBaseUrl` (the shipped binary does).
+- **`SmartServerDecisionConfig.provider` gains `'sap-aicore'`** (plus optional `deploymentId`, `resourceGroup`). Your own composition root's `makeDecisionModel` compiles unchanged; to serve Cohere, supply the new `BuildAgentDeps.makeRelevanceDecision` that builds `SapAiCoreRelevanceDecision` from a bearer credential and `apiBaseUrl` (the shipped binary does).
 - **Intents are generated at every indexing** — the framework does not cache them; use a `StaticIntentSource` over a file generated at deploy, or your own caching `IToolIntentSource`.
 - If you imported `tool-indexing-strategy.ts` by deep path: use `FacetedToolIndexer` (`full` record) and `IntentRecordIndexer` / `IntentCompanionIndexer` with `LlmIntentSource` instead.
 ```
 
 - [ ] **Step 2: `CLAUDE.md`**
 
-- `## Architecture` provider paragraph: after the `typesafe-decision` paragraph add — `@mcp-abap-adt/sap-aicore-decision` is a provider package (`SapAiCoreDecisionModel`, Cohere Rerank on SAP AI Core as an `IDecisionModel`, used by `DecisionReranker`): peers on `llm-agent` and `interfaces-auth`, a regular dependency of `llm-agent-server`; the binary's `makeDecisionModel` builds it for `decision.provider: sap-aicore`.
+- `## Architecture` provider paragraph: reword the `typesafe-decision` paragraph to `IProbabilityDecision` and add — `@mcp-abap-adt/sap-aicore-decision` is a provider package (`SapAiCoreRelevanceDecision`, Cohere Rerank on SAP AI Core as an `IRelevanceDecision`, adapted by `RelevanceReranker`): peers on `llm-agent` and `interfaces-auth`, a regular dependency of `llm-agent-server`; the binary's `makeRelevanceDecision` builds it for `decision.provider: sap-aicore`. And — `@mcp-abap-adt/llm-agent-reranker` holds every reranker (vendor-neutral; peer `llm-agent`); libs depends on it and re-exports the 30.1.0 names as deprecated aliases; retrieval strategies stay in libs and use rerankers through `IReranker`. Publish order: `llm-agent` → `llm-agent-reranker` → providers → … → `llm-agent-libs`.
+- `### Key API notes`: add — `A probability and a relevance are different decisions: IProbabilityDecision (was IDecisionModel) vs IRelevanceDecision (scores, not probabilities). One decision: section; its provider decides the kind and reranker: decision builds ProbabilityReranker or RelevanceReranker.`
 - `### Key API notes`: add —
   `- Collection profiles: builder.withToolsProfile(profile) or YAML rag.profiles.<key> (variant | compose); a key is under rag.retrieval OR rag.profiles. Under a profile k counts items, every returned item is its canonical record, and records are addressed by recordId(owner, itemId, kind, n) — never by the bare itemId`.
 - `### Key layers` table, `llm-agent-libs` row: append `, collection profiles (StagedRetrieval, ComposedToolsProfile, mcpToolsVariants, SharedItemsProfile)`.
-- `## Environment` table: add `| DECISION_SERVICE_KEY | SAP AI Core service key of the decision: section with provider: sap-aicore and no credentialRef (Cohere Rerank); read only when a decision reranker builds the model |`, and widen the `DECISION_API_KEY` row's wording to "provider: typesafe".
+- `## Environment` table: add `| DECISION_SERVICE_KEY | SAP AI Core service key of the decision: section with provider: sap-aicore and no credentialRef (Cohere Rerank, a relevance decision); read only when a decision reranker builds it |`, and widen the `DECISION_API_KEY` row's wording to "provider: typesafe".
 
 - [ ] **Step 3: Commit**
 
@@ -11353,7 +12972,8 @@ Expected: `"link": true` only for `node_modules/@mcp-abap-adt/<sibling>` entries
 
 - [ ] **Step 4: Gates and spec coverage**
 
-- Spec issues S1–S9 are decided (spec §17.4) and done in their tasks (Tasks 3, 6, 9, 10, 11, 15, 19, 21, 23, 28, 29, 30); a new gap found while executing was taken to the user before any code (fix the spec before the plan).
+- Spec issues S1–S9 are decided (spec §17.4) and done in their tasks (Tasks 3, 6, 9, 10, 11, 15, 19, 21, 23, 28, 29, 30); D24–D27, F1, F3, F4 (spec §17.6) in Tasks 4A–4C, 6, 8, 11, 12, 14, 15, 16, 18, 21–24, 30, 32–34; a new gap found while executing was taken to the user before any code (fix the spec before the plan).
+- The renames left the old names as aliases only: `git grep -n -w "IDecisionModel\|DecisionReranker\|wrapDecisionModel" -- packages/*/src ':!**/__tests__/**'` prints only the alias declarations (`decision-model.ts`, libs `index.ts`, `usage-logging-decision-model.ts`) and `typesafe-decision` (unchanged, it implements the same type); `git grep -n "SapAiCoreDecisionModel" -- packages docs` prints nothing.
 - No reference to the withdrawn design is left: `git grep -n -i "crossEncoder\|cross-encoder\|sap-aicore-reranker\|SapAiCoreReranker\|makeCrossEncoder\|CROSS_ENCODER" -- packages docs README.md CLAUDE.md examples scripts ':!docs/superpowers'` prints nothing (the pre-existing `### Example: Cross-encoder reranker via external API` heading in `docs/INTEGRATION.md` is the one allowed hit).
 - The spec's §14.3 acceptance runs are the consumer check (env-gated, not `npm test`); list them in the PR description as the next stage. Do **not** delete the spec or this plan: they stay until the work, consumer check included, is fully implemented (CLAUDE.md "Plans and Specs").
 - No version bump, no tag, no publish.
@@ -11380,18 +13000,30 @@ Found while planning; all decided (spec §17.4) and written into the tasks above
 | S6 | `StagedRetrieval` could not learn a size cut's tokens | Optional capability `ISizeBoundedCut` (`budgetTokens`, `estimator`), implemented by `TokenBudgetCut` | Tasks 3, 6, 28 |
 | S7 | `remove` left companion records behind | Reserved key `companionRecordIds` on the canonical record; `remove` and replacement clear companion records | Tasks 2, 11, 15 |
 | S8 | YAML keys other than `tools` had no store or filling path | Only `rag.profiles.tools`; any other key refused at config resolution (and at server start for a config built in code) | Tasks 21, 23 |
-| S9 | "At most k" contradicted `FixedItemsCut` | The kit checks at most `cut.limit(k)` items | Task 30 |
+| S9 | "At most k" contradicted `FixedItemsCut` | The kit checks at most `cut.limit(k)` items — amended by F1: `cut.limit(k)` ≤ k for every cut, so the kit checks ≤ k, also for k below each shipped profile's default | Tasks 6, 12, 14, 30 |
 | — | Spec header "Status" line | Updated: every decision is taken (D16, D18, D22, D23 included) | spec header |
 
-**Cohere on SAP AI Core** (goal decision 2026-10-05): one more `IDecisionModel` — `SapAiCoreDecisionModel` in the new package `@mcp-abap-adt/sap-aicore-decision` (Task 18), used by the existing `DecisionReranker` (Tasks 16, 22, 24). The former `sap-aicore-reranker` package, `SapAiCoreReranker`, the `crossEncoder:` section and the `makeCrossEncoder` seam are gone from the plan.
+## Decided by the user on 2026-10-05 — decisions split, reranker package, review findings (spec §17.6)
 
-**Choices made while writing these in** are listed for the user's review in spec §17.5 (one `SmartServerDecisionConfig` interface with optional fields; named variants checked against `decision.provider`; a question / task refused under Cohere; non-text state → `DECISION_UNSUPPORTED_QUESTION`; a score outside [0, 1] → `DECISION_ERROR`; no peer on `sap-aicore-auth`). One stays open for the user: whether answering a `noul` question with the passage's relevance while not reading `task` / `criteria` fully meets `IDecisionModel`'s "answers are never faked" (spec §17.5).
+| # | Decision | Done in |
+|---|---|---|
+| D24 | Probability vs relevance: `IProbabilityDecision` (rename + alias), `IRelevanceDecision`; `ProbabilityReranker` (rename + aliases), `RelevanceReranker` | Tasks 4A, 4B, 4C |
+| D25 | Packages by role: `typesafe-decision` unchanged; `sap-aicore-decision` = `SapAiCoreRelevanceDecision` (`IRelevanceDecision`); `SapAiCoreDecisionModel` withdrawn | Task 18, 24 |
+| D26 | All rerankers in the new `@mcp-abap-adt/llm-agent-reranker`; libs re-exports old names as deprecated aliases | Task 4B (4C adds `RelevanceReranker`) |
+| D27 | One `decision:` section; the provider decides the kind (`DECISION_KINDS`); `reranker: decision` builds the matching reranker; wording refused for relevance | Tasks 21, 22, 23, 24, 32 |
+| F1 | The caller's k caps every cut (`FixedItemsCut` is a ceiling), also after decomposition; the kit calls each shipped profile with k below its default | Tasks 6, 12, 14, 16, 30 |
+| F3 | Cleanup failures kept: every stale delete checked; `cleanup-failed`; `staleRecordIds` / `staleCompanionRecordIds` retried by `index` / `remove` | Tasks 2–3 (reserved keys), 11, 15, 30 |
+| F4 | Provider text composition is a strategy (`IToolTextComposer`); the default stays C0 (measured); C0e / C0s in no default | Tasks 3, 8, 10, 16, 21, 22, 32 |
+
+**Withdrawn:** `SapAiCoreDecisionModel` (Cohere behind `IDecisionModel`, amendment 3) — never built. Still gone from earlier: the `sap-aicore-reranker` package, `SapAiCoreReranker`, the `crossEncoder:` section and the `makeCrossEncoder` seam.
+
+**Choices made while writing these in** are listed for the user's review in spec §17.5 — notably the second optional seam `makeRelevanceDecision`, `{index, score}` relevance results, `DecisionError` reused, and **one open question:** `RelevanceReranker` sends every candidate in ONE call by default (scores are comparable only within one call); batching is opt-in through `maxBatchTokens`, valid only for a pairwise provider — or the contract could promise cross-call comparability for one query and batch by default.
 
 ---
 
 ## Self-review (done while writing)
 
-- **Spec coverage.** §3 contracts → Tasks 2–4 (S1 / S6 capabilities and the S7 reserved key in 2–3); §4 `StagedRetrieval` → 12–14 (+28 telemetry, incl. `over_budget`); §4.9/§4.10 cuts → 6; §5 rerankers → 18 (`SapAiCoreDecisionModel`), 16 (both decision variants), 24 (the composition root's `sap-aicore` arm + batches → `/rerank` calls); §6.1 builder → 20; §6.2 YAML → 21–23 (no new seam); §7.0–§7.5 tools strategies and variants → 7–10, 15, 16; §7.6 filling → 19 (notes logged); §7.7 skills pass-through → 12 (pass-through test), 26 (F3); §7.8 migration → 33/34 docs; §7.9 consumer-built profile → 30; §8 shared items → 17; §9 observability → 28–29 (S4: telemetry only on 30.1.0 strategies); §10 fixes → 25–27; §11 placement → File Structure, Task 18 wiring; §13 compatibility/docs → 1 (golden), 33–34; §14.1 unit tests → per task; §14.2 kit → 30 (S9); §14.3 harness → 31–32 (acceptance runs = consumer check, env-gated).
+- **Spec coverage.** §3 contracts → Tasks 2–4 (S1 / S6 capabilities and the S7 / F3 reserved keys in 2–3); §3.9 decision contracts → 4A; §4 `StagedRetrieval` → 12–14 (+28 telemetry, incl. `over_budget`; F1 cap in 12 and 14); §4.9/§4.10 cuts → 6 (F1); §5 rerankers → 4B (package, `ProbabilityReranker`), 4C (`RelevanceReranker`), 18 (`SapAiCoreRelevanceDecision`), 16 (the decision variants), 24 (`createMakeRelevanceDecision` + calls → `/rerank`); §6.1 builder → 20; §6.2 YAML → 21–23 (one `decision:` section, kind table, the `makeRelevanceDecision` seam); §7.3.1 provider text composers → 8 (F4); §3.3 cleanup failures → 11, 15 (F3); §7.0–§7.5 tools strategies and variants → 7–10, 15, 16; §7.6 filling → 19 (notes logged); §7.7 skills pass-through → 12 (pass-through test), 26 (F3); §7.8 migration → 33/34 docs; §7.9 consumer-built profile → 30; §8 shared items → 17; §9 observability → 28–29 (S4: telemetry only on 30.1.0 strategies); §10 fixes → 25–27; §11 placement → File Structure, Task 18 wiring; §13 compatibility/docs → 1 (golden), 33–34; §14.1 unit tests → per task; §14.2 kit → 30 (S9); §14.3 harness → 31–32 (acceptance runs = consumer check, env-gated).
 - **Placeholders.** None; no gated step remains.
-- **Type consistency.** `StagedRetrievalOptions` (Task 12) is the shape Tasks 15–17, 22 and 30 pass; `ComposedToolsProfile.composition` (Task 15) is what Tasks 16, 22, 30 inspect; `IBoundCollection<ToolItem>` + `bindToolsProfile` / `toolsBindingOf` (Task 15) are what Tasks 19, 20, 23 use; `ToolCatalogStatus.records/profile` (Task 3) feed Tasks 19 and 29; `RunStats` (Task 12) is what Task 28 reports; `CompanionIds` / `listedCompanions` / `oldCompanions` (Task 11) are what Task 15 uses; `SapAiCoreDecisionConfig` (Task 18) is what Task 24 constructs; `SmartServerDecisionConfig` (Task 21) is what Tasks 22 and 24 read; `mcpToolsVariants.facetedCohere({ decisionModel })` (Task 16) is what Tasks 22 and 32 call.
-- **Review Focus.** Each of the five lines has its test in the named task (Tasks 6, 12, 13, 14, 17, 18).
+- **Type consistency.** `StagedRetrievalOptions` (Task 12) is the shape Tasks 15–17, 22 and 30 pass; `ComposedToolsProfile.composition` (Task 15) is what Tasks 16, 22, 30 inspect; `IBoundCollection<ToolItem>` + `bindToolsProfile` / `toolsBindingOf` (Task 15) are what Tasks 19, 20, 23 use; `ToolCatalogStatus.records/profile` (Task 3) feed Tasks 19 and 29; `RunStats` (Task 12) is what Task 28 reports; `CompanionIds` / `listedCompanions` and `storeItems(rag, items, options, companions)` (Task 11) are what Tasks 15 and 17 use; `IProbabilityDecision` / `IRelevanceDecision` (Task 4A) are what Tasks 4B, 4C, 16, 18, 22, 24, 32 take; `SapAiCoreRelevanceConfig` (Task 18) is what Task 24 constructs; `SmartServerDecisionConfig` + `DECISION_KINDS` (Task 21) are what Tasks 22 and 24 read; `DecisionSeams` (Task 22) is what Task 23 threads; `mcpToolsVariants.facetedCohere({ relevanceDecision })` / `facetedJev({ probabilityDecision })` / `smallSetJev({ probabilityDecision, poolItems })` (Task 16) are what Tasks 22, 30 and 32 call.
+- **Review Focus.** Each of the seven lines has its test in the named task (Tasks 4C, 6, 11, 12, 13, 14, 17, 18, 30).
