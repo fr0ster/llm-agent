@@ -98,7 +98,7 @@ The twelve inputs the spec implies, most likely to bite a user, each pinned by a
 
 **`packages/sap-aicore-decision/`** — NEW package (`package.json`, `tsconfig.json`, `README.md`, `CHANGELOG.md`, `LICENSE`, `GPL-3.0.txt`, `src/index.ts`, `src/sap-aicore-relevance-decision.ts`, `src/map-rerank.ts`, `src/__tests__/fake-fetch.ts`, `src/__tests__/sap-aicore-relevance-decision.test.ts`).
 
-**`packages/llm-agent-server-libs/src/smart-agent/`** — Task 0A: `smart-server.ts` (the `withCircuitBreakers` call removed), `config-reload-watcher.ts` (a doc comment), `__tests__/config-reload-weights.test.ts`, `__tests__/session-breakers.test.ts`, `__tests__/smart-server-session-rag-registry.test.ts`, `session-lifecycle/__tests__/session-rag-registry.test.ts`; `profiles-config.ts` (NEW: YAML types), `profiles-config-validator.ts` (NEW), `decision-config.ts` (`provider: 'sap-aicore'`, `DECISION_KINDS`), `decision-seams.ts` (NEW: the decision of the provider's kind → its reranker), `resolve-retrieval.ts` (kind dispatch), `resolve-config-sections.ts`, `config.ts`, `config-validator.ts`, `resolve-collection-profiles.ts` (NEW), `smart-server.ts` (`makeProbabilityDecision` seam — `makeDecisionModel` removed, Task 20A; `makeRelevanceDecision` seam; binds `rag.profiles.tools`, Task 23; fills the main store once at startup and a worker's own store by its construction, D35, D41, Task 23A; `toolsFillFactories` and the bind with the configured fill source, Task 23B), `workers/worker-registry.ts` (descriptors and slot count to workers, Task 23A) + `workers/connected-mcp-server.ts` (NEW, Task 23A), `config-reload-watcher.ts` (`_onReload` awaitable, Task 23A), `__tests__/profile-fill-ready-clients.test.ts` (NEW, Task 23A, incl. `PUT /v1/config`, hot reload through the reload entry point, a re-wire never fills, a construction that fails anywhere — fill, build, backfill — leaves no cached worker, D47; Task 23B: `fill: corpus`, a leftover `prebuilt` refused), `profiles-config.ts` / `profiles-config-validator.ts` / `resolve-collection-profiles.ts` (`fill`, Task 23B), `__tests__/config-reload-entry.test.ts` (NEW, Task 23A), `tools-rag-handle.ts` (F2), `http/chat-route-handler.ts` + `http/response-helpers.ts` (`StopReason` from `llm-agent`, Task 4D); `package.json` (peer `llm-agent-reranker`; `./legacy/flat` removed from `exports`, Task 4D). **`packages/llm-agent-server-libs/src/legacy/`** — `flat.ts` DELETED, `linear.ts` / `dag.ts` lose their libs re-export (Task 4D).
+**`packages/llm-agent-server-libs/src/smart-agent/`** — Task 0A: `smart-server.ts` (the `withCircuitBreakers` call removed), `config-reload-watcher.ts` (a doc comment), `__tests__/config-reload-weights.test.ts`, `__tests__/session-breakers.test.ts`, `__tests__/smart-server-session-rag-registry.test.ts`, `session-lifecycle/__tests__/session-rag-registry.test.ts`; `profiles-config.ts` (NEW: YAML types), `profiles-config-validator.ts` (NEW), `decision-config.ts` (`provider: 'sap-aicore'`, `DECISION_KINDS`), `decision-seams.ts` (NEW: the decision of the provider's kind → its reranker), `resolve-retrieval.ts` (kind dispatch), `resolve-config-sections.ts`, `config.ts`, `config-validator.ts`, `resolve-collection-profiles.ts` (NEW), `smart-server.ts` (`makeProbabilityDecision` seam — `makeDecisionModel` removed, Task 20A; `makeRelevanceDecision` seam; binds `rag.profiles.tools`, Task 23; fills the main store once at startup and a worker's own store by its construction, D35, D41, Task 23A; `toolsFillFactories` and the bind with the configured fill source, Task 23B), `workers/worker-registry.ts` (descriptors and slot count to workers, Task 23A) + `workers/connected-mcp-server.ts` (NEW, Task 23A), `config-reload-watcher.ts` (`_onReload` awaitable, rejecting on a failed drain / invalidation after restoring the previous config, Task 4M — V6, D77), `__tests__/profile-fill-ready-clients.test.ts` (NEW, Task 23A, incl. `PUT /v1/config`, hot reload through the reload entry point, a re-wire never fills, a construction that fails anywhere — fill, build, backfill — leaves no cached worker, D47; Task 23B: `fill: corpus`, a leftover `prebuilt` refused), `profiles-config.ts` / `profiles-config-validator.ts` / `resolve-collection-profiles.ts` (`fill`, Task 23B), `__tests__/config-reload-entry.test.ts` (NEW, Task 23A), `tools-rag-handle.ts` (F2), `http/chat-route-handler.ts` + `http/response-helpers.ts` (`StopReason` from `llm-agent`, Task 4D); `package.json` (peer `llm-agent-reranker`; `./legacy/flat` removed from `exports`, Task 4D). **`packages/llm-agent-server-libs/src/legacy/`** — `flat.ts` DELETED, `linear.ts` / `dag.ts` lose their libs re-export (Task 4D).
 
 **`packages/llm-agent-server/src/composition/`** — `make-relevance-decision.ts` (NEW: `createMakeRelevanceDecision`, the `sap-aicore` arm), `make-probability-decision.ts` (RENAMED from `make-decision-model.ts`, Task 20A: `createMakeProbabilityDecision`; names the other seam for `sap-aicore`, Task 24), `index.ts`, `__tests__/make-relevance-decision.test.ts` (NEW), `__tests__/make-probability-decision.test.ts` (RENAMED). **`packages/llm-agent-server/src/`** — `index.ts` DELETED (unreachable `export *` of server-libs, Task 4D); `smart-agent/server.ts`, `smart-agent/__tests__/server.test.ts` (`StopReason`, `OrchestratorError`, `SmartAgentResponse` from `llm-agent`, Task 4D).
 
@@ -3555,7 +3555,7 @@ Spec §10.5.1 (D69: the rule, the carriers, `PIPELINE_FAILURE_CODES`), §10.5.2 
   } as const;
   export type PipelineFailureCode = (typeof PIPELINE_FAILURE_CODES)[keyof typeof PIPELINE_FAILURE_CODES];
   ```
-- Produces (libs): `PipelineExecutor.executeStages` sets `ctx.error` (`OrchestratorError`, code `PIPELINE_ERROR`, message `stage "<id>" failed: <err>`) on a throwing handler or an unknown stage type, unless a handler already set one; `DefaultPipeline.execute` does the same for anything the executor let through; `pipelineToStream` yields `{ ok: false, error: result.error }` last when `result.error` is set and no `ok: false` chunk was yielded already; `SmartAgent.streamProcess` sets the root span `error` when the stream carried an error.
+- Produces (libs): `PipelineExecutor.executeStages` sets `ctx.error` (`OrchestratorError`, code `PIPELINE_ERROR`, message `stage "<id>" failed: <err>`) on a throwing handler or an unknown stage type, unless a handler already set one; `DefaultPipeline.execute` does the same for anything the executor let through; `pipelineToStream` yields `{ ok: false, error: result.error }` last when `result.error` is set and no `ok: false` chunk was yielded already; `SmartAgent.streamProcess` sets the root span `error` when the stream carried an error — **before** it yields the unsuccessful chunk (spec D78: `process()` returns on that chunk and closes the generator, so nothing after the `yield` runs); `ok` only after a stream that carried none; the span is ended in `finally` as today.
 - Produces: a tool call whose arguments are not valid JSON is **not run**; its tool result is `Error: arguments of tool "<name>" are not valid JSON (TOOL_ARGUMENTS_JSON_PARSE_FAILED): <parse error>` and the session step `tool_arguments_invalid { tool, code, error }` — the same at all five sites.
 
 - [ ] **Step 1: Write the failing tests**
@@ -3638,13 +3638,33 @@ describe('N1 — a pipeline error reaches the consumer (spec §10.5.2, D70)', ()
     const agent = new SmartAgent({ ...deps, tracer, pipeline: fakePipeline({ timing: [], error }) }, { maxIterations: 5 });
     const r = await agent.process('hello');
     assert.ok(!r.ok && r.error.code === 'CLASSIFIER_ERROR');
-    const root = tracer.spans.find((s) => s.name === 'smart_agent.process' || s.parent === undefined);
-    assert.equal(root?.status, 'error');
+    // process() returned on the error chunk, closing streamProcess's generator at that
+    // yield: the status must already be set (spec D78).
+    const root = tracer.spans.find((s) => s.name === 'smart_agent.process');
+    assert.equal(root?.status?.status, 'error');
+    assert.match(root?.status?.message ?? '', /CLASSIFIER_ERROR/);
+    assert.equal(root?.ended, true, 'ended by finally');
+  });
+
+  it('a consumer that stops reading at the error chunk still leaves the root span error and ended (D78)', async () => {
+    const { deps } = makeDefaultDeps();
+    const tracer = makeCapturingTracer();
+    const error = new OrchestratorError('assemble failed', 'PIPELINE_ERROR');
+    const agent = new SmartAgent({ ...deps, tracer, pipeline: fakePipeline({ timing: [], error }) }, { maxIterations: 5 });
+    const iter = agent.streamProcess('hello')[Symbol.asyncIterator]();
+    const first = await iter.next();
+    assert.ok(!first.done && !first.value.ok, 'the first chunk is the error');
+    // Close early, as `for await … break` and process() do: the generator resumes only
+    // into its finally — no code after the yield runs.
+    await iter.return?.(undefined);
+    const root = tracer.spans.find((s) => s.name === 'smart_agent.process');
+    assert.equal(root?.status?.status, 'error');
+    assert.equal(root?.ended, true);
   });
 });
 ```
 
-(`makeCapturingTracer`'s span fields are `name`, `status`, `parent` — check `testing/index.ts` `CapturedSpan` and use the root span's actual name from `agent.ts` `startSpan(...)`; adjust the `find` to it.)
+(`CapturedSpan` in `testing/index.ts` has `name`, `parentName`, `status?: { status, message? }` and `ended`; the root span is `startSpan('smart_agent.process', …)` in `agent.ts`. Both cases FAIL today — the status line runs after the loop, which a closed generator never reaches; it would be `ok` there anyway.)
 
 `tool-arguments-invalid.test.ts` — one case per site, each fed `arguments: '{"a":'` (truncated JSON):
 - `tool-loop` (through `DefaultPipeline` with `makeMcpClient` whose `callTool` records calls, and `makeLlm` answering one tool call with the bad arguments, then a text answer): `callTool` is **never** called; the next LLM request carries a tool message matching `/TOOL_ARGUMENTS_JSON_PARSE_FAILED/`; the session step `tool_arguments_invalid` is logged. Today the tool runs with `{}`.
@@ -3698,16 +3718,31 @@ Expected: FAIL — `PIPELINE_FAILURE_CODES` not exported; the stream ends with n
     })
 ```
 
-`agent.ts`, the pipeline branch of `streamProcess`:
+`agent.ts` — one private generator both branches of `streamProcess` delegate to (the pipeline branch's `for await (const chunk of stream) yield chunk; rootSpan.setStatus('ok');` and the legacy branch's same two lines after `_runStreamingToolLoop`):
 ```ts
-        let failed: OrchestratorError | undefined;
-        for await (const chunk of stream) {
-          if (!chunk.ok) failed ??= chunk.error;
-          yield chunk;
-        }
-        if (failed) rootSpan.setStatus('error', `${failed.code}: ${failed.message}`);
-        else rootSpan.setStatus('ok');
+  /**
+   * Spec §10.5.2 (D70, D78): the root span is `error` from the first unsuccessful
+   * chunk — set BEFORE that chunk is yielded. A consumer that stops at it
+   * (`process()` returns on it; `for await … break`) closes this generator at the
+   * yield, and no line after the yield ever runs. `ok` only after a stream that
+   * carried no error. The caller's `finally` ends the span.
+   */
+  private async *withRootStatus(
+    stream: AsyncIterable<Result<LlmStreamChunk, OrchestratorError>>,
+    rootSpan: ISpan,
+  ): AsyncIterable<Result<LlmStreamChunk, OrchestratorError>> {
+    let failed = false;
+    for await (const chunk of stream) {
+      if (!chunk.ok && !failed) {
+        failed = true;
+        rootSpan.setStatus('error', `${chunk.error.code}: ${chunk.error.message}`);
+      }
+      yield chunk;
+    }
+    if (!failed) rootSpan.setStatus('ok');
+  }
 ```
+The pipeline branch becomes `yield* this.withRootStatus(stream, rootSpan); rootSpan.end(); return;` and the legacy branch `yield* this.withRootStatus(stream, rootSpan);` (its `finally` ends the span, as today). `pipelineToStream`'s and `_runStreamingToolLoop`'s element type is this `Result<LlmStreamChunk, OrchestratorError>` (the type `streamProcess` yields); `ISpan` and `LlmStreamChunk` are already imported by `agent.ts`. Status set once: a later error chunk does not overwrite the first error.
 
 N2 / N3 — one helper in libs, `adapters/parse-tool-arguments.ts`:
 ```ts
@@ -4027,7 +4062,7 @@ Spec §10.5.8 (S-1–S-10), §3.8 (`SkillLoadResult.carried`), §13 B8; §10.5.1
 - Modify: `packages/llm-agent-libs/src/pipeline/handlers/skill-select.ts` (~51, ~70), `agent/rag-orchestrator.ts` (~262, ~297), `skills/skill-utils.ts` (~27), `skills/filesystem-skill.ts` (~98), `mcp/vectorize-mcp-tools.ts` (`vectorizeSkills` ~443), `builder.ts` (~1335), `skills/plugin-host/compatible-skills-rag.ts` (~89, ~110), `skills/plugin-host/skill-plugin-host.ts` (~236, ~339)
 - Modify: `packages/llm-agent-server-libs/src/smart-agent/config-validator.ts` (`skills.type`), `smart-server.ts` (`resolveSkillManager` default branch)
 - Modify (U2): `packages/llm-agent-server-libs/src/smart-agent/skill-plugins-config.ts` (~89 doc comment, ~528 default); extend `skill-plugins-config.test.ts` and `packages/llm-agent-libs/src/skills/plugin-host/skill-plugin-host.ingest.test.ts`
-- Create: `packages/llm-agent-libs/src/skills/__tests__/skills-fail-loud.test.ts`, `packages/llm-agent-libs/src/pipeline/handlers/__tests__/skill-select-fail-loud.test.ts`, `packages/llm-agent-server-libs/src/smart-agent/__tests__/skills-type-validation.test.ts`
+- Create: `packages/llm-agent-libs/src/skills/__tests__/skills-fail-loud.test.ts`, `packages/llm-agent-libs/src/pipeline/handlers/__tests__/skill-select-fail-loud.test.ts`, `packages/llm-agent-server-libs/src/smart-agent/__tests__/skills-type-validation.test.ts`; modify `packages/llm-agent-libs/src/__tests__/vectorize-skills.test.ts` (S-5: failures reject) and `packages/llm-agent-server-libs/src/smart-agent/__tests__/session-wiring.test.ts` (S-5: a failed skill write fails `start()`)
 
 **Interfaces:**
 - Produces (contracts, additive): `SkillLoadResult.carried?: readonly { sourceId: string; reason: string }[]`.
@@ -4037,7 +4072,14 @@ Spec §10.5.8 (S-1–S-10), §3.8 (`SkillLoadResult.carried`), §13 B8; §10.5.1
   - S-2 legacy orchestrator: the same → `process()` returns it.
   - S-3 `skill-utils`: a directory whose `readdir` fails with `EACCES` (a fake `fs`, or a `chmod 000` temp dir skipped on Windows) → `SkillError` naming it; `ENOENT` → skipped (kept, pinned).
   - S-4 `filesystem-skill`: a `SKILL.md` with broken frontmatter → `listSkills` returns `SkillError` naming the file; a directory without `SKILL.md` → not a skill (kept, pinned).
-  - S-5 `vectorizeSkills`: `listSkills` `ok: false` → throws; `build()` rejects with it. A writerless store → skipped (kept).
+  - S-5 `vectorizeSkills` (spec S-5, D75; rewrite the three cases of `packages/llm-agent-libs/src/__tests__/vectorize-skills.test.ts` that pin the old behaviour — their names say so):
+    - `listSkills` `ok: false` → rejects with that `SkillError`; no upsert. Today: resolves, no upserts.
+    - a writer whose `upsertRaw` answers `{ ok: false }` (`makeWriter({ failUpsert: true })`) → rejects with a `SkillError` whose message matches `/skill "bad-skill" \(skill:bad-skill\)/` and carries the store's error (`cause` is the `RagError`); no `logLlmCall`. Today: a warning, resolves.
+    - a writer whose `upsertRaw` throws `new Error('disk full')` → rejects, `/skill "bad-skill".*disk full/`, `cause` that error. Today: a warning, resolves.
+    - two skills, the first failing → rejects; the second is never written (no upsert call for it).
+    - success: per-skill upsert + estimated `logLlmCall` (pinned, unchanged); a writerless store → resolves, nothing attempted (kept, pinned).
+    - builder (`skills-fail-loud.test.ts`): `SmartAgentBuilder` with `withSkillManager(m)` over a tools store whose writer fails `skill:` ids → `build()` rejects with the `SkillError` naming the skill. Today: builds.
+    - server (append to `packages/llm-agent-server-libs/src/smart-agent/__tests__/session-wiring.test.ts`, beside "skills are vectorized once at startup", its helpers `spySkillManager`, `configFrom(BASE_YAML)`, `pluginsWith`, `constructionSeams`): the same `makeRag` wrapper, but `w.upsertRaw = async (id, ...rest) => id.startsWith('skill:') ? { ok: false as const, error: new RagError('skill store down') } : upsertRaw(id, ...rest)` → `await assert.rejects(server.start(), /skill "demo".*skill store down/)` — the server's startup build propagates it (`RagError` into its `@mcp-abap-adt/llm-agent` import). Today: starts. (The deferred shared-worker pass through `fillToolsBinding`'s `skills` is Task 23A's.)
   - S-6 builder: a plugin loader returning `errors: [{ file: 'p.js', error: 'boom' }]` → `build()` rejects naming `p.js`. Today: ignored.
   - S-7 `CompatibleSkillsRag.query`: an incompatible generation → throws `SkillsIncompatibleError`; an `AbortError` → rethrown. Today: `[]`.
   - S-8 plugin host: a group whose build fails with a prior generation present → `ok: false`, the group in `omitted` with its reason (under `strict: false` the prior generation is still served; under the default `strict: true` the group serves nothing old — U2).
@@ -4045,16 +4087,58 @@ Spec §10.5.8 (S-1–S-10), §3.8 (`SkillLoadResult.carried`), §13 B8; §10.5.1
   - S-10 server: `skills: { type: 'nope' }` → `ConfigValidationError` naming `skills.type` and the three values. Today: no skill manager.
   - **U2** host: no `strict` in the deps + a source whose `acquire` rejects → the group is not committed and is in `omitted` with the reason (the `strict:true source failure` behaviour), no `carried`. Today: carried forward. `strict: false` → carried, reported (S-9, pinned). Server: `parseSkillPluginsConfig` of a block without `strict` → `strict: true`; with `strict: false` → `false` (pinned).
 - [ ] **Step 2: Run to see them fail.** Expected: FAIL.
-- [ ] **Step 3: Implement** — as the rows say; `config-validator.ts` gains the `skills.type` check (`claude | codex | filesystem`), and `resolveSkillManager`'s `default` throws (a config built in code that bypasses the validator still fails). **U2**: `skill-plugin-host.ts` reads `const strict = deps.strict ?? true;` wherever it read `deps.strict` (the `IngestHostDeps.strict` doc: "default `true`; `false` carries a failed source's prior data forward, reported in `carried`"); `skill-plugins-config.ts`: `strict: raw.strict !== undefined ? Boolean(raw.strict) : true`, the field's doc "Default true".
+- [ ] **Step 3: Implement** — as the rows say. **S-5 (spec D75)** — `vectorize-mcp-tools.ts`: move `writeOne`'s estimated-usage record into `function logEstimatedEmbedding(requestLogger: IRequestLogger, text: string, start: number, detail: 'tools' | 'skills'): void` (writeOne calls it where it logged before — no behaviour change), add `SkillError` to the `@mcp-abap-adt/llm-agent` **value** import, and replace `vectorizeSkills` with (its `logger` parameter goes: nothing is warned any more — the two callers drop the argument, `builder.ts` ~1357 here and `fillToolsBinding` in Task 23A):
+  ```ts
+  /**
+   * Write the builder's skills into the tools store (spec §7.7). Spec S-5, D75: a
+   * failed listing, or a skill whose embedding / write fails (`ok: false` or a
+   * throw), REJECTS — with a SkillError naming the skill, the store's error as
+   * `cause` — at the first failing skill; no later skill is attempted. Nothing is
+   * left out with a warning: `build()`, the server's fills and `start()` fail with
+   * it. A writerless store is skipped (absent by design).
+   */
+  export async function vectorizeSkills(
+    skillManager: ISkillManager,
+    toolsRag: IRag,
+    requestLogger: IRequestLogger,
+  ): Promise<void> {
+    const writer = toolsRag.writer?.();
+    if (!writer) return;
+    const skillsResult = await skillManager.listSkills();
+    if (!skillsResult.ok) throw skillsResult.error;
+    for (const s of skillsResult.value) {
+      const id = `skill:${s.name}`;
+      const text = `Skill: ${s.name}\n${s.description}`;
+      const start = Date.now();
+      let failure: unknown;
+      try {
+        const res = await writer.upsertRaw(id, text, { name: s.name });
+        if (res.ok) logEstimatedEmbedding(requestLogger, text, start, 'skills');
+        else failure = res.error;
+      } catch (err) {
+        failure = err;
+      }
+      if (failure !== undefined) {
+        const reason = failure instanceof Error ? failure.message : String(failure);
+        const error = new SkillError(
+          `vectorizeSkills: skill "${s.name}" (${id}) could not be written into the tools store: ${reason}`,
+        );
+        error.cause = failure; // ES2022 Error.cause — no contract change (SkillError's constructor is unchanged)
+        throw error;
+      }
+    }
+  }
+  ```
+  `builder.ts` ~1357: `await vectorizeSkills(this._skillManager, toolsRag, requestLogger);` — inside `build()`'s existing `try`, so a rejection runs the build's failure cleanup and rethrows (no new catch). `config-validator.ts` gains the `skills.type` check (`claude | codex | filesystem`), and `resolveSkillManager`'s `default` throws (a config built in code that bypasses the validator still fails). **U2**: `skill-plugin-host.ts` reads `const strict = deps.strict ?? true;` wherever it read `deps.strict` (the `IngestHostDeps.strict` doc: "default `true`; `false` carries a failed source's prior data forward, reported in `carried`"); `skill-plugins-config.ts`: `strict: raw.strict !== undefined ? Boolean(raw.strict) : true`, the field's doc "Default true".
 - [ ] **Step 4: Fix the tests that pin the old behaviour, then the gate**
 
 ```bash
-git grep -n "skill_select_error\|continue without skills\|Directory doesn't exist\|return \[\]; // no embed\|strict: false\|Default false" -- 'packages/llm-agent-libs/src' 'packages/llm-agent-server-libs/src'
+git grep -n "skill_select_error\|continue without skills\|Directory doesn't exist\|return \[\]; // no embed\|strict: false\|Default false\|Skill vectorization failed\|vectorizeSkills(" -- 'packages/llm-agent-libs/src' 'packages/llm-agent-server-libs/src'
 npx tsc -b packages/llm-agent packages/llm-agent-libs packages/llm-agent-server-libs
 npm test --workspace @mcp-abap-adt/llm-agent --workspace @mcp-abap-adt/llm-agent-libs --workspace @mcp-abap-adt/llm-agent-server-libs
 ```
 A test that relied on the carry-forward without passing `strict` now passes `strict: false` explicitly (its name says so).
-- [ ] **Step 5: Commit** — `fix(skills): an unreadable skill source, a failed listing or a plugin loader error is an error; the plugin host defaults to strict (U2)` (with the two trailers).
+- [ ] **Step 5: Commit** — `fix(skills): an unreadable skill source, a failed listing, a skill that cannot be written or a plugin loader error is an error; the plugin host defaults to strict (U2)` (with the two trailers).
 
 ---
 
@@ -4065,25 +4149,109 @@ Spec §10.5.9 (V1–V9), §10.5.6 L7 (models route), §13 B10; §10.5.12 U10 (de
 **Files:**
 - Modify: `packages/llm-agent-server-libs/src/smart-agent/session-lifecycle/session-rag-registry.ts` (~90), `controller/session-bundle.ts` (~57), `controller/run-scope.ts` (~79), `controller/artifacts.ts` (~261), `smart-server.ts` (~3112 session meta), `config-reload-watcher.ts` (~132), `tools-rag-handle.ts` (~90 eager load), `build-stepper-root.ts` (~97, ~234), `http/models-route-handler.ts` (~17, ~48)
 - Modify: `packages/llm-agent-server/src/smart-agent/cli.ts` (~146)
-- Create: `packages/llm-agent-server-libs/src/smart-agent/__tests__/server-fail-loud.test.ts`, `packages/llm-agent-server-libs/src/smart-agent/http/__tests__/models-route-fail-loud.test.ts`; extend `packages/llm-agent-server/src/smart-agent/__tests__/cli-flags.test.ts`
+- Create: `packages/llm-agent-server-libs/src/smart-agent/__tests__/server-fail-loud.test.ts`, `packages/llm-agent-server-libs/src/smart-agent/__tests__/config-reload-failure.test.ts` (V6), `packages/llm-agent-server-libs/src/smart-agent/http/__tests__/models-route-fail-loud.test.ts`; extend `packages/llm-agent-server/src/smart-agent/__tests__/cli-flags.test.ts`; modify `packages/llm-agent-server-libs/src/smart-agent/__tests__/config-reload-weights.test.ts` (V6: `snapshotConfig`, awaited reloads)
 - Modify (U10): `packages/llm-agent-server-libs/src/smart-agent/smart-server.ts` (the worker wire, ~2240–2262); Create `packages/llm-agent-server-libs/src/smart-agent/__tests__/worker-shared-clients-log.test.ts`
 
 - [ ] **Step 1: Write the failing tests**
   - V1: a session whose persisted collection's `openCollection` answers `ok: false` (`CollectionNotFoundError`) → the session's creation rejects with it. Today: the session without the collection.
   - V2, V3, V4: a malformed bundle line / terminal entry / an artifact claim without `writeOrdinal` → `OrchestratorError` (or `RagError` where the module already uses one) with code `STATE_CORRUPT` naming the session / entry / claim. Today: an older / empty bundle, a skip, a drop.
   - V5: a session-meta store whose `recordSessionStart` throws → the chat request answers 500 `jsonError`; `recordSessionEnd` throwing → the response is unaffected and `session_meta_end_failed` is logged.
-  - V6: a reload whose `drainWorkers()` rejects → the reload is reported failed (`config_reload_failed` logged, not counted applied), the previous config stays live. (Task 23A later makes the reload entry point awaitable; its tests then see the rejection too.)
+  - V6 (`config-reload-failure.test.ts`, the watcher driven through `_onReload`, which this task makes awaitable — spec V6, D77): deps recording `applyAgentUpdate` / `mirrorCfg` calls, a `snapshotConfig` whose restore records `'restored'`, a weighted store (as in `config-reload-weights.test.ts`):
+    - `drainWorkers` rejects with `new Error('close failed')` → `await assert.rejects(_onReload({ maxIterations: 25, vectorWeight: 0.3 }), /worker drain: Error: close failed/)`; the restore ran (after the update was applied); the store's `updateWeights` was never called; the log has no `config_reload_applied`. Today: resolves (`void`), weights applied, `config_reload_drain_error` logged only.
+    - `invalidateSessions` rejects → the same, `/session invalidation: Error: …/`.
+    - both reject → one rejection naming both.
+    - success → resolves, no restore, weights applied, `config_reload_applied` logged once (pinned).
+    - the event boundary: `watcher.start()`, then the inner `ConfigWatcher` emits `reload` with a rejecting `drainWorkers` → after a turn of the event loop the log carries `{ event: 'config_reload_failed', error: /worker drain/ }` and no `config_reload_applied`; no unhandled rejection (the test registers `process.on('unhandledRejection', …)` and asserts it was not called).
   - V7: the eager tool catalog load fails at start → the server's `start()` rejects with the `McpError`.
   - V8 (`cli-flags.test.ts`): `--env /no/such/file` → exit code 1 with the path in stderr; `--secrets-dir /no/such/dir` → exit code 1; no `--env` and no `.env` → starts (kept, pinned).
   - V9: a stepper role whose LLM config does not resolve → `ConfigValidationError` naming the role. Today: the stub OpenAI model.
   - L7: `getModels` `ok: false` → `GET /v1/models` answers 502 with `jsonError`; `getEmbeddingModels` `ok: false` → 502. Today: 200 with a placeholder / `[]`.
   - **U10** (`worker-shared-clients-log.test.ts`, a server with a recording `cfg.log`): a worker declaring neither `mcp` / `mcpClients` nor `rag`, parent with clients and a tools store → each wire emits exactly one `{ event: 'worker_uses_shared_clients', worker: <name>, shared: ['toolsRag', 'mcpClients'] }`; a worker with its own store but no clients → `shared: ['mcpClients']`; a worker with both of its own → no such event (pinned); the worker's behaviour is unchanged (it still gets the parent's clients — pinned). Today: no event.
 - [ ] **Step 2: Run to see them fail.** Expected: FAIL.
-- [ ] **Step 3: Implement** — as the rows say. `STUB_LLM_CFG` is deleted with its use. `gcTerminal`'s catch (cleanup) and the shutdown closes stay (spec §10.5.1). **U10**: in the worker wire, collect `shared: ('toolsRag' | 'mcpClients')[]` in the two `else if (injected?.…)` branches; after both, `if (shared.length > 0) (this.cfg.log ?? this.noop)({ event: 'worker_uses_shared_clients', worker: <the worker's name>, shared });` — one line per wire, the same event sink as `plugins_loaded`.
+- [ ] **Step 3: Implement** — as the rows say. `STUB_LLM_CFG` is deleted with its use. `gcTerminal`'s catch (cleanup) and the shutdown closes stay (spec §10.5.1).
+
+  **V6 (spec D77) — `config-reload-watcher.ts`, the final shape Task 23A builds on:**
+  - `ConfigReloadDeps` gains
+    ```ts
+    /**
+     * Captures what a reload changes — the live agent's hot-reloadable config and the
+     * server's mirror (`cfg.agent`, `cfg.prompts`) — and returns the function that
+     * restores exactly that (spec §10.5.9 V6, D77: a failed reload keeps the previous
+     * config live).
+     */
+    snapshotConfig(): () => void;
+    ```
+  - `start()`'s listener — the event boundary, the ONE place the rejection is handled (an emitter cannot await):
+    ```ts
+    this.watcher.on('reload', (update: HotReloadableConfig) => {
+      // Spec V6 (D77): handled here, at the event boundary — logged as the failure it
+      // is, never as applied. `_onReload` has already restored the previous config.
+      this._onReload(update).catch((err: unknown) => {
+        this.deps.log({ event: 'config_reload_failed', error: String(err) });
+      });
+    });
+    ```
+  - `_onReload` becomes `private async _onReload(update: HotReloadableConfig): Promise<void>` with the doc "The reload entry point (spec §14.1 D39, §10.5.9 V6 D77). Resolves when the reload is applied: the agent update, the worker drain, the session invalidation and the RAG weights. Rejects when the drain or the invalidation fails — after restoring the previous config, without applying the weights." Its body: `log({ event: 'config_reload', update })`; `const restore = this.deps.snapshotConfig();`; the agent update and the mirror exactly as today; then, replacing the two fire-and-forget `.catch(log)` calls:
+    ```ts
+    // Both run (each settles), then one verdict — a failure is never swallowed
+    // into "applied" (spec V6, D77). Called synchronously, as before, so the
+    // drain starts in the same turn as the update.
+    const started = (f: () => Promise<void>): Promise<void> => {
+      try {
+        return f();
+      } catch (err) {
+        return Promise.reject(err);
+      }
+    };
+    const [drained, invalidated] = await Promise.allSettled([
+      started(() => this.deps.drainWorkers()),
+      started(() => this.deps.invalidateSessions()),
+    ]);
+    const failures: string[] = [];
+    if (drained.status === 'rejected') failures.push(`worker drain: ${String(drained.reason)}`);
+    if (invalidated.status === 'rejected') {
+      failures.push(`session invalidation: ${String(invalidated.reason)}`);
+    }
+    if (failures.length > 0) {
+      restore();
+      throw new Error(
+        `config reload failed, the previous config is kept — ${failures.join('; ')}`,
+        { cause: drained.status === 'rejected' ? drained.reason : invalidated.status === 'rejected' ? invalidated.reason : undefined },
+      );
+    }
+    ```
+    then the RAG weight updates (unchanged code, now only on success), then `this.deps.log({ event: 'config_reload_applied' });`.
+  - `smart-server.ts`, the `new ConfigReloadWatcher({` deps gain (after `mirrorCfg`):
+    ```ts
+        snapshotConfig: () => {
+          // What a reload changes (spec V6, D77): the agent's whitelisted config,
+          // the prompts it was built with (the builder passes cfg.prompts'
+          // ragTranslate / historySummary as ragTranslatePrompt /
+          // historySummaryPrompt), and the server's mirror. mirrorCfg replaces
+          // cfg.agent / cfg.prompts with new objects, so these references are
+          // the pre-reload values.
+          const agentBefore = smartAgent.getAgentConfig();
+          const cfgAgent = (this.cfg as { agent?: Record<string, unknown> }).agent;
+          const cfgPrompts = this.cfg.prompts;
+          return () => {
+            smartAgent.applyConfigUpdate({
+              ...agentBefore,
+              ragTranslatePrompt: cfgPrompts?.ragTranslate,
+              historySummaryPrompt: cfgPrompts?.historySummary,
+            });
+            (this.cfg as { agent?: Record<string, unknown> }).agent = cfgAgent;
+            (this.cfg as { prompts?: SmartServerPromptsConfig }).prompts = cfgPrompts;
+          };
+        },
+    ```
+    (`SmartServerPromptsConfig` is declared in `smart-server.ts`; `getAgentConfig()` returns only fields of `SmartAgentConfig`, so the spread type-checks against `applyConfigUpdate(Partial<SmartAgentConfig>)` — after Task 4Q it no longer carries `toolUnavailableTtlMs`, and the restore follows without an edit.)
+  - existing tests: `config-reload-weights.test.ts`'s `watcherOver` gains `snapshotConfig: () => () => {}`; its `reload` returns the promise and each case `await`s it (the weights are applied after the drain settles now); `config_reload_drain_error` / `config_reload_invalidate_error` are gone (grep below).
+
+  **U10**: in the worker wire, collect `shared: ('toolsRag' | 'mcpClients')[]` in the two `else if (injected?.…)` branches; after both, `if (shared.length > 0) (this.cfg.log ?? this.noop)({ event: 'worker_uses_shared_clients', worker: <the worker's name>, shared });` — one line per wire, the same event sink as `plugins_loaded`.
 - [ ] **Step 4: Fix the tests that pin the old behaviour, then the gate**
 
 ```bash
-git grep -n "rag_hydration_failed\|emptyBundle\|STUB_LLM_CFG\|smart-agent'\|config_reload_drain_error\|tools_catalog_eager_load_failed\|could not load env file" -- 'packages/llm-agent-server-libs/src' 'packages/llm-agent-server/src'
+git grep -n "rag_hydration_failed\|emptyBundle\|STUB_LLM_CFG\|smart-agent'\|config_reload_drain_error\|config_reload_invalidate_error\|tools_catalog_eager_load_failed\|could not load env file" -- 'packages/llm-agent-server-libs/src' 'packages/llm-agent-server/src'
 npx tsc -b packages/llm-agent-server-libs packages/llm-agent-server
 npm test --workspace @mcp-abap-adt/llm-agent-server-libs --workspace @mcp-abap-adt/llm-agent-server
 ```
@@ -5982,7 +6150,7 @@ Correct on both kinds: a merging store overwrites the key with `undefined` (read
   export function asItem(canonical: RagResult, score: number, extra?: { matchedKinds?: string[]; source?: string }): RagResult; // metadata.id = itemId
   export function isExpired(meta: RagMetadata, nowSecs?: number): boolean;
   ```
-  Failure reasons: `'too-many-records'`, `'missing-canonical'`, `'owner-mismatch'`, `'item-id-mismatch'`, `'no-records'`, `'write-failed'`, `'read-failed: <message>'`, `'cleanup-failed: <n> stale record(s) kept for retry'` (F3); a rejected batch puts `rejected.message` on every item.
+  Failure reasons: `'too-many-records'`, `'missing-canonical'`, `'owner-mismatch'`, `'item-id-mismatch'`, `'no-records'`, `'write-failed: <the store's error>'` (a failed bulk write: `'write-failed: bulk write failed: <error>'` on every item of the batch — never retried record by record, spec §3.3, D76), `'read-failed: <message>'`, `'cleanup-failed: <n> stale record(s) kept for retry'` (F3), `'cleanup-failed: the settled stale list was not written: <error>'` (D76); a rejected batch puts `rejected.message` on every item.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -5995,6 +6163,7 @@ import {
   type IEmbedder,
   type IRag,
   RagError,
+  type RagMetadata,
   type RecordDraft,
   type RecordOwner,
   recordId,
@@ -6199,6 +6368,67 @@ function flakyDeletes(inner: InMemoryRag, failing: Set<string>): IRag {
     }),
   } as IRag;
 }
+
+/**
+ * A store whose embedder batches and whose bulk write fails (`ok: false`, or a
+ * throw) while every individual write would succeed. `calls` records each write path.
+ */
+function bulkWriteDown(mode: 'error' | 'throw'): { rag: IRag; inner: InMemoryRag; calls: string[] } {
+  const inner = new InMemoryRag();
+  const w = inner.writer();
+  const calls: string[] = [];
+  const embedder = {
+    embedDocument: async () => ({ vector: [1, 0] }),
+    embedDocuments: async (ts: string[]) => ts.map(() => ({ vector: [1, 0] })),
+    embedQuery: async () => ({ vector: [1, 0] }),
+  };
+  const rag = {
+    ...inner,
+    query: inner.query.bind(inner),
+    getById: inner.getById.bind(inner),
+    retrievalEmbedder: embedder, // IRetrievalEmbedderOwner: the batch embedding runs
+    writer: () => ({
+      ...w,
+      upsertManyPrecomputedRaw: async () => {
+        calls.push('bulk');
+        if (mode === 'throw') throw new Error('bulk down');
+        return { ok: false as const, error: new RagError('bulk down') };
+      },
+      upsertPrecomputedRaw: async (id: string, text: string, _v: number[], meta: RagMetadata, o?: CallOptions) => {
+        calls.push('one');
+        return w.upsertRaw(id, text, meta, o);
+      },
+      upsertRaw: async (id: string, text: string, meta: RagMetadata, o?: CallOptions) => {
+        calls.push('one');
+        return w.upsertRaw(id, text, meta, o);
+      },
+    }),
+  } as unknown as IRag;
+  return { rag, inner, calls };
+}
+
+describe('a failed bulk write fails its items — never retried record by record (spec §3.3, D76)', () => {
+  for (const mode of ['error', 'throw'] as const) {
+    it(`bulk write ${mode === 'error' ? 'answers ok: false' : 'throws'} → every item failed with the bulk error; no individual write`, async () => {
+      const { rag, inner, calls } = bulkWriteDown(mode);
+      const a = prep([draft('item', 'c'), draft('note', 'x')]);
+      const b = prepareItem(
+        { itemId: 'case-43', drafts: [{ ...draft('item', 'd'), itemId: 'case-43' }] },
+        { canonicalKind: 'item', profile: 'p', maxRecordsPerItem: 5 },
+      );
+      assert.ok(a.ok && b.ok);
+      const r = await storeItems(rag, [a.item, b.item]);
+      assert.deepEqual(r.indexed, [false, false]);
+      assert.equal(r.records, 0);
+      for (const f of r.failures) assert.match(f ?? '', /^write-failed: bulk write failed: .*bulk down/);
+      assert.ok(calls.length > 0 && calls.every((c) => c === 'bulk'), `only bulk writes, got ${calls.join(',')}`);
+      for (const id of [a.item.canonical.id, ...a.item.others.map((x) => x.id), b.item.canonical.id]) {
+        const x = await inner.getById(id);
+        assert.ok(x.ok && x.value === null, `${id} not written by another path`);
+      }
+    });
+  }
+});
 
 describe('cleanup failures are kept for retry (spec §3.3, F3)', () => {
   const canonId = recordId(U_A, 'case-42', 'item', 0);
@@ -6517,35 +6747,59 @@ async function embedAll(
   }
 }
 
+/**
+ * Write records into one store; the id → error of every record NOT written.
+ *
+ * Bulk path — a vector for every record and `upsertManyPrecomputedRaw`: ONE call.
+ * A bulk failure (`ok: false` or a throw) fails EVERY record of the batch with that
+ * error. It is never retried record by record (spec §3.3, D76): a store that
+ * refused the batch is not asked again through another write path — that would be
+ * a silent substitution hiding the bulk failure.
+ * Per-record path — only where the bulk one is not available (no bulk capability,
+ * or no precomputed vectors: the store embeds, U7's embedding retry): a record's
+ * failure fails that record, with its own error.
+ */
 async function writeAll(
   rag: IRag,
   records: readonly PreparedRecord[],
   vectors: Map<string, number[]> | undefined,
   written: Set<string>,
   options?: CallOptions,
-): Promise<void> {
+): Promise<Map<string, string>> {
+  const failed = new Map<string, string>();
+  if (records.length === 0) return failed;
   const writer = rag.writer?.();
-  if (!writer || records.length === 0) return;
+  if (!writer) {
+    for (const r of records) failed.set(r.id, 'the store has no writer');
+    return failed;
+  }
   if (vectors && writer.upsertManyPrecomputedRaw) {
     const batch = records.flatMap((r) => {
       const vector = vectors.get(r.id);
       return vector ? [{ ...r, vector }] : [];
     });
     if (batch.length === records.length) {
-      const bulk = await writer
-        .upsertManyPrecomputedRaw(batch, options)
-        .catch((err: unknown) => ({
-          ok: false as const,
-          error: new RagError(message(err)),
-        }));
-      if (bulk.ok) {
-        for (const r of records) written.add(r.id);
-        return;
+      let error: string;
+      try {
+        const bulk = await writer.upsertManyPrecomputedRaw(batch, options);
+        if (bulk.ok) {
+          for (const r of records) written.add(r.id);
+          return failed;
+        }
+        error = bulk.error.message;
+      } catch (err) {
+        error = message(err);
       }
+      // D76: the whole batch fails with the bulk error — no per-record retry.
+      for (const r of records) failed.set(r.id, `bulk write failed: ${error}`);
+      return failed;
     }
   }
   for (const r of records) {
-    if (options?.signal?.aborted) return;
+    if (options?.signal?.aborted) {
+      failed.set(r.id, 'aborted');
+      continue;
+    }
     const vector = vectors?.get(r.id);
     try {
       const res =
@@ -6553,10 +6807,13 @@ async function writeAll(
           ? await writer.upsertPrecomputedRaw(r.id, r.text, vector, r.metadata, options)
           : await writer.upsertRaw(r.id, r.text, r.metadata, options);
       if (res.ok) written.add(r.id);
-    } catch {
-      // not written: the item lands in failedItems
+      else failed.set(r.id, res.error.message);
+    } catch (err) {
+      // This record's own failure, reported with its item (`write-failed: <error>`).
+      failed.set(r.id, message(err));
     }
   }
+  return failed;
 }
 
 const listed = (
@@ -6699,22 +6956,32 @@ export async function storeItems(
   const all = live.flatMap((it) => [...it.others, it.canonical]);
   const { vectors, failure } = await embedAll(rag, all, options);
   const written = new Set<string>();
-  await writeAll(rag, live.flatMap((it) => it.others), vectors, written, options);
-  await writeAll(rag, live.map((it) => it.canonical), vectors, written, options);
+  const writeErrors = new Map([
+    ...(await writeAll(rag, live.flatMap((it) => it.others), vectors, written, options)),
+    ...(await writeAll(rag, live.map((it) => it.canonical), vectors, written, options)),
+  ]);
   const indexed = await Promise.all(
     prepared.map(async (it, i) => {
       if (failures[i] !== undefined) return false;
       const ids = [...it.others, it.canonical].map((r) => r.id);
-      if (!ids.every((id) => written.has(id))) {
-        failures[i] = 'write-failed';
+      const missing = ids.find((id) => !written.has(id));
+      if (missing !== undefined) {
+        // The store's own error reaches the report (spec §3.3, D76).
+        failures[i] = `write-failed: ${writeErrors.get(missing) ?? 'not written'}`;
         return false;
       }
       if (stale[i].length === 0) return true;
       // Delete every stale id, each Result checked.
       const left = await deleteAll(rag, stale[i], options);
-      // Settle: the canonical lists exactly what is still pending. If this write
-      // fails, the written-ahead superset stays — retrying a deleted id is a no-op.
-      await writeAll(rag, [withStale(it.canonical, left)], vectors, new Set<string>(), options);
+      // Settle: the canonical lists exactly what is still pending. A failed settle
+      // write is reported, never counted indexed (D76); the written-ahead superset
+      // stays, and the retry's delete of an already-deleted id is a no-op.
+      const settled = await writeAll(rag, [withStale(it.canonical, left)], vectors, new Set<string>(), options);
+      const settleError = settled.get(it.canonical.id);
+      if (settleError !== undefined) {
+        failures[i] = `cleanup-failed: the settled stale list was not written: ${settleError}`;
+        return false;
+      }
       const n = left.length;
       if (n > 0) {
         failures[i] = `cleanup-failed: ${n} stale record(s) kept for retry`;
@@ -6837,7 +7104,7 @@ Run:
 npx tsc -b packages/llm-agent-libs
 node --import tsx/esm --test packages/llm-agent-libs/src/collections/__tests__/record-writer.test.ts
 ```
-Expected: PASS (`tsc -b` type-checks `record-writer.ts` and `collections/index.ts`; the tsx run does not). The duplicate tests pin the order: the call log of a rejected batch is empty (no `getById` either), and two versions of one item never reach the store. (If `VectorRag` writes ids into `metadata.id` differently from `InMemoryRag`, `getById(recordId(...))` must still find the record — VectorRag replaces "the slot with the same `metadata.id`", spec §3.1.) The replacement test runs on `InMemoryRag` and `VectorRag` — the two stores that merge metadata (table above); a `tsc` error naming `UNSET_RESERVED` means `ReservedRecordKey` gained or lost a key: list it there.
+Expected: PASS (`tsc -b` type-checks `record-writer.ts` and `collections/index.ts`; the tsx run does not). The bulk-write tests pin D76: a failed `upsertManyPrecomputedRaw` (answered or thrown) fails every item of the batch with the bulk error and no individual write is ever called — a per-record retry would have written every record and reported both items indexed. The duplicate tests pin the order: the call log of a rejected batch is empty (no `getById` either), and two versions of one item never reach the store. (If `VectorRag` writes ids into `metadata.id` differently from `InMemoryRag`, `getById(recordId(...))` must still find the record — VectorRag replaces "the slot with the same `metadata.id`", spec §3.1.) The replacement test runs on `InMemoryRag` and `VectorRag` — the two stores that merge metadata (table above); a `tsc` error naming `UNSET_RESERVED` means `ReservedRecordKey` gained or lost a key: list it there.
 
 - [ ] **Step 5: Commit**
 
@@ -13900,8 +14167,8 @@ Spec §6.3 (D31; D32 — a worker's fill keeps the identity its agent dispatches
 - Modify: `packages/llm-agent-server-libs/src/smart-agent/smart-server.ts` `buildSubAgent` (`injected.mcpClientDescriptors?` / `configuredSlotCount?`; `withToolNamespace`; clients with descriptors → `withMcpServers`; **the worker's own bound store filled before `subBuilder.build()`**, D35)
 - Create: `packages/llm-agent-server-libs/src/smart-agent/__tests__/profile-fill-ready-clients.test.ts`
 - Modify: `packages/llm-agent-server-libs/src/smart-agent/__tests__/mcp-yaml-vectorization.test.ts` (append the D38 startup fill on `yamlBuilderConnect`; reuses its stub MCP server)
-- Modify: `packages/llm-agent-server-libs/src/smart-agent/config-reload-watcher.ts` (`_onReload` returns the drain + invalidation as one promise, D39)
-- Create: `packages/llm-agent-server-libs/src/smart-agent/__tests__/config-reload-entry.test.ts` (the watcher's `reload` event reaches `_onReload`, D39)
+- Unchanged: `packages/llm-agent-server-libs/src/smart-agent/config-reload-watcher.ts` — Task 4M made `_onReload` the awaitable entry point that rejects on a failed drain / invalidation after restoring the previous config (spec V6, D77); this task only holds the watcher
+- Create: `packages/llm-agent-server-libs/src/smart-agent/__tests__/config-reload-entry.test.ts` (the watcher's `reload` event reaches `_onReload`, D39; a failed drain / invalidation at the event boundary, D77)
 
 **Interfaces:**
 - Consumes: `vectorizeMcpTools`, which reads the binding from the store (Task 19, D34); `bindToolsProfile`, `toolsBindingOf` (Task 15); `mcpToolsVariants` (Task 16); `ToolsVariantFactory`, `SmartServerConfig.toolsVariantFactories` (Task 22); Task 23's `_toolsProfiles` and `withToolsStore`; `ToolCatalogStatus.records` / `.profile` (Task 3).
@@ -13912,7 +14179,7 @@ Spec §6.3 (D31; D32 — a worker's fill keeps the identity its agent dispatches
   export function fillToolsBinding(clients: readonly IMcpClient[], binding: IBoundCollection<ToolItem>, options?: FillToolsBindingOptions): Promise<ToolCatalogStatus | undefined>; // runs the store's fill source at creation (D42), then vectorizes `skills` into the same store (D66); undefined when the source attempts nothing (consumer) or callOptions.signal is already aborted; rejects a binding its store does not carry (D34)
   // HealthCheckerDeps gains: toolCatalog?: IToolCatalogReporter  (absent → the agent's own status, 30.1.0)
   ```
-  The server: with a bound `tools` store, `_buildInfra` fills it once from `_sharedMcpClients` on every path except `yamlBuilderConnect` (there the builder filled it at its `build()`, before its skills) — right after the clients are resolved and before the startup build, so the skills that build vectorizes into the store land after the fill (D66). The worker's construction (`buildSubAgent` without `injected`) fills a worker's OWN bound store (D35, D41), before `subBuilder.build()`, from the clients its re-wires will hand that worker — the worker's own `mcpClients` in array order (they carry no descriptors), or the shared clients with `_sharedMcpClientDescriptors` / `_configuredSlotCount` once they are known (D32); on `yamlBuilderConnect` `_buildInfra` fills those workers right after the harvest (`fillSharedClientWorkerStores`, D38) — their builds skipped the skills (`fillsAfterBuild`), which that pass vectorizes after the fill (`fillToolsBinding`'s `skills`, D66). On every path a store is filled before skills are vectorized into it. So startup, a lazy rebuild, `PUT /v1/config` and hot reload all fill it — once per store. A per-session re-wire never fills; nothing is memoized or retried (D41). A worker on its own `mcp:` is filled by its own builder on the construction's build. A construction that fails anywhere — the server's fill, `subBuilder.build()` (incl. the builder-driven fill of a worker on its own `mcp:`), or the backfill — drops the worker's cache entry and closes the handle it built; a failed `build()` disposes the connection strategy it resolved through (D47). `ConfigReloadWatcher._onReload` returns the drain + invalidation as one promise and the server keeps the watcher (`_configReload`), so tests drive a hot reload directly (D39). Every worker's builder dispatches by the identity its store was filled with (the clients' descriptors through `withMcpServers` + `connectedMcpServer`, the server's `withToolNamespace`). `/health` reads the main status; a worker's fill is logged only. Without a binding nothing new runs.
+  The server: with a bound `tools` store, `_buildInfra` fills it once from `_sharedMcpClients` on every path except `yamlBuilderConnect` (there the builder filled it at its `build()`, before its skills) — right after the clients are resolved and before the startup build, so the skills that build vectorizes into the store land after the fill (D66). The worker's construction (`buildSubAgent` without `injected`) fills a worker's OWN bound store (D35, D41), before `subBuilder.build()`, from the clients its re-wires will hand that worker — the worker's own `mcpClients` in array order (they carry no descriptors), or the shared clients with `_sharedMcpClientDescriptors` / `_configuredSlotCount` once they are known (D32); on `yamlBuilderConnect` `_buildInfra` fills those workers right after the harvest (`fillSharedClientWorkerStores`, D38) — their builds skipped the skills (`fillsAfterBuild`), which that pass vectorizes after the fill (`fillToolsBinding`'s `skills`, D66). On every path a store is filled before skills are vectorized into it. So startup, a lazy rebuild, `PUT /v1/config` and hot reload all fill it — once per store. A per-session re-wire never fills; nothing is memoized or retried (D41). A worker on its own `mcp:` is filled by its own builder on the construction's build. A construction that fails anywhere — the server's fill, `subBuilder.build()` (incl. the builder-driven fill of a worker on its own `mcp:`), or the backfill — drops the worker's cache entry and closes the handle it built; a failed `build()` disposes the connection strategy it resolved through (D47). `ConfigReloadWatcher._onReload` (Task 4M's final shape) resolves when the reload is applied and rejects — the previous config restored — when the drain or the invalidation fails; the server keeps the watcher (`_configReload`), so tests drive a hot reload directly and see the rejection (D39, D77). Every worker's builder dispatches by the identity its store was filled with (the clients' descriptors through `withMcpServers` + `connectedMcpServer`, the server's `withToolNamespace`). `/health` reads the main status; a worker's fill is logged only. Without a binding nothing new runs.
 
 - [ ] **Step 1: Write the failing libs test**
 
@@ -13921,10 +14188,15 @@ Spec §6.3 (D31; D32 — a worker's fill keeps the identity its agent dispatches
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
+  type CallOptions,
   type IMcpClient,
+  type IRag,
   type ISkill,
   type ISkillManager,
   type McpTool,
+  RagError,
+  type RagMetadata,
+  SkillError,
   type ToolCatalogStatus,
 } from '@mcp-abap-adt/llm-agent';
 import { InMemoryRag, VectorRag } from '@mcp-abap-adt/llm-agent-rag';
@@ -14020,6 +14292,36 @@ describe('fillToolsBinding', () => {
     assert.ok(sk.ok && sk.value, 'the skill record is there after the corpus load cleared the store');
     const tool = await b.get({ itemId: 'tool:read_file', owner: { scope: 'global' } });
     assert.ok(tool.ok && tool.value, 'and the corpus too');
+  });
+
+  it('a skill that cannot be written rejects fillToolsBinding with the SkillError naming it (spec S-5, D75)', async () => {
+    const skill = { name: 'deploy', description: 'Deploy the app' } as unknown as ISkill;
+    const skills: ISkillManager = {
+      listSkills: async () => ({ ok: true, value: [skill] }),
+      getSkill: async () => ({ ok: true, value: skill }),
+      matchSkills: async () => ({ ok: true, value: [skill] }),
+    };
+    const inner = new InMemoryRag();
+    const w = inner.writer();
+    const rag = {
+      ...inner,
+      query: inner.query.bind(inner),
+      getById: inner.getById.bind(inner),
+      writer: () => ({
+        ...w,
+        upsertRaw: async (id: string, text: string, meta: RagMetadata, o?: CallOptions) =>
+          id.startsWith('skill:')
+            ? { ok: false as const, error: new RagError('skill store down') }
+            : w.upsertRaw(id, text, meta, o),
+      }),
+    } as unknown as IRag;
+    const b = bindToolsProfile(profile(), { key: 'tools', rag });
+    await assert.rejects(fillToolsBinding([client(TOOLS)], b, { skills }), (err: unknown) => {
+      assert.ok(err instanceof SkillError);
+      assert.match(err.message, /skill "deploy" \(skill:deploy\).*skill store down/);
+      assert.ok(err.cause instanceof RagError, 'the store error is the cause');
+      return true;
+    });
   });
 });
 
@@ -14142,6 +14444,8 @@ export interface FillToolsBindingOptions {
  *
  * Resolves `undefined` when the source attempts nothing (`consumer`) or
  * `callOptions.signal` is already aborted.
+ * Rejects with `vectorizeSkills`' `SkillError` when one of `skills` cannot be
+ * written (spec S-5, D75) — after the fill, which stays done.
  * Rejects a binding its store does not carry (made by `profile.bind()`, not
  * `bindToolsProfile`): this fill would miss it, and a later reconnect's
  * `toolsChanged` would take the store for unbound and write 30.1.0 records
@@ -14175,8 +14479,10 @@ export async function fillToolsBinding(
     },
   );
   // After the fill, never before: a `corpus` source clears the store (D66).
+  // A skill that cannot be written rejects (spec S-5, D75) — propagated
+  // unchanged, never caught here: the caller's start or construction fails.
   if (options.skills) {
-    await vectorizeSkills(options.skills, binding.rag, requestLogger, options.logger);
+    await vectorizeSkills(options.skills, binding.rag, requestLogger);
   }
   return status;
 }
@@ -14770,6 +15076,34 @@ test('(10) hot reload: the server reload entry point drains the workers; the nex
   );
 });
 
+test('(10b) hot reload whose worker drain fails: the entry point rejects and the previous config stays live (spec V6, D77)', async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'hot-reload-fail-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const configFile = join(dir, 'smart-server.yaml');
+  writeFileSync(configFile, 'agent:\n  maxIterations: 10\n');
+  const calls: string[][] = [];
+  await withServer(
+    rebuildConfig(calls, { configFile }),
+    { ...constructionSeams, connectMcpWithDescriptors: labelledSeam },
+    async ({ server }) => {
+      const s = server as unknown as WorkerInternals;
+      const cfg = (server as unknown as { cfg: { agent?: { maxIterations?: number } } }).cfg;
+      assert.ok(s._configReload, 'precondition: a configFile gives the server its reload watcher');
+      const before = cfg.agent?.maxIterations;
+      const drain = s._workers.drain.bind(s._workers);
+      s._workers.drain = async () => {
+        throw new Error('close failed');
+      };
+      try {
+        await assert.rejects(s._configReload._onReload({ maxIterations: 25 }), /worker drain: Error: close failed/);
+      } finally {
+        s._workers.drain = drain; // the server's close drains the workers
+      }
+      assert.equal(cfg.agent?.maxIterations, before, 'the mirror is restored — the next session builds on the previous config');
+    },
+  );
+});
+
 /** A client whose `listTools()` fails while `down.list` is set. */
 function toggledClient(names: readonly string[], down: { list: boolean }): IMcpClient {
   const up = client(names);
@@ -15033,7 +15367,7 @@ test("D47: a worker on its own mcp: whose builder-driven fill throws on a lazy r
 - [ ] **Step 6: Run to see them fail**
 
 Run: `npx tsc -b packages/llm-agent-libs && node --import tsx/esm --test packages/llm-agent-server-libs/src/smart-agent/__tests__/profile-fill-ready-clients.test.ts`
-Expected: FAIL — (1), (2), (3), (5), (6) find the store empty (`calls` is `[]`, no `toolCatalog`); (7) finds the worker's store empty; (9) fails its startup precondition (`calls.length` is 0), and the rebuilt stores are empty too; (10) finds no `_configReload`; (12) fails its precondition (no startup fill); (12b) fails its precondition too (no startup fill), and once filled it would find the entry kept — a backfill failure is outside any cleanup; (4) passes already (it pins 30.1.0), and so does (11) (nothing fills a worker yet — it pins that a re-wire never will). In `mcp-yaml-vectorization.test.ts` the D38 test finds the worker's store empty after `start()`; the D47 own-`mcp:` test finds the cache entry kept after the failed rebuild (the builder-driven fill throws inside `subBuilder.build()`, outside the fill's catch), and the next session re-wires that empty store with the parent's clients. `config-reload-entry.test.ts` passes already: it pins the existing link from the watcher's event to `_onReload`.
+Expected: FAIL — (1), (2), (3), (5), (6) find the store empty (`calls` is `[]`, no `toolCatalog`); (7) finds the worker's store empty; (9) fails its startup precondition (`calls.length` is 0), and the rebuilt stores are empty too; (10) finds no `_configReload`; (12) fails its precondition (no startup fill); (12b) fails its precondition too (no startup fill), and once filled it would find the entry kept — a backfill failure is outside any cleanup; (4) passes already (it pins 30.1.0), and so does (11) (nothing fills a worker yet — it pins that a re-wire never will). In `mcp-yaml-vectorization.test.ts` the D38 test finds the worker's store empty after `start()`; the S-5 / D75 deferred-pass test passes already (Task 4L: the worker's own build still vectorizes its skills and rejects) — it pins that moving those skills into the deferred pass (`fillsAfterBuild`) keeps the rejection; the D47 own-`mcp:` test finds the cache entry kept after the failed rebuild (the builder-driven fill throws inside `subBuilder.build()`, outside the fill's catch), and the next session re-wires that empty store with the parent's clients. `config-reload-entry.test.ts` passes already (Task 4M gave the watcher its V6 shape: the link, the rejection and the event boundary's `config_reload_failed`), and so does (10b) once (10)'s precondition holds — it pins that this task keeps V6: a failed drain rejects and leaves the previous config live.
 
 - [ ] **Step 7: Implement (server)**
 
@@ -15392,27 +15726,17 @@ In `smart-server.ts`:
 - the reload entry point the hot-reload test drives (D39):
   - field, beside `_serverToolCatalog`: `private _configReload?: ConfigReloadWatcher;`
   - in the `if (this.cfg.configFile) {` block: after `reloadWatcher.start();` add `this._configReload = reloadWatcher;` and replace `closeFns.push(() => reloadWatcher.stop());` with `closeFns.push(() => this._configReload?.stop());` (the field is read, so `noUnusedLocals` accepts it).
-- `config-reload-watcher.ts` (D39) — `_onReload` returns what it starts, so a caller can await it; the watcher still fires and forgets:
-  - in `start()`: `this.watcher.on('reload', (update: HotReloadableConfig) => this._onReload(update));` → `this.watcher.on('reload', (update: HotReloadableConfig) => { void this._onReload(update); });`
-  - `private _onReload(update: HotReloadableConfig): void {` → `private _onReload(update: HotReloadableConfig): Promise<void> {`, with the doc line "The reload entry point (spec §14.1, D39). Resolves when the worker drain and the session invalidation have settled; their failures are logged, never thrown."
-  - the two fire-and-forget calls become named promises, returned at the end (after the weight updates, which stay synchronous):
-    ```ts
-      const drained = this.deps.drainWorkers().catch((err: unknown) => {
-        this.deps.log({ event: 'config_reload_drain_error', error: String(err) });
-      });
-      const invalidated = this.deps.invalidateSessions().catch((err: unknown) => {
-        this.deps.log({ event: 'config_reload_invalidate_error', error: String(err) });
-      });
-      // … the RAG weight updates, unchanged …
-      return Promise.all([drained, invalidated]).then(() => undefined);
-    ```
-- `__tests__/config-reload-entry.test.ts` (new, D39 — the one link the server test skips):
+- `config-reload-watcher.ts` — **no change in this task.** Task 4M already gave it its final shape (spec V6, D77), which is what this task's hot-reload test drives: `_onReload` is the awaitable reload entry point (D39); it applies the agent update, awaits the worker drain and the session invalidation, and on a failure of either **restores** the pre-reload config (`snapshotConfig`), skips the RAG weights and **rejects** with an error naming the failure; the watcher's `reload` listener is the one place the rejection is handled (`config_reload_failed` through the server's log sink); `config_reload_applied` only on success. This task must not add a `.catch` that turns the drain or invalidation rejection into a resolved promise — that is the V6 regression (spec D77).
+- `__tests__/config-reload-entry.test.ts` (new, D39 — the one link the server test skips — and the event boundary of V6, D77):
   ```ts
   /**
    * Spec §14.1 (D39): the file watcher's `reload` event calls the reload entry
    * point (`_onReload`). The server's hot-reload test drives that entry point
    * directly; this pins the link it skips. No file change, no debounce: the
    * event is emitted on the watcher's own emitter.
+   * Spec V6 (D77): a failed drain or invalidation rejects the entry point, the
+   * previous config is restored, and the event boundary logs config_reload_failed
+   * — never config_reload_applied, never an unhandled rejection.
    */
   import assert from 'node:assert/strict';
   import type { EventEmitter } from 'node:events';
@@ -15420,21 +15744,32 @@ In `smart-server.ts`:
   import { tmpdir } from 'node:os';
   import { join } from 'node:path';
   import { test } from 'node:test';
-  import { ConfigReloadWatcher } from '../config-reload-watcher.js';
+  import { ConfigReloadWatcher, type ConfigReloadDeps } from '../config-reload-watcher.js';
 
-  test("the watcher's reload event reaches _onReload: agent update, worker drain, session invalidation", async (t) => {
+  type Inner = { watcher: EventEmitter; _onReload: (u: unknown) => Promise<void> };
+
+  function makeWatcher(
+    t: { after(fn: () => void): void },
+    over: Partial<ConfigReloadDeps> = {},
+  ) {
     const dir = mkdtempSync(join(tmpdir(), 'reload-entry-'));
     t.after(() => rmSync(dir, { recursive: true, force: true }));
     const configFile = join(dir, 'smart-server.yaml');
     writeFileSync(configFile, 'agent:\n  maxIterations: 10\n');
     const seen: string[] = [];
+    const events: Record<string, unknown>[] = [];
     const watcher = new ConfigReloadWatcher({
       configFile,
-      log: () => {},
+      log: (e) => {
+        events.push(e);
+      },
       applyAgentUpdate: () => {
         seen.push('agent');
       },
       mirrorCfg: () => {},
+      snapshotConfig: () => () => {
+        seen.push('restored');
+      },
       drainWorkers: async () => {
         seen.push('drain');
       },
@@ -15442,12 +15777,15 @@ In `smart-server.ts`:
         seen.push('invalidate');
       },
       ragStores: {},
+      ...over,
     });
     // White-box: the inner ConfigWatcher (an EventEmitter) and the entry point.
-    const inner = watcher as unknown as {
-      watcher: EventEmitter;
-      _onReload: (u: unknown) => Promise<void>;
-    };
+    const inner = watcher as unknown as Inner;
+    return { watcher, inner, seen, events };
+  }
+
+  test("the watcher's reload event reaches _onReload: agent update, worker drain, session invalidation", async (t) => {
+    const { watcher, inner, seen, events } = makeWatcher(t);
     const reached: unknown[] = [];
     const entry = inner._onReload.bind(watcher);
     inner._onReload = (u) => {
@@ -15458,10 +15796,46 @@ In `smart-server.ts`:
     t.after(() => watcher.stop());
     inner.watcher.emit('reload', { maxIterations: 25 });
     assert.deepEqual(reached, [{ maxIterations: 25 }], 'the event reached the entry point');
+    // Called synchronously by the entry point, before its first await.
     assert.deepEqual(seen, ['agent', 'drain', 'invalidate']);
+    await new Promise((r) => setImmediate(r));
+    assert.ok(events.some((e) => e.event === 'config_reload_applied'));
   });
+
+  for (const which of ['drain', 'invalidation'] as const) {
+    test(`a failed ${which}: the entry point rejects, the previous config is restored, the event boundary logs config_reload_failed (D77)`, async (t) => {
+      const fail = async () => {
+        throw new Error(`${which} down`);
+      };
+      const { watcher, inner, seen, events } = makeWatcher(
+        t,
+        which === 'drain' ? { drainWorkers: fail } : { invalidateSessions: fail },
+      );
+      const label = which === 'drain' ? 'worker drain' : 'session invalidation';
+      // Directly: the rejection is the caller's (the server's hot-reload test awaits it).
+      await assert.rejects(inner._onReload({ maxIterations: 25 }), new RegExp(`${label}: Error: ${which} down`));
+      assert.ok(seen.includes('restored'), 'the pre-reload config is restored');
+      assert.ok(!events.some((e) => e.event === 'config_reload_applied'));
+      // Through the event: handled at the boundary — logged as failed, not unhandled.
+      events.length = 0;
+      let unhandled: unknown;
+      const onUnhandled = (r: unknown) => {
+        unhandled = r;
+      };
+      process.on('unhandledRejection', onUnhandled);
+      t.after(() => process.off('unhandledRejection', onUnhandled));
+      watcher.start();
+      t.after(() => watcher.stop());
+      inner.watcher.emit('reload', { maxIterations: 25 });
+      await new Promise((r) => setImmediate(r));
+      const failed = events.find((e) => e.event === 'config_reload_failed');
+      assert.match(String(failed?.error), new RegExp(label));
+      assert.ok(!events.some((e) => e.event === 'config_reload_applied'), 'never counted applied');
+      assert.equal(unhandled, undefined);
+    });
+  }
   ```
-- `mcp-yaml-vectorization.test.ts` — append (D38; `toolsBindingOf` and `IRag` are already imported there by Task 23):
+- `mcp-yaml-vectorization.test.ts` — append (D38, and S-5 / D75 on the deferred pass; `toolsBindingOf`, `IRag` and `type SmartServerConfig` are already imported there by Task 23; add `type ISkill`, `type ISkillManager` and the value `RagError` to the `@mcp-abap-adt/llm-agent` import — written `import { type IMcpClient, type IRag, type ISkill, type ISkillManager, RagError } from '@mcp-abap-adt/llm-agent';` now that it carries a value):
   ```ts
   test('D38: yamlBuilderConnect — a worker with its own store on the shared clients is filled at startup, before any session', async (t) => {
     const stub = await startStubOrSkip(t, ['EchoTool', 'GetTable']);
@@ -15499,9 +15873,60 @@ In `smart-server.ts`:
       await stub.close();
     }
   });
+
+  test('S-5 / D75: yamlBuilderConnect — a worker skill that cannot be written in the deferred pass fails start(), naming the skill', async (t) => {
+    const stub = await startStubOrSkip(t, ['EchoTool', 'GetTable']);
+    if (!stub) return;
+    const skill = { name: 'deploy', description: 'Deploy the app' } as unknown as ISkill;
+    const skillManager: ISkillManager = {
+      listSkills: async () => ({ ok: true, value: [skill] }),
+      getSkill: async () => ({ ok: true, value: skill }),
+      matchSkills: async () => ({ ok: true, value: [skill] }),
+    };
+    // Every store refuses `skill:` records; tool records are written as usual.
+    const makeRag: typeof constructionSeams.makeRag = async (input) => {
+      const rag = (await constructionSeams.makeRag(input)) as IRag;
+      const writerOf = rag.writer?.bind(rag);
+      if (writerOf) {
+        rag.writer = () => {
+          const w = writerOf();
+          if (!w) return w;
+          const upsertRaw = w.upsertRaw.bind(w);
+          w.upsertRaw = async (id, ...rest) =>
+            id.startsWith('skill:')
+              ? { ok: false as const, error: new RagError('skill store down') }
+              : upsertRaw(id, ...rest);
+          return w;
+        };
+      }
+      return rag;
+    };
+    const server = new SmartServer(
+      {
+        port: 0,
+        llm: { model: 'test-model' },
+        skipModelValidation: true,
+        mode: 'smart',
+        rag: { store: { type: 'in-memory' }, profiles: { tools: { variant: 'faceted' } } },
+        mcp: { type: 'http', url: stub.url },
+        subAgentConfigs: [
+          // own bound store, no own clients, no own mcp: → its skills go in after the deferred fill (D66)
+          { name: 'shared', config: { skipModelValidation: true, rag: { store: { type: 'in-memory' } }, skillManager } },
+        ],
+      } as unknown as SmartServerConfig,
+      { ...constructionSeams, makeRag },
+    );
+    try {
+      // fillSharedClientWorkerStores → fillToolsBinding's `skills` → vectorizeSkills
+      // rejects; nothing on the way catches it (spec S-5, D75).
+      await assert.rejects(server.start(), /skill "deploy" \(skill:deploy\).*skill store down/);
+    } finally {
+      await stub.close();
+    }
+  });
   ```
 
-Failure policy (spec §6.3) needs no extra code: `vectorizeMcpTools` counts a failing or throwing `listTools()` in `clientFailures`, sets `complete: false` and logs the summary through `this._fileLogger`; `HealthChecker` turns `complete: false` into `degraded` (main store); startup goes on. A thrown error (an `IToolRecordKey` id without `tool:`, mismatched descriptors, a binding its store does not carry) propagates: out of `_buildInfra` (main store, or a worker's startup build) and fails startup, as on the builder's path; out of `WorkerRegistry.build` on a lazy rebuild, failing that session's worker build like any worker build error — `buildSubAgent` drops the worker's cache entry first — whichever step of the construction failed: the server's fill, `subBuilder.build()` (a worker on its own `mcp:` is filled there by its builder) or the backfill — and closes the handle it built, so the next session constructs it again (and a configuration error stays loud). An incomplete fill is not retried (D41): it stays reported until a new instance is created — a reconnect's `toolsChanged` never writes a bound store (D46). `/health` reports the main catalog only (spec §6.3); a worker's fill is the logged summary line.
+Failure policy (spec §6.3) needs no extra code: `vectorizeMcpTools` counts a failing or throwing `listTools()` in `clientFailures`, sets `complete: false` and logs the summary through `this._fileLogger`; `HealthChecker` turns `complete: false` into `degraded` (main store); startup goes on. A thrown error (an `IToolRecordKey` id without `tool:`, mismatched descriptors, a binding its store does not carry, a skill that cannot be written — `fillToolsBinding`'s `skills`, spec S-5, D75) propagates: out of `_buildInfra` (main store, or a worker's startup build) and fails startup, as on the builder's path; out of `WorkerRegistry.build` on a lazy rebuild, failing that session's worker build like any worker build error — `buildSubAgent` drops the worker's cache entry first — whichever step of the construction failed: the server's fill, `subBuilder.build()` (a worker on its own `mcp:` is filled there by its builder) or the backfill — and closes the handle it built, so the next session constructs it again (and a configuration error stays loud). An incomplete fill is not retried (D41): it stays reported until a new instance is created — a reconnect's `toolsChanged` never writes a bound store (D46). `/health` reports the main catalog only (spec §6.3); a worker's fill is the logged summary line.
 
 - [ ] **Step 8: Run (gate: build + the new and neighbouring tests)**
 
@@ -15513,7 +15938,7 @@ node --import tsx/esm --test packages/llm-agent-server-libs/src/smart-agent/__te
 npm test --workspace @mcp-abap-adt/llm-agent-libs
 npm test --workspace @mcp-abap-adt/llm-agent-server-libs
 ```
-Expected: PASS. `tsc -b` with `strict` + `noUnusedLocals` proves the cumulative imports and members: every added name is used (`ToolCatalogStatus` by the field and methods, `fillToolsBinding`/`toolsBindingOf` by `fillBoundToolsStore`, `fillBoundToolsStore` by `_buildInfra`, `buildSubAgent` and `fillSharedClientWorkerStores`, `fillSharedClientWorkerStores` by `_buildInfra`, `fillsAfterBuild` by `buildSubAgent` (and the local `type WorkerLlmSet` import by `fillsAfterBuild`), `_configReload` read by the close function, `isToolCatalogReporter` by `mainToolCatalogStatus`, `connectedMcpServer` by `buildSubAgent`, `McpClientDescriptor` in `worker-registry.ts` by `WorkerLlmSet`, the handle type and `BuildSubAgentFn`); nothing named `fillWorkerToolsStores`, `_filledToolsBindings`, `_toolsFills` or `markToolsFilledByBuilder` exists (no memo, no refill — D41). The existing worker and reload tests (`retrieval-wiring.test.ts`, `worker-llm-keys.test.ts`, `worker-llm-cache.test.ts`, `smart-server-config-reload.test.ts`, `config-reload-weights.test.ts` — it calls `_onReload` and ignores the returned promise; the weights are still applied synchronously) pass unchanged: without a profile no store carries a binding, so the fill block does nothing; without descriptors a worker still gets `withMcpClients`, and the default namespace is what `withToolNamespace` threads when none is injected.
+Expected: PASS. `tsc -b` with `strict` + `noUnusedLocals` proves the cumulative imports and members: every added name is used (`ToolCatalogStatus` by the field and methods, `fillToolsBinding`/`toolsBindingOf` by `fillBoundToolsStore`, `fillBoundToolsStore` by `_buildInfra`, `buildSubAgent` and `fillSharedClientWorkerStores`, `fillSharedClientWorkerStores` by `_buildInfra`, `fillsAfterBuild` by `buildSubAgent` (and the local `type WorkerLlmSet` import by `fillsAfterBuild`), `_configReload` read by the close function, `isToolCatalogReporter` by `mainToolCatalogStatus`, `connectedMcpServer` by `buildSubAgent`, `McpClientDescriptor` in `worker-registry.ts` by `WorkerLlmSet`, the handle type and `BuildSubAgentFn`); nothing named `fillWorkerToolsStores`, `_filledToolsBindings`, `_toolsFills` or `markToolsFilledByBuilder` exists (no memo, no refill — D41). The existing worker and reload tests (`retrieval-wiring.test.ts`, `worker-llm-keys.test.ts`, `worker-llm-cache.test.ts`, `smart-server-config-reload.test.ts`, `config-reload-weights.test.ts` — Task 4M made it await `_onReload`: the weights are applied after the drain and the invalidation succeed) pass unchanged: without a profile no store carries a binding, so the fill block does nothing; without descriptors a worker still gets `withMcpClients`, and the default namespace is what `withToolNamespace` threads when none is injected.
 
 - [ ] **Step 9: Commit**
 
@@ -15821,7 +16246,7 @@ test('(17) fill: corpus with a worker that has its own rag AND its own clients �
 ```
 (`VectorRag.writer()` always carries `upsertPrecomputedRaw` and `clearAll`, so the loader's capability check passes on it. Tests (16) and (16b) are refused at resolution — every declared dimension, the main store's and each worker store's, is checked against the corpus before any store is created (D65); its message names the corpus's and each differing store's dimension. `ToolsCorpusLoader`'s own step 1 (Task 19A) still checks `expect.dimensions` before its clear, for a builder consumer's composition root. Tests (16c) and (16d) pin the order of Task 23A (D66) with a real clearing source: the corpus is loaded before the startup build vectorizes the skills into the store; a live fill is unaffected.)
 
-Append to `mcp-yaml-vectorization.test.ts` (D66 on the one path whose store is filled after its build — a worker on the shared clients under `yamlBuilderConnect`, filled by `fillSharedClientWorkerStores` right after the harvest; imports gain `mkdtempSync`, `rmSync`, `writeFileSync` from `node:fs`, `tmpdir` from `node:os`, `join` from `node:path`; `buildToolsCorpus`, `toolItemFromTool` into the `@mcp-abap-adt/llm-agent-libs` import (Task 23A added `mcpToolsVariants`; `toolsBindingOf` is there since Task 23); `VectorRag` into the `@mcp-abap-adt/llm-agent-rag` import (Task 23A added it with `SimpleRagRegistry`); `type IRetrievalEmbedder`, `type ISkill`, `type ISkillManager` and the value `TextOnlyEmbedding` into the `@mcp-abap-adt/llm-agent` import — written `import { type IMcpClient, type IRag, …, TextOnlyEmbedding } from '@mcp-abap-adt/llm-agent';` once it carries a value):
+Append to `mcp-yaml-vectorization.test.ts` (D66 on the one path whose store is filled after its build — a worker on the shared clients under `yamlBuilderConnect`, filled by `fillSharedClientWorkerStores` right after the harvest; imports gain `mkdtempSync`, `rmSync`, `writeFileSync` from `node:fs`, `tmpdir` from `node:os`, `join` from `node:path`; `buildToolsCorpus`, `toolItemFromTool` into the `@mcp-abap-adt/llm-agent-libs` import (Task 23A added `mcpToolsVariants`; `toolsBindingOf` is there since Task 23); `VectorRag` into the `@mcp-abap-adt/llm-agent-rag` import (Task 23A added it with `SimpleRagRegistry`); `type IRetrievalEmbedder` and the value `TextOnlyEmbedding` into the `@mcp-abap-adt/llm-agent` import (`type ISkill`, `type ISkillManager` and `RagError` are there since Task 23A's S-5 test)):
 ```ts
 test("D66: yamlBuilderConnect — a worker on the shared clients with fill: corpus and its own skill manager keeps its skills: the deferred fill loads the corpus, then the skills", async (t) => {
   const stub = await startStubOrSkip(t, ['EchoTool', 'GetTable']);
@@ -18994,9 +19419,9 @@ build as an injected strategy (an `IRag` wrapper, an `IReranker`, an LLM call st
 | B5 | an MCP client's `listTools` (client, adapter cache, registry, `tool-select`, `tool-loop`, `tools-rag-handle`, the server's bridge and snapshot); a slot that failed to connect | the client's tools left out (or stale), the request continues | `MCP_UNAVAILABLE` / the client's `McpError` code | make the server reachable; a consumer that wants to run on fewer servers builds that pipeline with those clients only |
 | B6 | an LLM step: `translate`, `expand`, `summarize`, `history-upsert`, the query preprocessors and enricher, the stepper's need-resolver / formalizer / planner sections, the DAG planner's empty plan | the original text / full history / a raw-prompt plan | the step's error (`LLM_ERROR`, `QUERY_EXPAND_ERROR`, `COORDINATOR_*`) | — (a consumer that wants untranslated text on failure injects its own handler / preprocessor) |
 | B7 | invalid tool-call JSON from the LLM | the tool ran with `{}` | the tool does not run; the LLM gets an error tool result (`TOOL_ARGUMENTS_JSON_PARSE_FAILED`) | — |
-| B8 | skills: a store / `listSkills` / a `SKILL.md` that cannot be read, a plugin loader error, an incompatible generation, an unknown `skills.type` | the skill (or all skills) left out | `SKILL_ERROR` / `SkillsIncompatibleError` / `build()` or start fails | fix the skill source; `strict: false` keeps its carry-forward, now an explicit opt-in (B12) |
+| B8 | skills: a store / `listSkills` / a `SKILL.md` that cannot be read, a plugin loader error, an incompatible generation, an unknown `skills.type`; a skill whose embedding or write into the tools store fails | the skill (or all skills) left out — for a failed skill write, a warning and `build()` / start succeeded | `SKILL_ERROR` / `SkillsIncompatibleError` / `build()` or start fails; a failed skill write rejects `build()`, the server's start (or a worker's construction) and `fillToolsBinding` with a `SkillError` naming the skill, the store's error as `cause` | fix the skill source, or the tools store / its embedder the error names; `strict: false` keeps its carry-forward, now an explicit opt-in (B12) |
 | B9 | `/health` with a configured component not working (`degraded`) | HTTP 200 | HTTP **503**; body unchanged; every RAG store probed; an MCP `value: false` or unanswered probe is not OK  | a load balancer that treated `degraded` as up now takes the instance out — intended |
-| B10 | server: persisted collections at session start, a corrupt session bundle / run-scope entry / artifact claim, the session-meta start record, a config reload's drain, the eager tool catalog, an explicit `--env` / `--secrets-dir`, a stepper role without an LLM config, `GET /v1/models` | the part skipped, an older state, a stub model, a 200 placeholder | an error: the session / request fails, `STATE_CORRUPT`, the reload reports failure, the start fails (exit 1, `ConfigValidationError`), 502 | fix the configuration or the state the error names |
+| B10 | server: persisted collections at session start, a corrupt session bundle / run-scope entry / artifact claim, the session-meta start record, a config reload's drain, the eager tool catalog, an explicit `--env` / `--secrets-dir`, a stepper role without an LLM config, `GET /v1/models` | the part skipped, an older state, a stub model, a 200 placeholder | an error: the session / request fails, `STATE_CORRUPT`, the reload reports failure (`config_reload_failed`; the previous config restored and kept live), the start fails (exit 1, `ConfigValidationError`), 502 | fix the configuration or the state the error names |
 | B11 | providers: `sap-aicore-llm` `getModels`, a malformed SSE line (OpenAI, Anthropic), a short or empty SAP AI Core embedding batch, a Qdrant collection whose info cannot be read | the configured model / a silently truncated stream / short or empty vectors / the dimension check skipped for good | `LLM_ERROR` / `EMBED_ERROR` / `UPSERT_ERROR` | — |
 | B12 | a skill plugin source whose `acquire` fails | carried forward by default (`strict: false` was the default) | the default is `strict: true`: the source's group fails and is reported in `omitted` | set `strict: false` (`skillPlugins.strict: false`) to keep the carry-forward, reported in `carried` |
 | B13 | a coordinator step naming an agent the registry lacks, under `HybridDispatch` | silently run by the fallback dispatcher | a failed step naming the agent — `COORDINATOR_STEP_FAILED` under `failPolicy: 'abort'`, a reported failed step under `'continue'`; a step naming no agent still goes to the fallback | register the agent, or plan the step without one |
@@ -19192,7 +19617,7 @@ Found while planning; all decided (spec §17.4) and written into the tasks above
 | D36 | *Superseded by D41 — withdrawn; its tests (11), (12) are replaced.* Only complete fills are memoized: a fill in flight is shared per binding; one resolving `complete: false` (index Result failure, `listTools` client failures) or aborted, or rejecting, is evicted, so the worker's next build or re-wire retries it — no timers, no retry loops. Builder-filled bindings are marked only when complete. Tests (11) index failure → success on the next build of the same binding, (12) `listTools` failure → recovery | Task 23A |
 | D37 | *Moved out by D45 — Task 22A and test (13) deleted; a separate issue (spec §15).* Single-flight worker construction (`WorkerRegistry.resolve`; the construction builds into its own map and publishes once; drain rule: a construction publishes only into the generation it started in — one overtaken by a drain closes what it built, its waiters resolve in the current generation, and `drain()` awaits it). A pre-existing 30.1.0 in-process race, not a RAG protocol: concurrent persistent-store writes stay the backend's. Tests: the registry unit test (Task 22A); (13) two simultaneous first sessions after a drain → one construction, one fill | Tasks 22A, 23A, 34 |
 | D38 | Workers on the shared clients are filled at startup on every path; on `yamlBuilderConnect` one pass right after the harvest (`fillSharedClientWorkerStores`). Startup filling concerns only `tools` (S8); runtime-changing collections are written by pipeline elements during work or stay 30.1.0 (goal 8) | Task 23A (+ the D38 test in `mcp-yaml-vectorization.test.ts`) |
-| D39 | The hot-reload test calls the server's reload entry point (`_configReload._onReload`, now awaitable) instead of `fs.watch` + debounce polling; `config-reload-entry.test.ts` pins that the watcher's `reload` event calls it | Task 23A |
+| D39 | The hot-reload test calls the server's reload entry point (`_configReload._onReload`, awaitable since Task 4M) instead of `fs.watch` + debounce polling; `config-reload-entry.test.ts` pins that the watcher's `reload` event calls it, and that a failed drain / invalidation is handled at that event boundary (D77) | Task 23A |
 | D40 | Tools a server removes at runtime (`notifications/tools/list_changed` → `toolsChanged`) stay in the store, as in 30.1.0; removal out of scope (spec note only). Read with D46: a bound store is not written on `toolsChanged` at all | spec §6.3, §15 — no code |
 
 Recommendations applied to the earlier open choices (the user may still overrule): ~~a persistent companion store with a worker-owned `rag` is refused at startup (Task 23)~~ — superseded by D50 (no companion stores); the internal `connectedMcpServer` adapter is kept — no `withMcpClients` change (Task 23A); the worker tool-naming fix is a CHANGELOG "Fixed" entry (Task 34).
@@ -19331,6 +19756,29 @@ Recommendations applied to the earlier open choices (the user may still overrule
 | U10 | a worker on the parent's clients / tools store kept; one `worker_uses_shared_clients` line per wire | Task 4M |
 
 The `closeFns` loop bug (spec §15) is tracked in fr0ster/llm-agent#330 — not in this plan.
+
+**Decided by the user on 2026-10-05 — the four choices made while writing U5–U8 in** (spec §17.24): U8 removes `SmartAgentConfig.toolUnavailableTtlMs` (`PUT /v1/config` with it → 400; the YAML key is the opt-in, no default TTL) — Task 4Q; U7 adds `batchFailures` to `/health`'s `toolCatalog` — Task 19B; U5's missing named agent fails the request only under `failPolicy: 'abort'`, a failed step under `'continue'` — Task 4K; U6 keeps the factory error as `LazyInitError`'s `cause` — Task 4P. Nothing in the tasks changes: each was already written that way.
+
+## Review findings on 2026-10-05 — fail-loud regressions in later tasks (spec §17.25)
+
+| # | Decision | Done in |
+|---|---|---|
+| D75 | A skill whose embedding or write into the tools store fails rejects `vectorizeSkills` (a `SkillError` naming it, `cause` the store's error); `build()`, `fillToolsBinding`'s `skills` and the server's start propagate it | Task 4L (S-5: `vectorizeSkills`, builder, server startup build); Task 23A (`fillToolsBinding`, the deferred shared-worker pass) |
+| D76 | A failed bulk write fails every record of its batch with the bulk error — no per-record retry; a failed settle write is reported | Task 11 (`writeAll`, `storeItems`, the bulk-write tests) |
+| D77 | A failed reload restores the previous config and rejects; the watcher's `reload` listener is the one boundary that handles it (`config_reload_failed`) | Task 4M (V6 — the watcher's final shape, `snapshotConfig`); Task 23A (holds the watcher, no change to it; the event-boundary and server failure tests) |
+| D78 | The root span's `error` status is set before the error chunk is yielded | Task 4F (`withRootStatus`; the early-closing consumer test) |
+
+**Plan-wide scan for the same class** (2026-10-05; every `catch`, `.catch(`, `?? []`, `return []`, "never throw", "best-effort", "fallback" in the plan's code blocks, and every task after 4F–4Q that touches a file a fail-loud task changed). Fixed: the three above (Task 23A's reload `.catch` → resolve; Task 11's bulk-write → per-record retry, plus its per-record `catch {}` that dropped the store's error and its unchecked settle write; `vectorizeSkills`' warn-and-resolve, extended through Task 23A). Kept, each for a stated reason:
+- Task 11 `embedAll`'s `catch` → `batchFailure` and the per-record embedding: U7 (the user kept the batch → per-item embedding, counted — Task 19B maps it to `batchFailures`); it retries the embedding, never a write.
+- Task 11 `deleteAll` / `removeItem` `catch`: a failed delete is counted and the item reported (`cleanup-failed: …`) or `remove` returns a `RagError` — F3, never success.
+- Tasks 15, 17 `index`: a per-item failure (indexer, `prepareItem`, `storeItems`) goes to `failedItems` — the `IndexReport` contract; Task 19 `indexToolsThroughProfile` turns a failed `index` into failed tools and `complete: false`, which `/health` answers 503 (D31, D72).
+- Task 12/13 `StagedRetrieval` rerank `catch` and Task 14 decomposer `catch`: converted into the returned `RERANK_ERROR` / `DECOMPOSE_ERROR` — errors, not substitutes (D71).
+- Task 18 `SapAiCoreRelevanceDecision` `catch`es: each becomes a `DecisionError` `Result` (`DECISION_AUTH`, `DECISION_UNAVAILABLE`, `DECISION_ABORTED`, …) — the `IRelevanceDecision` contract.
+- Task 22 `resolve-collection-profiles` `catch`: rethrows with the profile key in the message.
+- Task 23A `buildSubAgent` `catch`: drops the cache entry and closes the built handle, then rethrows (D47); Task 23A builder failure path: disposing the connection strategy is best-effort cleanup, the ORIGINAL error rethrown.
+- `?? []` in Tasks 15–17, 23A, 23B, 30–32: an optional field or capability that is absent (no `records`, no `groups`, no workers) — absent by design; the vectorize writerless-store `return undefined` (Task 19) is the same, as in 30.1.0.
+- Test-only `catch`es (Task 4B's no-re-export guard skipping a directory a later task creates; a JSON `reject` in a test helper) and Task 31's `evaluateRetrieval` counting a failed query (a measurement harness reports it as `errors`).
+Not fixed here, for the user: the **30.1.0** `vectorizeMcpTools` path (unbound stores, `vectorize-mcp-tools.ts` ~310–336, existing code no task rewrites) answers a failed `upsertManyPrecomputedRaw` by writing tool by tool — the same pattern D76 removes from the record writer. It is not in the spec's §10.5 inventory, so changing it needs a decision (spec §17.25 records D76 for the record writer only).
 
 ## Self-review (done while writing)
 
