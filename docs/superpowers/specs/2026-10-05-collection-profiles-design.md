@@ -313,7 +313,7 @@
 >   skill (D75, S-5, B8); a failed bulk write fails its records and is never retried record by
 >   record (D76, §3.3); a reload whose drain or invalidation fails restores the previous config and
 >   rejects, handled once at the watcher's event boundary (`config_reload_failed`) (D77, V6);
-  reloads run one at a time — each snapshots only after the previous one settled (D80);
+>   reloads run one at a time — each snapshots only after the previous one settled (D80);
 > - **the root span's `error` status** is set before the error chunk is yielded, so a consumer
 >   that stops at that chunk (`process()` does) still sees it (D78, §10.5.2);
 > - **confirmed by the user:** `SmartAgentConfig.toolUnavailableTtlMs` removed, `PUT /v1/config`
@@ -333,6 +333,14 @@
 > time.** The watcher queues each complete reload transaction (snapshot → agent update → drain +
 > invalidation → weights or restore); the next one starts only after the previous one settled,
 > so a failed reload's restore can never overwrite a later reload's config (§10.5.9 V6).
+>
+> **Amended 2026-10-06 (20)** for the user's decisions (§17.28 — D80 extended, D79 confirmed):
+> - **one queue for every config change.** The server owns one `ConfigTransactionQueue` and hands
+>   the same instance to the file reload (V6) and to `PUT /v1/config` (V10). A `PUT` takes its
+>   snapshot only after the previous transaction settled, applies, awaits the worker drain and the
+>   session invalidation, and when either fails restores the previous config and answers **500**
+>   (`server_error`, naming the failure) — the update is not applied (§10.5.9 V10, §13 B17);
+> - **`ToolCatalogStatus.writeFailure?: string`** (D79) — approved by the user (§3.8).
 >
 > Every path that creates or refreshes a tools store is audited in §6.4. Earlier open choices are
 > settled by the recommendations applied in §17.9; the user may still overrule them.
@@ -402,7 +410,7 @@
 - The retrieval half **is** a 30.1.0 `IRetrievalStrategy`, so every path that already honours
   per-store strategies gets it with no new wiring.
 - **Nothing changes by default** on the success path. No profile set → 30.1.0 behaviour, byte for
-  byte (golden test). Failure paths change everywhere: they fail loud (§10.5, §13 B1–B16).
+  byte (golden test). Failure paths change everywhere: they fail loud (§10.5, §13 B1–B17).
 - **Everything is a strategy (DI).** A profile is a **composition** of injected strategy
   instances: indexing, candidate pool, collapse, query decomposition (optional), reranker,
   final cut. No booleans where a strategy is the choice. YAML only maps names to instances, in the builder.
@@ -1217,7 +1225,7 @@ export function retrievalEmbedderOf(rag: IRag): IRetrievalEmbedder | undefined;
 | **`SkillLoadResult.carried?: { sourceId, reason }[]`** — new optional field | D74 S-9: a source whose `acquire` failed and whose prior data was carried forward (`strict: false`) is reported with its reason instead of discarded | `@mcp-abap-adt/llm-agent` (`interfaces/skills-rag.ts`, beside `SkillLoadResult`) |
 | `FallbackLlmCallStrategy` constructor gains an optional second argument `{ fallbackCount?: ICounter }` — additive (U1, §10.5.12) | the user's decision of 2026-10-05: the opt-in fallback stays, and each fallback must be countable. The log event is always there; a counter needs a metrics backend the strategy cannot build itself, so the consumer injects one (`ICounter` is the existing metrics contract — no new interface). The first argument (the logger) is unchanged, so every existing call compiles | `@mcp-abap-adt/llm-agent` (`policy/fallback-llm-call-strategy.ts`, where the class lives) |
 | `ToolCatalogStatus.batchFailures?: number`, `IndexReport.batchFailures?: number`, `HealthComponentStatus.toolCatalog.batchFailures?: number` — additive (U7, §10.5.12) | the user's decision of 2026-10-05: the batch → per-tool embedding retry stays, and a failed batch is counted instead of named only in a log line. `ToolCatalogStatus` carries it to the health checker, which copies it into `HealthComponentStatus.toolCatalog` beside `records` / `profile`; `IndexReport` carries it from a binding's `index` to the tools summary (the profile path writes through `storeItems`, whose `batchFailure` no caller could see). Absent = no batch failed | `@mcp-abap-adt/llm-agent` (`interfaces/tool-catalog.ts`, `interfaces/health.ts`; the collection-profile contracts beside `IndexReport`) |
-| `ToolCatalogStatus.writeFailure?: string` — additive (D79, §10.5.4 R14) | the user's rule of 2026-10-06 ("no fallback anywhere"): the 30.1.0 tools path no longer retries a failed bulk write tool by tool, so its catalog can now be incomplete because the store refused the batch. `failed` names the tools but not why, and a reporter's consumer (`IToolCatalogReporter`) sees only the status, not the log; the field carries the store's error (`bulk write failed: <error>`). `/health` is not widened: `complete: false` already answers 503 (D72). Absent = the bulk write did not fail (or none was made) | `@mcp-abap-adt/llm-agent` (`interfaces/tool-catalog.ts`, where `ToolCatalogStatus` lives) |
+| `ToolCatalogStatus.writeFailure?: string` — additive (D79, §10.5.4 R14) — **decided by the user** on 2026-10-06 (§17.28) | the user's rule of 2026-10-06 ("no fallback anywhere"): the 30.1.0 tools path no longer retries a failed bulk write tool by tool, so its catalog can now be incomplete because the store refused the batch. `failed` names the tools but not why, and a reporter's consumer (`IToolCatalogReporter`) sees only the status, not the log; the field carries the store's error (`bulk write failed: <error>`). `/health` is not widened: `complete: false` already answers 503 (D72). Absent = the bulk write did not fail (or none was made) | `@mcp-abap-adt/llm-agent` (`interfaces/tool-catalog.ts`, where `ToolCatalogStatus` lives) |
 | **`IToolAvailabilityPolicy`** + **`HeuristicToolAvailabilityPolicy`**, `SmartAgentDeps.toolAvailabilityPolicy?`, `SmartAgentBuilder.withToolAvailabilityPolicy(policy)`, `PipelineContext.toolAvailabilityPolicy?` — new; **`SmartAgentConfig.toolUnavailableTtlMs` removed** — **breaking** (U8, migration line 74) | the user's decision of 2026-10-05: blocking a tool on a text heuristic silently shrinks the tool set, so it is a strategy the consumer injects, and with none injected nothing is blocked. One method (`onToolError(toolName, errorText)` → a TTL or nothing) is the minimum: the per-session block state stays in the existing internal `ToolAvailabilityRegistry`. The 30.1.0 heuristic ships as `HeuristicToolAvailabilityPolicy({ ttlMs })` (ttl required — no tuned number, D55). The TTL lived in `SmartAgentConfig` only for this; config is the builder's, the TTL is the policy's | `@mcp-abap-adt/llm-agent-libs` — the only package that calls it (contract placement: where used); the server injects it from YAML |
 | `LazyOptions.fallback` removed — **breaking** (U6, migration line 73) | the user's decision of 2026-10-05: an init failure answered by a substitute instance is the pattern the goal removes; unused in the repo | `@mcp-abap-adt/llm-agent-libs` (`utils/lazy.ts`) |
 
@@ -3400,10 +3408,12 @@ Every item below was re-read against the code on 2026-10-05 (`493fcf17`; lines m
   - **an honest empty answer** — a store query that succeeds with no hits, smart tool selection
     whose store answered and matched no tool;
   - **best-effort cleanup on shutdown or after a request** (the close / logoff / dispose catches in
-    `stop-all.ts`, `session-graph-factory.ts`, `worker-registry.ts`, `config-route-handler.ts`,
+    `stop-all.ts`, `session-graph-factory.ts`, `worker-registry.ts`,
     `smart-server.ts`, `pg-pool.ts`, `http-mcp-server.ts`, `stdio-mcp-server.ts`,
     `build-session-mcp-clients.ts`): the work they guard is already done or abandoned; a failed close
-    has nobody left to answer, and blocking a shutdown on it would turn one failure into two;
+    has nobody left to answer, and blocking a shutdown on it would turn one failure into two.
+    `config-route-handler.ts`'s session-invalidation catch is **not** one of them: the drain and
+    the invalidation are the `PUT /v1/config` transaction's verdict (V10, D80);
   - **diagnostics-only catches** — `llm-reranker.ts` usage metering, the throttle observer
     (`llm/throttle.ts`): a broken diagnostic is not a broken request (the request's own result is
     untouched);
@@ -3585,10 +3595,11 @@ Layer: framework (libs) for S-1–S-9, server for S-10.
 | V3 | `controller/run-scope.ts` (~79; N24) | a malformed terminal entry skipped | `STATE_CORRUPT`; (`gcTerminal`'s catch at ~101 is cleanup — kept) |
 | V4 | `controller/artifacts.ts` (~261) | a claim without a numeric `writeOrdinal` silently dropped | `STATE_CORRUPT` naming the claim |
 | V5 | `smart-server.ts` (~3112; N25) | session metadata `recordSessionStart` / `recordSessionEnd` throws → swallowed | `recordSessionStart` failing fails the request (500 `jsonError`); `recordSessionEnd` is end-of-request cleanup — kept, but logged (`session_meta_end_failed`) |
-| V6 | `config-reload-watcher.ts` (~132; N26) | a drain / invalidate rejection logged, the reload counted applied | the reload reports failure and the old config stays live (D77): the reload entry point (`_onReload`) applies the agent update, runs the drain and the invalidation, and when either rejects it **restores** the agent config and the server's mirror (`cfg.agent`, `cfg.prompts`) to the values captured before the reload, does not apply the RAG weights, and **rejects** with an error naming the drain and / or invalidation failure. The file watcher's `reload` listener (an event emitter cannot await) is the boundary that handles the rejection: it logs `config_reload_failed` with the error through the server's log sink — nothing reports the reload applied; `config_reload_applied` is logged only on success. No later code path catches the rejection and resolves. **Reloads are serialized (D80):** the entry point queues each complete reload transaction — the snapshot, the agent update and mirror, the drain and the invalidation, then the weights or the restore — behind the previous one, and starts it only after that one **settled** (resolved or rejected); so a transaction's snapshot is always the config the previous transaction left (applied, or restored). A failed transaction still rejects its own caller and is reported individually (`config_reload_failed`, one per failed reload); it never blocks the reloads queued after it. `ConfigWatcher` debounces file events but cannot await its listeners, so the queue is the watcher's, not the emitter's. `PUT /v1/config` does not pass through this entry point (`handleConfigUpdate`, `http/config-route-handler.ts`, awaits its own drain and invalidation per request) and is not in this queue |
+| V6 | `config-reload-watcher.ts` (~132; N26) | a drain / invalidate rejection logged, the reload counted applied | the reload reports failure and the old config stays live (D77): the reload entry point (`_onReload`) applies the agent update, runs the drain and the invalidation, and when either rejects it **restores** the agent config and the server's mirror (`cfg.agent`, `cfg.prompts`) to the values captured before the reload, does not apply the RAG weights, and **rejects** with an error naming the drain and / or invalidation failure. The file watcher's `reload` listener (an event emitter cannot await) is the boundary that handles the rejection: it logs `config_reload_failed` with the error through the server's log sink — nothing reports the reload applied; `config_reload_applied` is logged only on success. No later code path catches the rejection and resolves. **Reloads are serialized (D80):** the entry point queues each complete reload transaction — the snapshot, the agent update and mirror, the drain and the invalidation, then the weights or the restore — behind the previous one, and starts it only after that one **settled** (resolved or rejected); so a transaction's snapshot is always the config the previous transaction left (applied, or restored). A failed transaction still rejects its own caller and is reported individually (`config_reload_failed`, one per failed reload); it never blocks the reloads queued after it. `ConfigWatcher` debounces file events but cannot await its listeners, so the emitter cannot order them. The queue is the **server's** (`ConfigTransactionQueue`, injected as `ConfigReloadDeps.transactions`, D80 extended by the user): `PUT /v1/config` runs its transactions in the same queue (V10), so a reload and a `PUT` never overlap either |
 | V7 | `tools-rag-handle.ts` (~90; N28) | the eager catalog load fails → logged, startup continues | the start fails with the `McpError` |
 | V8 | `llm-agent-server/src/smart-agent/cli.ts` (~146; N30) | an explicit `--env` file or `--secrets-dir` that cannot be read → a warning, startup continues | exit code 1 with the path and the reason (a missing implicit `.env` stays ignored: absent by design) |
 | V9 | `build-stepper-root.ts` (~97, ~234; N31) | a role with no resolvable LLM config → a stub OpenAI model | `ConfigValidationError` naming the role |
+| V10 | `http/config-route-handler.ts` (`handleConfigUpdate`; D80 extended, decided by the user on 2026-10-06) | `PUT /v1/config`: a failed session invalidation swallowed (200 with the new config); a failed worker drain escapes to the server's catch-all 500 with the new config left applied; a `PUT` and a file reload (or two `PUT`s) overlap, so one's restore can overwrite the other's config | the `PUT` is one transaction in the server's config queue (`IConfigUpdateTarget.transactions` — the same `ConfigTransactionQueue` the reload watcher uses, V6). Validation stays before the queue (JSON, the whitelist, model resolution and the model probe apply nothing, so a slow probe never holds a reload). In the queue — so only after the previous transaction settled — it takes its snapshot (`IConfigUpdateTarget.snapshotConfig`: the held role LLMs and `cfg.agent`), applies the server's state (the held LLMs through the setters, the mirror), then awaits the drain and the invalidation (both settle, one verdict, as V6). When either fails it restores the snapshot and answers **500** `jsonError('config update failed, the previous config is kept — <worker drain: …; session invalidation: …>', 'server_error')` — the status and type of the route's own server-side failure (a model resolver error) and of the server's catch-all; nothing of the update is applied. Only on success does it apply the update to the startup agent (`reconfigure`, `applyConfigUpdate`) and answer 200 with the config read inside the transaction. The startup agent changes last because `SmartAgent` has no getter for its LLM instances and `reconfigure` cannot unset a role, so a restore of it could not be exact; the drain, the invalidation and the rebuilds read only the held LLMs and `cfg.agent` |
 
 Plus M9–M11 (§10.5.3), R10 (§10.5.4), L7 (§10.5.6), S-10 (§10.5.8). Layer: server.
 
@@ -3729,7 +3740,8 @@ concurrency (D13) and belong to no layer of this design.
 - framework — `llm-agent-mcp`: M1–M3b; the store kit, `llm-agent-rag` and the store / embedder
   packages: R1–R3, R11, R12; libs: R9, K1, K2, C1–C8, S-3–S-9, H2–H4, M12; LLM providers: L5, L6;
   contracts: `PIPELINE_FAILURE_CODES`, `SkillLoadResult.carried`;
-- llm-agent-server: M9–M11, R10, L7, S-10, V1–V9, H1;
+- llm-agent-server: M9–M11, R10, L7, S-10, V1–V10 (V6 and V10 share the server's one
+  config-transaction queue, D80), H1;
 - pipelines in llm-agent: D70 (executor, `DefaultPipeline`, `pipelineToStream`, `SmartAgent`), N2,
   N3, N13, the tool-loop context strategies, M4–M8, R4–R8, K3, K4, L1–L4, S-1, S-2;
 - the consumer: its degraded modes (above).
@@ -3976,7 +3988,7 @@ again, written either way.
 
 - **No profile configured → no change on the success path.** Same records (golden test), same
   stages, same k semantics, same `RerankHandler` precedence, same YAML. A **failure** no longer
-  passes for a success anywhere (fail loud, the behaviour table B1–B16 below).
+  passes for a success anywhere (fail loud, the behaviour table B1–B17 below).
 - **This is a major release — breaking** (D57–D59, the goal's decision "No deprecated aliases").
   Old names are not kept; no package re-exports another package's names — neither the names
   this PR moves nor the pre-existing re-exports (S12, §11.4: lines 52–69); `ITextLogger`, a
@@ -4153,6 +4165,7 @@ again, written either way.
   | B14 | `lazy`'s factory fails while a `fallback` was given (U6) | calls went to the fallback instance | the init error reaches every call (the option is removed, migration line 73) | wrap the proxy in your own substitute if you want one |
   | B15 | a tool error whose text matches "not found", "permission", … (U8) | the tool blocked for the session for 10 min by default ("temporarily unavailable") | nothing blocked unless a policy is injected; the error reaches the LLM as the tool result, as every tool error does | inject `HeuristicToolAvailabilityPolicy({ ttlMs })` (or set `agent.toolUnavailableTtlMs` in the server YAML) for 30.1.0's blacklist; `PUT /v1/config` with `toolUnavailableTtlMs` now answers 400 (the key never changed a live agent) |
   | B16 | a bulk write of the startup tool catalog into an unbound tools store (`upsertManyPrecomputedRaw` answers `ok: false` or throws, D79) | the tools written again one by one; the catalog complete when those writes succeeded | no per-tool write: the catalog is incomplete (`complete: false`, every tool of the batch in `failed`, `writeFailure: 'bulk write failed: <error>'`), the summary log line names it, `/health` answers 503 | fix the store the error names; a store that cannot take a bulk write does not implement `upsertManyPrecomputedRaw` (the per-record path is then the only one) |
+  | B17 | `PUT /v1/config` whose worker drain or session invalidation fails (D80, V10) | a failed invalidation swallowed: 200 with the new config; a failed drain: 500 from the server's catch-all, the new config left applied | **500** `server_error` naming the failure (`config update failed, the previous config is kept — …`); the previous config restored (the held models, the agent fields, the server's mirror), nothing of the update applied. A `PUT` also waits for a reload or another `PUT` in flight (one queue) | fix what the error names and send the `PUT` again; `GET /v1/config` shows the live config |
 - **Named compositions carry no tuned numbers** (D55): `mcpToolsVariants` has `baseline`,
   `faceted` and `faceted-rerank`; pools and cuts default to the caller's k; `faceted-rerank`
   requires `poolItems`. New in this release, so nothing released changes.
@@ -4535,7 +4548,17 @@ again, written either way.
   when B is queued → B's snapshot, update and drain start only after A settled; A's drain
   rejecting → A rejects (`config_reload_failed` for A), then B runs → the live config and the
   server's mirror are B's, the RAG weights are B's; a failed reload followed by a successful one →
-  the first reported failed, the second applied (`config_reload_applied` once) (D80). `process()` on a pipeline that fails → the root span's
+  the first reported failed, the second applied (`config_reload_applied` once) (D80).
+  `PUT /v1/config` and a reload on one `ConfigTransactionQueue` (`handleConfigUpdate` over a
+  recording target, the watcher over the same server state): a reload whose drain is pending, then
+  a `PUT` → the `PUT`'s snapshot and drain start only after the reload settled; the reload's drain
+  rejecting → the reload restored and reported, then the `PUT` applied (200, its config live);
+  the reverse — a `PUT` whose drain is pending, then a reload; the `PUT`'s drain rejecting → 500,
+  then the reload applied (its config live, not overwritten by the `PUT`'s restore); a `PUT` whose
+  drain rejects, and one whose invalidation rejects → 500 `server_error` naming it, the mirror and
+  the held models the previous ones, the startup agent untouched; a real server with a
+  `configFile` → a `PUT` sent while a reload's drain is held answers only after the reload
+  settled (D80, V10). `process()` on a pipeline that fails → the root span's
   status is `error`; a consumer that reads the stream only to the error chunk and closes it
   (`return()` on the iterator) → the root span is `error` and ended (D78).
 - The 30.1.0 tools path's bulk write (D79): `vectorizeMcpTools` on an unbound store whose
@@ -5108,4 +5131,16 @@ config that no file ever held.
 
 | # | Decision | Where |
 |---|---|---|
-| D80 | **Config reloads run one at a time.** The watcher keeps one queue (a promise chain) of complete reload transactions; the entry point (`_onReload`, D39) appends the transaction and returns its own promise. A transaction takes its snapshot only after the previous one settled, so every restore returns to the config the previous transaction left. A failed transaction rejects its own promise and is reported on its own (`config_reload_failed`); the queue continues past it — a failure never blocks later reloads. `PUT /v1/config` is a separate path (`handleConfigUpdate`) and does not join this queue. Extends D77 | §10.5.9 V6, §14.1 |
+| D80 | *Extended by the user's decision of 2026-10-06 (§17.28): the queue is the server's and `PUT /v1/config` joins it (V10).* **Config reloads run one at a time.** The watcher keeps one queue (a promise chain) of complete reload transactions; the entry point (`_onReload`, D39) appends the transaction and returns its own promise. A transaction takes its snapshot only after the previous one settled, so every restore returns to the config the previous transaction left. A failed transaction rejects its own promise and is reported on its own (`config_reload_failed`); the queue continues past it — a failure never blocks later reloads. `PUT /v1/config` is a separate path (`handleConfigUpdate`) and does not join this queue. Extends D77 | §10.5.9 V6, §14.1 |
+
+### 17.28 Decided by the user on 2026-10-06 — one queue for every config change (D80 extended); `writeFailure` approved
+
+D80 ordered file reloads in the watcher and left `PUT /v1/config` outside: a `PUT` could snapshot a
+reload's provisional config, and a failed reload's restore could overwrite a `PUT` applied in
+between (or the reverse). The `PUT` itself swallowed a failed invalidation (200) and, on a failed
+drain, left the update applied behind the catch-all's 500.
+
+| # | Decision | Where |
+|---|---|---|
+| D80 (extended) | **One queue for every config change.** The server owns one `ConfigTransactionQueue` (server-libs `smart-agent/config-transaction-queue.ts`, internal, not exported) and injects the same instance into the reload watcher (`ConfigReloadDeps.transactions`) and the `PUT` route (`IConfigUpdateTarget.transactions`). It lives in the server because the server is the one object both reach and the owner of every piece of state a transaction changes (the held LLMs, `cfg.agent` / `cfg.prompts`, the worker cache, the sessions): the watcher exists only with a `configFile` and is built inside `start()`; the route handler is a stateless function handed `IConfigUpdateTarget` per request; a module-level queue would be shared by every `SmartServer` in a process. `PUT /v1/config` validates outside the queue, then runs one transaction: snapshot → the server's state applied → drain + invalidation → on success the startup agent and 200; on a failure the snapshot restored and **500** `server_error` naming it. A failed transaction (a reload or a `PUT`) rejects or answers only its own caller and never blocks the next one | §10.5.1, §10.5.9 V6, V10, §11.1, §13 B17, §14.1 |
+| D79 (confirmed) | `ToolCatalogStatus.writeFailure?: string` — the framework contract in `@mcp-abap-adt/llm-agent`, set by libs' `vectorizeMcpTools` — **approved by the user** | §3.8, §10.5.4 R14 |
