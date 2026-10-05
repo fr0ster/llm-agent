@@ -818,6 +818,7 @@ handling, not a concurrency protocol: no generations, no locks, D13 stands).
   pending; retries of the deleted ones are no-ops. The item's report follows step 5.
 - **Tested:** replacement → a failed stale delete → not indexed, id listed → retry `index` → the
   record is gone, list cleared; then `remove` leaves nothing in the store (§14.1).
+- **Duplicate item ids in one batch are rejected** (D61): an `index` batch holding the same owner-qualified item id more than once (two versions of one item) returns `ok: false` with a `RagError` naming each duplicate (`user:A/case-42 (2×)`), checked over the whole batch before any store read or write — nothing is written, in any partition (no partial writes). Unchecked, both versions read the same old canonical and the losing version's records end up listed nowhere.
 - **Concurrent writers of the same item** — in one process or in several (replicas sharing a
   persistent store) — are the store backend's responsibility, not the library's. Two concurrent
   `index` calls for one item may interleave; the library adds no lock and gives **no** item-level
@@ -4335,3 +4336,9 @@ Migration: 18 more lines (§13, lines 52–69; 69 with S12).
 | 2 | libs' dead internal files `adapters/index.ts`, `interfaces/model-resolver.ts` | **deleted** (no importer, no `exports` path — verified again); no migration line | §11.4, §13 |
 | 3 | `SmartAgentHandle`, libs' `IStageHandler` (specialisations declared in libs) | **kept** (rule (b)) | §11.4 |
 | 4 | libs' internal, non-public shims | **kept** (rule (a)) | §11.4 |
+
+### 17.19 Review finding on 2026-10-05 — duplicate item ids in one batch
+
+| # | Decision | Where |
+|---|---|---|
+| D61 | **An `index` batch with a duplicate owner-qualified item id is rejected whole.** Same owner + item id = same canonical record id. Two versions of one item in one batch both read the same old canonical (step 1 of §3.3), and the version whose canonical is written last lists only its own records: the other version's extra records (e.g. a `note` the replacement no longer has) are listed nowhere, so no later `index` or `remove` deletes them. The binding checks the whole batch after preparing the items and **before any store read or write**; duplicates → `ok: false` with a `RagError` naming each duplicate and its count — nothing is written in any partition (the shared-items binding writes several, so the check is over the batch, not per store). The record writer runs the same check first and reads or writes nothing on a duplicate. Same item id under another owner is a different item. Tested: two versions of one item → rejected, store untouched (no read, no write); the note-record + replacement scenario leaves no untracked record; a duplicate after an item of another partition → that partition is not written either. Failure handling, not a concurrency protocol (D13 stands) | §3.3 |
