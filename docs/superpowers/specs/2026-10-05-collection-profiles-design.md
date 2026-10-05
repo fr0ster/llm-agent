@@ -1328,7 +1328,9 @@ merge hits
   → rerank items on their item text (optional, §4.6); check the result (§4.8)
   → hydrate in rank order from the CANONICAL record (§4.6); drop + count orphans;
     each orphan is replaced by the next overflow item (ranked like the pool, then
-    hydrated) until k items or the overflow is spent — orphans never use up the pool (D67)
+    hydrated) until k items or the overflow is spent — orphans never use up the pool (D67);
+    the replacements merge with the pool's items by DESCENDING score (same query → one
+    scale; `keepStage1Top` pins keep their head places)
   → cut (IItemCut) over hydrated items, once: at most min(k, cut.limit(k)) items
     (with a decomposer this runs per sub-query and the results are merged, §4.5)
 ```
@@ -1456,9 +1458,23 @@ no record carries generated text any more (D50). For each collapsed item:
   So `StagedRetrieval` keeps what it fetched beyond the pool (the overflow, stage-1 order). When the
   ranked pool hydrates to fewer than k items, the next overflow items — as many as are missing —
   are ranked like the pool (the reranker scores them against the **same** query, so one scale
-  holds, D28; no `keepStage1Top` pins, which are the pool's stage-1 places) and hydrated, appended
-  after the pool's items; this repeats until k items or the overflow is spent. Then the one cut.
-  No new query; the run's rerank outcome is the most severe of its reranker calls.
+  holds, D28; no `keepStage1Top` pins, which are the pool's stage-1 places) and hydrated; this
+  repeats until k items or the overflow is spent. No new query; the run's rerank outcome is the
+  most severe of its reranker calls.
+- **Replacements merge by score, never appended (D67).** A replacement can outscore a surviving
+  pool item (the reranker scores it higher, or, without a reranker, a per-source pool left a
+  higher stage-1 item of one source in the overflow). Appended after the pool's items, the list
+  would not be descending, and `ScoreFloorCut` — which stops at the first score below its floor —
+  would drop the higher-scored replacement. So, before the one cut, the surviving pool items and
+  the replacements are merged into one list by **descending score**:
+  - with a reranker: the reranked scores — every call scored against the **same** query, so they
+    are comparable (§3.9, D28); without one: the stage-1 scores — the same query, comparable too;
+  - `keepStage1Top` pins (when configured) keep their pinned head places, in stage-1 order; the
+    merge orders only the rest (pins + `ScoreFloorCut` is rejected anyway, §4.7);
+  - scores of different scales are never compared: if one reranker call of the run fell back to
+    stage 1 (`onFailure: 'stage1'`) and another did not, the replacements stay after the pool's
+    items in rank order (never with `ScoreFloorCut`, which needs `onFailure: 'error'`, §4.7);
+  - ties keep their order (a stable sort: the pool's item first). Then the one cut.
   - Why not validate the pool before reranking: that reads the canonical record of every pooled
     item whose canonical was not among the candidates — the reads the `itemText` shortcut exists
     to avoid (below). The replacement reads and reranks only when orphans leave the result short.
@@ -3869,7 +3885,11 @@ again, written either way.
   through; reranker-text order; **hydration: only a secondary record matches → the full payload
   (canonical text + `data`) is returned**; a missing canonical record → dropped, counted, span
   `orphans`; orphans do not use up k — **nor the pool** (D67): with the default pool (omitted),
-  k=1, a top orphan and a valid second fetched item → the valid item is returned; **the reranker reads the item text, never a non-canonical
+  k=1, a top orphan and a valid second fetched item → the valid item is returned; **the replacements
+  merge by descending score** (D67): k=2, an orphan and a surviving item scored 0.1 in the pool, an
+  overflow replacement scored 0.9, `ScoreFloorCut({ minItems: 0, maxItems: 2, minScore: 0.5 })` →
+  the 0.9 item is returned (with a reranker and with stage-1 scores); with `keepStage1Top: 1` the
+  pinned item stays at the head and the replacement is merged into the rest by score; **the reranker reads the item text, never a non-canonical
   record's own text**; a non-canonical hit without `itemText` → the canonical record is read for
   its text; `getById`
   result outside the identity filter dropped; user partition skipped without `userId`; both failure
@@ -4563,4 +4583,4 @@ Migration: 18 more lines (§13, lines 52–69; 69 with S12).
 | D64 | **An injected MCP connection strategy is owned by the agent / pipeline it is injected into** (decided by the user). `handle.close()` disposes it, and so does a `build()` that fails (it has no handle to close it then, §6.3, D47); the consumer must not reuse it after either — it injects a new one into the next builder. Stated in `docs/INTEGRATION.md` (`IMcpConnectionStrategy` → *Builder usage*) and in the `withMcpConnectionStrategy` doc comment. Before, a failed build left an injected strategy alive; no contract changes (`IMcpConnectionStrategy.dispose` is already optional and called by `close()`) | §6.3, §14.1 |
 | D65 | **A corpus is checked against every tools store it is bound to, before any store is created.** One `corpus` source binds the main store and every worker store the server builds, each from its own store config (`_workerRagInput`), but its expectation carried only the main store's `dimension`. Now the server checks the corpus's vector dimension against the main tools store's declared `dimension` **and each worker's own** when it resolves `fill` — before any store exists — and fails startup naming each differing store and both dimensions. Chosen over a per-store check at each store's creation: that keeps each store untouched until its own checks pass, but would clear and load the main store before a worker's mismatch failed the start; at resolution nothing is touched anywhere. The other identity checks (`profile`, `embedder`, the binding's `profileName`) are server-wide — one `fill`, one profile — and still run at each store's creation, before its clear. Test: main dimension 2, a worker store 3, corpus 2 → startup fails naming the worker; zero clears and writes in every store | §3.10, §6.2, §14.1 |
 | D66 | **A store is filled before skills are vectorized into it, on every path.** Skills coexist in the tools store (D4, goal 8, §7.7) and the builder writes them during `build()`; the server's fill ran after the startup `build()` on the ready-client / plugin / injected-seam paths, and the `corpus` source clears the store — erasing them. Least invasive order, no new builder behaviour: the server fills the main store right after the clients are resolved, before the startup build; the builder's own auto-connect already fills before skills; a worker's construction already fills before `subBuilder.build()`; the one store filled after its build (a worker on the shared clients under `yamlBuilderConnect`, D38) is built with `withSkillManager(m, { vectorize: false })` and its skills are vectorized right after the deferred fill (`FillToolsBindingOptions.skills`, libs, new in this PR). Rejected: running the fill inside `build()` on the `withMcpClients` path (changes §6.1's "no vectorization there" for every consumer). Tests: corpus fill + a skill manager on the ready-client path and on the deferred shared-worker path → skill records searchable after start; a live fill unaffected | §6.3, §6.4, §7.7, §14.1 |
-| D67 | **Orphans never use up the candidate pool.** `runOne` cut the collapsed units to `pool.items(k)` before any canonical record was read, so with the default `ItemPool()` (pool = k) a top orphan at k=1 dropped a valid item fetched below it. Now what was fetched beyond the pool is kept (the overflow, stage-1 order); when the ranked pool hydrates to fewer than k items, the next overflow items are ranked like the pool (the reranker on the same query, D28; no `keepStage1Top` pins) and hydrated, until k items or the overflow is spent — before the cut; no new query; the run's rerank outcome is the most severe of its calls. Rejected: validating every pooled item before reranking — a canonical read per pooled candidate, which the `itemText` shortcut exists to avoid. Test: default pool (omitted), k=1, a top orphan + a valid second item → the valid item | §4.3, §4.4, §4.6, §14.1 |
+| D67 | **Orphans never use up the candidate pool.** `runOne` cut the collapsed units to `pool.items(k)` before any canonical record was read, so with the default `ItemPool()` (pool = k) a top orphan at k=1 dropped a valid item fetched below it. Now what was fetched beyond the pool is kept (the overflow, stage-1 order); when the ranked pool hydrates to fewer than k items, the next overflow items are ranked like the pool (the reranker on the same query, D28; no `keepStage1Top` pins) and hydrated, until k items or the overflow is spent — before the cut; no new query; the run's rerank outcome is the most severe of its calls. The replacements are **merged with the surviving pool items by descending score** (reranked, or stage-1 without a reranker — the same query, so comparable), never appended: appended, a replacement outscoring a surviving item would sit below it and `ScoreFloorCut` (it stops at the first below-floor score) would drop it; `keepStage1Top` pins keep their head places and the merge orders the rest; scores of different scales (one call fell back to stage 1) are never compared — then the replacements stay after the pool's items. Rejected: validating every pooled item before reranking — a canonical read per pooled candidate, which the `itemText` shortcut exists to avoid. Tests: default pool (omitted), k=1, a top orphan + a valid second item → the valid item; k=2, an orphan + a surviving item at 0.1 in the pool, an overflow replacement at 0.9, `ScoreFloorCut({ minItems: 0, maxItems: 2, minScore: 0.5 })` → the 0.9 item (reranked and stage-1); a pin stays at the head | §4.3, §4.4, §4.6, §14.1 |
