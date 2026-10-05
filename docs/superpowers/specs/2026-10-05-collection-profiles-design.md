@@ -469,6 +469,19 @@
 > reload, not applied — a valid change takes effect at the next start, like every start-only
 > field (§10.5.9 V6, *The start config*, §13 B24, §14.1).
 >
+> **Amended 2026-10-06 (31)** for a review finding (§17.38, D83 (12)): **a present config section
+> with the wrong shape is an error, never its default.** `skillPlugins.embedder: sap-ai-core` (a
+> scalar where a mapping belongs) was read as no embedder and the default embedder served; so was
+> `skillPlugins.chunk: 2000`, and the same guard (`isObject(x) ? x : undefined`, `typeof x ===
+> 'object' ? x : {}`, a truthiness test) turned other wrong shapes into "absent" before any rule
+> saw them. Now every section a reader takes fields or items from is checked by that reader's
+> `FieldCheck` (`section` / `closed` / `map` for a mapping, `list` for a list) **before** a field
+> of it is read, named at its path in the same `ConfigFieldError`; a default applies only when the
+> section is absent — not written, or written with no value (`null`), the rule every section
+> already had (`prompts:`, `agent:`). Presence is that test everywhere, never truthiness. Applies
+> at start and on a reload alike (one validator, D83 (10)) (§10.5.9 *Config field rules*, *The
+> start config*, §13 B25, §14.1).
+>
 > Every path that creates or refreshes a tools store is audited in §6.4. Earlier open choices are
 > settled by the recommendations applied in §17.9; the user may still overrule them.
 
@@ -3765,6 +3778,11 @@ user on 2026-10-06):
   (`<field>.<key> is not a known key, got <value>`): those are the mappings the consumer reads
   key by key, where a misspelled key (`retryon`, `toolTimeout`) would be read by nobody while
   the default applies in silence.
+- **A present section is a section** (D83 (12), §17.38): a section given a value of the wrong
+  shape (`embedder: sap-ai-core`, `chunk: 2000`, `rag: [a]`) is `<path> must be a mapping, got
+  <value>` (or `must be a list`) — never read as absent, so its default never applies to it. A
+  section is absent when it is not written or written with no value (`null`), and only then does
+  its default apply.
 
 Every invalid field is
 named in one error, `<field> <rule>, got <value>`, with the field as the input spells it
@@ -3950,14 +3968,55 @@ the whole config):
   it throws once every section of the main file was read — before `skillPlugins` and the workers
   are parsed. Every invalid field of the main file is named in one error,
   `invalid config — <field> <rule>, got <value>`.
-- **Section shapes (D83 (10), §17.36).** Every top-level section the start reads has its shape
-  checked: `prompts`, `circuitBreaker` (*Config field rules*), `mcp`, `skills`, `plugins`,
-  `pipeline.config` (*Cast-read fields*), `llm`, `rag`, `pipeline`, `decision`
-  (`validateResolvedConfig`), `skillPlugins` (its parser) — and the two no rule checked:
+- **Section shapes (D83 (10), §17.36; amended by D83 (12), §17.38).** Every top-level section the
+  start reads has its shape checked: `prompts`, `circuitBreaker` (*Config field rules*), `mcp`,
+  `skills`, `plugins`, `pipeline.config` (*Cast-read fields*), `llm`, `rag`, `decision` (their
+  readers' `FieldCheck`, D83 (12) — `validateResolvedConfig` checked them only after the readers
+  had read through them), `pipeline` (`resolvePipelineSelection`), `skillPlugins` (its parser) —
+  and the two no rule checked:
   **`agent` a mapping** (30.1.0 read `agent: broken` as a file with no agent fields) and
   **`subagents` a list** (30.1.0 read `subagents: w` as no workers), checked by the same
   `FieldCheck` first (`agent must be a mapping, got "broken"`, `subagents must be a list, got
   "w"`). A section with no value (`agent:`) is absent, as `prompts:`.
+- **A present section is checked before a field of it is read (D83 (12), §17.38).** No reader
+  turns a present section of the wrong shape into `undefined`, `{}` or `[]` — the guards
+  `isObject(x) ? x : undefined`, `typeof x === 'object' ? x : {}` (which also took a list for a
+  mapping) and a truthiness test of a section (`yaml.skillPlugins ? …` read `skillPlugins: false`
+  as absent) are gone from every config reader. Each reader checks the section with its
+  `FieldCheck` first and reads its fields only from the checked value; presence is `present()`
+  (not `undefined`, not `null`). The sections this adds to the checks above:
+
+  | Section | Was | Now |
+  |---|---|---|
+  | `skillPlugins.embedder` | not a mapping → no embedder: the default embedder served | `skillPlugins.embedder must be a mapping` |
+  | `skillPlugins.chunk` | not a mapping → `maxChars` 1500 | `skillPlugins.chunk must be a mapping` |
+  | `skillPlugins` itself | `false`, `0`, `""` → no skill plugins | refused by its parser (`skillPlugins: config must be an object`) |
+  | `skillPlugins.embeddingSpaceId`, `skillPlugins.store.collection` (fields read the same way) | not a string → absent | `skillPlugins.embeddingSpaceId must be a non-empty string`; `skillPlugins: store.collection must be a non-empty string when set` |
+  | `llm` | `false`, `0`, `""` → no `llm` section; a scalar or a list read as a map of roles; `llm:` with no value a `TypeError` in the validator | `llm must be a mapping`; `llm:` with no value is absent → `llm: required` |
+  | `llm.<role>` | not a mapping → passed through to the map unchecked | `llm.<role> must be a mapping`; a role with no value is absent |
+  | `rag` | `false`, `0`, `""` → no RAG (the validator refused it later) | `rag must be a mapping` |
+  | `rag.store` | a list read as a store; a scalar as `{}` (`rag.store: required`) | `rag.store must be a mapping`; absent → `rag.store: required`, as before |
+  | `rag.embedder` | not a mapping → no embedder (the validator refused it later) | `rag.embedder must be a mapping` |
+  | `rag.retrieval`, `rag.retrieval.<key>` | not a mapping → no strategies (the validator refused it later) | `rag.retrieval must be a mapping`, `rag.retrieval.<key> must be a mapping` |
+  | `rag.profiles`, `rag.profiles.<key>` (§6.2) | not a mapping → no profile (the validator refused it later) | `rag.profiles must be a mapping`, `rag.profiles.<key> must be a mapping` |
+  | `decision` | a scalar read as a section with no `provider` | `decision must be a mapping` |
+  | `pipeline.config.knowledgeSeed` (the server seeds every new session from it) | read a second time by the server, which dropped a non-list and every entry without text | the stepper's rule (*Cast-read fields*), at start and on a reload, read once |
+
+  `validateResolvedConfig`'s own shape issues for these sections (`rag: must be a mapping …`,
+  `rag.embedder: must be a mapping …`, `rag.retrieval: must be a mapping …` and its entries',
+  `rag.profiles: must be a mapping …` and its entries') go — the reader names each first and
+  `done()` throws before the validator runs (one rule per field, as `mcp.type`, D83 (9));
+  `rag.store: required` stays for an absent store. The validator's other rules are unchanged.
+  `checkProfiles`' sub-sections the resolver reads key by key (`cut`'s `score-floor` /
+  `token-budget`, `indexer`'s `enum-values`) are refused as `<path>: must be a mapping` instead of
+  read as `{}` (which named only their missing keys). Reviewed and unchanged: the sections whose
+  readers already fail on a wrong shape (`skillPlugins.store`, `.catalog`, `.sources` and each
+  source, `.strategyConfig`, `.serveCollections`; `llm.whenThrottled`; `subagents[]` and a
+  worker's `llm`; the controller's `subagents`; `pipeline` and the pipeline sections' own
+  parsers); the reload table's extraction (`startConfigInput`, `ConfigWatcher`) — it reads values
+  into the same `FieldCheck` that records the section's shape issue, and nothing leaves it before
+  `done()`; the readers of the resolved config (`cfg.mcp`, the profile resolver), which run after
+  the validator.
 - **A file reload runs this same validation (D83 (10), §17.36).** The reload's transaction calls
   `resolveSmartServerConfig({}, document, env, { configPath })` over the whole resolved document
   the watcher read (V6) — one rule set for the start and the reload, no reloadable-only
@@ -4661,6 +4720,7 @@ again, written either way.
   | B22 | a config field read by a cast with no check — the *Cast-read fields* table of §10.5.9 (D83 (9)): `agent.retry`, `agent.toolSelection`, `agent.externalToolsValidationMode`, `mcp` and `mcp[]` entry fields, `llm.url` / `llm.model` (and each role's), `host`, `mode`, `pluginDir`, `plugins`, `skills`, `pipeline.config`, the linear / DAG / controller / stepper sections' cast fields | the value reached its consumer as it was: `retry.retryOn: ["429"]` never matched, `toolSelection.strategy: ""` meant none, `mcp.url: ${MCP_ENDPOINT}` unset started a server without MCP, `budgets.maxSteps: "20"` was a string, a stepper plan node without a goal or a `knowledgeSeed` entry without text was dropped, `flow.evaluator.enabled: "false"` kept the evaluator on, an unknown key of `agent.retry` / `agent.toolSelection` / `mcp` / the controller's blocks was read by nobody, an `mcp[]` entry's `type: none` connected as `http` | **the start fails** with the same `invalid config — <field> <rule>, got <value>`: the main file's fields in one error from `resolveSmartServerConfig` (the CLI exits 1); a pipeline section's in one error when the server builds the pipeline at start (`parseLinearSettings`, `parseDagSettings`, `parseControllerSettings`, `parseStepperCoordinatorConfig` throw one `ConfigFieldError` for their section, same signatures). A number literal string (`"20"`, `"429"`) and `"true"` / `"false"` pass and are applied as the number / flag. `budgets.maxWaitMs: "600000"` now passes (it was refused) | write the value as its rule says; drop or fix the key the error names; quote a header value or a model name YAML reads as a number; set `mcp.url` (an empty one is no longer "no MCP" — write `type: none` for that) |
   | B23 | a hot reload of a file that is not a valid start config outside the hot-reloadable fields — a section of the wrong shape (`agent: broken`, `subagents: w`), an invalid start-only or cast-read field (`mcp.timeout: 5x`), a structural error (`llm:` missing) (§10.5.9 V6, *The start config*, D83 (10)) | the reload read only the hot-reloadable fields: `agent: broken` was an empty update that applied, drained the workers and counted applied (a not-ready server became ready, its old settings kept); every other field was not looked at | the reload validates the whole resolved document with the start's validator before anything applies; a document the server could not start from fails the reload (`config_reload_failed` with the start's error, nothing applied, the server not ready — B17). `ConfigWatcher`'s `reload` event carries the resolved document as its second argument | keep the file a valid start config at every save — a reload checks it as a start would; a direct consumer of `ConfigWatcher` validates the event's document, not only its values |
   | B24 | a hot reload of a file whose `pipeline.config` is invalid for the selected pipeline, that selects another pipeline than the running one, or that changes a plugin factory's section (§10.5.9 *The start config*, D83 (11)) | the reload never looked at `pipeline.config` or `pipeline.name`: the file applied, the running pipeline kept its section, and the next start failed on the section (or switched pipeline) | the reload runs the selected pipeline's own section parser (a built-in's) over the reloaded section before anything applies — an invalid section fails the reload (`pipeline '<name>' config invalid — …`); another pipeline fails it (`pipeline change needs a restart — …`, with the new pipeline's section errors); a plugin factory's changed section fails it (no validation entry). A valid section passes and is applied at the next start | change the pipeline or a plugin pipeline's section with a restart, not a reload; keep `pipeline.config` valid at every save |
+  | B25 | a config section present with the wrong shape — a scalar or a list where a mapping belongs, or `false` / `0` / `""` for a section (`skillPlugins.embedder: sap-ai-core`, `skillPlugins.chunk: 2000`, `skillPlugins: false`, `llm: x`, `rag.store: [a]`, `decision: typesafe`, a `knowledgeSeed` that is not a list), at start or on a hot reload (§10.5.9 *The start config*, D83 (12)) | read as absent: its default applied (the default embedder, `chunk.maxChars` 1500, no skill plugins) or the validator refused it later with a message about a missing key; the server's session seeding dropped a wrong `knowledgeSeed` | `<path> must be a mapping, got <value>` (or `must be a list`) in the same `ConfigFieldError` — the start fails, a reload fails (not ready). A section written with no value is absent, as before | write the section as a mapping (`embedder: { provider: sap-ai-core }`, `chunk: { maxChars: 2000 }`), or leave it out for its default |
 - **Named compositions carry no tuned numbers** (D55): `mcpToolsVariants` has `baseline`,
   `faceted` and `faceted-rerank`; pools and cuts default to the caller's k; `faceted-rerank`
   requires `poolItems`. New in this release, so nothing released changes.
@@ -4730,8 +4790,9 @@ again, written either way.
   `skills`, `plugins`, the pipeline sections — and that an empty `mcp.url` is an error, not "no
   MCP", D83 (9); a reload validates the whole file as a start would — a file the server could
   not start from fails the reload, D83 (10); a reload checks the selected pipeline's section and
-  refuses a pipeline change or a plugin factory's changed section (restart), D83 (11); in the
-  hot-reload paragraph,
+  refuses a pipeline change or a plugin factory's changed section (restart), D83 (11); a section
+  written with the wrong shape (`embedder: sap-ai-core`, `chunk: 2000`) is an error, never its
+  default — write it as a mapping or leave it out, D83 (12); in the hot-reload paragraph,
   `ConfigWatcherOptions.resolveDocument` and the `reload` event's document for a direct
   consumer of `ConfigWatcher`), `docs/ARCHITECTURE.md` (`agent.heartbeatIntervalMs`: 0 disables,
   an invalid value fails the start), the five `docs/examples/stepper/` files (their
@@ -5162,7 +5223,16 @@ again, written either way.
   and the key; a server running a plugin factory `ext` — the same section → applied, a changed
   one → failed (`no validation entry`). `checkReloadedPipeline` alone: an instance export's
   changed section passes; an unknown name names the registry; `dag`'s key check uses the reloaded
-  `llm:` keys, not the running ones; the parse runs once per reload. `process()` on a pipeline that fails → the root span's
+  `llm:` keys, not the running ones; the parse runs once per reload. A present section of the
+  wrong shape (D83 (12)): `skillPlugins.embedder` and `skillPlugins.chunk` each as a scalar and as
+  a list, and one wrong shape per other converted section (`skillPlugins` `false`,
+  `skillPlugins.embeddingSpaceId` a number, `llm` a scalar, `llm.<role>` a scalar, `rag` a list,
+  `rag.store` a list, `rag.embedder` a scalar, `rag.retrieval` a scalar and an entry a scalar,
+  `rag.profiles` a scalar and an entry a scalar, `decision` a scalar, `pipeline.config.knowledgeSeed`
+  a mapping) → the start fails naming `<path> must be a mapping` / `must be a list`, exactly one
+  issue; the same file on a reload → `config_reload_failed` naming it, not ready, nothing applied;
+  each section with no value → absent (its default; `llm:` → `llm: required`, not a `TypeError`).
+  `process()` on a pipeline that fails → the root span's
   status is `error`; a consumer that reads the stream only to the error chunk and closes it
   (`return()` on the iterator) → the root span is `error` and ended (D78).
 - The 30.1.0 tools path's bulk write (D79): `vectorizeMcpTools` on an unbound store whose
@@ -5906,3 +5976,25 @@ factory, which exposes no parser, is this spec's choice (the strict one), for th
 | # | Decision | Where |
 |---|---|---|
 | D83 (11) | **A file reload runs the selected pipeline's own section parser as a validation step — nothing is built — after the start's validator and before anything applies.** (1) **The same entry as the start.** The parse half of each built-in registry entry is a named function (server-libs `pipeline-sections.ts`, internal: `parseDagSection`, `parseControllerSection`, and the existing `parseLinearSettings`, `parseStepperSettings`); the start's factories and the reload's `BUILTIN_PIPELINE_SECTIONS` call the same functions, and both are keyed by `BuiltinPipelineName`, so the compiler keeps the two lists equal. A plugin's instance export is `no-section` (the start reads none); a plugin's factory is `plugin-factory`. The server hands the entries and its running selection to the reload watcher (`ConfigReloadDeps.pipeline`, required). (2) **The reload's input.** The validated document's `pipeline.name` (default `flat`) and `pipeline.config` (default `{}`), and its own `llm:` keys (`normalizeLlmConfig`, the function behind the start's `_llmMap`): the check answers whether a start from this file would accept the section, so the keys are the file's — the running map would refuse a key added in the same save and accept a removed one. (3) **A pipeline change needs a restart.** A reloaded name other than the running one fails the reload — `pipeline change needs a restart — the server runs pipeline '<running>', the file selects '<reloaded>'` — after the new pipeline's entry ran, so the same error names its section's problems (or `unknown pipeline …`). (4) **A plugin factory — strict.** No validation entry exists (the factory constructs; the API calls it once, at startup), so the reload does not call it: an unchanged section (deep-equal to the one the running plugin was constructed from) passes — the factory accepted it at start; a changed one fails (`… is a plugin factory with no validation entry — … restart to apply it`). Chosen over treating it as validated by the plugin's own build: that build happens only at the next start, so the reload would report applied a section no code checked, the gap D83 (10) closed for every other section. A plugin that wants its section reloadable needs a validation entry in the plugin API — not part of this release (a contract change, needing its own justification). (5) **Validated, not applied.** A valid section passes; the running pipeline keeps the section it was built with until the next start, like every start-only field. A failed check fails the transaction like the start's validator (D83 (10) (3)) | §10.5.9 V6, *The start config*, §13 B24, §14.1, D83 (10) |
+
+### 17.38 Review finding on 2026-10-06 — a present config section with the wrong shape is an error (D83 (12))
+
+D83 (7) moved `skillPlugins`' fields onto the shared `FieldCheck`, but the two sections they live
+in were still read with `isObject(raw.embedder) ? raw.embedder : undefined` and
+`isObject(raw.chunk) ? raw.chunk : undefined`: `skillPlugins.embedder: sap-ai-core` (a scalar,
+a list) passed as "no embedder" and the default embedder served the skills; `chunk: 2000` passed as
+"no chunk" and `maxChars` 1500 applied. The guard is a class, not one site: a reader that tests a
+section's shape and treats a wrong one as absent hands its default to a value the operator wrote.
+A sweep of every config reader (server-libs `config.ts`, `resolve-config-sections.ts`,
+`skill-plugins-config.ts`, `stepper-config.ts`, `pipeline-settings.ts`, `config-validator.ts`,
+the profiles reader and validator (§6.2), `smart-server.ts`; libs `config/config-watcher.ts`;
+`llm-agent-server`) found the same guard on `llm`, `llm.<role>`, `rag`, `rag.store`,
+`rag.embedder`, `rag.retrieval`, `rag.profiles`, `decision`, `skillPlugins` itself, two
+`skillPlugins` string fields and the server's second reader of `knowledgeSeed`; the sections
+D83 (9) converted (`mcp`, `skills`, `plugins`, `pipeline.config`, the pipeline sections) already
+followed the rule. Most of these were refused later by `validateResolvedConfig`, but only after a
+reader had read through them, with a message about a missing key instead of the section.
+
+| # | Decision | Where |
+|---|---|---|
+| D83 (12) | **A present config section with the wrong shape is an error, never its default.** (1) **The rule.** Every section — a mapping or a list a reader takes fields or items from — is checked by that reader's `FieldCheck` (`section` / `closed` / `map` for a mapping, `list` for a list) when it is present and **before** any field of it is read; its fields are read only from the checked value. A wrong shape is `<path> must be a mapping, got <value>` (or `must be a list`) in the same `ConfigFieldError`, beside every other invalid field. (2) **Presence.** A section is absent when it is not written or written with no value (`null`) — the rule every section already had (`prompts:`, `agent:`, `skills:`, D83, D83 (10)); only then does its default apply. The test is `present()` everywhere: never truthiness (`skillPlugins: false` is present) and never `typeof … === 'object'` (a list is not a mapping). A field (not a section) with no value still fails its rule, as before. (3) **The sites** (§10.5.9 *The start config*, the table): `skillPlugins.embedder`, `skillPlugins.chunk`, `skillPlugins` itself, `skillPlugins.embeddingSpaceId`, `skillPlugins.store.collection`, `llm`, `llm.<role>`, `rag`, `rag.store`, `rag.embedder`, `rag.retrieval` and its entries, `rag.profiles` and its entries, `decision`, `pipeline.config.knowledgeSeed` (the server read it a second time for session seeding and dropped what it could not use — now one rule, the stepper's, checked by `resolvePipelineSelection` at start and on a reload, and read once by the server at start). (4) **One rule per field.** `validateResolvedConfig`'s shape issues for the converted sections go — the reader names each first and `done()` throws before the validator runs — as `mcp.type`'s did (D83 (9)); `rag.store: required` stays for an absent store; the profile validator names a `score-floor`, `token-budget` or `enum-values` that is not a mapping instead of reading it as `{}`. (5) **Both inputs.** The start and the file reload run the same readers (D83 (10)), so a wrong shape fails the start (exit 1) and fails a reload (not ready, nothing applied). (6) **Reviewed and unchanged**: readers that already fail on a wrong shape (`skillPlugins.store` / `.catalog` / `.sources` / each source / `.strategyConfig` / `.serveCollections`, `llm.whenThrottled`, `subagents[]`, a worker's `llm`, the controller's `subagents`, `pipeline`, the pipeline sections' parsers); the reload table's extraction (`startConfigInput`, libs `ConfigWatcher._extractReloadable`), which feeds the same `FieldCheck` that records the section's shape issue (nothing leaves before `done()`; the server reads no extracted value, D83 (10)); readers of the resolved, validated config. No contract changes: every changed function is internal (`skill-plugins-config.ts`' exported `parseSkillPluginsConfig` keeps its signature) | §10.5.9 *Config field rules*, *The start config*, §13 B25, §14.1, D83 (7), (9), (10) |
