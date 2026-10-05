@@ -60,6 +60,10 @@
 >   `BuildAgentDeps.makeDecisionModel` → **`makeProbabilityDecision`** (the old name a deprecated
 >   alias; both supplied → startup error naming both); the app's `createMakeDecisionModel` →
 >   **`createMakeProbabilityDecision`** (§3.8, §6.2, §13).
+>
+> **Amended 2026-10-05 (6)** — a design fix approved by the user from the plan review: a bound
+> tools profile is filled through `bound.index` even when `bound.rag` has no `writer()`; the
+> "no writer → skip" guard of `vectorizeMcpTools` is the 30.1.0 path's only (§7.6).
 
 ## TL;DR
 
@@ -2038,6 +2042,13 @@ This is the main path (§7.1): the consumer chooses each strategy; a default fil
   `definitionChars` of the exported definition) and calls `bound.index(items)`. It reads the
   schema generically (top-level `properties`, `required`, string `enum` / `const`); no server is
   special-cased.
+- **A profile needs no raw writer on the bound store.** 30.1.0 returns early (no fill, status
+  unknown) when the tools store has no `writer()`. That guard belongs to the 30.1.0 path only:
+  `IRag.writer` is optional, `StrategyRag` preserves its absence, and a binding may expose a
+  query facade while its `index` writes through the profile's own backend. With a binding,
+  listing, `ToolItem` building and `bound.index` run whether or not `bound.rag.writer()` exists,
+  and the catalog status is published from the `IndexReport`. Without a binding, a store without a
+  writer is still skipped before any listing, as in 30.1.0.
 - Accounting counts **items** (`vectorized` = items with every record written; `failed` = item
   names). The `toolCatalog` health counters keep their meaning (tools), plus `records` and
   `profile` (carried by `ToolCatalogStatus`, S3).
@@ -2542,7 +2553,9 @@ new SharedItemsProfile({
   `remove` whose delete fails keeps the canonical and returns an error, and a second `remove`
   completes.
 - `vectorizeMcpTools`: golden test of the default path; item accounting with a profile; one batch
-  for all records; F1 regression through `StrategyRag` and `FallbackRag`.
+  for all records; a binding whose `rag` has no writer is still filled through its own `index`
+  (catalog complete, items retrievable), while a writerless store without a binding is skipped as
+  in 30.1.0; F1 regression through `StrategyRag` and `FallbackRag`.
 - F2 / F3.
 - Precedence: a profiled store is skipped by `RerankHandler`; binding is idempotent (server +
   builder).
