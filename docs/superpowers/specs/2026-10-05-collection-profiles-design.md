@@ -2173,7 +2173,7 @@ export interface ToolsCorpusManifest {
   readonly identity: ToolsCorpusIdentity;
   readonly profileName: string;              // the binding's profileName at build
   readonly companions: readonly string[];    // companion store names the profile wrote
-  readonly dimensions: number;               // every vector's length
+  readonly dimensions?: number;              // every vector's length; absent exactly when there are no records
   readonly items: number;                    // tools
   readonly records: number;
   readonly corpusHash: string;               // sha256 over the identity and every record's hash
@@ -2196,7 +2196,7 @@ export function buildToolsCorpus(input: {
   readonly items: readonly ToolItem[];        // toolItemFromTool over the provider's definitions
   readonly companions?: readonly string[];    // the companion store names the profile binds
 }, options?: CallOptions): Promise<ToolsCorpus>;
-/** The serialized corpus back: shape, format, one dimension, the hash recomputed. Throws on any mismatch. */
+/** The serialized corpus back: shape, format, one dimension (none when empty), the hash recomputed. Throws on any mismatch. */
 export function parseToolsCorpus(json: string): ToolsCorpus;
 /** Deploy step: write a built corpus into a store (and its companions), in place, idempotent. */
 export function deployToolsCorpus(corpus: ToolsCorpus, target: CollectionStore, options?: CallOptions): Promise<ToolsCorpusDeployReport>;
@@ -2210,7 +2210,13 @@ export const TOOLS_CORPUS_RECORD_ID = 'tools-corpus';   // the service record's 
   companion name — and calls `bound.index(items)`. So the records are exactly what the same
   profile's indexer and record writer produce at run time: same ids (§3.1), texts, metadata,
   companion records; only the store differs.
-- Any `failedItems` → throws naming them: a corpus is complete or not built. No items → throws.
+- Any `failedItems` → throws naming them: a corpus is complete or not built.
+- **An empty corpus is valid** (D49). No items → a corpus with zero records and a manifest with
+  `items: 0`, `records: 0` and **no `dimensions`** (nothing to infer it from). `parseToolsCorpus`
+  accepts it: `dimensions` must be absent when there are no records and a positive integer when
+  there are, and the per-record dimension check runs over the records there are. A consumer that
+  removes every tool deploys this corpus and the store follows (below). The dimension checks are
+  skipped only for an empty corpus.
 - Item ids must be what tool selection reads at run time: `toolItemFromTool(tool, { itemId:
   toolRecordKey.key(…), originalName })` with the same `IToolRecordKey`, client order and namespace
   as the server (§6.1 snippet). The consumer's build reads the tool definitions from its provider
@@ -2243,8 +2249,19 @@ export const TOOLS_CORPUS_RECORD_ID = 'tools-corpus';   // the service record's 
    holds, per store; every `deleteByIdRaw` Result checked — a failure throws (the service record
    still lists it, so a rerun deletes it).
 6. Write the final service record: `{ serviceRecord: { kind: 'tools-corpus', state: 'final',
-   manifest, hashes: { <store>: { <id>: <hash> } } } }` (no `pending`), text `tools corpus <corpusHash>`, vector = a unit vector of the
-   corpus dimension. Retrieval drops it (§4.3); `ReservedRecordKey` keeps extras from setting it.
+   manifest, dimensions, hashes: { <store>: { <id>: <hash> } } } }` (no `pending`), text `tools corpus <corpusHash>`, vector = a unit vector of
+   `dimensions`. Retrieval drops it (§4.3); `ReservedRecordKey` keeps extras from setting it.
+
+**The service record's own vector** has `dimensions` entries: the corpus's dimension, or — for an
+empty corpus, which has none — the dimension of the service record already in the store (a store
+accepts one vector length). The pending and the final record carry it alike.
+
+**An empty corpus deploys like any other** (D49), through the same steps: the write-ahead record
+lists nothing new; step 5 deletes every listed and pending id from every store; step 6 finalizes
+a manifest with `items: 0`, `records: 0`, `hashes: {}`. Interrupted, it leaves the record
+`pending`, and a rerun deletes what is still listed and finalizes. An empty corpus into a store
+that holds no service record has no dimension for that record → throws before any write, naming
+it (there is also nothing to delete).
 
 - A failed write throws; nothing is reported as deployed that is not. A rerun is safe: after an
   interruption it rewrites the whole corpus (step 4), so a store a later run left mixed — records
@@ -2252,6 +2269,9 @@ export const TOOLS_CORPUS_RECORD_ID = 'tools-corpus';   // the service record's 
   before it is certified `final`.
 - `PrebuiltToolsStore` accepts only a finalized service record (§3.10): an unfinished or running
   deploy is refused at instance creation.
+- **An empty corpus at instance creation** (D49): `ToolsCorpusLoader` writes nothing and
+  `PrebuiltToolsStore` reads a finalized zero-item manifest; both report a complete catalog of
+  0 tools (`total: 0`, `vectorized: 0`, `records: 0`, `complete: true`).
 - The service record holds one hash per record (~80 bytes each): a few hundred tools with several
   records each fit a Qdrant payload, a pg-vector `jsonb` and a HANA `NCLOB`.
 - Concurrent deploy steps against one store are the backend's concern (§3.3, D13); a deploy runs
@@ -3325,9 +3345,10 @@ new SharedItemsProfile({
 - Offline corpus (§6.5, libs), with an embedder that counts its calls:
   - `buildToolsCorpus` → one record per profile record (ids, texts, metadata equal to what
     `bound.index` writes into a live store), every vector of one dimension, companion records under
-    their store name; a failing item → throws naming it; no items → throws;
+    their store name; a failing item → throws naming it; no items → a valid empty corpus (zero
+    records, `items: 0`, no `dimensions`) that `parseToolsCorpus` round-trips;
   - `parseToolsCorpus(JSON.stringify(corpus))` round-trips; a changed record (hash mismatch), a
-    wrong format or a mixed dimension → throws;
+    wrong format, a mixed dimension, `dimensions` missing with records or present without → throws;
   - `deployToolsCorpus` into a `VectorRag` (+ companion): **zero embedding calls**; retrieval through
     the binding finds the tools and never returns the service record; a second deploy of the same
     corpus → `unchanged: true`, no write; a corpus with one changed and one dropped tool → only the
@@ -3338,6 +3359,11 @@ new SharedItemsProfile({
     A's records → redeploy A → every stored record equals A's and the service record is `final`
     with A's manifest; the same with B interrupted after deleting one of A's records → the record
     is recreated;
+  - empty corpus (D49): a deployed corpus → an empty deploy deletes every record (primary and
+    companion) and finalizes a zero-item manifest; an empty deploy interrupted after some deletions
+    → `prebuilt` refuses the store, a rerun deletes the rest and finalizes; an empty corpus into a
+    never-deployed store → throws naming the missing dimension, nothing written; `ToolsCorpusLoader`
+    with an empty corpus and `PrebuiltToolsStore` over the empty deploy → complete, `total: 0`;
   - `ToolsCorpusLoader`: loads with zero embedding calls, the catalog status complete with `records`;
     a mismatching `profile` / `embedder` / `profileName` / companion set → throws naming it;
   - `PrebuiltToolsStore`: a deployed store → status from the service record, **no write** (a writer
@@ -3667,3 +3693,9 @@ to `toolsChanged`*).
 | # | Decision | Where |
 |---|---|---|
 | D48 | **A deploy after an unfinished one rewrites the whole corpus.** The service record carries `state: 'pending' \| 'final'`; the write-ahead record (`pending`) is written before the first record write, so any interruption leaves it set. When the record read at the start is not `final` (or absent), `deployToolsCorpus` does not trust its per-record hashes — the unfinished run may have overwritten or deleted any record they describe — and writes every record of the requested corpus, deletes the listed and pending ids the corpus does not hold, then finalizes. When it is `final`, the hash-skip optimisation stays (and a matching `corpusHash` answers `unchanged`). `PrebuiltToolsStore` refuses a store whose record is not `final`, loudly at instance creation. One current state: no journals, no generations (the user's principle). Amends D43 | §3.10, §6.5, §14.1 |
+
+### 17.14 Review finding on 2026-10-05 — an empty corpus is valid
+
+| # | Decision | Where |
+|---|---|---|
+| D49 | **An empty tools corpus is valid.** `buildToolsCorpus` with no items builds a corpus of zero records whose manifest has `items: 0`, `records: 0` and no `dimensions`; `parseToolsCorpus` accepts it and checks dimensions only when there are records. `deployToolsCorpus` of an empty corpus runs the same pending → final protocol: deletes every listed and pending record and finalizes a zero-item manifest (the service record's vector keeps the store's previous service-record dimension; an empty corpus into a store with no service record throws before any write). `ToolsCorpusLoader` and `PrebuiltToolsStore` with an empty corpus report a complete catalog of 0 tools. So a consumer that removes every tool can deploy the replacement corpus instead of keeping the old one. Amends D43, D48 | §6.5, §14.1 |
