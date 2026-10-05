@@ -82,13 +82,13 @@ The ten inputs the spec implies, most likely to bite a user, each pinned by a te
 - `index.ts` — exports; re-exported from `src/index.ts`.
 - `__tests__/*.test.ts`, `__tests__/collection-profile.typecheck.ts`.
 
-**Other libs files:** `mcp/fill-tools-binding.ts` (NEW, Task 23A: `fillToolsBinding`), `adapters/usage-logging-decision-model.ts` (`wrapProbabilityDecision`, `wrapRelevanceDecision`; `wrapDecisionModel` removed), `index.ts` (the reranker block deleted — no re-exports, Task 4B; the 15 root names of `llm-agent` dropped, Task 4D), `README.md` ("Top-level exports" without type re-exports, Task 4D), `mcp/vectorize-mcp-tools.ts` (dispatches to the store's fill source; the live profile path, the binding read from the store — D34, D42, Task 19; F1), `mcp/tool-registry.ts` (`revectorizeTools` writes nothing into a bound store, D46; `mcp/tool-registry-revectorize-profile.test.ts` NEW, Task 19), `builder.ts` (`withToolsProfile`), `metrics/in-memory-metrics.ts`, `metrics/noop-metrics.ts`, `retrieval/reranked-retrieval.ts` (telemetry), `health/health-checker.ts` (`HealthCheckerDeps.toolCatalog`, Task 23A; records/profile, Task 29), `pipeline/handlers/skill-select.ts` (F3), `testing/evaluate-retrieval.ts` + `testing/index.ts`. Task 4E: `adapters/index.ts`, `interfaces/model-resolver.ts` DELETED (dead internal files); `__tests__/text-logger-di.test.ts`, `builder.ts` / `session/session-graph-factory.ts` (doc comments) switch to `ILogger` of `@mcp-abap-adt/interfaces-utils`; `package.json` gets the dev dependency `@mcp-abap-adt/interfaces-utils` `^1.1.0`.
+**Other libs files:** `mcp/fill-tools-binding.ts` (NEW, Task 23A: `fillToolsBinding`), `adapters/usage-logging-decision-model.ts` (`wrapProbabilityDecision`, `wrapRelevanceDecision`; `wrapDecisionModel` removed), `index.ts` (the reranker block deleted — no re-exports, Task 4B; the 15 root names of `llm-agent` dropped, Task 4D), `README.md` ("Top-level exports" without type re-exports, Task 4D), `mcp/vectorize-mcp-tools.ts` (dispatches to the store's fill source; the live profile path, the binding read from the store — D34, D42, Task 19; F1), `mcp/tool-registry.ts` (`revectorizeTools` writes nothing into a bound store, D46; `mcp/tool-registry-revectorize-profile.test.ts` NEW, Task 19), `builder.ts` (`withToolsProfile`; a failed `build()` disposes its connection strategy, Task 23A, D47), `metrics/in-memory-metrics.ts`, `metrics/noop-metrics.ts`, `retrieval/reranked-retrieval.ts` (telemetry), `health/health-checker.ts` (`HealthCheckerDeps.toolCatalog`, Task 23A; records/profile, Task 29), `pipeline/handlers/skill-select.ts` (F3), `testing/evaluate-retrieval.ts` + `testing/index.ts`. Task 4E: `adapters/index.ts`, `interfaces/model-resolver.ts` DELETED (dead internal files); `__tests__/text-logger-di.test.ts`, `builder.ts` / `session/session-graph-factory.ts` (doc comments) switch to `ILogger` of `@mcp-abap-adt/interfaces-utils`; `package.json` gets the dev dependency `@mcp-abap-adt/interfaces-utils` `^1.1.0`.
 
 **`packages/llm-agent-mcp/`** — Task 4E: `src/strategies/lazy-connection-strategy-text-logger.test.ts` imports `ILogger` from `@mcp-abap-adt/interfaces-utils`; `package.json` gets the dev dependency `@mcp-abap-adt/interfaces-utils` `^1.1.0`.
 
 **`packages/sap-aicore-decision/`** — NEW package (`package.json`, `tsconfig.json`, `README.md`, `CHANGELOG.md`, `LICENSE`, `GPL-3.0.txt`, `src/index.ts`, `src/sap-aicore-relevance-decision.ts`, `src/map-rerank.ts`, `src/__tests__/fake-fetch.ts`, `src/__tests__/sap-aicore-relevance-decision.test.ts`).
 
-**`packages/llm-agent-server-libs/src/smart-agent/`** — `profiles-config.ts` (NEW: YAML types), `profiles-config-validator.ts` (NEW), `decision-config.ts` (`provider: 'sap-aicore'`, `DECISION_KINDS`), `decision-seams.ts` (NEW: the decision of the provider's kind → its reranker), `resolve-retrieval.ts` (kind dispatch), `resolve-config-sections.ts`, `config.ts`, `config-validator.ts`, `resolve-collection-profiles.ts` (NEW), `smart-server.ts` (`makeProbabilityDecision` seam — `makeDecisionModel` removed, Task 20A; `makeRelevanceDecision` seam; binds `rag.profiles.tools`, Task 23; fills the main store once at startup and a worker's own store by its construction, D35, D41, Task 23A; `toolsFillFactories` and the bind with the configured fill source, Task 23B), `workers/worker-registry.ts` (descriptors and slot count to workers, Task 23A) + `workers/connected-mcp-server.ts` (NEW, Task 23A), `config-reload-watcher.ts` (`_onReload` awaitable, Task 23A), `__tests__/profile-fill-ready-clients.test.ts` (NEW, Task 23A, incl. `PUT /v1/config`, hot reload through the reload entry point, a re-wire never fills, a throwing fill leaves no cached worker; Task 23B: `fill: corpus`, a leftover `prebuilt` refused), `profiles-config.ts` / `profiles-config-validator.ts` / `resolve-collection-profiles.ts` (`fill`, Task 23B), `__tests__/config-reload-entry.test.ts` (NEW, Task 23A), `tools-rag-handle.ts` (F2), `http/chat-route-handler.ts` + `http/response-helpers.ts` (`StopReason` from `llm-agent`, Task 4D); `package.json` (peer `llm-agent-reranker`; `./legacy/flat` removed from `exports`, Task 4D). **`packages/llm-agent-server-libs/src/legacy/`** — `flat.ts` DELETED, `linear.ts` / `dag.ts` lose their libs re-export (Task 4D).
+**`packages/llm-agent-server-libs/src/smart-agent/`** — `profiles-config.ts` (NEW: YAML types), `profiles-config-validator.ts` (NEW), `decision-config.ts` (`provider: 'sap-aicore'`, `DECISION_KINDS`), `decision-seams.ts` (NEW: the decision of the provider's kind → its reranker), `resolve-retrieval.ts` (kind dispatch), `resolve-config-sections.ts`, `config.ts`, `config-validator.ts`, `resolve-collection-profiles.ts` (NEW), `smart-server.ts` (`makeProbabilityDecision` seam — `makeDecisionModel` removed, Task 20A; `makeRelevanceDecision` seam; binds `rag.profiles.tools`, Task 23; fills the main store once at startup and a worker's own store by its construction, D35, D41, Task 23A; `toolsFillFactories` and the bind with the configured fill source, Task 23B), `workers/worker-registry.ts` (descriptors and slot count to workers, Task 23A) + `workers/connected-mcp-server.ts` (NEW, Task 23A), `config-reload-watcher.ts` (`_onReload` awaitable, Task 23A), `__tests__/profile-fill-ready-clients.test.ts` (NEW, Task 23A, incl. `PUT /v1/config`, hot reload through the reload entry point, a re-wire never fills, a construction that fails anywhere — fill, build, backfill — leaves no cached worker, D47; Task 23B: `fill: corpus`, a leftover `prebuilt` refused), `profiles-config.ts` / `profiles-config-validator.ts` / `resolve-collection-profiles.ts` (`fill`, Task 23B), `__tests__/config-reload-entry.test.ts` (NEW, Task 23A), `tools-rag-handle.ts` (F2), `http/chat-route-handler.ts` + `http/response-helpers.ts` (`StopReason` from `llm-agent`, Task 4D); `package.json` (peer `llm-agent-reranker`; `./legacy/flat` removed from `exports`, Task 4D). **`packages/llm-agent-server-libs/src/legacy/`** — `flat.ts` DELETED, `linear.ts` / `dag.ts` lose their libs re-export (Task 4D).
 
 **`packages/llm-agent-server/src/composition/`** — `make-relevance-decision.ts` (NEW: `createMakeRelevanceDecision`, the `sap-aicore` arm), `make-probability-decision.ts` (RENAMED from `make-decision-model.ts`, Task 20A: `createMakeProbabilityDecision`; names the other seam for `sap-aicore`, Task 24), `index.ts`, `__tests__/make-relevance-decision.test.ts` (NEW), `__tests__/make-probability-decision.test.ts` (RENAMED). **`packages/llm-agent-server/src/`** — `index.ts` DELETED (unreachable `export *` of server-libs, Task 4D); `smart-agent/server.ts`, `smart-agent/__tests__/server.test.ts` (`StopReason`, `OrchestratorError`, `SmartAgentResponse` from `llm-agent`, Task 4D).
 
@@ -12846,12 +12846,14 @@ Spec §6.3 (D31; D32 — a worker's fill keeps the identity its agent dispatches
 | YAML builder connect | `yamlBuilderConnect = mcpFromYaml` (YAML `mcp:`, no ready clients, no seam) | the builder connects and fills (Task 20); harvested into `_sharedMcpClients` after `build()` |
 | no MCP | none of the above | `buildSharedPipelineInfra` → `_sharedMcpClients = []` |
 
-**Where a worker's own store is created — and so filled (D35, D41).** `buildSubAgent` → `resolveWorkerLlmSet` → `makeToolsRag` → `withToolsStore` (Task 23) creates and binds it. That runs on the worker's **construction** — `buildSubAgent` without `injected`: the startup primary build (`_buildInfra`'s `subAgentConfigs` loop) and the lazy rebuild in `WorkerRegistry.build` after `PUT /v1/config` or a hot reload drained the cache (`WorkerRegistry.drain` → the next session's cache miss). Filling it only in `_buildInfra` would leave every rebuilt store empty (review finding (b)), so the construction fills it, right before `subBuilder.build()`. A per-session re-wire (`injected` set) receives the cached store by reference and **never fills** (D41): no memo, no retry — an incomplete fill is reported and stays. On `yamlBuilderConnect` the shared clients are known only after the workers' startup build, so `_buildInfra` fills the workers on them in one pass right after the harvest — at startup, completing their creation (D38). A construction whose fill throws removes the worker's cache entry before rethrowing, so no session re-wires a worker whose store was never filled. (Two sessions arriving together after a drain may still construct one worker twice — the 30.1.0 race moved to a separate issue, spec §15, D45; each construction then fills its own new store.)
+**Where a worker's own store is created — and so filled (D35, D41).** `buildSubAgent` → `resolveWorkerLlmSet` → `makeToolsRag` → `withToolsStore` (Task 23) creates and binds it. That runs on the worker's **construction** — `buildSubAgent` without `injected`: the startup primary build (`_buildInfra`'s `subAgentConfigs` loop) and the lazy rebuild in `WorkerRegistry.build` after `PUT /v1/config` or a hot reload drained the cache (`WorkerRegistry.drain` → the next session's cache miss). Filling it only in `_buildInfra` would leave every rebuilt store empty (review finding (b)), so the construction fills it, right before `subBuilder.build()`. A per-session re-wire (`injected` set) receives the cached store by reference and **never fills** (D41): no memo, no retry — an incomplete fill is reported and stays. On `yamlBuilderConnect` the shared clients are known only after the workers' startup build, so `_buildInfra` fills the workers on them in one pass right after the harvest — at startup, completing their creation (D38). A construction that fails **anywhere** — the server's fill, `subBuilder.build()` (where a worker on its own `mcp:` is filled by its own builder through the store's fill source), or the backfill of the cache entry from the built handle — removes the entry `resolveWorkerLlmSet` cached for it and closes the handle it built (a failed `build()` has none: it stops its servers and disposes its connection strategy itself, Step 3) before rethrowing, so no session re-wires a worker whose store was never filled — an empty or partial store, possibly with the parent's clients (spec §6.3, D47). (Two sessions arriving together after a drain may still construct one worker twice — the 30.1.0 race moved to a separate issue, spec §15, D45; each construction then fills its own new store.)
 
 **Files:**
 - Create: `packages/llm-agent-libs/src/mcp/fill-tools-binding.ts`
 - Modify: `packages/llm-agent-libs/src/index.ts` (export beside `HealthChecker`, ~line 82)
 - Modify: `packages/llm-agent-libs/src/health/health-checker.ts` (`HealthCheckerDeps.toolCatalog?`)
+- Modify: `packages/llm-agent-libs/src/builder.ts` (`build()`'s failure path also disposes the connection strategy it resolved through — no handle owns it yet; spec §6.3, D47)
+- Modify: `packages/llm-agent-libs/src/__tests__/mcp-servers-di.test.ts` (append: a failed build disposes its connection strategy)
 - Create: `packages/llm-agent-libs/src/__tests__/fill-tools-binding.test.ts`
 - Modify: `packages/llm-agent-server-libs/src/smart-agent/smart-server.ts` (fields after Task 23's `_toolsProfiles`; methods after Task 23's `withToolsStore`; the fill block right after the `if (yamlBuilderConnect) { … buildToolsRagHandle … }` harvest block ~line 1782; `new HealthChecker({` ~line 1888)
 - Create: `packages/llm-agent-server-libs/src/smart-agent/workers/connected-mcp-server.ts` (D32: an already-connected client as an `IMcpServer`, so a worker's builder gets clients WITH descriptors through the existing `withMcpServers`)
@@ -12871,7 +12873,7 @@ Spec §6.3 (D31; D32 — a worker's fill keeps the identity its agent dispatches
   export function fillToolsBinding(clients: readonly IMcpClient[], binding: IBoundCollection<ToolItem>, options?: FillToolsBindingOptions): Promise<ToolCatalogStatus | undefined>; // runs the store's fill source at creation (D42); undefined when the source attempts nothing (consumer) or callOptions.signal is already aborted; rejects a binding its store does not carry (D34)
   // HealthCheckerDeps gains: toolCatalog?: IToolCatalogReporter  (absent → the agent's own status, 30.1.0)
   ```
-  The server: with a bound `tools` store, `_buildInfra` fills it once from `_sharedMcpClients` on every path except `yamlBuilderConnect` (there the builder filled it at its `build()`). The worker's construction (`buildSubAgent` without `injected`) fills a worker's OWN bound store (D35, D41), before `subBuilder.build()`, from the clients its re-wires will hand that worker — the worker's own `mcpClients` in array order (they carry no descriptors), or the shared clients with `_sharedMcpClientDescriptors` / `_configuredSlotCount` once they are known (D32); on `yamlBuilderConnect` `_buildInfra` fills those workers right after the harvest (`fillSharedClientWorkerStores`, D38). So startup, a lazy rebuild, `PUT /v1/config` and hot reload all fill it — once per store. A per-session re-wire never fills; nothing is memoized or retried (D41). A worker on its own `mcp:` is filled by its own builder on the construction's build. A construction whose fill throws drops the worker's cache entry. `ConfigReloadWatcher._onReload` returns the drain + invalidation as one promise and the server keeps the watcher (`_configReload`), so tests drive a hot reload directly (D39). Every worker's builder dispatches by the identity its store was filled with (the clients' descriptors through `withMcpServers` + `connectedMcpServer`, the server's `withToolNamespace`). `/health` reads the main status; a worker's fill is logged only. Without a binding nothing new runs.
+  The server: with a bound `tools` store, `_buildInfra` fills it once from `_sharedMcpClients` on every path except `yamlBuilderConnect` (there the builder filled it at its `build()`). The worker's construction (`buildSubAgent` without `injected`) fills a worker's OWN bound store (D35, D41), before `subBuilder.build()`, from the clients its re-wires will hand that worker — the worker's own `mcpClients` in array order (they carry no descriptors), or the shared clients with `_sharedMcpClientDescriptors` / `_configuredSlotCount` once they are known (D32); on `yamlBuilderConnect` `_buildInfra` fills those workers right after the harvest (`fillSharedClientWorkerStores`, D38). So startup, a lazy rebuild, `PUT /v1/config` and hot reload all fill it — once per store. A per-session re-wire never fills; nothing is memoized or retried (D41). A worker on its own `mcp:` is filled by its own builder on the construction's build. A construction that fails anywhere — the server's fill, `subBuilder.build()` (incl. the builder-driven fill of a worker on its own `mcp:`), or the backfill — drops the worker's cache entry and closes the handle it built; a failed `build()` disposes the connection strategy it resolved through (D47). `ConfigReloadWatcher._onReload` returns the drain + invalidation as one promise and the server keeps the watcher (`_configReload`), so tests drive a hot reload directly (D39). Every worker's builder dispatches by the identity its store was filled with (the clients' descriptors through `withMcpServers` + `connectedMcpServer`, the server's `withToolNamespace`). `/health` reads the main status; a worker's fill is logged only. Without a binding nothing new runs.
 
 - [ ] **Step 1: Write the failing libs test**
 
@@ -12975,10 +12977,46 @@ describe('HealthCheckerDeps.toolCatalog', () => {
 });
 ```
 
+Append to the `describe` block of `packages/llm-agent-libs/src/__tests__/mcp-servers-di.test.ts` (its imports already carry `IMcpConnectionStrategy`, `IPipeline`, `stubLlm`, `stubMcpClient`) — a worker on its own `mcp:` is filled by its builder inside `build()`; when that build fails after connecting, no handle exists to close the connection, so `build()` must (spec §6.3, D47). A failing pipeline stands in for a throwing tools fill: both fail inside the same `try`, after `resolve`:
+```ts
+  it('a build that fails after resolving its connection strategy disposes it, and rethrows the original error (spec §6.3, D47)', async () => {
+    const { SmartAgentBuilder } = await import('../builder.js');
+    const log: string[] = [];
+    const strategy: IMcpConnectionStrategy = {
+      async resolve() {
+        log.push('resolve');
+        return { clients: [stubMcpClient('a')], toolsChanged: false };
+      },
+      async dispose() {
+        log.push('dispose');
+      },
+    };
+    const throwingPipeline: IPipeline = {
+      initialize() {
+        throw new Error('pipeline init failed');
+      },
+      async execute() {
+        throw new Error('not exercised by this test');
+      },
+    };
+
+    await assert.rejects(
+      () =>
+        new SmartAgentBuilder({ skipModelValidation: true })
+          .withMainLlm(stubLlm())
+          .setPipeline(throwingPipeline)
+          .withMcpConnectionStrategy(strategy)
+          .build(),
+      /pipeline init failed/,
+    );
+    assert.deepEqual(log, ['resolve', 'dispose'], 'no handle owns the connection: the failed build disposes it');
+  });
+```
+
 - [ ] **Step 2: Run to see it fail**
 
-Run: `node --import tsx/esm --test packages/llm-agent-libs/src/__tests__/fill-tools-binding.test.ts`
-Expected: FAIL — `../mcp/fill-tools-binding.js` does not exist; `toolCatalog` is not read.
+Run: `node --import tsx/esm --test packages/llm-agent-libs/src/__tests__/fill-tools-binding.test.ts packages/llm-agent-libs/src/__tests__/mcp-servers-di.test.ts`
+Expected: FAIL — `../mcp/fill-tools-binding.js` does not exist; `toolCatalog` is not read; the new `mcp-servers-di.test.ts` case finds `log` = `['resolve']` (a failed build leaves its connection strategy alive).
 
 - [ ] **Step 3: Implement (libs)**
 
@@ -13091,12 +13129,44 @@ export {
     const tc = reporter?.getToolCatalogStatus();
   ```
 
+`packages/llm-agent-libs/src/builder.ts` — `build()`'s outer `catch (err)` (the one that runs `await stopAll(closeFns);` and rethrows, after the pipeline is set up) disposes the connection strategy too, first, best-effort — the same strategy `handle.close()` disposes (`connectionStrategy`: the YAML `mcp:` one the build created, or the injected one). Replace
+```ts
+      await stopAll(closeFns);
+      throw err;
+```
+with
+```ts
+      // No handle owns the connection yet: a build that fails after connecting
+      // (a throwing tools fill — a worker on its own `mcp:` is filled here —
+      // or a pipeline that fails to initialize) disposes it, as handle.close()
+      // would, so no connection or reconnect timer outlives the failure (spec
+      // §6.3, D47). Best-effort: the ORIGINAL failure goes through unchanged.
+      try {
+        await connectionStrategy?.dispose?.();
+      } catch (disposeErr) {
+        const message =
+          disposeErr instanceof Error ? disposeErr.message : String(disposeErr);
+        if (log) {
+          log.log({
+            type: 'warning',
+            traceId: 'builder',
+            message: `build_failed_connection_strategy_dispose_failed: ${message}`,
+          });
+        } else {
+          console.warn(`[builder] build_failed_connection_strategy_dispose_failed: ${message}`);
+        }
+      }
+      await stopAll(closeFns);
+      throw err;
+```
+(`connectionStrategy` and `log` are declared before the `try`, as `handle.close()` uses them. A build that fails before `resolve` disposes a strategy it never resolved through — idempotent for `makeConnectionStrategy`'s, whose `dispose` closes only connected slots; an injected one was handed to the build, as `handle.close()` already treats it.)
+
 - [ ] **Step 4: Run (libs)**
 
 Run:
 ```bash
 npx tsc -b packages/llm-agent-libs
-node --import tsx/esm --test packages/llm-agent-libs/src/__tests__/fill-tools-binding.test.ts packages/llm-agent-libs/src/__tests__/vectorize-mcp-tools-profile.test.ts packages/llm-agent-libs/src/health/health-checker.test.ts
+node --import tsx/esm --test packages/llm-agent-libs/src/__tests__/fill-tools-binding.test.ts packages/llm-agent-libs/src/__tests__/vectorize-mcp-tools-profile.test.ts packages/llm-agent-libs/src/health/health-checker.test.ts packages/llm-agent-libs/src/__tests__/mcp-servers-di.test.ts
 ```
 Expected: PASS.
 
@@ -13718,12 +13788,164 @@ test('(12) D41: a construction whose fill throws leaves no cached worker — the
     },
   );
 });
+
+test('(12b) D47: a construction whose backfill throws leaves no cached worker — the next session constructs a fresh store and fills it again', async () => {
+  const calls: string[][] = [];
+  const down = { backfill: false };
+  await withServer(
+    diWorkerConfig(countingVariant(calls), client(['WorkerTool'])),
+    constructionSeams,
+    async ({ server }) => {
+      const s = server as unknown as WorkerInternals;
+      const first = s._workers.cache.get('di')?.toolsRag;
+      assert.ok(first && (await workerHas(s, 'WorkerTool')), 'precondition: filled at startup');
+      assert.equal(workerFills(calls), 1);
+      // The backfill writes `close` (and the clients) onto the cached entry:
+      // while `down.backfill` is set, a construction's entry refuses that write,
+      // so the failure lands AFTER the fill and the build succeeded.
+      const cache = s._workers.cache;
+      const set = cache.set.bind(cache);
+      cache.set = (k, v) =>
+        set(
+          k,
+          k === 'di' && down.backfill
+            ? new Proxy(v, {
+                set(target, prop, value) {
+                  if (prop === 'close') throw new Error('backfill down');
+                  return Reflect.set(target, prop, value);
+                },
+              })
+            : v,
+        );
+      await s._workers.drain();
+      down.backfill = true;
+      await assert.rejects(rewire(s), /backfill down/);
+      assert.equal(cache.has('di'), false, 'no cached worker from a construction that failed after its build');
+      assert.equal(workerFills(calls), 2, 'the failed construction had filled its own (now dropped) store');
+      down.backfill = false;
+      await rewire(s);
+      const fresh = cache.get('di')?.toolsRag;
+      assert.ok(fresh && fresh !== first, 'constructed again: a new store');
+      assert.equal(workerFills(calls), 3, 'and filled again');
+      assert.equal(await workerHas(s, 'WorkerTool'), true);
+    },
+  );
+});
+```
+
+Append to `mcp-yaml-vectorization.test.ts` (D47 — a worker on its own `mcp:` is filled by its builder inside `subBuilder.build()`, outside the server's fill; its imports gain `SimpleRagRegistry` from `@mcp-abap-adt/llm-agent-rag`, `mcpToolsVariants` and `type SessionAgentParts` from `@mcp-abap-adt/llm-agent-libs`, `type ToolsVariantFactory` from `'../resolve-collection-profiles.js'`; `toolsBindingOf`, `IRag`, `IMcpClient` and `type SmartServerConfig` are already there — Task 23 and the file's own imports). The fill source here is the default `live` one, its `index` throwing: a `corpus` source cannot reach this path, because Task 23B refuses `fill: corpus` at start for a worker with its own `rag` and its own clients or `mcp:` (D47 (3)) — the builder-driven failure is the same either way:
+```ts
+test("D47: a worker on its own mcp: whose builder-driven fill throws on a lazy rebuild is evicted — the next session connects again, builds a fresh store and fills it, never on the parent's clients", async (t) => {
+  const stub = await startStubOrSkip(t, ['EchoTool']);
+  if (!stub) return;
+  const down = { throw: false };
+  const indexed: string[][] = [];
+  const variant: ToolsVariantFactory = () => {
+    const inner = mcpToolsVariants.faceted();
+    return {
+      name: inner.name,
+      bind(target) {
+        const b = inner.bind(target);
+        return {
+          key: b.key,
+          profileName: b.profileName,
+          rag: b.rag,
+          retrieval: b.retrieval,
+          index: async (items, o) => {
+            if (down.throw) throw new Error('fill down');
+            indexed.push(items.map((i) => i.name));
+            return b.index(items, o);
+          },
+          remove: (refs, o) => b.remove(refs, o),
+          get: (ref, o) => b.get(ref, o),
+        };
+      },
+    };
+  };
+  const parent = {
+    async listTools() {
+      return {
+        ok: true as const,
+        value: [{ name: 'ParentTool', description: 'Tool ParentTool', inputSchema: { type: 'object', properties: {} } }],
+      };
+    },
+    async callTool() {
+      return { ok: true as const, value: { content: 'ok' } };
+    },
+  } as unknown as IMcpClient;
+  const server = new SmartServer(
+    {
+      port: 0,
+      llm: { model: 'test-model' },
+      skipModelValidation: true,
+      mode: 'smart',
+      rag: { store: { type: 'in-memory' }, profiles: { tools: { variant: 'v' } } },
+      toolsVariantFactories: { v: variant },
+      mcpClients: [parent],
+      subAgentConfigs: [
+        {
+          name: 'own',
+          config: { skipModelValidation: true, rag: { store: { type: 'in-memory' } }, mcp: { type: 'http', url: stub.url } },
+        },
+      ],
+    } as unknown as SmartServerConfig,
+    constructionSeams,
+  );
+  type Own = {
+    _workers: {
+      cache: Map<string, { toolsRag?: IRag; mcpClients?: IMcpClient[] }>;
+      build(parts: SessionAgentParts): Promise<unknown>;
+      drain(): Promise<void>;
+    };
+    _embeddedSessionParts(mcpClients: undefined, ragRegistry: SimpleRagRegistry): SessionAgentParts;
+  };
+  const ownFills = () => indexed.filter((c) => c.includes('EchoTool')).length;
+  const has = async (rag: IRag, name: string) => {
+    const b = toolsBindingOf(rag);
+    assert.ok(b, 'bound');
+    const got = await b.get({ itemId: `tool:${name}`, owner: { scope: 'global' } });
+    assert.ok(got.ok);
+    return got.value !== null;
+  };
+  let handle: Awaited<ReturnType<SmartServer['start']>> | undefined;
+  try {
+    handle = await server.start();
+    const s = server as unknown as Own;
+    const rewire = () => s._workers.build(s._embeddedSessionParts(undefined, new SimpleRagRegistry()));
+    const first = s._workers.cache.get('own')?.toolsRag;
+    assert.ok(first && (await has(first, 'EchoTool')), 'precondition: filled at startup by its own builder');
+    assert.equal(ownFills(), 1);
+    assert.equal(stub.initializeCount(), 1);
+
+    await s._workers.drain();
+    down.throw = true;
+    await assert.rejects(rewire(), /fill down/);
+    assert.equal(s._workers.cache.has('own'), false, 'no cached worker with an empty store and no clients of its own');
+    assert.equal(stub.initializeCount(), 2, 'the failed construction connected on its own mcp:');
+
+    down.throw = false;
+    await rewire();
+    const entry = s._workers.cache.get('own');
+    assert.ok(entry?.toolsRag && entry.toolsRag !== first, 'constructed again: a fresh store');
+    assert.equal(ownFills(), 2, 'the fill ran again');
+    assert.equal(await has(entry.toolsRag, 'EchoTool'), true);
+    assert.equal(await has(entry.toolsRag, 'ParentTool'), false, "never filled from the parent's clients");
+    assert.ok(
+      entry.mcpClients && entry.mcpClients.length > 0 && !entry.mcpClients.includes(parent),
+      "re-wires get the worker's own connection, not the parent's clients",
+    );
+    assert.equal(stub.initializeCount(), 3, 'the new construction connected on its own mcp:');
+  } finally {
+    if (handle) await handle.close();
+    await stub.close();
+  }
+});
 ```
 
 - [ ] **Step 6: Run to see them fail**
 
 Run: `npx tsc -b packages/llm-agent-libs && node --import tsx/esm --test packages/llm-agent-server-libs/src/smart-agent/__tests__/profile-fill-ready-clients.test.ts`
-Expected: FAIL — (1), (2), (3), (5), (6) find the store empty (`calls` is `[]`, no `toolCatalog`); (7) finds the worker's store empty; (9) fails its startup precondition (`calls.length` is 0), and the rebuilt stores are empty too; (10) finds no `_configReload`; (12) fails its precondition (no startup fill); (4) passes already (it pins 30.1.0), and so does (11) (nothing fills a worker yet — it pins that a re-wire never will). In `mcp-yaml-vectorization.test.ts` the D38 test finds the worker's store empty after `start()`. `config-reload-entry.test.ts` passes already: it pins the existing link from the watcher's event to `_onReload`.
+Expected: FAIL — (1), (2), (3), (5), (6) find the store empty (`calls` is `[]`, no `toolCatalog`); (7) finds the worker's store empty; (9) fails its startup precondition (`calls.length` is 0), and the rebuilt stores are empty too; (10) finds no `_configReload`; (12) fails its precondition (no startup fill); (12b) fails its precondition too (no startup fill), and once filled it would find the entry kept — a backfill failure is outside any cleanup; (4) passes already (it pins 30.1.0), and so does (11) (nothing fills a worker yet — it pins that a re-wire never will). In `mcp-yaml-vectorization.test.ts` the D38 test finds the worker's store empty after `start()`; the D47 own-`mcp:` test finds the cache entry kept after the failed rebuild (the builder-driven fill throws inside `subBuilder.build()`, outside the fill's catch), and the next session re-wires that empty store with the parent's clients. `config-reload-entry.test.ts` passes already: it pins the existing link from the watcher's event to `_onReload`.
 
 - [ ] **Step 7: Implement (server)**
 
@@ -13842,48 +14064,77 @@ In `smart-server.ts`:
       subBuilder = subBuilder.withMcpClients(workerMcp.clients);
     }
     ```
-  - immediately before `const handle = await subBuilder.build();` (after the `withRetrievalStrategy` loop), the fill — on the construction only (D35, D41):
+  - replace the tail of `buildSubAgent` — from `const handle = await subBuilder.build();` (after the `withRetrievalStrategy` loop) through `return handle.agent;`, i.e. the build and the `if (!injected) { … backfillWorkerCacheFromHandle(entry, handle); }` backfill — with the fill, the build and the backfill under ONE failure cleanup — the whole construction (D35, D41, D47):
     ```ts
-    // ---- The construction that creates a bound store fills it, once (spec §6.3 rule 2, D35, D41) ----
+    // ---- The worker's construction: fill, build, backfill (spec §6.3 rule 2, D35, D41, D47) ----
     // `!injected` is the worker's construction: resolveWorkerLlmSet created
-    // its OWN store (cached.toolsRag, bound by withToolsStore) in this very
-    // call — the startup primary build, or the lazy rebuild after a drain
-    // (PUT /v1/config, hot reload). A per-session re-wire (`injected`) gets the
-    // cached store by reference and never fills: no memo, no retry. The fill
-    // runs the store's fill source (D42) from the clients every re-wire will
-    // hand this worker, so its records carry the names its agent dispatches
-    // by (D32). A store read by reference (no cached.toolsRag: the main one)
-    // is never filled here.
-    if (!injected && cached.toolsRag) {
-      const fillFrom =
-        workerMcp ??
-        // Nothing of its own is handed over: a worker on its own `mcp:` is
-        // filled by its own builder on this build (§6.1). Otherwise the shared
-        // clients with their descriptors, once known — on yamlBuilderConnect
-        // they are harvested after the startup build and _buildInfra fills
-        // this store right after the harvest (D38).
-        (!subCfg.mcp && this._sharedMcpClients !== undefined
-          ? {
-              clients: this._sharedMcpClients,
-              descriptors: this._sharedMcpClientDescriptors,
-              configuredSlotCount: this._configuredSlotCount,
-            }
-          : undefined);
-      if (fillFrom) {
-        try {
+    // its OWN store (cached.toolsRag, bound by withToolsStore) and cached the
+    // set in this very call — the startup primary build, or the lazy rebuild
+    // after a drain (PUT /v1/config, hot reload). A per-session re-wire
+    // (`injected`) gets the cached store by reference and never fills: no memo,
+    // no retry. The fill runs the store's fill source (D42) from the clients
+    // every re-wire will hand this worker, so its records carry the names its
+    // agent dispatches by (D32). A store read by reference (no
+    // cached.toolsRag: the main one) is never filled here.
+    //
+    // The set is cached BEFORE all three steps, so a construction that fails
+    // ANYWHERE — the server's fill below, subBuilder.build() (a worker on its
+    // own `mcp:` is filled by its builder there, through the same fill
+    // source), or the backfill — drops that entry and closes the handle it
+    // built (what drainWorkerCache would close) before rethrowing: the next
+    // session constructs the worker again — a new store, filled again, on its
+    // own connection — instead of re-wiring an empty or partial store with the
+    // parent's clients (spec §6.3, D47). A failed build() has no handle: it
+    // stops its servers and disposes its connection strategy itself (libs
+    // Step 3). The set's DI clients are the config's, not this construction's:
+    // never closed here. A failed re-wire (`injected`) touches no cache entry.
+    let handle: SmartAgentHandle | undefined;
+    try {
+      if (!injected && cached.toolsRag) {
+        const fillFrom =
+          workerMcp ??
+          // Nothing of its own is handed over: a worker on its own `mcp:` is
+          // filled by its own builder on this build (§6.1). Otherwise the shared
+          // clients with their descriptors, once known — on yamlBuilderConnect
+          // they are harvested after the startup build and _buildInfra fills
+          // this store right after the harvest (D38).
+          (!subCfg.mcp && this._sharedMcpClients !== undefined
+            ? {
+                clients: this._sharedMcpClients,
+                descriptors: this._sharedMcpClientDescriptors,
+                configuredSlotCount: this._configuredSlotCount,
+              }
+            : undefined);
+        if (fillFrom) {
           await this.fillBoundToolsStore(cached.toolsRag, fillFrom.clients, {
             descriptors: fillFrom.descriptors,
             configuredSlotCount: fillFrom.configuredSlotCount,
           });
-        } catch (err) {
-          // resolveWorkerLlmSet cached the set before this build: drop it, so no
-          // session re-wires a worker whose store was never filled (spec §6.3).
-          this._workers.cache.delete(name);
-          throw err;
         }
       }
+
+      handle = await subBuilder.build();
+
+      // Backfill the per-worker cache from the BUILT handle (review HIGH #7).
+      // Only on the construction (no `injected`), so per-session re-wires
+      // never overwrite the cache.
+      if (!injected) {
+        const entry = this._workers.cache.get(name);
+        if (entry) await backfillWorkerCacheFromHandle(entry, handle);
+      }
+      return handle.agent;
+    } catch (err) {
+      if (!injected) {
+        this._workers.cache.delete(name);
+        // close() never throws (the builder's contract); after a backfill
+        // failure it may be the entry's close too — the entry is gone, so it
+        // runs once.
+        await handle?.close();
+      }
+      throw err;
     }
     ```
+    (`type SmartAgentHandle` is already in the `@mcp-abap-adt/llm-agent-libs` import. The eviction is unconditional on `name`, as before: concurrent constructions after a drain stay the 30.1.0 race moved out, D45 — this changes no single-flight behaviour.)
   - import: `import { connectedMcpServer } from './workers/connected-mcp-server.js';` beside the `./workers/worker-registry.js` import (`McpClientDescriptor` is already in the type import).
 - `packages/llm-agent-server-libs/src/smart-agent/workers/connected-mcp-server.ts` (new):
   ```ts
@@ -14096,7 +14347,7 @@ In `smart-server.ts`:
   });
   ```
 
-Failure policy (spec §6.3) needs no extra code: `vectorizeMcpTools` counts a failing or throwing `listTools()` in `clientFailures`, sets `complete: false` and logs the summary through `this._fileLogger`; `HealthChecker` turns `complete: false` into `degraded` (main store); startup goes on. A thrown error (an `IToolRecordKey` id without `tool:`, mismatched descriptors, a binding its store does not carry) propagates: out of `_buildInfra` (main store, or a worker's startup build) and fails startup, as on the builder's path; out of `WorkerRegistry.build` on a lazy rebuild, failing that session's worker build like any worker build error — `buildSubAgent` drops the worker's cache entry first, so the next session constructs it again (and a configuration error stays loud). An incomplete fill is not retried (D41): it stays reported until a new instance is created — a reconnect's `toolsChanged` never writes a bound store (D46). `/health` reports the main catalog only (spec §6.3); a worker's fill is the logged summary line.
+Failure policy (spec §6.3) needs no extra code: `vectorizeMcpTools` counts a failing or throwing `listTools()` in `clientFailures`, sets `complete: false` and logs the summary through `this._fileLogger`; `HealthChecker` turns `complete: false` into `degraded` (main store); startup goes on. A thrown error (an `IToolRecordKey` id without `tool:`, mismatched descriptors, a binding its store does not carry) propagates: out of `_buildInfra` (main store, or a worker's startup build) and fails startup, as on the builder's path; out of `WorkerRegistry.build` on a lazy rebuild, failing that session's worker build like any worker build error — `buildSubAgent` drops the worker's cache entry first — whichever step of the construction failed: the server's fill, `subBuilder.build()` (a worker on its own `mcp:` is filled there by its builder) or the backfill — and closes the handle it built, so the next session constructs it again (and a configuration error stays loud). An incomplete fill is not retried (D41): it stays reported until a new instance is created — a reconnect's `toolsChanged` never writes a bound store (D46). `/health` reports the main catalog only (spec §6.3); a worker's fill is the logged summary line.
 
 - [ ] **Step 8: Run (gate: build + the new and neighbouring tests)**
 
@@ -17524,7 +17775,7 @@ Recommendations applied to the earlier open choices (the user may still overrule
 
 | # | Decision | Done in |
 |---|---|---|
-| D41 | A tools store is filled once, when its instance is created; never refilled while running. The main store in `_buildInfra`; a worker's own store by its construction (`buildSubAgent` without `injected`); a per-session re-wire never fills. No refill API, no memo, no retry; an incomplete fill is reported and stays. A construction whose fill throws drops the worker's cache entry. Tests: (11) a re-wire never fills after a failed listing; (12) a throwing fill leaves no cached worker | Task 23A |
+| D41 | A tools store is filled once, when its instance is created; never refilled while running. The main store in `_buildInfra`; a worker's own store by its construction (`buildSubAgent` without `injected`); a per-session re-wire never fills. No refill API, no memo, no retry; an incomplete fill is reported and stays. A construction that fails anywhere (the server's fill, `subBuilder.build()` incl. a builder-driven fill, the backfill) drops the worker's cache entry and closes what it built. Tests: (11) a re-wire never fills after a failed listing; (12) a throwing fill leaves no cached worker; (12b) a throwing backfill; the D47 own-`mcp:` test in `mcp-yaml-vectorization.test.ts` | Task 23A |
 | D42 | *Amended by D54: `prebuilt` / `PrebuiltToolsStore` removed — three sources.* The fill source is a strategy: `IToolsFillSource` / `ToolsFillContext` (llm-agent), attached with the binding (`bindToolsProfile(profile, target, source?)`, default `LiveToolsFill`) and read from the store; `vectorizeMcpTools` dispatches to the source (`fill` only since D46): `fill` / `toolsChanged`; `LiveToolsFill`, `ConsumerToolsFill`, `ToolsCorpusLoader`, `PrebuiltToolsStore`; `withToolsProfile(profile, source?)`; YAML `fill` + `toolsFillFactories` | Tasks 19, 19A, 20, 23B, 33, 34 |
 | D43 | *Amended by D54: `deployToolsCorpus`, the service record and `serviceRecord` removed; `buildToolsCorpus` / `parseToolsCorpus` stay; the server loads the corpus at start (Task 19A, 23B).* Offline corpus API: `buildToolsCorpus` (build step, the profile's own indexer over capture stores), `parseToolsCorpus`, `deployToolsCorpus` (deploy step: precomputed, in place, idempotent, write-ahead, a `tools-corpus` service record — *its per-record hashes and hash-skip superseded by D51: the deploy writes the whole corpus*); reserved key `serviceRecord`, dropped by `StagedRetrieval`. `ToolsCorpusLoader` — the in-memory source — checks the fingerprint, writes the records precomputed and reports the status, nothing else | Tasks 2, 11, 12, 19A, 33, 34 |
 | D44 | *Superseded by D46.* `toolsChanged` is the source's answer: `live` / `consumer` re-index as 30.1.0; `corpus` / `prebuilt` write nothing and log a warning | — |
@@ -17535,7 +17786,7 @@ Recommendations applied to the earlier open choices (the user may still overrule
 | # | Decision | Done in |
 |---|---|---|
 | D46 | *(`PrebuiltToolsStore` removed by D54.)* No reaction to `toolsChanged` for a bound store: `IToolsFillSource` is `fill` only (its `toolsChanged` removed from the contract, `LiveToolsFill`, `ConsumerToolsFill`, `ToolsCorpusLoader`, `PrebuiltToolsStore`, and `warnUnchanged` gone); `vectorizeMcpTools` has no `event` and runs `fill` for a bound store; `McpToolRegistry.revectorizeTools` returns before writing when `toolsBindingOf(store)` finds a binding (one `DEBUG_MCP` line, no warning); an unbound store keeps the 30.1.0 re-vectorize. `ConsumerToolsFill`: the library never writes. Tests: a bound store is not written on `tools-changed` (no listing, no write, no source call, no warning); a bound store behind `FallbackRag` (initial fill + reconnect); an unbound store keeps 30.1.0; a consumer store unwritten on a reconnect; a reconnect never calls the source. Removed: the re-index-through-profile, companions-on-update, writerless-refresh-on-`toolsChanged` and source-`toolsChanged` tests | Tasks 19, 19A, 20, 23A, 23B, 33, 34 |
-| D47 | *Amended by D54: `corpus` only (no `prebuilt`); the loader also checks the store's declared `dimensions`.* Approved as written: the fingerprint is the consumer-named `ToolsCorpusIdentity { profile, embedder }` plus the library's own checks (*the companion-set check superseded by D50*); a worker construction whose fill throws drops that cache entry; a worker with its own `rag` and own clients is refused when the fill is `corpus` or `prebuilt` | Tasks 19A, 23A, 23B (no change) |
+| D47 | *Amended by D54: `corpus` only (no `prebuilt`); the loader also checks the store's declared `dimensions`.* Approved as written: the fingerprint is the consumer-named `ToolsCorpusIdentity { profile, embedder }` plus the library's own checks (*the companion-set check superseded by D50*); a worker construction whose fill throws drops that cache entry (*any failure of the construction — the server's fill, `subBuilder.build()` incl. the builder-driven fill, the backfill — spec §6.3*); a worker with its own `rag` and own clients is refused when the fill is `corpus` or `prebuilt` | Tasks 19A, 23A, 23B (no change) |
 
 ## Review finding on 2026-10-05 — an unfinished corpus deploy is rewritten in full (spec §17.13)
 
