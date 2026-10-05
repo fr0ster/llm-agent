@@ -400,6 +400,18 @@
 > start (exit code 1) with the same `invalid config — <field> <rule>, got <value>` message
 > (§10.5.9 *Config field rules*, §13 B20, §14.1, §17.32).
 >
+> **Amended 2026-10-06 (26)** for the user's decisions (§17.33, D83 (6), (7)): **a number may be
+> written as a number literal string, a flag as `"true"` / `"false"`, and every config field that
+> was coerced is validated.** One grammar for every input (start, reload, `PUT`): a numeric field
+> takes a number or a string that is exactly a JSON number literal (no spaces, no `NaN` /
+> `Infinity`, no hex), then the field's rule; a flag takes `true` / `false` or exactly `"true"` /
+> `"false"` — so `${VAR}` substitution keeps working at start. Every other field the start coerced
+> with `Number()` / `Boolean()` / `String()` (the `agent`, `llm`, `rag.store`, `rag.embedder`,
+> `mcp`, `decision`, `skillPlugins` fields, the stepper's section, `port`) gets a rule in the same
+> validator and fails the start when invalid; the "not covered" list is gone. `optionalNumber` is
+> removed from server-libs (migration line 75) (§10.5.9 *Config field rules*, §13 B19, B20, §14.1,
+> §17.33).
+>
 > Every path that creates or refreshes a tools store is audited in §6.4. Earlier open choices are
 > settled by the recommendations applied in §17.9; the user may still overrule them.
 
@@ -3664,10 +3676,33 @@ Layer: framework (libs) for S-1–S-9, server for S-10.
 **Config field rules (D83).** One validator — server-libs `smart-agent/config-fields.ts`
 (internal) — checks every field a running server changes, for all three inputs: the start config
 (D83 (5), below), the file reload (V6, every field `ConfigWatcher` reads) and `PUT /v1/config`
-(V10, its whitelist). No value is
-coerced: a number must be a JSON / YAML number, a flag `true` or `false`. Every invalid field is
+(V10, its whitelist) — and, at start, every other field the start reads (*Start-only fields*
+below, D83 (7)). No value is coerced; one grammar holds for every input (D83 (6), decided by the
+user on 2026-10-06):
+
+- **A number** is a JSON / YAML number, or a string that is exactly a **number literal** —
+  JSON's number grammar over the whole string,
+  `^-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?$` (`NUMBER_LITERAL`): an optional `-`, an
+  integer part without leading zeros, an optional fraction, an optional exponent. `"25"`, `"-1"`,
+  `"0.5"`, `"1e3"` are numbers; `" 25"`, `"25 "`, `"25abc"`, `""`, `"+5"`, `"025"`, `".5"`,
+  `"5."`, `"0x19"`, `"1_000"`, `"NaN"`, `"Infinity"` are not. The `-` is part of the grammar for
+  every field and the field's range refuses a negative where it has no room for one (`"-1"` for
+  `agent.maxToolCalls` → `must be >= 0, got "-1"`). A literal whose value is not finite
+  (`"1e999"`) fails `must be a finite number`. The parsed number then goes through the field's
+  rule (integer, range); the validated value is the number, never the string. Why this grammar:
+  it is what `JSON.parse` accepts and how a YAML 1.2 plain scalar writes a number; no leading
+  zeros (YAML 1.1 reads `025` as octal 21), no `+`, no `.5` — forms nobody needs in an
+  environment variable and that read differently in different parsers.
+- **A flag** is `true` / `false`, or exactly the string `"true"` / `"false"` (lowercase);
+  `"yes"`, `"True"`, `"1"`, `1`, `null` are not.
+- **A string** field takes a string only (a YAML number is not a string — quote it); a *non-empty
+  string* is one with a non-blank character; a *one of* field takes exactly one of the listed
+  names.
+
+Every invalid field is
 named in one error, `<field> <rule>, got <value>`, with the field as the input spells it
-(`agent.maxIterations`, `rag.store.vectorWeight`, `models.mainModel`). Each range is what the
+(`agent.maxIterations`, `rag.store.vectorWeight`, `models.mainModel`) and the value as the input
+holds it (`got "oops"`, `got " 25"`). Each range is what the
 code that reads the field can work with:
 
 | Field | Rule | Why |
@@ -3697,9 +3732,69 @@ directory and model resolver); `SmartAgent` receives typed values from its compo
 parses no config. Every caller is a server-libs module and the validator imports only libs'
 types, so no cycle is possible.
 
+**Start-only fields (D83 (7), decided by the user on 2026-10-06).** Every other config field the
+start reads with `Number()` / `Boolean()` / `String()` (30.1.0) is checked by the same validator
+(the same grammar, `FieldCheck` and error) where its section is read; nothing reloads or `PUT`s
+them. A field with no value (`timeout:`) is `null` and fails its rule, as above; an absent field
+keeps its 30.1.0 default.
+
+| Field | Rule | Why |
+|---|---|---|
+| `port` (`args.port`, else the YAML's `port`, else `env.PORT` — the one used is checked and named so: `args.port`, `port`, `env.PORT`) | integer in [0, 65535] | a TCP port; 0 lets the OS pick one |
+| `agent.contextBudgetTokens` | integer ≥ 0 | a token budget for the RAG context; 0 = no limit |
+| `agent.historyRecencyWindow` | integer ≥ 1 | the last N client messages kept; 0 would `slice(-0)` — keep every message |
+| `agent.heartbeatIntervalMs` | integer in [0, 2147483647] | a timer delay in ms; 0 disables the keep-alive (documented); Node clamps a delay above 2³¹−1 to 1 ms. An invalid value disabled it with a console warning — it now fails |
+| `agent.healthTimeoutMs` | integer in [1, 2147483647] | a probe's timer delay in ms |
+| `agent.semanticHistoryEnabled`, `agent.toolReselectPerIteration`, `agent.ragTranslateEnabled`, `agent.refreshToolsPerIteration`, `agent.mcpSharedClient` | flag | a switch |
+| `agent.historyTurnSummaryPrompt` | non-empty string | a prompt |
+| `agent.streamMode` | one of `full`, `final` | the names the tool loop knows |
+| `agent.llmCallStrategy` | one of `streaming`, `non-streaming`, `fallback` | the names the server maps to a strategy |
+| `llm.temperature`, `llm.classifierTemperature`, and each `llm.<role>.temperature` / `.classifierTemperature` of the map | finite number ≥ 0 | a sampling temperature; the upper bound is the provider's |
+| `llm.maxTokens`, `llm.<role>.maxTokens` | integer ≥ 1 | a token cap |
+| `llm.whenThrottled.maxAttempts`, `llm.<role>.whenThrottled.maxAttempts` | integer ≥ 1 | attempts include the first |
+| `llm.resourceGroup`, `llm.<role>.resourceGroup` | non-empty string | an SAP AI Core resource group |
+| `rag.store.collectionName`, `.connectionString`, `.host`, `.schema`, `.database`, `.url` | non-empty string | a name or an address |
+| `rag.store.port` | integer in [1, 65535] | a TCP port |
+| `rag.store.poolMax` | integer ≥ 1 | a pool size |
+| `rag.store.connectTimeout` | integer ≥ 0 | ms; 0 = the driver's "no timeout" (pg `connectionTimeoutMillis`, HANA `communicationTimeout`) |
+| `rag.store.dimension` | integer ≥ 1 | a vector size |
+| `rag.store.autoCreateSchema` | flag | a switch (30.1.0: anything but `true` / `"true"` read as `false`) |
+| `rag.store.timeoutMs` (qdrant) | integer in [1, 2147483647] | a request timeout in ms |
+| `rag.store.dedupThreshold` (in-memory) | finite number in [0, 1] | a cosine-similarity threshold |
+| `rag.embedder.provider`, `.factory`, `.model`, `.url`, `.resourceGroup` | non-empty string | a name or an address (`checkRag` still checks which names exist) |
+| `rag.embedder.scenario` | one of `orchestration`, `foundation-models` | SAP AI Core's two scenarios |
+| `rag.embedder.maxBatchSize` | integer ≥ 1 | a batch size |
+| `rag.embedder.asymmetric` | flag | a switch (`checkRag` keeps its provider rule) |
+| `mcp.timeout` and each `mcp[i].timeout` | integer in [1, 2147483647] | a request timeout in ms |
+| `mcp.args` (single server; `args.mcp-args` when set) | non-empty string | split on spaces into the command's arguments (30.1.0: a YAML list became `"a,b"`) |
+| `decision.model`, `decision.baseUrl` | non-empty string | as `checkDecision` already required |
+| `decision.deploymentId`, `decision.resourceGroup` (`provider: sap-aicore`, §6.2) | non-empty string | names (`String()` in the first draft of this change) |
+| `decision.timeoutMs`; `rag.retrieval.<store>.overfetch`, `.maxCandidates` | integer ≥ 1 | unchanged rules; the string form now follows `NUMBER_LITERAL` (30.1.0's `parseIntegerField` also took surrounding spaces) |
+| `decision.maxRetries` | integer ≥ 0 | unchanged rule, the same grammar |
+| `skillPlugins.k`, `.maxInjectChars`, `.catalogCasMaxAttempts`, `.orphanGraceMs`, `.recallTimeoutMs`, `.dimension`, `.chunk.maxChars` | integer ≥ 1 | counts, sizes and durations (their 30.1.0 rules; `Number()` let `" 4"` and `"0x4"` through) |
+| `skillPlugins.retiredGraceMs` | integer ≥ 1000 | its 30.1.0 rule |
+| `skillPlugins.threshold` | finite number in [0, 1] | a similarity threshold |
+| `skillPlugins.loadOnStartup`, `skillPlugins.strict` | flag | a switch (30.1.0: `Boolean("false")` is `true`) |
+| `skillPlugins.embedder.provider`, `.model` | non-empty string | a name |
+| `stepper.maxParallelSteps` (the stepper / controller pipeline's `pipeline.config`) | integer ≥ 1 | a pool size |
+| `stepper.maxDepth` | integer ≥ 0 | a recursion depth; 0 = no recursion |
+| `stepper.tokenBudget` | integer ≥ 1 | a token ledger's budget |
+| `rag.profiles.<key>` integers (`poolItems`, `maxItems`, `items`, `maxValues`, `fixed-items`, `minItems`, `budgetTokens`) and `score-floor.minScore` (§6.2) | their §6.2 rules | the same grammar: an integer field through `parseIntegerField`, `minScore` a finite number, normalized to a number before the resolver reads it |
+
+Where a section has its own parser, that parser applies the rules with its own `FieldCheck` and
+throws its own `ConfigFieldError`: `skillPlugins` (`parseSkillPluginsConfig`, named
+`skillPlugins.<field>`) and the stepper's section (`parseStepperCoordinatorConfig`, public,
+named `stepper.<field>` — the key inside the pipeline's `config`; it runs when the server builds
+the pipeline at start). The integer fields `config-validator.ts` checks (`decision`,
+`rag.retrieval`, `rag.profiles`) keep their `ConfigValidationError` and messages; their string
+form goes through the same `NUMBER_LITERAL` (`parseIntegerField` uses it). Fields read by a cast
+and never coerced (`agent.retry`, `agent.toolSelection`, `mcp.toolTimeouts`, `mcp.headers`, the
+other fields of an `mcp[]` entry) are not part of this decision.
+
 **The start config (D83 (5), the user's rule of 2026-10-06: no silent degradation).** Every field
 of the table except the three `models.*` names (a `PUT` input only) is checked at start too, with
-the same rules and the same error, before anything is built — also `circuitBreaker`, which the
+the same rules and the same error, before anything is built (and every start-only field above,
+D83 (7)) — also `circuitBreaker`, which the
 start does not take from the YAML (as the reload checks the fields it does not apply: the file is
 the whole config):
 
@@ -3709,8 +3804,11 @@ the whole config):
   `logDir`) — exactly the input a reload of the same file would validate — plus the two
   `ResolveConfigArgs` overrides that replace two of them, checked in place
   (`args.agent-show-reasoning` a flag, `args.log-dir` a non-empty string, named so; a programmatic
-  caller passes them — the CLI sets neither). Every invalid field of one start is named
-  in one error, `invalid config — <field> <rule>, got <value>`.
+  caller passes them — the CLI sets neither). The section readers apply the start-only rules
+  with the same `FieldCheck` (`resolveSmartServerConfig` makes one per start and passes it), and
+  it throws once every section of the main file was read — before `skillPlugins` and the workers
+  are parsed. Every invalid field of the main file is named in one error,
+  `invalid config — <field> <rule>, got <value>`.
 - The section readers take the validated values instead of coercing: `resolveAgentSection` for
   the `agent.*` fields of the table, `resolveRagSection` for the in-memory weights,
   `resolvePromptsSection` for the prompts, and `logDir`. An absent field keeps its default as in
@@ -3727,15 +3825,20 @@ the whole config):
   `Error: <message>` to stderr and exits with code 1, before a logger, a store or a server is
   made. A start config is therefore always valid, which is what D82 (5) assumes (the server starts
   ready).
-- **A value substituted from `${VAR}` is a string.** The start resolves `${VAR}` before it reads
-  the file; the reload does not substitute at all. A field of this table written as `${VAR}` was
-  coerced at start and refused by every reload (D83); it now fails the start too — write the
-  number or the flag in the YAML. `logDir: ${LOG_DIR:-./sessions}` is a string and passes; a
-  `${VAR}` that resolves to an empty string fails `logDir`'s rule.
-- Not covered: the fields outside the table (e.g. `agent.contextBudgetTokens`,
-  `agent.heartbeatIntervalMs`, `rag.store.dedupThreshold`) keep their 30.1.0 reading — no reload
-  or `PUT` changes them and this decision does not widen the table; a `SmartServerConfig` a
-  consumer constructs in code is typed by its own composition root and is not re-validated.
+- **A value substituted from `${VAR}` is a string** (the start resolves `${VAR}` before it reads
+  the file), and that is allowed (D83 (6)): `maxIterations: ${MAX_ITERATIONS}` with
+  `MAX_ITERATIONS=25` is 25, `showReasoning: ${SHOW}` with `SHOW=true` is `true` — docker compose
+  keeps working. A variable that holds anything else fails its field (`MAX_ITERATIONS=" 25"`,
+  `25abc`, an unset variable with no default → `""`). `logDir: ${LOG_DIR:-./sessions}` is a
+  string and passes; a `${VAR}` that resolves to an empty string fails `logDir`'s rule.
+- **The file reload does not substitute `${VAR}`** (`ConfigWatcher` parses the file as written).
+  A field of the reload table written as `${VAR}` therefore reaches the reload as the text
+  `"${VAR}"`, which is no number literal and no flag: the start accepts the file, and a reload of
+  the same file fails naming the field (the server not ready until a whole config applies, V6).
+  Such a field is changed by a restart, or written as a value in the file. (Unchanged from D83:
+  30.1.0 applied `NaN` there.)
+- A `SmartServerConfig` a consumer constructs in code is typed by its own composition root and is
+  not re-validated; the server reads its numbers as numbers (no `optionalNumber`, D83 (7)).
 
 Plus M9–M11 (§10.5.3), R10 (§10.5.4), L7 (§10.5.6), S-10 (§10.5.8). Layer: server.
 
@@ -4153,9 +4256,9 @@ again, written either way.
   the package's `exports` lists only `./package.json` —, and libs' two dead internal files
   `src/adapters/index.ts` and `src/interfaces/model-resolver.ts` (no `exports` path, no importer).
 - **Migration table — one line per removed or moved name** (the CHANGELOG's **Breaking** section
-  carries it as is; **74 lines**). Every name keeps its members and behaviour; only the name or the
+  carries it as is; **75 lines**). Every name keeps its members and behaviour; only the name or the
   import path changes, except `FallbackRag` (line 5), `OllamaRag` (line 51) and the members of
-  lines 71–74, which are removed:
+  lines 71–75, which are removed:
 
   | # | Old name | Old import | New name | Import it from |
   |---|---|---|---|---|
@@ -4233,6 +4336,7 @@ again, written either way.
   | 72 | `SmartAgentBuilder.withCircuitBreakers` (method) | `@mcp-abap-adt/llm-agent-libs` | — (removed, D68) | — wrap the embedder with `withCircuitBreaker(embedder, breaker)` (`@mcp-abap-adt/llm-agent`) and list the breaker in `HealthCheckerDeps.circuitBreakers` |
   | 73 | `LazyOptions.fallback` (option of `lazy`) | `@mcp-abap-adt/llm-agent-libs` | — (removed, U6) | — an init failure propagates; a consumer that wants a substitute wraps the proxy itself |
   | 74 | `SmartAgentConfig.toolUnavailableTtlMs` (field) | `@mcp-abap-adt/llm-agent-libs` | `SmartAgentBuilder.withToolAvailabilityPolicy(new HeuristicToolAvailabilityPolicy({ ttlMs }))` (U8) | `HeuristicToolAvailabilityPolicy` from `@mcp-abap-adt/llm-agent-libs`; inject nothing for no blacklist (the new default) |
+  | 75 | `optionalNumber` (function) | `@mcp-abap-adt/llm-agent-server-libs` | — (removed, D83 (7)) | — the resolved config's `temperature` / `classifierTemperature` are numbers (validated at start); read them as they are |
 
   - Line 5, lines 71–72 (D68): `FallbackRag` is removed with the two members that existed only for
     it; the builder wraps no store, and `withCircuitBreaker(config)` builds the main-LLM breaker
@@ -4243,6 +4347,10 @@ again, written either way.
     `HeuristicToolAvailabilityPolicy({ ttlMs })`; one that set nothing had the blacklist on by
     default and now has none (behaviour row B15). The server's YAML key `agent.toolUnavailableTtlMs`
     stays and now means "inject the heuristic policy with this TTL"; unset → no blacklist.
+  - Line 75 (D83 (7)): `optionalNumber(value)` coerced any value with `Number()` (`"warm"` →
+    `NaN`); the start now validates the temperatures, so a `SmartServerConfig` from
+    `resolveSmartServerConfig` holds numbers. A consumer that called it reads the field directly
+    (a value of its own it validates itself).
   - Lines 1–4 and 6–39: add `@mcp-abap-adt/llm-agent-rag` as a dependency. A package that
     `llm-agent-rag` itself depends on (a store or embedder package) cannot import them (§11.3).
   - Lines 41–48: add `@mcp-abap-adt/llm-agent-reranker` as a dependency.
@@ -4321,8 +4429,8 @@ again, written either way.
   | B16 | a bulk write of the startup tool catalog into an unbound tools store (`upsertManyPrecomputedRaw` answers `ok: false` or throws, D79) | the tools written again one by one; the catalog complete when those writes succeeded | no per-tool write: the catalog is incomplete (`complete: false`, every tool of the batch in `failed`, `writeFailure: 'bulk write failed: <error>'`), the summary log line names it, `/health` answers 503 | fix the store the error names; a store that cannot take a bulk write does not implement `upsertManyPrecomputedRaw` (the per-record path is then the only one) |
   | B17 | a config change that fails to apply — `PUT /v1/config` whose apply (a setter, the startup agent's `reconfigure` / `applyConfigUpdate`, the mirror), worker drain or session invalidation fails; a file reload whose drain or invalidation fails (D80, D82, V6, V10) | `PUT`: a failed invalidation swallowed (200 with the new config); a failed drain or a throwing `reconfigure`: 500 from the server's catch-all with the new config left applied, the server still ready. Reload: the failure logged, the reload counted applied | `PUT`: **500** `server_error` naming the failure (`config update failed, the server is not ready until a whole config applies — …`); reload: `config_reload_failed`. **No rollback:** what the change applied stays. The server is **not ready** until a whole config applies: `/health` 503 with `configNotApplied: { reason, source, at }`, the chat routes 503 `service_unavailable` (`config not applied — …`). Config changes run one at a time (a `PUT` waits for a reload or another `PUT` in flight). **While not ready, only a whole config is accepted** (D82 (8)): a `PUT` missing a section the route can change (`agent`; `models` when the server has a model resolver) answers **409** `invalid_request_error`, code `config_not_applied` (`server not ready — send the whole config: <missing sections>`) and changes nothing | fix what the error names, then send the whole config — a `PUT /v1/config` carrying every section (`models` and `agent`; `agent` alone when the server has no model resolver), or save the YAML file (a reload re-reads all of it); a partial `PUT` is refused until then; the first whole config that applies makes the server ready. `GET /v1/config` shows the live config |
   | B18 | *Withdrawn by D82 (§17.30).* `SmartAgent.reconfigure` is unchanged from 30.1.0: a pipeline `reconfigure` hook that throws leaves the swap half-applied, as before; on the server that is a failed `PUT` (B17) — 500, and not ready until a whole config applies | — | — | — |
-  | B19 | a config field with an invalid value — a file reload or a `PUT /v1/config` carrying a non-number, a non-integer, an out-of-range number, a non-boolean flag or an empty string (§10.5.9 *Config field rules*, D83) | reload: the value coerced (`Number()`, `Boolean()`) and applied — `agent.maxIterations: oops` → `NaN` (no iteration limit), `showReasoning: "false"` → `true`; `PUT`: any JSON value of a whitelisted field applied as is. `ConfigWatcher`'s `reload` event carried the coerced values | reload: the transaction fails before anything applies — `config_reload_failed` naming each invalid field, the server not ready (B17); `PUT`: **400** `invalid_request_error` naming each invalid field, nothing applied or queued. `ConfigWatcher`'s `reload` event carries the file's values as read (`HotReloadableInput`) | fix the value the error names, then save the file or send the `PUT` again; a direct consumer of `ConfigWatcher` validates the event's values before it applies them |
-  | B20 | a field of the *Config field rules* table with an invalid value in the start config — the server's YAML, a worker file, or the `ResolveConfigArgs` overrides `agent-show-reasoning` / `log-dir` (§10.5.9, D83 (5)) | coerced at start with `Number()` / `Boolean()` and applied: `agent.maxIterations: oops` → `NaN` (no iteration limit), `showReasoning: "false"` → `true`, `rag.store.vectorWeight: "0.5"` → 0.5, an empty prompt read as absent; a `${VAR}` number accepted as its string | **the start fails, exit code 1**: `Error: invalid config — <field> <rule>, got <value>` on stderr (every invalid field in one line, the reload's and the `PUT`'s message; a worker file's error names the worker and its path); nothing is built | write the value as the rule says — a YAML number, `true` / `false`, a non-empty string; a field of the table cannot take `${VAR}` (it is a string; a reload of that file already failed) |
+  | B19 | a config field with an invalid value — a file reload or a `PUT /v1/config` carrying a value that is neither a number nor a number literal string, a non-integer, an out-of-range number, a flag other than `true` / `false` / `"true"` / `"false"`, or an empty string (§10.5.9 *Config field rules*, D83, D83 (6)) | reload: the value coerced (`Number()`, `Boolean()`) and applied — `agent.maxIterations: oops` → `NaN` (no iteration limit), `showReasoning: "false"` → `true`; `PUT`: any JSON value of a whitelisted field applied as is. `ConfigWatcher`'s `reload` event carried the coerced values | reload: the transaction fails before anything applies — `config_reload_failed` naming each invalid field, the server not ready (B17); `PUT`: **400** `invalid_request_error` naming each invalid field, nothing applied or queued. `ConfigWatcher`'s `reload` event carries the file's values as read (`HotReloadableInput`). A number literal string (`"25"`) and `"true"` / `"false"` are accepted and applied as the number / flag (D83 (6)) | fix the value the error names, then save the file or send the `PUT` again; a direct consumer of `ConfigWatcher` validates the event's values before it applies them |
+  | B20 | a config field read at start with an invalid value — a field of the *Config field rules* table or of the *Start-only fields* table, in the server's YAML, a worker file, `skillPlugins`, the stepper's pipeline section, the `ResolveConfigArgs` overrides `agent-show-reasoning` / `log-dir` / `port` / `mcp-args`, or `PORT` (§10.5.9, D83 (5), (7)) | coerced at start with `Number()` / `Boolean()` / `String()` and applied: `agent.maxIterations: oops` → `NaN` (no iteration limit), `showReasoning: "false"` → `true`, `agent.historyRecencyWindow: oops` → `NaN`, `rag.store.autoCreateSchema: "yes"` → `false`, `skillPlugins.strict: "false"` → `true`, `llm.temperature: warm` → `NaN`, `llm.maxTokens: " 25"` → 25, `mcp.args: [a, b]` → `"a,b"`, `agent.heartbeatIntervalMs: oops` → the keep-alive disabled with a console warning, an empty prompt read as absent | **the start fails, exit code 1**: `Error: invalid config — <field> <rule>, got <value>` on stderr (every invalid field of the main file in one line, the reload's and the `PUT`'s message; a worker file's error names the worker and its path; `skillPlugins` and the stepper's section in their own error); nothing is built. A number literal string (`"25"`, e.g. from `${VAR}`) and `"true"` / `"false"` pass (D83 (6)) | write the value as the rule says — a number or a number literal, `true` / `false` (or `"true"` / `"false"`), a non-empty string, one of the listed names; a `${VAR}` must hold such a value |
 - **Named compositions carry no tuned numbers** (D55): `mcpToolsVariants` has `baseline`,
   `faceted` and `faceted-rerank`; pools and cuts default to the caller's k; `faceted-rerank`
   requires `poolItems`. New in this release, so nothing released changes.
@@ -4382,7 +4490,12 @@ again, written either way.
   where each mode is: `docs/INTEGRATION.md` (the tool availability policy, `lazy` without
   `fallback`, `HybridDispatch`, the LLM call strategy's fallback count), `docs/EXAMPLES.md` and
   `docs/DEPLOYMENT.md` (`agent.toolUnavailableTtlMs` now opts in; `skillPlugins.strict` defaults to
-  `true`), `docs/TROUBLESHOOTING.md` (`llm_streaming_fallback`, `worker_uses_shared_clients`,
+  `true`; every config field validated at start, on a reload and on `PUT` — an environment
+  variable's value is allowed for a number or flag field when it is a number literal or
+  `true` / `false`, and a `${VAR}` in a reloadable field fails every reload, D83 (6), (7)),
+  `docs/ARCHITECTURE.md` (`agent.heartbeatIntervalMs`: 0 disables, an invalid value fails the
+  start), the five `docs/examples/stepper/` files (their `url: ${EMBEDDER_URL:-}` is `""` when
+  unset and fails `rag.embedder.url` — the line becomes a comment), `docs/TROUBLESHOOTING.md` (`llm_streaming_fallback`, `worker_uses_shared_clients`,
   `batchFailures`).
 
 ---
@@ -4748,8 +4861,8 @@ again, written either way.
   `agent.maxIterations`, `notApplied` set (`source: 'reload'`), the agent update never called, the
   limit unchanged; then `maxIterations: 0` while not ready → failed again, still not ready, the
   reason the new one; then `maxIterations: 25` → applied, ready, the limit 25. `PUT /v1/config`
-  with `"oops"`, `null`, `1e999` (`Infinity`), `0`, `2.5` for `maxIterations`, `"false"` for
-  `showReasoning`, `""` for `models.mainModel` → 400 naming the field, nothing applied, no model
+  with `"oops"`, `null`, `1e999` (`Infinity`), `0`, `2.5`, `" 25"` for `maxIterations`, `"yes"`
+  for `showReasoning`, `""` for `models.mainModel` → 400 naming the field, nothing applied, no model
   resolved, no transaction (the state unchanged); while not ready a whole `PUT` with an invalid
   value → 400 (not 409), the state the same object. The start config (D83 (5)):
   `resolveSmartServerConfig` over a YAML with `agent.maxIterations: oops` → `ConfigFieldError`,
@@ -4760,7 +4873,17 @@ again, written either way.
   real `ConfigWatcher` emits for the same file (the same paths); a valid YAML → the values as
   written (`maxIterations: 5` is 5, `showReasoning: true`, the in-memory weights, the prompts),
   an absent field its default, and a real `SmartServer` starts from it; the CLI with
-  `maxIterations: oops` exits 1 with that message on stderr. `process()` on a pipeline that fails → the root span's
+  `maxIterations: oops` exits 1 with that message on stderr. The grammar (D83 (6)): `"25"`,
+  `"-1"` (where the range allows it), `"0.5"`, `"1e3"` pass as numbers; `" 25"`, `"25 "`,
+  `"25abc"`, `""`, `"NaN"`, `"Infinity"`, `"0x19"`, `"025"`, `"+5"`, `".5"` fail as `must be a
+  finite number`, `"1e999"` too; `"-1"` for a field with min 0 fails its range; `"true"` /
+  `"false"` pass as flags, `"yes"`, `"True"`, `1` fail; the same on a reload and a `PUT`
+  (`{"maxIterations":"25"}` → 200, the limit 25); a start from a YAML with `${MAX}` and
+  `MAX=25` → 25. Every start-only field (D83 (7)) — one valid and one invalid value each, named
+  at its path; `parseIntegerField(" 5")` is `'invalid'`, `parseIntegerField("5")` 5;
+  `parseSkillPluginsConfig` with `strict: "false"` → `false`, `k: " 4"` → `ConfigFieldError`
+  naming `skillPlugins.k`; `parseStepperCoordinatorConfig` with `stepper: { maxDepth: "x" }` →
+  `ConfigFieldError` naming `stepper.maxDepth`. `process()` on a pipeline that fails → the root span's
   status is `error`; a consumer that reads the stream only to the error chunk and closes it
   (`return()` on the iterator) → the root span is `error` and ended (D78).
 - The 30.1.0 tools path's bulk write (D79): `vectorizeMcpTools` on an unbound store whose
@@ -5386,7 +5509,7 @@ and the loop's `iteration >= NaN` never fires, so the iteration limit was silent
 
 | # | Decision | Where |
 |---|---|---|
-| D83 | **Every config field a running server changes is validated before it applies — one validator, both inputs, no coercion.** (1) One semantic validator, server-libs `smart-agent/config-fields.ts` (internal), holds the rule of every field the file reload reads and every field `PUT /v1/config` accepts (§10.5.9 *Config field rules*): numbers finite and in the range the reading code can work with, flags booleans, prompts, the log directory and model names non-empty strings. Nothing is coerced; every invalid field is named in one error. (2) **Reload:** `ConfigWatcher` passes the file's values as read (`HotReloadableInput`, §3.8); the validator is the first step of the reload transaction, so an invalid file is a failed transaction that applied nothing — it rejects naming the fields, the queue sets (or keeps) the *config not applied* state with that reason, `config_reload_failed` is logged; a valid one applies the validated values. (3) **`PUT`:** the same validator after the whitelist and before any model is resolved; an invalid value → 400 `invalid_request_error` naming the field, before the queue — nothing resolved, applied or queued, the state unchanged (D82 (3)); the transaction applies the validated values. (4) **Layer: server.** Both inputs are the server's and only the server composes these fields (the agent's loop, the in-memory store's weights, its prompts, breaker, log directory, model resolver); `SmartAgent` gets typed values from its composition root and parses no config. Both callers live in server-libs and the validator imports only libs' types — no cycle. (5) **The start config — the same validator** (amended by the user's rule of 2026-10-06, §17.32; it replaced "not part of this finding"). `resolveSmartServerConfig` validates the YAML it starts from — at the reload's paths — and the `ResolveConfigArgs` overrides `agent-show-reasoning` / `log-dir` with the same rules before any section is read; `resolveAgentSection`, `resolveRagSection` (the in-memory weights), `resolvePromptsSection` and `logDir` take the validated values and coerce nothing (an absent field keeps its 30.1.0 default). An invalid value fails the start: the same `ConfigFieldError` (`invalid config — <field> <rule>, got <value>`, a worker file's prefixed with the worker and its path), which the CLI writes to stderr and exits 1 with, as for any unusable start config (a programmatic caller gets it thrown). After U8 `agent.toolUnavailableTtlMs` keeps its rule as a start-only field | §3.8, §10.5.9 V6, V10, *Config field rules*, §13 B19, B20, §14.1, §17.32 |
+| D83 | **Every config field a running server changes is validated before it applies — one validator, both inputs, no coercion.** (1) One semantic validator, server-libs `smart-agent/config-fields.ts` (internal), holds the rule of every field the file reload reads and every field `PUT /v1/config` accepts (§10.5.9 *Config field rules*): numbers finite and in the range the reading code can work with, flags booleans, prompts, the log directory and model names non-empty strings. Nothing is coerced; every invalid field is named in one error. (2) **Reload:** `ConfigWatcher` passes the file's values as read (`HotReloadableInput`, §3.8); the validator is the first step of the reload transaction, so an invalid file is a failed transaction that applied nothing — it rejects naming the fields, the queue sets (or keeps) the *config not applied* state with that reason, `config_reload_failed` is logged; a valid one applies the validated values. (3) **`PUT`:** the same validator after the whitelist and before any model is resolved; an invalid value → 400 `invalid_request_error` naming the field, before the queue — nothing resolved, applied or queued, the state unchanged (D82 (3)); the transaction applies the validated values. (4) **Layer: server.** Both inputs are the server's and only the server composes these fields (the agent's loop, the in-memory store's weights, its prompts, breaker, log directory, model resolver); `SmartAgent` gets typed values from its composition root and parses no config. Both callers live in server-libs and the validator imports only libs' types — no cycle. (5) **The start config — the same validator** (amended by the user's rule of 2026-10-06, §17.32; it replaced "not part of this finding"). `resolveSmartServerConfig` validates the YAML it starts from — at the reload's paths — and the `ResolveConfigArgs` overrides `agent-show-reasoning` / `log-dir` with the same rules before any section is read; `resolveAgentSection`, `resolveRagSection` (the in-memory weights), `resolvePromptsSection` and `logDir` take the validated values and coerce nothing (an absent field keeps its 30.1.0 default). An invalid value fails the start: the same `ConfigFieldError` (`invalid config — <field> <rule>, got <value>`, a worker file's prefixed with the worker and its path), which the CLI writes to stderr and exits 1 with, as for any unusable start config (a programmatic caller gets it thrown). After U8 `agent.toolUnavailableTtlMs` keeps its rule as a start-only field. (6) **Number literal strings and string flags** (decided by the user on 2026-10-06, §17.33): one grammar for the start, the reload and `PUT` — a numeric field takes a number or a string that is exactly a `NUMBER_LITERAL` (JSON's number grammar, the whole string), parsed and then checked by the field's rule (finite, integer, range); a flag takes `true` / `false` or exactly `"true"` / `"false"`; anything else is the same `ConfigFieldError`. (7) **Every coerced field** (decided by the user on 2026-10-06, §17.33): every config field the start read with `Number()` / `Boolean()` / `String()` has a rule in `config-fields.ts` (*Start-only fields*) and is checked by the start's `FieldCheck` where its section is read (`skillPlugins` and the stepper's section by their own parsers with the same check); `parseIntegerField` takes the same grammar; `optionalNumber` is removed (migration line 75) — the server and the shipped composition root read the validated temperatures | §3.8, §10.5.9 V6, V10, *Config field rules*, *Start-only fields*, §13 B19, B20, §14.1, §17.32, §17.33 |
 
 ### 17.32 Decided by the user on 2026-10-06 — the start config uses the same field validator (D83 (5) amended)
 
@@ -5400,3 +5523,30 @@ rewritten accordingly (§10.5.9 *Config field rules*, *The start config*; §13 B
 public name: `config-fields.ts` stays internal; `resolveAgentSection`, `resolveRagSection` and
 `resolvePromptsSection` are internal to server-libs (not exported from the package), so their
 new parameter changes no contract.
+
+### 17.33 Decided by the user on 2026-10-06 — number literal strings, string flags, every coerced field validated (D83 (6), (7))
+
+D83 required a JSON / YAML number for every numeric field and a boolean for every flag. A
+`${VAR}` substituted at start is a string, so `maxIterations: ${MAX_ITERATIONS}` in a docker
+compose deployment would have failed the start. And D83 (5) left every field outside the reload
+table to its 30.1.0 coercion (`historyRecencyWindow: oops` → `NaN`, `skillPlugins.strict:
+"false"` → `true`, `mcp.args` as a YAML list → `"a,b"`). The user decided:
+
+1. **Strict string parsing for numbers and flags** — the start, the reload and `PUT` alike, one
+   validator: a numeric field accepts a number, or a string that is exactly a number literal
+   (`NUMBER_LITERAL`, §10.5.9 — JSON's grammar: optional `-`, no leading zeros, optional fraction
+   and exponent; no spaces, `+`, hex, `NaN`, `Infinity`); the parsed value then goes through the
+   field's rule. A flag accepts `true` / `false` or exactly `"true"` / `"false"`. Anything else
+   is the same `ConfigFieldError`. D83 (6).
+2. **Every config field coerced with `Number()` / `Boolean()` / `String()` goes through the
+   validator** — the *Start-only fields* table of §10.5.9 replaces the "not covered" list; each
+   rule is what the code that reads the field can work with. D83 (7).
+
+Consequences: `ConfigFieldError` now also comes from `parseSkillPluginsConfig` and the public
+`parseStepperCoordinatorConfig` (same signatures; a value they turned into `NaN` or a wrong flag
+now throws); `parseIntegerField` (internal) refuses surrounding spaces; the server-libs export
+`optionalNumber` is removed (migration line 75, §13); `agent.heartbeatIntervalMs` keeps 0 as the
+documented "disable" and refuses anything else outside its range (the console warning goes). A
+`${VAR}` in a field of the reload table passes at start and fails every reload, because the
+reload does not substitute (§10.5.9 *The start config*) — unchanged by this decision, now stated.
+
