@@ -18,7 +18,10 @@
 >   2026-10-05 (§17.6). Choices made while writing them in are listed for review (§17.5);
 > - relevance scores comparable for the same query and model (batching by default), the second
 >   seam `makeRelevanceDecision`, the seam rename `makeDecisionModel` → `makeProbabilityDecision`:
->   decided by the user on 2026-10-05 (§17.7).
+>   decided by the user on 2026-10-05 (§17.7);
+> - a tools store filled once at instance creation, the fill source as an injected strategy, the
+>   offline corpus API, refill and single-flight construction out: decided by the user on
+>   2026-10-05 (§17.11).
 >
 > **Amended 2026-10-05** for the goal's *Purpose* and goal 9: llm-agent builds **any** pipeline
 > with **any** MCP server. `mcp-abap-adt` is one server; its names and figures appear only as
@@ -72,20 +75,45 @@
 > - **whoever creates a bound store fills it** (D35): a worker's own store is filled when the worker is
 >   built (`buildSubAgent`), so startup, lazy rebuilds, `PUT /v1/config` and hot reload all fill it.
 >
-> **Amended 2026-10-05 (8)** for the user's decisions of the same day (§17.10):
+> **Amended 2026-10-05 (8)** for the user's decisions of the same day (§17.10) — *partly superseded
+> by (9): the fill memo (D36) is withdrawn and single-flight construction (D37) moved out of this
+> PR; D38–D40 stand:*
 > - **only a complete fill is memoized** (D36): a fill that resolves incomplete or rejects is
 >   evicted, so the next build or re-wire of that worker retries it — no timers, no retry loops;
 > - **worker construction is single-flight** (D37): one in-flight primary construction per worker
 >   name and config generation; a construction started before a drain never publishes into the
 >   new generation. This fixes a **pre-existing 30.1.0 race in our own process** (duplicate worker
 >   instances, leaked resources) — it is **not** a RAG concurrency protocol: concurrent writes to
->   a persistent store stay the backend's responsibility (§6.5);
+>   a persistent store stay the backend's responsibility (§3.3);
 > - **workers on the shared clients are filled at startup on every path** (D38), on
 >   `yamlBuilderConnect` too — one pass right after the harvest; startup filling concerns only the
 >   `tools` store (§6.6);
 > - the hot-reload test drives the server's reload entry point directly (D39, §14.1);
 > - **tools a server removes at runtime stay in the store**, as in 30.1.0; removal is out of scope
 >   (D40, §6.3, §15).
+>
+> **Amended 2026-10-05 (9)** for the goal's decision of the same day (*a tools store is filled once,
+> when its instance is created*) and the user's decisions D41–D45 (§17.11):
+> - **filled once, at instance creation; never refilled while running** (D41). No refill API, no
+>   fill memo, no retry: an incomplete fill is reported (`complete: false`, `/health` `degraded`
+>   for the main store, the logged summary line for a worker) and stays. A per-session re-wire of a
+>   worker never fills; only the construction that creates the store does;
+> - **where the records come from is a strategy the consumer injects** (D42): `IToolsFillSource`
+>   (§3.10), attached to the store with its binding. Four ship: `live` (the default — the MCP tool
+>   list indexed through the profile, 30.1.0's behaviour), `corpus` (a corpus built at build time by
+>   the same profile's indexer, loaded at instance creation with no embedding call), `prebuilt` (a
+>   persistent store filled by the consumer's build/deploy step — the process binds it for
+>   retrieval and never writes) and `consumer` (the library does not fill);
+> - **an offline corpus API** (D43, §6.5): `buildToolsCorpus` (build step: provider tool definitions
+>   → records + vectors with the profile's indexer and an embedder), `parseToolsCorpus`, and
+>   `deployToolsCorpus` (deploy step: a built corpus written into any store through its writer,
+>   with precomputed vectors, in place, idempotent, with a service record carrying the fingerprint
+>   and the corpus hash). Recommended: in-memory store → `corpus`; persistent store → `prebuilt`;
+> - **`toolsChanged` by source** (D44): `live` and `consumer` re-index what is listed through the
+>   profile, as 30.1.0 does; `corpus` and `prebuilt` write nothing (a store built ahead is not
+>   refilled while running; the next build / deploy brings the new list);
+> - **single-flight worker construction and the drain ordering move out** (D45): a pre-existing
+>   30.1.0 race unrelated to profiles, a separate issue (§15).
 >
 > Every path that creates or refreshes a tools store is audited in §6.4. Earlier open choices are
 > settled by the recommendations applied in §17.9; the user may still overrule them.
@@ -128,6 +156,28 @@
   injected → the query runs as is. No shipped variant uses it; no implementation ships.
 - A profile is **bound** to each store of its kind (`profile.bind(...)`), so one profile serves
   several stores (e.g. reader and writer tool stores).
+- **A tools store is filled once, when its instance is created** — never refilled while running
+  (D41). No refill API, no fill memo, no retry: an incomplete fill is reported (`complete: false`,
+  `/health` `degraded`, the logged summary line) and stays. `toolsChanged` on a reconnect works as
+  in 30.1.0, through the profile — except on a `corpus` or `prebuilt` store, which is never written
+  after its creation (§6.3).
+- **Where the records come from is a strategy the consumer injects** — `IToolsFillSource` (§3.10),
+  attached to the store with its binding (D42):
+  1. **`live`** (default) — the MCP tool list, indexed through the profile at creation (30.1.0);
+  2. **`corpus`** (`ToolsCorpusLoader`, for in-memory stores) — a corpus built **at build time** by
+     the same profile's indexer (records + vectors); at instance creation one small class checks
+     its fingerprint, writes the records with their precomputed vectors (**no embedding call**) and
+     reports the status — nothing else; an incompatible corpus fails loudly at creation;
+  3. **`prebuilt`** — a persistent store filled by the consumer's build/deploy step; the process
+     binds it for retrieval only, checks the fingerprint at creation and **never writes**;
+  4. **`consumer`** — the library does not fill; the consumer fills through `bound.index` /
+     `fillToolsBinding`.
+  - Recommended: in-memory store → `corpus`; persistent store (Qdrant, HANA, pg-vector) →
+    `prebuilt`. Both work for any store; the consumer chooses.
+- **Offline corpus API (§6.5):** `buildToolsCorpus` (build step) → `parseToolsCorpus` →
+  `deployToolsCorpus` (deploy step: in place, one current state, idempotent, a service record with
+  the fingerprint and the corpus hash). Collections that change while running (session, history,
+  user collections, shared items) are not filled by these strategies (§6.6).
 - The retrieval half **is** a 30.1.0 `IRetrievalStrategy`, so every path that already honours
   per-store strategies gets it with no new wiring.
 - **Nothing changes by default.** No profile set → 30.1.0 behaviour, byte for byte (golden test).
@@ -240,8 +290,10 @@ user collections on the 30.1.0 behaviour (no profile = the default profile).
 | `createMakeDecisionModel` (app, `make-decision-model.ts`) | the app's probability seam | **renamed `createMakeProbabilityDecision`** in `make-probability-decision.ts` — internal to the app (not exported from `@mcp-abap-adt/llm-agent-server`), so no alias |
 | — | new | `IRelevanceDecision`, `RelevanceRequest`, `RelevanceResult`, `RelevanceScore`, `RelevanceReranker`, `RelevanceRerankerOptions`, `wrapRelevanceDecision`, `BuildAgentDeps.makeProbabilityDecision`, `BuildAgentDeps.makeRelevanceDecision`, package `@mcp-abap-adt/llm-agent-reranker`; in `sap-aicore-decision`: `SapAiCoreRelevanceDecision`, `SapAiCoreRelevanceConfig`, `FetchLike`; reserved record keys `staleRecordIds`, `staleCompanionRecordIds` |
 | — | new | `ICollectionProfile`, `IBoundCollection`, `IItemIndexer`, `IIndexNoteSource`, `IndexNote`, `isIndexNoteSource`, `IndexedRecord`, `RecordDraft`, `recordId`, `RecordOwner`, `ItemRef`, `ICandidatePool`, `ICollapseRule`, `IItemCut`, `ISizeBoundedCut`, `isSizeBoundedCut`, `IQueryDecomposer`, `SubQuery`, `ISourceSelector`, `RetrievalSource`, `IRetrievalMetrics`, `ToolItem`, `ToolParameter`, `ToolParameterValue`, `IToolFacet`, `IToolIntentSource`, `IDiscriminatorSelector`, `IItemSizeEstimator`, `SharedItem`, `SharedItemVisibility`, `ISharedItemGroups`, `StagedRetrieval`, `ComposedToolsProfile`, `mcpToolsVariants`, `FacetedToolIndexer`, `SummaryFacet`, `ParametersFacet`, `NameTailFacet`, `EnumValueToolIndexer`, `RequiredEnumDiscriminator`, `NamedDiscriminator`, `IntentRecordIndexer`, `IntentCompanionIndexer`, `StaticIntentSource`, `LlmIntentSource`, `ItemPool`, `MaxScoreCollapse`, `TopItemsCut`, `FixedItemsCut`, `ScoreFloorCut`, `TokenBudgetCut`, `CharsPerTokenEstimator`, `ToolDefinitionSizeEstimator`, `SharedItemsProfile`; reserved record key `companionRecordIds` |
+| — | new (fill sources, §3.10, §6.5) | `IToolsFillSource`, `ToolsFillContext`, `LiveToolsFill`, `ToolsCorpusLoader`, `PrebuiltToolsStore`, `ConsumerToolsFill`, `buildToolsCorpus`, `parseToolsCorpus`, `deployToolsCorpus`, `ToolsCorpus`, `ToolsCorpusRecord`, `ToolsCorpusManifest`, `ToolsCorpusIdentity`, `ToolsCorpusDeployReport`, `TOOLS_CORPUS_RECORD_ID`, `SmartServerConfig.toolsFillFactories`; reserved record key `serviceRecord` |
 
-Every new name above was checked with `git grep -w` over `packages/`: 0 hits (2026-10-05).
+Every new name above was checked with `git grep -w` over `packages/`: 0 hits (2026-10-05; the
+fill-source names of the last row re-checked the same way on the same day).
 
 ---
 
@@ -412,7 +464,8 @@ export type RecordOwner =
 export type ReservedRecordKey =
   | 'id' | 'itemId' | 'recordKind' | 'itemText' | 'profile' | 'generated' | 'recordIds'
   | 'companionRecordIds' | 'staleRecordIds' | 'staleCompanionRecordIds'
-  | 'visibility' | 'userId' | 'groupId' | 'sessionId' | 'ttl';
+  | 'visibility' | 'userId' | 'groupId' | 'sessionId' | 'ttl'
+  | 'serviceRecord';   // a store's service record (§6.5): never an item, dropped by retrieval (§4.3)
 
 /** What an indexer produces. The physical id is not the indexer's to choose. */
 export type RecordDraft = Omit<IndexedRecord, 'id'>;
@@ -646,9 +699,7 @@ handling, not a concurrency protocol: no generations, no locks, D13 stands).
 - **Why no generations, commit markers or locks:** the store owns concurrency (the project's
   standing rule): concurrent writes to a persistent store (Qdrant, HANA, pg-vector) are the
   backend's responsibility. Collections are filled once and read-mostly. A generation protocol
-  would add writer coordination the library must not own. (Decision D13.) The single-flight
-  worker construction of §6.5 is not an exception: it keeps one process from building the same
-  worker twice and coordinates no writes to any store.
+  would add writer coordination the library must not own. (Decision D13.)
 - **What keeps it safe for readers** is retrieval, not writing: a hit is never returned from its own
   record; it is hydrated from the item's canonical record, and a hit whose canonical record is
   missing is dropped and counted (§4.6). A stale record of a live item can at most lift that item's
@@ -894,11 +945,15 @@ export function retrievalEmbedderOf(rag: IRag): IRetrievalEmbedder | undefined;
 | `SmartServerDecisionConfig`: `provider` gains `'sap-aicore'`; optional `deploymentId`, `resourceGroup` | goal 10 + the goal decision 2026-10-05 (one `decision:` section; the provider decides the kind): Cohere needs a provider name and its deployment (§6.2). Kept one interface with optional fields — additive, so a consumer's own probability seam still compiles (§17.5) | `@mcp-abap-adt/llm-agent-server-libs` (`decision-config.ts`), where the section's type already lives |
 | `ReservedRecordKey` gains `staleRecordIds`, `staleCompanionRecordIds` | approved review finding 3: a failed stale-record delete must be retried by the next `index` / `remove`, so its id is kept on the canonical; reserved so no extra can overwrite it. `ReservedRecordKey` is new in this spec | libs (record writer, tools binding) |
 | `IItemCut.limit()` — doc only: never above `requestedK` | approved review finding 1: the caller's k caps every cut (§4.5, §4.9). No signature change | — |
-| `fillToolsBinding(clients, binding, opts)` — new export of `llm-agent-libs` (D31) | the server fills a bound tools store from ready clients (§6.3) and lives in another package; `vectorizeMcpTools` is internal to libs and also carries the 30.1.0 record path. A thin wrapper that requires a binding exposes only the profile path and reuses `vectorizeMcpTools`, which reads the binding from the store (D34) — nothing duplicated. It refuses a binding its store does not carry, which a later `toolsChanged` refill would otherwise miss | `llm-agent-libs` (`src/mcp/fill-tools-binding.ts`), beside `vectorizeMcpTools`; used by server-libs and builder consumers |
+| `fillToolsBinding(clients, binding, opts)` — new export of `llm-agent-libs` (D31, amended by D42) | the server fills a bound tools store at its creation (§6.3) and lives in another package; `vectorizeMcpTools` is internal to libs and also carries the 30.1.0 record path. A thin wrapper that requires a binding: it runs the **fill source** the store carries (§3.10) at instance creation — for `live`, the listing and `bound.index` of `vectorizeMcpTools`' profile path, reused, nothing duplicated. It refuses a binding its store does not carry (D34): such a store would carry no fill source either, and a later `toolsChanged` would write 30.1.0 records into it | `llm-agent-libs` (`src/mcp/fill-tools-binding.ts`), beside `vectorizeMcpTools`; used by server-libs and builder consumers |
 | `HealthCheckerDeps.toolCatalog?: IToolCatalogReporter` (D31) | `/health` must reflect the server's own fill (§6.3); the builder's status holder is private to `build()`, so the server cannot publish into it. An optional reporter the checker reads instead of the agent's; absent → 30.1.0 | `llm-agent-libs` (`health/health-checker.ts`), where `HealthCheckerDeps` lives |
 | Worker builders receive the shared clients **with** their descriptors and the server's `IToolNamespace` (D32, §6.3) — **no contract change** | a worker's store must hold the names its agent dispatches by; the existing `withMcpServers` (+ `IMcpServer.descriptor`) already carries descriptors to the pipeline, and `withToolNamespace` already exists. An optional `descriptors` parameter on `withMcpClients` was the alternative — a public builder change this does not need | `llm-agent-server-libs` (`smart-server.ts` `buildSubAgent`, `workers/worker-registry.ts`), internal |
 | Companion storage per primary binding (D33, §7.3.3) — **no contract change** | two catalogs must not share companion records; separate stores isolate writes AND reads, a binding segment in `recordId` would isolate writes only. `recordId`, `CollectionStore`, `ReservedRecordKey` unchanged. Server-libs' new (unreleased) `ResolvedToolsProfile` carries the companion store **sections** (`companionStores`) instead of built stores | `llm-agent-server-libs` (`resolve-collection-profiles.ts`, `smart-server.ts`) |
-| `WorkerRegistry.resolve(sub)` (additive method on the exported class) and `drain()` awaiting the constructions it forgot (D37, §6.5) — `IWorkerRegistry` **unchanged** | single-flight construction needs one entry point that joins or starts a worker's construction, for the per-session build and the startup build alike. Added to the class only: an external `IWorkerRegistry` implementation keeps compiling. The server's private `_workers` field is typed by the class. `resolveWorkerLlmSet` and `backfillWorkerCacheFromHandle` keep their signatures; only the map they are handed changes (the construction's own) | `llm-agent-server-libs` (`workers/worker-registry.ts`, `smart-server.ts`) |
+| **`IToolsFillSource`**, **`ToolsFillContext`** (D42, §3.10) | the goal decision 2026-10-05: *where the records come from is a strategy the consumer injects*. One source per bound store answers the two moments a tools store is written — its creation (`fill`) and a reconnect's `toolsChanged` — so `prebuilt` can promise that the process never writes, and `corpus` that creation makes no embedding call. The context hands a source the binding, the stores it was made over (a corpus is written into the companions too, which `IBoundCollection` does not expose) and the live path as a function (`indexLiveTools`), so a source never needs MCP clients, namespaces or record keys. The minimum: one name, two methods, a four-field context. No existing contract changes | `@mcp-abap-adt/llm-agent` (`interfaces/tools-fill-source.ts`): implemented in libs (the four shipped sources) and by consumers; resolved by name in server-libs; called by libs (`vectorizeMcpTools`) |
+| `bindToolsProfile(profile, target, source?)` — third parameter (libs, new in this spec) | the fill source travels with the store like its binding (D34, D42): whatever fills the store later — the builder, `fillToolsBinding`, a reconnect — reads both from the store, never from an option. Absent → `LiveToolsFill` (30.1.0's behaviour) | `llm-agent-libs` (`collections/tools-binding.ts`) |
+| `ReservedRecordKey` gains `serviceRecord` (D43) | `deployToolsCorpus` keeps one service record in the store (fingerprint, corpus hash, record hashes, §6.5); `StagedRetrieval` drops a hit that carries the key (§4.3), so the record is never an item; reserved so no extra can set it on an item record. `ReservedRecordKey` is new in this spec | libs (record writer clears it; `StagedRetrieval` drops it; `deployToolsCorpus` writes it) |
+| `buildToolsCorpus`, `parseToolsCorpus`, `deployToolsCorpus`, `ToolsCorpus*` types, `TOOLS_CORPUS_RECORD_ID`, `ToolsCorpusLoader`, `PrebuiltToolsStore`, `LiveToolsFill`, `ConsumerToolsFill` (D42, D43) — new exports of `llm-agent-libs` | the offline side of the fill sources: the profile's indexer must be usable outside the runtime to produce the corpus, and a deploy step must write it into a persistent store without embedding. Types used only where the functions are (libs + the consumer's scripts) — not contracts, so not in `@mcp-abap-adt/llm-agent` | `llm-agent-libs` (`collections/tools/`) |
+| `SmartServerConfig.toolsFillFactories?` (D42) | YAML `rag.profiles.tools.fill` names a source (§6.2); a consumer's own source is registered by name, like `toolsVariantFactories` | `llm-agent-server-libs` (`smart-server.ts` config type, `resolve-collection-profiles.ts`) |
 | `ToolCatalogStatus.records?`, `.profile?` (S3) | `/health` copies `toolCatalog` from the status `IToolCatalogReporter` returns (`vectorizeMcpTools`' summary), so the two fields must be carried there first (§7.6, §9.1). Additive, optional | `interfaces/tool-catalog.ts`, where `ToolCatalogStatus` lives |
 
 ### 3.9 Decision contracts — probability and relevance
@@ -984,6 +1039,72 @@ consumers, so they belong in `@mcp-abap-adt/llm-agent` (the YAML config type sta
 server-libs, where the server's config types live), not in the cross-family
 `@mcp-abap-adt/interfaces-*` packages.
 
+### 3.10 Where a tools store's records come from — `IToolsFillSource` (D41, D42)
+
+**TL;DR.** A tools store is filled **once, when its instance is created**, and never refilled while
+it runs (goal decision 2026-10-05). *Where the records come from* is a strategy the consumer
+injects. The source travels with the store, attached with its binding.
+
+```ts
+/** Where a bound tools store's records come from. Attached with the binding
+ *  (`bindToolsProfile(profile, target, source)`); read from the store by whatever fills it. */
+export interface IToolsFillSource {
+  /** 'live' | 'corpus' | 'prebuilt' | 'consumer' | a consumer's own — named in the fill's log line. */
+  readonly name: string;
+  /** Once, when the store's instance is created. `undefined` = nothing attempted (status unknown).
+   *  Throws on an incompatible corpus or store — never a silent empty store. */
+  fill(ctx: ToolsFillContext, options?: CallOptions): Promise<ToolCatalogStatus | undefined>;
+  /** A reconnect reported `toolsChanged` (30.1.0's `revectorizeTools`). */
+  toolsChanged(ctx: ToolsFillContext, options?: CallOptions): Promise<ToolCatalogStatus | undefined>;
+}
+
+export interface ToolsFillContext {
+  readonly binding: IBoundCollection<ToolItem>;
+  /** The stores the binding was made over (primary + companions). A corpus is written into these. */
+  readonly target: CollectionStore;
+  /** The live path: list the MCP clients' tools (namespaced and keyed exactly as tool selection reads
+   *  them), index them through `binding.index`, return the catalog status (§7.6). */
+  indexLiveTools(options?: CallOptions): Promise<ToolCatalogStatus | undefined>;
+  readonly logger?: ILogger;
+}
+```
+
+**The four shipped sources** (`llm-agent-libs`):
+
+| Source | `fill` — at instance creation | `toolsChanged` — a reconnect | Embedding calls in the process | Writes by the process |
+|---|---|---|---|---|
+| **`LiveToolsFill`** (`live`, the default) | `ctx.indexLiveTools()` — 30.1.0's listing, indexed through the profile | `ctx.indexLiveTools()` (30.1.0) | yes | yes |
+| **`ToolsCorpusLoader({ corpus, expect })`** (`corpus`, the in-memory source) | its only job: checks the corpus's fingerprint against `expect` and the binding (below), writes every record with its precomputed vector into `ctx.target` (primary + companions), reports the status. Nothing else: no service record, no diff, no refill, no memo, no retry, no watching | writes nothing; logs a warning that the live tool list changed since the build | **none** | at creation only |
+| **`PrebuiltToolsStore({ expect })`** (`prebuilt`) | reads the store's service record (§6.5) and checks it as `corpus` does; writes nothing; the status comes from the record | writes nothing; logs a warning that the live tool list changed since the deploy | none | **never** |
+| **`ConsumerToolsFill`** (`consumer`) | nothing (`undefined`): the consumer fills through `bound.index` or `fillToolsBinding` | `ctx.indexLiveTools()` (30.1.0) | — | only on `toolsChanged` |
+
+- **Compatibility is checked at instance creation and fails loudly** (`corpus`, `prebuilt`): a
+  throw names what differs. Checked:
+  - `identity.profile` and `identity.embedder` against `expect` (`ToolsCorpusIdentity`, §6.5) —
+    the consumer's own names for the profile composition and the document embedder, the same
+    strings at build time and at instance creation;
+  - the binding's `profileName`, and the companion store names against `ctx.target.companions`;
+  - the corpus format, and one vector dimension for every record (`parseToolsCorpus`).
+- **Why the fingerprint is the consumer's string.** No contract carries a fingerprint of an injected
+  strategy (a consumer's own indexer, an LLM intent source) or of an embedder (`IEmbedder` has no
+  identity), and the library cannot derive one without calling them. The consumer chose both, so
+  it names them; the library records and compares the names and checks what it can see itself.
+- **An incomplete live fill stays** (D41): `complete: false`, `/health` `degraded` for the main
+  store, the summary line logged for a worker. Nothing retries it; a reconnect that reports
+  `toolsChanged` re-indexes what is listed then (30.1.0), and a new instance (a restart, a worker
+  rebuilt after a drain) fills again because it is a new store.
+- **Why `toolsChanged` belongs to the source** (D44): the goal keeps 30.1.0's reconnect behaviour
+  through the profile, and it also says a store built ahead is not refilled while running (the
+  user's decision: the corpus source fills the in-memory store at creation and does nothing else;
+  the process never writes a prebuilt store). Both hold only if the source answers the reconnect:
+  `live` and `consumer` re-index as 30.1.0 does; `corpus` and `prebuilt` write nothing — the next
+  build / deploy brings the new tool list.
+- **Recommended mapping** (both work for any store; the consumer chooses):
+  - an **in-memory** store is empty at every start → `corpus` (or `live`);
+  - a **persistent** store (Qdrant, HANA vector, pg-vector) is shared by every instance → `prebuilt`
+    with the consumer's deploy step (§6.5); writing a shared persistent collection from every
+    instance at startup is redundant.
+
 ---
 
 ## 4. The composable retrieval half — `StagedRetrieval` (libs)
@@ -1048,6 +1169,9 @@ merge hits
   identity filter, so it is always *after* the owner filter. The only extra read, `getById` of the
   canonical record, is checked with `matchesRagIdentity` against the same filter; a record that
   fails it is dropped as an orphan.
+- **A store's service record is never an item.** A hit whose metadata carries `serviceRecord` (the
+  record `deployToolsCorpus` keeps, §6.5) is dropped before collapse — not passed through, not
+  counted as an orphan, not reranked.
 - **Records without `itemId`** (e.g. today's `skill:*` records in the tools store) pass through as
   their own item, keyed by `metadata.id`, and are returned as the record itself (they are not
   profile records, so there is no canonical record to hydrate from). That is how skills keep 30.1.0
@@ -1524,7 +1648,7 @@ alias.
 
 | Method | What |
 |---|---|
-| `withToolsProfile(profile: ICollectionProfile<ToolItem>)` | **new.** The builder binds the profile (a shipped variant or the consumer's own composition) to its own `tools` store (set by `setToolsRag` or auto-created), fills it through `bound.index` at build (where `vectorizeMcpTools` runs today) and applies `bound.retrieval` like an explicit `withRetrievalStrategy('tools', …)`. |
+| `withToolsProfile(profile: ICollectionProfile<ToolItem>, source?: IToolsFillSource)` | **new.** The builder binds the profile (a shipped variant or the consumer's own composition) to its own `tools` store (set by `setToolsRag` or auto-created) with the fill source (absent → `LiveToolsFill`, §3.10), runs that source's `fill` at build (where `vectorizeMcpTools` runs today — the store's creation) and applies `bound.retrieval` like an explicit `withRetrievalStrategy('tools', …)`. |
 | `withRetrievalStrategy(key, bound.retrieval)` | **existing.** Any other store (e.g. a shared-items binding): the consumer binds the profile itself, registers `bound.rag` under `key` and hands `bound` to its writing elements. Pure DI; no new method. |
 
 Rules (pattern 5, "unsupported is an error"; checked at `build()`):
@@ -1544,7 +1668,8 @@ says the same). This spec does not change that: there the profile is **bound** a
 applied, but the store is **not filled**. The consumer fills it, with the shipped API:
 
 ```ts
-// 1. bind first (the builder reuses a bound store, never binds it twice)
+// 1. bind first (the builder reuses a bound store, never binds it twice); the fill source is
+//    the third argument (absent → live)
 const bound = bindToolsProfile(profile, { key: 'tools', rag: toolsRag });
 // 2. fill: one ToolItem per tool, itemId = the tool's record key (`tool:` prefix)
 const listed = await client.listTools();                       // per client; Result
@@ -1564,10 +1689,13 @@ builder.withMcpClients([client]).setToolsRag(bound.rag).withToolsProfile(profile
   own `IToolRecordKey`, the same one given to `withToolRecordKey`), so the ids match what tool
   selection reads.
 - Filling after `build()` works too: `toolsBindingOf(handle.ragStores.tools)?.index(items)`.
-- Whatever fills the store later — a reconnect that reports `toolsChanged`, `fillToolsBinding` —
-  reads the binding from the store (D34, §6.3). Bind with `bindToolsProfile`, never with
-  `profile.bind()` alone: a binding the store does not carry is invisible to those paths, and
-  `fillToolsBinding` refuses it.
+- Whatever writes the store later — a reconnect that reports `toolsChanged`, `fillToolsBinding` —
+  reads the binding and its fill source from the store (D34, D42, §6.3). Bind with
+  `bindToolsProfile`, never with `profile.bind()` alone: a binding the store does not carry is
+  invisible to those paths, and `fillToolsBinding` refuses it.
+- With a `corpus` or `prebuilt` source the snippet's listing is not needed:
+  `await fillToolsBinding([], bound)` runs the store's source at creation (it loads or checks; no
+  client is read).
 - Not filled → the tools store stays empty, as on these branches in 30.1.0; nothing errors, and
   what tool selection does with an empty tools store is unchanged by this spec.
 - **The limit is the builder's only.** The builder has no startup phase of its own: `build()`
@@ -1605,7 +1733,24 @@ rag:
       intents:                                   # optional indexing strategy; not with baseline
         record: { file: ./tool-intents.json }    # or: companion: { source: { llm: intents }, store: { … } }
       decomposer: my-splitter                    # optional; a NAME the consumer registered (§4.5); not with baseline
+      fill: live                                 # optional (§3.10): live (default) | consumer | a registered name | { corpus: … } | { prebuilt: … }
 ```
+
+Where the tools store's records come from (§3.10, D42):
+
+```yaml
+rag:
+  profiles:
+    tools:
+      variant: faceted
+      # an in-memory store: load a corpus built at build time (no embedding call at start)
+      fill: { corpus: { file: ./tools-corpus.json, profile: faceted@1, embedder: aicore-te3-small } }
+      # a persistent store filled by the deploy step (deployToolsCorpus): bind, check, never write
+      # fill: { prebuilt: { profile: faceted@1, embedder: aicore-te3-small } }
+```
+
+`profile` and `embedder` are the consumer's names for the composition and the document embedder,
+the same strings its build step passed to `buildToolsCorpus` (§6.5).
 
 A coarse / small tool set (Jev over the whole set):
 
@@ -1705,6 +1850,11 @@ rag:
   binding** (main, and each worker with its own `rag`), with that primary's embedder (§7.3.3, D33).
 - `record: { file }` / `companion: { source: { file } }` is a JSON object
   `{ "<originalName>": ["intent", …] }` read at startup into a `StaticIntentSource`.
+- `fill` resolves to ONE `IToolsFillSource` instance, server-wide (§3.10): `live` →
+  `LiveToolsFill`, `consumer` → `ConsumerToolsFill`, `{ corpus: { file, profile, embedder } }` →
+  the file read once at startup, `parseToolsCorpus`, `ToolsCorpusLoader`; `{ prebuilt: { profile,
+  embedder } }` → `PrebuiltToolsStore`; any other name → `SmartServerConfig.toolsFillFactories`.
+  Absent → `live`. The server binds the main store and every worker store it builds with it.
 
 **Validation** (raw YAML, as in #321 §13.4) → startup error, never a silent drop:
 
@@ -1728,6 +1878,11 @@ rag:
   for a decision reranker when the provider's kind is relevance — a relevance decision reads no wording (§3.9);
 - an unknown `text` composer name;
 - a tools key whose variant is not a tools profile;
+- `fill`: an unknown name; `corpus` without `file`, `profile` or `embedder`; `prebuilt` without
+  `profile` or `embedder`; `prebuilt` over an `in-memory` tools store (empty at every start — use
+  `corpus`); `corpus` or `prebuilt` while a worker declares its own `rag` **and** its own
+  `mcpClients` or `mcp:` (the corpus describes the shared catalog; bind that worker's store in the
+  composition root). Checked by the server at start too, for a config built in code;
 - an `intents.companion.store` that is not `in-memory` while a worker declares its own `rag`
   (D33): the section names ONE physical collection, and the worker's binding would need a second
   one the config does not name (§7.3.3). Checked by the server at start, so a config built in code
@@ -1738,24 +1893,26 @@ rag:
   storage, §7.3.3).
 - Shared items have **no YAML** in this PR (library API only). Decided — D6 (§17).
 
-### 6.3 The server fills a bound tools store — filling follows the store's lifecycle (D31, D34, D35)
+### 6.3 The server fills a bound tools store once, when the store is created (D31, D34, D35, D41)
 
-**TL;DR.** Two rules, on every path that creates or refreshes a tools store (all listed in §6.4):
+**TL;DR.** Three rules, on every path that creates or refreshes a tools store (all listed in §6.4):
 
-1. **The binding travels with the store (D34).** Every tools vectorization reads the binding from
-   the store it fills — `toolsBindingOf(store)` — never from an option: the builder's fill at
-   `build()`, a reconnect that reports `toolsChanged` (`McpToolRegistry.revectorizeTools`), and
-   `fillToolsBinding`. A bound store → the profile path (no raw writer needed, §7.6); an unbound
-   store → exactly 30.1.0.
-2. **Whoever creates a bound store fills it (D35).** The server creates the main store in
-   `_buildInfra` and fills it there, once, before it reports ready. It creates a worker's own
-   store in `buildSubAgent` (through `resolveWorkerLlmSet`), so `buildSubAgent` fills it — from
-   exactly the clients that worker's builder is handed — on startup, on a lazy rebuild, after
-   `PUT /v1/config` and after a hot reload. A worker on the shared clients is filled at startup
-   on every path; on `yamlBuilderConnect` by one pass right after the harvest (D38).
-3. **Only a complete fill is kept (D36).** A fill in flight is shared per binding; a fill that
-   resolves incomplete (`complete: false`, or aborted) or rejects is evicted, so the next build or
-   re-wire of that worker retries it. No timer and no retry loop.
+1. **The binding and its fill source travel with the store (D34, D42).** Every tools write reads
+   them from the store it writes — never from an option: the builder's fill at `build()`, a
+   reconnect that reports `toolsChanged` (`McpToolRegistry.revectorizeTools`), and
+   `fillToolsBinding`. A bound store → its fill source (§3.10); an unbound store → exactly 30.1.0.
+2. **Whoever creates a bound store fills it, once (D35, D41).** The server creates the main store in
+   `_buildInfra` and fills it there, before it reports ready. It creates a worker's own store in
+   the worker's **construction** (`buildSubAgent` without `injected`: the startup primary build, or
+   the lazy rebuild after a drain), so that construction fills it. A per-session re-wire reuses the
+   cached store and **never fills**. On `yamlBuilderConnect` the shared clients are known only after
+   the workers' startup build, so one pass right after the harvest completes those workers' fill at
+   startup (D38).
+3. **Never refilled while running (D41).** No refill API, no fill memo, no retry. An incomplete fill
+   (`complete: false`, or aborted) is reported and stays: `/health` `degraded` for the main store,
+   the logged summary line for a worker. A reconnect that reports `toolsChanged` re-indexes what is
+   listed then, as in 30.1.0 (`corpus` and `prebuilt` excepted, D44); a new instance — a restart, a worker rebuilt
+   after a drain — is a new store and is filled at its creation.
 
 Without a bound profile nothing changes: 30.1.0 behaviour on every path.
 
@@ -1765,8 +1922,8 @@ Without a bound profile nothing changes: 30.1.0 behaviour on every path.
 |---|---|---|---|
 | ready clients | `BuildAgentDeps.mcpClients` ?? `cfg.mcpClients` ?? plugin `mcpClients` (when the plugins brought any) — presence wins, even `[]` | nobody (handed over) | **the server** (new) |
 | injected seam | YAML `mcp:` + `connectMcpWithDescriptors` or a bare `connectMcp` injected, no ready clients | the seam (`_resolveMcpWithDescriptors`) | **the server** (new) |
-| YAML builder connect (`yamlBuilderConnect`) | YAML `mcp:`, no ready clients, no injected seam | the startup builder | the builder (§6.1, auto-connect branch) — the server marks the binding filled and does not fill again |
-| no MCP | none of the above | — | **the server**: zero clients → an empty, complete catalog (`total: 0`) |
+| YAML builder connect (`yamlBuilderConnect`) | YAML `mcp:`, no ready clients, no injected seam | the startup builder | the builder (§6.1, auto-connect branch) — its `build()` creates the store's agent and runs the store's fill source; the server does not fill again |
+| no MCP | none of the above | — | **the server**: zero clients → `live` gives an empty, complete catalog (`total: 0`); `corpus` / `prebuilt` need no client |
 
 On the first two paths the server hands the clients to the builder through `withMcpClients`
 (main and workers), which skips vectorization (§6.1), so in 30.1.0 the tools store stays empty
@@ -1775,50 +1932,29 @@ there. Under a profile that would leave a bound store empty: the server fills it
 **How it fills — the shipped path, not a second one.**
 
 - `fillToolsBinding(clients, binding, opts)` (new export of `llm-agent-libs`) is a thin call of
-  `vectorizeMcpTools(clients, binding.rag, …)`, which reads the binding from `binding.rag`
-  (rule 1): listing, namespacing, `IToolRecordKey` ids, `toolItemFromTool` and `bound.index` are
-  exactly the profile path of §7.6. Nothing is duplicated. Its type requires a binding, so it
+  `vectorizeMcpTools(clients, binding.rag, …)`, which reads the binding **and its fill source** from
+  `binding.rag` (rule 1) and runs the source's `fill`. For `live` that is exactly the profile path
+  of §7.6 (listing, namespacing, `IToolRecordKey` ids, `toolItemFromTool`, `bound.index`); for
+  `corpus` / `prebuilt` no client is read. Nothing is duplicated. Its type requires a binding, so it
   never starts the 30.1.0 record path. It **throws** when the store does not carry that binding
   (`toolsBindingOf(binding.rag) !== binding`, i.e. a binding made by calling `profile.bind()`
-  directly instead of `bindToolsProfile`). Without the check, `vectorizeMcpTools` would find no
-  binding on that store and write 30.1.0 records. The next `toolsChanged` would do the same. So
-  the mistake is refused at the first fill.
+  directly instead of `bindToolsProfile`): such a store carries no fill source, and the next
+  `toolsChanged` would write 30.1.0 records into it. So the mistake is refused at the first fill.
 - The server passes the clients it resolved (`_sharedMcpClients`), their descriptors and
   configured slot count when the seam produced them (`_sharedMcpClientDescriptors`,
   `_configuredSlotCount`; array order otherwise), its `IToolNamespace` and its file logger — the
   same inputs its authoritative tool snapshot is built from, so the record ids match the names
-  tool selection reads. It is one more `listTools()` pass at startup on these paths.
-- **Only complete fills are memoized (D36).** The server keeps the fill per binding (a `WeakMap`
-  from binding to the fill's promise):
-  - **in flight:** concurrent callers — two re-wires of the same worker — await the same fill;
-  - **resolved with `complete: true`:** kept; every later build or re-wire of that worker skips
-    the fill;
-  - **resolved incomplete** — a `bound.index` Result failure (every item in `failed`), a client
-    whose `listTools()` failed (`clientFailures`), an aborted fill (`undefined`) — or
-    **rejected:** evicted when it settles. The caller still gets its status or its error (the
-    failure policy below is unchanged). The **next build or re-wire of that worker** fills again.
-  - **No timer, no retry loop** (standing rule: no timeouts). A retry happens only when the worker
-    is built again; a worker that is never built again keeps its incomplete store, reported in
-    the logged summary line.
-  - **The same rule for builder-filled bindings.** A binding its own builder filled on its
-    auto-connect (§6.1) is marked filled only when that builder's catalog status is
-    `complete: true`; otherwise it is left unmarked, so the worker's next re-wire — which hands
-    the builder's connected clients over — fills it.
-  - **The main store** has no later build in a running server: an incomplete main fill is evicted
-    by the same rule, stays reported (`/health` `degraded`, 30.1.0 policy) and is refreshed by a
-    reconnect that reports `toolsChanged` (rule 1) or by a restart.
-  - Each retry is one more `listTools()` pass and one more `bound.index` of every listed tool
-    (records replaced in place); nothing else is repeated.
+  tool selection reads. It is one more `listTools()` pass at startup on these paths (`live`).
 - **When (main store).** In `_buildInfra`, after the startup agent is built and the shared clients
   are resolved, before the small-set check (D23) and before `HealthChecker` is created — so before
-  `start()` listens and before the embeddable `buildAgent(cfg)` returns.
+  `start()` listens and before the embeddable `buildAgent(cfg)` returns. Once.
 
-**Rule 1 in detail — the binding is read from the store (D34).**
+**Rule 1 in detail — the binding and its fill source are read from the store (D34, D42).**
 
-- `vectorizeMcpTools` takes **no `binding` option**. It calls `toolsBindingOf(toolsRag)`, which
-  walks `IRagDecorator.inner` (a `StrategyRag`, the circuit breaker's `FallbackRag`), and branches:
-  a binding → the profile path, writer not required; none → the 30.1.0 records and the 30.1.0
-  writer guard.
+- `vectorizeMcpTools` takes **no `binding` option**. It reads the store's binding and fill source
+  (walking `IRagDecorator.inner`: a `StrategyRag`, the circuit breaker's `FallbackRag`) and
+  branches: a binding → the source's `fill` (the store's creation) or `toolsChanged` (a reconnect);
+  the `live` path needs no raw writer; none → the 30.1.0 records and the 30.1.0 writer guard.
 - **Why no option.** An option was a second source of truth, and only the startup caller passed
   it. The reconnect path (`McpToolRegistry`) receives `ragStores`, not a binding, so it did not.
   A profiled store then got 30.1.0 records on reconnect, and a writerless binding was skipped
@@ -1830,8 +1966,11 @@ there. Under a profile that would leave a bound store empty: the server fills it
 
   So no caller holds a binding its store does not carry. The option is removed, not kept beside
   the store's.
-- **`toolsChanged` with a binding.** The reconnect lists the clients again and calls
-  `bound.index` with every current tool:
+- **`toolsChanged` with a binding (D44).** The store's source answers. `live` and `consumer`
+  re-index what is listed, as 30.1.0 does — the reconnect lists the clients again and calls
+  `bound.index` with every current tool; `corpus` and `prebuilt` write nothing and log a warning (a
+  store built ahead is never written after its creation; the next build / deploy brings the new
+  list):
   - a changed tool's records are replaced, and so are its companion records (§3.3, §7.3.3);
   - a new tool is added;
   - a tool that disappeared stays in the store, as in 30.1.0 (a reconnect never removed records).
@@ -1840,7 +1979,7 @@ there. Under a profile that would leave a bound store empty: the server fills it
   **When a tool disappears at runtime.** A generic MCP server can change its tool list while
   running and announce it (`notifications/tools/list_changed`); the next reconnect then reports
   `toolsChanged` and `revectorizeTools` re-indexes what is listed now. A consumer that builds its
-  tool corpus at deploy (a fixed server version per deployment) does not hit this. Removing the
+  tool corpus at build time (a fixed server version per deployment) does not hit this. Removing the
   records of a tool that is no longer listed is **out of scope** (§15): tool selection keeps only
   names in the agent's current catalog, so such a record is never offered as a tool.
 
@@ -1849,43 +1988,48 @@ there. Under a profile that would leave a bound store empty: the server fills it
 - A reconnect fill's status is logged (the summary line), not published: the catalog status
   `/health` reads stays the startup one, as in 30.1.0.
 
-**Rule 2 in detail — a worker's store is filled when the worker is built (D35).**
+**Rule 2 in detail — a worker's store is filled by the construction that creates it (D35, D41).**
 
-| Worker | Its tools store | Filled by | From | When |
+| Worker | Its tools store | Filled by | From (`live`) | When |
 |---|---|---|---|---|
 | no own `rag` | the main store, by reference (the parent's `toolsRag` on every re-wire) | the main fill | — | never again |
-| own `rag`, own `mcpClients` | its own, bound at creation (`withToolsStore`, own companion stores, D33) | `buildSubAgent` | its own clients, array order (plain `IMcpClient[]`: no descriptors exist) | its first build: the startup primary build, or the lazy rebuild after a drain |
-| own `rag`, no own clients, no own `mcp:` | its own, bound at creation | `buildSubAgent` | the server's shared clients with `_sharedMcpClientDescriptors` / `_configuredSlotCount`; on a per-session re-wire, the session's clients with their descriptors and slot count (`SessionAgentParts`) — always the clients its builder is handed | at startup on every path (below); after a drain, its lazy rebuild |
-| own `rag`, own `mcp:` | its own, bound at creation | its own builder's auto-connect (§6.1) | its own connection | every build of that builder; `buildSubAgent` marks the binding filled when that fill was complete (D36) |
+| own `rag`, own `mcpClients` | its own, bound at creation (`withToolsStore`, own companion stores, D33) | its construction (`buildSubAgent`, no `injected`) | its own clients, array order (plain `IMcpClient[]`: no descriptors exist) | the startup primary build, or the lazy rebuild after a drain |
+| own `rag`, no own clients, no own `mcp:` | its own, bound at creation | its construction; on `yamlBuilderConnect` at startup, the pass right after the harvest (D38) | the server's shared clients with `_sharedMcpClientDescriptors` / `_configuredSlotCount` — what every re-wire hands it | at startup on every path; after a drain, its lazy rebuild |
+| own `rag`, own `mcp:` | its own, bound at creation | its own builder's auto-connect on the construction's build (§6.1) | its own connection | the construction only: a re-wire hands the builder the backfilled clients through `withMcpClients`, which does not vectorize |
 
-- `buildSubAgent` fills **right before `subBuilder.build()`**, from the clients and descriptors it
-  hands that builder, so the records carry the names the worker's agent dispatches by — by
-  construction (D32). On the primary build (no `injected`), the server hands the worker builder
-  no clients. Its store is then filled from the shared clients with their descriptors, which are
-  what every re-wire hands it, once those are known.
+- `buildSubAgent` fills on the **construction** (no `injected`) **right before `subBuilder.build()`**,
+  from the clients it would hand a re-wire, so the records carry the names the worker's agent
+  dispatches by — by construction (D32). It runs the store's fill source: `corpus` / `prebuilt`
+  read no client.
+- **A per-session re-wire never fills** (D41): it receives the cached store by reference.
 - **When the shared clients are known — always at startup (D38).** On every path except
-  `yamlBuilderConnect`, they are resolved before the startup primary builds of the workers, so
-  `buildSubAgent` fills a worker on the shared clients at startup, before the server listens. On
+  `yamlBuilderConnect`, they are resolved before the startup primary builds of the workers, so the
+  construction fills a worker on the shared clients at startup, before the server listens. On
   `yamlBuilderConnect` the shared clients are taken from the main builder after the workers'
   startup build, so `_buildInfra` makes **one fill pass right after the harvest**: every worker
   with its own bound store, no own `mcpClients` and no own `mcp:` is filled from the harvested
-  clients with `_sharedMcpClientDescriptors` / `_configuredSlotCount` — the same inputs a re-wire
-  hands it — before the small-set check, `/health` and listen. Not at the first session: a
-  session never waits for a startup fill. The per-session re-wire still calls the fill, which the
-  memo turns into a no-op once complete, or into the retry of an incomplete one (D36).
+  clients with `_sharedMcpClientDescriptors` / `_configuredSlotCount` — before the small-set check,
+  `/health` and listen. That pass completes those workers' creation at startup; it is not a refill.
+  A lazy rebuild later finds the shared clients known and fills in the construction.
 - **`PUT /v1/config` and hot reload** drain the worker cache (`WorkerRegistry.drain`). The next
-  session's `WorkerRegistry.build` rebuilds the worker through `buildSubAgent`:
-  `resolveWorkerLlmSet` creates a new store and `withToolsStore` binds it with new companion
-  stores. That build fills the store. Nothing in `_buildInfra` fills workers apart from the
-  `yamlBuilderConnect` pass above: in the earlier design (`fillWorkerToolsStores`, startup only),
-  these rebuilds left the new bound stores empty. Two sessions that rebuild the same worker at
-  once share one construction and so one store and one fill (§6.5).
-- A worker's own **persistent** store (its `rag` on qdrant, …) is bound again on every rebuild and
-  filled again: each record is replaced in place. The builder's own `mcp:` path already
-  re-vectorizes on every build in 30.1.0. (A persistent *companion* store with a worker that has
-  its own `rag` is refused at start, D33.) Several server processes filling one persistent store
-  at the same time is the backend's concern (§3.3, D13); the library coordinates nothing across
-  processes.
+  session's `WorkerRegistry.build` misses the cache and constructs the worker (`buildSubAgent`
+  without `injected`): `resolveWorkerLlmSet` creates a new store, `withToolsStore` binds it with new
+  companion stores and its fill source, and that construction fills it. In the earlier design
+  (`fillWorkerToolsStores`, startup only) these rebuilds left the new bound stores empty.
+- **A construction whose fill throws leaves no cached worker.** `resolveWorkerLlmSet` caches the
+  worker's set before the build; when the fill throws (an incompatible corpus, a store not deployed,
+  an invalid `IToolRecordKey`, a binding its store does not carry), `buildSubAgent` removes that
+  entry before rethrowing, so no later session re-wires a worker whose store was never filled. A
+  configuration error stays loud: the next session's construction throws again.
+- A worker's own **persistent** store (its `rag` on qdrant, …) is bound again on every construction
+  and its source runs again: `live` replaces each record in place; `prebuilt` (the recommended
+  source for a persistent store) only checks it. (A persistent *companion* store with a worker that
+  has its own `rag` is refused at start, D33.) Several server processes writing one persistent
+  store at the same time is the backend's concern (§3.3, D13); the library coordinates nothing
+  across processes.
+- **Two sessions arriving together after a drain** can both construct the same worker in 30.1.0,
+  and with a profile each construction fills its own new store. That race exists without profiles
+  and is out of scope here (§15, D45).
 
 **A worker's records carry the identity its agent dispatches by (D32).** A tool's exposed name
 (the namespace prefix on a collision: the slot's `label`, else `s<slotIndex>`) and its record id
@@ -1944,13 +2088,15 @@ are in the agent's catalog.
 - `bound.index` failing → every item in `failed`, the error message in the logged line, the same
   `degraded` status (main). A tool that fails to index → named in `failed`.
 - An invalid `IToolRecordKey` (an id without `tool:`), a client set that does not match its
-  descriptors, or a binding its store does not carry **throws**:
+  descriptors, a binding its store does not carry, an incompatible corpus or a prebuilt store that
+  was not deployed (or differs, §3.10) **throws**:
   - main store → startup fails, as on the builder's path;
   - a worker's startup build → startup fails;
-  - a worker's lazy rebuild → that session's worker build fails, like any worker build error,
-    and the next build retries it.
-- An incomplete fill (`complete: false`, or aborted) does not fail anything: it is reported as
-  above and evicted from the memo, so the worker's next build or re-wire retries it (D36).
+  - a worker's lazy rebuild → that session's worker build fails, like any worker build error; its
+    cache entry is removed (rule 2), so the next session constructs it again.
+- An incomplete fill (`complete: false`, or aborted) does not fail anything and is **not retried**
+  (D41): it is reported as above and stays until a reconnect's `toolsChanged` re-indexes, or a new
+  instance is created.
 
 **Without a bound profile** the server calls nothing new on any path: no listing, no writes, no
 status (`/health` exactly as in 30.1.0).
@@ -1960,92 +2106,161 @@ status (`/health` exactly as in 30.1.0).
 Found with `git grep -- packages scripts` for `vectorizeMcpTools`, `vectorizeSkills`,
 `McpToolRegistry`, `revectorizeTools`, `makeToolsRag`, `setToolsRag`, `addRagStore`,
 `drainWorkers` / `_workers.drain`, and every `writer()` / `upsertRaw` call outside the stores
-themselves. Each path is listed with what fills it under a profile, so a reviewer can check
-that none is missed.
+themselves. Each path is listed with what writes it under a profile and what each fill source does
+there, so a reviewer can check that none is missed. "Creation" = the source's `fill`; "reconnect" =
+its `toolsChanged` (§3.10).
 
-| # | Path | Code | Store | What fills it under a profile |
+| # | Path | Code | Store | Under a profile | `live` | `corpus` | `prebuilt` | `consumer` |
+|---|---|---|---|---|---|---|---|---|
+| 1 | Builder `build()`, auto-connect branch (YAML `mcp:` / `withMcpConnectionStrategy`) | `builder.ts`, `vectorizeMcpTools(…, toolsRag, …)` | `setToolsRag` or the auto-created `InMemoryRag`; bound by `withToolsProfile`, or already bound by the server | creation: `vectorizeMcpTools` runs the store's source (rule 1) | lists + indexes | loads the corpus (precomputed) | checks; no write | nothing |
+| 2 | Builder `build()` with `withMcpClients` / `withMcpServers` | `builder.ts`, "skip auto-connect and vectorization" | the same | not the builder (§6.1 limit): the consumer (`fillToolsBinding`, `bound.index`), or the server (rows 4, 5) | — | — | — | — |
+| 3 | Reconnect: `McpToolRegistry.resolveActiveClients` → `toolsChanged` → `revectorizeTools` (any agent with a connection strategy) | `mcp/tool-registry.ts` | `ragStores.tools` — the projection, possibly a `FallbackRag` over the bound store | reconnect: the store's `toolsChanged` (D44) — **finding (a)**; a tool no longer listed keeps its records (D40) | re-indexes | **no write**, warning | **no write**, warning | re-indexes |
+| 4 | Server main store | `_buildInfra`: `makeRag` → `withToolsStore` (bound with the YAML `fill` source) | the main store | creation, once: the server (`fillBoundToolsStore` → `fillToolsBinding`) on ready clients, an injected seam, plugin clients or no MCP; on `yamlBuilderConnect` the builder (row 1) | lists + indexes | loads | checks | nothing |
+| 5 | Server worker store, created by the worker's **construction**: the startup primary build, or the lazy rebuild after a drain (`PUT /v1/config`, hot reload) | `WorkerRegistry.build` (cache miss) / the startup loop → `buildSubAgent` (no `injected`) → `resolveWorkerLlmSet` → `makeToolsRag` → `withToolsStore` | the worker's own | creation, once: `buildSubAgent` before `subBuilder.build()` (rule 2) — **finding (b)**; on `yamlBuilderConnect`, a worker on the shared clients by the pass right after the harvest (D38); own `mcp:` → row 1; a throwing fill removes the cache entry | lists + indexes | loads | checks | nothing |
+| 5a | Per-session re-wire of a worker | `WorkerRegistry.build` (cache hit) → `buildSubAgent` with `injected` | the cached store, by reference | **never written** (D41) | — | — | — | — |
+| 6 | Worker without its own `rag` | `buildSubAgent`: `setToolsRag(injected.toolsRag)` | the main store, by reference | row 4; never filled again | — | — | — | — |
+| 7 | Per-session agents (`buildSessionAgent` → the pipeline builder) | `smart-server.ts` | the main store by reference (`parts.toolsRag`); clients through `withMcpClients` | row 4; their registries reach it only through row 3 | — | — | — | — |
+| 8 | Builder skills into the tools store | `vectorizeSkills` (`builder.ts`) | the tools store | skill records, 30.1.0 pass-through (§7.7) — not tool items, not a fill source's; unchanged (a writerless store is skipped, as today) | — | — | — | — |
+| 9 | A consumer of the builder | §6.1 snippet; `fillToolsBinding`; `bound.index` | the consumer's | the consumer; the binding and its source attached by `bindToolsProfile` | as row 1 | as row 1 | as row 1 | the consumer's `bound.index` |
+| 10 | `scripts/rag-eval` profile arms | `runProfileArm` (§14.3) | the eval store | `vectorizeMcpTools` on a store bound by `bindToolsProfile` (rule 1) with the default `live` source | lists + indexes | — | — | — |
+| 11 | The consumer's build step | `buildToolsCorpus` (§6.5) | an in-process capture store, never a served one | the profile's own `bind` + `index` over capture stores; nothing is served from it | — | — | — | — |
+| 12 | The consumer's deploy step | `deployToolsCorpus` (§6.5) | the persistent store (+ companions) a `prebuilt` source will bind | precomputed vectors through the store's writer, in place, idempotent | — | — | writes it | — |
+| 13 | `SmartAgent.addRagStore('tools', …)` | `agent.ts` | — | refused (a built-in store), as in 30.1.0 | — | — | — | — |
+| 14 | RAG editing tools (`rag_add`, …) | registry editors | — | the `tools` entry is registered without an editor: not reachable | — | — | — | — |
+| 15 | Hot reload of weights | `config-reload-watcher.ts` | any store | not a fill — weights only | — | — | — | — |
+
+### 6.5 Offline corpus — built at build time, deployed by the consumer's deploy step (D43)
+
+**TL;DR.** The profile's indexer runs outside the server to produce a corpus. Two steps, both the
+consumer's scripts:
+
+| Step | When | Function | Embedding calls | Result |
 |---|---|---|---|---|
-| 1 | Builder `build()`, auto-connect branch (YAML `mcp:` / `withMcpConnectionStrategy`) | `builder.ts`, `vectorizeMcpTools(…, toolsRag, …)` | `setToolsRag` or the auto-created `InMemoryRag`; bound by `withToolsProfile`, or already bound by the server | the builder: `vectorizeMcpTools` reads the binding from the store (rule 1) |
-| 2 | Builder `build()` with `withMcpClients` / `withMcpServers` | `builder.ts`, "skip auto-connect and vectorization" | the same | not the builder (§6.1 limit): the consumer (`bound.index`, `fillToolsBinding`), or the server (rows 4, 5) |
-| 3 | Reconnect: `McpToolRegistry.resolveActiveClients` → `toolsChanged` → `revectorizeTools` (any agent with a connection strategy: the builder's auto-connect, per-session agents) | `mcp/tool-registry.ts` | `ragStores.tools` — the projection, possibly a `FallbackRag` over the bound store | `vectorizeMcpTools`, binding read from the store (rule 1) — **finding (a)**; a tool no longer listed keeps its records (D40) |
-| 4 | Server main store | `_buildInfra`: `makeRag` → `withToolsStore` | the main store | the server (`fillBoundToolsStore` → `fillToolsBinding`) on ready clients, an injected seam, plugin clients or no MCP; on `yamlBuilderConnect` the builder (row 1), marked filled when complete (D36) |
-| 5 | Server worker store: the startup primary build, a lazy rebuild after a drain (`PUT /v1/config`, hot reload), a per-session re-wire | `WorkerRegistry` (single-flight, §6.5) → `buildSubAgent` → `resolveWorkerLlmSet` → `makeToolsRag` → `withToolsStore` | the worker's own | `buildSubAgent` before `subBuilder.build()` (rule 2) — **finding (b)**; on `yamlBuilderConnect`, a worker on the shared clients by the pass right after the harvest (D38); own `mcp:` → row 1, marked filled when complete; an incomplete fill retried by the next build or re-wire (D36) |
-| 6 | Worker without its own `rag` | `buildSubAgent`: `setToolsRag(injected.toolsRag)` | the main store, by reference | row 4; never filled again |
-| 7 | Per-session agents (`buildSessionAgent` → the pipeline builder) | `smart-server.ts` | the main store by reference (`parts.toolsRag`); clients through `withMcpClients` | row 4; their registries refresh it through row 3 |
-| 8 | Builder skills into the tools store | `vectorizeSkills` (`builder.ts`) | the tools store | skill records, 30.1.0 pass-through (§7.7) — not tool items; unchanged (a writerless store is skipped, as today) |
-| 9 | A consumer of the builder | §6.1 snippet; `fillToolsBinding` | the consumer's | the consumer; the binding is attached by `bindToolsProfile` |
-| 10 | `scripts/rag-eval` profile arms | `runProfileArm` (§14.3) | the eval store | `vectorizeMcpTools` on a store bound by `bindToolsProfile` (rule 1) |
-| 11 | `SmartAgent.addRagStore('tools', …)` | `agent.ts` | — | refused (a built-in store), as in 30.1.0 |
-| 12 | RAG editing tools (`rag_add`, …) | registry editors | — | the `tools` entry is registered without an editor: not reachable |
-| 13 | Hot reload of weights | `config-reload-watcher.ts` | any store | not a fill — weights only |
+| **build** | the consumer's build (CI) | `buildToolsCorpus` | yes — the document embedder, once | a `ToolsCorpus` (records + vectors), serialized as JSON |
+| **deploy** (persistent store) | the consumer's deploy | `parseToolsCorpus` → `deployToolsCorpus` | **none** — precomputed vectors | the store holds the corpus in place, plus one service record |
+| instance creation, in-memory store | the process starts | `ToolsCorpusLoader` (fingerprint check, precomputed writes into the fresh store) | **none** | the store holds the corpus |
+| instance creation, persistent store | the process starts | `PrebuiltToolsStore` | **none** | bound, fingerprint checked, **never written** |
 
-### 6.5 Worker construction is single-flight — a pre-existing 30.1.0 race (D37)
+```ts
+export interface ToolsCorpusIdentity {
+  /** The consumer's name for the profile composition, e.g. 'faceted@1'. */
+  readonly profile: string;
+  /** The consumer's name for the document embedder, e.g. 'aicore-te3-small'. */
+  readonly embedder: string;
+}
+export interface ToolsCorpusManifest {
+  readonly format: 1;
+  readonly identity: ToolsCorpusIdentity;
+  readonly profileName: string;              // the binding's profileName at build
+  readonly companions: readonly string[];    // companion store names the profile wrote
+  readonly dimensions: number;               // every vector's length
+  readonly items: number;                    // tools
+  readonly records: number;
+  readonly corpusHash: string;               // sha256 over the identity and every record's hash
+}
+export interface ToolsCorpusRecord {
+  readonly store: string;                    // '' = the primary store; else the companion's name
+  readonly id: string;                       // the physical id the profile assigned (§3.1)
+  readonly text: string;
+  readonly vector: readonly number[];
+  readonly metadata: RagMetadata;
+}
+export interface ToolsCorpus { readonly manifest: ToolsCorpusManifest; readonly records: readonly ToolsCorpusRecord[] }
+export interface ToolsCorpusDeployReport { readonly unchanged: boolean; readonly upserted: number; readonly deleted: number }
 
-**TL;DR.** One in-flight primary construction per worker name and config generation. A
-construction started before a drain never publishes into the new generation. This fixes a race in
-**our own process** that exists in 30.1.0. It is **not** a RAG concurrency protocol.
+/** Build step: provider tool definitions → records + vectors, with the profile's own indexer. */
+export function buildToolsCorpus(input: {
+  readonly profile: ICollectionProfile<ToolItem>;
+  readonly embedder: IRetrievalEmbedder;      // the store's embedder at run time (its document side)
+  readonly identity: ToolsCorpusIdentity;
+  readonly items: readonly ToolItem[];        // toolItemFromTool over the provider's definitions
+  readonly companions?: readonly string[];    // the companion store names the profile binds
+}, options?: CallOptions): Promise<ToolsCorpus>;
+/** The serialized corpus back: shape, format, one dimension, the hash recomputed. Throws on any mismatch. */
+export function parseToolsCorpus(json: string): ToolsCorpus;
+/** Deploy step: write a built corpus into a store (and its companions), in place, idempotent. */
+export function deployToolsCorpus(corpus: ToolsCorpus, target: CollectionStore, options?: CallOptions): Promise<ToolsCorpusDeployReport>;
+export const TOOLS_CORPUS_RECORD_ID = 'tools-corpus';   // the service record's id (no `recordId` output has this form)
+```
 
-**The 30.1.0 race (`workers/worker-registry.ts`).**
+**Build (`buildToolsCorpus`).**
 
-- `WorkerRegistry.build` checks `cache.has(name)` and, on a miss, awaits a primary
-  `buildSubAgent`. `resolveWorkerLlmSet` checks the cache, awaits its factories, then sets the
-  entry. Nothing is recorded between the check and the set.
-- Two sessions that miss together (the first two after a drain, or after a failed lazy rebuild)
-  both construct the worker: two sets of worker stores, two MCP connections for an own `mcp:`,
-  two builder handles. The later `cache.set` overwrites the earlier entry; the
-  earlier handle's `close` is lost or closed under a running agent; its stores and connections
-  leak.
-- A session can also see the entry `resolveWorkerLlmSet` published before the primary build
-  finished its `backfillWorkerCacheFromHandle`, and re-wire with the parent's clients instead of
-  the worker's own.
-- `drain()` clears the cache while a construction is in flight; that construction then sets its
-  entry into the drained cache — built before the reload, published after it, and closed by
-  nobody until the next drain.
+- Binds the profile to **capture stores** (an internal in-memory `IRag` that owns the given embedder
+  through `IRetrievalEmbedderOwner` and keeps every precomputed write) — the primary and one per
+  companion name — and calls `bound.index(items)`. So the records are exactly what the same
+  profile's indexer and record writer produce at run time: same ids (§3.1), texts, metadata,
+  companion records; only the store differs.
+- Any `failedItems` → throws naming them: a corpus is complete or not built. No items → throws.
+- Item ids must be what tool selection reads at run time: `toolItemFromTool(tool, { itemId:
+  toolRecordKey.key(…), originalName })` with the same `IToolRecordKey`, client order and namespace
+  as the server (§6.1 snippet). The consumer's build reads the tool definitions from its provider
+  (an MCP server it starts in CI, or the definitions the provider exports).
+- Serialization is `JSON.stringify(corpus)`; `parseToolsCorpus` is its checked inverse.
 
-**The rule.**
+**Deploy (`deployToolsCorpus`) — one current state, in place, idempotent.**
 
-1. **Single-flight per name.** `WorkerRegistry` keeps the in-flight primary construction of each
-   worker name (a promise). It is recorded **before any async factory runs** — the construction
-   body starts in a later microtask — so every concurrent caller finds it and awaits it. A
-   cached entry is used only when no construction of that name is in flight.
-2. **A construction builds privately and publishes once.** `resolveWorkerLlmSet` and
-   `backfillWorkerCacheFromHandle` work on the construction's own entry; the registry publishes it
-   into the cache only when the whole primary build has finished. A per-session re-wire receives
-   the published entry it resolved, never re-reads the cache, so it can never trigger a second
-   construction.
-3. **Drain rule — a construction publishes only into the generation it started in.** `drain()`
-   increments the generation, forgets the in-flight constructions, closes and clears the cached
-   entries, and **awaits the forgotten constructions**. A construction that settles after a drain
-   started does not publish: it closes what it built (`close` of its handle) and settles. Its
-   waiters then resolve the worker in the current generation — they await that generation's
-   construction, or start it. So `drain()` returns only when nothing of the old generation is
-   left open (server `close()` included), and nothing built before a reload serves after it.
-4. **A failed construction is not kept.** A rejected construction is removed when it settles; its
-   waiters get the error (that session's worker build fails, as in 30.1.0); the next build
-   constructs again.
-5. **Startup goes through the same path.** `_buildInfra`'s startup primary builds call the
-   registry, so there is one construction path.
-6. **No contract change for implementers.** `IWorkerRegistry` is unchanged; the class
-   `WorkerRegistry` gains `resolve(sub)` (§3.8).
+1. Read the store's service record (`TOOLS_CORPUS_RECORD_ID`). Its `corpusHash` and identity equal
+   the corpus's → `{ unchanged: true }`, nothing written.
+2. Every target store (primary + each companion the corpus names; a corpus companion the target
+   lacks, or a target companion the corpus lacks → throw) must accept precomputed vectors
+   (`writer().upsertManyPrecomputedRaw` or `upsertPrecomputedRaw`) — else throw: the step makes no
+   embedding call.
+3. **Write ahead:** the service record is rewritten first with the old hashes plus `pending` = the
+   ids this run may write. An interrupted run's records are therefore always listed, and the next
+   run deletes what its corpus does not hold (the same write-ahead rule as §3.3's stale lists).
+4. Upsert every record whose hash is new or differs from the service record's, in batches.
+5. Delete every id the old service record lists (or lists as `pending`) that the corpus no longer
+   holds, per store; every `deleteByIdRaw` Result checked — a failure throws (the service record
+   still lists it, so a rerun deletes it).
+6. Write the final service record: `{ serviceRecord: { kind: 'tools-corpus', manifest, hashes: {
+   <store>: { <id>: <hash> } } } }`, text `tools corpus <corpusHash>`, vector = a unit vector of the
+   corpus dimension. Retrieval drops it (§4.3); `ReservedRecordKey` keeps extras from setting it.
 
-**What it is not.** No lock, no generation and no writer election is added for RAG. Concurrent
-writes to persistent stores (Qdrant, HANA, pg-vector) — from one process or from several
-replicas — are the backend's responsibility (§3.3, D13). Single-flight construction only keeps
-one process from building one worker twice; two processes may still fill the same persistent
-store at once, and the library does not serialize their item replacements.
+- A failed write throws; nothing is reported as deployed that is not. A rerun is safe.
+- The service record holds one hash per record (~80 bytes each): a few hundred tools with several
+  records each fit a Qdrant payload, a pg-vector `jsonb` and a HANA `NCLOB`.
+- Concurrent deploy steps against one store are the backend's concern (§3.3, D13); a deploy runs
+  once per release.
 
-**Tested** (§14.1): two simultaneous builds of one worker → one construction; a drain during a
-construction → it publishes nothing, closes its handle, its waiter gets the new generation's
-worker; a rejected construction → the next build constructs again; at the server, two
-simultaneous first sessions after a drain → one construction and one fill per worker.
+**How a consumer's scripts use it** (a sketch; the names are the consumer's):
 
-### 6.6 What is filled at startup — the tools store only
+```ts
+// build step (CI) — scripts/build-tools-corpus.ts
+const profile = mcpToolsVariants.faceted();
+const tools = await listProviderTools();                 // the consumer's: McpTool[] from its server
+const items = tools.map((t) => toolItemFromTool(t, {
+  itemId: defaultToolRecordKey.key({ toolName: t.name, clientIndex: 0, clientCount: 1 }),
+  originalName: t.name,
+}));
+const corpus = await buildToolsCorpus({ profile, embedder, identity: { profile: 'faceted@1', embedder: 'aicore-te3-small' }, items });
+writeFileSync('dist/tools-corpus.json', JSON.stringify(corpus));
 
-- Startup filling (this section and §6.3) concerns **only the `tools` store**: profiles exist only
-  for `tools` in this PR (S8).
-- Collections that change while the server runs are **not** filled at startup:
+// deploy step — scripts/deploy-tools-corpus.ts (persistent store)
+const corpus = parseToolsCorpus(readFileSync('dist/tools-corpus.json', 'utf8'));
+const report = await deployToolsCorpus(corpus, { key: 'tools', rag: new QdrantRag(/* … */) });
+console.log(report.unchanged ? 'tools corpus up to date' : `upserted ${report.upserted}, deleted ${report.deleted}`);
+
+// run time — in-memory store: load the built corpus
+bindToolsProfile(profile, { key: 'tools', rag: new VectorRag(embedder) },
+  new ToolsCorpusLoader({ corpus, expect: { profile: 'faceted@1', embedder: 'aicore-te3-small' } }));
+// run time — persistent store: bind for retrieval, check, never write
+bindToolsProfile(profile, { key: 'tools', rag: qdrantRag },
+  new PrebuiltToolsStore({ expect: { profile: 'faceted@1', embedder: 'aicore-te3-small' } }));
+```
+
+- The SmartServer reads the same through YAML `fill` (§6.2). This mirrors cloud-llm-hub's flow (a
+  bundle for an in-process vector store; Qdrant role stores replaced in place with a fingerprint
+  and corpus-hash record), generalised to any `IRag` with precomputed writes.
+
+### 6.6 What is filled at instance creation — the tools store only
+
+- Filling at instance creation (§3.10, §6.3) and the fill sources (`live`, `corpus`, `prebuilt`,
+  `consumer`) concern **only the `tools` store**: profiles exist only for `tools` in this PR (S8),
+  and a tools store's content is fixed by its provider.
+- Collections that change while the server runs are **not** filled at creation and get no fill
+  source:
   - **session collections** and **session history** — written during work by pipeline elements;
-  - **user collections** — written during work;
+  - **user collections** — written during work, by pipeline elements or the consumer's actions;
   - **shared items** — written and removed by the pipeline elements that own them, through
     `SharedItemsProfile` `index` / `remove` (§8.4).
   Without a profile for their key they stay on 30.1.0 behaviour (goal 8).
@@ -2459,12 +2674,14 @@ This is the main path (§7.1): the consumer chooses each strategy; a default fil
 - **Without a profile (`baseline`):** the 30.1.0 record code is untouched
   (`Tool: ${name} — ${description}`, id from `IToolRecordKey`, metadata `{ name }`). A golden test
   pins id, text and metadata byte for byte on the committed snapshot.
-- **Which path — read from the store (D34).** `vectorizeMcpTools` takes no `binding` option: it
-  calls `toolsBindingOf(toolsRag)` (through `IRagDecorator.inner`) and takes the profile path when
-  the store carries a binding, the 30.1.0 path when it does not. So every caller — the builder's
-  fill, a reconnect's `toolsChanged`, `fillToolsBinding`, `rag-eval` — fills a store the way its
-  binding says, and none can forget to pass it (§6.3, §6.4).
-- **With a profile:** `vectorizeMcpTools` builds `ToolItem`s (exposed name, provenance's original
+- **Which path — read from the store (D34, D42).** `vectorizeMcpTools` takes no `binding` option:
+  it reads the store's binding and fill source (through `IRagDecorator.inner`). A bound store →
+  the source decides: `fill` at the store's creation, `toolsChanged` on a reconnect (§3.10); an
+  unbound store → the 30.1.0 path. So every caller — the builder's fill, a reconnect's
+  `toolsChanged`, `fillToolsBinding`, `rag-eval` — writes a store the way its binding and source
+  say, and none can forget to pass them (§6.3, §6.4). The live path below is what
+  `ToolsFillContext.indexLiveTools` runs.
+- **With a profile (the live path):** `vectorizeMcpTools` builds `ToolItem`s (exposed name, provenance's original
   name, record key, description, `parameters` read from the tool's `inputSchema`, and
   `definitionChars` of the exported definition) and calls `bound.index(items)`. It reads the
   schema generically (top-level `properties`, `required`, string `enum` / `const`); no server is
@@ -2509,6 +2726,10 @@ This is the main path (§7.1): the consumer chooses each strategy; a default fil
   the 30.1.0 path would rank as records.
 - So switching variants (or the intent placement) on a persistent store = a fresh collection
   (redeploy), like an embedder change. Every record carries `profile` in metadata for diagnosis.
+- A store filled by the deploy step (`prebuilt`, §6.5) is kept current by that step: a new corpus of
+  the **same** profile and embedder replaces changed records and removes dropped ones in place; a
+  different profile or embedder still needs a fresh collection (the deploy step does not remove
+  records it never listed, and a running process refuses a mismatching store at creation).
 - In-memory tool stores (rebuilt every boot) need nothing.
 
 ### 7.9 A profile for any other MCP server — built by the consumer (goal 9)
@@ -2816,14 +3037,21 @@ new SharedItemsProfile({
   `BuildAgentDeps` (same function, same signature); until it does, `makeDecisionModel` keeps
   working (deprecated). Supplying **both** keys is refused at startup with an error naming both —
   remove `makeDecisionModel`. A behaviour change: none for a consumer supplying one of them.
-- **Worker construction is single-flight** (D37, §6.5) — a fix of a 30.1.0 race, a CHANGELOG
-  "Fixed" entry: concurrent first sessions no longer build a worker twice, and a construction in
-  flight during `PUT /v1/config` / hot reload no longer publishes into the reloaded cache. No API
-  change; `drain()` now also waits for the constructions it forgot.
+- **A bound tools store is filled once, at its creation; where its records come from is the
+  consumer's fill source** (§3.10, §6.3, §6.5). Without a profile nothing changes. With one and no
+  source chosen, `live` is 30.1.0's behaviour through the profile. **Migration note** (CHANGELOG):
+  a consumer that ships a tools corpus builds it in its build step with `buildToolsCorpus` and
+  either loads it at start (`ToolsCorpusLoader`, in-memory store) or writes it in its deploy step
+  with `deployToolsCorpus` and binds the store with `PrebuiltToolsStore` (persistent store); the
+  `profile` / `embedder` names must be the same in the build step and at run time.
+- **Single-flight worker construction is not in this release** (D45): the 30.1.0 race of two
+  sessions constructing one worker together after a drain is unchanged here and tracked as a
+  separate issue (§15).
 - **The caller's k caps every cut** (approved review finding 1). 30.1.0 has no item cuts, so
   nothing released changes; `FixedItemsCut` is new in this spec and is a ceiling from the start.
-- Added, all optional: the contracts of §3, one builder method, the YAML section `rag.profiles`
-  (key `tools` only, S8), the value `sap-aicore` for the existing `decision.provider` (with
+- Added, all optional: the contracts of §3 (incl. `IToolsFillSource`, §3.10), one builder method,
+  the offline corpus API and the four fill sources (libs, §6.5), the YAML section `rag.profiles`
+  (key `tools` only, S8; its `fill` key), the value `sap-aicore` for the existing `decision.provider` (with
   `deploymentId`, `model`, `resourceGroup`), optional health fields, the embedder capability,
   telemetry options on the 30.1.0 rerank strategies, the optional seam
   `BuildAgentDeps.makeRelevanceDecision`, `BuildAgentDeps.makeProbabilityDecision` (the renamed
@@ -2847,7 +3075,7 @@ new SharedItemsProfile({
 - Docs updated in the same PR: `README.md`, `docs/ARCHITECTURE.md`, `docs/INTEGRATION.md`,
   `docs/PERFORMANCE.md`, `docs/EXAMPLES.md` (YAML, both decision providers),
   `docs/TROUBLESHOOTING.md` (rerank error metric; switching profiles needs a fresh collection),
-  `docs/DEPLOYMENT.md` (`DECISION_SERVICE_KEY`), `docs/SECURITY_THREAT_MODEL.md` (Cohere receives
+  `docs/DEPLOYMENT.md` (`DECISION_SERVICE_KEY`; the tools corpus build and deploy steps, §6.5), `docs/SECURITY_THREAT_MODEL.md` (Cohere receives
   the query and the candidate texts), `CLAUDE.md` key API notes, both new packages' `README.md`,
   the `typesafe-decision` README (`IProbabilityDecision`; one of two decision kinds), the
   `llm-agent` and `llm-agent-libs` READMEs (renames, reranker package), `scripts/rag-eval/README.md`;
@@ -3012,7 +3240,8 @@ new SharedItemsProfile({
   the other's; re-indexing and then removing the main's item leaves the worker's companion record
   and retrieval intact; a non-in-memory companion store with a worker that has its own `rag` →
   startup error naming the worker.
-- Filling follows the store (D34, D35), one test per lifecycle path:
+- Filling follows the store and happens once, at creation (D34, D35, D41), one test per lifecycle
+  path:
   - **startup** — the server fill tests above (main, workers on own and shared clients); on
     `yamlBuilderConnect` (the in-process MCP stub) a worker with its own store and no own clients
     holds the stub's tools right after `start()`, before any session (D38);
@@ -3024,31 +3253,56 @@ new SharedItemsProfile({
     - a binding over a writerless store is refreshed through its own `index`, not skipped;
     - a bound store behind a `FallbackRag` is still found;
     - an unbound store keeps the 30.1.0 records (the existing reconnect tests, unchanged);
-  - **`PUT /v1/config`** and **hot reload** → the drained workers are rebuilt by the next session.
-    The hot reload is driven through the server's reload entry point (the `ConfigReloadWatcher`
-    the server holds, `_onReload`, awaited) — no `fs.watch`, no debounce polling (D39). One thin
-    test pins that the file watcher's `reload` event calls that entry point. Covered:
+    - a `corpus` or `prebuilt` store: nothing written, a warning logged (D44);
+  - **`PUT /v1/config`** and **hot reload** → the drained workers are constructed again by the next
+    session. The hot reload is driven through the server's reload entry point (the
+    `ConfigReloadWatcher` the server holds, `_onReload`, awaited) — no `fs.watch`, no debounce
+    polling (D39). One thin test pins that the file watcher's `reload` event calls that entry point.
+    Covered:
     - a worker with its own in-memory primary + companion store on the shared clients (labelled
       slots, a collision);
     - a worker with DI clients.
 
-    Each rebuilt store is a new instance carrying its binding. It is filled once and retrievable
-    by its primary records and by its companion intents, under the names its agent dispatches by
-    (`<label>__<tool>`, ids `tool:<slotIndex>:<name>`; array order for the DI clients).
-  - **Only complete fills are memoized (D36):**
-    - a worker's fill whose `bound.index` resolves with a failure → the item is absent; the next
-      build (re-wire) of the same binding indexes again and the item is present; a further
-      re-wire indexes nothing;
-    - a worker's client whose `listTools()` fails at startup → nothing indexed; after the client
-      recovers, the next re-wire fills the store; a further re-wire indexes nothing.
-  - **Single-flight construction (D37, §6.5):** `WorkerRegistry` with a stub `buildSubAgent` —
-    two simultaneous builds → one construction; a drain while a construction is in flight → it
-    is never published, its handle is closed, and its waiter gets the new generation's worker; a
-    rejected construction → the next build constructs again. Through the server: two
-    simultaneous first sessions after a drain → one construction (one bind) and one fill per
-    worker.
+    Each rebuilt store is a new instance carrying its binding. It is filled once by the
+    construction and retrievable by its primary records and by its companion intents, under the
+    names its agent dispatches by (`<label>__<tool>`, ids `tool:<slotIndex>:<name>`; array order
+    for the DI clients); the following re-wire fills nothing.
+  - **Never refilled (D41):** a worker's client whose `listTools()` fails at startup → nothing
+    indexed, the summary line logged; after the client recovers, re-wires still index nothing —
+    the store stays as created.
+  - **A construction whose fill throws leaves no cached worker:** a lazy rebuild whose fill throws
+    → that session's worker build fails and the cache holds no entry for the worker.
   - `fillToolsBinding` refuses a binding its store does not carry; `vectorizeMcpTools` has no
     `binding` option (the libs tests bind through `bindToolsProfile`).
+- Fill sources (§3.10, libs):
+  - no source → `live`: the existing profile fill tests, unchanged;
+  - `ConsumerToolsFill`: the builder's auto-connect writes nothing and reports no status; a
+    `toolsChanged` re-indexes through the profile;
+  - a consumer's own source receives the binding, the target and `indexLiveTools`, and its status
+    is the catalog status;
+  - `bindToolsProfile` on a store already bound with a different explicit source → throws.
+- Offline corpus (§6.5, libs), with an embedder that counts its calls:
+  - `buildToolsCorpus` → one record per profile record (ids, texts, metadata equal to what
+    `bound.index` writes into a live store), every vector of one dimension, companion records under
+    their store name; a failing item → throws naming it; no items → throws;
+  - `parseToolsCorpus(JSON.stringify(corpus))` round-trips; a changed record (hash mismatch), a
+    wrong format or a mixed dimension → throws;
+  - `deployToolsCorpus` into a `VectorRag` (+ companion): **zero embedding calls**; retrieval through
+    the binding finds the tools and never returns the service record; a second deploy of the same
+    corpus → `unchanged: true`, no write; a corpus with one changed and one dropped tool → only the
+    changed records upserted, the dropped tool's records deleted (primary and companion); a
+    store without precomputed writes → throws; a failed delete → throws, and a rerun deletes it;
+  - `ToolsCorpusLoader`: loads with zero embedding calls, the catalog status complete with `records`;
+    `toolsChanged` → no write;
+    a mismatching `profile` / `embedder` / `profileName` / companion set → throws naming it;
+  - `PrebuiltToolsStore`: a deployed store → status from the service record, **no write** (a writer
+    spy sees none); a store never deployed → throws "not deployed"; a mismatching identity →
+    throws; `toolsChanged` → no write.
+- `StagedRetrieval`: a hit carrying `serviceRecord` is dropped — not an item, not an orphan.
+- Server `fill` (§6.2): `{ corpus: … }` on an in-memory store with ready clients → the store holds
+  the corpus and the embedder saw no call at startup; `{ prebuilt: … }` over a store the test
+  deployed → `/health` complete, no write; every `fill` validation rule (unknown name, missing
+  fields, `prebuilt` over `in-memory`, `corpus` with a worker that has its own `rag` and own clients).
 - YAML: every validation rule of §6.2 through the real `resolveSmartServerConfig` (incl. a
   `rag.profiles` key other than `tools` refused, S8; a variant against the wrong kind of decision;
   `question` / `task` refused for a relevance provider; `decision.provider: sap-aicore` fields; an
@@ -3118,7 +3372,9 @@ estimator) and no item is truncated. A consumer runs it against its own profile.
 | #324, #314, #291, #290, #247 | own PRs (unrelated) |
 | Profiles for skills, user collections, session history | later, through the same contract (goal 8) |
 | Removing the records of a tool a server no longer lists (`notifications/tools/list_changed` → `toolsChanged`) | not changed: the records stay, as in 30.1.0 (§6.3, D40) |
-| Coordinating concurrent writes to a persistent store across processes | the store backend's responsibility (§3.3, §6.5, D13) |
+| Coordinating concurrent writes to a persistent store across processes | the store backend's responsibility (§3.3, D13) |
+| **Single-flight worker construction and drain ordering** — a pre-existing 30.1.0 race in `WorkerRegistry` (`packages/llm-agent-server-libs/src/smart-agent/workers/worker-registry.ts`), unrelated to profiles: (1) `WorkerRegistry.build` checks `cache.has(name)` and on a miss awaits a primary `buildSubAgent`; nothing is recorded between the check and `resolveWorkerLlmSet`'s `cache.set`, so two sessions that miss together (the first two after `PUT /v1/config` or a hot reload drained the cache) both construct the worker — two sets of worker stores, two builder handles, two MCP connections for an own `mcp:`; the later `cache.set` wins and the other handle leaks, or `backfillWorkerCacheFromHandle`'s defensive `close` closes a handle a running agent still uses; (2) `resolveWorkerLlmSet` publishes the entry before the primary build's `backfillWorkerCacheFromHandle`, so a concurrent session can re-wire with the parent's MCP clients instead of the worker's own; (3) `drain()` clears the cache while a construction is in flight, and that construction then publishes into the drained cache — built before the reload, served after it, closed by nobody until the next drain. With a tools profile each duplicate construction also fills its own new store (one more listing and indexing) | **a separate issue** (D45), filed from this row; it needs one construction per worker name and config generation and a drain that waits for, and discards, the constructions it overtook. Not a RAG concurrency protocol: concurrent store writes stay the backend's (D13) |
+| A refill API, a fill memo or a retry of an incomplete fill | not built: a store is filled once at creation (goal decision 2026-10-05, D41) |
 | Shared items in the server YAML | D6 |
 | A query-decomposition **implementation** (splitting multi-step queries) | the consumer: it injects its own `IQueryDecomposer` into the slot `StagedRetrieval` provides (§4.5); the framework ships none and no variant uses one (goal decision 2026-10-05) |
 | BM25 identifier tokenization (`ZDEMO_D_TEST` → `test`) | separate change to the in-store scoring (`ISearchStrategy` / tokenizer) |
@@ -3140,7 +3396,8 @@ estimator) and no item is truncated. A consumer runs it against its own profile.
    `IRetrievalStrategy`, `IItemIndexer`, `IItemCut` not grown — notes and size budgets are optional
    capabilities (`IIndexNoteSource`, `ISizeBoundedCut`).
 5. **Strategies:** collapse, cut, query decomposition, reranker, intent source, source selector, group
-   partitions, indexing, provider text, facets, intent sources, candidate pool — all injected. A variant is a
+   partitions, indexing, provider text, facets, intent sources, candidate pool, the tools fill
+   source — all injected. A variant is a
    named set of instances, never flags; the library picks no k, no pool and no reranker by guessing.
    The consumer makes the main behaviour choices by choosing strategies; a default composition
    fills only what it left open, and is the only place a tuned number lives, next to its
@@ -3313,7 +3570,7 @@ the rule it broke, and §6.4 lists every path so a reviewer can check that none 
 | # | Decision | Where |
 |---|---|---|
 | D34 | **The binding travels with the store.** Every tools vectorization resolves the binding from the store it fills (`toolsBindingOf`, through decorators): the builder's fill, `revectorizeTools` on `toolsChanged`, `fillToolsBinding`, `rag-eval`. With a binding → the profile path (no writer required); without → exactly 30.1.0. `vectorizeMcpTools`' explicit `binding` option is **removed**: no caller holds a binding its store does not carry (all bind through `bindToolsProfile`), so the option could only disagree with the store. `fillToolsBinding` keeps its typed `binding` parameter (it guarantees the profile path) and throws when the store does not carry that binding | §6.1, §6.3, §6.4, §7.6, §3.8, §14.1 |
-| D35 | **Whoever creates a bound store fills it.** The main store: `_buildInfra`, as D31. A worker's own store: `buildSubAgent`, right before `subBuilder.build()`, from the clients and descriptors that builder is handed (or, on the primary build, the shared clients with their descriptors once known). This covers startup, a lazy rebuild, `PUT /v1/config` and hot reload. `fillWorkerToolsStores` in `_buildInfra` is dropped. Kept: reader workers are never filled; one fill per binding (memoized, so concurrent rebuilds await one fill; a fill that throws is not kept); the D31 failure policy. `/health` reports the main catalog only; a worker's fill is logged (§6.3). On `yamlBuilderConnect` a worker on the shared clients is filled at its first per-session re-wire, because those clients are known only after the workers' startup build. *Amended by D36 (only complete fills are kept; an incomplete one is evicted too) and D38 (on `yamlBuilderConnect` one fill pass right after the harvest, at startup), §17.10* | §6.3, §6.4, §14.1 |
+| D35 | *Amended by D41 (§17.11): only the worker's construction fills; a per-session re-wire never does.* **Whoever creates a bound store fills it.** The main store: `_buildInfra`, as D31. A worker's own store: `buildSubAgent`, right before `subBuilder.build()`, from the clients and descriptors that builder is handed (or, on the primary build, the shared clients with their descriptors once known). This covers startup, a lazy rebuild, `PUT /v1/config` and hot reload. `fillWorkerToolsStores` in `_buildInfra` is dropped. Kept: reader workers are never filled; one fill per binding (memoized, so concurrent rebuilds await one fill; a fill that throws is not kept); the D31 failure policy. `/health` reports the main catalog only; a worker's fill is logged (§6.3). On `yamlBuilderConnect` a worker on the shared clients is filled at its first per-session re-wire, because those clients are known only after the workers' startup build. *Amended by D36 (only complete fills are kept; an incomplete one is evicted too) and D38 (on `yamlBuilderConnect` one fill pass right after the harvest, at startup), §17.10* | §6.3, §6.4, §14.1 |
 
 **Recommendations applied to the earlier open choices.** The user may still overrule any of
 them.
@@ -3328,8 +3585,22 @@ them.
 
 | # | Decision | Where |
 |---|---|---|
-| D36 | **Only complete fills are memoized.** A fill in flight stays shared per binding. One that resolves with `complete: false` (a `bound.index` Result failure, `listTools()` client failures) or aborted (`undefined`), or that rejects, is evicted when it settles, so the next build or re-wire of that worker retries it. No timers, no retry loops (standing rule: no timeouts) — a retry happens only when the worker is built again. The same rule for builder-filled bindings: marked filled only when the builder's catalog status is complete. The main store has no later build: an incomplete main fill stays reported (`degraded`) until a `toolsChanged` refill or a restart | §6.3, §6.4, §14.1 |
-| D37 | **Single-flight worker construction** in `WorkerRegistry` (with `resolveWorkerLlmSet` and the backfill working on the construction's own entry): one in-flight primary construction per worker name and config generation, recorded before any async factory runs; a construction started before a drain never publishes into the new generation — it closes what it built, and `drain()` awaits it. Framed as a fix of a **pre-existing 30.1.0 race in our own process** (duplicate worker instances, leaked resources), **not** a RAG concurrency protocol: concurrent writes to persistent stores (Qdrant, HANA, pg-vector) stay the backend's responsibility; the library adds no locks or generations for RAG, and no wording promises serialized item replacement across processes (§3.3, D13 wording amended) | §3.3, §6.3, §6.5, §8.4, §13, §14.1, §15 |
-| D38 | **Worker stores on the shared clients are filled at startup**, on `yamlBuilderConnect` too: one fill pass right after the harvest in `_buildInfra`, not at the first session. Startup filling concerns only the `tools` store (S8); collections that change while running — session collections, session history, user collections — are not filled at startup: pipeline elements write them during work (`SharedItemsProfile` `index` / `remove` for shared items), or they stay on 30.1.0 behaviour (goal 8) | §6.3, §6.4, §6.6, §14.1 |
+| D36 | *Superseded by D41 (§17.11): withdrawn — no memo, no retry.* **Only complete fills are memoized.** A fill in flight stays shared per binding. One that resolves with `complete: false` (a `bound.index` Result failure, `listTools()` client failures) or aborted (`undefined`), or that rejects, is evicted when it settles, so the next build or re-wire of that worker retries it. No timers, no retry loops (standing rule: no timeouts) — a retry happens only when the worker is built again. The same rule for builder-filled bindings: marked filled only when the builder's catalog status is complete. The main store has no later build: an incomplete main fill stays reported (`degraded`) until a `toolsChanged` refill or a restart | §6.3, §6.4, §14.1 |
+| D37 | *Moved out of this PR by D45 (§17.11): a separate issue (§15).* **Single-flight worker construction** in `WorkerRegistry` (with `resolveWorkerLlmSet` and the backfill working on the construction's own entry): one in-flight primary construction per worker name and config generation, recorded before any async factory runs; a construction started before a drain never publishes into the new generation — it closes what it built, and `drain()` awaits it. Framed as a fix of a **pre-existing 30.1.0 race in our own process** (duplicate worker instances, leaked resources), **not** a RAG concurrency protocol: concurrent writes to persistent stores (Qdrant, HANA, pg-vector) stay the backend's responsibility; the library adds no locks or generations for RAG, and no wording promises serialized item replacement across processes (§3.3, D13 wording amended) | §3.3, §6.3, §6.5, §8.4, §13, §14.1, §15 |
+| D38 | *Stands, read with D41: the pass completes those workers' creation at startup; it is not a refill.* **Worker stores on the shared clients are filled at startup**, on `yamlBuilderConnect` too: one fill pass right after the harvest in `_buildInfra`, not at the first session. Startup filling concerns only the `tools` store (S8); collections that change while running — session collections, session history, user collections — are not filled at startup: pipeline elements write them during work (`SharedItemsProfile` `index` / `remove` for shared items), or they stay on 30.1.0 behaviour (goal 8) | §6.3, §6.4, §6.6, §14.1 |
 | D39 | **The hot-reload test drives the server's reload entry point directly** — the `ConfigReloadWatcher` the server now holds, `_onReload(update)`, which returns the drain + invalidation as one awaitable promise (the file watcher's `reload` listener still fires and forgets) — instead of `fs.watch` + debounce polling. One thin test pins that the watcher's `reload` event calls that entry point (the seam exists: the `ConfigWatcher` event emitter inside `ConfigReloadWatcher`) | §14.1 |
-| D40 | **Tools a server removes at runtime stay in the store**, as in 30.1.0. It happens when a generic MCP server changes its tool list while running (`notifications/tools/list_changed` → `toolsChanged` → `revectorizeTools`); a consumer that builds its corpus at deploy does not hit it. Removal is out of scope | §6.3, §6.4, §15 |
+| D40 | **Tools a server removes at runtime stay in the store**, as in 30.1.0. It happens when a generic MCP server changes its tool list while running (`notifications/tools/list_changed` → `toolsChanged` → `revectorizeTools`); a consumer that builds its corpus at build time does not hit it. Removal is out of scope | §6.3, §6.4, §15 |
+
+### 17.11 Decided by the user on 2026-10-05 — fill once at creation; the fill source is a strategy; refill and single-flight out
+
+From the goal's decision of 2026-10-05 (*a tools store is filled once, when its instance is
+created*) and the user's clarifications of the same day (the corpus is built at build time; a
+persistent store is written by the consumer's deploy step).
+
+| # | Decision | Where |
+|---|---|---|
+| D41 | **A tools store is filled once, when its instance is created, and never refilled while running.** The main store: `_buildInfra`, once. A worker's own store: its construction (`buildSubAgent` without `injected`: the startup primary build or the lazy rebuild after a drain); a per-session re-wire never fills. No refill API, no fill memo, no retry: an incomplete fill is reported (`complete: false`; `/health` `degraded` for the main store; the summary line logged for a worker) and stays. A construction whose fill throws leaves no cached worker. Supersedes D36; amends D35 | §3.10, §6.3, §6.4, §14.1 |
+| D42 | **The fill source is a strategy the consumer injects**: `IToolsFillSource` (`fill` at creation, `toolsChanged` on a reconnect) with `ToolsFillContext` (binding, target, `indexLiveTools`, logger), attached with the binding (`bindToolsProfile(profile, target, source?)`, default `LiveToolsFill`) and read from the store like it (D34). Shipped: `live`, `corpus` (`ToolsCorpusLoader`), `prebuilt` (`PrebuiltToolsStore`), `consumer` (`ConsumerToolsFill`). YAML `rag.profiles.tools.fill`; a consumer's own through `toolsFillFactories`. Compatibility (`corpus`, `prebuilt`) is checked at creation and fails loudly; the profile and embedder fingerprints are the consumer's names (`ToolsCorpusIdentity`), because no contract carries one | §3.8, §3.10, §6.1, §6.2, §6.3 |
+| D43 | **Offline corpus API**: `buildToolsCorpus` (build step: provider tool definitions → records + vectors with the profile's own indexer and record writer over capture stores, and an embedder), `parseToolsCorpus`, `deployToolsCorpus` (deploy step: any store with precomputed writes, in place, one current state, idempotent, write-ahead, a service record with the fingerprint, the corpus hash and record hashes). Reserved record key `serviceRecord`; `StagedRetrieval` drops a hit that carries it. Recommended: in-memory → `corpus`; persistent → `prebuilt` | §3.1, §4.3, §6.5, §7.8, §13 |
+| D44 | **`toolsChanged` is the source's answer**: `live` and `consumer` re-index what is listed through the profile, as 30.1.0; `corpus` and `prebuilt` write nothing and log a warning (the user's decision: `ToolsCorpusLoader` fills the in-memory store at creation and does nothing else; the process never writes a prebuilt store). D40 stands: a tool no longer listed keeps its records | §3.10, §6.3, §6.4 |
+| D45 | **Single-flight worker construction and the drain ordering move out of this PR** — a pre-existing 30.1.0 race unrelated to profiles, described in §15 for a separate issue. D37 and its plan task are withdrawn here; no remaining task depends on them | §6.3, §13, §15 |
