@@ -8,7 +8,7 @@
 
 **Tech Stack:** TypeScript 6 (strict, ESM, NodeNext), Node ≥ 22, `node:test` via `tsx`, Biome, npm workspaces monorepo.
 
-**Spec:** `docs/superpowers/specs/2026-10-05-collection-profiles-design.md` (approved 2026-10-05, frozen; amended 2026-10-05 with the user's decisions on S1–S9, spec §17.4, and on probability vs relevance decisions, the reranker package, the caller's k, cleanup failures and provider text composition, spec §17.6; and on relevance comparability, the second seam and the seam rename, spec §17.7; and on the server filling a bound tools profile from ready clients, D31, spec §6.3, §17.8; and on filling following the store's lifecycle, D34–D35, spec §17.9; and on only complete fills memoized, single-flight worker construction, the startup fill on every path, the direct hot-reload test and runtime-removed tools, D36–D40, spec §6.6, §17.10 — D36 superseded and D37 moved out by the next amendment; and on a tools store filled once at instance creation, the fill source as an injected strategy, the offline corpus API, refill and single-flight out, D41–D45, spec §3.10, §6.3–§6.5, §17.11; and on fill sources filling once with no `toolsChanged` reaction for a bound store, D46–D47, spec §3.10, §6.3, §6.4, §13, §15, §17.12; and on intents and companion stores removed entirely and the corpus deploy written in full, D50–D51, spec §17.15; and on the goal's three decisions of 2026-10-05 — the RAG implementations' home, the corpus loaded by the server at start with no deploy step, no tuned numbers in what ships — D53–D56, spec §11.3, §17.17; and on a major release without deprecated aliases or re-exports — the RAG implementations' files move now (S10 decided), no old names, no re-exports, the replicas' reload window accepted — D57–D60, spec §11.3, §11.4, §13, §17.18; and on S11, S12 and the search-strategy types — **all decided by the user on 2026-10-05** (spec §17.18): `OllamaRag` removed (S11, Task 1A Step 4); the pre-existing re-exports of spec §11.4 removed in this same major (S12, Task 4D; migration lines 52–69); `ISearchStrategy`, `ISearchCandidate`, `ISearchQuery`, `IScoredResult`, `ISearchContext` move with `VectorRag` to `llm-agent-rag` (Task 1A); and on the four questions spec §11.4 left open — **decided by the user on 2026-10-05** (spec §11.4, §17.18): `ITextLogger` removed, every use imports `ILogger` from `@mcp-abap-adt/interfaces-utils` (Task 4E; migration line 70), libs' two dead internal files `adapters/index.ts` and `interfaces/model-resolver.ts` deleted (Task 4E), `SmartAgentHandle` / libs' `IStageHandler` and libs' internal shims kept); and on the review findings and the user's decision of 2026-10-05 in spec §17.22 — D64 (an injected connection strategy is owned by the agent: `close()` and a failed `build()` dispose it), D65 (the corpus checked against every bound store's declared dimension before any store exists), D66 (a store filled before skills are vectorized into it), D67 (orphans never use up the pool); and on the goal's decision of 2026-10-05 that `FallbackRag` is removed — D68 (spec §10.4, §13, §17.23): Task 0A removes it with the builder's store wrapping and what existed only for it; D52 and D62 are withdrawn; and on the goal's decisions of 2026-10-05 "No fallbacks anywhere in the pipeline" and "the fail-loud sweep is part of this PR" — D69–D74 (spec §10.5, §13 B1–B11, §17.24): Tasks 4F–4O sweep every fallback and silent degradation (pipeline errors reach the consumer first, Task 4F), and `onFailure` is removed where `StagedRetrieval` is built (Tasks 12, 13, 14, 16, 18, 21, 22, 28, 29, 32, 33); and on the user's decisions of 2026-10-05 on U1–U10 — every recommendation approved (spec §10.5.12, §13 B12–B15, migration lines 73–74, §17.24): Task 4J counts `FallbackLlmCallStrategy`'s fallbacks (U1), Task 4K fails a step naming an agent the registry lacks (U5), Task 4L defaults the skill plugin host to `strict: true` (U2), Task 4M logs a worker on the parent's clients (U10), new Task 4P removes `lazy`'s `fallback` (U6), new Task 4Q makes the tool availability blacklist an injected policy with no default (U8), new Task 19B counts failed batch embedding calls (U7); U3, U4 stay as they are; U9 is Task 0A, confirmed; amended 2026-10-06 with the user's rule "no fallback anywhere; all in #322" for the 30.1.0 tool write path (spec §17.26, D79): Task 19B Steps 6–10 remove the per-tool write retry after a failed bulk write; amended 2026-10-06 for a review finding (spec §17.27, D80): Task 4M serializes complete reload transactions in the watcher; amended 2026-10-06 with the user's decisions (spec §17.28 — D80 extended, D79 confirmed): Task 4M moves the queue into the server (`ConfigTransactionQueue`, one instance for the reload watcher and `PUT /v1/config`) and makes a `PUT` one transaction that restores and answers 500 on a failed drain or invalidation (V10, B17); Task 23A pins the shared queue on a real server; Task 33 Step 8b and Task 34 document it; amended 2026-10-06 for a review finding (spec §17.29, D81 — *withdrawn by D82*); amended 2026-10-06 with the user's decision (spec §17.30, D82): a failed config change is an error that leaves the server not ready until a whole config applies — no rollback: Task 4M drops the snapshot / restore (`snapshotConfig`, `LlmCircuitBreakers.snapshot()`) and D81's atomic `SmartAgent.reconfigure`, and adds the queue's *config not applied* state, `/health`'s `configNotApplied` and the chat routes' not-ready message; Task 23A's real-server reload test checks the not-ready answers; Task 33 Step 8b and Task 34 (B10, B17; B18 withdrawn) document it; amended 2026-10-06 with the user's decision (spec §17.30, D82 (8), amendment 23): while the server is not ready only a whole config clears the state — a file reload or a `PUT` carrying every section the route can change — so Task 4M refuses a partial `PUT` with 409 before the queue and again at its transaction's start (`ConfigTransactionQueue.run` takes the change's scope), Task 23A's (10b) pins the refusal and the clearing reload on a real server, and Task 33 Step 8b and Task 34 (B17) document the rule; amended 2026-10-06 under the user's rule — no silent degradation, everything in this change (spec §17.32, D83 (5), amendment 25): the start config is checked by the same config field validator as a reload and a `PUT` — Task 4M validates it in `resolveSmartServerConfig` before any section is read (the section readers take the validated values, an invalid one fails the start with the same `invalid config — …` error, the CLI exits 1), Task 4Q keeps `agent.toolUnavailableTtlMs`'s rule as a start-only rule, and Task 33 Step 8b and Task 34 (B19, B20) document it; and with the user's decisions D83 (6), (7) of 2026-10-06 (spec §17.33, amendment 26): one grammar for numbers and flags at start, on a reload and on `PUT` — a number or a string that is exactly a `NUMBER_LITERAL`, `true` / `false` or exactly `"true"` / `"false"` — and every config field the start coerced with `Number()` / `Boolean()` / `String()` validated (spec §10.5.9 *Start-only fields*): Task 4M (`config-fields.ts`'s grammar and start-only rules, the section readers, `parseIntegerField`, `parseSkillPluginsConfig`, `parseStepperCoordinatorConfig`, `optionalNumber` removed), Task 4Q (`agent.toolUnavailableTtlMs` joins the start-only rules), Task 21 (`score-floor.minScore` normalized), Task 33 (DEPLOYMENT: environment-variable values for number / flag fields), Task 34 (migration line 75); and with the user's decisions D83 (8), (9) of 2026-10-06 (spec §17.34, amendment 27): the file reload substitutes `${VAR}` exactly as the start does — `ConfigWatcher` takes an injected `resolveDocument`, applied to the whole parsed file before a field is read, and the server passes the start's own `resolveEnvVars` — and every config field read by a type cast is validated (spec §10.5.9 *Cast-read fields*): Task 4M (libs `config-watcher.ts`, `config-reload-watcher.ts`, `config-fields.ts`'s shape checks and cast rules, the resolvers, `pipeline-settings.ts`, `stepper-config.ts`, the stepper examples' `${LLM_URL:-}` lines), Task 33 (DEPLOYMENT, INTEGRATION, the stepper README), Task 34 (B21, B22, the libs and server-libs CHANGELOGs); and with the review finding D82 (9) of 2026-10-06 (spec §17.35, amendment 28): a config file the watcher cannot read, parse or resolve is a failed reload — queued in the server's config queue, so it sets not-ready in queue order and logs `config_reload_failed` (`config_reload_error` gone): Task 4M (`config-reload-watcher.ts`'s `error` listener and `_onWatcherError`; four new test cases), Task 33 (INTEGRATION, DEPLOYMENT, TROUBLESHOOTING), Task 34 (B17); and with the review finding D83 (10) of 2026-10-06 (spec §17.36, amendment 29): a file reload validates the whole resolved document with the start's validator before anything applies — `ConfigWatcher`'s `reload` event carries the resolved document as a second argument, `_applyReload` runs `resolveSmartServerConfig` over it and applies the reload table's values `validateStartConfig` checked, `validateReloadedConfig` is removed (one rule set), and the start checks the `agent` / `subagents` section shapes: Task 4M (libs `config-watcher.ts`, `config-reload-watcher.ts`, `config-fields.ts`, the test helper `__tests__/reload-document.ts`, every reload test carries a whole document), Task 23A (its reload tests carry whole documents), Task 33 (DEPLOYMENT, INTEGRATION), Task 34 (B23, the libs CHANGELOG). **Goal:** `docs/superpowers/goals/2026-10-04-collection-profiles.md` (user-owned; never edited). Executors read the spec section each task cites.
+**Spec:** `docs/superpowers/specs/2026-10-05-collection-profiles-design.md` (approved 2026-10-05, frozen; amended 2026-10-05 with the user's decisions on S1–S9, spec §17.4, and on probability vs relevance decisions, the reranker package, the caller's k, cleanup failures and provider text composition, spec §17.6; and on relevance comparability, the second seam and the seam rename, spec §17.7; and on the server filling a bound tools profile from ready clients, D31, spec §6.3, §17.8; and on filling following the store's lifecycle, D34–D35, spec §17.9; and on only complete fills memoized, single-flight worker construction, the startup fill on every path, the direct hot-reload test and runtime-removed tools, D36–D40, spec §6.6, §17.10 — D36 superseded and D37 moved out by the next amendment; and on a tools store filled once at instance creation, the fill source as an injected strategy, the offline corpus API, refill and single-flight out, D41–D45, spec §3.10, §6.3–§6.5, §17.11; and on fill sources filling once with no `toolsChanged` reaction for a bound store, D46–D47, spec §3.10, §6.3, §6.4, §13, §15, §17.12; and on intents and companion stores removed entirely and the corpus deploy written in full, D50–D51, spec §17.15; and on the goal's three decisions of 2026-10-05 — the RAG implementations' home, the corpus loaded by the server at start with no deploy step, no tuned numbers in what ships — D53–D56, spec §11.3, §17.17; and on a major release without deprecated aliases or re-exports — the RAG implementations' files move now (S10 decided), no old names, no re-exports, the replicas' reload window accepted — D57–D60, spec §11.3, §11.4, §13, §17.18; and on S11, S12 and the search-strategy types — **all decided by the user on 2026-10-05** (spec §17.18): `OllamaRag` removed (S11, Task 1A Step 4); the pre-existing re-exports of spec §11.4 removed in this same major (S12, Task 4D; migration lines 52–69); `ISearchStrategy`, `ISearchCandidate`, `ISearchQuery`, `IScoredResult`, `ISearchContext` move with `VectorRag` to `llm-agent-rag` (Task 1A); and on the four questions spec §11.4 left open — **decided by the user on 2026-10-05** (spec §11.4, §17.18): `ITextLogger` removed, every use imports `ILogger` from `@mcp-abap-adt/interfaces-utils` (Task 4E; migration line 70), libs' two dead internal files `adapters/index.ts` and `interfaces/model-resolver.ts` deleted (Task 4E), `SmartAgentHandle` / libs' `IStageHandler` and libs' internal shims kept); and on the review findings and the user's decision of 2026-10-05 in spec §17.22 — D64 (an injected connection strategy is owned by the agent: `close()` and a failed `build()` dispose it), D65 (the corpus checked against every bound store's declared dimension before any store exists), D66 (a store filled before skills are vectorized into it), D67 (orphans never use up the pool); and on the goal's decision of 2026-10-05 that `FallbackRag` is removed — D68 (spec §10.4, §13, §17.23): Task 0A removes it with the builder's store wrapping and what existed only for it; D52 and D62 are withdrawn; and on the goal's decisions of 2026-10-05 "No fallbacks anywhere in the pipeline" and "the fail-loud sweep is part of this PR" — D69–D74 (spec §10.5, §13 B1–B11, §17.24): Tasks 4F–4O sweep every fallback and silent degradation (pipeline errors reach the consumer first, Task 4F), and `onFailure` is removed where `StagedRetrieval` is built (Tasks 12, 13, 14, 16, 18, 21, 22, 28, 29, 32, 33); and on the user's decisions of 2026-10-05 on U1–U10 — every recommendation approved (spec §10.5.12, §13 B12–B15, migration lines 73–74, §17.24): Task 4J counts `FallbackLlmCallStrategy`'s fallbacks (U1), Task 4K fails a step naming an agent the registry lacks (U5), Task 4L defaults the skill plugin host to `strict: true` (U2), Task 4M logs a worker on the parent's clients (U10), new Task 4P removes `lazy`'s `fallback` (U6), new Task 4Q makes the tool availability blacklist an injected policy with no default (U8), new Task 19B counts failed batch embedding calls (U7); U3, U4 stay as they are; U9 is Task 0A, confirmed; amended 2026-10-06 with the user's rule "no fallback anywhere; all in #322" for the 30.1.0 tool write path (spec §17.26, D79): Task 19B Steps 6–10 remove the per-tool write retry after a failed bulk write; amended 2026-10-06 for a review finding (spec §17.27, D80): Task 4M serializes complete reload transactions in the watcher; amended 2026-10-06 with the user's decisions (spec §17.28 — D80 extended, D79 confirmed): Task 4M moves the queue into the server (`ConfigTransactionQueue`, one instance for the reload watcher and `PUT /v1/config`) and makes a `PUT` one transaction that restores and answers 500 on a failed drain or invalidation (V10, B17); Task 23A pins the shared queue on a real server; Task 33 Step 8b and Task 34 document it; amended 2026-10-06 for a review finding (spec §17.29, D81 — *withdrawn by D82*); amended 2026-10-06 with the user's decision (spec §17.30, D82): a failed config change is an error that leaves the server not ready until a whole config applies — no rollback: Task 4M drops the snapshot / restore (`snapshotConfig`, `LlmCircuitBreakers.snapshot()`) and D81's atomic `SmartAgent.reconfigure`, and adds the queue's *config not applied* state, `/health`'s `configNotApplied` and the chat routes' not-ready message; Task 23A's real-server reload test checks the not-ready answers; Task 33 Step 8b and Task 34 (B10, B17; B18 withdrawn) document it; amended 2026-10-06 with the user's decision (spec §17.30, D82 (8), amendment 23): while the server is not ready only a whole config clears the state — a file reload or a `PUT` carrying every section the route can change — so Task 4M refuses a partial `PUT` with 409 before the queue and again at its transaction's start (`ConfigTransactionQueue.run` takes the change's scope), Task 23A's (10b) pins the refusal and the clearing reload on a real server, and Task 33 Step 8b and Task 34 (B17) document the rule; amended 2026-10-06 under the user's rule — no silent degradation, everything in this change (spec §17.32, D83 (5), amendment 25): the start config is checked by the same config field validator as a reload and a `PUT` — Task 4M validates it in `resolveSmartServerConfig` before any section is read (the section readers take the validated values, an invalid one fails the start with the same `invalid config — …` error, the CLI exits 1), Task 4Q keeps `agent.toolUnavailableTtlMs`'s rule as a start-only rule, and Task 33 Step 8b and Task 34 (B19, B20) document it; and with the user's decisions D83 (6), (7) of 2026-10-06 (spec §17.33, amendment 26): one grammar for numbers and flags at start, on a reload and on `PUT` — a number or a string that is exactly a `NUMBER_LITERAL`, `true` / `false` or exactly `"true"` / `"false"` — and every config field the start coerced with `Number()` / `Boolean()` / `String()` validated (spec §10.5.9 *Start-only fields*): Task 4M (`config-fields.ts`'s grammar and start-only rules, the section readers, `parseIntegerField`, `parseSkillPluginsConfig`, `parseStepperCoordinatorConfig`, `optionalNumber` removed), Task 4Q (`agent.toolUnavailableTtlMs` joins the start-only rules), Task 21 (`score-floor.minScore` normalized), Task 33 (DEPLOYMENT: environment-variable values for number / flag fields), Task 34 (migration line 75); and with the user's decisions D83 (8), (9) of 2026-10-06 (spec §17.34, amendment 27): the file reload substitutes `${VAR}` exactly as the start does — `ConfigWatcher` takes an injected `resolveDocument`, applied to the whole parsed file before a field is read, and the server passes the start's own `resolveEnvVars` — and every config field read by a type cast is validated (spec §10.5.9 *Cast-read fields*): Task 4M (libs `config-watcher.ts`, `config-reload-watcher.ts`, `config-fields.ts`'s shape checks and cast rules, the resolvers, `pipeline-settings.ts`, `stepper-config.ts`, the stepper examples' `${LLM_URL:-}` lines), Task 33 (DEPLOYMENT, INTEGRATION, the stepper README), Task 34 (B21, B22, the libs and server-libs CHANGELOGs); and with the review finding D82 (9) of 2026-10-06 (spec §17.35, amendment 28): a config file the watcher cannot read, parse or resolve is a failed reload — queued in the server's config queue, so it sets not-ready in queue order and logs `config_reload_failed` (`config_reload_error` gone): Task 4M (`config-reload-watcher.ts`'s `error` listener and `_onWatcherError`; four new test cases), Task 33 (INTEGRATION, DEPLOYMENT, TROUBLESHOOTING), Task 34 (B17); and with the review finding D83 (10) of 2026-10-06 (spec §17.36, amendment 29): a file reload validates the whole resolved document with the start's validator before anything applies — `ConfigWatcher`'s `reload` event carries the resolved document as a second argument, `_applyReload` runs `resolveSmartServerConfig` over it and applies the reload table's values `validateStartConfig` checked, `validateReloadedConfig` is removed (one rule set), and the start checks the `agent` / `subagents` section shapes: Task 4M (libs `config-watcher.ts`, `config-reload-watcher.ts`, `config-fields.ts`, the test helper `__tests__/reload-document.ts`, every reload test carries a whole document), Task 23A (its reload tests carry whole documents), Task 33 (DEPLOYMENT, INTEGRATION), Task 34 (B23, the libs CHANGELOG); and with D83 (11) of 2026-10-06 (spec §17.37, amendment 30, closing §17.36 (6)): a file reload also runs the selected pipeline's own section parser as a validation step — the start's registry entry's parse half, over the reloaded `pipeline.config` with the reloaded `llm:` keys, nothing built — after `resolveSmartServerConfig` and before anything applies; a reload that selects another pipeline fails (`pipeline change needs a restart`, the new pipeline's section checked too); a plugin factory has no validation entry, so its changed section fails the reload (strict) and an unchanged one passes: Task 4M (new `pipeline-sections.ts`, the registry in `smart-server.ts`, `ConfigReloadDeps.pipeline`, `_applyReload`, `reload-document.ts`'s `runningPipeline` / `FLAT_PIPELINE`, every reload watcher a test builds passes `pipeline`, one new case and one new test file), Task 23A (its watcher passes `pipeline`), Task 33 (DEPLOYMENT, INTEGRATION, TROUBLESHOOTING), Task 34 (B24). **Goal:** `docs/superpowers/goals/2026-10-04-collection-profiles.md` (user-owned; never edited). Executors read the spec section each task cites.
 
 ## Global Constraints
 
@@ -4144,7 +4144,7 @@ A test that relied on the carry-forward without passing `strict` now passes `str
 
 ## Task 4M: Server (server-libs + server)
 
-Spec §10.5.9 (V1–V10; V10 and the server's one config queue are D80 extended, decided by the user on 2026-10-06, spec §17.28; a failed config change is an error that leaves the server not ready, with no rollback — D82, decided by the user on 2026-10-06, spec §17.30, which withdraws D77's restore and D81; D82 (8), the user's decision of 2026-10-06: while not ready only a whole config clears the state, a partial `PUT` is refused with 409; every config field validated before it applies, one validator for the reload and the `PUT`, no coercion — D83, review finding of 2026-10-06, spec §17.31 and §10.5.9 *Config field rules*; the start config checked by the same validator, an invalid value fails the start — D83 (5), the user's rule of 2026-10-06, spec §17.32 and §10.5.9 *The start config*; one grammar for numbers and flags — a number literal string and `"true"` / `"false"` accepted, everything else refused — and every coerced config field validated — D83 (6), (7), decided by the user on 2026-10-06, spec §17.33, §10.5.9 *Start-only fields*; the file reload substitutes `${VAR}` exactly as the start does, and every config field read by a type cast is validated — D83 (8), (9), decided by the user on 2026-10-06, spec §17.34, §10.5.9 *The start config*, *Cast-read fields*), §10.5.10 (the config-not-applied readiness, D82), §10.5.6 L7 (models route), §13 B10, B17, B19, B20, B21, B22 (B18 withdrawn); §10.5.12 U10 (decided by the user on 2026-10-05: a worker on the parent's clients / tools store stays, and logs one line). M9–M11 are Task 4G's, R10 Task 4H's, S-10 Task 4L's. A config file the watcher cannot read, parse or resolve is a failed reload — queued in the server's config queue as a reload transaction that rejects, so it sets not-ready in queue order and is logged `config_reload_failed` (D82 (9), review finding of 2026-10-06, spec §17.35, amendment 28). A file reload validates the whole resolved document with the start's own validator before anything applies — only a document the server could start from applies, one rule set for the start and the reload (D83 (10), review finding of 2026-10-06, spec §17.36, amendment 29).
+Spec §10.5.9 (V1–V10; V10 and the server's one config queue are D80 extended, decided by the user on 2026-10-06, spec §17.28; a failed config change is an error that leaves the server not ready, with no rollback — D82, decided by the user on 2026-10-06, spec §17.30, which withdraws D77's restore and D81; D82 (8), the user's decision of 2026-10-06: while not ready only a whole config clears the state, a partial `PUT` is refused with 409; every config field validated before it applies, one validator for the reload and the `PUT`, no coercion — D83, review finding of 2026-10-06, spec §17.31 and §10.5.9 *Config field rules*; the start config checked by the same validator, an invalid value fails the start — D83 (5), the user's rule of 2026-10-06, spec §17.32 and §10.5.9 *The start config*; one grammar for numbers and flags — a number literal string and `"true"` / `"false"` accepted, everything else refused — and every coerced config field validated — D83 (6), (7), decided by the user on 2026-10-06, spec §17.33, §10.5.9 *Start-only fields*; the file reload substitutes `${VAR}` exactly as the start does, and every config field read by a type cast is validated — D83 (8), (9), decided by the user on 2026-10-06, spec §17.34, §10.5.9 *The start config*, *Cast-read fields*), §10.5.10 (the config-not-applied readiness, D82), §10.5.6 L7 (models route), §13 B10, B17, B19, B20, B21, B22 (B18 withdrawn); §10.5.12 U10 (decided by the user on 2026-10-05: a worker on the parent's clients / tools store stays, and logs one line). M9–M11 are Task 4G's, R10 Task 4H's, S-10 Task 4L's. A config file the watcher cannot read, parse or resolve is a failed reload — queued in the server's config queue as a reload transaction that rejects, so it sets not-ready in queue order and is logged `config_reload_failed` (D82 (9), review finding of 2026-10-06, spec §17.35, amendment 28). A file reload validates the whole resolved document with the start's own validator before anything applies — only a document the server could start from applies, one rule set for the start and the reload (D83 (10), review finding of 2026-10-06, spec §17.36, amendment 29). A file reload also runs the selected pipeline's own section parser — the start's registry entry's parse half, no pipeline built — and fails on an invalid section, on a pipeline change (`pipeline change needs a restart`) and on a plugin factory's changed section (no validation entry; strict) (D83 (11), spec §17.37, amendment 30, closing §17.36 (6)).
 
 **Files:**
 - Modify: `packages/llm-agent-server-libs/src/smart-agent/session-lifecycle/session-rag-registry.ts` (~90), `controller/session-bundle.ts` (~57), `controller/run-scope.ts` (~79), `controller/artifacts.ts` (~261), `smart-server.ts` (~3112 session meta), `config-reload-watcher.ts` (~132), `tools-rag-handle.ts` (~90 eager load), `build-stepper-root.ts` (~97, ~234), `http/models-route-handler.ts` (~17, ~48)
@@ -4159,6 +4159,7 @@ Spec §10.5.9 (V1–V10; V10 and the server's one config queue are D80 extended,
 - Modify (D83 (6), (7), spec §17.33 — one grammar; every coerced config field): server-libs `smart-agent/config-fields.ts` (`NUMBER_LITERAL`, `numberOf`, `flagOf`, `FieldCheck` exported with `oneOf` / `numberOr` / `flagOr`, `START_NUMBER_RULES` and the name lists, `checkStartConfig`), `smart-agent/config.ts` (one `FieldCheck` per start; `port`; the literal split so the file's own fields throw before `skillPlugins` and the workers), `smart-agent/resolve-config-sections.ts` (every `Number()` / `Boolean()` / `String()` of a config value → the check; `positiveIntOption` and `whenThrottledOption` take the check; the heartbeat warning goes), `smart-agent/decision-config.ts` (`parseIntegerField` over `numberOf`), `smart-agent/skill-plugins-config.ts` (`posInt`, `threshold`, `loadOnStartup`, `strict`, the embedder names → its own `FieldCheck`), `smart-agent/stepper-config.ts` (`maxParallelSteps`, `maxDepth`, `tokenBudget` → its own `FieldCheck`), `smart-agent/llm-config-map.ts` (`optionalNumber` removed), `smart-agent/smart-server.ts` (~1174–1197: the temperatures read as they are); `packages/llm-agent-server/src/composition/model-resolver.ts` (~4, ~40–45: the same). Tests: `config-field-validation.test.ts` (three cases: the grammar, the start-only fields, the own parsers), `__tests__/resolve-llm-section.test.ts` (its `optionalNumber` case goes; the `maxTokens` / `maxAttempts` messages are the shared ones), `skill-plugins-config.test.ts` and `__tests__/stepper-config.test.ts` (messages), `__tests__/decision-config.test.ts` (one case: `" 5000"` refused); `docs/examples/stepper/0{1,2,3,4,5}-*.yaml` (the `url: ${EMBEDDER_URL:-}` line removed — `""` when unset, refused by `rag.embedder.url`)
 - Modify (D83 (8), (9), spec §17.34 — the reload substitutes `${VAR}`; every cast-read config field): libs `config/config-watcher.ts` (`ConfigWatcherOptions.resolveDocument`, applied to the parsed file before `_extractReloadable`), libs `config/__tests__/config-watcher.test.ts` (one case); server-libs `smart-agent/config-reload-watcher.ts` (`ConfigReloadDeps.env?`; the watcher built with `resolveDocument: (doc) => resolveEnvVars(doc, env)`), `smart-agent/config-fields.ts` (`FieldCheck.closed` / `.list` / `.map` / `.refuse`, the cast rules and name lists, `checkRetry`, `checkToolSelection`, `checkMcpMaps`, `checkMcpEntry`, `checkSkills`), `smart-agent/resolve-config-sections.ts` (`llm.url` / `llm.model` and each role's; the `mcp` single form and entries; `agent.retry`, `agent.toolSelection`, `agent.externalToolsValidationMode`; `resolvePipelineSelection(yaml, check)` — `pipeline.config`), `smart-agent/config.ts` (`host`, `mode`, `pluginDir`, `plugins`, `skills`), `smart-agent/config-validator.ts` (the `mcp` / `mcp[i]` type-name check moves to the field check; the `url` / `command` requirements stay), `smart-agent/pipeline-settings.ts` (linear, DAG, controller — each its own `FieldCheck`; the controller's `requireInt` goes), `smart-agent/stepper-config.ts` (the stepper's cast fields; D83 (7)'s `FieldCheck` moves up). Tests: `config-field-validation.test.ts` (three cases: the reload's substitution, the substitution parity, the cast-read fields; `reloadHarness` takes an `env`), `__tests__/stepper-config.test.ts` (`knowledgeSeed` blanks now fail), `pipelines/__tests__/controller.test.ts` (`'600000'` / `'1800000'` now pass — replaced by `' 600000'` / `' 1800000'`); `docs/examples/stepper/0{1,2,3,4,5}-*.yaml` (every `url: ${LLM_URL:-}` line removed — `""` when unset, refused by `llm.<role>.url`)
 - Modify (D83 (10), spec §17.36 — a reload validates the whole document like the start): libs `config/config-watcher.ts` (`reload`'s second argument, the resolved document), libs `config/__tests__/config-watcher.test.ts` (one case); server-libs `smart-agent/config-reload-watcher.ts` (the listener passes the document; `_onReload(document)`, `_applyReload(document)` — `resolveSmartServerConfig`, then `validateStartConfig`), `smart-agent/config-fields.ts` (`validateReloadedConfig` removed; `checkStartConfig` checks the `agent` / `subagents` shapes). Create `packages/llm-agent-server-libs/src/smart-agent/__tests__/reload-document.ts` (a test helper, not a test file: a whole document for a reload). Tests: `config-field-validation.test.ts` (one case; the reload cases save whole files; the rule and grammar cases through `validateStartConfig`), and every reload a test of this task drives carries a whole document — `config-reload-failure.test.ts`, `config-reload-weights.test.ts`, `http/__tests__/config-route-transactions.test.ts`, `config-not-ready.test.ts`
+- Create (D83 (11), spec §17.37 — the selected pipeline's section validated on a reload): `packages/llm-agent-server-libs/src/smart-agent/pipeline-sections.ts` (internal: `BuiltinPipelineName`, `BUILTIN_PIPELINE_PARSERS`, `BUILTIN_PIPELINE_SECTIONS`, `PipelineSectionEntry`, `parseDagSection`, `parseControllerSection`, `ReloadPipeline`, `checkReloadedPipeline`), `packages/llm-agent-server-libs/src/smart-agent/__tests__/pipeline-sections.test.ts`; Modify: `smart-agent/smart-server.ts` (the registry's built-in factories call `BUILTIN_PIPELINE_PARSERS`; `registerPipeline` records each plugin's entry; `_pipelineSections` / `_pipelineSelection`; the watcher's deps gain `pipeline`), `smart-agent/config-reload-watcher.ts` (`ConfigReloadDeps.pipeline`; `_applyReload` runs `checkReloadedPipeline`), `__tests__/reload-document.ts` (`runningPipeline`, `FLAT_PIPELINE`), `config-field-validation.test.ts` (`reloadHarness` takes a `pipeline`; one case), and every `new ConfigReloadWatcher(` a test of this task builds (`config-reload-failure.test.ts`, `config-reload-weights.test.ts`, `http/__tests__/config-route-transactions.test.ts`) passes `pipeline: FLAT_PIPELINE`
 
 - [ ] **Step 1: Write the failing tests**
   - V1: a session whose persisted collection's `openCollection` answers `ok: false` (`CollectionNotFoundError`) → the session's creation rejects with it. Today: the session without the collection.
@@ -4263,7 +4264,7 @@ Spec §10.5.9 (V1–V10; V10 and the server's one config queue are D80 extended,
     });
     ```
     Today: the module does not exist.
-  - V6 (`config-reload-failure.test.ts`, the watcher driven through `_onReload`, which this task makes awaitable — spec V6, D77's rejection and event boundary, D82): deps recording `applyAgentUpdate` / `mirrorCfg` calls, a weighted store (as in `config-reload-weights.test.ts`), and `transactions: new ConfigTransactionQueue()` held by the test (`import { ConfigTransactionQueue } from '../config-transaction-queue.js';` — every watcher in this task's tests gets its own queue, as the server injects one, D80). Every reload these tests drive carries a whole document (D83 (10) — a reload applies only a document the server could start from): `reloadDocument(values)` and `emitReload(emitter, values)` from `./reload-document.js` (the helper, under D83 (10) below):
+  - V6 (`config-reload-failure.test.ts`, the watcher driven through `_onReload`, which this task makes awaitable — spec V6, D77's rejection and event boundary, D82): deps recording `applyAgentUpdate` / `mirrorCfg` calls, a weighted store (as in `config-reload-weights.test.ts`), and `transactions: new ConfigTransactionQueue()` held by the test (`import { ConfigTransactionQueue } from '../config-transaction-queue.js';` — every watcher in this task's tests gets its own queue, as the server injects one, D80), and `pipeline: FLAT_PIPELINE` (from `./reload-document.js`, D83 (11): the documents select no pipeline). Every reload these tests drive carries a whole document (D83 (10) — a reload applies only a document the server could start from): `reloadDocument(values)` and `emitReload(emitter, values)` from `./reload-document.js` (the helper, under D83 (10) below):
     - `drainWorkers` rejects with `new Error('close failed')` → `await assert.rejects(_onReload(reloadDocument({ maxIterations: 25, vectorWeight: 0.3 })), /config reload failed, the server is not ready until a whole config applies — worker drain: Error: close failed/)`; **nothing restored** — `applyAgentUpdate` was called once with `{ maxIterations: 25 }` and `mirrorCfg` once, and neither again (no rollback, D82); the store's `updateWeights` was never called; the log has no `config_reload_applied`; `queue.notApplied` is `{ source: 'reload', reason: /worker drain: Error: close failed/ }`. Today: resolves (`void`), weights applied, `config_reload_drain_error` logged only.
     - `invalidateSessions` rejects → the same, `/session invalidation: Error: …/`.
     - both reject → one rejection naming both.
@@ -4276,7 +4277,7 @@ Spec §10.5.9 (V1–V10; V10 and the server's one config queue are D80 extended,
       // `import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';`,
       // `import { tmpdir } from 'node:os';`, `import { join } from 'node:path';`
       // `import { ConfigTransactionQueue } from '../config-transaction-queue.js';` and
-      // `import { emitReload, reloadDocument } from './reload-document.js';` (D83 (10))
+      // `import { emitReload, FLAT_PIPELINE, reloadDocument } from './reload-document.js';` (D83 (10), (11))
       // (each only if not already there). The helpers are prefixed `serial` / `Serial` so they cannot collide with the V6 cases' own helpers in this file. `test`, `assert` and `ConfigReloadWatcher`
       // are imported by the cases above.
       type SerialWeights = { vectorWeight?: number; keywordWeight?: number };
@@ -4332,6 +4333,7 @@ Spec §10.5.9 (V1–V10; V10 and the server's one config queue are D80 extended,
             },
           },
           transactions: queue,
+          pipeline: FLAT_PIPELINE, // D83 (11): the documents select no pipeline — flat
         });
         // White-box: the inner ConfigWatcher (an EventEmitter) and the entry point.
         const entry = watcher as unknown as SerialEntry;
@@ -4411,7 +4413,7 @@ Spec §10.5.9 (V1–V10; V10 and the server's one config queue are D80 extended,
     import type { SmartAgent } from '@mcp-abap-adt/llm-agent-libs';
     import { ConfigReloadWatcher } from '../../config-reload-watcher.js';
     import { ConfigTransactionQueue } from '../../config-transaction-queue.js';
-    import { reloadDocument } from '../../__tests__/reload-document.js';
+    import { FLAT_PIPELINE, reloadDocument } from '../../__tests__/reload-document.js';
     import { handleConfigUpdate, type IConfigUpdateTarget } from '../config-route-handler.js';
 
     function deferred() {
@@ -4510,6 +4512,7 @@ Spec §10.5.9 (V1–V10; V10 and the server's one config queue are D80 extended,
         invalidateSessions: async () => {},
         ragStores: {},
         transactions: queue,
+        pipeline: FLAT_PIPELINE, // D83 (11)
       });
       // White-box: the watcher's reload entry point (D39), with a whole document
       // holding `u` (D83 (10): a reload applies only a document the server could start from).
@@ -5086,6 +5089,11 @@ Spec §10.5.9 (V1–V10; V10 and the server's one config queue are D80 extended,
     import type { EventEmitter } from 'node:events';
     import { stringify } from 'yaml';
     import { startConfigInput } from '../config-fields.js';
+    import {
+      BUILTIN_PIPELINE_SECTIONS,
+      type PipelineSectionEntry,
+      type ReloadPipeline,
+    } from '../pipeline-sections.js';
     import type { YamlConfig } from '../yaml-loader.js';
 
     /** The `llm:` section every test document starts with — valid at start (no provider runtime is reached). */
@@ -5125,6 +5133,26 @@ Spec §10.5.9 (V1–V10; V10 and the server's one config queue are D80 extended,
       const document = reloadDocument(values);
       watcher.emit('reload', startConfigInput(document), document);
     }
+
+    /**
+     * The `ConfigReloadDeps.pipeline` of a server running pipeline `name` with
+     * `section` (spec D83 (11)): the built-in section entries plus `plugins`
+     * (a plugin's `no-section` / `plugin-factory` entry), warnings dropped.
+     */
+    export function runningPipeline(
+      name: string,
+      section: unknown = {},
+      plugins: Iterable<readonly [string, PipelineSectionEntry]> = [],
+    ): ReloadPipeline {
+      return {
+        entries: new Map<string, PipelineSectionEntry>([...Object.entries(BUILTIN_PIPELINE_SECTIONS), ...plugins]),
+        running: { name, section },
+        warn: () => {},
+      };
+    }
+
+    /** A server running `flat` — what every `reloadDocument` selects (no `pipeline:`). */
+    export const FLAT_PIPELINE: ReloadPipeline = runningPipeline('flat');
     ```
     (`yaml` is a dependency of server-libs — `yaml-loader.ts` imports it; `startConfigInput` is this task's, so the helper lands with it.)
 
@@ -5168,7 +5196,8 @@ Spec §10.5.9 (V1–V10; V10 and the server's one config queue are D80 extended,
     import { loadYamlConfig, resolveEnvVars } from '../yaml-loader.js';
     import { SmartServer } from '../smart-server.js';
     import { constructionSeams } from './construction-seams.js';
-    import { LLM_SECTION, reloadDocument } from './reload-document.js';
+    import { FLAT_PIPELINE, LLM_SECTION, reloadDocument, runningPipeline } from './reload-document.js';
+    import type { ReloadPipeline } from '../pipeline-sections.js';
 
     /** The validator's error thrown by `fn`; fails the test when `fn` does not throw one. */
     function fieldError(fn: () => unknown): ConfigFieldError {
@@ -5250,9 +5279,15 @@ Spec §10.5.9 (V1–V10; V10 and the server's one config queue are D80 extended,
      * event (`config_reload_failed` / `config_reload_applied`). `env` is the
      * environment the reload substitutes `${VAR}` from (spec D83 (8)). A saved file
      * is a whole config — `LLM_SECTION` first — since a reload validates the whole
-     * document as a start would (spec D83 (10)).
+     * document as a start would (spec D83 (10)). `pipeline` is the running
+     * pipeline and the registry's section entries the reload checks the file's
+     * `pipeline` against (spec D83 (11)); `flat` by default, as the files below select.
      */
-    function reloadHarness(t: { after(fn: () => void): void }, env: NodeJS.ProcessEnv = {}) {
+    function reloadHarness(
+      t: { after(fn: () => void): void },
+      env: NodeJS.ProcessEnv = {},
+      pipeline: ReloadPipeline = FLAT_PIPELINE,
+    ) {
       const dir = mkdtempSync(join(tmpdir(), 'config-fields-'));
       t.after(() => rmSync(dir, { recursive: true, force: true }));
       const configFile = join(dir, 'smart-server.yaml');
@@ -5279,6 +5314,7 @@ Spec §10.5.9 (V1–V10; V10 and the server's one config queue are D80 extended,
         ragStores: {},
         transactions: queue,
         env,
+        pipeline,
       });
       watcher.start();
       t.after(() => watcher.stop());
@@ -5358,6 +5394,51 @@ Spec §10.5.9 (V1–V10; V10 and the server's one config queue are D80 extended,
         'subagents must be a list, got "w"',
       ]);
       assert.deepEqual(validateStartConfig({ agent: null, subagents: null }, {}), {}); // no value: absent
+    });
+
+    test("D83 (11): a reload runs the selected pipeline's own section parser — an invalid section fails, a valid one applies, a pipeline change needs a restart, a plugin factory's changed section fails", async (t) => {
+      const NOT_READY = 'config reload failed, the server is not ready until a whole config applies — ';
+      const h = reloadHarness(t, {}, runningPipeline('linear'));
+      const linear = (section: string) =>
+        LLM_SECTION + 'agent:\n  maxIterations: 25\npipeline:\n  name: linear\n  config:\n' + section;
+      // Everything the start's validator reads is valid; only the linear parser refuses.
+      let e = await h.save(linear('    maxSteps: 10x\n'));
+      assert.equal(e.event, 'config_reload_failed');
+      assert.ok(String(e.error).includes(`${NOT_READY}pipeline 'linear' config invalid — `), String(e.error));
+      assert.match(String(e.error), /maxSteps/);
+      assert.equal(h.queue.notApplied?.source, 'reload'); // not ready
+      assert.deepEqual(h.applied, []); // nothing applied — 30.1.0 never looked at pipeline.config
+      // A valid section: validated, the reload table applied (the section waits for the next start).
+      e = await h.save(linear('    maxSteps: 12\n'));
+      assert.equal(e.event, 'config_reload_applied');
+      assert.equal(h.queue.notApplied, undefined); // ready
+      assert.deepEqual(h.applied, [{ maxIterations: 25 }]);
+      // Another pipeline: a restart, even with a valid section.
+      const dag = (plannerLlm: string) =>
+        LLM_SECTION + `pipeline:\n  name: dag\n  config:\n    planner:\n      plannerLlm: ${plannerLlm}\n`;
+      e = await h.save(dag('main'));
+      assert.equal(e.event, 'config_reload_failed');
+      assert.equal(
+        String(e.error),
+        `Error: ${NOT_READY}pipeline change needs a restart — the server runs pipeline 'linear', the file selects 'dag'`,
+      );
+      // The new pipeline's parser ran too: its error is named beside the restart.
+      e = await h.save(dag('other'));
+      assert.equal(e.event, 'config_reload_failed');
+      assert.match(String(e.error), /pipeline change needs a restart — .*; pipeline 'dag' config invalid — pipeline 'dag' names llm: key 'other'/);
+      assert.deepEqual(h.applied, [{ maxIterations: 25 }]); // nothing more applied
+
+      // A plugin factory: no validation entry — its section must be the one it was built from.
+      const p = reloadHarness(t, {}, runningPipeline('ext', { a: 1 }, [['ext', { kind: 'plugin-factory' }]]));
+      const ext = (a: number) => LLM_SECTION + `agent:\n  maxIterations: 30\npipeline:\n  name: ext\n  config:\n    a: ${a}\n`;
+      e = await p.save(ext(1));
+      assert.equal(e.event, 'config_reload_applied'); // unchanged: the section the factory accepted at start
+      assert.deepEqual(p.applied, [{ maxIterations: 30 }]);
+      e = await p.save(ext(2));
+      assert.equal(e.event, 'config_reload_failed');
+      assert.match(String(e.error), /pipeline 'ext' is a plugin factory with no validation entry/);
+      assert.equal(p.queue.notApplied?.source, 'reload');
+      assert.deepEqual(p.applied, [{ maxIterations: 30 }]);
     });
 
     /** `handleConfigUpdate` over a recording target with a model resolver; `put` sends a raw body. */
@@ -6224,7 +6305,7 @@ Spec §10.5.9 (V1–V10; V10 and the server's one config queue are D80 extended,
     }
     ```
     The listener above is unchanged (it calls `this._onReload(document).catch(…)`), so every event joins the queue; `PUT /v1/config` joins it through `IConfigUpdateTarget.transactions` (V10, below).
-  - `_applyReload` is `private async _applyReload(document: YamlConfig): Promise<void>` with the doc "One reload transaction (spec §10.5.9 V6, D82, D83, D83 (10)). Run only by the queue in `_onReload` (D80). Validates the whole resolved document first, with the start's own validator (D83 (10)) — a document the server could not start from fails the transaction before anything applies. Resolves when the reload is applied: the agent update, the worker drain, the session invalidation and the RAG weights. Rejects when anything fails — nothing is restored and the weights are not applied; the queue marks the server not ready." The file's imports become `import { ConfigWatcher, type HotReloadableConfig, type HotReloadableInput } from '@mcp-abap-adt/llm-agent-libs';`, `import { resolveSmartServerConfig } from './config.js';`, `import { validateStartConfig } from './config-fields.js';` and `import { resolveEnvVars, type YamlConfig } from './yaml-loader.js';` (one import with D83 (8)'s `resolveEnvVars`, below). `config.ts` imports `smart-server.ts` for types only, so this adds no runtime cycle (`smart-server.ts` → `config-reload-watcher.ts` → `config.ts`). Its body (the former `_onReload` body) starts with the validation (D83, D83 (10)), before anything is applied or logged:
+  - `_applyReload` is `private async _applyReload(document: YamlConfig): Promise<void>` with the doc "One reload transaction (spec §10.5.9 V6, D82, D83, D83 (10), D83 (11)). Run only by the queue in `_onReload` (D80). Validates the whole resolved document first, with the start's own validator (D83 (10)) and the selected pipeline's section parser (D83 (11)) — a document the server could not start from fails the transaction before anything applies. Resolves when the reload is applied: the agent update, the worker drain, the session invalidation and the RAG weights. Rejects when anything fails — nothing is restored and the weights are not applied; the queue marks the server not ready." The file's imports become `import { ConfigWatcher, type HotReloadableConfig, type HotReloadableInput } from '@mcp-abap-adt/llm-agent-libs';`, `import { resolveSmartServerConfig } from './config.js';`, `import { validateStartConfig } from './config-fields.js';`, `import { normalizeLlmConfig } from './llm-config-map.js';` and `import { checkReloadedPipeline, type ReloadPipeline } from './pipeline-sections.js';` (D83 (11), below) and `import { resolveEnvVars, type YamlConfig } from './yaml-loader.js';` (one import with D83 (8)'s `resolveEnvVars`, below). `config.ts` imports `smart-server.ts` for types only, so this adds no runtime cycle (`smart-server.ts` → `config-reload-watcher.ts` → `config.ts`). Its body (the former `_onReload` body) starts with the validation (D83, D83 (10)), before anything is applied or logged:
     ```ts
     // Spec V6, D83 (10): the whole resolved file, checked by the start's own
     // validator before anything applies — every section shape and every field a
@@ -6235,7 +6316,16 @@ Spec §10.5.9 (V1–V10; V10 and the server's one config queue are D80 extended,
     // start's error as the reason.
     let valid: HotReloadableConfig;
     try {
-      resolveSmartServerConfig({}, document, this.deps.env ?? process.env, { configPath: this.deps.configFile });
+      const resolved = resolveSmartServerConfig({}, document, this.deps.env ?? process.env, { configPath: this.deps.configFile });
+      // Spec D83 (11): the selected pipeline's own section, by the parse the
+      // start's registry entry runs for it — nothing built. The file's own
+      // `llm:` keys, as a start from it would check them. A pipeline change, an
+      // invalid section or a plugin factory's changed section fails here.
+      checkReloadedPipeline(
+        this.deps.pipeline,
+        { name: resolved.pipeline?.name ?? 'flat', section: resolved.pipeline?.config ?? {} },
+        normalizeLlmConfig(resolved.llm),
+      );
       // The reload table's values of that document, by the same rules (the
       // start's checkStartConfig over the same document — it cannot fail once
       // the line above passed): typed, never coerced.
@@ -7056,8 +7146,282 @@ Spec §10.5.9 (V1–V10; V10 and the server's one config queue are D80 extended,
   - **Where the document comes from — the watcher passes it** (libs `config-watcher.ts`, D83 (8)'s `_reload` above): `emit('reload', config, resolved)` — the resolved document the values were read from, as a second argument (additive, spec §3.8: a listener with one parameter is unchanged). Chosen over `_applyReload` re-reading the file: one read, so the values and the document can never come from two versions of a file saved in between; no second parse, `${VAR}` pass or read-error path; and libs stays free of the server's rules — it hands over what it read and validates nothing.
   - **The server validates it with the start's validator** (`config-reload-watcher.ts`, V6 above): the listener passes the document to `_onReload(document)`; `_applyReload(document)` first calls `resolveSmartServerConfig({}, document, env, { configPath })` — the function the CLI's start runs (every section shape, every field of the reload table, the start-only and cast-read rules, `validateResolvedConfig`, the worker files, `skillPlugins`), with no command-line overrides and the environment the reload substitutes from — then reads the reload table's typed values with `validateStartConfig(document, {})` (the start's `checkStartConfig` over the same document; it cannot fail once the first call passed). Its error fails the transaction before the agent update. The event's extracted values are not read by the server.
   - **One rule set** (`config-fields.ts` above): `validateReloadedConfig` is removed — the reload's rules are `checkReloadable`, run by `checkStartConfig`, which the start runs; `checkStartConfig` gains the two section shapes no rule checked: `agent` a mapping, `subagents` a list (`check.section` / `check.refuse`; a key with no value is absent). Every other top-level section's shape is already checked where it is read (spec §10.5.9 *The start config*).
-  - **Not covered — raised for the user (spec §17.36 (6)):** the selected pipeline's own section parser runs when the server builds the pipeline (its registry, its LLM map), after `resolveSmartServerConfig`; a reload does not rebuild the pipeline, so an invalid `pipeline.config` field is caught by the next start, not by the reload. Nothing in this task changes that.
+  - **The selected pipeline's section — closed by D83 (11) below (spec §17.36 (6), §17.37).** The start's validator does not run the pipeline's own parser (it runs when the server builds the pipeline); the reload runs it separately, right after `resolveSmartServerConfig` (the `checkReloadedPipeline` call above).
   - **Tests**: every reload a test of this task drives carries a whole document (`__tests__/reload-document.ts`, Step 1); the D83 (10) case of `config-field-validation.test.ts` (`agent: broken`, `mcp.timeout: 5x`, no `llm:` → failed and not ready; a valid whole file → applied); the libs watcher case (the second argument). **Cumulative compile:** `HotReloadableInput` stays exported and used (the event's first argument, `config-fields.ts`); `_values` is a leading-underscore parameter (`noUnusedParameters` accepts it); `validateStartConfig` gains its first non-test caller; `config-reload-watcher.ts` reads `this.deps.env` and `this.deps.configFile`, both on `ConfigReloadDeps`.
+
+  **D83 (11) — a reload validates the selected pipeline's section (spec §17.37, §10.5.9 V6, *The start config*; closes §17.36 (6)).** The selected pipeline's own section parser ran only inside the registry entry that constructs the plugin at start, so a reloaded `pipeline.config` with an invalid field applied and failed the next start, and a reloaded `pipeline.name` was not looked at. Now the parse half of every built-in entry is a named function both the start's factory and the reload call; the reload runs it over the reloaded section (nothing built) right after `resolveSmartServerConfig` and before anything applies.
+  - **`pipeline-sections.ts`** (server-libs `smart-agent/`, new, internal — not exported from the package):
+    ```ts
+    /**
+     * The selected pipeline's `pipeline.config`, as the start reads it (spec
+     * §10.5.9 *The start config*, D83 (11)): the parse half of each built-in
+     * registry entry, callable without constructing a plugin, so a file reload
+     * validates the section a start from the same file would parse.
+     */
+    import { isDeepStrictEqual } from 'node:util';
+    import { llmKeySet, type NormalizedLlmMap } from './llm-config-map.js';
+    import {
+      assertNamedLlmKeys,
+      type DagPipelineSettings,
+      dagNamedLlmKeys,
+      parseControllerSettings,
+      parseDagSettings,
+      parseLinearSettings,
+      parseStepperSettings,
+    } from './pipeline-settings.js';
+    import type { ControllerConfig } from './controller/types.js';
+
+    /** The server's built-in pipelines — the keys of the start's built-in factories and of their section entries. */
+    export type BuiltinPipelineName = 'flat' | 'linear' | 'dag' | 'stepper' | 'controller' | 'controller-weak';
+
+    /** One section parse: the section, the `llm:` keys a section may name, the start's warning sink. */
+    export type PipelineSectionParse = (
+      section: unknown,
+      llm: NormalizedLlmMap | undefined,
+      warn: (msg: string) => void,
+    ) => unknown;
+
+    /** `parseDagSettings` plus the `llm:` key check the `dag` entry ran inline (moved, unchanged). */
+    export function parseDagSection(
+      section: unknown,
+      llm: NormalizedLlmMap | undefined,
+      warn: (msg: string) => void,
+    ): DagPipelineSettings {
+      const settings = parseDagSettings(section, warn);
+      assertNamedLlmKeys(dagNamedLlmKeys(settings), llm, "pipeline 'dag'");
+      return settings;
+    }
+
+    /** `parseControllerSettings` over the `llm:` keys (moved from the two controller entries, unchanged). */
+    export function parseControllerSection(section: unknown, llm: NormalizedLlmMap | undefined): ControllerConfig {
+      return parseControllerSettings(section, llmKeySet(llm));
+    }
+
+    /**
+     * The parse each built-in entry runs — the start's factory calls it and
+     * constructs the plugin with the result; the reload calls it and discards the
+     * result. `satisfies` keeps each one's own return type for the factories.
+     */
+    export const BUILTIN_PIPELINE_PARSERS = {
+      linear: (section: unknown) => parseLinearSettings(section),
+      dag: parseDagSection,
+      stepper: (section: unknown) => parseStepperSettings(section),
+      controller: parseControllerSection,
+      'controller-weak': parseControllerSection,
+    } satisfies Record<Exclude<BuiltinPipelineName, 'flat'>, PipelineSectionParse>;
+
+    /** How a registered pipeline's `pipeline.config` is read at start. */
+    export type PipelineSectionEntry =
+      /** A built-in: its parser, the start's and the reload's. */
+      | { readonly kind: 'parser'; readonly parse: PipelineSectionParse }
+      /** `flat` and a plugin's instance export: the start reads no section. */
+      | { readonly kind: 'no-section' }
+      /** A plugin's factory: parser and constructor in one call, called once at start (§4.6.7) — no validation entry. */
+      | { readonly kind: 'plugin-factory' };
+
+    export const BUILTIN_PIPELINE_SECTIONS: Readonly<Record<BuiltinPipelineName, PipelineSectionEntry>> = {
+      flat: { kind: 'no-section' },
+      linear: { kind: 'parser', parse: BUILTIN_PIPELINE_PARSERS.linear },
+      dag: { kind: 'parser', parse: BUILTIN_PIPELINE_PARSERS.dag },
+      stepper: { kind: 'parser', parse: BUILTIN_PIPELINE_PARSERS.stepper },
+      controller: { kind: 'parser', parse: BUILTIN_PIPELINE_PARSERS.controller },
+      'controller-weak': { kind: 'parser', parse: BUILTIN_PIPELINE_PARSERS['controller-weak'] },
+    };
+
+    /** A pipeline selection: `pipeline.name` (default `flat`) and `pipeline.config` (default `{}`). */
+    export interface PipelineSelection {
+      readonly name: string;
+      readonly section: unknown;
+    }
+
+    /** What the server hands the reload watcher (`ConfigReloadDeps.pipeline`). */
+    export interface ReloadPipeline {
+      /** Every registered pipeline's entry — the built-ins' and each plugin's. */
+      readonly entries: ReadonlyMap<string, PipelineSectionEntry>;
+      /** The selection the running pipeline was constructed from. */
+      readonly running: PipelineSelection;
+      /** The start's warning sink (`parseDagSettings` warns). */
+      readonly warn: (msg: string) => void;
+    }
+
+    /**
+     * The reload's check of the selected pipeline (spec D83 (11)): throws one
+     * error naming every issue; builds nothing, applies nothing.
+     */
+    export function checkReloadedPipeline(
+      pipeline: ReloadPipeline,
+      reloaded: PipelineSelection,
+      llm: NormalizedLlmMap | undefined,
+    ): void {
+      const issues: string[] = [];
+      const changed = reloaded.name !== pipeline.running.name;
+      if (changed) {
+        // The reload does not rebuild the pipeline: a file whose agent is not
+        // the one serving is never reported applied.
+        issues.push(
+          `pipeline change needs a restart — the server runs pipeline '${pipeline.running.name}', the file selects '${reloaded.name}'`,
+        );
+      }
+      const entry = pipeline.entries.get(reloaded.name);
+      if (entry === undefined) {
+        issues.push(`unknown pipeline '${reloaded.name}'; available: ${[...pipeline.entries.keys()].join(', ')}`);
+      } else {
+        switch (entry.kind) {
+          case 'parser':
+            try {
+              entry.parse(reloaded.section, llm, pipeline.warn);
+            } catch (err) {
+              issues.push(
+                `pipeline '${reloaded.name}' config invalid — ${err instanceof Error ? err.message : String(err)}`,
+              );
+            }
+            break;
+          case 'no-section':
+            break;
+          case 'plugin-factory':
+            // Strict: never report applied a section no code checked. An
+            // unchanged section is the one the factory accepted at start.
+            if (!changed && !isDeepStrictEqual(reloaded.section, pipeline.running.section)) {
+              issues.push(
+                `pipeline '${reloaded.name}' is a plugin factory with no validation entry — its changed pipeline.config is checked only by building the pipeline: restart to apply it`,
+              );
+            }
+            break;
+          default: {
+            const exhaustive: never = entry;
+            return exhaustive;
+          }
+        }
+      }
+      if (issues.length > 0) throw new Error(issues.join('; '));
+    }
+    ```
+    (Check at implementation: `ControllerConfig`'s path is the one `pipeline-settings.ts` imports — `./controller/types.js`; `DagPipelineSettings` is exported there. `pipeline-sections.ts` imports `llm-config-map.ts` (a type-only import of `smart-server.ts`) and `pipeline-settings.ts` — no runtime cycle.)
+  - **`smart-server.ts` — the registry calls the same parsers** (`_buildInfra`, the *Pipeline-plugin registry* block, ~1336–1395):
+    ```ts
+    const warn = (m: string) => this.warn(m);
+    // Spec D83 (11): the built-in factories call BUILTIN_PIPELINE_PARSERS — the
+    // parse the reload runs too; both records are keyed by BuiltinPipelineName,
+    // so the compiler keeps the factories and the section entries equal.
+    const builtinFactories: Record<BuiltinPipelineName, PipelinePluginFactory> = {
+      flat: () => new FlatPipelinePlugin(),
+      linear: (s) => new LinearPipelinePlugin(BUILTIN_PIPELINE_PARSERS.linear(s)),
+      dag: (s) => new DagPipelinePlugin(BUILTIN_PIPELINE_PARSERS.dag(s, this._llmMap, warn)),
+      stepper: (s) => new StepperPipelinePlugin(BUILTIN_PIPELINE_PARSERS.stepper(s)),
+      controller: (s) =>
+        new ControllerPipelinePlugin('controller', 'smart-executor', BUILTIN_PIPELINE_PARSERS.controller(s, this._llmMap)),
+      'controller-weak': (s) =>
+        new ControllerPipelinePlugin(
+          'controller-weak',
+          'weak-executor',
+          BUILTIN_PIPELINE_PARSERS['controller-weak'](s, this._llmMap),
+        ),
+    };
+    const pipelineRegistry = new Map<string, PipelinePluginFactory>(Object.entries(builtinFactories));
+    const pipelineSections = new Map<string, PipelineSectionEntry>(Object.entries(BUILTIN_PIPELINE_SECTIONS));
+    ```
+    (the map's insertion order — and so `pipeline_registry_loaded`'s list — is the literal's, as today). `registerPipeline(name, factory)` becomes `registerPipeline(name, factory, entry: PipelineSectionEntry)` and, after the collision check, also `pipelineSections.set(name, entry);`; the instance loop passes `{ kind: 'no-section' }` (its factory `() => plugin` reads no section), the factory loop `{ kind: 'plugin-factory' }`. The selection is computed once and kept:
+    ```ts
+    const selection: PipelineSelection = {
+      name: this.cfg.pipeline?.name ?? 'flat',
+      section: this.cfg.pipeline?.config ?? {},
+    };
+    this._pipelinePlugin = selectPipelinePlugin(pipelineRegistry, pipelineSources, selection.name, selection.section);
+    // Spec D83 (11): what a reload checks its file's pipeline against.
+    this._pipelineSections = pipelineSections;
+    this._pipelineSelection = selection;
+    ```
+    with the fields beside `_pipelinePlugin`: `private _pipelineSections!: ReadonlyMap<string, PipelineSectionEntry>;` and `private _pipelineSelection!: PipelineSelection;` (doc: "Set in `_buildInfra` with `_pipelinePlugin`; the reload watcher's `pipeline` (spec D83 (11))."). The `new ConfigReloadWatcher({` deps gain, after `transactions`, `pipeline: { entries: this._pipelineSections, running: this._pipelineSelection, warn: (m) => this.warn(m) },`. Imports: `import { BUILTIN_PIPELINE_PARSERS, BUILTIN_PIPELINE_SECTIONS, type BuiltinPipelineName, type PipelineSectionEntry, type PipelineSelection } from './pipeline-sections.js';`; the `./pipeline-settings.js` import keeps nothing the file still uses — `assertNamedLlmKeys`, `dagNamedLlmKeys`, `parseControllerSettings`, `parseDagSettings`, `parseLinearSettings`, `parseStepperSettings` were used only by the registry — so it is removed, and `llmKeySet` leaves the `./llm-config-map.js` import (D83 (7) already removed `optionalNumber` from it; the import goes when nothing is left — check at implementation for any other use with `git grep -n "llmKeySet\|parseLinearSettings" -- packages/llm-agent-server-libs/src/smart-agent/smart-server.ts`).
+  - **`config-reload-watcher.ts`** — `ConfigReloadDeps` gains
+    ```ts
+      /**
+       * The running pipeline and every registered pipeline's section entry
+       * (spec V6, D83 (11)): a reload checks its file's `pipeline` against them.
+       * Required — a server that forgot it does not compile.
+       */
+      pipeline: ReloadPipeline;
+    ```
+    and `_applyReload` calls `checkReloadedPipeline` right after `resolveSmartServerConfig`, inside the same `try` (V6 above), so its error fails the transaction with the same prefix before `validateStartConfig`, the agent update or any log of `config_reload`.
+  - **Validated, not applied.** A valid reloaded section (a built-in's changed one included) passes; the running pipeline keeps its section until the next start. The parse's result is discarded. `parseDagSettings`' warnings reach the server's `warn` at each reload, as at start.
+  - **Tests** (Step 1 lists them where they live): `config-field-validation.test.ts`'s D83 (11) case (the real watcher; `linear` with `maxSteps: 10x` → failed, not ready, nothing applied; `maxSteps: 12` → applied, ready; `dag` → `pipeline change needs a restart` exactly; `dag` naming key `other` → the restart and the key error in one message; a plugin factory `ext` — the same section applied, a changed one failed). New `__tests__/pipeline-sections.test.ts` (pure, `checkReloadedPipeline` with `runningPipeline` from `./reload-document.js`):
+    ```ts
+    /**
+     * Spec §10.5.9 *The start config*, D83 (11): the reload's check of the
+     * selected pipeline's section — the start's parsers, nothing built.
+     */
+    import assert from 'node:assert/strict';
+    import { test } from 'node:test';
+    import { normalizeLlmConfig } from '../llm-config-map.js';
+    import { BUILTIN_PIPELINE_PARSERS, BUILTIN_PIPELINE_SECTIONS, checkReloadedPipeline } from '../pipeline-sections.js';
+    import { runningPipeline } from './reload-document.js';
+
+    const LLM = normalizeLlmConfig({ provider: 'ollama', model: 'm' } as never);
+
+    function message(fn: () => void): string {
+      try {
+        fn();
+      } catch (err) {
+        return err instanceof Error ? err.message : String(err);
+      }
+      assert.fail('expected a throw');
+    }
+
+    test('the built-in section entries cover exactly the built-in pipelines, each parser the start calls', () => {
+      assert.deepEqual(Object.keys(BUILTIN_PIPELINE_SECTIONS), ['flat', 'linear', 'dag', 'stepper', 'controller', 'controller-weak']);
+      for (const [name, entry] of Object.entries(BUILTIN_PIPELINE_SECTIONS)) {
+        if (name === 'flat') assert.equal(entry.kind, 'no-section');
+        else assert.deepEqual(entry, { kind: 'parser', parse: BUILTIN_PIPELINE_PARSERS[name as keyof typeof BUILTIN_PIPELINE_PARSERS] });
+      }
+    });
+
+    test('a valid built-in section passes; an invalid one names the pipeline and the parser', () => {
+      checkReloadedPipeline(runningPipeline('linear'), { name: 'linear', section: { maxSteps: 12 } }, LLM);
+      assert.match(
+        message(() => checkReloadedPipeline(runningPipeline('linear'), { name: 'linear', section: { maxSteps: '10x' } }, LLM)),
+        /^pipeline 'linear' config invalid — .*maxSteps/,
+      );
+    });
+
+    test("dag's key check uses the reloaded llm: keys, not the running server's", () => {
+      const dag = { name: 'dag', section: { planner: { plannerLlm: 'strong' } } };
+      const withStrong = normalizeLlmConfig({ main: { provider: 'ollama', model: 'm' }, strong: { provider: 'ollama', model: 's' } } as never);
+      checkReloadedPipeline(runningPipeline('dag', dag.section), dag, withStrong); // a key added in the same save
+      assert.match(message(() => checkReloadedPipeline(runningPipeline('dag', dag.section), dag, LLM)), /names llm: key 'strong'/);
+    });
+
+    test('a pipeline change needs a restart; an unknown name names the registry', () => {
+      assert.equal(
+        message(() => checkReloadedPipeline(runningPipeline('flat'), { name: 'stepper', section: {} }, LLM)),
+        "pipeline change needs a restart — the server runs pipeline 'flat', the file selects 'stepper'",
+      );
+      assert.equal(
+        message(() => checkReloadedPipeline(runningPipeline('flat'), { name: 'nope', section: {} }, LLM)),
+        "pipeline change needs a restart — the server runs pipeline 'flat', the file selects 'nope'; unknown pipeline 'nope'; available: flat, linear, dag, stepper, controller, controller-weak",
+      );
+    });
+
+    test('plugins: an instance export reads no section; a factory passes only its unchanged section', () => {
+      const inst = runningPipeline('inst', { a: 1 }, [['inst', { kind: 'no-section' }]]);
+      checkReloadedPipeline(inst, { name: 'inst', section: { a: 2 } }, LLM);
+      const fac = runningPipeline('ext', { a: { b: [1] } }, [['ext', { kind: 'plugin-factory' }]]);
+      checkReloadedPipeline(fac, { name: 'ext', section: { a: { b: [1] } } }, LLM); // deep-equal, a new object
+      assert.match(
+        message(() => checkReloadedPipeline(fac, { name: 'ext', section: { a: { b: [2] } } }, LLM)),
+        /^pipeline 'ext' is a plugin factory with no validation entry/,
+      );
+    });
+
+    test('the parse runs once per check and its warnings reach the sink', () => {
+      let calls = 0;
+      const warned: string[] = [];
+      const p = runningPipeline('x', {}, [['x', { kind: 'parser', parse: (_s, _l, warn) => { calls++; warn('w'); } }]]);
+      checkReloadedPipeline({ ...p, warn: (m) => warned.push(m) }, { name: 'x', section: {} }, LLM);
+      assert.equal(calls, 1);
+      assert.deepEqual(warned, ['w']);
+    });
+    ```
+    Today: `pipeline-sections.ts` does not exist (a compile error in both files); with it but without the `_applyReload` call, the D83 (11) case's first save applies (`config_reload_applied`) — the gap. The existing `pipeline-registry.test.ts` / `select-pipeline-plugin.test.ts` stay green unchanged (the start's behaviour and messages are the same: the factories call the same parsers; `registerPipeline` only records one more map).
+  - **Cumulative compile:** `ConfigReloadDeps.pipeline` is required, and every `new ConfigReloadWatcher(` passes it — the server (`_pipelineSections` / `_pipelineSelection`, set in `_buildInfra`, which `_start` runs before it builds the watcher) and every test watcher (`FLAT_PIPELINE` or `runningPipeline(…)`; Task 23A's `makeWatcher` too); `pipeline-sections.ts` is new and internal (not added to `index.ts`), so no package export changes; `smart-server.ts` drops the `pipeline-settings.js` import and `llmKeySet` (`noUnusedLocals`); `PipelineSelection` / `PipelineSectionEntry` are type imports. Nothing else calls the moved inline code.
 
   **D83 (9) — every cast-read config field validated (spec §17.34, §10.5.9 *Cast-read fields*; decided by the user on 2026-10-06).** `config-fields.ts` gains (beside `START_NUMBER_RULES`; `import type { SmartServerAgentConfig, SmartServerMcpConfig, SmartServerSkillsConfig } from './smart-server.js';` — a type-only import, erased at runtime, so no cycle):
     ```ts
@@ -7329,7 +7693,7 @@ Spec §10.5.9 (V1–V10; V10 and the server's one config queue are D80 extended,
     and `rc` gains `notReadyMessage, configNotApplied,` (after `ready`). Both chat routes' gate becomes `writeNotReady(rc.res, rc.notReadyMessage);`. No other route reads `rc.ready`: `GET` / `PUT /v1/config`, the models, usage and session routes stay ungated.
   - `http/response-helpers.ts`: `writeNotReady(res, message = 'MCP unavailable — server not ready')` — the body's `message` is the parameter; the doc gains "`message` names why (spec §10.5.10, D82): a config change that failed to apply, or MCP unavailable." Additive (spec §3.8): existing callers compile and answer as before.
   - `http/health-route-handler.ts`: the body becomes `JSON.stringify({ ...status, ready: rc.ready, ...(rc.configNotApplied ? { configNotApplied: rc.configNotApplied } : {}) })`; the HTTP code is unchanged here (`rc.ready ? 200 : 503` — `ready` is false while the config is not applied; Task 4O adds `status === 'healthy'`).
-  - existing tests: `config-reload-weights.test.ts`'s `watcherOver` gains `transactions: new ConfigTransactionQueue()` (imported from `../config-transaction-queue.js`); its `reload` returns the promise and each case `await`s it (the weights are applied after the drain settles now), and drives the entry point with a whole document — `(u: Weights) => (watcher as unknown as { _onReload: (d: unknown) => Promise<void> })._onReload(reloadDocument(u))` with `import { reloadDocument } from './reload-document.js';` (D83 (10): a reload applies only a document the server could start from; the weights land in an in-memory `rag.store`, so they are read); `config_reload_drain_error` / `config_reload_invalidate_error` are gone (grep below). A test that builds `RouteContext` by hand needs nothing (the new fields are optional).
+  - existing tests: `config-reload-weights.test.ts`'s `watcherOver` gains `transactions: new ConfigTransactionQueue()` (imported from `../config-transaction-queue.js`) and `pipeline: FLAT_PIPELINE` (imported with `reloadDocument` from `./reload-document.js`, D83 (11)); its `reload` returns the promise and each case `await`s it (the weights are applied after the drain settles now), and drives the entry point with a whole document — `(u: Weights) => (watcher as unknown as { _onReload: (d: unknown) => Promise<void> })._onReload(reloadDocument(u))` with `import { reloadDocument } from './reload-document.js';` (D83 (10): a reload applies only a document the server could start from; the weights land in an in-memory `rag.store`, so they are read); `config_reload_drain_error` / `config_reload_invalidate_error` are gone (grep below). A test that builds `RouteContext` by hand needs nothing (the new fields are optional).
 
   **U10**: in the worker wire, collect `shared: ('toolsRag' | 'mcpClients')[]` in the two `else if (injected?.…)` branches; after both, `if (shared.length > 0) (this.cfg.log ?? this.noop)({ event: 'worker_uses_shared_clients', worker: <the worker's name>, shared });` — one line per wire, the same event sink as `plugins_loaded`.
 - [ ] **Step 4: Fix the tests that pin the old behaviour, then the gate**
@@ -7349,6 +7713,9 @@ git grep -n "validateReloadedConfig" -- packages docs ':!docs/superpowers'   # e
 git grep -n "resolveSmartServerConfig(\|validateStartConfig(" -- 'packages/llm-agent-server-libs/src/smart-agent/config-reload-watcher.ts'   # one of each, in _applyReload: the whole document, then its values (D83 (10))
 git grep -n "emit('reload'" -- 'packages/llm-agent-libs/src/config/config-watcher.ts'   # one hit: `emit('reload', config, resolved)` — the document beside the values (D83 (10))
 git grep -n "validateStartConfig(" -- 'packages/llm-agent-server-libs/src' ':!*.test.ts'   # config-fields.ts (the definition) and config-reload-watcher.ts (the reload's values, D83 (10)) only
+git grep -n "checkReloadedPipeline(" -- 'packages/llm-agent-server-libs/src' ':!*.test.ts'   # pipeline-sections.ts (the definition) and config-reload-watcher.ts (_applyReload, after resolveSmartServerConfig) only (D83 (11))
+git grep -n "parseLinearSettings(\|parseDagSettings(\|parseStepperSettings(\|parseControllerSettings(" -- 'packages/llm-agent-server-libs/src' ':!*.test.ts' ':!**/__tests__/**'   # pipeline-settings.ts (definitions) and pipeline-sections.ts only — the start's factories call BUILTIN_PIPELINE_PARSERS (D83 (11))
+git grep -n "new ConfigReloadWatcher(" -A30 -- 'packages/llm-agent-server-libs/src' | grep -c "pipeline:"   # one per `new ConfigReloadWatcher(` (D83 (11): the dep is required — tsc proves it; this is the reviewer's check)
 git grep -n "get(yaml, 'agent', '\(maxIterations\|maxToolCalls\|ragQueryK\|toolUnavailableTtlMs\|showReasoning\|historyAutoSummarizeLimit\|queryExpansionEnabled\|toolResultCacheTtlMs\|sessionTokenBudget\|classificationEnabled\)')\|get(yaml, 'prompts'\|s\.vectorWeight\|s\.keywordWeight\|agent-show-reasoning" -- 'packages/llm-agent-server-libs/src/smart-agent/resolve-config-sections.ts'   # expect no hits (the start reads the validated values, D83 (5))
 git grep -n "get(yaml, 'logDir')\|args\['log-dir'\]" -- 'packages/llm-agent-server-libs/src/smart-agent/config.ts'   # expect no hits (D83 (5))
 git grep -n "Number(\|Boolean(\|String(" -- 'packages/llm-agent-server-libs/src/smart-agent/resolve-config-sections.ts' 'packages/llm-agent-server-libs/src/smart-agent/config.ts' 'packages/llm-agent-server-libs/src/smart-agent/stepper-config.ts' 'packages/llm-agent-server-libs/src/smart-agent/decision-config.ts' 'packages/llm-agent-server-libs/src/smart-agent/llm-config-map.ts'   # expect only error-message text (`${String(…)}` inside a thrown message, e.g. stepper-config's `unknown coordinator.mode`) — no config value read through them (D83 (7))
@@ -7366,7 +7733,7 @@ npx tsc -b packages/llm-agent-libs packages/llm-agent-server-libs packages/llm-a
 npm test --workspace @mcp-abap-adt/llm-agent-libs --workspace @mcp-abap-adt/llm-agent-server-libs --workspace @mcp-abap-adt/llm-agent-server
 ```
 A test that resolved a start config with an empty prompt for a field of the table, or a value outside the grammar (a quoted number with spaces, a flag other than `true` / `false` / `"true"` / `"false"`), now expects the `ConfigFieldError` (a quoted number literal and `"true"` / `"false"` pass, D83 (6)); the tests that pinned 30.1.0's messages of `positiveIntOption` / `whenThrottled.maxAttempts` (`resolve-llm-section.test.ts`), of `posInt` / `threshold` (`skill-plugins-config.test.ts`: `/dimension must be a positive integer/` → `/skillPlugins\.dimension must be (>= 1|an integer|a finite number)/`) and the stepper's numbers expect the shared `invalid config — <field> <rule>, got <value>`; `resolve-llm-section.test.ts`'s `describe('optionalNumber', …)` is deleted with the function; the tests that call a section reader directly pass the new `FieldCheck` argument (`import { FieldCheck } from '../config-fields.js';`, `new FieldCheck()` last): `resolve-llm-section.test.ts` (`resolveLlmSection(yaml, new FieldCheck())`, 4 calls — its `classifierTemperature: '0.2'` case still reads 0.2, a number literal), `resolve-mcp-name.test.ts` (5), `resolve-mcp-timeout.test.ts` (3), `agent-mcp-shared-client-config.test.ts` (2, `resolveAgentSection(yaml, {}, new FieldCheck())`) — a reader only records an issue, so a case that expects an invalid value to fail passes the reader's result to `done` (`check.done(resolveLlmSection(yaml, check))` — the reader runs first, then `done`, as in the server); every YAML in the repo (examples, `docs/examples`, `pipelines/`, the template) holds valid values — checked by parsing each with `${VAR}` resolved to its default and applying the rules — except `rag.embedder.url: ${EMBEDDER_URL:-}` in the five `docs/examples/stepper/0[1-5]-*.yaml` files: unset, it is `""`, which fails `rag.embedder.url` (D83 (7)); this task removes that line from the five files (Task 33 documents the variable), and `node scripts/check-example-configs.mjs` then reports no `SHAPE-FAIL`. D83 (8), (9): every YAML in the repo was scanned for the cast-read fields with `${VAR}` resolved to its default — every value passes its rule (the DAG examples' `planner` / `reviewer` carry `type: llm`, which the open mapping allows; the controller examples' `budgets` / `targetState` keys are all known; the docker examples' `agent.retry` and `mcp.headers` are valid) except `url: ${LLM_URL:-}` in the five `docs/examples/stepper/0[1-5]-*.yaml` files (24 lines, one per role): unset it is `""`, which fails `llm.<role>.url`; this task removes those lines too (Task 33 documents the variable). The `pipelines/*.yaml` with `url: ${MCP_ENDPOINT}` stay ENV-MISSING in the script (unset, `""` now fails `mcp.url` instead of `mcp.url: required` — the placeholder re-check passes). Tests that pin 30.1.0's silent reads: `stepper-config.test.ts`'s `'knowledgeSeed: parses entries …, drops blanks, defaults empty'` keeps its two valid entries and its empty default, and its two dropped entries become one `ConfigFieldError` assert naming both (`knowledgeSeed[2].content must be a non-empty string, got "   "`; `knowledgeSeed[3].content must be a non-empty string, got undefined`; the title drops "drops blanks"); `pipelines/__tests__/controller.test.ts`'s invalid lists lose `'600000'` / `'1800000'` (a number literal now passes, D83 (6)) and gain `' 600000'` / `' 1800000'` — their `/maxWaitMs/` / `/maxTotalWaitMs/` regexes match the new messages (`budgets.maxWaitMs must be …`). Every other test that passes a cast-read field to a resolver or a section parser was checked and holds valid values (`pipeline-settings.test.ts`, `server-routing-namespace.test.ts`, `server-namespacing-e2e.test.ts`, the stepper and MCP-name tests; `stepper-callmcp-bridge.test.ts`'s `atDepths: []` is a valid empty list); the controller tests that build a `ControllerConfig` literal do not go through the parser. (The only libs change in this task is D83's `config-watcher.ts` and its exports — D81 is withdrawn, `SmartAgent.reconfigure` stays as in 30.1.0.)
-- [ ] **Step 5: Commit** — `fix(server): unreadable state, a failed config change, an unbuildable config or a failed backend is an error — never a placeholder; one queue for every config change, a failed one leaves the server not ready until one applies — no rollback; a config file that cannot be read or parsed is a failed reload (D80, D82, D82 (9), V6, V10); every config field validated before it applies — at start, on a reload and on PUT — no coercion — a number literal string and "true" / "false" accepted, every coerced config field validated; an invalid start value fails the start (D83, D83 (5), (6), (7)); a reload substitutes ${VAR} exactly as the start does, and every config field read by a type cast is validated (D83 (8), (9)); a reload validates the whole resolved document with the start's validator — only a document the server could start from applies (D83 (10)); a worker on the parent's clients is logged (U10)` (with the two trailers).
+- [ ] **Step 5: Commit** — `fix(server): unreadable state, a failed config change, an unbuildable config or a failed backend is an error — never a placeholder; one queue for every config change, a failed one leaves the server not ready until one applies — no rollback; a config file that cannot be read or parsed is a failed reload (D80, D82, D82 (9), V6, V10); every config field validated before it applies — at start, on a reload and on PUT — no coercion — a number literal string and "true" / "false" accepted, every coerced config field validated; an invalid start value fails the start (D83, D83 (5), (6), (7)); a reload substitutes ${VAR} exactly as the start does, and every config field read by a type cast is validated (D83 (8), (9)); a reload validates the whole resolved document with the start's validator — only a document the server could start from applies (D83 (10)); a reload runs the selected pipeline's section parser — an invalid section, a pipeline change or a plugin factory's changed section fails it (D83 (11)); a worker on the parent's clients is logged (U10)` (with the two trailers).
 
 ---
 
@@ -19097,7 +19464,7 @@ In `smart-server.ts`:
   import { test } from 'node:test';
   import { ConfigReloadWatcher, type ConfigReloadDeps } from '../config-reload-watcher.js';
   import { ConfigTransactionQueue } from '../config-transaction-queue.js';
-  import { emitReload, reloadDocument } from './reload-document.js';
+  import { emitReload, FLAT_PIPELINE, reloadDocument } from './reload-document.js';
 
   type Inner = { watcher: EventEmitter; _onReload: (u: unknown) => Promise<void> };
 
@@ -19129,6 +19496,7 @@ In `smart-server.ts`:
       },
       ragStores: {},
       transactions: queue,
+      pipeline: FLAT_PIPELINE, // D83 (11)
       ...over,
     });
     // White-box: the inner ConfigWatcher (an EventEmitter) and the entry point.
@@ -22575,11 +22943,11 @@ In `examples/docker-sap-ai-core/smart-server.yaml`, append a commented block (co
 #     tools: { variant: faceted-rerank, poolItems: 30 }   # poolItems: your number
 ```
 
-- [ ] **Step 8b: Fail loud — every page that describes a fallback as current (spec §10.5, §13 B1–B23; B18 withdrawn)**
+- [ ] **Step 8b: Fail loud — every page that describes a fallback as current (spec §10.5, §13 B1–B24; B18 withdrawn)**
 
 - `docs/INTEGRATION.md` (~347, `upsertManyPrecomputedRaw`): add that a failed bulk call fails the startup catalog — no per-tool retry; the status reports `complete: false` and `writeFailure` (D79, B16).
 - `docs/INTEGRATION.md` (`### Runtime config endpoints`, ~271), TL;DR first: `PUT /v1/config` and a hot reload of `smart-server.yaml` run one at a time (one queue: a `PUT` waits for a reload or another `PUT` in flight). **A config change that fails to apply is an error and leaves the server not ready — there is no rollback** (D82, B17): a `PUT` whose apply (the startup agent's update included), worker drain or session invalidation fails answers **500** `server_error` naming it; what it applied stays applied; until a whole config applies, `/health` answers 503 with `ready: false` and `configNotApplied: { reason, source, at }`, and `POST /v1/chat/completions` / `POST /v1/messages` answer **503** `service_unavailable` (`config not applied — <reason>`); `GET` / `PUT /v1/config` keep answering. What to do: fix what the error names, then send the whole config — a `PUT` carrying every section (`models` and `agent`; `agent` alone on a server without a model resolver), or save the YAML file; the first whole config that applies makes the server ready. **While the server is not ready a partial `PUT` is refused** (a rule, D82 (8)): **409** `invalid_request_error`, code `config_not_applied`, `server not ready — send the whole config: <missing sections>`, and nothing changes — a failed change may have applied part of itself, so only the whole config can clear the state. While the server is ready, partial `PUT`s work as before. The server starts ready from its config (a start config that cannot be applied fails the start). `docs/DEPLOYMENT.md` (the hot-reload section, ~390–418, and the health / load-balancer paragraph): reloads and `PUT`s share that queue; a reload whose drain or invalidation fails logs `config_reload_failed`, restores nothing and leaves the server not ready (a load balancer takes it out) until the next reload or `PUT` applies — saving the file again re-reads all of it (B10, B17). **A file the server cannot read or parse is a failed reload too** (D82 (9)): saving malformed YAML, making the file unreadable or deleting it logs `config_reload_failed` (`… cannot read the config file: <error>`) and leaves the server not ready until the repaired file is saved or a whole `PUT` applies; a deleted file is not watched again when recreated — send a whole `PUT` or restart. `docs/EXAMPLES.md` (~844) and `docs/QUICK_START.md` (~163): the `PUT /v1/config` row adds "500 when the update, the worker drain or the session invalidation fails — the server is then not ready (`/health` 503, chat 503) until a whole config applies; nothing is rolled back; while not ready, a `PUT` without every section answers 409 `config_not_applied`". `docs/TROUBLESHOOTING.md` (`## Errors instead of fallbacks`): a row `config not applied — …` (503 on chat, `/health` `configNotApplied`) → a config change failed → fix the named step and send the whole config (a `PUT` with every section, or save the file); a row `server not ready — send the whole config: …` (409 on `PUT /v1/config`) → a partial `PUT` while not ready → send the sections it names too; a row `config not applied — config reload failed, … cannot read the config file: …` → the YAML file is malformed, unreadable or gone (D82 (9)) → fix and save it, or send the whole config by `PUT`. Nowhere is `reconfigure` described as atomic (D81 withdrawn).
-- **Config field validation (D83, D83 (5)–(10); spec §10.5.9 *Config field rules*, *Start-only fields*, *Cast-read fields*, *The start config*; §13 B19–B23)** — `docs/DEPLOYMENT.md` (the hot-reload section and the paragraph on starting the server) and `docs/INTEGRATION.md` (`### Runtime config endpoints`), TL;DR first: every hot-reloadable field and every field `PUT /v1/config` accepts is checked **at start, on a reload and on a `PUT`, by the same rules, with no coercion** — one short table (field → rule) copied from spec §10.5.9. An invalid value: the start fails (exit code 1, `Error: invalid config — <field> <rule>, got <value>` on stderr; a worker file's error names the worker and its path), a reload fails (`config_reload_failed`, the server not ready until a whole config applies — B17), a `PUT` answers 400 naming the field. Write each value as its rule says — a number or a number literal string, `true` / `false` or `"true"` / `"false"`, a non-empty string, one of the listed names. **An environment variable's value is allowed for a number or flag field** (D83 (6)): `maxIterations: ${MAX_ITERATIONS}` works when the variable holds a number literal (`25`, not ` 25` or `25abc`) or `true` / `false`; an unset variable with no default is `""` and fails. **A reload substitutes `${VAR}` exactly as the start does** (D83 (8)): the same `${VAR}` / `${VAR:-default}` syntax, the server process's environment (a reload does not re-read `--env` files — a variable changed there needs a restart); an unset variable fails the reload as it fails the start, and `${VAR:-}` is `""`, which a non-empty-string field refuses. A second short table lists the start-only fields (spec §10.5.9 *Start-only fields*, D83 (7)) — `port`, the `agent`, `llm`, `rag.store`, `rag.embedder`, `mcp`, `decision`, `skillPlugins` and `stepper` fields — and the number-literal grammar in one line with examples that pass and fail. A third short table lists the cast-read fields (spec §10.5.9 *Cast-read fields*, D83 (9)) — `agent.retry`, `agent.toolSelection`, `agent.externalToolsValidationMode`, `mcp` (headers, tool timeouts, entries — closed keys), `llm.url` / `llm.model`, `host`, `mode`, `pluginDir`, `plugins`, `skills`, `pipeline.config` and the linear / DAG / controller / stepper sections — with the shapes in one line (mapping, list, map, a closed mapping refuses an unknown key), and the one behaviour change a deployment can meet: an empty `mcp.url` (`${MCP_ENDPOINT}` unset) is an error, not "no MCP" — write `type: none` for that. `docs/DEPLOYMENT.md`'s hot-reload paragraph (~390, "The `ConfigWatcher` supports hot-reload") also gains one line for a direct consumer of `ConfigWatcher`: `ConfigWatcherOptions.resolveDocument` resolves the parsed file before a field is read (the server passes its `resolveEnvVars`); without it the values are as written; the `reload` event's second argument is the whole resolved document — validate it, not only the values (D83 (10)). **A reload checks the whole file as a start would** (D83 (10), B23): a file the server could not start from — a section of the wrong shape (`agent: broken`), an invalid start-only or cast-read field (`mcp.timeout: 5x`), a missing `llm:` — fails the reload (`config_reload_failed` with the start's error, the server not ready until a whole config applies) even when every hot-reloadable value in it is valid; keep the file a valid start config at every save. `docs/ARCHITECTURE.md` (~799): `agent.heartbeatIntervalMs` — "`0` disables; any other value outside [1, 2147483647] fails the start" replaces "`<= 0`/invalid disables". `docs/examples/stepper/0[1-5]-*.yaml`: the removed `url: ${EMBEDDER_URL:-}` line (Task 4M) becomes a comment `# url: ${EMBEDDER_URL}   # ollama / openai: the embedder's address (sap-ai-core reads none)`; the removed `url: ${LLM_URL:-}` lines (Task 4M, D83 (9)) become one comment above the `llm:` map, `# Each role may set url: ${LLM_URL} (ollama / OpenAI-compatible base URL); an empty url fails the start`, and `docs/examples/stepper/README.md`'s `LLM_URL` row reads "base URL (Ollama / OpenAI-compatible) — set `url: ${LLM_URL}` on a role to use it; unset, leave `url` out (an empty `url` fails the start)" instead of "_(empty → provider default)_". `docs/TROUBLESHOOTING.md` (`## Errors instead of fallbacks`): a row `invalid config — <field> <rule>, got <value>` (at start: exit 1; on a reload: `config_reload_failed`; on `PUT /v1/config`: 400) → fix the value the message names. `docs/examples/*.yaml` and the YAML template need no change (every value they hold passes the rules — checked).
+- **Config field validation (D83, D83 (5)–(11); spec §10.5.9 *Config field rules*, *Start-only fields*, *Cast-read fields*, *The start config*; §13 B19–B24)** — `docs/DEPLOYMENT.md` (the hot-reload section and the paragraph on starting the server) and `docs/INTEGRATION.md` (`### Runtime config endpoints`), TL;DR first: every hot-reloadable field and every field `PUT /v1/config` accepts is checked **at start, on a reload and on a `PUT`, by the same rules, with no coercion** — one short table (field → rule) copied from spec §10.5.9. An invalid value: the start fails (exit code 1, `Error: invalid config — <field> <rule>, got <value>` on stderr; a worker file's error names the worker and its path), a reload fails (`config_reload_failed`, the server not ready until a whole config applies — B17), a `PUT` answers 400 naming the field. Write each value as its rule says — a number or a number literal string, `true` / `false` or `"true"` / `"false"`, a non-empty string, one of the listed names. **An environment variable's value is allowed for a number or flag field** (D83 (6)): `maxIterations: ${MAX_ITERATIONS}` works when the variable holds a number literal (`25`, not ` 25` or `25abc`) or `true` / `false`; an unset variable with no default is `""` and fails. **A reload substitutes `${VAR}` exactly as the start does** (D83 (8)): the same `${VAR}` / `${VAR:-default}` syntax, the server process's environment (a reload does not re-read `--env` files — a variable changed there needs a restart); an unset variable fails the reload as it fails the start, and `${VAR:-}` is `""`, which a non-empty-string field refuses. A second short table lists the start-only fields (spec §10.5.9 *Start-only fields*, D83 (7)) — `port`, the `agent`, `llm`, `rag.store`, `rag.embedder`, `mcp`, `decision`, `skillPlugins` and `stepper` fields — and the number-literal grammar in one line with examples that pass and fail. A third short table lists the cast-read fields (spec §10.5.9 *Cast-read fields*, D83 (9)) — `agent.retry`, `agent.toolSelection`, `agent.externalToolsValidationMode`, `mcp` (headers, tool timeouts, entries — closed keys), `llm.url` / `llm.model`, `host`, `mode`, `pluginDir`, `plugins`, `skills`, `pipeline.config` and the linear / DAG / controller / stepper sections — with the shapes in one line (mapping, list, map, a closed mapping refuses an unknown key), and the one behaviour change a deployment can meet: an empty `mcp.url` (`${MCP_ENDPOINT}` unset) is an error, not "no MCP" — write `type: none` for that. `docs/DEPLOYMENT.md`'s hot-reload paragraph (~390, "The `ConfigWatcher` supports hot-reload") also gains one line for a direct consumer of `ConfigWatcher`: `ConfigWatcherOptions.resolveDocument` resolves the parsed file before a field is read (the server passes its `resolveEnvVars`); without it the values are as written; the `reload` event's second argument is the whole resolved document — validate it, not only the values (D83 (10)). **A reload checks the whole file as a start would** (D83 (10), B23): a file the server could not start from — a section of the wrong shape (`agent: broken`), an invalid start-only or cast-read field (`mcp.timeout: 5x`), a missing `llm:` — fails the reload (`config_reload_failed` with the start's error, the server not ready until a whole config applies) even when every hot-reloadable value in it is valid; keep the file a valid start config at every save. **The selected pipeline's section too** (D83 (11), B24): a reload runs the pipeline's own section parser over `pipeline.config` — an invalid field fails the reload (`pipeline '<name>' config invalid — …`); a changed `pipeline.name` fails it (`pipeline change needs a restart`) — change the pipeline with a restart; a plugin pipeline built by a factory has no validation entry, so a reload that changes its section fails (restart to apply it); a valid built-in section passes and takes effect at the next start. `docs/ARCHITECTURE.md` (~799): `agent.heartbeatIntervalMs` — "`0` disables; any other value outside [1, 2147483647] fails the start" replaces "`<= 0`/invalid disables". `docs/examples/stepper/0[1-5]-*.yaml`: the removed `url: ${EMBEDDER_URL:-}` line (Task 4M) becomes a comment `# url: ${EMBEDDER_URL}   # ollama / openai: the embedder's address (sap-ai-core reads none)`; the removed `url: ${LLM_URL:-}` lines (Task 4M, D83 (9)) become one comment above the `llm:` map, `# Each role may set url: ${LLM_URL} (ollama / OpenAI-compatible base URL); an empty url fails the start`, and `docs/examples/stepper/README.md`'s `LLM_URL` row reads "base URL (Ollama / OpenAI-compatible) — set `url: ${LLM_URL}` on a role to use it; unset, leave `url` out (an empty `url` fails the start)" instead of "_(empty → provider default)_". `docs/TROUBLESHOOTING.md` (`## Errors instead of fallbacks`): a row `invalid config — <field> <rule>, got <value>` (at start: exit 1; on a reload: `config_reload_failed`; on `PUT /v1/config`: 400) → fix the value the message names; a row `config_reload_failed` with `pipeline change needs a restart` or `is a plugin factory with no validation entry` → restart the server to change the pipeline or a plugin pipeline's section (D83 (11)). `docs/examples/*.yaml` and the YAML template need no change (every value they hold passes the rules — checked).
 
 - `docs/INTEGRATION.md`: a new `## Errors — fail loud` section (TL;DR first): a stage failure is the stream's last item `{ ok: false, error }` and `process()`'s result; the error carries the failing component's code (table of the codes a consumer meets: `PIPELINE_ERROR`, `MCP_UNAVAILABLE`, `CIRCUIT_OPEN`, `EMBED_ERROR`, `QUERY_ERROR`, `QUERY_EXPAND_ERROR`, `RERANK_ERROR`, `LLM_ERROR`, `SKILL_ERROR`, the `COORDINATOR_*` codes, and `PIPELINE_FAILURE_CODES`); **a degraded mode is your injected strategy** — an `IRag` wrapper (implement `IRagDecorator`), an `IReranker` that answers unranked, `agent.llmCallStrategy: fallback` — with one short example of an `IRag` wrapper; `FallbackQueryEmbedding` stands in only for a pipeline without an embedder. Every existing sentence that says a stage "continues", "skips", "falls back" or "keeps the original" on a failure is rewritten.
 - `docs/ARCHITECTURE.md`: the pipeline section states that a stage error reaches the consumer (executor → `ctx.error` → `pipelineToStream` → `{ ok: false }`).
@@ -22628,7 +22996,7 @@ Claude-Session: https://claude.ai/code/session_012KjevEeQGZMkWMfnupJ7Yd"
 
 ## Task 34: CHANGELOG, migration notes, `CLAUDE.md`
 
-Spec §13 (**a major release**: the Breaking section with the 75-line migration table, D57–D59, D68, U6, U8; the behaviour table B1–B23, incl. the user's U1–U10 decisions, D79, D82 (B18 withdrawn by D82), D83 (B19), D83 (5) (B20), D83 (8), (9) (B21, B22) and D83 (10) (B23), §10.5.12; the corpus flow, D54; the replicas' reload window, D60). No version heading and no bump — the entry goes under `## [Unreleased]`, and its first line says the release is a **major** (breaking); the release step (the user's) picks the number.
+Spec §13 (**a major release**: the Breaking section with the 75-line migration table, D57–D59, D68, U6, U8; the behaviour table B1–B24, incl. the user's U1–U10 decisions, D79, D82 (B18 withdrawn by D82), D83 (B19), D83 (5) (B20), D83 (8), (9) (B21, B22), D83 (10) (B23) and D83 (11) (B24), §10.5.12; the corpus flow, D54; the replicas' reload window, D60). No version heading and no bump — the entry goes under `## [Unreleased]`, and its first line says the release is a **major** (breaking); the release step (the user's) picks the number.
 
 **Files:**
 - Modify: `CHANGELOG.md` (`## [Unreleased]`)
@@ -22796,6 +23164,7 @@ build as an injected strategy (an `IRag` wrapper, an `IReranker`, an LLM call st
 | B21 | a hot reload of a file whose reloadable field is written as `${VAR}` / `${VAR:-default}` | not substituted: a number field applied `NaN`, a flag `true`, a prompt the literal text `${VAR}`; `rag.store.type: ${STORE}` left the weights out | substituted as at start — the same function, syntax and environment, over the whole file before a field is read; then validated (an unset variable with no default is `""` and fails its field: the reload fails, not ready, B17). `ConfigWatcher` gains the optional `resolveDocument` (absent: the values as written) | a variable must hold a valid value in the server's environment (a reload does not re-read `--env` files) |
 | B22 | a config field read by a cast with no check — `agent.retry`, `agent.toolSelection`, `agent.externalToolsValidationMode`, `mcp` and `mcp[]` entry fields, `llm.url` / `llm.model` (and each role's), `host`, `mode`, `pluginDir`, `plugins`, `skills`, `pipeline.config`, the linear / DAG / controller / stepper sections' cast fields — with a wrong type, shape or an unknown key | reached its consumer as it was (`retryOn: ["429"]` never matched, `mcp.url: ""` started without MCP, `budgets.maxSteps: "20"` a string, a plan node without a goal dropped, `flow.evaluator.enabled: "false"` on, an unknown `agent.retry` / `mcp` / controller key ignored, an `mcp[]` entry's `type: none` connected as `http`) | **the start fails**: the same `invalid config — <field> <rule>, got <value>` (the main file's in one error, the CLI exits 1; a pipeline section's when the server builds the pipeline — `parseLinearSettings`, `parseDagSettings`, `parseControllerSettings`, `parseStepperCoordinatorConfig` throw it, same signatures). Number literal strings and `"true"` / `"false"` pass; `budgets.maxWaitMs: "600000"` now passes | write the value as its rule says; drop or fix the key the error names; quote a header value or a model name YAML reads as a number; for no MCP write `type: none`, not an empty `url` |
 | B23 | a hot reload of a file that is not a valid start config outside the hot-reloadable fields — a section of the wrong shape (`agent: broken`, `subagents: w`), an invalid start-only or cast-read field (`mcp.timeout: 5x`), `llm:` missing | only the hot-reloadable fields were read: `agent: broken` was an empty update that applied and counted applied (a not-ready server became ready, its old settings kept); the rest of the file was not looked at | the reload validates the whole resolved document with the start's validator before anything applies; a file the server could not start from fails the reload (`config_reload_failed` with the start's error, nothing applied, not ready — B17). `ConfigWatcher`'s `reload` event carries the resolved document as its second argument | keep the file a valid start config at every save; a direct consumer of `ConfigWatcher` validates the event's document, not only its values |
+| B24 | a hot reload of a file whose `pipeline.config` is invalid for the selected pipeline, that selects another pipeline than the running one, or that changes a plugin factory's section (§10.5.9 *The start config*, D83 (11)) | the reload never looked at `pipeline.config` or `pipeline.name`: the file applied, the running pipeline kept its section, and the next start failed on the section (or switched pipeline) | the reload runs the selected pipeline's own section parser (a built-in's) over the reloaded section before anything applies — an invalid section fails the reload (`pipeline '<name>' config invalid — …`); another pipeline fails it (`pipeline change needs a restart — …`, with the new pipeline's section errors); a plugin factory's changed section fails it (no validation entry). A valid section passes and is applied at the next start | change the pipeline or a plugin pipeline's section with a restart, not a reload; keep `pipeline.config` valid at every save |
 
 New codes, in a set of their own: `PIPELINE_FAILURE_CODES` (`RAG_STORE_MISSING`, `STATE_CORRUPT`,
 `TOOL_ARGUMENTS_JSON_PARSE_FAILED`) from `@mcp-abap-adt/llm-agent`. Every other error carries the
@@ -23186,6 +23555,7 @@ Left to the user by this scan, then decided (next section): the **30.1.0** `vect
 | D83 (8), (9) | *Decided by the user on 2026-10-06 (spec §17.34, amendment 27).* (8) The file reload substitutes `${VAR}` exactly as the start does: libs `ConfigWatcher` takes an injected `ConfigWatcherOptions.resolveDocument`, applied to the whole parsed file before a field is read; `ConfigReloadWatcher` passes the start's own `resolveEnvVars` (server-libs `yaml-loader.ts` — one implementation, no cycle) with `ConfigReloadDeps.env ?? process.env`. Not in `_applyReload`: the watcher picks the fields on the file (`rag.store.type: ${…}` gates the weights), so the substitution must precede it, as at start. An unset variable with no default is `""` on both paths and fails its field. (9) Every config field read by an `as` cast with no check is validated (spec §10.5.9 *Cast-read fields*): `agent.retry`, `agent.toolSelection`, `agent.externalToolsValidationMode`, the `mcp` single form and entries (closed keys, `headers` a map of non-empty strings, `toolTimeouts` a map of timer delays, `args` a list of strings, an entry's `type` `http` / `stdio`), `llm.url` / `llm.model` and each role's, `host`, `mode`, `pluginDir`, `plugins`, `skills`, `pipeline.config`, and the linear, DAG, controller and stepper sections' cast fields — the same `FieldCheck`, grammar and `ConfigFieldError` | Task 4M (libs `config-watcher.ts` and its test case; `config-reload-watcher.ts`; `config-fields.ts`'s `closed` / `list` / `map` / `refuse`, `CAST_NUMBER_RULES`, the name lists and section checks; `resolve-config-sections.ts`, `config.ts`, `config-validator.ts`, `pipeline-settings.ts`, `stepper-config.ts`; tests `config-field-validation.test.ts` (three cases), `stepper-config.test.ts`, `controller.test.ts`; the five stepper examples' `${LLM_URL:-}` lines); Task 33 (DEPLOYMENT, the stepper examples and README); Task 34 (B21, B22, the libs and server-libs CHANGELOGs) |
 | D82 (9) | *Review finding of 2026-10-06 (spec §17.35, amendment 28).* A config file the watcher cannot read (missing, permissions), parse (malformed YAML) or resolve (`resolveDocument` throws) is a failed reload: `ConfigReloadWatcher`'s `error` listener queues `_onWatcherError(err)` — `transactions.run('reload', 'full', …)` whose body rejects with `config reload failed, the server is not ready until a whole config applies — cannot read the config file: <message>` — so it applies nothing and sets the *config not applied* state in queue order with the `PUT`s and reloads around it; the listener logs `config_reload_failed` (`config_reload_error` is gone). `ConfigWatcher` (libs) unchanged | Task 4M (`config-reload-watcher.ts`; tests: `config-route-transactions.test.ts` — queue order against a `PUT`; `config-not-ready.test.ts` — malformed, unreadable and deleted file on a real server: `/health` 503, both chat routes 503, until a whole config applies); Task 33 (INTEGRATION, DEPLOYMENT, TROUBLESHOOTING); Task 34 (B17) |
 | D83 (10) | *Review finding of 2026-10-06 (spec §17.36, amendment 29).* A file reload validates the whole resolved document with the start's own validator before anything applies; only a document the server could start from applies. libs `ConfigWatcher` emits `reload` with the resolved document as a second argument (additive; chosen over re-reading the file in `_applyReload`: one read, no version skew between values and document, libs free of server rules). `ConfigReloadWatcher._applyReload(document)` first runs `resolveSmartServerConfig({}, document, env, { configPath })` (every section shape and field, `validateResolvedConfig`, the worker files; no command-line overrides), then reads the reload table's typed values with `validateStartConfig(document, {})`; its error fails the transaction (not ready, `config_reload_failed`). `validateReloadedConfig` is removed — one rule set (`checkReloadable` runs only inside `checkStartConfig`). `checkStartConfig` checks `agent` a mapping and `subagents` a list. Every reload test carries a whole document (`__tests__/reload-document.ts`). Not covered, raised for the user: the pipeline section's own parser runs at pipeline build, not on a reload |
+| D83 (11) | *Closes spec §17.36 (6) (spec §17.37, amendment 30, 2026-10-06); the plugin-factory rule is the spec's strict choice, for the user's review.* A file reload runs the selected pipeline's own section parser as a validation step, nothing built: the parse half of each built-in registry entry is `BUILTIN_PIPELINE_PARSERS` (server-libs `pipeline-sections.ts`, internal), which the start's factories call and `checkReloadedPipeline` calls in `_applyReload` right after `resolveSmartServerConfig`, over the reloaded `pipeline.config` with the reloaded `llm:` keys. A reloaded `pipeline.name` other than the running one fails (`pipeline change needs a restart`, the new pipeline's section checked too); a plugin factory has no validation entry, so a changed section fails and an unchanged one passes; an instance export reads no section. `ConfigReloadDeps.pipeline` is required. Valid sections are validated, not applied (next start) | Task 4M |
 
 ## Self-review (done while writing)
 
@@ -23215,3 +23585,4 @@ Left to the user by this scan, then decided (next section): the **30.1.0** `vect
 - **Rework for D83 (8), (9) (spec §17.34, amendment 27 — decided by the user on 2026-10-06).** Task 4M: libs `ConfigWatcherOptions` gains `resolveDocument` (additive, spec §3.8), applied in `_reload` to the parsed file before `_extractReloadable`, so libs stays in Task 4M's gate (`tsc -b` and its tests, two new cases); `ConfigReloadDeps` gains an optional `env` and the watcher is built with `resolveDocument: (doc) => resolveEnvVars(doc, deps.env ?? process.env)` — `resolveEnvVars` stays the one implementation in `yaml-loader.ts`, which imports nothing of the server, so no cycle (libs never imports server-libs). Where it runs was decided against `_applyReload`: the watcher picks fields on the document (`rag.store.type` gates the weights), so only a resolution before the pick reads the file as the start does — pinned by the parity test (`startConfigInput(loadYamlConfig(file, env))` equals the event). `config-fields.ts` gains `FieldCheck.closed` / `.list` / `.map` / `.refuse`, `CAST_NUMBER_RULES` (only the rules `START_NUMBER_RULES` lacks), the name lists, `CONTROLLER_BUDGET_RULES`, `present`, `checkRetry`, `checkToolSelection`, `checkMcpMaps`, `checkMcpEntry`, `checkSkills`; the resolvers (`resolveLlmSection` / `validateLlmMap`, `resolveMcpSection`, `resolveAgentSection`, `resolvePipelineSelection`, `resolveSmartServerConfig`'s `host` / `mode` / `pluginDir` / `plugins` / `skills`), `parseLinearSettings` / `parseDagSettings` / `parseControllerSettings` (each its own `FieldCheck`; `requireInt` goes) and `parseStepperCoordinatorConfig` (D83 (7)'s check moved up; the plan / node parsers take the check and a field path) read every cast field through it; `validateResolvedConfig`'s `mcp` type-name issue moves to the field check. Tests: three new cases in `config-field-validation.test.ts`; `stepper-config.test.ts`'s blank `knowledgeSeed` entries and `controller.test.ts`'s `'600000'` / `'1800000'` rows updated. The five stepper examples lose `url: ${LLM_URL:-}` (24 lines). **Cumulative compile:** every new export of `config-fields.ts` has a reader (`noUnusedLocals`): `present` / `checkRetry` / `checkToolSelection` / `checkMcpEntry` / `checkMcpMaps` / `MCP_KEYS` / `MCP_TYPES` / `TOOLS_VALIDATION_MODES` in `resolve-config-sections.ts`, `checkSkills` / `SERVER_MODES` in `config.ts`, `CAST_NUMBER_RULES` / `CONTROLLER_BUDGET_RULES` / `DAG_ERROR_STRATEGIES` / `FAIL_POLICIES` / `FINALIZER_TYPES` / `TARGET_STATE_STRATEGIES` in `pipeline-settings.ts`; the module-local lists (`MCP_ENTRY_TYPES`, `MCP_ENTRY_KEYS`, `SKILLS_TYPES`, `RETRY_KEYS`, `TOOL_SELECTION_STRATEGIES`) are read by the section checks; `config-fields.ts`'s new import from `smart-server.ts` is `import type` (erased — no runtime cycle); `ConfigReloadDeps.env` is optional, so `smart-server.ts`, the weights test and Task 23A's harness compile unchanged; `SmartServerMode` stays imported in `config.ts` only if still read. Task 23A's, 4O's and 4Q's gates are unchanged (none reads a changed signature: the section parsers keep theirs).
 - **Rework for D82 (9) and the `FieldCheck` order (review findings of 2026-10-06 — D82 (9) is spec §17.35, amendment 28; the order is a plan fix under D83 (1), "every invalid field named in one error", with no spec change).** Task 4M: (1) `ConfigReloadWatcher`'s `error` listener no longer only logs `config_reload_error`: it queues `_onWatcherError(err)`, a reload transaction (scope `'full'`) that rejects naming the read / parse / resolve error — a malformed, unreadable or deleted file now leaves the server not ready (in queue order with `PUT`s) until a whole config applies, logged `config_reload_failed`; four test cases (one white-box ordering case in `config-route-transactions.test.ts`, three real-server cases in `config-not-ready.test.ts`) and two gate lines. (2) Every `FieldCheck` reader finishes after its last checked field, and `done` is the only way its checked values leave it: the plan had told the pipeline parsers to call `check.done(undefined)` before a return literal that still evaluated checks (`parseLinearSettings`' three fields, `parseDagSettings`' `stateOracle` / `maxRoundTrips`, `parseControllerSettings`' three blocks) — an invalid value recorded after `done` and its default returned. The same order bug was in `parseSkillPluginsConfig` (`strict` and `dimension` read in the return literal, the embedder's `provider` / `model` checked after `done`); `parseStepperCoordinatorConfig` (`done` after the last field) and `resolveSmartServerConfig` (`check.done(own)`) were already in order, and both now return through `done`'s value too. Each parser computes every checked field into locals, then `return check.done(result)` (linear, DAG, controller) or `const v / valid = check.done(…)` before its cross-field rules (skillPlugins, stepper, the start config); `FieldCheck` refuses an issue recorded after `done` (a plain `Error` naming the field); a gate line forbids `done(undefined)`; one new test case (each linear field, one field per other parser, the late-check refusal). **Cumulative compile:** `_onWatcherError` is private and read by the listener; no signature changes (`parseSkillEmbedderAsymmetric` is module-local and gains the checked `provider`); the test file imports `FieldCheck` / `START_NUMBER_RULES`, both already exported by `config-fields.ts`.
 - **Rework for D83 (10) (spec §17.36, amendment 29 — review finding of 2026-10-06: the reload validated only the extracted subset).** Task 4M: libs `ConfigWatcher` emits the resolved document as `reload`'s second argument; `ConfigReloadWatcher`'s listener passes it, `_onReload(document)` / `_applyReload(document)` run `resolveSmartServerConfig` over it, then `validateStartConfig` for the values to apply; `validateReloadedConfig` removed; `checkStartConfig` gains the `agent` / `subagents` shapes; a new test helper `__tests__/reload-document.ts` (`LLM_SECTION`, `reloadDocument`, `reloadYaml`, `emitReload`), used by every reload test (`config-reload-failure`, `config-reload-weights`, `config-route-transactions`, `config-not-ready`, `config-field-validation` — its rule and grammar cases go through `validateStartConfig`; `prompts` / `circuitBreaker` `null` dropped from the invalid lists: a key with no value is absent on both paths); one new case in `config-field-validation.test.ts` and one in libs `config-watcher.test.ts`; gates updated. Task 23A: `WorkerInternals._configReload._onReload(document)`, its four reloads and `config-reload-entry.test.ts` pass `reloadDocument(…)` / `emitReload(…)`. Task 33: DEPLOYMENT / INTEGRATION — a reload checks the whole file. Task 34: B23, the libs CHANGELOG. **Cumulative compile:** the event's second argument is additive (every one-parameter listener compiles); `validateStartConfig` gains a non-test caller; no export added to a package (the helper is a test file's, `config-fields.ts` stays internal).
+- **Rework for D83 (11) (spec §17.37, amendment 30 — closes §17.36 (6): the selected pipeline's section validated on a reload).** Task 4M: new internal `pipeline-sections.ts` (`BUILTIN_PIPELINE_PARSERS`, `BUILTIN_PIPELINE_SECTIONS`, `checkReloadedPipeline`); `smart-server.ts`'s registry calls the same parsers (`Record<BuiltinPipelineName, …>` — the compiler keeps the factories and the entries equal), `registerPipeline` records each plugin's entry, `_pipelineSections` / `_pipelineSelection`, the watcher's `pipeline` dep; `ConfigReloadDeps.pipeline` (required); `_applyReload` runs the check after `resolveSmartServerConfig`; `reload-document.ts` gains `runningPipeline` / `FLAT_PIPELINE`; every test watcher passes `pipeline`; one case in `config-field-validation.test.ts`, a new `pipeline-sections.test.ts`; gates and the commit line. Task 23A: `makeWatcher` passes `pipeline: FLAT_PIPELINE`. Task 33: DEPLOYMENT / INTEGRATION / TROUBLESHOOTING lines. Task 34: B24. **Cumulative compile:** the required dep is passed by every construction (the server and four test files); `smart-server.ts` drops the imports the moved code used; no package export added.
