@@ -109,6 +109,12 @@ export interface IProbabilityDecision {
     request: DecisionRequest,
     options?: CallOptions,
   ): Promise<Result<DecisionResult, DecisionError>>;
+  /**
+   * The provider's cheapest real check, with no inference when it has one
+   * (spec §17.43 D97): `true` when the model can answer. Optional: without it,
+   * a health probe makes one minimal call.
+   */
+  healthCheck?(options?: CallOptions): Promise<Result<boolean, DecisionError>>;
 }
 
 /** What a relevance decision judges: passages against one query. */
@@ -158,4 +164,10 @@ export interface IRelevanceDecision {
     request: RelevanceRequest,
     options?: CallOptions,
   ): Promise<Result<RelevanceResult, DecisionError>>;
+  /**
+   * The provider's cheapest real check, with no inference when it has one
+   * (spec §17.43 D97): `true` when the model can answer. Optional: without it,
+   * a health probe makes one minimal call.
+   */
+  healthCheck?(options?: CallOptions): Promise<Result<boolean, DecisionError>>;
 }

@@ -57,7 +57,10 @@ import { RagOrchestrator } from './agent/rag-orchestrator.js';
 import { normalizeRequestOptions } from './agent-request-options.js';
 import type { LlmClassifierConfig } from './classifier/llm-classifier.js';
 import { LlmClassifier } from './classifier/llm-classifier.js';
-import { buildAgentHealthSnapshot } from './health/agent-health.js';
+import {
+  buildAgentHealthSnapshot,
+  heldRerankers,
+} from './health/agent-health.js';
 import type { IMcpConnectionStrategy } from './interfaces/mcp-connection-strategy.js';
 
 export {
@@ -509,6 +512,7 @@ export class SmartAgent {
         llm: boolean;
         rag: boolean;
         mcp: { name: string; ok: boolean; error?: string }[];
+        reranker?: { name: string; ok: boolean; error?: string }[];
       },
       OrchestratorError
     >
@@ -530,6 +534,9 @@ export class SmartAgent {
         this.deps.ragStores,
         this.mcpToolRegistry.getActiveClients(),
         healthOptions,
+        // D97: the global reranker only when one was given (the default
+        // NoopReranker is absent by design), and every store-held one.
+        heldRerankers(this.deps.reranker, this.deps.ragStores),
       );
       return { ok: true, value: snapshot };
     } finally {

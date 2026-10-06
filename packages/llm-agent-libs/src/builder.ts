@@ -1282,13 +1282,20 @@ export class SmartAgentBuilder {
       let loadedPlugins: import('./plugins/types.js').LoadedPlugins | undefined;
       if (this._pluginLoader) {
         const plugins = await this._pluginLoader.load();
-        // Spec §10.5.8 S-6: a plugin that failed to load fails the build —
-        // never an agent missing the plugin's registrations.
+        // Spec §10.5.8 S-6 (amended by D96): a plugin the loader was told to
+        // load that failed fails the build — never an agent missing the
+        // plugin's registrations. A discovered file that did not load is
+        // reported, never fails the build.
         if (plugins.errors.length > 0) {
           throw new Error(
             `plugin loader: ${plugins.errors.length} plugin(s) failed to load: ` +
               plugins.errors.map((e) => `${e.file}: ${e.error}`).join('; '),
           );
+        }
+        for (const s of plugins.skipped ?? []) {
+          const message = `plugin_skipped: ${s.file}: ${s.error}`;
+          if (log) log.log({ type: 'warning', traceId: 'builder', message });
+          else console.warn(`[builder] ${message}`);
         }
         loadedPlugins = plugins;
         if (plugins.reranker && !this._reranker) {
@@ -1565,7 +1572,26 @@ export class SmartAgentBuilder {
       // Everything from here down (model validation was already done above)
       // can throw before a handle exists to own `close()`: stop every server
       // already registered in `closeFns` — via `withMcpServers` — on the
-      // ORIGINAL failure, then let that failure through unchanged.
+      // ORIGINAL failure, then let that failure through unchanged. The MCP
+      // connection strategy is disposed too, as close() would (spec §17.43
+      // D96: a failed build releases what it already took); a dispose failure
+      // is reported, never masks the original.
+      try {
+        await connectionStrategy?.dispose?.();
+      } catch (disposeErr) {
+        const message =
+          disposeErr instanceof Error ? disposeErr.message : String(disposeErr);
+        if (log)
+          log.log({
+            type: 'warning',
+            traceId: 'builder',
+            message: `build_failed_connection_strategy_dispose_failed: ${message}`,
+          });
+        else
+          console.warn(
+            `[builder] build_failed_connection_strategy_dispose_failed: ${message}`,
+          );
+      }
       await stopAll(closeFns);
       throw err;
     }

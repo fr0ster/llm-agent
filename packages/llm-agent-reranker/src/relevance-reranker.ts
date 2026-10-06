@@ -17,6 +17,7 @@ import {
   runInWaves,
   sortByScore,
 } from './batching.js';
+import { delegateHealth, minimalRerank } from './health.js';
 
 export interface RelevanceRerankerOptions {
   /**
@@ -96,6 +97,19 @@ export class RelevanceReranker implements IReranker {
       for (const s of value) score[idxs[s.index]] = s.score;
     }
     return { ok: true, value: sortByScore(results, score) };
+  }
+
+  /**
+   * The decision's own `healthCheck` when it has one, else one minimal score
+   * over one passage (spec §17.43 D97).
+   */
+  async healthCheck(options?: CallOptions): Promise<Result<boolean, RagError>> {
+    const decision = this.decision;
+    const check = decision.healthCheck;
+    if (check) {
+      return delegateHealth('decision', () => check.call(decision, options));
+    }
+    return minimalRerank(this, options);
   }
 
   /** One `score()` call, its answer checked (spec §5.2 items 3–4). */

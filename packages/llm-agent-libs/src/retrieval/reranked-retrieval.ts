@@ -38,7 +38,8 @@ export class RerankedRetrieval implements IRetrievalStrategy {
   private readonly overfetch: number;
 
   constructor(
-    private readonly reranker: IReranker,
+    /** Read-only, so the agent's health probe finds it (spec §17.43 D97). */
+    readonly reranker: IReranker,
     private readonly opts: { overfetch?: number; storeName?: string } = {},
   ) {
     this.overfetch = opts.overfetch ?? 2;
@@ -73,7 +74,8 @@ export class RerankAllRetrieval implements IRetrievalStrategy {
   readonly name = 'rerank-all';
 
   constructor(
-    private readonly reranker: IReranker,
+    /** Read-only, so the agent's health probe finds it (spec §17.43 D97). */
+    readonly reranker: IReranker,
     private readonly opts: { maxCandidates: number; storeName?: string },
   ) {
     assertPositiveInteger(

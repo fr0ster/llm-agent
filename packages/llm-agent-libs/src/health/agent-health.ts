@@ -1,14 +1,32 @@
-import type {
-  CallOptions,
-  ILlm,
-  IMcpClient,
-  IRag,
+import {
+  type CallOptions,
+  type ILlm,
+  type IMcpClient,
+  type IRag,
+  type IReranker,
+  type IRetrievalStrategy,
+  isRagDecorator,
+  type RagResult,
 } from '@mcp-abap-adt/llm-agent';
+import { StagedRetrieval } from '../collections/staged-retrieval.js';
+import {
+  RerankAllRetrieval,
+  RerankedRetrieval,
+} from '../retrieval/reranked-retrieval.js';
+import { StrategyRag } from '../retrieval/strategy-rag.js';
 
 export interface AgentHealthSnapshot {
   llm: boolean;
   rag: boolean;
   mcp: { name: string; ok: boolean; error?: string }[];
+  /** Every reranker the agent uses, named by its holders (D97). Absent when none. */
+  reranker?: { name: string; ok: boolean; error?: string }[];
+}
+
+/** A reranker the agent uses, and who holds it (`global`, `store:<key>`). */
+export interface HeldReranker {
+  name: string;
+  reranker: IReranker;
 }
 
 export type IAgentHealthProbe = (
@@ -16,13 +34,61 @@ export type IAgentHealthProbe = (
   ragStores: Record<string, IRag>,
   activeClients: IMcpClient[],
   options: CallOptions,
+  rerankers?: readonly HeldReranker[],
 ) => Promise<AgentHealthSnapshot>;
+
+/** The reranker a shipped retrieval strategy holds, if any (spec §17.43 D97). */
+function rerankerOf(strategy: IRetrievalStrategy): IReranker | undefined {
+  if (
+    strategy instanceof RerankedRetrieval ||
+    strategy instanceof RerankAllRetrieval ||
+    strategy instanceof StagedRetrieval
+  ) {
+    return strategy.reranker;
+  }
+  return undefined;
+}
+
+/**
+ * Every reranker the agent uses (spec §17.43 D97): the global one, when the
+ * agent was given one, and each one a store's retrieval strategy holds — found
+ * through the store's decorators. One instance held twice is listed once,
+ * naming both holders. A reranker wired into nothing is not here.
+ */
+export function heldRerankers(
+  globalReranker: IReranker | undefined,
+  ragStores: Record<string, IRag>,
+): HeldReranker[] {
+  const holders = new Map<IReranker, string[]>();
+  const hold = (r: IReranker, holder: string) => {
+    const names = holders.get(r);
+    if (names) {
+      if (!names.includes(holder)) names.push(holder);
+    } else holders.set(r, [holder]);
+  };
+  if (globalReranker) hold(globalReranker, 'global');
+  for (const [key, store] of Object.entries(ragStores)) {
+    let cur: IRag | undefined = store;
+    for (let depth = 0; cur && depth < 16; depth++) {
+      if (cur instanceof StrategyRag) {
+        const r = rerankerOf(cur.strategy);
+        if (r) hold(r, `store:${key}`);
+      }
+      cur = isRagDecorator(cur) ? cur.inner : undefined;
+    }
+  }
+  return [...holders].map(([reranker, names]) => ({
+    name: names.join(', '),
+    reranker,
+  }));
+}
 
 export const buildAgentHealthSnapshot: IAgentHealthProbe = async (
   mainLlm,
   ragStores,
   activeClients,
   options,
+  rerankers = [],
 ) => {
   const results: AgentHealthSnapshot = { llm: false, rag: false, mcp: [] };
   const signal = options?.signal;
@@ -31,7 +97,7 @@ export const buildAgentHealthSnapshot: IAgentHealthProbe = async (
   // The LLM, every store and every client are probed concurrently; each probe
   // is raced against the health signal, so one that ignores it cannot hold
   // the whole check (D72).
-  const [llmProbe, ragProbes, mcpProbes] = await Promise.all([
+  const [llmProbe, ragProbes, mcpProbes, rerankProbes] = await Promise.all([
     untilAborted(() => probeLlm(mainLlm, options), signal).then(
       (reason) => reason,
       (err: unknown) => errorText(err),
@@ -51,6 +117,13 @@ export const buildAgentHealthSnapshot: IAgentHealthProbe = async (
     Promise.allSettled(
       activeClients.map((client) =>
         untilAborted(() => probeMcpClient(client, options), signal),
+      ),
+    ),
+    // D97: every reranker the agent uses — `false`, `ok: false`, a rejection
+    // or no answer before the health signal is not OK, named by its holders.
+    Promise.allSettled(
+      rerankers.map((held) =>
+        untilAborted(() => probeReranker(held.reranker, options), signal),
       ),
     ),
   ]);
@@ -84,8 +157,40 @@ export const buildAgentHealthSnapshot: IAgentHealthProbe = async (
       ? probe.value
       : { name: 'mcp-client', ok: false, error: errorText(probe.reason) },
   );
+  if (rerankers.length > 0) {
+    results.reranker = rerankProbes.map((probe, i) => {
+      const name = rerankers[i].name;
+      const reason =
+        probe.status === 'fulfilled' ? probe.value : errorText(probe.reason);
+      return reason === undefined
+        ? { name, ok: true }
+        : { name, ok: false, error: reason };
+    });
+  }
   return results;
 };
+
+/** The one short candidate a minimal health rerank scores. */
+const HEALTH_CANDIDATE: RagResult = {
+  text: 'health check',
+  metadata: { id: 'health' },
+  score: 1,
+};
+
+/** `undefined` when the reranker works, else why not (D97). */
+async function probeReranker(
+  reranker: IReranker,
+  options: CallOptions,
+): Promise<string | undefined> {
+  if (reranker.healthCheck) {
+    const hc = await reranker.healthCheck(options);
+    if (hc.ok) return hc.value ? undefined : 'unhealthy';
+    return errorText(hc.error);
+  }
+  // A reranker without healthCheck: one minimal rerank over one candidate.
+  const r = await reranker.rerank('health check', [HEALTH_CANDIDATE], options);
+  return r.ok ? undefined : errorText(r.error);
+}
 
 /** `undefined` when the LLM works, else why not. */
 async function probeLlm(

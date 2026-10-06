@@ -33,6 +33,7 @@ export function emptyLoadedPlugins(): LoadedPlugins {
     pipelinePluginSources: new Map(),
     loadedFiles: [],
     errors: [],
+    skipped: [],
   };
 }
 

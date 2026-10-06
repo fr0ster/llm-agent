@@ -2,7 +2,8 @@
  * Spec §10.5.8 S-2–S-7 (D74, D75) — skills fail loud: the legacy orchestrator
  * returns a failing skill source's error; an unreadable skill directory or a
  * broken `SKILL.md` is a SkillError naming it; a skill that cannot be written
- * into the tools store, or a plugin loader error, fails `build()`; the runtime
+ * into the tools store, or a plugin loader `errors` entry (a plugin it was
+ * told to load — S-6 amended by D96), fails `build()`; the runtime
  * skills recall throws on an incompatible generation and rethrows an abort.
  * Kept (absent by design): a default skill path that does not exist, a
  * directory without `SKILL.md`.
@@ -302,7 +303,7 @@ describe('S-5 / S-6 builder', () => {
     );
   });
 
-  it('S-6: a plugin loader that reports errors fails build(), naming every file', async () => {
+  it('S-6 (D96): a plugin loader that reports errors (plugins it was told to load) fails build(), naming every file', async () => {
     const b = new SmartAgentBuilder({})
       .withMainLlm(makeLlm([{ content: 'ok' }]))
       .withPluginLoader({

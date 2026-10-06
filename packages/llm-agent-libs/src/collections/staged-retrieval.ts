@@ -200,6 +200,12 @@ export class StagedRetrieval implements IRetrievalStrategy {
   protected readonly cut: IItemCut;
   protected readonly pool: ICandidatePool;
 
+  /** The reranker this strategy holds, read-only — the agent's health probe
+   *  finds it here (spec §17.43 D97). Absent without `rerank`. */
+  get reranker(): IReranker | undefined {
+    return this.options.rerank?.reranker;
+  }
+
   constructor(readonly options: StagedRetrievalOptions) {
     assertPositiveInteger(
       'StagedRetrieval',

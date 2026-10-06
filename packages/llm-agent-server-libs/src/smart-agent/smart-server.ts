@@ -587,6 +587,7 @@ import {
   buildSkillHostFromConfig,
   initSkillHost,
 } from './skill-plugins-host-factory.js';
+import { StartReleases } from './start-releases.js';
 
 export {
   generateConfigTemplate,
@@ -1141,26 +1142,28 @@ export class SmartServer {
   }
 
   async start(): Promise<SmartServerHandle> {
-    // Startup pg-pool cleanup must span the ENTIRE start(): host.load() (via
-    // initSkillHost) creates pg pools, but fallible work AFTER it — makeRag,
-    // builder.build(), server.listen — can still throw/reject before the handle
-    // is returned and `closeFns` becomes callable. Without this guard those
-    // pools would leak open sockets and block process exit. initSkillHost keeps
-    // its own catch-cleanup (it clears the array, so this finally then no-ops —
-    // no double-end; pool end() is idempotent regardless). No-op when
-    // skillPlugins is unconfigured (_skillPgPools stays empty).
-    let started = false;
+    // Every failure of the start — the infra build, the pipeline registry, a
+    // required plugin, server.listen — releases what the start already took
+    // (MCP connections, workers, pg pools, session lifecycle, config watcher)
+    // through ONE path before it rejects (spec §17.43 D96): `_withStartRelease`.
+    // The handle is produced only once server.listen succeeds.
+    return this._start();
+  }
+
+  /**
+   * The ONE release path of a start (spec §17.43 D96): `run` registers each
+   * resource it takes on `taken`; if `run` fails, every registered resource is
+   * released, newest first, and the original failure is rethrown unchanged.
+   */
+  private async _withStartRelease<T>(
+    run: (taken: StartReleases) => Promise<T>,
+  ): Promise<T> {
+    const taken = new StartReleases();
     try {
-      // Single success path: the handle is only produced once server.listen
-      // succeeds (a listen error rejects this promise → finally cleans up).
-      const handle = await this._start();
-      started = true;
-      return handle;
-    } finally {
-      if (!started) {
-        await Promise.allSettled(this._skillPgPools.map((p) => p.end()));
-        this._skillPgPools = [];
-      }
+      return await run(taken);
+    } catch (err) {
+      await taken.releaseAll(this.cfg.log ?? this.noop);
+      throw err;
     }
   }
 
@@ -1174,7 +1177,7 @@ export class SmartServer {
    * coordinator is built only on the embeddable path (see `_buildEmbeddedAgent`),
    * so a plain `start()` no longer pays for a coordinator it never serves.
    */
-  private async _buildInfra(): Promise<{
+  private async _buildInfra(taken: StartReleases): Promise<{
     close: () => Promise<void>;
     chat: SmartAgentHandle['chat'];
     streamChat: SmartAgentHandle['streamChat'];
@@ -1192,6 +1195,16 @@ export class SmartServer {
       log: (e) => log(e as unknown as Record<string, unknown>),
     };
     this._fileLogger = fileLogger;
+    // pg pools the skill plugin-host creates: ended if the start fails later
+    // (initSkillHost ends them itself when it fails, and empties the array).
+    taken.add('skill pg pools', async () => {
+      const ended = await Promise.allSettled(
+        this._skillPgPools.map((p) => p.end()),
+      );
+      this._skillPgPools = [];
+      const failed = ended.find((r) => r.status === 'rejected');
+      if (failed) throw failed.reason;
+    });
 
     // ---- Composition root: resolve config → interfaces --------------------
 
@@ -1280,27 +1293,59 @@ export class SmartServer {
         mcpClients: plugins.mcpClients.length,
       });
     }
+    // Spec §17.43 D96: a discovered file in a plugin directory that did not
+    // load is reported, not an error — the server starts.
+    const skipped = plugins.skipped ?? [];
+    if (skipped.length > 0) {
+      log({ event: 'plugin_errors', errors: skipped });
+    }
+    // A plugin a (consumer's) loader was told to load is required: its
+    // failure fails the start, naming it.
     if (plugins.errors.length > 0) {
-      log({ event: 'plugin_errors', errors: plugins.errors });
+      throw new Error(
+        plugins.errors
+          .map((e) => `plugin '${e.file}' could not be loaded: ${e.error}`)
+          .join('; '),
+      );
     }
 
     // ---- Explicit plugin specifiers (`plugins: [...]`) -------------------
     // Dynamically import each module specifier and merge its FULL
     // PluginExports (pipelinePlugins, embedderFactories, mcpClients, …) into
     // the same LoadedPlugins object. Done BEFORE the embedder/RAG build below
-    // so plugin-supplied embedder factories are visible.
+    // so plugin-supplied embedder factories are visible. A specifier is a
+    // REQUIRED plugin (D96): one that cannot be resolved or imported, whose
+    // exports are refused, or that registers nothing fails the start.
     const requireFromCwd = createRequire(`${process.cwd()}/`);
     for (const spec of this.cfg.plugins ?? []) {
-      // Resolve to an ABSOLUTE path against the USER's cwd, then import via
-      // a file URL. A bare `await import('./x.js')` would resolve relative to
-      // smart-server.js, not the user's cwd.
-      const abs = spec.startsWith('.')
-        ? pathResolve(process.cwd(), spec)
-        : spec.startsWith('/')
-          ? spec
-          : requireFromCwd.resolve(spec);
-      const mod = (await import(pathToFileURL(abs).href)) as PluginExports;
+      const notLoaded = (cause: string, err?: unknown) =>
+        new Error(
+          `plugin '${spec}' could not be loaded: ${cause}`,
+          err === undefined ? undefined : { cause: err },
+        );
+      let mod: PluginExports;
+      try {
+        // Resolve to an ABSOLUTE path against the USER's cwd, then import via
+        // a file URL. A bare `await import('./x.js')` would resolve relative
+        // to smart-server.js, not the user's cwd.
+        const abs = spec.startsWith('.')
+          ? pathResolve(process.cwd(), spec)
+          : spec.startsWith('/')
+            ? spec
+            : requireFromCwd.resolve(spec);
+        mod = (await import(pathToFileURL(abs).href)) as PluginExports;
+      } catch (err) {
+        throw notLoaded(err instanceof Error ? err.message : String(err), err);
+      }
+      const before = plugins.errors.length;
       const registered = mergePluginExports(plugins, mod, spec);
+      const refused = plugins.errors.splice(before);
+      if (refused.length > 0) {
+        throw notLoaded(refused.map((e) => e.error).join('; '));
+      }
+      if (!registered) {
+        throw notLoaded('it exports no plugin registration');
+      }
       log({ event: 'plugin_specifier_loaded', spec, registered });
     }
 
@@ -1478,6 +1523,9 @@ export class SmartServer {
           injected,
         ),
     });
+    // Worker handles (their MCP clients) are closed if the start fails later.
+    const workers = this._workers;
+    taken.add('workers', () => workers.drain());
 
     // Resolve the embedder ONCE so the same instance feeds both makeRag and the
     // subagent context-builder's toolSource (#137). See resolve-agent-embedder.
@@ -1773,6 +1821,7 @@ export class SmartServer {
     // pipeline's buildServerCtx resolves its dep-sources.)
 
     const agentHandle = await builder.build();
+    taken.add('startup agent', () => agentHandle.close());
     const {
       agent: smartAgent,
       chat,
@@ -1927,6 +1976,10 @@ export class SmartServer {
       void lifecycle.evictIdle();
     }, sweepMs);
     sweep.unref?.();
+    taken.add('session lifecycle', async () => {
+      clearInterval(sweep);
+      await lifecycle.disposeAll();
+    });
     closeFns.push(async () => {
       clearInterval(sweep);
       await lifecycle.disposeAll();
@@ -1993,6 +2046,7 @@ export class SmartServer {
         ragStores,
       });
       reloadWatcher.start();
+      taken.add('config watcher', () => reloadWatcher.stop());
       closeFns.push(() => reloadWatcher.stop());
     }
 
@@ -2042,36 +2096,32 @@ export class SmartServer {
     agent: ISmartAgent;
     close: () => Promise<void>;
   }> {
-    const infra = await this._buildInfra();
-    // If the pipeline-instance build throws, the infra (LLM clients, MCP, skill
-    // host, pg pools) is already live — tear it down before propagating so a
-    // failed embedded build never leaks the infra.
-    let inst: IPipelineInstance;
-    try {
-      inst = await this.buildPipelineInstance({
+    // The start's one release path (D96): if the pipeline-instance build — or
+    // the infra build itself — fails, what was taken (MCP, workers, skill
+    // host pg pools, …) is released before the failure propagates.
+    return this._withStartRelease(async (taken) => {
+      const infra = await this._buildInfra(taken);
+      const inst: IPipelineInstance = await this.buildPipelineInstance({
         sessionId: 'embedded',
         parts: this._embeddedSessionParts(
           infra.globalMcpClients,
           infra.globalRagRegistry,
         ),
       });
-    } catch (e) {
-      await infra.close().catch(() => {});
-      throw e;
-    }
-    return {
-      // PUBLIC embeddable agent = the coordinated pipeline instance's agent.
-      agent: inst.agent,
-      // Dispose the pipeline instance FIRST, then the shared infra. `finally`
-      // guarantees `infra.close()` runs even if `inst.close()` throws.
-      close: async () => {
-        try {
-          await inst.close();
-        } finally {
-          await infra.close();
-        }
-      },
-    };
+      return {
+        // PUBLIC embeddable agent = the coordinated pipeline instance's agent.
+        agent: inst.agent,
+        // Dispose the pipeline instance FIRST, then the shared infra. `finally`
+        // guarantees `infra.close()` runs even if `inst.close()` throws.
+        close: async () => {
+          try {
+            await inst.close();
+          } finally {
+            await infra.close();
+          }
+        },
+      };
+    });
   }
 
   /**
@@ -2101,8 +2151,12 @@ export class SmartServer {
     };
   }
 
-  private async _start(): Promise<SmartServerHandle> {
-    const built = await this._buildInfra();
+  private _start(): Promise<SmartServerHandle> {
+    return this._withStartRelease((taken) => this._listen(taken));
+  }
+
+  private async _listen(taken: StartReleases): Promise<SmartServerHandle> {
+    const built = await this._buildInfra(taken);
     const {
       chat,
       streamChat,

@@ -78,7 +78,7 @@ export function makePgPool(
   let poolPromise: Promise<RawPgPool> | undefined;
   let ensured: Promise<void> | undefined;
   // The real `pg.Pool` throws on a second `.end()`. Overlapping cleanup paths
-  // (initSkillHost on failure + the start() finally + closeFns) may all reach
+  // (initSkillHost on failure + the failed start's release + closeFns) may all reach
   // here, so guard so a second end() is a no-op rather than a throw.
   let ended = false;
 

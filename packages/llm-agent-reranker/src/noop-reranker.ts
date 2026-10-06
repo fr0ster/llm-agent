@@ -14,4 +14,11 @@ export class NoopReranker implements IReranker {
   ): Promise<Result<RagResult[], RagError>> {
     return { ok: true, value: results };
   }
+
+  /** Nothing to reach: always works (spec §17.43 D97). */
+  async healthCheck(
+    _options?: CallOptions,
+  ): Promise<Result<boolean, RagError>> {
+    return { ok: true, value: true };
+  }
 }

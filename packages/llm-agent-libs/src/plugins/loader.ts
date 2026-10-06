@@ -3,7 +3,10 @@
  *
  * Scans directories and dynamically imports `.js`, `.mjs`, and `.ts` files.
  * Each file is expected to export named registrations matching {@link PluginExports}.
- * Invalid exports are silently ignored; import errors are collected in `errors`.
+ * A file in a directory is DISCOVERED, not required (spec §17.43 D96): one that
+ * fails to import, or whose exports are refused, is reported in
+ * `LoadedPlugins.skipped` and logged — never in `errors`, which holds only the
+ * plugins a loader was told to load.
  *
  * ## Load order
  *
@@ -63,6 +66,8 @@ export class FileSystemPluginLoader implements IPluginLoader {
 
   async load(): Promise<LoadedPlugins> {
     const result = emptyLoadedPlugins();
+    const skipped: Array<{ file: string; error: string }> = [];
+    result.skipped = skipped;
 
     for (const dir of this.dirs) {
       const resolved = resolve(dir);
@@ -76,24 +81,32 @@ export class FileSystemPluginLoader implements IPluginLoader {
         files = readdirSync(resolved)
           .filter((f) => PLUGIN_EXTENSIONS.has(extname(f)))
           .sort();
-      } catch {
-        this.log?.(`[plugins] Cannot read directory: ${resolved}`);
+      } catch (err) {
+        // Its files are discovered, not required: reported like one (D96).
+        const error = `cannot read directory: ${err instanceof Error ? err.message : String(err)}`;
+        skipped.push({ file: resolved, error });
+        this.log?.(`[plugins] Skipped ${resolved}: ${error}`);
         continue;
       }
 
       for (const file of files) {
         const filePath = resolve(resolved, file);
+        const skip = (error: string) => {
+          skipped.push({ file: filePath, error });
+          this.log?.(`[plugins] Skipped ${filePath}: ${error}`);
+        };
         try {
           const fileUrl = pathToFileURL(filePath).href;
           const mod = (await import(fileUrl)) as PluginExports;
+          const before = result.errors.length;
           const registered = mergePluginExports(result, mod, filePath);
+          // A refused export of a discovered file is reported, not an error (D96).
+          for (const e of result.errors.splice(before)) skip(e.error);
           if (registered) {
             this.log?.(`[plugins] Loaded: ${filePath}`);
           }
         } catch (err) {
-          const message = err instanceof Error ? err.message : String(err);
-          result.errors.push({ file: filePath, error: message });
-          this.log?.(`[plugins] Failed to load ${filePath}: ${message}`);
+          skip(err instanceof Error ? err.message : String(err));
         }
       }
     }

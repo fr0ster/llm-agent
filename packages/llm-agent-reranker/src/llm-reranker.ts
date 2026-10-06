@@ -8,6 +8,7 @@ import {
   type Result,
 } from '@mcp-abap-adt/llm-agent';
 import { assertPositiveInteger } from './assert-positive-integer.js';
+import { delegateHealth, minimalRerank } from './health.js';
 import { PASSAGE_QUESTION } from './probability-reranker.js';
 
 const DEFAULT_BATCH_SIZE = 20;
@@ -118,6 +119,19 @@ export class LlmReranker implements IReranker {
       .sort((a, b) => b.r.score - a.r.score || a.i - b.i)
       .map((x) => x.r);
     return { ok: true, value: reranked };
+  }
+
+  /**
+   * The LLM's own `healthCheck` when it has one, else one minimal rerank call
+   * (spec §17.43 D97).
+   */
+  async healthCheck(options?: CallOptions): Promise<Result<boolean, RagError>> {
+    const llm = this.llm;
+    const check = llm.healthCheck;
+    if (check) {
+      return delegateHealth('LLM', () => check.call(llm, options));
+    }
+    return minimalRerank(this, options);
   }
 
   private async _scoreBatch(

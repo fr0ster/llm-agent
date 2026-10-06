@@ -18,6 +18,7 @@ import {
   runInWaves,
   sortByScore,
 } from './batching.js';
+import { delegateHealth, minimalRerank } from './health.js';
 
 export const PROBABILITY_RERANK_DEFAULT_TASK =
   'Judge whether this passage helps answer the query given as the state.';
@@ -124,6 +125,19 @@ export class ProbabilityReranker implements IReranker {
       probability.push(a.probability);
     }
     return { ok: true, value: sortByScore(results, probability) };
+  }
+
+  /**
+   * The decision's own `healthCheck` when it has one, else one minimal decide
+   * over one question (spec §17.43 D97).
+   */
+  async healthCheck(options?: CallOptions): Promise<Result<boolean, RagError>> {
+    const decision = this.decision;
+    const check = decision.healthCheck;
+    if (check) {
+      return delegateHealth('decision', () => check.call(decision, options));
+    }
+    return minimalRerank(this, options);
   }
 
   private async runBatch(
