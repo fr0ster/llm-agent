@@ -11,8 +11,8 @@ export type NormalizedLlmMap = { main: SmartServerLlmConfig } & LlmConfigMap;
  * `credentialRef`-only detection silently misclassified those configs as a
  * "map" shape.
  */
-function isFlatLlmConfig(input: SmartServerLlmConfig | LlmConfigMap): boolean {
-  const flat = input as Partial<SmartServerLlmConfig>;
+export function isFlatLlmConfig(input: object): boolean {
+  const flat = input as Partial<Record<keyof SmartServerLlmConfig, unknown>>;
   return (
     typeof flat.provider === 'string' ||
     typeof flat.credentialRef === 'string' ||

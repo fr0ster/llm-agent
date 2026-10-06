@@ -498,3 +498,54 @@ test('D82 (8): while ready a partial PUT works as before, and one that names not
   assert.equal(h.drains.length, 1, 'no transaction ran');
   assert.equal(h.queue.notApplied, undefined);
 });
+
+test('V10: a model probe that REJECTS answers 400 naming the model, as a probe that returns ok:false — nothing applied, the server ready', async () => {
+  const queue = new ConfigTransactionQueue();
+  const applied: string[] = [];
+  const agent = {
+    applyConfigUpdate: () => {
+      applied.push('applyConfigUpdate');
+    },
+    reconfigure: () => {
+      applied.push('reconfigure');
+    },
+    getActiveConfig: () => ({}),
+    getAgentConfig: () => ({}),
+  } as unknown as SmartAgent;
+  const target: IConfigUpdateTarget = {
+    modelResolver: {
+      resolve: async () =>
+        ({
+          chat: () => Promise.reject(new Error('connect ECONNREFUSED')),
+        }) as unknown as ILlm,
+    },
+    setMainLlm: (llm) => {
+      applied.push('setMainLlm');
+      return llm;
+    },
+    setClassifierLlm: (llm) => llm,
+    setHelperLlm: (llm) => llm,
+    mirrorAgentCfg: () => {
+      applied.push('mirrorAgentCfg');
+    },
+    drainWorkers: async () => {},
+    invalidateSessions: async () => {},
+    transactions: queue,
+  };
+  const { reply, res } = recordingResponse();
+  await handleConfigUpdate(
+    jsonRequest(JSON.stringify({ models: { mainModel: 'gone-model' } })),
+    res,
+    agent,
+    target,
+  );
+  assert.equal(reply.status, 400);
+  const error = JSON.parse(reply.body ?? '{}').error;
+  assert.equal(error.type, 'invalid_request_error');
+  assert.equal(
+    error.message,
+    'model "gone-model" is not available: connect ECONNREFUSED',
+  );
+  assert.deepEqual(applied, []);
+  assert.equal(queue.notApplied, undefined);
+});

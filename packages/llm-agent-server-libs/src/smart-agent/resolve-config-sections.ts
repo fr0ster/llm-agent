@@ -30,6 +30,7 @@ import {
   type SmartServerDecisionConfig,
   type SmartServerRetrievalConfig,
 } from './decision-config.js';
+import { isFlatLlmConfig } from './llm-config-map.js';
 import type {
   BuiltInEmbedderProvider,
   SmartServerEmbedderConfig,
@@ -57,7 +58,9 @@ export function resolveLlmSection(
   if (!present(raw)) return undefined;
   const s = check.section('llm', raw);
   if (s === undefined) return undefined; // recorded — done() throws before the config is used
-  if (typeof s.provider !== 'string') return validateLlmMap(s, check);
+  // The one flat-vs-map discriminator (normalizeLlmConfig's, the validator's):
+  // a flat block that lost its provider is still flat — `llm.provider: required`.
+  if (!isFlatLlmConfig(s)) return validateLlmMap(s, check);
   return {
     provider: s.provider as
       | 'deepseek'
@@ -207,7 +210,12 @@ function whenThrottledOption(
   path: string,
   check: FieldCheck,
 ): { whenThrottled?: IThrottleStrategy } {
-  if (value === undefined || value === null) return {};
+  if (value === undefined) return {};
+  // Spec D83 (13): a key written with no value is that, never "no strategy".
+  if (value === null) {
+    check.refuse(path, 'has no value', value);
+    return {};
+  }
 
   const named = (name: unknown, options: { maxAttempts?: number } = {}) => {
     if (name === 'report') {
@@ -239,7 +247,8 @@ function whenThrottledOption(
   const raw = value as Record<string, unknown>;
   const options: { maxAttempts?: number } = {};
   for (const [key, v] of Object.entries(raw)) {
-    if (key === 'strategy' || v === undefined || v === null) continue;
+    // Spec D83 (13): a `null` reaches its check (`has no value`), never skipped.
+    if (key === 'strategy' || v === undefined) continue;
     // A count, not a duration: fractional attempts do not exist, and zero of
     // them is not "none" — the first attempt is included in the total, so 0
     // behaves as 1 and 1.5 as 2. Silently meaning something other than what it
@@ -252,6 +261,10 @@ function whenThrottledOption(
     throw new Error(
       `Unknown ${path} key '${key}'. Known keys: strategy, maxAttempts.`,
     );
+  }
+  if (raw.strategy === null) {
+    check.refuse(`${path}.strategy`, 'has no value', null);
+    return {};
   }
   return { whenThrottled: named(raw.strategy, options) };
 }
@@ -275,9 +288,11 @@ function resolveRagStore(
     s[k] !== undefined ? check.text(`rag.store.${k}`, s[k]) : undefined;
   const num = (k: string, rule: (typeof R)[keyof typeof R]) =>
     s[k] !== undefined ? check.number(`rag.store.${k}`, rule, s[k]) : undefined;
+  // Spec D83 (9): the override is checked like `args.host`, never cast.
   const collectionName =
-    (args['rag-collection-name'] as string | undefined) ??
-    text('collectionName');
+    args['rag-collection-name'] !== undefined
+      ? check.text('args.rag-collection-name', args['rag-collection-name'])
+      : text('collectionName');
   const ref =
     typeof s.credentialRef === 'string'
       ? { credentialRef: s.credentialRef }
@@ -628,7 +643,12 @@ export function resolvePipelineSelection(
   // (built-ins) or by the plugin's factory (dynamic). A bare string
   // (`pipeline: stepper`) is accepted as shorthand for `{ name: <string> }`.
   const raw = (yaml as { pipeline?: unknown }).pipeline;
-  if (raw === undefined || raw === null) return {};
+  if (raw === undefined) return {};
+  // Spec D83 (13): `pipeline:` with no value is that, never "no pipeline".
+  if (raw === null) {
+    check.refuse('pipeline', 'has no value', raw);
+    return {};
+  }
   if (typeof raw === 'string') return { pipeline: { name: raw } };
   const obj = raw as { name?: unknown; config?: unknown };
   if (typeof obj.name !== 'string') {

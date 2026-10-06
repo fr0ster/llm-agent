@@ -216,28 +216,37 @@ export class ConfigReloadWatcher implements IConfigReloadWatcher {
     if (valid.classificationEnabled !== undefined)
       agentUpdate.classificationEnabled = valid.classificationEnabled;
     if (Object.keys(agentUpdate).length > 0) {
-      this.deps.applyAgentUpdate(agentUpdate);
-      // Mirror onto `this.cfg.agent` so freshly-built session graphs
-      // (which read `this.cfg.agent` in `buildSessionAgent`) observe the
-      // valid. Deep-merge to preserve untouched startup fields.
-      // Note: `agentUpdate` includes flat fields ONLY whitelisted by
-      // `AGENT_CONFIG_FIELDS` plus the two prompt fields, which we route
-      // into `this.cfg.prompts` separately below.
-      const agentPatch: Record<string, unknown> = {};
-      for (const k of Object.keys(agentUpdate)) {
-        if (k !== 'ragTranslatePrompt' && k !== 'historySummaryPrompt') {
-          agentPatch[k] = agentUpdate[k];
+      // A throw from the agent update or the mirror fails the transaction under
+      // the queue's prefix, naming the step — never the bare error as the reason.
+      try {
+        this.deps.applyAgentUpdate(agentUpdate);
+        // Mirror onto `this.cfg.agent` so freshly-built session graphs
+        // (which read `this.cfg.agent` in `buildSessionAgent`) observe the
+        // update. Deep-merge to preserve untouched startup fields.
+        // Note: `agentUpdate` includes flat fields ONLY whitelisted by
+        // `AGENT_CONFIG_FIELDS` plus the two prompt fields, which we route
+        // into `this.cfg.prompts` separately below.
+        const agentPatch: Record<string, unknown> = {};
+        for (const k of Object.keys(agentUpdate)) {
+          if (k !== 'ragTranslatePrompt' && k !== 'historySummaryPrompt') {
+            agentPatch[k] = agentUpdate[k];
+          }
         }
+        const ragTranslate =
+          valid.prompts?.ragTranslate !== undefined
+            ? valid.prompts.ragTranslate
+            : undefined;
+        const historySummary =
+          valid.prompts?.historySummary !== undefined
+            ? valid.prompts.historySummary
+            : undefined;
+        this.deps.mirrorCfg(agentPatch, { ragTranslate, historySummary });
+      } catch (err) {
+        throw new Error(
+          `config reload failed, the server is not ready until a whole config applies — apply: ${String(err)}`,
+          { cause: err },
+        );
       }
-      const ragTranslate =
-        valid.prompts?.ragTranslate !== undefined
-          ? valid.prompts.ragTranslate
-          : undefined;
-      const historySummary =
-        valid.prompts?.historySummary !== undefined
-          ? valid.prompts.historySummary
-          : undefined;
-      this.deps.mirrorCfg(agentPatch, { ragTranslate, historySummary });
     }
     // Per-session graphs (built by SessionGraphFactory) captured the OLD
     // config and the OLD cached worker LLM set: drain the workers (Fix #21:
@@ -245,7 +254,7 @@ export class ConfigReloadWatcher implements IConfigReloadWatcher {
     // session graph so the next build reads the just-applied config.
     // Both run (each settles), then one verdict — a failure is never swallowed
     // into "applied" (spec V6, D77). Called synchronously, as before, so the
-    // drain starts in the same turn as the valid.
+    // drain starts in the same turn as the update.
     const started = (f: () => Promise<void>): Promise<void> => {
       try {
         return f();
@@ -280,11 +289,18 @@ export class ConfigReloadWatcher implements IConfigReloadWatcher {
     }
     // Apply RAG weight updates
     if (valid.vectorWeight !== undefined || valid.keywordWeight !== undefined) {
-      for (const store of Object.values(this.deps.ragStores)) {
-        findWeightedStore(store)?.updateWeights({
-          vectorWeight: valid.vectorWeight,
-          keywordWeight: valid.keywordWeight,
-        });
+      try {
+        for (const store of Object.values(this.deps.ragStores)) {
+          findWeightedStore(store)?.updateWeights({
+            vectorWeight: valid.vectorWeight,
+            keywordWeight: valid.keywordWeight,
+          });
+        }
+      } catch (err) {
+        throw new Error(
+          `config reload failed, the server is not ready until a whole config applies — weights: ${String(err)}`,
+          { cause: err },
+        );
       }
     }
   }

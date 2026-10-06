@@ -263,16 +263,24 @@ export async function handleConfigUpdate(
       ];
       for (const [name, llm] of checks) {
         if (!llm) continue;
-        const probe = await llm.chat(
-          [{ role: 'user', content: 'Reply with OK' }],
-          undefined,
-          { maxTokens: 10 },
-        );
-        if (!probe.ok) {
+        // A probe that rejects is the model not answering, as one that returns
+        // ok:false — the same 400 naming the model, never the catch-all 500.
+        let failure: string | undefined;
+        try {
+          const probe = await llm.chat(
+            [{ role: 'user', content: 'Reply with OK' }],
+            undefined,
+            { maxTokens: 10 },
+          );
+          if (!probe.ok) failure = probe.error.message;
+        } catch (err) {
+          failure = err instanceof Error ? err.message : String(err);
+        }
+        if (failure !== undefined) {
           res.writeHead(400, { 'Content-Type': 'application/json' });
           res.end(
             jsonError(
-              `model "${name}" is not available: ${probe.error.message}`,
+              `model "${name}" is not available: ${failure}`,
               'invalid_request_error',
             ),
           );

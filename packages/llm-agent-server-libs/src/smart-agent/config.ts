@@ -90,6 +90,8 @@ export interface ResolveConfigArgs {
   'prompt-classifier'?: string | boolean;
   'agent-show-reasoning'?: boolean;
   'log-dir'?: string;
+  /** The CLI's log file — over `log` and `env.LOG_FILE`; validated, read back as `logFile`. */
+  'log-file'?: string | boolean;
   'plugin-dir'?: string;
   mode?: string | boolean;
 }
@@ -131,7 +133,8 @@ function resolveWorkerConfig(
       requireLlmSection: false,
     }),
   );
-  const { llm: _none, ...rest } = resolved;
+  // The log file is the process's (the CLI's), never a worker's.
+  const { llm: _none, logFile: _logFile, ...rest } = resolved;
   return { ...rest, llm };
 }
 
@@ -257,12 +260,22 @@ export interface ResolveSmartServerConfigOptions {
   requireLlmSection?: boolean;
 }
 
+/**
+ * The start config `resolveSmartServerConfig` returns: the server's config
+ * without its logger, and the validated log file the CLI opens for it
+ * (`undefined` when none is written — the CLI's default applies). Internal —
+ * not a new exported name.
+ */
+type ResolvedSmartServerConfig = Omit<SmartServerConfig, 'log'> & {
+  readonly logFile?: string;
+};
+
 export function resolveSmartServerConfig(
   args: ResolveConfigArgs = {},
   input: YamlConfig = {},
   env: NodeJS.ProcessEnv = process.env,
   options: ResolveSmartServerConfigOptions = {},
-): Omit<SmartServerConfig, 'log'> {
+): ResolvedSmartServerConfig {
   // Spec D83 (14): the document is a mapping before anything of it is read.
   const yaml = checkDocument(input);
   // Clean-break migration guard FIRST — before any pipeline-shape parsing — so a
@@ -318,6 +331,18 @@ export function resolveSmartServerConfig(
     // 30.1.0 value, `null` (its old expression was typed `string` by a cast;
     // `SmartServerConfig.logDir` is unchanged here).
     logDir: fields.logDir ?? (null as unknown as string | undefined),
+    // Spec D83 (13), (14): the CLI's log file, by the source used — a value
+    // that is not a non-empty string is an error naming that source (30.1.0
+    // read it through a cast: `log: 5` was a TypeError, `log: ""` stdout).
+    ...(() => {
+      const [field, value] =
+        args['log-file'] !== undefined
+          ? ['args.log-file', args['log-file']]
+          : get(yaml, 'log') !== undefined
+            ? ['log', get(yaml, 'log')]
+            : ['env.LOG_FILE', env.LOG_FILE];
+      return value !== undefined ? { logFile: check.text(field, value) } : {};
+    })(),
     pluginDir:
       (args['plugin-dir'] ?? get(yaml, 'pluginDir')) !== undefined
         ? check.text(
@@ -345,7 +370,7 @@ export function resolveSmartServerConfig(
   const valid = check.done(own);
   // A worker file and `skillPlugins` are parsed only after this file's own
   // fields passed.
-  const resolved: Omit<SmartServerConfig, 'log'> = {
+  const resolved: ResolvedSmartServerConfig = {
     ...valid,
     ...(() => {
       const subAgentConfigs = parseSubAgents(

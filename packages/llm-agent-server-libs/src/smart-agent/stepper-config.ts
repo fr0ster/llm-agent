@@ -261,12 +261,14 @@ function parseNestedFlowSpec(
   if (!['simple', 'cyclic-react', 'recursive'].includes(executor))
     throw new Error(`flow.executor.type must be simple|cyclic-react|recursive`);
   const plannerSystemPrompt = parseSystemPromptOverride(
+    check,
+    `${field}.planner.systemPrompt`,
     planner?.systemPrompt,
-    'flow.planner.systemPrompt',
   );
   const executorSystemPrompt = parseSystemPromptOverride(
+    check,
+    `${field}.executor.systemPrompt`,
     executorCfg?.systemPrompt,
-    'flow.executor.systemPrompt',
   );
   const plan = parseFlowPlan(flowCfg.plan, check, `${field}.plan`);
   const nodes = parseCompositionNodes(
@@ -290,15 +292,17 @@ function parseNestedFlowSpec(
   };
 }
 
-/** Validate an optional system-prompt override: must be a non-empty string. */
+/**
+ * An optional system-prompt override at `field`: a non-empty string when
+ * written (spec D83 (9)); a key with no value is `has no value` (D83 (13)),
+ * never "no override".
+ */
 function parseSystemPromptOverride(
+  check: FieldCheck,
+  field: string,
   raw: unknown,
-  label: string,
 ): string | undefined {
-  if (raw === undefined || raw === null) return undefined;
-  if (typeof raw !== 'string' || raw.trim() === '')
-    throw new Error(`coordinator.${label} must be a non-empty string`);
-  return raw;
+  return raw === undefined ? undefined : check.text(field, raw);
 }
 
 /** Parse composition nodes; a node with a nested `flow` recurses into a sub-spec. */
@@ -417,12 +421,14 @@ export function parseStepperCoordinatorConfig(
       `coordinator.flow.finalizer.type 'passthrough' is not yet implemented (use 'llm')`,
     );
   const plannerSystemPrompt = parseSystemPromptOverride(
-    plannerCfg?.systemPrompt,
+    check,
     'flow.planner.systemPrompt',
+    plannerCfg?.systemPrompt,
   );
   const executorSystemPrompt = parseSystemPromptOverride(
-    executorCfg?.systemPrompt,
+    check,
     'flow.executor.systemPrompt',
+    executorCfg?.systemPrompt,
   );
   // 18.1 Evaluator: ON by default at all depths (per design). Disable via
   // `flow.evaluator.enabled: false`; narrow via `flow.evaluator.atDepths`.
@@ -443,8 +449,9 @@ export function parseStepperCoordinatorConfig(
           return { has: (d: number) => s.has(d) };
         })();
   const evaluatorSystemPrompt = parseSystemPromptOverride(
-    evaluatorCfg?.systemPrompt,
+    check,
     'flow.evaluator.systemPrompt',
+    evaluatorCfg?.systemPrompt,
   );
   const plan = parseFlowPlan(flowCfg?.plan, check, 'flow.plan');
 

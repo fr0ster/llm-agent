@@ -64,9 +64,9 @@ describe('config validation — fail loud, human-readable', () => {
   it('flat schema requires explicit provider', () => {
     assert.throws(
       () => resolveSmartServerConfig({}, base({ model: 'm' }), {}),
-      // Spec D83 (12): without a provider the block is read as a map of roles,
-      // and its `model` role is not a mapping.
-      /llm\.model must be a mapping, got "m"/,
+      // A flat block (it has a `model`) that lost its provider — read by the
+      // one flat-vs-map discriminator the reader and the validator share.
+      /llm\.provider: required \(one of: openai, anthropic, deepseek, sap-ai-sdk, ollama\)/,
     );
   });
 

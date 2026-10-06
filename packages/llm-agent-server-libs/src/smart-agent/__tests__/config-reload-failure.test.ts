@@ -30,6 +30,7 @@ interface V6Options {
   drainWorkers?: () => Promise<void>;
   invalidateSessions?: () => Promise<void>;
   applyAgentUpdate?: (u: Record<string, unknown>) => void;
+  updateWeights?: (w: Weights) => void;
 }
 
 /** A watcher over recording deps, a weighted store and its own queue (the server injects one, D80). */
@@ -67,6 +68,7 @@ function v6Harness(t: { after(fn: () => void): void }, o: V6Options = {}) {
       tools: {
         updateWeights: (w: Weights) => {
           weights.push(w);
+          o.updateWeights?.(w);
         },
       },
     },
@@ -160,6 +162,28 @@ test('V6: a throwing applyAgentUpdate rejects with its error; the drain never ru
   await assert.rejects(h.reload({ maxIterations: 25 }), /boom/);
   assert.equal(h.drainCalls(), 0);
   assert.equal(h.queue.notApplied?.source, 'reload');
+  // The reason names the failed step under the queue's prefix, never the bare error.
+  assert.match(
+    h.queue.notApplied?.reason ?? '',
+    /^config reload failed, the server is not ready until a whole config applies — apply: Error: boom/,
+  );
+});
+
+test('V6: a throwing updateWeights fails the reload with the weights prefix; not ready', async (t) => {
+  const h = v6Harness(t, {
+    updateWeights: () => {
+      throw new Error('weights broke');
+    },
+  });
+  await assert.rejects(
+    h.reload({ maxIterations: 25, vectorWeight: 0.3 }),
+    /config reload failed, the server is not ready until a whole config applies — weights: Error: weights broke/,
+  );
+  assert.equal(h.queue.notApplied?.source, 'reload');
+  assert.match(
+    h.queue.notApplied?.reason ?? '',
+    /^config reload failed, the server is not ready until a whole config applies — weights: Error: weights broke/,
+  );
 });
 
 test('V6: success resolves, applies the weights, logs config_reload_applied once; failed then successful → set then cleared', async (t) => {

@@ -4,8 +4,8 @@ import type { RouteContext } from './route-table.js';
  * GET /health | /v1/health — return server + MCP health status.
  *
  * Body moved verbatim from `SmartServer._buildRouteTable` (route index 6).
- * Reads only `rc.healthChecker`, `rc.ready`, and `rc.res` — no private server
- * fields, so no threading is required.
+ * Reads only `rc.healthChecker`, `rc.ready`, `rc.configNotApplied` and
+ * `rc.res` — no private server fields, so no threading is required.
  * MCP-down ⇒ NOT_READY ⇒ 503 (not just LLM-unhealthy), so a load balancer
  * stops routing while MCP is unreachable.
  */

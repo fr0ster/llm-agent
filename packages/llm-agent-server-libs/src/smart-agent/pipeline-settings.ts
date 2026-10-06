@@ -31,7 +31,14 @@ import {
 type Section = Record<string, unknown>;
 
 function asSection(raw: unknown, pipeline: string): Section {
-  if (raw === undefined || raw === null) return {};
+  if (raw === undefined) return {};
+  if (raw === null) {
+    // Spec D83 (13): a section written with no value is that, never its
+    // default — the check names it and `done` throws.
+    const check = new FieldCheck();
+    check.refuse('pipeline.config', 'has no value', raw);
+    return check.done({});
+  }
   if (typeof raw !== 'object' || Array.isArray(raw)) {
     throw new Error(
       `pipeline '${pipeline}': 'pipeline.config' must be an object, got ${Array.isArray(raw) ? 'an array' : typeof raw}`,

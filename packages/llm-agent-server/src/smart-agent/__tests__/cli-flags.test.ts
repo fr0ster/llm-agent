@@ -173,4 +173,21 @@ describe('cli start config (spec D83 (5))', () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it('a log file that is not a non-empty string fails the start naming log — never a TypeError (D83 (14))', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'cli-cfg-'));
+    try {
+      const file = path.join(dir, 'smart-server.yaml');
+      writeFileSync(file, 'llm:\n  provider: ollama\n  model: m\nlog: 5\n');
+      const r = runCli(['--config', file]);
+      assert.equal(r.status, 1);
+      assert.match(
+        r.stderr,
+        /^Error: invalid config — log must be a non-empty string, got 5$/m,
+      );
+      assert.doesNotMatch(r.stderr, /ERR_INVALID_ARG_TYPE|TypeError/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });

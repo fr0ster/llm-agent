@@ -1,6 +1,7 @@
 import { present } from './config-fields.js';
 import { parseIntegerField } from './decision-config.js';
 import {
+  isFlatLlmConfig,
   type LlmConfigMap,
   llmKeySet,
   normalizeLlmConfig,
@@ -600,7 +601,9 @@ export function validateResolvedConfig(
         true,
       );
     }
-    if (typeof llm.provider === 'string') {
+    // The one flat-vs-map discriminator the reader shares: a flat block that
+    // lost its provider is reported as `llm.provider: required`.
+    if (isFlatLlmConfig(llm)) {
       validateLlmEntry('llm', llm, true, issues, skip);
     } else {
       const map = llm as Record<string, Record<string, unknown> | undefined>;
@@ -619,22 +622,6 @@ export function validateResolvedConfig(
     }
   }
 
-  // Pipeline selection shape: `pipeline:` must name a pipeline (string or
-  // { name } object). The plugin validates its own `config` dialect at build
-  // time — we only enforce the presence of a name here.
-  const rawPipeline = (yaml as { pipeline?: unknown }).pipeline;
-  if (rawPipeline !== undefined && rawPipeline !== null) {
-    const ok =
-      typeof rawPipeline === 'string' ||
-      (typeof rawPipeline === 'object' &&
-        typeof (rawPipeline as { name?: unknown }).name === 'string');
-    if (!ok) {
-      issues.push(
-        "pipeline: requires a 'name' (string, or { name, config }); built-ins: flat, linear, dag, stepper, controller, controller-weak",
-      );
-    }
-  }
-
   if (get(yaml, 'mcp')) {
     const rawMcpVal = yaml.mcp;
     const mcpEntries = Array.isArray(rawMcpVal)
@@ -643,8 +630,10 @@ export function validateResolvedConfig(
     mcpEntries.forEach((entry, i) => {
       const label = Array.isArray(rawMcpVal) ? `mcp[${i}]` : 'mcp';
       // The type name is the reader's rule (spec D83 (9)); the url / command
-      // requirements stay here.
-      const mcpType = entry?.type as string | undefined;
+      // requirements stay here, on the type the reader resolved: an `mcp[]`
+      // entry without one is http (checkMcpEntry), so it needs a url.
+      const mcpType = (entry?.type ??
+        (Array.isArray(rawMcpVal) ? 'http' : undefined)) as string | undefined;
       if (mcpType === 'http' && !entry?.url) {
         issues.push(`${label}.url: required when ${label}.type is http`);
       }
