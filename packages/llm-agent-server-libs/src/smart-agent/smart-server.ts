@@ -60,6 +60,7 @@ import {
   type IStepExecutionControl,
   type IWaitStrategy,
   isReadinessReporter,
+  McpError,
   symmetricEmbedder,
   type ToolLoopContextStrategyFactory,
   withCircuitBreaker,
@@ -750,14 +751,10 @@ export function buildMcpBridge(
         ? () => client.healthCheck!(opts).then((r) => (r.ok ? r.value : false))
         : undefined;
       const listed = await client.listTools(opts);
-      if (!listed.ok) {
-        // FAIL LOUD on an availability failure: a transient listTools() outage must
-        // NOT make the tool look merely absent (→ "Tool not found"/tool-blind). A
-        // benign error (this client genuinely can't list) falls through to the next.
-        if ((await classifier.classify(listed.error, probe)) === 'unavailable')
-          throw listed.error;
-        continue;
-      }
+      // Spec §10.5.3 M10: a client that cannot list its tools is an error of
+      // every class — never silently the next client (the tool would look
+      // merely absent, or run on another server).
+      if (!listed.ok) throw listed.error;
       const owns = listed.value.some((t) => t.name === name);
       if (!owns) continue;
       const result = await client.callTool(name, safeArgs, opts);
@@ -2566,11 +2563,9 @@ export class SmartServer {
    *     `_toolNamespace` — the SAME strategy instance threaded onto the
    *     startup builder, so both snapshot sources agree on the naming rule.
    *
-   * Preserves the ORIGINAL client index on a partial `listTools()` failure:
-   * the per-client input is built index-preservingly via `settled.flatMap`
-   * aligned by position (mirroring the builder's own snapshot build), NEVER
-   * `filter().map()` — a middle-client failure must not shift later slots'
-   * `slotIndex`.
+   * Every client must list its tools: any failure rejects with that client's
+   * McpError and nothing is memoized (spec §10.5.3 M11). Each client keeps its
+   * descriptor's `slotIndex`.
    */
   private async resolveAuthoritativeSnapshot(): Promise<void> {
     // Memoized: a handle-carried snapshot (yaml path) or a prior fallback
@@ -2581,46 +2576,34 @@ export class SmartServer {
     const descs: readonly McpClientDescriptor[] =
       this._sharedMcpClientDescriptors ??
       clients.map((_, i) => ({ slotIndex: i }));
-    const settled = await Promise.all(
-      clients.map(async (client) => {
-        try {
-          const result = await client.listTools();
-          return result.ok
-            ? { ok: true as const, value: result.value }
-            : { ok: false as const };
-        } catch {
-          return { ok: false as const };
-        }
-      }),
+    // Spec §10.5.3 M11: a client that cannot list its tools fails the
+    // snapshot with its McpError; nothing is memoized, so a later call builds
+    // it once the client recovers.
+    const settled = await Promise.allSettled(
+      clients.map((client) => client.listTools()),
     );
-    const perClient: NamespaceClientInput[] = settled.flatMap((entry, i) => {
-      if (!entry.ok) return [];
-      return [
-        {
-          slotIndex: descs[i]?.slotIndex ?? i,
-          label: descs[i]?.label,
-          client: clients[i],
-          tools: entry.value,
-        },
-      ];
-    });
+    const perClient: NamespaceClientInput[] = [];
+    for (const [i, entry] of settled.entries()) {
+      if (entry.status === 'rejected') {
+        const reason = entry.reason;
+        throw reason instanceof McpError
+          ? reason
+          : new McpError(
+              reason instanceof Error ? reason.message : String(reason),
+              'MCP_ERROR',
+            );
+      }
+      if (!entry.value.ok) throw entry.value.error;
+      perClient.push({
+        slotIndex: descs[i]?.slotIndex ?? i,
+        label: descs[i]?.label,
+        client: clients[i],
+        tools: entry.value.value,
+      });
+    }
     const built = buildNamespacedTools(perClient, this._toolNamespace);
     this._namespacedTools = built.tools;
     this._toolProvenance = built.provenance;
-
-    // Spec §4: a partial listTools() failure must be LOGGED (aligned with
-    // vectorizeMcpTools's `clientFailures` reporting), never a silent drop —
-    // this snapshot is the ONLY source when there is no writable tools RAG,
-    // in which case vectorizeMcpTools never runs and never logs either.
-    const clientFailures = settled.filter((entry) => !entry.ok).length;
-    if (clientFailures > 0) {
-      this.cfg.log?.({
-        event: 'authoritative_snapshot_client_failures',
-        message: `resolveAuthoritativeSnapshot: ${clientFailures} client(s) failed to list tools`,
-        clientFailures,
-        clientCount: clients.length,
-      });
-    }
   }
 
   /**

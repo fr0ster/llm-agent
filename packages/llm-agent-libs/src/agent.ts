@@ -73,7 +73,11 @@ import type { IPipeline } from './interfaces/pipeline.js';
 import type { ILogger } from './logger/index.js';
 import { NoopRequestLogger } from './logger/noop-request-logger.js';
 import { summaryToUsage } from './logger/session-request-logger.js';
-import { type IMcpToolRegistry, McpToolRegistry } from './mcp/tool-registry.js';
+import {
+  type IMcpToolRegistry,
+  McpToolRegistry,
+  type ToolRegistryResult,
+} from './mcp/tool-registry.js';
 import { NoopMetrics } from './metrics/noop-metrics.js';
 import type { IMetrics } from './metrics/types.js';
 import { LegacyAccumulateContextStrategy } from './pipeline/context/tool-loop-context/index.js';
@@ -251,6 +255,13 @@ export interface SmartAgentReconfigureOptions {
   helperLlm?: ILlm;
 }
 
+/** A registry rejection keeps its code (MCP_UNAVAILABLE); anything else thrown
+ *  is PIPELINE_ERROR — the same mapping as `withRootStatus`. */
+function asOrchestratorError(err: unknown): OrchestratorError {
+  return err instanceof OrchestratorError
+    ? err
+    : new OrchestratorError(String(err), 'PIPELINE_ERROR');
+}
 export class SmartAgent {
   private readonly toolAvailabilityRegistry: ToolAvailabilityRegistry;
   private readonly tracer: ITracer;
@@ -902,7 +913,21 @@ export class SmartAgent {
           parent: toolLoopSpan,
           attributes: { 'llm.iteration': iteration + 1 },
         });
-        const refreshed = await this.mcpToolRegistry.resolve(opts);
+        // Spec §10.5.3 M6: a client that cannot list its tools fails the
+        // request with MCP_UNAVAILABLE (the registry rejects) — never a set
+        // shrunk by the failure.
+        let refreshed: ToolRegistryResult;
+        try {
+          refreshed = await this.mcpToolRegistry.resolve(opts);
+        } catch (err) {
+          const error = asOrchestratorError(err);
+          refreshSpan.setStatus('error', error.message);
+          refreshSpan.end();
+          toolLoopSpan.setStatus('error', error.message);
+          toolLoopSpan.end();
+          yield { ok: false, error };
+          return;
+        }
         const prevNames = [...toolClientMap.keys()];
         toolClientMap.clear();
         for (const [name, client] of refreshed.toolClientMap) {
@@ -1005,7 +1030,21 @@ export class SmartAgent {
               opts,
             );
 
-            if (ragResult.ok && ragResult.value.length > 0) {
+            // Spec §10.5.3 M8: a failed re-select query fails the request with
+            // the store's code — never the previous set kept unlogged.
+            if (!ragResult.ok) {
+              const error = new OrchestratorError(
+                `tool re-select: store "tools" failed: ${ragResult.error.message}`,
+                ragResult.error.code,
+              );
+              reselectSpan.setStatus('error', error.message);
+              toolLoopSpan.setStatus('error', error.message);
+              toolLoopSpan.end();
+              yield { ok: false, error };
+              return;
+            }
+
+            if (ragResult.value.length > 0) {
               const newToolNames = new Set(
                 ragResult.value
                   .map((r) => toolNameFromRecord(r.metadata))
@@ -1013,7 +1052,17 @@ export class SmartAgent {
               );
 
               if (newToolNames.size > 0) {
-                const refreshed = await this.mcpToolRegistry.resolve(opts);
+                let refreshed: ToolRegistryResult;
+                try {
+                  refreshed = await this.mcpToolRegistry.resolve(opts);
+                } catch (err) {
+                  const error = asOrchestratorError(err);
+                  reselectSpan.setStatus('error', error.message);
+                  toolLoopSpan.setStatus('error', error.message);
+                  toolLoopSpan.end();
+                  yield { ok: false, error };
+                  return;
+                }
                 const newMcpTools = refreshed.tools.filter((t) =>
                   newToolNames.has(t.name),
                 );

@@ -34,12 +34,17 @@ test('buildMcpBridge forwards the signal into listTools + callTool', async () =>
 test('buildMcpBridge threads the signal into the classifier health probe', async () => {
   let probeCalled = false;
   let probeOpts: { signal?: AbortSignal } | undefined;
+  // The classifier is consulted for a failed callTool (a failed listTools is
+  // always an error — spec §10.5.3 M10 — and never reaches the classifier).
   const client = {
     listTools: async () => ({
+      ok: true,
+      value: [{ name: 'T', description: '', inputSchema: {} }],
+    }),
+    callTool: async () => ({
       ok: false,
       error: { code: 'net', message: 'down' },
     }),
-    callTool: async () => ({ ok: true, value: { content: 'r' } }),
     healthCheck: async (options?: { signal?: AbortSignal }) => {
       probeCalled = true;
       probeOpts = options;
@@ -47,7 +52,7 @@ test('buildMcpBridge threads the signal into the classifier health probe', async
     },
   } as unknown as IMcpClient;
   // Custom classifier that AWAITS the probe (so the probe actually fires) and
-  // then reports a tool-level error → loop continues, no throw.
+  // then reports a tool-level error → a tool result, no throw.
   const classifier: IMcpFailureClassifier = {
     classify: async (_err, probe) => {
       if (probe) await probe();

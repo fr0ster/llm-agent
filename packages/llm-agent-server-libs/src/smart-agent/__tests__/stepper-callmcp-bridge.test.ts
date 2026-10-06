@@ -139,7 +139,7 @@ test('bridge returns Tool-not-found string when no client owns the tool', async 
   );
 });
 
-test('bridge skips a client whose listTools fails and tries the next', async () => {
+test('bridge throws the error of a client whose listTools fails — never the next client (spec §10.5.3 M10)', async () => {
   const broken: IMcpClient = {
     async listTools() {
       return {
@@ -156,9 +156,11 @@ test('bridge skips a client whose listTools fails and tries the next', async () 
   };
   const good = fakeMcpClient(['ReadProgram'], { ReadProgram: 'source code' });
   const callMcp = buildMcpBridge([broken, good]);
-  const result = await callMcp('ReadProgram', {});
-  assert.equal(result.text, 'source code');
-  assert.equal(good.callsMade.length, 1);
+  await assert.rejects(
+    callMcp('ReadProgram', {}),
+    (e: unknown) => (e as { message?: string }).message === 'disconnected',
+  );
+  assert.equal(good.callsMade.length, 0);
 });
 
 // ---------------------------------------------------------------------------

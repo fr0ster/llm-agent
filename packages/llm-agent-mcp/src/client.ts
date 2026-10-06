@@ -428,16 +428,15 @@ export class MCPClientWrapper {
     } catch (error: unknown) {
       const errorMessage =
         error instanceof Error ? error.message : String(error);
-      try {
-        console.warn(
-          `MCP listTools failed, attempting reconnect: ${errorMessage}`,
-        );
-        await this.disconnect();
-        await this.connect();
-        return await performList();
-      } catch (_retryError) {
-        return this.tools; // Return cached tools if reconnect fails
-      }
+      console.warn(
+        `MCP listTools failed, attempting reconnect: ${errorMessage}`,
+      );
+      // Fail loud (spec §10.5.3 M1): when the reconnect or the second listing
+      // fails, that error propagates — never the cached (stale or empty) list.
+      // The adapter maps it with toMcpError.
+      await this.disconnect();
+      await this.connect();
+      return await performList();
     }
   }
 

@@ -5,6 +5,7 @@ import {
   type IRag,
   type IToolsRagHandle,
   type LlmTool,
+  McpError,
   QueryEmbedding,
   toolNameFromRecord,
 } from '@mcp-abap-adt/llm-agent';
@@ -13,8 +14,9 @@ import {
  * Build a real IToolsRagHandle over the tools RAG store + MCP catalog,
  * dispatching over the ALREADY-RESOLVED `clients`. Eagerly populates the
  * catalog so the SYNC `lookup(name)` contract returns a schema before any
- * `query()` runs; a catalog-load failure is swallowed (logged) so startup
- * never crashes. Extracted verbatim from SmartServer.buildToolsRagHandle.
+ * `query()` runs. A catalog-load failure caches nothing: the eager load logs
+ * it, and every `query()` lists again and rejects with the client's McpError
+ * (spec §10.5.3 M9).
  */
 export async function makeToolsRagHandle(
   clients: IMcpClient[],
@@ -37,16 +39,30 @@ export async function makeToolsRagHandle(
         if (!catalog.has(t.name)) catalog.set(t.name, t);
       }
     } else {
-      await Promise.allSettled(
-        stepperMcpClients.map(async (client) => {
-          const result = await client.listTools();
-          if (result.ok) {
-            for (const t of result.value) {
-              if (!catalog.has(t.name)) catalog.set(t.name, t as LlmTool);
-            }
-          }
-        }),
+      // Spec §10.5.3 M9: a client that cannot list its tools is an error —
+      // the first failure is thrown and nothing is cached, so the next query
+      // lists again.
+      const settled = await Promise.allSettled(
+        stepperMcpClients.map((client) => client.listTools()),
       );
+      for (const entry of settled) {
+        if (entry.status === 'rejected') {
+          const reason = entry.reason;
+          throw reason instanceof McpError
+            ? reason
+            : new McpError(
+                reason instanceof Error ? reason.message : String(reason),
+                'MCP_ERROR',
+              );
+        }
+        if (!entry.value.ok) throw entry.value.error;
+      }
+      for (const entry of settled) {
+        if (entry.status !== 'fulfilled' || !entry.value.ok) continue;
+        for (const t of entry.value.value) {
+          if (!catalog.has(t.name)) catalog.set(t.name, t as LlmTool);
+        }
+      }
     }
     catalogCache = catalog;
     return catalog;
@@ -62,18 +78,20 @@ export async function makeToolsRagHandle(
         // requestLogger and sessionLogger (§13.4).
         const embedding = new QueryEmbedding(text, resolvedEmbedder, options);
         const ragResult = await toolsRag.query(embedding, limit, options);
-        if (ragResult.ok) {
-          const hits: LlmTool[] = [];
-          for (const r of ragResult.value) {
-            const name = toolNameFromRecord(r.metadata);
-            if (name !== undefined) {
-              const tool = catalog.get(name);
-              if (tool) hits.push(tool);
-            }
+        // Spec §10.5.3 M9: a failed query is its RagError; zero hits is an
+        // honest empty answer — never an unranked catalog prefix.
+        if (!ragResult.ok) throw ragResult.error;
+        const hits: LlmTool[] = [];
+        for (const r of ragResult.value) {
+          const name = toolNameFromRecord(r.metadata);
+          if (name !== undefined) {
+            const tool = catalog.get(name);
+            if (tool) hits.push(tool);
           }
-          if (hits.length > 0) return hits;
         }
+        return hits;
       }
+      // No tools store configured: the catalog itself is the answer.
       return [...catalog.values()].slice(0, limit);
     },
     lookup(name: string) {

@@ -319,39 +319,36 @@ test('custom BuildAgentDeps.toolNamespace reaches the yaml-builder snapshot (ass
 });
 
 // ---------------------------------------------------------------------------
-// 4. Server-side fallback build preserves the original client index on a
-//    middle-client listTools() failure.
+// 4. Server-side fallback build: a middle-client listTools() failure fails the
+//    snapshot with that client's error (spec §10.5.3 M11) — never a partial
+//    snapshot with the client dropped, and nothing memoized.
 // ---------------------------------------------------------------------------
 
-test('fallback build: middle-client listTools() failure keeps the surviving third client at slotIndex 2', async () => {
+test('fallback build: middle-client listTools() failure rejects with its error; nothing memoized', async () => {
   const c0 = fakeMcpClient(['A']);
   const c1 = fakeMcpClient(['Broken'], { fail: true });
   const c2 = fakeMcpClient(['B']);
   const server = new SmartServer({}, constructionSeams) as unknown as Internals;
 
-  await server.buildSharedPipelineInfra({
-    toolsRag: undefined,
-    resolvedEmbedder: undefined,
-    mcpClients: [c0, c1, c2],
-  });
-
-  assert.equal(
-    server._toolProvenance?.get('B')?.slotIndex,
-    2,
-    'the third (surviving) client must keep slotIndex 2 despite the middle client failing — never filter().map()',
+  await assert.rejects(
+    server.buildSharedPipelineInfra({
+      toolsRag: undefined,
+      resolvedEmbedder: undefined,
+      mcpClients: [c0, c1, c2],
+    }),
+    (e: unknown) => (e as { message?: string }).message === 'listTools failed',
   );
-  assert.equal(server._toolProvenance?.get('A')?.slotIndex, 0);
-  assert.ok(server._toolsRagHandle?.lookup('B'));
-  assert.ok(server._toolsRagHandle?.lookup('A'));
+  assert.equal(server._toolProvenance, undefined);
+  assert.equal(server._namespacedTools, undefined);
+  assert.equal(server._toolsRagHandle, undefined);
 });
 
 // ---------------------------------------------------------------------------
-// 5. Spec §4 observability — a partial listTools() failure in the server-side
-//    fallback build must be LOGGED (aligned with vectorizeMcpTools's
-//    `clientFailures` reporting), never a silent drop.
+// 5. The failure is the error, not a log line: no aggregated clientFailures
+//    event is emitted for a snapshot that did not build.
 // ---------------------------------------------------------------------------
 
-test('fallback build: a middle-client listTools() failure emits ONE aggregated clientFailures log event, snapshot still index-preserving', async () => {
+test('fallback build: a middle-client listTools() failure is thrown, not logged as clientFailures', async () => {
   const c0 = fakeMcpClient(['A']);
   const c1 = fakeMcpClient(['Broken'], { fail: true });
   const c2 = fakeMcpClient(['B']);
@@ -363,28 +360,16 @@ test('fallback build: a middle-client listTools() failure emits ONE aggregated c
     constructionSeams,
   ) as unknown as Internals;
 
-  await server.buildSharedPipelineInfra({
-    toolsRag: undefined,
-    resolvedEmbedder: undefined,
-    mcpClients: [c0, c1, c2],
-  });
-
-  const failureEvents = events.filter(
-    (e) =>
-      typeof e.clientFailures === 'number' && (e.clientFailures as number) > 0,
+  await assert.rejects(
+    server.buildSharedPipelineInfra({
+      toolsRag: undefined,
+      resolvedEmbedder: undefined,
+      mcpClients: [c0, c1, c2],
+    }),
   );
   assert.equal(
-    failureEvents.length,
-    1,
-    `expected exactly one aggregated client-failure log event, got: ${JSON.stringify(events)}`,
+    events.filter((e) => e.event === 'authoritative_snapshot_client_failures')
+      .length,
+    0,
   );
-  assert.equal(failureEvents[0]?.clientFailures, 1);
-  assert.equal(failureEvents[0]?.clientCount, 3);
-
-  // The snapshot itself must be unaffected by the added log call — surviving
-  // clients keep their original index (no shift on a middle-client failure).
-  assert.equal(server._toolProvenance?.get('A')?.slotIndex, 0);
-  assert.equal(server._toolProvenance?.get('B')?.slotIndex, 2);
-  assert.ok(server._toolsRagHandle?.lookup('A'));
-  assert.ok(server._toolsRagHandle?.lookup('B'));
 });

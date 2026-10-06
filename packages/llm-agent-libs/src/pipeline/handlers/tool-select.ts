@@ -15,13 +15,14 @@
 
 import type { LlmTool } from '@mcp-abap-adt/llm-agent';
 import {
-  buildNamespacedTools,
   defaultToolNamespace,
   mergeOfferedTools,
+  OrchestratorError,
   QueryEmbedding,
   TextOnlyEmbedding,
   toolNameFromRecord,
 } from '@mcp-abap-adt/llm-agent';
+import { listClientTools } from '../../mcp/list-client-tools.js';
 import type { ISpan } from '../../tracer/types.js';
 import type { PipelineContext } from '../context.js';
 import type { IStageHandler } from '../stage-handler.js';
@@ -37,28 +38,23 @@ export class ToolSelectHandler implements IStageHandler {
 
     // List all MCP tools if not already done
     if (ctx.mcpTools.length === 0 && ctx.mcpClients.length > 0) {
-      const settled = await Promise.allSettled(
-        ctx.mcpClients.map(async (client) => ({
-          client,
-          result: await client.listTools(ctx.options),
-        })),
-      );
-      const perClient = settled.flatMap((entry, i) =>
-        entry.status === 'fulfilled' && entry.value.result.ok
-          ? [
-              {
-                slotIndex: ctx.mcpClientDescriptors?.[i]?.slotIndex ?? i,
-                label: ctx.mcpClientDescriptors?.[i]?.label,
-                client: entry.value.client,
-                tools: entry.value.result.value,
-              },
-            ]
-          : [],
-      );
-      const { tools, toolClientMap } = buildNamespacedTools(
-        perClient,
-        ctx.toolNamespace ?? defaultToolNamespace,
-      );
+      // Spec §10.5.3 M5: a client that cannot list its tools fails the stage
+      // with MCP_UNAVAILABLE — the request never runs on fewer tools.
+      let listed: Awaited<ReturnType<typeof listClientTools>>;
+      try {
+        listed = await listClientTools(ctx.mcpClients, {
+          descriptors: ctx.mcpClientDescriptors,
+          toolNamespace: ctx.toolNamespace ?? defaultToolNamespace,
+          options: ctx.options,
+        });
+      } catch (err) {
+        // Anything but the listing's MCP_UNAVAILABLE is the executor's
+        // PIPELINE_ERROR (Task 4F).
+        if (!(err instanceof OrchestratorError)) throw err;
+        ctx.error = err;
+        return false;
+      }
+      const { tools, toolClientMap } = listed;
       ctx.mcpTools.push(...tools);
       for (const [name, client] of toolClientMap) {
         ctx.toolClientMap.set(name, client);
@@ -89,9 +85,17 @@ export class ToolSelectHandler implements IStageHandler {
         })),
       );
       for (const { name, result } of queryResults) {
-        if (result.ok) {
-          ctx.ragResults[name] = result.value;
+        // Spec §10.5.3 M7: a failed store query fails the stage with the
+        // store's code. Zero tools stays possible only after a successful
+        // query with no match (an honest empty answer).
+        if (!result.ok) {
+          ctx.error = new OrchestratorError(
+            `tool-select: store "${name}" failed: ${result.error.message}`,
+            result.error.code,
+          );
+          return false;
         }
+        ctx.ragResults[name] = result.value;
       }
       allRagResults = Object.values(ctx.ragResults).flat();
 

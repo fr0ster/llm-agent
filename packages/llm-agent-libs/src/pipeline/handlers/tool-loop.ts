@@ -33,7 +33,6 @@ import type {
   ToolRound,
 } from '@mcp-abap-adt/llm-agent';
 import {
-  buildNamespacedTools,
   defaultToolNamespace,
   externalToolCallId,
   getStreamToolCallName,
@@ -42,6 +41,7 @@ import {
   toToolCallDelta,
 } from '@mcp-abap-adt/llm-agent';
 import { OrchestratorError } from '../../agent.js';
+import { listClientTools } from '../../mcp/list-client-tools.js';
 import { fireInternalToolsAsync } from '../../policy/mixed-tool-call-handler.js';
 import type { ISpan } from '../../tracer/types.js';
 import { LegacyAccumulateContextStrategy } from '../context/tool-loop-context/index.js';
@@ -226,30 +226,28 @@ export class ToolLoopHandler implements IStageHandler {
           attributes: { 'llm.iteration': iteration + 1 },
         });
         const prevNames = [...ctx.toolClientMap.keys()];
+        // Spec §10.5.3 M6: list first, into a local. A client that cannot list
+        // its tools fails the stage with MCP_UNAVAILABLE — the tool set is
+        // never shrunk by a failure.
+        let listed: Awaited<ReturnType<typeof listClientTools>>;
+        try {
+          listed = await listClientTools(ctx.mcpClients, {
+            descriptors: ctx.mcpClientDescriptors,
+            toolNamespace: ctx.toolNamespace ?? defaultToolNamespace,
+            options: ctx.options,
+          });
+        } catch (err) {
+          refreshSpan.setStatus('error', String(err));
+          refreshSpan.end();
+          // Anything but the listing's MCP_UNAVAILABLE is the executor's
+          // PIPELINE_ERROR (Task 4F).
+          if (!(err instanceof OrchestratorError)) throw err;
+          ctx.error = err;
+          return false;
+        }
+        const { tools, toolClientMap } = listed;
         ctx.toolClientMap.clear();
         ctx.mcpTools.length = 0;
-        const settled = await Promise.allSettled(
-          ctx.mcpClients.map(async (client) => ({
-            client,
-            result: await client.listTools(ctx.options),
-          })),
-        );
-        const perClient = settled.flatMap((entry, i) =>
-          entry.status === 'fulfilled' && entry.value.result.ok
-            ? [
-                {
-                  slotIndex: ctx.mcpClientDescriptors?.[i]?.slotIndex ?? i,
-                  label: ctx.mcpClientDescriptors?.[i]?.label,
-                  client: entry.value.client,
-                  tools: entry.value.result.value,
-                },
-              ]
-            : [],
-        );
-        const { tools, toolClientMap } = buildNamespacedTools(
-          perClient,
-          ctx.toolNamespace ?? defaultToolNamespace,
-        );
         ctx.mcpTools.push(...tools);
         for (const [name, client] of toolClientMap) {
           ctx.toolClientMap.set(name, client);
@@ -361,7 +359,18 @@ export class ToolLoopHandler implements IStageHandler {
               durationMs: Date.now() - ragStart,
             });
 
-            if (ragResult.ok && ragResult.value.length > 0) {
+            // Spec §10.5.3 M8: a failed re-select query fails the stage with
+            // the store's code — never the previous set kept unlogged.
+            if (!ragResult.ok) {
+              reselectSpan.setStatus('error', ragResult.error.message);
+              ctx.error = new OrchestratorError(
+                `tool-loop: re-select store "tools" failed: ${ragResult.error.message}`,
+                ragResult.error.code,
+              );
+              return false;
+            }
+
+            if (ragResult.value.length > 0) {
               const newToolNames = new Set(
                 ragResult.value
                   .map((r) => toolNameFromRecord(r.metadata))

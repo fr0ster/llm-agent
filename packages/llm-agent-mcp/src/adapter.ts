@@ -30,7 +30,10 @@ export class McpClientAdapter implements IMcpClient {
   constructor(private readonly client: MCPClientWrapper) {}
 
   async listTools(options?: CallOptions): Promise<Result<McpTool[], McpError>> {
-    if (this.toolsCache) {
+    // The cache answers only while the last health result was good (spec
+    // §10.5.3 M2). After a failed probe or call, ask the server — which fails
+    // with its mapped code when it is down.
+    if (this.toolsCache && this.lastHealthy) {
       return { ok: true, value: this.toolsCache };
     }
     try {
@@ -47,10 +50,19 @@ export class McpClientAdapter implements IMcpClient {
       }));
 
       this.toolsCache = tools;
+      this.lastHealthy = true;
       return { ok: true, value: tools };
     } catch (err) {
-      return { ok: false, error: toMcpError(err) };
+      const error = toMcpError(err);
+      this._markFailure(error);
+      return { ok: false, error };
     }
+  }
+
+  /** A failed call that is not the caller's abort marks the server unhealthy,
+   *  so the tools cache no longer answers for it. */
+  private _markFailure(error: McpError): void {
+    if (error.code !== 'ABORTED') this.lastHealthy = false;
   }
 
   async healthCheck(options?: CallOptions): Promise<Result<boolean, McpError>> {
@@ -107,8 +119,10 @@ export class McpClientAdapter implements IMcpClient {
         if (
           mapped.code === 'MCP_NOT_CONNECTED' ||
           mapped.code === 'MCP_NO_RESPONSE'
-        )
+        ) {
+          this._markFailure(mapped);
           return { ok: false, error: mapped };
+        }
       }
 
       return {
@@ -131,7 +145,9 @@ export class McpClientAdapter implements IMcpClient {
         },
       };
     } catch (err) {
-      return { ok: false, error: toMcpError(err) };
+      const error = toMcpError(err);
+      this._markFailure(error);
+      return { ok: false, error };
     }
   }
 }
