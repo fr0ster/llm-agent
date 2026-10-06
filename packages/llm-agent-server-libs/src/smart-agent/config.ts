@@ -92,6 +92,8 @@ export interface ResolveConfigArgs {
   'log-dir'?: string;
   /** The CLI's log file — over `log` and `env.LOG_FILE`; validated, read back as `logFile`. */
   'log-file'?: string | boolean;
+  /** The CLI logs to stdout: `env.LOG_FILE` is not the source used, so it is not read. */
+  'log-stdout'?: boolean;
   'plugin-dir'?: string;
   mode?: string | boolean;
 }
@@ -331,17 +333,26 @@ export function resolveSmartServerConfig(
     // 30.1.0 value, `null` (its old expression was typed `string` by a cast;
     // `SmartServerConfig.logDir` is unchanged here).
     logDir: fields.logDir ?? (null as unknown as string | undefined),
-    // Spec D83 (13), (14): the CLI's log file, by the source used — a value
-    // that is not a non-empty string is an error naming that source (30.1.0
-    // read it through a cast: `log: 5` was a TypeError, `log: ""` stdout).
+    // Spec D83 (13), (14): the CLI's log file — a value that is not a
+    // non-empty string is an error naming its source (30.1.0 read it through a
+    // cast: `log: 5` was a TypeError, `log: ""` stdout). The YAML `log` is the
+    // document's, checked always (also under --log-stdout); `--log-file` when
+    // given. `LOG_FILE` is the environment: `""` is unset (a deploy template's
+    // unset param), and a value is checked only when it is the source used —
+    // no `--log-file`, no `log`, no `--log-stdout`.
     ...(() => {
-      const [field, value] =
-        args['log-file'] !== undefined
-          ? ['args.log-file', args['log-file']]
-          : get(yaml, 'log') !== undefined
-            ? ['log', get(yaml, 'log')]
-            : ['env.LOG_FILE', env.LOG_FILE];
-      return value !== undefined ? { logFile: check.text(field, value) } : {};
+      const yamlLog = get(yaml, 'log');
+      const fromYaml =
+        yamlLog !== undefined ? check.text('log', yamlLog) : undefined;
+      if (args['log-file'] !== undefined)
+        return { logFile: check.text('args.log-file', args['log-file']) };
+      if (yamlLog !== undefined) return { logFile: fromYaml };
+      const envLog = env.LOG_FILE;
+      return envLog !== undefined &&
+        envLog !== '' &&
+        args['log-stdout'] !== true
+        ? { logFile: check.text('env.LOG_FILE', envLog) }
+        : {};
     })(),
     pluginDir:
       (args['plugin-dir'] ?? get(yaml, 'pluginDir')) !== undefined

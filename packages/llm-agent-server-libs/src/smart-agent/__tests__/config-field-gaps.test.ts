@@ -50,9 +50,6 @@ test('D83 (14): the log file — a non-empty string named by the source used; th
     fieldError(() => start({ log: './ok.log' }, { 'log-file': true })).issues,
     ['args.log-file must be a non-empty string, got true'],
   );
-  assert.deepEqual(fieldError(() => start({}, {}, { LOG_FILE: '' })).issues, [
-    'env.LOG_FILE must be a non-empty string, got ""',
-  ]);
   // Valid: the source used, by precedence args > log > env; none → undefined.
   assert.equal(start({ log: './a.log' }).logFile, './a.log');
   assert.equal(
@@ -61,6 +58,38 @@ test('D83 (14): the log file — a non-empty string named by the source used; th
   );
   assert.equal(start({}, {}, { LOG_FILE: './c.log' }).logFile, './c.log');
   assert.equal(start({}).logFile, undefined);
+});
+
+test('LOG_FILE is the environment: "" is unset; a value is checked only when it is the source used — never under --log-stdout; the YAML log always', () => {
+  // A deploy template sets an unset param to "": not set, never an error.
+  assert.equal(start({}, {}, { LOG_FILE: '' }).logFile, undefined);
+  assert.equal(
+    start({}, { 'log-stdout': true }, { LOG_FILE: '' }).logFile,
+    undefined,
+  );
+  // A value that is not the source used is not read.
+  assert.equal(
+    start({}, { 'log-stdout': true }, { LOG_FILE: '   ' }).logFile,
+    undefined,
+  );
+  assert.equal(
+    start({ log: './a.log' }, {}, { LOG_FILE: '   ' }).logFile,
+    './a.log',
+  );
+  // The source used: checked, named so.
+  assert.deepEqual(
+    fieldError(() => start({}, {}, { LOG_FILE: '   ' })).issues,
+    ['env.LOG_FILE must be a non-empty string, got "   "'],
+  );
+  // The YAML key is the document's: validated always, --log-stdout or not.
+  assert.deepEqual(
+    fieldError(() => start({ log: 5 }, { 'log-stdout': true })).issues,
+    ['log must be a non-empty string, got 5'],
+  );
+  assert.deepEqual(
+    fieldError(() => start({ log: '' }, { 'log-stdout': true })).issues,
+    ['log must be a non-empty string, got ""'],
+  );
 });
 
 test('D83 (9): an mcp[] entry without a type is http — its url is required', () => {

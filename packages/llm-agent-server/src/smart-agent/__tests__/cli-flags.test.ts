@@ -190,4 +190,60 @@ describe('cli start config (spec D83 (5))', () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it('LOG_FILE="" is unset — with --log-stdout and without a YAML log the start goes past the config (the next failure is the credential)', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'cli-cfg-'));
+    try {
+      const file = path.join(dir, 'smart-server.yaml');
+      writeFileSync(
+        file,
+        'port: 0\nllm:\n  main: { provider: openai, model: gpt-4o-mini }\n',
+      );
+      const env: Record<string, string | undefined> = {
+        ...process.env,
+        LOG_FILE: '',
+      };
+      delete env.LLM_API_KEY;
+      for (const extra of [['--log-stdout'], []]) {
+        const r = spawnSync(
+          'node',
+          // cwd is the temp dir, so the default log file lands there; tsx
+          // is imported by its resolved URL, not from that cwd.
+          [
+            '--import',
+            import.meta.resolve('tsx/esm'),
+            CLI,
+            '--config',
+            file,
+            ...extra,
+          ],
+          { encoding: 'utf8', env, cwd: dir, timeout: 60_000 },
+        );
+        assert.notEqual(r.status, 0);
+        assert.doesNotMatch(r.stderr, /LOG_FILE|invalid config/);
+        assert.match(
+          r.stderr,
+          /credentialRef 'LLM' must hold a api-key credential for openai, got none/,
+        );
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('a YAML log: 5 fails the start even with --log-stdout', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'cli-cfg-'));
+    try {
+      const file = path.join(dir, 'smart-server.yaml');
+      writeFileSync(file, 'llm:\n  provider: ollama\n  model: m\nlog: 5\n');
+      const r = runCli(['--config', file, '--log-stdout']);
+      assert.equal(r.status, 1);
+      assert.match(
+        r.stderr,
+        /^Error: invalid config — log must be a non-empty string, got 5$/m,
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
