@@ -142,10 +142,19 @@ export class ProbabilityReranker implements IReranker {
         criteria,
       };
     }
-    const res = await this.decision.decide(
-      { state: query, questions },
-      options,
-    );
+    let res: Awaited<ReturnType<IProbabilityDecision['decide']>>;
+    try {
+      res = await this.decision.decide({ state: query, questions }, options);
+    } catch (e) {
+      // A throw / rejection is a failed call too: a Result error, never an exception.
+      return {
+        ok: false,
+        error: new RagError(
+          `decision rerank failed: ${e instanceof Error ? e.message : String(e)}`,
+          'RERANK_ERROR',
+        ),
+      };
+    }
     if (!res.ok) {
       return {
         ok: false,

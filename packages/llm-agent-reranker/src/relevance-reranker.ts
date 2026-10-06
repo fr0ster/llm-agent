@@ -105,10 +105,22 @@ export class RelevanceReranker implements IReranker {
     idxs: number[],
     options?: CallOptions,
   ): Promise<Result<readonly RelevanceScore[], RagError>> {
-    const res = await this.decision.score(
-      { query, passages: idxs.map((i) => results[i].text) },
-      options,
-    );
+    let res: Awaited<ReturnType<IRelevanceDecision['score']>>;
+    try {
+      res = await this.decision.score(
+        { query, passages: idxs.map((i) => results[i].text) },
+        options,
+      );
+    } catch (e) {
+      // A throw / rejection is a failed call too: a Result error, never an exception.
+      return {
+        ok: false,
+        error: new RagError(
+          `relevance rerank: ${e instanceof Error ? e.message : String(e)}`,
+          'RERANK_ERROR',
+        ),
+      };
+    }
     if (!res.ok) {
       return {
         ok: false,

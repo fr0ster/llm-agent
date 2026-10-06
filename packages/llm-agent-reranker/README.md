@@ -13,19 +13,19 @@ decision**; the decision comes from a provider package you inject.
 | `LlmReranker` | `ILlm` | any LLM | 0–1 from the model |
 | `NoopReranker` | — | — | unchanged |
 
-### `RelevanceReranker`
-
-- Batches by default, like `ProbabilityReranker` (`maxBatchTokens` 48000, `concurrency` 4).
-- The batches' scores are merged into one order: relevance scores are comparable for the same query and model.
-- The answer is checked: wrong count, duplicate, out-of-range or non-finite → `RERANK_ERROR`.
-- The score is a relevance score, not a probability.
-
 - Wording presets for the probability reranker: `TOOL_QUESTION`, `PASSAGE_QUESTION`.
 - A relevance score is comparable for the same query and model (also across calls — `RelevanceReranker` batches); never a probability; a threshold on it is your calibration.
 - **Moved from `@mcp-abap-adt/llm-agent-libs`** — libs no longer exports them, under any name.
   Migrate: `DecisionReranker` → `ProbabilityReranker`, `DecisionRerankerOptions` →
   `ProbabilityRerankerOptions`, `DECISION_RERANK_DEFAULT_*` → `PROBABILITY_RERANK_DEFAULT_*`;
   import every reranker from this package.
+
+### `RelevanceReranker`
+
+- Batches by default, like `ProbabilityReranker` (`maxBatchTokens` 48000, `concurrency` 4).
+- The batches' scores are merged into one order: relevance scores are comparable for the same query and model.
+- The answer is checked: wrong count, duplicate, out-of-range or non-finite → `RERANK_ERROR`.
+- The score is a relevance score, not a probability.
 
 ## License
 

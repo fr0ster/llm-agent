@@ -153,4 +153,25 @@ describe('ProbabilityReranker', () => {
     await new ProbabilityReranker(model).rerank('q', [results[0]], opts);
     assert.equal(got, opts);
   });
+
+  it('a rejecting decide() → RERANK_ERROR with the original message, not an exception', async () => {
+    const model: IProbabilityDecision = {
+      decide: async () => {
+        throw new Error('boom');
+      },
+    };
+    const r = await new ProbabilityReranker(model).rerank('q', results);
+    assert.ok(!r.ok && r.error.code === 'RERANK_ERROR');
+    assert.equal(r.error.message, 'decision rerank failed: boom');
+  });
+  it('a synchronously throwing decide() → RERANK_ERROR', async () => {
+    const model = {
+      decide: () => {
+        throw new Error('sync boom');
+      },
+    } as unknown as IProbabilityDecision;
+    const r = await new ProbabilityReranker(model).rerank('q', results);
+    assert.ok(!r.ok && r.error.code === 'RERANK_ERROR');
+    assert.equal(r.error.message, 'decision rerank failed: sync boom');
+  });
 });

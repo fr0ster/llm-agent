@@ -117,13 +117,112 @@ describe('RelevanceReranker (spec §5.2)', () => {
       ],
     ],
   ];
-  for (const [name, answer] of badAnswers) {
+  const badMessages = [
+    /^relevance rerank: 1 scores for 2 passages$/,
+    /^relevance rerank: index 0 twice$/,
+    /^relevance rerank: out-of-range index 2$/,
+    /^relevance rerank: out-of-range index 0\.5$/,
+    /^relevance rerank: non-finite score for index 1$/,
+  ];
+  for (const [n, [name, answer]] of badAnswers.entries()) {
     it(`${name} → RERANK_ERROR`, async () => {
       const { d } = decision(() => answer);
       const r = await new RelevanceReranker(d).rerank('q', mk(2));
       assert.ok(!r.ok && r.error.code === 'RERANK_ERROR');
+      assert.match(r.error.message, badMessages[n]);
     });
   }
+  for (const [name, bad] of [
+    ['Infinity', Number.POSITIVE_INFINITY],
+    ['a string score', 'high' as unknown as number],
+  ] as const) {
+    it(`${name} → RERANK_ERROR`, async () => {
+      const { d } = decision(() => [
+        { index: 0, score: 1 },
+        { index: 1, score: bad },
+      ]);
+      const r = await new RelevanceReranker(d).rerank('q', mk(2));
+      assert.ok(!r.ok && r.error.code === 'RERANK_ERROR');
+      assert.match(r.error.message, /non-finite score for index 1/);
+    });
+  }
+  it('a bad answer only in a later batch fails the whole rerank (index valid for a larger batch, out of range for this one)', async () => {
+    let n = 0;
+    // mk(6, 40) under maxBatchTokens 25 → batches of 2; the second answers index 2 (valid only in a bigger batch)
+    const { d } = decision((req) =>
+      n++ === 1
+        ? [
+            { index: 0, score: 1 },
+            { index: 2, score: 1 },
+          ]
+        : byLength(req),
+    );
+    const r = await new RelevanceReranker(d, { maxBatchTokens: 25 }).rerank(
+      'q',
+      mk(6, 40),
+    );
+    assert.ok(!r.ok && r.error.code === 'RERANK_ERROR');
+    assert.match(r.error.message, /out-of-range index 2/);
+  });
+  it('a rejecting score() → RERANK_ERROR with the original message, not an exception', async () => {
+    const d: IRelevanceDecision = {
+      model: 'fake',
+      score: async () => {
+        throw new Error('boom');
+      },
+    };
+    const r = await new RelevanceReranker(d).rerank('q', mk(2));
+    assert.ok(!r.ok && r.error.code === 'RERANK_ERROR');
+    assert.equal(r.error.message, 'relevance rerank: boom');
+  });
+  it('a synchronously throwing score() → RERANK_ERROR', async () => {
+    const d = {
+      model: 'fake',
+      score: () => {
+        throw new Error('sync boom');
+      },
+    } as unknown as IRelevanceDecision;
+    const r = await new RelevanceReranker(d).rerank('q', mk(2));
+    assert.ok(!r.ok && r.error.code === 'RERANK_ERROR');
+    assert.equal(r.error.message, 'relevance rerank: sync boom');
+  });
+  it('a rejection in one batch of a wave leaves no unhandled rejection from its siblings', async () => {
+    const unhandled: unknown[] = [];
+    const onUnhandled = (e: unknown) => unhandled.push(e);
+    process.on('unhandledRejection', onUnhandled);
+    try {
+      let n = 0;
+      const d: IRelevanceDecision = {
+        model: 'fake',
+        score: async () => {
+          const me = n++;
+          await new Promise((r) => setTimeout(r, 1));
+          throw new Error(`boom${me}`);
+        },
+      };
+      const r = await new RelevanceReranker(d, {
+        maxBatchTokens: 25,
+        concurrency: 3,
+      }).rerank('q', mk(6, 40));
+      await new Promise((r) => setTimeout(r, 20));
+      assert.ok(!r.ok && r.error.code === 'RERANK_ERROR');
+      assert.deepEqual(unhandled, []);
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+    }
+  });
+  it('concurrency 1: a failure in an early batch starts no later wave', async () => {
+    let n = 0;
+    const { d, calls } = decision((req) =>
+      n++ === 1 ? new DecisionError('x') : byLength(req),
+    );
+    const r = await new RelevanceReranker(d, {
+      maxBatchTokens: 25,
+      concurrency: 1,
+    }).rerank('q', mk(6, 40));
+    assert.ok(!r.ok && r.error.code === 'RERANK_ERROR');
+    assert.equal(calls.length, 2);
+  });
   it('a DecisionError → RERANK_ERROR, message as the probability reranker words it (spec §5.2 item 4)', async () => {
     const { d } = decision(
       () => new DecisionError('down', 'DECISION_UNAVAILABLE'),
