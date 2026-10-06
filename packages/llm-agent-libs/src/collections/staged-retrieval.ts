@@ -23,6 +23,7 @@ import {
   type ISourceSelector,
   type ITracer,
   matchesRagIdentity,
+  QueryEmbedding,
   RagError,
   type RagResult,
   type Result,
@@ -30,8 +31,13 @@ import {
   ragIdentityFilter,
   recordId,
   type SourcedHit,
+  type SubQuery,
 } from '@mcp-abap-adt/llm-agent';
-import { callReranker, rerankFailedError } from '../retrieval/rerank-call.js';
+import {
+  callReranker,
+  MAX_THROWN_MESSAGE,
+  rerankFailedError,
+} from '../retrieval/rerank-call.js';
 import { assertPositiveInteger } from '../util/assert-positive-integer.js';
 import { ScoreFloorCut, TopItemsCut } from './cuts.js';
 import { ItemPool } from './item-pool.js';
@@ -180,6 +186,20 @@ async function settled<T>(
   }
 }
 
+/** The owner-qualified key of a returned result (pass-through records by id). Module-private. */
+function resultKey(r: RagResult): string {
+  const itemId = r.metadata.itemId;
+  const owner = ownerFromMetadata(r.metadata);
+  return typeof itemId === 'string' && owner
+    ? itemKey(String(r.metadata.source), owner, itemId)
+    : JSON.stringify(['record', String(r.metadata.id)]);
+}
+
+const decomposeError = (message: string): Result<never, RagError> => ({
+  ok: false,
+  error: new RagError(message, 'DECOMPOSE_ERROR'),
+});
+
 const matchedKinds = (hits: readonly RagResult[]): string[] => [
   ...new Set(hits.map((h) => String(h.metadata.recordKind))),
 ];
@@ -217,6 +237,13 @@ export class StagedRetrieval implements IRetrievalStrategy {
         'StagedRetrieval: keepStage1Top cannot be combined with ScoreFloorCut — keepStage1Top is unmeasured (D7); a threshold over a pinned head would let an unmeasured order decide what a calibrated threshold keeps',
       );
     }
+    // Spec §4.5 (D63): scores of different sub-queries are not comparable (§3.9,
+    // D28); a threshold over the merged union would compare them.
+    if (options.decompose && this.cut instanceof ScoreFloorCut) {
+      throw new Error(
+        'StagedRetrieval: a decomposer cannot be combined with ScoreFloorCut — scores of different sub-queries are not comparable (§4.5, D63); a threshold over the merged union would compare them',
+      );
+    }
   }
 
   async retrieve(
@@ -225,12 +252,99 @@ export class StagedRetrieval implements IRetrievalStrategy {
     k: number,
     callOptions?: CallOptions,
   ): Promise<Result<RagResult[], RagError>> {
-    // The caller's k caps every cut, a consumer's included (spec §4.5, F1).
+    // The caller's k caps every cut, also after decomposition (spec §4.5, F1).
     const budget = Math.min(k, this.cut.limit(k));
-    const ctx = newRunContext(callOptions);
-    const run = await this.runOne(query, budget, ctx, k);
-    if (!run.ok) return run;
-    return { ok: true, value: this.cut.cut(run.value, k).slice(0, budget) };
+    const finish = (items: RagResult[]): Result<RagResult[], RagError> => ({
+      ok: true,
+      value: this.cut.cut(items, k).slice(0, budget),
+    });
+    const d = this.options.decompose;
+    let subs: readonly SubQuery[] = [];
+    if (d) {
+      const decomposed = await this.decomposeQuery(
+        d.decomposer,
+        query.text,
+        budget,
+        callOptions,
+      );
+      if (!decomposed.ok) return decomposed;
+      subs = decomposed.value;
+    }
+    if (!d || subs.length === 0) {
+      const run = await this.runOne(
+        query,
+        budget,
+        newRunContext(callOptions),
+        k,
+      );
+      return run.ok ? finish(run.value) : run;
+    }
+    const runs = await Promise.all(
+      subs.map((s) =>
+        this.runOne(
+          new QueryEmbedding(s.text, d.queryEmbedder, callOptions),
+          s.k,
+          newRunContext(callOptions),
+          s.k, // each sub-query's pool is sized from its own k (D56)
+        ),
+      ),
+    );
+    // Union in sub-query order (spec §4.5, D63): each sub-query's own ranked list, one
+    // after the other; a duplicate item stays at its FIRST occurrence with that
+    // occurrence's score. Scores of different sub-queries are never compared.
+    const union: RagResult[] = [];
+    const seen = new Set<string>();
+    for (const run of runs) {
+      if (!run.ok) return run;
+      for (const item of run.value) {
+        const key = resultKey(item);
+        if (seen.has(key)) continue;
+        seen.add(key);
+        union.push(item);
+      }
+    }
+    return finish(union);
+  }
+
+  /** Calls the consumer's decomposer and checks its answer (spec §4.5). Never swallowed. */
+  private async decomposeQuery(
+    decomposer: IQueryDecomposer,
+    text: string,
+    budget: number,
+    callOptions?: CallOptions,
+  ): Promise<Result<readonly SubQuery[], RagError>> {
+    let r: Result<readonly SubQuery[], RagError>;
+    try {
+      r = await decomposer.decompose(text, budget, callOptions);
+    } catch (err) {
+      return decomposeError(
+        `decomposer ${decomposer.name} threw: ${String(err).slice(0, MAX_THROWN_MESSAGE)}`,
+      );
+    }
+    if (!r.ok) {
+      // The decomposer's own code travels in the message (as a rerank failure's, Task 13).
+      return decomposeError(
+        `decomposer ${decomposer.name} failed: ${r.error.code}: ${r.error.message}`,
+      );
+    }
+    let sum = 0;
+    for (const s of r.value) {
+      if (!Number.isInteger(s.k) || s.k < 1) {
+        return decomposeError(
+          `sub-query k must be an integer ≥ 1 (got ${s.k})`,
+        );
+      }
+      if (typeof s.text !== 'string' || s.text.trim().length === 0) {
+        return decomposeError('sub-query text must be non-empty');
+      }
+      sum += s.k;
+    }
+    if (sum > budget) {
+      return decomposeError(
+        `sub-query budgets sum to ${sum}, above the retrieval's budget ${budget}`,
+      );
+    }
+    return r;
   }
 
   /** §4.3 up to hydration: at most `keep` hydrated items, in rank order. `poolK`
