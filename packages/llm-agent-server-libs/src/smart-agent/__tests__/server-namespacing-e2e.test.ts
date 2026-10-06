@@ -673,10 +673,10 @@ function scriptedRoleLlm(model: string, queue: Partial<LlmResponse>[]): ILlm {
   } as unknown as ILlm;
 }
 
-const constEmbedder = symmetricEmbedder({
-  embed: async () => ({ vector: [1, 0, 0] }),
-  dimensions: 3,
-}) as unknown as import('@mcp-abap-adt/llm-agent').IEmbedder;
+const constEmbedder: import('@mcp-abap-adt/llm-agent').IRetrievalEmbedder =
+  symmetricEmbedder({
+    embed: async () => ({ vector: [1, 0, 0] }),
+  });
 
 test('controller pipeline: over a REAL boot, s1__Search routes to the SESSION client-1 instance, never the global clients', async (t) => {
   const boot = await bootTwoServerSmartServer(t);
@@ -732,12 +732,7 @@ test('controller pipeline: over a REAL boot, s1__Search routes to the SESSION cl
       ...base,
       embedder: constEmbedder,
       stepperKnowledgeBackend: new InMemoryKnowledgeBackend(
-        makeKnowledgeSemanticIndex(
-          // constEmbedder is already a retrieval embedder (symmetricEmbedder);
-          // wrapping it again made every index upsert throw (spec §10.5.4 R9
-          // now surfaces that instead of leaving the entry unindexed).
-          constEmbedder as unknown as import('@mcp-abap-adt/llm-agent').IRetrievalEmbedder,
-        ),
+        makeKnowledgeSemanticIndex(constEmbedder),
       ),
       knowledgeRagFor: () => ({
         query: async () => [],

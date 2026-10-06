@@ -47,15 +47,31 @@ function store(
   } as unknown as IRag & { seen: IQueryEmbedding[] };
 }
 
-function ctx(stores: Record<string, IRag>): PipelineContext {
+function ctx(
+  stores: Record<string, IRag>,
+  seen: { logged: unknown[]; counted: unknown[] } = {
+    logged: [],
+    counted: [],
+  },
+): PipelineContext {
   return {
     ragText: 'q',
     ragStores: stores,
     options: undefined,
     sessionId: 's1',
     config: { ragQueryK: 5 },
-    metrics: { ragQueryCount: { add() {} } },
-    requestLogger: { logRagQuery() {} },
+    metrics: {
+      ragQueryCount: {
+        add(_n: number, attrs: unknown) {
+          seen.counted.push(attrs);
+        },
+      },
+    },
+    requestLogger: {
+      logRagQuery(entry: unknown) {
+        seen.logged.push(entry);
+      },
+    },
     ragResults: {},
   } as unknown as PipelineContext;
 }
@@ -81,7 +97,8 @@ describe('R5 rag-query: a store whose query fails fails the stage', () => {
       ok: false,
       error: new RagError('open', 'CIRCUIT_OPEN'),
     }));
-    const c = ctx({ docs: s });
+    const seen = { logged: [] as unknown[], counted: [] as unknown[] };
+    const c = ctx({ docs: s }, seen);
     const cont = await new RagQueryHandler().execute(
       c,
       { store: 'docs' },
@@ -92,6 +109,49 @@ describe('R5 rag-query: a store whose query fails fails the stage', () => {
     assert.equal(c.error.code, 'CIRCUIT_OPEN');
     assert.match(c.error.message, /^rag-query: store "docs" failed: open/);
     assert.equal(c.ragResults.docs, undefined, 'no partial results');
+    // The failed query is still logged and counted (a miss).
+    assert.equal(seen.logged.length, 1);
+    assert.equal(
+      (seen.logged[0] as { store: string; resultCount: number }).store,
+      'docs',
+    );
+    assert.equal((seen.logged[0] as { resultCount: number }).resultCount, 0);
+    assert.deepEqual(seen.counted, [{ store: 'docs', hit: 'false' }]);
+  });
+
+  it('a store whose query rejects keeps its code; the message names the store', async () => {
+    const s = store(async () => {
+      throw new RagError('open', 'CIRCUIT_OPEN');
+    });
+    const c = ctx({ docs: s });
+    const cont = await new RagQueryHandler().execute(
+      c,
+      { store: 'docs' },
+      span,
+    );
+    assert.equal(cont, false);
+    assert.ok(c.error instanceof OrchestratorError);
+    assert.equal(c.error.code, 'CIRCUIT_OPEN');
+    assert.match(c.error.message, /^rag-query: store "docs" failed: open/);
+  });
+
+  it('a store whose query rejects with a plain error → QUERY_ERROR naming the store', async () => {
+    const s = store(async () => {
+      throw new Error('socket closed');
+    });
+    const c = ctx({ docs: s });
+    const cont = await new RagQueryHandler().execute(
+      c,
+      { store: 'docs' },
+      span,
+    );
+    assert.equal(cont, false);
+    assert.ok(c.error instanceof OrchestratorError);
+    assert.equal(c.error.code, 'QUERY_ERROR');
+    assert.match(
+      c.error.message,
+      /^rag-query: store "docs" failed: .*socket closed/,
+    );
   });
 
   it('a successful query with no hits is an honest empty answer', async () => {

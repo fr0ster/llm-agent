@@ -74,6 +74,41 @@ describe('R6 legacy orchestrator: a failed store fails the request', () => {
   });
 });
 
+describe('R6 legacy orchestrator: a store whose query rejects fails the request', () => {
+  it('SmartAgent.process (no pipeline) → ok:false with the RagError code naming the store', async () => {
+    const kb = {
+      async query() {
+        throw new RagError('open', 'CIRCUIT_OPEN');
+      },
+      async healthCheck() {
+        return { ok: true as const, value: undefined };
+      },
+    } as unknown as IRag;
+    const { deps } = makeDefaultDeps({ ragStores: { kb } });
+    const agent = new SmartAgent(deps, { maxIterations: 3 });
+    const r = await agent.process('what is alpha?');
+    assert.ok(!r.ok);
+    assert.equal(r.error.code, 'CIRCUIT_OPEN');
+    assert.match(r.error.message, /store "kb" failed: open/);
+  });
+
+  it('a plain rejection → QUERY_ERROR naming the store', async () => {
+    const kb = {
+      async query() {
+        throw new Error('socket closed');
+      },
+      async healthCheck() {
+        return { ok: true as const, value: undefined };
+      },
+    } as unknown as IRag;
+    const { deps } = makeDefaultDeps({ ragStores: { kb } });
+    const r = await new SmartAgent(deps, { maxIterations: 3 }).process('q?');
+    assert.ok(!r.ok);
+    assert.equal(r.error.code, 'QUERY_ERROR');
+    assert.match(r.error.message, /store "kb" failed: .*socket closed/);
+  });
+});
+
 describe('R7 builder: the sub-agent retrieval source throws the store error', () => {
   it('a failed query rejects with the RagError (never [])', async () => {
     const builder = new SmartAgentBuilder() as unknown as {

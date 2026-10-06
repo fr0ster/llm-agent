@@ -353,3 +353,51 @@ test('R12: an HTTP 500 → EMBED_ERROR (azure and gemini)', async () => {
   }));
   await assertEmbedError(makeGeminiEmbedder().embed('a'), /500/);
 });
+
+test('R12: a network rejection of the inference call → EMBED_ERROR', async () => {
+  globalThis.fetch = (async (url: string | URL | Request) => {
+    const u = typeof url === 'string' ? url : url.toString();
+    if (u.includes('/v2/lm/deployments')) {
+      return new Response(
+        JSON.stringify(deploymentList('text-embedding-3-small')),
+        {
+          status: 200,
+        },
+      );
+    }
+    throw new TypeError('fetch failed');
+  }) as typeof fetch;
+  await assertEmbedError(makeOpenAiEmbedder().embed('a'), /fetch failed/);
+});
+
+test('R12: an answer that is not JSON → EMBED_ERROR', async () => {
+  globalThis.fetch = (async (url: string | URL | Request) => {
+    const u = typeof url === 'string' ? url : url.toString();
+    if (u.includes('/v2/lm/deployments')) {
+      return new Response(JSON.stringify(deploymentList('gemini-embedding')), {
+        status: 200,
+      });
+    }
+    return new Response('<html>gateway</html>', { status: 200 });
+  }) as typeof fetch;
+  await assertEmbedError(makeGeminiEmbedder().embed('a'), /not JSON|JSON/);
+});
+
+test('R12: batch indexes that do not cover 0..n-1 → EMBED_ERROR', async () => {
+  installInference('text-embedding-3-small', () => ({
+    body: {
+      data: [
+        { embedding: [0.1], index: 0 },
+        { embedding: [0.2], index: 0 },
+      ],
+    },
+  }));
+  await assertEmbedError(makeOpenAiEmbedder().embedBatch(['a', 'b']), /index/);
+});
+
+test('R12: an azure item with embedding [] → EMBED_ERROR (empty vector)', async () => {
+  installInference('text-embedding-3-small', () => ({
+    body: { data: [{ embedding: [], index: 0 }] },
+  }));
+  await assertEmbedError(makeOpenAiEmbedder().embed('a'), /empty embedding/);
+});

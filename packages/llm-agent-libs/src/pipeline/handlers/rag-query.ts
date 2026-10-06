@@ -24,6 +24,7 @@ import {
   OrchestratorError,
   PIPELINE_FAILURE_CODES,
   QueryEmbedding,
+  RagError,
   TextOnlyEmbedding,
 } from '@mcp-abap-adt/llm-agent';
 import type { ISpan } from '../../tracer/types.js';
@@ -104,7 +105,20 @@ export class RagQueryHandler implements IStageHandler {
     };
 
     const ragStart = Date.now();
-    const result = await store.query(embedding, k, queryOptions);
+    let result: Awaited<ReturnType<typeof store.query>>;
+    try {
+      result = await store.query(embedding, k, queryOptions);
+    } catch (err) {
+      // A store that rejects instead of answering `ok: false` fails the stage
+      // the same way: named, with its own code (R5).
+      const msg = err instanceof Error ? err.message : String(err);
+      span.setAttribute('error', msg);
+      ctx.error = new OrchestratorError(
+        `rag-query: store "${storeName}" failed: ${msg}`,
+        err instanceof RagError ? err.code : 'QUERY_ERROR',
+      );
+      return false;
+    }
     ctx.requestLogger.logRagQuery({
       store: storeName,
       query: queryText.slice(0, 200),

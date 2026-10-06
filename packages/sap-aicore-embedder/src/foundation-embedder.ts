@@ -82,6 +82,15 @@ export class FoundationModelsEmbedder implements IEmbedderBatch {
     if (texts.length === 0) return [];
     const items = await this.requestEmbeddings(texts);
     const sorted = [...items].sort((a, b) => a.index - b.index);
+    // One item per text position: the indexes are exactly 0..n-1.
+    sorted.forEach((item, i) => {
+      if (item.index !== i) {
+        throw new RagError(
+          `SAP AI Core batch indexes do not cover 0..${texts.length - 1} (position ${i} has index ${item.index})`,
+          'EMBED_ERROR',
+        );
+      }
+    });
     return sorted.map((item) => ({ vector: toVector(item) }));
   }
 
@@ -120,19 +129,11 @@ export class FoundationModelsEmbedder implements IEmbedderBatch {
       const body = {
         instances: input.map((content) => ({ content })),
       };
-      const res = await fetch(url, {
-        method: 'POST',
+      const json = (await postEmbeddings(
+        url,
         headers,
-        body: JSON.stringify(body),
-      });
-      if (!res.ok) {
-        const text = await res.text().catch(() => '');
-        throw new RagError(
-          `SAP AI Core embeddings call failed: ${res.status} ${res.statusText} ${text}`,
-          'EMBED_ERROR',
-        );
-      }
-      const json = (await res.json()) as GeminiPredictResponse;
+        body,
+      )) as GeminiPredictResponse;
       return (json.predictions ?? []).map((p, i) => {
         const values = p.embeddings?.values;
         if (!Array.isArray(values)) {
@@ -148,19 +149,11 @@ export class FoundationModelsEmbedder implements IEmbedderBatch {
     // azure-openai
     const url = `${base}/embeddings?api-version=${encodeURIComponent(this.azureApiVersion)}`;
     const body = { input: input.length === 1 ? input[0] : input };
-    const res = await fetch(url, {
-      method: 'POST',
+    const json = (await postEmbeddings(
+      url,
       headers,
-      body: JSON.stringify(body),
-    });
-    if (!res.ok) {
-      const text = await res.text().catch(() => '');
-      throw new RagError(
-        `SAP AI Core embeddings call failed: ${res.status} ${res.statusText} ${text}`,
-        'EMBED_ERROR',
-      );
-    }
-    const json = (await res.json()) as OpenAiEmbeddingsResponse;
+      body,
+    )) as OpenAiEmbeddingsResponse;
     if (!Array.isArray(json.data)) {
       throw new RagError(
         'SAP AI Core embeddings answer has no data',
@@ -183,6 +176,47 @@ export class FoundationModelsEmbedder implements IEmbedderBatch {
       });
     }
     return this.deploymentIdPromise;
+  }
+}
+
+/**
+ * POST one embeddings request and read its JSON answer. A network rejection,
+ * an HTTP failure or an answer that is not JSON is `EMBED_ERROR` (spec §10.5.4
+ * R12).
+ */
+async function postEmbeddings(
+  url: string,
+  headers: Record<string, string>,
+  body: unknown,
+): Promise<unknown> {
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+    });
+  } catch (err) {
+    throw new RagError(
+      `SAP AI Core embeddings call failed: ${String(err)}`,
+      'EMBED_ERROR',
+    );
+  }
+  if (!res.ok) {
+    // Diagnostics only: the body text completes the message when readable.
+    const text = await res.text().catch(() => '');
+    throw new RagError(
+      `SAP AI Core embeddings call failed: ${res.status} ${res.statusText} ${text}`,
+      'EMBED_ERROR',
+    );
+  }
+  try {
+    return await res.json();
+  } catch (err) {
+    throw new RagError(
+      `SAP AI Core embeddings answer is not JSON: ${String(err)}`,
+      'EMBED_ERROR',
+    );
   }
 }
 

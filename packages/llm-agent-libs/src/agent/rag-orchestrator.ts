@@ -12,6 +12,7 @@ import {
   mergeOfferedTools,
   OrchestratorError,
   QueryEmbedding,
+  RagError,
   TextOnlyEmbedding,
   toolNameFromRecord,
 } from '@mcp-abap-adt/llm-agent';
@@ -141,7 +142,20 @@ export class RagOrchestrator implements IRagOrchestrator {
             translateStores?.has(name) && translatedText
               ? translatedEmbedding
               : originalEmbedding;
-          return store.query(emb, k, opts).then((r) => ({ name, result: r }));
+          // A rejection is that store's failure too (R6) — kept with its name.
+          return store.query(emb, k, opts).then(
+            (r) => ({ name, result: r }),
+            (err: unknown) => ({
+              name,
+              result: {
+                ok: false as const,
+                error:
+                  err instanceof RagError
+                    ? err
+                    : new RagError(String(err), 'QUERY_ERROR'),
+              },
+            }),
+          );
         }),
       );
       ragSpan.end();
