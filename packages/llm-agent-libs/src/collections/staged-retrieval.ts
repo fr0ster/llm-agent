@@ -362,6 +362,21 @@ export class StagedRetrieval implements IRetrievalStrategy {
     return { ok: true, value: c.value?.text };
   }
 
+  /**
+   * What the reranker sees of a unit besides its text: the canonical hit's
+   * metadata, else only `{ id, itemId }` — never a non-canonical record's own
+   * metadata (its kind or `itemText`). A pass-through record is its own record.
+   * `id` is always the unit key: the output check and the mapping back use it.
+   */
+  private candidateMetadata(u: Unit): RagResult['metadata'] {
+    if (!u.item) return { ...(u.hits[0]?.metadata ?? {}), id: u.key };
+    const canonicalHit = u.hits.find(
+      (h) => h.metadata.recordKind === this.options.canonicalKind,
+    );
+    if (canonicalHit) return { ...canonicalHit.metadata, id: u.key };
+    return { id: u.key, itemId: u.item.itemId };
+  }
+
   protected async rank(
     pooled: Unit[],
     text: string,
@@ -383,7 +398,7 @@ export class StagedRetrieval implements IRetrievalStrategy {
       live.push(u);
       candidates.push({
         text: t.value,
-        metadata: { ...(u.hits[0]?.metadata ?? {}), id: u.key },
+        metadata: this.candidateMetadata(u),
         score: u.score,
       });
     }

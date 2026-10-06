@@ -109,12 +109,22 @@ const floor = () =>
 
 /** Records what it was asked and answers via `answer`. */
 function spy(answer: (c: RagResult[]) => RagResult[] | Error | 'throw') {
-  const seen: Array<{ query: string; texts: string[] }> = [];
+  const seen: Array<{
+    query: string;
+    texts: string[];
+    metas: RagResult['metadata'][];
+  }> = [];
   const reranker: IReranker = {
     rerank: async (query, results) => {
-      seen.push({ query, texts: results.map((r) => r.text) });
+      seen.push({
+        query,
+        texts: results.map((r) => r.text),
+        metas: results.map((r) => r.metadata),
+      });
       const a = answer(results);
       if (a === 'throw') throw new Error('boom');
+      // A RagError keeps its own code; another Error answers RERANK_ERROR.
+      if (a instanceof RagError) return { ok: false, error: a };
       if (a instanceof Error)
         return { ok: false, error: new RagError(a.message, 'RERANK_ERROR') };
       return { ok: true, value: a };
@@ -207,8 +217,88 @@ describe('StagedRetrieval — reranker', () => {
   it('a thrown reranker is a RERANK_ERROR — no stage-1 fallback (D71)', async () => {
     const rag = await fixture();
     const { reranker } = spy(() => 'throw');
+    const steps: Array<[string, unknown]> = [];
+    const opts: CallOptions = {
+      sessionLogger: { logStep: (n, d) => steps.push([n, d]) },
+    };
+    const r = await staged(rag, { reranker }).retrieve(
+      rag,
+      q('needle'),
+      3,
+      opts,
+    );
+    assert.ok(!r.ok && r.error.code === 'RERANK_ERROR');
+    assert.match(r.error.message, /^rerank failed: RERANK_THROWN: /);
+    assert.equal(steps[0][0], 'retrieval_rerank_error');
+    assert.equal((steps[0][1] as { code: string }).code, 'RERANK_THROWN');
+  });
+
+  it('a reranker answering ok: false with its own code: the code reaches the message', async () => {
+    const rag = await fixture();
+    const { reranker } = spy(() => new RagError('upstream down', 'UPSTREAM_X'));
     const r = await staged(rag, { reranker }).retrieve(rag, q('needle'), 3);
     assert.ok(!r.ok && r.error.code === 'RERANK_ERROR');
+    assert.match(r.error.message, /rerank failed: UPSTREAM_X: /);
+  });
+
+  it('a reranker answering NaN scores is a RERANK_ERROR (§4.8)', async () => {
+    const rag = await fixture();
+    const { reranker } = spy((c) =>
+      c.map((x) => ({ ...x, score: Number.NaN })),
+    );
+    const r = await staged(rag, { reranker }).retrieve(rag, q('needle'), 3);
+    assert.ok(!r.ok && r.error.code === 'RERANK_ERROR');
+    assert.match(r.error.message, /non-finite/);
+  });
+
+  it("candidate metadata: the canonical hit's, else only { id, itemId } — never a non-canonical record's", async () => {
+    const rag = await fixture();
+    const { reranker, seen } = spy((c) => c);
+    await staged(rag, { reranker }).retrieve(rag, q('needle'), 3);
+    const byItem = new Map(seen[0].metas.map((m) => [m.itemId, m] as const));
+    // A and C matched only through a non-canonical record; B through its canonical one.
+    for (const id of ['A', 'C']) {
+      const m = byItem.get(id);
+      assert.ok(m, `${id} is a candidate`);
+      assert.deepEqual(Object.keys(m).sort(), ['id', 'itemId']);
+    }
+    const b = byItem.get('B');
+    assert.ok(b);
+    assert.equal(b.recordKind, 'full');
+    assert.equal(typeof b.id, 'string');
+    assert.notEqual(b.id, recordId(G, 'B', 'full', 0), 'id is the unit key');
+  });
+
+  it('a pass-through record is reranked on its own text and returned with its reranked score', async () => {
+    const raw = new InMemoryRag();
+    await raw
+      .writer()
+      .upsertRaw('skill:deploy', 'Skill: deploy needle', { name: 'deploy' });
+    await put(raw, 'A', [['full', 'alpha needle']]);
+    const rag = matchesOnly(raw);
+    const { reranker, seen } = spy((c) =>
+      c
+        .map((x) => ({
+          ...x,
+          score: x.text === 'Skill: deploy needle' ? 0.7 : 0.2,
+        }))
+        .sort((a, b) => b.score - a.score),
+    );
+    const r = await staged(rag, { reranker }).retrieve(rag, q('needle'), 3);
+    assert.deepEqual(
+      new Set(seen[0].texts),
+      new Set(['Skill: deploy needle', 'alpha needle']),
+    );
+    const own = seen[0].metas.find((m) => m.name === 'deploy');
+    assert.ok(own, 'the record carries its own metadata to the reranker');
+    assert.ok(r.ok);
+    assert.deepEqual(
+      r.value.map((x) => [x.metadata.id, x.score, x.text]),
+      [
+        ['skill:deploy', 0.7, 'Skill: deploy needle'],
+        ['A', 0.2, 'alpha needle'],
+      ],
+    );
   });
 
   it('keepStage1Top: the stage-1 top-n first, reranked items fill the rest, counted inside k', async () => {
