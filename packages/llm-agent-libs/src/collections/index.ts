@@ -8,6 +8,13 @@ export {
 export { FixedItemsCut, ScoreFloorCut, TopItemsCut } from './cuts.js';
 export { ItemPool } from './item-pool.js';
 export { MaxScoreCollapse } from './max-score-collapse.js';
+export {
+  type FacetedOptions,
+  type FacetedRerankOptions,
+  MCP_TOOLS_VARIANT_NAMES,
+  mcpToolsVariants,
+  type VariantOptions,
+} from './mcp-tools-variants.js';
 export { checkRerankOutput } from './rerank-check.js';
 export {
   CharsPerTokenEstimator,
