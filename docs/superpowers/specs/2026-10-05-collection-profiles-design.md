@@ -66,6 +66,15 @@
 >   `PUT` is refused while not ready (409, D82 (8), the user's decision of 2026-10-06); no rollback
 >   (D77's restore and D81 withdrawn); changes stay serialized (D80). A file the watcher cannot
 >   read, parse or resolve is such a failed reload (D82 (9), review finding of 2026-10-06, §17.35).
+> - **pre-flight decisions** (the user's, 2026-10-06, D85–D95, §17.42): the builder fills a bound
+>   store only with its own MCP connection (D85); the `corpus` source needs a store with a
+>   precomputed write — `InMemoryRag` is refused (D86); a tool call whose arguments failed to parse
+>   carries `argumentsError?` (D87); the migration table has 75 lines (D88); one `skills.type` rule
+>   (D89); a worker store's decomposer uses that store's embedder (D90); `fill` with `baseline` is
+>   refused (D91); every tool-loop context strategy throws `STATE_CORRUPT` on bad state (D92); the
+>   configured slot count reaches a re-wired worker's tool record key (D93); YAML `fill: corpus`
+>   with a worker on its own store and clients is refused at start (D94); a client that fails its
+>   listing at the startup snapshot fails `start()` (D95).
 >
 > **Amended 2026-10-05** for the goal's *Purpose* and goal 9: llm-agent builds **any** pipeline
 > with **any** MCP server. `mcp-abap-adt` is one server; its names and figures appear only as
@@ -157,7 +166,7 @@
 >   with precomputed vectors, in place, idempotent, with a service record carrying the fingerprint
 >   and the corpus hash; *how it writes is amended by (11), D51*). Recommended: in-memory store → `corpus`; persistent store → `prebuilt`.
 >   *Amended by (12), D54: `prebuilt`, `deployToolsCorpus` and the service record are removed; the
->   `corpus` source loads the corpus at start into any store;*
+>   `corpus` source loads the corpus at start into any store — with a precomputed write, D86;*
 > - *(superseded by (10), D46)* **`toolsChanged` by source** (D44): `live` and `consumer` re-index
 >   what is listed through the profile, as 30.1.0 does; `corpus` and `prebuilt` write nothing (a
 >   store built ahead is not refilled while running; the next build / deploy brings the new list);
@@ -246,7 +255,7 @@
 >   import `llm-agent-rag` — a cycle. This spec removes `OllamaRag` (one migration line);
 > - **§11.4's questions decided** (user, 2026-10-05; §11.4, §17.18): `llm-agent`'s `ITextLogger`
 >   (a second name for `ILogger` of `@mcp-abap-adt/interfaces-utils`) is removed — every in-repo use
->   imports `ILogger` from `@mcp-abap-adt/interfaces-utils` (migration line 70; **70 lines** in all);
+>   imports `ILogger` from `@mcp-abap-adt/interfaces-utils` (migration line 70; **70 lines** in all — *75 in the final table, D88*);
 >   libs' two dead internal files `adapters/index.ts` and `interfaces/model-resolver.ts` are deleted;
 >   `SmartAgentHandle`, libs' `IStageHandler` and libs' internal shims are kept.
 >
@@ -262,7 +271,7 @@
 >   `isGuardedBy`, and what existed only for them — `SimpleRagRegistry.replaceRag`,
 >   `SmartAgentBuilder.withCircuitBreakers` with its `_sharedBreakers` field and the server's call
 >   of it, and the embedder breaker `withCircuitBreaker(config)` built (nothing ever recorded on it:
->   the builder wraps no embedder) — are removed (migration lines 71, 72: **72 lines** in all). The
+>   the builder wraps no embedder) — are removed (migration lines 71, 72: **72 lines** in all — *75 in the final table, D88*). The
 >   breakers that guard calls stay: `withCircuitBreaker(config)` still wraps the main LLM; the
 >   server's embedder breaker still wraps the retrieval embedder (`withCircuitBreaker(embedder,
 >   breaker)`, below the document/query role) and is listed in `/health`. With it open, a store's
@@ -516,6 +525,25 @@
 > written; a failed later write leaves an id that is already tracked. The bulk path writes the
 > batch's canonicals as one bulk write, then the other records as a second (§3.3, §14.1).
 >
+> **Amended 2026-10-06 (35)** with the user's pre-flight decisions (§17.42, D85–D95). The plan's
+> pre-flight scan found places where the spec gave the plan no authority or contradicted itself;
+> the user decided each. **The builder runs a bound store's fill source only when it has its own
+> MCP connection** (YAML `mcp:` / `withMcpConnectionStrategy`): with none, the store's creator — the
+> server or the consumer — fills it, so no store is filled twice (D85, §6.1, §6.4). **The `corpus`
+> source needs a store with a precomputed-vector write** — `VectorRag` (the server's `in-memory`
+> store), qdrant, pg-vector, HANA; `InMemoryRag` is refused with the capability error (D86, §3.10,
+> §6.5). **A tool call whose arguments failed to parse carries `argumentsError?: string`**
+> (`ToolCall`, `LlmToolCall`, additive) and is never run (D87, §3.8, §10.5.2). **The migration
+> table has 75 lines** wherever its size is stated (D88). **One `skills.type` rule**, the start's
+> field validator's (D89, §10.5.8). **A decomposer on a worker's own tools store uses that store's
+> embedder** (D90, §6.2). **`fill` with `variant: baseline` is refused** at start (D91). **The
+> legacy-transcript and RAG-recall context strategies throw `STATE_CORRUPT`** on bad state like the
+> other two (D92). **The configured slot count reaches a re-wired worker's tool record key** (D93,
+> D32's purpose). **YAML `fill: corpus` with a worker that has its own `rag` and its own clients is
+> refused at start** by the config resolution too (D94, mirroring D47 (3)). **A client that fails
+> its listing at the startup snapshot fails `start()`**; D31's "counted, degraded" covers only
+> failures after the snapshot (D95) (§3.8, §3.10, §6.1–§6.5, §10.5.2, §10.5.8, §13, §14.1).
+>
 > Every path that creates or refreshes a tools store is audited in §6.4. Earlier open choices are
 > settled by the recommendations applied in §17.9; the user may still overrule them.
 
@@ -568,7 +596,9 @@
 - **Where the records come from is a strategy the consumer injects** — `IToolsFillSource` (§3.10),
   attached to the store with its binding (D42). Three ship:
   1. **`live`** (default) — the MCP tool list, indexed through the profile at creation (30.1.0);
-  2. **`corpus`** (`ToolsCorpusLoader`, any store — in-memory or persistent) — a corpus the
+  2. **`corpus`** (`ToolsCorpusLoader`, any store with a precomputed-vector write — the server's
+     in-memory store (a `VectorRag`) or a persistent one; `InMemoryRag` has none and is refused,
+     D86) — a corpus the
      consumer's **build step** made with the same profile's indexer (records + vectors). At start
      the source checks the corpus's identity against what the server is configured with, **clears
      the store**, writes the corpus with its precomputed vectors (**no embedding call**) and logs
@@ -1428,6 +1458,7 @@ export function retrievalEmbedderOf(rag: IRag): IRetrievalEmbedder | undefined;
 | **`ConfigWatcherOptions.resolveDocument?: (document: unknown) => unknown`** — a new optional option, additive (D83 (8), decided by the user on 2026-10-06, §17.34). When given, `ConfigWatcher` applies it to the whole parsed file before it reads a hot-reloadable field (a throw is emitted as `error`, like a parse failure — the server queues it as a failed reload, D82 (9)); absent, the values are the file's as written (today's behaviour). The `reload` event's values are then the resolved document's. **The `reload` event gains a second argument** (D83 (10), §17.36): the whole resolved document the values were read from (after `resolveDocument`; an empty file is `{}`) — additive: a listener with one parameter is unchanged | the user's decision of 2026-10-06: a reload substitutes `${VAR}` exactly as the start does. The start substitutes in server-libs (`loadYamlConfig` → `resolveEnvVars`) over the whole document before any field is read, and `ConfigWatcher` decides on that document which fields exist (`rag.store.type === 'in-memory'` gates the weights) — so substituting after the watcher (over the event's values) would read `type: ${STORE}` unsubstituted and drop the weights a start from the same file applies. The substitution is the consumer's policy, not the watcher's (libs knows no `${VAR}` syntax and must not import server-libs, which depends on it), so it is injected: one implementation, no cycle. The document as the event's second argument (review finding of 2026-10-06, D83 (10)): a reload must be validated as a whole file, like the start, and the extracted values have lost every other section; the watcher already holds the document it read them from, so handing it over costs no second read of a file that may change in between (the values and the document are always one read), and libs stays free of the server's rules — it validates nothing | `@mcp-abap-adt/llm-agent-libs` (`config/config-watcher.ts`), beside `ConfigWatcherOptions.debounceMs` |
 | **`IToolAvailabilityPolicy`** + **`HeuristicToolAvailabilityPolicy`**, `SmartAgentDeps.toolAvailabilityPolicy?`, `SmartAgentBuilder.withToolAvailabilityPolicy(policy)`, `PipelineContext.toolAvailabilityPolicy?` — new; **`SmartAgentConfig.toolUnavailableTtlMs` removed** — **breaking** (U8, migration line 74) | the user's decision of 2026-10-05: blocking a tool on a text heuristic silently shrinks the tool set, so it is a strategy the consumer injects, and with none injected nothing is blocked. One method (`onToolError(toolName, errorText)` → a TTL or nothing) is the minimum: the per-session block state stays in the existing internal `ToolAvailabilityRegistry`. The 30.1.0 heuristic ships as `HeuristicToolAvailabilityPolicy({ ttlMs })` (ttl required — no tuned number, D55). The TTL lived in `SmartAgentConfig` only for this; config is the builder's, the TTL is the policy's | `@mcp-abap-adt/llm-agent-libs` — the only package that calls it (contract placement: where used); the server injects it from YAML |
 | `LazyOptions.fallback` removed — **breaking** (U6, migration line 73) | the user's decision of 2026-10-05: an init failure answered by a substitute instance is the pattern the goal removes; unused in the repo | `@mcp-abap-adt/llm-agent-libs` (`utils/lazy.ts`) |
+| `ToolCall.argumentsError?: string`, `LlmToolCall.argumentsError?: string` — additive (N2, N3, D87) — **decided by the user** on 2026-10-06 (§17.42) | fail loud (D69, N2): a tool call whose arguments are not valid JSON must not run. The adapters that parse a provider's argument text (`llm-adapter`, `llm-provider-bridge`) run no tools, and the loops that run tools see only the parsed `arguments` object — in which the `{}` of a failed parse and the `{}` of a call with no arguments are the same value. A field on the call carries the failure across that boundary, so every site that runs a tool reads one field instead of re-parsing. Named like the contract's existing failure carrier, `ToolResult.error?: string`: an optional string beside the value it qualifies (here `arguments`, so `argumentsError`), holding the parse error's message. Optional: every existing object literal compiles; absent = the arguments parsed | `@mcp-abap-adt/llm-agent` (`types.ts` `ToolCall`, `interfaces/types.ts` `LlmToolCall`), where both call types live |
 
 ### 3.9 Decision contracts — probability and relevance
 
@@ -1543,7 +1574,7 @@ export interface ToolsFillContext {
 | Source | `fill` — at instance creation | Embedding calls in the process | Writes by the process |
 |---|---|---|---|
 | **`LiveToolsFill`** (`live`, the default) | `ctx.indexLiveTools()` — 30.1.0's listing, indexed through the profile | yes | at creation only |
-| **`ToolsCorpusLoader({ corpus, expect })`** (`corpus`, any store — in-memory or persistent) | checks the corpus against `expect` and the binding (below) and the store's capabilities (a precomputed write **and** `clearAll` on the writer of `ctx.target.rag`, the store it writes), then **clears the store**, writes every record with its precomputed vector into `ctx.target.rag` in batches, logs one summary line (source, identity, items, records, `corpusHash`) and reports the status. Every check runs **before** the clear: an incompatible corpus or store throws with the store untouched. Nothing else: no record of the load in the store, no diff, no refill, no memo, no retry, no watching | **none** | at creation only |
+| **`ToolsCorpusLoader({ corpus, expect })`** (`corpus`, any store with a precomputed-vector write — `VectorRag` (the server's in-memory store), qdrant, pg-vector, HANA; `InMemoryRag` refused, D86) | checks the corpus against `expect` and the binding (below) and the store's capabilities (a precomputed write **and** `clearAll` on the writer of `ctx.target.rag`, the store it writes), then **clears the store**, writes every record with its precomputed vector into `ctx.target.rag` in batches, logs one summary line (source, identity, items, records, `corpusHash`) and reports the status. Every check runs **before** the clear: an incompatible corpus or store throws with the store untouched. Nothing else: no record of the load in the store, no diff, no refill, no memo, no retry, no watching | **none** | at creation only |
 | **`ConsumerToolsFill`** (`consumer`) | nothing (`undefined`): the consumer fills through `bound.index` or `fillToolsBinding` | — | **never** (the consumer writes) |
 
 A reconnect that reports `toolsChanged` calls no source: a bound store is not written after its
@@ -1573,6 +1604,12 @@ creation (D46, below).
   store, which D54 removes. So `IRagBackendWriter.clearAll` is required; a store whose writer lacks
   it is refused at creation, naming the store. Every shipped store has it (`InMemoryRag`,
   `VectorRag`, qdrant, pg-vector, HANA).
+- **A store without a precomputed-vector write is refused too** (D86): the load writes the corpus's
+  vectors as they are — it makes no embedding call — so the writer of the store it writes must have
+  `upsertManyPrecomputedRaw` or `upsertPrecomputedRaw`. `VectorRag`, qdrant, pg-vector and HANA
+  have it; **`InMemoryRag` does not** (its writer has `upsertRaw` only), so a corpus is refused
+  there at creation with the capability error, before anything is cleared. The server's
+  `rag.store.type: in-memory` builds a `VectorRag`, so an in-memory server store loads a corpus.
 - **An interrupted load repeats at the next start** (D54): there is no state to resume; the next
   instance clears and writes again. A process that fails its load does not start (main store) or
   fails that worker's construction (§6.3).
@@ -2182,7 +2219,7 @@ alias.
 
 | Method | What |
 |---|---|
-| `withToolsProfile(profile: ICollectionProfile<ToolItem>, source?: IToolsFillSource)` | **new.** The builder binds the profile (a shipped variant or the consumer's own composition) to its own `tools` store (set by `setToolsRag` or auto-created) with the fill source (absent → `LiveToolsFill`, §3.10), runs that source's `fill` at build (where `vectorizeMcpTools` runs today — the store's creation) and applies `bound.retrieval` like an explicit `withRetrievalStrategy('tools', …)`. |
+| `withToolsProfile(profile: ICollectionProfile<ToolItem>, source?: IToolsFillSource)` | **new.** The builder binds the profile (a shipped variant or the consumer's own composition) to its own `tools` store (set by `setToolsRag` or auto-created) with the fill source (absent → `LiveToolsFill`, §3.10), runs that source's `fill` at build when the builder has its own MCP connection (where `vectorizeMcpTools` runs today — the store's creation; without a connection the store's creator fills it, D85, limit below) and applies `bound.retrieval` like an explicit `withRetrievalStrategy('tools', …)`. |
 | `withRetrievalStrategy(key, bound.retrieval)` | **existing.** Any other store (e.g. a shared-items binding): the consumer binds the profile itself, registers `bound.rag` under `key` and hands `bound` to its writing elements. Pure DI; no new method. |
 
 Rules (pattern 5, "unsupported is an error"; checked at `build()`):
@@ -2194,12 +2231,16 @@ Rules (pattern 5, "unsupported is an error"; checked at `build()`):
 
 Type check: `withToolsProfile(sharedItemsProfile)` does not compile (`ICollectionProfile<ToolItem>`).
 
-**Limit — the builder fills a profile only where it vectorizes today.** The builder writes tool
-records only on its auto-connect branch (YAML `mcp:` / `withMcpConnectionStrategy`). On the
-`withMcpClients` and `withMcpServers` branches it skips vectorization — as in 30.1.0
-(`builder.ts`, "Caller-provided clients: skip auto-connect and vectorization"; the servers branch
-says the same). This spec does not change that: there the profile is **bound** and its retrieval
-applied, but the store is **not filled**. The consumer fills it, with the shipped API:
+**Limit — the builder fills a profile only where it has its own MCP connection** (D85). The
+builder runs a bound store's fill source only on its auto-connect branch **with a connection** —
+YAML `mcp:` or `withMcpConnectionStrategy`. On the `withMcpClients` and `withMcpServers` branches
+it skips vectorization — as in 30.1.0 (`builder.ts`, "Caller-provided clients: skip auto-connect
+and vectorization"; the servers branch says the same) — and on the auto-connect branch **without**
+a connection (no `mcp:`, no strategy) it does not run the bound store's source either: the store's
+creator fills it — the server (§6.3) or the consumer — so no store is filled twice (D41). An
+unbound store keeps 30.1.0's behaviour on every branch. Where the builder does not fill, the
+profile is **bound** and its retrieval applied, but the store is **not filled**. The consumer
+fills it, with the shipped API:
 
 ```ts
 // 1. bind first (the builder reuses a bound store, never binds it twice); the fill source is
@@ -2282,7 +2323,7 @@ rag:
   profiles:
     tools:
       variant: faceted
-      # any store (in-memory or persistent): at start, clear it and load the corpus the build step made
+      # a store with a precomputed write (in-memory = VectorRag, or persistent): at start, clear it and load the corpus the build step made
       # (no embedding call at start)
       fill: { corpus: { file: ./tools-corpus.json, profile: faceted@1, embedder: aicore-te3-small } }
 ```
@@ -2378,8 +2419,13 @@ rag:
   `toolsStrategyFactories` (built-in facets, discriminators, pools, collapse, cuts, size
   estimators). A consumer registers its own, including its decomposers (none is built in). Unknown
   name → startup error.
-- A decomposer factory gets the store's query embedder from the resolver (the same one `makeRag`
-  gives the store); YAML carries no decomposer parameters — they belong to the registered factory.
+- A decomposer factory gets the query embedder **of the store it serves** (D90): the resolver
+  builds the main binding's decomposer over the main store's query embedder (the same one `makeRag`
+  gives that store); a worker's own tools store with its own embedder is bound with the same
+  composition whose decomposer is built over **that** store's embedder (the server's one decision
+  reused — nothing is built from the `decision:` section again). A worker store with no embedder
+  and a configured decomposer fails that worker's construction, naming the worker. YAML carries no
+  decomposer parameters — they belong to the registered factory.
 - Rerankers resolve through the same code as `rag.retrieval`:
   - `decision`: by the provider's kind — `ProbabilityReranker` over the ONE
     `IProbabilityDecision` the `makeProbabilityDecision` seam builds, or `RelevanceReranker` over the ONE
@@ -2409,7 +2455,9 @@ rag:
 - a `rag.profiles` key other than `tools` (S8);
 - unknown variant or strategy name; `variant` and `compose` together; a key under both
   `retrieval` and `profiles`;
-- `decomposer` with `baseline`;
+- `decomposer` with `baseline`; `fill` with `baseline` (D91: baseline binds no profile, so no
+  fill source would run — a `corpus` file was read and checked, then the store filled live); the
+  server refuses both at start for a config built in code too, before the corpus file is read;
 - an `llm` key not in `llm:`; non-positive `pool.items`; `minItems > maxItems`;
 - an `onFailure` key under `compose` (D71 — there is no stage-1 fallback; refused with a message
   naming D71, never silently ignored);
@@ -2433,8 +2481,10 @@ rag:
 - `fill`: an unknown name; `corpus` without `file`, `profile` or `embedder`; a leftover
   `prebuilt` (removed, D54 — refused with a message naming `corpus`); `corpus` while a worker
   declares its own `rag` **and** its own `mcpClients` or `mcp:` (the corpus describes the shared
-  catalog; bind that worker's store in the composition root). Checked by the server at start too,
-  for a config built in code. `corpus` whose vector dimension differs from a declared `dimension`
+  catalog; bind that worker's store in the composition root — D47 (3)). Refused at start by the
+  YAML resolution (`resolveSmartServerConfig`, a `ConfigValidationError` once the worker files
+  are read, D94) and by the server for a config built in code — one rule, one message; a worker
+  with its own `rag` on the shared clients stays allowed (its declared dimension is checked, D65). `corpus` whose vector dimension differs from a declared `dimension`
   of the main tools store or of any worker's own tools store — refused when `fill` is resolved,
   naming the store (D65). A store whose writer has no `clearAll` or no precomputed write is
   refused by `ToolsCorpusLoader` at the store's creation (§3.10), naming the store.
@@ -2631,6 +2681,14 @@ are in the agent's catalog.
   Without descriptors (none were reported) the server keeps `withMcpClients`. Kept internal (the
   `connectedMcpServer` adapter in server-libs) — `withMcpClients` is not changed (§17.9).
 - `withToolNamespace(server's IToolNamespace)` on every worker builder — as on the startup builder.
+- **The configured slot count reaches the worker's tool record key** (D93 — D32's purpose). A
+  re-wire hands a worker on the shared clients the session's `configuredSlotCount` beside the
+  descriptors; the server gives that worker's builder `withToolRecordKey(…)` with
+  `defaultToolRecordKey` over that count (`clientCount` = the configured slots, never the number of
+  clients connected), so every id the worker's agent computes (its `McpToolRegistry`) is the id
+  the store was filled with — `tool:<slotIndex>:<name>` while one slot of several is connected,
+  not `tool:<name>`. Internal to server-libs (`slotCountRecordKey`, beside `connectedMcpServer`);
+  no contract change. A worker on its own clients gets no slot count (array order is its identity).
 - **This also changes workers without a profile** (a fix, a CHANGELOG "Fixed" entry, §17.9): in
   30.1.0 a worker on the shared clients built its catalog by array position with no labels and
   the default namespace. On a collision, or with a slot missing, it exposed `s<i>__<tool>`, while
@@ -2658,11 +2716,15 @@ are in the agent's catalog.
   - A worker's store can be rebuilt (a lazy rebuild after a drain) long after startup, so a
     startup snapshot of it would go stale.
   - Per-worker catalog components would be a `/health` contract change that no goal asks for.
-- A client whose `listTools()` fails or throws is counted in `clientFailures` and its tools never
-  reach `total`. The status is `complete: false`, and the summary line is logged as a warning
-  ("… N client(s) failed to list tools"). For the main store, `/health` is `degraded` with
-  `toolCatalog` present. Startup goes on: a partial catalog degrades service, it does not
-  prevent it (30.1.0 policy). Never a silent empty store.
+- **A client that fails its listing at the startup snapshot fails `start()`** (D95, amending
+  D31): the authoritative snapshot (§10.5.3 M11) lists every client before the server's fill and
+  rejects with that client's `McpError`; no fill runs and nothing is memoized.
+- A client that listed at the snapshot but whose `listTools()` fails or throws at the fill — after
+  the snapshot — is counted in `clientFailures` and its tools never reach `total`. The status is
+  `complete: false`, and the summary line is logged as a warning ("… N client(s) failed to list
+  tools"). For the main store, `/health` is `degraded` (503, D72) with `toolCatalog` present.
+  Startup goes on: a partial catalog after a good snapshot degrades service, it does not prevent
+  it. Never a silent empty store.
 - `bound.index` failing → every item in `failed`, the error message in the logged line, the same
   `degraded` status (main). A tool that fails to index → named in `failed`.
 - An invalid `IToolRecordKey` (an id without `tool:`), a client set that does not match its
@@ -2691,7 +2753,8 @@ reconnect calls no source (D46).
 
 | # | Path | Code | Store | Under a profile | `live` | `corpus` | `consumer` |
 |---|---|---|---|---|---|---|---|
-| 1 | Builder `build()`, auto-connect branch (YAML `mcp:` / `withMcpConnectionStrategy`) | `builder.ts`, `vectorizeMcpTools(…, toolsRag, …)` | `setToolsRag` or the auto-created `InMemoryRag`; bound by `withToolsProfile`, or already bound by the server | creation: `vectorizeMcpTools` runs the store's source (rule 1) | lists + indexes | clears the store, loads the corpus (precomputed) | nothing |
+| 1 | Builder `build()`, auto-connect branch **with a connection** (YAML `mcp:` / `withMcpConnectionStrategy`) | `builder.ts`, `vectorizeMcpTools(…, toolsRag, …)` | `setToolsRag` or the auto-created `InMemoryRag`; bound by `withToolsProfile`, or already bound by the server | creation: `vectorizeMcpTools` runs the store's source (rule 1) | lists + indexes | clears the store, loads the corpus (precomputed; the auto-created `InMemoryRag` has no precomputed write — refused, D86) | nothing |
+| 1a | Builder `build()`, auto-connect branch **without** a connection (no `mcp:`, no strategy, no clients) — e.g. a worker's construction on the shared clients, whose builder gets no clients (§6.3), or any build that hands none | `builder.ts`: `vectorizeMcpTools` is not called for a bound store (D85) | the same | **not the builder**: the store's creator — the server (rows 4, 5) or the consumer (row 9, `fillToolsBinding`); the store is filled once. An unbound store: 30.1.0, unchanged | — | — | — |
 | 2 | Builder `build()` with `withMcpClients` / `withMcpServers` | `builder.ts`, "skip auto-connect and vectorization" | the same | not the builder (§6.1 limit): the consumer (`fillToolsBinding`, `bound.index`), or the server (rows 4, 5) | — | — | — |
 | 3 | Reconnect: `McpToolRegistry.resolveActiveClients` → `toolsChanged` → `revectorizeTools` (any agent with a connection strategy) | `mcp/tool-registry.ts` | `ragStores.tools` — the projection: the bound store itself (no store is wrapped, D68), or a consumer's decorator over it | **never written** (D46): `revectorizeTools` finds the binding and stops, one `mcp` debug line; no source is called — **finding (a)**. An unbound store: 30.1.0 re-vectorize, unchanged; a tool no longer listed keeps its records (D40) | **no write** | **no write** | **no write** |
 | 4 | Server main store | `_buildInfra`: `makeRag` → `withToolsStore` (bound with the YAML `fill` source) | the main store | creation, once: the server (`fillBoundToolsStore` → `fillToolsBinding`) on ready clients, an injected seam, plugin clients or no MCP — before the startup build writes the skills (D66); on `yamlBuilderConnect` the builder (row 1) | lists + indexes | clears, loads | nothing |
@@ -2790,7 +2853,7 @@ export class ToolsCorpusLoader implements IToolsFillSource {
 | Step | What |
 |---|---|
 | 1. identity | `identity.profile` / `identity.embedder` equal `expect`'s; the manifest's `profileName` equals the binding's; `manifest.dimensions` equals `expect.dimensions` when both are present. Any difference → throw naming it |
-| 2. capability | every capability the load uses — a precomputed write (`writer().upsertManyPrecomputedRaw` or `upsertPrecomputedRaw`) **and** `clearAll` — is checked on the writer of the store it writes (`ctx.target.rag`). Any one missing → throw naming the store and what is missing, before any mutation. The check reads the writer the load then calls; a `StrategyRag` returns its inner writer unchanged. *Until D68 it ran twice — also on the resolved backend behind the store's decorators — because `FallbackRag` claimed both capabilities over a backend without them (D52); `FallbackRag` is removed, and the second check with it (§10.4)* |
+| 2. capability | every capability the load uses — a precomputed write (`writer().upsertManyPrecomputedRaw` or `upsertPrecomputedRaw`) **and** `clearAll` — is checked on the writer of the store it writes (`ctx.target.rag`). Any one missing → throw naming the store and what is missing, before any mutation (`InMemoryRag` has no precomputed write: refused here, D86). The check reads the writer the load then calls; a `StrategyRag` returns its inner writer unchanged. *Until D68 it ran twice — also on the resolved backend behind the store's decorators — because `FallbackRag` claimed both capabilities over a backend without them (D52); `FallbackRag` is removed, and the second check with it (§10.4)* |
 | 3. clear | `writer().clearAll()`; a failure throws |
 | 4. write | every record with its precomputed vector, in batches (`upsertManyPrecomputedRaw` when present, else one `upsertPrecomputedRaw` per record); a failed write throws |
 | 5. log | one summary line through `ctx.logger`: the source (`corpus`), the identity, `items`, `records`, `corpusHash` — on the same channel as the live fill's summary line (`LogEvent` `type: 'warning'`, `traceId: 'builder'`: the only free-text event `ILogger` has; no contract change) |
@@ -3688,10 +3751,10 @@ empty answer now sees an error (§13, behaviour table row B1).
 
 | # | Where (libs unless named) | Today | Now | Layer |
 |---|---|---|---|---|
-| N2 | `pipeline/handlers/tool-loop.ts` (~600), `agent.ts` (~1141), `adapters/llm-provider-bridge.ts` (~150), server-libs `controller/controller-coordinator-handler.ts` (~1554) | tool-call arguments that are not valid JSON become `{}`, and the tool **runs** with them | the tool does **not** run; the tool result given back to the LLM is an error naming the tool and the parse error (code `TOOL_ARGUMENTS_JSON_PARSE_FAILED`, in the tool message and as session step `tool_arguments_invalid`); the LLM may retry as with any tool error | pipelines |
-| N3 | `adapters/llm-adapter.ts` (~88) | the same, `onDiagnostic` only | the same as N2; the diagnostic stays | pipelines |
+| N2 | `pipeline/handlers/tool-loop.ts` (~600), `agent.ts` (~1141), `adapters/llm-provider-bridge.ts` (~150), server-libs `controller/controller-coordinator-handler.ts` (~1554) | tool-call arguments that are not valid JSON become `{}`, and the tool **runs** with them | the site that parses the arguments marks the call — `argumentsError` (the parse error; `arguments` `{}`, D87) — and every site that runs a tool checks it first: a marked call does **not** run; the tool result given back to the LLM is an error naming the tool and the parse error (code `TOOL_ARGUMENTS_JSON_PARSE_FAILED`, in the tool message and as session step `tool_arguments_invalid`); the LLM may retry as with any tool error | pipelines |
+| N3 | `adapters/llm-adapter.ts` (~88) | the same, `onDiagnostic` only | the same as N2 — the adapter sets `argumentsError` on the call (D87); the diagnostic stays | pipelines |
 | N13 | `policy/pending-tool-results-registry.ts` (~49) | pending tool results that reject → `results: []` | the rejection is returned: the waiting stage fails with `PIPELINE_ERROR` naming the tool calls | pipelines |
-| — | `pipeline/context/tool-loop-context/window-context-strategy.ts` (~51), `legacy-accumulate-context-strategy.ts` (~31) | a saved state of another version, or malformed, is silently replaced by `[]` | `restore` throws `OrchestratorError(…, 'STATE_CORRUPT')`, the stage fails with it | pipelines |
+| — | `pipeline/context/tool-loop-context/window-context-strategy.ts` (~51), `legacy-accumulate-context-strategy.ts` (~31), `legacy-transcript-context-strategy.ts` (~39), `rag-recall-context-strategy.ts` (~71) — all four strategies (D92) | a saved state of another version, or malformed, is silently replaced by `[]` (`rag-recall`: `last: null`, `counter: 0`) | `restore` throws `OrchestratorError(…, 'STATE_CORRUPT')`, the stage fails with it | pipelines |
 
 #### 10.5.3 MCP — client, adapter, registry, tool selection (D74)
 
@@ -3782,7 +3845,7 @@ Layer: framework (libs), coordinator.
 | S-7 | `skills/plugin-host/compatible-skills-rag.ts` (~89, ~110) | an incompatible generation, or an abort / timeout → `[]` | an incompatible generation throws `SkillsIncompatibleError` (as the eager path already does); an abort rethrows (the caller's cancellation, not an empty answer) |
 | S-8 | `skills/plugin-host/skill-plugin-host.ts` (~339; N17) | a group's build fails → the prior generation kept, `ok: true` when a prior exists | `ok: false`, the group in `omitted` with its reason; whether the prior generation keeps serving is the consumer's `strict` choice — `strict: true` by default (U2, §10.5.12) |
 | S-9 | `skill-plugin-host.ts` (~236; N16) | a failed `acquire` carries the source's prior data forward under `strict: false` (the default), the reason discarded | the reason is kept and reported (`SkillLoadResult.carried: { sourceId, reason }[]`, additive); carrying forward at all is the consumer's opt-in — the default becomes `strict: true` (U2, §10.5.12) |
-| S-10 | server-libs `smart-server.ts` (~496) + `config.ts` (~280) | an unknown `skills.type` → no skill manager | `ConfigValidationError` at start (`skills.type: must be claude \| codex \| filesystem`) |
+| S-10 | server-libs `smart-server.ts` (~496) + `config.ts` (~280) | an unknown `skills.type` → no skill manager | **one rule** (D89): the start's field validator (`checkSkills`, §10.5.9 *Cast-read fields*) — `skills.type must be one of claude, codex, filesystem, got "<value>"` in the `ConfigFieldError` at start; `config-validator.ts` has no second `skills.type` rule. A config built in code that skips the validator fails in `resolveSkillManager`, naming `skills.type` |
 
 Layer: framework (libs) for S-1–S-9, server for S-10.
 
@@ -4811,7 +4874,9 @@ again, written either way.
   a consumer that ships a tools corpus builds it in its build step with `buildToolsCorpus` and
   ships the file; the server loads it at every start with the `corpus` source
   (`fill: { corpus: … }`, or `ToolsCorpusLoader` in a builder consumer's composition root) — the
-  store, in-memory or persistent, is **cleared** and the corpus written; the `profile` /
+  store, in-memory (`VectorRag`) or persistent, is **cleared** and the corpus written; it must have
+  a precomputed-vector write and `clearAll` (`InMemoryRag` has no precomputed write and is
+  refused, D86); the `profile` /
   `embedder` names must be the same in the build step and in the server's configuration. There is
   no deploy step.
 - **Behaviour note — a bound profile is not re-indexed on `toolsChanged`** (D46). With a profile
@@ -4850,7 +4915,7 @@ again, written either way.
   | B4 | a reranker — `RerankedRetrieval`, `RerankAllRetrieval`, the `rerank` stage, the legacy orchestrator (and `StagedRetrieval`, new in this release) | stage-1 / original order, `ok: true` | `RERANK_ERROR` (D71). `onFailure` existed only in this spec's drafts and was never released, so no config carries it | for unranked results on failure, inject a reranker (`IReranker`) that answers them itself |
   | B5 | an MCP client's `listTools` (client, adapter cache, registry, `tool-select`, `tool-loop`, `tools-rag-handle`, the server's bridge and snapshot); a slot that failed to connect | the client's tools left out (or stale), the request continues | `MCP_UNAVAILABLE` / the client's `McpError` code | make the server reachable; a consumer that wants to run on fewer servers builds that pipeline with those clients only |
   | B6 | an LLM step: `translate`, `expand`, `summarize`, `history-upsert`, the query preprocessors and enricher, the stepper's need-resolver / formalizer / planner sections, the DAG planner's empty plan | the original text / full history / a raw-prompt plan | the step's error (`LLM_ERROR`, `QUERY_EXPAND_ERROR`, `COORDINATOR_*`) | — (a consumer that wants untranslated text on failure injects its own handler / preprocessor) |
-  | B7 | invalid tool-call JSON from the LLM | the tool ran with `{}` | the tool does not run; the LLM gets an error tool result (`TOOL_ARGUMENTS_JSON_PARSE_FAILED`) | — |
+  | B7 | invalid tool-call JSON from the LLM | the tool ran with `{}` | the tool does not run; the call carries `argumentsError` (D87); the LLM gets an error tool result (`TOOL_ARGUMENTS_JSON_PARSE_FAILED`) | a consumer that runs parsed tool calls itself skips a call with `argumentsError` |
   | B8 | skills: a store / `listSkills` / a `SKILL.md` that cannot be read, a plugin loader error, an incompatible generation, an unknown `skills.type`; a skill whose embedding or write into the tools store fails (`vectorizeSkills`, D75) | the skill (or all skills) left out — for a failed skill write, a warning and `build()` / start succeeded | `SKILL_ERROR` / `SkillsIncompatibleError` / `build()` or start fails; a failed skill write rejects `build()`, the server's start (or a worker's construction) and `fillToolsBinding` with a `SkillError` naming the skill, the store's error as `cause` | fix the skill source, or the tools store / its embedder the error names; `strict: false` keeps its carry-forward, now an explicit opt-in (B12) |
   | B9 | `/health` with a configured component not working (`degraded`) | HTTP 200 | HTTP **503**; body unchanged; every RAG store probed; an MCP `value: false` or unanswered probe is not OK (D72) | a load balancer that treated `degraded` as up now takes the instance out — intended |
   | B10 | server: persisted collections at session start, a corrupt session bundle / run-scope entry / artifact claim, the session-meta start record, a config reload's drain, the eager tool catalog, an explicit `--env` / `--secrets-dir`, a stepper role without an LLM config, `GET /v1/models` | the part skipped, an older state, a stub model, a 200 placeholder | an error: the session / request fails, `STATE_CORRUPT`, the reload reports failure (`config_reload_failed`; no rollback — the server is not ready until a whole config applies, D82), the start fails (exit 1, `ConfigValidationError`), 502 | fix the configuration or the state the error names |
@@ -4897,7 +4962,8 @@ again, written either way.
   from D82: `/health`'s `configNotApplied` body field and `writeNotReady`'s optional `message`;
   from D83: `HotReloadableInput` (libs; `ConfigWatcher`'s `reload` event now carries it, B19);
   from D83 (8): `ConfigWatcherOptions.resolveDocument` (libs; B21);
-  from D83 (10): the `reload` event's second argument, the resolved document (libs; B23).
+  from D83 (10): the `reload` event's second argument, the resolved document (libs; B23);
+  from D87: `ToolCall.argumentsError` / `LlmToolCall.argumentsError` (B7).
 - **A consumer with its own composition root** that wants Cohere supplies `makeRelevanceDecision`
   (build `SapAiCoreRelevanceDecision` with a bearer credential and `apiBaseUrl`); its existing
   probability seam function compiles unchanged under the key `makeProbabilityDecision` (table line
@@ -5144,8 +5210,10 @@ again, written either way.
   profile → store filled, items retrievable, `/health` `toolCatalog` complete with `records` and
   `profile`; an injected `connectMcp` seam → the same; plugin clients → included; no profile +
   ready clients → no profile record, no 30.1.0 record, no `toolCatalog` on `/health` (30.1.0
-  unchanged); a client whose `listTools()` fails → `clientFailures: 1`, `complete: false`,
-  `/health` `degraded`, the good client's tools filled; main + a worker reading the main store +
+  unchanged); a client that listed at the startup snapshot and whose `listTools()` fails at the
+  fill → `clientFailures: 1`, `complete: false`, `/health` `degraded`, the good client's tools
+  filled; a client that fails at the startup snapshot → `start()` rejects with its `McpError`, no
+  fill (D95); main + a worker reading the main store +
   a worker with its own store and clients → each store's records written exactly once.
   `fillToolsBinding` and `HealthCheckerDeps.toolCatalog` unit-tested in libs.
 - Worker identity (D32): an injected `connectMcpWithDescriptors` seam with labelled servers, one
@@ -5215,7 +5283,10 @@ again, written either way.
     corpus (the foreign record is gone — cleared); retrieval through the binding finds the tools;
     the catalog status is complete with `records`; one summary log line naming `corpus`, the identity,
     the counts and `corpusHash`;
-  - **replacement leaves no merged metadata** (`VectorRag`, `InMemoryRag`): a store loaded with A
+  - **`InMemoryRag` is refused** (D86): a load into an `InMemoryRag` holding a record → throws
+    `… has no precomputed write` naming the store; the record is still there (nothing cleared or
+    written) and the embedder is never called;
+  - **replacement leaves no merged metadata** (`VectorRag`): a store loaded with A
     whose record X carries extra metadata `ttl` and `data` → a new instance loads B whose X carries
     neither → X has no `ttl` and no `data`;
   - **checks before the store is touched:** a mismatching `profile` / `embedder` / `profileName` /
@@ -5229,7 +5300,7 @@ again, written either way.
     (the next start) → the store holds exactly the corpus;
   - **empty corpus** (D49): a store holding records → the load clears it and writes nothing; the
     status is complete, `total: 0`, `records: 0`.
-- Server `fill` (§6.2): `{ corpus: … }` on an in-memory store with ready clients → the store holds
+- Server `fill` (§6.2): `{ corpus: … }` on an in-memory store (a `VectorRag`, D86) with ready clients → the store holds
   the corpus and the embedder saw no call at startup; the same on a store that already holds other
   records (a persistent store's second start, simulated) → only the corpus remains; a store config
   with a declared `dimension` and a corpus of another length → startup fails naming both, the
@@ -5435,6 +5506,36 @@ again, written either way.
   `complete: false`, `writeFailure` `bulk write failed: <error>`, the summary log line naming it;
   the 30.1.0 test that pinned the per-tool retry is replaced by these. A successful bulk write →
   `writeFailure` absent. A failed batch **embedding** still takes the per-tool path (U7, counted).
+- The pre-flight decisions (§17.42):
+  - D85 — the builder: a bound store with a counting fill source and **no** connection (no `mcp:`,
+    no strategy, no clients) → `build()` runs the source zero times and publishes no status; with
+    a connection strategy → once. The server: main + two workers on a startup with an injected
+    seam → three fills (one per store); after a `PUT /v1/config` and after a hot reload → each
+    rebuilt worker store filled once, the main store not again — no store filled twice;
+  - D86 — the corpus cases above (`InMemoryRag` refused; the in-memory cases on `VectorRag`);
+  - D87 — `parseToolArguments` / the adapters: invalid JSON → the call carries `argumentsError`
+    (the parse error) and `arguments` `{}`; valid JSON or no arguments → no `argumentsError`; each
+    of the five sites does not run a marked call and answers its tool result with
+    `TOOL_ARGUMENTS_JSON_PARSE_FAILED`;
+  - D89 — `skills: { type: 'nope' }` in YAML → one `ConfigFieldError` issue naming `skills.type`
+    (no second message from `validateResolvedConfig`); a config built in code → `start()` rejects
+    naming `skills.type`;
+  - D90 — a decomposer registered as a factory that records the embedder it gets; main store and a
+    worker with its own store and embedder → the main binding's decomposer got the main store's
+    embedder, the worker's got the worker store's (the `makeRag` inputs' embedders); the decision
+    seam called once; a worker store with no embedder → its construction fails naming the worker;
+  - D91 — `fill` with `variant: baseline` → refused by the YAML validator and, for a config built
+    in code, by `start()`, the corpus file never read;
+  - D92 — `LegacyTranscriptContextStrategy` and `RagRecallContextStrategy`: a state of another
+    version or of the wrong shape → `restore` throws `STATE_CORRUPT`; `restore(undefined)` → empty;
+  - D93 — `slotCountRecordKey(3)` keys `{ toolName: 'Search', clientIndex: 2, clientCount: 1 }` as
+    `tool:2:Search` (`defaultToolRecordKey` would give `tool:Search`); a re-wire of a worker on the
+    shared clients (3 configured slots) hands its builder that key, and the key the builder gets
+    equals the store's ids;
+  - D94 — a YAML file with `fill: { corpus: … }` and a worker file with its own `rag` and `mcp:` →
+    `resolveSmartServerConfig` throws `ConfigValidationError` naming the worker; a worker with its
+    own `rag` only → resolves;
+  - D95 — the server-fill cases above (a startup-snapshot failure fails `start()`).
 
 ### 14.2 Conformance kit
 
@@ -5687,7 +5788,7 @@ them.
 
 | # | Decision | Where |
 |---|---|---|
-| D31 | **The server fills a bound tools profile from the MCP clients it uses, at startup.** Replaces the stated limit "the server inherits the builder's limit". On every path that hands clients to the builder through `withMcpClients` — ready clients (`BuildAgentDeps.mcpClients`, `cfg.mcpClients`, plugin clients) or an injected `connectMcp` / `connectMcpWithDescriptors` seam — the server lists the clients' tools and fills the bound store through the shipped profile path (`fillToolsBinding` → `vectorizeMcpTools`, binding read from the store (D34) → `toolItemFromTool` + `IToolRecordKey` → `bound.index`), once per store, before it reports ready; `/health` reads that status (the small-set check went with D55); failures follow the 30.1.0 tool-catalog policy (counted, logged, `degraded` — never a silent empty store). Workers reading the main store are not filled again. Without a bound profile nothing changes. The builder keeps its limit for `withMcpClients` / `withMcpServers` (no startup phase). *When a worker's store is filled is amended by D35 (§17.9).* | §6.1, §6.3, §3.8, §14.1 |
+| D31 | **The server fills a bound tools profile from the MCP clients it uses, at startup.** Replaces the stated limit "the server inherits the builder's limit". On every path that hands clients to the builder through `withMcpClients` — ready clients (`BuildAgentDeps.mcpClients`, `cfg.mcpClients`, plugin clients) or an injected `connectMcp` / `connectMcpWithDescriptors` seam — the server lists the clients' tools and fills the bound store through the shipped profile path (`fillToolsBinding` → `vectorizeMcpTools`, binding read from the store (D34) → `toolItemFromTool` + `IToolRecordKey` → `bound.index`), once per store, before it reports ready; `/health` reads that status (the small-set check went with D55); failures follow the 30.1.0 tool-catalog policy (counted, logged, `degraded` — never a silent empty store). Workers reading the main store are not filled again. Without a bound profile nothing changes. The builder keeps its limit for `withMcpClients` / `withMcpServers` (no startup phase). *When a worker's store is filled is amended by D35 (§17.9).* *Amended by D95 (§17.42): a client that fails its listing at the startup snapshot fails `start()` (§10.5.3 M11); "counted, logged, `degraded`" covers only a client that fails after the snapshot — at the fill's own listing.* | §6.1, §6.3, §3.8, §14.1 |
 | D32 | **A worker's fill keeps the identity its agent dispatches by** (review finding on D31). Filled from the shared clients → the same `_sharedMcpClientDescriptors`, `_configuredSlotCount` and `IToolNamespace` as the main fill, and the worker's builder receives those clients with the same descriptors (existing `withMcpServers`, one already-connected `IMcpServer` per client) and the server's namespace (`withToolNamespace`), so the stored names are the names it can call. Own `mcpClients` → no descriptors exist: array order on both sides. Own `mcp:` → its own builder fills and dispatches from one connection. No contract change. Also fixes 30.1.0 workers on the shared clients exposing `s<i>__<tool>` where the main catalog has `<label>__<tool>`. *For the user's review:* the `withMcpServers` adapter over an optional `descriptors` parameter on `withMcpClients` (a public builder change) — recommendation applied, §17.9 | §6.3, §3.8, §14.1 |
 | D33 | *Superseded by D50 (§17.15): intents and companion stores are removed.* **Companion storage per primary binding** (review finding on Tasks 22–23). The profile instance may be shared; each primary binding (main, each worker with its own `rag`) gets companion stores of its own, built by the server through `makeRag` with that primary's embedder; a binding that reads another's primary shares its companions. Separate stores, not a binding segment in `recordId`: they isolate reads as well as writes, with no contract change. *For the user's review:* a persistent (non-in-memory) companion store with a worker that has its own `rag` is refused at start, rather than deriving a second collection name — recommendation applied, §17.9 | §6.2, §7.3.3, §3.8, §14.1 |
 
@@ -5820,7 +5921,7 @@ the same day.
 | # | Decision | Where |
 |---|---|---|
 | D57 | *`FallbackRag` is removed by D68 (§17.23), not moved.* **The RAG implementations really move now** (S10 decided: the alternative). The files of every class of §11.3's "moves" table — `VectorRag`, `InMemoryRag`, `FallbackRag`, `OverlayRag`, `SessionScopedRag`, `ActiveFilteringRag`, `SimpleRagRegistry` / `ragStoreKey`, the providers, the search strategies (with their types), the preprocessors / enrichers, the query expanders, `buildRagCollectionToolEntries`, their config / option types, the private `InvertedIndex` and tokenizer — and their tests move to `packages/llm-agent-rag/src/`. `@mcp-abap-adt/llm-agent` stops exporting them; no `rag-implementations` subpath; no aliases. `IQueryExpander`, `IQueryPreprocessor`, `IDocumentEnricher` move to `llm-agent/src/interfaces/`. Nothing left in `llm-agent` imports a moved file (verified, §11.3); a repo test pins that `llm-agent` does not depend on `llm-agent-rag`. Every importer switches to `llm-agent-rag`. The store kit stays in `llm-agent` (unchanged). Supersedes the "public home now, files in the next major" of D53 and amendment (12) | §1, §3.8, §10.4, §11, §11.3, §13, §14.1, §15, §16 |
-| D58 | **No deprecated aliases anywhere** — a major release. Removed without an old name: `IDecisionModel`, `DecisionReranker` / `DecisionRerankerOptions`, `DECISION_RERANK_DEFAULT_TASK` / `_CRITERIA`, `wrapDecisionModel`, `BuildAgentDeps.makeDecisionModel` (and with it the "both supplied" startup error and its tests), the libs-root reranker exports, the RAG implementations' `llm-agent` exports. Every in-repo use takes the new name. The CHANGELOG has a **Breaking** section with one migration line per removed or moved name (§13: 51 lines, 69 with S12, 70 with `ITextLogger`, 72 with D68). The plan does no version bump or publish; its docs task says the release is a major. Supersedes the alias parts of D24, D26, D30, D53, §17.5 and amendments (4), (5), (12) | §1, §3.8, §3.9, §5.4, §6.2, §11, §13, §14.1 |
+| D58 | **No deprecated aliases anywhere** — a major release. Removed without an old name: `IDecisionModel`, `DecisionReranker` / `DecisionRerankerOptions`, `DECISION_RERANK_DEFAULT_TASK` / `_CRITERIA`, `wrapDecisionModel`, `BuildAgentDeps.makeDecisionModel` (and with it the "both supplied" startup error and its tests), the libs-root reranker exports, the RAG implementations' `llm-agent` exports. Every in-repo use takes the new name. The CHANGELOG has a **Breaking** section with one migration line per removed or moved name (§13: 51 lines, 69 with S12, 70 with `ITextLogger`, 72 with D68; 75 in the final table, D88). The plan does no version bump or publish; its docs task says the release is a major. Supersedes the alias parts of D24, D26, D30, D53, §17.5 and amendments (4), (5), (12) | §1, §3.8, §3.9, §5.4, §6.2, §11, §13, §14.1 |
 | D59 | **No re-exports at all.** Every consumer — our own packages included — imports a name from the package that owns it. `llm-agent-libs` re-exports nothing from `llm-agent-reranker` or `llm-agent-rag`; `llm-agent-rag` exports only what lives in it; `@mcp-abap-adt/llm-agent` exports no implementation it moved. The migration table says where each name is imported from now. The pre-existing re-exports are removed in this major too (S12, decided below; §11.4) | §3.8, §5.4, §11, §11.4, §13, §14.1 |
 | D60 | **Replicas over one persistent tools store: accepted as is.** Each replica clears and reloads the store at its start, and the others read a partial store meanwhile — the price of the simple corpus flow (D54). No marker or coordination is added | §3.10, §6.5, §11.1 |
 
@@ -5877,7 +5978,7 @@ Migration: 18 more lines (§13, lines 52–69; 69 with S12).
 
 | # | Question (§11.4) | Decision | Where |
 |---|---|---|---|
-| 1 | `llm-agent`'s `ITextLogger` — a second name for `@mcp-abap-adt/interfaces-utils`' `ILogger` | **removed.** Every in-repo use (17 occurrences in 9 files) imports `ILogger` from `@mcp-abap-adt/interfaces-utils`; `text-logger.ts` and its root line go; no re-export. `llm-agent` already peers on it; libs and mcp (tests only) get a dev dependency. Migration line 70 — **70 lines in total** (72 with D68, §17.23) | §11.4, §13 |
+| 1 | `llm-agent`'s `ITextLogger` — a second name for `@mcp-abap-adt/interfaces-utils`' `ILogger` | **removed.** Every in-repo use (17 occurrences in 9 files) imports `ILogger` from `@mcp-abap-adt/interfaces-utils`; `text-logger.ts` and its root line go; no re-export. `llm-agent` already peers on it; libs and mcp (tests only) get a dev dependency. Migration line 70 — **70 lines in total** (72 with D68, §17.23; 75 in the final table, D88) | §11.4, §13 |
 | 2 | libs' dead internal files `adapters/index.ts`, `interfaces/model-resolver.ts` | **deleted** (no importer, no `exports` path — verified again); no migration line | §11.4, §13 |
 | 3 | `SmartAgentHandle`, libs' `IStageHandler` (specialisations declared in libs) | **kept** (rule (b)) | §11.4 |
 | 4 | libs' internal, non-public shims | **kept** (rule (a)) | §11.4 |
@@ -5915,7 +6016,7 @@ From the goal's newest decision ("`FallbackRag` is removed", 2026-10-05).
 
 | # | Decision | Where |
 |---|---|---|
-| D68 | **`FallbackRag` is removed, and the builder wraps no store.** When RAG has problems they are deeper, and llm-agent cannot solve them; a fallback to an in-memory copy only hides the failure behind empty or partial results. Removed with it, because each existed only for it (checked with `git grep` over `packages/`): the builder's circuit-breaker loop over the registry and `isGuardedBy`; `SimpleRagRegistry.replaceRag`; `SmartAgentBuilder.withCircuitBreakers` with `_sharedBreakers`, and the server's call of it; the embedder breaker `withCircuitBreaker(config)` built (fed by nothing). Kept: the breakers that guard calls — `withCircuitBreaker(config)` wraps the main LLM; the server's embedder breaker wraps the retrieval embedder and is listed in `/health`; with it open, a store's query fails fast with `CIRCUIT_OPEN`. Kept: `IRagDecorator` and every walk through it (`StrategyRag` and a consumer's own wrapper). A consumer that wants a degraded mode writes its own `IRag` wrapper. **Withdrawn:** D52 (the decorator writer rule — no decorator in this design needs it — and the corpus load's resolved-backend check: the load checks the writer of the store it writes), D62, their tests, and the "behind `FallbackRag`" cases of the binding-discovery, F1 and corpus tests (a plain decorator stands in where the walk is tested). Migration lines 5 (`FallbackRag` removed), 71 (`replaceRag`), 72 (`withCircuitBreakers`): **72 lines**. Amends D53, D54, D57 (`FallbackRag` is not moved) | header, amendment (14), TL;DR, §1, §3.8, §3.10, §6.3–§6.5, §10.4, §11, §11.1–§11.3, §13, §14.1, §15 |
+| D68 | **`FallbackRag` is removed, and the builder wraps no store.** When RAG has problems they are deeper, and llm-agent cannot solve them; a fallback to an in-memory copy only hides the failure behind empty or partial results. Removed with it, because each existed only for it (checked with `git grep` over `packages/`): the builder's circuit-breaker loop over the registry and `isGuardedBy`; `SimpleRagRegistry.replaceRag`; `SmartAgentBuilder.withCircuitBreakers` with `_sharedBreakers`, and the server's call of it; the embedder breaker `withCircuitBreaker(config)` built (fed by nothing). Kept: the breakers that guard calls — `withCircuitBreaker(config)` wraps the main LLM; the server's embedder breaker wraps the retrieval embedder and is listed in `/health`; with it open, a store's query fails fast with `CIRCUIT_OPEN`. Kept: `IRagDecorator` and every walk through it (`StrategyRag` and a consumer's own wrapper). A consumer that wants a degraded mode writes its own `IRag` wrapper. **Withdrawn:** D52 (the decorator writer rule — no decorator in this design needs it — and the corpus load's resolved-backend check: the load checks the writer of the store it writes), D62, their tests, and the "behind `FallbackRag`" cases of the binding-discovery, F1 and corpus tests (a plain decorator stands in where the walk is tested). Migration lines 5 (`FallbackRag` removed), 71 (`replaceRag`), 72 (`withCircuitBreakers`): **72 lines** (*75 in the final table, D88*). Amends D53, D54, D57 (`FallbackRag` is not moved) | header, amendment (14), TL;DR, §1, §3.8, §3.10, §6.3–§6.5, §10.4, §11, §11.1–§11.3, §13, §14.1, §15 |
 
 ### 17.24 Decided by the goal on 2026-10-05 — fail loud (D69–D74); U1–U10 decided by the user on 2026-10-05
 
@@ -6232,3 +6333,24 @@ write-ahead canonical is written first instead of last.
 | # | Decision | Where |
 |---|---|---|
 | D84 | **The canonical record is written first and tracks every id the item holds or may hold.** (1) **The order.** Per store and per `index` batch: the new canonical of every item first — `recordIds` = the new ids, `staleRecordIds` = the stale set (old `recordIds` ∪ old `staleRecordIds` − the new ids), so it lists old ∪ pending ∪ new — then the other records of the items whose canonical was written, then the stale deletes and the settle write of §3.3 (steps 3–5, unchanged: the settle rewrites the canonical with the same `recordIds` and the ids still pending). (2) **Outcomes.** A failed canonical write → no other record of the item is written, the old canonical is untouched, the item is `write-failed`: no orphan. The canonical written and a later record failed → its id is already listed, the item is `write-failed`, no delete or settle runs (the stale set stays on the canonical); the next `index` deletes it as stale (absent ids are no-ops) and `remove` deletes it. Readers tolerate the in-between state by D15 (a record without a canonical is dropped; a listed id with no record is never a hit). (3) **The bulk path** keeps the same order with two bulk writes: the batch's canonicals as one, then the other records of the items whose canonical landed as a second. A failed first batch fails every item and the second is not made; a failed second batch fails the items with a record in it, an item with no other record stays indexed. No per-record retry on either batch (D76 stands); the per-record path writes in the same order. (4) **Unchanged:** D13 (no locks, no generations; concurrent writers of one item can still leave an untracked record), D61 (duplicate item ids rejected first), D76. Tested on `InMemoryRag` and `VectorRag`: canonical fails while the notes would succeed → nothing else written, `remove` leaves no record; canonical written and a note fails → item failed, then a replacement with fewer notes → no abandoned record; the bulk order and a failed second batch | §3.3, §14.1 |
+
+### 17.42 Decided by the user on 2026-10-06 — pre-flight spec decisions (D85–D95)
+
+The plan's pre-flight scan of 2026-10-06 (every task read against this spec and the code) found
+places where the spec gave the plan no authority, or contradicted itself. Each went to the user,
+who decided all of them on 2026-10-06; they are written in here first, and the plan follows
+(fix the spec before the plan).
+
+| # | Decision | Where |
+|---|---|---|
+| D85 | **The builder runs a bound store's fill source only when the builder itself has an MCP connection** — its auto-connect branch with YAML `mcp:` or `withMcpConnectionStrategy` (§6.1). Without one — no `mcp:` and no strategy, `withMcpClients`, `withMcpServers` — `build()` binds the store and applies its retrieval but does not fill it; the store's creator fills it: the server (§6.3 — the main store in `_buildInfra`, a worker's own store by its construction) or the consumer (`fillToolsBinding`, `bound.index`). Found by the pre-flight: with no connection the auto-connect branch still called `vectorizeMcpTools` (no clients), which runs the store's source, so a store the server had filled was filled a second time (`corpus`: cleared and loaded again) — against D41's "once". **No store is filled twice**: the server's rebuild tests count one fill per store — main + two workers at startup, then each rebuilt worker store once after `PUT /v1/config` and after a hot reload (§14.1). An unbound store keeps 30.1.0's behaviour. *Choice made while writing it in, for the user's review:* the decision named "the auto-connect / `withMcpServers` paths per §6.1"; §6.1 and the 30.1.0 builder skip vectorization on `withMcpServers` (the builder starts those servers, but like `withMcpClients` never vectorizes there), so the `withMcpServers` branch stays bound-not-filled, as §6.1's limit states; filling there would be a new builder behaviour, for the user to ask for | §6.1, §6.4 rows 1, 1a, §14.1 |
+| D86 | **The `corpus` source needs a store with a precomputed-vector write** — `VectorRag` (the server's `rag.store.type: in-memory` builds one), qdrant, pg-vector, HANA. `InMemoryRag` has none (its writer has `upsertRaw` only) and is refused at the store's creation with the existing capability error (`… has no precomputed write`, §6.5 load step 2), before anything is cleared. "Any store, in-memory included" (§3.10, §6.2, §6.5, §13) read "any store with a precomputed write"; it contradicted §6.5 step 2. The in-memory corpus tests use `VectorRag`; one test pins the refusal of `InMemoryRag` | §3.10, §6.2, §6.4, §6.5, §13, §14.1 |
+| D87 | **A tool call whose arguments failed to parse is marked on the call: `argumentsError?: string`** on `ToolCall` (`types.ts`) and `LlmToolCall` (`interfaces/types.ts`) — the parse error's message, with `arguments` `{}`. The adapters that parse provider text (`llm-adapter`, `llm-provider-bridge`) set it, and so does every site that assembles a call from streamed deltas (`tool-loop`, the legacy `agent.ts` loop, the controller handler); every site that runs a tool checks it before calling and does not run a marked call (N2, N3). Named like the contract's existing failure carrier `ToolResult.error?: string`; additive (§3.8) | §3.8, §10.5.2 N2, N3, §13 B7, §14.1 |
+| D88 | **The migration table has 75 lines**, the count its last line carries; every statement of the table's size says 75 (§13, the CHANGELOG). Past amendments that recorded 70 or 72 keep their count, marked superseded | §13, amendments (13), (14), §17.18, D58, D68 |
+| D89 | **One rule for `skills.type`: the start's field validator** (`checkSkills`, §10.5.9 *Cast-read fields*) — `skills.type must be one of claude, codex, filesystem, got …` in the `ConfigFieldError`. `config-validator.ts` gets no `skills.type` rule (the fail-loud skills change's duplicate, which the field check would always pre-empt, is not added); a config built in code that skips the validator still fails in `resolveSkillManager`, naming `skills.type` | §10.5.8 S-10, §14.1 |
+| D90 | **A decomposer on a worker's own tools store uses that store's embedder.** The resolver builds the main binding's decomposer over the main store's query embedder; a worker whose own store has its own embedder is bound with the same composition whose decomposer is built over that store's embedder (the server's one decision reused — §6.2's one decision per server intact). A worker store with no embedder and a configured decomposer fails the worker's construction, naming the worker | §6.2, §14.1 |
+| D91 | **`fill` together with `variant: baseline` is refused at start**: `rag.profiles.tools.fill: not with variant baseline` — baseline binds no profile, so no fill source would run (with `corpus` the file was read and checked, then the store filled live — a silent drop). The YAML validator names it; the server checks a config built in code too, before the corpus file is read | §6.2, §14.1 |
+| D92 | **`LegacyTranscriptContextStrategy` and `RagRecallContextStrategy` throw `STATE_CORRUPT` on bad state, like the window and legacy-accumulate strategies.** `restore` of a state of another version or of the wrong shape throws `OrchestratorError(…, 'STATE_CORRUPT')`; no saved state (`undefined`) still starts empty | §10.5.2, §14.1 |
+| D93 | **The configured slot count reaches a re-wired worker's tool record key** — D32's purpose for `injected.configuredSlotCount`, which nothing read. The server gives the worker's builder `withToolRecordKey` of `defaultToolRecordKey` over that count (`clientCount` = the configured slots), so every key the worker's agent computes equals the ids its store was filled with. Read by that key; tested on the key and on the re-wire | §6.3 (D32), §14.1 |
+| D94 | **YAML `fill: corpus` with a worker that has its own `rag` and its own clients (`mcp:`) is refused at start** — by the YAML resolution (`resolveSmartServerConfig`, a `ConfigValidationError` once the worker files are read), mirroring D47 (3), which the server checks for a config built in code. One rule, one message, two callers. A worker with its own `rag` on the shared clients stays allowed (its declared dimension is checked, D65) | §6.2, §14.1 |
+| D95 | **D31 amended: a client that fails its listing at the startup snapshot fails `start()`** — the authoritative snapshot (§10.5.3 M11) runs before the server's fill and rejects with that client's `McpError`. "Counted, logged, `degraded`" (D31) applies only to a client that fails after the startup snapshot, at the fill's own listing: `clientFailures`, `complete: false`, `/health` 503 (D72) | D31, §6.3, §14.1 |
