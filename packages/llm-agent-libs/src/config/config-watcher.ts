@@ -4,7 +4,10 @@
  *
  * Uses `fs.watch()` with debounce (500ms default) to avoid firing
  * on partial writes. Emits `reload` with the reloadable portion
- * of the config, or `error` on parse failure.
+ * of the config — the values as the file holds them (`HotReloadableInput`,
+ * not validated), after the injected `resolveDocument`, when given — and, as
+ * the event's second argument, the whole resolved document the values were
+ * read from (D83 (10)); or `error` on a read, parse or resolve failure.
  */
 
 import { EventEmitter } from 'node:events';
@@ -42,6 +45,28 @@ export interface HotReloadableConfig {
   logDir?: string;
 }
 
+/**
+ * The hot-reloadable values exactly as the file holds them (spec §3.8, D83):
+ * not validated and not coerced — a value of the wrong type or out of range
+ * stays as it is. Validate before applying anything; the server does so with
+ * its config field validator, and an invalid value fails the reload.
+ */
+export type HotReloadableInput = { [K in keyof HotReloadableConfig]?: unknown };
+
+/** The `agent.*` keys the watcher reads. */
+const AGENT_KEYS = [
+  'maxIterations',
+  'maxToolCalls',
+  'ragQueryK',
+  'toolUnavailableTtlMs',
+  'showReasoning',
+  'historyAutoSummarizeLimit',
+  'queryExpansionEnabled',
+  'toolResultCacheTtlMs',
+  'sessionTokenBudget',
+  'classificationEnabled',
+] as const satisfies readonly (keyof HotReloadableConfig)[];
+
 // ---------------------------------------------------------------------------
 // ConfigWatcher
 // ---------------------------------------------------------------------------
@@ -49,6 +74,13 @@ export interface HotReloadableConfig {
 export interface ConfigWatcherOptions {
   /** Debounce interval in ms. Default: 500 */
   debounceMs?: number;
+  /**
+   * Applied to the whole parsed file before any hot-reloadable field is read
+   * (spec §3.8, D83 (8)) — e.g. the server's `${VAR}` substitution, so a reload
+   * reads the file as the start read it. A throw is emitted as `error`, like a
+   * parse failure. Absent: the values are the file's as written.
+   */
+  resolveDocument?: (document: unknown) => unknown;
 }
 
 export class ConfigWatcher extends EventEmitter {
@@ -56,11 +88,13 @@ export class ConfigWatcher extends EventEmitter {
   private debounceTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly debounceMs: number;
   private readonly filePath: string;
+  private readonly resolveDocument?: (document: unknown) => unknown;
 
   constructor(filePath: string, options?: ConfigWatcherOptions) {
     super();
     this.filePath = filePath;
     this.debounceMs = options?.debounceMs ?? 500;
+    this.resolveDocument = options?.resolveDocument;
   }
 
   /** Start watching the config file. */
@@ -97,9 +131,18 @@ export class ConfigWatcher extends EventEmitter {
   private _reload(): void {
     try {
       const raw = fs.readFileSync(this.filePath, 'utf8');
-      const parsed = parseYaml(raw) as Record<string, unknown>;
-      const config = this._extractReloadable(parsed);
-      this.emit('reload', config);
+      const parsed: unknown = parseYaml(raw);
+      // Spec D83 (8): the consumer's resolution (the server's ${VAR}) over the
+      // whole document, before a field is picked — as the start does.
+      const document = this.resolveDocument
+        ? this.resolveDocument(parsed)
+        : parsed;
+      const resolved = (document ?? {}) as Record<string, unknown>;
+      const config = this._extractReloadable(resolved);
+      // Spec D83 (10): the document the values were read from, beside them — a
+      // consumer validates the whole file (the server: with its start
+      // validator), never the extracted values alone. One read for both.
+      this.emit('reload', config, resolved);
     } catch (err) {
       this.emit('error', err);
     }
@@ -107,57 +150,29 @@ export class ConfigWatcher extends EventEmitter {
 
   private _extractReloadable(
     yaml: Record<string, unknown>,
-  ): HotReloadableConfig {
+  ): HotReloadableInput {
     const agent = (yaml.agent ?? {}) as Record<string, unknown>;
     // The weights belong to the in-memory store, the only one that applies them
     // (VectorRag.updateWeights) — read from rag.store, and only for that type (§4.6.4).
     const ragStore = ((yaml.rag as Record<string, unknown> | undefined)
       ?.store ?? {}) as Record<string, unknown>;
     const inMemory = ragStore.type === 'in-memory';
-    const prompts = yaml.prompts as Record<string, string> | undefined;
-    const cb = yaml.circuitBreaker as Record<string, unknown> | undefined;
-
-    const config: HotReloadableConfig = {};
-
-    if (agent.maxIterations !== undefined)
-      config.maxIterations = Number(agent.maxIterations);
-    if (agent.maxToolCalls !== undefined)
-      config.maxToolCalls = Number(agent.maxToolCalls);
-    if (agent.ragQueryK !== undefined)
-      config.ragQueryK = Number(agent.ragQueryK);
-    if (agent.toolUnavailableTtlMs !== undefined)
-      config.toolUnavailableTtlMs = Number(agent.toolUnavailableTtlMs);
-    if (agent.showReasoning !== undefined)
-      config.showReasoning = Boolean(agent.showReasoning);
-    if (agent.historyAutoSummarizeLimit !== undefined)
-      config.historyAutoSummarizeLimit = Number(
-        agent.historyAutoSummarizeLimit,
-      );
-    if (agent.queryExpansionEnabled !== undefined)
-      config.queryExpansionEnabled = Boolean(agent.queryExpansionEnabled);
-    if (agent.toolResultCacheTtlMs !== undefined)
-      config.toolResultCacheTtlMs = Number(agent.toolResultCacheTtlMs);
-    if (agent.sessionTokenBudget !== undefined)
-      config.sessionTokenBudget = Number(agent.sessionTokenBudget);
-    if (agent.classificationEnabled !== undefined)
-      config.classificationEnabled = Boolean(agent.classificationEnabled);
-
-    if (inMemory && ragStore.vectorWeight !== undefined)
-      config.vectorWeight = Number(ragStore.vectorWeight);
-    if (inMemory && ragStore.keywordWeight !== undefined)
-      config.keywordWeight = Number(ragStore.keywordWeight);
-
-    if (prompts) config.prompts = prompts;
-    if (cb) {
-      config.circuitBreaker = {};
-      if (cb.failureThreshold !== undefined)
-        config.circuitBreaker.failureThreshold = Number(cb.failureThreshold);
-      if (cb.recoveryWindowMs !== undefined)
-        config.circuitBreaker.recoveryWindowMs = Number(cb.recoveryWindowMs);
+    // Values as read — never coerced (spec D83): `Number('oops')` is NaN, and a
+    // NaN iteration limit never stops the loop. The reader of the event validates.
+    const config: HotReloadableInput = {};
+    for (const key of AGENT_KEYS) {
+      if (agent[key] !== undefined) config[key] = agent[key];
     }
-
-    if (yaml.logDir !== undefined) config.logDir = String(yaml.logDir);
-
+    if (inMemory && ragStore.vectorWeight !== undefined)
+      config.vectorWeight = ragStore.vectorWeight;
+    if (inMemory && ragStore.keywordWeight !== undefined)
+      config.keywordWeight = ragStore.keywordWeight;
+    // Passed as read — a section with no value (`prompts:`) too: the reader of
+    // the event validates it (the server: `prompts has no value`, D83 (13)).
+    if (yaml.prompts !== undefined) config.prompts = yaml.prompts;
+    if (yaml.circuitBreaker !== undefined)
+      config.circuitBreaker = yaml.circuitBreaker;
+    if (yaml.logDir !== undefined) config.logDir = yaml.logDir;
     return config;
   }
 }

@@ -539,9 +539,10 @@ import {
   resolveLlmConfigStrict,
   resolveToolSelectionStrategy,
 } from './config.js';
+import { ConfigTransactionQueue } from './config-transaction-queue.js';
 import type { SmartServerDecisionConfig } from './decision-config.js';
 import { makeKnowledgeBackend } from './knowledge/make-knowledge-backend.js';
-import { llmKeySet, optionalNumber } from './llm-config-map.js';
+import { optionalNumber } from './llm-config-map.js';
 import {
   buildSessionMcpClients,
   serverOwnsMcpConnection,
@@ -554,13 +555,12 @@ import {
 } from './mcp/namespaced-bridge.js';
 import { makePgPool, makePgReadPool } from './pg-pool.js';
 import {
-  assertNamedLlmKeys,
-  dagNamedLlmKeys,
-  parseControllerSettings,
-  parseDagSettings,
-  parseLinearSettings,
-  parseStepperSettings,
-} from './pipeline-settings.js';
+  BUILTIN_PIPELINE_PARSERS,
+  BUILTIN_PIPELINE_SECTIONS,
+  type BuiltinPipelineName,
+  type PipelineSectionEntry,
+  type PipelineSelection,
+} from './pipeline-sections.js';
 import { selectPipelinePlugin } from './select-pipeline-plugin.js';
 import type { ISessionMetaStore } from './session-meta-store.js';
 import { InMemorySessionMetaStore } from './session-meta-store.js';
@@ -813,6 +813,8 @@ export class SmartServer {
    * Constructed in `_buildInfra` after embedder factories are resolved.
    */
   private _workers!: IWorkerRegistry;
+  /** The server's one config queue and its "config not applied" state (spec V6, V10, D80, D82). */
+  private readonly _configTransactions = new ConfigTransactionQueue();
   /**
    * Declarative HTTP route table built once; `_handle` delegates to its
    * `dispatch`. Replaces the former ~300-line if/else route chain.
@@ -1011,6 +1013,10 @@ export class SmartServer {
    * factory (dynamic). `buildPipelineInstance` only builds it per session.
    */
   private _pipelinePlugin!: IPipelinePlugin;
+  /** Set in `_buildInfra` with `_pipelinePlugin`; the reload watcher's `pipeline` (spec D83 (11)). */
+  private _pipelineSections!: ReadonlyMap<string, PipelineSectionEntry>;
+  /** Set in `_buildInfra` with `_pipelinePlugin`; the reload watcher's `pipeline` (spec D83 (11)). */
+  private _pipelineSelection!: PipelineSelection;
   /**
    * Per-session `IPipelineInstance.close()` hooks, keyed by sessionId. Populated
    * by `buildPipelineInstance` (via `buildSessionAgent`) and invoked from the
@@ -1336,47 +1342,46 @@ export class SmartServer {
     // section; a dynamic factory is the plugin author's parser. Only the selected
     // entry is ever called, once, below.
     const warn = (m: string) => this.warn(m);
-    const pipelineRegistry = new Map<string, PipelinePluginFactory>([
-      ['flat', () => new FlatPipelinePlugin()],
-      ['linear', (s) => new LinearPipelinePlugin(parseLinearSettings(s))],
-      [
-        'dag',
-        (s) => {
-          const settings = parseDagSettings(s, warn);
-          assertNamedLlmKeys(
-            dagNamedLlmKeys(settings),
-            this._llmMap,
-            "pipeline 'dag'",
-          );
-          return new DagPipelinePlugin(settings);
-        },
-      ],
-      ['stepper', (s) => new StepperPipelinePlugin(parseStepperSettings(s))],
-      [
-        'controller',
-        (s) =>
+    // Spec D83 (11): the built-in factories call BUILTIN_PIPELINE_PARSERS — the
+    // parse the reload runs too; both records are keyed by BuiltinPipelineName,
+    // so the compiler keeps the factories and the section entries equal.
+    const builtinFactories: Record<BuiltinPipelineName, PipelinePluginFactory> =
+      {
+        flat: () => new FlatPipelinePlugin(),
+        linear: (s) =>
+          new LinearPipelinePlugin(BUILTIN_PIPELINE_PARSERS.linear(s)),
+        dag: (s) =>
+          new DagPipelinePlugin(
+            BUILTIN_PIPELINE_PARSERS.dag(s, this._llmMap, warn),
+          ),
+        stepper: (s) =>
+          new StepperPipelinePlugin(BUILTIN_PIPELINE_PARSERS.stepper(s)),
+        controller: (s) =>
           new ControllerPipelinePlugin(
             'controller',
             'smart-executor',
-            parseControllerSettings(s, llmKeySet(this._llmMap)),
+            BUILTIN_PIPELINE_PARSERS.controller(s, this._llmMap),
           ),
-      ],
-      [
-        'controller-weak',
-        (s) =>
+        'controller-weak': (s) =>
           new ControllerPipelinePlugin(
             'controller-weak',
             'weak-executor',
-            parseControllerSettings(s, llmKeySet(this._llmMap)),
+            BUILTIN_PIPELINE_PARSERS['controller-weak'](s, this._llmMap),
           ),
-      ],
-    ]);
+      };
+    const pipelineRegistry = new Map<string, PipelinePluginFactory>(
+      Object.entries(builtinFactories),
+    );
+    const pipelineSections = new Map<string, PipelineSectionEntry>(
+      Object.entries(BUILTIN_PIPELINE_SECTIONS),
+    );
     const pipelineSources = new Map<string, string>(
       [...pipelineRegistry.keys()].map((k) => [k, 'built-in']),
     );
     const registerPipeline = (
       name: string,
       factory: PipelinePluginFactory,
+      entry: PipelineSectionEntry,
     ): void => {
       const source = plugins.pipelinePluginSources.get(name) ?? 'unknown';
       if (pipelineRegistry.has(name)) {
@@ -1387,22 +1392,30 @@ export class SmartServer {
       }
       pipelineRegistry.set(name, factory);
       pipelineSources.set(name, source);
+      pipelineSections.set(name, entry);
     };
     for (const [name, plugin] of plugins.pipelinePlugins)
-      registerPipeline(name, () => plugin);
+      registerPipeline(name, () => plugin, { kind: 'no-section' });
     for (const [name, factory] of plugins.pipelinePluginFactories ?? []) {
-      registerPipeline(name, factory);
+      registerPipeline(name, factory, { kind: 'plugin-factory' });
     }
     log({
       event: 'pipeline_registry_loaded',
       pipelines: [...pipelineRegistry.keys()],
     });
+    const selection: PipelineSelection = {
+      name: this.cfg.pipeline?.name ?? 'flat',
+      section: this.cfg.pipeline?.config ?? {},
+    };
     this._pipelinePlugin = selectPipelinePlugin(
       pipelineRegistry,
       pipelineSources,
-      this.cfg.pipeline?.name ?? 'flat',
-      this.cfg.pipeline?.config ?? {},
+      selection.name,
+      selection.section,
     );
+    // Spec D83 (11): what a reload checks its file's pipeline against.
+    this._pipelineSections = pipelineSections;
+    this._pipelineSelection = selection;
 
     // Merge plugin embedder factories with config-provided ones
     const mergedEmbedderFactories = {
@@ -1934,6 +1947,12 @@ export class SmartServer {
         drainWorkers: () => this._workers.drain(),
         invalidateSessions: () =>
           this._lifecycle?.invalidateAll() ?? Promise.resolve(),
+        transactions: this._configTransactions,
+        pipeline: {
+          entries: this._pipelineSections,
+          running: this._pipelineSelection,
+          warn: (m) => this.warn(m),
+        },
         ragStores,
       });
       reloadWatcher.start();
@@ -3151,11 +3170,21 @@ export class SmartServer {
       url: rawUrl,
       normalizedPath: urlPath,
     });
-    // Server readiness: derived from the agent's MCP connection strategy (it
-    // implements IReadinessReporter). No strategy / non-reporting ⇒ ready
-    // (readiness unknown). Computed ONCE here and reused by /health and the
-    // pre-dispatch request gate (messages/chat) via `rc.ready`.
-    const ready = isReadinessReporter(smartAgent) ? smartAgent.isReady() : true;
+    // Server readiness (spec §10.5.10, D82): the agent's MCP connection
+    // strategy (IReadinessReporter; none / non-reporting ⇒ ready) AND the
+    // config state — a config change that failed to apply leaves the server
+    // not ready until a later one applies. Computed ONCE here and reused by
+    // /health and the pre-dispatch request gate (messages/chat) via `rc.ready`.
+    const mcpReady = isReadinessReporter(smartAgent)
+      ? smartAgent.isReady()
+      : true;
+    const configNotApplied = this._configTransactions.notApplied;
+    const ready = mcpReady && configNotApplied === undefined;
+    const notReadyMessage = configNotApplied
+      ? `config not applied — ${configNotApplied.reason}`
+      : mcpReady
+        ? undefined
+        : 'MCP unavailable — server not ready';
     const rc: RouteContext = {
       req,
       res,
@@ -3163,6 +3192,8 @@ export class SmartServer {
       urlPath,
       method: req.method ?? 'GET',
       ready,
+      notReadyMessage,
+      configNotApplied,
       server: this,
       requestLogger,
       smartAgent,
@@ -3279,7 +3310,7 @@ export class SmartServer {
       handle: async (rc) => {
         // Pre-dispatch readiness gate: fail loud (503) BEFORE opening any stream.
         if (!rc.ready) {
-          writeNotReady(rc.res);
+          writeNotReady(rc.res, rc.notReadyMessage);
           return;
         }
         const anthropicAdapter = rc.adapterMap?.get('anthropic');
@@ -3313,7 +3344,7 @@ export class SmartServer {
       handle: async (rc) => {
         // Pre-dispatch readiness gate: fail loud (503) BEFORE opening any SSE stream.
         if (!rc.ready) {
-          writeNotReady(rc.res);
+          writeNotReady(rc.res, rc.notReadyMessage);
           return;
         }
         await rc.server._withSession(
@@ -3373,6 +3404,7 @@ export class SmartServer {
       drainWorkers: () => this._workers.drain(),
       invalidateSessions: () =>
         this._lifecycle?.invalidateAll() ?? Promise.resolve(),
+      transactions: this._configTransactions,
     };
   }
 }

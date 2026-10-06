@@ -63,18 +63,22 @@ export const CORS_HEADERS = {
  * Pre-dispatch readiness gate response: HTTP 503 with an OpenAI-shaped error,
  * written BEFORE any pipeline run or SSE stream is opened. Used when the server is
  * NOT_READY (MCP unavailable) so a request fails loud instead of being served
- * tool-blind / returning a silent "(no response)".
+ * tool-blind / returning a silent "(no response)". `message` names why (spec
+ * §10.5.10, D82): a config change that failed to apply, or MCP unavailable.
  */
-export function writeNotReady(res: {
-  writeHead(code: number, headers?: Record<string, string>): unknown;
-  end(body?: string): unknown;
-}): void {
+export function writeNotReady(
+  res: {
+    writeHead(code: number, headers?: Record<string, string>): unknown;
+    end(body?: string): unknown;
+  },
+  message = 'MCP unavailable — server not ready',
+): void {
   res.writeHead(503, { 'Content-Type': 'application/json' });
   res.end(
     JSON.stringify({
       error: {
         type: 'service_unavailable',
-        message: 'MCP unavailable — server not ready',
+        message,
       },
     }),
   );

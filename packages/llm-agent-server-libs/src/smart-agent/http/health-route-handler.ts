@@ -16,5 +16,11 @@ export async function handleHealthRoute(rc: RouteContext): Promise<void> {
   // that can still serve — a load balancer must not drop a working pod.
   const httpCode = rc.ready ? 200 : 503;
   rc.res.writeHead(httpCode, { 'Content-Type': 'application/json' });
-  rc.res.end(JSON.stringify({ ...status, ready: rc.ready }));
+  rc.res.end(
+    JSON.stringify({
+      ...status,
+      ready: rc.ready,
+      ...(rc.configNotApplied ? { configNotApplied: rc.configNotApplied } : {}),
+    }),
+  );
 }

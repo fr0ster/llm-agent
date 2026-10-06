@@ -19,6 +19,7 @@ import type {
   SmartAgent,
   SmartAgentHandle,
 } from '@mcp-abap-adt/llm-agent-libs';
+import type { ConfigNotApplied } from '../config-transaction-queue.js';
 import type { SmartServer } from '../smart-server.js';
 import { jsonError } from './response-helpers.js';
 
@@ -28,8 +29,12 @@ export interface RouteContext {
   rawUrl: string;
   urlPath: string;
   method: string;
-  /** Pre-computed once in `_handle`; reused by health/messages/chat. */
+  /** Pre-computed once in `_handle` — MCP readiness AND no config-not-applied (D82); reused by health/messages/chat. */
   ready: boolean;
+  /** Why `ready` is false — the chat gate's 503 message (spec §10.5.10, D82). */
+  notReadyMessage?: string;
+  /** The server's "config not applied" state (D82) — `/health` reports it. */
+  configNotApplied?: ConfigNotApplied;
   server: SmartServer;
   requestLogger: IRequestLogger;
   smartAgent: SmartAgent;

@@ -49,6 +49,7 @@ export {
   ConfigWatcher,
   type ConfigWatcherOptions,
   type HotReloadableConfig,
+  type HotReloadableInput,
 } from './config/config-watcher.js';
 export {
   FINALIZER_SYSTEM,
