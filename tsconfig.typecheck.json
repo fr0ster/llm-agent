@@ -49,6 +49,7 @@
     "packages/llm-agent-libs/src/utils/__tests__/lazy.typecheck.ts",
     "packages/llm-agent-libs/src/__tests__/tool-availability-policy.typecheck.ts",
     "packages/llm-agent-libs/src/collections/__tests__/record-writer.test.ts",
-    "packages/llm-agent-libs/src/collections/__tests__/staged-retrieval.test.ts"
+    "packages/llm-agent-libs/src/collections/__tests__/staged-retrieval.test.ts",
+    "packages/llm-agent-libs/src/collections/__tests__/composed-tools-profile.test.ts"
   ]
 }

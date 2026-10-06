@@ -1,5 +1,10 @@
 // packages/llm-agent-libs/src/collections/index.ts
 
+export {
+  ComposedToolsProfile,
+  type ComposedToolsProfileOptions,
+  TOOLS_PROFILE_NAME,
+} from './composed-tools-profile.js';
 export { FixedItemsCut, ScoreFloorCut, TopItemsCut } from './cuts.js';
 export { ItemPool } from './item-pool.js';
 export { MaxScoreCollapse } from './max-score-collapse.js';
@@ -32,3 +37,4 @@ export {
   ParameterNamesToolText,
   SchemaToolText,
 } from './tools/tool-text.js';
+export { bindToolsProfile, toolsBindingOf } from './tools-binding.js';
