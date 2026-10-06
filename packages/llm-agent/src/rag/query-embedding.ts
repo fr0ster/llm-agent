@@ -55,9 +55,10 @@ export class TextOnlyEmbedding implements IQueryEmbedding {
 }
 
 /**
- * Decorator: tries the inner embedding first; on failure falls back
- * to the supplied embedder.  Result is memoized so concurrent callers
- * share one promise — same contract as {@link QueryEmbedding}.
+ * Decorator: a {@link TextOnlyEmbedding} (no caller embedder) is embedded with
+ * the supplied store embedder; any other inner embedding is used as is and its
+ * failure propagates.  Result is memoized so concurrent callers share one
+ * promise — same contract as {@link QueryEmbedding}.
  */
 export class FallbackQueryEmbedding implements IQueryEmbedding {
   private _vector: Promise<number[]> | null = null;
@@ -72,9 +73,13 @@ export class FallbackQueryEmbedding implements IQueryEmbedding {
   }
 
   toVector(): Promise<number[]> {
-    this._vector ??= this.inner
-      .toVector()
-      .catch(() => this.fallback.embedQuery(this.text).then((r) => r.vector));
+    // Spec §10.5.4 R1 (D73): the store's embedder stands in ONLY for a caller with
+    // no embedder (TextOnlyEmbedding — an absent capability). A real embedder that
+    // failed is an error, never re-embedded behind the caller's back.
+    this._vector ??=
+      this.inner instanceof TextOnlyEmbedding
+        ? this.fallback.embedQuery(this.text).then((r) => r.vector)
+        : this.inner.toVector();
     return this._vector;
   }
 }

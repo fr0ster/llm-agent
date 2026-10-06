@@ -63,8 +63,8 @@ export class VectorRag implements IRag, IRetrievalEmbedderOwner {
   private readonly documentEnrichers: IDocumentEnricher[];
   /**
    * `embedder` writes the records (`embedDocument`) and embeds the search text
-   * this store embeds itself (`embedQuery`) — a text-only query, a
-   * preprocessed one, a failed caller embedding.
+   * this store embeds itself (`embedQuery`) — a text-only query or a
+   * preprocessed one (spec §10.5.4 R1: a failed caller embedding is an error).
    */
   constructor(
     private readonly embedder: IRetrievalEmbedder,
@@ -187,7 +187,8 @@ export class VectorRag implements IRag, IRetrievalEmbedderOwner {
       let enrichedText = text;
       for (const enricher of this.documentEnrichers) {
         const eResult = await enricher.enrich(enrichedText, options);
-        if (eResult.ok) enrichedText = eResult.value;
+        if (!eResult.ok) return eResult;
+        enrichedText = eResult.value;
       }
       const { vector } = await this.embedder.embedDocument(
         enrichedText,
@@ -228,7 +229,8 @@ export class VectorRag implements IRag, IRetrievalEmbedderOwner {
       let searchText = text;
       for (const pp of this.queryPreprocessors) {
         const ppResult = await pp.process(searchText, options);
-        if (ppResult.ok) searchText = ppResult.value;
+        if (!ppResult.ok) return ppResult;
+        searchText = ppResult.value;
       }
       const nowSecs = Date.now() / 1000;
       // If preprocessors transformed the text, embed the transformed version

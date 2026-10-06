@@ -255,7 +255,12 @@ test('controller session-local: s1__Search routes to the SESSION client-1 instan
     ...base,
     embedder: constEmbedder,
     stepperKnowledgeBackend: new InMemoryKnowledgeBackend(
-      makeKnowledgeSemanticIndex(symmetricEmbedder(constEmbedder)),
+      makeKnowledgeSemanticIndex(
+        // constEmbedder is already a retrieval embedder (symmetricEmbedder);
+        // wrapping it again made every index upsert throw (spec §10.5.4 R9
+        // now surfaces that instead of leaving the entry unindexed).
+        constEmbedder as unknown as import('@mcp-abap-adt/llm-agent').IRetrievalEmbedder,
+      ),
     ),
     knowledgeRagFor: () => ({
       query: async () => [],

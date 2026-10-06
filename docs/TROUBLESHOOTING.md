@@ -240,11 +240,11 @@ Other reasons for "no effect":
 - **A collection added after build is not reranked.** The builder applies a strategy when it projects registry entries into the pipeline's stores. A registry with `setMutationListener` (`SimpleRagRegistry` has it) re-projects on every change, so a collection registered later is wrapped like the rest. A custom `IRagRegistry` without `setMutationListener` is never re-projected: a collection registered after build is not visible to any pipeline stage, reranked or not. Add `setMutationListener` to the registry.
 - **The embedder breaker is open** (see the next entry).
 
-### With the embedder breaker open, a store returns nothing
+### With the embedder breaker open, a request fails with CIRCUIT_OPEN
 
-**Symptom.** Under an embedder outage (`circuitBreaker` configured, the embedder breaker `open` in `/health`) retrieval returns no tools / documents, reranked or not.
+**Symptom.** Under an embedder outage (`circuitBreaker` configured, the embedder breaker `open` in `/health`) every request that retrieves fails with `CIRCUIT_OPEN` naming the store (before the breaker opens: the embedder's own error).
 
-**Cause.** The breaker fails each embedding fast (`CIRCUIT_OPEN`), so every store that embeds the query fails its query; the `rag-query` stage records no results for it (`ragQueryCount` with `hit: false`, `logRagQuery` with `resultCount: 0`) and the request continues. There is no in-memory fallback any more (removed in this major).
+**Cause.** The breaker fails each embedding fast, every store that embeds the query fails its query, and the `rag-query` stage fails the request with that error (no request continues on missing results).
 
 **Fix.** The embedder; the breaker closes after its recovery window.
 

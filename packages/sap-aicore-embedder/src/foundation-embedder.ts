@@ -71,11 +71,8 @@ export class FoundationModelsEmbedder implements IEmbedderBatch {
   }
 
   async embed(text: string, _options?: CallOptions): Promise<IEmbedResult> {
-    const items = await this.requestEmbeddings([text]);
-    if (items.length === 0) {
-      throw new RagError('No embeddings returned from SAP AI Core');
-    }
-    return { vector: decodeEmbedding(items[0].embedding) };
+    const [item] = await this.requestEmbeddings([text]);
+    return { vector: toVector(item) };
   }
 
   async embedBatch(
@@ -84,14 +81,27 @@ export class FoundationModelsEmbedder implements IEmbedderBatch {
   ): Promise<IEmbedResult[]> {
     if (texts.length === 0) return [];
     const items = await this.requestEmbeddings(texts);
-    if (items.length === 0) {
-      throw new RagError('No embeddings returned from SAP AI Core batch');
-    }
     const sorted = [...items].sort((a, b) => a.index - b.index);
-    return sorted.map((item) => ({ vector: decodeEmbedding(item.embedding) }));
+    return sorted.map((item) => ({ vector: toVector(item) }));
   }
 
+  /**
+   * Spec §10.5.4 R12: one embedding per text, or `EMBED_ERROR` — a short
+   * answer, a missing `data`, an empty vector or an HTTP failure is never
+   * returned as a result.
+   */
   private async requestEmbeddings(input: string[]): Promise<NormalizedItem[]> {
+    const items = await this.callInference(input);
+    if (items.length !== input.length) {
+      throw new RagError(
+        `SAP AI Core returned ${items.length} embeddings for ${input.length} texts`,
+        'EMBED_ERROR',
+      );
+    }
+    return items;
+  }
+
+  private async callInference(input: string[]): Promise<NormalizedItem[]> {
     // Asked fresh on every request — never cached on the instance — so a
     // rotating credential (client-credentials exchange, Entra ID, ...) keeps
     // rotating rather than being frozen at construction time.
@@ -119,13 +129,20 @@ export class FoundationModelsEmbedder implements IEmbedderBatch {
         const text = await res.text().catch(() => '');
         throw new RagError(
           `SAP AI Core embeddings call failed: ${res.status} ${res.statusText} ${text}`,
+          'EMBED_ERROR',
         );
       }
       const json = (await res.json()) as GeminiPredictResponse;
-      return (json.predictions ?? []).map((p, i) => ({
-        embedding: p.embeddings?.values ?? [],
-        index: i,
-      }));
+      return (json.predictions ?? []).map((p, i) => {
+        const values = p.embeddings?.values;
+        if (!Array.isArray(values)) {
+          throw new RagError(
+            `SAP AI Core returned an empty embedding (prediction ${i} has no values)`,
+            'EMBED_ERROR',
+          );
+        }
+        return { embedding: values, index: i };
+      });
     }
 
     // azure-openai
@@ -140,10 +157,17 @@ export class FoundationModelsEmbedder implements IEmbedderBatch {
       const text = await res.text().catch(() => '');
       throw new RagError(
         `SAP AI Core embeddings call failed: ${res.status} ${res.statusText} ${text}`,
+        'EMBED_ERROR',
       );
     }
     const json = (await res.json()) as OpenAiEmbeddingsResponse;
-    return json.data ?? [];
+    if (!Array.isArray(json.data)) {
+      throw new RagError(
+        'SAP AI Core embeddings answer has no data',
+        'EMBED_ERROR',
+      );
+    }
+    return json.data;
   }
 
   private getDeploymentId(token: string): Promise<string> {
@@ -160,6 +184,18 @@ export class FoundationModelsEmbedder implements IEmbedderBatch {
     }
     return this.deploymentIdPromise;
   }
+}
+
+/** The decoded vector of one item; an empty one is `EMBED_ERROR`. */
+function toVector(item: NormalizedItem): number[] {
+  const vector = decodeEmbedding(item.embedding);
+  if (vector.length === 0) {
+    throw new RagError(
+      `SAP AI Core returned an empty embedding (item ${item.index})`,
+      'EMBED_ERROR',
+    );
+  }
+  return vector;
 }
 
 function detectFamily(model: string): ModelFamily {

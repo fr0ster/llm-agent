@@ -122,7 +122,7 @@ describe('FallbackQueryEmbedding', () => {
     assert.equal(fallback.callCount, 0);
   });
 
-  it('toVector() falls back to fallback embedder when inner fails', async () => {
+  it('toVector() embeds a TextOnlyEmbedding with the store embedder', async () => {
     const inner = new TextOnlyEmbedding('hello'); // always rejects on toVector
     const fallbackEmbedder = makeStubEmbedder();
     const fqe = new FallbackQueryEmbedding(

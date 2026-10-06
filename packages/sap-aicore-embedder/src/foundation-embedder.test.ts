@@ -293,3 +293,63 @@ test('non-gemini declares no cap (undefined, not absent)', () => {
   assert.equal(e.maxBatchSize, undefined);
   assert.equal(isBatchSizeLimited(e), false);
 });
+
+// ---------------------------------------------------------------------------
+// Spec §10.5.4 R12 — a malformed or failed answer is EMBED_ERROR
+// ---------------------------------------------------------------------------
+
+/** Route deployments to a list for `model`, inference to `inference()`. */
+function installInference(
+  model: string,
+  inference: () => { body: unknown; status?: number },
+) {
+  installFetch((url) =>
+    url.includes('/v2/lm/deployments')
+      ? { body: deploymentList(model) }
+      : inference(),
+  );
+}
+
+async function assertEmbedError(p: Promise<unknown>, re: RegExp) {
+  await assert.rejects(p, (e: unknown) => {
+    const err = e as { code?: string; message?: string };
+    assert.equal(err.code, 'EMBED_ERROR');
+    assert.match(err.message ?? '', re);
+    return true;
+  });
+}
+
+test('R12: a batch answer with fewer items than texts → EMBED_ERROR', async () => {
+  installInference('text-embedding-3-small', () => ({
+    body: { data: [{ embedding: [0.1], index: 0 }] },
+  }));
+  await assertEmbedError(
+    makeOpenAiEmbedder().embedBatch(['a', 'b']),
+    /1 embeddings for 2 texts/,
+  );
+});
+
+test('R12: a gemini prediction without values → EMBED_ERROR (never a [] vector)', async () => {
+  installInference('gemini-embedding', () => ({
+    body: { predictions: [{ embeddings: {} }] },
+  }));
+  await assertEmbedError(makeGeminiEmbedder().embed('a'), /empty embedding/);
+});
+
+test('R12: an azure answer without data → EMBED_ERROR', async () => {
+  installInference('text-embedding-3-small', () => ({ body: {} }));
+  await assertEmbedError(makeOpenAiEmbedder().embed('a'), /no data/);
+});
+
+test('R12: an HTTP 500 → EMBED_ERROR (azure and gemini)', async () => {
+  installInference('text-embedding-3-small', () => ({
+    body: { error: 'x' },
+    status: 500,
+  }));
+  await assertEmbedError(makeOpenAiEmbedder().embed('a'), /500/);
+  installInference('gemini-embedding', () => ({
+    body: { error: 'x' },
+    status: 500,
+  }));
+  await assertEmbedError(makeGeminiEmbedder().embed('a'), /500/);
+});

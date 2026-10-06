@@ -548,7 +548,7 @@ CLOSED (normal) ──[failures >= threshold]──► OPEN (fast-fail)
 
 ### Embedder breaker open
 
-When the embedder breaker is open, an embedding call fails fast with `CIRCUIT_OPEN` and a store's query returns that error; no store answers from an in-memory copy (removed — it hid the outage behind empty or partial results). The pipeline's `rag-query` stage records no results for that store and the request continues. `/health` shows the breaker `open`; fix the embedder.
+When the embedder breaker is open, an embedding call fails fast with `CIRCUIT_OPEN` and a store's query returns that error; no store answers from an in-memory copy (removed — it hid the outage behind empty or partial results). The pipeline's `rag-query` stage fails the request with that error (`CIRCUIT_OPEN`, naming the store) — there are no partial results. `/health` shows the breaker `open`; fix the embedder.
 
 ## Benchmarking
 

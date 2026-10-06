@@ -147,11 +147,24 @@ export class RagOrchestrator implements IRagOrchestrator {
       ragSpan.end();
       const ragResultsMap: Record<string, RagResult[]> = {};
       for (const { name, result: r } of ragQueryResults) {
-        ragResultsMap[name] = r.ok ? r.value : [];
         this.deps.metrics.ragQueryCount.add(1, {
           store: name,
           hit: String(r.ok && r.value.length > 0),
         });
+      }
+      for (const { name, result: r } of ragQueryResults) {
+        // Spec §10.5.4 R6: a failed store query is the request's error, with
+        // the store's code — never an empty result for that store.
+        if (!r.ok) {
+          return {
+            ok: false,
+            error: new OrchestratorError(
+              `rag-orchestrator: store "${name}" failed: ${r.error.message}`,
+              r.error.code,
+            ),
+          };
+        }
+        ragResultsMap[name] = r.value;
       }
 
       // Rerank results

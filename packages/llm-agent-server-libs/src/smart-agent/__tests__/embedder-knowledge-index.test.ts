@@ -384,7 +384,7 @@ describe('JsonlKnowledgeBackend index lifecycle', () => {
     });
   });
 
-  it('upsert failure does NOT fail the put and does NOT duplicate the JSONL entry', async () => {
+  it('upsert failure rejects the put with UPSERT_ERROR (spec §10.5.4 R10) and does NOT duplicate the JSONL entry', async () => {
     await withDir(async (dir) => {
       const failing = {
         async upsert() {
@@ -396,7 +396,12 @@ describe('JsonlKnowledgeBackend index lifecycle', () => {
         deleteSession() {},
       };
       const b = new JsonlKnowledgeBackend(dir, failing as never);
-      await b.put('s', { content: 'alpha', metadata: meta({ runId: 'R' }) }); // must NOT throw
+      await assert.rejects(
+        b.put('s', { content: 'alpha', metadata: meta({ runId: 'R' }) }),
+        (e: unknown) =>
+          (e as { code?: string }).code === 'UPSERT_ERROR' &&
+          /index down/.test((e as Error).message),
+      );
       const entries = await b.scan('s');
       assert.equal(
         entries.length,

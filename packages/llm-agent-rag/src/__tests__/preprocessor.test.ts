@@ -61,12 +61,13 @@ describe('TranslatePreprocessor', () => {
     assert.equal(llm.callCount, 0);
   });
 
-  it('returns original text when LLM fails', async () => {
+  it('returns QUERY_EXPAND_ERROR when LLM fails (spec §10.5.4 R3)', async () => {
     const llm = makeLlm([new Error('LLM unavailable')]);
     const preprocessor = new TranslatePreprocessor(llm);
     const result = await preprocessor.process('внутренние таблицы ABAP запрос');
-    assert.ok(result.ok);
-    assert.equal(result.value, 'внутренние таблицы ABAP запрос');
+    assert.ok(!result.ok);
+    assert.equal(result.error.code, 'QUERY_EXPAND_ERROR');
+    assert.match(result.error.message, /LLM unavailable/);
   });
 
   it('name is translate', () => {
@@ -90,12 +91,13 @@ describe('ExpandPreprocessor', () => {
     );
   });
 
-  it('returns original when LLM fails', async () => {
+  it('returns QUERY_EXPAND_ERROR when LLM fails (spec §10.5.4 R3)', async () => {
     const llm = makeLlm([new Error('LLM unavailable')]);
     const pp = new ExpandPreprocessor(llm);
     const result = await pp.process('create transport');
-    assert.ok(result.ok);
-    assert.equal(result.value, 'create transport');
+    assert.ok(!result.ok);
+    assert.equal(result.error.code, 'QUERY_EXPAND_ERROR');
+    assert.match(result.error.message, /LLM unavailable/);
   });
 
   it('name is expand', () => {

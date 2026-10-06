@@ -812,7 +812,9 @@ export class SmartAgentBuilder {
     return async (text, k, signal) => {
       const embedding = new QueryEmbedding(text, embedder, { signal });
       const queryRes = await resolve().query(embedding, k, { signal });
-      return queryRes.ok ? queryRes.value : [];
+      // Spec §10.5.4 R7: a failed query fails the sub-agent's context build.
+      if (!queryRes.ok) throw queryRes.error;
+      return queryRes.value;
     };
   }
 

@@ -137,7 +137,12 @@ describe('pipeline: controller — MCP failure classifier wiring', () => {
       // goal clears the target-state gate and the run proceeds to plan/execute.
       embedder: constEmbedder,
       stepperKnowledgeBackend: new InMemoryKnowledgeBackend(
-        makeKnowledgeSemanticIndex(symmetricEmbedder(constEmbedder)),
+        makeKnowledgeSemanticIndex(
+          // constEmbedder is already a retrieval embedder (symmetricEmbedder);
+          // wrapping it again made every index upsert throw (spec §10.5.4 R9
+          // now surfaces that instead of leaving the entry unindexed).
+          constEmbedder as unknown as import('@mcp-abap-adt/llm-agent').IRetrievalEmbedder,
+        ),
       ),
       // Complete knowledge-rag handle (the controller writes goal/plan/step
       // artifacts through it — the fixture's minimal stub lacks write/list).

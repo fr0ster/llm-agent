@@ -105,7 +105,8 @@ export class InMemoryRag implements IRag {
     let enrichedText = text;
     for (const enricher of this.documentEnrichers) {
       const eResult = await enricher.enrich(enrichedText, options);
-      if (eResult.ok) enrichedText = eResult.value;
+      if (!eResult.ok) return eResult;
+      enrichedText = eResult.value;
     }
 
     const embedding = embed(enrichedText);
@@ -182,7 +183,8 @@ export class InMemoryRag implements IRag {
     let searchText = text;
     for (const pp of this.queryPreprocessors) {
       const ppResult = await pp.process(searchText, options);
-      if (ppResult.ok) searchText = ppResult.value;
+      if (!ppResult.ok) return ppResult;
+      searchText = ppResult.value;
     }
     const queryEmbedding = embed(searchText);
     const nowSecs = Date.now() / 1000;

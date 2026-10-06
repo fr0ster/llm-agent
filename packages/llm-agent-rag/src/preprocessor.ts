@@ -1,12 +1,26 @@
-import type {
-  CallOptions,
-  IDocumentEnricher,
-  ILlm,
-  IQueryPreprocessor,
-  IRequestLogger,
+import {
+  type CallOptions,
+  type IDocumentEnricher,
+  type ILlm,
+  type IQueryPreprocessor,
+  type IRequestLogger,
   RagError,
-  Result,
+  type Result,
 } from '@mcp-abap-adt/llm-agent';
+
+/**
+ * Spec §10.5.4 R3: an LLM that fails, answers empty content or throws is a
+ * `QUERY_EXPAND_ERROR` naming the component — never the original text.
+ */
+function expandFailure(
+  component: string,
+  reason: string,
+): { ok: false; error: RagError } {
+  return {
+    ok: false,
+    error: new RagError(`${component}: ${reason}`, 'QUERY_EXPAND_ERROR'),
+  };
+}
 
 export class NoopQueryPreprocessor implements IQueryPreprocessor {
   readonly name = 'noop';
@@ -28,7 +42,7 @@ const TRANSLATE_SYSTEM_PROMPT =
 /**
  * Translates non-ASCII queries to English via helper LLM.
  * Passes through ASCII-only text and short text (< 15 chars) without LLM call.
- * Falls back to original text on LLM failure.
+ * An LLM failure, empty content or a throw is a `QUERY_EXPAND_ERROR`.
  */
 export class TranslatePreprocessor implements IQueryPreprocessor {
   readonly name = 'translate';
@@ -73,13 +87,25 @@ export class TranslatePreprocessor implements IQueryPreprocessor {
         });
       }
 
-      if (!res.ok || !res.value.content.trim()) {
-        return { ok: true, value: text };
+      if (!res.ok) {
+        return expandFailure(
+          'TranslatePreprocessor',
+          `LLM call failed: ${res.error.message}`,
+        );
       }
+      const content = res.value.content.trim();
+      if (!content)
+        return expandFailure(
+          'TranslatePreprocessor',
+          'LLM returned empty content',
+        );
 
-      return { ok: true, value: res.value.content.trim() };
-    } catch {
-      return { ok: true, value: text };
+      return { ok: true, value: content };
+    } catch (err) {
+      return expandFailure(
+        'TranslatePreprocessor',
+        `LLM call threw: ${String(err)}`,
+      );
     }
   }
 }
@@ -130,13 +156,25 @@ export class ExpandPreprocessor implements IQueryPreprocessor {
         });
       }
 
-      if (!res.ok || !res.value.content.trim()) {
-        return { ok: true, value: text };
+      if (!res.ok) {
+        return expandFailure(
+          'ExpandPreprocessor',
+          `LLM call failed: ${res.error.message}`,
+        );
       }
+      const content = res.value.content.trim();
+      if (!content)
+        return expandFailure(
+          'ExpandPreprocessor',
+          'LLM returned empty content',
+        );
 
-      return { ok: true, value: `${text} ${res.value.content.trim()}` };
-    } catch {
-      return { ok: true, value: text };
+      return { ok: true, value: `${text} ${content}` };
+    } catch (err) {
+      return expandFailure(
+        'ExpandPreprocessor',
+        `LLM call threw: ${String(err)}`,
+      );
     }
   }
 }
@@ -204,17 +242,23 @@ export class IntentEnricher implements IDocumentEnricher {
         });
       }
 
-      if (!res.ok || !res.value.content.trim()) {
-        return { ok: true, value: text };
+      if (!res.ok) {
+        return expandFailure(
+          'IntentEnricher',
+          `LLM call failed: ${res.error.message}`,
+        );
       }
+      const content = res.value.content.trim();
+      if (!content)
+        return expandFailure('IntentEnricher', 'LLM returned empty content');
 
       // Append intent keywords to original text — both get embedded together
       return {
         ok: true,
-        value: `${text}\nIntent: ${res.value.content.trim()}`,
+        value: `${text}\nIntent: ${content}`,
       };
-    } catch {
-      return { ok: true, value: text };
+    } catch (err) {
+      return expandFailure('IntentEnricher', `LLM call threw: ${String(err)}`);
     }
   }
 }
