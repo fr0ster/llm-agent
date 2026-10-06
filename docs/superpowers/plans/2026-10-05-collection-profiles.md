@@ -8,12 +8,12 @@
 
 **Tech Stack:** TypeScript 6 (strict, ESM, NodeNext), Node ≥ 22, `node:test` via `tsx`, Biome, npm workspaces monorepo.
 
-**Spec:** `docs/superpowers/specs/2026-10-05-collection-profiles-design.md` (approved 2026-10-05, frozen; amended 2026-10-05 with the user's decisions on S1–S9, spec §17.4, and on probability vs relevance decisions, the reranker package, the caller's k, cleanup failures and provider text composition, spec §17.6; and on relevance comparability, the second seam and the seam rename, spec §17.7; and on the server filling a bound tools profile from ready clients, D31, spec §6.3, §17.8; and on filling following the store's lifecycle, D34–D35, spec §17.9; and on only complete fills memoized, single-flight worker construction, the startup fill on every path, the direct hot-reload test and runtime-removed tools, D36–D40, spec §6.6, §17.10 — D36 superseded and D37 moved out by the next amendment; and on a tools store filled once at instance creation, the fill source as an injected strategy, the offline corpus API, refill and single-flight out, D41–D45, spec §3.10, §6.3–§6.5, §17.11; and on fill sources filling once with no `toolsChanged` reaction for a bound store, D46–D47, spec §3.10, §6.3, §6.4, §13, §15, §17.12; and on intents and companion stores removed entirely and the corpus deploy written in full, D50–D51, spec §17.15; and on the goal's three decisions of 2026-10-05 — the RAG implementations' home, the corpus loaded by the server at start with no deploy step, no tuned numbers in what ships — D53–D56, spec §11.3, §17.17; and on a major release without deprecated aliases or re-exports — the RAG implementations' files move now (S10 decided), no old names, no re-exports, the replicas' reload window accepted — D57–D60, spec §11.3, §11.4, §13, §17.18; and on S11, S12 and the search-strategy types — **all decided by the user on 2026-10-05** (spec §17.18): `OllamaRag` removed (S11, Task 1A Step 4); the pre-existing re-exports of spec §11.4 removed in this same major (S12, Task 4D; migration lines 52–69); `ISearchStrategy`, `ISearchCandidate`, `ISearchQuery`, `IScoredResult`, `ISearchContext` move with `VectorRag` to `llm-agent-rag` (Task 1A); and on the four questions spec §11.4 left open — **decided by the user on 2026-10-05** (spec §11.4, §17.18): `ITextLogger` removed, every use imports `ILogger` from `@mcp-abap-adt/interfaces-utils` (Task 4E; migration line 70), libs' two dead internal files `adapters/index.ts` and `interfaces/model-resolver.ts` deleted (Task 4E), `SmartAgentHandle` / libs' `IStageHandler` and libs' internal shims kept); and on the review findings and the user's decision of 2026-10-05 in spec §17.22 — D64 (an injected connection strategy is owned by the agent: `close()` and a failed `build()` dispose it), D65 (the corpus checked against every bound store's declared dimension before any store exists), D66 (a store filled before skills are vectorized into it), D67 (orphans never use up the pool); and on the goal's decision of 2026-10-05 that `FallbackRag` is removed — D68 (spec §10.4, §13, §17.23): Task 0A removes it with the builder's store wrapping and what existed only for it; D52 and D62 are withdrawn; and on the goal's decisions of 2026-10-05 "No fallbacks anywhere in the pipeline" and "the fail-loud sweep is part of this PR" — D69–D74 (spec §10.5, §13 B1–B11, §17.24): Tasks 4F–4O sweep every fallback and silent degradation (pipeline errors reach the consumer first, Task 4F), and `onFailure` is removed where `StagedRetrieval` is built (Tasks 12, 13, 14, 16, 18, 21, 22, 28, 29, 32, 33); and on the user's decisions of 2026-10-05 on U1–U10 — every recommendation approved (spec §10.5.12, §13 B12–B15, migration lines 73–74, §17.24): Task 4J counts `FallbackLlmCallStrategy`'s fallbacks (U1), Task 4K fails a step naming an agent the registry lacks (U5), Task 4L defaults the skill plugin host to `strict: true` (U2), Task 4M logs a worker on the parent's clients (U10), new Task 4P removes `lazy`'s `fallback` (U6), new Task 4Q makes the tool availability blacklist an injected policy with no default (U8), new Task 19B counts failed batch embedding calls (U7); U3, U4 stay as they are; U9 is Task 0A, confirmed; amended 2026-10-06 with the user's rule "no fallback anywhere; all in #322" for the 30.1.0 tool write path (spec §17.26, D79): Task 19B Steps 6–10 remove the per-tool write retry after a failed bulk write; amended 2026-10-06 for a review finding (spec §17.27, D80): Task 4M serializes complete reload transactions in the watcher; amended 2026-10-06 with the user's decisions (spec §17.28 — D80 extended, D79 confirmed): Task 4M moves the queue into the server (`ConfigTransactionQueue`, one instance for the reload watcher and `PUT /v1/config`) and makes a `PUT` one transaction that restores and answers 500 on a failed drain or invalidation (V10, B17); Task 23A pins the shared queue on a real server; Task 33 Step 8b and Task 34 document it; amended 2026-10-06 for a review finding (spec §17.29, D81 — *withdrawn by D82*); amended 2026-10-06 with the user's decision (spec §17.30, D82): a failed config change is an error that leaves the server not ready until a whole config applies — no rollback: Task 4M drops the snapshot / restore (`snapshotConfig`, `LlmCircuitBreakers.snapshot()`) and D81's atomic `SmartAgent.reconfigure`, and adds the queue's *config not applied* state, `/health`'s `configNotApplied` and the chat routes' not-ready message; Task 23A's real-server reload test checks the not-ready answers; Task 33 Step 8b and Task 34 (B10, B17; B18 withdrawn) document it; amended 2026-10-06 with the user's decision (spec §17.30, D82 (8), amendment 23): while the server is not ready only a whole config clears the state — a file reload or a `PUT` carrying every section the route can change — so Task 4M refuses a partial `PUT` with 409 before the queue and again at its transaction's start (`ConfigTransactionQueue.run` takes the change's scope), Task 23A's (10b) pins the refusal and the clearing reload on a real server, and Task 33 Step 8b and Task 34 (B17) document the rule; amended 2026-10-06 under the user's rule — no silent degradation, everything in this change (spec §17.32, D83 (5), amendment 25): the start config is checked by the same config field validator as a reload and a `PUT` — Task 4M validates it in `resolveSmartServerConfig` before any section is read (the section readers take the validated values, an invalid one fails the start with the same `invalid config — …` error, the CLI exits 1), Task 4Q keeps `agent.toolUnavailableTtlMs`'s rule as a start-only rule, and Task 33 Step 8b and Task 34 (B19, B20) document it; and with the user's decisions D83 (6), (7) of 2026-10-06 (spec §17.33, amendment 26): one grammar for numbers and flags at start, on a reload and on `PUT` — a number or a string that is exactly a `NUMBER_LITERAL`, `true` / `false` or exactly `"true"` / `"false"` — and every config field the start coerced with `Number()` / `Boolean()` / `String()` validated (spec §10.5.9 *Start-only fields*): Task 4M (`config-fields.ts`'s grammar and start-only rules, the section readers, `parseIntegerField`, `parseSkillPluginsConfig`, `parseStepperCoordinatorConfig`, `optionalNumber` removed), Task 4Q (`agent.toolUnavailableTtlMs` joins the start-only rules), Task 21 (`score-floor.minScore` normalized), Task 33 (DEPLOYMENT: environment-variable values for number / flag fields), Task 34 (migration line 75); and with the user's decisions D83 (8), (9) of 2026-10-06 (spec §17.34, amendment 27): the file reload substitutes `${VAR}` exactly as the start does — `ConfigWatcher` takes an injected `resolveDocument`, applied to the whole parsed file before a field is read, and the server passes the start's own `resolveEnvVars` — and every config field read by a type cast is validated (spec §10.5.9 *Cast-read fields*): Task 4M (libs `config-watcher.ts`, `config-reload-watcher.ts`, `config-fields.ts`'s shape checks and cast rules, the resolvers, `pipeline-settings.ts`, `stepper-config.ts`, the stepper examples' `${LLM_URL:-}` lines), Task 33 (DEPLOYMENT, INTEGRATION, the stepper README), Task 34 (B21, B22, the libs and server-libs CHANGELOGs); and with the review finding D82 (9) of 2026-10-06 (spec §17.35, amendment 28): a config file the watcher cannot read, parse or resolve is a failed reload — queued in the server's config queue, so it sets not-ready in queue order and logs `config_reload_failed` (`config_reload_error` gone): Task 4M (`config-reload-watcher.ts`'s `error` listener and `_onWatcherError`; four new test cases), Task 33 (INTEGRATION, DEPLOYMENT, TROUBLESHOOTING), Task 34 (B17); and with the review finding D83 (10) of 2026-10-06 (spec §17.36, amendment 29): a file reload validates the whole resolved document with the start's validator before anything applies — `ConfigWatcher`'s `reload` event carries the resolved document as a second argument, `_applyReload` runs `resolveSmartServerConfig` over it and applies the reload table's values `validateStartConfig` checked, `validateReloadedConfig` is removed (one rule set), and the start checks the `agent` / `subagents` section shapes: Task 4M (libs `config-watcher.ts`, `config-reload-watcher.ts`, `config-fields.ts`, the test helper `__tests__/reload-document.ts`, every reload test carries a whole document), Task 23A (its reload tests carry whole documents), Task 33 (DEPLOYMENT, INTEGRATION), Task 34 (B23, the libs CHANGELOG); and with D83 (11) of 2026-10-06 (spec §17.37, amendment 30, closing §17.36 (6)): a file reload also runs the selected pipeline's own section parser as a validation step — the start's registry entry's parse half, over the reloaded `pipeline.config` with the reloaded `llm:` keys, nothing built — after `resolveSmartServerConfig` and before anything applies; a reload that selects another pipeline fails (`pipeline change needs a restart`, the new pipeline's section checked too); a plugin factory has no validation entry, so its changed section fails the reload (strict) and an unchanged one passes: Task 4M (new `pipeline-sections.ts`, the registry in `smart-server.ts`, `ConfigReloadDeps.pipeline`, `_applyReload`, `reload-document.ts`'s `runningPipeline` / `FLAT_PIPELINE`, every reload watcher a test builds passes `pipeline`, one new case and one new test file), Task 23A (its watcher passes `pipeline`), Task 33 (DEPLOYMENT, INTEGRATION, TROUBLESHOOTING), Task 34 (B24).; and with the review finding D83 (12) of 2026-10-06 (spec §17.38, amendment 31): a present config section with the wrong shape is an error, never its default — every section a reader takes fields or items from is checked by its `FieldCheck` before a field of it is read, a default only when the section is absent (not written or `null`); `skillPlugins.embedder` / `.chunk` (the finding) and the same guard on `llm`, `rag`, `rag.store`, `rag.embedder`, `rag.retrieval`, `rag.profiles`, `decision`, `skillPlugins` itself, two `skillPlugins` string fields and the server's second reader of `knowledgeSeed`: Task 4M, Task 21 (`rag.profiles`), Task 33 (DEPLOYMENT, TROUBLESHOOTING), Task 34 (B25); and with the user's decision D83 (13) of 2026-10-06 (spec §17.39, amendment 32): a key written with no value (`null` — `rag.embedder:`, `prompts:`, `skillPlugins.store:`, `key: ~`, a JSON `null`) is an error everywhere, `<path> has no value` in the same `ConfigFieldError` at start, on a reload and on `PUT`; a default applies only when the key is absent (not written) — `present()` is "the key is written", `checkStartConfig` walks the whole document first (`checkNoValue`), `FieldCheck` names a `null` once, the `PUT` body is walked too, and the 30.1.0 tests that pinned a key with no value as absent are rewritten: Task 4M, Task 21 (one assertion), Task 33 (DEPLOYMENT, INTEGRATION, TROUBLESHOOTING), Task 34 (B26); and for the review finding D83 (14) of 2026-10-06 (spec §17.40, amendment 33): a reader checks a value's shape before it reads a field of it — readers run before `done()`, so a value already named still reaches them, and a `TypeError` from config input is a defect: `mcp[]` entries go through `check.list` and their closed check, `mcp[i].name` (a label, unique) is an issue of the same check (`validateMcpNames` goes), the document is a mapping (`checkDocument`; an empty file `{}` in `loadYamlConfig`), the worker file's document is checked before `parseSubAgents` reads it, the profile validator names a `fill.corpus` that is not a mapping, and a generated wrong-shape table covers every section, list item and reload-table field: Task 4M, Task 21 (the table gains `rag.profiles`), Task 23B (`checkFill`), Task 34 (B27); and for the review finding D84 of 2026-10-06 (spec §17.41, amendment 34): the record writer writes an item's canonical record **first** — listing every id the item holds or may hold (new `recordIds` + the stale set) — then its other records, then the unchanged stale deletes and settle; a failed canonical write leaves nothing written, a failed later write leaves an id already tracked; the bulk path writes the batch's canonicals as one bulk write, then the other records of the items whose canonical landed as a second: Task 11 (`storeItems`, the canonical-first tests on `InMemoryRag` and `VectorRag`, the bulk-order test), Tasks 15 and 19A (comments only). **Goal:** `docs/superpowers/goals/2026-10-04-collection-profiles.md` (user-owned; never edited). Executors read the spec section each task cites.
+**Spec:** `docs/superpowers/specs/2026-10-05-collection-profiles-design.md` (approved 2026-10-05, frozen; amended 2026-10-05 with the user's decisions on S1–S9, spec §17.4, and on probability vs relevance decisions, the reranker package, the caller's k, cleanup failures and provider text composition, spec §17.6; and on relevance comparability, the second seam and the seam rename, spec §17.7; and on the server filling a bound tools profile from ready clients, D31, spec §6.3, §17.8; and on filling following the store's lifecycle, D34–D35, spec §17.9; and on only complete fills memoized, single-flight worker construction, the startup fill on every path, the direct hot-reload test and runtime-removed tools, D36–D40, spec §6.6, §17.10 — D36 superseded and D37 moved out by the next amendment; and on a tools store filled once at instance creation, the fill source as an injected strategy, the offline corpus API, refill and single-flight out, D41–D45, spec §3.10, §6.3–§6.5, §17.11; and on fill sources filling once with no `toolsChanged` reaction for a bound store, D46–D47, spec §3.10, §6.3, §6.4, §13, §15, §17.12; and on intents and companion stores removed entirely and the corpus deploy written in full, D50–D51, spec §17.15; and on the goal's three decisions of 2026-10-05 — the RAG implementations' home, the corpus loaded by the server at start with no deploy step, no tuned numbers in what ships — D53–D56, spec §11.3, §17.17; and on a major release without deprecated aliases or re-exports — the RAG implementations' files move now (S10 decided), no old names, no re-exports, the replicas' reload window accepted — D57–D60, spec §11.3, §11.4, §13, §17.18; and on S11, S12 and the search-strategy types — **all decided by the user on 2026-10-05** (spec §17.18): `OllamaRag` removed (S11, Task 1A Step 4); the pre-existing re-exports of spec §11.4 removed in this same major (S12, Task 4D; migration lines 52–69); `ISearchStrategy`, `ISearchCandidate`, `ISearchQuery`, `IScoredResult`, `ISearchContext` move with `VectorRag` to `llm-agent-rag` (Task 1A); and on the four questions spec §11.4 left open — **decided by the user on 2026-10-05** (spec §11.4, §17.18): `ITextLogger` removed, every use imports `ILogger` from `@mcp-abap-adt/interfaces-utils` (Task 4E; migration line 70), libs' two dead internal files `adapters/index.ts` and `interfaces/model-resolver.ts` deleted (Task 4E), `SmartAgentHandle` / libs' `IStageHandler` and libs' internal shims kept); and on the review findings and the user's decision of 2026-10-05 in spec §17.22 — D64 (an injected connection strategy is owned by the agent: `close()` and a failed `build()` dispose it), D65 (the corpus checked against every bound store's declared dimension before any store exists), D66 (a store filled before skills are vectorized into it), D67 (orphans never use up the pool); and on the goal's decision of 2026-10-05 that `FallbackRag` is removed — D68 (spec §10.4, §13, §17.23): Task 0A removes it with the builder's store wrapping and what existed only for it; D52 and D62 are withdrawn; and on the goal's decisions of 2026-10-05 "No fallbacks anywhere in the pipeline" and "the fail-loud sweep is part of this PR" — D69–D74 (spec §10.5, §13 B1–B11, §17.24): Tasks 4F–4O sweep every fallback and silent degradation (pipeline errors reach the consumer first, Task 4F), and `onFailure` is removed where `StagedRetrieval` is built (Tasks 12, 13, 14, 16, 18, 21, 22, 28, 29, 32, 33); and on the user's decisions of 2026-10-05 on U1–U10 — every recommendation approved (spec §10.5.12, §13 B12–B15, migration lines 73–74, §17.24): Task 4J counts `FallbackLlmCallStrategy`'s fallbacks (U1), Task 4K fails a step naming an agent the registry lacks (U5), Task 4L defaults the skill plugin host to `strict: true` (U2), Task 4M logs a worker on the parent's clients (U10), new Task 4P removes `lazy`'s `fallback` (U6), new Task 4Q makes the tool availability blacklist an injected policy with no default (U8), new Task 19B counts failed batch embedding calls (U7); U3, U4 stay as they are; U9 is Task 0A, confirmed; amended 2026-10-06 with the user's rule "no fallback anywhere; all in #322" for the 30.1.0 tool write path (spec §17.26, D79): Task 19B Steps 6–10 remove the per-tool write retry after a failed bulk write; amended 2026-10-06 for a review finding (spec §17.27, D80): Task 4M serializes complete reload transactions in the watcher; amended 2026-10-06 with the user's decisions (spec §17.28 — D80 extended, D79 confirmed): Task 4M moves the queue into the server (`ConfigTransactionQueue`, one instance for the reload watcher and `PUT /v1/config`) and makes a `PUT` one transaction that restores and answers 500 on a failed drain or invalidation (V10, B17); Task 23A pins the shared queue on a real server; Task 33 Step 8b and Task 34 document it; amended 2026-10-06 for a review finding (spec §17.29, D81 — *withdrawn by D82*); amended 2026-10-06 with the user's decision (spec §17.30, D82): a failed config change is an error that leaves the server not ready until a whole config applies — no rollback: Task 4M drops the snapshot / restore (`snapshotConfig`, `LlmCircuitBreakers.snapshot()`) and D81's atomic `SmartAgent.reconfigure`, and adds the queue's *config not applied* state, `/health`'s `configNotApplied` and the chat routes' not-ready message; Task 23A's real-server reload test checks the not-ready answers; Task 33 Step 8b and Task 34 (B10, B17; B18 withdrawn) document it; amended 2026-10-06 with the user's decision (spec §17.30, D82 (8), amendment 23): while the server is not ready only a whole config clears the state — a file reload or a `PUT` carrying every section the route can change — so Task 4M refuses a partial `PUT` with 409 before the queue and again at its transaction's start (`ConfigTransactionQueue.run` takes the change's scope), Task 23A's (10b) pins the refusal and the clearing reload on a real server, and Task 33 Step 8b and Task 34 (B17) document the rule; amended 2026-10-06 under the user's rule — no silent degradation, everything in this change (spec §17.32, D83 (5), amendment 25): the start config is checked by the same config field validator as a reload and a `PUT` — Task 4M validates it in `resolveSmartServerConfig` before any section is read (the section readers take the validated values, an invalid one fails the start with the same `invalid config — …` error, the CLI exits 1), Task 4Q keeps `agent.toolUnavailableTtlMs`'s rule as a start-only rule, and Task 33 Step 8b and Task 34 (B19, B20) document it; and with the user's decisions D83 (6), (7) of 2026-10-06 (spec §17.33, amendment 26): one grammar for numbers and flags at start, on a reload and on `PUT` — a number or a string that is exactly a `NUMBER_LITERAL`, `true` / `false` or exactly `"true"` / `"false"` — and every config field the start coerced with `Number()` / `Boolean()` / `String()` validated (spec §10.5.9 *Start-only fields*): Task 4M (`config-fields.ts`'s grammar and start-only rules, the section readers, `parseIntegerField`, `parseSkillPluginsConfig`, `parseStepperCoordinatorConfig`, `optionalNumber` removed), Task 4Q (`agent.toolUnavailableTtlMs` joins the start-only rules), Task 21 (`score-floor.minScore` normalized), Task 33 (DEPLOYMENT: environment-variable values for number / flag fields), Task 34 (migration line 75); and with the user's decisions D83 (8), (9) of 2026-10-06 (spec §17.34, amendment 27): the file reload substitutes `${VAR}` exactly as the start does — `ConfigWatcher` takes an injected `resolveDocument`, applied to the whole parsed file before a field is read, and the server passes the start's own `resolveEnvVars` — and every config field read by a type cast is validated (spec §10.5.9 *Cast-read fields*): Task 4M (libs `config-watcher.ts`, `config-reload-watcher.ts`, `config-fields.ts`'s shape checks and cast rules, the resolvers, `pipeline-settings.ts`, `stepper-config.ts`, the stepper examples' `${LLM_URL:-}` lines), Task 33 (DEPLOYMENT, INTEGRATION, the stepper README), Task 34 (B21, B22, the libs and server-libs CHANGELOGs); and with the review finding D82 (9) of 2026-10-06 (spec §17.35, amendment 28): a config file the watcher cannot read, parse or resolve is a failed reload — queued in the server's config queue, so it sets not-ready in queue order and logs `config_reload_failed` (`config_reload_error` gone): Task 4M (`config-reload-watcher.ts`'s `error` listener and `_onWatcherError`; four new test cases), Task 33 (INTEGRATION, DEPLOYMENT, TROUBLESHOOTING), Task 34 (B17); and with the review finding D83 (10) of 2026-10-06 (spec §17.36, amendment 29): a file reload validates the whole resolved document with the start's validator before anything applies — `ConfigWatcher`'s `reload` event carries the resolved document as a second argument, `_applyReload` runs `resolveSmartServerConfig` over it and applies the reload table's values `validateStartConfig` checked, `validateReloadedConfig` is removed (one rule set), and the start checks the `agent` / `subagents` section shapes: Task 4M (libs `config-watcher.ts`, `config-reload-watcher.ts`, `config-fields.ts`, the test helper `__tests__/reload-document.ts`, every reload test carries a whole document), Task 23A (its reload tests carry whole documents), Task 33 (DEPLOYMENT, INTEGRATION), Task 34 (B23, the libs CHANGELOG); and with D83 (11) of 2026-10-06 (spec §17.37, amendment 30, closing §17.36 (6)): a file reload also runs the selected pipeline's own section parser as a validation step — the start's registry entry's parse half, over the reloaded `pipeline.config` with the reloaded `llm:` keys, nothing built — after `resolveSmartServerConfig` and before anything applies; a reload that selects another pipeline fails (`pipeline change needs a restart`, the new pipeline's section checked too); a plugin factory has no validation entry, so its changed section fails the reload (strict) and an unchanged one passes: Task 4M (new `pipeline-sections.ts`, the registry in `smart-server.ts`, `ConfigReloadDeps.pipeline`, `_applyReload`, `reload-document.ts`'s `runningPipeline` / `FLAT_PIPELINE`, every reload watcher a test builds passes `pipeline`, one new case and one new test file), Task 23A (its watcher passes `pipeline`), Task 33 (DEPLOYMENT, INTEGRATION, TROUBLESHOOTING), Task 34 (B24).; and with the review finding D83 (12) of 2026-10-06 (spec §17.38, amendment 31): a present config section with the wrong shape is an error, never its default — every section a reader takes fields or items from is checked by its `FieldCheck` before a field of it is read, a default only when the section is absent (not written or `null`); `skillPlugins.embedder` / `.chunk` (the finding) and the same guard on `llm`, `rag`, `rag.store`, `rag.embedder`, `rag.retrieval`, `rag.profiles`, `decision`, `skillPlugins` itself, two `skillPlugins` string fields and the server's second reader of `knowledgeSeed`: Task 4M, Task 21 (`rag.profiles`), Task 33 (DEPLOYMENT, TROUBLESHOOTING), Task 34 (B25); and with the user's decision D83 (13) of 2026-10-06 (spec §17.39, amendment 32): a key written with no value (`null` — `rag.embedder:`, `prompts:`, `skillPlugins.store:`, `key: ~`, a JSON `null`) is an error everywhere, `<path> has no value` in the same `ConfigFieldError` at start, on a reload and on `PUT`; a default applies only when the key is absent (not written) — `present()` is "the key is written", `checkStartConfig` walks the whole document first (`checkNoValue`), `FieldCheck` names a `null` once, the `PUT` body is walked too, and the 30.1.0 tests that pinned a key with no value as absent are rewritten: Task 4M, Task 21 (one assertion), Task 33 (DEPLOYMENT, INTEGRATION, TROUBLESHOOTING), Task 34 (B26); and for the review finding D83 (14) of 2026-10-06 (spec §17.40, amendment 33): a reader checks a value's shape before it reads a field of it — readers run before `done()`, so a value already named still reaches them, and a `TypeError` from config input is a defect: `mcp[]` entries go through `check.list` and their closed check, `mcp[i].name` (a label, unique) is an issue of the same check (`validateMcpNames` goes), the document is a mapping (`checkDocument`; an empty file `{}` in `loadYamlConfig`), the worker file's document is checked before `parseSubAgents` reads it, the profile validator names a `fill.corpus` that is not a mapping, and a generated wrong-shape table covers every section, list item and reload-table field: Task 4M, Task 21 (the table gains `rag.profiles`), Task 23B (`checkFill`), Task 34 (B27); and for the review finding D84 of 2026-10-06 (spec §17.41, amendment 34): the record writer writes an item's canonical record **first** — listing every id the item holds or may hold (new `recordIds` + the stale set) — then its other records, then the unchanged stale deletes and settle; a failed canonical write leaves nothing written, a failed later write leaves an id already tracked; the bulk path writes the batch's canonicals as one bulk write, then the other records of the items whose canonical landed as a second: Task 11 (`storeItems`, the canonical-first tests on `InMemoryRag` and `VectorRag`, the bulk-order test), Tasks 15 and 19A (comments only); and for the user's pre-flight decisions of 2026-10-06 (spec §17.42, amendment 35, D85–D95): the builder runs a bound store's fill source only with its own MCP connection, so no store is filled twice (D85: Task 20, Task 23A's (9) / (10) preconditions, Task 33); the `corpus` source needs a precomputed write — `InMemoryRag` refused, the in-memory cases on `VectorRag` (D86: Tasks 19A, 23B, 33, 34); `ToolCall.argumentsError?` / `LlmToolCall.argumentsError?` mark a call whose arguments failed to parse (D87: Task 4F, Task 34); 75 migration lines everywhere (D88); one `skills.type` rule, 4M's `checkSkills` (D89: Tasks 4L, 4M); a worker store's decomposer over that store's embedder (D90: Tasks 22, 23, 23B); `fill` with `baseline` refused (D91: Task 23B); `STATE_CORRUPT` in the legacy-transcript and RAG-recall context strategies (D92: Task 4F); the configured slot count in a re-wired worker's tool record key (D93: Task 23A); YAML `fill: corpus` with a worker on its own `rag` and clients refused by the config resolution (D94: Task 23B); a startup-snapshot listing failure fails `start()`, D31's "counted, degraded" only after it (D95: Task 23A, already so; spec wording). **Goal:** `docs/superpowers/goals/2026-10-04-collection-profiles.md` (user-owned; never edited). Executors read the spec section each task cites.
 
 ## Global Constraints
 
 - **Nothing changes by default — on the success path.** No profile set → 30.1.0 behaviour byte for byte: same records (golden test, Task 1), same stages, same k, same `RerankHandler` precedence, same YAML (spec §13). **Failure paths change everywhere** (fail loud, below; spec §13 B1–B15).
-- **A major release — no deprecated aliases, no re-exports** (spec §13, D57–D59). `IRag`, `IReranker`, `IRetrievalStrategy`, `IMetrics` are not changed (spec §3). Renames (`IDecisionModel` → `IProbabilityDecision`, `DecisionReranker` → `ProbabilityReranker`, `DecisionRerankerOptions` → `ProbabilityRerankerOptions`, `DECISION_RERANK_DEFAULT_*` → `PROBABILITY_RERANK_DEFAULT_*`, `wrapDecisionModel` → `wrapProbabilityDecision`, `BuildAgentDeps.makeDecisionModel` → `makeProbabilityDecision`) keep **no old name**; the task that renames a name switches **every in-repo use** of it in the same commit, so each commit builds (no "callers stay on the alias until Task N"). Moved names (the RAG implementations, the rerankers) are exported only by their new owner. **No `export … from '@mcp-abap-adt/…'`** in any file this plan creates, and none is added to a file it edits (the existing lines that rule (a) of spec §11.4 keeps — e.g. in `agent.ts`, `metrics/in-memory-metrics.ts` — stay, Task 4D): every package imports a name from the package that owns it (D59). **The pre-existing re-exports go too** (S12, decided by the user; spec §11.4): Task 4D drops libs' 15 root names of `llm-agent`, server-libs' `./legacy/flat` subpath and the `legacy/{linear,dag}` re-exports, and the server's unreachable `src/index.ts`; from Task 4D on, `test/repo/no-old-names.test.ts` fails when any public entry point of any package exports a name declared in another package — every later task keeps it green. libs' internal shims that only serve libs' own files stay (spec §11.4 rule (a); kept — the user's decision). **`ITextLogger` is removed** (the user's decision, spec §11.4): Task 4E switches every in-repo use to `ILogger` imported directly from `@mcp-abap-adt/interfaces-utils` (no re-export, no exported alias) in the same commit, declares the dependency where it is used (`llm-agent` already peers on it; libs and mcp get a dev dependency for their tests), and deletes libs' two dead internal files (`adapters/index.ts`, `interfaces/model-resolver.ts`). Removed besides the 72 names of spec §13's migration table: the unexported `packages/llm-agent/src/rag/tool-indexing-strategy.ts` (spec §10.3), the binary's unexported `createMakeDecisionModel` (renamed), and libs' two dead internal files (Task 4E). **No version bump in this plan**, but the docs say the release is a major (Task 34).
+- **A major release — no deprecated aliases, no re-exports** (spec §13, D57–D59). `IRag`, `IReranker`, `IRetrievalStrategy`, `IMetrics` are not changed (spec §3). Renames (`IDecisionModel` → `IProbabilityDecision`, `DecisionReranker` → `ProbabilityReranker`, `DecisionRerankerOptions` → `ProbabilityRerankerOptions`, `DECISION_RERANK_DEFAULT_*` → `PROBABILITY_RERANK_DEFAULT_*`, `wrapDecisionModel` → `wrapProbabilityDecision`, `BuildAgentDeps.makeDecisionModel` → `makeProbabilityDecision`) keep **no old name**; the task that renames a name switches **every in-repo use** of it in the same commit, so each commit builds (no "callers stay on the alias until Task N"). Moved names (the RAG implementations, the rerankers) are exported only by their new owner. **No `export … from '@mcp-abap-adt/…'`** in any file this plan creates, and none is added to a file it edits (the existing lines that rule (a) of spec §11.4 keeps — e.g. in `agent.ts`, `metrics/in-memory-metrics.ts` — stay, Task 4D): every package imports a name from the package that owns it (D59). **The pre-existing re-exports go too** (S12, decided by the user; spec §11.4): Task 4D drops libs' 15 root names of `llm-agent`, server-libs' `./legacy/flat` subpath and the `legacy/{linear,dag}` re-exports, and the server's unreachable `src/index.ts`; from Task 4D on, `test/repo/no-old-names.test.ts` fails when any public entry point of any package exports a name declared in another package — every later task keeps it green. libs' internal shims that only serve libs' own files stay (spec §11.4 rule (a); kept — the user's decision). **`ITextLogger` is removed** (the user's decision, spec §11.4): Task 4E switches every in-repo use to `ILogger` imported directly from `@mcp-abap-adt/interfaces-utils` (no re-export, no exported alias) in the same commit, declares the dependency where it is used (`llm-agent` already peers on it; libs and mcp get a dev dependency for their tests), and deletes libs' two dead internal files (`adapters/index.ts`, `interfaces/model-resolver.ts`). Removed besides the 75 names of spec §13's migration table (D88): the unexported `packages/llm-agent/src/rag/tool-indexing-strategy.ts` (spec §10.3), the binary's unexported `createMakeDecisionModel` (renamed), and libs' two dead internal files (Task 4E). **No version bump in this plan**, but the docs say the release is a major (Task 34).
 - **The RAG implementations live in `@mcp-abap-adt/llm-agent-rag` (Task 1A, D53, D57).** From Task 1A on, every code block outside `llm-agent-rag` (libs, server-libs, server, scripts, tests) imports `VectorRag`, `InMemoryRag`, `SimpleRagRegistry`, `ISearchStrategy` and the other names of spec §11.3's "moves" table from `@mcp-abap-adt/llm-agent-rag` — `@mcp-abap-adt/llm-agent` no longer exports them; contracts and the store kit (`TextOnlyEmbedding`, `QueryEmbedding`, `symmetricEmbedder`, `matchesRagIdentity`, `RagError`, `IQueryExpander`, …) stay on `@mcp-abap-adt/llm-agent`. **Nothing in `packages/llm-agent` — nor in any package `llm-agent-rag` depends on — imports `llm-agent-rag`** (a cycle; `test/repo/rag-implementations-home.test.ts` pins it). The file is at `packages/llm-agent-rag/src/vector-rag.ts` (Tasks 4 and 4H edit it there; its tests are in `packages/llm-agent-rag/src/__tests__/`). A test that needs `VectorRag` / `InMemoryRag` lives in `llm-agent-rag` or a package above it — never in `llm-agent`.
 - **No store fallback, no store wrapping (D68, Task 0A).** `FallbackRag` is removed, and so are the builder's circuit-breaker loop over the registry, `isGuardedBy`, `SimpleRagRegistry.replaceRag`, `SmartAgentBuilder.withCircuitBreakers` and the server's call of it. No code block in this plan imports `FallbackRag`, calls `replaceRag` or `withCircuitBreakers`, or wraps a registered store; `withCircuitBreaker(config)` builds the main-LLM breaker only. The circuit breaker stays on the embedder (`withCircuitBreaker(embedder, breaker)`; the server's `_embedderBreaker`): with it open, a store's query fails fast with `CIRCUIT_OPEN`. `IRagDecorator` and every walk through `inner` stay — `StrategyRag` is a decorator, and a consumer's own wrapper relies on them; a test of a walk uses a plain test decorator (`{ inner, query, healthCheck, getById, writer }`). The corpus load checks the writer of the store it writes — there is no resolved-backend check (D52 withdrawn).
 - **Fail loud (D69–D74, spec §10.5; Tasks 4F–4O).** A component that finds another not working returns an **error** — a `Result` error, a thrown typed error, an `{ ok: false }` stream item, a non-200 / `/health` 503 — never a fake success, an empty result, a skipped part, a stale cache or a substitute component. A stage's `OrchestratorError` carries the failing component's code unchanged and names the stage and component; a thrown `OrchestratorError` keeps its code. Existing codes are reused; the only new codes are `PIPELINE_FAILURE_CODES` (`RAG_STORE_MISSING`, `STATE_CORRUPT`, `TOOL_ARGUMENTS_JSON_PARSE_FAILED`, Task 4F); **no shared set is widened** (`MCP_UNAVAILABLE_CODES`, `DecisionErrorCode` unchanged). Kept: an optional capability absent by design (no pipeline embedder → `TextOnlyEmbedding`; `ENOENT` of a default skill path; no `SKILL.md`; the implicit `.env`; a worker that declares no clients), an honest empty answer (a query that succeeded with no hits), best-effort cleanup on shutdown / after a request, diagnostics-only catches. **No `onFailure` anywhere** (D71): a failed rerank is `RERANK_ERROR` in `StagedRetrieval`, the 30.1.0 rerank strategies, the `rerank` stage and the legacy orchestrator. **`/health` answers 503 unless every configured component works** (D72). No code block in this plan adds a fallback. **The modes a consumer chooses are decided (spec §10.5.12, U1–U10):** an explicit opt-in stays and becomes countable or visible — `FallbackLlmCallStrategy` (counted, Task 4J), the batch → per-tool embedding (`batchFailures`, Task 19B), a worker on the parent's clients (logged, Task 4M), `onFinalizeExhausted: 'best-effort'` and `AutoActivation` (unchanged); a default that degraded silently is turned around — the skill plugin host defaults to `strict: true` (Task 4L), a named agent missing from the registry fails its step (Task 4K), the tool availability blacklist is an injected policy, none by default (Task 4Q); `lazy`'s `fallback` is removed (Task 4P).
@@ -23,7 +23,7 @@
 - **Owner in every physical id.** Every profile record id is `recordId(owner, itemId, kind, n)`; no code path addresses a record by the bare `itemId` (spec §3.1).
 - **Nothing that ships carries a tuned number (D55, D56).** No strategy class and no named composition carries a number measured in a consumer; a number it needs is a required argument (`budgetTokens`, `maxValues`, `minScore`, `faceted-rerank`'s `poolItems`) or a generic default: the caller's k for every cut (`TopItemsCut`) and k items for the pool (`ItemPool()`; `ICandidatePool` takes the caller's k). The measurements stay in the consumer; no "measured" text justifies a default (spec §7.1, §7.4).
 - **`k` is the overall limit, in items.** The caller's k caps every cut: a retrieval never returns more than `min(k, cut.limit(k))` ≤ k items, with or without a decomposer; `FixedItemsCut(n)` is a ceiling (spec §4.5, §4.9, §17.6 F1).
-- **Filled once, at instance creation; the source is the consumer's strategy.** Every tools write reads the binding **and its fill source** from the store it writes (`boundToolsOf` / `toolsBindingOf`) — never from an option (spec §6.3 rule 1, D34, D42); whoever creates a bound store fills it, once — the main store in `_buildInfra`, a worker's own store by its construction (`buildSubAgent` without `injected`), so lazy rebuilds after `PUT /v1/config` / hot reload are filled too (rule 2, D35); workers on the shared clients are filled at startup on every path — on `yamlBuilderConnect` right after the harvest (D38). **Never refilled while running** (D41): no refill API, no fill memo, no retry, a per-session re-wire never fills; an incomplete fill is reported and stays. **A bound store is never written on `toolsChanged`** (D46, supersedes D44): `McpToolRegistry.revectorizeTools` finds the binding on the store and stops (one `mcp` debug line, no warning), for every source alike; an unbound store keeps 30.1.0's re-vectorize. `IToolsFillSource` is `fill` only. The three sources: `LiveToolsFill` (default), `ToolsCorpusLoader` (`corpus`, any store: checks the corpus against the server's configured identity and the store's capabilities, **clears the store**, writes the corpus with its precomputed vectors — no embedding call — and logs it; D54), `ConsumerToolsFill`. **No deploy step, no service record, no `prebuilt` source** (D54): the consumer's build step makes the corpus, the server loads it at every start. Every fill path is listed in spec §6.4; a new one must say which mechanism fills it.
+- **Filled once, at instance creation; the source is the consumer's strategy.** Every tools write reads the binding **and its fill source** from the store it writes (`boundToolsOf` / `toolsBindingOf`) — never from an option (spec §6.3 rule 1, D34, D42); whoever creates a bound store fills it, once — the main store in `_buildInfra`, a worker's own store by its construction (`buildSubAgent` without `injected`), so lazy rebuilds after `PUT /v1/config` / hot reload are filled too (rule 2, D35); workers on the shared clients are filled at startup on every path — on `yamlBuilderConnect` right after the harvest (D38). **Never refilled while running** (D41): no refill API, no fill memo, no retry, a per-session re-wire never fills; an incomplete fill is reported and stays. **A bound store is never written on `toolsChanged`** (D46, supersedes D44): `McpToolRegistry.revectorizeTools` finds the binding on the store and stops (one `mcp` debug line, no warning), for every source alike; an unbound store keeps 30.1.0's re-vectorize. `IToolsFillSource` is `fill` only. The three sources: `LiveToolsFill` (default), `ToolsCorpusLoader` (`corpus`, any store with a precomputed-vector write — `InMemoryRag` refused, D86: checks the corpus against the server's configured identity and the store's capabilities, **clears the store**, writes the corpus with its precomputed vectors — no embedding call — and logs it; D54), `ConsumerToolsFill`. **No deploy step, no service record, no `prebuilt` source** (D54): the consumer's build step makes the corpus, the server loads it at every start. Every fill path is listed in spec §6.4; a new one must say which mechanism fills it.
 - **Never silent.** Reranker errors (incl. output-check failures — always returned, D71), decomposer errors, orphans and over-budget cuts are returned or counted (spec §4.8, §4.5, §4.6, §4.10, §9).
 - **Shipped tools strategies read only what every MCP server exports** (name, description, input schema); `NameTailFacet` is opt-in and in no variant; `EnumValueToolIndexer` and `TokenBudgetCut` are in no variant (spec §7.0, §7.4). The named compositions are `baseline`, `faceted`, `faceted-rerank`; `faceted-cohere`, `faceted-jev`, `small-set-jev`, `assertSmallSetPool` and the YAML `smallSet` key are withdrawn (D55) — a leftover YAML name is refused naming its replacement.
 - **ESM only**, `.js` extensions in relative imports; Biome style (2 spaces, single quotes, semicolons); no `any` (Biome warns); no per-file licence header; every package `LGPL-3.0-only` (spec §11).
@@ -3711,13 +3711,14 @@ Spec §10.5 (D69–D74, §17.24; §10.5.12 for the user's U1–U10 decisions), �
 
 ## Task 4F: Pipeline core — pipeline errors reach the consumer (N1), tool-call arguments, pending results, context state (contracts + libs + server-libs)
 
-Spec §10.5.1 (D69: the rule, the carriers, `PIPELINE_FAILURE_CODES`), §10.5.2 (D70: N1; N2, N3, N13, the context strategies), §13 B1, B7. **Highest priority of the sweep:** until this lands, no stage error of Tasks 4G–4O can reach a consumer.
+Spec §10.5.1 (D69: the rule, the carriers, `PIPELINE_FAILURE_CODES`), §10.5.2 (D70: N1; N2, N3, N13, the context strategies — all four, D92), §3.8 (`ToolCall.argumentsError?` / `LlmToolCall.argumentsError?`, D87 — decided by the user on 2026-10-06, spec §17.42), §13 B1, B7. **Highest priority of the sweep:** until this lands, no stage error of Tasks 4G–4O can reach a consumer.
 
 **Files:**
 - Create: `packages/llm-agent/src/interfaces/pipeline-failure-codes.ts`; export it from `packages/llm-agent/src/interfaces/index.ts` (the package root already has `export * from './interfaces/index.js'` — no second line there)
-- Modify: `packages/llm-agent-libs/src/pipeline/executor.ts`, `pipeline/default-pipeline.ts`, `pipeline/pipeline-to-stream.ts`, `agent.ts` (`streamProcess` root span; the legacy tool-call parse ~1141), `pipeline/handlers/tool-loop.ts` (~600), `adapters/llm-provider-bridge.ts` (~150), `adapters/llm-adapter.ts` (~88), `policy/pending-tool-results-registry.ts` (~49), `pipeline/context/tool-loop-context/window-context-strategy.ts` (~51), `pipeline/context/tool-loop-context/legacy-accumulate-context-strategy.ts` (~31)
+- Modify (contracts, additive — spec §3.8, D87): `packages/llm-agent/src/types.ts` (`ToolCall.argumentsError?`), `packages/llm-agent/src/interfaces/types.ts` (`LlmToolCall.argumentsError?`)
+- Modify: `packages/llm-agent-libs/src/pipeline/executor.ts`, `pipeline/default-pipeline.ts`, `pipeline/pipeline-to-stream.ts`, `agent.ts` (`streamProcess` root span; the legacy tool-call parse ~1141), `pipeline/handlers/tool-loop.ts` (~600), `adapters/llm-provider-bridge.ts` (~150), `adapters/llm-adapter.ts` (~88), `policy/pending-tool-results-registry.ts` (~49), `pipeline/context/tool-loop-context/window-context-strategy.ts` (~51), `pipeline/context/tool-loop-context/legacy-accumulate-context-strategy.ts` (~31), `pipeline/context/tool-loop-context/legacy-transcript-context-strategy.ts` (~39), `pipeline/context/tool-loop-context/rag-recall-context-strategy.ts` (~71) — all four strategies (spec D92)
 - Modify: `packages/llm-agent-server-libs/src/smart-agent/controller/controller-coordinator-handler.ts` (~1554)
-- Create: `packages/llm-agent-libs/src/adapters/parse-tool-arguments.ts` (`parseToolArguments`, `invalidArgumentsMessage`); export both from libs' `src/index.ts` (libs owns them — server-libs imports them from `@mcp-abap-adt/llm-agent-libs`, no copy)
+- Create: `packages/llm-agent-libs/src/adapters/parse-tool-arguments.ts` (`parseToolArguments`, `toolCallFromRaw`, `invalidArgumentsMessage`); export the three from libs' `src/index.ts` (libs owns them — server-libs imports them from `@mcp-abap-adt/llm-agent-libs`, no copy)
 - Create: `packages/llm-agent/src/interfaces/__tests__/pipeline-failure-codes.test.ts`, `packages/llm-agent-libs/src/pipeline/__tests__/pipeline-errors-reach-consumer.test.ts`, `packages/llm-agent-libs/src/pipeline/__tests__/tool-arguments-invalid.test.ts`, `packages/llm-agent-libs/src/pipeline/context/tool-loop-context/__tests__/restore-state-corrupt.test.ts`, `packages/llm-agent-libs/src/policy/__tests__/pending-tool-results-reject.test.ts`, `packages/llm-agent-server-libs/src/smart-agent/controller/__tests__/controller-tool-arguments-invalid.test.ts`
 
 **Interfaces:**
@@ -3732,8 +3733,18 @@ Spec §10.5.1 (D69: the rule, the carriers, `PIPELINE_FAILURE_CODES`), §10.5.2 
   } as const;
   export type PipelineFailureCode = (typeof PIPELINE_FAILURE_CODES)[keyof typeof PIPELINE_FAILURE_CODES];
   ```
+- Produces (contracts, additive — spec §3.8, D87): on `ToolCall` (`packages/llm-agent/src/types.ts`) and on `LlmToolCall` (`packages/llm-agent/src/interfaces/types.ts`), after `arguments`:
+  ```ts
+    /**
+     * Set when the provider's argument text could not be parsed as a JSON object —
+     * the parse error's message; `arguments` is then `{}`. A call carrying it is
+     * never run: its tool result is the error (spec §10.5.2 N2, D87). Absent = parsed.
+     */
+    argumentsError?: string;
+  ```
+  (Named like the contract's existing failure carrier `ToolResult.error?: string`. Optional: every existing object literal of either type compiles.)
 - Produces (libs): `PipelineExecutor.executeStages` sets `ctx.error` (`OrchestratorError`, code `PIPELINE_ERROR`, message `stage "<id>" failed: <err>`) on a throwing handler or an unknown stage type, unless a handler already set one; `DefaultPipeline.execute` does the same for anything the executor let through; `pipelineToStream` yields `{ ok: false, error: result.error }` last when `result.error` is set and no `ok: false` chunk was yielded already; `SmartAgent.streamProcess` sets the root span `error` when the stream carried an error — **before** it yields the unsuccessful chunk (spec D78: `process()` returns on that chunk and closes the generator, so nothing after the `yield` runs); `ok` only after a stream that carried none; the span is ended in `finally` as today.
-- Produces: a tool call whose arguments are not valid JSON is **not run**; its tool result is `Error: arguments of tool "<name>" are not valid JSON (TOOL_ARGUMENTS_JSON_PARSE_FAILED): <parse error>` and the session step `tool_arguments_invalid { tool, code, error }` — the same at all five sites.
+- Produces: a tool call whose arguments are not valid JSON carries `argumentsError` and is **not run**; its tool result is `Error: arguments of tool "<name>" are not valid JSON (TOOL_ARGUMENTS_JSON_PARSE_FAILED): <parse error>` and the session step `tool_arguments_invalid { tool, code, error }` — the same at all five sites.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -3857,13 +3868,13 @@ describe('N1 — a pipeline error reaches the consumer (spec §10.5.2, D70)', ()
 
 `tool-arguments-invalid.test.ts` — one case per site, each fed `arguments: '{"a":'` (truncated JSON):
 - `tool-loop` (through `DefaultPipeline` with `makeMcpClient` whose `callTool` records calls, and `makeLlm` answering one tool call with the bad arguments, then a text answer): `callTool` is **never** called; the next LLM request carries a tool message matching `/TOOL_ARGUMENTS_JSON_PARSE_FAILED/`; the session step `tool_arguments_invalid` is logged. Today the tool runs with `{}`.
-- `llm-provider-bridge` and `llm-adapter` (OpenAI format): the parsed call is marked invalid (the bridge returns the parse failure instead of `{}`; the adapter emits the existing diagnostic **and** marks the call) and the tool loop does not run it.
+- `llm-provider-bridge` and `llm-adapter` (OpenAI format): the parsed call carries `argumentsError` (the parse error's message, D87) and `arguments` `{}` — the bridge's `tool_calls` chunk and the adapter's `LlmToolCall` alike; the adapter also emits the existing diagnostic; a call with valid JSON, or with no argument text, has no `argumentsError`; and the tool loop does not run a marked call (`callTool` never called for it, its tool message carries the code).
 - the legacy `agent.ts` path (`SmartAgent` without `deps.pipeline`): `callTool` never called, the tool message carries the code.
 - server-libs `controller-coordinator-handler.ts`: in `packages/llm-agent-server-libs/src/smart-agent/controller/__tests__/controller-tool-arguments-invalid.test.ts`, a controller step whose LLM emits the bad arguments → the tool is not called; the step's tool result carries the code.
 
 `pending-tool-results-reject.test.ts`: a registry entry whose results promise rejects with `new Error('lost')` → `consume` (the method at ~49) rejects with an `OrchestratorError` code `PIPELINE_ERROR` naming the tool calls — today `results: []`.
 
-`restore-state-corrupt.test.ts`: `WindowContextStrategy.restore({ version: 2, rounds: [] })` and `restore({ version: 1, rounds: 'x' })` throw `OrchestratorError` with code `PIPELINE_FAILURE_CODES.STATE_CORRUPT`; the same for `LegacyAccumulateContextStrategy`; `restore(undefined)` (no saved state — absent by design) does not throw and leaves the strategy empty: after one `await record(round)`, `restore(undefined)` → `snapshot()` deep-equals `{ version: 1, rounds: [] }` (`restore` returns `void`; the state is read back through `snapshot()`). Today all reset to `[]`.
+`restore-state-corrupt.test.ts`: `WindowContextStrategy.restore({ version: 2, rounds: [] })` and `restore({ version: 1, rounds: 'x' })` throw `OrchestratorError` with code `PIPELINE_FAILURE_CODES.STATE_CORRUPT`; the same for `LegacyAccumulateContextStrategy`; `restore(undefined)` (no saved state — absent by design) does not throw and leaves the strategy empty: after one `await record(round)`, `restore(undefined)` → `snapshot()` deep-equals `{ version: 1, rounds: [] }` (`restore` returns `void`; the state is read back through `snapshot()`). Today all reset to `[]`. The other two strategies (spec D92), each constructed as its existing test constructs it: `LegacyTranscriptContextStrategy.restore({ version: 2, rawMessages: [], newRounds: [] })` and `restore({ version: 1, rawMessages: 'x', newRounds: [] })` throw `STATE_CORRUPT`, `restore(undefined)` → `snapshot()` deep-equals `{ version: 1, rawMessages: [], newRounds: [] }`; `RagRecallContextStrategy.restore({ version: 2, last: null, counter: 0 })`, `restore({ version: 1, last: null, counter: 'x' })` and `restore({ version: 1, last: [], counter: 0 })` throw `STATE_CORRUPT`, `restore(undefined)` → `{ version: 1, last: null, counter: 0 }`. Today: `legacy-transcript` ignores a state of another version, `rag-recall` resets to `null` / `0`.
 
 `pipeline-failure-codes.test.ts`: the three members, their string values, and that `MCP_UNAVAILABLE_CODES` is unchanged (deep-equal against its current list — no shared set widened).
 
@@ -3873,7 +3884,7 @@ describe('N1 — a pipeline error reaches the consumer (spec §10.5.2, D70)', ()
 npx tsc -b packages/llm-agent packages/llm-agent-libs
 node --import tsx/esm --test packages/llm-agent-libs/src/pipeline/__tests__/pipeline-errors-reach-consumer.test.ts packages/llm-agent-libs/src/pipeline/__tests__/tool-arguments-invalid.test.ts
 ```
-Expected: FAIL — `PIPELINE_FAILURE_CODES` not exported; the stream ends with no error item; `ctx.error` undefined; `process()` `ok: true`; the tool ran with `{}`.
+Expected: FAIL — `PIPELINE_FAILURE_CODES` not exported; the stream ends with no error item; `ctx.error` undefined; `process()` `ok: true`; the tool ran with `{}`; no call carries `argumentsError`.
 
 - [ ] **Step 3: Implement**
 
@@ -3949,11 +3960,24 @@ export function parseToolArguments(raw: string | undefined): ParsedToolArguments
     return { ok: false, error: String(e) };
   }
 }
+/**
+ * A tool call from the provider's argument text (spec §10.5.2 N2, D87): parsed, or
+ * marked — `argumentsError` = the parse error, `arguments` `{}`. Never `{}` alone
+ * for text that did not parse: the site that runs tools must see the difference.
+ */
+export function toolCallFromRaw(id: string, name: string, raw: string | undefined): LlmToolCall {
+  const parsed = parseToolArguments(raw);
+  return parsed.ok
+    ? { id, name, arguments: parsed.value }
+    : { id, name, arguments: {}, argumentsError: parsed.error };
+}
 export function invalidArgumentsMessage(tool: string, error: string): string {
   return `Error: arguments of tool "${tool}" are not valid JSON (${PIPELINE_FAILURE_CODES.TOOL_ARGUMENTS_JSON_PARSE_FAILED}): ${error}`;
 }
 ```
-Every site replaces its `catch { args = {} }` with `parseToolArguments`; on `!ok` it logs `tool_arguments_invalid`, does not call the tool, and appends `invalidArgumentsMessage(...)` as that call's tool result (the tool-loop already builds per-call tool messages — `buildBlockedToolMessages` in `tool-loop-core.ts` is the shape to follow). server-libs' controller handler imports the helper from libs (`@mcp-abap-adt/llm-agent-libs` exports it) — no copy. An empty argument string stays `{}`: a tool called with no arguments is valid.
+(`LlmToolCall` and `PIPELINE_FAILURE_CODES` from `@mcp-abap-adt/llm-agent`; an `LlmToolCall` is assignable to `ToolCall` — the same members.)
+
+**Two halves, one field (spec D87).** (1) **Parse — mark the call.** Every site that turns argument text into a call replaces its `catch { args = {} }` with `toolCallFromRaw(id, name, raw)`: the bridge (`llm-provider-bridge.ts` ~150, its `tool_calls` chunk), the adapter (`llm-adapter.ts` ~88, which also keeps its `onDiagnostic`), the tool-loop (~600) and the legacy `agent.ts` loop (~1141), which assemble calls from streamed deltas, and the controller handler (~1554, its string-arguments arm; the object arm is already parsed and carries no `argumentsError`). (2) **Run — check the mark.** Every site that runs a tool checks `call.argumentsError !== undefined` before it calls the tool: it logs `tool_arguments_invalid { tool, code, error }`, does not call the tool, and appends `invalidArgumentsMessage(call.name, call.argumentsError)` as that call's tool result (the tool-loop already builds per-call tool messages — `buildBlockedToolMessages` in `tool-loop-core.ts` is the shape to follow). So a call marked by an adapter is refused by the loop that runs it, with no second parse. server-libs' controller handler imports the helpers from libs (`@mcp-abap-adt/llm-agent-libs` exports them) — no copy. An empty argument string stays `{}` with no mark: a tool called with no arguments is valid.
 
 N13 — `pending-tool-results-registry.ts`: the `catch` rethrows `new OrchestratorError(\`pending tool results for ${ids} failed: ${String(err)}\`, 'PIPELINE_ERROR')`; the caller (the stage awaiting it) lets it propagate, so Step 3's executor catch reports it.
 
@@ -3973,12 +3997,59 @@ Context strategies — `restore`:
 ```
 (`restore` returns `void`; neither strategy has an `empty()` — the empty state is `this.rounds = []`.)
 
+The other two strategies (spec D92), the same rule — no saved state starts empty; a state of another version or of the wrong shape is `STATE_CORRUPT`, never a silent reset (each file gains a value import `import { OrchestratorError, PIPELINE_FAILURE_CODES } from '@mcp-abap-adt/llm-agent';` beside its existing `import type`):
+```ts
+  // legacy-transcript-context-strategy.ts
+  restore(state: SerializableStrategyState): void {
+    if (state === undefined) {
+      this.rawMessages = [];
+      this.newRounds = [];
+      return;
+    }
+    const s = state as unknown as { rawMessages?: unknown; newRounds?: unknown };
+    if (state.version !== 1 || !Array.isArray(s.rawMessages) || !Array.isArray(s.newRounds)) {
+      throw new OrchestratorError(
+        `tool-loop context (legacy-transcript): saved state of version ${String(state.version)} cannot be restored`,
+        PIPELINE_FAILURE_CODES.STATE_CORRUPT,
+      );
+    }
+    this.rawMessages = s.rawMessages as Message[];
+    this.newRounds = s.newRounds as ToolRound[];
+  }
+
+  // rag-recall-context-strategy.ts
+  restore(state: SerializableStrategyState): void {
+    if (state === undefined) {
+      this.last = null;
+      this.counter = 0;
+      return;
+    }
+    const s = state as unknown as { last?: unknown; counter?: unknown };
+    const lastOk = s.last === null || (typeof s.last === 'object' && !Array.isArray(s.last));
+    if (
+      state.version !== 1 ||
+      !lastOk ||
+      typeof s.counter !== 'number' ||
+      !Number.isInteger(s.counter) ||
+      s.counter < 0
+    ) {
+      throw new OrchestratorError(
+        `tool-loop context (rag-recall): saved state of version ${String(state.version)} cannot be restored`,
+        PIPELINE_FAILURE_CODES.STATE_CORRUPT,
+      );
+    }
+    this.last = s.last as ToolRound | null;
+    this.counter = s.counter;
+  }
+```
+(Both strategies' own `snapshot()` always writes these fields, so a state they wrote restores unchanged.)
+
 - [ ] **Step 4: Fix the tests that pin the old behaviour, then the gate**
 
 ```bash
-git grep -n "args = {}\|return {};\|results: \[\]\|rounds : \[\]\|stage_error_" -- packages/llm-agent-libs/src packages/llm-agent-server-libs/src | grep test
+git grep -n "args = {}\|return {};\|results: \[\]\|rounds : \[\]\|stage_error_\|rawMessages ?? \[\]\|counter = 0" -- packages/llm-agent-libs/src packages/llm-agent-server-libs/src | grep test
 ```
-A test that asserted an empty stream / `{}` arguments / `[]` results for a failure is rewritten to assert the error (rename it accordingly). Then:
+A test that asserted an empty stream / `{}` arguments / `[]` results / a silently reset context state for a failure is rewritten to assert the error (rename it accordingly). Then:
 ```bash
 npx tsc -b packages/llm-agent packages/llm-agent-libs packages/llm-agent-server-libs
 npm test --workspace @mcp-abap-adt/llm-agent --workspace @mcp-abap-adt/llm-agent-libs --workspace @mcp-abap-adt/llm-agent-server-libs
@@ -4367,12 +4438,12 @@ npm test --workspace @mcp-abap-adt/llm-agent-libs
 
 ## Task 4L: Skills (llm-agent + libs + server-libs)
 
-Spec §10.5.8 (S-1–S-10), §3.8 (`SkillLoadResult.carried`), §13 B8; §10.5.12 U2 (decided by the user on 2026-10-05), §13 B12. **`strict` defaults to `true`** in the skill plugin host and the server's `skillPlugins` config; `strict: false` is the consumer's opt-in, and its carry-forward is reported (S-9).
+Spec §10.5.8 (S-1–S-10; S-10 has **one** rule, the start's field validator — Task 4M's `checkSkills`, spec D89, decided by the user on 2026-10-06: this task adds no `skills.type` rule to `config-validator.ts`), §3.8 (`SkillLoadResult.carried`), §13 B8; §10.5.12 U2 (decided by the user on 2026-10-05), §13 B12. **`strict` defaults to `true`** in the skill plugin host and the server's `skillPlugins` config; `strict: false` is the consumer's opt-in, and its carry-forward is reported (S-9).
 
 **Files:**
 - Modify: `packages/llm-agent/src/interfaces/skills-rag.ts` (`SkillLoadResult.carried?`)
 - Modify: `packages/llm-agent-libs/src/pipeline/handlers/skill-select.ts` (~51, ~70), `agent/rag-orchestrator.ts` (~262, ~297), `skills/skill-utils.ts` (~27), `skills/filesystem-skill.ts` (~98), `mcp/vectorize-mcp-tools.ts` (`vectorizeSkills` ~443), `builder.ts` (~1335), `skills/plugin-host/compatible-skills-rag.ts` (~89, ~110), `skills/plugin-host/skill-plugin-host.ts` (~236, ~339)
-- Modify: `packages/llm-agent-server-libs/src/smart-agent/config-validator.ts` (`skills.type`), `smart-server.ts` (`resolveSkillManager` default branch)
+- Modify: `packages/llm-agent-server-libs/src/smart-agent/smart-server.ts` (`resolveSkillManager` default branch — a config built in code; the YAML rule is Task 4M's `checkSkills`, spec D89)
 - Modify (U2): `packages/llm-agent-server-libs/src/smart-agent/skill-plugins-config.ts` (~89 doc comment, ~528 default); extend `skill-plugins-config.test.ts` and `packages/llm-agent-libs/src/skills/plugin-host/skill-plugin-host.ingest.test.ts`
 - Create: `packages/llm-agent-libs/src/skills/__tests__/skills-fail-loud.test.ts`, `packages/llm-agent-libs/src/pipeline/handlers/__tests__/skill-select-fail-loud.test.ts`, `packages/llm-agent-server-libs/src/smart-agent/__tests__/skills-type-validation.test.ts`; modify `packages/llm-agent-libs/src/__tests__/vectorize-skills.test.ts` (S-5: failures reject) and `packages/llm-agent-server-libs/src/smart-agent/__tests__/session-wiring.test.ts` (S-5: a failed skill write fails `start()`)
 
@@ -4396,7 +4467,7 @@ Spec §10.5.8 (S-1–S-10), §3.8 (`SkillLoadResult.carried`), §13 B8; §10.5.1
   - S-7 `CompatibleSkillsRag.query`: an incompatible generation → throws `SkillsIncompatibleError`; an `AbortError` → rethrown. Today: `[]`.
   - S-8 plugin host: a group whose build fails with a prior generation present → `ok: false`, the group in `omitted` with its reason (under `strict: false` the prior generation is still served; under the default `strict: true` the group serves nothing old — U2).
   - S-9 plugin host, `strict: false`, a source whose `acquire` rejects with `new Error('net')` → `result.carried` = `[{ sourceId, reason: 'Error: net' }]`.
-  - S-10 server: `skills: { type: 'nope' }` → `ConfigValidationError` naming `skills.type` and the three values. Today: no skill manager.
+  - S-10 server, a config built in code (`new SmartServer({ …, skills: { type: 'nope' } } as unknown as SmartServerConfig, constructionSeams)` — it skips the YAML validator): `start()` rejects with `/skills\.type.*'nope'.*claude, codex, filesystem/`. Today: no skill manager. The YAML half (`ConfigFieldError` naming `skills.type`, one issue) is Task 4M's `checkSkills` row in `config-field-validation.test.ts` — one rule (spec D89); this task adds no `config-validator.ts` rule, which `checkSkills` would always pre-empt.
   - **U2** host: no `strict` in the deps + a source whose `acquire` rejects → the group is not committed and is in `omitted` with the reason (the `strict:true source failure` behaviour), no `carried`. Today: carried forward. `strict: false` → carried, reported (S-9, pinned). Server: `parseSkillPluginsConfig` of a block without `strict` → `strict: true`; with `strict: false` → `false` (pinned).
 - [ ] **Step 2: Run to see them fail.** Expected: FAIL.
 - [ ] **Step 3: Implement** — as the rows say. **S-5 (spec D75)** — `vectorize-mcp-tools.ts`: move `writeOne`'s estimated-usage record into `function logEstimatedEmbedding(requestLogger: IRequestLogger, text: string, start: number, detail: 'tools' | 'skills'): void` (writeOne calls it where it logged before — no behaviour change), add `SkillError` to the `@mcp-abap-adt/llm-agent` **value** import, and replace `vectorizeSkills` with (its `logger` parameter goes: nothing is warned any more — the two callers drop the argument, `builder.ts` ~1357 here and `fillToolsBinding` in Task 23A):
@@ -4441,7 +4512,7 @@ Spec §10.5.8 (S-1–S-10), §3.8 (`SkillLoadResult.carried`), §13 B8; §10.5.1
     }
   }
   ```
-  `builder.ts` ~1357: `await vectorizeSkills(this._skillManager, toolsRag, requestLogger);` — inside `build()`'s existing `try`, so a rejection runs the build's failure cleanup and rethrows (no new catch). `config-validator.ts` gains the `skills.type` check (`claude | codex | filesystem`), and `resolveSkillManager`'s `default` throws (a config built in code that bypasses the validator still fails). **U2**: `skill-plugin-host.ts` reads `const strict = deps.strict ?? true;` wherever it read `deps.strict` (the `IngestHostDeps.strict` doc: "default `true`; `false` carries a failed source's prior data forward, reported in `carried`"); `skill-plugins-config.ts`: `strict: raw.strict !== undefined ? Boolean(raw.strict) : true`, the field's doc "Default true".
+  `builder.ts` ~1357: `await vectorizeSkills(this._skillManager, toolsRag, requestLogger);` — inside `build()`'s existing `try`, so a rejection runs the build's failure cleanup and rethrows (no new catch). `resolveSkillManager`'s `default` throws `new Error(\`skills.type: unknown skill manager '${String(type)}' — one of claude, codex, filesystem\`)` (a config built in code skips the validator and still fails). No `config-validator.ts` rule: the YAML's `skills.type` has one rule, Task 4M's `checkSkills` (spec D89). **U2**: `skill-plugin-host.ts` reads `const strict = deps.strict ?? true;` wherever it read `deps.strict` (the `IngestHostDeps.strict` doc: "default `true`; `false` carries a failed source's prior data forward, reported in `carried`"); `skill-plugins-config.ts`: `strict: raw.strict !== undefined ? Boolean(raw.strict) : true`, the field's doc "Default true".
 - [ ] **Step 4: Fix the tests that pin the old behaviour, then the gate**
 
 ```bash
@@ -8407,7 +8478,11 @@ Expected: FAIL — each file as its "Today:" note says (missing modules: `config
       return check.done(check.section('config', value) ?? {});
     }
 
-    /** `skills` (spec D83 (9)), as `resolveSkillManager` reads it. */
+    /**
+     * `skills` (spec D83 (9)), as `resolveSkillManager` reads it. The ONE rule for
+     * `skills.type` (spec D89, S-10): `validateResolvedConfig` has none (Task 4L added
+     * none), so an unknown type is one issue of the ConfigFieldError.
+     */
     export function checkSkills(check: FieldCheck, value: unknown): SmartServerSkillsConfig {
       const s = check.section('skills', value) ?? {};
       return {
@@ -16217,7 +16292,7 @@ Claude-Session: https://claude.ai/code/session_012KjevEeQGZMkWMfnupJ7Yd"
 
 Spec §6.5 (D43 as amended by D54, D49's build half — §17.17), §3.10 (`ToolsCorpusLoader`: checks before the store is touched, `clearAll` required, clear, precomputed write, one log line, status; D42, D46, D47, D54), §10.4 (D68 — §17.23: `FallbackRag` removed in Task 0A; the load checks the writer of the store it writes — D52's resolved-backend check and D62 withdrawn), §14.1 ("The corpus").
 
-**Why.** A tools store is filled once at instance creation (D41). The corpus flow has two layers (D54, spec §6.5): the consumer's **build step** runs the profile's own indexer outside the process and produces a corpus (records + vectors) with an embedder — `buildToolsCorpus`; the **server, at start**, loads that ready corpus into the store through the `corpus` fill source — `ToolsCorpusLoader`, in-memory and persistent stores alike. **There is no deploy step and nothing about the corpus is kept in the store**: no service record, no pending / final state, no id list, no hash in the store. The load: (1) the corpus's identity against what the server is configured with (`ToolsCorpusExpectation`: the consumer-named profile and embedder, the store's declared `dimensions` when there is one) and the manifest's `profileName` against the binding's; (2) the store's capabilities — a precomputed write **and** `clearAll` on the writer of the store it writes; steps 1–2 touch nothing, so an incompatible corpus or store leaves the store as it was; (3) **clear the store** — the corpus is the store's whole content: no record of an earlier corpus, profile or embedder survives, and every write lands in an empty slot, so no old metadata key merges in (`InMemoryRag.upsert` and `VectorRag`'s `upsertKnownVector` set `metadata = { ...old, ...new }` on an in-place write); (4) write every record with its precomputed vector — **no embedding call**; (5) one log line; (6) the catalog status. A store without `clearAll` is refused rather than loaded by deleting the corpus's own ids: the store may hold records the corpus does not list (spec §3.10). An interrupted load repeats at the next start (a new instance clears and writes again); a failure in steps 3–4 throws, so the start (main store) or that worker's construction fails loudly — never a silent empty store. A reconnect calls no source (D46: `IToolsFillSource` is `fill` only). The fingerprint is the consumer-named identity plus the library's own checks (D47: the binding's `profileName`, the corpus format, one vector dimension; D54: the declared `dimensions`). There are no companion stores (D50): a corpus is one store's records. **An empty corpus is valid** (D49, its build half): no items → zero records, no `dimensions`; its load clears the store and writes nothing — a complete catalog of 0 tools.
+**Why.** A tools store is filled once at instance creation (D41). The corpus flow has two layers (D54, spec §6.5): the consumer's **build step** runs the profile's own indexer outside the process and produces a corpus (records + vectors) with an embedder — `buildToolsCorpus`; the **server, at start**, loads that ready corpus into the store through the `corpus` fill source — `ToolsCorpusLoader`, into any store with a precomputed-vector write: the server's in-memory store (a `VectorRag`) and the persistent ones alike; `InMemoryRag` has none and is refused by the capability check (spec D86, decided by the user on 2026-10-06). **There is no deploy step and nothing about the corpus is kept in the store**: no service record, no pending / final state, no id list, no hash in the store. The load: (1) the corpus's identity against what the server is configured with (`ToolsCorpusExpectation`: the consumer-named profile and embedder, the store's declared `dimensions` when there is one) and the manifest's `profileName` against the binding's; (2) the store's capabilities — a precomputed write **and** `clearAll` on the writer of the store it writes; steps 1–2 touch nothing, so an incompatible corpus or store leaves the store as it was; (3) **clear the store** — the corpus is the store's whole content: no record of an earlier corpus, profile or embedder survives, and every write lands in an empty slot, so no old metadata key merges in (`InMemoryRag.upsert` and `VectorRag`'s `upsertKnownVector` set `metadata = { ...old, ...new }` on an in-place write); (4) write every record with its precomputed vector — **no embedding call**; (5) one log line; (6) the catalog status. A store without `clearAll` is refused rather than loaded by deleting the corpus's own ids: the store may hold records the corpus does not list (spec §3.10). An interrupted load repeats at the next start (a new instance clears and writes again); a failure in steps 3–4 throws, so the start (main store) or that worker's construction fails loudly — never a silent empty store. A reconnect calls no source (D46: `IToolsFillSource` is `fill` only). The fingerprint is the consumer-named identity plus the library's own checks (D47: the binding's `profileName`, the corpus format, one vector dimension; D54: the declared `dimensions`). There are no companion stores (D50): a corpus is one store's records. **An empty corpus is valid** (D49, its build half): no items → zero records, no `dimensions`; its load clears the store and writes nothing — a complete catalog of 0 tools.
 
 **The capability check reads the writer the load writes through (D68, spec §6.5 load step 2).** The load writes only through a precomputed write and replaces the store through `clearAll`, so `corpusWriter` checks both on `ctx.target.rag.writer()` — the store it writes — and throws before the clear, any write or any embedding call. There is no second check on a resolved backend: it existed because `FallbackRag`, which the builder put around every registered store, claimed both capabilities over a backend without them (D52); Task 0A removed `FallbackRag` and the wrap (D68). The decorators left in the repository pass the backend's answer through (`StrategyRag` returns its inner writer unchanged; `ActiveFilteringRag`, `OverlayRag`, `SessionScopedRag` and the skills RAG source expose no writer); a consumer's own decorator is checked through its own writer — the one the load calls.
 
@@ -16508,10 +16583,19 @@ describe('ToolsCorpusLoader — the load at start (spec §3.10, §6.5, D54)', ()
     }
   });
 
-  for (const [name, make] of [
-    ['VectorRag', () => vectorTarget().rag],
-    ['InMemoryRag', () => new InMemoryRag()],
-  ] as const) {
+  it('InMemoryRag is refused: its writer has no precomputed write (spec D86) — nothing cleared or written, no embedding call', async () => {
+    const { corpus } = await build();
+    const rag = new InMemoryRag();
+    const kept = await rag.writer().upsertRaw('kept', 'an earlier record', { id: 'kept' });
+    assert.ok(kept.ok);
+    await assert.rejects(load(rag, corpus).run(), /has no precomputed write/);
+    const still = await rag.getById('kept');
+    assert.ok(still.ok && still.value, 'not cleared — refused before step 3');
+  });
+
+  // The stores that merge metadata on an in-place upsert AND take a corpus (spec D86):
+  // VectorRag — the server's in-memory store. (InMemoryRag merges too, but is refused above.)
+  for (const [name, make] of [['VectorRag', () => vectorTarget().rag]] as const) {
     it(`no merged metadata on ${name}: a record that loses ttl / data in the next corpus has none after the next start`, async () => {
       const { corpus: plain } = await build();
       const xId = recordId(G, 'tool:read_file', 'full', 0);
@@ -16858,7 +16942,9 @@ function checkCompatible(m: ToolsCorpusManifest, expect: ToolsCorpusExpectation,
 }
 
 /**
- * The `corpus` source (spec §3.10, §6.5, D54) — any store, in-memory or persistent. At the
+ * The `corpus` source (spec §3.10, §6.5, D54) — any store with a precomputed-vector write
+ * (`VectorRag` — the server's in-memory store —, qdrant, pg-vector, HANA; `InMemoryRag` has
+ * none and is refused by the capability check, spec D86). At the
  * store's instance creation: check the corpus against what the server is configured with and the
  * store's capabilities (nothing touched yet), clear the store, write every record with its
  * precomputed vector (no embedding call), log one line, report the status. Nothing else: no
@@ -17118,10 +17204,10 @@ Claude-Session: https://claude.ai/code/session_012KjevEeQGZMkWMfnupJ7Yd"
 
 ## Task 20: `SmartAgentBuilder.withToolsProfile` (libs)
 
-Spec §6.1 (incl. the fill source, §3.10, D42); §16 principle 6 (one call site).
+Spec §6.1 (incl. the fill source, §3.10, D42; **D85 — decided by the user on 2026-10-06, spec §17.42: the builder runs a bound store's fill source only when it has its own MCP connection**, so a store the server or the consumer fills is never filled twice); §6.4 rows 1, 1a; §16 principle 6 (one call site).
 
 **Files:**
-- Modify: `packages/llm-agent-libs/src/builder.ts` (field near `_retrievalStrategies` ~line 198; method after `withRetrievalStrategy` ~line 449; `toolsRag` computation ~lines 922–926). The `vectorizeMcpTools` call (~line 1220) is **not** changed: it already passes `toolsRag`, the bound store, and Task 19 reads the binding from it (D34).
+- Modify: `packages/llm-agent-libs/src/builder.ts` (field near `_retrievalStrategies` ~line 198; method after `withRetrievalStrategy` ~line 449; `toolsRag` computation ~lines 922–926; the auto-connect branch's `vectorizeMcpTools` call ~line 1220 — guarded for a bound store without a connection, spec D85; its arguments are unchanged: it passes `toolsRag`, the bound store, and Task 19 reads the binding from it, D34).
 - Create: `packages/llm-agent-libs/src/__tests__/builder-tools-profile.test.ts`
 - Modify: `packages/llm-agent-libs/src/collections/__tests__/collection-profile.typecheck.ts` (append)
 
@@ -17134,6 +17220,8 @@ Spec §6.1 (incl. the fill source, §3.10, D42); §16 principle 6 (one call site
   // a store that already carries a tools binding (server-bound) is reused, never bound twice —
   //   through bindToolsProfile, which refuses another profile or a different explicit source (Task 19).
   // withMcpClients / withMcpServers: bound, NOT filled (no vectorization there, as in 30.1.0; spec §6.1 limit).
+  // auto-connect with NO connection (no mcp:, no strategy): a bound store is NOT filled either (spec D85) —
+  //   its creator (the server, fillToolsBinding) fills it once; an unbound store keeps 30.1.0's call.
   ```
 
 - [ ] **Step 1: Write the failing test**
@@ -17147,6 +17235,7 @@ import {
   type ICollectionProfile,
   type IMcpClient,
   type IMcpConnectionStrategy,
+  type IToolsFillSource,
   isToolCatalogReporter,
   type McpTool,
   TextOnlyEmbedding,
@@ -17170,8 +17259,9 @@ function counting(p: ICollectionProfile<ToolItem>) {
   return { profile, c };
 }
 // Through a connection strategy, not withMcpClients: the builder vectorizes (and so fills a
-// profile) only on the auto-connect branch — withMcpClients / withMcpServers skip vectorization
-// entirely (builder.ts ~1144, "Caller-provided clients: skip auto-connect and vectorization").
+// profile) only on the auto-connect branch WITH a connection (spec D85) — withMcpClients /
+// withMcpServers skip vectorization entirely (builder.ts ~1144, "Caller-provided clients: skip
+// auto-connect and vectorization"), and with no connection a bound store is left to its creator.
 const connection: IMcpConnectionStrategy = {
   resolve: async () => ({ clients: [client()], toolsChanged: true }),
 };
@@ -17241,6 +17331,28 @@ describe('SmartAgentBuilder.withToolsProfile', () => {
     );
   });
 
+  it('no MCP connection (no mcp:, no strategy, no clients) → the bound store is not filled at build — its creator fills it, once (spec D85)', async () => {
+    let fills = 0;
+    const counting: IToolsFillSource = { name: 'counting', fill: async () => { fills++; return undefined; } };
+    const bound = bindToolsProfile(mcpToolsVariants.faceted(), { key: 'tools', rag: new InMemoryRag() }, counting);
+    // A builder with no connection: what the server's startup build and a worker's construction are.
+    const handle = await new SmartAgentBuilder({}).withMainLlm(makeLlm([{ content: 'ok' }])).setToolsRag(bound.rag).build();
+    try {
+      assert.equal(fills, 0, 'build() ran no fill source');
+      assert.ok(isToolCatalogReporter(handle.agent));
+      assert.equal(handle.agent.getToolCatalogStatus(), undefined, 'nothing attempted, nothing published');
+    } finally {
+      await handle.close();
+    }
+    // The same store under a builder WITH a connection: the source runs once, at build.
+    const withConn = await builder().setToolsRag(bindToolsProfile(mcpToolsVariants.faceted(), { key: 'tools', rag: new InMemoryRag() }, counting).rag).build();
+    try {
+      assert.equal(fills, 1, 'one fill with a connection');
+    } finally {
+      await withConn.close();
+    }
+  });
+
   it("withToolsProfile + withRetrievalStrategy('tools', …) is refused", async () => {
     await assert.rejects(
       builder().setToolsRag(new InMemoryRag()).withToolsProfile(mcpToolsVariants.faceted()).withRetrievalStrategy('tools', new EmbeddingRetrieval()).build(),
@@ -17292,9 +17404,11 @@ In `builder.ts`:
    * setToolsRag or auto-created), filled through it at build where the 30.1.0
    * tool records were written, and its retrieval applied like an explicit
    * strategy. A store the server already bound is reused, never bound twice.
-   * Filled ONLY on the auto-connect branch: with withMcpClients / withMcpServers
-   * the builder does not vectorize (as in 30.1.0) — bound, not filled; the
-   * consumer fills it through `fillToolsBinding` / `bound.index` (spec §6.1 limit).
+   * Filled ONLY on the auto-connect branch WITH a connection (YAML `mcp:` /
+   * withMcpConnectionStrategy): with withMcpClients / withMcpServers the builder
+   * does not vectorize (as in 30.1.0), and with no connection it does not run the
+   * store's source (spec D85) — bound, not filled; the store's creator fills it
+   * through `fillToolsBinding` / `bound.index` (spec §6.1 limit), once.
    * `source` — where the records come from (spec §3.10); absent → live.
    */
   withToolsProfile(profile: ICollectionProfile<ToolItem>, source?: IToolsFillSource): this {
@@ -17336,6 +17450,39 @@ In `builder.ts`:
     const toolsRag: IRag | undefined =
       existingToolsBinding || !toolsBinding ? baseToolsRag : toolsBinding.rag;
   ```
+- in the auto-connect branch (`else { … resolved = connectionStrategy ? await connectionStrategy.resolve([]) : { clients: [], toolsChanged: false }; … }`), replace `const toolSummary = await vectorizeMcpTools(` with a guarded call (its arguments unchanged):
+  ```ts
+        // Spec §6.1, D85: the builder runs a BOUND store's fill source only when it
+        // has its own MCP connection (YAML `mcp:` / withMcpConnectionStrategy). With
+        // none, the store's creator fills it — the server (§6.3) or the consumer
+        // (fillToolsBinding) — and running the source here too would fill it twice
+        // (a `corpus` source clears and loads again). An unbound store keeps 30.1.0's
+        // call (it lists the clients it has).
+        const builderFills =
+          connectionStrategy !== undefined || !(toolsRag && toolsBindingOf(toolsRag));
+        const toolSummary = builderFills
+          ? await vectorizeMcpTools(
+              mcpClients,
+              toolsRag,
+              requestLogger,
+              log,
+              this._toolRecordKey,
+              undefined,
+              {
+                descriptors: mcpClientDescriptors,
+                configuredSlotCount: resolved.configuredSlotCount,
+                toolNamespace: this._toolNamespace ?? defaultToolNamespace,
+                prebuiltView: {
+                  tools: namespacedTools,
+                  provenance: toolProvenance,
+                  clientFailures,
+                  total,
+                },
+              },
+            )
+          : undefined;
+  ```
+  (The existing `if (toolSummary) toolCatalogStatus.publish(toolSummary)` — "published only when defined" — already leaves the holder empty for `undefined`.)
   `toolsRag` now carries the binding and its fill source (registered by `bindToolsProfile`, or found on the server-bound store — the same profile and no different source, else `build()` threw), so the existing `vectorizeMcpTools(…, toolsRag, …)` call runs the source's `fill` — the store's creation — and a later `toolsChanged` of the agent's `McpToolRegistry` (its `ragStores.tools` is this store, or a `StrategyRag` over it) finds the binding and writes nothing (D46). Nothing is passed beside the store (D34, D42).
 
 - [ ] **Step 4: Run (new + existing builder/retrieval tests + golden + typecheck)**
@@ -18228,7 +18375,7 @@ Claude-Session: https://claude.ai/code/session_012KjevEeQGZMkWMfnupJ7Yd"
 
 ## Task 22: Names → instances — `resolve-collection-profiles.ts` (server-libs)
 
-Spec §6.2 (registries; ONE `decision:` section whose provider decides the kind — `makeProbabilityDecision` (Task 20A) builds the probability decision, the new optional `makeRelevanceDecision` the relevance one; `reranker: decision` builds the matching reranker in `rag.profiles` AND `rag.retrieval`), §3.8 (the seam row), §5.5 (`faceted-rerank` takes the `decision:` reranker of either kind), §7.3.1 (text composers, F4), §7.4 (three named compositions, no tuned numbers); D27, D55, D56. No intents and no companion stores (spec D50, §17.15): a profile resolves to its strategy instances and nothing else.
+Spec §6.2 (registries; ONE `decision:` section whose provider decides the kind — `makeProbabilityDecision` (Task 20A) builds the probability decision, the new optional `makeRelevanceDecision` the relevance one; `reranker: decision` builds the matching reranker in `rag.profiles` AND `rag.retrieval`), §3.8 (the seam row), §5.5 (`faceted-rerank` takes the `decision:` reranker of either kind), §7.3.1 (text composers, F4), §7.4 (three named compositions, no tuned numbers); D27, D55, D56; **D90 (decided by the user on 2026-10-06, spec §17.42): a decomposer serves the store it is bound to — `ResolvedToolsProfile.forQueryEmbedder` rebuilds the composition over a worker store's embedder (Task 23 calls it)**. No intents and no companion stores (spec D50, §17.15): a profile resolves to its strategy instances and nothing else.
 
 **Files:**
 - Create: `packages/llm-agent-server-libs/src/smart-agent/resolve-collection-profiles.ts`
@@ -18255,7 +18402,7 @@ Spec §6.2 (registries; ONE `decision:` section whose provider decides the kind 
   export interface ToolsStrategyFactories { readonly facets?: Readonly<Record<string, () => IToolFacet>>; readonly texts?: Readonly<Record<string, () => IToolTextComposer>> /* F4 */; readonly discriminators?: Readonly<Record<string, () => IDiscriminatorSelector>>; readonly pools?: Readonly<Record<string, (args: unknown) => ICandidatePool>>; readonly collapse?: Readonly<Record<string, () => ICollapseRule>>; readonly cuts?: Readonly<Record<string, (args: unknown) => IItemCut>>; readonly estimators?: Readonly<Record<string, () => IItemSizeEstimator>>; readonly decomposers?: Readonly<Record<string, (deps: { queryEmbedder: IQueryEmbedder }) => IQueryDecomposer>> }
   export const BUILT_IN_TOOLS_VARIANTS: Readonly<Record<string, ToolsVariantFactory>>;
   export const BUILT_IN_TOOLS_STRATEGIES: ToolsStrategyFactories;
-  export interface ResolvedToolsProfile { readonly key: string; readonly profile?: ICollectionProfile<ToolItem>; readonly variant?: string }
+  export interface ResolvedToolsProfile { readonly key: string; readonly profile?: ICollectionProfile<ToolItem>; readonly variant?: string; readonly forQueryEmbedder?: (queryEmbedder: IQueryEmbedder) => Promise<ICollectionProfile<ToolItem>> /* D90: with a decomposer — the composition over another store's embedder */ }
   export interface ResolveCollectionProfilesInput { profiles?: Record<string, SmartServerProfileConfig>; decisions: DecisionBuilders /* the server's one, shared with rag.retrieval */; resolveLlm: (key: string) => Promise<ILlm>; queryEmbedder?: IQueryEmbedder; telemetry?: StagedRetrievalOptions['telemetry']; variantFactories?: Readonly<Record<string, ToolsVariantFactory>>; strategyFactories?: ToolsStrategyFactories }
   export function resolveCollectionProfiles(input: ResolveCollectionProfilesInput): Promise<Map<string, ResolvedToolsProfile>>;
   // No assertSmallSetPool: withdrawn with small-set-jev (D55; D23 withdrawn).
@@ -18455,6 +18602,40 @@ describe('resolveCollectionProfiles', () => {
     });
     await resolveCollectionProfiles(i);
     assert.deepEqual(seams, { decision: 1, relevance: 0 });
+  });
+
+  it("a decomposer over a worker store's embedder: forQueryEmbedder rebuilds the composition over it; the one decision reused (spec D90)", async () => {
+    const seen: unknown[] = [];
+    const main = { embedQuery: async () => ({ vector: [1] }) };
+    const worker = { embedQuery: async () => ({ vector: [2] }) };
+    const { i, seams } = input({
+      queryEmbedder: main,
+      profiles: {
+        v: { variant: 'faceted-rerank', poolItems: 5, decomposer: 'split' },
+        c: { compose: { indexer: { faceted: [] }, reranker: 'decision', decomposer: 'split' } },
+        n: { variant: 'faceted' },
+      },
+      strategyFactories: {
+        decomposers: {
+          split: ({ queryEmbedder }) => {
+            seen.push(queryEmbedder);
+            return { name: 'split', decompose: async () => ({ ok: true, value: [] }) };
+          },
+        },
+      },
+    });
+    const out = await resolveCollectionProfiles(i);
+    assert.deepEqual(seen, [main, main], "the main bindings: the main store's embedder");
+    for (const key of ['v', 'c']) {
+      const r = out.get(key);
+      assert.ok(r?.forQueryEmbedder, `${key}: a decomposer → forQueryEmbedder`);
+      const p = await r.forQueryEmbedder(worker);
+      assert.notEqual(p, r.profile, `${key}: a profile of its own`);
+      assert.equal(composed(p).decompose?.queryEmbedder, worker, `${key}: over the worker store's embedder`);
+    }
+    assert.deepEqual(seen, [main, main, worker, worker]);
+    assert.equal(out.get('n')?.forQueryEmbedder, undefined, 'no decomposer → nothing to rebuild');
+    assert.deepEqual(seams, { decision: 1, relevance: 0 }, 'the one decision reused');
   });
 
   it('numbers are read as numbers, never coerced (spec §10.5.9, D83 (6)/(7)): a code-built true / null / string → error', async () => {
@@ -18808,9 +18989,16 @@ export const BUILT_IN_TOOLS_STRATEGIES: ToolsStrategyFactories = {
 
 export interface ResolvedToolsProfile {
   readonly key: string;
-  /** Undefined = baseline (no profile is bound). */
+  /** Undefined = baseline (no profile is bound). Over the main store's query embedder. */
   readonly profile?: ICollectionProfile<ToolItem>;
   readonly variant?: string;
+  /**
+   * Present when a decomposer is configured (spec §6.2, D90): the same composition
+   * with its decomposer over ANOTHER store's query embedder — a worker's own tools
+   * store with its own embedder. The server's one decision is reused (`decisions`
+   * builds it once); every other strategy instance is made again for that store.
+   */
+  readonly forQueryEmbedder?: (queryEmbedder: IQueryEmbedder) => Promise<ICollectionProfile<ToolItem>>;
 }
 
 export interface ResolveCollectionProfilesInput {
@@ -18821,7 +19009,7 @@ export interface ResolveCollectionProfilesInput {
   telemetry?: StagedRetrievalOptions['telemetry'];
   /** Resolves a key of the `llm:` map (strict). */
   resolveLlm: (key: string) => Promise<ILlm>;
-  /** The store's query embedder (the one makeRag gives the store); for decomposers. */
+  /** The MAIN store's query embedder (the one makeRag gives it); for its decomposer — a worker store's comes through `forQueryEmbedder` (D90). */
   queryEmbedder?: IQueryEmbedder;
   variantFactories?: Readonly<Record<string, ToolsVariantFactory>>;
   strategyFactories?: ToolsStrategyFactories;
@@ -18852,10 +19040,11 @@ export async function resolveCollectionProfiles(
     if (!f) throw new Error(`unknown ${kind} "${n}" (known: ${Object.keys(reg ?? {}).join(', ') || 'none'})`);
     return f;
   };
-  const decomposeOf = (n: string): StagedRetrievalOptions['decompose'] => {
+  // Spec §6.2, D90: over the query embedder of the store the profile serves.
+  const decomposeOf = (n: string, storeEmbedder: IQueryEmbedder | undefined): StagedRetrievalOptions['decompose'] => {
     const f = s.decomposers?.[n];
     if (!f) throw new Error(`unknown decomposer "${n}" (none is built in — register yours in toolsStrategyFactories.decomposers)`);
-    const queryEmbedder = need(input.queryEmbedder, `decomposer "${n}" needs the store's query embedder (rag.embedder)`);
+    const queryEmbedder = need(storeEmbedder, `decomposer "${n}" needs the store's query embedder (rag.embedder)`);
     return { decomposer: f({ queryEmbedder }), queryEmbedder };
   };
   const facetsOf = (names: readonly string[]) => names.map((n) => pick(s.facets, 'facet', n)());
@@ -18936,9 +19125,18 @@ export async function resolveCollectionProfiles(
 
   for (const [key, cfg] of entries) {
     try {
+      if (cfg.variant === undefined && !cfg.compose) continue;
       const decomposerName = cfg.decomposer ?? cfg.compose?.decomposer;
-      const decompose = decomposerName && decomposerName !== 'none' ? decomposeOf(decomposerName) : undefined;
-      if (cfg.variant !== undefined) {
+      const named = decomposerName && decomposerName !== 'none' ? decomposerName : undefined;
+      // Spec §6.2, D90: the entry's profile over ONE store's query embedder — the
+      // main store's below; a worker store with its own embedder gets its own
+      // through `forQueryEmbedder`. `decisions` builds the decision once, so a
+      // second call reuses it (one decision per server).
+      const profileOver = async (
+        storeEmbedder: IQueryEmbedder | undefined,
+      ): Promise<ICollectionProfile<ToolItem> | undefined> => {
+        const decompose = named ? decomposeOf(named, storeEmbedder) : undefined;
+        if (cfg.variant === undefined) return cfg.compose ? composeOf(cfg.compose, decompose) : undefined;
         const factory = variants[cfg.variant];
         if (!factory) throw new Error(`unknown variant "${cfg.variant}" (known: ${Object.keys(variants).join(', ')})`);
         const builtIn = cfg.variant in BUILT_IN_TOOLS_VARIANTS;
@@ -18953,7 +19151,7 @@ export async function resolveCollectionProfiles(
         const reranker = kind
           ? await decisionRerankerFor(decisions, { task: TOOL_QUESTION.task, criteria: TOOL_QUESTION.criteria, explicit: false })
           : undefined;
-        const profile = factory({
+        return factory({
           ...(kind === 'probability' ? { probabilityDecision: await decisions.probability() } : {}),
           ...(kind === 'relevance' ? { relevanceDecision: await decisions.relevance() } : {}),
           ...(reranker ? { reranker } : {}),
@@ -18962,10 +19160,19 @@ export async function resolveCollectionProfiles(
           ...(decompose ? { decompose } : {}),
           ...(input.telemetry ? { telemetry: input.telemetry } : {}),
         });
-        out.set(key, { key, ...(profile ? { profile } : {}), variant: cfg.variant });
-      } else if (cfg.compose) {
-        out.set(key, { key, profile: await composeOf(cfg.compose, decompose) });
-      }
+      };
+      const profile = await profileOver(input.queryEmbedder);
+      out.set(key, {
+        key,
+        ...(profile ? { profile } : {}),
+        ...(cfg.variant !== undefined ? { variant: cfg.variant } : {}),
+        ...(named && profile
+          ? {
+              forQueryEmbedder: async (e: IQueryEmbedder) =>
+                need(await profileOver(e), `rag.profiles.${key}: no profile over the store's embedder`),
+            }
+          : {}),
+      });
     } catch (err) {
       throw new Error(`rag.profiles.${key}: ${err instanceof Error ? err.message : String(err)}`);
     }
@@ -19017,7 +19224,7 @@ Claude-Session: https://claude.ai/code/session_012KjevEeQGZMkWMfnupJ7Yd"
 
 ## Task 23: SmartServer wiring — bind at creation, workers by key, startup check (server-libs)
 
-Spec §6.1 (server binds, builder reuses), §6.2 (only `rag.profiles.tools`, S8 — the startup check of this task; workers' tools stores get the main config's profile, each its own binding). No small-set pool check: it went with `small-set-jev` (D55 withdraws D23). No companion stores (D50, spec §17.15): a binding is the primary store only.
+Spec §6.1 (server binds, builder reuses), §6.2 (only `rag.profiles.tools`, S8 — the startup check of this task; workers' tools stores get the main config's profile, each its own binding; **D90 — decided by the user on 2026-10-06, spec §17.42: a worker's own store with a decomposer is bound with the composition over that store's embedder**, `ResolvedToolsProfile.forQueryEmbedder` of Task 22). No small-set pool check: it went with `small-set-jev` (D55 withdraws D23). No companion stores (D50, spec §17.15): a binding is the primary store only.
 
 **Files:**
 - Modify: `packages/llm-agent-server-libs/src/smart-agent/smart-server.ts` (field near `_retrievalStrategies` ~line 840; resolution after `resolvedEmbedder` ~line 1434; the `toolsRag` creation ~line 1550; the worker `makeToolsRag` ~line 2170; before `new HealthChecker(` ~line 1888)
@@ -19135,13 +19342,84 @@ test('one decision per server: rag.retrieval and rag.profiles.tools share ONE se
     if (handle) await handle.close();
   }
 });
+
+/** A registered decomposer that records the query embedder each binding gets (spec D90). */
+function recordingDecomposers(seen: unknown[]) {
+  return {
+    decomposers: {
+      split: ({ queryEmbedder }: { queryEmbedder: unknown }) => {
+        seen.push(queryEmbedder);
+        return { name: 'split', decompose: async () => ({ ok: true as const, value: [] }) };
+      },
+    },
+  };
+}
+
+test("D90: a decomposer serves the store it is bound to — a worker store's own embedder, the main store's for the main binding", async () => {
+  const seen: unknown[] = [];
+  const given: unknown[] = [];
+  const server = new SmartServer(
+    {
+      port: 0,
+      llm: { model: 'test-model' },
+      skipModelValidation: true,
+      rag: {
+        store: { type: 'in-memory' },
+        embedder: { provider: 'ollama', model: 'main' },
+        profiles: { tools: { variant: 'faceted', decomposer: 'split' } },
+      },
+      toolsStrategyFactories: recordingDecomposers(seen),
+      subAgentConfigs: [
+        {
+          name: 'own',
+          config: { skipModelValidation: true, rag: { store: { type: 'in-memory' }, embedder: { provider: 'ollama', model: 'worker' } } },
+        },
+      ],
+    },
+    {
+      ...constructionSeams,
+      makeRag: async (input) => {
+        given.push(input.embedder);
+        return constructionSeams.makeRag(input);
+      },
+    },
+  );
+  let handle: Awaited<ReturnType<SmartServer['start']>> | undefined;
+  try {
+    handle = await server.start();
+    assert.equal(seen.length, 2, 'the main binding and the worker store — one decomposer each');
+    assert.notEqual(seen[0], seen[1], 'two stores, two embedders');
+    assert.ok(seen.every((e) => e !== undefined && given.includes(e)), 'each is the embedder makeRag gave a store');
+  } finally {
+    if (handle) await handle.close();
+  }
+});
+
+test('D90: a worker store with no embedder and a decomposer → start() fails naming the worker', async () => {
+  const server = new SmartServer(
+    {
+      port: 0,
+      llm: { model: 'test-model' },
+      skipModelValidation: true,
+      rag: {
+        store: { type: 'in-memory' },
+        embedder: { provider: 'ollama', model: 'main' },
+        profiles: { tools: { variant: 'faceted', decomposer: 'split' } },
+      },
+      toolsStrategyFactories: recordingDecomposers([]),
+      subAgentConfigs: [{ name: 'bare', config: { skipModelValidation: true, rag: { store: { type: 'in-memory' } } } }],
+    },
+    constructionSeams,
+  );
+  await assert.rejects(server.start(), /subagent 'bare': rag\.profiles\.tools has a decomposer/);
+});
 ```
 Imports: the file's `import type { IMcpClient, IRag } from '@mcp-abap-adt/llm-agent';` becomes the value import `import { type IMcpClient, type IRag, recordId } from '@mcp-abap-adt/llm-agent';` (it now carries a value — an `import type` would erase `recordId`); add `import { toolsBindingOf } from '@mcp-abap-adt/llm-agent-libs';`. (No config type import: the tests pass literals.)
 
 - [ ] **Step 2: Run to see them fail**
 
 Run: `npx tsc -b packages/llm-agent-libs && node --import tsx/esm --test packages/llm-agent-server-libs/src/smart-agent/__tests__/mcp-yaml-vectorization.test.ts`
-Expected: FAIL — the store carries no binding; startup refuses none of the three configs. The one-decision test passes already (only `rag.retrieval` is resolved before this task) — it pins that wiring `rag.profiles` adds no second seam call (two `decisionBuilders` would make it 2).
+Expected: FAIL — the store carries no binding; startup refuses none of the three configs; nothing binds a decomposer yet (D90: `seen` is empty, the bare worker starts). The one-decision test passes already (only `rag.retrieval` is resolved before this task) — it pins that wiring `rag.profiles` adds no second seam call (two `decisionBuilders` would make it 2).
 
 - [ ] **Step 3: Implement**
 
@@ -19207,14 +19485,46 @@ In `smart-server.ts`:
    * A worker reading the main store by reference never comes here — it shares
    * the main binding. No companion stores (D50).
    */
-  private withToolsStore(store: IRag): IRag {
+  private async withToolsStore(
+    store: IRag,
+    /** A worker's own store: its name and the query embedder makeRag got for it (spec D90). */
+    worker?: { readonly name: string; readonly queryEmbedder: IQueryEmbedder | undefined },
+  ): Promise<IRag> {
     const p = this._toolsProfiles.get('tools');
     if (!p?.profile) return this.withStrategy('tools', store);
-    return bindToolsProfile(p.profile, { key: 'tools', rag: store }).rag;
+    // Spec §6.2, D90: a decomposer serves the store it is bound to — a worker's own
+    // store gets the composition over ITS embedder (the main one is p.profile).
+    let profile = p.profile;
+    if (worker && p.forQueryEmbedder) {
+      if (!worker.queryEmbedder) {
+        throw new Error(
+          `subagent '${worker.name}': rag.profiles.tools has a decomposer, which needs the worker store's query embedder — configure the worker's rag.embedder`,
+        );
+      }
+      profile = await p.forQueryEmbedder(worker.queryEmbedder);
+    }
+    return bindToolsProfile(profile, { key: 'tools', rag: store }).rag;
   }
   ```
-- main store: replace `toolsRag = this.withStrategy('tools', await this._deps.makeRag(input));` with `toolsRag = this.withToolsStore(await this._deps.makeRag(input));`.
-- in the worker `makeToolsRag` closure, replace its `this.withStrategy('tools', …)` over the worker's own store with `this.withToolsStore(…)` over the same store (the closure is otherwise unchanged; `makeHistoryRag` is unchanged — `withStrategy` keeps it as a caller).
+  (`IQueryEmbedder` into the `@mcp-abap-adt/llm-agent` type import if it is not there yet.)
+- main store: replace `toolsRag = this.withStrategy('tools', await this._deps.makeRag(input));` with `toolsRag = await this.withToolsStore(await this._deps.makeRag(input));` (the main binding: `p.profile`, built over this store's embedder — `resolvedEmbedder`, the one in `input`).
+- the worker `makeToolsRag` closure becomes (it keeps the store input, so the binding gets the worker store's embedder; `makeHistoryRag` is unchanged — `withStrategy` keeps it as a caller):
+  ```ts
+      makeToolsRag: subCfg.rag
+        ? async () => {
+            const input = await this._workerRagInput(
+              name,
+              subCfg.rag as SmartServerRagConfig,
+              subCfg.embedder,
+              embedderFactories,
+            );
+            return this.withToolsStore(await this._deps.makeRag(input), {
+              name,
+              queryEmbedder: input.embedder,
+            });
+          }
+        : undefined,
+  ```
 
 - [ ] **Step 4: Run (new + existing server tests)**
 
@@ -19241,7 +19551,7 @@ Claude-Session: https://claude.ai/code/session_012KjevEeQGZMkWMfnupJ7Yd"
 
 ## Task 23A: The server fills a bound tools store once, when it is created — the main store at startup, a worker's store by the worker's construction (libs + server-libs)
 
-Spec §6.3 (D31; D32 — a worker's fill keeps the identity its agent dispatches by, §17.8; D34 — the binding travels with the store; D35 — whoever creates a bound store fills it, §17.9; D38 — workers on the shared clients filled at startup, on `yamlBuilderConnect` right after the harvest; D39 — the hot-reload test drives the reload entry point; §17.10; **D41 — filled once at creation, never refilled: no memo, no retry, a re-wire never fills; D42 — the store's fill source runs, §17.11**), §6.4 (rows 4–7, 5a), §6.6 (only `tools`), §6.1 (the builder keeps its limit), §7.6 (the profile path, reused), §3.8 (`fillToolsBinding`, `HealthCheckerDeps.toolCatalog`; the two no-contract-change rows), §14.1. The YAML `fill` key arrives in Task 23B; until then every server-bound store carries the default `live` source. A binding is the primary store only — no companion stores (D50, spec §17.15).
+Spec §6.3 (D31; D32 — a worker's fill keeps the identity its agent dispatches by, §17.8; D34 — the binding travels with the store; D35 — whoever creates a bound store fills it, §17.9; D38 — workers on the shared clients filled at startup, on `yamlBuilderConnect` right after the harvest; D39 — the hot-reload test drives the reload entry point; §17.10; **D41 — filled once at creation, never refilled: no memo, no retry, a re-wire never fills; D42 — the store's fill source runs, §17.11**; **decided by the user on 2026-10-06, spec §17.42: D85 — the builder runs a bound store's source only with its own MCP connection (Task 20), so the server's fill is a store's only one — tests (9) and (10) count one fill per store; D93 — the configured slot count a re-wire hands a worker reaches the tool record key its builder gets; D95 — a client that fails its listing at the startup snapshot fails `start()`, and "counted, degraded" (D31) covers only a failure after it — tests (5), (5b)**), §6.4 (rows 1a, 4–7, 5a), §6.6 (only `tools`), §6.1 (the builder keeps its limit), §7.6 (the profile path, reused), §3.8 (`fillToolsBinding`, `HealthCheckerDeps.toolCatalog`; the two no-contract-change rows), §14.1. The YAML `fill` key arrives in Task 23B; until then every server-bound store carries the default `live` source. A binding is the primary store only — no companion stores (D50, spec §17.15).
 
 **Why.** After Task 23 a YAML `rag.profiles.tools` is bound on every path, but filled only where the builder connects itself (`yamlBuilderConnect` in `smart-server.ts`). The other provisioning paths in `_buildInfra` hand the clients to the builder through `withMcpClients` (main: `buildBaseBuilder` → `builder.withMcpClients(parts.mcpClients)`; workers: `buildSubAgent` → `subBuilder.withMcpClients(...)`), and the builder does not vectorize there (spec §6.1). The paths, as they are in `smart-server.ts` today:
 
@@ -19264,10 +19574,11 @@ Spec §6.3 (D31; D32 — a worker's fill keeps the identity its agent dispatches
 - Modify: `packages/llm-agent-libs/src/__tests__/mcp-servers-di.test.ts` (append: a failed build disposes its connection strategy)
 - Create: `packages/llm-agent-libs/src/__tests__/fill-tools-binding.test.ts`
 - Modify: `packages/llm-agent-server-libs/src/smart-agent/smart-server.ts` (fields after Task 23's `_toolsProfiles`; methods after Task 23's `withToolsStore`; the main fill inside the `if (!yamlBuilderConnect) { … buildSharedPipelineInfra … }` block ~line 1653 — before the workers' startup builds and the startup `builder.build()`, D66; the shared-worker pass right after the `if (yamlBuilderConnect) { … buildToolsRagHandle … }` harvest block ~line 1782; `new HealthChecker({` ~line 1888)
-- Create: `packages/llm-agent-server-libs/src/smart-agent/workers/connected-mcp-server.ts` (D32: an already-connected client as an `IMcpServer`, so a worker's builder gets clients WITH descriptors through the existing `withMcpServers`)
+- Create: `packages/llm-agent-server-libs/src/smart-agent/workers/connected-mcp-server.ts` (D32: an already-connected client as an `IMcpServer`, so a worker's builder gets clients WITH descriptors through the existing `withMcpServers`; D93: `slotCountRecordKey` — `defaultToolRecordKey` over the configured slot count, the key a re-wired worker's builder gets)
 - Modify: `packages/llm-agent-server-libs/src/smart-agent/workers/worker-registry.ts` (`WorkerLlmSet.mcpClientDescriptors?`, backfilled beside `mcpClients`; `BuildSubAgentFn`'s `injected.mcpClientDescriptors?` / `injected.configuredSlotCount?`; the per-session re-wire forwards the descriptors and slot count of the clients it hands over)
 - Modify: `packages/llm-agent-server-libs/src/smart-agent/smart-server.ts` `buildSubAgent` (`injected.mcpClientDescriptors?` / `configuredSlotCount?`; `withToolNamespace`; clients with descriptors → `withMcpServers`; **the worker's own bound store filled before `subBuilder.build()`**, D35)
 - Create: `packages/llm-agent-server-libs/src/smart-agent/__tests__/profile-fill-ready-clients.test.ts`
+- Create: `packages/llm-agent-server-libs/src/smart-agent/workers/__tests__/connected-mcp-server.test.ts` (D93: `slotCountRecordKey`; its own file, so the server tests of Step 5 load before `connected-mcp-server.ts` exists)
 - Create: `packages/llm-agent-server-libs/src/smart-agent/__tests__/index-hook-variant.ts` (test helper: the one `faceted` wrapper whose `index` the server tests observe or break)
 - Modify: `packages/llm-agent-server-libs/src/smart-agent/__tests__/mcp-yaml-vectorization.test.ts` (append the D47 own-`mcp:` eviction, the D38 startup fill on `yamlBuilderConnect` and the S-5 / D75 deferred-pass rejection; reuses its stub MCP server)
 - Unchanged: `packages/llm-agent-server-libs/src/smart-agent/config-reload-watcher.ts` — Task 4M made `_onReload` the awaitable entry point, queued in the server's config queue with `PUT /v1/config` (one transaction at a time, D80) that rejects on a failed drain / invalidation — nothing restored, the server not ready until a whole config applies (spec V6, D77, D82); this task only holds the watcher
@@ -19690,6 +20001,7 @@ import {
   type ILlm,
   type IMcpClient,
   type IRag,
+  type IToolRecordKey,
   McpError,
   recordId,
   TextOnlyEmbedding,
@@ -19699,6 +20011,7 @@ import { SimpleRagRegistry } from '@mcp-abap-adt/llm-agent-rag';
 import {
   emptyLoadedPlugins,
   type SessionAgentParts,
+  SmartAgentBuilder,
   toolsBindingOf,
 } from '@mcp-abap-adt/llm-agent-libs';
 import type { ToolsVariantFactory } from '../resolve-collection-profiles.js';
@@ -20032,6 +20345,48 @@ test('(7) D32: a worker filled from the shared clients holds the names its agent
   );
 });
 
+test("(7b) D93: a re-wire hands the worker's builder the configured slot count, as its tool record key — the ids its store holds", async (t) => {
+  const builderKeys = t.mock.method(SmartAgentBuilder.prototype, 'withToolRecordKey');
+  // Slots 0 and 2 connected, slot 1 down (3 configured) — as in (7).
+  const seam = async () => ({
+    clients: [client(['Search', 'Lookup']), client(['Search', 'Fetch'])],
+    clientDescriptors: [
+      { slotIndex: 0, label: 'alpha' },
+      { slotIndex: 2, label: 'gamma' },
+    ],
+    configuredSlotCount: 3,
+  });
+  await withServer(
+    cfg(
+      {
+        mcp: { type: 'http', url: 'http://127.0.0.1:9/never-connected' },
+        subAgentConfigs: [
+          {
+            name: 'own',
+            config: { skipModelValidation: true, agent: { classificationEnabled: false }, rag: { store: { type: 'in-memory' } } },
+          },
+        ],
+      },
+      [],
+    ),
+    { ...constructionSeams, connectMcpWithDescriptors: seam },
+    async ({ server }) => {
+      const s = server as unknown as WorkerInternals;
+      builderKeys.mock.resetCalls();
+      await s._workers.build(s._embeddedSessionParts(undefined, new SimpleRagRegistry()));
+      const keys = builderKeys.mock.calls.map((c) => c.arguments[0] as IToolRecordKey);
+      assert.equal(keys.length, 1, "the re-wired worker's builder got one record key — something reads injected.configuredSlotCount");
+      // clientCount is the configured 3, whatever its registry passes: a lone connected slot keeps its slot id
+      assert.equal(keys[0].key({ toolName: 'Search', clientIndex: 2, clientCount: 1 }), 'tool:2:Search');
+      const workerRag = s._workers.cache.get('own')?.toolsRag;
+      const b = workerRag ? toolsBindingOf(workerRag) : undefined;
+      assert.ok(b, "the worker's own bound store");
+      const got = await b.get({ itemId: keys[0].key({ toolName: 'Search', clientIndex: 2, clientCount: 2 }), owner: { scope: 'global' } });
+      assert.ok(got.ok && got.value, 'the key names an item the store was filled with');
+    },
+  );
+});
+
 // ---- D35: a worker's store is filled when the worker is built — also after a drain ----
 
 /** Two labelled servers, slot 1 of 3 down, `Search` on both (as in (7)). */
@@ -20109,7 +20464,7 @@ async function rebuildAndCheck(s: WorkerInternals, before: Record<'shared' | 'di
     { names: ['WorkerTool'], ids: ['tool:WorkerTool'], primaryQuery: 'Tool WorkerTool' },
     'di',
   );
-  assert.equal(calls.length, 2, 'each rebuilt store filled exactly once; the main store not again');
+  assert.equal(calls.length, 2, 'each rebuilt store filled exactly once (no build() fills it again, spec D85); the main store not again');
 }
 
 function putConfig(port: number, body: unknown): Promise<number> {
@@ -20142,7 +20497,8 @@ test('(9) PUT /v1/config: the next session rebuilds the drained workers and fill
       const s = server as unknown as WorkerInternals;
       const before = { shared: s._workers.cache.get('shared')?.toolsRag, di: s._workers.cache.get('di')?.toolsRag };
       assert.ok(before.shared && before.di, 'precondition: both workers built (and filled) at startup');
-      assert.equal(calls.length, 3, 'precondition: main + two workers filled at startup');
+      // Spec D85: a builder with no connection of its own runs no fill source (Task 20), so these are the server's fills only.
+      assert.equal(calls.length, 3, 'precondition: main + two workers filled at startup — once each');
       calls.length = 0;
       assert.equal(await putConfig(port, { agent: { maxIterations: 25 } }), 200);
       assert.equal(s._workers.cache.size, 0, 'precondition: the PUT drained the worker cache');
@@ -20780,10 +21136,29 @@ test('S-5 / D75: yamlBuilderConnect — a worker skill that cannot be written in
 });
 ```
 
+`packages/llm-agent-server-libs/src/smart-agent/workers/__tests__/connected-mcp-server.test.ts` (spec D93):
+```ts
+import assert from 'node:assert/strict';
+import { test } from 'node:test';
+import { defaultToolRecordKey } from '@mcp-abap-adt/llm-agent';
+import { slotCountRecordKey } from '../connected-mcp-server.js';
+
+test('slotCountRecordKey keys over the configured slot count — defaultToolRecordKey with clientCount fixed (D93)', () => {
+  // One connected client of three slots: the store holds tool:2:Search (filled over 3 slots).
+  assert.equal(slotCountRecordKey(3).key({ toolName: 'Search', clientIndex: 2, clientCount: 1 }), 'tool:2:Search');
+  assert.equal(
+    defaultToolRecordKey.key({ toolName: 'Search', clientIndex: 2, clientCount: 1 }),
+    'tool:Search',
+    'what the worker computed without it — an id the store does not hold',
+  );
+  assert.equal(slotCountRecordKey(1).key({ toolName: 'Search', clientIndex: 0, clientCount: 1 }), 'tool:Search');
+});
+```
+
 - [ ] **Step 6: Run to see them fail**
 
-Run: `npx tsc -b packages/llm-agent-libs && node --import tsx/esm --test packages/llm-agent-server-libs/src/smart-agent/__tests__/profile-fill-ready-clients.test.ts packages/llm-agent-server-libs/src/smart-agent/__tests__/mcp-yaml-vectorization.test.ts packages/llm-agent-server-libs/src/smart-agent/__tests__/config-reload-entry.test.ts`
-Expected: FAIL — (1), (2), (3), (5), (6) find the store empty (`calls` is `[]`, no `toolCatalog`); (7) finds the worker's store empty; (9) fails its startup precondition (`calls.length` is 0), and the rebuilt stores are empty too; (10), (10b) and (10c) find no `_configReload`; (12) fails its precondition (no startup fill); (12b) fails its precondition too (no startup fill), and once filled it would find the entry kept — a backfill failure is outside any cleanup; (4) passes already (it pins 30.1.0), and so does (11) (nothing fills a worker yet — it pins that a re-wire never will), and (5b) (Task 4G's M11 already fails the start — it pins that no fill runs before the snapshot). In `mcp-yaml-vectorization.test.ts` the D38 test finds the worker's store empty after `start()`; the S-5 / D75 deferred-pass test passes already (Task 4L: the worker's own build still vectorizes its skills and rejects) — it pins that moving those skills into the deferred pass (`fillsAfterBuild`) keeps the rejection; the D47 own-`mcp:` test finds the cache entry kept after the failed rebuild (the builder-driven fill throws inside `subBuilder.build()`, outside the fill's catch), and the next session re-wires that empty store with the parent's clients. `config-reload-entry.test.ts` passes already (Task 4M gave the watcher its V6 shape: the link, the rejection and the event boundary's `config_reload_failed`), and so does (10b) once (10)'s precondition holds — it pins V6 and D82 on a real server: a failed drain rejects, nothing is restored, `/health` and the chat route answer not ready until a reload applies.
+Run: `npx tsc -b packages/llm-agent-libs && node --import tsx/esm --test packages/llm-agent-server-libs/src/smart-agent/__tests__/profile-fill-ready-clients.test.ts packages/llm-agent-server-libs/src/smart-agent/__tests__/mcp-yaml-vectorization.test.ts packages/llm-agent-server-libs/src/smart-agent/__tests__/config-reload-entry.test.ts packages/llm-agent-server-libs/src/smart-agent/workers/__tests__/connected-mcp-server.test.ts`
+Expected: FAIL — (1), (2), (3), (5), (6) find the store empty (`calls` is `[]`, no `toolCatalog`); (7) finds the worker's store empty; (7b) finds no record key handed to the re-wired worker's builder; `connected-mcp-server.test.ts` cannot load `../connected-mcp-server.js` (Step 7 creates it); (9) fails its startup precondition (`calls.length` is 0), and the rebuilt stores are empty too; (10), (10b) and (10c) find no `_configReload`; (12) fails its precondition (no startup fill); (12b) fails its precondition too (no startup fill), and once filled it would find the entry kept — a backfill failure is outside any cleanup; (4) passes already (it pins 30.1.0), and so does (11) (nothing fills a worker yet — it pins that a re-wire never will), and (5b) (Task 4G's M11 already fails the start — it pins that no fill runs before the snapshot). In `mcp-yaml-vectorization.test.ts` the D38 test finds the worker's store empty after `start()`; the S-5 / D75 deferred-pass test passes already (Task 4L: the worker's own build still vectorizes its skills and rejects) — it pins that moving those skills into the deferred pass (`fillsAfterBuild`) keeps the rejection; the D47 own-`mcp:` test finds the cache entry kept after the failed rebuild (the builder-driven fill throws inside `subBuilder.build()`, outside the fill's catch), and the next session re-wires that empty store with the parent's clients. `config-reload-entry.test.ts` passes already (Task 4M gave the watcher its V6 shape: the link, the rejection and the event boundary's `config_reload_failed`), and so does (10b) once (10)'s precondition holds — it pins V6 and D82 on a real server: a failed drain rejects, nothing is restored, `/health` and the chat route answer not ready until a reload applies.
 
 - [ ] **Step 7: Implement (server)**
 
@@ -20938,6 +21313,13 @@ In `smart-server.ts`:
     // U10 (Task 4M): a worker on the parent's clients is logged, one line per wire.
     if (injectedMcp) shared.push('mcpClients');
     const workerMcp = ownMcp ?? injectedMcp;
+    // Spec D93 (D32's purpose): the slot count the worker's store was filled with
+    // reaches the key its agent computes — defaultToolRecordKey over the CONFIGURED
+    // slots, never the clients connected now. Only the clients a re-wire hands
+    // over carry one (own clients: array order is the identity).
+    if (workerMcp?.configuredSlotCount !== undefined) {
+      subBuilder = subBuilder.withToolRecordKey(slotCountRecordKey(workerMcp.configuredSlotCount));
+    }
     const workerDescriptors = workerMcp?.descriptors;
     if (workerMcp && workerDescriptors) {
       // withMcpClients carries no descriptors; withMcpServers does (to the
@@ -21022,10 +21404,16 @@ In `smart-server.ts`:
     }
     ```
     (`type SmartAgentHandle` is already in the `@mcp-abap-adt/llm-agent-libs` import. The eviction is unconditional on `name`, as before: concurrent constructions after a drain stay the 30.1.0 race moved out, D45 — this changes no single-flight behaviour.)
-  - import: `import { connectedMcpServer } from './workers/connected-mcp-server.js';` beside the `./workers/worker-registry.js` import (`McpClientDescriptor` is already in the type import).
+  - import: `import { connectedMcpServer, slotCountRecordKey } from './workers/connected-mcp-server.js';` beside the `./workers/worker-registry.js` import (`McpClientDescriptor` is already in the type import).
 - `packages/llm-agent-server-libs/src/smart-agent/workers/connected-mcp-server.ts` (new):
   ```ts
-  import type { IMcpClient, IMcpServer, McpClientDescriptor } from '@mcp-abap-adt/llm-agent';
+  import {
+    defaultToolRecordKey,
+    type IMcpClient,
+    type IMcpServer,
+    type IToolRecordKey,
+    type McpClientDescriptor,
+  } from '@mcp-abap-adt/llm-agent';
 
   /**
    * An already-connected client as an `IMcpServer` (spec §6.3, D32): `start()`
@@ -21039,6 +21427,19 @@ In `smart-server.ts`:
     descriptor: McpClientDescriptor,
   ): IMcpServer {
     return { descriptor, start: async () => client, stop: async () => {} };
+  }
+
+  /**
+   * `defaultToolRecordKey` over the configured slot count of the clients a re-wire
+   * hands a worker (spec §6.3, D32, D93): `clientCount` is the configured slots,
+   * whatever the caller passes, so every key the worker's agent computes (its
+   * McpToolRegistry) is the id its store was filled with — `tool:<slot>:<name>`
+   * while one slot of several is connected, not `tool:<name>`.
+   */
+  export function slotCountRecordKey(configuredSlotCount: number): IToolRecordKey {
+    return {
+      key: (ctx) => defaultToolRecordKey.key({ ...ctx, clientCount: configuredSlotCount }),
+    };
   }
   ```
 - `workers/worker-registry.ts` (D32):
@@ -21144,7 +21545,7 @@ In `smart-server.ts`:
   - in the `if (this.cfg.configFile) {` block: after `reloadWatcher.start();` add `this._configReload = reloadWatcher;` and replace `closeFns.push(() => reloadWatcher.stop());` with `closeFns.push(() => this._configReload?.stop());` (the field is read, so `noUnusedLocals` accepts it).
 - `config-reload-watcher.ts` — **no change in this task.** Task 4M already gave it its final shape (spec V6, D77, D80, D82), which is what this task's hot-reload test drives: `_onReload(document)` is the awaitable reload entry point (D39) — it takes the whole resolved document and validates it with the start's validator before anything applies (D83 (10)), so this task's reload tests pass `reloadDocument(…)` (Task 4M's helper) — queued in the server's `ConfigTransactionQueue` behind the previous reload or `PUT` (D80, V10); it applies the agent update, awaits the worker drain and the session invalidation, and on a failure of either restores **nothing**, skips the RAG weights and **rejects** with an error naming the failure — the queue marks the server not ready (D82); the watcher's `reload` listener is the one place the rejection is handled (`config_reload_failed` through the server's log sink); `config_reload_applied` only on success. This task must not add a `.catch` that turns the drain or invalidation rejection into a resolved promise — that is the V6 regression (spec D77).
 
-Failure policy (spec §6.3) needs no extra code. A client that cannot list at startup never reaches the fill: the authoritative snapshot (`resolveAuthoritativeSnapshot`, run by `buildToolsRagHandle` before it) rejects with that client's `McpError` and `start()` fails (Task 4G, M11 — test (5b)). A client that listed at the snapshot and fails during the fill is what `vectorizeMcpTools` counts in `clientFailures`: `complete: false`, the summary logged through `this._fileLogger`, and `HealthChecker` turns `complete: false` into `degraded` (main store) while startup goes on (test (5)) — so D31's "counted, degraded" covers only a listing that fails after the snapshot. A thrown error (an `IToolRecordKey` id without `tool:`, mismatched descriptors, a binding its store does not carry, a skill that cannot be written — `fillToolsBinding`'s `skills`, spec S-5, D75) propagates: out of `_buildInfra` (main store, or a worker's startup build) and fails startup, as on the builder's path; out of `WorkerRegistry.build` on a lazy rebuild, failing that session's worker build like any worker build error — `buildSubAgent` drops the worker's cache entry first — whichever step of the construction failed: the server's fill, `subBuilder.build()` (a worker on its own `mcp:` is filled there by its builder) or the backfill — and closes the handle it built, so the next session constructs it again (and a configuration error stays loud). An incomplete fill is not retried (D41): it stays reported until a new instance is created — a reconnect's `toolsChanged` never writes a bound store (D46). `/health` reports the main catalog only (spec §6.3); a worker's fill is the logged summary line.
+Failure policy (spec §6.3) needs no extra code. A client that cannot list at startup never reaches the fill: the authoritative snapshot (`resolveAuthoritativeSnapshot`, run by `buildToolsRagHandle` before it) rejects with that client's `McpError` and `start()` fails (Task 4G, M11 — test (5b)). A client that listed at the snapshot and fails during the fill is what `vectorizeMcpTools` counts in `clientFailures`: `complete: false`, the summary logged through `this._fileLogger`, and `HealthChecker` turns `complete: false` into `degraded` (main store) while startup goes on (test (5)) — so D31's "counted, degraded" covers only a listing that fails after the snapshot (spec D95, decided by the user on 2026-10-06: D31 amended in §17.42). A thrown error (an `IToolRecordKey` id without `tool:`, mismatched descriptors, a binding its store does not carry, a skill that cannot be written — `fillToolsBinding`'s `skills`, spec S-5, D75) propagates: out of `_buildInfra` (main store, or a worker's startup build) and fails startup, as on the builder's path; out of `WorkerRegistry.build` on a lazy rebuild, failing that session's worker build like any worker build error — `buildSubAgent` drops the worker's cache entry first — whichever step of the construction failed: the server's fill, `subBuilder.build()` (a worker on its own `mcp:` is filled there by its builder) or the backfill — and closes the handle it built, so the next session constructs it again (and a configuration error stays loud). An incomplete fill is not retried (D41): it stays reported until a new instance is created — a reconnect's `toolsChanged` never writes a bound store (D46). `/health` reports the main catalog only (spec §6.3); a worker's fill is the logged summary line.
 
 - [ ] **Step 8: Run (gate: build + the new and neighbouring tests)**
 
@@ -21152,11 +21553,11 @@ Run:
 ```bash
 npx tsc -b packages/llm-agent-libs packages/llm-agent-server-libs
 npm run typecheck
-node --import tsx/esm --test packages/llm-agent-server-libs/src/smart-agent/__tests__/profile-fill-ready-clients.test.ts packages/llm-agent-server-libs/src/smart-agent/__tests__/mcp-yaml-vectorization.test.ts packages/llm-agent-server-libs/src/smart-agent/__tests__/server-namespace-snapshot.test.ts packages/llm-agent-server-libs/src/smart-agent/__tests__/retrieval-wiring.test.ts packages/llm-agent-server-libs/src/smart-agent/__tests__/config-reload-entry.test.ts packages/llm-agent-server-libs/src/smart-agent/__tests__/config-reload-weights.test.ts packages/llm-agent-server-libs/src/smart-agent/__tests__/worker-llm-cache.test.ts packages/llm-agent-server-libs/src/smart-agent/__tests__/worker-shared-clients-log.test.ts
+node --import tsx/esm --test packages/llm-agent-server-libs/src/smart-agent/__tests__/profile-fill-ready-clients.test.ts packages/llm-agent-server-libs/src/smart-agent/__tests__/mcp-yaml-vectorization.test.ts packages/llm-agent-server-libs/src/smart-agent/__tests__/server-namespace-snapshot.test.ts packages/llm-agent-server-libs/src/smart-agent/__tests__/retrieval-wiring.test.ts packages/llm-agent-server-libs/src/smart-agent/__tests__/config-reload-entry.test.ts packages/llm-agent-server-libs/src/smart-agent/__tests__/config-reload-weights.test.ts packages/llm-agent-server-libs/src/smart-agent/__tests__/worker-llm-cache.test.ts packages/llm-agent-server-libs/src/smart-agent/__tests__/worker-shared-clients-log.test.ts packages/llm-agent-server-libs/src/smart-agent/workers/__tests__/connected-mcp-server.test.ts
 npm test --workspace @mcp-abap-adt/llm-agent-libs
 npm test --workspace @mcp-abap-adt/llm-agent-server-libs
 ```
-Expected: PASS. `tsc -b` with `strict` + `noUnusedLocals` proves the cumulative imports and members: every added name is used (`ToolCatalogStatus` by the field and methods, `fillToolsBinding`/`toolsBindingOf` by `fillBoundToolsStore`, `fillBoundToolsStore` by `_buildInfra`, `buildSubAgent` and `fillSharedClientWorkerStores`, `fillSharedClientWorkerStores` by `_buildInfra`, `fillsAfterBuild` by `buildSubAgent` (and the local `type WorkerLlmSet` import by `fillsAfterBuild`), `_configReload` read by the close function, `_serverToolCatalog` read before `new HealthChecker`, `connectedMcpServer` by `buildSubAgent`, `McpClientDescriptor` in `worker-registry.ts` by `WorkerLlmSet`, the handle type and `BuildSubAgentFn`); nothing named `fillWorkerToolsStores`, `_filledToolsBindings`, `_toolsFills` or `markToolsFilledByBuilder` exists (no memo, no refill — D41). The existing worker and reload tests (`retrieval-wiring.test.ts`, `worker-llm-keys.test.ts`, `worker-llm-cache.test.ts`, `smart-server-config-reload.test.ts`, `config-reload-weights.test.ts` — Task 4M made it await `_onReload`: the weights are applied after the drain and the invalidation succeed) pass unchanged, and so does Task 4M's U10 test (`worker-shared-clients-log.test.ts`: the `injected` arm still records `'mcpClients'`, spec §10.5.12): without a profile no store carries a binding, so the fill block does nothing; without descriptors a worker still gets `withMcpClients`, and the default namespace is what `withToolNamespace` threads when none is injected.
+Expected: PASS. `tsc -b` with `strict` + `noUnusedLocals` proves the cumulative imports and members: every added name is used (`ToolCatalogStatus` by the field and methods, `fillToolsBinding`/`toolsBindingOf` by `fillBoundToolsStore`, `fillBoundToolsStore` by `_buildInfra`, `buildSubAgent` and `fillSharedClientWorkerStores`, `fillSharedClientWorkerStores` by `_buildInfra`, `fillsAfterBuild` by `buildSubAgent` (and the local `type WorkerLlmSet` import by `fillsAfterBuild`), `_configReload` read by the close function, `_serverToolCatalog` read before `new HealthChecker`, `connectedMcpServer` and `slotCountRecordKey` by `buildSubAgent` (spec D93: `injected.configuredSlotCount` is read — through `workerMcp.configuredSlotCount` into the worker builder's record key, pinned by (7b)), `McpClientDescriptor` in `worker-registry.ts` by `WorkerLlmSet`, the handle type and `BuildSubAgentFn`); nothing named `fillWorkerToolsStores`, `_filledToolsBindings`, `_toolsFills` or `markToolsFilledByBuilder` exists (no memo, no refill — D41). The existing worker and reload tests (`retrieval-wiring.test.ts`, `worker-llm-keys.test.ts`, `worker-llm-cache.test.ts`, `smart-server-config-reload.test.ts`, `config-reload-weights.test.ts` — Task 4M made it await `_onReload`: the weights are applied after the drain and the invalidation succeed) pass unchanged, and so does Task 4M's U10 test (`worker-shared-clients-log.test.ts`: the `injected` arm still records `'mcpClients'`, spec §10.5.12): without a profile no store carries a binding, so the fill block does nothing; without descriptors a worker still gets `withMcpClients`, and the default namespace is what `withToolNamespace` threads when none is injected.
 
 - [ ] **Step 9: Commit**
 
@@ -21173,24 +21574,25 @@ Claude-Session: https://claude.ai/code/session_012KjevEeQGZMkWMfnupJ7Yd"
 
 ## Task 23B: YAML `rag.profiles.tools.fill` → the store's fill source (server-libs)
 
-Spec §6.2 (`fill`, its validation and resolution; `toolsFillFactories`), §3.10 (the three sources — `live`, `corpus`, `consumer`; D42, D46 — `fill` only; D47 — the fingerprint, the worker refusal; **D54 — the server loads the corpus at start: the expectation is what the server is configured with, incl. the tools store config's `dimension`**; **D65 — the corpus is checked against EVERY tools store the server binds with it — the main one and each worker's own — at resolution, before any store is created**), §6.5 (the load at start), §7.7 and D66 (the corpus is loaded before skills are vectorized into the store — Task 23A's order, tested here with a real `corpus` source), §14.1 (server `fill`). After Task 23A every server-bound store carries the default `live` source; this task lets the YAML (or a config built in code) choose another one, server-wide: the main store and every worker store the server builds are bound with it (`withToolsStore`). There is no `prebuilt` source and no deploy step (D54): a leftover `prebuilt` is refused, naming `corpus`.
+Spec §6.2 (`fill`, its validation and resolution; `toolsFillFactories`; **decided by the user on 2026-10-06, spec §17.42: D86 — the corpus needs a store with a precomputed write (`InMemoryRag` refused by the loader; the server's in-memory store is a `VectorRag`); D91 — `fill` with `variant: baseline` refused, by the YAML validator and at start; D94 — `fill: corpus` with a worker on its own `rag` and its own clients refused by the YAML resolution too, one rule (`corpusWorkerConflict`) for both callers; D90 — `withToolsStore` binds the profile Task 23 picked for the store**), §3.10 (the three sources — `live`, `corpus`, `consumer`; D42, D46 — `fill` only; D47 — the fingerprint, the worker refusal; **D54 — the server loads the corpus at start: the expectation is what the server is configured with, incl. the tools store config's `dimension`**; **D65 — the corpus is checked against EVERY tools store the server binds with it — the main one and each worker's own — at resolution, before any store is created**), §6.5 (the load at start), §7.7 and D66 (the corpus is loaded before skills are vectorized into the store — Task 23A's order, tested here with a real `corpus` source), §14.1 (server `fill`). After Task 23A every server-bound store carries the default `live` source; this task lets the YAML (or a config built in code) choose another one, server-wide: the main store and every worker store the server builds are bound with it (`withToolsStore`). There is no `prebuilt` source and no deploy step (D54): a leftover `prebuilt` is refused, naming `corpus`.
 
 **Files:**
 - Modify: `packages/llm-agent-server-libs/src/smart-agent/profiles-config.ts` (`SmartServerFillConfig`; `SmartServerProfileConfig.fill?`)
-- Modify: `packages/llm-agent-server-libs/src/smart-agent/profiles-config-validator.ts` (`'fill'` in `PROFILE_FIELDS`; `checkFill`)
+- Modify: `packages/llm-agent-server-libs/src/smart-agent/profiles-config-validator.ts` (`'fill'` in `PROFILE_FIELDS`; `checkFill`, with the `baseline` rule, D91; `corpusWorkerConflict`, D94)
+- Modify: `packages/llm-agent-server-libs/src/smart-agent/config.ts` (`resolveSmartServerConfig` runs `corpusWorkerConflict` once the worker files are read — a `ConfigValidationError`, D94)
 - Modify: `packages/llm-agent-server-libs/src/smart-agent/resolve-collection-profiles.ts` (`ResolvedToolsProfile.fill?`; `ResolveCollectionProfilesInput.fillFactories?`, `readFile?` — the file seam Task 22 no longer has since the intents file went, D50 — and `toolsStoreDimension?`; `resolveFill`)
 - Modify: `packages/llm-agent-server-libs/src/smart-agent/smart-server.ts` (`SmartServerConfig.toolsFillFactories?`; the resolver call; `withToolsStore` binds with the source; the worker check right after Task 23's S8 check in `_buildInfra`)
 - Modify: `packages/llm-agent-server-libs/src/index.ts` (export `SmartServerFillConfig`)
 - Modify (append): `__tests__/profiles-config.test.ts`, `__tests__/resolve-collection-profiles.test.ts`, `__tests__/profile-fill-ready-clients.test.ts`, `__tests__/mcp-yaml-vectorization.test.ts` (the deferred shared-worker fill keeps the worker's skills, D66)
 
 **Interfaces:**
-- Consumes: `LiveToolsFill`, `ConsumerToolsFill` (Task 19); `ToolsCorpusLoader` (`new ToolsCorpusLoader({ corpus, expect: ToolsCorpusExpectation })`, name `'corpus'`), `parseToolsCorpus`, `buildToolsCorpus` (Task 19A); `bindToolsProfile`'s `source` (Task 19); Task 23's (synchronous) `withToolsStore` and its S8 check; Task 23A's test helpers.
+- Consumes: `LiveToolsFill`, `ConsumerToolsFill` (Task 19); `ToolsCorpusLoader` (`new ToolsCorpusLoader({ corpus, expect: ToolsCorpusExpectation })`, name `'corpus'`), `parseToolsCorpus`, `buildToolsCorpus` (Task 19A); `bindToolsProfile`'s `source` (Task 19); Task 23's `withToolsStore` (async — it picks the store's profile, D90) and its S8 check; Task 23A's test helpers.
 - Produces:
   ```ts
   // profiles-config.ts
   export type SmartServerFillConfig =
     | string                                                            // live | consumer | a name in toolsFillFactories
-    | { corpus: { file: string; profile: string; embedder: string } };  // ToolsCorpusLoader — any store (D54)
+    | { corpus: { file: string; profile: string; embedder: string } };  // ToolsCorpusLoader — a store with a precomputed write (D54, D86)
   // SmartServerProfileConfig gains: fill?: SmartServerFillConfig
   // resolve-collection-profiles.ts
   // ResolvedToolsProfile gains: readonly fill?: IToolsFillSource   (absent → bindToolsProfile's default, live)
@@ -21203,7 +21605,7 @@ Spec §6.2 (`fill`, its validation and resolution; `toolsFillFactories`), §3.10
 
 - [ ] **Step 1: Write the failing tests**
 
-Append to `profiles-config.test.ts`:
+Append to `profiles-config.test.ts` (imports: `import { ConfigValidationError } from '../config-validator.js';` — `mkdtempSync`, `writeFileSync`, `tmpdir`, `path` and `loadYamlConfig` are there since Task 21):
 ```ts
 describe('rag.profiles.tools.fill (spec §6.2, §3.10, D54)', () => {
   it('names and the corpus shape resolve as written', () => {
@@ -21226,6 +21628,32 @@ describe('rag.profiles.tools.fill (spec §6.2, §3.10, D54)', () => {
       'tools: { variant: faceted, fill: { prebuilt: { profile: p, embedder: e } } }',
       /fill\.prebuilt: removed \(spec D54\) — use fill: \{ corpus: \{ file, profile, embedder \} \}; the server clears the store and loads the corpus at start/,
     );
+  });
+  it('fill with variant baseline → refused, never dropped (spec D91)', () => {
+    refused('tools: { variant: baseline, fill: live }', /rag\.profiles\.tools\.fill: not with variant baseline/);
+    refused(
+      'tools: { variant: baseline, fill: { corpus: { file: c.json, profile: p, embedder: e } } }',
+      /rag\.profiles\.tools\.fill: not with variant baseline/,
+    );
+  });
+  it("fill: corpus with a worker file on its own rag and its own mcp: → refused at start by the YAML resolution (D47 (3), D94)", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'corpus-worker-'));
+    writeFileSync(path.join(dir, 'own.yaml'), 'rag:\n  store: { type: in-memory }\nmcp: { type: http, url: "http://w" }\n');
+    writeFileSync(path.join(dir, 'shared.yaml'), 'rag:\n  store: { type: in-memory }\n');
+    const at = (worker: string) => {
+      const file = path.join(dir, `main-${worker}.yaml`);
+      writeFileSync(
+        file,
+        `${LLM}${RAG}  profiles:\n    tools:\n      variant: faceted\n      fill: { corpus: { file: ./c.json, profile: p, embedder: e } }\nsubagents:\n  - { name: ${worker}, config: ./${worker}.yaml }\n`,
+      );
+      return resolveSmartServerConfig({}, loadYamlConfig(file, {}), {}, { configPath: file, skipProviderRuntimeChecks: true });
+    };
+    assert.throws(
+      () => at('own'),
+      (e: unknown) => e instanceof ConfigValidationError && /worker 'own' has its own tools store and its own MCP clients/.test(e.message),
+    );
+    // its own rag on the shared clients: allowed (D65 checks its declared dimension)
+    assert.equal(at('shared').subAgentConfigs?.[0]?.name, 'shared');
   });
 });
 ```
@@ -21273,7 +21701,7 @@ describe('fill → the fill source (spec §6.2, D54)', () => {
 
 Append to `profile-fill-ready-clients.test.ts` (imports: `buildToolsCorpus`, `mcpToolsVariants`, `toolItemFromTool` into the `@mcp-abap-adt/llm-agent-libs` import (Task 23A's wrappers live in `index-hook-variant.ts`, so the file does not import `mcpToolsVariants` yet); `VectorRag` from `@mcp-abap-adt/llm-agent-rag` (where it lives since Task 1A, D57); `type IRetrievalEmbedder`, `type ISkill`, `type ISkillManager` into the `@mcp-abap-adt/llm-agent` import — `recordId` and `TextOnlyEmbedding` are there since Task 23A):
 ```ts
-// ---- D42, D54: the fill source from config — corpus, loaded at start into any store ----
+// ---- D42, D54: the fill source from config — corpus, loaded at start into a store with a precomputed write (the server's in-memory store is a VectorRag, D86) ----
 
 /** A 2-dim document embedder that counts document embeddings. */
 function docCounting() {
@@ -21453,6 +21881,18 @@ test('(16d) D66: live fill + a skill manager — tools and skills both there, as
   );
 });
 
+test('(17b) a config built in code: fill with variant baseline → refused at start, the corpus file never read (spec D91)', async () => {
+  const server = new SmartServer(
+    {
+      ...cfg({ mcpClients: [client(['EchoTool'])] }),
+      rag: { store: { type: 'in-memory' }, profiles: { tools: { variant: 'baseline', fill: { corpus: { file: '/no/such/corpus.json', ...FILL_ID } } } } },
+    } as unknown as SmartServerConfig,
+    constructionSeams,
+  );
+  // Refused before the resolver: a read of the missing file would name ENOENT instead.
+  await assert.rejects(server.start(), /rag\.profiles\.tools\.fill: not with variant baseline/);
+});
+
 test('(17) fill: corpus with a worker that has its own rag AND its own clients → refused at start', async (t) => {
   const file = await corpusFile(t, docCounting().embedder);
   const server = new SmartServer(
@@ -21543,16 +21983,21 @@ test("D66: yamlBuilderConnect — a worker on the shared clients with fill: corp
 - [ ] **Step 2: Run to see them fail**
 
 Run: `npx tsc -b packages/llm-agent-libs && node --import tsx/esm --test packages/llm-agent-server-libs/src/smart-agent/__tests__/profiles-config.test.ts packages/llm-agent-server-libs/src/smart-agent/__tests__/resolve-collection-profiles.test.ts packages/llm-agent-server-libs/src/smart-agent/__tests__/profile-fill-ready-clients.test.ts packages/llm-agent-server-libs/src/smart-agent/__tests__/mcp-yaml-vectorization.test.ts`
-Expected: FAIL — `fill` is an unknown profile field; `ResolvedToolsProfile` has no `fill` (and `workerToolsStoreDimensions` is not an input); (14) indexes live (document calls > 0); (15) keeps the foreign record; (16) and (16b) reach the dimension check only after this task (today they start: nothing compares a corpus with a store), and (17) starts; (16c) finds no `EchoTool` (the live fill listed `LiveOnly`); the D66 test in `mcp-yaml-vectorization.test.ts` finds no `CorpusTool` in the worker store. (16d) passes already — it pins that a live fill keeps both tools and skills.
+Expected: FAIL — `fill` is an unknown profile field (so the D91 baseline case fails on the wrong message, and the D94 worker case is refused for `fill`, not for the worker — its `shared` half throws); (17b) starts — nothing reads `fill`, and baseline drops it silently; `ResolvedToolsProfile` has no `fill` (and `workerToolsStoreDimensions` is not an input); (14) indexes live (document calls > 0); (15) keeps the foreign record; (16) and (16b) reach the dimension check only after this task (today they start: nothing compares a corpus with a store), and (17) starts; (16c) finds no `EchoTool` (the live fill listed `LiveOnly`); the D66 test in `mcp-yaml-vectorization.test.ts` finds no `CorpusTool` in the worker store. (16d) passes already — it pins that a live fill keeps both tools and skills.
 
 - [ ] **Step 3: Implement**
 
 `profiles-config.ts`: add `SmartServerFillConfig` (above) and `fill?: SmartServerFillConfig;` to `SmartServerProfileConfig`.
 
-`profiles-config-validator.ts`: `const PROFILE_FIELDS = ['variant', 'compose', 'decomposer', 'poolItems', 'maxItems', 'fill'];` (no `intents` — removed, D50; no `smallSet` — removed, D55; Task 21 refuses both by name) and, called from `checkProfiles` for each profile entry with `label = rag.profiles.<key>` (beside the `decomposer` check) as `checkFill(label, entry.fill, issues)`:
+`profiles-config-validator.ts`: `const PROFILE_FIELDS = ['variant', 'compose', 'decomposer', 'poolItems', 'maxItems', 'fill'];` (no `intents` — removed, D50; no `smallSet` — removed, D55; Task 21 refuses both by name) and, called from `checkProfiles` for each profile entry with `label = rag.profiles.<key>` (beside the `decomposer` check) as `checkFill(label, entry.fill, entry.variant, issues)`:
 ```ts
-function checkFill(label: string, v: unknown, issues: string[]): void {
+function checkFill(label: string, v: unknown, variant: unknown, issues: string[]): void {
   if (v == null) return;
+  if (variant === 'baseline') {
+    // Spec D91: baseline binds no profile, so no fill source would run — refused, never dropped.
+    issues.push(`${label}.fill: not with variant baseline — baseline binds no profile, so no fill source runs (spec D91)`);
+    return;
+  }
   if (typeof v === 'string') {
     if (!name(v)) issues.push(`${label}.fill: must be a non-empty name`);
     return; // live | consumer | a registered name — unknown names fail at resolution
@@ -21577,8 +22022,43 @@ function checkFill(label: string, v: unknown, issues: string[]): void {
   const o = v.corpus;
   for (const f of ['file', 'profile', 'embedder']) if (!name(o[f])) issues.push(`${label}.fill.corpus.${f}: required — a non-empty string`);
 }
+
+/**
+ * Spec §6.2, D47 (3), D94: a corpus holds the SHARED tool catalog; a worker with its
+ * own tools store AND its own clients has another — refused, never loaded with the
+ * wrong one. ONE rule, two callers: `resolveSmartServerConfig` once the worker files
+ * are read (a ConfigValidationError), and the server's start for a config built in
+ * code. A worker with its own `rag` on the shared clients is allowed (D65 checks its
+ * declared dimension).
+ */
+export function corpusWorkerConflict(
+  fill: unknown,
+  workers:
+    | readonly {
+        readonly name: string;
+        readonly config: { readonly rag?: unknown; readonly mcp?: unknown; readonly mcpClients?: readonly unknown[] };
+      }[]
+    | undefined,
+): string | undefined {
+  if (!isMap(fill) || !('corpus' in fill)) return undefined;
+  const own = (workers ?? []).find(
+    (w) => w.config.rag !== undefined && ((w.config.mcpClients?.length ?? 0) > 0 || w.config.mcp !== undefined),
+  );
+  return own
+    ? `rag.profiles.tools.fill: corpus holds the shared tool catalog, but worker '${own.name}' has its own tools store and its own MCP clients — bind that worker's store in your composition root (spec D47 (3))`
+    : undefined;
+}
 ```
-(No store-type rule: the `corpus` source loads any store — in-memory or persistent, D54. Whether a store can be cleared and written with precomputed vectors is checked by `ToolsCorpusLoader` itself at the store's creation, before it touches the store.)
+(`corpusWorkerConflict` is internal to server-libs — not exported from `src/index.ts`; its two callers import the module file.)
+
+`config.ts` `resolveSmartServerConfig`, right after the `assertWorkerLlmConfig(resolved.subAgentConfigs, …)` call and before `return resolved;` (the worker files are read by then; `import { corpusWorkerConflict } from './profiles-config-validator.js';` and `ConfigValidationError` into the existing `./config-validator.js` import):
+```ts
+  // Spec §6.2, D94: the YAML start refuses a corpus with a worker on its own store
+  // and clients — the rule the server runs for a config built in code (D47 (3)).
+  const corpusConflict = corpusWorkerConflict(resolved.rag?.profiles?.tools?.fill, resolved.subAgentConfigs);
+  if (corpusConflict) throw new ConfigValidationError([corpusConflict]);
+```
+(No store-type rule: the `corpus` source loads any store with a precomputed write — the server's in-memory store (a `VectorRag`) or a persistent one, D54, D86; `InMemoryRag`, which has none, is refused by the loader's capability check. Whether a store can be cleared and written with precomputed vectors is checked by `ToolsCorpusLoader` itself at the store's creation, before it touches the store.)
 
 `resolve-collection-profiles.ts`:
 - imports: `import { readFileSync } from 'node:fs';` (Task 22 has no file read any more — the intents file is gone, D50); `ConsumerToolsFill`, `LiveToolsFill`, `parseToolsCorpus`, `ToolsCorpusLoader` into the `@mcp-abap-adt/llm-agent-libs` value import; `IToolsFillSource` into the `@mcp-abap-adt/llm-agent` type import; `SmartServerFillConfig` into the `./profiles-config.js` type import.
@@ -21638,7 +22118,7 @@ function checkFill(label: string, v: unknown, issues: string[]): void {
     });
   }
   ```
-- in the loop, inside the `try` (so a failure is prefixed `rag.profiles.<key>: `), after `const decompose = …;`: `const fill = resolveFill(cfg.fill, readFile, input.fillFactories, { main: input.toolsStoreDimension, workers: input.workerToolsStoreDimensions });`, and each `out.set(key, { … })` gains `...(fill ? { fill } : {}),`.
+- in the loop, inside the `try` (so a failure is prefixed `rag.profiles.<key>: `), after `const named = …;` (Task 22, D90): `const fill = resolveFill(cfg.fill, readFile, input.fillFactories, { main: input.toolsStoreDimension, workers: input.workerToolsStoreDimensions });`, and the `out.set(key, { … })` gains `...(fill ? { fill } : {}),`.
 
 `smart-server.ts`:
 - `SmartServerConfig`, after `toolsStrategyFactories?`:
@@ -21669,23 +22149,19 @@ function checkFill(label: string, v: unknown, issues: string[]): void {
   }
   ```
   (`SmartServerRagStoreConfig` is a union; only the pg-vector and HANA arms carry `dimension?`, so the `in` check narrows it — no cast. Add `type SmartServerRagStoreConfig` to the `./rag-config.js` type import if it is not there yet. A worker's `config.rag` is a `SmartServerRagConfig` — `SmartServerWorkerConfig` omits only `log`, `llm`, `subAgentConfigs`.)
-- in `withToolsStore`, the bind becomes `bindToolsProfile(p.profile, { key: 'tools', rag: store }, p.fill).rag` — the main store and every worker store the server builds get the one configured source.
-- right after Task 23's S8 check in `_buildInfra`:
+- in `withToolsStore`, the bind becomes `bindToolsProfile(profile, { key: 'tools', rag: store }, p.fill).rag` (`profile`: the one Task 23 picked for this store, D90) — the main store and every worker store the server builds get the one configured source.
+- right after Task 23's two code-built checks in `_buildInfra` (`rag.retrieval.tools` + `rag.profiles.tools`; `decomposer` with `baseline`) — **before** the `resolveCollectionProfiles` call, so nothing is read or built for a refused config (`import { corpusWorkerConflict } from './profiles-config-validator.js';`):
   ```ts
-    // spec §6.2: a corpus holds the SHARED catalog. A worker with its own tools
-    // store AND its own clients has another catalog — refuse, never load the
-    // wrong one. (A config built in code skips the YAML validator.)
-    const fillSource = this._toolsProfiles.get('tools')?.fill;
-    if (fillSource?.name === 'corpus') {
-      const own = (this.cfg.subAgentConfigs ?? []).find(
-        (w) => w.config.rag && ((w.config.mcpClients?.length ?? 0) > 0 || w.config.mcp),
+    // Spec D91: baseline binds no profile, so no fill source would run — refused
+    // before the corpus file is read. (A config built in code skips the YAML validator.)
+    if (toolsProfileCfg?.variant === 'baseline' && toolsProfileCfg.fill !== undefined) {
+      throw new Error(
+        'rag.profiles.tools.fill: not with variant baseline — baseline binds no profile, so no fill source runs (spec D91)',
       );
-      if (own) {
-        throw new Error(
-          `rag.profiles.tools.fill: corpus holds the shared tool catalog, but worker '${own.name}' has its own tools store and its own MCP clients — bind that worker's store in your composition root`,
-        );
-      }
     }
+    // Spec §6.2, D47 (3), D94: the one rule the YAML resolution runs too.
+    const corpusConflict = corpusWorkerConflict(toolsProfileCfg?.fill, this.cfg.subAgentConfigs);
+    if (corpusConflict) throw new Error(corpusConflict);
   ```
 - `src/index.ts`: export `type SmartServerFillConfig` beside the other profile config types.
 
@@ -24243,9 +24719,12 @@ builder.withToolsProfile(myTools);
   `NameTailFacet` assumes verb-first names and is opt-in; `EnumValueToolIndexer` and `TokenBudgetCut`
   are generic strategies in no named composition.
 - `withToolsProfile` + `withRetrievalStrategy('tools', …)` is refused at build (one owner of a store's ranking).
-- **The builder fills the profile only where it vectorizes** — the auto-connect branch (YAML `mcp:` /
-  `withMcpConnectionStrategy`). With `withMcpClients` or `withMcpServers` it skips vectorization, as
-  before, so the profile is bound but the store stays empty. Fill it yourself (spec §6.1):
+- **The builder fills the profile only when it has its own MCP connection** — the auto-connect
+  branch with YAML `mcp:` or `withMcpConnectionStrategy` (spec §6.1, D85). With `withMcpClients` or
+  `withMcpServers` it skips vectorization, as before, and with no connection at all it does not run
+  the store's fill source either — the profile is bound but the store stays empty until its creator
+  fills it, once (no store is filled twice). Fill it yourself (spec §6.1; with a `corpus` source,
+  `await fillToolsBinding([], bound)` loads it without a listing):
 
   ```ts
   import { defaultToolRecordKey } from '@mcp-abap-adt/llm-agent';
@@ -24283,7 +24762,7 @@ builder.withToolsProfile(myTools);
   | Source | At creation | For |
   |---|---|---|
   | `LiveToolsFill` (default) | lists the MCP tools, indexes them through the profile | anything; 30.1.0's listing |
-  | `ToolsCorpusLoader({ corpus, expect })` | checks the corpus against `expect` and the store (precomputed writes, `clearAll`), **clears the store**, writes the corpus with its precomputed vectors — **no embedding call** — and logs one line | **any** store, in-memory or persistent |
+  | `ToolsCorpusLoader({ corpus, expect })` | checks the corpus against `expect` and the store (precomputed writes, `clearAll`), **clears the store**, writes the corpus with its precomputed vectors — **no embedding call** — and logs one line | a store with a precomputed-vector write — `VectorRag` (the server's in-memory store), qdrant, pg-vector, HANA; `InMemoryRag` has none and is refused (spec D86) |
   | `ConsumerToolsFill` | nothing — you fill (`fillToolsBinding`, `bound.index`); the library never writes | your own filling |
 
   An incomplete fill (a client that failed to list) is reported (`complete: false`, `/health`
@@ -24512,7 +24991,7 @@ rag:
   profiles:
     tools:
       variant: faceted
-      # any store (in-memory or persistent): at every start, clear it and load the corpus your build
+      # a store with a precomputed write (in-memory = VectorRag, or persistent): at every start, clear it and load the corpus your build
       # step made (no embedding call at start); the store config's `dimension`, when set, is checked
       fill: { corpus: { file: ./dist/tools-corpus.json, profile: faceted@1, embedder: te3-small } }
       # fill: consumer        # you fill it yourself
@@ -24591,7 +25070,8 @@ touches the store: `incompatible — embedder "…" ≠ expected "…"` (or `pro
 `dimensions`) means your build step made the corpus with other names or another embedder — rebuild
 it, and use the same `profile` / `embedder` names in the YAML. `… has no clearAll` / `… has no
 precomputed write` names a store the corpus cannot be loaded into (the load replaces the whole store,
-and writes vectors without embedding). A load that fails after the clear leaves the store empty or
+and writes vectors without embedding) — `InMemoryRag` is one: it has no precomputed write (use
+`VectorRag`; the server's `rag.store.type: in-memory` already is one, spec D86). A load that fails after the clear leaves the store empty or
 partial and fails the start; the next start loads it again. `fill: { prebuilt: … }` is refused: it
 was removed before release — use `fill: { corpus: … }`.
 ````
@@ -24819,7 +25299,7 @@ lines 71–75, which are removed.
 - **New package `@mcp-abap-adt/llm-agent-reranker`** — every reranker, vendor-neutral: `ProbabilityReranker` (was `DecisionReranker`), the new `RelevanceReranker` (batched by default like `ProbabilityReranker` — `maxBatchTokens` 48000, `concurrency` 4 — the batches' scores merged into one order; wrong count / duplicate / out-of-range / non-finite → `RERANK_ERROR`; `score` = the relevance score), `LlmReranker`, `NoopReranker`, `TOOL_QUESTION`, `PASSAGE_QUESTION`, `PROBABILITY_RERANK_DEFAULT_*`. Peer: `@mcp-abap-adt/llm-agent`. Published right after `llm-agent`.
 - **New package `@mcp-abap-adt/sap-aicore-decision`** — `SapAiCoreRelevanceDecision`, Cohere Rerank on an SAP AI Core deployment as an `IRelevanceDecision`: ONE `/rerank` call per `score`; a wrong / duplicate / out-of-range / non-finite answer is a `DecisionError`, never zero-filled. Credential injected (a SAP AI Core service key via `sap-aicore-auth`), no env, no timeout, no retries. Published at the same version, before the server.
 - **SmartServer:** `rag.profiles.tools` (`variant` with `poolItems` / `maxItems`, or `compose` incl. `text`; `decomposer`; `fill`; only the key `tools` in this release) and `decision.provider: sap-aicore` (`deploymentId`, `model`, `resourceGroup?`; default credential ref `DECISION` → `DECISION_SERVICE_KEY`). ONE `decision:` section — the provider decides the kind (`typesafe` → probability, `sap-aicore` → relevance) and `reranker: decision` builds `ProbabilityReranker` or `RelevanceReranker` (in `rag.profiles` and `rag.retrieval`); the relevance decision is built by the new optional seam `BuildAgentDeps.makeRelevanceDecision`, the probability decision by `BuildAgentDeps.makeProbabilityDecision` (renamed from `makeDecisionModel`, see Migration). `SmartServerConfig.toolsVariantFactories` / `toolsStrategyFactories` for your own names. Startup refuses a `rag.profiles` key other than `tools`, a key under both `rag.retrieval` and `rag.profiles`, unknown names, `faceted-rerank` without `poolItems` or without a `decision:` section, and a question / task for a relevance decision.
-- **Where a tools store's records come from is a strategy** (`IToolsFillSource`, `ToolsFillContext` in `@mcp-abap-adt/llm-agent`): `LiveToolsFill` (default — the MCP tool list, indexed through the profile), `ToolsCorpusLoader` (the `corpus` source, any store: at start it checks the corpus against the configured identity and the store, **clears the store**, writes the corpus with its precomputed vectors — no embedding call — and logs one line), `ConsumerToolsFill` (you fill it; the library never writes). A store with a profile bound is filled once and **not re-indexed on `toolsChanged`** — a runtime-plugged MCP server is your pipeline's to fill; without a profile, 30.1.0's re-vectorize is unchanged. The corpus: `buildToolsCorpus` (your build step), `parseToolsCorpus`, `ToolsCorpusExpectation`; no deploy step and nothing about the corpus kept in the store — an interrupted load repeats at the next start. YAML `rag.profiles.tools.fill` (`live | consumer | { corpus: { file, profile, embedder } }`); `SmartServerConfig.toolsFillFactories`; `bindToolsProfile(profile, target, source?)`, `withToolsProfile(profile, source?)`.
+- **Where a tools store's records come from is a strategy** (`IToolsFillSource`, `ToolsFillContext` in `@mcp-abap-adt/llm-agent`): `LiveToolsFill` (default — the MCP tool list, indexed through the profile), `ToolsCorpusLoader` (the `corpus` source, any store with a precomputed-vector write — not `InMemoryRag`: at start it checks the corpus against the configured identity and the store, **clears the store**, writes the corpus with its precomputed vectors — no embedding call — and logs one line), `ConsumerToolsFill` (you fill it; the library never writes). A store with a profile bound is filled once and **not re-indexed on `toolsChanged`** — a runtime-plugged MCP server is your pipeline's to fill; without a profile, 30.1.0's re-vectorize is unchanged. The corpus: `buildToolsCorpus` (your build step), `parseToolsCorpus`, `ToolsCorpusExpectation`; no deploy step and nothing about the corpus kept in the store — an interrupted load repeats at the next start. YAML `rag.profiles.tools.fill` (`live | consumer | { corpus: { file, profile, embedder } }`); `SmartServerConfig.toolsFillFactories`; `bindToolsProfile(profile, target, source?)`, `withToolsProfile(profile, source?)`.
 - **The RAG implementations live in `@mcp-abap-adt/llm-agent-rag`** — `VectorRag`, `InMemoryRag`, `OverlayRag`, `SessionScopedRag`, `ActiveFilteringRag`, `SimpleRagRegistry`, `ragStoreKey`, the `InMemoryRag` / `VectorRag` providers, `SimpleRagProviderRegistry`, the search strategies and their types, the preprocessors and query expanders, `buildRagCollectionToolEntries` — moved from `@mcp-abap-adt/llm-agent` with their code (see Breaking).
 - **Provider text is a strategy** (`IToolTextComposer`): `ParameterNamesToolText` (the default, unchanged), `EnumValuesToolText`, `SchemaToolText` — the latter two in no named composition.
 - **Observability:** `retrievalOutcome` counter (`ok`, `rerank_error`, `decompose_error`, `orphan`, `over_budget`, `empty`) on `InMemoryMetrics` / `NoopMetrics` and in `/health` metrics; a `retrieval` span per profiled retrieval; `/health` `components.toolCatalog.records` / `.profile` under a profile. `RerankedRetrieval` / `RerankAllRetrieval` accept an optional `telemetry` (additive).
@@ -24852,7 +25332,7 @@ build as an injected strategy (an `IRag` wrapper, an `IReranker`, an LLM call st
 | B4 | a reranker — `RerankedRetrieval`, `RerankAllRetrieval`, the `rerank` stage, the legacy orchestrator (and `StagedRetrieval`, new in this release) | stage-1 / original order, `ok: true` | `RERANK_ERROR` | for unranked results on failure, inject a reranker (`IReranker`) that answers them itself |
 | B5 | an MCP client's `listTools` (client, adapter cache, registry, `tool-select`, `tool-loop`, `tools-rag-handle`, the server's bridge and snapshot); a slot that failed to connect | the client's tools left out (or stale), the request continues | `MCP_UNAVAILABLE` / the client's `McpError` code | make the server reachable; a consumer that wants to run on fewer servers builds that pipeline with those clients only |
 | B6 | an LLM step: `translate`, `expand`, `summarize`, `history-upsert`, the query preprocessors and enricher, the stepper's need-resolver / formalizer / planner sections, the DAG planner's empty plan | the original text / full history / a raw-prompt plan | the step's error (`LLM_ERROR`, `QUERY_EXPAND_ERROR`, `COORDINATOR_*`) | — (a consumer that wants untranslated text on failure injects its own handler / preprocessor) |
-| B7 | invalid tool-call JSON from the LLM | the tool ran with `{}` | the tool does not run; the LLM gets an error tool result (`TOOL_ARGUMENTS_JSON_PARSE_FAILED`) | — |
+| B7 | invalid tool-call JSON from the LLM | the tool ran with `{}` | the tool does not run; the call carries `argumentsError` (`ToolCall` / `LlmToolCall`, additive); the LLM gets an error tool result (`TOOL_ARGUMENTS_JSON_PARSE_FAILED`) | if you run parsed tool calls yourself, skip a call with `argumentsError` |
 | B8 | skills: a store / `listSkills` / a `SKILL.md` that cannot be read, a plugin loader error, an incompatible generation, an unknown `skills.type`; a skill whose embedding or write into the tools store fails | the skill (or all skills) left out — for a failed skill write, a warning and `build()` / start succeeded | `SKILL_ERROR` / `SkillsIncompatibleError` / `build()` or start fails; a failed skill write rejects `build()`, the server's start (or a worker's construction) and `fillToolsBinding` with a `SkillError` naming the skill, the store's error as `cause` | fix the skill source, or the tools store / its embedder the error names; `strict: false` keeps its carry-forward, now an explicit opt-in (B12) |
 | B9 | `/health` with a configured component not working (`degraded`) | HTTP 200 | HTTP **503**; body unchanged; every RAG store probed; an MCP `value: false` or unanswered probe is not OK  | a load balancer that treated `degraded` as up now takes the instance out — intended |
 | B10 | server: persisted collections at session start, a corrupt session bundle / run-scope entry / artifact claim, the session-meta start record, a config reload's drain, the eager tool catalog, an explicit `--env` / `--secrets-dir`, a stepper role without an LLM config, `GET /v1/models` | the part skipped, an older state, a stub model, a 200 placeholder | an error: the session / request fails, `STATE_CORRUPT`, the reload reports failure (`config_reload_failed`; no rollback — the server is not ready until a whole config applies, B17), the start fails (exit 1, `ConfigValidationError`), 502 | fix the configuration or the state the error names |
@@ -24886,7 +25366,8 @@ failing component's existing code.
 - **Under a profile, `rag.getById(itemId)` on the raw store finds nothing** — records are addressed by owner-scoped ids; use `bound.get({ itemId, owner })`. Returned items keep `metadata.id = itemId`, so name-based consumers are unaffected.
 - **k counts items under a profile, and the caller's k caps every cut:** a `FixedItemsCut(n)` (`maxItems`) is a ceiling — a larger caller's k does not raise it, a smaller one still wins. No shipped composition carries a tuned number: measure your catalog (`scripts/rag-eval`) and pass `poolItems` / `maxItems`.
 - **A failed stale-record cleanup is reported** (`failedItems` reason `cleanup-failed: …`) and retried by the next `index` / `remove` — not reported as indexed.
-- **Shipping a tools corpus:** build it in your build step (`buildToolsCorpus`, serialized with `JSON.stringify`) and ship the file; the server loads it at every start (YAML `fill: { corpus: … }`, or `ToolsCorpusLoader` in your composition root) — the store, in-memory or persistent, is **cleared** and the corpus written, so it must be a store with `clearAll` and precomputed writes (every shipped one is). There is no deploy step. The `profile` / `embedder` names must be the same in the build step and in the configuration — a mismatch fails at startup before the store is touched. Replicas over one persistent store each reload it at their start, and the others read a partial store meanwhile — accepted as the price of the simple flow (no marker, no coordination). A store is filled once; a changed tool list waits for the next instance (`live`) or the next build (`corpus`). **With a profile bound, `toolsChanged` re-indexes nothing**, whatever the source: if you plug an MCP server in at runtime, fill its tools in your own pipeline (`bound.index`). Without a profile, nothing changes.
+- **Shipping a tools corpus:** build it in your build step (`buildToolsCorpus`, serialized with `JSON.stringify`) and ship the file; the server loads it at every start (YAML `fill: { corpus: … }`, or `ToolsCorpusLoader` in your composition root) — the store, in-memory or persistent, is **cleared** and the corpus written, so it must be a store with `clearAll` and precomputed writes — every shipped store but `InMemoryRag` (the server's `rag.store.type: in-memory` is a `VectorRag`, which has both). There is no deploy step. The `profile` / `embedder` names must be the same in the build step and in the configuration — a mismatch fails at startup before the store is touched. Replicas over one persistent store each reload it at their start, and the others read a partial store meanwhile — accepted as the price of the simple flow (no marker, no coordination). A store is filled once; a changed tool list waits for the next instance (`live`) or the next build (`corpus`). **With a profile bound, `toolsChanged` re-indexes nothing**, whatever the source: if you plug an MCP server in at runtime, fill its tools in your own pipeline (`bound.index`). Without a profile, nothing changes.
+- **`ToolCall` and `LlmToolCall` gain optional `argumentsError`** — the parse error of a tool call whose arguments are not valid JSON (`arguments` is then `{}`); such a call is never run (B7). An object literal of either type needs no change.
 - **`ToolCatalogStatus` gains optional `records` / `profile` / `batchFailures` / `writeFailure`** (`writeFailure`: the store's error when the bulk write of the startup catalog failed — `bulk write failed: <error>`, B16, D79), `IndexReport` optional `batchFailures`, `MetricsSnapshot` optional `retrievalOutcome`, `HealthComponentStatus.toolCatalog` optional `records` / `profile` / `batchFailures` — an exhaustive object literal of these types needs no change.
 - **Consumer-chosen modes, as decided (U1–U10):** `FallbackLlmCallStrategy` logs each fallback as `llm_streaming_fallback` and takes an optional `{ fallbackCount }` counter; a worker without its own clients / tools store logs `worker_uses_shared_clients`; the skill plugin host defaults to `strict: true` (B12); `HybridDispatch` fails a named missing agent (B13); `lazy` has no `fallback` (B14); the tool availability blacklist is opt-in (B15).
 - **`SmartServerDecisionConfig.provider` gains `'sap-aicore'`** (plus optional `deploymentId`, `resourceGroup`). Your own composition root's probability seam function compiles unchanged under the key `makeProbabilityDecision` (Breaking line 50); to serve Cohere, supply the new `BuildAgentDeps.makeRelevanceDecision` that builds `SapAiCoreRelevanceDecision` from a bearer credential and `apiBaseUrl` (the shipped binary does).
@@ -24902,7 +25383,7 @@ failing component's existing code.
 **Breaking (major):** `optionalNumber` is removed (line 75) — a resolved config's temperatures are validated numbers; every config field is validated at start, on a reload and on `PUT` (a number literal string and `"true"` / `"false"` accepted, B19, B20). `BuildAgentDeps.makeDecisionModel` is renamed **`makeProbabilityDecision`** (same type); `makeDecisionModel` is removed — rename the key. The subpath `./legacy/flat` is removed and `./legacy/linear`, `./legacy/dag` no longer re-export `CoordinatorHandler` / `DagCoordinatorHandler` — import `SmartAgentBuilder` and both handlers from `@mcp-abap-adt/llm-agent-libs` (lines 67–69). The rerankers are imported from `@mcp-abap-adt/llm-agent-reranker` (new peer). New optional seam `BuildAgentDeps.makeRelevanceDecision` (`decision.provider: sap-aicore`); `rag.profiles.tools` (`baseline | faceted | faceted-rerank`, no tuned numbers), each bound tools store filled once at its creation by the configured `fill` source (`live` from the clients the server uses — ready clients, injected seam, plugin clients, YAML `mcp:` —, `corpus` — the store cleared and loaded at start —, `consumer`, or `toolsFillFactories`); workers on the shared clients now name tools as the main catalog does (fix). The server no longer hands its embedder breaker to the builder (`withCircuitBreakers` is removed, line 72): it still wraps the retrieval embedder and is listed in `/health`, and with it open a store's query fails fast instead of answering from an in-memory copy. `skillPlugins.strict` defaults to `true`; `agent.toolUnavailableTtlMs` now opts in to the tool availability blacklist (unset → none) and is no longer accepted by `PUT /v1/config`; a worker on the parent's clients logs `worker_uses_shared_clients`. Config changes (`PUT /v1/config`, hot reload) run one at a time; one that fails to apply answers 500 / logs `config_reload_failed`, rolls nothing back and leaves the server not ready (`/health` 503 with `configNotApplied`, chat 503) until a whole config applies — a reload or a `PUT` with every section; a partial `PUT` then answers 409 `config_not_applied`; `writeNotReady` takes an optional message. Every config field of spec §10.5.9's table is validated — at start, on a reload and on `PUT /v1/config` — by one validator with no coercion: an invalid value fails the start (exit 1), fails the reload (not ready) or answers 400, each `invalid config — <field> <rule>, got <value>` (B19, B20). A hot reload substitutes `${VAR}` exactly as the start does (B21), and every config field the start read by a type cast — `agent.retry`, `agent.toolSelection`, the `mcp` fields and entries, `llm.url` / `llm.model`, `host`, `mode`, `plugins`, `skills`, the pipeline sections — is validated too; `parseLinearSettings`, `parseDagSettings`, `parseControllerSettings` and `parseStepperCoordinatorConfig` throw `ConfigFieldError` for an invalid value (B22). See the root CHANGELOG's Breaking table.
 ```
 The other package CHANGELOGs, each above its `## 30.1.0` (one short **Breaking (major)** paragraph naming its lines of the root Breaking table):
-- `packages/llm-agent/CHANGELOG.md`: "**Breaking (major):** the RAG implementations (`VectorRag`, `InMemoryRag`, … — root CHANGELOG lines 1–4, 6–39) moved to `@mcp-abap-adt/llm-agent-rag` and are no longer exported here; `FallbackRag` and `SimpleRagRegistry.replaceRag` are removed (lines 5, 71 — with the circuit breaker on, an embedder outage makes a store's query fail with `CIRCUIT_OPEN` instead of answering from an in-memory copy); `IDecisionModel` is renamed `IProbabilityDecision` (line 40). New: the collection-profile contracts, `IRelevanceDecision`, `IToolsFillSource`; `IQueryExpander`, `IQueryPreprocessor`, `IDocumentEnricher` now live in `interfaces/` (same exports); `ITextLogger` is removed — import `ILogger` from `@mcp-abap-adt/interfaces-utils` (line 70). `FallbackLlmCallStrategy` logs each fallback as `llm_streaming_fallback` and takes an optional `{ fallbackCount }` counter; `ToolCatalogStatus`, `IndexReport` and `HealthComponentStatus.toolCatalog` gain optional `batchFailures`, and `ToolCatalogStatus` optional `writeFailure` (B16); `IRetrievalEmbedderOwner` / `retrievalEmbedderOf` let a store declare its embedder (F1)."
+- `packages/llm-agent/CHANGELOG.md`: "**Breaking (major):** the RAG implementations (`VectorRag`, `InMemoryRag`, … — root CHANGELOG lines 1–4, 6–39) moved to `@mcp-abap-adt/llm-agent-rag` and are no longer exported here; `FallbackRag` and `SimpleRagRegistry.replaceRag` are removed (lines 5, 71 — with the circuit breaker on, an embedder outage makes a store's query fail with `CIRCUIT_OPEN` instead of answering from an in-memory copy); `IDecisionModel` is renamed `IProbabilityDecision` (line 40). New: the collection-profile contracts, `IRelevanceDecision`, `IToolsFillSource`; `IQueryExpander`, `IQueryPreprocessor`, `IDocumentEnricher` now live in `interfaces/` (same exports); `ITextLogger` is removed — import `ILogger` from `@mcp-abap-adt/interfaces-utils` (line 70). `FallbackLlmCallStrategy` logs each fallback as `llm_streaming_fallback` and takes an optional `{ fallbackCount }` counter; `ToolCatalogStatus`, `IndexReport` and `HealthComponentStatus.toolCatalog` gain optional `batchFailures`, and `ToolCatalogStatus` optional `writeFailure` (B16); `ToolCall` and `LlmToolCall` gain optional `argumentsError` — a call whose arguments are not valid JSON is never run (B7); `IRetrievalEmbedderOwner` / `retrievalEmbedderOf` let a store declare its embedder (F1)."
 - `packages/llm-agent-libs/CHANGELOG.md`: "**Breaking (major):** the rerankers moved to `@mcp-abap-adt/llm-agent-reranker` and are not exported here (lines 41–48); `wrapDecisionModel` → `wrapProbabilityDecision` (line 49); the root no longer re-exports `@mcp-abap-adt/llm-agent`'s `AgentCallOptions`, `BaseAgentLlmBridge`, `OrchestratorError`, `SmartAgentResponse`, `StopReason`, the metrics snapshots, the stage types and the plugin-loader types — import them from `@mcp-abap-adt/llm-agent` (lines 52–66). `SmartAgentBuilder.withCircuitBreakers` is removed and the builder wraps no store (line 72); `withCircuitBreaker(config)` builds the main-LLM breaker only. `LazyOptions.fallback` is removed (line 73); `SmartAgentConfig.toolUnavailableTtlMs` is removed — the tool availability blacklist is the injected `IToolAvailabilityPolicy`, none by default, `HeuristicToolAvailabilityPolicy` for 30.1.0's (line 74); the skill plugin host defaults to `strict: true`; `HybridDispatch` fails a step naming an agent the registry lacks. `ConfigWatcher`'s `reload` event carries the file's values as read, not coerced (new type `HotReloadableInput`, B19) — validate them before applying; the new optional `ConfigWatcherOptions.resolveDocument` resolves the parsed file before a field is read (the server passes its `${VAR}` substitution, B21); the `reload` event's new second argument is the whole resolved document the values were read from — validate the document, not only the values (B23). New peer `@mcp-abap-adt/llm-agent-reranker`. New: collection profiles (`src/collections/`), the fill sources and the corpus API."
 - `packages/llm-agent-rag/CHANGELOG.md`: "**Breaking (major):** now holds the RAG implementations moved from `@mcp-abap-adt/llm-agent` (lines 1–4, 6–39; `FallbackRag` is removed, not moved — line 5) — import them from here; it exports only its own code."
 - `packages/ollama-embedder/CHANGELOG.md`: "**Breaking (major):** `OllamaRag` removed (line 51) — use `new VectorRag(symmetricEmbedder(new OllamaEmbedder(cfg)), cfg)` with `VectorRag` from `@mcp-abap-adt/llm-agent-rag`."
@@ -24930,7 +25411,7 @@ The packages that change behaviour or gain a capability without a rename, each a
 - `### Key API notes`: add — `A probability and a relevance are different decisions: IProbabilityDecision vs IRelevanceDecision (scores, not probabilities). One decision: section; its provider decides the kind and reranker: decision builds ProbabilityReranker or RelevanceReranker.`
 - `### Key API notes`: add —
   `- Collection profiles: builder.withToolsProfile(profile) or YAML rag.profiles.<key> (variant | compose); a key is under rag.retrieval OR rag.profiles. Under a profile k counts items, every returned item is its canonical record, and records are addressed by recordId(owner, itemId, kind, n) — never by the bare itemId`.
-  `- A tools store is filled ONCE, when it is created (never refilled while running); where its records come from is an IToolsFillSource (live default | ToolsCorpusLoader: clears the store and loads a corpus the consumer's build step made with buildToolsCorpus — any store, no embedding call, no deploy step | ConsumerToolsFill), attached with the binding (bindToolsProfile(profile, target, source)); IToolsFillSource is fill-only — a bound store is never written on toolsChanged (McpToolRegistry stops), an unbound one keeps the 30.1.0 re-vectorize.`
+  `- A tools store is filled ONCE, when it is created (never refilled while running); where its records come from is an IToolsFillSource (live default | ToolsCorpusLoader: clears the store and loads a corpus the consumer's build step made with buildToolsCorpus — any store with a precomputed write (not InMemoryRag), no embedding call, no deploy step | ConsumerToolsFill), attached with the binding (bindToolsProfile(profile, target, source)); IToolsFillSource is fill-only — a bound store is never written on toolsChanged (McpToolRegistry stops), an unbound one keeps the 30.1.0 re-vectorize.`
   `- RAG implementations (VectorRag, InMemoryRag, …) live in and are imported from @mcp-abap-adt/llm-agent-rag; @mcp-abap-adt/llm-agent exports none of them. Nothing in packages/llm-agent, nor in a package llm-agent-rag depends on (the store and embedder packages), may import llm-agent-rag (cycle).`
   `- No re-exports: every package exports only the names it owns; import each name from its owner (llm-agent-libs exports no reranker and none of llm-agent's names; test/repo/no-old-names.test.ts checks every public entry point). No deprecated aliases are kept across a major.`
   `- No shipped strategy or named composition carries a tuned number: pools and cuts default to the caller's k; measured numbers are the consumer's.`
@@ -25133,7 +25614,7 @@ Recommendations applied to the earlier open choices (the user may still overrule
 | # | Decision | Done in |
 |---|---|---|
 | D57 | The RAG implementations' files, tests and exports move to `packages/llm-agent-rag/src/` (spec §11.3); `@mcp-abap-adt/llm-agent` stops exporting them; no subpath, no alias; the search-strategy types move with `VectorRag` (the user's decision); `IQueryExpander`, `IQueryPreprocessor`, `IDocumentEnricher` move to `interfaces/`; every importer switches (35 by codemod + `rag-factories.ts`); a repo test pins that nothing below `llm-agent-rag` imports it; `OllamaRag` removed (S11) | Task 1A; Tasks 4, 19A Step 0, 25 (new paths); Tasks 33–35 |
-| D58 | No deprecated aliases: `IDecisionModel`, `DecisionReranker` / `DecisionRerankerOptions`, `DECISION_RERANK_DEFAULT_*`, `wrapDecisionModel`, `BuildAgentDeps.makeDecisionModel` (and the "both supplied" error and its tests) are removed; each task that renames switches every in-repo use in the same commit; the CHANGELOG's Breaking table (51 lines; 69 with S12; 70 with `ITextLogger`); the docs say the release is a major (no bump in this plan) | Tasks 4A, 4B, 20A, 22; Tasks 33–35 |
+| D58 | No deprecated aliases: `IDecisionModel`, `DecisionReranker` / `DecisionRerankerOptions`, `DECISION_RERANK_DEFAULT_*`, `wrapDecisionModel`, `BuildAgentDeps.makeDecisionModel` (and the "both supplied" error and its tests) are removed; each task that renames switches every in-repo use in the same commit; the CHANGELOG's Breaking table (51 lines; 69 with S12; 70 with `ITextLogger`; 75 in the final table, spec D88); the docs say the release is a major (no bump in this plan) | Tasks 4A, 4B, 20A, 22; Tasks 33–35 |
 | D59 | No re-exports: libs exports no reranker (`NoopReranker` imported for its own defaults only), `llm-agent-rag` only its own files; every importer imports from the owner; `test/repo/no-old-names.test.ts`; the pre-existing re-exports too (S12, below) | Tasks 1A, 4A, 4B, 4D; Task 35 |
 | D60 | Replicas over one persistent store each clear and reload it at their start, the others read a partial store meanwhile — accepted; no marker, no coordination | Global Constraints; Task 33 (DEPLOYMENT, INTEGRATION), Task 34 (Migration) |
 
@@ -25147,7 +25628,7 @@ Recommendations applied to the earlier open choices (the user may still overrule
 
 | # | Question | Decision | Done in |
 |---|---|---|---|
-| 1 | `llm-agent`'s `ITextLogger` (a second name for `ILogger` of `@mcp-abap-adt/interfaces-utils`) | **removed**: the alias file and its root line go; every in-repo use (17 occurrences in 9 files — 5 code / test files, 3 doc comments, `docs/INTEGRATION.md`) imports `ILogger` directly from `@mcp-abap-adt/interfaces-utils`; `llm-agent` already peers on it, libs and mcp get a dev dependency; no re-export; migration line 70 (**70 lines**) | Task 4E; Task 34 (table, llm-agent paragraph); Task 35 (grep) |
+| 1 | `llm-agent`'s `ITextLogger` (a second name for `ILogger` of `@mcp-abap-adt/interfaces-utils`) | **removed**: the alias file and its root line go; every in-repo use (17 occurrences in 9 files — 5 code / test files, 3 doc comments, `docs/INTEGRATION.md`) imports `ILogger` directly from `@mcp-abap-adt/interfaces-utils`; `llm-agent` already peers on it, libs and mcp get a dev dependency; no re-export; migration line 70 (**70 lines** *(75 in the final table, spec D88)*) | Task 4E; Task 34 (table, llm-agent paragraph); Task 35 (grep) |
 | 2 | libs' dead internal files `adapters/index.ts`, `interfaces/model-resolver.ts` | **deleted** (no importer incl. tests, no `exports` path — verified again in Task 4E Step 4); no migration line | Task 4E; Task 35 |
 | 3 | `SmartAgentHandle`, libs' `IStageHandler` | **kept** (rule (b)) | — |
 | 4 | libs' internal, non-public shims | **kept** (rule (a)) | — |
@@ -25287,6 +25768,22 @@ Left to the user by this scan, then decided (next section): the **30.1.0** `vect
 |---|---|---|
 | D84 | *Review finding of 2026-10-06 (spec §17.41, amendment 34).* The record writer writes every item's canonical first — `recordIds` = the new ids, `staleRecordIds` = the stale set, so it lists old ∪ pending ∪ new — then the other records of the items whose canonical landed, then the unchanged stale deletes and settle. A failed canonical write → nothing else of the item written (`write-failed`); a failed later write → the id already tracked, the item `write-failed`, no delete or settle. Bulk path: the batch's canonicals as one bulk write, then the other records as a second; a failed first batch fails every item, a failed second batch the items with a record in it; no per-record retry on either (D76) | Task 11 (`storeItems`, the canonical-first tests on `InMemoryRag` / `VectorRag`, the bulk-order test); Tasks 15, 17, 19A (comments) |
 
+## Decided by the user on 2026-10-06 — pre-flight spec decisions (spec §17.42)
+
+| # | Decision | Done in |
+|---|---|---|
+| D85 | The builder runs a bound store's fill source only when it has its own MCP connection (YAML `mcp:` / `withMcpConnectionStrategy`); without one (`withMcpClients`, `withMcpServers`, or no connection) the store's creator fills it — no store is filled twice. `withMcpServers` stays bound-not-filled, as spec §6.1 states (a choice written into §17.42 for the user's review) | Task 20 (the guarded `vectorizeMcpTools` call; the no-connection / with-connection test); Task 23A (tests (9), (10): one fill per store); Task 33 (the builder bullet) |
+| D86 | The `corpus` source needs a store with a precomputed-vector write; `InMemoryRag` is refused with the capability error; the server's in-memory store is a `VectorRag` | Task 19A (the refusal test; the merged-metadata case on `VectorRag` only; the `ToolsCorpusLoader` doc); Task 23B (wording); Tasks 33, 34 (docs, CHANGELOG, `CLAUDE.md`) |
+| D87 | `ToolCall.argumentsError?` / `LlmToolCall.argumentsError?` (additive) mark a call whose arguments failed to parse; every site that runs a tool skips a marked call | Task 4F (contracts, `toolCallFromRaw`, the two halves, the adapter tests); Task 34 (B7, the additive bullet, the `llm-agent` CHANGELOG) |
+| D88 | The migration table has 75 lines wherever its size is stated; past counts stay marked superseded | the header (Global Constraints), the rework bullets |
+| D89 | One `skills.type` rule — Task 4M's `checkSkills` (`ConfigFieldError`); no `config-validator.ts` rule | Task 4L (no validator rule; S-10 tests a config built in code through `resolveSkillManager`); Task 4M (`checkSkills`' comment; its row in `config-field-validation.test.ts`, one issue) |
+| D90 | A decomposer on a worker's own tools store uses that store's embedder | Task 22 (`ResolvedToolsProfile.forQueryEmbedder`, `profileOver`, the resolver test); Task 23 (`withToolsStore` async with the worker's embedder; the two server tests); Task 23B (the bind line) |
+| D91 | `fill` with `variant: baseline` is refused at start | Task 23B (`checkFill`'s rule; the start check before the resolver; tests in `profiles-config.test.ts` and (17b)) |
+| D92 | `LegacyTranscriptContextStrategy` and `RagRecallContextStrategy` throw `STATE_CORRUPT` on bad state | Task 4F (both `restore`s; `restore-state-corrupt.test.ts`) |
+| D93 | The configured slot count a re-wire hands a worker reaches its builder's tool record key (`slotCountRecordKey`) | Task 23A (`connected-mcp-server.ts`, `buildSubAgent`; `connected-mcp-server.test.ts`, test (7b)) |
+| D94 | YAML `fill: corpus` with a worker on its own `rag` and its own clients is refused at start by the YAML resolution — one rule (`corpusWorkerConflict`) for it and the server's start | Task 23B (`profiles-config-validator.ts`, `config.ts`, `smart-server.ts`; the YAML test, test (17)) |
+| D95 | D31 amended: a client that fails its listing at the startup snapshot fails `start()`; "counted, degraded" only after the snapshot | Task 23A (tests (5), (5b) — already so; the failure-policy note cites D95); Task 4G (M11) |
+
 ## Self-review (done while writing)
 
 - **Spec coverage.** §3 contracts → Tasks 2–4 (S1 / S6 capabilities and the F3 reserved key `staleRecordIds` in 2–3; no intent or companion contract, D50); §3.9 decision contracts → 4A; §4 `StagedRetrieval` → 12–14 (+28 telemetry, incl. `over_budget`; F1 cap in 12 and 14); §4.9/§4.10 cuts → 6 (F1); §5 rerankers → 4B (package, `ProbabilityReranker`), 4C (`RelevanceReranker`), 18 (`SapAiCoreRelevanceDecision`), 16 (the decision variants), 24 (`createMakeRelevanceDecision` + calls → `/rerank`); §6.1 builder → 20; the probability seam rename without an alias (§3.8, §13, D30, D58) → 20A; the RAG implementations' move (§11.3, D57) → 1A; no re-exports (§11.4, D59; the pre-existing ones, S12) → 1A, 4B, 4D, 35; §6.2 YAML → 21–23 (one `decision:` section, kind table, the `makeRelevanceDecision` seam); §6.3 server filling from ready clients (D31) → 23A, a worker's fill and dispatch keep one identity (D32) → 23A, the binding read from the store on every fill, and by the reconnect to leave a bound store unwritten (D34, D46) → 19 (+20, 23A, 32), workers filled by their construction — startup, lazy rebuild, `PUT /v1/config`, hot reload (D35, D41) → 23A; filled once, no memo, no retry, a re-wire never fills (D41) → 23A; startup fill on `yamlBuilderConnect` (D38), the hot reload through the reload entry point (D39) → 23A; §3.10 fill sources (D42, D46 — `fill` only) → 19 (contract, live, consumer, dispatch, the registry's no-write), 19A (corpus loader, prebuilt), 20 (builder), 23B (YAML); §6.5 offline corpus (D43; written in full, no per-record diffing, D51) → 19A (+ `serviceRecord` in 2, 11, 12); single-flight construction (D37) → moved out (D45, spec §15), no task; only `tools` gets a fill source (§6.6) and runtime-removed tools stay (D40) → no code, spec notes; §6.4 fill-path audit → rows 1/3/10 in 19, rows 4–7 and 5a in 23A, rows 11–12 in 19A, row 9 in 33; §7.3.3 (intents and companion stores, D3 / D33) → removed by D50: no task (Task 10 withdrawn), and Tasks 2, 3, 11–13, 15, 16, 19A, 21–23A, 30, 32–35 carry no intent or companion code, test or doc; §7.3.1 provider text composers → 8 (F4); §3.3 cleanup failures → 11, 15 (F3); §7.0–§7.5 tools strategies and variants → 7–9, 15, 16; §7.6 filling → 19 (notes logged); §7.7 skills pass-through → 12 (pass-through test), 26 (F3); §7.8 migration → 33/34 docs; §7.9 consumer-built profile → 30; §8 shared items → 17; §9 observability → 28–29 (S4: telemetry only on 30.1.0 strategies); §10 fixes → 25–27; §11 placement → File Structure, Task 18 wiring; §13 compatibility/docs → 1 (golden), 33–34; §14.1 unit tests → per task; §14.2 kit → 30 (S9); §14.3 harness → 31–32 (acceptance runs = consumer check, env-gated).
@@ -25297,12 +25794,12 @@ Left to the user by this scan, then decided (next section): the **30.1.0** `vect
 - **Rework for D52 (spec §17.16)** — *withdrawn by D68, see the last rework below; kept for the record.* `FallbackRag` is fixed first in Task 19A (Steps 0a–0d, its own `fix(llm-agent)` commit, `packages/llm-agent` rebuilt before the libs tests run against `dist/`); the libs commit then adds the resolved-backend check (precomputed write and `clearAll`) and the five `FallbackRag` / claiming-decorator cases. No other task changes: Task 25 (F1) wraps stores that have the precomputed write (`QdrantRag`, `PgVectorRag`, `HanaVectorRag`) in `FallbackRag`, so its batch path is unaffected; Task 19's binding-through-`FallbackRag` test writes through the binding into the store under the `FallbackRag`, never through `FallbackRag`'s writer.
 - **Rework for D53–D56 (spec §17.17, amendment 12).** Task 1A is new, right after Task 1 and before every task that edits `VectorRag` (Tasks 4, 25) or `FallbackRag` (Task 19A Step 0); it changes no file path those tasks use, so their steps stand. Every code block above `llm-agent-rag` imports the moved names from `@mcp-abap-adt/llm-agent-rag` (a codemod over this plan's code blocks; contracts and the store kit stay on `@mcp-abap-adt/llm-agent`); no code block in `packages/llm-agent`, `llm-agent-reranker`, `sap-aicore-decision` or a store package imports `llm-agent-rag`. `ICandidatePool`'s new signature (Task 3) is implemented in Task 5 and used with the (sub-)query's k in Tasks 12 and 14; `pool?` defaults in 12, 15, 17; Task 16's three compositions are what Tasks 22, 30, 32 build and inspect (`composition.pool.items(k)`, `cut instanceof TopItemsCut | FixedItemsCut`, `rerank`). The corpus API of Task 19A (`buildToolsCorpus`, `parseToolsCorpus`, `ToolsCorpusLoader({ corpus, expect })`, `ToolsCorpusExpectation`) is exactly what Task 23B builds from YAML (`expect.dimensions` from the tools store config's `dimension`). The summary log line uses `LogEvent` `type: 'warning'` like the live fill's summary — `ILogger` has no info event, and no contract change is made for it. Task 35 Step 4 greps that no deploy / prebuilt / service-record / withdrawn-variant code and no numeric pool or cut literal in shipped code is left. Build, clean and publish order are unchanged (no new package edge).
 - **Rework for D57–D60 (spec §17.18, amendment 13).** Task 1A is now the real move (git mv of the files and of the 27 tests + 2 typecheck files that test them, the import rule for moved files, `llm-agent`'s export lines deleted, `llm-agent-rag/src/index.ts` exporting its own files, the importer codemod, `OllamaRag` removed, a `@ts-expect-error` typecheck and a clean build proving no cycle). Tasks 4 (the contract test on fake stores in `llm-agent`, `VectorRag`'s test in `llm-agent-rag`), 19A Step 0 (`packages/llm-agent-rag/src/fallback-rag.ts`, its own `fix(llm-agent-rag)` commit) and 25 (already importing from `llm-agent-rag`) use the new paths. **Cumulative compile without aliases:** Task 4A switches every `IDecisionModel` / `wrapDecisionModel` use (llm-agent test, typesafe-decision, server-libs, server) in its commit; Task 4B switches every libs-root reranker import (server-libs `resolve-retrieval.ts` + two tests, `test/integration`, `scripts/rag-eval`) and gives server-libs its `llm-agent-reranker` peer in its commit (Task 22 no longer adds it); Task 20A removes `makeDecisionModel` and switches every key in its commit; Task 22's import edits start from the post-4A/4B names (`IProbabilityDecision`, `wrapProbabilityDecision`, `ProbabilityReranker`). No code block this plan adds re-exports another package (`no-old-names.test.ts` from Task 4B on). Task 34's CHANGELOG has the Breaking table (51 lines = spec §13 before S12) and package CHANGELOG paragraphs; it says the release is a major and bumps nothing.
-- **Rework for S12 (spec §11.4, §13, §17.18 — decided by the user).** New Task 4D, after 4B (which creates `no-old-names.test.ts`) and 4C: libs' root drops the 15 `llm-agent` names, server-libs' `./legacy/flat` file and subpath go, `./legacy/{linear,dag}` lose their libs re-export, the server's unreachable `src/index.ts` is deleted, and the five in-repo importers (server-libs `chat-route-handler.ts`, `response-helpers.ts`, `smart-server.ts`; server `server.ts`, `server.test.ts`) switch to `@mcp-abap-adt/llm-agent` **in the same commit** — the commit builds. libs' internal shims are untouched, so libs' own files compile unchanged. No later code block imports a removed name from libs or a `legacy/*` subpath (checked by grep over this plan), and none adds a re-export, so the guard stays green from Task 4D to Task 35; a package created later (`sap-aicore-decision`, Task 18) or a new entry point (`llm-agent/testing/collection-profile-conformance`, Task 30) is covered automatically. Task 34's table grows to 69 lines (52–69 are S12's; 70 with Task 4E, below) with two note lines and the libs / server-libs package paragraphs; Task 35 greps that `legacy/flat` and the server's `src/index.ts` are gone. Docs showing the old paths (`docs/INTEGRATION.md` plugin loader, `docs/PIPELINES.md` `legacy/dag`, libs README) are updated in Task 4D.
-- **Rework for spec §11.4's four questions (decided by the user on 2026-10-05).** New Task 4E, right after Task 4D: `ITextLogger` removed — `text-logger.ts` and the root line deleted and all 17 uses in 9 files switched to `ILogger` of `@mcp-abap-adt/interfaces-utils` **in the same commit** (the file that also uses llm-agent's event `ILogger` imports it under a file-local name, nothing exported under it), so the commit builds; the dependency is declared where used (`llm-agent`: existing peer; libs, mcp: dev dependency for their tests, lockfile checked for links); a `@ts-expect-error` typecheck pins the removal, and the four switched tests are already in `tsconfig.typecheck.json`. libs' `adapters/index.ts` and `interfaces/model-resolver.ts` are deleted after a grep that proves no importer and no `exports` path. Task 4D's guard is unaffected (llm-agent's root keeps only its own names); no later code block names `ITextLogger` or the dead files (grep over this plan). Task 34's table grows to 70 lines with one note line and the llm-agent package paragraph; Task 35 greps that `ITextLogger` and the three files are gone. `SmartAgentHandle` / libs' `IStageHandler` and libs' internal shims stay (questions 3 and 4: keep).
+- **Rework for S12 (spec §11.4, §13, §17.18 — decided by the user).** New Task 4D, after 4B (which creates `no-old-names.test.ts`) and 4C: libs' root drops the 15 `llm-agent` names, server-libs' `./legacy/flat` file and subpath go, `./legacy/{linear,dag}` lose their libs re-export, the server's unreachable `src/index.ts` is deleted, and the five in-repo importers (server-libs `chat-route-handler.ts`, `response-helpers.ts`, `smart-server.ts`; server `server.ts`, `server.test.ts`) switch to `@mcp-abap-adt/llm-agent` **in the same commit** — the commit builds. libs' internal shims are untouched, so libs' own files compile unchanged. No later code block imports a removed name from libs or a `legacy/*` subpath (checked by grep over this plan), and none adds a re-export, so the guard stays green from Task 4D to Task 35; a package created later (`sap-aicore-decision`, Task 18) or a new entry point (`llm-agent/testing/collection-profile-conformance`, Task 30) is covered automatically. Task 34's table grows to 69 lines (52–69 are S12's; 70 with Task 4E, below) *(75 in the final table, spec D88)* with two note lines and the libs / server-libs package paragraphs; Task 35 greps that `legacy/flat` and the server's `src/index.ts` are gone. Docs showing the old paths (`docs/INTEGRATION.md` plugin loader, `docs/PIPELINES.md` `legacy/dag`, libs README) are updated in Task 4D.
+- **Rework for spec §11.4's four questions (decided by the user on 2026-10-05).** New Task 4E, right after Task 4D: `ITextLogger` removed — `text-logger.ts` and the root line deleted and all 17 uses in 9 files switched to `ILogger` of `@mcp-abap-adt/interfaces-utils` **in the same commit** (the file that also uses llm-agent's event `ILogger` imports it under a file-local name, nothing exported under it), so the commit builds; the dependency is declared where used (`llm-agent`: existing peer; libs, mcp: dev dependency for their tests, lockfile checked for links); a `@ts-expect-error` typecheck pins the removal, and the four switched tests are already in `tsconfig.typecheck.json`. libs' `adapters/index.ts` and `interfaces/model-resolver.ts` are deleted after a grep that proves no importer and no `exports` path. Task 4D's guard is unaffected (llm-agent's root keeps only its own names); no later code block names `ITextLogger` or the dead files (grep over this plan). Task 34's table grows to 70 lines *(75 in the final table, spec D88)* with one note line and the llm-agent package paragraph; Task 35 greps that `ITextLogger` and the three files are gone. `SmartAgentHandle` / libs' `IStageHandler` and libs' internal shims stay (questions 3 and 4: keep).
 - **Review finding on 2026-10-05 — guards vs the intentional negative fixtures.** Task 1A's repo guard (`no file imports a moved name from @mcp-abap-adt/llm-agent`) scans every package source file, `__typechecks__` included, so it would have failed Step 10's `npm test` on Step 9's `rag-implementations-moved.ts`, which imports `VectorRag` / `ISearchStrategy` from `@mcp-abap-adt/llm-agent` on purpose under `@ts-expect-error`. The guard now skips an **exact-path** allow-list `NEGATIVE_IMPORT_FIXTURES` (that one file — no directory or pattern), and gains two tests: an ordinary stale import (built from a string, also in a file beside the fixture) still fails while the listed path passes the same content; each listed fixture exists, still imports a moved name, has `// @ts-expect-error` directly above each such import, and is in `tsconfig.typecheck.json` (so `npm run typecheck` keeps checking it). Steps 2, 8 and 9 state when the fixture test fails (`ENOENT` before Step 9) and passes. Every other guard was checked against every negative fixture the plan creates (`rag-implementations-moved.ts`, `decision-model.typecheck.ts`, `collection-profile.typecheck.ts` of `llm-agent` (Tasks 2–3) and of libs (Task 16), the `@ts-expect-error` cases in the tests of Tasks 17 and 20 (`shared-items-profile.test.ts`, `builder-tools-profile.test.ts`), `text-logger-removed.typecheck.ts`, the `_removedSeam` of `construction-seams.ts`, the `'makeDecisionModel' in deps` assertion, the `REMOVED` table of `no-old-names.test.ts`, the `OllamaRag` test of `rag-implementations-home.test.ts`): Task 1A's "nothing below `llm-agent-rag` imports it" and "`OllamaRag` removed" scans and Task 4B/4D's `no-old-names` tests (runtime namespaces, the re-export scan, the checker over built `exports`) meet no fixture — none imports `llm-agent-rag` from below, names `OllamaRag` under `packages/`, re-exports a package, or reaches `dist/`; the line-exact greps of Tasks 4A, 4E and 20A already list their fixture lines. Fixed besides: Task 4B's reranker-name grep now expects the `REMOVED` literals of `no-old-names.test.ts` (created in the same step); Task 35's old-name grep lists every expected file and line (it missed `rag-implementations-home.test.ts`'s two `OllamaRag` lines, the `REMOVED` literals and the `import type` / `_Removed` lines of `decision-model.typecheck.ts`); Task 35's `ITextLogger` grep expects three lines, as Task 4E does (it said two); Task 35's `rag-implementations` grep excludes exact paths instead of `**/` patterns.
-- **Rework for D68 (spec §17.23 — `FallbackRag` removed).** New Task 0A, right after Task 0 and before Task 1A: it deletes `FallbackRag` and its test, `replaceRag`, `withCircuitBreakers` / `_sharedBreakers` / `isGuardedBy` and the builder's store-wrapping loop (keeping the main-LLM breaker), and the server's `withCircuitBreakers` call; it rewrites every test that built or expected a `FallbackRag` (a plain test decorator where a walk is tested), adds `open-breaker-query.test.ts` (the new behaviour) and fixes the docs that described the fallback — **in one commit, which builds** (`noUnusedLocals` proves the dropped imports: `FallbackRag`, `isRagDecorator` in `builder.ts`; `CircuitBreaker` / `FallbackRag` / `InMemoryRag` and the hydrated-collection test's imports in the tests). Supersedes the D52 / D62 work: Task 19A loses Steps 0a–0d (no `fix(llm-agent-rag)` commit), the five `FallbackRag` / claiming-decorator cases and `resolvedBackend` (its `isRagDecorator` import goes too; `corpusWriter` checks the store's writer); Task 1A moves no `fallback-rag.ts` (its counts: 27 tests, with `open-breaker-query.test.ts` in place of `fallback-rag.test.ts` — the re-check grep matches `../../rag/vector-rag`; 34 codemod files, since `strategy-rag.test.ts` imports no moved name any more; `fakes.ts` copies `makeLlm` only; the stay-target `resilience/circuit-breaker.js` is no longer imported by a moved file); Tasks 19 and 25 replace their `FallbackRag` wrapper with a plain decorator and drop the `CircuitBreaker` / `FallbackRag` / `InMemoryRag` imports they no longer use; Task 11's table loses its `FallbackRag` row. **Kept, checked:** `IRagDecorator` and `isRagDecorator` (`StrategyRag`; `hasRetrievalStrategy`, `ownBuiltInStore`, `retrievalEmbedderOf`, `toolsBindingOf` / `boundToolsOf`, `findWeightedStore` — a consumer's wrapper relies on them; the migration note tells a consumer who wants a degraded mode to write one); `CircuitBreakerEmbedder` / `withCircuitBreaker` and the server's `_embedderBreaker` (fails fast with an error). The Review Focus gains line 11 (an embedder outage with the breaker on); Task 34's table has 72 lines (lines 5, 71, 72 say *removed*, one note line); Task 35 greps that nothing of the removal is left.
+- **Rework for D68 (spec §17.23 — `FallbackRag` removed).** New Task 0A, right after Task 0 and before Task 1A: it deletes `FallbackRag` and its test, `replaceRag`, `withCircuitBreakers` / `_sharedBreakers` / `isGuardedBy` and the builder's store-wrapping loop (keeping the main-LLM breaker), and the server's `withCircuitBreakers` call; it rewrites every test that built or expected a `FallbackRag` (a plain test decorator where a walk is tested), adds `open-breaker-query.test.ts` (the new behaviour) and fixes the docs that described the fallback — **in one commit, which builds** (`noUnusedLocals` proves the dropped imports: `FallbackRag`, `isRagDecorator` in `builder.ts`; `CircuitBreaker` / `FallbackRag` / `InMemoryRag` and the hydrated-collection test's imports in the tests). Supersedes the D52 / D62 work: Task 19A loses Steps 0a–0d (no `fix(llm-agent-rag)` commit), the five `FallbackRag` / claiming-decorator cases and `resolvedBackend` (its `isRagDecorator` import goes too; `corpusWriter` checks the store's writer); Task 1A moves no `fallback-rag.ts` (its counts: 27 tests, with `open-breaker-query.test.ts` in place of `fallback-rag.test.ts` — the re-check grep matches `../../rag/vector-rag`; 34 codemod files, since `strategy-rag.test.ts` imports no moved name any more; `fakes.ts` copies `makeLlm` only; the stay-target `resilience/circuit-breaker.js` is no longer imported by a moved file); Tasks 19 and 25 replace their `FallbackRag` wrapper with a plain decorator and drop the `CircuitBreaker` / `FallbackRag` / `InMemoryRag` imports they no longer use; Task 11's table loses its `FallbackRag` row. **Kept, checked:** `IRagDecorator` and `isRagDecorator` (`StrategyRag`; `hasRetrievalStrategy`, `ownBuiltInStore`, `retrievalEmbedderOf`, `toolsBindingOf` / `boundToolsOf`, `findWeightedStore` — a consumer's wrapper relies on them; the migration note tells a consumer who wants a degraded mode to write one); `CircuitBreakerEmbedder` / `withCircuitBreaker` and the server's `_embedderBreaker` (fails fast with an error). The Review Focus gains line 11 (an embedder outage with the breaker on); Task 34's table has 72 lines *(75 in the final table, spec D88)* (lines 5, 71, 72 say *removed*, one note line); Task 35 greps that nothing of the removal is left.
 - **Rework for the fail-loud sweep (spec §10.5, §13 B1–B11, §17.24 — D69–D74).** Ten new tasks, 4F–4O, after Task 4E (every file they touch is in its final package: `preprocessor.ts`, `vector-rag.ts`, `in-memory-rag.ts` in `llm-agent-rag` since Task 1A; the rerankers in `llm-agent-reranker` since Task 4B) and before Task 5, so every later task builds on code that fails loud; 4F (N1) first, because no later stage error reaches a consumer without it. Each item: a failing test showing today's fake success, the fix, the gate; each task names the grep for existing tests that pinned the fallback. `onFailure` is removed **in place** (Tasks 12, 13, 14, 16, 18, 21, 22, 28, 29, 32, 33): no task introduces it to remove it later; Task 12's `Unit.reranked` and the two-scales branch of `mergeByScore` go with it (one scale per run); Task 29 counts `rerank_error` from `rerankOrError` (Task 4I's rename). The carriers keep signatures: `McpToolRegistry.resolve` throws (Task 4F's executor keeps a thrown `OrchestratorError`'s code) instead of growing an error branch; the only contract additions are `PIPELINE_FAILURE_CODES` and `SkillLoadResult.carried?` (spec §3.8). U1–U10 untouched (Global Constraints). Review Focus 12 added. Every commit builds: 4F adds the codes before any task uses them; 4G–4O touch disjoint files except `agent.ts` / `rag-orchestrator.ts` / `tool-loop.ts` / `smart-server.ts`, edited in different functions in task order.
-- **Rework for the user's U1–U10 decisions (spec §10.5.12, §13 B12–B15, migration lines 73–74, §17.24).** Extended in place: Task 4J (U1 — `FallbackLlmCallStrategy`'s second, optional constructor argument; the server's call compiles unchanged), Task 4K (U5 — `HybridDispatch`), Task 4L (U2 — the `strict` default in the host and the server's config), Task 4M (U10 — one event in the worker wire). New: Task 4P (U6 — `lazy` without `fallback`, after 4O), Task 4Q (U8 — `IToolAvailabilityPolicy`, after 4P and before Task 5), Task 19B (U7 — `batchFailures`, after 19A because it needs `storeItems`, both bindings and `indexToolsThroughProfile`). Each: failing tests first (incl. `@ts-expect-error` typechecks for the two removed members), the gate (`tsc -b` + the touched packages' suites), one commit. Compile order holds: 4P and 4Q touch files no earlier task leaves half-done; 4Q's `tool-loop-core.ts` / `tool-loop.ts` / `agent.ts` edits come after 4F–4G's in those files; every field 19B adds is optional, so the object literals of Tasks 3, 15, 17, 19 and 19A keep compiling. Task 33 Step 8b documents every mode as decided (and a new grep for `toolUnavailableTtlMs` / `fallback:` / `strict: false`); Task 34's Breaking table has 74 lines and the behaviour table B12–B15. U3, U4 untouched; U9 is Task 0A.
+- **Rework for the user's U1–U10 decisions (spec §10.5.12, §13 B12–B15, migration lines 73–74, §17.24).** Extended in place: Task 4J (U1 — `FallbackLlmCallStrategy`'s second, optional constructor argument; the server's call compiles unchanged), Task 4K (U5 — `HybridDispatch`), Task 4L (U2 — the `strict` default in the host and the server's config), Task 4M (U10 — one event in the worker wire). New: Task 4P (U6 — `lazy` without `fallback`, after 4O), Task 4Q (U8 — `IToolAvailabilityPolicy`, after 4P and before Task 5), Task 19B (U7 — `batchFailures`, after 19A because it needs `storeItems`, both bindings and `indexToolsThroughProfile`). Each: failing tests first (incl. `@ts-expect-error` typechecks for the two removed members), the gate (`tsc -b` + the touched packages' suites), one commit. Compile order holds: 4P and 4Q touch files no earlier task leaves half-done; 4Q's `tool-loop-core.ts` / `tool-loop.ts` / `agent.ts` edits come after 4F–4G's in those files; every field 19B adds is optional, so the object literals of Tasks 3, 15, 17, 19 and 19A keep compiling. Task 33 Step 8b documents every mode as decided (and a new grep for `toolUnavailableTtlMs` / `fallback:` / `strict: false`); Task 34's Breaking table has 74 lines *(75 in the final table, spec D88)* and the behaviour table B12–B15. U3, U4 untouched; U9 is Task 0A.
 - **Rework for D79 (spec §17.26 — decided by the user on 2026-10-06).** Task 19B gains Steps 6–10, its own TDD cycle after Steps 1–5 in the same function and test file: the failing tests (bulk write `ok: false` / throwing while per-tool writes would succeed → no per-tool write, `complete: false`, `writeFailure`), the optional contract field `ToolCatalogStatus.writeFailure` (every earlier object literal of `ToolCatalogStatus` still compiles; the test file is not type-checked by `tsc -b` — the package excludes tests —, so Step 7 fails on behaviour, not on compile, and Step 8's field makes the tests' `summary?.writeFailure` type-correct for the editor and Biome), the `else` branch in `listAndIndexTools`, the gate (`tsc -b` + the three suites, a grep that the retry test and comment are gone) and a `fix(libs)` commit. Task 19 (the rename to `listAndIndexTools`) and 19A touch no line Step 8 changes; Task 25 (F1) edits the embedder read (~168–171), above it. Task 33 Step 8b and Task 34 (B16) document it.
 - **Rework for D80 (spec §17.27 — review finding of 2026-10-06).** *Its restore is withdrawn by D82 (below).* Task 4M: `_onReload` becomes the queued entry point over a promise chain (`_reloadTail`), the D77 transaction moves unchanged to `_applyReload`; the listener and its `config_reload_failed` boundary are unchanged. Two new tests (overlapping reloads with a deferred drain; a failed reload followed by a successful one through the event). Task 23A's entry test moves its `seen` assertion after a turn, since the transaction no longer runs in the emit's call stack; its other assertions and the server's `_onReload` callers are unaffected (still `Promise<void>`). `tsc`: `_reloadTail` is read in `_onReload` (`noUnusedLocals`), `run.then(() => undefined, () => undefined)` is `Promise<void>`.
 - **Rework for D80 extended (spec §17.28 — decided by the user on 2026-10-06).** *Its snapshot / restore and `LlmCircuitBreakers.snapshot()` are withdrawn by D82 (below); the one queue stands.* Task 4M: the queue moves from the watcher (`_reloadTail`) into the server (`ConfigTransactionQueue`, one instance injected into the watcher and the `PUT` route); `PUT /v1/config` becomes one transaction (validation outside the queue; snapshot → the server's state → drain + invalidation → the startup agent and 200, or restore and 500 `server_error`). The startup agent is changed only on success because a `SmartAgent` cannot be restored exactly; the breakers are restored with the LLMs (`LlmCircuitBreakers.snapshot()`, internal). Every `new ConfigReloadWatcher(` in the plan's tests passes `transactions` (the V6 cases, the D80 harness, `watcherOver`, Task 23A's `makeWatcher`); tests run through `tsx` without type-checking, so a missing `transactions` would fail at runtime (`run` of undefined) — the Step 4 grep lists every construction. Compile: `IConfigUpdateTarget` has one implementation (`_configUpdateTarget()`), which gains both members in the same step; `ConfigReloadDeps` has one production construction (`smart-server.ts`), which gains `transactions` in the same step; `ReturnType<SmartAgent['getActiveConfig']>` / `['getAgentConfig']` type the outcome without a new type import. Real-server PUT tests are unchanged (their drains and invalidations succeed).
@@ -25322,3 +25819,5 @@ Left to the user by this scan, then decided (next section): the **30.1.0** `vect
 - **Rework for D83 (14) (spec §17.40, amendment 33 — review finding of 2026-10-06: `mcp: [null]` was a `TypeError` in `validateMcpNames`, before `done()`; fixed as a class).** The sweep read every config reader and validator the plan has or keeps (server-libs `config.ts`, `config-fields.ts`, `resolve-config-sections.ts`, `config-validator.ts`, `skill-plugins-config.ts`, `stepper-config.ts`, `pipeline-settings.ts`, `pipelines/controller-subagents.ts`, `worker-llm.ts`, `yaml-loader.ts`, `decision-config.ts`, `http/config-route-handler.ts`, `smart-server.ts`' seed, Task 21's profiles reader and validator, Task 23B's `checkFill` / `resolveFill`; libs `ConfigWatcher`) for a property read on a config value before its shape is checked. Sites fixed: `resolveMcpSection`'s list form (`checkMcpList` / `checkMcpEntry(check, field, value)`, the name rule in the check, `validateMcpNames` deleted); the document root (`checkDocument` in `resolveSmartServerConfig`, whose parameter is renamed `input`); a worker file's root (`parseSubAgents`, `inWorker` — D83 (5)'s prefixing made one helper); `loadYamlConfig` (no document → `{}`); `checkFill`'s `fill.corpus`; the stepper's failed sections read through `?.` (stated, as 30.1.0 already does). Everything else is listed as reviewed in Task 4M's D83 (14). Task 4M's Step 1 gains the D83 (14) case (the generated table — `shapePaths` over full documents, `RELOAD_FIELD_PATHS` and `CONTROLLER_BUDGET_RULES` from the rule tables — and the `mcp: [~]` case at start, reload and worker file); `resolve-mcp-name.test.ts`' refusals go through `done` with the new messages; Step 4 gains four gates (`validateMcpNames` gone, `MCP_NAME_PATTERN` / `checkDocument(` sites, one worker prefix); the commit message names D83 (14). Task 21 adds `profiles: { tools: { variant: 'baseline' } }` to the table's documents; Task 23B's `checkFill` and its test; Task 34's B27 row. Compile: `checkMcpList`, `checkDocument`, `RELOAD_FIELD_PATHS`, `MCP_NAME_PATTERN` are new in `config-fields.ts`; `resolve-config-sections.ts` drops its `checkMcpEntry` and `SmartServerMcpConfig` imports for `checkMcpList`; `config.ts` imports `checkDocument`.
 
 - **Rework for D84 (spec §17.41, amendment 34 — review finding of 2026-10-06: notes written before a failed canonical were listed nowhere).** Only the order changes; no new mechanism. Task 11's `storeItems` writes the canonicals first (the write-ahead canonical it already built: new `recordIds` + the stale set), then the other records of the items whose canonical was written; the stale deletes, the settle and D76's reports are unchanged, and the failed-item check reads the canonical's error first. Bulk order as spec §3.3 and D84 fix it (not a plan choice): one bulk write for the batch's canonicals, a second for the other records — two calls, as before, and no per-record retry on either (D79). Tasks 15 and 17 call `storeItems` unchanged (their order comments updated); Task 19A's capture store sees the canonical first, and its corpus hash sorts the records, so the corpus is unchanged (with an empty capture store no stale set exists and no settle write is made — the canonical written first is the final one). Cumulative compile: `storeItems`' signature and every type are unchanged; the new test helpers use only Task 11's imports (`IRag`, `RagMetadata`, `CallOptions`, `RagError`, `InMemoryRag`, `VectorRag`, `symmetricEmbedder`).
+
+- **Rework for the pre-flight decisions D85–D95 (spec §17.42, amendment 35 — decided by the user on 2026-10-06).** Task 20: the auto-connect branch's `vectorizeMcpTools` call is guarded (`builderFills` — a connection strategy, or an unbound store), so a bound store without the builder's own connection is filled only by its creator; one new test (no connection → zero fills, a connection → one), `IToolsFillSource` into its type import. Task 19A: `InMemoryRag` refused (new test), the merged-metadata loop on `VectorRag` only, `InMemoryRag` still imported (the refusal test reads it). Task 4F: `argumentsError?` on `ToolCall` / `LlmToolCall` (additive — every literal compiles), `toolCallFromRaw` beside `parseToolArguments` (exported with it; server-libs imports it), the parse half and the run half; the legacy-transcript and RAG-recall `restore`s with their tests (each file gains a value import of `OrchestratorError`, `PIPELINE_FAILURE_CODES`). Task 4L: no `config-validator.ts` rule, S-10 tests the code-built config; Task 4M's `checkSkills` is the one rule. Task 22: the resolver loop builds through `profileOver(storeEmbedder)`; `decomposeOf` takes the embedder; `ResolvedToolsProfile.forQueryEmbedder` present only with a decomposer and a profile. Task 23: `withToolsStore` is async and takes the worker's name and embedder (the main call site and the worker closure await it; `IQueryEmbedder` into the type import if missing); two tests. Task 23A: `slotCountRecordKey` in `connected-mcp-server.ts`, read by `buildSubAgent`; a new test file (its own, so Step 5's server tests load before the module exists) and test (7b); the startup preconditions of (9) / (10) name D85. Task 23B: `checkFill(label, v, variant, issues)`, `corpusWorkerConflict` (internal, two callers), `config.ts`' call (`ConfigValidationError` import), the start checks moved before the resolver (nothing read for a refused config), the bind line over Task 23's `profile`; three new tests. Tasks 33, 34: wording (`any store` → a store with a precomputed write; the builder bullet), B7 and the additive bullet. Cumulative compile: each new name has its reader in the same task (`forQueryEmbedder` → Task 23's `withToolsStore`; `slotCountRecordKey` → `buildSubAgent`; `corpusWorkerConflict` → `config.ts` and `_buildInfra`; `toolCallFromRaw` → the five parsing sites); no signature an earlier task's code calls changes except `withToolsStore`, whose two call sites are in Task 23 itself and are updated there; Task 23B's `fill` reads the `out.set` and `named` of Task 22's new loop.
