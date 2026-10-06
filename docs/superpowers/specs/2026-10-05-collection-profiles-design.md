@@ -506,6 +506,16 @@
 > and validator was reviewed against the same rule, and a test gives every section, list item and
 > reload-table field a wrong shape (§10.5.9 *The start config*, *Cast-read fields*, §13 B27, §14.1).
 >
+> **Amended 2026-10-06 (34)** for a review finding (§17.41, D84): **the canonical record is
+> written first and tracks every id.** The writer wrote an item's other records before its
+> canonical and returned on a failed write: when the notes landed and the canonical failed, the
+> new notes were listed nowhere — `remove` found no canonical listing them and a later `index`
+> took its stale set from the old canonical only. Now the canonical is written first, listing
+> every id the item holds or may hold (new `recordIds` + the stale set), then the other records;
+> the stale protocol (delete, settle, report) is unchanged. A failed canonical write leaves nothing
+> written; a failed later write leaves an id that is already tracked. The bulk path writes the
+> batch's canonicals as one bulk write, then the other records as a second (§3.3, §14.1).
+>
 > Every path that creates or refreshes a tools store is audited in §6.4. Earlier open choices are
 > settled by the recommendations applied in §17.9; the user may still overrule them.
 
@@ -1081,10 +1091,31 @@ export interface ICollectionProfile<TItem, TTarget extends BindTarget = Collecti
 
 **Replacing an item is not atomic — and the framework does not try to make it so.**
 
-- `index` of an existing item = several per-record writes: new non-canonical records, then the
-  canonical record (with the new `recordIds`), then deletes of the old ids it no longer lists. A
-  store's bulk write (`upsertManyPrecomputedRaw`) is all-or-nothing per batch, but the deletes are
-  separate calls; nothing spans them.
+- `index` of an existing item = several per-record writes: **the canonical record first** (with
+  the new `recordIds` and, written ahead, the stale ids — D84), then the item's other records, then
+  deletes of the old ids it no longer lists. A store's bulk write (`upsertManyPrecomputedRaw`) is
+  all-or-nothing per batch, but the batches and the deletes are separate calls; nothing spans them.
+- **The canonical record is written first and tracks every id** (D84, review finding of
+  2026-10-06). Before any other record of the item is written, the new canonical lists every id
+  the item holds or may hold: `recordIds` = the new ids, `staleRecordIds` = the stale set (step 1),
+  so together they are old `recordIds` ∪ old `staleRecordIds` ∪ the new ids. No record is ever
+  written that its canonical does not already list. The outcomes:
+
+  | What fails | What the store holds | Report | Next `index` / `remove` |
+  |---|---|---|---|
+  | the canonical write | nothing of the new version — no other record of the item is written; the old canonical (if any) is untouched and still lists the old records | `write-failed: <error>` | finds the old list — nothing untracked |
+  | a later record of the item (canonical written) | the new canonical, which already lists that id; no stale delete runs, the stale set stays on the canonical | `write-failed: <error>` | the id is in `recordIds`: an `index` without it puts it in the stale set (step 1) and deletes it; `remove` deletes it (an absent id is a no-op) |
+
+  Readers tolerate the in-between state by D15: the new canonical hydrates every hit of the item,
+  an old-version record under a reused id hydrates to it (its own text is never returned), and a
+  listed id with no record is never a hit. A record without a canonical is dropped (§4.6).
+  **Order on both write paths, per store and per `index` batch:** the canonicals of every item
+  of the batch first — **one** bulk write when the bulk path applies — then the other records of
+  the items whose canonical was written — a **second** bulk write. A failed first batch fails every
+  item and the second is never made; a failed second batch fails every item with a record in it
+  (each already tracked by its canonical), while an item with no other record stays indexed. The
+  per-record path keeps the same order: every canonical, then the other records of the items whose
+  canonical landed. Neither path retries a failed write another way (D76).
 - **A failed write is reported, never retried another way** (D76). When the records were written
   with the store's bulk write and that call fails (`ok: false` or a throw), every record of the
   batch is failed with the bulk write's error, and every item with a record in it is reported in
@@ -1104,7 +1135,7 @@ handling, not a concurrency protocol: no generations, no locks, D13 stands).
 | Step | What |
 |---|---|
 | 1. stale set | (old `recordIds` ∪ old `staleRecordIds`) − the new ids |
-| 2. write ahead | the new canonical record carries the stale set in `staleRecordIds` (absent when empty) |
+| 2. write ahead | the new canonical record carries the stale set in `staleRecordIds` (absent when empty) and the new ids in `recordIds`, and it is written **first**; the item's other records follow only after it is written (D84). A failed write here or in the other records → `write-failed`, no delete, no settle |
 | 3. delete | every stale id, each `deleteByIdRaw` **`Result` checked**; `ok` (deleted, or already absent → `false`) counts as done; `ok: false` or a throw keeps the id |
 | 4. settle | if the stale list changed, the canonical is rewritten with exactly the ids still pending (key absent when none) |
 | 5. report | any id still pending → the item is **not** indexed: `failedItems` reason `cleanup-failed: <n> stale record(s) kept for retry`; `indexedItems` excludes it. A failed settle write (step 4) → the same, reason `cleanup-failed: the settled stale list was not written: <error>` (the written-ahead superset stays; the retry's delete of an already-deleted id is a no-op) (D76) |
@@ -1124,9 +1155,11 @@ handling, not a concurrency protocol: no generations, no locks, D13 stands).
   persistent store) — are the store backend's responsibility, not the library's. Two concurrent
   `index` calls for one item may interleave; the library adds no lock and gives **no** item-level
   last-write-wins guarantee, within a process or across processes.
-- **An interrupted replacement can leave stale records** — non-canonical records the current
-  canonical record does not list. `remove` deletes only what the canonical lists, so such records
-  can outlive the item.
+- **An interrupted replacement can leave stale records, never untracked ones** (D84). Every record
+  the writer writes is already listed by its canonical (`recordIds` or `staleRecordIds`) when it is
+  written, so the next `index` or `remove` of the item deletes it. Only concurrent writers of the
+  same item (above, D13) can still leave a record no canonical lists; `remove` deletes only what
+  the canonical lists, so such a record can outlive the item.
 - **Why no generations, commit markers or locks:** the store owns concurrency (the project's
   standing rule): concurrent writes to a persistent store (Qdrant, HANA, pg-vector) are the
   backend's responsibility. Collections are filled once and read-mostly. A generation protocol
@@ -5083,6 +5116,13 @@ again, written either way.
   `remove` after that leaves nothing in the store; a
   `remove` whose delete fails keeps the canonical and returns an error, and a second `remove`
   completes.
+- Canonical first (D84), on `InMemoryRag` and `VectorRag` (the stores that merge metadata): a
+  replacement whose canonical write fails while its other records would succeed → no other record
+  written, the item in `failedItems` (`write-failed: …`), and `remove` then leaves no record in the
+  store; a replacement whose canonical is written but one note fails → the item failed, the note's
+  id listed on the canonical, and a later replacement with fewer notes leaves no abandoned record
+  (then `remove` leaves nothing). On the bulk path: the first bulk write holds the canonicals only,
+  the second the other records; a failed second batch fails only the items with a record in it.
 - `vectorizeMcpTools`: golden test of the default path; item accounting with a profile; one batch
   for all records; a binding whose `rag` has no writer is still filled through its own `index`
   (catalog complete, items retrievable), while a writerless store without a binding is skipped as
@@ -6179,3 +6219,16 @@ the worker's included, was read as no keys or through its indices.
 | # | Decision | Where |
 |---|---|---|
 | D83 (14) | **A reader checks a value's shape before it reads a field of it; a `TypeError` from config input is a defect.** (1) **The rule.** A reader reads a field only from a value its `FieldCheck` returned, or from the stand-in after a recorded issue — never from the raw value — whether or not an earlier check already named the value: readers run before `done()`. A list's items are checked by the list's item check before a field of an item is read; a rule across items (unique labels) runs over the checked items, in the same `FieldCheck`. (2) **`mcp[]`.** `check.list('mcp', …)`, each item through the closed check of `mcp[i]`; `mcp[i].name` a label matching `^[a-zA-Z0-9_-]+$` and unique among the entries — issues, not thrown `Error`s; `validateMcpNames` goes. (3) **The document.** `resolveSmartServerConfig` checks that the document is a mapping before it reads anything (`config must be a mapping, got <value>`), and `parseSubAgents` checks a worker's document before reading a field of it (prefixed with the worker and its path); `loadYamlConfig` reads a file with no document as `{}` — what §10.5.9 already said of an empty file, and what the reload's watcher does. (4) **Reviewed and safe**: the readers and validators listed in §10.5.9; the profile validator's `fill.corpus` that is not a mapping is named so instead of read as `{}` (D83 (12)'s rule, found by the same sweep). (5) **The test**: a generated table of wrong shapes at every section, list item and reload-table field the readers know → always a `ConfigFieldError` naming the path, never a `TypeError`; the fail-at-once readers (D83 (12) (6)) → their own `Error`. No contract changes: every changed function is internal (`resolveMcpSection`, `checkMcpEntry`, `checkDocument`), and `loadYamlConfig` keeps its signature | §10.5.9 *The start config*, *Cast-read fields*, §13 B27, §14.1, D83 (12), (13) |
+
+### 17.41 Review finding on 2026-10-06 — the canonical record is written first (D84)
+
+The record writer wrote an item's non-canonical records first, then its canonical, and returned on
+a failed write without tracking what it had written. When the notes were written and the canonical
+write failed, the new notes (ids the old version did not have) were listed by no canonical:
+`remove` deleted only what the old canonical listed, and a later `index` took its stale set from
+the old canonical only — the notes outlived the item. No new mechanism closes it: the existing
+write-ahead canonical is written first instead of last.
+
+| # | Decision | Where |
+|---|---|---|
+| D84 | **The canonical record is written first and tracks every id the item holds or may hold.** (1) **The order.** Per store and per `index` batch: the new canonical of every item first — `recordIds` = the new ids, `staleRecordIds` = the stale set (old `recordIds` ∪ old `staleRecordIds` − the new ids), so it lists old ∪ pending ∪ new — then the other records of the items whose canonical was written, then the stale deletes and the settle write of §3.3 (steps 3–5, unchanged: the settle rewrites the canonical with the same `recordIds` and the ids still pending). (2) **Outcomes.** A failed canonical write → no other record of the item is written, the old canonical is untouched, the item is `write-failed`: no orphan. The canonical written and a later record failed → its id is already listed, the item is `write-failed`, no delete or settle runs (the stale set stays on the canonical); the next `index` deletes it as stale (absent ids are no-ops) and `remove` deletes it. Readers tolerate the in-between state by D15 (a record without a canonical is dropped; a listed id with no record is never a hit). (3) **The bulk path** keeps the same order with two bulk writes: the batch's canonicals as one, then the other records of the items whose canonical landed as a second. A failed first batch fails every item and the second is not made; a failed second batch fails the items with a record in it, an item with no other record stays indexed. No per-record retry on either batch (D76 stands); the per-record path writes in the same order. (4) **Unchanged:** D13 (no locks, no generations; concurrent writers of one item can still leave an untracked record), D61 (duplicate item ids rejected first), D76. Tested on `InMemoryRag` and `VectorRag`: canonical fails while the notes would succeed → nothing else written, `remove` leaves no record; canonical written and a note fails → item failed, then a replacement with fewer notes → no abandoned record; the bulk order and a failed second batch | §3.3, §14.1 |
