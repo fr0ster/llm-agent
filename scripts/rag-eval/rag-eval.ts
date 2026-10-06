@@ -14,15 +14,14 @@
  * applyRetrievalStrategy and queried through it, as the server does. The
  * `embedding` arm always runs and is the baseline the others are compared to.
  *
- * A reranker failure falls back to the embedding order and still answers ok;
- * every fallback is counted per case and arm, and any fallback in a rerank arm
- * fails the run (exit 3) unless --allow-fallback.
+ * A reranker failure is RERANK_ERROR (no embedding-order fallback): every
+ * rerank error is a failed case, and any in a rerank arm fails the run
+ * (exit 3).
  *
  * Usage: npx tsx scripts/rag-eval/rag-eval.ts [--matrix f] [--only name]
  *          [--k 5] [--queries f] [--tools f] [--json out.json]
  *          [--retrieval embedding,rerank,rerank-all] [--reranker decision,llm]
  *          [--overfetch 2] [--max-candidates 30] [--config f --llm-key KEY]
- *          [--allow-fallback]
  * See scripts/rag-eval/README.md.
  */
 
@@ -75,11 +74,7 @@ import {
   loadYamlConfig,
 } from '../../packages/llm-agent-server-libs/src/smart-agent/yaml-loader.js';
 import { TypeSafeDecisionModel } from '../../packages/typesafe-decision/src/index.js';
-import {
-  type ArmFallbacks,
-  fallbackVerdict,
-  RerankFallbackCounter,
-} from './rerank-fallbacks.js';
+import { type ArmRerankErrors, rerankErrorVerdict } from './rerank-errors.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPORT_KS = [1, 3, 5, 10, 15] as const;
@@ -103,8 +98,8 @@ interface CaseResult {
   selected: boolean;
   top5: string[];
   top3: string[];
-  /** Rerank fallbacks to the embedding order while answering this case. */
-  fallbacks: number;
+  /** The reranker's failure while answering this case (`code: message`). */
+  rerankError?: string;
 }
 /** One retrieval arm: a strategy (+ reranker) over the same written store. */
 interface ArmSpec {
@@ -123,10 +118,10 @@ interface ArmResult {
   /** Cases ranked strictly better / worse than the embedding baseline. */
   better?: number;
   worse?: number;
-  /** Cases where the reranker fell back to the embedding order (rerank arms). */
-  fallbackCases?: number;
-  /** First fallback reason (`code: message`). */
-  fallbackReason?: string;
+  /** Cases where the reranker failed (rerank arms). */
+  errorCases?: number;
+  /** First rerank error (`code: message`). */
+  firstError?: string;
   cases?: CaseResult[];
 }
 interface ConfigResult {
@@ -311,9 +306,6 @@ async function evalConfig(
         continue;
       }
       const wrapped = applyRetrievalStrategy(toolsRag, strategy);
-      // Counts the strategy's rerank fallbacks (`retrieval_rerank_error`).
-      const fallbacks = new RerankFallbackCounter();
-      const opts = { sessionLogger: fallbacks.sessionLogger };
       let storeMs = 0;
       const results: CaseResult[] = [];
       for (let ci = 0; ci < cases.length; ci++) {
@@ -322,9 +314,15 @@ async function evalConfig(
 
         // Ranking at maxK through the strategy, for recall@N and MRR.
         const s0 = performance.now();
-        const raw = await wrapped.query(embedding, maxK, opts);
+        const raw = await wrapped.query(embedding, maxK);
         storeMs += performance.now() - s0;
-        if (!raw.ok) throw raw.error;
+        if (!raw.ok) {
+          if (isRerankError(arm, raw.error)) {
+            results.push(failedCase(c, raw.error.message));
+            continue;
+          }
+          throw raw.error;
+        }
         const names = raw.value.map((r: RagResult) =>
           toolNameFromRecord(r.metadata),
         );
@@ -342,8 +340,14 @@ async function evalConfig(
         );
 
         // The selection path at K, exactly as ToolSelectHandler.
-        const atK = await wrapped.query(embedding, k, opts);
-        if (!atK.ok) throw atK.error;
+        const atK = await wrapped.query(embedding, k);
+        if (!atK.ok) {
+          if (isRerankError(arm, atK.error)) {
+            results.push(failedCase(c, atK.error.message));
+            continue;
+          }
+          throw atK.error;
+        }
         const picked = new Set(
           DEFAULT_TOOL_SELECTION.select(atK.value)
             .map((r) => toolNameFromRecord(r.metadata))
@@ -357,7 +361,6 @@ async function evalConfig(
           selected: c.expect.some((e) => picked.has(e)),
           top5: names.slice(0, 5).map((n) => n ?? '<no-id>'),
           top3: names.slice(0, 3).map((n) => n ?? '<no-id>'),
-          fallbacks: fallbacks.take(),
         });
       }
 
@@ -386,8 +389,10 @@ async function evalConfig(
         ...(arm.retrieval === 'embedding'
           ? {}
           : {
-              fallbackCases: results.filter((r) => r.fallbacks > 0).length,
-              fallbackReason: fallbacks.firstReason,
+              errorCases: results.filter((r) => r.rerankError !== undefined)
+                .length,
+              firstError: results.find((r) => r.rerankError !== undefined)
+                ?.rerankError,
             }),
         cases: results,
       });
@@ -423,6 +428,23 @@ const pct = (x: number | undefined) =>
 const ms = (x: number | undefined) =>
   x === undefined ? '-' : `${Math.round(x)} ms`;
 
+/** A rerank arm's RERANK_ERROR is a failed case; any other error aborts the config. */
+const isRerankError = (arm: ArmSpec, e: { code: string }): boolean =>
+  arm.retrieval !== 'embedding' && e.code === 'RERANK_ERROR';
+
+const failedCase = (
+  c: { query: string; expect: string[] },
+  rerankError: string,
+): CaseResult => ({
+  query: c.query,
+  expect: c.expect,
+  rank: null,
+  selected: false,
+  top5: [],
+  top3: [],
+  rerankError,
+});
+
 const row = (a: ArmResult, k: number) => ({
   'recall@1': pct(a.recall?.['@1']),
   'recall@3': pct(a.recall?.['@3']),
@@ -434,10 +456,10 @@ const row = (a: ArmResult, k: number) => ({
   'better/worse vs embedding':
     a.better === undefined ? '-' : `${a.better}/${a.worse}`,
   'store/query': ms(a.avgStoreMs),
-  'rerank fallbacks':
-    a.fallbackCases === undefined
+  'rerank errors':
+    a.errorCases === undefined
       ? '-'
-      : `${a.fallbackCases}/${a.cases?.length ?? 0}`,
+      : `${a.errorCases}/${a.cases?.length ?? 0}`,
 });
 
 function printConfig(r: ConfigResult, k: number, tools: number): void {
@@ -465,18 +487,20 @@ function printConfig(r: ConfigResult, k: number, tools: number): void {
       `WARNING: ${r.scoreOrderViolations} score-order inversions in results`,
     );
   for (const a of ran) {
-    if (a.fallbackCases) {
+    if (a.errorCases) {
       console.log(
-        `WARNING: [${a.label}] reranker fell back to the embedding order in ${a.fallbackCases}/${a.cases?.length ?? 0} cases (first: ${a.fallbackReason}); those cases are marked [fallback]`,
+        `ERROR: [${a.label}] the reranker failed in ${a.errorCases}/${a.cases?.length ?? 0} cases (first: ${a.firstError}); those cases are marked [rerank error]`,
       );
-      for (const c of (a.cases ?? []).filter((x) => x.fallbacks > 0))
-        console.log(`  [fallback] "${c.query}"`);
+      for (const c of (a.cases ?? []).filter(
+        (x) => x.rerankError !== undefined,
+      ))
+        console.log(`  [rerank error] "${c.query}"`);
     }
     const misses = (a.cases ?? []).filter((c) => !c.selected);
     console.log(`[${a.label}] missed at K=${k}: ${misses.length}`);
     for (const m of misses) {
       console.log(
-        `  - ${m.fallbacks > 0 ? '[fallback] ' : ''}"${m.query}"\n    expect ${m.expect.join('|')}; rank ${m.rank ?? `>${Math.max(k, 15)}`}; top5: ${m.top5.join(', ')}`,
+        `  - ${m.rerankError !== undefined ? '[rerank error] ' : ''}"${m.query}"\n    expect ${m.expect.join('|')}; rank ${m.rank ?? `>${Math.max(k, 15)}`}; top5: ${m.top5.join(', ')}`,
       );
     }
   }
@@ -574,7 +598,6 @@ async function main(): Promise<number> {
       'max-candidates': { type: 'string' },
       config: { type: 'string' },
       'llm-key': { type: 'string' },
-      'allow-fallback': { type: 'boolean', default: false },
     },
   });
   const k = Number.parseInt(values.k ?? '5', 10);
@@ -668,21 +691,17 @@ async function main(): Promise<number> {
       'utf8',
     );
   }
-  const armFallbacks: ArmFallbacks[] = results.flatMap((r) =>
+  const armErrors: ArmRerankErrors[] = results.flatMap((r) =>
     (r.arms ?? [])
-      .filter((a) => !a.skipped)
+      .filter((a) => !a.skipped && a.errorCases !== undefined)
       .map((a) => ({
         label: `${r.name} / ${a.label}`,
-        reranks: a.fallbackCases !== undefined,
-        fallbackCases: a.fallbackCases ?? 0,
+        errorCases: a.errorCases ?? 0,
         cases: a.cases?.length ?? 0,
-        firstReason: a.fallbackReason,
+        firstError: a.firstError,
       })),
   );
-  const verdict = fallbackVerdict(
-    armFallbacks,
-    values['allow-fallback'] === true,
-  );
+  const verdict = rerankErrorVerdict(armErrors);
   for (const line of verdict.lines) console.log(line);
   if (!results.every((r) => r.ok)) return 1;
   return verdict.failed ? 3 : 0;

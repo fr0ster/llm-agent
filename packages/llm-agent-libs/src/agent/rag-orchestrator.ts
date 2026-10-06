@@ -16,6 +16,7 @@ import {
   TextOnlyEmbedding,
   toolNameFromRecord,
 } from '@mcp-abap-adt/llm-agent';
+import { callReranker, rerankFailedError } from '../retrieval/rerank-call.js';
 import type { ISpan } from '../tracer/types.js';
 import { summarizeHistory, toEnglishForRag } from './rag-helpers.js';
 import type {
@@ -190,16 +191,38 @@ export class RagOrchestrator implements IRagOrchestrator {
               translateStores?.has(name) && translatedText
                 ? translatedText
                 : combinedActionText;
-            const rr = await this.deps.reranker.rerank(
+            const rr = await callReranker(
+              this.deps.reranker,
               rerankText,
               results,
               opts,
             );
-            return { name, results: rr.ok ? rr.value : results };
+            if (!rr.ok) {
+              opts?.sessionLogger?.logStep('rerank_error', {
+                store: name,
+                code: rr.failure.code,
+                message: rr.failure.message,
+              });
+              return { name, results, failure: rr.failure };
+            }
+            return { name, results: rr.value };
           }
           return { name, results };
         }),
       );
+      // Spec §9.3, D71: a failed rerank is the request's error, never the
+      // unranked order.
+      for (const e of rerankedEntries) {
+        if ('failure' in e && e.failure) {
+          return {
+            ok: false,
+            error: new OrchestratorError(
+              `rag-orchestrator: store "${e.name}": ${rerankFailedError(e.failure).message}`,
+              'RERANK_ERROR',
+            ),
+          };
+        }
+      }
       const rerankedMap: Record<string, RagResult[]> = {};
       for (const { name, results } of rerankedEntries) {
         rerankedMap[name] = results;

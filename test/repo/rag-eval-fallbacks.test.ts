@@ -12,10 +12,7 @@ import {
   RerankAllRetrieval,
   RerankedRetrieval,
 } from '../../packages/llm-agent-libs/src/retrieval/index.js';
-import {
-  fallbackVerdict,
-  RerankFallbackCounter,
-} from '../../scripts/rag-eval/rerank-fallbacks.js';
+import { rerankErrorVerdict } from '../../scripts/rag-eval/rerank-errors.js';
 
 const hit = (id: string, score: number): RagResult => ({
   text: id,
@@ -39,62 +36,58 @@ const unauthorized: IReranker = {
   }),
 };
 
-describe('rag-eval rerank fallbacks', () => {
-  it('a failing reranker is counted per case although the strategy answers ok', async () => {
-    const counter = new RerankFallbackCounter();
-    const opts = { sessionLogger: counter.sessionLogger };
+describe('rag-eval rerank errors — no fallback (D71)', () => {
+  it('a failing reranker is a RERANK_ERROR from both strategies', async () => {
     const s = store([hit('a', 0.9), hit('b', 0.8)]);
     for (const strategy of [
       new RerankedRetrieval(unauthorized),
       new RerankAllRetrieval(unauthorized, { maxCandidates: 30 }),
     ]) {
       const wrapped = applyRetrievalStrategy(s, strategy);
-      const res = await wrapped.query(new TextOnlyEmbedding('q'), 1, opts);
-      assert.ok(res.ok, 'the strategy hides the failure behind ok');
-      assert.equal(counter.take(), 1);
+      const res = await wrapped.query(new TextOnlyEmbedding('q'), 1);
+      assert.ok(!res.ok);
+      assert.equal(res.error.code, 'RERANK_ERROR');
+      assert.match(res.error.message, /DECISION_AUTH: HTTP 401/);
     }
-    assert.equal(counter.take(), 0, 'take() resets');
-    assert.match(counter.firstReason ?? '', /DECISION_AUTH: HTTP 401/);
   });
 
-  it('a working reranker counts nothing; other steps are ignored', async () => {
-    const counter = new RerankFallbackCounter();
-    counter.sessionLogger.logStep('something_else', {});
-    const ok: IReranker = { rerank: async (_q, r) => ({ ok: true, value: r }) };
+  it('a working reranker answers ok with its order', async () => {
+    const ok: IReranker = {
+      rerank: async (_q, r) => ({ ok: true, value: [...r].reverse() }),
+    };
     const wrapped = applyRetrievalStrategy(
-      store([hit('a', 0.9)]),
+      store([hit('a', 0.9), hit('b', 0.8)]),
       new RerankedRetrieval(ok),
     );
-    await wrapped.query(new TextOnlyEmbedding('q'), 1, {
-      sessionLogger: counter.sessionLogger,
-    });
-    assert.equal(counter.take(), 0);
+    const res = await wrapped.query(new TextOnlyEmbedding('q'), 2);
+    assert.ok(res.ok);
+    assert.deepEqual(
+      res.value.map((r) => r.text),
+      ['b', 'a'],
+    );
   });
 
-  it('any fallback in a rerank arm fails the run unless allowed', () => {
-    const arms = [
-      { label: 'c / embedding', reranks: false, fallbackCases: 0, cases: 30 },
+  it('any failed case in a rerank arm fails the run', () => {
+    const failed = rerankErrorVerdict([
       {
         label: 'c / rerank:decision',
-        reranks: true,
-        fallbackCases: 30,
+        errorCases: 30,
         cases: 30,
-        firstReason: 'DECISION_AUTH: HTTP 401',
+        firstError: 'DECISION_AUTH: HTTP 401',
       },
-    ];
-    const strict = fallbackVerdict(arms, false);
-    assert.equal(strict.failed, true);
+    ]);
+    assert.equal(failed.failed, true);
     assert.ok(
-      strict.lines.some(
-        (l) => l.includes('c / rerank:decision') && l.includes('30/30'),
+      failed.lines.some(
+        (l) =>
+          l.includes('c / rerank:decision') &&
+          l.includes('30/30') &&
+          l.includes('DECISION_AUTH: HTTP 401'),
       ),
     );
-    const allowed = fallbackVerdict(arms, true);
-    assert.equal(allowed.failed, false);
-    assert.ok(allowed.lines.length > 0, 'still warns');
-    assert.deepEqual(fallbackVerdict([arms[0]], false), {
-      failed: false,
-      lines: [],
-    });
+    assert.deepEqual(
+      rerankErrorVerdict([{ label: 'c / rerank', errorCases: 0, cases: 30 }]),
+      { failed: false, lines: [] },
+    );
   });
 });

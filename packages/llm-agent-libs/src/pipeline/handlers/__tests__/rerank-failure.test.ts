@@ -22,7 +22,7 @@ function span() {
 }
 
 describe('RerankHandler failure telemetry', () => {
-  it('falls back to the original order and records the failure', async () => {
+  it('fails the stage with RERANK_ERROR and records the failure', async () => {
     const steps: Array<[string, unknown]> = [];
     const ctx = {
       ragText: 'q',
@@ -43,8 +43,9 @@ describe('RerankHandler failure telemetry', () => {
       },
     } as unknown as PipelineContext;
     const { s, attrs } = span();
-    await new RerankHandler().execute(ctx, {}, s);
-    assert.deepEqual(ctx.ragResults.docs, results);
+    const cont = await new RerankHandler().execute(ctx, {}, s);
+    assert.equal(cont, false);
+    assert.equal((ctx.error as { code?: string }).code, 'RERANK_ERROR');
     assert.equal(attrs['docs.rerank_error'], 'RERANK_ERROR');
     assert.equal(steps.length, 1);
     assert.equal(steps[0][0], 'rerank_error');

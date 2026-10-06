@@ -43,7 +43,7 @@
     "packages/llm-agent-rag/src/__typechecks__/embedder-roles.ts",
     "packages/llm-agent-rag/src/__typechecks__/rag-implementations-moved.ts",
     "scripts/rag-eval/rag-eval.ts",
-    "scripts/rag-eval/rerank-fallbacks.ts",
+    "scripts/rag-eval/rerank-errors.ts",
     "test/repo/rag-eval-fallbacks.test.ts"
   ]
 }

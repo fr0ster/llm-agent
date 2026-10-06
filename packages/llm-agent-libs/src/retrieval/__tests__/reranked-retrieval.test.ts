@@ -72,7 +72,7 @@ describe('RerankedRetrieval', () => {
     );
   });
 
-  it('a reranker failure returns the embedding top-k and logs retrieval_rerank_error', async () => {
+  it('a reranker failure is RERANK_ERROR and logs retrieval_rerank_error', async () => {
     const { store } = fakeStore([hit('a', 0.9), hit('b', 0.8), hit('c', 0.7)]);
     const steps: Array<[string, unknown]> = [];
     const reranker: IReranker = {
@@ -86,11 +86,8 @@ describe('RerankedRetrieval', () => {
     }).retrieve(store, q, 2, {
       sessionLogger: { logStep: (n: string, d: unknown) => steps.push([n, d]) },
     } as never);
-    assert.ok(r.ok);
-    assert.deepEqual(
-      r.value.map((x) => x.text),
-      ['a', 'b'],
-    );
+    assert.ok(!r.ok);
+    assert.equal(r.error.code, 'RERANK_ERROR');
     assert.deepEqual(steps, [
       [
         'retrieval_rerank_error',
@@ -120,7 +117,7 @@ describe('RerankedRetrieval', () => {
     assert.ok(!r.ok);
   });
 
-  it('a throwing reranker is treated as a failure', async () => {
+  it('a throwing reranker is a RERANK_ERROR', async () => {
     const { store } = fakeStore([hit('a', 0.9)]);
     const steps: Array<[string, Record<string, unknown>]> = [];
     const r = await new RerankedRetrieval({
@@ -132,11 +129,8 @@ describe('RerankedRetrieval', () => {
         logStep: (n: string, d: Record<string, unknown>) => steps.push([n, d]),
       },
     } as never);
-    assert.ok(r.ok);
-    assert.deepEqual(
-      r.value.map((x) => x.text),
-      ['a'],
-    );
+    assert.ok(!r.ok);
+    assert.equal(r.error.code, 'RERANK_ERROR');
     assert.equal(steps[0][1].code, 'RERANK_THROWN');
     assert.equal(steps[0][1].message, 'Error: boom');
   });
