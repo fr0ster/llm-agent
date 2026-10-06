@@ -105,10 +105,16 @@ async function serve(
   }
 }
 
+// A whole ISkill: the skill-select stage reads `getContent`. (Before the
+// chat route answered a failed request with 502, the missing method failed
+// the request behind a 200 placeholder.)
 const SKILL: ISkill = {
   name: 'demo',
   description: 'a demo skill',
-  content: 'demo body',
+  meta: { name: 'demo', description: 'a demo skill' },
+  getContent: async () => ({ ok: true, value: 'demo body' }),
+  listResources: async () => ({ ok: true, value: [] }),
+  readResource: async () => ({ ok: true, value: '' }),
 } as unknown as ISkill;
 
 function spySkillManager() {
