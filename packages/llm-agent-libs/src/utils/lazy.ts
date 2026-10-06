@@ -27,9 +27,7 @@
 // Public types
 // ---------------------------------------------------------------------------
 
-// The type parameter is kept (unused since `fallback` was removed, U6) so a
-// consumer's `LazyOptions<IFoo>` still names the same type.
-export interface LazyOptions<_T extends object> {
+export interface LazyOptions {
   /**
    * Minimum milliseconds between retry attempts after a failed init.
    * Default: `5_000`.
@@ -55,7 +53,7 @@ const DEFAULT_RETRY_INTERVAL_MS = 5_000;
  */
 export function lazy<T extends object>(
   factory: () => T | Promise<T>,
-  options?: LazyOptions<T>,
+  options?: LazyOptions,
 ): T {
   const retryIntervalMs = options?.retryIntervalMs ?? DEFAULT_RETRY_INTERVAL_MS;
   const onError = options?.onError;

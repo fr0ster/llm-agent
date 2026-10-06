@@ -1050,6 +1050,40 @@ describe('OpenAIProvider — streamChat() malformed line (L6)', () => {
     );
   });
 
+  it('a final line with no trailing newline is delivered', async () => {
+    const provider = streaming([
+      good('Hello'),
+      'data: {"choices":[{"delta":{"content":"Tail"},"finish_reason":"stop"}]}',
+    ]);
+    const contents: string[] = [];
+    for await (const chunk of provider.streamChat([
+      { role: 'user', content: 'hi' },
+    ])) {
+      contents.push(chunk.content);
+    }
+    assert.deepEqual(contents, ['Hello', 'Tail']);
+  });
+
+  it('a truncated final line with no trailing newline is an error naming it', async () => {
+    const provider = streaming([good('Hello'), 'data: {"choices":[{"del']);
+    const contents: string[] = [];
+    await assert.rejects(
+      async () => {
+        for await (const chunk of provider.streamChat([
+          { role: 'user', content: 'hi' },
+        ])) {
+          contents.push(chunk.content);
+        }
+      },
+      (err: Error) => {
+        assert.match(err.message, /malformed stream line/);
+        assert.match(err.message, /data: \{"choices":\[\{"del/);
+        return true;
+      },
+    );
+    assert.deepEqual(contents, ['Hello']);
+  });
+
   it('a chunk split across two reads and data: [DONE] still parse (kept)', async () => {
     const whole = good('Hello');
     const provider = streaming([

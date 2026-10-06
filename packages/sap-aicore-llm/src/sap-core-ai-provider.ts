@@ -530,10 +530,14 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
       // An unreachable catalog is an error, never the configured model as if
       // the catalog had listed it (spec §10.5.6 L5). Nothing is cached, so the
       // next call asks the catalog again.
-      throw new LlmError(
+      // `LlmError`'s constructor takes no `cause`; set it as `asLlmError`
+      // does, so the status and SDK facts stay reachable.
+      const error = new LlmError(
         `model catalog unavailable: ${String(e)}`,
         'LLM_ERROR',
       );
+      error.cause = e;
+      throw error;
     }
   }
 

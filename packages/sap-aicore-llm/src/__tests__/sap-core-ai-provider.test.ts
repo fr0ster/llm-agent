@@ -599,6 +599,16 @@ describe('SapCoreAIProvider — model catalog unavailable (L5)', () => {
     });
   });
 
+  it('the catalog LLM_ERROR keeps the original error as its cause', async () => {
+    const original = new Error('Request failed with status code 503');
+    const p = new ScriptedCatalogProvider([original]);
+    await assert.rejects(p.getModels(), (err: unknown) => {
+      assert.ok(err instanceof LlmError);
+      assert.equal(err.cause, original);
+      return true;
+    });
+  });
+
   it('a network error reaching the catalog is an LLM_ERROR', async () => {
     const p = new ScriptedCatalogProvider([
       new Error('connect ECONNREFUSED 10.0.0.1:443'),

@@ -171,6 +171,59 @@ describe('buildAgentHealthSnapshot — fail loud (D72)', () => {
     assert.match(snapshot.mcp[0].error ?? '', /timeout/i);
     assert.equal(snapshot.mcp[1].ok, true);
   });
+
+  it('an already-aborted signal: probes that reject raise no unhandled rejection; every component is reported failed', async () => {
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => unhandled.push(reason);
+    process.on('unhandledRejection', onUnhandled);
+    try {
+      const rejectLater = () =>
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('probe failed late')), 5),
+        );
+      const store = makeRag();
+      store.healthCheck = rejectLater;
+      const llm = {
+        async chat() {
+          return { ok: true as const, value: {} };
+        },
+        healthCheck: rejectLater,
+      } as unknown as ILlm;
+      const controller = new AbortController();
+      controller.abort(new Error('health timeout'));
+      const snapshot = await buildAgentHealthSnapshot(
+        llm,
+        { store },
+        [clientWithHealth(rejectLater)],
+        { signal: controller.signal } as CallOptions,
+      );
+      // Let any dropped probe settle.
+      await new Promise((r) => setTimeout(r, 30));
+      assert.deepEqual(unhandled, []);
+      assert.equal(snapshot.llm, false);
+      assert.equal(snapshot.rag, false);
+      assert.equal(snapshot.mcp.length, 1);
+      assert.equal(snapshot.mcp[0].ok, false);
+      assert.match(snapshot.mcp[0].error ?? '', /health timeout/);
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+    }
+  });
+
+  it('an LLM healthCheck that never answers is reported llm: false once the health signal fires', {
+    timeout: 5_000,
+  }, async () => {
+    const hangingLlm = {
+      async chat() {
+        return { ok: true as const, value: {} };
+      },
+      healthCheck: () => new Promise(() => {}),
+    } as unknown as ILlm;
+    const snapshot = await buildAgentHealthSnapshot(hangingLlm, {}, [], {
+      signal: AbortSignal.timeout(20),
+    } as CallOptions);
+    assert.equal(snapshot.llm, false);
+  });
 });
 
 describe('SmartAgent health — H5 kept', () => {

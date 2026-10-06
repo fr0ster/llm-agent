@@ -25,45 +25,44 @@ export const buildAgentHealthSnapshot: IAgentHealthProbe = async (
   options,
 ) => {
   const results: AgentHealthSnapshot = { llm: false, rag: false, mcp: [] };
-  try {
-    if (mainLlm.healthCheck) {
-      const hc = await mainLlm.healthCheck(options);
-      results.llm = hc.ok && hc.value;
-      if (!results.llm) {
-        options?.sessionLogger?.logStep('health_llm_probe_error', {
-          reason: hc.ok ? 'unhealthy' : String(hc.error?.message ?? hc.error),
-        });
-      }
-    } else {
-      // Fallback for ILlm implementations without healthCheck
-      const llmRes = await mainLlm.chat(
-        [{ role: 'user' as const, content: 'ping' }],
-        [],
-        options,
-      );
-      results.llm = llmRes.ok;
-      if (!llmRes.ok) {
-        options?.sessionLogger?.logStep('health_llm_probe_error', {
-          reason: String(llmRes.error?.message ?? llmRes.error),
-        });
-      }
-    }
-  } catch (err) {
-    results.llm = false;
+  const signal = options?.signal;
+  const stores = Object.entries(ragStores);
+
+  // The LLM, every store and every client are probed concurrently; each probe
+  // is raced against the health signal, so one that ignores it cannot hold
+  // the whole check (D72).
+  const [llmProbe, ragProbes, mcpProbes] = await Promise.all([
+    untilAborted(() => probeLlm(mainLlm, options), signal).then(
+      (reason) => reason,
+      (err: unknown) => errorText(err),
+    ),
+    // H2 (D72): every registered store is probed; `rag` is true only when all
+    // answer. No store ⇒ true (absent by design). A probe is a
+    // Result-returning call that can also reject — both are a store not
+    // working.
+    Promise.allSettled(
+      stores.map(([, store]) =>
+        untilAborted(() => store.healthCheck(options), signal),
+      ),
+    ),
+    // H3, H4 (D72): every client is reported. `{ ok: true, value: false }` is
+    // not OK; a probe that rejects, or does not answer before the health
+    // signal fires, is reported `ok: false` with the error — never dropped.
+    Promise.allSettled(
+      activeClients.map((client) =>
+        untilAborted(() => probeMcpClient(client, options), signal),
+      ),
+    ),
+  ]);
+
+  // `probeLlm` resolves `undefined` when the LLM works, else the reason.
+  results.llm = llmProbe === undefined;
+  if (!results.llm) {
     options?.sessionLogger?.logStep('health_llm_probe_error', {
-      reason: err instanceof Error ? err.message : String(err),
+      reason: llmProbe,
     });
   }
-  // H2 (D72): every registered store is probed; `rag` is true only when all
-  // answer. No store ⇒ true (absent by design). A probe is a Result-returning
-  // call that can also reject — both are a store not working.
-  const stores = Object.entries(ragStores);
-  const ragProbes = await Promise.allSettled(
-    // async: a probe that throws synchronously is a rejection too.
-    stores.map(async ([, store]) =>
-      untilAborted(store.healthCheck(options), options?.signal),
-    ),
-  );
+
   results.rag = true;
   ragProbes.forEach((probe, i) => {
     const ok = probe.status === 'fulfilled' && probe.value.ok;
@@ -80,14 +79,6 @@ export const buildAgentHealthSnapshot: IAgentHealthProbe = async (
     });
   });
 
-  // H3, H4 (D72): every client is reported. `{ ok: true, value: false }` is
-  // not OK; a probe that rejects, or does not answer before the health signal
-  // fires, is reported `ok: false` with the error — never dropped.
-  const mcpProbes = await Promise.allSettled(
-    activeClients.map((client) =>
-      untilAborted(probeMcpClient(client, options), options?.signal),
-    ),
-  );
   results.mcp = mcpProbes.map((probe) =>
     probe.status === 'fulfilled'
       ? probe.value
@@ -95,6 +86,25 @@ export const buildAgentHealthSnapshot: IAgentHealthProbe = async (
   );
   return results;
 };
+
+/** `undefined` when the LLM works, else why not. */
+async function probeLlm(
+  mainLlm: ILlm,
+  options: CallOptions,
+): Promise<string | undefined> {
+  if (mainLlm.healthCheck) {
+    const hc = await mainLlm.healthCheck(options);
+    if (hc.ok && hc.value) return undefined;
+    return hc.ok ? 'unhealthy' : String(hc.error?.message ?? hc.error);
+  }
+  // An ILlm without healthCheck: a one-token chat is the probe.
+  const llmRes = await mainLlm.chat(
+    [{ role: 'user' as const, content: 'ping' }],
+    [],
+    options,
+  );
+  return llmRes.ok ? undefined : String(llmRes.error?.message ?? llmRes.error);
+}
 
 async function probeMcpClient(
   client: IMcpClient,
@@ -117,16 +127,28 @@ async function probeMcpClient(
 }
 
 /**
- * `probe`, or a rejection with the signal's reason once `signal` fires — a
- * probe that ignores the signal must not hold the whole health check.
+ * Start `probe` and settle with it, or reject with the signal's reason once
+ * `signal` fires — a probe that ignores the signal must not hold the whole
+ * health check. Under an already-aborted signal the probe is never started.
+ * A synchronous throw from `probe` is a rejection. A probe left running after
+ * the abort keeps its handlers, so its late rejection is never unhandled.
  */
-function untilAborted<T>(probe: Promise<T>, signal?: AbortSignal): Promise<T> {
-  if (!signal) return probe;
-  if (signal.aborted) return Promise.reject(signal.reason);
+function untilAborted<T>(
+  probe: () => Promise<T>,
+  signal?: AbortSignal,
+): Promise<T> {
+  if (signal?.aborted) return Promise.reject(signal.reason);
+  let started: Promise<T>;
+  try {
+    started = probe();
+  } catch (err) {
+    return Promise.reject(err);
+  }
+  if (!signal) return started;
   return new Promise<T>((resolve, reject) => {
     const onAbort = () => reject(signal.reason);
     signal.addEventListener('abort', onAbort, { once: true });
-    probe.then(
+    started.then(
       (value) => {
         signal.removeEventListener('abort', onAbort);
         resolve(value);

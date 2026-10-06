@@ -629,6 +629,26 @@ describe('AnthropicProvider — streamChat malformed line (L6)', () => {
     assert.ok(!error.message.includes(long.slice(0, 201)));
   });
 
+  it('a final line with no trailing newline is delivered', async () => {
+    const { contents, error } = await run([
+      delta('Hello'),
+      'event: content_block_delta\ndata: {"delta":{"type":"text_delta","text":"Tail"}}',
+    ]);
+    assert.equal(error, undefined);
+    assert.deepEqual(contents, ['Hello', 'Tail']);
+  });
+
+  it('a truncated final line with no trailing newline is LLM_ERROR naming it', async () => {
+    const { contents, error } = await run([
+      delta('Hello'),
+      'event: content_block_delta\ndata: {"delta":{"type":"text_d',
+    ]);
+    assert.deepEqual(contents, ['Hello']);
+    assert.ok(error instanceof LlmError, String(error));
+    assert.equal(error.code, 'LLM_ERROR');
+    assert.match(error.message, /data: \{"delta":\{"type":"text_d/);
+  });
+
   it('a chunk split across two reads still parses (kept)', async () => {
     const whole = delta('Hello');
     const { contents, error } = await run([
