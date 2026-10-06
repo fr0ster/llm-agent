@@ -8,7 +8,11 @@ import {
   type Result,
 } from '@mcp-abap-adt/llm-agent';
 
-/** The one short candidate a minimal health call reranks (spec §17.43 D97). */
+/**
+ * The one short candidate a minimal health call reranks (spec §17.43 D97). The
+ * same probe lives in `@mcp-abap-adt/llm-agent-libs` `src/health/agent-health.ts`
+ * (`probeReranker`), for rerankers without a `healthCheck`; keep the two alike.
+ */
 const HEALTH_CANDIDATE: RagResult = {
   text: 'health check',
   metadata: { id: 'health' },
@@ -23,7 +27,18 @@ export async function minimalRerank(
   reranker: IReranker,
   options?: CallOptions,
 ): Promise<Result<boolean, RagError>> {
-  const r = await reranker.rerank('health check', [HEALTH_CANDIDATE], options);
+  // A health caller's `maxTokens` (the agent probes with 1) would cut the
+  // minimal call's reply: only the signal and the tracing context go on.
+  const callOptions: CallOptions = {};
+  if (options?.signal) callOptions.signal = options.signal;
+  if (options?.sessionLogger) callOptions.sessionLogger = options.sessionLogger;
+  if (options?.requestLogger) callOptions.requestLogger = options.requestLogger;
+  if (options?.trace) callOptions.trace = options.trace;
+  const r = await reranker.rerank(
+    'health check',
+    [HEALTH_CANDIDATE],
+    callOptions,
+  );
   return r.ok ? { ok: true, value: true } : r;
 }
 

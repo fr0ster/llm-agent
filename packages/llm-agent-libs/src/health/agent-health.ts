@@ -8,12 +8,7 @@ import {
   isRagDecorator,
   type RagResult,
 } from '@mcp-abap-adt/llm-agent';
-import { StagedRetrieval } from '../collections/staged-retrieval.js';
-import {
-  RerankAllRetrieval,
-  RerankedRetrieval,
-} from '../retrieval/reranked-retrieval.js';
-import { StrategyRag } from '../retrieval/strategy-rag.js';
+import { strategyOf } from '../retrieval/strategy-rag.js';
 
 export interface AgentHealthSnapshot {
   llm: boolean;
@@ -37,16 +32,19 @@ export type IAgentHealthProbe = (
   rerankers?: readonly HeldReranker[],
 ) => Promise<AgentHealthSnapshot>;
 
-/** The reranker a shipped retrieval strategy holds, if any (spec §17.43 D97). */
+/**
+ * The reranker a retrieval strategy holds, read structurally: a `reranker`
+ * property with a `rerank` method — `RerankedRetrieval`, `RerankAllRetrieval`
+ * and `StagedRetrieval` expose theirs read-only (spec §17.43 D97), and so may a
+ * consumer's strategy. No `instanceof`: a second copy of libs is found too.
+ */
 function rerankerOf(strategy: IRetrievalStrategy): IReranker | undefined {
-  if (
-    strategy instanceof RerankedRetrieval ||
-    strategy instanceof RerankAllRetrieval ||
-    strategy instanceof StagedRetrieval
-  ) {
-    return strategy.reranker;
-  }
-  return undefined;
+  const r = (strategy as { reranker?: unknown }).reranker;
+  return typeof r === 'object' &&
+    r !== null &&
+    typeof (r as IReranker).rerank === 'function'
+    ? (r as IReranker)
+    : undefined;
 }
 
 /**
@@ -70,8 +68,9 @@ export function heldRerankers(
   for (const [key, store] of Object.entries(ragStores)) {
     let cur: IRag | undefined = store;
     for (let depth = 0; cur && depth < 16; depth++) {
-      if (cur instanceof StrategyRag) {
-        const r = rerankerOf(cur.strategy);
+      const strategy = strategyOf(cur);
+      if (strategy) {
+        const r = rerankerOf(strategy);
         if (r) hold(r, `store:${key}`);
       }
       cur = isRagDecorator(cur) ? cur.inner : undefined;
@@ -123,7 +122,10 @@ export const buildAgentHealthSnapshot: IAgentHealthProbe = async (
     // or no answer before the health signal is not OK, named by its holders.
     Promise.allSettled(
       rerankers.map((held) =>
-        untilAborted(() => probeReranker(held.reranker, options), signal),
+        untilAborted(
+          () => probeReranker(held.reranker, rerankerOptions(options)),
+          signal,
+        ),
       ),
     ),
   ]);
@@ -170,7 +172,25 @@ export const buildAgentHealthSnapshot: IAgentHealthProbe = async (
   return results;
 };
 
-/** The one short candidate a minimal health rerank scores. */
+/**
+ * What a reranker probe passes on: the signal and the tracing/logging context,
+ * never the probe's `maxTokens: 1` — a fallback minimal rerank is a real model
+ * call whose reply must not be cut to one token.
+ */
+function rerankerOptions(options: CallOptions): CallOptions {
+  const out: CallOptions = {};
+  if (options.signal) out.signal = options.signal;
+  if (options.sessionLogger) out.sessionLogger = options.sessionLogger;
+  if (options.requestLogger) out.requestLogger = options.requestLogger;
+  if (options.trace) out.trace = options.trace;
+  return out;
+}
+
+/**
+ * The one short candidate a minimal health rerank scores. The same probe lives
+ * in `@mcp-abap-adt/llm-agent-reranker` `src/health.ts` (`minimalRerank`), used
+ * by the shipped rerankers' own `healthCheck`; keep the two alike.
+ */
 const HEALTH_CANDIDATE: RagResult = {
   text: 'health check',
   metadata: { id: 'health' },

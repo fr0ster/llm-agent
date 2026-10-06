@@ -41,6 +41,22 @@ export class StrategyRag implements IRag, IRagDecorator {
   }
 }
 
+/**
+ * The strategy `rag` itself applies, when `rag` is a `StrategyRag` — detected by
+ * its `Symbol.for` brand, not `instanceof`, so a StrategyRag from another copy
+ * of this package is found too. Internal (the agent's health probe, D97); not
+ * exported from the package root.
+ */
+export function strategyOf(rag: IRag): IRetrievalStrategy | undefined {
+  if (!(rag as { [BRAND]?: boolean })[BRAND]) return undefined;
+  const strategy = (rag as { strategy?: unknown }).strategy;
+  return typeof strategy === 'object' &&
+    strategy !== null &&
+    typeof (strategy as IRetrievalStrategy).retrieve === 'function'
+    ? (strategy as IRetrievalStrategy)
+    : undefined;
+}
+
 /** True when `rag`, or any store it decorates, carries a retrieval strategy. */
 export function hasRetrievalStrategy(rag: IRag): boolean {
   let cur: IRag | undefined = rag;

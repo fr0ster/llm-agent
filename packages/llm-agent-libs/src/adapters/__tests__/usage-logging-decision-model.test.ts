@@ -8,6 +8,10 @@ import {
   type LlmCallEntry,
 } from '@mcp-abap-adt/llm-agent';
 import {
+  ProbabilityReranker,
+  RelevanceReranker,
+} from '@mcp-abap-adt/llm-agent-reranker';
+import {
   wrapProbabilityDecision,
   wrapRelevanceDecision,
 } from '../usage-logging-decision-model.js';
@@ -144,5 +148,63 @@ describe('wrapRelevanceDecision', () => {
     const once = wrapRelevanceDecision(inner);
     assert.notEqual(once, inner);
     assert.equal(wrapRelevanceDecision(once), once);
+  });
+});
+
+// Spec §17.43 D97: the wrappers keep the provider's cheap check — the server
+// always wraps the decision, so a dropped healthCheck would turn every /health
+// probe into a model call.
+describe('usage-logging wrappers forward healthCheck (D97)', () => {
+  it('ProbabilityReranker over a wrapped decision with healthCheck makes no decide call', async () => {
+    let decides = 0;
+    let checks = 0;
+    const d: IProbabilityDecision = {
+      decide: async () => {
+        decides++;
+        return { ok: true, value: { answers: {}, model: 'm' } };
+      },
+      healthCheck: async () => {
+        checks++;
+        return { ok: true, value: true };
+      },
+    };
+    const r = await new ProbabilityReranker(
+      wrapProbabilityDecision(d),
+    ).healthCheck();
+    assert.deepEqual(r, { ok: true, value: true });
+    assert.equal(checks, 1);
+    assert.equal(decides, 0);
+  });
+
+  it('RelevanceReranker over a wrapped decision with healthCheck makes no score call', async () => {
+    let scores = 0;
+    let checks = 0;
+    const d: IRelevanceDecision = {
+      score: async () => {
+        scores++;
+        return { ok: true, value: { scores: [], model: 'm' } };
+      },
+      healthCheck: async () => {
+        checks++;
+        return { ok: true, value: false };
+      },
+    };
+    const r = await new RelevanceReranker(
+      wrapRelevanceDecision(d),
+    ).healthCheck();
+    assert.deepEqual(r, { ok: true, value: false });
+    assert.equal(checks, 1);
+    assert.equal(scores, 0);
+  });
+
+  it('a wrapped decision without healthCheck has none', () => {
+    const p = wrapProbabilityDecision({
+      decide: async () => ({ ok: true, value: { answers: {}, model: 'm' } }),
+    });
+    const s = wrapRelevanceDecision({
+      score: async () => ({ ok: true, value: { scores: [], model: 'm' } }),
+    });
+    assert.equal(p.healthCheck, undefined);
+    assert.equal(s.healthCheck, undefined);
   });
 });

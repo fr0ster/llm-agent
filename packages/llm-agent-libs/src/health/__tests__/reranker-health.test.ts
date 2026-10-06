@@ -13,7 +13,8 @@ import type {
   IReranker,
   RagResult,
 } from '@mcp-abap-adt/llm-agent';
-import { RagError } from '@mcp-abap-adt/llm-agent';
+import { type ILlm, LlmError, RagError } from '@mcp-abap-adt/llm-agent';
+import { LlmReranker } from '@mcp-abap-adt/llm-agent-reranker';
 import { SmartAgent } from '../../agent.js';
 import { StagedRetrieval } from '../../collections/staged-retrieval.js';
 import {
@@ -145,6 +146,29 @@ describe('agent health — rerankers (D97)', () => {
     ]);
   });
 
+  it('found structurally: a branded strategy store (another copy of libs) whose strategy exposes its reranker', async () => {
+    const r = reranker(async () => ({ ok: true, value: true }));
+    const inner = makeRag();
+    // Not an instance of THIS module's StrategyRag — e.g. a second copy of libs
+    // in node_modules — but carrying the same Symbol.for brand.
+    const foreign = {
+      [Symbol.for('@mcp-abap-adt/strategy-rag')]: true,
+      inner,
+      strategy: {
+        name: 'mine',
+        retrieve: async () => ({ ok: true, value: [] }),
+        reranker: r,
+      },
+      query: inner.query.bind(inner),
+      healthCheck: inner.healthCheck.bind(inner),
+      getById: inner.getById.bind(inner),
+    } as unknown as IRag;
+    const res = await agentWith({ ragStores: { docs: foreign } }).healthCheck();
+    assert.ok(res.ok);
+    assert.equal(r.healthCalls, 1);
+    assert.deepEqual(res.value.reranker, [{ name: 'store:docs', ok: true }]);
+  });
+
   it('one reranker held twice is probed once, both holders named', async () => {
     const r = reranker(async () => ({ ok: true, value: true }));
     const res = await agentWith({
@@ -184,7 +208,12 @@ describe('agent health — rerankers (D97)', () => {
 
   it('a reranker wired into nothing is not probed; no reranker → no field', async () => {
     const unused = reranker(async () => ({ ok: true, value: true }));
-    const res = await agentWith({}).healthCheck();
+    // Wired into a store — but a store the agent does not hold.
+    const notHeld = new StrategyRag(makeRag(), new RerankedRetrieval(unused));
+    assert.ok(notHeld);
+    const res = await agentWith({
+      ragStores: { facts: makeRag() },
+    }).healthCheck();
     assert.ok(res.ok);
     assert.equal(unused.healthCalls, 0);
     assert.equal(unused.rerankCalls.length, 0);
@@ -214,6 +243,37 @@ describe('agent health — rerankers (D97)', () => {
     } finally {
       process.off('unhandledRejection', onUnhandled);
     }
+  });
+
+  it('an LlmReranker over an LLM without healthCheck: the minimal call is not cut by the probe maxTokens', async () => {
+    // A fake LLM that honours maxTokens like a real one: a 1-token budget
+    // truncates the reply, which the reranker cannot parse.
+    const seen: Array<number | undefined> = [];
+    const llm = {
+      model: 'fake',
+      async chat(_m: unknown, _t: unknown, options?: CallOptions) {
+        seen.push(options?.maxTokens);
+        if (options?.maxTokens !== undefined && options.maxTokens < 5) {
+          return {
+            ok: true as const,
+            value: { content: '[', finishReason: 'length' },
+          };
+        }
+        return {
+          ok: true as const,
+          value: { content: '[0.9]', finishReason: 'stop' },
+        };
+      },
+      async *streamChat() {
+        yield { ok: false as const, error: new LlmError('unused') };
+      },
+    } as unknown as ILlm;
+    const res = await agentWith({
+      reranker: new LlmReranker(llm),
+    }).healthCheck();
+    assert.ok(res.ok);
+    assert.deepEqual(res.value.reranker, [{ name: 'global', ok: true }]);
+    assert.deepEqual(seen, [undefined], 'one call, no maxTokens');
   });
 
   it('HealthChecker: a reranker not OK → degraded (the route answers 503)', async () => {

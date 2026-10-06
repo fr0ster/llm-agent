@@ -50,7 +50,14 @@ function logDecisionUsage(
 
 class UsageLoggingProbabilityDecision implements IProbabilityDecision {
   readonly [BRAND] = true;
-  constructor(private readonly inner: IProbabilityDecision) {}
+  /** The inner decision's cheap check, kept (spec §17.43 D97); absent when it has none. */
+  healthCheck?: IProbabilityDecision['healthCheck'];
+
+  constructor(private readonly inner: IProbabilityDecision) {
+    if (inner.healthCheck) {
+      this.healthCheck = inner.healthCheck.bind(inner);
+    }
+  }
 
   get model(): string | undefined {
     return this.inner.model;
@@ -69,7 +76,14 @@ class UsageLoggingProbabilityDecision implements IProbabilityDecision {
 
 class UsageLoggingRelevanceDecision implements IRelevanceDecision {
   readonly [RELEVANCE_BRAND] = true;
-  constructor(private readonly inner: IRelevanceDecision) {}
+  /** The inner decision's cheap check, kept (spec §17.43 D97); absent when it has none. */
+  healthCheck?: IRelevanceDecision['healthCheck'];
+
+  constructor(private readonly inner: IRelevanceDecision) {
+    if (inner.healthCheck) {
+      this.healthCheck = inner.healthCheck.bind(inner);
+    }
+  }
 
   get model(): string | undefined {
     return this.inner.model;

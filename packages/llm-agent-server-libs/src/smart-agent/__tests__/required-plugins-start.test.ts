@@ -256,6 +256,54 @@ describe('SmartServer.start — a failed start releases what it took (D96)', () 
   });
 });
 
+describe('SmartServer._buildEmbeddedAgent — the same release path (D96)', () => {
+  it('a failing pipeline-instance build releases the startup agent and the workers, then rejects with it', async () => {
+    const seen = { agentClosed: 0, workersDrained: 0 };
+    const build = SmartAgentBuilder.prototype.build;
+    SmartAgentBuilder.prototype.build = async function (
+      this: SmartAgentBuilder,
+    ) {
+      const handle = await build.call(this);
+      const close = handle.close;
+      return {
+        ...handle,
+        close: async () => {
+          seen.agentClosed++;
+          await close();
+        },
+      };
+    } as typeof build;
+    restores.push(() => {
+      SmartAgentBuilder.prototype.build = build;
+    });
+    const drain = WorkerRegistry.prototype.drain;
+    WorkerRegistry.prototype.drain = async function (this: WorkerRegistry) {
+      seen.workersDrained++;
+      return drain.call(this);
+    };
+    restores.push(() => {
+      WorkerRegistry.prototype.drain = drain;
+    });
+    const proto = SmartServer.prototype as unknown as {
+      buildPipelineInstance: () => Promise<unknown>;
+    };
+    const buildInstance = proto.buildPipelineInstance;
+    proto.buildPipelineInstance = async () => {
+      throw new Error('pipeline instance exploded');
+    };
+    restores.push(() => {
+      proto.buildPipelineInstance = buildInstance;
+    });
+    const server = new SmartServer(baseCfg([]), constructionSeams);
+    await assert.rejects(
+      server._buildEmbeddedAgent(),
+      /pipeline instance exploded/,
+    );
+    assert.equal(seen.agentClosed, 1, 'the startup agent is closed');
+    assert.equal(seen.workersDrained, 1, 'the workers are drained');
+  });
+});
+
 describe('StartReleases — the one release path', () => {
   it('releases newest first; a failing release is logged, never stops the rest', async () => {
     const order: string[] = [];
