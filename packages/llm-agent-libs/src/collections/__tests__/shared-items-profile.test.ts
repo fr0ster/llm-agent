@@ -75,10 +75,13 @@ describe('SharedItemsProfile', () => {
     await bound.index([userItem('B', 'bravo changed')], B);
     const stillA = await user.getById(idA);
     assert.ok(stillA.ok && stillA.value?.text === 'alpha needle');
-    await bound.remove(
+    const rm = await bound.remove(
       [{ itemId: 'case-42', owner: { scope: 'user', userId: 'B' } }],
       B,
     );
+    assert.ok(rm.ok && rm.value === 1, 'B removed exactly its own canonical');
+    const goneB = await user.getById(idB);
+    assert.ok(goneB.ok && goneB.value === null);
     const afterRemove = await user.getById(idA);
     assert.ok(afterRemove.ok && afterRemove.value !== null);
     const r = await retrieve(bound, 'needle', A);
@@ -534,6 +537,131 @@ describe('SharedItemsProfile — fail loud (carry-overs of Tasks 4R, 11, 15)', (
           collapse: new MaxScoreCollapse(),
         }),
       /maxRecordsPerItem/,
+    );
+  });
+});
+
+describe('SharedItemsProfile — partitions together (fix round 1)', () => {
+  it('one item id in the user, global and group partitions: three items, each whole, read per caller', async () => {
+    const user = new InMemoryRag();
+    const global = new InMemoryRag();
+    const group = new InMemoryRag();
+    // A and B may both read (and write) g1.
+    const groups: ISharedItemGroups = {
+      readable: async () => [{ groupId: 'g1', rag: matchesOnly(group) }],
+      writable: async (id) => (id === 'g1' ? group : undefined),
+    };
+    const bound = profile().bind({
+      key: 'shared',
+      user: matchesOnly(user),
+      global: matchesOnly(global),
+      groups,
+    });
+    const r = await bound.index(
+      [
+        userItem('A', 'needle of A'),
+        {
+          itemId: 'case-42',
+          visibility: { scope: 'global' },
+          text: 'needle for everyone',
+        },
+        {
+          itemId: 'case-42',
+          visibility: { scope: 'group', groupId: 'g1' },
+          text: 'needle of group g1',
+        },
+      ],
+      A,
+    );
+    assert.ok(r.ok && r.value.indexedItems === 3, JSON.stringify(r));
+    const owners = (
+      xs: { text: string; metadata: Record<string, unknown> }[],
+    ) =>
+      xs
+        .map((x) => [
+          x.metadata.visibility,
+          x.metadata.userId ?? x.metadata.groupId ?? null,
+          x.text,
+        ])
+        .sort();
+    const asA = await retrieve(bound, 'needle', A);
+    assert.ok(asA.ok);
+    assert.equal(asA.value.length, 3);
+    assert.deepEqual(owners(asA.value), [
+      ['global', null, 'needle for everyone'],
+      ['group', 'g1', 'needle of group g1'],
+      ['user', 'A', 'needle of A'],
+    ]);
+    const asB = await retrieve(bound, 'needle', B);
+    assert.ok(asB.ok);
+    assert.deepEqual(owners(asB.value), [
+      ['global', null, 'needle for everyone'],
+      ['group', 'g1', 'needle of group g1'],
+    ]);
+    const gGlobal = await bound.get(
+      { itemId: 'case-42', owner: { scope: 'global' } },
+      B,
+    );
+    assert.ok(gGlobal.ok && gGlobal.value?.text === 'needle for everyone');
+    const gGroup = await bound.get(
+      { itemId: 'case-42', owner: { scope: 'group', groupId: 'g1' } },
+      B,
+    );
+    assert.ok(gGroup.ok && gGroup.value?.text === 'needle of group g1');
+    assert.equal(gGroup.value?.metadata.groupId, 'g1');
+    const notMine = await bound.get(
+      { itemId: 'case-42', owner: { scope: 'group', groupId: 'g2' } },
+      B,
+    );
+    assert.ok(notMine.ok && notMine.value === null, 'g2 is not readable');
+  });
+
+  it('an unknown visibility is a typed refusal, never a write into no store', async () => {
+    const user = new InMemoryRag();
+    const bound = profile().bind({ key: 'shared', user });
+    const r = await bound.index(
+      [
+        {
+          itemId: 's',
+          // A session visibility does not type-check; it can still arrive at runtime.
+          visibility: { scope: 'session', sessionId: 'x' } as never,
+          text: 's',
+        },
+      ],
+      A,
+    );
+    assert.ok(r.ok, JSON.stringify(r));
+    assert.deepEqual(r.value.failedItems, [
+      { itemId: 's', reason: 'unknown-visibility' },
+    ]);
+  });
+
+  it('the global and group partitions keep ragFilter.namespace (store identity); only identity keys are dropped', async () => {
+    const global = new InMemoryRag({ namespace: 'N1' });
+    const bound = profile().bind({
+      key: 'shared',
+      global: matchesOnly(global),
+    });
+    const w = await bound.index(
+      [{ itemId: 'pub', visibility: { scope: 'global' }, text: 'needle' }],
+      A,
+    );
+    assert.ok(w.ok && w.value.indexedItems === 1);
+    const n2 = await retrieve(bound, 'needle', {
+      userId: 'A',
+      ragFilter: { namespace: 'N2', userId: 'A' },
+    });
+    assert.ok(n2.ok);
+    assert.deepEqual(n2.value, [], 'a caller in N2 does not see N1');
+    const n1 = await retrieve(bound, 'needle', {
+      userId: 'A',
+      ragFilter: { namespace: 'N1', userId: 'A' },
+    });
+    assert.ok(n1.ok);
+    assert.deepEqual(
+      n1.value.map((x) => x.metadata.id),
+      ['pub'],
+      'the userId filter is dropped for the global partition; the namespace is kept',
     );
   });
 });

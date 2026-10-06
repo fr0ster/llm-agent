@@ -88,11 +88,24 @@ class PartitionsRag implements IRag {
   }
 }
 
-/** The request's options without its identity filter (partition stores are not user-scoped). */
-const unfiltered = (options?: CallOptions): CallOptions => ({
-  ...options,
-  ragFilter: undefined,
-});
+/**
+ * The request's options without the identity keys of its filter (`userId`,
+ * `sessionId`): the global and group partitions are not user- or session-scoped.
+ * Every other key — `namespace` above all, the store's identity and tenancy — is
+ * KEPT: a partition is never read outside the caller's namespace.
+ */
+const unfiltered = (options?: CallOptions): CallOptions => {
+  const f = options?.ragFilter;
+  if (!f) return { ...options };
+  const { userId: _userId, sessionId: _sessionId, ...kept } = f;
+  return {
+    ...options,
+    ragFilter: Object.keys(kept).length > 0 ? kept : undefined,
+  };
+};
+
+/** Why an item cannot be written to (or removed from) a partition (spec §8.3). */
+type WriteRefusal = 'foreign-user' | 'no-partition' | 'unknown-visibility';
 
 /** An item's owner-qualified id, for messages: `user:A/case-42` (as record-writer's). */
 const itemLabel = (owner: RecordOwner, itemId: string): string => {
@@ -160,7 +173,11 @@ class SharedItemsBinding implements IBoundCollection<SharedItem> {
       out.push({
         name: 'user',
         rag: this.target.user,
-        options: { ...unfiltered(options), ragFilter: { userId } },
+        // The user's own filter, over the request's other keys (namespace kept).
+        options: {
+          ...options,
+          ragFilter: { ...unfiltered(options).ragFilter, userId },
+        },
       });
     }
     if (this.target.global) {
@@ -186,7 +203,7 @@ class SharedItemsBinding implements IBoundCollection<SharedItem> {
   private async writable(
     v: SharedItemVisibility,
     options?: CallOptions,
-  ): Promise<IRag | string> {
+  ): Promise<IRag | WriteRefusal> {
     switch (v.scope) {
       case 'user':
         if (v.userId !== options?.userId) return 'foreign-user';
@@ -198,6 +215,14 @@ class SharedItemsBinding implements IBoundCollection<SharedItem> {
         );
       case 'global':
         return this.target.global ?? 'no-partition';
+      default: {
+        // A visibility outside the type (e.g. `session`) can still arrive at
+        // runtime: refused, never a write into no store.
+        // Exhaustive: a new visibility scope is a compile error here until handled.
+        const _never: never = v;
+        void _never;
+        return 'unknown-visibility';
+      }
     }
   }
 
@@ -227,7 +252,7 @@ class SharedItemsBinding implements IBoundCollection<SharedItem> {
       }
       // The consumer's `groups.writable` may reject: the call's Result error,
       // before anything is written (fail loud — never a guessed refusal).
-      let store: IRag | string;
+      let store: IRag | WriteRefusal;
       try {
         store = await this.writable(s.visibility, options);
       } catch (err) {
@@ -390,7 +415,7 @@ class SharedItemsBinding implements IBoundCollection<SharedItem> {
           ),
         };
       }
-      let store: IRag | string;
+      let store: IRag | WriteRefusal;
       try {
         store = await this.writable(ref.owner, options);
       } catch (err) {
@@ -401,7 +426,7 @@ class SharedItemsBinding implements IBoundCollection<SharedItem> {
           ok: false,
           error: new RagError(
             `cannot remove ${itemLabel(ref.owner, ref.itemId)}: ${store}`,
-            store === 'foreign-user' ? 'OWNER_MISMATCH' : 'NO_PARTITION',
+            store === 'no-partition' ? 'NO_PARTITION' : 'OWNER_MISMATCH',
           ),
         };
       }
