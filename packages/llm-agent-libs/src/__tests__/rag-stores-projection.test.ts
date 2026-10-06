@@ -1,14 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
-  CircuitBreaker,
   CircuitBreakerLlm,
-  FallbackRag,
   InMemoryRag,
-  type IRagEditor,
-  type IRagProvider,
-  RagError,
-  SimpleRagProviderRegistry,
   SimpleRagRegistry,
 } from '@mcp-abap-adt/llm-agent';
 import { SmartAgent } from '../agent.js';
@@ -60,83 +54,30 @@ test('the projection keys a global by its name and an owned collection by scope/
   }
 });
 
-test('the circuit-breaker wrapping keeps each entry’s scope and owner', async () => {
-  const { reg } = threeDocs();
+test('withCircuitBreaker wraps no store: every entry and projected store stays as registered; only the LLM breaker (D68)', async () => {
+  const { reg, g, u, s } = threeDocs();
+  const before = reg.list();
   const handle = await new SmartAgentBuilder({})
     .withMainLlm(makeLlm([{ content: 'ok' }]))
     .setRagRegistry(reg)
     .withCircuitBreaker()
     .build();
   try {
-    const user = reg
-      .list()
-      .find((m) => m.name === 'docs' && m.scope === 'user');
-    assert.equal(user?.userId, 'alice', 'not re-registered as a global');
-    const session = reg
-      .list()
-      .find((m) => m.name === 'docs' && m.scope === 'session');
-    assert.equal(session?.sessionId, 'S');
-    assert.equal(reg.list().length, 3, 'wrapped in place, nothing added');
-    assert.ok(handle.ragStores['user/docs'] instanceof FallbackRag);
-    assert.ok(handle.ragStores.docs instanceof FallbackRag);
-  } finally {
-    await handle.close();
-  }
-});
-
-test('a wrapped hydrated collection keeps its editor, and its delete still reaches its provider', async () => {
-  const deleted: string[] = [];
-  const provider = {
-    name: 'pg',
-    kind: 'vector',
-    editable: true,
-    supportedScopes: ['session', 'user', 'global'],
-    createCollection: async () => ({
-      ok: false,
-      error: new RagError('not expected'),
-    }),
-    deleteCollection: async (storeName: string) => {
-      deleted.push(storeName);
-      return { ok: true, value: undefined };
-    },
-  } as unknown as IRagProvider;
-  const providers = new SimpleRagProviderRegistry();
-  providers.registerProvider(provider);
-  const reg = new SimpleRagRegistry();
-  const editor = {} as IRagEditor;
-  reg.adopt(
-    {
-      storeName: 'mine_0123456789ab',
-      name: 'mine',
-      scope: 'user',
-      userId: 'alice',
-    },
-    new InMemoryRag(),
-    editor,
-    'pg',
-  );
-  const handle = await new SmartAgentBuilder({})
-    .withMainLlm(makeLlm([{ content: 'ok' }]))
-    .setRagRegistry(reg)
-    .setRagProviderRegistry(providers)
-    .withCircuitBreaker()
-    .build();
-  try {
-    assert.ok(handle.ragStores['user/mine'] instanceof FallbackRag);
-    const meta = reg.list().find((m) => m.name === 'mine');
-    assert.equal(meta?.providerName, 'pg', 'the provider survives the wrap');
-    assert.equal(meta?.userId, 'alice');
-    assert.equal(
-      reg.getEditor('mine', 'user'),
-      editor,
-      'still editable through the tools',
-    );
-    assert.ok((await reg.deleteCollection('mine', 'user')).ok);
     assert.deepEqual(
-      deleted,
-      ['mine_0123456789ab'],
-      'the store name, not the logical one: a delete that missed would leave the record to be hydrated again',
+      reg.list(),
+      before,
+      'scope, owner and provider unchanged; nothing added',
     );
+    assert.equal(
+      reg.get('docs', 'global'),
+      g,
+      'the registry entry is the store registered',
+    );
+    assert.equal(handle.ragStores.docs, g);
+    assert.equal(handle.ragStores['user/docs'], u);
+    assert.equal(handle.ragStores['session/docs'], s);
+    assert.equal(handle.circuitBreakers.length, 1, 'the main-LLM breaker only');
+    assert.ok(handle.agent.currentMainLlm instanceof CircuitBreakerLlm);
   } finally {
     await handle.close();
   }
@@ -194,60 +135,7 @@ test('addRagStore / removeRagStore address the global and leave a user collectio
   assert.equal(reg.get('kb', 'user'), mine);
 });
 
-test('withCircuitBreakers wraps a store once, never twice across builders, and leaves the LLM alone', async () => {
-  const breaker = new CircuitBreaker();
-  const reg = new SimpleRagRegistry();
-  const raw = new InMemoryRag();
-  reg.register('docs', raw, undefined, {
-    displayName: 'docs',
-    scope: 'global',
-  });
-  const llm = makeLlm([{ content: 'ok' }]);
-  const h1 = await new SmartAgentBuilder({})
-    .withMainLlm(llm)
-    .setRagRegistry(reg)
-    .withCircuitBreakers({ embedder: breaker })
-    .build();
-  const wrapped = h1.ragStores.docs;
-  assert.ok(wrapped instanceof FallbackRag);
-  assert.equal(wrapped.breaker, breaker);
-  assert.equal(wrapped.inner, raw);
-  assert.deepEqual(h1.circuitBreakers, [breaker]);
-  await h1.close();
-
-  const h2 = await new SmartAgentBuilder({})
-    .withMainLlm(llm)
-    .setRagRegistry(reg)
-    .withCircuitBreakers({ embedder: breaker })
-    .build();
-  try {
-    assert.equal(h2.ragStores.docs, wrapped, 'not wrapped again');
-    assert.ok(
-      !((h2.ragStores.docs as FallbackRag).inner instanceof FallbackRag),
-    );
-    assert.ok(!(h2.agent.currentMainLlm instanceof CircuitBreakerLlm));
-  } finally {
-    await h2.close();
-  }
-});
-
-test('withCircuitBreakers wins over withCircuitBreaker(config): no LLM breaker', async () => {
-  const breaker = new CircuitBreaker();
-  const reg = new SimpleRagRegistry();
-  reg.register('docs', new InMemoryRag(), undefined, {
-    displayName: 'docs',
-    scope: 'global',
-  });
-  const h = await new SmartAgentBuilder({})
-    .withMainLlm(makeLlm([{ content: 'ok' }]))
-    .setRagRegistry(reg)
-    .withCircuitBreaker()
-    .withCircuitBreakers({ embedder: breaker })
-    .build();
-  try {
-    assert.deepEqual(h.circuitBreakers, [breaker]);
-    assert.ok(!(h.agent.currentMainLlm instanceof CircuitBreakerLlm));
-  } finally {
-    await h.close();
-  }
+test('withCircuitBreakers and replaceRag are gone (D68)', () => {
+  assert.equal('withCircuitBreakers' in SmartAgentBuilder.prototype, false);
+  assert.equal('replaceRag' in SimpleRagRegistry.prototype, false);
 });

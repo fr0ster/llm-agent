@@ -501,7 +501,7 @@ describe('SmartServer LLM breakers — one per llm: key behind every role', () =
 // ---------------------------------------------------------------------------
 
 describe('SmartServer embedder breaker — fed by the retrieval embedder', () => {
-  it('failing embeds open the embedder breaker; LLM breakers stay closed; the store falls back', async () => {
+  it('failing embeds open the embedder breaker; LLM breakers stay closed; an open breaker fails the store query fast (D68)', async () => {
     let embeds = 0;
     const failing = {
       embed: async () => {
@@ -551,8 +551,9 @@ describe('SmartServer embedder breaker — fed by the retrieval embedder', () =>
         states.slice(0, -1).map(() => 'closed'),
         'the LLM breakers stay closed',
       );
-      // A request that queries a store answers from the fallback: the open
-      // breaker keeps the embedding service out of it.
+      // With the breaker open a store's query fails fast (CIRCUIT_OPEN) — no
+      // embedding call, no in-memory copy; the rag-query stage continues without
+      // that store's results, so the request still answers.
       const before = embeds;
       const res = await chat(handle.port, 's-3');
       assert.equal(res.status, 200, res.raw);

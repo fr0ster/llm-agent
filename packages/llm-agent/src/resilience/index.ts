@@ -22,7 +22,6 @@ export {
   getResilienceMetadata,
   RESILIENCE_META,
 } from './embedder-resilience.js';
-export { FallbackRag } from './fallback-rag.js';
 export {
   type EmbedderRetryOptions,
   extractStatusCode,

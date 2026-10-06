@@ -300,16 +300,13 @@ test('a provider without a catalog is skipped silently', async () => {
   assert.deepEqual(messages(), []);
 });
 
-test('the circuit-breaker fallback-wrap on one session’s registry never mutates the globals registry or another session’s registry', async () => {
-  // B26 concern: SmartAgentBuilder.build() wraps every RAG store with
-  // FallbackRag and, for a SimpleRagRegistry, swaps the handle in place via
-  // `replaceRag` (builder.ts) — it never re-registers, so it never touches
-  // ANOTHER registry's entries. buildSessionRagRegistry gives every session
-  // its OWN SimpleRagRegistry, seeding a global by `register()`-ing a NEW
-  // entry that shares only the underlying IRag instance, not the deployment
-  // registry's own entry object. So session A's circuit-breaker wrap (a real
-  // build, not a mock) must be invisible to the deployment registry and to
-  // session B's separately-built registry.
+test('a circuit-breaker build on one session’s registry leaves every registry as registered (D68: no store wrap)', async () => {
+  // B26 concern, closed by D68: the builder wraps no registry store, so a
+  // build mutates no registry entry. buildSessionRagRegistry gives every
+  // session its OWN SimpleRagRegistry, seeding a global by `register()`-ing a
+  // NEW entry that shares only the underlying IRag instance. A real build with
+  // withCircuitBreaker() on session A's registry must leave the deployment
+  // registry and session B's separately-built registry as registered.
   const globals = new SimpleRagRegistry();
   const originalKb = new InMemoryRag();
   globals.register('kb', originalKb, undefined, {
@@ -332,13 +329,11 @@ test('the circuit-breaker fallback-wrap on one session’s registry never mutate
     .withCircuitBreaker()
     .build();
   try {
-    // Positive control: session A's own registry IS wrapped — otherwise this
-    // test would pass even if isolation were silently broken by the wrap
-    // never running.
-    assert.notEqual(
+    // Positive control: session A's own entry is the store registered — no wrap.
+    assert.equal(
       regA.get('kb', 'global'),
       originalKb,
-      'the circuit breaker wrapped session A’s own handle',
+      'session A’s own entry is the store registered — no wrap',
     );
 
     // Isolation: neither the deployment registry nor session B's separately

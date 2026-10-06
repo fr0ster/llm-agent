@@ -275,18 +275,7 @@ test('a rejected catalog row is logged by the first session only, not by every s
   }
 });
 
-// NOTE on the circuit-breaker fallback-wrap isolation concern (B26): SmartServer
-// only calls `builder.withCircuitBreaker(...)` when `applyServerExtras` is true
-// (`buildBaseBuilder`, gated at the `if (parts.applyServerExtras)` block), and
-// `partsToBaseInput`/`buildServerCtx` always pass `applyServerExtras: false` for
-// a SESSION build — `applyServerExtras: true` is used only for the startup
-// global builder. So a real SmartServer session build never enables the
-// circuit-breaker wrap at all today; there is no `cfg.circuitBreaker` value
-// that reaches a per-session `SmartAgentBuilder.build()`. The isolation this
-// concern is actually about — `buildSessionRagRegistry`'s fresh
-// `SimpleRagRegistry` per session vs. `builder.build()`'s `replaceRag` —  is
-// still verified through a REAL `SmartAgentBuilder` + `withCircuitBreaker()`
-// build in
-// `session-lifecycle/__tests__/session-rag-registry.test.ts`
-// ("the circuit-breaker fallback-wrap on one session's registry never
-// mutates the globals registry or another session's registry").
+// NOTE (B26): since D68 the builder wraps no registry store, so no build — a
+// session's or the startup one — mutates a registry entry.
+// session-lifecycle/__tests__/session-rag-registry.test.ts pins it with a real
+// SmartAgentBuilder + withCircuitBreaker() build.

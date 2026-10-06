@@ -58,7 +58,7 @@ still install only what they need; `llm-agent-libs` has no LLM peers.)
 
 | Layer | Package | Role |
 |-------|---------|------|
-| **Interfaces & types** | `@mcp-abap-adt/llm-agent` | All `I*` interfaces (incl. `IDecisionModel`, `IRetrievalStrategy`, `IRagDecorator`), shared types, lightweight helpers (CircuitBreaker, FallbackRag, LLM call strategies, ToolCache, adapters, normalizers) |
+| **Interfaces & types** | `@mcp-abap-adt/llm-agent` | All `I*` interfaces (incl. `IDecisionModel`, `IRetrievalStrategy`, `IRagDecorator`), shared types, lightweight helpers (CircuitBreaker, LLM call strategies, ToolCache, adapters, normalizers) |
 | **MCP client** | `@mcp-abap-adt/llm-agent-mcp` | `MCPClientWrapper`, `McpClientAdapter`, connection strategies |
 | **RAG/embedder** | `@mcp-abap-adt/llm-agent-rag` | `makeRag`, `resolveEmbedder`, prefetch helpers, backend factories |
 | **Composition runtime** | `@mcp-abap-adt/llm-agent-libs` | `SmartAgentBuilder`, `SmartAgent`, pipeline, sessions, history, metrics, skills, plugins, per-store retrieval strategies (`EmbeddingRetrieval`, `RerankedRetrieval`, `RerankAllRetrieval`, `StrategyRag`) |

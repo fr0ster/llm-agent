@@ -72,8 +72,8 @@ function decorates(rag: IRag, target: IRag): boolean {
 /**
  * The store an agent queries for one of its built-in slots (`tools`, `history`).
  * The agent's OWN store always has priority: the projected entry is used only
- * when it carries a retrieval strategy and decorates `own` (so layers such as
- * the circuit-breaker fallback are kept); otherwise `ownWithStrategy` — `own`
+ * when it carries a retrieval strategy and decorates `own` (so a decorator the
+ * projection carries is kept); otherwise `ownWithStrategy` — `own`
  * with the explicit strategy applied once by the caller, or `own` itself. A
  * projected entry over another agent's store (a worker sharing its parent's
  * registry) never wins. Internal; not re-exported.

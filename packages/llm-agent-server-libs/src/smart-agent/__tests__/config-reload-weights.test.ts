@@ -1,11 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import {
-  CircuitBreaker,
-  FallbackRag,
-  InMemoryRag,
-  type IRag,
-} from '@mcp-abap-adt/llm-agent';
+import { InMemoryRag, type IRag } from '@mcp-abap-adt/llm-agent';
 import { EmbeddingRetrieval, StrategyRag } from '@mcp-abap-adt/llm-agent-libs';
 import {
   ConfigReloadWatcher,
@@ -50,13 +45,15 @@ describe('config reload — RAG weight updates through decorators', () => {
     assert.deepEqual(updates, [{ vectorWeight: 0.3, keywordWeight: 0.7 }]);
   });
 
-  it('reaches a store under FallbackRag(StrategyRag(...))', () => {
+  it('reaches a store under a decorator over StrategyRag(...)', () => {
     const { store, updates } = weightedStore();
-    const wrapped = new FallbackRag(
-      new StrategyRag(store, new EmbeddingRetrieval()),
-      new InMemoryRag(),
-      new CircuitBreaker(),
-    );
+    const strategy = new StrategyRag(store, new EmbeddingRetrieval());
+    const wrapped: IRag & { readonly inner: IRag } = {
+      inner: strategy,
+      query: (e, k, o) => strategy.query(e, k, o),
+      healthCheck: (o) => strategy.healthCheck(o),
+      getById: (id, o) => strategy.getById(id, o),
+    };
     const reload = watcherOver({ history: wrapped });
     reload({ vectorWeight: 0.5 });
     assert.deepEqual(updates, [

@@ -238,20 +238,15 @@ Other reasons for "no effect":
 - **`history` is reranked only when you ask for it.** `rag.retrieval.history` applies to per-session requests: session agents read the server's shared history store, wrapped by the strategy. Without an entry the store keeps plain embedding retrieval.
 - **The store has no entry.** Keys are the store keys the pipeline sees: `tools`, `history`, a global collection's bare name, `user/<name>`, `session/<name>`. A store that is not listed keeps embedding ranking.
 - **A collection added after build is not reranked.** The builder applies a strategy when it projects registry entries into the pipeline's stores. A registry with `setMutationListener` (`SimpleRagRegistry` has it) re-projects on every change, so a collection registered later is wrapped like the rest. A custom `IRagRegistry` without `setMutationListener` is never re-projected: a collection registered after build is not visible to any pipeline stage, reranked or not. Add `setMutationListener` to the registry.
-- **The circuit breaker is open** (see the next entry).
+- **The embedder breaker is open** (see the next entry).
 
-### With the circuit breaker open, a `tools` / `history` store is not reranked
+### With the embedder breaker open, a store returns nothing
 
-**Symptom.** Under an embedder outage (`circuitBreaker` configured, embedder breaker open) a store with `strategy: rerank` returns embedding-style results, with no `retrieval_rerank_error`; a named collection is still reranked.
+**Symptom.** Under an embedder outage (`circuitBreaker` configured, the embedder breaker `open` in `/health`) retrieval returns no tools / documents, reranked or not.
 
-**Cause.** Exactly one rerank happens per query in either wrapper order, but with the breaker **open** the two orders differ. `FallbackRag` fans writes out to its fallback store, so the fallback is not empty (it holds what was written, e.g. the vectorized tool catalog):
+**Cause.** The breaker fails each embedding fast (`CIRCUIT_OPEN`), so every store that embeds the query fails its query; the `rag-query` stage records no results for it (`ragQueryCount` with `hit: false`, `logRagQuery` with `resultCount: 0`) and the request continues. There is no in-memory fallback any more (removed in this major).
 
-| Order | Used for | Circuit open |
-|---|---|---|
-| `FallbackRag(StrategyRag(store))` | `tools` / `history`, wrapped by the server before the builder sees them | `FallbackRag` queries its fallback directly: the reranker is bypassed, results are the fallback's own ranking |
-| `StrategyRag(FallbackRag(store))` | named collections, wrapped in the builder's projection | the strategy reranks the fallback's results |
-
-Both are accepted (the request never fails). The controller / stepper tool path (`IToolsRagHandle`) holds the server-wrapped `StrategyRag(tools)` with no `FallbackRag` around it, so the breaker does not change it.
+**Fix.** The embedder; the breaker closes after its recovery window.
 
 ### Reranking has no effect — global (plugin / `withReranker`) reranker
 

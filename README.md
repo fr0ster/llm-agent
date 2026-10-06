@@ -125,7 +125,7 @@ that name into a credential ([how](packages/llm-agent-server/README.md#credentia
 
 | Package | What it is |
 |---|---|
-| [`@mcp-abap-adt/llm-agent`](packages/llm-agent/README.md) | Core interfaces, types, `MissingProviderError`, lightweight helpers (`CircuitBreaker`, `FallbackRag`, LLM call strategies, `ToolCache`, adapters, normalizers). Zero provider dependencies. |
+| [`@mcp-abap-adt/llm-agent`](packages/llm-agent/README.md) | Core interfaces, types, `MissingProviderError`, lightweight helpers (`CircuitBreaker`, LLM call strategies, `ToolCache`, adapters, normalizers). Zero provider dependencies. |
 | [`@mcp-abap-adt/llm-agent-mcp`](packages/llm-agent-mcp/README.md) | `MCPClientWrapper`, `McpClientAdapter`, `createDefaultMcpClient`, and MCP connection strategies. |
 | [`@mcp-abap-adt/llm-agent-rag`](packages/llm-agent-rag/README.md) | RAG/embedder composition — `makeRag` (async), `resolveEmbedder` (sync), prefetch helpers, backend factories. |
 | [`@mcp-abap-adt/llm-agent-libs`](packages/llm-agent-libs/README.md) | Core composition runtime: `SmartAgentBuilder`, `SmartAgent`, pipeline, sessions, history, resilience, observability, plugins, skills. |

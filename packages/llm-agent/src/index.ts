@@ -108,7 +108,6 @@ export {
   getResilienceMetadata,
   RESILIENCE_META,
 } from './resilience/embedder-resilience.js';
-export { FallbackRag } from './resilience/fallback-rag.js';
 export {
   type EmbedderRetryOptions,
   extractStatusCode,

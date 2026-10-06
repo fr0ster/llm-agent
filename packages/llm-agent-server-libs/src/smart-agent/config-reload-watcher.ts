@@ -19,8 +19,8 @@ const MAX_DECORATOR_DEPTH = 16;
 
 /**
  * The store that takes weight updates: `store` itself, or the first one down
- * its `IRagDecorator.inner` chain (a `StrategyRag` / `FallbackRag` wrapper
- * hides the `VectorRag` underneath).
+ * its `IRagDecorator.inner` chain (a `StrategyRag`, or a consumer's own
+ * decorator, hides the `VectorRag` underneath).
  */
 export function findWeightedStore(store: unknown): VectorRag | undefined {
   let cur: unknown = store;

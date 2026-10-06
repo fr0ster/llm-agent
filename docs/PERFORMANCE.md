@@ -546,9 +546,9 @@ CLOSED (normal) ──[failures >= threshold]──► OPEN (fast-fail)
 - **Open:** Immediate failure — no LLM/embedder calls, no latency.
 - **Half-open:** Single probe call — if it succeeds, circuit closes.
 
-### FallbackRag behavior
+### Embedder breaker open
 
-When the embedder circuit opens, RAG stores automatically fall back to `InMemoryRag` (TF-based, no external embedder needed). This ensures tool discovery continues even when the embedding service is down.
+When the embedder breaker is open, an embedding call fails fast with `CIRCUIT_OPEN` and a store's query returns that error; no store answers from an in-memory copy (removed — it hid the outage behind empty or partial results). The pipeline's `rag-query` stage records no results for that store and the request continues. `/health` shows the breaker `open`; fix the embedder.
 
 ## Benchmarking
 

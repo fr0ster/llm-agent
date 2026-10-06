@@ -170,7 +170,7 @@ binary `llm-agent-server` bundles it as a regular dependency.
 
 ### Package responsibilities
 
-- **`@mcp-abap-adt/llm-agent`** — contracts: all `I*` interfaces (including `IDecisionModel`, next to `ILlm` and `IEmbedder`, and the retrieval pair `IRetrievalStrategy` / `IRagDecorator`), shared types/DTOs, and lightweight helpers usable when embedding SmartAgent in your own server. Includes `CircuitBreaker` family, the embedder resilience decorators (`BatchChunkingEmbedder`, `RetryEmbedder`, `composeResilientEmbedder`), `FallbackRag`, LLM call strategies, `ToolCache`/`NoopToolCache`, `ClineClientAdapter`, `AnthropicApiAdapter`/`OpenAiApiAdapter`, external-tools normalization, tool-call-delta utilities, `ILogger`, and RAG implementations (`InMemoryRag`, `VectorRag`, `QdrantRag`, etc.).
+- **`@mcp-abap-adt/llm-agent`** — contracts: all `I*` interfaces (including `IDecisionModel`, next to `ILlm` and `IEmbedder`, and the retrieval pair `IRetrievalStrategy` / `IRagDecorator`), shared types/DTOs, and lightweight helpers usable when embedding SmartAgent in your own server. Includes `CircuitBreaker` family, the embedder resilience decorators (`BatchChunkingEmbedder`, `RetryEmbedder`, `composeResilientEmbedder`), LLM call strategies, `ToolCache`/`NoopToolCache`, `ClineClientAdapter`, `AnthropicApiAdapter`/`OpenAiApiAdapter`, external-tools normalization, tool-call-delta utilities, `ILogger`, and RAG implementations (`InMemoryRag`, `VectorRag`, `QdrantRag`, etc.).
 
 - **`@mcp-abap-adt/llm-agent-mcp`** — `MCPClientWrapper`, `McpClientAdapter`, factory (`createDefaultMcpClient`), and connection strategies (`LazyConnectionStrategy`, `PeriodicConnectionStrategy`, `NoopConnectionStrategy`). Depends on `llm-agent`.
 
@@ -213,7 +213,7 @@ and `wrapDecisionModel` (usage accounting, `component: 'decision'`) live in `llm
 top-k) and `RerankAllRetrieval` (the first `maxCandidates`, reranked, top-k). `StrategyRag(inner, strategy)` is
 an `IRag` decorator: `query` goes through the strategy; `healthCheck`, `getById` and `writer()` delegate to
 `inner`, so catalog vectorization keeps working. A store that wraps another exposes it through the optional
-`IRagDecorator { inner }` capability (implemented by `StrategyRag` and `FallbackRag`);
+`IRagDecorator { inner }` capability (implemented by `StrategyRag`; a consumer's own wrapper should implement it too);
 `hasRetrievalStrategy(rag)` walks `inner`, so an outer decorator never hides the strategy.
 
 **Two application points, one rerank per query.** The server wraps `tools` and `history` where it builds them
@@ -253,10 +253,8 @@ summary describes the answer as well as the question. `rag.retrieval.history` ap
 session and role. It wraps each LLM where it is created — the held main / classifier / helper (startup and
 `PUT /v1/config`, which gets a fresh breaker) and every per-key build of the role resolver — so the controller and the
 stepper go through it too; a consumer's own `CircuitBreakerLlm` takes the key's place and is not wrapped again. One
-embedder breaker wraps the server's retrieval embedder below the document/query role (`resolveRetrievalEmbedder`)
-and guards every agent's stores through `SmartAgentBuilder.withCircuitBreakers({ embedder })` (stores already guarded
-by a `FallbackRag` on that breaker, readable as `FallbackRag.breaker`, are not wrapped again). Worker embedders have no
-breaker. `/health` lists the LLM breakers first, then the embedder breaker, by `index`.
+embedder breaker wraps the server's retrieval embedder below the document/query role (`resolveRetrievalEmbedder`); with it open an embedding fails fast with `CIRCUIT_OPEN` and a store's query returns
+that error — no store is wrapped and none answers from a copy. Worker embedders have no breaker. `/health` lists the LLM breakers first, then the embedder breaker, by `index`.
 
 **Cancellation.** The chat route and the adapter route (`/v1/messages`) create one `AbortController` per request
 (`createRequestAbort`) and pass its `signal` to `process` / `streamProcess`. It aborts when the client disconnects
@@ -999,7 +997,7 @@ packages/
       interfaces/          # all I* interfaces (ILlm, IRag, IMcpClient, IPipeline, etc.)
       types/               # shared types (Message, ToolCall, AgentResponse, errors, etc.)
       rag/                 # RAG implementations (InMemoryRag, VectorRag, QdrantRag, etc.)
-      resilience/          # CircuitBreaker family, FallbackRag (an IRagDecorator)
+      resilience/          # CircuitBreaker family, embedder resilience decorators
       strategies/          # LLM call strategies
       cache/               # ToolCache, NoopToolCache
       adapters/            # ClineClientAdapter, AnthropicApiAdapter, OpenAiApiAdapter

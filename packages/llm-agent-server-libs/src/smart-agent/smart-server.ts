@@ -2953,14 +2953,6 @@ export class SmartServer {
       builder = builder.withToolSelectionStrategy(this._toolSelectionStrategy);
     }
 
-    // Not gated, same reason: the ONE embedder breaker guards the stores of
-    // every agent (§14.2). The LLMs given above are already breaker-guarded.
-    if (this._embedderBreaker) {
-      builder = builder.withCircuitBreakers({
-        embedder: this._embedderBreaker,
-      });
-    }
-
     // Not gated, same reason: the output validator, query expander, skill
     // manager, LLM-call strategy and client adapters reach the per-session
     // agents that serve requests (§14.1). Skills are vectorized into the tools
