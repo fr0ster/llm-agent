@@ -217,11 +217,13 @@ Specifiers resolve against the user's `cwd`. The host merges each module's full
 
 ## Embedding in code (no YAML)
 
-Consumers embedding the runtime build agents directly from components. The old
-coordinator components remain available under `legacy/*` subpath exports:
+Consumers embedding the runtime build agents directly from components. The
+coordinator handlers are `@mcp-abap-adt/llm-agent-libs`' classes; the `legacy/*`
+subpaths of server-libs carry only server-libs' own factories (`LinearFactory`,
+`DagFactory`, the stepper factories):
 
 ```ts
-import { DagCoordinatorHandler } from '@mcp-abap-adt/llm-agent-server-libs/legacy/dag';
+import { DagCoordinatorHandler } from '@mcp-abap-adt/llm-agent-libs';
 import { DagPipelinePlugin }    from '@mcp-abap-adt/llm-agent-server-libs/dag';
 ```
 

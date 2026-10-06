@@ -4,9 +4,9 @@ import { describe, it } from 'node:test';
 import type { CallOptions, Message } from '@mcp-abap-adt/llm-agent';
 import {
   OrchestratorError,
-  type SmartAgent,
   type SmartAgentResponse,
-} from '@mcp-abap-adt/llm-agent-libs';
+} from '@mcp-abap-adt/llm-agent';
+import type { SmartAgent } from '@mcp-abap-adt/llm-agent-libs';
 import { SmartAgentServer } from '../server.js';
 
 // ---------------------------------------------------------------------------

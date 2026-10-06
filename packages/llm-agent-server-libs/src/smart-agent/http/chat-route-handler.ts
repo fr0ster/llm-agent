@@ -6,6 +6,7 @@ import {
   type IRequestLogger,
   type Message,
   normalizeAndValidateExternalTools,
+  type StopReason,
   type StreamToolCall,
   toToolCallDelta,
 } from '@mcp-abap-adt/llm-agent';
@@ -14,7 +15,6 @@ import {
   SessionLogger,
   type SmartAgent,
   type SmartAgentHandle,
-  type StopReason,
 } from '@mcp-abap-adt/llm-agent-libs';
 import type { SmartServerConfig } from '../smart-server.js';
 import { resolveTraceSink } from './debug-trace-sink.js';

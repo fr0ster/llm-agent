@@ -8,8 +8,10 @@
  */
 
 import type { IncomingMessage } from 'node:http';
-import type { ExternalToolValidationCode } from '@mcp-abap-adt/llm-agent';
-import type { StopReason } from '@mcp-abap-adt/llm-agent-libs';
+import type {
+  ExternalToolValidationCode,
+  StopReason,
+} from '@mcp-abap-adt/llm-agent';
 
 export function mapStopReason(r: StopReason): 'stop' | 'length' | 'tool_calls' {
   if (r === 'stop') return 'stop';

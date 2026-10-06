@@ -23,6 +23,7 @@ import type {
   IOutputValidator,
   IPipelineInstance,
   IPipelinePlugin,
+  IPluginLoader,
   IQueryExpander,
   IRagProviderRegistry,
   IRagRegistry,
@@ -64,7 +65,6 @@ import {
   withCircuitBreaker,
 } from '@mcp-abap-adt/llm-agent';
 import type {
-  IPluginLoader,
   SessionAgentParts,
   SessionGraph,
   SessionGraphIdentity,

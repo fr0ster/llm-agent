@@ -3176,12 +3176,8 @@ Only `.js`, `.mjs`, and `.ts` files are loaded. Subdirectories are ignored.
 Replace the filesystem scanner with your own discovery mechanism:
 
 ```ts
-import {
-  type IPluginLoader,
-  type LoadedPlugins,
-  emptyLoadedPlugins,
-  mergePluginExports,
-} from '@mcp-abap-adt/llm-agent-libs';
+import type { IPluginLoader, LoadedPlugins } from '@mcp-abap-adt/llm-agent';
+import { emptyLoadedPlugins, mergePluginExports } from '@mcp-abap-adt/llm-agent-libs';
 
 class NpmPluginLoader implements IPluginLoader {
   constructor(private packages: string[]) {}
