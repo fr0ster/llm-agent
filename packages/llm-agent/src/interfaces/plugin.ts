@@ -5,7 +5,6 @@
  * and extend classifier prompts without modifying core agent code.
  */
 
-import type { IQueryExpander } from '../rag/query-expander.js';
 import type { ILlmApiAdapter } from './api-adapter.js';
 import type { IClientAdapter } from './client-adapter.js';
 import type { IMcpClient } from './mcp-client.js';
@@ -13,6 +12,7 @@ import type {
   IPipelinePlugin,
   PipelinePluginFactory,
 } from './pipeline-plugin.js';
+import type { IQueryExpander } from './query-expander.js';
 import type { EmbedderFactory, IRag } from './rag.js';
 import type { IReranker } from './reranker.js';
 import type { ISkillManager } from './skill.js';
@@ -161,8 +161,12 @@ export interface LoadedPlugins {
   pipelinePluginSources: Map<string, string>;
   /** Source identifiers for successfully loaded plugins. */
   loadedFiles: string[];
-  /** Plugins that failed to load, with error messages. */
+  /** Plugins the loader was told to load that failed, with error messages —
+   *  a required plugin: `SmartAgentBuilder.build()` fails on every entry (D96). */
   errors: Array<{ file: string; error: string }>;
+  /** Discovered files that did not load; reported, not an error (D96). Optional
+   *  so a custom loader written before it existed still compiles; absent = none. */
+  skipped?: Array<{ file: string; error: string }>;
 }
 
 /**

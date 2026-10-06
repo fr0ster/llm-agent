@@ -4,9 +4,9 @@ import { describe, it } from 'node:test';
 import type {
   CallOptions,
   DecisionRequest,
-  IDecisionModel,
   IEmbedder,
   ILlm,
+  IProbabilityDecision,
   IRag,
   Message,
   RagResult,
@@ -214,7 +214,7 @@ describe('session agents read the shared history store (§14.3)', () => {
     ];
     const { makeRag } = spiedStores(hits);
     const seen: DecisionRequest[] = [];
-    const model: IDecisionModel = {
+    const model: IProbabilityDecision = {
       decide: async (req: DecisionRequest, _o?: CallOptions) => {
         seen.push(req);
         const answers: Record<string, { type: 'noul'; probability: number }> =

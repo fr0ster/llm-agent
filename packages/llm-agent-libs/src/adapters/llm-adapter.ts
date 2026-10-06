@@ -20,9 +20,11 @@ import {
   type LlmTool,
   type LlmToolCall,
   type LlmToolCallDelta,
+  PIPELINE_FAILURE_CODES,
   type Result,
 } from '@mcp-abap-adt/llm-agent';
 import { withAbort } from '../utils/with-abort.js';
+import { toolCallFromRaw } from './parse-tool-arguments.js';
 
 export type { AgentCallOptions, BaseAgentLlmBridge };
 
@@ -85,22 +87,26 @@ function parseProviderResponse(
   // OpenAI / DeepSeek format
   if (providerRaw.choices?.[0]?.message?.tool_calls) {
     for (const tc of providerRaw.choices[0].message.tool_calls) {
-      let args: Record<string, unknown> = {};
-      try {
-        args = JSON.parse(tc.function.arguments);
-      } catch {
+      // Spec §10.5.2 N2 (D87): unparseable argument text marks the call
+      // (`argumentsError`); the tool loop refuses to run it.
+      const call = toolCallFromRaw(
+        tc.id,
+        tc.function.name,
+        tc.function.arguments,
+      );
+      if (call.argumentsError !== undefined) {
         onDiagnostic?.({
           stage: 'response',
-          code: 'TOOL_ARGUMENTS_JSON_PARSE_FAILED',
+          code: PIPELINE_FAILURE_CODES.TOOL_ARGUMENTS_JSON_PARSE_FAILED,
           message: 'Failed to parse tool call arguments JSON',
           details: {
             toolId: tc.id,
             toolName: tc.function?.name,
+            error: call.argumentsError,
           },
         });
-        args = {};
       }
-      toolCalls.push({ id: tc.id, name: tc.function.name, arguments: args });
+      toolCalls.push(call);
     }
 
     return {

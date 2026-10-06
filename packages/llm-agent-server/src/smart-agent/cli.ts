@@ -143,32 +143,40 @@ const secretsDir =
 const envPath = args['env-path'] as string | undefined;
 const envScan = args.env === true;
 
-if (envPath) {
-  const result = configDotenv({ path: path.resolve(envPath), override: false });
-  if (!result.parsed) {
-    process.stderr.write(`Warning: could not load env file: ${envPath}\n`);
+// Spec §10.5.9 V8: an env file or secrets-dir the command line names
+// explicitly must be readable — exit 1 with the path and the reason.
+/** Load one explicitly named env file, or exit 1 naming it and why. */
+function loadEnvFileOrExit(file: string): void {
+  // dotenv reports an unreadable file in `error` (it still returns an empty
+  // `parsed`), so the error is what is checked.
+  const result = configDotenv({ path: path.resolve(file), override: false });
+  if (result.error) {
+    process.stderr.write(
+      `Error: cannot read env file ${file}: ${result.error.message}\n`,
+    );
+    process.exit(1);
   }
 }
+
+if (envPath) loadEnvFileOrExit(envPath);
 if (envScan) {
-  let entries: string[] = [];
+  let entries: string[];
   try {
     entries = fs
       .readdirSync(secretsDir)
       .filter((f) => f.endsWith('.env'))
       .sort();
-  } catch {
-    process.stderr.write(`Warning: secrets-dir not readable: ${secretsDir}\n`);
+  } catch (err) {
+    process.stderr.write(
+      `Error: cannot read secrets-dir ${secretsDir}: ${errorText(err)}\n`,
+    );
+    process.exit(1);
   }
-  for (const f of entries) {
-    const full = path.join(secretsDir, f);
-    const result = configDotenv({ path: full, override: false });
-    if (!result.parsed) {
-      process.stderr.write(`Warning: could not load env file: ${full}\n`);
-    }
-  }
+  for (const f of entries) loadEnvFileOrExit(path.join(secretsDir, f));
 }
 if (!envPath && !envScan) {
-  // Implicit .env in cwd — only when neither flag is given. ok if absent.
+  // Implicit .env in cwd — only when neither flag is given. Absent by design
+  // when missing (spec §10.5.9 V8): its result is not an error.
   configDotenv({ path: path.resolve('.env'), override: false });
 }
 
@@ -220,7 +228,7 @@ const yaml = loadYamlConfig(path.resolve(configPath));
 // Merge: CLI > YAML > env vars > defaults
 // ---------------------------------------------------------------------------
 
-let baseConfig: Omit<SmartServerConfig, 'log'>;
+let baseConfig: ReturnType<typeof resolveSmartServerConfig>;
 try {
   baseConfig = resolveSmartServerConfig(
     args as ResolveConfigArgs,
@@ -237,15 +245,11 @@ try {
 // Logger: file or stdout
 // ---------------------------------------------------------------------------
 
-// biome-ignore lint/suspicious/noExplicitAny: nested yaml access
-const yamlAny = yaml as any;
+// The log file was validated with the start config (spec D83 (14)): a
+// non-empty string from --log-file, `log` or LOG_FILE, or none written.
+const { logFile: configuredLogFile, ...serverConfig } = baseConfig;
 const logToStdout = args['log-stdout'] === true;
-const logFile = logToStdout
-  ? null
-  : (args['log-file'] ??
-    yamlAny?.log ??
-    process.env.LOG_FILE ??
-    'smart-server.log');
+const logFile = logToStdout ? null : (configuredLogFile ?? 'smart-server.log');
 
 let logStream: fs.WriteStream | null = null;
 if (logFile) {
@@ -254,10 +258,10 @@ if (logFile) {
   // asynchronously, uncaught — and with sap-ai-sdk loaded, that SDK's handler
   // printed it to stdout. Create the directory, and fail loudly on stderr if
   // the log still cannot be written.
-  fs.mkdirSync(path.dirname(path.resolve(logFile as string)), {
+  fs.mkdirSync(path.dirname(path.resolve(logFile)), {
     recursive: true,
   });
-  logStream = fs.createWriteStream(logFile as string, { flags: 'a' });
+  logStream = fs.createWriteStream(logFile, { flags: 'a' });
   logStream.on('error', (err) => {
     process.stderr.write(`Error: log file ${logFile}: ${err.message}\n`);
     process.exit(1);
@@ -265,7 +269,7 @@ if (logFile) {
 }
 
 const config: SmartServerConfig = {
-  ...baseConfig,
+  ...serverConfig,
   log: (event) => {
     const line = `${JSON.stringify({ ts: new Date().toISOString(), ...event })}\n`;
     if (logStream) {

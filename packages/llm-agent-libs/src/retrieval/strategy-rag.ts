@@ -41,6 +41,22 @@ export class StrategyRag implements IRag, IRagDecorator {
   }
 }
 
+/**
+ * The strategy `rag` itself applies, when `rag` is a `StrategyRag` — detected by
+ * its `Symbol.for` brand, not `instanceof`, so a StrategyRag from another copy
+ * of this package is found too. Internal (the agent's health probe, D97); not
+ * exported from the package root.
+ */
+export function strategyOf(rag: IRag): IRetrievalStrategy | undefined {
+  if (!(rag as { [BRAND]?: boolean })[BRAND]) return undefined;
+  const strategy = (rag as { strategy?: unknown }).strategy;
+  return typeof strategy === 'object' &&
+    strategy !== null &&
+    typeof (strategy as IRetrievalStrategy).retrieve === 'function'
+    ? (strategy as IRetrievalStrategy)
+    : undefined;
+}
+
 /** True when `rag`, or any store it decorates, carries a retrieval strategy. */
 export function hasRetrievalStrategy(rag: IRag): boolean {
   let cur: IRag | undefined = rag;
@@ -72,8 +88,8 @@ function decorates(rag: IRag, target: IRag): boolean {
 /**
  * The store an agent queries for one of its built-in slots (`tools`, `history`).
  * The agent's OWN store always has priority: the projected entry is used only
- * when it carries a retrieval strategy and decorates `own` (so layers such as
- * the circuit-breaker fallback are kept); otherwise `ownWithStrategy` — `own`
+ * when it carries a retrieval strategy and decorates `own` (so a decorator the
+ * projection carries is kept); otherwise `ownWithStrategy` — `own`
  * with the explicit strategy applied once by the caller, or `own` itself. A
  * projected entry over another agent's store (a worker sharing its parent's
  * registry) never wins. Internal; not re-exported.

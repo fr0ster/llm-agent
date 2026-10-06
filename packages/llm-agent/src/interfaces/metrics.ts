@@ -64,4 +64,6 @@ export interface MetricsSnapshot {
   llmCallLatency: HistogramSnapshot;
   circuitBreakerTransition: CounterSnapshot;
   toolCacheHitCount: CounterSnapshot;
+  /** Present when the metrics implement IRetrievalMetrics. Attributes: store, strategy, outcome. */
+  retrievalOutcome?: CounterSnapshot;
 }

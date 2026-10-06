@@ -8,6 +8,7 @@ import {
   type LlmStreamChunk,
   type Result,
 } from '@mcp-abap-adt/llm-agent';
+import type { ICounter } from '../interfaces/metrics.js';
 import { FallbackLlmCallStrategy } from './fallback-llm-call-strategy.js';
 
 type Mode = 'error-chunk' | 'throw';
@@ -80,3 +81,76 @@ for (const mode of ['error-chunk', 'throw'] as const) {
     assert.equal(next.counts.chat, 1);
   });
 }
+
+// Spec §10.5.12 U1: each fallback is counted — a log event with a running
+// count (always) and an optional injected counter; a cancellation never.
+
+function recorders() {
+  const warnings: string[] = [];
+  const adds: Array<{ value?: number; attributes?: Record<string, string> }> =
+    [];
+  const logger = {
+    log(event: { message: string }) {
+      warnings.push(event.message);
+    },
+  };
+  const counter: ICounter = {
+    add(value, attributes) {
+      adds.push({ value, attributes });
+    },
+  };
+  return { warnings, adds, logger, counter };
+}
+
+test('U1: a streaming error chunk is logged as llm_streaming_fallback and counted', async () => {
+  const r = recorders();
+  const s = new FallbackLlmCallStrategy(r.logger, {
+    fallbackCount: r.counter,
+  });
+  const first = llm('error-chunk');
+  await drain(s, first.impl);
+  assert.equal(first.counts.chat, 1, 'the non-streaming retry still runs');
+  assert.equal(r.warnings.length, 1);
+  assert.ok(
+    r.warnings[0].startsWith('llm_streaming_fallback cause=error fallbacks=1'),
+    r.warnings[0],
+  );
+  assert.deepEqual(r.adds, [{ value: 1, attributes: { cause: 'error' } }]);
+});
+
+test('U1: a throwing stream is cause=throw', async () => {
+  const r = recorders();
+  const s = new FallbackLlmCallStrategy(r.logger, {
+    fallbackCount: r.counter,
+  });
+  await drain(s, llm('throw').impl);
+  assert.equal(r.warnings.length, 1);
+  assert.ok(
+    r.warnings[0].startsWith('llm_streaming_fallback cause=throw fallbacks=1'),
+    r.warnings[0],
+  );
+  assert.deepEqual(r.adds, [{ value: 1, attributes: { cause: 'throw' } }]);
+});
+
+for (const mode of ['error-chunk', 'throw'] as const) {
+  test(`U1 ${mode}: a caller's cancellation is neither logged nor counted`, async () => {
+    const r = recorders();
+    const s = new FallbackLlmCallStrategy(r.logger, {
+      fallbackCount: r.counter,
+    });
+    const ac = new AbortController();
+    await drain(s, llm(mode, ac).impl, { signal: ac.signal });
+    assert.equal(r.warnings.length, 0);
+    assert.equal(r.adds.length, 0);
+  });
+}
+
+test('U1: without the second argument the strategy behaves as before', async () => {
+  const r = recorders();
+  const s = new FallbackLlmCallStrategy(r.logger);
+  const first = llm('error-chunk');
+  const out = await drain(s, first.impl);
+  assert.equal(first.counts.chat, 1);
+  assert.ok(out.some((c) => c.ok && c.value.reset));
+  assert.equal(r.warnings.length, 1);
+});

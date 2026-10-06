@@ -26,23 +26,23 @@ function makeRc(status: string, ready: boolean) {
 }
 
 describe('handleHealthRoute', () => {
-  it('status:unhealthy + ready:true → 200 (soft failure, pod still serves)', async () => {
+  it('status:unhealthy + ready:true → 503 (a component not working, D72)', async () => {
     const { rc, getCode, getBody } = makeRc('unhealthy', true);
     await handleHealthRoute(rc as never);
     assert.equal(
       getCode(),
-      200,
-      'expected 200 when ready=true even if status=unhealthy',
+      503,
+      'expected 503 when status=unhealthy even if ready=true',
     );
     const body = JSON.parse(getBody());
     assert.equal(body.status, 'unhealthy');
     assert.equal(body.ready, true);
   });
 
-  it('status:degraded + ready:true → 200', async () => {
+  it('status:degraded + ready:true → 503 (D72)', async () => {
     const { rc, getCode } = makeRc('degraded', true);
     await handleHealthRoute(rc as never);
-    assert.equal(getCode(), 200);
+    assert.equal(getCode(), 503);
   });
 
   it('status:healthy + ready:true → 200', async () => {

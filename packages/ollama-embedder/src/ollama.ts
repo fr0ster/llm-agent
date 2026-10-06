@@ -1,11 +1,5 @@
 import type { IEmbedderBatch, IEmbedResult } from '@mcp-abap-adt/llm-agent';
-import {
-  type CallOptions,
-  RagError,
-  symmetricEmbedder,
-  VectorRag,
-  type VectorRagConfig,
-} from '@mcp-abap-adt/llm-agent';
+import { type CallOptions, RagError } from '@mcp-abap-adt/llm-agent';
 
 export interface OllamaEmbedderConfig {
   /** Default: 'http://localhost:11434' */
@@ -116,15 +110,5 @@ export class OllamaEmbedder implements IEmbedderBatch {
       lastError ||
       new RagError('Ollama batch embed failed after retries', 'EMBED_ERROR')
     );
-  }
-}
-
-/**
- * OllamaRag — convenience adapter that combines OllamaEmbedder with VectorRag.
- */
-export class OllamaRag extends VectorRag {
-  constructor(config: OllamaEmbedderConfig & VectorRagConfig) {
-    // An Ollama embedding model is symmetric: one embedder for both jobs.
-    super(symmetricEmbedder(new OllamaEmbedder(config)), config);
   }
 }

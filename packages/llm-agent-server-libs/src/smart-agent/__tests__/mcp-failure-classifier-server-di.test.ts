@@ -54,17 +54,22 @@ test('(c) SmartServer: custom classifier is used by callMcp bridge (Route B)', a
     },
   };
 
-  // Inject a failing MCP client so buildMcpBridge invokes the classifier.
+  // Inject an MCP client whose callTool fails so buildMcpBridge invokes the
+  // classifier (a failed listTools is always an error — spec §10.5.3 M10 —
+  // and never reaches the classifier).
   const { McpError } = await import('@mcp-abap-adt/llm-agent');
   const failingClient = {
     async listTools() {
       return {
-        ok: false as const,
-        error: new McpError('Not connected', 'MCP_NOT_CONNECTED'),
+        ok: true as const,
+        value: [{ name: 'GetTable', description: '', inputSchema: {} }],
       };
     },
     async callTool() {
-      return { ok: true as const, value: { content: 'x', isError: false } };
+      return {
+        ok: false as const,
+        error: new McpError('Not connected', 'MCP_NOT_CONNECTED'),
+      };
     },
   };
 

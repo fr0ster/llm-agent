@@ -49,6 +49,8 @@ export interface IngestHostDeps {
   embeddingSpaceId: string;
   retrievalSchemaVersion: number;
   dimension?: number;
+  /** Default `true`; `false` carries a failed source's prior data forward,
+   *  reported in `carried` (spec §10.5.12 U2, §10.5.8 S-9). */
   strict?: boolean;
   /** Default 3. */
   catalogCasMaxAttempts?: number;
@@ -174,12 +176,21 @@ function makeRecallOnlyHost(deps: RecallHostDeps): ISkillPluginHost {
 
 function makeIngestHost(deps: IngestHostDeps): ISkillPluginHost {
   const maxAttempts = deps.catalogCasMaxAttempts ?? 3;
+  const strict = deps.strict ?? true;
   const servingMode = deps.servingMode ?? true;
   const now = deps.now ?? Date.now;
 
   // Internal host state (closure vars, not deps).
   let _snapshot: SkillGroupInfo[] = [];
   let _registeredSet: Set<string> | undefined;
+  // Groups the last committed load omitted with no catalog entry (spec U2,
+  // S-8): they keep their place in the served set — serving nothing old — so a
+  // later load knows their owners and re-commits them without tripping the
+  // reload guard.
+  let _omittedLast = new Map<
+    string,
+    { info: SkillGroupInfo; sources: readonly string[] }
+  >();
   let _pendingReclaim: {
     generations: { group: string; generation: string }[];
     tombstonedGroups: string[];
@@ -239,11 +250,13 @@ function makeIngestHost(deps: IngestHostDeps): ISkillPluginHost {
 
     const desired = new Map<string, DesiredCollection>();
     const failedSourceIds: string[] = [];
+    const failureReason = new Map<string, string>();
     for (let i = 0; i < deps.sources.length; i++) {
       const { id } = deps.sources[i];
       const r = results[i];
       if (r.status === 'rejected') {
         failedSourceIds.push(id);
+        failureReason.set(id, String(r.reason));
         continue;
       }
       const value = r.value as SkillIngestResult;
@@ -262,16 +275,57 @@ function makeIngestHost(deps: IngestHostDeps): ISkillPluginHost {
       }
     }
 
-    // strict:true → any source failure aborts before any commit.
-    if (deps.strict && failedSourceIds.length) {
-      throw new Error(
-        `strict ingest: source(s) failed: ${failedSourceIds.join(', ')}`,
-      );
+    // strict:true (the default, U2) → a failed source fails ITS GROUP(S): each
+    // group it owns (from the prior catalog, or omitted by this host's last load)
+    // is omitted whole with the reason, serving nothing old; the other groups
+    // still commit. A failed source that owns no known group (a first load) has
+    // no group to omit → the load throws, nothing committed.
+    // strict:false → a failed source's catalog groups are carried forward
+    // (below); a group it owns that the last load omitted has no catalog entry
+    // to carry, so it is omitted again with the reason (it keeps its place).
+    const failedGroups = new Map<string, string>(); // group -> reason
+    if (failedSourceIds.length) {
+      const known = new Map<
+        string,
+        { info: SkillGroupInfo; sources: readonly string[] }
+      >(_omittedLast);
+      for (const e of prior.entries) {
+        if (e.tombstone) continue;
+        if (strict) {
+          known.set(e.collection.group, {
+            info: e.collection,
+            sources: e.sources,
+          });
+        } else {
+          known.delete(e.collection.group); // carried forward instead
+        }
+      }
+      for (const id of failedSourceIds) {
+        const reason = `source '${id}' failed: ${failureReason.get(id) as string}`;
+        const owned = [...known].filter(([, k]) => k.sources.includes(id));
+        if (strict && !owned.length) {
+          throw new Error(
+            `strict ingest: ${reason} — it owns no known group, nothing committed`,
+          );
+        }
+        for (const [group, k] of owned) {
+          const prev = failedGroups.get(group);
+          failedGroups.set(group, prev ? `${prev}; ${reason}` : reason);
+          const dc = desired.get(group);
+          if (dc) for (const src of k.sources) dc.sources.add(src);
+          else
+            desired.set(group, {
+              info: k.info,
+              sources: new Set(k.sources),
+              records: [],
+            });
+        }
+      }
     }
 
     // Carry-forward (strict:false): for each prior entry partly owned by a failed source,
     // re-add its collection to desired and mark the failed sourceIds for carryForward.
-    const failedSet = new Set(failedSourceIds);
+    const failedSet = new Set(strict ? [] : failedSourceIds);
     // group -> sourceIds (owned by a failed source) to carry forward
     const carryForwardByGroup = new Map<string, string[]>();
     for (const e of prior.entries) {
@@ -300,11 +354,13 @@ function makeIngestHost(deps: IngestHostDeps): ISkillPluginHost {
 
     // SERVING-HOST guard (re-checked on each attempt) — only on a reload.
     if (servingMode && _registeredSet) {
-      const activePriorSet = new Set(
-        prior.entries
+      // A group this host omitted last time keeps its place (U2).
+      const activePriorSet = new Set([
+        ...prior.entries
           .filter((e) => !e.tombstone)
           .map((e) => e.collection.group),
-      );
+        ..._omittedLast.keys(),
+      ]);
       if (
         !setEq(activePriorSet, _registeredSet) ||
         !setEq(desiredSet, _registeredSet)
@@ -323,6 +379,11 @@ function makeIngestHost(deps: IngestHostDeps): ISkillPluginHost {
       const entries: CatalogEntry[] = [];
       for (const group of desiredSet) {
         const dc = desired.get(group) as DesiredCollection;
+        const sourceFailure = failedGroups.get(group);
+        if (sourceFailure !== undefined) {
+          omitted.push({ group, reason: sourceFailure });
+          continue;
+        }
         const store = deps.storeProvider.forGroup(group);
         try {
           const { generation } = await store.beginGeneration();
@@ -337,14 +398,14 @@ function makeIngestHost(deps: IngestHostDeps): ISkillPluginHost {
             manifest,
           });
         } catch (buildErr) {
+          // Spec §10.5.8 S-8: a failed build is always reported (`omitted`,
+          // `ok: false`). Whether the prior generation keeps serving is the
+          // consumer's `strict` choice: only `strict: false` keeps its pointer.
+          omitted.push({ group, reason: String(buildErr) });
           const priorGen = prior.entries.find(
             (e) => e.collection.group === group && !e.tombstone,
           );
-          if (priorGen) {
-            entries.push({ ...priorGen }); // keep the prior pointer
-          } else {
-            omitted.push({ group, reason: String(buildErr) }); // OMIT, no prior
-          }
+          if (priorGen && !strict) entries.push({ ...priorGen });
         }
       }
 
@@ -367,10 +428,24 @@ function makeIngestHost(deps: IngestHostDeps): ISkillPluginHost {
         entries.filter((e) => !e.tombstone).map((e) => e.generation),
       );
 
+      // Omitted groups without a catalog entry keep their place (U2, S-8).
+      const servedGroups = new Set(
+        snap.entries.filter((e) => !e.tombstone).map((e) => e.collection.group),
+      );
+      _omittedLast = new Map(
+        omitted
+          .filter((o) => !servedGroups.has(o.group))
+          .map((o) => {
+            const dc = desired.get(o.group) as DesiredCollection;
+            return [o.group, { info: dc.info, sources: [...dc.sources] }];
+          }),
+      );
+
       // Cache the fixed groups() snapshot; register the set on the first load.
-      _snapshot = snap.entries
-        .filter((e) => !e.tombstone)
-        .map((e) => e.collection);
+      _snapshot = [
+        ...snap.entries.filter((e) => !e.tombstone).map((e) => e.collection),
+        ...[..._omittedLast.values()].map((o) => o.info),
+      ];
       _registeredSet ??= new Set(_snapshot.map((c) => c.group));
 
       // SCHEDULE (not now — deferred reclaim) the superseded prior generations
@@ -396,6 +471,16 @@ function makeIngestHost(deps: IngestHostDeps): ISkillPluginHost {
           .filter((e) => e.tombstone)
           .map((e) => e.collection.group),
         ok: omitted.length === 0,
+        // Spec §10.5.8 S-9: under `strict: false` every failed source is
+        // reported with its reason (its prior data, if any, carried forward).
+        ...(!strict && failedSourceIds.length > 0
+          ? {
+              carried: failedSourceIds.map((sourceId) => ({
+                sourceId,
+                reason: failureReason.get(sourceId) as string,
+              })),
+            }
+          : {}),
       };
     } finally {
       // ORPHAN CLEANUP — keyed on the COMMITTED catalog, not on !committed.

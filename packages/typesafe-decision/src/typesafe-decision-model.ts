@@ -6,7 +6,7 @@ import type {
   DecisionQuestion,
   DecisionRequest,
   DecisionResult,
-  IDecisionModel,
+  IProbabilityDecision,
   Result,
 } from '@mcp-abap-adt/llm-agent';
 import {
@@ -53,13 +53,13 @@ function toSdkQuestions(
 }
 
 /**
- * `IDecisionModel` over TypeSafe AI's Jev. A fresh `TypeSafeClient` per call:
+ * `IProbabilityDecision` over TypeSafe AI's Jev. A fresh `TypeSafeClient` per call:
  * the SDK freezes the key at construction and appends its own Authorization
  * header after per-call headers, so a per-call client is the only way to honour
  * a rotating credential. Every option is explicit, so `TYPESAFE_*` environment
  * variables are never consulted.
  */
-export class TypeSafeDecisionModel implements IDecisionModel {
+export class TypeSafeDecisionModel implements IProbabilityDecision {
   readonly model: string;
   private readonly cfg: TypeSafeDecisionConfig;
 
@@ -71,24 +71,52 @@ export class TypeSafeDecisionModel implements IDecisionModel {
     this.model = cfg.model ?? TYPESAFE_DEFAULT_MODEL;
   }
 
+  /** A fresh client per call, so a rotating credential rotates. */
+  private async client(): Promise<TypeSafeClient> {
+    return new TypeSafeClient({
+      apiKey: await this.cfg.credential.secret(),
+      baseURL: this.cfg.baseUrl ?? TYPESAFE_DEFAULT_BASE_URL,
+      defaultModel: this.model,
+      logLevel: 'off',
+      ...(this.cfg.timeoutMs !== undefined
+        ? { timeout: this.cfg.timeoutMs }
+        : {}),
+      ...(this.cfg.maxRetries !== undefined
+        ? { retry: { maxRetries: this.cfg.maxRetries } }
+        : {}),
+      ...(this.cfg.fetch !== undefined ? { fetch: this.cfg.fetch } : {}),
+    });
+  }
+
+  /**
+   * The provider's cheapest real check (spec §17.43 D97): the SDK's documented
+   * `models.list()` — `GET /v1/models`, "the models available to the account" —
+   * proves the API is reachable and the key accepted, with no inference. `true`
+   * when the list is fetched (the configured name may be an alias such as
+   * `jev-latest`, which the list need not carry). A failure → `ok: false` with
+   * the mapped code, never a throw.
+   */
+  async healthCheck(
+    options?: CallOptions,
+  ): Promise<Result<boolean, DecisionError>> {
+    try {
+      const client = await this.client();
+      const callOptions: RequestOptions = options?.signal
+        ? { signal: options.signal }
+        : {};
+      await client.models.list(callOptions);
+      return { ok: true, value: true };
+    } catch (err) {
+      return { ok: false, error: mapError(err) };
+    }
+  }
+
   async decide(
     request: DecisionRequest,
     options?: CallOptions,
   ): Promise<Result<DecisionResult, DecisionError>> {
     try {
-      const client = new TypeSafeClient({
-        apiKey: await this.cfg.credential.secret(),
-        baseURL: this.cfg.baseUrl ?? TYPESAFE_DEFAULT_BASE_URL,
-        defaultModel: this.model,
-        logLevel: 'off',
-        ...(this.cfg.timeoutMs !== undefined
-          ? { timeout: this.cfg.timeoutMs }
-          : {}),
-        ...(this.cfg.maxRetries !== undefined
-          ? { retry: { maxRetries: this.cfg.maxRetries } }
-          : {}),
-        ...(this.cfg.fetch !== undefined ? { fetch: this.cfg.fetch } : {}),
-      });
+      const client = await this.client();
       const callOptions: RequestOptions = options?.signal
         ? { signal: options.signal }
         : {};

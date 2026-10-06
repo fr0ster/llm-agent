@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { CallOptions, KnowledgeEntry } from '@mcp-abap-adt/llm-agent';
+import { RagError } from '@mcp-abap-adt/llm-agent';
 import {
   InMemoryKnowledgeBackend,
   KnowledgeRag,
@@ -92,7 +93,7 @@ test('ToolsRag delegates query and lookup', async () => {
   assert.equal(notFound, undefined);
 });
 
-test('#259: InMemoryKnowledgeBackend.put() survives a semantic upsert failure — entry retained (durable), unindexed, does not reject', async () => {
+test('R9 (spec §10.5.4): InMemoryKnowledgeBackend.put() rejects UPSERT_ERROR on a semantic upsert failure — the entry is still retained and listed', async () => {
   const semantic = {
     async upsert(_sid: string, _e: KnowledgeEntry, _options?: CallOptions) {
       throw new Error('embed rejected');
@@ -105,13 +106,23 @@ test('#259: InMemoryKnowledgeBackend.put() survives a semantic upsert failure �
   const backend = new InMemoryKnowledgeBackend(semantic);
   const kr = new KnowledgeRag(backend, 'session-1');
 
-  // put() must NOT reject even though the semantic upsert throws.
-  await assert.doesNotReject(() => kr.write({ content: 'A', metadata: META }));
+  // The caller sees that the write is not searchable.
+  await assert.rejects(
+    () => kr.write({ content: 'A', metadata: META }),
+    (e: unknown) => {
+      assert.ok(e instanceof RagError);
+      assert.equal(e.code, 'UPSERT_ERROR');
+      assert.match(e.message, /written but not indexed: .*embed rejected/);
+      return true;
+    },
+  );
 
-  // The entry is still durably retained even though it could not be indexed.
+  // The entry was written: durably retained and listed.
   const durable = await backend.scan('session-1');
   assert.equal(durable.length, 1);
   assert.equal(durable[0].content, 'A');
+  const listed = await kr.list({ turnId: 'u1' });
+  assert.equal(listed.length, 1);
 });
 
 test('#Phase2: hasArtifact + listArtifacts track fetched identities (dedup)', async () => {

@@ -1,5 +1,16 @@
 import { parseControllerSubagents } from '../pipelines/controller-subagents.js';
 import type { FinalizerYaml } from '../pipelines/coordinator-resolvers.js';
+import {
+  CAST_NUMBER_RULES as C,
+  CONTROLLER_BUDGET_RULES,
+  DAG_ERROR_STRATEGIES,
+  FAIL_POLICIES,
+  FINALIZER_TYPES,
+  FieldCheck,
+  present,
+  START_NUMBER_RULES,
+  TARGET_STATE_STRATEGIES,
+} from './config-fields.js';
 import type { ControllerConfig } from './controller/types.js';
 import {
   type NormalizedLlmMap,
@@ -20,7 +31,14 @@ import {
 type Section = Record<string, unknown>;
 
 function asSection(raw: unknown, pipeline: string): Section {
-  if (raw === undefined || raw === null) return {};
+  if (raw === undefined) return {};
+  if (raw === null) {
+    // Spec D83 (13): a section written with no value is that, never its
+    // default — the check names it and `done` throws.
+    const check = new FieldCheck();
+    check.refuse('pipeline.config', 'has no value', raw);
+    return check.done({});
+  }
   if (typeof raw !== 'object' || Array.isArray(raw)) {
     throw new Error(
       `pipeline '${pipeline}': 'pipeline.config' must be an object, got ${Array.isArray(raw) ? 'an array' : typeof raw}`,
@@ -69,15 +87,34 @@ export function parseLinearSettings(raw: unknown): LinearPipelineSettings {
       `Unknown coordinator.dispatch strategy: '${String(cfg.dispatch)}'. Allowed: ${DISPATCH.join(', ')}.`,
     );
   }
-  return {
+  // Spec D83 (9): every checked field first; done is the only way out.
+  const check = new FieldCheck();
+  const maxSteps = check.numberOr(
+    'maxSteps',
+    START_NUMBER_RULES.count,
+    cfg.maxSteps,
+    10,
+  );
+  const maxRetriesPerStep = check.numberOr(
+    'maxRetriesPerStep',
+    C.countOrNone,
+    cfg.maxRetriesPerStep,
+    1,
+  );
+  const failPolicy =
+    cfg.failPolicy !== undefined
+      ? (check.oneOf('failPolicy', FAIL_POLICIES, cfg.failPolicy) ?? 'abort')
+      : 'abort';
+  const result: LinearPipelineSettings = {
     planning: planning as LinearPipelineSettings['planning'],
     ...(cfg.dispatch !== undefined
       ? { dispatch: cfg.dispatch as LinearPipelineSettings['dispatch'] }
       : {}),
-    maxSteps: (cfg.maxSteps as number | undefined) ?? 10,
-    maxRetriesPerStep: (cfg.maxRetriesPerStep as number | undefined) ?? 1,
-    failPolicy: (cfg.failPolicy as 'abort' | 'continue' | undefined) ?? 'abort',
+    maxSteps,
+    maxRetriesPerStep,
+    failPolicy,
   };
+  return check.done(result);
 }
 
 // ---- stepper ------------------------------------------------------------
@@ -108,18 +145,25 @@ export function parseDagSettings(
   if (cfg.planner === undefined) {
     throw new Error("pipeline 'dag' requires a 'planner' in its config");
   }
-  const block = (v: unknown): Section =>
-    typeof v === 'object' && v !== null ? (v as Section) : {};
+  // Spec D83 (9): every checked field first; done is the only way out.
+  const check = new FieldCheck();
+  // `planner`, `reviewer` — open mappings: the examples carry a `type` the
+  // parser does not read.
+  const block = (field: string, v: unknown): Section =>
+    present(v) ? (check.section(field, v) ?? {}) : {};
 
   const plannerLlm = optionalKey(
-    block(cfg.planner).plannerLlm,
+    block('planner', cfg.planner).plannerLlm,
     "pipeline 'dag': 'planner.plannerLlm'",
   );
 
   let reviewer: DagPipelineSettings['reviewer'];
   if (cfg.reviewer !== undefined) {
     const name = resolveReviewerLlmName(
-      block(cfg.reviewer) as { reviewerLlm?: string; plannerLlm?: string },
+      block('reviewer', cfg.reviewer) as {
+        reviewerLlm?: string;
+        plannerLlm?: string;
+      },
       warn,
     );
     const reviewerLlm = optionalKey(
@@ -136,38 +180,83 @@ export function parseDagSettings(
     );
   }
 
-  const es = block(cfg.errorStrategy);
-  const errorStrategy: DagPipelineSettings['errorStrategy'] =
-    es.type === 'replan'
-      ? {
-          type: 'replan',
-          ...(typeof es.maxReplans === 'number'
-            ? { maxReplans: es.maxReplans }
-            : {}),
-        }
-      : es.type === 'abort'
-        ? { type: 'abort' }
+  let errorStrategy: DagPipelineSettings['errorStrategy'];
+  if (present(cfg.errorStrategy)) {
+    const es = check.section('errorStrategy', cfg.errorStrategy) ?? {};
+    const type = check.oneOf(
+      'errorStrategy.type',
+      DAG_ERROR_STRATEGIES,
+      es.type,
+    );
+    const maxReplans =
+      es.maxReplans === undefined
+        ? undefined
+        : type === 'replan'
+          ? check.number(
+              'errorStrategy.maxReplans',
+              C.countOrNone,
+              es.maxReplans,
+            )
+          : check.refuse(
+              'errorStrategy.maxReplans',
+              'only applies to type replan',
+              es.maxReplans,
+            );
+    errorStrategy =
+      type === 'replan'
+        ? {
+            type: 'replan',
+            ...(maxReplans !== undefined ? { maxReplans } : {}),
+          }
+        : type === 'abort'
+          ? { type: 'abort' }
+          : undefined;
+  }
+
+  let finalizer: FinalizerYaml | undefined;
+  if (present(cfg.finalizer)) {
+    const f = check.section('finalizer', cfg.finalizer) ?? {};
+    const type =
+      f.type !== undefined
+        ? check.oneOf('finalizer.type', FINALIZER_TYPES, f.type)
         : undefined;
+    const finalizerLlm = optionalKey(
+      f.finalizerLlm,
+      "pipeline 'dag': 'finalizer.finalizerLlm'",
+    );
+    const systemPrompt =
+      f.systemPrompt !== undefined
+        ? check.text('finalizer.systemPrompt', f.systemPrompt)
+        : undefined;
+    finalizer = {
+      ...(type !== undefined ? { type } : {}),
+      ...(finalizerLlm !== undefined ? { finalizerLlm } : {}),
+      ...(systemPrompt !== undefined ? { systemPrompt } : {}),
+    };
+  }
+  const stateOracle =
+    cfg.stateOracle !== undefined
+      ? check.text('stateOracle', cfg.stateOracle)
+      : undefined;
+  const maxRoundTrips =
+    cfg.maxRoundTrips !== undefined
+      ? check.number(
+          'maxRoundTrips',
+          START_NUMBER_RULES.count,
+          cfg.maxRoundTrips,
+        )
+      : undefined;
 
-  const finalizer = cfg.finalizer as FinalizerYaml | undefined;
-  optionalKey(
-    finalizer?.finalizerLlm,
-    "pipeline 'dag': 'finalizer.finalizerLlm'",
-  );
-
-  return {
+  const result: DagPipelineSettings = {
     ...(plannerLlm !== undefined ? { plannerLlm } : {}),
     ...(reviewer !== undefined ? { reviewer } : {}),
     ...(finalizer !== undefined ? { finalizer } : {}),
-    ...(typeof cfg.stateOracle === 'string'
-      ? { stateOracle: cfg.stateOracle }
-      : {}),
+    ...(stateOracle !== undefined ? { stateOracle } : {}),
     activation: activation as DagPipelineSettings['activation'],
     ...(errorStrategy !== undefined ? { errorStrategy } : {}),
-    ...(typeof cfg.maxRoundTrips === 'number'
-      ? { maxRoundTrips: cfg.maxRoundTrips }
-      : {}),
+    ...(maxRoundTrips !== undefined ? { maxRoundTrips } : {}),
   };
+  return check.done(result);
 }
 
 /** The `llm:` keys a dag section NAMED — each must exist, checked at startup. */
@@ -219,10 +308,6 @@ export function parseControllerSettings(
 ): ControllerConfig {
   const cfg = asSection(raw, 'controller');
 
-  const targetStateRaw = (cfg.targetState ?? {}) as Record<string, unknown>;
-  const sessionMemoryRaw = (cfg.sessionMemory ?? {}) as Record<string, unknown>;
-  const budgetsRaw = (cfg.budgets ?? {}) as Record<string, unknown>;
-
   if ('planner' in cfg) {
     throw new Error(
       'controller: `planner:` removed — capability is preset-encoded. Select ' +
@@ -233,31 +318,70 @@ export function parseControllerSettings(
     );
   }
 
-  const requireInt = (
-    key: 'maxWaitMs' | 'maxTotalWaitMs',
-    min: number,
-  ): void => {
-    const v = budgetsRaw[key];
-    if (v === undefined) return;
-    if (typeof v !== 'number' || !Number.isInteger(v) || v < min) {
-      throw new Error(
-        `controller: 'budgets.${key}' must be a ${min > 0 ? 'positive' : 'non-negative'} finite integer (ms), got ${JSON.stringify(v)}`,
+  // Spec D83 (9): every checked field first; done is the only way out. The
+  // three blocks are closed mappings; their values are validated, then spread
+  // over the defaults (never the raw ones).
+  const check = new FieldCheck();
+  const closed = (field: string, v: unknown, keys: readonly string[]) =>
+    present(v) ? (check.closed(field, v, keys) ?? {}) : {};
+  const targetStateRaw = closed('targetState', cfg.targetState, [
+    'strategy',
+    'distanceThreshold',
+  ]);
+  const sessionMemoryRaw = closed('sessionMemory', cfg.sessionMemory, [
+    'collection',
+  ]);
+  const budgetsRaw = closed(
+    'budgets',
+    cfg.budgets,
+    Object.keys(CONTROLLER_BUDGET_RULES),
+  );
+  const targetState: Record<string, unknown> = {};
+  if (targetStateRaw.strategy !== undefined) {
+    targetState.strategy = check.oneOf(
+      'targetState.strategy',
+      TARGET_STATE_STRATEGIES,
+      targetStateRaw.strategy,
+    );
+  }
+  if (targetStateRaw.distanceThreshold !== undefined) {
+    targetState.distanceThreshold = check.number(
+      'targetState.distanceThreshold',
+      C.cosineDistance,
+      targetStateRaw.distanceThreshold,
+    );
+  }
+  const sessionMemory: Record<string, unknown> = {};
+  if (sessionMemoryRaw.collection !== undefined) {
+    sessionMemory.collection = check.text(
+      'sessionMemory.collection',
+      sessionMemoryRaw.collection,
+    );
+  }
+  const budgets: Record<string, unknown> = {};
+  for (const k of Object.keys(CONTROLLER_BUDGET_RULES) as Array<
+    keyof typeof CONTROLLER_BUDGET_RULES
+  >) {
+    if (budgetsRaw[k] !== undefined) {
+      budgets[k] = check.number(
+        `budgets.${k}`,
+        CONTROLLER_BUDGET_RULES[k],
+        budgetsRaw[k],
       );
     }
-  };
-  requireInt('maxWaitMs', 1);
-  requireInt('maxTotalWaitMs', 0);
+  }
+  const subagents = parseControllerSubagents(cfg.subagents, llmKeys);
 
-  return {
-    subagents: parseControllerSubagents(cfg.subagents, llmKeys),
+  const result: ControllerConfig = {
+    subagents,
     targetState: {
       strategy: 'auto',
       distanceThreshold: 0.25,
-      ...targetStateRaw,
+      ...targetState,
     } as ControllerConfig['targetState'],
     sessionMemory: {
       collection: 'session-memory',
-      ...sessionMemoryRaw,
+      ...sessionMemory,
     } as ControllerConfig['sessionMemory'],
     budgets: {
       maxSteps: 20,
@@ -271,7 +395,8 @@ export function parseControllerSettings(
       keepRecentDigests: 8,
       maxWaitMs: 600_000,
       maxTotalWaitMs: 1_800_000,
-      ...budgetsRaw,
+      ...budgets,
     } as ControllerConfig['budgets'],
   };
+  return check.done(result);
 }

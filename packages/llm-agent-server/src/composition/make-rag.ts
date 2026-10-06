@@ -1,5 +1,8 @@
-import { InMemoryRag, type IRag } from '@mcp-abap-adt/llm-agent';
-import { makeRag as libMakeRag } from '@mcp-abap-adt/llm-agent-rag';
+import type { IRag } from '@mcp-abap-adt/llm-agent';
+import {
+  InMemoryRag,
+  makeRag as libMakeRag,
+} from '@mcp-abap-adt/llm-agent-rag';
 import {
   isInMemoryInput,
   type MakeRagInput,

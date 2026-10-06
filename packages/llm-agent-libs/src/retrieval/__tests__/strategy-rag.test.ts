@@ -1,13 +1,10 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import {
-  CircuitBreaker,
-  FallbackRag,
-  InMemoryRag,
-  type IQueryEmbedding,
-  type IRag,
-  type IRetrievalStrategy,
-  type RagResult,
+import type {
+  IQueryEmbedding,
+  IRag,
+  IRetrievalStrategy,
+  RagResult,
 } from '@mcp-abap-adt/llm-agent';
 import {
   applyRetrievalStrategy,
@@ -42,6 +39,14 @@ function fakeStore(results: RagResult[]) {
   };
   return { store, calls, writer };
 }
+/** A plain IRagDecorator — e.g. a consumer's tracing wrapper. */
+const decorate = (inner: IRag): IRag & { readonly inner: IRag } => ({
+  inner,
+  query: (e, k, o) => inner.query(e, k, o),
+  healthCheck: (o) => inner.healthCheck(o),
+  getById: (id, o) => inner.getById(id, o),
+  writer: () => inner.writer?.(),
+});
 const q = { text: 'q', toVector: async () => [1] } as IQueryEmbedding;
 
 describe('EmbeddingRetrieval', () => {
@@ -96,14 +101,10 @@ describe('applyRetrievalStrategy / hasRetrievalStrategy', () => {
     assert.equal(applyRetrievalStrategy(once, new EmbeddingRetrieval()), once);
   });
 
-  it('sees the brand through a FallbackRag (either order)', () => {
+  it('sees the brand through a decorator', () => {
     const { store } = fakeStore([]);
     const inner = applyRetrievalStrategy(store, new EmbeddingRetrieval());
-    const outer = new FallbackRag(
-      inner,
-      new InMemoryRag(),
-      new CircuitBreaker({}),
-    );
+    const outer = decorate(inner);
     assert.equal(hasRetrievalStrategy(outer), true);
     assert.equal(
       applyRetrievalStrategy(outer, new EmbeddingRetrieval()),
@@ -116,10 +117,7 @@ describe('ownBuiltInStore', () => {
   const strategy = new EmbeddingRetrieval();
   it('a strategy-wrapped projection over the own store wins (keeps its layers)', () => {
     const own = fakeStore([]).store;
-    const projected = new StrategyRag(
-      new FallbackRag(own, new InMemoryRag(), new CircuitBreaker()),
-      strategy,
-    );
+    const projected = new StrategyRag(decorate(own), strategy);
     const ownWithStrategy = applyRetrievalStrategy(own, strategy);
     assert.equal(ownBuiltInStore(own, ownWithStrategy, projected), projected);
   });

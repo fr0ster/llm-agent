@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { parseStepperCoordinatorConfig } from '../config.js';
+import { ConfigFieldError } from '../config-fields.js';
 
 test('parses mode + stepper.* with defaults', () => {
   const c = parseStepperCoordinatorConfig({
@@ -21,7 +22,7 @@ test('parses mode + stepper.* with defaults', () => {
   assert.equal(c.tokenBudget, 500000);
 });
 
-test('knowledgeSeed: parses entries (default artifactType=guidance), drops blanks, defaults empty', () => {
+test('knowledgeSeed: parses entries (default artifactType=guidance), defaults empty; a blank entry is an error', () => {
   const empty = parseStepperCoordinatorConfig({ mode: 'planned-react' });
   assert.deepEqual(empty.knowledgeSeed, []);
 
@@ -33,13 +34,35 @@ test('knowledgeSeed: parses entries (default artifactType=guidance), drops blank
         content: 'Read an include body via GetInclude.',
         artifactType: 'tool-rule',
       },
-      { content: '   ' }, // blank → dropped
-      { artifactType: 'x' }, // no content → dropped
     ],
   });
   assert.equal(c.knowledgeSeed.length, 2);
   assert.equal(c.knowledgeSeed[0].artifactType, 'guidance');
   assert.equal(c.knowledgeSeed[1].artifactType, 'tool-rule');
+
+  // Spec D83 (9): an entry without text is named, never dropped.
+  assert.throws(
+    () =>
+      parseStepperCoordinatorConfig({
+        mode: 'cyclic-react',
+        knowledgeSeed: [
+          { content: 'Read a report via GetProgram.' },
+          {
+            content: 'Read an include body via GetInclude.',
+            artifactType: 'tool-rule',
+          },
+          { content: '   ' },
+          { artifactType: 'x' },
+        ],
+      }),
+    (err: unknown) =>
+      err instanceof ConfigFieldError &&
+      JSON.stringify(err.issues) ===
+        JSON.stringify([
+          'knowledgeSeed[2].content must be a non-empty string, got "   "',
+          'knowledgeSeed[3].content must be a non-empty string, got undefined',
+        ]),
+  );
 });
 
 test('defaults: mode=planned-react, reviewer atDepths=[0,1], maxParallelSteps=4', () => {

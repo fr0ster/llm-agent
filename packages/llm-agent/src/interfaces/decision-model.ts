@@ -91,7 +91,9 @@ export class DecisionError extends SmartAgentError {
 }
 
 /**
- * A model that answers typed questions about a state with numbers, not text.
+ * A model that answers typed questions about a state with probabilities, not text
+ * (spec §3.9; the 30.1.0 decision interface, renamed — same members, same rules; the old
+ * name is removed, D58).
  *
  * - Returns `Result`; never throws for provider failures.
  * - A question type the implementation cannot answer fails the whole request
@@ -100,11 +102,72 @@ export class DecisionError extends SmartAgentError {
  * - On `ok: true` the numeric invariants documented on the answer types hold;
  *   consumers may rely on them without re-checking.
  */
-export interface IDecisionModel {
+export interface IProbabilityDecision {
   /** Configured model identifier, for logs. */
   readonly model?: string;
   decide(
     request: DecisionRequest,
     options?: CallOptions,
   ): Promise<Result<DecisionResult, DecisionError>>;
+  /**
+   * The provider's cheapest real check, with no inference when it has one
+   * (spec §17.43 D97): `true` when the model can answer. Optional: without it,
+   * a health probe makes one minimal call.
+   */
+  healthCheck?(options?: CallOptions): Promise<Result<boolean, DecisionError>>;
+}
+
+/** What a relevance decision judges: passages against one query. */
+export interface RelevanceRequest {
+  /** Non-empty. */
+  query: string;
+  /** Non-empty; each a non-empty string. `RelevanceScore.index` points into it. */
+  passages: readonly string[];
+}
+
+/** One passage's relevance. */
+export interface RelevanceScore {
+  /** Index into `RelevanceRequest.passages`. */
+  index: number;
+  /** Finite. NOT a probability: higher = more relevant. Comparable for the same query
+   *  and model — also across calls; never across queries or models. */
+  score: number;
+}
+
+export interface RelevanceResult {
+  /** Exactly one entry per passage, each index once; any order. */
+  scores: readonly RelevanceScore[];
+  /** The model that actually answered. */
+  model: string;
+  usage?: { inputTokens: number; outputTokens?: number };
+}
+
+/**
+ * A model that scores how relevant each passage is to a query — a
+ * cross-encoder (spec §3.9).
+ *
+ * - Returns `Result`; never throws for provider failures. Errors are
+ *   `DecisionError` with the existing codes; `DECISION_UNSUPPORTED_QUESTION`
+ *   is never returned.
+ * - The score is NOT a probability. It depends on the (query, passage) pair
+ *   alone — a cross-encoder scores each pair independently — so scores for the
+ *   SAME query from the SAME model are comparable, also across calls (a
+ *   reranker may batch and merge). Never compare across queries, across
+ *   models, or with a probability. A threshold on it is the consumer's
+ *   calibration.
+ * - Cancellation through `options.signal` yields `DECISION_ABORTED`.
+ */
+export interface IRelevanceDecision {
+  /** Configured model identifier, for logs. */
+  readonly model?: string;
+  score(
+    request: RelevanceRequest,
+    options?: CallOptions,
+  ): Promise<Result<RelevanceResult, DecisionError>>;
+  /**
+   * The provider's cheapest real check, with no inference when it has one
+   * (spec §17.43 D97): `true` when the model can answer. Optional: without it,
+   * a health probe makes one minimal call.
+   */
+  healthCheck?(options?: CallOptions): Promise<Result<boolean, DecisionError>>;
 }

@@ -210,7 +210,7 @@ npm run dev -- --config <path>   # any custom path
 **Fix.** The agent already invokes `_toEnglishForRag` (helper LLM translation) before embedding the query for the `tools` store specifically. Make sure:
 
 - The helper LLM (`pipeline.llm.helper`) is configured and the model is deployed.
-- `_toEnglishForRag` returns the translation, not the original. If translation fails, the function silently falls back to the original — add a `console.warn` on `!res.ok` while debugging.
+- If translation fails (the helper LLM errors or answers nothing), the request fails with the LLM's error code (normally `LLM_ERROR`), naming the `translate` step; the original text is never used instead.
 
 If translation chain is unreliable, use a multilingual embedder instead — `bge-m3` (Ollama, recommended; set `model: bge-m3` explicitly) or `gemini-embedding` (SAP AI Core, multilingual). Both produce comparable cross-lingual similarity without translation.
 
@@ -238,20 +238,15 @@ Other reasons for "no effect":
 - **`history` is reranked only when you ask for it.** `rag.retrieval.history` applies to per-session requests: session agents read the server's shared history store, wrapped by the strategy. Without an entry the store keeps plain embedding retrieval.
 - **The store has no entry.** Keys are the store keys the pipeline sees: `tools`, `history`, a global collection's bare name, `user/<name>`, `session/<name>`. A store that is not listed keeps embedding ranking.
 - **A collection added after build is not reranked.** The builder applies a strategy when it projects registry entries into the pipeline's stores. A registry with `setMutationListener` (`SimpleRagRegistry` has it) re-projects on every change, so a collection registered later is wrapped like the rest. A custom `IRagRegistry` without `setMutationListener` is never re-projected: a collection registered after build is not visible to any pipeline stage, reranked or not. Add `setMutationListener` to the registry.
-- **The circuit breaker is open** (see the next entry).
+- **The embedder breaker is open** (see the next entry).
 
-### With the circuit breaker open, a `tools` / `history` store is not reranked
+### With the embedder breaker open, a request fails with CIRCUIT_OPEN
 
-**Symptom.** Under an embedder outage (`circuitBreaker` configured, embedder breaker open) a store with `strategy: rerank` returns embedding-style results, with no `retrieval_rerank_error`; a named collection is still reranked.
+**Symptom.** Under an embedder outage (`circuitBreaker` configured, the embedder breaker `open` in `/health`) every request that retrieves fails with `CIRCUIT_OPEN` naming the store (before the breaker opens: the embedder's own error).
 
-**Cause.** Exactly one rerank happens per query in either wrapper order, but with the breaker **open** the two orders differ. `FallbackRag` fans writes out to its fallback store, so the fallback is not empty (it holds what was written, e.g. the vectorized tool catalog):
+**Cause.** The breaker fails each embedding fast, every store that embeds the query fails its query, and the `rag-query` stage fails the request with that error (no request continues on missing results).
 
-| Order | Used for | Circuit open |
-|---|---|---|
-| `FallbackRag(StrategyRag(store))` | `tools` / `history`, wrapped by the server before the builder sees them | `FallbackRag` queries its fallback directly: the reranker is bypassed, results are the fallback's own ranking |
-| `StrategyRag(FallbackRag(store))` | named collections, wrapped in the builder's projection | the strategy reranks the fallback's results |
-
-Both are accepted (the request never fails). The controller / stepper tool path (`IToolsRagHandle`) holds the server-wrapped `StrategyRag(tools)` with no `FallbackRag` around it, so the breaker does not change it.
+**Fix.** The embedder; the breaker closes after its recovery window.
 
 ### Reranking has no effect — global (plugin / `withReranker`) reranker
 

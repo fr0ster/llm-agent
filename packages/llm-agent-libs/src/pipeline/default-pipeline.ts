@@ -36,15 +36,13 @@ import type {
   SubAgentRegistry,
 } from '@mcp-abap-adt/llm-agent';
 import {
-  NoopQueryExpander,
   NoopToolCache,
+  OrchestratorError,
   StreamingLlmCallStrategy,
 } from '@mcp-abap-adt/llm-agent';
-import type {
-  OrchestratorError,
-  SmartAgentConfig,
-  SmartAgentRagStores,
-} from '../agent.js';
+import { NoopQueryExpander } from '@mcp-abap-adt/llm-agent-rag';
+import { NoopReranker } from '@mcp-abap-adt/llm-agent-reranker';
+import type { SmartAgentConfig, SmartAgentRagStores } from '../agent.js';
 import { LlmClassifier } from '../classifier/llm-classifier.js';
 import { ContextAssembler } from '../context/context-assembler.js';
 import { ExplicitActivation } from '../coordinator/activation/explicit.js';
@@ -57,7 +55,6 @@ import { NoopRequestLogger } from '../logger/noop-request-logger.js';
 import { NoopMetrics } from '../metrics/noop-metrics.js';
 import { PendingToolResultsRegistry } from '../policy/pending-tool-results-registry.js';
 import { ToolAvailabilityRegistry } from '../policy/tool-availability-registry.js';
-import { NoopReranker } from '../reranker/noop-reranker.js';
 import { applyRetrievalStrategy } from '../retrieval/index.js';
 import { ownBuiltInStore } from '../retrieval/strategy-rag.js';
 import { NoopSessionManager } from '../session/noop-session-manager.js';
@@ -284,8 +281,14 @@ export class DefaultPipeline implements IPipeline {
     try {
       await this.executor.executeStages(this.stages, ctx, rootSpan);
     } catch (err) {
-      rootSpan.setStatus('error', String(err));
+      // Spec §10.5.2 (D70): anything the executor let through is an error the
+      // consumer receives, not only a span status.
+      ctx.error ??= new OrchestratorError(
+        `pipeline failed: ${String(err)}`,
+        'PIPELINE_ERROR',
+      );
     } finally {
+      if (ctx.error) rootSpan.setStatus('error', ctx.error.message);
       rootSpan.end();
     }
 
@@ -503,6 +506,7 @@ export class DefaultPipeline implements IPipeline {
       logger: this.deps.logger,
       requestLogger: this.resolvedRequestLogger,
       toolPolicy: this.deps.toolPolicy,
+      toolAvailabilityPolicy: this.deps.toolAvailabilityPolicy,
       injectionDetector: this.deps.injectionDetector,
       ...(() => {
         const r = resolveSessionRegistries({

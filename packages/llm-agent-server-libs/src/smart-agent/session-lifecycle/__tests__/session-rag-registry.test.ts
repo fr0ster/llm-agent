@@ -2,17 +2,19 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
   type ILogger,
-  InMemoryRag,
   type IRagEditor,
   type IRagProvider,
   type LogEvent,
   type RagCollectionRecord,
   RagError,
-  SimpleRagProviderRegistry,
-  SimpleRagRegistry,
 } from '@mcp-abap-adt/llm-agent';
 import { SmartAgentBuilder } from '@mcp-abap-adt/llm-agent-libs';
 import { makeLlm } from '@mcp-abap-adt/llm-agent-libs/testing';
+import {
+  InMemoryRag,
+  SimpleRagProviderRegistry,
+  SimpleRagRegistry,
+} from '@mcp-abap-adt/llm-agent-rag';
 import { buildSessionRagRegistry } from '../session-rag-registry.js';
 
 /** A catalogued provider over in-memory stores. */
@@ -167,19 +169,12 @@ test('a caller without a userId gets no user collection', async () => {
   );
 });
 
-test('reports rejected catalog rows and a failed catalog read, and carries on', async () => {
-  const bad = catalogued('bad', []);
-  (bad.provider as { describeCollections: unknown }).describeCollections =
-    async () => ({
-      ok: false,
-      error: new RagError('catalog unreachable'),
-    });
+test('reports rejected catalog rows and hydrates the rest', async () => {
   const pg = catalogued('pg', records.slice(0, 1), [
     { storeName: 'junk_0000000009', reason: 'no scope' },
     { reason: 'no store name' },
   ]);
   const providers = new SimpleRagProviderRegistry();
-  providers.registerProvider(bad.provider);
   providers.registerProvider(pg.provider);
   const { log, messages } = logger();
   const reg = await buildSessionRagRegistry({
@@ -188,11 +183,33 @@ test('reports rejected catalog rows and a failed catalog read, and carries on', 
     providers,
     logger: log,
   });
-  assert.ok(reg.get('kb', 'global'), 'the healthy provider still hydrated');
+  assert.ok(reg.get('kb', 'global'), 'the catalogued global hydrated');
   const all = messages().join('\n');
-  assert.match(all, /catalog unreachable/);
   assert.match(all, /junk_0000000009.*no scope/);
   assert.match(all, /no store name/);
+});
+
+test('a failed catalog read fails the session’s creation, naming the provider, its RagError as cause (spec §10.5.9 V1)', async () => {
+  const bad = catalogued('bad', []);
+  const unreachable = new RagError('catalog unreachable');
+  (bad.provider as { describeCollections: unknown }).describeCollections =
+    async () => ({ ok: false, error: unreachable });
+  const pg = catalogued('pg', records.slice(0, 1));
+  const providers = new SimpleRagProviderRegistry();
+  providers.registerProvider(bad.provider);
+  providers.registerProvider(pg.provider);
+  await assert.rejects(
+    buildSessionRagRegistry({
+      identity: { sessionId: 'S' },
+      globals: new SimpleRagRegistry(),
+      providers,
+    }),
+    (e: unknown) =>
+      e instanceof RagError &&
+      e.cause === unreachable &&
+      e.code === unreachable.code &&
+      /provider 'bad'/.test(e.message),
+  );
 });
 
 test('a catalogued global that the deployment already configures is skipped, with a warning', async () => {
@@ -217,7 +234,7 @@ test('a catalogued global that the deployment already configures is skipped, wit
   assert.match(messages().join('\n'), /kb/);
 });
 
-test('a provider whose describeCollections throws, and a record whose openCollection throws, are logged and hydration continues', async () => {
+test('a provider whose describeCollections throws fails the session’s creation, naming the provider (spec §10.5.9 V1)', async () => {
   const throwing = {
     name: 'throwing',
     kind: 'vector',
@@ -235,7 +252,22 @@ test('a provider whose describeCollections throws, and a record whose openCollec
       error: new RagError('not expected'),
     }),
   } as unknown as IRagProvider;
+  const providers = new SimpleRagProviderRegistry();
+  providers.registerProvider(throwing);
+  await assert.rejects(
+    buildSessionRagRegistry({
+      identity: { sessionId: 'S' },
+      globals: new SimpleRagRegistry(),
+      providers,
+    }),
+    (e: unknown) =>
+      e instanceof RagError &&
+      /throwing/.test(e.message) &&
+      /describe boom/.test(e.message),
+  );
+});
 
+test('a record whose openCollection throws fails the session’s creation, naming the store (spec §10.5.9 V1)', async () => {
   // kb (global) and mine (user alice) — both belong to this identity.
   const pg = catalogued('pg', records.slice(0, 2));
   (pg.provider as { openCollection: unknown }).openCollection = async (
@@ -250,31 +282,19 @@ test('a provider whose describeCollections throws, and a record whose openCollec
       ? { ok: true, value: { rag, editor: {} as IRagEditor } }
       : { ok: false, error: new RagError(`gone: ${record.storeName}`) };
   };
-
   const providers = new SimpleRagProviderRegistry();
-  providers.registerProvider(throwing);
   providers.registerProvider(pg.provider);
-  const { log, messages } = logger();
-  const reg = await buildSessionRagRegistry({
-    identity: { sessionId: 'S', userId: 'alice' },
-    globals: new SimpleRagRegistry(),
-    providers,
-    logger: log,
-  });
-  assert.ok(
-    reg.get('kb', 'global'),
-    'a healthy provider and a healthy record still hydrate',
+  await assert.rejects(
+    buildSessionRagRegistry({
+      identity: { sessionId: 'S', userId: 'alice' },
+      globals: new SimpleRagRegistry(),
+      providers,
+    }),
+    (e: unknown) =>
+      e instanceof RagError &&
+      /mine_00000000002/.test(e.message) &&
+      /open boom/.test(e.message),
   );
-  assert.equal(
-    reg.get('mine', 'user'),
-    undefined,
-    'a record whose openCollection threw is not adopted',
-  );
-  const all = messages().join('\n');
-  assert.match(all, /throwing/);
-  assert.match(all, /describe boom/);
-  assert.match(all, /mine_00000000002/);
-  assert.match(all, /open boom/);
 });
 
 test('a provider without a catalog is skipped silently', async () => {
@@ -300,16 +320,13 @@ test('a provider without a catalog is skipped silently', async () => {
   assert.deepEqual(messages(), []);
 });
 
-test('the circuit-breaker fallback-wrap on one session’s registry never mutates the globals registry or another session’s registry', async () => {
-  // B26 concern: SmartAgentBuilder.build() wraps every RAG store with
-  // FallbackRag and, for a SimpleRagRegistry, swaps the handle in place via
-  // `replaceRag` (builder.ts) — it never re-registers, so it never touches
-  // ANOTHER registry's entries. buildSessionRagRegistry gives every session
-  // its OWN SimpleRagRegistry, seeding a global by `register()`-ing a NEW
-  // entry that shares only the underlying IRag instance, not the deployment
-  // registry's own entry object. So session A's circuit-breaker wrap (a real
-  // build, not a mock) must be invisible to the deployment registry and to
-  // session B's separately-built registry.
+test('a circuit-breaker build on one session’s registry leaves every registry as registered (D68: no store wrap)', async () => {
+  // B26 concern, closed by D68: the builder wraps no registry store, so a
+  // build mutates no registry entry. buildSessionRagRegistry gives every
+  // session its OWN SimpleRagRegistry, seeding a global by `register()`-ing a
+  // NEW entry that shares only the underlying IRag instance. A real build with
+  // withCircuitBreaker() on session A's registry must leave the deployment
+  // registry and session B's separately-built registry as registered.
   const globals = new SimpleRagRegistry();
   const originalKb = new InMemoryRag();
   globals.register('kb', originalKb, undefined, {
@@ -332,13 +349,11 @@ test('the circuit-breaker fallback-wrap on one session’s registry never mutate
     .withCircuitBreaker()
     .build();
   try {
-    // Positive control: session A's own registry IS wrapped — otherwise this
-    // test would pass even if isolation were silently broken by the wrap
-    // never running.
-    assert.notEqual(
+    // Positive control: session A's own entry is the store registered — no wrap.
+    assert.equal(
       regA.get('kb', 'global'),
       originalKb,
-      'the circuit breaker wrapped session A’s own handle',
+      'session A’s own entry is the store registered — no wrap',
     );
 
     // Isolation: neither the deployment registry nor session B's separately

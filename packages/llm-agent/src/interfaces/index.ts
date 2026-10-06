@@ -1,4 +1,3 @@
-export type { IQueryExpander } from '../rag/query-expander.js';
 export {
   type AgentCallOptions,
   type BaseAgentLlmBridge,
@@ -14,6 +13,48 @@ export type {
   SmartAgentRagStores,
 } from './builder.js';
 export type { ISubpromptClassifier } from './classifier.js';
+export {
+  type BindTarget,
+  type CollapsedItem,
+  type CollectionStore,
+  type IBoundCollection,
+  type ICandidatePool,
+  type ICollapseRule,
+  type ICollectionProfile,
+  type IDiscriminatorSelector,
+  type IIndexNoteSource,
+  type IItemCut,
+  type IItemIndexer,
+  type IItemSizeEstimator,
+  type IndexedRecord,
+  type IndexNote,
+  type IndexReport,
+  type IQueryDecomposer,
+  type IRetrievalMetrics,
+  type ISharedItemGroups,
+  type ISizeBoundedCut,
+  type ISourceSelector,
+  type IToolFacet,
+  type IToolTextComposer,
+  type ItemRef,
+  isIndexNoteSource,
+  isRetrievalMetrics,
+  isSizeBoundedCut,
+  ownerKeyOf,
+  type RecordDraft,
+  type RecordOwner,
+  type ReservedRecordKey,
+  type RetrievalSource,
+  recordId,
+  type SharedItem,
+  type SharedItemsStores,
+  type SharedItemVisibility,
+  type SourcedHit,
+  type SubQuery,
+  type ToolItem,
+  type ToolParameter,
+  type ToolParameterValue,
+} from './collection-profile.js';
 export type { ContextPath } from './context-path.js';
 export type {
   EpicFailTrace,
@@ -37,9 +78,13 @@ export type {
   DecisionQuestion,
   DecisionRequest,
   DecisionResult,
-  IDecisionModel,
+  IProbabilityDecision,
+  IRelevanceDecision,
   NoulAnswer,
   NoulQuestion,
+  RelevanceRequest,
+  RelevanceResult,
+  RelevanceScore,
   ScoreAnswer,
   ScoreQuestion,
 } from './decision-model.js';
@@ -129,6 +174,10 @@ export type {
   PipelineFactoryDepsBase,
   PipelineFactoryKind,
 } from './pipeline-factory.js';
+export {
+  PIPELINE_FAILURE_CODES,
+  type PipelineFailureCode,
+} from './pipeline-failure-codes.js';
 export type {
   IPipelineContext,
   IPipelineInstance,
@@ -153,6 +202,11 @@ export type {
   RagScope,
 } from './plugin.js';
 export type { IQueryEmbedding } from './query-embedding.js';
+export type { IQueryExpander } from './query-expander.js';
+export type {
+  IDocumentEnricher,
+  IQueryPreprocessor,
+} from './query-preprocessor.js';
 export type {
   EmbedderFactory,
   EmbedderFactoryConfig,
@@ -195,6 +249,11 @@ export type {
   ToolCallEntry,
 } from './request-logger.js';
 export type { IReranker } from './reranker.js';
+export {
+  type IRetrievalEmbedderOwner,
+  isRetrievalEmbedderOwner,
+  retrievalEmbedderOf,
+} from './retrieval-embedder-owner.js';
 export type {
   IRagDecorator,
   IRetrievalStrategy,

@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import { parse } from 'yaml';
 import { resolveSmartServerConfig } from '../config.js';
+import { ConfigFieldError } from '../config-fields.js';
 import { loadYamlConfig } from '../yaml-loader.js';
 
 const LLM = 'llm:\n  provider: openai\n  model: gpt-4o\n';
@@ -95,6 +96,13 @@ describe('${VAR}-substituted numbers (loadYamlConfig substitutes strings)', () =
       /decision\.timeoutMs/,
     );
   });
+
+  it('" 5000" is refused — a number literal has no surrounding spaces (spec D83 (6))', () => {
+    assert.throws(
+      () => fromFile(SECTION, { DT: ' 5000', DR: '0' }),
+      /decision\.timeoutMs/,
+    );
+  });
 });
 
 describe('decision.model / decision.baseUrl through ${VAR}', () => {
@@ -114,14 +122,14 @@ describe('decision.model / decision.baseUrl through ${VAR}', () => {
   it('an unset ${VAR} model is refused', () => {
     assert.throws(
       () => fromFile('decision:\n  provider: typesafe\n  model: ${DM}\n', {}),
-      /decision\.model: must be a non-empty string/,
+      /decision\.model must be a non-empty string, got ""/,
     );
   });
 
   it('an unset ${VAR} baseUrl is refused', () => {
     assert.throws(
       () => fromFile('decision:\n  provider: typesafe\n  baseUrl: ${DB}\n', {}),
-      /decision\.baseUrl: must be a non-empty string/,
+      /decision\.baseUrl must be a non-empty string, got ""/,
     );
   });
 
@@ -149,11 +157,11 @@ describe('decision: validation', () => {
     ],
     [
       'decision:\n  provider: typesafe\n  model: ""\n',
-      /decision\.model: must be a non-empty string/,
+      /decision\.model must be a non-empty string, got ""/,
     ],
     [
       'decision:\n  provider: typesafe\n  baseUrl: ""\n',
-      /decision\.baseUrl: must be a non-empty string/,
+      /decision\.baseUrl must be a non-empty string, got ""/,
     ],
     [
       'decision:\n  provider: typesafe\n  timeoutMs: 0\n',
@@ -193,13 +201,17 @@ describe('decision: validation', () => {
   });
 });
 
-describe('decision: empty YAML values (null) are absent, never the string "null"', () => {
-  it('model: / baseUrl: left empty resolve to absent fields', () => {
-    const cfg = resolve(
-      'decision:\n  provider: typesafe\n  model:\n  baseUrl:\n',
+describe('decision: a key with no value is an error (spec D83 (13))', () => {
+  it('model: / baseUrl: written with no value are named', () => {
+    assert.throws(
+      () => resolve('decision:\n  provider: typesafe\n  model:\n  baseUrl:\n'),
+      (err: unknown) =>
+        err instanceof ConfigFieldError &&
+        JSON.stringify(err.issues) ===
+          JSON.stringify([
+            'decision.model has no value',
+            'decision.baseUrl has no value',
+          ]),
     );
-    assert.deepEqual(cfg.decision, { provider: 'typesafe' });
-    assert.equal('model' in (cfg.decision ?? {}), false);
-    assert.equal('baseUrl' in (cfg.decision ?? {}), false);
   });
 });

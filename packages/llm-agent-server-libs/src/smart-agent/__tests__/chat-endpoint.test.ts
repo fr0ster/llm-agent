@@ -83,6 +83,38 @@ describe('SmartServer — POST /v1/chat/completions (handler body)', () => {
     }
   });
 
+  it('a failed process() answers 502 with jsonError carrying the code — never a 200 placeholder (spec §10.5.1)', async () => {
+    const handle = await new SmartServer(
+      {
+        port: 0,
+        llm: { provider: 'deepseek', model: 'test-model' },
+        skipModelValidation: true,
+      },
+      {
+        ...constructionSeams,
+        makeLlm: async () =>
+          makeLlm([new Error('llm down'), new Error('llm down')]),
+      },
+    ).start();
+    try {
+      const res = await httpRequest(
+        handle.port,
+        'POST',
+        '/v1/chat/completions',
+        { messages: [{ role: 'user', content: 'hi' }] },
+      );
+      assert.equal(res.status, 502, res.raw);
+      const body = JSON.parse(res.raw) as {
+        error: { message: string; type: string; code?: string };
+      };
+      assert.equal(body.error.type, 'api_error');
+      assert.equal(body.error.code, 'LLM_ERROR');
+      assert.match(body.error.message, /llm down/);
+    } finally {
+      await handle.close();
+    }
+  });
+
   it('streams SSE chunks ending with [DONE] for a streaming request', async () => {
     const handle = await makeServer().start();
     try {

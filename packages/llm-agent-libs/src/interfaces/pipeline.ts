@@ -26,6 +26,7 @@ import type {
   IRagProviderRegistry,
   IRagRegistry,
   IRequestLogger,
+  IReranker,
   IRetrievalStrategy,
   ISkillManager,
   ISubpromptClassifier,
@@ -42,8 +43,8 @@ import type {
 } from '@mcp-abap-adt/llm-agent';
 import type { OrchestratorError, SmartAgentConfig } from '../agent.js';
 import type { IMetrics } from '../metrics/types.js';
+import type { IToolAvailabilityPolicy } from '../policy/tool-availability-policy.js';
 import type { IPromptInjectionDetector, IToolPolicy } from '../policy/types.js';
-import type { IReranker } from '../reranker/types.js';
 import type { ISessionManager } from '../session/types.js';
 import type { ITracer } from '../tracer/types.js';
 import type { IOutputValidator } from '../validator/types.js';
@@ -101,6 +102,8 @@ export interface PipelineDeps {
   requestLogger?: IRequestLogger;
   /** Optional tool access policy. */
   toolPolicy?: IToolPolicy;
+  /** Decides whether a failed internal tool is blocked for the session (spec U8). None → nothing is blocked. */
+  toolAvailabilityPolicy?: IToolAvailabilityPolicy;
   /** Optional prompt injection detector. */
   injectionDetector?: IPromptInjectionDetector;
   /** Optional skill manager for slash-command resolution. */

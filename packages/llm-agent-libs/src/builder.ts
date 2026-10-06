@@ -32,6 +32,7 @@ import type {
   IModelProvider,
   IQueryExpander,
   IRequestLogger,
+  IReranker,
   IRetrievalStrategy,
   ISkillManager,
   ISubAgent,
@@ -54,24 +55,24 @@ import {
   CircuitBreakerLlm,
   collectServerDescriptors,
   defaultToolNamespace,
-  FallbackRag,
-  InMemoryRag,
   type IQueryEmbedder,
   type IRag,
   type IRagEditor,
   type IRagProvider,
   type IRagProviderRegistry,
   type IRagRegistry,
-  isRagDecorator,
   normaliseLogger,
   QueryEmbedding,
   type RagCollectionMeta,
   type RagRegistryCreateCollectionParams,
+} from '@mcp-abap-adt/llm-agent';
+import { makeConnectionStrategy } from '@mcp-abap-adt/llm-agent-mcp';
+import {
+  InMemoryRag,
   ragStoreKey,
   SimpleRagProviderRegistry,
   SimpleRagRegistry,
-} from '@mcp-abap-adt/llm-agent';
-import { makeConnectionStrategy } from '@mcp-abap-adt/llm-agent-mcp';
+} from '@mcp-abap-adt/llm-agent-rag';
 import { SmartAgent, type SmartAgentConfig } from './agent.js';
 import type {
   BuilderMcpConfig,
@@ -113,8 +114,8 @@ import { DefaultPipeline } from './pipeline/default-pipeline.js';
 import type { DagCoordinatorHandlerDeps } from './pipeline/handlers/dag-coordinator.js';
 import type { IStageHandler } from './pipeline/stage-handler.js';
 import type { IPluginLoader } from './plugins/types.js';
+import type { IToolAvailabilityPolicy } from './policy/tool-availability-policy.js';
 import type { IPromptInjectionDetector, IToolPolicy } from './policy/types.js';
-import type { IReranker } from './reranker/types.js';
 import { RateLimiterLlm } from './resilience/rate-limiter-llm.js';
 import { retryInsideBreakers } from './resilience/retry-llm.js';
 import { applyRetrievalStrategy } from './retrieval/index.js';
@@ -160,16 +161,6 @@ export function prepareMcpConfigs(
   return configs.map((c) => ({ ...c, requestHeadersStrategy }));
 }
 
-/** True when `store`, or a store it decorates, is a FallbackRag on `breaker` (bounded walk). */
-function isGuardedBy(store: IRag, breaker: CircuitBreaker): boolean {
-  let cur: IRag | undefined = store;
-  for (let depth = 0; cur && depth < 16; depth++) {
-    if (cur instanceof FallbackRag && cur.breaker === breaker) return true;
-    cur = isRagDecorator(cur) ? cur.inner : undefined;
-  }
-  return false;
-}
-
 // ---------------------------------------------------------------------------
 // SmartAgentBuilder
 // ---------------------------------------------------------------------------
@@ -191,6 +182,7 @@ export class SmartAgentBuilder {
   private _assembler?: IContextAssembler;
   private _logger?: ILogger;
   private _toolPolicy?: IToolPolicy;
+  private _toolAvailabilityPolicy?: IToolAvailabilityPolicy;
   private _injectionDetector?: IPromptInjectionDetector;
   private _tracer?: ITracer;
   private _metrics?: IMetrics;
@@ -201,7 +193,6 @@ export class SmartAgentBuilder {
   private _outputValidator?: IOutputValidator;
   private _sessionManager?: ISessionManager;
   private _circuitBreakerConfig?: CircuitBreakerConfig;
-  private _sharedBreakers?: { embedder: CircuitBreaker };
   private _vectorizeSkills = true;
   private _requestLogger?: IRequestLogger;
   private _agentOverrides: Partial<SmartAgentConfig> = {};
@@ -386,7 +377,7 @@ export class SmartAgentBuilder {
   /**
    * Set a logger for internal pipeline events.
    *
-   * Takes either shape: the event `ILogger`, or an ordinary `ITextLogger`
+   * Takes either shape: the event `ILogger`, or an ordinary text logger (`ILogger` of `@mcp-abap-adt/interfaces-utils`)
    * (`info`/`warn`/`error`/`debug`). A text logger is normalised here, at the
    * boundary, so everything downstream — `PipelineDeps.logger`, the agent, the
    * connection strategy — keeps receiving the event logger it already expects,
@@ -401,6 +392,16 @@ export class SmartAgentBuilder {
   /** Set a tool execution policy (allow/deny list). */
   withToolPolicy(policy: IToolPolicy): this {
     this._toolPolicy = policy;
+    return this;
+  }
+
+  /**
+   * Set the policy that decides whether a failed internal tool is blocked for
+   * the session (spec U8). Without one nothing is blocked — e.g.
+   * `new HeuristicToolAvailabilityPolicy({ ttlMs })` for 30.1.0's blacklist.
+   */
+  withToolAvailabilityPolicy(policy: IToolAvailabilityPolicy): this {
+    this._toolAvailabilityPolicy = policy;
     return this;
   }
 
@@ -500,24 +501,11 @@ export class SmartAgentBuilder {
   }
 
   /**
-   * Use breakers created and owned by the caller (shared across builders).
-   * Only the embedder breaker is taken: registry stores are wrapped in a
-   * `FallbackRag` on it unless a store already carries that same breaker. The
-   * main LLM gets no new breaker (the caller passes pre-wrapped LLMs); when it
-   * is a `CircuitBreakerLlm`, the builder's retry goes UNDER it, on the same
-   * breaker, so one call counts once. When both
-   * this and `withCircuitBreaker(config)` are set, this wins for stores and
-   * the LLM is not wrapped.
-   */
-  withCircuitBreakers(breakers: { embedder: CircuitBreaker }): this {
-    this._sharedBreakers = breakers;
-    return this;
-  }
-
-  /**
-   * Enable circuit breakers for LLM and embedder calls. Ignored in favour of
-   * `withCircuitBreakers(...)` when that is also set (nothing is wrapped
-   * twice, the LLM is left unwrapped).
+   * Enable a circuit breaker for the main LLM (`CircuitBreakerLlm`; the
+   * builder's retry goes under it). No store and no embedder is wrapped
+   * (spec §10.4, D68): to fail fast on an embedder outage, wrap the embedder
+   * below its document/query role — `symmetricEmbedder(withCircuitBreaker(e, breaker))`
+   * — and list the breaker in your `/health` (`HealthCheckerDeps.circuitBreakers`).
    */
   withCircuitBreaker(config: CircuitBreakerConfig = {}): this {
     this._circuitBreakerConfig = config;
@@ -836,7 +824,9 @@ export class SmartAgentBuilder {
     return async (text, k, signal) => {
       const embedding = new QueryEmbedding(text, embedder, { signal });
       const queryRes = await resolve().query(embedding, k, { signal });
-      return queryRes.ok ? queryRes.value : [];
+      // Spec §10.5.4 R7: a failed query fails the sub-agent's context build.
+      if (!queryRes.ok) throw queryRes.error;
+      return queryRes.value;
     };
   }
 
@@ -1021,69 +1011,27 @@ export class SmartAgentBuilder {
     const translateQueryStores = new Set<string>();
     if (toolsRag) translateQueryStores.add('tools');
 
-    // ---- Circuit breaker wrapping ----------------------------------------
+    // ---- Circuit breaker (the main LLM only) ------------------------------
+    // No store is wrapped (spec §10.4, D68): an embedder outage fails fast at an
+    // embedder the consumer wrapped with withCircuitBreaker(embedder, breaker).
     const circuitBreakers: CircuitBreaker[] = [];
-    if (this._circuitBreakerConfig || this._sharedBreakers) {
-      const cbCfg = this._circuitBreakerConfig ?? {};
+    if (this._circuitBreakerConfig) {
+      const cbCfg = this._circuitBreakerConfig;
       const metricsRef = this._metrics;
-      const makeOnStateChange =
-        (target: string) => (from: string, to: string) => {
-          metricsRef?.circuitBreakerTransition.add(1, { from, to, target });
-        };
-
-      // Wrap mainLlm — unless the caller owns the breakers (it passes
-      // pre-wrapped LLMs).
-      if (!this._sharedBreakers) {
-        const llmBreaker = new CircuitBreaker({
-          ...cbCfg,
-          onStateChange: cbCfg.onStateChange ?? makeOnStateChange('llm'),
-        });
-        wrappedMainLlm = new CircuitBreakerLlm(wrappedMainLlm, llmBreaker);
-        circuitBreakers.push(llmBreaker);
-      }
-
-      // Wrap RAG stores with FallbackRag using InMemoryRag fallback
-      const embedderBreaker =
-        this._sharedBreakers?.embedder ??
-        new CircuitBreaker({
-          ...cbCfg,
-          onStateChange: cbCfg.onStateChange ?? makeOnStateChange('embedder'),
-        });
-      circuitBreakers.push(embedderBreaker);
-      // list() is a snapshot, so changing entries while iterating is safe.
-      for (const meta of ragRegistry.list()) {
-        const scope = meta.scope ?? 'global';
-        const store = ragRegistry.get(meta.name, scope);
-        if (!store) continue;
-        if (this._sharedBreakers && isGuardedBy(store, embedderBreaker)) {
-          continue;
-        }
-        const wrapped = new FallbackRag(
-          store,
-          new InMemoryRag(),
-          embedderBreaker,
-        );
-        // Later lookups (and the mutation-listener rebuild) see the wrapped
-        // store. The entry keeps its scope, owner, editor, provider and store
-        // name: without the last two a hydrated collection's delete would reach
-        // no store and its catalog record would bring it back (§6.3).
-        if (ragRegistry instanceof SimpleRagRegistry) {
-          ragRegistry.replaceRag(meta.name, scope, wrapped);
-          continue;
-        }
-        // Another IRagRegistry: re-register with everything register carries.
-        const editor = ragRegistry.getEditor(meta.name, scope);
-        ragRegistry.unregister(meta.name, scope);
-        ragRegistry.register(meta.name, wrapped, editor, {
-          displayName: meta.displayName,
-          description: meta.description,
-          scope,
-          sessionId: meta.sessionId,
-          userId: meta.userId,
-          providerName: meta.providerName,
-          tags: meta.tags,
-        });
-      }
+      const llmBreaker = new CircuitBreaker({
+        ...cbCfg,
+        onStateChange:
+          cbCfg.onStateChange ??
+          ((from: string, to: string) => {
+            metricsRef?.circuitBreakerTransition.add(1, {
+              from,
+              to,
+              target: 'llm',
+            });
+          }),
+      });
+      wrappedMainLlm = new CircuitBreakerLlm(wrappedMainLlm, llmBreaker);
+      circuitBreakers.push(llmBreaker);
     }
 
     // ---- Request logger ---------------------------------------------------
@@ -1334,6 +1282,21 @@ export class SmartAgentBuilder {
       let loadedPlugins: import('./plugins/types.js').LoadedPlugins | undefined;
       if (this._pluginLoader) {
         const plugins = await this._pluginLoader.load();
+        // Spec §10.5.8 S-6 (amended by D96): a plugin the loader was told to
+        // load that failed fails the build — never an agent missing the
+        // plugin's registrations. A discovered file that did not load is
+        // reported, never fails the build.
+        if (plugins.errors.length > 0) {
+          throw new Error(
+            `plugin loader: ${plugins.errors.length} plugin(s) failed to load: ` +
+              plugins.errors.map((e) => `${e.file}: ${e.error}`).join('; '),
+          );
+        }
+        for (const s of plugins.skipped ?? []) {
+          const message = `plugin_skipped: ${s.file}: ${s.error}`;
+          if (log) log.log({ type: 'warning', traceId: 'builder', message });
+          else console.warn(`[builder] ${message}`);
+        }
         loadedPlugins = plugins;
         if (plugins.reranker && !this._reranker) {
           this._reranker = plugins.reranker;
@@ -1354,7 +1317,7 @@ export class SmartAgentBuilder {
 
       // ---- Skill vectorization (optional) ------------------------------------
       if (this._skillManager && toolsRag && this._vectorizeSkills) {
-        await vectorizeSkills(this._skillManager, toolsRag, requestLogger, log);
+        await vectorizeSkills(this._skillManager, toolsRag, requestLogger);
       }
 
       // ---- Pipeline initialization -------------------------------------------
@@ -1432,6 +1395,7 @@ export class SmartAgentBuilder {
         reranker: this._reranker,
         queryExpander: this._queryExpander,
         toolPolicy: this._toolPolicy,
+        toolAvailabilityPolicy: this._toolAvailabilityPolicy,
         injectionDetector: this._injectionDetector,
         toolCache: this._toolCache,
         outputValidator: this._outputValidator,
@@ -1471,6 +1435,9 @@ export class SmartAgentBuilder {
           pipeline,
           ...(log ? { logger: log } : {}),
           ...(this._toolPolicy ? { toolPolicy: this._toolPolicy } : {}),
+          ...(this._toolAvailabilityPolicy
+            ? { toolAvailabilityPolicy: this._toolAvailabilityPolicy }
+            : {}),
           ...(this._injectionDetector
             ? { injectionDetector: this._injectionDetector }
             : {}),
@@ -1605,7 +1572,26 @@ export class SmartAgentBuilder {
       // Everything from here down (model validation was already done above)
       // can throw before a handle exists to own `close()`: stop every server
       // already registered in `closeFns` — via `withMcpServers` — on the
-      // ORIGINAL failure, then let that failure through unchanged.
+      // ORIGINAL failure, then let that failure through unchanged. The MCP
+      // connection strategy is disposed too, as close() would (spec §17.43
+      // D96: a failed build releases what it already took); a dispose failure
+      // is reported, never masks the original.
+      try {
+        await connectionStrategy?.dispose?.();
+      } catch (disposeErr) {
+        const message =
+          disposeErr instanceof Error ? disposeErr.message : String(disposeErr);
+        if (log)
+          log.log({
+            type: 'warning',
+            traceId: 'builder',
+            message: `build_failed_connection_strategy_dispose_failed: ${message}`,
+          });
+        else
+          console.warn(
+            `[builder] build_failed_connection_strategy_dispose_failed: ${message}`,
+          );
+      }
       await stopAll(closeFns);
       throw err;
     }

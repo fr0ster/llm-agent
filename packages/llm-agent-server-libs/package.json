@@ -29,10 +29,6 @@
       "types": "./dist/pipelines/controller.d.ts",
       "default": "./dist/pipelines/controller.js"
     },
-    "./legacy/flat": {
-      "types": "./dist/legacy/flat.d.ts",
-      "default": "./dist/legacy/flat.js"
-    },
     "./legacy/linear": {
       "types": "./dist/legacy/linear.d.ts",
       "default": "./dist/legacy/linear.js"
@@ -67,6 +63,7 @@
     "@mcp-abap-adt/llm-agent-libs": "^30.1.0",
     "@mcp-abap-adt/llm-agent-mcp": "^30.1.0",
     "@mcp-abap-adt/llm-agent-rag": "^30.1.0",
+    "@mcp-abap-adt/llm-agent-reranker": "^30.1.0",
     "@mcp-abap-adt/sap-aicore-llm": "^30.1.0"
   },
   "peerDependenciesMeta": {

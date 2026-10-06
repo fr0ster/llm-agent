@@ -16,10 +16,10 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
-  type IEmbedder,
   type ILlm,
   type IMcpClient,
   type IMcpFailureClassifier,
+  type IRetrievalEmbedder,
   type LlmResponse,
   type LlmTool,
   McpError,
@@ -35,10 +35,9 @@ import { controllerPlugin, fakeControllerServerCtx } from './fixtures.js';
 // established, not the ambiguity gate): the fixture's dim-1 [0] embedder yields
 // distance 1.00, which makes the controller ask for clarification and suspend
 // BEFORE it ever plans/executes.
-const constEmbedder = symmetricEmbedder({
+const constEmbedder: IRetrievalEmbedder = symmetricEmbedder({
   embed: async () => ({ vector: [1, 0, 0] }),
-  dimensions: 3,
-}) as unknown as IEmbedder;
+});
 
 // A stateful scripted LLM: chat() shifts the next queued response; an exhausted
 // queue returns benign empty content so an unexpected extra round-trip cannot
@@ -137,7 +136,7 @@ describe('pipeline: controller — MCP failure classifier wiring', () => {
       // goal clears the target-state gate and the run proceeds to plan/execute.
       embedder: constEmbedder,
       stepperKnowledgeBackend: new InMemoryKnowledgeBackend(
-        makeKnowledgeSemanticIndex(symmetricEmbedder(constEmbedder)),
+        makeKnowledgeSemanticIndex(constEmbedder),
       ),
       // Complete knowledge-rag handle (the controller writes goal/plan/step
       // artifacts through it — the fixture's minimal stub lacks write/list).

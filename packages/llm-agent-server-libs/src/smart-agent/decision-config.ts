@@ -1,3 +1,5 @@
+import { numberOf } from './config-fields.js';
+
 /** `decision:` — a decision model (numbers, not text). Secrets never here. */
 export interface SmartServerDecisionConfig {
   provider: 'typesafe';
@@ -28,17 +30,15 @@ export interface SmartServerRetrievalConfig {
  * The one normalisation of an integer field, shared by the resolver and the
  * validator. `loadYamlConfig` substitutes `${VAR}` as a STRING, so `"5000"` and
  * `"0"` arrive as text and must count as integers; `""` (an unset variable with
- * no fallback) is invalid, never 0.
+ * no fallback) is invalid, never 0. The string form follows `NUMBER_LITERAL`
+ * (spec D83 (6)).
  */
 export function parseIntegerField(
   value: unknown,
 ): number | 'invalid' | undefined {
   if (value === undefined || value === null) return undefined;
-  if (typeof value === 'number') {
-    return Number.isInteger(value) ? value : 'invalid';
-  }
-  if (typeof value === 'string' && /^\s*-?\d+\s*$/.test(value)) {
-    return Number(value);
-  }
-  return 'invalid';
+  // Spec D83 (6): a number, or a string that is exactly a number literal — no
+  // surrounding spaces (30.1.0 took " 5 "); the integer rule is this parser's.
+  const n = numberOf(value);
+  return n !== undefined && Number.isInteger(n) ? n : 'invalid';
 }

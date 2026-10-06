@@ -7,8 +7,8 @@ import {
 
 describe('ToolAvailabilityRegistry', () => {
   it('blocks tool per session and filters it out', () => {
-    const registry = new ToolAvailabilityRegistry(1_000);
-    registry.block('s1', 'GetTableContent', 'not available');
+    const registry = new ToolAvailabilityRegistry();
+    registry.block('s1', 'GetTableContent', 'not available', 1_000);
 
     const result = registry.filterTools('s1', [
       { name: 'GetTable', description: '', inputSchema: { type: 'object' } },
@@ -27,15 +27,15 @@ describe('ToolAvailabilityRegistry', () => {
   });
 
   it('blocklist is session-scoped', () => {
-    const registry = new ToolAvailabilityRegistry(1_000);
-    registry.block('s1', 'GetTableContent', 'not available');
+    const registry = new ToolAvailabilityRegistry();
+    registry.block('s1', 'GetTableContent', 'not available', 1_000);
 
     assert.equal(registry.isBlocked('s1', 'GetTableContent'), true);
     assert.equal(registry.isBlocked('s2', 'GetTableContent'), false);
   });
 
   it('block expires after ttl', () => {
-    const registry = new ToolAvailabilityRegistry(100);
+    const registry = new ToolAvailabilityRegistry();
     registry.block('s1', 'GetTableContent', 'not available', 100, 1_000);
 
     assert.equal(registry.isBlocked('s1', 'GetTableContent', 1_050), true);

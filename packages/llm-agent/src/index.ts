@@ -76,7 +76,6 @@ export {
 } from './interfaces/tool-namespace.js';
 export type { AnyLogger } from './logger/normalise-logger.js';
 export { isTextLogger, normaliseLogger } from './logger/normalise-logger.js';
-export type { ITextLogger } from './logger/text-logger.js';
 // Logger
 export type { ILogger, LogEvent } from './logger/types.js';
 export { FallbackLlmCallStrategy } from './policy/fallback-llm-call-strategy.js';
@@ -108,7 +107,6 @@ export {
   getResilienceMetadata,
   RESILIENCE_META,
 } from './resilience/embedder-resilience.js';
-export { FallbackRag } from './resilience/fallback-rag.js';
 export {
   type EmbedderRetryOptions,
   extractStatusCode,

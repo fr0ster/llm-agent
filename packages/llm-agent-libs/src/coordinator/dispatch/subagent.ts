@@ -15,7 +15,9 @@ import { composeTask } from './compose-task.js';
  * When constructed with an `ISubAgentContextBuilder`, the builder is invoked
  * before `sub.run()` to assemble the `context` preamble. If the subagent's
  * `contextPolicy === 'required'` and the builder returns empty context,
- * dispatch returns a clean error instead of invoking the subagent.
+ * dispatch returns a clean error instead of invoking the subagent. A builder
+ * that throws fails the step the same way (ok=false, the error's code kept in
+ * the message).
  */
 export class SubAgentDispatch implements IDispatchStrategy {
   readonly name = 'subagent';
@@ -52,14 +54,33 @@ export class SubAgentDispatch implements IDispatchStrategy {
 
     let context: string | undefined;
     if (this.contextBuilder) {
-      const built = await this.contextBuilder.build({
-        task,
-        step,
-        agent: sub,
-        inputText: ctx.inputText,
-        sessionId: ctx.sessionId,
-        signal: ctx.signal,
-      });
+      // Spec §10.5.4 R8: a context build that fails fails the step (the
+      // coordinator reports COORDINATOR_STEP_FAILED); the sub-agent does not
+      // run without its context. The failing component's code is kept in the
+      // message.
+      let built: Awaited<ReturnType<ISubAgentContextBuilder['build']>>;
+      try {
+        built = await this.contextBuilder.build({
+          task,
+          step,
+          agent: sub,
+          inputText: ctx.inputText,
+          sessionId: ctx.sessionId,
+          signal: ctx.signal,
+        });
+      } catch (err) {
+        const code = (err as { code?: unknown } | null)?.code;
+        const message = err instanceof Error ? err.message : String(err);
+        return {
+          stepId: step.id,
+          output: '',
+          durationMs: 0,
+          ok: false,
+          error: `SubAgentDispatch: context build for subagent '${agentName}' failed: ${
+            typeof code === 'string' ? `[${code}] ` : ''
+          }${message}`,
+        };
+      }
       context = built.context.length > 0 ? built.context : undefined;
     }
 

@@ -52,41 +52,35 @@ export class DefaultSubAgentContextBuilder implements ISubAgentContextBuilder {
     const topKTool = this.config.topKTool ?? DEFAULT_TOP_K_TOOL;
     const maxChars = this.config.maxContextChars ?? DEFAULT_MAX_CHARS;
 
+    // Spec §10.5.4 R8: a source that throws fails the context build — its
+    // error propagates to the caller (COORDINATOR_STEP_FAILED there).
     if (this.config.projectSource) {
-      try {
-        const results = await this.config.projectSource(
-          req.task,
-          topKProject,
-          req.signal,
-        );
-        for (const r of results.slice(0, topKProject)) {
-          parts.push(r.text);
-          sources.push({
-            kind: 'rag',
-            ref: this.refOf(r, 'path') ?? 'unknown',
-          });
-        }
-      } catch {
-        // Retrieval errors are non-fatal — caller observes empty source.
+      const results = await this.config.projectSource(
+        req.task,
+        topKProject,
+        req.signal,
+      );
+      for (const r of results.slice(0, topKProject)) {
+        parts.push(r.text);
+        sources.push({
+          kind: 'rag',
+          ref: this.refOf(r, 'path') ?? 'unknown',
+        });
       }
     }
 
     if (this.config.toolSource) {
-      try {
-        const results = await this.config.toolSource(
-          req.task,
-          topKTool,
-          req.signal,
-        );
-        for (const r of results.slice(0, topKTool)) {
-          parts.push(r.text);
-          sources.push({
-            kind: 'tool-rag',
-            ref: this.refOf(r, 'tool') ?? 'unknown',
-          });
-        }
-      } catch {
-        // Same policy as projectSource.
+      const results = await this.config.toolSource(
+        req.task,
+        topKTool,
+        req.signal,
+      );
+      for (const r of results.slice(0, topKTool)) {
+        parts.push(r.text);
+        sources.push({
+          kind: 'tool-rag',
+          ref: this.refOf(r, 'tool') ?? 'unknown',
+        });
       }
     }
 

@@ -23,6 +23,10 @@ export interface ToolCatalogStatus {
    * as a complete catalog.
    */
   complete: boolean;
+  /** Records written under a tools profile (several per tool). Absent without a profile. */
+  records?: number;
+  /** The tools profile's name. Absent without a profile. */
+  profile?: string;
 }
 
 /**

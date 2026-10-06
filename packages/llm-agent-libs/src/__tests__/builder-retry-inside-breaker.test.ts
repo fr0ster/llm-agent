@@ -104,10 +104,7 @@ test('pre-wrapped shared breaker: the same breaker guards, retry goes under it',
     recoveryWindowMs: 60_000,
   });
   const given = new CircuitBreakerLlm(raw, shared);
-  const h = await builder()
-    .withMainLlm(given)
-    .withCircuitBreakers({ embedder: new CircuitBreaker() })
-    .build();
+  const h = await builder().withMainLlm(given).build();
   try {
     const main = h.agent.currentMainLlm;
     assert.ok(main instanceof CircuitBreakerLlm, 'breaker is outermost');
@@ -133,7 +130,6 @@ test('a caller-cancelled call through retry records nothing and stops retrying',
   });
   const h = await builder()
     .withMainLlm(new CircuitBreakerLlm(raw, shared))
-    .withCircuitBreakers({ embedder: new CircuitBreaker() })
     .build();
   try {
     const main = h.agent.currentMainLlm;

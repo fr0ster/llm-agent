@@ -4,6 +4,12 @@
  */
 
 import type { PlanNode } from '@mcp-abap-adt/llm-agent';
+import {
+  checkKnowledgeSeed,
+  FieldCheck,
+  present,
+  START_NUMBER_RULES,
+} from './config-fields.js';
 
 /**
  * Stepper coordinator modes.
@@ -144,27 +150,73 @@ const MODE_FLOW_PRESET: Record<
   'deep-stepper': { planner: 'llm', executor: 'recursive' },
 };
 
+type Section = Readonly<Record<string, unknown>>;
+
+/** `v` checked as a mapping when written; `undefined` when not written (spec D83 (9), (12)). */
+function optionalSection(
+  check: FieldCheck,
+  field: string,
+  v: unknown,
+): Section | undefined {
+  return present(v) ? (check.section(field, v) ?? {}) : undefined;
+}
+
+/**
+ * One plan / composition node at `f` (spec D83 (9)): a mapping, `goal` a
+ * non-empty string, `id` / `agent` non-empty strings when written,
+ * `dependsOn` a list of non-empty strings when written — never dropped.
+ */
+function parseNodeBase(
+  check: FieldCheck,
+  f: string,
+  v: unknown,
+  index: number,
+):
+  | {
+      node: Section;
+      id: string;
+      goal: string;
+      dependsOn?: string[];
+      agent?: string;
+    }
+  | undefined {
+  const node = check.section(f, v);
+  if (!node) return undefined;
+  const goal = check.text(`${f}.goal`, node.goal);
+  const id =
+    node.id !== undefined ? check.text(`${f}.id`, node.id) : `n${index}`;
+  const agent =
+    node.agent !== undefined ? check.text(`${f}.agent`, node.agent) : undefined;
+  const dependsOn =
+    node.dependsOn !== undefined
+      ? check.list(`${f}.dependsOn`, node.dependsOn, (g, d) => check.text(g, d))
+      : undefined;
+  if (goal === undefined || id === undefined) return undefined;
+  return {
+    node,
+    id,
+    goal,
+    ...(dependsOn !== undefined ? { dependsOn } : {}),
+    ...(agent !== undefined ? { agent } : {}),
+  };
+}
+
 /** Parse declarative `flow.plan` nodes (for the static planner). */
-function parseFlowPlan(raw: unknown): PlanNode[] | undefined {
-  if (!Array.isArray(raw)) return undefined;
-  const nodes = raw
-    .filter(
-      (n): n is Record<string, unknown> =>
-        !!n && typeof (n as { goal?: unknown }).goal === 'string',
-    )
-    .map((n, i) => ({
-      id: typeof n.id === 'string' && n.id ? n.id : `n${i}`,
-      goal: n.goal as string,
-      ...(Array.isArray(n.dependsOn)
-        ? {
-            dependsOn: (n.dependsOn as unknown[]).filter(
-              (d) => typeof d === 'string',
-            ) as string[],
-          }
-        : {}),
-      ...(typeof n.agent === 'string' ? { agent: n.agent } : {}),
-    }));
-  return nodes.length > 0 ? nodes : undefined;
+function parseFlowPlan(
+  raw: unknown,
+  check: FieldCheck,
+  field: string,
+): PlanNode[] | undefined {
+  if (!present(raw)) return undefined;
+  let index = 0;
+  const nodes = check.list(field, raw, (f, v) => {
+    const base = parseNodeBase(check, f, v, index++);
+    if (!base) return undefined;
+    const { node: _node, ...planNode } = base;
+    return planNode as PlanNode;
+  });
+  // A list that is present but empty stays "no plan", as in 30.1.0.
+  return nodes && nodes.length > 0 ? nodes : undefined;
 }
 
 /** Bounds a nested composition flow inherits from the root. */
@@ -183,42 +235,48 @@ type FlowBounds = Pick<
 /**
  * Parse a (possibly nested) `flow` block into a full StepperCompositionSpec,
  * inheriting bounds from the root. Mutually recursive with
- * parseCompositionNodes (function declarations are hoisted).
+ * parseCompositionNodes (function declarations are hoisted). `flowCfg` is a
+ * checked section (spec D83 (9)); its blocks are checked before a field of
+ * them is read, and read through `?.` (D83 (14)).
  */
 function parseNestedFlowSpec(
-  flowCfg:
-    | {
-        planner?: {
-          type?: string;
-          granularity?: string;
-          systemPrompt?: string;
-        };
-        executor?: { type?: string; systemPrompt?: string };
-        plan?: unknown;
-        nodes?: unknown;
-      }
-    | undefined,
+  flowCfg: Section,
   bounds: FlowBounds,
+  check: FieldCheck,
+  field: string,
 ): StepperCompositionSpec {
-  const plannerType = flowCfg?.planner?.type ?? 'llm';
+  const planner = optionalSection(check, `${field}.planner`, flowCfg.planner);
+  const executorCfg = optionalSection(
+    check,
+    `${field}.executor`,
+    flowCfg.executor,
+  );
+  const plannerType = (planner?.type ?? 'llm') as string;
   if (!['none', 'llm', 'static'].includes(plannerType))
     throw new Error(`flow.planner.type must be none|llm|static`);
-  const granularity = flowCfg?.planner?.granularity ?? 'shallow';
+  const granularity = (planner?.granularity ?? 'shallow') as string;
   if (!['shallow', 'detailed'].includes(granularity))
     throw new Error(`flow.planner.granularity must be shallow|detailed`);
-  const executor = flowCfg?.executor?.type ?? 'cyclic-react';
+  const executor = (executorCfg?.type ?? 'cyclic-react') as string;
   if (!['simple', 'cyclic-react', 'recursive'].includes(executor))
     throw new Error(`flow.executor.type must be simple|cyclic-react|recursive`);
   const plannerSystemPrompt = parseSystemPromptOverride(
-    flowCfg?.planner?.systemPrompt,
-    'flow.planner.systemPrompt',
+    check,
+    `${field}.planner.systemPrompt`,
+    planner?.systemPrompt,
   );
   const executorSystemPrompt = parseSystemPromptOverride(
-    flowCfg?.executor?.systemPrompt,
-    'flow.executor.systemPrompt',
+    check,
+    `${field}.executor.systemPrompt`,
+    executorCfg?.systemPrompt,
   );
-  const plan = parseFlowPlan(flowCfg?.plan);
-  const nodes = parseCompositionNodes(flowCfg?.nodes, bounds);
+  const plan = parseFlowPlan(flowCfg.plan, check, `${field}.plan`);
+  const nodes = parseCompositionNodes(
+    flowCfg.nodes,
+    bounds,
+    check,
+    `${field}.nodes`,
+  );
   return {
     // Declared nodes ARE the plan ⇒ this level is static (keep the spec honest:
     // buildFromComposition routes a node-bearing level to a StaticPlanner).
@@ -234,41 +292,45 @@ function parseNestedFlowSpec(
   };
 }
 
-/** Validate an optional system-prompt override: must be a non-empty string. */
+/**
+ * An optional system-prompt override at `field`: a non-empty string when
+ * written (spec D83 (9)); a key with no value is `has no value` (D83 (13)),
+ * never "no override".
+ */
 function parseSystemPromptOverride(
+  check: FieldCheck,
+  field: string,
   raw: unknown,
-  label: string,
 ): string | undefined {
-  if (raw === undefined || raw === null) return undefined;
-  if (typeof raw !== 'string' || raw.trim() === '')
-    throw new Error(`coordinator.${label} must be a non-empty string`);
-  return raw;
+  return raw === undefined ? undefined : check.text(field, raw);
 }
 
 /** Parse composition nodes; a node with a nested `flow` recurses into a sub-spec. */
 function parseCompositionNodes(
   raw: unknown,
   bounds: FlowBounds,
+  check: FieldCheck,
+  field: string,
 ): CompositionNode[] | undefined {
-  if (!Array.isArray(raw)) return undefined;
-  const nodes = raw
-    .filter(
-      (n): n is Record<string, unknown> =>
-        !!n && typeof (n as { goal?: unknown }).goal === 'string',
-    )
-    .map((n, i) => ({
-      id: typeof n.id === 'string' && n.id ? n.id : `n${i}`,
-      goal: n.goal as string,
-      ...(Array.isArray(n.dependsOn)
-        ? {
-            dependsOn: (n.dependsOn as unknown[]).filter(
-              (d) => typeof d === 'string',
-            ) as string[],
-          }
+  if (!present(raw)) return undefined;
+  let index = 0;
+  const nodes = check.list(field, raw, (f, v) => {
+    const base = parseNodeBase(check, f, v, index++);
+    if (!base) return undefined;
+    const { node, id, goal, dependsOn } = base;
+    const flow = optionalSection(check, `${f}.flow`, node.flow);
+    const out: CompositionNode = {
+      id,
+      goal,
+      ...(dependsOn !== undefined ? { dependsOn } : {}),
+      ...(flow !== undefined
+        ? { flow: parseNestedFlowSpec(flow, bounds, check, `${f}.flow`) }
         : {}),
-      ...(n.flow ? { flow: parseNestedFlowSpec(n.flow as never, bounds) } : {}),
-    }));
-  return nodes.length > 0 ? nodes : undefined;
+    };
+    return out;
+  });
+  // A list that is present but empty stays "no nodes", as in 30.1.0.
+  return nodes && nodes.length > 0 ? nodes : undefined;
 }
 
 /**
@@ -287,120 +349,137 @@ export function parseStepperCoordinatorConfig(
   const mode = (coord.mode as StepperMode | undefined) ?? 'planned-react';
   if (!MODES.has(mode))
     throw new Error(`unknown coordinator.mode '${String(coord.mode)}'`);
+  // Spec D83 (7), (9): every checked field first — named as the key inside the
+  // pipeline's `config` — then done, the only way they leave the check.
+  const check = new FieldCheck();
+  const R = START_NUMBER_RULES;
 
   // Tool permissioning is the MCP SERVER's responsibility — whatever it exposes
   // via tools/list is allowed. The agent does not classify tools (read-only vs
   // mutating); there is no agent-side gate. The consumer wires the agent to a
   // server that exposes only the permitted tools (e.g. a read-only MCP proxy).
 
-  const stepper = (coord.stepper as Record<string, unknown> | undefined) ?? {};
+  const stepper = optionalSection(check, 'stepper', coord.stepper) ?? {};
   const reviewerCfg =
-    (stepper.reviewer as { atDepths?: number[] | 'all' } | undefined) ?? {};
-  const atDepths = reviewerCfg.atDepths ?? [0, 1];
+    optionalSection(check, 'stepper.reviewer', stepper.reviewer) ?? {};
+  const depths = (field: string, v: unknown): 'all' | number[] =>
+    v === 'all'
+      ? 'all'
+      : (check.list(field, v, (f, d) => check.number(f, R.depth, d)) ?? []);
+  const atDepths =
+    reviewerCfg.atDepths !== undefined
+      ? depths('stepper.reviewer.atDepths', reviewerCfg.atDepths)
+      : [0, 1];
   const reviewerAtDepths =
     atDepths === 'all'
       ? { has: () => true }
       : (() => {
-          const s = new Set(atDepths as number[]);
+          const s = new Set(atDepths);
           return { has: (d: number) => s.has(d) };
         })();
 
-  const knowledgeSeed = Array.isArray(coord.knowledgeSeed)
-    ? (
-        coord.knowledgeSeed as Array<{
-          content?: unknown;
-          artifactType?: unknown;
-        }>
-      )
-        .filter(
-          (e) => e && typeof e.content === 'string' && e.content.trim() !== '',
-        )
-        .map((e) => ({
-          content: e.content as string,
-          artifactType:
-            typeof e.artifactType === 'string' && e.artifactType
-              ? e.artifactType
-              : 'guidance',
-        }))
+  const knowledgeSeed = present(coord.knowledgeSeed)
+    ? checkKnowledgeSeed(check, 'knowledgeSeed', coord.knowledgeSeed)
     : [];
 
   // Resolve the program flow: explicit `coordinator.flow` overrides the
   // mode-derived preset per component. `mode` thus becomes a preset alias.
   const preset = MODE_FLOW_PRESET[mode];
-  const flowCfg = coord.flow as
-    | {
-        planner?: {
-          type?: string;
-          granularity?: string;
-          systemPrompt?: string;
-        };
-        executor?: { type?: string; systemPrompt?: string };
-        finalizer?: { type?: string };
-        evaluator?: {
-          enabled?: boolean;
-          atDepths?: number[] | 'all';
-          systemPrompt?: string;
-        };
-        plan?: unknown;
-        nodes?: unknown;
-      }
-    | undefined;
-  const plannerType = flowCfg?.planner?.type ?? preset.planner;
+  const flowCfg = optionalSection(check, 'flow', coord.flow);
+  const plannerCfg = optionalSection(check, 'flow.planner', flowCfg?.planner);
+  const executorCfg = optionalSection(
+    check,
+    'flow.executor',
+    flowCfg?.executor,
+  );
+  const finalizerCfg = optionalSection(
+    check,
+    'flow.finalizer',
+    flowCfg?.finalizer,
+  );
+  const evaluatorCfg = optionalSection(
+    check,
+    'flow.evaluator',
+    flowCfg?.evaluator,
+  );
+  const plannerType = (plannerCfg?.type ?? preset.planner) as string;
   if (!['none', 'llm', 'static'].includes(plannerType))
     throw new Error(`coordinator.flow.planner.type must be none|llm|static`);
-  const granularity = flowCfg?.planner?.granularity ?? 'shallow';
+  const granularity = (plannerCfg?.granularity ?? 'shallow') as string;
   if (!['shallow', 'detailed'].includes(granularity))
     throw new Error(
       `coordinator.flow.planner.granularity must be shallow|detailed`,
     );
-  const executorType = flowCfg?.executor?.type ?? preset.executor;
+  const executorType = (executorCfg?.type ?? preset.executor) as string;
   if (!['simple', 'cyclic-react', 'recursive'].includes(executorType))
     throw new Error(
       `coordinator.flow.executor.type must be simple|cyclic-react|recursive`,
     );
-  const finalizerType = flowCfg?.finalizer?.type ?? 'llm';
+  const finalizerType = finalizerCfg?.type ?? 'llm';
   if (finalizerType !== 'llm')
     throw new Error(
       `coordinator.flow.finalizer.type 'passthrough' is not yet implemented (use 'llm')`,
     );
   const plannerSystemPrompt = parseSystemPromptOverride(
-    flowCfg?.planner?.systemPrompt,
+    check,
     'flow.planner.systemPrompt',
+    plannerCfg?.systemPrompt,
   );
   const executorSystemPrompt = parseSystemPromptOverride(
-    flowCfg?.executor?.systemPrompt,
+    check,
     'flow.executor.systemPrompt',
+    executorCfg?.systemPrompt,
   );
   // 18.1 Evaluator: ON by default at all depths (per design). Disable via
   // `flow.evaluator.enabled: false`; narrow via `flow.evaluator.atDepths`.
-  const evaluatorEnabled = flowCfg?.evaluator?.enabled !== false;
-  // RUNAWAY GUARD: demand-driven recursion (executor:recursive / deep-stepper)
-  // terminates via the Evaluator (executable → leaf, needs-work → recurse).
-  // Without it recursion has no termination judge — that is exactly the 18.0
-  // runaway (141 spawns). So recursion REQUIRES the Evaluator enabled.
-  if (executorType === 'recursive' && !evaluatorEnabled)
-    throw new Error(
-      'coordinator.flow.executor.type "recursive" (deep-stepper) requires the Evaluator ' +
-        '(it is the recursion terminator) — do not set coordinator.flow.evaluator.enabled: false',
-    );
-  const evalAtDepths = flowCfg?.evaluator?.atDepths ?? 'all';
+  const evaluatorEnabled = check.flagOr(
+    'flow.evaluator.enabled',
+    evaluatorCfg?.enabled,
+    true,
+  );
+  const evalAtDepths =
+    evaluatorCfg?.atDepths !== undefined
+      ? depths('flow.evaluator.atDepths', evaluatorCfg.atDepths)
+      : 'all';
   const evaluatorAtDepths =
     evalAtDepths === 'all'
       ? { has: () => true }
       : (() => {
-          const s = new Set(evalAtDepths as number[]);
+          const s = new Set(evalAtDepths);
           return { has: (d: number) => s.has(d) };
         })();
   const evaluatorSystemPrompt = parseSystemPromptOverride(
-    flowCfg?.evaluator?.systemPrompt,
+    check,
     'flow.evaluator.systemPrompt',
+    evaluatorCfg?.systemPrompt,
   );
-  const plan = parseFlowPlan(flowCfg?.plan);
+  const plan = parseFlowPlan(flowCfg?.plan, check, 'flow.plan');
 
-  const maxParallelSteps = Number(stepper.maxParallelSteps ?? 4);
-  const maxDepth = Number(stepper.maxDepth ?? 4);
-  const tokenBudget = Number(stepper.tokenBudget ?? 1_000_000);
-  const formalizeTask = coord.formalizeTask === true;
+  // Spec D83 (7): the stepper's numbers, the shared grammar and rules — named as
+  // the key inside the pipeline's `config` (30.1.0: Number("x") → NaN).
+  const maxParallelSteps = check.numberOr(
+    'stepper.maxParallelSteps',
+    R.count,
+    stepper.maxParallelSteps,
+    4,
+  );
+  const maxDepth = check.numberOr(
+    'stepper.maxDepth',
+    R.depth,
+    stepper.maxDepth,
+    4,
+  );
+  const tokenBudget = check.numberOr(
+    'stepper.tokenBudget',
+    R.count,
+    stepper.tokenBudget,
+    1_000_000,
+  );
+  const formalizeTask = check.flagOr(
+    'formalizeTask',
+    coord.formalizeTask,
+    false,
+  );
 
   // Nested composition nodes inherit the root bounds (a sub-cycle uses the same
   // parallelism / depth / budget / safety unless the runtime threads otherwise).
@@ -414,15 +493,14 @@ export function parseStepperCoordinatorConfig(
     tokenBudget,
     formalizeTask,
   };
-  const nodes = parseCompositionNodes(flowCfg?.nodes, bounds);
+  const nodes = parseCompositionNodes(
+    flowCfg?.nodes,
+    bounds,
+    check,
+    'flow.nodes',
+  );
 
-  // Static planner needs an explicit plan OR declared nodes (nodes ARE the plan).
-  if (plannerType === 'static' && !plan && !nodes)
-    throw new Error(
-      `coordinator.flow.planner.type 'static' requires coordinator.flow.plan or coordinator.flow.nodes`,
-    );
-
-  return {
+  const result: StepperCoordinatorConfig = {
     mode,
     reviewerAtDepths,
     maxParallelSteps,
@@ -445,4 +523,23 @@ export function parseStepperCoordinatorConfig(
       ...(nodes ? { nodes } : {}),
     },
   };
+  // The only way the checked values leave the check; nothing after it checks a
+  // field. The cross-field rules read valid values only.
+  const valid = check.done(result);
+
+  // RUNAWAY GUARD: demand-driven recursion (executor:recursive / deep-stepper)
+  // terminates via the Evaluator (executable → leaf, needs-work → recurse).
+  // Without it recursion has no termination judge — that is exactly the 18.0
+  // runaway (141 spawns). So recursion REQUIRES the Evaluator enabled.
+  if (valid.flow.executor === 'recursive' && !valid.flow.evaluatorEnabled)
+    throw new Error(
+      'coordinator.flow.executor.type "recursive" (deep-stepper) requires the Evaluator ' +
+        '(it is the recursion terminator) — do not set coordinator.flow.evaluator.enabled: false',
+    );
+  // Static planner needs an explicit plan OR declared nodes (nodes ARE the plan).
+  if (plannerType === 'static' && !valid.flow.plan && !valid.flow.nodes)
+    throw new Error(
+      `coordinator.flow.planner.type 'static' requires coordinator.flow.plan or coordinator.flow.nodes`,
+    );
+  return valid;
 }

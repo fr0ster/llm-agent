@@ -210,6 +210,12 @@ export interface LlmToolCall {
   id: string;
   name: string;
   arguments: Record<string, unknown>;
+  /**
+   * Set when the provider's argument text could not be parsed as a JSON object —
+   * the parse error's message; `arguments` is then `{}`. A call carrying it is
+   * never run: its tool result is the error (spec §10.5.2 N2, D87). Absent = parsed.
+   */
+  argumentsError?: string;
 }
 
 export interface LlmToolCallDelta {

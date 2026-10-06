@@ -47,7 +47,7 @@ test('query() filters catalog by RAG hits (tool:Name:... ids)', async () => {
   );
 });
 
-test('query() falls back to catalog slice when RAG returns 0 hits', async () => {
+test('query() returns [] when RAG returns 0 hits — never a catalog slice (spec §10.5.3 M9)', async () => {
   const toolsRag = { query: async () => ok([]) } as never; // IRag
   const h = await makeToolsRagHandle(
     [fakeClient([{ name: 'A' }])],
@@ -55,20 +55,19 @@ test('query() falls back to catalog slice when RAG returns 0 hits', async () => 
     embedder,
   );
   const r = await h.query('x', 10);
-  assert.deepEqual(
-    r.map((t) => t.name),
-    ['A'],
-  );
+  assert.deepEqual(r, []);
 });
 
-test('eager catalog-load failure is swallowed; lookup() returns undefined', async () => {
+test('eager catalog-load failure rejects the handle (spec §10.5.9 V7)', async () => {
   const throwing = {
     listTools: async () => {
       throw new Error('boom');
     },
   } as never;
-  const h = await makeToolsRagHandle([throwing], undefined, undefined);
-  assert.equal(h.lookup('anything'), undefined);
+  await assert.rejects(
+    makeToolsRagHandle([throwing], undefined, undefined),
+    /boom/,
+  );
 });
 
 test('query(text, k, options) forwards options to toolsRag.query', async () => {

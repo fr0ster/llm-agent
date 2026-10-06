@@ -1,5 +1,9 @@
 export { HeuristicInjectionDetector } from './heuristic-injection-detector.js';
 export {
+  HeuristicToolAvailabilityPolicy,
+  type IToolAvailabilityPolicy,
+} from './tool-availability-policy.js';
+export {
   isToolContextUnavailableError,
   ToolAvailabilityRegistry,
 } from './tool-availability-registry.js';

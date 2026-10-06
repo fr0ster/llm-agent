@@ -2,19 +2,21 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
   type DecisionRequest,
-  type IDecisionModel,
   type ILlm,
+  type IProbabilityDecision,
   type IRag,
   type RagResult,
   TextOnlyEmbedding,
 } from '@mcp-abap-adt/llm-agent';
 import {
   EmbeddingRetrieval,
-  PASSAGE_QUESTION,
   RerankAllRetrieval,
   RerankedRetrieval,
-  TOOL_QUESTION,
 } from '@mcp-abap-adt/llm-agent-libs';
+import {
+  PASSAGE_QUESTION,
+  TOOL_QUESTION,
+} from '@mcp-abap-adt/llm-agent-reranker';
 import { resolveRetrievalStrategies } from '../resolve-retrieval.js';
 
 const HITS: RagResult[] = [
@@ -35,7 +37,7 @@ function storeRecording() {
 
 function decisionModel() {
   const seen: DecisionRequest[] = [];
-  const model: IDecisionModel = {
+  const model: IProbabilityDecision = {
     decide: async (req) => {
       seen.push(req);
       const answers: Record<string, { type: 'noul'; probability: number }> = {};

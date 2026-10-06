@@ -4,9 +4,11 @@ import {
   type IRagProviderRegistry,
   type IRagRegistry,
   type RagCollectionRecord,
-  SimpleRagRegistry,
+  RagError,
+  SmartAgentError,
 } from '@mcp-abap-adt/llm-agent';
 import type { SessionGraphIdentity } from '@mcp-abap-adt/llm-agent-libs';
+import { SimpleRagRegistry } from '@mcp-abap-adt/llm-agent-rag';
 
 export interface SessionRagRegistryInput {
   readonly identity: SessionGraphIdentity;
@@ -17,7 +19,7 @@ export interface SessionRagRegistryInput {
   readonly globals: IRagRegistry;
   /** Providers whose catalogs are read, and which the new registry creates through. */
   readonly providers?: IRagProviderRegistry;
-  /** Where rejected catalog rows and failed reads are reported. */
+  /** Where rejected catalog rows and skipped globals are reported. */
   readonly logger?: ILogger;
   /**
    * Catalog findings already reported, keyed per provider and row. A rejected
@@ -25,8 +27,8 @@ export interface SessionRagRegistryInput {
    * so every session would repeat them; pass ONE set for the owner's lifetime
    * (`SmartServer` holds one) and each is logged once. Owned by the caller, so
    * two unrelated servers in one process never silence each other. Omitted,
-   * every call reports everything. Failures to read or open are not deduped:
-   * they may be transient, and each one matters.
+   * every call reports everything. A failure to describe, open or adopt is
+   * not reported here: it fails the session's creation (spec §10.5.9 V1).
    */
   readonly reported?: Set<string>;
 }
@@ -39,6 +41,11 @@ export interface SessionRagRegistryInput {
  * openCollection and adopt for each record kept (§6.3). This server holds no
  * policy of its own, so every catalogued global is kept; a consumer that
  * decides which globals a caller may reach reads the record's attributes here.
+ *
+ * A catalog that cannot be read, or a collection of this identity that cannot
+ * be opened or adopted, rejects with a `RagError` naming the provider and the
+ * collection, the original error as its `cause` and its code kept (spec
+ * §10.5.9 V1): the session is not created without it.
  *
  * The globals are copied in ONCE, when the session is created: a global added
  * to the deployment registry afterwards is not seen by a session already
@@ -84,24 +91,22 @@ export async function buildSessionRagRegistry(
   for (const providerName of providers.listProviders()) {
     const provider = providers.getProvider(providerName);
     if (!provider?.describeCollections || !provider.openCollection) continue;
+    // Spec §10.5.9 V1: a persisted collection that cannot be described,
+    // opened or adopted fails the session's creation — never a session that
+    // silently lacks it.
     let described: Awaited<
       ReturnType<NonNullable<IRagProvider['describeCollections']>>
     >;
     try {
       described = await provider.describeCollections();
     } catch (err) {
-      warn(
-        `rag_hydration_failed: provider '${providerName}': ${
-          err instanceof Error ? err.message : String(err)
-        }`,
-      );
-      continue;
+      throw hydrationError(err, `provider '${providerName}': describe`);
     }
     if (!described.ok) {
-      warn(
-        `rag_hydration_failed: provider '${providerName}': ${described.error.message}`,
+      throw hydrationError(
+        described.error,
+        `provider '${providerName}': describe`,
       );
-      continue;
     }
     for (const row of described.value.rejected) {
       warnOnce(
@@ -120,25 +125,16 @@ export async function buildSessionRagRegistry(
         );
         continue;
       }
+      const where = `provider '${providerName}' collection '${record.name}' (store '${record.storeName}')`;
       let opened: Awaited<
         ReturnType<NonNullable<IRagProvider['openCollection']>>
       >;
       try {
         opened = await provider.openCollection(record);
       } catch (err) {
-        warn(
-          `rag_hydration_open_failed: provider '${providerName}' store '${record.storeName}': ${
-            err instanceof Error ? err.message : String(err)
-          }`,
-        );
-        continue;
+        throw hydrationError(err, `${where}: open`);
       }
-      if (!opened.ok) {
-        warn(
-          `rag_hydration_open_failed: provider '${providerName}' store '${record.storeName}': ${opened.error.message}`,
-        );
-        continue;
-      }
+      if (!opened.ok) throw hydrationError(opened.error, `${where}: open`);
       try {
         registry.adopt(
           record,
@@ -147,15 +143,28 @@ export async function buildSessionRagRegistry(
           providerName,
         );
       } catch (err) {
-        warn(
-          `rag_hydration_adopt_failed: provider '${providerName}' store '${record.storeName}': ${
-            err instanceof Error ? err.message : String(err)
-          }`,
-        );
+        throw hydrationError(err, `${where}: adopt`);
       }
     }
   }
   return registry;
+}
+
+/**
+ * A hydration failure as a `RagError` naming where it failed — the provider,
+ * and the collection and its store when one was being opened or adopted
+ * (spec §10.5.9 V1) — with the original as its `cause` and its code kept (a
+ * `SmartAgentError`'s code; `RAG_ERROR` for anything else).
+ */
+function hydrationError(err: unknown, where: string): RagError {
+  const wrapped = new RagError(
+    `session RAG hydration failed — ${where}: ${
+      err instanceof Error ? err.message : String(err)
+    }`,
+    err instanceof SmartAgentError ? err.code : undefined,
+  );
+  wrapped.cause = err;
+  return wrapped;
 }
 
 function belongsTo(

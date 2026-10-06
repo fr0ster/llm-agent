@@ -1,21 +1,11 @@
+import {
+  OrchestratorError,
+  PIPELINE_FAILURE_CODES,
+} from '@mcp-abap-adt/llm-agent';
 import type { KnowledgeBackend } from '@mcp-abap-adt/llm-agent-libs';
 import type { RunPhase, SessionBundle } from './types.js';
 
 const BUNDLE_ARTIFACT_TYPE = 'controller-bundle';
-
-const EMPTY_BUNDLE: SessionBundle = {
-  goal: '',
-  plannerPrivate: '',
-  budgets: { stepsUsed: 0, rewindsUsed: 0 },
-};
-
-function emptyBundle(): SessionBundle {
-  return {
-    goal: EMPTY_BUNDLE.goal,
-    plannerPrivate: EMPTY_BUNDLE.plannerPrivate,
-    budgets: { ...EMPTY_BUNDLE.budgets },
-  };
-}
 
 /**
  * Durably persist the session bundle into the KnowledgeBackend, keyed by
@@ -43,7 +33,9 @@ export async function persistBundle(
 
 /**
  * Retrieve the latest persisted bundle for a session. Returns a fresh empty
- * bundle if none exists or if the stored content cannot be parsed.
+ * bundle when none exists. A latest bundle that cannot be parsed is
+ * `STATE_CORRUPT` naming the session (spec §10.5.9 V2) — never an older or an
+ * empty bundle in its place.
  */
 export async function hydrateBundle(
   be: KnowledgeBackend,
@@ -54,13 +46,45 @@ export async function hydrateBundle(
   for (let i = entries.length - 1; i >= 0; i--) {
     const entry = entries[i];
     if (entry.metadata.artifactType !== BUNDLE_ARTIFACT_TYPE) continue;
+    let parsed: unknown;
     try {
-      return JSON.parse(entry.content) as SessionBundle;
-    } catch {
-      // malformed entry — keep scanning backwards for a valid one
+      parsed = JSON.parse(entry.content);
+    } catch (err) {
+      throw corruptBundle(
+        sessionId,
+        `does not parse (${err instanceof Error ? err.message : String(err)})`,
+      );
     }
+    if (
+      parsed === null ||
+      typeof parsed !== 'object' ||
+      Array.isArray(parsed)
+    ) {
+      throw corruptBundle(sessionId, 'is not an object');
+    }
+    const bundle = parsed as Partial<SessionBundle>;
+    if (
+      typeof bundle.goal !== 'string' ||
+      bundle.budgets === null ||
+      typeof bundle.budgets !== 'object'
+    ) {
+      throw corruptBundle(sessionId, 'has no goal or budgets');
+    }
+    return parsed as SessionBundle;
   }
-  return emptyBundle();
+  // No bundle persisted yet: a new session starts from a fresh one.
+  return {
+    goal: '',
+    plannerPrivate: '',
+    budgets: { stepsUsed: 0, rewindsUsed: 0 },
+  };
+}
+
+function corruptBundle(sessionId: string, why: string): OrchestratorError {
+  return new OrchestratorError(
+    `controller session bundle of session '${sessionId}' ${why}`,
+    PIPELINE_FAILURE_CODES.STATE_CORRUPT,
+  );
 }
 
 /**

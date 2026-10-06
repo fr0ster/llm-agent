@@ -3,7 +3,11 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, it } from 'node:test';
-import { ConfigWatcher, type HotReloadableConfig } from '../config-watcher.js';
+import {
+  ConfigWatcher,
+  type HotReloadableConfig,
+  type HotReloadableInput,
+} from '../config-watcher.js';
 
 function tmpFile(content: string): { filePath: string; cleanup: () => void } {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cw-test-'));
@@ -200,6 +204,128 @@ describe('ConfigWatcher', () => {
       assert.equal(last.prompts?.ragTranslate, 'Translate query');
       assert.equal(last.circuitBreaker?.failureThreshold, 10);
       assert.equal(last.circuitBreaker?.recoveryWindowMs, 60000);
+    } finally {
+      cleanup();
+    }
+  });
+  it('passes the values as the file holds them — never coerced (spec D83)', async () => {
+    const { filePath, cleanup } = tmpFile('agent:\n  maxIterations: 5\n');
+    try {
+      const watcher = new ConfigWatcher(filePath, { debounceMs: 50 });
+      const reloads: HotReloadableInput[] = [];
+      watcher.on('reload', (cfg: HotReloadableInput) => reloads.push(cfg));
+      watcher.start();
+      await wait(100);
+      fs.writeFileSync(
+        filePath,
+        'agent:\n  maxIterations: oops\n  showReasoning: "no"\nlogDir: 7\n',
+        'utf8',
+      );
+      await wait(200);
+      watcher.stop();
+      const last = reloads[reloads.length - 1];
+      // 30.1.0: NaN, true and '7' — an invalid value made valid-looking.
+      assert.equal(last.maxIterations, 'oops');
+      assert.equal(last.showReasoning, 'no');
+      assert.equal(last.logDir, 7);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('applies the injected resolveDocument to the whole file before reading a field (spec D83 (8))', async () => {
+    const { filePath, cleanup } = tmpFile('agent:\n  maxIterations: 5\n');
+    try {
+      const seen: unknown[] = [];
+      const watcher = new ConfigWatcher(filePath, {
+        debounceMs: 50,
+        // The consumer's policy — here: every "${MAX}" becomes "7", and the store type is set.
+        resolveDocument: (doc) => {
+          seen.push(doc);
+          return {
+            agent: { maxIterations: '7' },
+            rag: { store: { type: 'in-memory', vectorWeight: 0.4 } },
+          };
+        },
+      });
+      const reloads: HotReloadableInput[] = [];
+      const errors: unknown[] = [];
+      watcher.on('reload', (cfg: HotReloadableInput) => reloads.push(cfg));
+      watcher.on('error', (err: unknown) => errors.push(err));
+      watcher.start();
+      await wait(100);
+      fs.writeFileSync(filePath, 'agent:\n  maxIterations: ${MAX}\n', 'utf8');
+      await wait(200);
+      watcher.stop();
+      // The resolver got the parsed file; the fields were read from what it returned.
+      assert.deepEqual(seen[seen.length - 1], {
+        agent: { maxIterations: '${MAX}' },
+      });
+      assert.deepEqual(reloads[reloads.length - 1], {
+        maxIterations: '7',
+        vectorWeight: 0.4,
+      });
+      assert.deepEqual(errors, []);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('emits error when resolveDocument throws (spec D83 (8))', async () => {
+    const { filePath, cleanup } = tmpFile('agent:\n  maxIterations: 5\n');
+    try {
+      const watcher = new ConfigWatcher(filePath, {
+        debounceMs: 50,
+        resolveDocument: () => {
+          throw new Error('cannot resolve');
+        },
+      });
+      const reloads: unknown[] = [];
+      const errors: unknown[] = [];
+      watcher.on('reload', (cfg: unknown) => reloads.push(cfg));
+      watcher.on('error', (err: unknown) => errors.push(err));
+      watcher.start();
+      await wait(100);
+      fs.writeFileSync(filePath, 'agent:\n  maxIterations: 6\n', 'utf8');
+      await wait(200);
+      watcher.stop();
+      assert.deepEqual(reloads, []);
+      assert.match(String(errors[errors.length - 1]), /cannot resolve/);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('passes the whole resolved document as the second argument of reload (spec D83 (10))', async () => {
+    const { filePath, cleanup } = tmpFile('agent:\n  maxIterations: 5\n');
+    try {
+      const watcher = new ConfigWatcher(filePath, {
+        debounceMs: 50,
+        resolveDocument: (doc) => ({
+          ...(doc as Record<string, unknown>),
+          llm: { model: 'm' },
+        }),
+      });
+      const documents: unknown[] = [];
+      watcher.on('reload', (_values: HotReloadableInput, document: unknown) =>
+        documents.push(document),
+      );
+      watcher.start();
+      await wait(100);
+      fs.writeFileSync(
+        filePath,
+        'agent: broken\nmcp:\n  timeout: 5x\n',
+        'utf8',
+      );
+      await wait(200);
+      watcher.stop();
+      // The resolver's result, whole — the sections no value was read from included
+      // (the values of this file are `{}`: `agent` is not a mapping).
+      assert.deepEqual(documents[documents.length - 1], {
+        agent: 'broken',
+        mcp: { timeout: '5x' },
+        llm: { model: 'm' },
+      });
     } finally {
       cleanup();
     }

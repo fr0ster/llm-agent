@@ -1,9 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { createServer } from 'node:http';
-import type { CallOptions, Message } from '@mcp-abap-adt/llm-agent';
+import type { CallOptions, Message, StopReason } from '@mcp-abap-adt/llm-agent';
 import { toToolCallDelta } from '@mcp-abap-adt/llm-agent';
-import type { SmartAgent, StopReason } from '@mcp-abap-adt/llm-agent-libs';
+import type { SmartAgent } from '@mcp-abap-adt/llm-agent-libs';
 
 // ---------------------------------------------------------------------------
 // Public types

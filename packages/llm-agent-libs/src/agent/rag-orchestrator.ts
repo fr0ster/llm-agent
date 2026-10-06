@@ -15,8 +15,14 @@ import {
   TextOnlyEmbedding,
   toolNameFromRecord,
 } from '@mcp-abap-adt/llm-agent';
+import { callReranker, rerankFailedError } from '../retrieval/rerank-call.js';
 import type { ISpan } from '../tracer/types.js';
-import { summarizeHistory, toEnglishForRag } from './rag-helpers.js';
+import {
+  rejectionError,
+  storeRejection,
+  summarizeHistory,
+  toEnglishForRag,
+} from './rag-helpers.js';
 import type {
   IRagOrchestrator,
   OrchestratedContext,
@@ -66,7 +72,8 @@ export class RagOrchestrator implements IRagOrchestrator {
         processedHistory,
         opts,
       );
-      if (sumResult.ok) processedHistory = sumResult.value;
+      if (!sumResult.ok) return sumResult;
+      processedHistory = sumResult.value;
       this.deps.sessionManager.reset();
     }
 
@@ -98,7 +105,7 @@ export class RagOrchestrator implements IRagOrchestrator {
       const translateStores = this.deps.translateQueryStores;
       let translatedText: string | undefined;
       if (translateStores && translateStores.size > 0) {
-        translatedText = await this.toEnglish(
+        const translation = await this.toEnglish(
           {
             helperLlm: this.deps.helperLlm,
             mainLlm: this.deps.mainLlm,
@@ -107,12 +114,34 @@ export class RagOrchestrator implements IRagOrchestrator {
           combinedActionText,
           opts,
         );
+        if (!translation.ok) return translation;
+        translatedText = translation.value;
         if (this.deps.config.queryExpansionEnabled) {
-          const expandResult = await this.deps.queryExpander.expand(
-            translatedText,
-            opts,
-          );
-          if (expandResult.ok) translatedText = expandResult.value;
+          let expandResult: Awaited<
+            ReturnType<RagOrchestratorDeps['queryExpander']['expand']>
+          >;
+          try {
+            expandResult = await this.deps.queryExpander.expand(
+              translatedText,
+              opts,
+            );
+          } catch (err) {
+            return {
+              ok: false,
+              error: rejectionError('expand', err, 'QUERY_EXPAND_ERROR'),
+            };
+          }
+          // Spec §10.5.6 L2: a failed expander is the request's error.
+          if (!expandResult.ok) {
+            return {
+              ok: false,
+              error: new OrchestratorError(
+                `expand: ${expandResult.error.message}`,
+                expandResult.error.code,
+              ),
+            };
+          }
+          translatedText = expandResult.value;
         }
       }
 
@@ -141,17 +170,40 @@ export class RagOrchestrator implements IRagOrchestrator {
             translateStores?.has(name) && translatedText
               ? translatedEmbedding
               : originalEmbedding;
-          return store.query(emb, k, opts).then((r) => ({ name, result: r }));
+          // A rejection is that store's failure too (R6) — kept with its name.
+          return store.query(emb, k, opts).then(
+            (r) => ({ name, result: r }),
+            (err: unknown) => ({
+              name,
+              result: {
+                ok: false as const,
+                error: storeRejection(err),
+              },
+            }),
+          );
         }),
       );
       ragSpan.end();
       const ragResultsMap: Record<string, RagResult[]> = {};
       for (const { name, result: r } of ragQueryResults) {
-        ragResultsMap[name] = r.ok ? r.value : [];
         this.deps.metrics.ragQueryCount.add(1, {
           store: name,
           hit: String(r.ok && r.value.length > 0),
         });
+      }
+      for (const { name, result: r } of ragQueryResults) {
+        // Spec §10.5.4 R6: a failed store query is the request's error, with
+        // the store's code — never an empty result for that store.
+        if (!r.ok) {
+          return {
+            ok: false,
+            error: new OrchestratorError(
+              `rag-orchestrator: store "${name}" failed: ${r.error.message}`,
+              r.error.code,
+            ),
+          };
+        }
+        ragResultsMap[name] = r.value;
       }
 
       // Rerank results
@@ -163,16 +215,38 @@ export class RagOrchestrator implements IRagOrchestrator {
               translateStores?.has(name) && translatedText
                 ? translatedText
                 : combinedActionText;
-            const rr = await this.deps.reranker.rerank(
+            const rr = await callReranker(
+              this.deps.reranker,
               rerankText,
               results,
               opts,
             );
-            return { name, results: rr.ok ? rr.value : results };
+            if (!rr.ok) {
+              opts?.sessionLogger?.logStep('rerank_error', {
+                store: name,
+                code: rr.failure.code,
+                message: rr.failure.message,
+              });
+              return { name, results, failure: rr.failure };
+            }
+            return { name, results: rr.value };
           }
           return { name, results };
         }),
       );
+      // Spec §9.3, D71: a failed rerank is the request's error, never the
+      // unranked order.
+      for (const e of rerankedEntries) {
+        if ('failure' in e && e.failure) {
+          return {
+            ok: false,
+            error: new OrchestratorError(
+              `rag-orchestrator: store "${e.name}": ${rerankFailedError(e.failure).message}`,
+              'RERANK_ERROR',
+            ),
+          };
+        }
+      }
       const rerankedMap: Record<string, RagResult[]> = {};
       for (const { name, results } of rerankedEntries) {
         rerankedMap[name] = results;
@@ -271,16 +345,35 @@ export class RagOrchestrator implements IRagOrchestrator {
               const emb = this.deps.embedder
                 ? new QueryEmbedding(text, this.deps.embedder, opts)
                 : new TextOnlyEmbedding(text);
-              return store.query(emb, k, opts);
+              // A rejection is that store's failure too — kept with its name.
+              return store.query(emb, k, opts).then(
+                (r) => ({ name, result: r }),
+                (err: unknown) => ({
+                  name,
+                  result: {
+                    ok: false as const,
+                    error: storeRejection(err),
+                  },
+                }),
+              );
             }),
           );
-          for (const result of fallbackResults) {
-            if (result.ok) {
-              for (const r of result.value) {
-                const id = r.metadata.id as string;
-                if (id?.startsWith('skill:')) {
-                  ragSkillNames.add(id.slice(6));
-                }
+          // Spec §10.5.8 S-2: a failed skill query is the request's error,
+          // with the store's code — never "no skills".
+          for (const { name, result } of fallbackResults) {
+            if (!result.ok) {
+              return {
+                ok: false,
+                error: new OrchestratorError(
+                  `rag-orchestrator: skill query of store "${name}" failed: ${result.error.message}`,
+                  result.error.code,
+                ),
+              };
+            }
+            for (const r of result.value) {
+              const id = r.metadata.id as string;
+              if (id?.startsWith('skill:')) {
+                ragSkillNames.add(id.slice(6));
               }
             }
           }
@@ -293,32 +386,76 @@ export class RagOrchestrator implements IRagOrchestrator {
           }
         }
 
-        const allSkillsResult = await this.deps.skillManager.listSkills(opts);
-        if (allSkillsResult.ok) {
-          const allSkills = allSkillsResult.value;
-          const matched =
-            ragSkillNames.size > 0
-              ? allSkills.filter((s) => ragSkillNames.has(s.name))
-              : mode === 'hard'
-                ? allSkills
-                : [];
-          const contentParts: string[] = [];
-          for (const skill of matched) {
-            const contentResult = await skill.getContent(undefined, opts);
-            if (contentResult.ok && contentResult.value) {
-              contentParts.push(
-                `### Skill: ${skill.name}\n${contentResult.value}`,
-              );
-            }
-          }
-          skillContent = contentParts.join('\n\n');
-          opts?.sessionLogger?.logStep('skills_selected', {
-            totalSkills: allSkills.length,
-            ragMatchedSkills: [...ragSkillNames],
-            selectedCount: matched.length,
-            selectedNames: matched.map((s) => s.name),
-          });
+        let allSkillsResult: Awaited<
+          ReturnType<typeof this.deps.skillManager.listSkills>
+        >;
+        try {
+          allSkillsResult = await this.deps.skillManager.listSkills(opts);
+        } catch (err) {
+          return {
+            ok: false,
+            error: rejectionError(
+              'rag-orchestrator: listSkills',
+              err,
+              'SKILL_ERROR',
+            ),
+          };
         }
+        // Spec §10.5.8 S-2: a failed listing or a skill whose content cannot
+        // be read is the request's error — never a skill silently left out.
+        if (!allSkillsResult.ok) {
+          return {
+            ok: false,
+            error: new OrchestratorError(
+              `rag-orchestrator: listSkills failed: ${allSkillsResult.error.message}`,
+              allSkillsResult.error.code,
+            ),
+          };
+        }
+        const allSkills = allSkillsResult.value;
+        const matched =
+          ragSkillNames.size > 0
+            ? allSkills.filter((s) => ragSkillNames.has(s.name))
+            : mode === 'hard'
+              ? allSkills
+              : [];
+        const contentParts: string[] = [];
+        for (const skill of matched) {
+          let contentResult: Awaited<ReturnType<typeof skill.getContent>>;
+          try {
+            contentResult = await skill.getContent(undefined, opts);
+          } catch (err) {
+            return {
+              ok: false,
+              error: rejectionError(
+                `rag-orchestrator: skill "${skill.name}" content`,
+                err,
+                'SKILL_ERROR',
+              ),
+            };
+          }
+          if (!contentResult.ok) {
+            return {
+              ok: false,
+              error: new OrchestratorError(
+                `rag-orchestrator: skill "${skill.name}" content failed: ${contentResult.error.message}`,
+                contentResult.error.code,
+              ),
+            };
+          }
+          if (contentResult.value) {
+            contentParts.push(
+              `### Skill: ${skill.name}\n${contentResult.value}`,
+            );
+          }
+        }
+        skillContent = contentParts.join('\n\n');
+        opts?.sessionLogger?.logStep('skills_selected', {
+          totalSkills: allSkills.length,
+          ragMatchedSkills: [...ragSkillNames],
+          selectedCount: matched.length,
+          selectedNames: matched.map((s) => s.name),
+        });
       }
     } else {
       // If we're here, mode is definitely 'smart' (not 'hard' or 'pass')
@@ -444,7 +581,8 @@ export class RagOrchestrator implements IRagOrchestrator {
         history,
         opts,
       );
-      if (res.ok) processedHistory = res.value;
+      if (!res.ok) return res;
+      processedHistory = res.value;
     }
 
     let subprompts: Subprompt[];

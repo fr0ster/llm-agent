@@ -5,6 +5,10 @@ import type {
   ToolLoopContextBase,
   ToolRound,
 } from '@mcp-abap-adt/llm-agent';
+import {
+  OrchestratorError,
+  PIPELINE_FAILURE_CODES,
+} from '@mcp-abap-adt/llm-agent';
 
 export interface WindowContextStrategyOptions {
   keepLastRounds?: number;
@@ -48,11 +52,27 @@ export class WindowContextStrategy implements IToolLoopContextStrategy {
     return { version: 1, rounds: this.rounds as unknown as never };
   }
 
+  /**
+   * No saved state starts empty (absent by design); a state of another version
+   * or of the wrong shape is `STATE_CORRUPT` — never a silent reset (spec D70).
+   */
   restore(state: SerializableStrategyState): void {
-    this.rounds =
-      state?.version === 1 &&
-      Array.isArray((state as { rounds?: unknown }).rounds)
-        ? (state as unknown as { rounds: ToolRound[] }).rounds
-        : [];
+    if (state === undefined) {
+      this.rounds = [];
+      return;
+    }
+    if (state === null || typeof state !== 'object' || Array.isArray(state)) {
+      throw new OrchestratorError(
+        'tool-loop context (window): saved state is not an object',
+        PIPELINE_FAILURE_CODES.STATE_CORRUPT,
+      );
+    }
+    if (state.version !== 1 || !Array.isArray(state.rounds)) {
+      throw new OrchestratorError(
+        `tool-loop context (window): saved state of version ${String(state.version)} cannot be restored`,
+        PIPELINE_FAILURE_CODES.STATE_CORRUPT,
+      );
+    }
+    this.rounds = state.rounds as unknown as ToolRound[];
   }
 }

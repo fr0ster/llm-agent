@@ -3,6 +3,7 @@ import { describe, it } from 'node:test';
 import type { IBearerCredential } from '@mcp-abap-adt/interfaces-auth';
 import {
   isThrottledError,
+  LlmError,
   type Message,
   resetQuotaGates,
   WaitAsTold,
@@ -557,6 +558,83 @@ describe('SapCoreAIProvider — model catalog', () => {
       models.map((m) => m.id),
       ['text-embedding-3-small'],
     );
+  });
+});
+
+/** A catalog that answers each call from a script: an Error is thrown, an array returned. */
+class ScriptedCatalogProvider extends SapCoreAIProvider {
+  calls = 0;
+  constructor(
+    private readonly answers: Array<Error | SapCoreAICatalogModel[]>,
+  ) {
+    super({ model: 'gpt-4o', apiBaseUrl, credential: testCredential('cat') });
+  }
+  protected override async queryModelCatalog(): Promise<
+    SapCoreAICatalogModel[]
+  > {
+    const answer = this.answers[this.calls++];
+    if (answer instanceof Error) throw answer;
+    return answer;
+  }
+}
+
+describe('SapCoreAIProvider — model catalog unavailable (L5)', () => {
+  const catalog: SapCoreAICatalogModel[] = [
+    {
+      model: 'gpt-4o',
+      versions: [{ isLatest: true, capabilities: ['text-generation'] }],
+    },
+  ];
+
+  it('a catalog answering 503 is an LLM_ERROR carrying the status — not the configured model', async () => {
+    const p = new ScriptedCatalogProvider([
+      new Error('Request failed with status code 503'),
+    ]);
+    await assert.rejects(p.getModels(), (err: unknown) => {
+      assert.ok(err instanceof LlmError);
+      assert.equal(err.code, 'LLM_ERROR');
+      assert.match(err.message, /model catalog unavailable/);
+      assert.match(err.message, /503/);
+      return true;
+    });
+  });
+
+  it('the catalog LLM_ERROR keeps the original error as its cause', async () => {
+    const original = new Error('Request failed with status code 503');
+    const p = new ScriptedCatalogProvider([original]);
+    await assert.rejects(p.getModels(), (err: unknown) => {
+      assert.ok(err instanceof LlmError);
+      assert.equal(err.cause, original);
+      return true;
+    });
+  });
+
+  it('a network error reaching the catalog is an LLM_ERROR', async () => {
+    const p = new ScriptedCatalogProvider([
+      new Error('connect ECONNREFUSED 10.0.0.1:443'),
+    ]);
+    await assert.rejects(p.getEmbeddingModels(), (err: unknown) => {
+      assert.ok(err instanceof LlmError);
+      assert.equal(err.code, 'LLM_ERROR');
+      assert.match(err.message, /ECONNREFUSED/);
+      return true;
+    });
+  });
+
+  it('a failed fetch caches nothing — a later success fills the cache', async () => {
+    const p = new ScriptedCatalogProvider([
+      new Error('Request failed with status code 503'),
+      catalog,
+    ]);
+    await assert.rejects(p.getModels(), LlmError);
+    const models = await p.getModels();
+    assert.deepEqual(
+      models.map((m) => m.id),
+      ['gpt-4o'],
+    );
+    // Served from the cache now: no third catalog call.
+    await p.getModels();
+    assert.equal(p.calls, 2);
   });
 });
 

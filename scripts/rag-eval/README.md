@@ -42,7 +42,7 @@ The embedder and store are built the way `SmartServer.start` builds them:
 | File | What |
 |---|---|
 | `rag-eval.ts` | the harness |
-| `rerank-fallbacks.ts` | counts rerank fallbacks and decides the exit code (tested in `test/repo/rag-eval-fallbacks.test.ts`) |
+| `rerank-errors.ts` | counts failed rerank cases and decides the exit code (tested in `test/repo/rag-eval-fallbacks.test.ts`) |
 | `tools.mcp-abap-adt-readonly.json` | 63 tools from `@mcp-abap-adt/core` 8.13.0, readonly (default for `--tools`) |
 | `tools.mcp-abap-adt-16.0.0-readonly-high.json` | 218 tools from `@mcp-abap-adt/core` 16.0.0, `--exposition=readonly,high` |
 | `queries.en.json` | 30 English cases `{query, expect[]}` for the 8.13.0 catalog |
@@ -68,12 +68,10 @@ to get the keyword-only store.
 | `--overfetch N` | `2` | `rerank`: the store returns K x N candidates for the reranker |
 | `--max-candidates N` | `30` | `rerank-all`: the store's first N candidates go to the reranker; must be >= max(`--k`, 15), else the run is refused |
 | `--config f` + `--llm-key KEY` | none | an `llm:` entry of a `smart-server.yaml` (and its credentials) for the `llm` reranker |
-| `--allow-fallback` | off | accept rerank fallbacks: still reported, but the exit code is not `3` |
 
 Exit code: `0` all configs ran; `1` a config failed (e.g. not all
-vectorized); `2` the harness crashed; `3` a rerank arm fell back to the
-embedding order in at least one case (see below) and `--allow-fallback` was
-not given.
+vectorized); `2` the harness crashed; `3` a rerank arm failed
+(`RERANK_ERROR`) in at least one case (see below).
 
 ## Retrieval strategies
 
@@ -86,15 +84,11 @@ Each config is written once; every arm then queries the same store through
 
 Rerankers: `decision` is `DecisionReranker` over `TypeSafeDecisionModel` with
 `TOOL_QUESTION`; `llm` is `LlmReranker` over the `--llm-key` entry. A reranker
-failure falls back to the embedding order, as in the server — and the strategy
-still answers `ok`, so without a check a reranker that always fails (a bad key,
-HTTP 401) would report embedding metrics as rerank metrics. The eval passes a
-session logger to every query and counts the strategy's
-`retrieval_rerank_error` steps: the `rerank fallbacks` column shows, per arm,
-cases with a fallback / all cases; those cases are marked `[fallback]` (and
-carry `fallbacks` in `--json`); and any fallback in a rerank arm prints a
-warning with the first reason and makes the exit code `3`, unless
-`--allow-fallback`.
+failure is an error, as in the server (`RERANK_ERROR` — no embedding-order
+fallback): the case counts as a miss and is marked `[rerank error]` (and
+carries `rerankError` in `--json`), the `rerank errors` column shows failed
+cases / all cases, and any failed case in a rerank arm prints the first error
+and makes the exit code `3`.
 
 An arm that cannot run is **skipped with a printed reason and the exit code
 stays 0**: `decision` needs `DECISION_API_KEY`; `llm` needs `--config`,
@@ -170,9 +164,8 @@ Per config:
   the `embedding` arm (a miss counts as rank 99).
 - `vectorize` — time for the whole catalog write.
 - `embed/query`, `store/query` — mean per case.
-- `rerank fallbacks` — rerank arms: cases where the reranker failed and the
-  embedding order was used / all cases. Anything but `0/N` means the arm's
-  metrics are partly embedding metrics.
+- `rerank errors` — rerank arms: cases where the reranker failed / all
+  cases; anything but `0/N` means the arm's metrics are not comparable.
 
 Warnings to take seriously:
 

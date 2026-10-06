@@ -501,7 +501,7 @@ describe('SmartServer LLM breakers — one per llm: key behind every role', () =
 // ---------------------------------------------------------------------------
 
 describe('SmartServer embedder breaker — fed by the retrieval embedder', () => {
-  it('failing embeds open the embedder breaker; LLM breakers stay closed; the store falls back', async () => {
+  it("failing embeds open the embedder breaker; LLM breakers stay closed; a request fails with the store's error (R1, R5)", async () => {
     let embeds = 0;
     const failing = {
       embed: async () => {
@@ -529,20 +529,16 @@ describe('SmartServer embedder breaker — fed by the retrieval embedder', () =>
       const s = internals(server);
       const embedderBreaker = s._embedderBreaker;
       assert.ok(embedderBreaker, 'circuitBreaker: builds the embedder breaker');
-      // Two requests; each queries two stores (tools and history, since the
-      // session agents read the shared history store). The request's query
-      // embedding is shared and memoized, but when it fails each store's
-      // VectorRag falls back to embedding the query itself through its own
-      // embedder (FallbackQueryEmbedding) — so a failing request makes one
-      // counted embed per store it reads, and each of them fails.
-      await chat(handle.port, 's-1');
-      assert.equal(
-        embeds,
-        2,
-        'a failing request embeds once per store it reads (store fallback)',
-      );
+      // R1: no store re-embeds a failed query; each store (tools, history)
+      // embeds the text itself because the pipeline has no query embedder
+      // (TextOnlyEmbedding); R5: the store's error fails the request
+      // (CIRCUIT_OPEN once open).
+      const res1 = await chat(handle.port, 's-1');
+      assert.notEqual(res1.status, 200, res1.raw);
+      assert.equal(embeds, 2, 'one counted embed per store');
       assert.equal(embedderBreaker.state, 'closed');
-      await chat(handle.port, 's-2');
+      const res2 = await chat(handle.port, 's-2');
+      assert.notEqual(res2.status, 200, res2.raw);
       assert.equal(embeds, 4);
       const states = await healthStates(handle.port);
       assert.equal(states.at(-1), 'open', 'the embedder breaker is last');
@@ -551,11 +547,10 @@ describe('SmartServer embedder breaker — fed by the retrieval embedder', () =>
         states.slice(0, -1).map(() => 'closed'),
         'the LLM breakers stay closed',
       );
-      // A request that queries a store answers from the fallback: the open
-      // breaker keeps the embedding service out of it.
       const before = embeds;
       const res = await chat(handle.port, 's-3');
-      assert.equal(res.status, 200, res.raw);
+      assert.notEqual(res.status, 200, res.raw);
+      assert.match(res.raw, /CIRCUIT_OPEN/);
       assert.equal(embeds, before, 'no embedding call while open');
     } finally {
       await handle.close();

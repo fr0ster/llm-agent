@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
+  LlmError,
   type Message,
   resetQuotaGates,
   staticApiKey,
@@ -564,5 +565,106 @@ describe("AnthropicProvider — the caller's deadline", () => {
     } finally {
       globalThis.fetch = originalFetch;
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// streamChat — a malformed SSE line is an error (L6)
+// ---------------------------------------------------------------------------
+
+describe('AnthropicProvider — streamChat malformed line (L6)', () => {
+  /** Run `streamChat` against a fetch whose body arrives in the given reads. */
+  async function run(
+    reads: string[],
+  ): Promise<{ contents: string[]; error?: unknown }> {
+    const provider = new AnthropicProvider({
+      credential: staticApiKey('sk-test'),
+      model: 'claude-3-5-sonnet-20241022',
+    });
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () => {
+      const encoder = new TextEncoder();
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          for (const r of reads) controller.enqueue(encoder.encode(r));
+          controller.close();
+        },
+      });
+      return new Response(body, { status: 200 });
+    }) as typeof fetch;
+    const contents: string[] = [];
+    try {
+      for await (const c of provider.streamChat([
+        { role: 'user', content: 'hi' },
+      ])) {
+        if (c.content) contents.push(c.content);
+      }
+      return { contents };
+    } catch (error) {
+      return { contents, error };
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  }
+  const delta = (text: string) =>
+    `event: content_block_delta\ndata: {"delta":{"type":"text_delta","text":"${text}"}}\n\n`;
+
+  it('a content_block_delta whose data line is not JSON ends the stream with LLM_ERROR naming the line', async () => {
+    const { contents, error } = await run([
+      delta('Hello'),
+      'event: content_block_delta\ndata: {"broken\n\n',
+      delta('World'),
+    ]);
+    assert.deepEqual(contents, ['Hello']);
+    assert.ok(error instanceof LlmError, String(error));
+    assert.equal(error.code, 'LLM_ERROR');
+    assert.match(error.message, /data: \{"broken/);
+  });
+
+  it('the error names only the first 200 characters of the line', async () => {
+    const long = `data: {"broken${'x'.repeat(500)}`;
+    const { error } = await run([`event: content_block_delta\n${long}\n\n`]);
+    assert.ok(error instanceof LlmError, String(error));
+    assert.ok(error.message.includes(long.slice(0, 200)));
+    assert.ok(!error.message.includes(long.slice(0, 201)));
+  });
+
+  it('a final line with no trailing newline is delivered', async () => {
+    const { contents, error } = await run([
+      delta('Hello'),
+      'event: content_block_delta\ndata: {"delta":{"type":"text_delta","text":"Tail"}}',
+    ]);
+    assert.equal(error, undefined);
+    assert.deepEqual(contents, ['Hello', 'Tail']);
+  });
+
+  it('a truncated final line with no trailing newline is LLM_ERROR naming it', async () => {
+    const { contents, error } = await run([
+      delta('Hello'),
+      'event: content_block_delta\ndata: {"delta":{"type":"text_d',
+    ]);
+    assert.deepEqual(contents, ['Hello']);
+    assert.ok(error instanceof LlmError, String(error));
+    assert.equal(error.code, 'LLM_ERROR');
+    assert.match(error.message, /data: \{"delta":\{"type":"text_d/);
+  });
+
+  it('a chunk split across two reads still parses (kept)', async () => {
+    const whole = delta('Hello');
+    const { contents, error } = await run([
+      whole.slice(0, 40),
+      whole.slice(40),
+      delta('World'),
+    ]);
+    assert.equal(error, undefined);
+    assert.deepEqual(contents, ['Hello', 'World']);
+  });
+
+  it('an error event still throws "Anthropic stream error:" (kept)', async () => {
+    const { error } = await run([
+      'event: error\ndata: {"error":{"message":"overloaded"}}\n\n',
+    ]);
+    assert.ok(error instanceof Error);
+    assert.equal(error.message, 'Anthropic stream error: overloaded');
   });
 });

@@ -2,7 +2,7 @@
 
 This guide explains how to implement custom components for every pluggable interface in `@mcp-abap-adt/llm-agent` and `@mcp-abap-adt/llm-agent-libs`. Each interface has a description, method signatures, and a working code example.
 
-> **Package split (12.0.0+).** Library helpers — `CircuitBreaker` family, `FallbackRag`, LLM call strategies (`StreamingLlmCallStrategy`, `NonStreamingLlmCallStrategy`, `FallbackLlmCallStrategy`), `ToolCache` / `NoopToolCache`, `ClineClientAdapter`, `AnthropicApiAdapter` / `OpenAiApiAdapter` and their interface types (`NormalizedRequest`, `ApiRequestContext`, `ApiSseEvent`, `ILlmApiAdapter`, `AdapterValidationError`), `normalizeAndValidateExternalTools`, `normalizeExternalTools`, `getStreamToolCallName`, `toToolCallDelta`, `ILogger` — now live in `@mcp-abap-adt/llm-agent`. The composition runtime (`SmartAgentBuilder` and the providers/factories/plugins/skills/sessions/metrics/tracer/validator/reranker/history/pipeline/health/config-watcher around it) lives in `@mcp-abap-adt/llm-agent-libs`. The binary distribution (CLI, HTTP server) is in `@mcp-abap-adt/llm-agent-server` (not a library — do not import from it).
+> **Package split (12.0.0+).** Library helpers — `CircuitBreaker` family, LLM call strategies (`StreamingLlmCallStrategy`, `NonStreamingLlmCallStrategy`, `FallbackLlmCallStrategy`), `ToolCache` / `NoopToolCache`, `ClineClientAdapter`, `AnthropicApiAdapter` / `OpenAiApiAdapter` and their interface types (`NormalizedRequest`, `ApiRequestContext`, `ApiSseEvent`, `ILlmApiAdapter`, `AdapterValidationError`), `normalizeAndValidateExternalTools`, `normalizeExternalTools`, `getStreamToolCallName`, `toToolCallDelta`, `ILogger` — now live in `@mcp-abap-adt/llm-agent`. The composition runtime (`SmartAgentBuilder` and the providers/factories/plugins/skills/sessions/metrics/tracer/validator/reranker/history/pipeline/health/config-watcher around it) lives in `@mcp-abap-adt/llm-agent-libs`. The binary distribution (CLI, HTTP server) is in `@mcp-abap-adt/llm-agent-server` (not a library — do not import from it).
 
 ## Architecture Overview
 
@@ -1156,7 +1156,7 @@ interface IRagDecorator {
 }
 ```
 
-A decorator that wraps another `IRag` (a cache, a tracing wrapper, `FallbackRag`, `StrategyRag`) should
+A decorator that wraps another `IRag` (a cache, a tracing wrapper, a degraded mode of your own, `StrategyRag`) should
 implement `IRagDecorator` and expose the store it wraps as `inner`. `hasRetrievalStrategy(rag)` walks the
 `inner` chain, so a strategy underneath your decorator stays visible: the builder does not wrap the store
 a second time, and `RerankHandler` still skips it — one rerank per query. Without `inner` the chain stops at
@@ -2610,7 +2610,7 @@ All ILlm decorators (`NonStreamingLlm`, `RetryLlm`, `CircuitBreakerLlm`, `RateLi
 
 ### Shared embedder breaker, health breaker list, cancellation
 
-- `SmartAgentBuilder.withCircuitBreakers({ embedder })` takes an embedder `CircuitBreaker` you built and share. The builder guards the stores of its registry with it (a store already wrapped by a `FallbackRag` on the same breaker — `FallbackRag.breaker` — is not wrapped twice) and wraps no LLM. `withCircuitBreaker(config)` is unchanged and still builds its own LLM and embedder breakers. The breaker only sees embedding calls that go through it: wrap the embedder with `withCircuitBreaker(embedder, breaker)` below the document/query role.
+- `SmartAgentBuilder.withCircuitBreakers` is removed, and the builder wraps no store: `withCircuitBreaker(config)` builds the main-LLM breaker only. To fail fast on an embedder outage, wrap the embedder with `withCircuitBreaker(embedder, breaker)` below the document/query role and list the breaker in `HealthCheckerDeps.circuitBreakers`; with it open, a store's query returns `CIRCUIT_OPEN`. `FallbackRag` is removed — for a degraded mode, write your own `IRag` wrapper (implement `IRagDecorator`).
 - `HealthCheckerDeps.circuitBreakers` accepts an array or a provider function (`() => readonly CircuitBreaker[]`), read on every `/health` call, so a list that changes at run time (a swapped LLM gets a new breaker) is reported live. Entries are listed by `index`, with no labels.
 - A call whose `options.signal` was aborted by the caller — with any reason whose `name` is not `TimeoutError` — is not the provider's failure. `isCallerCancellation(signal)` (exported from `@mcp-abap-adt/llm-agent`) tells the two apart; `CircuitBreakerLlm` and `CircuitBreakerEmbedder` use it and record neither failure nor success. A custom breaker or decorator that counts failures should do the same. The agent's `timeoutMs` signal aborts with a `TimeoutError` reason, which is still a failure.
 
@@ -2811,7 +2811,7 @@ Both logger shapes are accepted at the seams listed below, which is where they a
 If you already have an ordinary text logger, pass it:
 
 ```ts
-import type { ITextLogger } from '@mcp-abap-adt/llm-agent';
+import type { ILogger } from '@mcp-abap-adt/interfaces-utils'; // the ordinary text logger
 
 const handle = await new SmartAgentBuilder(cfg)
   .withMainLlm(llm)
@@ -3176,12 +3176,8 @@ Only `.js`, `.mjs`, and `.ts` files are loaded. Subdirectories are ignored.
 Replace the filesystem scanner with your own discovery mechanism:
 
 ```ts
-import {
-  type IPluginLoader,
-  type LoadedPlugins,
-  emptyLoadedPlugins,
-  mergePluginExports,
-} from '@mcp-abap-adt/llm-agent-libs';
+import type { IPluginLoader, LoadedPlugins } from '@mcp-abap-adt/llm-agent';
+import { emptyLoadedPlugins, mergePluginExports } from '@mcp-abap-adt/llm-agent-libs';
 
 class NpmPluginLoader implements IPluginLoader {
   constructor(private packages: string[]) {}

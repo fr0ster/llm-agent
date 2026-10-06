@@ -10,20 +10,20 @@ import type {
   IQueryPreprocessor,
   IRag,
   IRetrievalEmbedder,
-  ISearchStrategy,
 } from '@mcp-abap-adt/llm-agent';
 import {
   composeResilientEmbedder,
   DEFAULT_MAX_BATCH_SIZE,
   isBatchSizeLimited,
   MissingProviderError,
-  VectorRag,
 } from '@mcp-abap-adt/llm-agent';
 import {
   constructBuiltInEmbedder,
   type EmbedderResolution,
 } from './embedder-factories.js';
 import { importPeer } from './import-peer.js';
+import type { ISearchStrategy } from './search-strategy.js';
+import { VectorRag } from './vector-rag.js';
 
 // ---------------------------------------------------------------------------
 // Peer-package loading — literal specifiers only
@@ -202,7 +202,7 @@ function constructFromExtraFactory(
  *     same shape as pg-vector's address/tuning fields, but
  *     `credential: ISecretLoginCredential` is **required** — HANA has no
  *     anonymous login (Task B6).
- *   - in-memory: `VectorRagConfig` (`packages/llm-agent/src/rag/vector-rag.ts`)
+ *   - in-memory: `VectorRagConfig` (`./vector-rag.ts`)
  *     — `dedupThreshold?`, `namespace?`, `vectorWeight?`, `keywordWeight?`,
  *     `strategy?`, `queryPreprocessors?`, `documentEnrichers?`. This arm's
  *     `collectionName` maps to `VectorRagConfig.namespace` (same purpose,

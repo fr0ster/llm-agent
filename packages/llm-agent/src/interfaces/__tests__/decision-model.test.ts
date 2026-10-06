@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
   DecisionError,
-  type IDecisionModel,
+  type IProbabilityDecision,
   type LlmComponent,
   SmartAgentError,
 } from '../../index.js';
@@ -21,9 +21,9 @@ describe('DecisionError', () => {
   });
 });
 
-describe('IDecisionModel', () => {
+describe('IProbabilityDecision', () => {
   it('is implementable with Result, not throw', async () => {
-    const m: IDecisionModel = {
+    const m: IProbabilityDecision = {
       model: 'fake',
       decide: async () => ({
         ok: true,

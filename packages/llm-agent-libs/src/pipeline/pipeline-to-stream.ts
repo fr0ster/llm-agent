@@ -21,6 +21,9 @@ export async function* pipelineToStream(
   const chunkQueue: Result<LlmStreamChunk, OrchestratorError>[] = [];
   let resolveWait: (() => void) | null = null;
   let done = false;
+  // Spec §10.5.2 (D70): a handler that yielded its own error chunk is not
+  // reported twice from the PipelineResult.
+  let yieldedError = false;
 
   const executorPromise = pipeline
     .execute(
@@ -28,6 +31,7 @@ export async function* pipelineToStream(
       history,
       opts,
       (chunk) => {
+        if (!chunk.ok) yieldedError = true;
         chunkQueue.push(chunk);
         if (resolveWait) {
           resolveWait();
@@ -36,7 +40,12 @@ export async function* pipelineToStream(
       },
       externalTools,
     )
-    .then(() => {
+    .then((result) => {
+      // Spec §10.5.2 (D70): the PipelineResult's error reaches the consumer,
+      // once — as the last item.
+      if (result?.error && !yieldedError) {
+        chunkQueue.push({ ok: false, error: result.error });
+      }
       done = true;
       if (resolveWait) {
         resolveWait();
@@ -46,7 +55,11 @@ export async function* pipelineToStream(
     .catch((err) => {
       chunkQueue.push({
         ok: false,
-        error: new OrchestratorError(String(err), 'PIPELINE_ERROR'),
+        // A rejected OrchestratorError keeps its own code (spec D70).
+        error:
+          err instanceof OrchestratorError
+            ? err
+            : new OrchestratorError(String(err), 'PIPELINE_ERROR'),
       });
       done = true;
       if (resolveWait) {

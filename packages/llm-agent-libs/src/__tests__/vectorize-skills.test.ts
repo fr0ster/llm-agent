@@ -1,22 +1,18 @@
 /**
- * Gap tests for vectorizeSkills — RED until mcp/vectorize-mcp-tools.ts exists.
- *
- * These tests import directly from the new module path. They FAIL on the
- * missing module until step 2b creates it, confirming the surface is new.
- * After step 2b they turn GREEN, proving behavior preservation.
+ * vectorizeSkills — spec §10.5.8 S-5, D75: a failed listing, or a skill whose
+ * write fails (`ok: false` or a throw), rejects with a SkillError naming the
+ * skill, the store's error as `cause`, at the first failing skill. A writerless
+ * store is skipped (absent by design).
  */
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type {
-  ILogger,
   IRag,
   IRagBackendWriter,
   IRequestLogger,
   ISkillManager,
-  LogEvent,
 } from '@mcp-abap-adt/llm-agent';
-
-// Import from the new module path (RED until 2b)
+import { RagError, SkillError } from '@mcp-abap-adt/llm-agent';
 import { vectorizeSkills } from '../mcp/vectorize-mcp-tools.js';
 
 // ---------------------------------------------------------------------------
@@ -42,13 +38,6 @@ class CapturingRequestLogger implements IRequestLogger {
   }
 }
 
-class CapturingLogger implements ILogger {
-  events: LogEvent[] = [];
-  log(event: LogEvent): void {
-    this.events.push(event);
-  }
-}
-
 function makeSkillManager(
   skills: Array<{ name: string; description: string }>,
   ok = true,
@@ -57,7 +46,7 @@ function makeSkillManager(
     listSkills: async () =>
       ok
         ? { ok: true as const, value: skills }
-        : { ok: false as const, error: new Error('list failed') },
+        : { ok: false as const, error: new SkillError('list failed') },
     getSkill: async () => ({
       ok: false as const,
       error: new Error('not impl'),
@@ -67,14 +56,17 @@ function makeSkillManager(
 
 function makeWriter(opts?: {
   failUpsert?: boolean;
+  throwUpsert?: Error;
+  failIds?: string[];
 }): IRagBackendWriter & { upsertCalls: Array<{ id: string; text: string }> } {
   const upsertCalls: Array<{ id: string; text: string }> = [];
   return {
     upsertCalls,
     async upsertRaw(id: string, text: string, _meta: object) {
       upsertCalls.push({ id, text });
-      if (opts?.failUpsert)
-        return { ok: false as const, error: new Error('write error') };
+      if (opts?.throwUpsert) throw opts.throwUpsert;
+      if (opts?.failUpsert || opts?.failIds?.includes(id))
+        return { ok: false as const, error: new RagError('write error') };
       return { ok: true as const, value: undefined };
     },
   } as unknown as IRagBackendWriter & {
@@ -103,9 +95,8 @@ describe('vectorizeSkills', () => {
     const writer = makeWriter();
     const rag = makeRag(writer);
     const reqLogger = new CapturingRequestLogger();
-    const logger = new CapturingLogger();
 
-    await vectorizeSkills(makeSkillManager(skills), rag, reqLogger, logger);
+    await vectorizeSkills(makeSkillManager(skills), rag, reqLogger);
 
     // per-skill upsert with correct key and text
     assert.equal(writer.upsertCalls.length, 2);
@@ -124,39 +115,90 @@ describe('vectorizeSkills', () => {
     assert.ok(reqLogger.calls.every((c) => c.estimated === true));
     assert.ok(reqLogger.calls.every((c) => c.detail === 'skills'));
     assert.ok(reqLogger.calls.every((c) => c.scope === 'initialization'));
-    // no warnings
-    assert.equal(logger.events.filter((e) => e.type === 'warning').length, 0);
   });
 
-  it('!result.ok: upsertRaw returning {ok:false} emits Skill vectorization failed warning', async () => {
+  it('S-5: upsertRaw answering {ok:false} rejects with a SkillError naming the skill, the store error as cause', async () => {
     const skills = [{ name: 'bad-skill', description: 'fails' }];
     const writer = makeWriter({ failUpsert: true });
-    const rag = makeRag(writer);
     const reqLogger = new CapturingRequestLogger();
-    const logger = new CapturingLogger();
 
-    await vectorizeSkills(makeSkillManager(skills), rag, reqLogger, logger);
-
-    const warnings = logger.events.filter((e) => e.type === 'warning');
-    assert.ok(
-      warnings.some((w) =>
-        w.message.includes('Skill vectorization failed for "bad-skill"'),
-      ),
-      `expected failure warning, got: ${JSON.stringify(warnings)}`,
+    const err = await vectorizeSkills(
+      makeSkillManager(skills),
+      makeRag(writer),
+      reqLogger,
+    ).then(
+      () => assert.fail('expected a rejection'),
+      (e: unknown) => e,
     );
+    assert.ok(err instanceof SkillError);
+    assert.match(err.message, /skill "bad-skill" \(skill:bad-skill\)/);
+    assert.match(err.message, /write error/);
+    assert.ok(err.cause instanceof RagError);
     // no logLlmCall on failure
     assert.equal(reqLogger.calls.length, 0);
   });
 
-  it('listSkills returning {ok:false} → no upserts', async () => {
+  it('S-5: upsertRaw throwing rejects with a SkillError naming the skill, the thrown error as cause', async () => {
+    const skills = [{ name: 'bad-skill', description: 'fails' }];
+    const thrown = new Error('disk full');
+    const writer = makeWriter({ throwUpsert: thrown });
+
+    const err = await vectorizeSkills(
+      makeSkillManager(skills),
+      makeRag(writer),
+      new CapturingRequestLogger(),
+    ).then(
+      () => assert.fail('expected a rejection'),
+      (e: unknown) => e,
+    );
+    assert.ok(err instanceof SkillError);
+    assert.match(err.message, /skill "bad-skill".*disk full/);
+    assert.equal(err.cause, thrown);
+  });
+
+  it('S-5: the first failing skill stops the run — no later skill is written', async () => {
+    const skills = [
+      { name: 'bad-skill', description: 'fails' },
+      { name: 'good-skill', description: 'never reached' },
+    ];
+    const writer = makeWriter({ failIds: ['skill:bad-skill'] });
+
+    await assert.rejects(
+      vectorizeSkills(
+        makeSkillManager(skills),
+        makeRag(writer),
+        new CapturingRequestLogger(),
+      ),
+      /skill "bad-skill"/,
+    );
+    assert.deepEqual(
+      writer.upsertCalls.map((c) => c.id),
+      ['skill:bad-skill'],
+    );
+  });
+
+  it('S-5: listSkills returning {ok:false} rejects with that SkillError, no upserts', async () => {
     const writer = makeWriter();
-    const rag = makeRag(writer);
     const reqLogger = new CapturingRequestLogger();
-    const logger = new CapturingLogger();
 
-    await vectorizeSkills(makeSkillManager([], false), rag, reqLogger, logger);
-
+    await assert.rejects(
+      vectorizeSkills(makeSkillManager([], false), makeRag(writer), reqLogger),
+      (e: unknown) => e instanceof SkillError && e.message === 'list failed',
+    );
     assert.equal(writer.upsertCalls.length, 0);
     assert.equal(reqLogger.calls.length, 0);
+  });
+
+  it('a writerless store resolves, nothing attempted (absent by design)', async () => {
+    let listed = 0;
+    const manager = {
+      listSkills: async () => {
+        listed++;
+        return { ok: true as const, value: [] };
+      },
+    } as unknown as ISkillManager;
+    const rag = { query: async () => [] } as unknown as IRag;
+    await vectorizeSkills(manager, rag, new CapturingRequestLogger());
+    assert.equal(listed, 0);
   });
 });

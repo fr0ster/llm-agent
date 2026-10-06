@@ -20,7 +20,13 @@
  */
 
 import type { CallOptions, RagScope } from '@mcp-abap-adt/llm-agent';
-import { QueryEmbedding, TextOnlyEmbedding } from '@mcp-abap-adt/llm-agent';
+import {
+  OrchestratorError,
+  PIPELINE_FAILURE_CODES,
+  QueryEmbedding,
+  TextOnlyEmbedding,
+} from '@mcp-abap-adt/llm-agent';
+import { storeRejection } from '../../agent/rag-helpers.js';
 import type { ISpan } from '../../tracer/types.js';
 import type { PipelineContext } from '../context.js';
 import type { IStageHandler } from '../stage-handler.js';
@@ -33,8 +39,13 @@ export class RagQueryHandler implements IStageHandler {
   ): Promise<boolean> {
     const storeName = config.store as string;
     if (!storeName || !ctx.ragStores[storeName]) {
+      // Spec §10.5.4 R4: a stage naming a store the registry lacks fails.
       span.setAttribute('error', `Invalid store: ${storeName}`);
-      return true; // non-fatal, skip
+      ctx.error = new OrchestratorError(
+        `rag-query: store "${storeName}" is not registered`,
+        PIPELINE_FAILURE_CODES.RAG_STORE_MISSING,
+      );
+      return false;
     }
 
     const k = (config.k as number) ?? ctx.config.ragQueryK ?? 10;
@@ -94,7 +105,20 @@ export class RagQueryHandler implements IStageHandler {
     };
 
     const ragStart = Date.now();
-    const result = await store.query(embedding, k, queryOptions);
+    let result: Awaited<ReturnType<typeof store.query>>;
+    try {
+      result = await store.query(embedding, k, queryOptions);
+    } catch (err) {
+      // A store that rejects instead of answering `ok: false` fails the stage
+      // the same way: named, with its own code (R5).
+      const failure = storeRejection(err);
+      span.setAttribute('error', failure.message);
+      ctx.error = new OrchestratorError(
+        `rag-query: store "${storeName}" failed: ${failure.message}`,
+        failure.code,
+      );
+      return false;
+    }
     ctx.requestLogger.logRagQuery({
       store: storeName,
       query: queryText.slice(0, 200),
@@ -112,26 +136,35 @@ export class RagQueryHandler implements IStageHandler {
       hit: String(result.ok && result.value.length > 0),
     });
 
-    if (result.ok) {
-      ctx.ragResults[storeName] = result.value;
-      span.setAttribute('results', result.value.length);
-
-      // Log RAG results with scores for diagnostics
-      ctx.options?.sessionLogger?.logStep(
-        `rag_query_${storeName}`,
-        {
-          query: queryText.slice(0, 200),
-          k,
-          resultCount: result.value.length,
-          results: result.value.map((r) => ({
-            id: r.metadata.id,
-            score: r.score,
-            text: r.text.slice(0, 120),
-          })),
-        },
-        'rag',
+    if (!result.ok) {
+      // Spec §10.5.4 R5: a failed store query fails the stage with the
+      // store's code — no partial results, the request does not continue.
+      span.setAttribute('error', result.error.message);
+      ctx.error = new OrchestratorError(
+        `rag-query: store "${storeName}" failed: ${result.error.message}`,
+        result.error.code,
       );
+      return false;
     }
+
+    ctx.ragResults[storeName] = result.value;
+    span.setAttribute('results', result.value.length);
+
+    // Log RAG results with scores for diagnostics
+    ctx.options?.sessionLogger?.logStep(
+      `rag_query_${storeName}`,
+      {
+        query: queryText.slice(0, 200),
+        k,
+        resultCount: result.value.length,
+        results: result.value.map((r) => ({
+          id: r.metadata.id,
+          score: r.score,
+          text: r.text.slice(0, 120),
+        })),
+      },
+      'rag',
+    );
 
     return true;
   }

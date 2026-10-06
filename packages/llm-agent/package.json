@@ -28,9 +28,6 @@
     "clean": "tsc -p tsconfig.json --clean",
     "test": "node --import tsx/esm --test --test-reporter=spec 'src/**/*.test.ts'"
   },
-  "dependencies": {
-    "zod": "^4.6.5"
-  },
   "license": "LGPL-3.0-only",
   "repository": {
     "type": "git",

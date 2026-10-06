@@ -19,10 +19,10 @@ import { test } from 'node:test';
 import {
   type ILlm,
   type IMcpClient,
-  InMemoryRag,
   isToolCatalogReporter,
   type McpTool,
 } from '@mcp-abap-adt/llm-agent';
+import { InMemoryRag } from '@mcp-abap-adt/llm-agent-rag';
 import { SmartAgentBuilder } from '../builder.js';
 import type {
   IMcpConnectionStrategy,

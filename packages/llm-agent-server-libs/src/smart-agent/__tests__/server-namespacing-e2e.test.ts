@@ -673,10 +673,10 @@ function scriptedRoleLlm(model: string, queue: Partial<LlmResponse>[]): ILlm {
   } as unknown as ILlm;
 }
 
-const constEmbedder = symmetricEmbedder({
-  embed: async () => ({ vector: [1, 0, 0] }),
-  dimensions: 3,
-}) as unknown as import('@mcp-abap-adt/llm-agent').IEmbedder;
+const constEmbedder: import('@mcp-abap-adt/llm-agent').IRetrievalEmbedder =
+  symmetricEmbedder({
+    embed: async () => ({ vector: [1, 0, 0] }),
+  });
 
 test('controller pipeline: over a REAL boot, s1__Search routes to the SESSION client-1 instance, never the global clients', async (t) => {
   const boot = await bootTwoServerSmartServer(t);
@@ -732,7 +732,7 @@ test('controller pipeline: over a REAL boot, s1__Search routes to the SESSION cl
       ...base,
       embedder: constEmbedder,
       stepperKnowledgeBackend: new InMemoryKnowledgeBackend(
-        makeKnowledgeSemanticIndex(symmetricEmbedder(constEmbedder)),
+        makeKnowledgeSemanticIndex(constEmbedder),
       ),
       knowledgeRagFor: () => ({
         query: async () => [],
@@ -804,7 +804,19 @@ test('stepper pipeline: over a REAL boot, s1__Search routes to server 1 with the
     const scriptedLlm = {
       name: 'stub',
       model: 'stub',
-      async chat() {
+      async chat(messages?: { content?: unknown }[]) {
+        // The need-resolver's classifier shares this LLM: answer its call with a
+        // well-formed "no need" verdict (spec §10.5.7 C6 — malformed classifier
+        // output now fails the step instead of reading as "no need").
+        if (
+          String(messages?.[0]?.content ?? '').startsWith(
+            'You decide whether an assistant answer is INCOMPLETE',
+          )
+        )
+          return {
+            ok: true as const,
+            value: { content: '{"need":false,"capability":""}' },
+          };
         llmCalls++;
         if (llmCalls === 1) {
           return {
@@ -848,6 +860,9 @@ test('stepper pipeline: over a REAL boot, s1__Search routes to server 1 with the
       },
       registry: new Map(),
       makeLlm: async () => scriptedLlm,
+      // Every role resolves to this config (spec §10.5.9 V9: a role with no
+      // config is an error, never a stub); makeLlm returns the scripted LLM.
+      pipelineFallback: { provider: 'openai', model: 'scripted' },
       knowledgeRagFor: () => knowledgeRag as never,
       toolsRag: internals._toolsRagHandle as never,
       callMcp,

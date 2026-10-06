@@ -6,6 +6,7 @@ import {
   type IRequestLogger,
   type Message,
   normalizeAndValidateExternalTools,
+  type StopReason,
   type StreamToolCall,
   toToolCallDelta,
 } from '@mcp-abap-adt/llm-agent';
@@ -14,7 +15,6 @@ import {
   SessionLogger,
   type SmartAgent,
   type SmartAgentHandle,
-  type StopReason,
 } from '@mcp-abap-adt/llm-agent-libs';
 import type { SmartServerConfig } from '../smart-server.js';
 import { resolveTraceSink } from './debug-trace-sink.js';
@@ -443,14 +443,21 @@ export async function handleChat(
     return;
   }
   log({ event: 'request_done', ok: result.ok, durationMs: Date.now() - t0 });
-  const finalContent = result.ok
-    ? result.value.content || (result.value.toolCalls ? null : '(no response)')
-    : `Error: ${result.error.message}`;
-  const finalFinishReason = result.ok
-    ? mapStopReason(result.value.stopReason)
-    : 'stop';
+  if (!result.ok) {
+    // Spec §10.5.1: a route whose backend failed answers an error status with
+    // jsonError — never a 200 with an `Error: …` placeholder as the content.
+    res.writeHead(502, {
+      'Content-Type': 'application/json',
+      ...invalidToolsHeader,
+    });
+    res.end(jsonError(result.error.message, 'api_error', result.error.code));
+    return;
+  }
+  const finalContent =
+    result.value.content || (result.value.toolCalls ? null : '(no response)');
+  const finalFinishReason = mapStopReason(result.value.stopReason);
   let finalUsage = null;
-  if (result.ok && result.value.usage) {
+  if (result.value.usage) {
     finalUsage = {
       prompt_tokens: result.value.usage.promptTokens,
       completion_tokens: result.value.usage.completionTokens,
@@ -462,7 +469,7 @@ export async function handleChat(
     role: 'assistant',
     content: finalContent,
   };
-  if (result.ok && result.value.toolCalls) {
+  if (result.value.toolCalls) {
     message.tool_calls = result.value.toolCalls;
   }
 

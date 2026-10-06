@@ -11,23 +11,14 @@ export type NormalizedLlmMap = { main: SmartServerLlmConfig } & LlmConfigMap;
  * `credentialRef`-only detection silently misclassified those configs as a
  * "map" shape.
  */
-function isFlatLlmConfig(input: SmartServerLlmConfig | LlmConfigMap): boolean {
-  const flat = input as Partial<SmartServerLlmConfig>;
+export function isFlatLlmConfig(input: object): boolean {
+  const flat = input as Partial<Record<keyof SmartServerLlmConfig, unknown>>;
   return (
     typeof flat.provider === 'string' ||
     typeof flat.credentialRef === 'string' ||
     typeof flat.model === 'string' ||
     typeof flat.url === 'string'
   );
-}
-
-/**
- * A numeric LLM knob (`temperature`, `classifierTemperature`) as configured, or
- * `undefined` when unset — never a default. Unset knobs are not sent, so the
- * model applies its own; a forced value breaks models that accept only theirs.
- */
-export function optionalNumber(value: unknown): number | undefined {
-  return value === undefined || value === null ? undefined : Number(value);
 }
 
 /**

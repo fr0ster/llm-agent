@@ -117,9 +117,11 @@ describe('rag.retrieval defaults and no-op fields', () => {
     assert.deepEqual(resolve('history: {}').rag?.retrieval, {
       history: { strategy: 'embedding' },
     });
-    assert.deepEqual(resolve('history: { strategy: null }').rag?.retrieval, {
-      history: { strategy: 'embedding' },
-    });
+    // Spec D83 (13): a key written with no value is an error, not absent.
+    assert.throws(
+      () => resolve('history: { strategy: null }'),
+      /rag\.retrieval\.history\.strategy has no value/,
+    );
   });
 
   const bad: Array<
@@ -200,7 +202,7 @@ describe('rag.retrieval defaults and no-op fields', () => {
     });
   }
 
-  it('a worker with rag.retrieval: null is not refused', () => {
+  it('a worker whose rag.retrieval has no value is refused (spec D83 (13))', () => {
     const dir = mkdtempSync(path.join(tmpdir(), 'retrieval-worker-null-'));
     writeFileSync(path.join(dir, 'w.yaml'), `${RAG}  retrieval:\n`);
     const main = path.join(dir, 'main.yaml');
@@ -208,13 +210,15 @@ describe('rag.retrieval defaults and no-op fields', () => {
       main,
       `${LLM}subagents:\n  - name: w\n    config: ./w.yaml\n`,
     );
-    assert.doesNotThrow(() =>
-      resolveSmartServerConfig(
-        {},
-        loadYamlConfig(main, {}),
-        {},
-        { configPath: main, skipProviderRuntimeChecks: true },
-      ),
+    assert.throws(
+      () =>
+        resolveSmartServerConfig(
+          {},
+          loadYamlConfig(main, {}),
+          {},
+          { configPath: main, skipProviderRuntimeChecks: true },
+        ),
+      /subagent 'w' \(.*w\.yaml\): rag\.retrieval has no value/,
     );
   });
 });
@@ -275,7 +279,7 @@ describe('rag.retrieval validation', () => {
     [
       'entry not a mapping',
       'tools: true',
-      /rag\.retrieval\.tools: must be a mapping/,
+      /rag\.retrieval\.tools must be a mapping, got true/,
     ],
   ];
   for (const [name, retrieval, re, o] of cases) {
@@ -293,7 +297,7 @@ describe('rag.retrieval validation', () => {
           {},
           { skipProviderRuntimeChecks: true },
         ),
-      /rag\.retrieval: must be a mapping/,
+      /rag\.retrieval must be a mapping, got 5/,
     );
   });
 

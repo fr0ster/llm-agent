@@ -30,6 +30,9 @@ const baseInput = {
   coordCfg: { mode: 'planned-react' },
   registry: new Map(),
   makeLlm: async () => stubLlm as never,
+  // Every role resolves to this config (spec §10.5.9 V9: a role with no
+  // config is an error, never a stub); makeLlm returns the stub.
+  pipelineFallback: { provider: 'openai', model: 'm' },
   knowledgeRagFor: () =>
     ({
       async query() {
@@ -142,8 +145,11 @@ test('Finding 2: shared token ledger is charged by NON-executor roles too (plann
       return {
         ok: true as const,
         value: {
+          // One answer serves every role; `"need":false` is the need
+          // resolver's verdict (spec §10.5.7 C6: a verdict without a boolean
+          // `need` is a ClassifierError, no longer read as "no need").
           content:
-            '{"pass":true,"objective":"o","nodes":[{"id":"a","goal":"g"}]}',
+            '{"pass":true,"need":false,"objective":"o","nodes":[{"id":"a","goal":"g"}]}',
           usage,
         },
       };
@@ -315,6 +321,7 @@ test('pipelineFallback is used when llmMap is absent', async () => {
 // ── (б) nested flow nodes — structural recursion via buildFromComposition ──────
 const compDeps = {
   makeLlm: async () => stubLlm as never,
+  pipelineFallback: { provider: 'openai', model: 'm' },
   callMcp: async () => 'result',
   mintStepperId: (() => {
     let i = 0;

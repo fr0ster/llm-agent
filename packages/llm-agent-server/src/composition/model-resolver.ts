@@ -1,7 +1,6 @@
 import type { ILlm, IModelResolver } from '@mcp-abap-adt/llm-agent';
 import {
   normalizeLlmConfig,
-  optionalNumber,
   type SmartServerConfig,
   type SmartServerLlmConfig,
 } from '@mcp-abap-adt/llm-agent-server-libs';
@@ -10,8 +9,8 @@ import {
  * `IModelResolver` for `PUT /v1/config`: the role's own `llm:` entry — its
  * provider and its `credentialRef` — with the model swapped, built through the
  * same `makeLlm` seam. The temperatures are this root's choice, read from the
- * entries the way `SmartServer` reads them at startup: an unset one stays
- * unset, so the model's own default applies (§8 item 2). `undefined` without an `llm:` section, so a
+ * entries the way `SmartServer` reads them at startup (validated numbers,
+ * spec D83 (7)): an unset one stays unset, so the model's own default applies (§8 item 2). `undefined` without an `llm:` section, so a
  * model update keeps being refused with 400.
  */
 export function createModelResolver(
@@ -37,12 +36,12 @@ export function createModelResolver(
       // Unset stays unset: the provider sends none, the model's default applies.
       const temperature =
         role === 'main'
-          ? optionalNumber(map.main.temperature)
+          ? map.main.temperature
           : role === 'classifier'
             ? own
               ? own.temperature
-              : optionalNumber(map.main.classifierTemperature)
-            : optionalNumber(base.temperature);
+              : map.main.classifierTemperature
+            : base.temperature;
       return makeLlm({ ...base, model: modelName, temperature });
     },
   };

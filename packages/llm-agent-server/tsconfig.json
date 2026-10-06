@@ -14,6 +14,7 @@
     { "path": "../llm-agent-server-libs" },
     { "path": "../llm-agent-mcp" },
     { "path": "../llm-agent-rag" },
+    { "path": "../llm-agent-reranker" },
     { "path": "../openai-llm" },
     { "path": "../anthropic-llm" },
     { "path": "../sap-aicore-llm" },
@@ -26,6 +27,7 @@
     { "path": "../pg-vector-rag" },
     { "path": "../ollama-llm" },
     { "path": "../sap-aicore-auth" },
-    { "path": "../typesafe-decision" }
+    { "path": "../typesafe-decision" },
+    { "path": "../sap-aicore-decision" }
   ]
 }

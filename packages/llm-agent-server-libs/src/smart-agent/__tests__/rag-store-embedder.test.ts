@@ -2,10 +2,10 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
   type IEmbedder,
-  InMemoryRag,
   type IRag,
   symmetricEmbedder,
 } from '@mcp-abap-adt/llm-agent';
+import { InMemoryRag } from '@mcp-abap-adt/llm-agent-rag';
 import { resolveSmartServerConfig } from '../config.js';
 import {
   isInMemoryInput,

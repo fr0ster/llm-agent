@@ -18,16 +18,19 @@ import {
   type Message,
   type ModelUsageEntry,
   mergeOfferedTools,
+  PIPELINE_FAILURE_CODES,
   type StepRoundState,
   type ToolLoopContextStrategyFactory,
   type ToolRound,
 } from '@mcp-abap-adt/llm-agent';
 import {
+  invalidArgumentsMessage,
   type KnowledgeBackend,
   LegacyAccumulateContextStrategy,
   LegacyTranscriptContextStrategy,
   type PipelineContext,
   summaryToUsage,
+  toolCallFromRaw,
 } from '@mcp-abap-adt/llm-agent-libs';
 import { writePlanDecision } from './artifacts.js';
 import {
@@ -1538,34 +1541,83 @@ export class ControllerCoordinatorHandler implements IStageHandler {
           );
         }
         // Normalize the StreamToolCall (full or delta) into an LlmToolCall inline.
+        // Spec §10.5.2 N2 (D87): argument text that does not parse marks the call
+        // (`argumentsError`); a complete call an adapter marked keeps its mark.
+        const callId = ('id' in firstCall && firstCall.id) || 'call';
+        const callName = ('name' in firstCall && firstCall.name) || '';
         const call: LlmToolCall =
           'arguments' in firstCall &&
           typeof firstCall.arguments === 'object' &&
           firstCall.arguments !== null
             ? {
-                id: ('id' in firstCall && firstCall.id) || 'call',
-                name: ('name' in firstCall && firstCall.name) || '',
+                id: callId,
+                name: callName,
                 arguments: firstCall.arguments as Record<string, unknown>,
+                ...('argumentsError' in firstCall &&
+                firstCall.argumentsError !== undefined
+                  ? { argumentsError: firstCall.argumentsError }
+                  : {}),
               }
-            : (() => {
-                let iArgs: Record<string, unknown> = {};
-                const raw =
-                  'arguments' in firstCall ? firstCall.arguments : undefined;
-                if (typeof raw === 'string' && raw.length > 0) {
-                  try {
-                    iArgs = JSON.parse(raw) as Record<string, unknown>;
-                  } catch {
-                    iArgs = {};
-                  }
-                }
-                return {
-                  id: ('id' in firstCall && firstCall.id) || 'call',
-                  name: ('name' in firstCall && firstCall.name) || '',
-                  arguments: iArgs,
-                };
-              })();
+            : toolCallFromRaw(
+                callId,
+                callName,
+                'arguments' in firstCall &&
+                  typeof firstCall.arguments === 'string'
+                  ? firstCall.arguments
+                  : undefined,
+              );
         const name = call.name;
         const args = call.arguments;
+
+        // A call whose arguments did not parse is never run (spec D87): its tool
+        // result is the error, recorded as the step's round so the executor sees
+        // it on its next turn. It counts against the tool budget like any call,
+        // so an executor that keeps emitting bad arguments is cut by the budget.
+        if (call.argumentsError !== undefined) {
+          const g = budget.canExecuteTool(state());
+          if (!g.continue) return cutControlFailure(g.reason);
+          if (inFlight) inFlight.toolCallCount += 1;
+          ctx.options?.sessionLogger?.logStep('tool_arguments_invalid', {
+            tool: name,
+            code: PIPELINE_FAILURE_CODES.TOOL_ARGUMENTS_JSON_PARSE_FAILED,
+            error: call.argumentsError,
+          });
+          bundle.writeOrdinal = (bundle.writeOrdinal ?? 0) + 1;
+          await strategy.record(
+            {
+              assistant: {
+                role: 'assistant',
+                content: null,
+                tool_calls: [
+                  {
+                    id: call.id,
+                    type: 'function',
+                    function: { name, arguments: JSON.stringify(args) },
+                  },
+                ],
+              },
+              results: [
+                {
+                  role: 'tool',
+                  tool_call_id: call.id,
+                  content: invalidArgumentsMessage(name, call.argumentsError),
+                },
+              ],
+              meta: [
+                {
+                  identityKey: externalToolCallId(name, args),
+                  isError: true,
+                },
+              ],
+              ordinal: bundle.writeOrdinal,
+              roundId: undefined,
+            },
+            ctx.options,
+          );
+          controlTail.length = 0;
+          await persistExchange();
+          continue;
+        }
 
         if (isExternalTool(name)) {
           // External round-trips share the SAME budget as internal calls; the

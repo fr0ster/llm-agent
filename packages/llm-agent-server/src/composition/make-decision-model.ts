@@ -1,4 +1,4 @@
-import type { IDecisionModel } from '@mcp-abap-adt/llm-agent';
+import type { IProbabilityDecision } from '@mcp-abap-adt/llm-agent';
 import type { SmartServerDecisionConfig } from '@mcp-abap-adt/llm-agent-server-libs';
 import {
   type TypeSafeDecisionConfig,
@@ -9,7 +9,7 @@ import type { Lookup } from './lookup.js';
 
 /** Injectable so a test records what each constructor receives. */
 export interface DecisionProviderCtors {
-  typesafe: new (cfg: TypeSafeDecisionConfig) => IDecisionModel;
+  typesafe: new (cfg: TypeSafeDecisionConfig) => IProbabilityDecision;
 }
 
 export const SHIPPED_DECISION_PROVIDERS: DecisionProviderCtors = {
@@ -24,7 +24,7 @@ export const SHIPPED_DECISION_PROVIDERS: DecisionProviderCtors = {
 export function createMakeDecisionModel(
   lookup: Lookup,
   ctors: DecisionProviderCtors = SHIPPED_DECISION_PROVIDERS,
-): (cfg: SmartServerDecisionConfig) => Promise<IDecisionModel> {
+): (cfg: SmartServerDecisionConfig) => Promise<IProbabilityDecision> {
   return async (cfg) => {
     switch (cfg.provider) {
       case 'typesafe': {

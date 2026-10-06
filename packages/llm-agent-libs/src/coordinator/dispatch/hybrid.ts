@@ -6,8 +6,10 @@ import type {
 } from '@mcp-abap-adt/llm-agent';
 
 /**
- * Try a primary dispatch strategy when the step names a known subagent;
- * otherwise fall back to a secondary (e.g. SelfDispatch).
+ * Try a primary dispatch strategy when the step names a registered subagent;
+ * a step that names no agent goes to a secondary (e.g. SelfDispatch).
+ * A step that NAMES an agent the registry lacks is a failed step — it is never
+ * run by the secondary in its place (spec §10.5.12 U5, §13 B13).
  */
 export class HybridDispatch implements IDispatchStrategy {
   readonly name = 'hybrid';
@@ -21,8 +23,15 @@ export class HybridDispatch implements IDispatchStrategy {
     step: PlanStep,
     ctx: ICoordinatorContext,
   ): Promise<StepResult> {
-    const needsFallback = !step.agent || !ctx.registry.has(step.agent);
-    if (needsFallback) return this.fallback.dispatch(step, ctx);
+    if (!step.agent) return this.fallback.dispatch(step, ctx);
+    if (!ctx.registry.has(step.agent))
+      return {
+        stepId: step.id,
+        output: '',
+        durationMs: 0,
+        ok: false,
+        error: `HybridDispatch: agent '${step.agent}' not in registry (registered: ${[...ctx.registry.keys()].join(', ') || 'none'})`,
+      };
     // Epicfail from primary is terminal — never fall through to fallback.
     // The shape itself (epicFailTrace marker on StepResult) is sufficient;
     // since we only invoke primary here (no chained on-failure fallback),

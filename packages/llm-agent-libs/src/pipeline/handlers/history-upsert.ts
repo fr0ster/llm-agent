@@ -6,8 +6,9 @@
  * 2. Upserts the summary to the history RAG store.
  * 3. Pushes the summary to the recency memory buffer.
  *
- * All operations are best-effort — failures are logged but never block the
- * response. The `summarizeAndStore` helper is exported for unit testing.
+ * A failed summarizer or a failed store write fails the stage with that
+ * component's code (spec §10.5.6 L4) — nothing raw is stored as if it were a
+ * summary. The `summarizeAndStore` helper is exported for unit testing.
  */
 
 import type {
@@ -16,7 +17,9 @@ import type {
   IHistoryMemory,
   IHistorySummarizer,
   IRag,
+  Result,
 } from '@mcp-abap-adt/llm-agent';
+import { OrchestratorError, SmartAgentError } from '@mcp-abap-adt/llm-agent';
 import type { ISpan } from '../../tracer/types.js';
 import type { PipelineContext } from '../context.js';
 import type { IStageHandler } from '../stage-handler.js';
@@ -33,17 +36,21 @@ export interface SummarizeAndStoreArgs {
 
 export async function summarizeAndStore(
   args: SummarizeAndStoreArgs,
-): Promise<void> {
+): Promise<Result<void, OrchestratorError>> {
   const { turn, summarizer, memory, rag, sessionId, options, log } = args;
 
   const result = await summarizer.summarize(turn, options);
-  const summary = result.ok
-    ? result.value
-    : `${turn.userText} → ${turn.assistantText}`;
-
   if (!result.ok) {
     log?.('history_summarize_failed', { error: result.error.message });
+    return {
+      ok: false,
+      error: new OrchestratorError(
+        `history-upsert: ${result.error.message}`,
+        result.error.code,
+      ),
+    };
   }
+  const summary = result.value;
 
   const ragWriter = rag.writer?.();
   if (!ragWriter) {
@@ -64,10 +71,18 @@ export async function summarizeAndStore(
     );
     if (!upsertResult.ok) {
       log?.('history_upsert_failed', { error: upsertResult.error.message });
+      return {
+        ok: false,
+        error: new OrchestratorError(
+          `history-upsert: ${upsertResult.error.message}`,
+          upsertResult.error.code,
+        ),
+      };
     }
   }
 
   memory.pushRecent(sessionId, summary);
+  return { ok: true, value: undefined };
 }
 
 export class HistoryUpsertHandler implements IStageHandler {
@@ -102,7 +117,7 @@ export class HistoryUpsertHandler implements IStageHandler {
         timestamp: Date.now(),
       };
 
-      await summarizeAndStore({
+      const stored = await summarizeAndStore({
         turn,
         summarizer: ctx.historySummarizer,
         memory: ctx.historyMemory,
@@ -116,9 +131,23 @@ export class HistoryUpsertHandler implements IStageHandler {
           ),
       });
 
+      if (!stored.ok) {
+        span.setStatus('error', stored.error.message);
+        ctx.error = stored.error;
+        return false;
+      }
       span.setStatus('ok');
-    } catch {
+    } catch (err) {
+      // A rejection (summarizer or store) is the same failure as `ok: false`.
       span.setStatus('error', 'history upsert failed');
+      ctx.error =
+        err instanceof SmartAgentError
+          ? new OrchestratorError(`history-upsert: ${err.message}`, err.code)
+          : new OrchestratorError(
+              `history-upsert: ${String(err)}`,
+              'PIPELINE_ERROR',
+            );
+      return false;
     }
 
     return true;

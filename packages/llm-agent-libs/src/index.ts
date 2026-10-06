@@ -9,24 +9,28 @@
 // Adapters
 // ---------------------------------------------------------------------------
 export {
-  type AgentCallOptions,
-  type BaseAgentLlmBridge,
   LlmAdapter,
   type LlmAdapterProviderInfo,
 } from './adapters/llm-adapter.js';
 export { LlmProviderBridge } from './adapters/llm-provider-bridge.js';
 export { NonStreamingLlm } from './adapters/non-streaming-llm.js';
-export { wrapDecisionModel } from './adapters/usage-logging-decision-model.js';
+export {
+  invalidArgumentsMessage,
+  type ParsedToolArguments,
+  parseToolArguments,
+  toolCallFromRaw,
+} from './adapters/parse-tool-arguments.js';
+export {
+  wrapProbabilityDecision,
+  wrapRelevanceDecision,
+} from './adapters/usage-logging-decision-model.js';
 export { wrapEmbedder } from './adapters/usage-logging-embedder.js';
 export {
-  OrchestratorError,
   SmartAgent,
   type SmartAgentConfig,
   type SmartAgentDeps,
   type SmartAgentRagStores,
   type SmartAgentReconfigureOptions,
-  type SmartAgentResponse,
-  type StopReason,
 } from './agent.js';
 // ---------------------------------------------------------------------------
 // Builder + agent
@@ -39,12 +43,17 @@ export {
   type SmartAgentHandle,
 } from './builder.js';
 // ---------------------------------------------------------------------------
+// Collection profiles
+// ---------------------------------------------------------------------------
+export * from './collections/index.js';
+// ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
 export {
   ConfigWatcher,
   type ConfigWatcherOptions,
   type HotReloadableConfig,
+  type HotReloadableInput,
 } from './config/config-watcher.js';
 export {
   FINALIZER_SYSTEM,
@@ -112,12 +121,7 @@ export {
 // ---------------------------------------------------------------------------
 // Metrics
 // ---------------------------------------------------------------------------
-export {
-  type CounterSnapshot,
-  type HistogramSnapshot,
-  InMemoryMetrics,
-  type MetricsSnapshot,
-} from './metrics/in-memory-metrics.js';
+export { InMemoryMetrics } from './metrics/in-memory-metrics.js';
 export { NoopMetrics } from './metrics/noop-metrics.js';
 export {
   LegacyAccumulateContextStrategy,
@@ -133,9 +137,7 @@ export { normalizeHeartbeatMs } from './pipeline/handlers/normalize-heartbeat-ms
 // Pipeline
 // ---------------------------------------------------------------------------
 export {
-  type BuiltInStageType,
   buildDefaultHandlerRegistry,
-  type ControlFlowType,
   CoordinatorHandler,
   type CoordinatorHandlerDeps,
   DagCoordinatorHandler,
@@ -146,19 +148,12 @@ export {
   type IStageHandler,
   type PipelineContext,
   PipelineExecutor,
-  type StageDefinition,
-  type StageType,
 } from './pipeline/index.js';
 export {
   DEFAULT_TOOL_SELECTION,
   ScoreThresholdToolSelection,
   TopKToolSelection,
 } from './pipeline/tool-selection/index.js';
-export type {
-  IPluginLoader,
-  LoadedPlugins,
-  PluginExports,
-} from './plugins/index.js';
 // ---------------------------------------------------------------------------
 // Plugins
 // ---------------------------------------------------------------------------
@@ -171,25 +166,19 @@ export {
   loadPlugins,
   mergePluginExports,
 } from './plugins/index.js';
+// ---------------------------------------------------------------------------
+// Policy
+// ---------------------------------------------------------------------------
+export {
+  HeuristicToolAvailabilityPolicy,
+  type IToolAvailabilityPolicy,
+} from './policy/tool-availability-policy.js';
 export {
   InMemoryKnowledgeBackend,
   type KnowledgeBackend,
   KnowledgeRag,
   matches as matchesKnowledgeFilter,
 } from './rag/knowledge-rag.js';
-// ---------------------------------------------------------------------------
-// Reranker
-// ---------------------------------------------------------------------------
-export {
-  DECISION_RERANK_DEFAULT_CRITERIA,
-  DECISION_RERANK_DEFAULT_TASK,
-  DecisionReranker,
-  type DecisionRerankerOptions,
-  PASSAGE_QUESTION,
-  TOOL_QUESTION,
-} from './reranker/decision-reranker.js';
-export { LlmReranker } from './reranker/llm-reranker.js';
-export { NoopReranker } from './reranker/noop-reranker.js';
 // ---------------------------------------------------------------------------
 // Resilience
 // ---------------------------------------------------------------------------

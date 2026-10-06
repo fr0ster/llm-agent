@@ -5,11 +5,16 @@
 import { readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { ISkill, ISkillMeta } from '@mcp-abap-adt/llm-agent';
+import { SkillError } from '@mcp-abap-adt/llm-agent';
 import { type FileSystemSkill, loadSkillFromDir } from './filesystem-skill.js';
 
 /**
  * Scan multiple directories for skill subdirectories, load each, and return
  * the resulting skills. Duplicate names from later directories override earlier ones.
+ *
+ * Spec §10.5.8 S-3: a directory that does not exist (`ENOENT`) is skipped — a
+ * default search path is absent by design; any other `readdir` error throws a
+ * SkillError naming the directory.
  *
  * @param dirs - Directories to scan for skill subdirectories.
  * @param normalizeMeta - Optional function to normalize vendor-specific frontmatter keys.
@@ -27,8 +32,14 @@ export async function scanDirsForSkills(
     try {
       const dirEntries = await readdir(baseDir, { withFileTypes: true });
       entries = dirEntries.filter((e) => e.isDirectory()).map((e) => e.name);
-    } catch {
-      continue; // Directory doesn't exist — skip
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') continue;
+      const reason = err instanceof Error ? err.message : String(err);
+      const error = new SkillError(
+        `skill directory "${baseDir}" cannot be read: ${reason}`,
+      );
+      error.cause = err;
+      throw error;
     }
 
     for (const entry of entries) {

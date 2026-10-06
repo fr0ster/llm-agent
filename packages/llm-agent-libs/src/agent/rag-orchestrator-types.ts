@@ -7,6 +7,7 @@ import type {
   IQueryExpander,
   IRag,
   IRequestLogger,
+  IReranker,
   ISkillManager,
   ISubpromptClassifier,
   LlmTool,
@@ -21,7 +22,6 @@ import type { SmartAgentConfig } from '../agent.js';
 import type { IMcpToolRegistry } from '../mcp/tool-registry.js';
 import type { IMetrics } from '../metrics/types.js';
 import type { ToolAvailabilityRegistry } from '../policy/tool-availability-registry.js';
-import type { IReranker } from '../reranker/types.js';
 import type { ISessionManager } from '../session/types.js';
 import type { ISpan, ITracer } from '../tracer/types.js';
 import type { summarizeHistory, toEnglishForRag } from './rag-helpers.js';

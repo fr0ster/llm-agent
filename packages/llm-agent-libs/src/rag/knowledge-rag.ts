@@ -7,7 +7,7 @@ import type {
   KnowledgeFilter,
   LlmTool,
 } from '@mcp-abap-adt/llm-agent';
-import { isDebugArea } from '../logger/debug-areas.js';
+import { RagError } from '@mcp-abap-adt/llm-agent';
 
 /**
  * Persistence + retrieval port for the knowledge blackboard. The server
@@ -238,21 +238,16 @@ export class InMemoryKnowledgeBackend implements KnowledgeBackend {
     return a;
   }
   async put(sid: string, entry: KnowledgeEntry, options?: CallOptions) {
-    // A durable append is the success point: an index upsert failure does NOT
-    // rethrow (mirrors JsonlKnowledgeBackend.put()) — the entry is already
-    // retained above, just left unindexed; only the semantic recall misses it.
-    // NB: unlike the jsonl backend (which unsets `built` and re-embeds every
-    // durable entry on the next touch), this in-memory backend has no rebuild,
-    // so a failed entry stays retained-but-unindexed for the process lifetime —
-    // a recall-quality degradation, never a crash.
+    // Spec §10.5.4 R9: the entry is retained, but an index upsert failure is
+    // the caller's error — a write that is not searchable is not a success.
     this.of(sid).push(entry);
     try {
       await this.semantic?.upsert(sid, entry, options);
     } catch (e) {
-      if (isDebugArea('rag'))
-        console.error(
-          `[knowledge-index] upsert failed (entry retained, unindexed): ${String(e)}`,
-        );
+      throw new RagError(
+        `knowledge entry written but not indexed: ${String(e)}`,
+        'UPSERT_ERROR',
+      );
     }
   }
   async semanticQuery(

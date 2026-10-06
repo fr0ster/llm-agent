@@ -107,10 +107,13 @@ describe('llm.whenThrottled from YAML', () => {
         () =>
           resolveSmartServerConfig(
             {},
-            yamlWith({ whenThrottled: { maxAttempts: bad } }),
+            yamlWith({
+              whenThrottled: { strategy: 'wait-as-told', maxAttempts: bad },
+            }),
             {},
           ),
-        /Invalid llm\.whenThrottled\.maxAttempts/,
+        // Spec D83 (7): the shared message of the start's field check.
+        /^invalid config — llm\.whenThrottled\.maxAttempts must be /,
         `expected a config error for ${JSON.stringify(bad)}`,
       );
     }
@@ -178,7 +181,7 @@ describe('the named-map form (llm.main, llm.helper, …)', () => {
           }),
           {},
         ),
-      /Invalid llm\.main\.whenThrottled\.maxAttempts/,
+      /^invalid config — llm\.main\.whenThrottled\.maxAttempts must be >= 1, got 0$/,
     );
   });
 

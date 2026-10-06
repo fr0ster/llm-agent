@@ -49,7 +49,7 @@ agent:
   externalToolsValidationMode: permissive  # permissive | strict
   maxIterations: 10
   maxToolCalls: 30
-  toolUnavailableTtlMs: 600000       # Temporary tool blacklist TTL (ms)
+  # toolUnavailableTtlMs: 600000   # opt-in: block a tool for this long after a "not found"/"permission" error
   ragQueryK: 10
   # contextBudgetTokens: 4000          # Max tokens for RAG context in system prompt (0 = no limit)
   # semanticHistoryEnabled: false      # Enable semantic history via RAG
@@ -161,7 +161,8 @@ export function loadYamlConfig(
   env: NodeJS.ProcessEnv = process.env,
 ): YamlConfig {
   const raw = fs.readFileSync(filePath, 'utf8');
-  return resolveEnvVars(parseYaml(raw), env) as YamlConfig;
+  // Spec D83 (14): a file with no document (empty, or only comments) holds no key — {}, as the reload's watcher reads it (document ?? {}).
+  return resolveEnvVars(parseYaml(raw) ?? {}, env) as YamlConfig;
 }
 
 export function generateConfigTemplate(outputPath: string): void {

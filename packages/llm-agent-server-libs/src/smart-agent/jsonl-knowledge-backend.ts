@@ -5,6 +5,7 @@ import type {
   KnowledgeEntry,
   KnowledgeFilter,
 } from '@mcp-abap-adt/llm-agent';
+import { RagError } from '@mcp-abap-adt/llm-agent';
 import {
   type KnowledgeBackend,
   matchesKnowledgeFilter,
@@ -60,26 +61,23 @@ export class JsonlKnowledgeBackend implements KnowledgeBackend {
    *  is forwarded into every re-index `upsert` so the embedder receives the
    *  triggering request's requestLogger — the lazy rebuild's embedding cost is
    *  metered against the request that triggered it (not silently dropped).
-   *  Each entry's upsert is individually guarded: a single rejected embed
-   *  (rate-limit, transient network, provider-specific rejection) must skip
-   *  that entry and continue, never abort the rebuild or crash the caller —
-   *  the durable JSONL (scan()) remains the source of truth regardless. */
+   *  Spec §10.5.4 R10: an entry that cannot be indexed fails the rebuild with
+   *  `UPSERT_ERROR` (never skipped); the session is not marked built, so the
+   *  next touch rebuilds it from the durable JSONL. */
   private async build(sid: string, options?: CallOptions): Promise<void> {
     if (!this.semantic || this.built.has(sid)) return;
     this.semantic.deleteSession(sid); // clear any partial state → idempotent
-    let failed = false;
     for (const e of await this.scan(sid)) {
       try {
         await this.semantic.upsert(sid, e, options);
       } catch (err) {
-        failed = true;
-        if (process.env.DEBUG_CONTROLLER)
-          console.error(
-            `[jsonl-index] rebuild upsert failed (entry skipped): ${String(err)}`,
-          );
+        throw new RagError(
+          `knowledge index rebuild failed: ${String(err)}`,
+          'UPSERT_ERROR',
+        );
       }
     }
-    if (!failed) this.built.add(sid); // mark built ONLY when every entry indexed
+    this.built.add(sid); // marked built ONLY when every entry indexed
   }
   private async append(sid: string, entry: KnowledgeEntry): Promise<void> {
     const f = this.file(sid);
@@ -98,10 +96,10 @@ export class JsonlKnowledgeBackend implements KnowledgeBackend {
     }
     // ENTIRE put serialized: build FIRST (indexes the durable JSONL BEFORE this
     // append → the new entry is never double-counted by a rebuild scan), THEN
-    // append, THEN upsert once. A durable append is the success point: an index
-    // upsert failure does NOT rethrow (that would make the caller retry put() and
-    // append the same artifact twice); instead mark the session dirty so the next
-    // build re-syncs from the durable JSONL.
+    // append, THEN upsert once. Spec §10.5.4 R10: an index upsert failure
+    // rejects with UPSERT_ERROR — the entry is durably written but not
+    // searchable, and the caller is told so; the session is marked dirty so the
+    // next build re-syncs from the durable JSONL.
     await this.run(sid, async () => {
       await this.build(sid, options);
       await this.append(sid, entry);
@@ -109,10 +107,10 @@ export class JsonlKnowledgeBackend implements KnowledgeBackend {
         await this.semantic?.upsert(sid, entry, options);
       } catch (e) {
         this.built.delete(sid);
-        if (process.env.DEBUG_CONTROLLER)
-          console.error(
-            `[jsonl-index] upsert failed (will rebuild lazily): ${String(e)}`,
-          );
+        throw new RagError(
+          `knowledge entry written but not indexed: ${String(e)}`,
+          'UPSERT_ERROR',
+        );
       }
     });
   }

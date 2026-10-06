@@ -5,10 +5,13 @@
  * Writes: `ctx.history` (replaces with summarized version)
  *
  * Keeps the last 5 messages verbatim and summarizes the rest into a
- * single system message. Skips silently if no helper LLM is available
- * or history is too short.
+ * single system message. Skips (no helper LLM configured, or history too
+ * short) are capability / size decisions; a failed summarizer call fails the
+ * stage.
  */
 
+import { OrchestratorError } from '@mcp-abap-adt/llm-agent';
+import { rejectionError } from '../../agent/rag-helpers.js';
 import type { ISpan } from '../../tracer/types.js';
 import type { PipelineContext } from '../context.js';
 import type { IStageHandler } from '../stage-handler.js';
@@ -43,11 +46,19 @@ export class SummarizeHandler implements IStageHandler {
       'Summarize the conversation so far in 2-3 sentences. Focus on the user goals and the current status of the task. Keep technical SAP terms as is.';
 
     const chatStart = Date.now();
-    const res = await ctx.helperLlm.chat(
-      [...toSummarize, { role: 'system' as const, content: prompt }],
-      [],
-      ctx.options,
-    );
+    const helperLlm = ctx.helperLlm;
+    let res: Awaited<ReturnType<typeof helperLlm.chat>>;
+    try {
+      res = await helperLlm.chat(
+        [...toSummarize, { role: 'system' as const, content: prompt }],
+        [],
+        ctx.options,
+      );
+    } catch (err) {
+      span.setStatus('error', String(err));
+      ctx.error = rejectionError('summarize', err, 'LLM_ERROR');
+      return false;
+    }
     ctx.requestLogger.logLlmCall({
       // Stamp requestId so this helper-LLM call is attributed to the active
       // request's per-traceId delta — without it, history-summarization tokens
@@ -62,10 +73,15 @@ export class SummarizeHandler implements IStageHandler {
       durationMs: Date.now() - chatStart,
     });
 
+    // Spec §10.5.6 L3: a failed summarizer is the stage's error — the full
+    // history is not a summary.
     if (!res.ok) {
-      // Non-fatal — keep original history
-      span.setAttribute('fallback', true);
-      return true;
+      span.setStatus('error', res.error.message);
+      ctx.error = new OrchestratorError(
+        `summarize: ${res.error.message}`,
+        res.error.code,
+      );
+      return false;
     }
 
     ctx.history = [

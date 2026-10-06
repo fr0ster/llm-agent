@@ -17,13 +17,18 @@ import type {
   Result,
   TimingEntry,
 } from '@mcp-abap-adt/llm-agent';
-import { OrchestratorError } from '@mcp-abap-adt/llm-agent';
+import {
+  OrchestratorError,
+  PIPELINE_FAILURE_CODES,
+} from '@mcp-abap-adt/llm-agent';
+import {
+  invalidArgumentsMessage,
+  toolCallFromRaw,
+} from '../../adapters/parse-tool-arguments.js';
 import type { IMetrics } from '../../metrics/types.js';
 import type { PendingToolResultsRegistry } from '../../policy/pending-tool-results-registry.js';
-import {
-  isToolContextUnavailableError,
-  type ToolAvailabilityRegistry,
-} from '../../policy/tool-availability-registry.js';
+import type { IToolAvailabilityPolicy } from '../../policy/tool-availability-policy.js';
+import type { ToolAvailabilityRegistry } from '../../policy/tool-availability-registry.js';
 import type { ISpan, ITracer } from '../../tracer/types.js';
 import type { IOutputValidator } from '../../validator/types.js';
 import { classifyToolResult } from './escalate-if-unavailable.js';
@@ -32,6 +37,8 @@ export type ParsedToolCall = {
   id: string;
   name: string;
   arguments: Record<string, unknown>;
+  /** Set when the argument text did not parse (spec D87) — the call is never run. */
+  argumentsError?: string;
 };
 
 export interface IClassifiedToolCalls {
@@ -163,6 +170,69 @@ export function buildBlockedToolMessages(
   return { assistant, results };
 }
 
+/**
+ * Spec §10.5.2 N2 (D87): the calls whose argument text did not parse are never
+ * run. Builds an assistant(tool_calls=invalid) + per-call error tool messages
+ * (`invalidArgumentsMessage`) and logs `tool_arguments_invalid` per call.
+ * Returns `null` when every call parsed.
+ */
+export function buildInvalidArgumentsToolMessages(
+  content: string,
+  toolCalls: ParsedToolCall[],
+  options?: CallOptions | undefined,
+): SyntheticToolGroup | null {
+  const invalid = toolCalls.filter((tc) => tc.argumentsError !== undefined);
+  if (invalid.length === 0) return null;
+  const assistant: Message = {
+    role: 'assistant' as const,
+    content: content || null,
+    tool_calls: invalid.map((tc) => ({
+      id: tc.id,
+      type: 'function' as const,
+      function: { name: tc.name, arguments: JSON.stringify(tc.arguments) },
+    })),
+  };
+  const results: Message[] = invalid.map((tc) => {
+    const error = tc.argumentsError ?? '';
+    options?.sessionLogger?.logStep('tool_arguments_invalid', {
+      tool: tc.name,
+      code: PIPELINE_FAILURE_CODES.TOOL_ARGUMENTS_JSON_PARSE_FAILED,
+      error,
+    });
+    return {
+      role: 'tool' as const,
+      content: invalidArgumentsMessage(tc.name, error),
+      tool_call_id: tc.id,
+    };
+  });
+  return { assistant, results };
+}
+
+/**
+ * The calls of one LLM turn, from the accumulated stream entries. A complete
+ * call an adapter already marked keeps its mark (no second parse); argument
+ * text is parsed here and marked when it does not parse (spec D87).
+ */
+export function toolCallsFromAccumulated(
+  entries: Iterable<{
+    id: string;
+    name: string;
+    arguments: string;
+    argumentsError?: string;
+  }>,
+): ParsedToolCall[] {
+  return Array.from(entries, (tc) =>
+    tc.argumentsError !== undefined
+      ? {
+          id: tc.id,
+          name: tc.name,
+          arguments: {},
+          argumentsError: tc.argumentsError,
+        }
+      : toolCallFromRaw(tc.id, tc.name, tc.arguments),
+  );
+}
+
 /** Build an assistant(tool_calls=ALL calls) + per-hallucination "not found"
  *  tool messages. Returns a `{ assistant, results }` group — the caller
  *  appends `group.assistant, ...group.results` to its message list. */
@@ -216,6 +286,8 @@ export interface IExecuteToolBatchArgs {
   metrics: IMetrics;
   parentSpan: ISpan; // toolLoopSpan (A) / parentSpan (B)
   toolAvailabilityRegistry: ToolAvailabilityRegistry;
+  /** Decides whether a failed internal tool is blocked for the session (spec U8). None → nothing is blocked. */
+  toolAvailabilityPolicy?: IToolAvailabilityPolicy;
   sessionId: string;
   externalToolNames: Set<string>;
   currentTools: LlmTool[];
@@ -242,6 +314,7 @@ export async function* executeToolBatchWithHeartbeat(
     metrics,
     parentSpan,
     toolAvailabilityRegistry,
+    toolAvailabilityPolicy,
     sessionId,
     externalToolNames,
     timingLog,
@@ -383,12 +456,19 @@ export async function* executeToolBatchWithHeartbeat(
       };
       return { escalated: true };
     }
-    if (
-      !res.ok &&
-      isToolContextUnavailableError(text) &&
-      !externalToolNames.has(tc.name)
-    ) {
-      const entry = toolAvailabilityRegistry.block(sessionId, tc.name, text);
+    // Spec U8: only an injected policy blocks a tool; an external
+    // (client-provided) tool is never offered to it (#91).
+    const block =
+      !res.ok && !externalToolNames.has(tc.name)
+        ? toolAvailabilityPolicy?.onToolError(tc.name, text)
+        : undefined;
+    if (block) {
+      const entry = toolAvailabilityRegistry.block(
+        sessionId,
+        tc.name,
+        text,
+        block.ttlMs,
+      );
       currentTools = currentTools.filter((t) => t.name !== tc.name);
       options?.sessionLogger?.logStep(`tool_blacklisted_${tc.name}`, {
         reason: text,

@@ -119,6 +119,9 @@ export interface SkillLoadResult {
   omitted: readonly { group: string; reason: string }[];
   tombstoned: readonly string[];
   ok: boolean;
+  /** Every source whose `acquire` failed under `strict: false`, with its
+   *  failure reason; its prior data, if any, is carried forward. Absent = none. */
+  carried?: readonly { sourceId: string; reason: string }[];
 }
 
 export interface ISkillPluginHost {

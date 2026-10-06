@@ -38,11 +38,9 @@ import type {
 } from '@mcp-abap-adt/llm-agent';
 import {
   type AgentCallOptions,
-  getStreamToolCallName,
   type IQueryExpander,
   isReadinessReporter,
   mergeOfferedTools,
-  NoopQueryExpander,
   NoopToolCache,
   normalizeExternalTools,
   OrchestratorError,
@@ -54,11 +52,15 @@ import {
   toolNameFromRecord,
   toToolCallDelta,
 } from '@mcp-abap-adt/llm-agent';
+import { NoopQueryExpander } from '@mcp-abap-adt/llm-agent-rag';
 import { RagOrchestrator } from './agent/rag-orchestrator.js';
 import { normalizeRequestOptions } from './agent-request-options.js';
 import type { LlmClassifierConfig } from './classifier/llm-classifier.js';
 import { LlmClassifier } from './classifier/llm-classifier.js';
-import { buildAgentHealthSnapshot } from './health/agent-health.js';
+import {
+  buildAgentHealthSnapshot,
+  heldRerankers,
+} from './health/agent-health.js';
 import type { IMcpConnectionStrategy } from './interfaces/mcp-connection-strategy.js';
 
 export {
@@ -68,11 +70,17 @@ export {
   type StopReason,
 } from '@mcp-abap-adt/llm-agent';
 
+import type { IReranker } from '@mcp-abap-adt/llm-agent';
+import { NoopReranker } from '@mcp-abap-adt/llm-agent-reranker';
 import type { IPipeline } from './interfaces/pipeline.js';
 import type { ILogger } from './logger/index.js';
 import { NoopRequestLogger } from './logger/noop-request-logger.js';
 import { summaryToUsage } from './logger/session-request-logger.js';
-import { type IMcpToolRegistry, McpToolRegistry } from './mcp/tool-registry.js';
+import {
+  type IMcpToolRegistry,
+  McpToolRegistry,
+  type ToolRegistryResult,
+} from './mcp/tool-registry.js';
 import { NoopMetrics } from './metrics/noop-metrics.js';
 import type { IMetrics } from './metrics/types.js';
 import { LegacyAccumulateContextStrategy } from './pipeline/context/tool-loop-context/index.js';
@@ -81,24 +89,25 @@ import { runPassThrough } from './pipeline/handlers/pass-through.js';
 import {
   buildBlockedToolMessages,
   buildHallucinatedToolMessages,
+  buildInvalidArgumentsToolMessages,
   classifyToolCalls,
   executeToolBatchWithHeartbeat,
   filterAvailableTools,
   injectPendingResults,
   injectToolPriority,
   runOutputValidationReprompt,
+  toolCallsFromAccumulated,
 } from './pipeline/handlers/tool-loop-core.js';
 import { pipelineToStream } from './pipeline/pipeline-to-stream.js';
 import { fireInternalToolsAsync } from './policy/mixed-tool-call-handler.js';
 import { PendingToolResultsRegistry } from './policy/pending-tool-results-registry.js';
+import type { IToolAvailabilityPolicy } from './policy/tool-availability-policy.js';
 import { ToolAvailabilityRegistry } from './policy/tool-availability-registry.js';
 import type {
   IPromptInjectionDetector,
   IToolPolicy,
   SessionPolicy,
 } from './policy/types.js';
-import { NoopReranker } from './reranker/noop-reranker.js';
-import type { IReranker } from './reranker/types.js';
 import { NoopSessionManager } from './session/noop-session-manager.js';
 import type { ISessionManager } from './session/types.js';
 import { NoopTracer } from './tracer/noop-tracer.js';
@@ -122,6 +131,8 @@ export interface SmartAgentDeps {
   logger?: ILogger;
   requestLogger?: IRequestLogger;
   toolPolicy?: IToolPolicy;
+  /** Decides whether a failed internal tool is blocked for the session (spec U8). None → nothing is blocked. */
+  toolAvailabilityPolicy?: IToolAvailabilityPolicy;
   injectionDetector?: IPromptInjectionDetector;
   tracer?: ITracer;
   metrics?: IMetrics;
@@ -161,7 +172,6 @@ export interface SmartAgentDeps {
 export interface SmartAgentConfig {
   maxIterations: number;
   maxToolCalls?: number;
-  toolUnavailableTtlMs?: number;
   timeoutMs?: number;
   tokenLimit?: number;
   ragQueryK?: number;
@@ -250,6 +260,13 @@ export interface SmartAgentReconfigureOptions {
   helperLlm?: ILlm;
 }
 
+/** A thrown OrchestratorError keeps its code (e.g. the registry's
+ *  MCP_UNAVAILABLE); anything else thrown is PIPELINE_ERROR (spec §10.5.1). */
+function asOrchestratorError(err: unknown): OrchestratorError {
+  return err instanceof OrchestratorError
+    ? err
+    : new OrchestratorError(String(err), 'PIPELINE_ERROR');
+}
 export class SmartAgent {
   private readonly toolAvailabilityRegistry: ToolAvailabilityRegistry;
   private readonly tracer: ITracer;
@@ -272,9 +289,7 @@ export class SmartAgent {
     private readonly deps: SmartAgentDeps,
     private config: SmartAgentConfig,
   ) {
-    this.toolAvailabilityRegistry = new ToolAvailabilityRegistry(
-      this.config.toolUnavailableTtlMs,
-    );
+    this.toolAvailabilityRegistry = new ToolAvailabilityRegistry();
     this.tracer = deps.tracer ?? new NoopTracer();
     this.metrics = deps.metrics ?? new NoopMetrics();
     this.reranker = deps.reranker ?? new NoopReranker();
@@ -456,7 +471,6 @@ export class SmartAgent {
     maxIterations: number;
     maxToolCalls?: number;
     ragQueryK?: number;
-    toolUnavailableTtlMs?: number;
     showReasoning?: boolean;
     historyAutoSummarizeLimit?: number;
     classificationEnabled?: boolean;
@@ -465,7 +479,6 @@ export class SmartAgent {
       maxIterations: this.config.maxIterations,
       maxToolCalls: this.config.maxToolCalls,
       ragQueryK: this.config.ragQueryK,
-      toolUnavailableTtlMs: this.config.toolUnavailableTtlMs,
       showReasoning: this.config.showReasoning,
       historyAutoSummarizeLimit: this.config.historyAutoSummarizeLimit,
       classificationEnabled: this.config.classificationEnabled,
@@ -499,6 +512,7 @@ export class SmartAgent {
         llm: boolean;
         rag: boolean;
         mcp: { name: string; ok: boolean; error?: string }[];
+        reranker?: { name: string; ok: boolean; error?: string }[];
       },
       OrchestratorError
     >
@@ -520,6 +534,9 @@ export class SmartAgent {
         this.deps.ragStores,
         this.mcpToolRegistry.getActiveClients(),
         healthOptions,
+        // D97: the global reranker only when one was given (the default
+        // NoopReranker is absent by design), and every store-held one.
+        heldRerankers(this.deps.reranker, this.deps.ragStores),
       );
       return { ok: true, value: snapshot };
     } finally {
@@ -674,16 +691,16 @@ export class SmartAgent {
             ? [{ role: 'user' as const, content: textOrMessages }]
             : textOrMessages;
         opts?.sessionLogger?.logStep('client_request', { textOrMessages });
-        for await (const chunk of runPassThrough(
-          this._mainLlm,
-          this.requestLogger,
-          passMessages,
-          externalTools,
-          opts,
-        )) {
-          yield chunk;
-        }
-        rootSpan.setStatus('ok');
+        yield* this.withRootStatus(
+          runPassThrough(
+            this._mainLlm,
+            this.requestLogger,
+            passMessages,
+            externalTools,
+            opts,
+          ),
+          rootSpan,
+        );
         rootSpan.end();
         return;
       }
@@ -696,8 +713,7 @@ export class SmartAgent {
           externalTools,
           opts,
         );
-        for await (const chunk of stream) yield chunk;
-        rootSpan.setStatus('ok');
+        yield* this.withRootStatus(stream, rootSpan);
         rootSpan.end();
         return;
       }
@@ -761,14 +777,51 @@ export class SmartAgent {
         finalTools,
         detectedAdapter,
       );
-      for await (const chunk of stream) yield chunk;
-      rootSpan.setStatus('ok');
+      yield* this.withRootStatus(stream, rootSpan);
     } finally {
       this.requestLogger.endRequest(traceId);
       rootSpan.end();
       timeoutCleanup?.();
       this.metrics.requestLatency.record(Date.now() - requestStart);
     }
+  }
+
+  /**
+   * Spec §10.5.2 (D70, D78): the root span is `error` from the first unsuccessful
+   * chunk — set BEFORE that chunk is yielded. A consumer that stops at it
+   * (`process()` returns on it; `for await … break`) closes this generator at the
+   * yield, and no line after the yield ever runs. `ok` only after a stream that
+   * carried no error; a stream that throws ends with an `{ ok: false }` item of
+   * the thrown error (never a rejection). The caller's `finally` ends the span.
+   */
+  private async *withRootStatus(
+    stream: AsyncIterable<Result<LlmStreamChunk, OrchestratorError>>,
+    rootSpan: ISpan,
+  ): AsyncIterable<Result<LlmStreamChunk, OrchestratorError>> {
+    let failed = false;
+    try {
+      for await (const chunk of stream) {
+        if (!chunk.ok && !failed) {
+          failed = true;
+          rootSpan.setStatus(
+            'error',
+            `${chunk.error.code}: ${chunk.error.message}`,
+          );
+        }
+        yield chunk;
+      }
+    } catch (err) {
+      // Spec §10.5.1 (N1): the consumer receives a failure as an `{ ok: false }`
+      // item — `process()` returns it, never rejects. An OrchestratorError keeps
+      // its code.
+      const error = asOrchestratorError(err);
+      if (!failed) {
+        rootSpan.setStatus('error', `${error.code}: ${error.message}`);
+      }
+      yield { ok: false, error };
+      return;
+    }
+    if (!failed) rootSpan.setStatus('ok');
   }
 
   private async *_runStreamingToolLoop(
@@ -862,7 +915,21 @@ export class SmartAgent {
           parent: toolLoopSpan,
           attributes: { 'llm.iteration': iteration + 1 },
         });
-        const refreshed = await this.mcpToolRegistry.resolve(opts);
+        // Spec §10.5.3 M6: a client that cannot list its tools fails the
+        // request with MCP_UNAVAILABLE (the registry rejects) — never a set
+        // shrunk by the failure.
+        let refreshed: ToolRegistryResult;
+        try {
+          refreshed = await this.mcpToolRegistry.resolve(opts);
+        } catch (err) {
+          const error = asOrchestratorError(err);
+          refreshSpan.setStatus('error', error.message);
+          refreshSpan.end();
+          toolLoopSpan.setStatus('error', error.message);
+          toolLoopSpan.end();
+          yield { ok: false, error };
+          return;
+        }
         const prevNames = [...toolClientMap.keys()];
         toolClientMap.clear();
         for (const [name, client] of refreshed.toolClientMap) {
@@ -965,7 +1032,21 @@ export class SmartAgent {
               opts,
             );
 
-            if (ragResult.ok && ragResult.value.length > 0) {
+            // Spec §10.5.3 M8: a failed re-select query fails the request with
+            // the store's code — never the previous set kept unlogged.
+            if (!ragResult.ok) {
+              const error = new OrchestratorError(
+                `tool re-select: store "tools" failed: ${ragResult.error.message}`,
+                ragResult.error.code,
+              );
+              reselectSpan.setStatus('error', error.message);
+              toolLoopSpan.setStatus('error', error.message);
+              toolLoopSpan.end();
+              yield { ok: false, error };
+              return;
+            }
+
+            if (ragResult.value.length > 0) {
               const newToolNames = new Set(
                 ragResult.value
                   .map((r) => toolNameFromRecord(r.metadata))
@@ -973,7 +1054,17 @@ export class SmartAgent {
               );
 
               if (newToolNames.size > 0) {
-                const refreshed = await this.mcpToolRegistry.resolve(opts);
+                let refreshed: ToolRegistryResult;
+                try {
+                  refreshed = await this.mcpToolRegistry.resolve(opts);
+                } catch (err) {
+                  const error = asOrchestratorError(err);
+                  reselectSpan.setStatus('error', error.message);
+                  toolLoopSpan.setStatus('error', error.message);
+                  toolLoopSpan.end();
+                  yield { ok: false, error };
+                  return;
+                }
                 const newMcpTools = refreshed.tools.filter((t) =>
                   newToolNames.has(t.name),
                 );
@@ -1033,11 +1124,8 @@ export class SmartAgent {
       let finishReason: LlmFinishReason | undefined;
       const toolCallsMap = new Map<
         number,
-        { id: string; name: string; arguments: string }
+        { id: string; name: string; arguments: string; argumentsError?: string }
       >();
-      // Track which streaming indices belong to external tools so that
-      // argument-only continuation deltas (no name field) are forwarded too.
-      const externalToolIndices = new Set<number>();
       for await (const chunkResult of stream) {
         if (!chunkResult.ok) {
           llmSpan.setStatus('error', chunkResult.error.message);
@@ -1059,7 +1147,6 @@ export class SmartAgent {
           content = '';
           iterationBuffer = '';
           toolCallsMap.clear();
-          externalToolIndices.clear();
           finishReason = undefined;
           continue;
         }
@@ -1075,24 +1162,6 @@ export class SmartAgent {
           }
         }
         if (chunk.toolCalls) {
-          // Register newly seen external tool indices
-          for (const tc of chunk.toolCalls) {
-            const name = getStreamToolCallName(tc);
-            if (name && externalToolNames.has(name)) {
-              const delta = toToolCallDelta(tc, 0);
-              externalToolIndices.add(delta.index);
-            }
-          }
-          const externalDeltas = chunk.toolCalls.filter((tc) => {
-            const delta = toToolCallDelta(tc, 0);
-            return externalToolIndices.has(delta.index);
-          });
-          if (externalDeltas.length > 0) {
-            yield {
-              ok: true,
-              value: { content: '', toolCalls: externalDeltas },
-            };
-          }
           for (const [
             fallbackIndex,
             rawToolCall,
@@ -1111,6 +1180,14 @@ export class SmartAgent {
                 if (tc.name) ex.name = tc.name;
                 if (tc.arguments) ex.arguments += tc.arguments;
               }
+            }
+            // A complete call an adapter marked (spec D87) keeps its mark.
+            if (
+              'argumentsError' in rawToolCall &&
+              rawToolCall.argumentsError !== undefined
+            ) {
+              const ex = toolCallsMap.get(tc.index);
+              if (ex) ex.argumentsError = rawToolCall.argumentsError;
             }
           }
         }
@@ -1138,15 +1215,8 @@ export class SmartAgent {
         }
         iterationBuffer = '';
       }
-      const toolCalls = Array.from(toolCallsMap.values()).map((tc) => {
-        let args = {};
-        try {
-          args = JSON.parse(tc.arguments);
-        } catch {
-          args = {};
-        }
-        return { id: tc.id, name: tc.name, arguments: args };
-      });
+      // Spec §10.5.2 N2 (D87): argument text that does not parse marks the call.
+      let toolCalls = toolCallsFromAccumulated(toolCallsMap.values());
       opts?.sessionLogger?.logStep(
         `llm_response_iter_${iteration + 1}`,
         {
@@ -1222,6 +1292,30 @@ export class SmartAgent {
         };
         return;
       }
+      // Refuse calls whose arguments did not parse (spec D87): never run with
+      // `{}` — the call's tool result is the error.
+      const invalidGroup = buildInvalidArgumentsToolMessages(
+        content,
+        toolCalls,
+        opts,
+      );
+      if (invalidGroup) {
+        await strategy.record({
+          assistant: invalidGroup.assistant,
+          results: invalidGroup.results,
+        });
+        controlTail.length = 0;
+        messages = (
+          await strategy.form({ prefix: staticPrefix, queryText: _action.text })
+        ).concat(controlTail);
+        // Spec N2: only the marked calls are refused; valid siblings of the
+        // same round still run (the LLM retries the refused one as any tool error).
+        toolCalls = toolCalls.filter((tc) => tc.argumentsError === undefined);
+        if (toolCalls.length === 0) continue;
+        // The refusal round carries this turn's assistant text; the round of the
+        // valid siblings must not repeat it.
+        content = '';
+      }
       const {
         internalCalls,
         validExternalCalls,
@@ -1263,6 +1357,12 @@ export class SmartAgent {
         continue;
       }
       if (validExternalCalls.length > 0) {
+        // Spec D87/N2: external calls reach the consumer only here, after their
+        // arguments were checked — never as unchecked live deltas.
+        yield {
+          ok: true,
+          value: { content: '', toolCalls: validExternalCalls },
+        };
         // Mixed calls: fire internal tools async, store pending results
         if (internalCalls.length > 0) {
           fireInternalToolsAsync(
@@ -1367,6 +1467,7 @@ export class SmartAgent {
         metrics: this.metrics,
         parentSpan: toolLoopSpan,
         toolAvailabilityRegistry: this.toolAvailabilityRegistry,
+        toolAvailabilityPolicy: this.deps.toolAvailabilityPolicy,
         sessionId,
         externalToolNames,
         currentTools,

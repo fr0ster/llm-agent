@@ -17,6 +17,7 @@ import type {
   ISkillManager,
   LoadedPlugins,
 } from '@mcp-abap-adt/llm-agent';
+import { RagError } from '@mcp-abap-adt/llm-agent';
 import {
   emptyLoadedPlugins,
   SmartAgentBuilder,
@@ -105,10 +106,16 @@ async function serve(
   }
 }
 
+// A whole ISkill: the skill-select stage reads `getContent`. (Before the
+// chat route answered a failed request with 502, the missing method failed
+// the request behind a 200 placeholder.)
 const SKILL: ISkill = {
   name: 'demo',
   description: 'a demo skill',
-  content: 'demo body',
+  meta: { name: 'demo', description: 'a demo skill' },
+  getContent: async () => ({ ok: true, value: 'demo body' }),
+  listResources: async () => ({ ok: true, value: [] }),
+  readResource: async () => ({ ok: true, value: '' }),
 } as unknown as ISkill;
 
 function spySkillManager() {
@@ -225,6 +232,36 @@ describe('session agents carry the server wiring (§14.1)', () => {
     );
     await serve(server, ['s-1', 's-2', 's-3']);
     assert.deepEqual(upserts, ['skill:demo']);
+  });
+
+  it('S-5: a skill that cannot be written into the tools store fails start()', async () => {
+    const { manager } = spySkillManager();
+    const makeRag: BuildAgentDeps['makeRag'] = async (input) => {
+      const rag = (await constructionSeams.makeRag(input)) as IRag;
+      const writerOf = rag.writer?.bind(rag);
+      if (writerOf) {
+        rag.writer = () => {
+          const w = writerOf();
+          if (!w) return w;
+          const upsertRaw = w.upsertRaw.bind(w);
+          w.upsertRaw = async (id, ...rest) =>
+            id.startsWith('skill:')
+              ? { ok: false as const, error: new RagError('skill store down') }
+              : upsertRaw(id, ...rest);
+          return w;
+        };
+      }
+      return rag;
+    };
+    const server = new SmartServer(
+      {
+        ...configFrom(BASE_YAML),
+        pluginLoader: pluginsWith({}),
+        skillManager: manager,
+      },
+      { ...constructionSeams, makeRag },
+    );
+    await assert.rejects(server.start(), /skill "demo".*skill store down/);
   });
 
   it('the query expander and the client adapters reach the session builder', async () => {

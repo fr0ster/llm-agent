@@ -273,7 +273,14 @@ async function buildSkillsRecall(): Promise<(goal: string) => Promise<string>> {
     embeddingSpaceId: 'eval',
     retrievalSchemaVersion: 1,
   });
-  await host.load();
+  const loaded = await host.load();
+  if (!loaded.ok) {
+    throw new Error(
+      `plan-analysis: skills load failed — ${loaded.omitted
+        .map((o) => `'${o.group}' (${o.reason})`)
+        .join('; ')}`,
+    );
+  }
 
   const k = 3;
   const threshold = 0; // stub vectors are weakly separated; keep the gate open.

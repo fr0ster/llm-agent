@@ -1,10 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import {
-  InMemoryRag,
-  type IRag,
-  type ISkillManager,
-} from '@mcp-abap-adt/llm-agent';
+import type { IRag, ISkillManager } from '@mcp-abap-adt/llm-agent';
+import { InMemoryRag } from '@mcp-abap-adt/llm-agent-rag';
 import { SmartAgentBuilder } from '../builder.js';
 import { makeLlm } from '../testing/index.js';
 

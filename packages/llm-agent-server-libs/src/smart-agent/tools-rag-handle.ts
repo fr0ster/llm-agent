@@ -6,21 +6,23 @@ import {
   type IToolsRagHandle,
   type LlmTool,
   QueryEmbedding,
+  TextOnlyEmbedding,
   toolNameFromRecord,
 } from '@mcp-abap-adt/llm-agent';
+import { listedToolsOrThrow } from './listed-tools.js';
 
 /**
  * Build a real IToolsRagHandle over the tools RAG store + MCP catalog,
  * dispatching over the ALREADY-RESOLVED `clients`. Eagerly populates the
  * catalog so the SYNC `lookup(name)` contract returns a schema before any
- * `query()` runs; a catalog-load failure is swallowed (logged) so startup
- * never crashes. Extracted verbatim from SmartServer.buildToolsRagHandle.
+ * `query()` runs. A client that cannot list its tools rejects the handle's
+ * construction with its McpError (spec §10.5.3 M9, §10.5.9 V7) — no handle
+ * without a catalog.
  */
 export async function makeToolsRagHandle(
   clients: IMcpClient[],
   toolsRag: IRag | undefined,
   resolvedEmbedder: IQueryEmbedder | undefined,
-  log?: (event: Record<string, unknown>) => void,
   namespaced?: { namespacedTools: readonly LlmTool[] },
 ): Promise<IToolsRagHandle> {
   const stepperMcpClients = clients ?? [];
@@ -37,16 +39,16 @@ export async function makeToolsRagHandle(
         if (!catalog.has(t.name)) catalog.set(t.name, t);
       }
     } else {
-      await Promise.allSettled(
-        stepperMcpClients.map(async (client) => {
-          const result = await client.listTools();
-          if (result.ok) {
-            for (const t of result.value) {
-              if (!catalog.has(t.name)) catalog.set(t.name, t as LlmTool);
-            }
-          }
-        }),
+      // Spec §10.5.3 M9: a client that cannot list its tools is an error —
+      // the first failure is thrown and nothing is cached.
+      const settled = await Promise.allSettled(
+        stepperMcpClients.map((client) => client.listTools()),
       );
+      for (const tools of listedToolsOrThrow(settled)) {
+        for (const t of tools) {
+          if (!catalog.has(t.name)) catalog.set(t.name, t as LlmTool);
+        }
+      }
     }
     catalogCache = catalog;
     return catalog;
@@ -55,25 +57,30 @@ export async function makeToolsRagHandle(
     async query(text: string, k?: number, options?: CallOptions) {
       const limit = k ?? 20;
       const catalog = await ensureCatalog();
-      if (toolsRag && resolvedEmbedder) {
+      if (toolsRag) {
         // Pass options (requestLogger + trace) so the wrapped embedder logs
         // this query-embedding against the request — and to the store, so a
         // retrieval strategy's reranker gets the request's signal,
-        // requestLogger and sessionLogger (§13.4).
-        const embedding = new QueryEmbedding(text, resolvedEmbedder, options);
+        // requestLogger and sessionLogger (§13.4). A store with no resolved
+        // embedder is still queried — it embeds the text itself.
+        const embedding = resolvedEmbedder
+          ? new QueryEmbedding(text, resolvedEmbedder, options)
+          : new TextOnlyEmbedding(text);
         const ragResult = await toolsRag.query(embedding, limit, options);
-        if (ragResult.ok) {
-          const hits: LlmTool[] = [];
-          for (const r of ragResult.value) {
-            const name = toolNameFromRecord(r.metadata);
-            if (name !== undefined) {
-              const tool = catalog.get(name);
-              if (tool) hits.push(tool);
-            }
+        // Spec §10.5.3 M9: a failed query is its RagError; zero hits is an
+        // honest empty answer — never an unranked catalog prefix.
+        if (!ragResult.ok) throw ragResult.error;
+        const hits: LlmTool[] = [];
+        for (const r of ragResult.value) {
+          const name = toolNameFromRecord(r.metadata);
+          if (name !== undefined) {
+            const tool = catalog.get(name);
+            if (tool) hits.push(tool);
           }
-          if (hits.length > 0) return hits;
         }
+        return hits;
       }
+      // No tools store configured: the catalog itself is the answer.
       return [...catalog.values()].slice(0, limit);
     },
     lookup(name: string) {
@@ -84,18 +91,8 @@ export async function makeToolsRagHandle(
   // F2: eagerly populate the MCP tool catalog at startup (MCP is connected
   // above), so the SYNC `lookup(name)` contract (IToolsRagHandle.lookup) returns
   // a tool schema BEFORE any `query()` runs. `ensureCatalog` is idempotent —
-  // later `query()` calls reuse the cached map. Guard against a catalog-load
-  // failure so startup never crashes: on failure `catalogCache` stays unset and
-  // `lookup` returns undefined (today's worst case), while the happy path works.
-  try {
-    await ensureCatalog();
-  } catch (err) {
-    log?.({
-      event: 'tools_catalog_eager_load_failed',
-      message:
-        'tools catalog eager-load failed; lookup() returns undefined until first query()',
-      error: err instanceof Error ? err.message : String(err),
-    });
-  }
+  // later `query()` calls reuse the cached map. A failed load rejects with the
+  // client's McpError, so the server's start fails (spec §10.5.9 V7).
+  await ensureCatalog();
   return handle;
 }

@@ -16,6 +16,10 @@
   // test added to either package that needs type-checking in CI must be
   // added to this list by hand.
   "include": [
+    "packages/llm-agent/src/interfaces/__tests__/collection-profile.typecheck.ts",
+    "packages/llm-agent/src/interfaces/__tests__/decision-model.typecheck.ts",
+    "packages/llm-agent/src/interfaces/__tests__/health-contracts.typecheck.ts",
+    "packages/llm-agent/src/logger/__tests__/text-logger-removed.typecheck.ts",
     "packages/llm-agent/src/logger/normalise-logger.test.ts",
     "packages/llm-agent/src/resilience/embedder-resilience-text-logger.test.ts",
     "packages/llm-agent-libs/src/__tests__/text-logger-di.test.ts",
@@ -24,6 +28,7 @@
     "packages/anthropic-llm/src/__tests__/credential.test.ts",
     "packages/deepseek-llm/src/__tests__/credential.test.ts",
     "packages/typesafe-decision/src/__tests__/credential.test.ts",
+    "packages/llm-agent-reranker/src/__tests__/fake-llm.ts",
     "packages/ollama-llm/src/__tests__/credential.test.ts",
     "packages/openai-embedder/src/__tests__/credential.test.ts",
     "packages/llm-agent-rag/src/__typechecks__/rag-resolution.ts",
@@ -34,11 +39,18 @@
     "packages/llm-agent/src/interfaces/__tests__/pipeline-plugin-contract.typecheck.ts",
     "packages/llm-agent-server-libs/src/pipelines/__tests__/server-context-lookups-only.typecheck.ts",
     "packages/llm-agent/src/rag/__tests__/rag-collection-owner.typecheck.ts",
-    "packages/llm-agent/src/rag/__tests__/rag-tool-identity.typecheck.ts",
+    "packages/llm-agent-rag/src/__typechecks__/rag-tool-identity.ts",
     "packages/llm-agent-server/scripts/check-models/*.ts",
-    "packages/llm-agent/src/rag/__tests__/embedder-roles.typecheck.ts",
+    "packages/llm-agent-rag/src/__typechecks__/embedder-roles.ts",
+    "packages/llm-agent-rag/src/__typechecks__/rag-implementations-moved.ts",
     "scripts/rag-eval/rag-eval.ts",
-    "scripts/rag-eval/rerank-fallbacks.ts",
-    "test/repo/rag-eval-fallbacks.test.ts"
+    "scripts/rag-eval/rerank-errors.ts",
+    "test/repo/rag-eval-fallbacks.test.ts",
+    "packages/llm-agent-libs/src/utils/__tests__/lazy.typecheck.ts",
+    "packages/llm-agent-libs/src/__tests__/tool-availability-policy.typecheck.ts",
+    "packages/llm-agent-libs/src/collections/__tests__/record-writer.test.ts",
+    "packages/llm-agent-libs/src/collections/__tests__/staged-retrieval.test.ts",
+    "packages/llm-agent-libs/src/collections/__tests__/composed-tools-profile.test.ts",
+    "packages/llm-agent-libs/src/collections/__tests__/collection-profile.typecheck.ts"
   ]
 }

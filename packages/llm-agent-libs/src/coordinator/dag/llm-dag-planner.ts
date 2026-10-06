@@ -7,7 +7,11 @@ import type {
   PlannerInput,
   PlannerResult,
 } from '@mcp-abap-adt/llm-agent';
-import { ClarifySignal, NeedInfoSignal } from '@mcp-abap-adt/llm-agent';
+import {
+  ClarifySignal,
+  NeedInfoSignal,
+  OrchestratorError,
+} from '@mcp-abap-adt/llm-agent';
 import { DirectLlmSubAgent } from '../../subagent/direct-llm-subagent.js';
 import { renderAncestorContext } from './render-ancestor-context.js';
 
@@ -54,20 +58,11 @@ Emit a plan-level "objective". Respond with ONLY one of:
  * The optional `usage` argument is attached to thrown errors so callers can
  * still bill LLM spend even when parsing fails.
  *
- * When `fallbackGoal` is supplied and the LLM returns a structurally valid
- * plan with ZERO nodes (and no needInfo/clarify), the parser synthesizes a
- * single fallback node carrying that goal instead of throwing. This is the
- * #171 obs-2c fix: a bare "call external tool X" request cannot be decomposed
- * into an internal MCP action, so the LLM may legitimately emit no nodes — but
- * the DAG must still run ONE worker so the worker LLM can emit the external
- * tool_call that the #171 surfacing machinery then handles. Callers that want
- * the strict no-nodes error (e.g. the Stepper planner) simply omit it.
+ * A plan with no nodes (and no needInfo/clarify) is an invalid plan: an
+ * `OrchestratorError` with `COORDINATOR_PLAN_INVALID` — never a one-node plan
+ * made from the raw prompt (spec §10.5.7 C8, #171).
  */
-export function parseDagPlan(
-  content: string,
-  usage?: LlmUsage,
-  fallbackGoal?: string,
-): DagPlan {
+export function parseDagPlan(content: string, usage?: LlmUsage): DagPlan {
   const match = content.match(/\{[\s\S]*\}/);
   if (!match)
     throw withUsage(
@@ -106,18 +101,13 @@ export function parseDagPlan(
     throw new ClarifySignal(parsed.clarify, usage);
   }
   if (!Array.isArray(parsed.nodes) || parsed.nodes.length === 0) {
-    // #171 obs 2c: rather than yield an empty plan (→ no worker → `(no
-    // response)`), synthesize a single node carrying the user objective so a
-    // worker always runs. Only when a fallbackGoal was supplied AND the LLM
-    // did not request needInfo/clarify (handled above).
-    if (fallbackGoal?.trim()) {
-      parsed.nodes = [{ id: 'n1', goal: fallbackGoal }];
-    } else {
-      throw withUsage(
-        new Error(`Planner returned no nodes: ${match[0].slice(0, 200)}`),
-        usage,
-      );
-    }
+    throw withUsage(
+      new OrchestratorError(
+        `Planner returned no nodes: ${match[0].slice(0, 200)}`,
+        'COORDINATOR_PLAN_INVALID',
+      ),
+      usage,
+    );
   }
   if (parsed.objective !== undefined && typeof parsed.objective !== 'string') {
     throw withUsage(
@@ -238,12 +228,9 @@ export class LlmDagPlanner implements IPlanner {
 
     // parseDagPlan throws NeedInfoSignal / ClarifySignal / parse errors,
     // forwarding res.usage so the coordinator can attribute planner-LLM spend
-    // even when the role short-circuits.
-    // Pass the user prompt as a fallback objective: if the LLM cannot
-    // decompose the request (e.g. a bare "call external tool X") and returns
-    // zero nodes, parseDagPlan synthesizes one node carrying the prompt so a
-    // worker still runs and can surface the external tool_call (#171 obs 2c).
-    const plan = parseDagPlan(res.output, res.usage, input.prompt);
+    // even when the role short-circuits. A plan with no nodes is
+    // COORDINATOR_PLAN_INVALID (spec §10.5.7 C8) — no raw-prompt node.
+    const plan = parseDagPlan(res.output, res.usage);
     return {
       plan,
       // Forward the underlying ILlm.chat usage on the WRAPPER (not on the

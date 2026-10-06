@@ -23,6 +23,7 @@ import type {
   IOutputValidator,
   IPipelineInstance,
   IPipelinePlugin,
+  IPluginLoader,
   IQueryExpander,
   IRagProviderRegistry,
   IRagRegistry,
@@ -52,20 +53,18 @@ import {
   CircuitBreaker,
   defaultToolNamespace,
   type IAuxiliaryMcpTools,
-  type IDecisionModel,
   type IMcpFailureClassifier,
+  type IProbabilityDecision,
   type IRag,
   type IRunExecutionControl,
   type IStepExecutionControl,
   type IWaitStrategy,
   isReadinessReporter,
-  SimpleRagProviderRegistry,
   symmetricEmbedder,
   type ToolLoopContextStrategyFactory,
   withCircuitBreaker,
 } from '@mcp-abap-adt/llm-agent';
 import type {
-  IPluginLoader,
   SessionAgentParts,
   SessionGraph,
   SessionGraphIdentity,
@@ -79,7 +78,9 @@ import {
   FileSystemSkillManager,
   getDefaultPluginDirs,
   HealthChecker,
+  HeuristicToolAvailabilityPolicy,
   InMemoryKnowledgeBackend,
+  type IToolAvailabilityPolicy,
   type KnowledgeBackend,
   KnowledgeRag,
   mergePluginExports,
@@ -95,7 +96,10 @@ import {
   McpClientAdapter,
 } from '@mcp-abap-adt/llm-agent-mcp';
 import type { EmbedderResolutionOptions } from '@mcp-abap-adt/llm-agent-rag';
-import { prefetchEmbedderFactories } from '@mcp-abap-adt/llm-agent-rag';
+import {
+  prefetchEmbedderFactories,
+  SimpleRagProviderRegistry,
+} from '@mcp-abap-adt/llm-agent-rag';
 import { PACKAGE_VERSION } from '../generated/version.js';
 import { ConfigReloadWatcher } from './config-reload-watcher.js';
 import { handleAdapterRequest } from './http/adapter-route-handler.js';
@@ -121,6 +125,7 @@ import {
   handleSessionsList,
 } from './http/sessions-route-handler.js';
 import { handleUsageRoute } from './http/usage-route-handler.js';
+import { listedToolsOrThrow } from './listed-tools.js';
 import { LlmCircuitBreakers } from './llm/llm-circuit-breakers.js';
 import {
   type IRoleLlmResolver,
@@ -380,7 +385,7 @@ export interface BuildAgentDeps {
    */
   makeDecisionModel?: (
     cfg: SmartServerDecisionConfig,
-  ) => Promise<IDecisionModel>;
+  ) => Promise<IProbabilityDecision>;
   prefetchEmbedderFactories?: typeof prefetchEmbedderFactories;
   buildSkillHost?: (
     cfg: SkillPluginsConfig,
@@ -493,6 +498,21 @@ export interface SmartServerHandle {
 // Helpers
 // ---------------------------------------------------------------------------
 
+/**
+ * The tool availability policy an agent's `agent` settings opt into (spec
+ * §10.5.12 U8): `toolUnavailableTtlMs` set → 30.1.0's heuristic with that TTL;
+ * unset → none, nothing is blocked.
+ */
+function toolAvailabilityPolicyFor(
+  agentCfg: Pick<SmartServerAgentConfig, 'toolUnavailableTtlMs'> | undefined,
+): IToolAvailabilityPolicy | undefined {
+  return agentCfg?.toolUnavailableTtlMs !== undefined
+    ? new HeuristicToolAvailabilityPolicy({
+        ttlMs: agentCfg.toolUnavailableTtlMs,
+      })
+    : undefined;
+}
+
 function resolveSkillManager(
   cfg?: SmartServerSkillsConfig,
 ): ISkillManager | undefined {
@@ -507,7 +527,11 @@ function resolveSkillManager(
     case 'filesystem':
       return new FileSystemSkillManager(cfg.dirs ?? []);
     default:
-      return undefined;
+      // Spec §10.5.8 S-10, D89: a config built in code skips the YAML field
+      // validator — an unknown type still fails, never a server without skills.
+      throw new Error(
+        `skills.type: unknown skill manager '${String(type)}' — one of claude, codex, filesystem`,
+      );
   }
 }
 
@@ -532,9 +556,10 @@ import {
   resolveLlmConfigStrict,
   resolveToolSelectionStrategy,
 } from './config.js';
+import { checkKnowledgeSeed, FieldCheck, present } from './config-fields.js';
+import { ConfigTransactionQueue } from './config-transaction-queue.js';
 import type { SmartServerDecisionConfig } from './decision-config.js';
 import { makeKnowledgeBackend } from './knowledge/make-knowledge-backend.js';
-import { llmKeySet, optionalNumber } from './llm-config-map.js';
 import {
   buildSessionMcpClients,
   serverOwnsMcpConnection,
@@ -547,13 +572,12 @@ import {
 } from './mcp/namespaced-bridge.js';
 import { makePgPool, makePgReadPool } from './pg-pool.js';
 import {
-  assertNamedLlmKeys,
-  dagNamedLlmKeys,
-  parseControllerSettings,
-  parseDagSettings,
-  parseLinearSettings,
-  parseStepperSettings,
-} from './pipeline-settings.js';
+  BUILTIN_PIPELINE_PARSERS,
+  BUILTIN_PIPELINE_SECTIONS,
+  type BuiltinPipelineName,
+  type PipelineSectionEntry,
+  type PipelineSelection,
+} from './pipeline-sections.js';
 import { selectPipelinePlugin } from './select-pipeline-plugin.js';
 import type { ISessionMetaStore } from './session-meta-store.js';
 import { InMemorySessionMetaStore } from './session-meta-store.js';
@@ -563,6 +587,7 @@ import {
   buildSkillHostFromConfig,
   initSkillHost,
 } from './skill-plugins-host-factory.js';
+import { StartReleases } from './start-releases.js';
 
 export {
   generateConfigTemplate,
@@ -748,14 +773,10 @@ export function buildMcpBridge(
         ? () => client.healthCheck!(opts).then((r) => (r.ok ? r.value : false))
         : undefined;
       const listed = await client.listTools(opts);
-      if (!listed.ok) {
-        // FAIL LOUD on an availability failure: a transient listTools() outage must
-        // NOT make the tool look merely absent (→ "Tool not found"/tool-blind). A
-        // benign error (this client genuinely can't list) falls through to the next.
-        if ((await classifier.classify(listed.error, probe)) === 'unavailable')
-          throw listed.error;
-        continue;
-      }
+      // Spec §10.5.3 M10: a client that cannot list its tools is an error of
+      // every class — never silently the next client (the tool would look
+      // merely absent, or run on another server).
+      if (!listed.ok) throw listed.error;
       const owns = listed.value.some((t) => t.name === name);
       if (!owns) continue;
       const result = await client.callTool(name, safeArgs, opts);
@@ -810,6 +831,8 @@ export class SmartServer {
    * Constructed in `_buildInfra` after embedder factories are resolved.
    */
   private _workers!: IWorkerRegistry;
+  /** The server's one config queue and its "config not applied" state (spec V6, V10, D80, D82). */
+  private readonly _configTransactions = new ConfigTransactionQueue();
   /**
    * Declarative HTTP route table built once; `_handle` delegates to its
    * `dispatch`. Replaces the former ~300-line if/else route chain.
@@ -994,6 +1017,11 @@ export class SmartServer {
    * knowledge after a delete and rehydrate it on a same-id re-entry.
    */
   private _stepperKnowledgeBackend?: KnowledgeBackend;
+  /** `pipeline.config.knowledgeSeed`, read once at start with the stepper's rule (spec D83 (12)). */
+  private _knowledgeSeed: ReadonlyArray<{
+    content: string;
+    artifactType: string;
+  }> = [];
   /**
    * Session meta-store for /v1/sessions endpoints (Task 17).
    * Defaults to InMemorySessionMetaStore; a durable store can be injected via
@@ -1008,6 +1036,10 @@ export class SmartServer {
    * factory (dynamic). `buildPipelineInstance` only builds it per session.
    */
   private _pipelinePlugin!: IPipelinePlugin;
+  /** Set in `_buildInfra` with `_pipelinePlugin`; the reload watcher's `pipeline` (spec D83 (11)). */
+  private _pipelineSections!: ReadonlyMap<string, PipelineSectionEntry>;
+  /** Set in `_buildInfra` with `_pipelinePlugin`; the reload watcher's `pipeline` (spec D83 (11)). */
+  private _pipelineSelection!: PipelineSelection;
   /**
    * Per-session `IPipelineInstance.close()` hooks, keyed by sessionId. Populated
    * by `buildPipelineInstance` (via `buildSessionAgent`) and invoked from the
@@ -1110,26 +1142,28 @@ export class SmartServer {
   }
 
   async start(): Promise<SmartServerHandle> {
-    // Startup pg-pool cleanup must span the ENTIRE start(): host.load() (via
-    // initSkillHost) creates pg pools, but fallible work AFTER it — makeRag,
-    // builder.build(), server.listen — can still throw/reject before the handle
-    // is returned and `closeFns` becomes callable. Without this guard those
-    // pools would leak open sockets and block process exit. initSkillHost keeps
-    // its own catch-cleanup (it clears the array, so this finally then no-ops —
-    // no double-end; pool end() is idempotent regardless). No-op when
-    // skillPlugins is unconfigured (_skillPgPools stays empty).
-    let started = false;
+    // Every failure of the start — the infra build, the pipeline registry, a
+    // required plugin, server.listen — releases what the start already took
+    // (MCP connections, workers, pg pools, session lifecycle, config watcher)
+    // through ONE path before it rejects (spec §17.43 D96): `_withStartRelease`.
+    // The handle is produced only once server.listen succeeds.
+    return this._start();
+  }
+
+  /**
+   * The ONE release path of a start (spec §17.43 D96): `run` registers each
+   * resource it takes on `taken`; if `run` fails, every registered resource is
+   * released, newest first, and the original failure is rethrown unchanged.
+   */
+  private async _withStartRelease<T>(
+    run: (taken: StartReleases) => Promise<T>,
+  ): Promise<T> {
+    const taken = new StartReleases();
     try {
-      // Single success path: the handle is only produced once server.listen
-      // succeeds (a listen error rejects this promise → finally cleans up).
-      const handle = await this._start();
-      started = true;
-      return handle;
-    } finally {
-      if (!started) {
-        await Promise.allSettled(this._skillPgPools.map((p) => p.end()));
-        this._skillPgPools = [];
-      }
+      return await run(taken);
+    } catch (err) {
+      await taken.releaseAll(this.cfg.log ?? this.noop);
+      throw err;
     }
   }
 
@@ -1143,7 +1177,7 @@ export class SmartServer {
    * coordinator is built only on the embeddable path (see `_buildEmbeddedAgent`),
    * so a plain `start()` no longer pays for a coordinator it never serves.
    */
-  private async _buildInfra(): Promise<{
+  private async _buildInfra(taken: StartReleases): Promise<{
     close: () => Promise<void>;
     chat: SmartAgentHandle['chat'];
     streamChat: SmartAgentHandle['streamChat'];
@@ -1161,6 +1195,16 @@ export class SmartServer {
       log: (e) => log(e as unknown as Record<string, unknown>),
     };
     this._fileLogger = fileLogger;
+    // pg pools the skill plugin-host creates: ended if the start fails later
+    // (initSkillHost ends them itself when it fails, and empties the array).
+    taken.add('skill pg pools', async () => {
+      const ended = await Promise.allSettled(
+        this._skillPgPools.map((p) => p.end()),
+      );
+      this._skillPgPools = [];
+      const failed = ended.find((r) => r.status === 'rejected');
+      if (failed) throw failed.reason;
+    });
 
     // ---- Composition root: resolve config → interfaces --------------------
 
@@ -1171,7 +1215,8 @@ export class SmartServer {
     // An unset temperature stays unset all the way to the provider, which then
     // sends none and the model applies its own default — a forced value breaks
     // models that accept only theirs (gpt-5, o-series, claude-opus-4-7+).
-    const mainTemp = optionalNumber(topMain?.temperature);
+    // The resolved config holds validated numbers (spec D83 (7)).
+    const mainTemp = topMain?.temperature;
     const mainLlm = topMain
       ? await this._deps.makeLlm({ ...topMain, temperature: mainTemp })
       : (() => {
@@ -1179,7 +1224,7 @@ export class SmartServer {
         })();
 
     const classifierEntry = resolveLlmConfigStrict(llmMap, 'classifier');
-    const classifierTemp = optionalNumber(topMain?.classifierTemperature);
+    const classifierTemp = topMain?.classifierTemperature;
     const classifierLlm = classifierEntry
       ? await this._deps.makeLlm(classifierEntry)
       : topMain
@@ -1194,7 +1239,7 @@ export class SmartServer {
     const helperLlm = helperCfg
       ? await this._deps.makeLlm({
           ...helperCfg,
-          temperature: optionalNumber(helperCfg.temperature),
+          temperature: helperCfg.temperature,
         })
       : undefined;
     // `circuitBreaker:` → the shared breakers (§14.2): created once, before any
@@ -1248,27 +1293,59 @@ export class SmartServer {
         mcpClients: plugins.mcpClients.length,
       });
     }
+    // Spec §17.43 D96: a discovered file in a plugin directory that did not
+    // load is reported, not an error — the server starts.
+    const skipped = plugins.skipped ?? [];
+    if (skipped.length > 0) {
+      log({ event: 'plugin_errors', errors: skipped });
+    }
+    // A plugin a (consumer's) loader was told to load is required: its
+    // failure fails the start, naming it.
     if (plugins.errors.length > 0) {
-      log({ event: 'plugin_errors', errors: plugins.errors });
+      throw new Error(
+        plugins.errors
+          .map((e) => `plugin '${e.file}' could not be loaded: ${e.error}`)
+          .join('; '),
+      );
     }
 
     // ---- Explicit plugin specifiers (`plugins: [...]`) -------------------
     // Dynamically import each module specifier and merge its FULL
     // PluginExports (pipelinePlugins, embedderFactories, mcpClients, …) into
     // the same LoadedPlugins object. Done BEFORE the embedder/RAG build below
-    // so plugin-supplied embedder factories are visible.
+    // so plugin-supplied embedder factories are visible. A specifier is a
+    // REQUIRED plugin (D96): one that cannot be resolved or imported, whose
+    // exports are refused, or that registers nothing fails the start.
     const requireFromCwd = createRequire(`${process.cwd()}/`);
     for (const spec of this.cfg.plugins ?? []) {
-      // Resolve to an ABSOLUTE path against the USER's cwd, then import via
-      // a file URL. A bare `await import('./x.js')` would resolve relative to
-      // smart-server.js, not the user's cwd.
-      const abs = spec.startsWith('.')
-        ? pathResolve(process.cwd(), spec)
-        : spec.startsWith('/')
-          ? spec
-          : requireFromCwd.resolve(spec);
-      const mod = (await import(pathToFileURL(abs).href)) as PluginExports;
+      const notLoaded = (cause: string, err?: unknown) =>
+        new Error(
+          `plugin '${spec}' could not be loaded: ${cause}`,
+          err === undefined ? undefined : { cause: err },
+        );
+      let mod: PluginExports;
+      try {
+        // Resolve to an ABSOLUTE path against the USER's cwd, then import via
+        // a file URL. A bare `await import('./x.js')` would resolve relative
+        // to smart-server.js, not the user's cwd.
+        const abs = spec.startsWith('.')
+          ? pathResolve(process.cwd(), spec)
+          : spec.startsWith('/')
+            ? spec
+            : requireFromCwd.resolve(spec);
+        mod = (await import(pathToFileURL(abs).href)) as PluginExports;
+      } catch (err) {
+        throw notLoaded(err instanceof Error ? err.message : String(err), err);
+      }
+      const before = plugins.errors.length;
       const registered = mergePluginExports(plugins, mod, spec);
+      const refused = plugins.errors.splice(before);
+      if (refused.length > 0) {
+        throw notLoaded(refused.map((e) => e.error).join('; '));
+      }
+      if (!registered) {
+        throw notLoaded('it exports no plugin registration');
+      }
       log({ event: 'plugin_specifier_loaded', spec, registered });
     }
 
@@ -1327,53 +1404,66 @@ export class SmartServer {
         })
       : undefined;
 
+    // Spec D83 (12): pipeline.config.knowledgeSeed with the stepper's rule — a
+    // present wrong shape fails the start, never "no seed".
+    const seedCheck = new FieldCheck();
+    const rawSeed = this.cfg.pipeline?.config?.knowledgeSeed;
+    this._knowledgeSeed = seedCheck.done(
+      present(rawSeed)
+        ? checkKnowledgeSeed(
+            seedCheck,
+            'pipeline.config.knowledgeSeed',
+            rawSeed,
+          )
+        : [],
+    );
+
     // ---- Pipeline-plugin registry: factories (§4.6.7) -------------------
     // Built-ins are server code — parse, validate, construct with typed settings.
     // A dynamic instance export is registered as a factory that ignores its
     // section; a dynamic factory is the plugin author's parser. Only the selected
     // entry is ever called, once, below.
     const warn = (m: string) => this.warn(m);
-    const pipelineRegistry = new Map<string, PipelinePluginFactory>([
-      ['flat', () => new FlatPipelinePlugin()],
-      ['linear', (s) => new LinearPipelinePlugin(parseLinearSettings(s))],
-      [
-        'dag',
-        (s) => {
-          const settings = parseDagSettings(s, warn);
-          assertNamedLlmKeys(
-            dagNamedLlmKeys(settings),
-            this._llmMap,
-            "pipeline 'dag'",
-          );
-          return new DagPipelinePlugin(settings);
-        },
-      ],
-      ['stepper', (s) => new StepperPipelinePlugin(parseStepperSettings(s))],
-      [
-        'controller',
-        (s) =>
+    // Spec D83 (11): the built-in factories call BUILTIN_PIPELINE_PARSERS — the
+    // parse the reload runs too; both records are keyed by BuiltinPipelineName,
+    // so the compiler keeps the factories and the section entries equal.
+    const builtinFactories: Record<BuiltinPipelineName, PipelinePluginFactory> =
+      {
+        flat: () => new FlatPipelinePlugin(),
+        linear: (s) =>
+          new LinearPipelinePlugin(BUILTIN_PIPELINE_PARSERS.linear(s)),
+        dag: (s) =>
+          new DagPipelinePlugin(
+            BUILTIN_PIPELINE_PARSERS.dag(s, this._llmMap, warn),
+          ),
+        stepper: (s) =>
+          new StepperPipelinePlugin(BUILTIN_PIPELINE_PARSERS.stepper(s)),
+        controller: (s) =>
           new ControllerPipelinePlugin(
             'controller',
             'smart-executor',
-            parseControllerSettings(s, llmKeySet(this._llmMap)),
+            BUILTIN_PIPELINE_PARSERS.controller(s, this._llmMap),
           ),
-      ],
-      [
-        'controller-weak',
-        (s) =>
+        'controller-weak': (s) =>
           new ControllerPipelinePlugin(
             'controller-weak',
             'weak-executor',
-            parseControllerSettings(s, llmKeySet(this._llmMap)),
+            BUILTIN_PIPELINE_PARSERS['controller-weak'](s, this._llmMap),
           ),
-      ],
-    ]);
+      };
+    const pipelineRegistry = new Map<string, PipelinePluginFactory>(
+      Object.entries(builtinFactories),
+    );
+    const pipelineSections = new Map<string, PipelineSectionEntry>(
+      Object.entries(BUILTIN_PIPELINE_SECTIONS),
+    );
     const pipelineSources = new Map<string, string>(
       [...pipelineRegistry.keys()].map((k) => [k, 'built-in']),
     );
     const registerPipeline = (
       name: string,
       factory: PipelinePluginFactory,
+      entry: PipelineSectionEntry,
     ): void => {
       const source = plugins.pipelinePluginSources.get(name) ?? 'unknown';
       if (pipelineRegistry.has(name)) {
@@ -1384,22 +1474,30 @@ export class SmartServer {
       }
       pipelineRegistry.set(name, factory);
       pipelineSources.set(name, source);
+      pipelineSections.set(name, entry);
     };
     for (const [name, plugin] of plugins.pipelinePlugins)
-      registerPipeline(name, () => plugin);
+      registerPipeline(name, () => plugin, { kind: 'no-section' });
     for (const [name, factory] of plugins.pipelinePluginFactories ?? []) {
-      registerPipeline(name, factory);
+      registerPipeline(name, factory, { kind: 'plugin-factory' });
     }
     log({
       event: 'pipeline_registry_loaded',
       pipelines: [...pipelineRegistry.keys()],
     });
+    const selection: PipelineSelection = {
+      name: this.cfg.pipeline?.name ?? 'flat',
+      section: this.cfg.pipeline?.config ?? {},
+    };
     this._pipelinePlugin = selectPipelinePlugin(
       pipelineRegistry,
       pipelineSources,
-      this.cfg.pipeline?.name ?? 'flat',
-      this.cfg.pipeline?.config ?? {},
+      selection.name,
+      selection.section,
     );
+    // Spec D83 (11): what a reload checks its file's pipeline against.
+    this._pipelineSections = pipelineSections;
+    this._pipelineSelection = selection;
 
     // Merge plugin embedder factories with config-provided ones
     const mergedEmbedderFactories = {
@@ -1425,6 +1523,9 @@ export class SmartServer {
           injected,
         ),
     });
+    // Worker handles (their MCP clients) are closed if the start fails later.
+    const workers = this._workers;
+    taken.add('workers', () => workers.drain());
 
     // Resolve the embedder ONCE so the same instance feeds both makeRag and the
     // subagent context-builder's toolSource (#137). See resolve-agent-embedder.
@@ -1528,6 +1629,7 @@ export class SmartServer {
         buildHost,
         skillCfg,
         this._skillPgPools,
+        log,
       );
     }
 
@@ -1719,6 +1821,7 @@ export class SmartServer {
     // pipeline's buildServerCtx resolves its dep-sources.)
 
     const agentHandle = await builder.build();
+    taken.add('startup agent', () => agentHandle.close());
     const {
       agent: smartAgent,
       chat,
@@ -1873,6 +1976,10 @@ export class SmartServer {
       void lifecycle.evictIdle();
     }, sweepMs);
     sweep.unref?.();
+    taken.add('session lifecycle', async () => {
+      clearInterval(sweep);
+      await lifecycle.disposeAll();
+    });
     closeFns.push(async () => {
       clearInterval(sweep);
       await lifecycle.disposeAll();
@@ -1930,9 +2037,16 @@ export class SmartServer {
         drainWorkers: () => this._workers.drain(),
         invalidateSessions: () =>
           this._lifecycle?.invalidateAll() ?? Promise.resolve(),
+        transactions: this._configTransactions,
+        pipeline: {
+          entries: this._pipelineSections,
+          running: this._pipelineSelection,
+          warn: (m) => this.warn(m),
+        },
         ragStores,
       });
       reloadWatcher.start();
+      taken.add('config watcher', () => reloadWatcher.stop());
       closeFns.push(() => reloadWatcher.stop());
     }
 
@@ -1982,36 +2096,32 @@ export class SmartServer {
     agent: ISmartAgent;
     close: () => Promise<void>;
   }> {
-    const infra = await this._buildInfra();
-    // If the pipeline-instance build throws, the infra (LLM clients, MCP, skill
-    // host, pg pools) is already live — tear it down before propagating so a
-    // failed embedded build never leaks the infra.
-    let inst: IPipelineInstance;
-    try {
-      inst = await this.buildPipelineInstance({
+    // The start's one release path (D96): if the pipeline-instance build — or
+    // the infra build itself — fails, what was taken (MCP, workers, skill
+    // host pg pools, …) is released before the failure propagates.
+    return this._withStartRelease(async (taken) => {
+      const infra = await this._buildInfra(taken);
+      const inst: IPipelineInstance = await this.buildPipelineInstance({
         sessionId: 'embedded',
         parts: this._embeddedSessionParts(
           infra.globalMcpClients,
           infra.globalRagRegistry,
         ),
       });
-    } catch (e) {
-      await infra.close().catch(() => {});
-      throw e;
-    }
-    return {
-      // PUBLIC embeddable agent = the coordinated pipeline instance's agent.
-      agent: inst.agent,
-      // Dispose the pipeline instance FIRST, then the shared infra. `finally`
-      // guarantees `infra.close()` runs even if `inst.close()` throws.
-      close: async () => {
-        try {
-          await inst.close();
-        } finally {
-          await infra.close();
-        }
-      },
-    };
+      return {
+        // PUBLIC embeddable agent = the coordinated pipeline instance's agent.
+        agent: inst.agent,
+        // Dispose the pipeline instance FIRST, then the shared infra. `finally`
+        // guarantees `infra.close()` runs even if `inst.close()` throws.
+        close: async () => {
+          try {
+            await inst.close();
+          } finally {
+            await infra.close();
+          }
+        },
+      };
+    });
   }
 
   /**
@@ -2041,8 +2151,12 @@ export class SmartServer {
     };
   }
 
-  private async _start(): Promise<SmartServerHandle> {
-    const built = await this._buildInfra();
+  private _start(): Promise<SmartServerHandle> {
+    return this._withStartRelease((taken) => this._listen(taken));
+  }
+
+  private async _listen(taken: StartReleases): Promise<SmartServerHandle> {
+    const built = await this._buildInfra(taken);
     const {
       chat,
       streamChat,
@@ -2220,6 +2334,16 @@ export class SmartServer {
 
     subBuilder = subBuilder.withHelperLlm(helperLlm);
 
+    // Spec U8: the worker's own agent.toolUnavailableTtlMs wins, else the parent's.
+    const subToolAvailability = toolAvailabilityPolicyFor({
+      toolUnavailableTtlMs:
+        subCfg.agent?.toolUnavailableTtlMs ??
+        this.cfg.agent?.toolUnavailableTtlMs,
+    });
+    if (subToolAvailability) {
+      subBuilder = subBuilder.withToolAvailabilityPolicy(subToolAvailability);
+    }
+
     // SHARE the parent RAG registry + session logger when injected (per-session
     // worker re-wire). The per-call scope filter isolates by ctx.sessionId.
     const sharedReg = resolveSubAgentRagRegistry({
@@ -2237,6 +2361,9 @@ export class SmartServer {
     //      declare their own store).
     // History RAG: only when the worker has its own cached instance — the
     // parent's history RAG is owned by the parent agent and is not shared.
+    // What this wire takes from the parent (spec §10.5.12 U10): kept — the
+    // consumer chose it by declaring none of its own — and logged below.
+    const shared: ('toolsRag' | 'mcpClients')[] = [];
     if (cached.toolsRag) {
       subBuilder = subBuilder.setToolsRag(cached.toolsRag);
       if (cached.historyRag) {
@@ -2244,6 +2371,7 @@ export class SmartServer {
       }
     } else if (injected?.toolsRag) {
       subBuilder = subBuilder.setToolsRag(injected.toolsRag);
+      shared.push('toolsRag');
     }
 
     if (subCfg.skillManager) {
@@ -2260,6 +2388,14 @@ export class SmartServer {
       subBuilder = subBuilder.withMcpClients(cached.mcpClients);
     } else if (injected?.mcpClients && injected.mcpClients.length > 0) {
       subBuilder = subBuilder.withMcpClients(injected.mcpClients);
+      shared.push('mcpClients');
+    }
+    if (shared.length > 0) {
+      (this.cfg.log ?? this.noop)({
+        event: 'worker_uses_shared_clients',
+        worker: name,
+        shared,
+      });
     }
 
     // rag.retrieval is server-wide: a worker's projection (named collections
@@ -2369,8 +2505,8 @@ export class SmartServer {
    * unconditionally in `start()`; a fresh in-memory backend is a defensive
    * fallback). HOST-level seeding happens HERE so the stepper plugin stays
    * agnostic (it just calls `ctx.knowledgeRagFor`): a BRAND-NEW session is
-   * seeded from `pipeline.config.knowledgeSeed` (read defensively — absent for
-   * non-stepper pipelines, where an empty seed is a harmless no-op). Idempotent
+   * seeded from `pipeline.config.knowledgeSeed` (read once at start, D83 (12) —
+   * absent for non-stepper pipelines, where an empty seed is a harmless no-op). Idempotent
    * on resume via `seedSessionKnowledge`.
    */
   private async knowledgeRagFor(
@@ -2379,18 +2515,11 @@ export class SmartServer {
     const backend =
       this._stepperKnowledgeBackend ?? new InMemoryKnowledgeBackend();
     const kr = new KnowledgeRag(backend, sessionId);
-    const rawSeed = (this.cfg.pipeline?.config as { knowledgeSeed?: unknown })
-      ?.knowledgeSeed;
-    const seeds = Array.isArray(rawSeed)
-      ? (rawSeed as Array<{ content?: unknown; artifactType?: unknown }>)
-          .filter((e) => e && typeof e.content === 'string')
-          .map((e) => ({
-            content: e.content as string,
-            artifactType:
-              typeof e.artifactType === 'string' ? e.artifactType : 'guidance',
-          }))
-      : [];
-    await seedSessionKnowledge(kr, seeds, new Date().toISOString());
+    await seedSessionKnowledge(
+      kr,
+      this._knowledgeSeed,
+      new Date().toISOString(),
+    );
     return kr;
   }
 
@@ -2564,11 +2693,9 @@ export class SmartServer {
    *     `_toolNamespace` — the SAME strategy instance threaded onto the
    *     startup builder, so both snapshot sources agree on the naming rule.
    *
-   * Preserves the ORIGINAL client index on a partial `listTools()` failure:
-   * the per-client input is built index-preservingly via `settled.flatMap`
-   * aligned by position (mirroring the builder's own snapshot build), NEVER
-   * `filter().map()` — a middle-client failure must not shift later slots'
-   * `slotIndex`.
+   * Every client must list its tools: any failure rejects with that client's
+   * McpError and nothing is memoized (spec §10.5.3 M11). Each client keeps its
+   * descriptor's `slotIndex`.
    */
   private async resolveAuthoritativeSnapshot(): Promise<void> {
     // Memoized: a handle-carried snapshot (yaml path) or a prior fallback
@@ -2579,46 +2706,23 @@ export class SmartServer {
     const descs: readonly McpClientDescriptor[] =
       this._sharedMcpClientDescriptors ??
       clients.map((_, i) => ({ slotIndex: i }));
-    const settled = await Promise.all(
-      clients.map(async (client) => {
-        try {
-          const result = await client.listTools();
-          return result.ok
-            ? { ok: true as const, value: result.value }
-            : { ok: false as const };
-        } catch {
-          return { ok: false as const };
-        }
+    // Spec §10.5.3 M11: a client that cannot list its tools fails the
+    // snapshot with its McpError; nothing is memoized, so a later call builds
+    // it once the client recovers.
+    const settled = await Promise.allSettled(
+      clients.map((client) => client.listTools()),
+    );
+    const perClient: NamespaceClientInput[] = listedToolsOrThrow(settled).map(
+      (tools, i) => ({
+        slotIndex: descs[i]?.slotIndex ?? i,
+        label: descs[i]?.label,
+        client: clients[i],
+        tools,
       }),
     );
-    const perClient: NamespaceClientInput[] = settled.flatMap((entry, i) => {
-      if (!entry.ok) return [];
-      return [
-        {
-          slotIndex: descs[i]?.slotIndex ?? i,
-          label: descs[i]?.label,
-          client: clients[i],
-          tools: entry.value,
-        },
-      ];
-    });
     const built = buildNamespacedTools(perClient, this._toolNamespace);
     this._namespacedTools = built.tools;
     this._toolProvenance = built.provenance;
-
-    // Spec §4: a partial listTools() failure must be LOGGED (aligned with
-    // vectorizeMcpTools's `clientFailures` reporting), never a silent drop —
-    // this snapshot is the ONLY source when there is no writable tools RAG,
-    // in which case vectorizeMcpTools never runs and never logs either.
-    const clientFailures = settled.filter((entry) => !entry.ok).length;
-    if (clientFailures > 0) {
-      this.cfg.log?.({
-        event: 'authoritative_snapshot_client_failures',
-        message: `resolveAuthoritativeSnapshot: ${clientFailures} client(s) failed to list tools`,
-        clientFailures,
-        clientCount: clients.length,
-      });
-    }
   }
 
   /**
@@ -2647,7 +2751,6 @@ export class SmartServer {
       this._sharedMcpClients ?? [],
       toolsRag,
       resolvedEmbedder,
-      this.cfg.log,
       this._namespacedTools
         ? { namespacedTools: this._namespacedTools }
         : undefined,
@@ -2914,6 +3017,12 @@ export class SmartServer {
       builder = builder.withHelperLlm(parts.helperLlm);
     }
 
+    // Spec U8: agent.toolUnavailableTtlMs set → the heuristic blacklist; unset → none.
+    const toolAvailability = toolAvailabilityPolicyFor(this.cfg.agent);
+    if (toolAvailability) {
+      builder = builder.withToolAvailabilityPolicy(toolAvailability);
+    }
+
     if (parts.toolsRag) {
       builder = builder.setToolsRag(parts.toolsRag);
     }
@@ -2951,14 +3060,6 @@ export class SmartServer {
     // `minScore` compares reranker probabilities in [0, 1], not cosine.
     if (this._toolSelectionStrategy) {
       builder = builder.withToolSelectionStrategy(this._toolSelectionStrategy);
-    }
-
-    // Not gated, same reason: the ONE embedder breaker guards the stores of
-    // every agent (§14.2). The LLMs given above are already breaker-guarded.
-    if (this._embedderBreaker) {
-      builder = builder.withCircuitBreakers({
-        embedder: this._embedderBreaker,
-      });
     }
 
     // Not gated, same reason: the output validator, query expander, skill
@@ -3106,29 +3207,33 @@ export class SmartServer {
       res.setHeader('Set-Cookie', resolved.setCookie);
     }
     const graph = await lifecycle.acquire(sessionId);
-    // Register/touch the session in the meta store so /v1/sessions, resume and
-    // delete reflect real chat/stream traffic (review Finding 3). Best-effort:
-    // a meta-store hiccup must never break the actual request.
     try {
+      // Register/touch the session in the meta store so /v1/sessions, resume
+      // and delete reflect real chat/stream traffic (review Finding 3). A
+      // failed write fails the request (spec §10.5.9 V5): the server's
+      // catch-all answers 500 jsonError, and the graph is released below.
       await recordSessionStart(
         this._sessionMetaStore,
         sessionId,
         new Date().toISOString(),
       );
-    } catch {
-      // swallow — session metadata is non-critical to serving the request
-    }
-    try {
       await fn(graph, sessionId, traceId);
     } finally {
+      // End-of-request cleanup (spec §10.5.9 V5): a failure here does not
+      // change the response already served — it is logged, never swallowed.
       try {
         await recordSessionEnd(
           this._sessionMetaStore,
           sessionId,
           new Date().toISOString(),
         );
-      } catch {
-        // swallow — see above
+      } catch (err) {
+        (this.cfg.log ?? this.noop)({
+          event: 'session_meta_end_failed',
+          sessionId,
+          traceId,
+          error: err instanceof Error ? err.message : String(err),
+        });
       }
       graph.logger.dropRequest(traceId);
       // Pass the graph instance — `invalidateAll()` may have detached this
@@ -3165,11 +3270,21 @@ export class SmartServer {
       url: rawUrl,
       normalizedPath: urlPath,
     });
-    // Server readiness: derived from the agent's MCP connection strategy (it
-    // implements IReadinessReporter). No strategy / non-reporting ⇒ ready
-    // (readiness unknown). Computed ONCE here and reused by /health and the
-    // pre-dispatch request gate (messages/chat) via `rc.ready`.
-    const ready = isReadinessReporter(smartAgent) ? smartAgent.isReady() : true;
+    // Server readiness (spec §10.5.10, D82): the agent's MCP connection
+    // strategy (IReadinessReporter; none / non-reporting ⇒ ready) AND the
+    // config state — a config change that failed to apply leaves the server
+    // not ready until a later one applies. Computed ONCE here and reused by
+    // /health and the pre-dispatch request gate (messages/chat) via `rc.ready`.
+    const mcpReady = isReadinessReporter(smartAgent)
+      ? smartAgent.isReady()
+      : true;
+    const configNotApplied = this._configTransactions.notApplied;
+    const ready = mcpReady && configNotApplied === undefined;
+    const notReadyMessage = configNotApplied
+      ? `config not applied — ${configNotApplied.reason}`
+      : mcpReady
+        ? undefined
+        : 'MCP unavailable — server not ready';
     const rc: RouteContext = {
       req,
       res,
@@ -3177,6 +3292,8 @@ export class SmartServer {
       urlPath,
       method: req.method ?? 'GET',
       ready,
+      notReadyMessage,
+      configNotApplied,
       server: this,
       requestLogger,
       smartAgent,
@@ -3293,7 +3410,7 @@ export class SmartServer {
       handle: async (rc) => {
         // Pre-dispatch readiness gate: fail loud (503) BEFORE opening any stream.
         if (!rc.ready) {
-          writeNotReady(rc.res);
+          writeNotReady(rc.res, rc.notReadyMessage);
           return;
         }
         const anthropicAdapter = rc.adapterMap?.get('anthropic');
@@ -3327,7 +3444,7 @@ export class SmartServer {
       handle: async (rc) => {
         // Pre-dispatch readiness gate: fail loud (503) BEFORE opening any SSE stream.
         if (!rc.ready) {
-          writeNotReady(rc.res);
+          writeNotReady(rc.res, rc.notReadyMessage);
           return;
         }
         await rc.server._withSession(
@@ -3387,6 +3504,7 @@ export class SmartServer {
       drainWorkers: () => this._workers.drain(),
       invalidateSessions: () =>
         this._lifecycle?.invalidateAll() ?? Promise.resolve(),
+      transactions: this._configTransactions,
     };
   }
 }

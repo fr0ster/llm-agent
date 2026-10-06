@@ -16,7 +16,8 @@ import type {
   IEmbedderBatch,
   IEmbedResult,
 } from '@mcp-abap-adt/llm-agent';
-import { isBatchEmbedder, RagError } from '@mcp-abap-adt/llm-agent';
+import { isBatchEmbedder } from '../interfaces/rag.js';
+import { RagError } from '../interfaces/types.js';
 import { isCallerCancellation } from './caller-cancellation.js';
 import type { CircuitBreaker } from './circuit-breaker.js';
 

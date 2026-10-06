@@ -10,8 +10,47 @@ import type {
   LLMResponse,
   Message,
 } from '@mcp-abap-adt/llm-agent';
-import { BaseLLMProvider } from '@mcp-abap-adt/llm-agent';
+import { BaseLLMProvider, LlmError } from '@mcp-abap-adt/llm-agent';
 import axios, { type AxiosInstance } from 'axios';
+
+/**
+ * One SSE `data:` payload. Lines are split on `\n` before this is called, so a
+ * payload that is not JSON is a whole malformed line — never a partial chunk.
+ * Dropping it would end the stream "successfully", truncated (spec §10.5.6
+ * L6), so it is an `LLM_ERROR` naming the line's first 200 characters.
+ */
+function parseStreamData(data: string, line: string) {
+  try {
+    return JSON.parse(data);
+  } catch {
+    throw new LlmError(
+      `malformed stream line (not JSON): ${line.slice(0, 200)}`,
+      'LLM_ERROR',
+    );
+  }
+}
+
+/**
+ * The lines of an SSE body, split on `\n` across reads. The final line is
+ * yielded even without a trailing `\n`, so a truncated tail reaches the
+ * parser (an error) and a complete one is delivered — never dropped.
+ */
+async function* sseLines(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+): AsyncGenerator<string> {
+  const decoder = new TextDecoder();
+  let buffer = '';
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n');
+    buffer = lines.pop() ?? '';
+    yield* lines;
+  }
+  buffer += decoder.decode();
+  if (buffer) yield buffer;
+}
 
 export interface AnthropicConfig extends LLMProviderConfig {
   /**
@@ -216,8 +255,6 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
     );
 
     const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '';
 
     // Anthropic streams tool_use as discrete content blocks: a
     // `content_block_start` with type=tool_use carries id+name, then a series
@@ -227,118 +264,101 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
     const toolBlockIndices = new Map<number, number>();
     let nextToolIndex = 0;
 
+    // The current SSE event's type. It lives across reads: an `event:` line
+    // and its `data:` line can arrive in two reads, and a type reset per read
+    // dropped that data line's text without a trace.
+    let eventType = '';
+
     try {
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
+      for await (const line of sseLines(reader)) {
+        const trimmed = line.trim();
+        if (!trimmed) {
+          eventType = '';
+          continue;
+        }
+        if (trimmed.startsWith('event: ')) {
+          eventType = trimmed.slice(7);
+          continue;
+        }
+        if (!trimmed.startsWith('data: ')) continue;
 
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop() || '';
-
-        let eventType = '';
-        for (const line of lines) {
-          const trimmed = line.trim();
-          if (!trimmed) {
-            eventType = '';
-            continue;
-          }
-          if (trimmed.startsWith('event: ')) {
-            eventType = trimmed.slice(7);
-            continue;
-          }
-          if (!trimmed.startsWith('data: ')) continue;
-
-          const data = trimmed.slice(6);
-          try {
-            const parsed = JSON.parse(data);
-            if (
-              eventType === 'content_block_delta' &&
-              parsed.delta?.type === 'text_delta'
-            ) {
-              yield { content: parsed.delta.text || '', raw: parsed };
-            } else if (
-              eventType === 'content_block_start' &&
-              parsed.content_block?.type === 'tool_use'
-            ) {
-              const blockIndex = parsed.index as number;
-              const toolIndex = nextToolIndex++;
-              toolBlockIndices.set(blockIndex, toolIndex);
-              yield {
-                content: '',
-                raw: parsed,
-                toolCalls: [
-                  {
-                    index: toolIndex,
-                    id: parsed.content_block.id,
-                    name: parsed.content_block.name,
-                    arguments: '',
-                  },
-                ],
-              };
-            } else if (
-              eventType === 'content_block_delta' &&
-              parsed.delta?.type === 'input_json_delta'
-            ) {
-              const toolIndex = toolBlockIndices.get(parsed.index as number);
-              if (toolIndex !== undefined) {
-                yield {
-                  content: '',
-                  raw: parsed,
-                  toolCalls: [
-                    {
-                      index: toolIndex,
-                      arguments: parsed.delta.partial_json ?? '',
-                    },
-                  ],
-                };
-              }
-            } else if (eventType === 'message_start' && parsed.message?.usage) {
-              const u = parsed.message.usage;
-              yield {
-                content: '',
-                raw: parsed,
-                usage: {
-                  promptTokens: u.input_tokens ?? 0,
-                  completionTokens: u.output_tokens ?? 0,
-                  totalTokens: (u.input_tokens ?? 0) + (u.output_tokens ?? 0),
+        const parsed = parseStreamData(trimmed.slice(6), trimmed);
+        if (
+          eventType === 'content_block_delta' &&
+          parsed.delta?.type === 'text_delta'
+        ) {
+          yield { content: parsed.delta.text || '', raw: parsed };
+        } else if (
+          eventType === 'content_block_start' &&
+          parsed.content_block?.type === 'tool_use'
+        ) {
+          const blockIndex = parsed.index as number;
+          const toolIndex = nextToolIndex++;
+          toolBlockIndices.set(blockIndex, toolIndex);
+          yield {
+            content: '',
+            raw: parsed,
+            toolCalls: [
+              {
+                index: toolIndex,
+                id: parsed.content_block.id,
+                name: parsed.content_block.name,
+                arguments: '',
+              },
+            ],
+          };
+        } else if (
+          eventType === 'content_block_delta' &&
+          parsed.delta?.type === 'input_json_delta'
+        ) {
+          const toolIndex = toolBlockIndices.get(parsed.index as number);
+          if (toolIndex !== undefined) {
+            yield {
+              content: '',
+              raw: parsed,
+              toolCalls: [
+                {
+                  index: toolIndex,
+                  arguments: parsed.delta.partial_json ?? '',
                 },
-              };
-            } else if (eventType === 'message_delta') {
-              const u = parsed.usage;
-              const stopReason = parsed.delta?.stop_reason;
-              yield {
-                content: '',
-                // Normalize Anthropic's 'tool_use' to 'tool_calls' so the
-                // downstream bridge / agent sees the canonical finish reason.
-                finishReason:
-                  stopReason === 'tool_use' ? 'tool_calls' : stopReason,
-                raw: parsed,
-                usage: u
-                  ? {
-                      promptTokens: 0,
-                      completionTokens: u.output_tokens ?? 0,
-                      totalTokens: u.output_tokens ?? 0,
-                    }
-                  : undefined,
-              };
-            } else if (eventType === 'error') {
-              const error = parsed.error as { message?: string } | undefined;
-              throw new Error(
-                `Anthropic stream error: ${error?.message ?? 'unknown'}`,
-              );
-            } else {
-              yield { content: '', raw: parsed };
-            }
-          } catch (e) {
-            if (
-              e instanceof Error &&
-              e.message.startsWith('Anthropic stream error:')
-            ) {
-              throw e;
-            }
-            /* incomplete JSON — skip */
+              ],
+            };
           }
+        } else if (eventType === 'message_start' && parsed.message?.usage) {
+          const u = parsed.message.usage;
+          yield {
+            content: '',
+            raw: parsed,
+            usage: {
+              promptTokens: u.input_tokens ?? 0,
+              completionTokens: u.output_tokens ?? 0,
+              totalTokens: (u.input_tokens ?? 0) + (u.output_tokens ?? 0),
+            },
+          };
+        } else if (eventType === 'message_delta') {
+          const u = parsed.usage;
+          const stopReason = parsed.delta?.stop_reason;
+          yield {
+            content: '',
+            // Normalize Anthropic's 'tool_use' to 'tool_calls' so the
+            // downstream bridge / agent sees the canonical finish reason.
+            finishReason: stopReason === 'tool_use' ? 'tool_calls' : stopReason,
+            raw: parsed,
+            usage: u
+              ? {
+                  promptTokens: 0,
+                  completionTokens: u.output_tokens ?? 0,
+                  totalTokens: u.output_tokens ?? 0,
+                }
+              : undefined,
+          };
+        } else if (eventType === 'error') {
+          const error = parsed.error as { message?: string } | undefined;
+          throw new Error(
+            `Anthropic stream error: ${error?.message ?? 'unknown'}`,
+          );
+        } else {
+          yield { content: '', raw: parsed };
         }
       }
     } finally {

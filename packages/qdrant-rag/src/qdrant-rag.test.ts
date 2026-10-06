@@ -36,6 +36,14 @@ interface StubState {
     string,
     Array<{ id: string; vector: number[]; payload: Record<string, unknown> }>
   >;
+  /** vectors.size of each collection, as Qdrant reports it in the collection info. */
+  sizes: Map<string, number>;
+}
+
+/** Pre-create a collection of `size`-dim vectors in the stub. */
+function seed(state: StubState, name: string, size = 3): void {
+  state.collections.set(name, []);
+  state.sizes.set(name, size);
 }
 
 function createStubServer(state: StubState): http.Server {
@@ -53,7 +61,16 @@ function createStubServer(state: StubState): http.Server {
         const name = getCollMatch[1];
         if (state.collections.has(name)) {
           res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ result: { status: 'green' } }));
+          res.end(
+            JSON.stringify({
+              result: {
+                status: 'green',
+                config: {
+                  params: { vectors: { size: state.sizes.get(name) } },
+                },
+              },
+            }),
+          );
         } else {
           res.writeHead(404, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ status: { error: 'Not found' } }));
@@ -65,6 +82,7 @@ function createStubServer(state: StubState): http.Server {
       if (getCollMatch && req.method === 'PUT' && !url.includes('/points')) {
         const name = getCollMatch[1];
         state.collections.set(name, []);
+        state.sizes.set(name, JSON.parse(body).vectors.size);
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ result: true }));
         return;
@@ -177,7 +195,7 @@ describe('QdrantRag', () => {
   let state: StubState;
 
   before(async () => {
-    state = { collections: new Map() };
+    state = { collections: new Map(), sizes: new Map() };
     server = createStubServer(state);
     await new Promise<void>((resolve) => {
       server.listen(0, '127.0.0.1', resolve);
@@ -207,7 +225,7 @@ describe('QdrantRag', () => {
   });
 
   it('upserts and queries documents', async () => {
-    state.collections.set('test-query', []);
+    seed(state, 'test-query');
     const rag = new QdrantRag({
       url: baseUrl,
       collectionName: 'test-query',
@@ -229,7 +247,7 @@ describe('QdrantRag', () => {
   });
 
   it('healthCheck succeeds when collection exists', async () => {
-    state.collections.set('test-health', []);
+    seed(state, 'test-health');
     const rag = new QdrantRag({
       url: baseUrl,
       collectionName: 'test-health',
@@ -263,7 +281,7 @@ describe('QdrantRag', () => {
   });
 
   it('passes api-key header when configured', async () => {
-    state.collections.set('test-auth', []);
+    seed(state, 'test-auth');
     // This just tests that the constructor accepts a credential without error
     const rag = new QdrantRag({
       url: baseUrl,
@@ -276,7 +294,7 @@ describe('QdrantRag', () => {
   });
 
   it('getById returns the stored record via deterministic UUID', async () => {
-    state.collections.set('test-get', []);
+    seed(state, 'test-get');
     const rag = new QdrantRag({
       url: baseUrl,
       collectionName: 'test-get',
@@ -290,7 +308,7 @@ describe('QdrantRag', () => {
   });
 
   it('getById returns null for unknown id', async () => {
-    state.collections.set('test-get-miss', []);
+    seed(state, 'test-get-miss');
     const rag = new QdrantRag({
       url: baseUrl,
       collectionName: 'test-get-miss',
@@ -302,7 +320,7 @@ describe('QdrantRag', () => {
   });
 
   it('writer().deleteByIdRaw removes the point', async () => {
-    state.collections.set('test-del', []);
+    seed(state, 'test-del');
     const rag = new QdrantRag({
       url: baseUrl,
       collectionName: 'test-del',
@@ -317,7 +335,7 @@ describe('QdrantRag', () => {
   });
 
   it('writer().upsertManyPrecomputedRaw writes every point in one PUT', async () => {
-    state.collections.set('test-bulk', []);
+    seed(state, 'test-bulk', 2);
     let putPointsCalls = 0;
     const origFetch = globalThis.fetch;
     globalThis.fetch = (async (input: unknown, init?: RequestInit) => {
@@ -346,7 +364,7 @@ describe('QdrantRag', () => {
   });
 
   it('writer().clearAll empties the collection', async () => {
-    state.collections.set('test-clear', []);
+    seed(state, 'test-clear');
     const rag = new QdrantRag({
       url: baseUrl,
       collectionName: 'test-clear',
@@ -426,5 +444,105 @@ describe('QdrantRag — session/user filter (security)', () => {
     const body = await searchBody();
     assert.ok(!JSON.stringify(body).includes('"sessionId"'));
     assert.ok(!JSON.stringify(body).includes('"userId"'));
+  });
+});
+
+describe('QdrantRag — the collection check fails loud (spec §10.5.4 R11)', () => {
+  /** A fake fetch: GET /collections/<name> answers `info()`; every other call succeeds. */
+  async function withFakeFetch(
+    info: () => Response,
+    run: (rag: QdrantRag, gets: () => number) => Promise<void>,
+  ): Promise<void> {
+    let gets = 0;
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = (async (input: unknown, init?: RequestInit) => {
+      const u = String(input);
+      if (/\/collections\/r11$/.test(u) && (init?.method ?? 'GET') === 'GET') {
+        gets++;
+        return info();
+      }
+      return new Response(JSON.stringify({ result: { status: 'completed' } }), {
+        status: 200,
+      });
+    }) as typeof fetch;
+    try {
+      const rag = new QdrantRag({
+        url: 'http://qdrant.invalid',
+        collectionName: 'r11',
+        embedder: symmetricEmbedder(makeEmbedder()),
+      });
+      await run(rag, () => gets);
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  }
+
+  const upsert = (rag: QdrantRag) =>
+    rag.upsertPrecomputed('t', [0.1, 0.2, 0.3], { id: 'a' });
+
+  it('a failing GET → UPSERT_ERROR; the next upsert reads the collection again', async () => {
+    await withFakeFetch(
+      () => new Response('boom', { status: 500 }),
+      async (rag, gets) => {
+        const r1 = await upsert(rag);
+        assert.ok(!r1.ok);
+        assert.equal(r1.error.code, 'UPSERT_ERROR');
+        assert.match(
+          r1.error.message,
+          /cannot read the collection info: HTTP 500/,
+        );
+        const r2 = await upsert(rag);
+        assert.ok(!r2.ok);
+        assert.equal(gets(), 2, 'not marked ensured');
+      },
+    );
+  });
+
+  it('an unreadable collection info → UPSERT_ERROR, not marked ensured', async () => {
+    await withFakeFetch(
+      () => new Response('not json', { status: 200 }),
+      async (rag, gets) => {
+        const r1 = await upsert(rag);
+        assert.ok(!r1.ok);
+        assert.equal(r1.error.code, 'UPSERT_ERROR');
+        assert.match(r1.error.message, /cannot read the collection info/);
+        await upsert(rag);
+        assert.equal(gets(), 2);
+      },
+    );
+  });
+
+  it('a collection info without vectors.size → UPSERT_ERROR', async () => {
+    await withFakeFetch(
+      () =>
+        new Response(JSON.stringify({ result: { status: 'green' } }), {
+          status: 200,
+        }),
+      async (rag, gets) => {
+        const r1 = await upsert(rag);
+        assert.ok(!r1.ok);
+        assert.equal(r1.error.code, 'UPSERT_ERROR');
+        assert.match(r1.error.message, /no numeric vectors\.size/);
+        await upsert(rag);
+        assert.equal(gets(), 2);
+      },
+    );
+  });
+
+  it('a matching vectors.size passes and is checked once', async () => {
+    await withFakeFetch(
+      () =>
+        new Response(
+          JSON.stringify({
+            result: { config: { params: { vectors: { size: 3 } } } },
+          }),
+          { status: 200 },
+        ),
+      async (rag, gets) => {
+        assert.ok((await upsert(rag)).ok);
+        assert.ok((await upsert(rag)).ok);
+        assert.equal(gets(), 1, 'marked ensured after the check passed');
+      },
+    );
   });
 });

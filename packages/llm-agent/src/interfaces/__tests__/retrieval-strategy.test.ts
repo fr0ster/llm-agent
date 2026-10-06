@@ -1,27 +1,29 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
-  CircuitBreaker,
-  FallbackRag,
-  InMemoryRag,
+  type IRag,
   type IRetrievalStrategy,
   isRagDecorator,
 } from '../../index.js';
 
+/** A bare store: no decorator. */
+const plain = (): IRag =>
+  ({
+    query: async () => ({ ok: true, value: [] }),
+    healthCheck: async () => ({ ok: true, value: undefined }),
+    getById: async () => ({ ok: true, value: null }),
+  }) as unknown as IRag;
+
 describe('IRagDecorator', () => {
-  it('FallbackRag exposes its primary store as inner', () => {
-    const primary = new InMemoryRag();
-    const fb = new FallbackRag(
-      primary,
-      new InMemoryRag(),
-      new CircuitBreaker({}),
-    );
-    assert.ok(isRagDecorator(fb));
-    assert.equal(fb.inner, primary);
+  it('a decorator exposes the store it wraps as inner', () => {
+    const inner = plain();
+    const decorator = { ...plain(), inner };
+    assert.ok(isRagDecorator(decorator));
+    assert.equal(decorator.inner, inner);
   });
 
   it('a plain store is not a decorator', () => {
-    assert.equal(isRagDecorator(new InMemoryRag()), false);
+    assert.equal(isRagDecorator(plain()), false);
   });
 
   it('IRetrievalStrategy is implementable', async () => {

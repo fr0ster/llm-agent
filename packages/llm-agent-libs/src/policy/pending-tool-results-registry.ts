@@ -1,4 +1,5 @@
 import type { Message } from '@mcp-abap-adt/llm-agent';
+import { OrchestratorError } from '@mcp-abap-adt/llm-agent';
 
 export interface PendingToolResult {
   toolCallId: string;
@@ -49,8 +50,17 @@ export class PendingToolResultsRegistry {
     try {
       const results = await entry.promise;
       return { assistantMessage: entry.assistantMessage, results };
-    } catch {
-      return { assistantMessage: entry.assistantMessage, results: [] };
+    } catch (err) {
+      // Spec §10.5.2 N13 (D70): failed pending results are an error, never
+      // `results: []` (which reads as tools that returned nothing). The stage
+      // awaiting it lets it propagate; the executor reports it.
+      const ids = (entry.assistantMessage.tool_calls ?? [])
+        .map((tc) => tc.id)
+        .join(', ');
+      throw new OrchestratorError(
+        `pending tool results for ${ids} failed: ${String(err)}`,
+        'PIPELINE_ERROR',
+      );
     }
   }
 

@@ -1,3 +1,4 @@
+import { ConfigFieldError } from './config-fields.js';
 import {
   INLINE_LLM_CONFIG_FIELDS,
   type NormalizedLlmMap,
@@ -25,6 +26,10 @@ export function parseWorkerLlm(
   raw: unknown,
 ): SmartServerWorkerLlmKeys {
   if (raw === undefined) return {};
+  // Spec D83 (13): a key written with no value is an error, never "no llm".
+  if (raw === null) {
+    throw new ConfigFieldError([`subagent '${worker}': llm has no value`]);
+  }
   if (typeof raw === 'string') {
     if (raw === '') {
       throw new Error(`subagent '${worker}': llm must be a non-empty key`);
@@ -43,7 +48,12 @@ export function parseWorkerLlm(
         `subagent '${worker}': llm has unknown role '${k}' (roles: ${WORKER_ROLES.join(', ')})`,
       );
     }
-    if (typeof v === 'object' && v !== null) throw inlineError(worker);
+    if (v === null) {
+      throw new ConfigFieldError([
+        `subagent '${worker}': llm.${k} has no value`,
+      ]);
+    }
+    if (typeof v === 'object') throw inlineError(worker);
     if (typeof v !== 'string' || v === '') {
       throw new Error(`subagent '${worker}': llm.${k} must be a non-empty key`);
     }

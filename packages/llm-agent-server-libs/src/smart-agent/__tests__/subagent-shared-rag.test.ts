@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { SimpleRagRegistry } from '@mcp-abap-adt/llm-agent';
+import { SimpleRagRegistry } from '@mcp-abap-adt/llm-agent-rag';
 import { resolveSubAgentRagRegistry } from '../smart-server.js';
 
 test('subagent reuses the injected parent registry instead of a fresh one', () => {

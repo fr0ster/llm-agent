@@ -123,27 +123,46 @@ export class QdrantRag implements IRag {
       // upserts with a different vector length are silently dropped.
       // Fail fast so the operator can either delete the stale collection
       // or point this RAG store at a collection matching the current embedder.
+      // Spec §10.5.4 R11: a collection info that cannot be read, or that has
+      // no numeric vectors.size, is an error — the check is never skipped,
+      // and the collection is marked ensured only after it passed.
+      let body: {
+        result?: { config?: { params?: { vectors?: { size?: unknown } } } };
+      };
       try {
-        const body = (await res.json()) as {
-          result?: {
-            config?: { params?: { vectors?: { size?: number } } };
-          };
-        };
-        const existingSize = body.result?.config?.params?.vectors?.size;
-        if (typeof existingSize === 'number' && existingSize !== vectorSize) {
-          throw new RagError(
-            `Qdrant collection "${this.collectionName}" has vectors.size=${existingSize} but the current embedder produces ${vectorSize}-dim vectors. ` +
-              'The collection was created for a different embedding model. ' +
-              'Either drop and recreate the collection, or point this RAG store at a collection matching the current embedder.',
-            'UPSERT_ERROR',
-          );
-        }
+        body = (await res.json()) as typeof body;
       } catch (err) {
-        if (err instanceof RagError) throw err;
-        // JSON parsing or transient read failures — let the next upsert surface them naturally.
+        throw new RagError(
+          `Qdrant collection "${this.collectionName}": cannot read the collection info: ${String(err)}`,
+          'UPSERT_ERROR',
+        );
+      }
+      const existingSize = body.result?.config?.params?.vectors?.size;
+      if (typeof existingSize !== 'number') {
+        throw new RagError(
+          `Qdrant collection "${this.collectionName}": the collection info has no numeric vectors.size (got ${JSON.stringify(existingSize)})`,
+          'UPSERT_ERROR',
+        );
+      }
+      if (existingSize !== vectorSize) {
+        throw new RagError(
+          `Qdrant collection "${this.collectionName}" has vectors.size=${existingSize} but the current embedder produces ${vectorSize}-dim vectors. ` +
+            'The collection was created for a different embedding model. ' +
+            'Either drop and recreate the collection, or point this RAG store at a collection matching the current embedder.',
+          'UPSERT_ERROR',
+        );
       }
       this.collectionEnsured = true;
       return;
+    }
+    if (res.status !== 404) {
+      // R11: only a missing collection (404) is created; any other failed
+      // read is the caller's error.
+      const text = await res.text();
+      throw new RagError(
+        `Qdrant collection "${this.collectionName}": cannot read the collection info: HTTP ${res.status} ${text}`,
+        'UPSERT_ERROR',
+      );
     }
     // Collection doesn't exist — create it
     const createRes = await this._fetch(

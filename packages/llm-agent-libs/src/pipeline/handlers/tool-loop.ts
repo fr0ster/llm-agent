@@ -33,7 +33,6 @@ import type {
   ToolRound,
 } from '@mcp-abap-adt/llm-agent';
 import {
-  buildNamespacedTools,
   defaultToolNamespace,
   externalToolCallId,
   getStreamToolCallName,
@@ -42,6 +41,7 @@ import {
   toToolCallDelta,
 } from '@mcp-abap-adt/llm-agent';
 import { OrchestratorError } from '../../agent.js';
+import { listClientTools } from '../../mcp/list-client-tools.js';
 import { fireInternalToolsAsync } from '../../policy/mixed-tool-call-handler.js';
 import type { ISpan } from '../../tracer/types.js';
 import { LegacyAccumulateContextStrategy } from '../context/tool-loop-context/index.js';
@@ -51,12 +51,14 @@ import { normalizeHeartbeatMs } from './normalize-heartbeat-ms.js';
 import {
   buildBlockedToolMessages,
   buildHallucinatedToolMessages,
+  buildInvalidArgumentsToolMessages,
   classifyToolCalls,
   executeToolBatchWithHeartbeat,
   filterAvailableTools,
   injectPendingResults,
   injectToolPriority,
   runOutputValidationReprompt,
+  toolCallsFromAccumulated,
 } from './tool-loop-core.js';
 
 function summarizeIterationMessages(
@@ -224,30 +226,29 @@ export class ToolLoopHandler implements IStageHandler {
           attributes: { 'llm.iteration': iteration + 1 },
         });
         const prevNames = [...ctx.toolClientMap.keys()];
+        // Spec §10.5.3 M6: list first, into a local. A client that cannot list
+        // its tools fails the stage with MCP_UNAVAILABLE — the tool set is
+        // never shrunk by a failure.
+        let listed: Awaited<ReturnType<typeof listClientTools>>;
+        try {
+          listed = await listClientTools(ctx.mcpClients, {
+            stage: 'tool-loop',
+            descriptors: ctx.mcpClientDescriptors,
+            toolNamespace: ctx.toolNamespace ?? defaultToolNamespace,
+            options: ctx.options,
+          });
+        } catch (err) {
+          refreshSpan.setStatus('error', String(err));
+          refreshSpan.end();
+          // Anything but the listing's MCP_UNAVAILABLE is the executor's
+          // PIPELINE_ERROR (Task 4F).
+          if (!(err instanceof OrchestratorError)) throw err;
+          ctx.error = err;
+          return false;
+        }
+        const { tools, toolClientMap } = listed;
         ctx.toolClientMap.clear();
         ctx.mcpTools.length = 0;
-        const settled = await Promise.allSettled(
-          ctx.mcpClients.map(async (client) => ({
-            client,
-            result: await client.listTools(ctx.options),
-          })),
-        );
-        const perClient = settled.flatMap((entry, i) =>
-          entry.status === 'fulfilled' && entry.value.result.ok
-            ? [
-                {
-                  slotIndex: ctx.mcpClientDescriptors?.[i]?.slotIndex ?? i,
-                  label: ctx.mcpClientDescriptors?.[i]?.label,
-                  client: entry.value.client,
-                  tools: entry.value.result.value,
-                },
-              ]
-            : [],
-        );
-        const { tools, toolClientMap } = buildNamespacedTools(
-          perClient,
-          ctx.toolNamespace ?? defaultToolNamespace,
-        );
         ctx.mcpTools.push(...tools);
         for (const [name, client] of toolClientMap) {
           ctx.toolClientMap.set(name, client);
@@ -359,7 +360,18 @@ export class ToolLoopHandler implements IStageHandler {
               durationMs: Date.now() - ragStart,
             });
 
-            if (ragResult.ok && ragResult.value.length > 0) {
+            // Spec §10.5.3 M8: a failed re-select query fails the stage with
+            // the store's code — never the previous set kept unlogged.
+            if (!ragResult.ok) {
+              reselectSpan.setStatus('error', ragResult.error.message);
+              ctx.error = new OrchestratorError(
+                `tool-loop: re-select store "tools" failed: ${ragResult.error.message}`,
+                ragResult.error.code,
+              );
+              return false;
+            }
+
+            if (ragResult.value.length > 0) {
               const newToolNames = new Set(
                 ragResult.value
                   .map((r) => toolNameFromRecord(r.metadata))
@@ -452,7 +464,7 @@ export class ToolLoopHandler implements IStageHandler {
       let finishReason: LlmFinishReason | undefined;
       const toolCallsMap = new Map<
         number,
-        { id: string; name: string; arguments: string }
+        { id: string; name: string; arguments: string; argumentsError?: string }
       >();
       // Track which streaming indices belong to external tools so that
       // argument-only continuation deltas (no name field) are forwarded too.
@@ -556,6 +568,14 @@ export class ToolLoopHandler implements IStageHandler {
                 if (tc.arguments) ex.arguments += tc.arguments;
               }
             }
+            // A complete call an adapter marked (spec D87) keeps its mark.
+            if (
+              'argumentsError' in rawToolCall &&
+              rawToolCall.argumentsError !== undefined
+            ) {
+              const ex = toolCallsMap.get(tc.index);
+              if (ex) ex.argumentsError = rawToolCall.argumentsError;
+            }
             if (tc.name && ctx.onPartial) {
               ctx.onPartial({
                 kind: 'mcp-call',
@@ -597,15 +617,8 @@ export class ToolLoopHandler implements IStageHandler {
         requestId: ctx.options?.trace?.traceId,
       });
 
-      const toolCalls = Array.from(toolCallsMap.values()).map((tc) => {
-        let args: Record<string, unknown> = {};
-        try {
-          args = JSON.parse(tc.arguments);
-        } catch {
-          args = {};
-        }
-        return { id: tc.id, name: tc.name, arguments: args };
-      });
+      // Spec §10.5.2 N2 (D87): argument text that does not parse marks the call.
+      let toolCalls = toolCallsFromAccumulated(toolCallsMap.values());
 
       ctx.options?.sessionLogger?.logStep(
         `llm_response_iter_${iteration + 1}`,
@@ -663,6 +676,35 @@ export class ToolLoopHandler implements IStageHandler {
           },
         });
         return true;
+      }
+
+      // -- Refuse calls whose arguments did not parse (spec D87) -------------
+      // Never run with `{}`: the call's tool result is the error, and the LLM
+      // sees it on the next iteration.
+      const invalidGroup = buildInvalidArgumentsToolMessages(
+        content,
+        toolCalls,
+        ctx.options,
+      );
+      if (invalidGroup) {
+        await strategy.record({
+          assistant: invalidGroup.assistant,
+          results: invalidGroup.results,
+        });
+        controlTail.length = 0;
+        messages = (
+          await strategy.form({
+            prefix: staticPrefix,
+            queryText: ctx.inputText,
+          })
+        ).concat(controlTail);
+        // Spec N2: only the marked calls are refused; valid siblings of the
+        // same round still run (the LLM retries the refused one as any tool error).
+        toolCalls = toolCalls.filter((tc) => tc.argumentsError === undefined);
+        if (toolCalls.length === 0) continue;
+        // The refusal round carries this turn's assistant text; the round of the
+        // valid siblings must not repeat it.
+        content = '';
       }
 
       // -- Classify tool calls -----------------------------------------------
@@ -905,6 +947,7 @@ export class ToolLoopHandler implements IStageHandler {
         metrics: ctx.metrics,
         parentSpan,
         toolAvailabilityRegistry: ctx.toolAvailabilityRegistry,
+        toolAvailabilityPolicy: ctx.toolAvailabilityPolicy,
         sessionId: ctx.sessionId,
         externalToolNames,
         currentTools,

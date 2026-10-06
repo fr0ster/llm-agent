@@ -24,6 +24,7 @@ import {
   StepperInterpreter,
 } from '@mcp-abap-adt/llm-agent-libs';
 import { type NormalizedLlmMap, resolveLlmConfig } from './config.js';
+import { ConfigValidationError } from './config-validator.js';
 import type { SmartServerLlmConfig } from './smart-server.js';
 import {
   parseStepperCoordinatorConfig,
@@ -64,7 +65,8 @@ export interface BuildStepperRootInput {
   /**
    * Normalized per-role LLM map (top-level `llm:` block after normalization).
    * Roles resolve via: llmMap[role] → llmMap.main → pipelineFallback.
-   * When both are undefined, roles fall back to a stub (test path).
+   * A role that resolves through none of them is a ConfigValidationError
+   * naming the role (spec §10.5.9 V9).
    */
   llmMap?: NormalizedLlmMap;
   /**
@@ -93,11 +95,6 @@ export interface BuiltStepperRoot {
    */
   taskFormalizer?: ITaskFormalizer;
 }
-
-const STUB_LLM_CFG: SmartServerLlmConfig = {
-  provider: 'openai',
-  model: 'stub',
-};
 
 // StepperCompositionSpec + CompositionNode are defined in stepper-config.ts (so
 // the yaml parser can produce them without a circular import) and re-exported
@@ -211,7 +208,8 @@ export async function buildFromComposition(
   const tokens = new TokenLedger(spec.tokenBudget);
 
   // ---- Per-role LLM resolver -----------------------------------------------
-  // Priority chain: llmMap[role] → llmMap.main → pipelineFallback → STUB_LLM_CFG.
+  // Priority chain: llmMap[role] → llmMap.main → pipelineFallback; none of
+  // them → a ConfigValidationError naming the role (spec §10.5.9 V9).
   // Mirrors the resolution chain used in buildDagCoordinatorDeps.
   //
   // `spendOnLedger` makes the role's LLM decrement the SHARED token ledger after
@@ -230,8 +228,12 @@ export async function buildFromComposition(
     if (deps.makeRoleLlm) {
       inner = await deps.makeRoleLlm(role);
     } else {
-      const cfg =
-        resolveLlmConfig(llmMap, role, pipelineFallback) ?? STUB_LLM_CFG;
+      const cfg = resolveLlmConfig(llmMap, role, pipelineFallback);
+      if (!cfg) {
+        throw new ConfigValidationError([
+          `stepper role '${role}': no LLM config resolves — set llm.${role}, llm.main or pipeline.llm.main`,
+        ]);
+      }
       cfgModel = cfg.model;
       // makeLlm is safe here: this branch only runs when makeRoleLlm is absent.
       // If both are absent the call throws at runtime, matching prior behaviour

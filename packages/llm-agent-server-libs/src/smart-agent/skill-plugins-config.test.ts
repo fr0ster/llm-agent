@@ -263,7 +263,8 @@ test('clean implicit config parses with defaults applied', () => {
   assert.equal(cfg.threshold, 0.3);
   assert.equal(cfg.maxInjectChars, 4000);
   assert.deepEqual(cfg.chunk, { maxChars: 1500 });
-  assert.equal(cfg.strict, false);
+  // U2 (spec §10.5.12): strict defaults to true.
+  assert.equal(cfg.strict, true);
   assert.equal(cfg.catalogCasMaxAttempts, 3);
   assert.equal(cfg.retiredGraceMs, 30000);
   assert.equal(cfg.orphanGraceMs, 3600000);
@@ -271,6 +272,17 @@ test('clean implicit config parses with defaults applied', () => {
   // in-memory store → recallTimeoutMs unused (undefined).
   assert.equal(cfg.recallTimeoutMs, undefined);
   assert.equal(cfg.sources?.length, 1);
+});
+
+// U2 (spec §10.5.12, B12): strict is true unless the consumer sets false.
+test('strict: absent → true; strict: false → false (the consumer opt-in)', () => {
+  const sources = [{ id: 'a', records: [{ group: 'g', content: 'x' }] }];
+  assert.equal(parseSkillPluginsConfig({ sources }).strict, true);
+  assert.equal(
+    parseSkillPluginsConfig({ sources, strict: false }).strict,
+    false,
+  );
+  assert.equal(parseSkillPluginsConfig({ sources, strict: true }).strict, true);
 });
 
 // 10. P2-C — catalog.table must be a valid SQL identifier.
@@ -463,28 +475,28 @@ test('serveCollections empty array → explicit serve-none (kept, not serve-all)
 test('dimension non-numeric throws', () => {
   assert.throws(
     () => parseSkillPluginsConfig(withSource({ dimension: 'big' })),
-    /dimension must be a positive integer/i,
+    /skillPlugins\.dimension must be (>= 1|an integer|a finite number)/,
   );
 });
 
 test('dimension zero throws', () => {
   assert.throws(
     () => parseSkillPluginsConfig(withSource({ dimension: 0 })),
-    /dimension must be a positive integer/i,
+    /skillPlugins\.dimension must be (>= 1|an integer|a finite number)/,
   );
 });
 
 test('dimension fractional throws', () => {
   assert.throws(
     () => parseSkillPluginsConfig(withSource({ dimension: 768.5 })),
-    /dimension must be a positive integer/i,
+    /skillPlugins\.dimension must be (>= 1|an integer|a finite number)/,
   );
 });
 
 test('dimension negative throws', () => {
   assert.throws(
     () => parseSkillPluginsConfig(withSource({ dimension: -1 })),
-    /dimension must be a positive integer/i,
+    /skillPlugins\.dimension must be (>= 1|an integer|a finite number)/,
   );
 });
 

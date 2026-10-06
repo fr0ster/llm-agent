@@ -91,7 +91,7 @@ describe('ControllerPipelinePlugin', () => {
     assert.equal(cfg.budgets.maxTotalWaitMs, 0);
   });
 
-  for (const bad of ['600000', Number.NaN, -1, 0, 1.5]) {
+  for (const bad of [' 600000', Number.NaN, -1, 0, 1.5]) {
     it(`parseControllerSettings throws for maxWaitMs=${String(bad)}`, () => {
       assert.throws(
         () =>
@@ -107,7 +107,7 @@ describe('ControllerPipelinePlugin', () => {
     });
   }
 
-  for (const bad of ['1800000', Number.NaN, -1, 1.5]) {
+  for (const bad of [' 1800000', Number.NaN, -1, 1.5]) {
     it(`parseControllerSettings throws for maxTotalWaitMs=${String(bad)}`, () => {
       assert.throws(
         () =>

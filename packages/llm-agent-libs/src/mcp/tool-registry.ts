@@ -1,6 +1,5 @@
 import {
   assertClientDescriptors,
-  buildNamespacedTools,
   type CallOptions,
   defaultToolNamespace,
   type IMcpClient,
@@ -17,6 +16,7 @@ import type {
 import { isDebugArea } from '../logger/debug-areas.js';
 import type { ILogger } from '../logger/index.js';
 import { NoopRequestLogger } from '../logger/noop-request-logger.js';
+import { listClientTools } from './list-client-tools.js';
 import { vectorizeMcpTools } from './vectorize-mcp-tools.js';
 
 export interface ToolRegistryResult {
@@ -116,28 +116,16 @@ export class McpToolRegistry implements IMcpToolRegistry {
 
   async resolve(opts?: CallOptions): Promise<ToolRegistryResult> {
     await this.resolveActiveClients(opts);
-    const settled = await Promise.allSettled(
-      this.activeClients.map(async (client) => ({
-        client,
-        result: await client.listTools(opts),
-      })),
-    );
-    const perClient = settled.flatMap((e, i) =>
-      e.status === 'fulfilled' && e.value.result.ok
-        ? [
-            {
-              slotIndex: this.activeClientDescriptors[i]?.slotIndex ?? i,
-              label: this.activeClientDescriptors[i]?.label,
-              client: e.value.client,
-              tools: e.value.result.value,
-            },
-          ]
-        : [],
-    );
-    const { tools, toolClientMap } = buildNamespacedTools(
-      perClient,
-      this.toolNamespace,
-    );
+    // Spec §10.5.3 M3/M4: a client that cannot list its tools, or a configured
+    // slot that did not resolve, rejects with MCP_UNAVAILABLE — never a
+    // silently dropped client.
+    const { tools, toolClientMap } = await listClientTools(this.activeClients, {
+      stage: 'tool-registry',
+      descriptors: this.activeClientDescriptors,
+      configuredSlotCount: this.configuredSlotCount,
+      toolNamespace: this.toolNamespace,
+      options: opts,
+    });
     return { tools, toolClientMap };
   }
 }

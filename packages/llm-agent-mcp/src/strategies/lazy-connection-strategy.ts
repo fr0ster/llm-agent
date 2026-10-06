@@ -161,7 +161,7 @@ export class LazyConnectionStrategy
     try {
       if (typeof client.healthCheck === 'function') {
         const result = await client.healthCheck();
-        return result.ok;
+        return result.ok && result.value;
       }
       const result = await client.listTools();
       return result.ok;

@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import type { ITextLogger, McpConnectionConfig } from '@mcp-abap-adt/llm-agent';
+import type { ILogger } from '@mcp-abap-adt/interfaces-utils';
+import type { McpConnectionConfig } from '@mcp-abap-adt/llm-agent';
 import { LazyConnectionStrategy } from './lazy-connection-strategy.js';
 
 function recordingTextLogger(): {
-  logger: ITextLogger;
+  logger: ILogger;
   calls: Array<{ level: string; message: string }>;
 } {
   const calls: Array<{ level: string; message: string }> = [];

@@ -8,6 +8,7 @@ import type {
   RunIdentity,
 } from '@mcp-abap-adt/llm-agent';
 import { renderTaskSpec } from '@mcp-abap-adt/llm-agent';
+import { coordinatorError } from '../coordinator-error.js';
 import { parseDagPlan } from '../dag/llm-dag-planner.js';
 
 // NOTE (18.1): the 18.0 SOFT completeness clause was REMOVED here — the dedicated
@@ -68,42 +69,64 @@ export class LlmStepperPlanner implements IStepperPlanner {
     taskSpec?: ITaskSpec;
     signal?: AbortSignal;
   }): Promise<DagPlan> {
-    const facts = await input.knowledgeRag.query(input.prompt, { k: 8 });
+    let facts: Awaited<ReturnType<typeof input.knowledgeRag.query>>;
+    try {
+      facts = await input.knowledgeRag.query(input.prompt, { k: 8 });
+    } catch (err) {
+      throw coordinatorError(
+        'stepper planner: knowledge store query failed',
+        err,
+        'COORDINATOR_PLAN_FAILED',
+      );
+    }
     const factBlock = facts.length
       ? `Known facts (already in the knowledge store):\n${facts.map((f) => `- [${f.metadata.artifactType}] ${truncate(f.content, 400)}`).join('\n')}\n\n`
       : 'Known facts: (none yet)\n\n';
 
-    let toolsBlock = '';
+    // Spec §10.5.7 C2: a store that fails fails the plan — never a planning
+    // prompt with the section silently left out.
+    let tools: Awaited<ReturnType<typeof input.toolsRag.query>>;
     try {
-      const tools = await input.toolsRag.query(input.prompt, 15);
-      if (tools.length > 0) {
-        toolsBlock =
-          `Available tools (workers can call these to FETCH data):\n` +
+      tools = await input.toolsRag.query(input.prompt, 15);
+    } catch (err) {
+      throw coordinatorError(
+        'stepper planner: tools store query failed',
+        err,
+        'COORDINATOR_PLAN_FAILED',
+      );
+    }
+    const toolsBlock =
+      tools.length > 0
+        ? `Available tools (workers can call these to FETCH data):\n` +
           tools
             .map((t) => `- ${t.name}: ${truncate(t.description, 200)}`)
             .join('\n') +
-          '\n\n';
-      }
-    } catch {
-      // toolsRag unavailable — omit the section gracefully
-    }
+          '\n\n'
+        : '';
 
     // 18.1 dedup manifest: the EXACT artefacts already fetched this run (by
     // identity, not lossy semantic top-k). The planner must NOT plan a step to
     // re-fetch any of these — backs the "RAG-FIRST: don't re-fetch" rule with a
-    // hard lookup. Feature-detected (older handles omit it).
-    let fetchedBlock = '';
+    // hard lookup. Feature-detected (a handle without `listArtifacts` has no
+    // manifest by design); a `listArtifacts` that fails fails the plan (C2).
+    let arts: Awaited<
+      ReturnType<NonNullable<IKnowledgeRagHandle['listArtifacts']>>
+    >;
     try {
-      const arts = (await input.knowledgeRag.listArtifacts?.()) ?? [];
-      if (arts.length > 0) {
-        fetchedBlock =
-          'Already fetched (DO NOT plan a step to re-fetch these — they are in the store):\n' +
-          arts.map((a) => `- ${a.identityKey}`).join('\n') +
-          '\n\n';
-      }
-    } catch {
-      // listArtifacts unavailable / failed — omit the manifest gracefully
+      arts = (await input.knowledgeRag.listArtifacts?.()) ?? [];
+    } catch (err) {
+      throw coordinatorError(
+        'stepper planner: knowledge store listArtifacts failed',
+        err,
+        'COORDINATOR_PLAN_FAILED',
+      );
     }
+    const fetchedBlock =
+      arts.length > 0
+        ? 'Already fetched (DO NOT plan a step to re-fetch these — they are in the store):\n' +
+          arts.map((a) => `- ${a.identityKey}`).join('\n') +
+          '\n\n'
+        : '';
 
     const agentsBlock =
       input.agents && input.agents.length > 0

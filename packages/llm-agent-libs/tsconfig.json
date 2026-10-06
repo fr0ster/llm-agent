@@ -10,6 +10,7 @@
   "references": [
     { "path": "../llm-agent" },
     { "path": "../llm-agent-mcp" },
-    { "path": "../llm-agent-rag" }
+    { "path": "../llm-agent-rag" },
+    { "path": "../llm-agent-reranker" }
   ]
 }

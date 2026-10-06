@@ -20,6 +20,7 @@ import type {
   IRag,
   IRagProviderRegistry,
   IRagRegistry,
+  IReranker,
   ISubpromptClassifier,
   IToolCache,
   LogEvent,
@@ -40,7 +41,6 @@ import {
   McpError,
   type McpTool,
   type McpToolResult,
-  NoopQueryExpander,
   NoopToolCache,
   RagError,
   type RagMetadata,
@@ -49,13 +49,13 @@ import {
   type Subprompt,
   ToolCache,
 } from '@mcp-abap-adt/llm-agent';
+import { NoopQueryExpander } from '@mcp-abap-adt/llm-agent-rag';
+import { NoopReranker } from '@mcp-abap-adt/llm-agent-reranker';
 import type { SmartAgent } from '../agent.js';
 import type { IMcpConnectionStrategy } from '../interfaces/mcp-connection-strategy.js';
 import { InMemoryMetrics } from '../metrics/in-memory-metrics.js';
 import type { IMetrics } from '../metrics/types.js';
 import type { IPromptInjectionDetector, IToolPolicy } from '../policy/types.js';
-import { NoopReranker } from '../reranker/noop-reranker.js';
-import type { IReranker } from '../reranker/types.js';
 import { NoopSessionManager } from '../session/noop-session-manager.js';
 import { SessionManager } from '../session/session-manager.js';
 import type { ISessionManager } from '../session/types.js';

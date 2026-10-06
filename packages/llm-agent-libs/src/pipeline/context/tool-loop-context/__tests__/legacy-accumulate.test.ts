@@ -1,6 +1,11 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import type { Message, ToolRound } from '@mcp-abap-adt/llm-agent';
+import {
+  type Message,
+  OrchestratorError,
+  PIPELINE_FAILURE_CODES,
+  type ToolRound,
+} from '@mcp-abap-adt/llm-agent';
 import { LegacyAccumulateContextStrategy } from '../legacy-accumulate-context-strategy.js';
 
 const mkRound = (id: string, text: string): ToolRound => ({
@@ -31,7 +36,7 @@ test('empty history → prefix only', async () => {
   assert.deepEqual(await s.form({ prefix }), prefix);
 });
 
-test('snapshot/restore round-trips as JSON and is versioned', async () => {
+test('snapshot/restore round-trips as JSON; an unknown version is STATE_CORRUPT', async () => {
   const s = new LegacyAccumulateContextStrategy();
   await s.record(mkRound('c1', 'r1'));
   const snap = JSON.parse(JSON.stringify(s.snapshot()));
@@ -39,8 +44,12 @@ test('snapshot/restore round-trips as JSON and is versioned', async () => {
   const s2 = new LegacyAccumulateContextStrategy();
   s2.restore(snap);
   assert.equal((await s2.form({ prefix })).length, 3);
-  // unknown version → clean
+  // unknown version → an error, never a silent reset (spec D70)
   const s3 = new LegacyAccumulateContextStrategy();
-  s3.restore({ version: 999 } as never);
-  assert.deepEqual(await s3.form({ prefix }), prefix);
+  assert.throws(
+    () => s3.restore({ version: 999 } as never),
+    (e: unknown) =>
+      e instanceof OrchestratorError &&
+      e.code === PIPELINE_FAILURE_CODES.STATE_CORRUPT,
+  );
 });

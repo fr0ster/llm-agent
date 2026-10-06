@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, it } from 'node:test';
@@ -53,6 +53,60 @@ describe('cli env loading', () => {
   });
 });
 
+describe('cli env files fail loud (spec §10.5.9 V8)', () => {
+  /**
+   * Runs the CLI in a fresh temp dir: should it go on past its env files, it
+   * writes a config template into its cwd — never into the repository. tsx is
+   * resolved from this package: that cwd has no node_modules.
+   */
+  function runCliInTempDir(args: string[]) {
+    const cwd = mkdtempSync(path.join(tmpdir(), 'cli-v8-'));
+    try {
+      return spawnSync(
+        'node',
+        ['--import', import.meta.resolve('tsx/esm'), CLI, ...args],
+        { encoding: 'utf8', cwd },
+      );
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  }
+
+  it('--env-path naming a file that cannot be read → exit 1 with the path and the reason', () => {
+    const r = runCliInTempDir(['--env-path', '/no/such/file']);
+    assert.equal(r.status, 1);
+    assert.match(r.stderr, /cannot read env file \/no\/such\/file: .*ENOENT/);
+  });
+
+  it('--env with a secrets-dir that cannot be read → exit 1 with the path and the reason', () => {
+    const r = runCliInTempDir(['--env', '--secrets-dir', '/no/such/dir']);
+    assert.equal(r.status, 1);
+    assert.match(r.stderr, /cannot read secrets-dir \/no\/such\/dir: .*ENOENT/);
+  });
+
+  it('--env with a *.env entry that cannot be read → exit 1 naming it', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'cli-v8-secrets-'));
+    try {
+      // A directory named a.env: reading it fails with EISDIR.
+      mkdirSync(path.join(dir, 'a.env'));
+      const r = runCliInTempDir(['--env', '--secrets-dir', dir]);
+      assert.equal(r.status, 1);
+      assert.match(r.stderr, /cannot read env file .*a\.env/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('an absent implicit .env stays ignored (absent by design)', () => {
+    // Neither flag, a cwd without .env, and a config path that cannot be
+    // written: the process stops at its config, naming it — not at an env file.
+    const r = runCliInTempDir(['--config', '/no/such/config.yaml']);
+    assert.notEqual(r.status, 0);
+    assert.match(r.stderr, /\/no\/such\/config\.yaml/);
+    assert.doesNotMatch(r.stderr, /env file/);
+  });
+});
+
 describe('cli strict flag parsing', () => {
   it('rejects a removed behavior flag (--llm-api-key)', () => {
     const r = runCli(['--llm-api-key', 'x']);
@@ -97,5 +151,99 @@ describe('cli composition root', () => {
       r.stderr,
       /credentialRef 'LLM' must hold a api-key credential for openai, got none/,
     );
+  });
+});
+
+describe('cli start config (spec D83 (5))', () => {
+  it('an invalid config field fails the start: exit code 1, the field named on stderr', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'cli-cfg-'));
+    try {
+      const file = path.join(dir, 'smart-server.yaml');
+      writeFileSync(
+        file,
+        'llm:\n  provider: ollama\n  model: m\nagent:\n  maxIterations: oops\n',
+      );
+      const r = runCli(['--config', file, '--log-stdout']);
+      assert.equal(r.status, 1);
+      assert.match(
+        r.stderr,
+        /^Error: invalid config — agent\.maxIterations must be a finite number, got "oops"$/m,
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('a log file that is not a non-empty string fails the start naming log — never a TypeError (D83 (14))', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'cli-cfg-'));
+    try {
+      const file = path.join(dir, 'smart-server.yaml');
+      writeFileSync(file, 'llm:\n  provider: ollama\n  model: m\nlog: 5\n');
+      const r = runCli(['--config', file]);
+      assert.equal(r.status, 1);
+      assert.match(
+        r.stderr,
+        /^Error: invalid config — log must be a non-empty string, got 5$/m,
+      );
+      assert.doesNotMatch(r.stderr, /ERR_INVALID_ARG_TYPE|TypeError/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('LOG_FILE="" is unset — with --log-stdout and without a YAML log the start goes past the config (the next failure is the credential)', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'cli-cfg-'));
+    try {
+      const file = path.join(dir, 'smart-server.yaml');
+      writeFileSync(
+        file,
+        'port: 0\nllm:\n  main: { provider: openai, model: gpt-4o-mini }\n',
+      );
+      const env: Record<string, string | undefined> = {
+        ...process.env,
+        LOG_FILE: '',
+      };
+      delete env.LLM_API_KEY;
+      for (const extra of [['--log-stdout'], []]) {
+        const r = spawnSync(
+          'node',
+          // cwd is the temp dir, so the default log file lands there; tsx
+          // is imported by its resolved URL, not from that cwd.
+          [
+            '--import',
+            import.meta.resolve('tsx/esm'),
+            CLI,
+            '--config',
+            file,
+            ...extra,
+          ],
+          { encoding: 'utf8', env, cwd: dir, timeout: 60_000 },
+        );
+        assert.notEqual(r.status, 0);
+        assert.doesNotMatch(r.stderr, /LOG_FILE|invalid config/);
+        assert.match(
+          r.stderr,
+          /credentialRef 'LLM' must hold a api-key credential for openai, got none/,
+        );
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('a YAML log: 5 fails the start even with --log-stdout', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'cli-cfg-'));
+    try {
+      const file = path.join(dir, 'smart-server.yaml');
+      writeFileSync(file, 'llm:\n  provider: ollama\n  model: m\nlog: 5\n');
+      const r = runCli(['--config', file, '--log-stdout']);
+      assert.equal(r.status, 1);
+      assert.match(
+        r.stderr,
+        /^Error: invalid config — log must be a non-empty string, got 5$/m,
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

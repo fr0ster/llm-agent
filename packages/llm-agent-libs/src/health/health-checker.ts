@@ -52,10 +52,13 @@ export class HealthChecker {
     const ragOk = components.rag;
     const mcpAllOk =
       components.mcp.length === 0 || components.mcp.every((m) => m.ok);
+    // D97: every reranker the agent uses must work; none used ⇒ OK.
+    const rerankerAllOk = (components.reranker ?? []).every((r) => r.ok);
     const anyCircuitOpen = breakers.some((cb) => cb.state === 'open');
 
-    // A partial tool catalog degrades service; it does not prevent it, so it
-    // never touches readiness. Keyed on `complete`, NOT on
+    // A partial tool catalog is a component not fully working: `degraded`,
+    // which `/health` answers with 503 (D72); it never touches readiness (the
+    // chat routes' gate). Keyed on `complete`, NOT on
     // vectorized === total: a client whose listTools() failed contributes to
     // neither counter, so the counters alone would read as a full catalog.
     const tc = isToolCatalogReporter(this.agent)
@@ -64,11 +67,17 @@ export class HealthChecker {
     const toolCatalogOk = !tc || tc.complete;
 
     let status: 'healthy' | 'degraded' | 'unhealthy';
-    if (!llmOk || !ragOk || !mcpAllOk || anyCircuitOpen || !toolCatalogOk) {
-      // A soft component signal (LLM/RAG/MCP/circuit/tool catalog) ⇒ degraded,
-      // not unhealthy. Inability to SERVE is expressed via readiness
-      // (ready:false ⇒ 503), handled by the route; /health status stays a body
-      // signal.
+    if (
+      !llmOk ||
+      !ragOk ||
+      !mcpAllOk ||
+      !rerankerAllOk ||
+      anyCircuitOpen ||
+      !toolCatalogOk
+    ) {
+      // A configured component not working (LLM/RAG/MCP/reranker/circuit/tool
+      // catalog) ⇒ degraded, which `/health` answers with 503 (spec §10.5.10,
+      // D72). Readiness (ready:false) stays the chat routes' gate.
       status = 'degraded';
     } else {
       status = 'healthy';

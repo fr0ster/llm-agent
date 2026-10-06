@@ -50,13 +50,14 @@ export function makeCompatibleSkillsRag(
       snap.manifest.dimension === d.dimension &&
       snap.manifest.retrievalSchemaVersion === d.retrievalSchemaVersion;
     verdictByRevision.set(snap.revision, ok);
-    if (!ok) {
-      // loud signal; serving never blocks on this — recall just degrades to empty.
-      console.error(
-        `[skills] incompatible generation ${snap.revision}: serving descriptor ${JSON.stringify(d)} != manifest ${JSON.stringify(snap.manifest)}`,
-      );
-    }
     return ok;
+  }
+
+  function incompatible(snap: ActiveSnapshot): SkillsIncompatibleError {
+    return new SkillsIncompatibleError(
+      `serving descriptor != active manifest for generation ${snap.revision}: ` +
+        `serving ${JSON.stringify(descriptor())}, manifest ${JSON.stringify(snap.manifest)}`,
+    );
   }
 
   return {
@@ -64,16 +65,12 @@ export function makeCompatibleSkillsRag(
       options?: CallOptions,
     ): Promise<ActiveSnapshot | null> {
       // EAGER fail-fast (startup + healthCheck): THROW on incompatibility (P1.3) so a
-      // recall-only load() can actually abort and healthCheck() reports the fault. Only
-      // the RUNTIME query() degrades to [] on incompatibility.
+      // recall-only load() can actually abort and healthCheck() reports the fault. The
+      // RUNTIME query() throws the same error (spec §10.5.8 S-7).
       await ensureDimension(options);
       const snap = await deps.backend.activeSnapshot(); // pins if non-null
       try {
-        if (snap && !compatible(snap)) {
-          throw new SkillsIncompatibleError(
-            `serving descriptor != active manifest for generation ${snap.revision}`,
-          );
-        }
+        if (snap && !compatible(snap)) throw incompatible(snap);
         return snap; // null (no active generation) is OK — empty recall, no abort
       } finally {
         if (snap) deps.backend.release?.(snap.revision);
@@ -88,10 +85,14 @@ export function makeCompatibleSkillsRag(
       const snap = await deps.backend.activeSnapshot(); // ONCE — pins the generation (lease)
       if (!snap) return [];
       try {
-        if (!compatible(snap)) return []; // no embed on incompatible
+        // Spec §10.5.8 S-7: an incompatible generation is an error, never an
+        // empty recall (no embed is paid for it).
+        if (!compatible(snap)) throw incompatible(snap);
         const { vector } = await deps.embedder.embedQuery(text, options); // PAID step, last
         // Bound the vector read with a DEADLINE so it cannot outlive a time-grace backend's
         // retention window (P1.4). For the exact-lease backend recallTimeoutMs is omitted.
+        // An abort or a deadline propagates — the caller's cancellation (or a read
+        // that outlived the grace) is not an empty answer (S-7).
         const sigs = [
           options?.signal,
           deps.recallTimeoutMs
@@ -107,10 +108,6 @@ export function makeCompatibleSkillsRag(
         );
         const threshold = opts.threshold ?? 0.3;
         return hits.filter((h) => h.score >= threshold);
-      } catch (e) {
-        const n = (e as Error)?.name;
-        if (n === 'AbortError' || n === 'TimeoutError') return []; // deadline hit → empty, no crash
-        throw e;
       } finally {
         deps.backend.release?.(snap.revision); // EXACT retention: release the lease
       }

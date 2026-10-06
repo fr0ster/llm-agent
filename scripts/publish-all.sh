@@ -16,6 +16,7 @@ npm run build
 
 PACKAGES=(
   llm-agent
+  llm-agent-reranker
   llm-agent-mcp
   llm-agent-rag
   openai-llm
@@ -31,6 +32,7 @@ PACKAGES=(
   hana-vector-rag
   pg-vector-rag
   typesafe-decision
+  sap-aicore-decision
   llm-agent-libs
   llm-agent-server-libs
   llm-agent-server

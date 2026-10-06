@@ -139,7 +139,7 @@ test('bridge returns Tool-not-found string when no client owns the tool', async 
   );
 });
 
-test('bridge skips a client whose listTools fails and tries the next', async () => {
+test('bridge throws the error of a client whose listTools fails — never the next client (spec §10.5.3 M10)', async () => {
   const broken: IMcpClient = {
     async listTools() {
       return {
@@ -156,9 +156,11 @@ test('bridge skips a client whose listTools fails and tries the next', async () 
   };
   const good = fakeMcpClient(['ReadProgram'], { ReadProgram: 'source code' });
   const callMcp = buildMcpBridge([broken, good]);
-  const result = await callMcp('ReadProgram', {});
-  assert.equal(result.text, 'source code');
-  assert.equal(good.callsMade.length, 1);
+  await assert.rejects(
+    callMcp('ReadProgram', {}),
+    (e: unknown) => (e as { message?: string }).message === 'disconnected',
+  );
+  assert.equal(good.callsMade.length, 0);
 });
 
 // ---------------------------------------------------------------------------
@@ -183,7 +185,19 @@ test('bridge dispatched through buildStepperRoot: tool result reaches knowledgeR
   const stubLlm = {
     name: 'stub',
     model: 'stub',
-    async chat() {
+    async chat(messages?: { content?: unknown }[]) {
+      // The need-resolver's classifier shares this LLM: answer its call with a
+      // well-formed "no need" verdict (spec §10.5.7 C6 — malformed classifier
+      // output now fails the step instead of reading as "no need").
+      if (
+        String(messages?.[0]?.content ?? '').startsWith(
+          'You decide whether an assistant answer is INCOMPLETE',
+        )
+      )
+        return {
+          ok: true as const,
+          value: { content: '{"need":false,"capability":""}' },
+        };
       llmCalls++;
       if (llmCalls === 1) {
         return {
@@ -227,6 +241,9 @@ test('bridge dispatched through buildStepperRoot: tool result reaches knowledgeR
     },
     registry: new Map(),
     makeLlm: async () => stubLlm as never,
+    // Every role resolves to this config (spec §10.5.9 V9: a role with no
+    // config is an error, never a stub); makeLlm returns the stub.
+    pipelineFallback: { provider: 'openai', model: 'stub' },
     knowledgeRagFor: () => knowledgeRag as never,
     toolsRag: {
       async query() {

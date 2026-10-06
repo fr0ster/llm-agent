@@ -10,8 +10,43 @@ import type {
   LLMResponse,
   Message,
 } from '@mcp-abap-adt/llm-agent';
-import { BaseLLMProvider } from '@mcp-abap-adt/llm-agent';
+import { BaseLLMProvider, LlmError } from '@mcp-abap-adt/llm-agent';
 import axios, { type AxiosInstance } from 'axios';
+
+/**
+ * One SSE `data:` payload. Lines are split on `\n` before this is called, so a
+ * payload that is not JSON is a whole malformed line — never a partial chunk.
+ * Dropping it would end the stream "successfully", truncated (spec §10.5.6
+ * L6), so it is an `LLM_ERROR` naming the line's first 200 characters.
+ */
+function parseStreamData(data: string, line: string) {
+  try {
+    return JSON.parse(data);
+  } catch {
+    throw new LlmError(
+      `malformed stream line (not JSON): ${line.slice(0, 200)}`,
+      'LLM_ERROR',
+    );
+  }
+}
+
+/**
+ * The lines of an SSE body, split on `\n` across reads. The final line is
+ * yielded even without a trailing `\n`, so a truncated tail reaches the
+ * parser (an error) and a complete one is delivered — never dropped.
+ */
+async function* sseLines(
+  stream: AsyncIterable<Buffer | string>,
+): AsyncGenerator<string> {
+  let buffer = '';
+  for await (const chunk of stream) {
+    buffer += chunk.toString();
+    const lines = buffer.split('\n');
+    buffer = lines.pop() ?? '';
+    yield* lines;
+  }
+  if (buffer) yield buffer;
+}
 
 export interface OpenAIConfig extends LLMProviderConfig {
   /**
@@ -245,68 +280,55 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
         { model, signal: options?.signal },
       );
 
-      const stream = response.data;
-      let buffer = '';
+      for await (const line of sseLines(response.data)) {
+        const trimmed = line.trim();
+        if (!trimmed?.startsWith('data: ')) continue;
 
-      for await (const chunk of stream) {
-        buffer += chunk.toString();
-        const lines = buffer.split('\n');
-        buffer = lines.pop() || '';
+        const data = trimmed.slice(6);
+        if (data === '[DONE]') break; // ends the stream
 
-        for (const line of lines) {
-          const trimmed = line.trim();
-          if (!trimmed?.startsWith('data: ')) continue;
-
-          const data = trimmed.slice(6);
-          if (data === '[DONE]') break;
-
-          try {
-            const parsed = JSON.parse(data);
-            const choice = parsed.choices?.[0];
-            if (choice?.delta) {
-              const deltaToolCalls = choice.delta.tool_calls as
-                | Array<{
-                    index: number;
-                    id?: string;
-                    function?: { name?: string; arguments?: string };
-                  }>
-                | undefined;
-              const toolCalls = deltaToolCalls?.length
-                ? deltaToolCalls.map((tc) => ({
-                    index: tc.index,
-                    id: tc.id,
-                    name: tc.function?.name,
-                    arguments: tc.function?.arguments,
-                  }))
-                : undefined;
-              yield {
-                content: choice.delta.content || '',
-                finishReason: choice.finish_reason,
-                raw: parsed,
-                ...(toolCalls ? { toolCalls } : {}),
-              };
-            }
-            // Usage chunk. OpenAI emits it as a separate chunk with empty
-            // `choices`, but DeepSeek (and some other OpenAI-compatible APIs)
-            // attaches `usage` to the FINAL delta chunk that ALSO carries
-            // `finish_reason:"stop"` (with empty `delta.content`). Cover both
-            // by yielding a usage chunk whenever `parsed.usage` is present —
-            // independent of whether the same payload also produced a delta
-            // yield above.
-            if (parsed.usage) {
-              yield {
-                content: '',
-                raw: parsed,
-                usage: {
-                  promptTokens: parsed.usage.prompt_tokens,
-                  completionTokens: parsed.usage.completion_tokens,
-                  totalTokens: parsed.usage.total_tokens,
-                },
-              };
-            }
-          } catch (_e) {
-            // Ignore parse errors for incomplete chunks
-          }
+        const parsed = parseStreamData(data, trimmed);
+        const choice = parsed.choices?.[0];
+        if (choice?.delta) {
+          const deltaToolCalls = choice.delta.tool_calls as
+            | Array<{
+                index: number;
+                id?: string;
+                function?: { name?: string; arguments?: string };
+              }>
+            | undefined;
+          const toolCalls = deltaToolCalls?.length
+            ? deltaToolCalls.map((tc) => ({
+                index: tc.index,
+                id: tc.id,
+                name: tc.function?.name,
+                arguments: tc.function?.arguments,
+              }))
+            : undefined;
+          yield {
+            content: choice.delta.content || '',
+            finishReason: choice.finish_reason,
+            raw: parsed,
+            ...(toolCalls ? { toolCalls } : {}),
+          };
+        }
+        // Usage chunk. OpenAI emits it as a separate chunk with empty
+        // `choices`, but DeepSeek (and some other OpenAI-compatible APIs)
+        // attaches `usage` to the FINAL delta chunk that ALSO carries
+        // `finish_reason:"stop"` (with empty `delta.content`). Cover both
+        // by yielding a usage chunk whenever `parsed.usage` is present —
+        // independent of whether the same payload also produced a delta
+        // yield above.
+        if (parsed.usage) {
+          yield {
+            content: '',
+            raw: parsed,
+            usage: {
+              promptTokens: parsed.usage.prompt_tokens,
+              completionTokens: parsed.usage.completion_tokens,
+              totalTokens: parsed.usage.total_tokens,
+            },
+          };
         }
       }
     } catch (error: unknown) {

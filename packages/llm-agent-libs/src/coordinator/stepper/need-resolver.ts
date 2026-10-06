@@ -1,4 +1,9 @@
-import type { ILlm, INeedResolver } from '@mcp-abap-adt/llm-agent';
+import {
+  ClassifierError,
+  type ILlm,
+  type INeedResolver,
+} from '@mcp-abap-adt/llm-agent';
+import { coordinatorError } from '../coordinator-error.js';
 
 const NEED_RE =
   /\bI (?:can'?t|cannot|am unable to|need to|lack (?:a|the) (?:tool|way) to)\s+(.+?)[.!]?$/i;
@@ -29,28 +34,73 @@ export const CLASSIFY_SYSTEM =
   'include bodies of the program"), or "" when the answer is genuinely complete.';
 
 /** LLM-driven need classifier. Opt-in (more accurate on paraphrase, costs a
- *  small classifier call). */
+ *  small classifier call). A classifier that fails — the LLM call answers
+ *  `ok: false` or rejects, or the answer is not the JSON verdict — fails the
+ *  step (`COORDINATOR_STEP_FAILED`, spec §10.5.7 C6): a failed classification
+ *  is never read as "no need". */
 export class LlmNeedResolver implements INeedResolver {
   constructor(private readonly llm: ILlm) {}
   async resolve(response: string) {
-    const res = await this.llm.chat(
-      [
-        { role: 'system', content: CLASSIFY_SYSTEM },
-        { role: 'user', content: response },
-      ],
-      [],
-    );
-    if (res.ok === false) return undefined;
+    let res: Awaited<ReturnType<ILlm['chat']>>;
     try {
-      const parsed = JSON.parse(res.value.content) as {
-        need?: boolean;
-        capability?: string;
-      };
-      if (parsed.need && parsed.capability)
-        return { queryToolsRag: parsed.capability };
-    } catch {
-      // ignore malformed classifier output → treat as no need
+      res = await this.llm.chat(
+        [
+          { role: 'system', content: CLASSIFY_SYSTEM },
+          { role: 'user', content: response },
+        ],
+        [],
+      );
+    } catch (err) {
+      throw coordinatorError(
+        'need resolver: classifier LLM failed',
+        err,
+        'COORDINATOR_STEP_FAILED',
+      );
     }
+    if (res.ok === false)
+      throw coordinatorError(
+        'need resolver: classifier LLM failed',
+        res.error,
+        'COORDINATOR_STEP_FAILED',
+      );
+    const parsed = parseClassification(res.value.content);
+    if (!parsed)
+      throw coordinatorError(
+        'need resolver',
+        new ClassifierError(
+          `classifier answered no JSON verdict with a boolean need: ${res.value.content.slice(0, 200)}`,
+        ),
+        'COORDINATOR_STEP_FAILED',
+      );
+    if (
+      parsed.need &&
+      typeof parsed.capability === 'string' &&
+      parsed.capability
+    )
+      return { queryToolsRag: parsed.capability };
     return undefined;
   }
+}
+
+/** Parse the classifier's verdict. Tolerates ```json fences and surrounding
+ *  prose (first `{` to last `}`, as `parseTaskSpec` does); a verdict without a
+ *  boolean `need` is malformed. */
+function parseClassification(
+  content: string,
+): { need: boolean; capability?: unknown } | undefined {
+  const start = content.indexOf('{');
+  const end = content.lastIndexOf('}');
+  if (start === -1 || end <= start) return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(content.slice(start, end + 1));
+  } catch {
+    return undefined;
+  }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed))
+    return undefined;
+  const verdict = parsed as { need?: unknown; capability?: unknown };
+  return typeof verdict.need === 'boolean'
+    ? { need: verdict.need, capability: verdict.capability }
+    : undefined;
 }

@@ -1,5 +1,9 @@
 import { createHash } from 'node:crypto';
-import type { IKnowledgeRagHandle } from '@mcp-abap-adt/llm-agent';
+import {
+  type IKnowledgeRagHandle,
+  OrchestratorError,
+  PIPELINE_FAILURE_CODES,
+} from '@mcp-abap-adt/llm-agent';
 import type { KnowledgeBackend } from '@mcp-abap-adt/llm-agent-libs';
 import type { Step } from './types.js';
 
@@ -256,21 +260,28 @@ export async function readClaims(
 ): Promise<StepStartClaim[]> {
   const list = await rag.list({ runId, artifactType: STEP_START_ARTIFACT });
   // A persisted claim ALWAYS has a writeOrdinal (writeStepStartClaim sets it).
-  // Drop any claim missing it (malformed/foreign row) rather than defaulting to
-  // 0, which would make ordering input-dependent.
-  return list.flatMap((e) => {
-    if (typeof e.metadata.writeOrdinal !== 'number') return [];
-    return [
-      {
-        runId,
-        slotId: e.metadata.slotId ?? '',
-        stepId: e.metadata.stepId ?? '',
-        seq: e.metadata.seq ?? 0,
-        attempt: e.metadata.attempt ?? 0,
-        decisionId: e.metadata.decisionId ?? '',
-        writeOrdinal: e.metadata.writeOrdinal,
-      },
-    ];
+  // One without it is STATE_CORRUPT (spec §10.5.9 V4) — never dropped, and
+  // never defaulted to 0, which would make ordering input-dependent.
+  return list.map((e) => {
+    if (typeof e.metadata.writeOrdinal !== 'number') {
+      throw new OrchestratorError(
+        `controller step-start claim of run '${runId}' (slot '${
+          e.metadata.slotId ?? ''
+        }', step '${e.metadata.stepId ?? ''}', decision '${
+          e.metadata.decisionId ?? ''
+        }') has no numeric writeOrdinal`,
+        PIPELINE_FAILURE_CODES.STATE_CORRUPT,
+      );
+    }
+    return {
+      runId,
+      slotId: e.metadata.slotId ?? '',
+      stepId: e.metadata.stepId ?? '',
+      seq: e.metadata.seq ?? 0,
+      attempt: e.metadata.attempt ?? 0,
+      decisionId: e.metadata.decisionId ?? '',
+      writeOrdinal: e.metadata.writeOrdinal,
+    };
   });
 }
 
