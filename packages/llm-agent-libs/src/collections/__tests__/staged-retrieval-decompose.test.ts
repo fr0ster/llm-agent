@@ -102,12 +102,23 @@ describe('StagedRetrieval — query decomposition slot', () => {
     ]);
   });
 
-  it('each sub-query is reranked against its own text and kept to its k; the union is de-duplicated', async () => {
+  it('each sub-query is reranked against its own text and kept to its own k', async () => {
     const asked: string[] = [];
+    // Each sub-query's own scale; the two sub-queries find disjoint items, so the
+    // union shows how many items each one kept.
+    const scores: Record<string, Record<string, number>> = {
+      apple: { 'apple one': 0.9, 'apple banana': 0.2 },
+      cherry: { 'banana cherry': 0.8, 'cherry date': 0.7 },
+    };
     const reranker: IReranker = {
       rerank: async (query, results) => {
         asked.push(query);
-        return { ok: true, value: results };
+        return {
+          ok: true,
+          value: results
+            .map((r) => ({ ...r, score: scores[query]?.[r.text] ?? 0 }))
+            .sort((a, b) => b.score - a.score),
+        };
       },
     };
     const rag = await fixture();
@@ -116,18 +127,14 @@ describe('StagedRetrieval — query decomposition slot', () => {
       decompose: {
         decomposer: decomposer([
           { text: 'apple', k: 1 },
-          { text: 'banana', k: 2 },
+          { text: 'cherry', k: 2 },
         ]),
         queryEmbedder: embedder,
       },
-    }).retrieve(rag, q('apple then banana'), 3);
-    assert.deepEqual(asked.sort(), ['apple', 'banana']);
-    assert.ok(r.ok);
-    assert.equal(
-      new Set(r.value.map((x) => x.metadata.id)).size,
-      r.value.length,
-    );
-    assert.ok(r.value.length <= 3);
+    }).retrieve(rag, q('apple then cherry'), 3);
+    assert.deepEqual(asked.sort(), ['apple', 'cherry']);
+    // apple kept 1 (A, not B); cherry kept 2 (C, D).
+    assert.deepEqual(ids(r), ['A', 'C', 'D']);
   });
 
   it("without a pool, each sub-query's pool is its own k items (D56)", async () => {
@@ -158,7 +165,8 @@ describe('StagedRetrieval — query decomposition slot', () => {
   });
 
   it('budgets summing above the budget are a DECOMPOSE_ERROR — never a silent fall-back', async () => {
-    const rag = await fixture();
+    const queries: string[] = [];
+    const rag = await fixture(queries);
     for (const subs of [
       [
         { text: 'apple', k: 2 },
@@ -177,16 +185,21 @@ describe('StagedRetrieval — query decomposition slot', () => {
         JSON.stringify(subs),
       );
     }
+    // No store was queried: no fall-back to the undecomposed query.
+    assert.deepEqual(queries, []);
   });
 
   it('a decomposer error or throw is a DECOMPOSE_ERROR', async () => {
-    const rag = await fixture();
+    const queries: string[] = [];
+    const rag = await fixture(queries);
     for (const d of [decomposer(new Error('no')), decomposer('throw')]) {
       const r = await staged(rag, {
         decompose: { decomposer: d, queryEmbedder: embedder },
       }).retrieve(rag, q('x'), 3);
       assert.ok(!r.ok && r.error.code === 'DECOMPOSE_ERROR');
     }
+    // No store was queried: no fall-back to the undecomposed query.
+    assert.deepEqual(queries, []);
   });
 
   it("a failing decomposer's own code and message travel in the DECOMPOSE_ERROR; a throw is named", async () => {
@@ -314,6 +327,116 @@ describe('StagedRetrieval — query decomposition slot', () => {
     assert.doesNotThrow(() => staged(rag, { cut: floor }));
     assert.doesNotThrow(() =>
       staged(rag, { cut: new FixedItemsCut(3), decompose }),
+    );
+  });
+
+  it('a failing sub-query run fails the retrieval: a reranker that fails for one sub-query is RERANK_ERROR', async () => {
+    const reranker: IReranker = {
+      rerank: async (query, results) =>
+        query === 'banana'
+          ? {
+              ok: false,
+              error: new RagError('banana refused', 'PROVIDER_DOWN'),
+            }
+          : { ok: true, value: results },
+    };
+    const rag = await fixture();
+    const r = await staged(rag, {
+      rerank: { reranker },
+      decompose: {
+        decomposer: decomposer([
+          { text: 'apple', k: 1 },
+          { text: 'banana', k: 1 },
+        ]),
+        queryEmbedder: embedder,
+      },
+    }).retrieve(rag, q('apple then banana'), 3);
+    assert.ok(!r.ok && r.error.code === 'RERANK_ERROR', JSON.stringify(r));
+    assert.ok(
+      !r.ok && r.error.message.includes('PROVIDER_DOWN'),
+      !r.ok ? r.error.message : '',
+    );
+  });
+});
+
+describe('StagedRetrieval — the sub-query union is keyed on the stage-1 unit', () => {
+  const two = (subA: string, subB: string) =>
+    decomposer([
+      { text: subA, k: 1 },
+      { text: subB, k: 1 },
+    ]);
+
+  it('the same itemId under two owners: both survive', async () => {
+    const raw = new InMemoryRag();
+    await put(raw, 'X', [['full', 'apple x']], {
+      owner: { scope: 'user', userId: 'A' },
+    });
+    await put(raw, 'X', [['full', 'banana x']], {
+      owner: { scope: 'user', userId: 'B' },
+    });
+    const rag = matchesOnly(raw);
+    const r = await staged(rag, {
+      decompose: {
+        decomposer: two('apple', 'banana'),
+        queryEmbedder: embedder,
+      },
+    }).retrieve(rag, q('apple then banana'), 2);
+    assert.ok(r.ok);
+    assert.deepEqual(
+      r.value.map((x) => [x.metadata.id, x.metadata.userId]),
+      [
+        ['X', 'A'],
+        ['X', 'B'],
+      ],
+    );
+  });
+
+  it('one pass-through record found by two sub-queries is kept once', async () => {
+    const raw = new InMemoryRag();
+    await raw
+      .writer()
+      .upsertRaw('skill:s', 'apple banana skill', { name: 's' });
+    const rag = matchesOnly(raw);
+    const r = await staged(rag, {
+      decompose: {
+        decomposer: two('apple', 'banana'),
+        queryEmbedder: embedder,
+      },
+    }).retrieve(rag, q('apple then banana'), 2);
+    assert.ok(r.ok);
+    assert.deepEqual(
+      r.value.map((x) => [x.metadata.id, x.text]),
+      [['skill:s', 'apple banana skill']],
+    );
+  });
+
+  it('pass-through records with the same id in two sources are both kept', async () => {
+    const left = new InMemoryRag();
+    const right = new InMemoryRag();
+    await left.writer().upsertRaw('skill:s', 'apple left', { name: 's' });
+    await right.writer().upsertRaw('skill:s', 'banana right', { name: 's' });
+    const l = matchesOnly(left);
+    const rt = matchesOnly(right);
+    const r = await staged(l, {
+      sources: {
+        sources: async (options) => [
+          { name: 'left', rag: l, options },
+          { name: 'right', rag: rt, options },
+        ],
+      },
+      decompose: {
+        decomposer: two('apple', 'banana'),
+        queryEmbedder: embedder,
+      },
+    }).retrieve(l, q('apple then banana'), 2);
+    assert.ok(r.ok);
+    // Their result shape stays the record itself (no source field added).
+    assert.deepEqual(
+      r.value.map((x) => [x.metadata.id, x.text, x.metadata.source]),
+      [
+        ['skill:s', 'apple left', undefined],
+        ['skill:s', 'banana right', undefined],
+      ],
     );
   });
 });

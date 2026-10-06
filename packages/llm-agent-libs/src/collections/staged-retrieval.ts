@@ -168,11 +168,11 @@ function splitPerSource(
  * retrieval (D71), so two scales never meet here. `keepStage1Top` pins keep their
  * head places. The sort is stable: ties keep order.
  */
-function mergeByScore(got: readonly Hydrated[]): RagResult[] {
+function mergeByScore(got: readonly Hydrated[]): Hydrated[] {
   const head = got.filter((h) => h.unit.pinned === true);
   const rest = got.filter((h) => h.unit.pinned !== true);
   rest.sort((a, b) => b.item.score - a.item.score);
-  return [...head, ...rest].map((h) => h.item);
+  return [...head, ...rest];
 }
 
 /** A Result-returning store call, handled on both failure paths (`ok: false` and a rejection). */
@@ -184,15 +184,6 @@ async function settled<T>(
   } catch (err) {
     return { ok: false, error: toRagError(err) };
   }
-}
-
-/** The owner-qualified key of a returned result (pass-through records by id). Module-private. */
-function resultKey(r: RagResult): string {
-  const itemId = r.metadata.itemId;
-  const owner = ownerFromMetadata(r.metadata);
-  return typeof itemId === 'string' && owner
-    ? itemKey(String(r.metadata.source), owner, itemId)
-    : JSON.stringify(['record', String(r.metadata.id)]);
 }
 
 const decomposeError = (message: string): Result<never, RagError> => ({
@@ -277,7 +268,7 @@ export class StagedRetrieval implements IRetrievalStrategy {
         newRunContext(callOptions),
         k,
       );
-      return run.ok ? finish(run.value) : run;
+      return run.ok ? finish(run.value.map((h) => h.item)) : run;
     }
     const runs = await Promise.all(
       subs.map((s) =>
@@ -292,14 +283,16 @@ export class StagedRetrieval implements IRetrievalStrategy {
     // Union in sub-query order (spec §4.5, D63): each sub-query's own ranked list, one
     // after the other; a duplicate item stays at its FIRST occurrence with that
     // occurrence's score. Scores of different sub-queries are never compared.
+    // "Same" is the stage-1 unit key, which qualifies the source and the owner:
+    // `itemKey(source, owner, itemId)` for an item, `['record', source, id]` for a
+    // pass-through record — so two sources' records sharing an id stay two.
     const union: RagResult[] = [];
     const seen = new Set<string>();
     for (const run of runs) {
       if (!run.ok) return run;
-      for (const item of run.value) {
-        const key = resultKey(item);
-        if (seen.has(key)) continue;
-        seen.add(key);
+      for (const { unit, item } of run.value) {
+        if (seen.has(unit.key)) continue;
+        seen.add(unit.key);
         union.push(item);
       }
     }
@@ -347,14 +340,15 @@ export class StagedRetrieval implements IRetrievalStrategy {
     return r;
   }
 
-  /** §4.3 up to hydration: at most `keep` hydrated items, in rank order. `poolK`
+  /** §4.3 up to hydration: at most `keep` hydrated items, in rank order, each with
+   *  the stage-1 unit it came from (the sub-query union keys on `unit.key`). `poolK`
    *  is the k of this (sub-)query, which the pool is sized from (D56). */
   protected async runOne(
     query: IQueryEmbedding,
     keep: number,
     ctx: RunContext,
     poolK: number,
-  ): Promise<Result<RagResult[], RagError>> {
+  ): Promise<Result<Hydrated[], RagError>> {
     const o = this.options;
     const sources = await o.sources.sources(ctx.options);
     const byName = new Map(sources.map((s) => [s.name, s] as const));
