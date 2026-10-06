@@ -7,6 +7,11 @@ export {
   CharsPerTokenEstimator,
   ToolDefinitionSizeEstimator,
 } from './size-estimators.js';
+export {
+  type RunStats,
+  StagedRetrieval,
+  type StagedRetrievalOptions,
+} from './staged-retrieval.js';
 export { TokenBudgetCut } from './token-budget-cut.js';
 export {
   NamedDiscriminator,
