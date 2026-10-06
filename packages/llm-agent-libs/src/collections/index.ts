@@ -8,3 +8,4 @@ export {
   ToolDefinitionSizeEstimator,
 } from './size-estimators.js';
 export { TokenBudgetCut } from './token-budget-cut.js';
+export { toolItemFromTool } from './tools/tool-item.js';
