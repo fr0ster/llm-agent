@@ -43,6 +43,7 @@ export class ToolSelectHandler implements IStageHandler {
       let listed: Awaited<ReturnType<typeof listClientTools>>;
       try {
         listed = await listClientTools(ctx.mcpClients, {
+          stage: 'tool-select',
           descriptors: ctx.mcpClientDescriptors,
           toolNamespace: ctx.toolNamespace ?? defaultToolNamespace,
           options: ctx.options,

@@ -171,6 +171,7 @@ describe('M5 tool-select: a client that cannot list fails the request', () => {
     const r = await agent.process('find something');
     assert.ok(!r.ok, 'the request ran with one client’s tools');
     assert.equal(r.error.code, 'MCP_UNAVAILABLE');
+    assert.match(r.error.message, /^tool-select: MCP tools unavailable: /);
     assert.match(r.error.message, /MCP_TRANSPORT/);
   });
 });
@@ -342,6 +343,7 @@ describe('M6 tool-loop: a per-iteration re-list failure fails the stage', () => 
     assert.equal(ok, false);
     assert.ok(ctx.error instanceof OrchestratorError);
     assert.equal(ctx.error.code, 'MCP_UNAVAILABLE');
+    assert.match(ctx.error.message, /^tool-loop: MCP tools unavailable: /);
     assert.equal(captured.length, 1, 'no LLM call went out with a shrunk set');
     assert.deepEqual(
       [...ctx.toolClientMap.keys()].sort(),

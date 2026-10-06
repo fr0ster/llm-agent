@@ -60,7 +60,6 @@ import {
   type IStepExecutionControl,
   type IWaitStrategy,
   isReadinessReporter,
-  McpError,
   symmetricEmbedder,
   type ToolLoopContextStrategyFactory,
   withCircuitBreaker,
@@ -124,6 +123,7 @@ import {
   handleSessionsList,
 } from './http/sessions-route-handler.js';
 import { handleUsageRoute } from './http/usage-route-handler.js';
+import { listedToolsOrThrow } from './listed-tools.js';
 import { LlmCircuitBreakers } from './llm/llm-circuit-breakers.js';
 import {
   type IRoleLlmResolver,
@@ -2582,25 +2582,14 @@ export class SmartServer {
     const settled = await Promise.allSettled(
       clients.map((client) => client.listTools()),
     );
-    const perClient: NamespaceClientInput[] = [];
-    for (const [i, entry] of settled.entries()) {
-      if (entry.status === 'rejected') {
-        const reason = entry.reason;
-        throw reason instanceof McpError
-          ? reason
-          : new McpError(
-              reason instanceof Error ? reason.message : String(reason),
-              'MCP_ERROR',
-            );
-      }
-      if (!entry.value.ok) throw entry.value.error;
-      perClient.push({
+    const perClient: NamespaceClientInput[] = listedToolsOrThrow(settled).map(
+      (tools, i) => ({
         slotIndex: descs[i]?.slotIndex ?? i,
         label: descs[i]?.label,
         client: clients[i],
-        tools: entry.value.value,
-      });
-    }
+        tools,
+      }),
+    );
     const built = buildNamespacedTools(perClient, this._toolNamespace);
     this._namespacedTools = built.tools;
     this._toolProvenance = built.provenance;

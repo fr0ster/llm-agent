@@ -321,34 +321,11 @@ test('custom BuildAgentDeps.toolNamespace reaches the yaml-builder snapshot (ass
 // ---------------------------------------------------------------------------
 // 4. Server-side fallback build: a middle-client listTools() failure fails the
 //    snapshot with that client's error (spec §10.5.3 M11) — never a partial
-//    snapshot with the client dropped, and nothing memoized.
+//    snapshot with the client dropped, nothing memoized, and no log line in
+//    place of the error.
 // ---------------------------------------------------------------------------
 
-test('fallback build: middle-client listTools() failure rejects with its error; nothing memoized', async () => {
-  const c0 = fakeMcpClient(['A']);
-  const c1 = fakeMcpClient(['Broken'], { fail: true });
-  const c2 = fakeMcpClient(['B']);
-  const server = new SmartServer({}, constructionSeams) as unknown as Internals;
-
-  await assert.rejects(
-    server.buildSharedPipelineInfra({
-      toolsRag: undefined,
-      resolvedEmbedder: undefined,
-      mcpClients: [c0, c1, c2],
-    }),
-    (e: unknown) => (e as { message?: string }).message === 'listTools failed',
-  );
-  assert.equal(server._toolProvenance, undefined);
-  assert.equal(server._namespacedTools, undefined);
-  assert.equal(server._toolsRagHandle, undefined);
-});
-
-// ---------------------------------------------------------------------------
-// 5. The failure is the error, not a log line: no aggregated clientFailures
-//    event is emitted for a snapshot that did not build.
-// ---------------------------------------------------------------------------
-
-test('fallback build: a middle-client listTools() failure is thrown, not logged as clientFailures', async () => {
+test('fallback build: middle-client listTools() failure rejects with its error; nothing memoized, no clientFailures log', async () => {
   const c0 = fakeMcpClient(['A']);
   const c1 = fakeMcpClient(['Broken'], { fail: true });
   const c2 = fakeMcpClient(['B']);
@@ -366,7 +343,12 @@ test('fallback build: a middle-client listTools() failure is thrown, not logged 
       resolvedEmbedder: undefined,
       mcpClients: [c0, c1, c2],
     }),
+    (e: unknown) => (e as { message?: string }).message === 'listTools failed',
   );
+  assert.equal(server._toolProvenance, undefined);
+  assert.equal(server._namespacedTools, undefined);
+  assert.equal(server._toolsRagHandle, undefined);
+  // The failure is the error, not a log line.
   assert.equal(
     events.filter((e) => e.event === 'authoritative_snapshot_client_failures')
       .length,

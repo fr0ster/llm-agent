@@ -86,3 +86,22 @@ test('M9: zero hits → [] (never the first N catalog tools)', async () => {
   const h = await makeToolsRagHandle([client], toolsRag, embedder);
   assert.deepEqual(await h.query('x', 5), []);
 });
+
+test('a tools store configured with no embedder is queried (text-only), and its hits come back', async () => {
+  const seen: { text?: string }[] = [];
+  const toolsRag = {
+    query: async (embedding: { text: string }) => {
+      seen.push({ text: embedding.text });
+      return ok([{ metadata: { id: 'tool:B' } }]);
+    },
+  } as unknown as IRag;
+  const client = switchable([{ name: 'A' }, { name: 'B' }]);
+  client.up();
+  const h = await makeToolsRagHandle([client], toolsRag, undefined);
+  const r = await h.query('find B', 5);
+  assert.deepEqual(
+    r.map((t) => t.name),
+    ['B'],
+  );
+  assert.deepEqual(seen, [{ text: 'find B' }]);
+});

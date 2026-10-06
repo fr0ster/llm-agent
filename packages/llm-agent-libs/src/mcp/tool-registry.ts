@@ -120,6 +120,7 @@ export class McpToolRegistry implements IMcpToolRegistry {
     // slot that did not resolve, rejects with MCP_UNAVAILABLE — never a
     // silently dropped client.
     const { tools, toolClientMap } = await listClientTools(this.activeClients, {
+      stage: 'tool-registry',
       descriptors: this.activeClientDescriptors,
       configuredSlotCount: this.configuredSlotCount,
       toolNamespace: this.toolNamespace,

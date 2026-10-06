@@ -5,10 +5,11 @@ import {
   type IRag,
   type IToolsRagHandle,
   type LlmTool,
-  McpError,
   QueryEmbedding,
+  TextOnlyEmbedding,
   toolNameFromRecord,
 } from '@mcp-abap-adt/llm-agent';
+import { listedToolsOrThrow } from './listed-tools.js';
 
 /**
  * Build a real IToolsRagHandle over the tools RAG store + MCP catalog,
@@ -45,21 +46,8 @@ export async function makeToolsRagHandle(
       const settled = await Promise.allSettled(
         stepperMcpClients.map((client) => client.listTools()),
       );
-      for (const entry of settled) {
-        if (entry.status === 'rejected') {
-          const reason = entry.reason;
-          throw reason instanceof McpError
-            ? reason
-            : new McpError(
-                reason instanceof Error ? reason.message : String(reason),
-                'MCP_ERROR',
-              );
-        }
-        if (!entry.value.ok) throw entry.value.error;
-      }
-      for (const entry of settled) {
-        if (entry.status !== 'fulfilled' || !entry.value.ok) continue;
-        for (const t of entry.value.value) {
+      for (const tools of listedToolsOrThrow(settled)) {
+        for (const t of tools) {
           if (!catalog.has(t.name)) catalog.set(t.name, t as LlmTool);
         }
       }
@@ -71,12 +59,15 @@ export async function makeToolsRagHandle(
     async query(text: string, k?: number, options?: CallOptions) {
       const limit = k ?? 20;
       const catalog = await ensureCatalog();
-      if (toolsRag && resolvedEmbedder) {
+      if (toolsRag) {
         // Pass options (requestLogger + trace) so the wrapped embedder logs
         // this query-embedding against the request — and to the store, so a
         // retrieval strategy's reranker gets the request's signal,
-        // requestLogger and sessionLogger (§13.4).
-        const embedding = new QueryEmbedding(text, resolvedEmbedder, options);
+        // requestLogger and sessionLogger (§13.4). A store with no resolved
+        // embedder is still queried — it embeds the text itself.
+        const embedding = resolvedEmbedder
+          ? new QueryEmbedding(text, resolvedEmbedder, options)
+          : new TextOnlyEmbedding(text);
         const ragResult = await toolsRag.query(embedding, limit, options);
         // Spec §10.5.3 M9: a failed query is its RagError; zero hits is an
         // honest empty answer — never an unranked catalog prefix.

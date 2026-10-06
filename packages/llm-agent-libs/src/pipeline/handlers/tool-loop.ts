@@ -232,6 +232,7 @@ export class ToolLoopHandler implements IStageHandler {
         let listed: Awaited<ReturnType<typeof listClientTools>>;
         try {
           listed = await listClientTools(ctx.mcpClients, {
+            stage: 'tool-loop',
             descriptors: ctx.mcpClientDescriptors,
             toolNamespace: ctx.toolNamespace ?? defaultToolNamespace,
             options: ctx.options,

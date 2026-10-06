@@ -41,6 +41,11 @@ describe('McpToolRegistry.resolve — fail loud (M4)', () => {
     );
     await assert.rejects(registry.resolve(), (e: unknown) => {
       rejects(e);
+      assert.match(
+        (e as Error).message,
+        /^tool-registry: MCP tools unavailable: /,
+        'names the stage',
+      );
       assert.match((e as Error).message, /client 1/);
       assert.match((e as Error).message, /MCP_TRANSPORT/);
       return true;

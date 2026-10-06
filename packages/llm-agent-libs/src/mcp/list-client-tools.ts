@@ -11,6 +11,8 @@ import type { McpClientDescriptor } from '../interfaces/mcp-connection-strategy.
 export async function listClientTools(
   clients: readonly IMcpClient[],
   opts: {
+    /** The stage or component that lists — the message's prefix (e.g. `tool-select`). */
+    stage?: string;
     descriptors?: readonly McpClientDescriptor[];
     configuredSlotCount?: number;
     toolNamespace: IToolNamespace;
@@ -69,7 +71,7 @@ export async function listClientTools(
 
   if (failures.length > 0) {
     throw new OrchestratorError(
-      `MCP tools unavailable: ${failures.join('; ')}`,
+      `${opts.stage ? `${opts.stage}: ` : ''}MCP tools unavailable: ${failures.join('; ')}`,
       'MCP_UNAVAILABLE',
     );
   }

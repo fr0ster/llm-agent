@@ -255,8 +255,8 @@ export interface SmartAgentReconfigureOptions {
   helperLlm?: ILlm;
 }
 
-/** A registry rejection keeps its code (MCP_UNAVAILABLE); anything else thrown
- *  is PIPELINE_ERROR — the same mapping as `withRootStatus`. */
+/** A thrown OrchestratorError keeps its code (e.g. the registry's
+ *  MCP_UNAVAILABLE); anything else thrown is PIPELINE_ERROR (spec §10.5.1). */
 function asOrchestratorError(err: unknown): OrchestratorError {
   return err instanceof OrchestratorError
     ? err
@@ -809,10 +809,7 @@ export class SmartAgent {
       // Spec §10.5.1 (N1): the consumer receives a failure as an `{ ok: false }`
       // item — `process()` returns it, never rejects. An OrchestratorError keeps
       // its code.
-      const error =
-        err instanceof OrchestratorError
-          ? err
-          : new OrchestratorError(String(err), 'PIPELINE_ERROR');
+      const error = asOrchestratorError(err);
       if (!failed) {
         rootSpan.setStatus('error', `${error.code}: ${error.message}`);
       }
