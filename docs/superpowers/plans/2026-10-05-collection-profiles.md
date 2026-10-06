@@ -8,7 +8,7 @@
 
 **Tech Stack:** TypeScript 6 (strict, ESM, NodeNext), Node ≥ 22, `node:test` via `tsx`, Biome, npm workspaces monorepo.
 
-**Spec:** `docs/superpowers/specs/2026-10-05-collection-profiles-design.md` (approved 2026-10-05, frozen; amended 2026-10-05 with the user's decisions on S1–S9, spec §17.4, and on probability vs relevance decisions, the reranker package, the caller's k, cleanup failures and provider text composition, spec §17.6; and on relevance comparability, the second seam and the seam rename, spec §17.7; and on the server filling a bound tools profile from ready clients, D31, spec §6.3, §17.8; and on filling following the store's lifecycle, D34–D35, spec §17.9; and on only complete fills memoized, single-flight worker construction, the startup fill on every path, the direct hot-reload test and runtime-removed tools, D36–D40, spec §6.6, §17.10 — D36 superseded and D37 moved out by the next amendment; and on a tools store filled once at instance creation, the fill source as an injected strategy, the offline corpus API, refill and single-flight out, D41–D45, spec §3.10, §6.3–§6.5, §17.11; and on fill sources filling once with no `toolsChanged` reaction for a bound store, D46–D47, spec §3.10, §6.3, §6.4, §13, §15, §17.12; and on intents and companion stores removed entirely and the corpus deploy written in full, D50–D51, spec §17.15; and on the goal's three decisions of 2026-10-05 — the RAG implementations' home, the corpus loaded by the server at start with no deploy step, no tuned numbers in what ships — D53–D56, spec §11.3, §17.17; and on a major release without deprecated aliases or re-exports — the RAG implementations' files move now (S10 decided), no old names, no re-exports, the replicas' reload window accepted — D57–D60, spec §11.3, §11.4, §13, §17.18; and on S11, S12 and the search-strategy types — **all decided by the user on 2026-10-05** (spec §17.18): `OllamaRag` removed (S11, Task 1A Step 4); the pre-existing re-exports of spec §11.4 removed in this same major (S12, Task 4D; migration lines 52–69); `ISearchStrategy`, `ISearchCandidate`, `ISearchQuery`, `IScoredResult`, `ISearchContext` move with `VectorRag` to `llm-agent-rag` (Task 1A); and on the four questions spec §11.4 left open — **decided by the user on 2026-10-05** (spec §11.4, §17.18): `ITextLogger` removed, every use imports `ILogger` from `@mcp-abap-adt/interfaces-utils` (Task 4E; migration line 70), libs' two dead internal files `adapters/index.ts` and `interfaces/model-resolver.ts` deleted (Task 4E), `SmartAgentHandle` / libs' `IStageHandler` and libs' internal shims kept); and on the review findings and the user's decision of 2026-10-05 in spec §17.22 — D64 (an injected connection strategy is owned by the agent: `close()` and a failed `build()` dispose it), D65 (the corpus checked against every bound store's declared dimension before any store exists), D66 (a store filled before skills are vectorized into it), D67 (orphans never use up the pool); and on the goal's decision of 2026-10-05 that `FallbackRag` is removed — D68 (spec §10.4, §13, §17.23): Task 0A removes it with the builder's store wrapping and what existed only for it; D52 and D62 are withdrawn; and on the goal's decisions of 2026-10-05 "No fallbacks anywhere in the pipeline" and "the fail-loud sweep is part of this PR" — D69–D74 (spec §10.5, §13 B1–B11, §17.24): Tasks 4F–4O sweep every fallback and silent degradation (pipeline errors reach the consumer first, Task 4F), and `onFailure` is removed where `StagedRetrieval` is built (Tasks 12, 13, 14, 16, 18, 21, 22, 28, 29, 32, 33); and on the user's decisions of 2026-10-05 on U1–U10 — every recommendation approved (spec §10.5.12, §13 B12–B15, migration lines 73–74, §17.24): Task 4J counts `FallbackLlmCallStrategy`'s fallbacks (U1), Task 4K fails a step naming an agent the registry lacks (U5), Task 4L defaults the skill plugin host to `strict: true` (U2), Task 4M logs a worker on the parent's clients (U10), new Task 4P removes `lazy`'s `fallback` (U6), new Task 4Q makes the tool availability blacklist an injected policy with no default (U8), new Task 19B counts failed batch embedding calls (U7); U3, U4 stay as they are; U9 is Task 0A, confirmed; amended 2026-10-06 with the user's rule "no fallback anywhere; all in #322" for the 30.1.0 tool write path (spec §17.26, D79): Task 19B Steps 6–10 remove the per-tool write retry after a failed bulk write; amended 2026-10-06 for a review finding (spec §17.27, D80): Task 4M serializes complete reload transactions in the watcher; amended 2026-10-06 with the user's decisions (spec §17.28 — D80 extended, D79 confirmed): Task 4M moves the queue into the server (`ConfigTransactionQueue`, one instance for the reload watcher and `PUT /v1/config`) and makes a `PUT` one transaction that restores and answers 500 on a failed drain or invalidation (V10, B17); Task 23A pins the shared queue on a real server; Task 33 Step 8b and Task 34 document it; amended 2026-10-06 for a review finding (spec §17.29, D81 — *withdrawn by D82*); amended 2026-10-06 with the user's decision (spec §17.30, D82): a failed config change is an error that leaves the server not ready until a whole config applies — no rollback: Task 4M drops the snapshot / restore (`snapshotConfig`, `LlmCircuitBreakers.snapshot()`) and D81's atomic `SmartAgent.reconfigure`, and adds the queue's *config not applied* state, `/health`'s `configNotApplied` and the chat routes' not-ready message; Task 23A's real-server reload test checks the not-ready answers; Task 33 Step 8b and Task 34 (B10, B17; B18 withdrawn) document it; amended 2026-10-06 with the user's decision (spec §17.30, D82 (8), amendment 23): while the server is not ready only a whole config clears the state — a file reload or a `PUT` carrying every section the route can change — so Task 4M refuses a partial `PUT` with 409 before the queue and again at its transaction's start (`ConfigTransactionQueue.run` takes the change's scope), Task 23A's (10b) pins the refusal and the clearing reload on a real server, and Task 33 Step 8b and Task 34 (B17) document the rule; amended 2026-10-06 under the user's rule — no silent degradation, everything in this change (spec §17.32, D83 (5), amendment 25): the start config is checked by the same config field validator as a reload and a `PUT` — Task 4M validates it in `resolveSmartServerConfig` before any section is read (the section readers take the validated values, an invalid one fails the start with the same `invalid config — …` error, the CLI exits 1), Task 4Q keeps `agent.toolUnavailableTtlMs`'s rule as a start-only rule, and Task 33 Step 8b and Task 34 (B19, B20) document it; and with the user's decisions D83 (6), (7) of 2026-10-06 (spec §17.33, amendment 26): one grammar for numbers and flags at start, on a reload and on `PUT` — a number or a string that is exactly a `NUMBER_LITERAL`, `true` / `false` or exactly `"true"` / `"false"` — and every config field the start coerced with `Number()` / `Boolean()` / `String()` validated (spec §10.5.9 *Start-only fields*): Task 4M (`config-fields.ts`'s grammar and start-only rules, the section readers, `parseIntegerField`, `parseSkillPluginsConfig`, `parseStepperCoordinatorConfig`, `optionalNumber` removed), Task 4Q (`agent.toolUnavailableTtlMs` joins the start-only rules), Task 21 (`score-floor.minScore` normalized), Task 33 (DEPLOYMENT: environment-variable values for number / flag fields), Task 34 (migration line 75); and with the user's decisions D83 (8), (9) of 2026-10-06 (spec §17.34, amendment 27): the file reload substitutes `${VAR}` exactly as the start does — `ConfigWatcher` takes an injected `resolveDocument`, applied to the whole parsed file before a field is read, and the server passes the start's own `resolveEnvVars` — and every config field read by a type cast is validated (spec §10.5.9 *Cast-read fields*): Task 4M (libs `config-watcher.ts`, `config-reload-watcher.ts`, `config-fields.ts`'s shape checks and cast rules, the resolvers, `pipeline-settings.ts`, `stepper-config.ts`, the stepper examples' `${LLM_URL:-}` lines), Task 33 (DEPLOYMENT, INTEGRATION, the stepper README), Task 34 (B21, B22, the libs and server-libs CHANGELOGs); and with the review finding D82 (9) of 2026-10-06 (spec §17.35, amendment 28): a config file the watcher cannot read, parse or resolve is a failed reload — queued in the server's config queue, so it sets not-ready in queue order and logs `config_reload_failed` (`config_reload_error` gone): Task 4M (`config-reload-watcher.ts`'s `error` listener and `_onWatcherError`; four new test cases), Task 33 (INTEGRATION, DEPLOYMENT, TROUBLESHOOTING), Task 34 (B17); and with the review finding D83 (10) of 2026-10-06 (spec §17.36, amendment 29): a file reload validates the whole resolved document with the start's validator before anything applies — `ConfigWatcher`'s `reload` event carries the resolved document as a second argument, `_applyReload` runs `resolveSmartServerConfig` over it and applies the reload table's values `validateStartConfig` checked, `validateReloadedConfig` is removed (one rule set), and the start checks the `agent` / `subagents` section shapes: Task 4M (libs `config-watcher.ts`, `config-reload-watcher.ts`, `config-fields.ts`, the test helper `__tests__/reload-document.ts`, every reload test carries a whole document), Task 23A (its reload tests carry whole documents), Task 33 (DEPLOYMENT, INTEGRATION), Task 34 (B23, the libs CHANGELOG); and with D83 (11) of 2026-10-06 (spec §17.37, amendment 30, closing §17.36 (6)): a file reload also runs the selected pipeline's own section parser as a validation step — the start's registry entry's parse half, over the reloaded `pipeline.config` with the reloaded `llm:` keys, nothing built — after `resolveSmartServerConfig` and before anything applies; a reload that selects another pipeline fails (`pipeline change needs a restart`, the new pipeline's section checked too); a plugin factory has no validation entry, so its changed section fails the reload (strict) and an unchanged one passes: Task 4M (new `pipeline-sections.ts`, the registry in `smart-server.ts`, `ConfigReloadDeps.pipeline`, `_applyReload`, `reload-document.ts`'s `runningPipeline` / `FLAT_PIPELINE`, every reload watcher a test builds passes `pipeline`, one new case and one new test file), Task 23A (its watcher passes `pipeline`), Task 33 (DEPLOYMENT, INTEGRATION, TROUBLESHOOTING), Task 34 (B24).; and with the review finding D83 (12) of 2026-10-06 (spec §17.38, amendment 31): a present config section with the wrong shape is an error, never its default — every section a reader takes fields or items from is checked by its `FieldCheck` before a field of it is read, a default only when the section is absent (not written or `null`); `skillPlugins.embedder` / `.chunk` (the finding) and the same guard on `llm`, `rag`, `rag.store`, `rag.embedder`, `rag.retrieval`, `rag.profiles`, `decision`, `skillPlugins` itself, two `skillPlugins` string fields and the server's second reader of `knowledgeSeed`: Task 4M, Task 21 (`rag.profiles`), Task 33 (DEPLOYMENT, TROUBLESHOOTING), Task 34 (B25); and with the user's decision D83 (13) of 2026-10-06 (spec §17.39, amendment 32): a key written with no value (`null` — `rag.embedder:`, `prompts:`, `skillPlugins.store:`, `key: ~`, a JSON `null`) is an error everywhere, `<path> has no value` in the same `ConfigFieldError` at start, on a reload and on `PUT`; a default applies only when the key is absent (not written) — `present()` is "the key is written", `checkStartConfig` walks the whole document first (`checkNoValue`), `FieldCheck` names a `null` once, the `PUT` body is walked too, and the 30.1.0 tests that pinned a key with no value as absent are rewritten: Task 4M, Task 21 (one assertion), Task 33 (DEPLOYMENT, INTEGRATION, TROUBLESHOOTING), Task 34 (B26); and for the review finding D83 (14) of 2026-10-06 (spec §17.40, amendment 33): a reader checks a value's shape before it reads a field of it — readers run before `done()`, so a value already named still reaches them, and a `TypeError` from config input is a defect: `mcp[]` entries go through `check.list` and their closed check, `mcp[i].name` (a label, unique) is an issue of the same check (`validateMcpNames` goes), the document is a mapping (`checkDocument`; an empty file `{}` in `loadYamlConfig`), the worker file's document is checked before `parseSubAgents` reads it, the profile validator names a `fill.corpus` that is not a mapping, and a generated wrong-shape table covers every section, list item and reload-table field: Task 4M, Task 21 (the table gains `rag.profiles`), Task 23B (`checkFill`), Task 34 (B27). **Goal:** `docs/superpowers/goals/2026-10-04-collection-profiles.md` (user-owned; never edited). Executors read the spec section each task cites.
+**Spec:** `docs/superpowers/specs/2026-10-05-collection-profiles-design.md` (approved 2026-10-05, frozen; amended 2026-10-05 with the user's decisions on S1–S9, spec §17.4, and on probability vs relevance decisions, the reranker package, the caller's k, cleanup failures and provider text composition, spec §17.6; and on relevance comparability, the second seam and the seam rename, spec §17.7; and on the server filling a bound tools profile from ready clients, D31, spec §6.3, §17.8; and on filling following the store's lifecycle, D34–D35, spec §17.9; and on only complete fills memoized, single-flight worker construction, the startup fill on every path, the direct hot-reload test and runtime-removed tools, D36–D40, spec §6.6, §17.10 — D36 superseded and D37 moved out by the next amendment; and on a tools store filled once at instance creation, the fill source as an injected strategy, the offline corpus API, refill and single-flight out, D41–D45, spec §3.10, §6.3–§6.5, §17.11; and on fill sources filling once with no `toolsChanged` reaction for a bound store, D46–D47, spec §3.10, §6.3, §6.4, §13, §15, §17.12; and on intents and companion stores removed entirely and the corpus deploy written in full, D50–D51, spec §17.15; and on the goal's three decisions of 2026-10-05 — the RAG implementations' home, the corpus loaded by the server at start with no deploy step, no tuned numbers in what ships — D53–D56, spec §11.3, §17.17; and on a major release without deprecated aliases or re-exports — the RAG implementations' files move now (S10 decided), no old names, no re-exports, the replicas' reload window accepted — D57–D60, spec §11.3, §11.4, §13, §17.18; and on S11, S12 and the search-strategy types — **all decided by the user on 2026-10-05** (spec §17.18): `OllamaRag` removed (S11, Task 1A Step 4); the pre-existing re-exports of spec §11.4 removed in this same major (S12, Task 4D; migration lines 52–69); `ISearchStrategy`, `ISearchCandidate`, `ISearchQuery`, `IScoredResult`, `ISearchContext` move with `VectorRag` to `llm-agent-rag` (Task 1A); and on the four questions spec §11.4 left open — **decided by the user on 2026-10-05** (spec §11.4, §17.18): `ITextLogger` removed, every use imports `ILogger` from `@mcp-abap-adt/interfaces-utils` (Task 4E; migration line 70), libs' two dead internal files `adapters/index.ts` and `interfaces/model-resolver.ts` deleted (Task 4E), `SmartAgentHandle` / libs' `IStageHandler` and libs' internal shims kept); and on the review findings and the user's decision of 2026-10-05 in spec §17.22 — D64 (an injected connection strategy is owned by the agent: `close()` and a failed `build()` dispose it), D65 (the corpus checked against every bound store's declared dimension before any store exists), D66 (a store filled before skills are vectorized into it), D67 (orphans never use up the pool); and on the goal's decision of 2026-10-05 that `FallbackRag` is removed — D68 (spec §10.4, §13, §17.23): Task 0A removes it with the builder's store wrapping and what existed only for it; D52 and D62 are withdrawn; and on the goal's decisions of 2026-10-05 "No fallbacks anywhere in the pipeline" and "the fail-loud sweep is part of this PR" — D69–D74 (spec §10.5, §13 B1–B11, §17.24): Tasks 4F–4O sweep every fallback and silent degradation (pipeline errors reach the consumer first, Task 4F), and `onFailure` is removed where `StagedRetrieval` is built (Tasks 12, 13, 14, 16, 18, 21, 22, 28, 29, 32, 33); and on the user's decisions of 2026-10-05 on U1–U10 — every recommendation approved (spec §10.5.12, §13 B12–B15, migration lines 73–74, §17.24): Task 4J counts `FallbackLlmCallStrategy`'s fallbacks (U1), Task 4K fails a step naming an agent the registry lacks (U5), Task 4L defaults the skill plugin host to `strict: true` (U2), Task 4M logs a worker on the parent's clients (U10), new Task 4P removes `lazy`'s `fallback` (U6), new Task 4Q makes the tool availability blacklist an injected policy with no default (U8), new Task 19B counts failed batch embedding calls (U7); U3, U4 stay as they are; U9 is Task 0A, confirmed; amended 2026-10-06 with the user's rule "no fallback anywhere; all in #322" for the 30.1.0 tool write path (spec §17.26, D79): Task 19B Steps 6–10 remove the per-tool write retry after a failed bulk write; amended 2026-10-06 for a review finding (spec §17.27, D80): Task 4M serializes complete reload transactions in the watcher; amended 2026-10-06 with the user's decisions (spec §17.28 — D80 extended, D79 confirmed): Task 4M moves the queue into the server (`ConfigTransactionQueue`, one instance for the reload watcher and `PUT /v1/config`) and makes a `PUT` one transaction that restores and answers 500 on a failed drain or invalidation (V10, B17); Task 23A pins the shared queue on a real server; Task 33 Step 8b and Task 34 document it; amended 2026-10-06 for a review finding (spec §17.29, D81 — *withdrawn by D82*); amended 2026-10-06 with the user's decision (spec §17.30, D82): a failed config change is an error that leaves the server not ready until a whole config applies — no rollback: Task 4M drops the snapshot / restore (`snapshotConfig`, `LlmCircuitBreakers.snapshot()`) and D81's atomic `SmartAgent.reconfigure`, and adds the queue's *config not applied* state, `/health`'s `configNotApplied` and the chat routes' not-ready message; Task 23A's real-server reload test checks the not-ready answers; Task 33 Step 8b and Task 34 (B10, B17; B18 withdrawn) document it; amended 2026-10-06 with the user's decision (spec §17.30, D82 (8), amendment 23): while the server is not ready only a whole config clears the state — a file reload or a `PUT` carrying every section the route can change — so Task 4M refuses a partial `PUT` with 409 before the queue and again at its transaction's start (`ConfigTransactionQueue.run` takes the change's scope), Task 23A's (10b) pins the refusal and the clearing reload on a real server, and Task 33 Step 8b and Task 34 (B17) document the rule; amended 2026-10-06 under the user's rule — no silent degradation, everything in this change (spec §17.32, D83 (5), amendment 25): the start config is checked by the same config field validator as a reload and a `PUT` — Task 4M validates it in `resolveSmartServerConfig` before any section is read (the section readers take the validated values, an invalid one fails the start with the same `invalid config — …` error, the CLI exits 1), Task 4Q keeps `agent.toolUnavailableTtlMs`'s rule as a start-only rule, and Task 33 Step 8b and Task 34 (B19, B20) document it; and with the user's decisions D83 (6), (7) of 2026-10-06 (spec §17.33, amendment 26): one grammar for numbers and flags at start, on a reload and on `PUT` — a number or a string that is exactly a `NUMBER_LITERAL`, `true` / `false` or exactly `"true"` / `"false"` — and every config field the start coerced with `Number()` / `Boolean()` / `String()` validated (spec §10.5.9 *Start-only fields*): Task 4M (`config-fields.ts`'s grammar and start-only rules, the section readers, `parseIntegerField`, `parseSkillPluginsConfig`, `parseStepperCoordinatorConfig`, `optionalNumber` removed), Task 4Q (`agent.toolUnavailableTtlMs` joins the start-only rules), Task 21 (`score-floor.minScore` normalized), Task 33 (DEPLOYMENT: environment-variable values for number / flag fields), Task 34 (migration line 75); and with the user's decisions D83 (8), (9) of 2026-10-06 (spec §17.34, amendment 27): the file reload substitutes `${VAR}` exactly as the start does — `ConfigWatcher` takes an injected `resolveDocument`, applied to the whole parsed file before a field is read, and the server passes the start's own `resolveEnvVars` — and every config field read by a type cast is validated (spec §10.5.9 *Cast-read fields*): Task 4M (libs `config-watcher.ts`, `config-reload-watcher.ts`, `config-fields.ts`'s shape checks and cast rules, the resolvers, `pipeline-settings.ts`, `stepper-config.ts`, the stepper examples' `${LLM_URL:-}` lines), Task 33 (DEPLOYMENT, INTEGRATION, the stepper README), Task 34 (B21, B22, the libs and server-libs CHANGELOGs); and with the review finding D82 (9) of 2026-10-06 (spec §17.35, amendment 28): a config file the watcher cannot read, parse or resolve is a failed reload — queued in the server's config queue, so it sets not-ready in queue order and logs `config_reload_failed` (`config_reload_error` gone): Task 4M (`config-reload-watcher.ts`'s `error` listener and `_onWatcherError`; four new test cases), Task 33 (INTEGRATION, DEPLOYMENT, TROUBLESHOOTING), Task 34 (B17); and with the review finding D83 (10) of 2026-10-06 (spec §17.36, amendment 29): a file reload validates the whole resolved document with the start's validator before anything applies — `ConfigWatcher`'s `reload` event carries the resolved document as a second argument, `_applyReload` runs `resolveSmartServerConfig` over it and applies the reload table's values `validateStartConfig` checked, `validateReloadedConfig` is removed (one rule set), and the start checks the `agent` / `subagents` section shapes: Task 4M (libs `config-watcher.ts`, `config-reload-watcher.ts`, `config-fields.ts`, the test helper `__tests__/reload-document.ts`, every reload test carries a whole document), Task 23A (its reload tests carry whole documents), Task 33 (DEPLOYMENT, INTEGRATION), Task 34 (B23, the libs CHANGELOG); and with D83 (11) of 2026-10-06 (spec §17.37, amendment 30, closing §17.36 (6)): a file reload also runs the selected pipeline's own section parser as a validation step — the start's registry entry's parse half, over the reloaded `pipeline.config` with the reloaded `llm:` keys, nothing built — after `resolveSmartServerConfig` and before anything applies; a reload that selects another pipeline fails (`pipeline change needs a restart`, the new pipeline's section checked too); a plugin factory has no validation entry, so its changed section fails the reload (strict) and an unchanged one passes: Task 4M (new `pipeline-sections.ts`, the registry in `smart-server.ts`, `ConfigReloadDeps.pipeline`, `_applyReload`, `reload-document.ts`'s `runningPipeline` / `FLAT_PIPELINE`, every reload watcher a test builds passes `pipeline`, one new case and one new test file), Task 23A (its watcher passes `pipeline`), Task 33 (DEPLOYMENT, INTEGRATION, TROUBLESHOOTING), Task 34 (B24).; and with the review finding D83 (12) of 2026-10-06 (spec §17.38, amendment 31): a present config section with the wrong shape is an error, never its default — every section a reader takes fields or items from is checked by its `FieldCheck` before a field of it is read, a default only when the section is absent (not written or `null`); `skillPlugins.embedder` / `.chunk` (the finding) and the same guard on `llm`, `rag`, `rag.store`, `rag.embedder`, `rag.retrieval`, `rag.profiles`, `decision`, `skillPlugins` itself, two `skillPlugins` string fields and the server's second reader of `knowledgeSeed`: Task 4M, Task 21 (`rag.profiles`), Task 33 (DEPLOYMENT, TROUBLESHOOTING), Task 34 (B25); and with the user's decision D83 (13) of 2026-10-06 (spec §17.39, amendment 32): a key written with no value (`null` — `rag.embedder:`, `prompts:`, `skillPlugins.store:`, `key: ~`, a JSON `null`) is an error everywhere, `<path> has no value` in the same `ConfigFieldError` at start, on a reload and on `PUT`; a default applies only when the key is absent (not written) — `present()` is "the key is written", `checkStartConfig` walks the whole document first (`checkNoValue`), `FieldCheck` names a `null` once, the `PUT` body is walked too, and the 30.1.0 tests that pinned a key with no value as absent are rewritten: Task 4M, Task 21 (one assertion), Task 33 (DEPLOYMENT, INTEGRATION, TROUBLESHOOTING), Task 34 (B26); and for the review finding D83 (14) of 2026-10-06 (spec §17.40, amendment 33): a reader checks a value's shape before it reads a field of it — readers run before `done()`, so a value already named still reaches them, and a `TypeError` from config input is a defect: `mcp[]` entries go through `check.list` and their closed check, `mcp[i].name` (a label, unique) is an issue of the same check (`validateMcpNames` goes), the document is a mapping (`checkDocument`; an empty file `{}` in `loadYamlConfig`), the worker file's document is checked before `parseSubAgents` reads it, the profile validator names a `fill.corpus` that is not a mapping, and a generated wrong-shape table covers every section, list item and reload-table field: Task 4M, Task 21 (the table gains `rag.profiles`), Task 23B (`checkFill`), Task 34 (B27); and for the review finding D84 of 2026-10-06 (spec §17.41, amendment 34): the record writer writes an item's canonical record **first** — listing every id the item holds or may hold (new `recordIds` + the stale set) — then its other records, then the unchanged stale deletes and settle; a failed canonical write leaves nothing written, a failed later write leaves an id already tracked; the bulk path writes the batch's canonicals as one bulk write, then the other records of the items whose canonical landed as a second: Task 11 (`storeItems`, the canonical-first tests on `InMemoryRag` and `VectorRag`, the bulk-order test), Tasks 15 and 19A (comments only). **Goal:** `docs/superpowers/goals/2026-10-04-collection-profiles.md` (user-owned; never edited). Executors read the spec section each task cites.
 
 ## Global Constraints
 
@@ -10189,6 +10189,8 @@ Spec §3.1, §3.3 (incl. **cleanup failures kept for retry** — `staleRecordIds
 
 **Duplicate item ids in one batch are rejected** (spec §3.3, §17.19). Two versions of one item in one batch (same owner-qualified item id = same canonical record id) would both read the same old canonical, and the version whose canonical lands last lists only its own records — the other version's extra records (e.g. its `note` 1) are then listed nowhere, so no `index` or `remove` ever deletes them. `storeItems` checks the batch **first**, before any `getById`, embedding or write: duplicates → nothing read or written, every item not indexed, `rejected` = one `RagError` naming each duplicate (`user:A/case-42 (2×)`). The bindings (Tasks 15, 17) run the same check, `duplicateItemsError`, over their **whole** `index` batch before their first `storeItems` call and return it as `{ ok: false, error }` — the shared-items binding writes several partitions, so a per-store check alone could leave the partitions before the offending one written.
 
+**The canonical record is written first and tracks every id** (spec §3.3, §17.41, D84). Writing the non-canonical records first and the canonical last left new notes untracked when the canonical write failed: no canonical listed them, so `remove` missed them and a later `index` took its stale set only from the old canonical. `storeItems` therefore writes, per store and per batch: (1) the canonical of every item — its `recordIds` = the new ids and `staleRecordIds` = the stale set, so it lists old `recordIds` ∪ old stale ∪ new ids — **before** any other record; (2) the other records of the items whose canonical was written; (3) the stale deletes and the settle write, unchanged (D76: a failed settle → `cleanup-failed`). A failed canonical write → no other record of the item is written, the item `write-failed`. The canonical written and a later record failed → that id is already in `recordIds`; the item `write-failed`, no delete or settle runs; the next `index` deletes the id as stale, `remove` deletes it. **Bulk path (decided here):** two bulk writes per `storeItems` call — the batch's canonicals as one `upsertManyPrecomputedRaw`, then the other records of the items whose canonical landed as a second. A failed first batch fails every item and the second is never made; a failed second batch fails each item with a record in it (each already tracked), an item with no other record stays indexed. Per item would be one bulk call per item; one batch per phase keeps the call count of the old order (two) and keeps "no per-record retry" (D76) true on both batches. The per-record path writes in the same order.
+
 **A replacement replaces the record — on every backend.** Re-indexing writes the same ids again, and the backends differ on what a write to an existing id does with the old metadata (read in the repo, 2026-10-05):
 
 | Backend | Write to an existing id | Code |
@@ -10223,7 +10225,9 @@ Correct on both kinds: a merging store overwrites the key with `undefined` (read
   // Duplicate owner-qualified item ids in the batch → one error naming them; undefined when none.
   export function duplicateItemsError(items: readonly PreparedItem[]): RagError | undefined;
   // Checks duplicateItemsError FIRST: a rejected batch reads and writes nothing (`rejected` set,
-  // every `indexed[i]` false, `records` 0).
+  // every `indexed[i]` false, `records` 0). Then (D84): every canonical first (one bulk write on
+  // the bulk path), listing new + stale ids → the other records of the items whose canonical
+  // landed (a second bulk write) → stale deletes → settle.
   export function storeItems(rag: IRag, items: readonly PreparedItem[], options?: CallOptions): Promise<{ indexed: boolean[]; records: number; failures: (string | undefined)[]; batchFailure?: string; rejected?: RagError }>;
   export function getItem(rag: IRag, canonicalId: string, filter: CallOptions | undefined, options?: CallOptions): Promise<Result<RagResult | null, RagError>>;
   export function removeItem(rag: IRag, canonicalId: string, options?: CallOptions): Promise<Result<number, RagError>>; // F3: listed AND stale ids; a failed delete keeps the canonical and returns an error
@@ -10571,6 +10575,152 @@ describe('cleanup failures are kept for retry (spec §3.3, F3)', () => {
   });
 });
 
+/**
+ * `inner` behind a per-record writer (no precomputed or bulk write, so storeItems takes the
+ * per-record path) whose `upsertRaw` fails for the ids in `failing`. `writes` logs every
+ * write attempt in order.
+ */
+function flakyWrites(inner: IRag, failing: Set<string>): { rag: IRag; writes: string[] } {
+  const w = inner.writer?.();
+  assert.ok(w);
+  const writes: string[] = [];
+  const rag: IRag = {
+    query: (e, k, o) => inner.query(e, k, o),
+    healthCheck: (o) => inner.healthCheck(o),
+    getById: (id, o) => inner.getById(id, o),
+    writer: () => ({
+      upsertRaw: async (id: string, text: string, meta: RagMetadata, o?: CallOptions) => {
+        writes.push(id);
+        if (failing.has(id)) return { ok: false as const, error: new RagError('write down') };
+        return w.upsertRaw(id, text, meta, o);
+      },
+      deleteByIdRaw: (id: string, o?: CallOptions) => w.deleteByIdRaw(id, o),
+    }),
+  };
+  return { rag, writes };
+}
+
+const MERGING_STORES: [string, () => IRag][] = [
+  ['InMemoryRag', () => new InMemoryRag()],
+  ['VectorRag', () => new VectorRag(symmetricEmbedder({ embed: async () => ({ vector: [1, 0] }) }))],
+];
+
+describe('the canonical record is written first and tracks every id (spec §3.3, D84)', () => {
+  const canonId = recordId(U_A, 'case-42', 'item', 0);
+  const notes = [0, 1, 2].map((n) => recordId(U_A, 'case-42', 'note', n));
+  const absent = async (rag: IRag, ids: readonly string[]) => {
+    for (const id of ids) {
+      const x = await rag.getById(id);
+      assert.ok(x.ok && x.value === null, `${id} absent`);
+    }
+  };
+
+  for (const [name, make] of MERGING_STORES) {
+    it(`${name}: the canonical write fails while the notes would succeed → nothing else written; remove leaves no records`, async () => {
+      const inner = make();
+      const v1 = prep([draft('item', 'v1'), draft('note', 'a')]);
+      const v2 = prep([draft('item', 'v2'), draft('note', 'a2'), draft('note', 'b2'), draft('note', 'c2')]);
+      assert.ok(v1.ok && v2.ok);
+      assert.deepEqual((await storeItems(inner, [v1.item])).indexed, [true]);
+      const failing = new Set([canonId]);
+      const { rag, writes } = flakyWrites(inner, failing);
+      const r = await storeItems(rag, [v2.item]);
+      assert.deepEqual(r.indexed, [false]);
+      assert.match(r.failures[0] ?? '', /^write-failed: write down/);
+      assert.equal(r.records, 0);
+      assert.deepEqual(writes, [canonId], 'no note is written after the canonical failed');
+      await absent(inner, [notes[1], notes[2]]);
+      const canon = await inner.getById(canonId);
+      assert.ok(canon.ok && canon.value?.text === 'v1', 'the old canonical is untouched');
+      // Under the old order (notes first) notes 1 and 2 were written and listed nowhere.
+      failing.clear();
+      const n = await removeItem(rag, canonId);
+      assert.ok(n.ok);
+      await absent(inner, [canonId, ...notes]);
+    });
+
+    it(`${name}: the canonical is written, a note fails → item failed, id tracked; a replacement with fewer notes abandons nothing`, async () => {
+      const inner = make();
+      const v1 = prep([draft('item', 'v1'), draft('note', 'a')]);
+      const v2 = prep([draft('item', 'v2'), draft('note', 'a2'), draft('note', 'b2'), draft('note', 'c2')]);
+      const v3 = prep([draft('item', 'v3'), draft('note', 'a3')]);
+      assert.ok(v1.ok && v2.ok && v3.ok);
+      assert.deepEqual((await storeItems(inner, [v1.item])).indexed, [true]);
+      const failing = new Set([notes[2]]);
+      const { rag, writes } = flakyWrites(inner, failing);
+      const r = await storeItems(rag, [v2.item]);
+      assert.deepEqual(r.indexed, [false]);
+      assert.match(r.failures[0] ?? '', /^write-failed: write down/);
+      assert.equal(writes[0], canonId, 'the canonical is written first');
+      const canon = await inner.getById(canonId);
+      assert.ok(canon.ok && canon.value);
+      assert.equal(canon.value.text, 'v2');
+      assert.deepEqual(canon.value.metadata.recordIds, notes, 'the failed note is already tracked');
+      const b2 = await inner.getById(notes[1]);
+      assert.ok(b2.ok && b2.value?.text === 'b2');
+      await absent(inner, [notes[2]]);
+
+      failing.clear();
+      const again = await storeItems(rag, [v3.item]);
+      assert.deepEqual(again.indexed, [true]);
+      await absent(inner, [notes[1], notes[2]]);
+      const settled = await inner.getById(canonId);
+      assert.ok(settled.ok && settled.value);
+      assert.deepEqual(settled.value.metadata.recordIds, [notes[0]]);
+      assert.equal(settled.value.metadata.staleRecordIds, undefined);
+      const n = await removeItem(rag, canonId);
+      assert.ok(n.ok);
+      await absent(inner, [canonId, ...notes]);
+    });
+  }
+
+  it('bulk path: the canonicals are one bulk write, then the other records; a failed second batch fails only items with a record in it', async () => {
+    const inner = new InMemoryRag();
+    const w = inner.writer();
+    const batches: string[][] = [];
+    const embedder = {
+      embedDocument: async () => ({ vector: [1, 0] }),
+      embedDocuments: async (ts: string[]) => ts.map(() => ({ vector: [1, 0] })),
+      embedQuery: async () => ({ vector: [1, 0] }),
+    };
+    const rag = {
+      query: inner.query.bind(inner),
+      healthCheck: inner.healthCheck.bind(inner),
+      getById: inner.getById.bind(inner),
+      retrievalEmbedder: embedder,
+      writer: () => ({
+        ...w,
+        upsertManyPrecomputedRaw: async (items: { id: string; text: string; metadata: RagMetadata }[], o?: CallOptions) => {
+          batches.push(items.map((i) => i.id));
+          if (batches.length === 2) return { ok: false as const, error: new RagError('bulk down') };
+          for (const i of items) await w.upsertRaw(i.id, i.text, i.metadata, o);
+          return { ok: true as const, value: undefined };
+        },
+      }),
+    } as unknown as IRag;
+    const a = prep([draft('item', 'c'), draft('note', 'x')]);
+    const b = prepareItem(
+      { itemId: 'case-43', drafts: [{ ...draft('item', 'd'), itemId: 'case-43' }] },
+      { canonicalKind: 'item', profile: 'p', maxRecordsPerItem: 5 },
+    );
+    assert.ok(a.ok && b.ok);
+    const r = await storeItems(rag, [a.item, b.item]);
+    assert.deepEqual(batches, [[a.item.canonical.id, b.item.canonical.id], [notes[0]]]);
+    assert.deepEqual(r.indexed, [false, true]);
+    assert.match(r.failures[0] ?? '', /^write-failed: bulk write failed: bulk down/);
+    const canon = await inner.getById(canonId);
+    assert.ok(canon.ok && canon.value);
+    assert.deepEqual(canon.value.metadata.recordIds, [notes[0]], 'the unwritten note is tracked');
+    // A replacement without the note (straight on the store, per-record path) leaves nothing behind.
+    const lone = prep([draft('item', 'c2')]);
+    assert.ok(lone.ok);
+    assert.deepEqual((await storeItems(inner, [lone.item])).indexed, [true]);
+    const n = await removeItem(inner, canonId);
+    assert.ok(n.ok);
+    await absent(inner, [canonId, notes[0]]);
+  });
+});
+
 /** Logs every store call (read, write, delete); a rejected batch must make none. */
 function counting(inner: InMemoryRag): { rag: IRag; calls: string[] } {
   const calls: string[] = [];
@@ -10680,11 +10830,13 @@ Expected: FAIL — module not found.
 // packages/llm-agent-libs/src/collections/record-writer.ts
 /**
  * The binding's write path (spec §3.1, §3.3, §7.6). Ids come from recordId only;
- * an item is written as: new non-canonical records → the canonical (with the
- * new `recordIds` AND, written ahead, the stale ids still to delete) → deletes
- * of those stale ids, each Result checked → the canonical settled to what is
- * still pending (F3). NOT atomic, no locks, no generations (D13): readers stay
- * safe through hydration (§4.6); a failed cleanup is kept, never reported indexed.
+ * an item is written as: the canonical FIRST (D84: the new `recordIds` AND, written
+ * ahead, the stale ids still to delete — every id the item holds or may hold) →
+ * the item's other records → deletes of the stale ids, each Result checked → the
+ * canonical settled to what is still pending (F3). No record is written that its
+ * canonical does not already list. NOT atomic, no locks, no generations (D13):
+ * readers stay safe through hydration (§4.6); a failed cleanup is kept, never
+ * reported indexed.
  */
 import {
   type CallOptions,
@@ -10986,6 +11138,8 @@ export function duplicateItemsError(items: readonly PreparedItem[]): RagError | 
  * Write prepared items into ONE store (spec §3.3 order). `indexed[i]` = every
  * record of item i written AND its stale cleanup done (F3). A batch with a
  * duplicate item id is rejected first — nothing read or written (`rejected`).
+ * Canonicals first, then the other records of the items whose canonical was
+ * written (D84) — two bulk writes on the bulk path, never retried per record (D76).
  */
 export async function storeItems(
   rag: IRag,
@@ -11036,17 +11190,26 @@ export async function storeItems(
   const all = live.flatMap((it) => [...it.others, it.canonical]);
   const { vectors, failure } = await embedAll(rag, all, options);
   const written = new Set<string>();
-  const writeErrors = new Map([
-    ...(await writeAll(rag, live.flatMap((it) => it.others), vectors, written, options)),
-    ...(await writeAll(rag, live.map((it) => it.canonical), vectors, written, options)),
-  ]);
+  // D84: every canonical FIRST — it already lists every id its item holds or may hold
+  // (new recordIds + stale), so no record below is ever written untracked. One bulk
+  // write for the batch's canonicals on the bulk path.
+  const canonicalErrors = await writeAll(rag, live.map((it) => it.canonical), vectors, written, options);
+  // Then the other records — only of the items whose canonical landed (a failed
+  // canonical leaves its item's new records unwritten: nothing to orphan). A second
+  // bulk write; a failure fails its items, each id already tracked (D76: no retry).
+  const tracked = live.filter((it) => written.has(it.canonical.id));
+  const otherErrors = await writeAll(rag, tracked.flatMap((it) => it.others), vectors, written, options);
+  const writeErrors = new Map([...canonicalErrors, ...otherErrors]);
   const indexed = await Promise.all(
     prepared.map(async (it, i) => {
       if (failures[i] !== undefined) return false;
-      const ids = [...it.others, it.canonical].map((r) => r.id);
+      // The canonical first: its error is the item's when it failed (D84).
+      const ids = [it.canonical, ...it.others].map((r) => r.id);
       const missing = ids.find((id) => !written.has(id));
       if (missing !== undefined) {
-        // The store's own error reaches the report (spec §3.3, D76).
+        // The store's own error reaches the report (spec §3.3, D76). No delete or
+        // settle: the canonical (if written) keeps the stale set and lists the
+        // unwritten id, so the next index / remove cleans up (D84).
         failures[i] = `write-failed: ${writeErrors.get(missing) ?? 'not written'}`;
         return false;
       }
@@ -11184,14 +11347,14 @@ Run:
 npx tsc -b packages/llm-agent-libs
 node --import tsx/esm --test packages/llm-agent-libs/src/collections/__tests__/record-writer.test.ts
 ```
-Expected: PASS (`tsc -b` type-checks `record-writer.ts` and `collections/index.ts`; the tsx run does not). The bulk-write tests pin D76: a failed `upsertManyPrecomputedRaw` (answered or thrown) fails every item of the batch with the bulk error and no individual write is ever called — a per-record retry would have written every record and reported both items indexed. The duplicate tests pin the order: the call log of a rejected batch is empty (no `getById` either), and two versions of one item never reach the store. (If `VectorRag` writes ids into `metadata.id` differently from `InMemoryRag`, `getById(recordId(...))` must still find the record — VectorRag replaces "the slot with the same `metadata.id`", spec §3.1.) The replacement test runs on `InMemoryRag` and `VectorRag` — the two stores that merge metadata (table above); a `tsc` error naming `UNSET_RESERVED` means `ReservedRecordKey` gained or lost a key: list it there.
+Expected: PASS (`tsc -b` type-checks `record-writer.ts` and `collections/index.ts`; the tsx run does not). The bulk-write tests pin D76: a failed `upsertManyPrecomputedRaw` (answered or thrown) fails every item of the batch with the bulk error and no individual write is ever called — a per-record retry would have written every record and reported both items indexed. The duplicate tests pin the order: the call log of a rejected batch is empty (no `getById` either), and two versions of one item never reach the store. The canonical-first tests pin D84 on `InMemoryRag` and `VectorRag` (through a per-record writer): with the canonical write failing, the write log holds only the canonical and `remove` leaves no record — under the old order (notes first) notes 1 and 2 were written and listed by no canonical; with a note failing after the canonical, the canonical already lists it and a replacement with fewer notes deletes everything it no longer has. The bulk-order test pins the two batches (canonicals, then the rest) and that a failed second batch fails only the item with a note. (If `VectorRag` writes ids into `metadata.id` differently from `InMemoryRag`, `getById(recordId(...))` must still find the record — VectorRag replaces "the slot with the same `metadata.id`", spec §3.1.) The replacement test runs on `InMemoryRag` and `VectorRag` — the two stores that merge metadata (table above); a `tsc` error naming `UNSET_RESERVED` means `ReservedRecordKey` gained or lost a key: list it there.
 
 - [ ] **Step 5: Commit**
 
 ```bash
 npx biome check --write packages/llm-agent-libs/src/collections
 git add packages/llm-agent-libs/src/collections
-git commit -m "feat(libs): record writer — owner-scoped ids, one batch pass, replacement, get, remove, duplicate check
+git commit -m "feat(libs): record writer — owner-scoped ids, one batch pass, canonical first, replacement, get, remove, duplicate check
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_012KjevEeQGZMkWMfnupJ7Yd"
@@ -12846,7 +13009,7 @@ Spec §3.3 (cleanup failures kept for retry, F3 — primary store only), §6.1 (
   export class ComposedToolsProfile implements ICollectionProfile<ToolItem> { constructor(composition: ComposedToolsProfileOptions); readonly name: 'mcp-tools'; readonly composition: ComposedToolsProfileOptions }
   // bind({ key, rag }): bound.rag = StrategyRag(target.rag, StagedRetrieval) over ONE source, 'primary'.
   // index(): duplicate item ids in the batch → { ok: false, RagError naming them }, nothing written; else
-  // non-canonical → canonical → stale deletes (Task 11); IndexReport.notes from an IIndexNoteSource indexer (S1).
+  // canonical (tracks every id, D84) → non-canonical → stale deletes (Task 11); IndexReport.notes from an IIndexNoteSource indexer (S1).
   // remove(): the canonical's listed and stale ids, then the canonical (Task 11).
   export function bindToolsProfile(profile: ICollectionProfile<ToolItem>, target: CollectionStore): IBoundCollection<ToolItem>; // idempotent per store
   export function toolsBindingOf(rag: IRag): IBoundCollection<ToolItem> | undefined;         // walks IRagDecorator.inner
@@ -13084,8 +13247,9 @@ class ToolsBinding implements IBoundCollection<ToolItem> {
     // Spec §3.3: two versions of one item in one batch → the batch is refused, nothing written.
     const duplicates = duplicateItemsError(prepared.map((p) => p.item));
     if (duplicates) return { ok: false, error: duplicates };
-    // Write order (spec §3.3): non-canonical → canonical → stale deletes, every
-    // delete's Result checked (F3). NOT atomic (D13); readers stay safe through hydration.
+    // Write order (spec §3.3, D84): canonical (listing every id) → non-canonical →
+    // stale deletes, every delete's Result checked (F3). NOT atomic (D13); readers
+    // stay safe through hydration.
     const main = await storeItems(
       this.target.rag,
       prepared.map((p) => p.item),
@@ -14087,6 +14251,7 @@ class SharedItemsBinding implements IBoundCollection<SharedItem> {
     let indexedItems = 0;
     let records = 0;
     for (const [store, list] of byStore) {
+      // Per partition: canonicals first, then the other records, then stale deletes (D84, Task 11).
       const r = await storeItems(store, list.map((l) => l.item), options);
       records += r.records;
       list.forEach((l, i) => {
@@ -16008,7 +16173,7 @@ export class CorpusCaptureRag implements IRag, IRetrievalEmbedderOwner {
       deleteByIdRaw: async (id) => ({ ok: true, value: this.rows.delete(id) }),
     };
   }
-  /** Everything written, in write order. */
+  /** Everything written, in first-write order (an item's canonical before its other records, D84); the corpus hash sorts, so the order is not part of it. */
   records(): readonly CapturedRecord[] {
     return [...this.rows.values()];
   }
@@ -24190,6 +24355,12 @@ Left to the user by this scan, then decided (next section): the **30.1.0** `vect
 | D83 (13) | *Decided by the user on 2026-10-06 (spec §17.39, amendment 32).* A key written with no value (`null` — YAML `key:` / `key: ~` / `key: null`, a list item `- `, a JSON `null` in a `PUT` body) is an error everywhere, `<path> has no value` in the same `ConfigFieldError`, at start, on a reload and on `PUT`; a default applies only to a key not written. Replaces "a section written with no value is absent" (D83, D83 (10), D83 (12)). `present()` is `value !== undefined`; `FieldCheck` names a `null` `<field> has no value`, once per field; `checkNoValue` walks the whole document first in `checkStartConfig` (start, reload, worker files — so no later reader or validator sees a `null` from a file) and the `PUT` body after the whole-config check; a worker's `llm:` / `llm.<role>:` with no value is named by `parseWorkerLlm`; libs `ConfigWatcher` passes a `null` as read. `${VAR}` unchanged (unset → `""`, never `null`). No repo YAML holds a key with no value (scanned) | Task 4M (`config-fields.ts`, `http/config-route-handler.ts`, `worker-llm.ts`, `resolve-config-sections.ts`, libs `config-watcher.ts`; tests `config-field-validation.test.ts` (one new case, five updated lines), `decision-config.test.ts`, `retrieval-config.test.ts`); Task 21 (one assertion group); Task 33 (DEPLOYMENT migration note, INTEGRATION, TROUBLESHOOTING); Task 34 (B26) |
 | D83 (14) | *Review finding of 2026-10-06 (spec §17.40, amendment 33).* A reader checks a value's shape before it reads a field of it; a `TypeError` from config input is a defect. Readers run before `done()` with every issue only recorded, so `mcp: [null]` reached `validateMcpNames`, which read `entry.name` before any entry's shape — a `TypeError` at start, on a reload and in a worker file (prefix lost). `mcp[]` goes through `checkMcpList` (`check.list`, each entry's closed check first, `name` a label, labels unique — issues, not thrown); `validateMcpNames` goes; the document is a mapping (`checkDocument`, first in `resolveSmartServerConfig` and on a worker file before `parseSubAgents` reads it, prefixed by `inWorker`); `loadYamlConfig` reads a file with no document as `{}`; `checkFill` names a `fill.corpus` that is not a mapping. Every other config reader and validator reviewed and listed. A generated wrong-shape table (every mapping, list, list item of a full document, the reload-table fields, the pipeline sections) → always a `ConfigFieldError` naming the path, never a `TypeError` | Task 4M (D83 (14)); Task 21 (the table gains `rag.profiles`); Task 23B (`checkFill`); Task 34 (B27) |
 
+## Review finding on 2026-10-06 — the canonical record is written first (spec §17.41)
+
+| # | Decision | Done in |
+|---|---|---|
+| D84 | *Review finding of 2026-10-06 (spec §17.41, amendment 34).* The record writer writes every item's canonical first — `recordIds` = the new ids, `staleRecordIds` = the stale set, so it lists old ∪ pending ∪ new — then the other records of the items whose canonical landed, then the unchanged stale deletes and settle. A failed canonical write → nothing else of the item written (`write-failed`); a failed later write → the id already tracked, the item `write-failed`, no delete or settle. Bulk path: the batch's canonicals as one bulk write, then the other records as a second; a failed first batch fails every item, a failed second batch the items with a record in it; no per-record retry on either (D76) | Task 11 (`storeItems`, the canonical-first tests on `InMemoryRag` / `VectorRag`, the bulk-order test); Tasks 15, 17, 19A (comments) |
+
 ## Self-review (done while writing)
 
 - **Spec coverage.** §3 contracts → Tasks 2–4 (S1 / S6 capabilities and the F3 reserved key `staleRecordIds` in 2–3; no intent or companion contract, D50); §3.9 decision contracts → 4A; §4 `StagedRetrieval` → 12–14 (+28 telemetry, incl. `over_budget`; F1 cap in 12 and 14); §4.9/§4.10 cuts → 6 (F1); §5 rerankers → 4B (package, `ProbabilityReranker`), 4C (`RelevanceReranker`), 18 (`SapAiCoreRelevanceDecision`), 16 (the decision variants), 24 (`createMakeRelevanceDecision` + calls → `/rerank`); §6.1 builder → 20; the probability seam rename without an alias (§3.8, §13, D30, D58) → 20A; the RAG implementations' move (§11.3, D57) → 1A; no re-exports (§11.4, D59; the pre-existing ones, S12) → 1A, 4B, 4D, 35; §6.2 YAML → 21–23 (one `decision:` section, kind table, the `makeRelevanceDecision` seam); §6.3 server filling from ready clients (D31) → 23A, a worker's fill and dispatch keep one identity (D32) → 23A, the binding read from the store on every fill, and by the reconnect to leave a bound store unwritten (D34, D46) → 19 (+20, 23A, 32), workers filled by their construction — startup, lazy rebuild, `PUT /v1/config`, hot reload (D35, D41) → 23A; filled once, no memo, no retry, a re-wire never fills (D41) → 23A; startup fill on `yamlBuilderConnect` (D38), the hot reload through the reload entry point (D39) → 23A; §3.10 fill sources (D42, D46 — `fill` only) → 19 (contract, live, consumer, dispatch, the registry's no-write), 19A (corpus loader, prebuilt), 20 (builder), 23B (YAML); §6.5 offline corpus (D43; written in full, no per-record diffing, D51) → 19A (+ `serviceRecord` in 2, 11, 12); single-flight construction (D37) → moved out (D45, spec §15), no task; only `tools` gets a fill source (§6.6) and runtime-removed tools stay (D40) → no code, spec notes; §6.4 fill-path audit → rows 1/3/10 in 19, rows 4–7 and 5a in 23A, rows 11–12 in 19A, row 9 in 33; §7.3.3 (intents and companion stores, D3 / D33) → removed by D50: no task (Task 10 withdrawn), and Tasks 2, 3, 11–13, 15, 16, 19A, 21–23A, 30, 32–35 carry no intent or companion code, test or doc; §7.3.1 provider text composers → 8 (F4); §3.3 cleanup failures → 11, 15 (F3); §7.0–§7.5 tools strategies and variants → 7–9, 15, 16; §7.6 filling → 19 (notes logged); §7.7 skills pass-through → 12 (pass-through test), 26 (F3); §7.8 migration → 33/34 docs; §7.9 consumer-built profile → 30; §8 shared items → 17; §9 observability → 28–29 (S4: telemetry only on 30.1.0 strategies); §10 fixes → 25–27; §11 placement → File Structure, Task 18 wiring; §13 compatibility/docs → 1 (golden), 33–34; §14.1 unit tests → per task; §14.2 kit → 30 (S9); §14.3 harness → 31–32 (acceptance runs = consumer check, env-gated).
@@ -24223,3 +24394,5 @@ Left to the user by this scan, then decided (next section): the **30.1.0** `vect
 - **Rework for D83 (13) (spec §17.39, amendment 32 — the user's decision of 2026-10-06: a key written with no value is an error everywhere; a default only for a key not written).** Every place the plan relied on "`null` = absent" was found by a search of the plan for `!= null`, `== null`, `present(`, `?? {}` on a config value and the phrases "no value" / "absent", and by a scan of the repo's tests and YAML: `present()` (now `!== undefined`), `checkStartConfig`'s `agent` / `subagents` tests, `startConfigInput` and libs `_extractReloadable` (`!== undefined` — the parity pin holds), `validateLlmMap`'s `present` skip (gone), the `llm` reader's and `config-validator.ts`' comments (`llm:` with no value is `llm has no value`, `llm: required` only when not written; `rag.embedder:` is named, no longer absent), `resolveMcpSection`'s "`mcp:` with no value is absent", the D83 (5)–(12) prose ("a `null` … fails its rule", "a key with no value is absent"), and five test lines of `config-field-validation.test.ts` that pinned absence (the rule table's `prompts` / `circuitBreaker`, the D83 (10) case's last line, the D83 (9) `retry` / `skills` line, the D83 (12) case's absent block, the `PUT` `null` row). New: `checkNoValue` (the whole-document walk, run first by `checkStartConfig`, so every reader and validator after `done()` — the profile validator, `checkDecision`, `parseIntegerField`, `resolveRetrieval`, `parseSkillPluginsConfig`, `parseSubAgents`, the pipeline parsers — is reviewed and unchanged: it never sees a file's `null`), `FieldCheck` naming a `null` once (the walk and the reader share the issue), the `PUT` body walked after the whole-config check (a `null` section is not missing — 400, not 409), `parseWorkerLlm`'s two `null` cases. 30.1.0 tests rewritten: `decision-config.test.ts` (`model:` / `baseUrl:` were absent — D83 (7) had already made them fail without updating the test; fixed here) and `retrieval-config.test.ts` (`strategy: null`, the worker's `rag.retrieval:`). One new case in `config-field-validation.test.ts` (start: `rag.embedder:` / `prompts:` / `skillPlugins.store:` → the error, absent → the default; `~` / `null`; a field, map entry, list item and `pipeline.config` key; a worker file; `${VAR}`; reload; `PUT`), one assertion group in Task 21. Task 33: DEPLOYMENT migration note, INTEGRATION, TROUBLESHOOTING. Task 34: B26. Choices left for the user's review (spec D83 (13) (5)): a list item with no value is included; the walk covers a plugin factory's section; the message has no `, got null`. **Cumulative compile:** `checkNoValue` has two readers (`checkStartConfig`, `config-route-handler.ts`); `present` keeps its signature (every caller compiles unchanged); `worker-llm.ts` imports `ConfigFieldError` from `config-fields.ts`, which imports nothing of it; no package export added; Task 21's gate is unchanged (its reader already takes the `FieldCheck`).
 
 - **Rework for D83 (14) (spec §17.40, amendment 33 — review finding of 2026-10-06: `mcp: [null]` was a `TypeError` in `validateMcpNames`, before `done()`; fixed as a class).** The sweep read every config reader and validator the plan has or keeps (server-libs `config.ts`, `config-fields.ts`, `resolve-config-sections.ts`, `config-validator.ts`, `skill-plugins-config.ts`, `stepper-config.ts`, `pipeline-settings.ts`, `pipelines/controller-subagents.ts`, `worker-llm.ts`, `yaml-loader.ts`, `decision-config.ts`, `http/config-route-handler.ts`, `smart-server.ts`' seed, Task 21's profiles reader and validator, Task 23B's `checkFill` / `resolveFill`; libs `ConfigWatcher`) for a property read on a config value before its shape is checked. Sites fixed: `resolveMcpSection`'s list form (`checkMcpList` / `checkMcpEntry(check, field, value)`, the name rule in the check, `validateMcpNames` deleted); the document root (`checkDocument` in `resolveSmartServerConfig`, whose parameter is renamed `input`); a worker file's root (`parseSubAgents`, `inWorker` — D83 (5)'s prefixing made one helper); `loadYamlConfig` (no document → `{}`); `checkFill`'s `fill.corpus`; the stepper's failed sections read through `?.` (stated, as 30.1.0 already does). Everything else is listed as reviewed in Task 4M's D83 (14). Task 4M's Step 1 gains the D83 (14) case (the generated table — `shapePaths` over full documents, `RELOAD_FIELD_PATHS` and `CONTROLLER_BUDGET_RULES` from the rule tables — and the `mcp: [~]` case at start, reload and worker file); `resolve-mcp-name.test.ts`' refusals go through `done` with the new messages; Step 4 gains four gates (`validateMcpNames` gone, `MCP_NAME_PATTERN` / `checkDocument(` sites, one worker prefix); the commit message names D83 (14). Task 21 adds `profiles: { tools: { variant: 'baseline' } }` to the table's documents; Task 23B's `checkFill` and its test; Task 34's B27 row. Compile: `checkMcpList`, `checkDocument`, `RELOAD_FIELD_PATHS`, `MCP_NAME_PATTERN` are new in `config-fields.ts`; `resolve-config-sections.ts` drops its `checkMcpEntry` and `SmartServerMcpConfig` imports for `checkMcpList`; `config.ts` imports `checkDocument`.
+
+- **Rework for D84 (spec §17.41, amendment 34 — review finding of 2026-10-06: notes written before a failed canonical were listed nowhere).** Only the order changes; no new mechanism. Task 11's `storeItems` writes the canonicals first (the write-ahead canonical it already built: new `recordIds` + the stale set), then the other records of the items whose canonical was written; the stale deletes, the settle and D76's reports are unchanged, and the failed-item check reads the canonical's error first. Bulk order chosen: one bulk write for the batch's canonicals, a second for the other records — two calls, as before, and no per-record retry on either. Tasks 15 and 17 call `storeItems` unchanged (their order comments updated); Task 19A's capture store sees the canonical first, and its corpus hash sorts the records, so the corpus is unchanged (with an empty capture store no stale set exists and no settle write is made — the canonical written first is the final one). Cumulative compile: `storeItems`' signature and every type are unchanged; the new test helpers use only Task 11's imports (`IRag`, `RagMetadata`, `CallOptions`, `RagError`, `InMemoryRag`, `VectorRag`, `symmetricEmbedder`) and Task 11's own `MERGING_STORES` duplicates the replacement test's store list on purpose (that `describe` keeps its local list).
