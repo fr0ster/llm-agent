@@ -83,7 +83,7 @@ describe('lazy<T>', () => {
   // Failure & retry
   // -------------------------------------------------------------------------
 
-  it('throws LazyInitError when factory fails and no fallback', async () => {
+  it('throws LazyInitError when the factory fails', async () => {
     const proxy = lazy<IGreeter>(
       () => {
         throw new Error('boom');
@@ -143,48 +143,45 @@ describe('lazy<T>', () => {
   });
 
   // -------------------------------------------------------------------------
-  // Fallback
+  // No fallback (U6): an init failure reaches the call with its cause
   // -------------------------------------------------------------------------
 
-  it('delegates to fallback when factory fails', async () => {
-    const fallback = makeGreeter('Fallback');
+  it('an init failure rejects the call with the factory error as its cause (no fallback)', async () => {
     const proxy = lazy<IGreeter>(
       () => {
         throw new Error('unavailable');
       },
-      { fallback, retryIntervalMs: 10 },
+      { retryIntervalMs: 10 },
     );
 
-    const result = await proxy.greet('User');
-    assert.equal(result, 'Fallback, User!');
+    await assert.rejects(
+      () => proxy.greet('User'),
+      (err: unknown) => {
+        assert.ok(err instanceof LazyInitError);
+        assert.equal((err.cause as Error).message, 'unavailable');
+        assert.match(err.message, /greet/);
+        assert.match(err.message, /unavailable/);
+        return true;
+      },
+    );
   });
 
-  it('switches from fallback to real instance once factory succeeds', async () => {
-    let available = false;
-    const fallback = makeGreeter('Fallback');
+  it('a later call after the retry interval reaches the real instance', async () => {
+    let attempt = 0;
     const proxy = lazy<IGreeter>(
       () => {
-        if (!available) throw new Error('not yet');
+        attempt++;
+        if (attempt === 1) throw new Error('not yet');
         return makeGreeter('Real');
       },
-      { fallback, retryIntervalMs: 10 },
+      { retryIntervalMs: 10 },
     );
 
-    // First call — factory fails, fallback used
-    const r1 = await proxy.greet('A');
-    assert.equal(r1, 'Fallback, A!');
-
-    // Make factory succeed
-    available = true;
+    await assert.rejects(() => proxy.greet('A'), LazyInitError);
     await delay(15);
-
-    // Next call — factory succeeds, real instance used
-    const r2 = await proxy.greet('B');
-    assert.equal(r2, 'Real, B!');
-
-    // Subsequent calls use cached real instance
-    const r3 = await proxy.greet('C');
-    assert.equal(r3, 'Real, C!');
+    assert.equal(await proxy.greet('B'), 'Real, B!');
+    assert.equal(await proxy.greet('C'), 'Real, C!');
+    assert.equal(attempt, 2);
   });
 
   // -------------------------------------------------------------------------
@@ -197,21 +194,33 @@ describe('lazy<T>', () => {
     assert.equal(result, 'Sync, Test!');
   });
 
-  it('retry suppression returns fallback instead of throwing', async () => {
-    const fallback = makeGreeter('Safe');
-    const proxy = lazy<IGreeter>(
-      () => {
-        throw new Error('down');
+  it('a call inside the retry window rejects with the factory error as its cause (no fallback)', async () => {
+    const factory = mock.fn(() => {
+      throw new Error('down');
+    });
+    const proxy = lazy<IGreeter>(factory, { retryIntervalMs: 1000 });
+
+    // First call — the real failure.
+    await assert.rejects(
+      () => proxy.greet('A'),
+      (err: unknown) => {
+        assert.ok(err instanceof LazyInitError);
+        assert.equal((err.cause as Error).message, 'down');
+        return true;
       },
-      { fallback, retryIntervalMs: 1000 },
     );
 
-    // First call — real failure, delegates to fallback
-    const r1 = await proxy.greet('A');
-    assert.equal(r1, 'Safe, A!');
-
-    // Second call — retry suppressed, still delegates to fallback
-    const r2 = await proxy.greet('B');
-    assert.equal(r2, 'Safe, B!');
+    // Second call — inside the retry window: the factory's error, not the
+    // gate's own "retry suppressed", is the cause.
+    await assert.rejects(
+      () => proxy.greet('B'),
+      (err: unknown) => {
+        assert.ok(err instanceof LazyInitError);
+        assert.equal((err.cause as Error).message, 'down');
+        assert.match(err.message, /greet/);
+        return true;
+      },
+    );
+    assert.equal(factory.mock.callCount(), 1);
   });
 });
