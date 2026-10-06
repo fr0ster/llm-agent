@@ -157,7 +157,7 @@ export class ConfigWatcher extends EventEmitter {
     const ragStore = ((yaml.rag as Record<string, unknown> | undefined)
       ?.store ?? {}) as Record<string, unknown>;
     const inMemory = ragStore.type === 'in-memory';
-    // Values as read — never coerced (spec D83): `Number('oops')` is NaN, and a
+    // Values as read — never coerced (spec D83): 'oops' coerced is NaN, and a
     // NaN iteration limit never stops the loop. The reader of the event validates.
     const config: HotReloadableInput = {};
     for (const key of AGENT_KEYS) {

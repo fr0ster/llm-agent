@@ -153,3 +153,24 @@ describe('cli composition root', () => {
     );
   });
 });
+
+describe('cli start config (spec D83 (5))', () => {
+  it('an invalid config field fails the start: exit code 1, the field named on stderr', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'cli-cfg-'));
+    try {
+      const file = path.join(dir, 'smart-server.yaml');
+      writeFileSync(
+        file,
+        'llm:\n  provider: ollama\n  model: m\nagent:\n  maxIterations: oops\n',
+      );
+      const r = runCli(['--config', file, '--log-stdout']);
+      assert.equal(r.status, 1);
+      assert.match(
+        r.stderr,
+        /^Error: invalid config — agent\.maxIterations must be a finite number, got "oops"$/m,
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

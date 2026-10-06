@@ -475,28 +475,28 @@ test('serveCollections empty array → explicit serve-none (kept, not serve-all)
 test('dimension non-numeric throws', () => {
   assert.throws(
     () => parseSkillPluginsConfig(withSource({ dimension: 'big' })),
-    /dimension must be a positive integer/i,
+    /skillPlugins\.dimension must be (>= 1|an integer|a finite number)/,
   );
 });
 
 test('dimension zero throws', () => {
   assert.throws(
     () => parseSkillPluginsConfig(withSource({ dimension: 0 })),
-    /dimension must be a positive integer/i,
+    /skillPlugins\.dimension must be (>= 1|an integer|a finite number)/,
   );
 });
 
 test('dimension fractional throws', () => {
   assert.throws(
     () => parseSkillPluginsConfig(withSource({ dimension: 768.5 })),
-    /dimension must be a positive integer/i,
+    /skillPlugins\.dimension must be (>= 1|an integer|a finite number)/,
   );
 });
 
 test('dimension negative throws', () => {
   assert.throws(
     () => parseSkillPluginsConfig(withSource({ dimension: -1 })),
-    /dimension must be a positive integer/i,
+    /skillPlugins\.dimension must be (>= 1|an integer|a finite number)/,
   );
 });
 

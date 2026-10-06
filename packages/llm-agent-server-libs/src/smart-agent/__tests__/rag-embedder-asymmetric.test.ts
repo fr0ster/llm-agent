@@ -60,7 +60,7 @@ describe('rag.embedder.asymmetric', () => {
           model: 'm',
           asymmetric: 'yes',
         }),
-      /asymmetric: must be true or false/,
+      /rag\.embedder\.asymmetric must be true or false, got "yes"/,
     );
   });
 

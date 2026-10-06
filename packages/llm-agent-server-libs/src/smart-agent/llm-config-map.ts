@@ -22,15 +22,6 @@ function isFlatLlmConfig(input: SmartServerLlmConfig | LlmConfigMap): boolean {
 }
 
 /**
- * A numeric LLM knob (`temperature`, `classifierTemperature`) as configured, or
- * `undefined` when unset — never a default. Unset knobs are not sent, so the
- * model applies its own; a forced value breaks models that accept only theirs.
- */
-export function optionalNumber(value: unknown): number | undefined {
-  return value === undefined || value === null ? undefined : Number(value);
-}
-
-/**
  * Normalize the optional top-level `llm:` block.
  * - undefined → undefined (pipeline-only configs stay valid)
  * - flat shape (has `provider` | `credentialRef` | `model` | `url`) → { main: flat } (backward compat)

@@ -64,7 +64,9 @@ describe('config validation — fail loud, human-readable', () => {
   it('flat schema requires explicit provider', () => {
     assert.throws(
       () => resolveSmartServerConfig({}, base({ model: 'm' }), {}),
-      /provider.*required|one of: openai, anthropic, deepseek, sap-ai-sdk, ollama/i,
+      // Spec D83 (12): without a provider the block is read as a map of roles,
+      // and its `model` role is not a mapping.
+      /llm\.model must be a mapping, got "m"/,
     );
   });
 
@@ -129,7 +131,7 @@ describe('config validation — fail loud, human-readable', () => {
           { llm: { provider: 'ollama', model: 'm' }, mcp: { type: 'grpc' } },
           {},
         ),
-      /mcp\.type.*invalid/i,
+      /mcp\.type must be one of http, stdio, none, got "grpc"/,
     );
   });
 
@@ -420,7 +422,7 @@ describe('validateResolvedConfig — llm map shape', () => {
         {},
         {
           llm: { provider: 'deepseek', model: 'm' },
-          mode: 'agent',
+          mode: 'smart',
         },
         {},
       ),
@@ -436,7 +438,7 @@ describe('validateResolvedConfig — llm map shape', () => {
             main: { provider: 'deepseek', model: 'm' },
             planner: { provider: 'openai', model: 'gpt' },
           },
-          mode: 'agent',
+          mode: 'smart',
         },
         {},
       ),
@@ -452,7 +454,7 @@ describe('validateResolvedConfig — llm map shape', () => {
             llm: {
               planner: { provider: 'openai', model: 'gpt' },
             },
-            mode: 'agent',
+            mode: 'smart',
           },
           {},
         ),
@@ -470,7 +472,7 @@ describe('validateResolvedConfig — llm map shape', () => {
               main: { provider: 'deepseek', model: 'm' },
               planner: { model: 'gpt' },
             },
-            mode: 'agent',
+            mode: 'smart',
           },
           {},
         ),

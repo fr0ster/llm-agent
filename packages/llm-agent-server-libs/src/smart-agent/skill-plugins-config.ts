@@ -12,6 +12,7 @@
  */
 
 import { resolveSkillSourceStrategy } from '@mcp-abap-adt/llm-agent-libs';
+import { FieldCheck, present, START_NUMBER_RULES } from './config-fields.js';
 
 /** Normalized store selection. A persistent (`qdrant`) store carries its URL, and
  *  names its account with `credentialRef` — a name the composition root resolves. */
@@ -122,19 +123,6 @@ function fail(msg: string): never {
  */
 const SQL_IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)?$/;
 
-/**
- * Parse a numeric knob as a positive INTEGER (finite, integer, `> 0`). A bad
- * value fails loud naming the knob (NOT a silent NaN/default). The key being
- * ABSENT is the caller's concern (defaults applied before this is called).
- */
-function posInt(raw: unknown, name: string): number {
-  const n = Number(raw);
-  if (!Number.isInteger(n) || n <= 0) {
-    fail(`${name} must be a positive integer (got ${JSON.stringify(raw)})`);
-  }
-  return n;
-}
-
 function parseStore(raw: unknown): SkillPluginsStoreConfig {
   if (raw === undefined) return { type: 'in-memory' };
   if (!isObject(raw)) fail('store must be an object');
@@ -159,11 +147,19 @@ function parseStore(raw: unknown): SkillPluginsStoreConfig {
         'store.credentialRef must be a non-empty string naming a credential',
       );
     }
+    // Spec D83 (12): a present collection of the wrong shape is an error, not
+    // "no collection" (30.1.0 dropped it).
+    if (
+      raw.collection !== undefined &&
+      (typeof raw.collection !== 'string' || raw.collection.trim() === '')
+    ) {
+      fail('store.collection must be a non-empty string when set');
+    }
     return {
       type: 'qdrant',
       url: raw.url,
-      ...(typeof raw.collection === 'string'
-        ? { collection: raw.collection }
+      ...(raw.collection !== undefined
+        ? { collection: raw.collection as string }
         : {}),
       ...(typeof raw.credentialRef === 'string'
         ? { credentialRef: raw.credentialRef }
@@ -296,7 +292,10 @@ function parseSource(raw: unknown): SkillPluginsSource {
  * `skillPlugins.embedder.asymmetric` — SAP AI Core only; `${VAR}` substitution
  * leaves a string, so 'true'/'false' count too. Said and not supported fails.
  */
-function parseSkillEmbedderAsymmetric(raw: Record<string, unknown>): {
+function parseSkillEmbedderAsymmetric(
+  raw: Readonly<Record<string, unknown>>,
+  provider: string,
+): {
   asymmetric?: true;
 } {
   const v = raw.asymmetric;
@@ -304,7 +303,6 @@ function parseSkillEmbedderAsymmetric(raw: Record<string, unknown>): {
   if (v !== true && v !== 'true') {
     throw new Error('skillPlugins.embedder.asymmetric: must be true or false');
   }
-  const provider = String(raw.provider);
   if (provider !== 'sap-ai-core' && provider !== 'sap-aicore') {
     throw new Error(
       `skillPlugins.embedder.asymmetric: supported for provider sap-ai-core only, not "${provider}"`,
@@ -329,15 +327,6 @@ export function parseSkillPluginsConfig(raw: unknown): SkillPluginsConfig {
   const catalog = parseCatalog(raw.catalog);
   const persistentStore = store.type === 'qdrant';
 
-  // A persistent store mandates embeddingSpaceId.
-  const embeddingSpaceId =
-    typeof raw.embeddingSpaceId === 'string' ? raw.embeddingSpaceId : undefined;
-  if (persistentStore && !embeddingSpaceId) {
-    fail(
-      'embeddingSpaceId is required for a persistent store (it is published in the catalog so a recall-only instance can verify it)',
-    );
-  }
-
   // A persistent store mandates a persistent (postgres) catalog.
   if (persistentStore && catalog.type !== 'postgres') {
     fail(
@@ -345,60 +334,121 @@ export function parseSkillPluginsConfig(raw: unknown): SkillPluginsConfig {
     );
   }
 
-  // Numeric knobs + defaults. A present-but-invalid value fails loud naming the
-  // knob (NEVER a silent NaN/default); an ABSENT key keeps today's default.
-  const k = raw.k !== undefined ? posInt(raw.k, 'k') : 4;
-  let threshold = 0.3;
-  if (raw.threshold !== undefined) {
-    const t = Number(raw.threshold);
-    if (!Number.isFinite(t) || t < 0 || t > 1) {
-      fail(
-        `threshold must be a finite number in [0, 1] (got ${JSON.stringify(raw.threshold)})`,
-      );
-    }
-    threshold = t;
-  }
-  const maxInjectChars =
-    raw.maxInjectChars !== undefined
-      ? posInt(raw.maxInjectChars, 'maxInjectChars')
-      : 4000;
-  const catalogCasMaxAttempts =
-    raw.catalogCasMaxAttempts !== undefined
-      ? posInt(raw.catalogCasMaxAttempts, 'catalogCasMaxAttempts')
-      : 3;
-  const retiredGraceMs =
-    raw.retiredGraceMs !== undefined
-      ? posInt(raw.retiredGraceMs, 'retiredGraceMs')
-      : 30000;
-  const orphanGraceMs =
-    raw.orphanGraceMs !== undefined
-      ? posInt(raw.orphanGraceMs, 'orphanGraceMs')
-      : 3600000;
-  const chunkRaw = isObject(raw.chunk) ? raw.chunk : undefined;
-  const chunk = {
-    maxChars:
-      chunkRaw && chunkRaw.maxChars !== undefined
-        ? posInt(chunkRaw.maxChars, 'chunk.maxChars')
-        : 1500,
-  };
+  // Spec D83 (7): every checked field first, then done — the only way they
+  // leave the check. Nothing below checks a field: the cross-field rules and
+  // the return read `v` (valid values only).
+  const check = new FieldCheck();
+  const R = START_NUMBER_RULES;
+  // Spec D83 (12): a present section is checked before a field of it is read —
+  // a scalar or a list is an error, never "absent" (the default embedder,
+  // maxChars 1500); a key with no value is `<path> has no value` (D83 (13)).
+  const chunkRaw = present(raw.chunk)
+    ? check.section('skillPlugins.chunk', raw.chunk)
+    : undefined;
+  const embedderRaw = present(raw.embedder)
+    ? check.section('skillPlugins.embedder', raw.embedder)
+    : undefined;
+  const v = check.done({
+    k: check.numberOr('skillPlugins.k', R.count, raw.k, 4),
+    threshold: check.numberOr(
+      'skillPlugins.threshold',
+      R.unitInterval,
+      raw.threshold,
+      0.3,
+    ),
+    maxInjectChars: check.numberOr(
+      'skillPlugins.maxInjectChars',
+      R.count,
+      raw.maxInjectChars,
+      4000,
+    ),
+    catalogCasMaxAttempts: check.numberOr(
+      'skillPlugins.catalogCasMaxAttempts',
+      R.count,
+      raw.catalogCasMaxAttempts,
+      3,
+    ),
+    // The rule is the old `< 1000` fail (spec §10.5.9 *Start-only fields*).
+    retiredGraceMs: check.numberOr(
+      'skillPlugins.retiredGraceMs',
+      R.retiredGraceMs,
+      raw.retiredGraceMs,
+      30000,
+    ),
+    orphanGraceMs: check.numberOr(
+      'skillPlugins.orphanGraceMs',
+      R.count,
+      raw.orphanGraceMs,
+      3600000,
+    ),
+    chunkMaxChars: check.numberOr(
+      'skillPlugins.chunk.maxChars',
+      R.count,
+      chunkRaw?.maxChars,
+      1500,
+    ),
+    recallTimeoutMs:
+      raw.recallTimeoutMs !== undefined
+        ? check.number(
+            'skillPlugins.recallTimeoutMs',
+            R.count,
+            raw.recallTimeoutMs,
+          )
+        : undefined,
+    dimension:
+      raw.dimension !== undefined
+        ? check.number('skillPlugins.dimension', R.count, raw.dimension)
+        : undefined,
+    loadOnStartupReq:
+      raw.loadOnStartup !== undefined
+        ? check.flag('skillPlugins.loadOnStartup', raw.loadOnStartup)
+        : undefined,
+    strict: check.flagOr('skillPlugins.strict', raw.strict, true),
+    // D83 (12): a number is an error, not "no embeddingSpaceId".
+    embeddingSpaceId:
+      raw.embeddingSpaceId !== undefined
+        ? check.text('skillPlugins.embeddingSpaceId', raw.embeddingSpaceId)
+        : undefined,
+    embedder: embedderRaw
+      ? {
+          provider:
+            check.text(
+              'skillPlugins.embedder.provider',
+              embedderRaw.provider,
+            ) ?? '',
+          ...(embedderRaw.model !== undefined
+            ? {
+                model:
+                  check.text(
+                    'skillPlugins.embedder.model',
+                    embedderRaw.model,
+                  ) ?? '',
+              }
+            : {}),
+        }
+      : undefined,
+  });
 
-  if (retiredGraceMs < 1000) {
-    fail('retiredGraceMs must be >= 1000 (too small to bound recall)');
+  // A persistent store mandates embeddingSpaceId.
+  if (persistentStore && !v.embeddingSpaceId) {
+    fail(
+      'embeddingSpaceId is required for a persistent store (it is published in the catalog so a recall-only instance can verify it)',
+    );
   }
 
   // recallTimeoutMs: explicit must be a positive integer < retiredGraceMs;
   // default = floor(grace*0.8) for a persistent store (always strictly <
   // grace), unused for in-memory.
   let recallTimeoutMs: number | undefined;
-  if (raw.recallTimeoutMs !== undefined) {
-    recallTimeoutMs = posInt(raw.recallTimeoutMs, 'recallTimeoutMs');
-    if (recallTimeoutMs >= retiredGraceMs) {
+  if (v.recallTimeoutMs !== undefined) {
+    if (v.recallTimeoutMs >= v.retiredGraceMs) {
       fail(
-        `recallTimeoutMs (${recallTimeoutMs}) must be < retiredGraceMs (${retiredGraceMs})`,
+        `recallTimeoutMs (${v.recallTimeoutMs}) must be < retiredGraceMs (${v.retiredGraceMs})`,
       );
     }
+    recallTimeoutMs = v.recallTimeoutMs;
   } else if (persistentStore) {
-    recallTimeoutMs = Math.floor(retiredGraceMs * 0.8);
+    recallTimeoutMs = Math.floor(v.retiredGraceMs * 0.8);
   }
 
   // loadOnStartup + sources/store mutual constraints.
@@ -414,8 +464,7 @@ export function parseSkillPluginsConfig(raw: unknown): SkillPluginsConfig {
     );
   }
   const hasSources = Array.isArray(rawSources) && rawSources.length > 0;
-  const loadOnStartupReq =
-    raw.loadOnStartup !== undefined ? Boolean(raw.loadOnStartup) : undefined;
+  const loadOnStartupReq = v.loadOnStartupReq;
 
   // Resolve loadOnStartup with the no-source safety rule. The contract
   // (`sources` absent → recall-only) means the default true must NEVER turn a
@@ -462,15 +511,13 @@ export function parseSkillPluginsConfig(raw: unknown): SkillPluginsConfig {
     }
   }
 
-  const embedder = isObject(raw.embedder)
-    ? {
-        provider: String(raw.embedder.provider),
-        ...(raw.embedder.model !== undefined
-          ? { model: String(raw.embedder.model) }
-          : {}),
-        ...parseSkillEmbedderAsymmetric(raw.embedder),
-      }
-    : undefined;
+  const embedder =
+    v.embedder && embedderRaw
+      ? {
+          ...v.embedder,
+          ...parseSkillEmbedderAsymmetric(embedderRaw, v.embedder.provider),
+        }
+      : undefined;
 
   // serveCollections: ABSENT → serve all served groups (downstream default).
   // But a PRESENT key with the wrong shape must FAIL LOUD, not silently fall
@@ -517,20 +564,18 @@ export function parseSkillPluginsConfig(raw: unknown): SkillPluginsConfig {
   return {
     mode: 'implicit',
     store,
-    ...(embeddingSpaceId ? { embeddingSpaceId } : {}),
+    ...(v.embeddingSpaceId ? { embeddingSpaceId: v.embeddingSpaceId } : {}),
     ...(embedder ? { embedder } : {}),
-    ...(raw.dimension !== undefined
-      ? { dimension: posInt(raw.dimension, 'dimension') }
-      : {}),
+    ...(v.dimension !== undefined ? { dimension: v.dimension } : {}),
     catalog,
-    k,
-    threshold,
-    maxInjectChars,
-    chunk,
-    strict: raw.strict !== undefined ? Boolean(raw.strict) : true,
-    catalogCasMaxAttempts,
-    retiredGraceMs,
-    orphanGraceMs,
+    k: v.k,
+    threshold: v.threshold,
+    maxInjectChars: v.maxInjectChars,
+    chunk: { maxChars: v.chunkMaxChars },
+    strict: v.strict,
+    catalogCasMaxAttempts: v.catalogCasMaxAttempts,
+    retiredGraceMs: v.retiredGraceMs,
+    orphanGraceMs: v.orphanGraceMs,
     ...(recallTimeoutMs !== undefined ? { recallTimeoutMs } : {}),
     ...(controllerSkillGroup !== undefined ? { controllerSkillGroup } : {}),
     ...(serveCollections ? { serveCollections } : {}),

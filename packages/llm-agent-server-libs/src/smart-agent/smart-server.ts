@@ -539,10 +539,10 @@ import {
   resolveLlmConfigStrict,
   resolveToolSelectionStrategy,
 } from './config.js';
+import { checkKnowledgeSeed, FieldCheck, present } from './config-fields.js';
 import { ConfigTransactionQueue } from './config-transaction-queue.js';
 import type { SmartServerDecisionConfig } from './decision-config.js';
 import { makeKnowledgeBackend } from './knowledge/make-knowledge-backend.js';
-import { optionalNumber } from './llm-config-map.js';
 import {
   buildSessionMcpClients,
   serverOwnsMcpConnection,
@@ -999,6 +999,11 @@ export class SmartServer {
    * knowledge after a delete and rehydrate it on a same-id re-entry.
    */
   private _stepperKnowledgeBackend?: KnowledgeBackend;
+  /** `pipeline.config.knowledgeSeed`, read once at start with the stepper's rule (spec D83 (12)). */
+  private _knowledgeSeed: ReadonlyArray<{
+    content: string;
+    artifactType: string;
+  }> = [];
   /**
    * Session meta-store for /v1/sessions endpoints (Task 17).
    * Defaults to InMemorySessionMetaStore; a durable store can be injected via
@@ -1180,7 +1185,8 @@ export class SmartServer {
     // An unset temperature stays unset all the way to the provider, which then
     // sends none and the model applies its own default — a forced value breaks
     // models that accept only theirs (gpt-5, o-series, claude-opus-4-7+).
-    const mainTemp = optionalNumber(topMain?.temperature);
+    // The resolved config holds validated numbers (spec D83 (7)).
+    const mainTemp = topMain?.temperature;
     const mainLlm = topMain
       ? await this._deps.makeLlm({ ...topMain, temperature: mainTemp })
       : (() => {
@@ -1188,7 +1194,7 @@ export class SmartServer {
         })();
 
     const classifierEntry = resolveLlmConfigStrict(llmMap, 'classifier');
-    const classifierTemp = optionalNumber(topMain?.classifierTemperature);
+    const classifierTemp = topMain?.classifierTemperature;
     const classifierLlm = classifierEntry
       ? await this._deps.makeLlm(classifierEntry)
       : topMain
@@ -1203,7 +1209,7 @@ export class SmartServer {
     const helperLlm = helperCfg
       ? await this._deps.makeLlm({
           ...helperCfg,
-          temperature: optionalNumber(helperCfg.temperature),
+          temperature: helperCfg.temperature,
         })
       : undefined;
     // `circuitBreaker:` → the shared breakers (§14.2): created once, before any
@@ -1335,6 +1341,20 @@ export class SmartServer {
           minScore: toolSelectionCfg.minScore,
         })
       : undefined;
+
+    // Spec D83 (12): pipeline.config.knowledgeSeed with the stepper's rule — a
+    // present wrong shape fails the start, never "no seed".
+    const seedCheck = new FieldCheck();
+    const rawSeed = this.cfg.pipeline?.config?.knowledgeSeed;
+    this._knowledgeSeed = seedCheck.done(
+      present(rawSeed)
+        ? checkKnowledgeSeed(
+            seedCheck,
+            'pipeline.config.knowledgeSeed',
+            rawSeed,
+          )
+        : [],
+    );
 
     // ---- Pipeline-plugin registry: factories (§4.6.7) -------------------
     // Built-ins are server code — parse, validate, construct with typed settings.
@@ -2404,8 +2424,8 @@ export class SmartServer {
    * unconditionally in `start()`; a fresh in-memory backend is a defensive
    * fallback). HOST-level seeding happens HERE so the stepper plugin stays
    * agnostic (it just calls `ctx.knowledgeRagFor`): a BRAND-NEW session is
-   * seeded from `pipeline.config.knowledgeSeed` (read defensively — absent for
-   * non-stepper pipelines, where an empty seed is a harmless no-op). Idempotent
+   * seeded from `pipeline.config.knowledgeSeed` (read once at start, D83 (12) —
+   * absent for non-stepper pipelines, where an empty seed is a harmless no-op). Idempotent
    * on resume via `seedSessionKnowledge`.
    */
   private async knowledgeRagFor(
@@ -2414,18 +2434,11 @@ export class SmartServer {
     const backend =
       this._stepperKnowledgeBackend ?? new InMemoryKnowledgeBackend();
     const kr = new KnowledgeRag(backend, sessionId);
-    const rawSeed = (this.cfg.pipeline?.config as { knowledgeSeed?: unknown })
-      ?.knowledgeSeed;
-    const seeds = Array.isArray(rawSeed)
-      ? (rawSeed as Array<{ content?: unknown; artifactType?: unknown }>)
-          .filter((e) => e && typeof e.content === 'string')
-          .map((e) => ({
-            content: e.content as string,
-            artifactType:
-              typeof e.artifactType === 'string' ? e.artifactType : 'guidance',
-          }))
-      : [];
-    await seedSessionKnowledge(kr, seeds, new Date().toISOString());
+    await seedSessionKnowledge(
+      kr,
+      this._knowledgeSeed,
+      new Date().toISOString(),
+    );
     return kr;
   }
 

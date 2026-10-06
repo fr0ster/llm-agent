@@ -291,6 +291,11 @@ export class ConfigFieldError extends Error {
     super(`invalid config — ${issues.join('; ')}`);
     this.name = 'ConfigFieldError';
   }
+
+  /** The message alone — `invalid config — …`, as the CLI and a log print it. */
+  override toString(): string {
+    return this.message;
+  }
 }
 
 /** A value as the error shows it: a number as written (NaN, Infinity), the rest as JSON. */

@@ -1,3 +1,4 @@
+import { present } from './config-fields.js';
 import { parseIntegerField } from './decision-config.js';
 import {
   type LlmConfigMap,
@@ -64,41 +65,37 @@ function checkNoSecret(
 }
 
 function checkDecision(yaml: YamlConfig, issues: string[]): void {
-  const d = get(yaml, 'decision') as Record<string, unknown> | undefined;
-  if (d !== undefined && d !== null) {
-    checkNoSecret('decision', d, issues);
-    checkCredentialRef('decision', d.credentialRef, issues);
-    if (d.provider !== 'typesafe') {
-      issues.push(
-        `decision.provider: must be 'typesafe' (got ${JSON.stringify(d.provider)})`,
-      );
-    }
-    for (const key of ['model', 'baseUrl'] as const) {
-      const v = d[key];
-      if (
-        v !== undefined &&
-        v !== null &&
-        (typeof v !== 'string' || !v.trim())
-      ) {
-        issues.push(`decision.${key}: must be a non-empty string`);
-      }
-    }
-    const timeoutMs = parseIntegerField(d.timeoutMs);
-    if (
-      timeoutMs === 'invalid' ||
-      (timeoutMs !== undefined && timeoutMs <= 0)
-    ) {
-      issues.push(
-        'decision.timeoutMs: must be a positive integer (milliseconds)',
-      );
-    }
-    const maxRetries = parseIntegerField(d.maxRetries);
-    if (
-      maxRetries === 'invalid' ||
-      (maxRetries !== undefined && maxRetries < 0)
-    ) {
-      issues.push('decision.maxRetries: must be a non-negative integer');
-    }
+  // The reader named a section of another shape (spec D83 (12)) and a key with
+  // no value (D83 (13)) before this runs: `done()` threw first.
+  const raw = get(yaml, 'decision');
+  if (
+    !present(raw) ||
+    raw === null ||
+    typeof raw !== 'object' ||
+    Array.isArray(raw)
+  )
+    return;
+  const d = raw as Record<string, unknown>;
+  checkNoSecret('decision', d, issues);
+  checkCredentialRef('decision', d.credentialRef, issues);
+  if (d.provider !== 'typesafe') {
+    issues.push(
+      `decision.provider: must be 'typesafe' (got ${JSON.stringify(d.provider)})`,
+    );
+  }
+  // `decision.model` / `decision.baseUrl`: the reader's rule (spec D83 (7)).
+  const timeoutMs = parseIntegerField(d.timeoutMs);
+  if (timeoutMs === 'invalid' || (timeoutMs !== undefined && timeoutMs <= 0)) {
+    issues.push(
+      'decision.timeoutMs: must be a positive integer (milliseconds)',
+    );
+  }
+  const maxRetries = parseIntegerField(d.maxRetries);
+  if (
+    maxRetries === 'invalid' ||
+    (maxRetries !== undefined && maxRetries < 0)
+  ) {
+    issues.push('decision.maxRetries: must be a non-negative integer');
   }
 }
 
@@ -146,18 +143,14 @@ function checkRetrieval(
   issues: string[],
 ): void {
   const raw = rag.retrieval;
-  if (raw === undefined || raw === null) return;
-  if (typeof raw !== 'object' || Array.isArray(raw)) {
-    issues.push('rag.retrieval: must be a mapping of store key → strategy');
-    return;
-  }
+  // The reader named another shape (spec D83 (12)); a key with no value never
+  // reaches here (D83 (13)).
+  if (!present(raw) || typeof raw !== 'object' || Array.isArray(raw)) return;
   const llmKeys = retrievalLlmKeys(get(yaml, 'llm'));
   for (const [key, entry] of Object.entries(raw as Record<string, unknown>)) {
     const label = `rag.retrieval.${key}`;
-    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
-      issues.push(`${label}: must be a mapping`);
-      continue;
-    }
+    // The reader named another shape (spec D83 (12)).
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue;
     const e = entry as Record<string, unknown>;
     const strategy = e.strategy ?? 'embedding';
     if (
@@ -307,17 +300,16 @@ function checkRag(
     }
   }
   const store = rag.store;
-  if (
-    store === undefined ||
-    store === null ||
-    typeof store !== 'object' ||
-    Array.isArray(store)
-  ) {
+  if (!present(store)) {
     issues.push(
       'rag.store: required (a mapping with type: in-memory | qdrant | hana-vector | pg-vector)',
     );
     return;
   }
+  // The reader named another shape (spec D83 (12)); a key with no value never
+  // reaches here (D83 (13)).
+  if (store === null || typeof store !== 'object' || Array.isArray(store))
+    return;
   const s = store as Record<string, unknown>;
   const ragType = s.type as string | undefined;
   if (!ragType) {
@@ -357,16 +349,18 @@ function checkRag(
   checkCredentialRef('rag.store', s.credentialRef, issues);
 
   const rawEmbedder = rag.embedder;
+  // The reader named another shape (spec D83 (12)); `rag.embedder` with no
+  // value is `rag.embedder has no value`, named before this runs (D83 (13)).
   if (
-    rawEmbedder !== undefined &&
+    present(rawEmbedder) &&
     (rawEmbedder === null ||
       typeof rawEmbedder !== 'object' ||
       Array.isArray(rawEmbedder))
-  ) {
-    issues.push('rag.embedder: must be a mapping (provider, model, …)');
+  )
     return;
-  }
-  const e = rawEmbedder as Record<string, unknown> | undefined;
+  const e = present(rawEmbedder)
+    ? (rawEmbedder as Record<string, unknown>)
+    : undefined;
   const provider = e?.provider as string | undefined;
   const factory = e?.factory;
   if (provider !== undefined && factory !== undefined) {
@@ -407,16 +401,10 @@ function checkRag(
   if (e && factory === undefined)
     checkCredentialRef('rag.embedder', e.credentialRef, issues);
   if (e?.asymmetric !== undefined) {
-    // `${VAR}` substitution leaves a string, so 'true'/'false' count too.
-    const asymmetric =
-      e.asymmetric === true || e.asymmetric === 'true'
-        ? true
-        : e.asymmetric === false || e.asymmetric === 'false'
-          ? false
-          : undefined;
-    if (asymmetric === undefined) {
-      issues.push('rag.embedder.asymmetric: must be true or false');
-    } else if (
+    // The value is a checked flag here (the reader's rule, spec D83 (7));
+    // `${VAR}` substitution leaves a string, so 'true' counts too.
+    const asymmetric = e.asymmetric === true || e.asymmetric === 'true';
+    if (
       asymmetric &&
       factory === undefined &&
       provider !== 'sap-ai-core' &&
@@ -586,36 +574,46 @@ export function validateResolvedConfig(
   const issues: string[] = [];
   const skip = opts.skipProviderRuntimeChecks === true;
 
-  const rawLlm = get(yaml, 'llm') as Record<string, unknown> | undefined;
-  if (rawLlm === undefined) {
+  const rawLlm = get(yaml, 'llm');
+  // `llm:` with no value is `llm has no value`, named before this runs (spec
+  // D83 (13)); another shape was named by the reader (D83 (12)).
+  if (!present(rawLlm)) {
     // A DAG worker file names keys of the MAIN file's llm: map (§4.6.7) and is
     // resolved with its own llm: stripped, so it has no section to require.
     if (opts.requireLlmSection !== false) {
       issues.push('llm: required (top-level llm.main or a flat llm block)');
     }
-  } else {
+  } else if (
+    rawLlm !== null &&
+    typeof rawLlm === 'object' &&
+    !Array.isArray(rawLlm)
+  ) {
+    const llm = rawLlm as Record<string, unknown>;
     // Checked before the shape is decided: a flat block that lost its provider
     // is read as a map below, and would otherwise report `llm.apiKey.provider`.
-    if (rawLlm.apiKey !== undefined) {
+    if (llm.apiKey !== undefined) {
       checkLlmRole(
         'llm',
-        { apiKey: rawLlm.apiKey, provider: 'openai' },
+        { apiKey: llm.apiKey, provider: 'openai' },
         false,
         issues,
         true,
       );
     }
-    if (typeof rawLlm.provider === 'string') {
-      validateLlmEntry('llm', rawLlm, true, issues, skip);
+    if (typeof llm.provider === 'string') {
+      validateLlmEntry('llm', llm, true, issues, skip);
     } else {
-      const map = rawLlm as Record<string, Record<string, unknown> | undefined>;
-      if (!map.main) {
+      const map = llm as Record<string, Record<string, unknown> | undefined>;
+      // `main` not written → required; a role with no value never reaches here
+      // (spec D83 (13)).
+      if (!present(map.main)) {
         issues.push("llm.main: required when 'llm' is a named map");
       } else {
         validateLlmEntry('llm.main', map.main, true, issues, skip);
       }
       for (const [name, entry] of Object.entries(map)) {
         if (name === 'main' || name === 'apiKey') continue;
+        if (entry === undefined) continue;
         validateLlmEntry(`llm.${name}`, entry, true, issues, skip);
       }
     }
@@ -644,12 +642,9 @@ export function validateResolvedConfig(
       : [rawMcpVal as Record<string, unknown>];
     mcpEntries.forEach((entry, i) => {
       const label = Array.isArray(rawMcpVal) ? `mcp[${i}]` : 'mcp';
+      // The type name is the reader's rule (spec D83 (9)); the url / command
+      // requirements stay here.
       const mcpType = entry?.type as string | undefined;
-      if (mcpType && !['http', 'stdio', 'none'].includes(mcpType)) {
-        issues.push(
-          `${label}.type: "${mcpType}" is invalid (one of: http, stdio, none)`,
-        );
-      }
       if (mcpType === 'http' && !entry?.url) {
         issues.push(`${label}.url: required when ${label}.type is http`);
       }
@@ -660,15 +655,16 @@ export function validateResolvedConfig(
   }
 
   const rawRag = get(yaml, 'rag');
-  if (rawRag !== undefined && rawRag !== null) {
-    if (typeof rawRag !== 'object' || Array.isArray(rawRag)) {
-      issues.push(
-        'rag: must be a mapping with store: and, optionally, embedder:',
-      );
-    } else {
-      checkRag(rawRag as Record<string, unknown>, issues, skip);
-      checkRetrieval(yaml, rawRag as Record<string, unknown>, issues);
-    }
+  // Another shape was named by the reader (spec D83 (12)); `rag:` with no
+  // value never reaches here (D83 (13)).
+  if (
+    present(rawRag) &&
+    rawRag !== null &&
+    typeof rawRag === 'object' &&
+    !Array.isArray(rawRag)
+  ) {
+    checkRag(rawRag as Record<string, unknown>, issues, skip);
+    checkRetrieval(yaml, rawRag as Record<string, unknown>, issues);
   }
   // NOTE: the legacy `pipeline.rag.{name}` multistore was removed with the
   // `pipeline: {name,config}` migration; the top-level `rag:` block is the sole

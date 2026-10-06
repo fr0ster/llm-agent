@@ -7,6 +7,7 @@
  */
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
+import { FieldCheck } from '../config-fields.js';
 import { resolveMcpSection } from '../resolve-config-sections.js';
 
 describe('resolveMcpSection — mcp[].name validation', () => {
@@ -14,7 +15,11 @@ describe('resolveMcpSection — mcp[].name validation', () => {
     const yaml = {
       mcp: [{ type: 'http', url: 'http://a/mcp', name: 'a b' }],
     };
-    assert.throws(() => resolveMcpSection(yaml, {}), /name/i);
+    const check = new FieldCheck();
+    assert.throws(
+      () => check.done(resolveMcpSection(yaml, {}, check)),
+      /mcp\[0\]\.name must be a label of letters, digits, _ and -, got "a b"/,
+    );
   });
 
   it('rejects duplicate names among servers', () => {
@@ -24,7 +29,11 @@ describe('resolveMcpSection — mcp[].name validation', () => {
         { type: 'http', url: 'http://b/mcp', name: 'x' },
       ],
     };
-    assert.throws(() => resolveMcpSection(yaml, {}), /duplicate/i);
+    const check = new FieldCheck();
+    assert.throws(
+      () => check.done(resolveMcpSection(yaml, {}, check)),
+      /mcp\[1\]\.name must be unique among the mcp entries, got "x"/,
+    );
   });
 
   it('threads a valid mcp[].name onto the connection config unchanged', () => {
@@ -34,7 +43,9 @@ describe('resolveMcpSection — mcp[].name validation', () => {
         { type: 'http', url: 'http://b/mcp', name: 'secondary' },
       ],
     };
-    const result = resolveMcpSection(yaml, {}) as Array<{ name?: string }>;
+    const result = resolveMcpSection(yaml, {}, new FieldCheck()) as Array<{
+      name?: string;
+    }>;
     assert.equal(result[0].name, 'primary');
     assert.equal(result[1].name, 'secondary');
   });
@@ -43,7 +54,9 @@ describe('resolveMcpSection — mcp[].name validation', () => {
     const yaml = {
       mcp: [{ type: 'http', url: 'http://a/mcp', name: 'Primary-1_ok' }],
     };
-    const result = resolveMcpSection(yaml, {}) as Array<{ name?: string }>;
+    const result = resolveMcpSection(yaml, {}, new FieldCheck()) as Array<{
+      name?: string;
+    }>;
     assert.equal(result[0].name, 'Primary-1_ok');
   });
 
@@ -54,7 +67,9 @@ describe('resolveMcpSection — mcp[].name validation', () => {
         { type: 'http', url: 'http://b/mcp' },
       ],
     };
-    const result = resolveMcpSection(yaml, {}) as Array<{ name?: string }>;
+    const result = resolveMcpSection(yaml, {}, new FieldCheck()) as Array<{
+      name?: string;
+    }>;
     assert.equal(result[0].name, undefined);
     assert.equal(result[1].name, undefined);
   });

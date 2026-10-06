@@ -4,6 +4,16 @@
 
 import path from 'node:path';
 import {
+  ConfigFieldError,
+  checkDocument,
+  checkSkills,
+  checkStartConfig,
+  FieldCheck,
+  present,
+  SERVER_MODES,
+  START_NUMBER_RULES,
+} from './config-fields.js';
+import {
   assertNoLegacyPipelineConfig,
   assertNoLegacyRagShape,
   validateResolvedConfig,
@@ -21,7 +31,6 @@ import {
 import { parseSkillPluginsConfig } from './skill-plugins-config.js';
 import type {
   SmartServerConfig,
-  SmartServerMode,
   SmartServerSubAgentConfig,
   SmartServerWorkerConfig,
 } from './smart-server.js';
@@ -49,7 +58,6 @@ export {
 export type { LlmConfigMap, NormalizedLlmMap } from './llm-config-map.js';
 export {
   normalizeLlmConfig,
-  optionalNumber,
   resolveLlmConfig,
   resolveLlmConfigStrict,
   resolveReviewerLlmName,
@@ -86,6 +94,20 @@ export interface ResolveConfigArgs {
   mode?: string | boolean;
 }
 
+/** `fn` for worker `name`'s file: a field error names the worker and its file (spec D83 (5), (14)). */
+function inWorker<T>(name: string, file: string, fn: () => T): T {
+  try {
+    return fn();
+  } catch (err) {
+    if (err instanceof ConfigFieldError) {
+      throw new ConfigFieldError(
+        err.issues.map((i) => `subagent '${name}' (${file}): ${i}`),
+      );
+    }
+    throw err;
+  }
+}
+
 /** Resolve a DAG worker file (§4.6.7): its `llm` is read as keys of the main
  *  file's map, and the rest resolves like a main file minus the llm: section. */
 function resolveWorkerConfig(
@@ -103,15 +125,13 @@ function resolveWorkerConfig(
   }
   const { llm: rawLlm, ...withoutLlm } = subYaml;
   const llm = parseWorkerLlm(name, rawLlm);
-  const { llm: _none, ...rest } = resolveSmartServerConfig(
-    args,
-    withoutLlm,
-    env,
-    {
+  const resolved = inWorker(name, subConfigPath, () =>
+    resolveSmartServerConfig(args, withoutLlm, env, {
       configPath: subConfigPath,
       requireLlmSection: false,
-    },
+    }),
   );
+  const { llm: _none, ...rest } = resolved;
   return { ...rest, llm };
 }
 
@@ -166,7 +186,12 @@ function parseSubAgents(
       ? cfgRel
       : path.resolve(baseDir, cfgRel);
 
-    const subYaml = loadYamlConfig(subConfigPath, env);
+    // Spec D83 (14): the worker's document is a mapping before anything of it
+    // is read (30.1.0: an empty file was a TypeError, a string or a list was
+    // read as a worker with no fields).
+    const subYaml = inWorker(name, subConfigPath, () =>
+      checkDocument(loadYamlConfig(subConfigPath, env)),
+    );
     if ((subYaml as { subagents?: unknown }).subagents !== undefined) {
       throw new Error(
         `subagent '${name}' must not define its own 'subagents:' (nested orchestration is not supported)`,
@@ -234,36 +259,94 @@ export interface ResolveSmartServerConfigOptions {
 
 export function resolveSmartServerConfig(
   args: ResolveConfigArgs = {},
-  yaml: YamlConfig = {},
+  input: YamlConfig = {},
   env: NodeJS.ProcessEnv = process.env,
   options: ResolveSmartServerConfigOptions = {},
 ): Omit<SmartServerConfig, 'log'> {
+  // Spec D83 (14): the document is a mapping before anything of it is read.
+  const yaml = checkDocument(input);
   // Clean-break migration guard FIRST — before any pipeline-shape parsing — so a
   // legacy `coordinator:`/`pipeline:` config gets the actionable migration error
   // rather than the generic "pipeline requires a name" diagnostic.
   assertNoLegacyPipelineConfig(yaml);
   assertNoLegacyRagShape(yaml);
 
-  const resolved: Omit<SmartServerConfig, 'log'> = {
-    port: Number(
-      (args.port as string) ?? get(yaml, 'port') ?? env.PORT ?? 4004,
+  // Every config field the start reads, one check (spec §10.5.9, D83 (5), (7)):
+  // the reload table's fields first, then each section reader's own — the
+  // reload's and PUT's validator, grammar and error; an invalid value fails the
+  // start, never coerced. The CLI's catch writes it to stderr and exits 1, as for
+  // any unusable start config.
+  const check = new FieldCheck();
+  const fields = checkStartConfig(check, yaml, args);
+  const R = START_NUMBER_RULES;
+  // Every key read from this file, each checked inside the literal — so every
+  // field is checked before `done` (spec D83 (7)).
+  const own = {
+    port: check.numberOr(
+      args.port !== undefined
+        ? 'args.port'
+        : get(yaml, 'port') !== undefined
+          ? 'port'
+          : 'env.PORT',
+      R.port,
+      args.port ?? get(yaml, 'port') ?? env.PORT,
+      4004,
     ),
-    host: (args.host as string) ?? get(yaml, 'host') ?? '0.0.0.0',
-    llm: resolveLlmSection(yaml),
-    rag: resolveRagSection(yaml, args as Record<string, unknown>),
-    mcp: resolveMcpSection(yaml, args as Record<string, unknown>),
-    agent: resolveAgentSection(yaml, args as Record<string, unknown>),
-    prompts: resolvePromptsSection(yaml),
-    mode: (get(yaml, 'mode') as SmartServerMode) ?? undefined,
-    logDir: (args['log-dir'] as string) ?? get(yaml, 'logDir') ?? null,
+    // Spec D83 (9): the cast-read top-level fields, the source used named so.
+    host:
+      (args.host ?? get(yaml, 'host')) !== undefined
+        ? (check.text(
+            args.host !== undefined ? 'args.host' : 'host',
+            args.host ?? get(yaml, 'host'),
+          ) ?? '')
+        : '0.0.0.0',
+    llm: resolveLlmSection(yaml, check),
+    rag: resolveRagSection(
+      yaml,
+      args as Record<string, unknown>,
+      fields,
+      check,
+    ),
+    mcp: resolveMcpSection(yaml, args as Record<string, unknown>, check),
+    agent: resolveAgentSection(yaml, fields, check),
+    prompts: resolvePromptsSection(fields),
+    mode:
+      get(yaml, 'mode') !== undefined
+        ? check.oneOf('mode', SERVER_MODES, get(yaml, 'mode'))
+        : undefined,
+    // The override is already applied (checkStartConfig, D83 (5)). Absent: the
+    // 30.1.0 value, `null` (its old expression was typed `string` by a cast;
+    // `SmartServerConfig.logDir` is unchanged here).
+    logDir: fields.logDir ?? (null as unknown as string | undefined),
     pluginDir:
-      (args['plugin-dir'] as string) ?? get(yaml, 'pluginDir') ?? undefined,
+      (args['plugin-dir'] ?? get(yaml, 'pluginDir')) !== undefined
+        ? check.text(
+            args['plugin-dir'] !== undefined ? 'args.plugin-dir' : 'pluginDir',
+            args['plugin-dir'] ?? get(yaml, 'pluginDir'),
+          )
+        : undefined,
     plugins: (() => {
       const raw = get(yaml, 'plugins');
-      if (!Array.isArray(raw)) return undefined;
-      const specs = raw.filter((s): s is string => typeof s === 'string');
-      return specs.length > 0 ? specs : undefined;
+      if (!present(raw)) return undefined;
+      const specs = check.list('plugins', raw, (f, v) => check.text(f, v));
+      return specs && specs.length > 0 ? specs : undefined; // an empty list stays "no plugins", as in 30.1.0
     })(),
+    ...(present(yaml.skills)
+      ? { skills: checkSkills(check, yaml.skills) }
+      : {}),
+    ...resolvePipelineSelection(yaml, check),
+    ...(() => {
+      const decision = resolveDecisionSection(yaml, check);
+      return decision ? { decision } : {};
+    })(),
+  };
+  // Every invalid field of this file in one ConfigFieldError — the only way
+  // `own` leaves the check; nothing after this line checks a field of this file.
+  const valid = check.done(own);
+  // A worker file and `skillPlugins` are parsed only after this file's own
+  // fields passed.
+  const resolved: Omit<SmartServerConfig, 'log'> = {
+    ...valid,
     ...(() => {
       const subAgentConfigs = parseSubAgents(
         yaml,
@@ -273,28 +356,11 @@ export function resolveSmartServerConfig(
       );
       return subAgentConfigs ? { subAgentConfigs } : {};
     })(),
-    ...resolvePipelineSelection(yaml),
-    ...(yaml.skills
-      ? {
-          skills: {
-            type: (get(yaml, 'skills', 'type') ?? 'claude') as
-              | 'claude'
-              | 'codex'
-              | 'filesystem',
-            dirs: get(yaml, 'skills', 'dirs') as string[] | undefined,
-            projectRoot: get(yaml, 'skills', 'projectRoot') as
-              | string
-              | undefined,
-          },
-        }
-      : {}),
-    ...(yaml.skillPlugins
+    // Spec D83 (12): a present skillPlugins reaches its parser, which refuses
+    // a wrong shape (30.1.0: `false` → no skill plugins).
+    ...(present(yaml.skillPlugins)
       ? { skillPlugins: parseSkillPluginsConfig(yaml.skillPlugins) }
       : {}),
-    ...(() => {
-      const decision = resolveDecisionSection(yaml);
-      return decision ? { decision } : {};
-    })(),
   };
   validateResolvedConfig(resolved, yaml, env, {
     skipProviderRuntimeChecks: options.skipProviderRuntimeChecks,

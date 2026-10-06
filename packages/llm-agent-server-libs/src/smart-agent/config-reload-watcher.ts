@@ -119,11 +119,14 @@ export class ConfigReloadWatcher implements IConfigReloadWatcher {
    * not ready until a whole config applies. `document` is the whole resolved
    * file the watcher read (D83 (10)).
    */
-  private _onReload(document: YamlConfig): Promise<void> {
+  private async _onReload(document: YamlConfig): Promise<void> {
     // A reload re-reads the whole file: always a whole config (D82 (8)).
-    return this.deps.transactions.run('reload', 'full', () =>
+    await this.deps.transactions.run('reload', 'full', () =>
       this._applyReload(document),
     );
+    // Logged once the queue has settled the transaction — the server is ready
+    // (its not-applied state cleared) when `config_reload_applied` is seen.
+    this.deps.log({ event: 'config_reload_applied' });
   }
 
   /**
@@ -149,7 +152,8 @@ export class ConfigReloadWatcher implements IConfigReloadWatcher {
    * pipeline's section parser (D83 (11)) — a document the server could not
    * start from fails the transaction before anything applies. Resolves when the
    * reload is applied: the agent update, the worker drain, the session
-   * invalidation and the RAG weights. Rejects when anything fails — nothing is
+   * invalidation and the RAG weights (`_onReload` logs `config_reload_applied`
+   * once the queue settled it). Rejects when anything fails — nothing is
    * restored and the weights are not applied; the queue marks the server not
    * ready.
    */
@@ -283,6 +287,5 @@ export class ConfigReloadWatcher implements IConfigReloadWatcher {
         });
       }
     }
-    this.deps.log({ event: 'config_reload_applied' });
   }
 }
