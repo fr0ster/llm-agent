@@ -32,6 +32,7 @@ PACKAGES=(
   hana-vector-rag
   pg-vector-rag
   typesafe-decision
+  sap-aicore-decision
   llm-agent-libs
   llm-agent-server-libs
   llm-agent-server

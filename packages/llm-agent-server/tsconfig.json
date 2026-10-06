@@ -27,6 +27,7 @@
     { "path": "../pg-vector-rag" },
     { "path": "../ollama-llm" },
     { "path": "../sap-aicore-auth" },
-    { "path": "../typesafe-decision" }
+    { "path": "../typesafe-decision" },
+    { "path": "../sap-aicore-decision" }
   ]
 }
