@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
+import type { ILogger } from '@mcp-abap-adt/interfaces-utils';
 import type {
   CallOptions,
   IEmbedder,
   IEmbedResult,
   ILlm,
-  ITextLogger,
   LlmStreamChunk,
   LlmTool,
   LogEvent,
@@ -44,7 +44,7 @@ function stubEmbedder(): IEmbedder {
 }
 
 function recordingTextLogger(): {
-  logger: ITextLogger;
+  logger: ILogger;
   calls: Array<{ level: string; message: string; meta?: unknown }>;
 } {
   const calls: Array<{ level: string; message: string; meta?: unknown }> = [];

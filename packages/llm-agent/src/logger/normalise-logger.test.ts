@@ -1,12 +1,12 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
+import type { ILogger } from '@mcp-abap-adt/interfaces-utils';
 import { isTextLogger, normaliseLogger } from './normalise-logger.js';
-import type { ITextLogger } from './text-logger.js';
 import type { LogEvent } from './types.js';
 
 type Call = { level: string; message: string; meta?: unknown };
 
-function recordingTextLogger(): { logger: ITextLogger; calls: Call[] } {
+function recordingTextLogger(): { logger: ILogger; calls: Call[] } {
   const calls: Call[] = [];
   const push = (level: string) => (message: string, meta?: unknown) => {
     calls.push({ level, message, meta });

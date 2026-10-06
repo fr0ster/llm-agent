@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
+import type { ILogger } from '@mcp-abap-adt/interfaces-utils';
 import type { IEmbedResult } from '../interfaces/rag.js';
-import type { ITextLogger } from '../logger/text-logger.js';
 import type { LogEvent } from '../logger/types.js';
 import { composeResilientEmbedder } from './embedder-resilience.js';
 
@@ -16,7 +16,7 @@ class BatchProvider {
 }
 
 function recordingTextLogger(): {
-  logger: ITextLogger;
+  logger: ILogger;
   calls: Array<{ level: string; message: string; meta?: unknown }>;
 } {
   const calls: Array<{ level: string; message: string; meta?: unknown }> = [];
@@ -35,7 +35,7 @@ function recordingTextLogger(): {
 }
 
 describe('composeResilientEmbedder with a text logger', () => {
-  it('reports the maxBatchSize conflict through an ITextLogger', () => {
+  it('reports the maxBatchSize conflict through a text logger', () => {
     const { logger, calls } = recordingTextLogger();
 
     // First composition fixes the cap at the provider's own 250.

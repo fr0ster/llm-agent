@@ -375,7 +375,7 @@ export class SmartAgentBuilder {
   /**
    * Set a logger for internal pipeline events.
    *
-   * Takes either shape: the event `ILogger`, or an ordinary `ITextLogger`
+   * Takes either shape: the event `ILogger`, or an ordinary text logger (`ILogger` of `@mcp-abap-adt/interfaces-utils`)
    * (`info`/`warn`/`error`/`debug`). A text logger is normalised here, at the
    * boundary, so everything downstream — `PipelineDeps.logger`, the agent, the
    * connection strategy — keeps receiving the event logger it already expects,

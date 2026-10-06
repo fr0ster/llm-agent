@@ -86,7 +86,7 @@ export type McpClientFactory = (
 export interface ConnectionStrategyOptions {
   skipRevectorize?: boolean;
   /**
-   * Either logger shape. An `ITextLogger` is normalised at the boundary, so
+   * Either logger shape. A text logger (`ILogger` of `@mcp-abap-adt/interfaces-utils`) is normalised at the boundary, so
    * everything downstream keeps receiving the event `ILogger`.
    */
   logger?: AnyLogger;

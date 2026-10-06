@@ -18,6 +18,7 @@
   "include": [
     "packages/llm-agent/src/interfaces/__tests__/collection-profile.typecheck.ts",
     "packages/llm-agent/src/interfaces/__tests__/decision-model.typecheck.ts",
+    "packages/llm-agent/src/logger/__tests__/text-logger-removed.typecheck.ts",
     "packages/llm-agent/src/logger/normalise-logger.test.ts",
     "packages/llm-agent/src/resilience/embedder-resilience-text-logger.test.ts",
     "packages/llm-agent-libs/src/__tests__/text-logger-di.test.ts",

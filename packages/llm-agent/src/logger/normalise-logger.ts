@@ -1,8 +1,8 @@
-import type { ITextLogger } from './text-logger.js';
+import type { ILogger as InterfacesUtilsLogger } from '@mcp-abap-adt/interfaces-utils';
 import type { ILogger, LogEvent } from './types.js';
 
-/** Either logger a consumer may hand to an input seam. */
-export type AnyLogger = ILogger | ITextLogger;
+/** Either logger a consumer may hand to an input seam: llm-agent's event `ILogger` or the text `ILogger` of `@mcp-abap-adt/interfaces-utils`. */
+export type AnyLogger = ILogger | InterfacesUtilsLogger;
 
 /**
  * An event logger has a callable `log`; a text logger does not.
@@ -16,7 +16,9 @@ export type AnyLogger = ILogger | ITextLogger;
  * A consumer who wants the text path for a hybrid object passes only its text
  * methods, or wraps it.
  */
-export function isTextLogger(logger: AnyLogger): logger is ITextLogger {
+export function isTextLogger(
+  logger: AnyLogger,
+): logger is InterfacesUtilsLogger {
   return typeof (logger as ILogger).log !== 'function';
 }
 
@@ -32,7 +34,7 @@ const DEBUG_EVENTS = new Set<LogEvent['type']>([
 /**
  * Normalise whatever a consumer passed into the event logger the internals
  * already speak. An `ILogger` is returned unchanged — the existing path does
- * not move — and an `ITextLogger` is wrapped.
+ * not move — and a text logger (`ILogger` of `@mcp-abap-adt/interfaces-utils`) is wrapped.
  *
  * The event's `type` is the message (a `warning` carries its own), and the
  * whole event travels as `meta`: a structured event fits inside `meta`, while

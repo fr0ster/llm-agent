@@ -2811,7 +2811,7 @@ Both logger shapes are accepted at the seams listed below, which is where they a
 If you already have an ordinary text logger, pass it:
 
 ```ts
-import type { ITextLogger } from '@mcp-abap-adt/llm-agent';
+import type { ILogger } from '@mcp-abap-adt/interfaces-utils'; // the ordinary text logger
 
 const handle = await new SmartAgentBuilder(cfg)
   .withMainLlm(llm)
