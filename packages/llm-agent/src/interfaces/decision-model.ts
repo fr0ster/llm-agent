@@ -92,7 +92,7 @@ export class DecisionError extends SmartAgentError {
 
 /**
  * A model that answers typed questions about a state with probabilities, not text
- * (spec §3.9; 30.1.0's `IProbabilityDecision`, renamed — same members, same rules; the old
+ * (spec §3.9; the 30.1.0 decision interface, renamed — same members, same rules; the old
  * name is removed, D58).
  *
  * - Returns `Result`; never throws for provider failures.
