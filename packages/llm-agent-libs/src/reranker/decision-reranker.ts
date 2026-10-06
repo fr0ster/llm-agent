@@ -2,7 +2,7 @@ import {
   type CallOptions,
   type DecisionAnswer,
   type DecisionEntry,
-  type IDecisionModel,
+  type IProbabilityDecision,
   type NoulQuestion,
   RagError,
   type RagResult,
@@ -62,7 +62,7 @@ export class DecisionReranker implements IReranker {
 
   /** @throws Error when `maxBatchTokens` or `concurrency` is not a positive integer. */
   constructor(
-    private readonly model: IDecisionModel,
+    private readonly model: IProbabilityDecision,
     private readonly options: DecisionRerankerOptions = {},
   ) {
     this.maxBatchTokens = options.maxBatchTokens ?? DEFAULT_MAX_BATCH_TOKENS;

@@ -6,7 +6,7 @@ import type {
   DecisionQuestion,
   DecisionRequest,
   DecisionResult,
-  IDecisionModel,
+  IProbabilityDecision,
   Result,
 } from '@mcp-abap-adt/llm-agent';
 import {
@@ -53,13 +53,13 @@ function toSdkQuestions(
 }
 
 /**
- * `IDecisionModel` over TypeSafe AI's Jev. A fresh `TypeSafeClient` per call:
+ * `IProbabilityDecision` over TypeSafe AI's Jev. A fresh `TypeSafeClient` per call:
  * the SDK freezes the key at construction and appends its own Authorization
  * header after per-call headers, so a per-call client is the only way to honour
  * a rotating credential. Every option is explicit, so `TYPESAFE_*` environment
  * variables are never consulted.
  */
-export class TypeSafeDecisionModel implements IDecisionModel {
+export class TypeSafeDecisionModel implements IProbabilityDecision {
   readonly model: string;
   private readonly cfg: TypeSafeDecisionConfig;
 

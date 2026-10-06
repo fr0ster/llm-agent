@@ -3,7 +3,7 @@ import { describe, it } from 'node:test';
 import {
   DecisionError,
   type DecisionRequest,
-  type IDecisionModel,
+  type IProbabilityDecision,
   type RagResult,
 } from '@mcp-abap-adt/llm-agent';
 import {
@@ -20,7 +20,7 @@ const results: RagResult[] = [
 
 function fakeModel(probs: number[]) {
   const seen: DecisionRequest[] = [];
-  const model: IDecisionModel = {
+  const model: IProbabilityDecision = {
     decide: async (req) => {
       seen.push(req);
       const answers: Record<string, { type: 'noul'; probability: number }> = {};
@@ -116,7 +116,7 @@ describe('DecisionReranker', () => {
   });
 
   it('a model error → RERANK_ERROR carrying the decision code', async () => {
-    const model: IDecisionModel = {
+    const model: IProbabilityDecision = {
       decide: async () => ({
         ok: false,
         error: new DecisionError('stale key', 'DECISION_AUTH'),
@@ -137,7 +137,7 @@ describe('DecisionReranker', () => {
 
   it('passes call options through', async () => {
     let got: unknown;
-    const model: IDecisionModel = {
+    const model: IProbabilityDecision = {
       decide: async (_req, opts) => {
         got = opts;
         return {

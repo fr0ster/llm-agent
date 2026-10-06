@@ -7,10 +7,10 @@ import { describe, it } from 'node:test';
 import type {
   CallOptions,
   DecisionRequest,
-  IDecisionModel,
   IEmbedder,
   ILlm,
   IMcpClient,
+  IProbabilityDecision,
   IRag,
   IRagRegistry,
   IReranker,
@@ -110,7 +110,7 @@ function labelledStores(toolHits: RagResult[] = TOOL_HITS) {
 
 function recordingModel(score?: (passage: unknown) => number) {
   const seen: Array<{ req: DecisionRequest; options?: CallOptions }> = [];
-  const model: IDecisionModel = {
+  const model: IProbabilityDecision = {
     decide: async (req, options) => {
       seen.push({ req, options });
       const answers: Record<string, { type: 'noul'; probability: number }> = {};

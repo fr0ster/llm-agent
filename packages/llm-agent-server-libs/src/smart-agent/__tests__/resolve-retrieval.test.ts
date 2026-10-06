@@ -2,8 +2,8 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
   type DecisionRequest,
-  type IDecisionModel,
   type ILlm,
+  type IProbabilityDecision,
   type IRag,
   type RagResult,
   TextOnlyEmbedding,
@@ -35,7 +35,7 @@ function storeRecording() {
 
 function decisionModel() {
   const seen: DecisionRequest[] = [];
-  const model: IDecisionModel = {
+  const model: IProbabilityDecision = {
     decide: async (req) => {
       seen.push(req);
       const answers: Record<string, { type: 'noul'; probability: number }> = {};

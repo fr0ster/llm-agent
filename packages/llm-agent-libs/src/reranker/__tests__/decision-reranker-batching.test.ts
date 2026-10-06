@@ -3,7 +3,7 @@ import { describe, it } from 'node:test';
 import {
   DecisionError,
   type DecisionRequest,
-  type IDecisionModel,
+  type IProbabilityDecision,
   type RagResult,
 } from '@mcp-abap-adt/llm-agent';
 import {
@@ -21,7 +21,7 @@ const mk = (n: number, len = 10): RagResult[] =>
 
 function model(prob: (passage: string) => number, failOn?: number) {
   const calls: DecisionRequest[] = [];
-  const m: IDecisionModel = {
+  const m: IProbabilityDecision = {
     decide: async (req) => {
       calls.push(req);
       if (failOn !== undefined && calls.length === failOn) {

@@ -16,7 +16,10 @@ export {
 } from './adapters/llm-adapter.js';
 export { LlmProviderBridge } from './adapters/llm-provider-bridge.js';
 export { NonStreamingLlm } from './adapters/non-streaming-llm.js';
-export { wrapDecisionModel } from './adapters/usage-logging-decision-model.js';
+export {
+  wrapProbabilityDecision,
+  wrapRelevanceDecision,
+} from './adapters/usage-logging-decision-model.js';
 export { wrapEmbedder } from './adapters/usage-logging-embedder.js';
 export {
   OrchestratorError,

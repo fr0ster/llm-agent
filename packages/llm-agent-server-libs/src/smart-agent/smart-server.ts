@@ -52,8 +52,8 @@ import {
   CircuitBreaker,
   defaultToolNamespace,
   type IAuxiliaryMcpTools,
-  type IDecisionModel,
   type IMcpFailureClassifier,
+  type IProbabilityDecision,
   type IRag,
   type IRunExecutionControl,
   type IStepExecutionControl,
@@ -382,7 +382,7 @@ export interface BuildAgentDeps {
    */
   makeDecisionModel?: (
     cfg: SmartServerDecisionConfig,
-  ) => Promise<IDecisionModel>;
+  ) => Promise<IProbabilityDecision>;
   prefetchEmbedderFactories?: typeof prefetchEmbedderFactories;
   buildSkillHost?: (
     cfg: SkillPluginsConfig,

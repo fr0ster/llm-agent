@@ -1,6 +1,6 @@
 import type {
-  IDecisionModel,
   ILlm,
+  IProbabilityDecision,
   IReranker,
   IRetrievalStrategy,
 } from '@mcp-abap-adt/llm-agent';
@@ -12,7 +12,7 @@ import {
   RerankAllRetrieval,
   RerankedRetrieval,
   TOOL_QUESTION,
-  wrapDecisionModel,
+  wrapProbabilityDecision,
 } from '@mcp-abap-adt/llm-agent-libs';
 import type {
   SmartServerDecisionConfig,
@@ -25,7 +25,7 @@ export interface ResolveRetrievalInput {
   decisionCfg?: SmartServerDecisionConfig;
   makeDecisionModel?: (
     cfg: SmartServerDecisionConfig,
-  ) => Promise<IDecisionModel>;
+  ) => Promise<IProbabilityDecision>;
   /** Resolves a key of the `llm:` map (strict). */
   resolveLlm: (key: string) => Promise<ILlm>;
 }
@@ -47,7 +47,7 @@ export async function resolveRetrievalStrategies(
   const entries = Object.entries(input.retrieval ?? {});
   if (entries.length === 0) return out;
 
-  let decisionModel: IDecisionModel | undefined;
+  let decisionModel: IProbabilityDecision | undefined;
   const decisionRerankers = new Map<string, IReranker>();
   const decisionReranker = async (
     preset: typeof TOOL_QUESTION | typeof PASSAGE_QUESTION,
@@ -63,7 +63,7 @@ export async function resolveRetrievalStrategies(
         );
       }
       if (!input.makeDecisionModel) throw new Error(MISSING_SEAM);
-      decisionModel = wrapDecisionModel(
+      decisionModel = wrapProbabilityDecision(
         await input.makeDecisionModel(input.decisionCfg),
       );
     }
