@@ -54,56 +54,91 @@ export const buildAgentHealthSnapshot: IAgentHealthProbe = async (
       reason: err instanceof Error ? err.message : String(err),
     });
   }
-  try {
-    const firstStore = Object.values(ragStores)[0];
-    const ragRes = firstStore
-      ? await firstStore.healthCheck(options)
-      : { ok: true as const, value: undefined };
-    results.rag = ragRes.ok;
-  } catch {
+  // H2 (D72): every registered store is probed; `rag` is true only when all
+  // answer. No store ⇒ true (absent by design). A probe is a Result-returning
+  // call that can also reject — both are a store not working.
+  const stores = Object.entries(ragStores);
+  const ragProbes = await Promise.allSettled(
+    // async: a probe that throws synchronously is a rejection too.
+    stores.map(async ([, store]) =>
+      untilAborted(store.healthCheck(options), options?.signal),
+    ),
+  );
+  results.rag = true;
+  ragProbes.forEach((probe, i) => {
+    const ok = probe.status === 'fulfilled' && probe.value.ok;
+    if (ok) return;
     results.rag = false;
-  }
-  try {
-    const mcpChecks = await Promise.all(
-      activeClients.map(async (client) => {
-        try {
-          if (client.healthCheck) {
-            const hc = await client.healthCheck(options);
-            return {
-              name: 'mcp-client',
-              ok: hc.ok,
-              error:
-                hc.ok || !hc.error
-                  ? undefined
-                  : hc.error instanceof Error
-                    ? hc.error.message
-                    : String(hc.error),
-            };
-          }
-          // Fallback for IMcpClient implementations without healthCheck
-          const tools = await client.listTools(options);
-          return {
-            name: 'mcp-client',
-            ok: tools.ok,
-            error:
-              tools.ok || !tools.error
-                ? undefined
-                : tools.error instanceof Error
-                  ? tools.error.message
-                  : String(tools.error),
-          };
-        } catch (err) {
-          return {
-            name: 'mcp-client',
-            ok: false,
-            error: err instanceof Error ? err.message : String(err),
-          };
-        }
-      }),
-    );
-    results.mcp = mcpChecks;
-  } catch {
-    // AbortSignal timeout — leave mcp as empty
-  }
+    options?.sessionLogger?.logStep('health_rag_probe_error', {
+      store: stores[i][0],
+      reason:
+        probe.status === 'rejected'
+          ? errorText(probe.reason)
+          : probe.value.ok
+            ? 'unhealthy'
+            : errorText(probe.value.error),
+    });
+  });
+
+  // H3, H4 (D72): every client is reported. `{ ok: true, value: false }` is
+  // not OK; a probe that rejects, or does not answer before the health signal
+  // fires, is reported `ok: false` with the error — never dropped.
+  const mcpProbes = await Promise.allSettled(
+    activeClients.map((client) =>
+      untilAborted(probeMcpClient(client, options), options?.signal),
+    ),
+  );
+  results.mcp = mcpProbes.map((probe) =>
+    probe.status === 'fulfilled'
+      ? probe.value
+      : { name: 'mcp-client', ok: false, error: errorText(probe.reason) },
+  );
   return results;
 };
+
+async function probeMcpClient(
+  client: IMcpClient,
+  options: CallOptions,
+): Promise<{ name: string; ok: boolean; error?: string }> {
+  if (client.healthCheck) {
+    const hc = await client.healthCheck(options);
+    if (hc.ok) {
+      return hc.value
+        ? { name: 'mcp-client', ok: true }
+        : { name: 'mcp-client', ok: false, error: 'unhealthy' };
+    }
+    return { name: 'mcp-client', ok: false, error: errorText(hc.error) };
+  }
+  // An IMcpClient without healthCheck: listing its tools is the probe.
+  const tools = await client.listTools(options);
+  return tools.ok
+    ? { name: 'mcp-client', ok: true }
+    : { name: 'mcp-client', ok: false, error: errorText(tools.error) };
+}
+
+/**
+ * `probe`, or a rejection with the signal's reason once `signal` fires — a
+ * probe that ignores the signal must not hold the whole health check.
+ */
+function untilAborted<T>(probe: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return probe;
+  if (signal.aborted) return Promise.reject(signal.reason);
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(signal.reason);
+    signal.addEventListener('abort', onAbort, { once: true });
+    probe.then(
+      (value) => {
+        signal.removeEventListener('abort', onAbort);
+        resolve(value);
+      },
+      (reason) => {
+        signal.removeEventListener('abort', onAbort);
+        reject(reason);
+      },
+    );
+  });
+}
+
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
