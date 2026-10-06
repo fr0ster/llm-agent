@@ -506,6 +506,7 @@ export class DefaultPipeline implements IPipeline {
       logger: this.deps.logger,
       requestLogger: this.resolvedRequestLogger,
       toolPolicy: this.deps.toolPolicy,
+      toolAvailabilityPolicy: this.deps.toolAvailabilityPolicy,
       injectionDetector: this.deps.injectionDetector,
       ...(() => {
         const r = resolveSessionRegistries({

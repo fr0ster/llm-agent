@@ -566,7 +566,17 @@ export function resolveAgentSection(
     // never coerced here; an absent one keeps its 30.1.0 default.
     maxIterations: fields.maxIterations ?? 10,
     maxToolCalls: fields.maxToolCalls ?? 30,
-    toolUnavailableTtlMs: fields.toolUnavailableTtlMs ?? 600000,
+    // Spec U8, D83 (5): a start-only field with no default — set, the server
+    // injects HeuristicToolAvailabilityPolicy with this TTL; absent stays absent.
+    ...(get(yaml, 'agent', 'toolUnavailableTtlMs') !== undefined
+      ? {
+          toolUnavailableTtlMs: check.number(
+            'agent.toolUnavailableTtlMs',
+            START_NUMBER_RULES.toolUnavailableTtlMs,
+            get(yaml, 'agent', 'toolUnavailableTtlMs'),
+          ),
+        }
+      : {}),
     ragQueryK: fields.ragQueryK ?? 10,
     // Spec D83 (7): every other field through the start's check.
     ...num('contextBudgetTokens', R.contextBudgetTokens),

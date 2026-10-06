@@ -6,10 +6,12 @@ export interface ToolBlockEntry {
   reason: string;
 }
 
+/**
+ * Per-session tool blocks. It decides nothing: a block is placed by the
+ * caller with the TTL its `IToolAvailabilityPolicy` answered (spec U8).
+ */
 export class ToolAvailabilityRegistry {
   private readonly sessions = new Map<string, Map<string, ToolBlockEntry>>();
-
-  constructor(private readonly defaultTtlMs = 10 * 60 * 1000) {}
 
   getBlockedToolNames(sessionId: string, now = Date.now()): Set<string> {
     const blocked = this.sessions.get(sessionId);
@@ -35,7 +37,7 @@ export class ToolAvailabilityRegistry {
     sessionId: string,
     toolName: string,
     reason: string,
-    ttlMs = this.defaultTtlMs,
+    ttlMs: number,
     now = Date.now(),
   ): ToolBlockEntry {
     const blockedUntil = now + ttlMs;

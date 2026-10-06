@@ -61,6 +61,7 @@ import type {
 import type { McpClientDescriptor } from '../interfaces/mcp-connection-strategy.js';
 import type { IMetrics } from '../metrics/types.js';
 import type { PendingToolResultsRegistry } from '../policy/pending-tool-results-registry.js';
+import type { IToolAvailabilityPolicy } from '../policy/tool-availability-policy.js';
 import type { ToolAvailabilityRegistry } from '../policy/tool-availability-registry.js';
 import type { IPromptInjectionDetector, IToolPolicy } from '../policy/types.js';
 import type { ISessionManager } from '../session/types.js';
@@ -120,6 +121,8 @@ export interface PipelineContext {
   readonly toolPolicy: IToolPolicy | undefined;
   readonly injectionDetector: IPromptInjectionDetector | undefined;
   readonly toolAvailabilityRegistry: ToolAvailabilityRegistry;
+  /** Decides whether a failed internal tool is blocked for the session (spec U8). None → nothing is blocked. */
+  readonly toolAvailabilityPolicy?: IToolAvailabilityPolicy;
   readonly pendingToolResults: PendingToolResultsRegistry;
   readonly skillManager: ISkillManager | undefined;
   readonly embedder: IQueryEmbedder | undefined;

@@ -98,6 +98,7 @@ import {
 import { pipelineToStream } from './pipeline/pipeline-to-stream.js';
 import { fireInternalToolsAsync } from './policy/mixed-tool-call-handler.js';
 import { PendingToolResultsRegistry } from './policy/pending-tool-results-registry.js';
+import type { IToolAvailabilityPolicy } from './policy/tool-availability-policy.js';
 import { ToolAvailabilityRegistry } from './policy/tool-availability-registry.js';
 import type {
   IPromptInjectionDetector,
@@ -127,6 +128,8 @@ export interface SmartAgentDeps {
   logger?: ILogger;
   requestLogger?: IRequestLogger;
   toolPolicy?: IToolPolicy;
+  /** Decides whether a failed internal tool is blocked for the session (spec U8). None → nothing is blocked. */
+  toolAvailabilityPolicy?: IToolAvailabilityPolicy;
   injectionDetector?: IPromptInjectionDetector;
   tracer?: ITracer;
   metrics?: IMetrics;
@@ -166,7 +169,6 @@ export interface SmartAgentDeps {
 export interface SmartAgentConfig {
   maxIterations: number;
   maxToolCalls?: number;
-  toolUnavailableTtlMs?: number;
   timeoutMs?: number;
   tokenLimit?: number;
   ragQueryK?: number;
@@ -284,9 +286,7 @@ export class SmartAgent {
     private readonly deps: SmartAgentDeps,
     private config: SmartAgentConfig,
   ) {
-    this.toolAvailabilityRegistry = new ToolAvailabilityRegistry(
-      this.config.toolUnavailableTtlMs,
-    );
+    this.toolAvailabilityRegistry = new ToolAvailabilityRegistry();
     this.tracer = deps.tracer ?? new NoopTracer();
     this.metrics = deps.metrics ?? new NoopMetrics();
     this.reranker = deps.reranker ?? new NoopReranker();
@@ -468,7 +468,6 @@ export class SmartAgent {
     maxIterations: number;
     maxToolCalls?: number;
     ragQueryK?: number;
-    toolUnavailableTtlMs?: number;
     showReasoning?: boolean;
     historyAutoSummarizeLimit?: number;
     classificationEnabled?: boolean;
@@ -477,7 +476,6 @@ export class SmartAgent {
       maxIterations: this.config.maxIterations,
       maxToolCalls: this.config.maxToolCalls,
       ragQueryK: this.config.ragQueryK,
-      toolUnavailableTtlMs: this.config.toolUnavailableTtlMs,
       showReasoning: this.config.showReasoning,
       historyAutoSummarizeLimit: this.config.historyAutoSummarizeLimit,
       classificationEnabled: this.config.classificationEnabled,
@@ -1462,6 +1460,7 @@ export class SmartAgent {
         metrics: this.metrics,
         parentSpan: toolLoopSpan,
         toolAvailabilityRegistry: this.toolAvailabilityRegistry,
+        toolAvailabilityPolicy: this.deps.toolAvailabilityPolicy,
         sessionId,
         externalToolNames,
         currentTools,

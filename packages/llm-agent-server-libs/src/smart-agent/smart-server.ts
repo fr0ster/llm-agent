@@ -78,7 +78,9 @@ import {
   FileSystemSkillManager,
   getDefaultPluginDirs,
   HealthChecker,
+  HeuristicToolAvailabilityPolicy,
   InMemoryKnowledgeBackend,
+  type IToolAvailabilityPolicy,
   type KnowledgeBackend,
   KnowledgeRag,
   mergePluginExports,
@@ -495,6 +497,21 @@ export interface SmartServerHandle {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/**
+ * The tool availability policy an agent's `agent` settings opt into (spec
+ * §10.5.12 U8): `toolUnavailableTtlMs` set → 30.1.0's heuristic with that TTL;
+ * unset → none, nothing is blocked.
+ */
+function toolAvailabilityPolicyFor(
+  agentCfg: Pick<SmartServerAgentConfig, 'toolUnavailableTtlMs'> | undefined,
+): IToolAvailabilityPolicy | undefined {
+  return agentCfg?.toolUnavailableTtlMs !== undefined
+    ? new HeuristicToolAvailabilityPolicy({
+        ttlMs: agentCfg.toolUnavailableTtlMs,
+      })
+    : undefined;
+}
 
 function resolveSkillManager(
   cfg?: SmartServerSkillsConfig,
@@ -2263,6 +2280,16 @@ export class SmartServer {
 
     subBuilder = subBuilder.withHelperLlm(helperLlm);
 
+    // Spec U8: the worker's own agent.toolUnavailableTtlMs wins, else the parent's.
+    const subToolAvailability = toolAvailabilityPolicyFor({
+      toolUnavailableTtlMs:
+        subCfg.agent?.toolUnavailableTtlMs ??
+        this.cfg.agent?.toolUnavailableTtlMs,
+    });
+    if (subToolAvailability) {
+      subBuilder = subBuilder.withToolAvailabilityPolicy(subToolAvailability);
+    }
+
     // SHARE the parent RAG registry + session logger when injected (per-session
     // worker re-wire). The per-call scope filter isolates by ctx.sessionId.
     const sharedReg = resolveSubAgentRagRegistry({
@@ -2934,6 +2961,12 @@ export class SmartServer {
 
     if (parts.helperLlm) {
       builder = builder.withHelperLlm(parts.helperLlm);
+    }
+
+    // Spec U8: agent.toolUnavailableTtlMs set → the heuristic blacklist; unset → none.
+    const toolAvailability = toolAvailabilityPolicyFor(this.cfg.agent);
+    if (toolAvailability) {
+      builder = builder.withToolAvailabilityPolicy(toolAvailability);
     }
 
     if (parts.toolsRag) {

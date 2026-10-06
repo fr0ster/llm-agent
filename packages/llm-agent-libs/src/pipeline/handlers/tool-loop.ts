@@ -947,6 +947,7 @@ export class ToolLoopHandler implements IStageHandler {
         metrics: ctx.metrics,
         parentSpan,
         toolAvailabilityRegistry: ctx.toolAvailabilityRegistry,
+        toolAvailabilityPolicy: ctx.toolAvailabilityPolicy,
         sessionId: ctx.sessionId,
         externalToolNames,
         currentTools,

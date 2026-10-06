@@ -22,7 +22,6 @@ export interface HotReloadableConfig {
   maxIterations?: number;
   maxToolCalls?: number;
   ragQueryK?: number;
-  toolUnavailableTtlMs?: number;
   showReasoning?: boolean;
   historyAutoSummarizeLimit?: number;
   queryExpansionEnabled?: boolean;
@@ -58,7 +57,6 @@ const AGENT_KEYS = [
   'maxIterations',
   'maxToolCalls',
   'ragQueryK',
-  'toolUnavailableTtlMs',
   'showReasoning',
   'historyAutoSummarizeLimit',
   'queryExpansionEnabled',

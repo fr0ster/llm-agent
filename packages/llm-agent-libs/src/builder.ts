@@ -114,6 +114,7 @@ import { DefaultPipeline } from './pipeline/default-pipeline.js';
 import type { DagCoordinatorHandlerDeps } from './pipeline/handlers/dag-coordinator.js';
 import type { IStageHandler } from './pipeline/stage-handler.js';
 import type { IPluginLoader } from './plugins/types.js';
+import type { IToolAvailabilityPolicy } from './policy/tool-availability-policy.js';
 import type { IPromptInjectionDetector, IToolPolicy } from './policy/types.js';
 import { RateLimiterLlm } from './resilience/rate-limiter-llm.js';
 import { retryInsideBreakers } from './resilience/retry-llm.js';
@@ -181,6 +182,7 @@ export class SmartAgentBuilder {
   private _assembler?: IContextAssembler;
   private _logger?: ILogger;
   private _toolPolicy?: IToolPolicy;
+  private _toolAvailabilityPolicy?: IToolAvailabilityPolicy;
   private _injectionDetector?: IPromptInjectionDetector;
   private _tracer?: ITracer;
   private _metrics?: IMetrics;
@@ -390,6 +392,16 @@ export class SmartAgentBuilder {
   /** Set a tool execution policy (allow/deny list). */
   withToolPolicy(policy: IToolPolicy): this {
     this._toolPolicy = policy;
+    return this;
+  }
+
+  /**
+   * Set the policy that decides whether a failed internal tool is blocked for
+   * the session (spec U8). Without one nothing is blocked — e.g.
+   * `new HeuristicToolAvailabilityPolicy({ ttlMs })` for 30.1.0's blacklist.
+   */
+  withToolAvailabilityPolicy(policy: IToolAvailabilityPolicy): this {
+    this._toolAvailabilityPolicy = policy;
     return this;
   }
 
@@ -1376,6 +1388,7 @@ export class SmartAgentBuilder {
         reranker: this._reranker,
         queryExpander: this._queryExpander,
         toolPolicy: this._toolPolicy,
+        toolAvailabilityPolicy: this._toolAvailabilityPolicy,
         injectionDetector: this._injectionDetector,
         toolCache: this._toolCache,
         outputValidator: this._outputValidator,
@@ -1415,6 +1428,9 @@ export class SmartAgentBuilder {
           pipeline,
           ...(log ? { logger: log } : {}),
           ...(this._toolPolicy ? { toolPolicy: this._toolPolicy } : {}),
+          ...(this._toolAvailabilityPolicy
+            ? { toolAvailabilityPolicy: this._toolAvailabilityPolicy }
+            : {}),
           ...(this._injectionDetector
             ? { injectionDetector: this._injectionDetector }
             : {}),

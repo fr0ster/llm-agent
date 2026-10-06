@@ -57,7 +57,6 @@ const AGENT_NUMBER_FIELDS = [
   'maxIterations',
   'maxToolCalls',
   'ragQueryK',
-  'toolUnavailableTtlMs',
   'historyAutoSummarizeLimit',
   'toolResultCacheTtlMs',
   'sessionTokenBudget',
@@ -71,8 +70,7 @@ const AGENT_NUMBER_RULES: { readonly [K in AgentNumberField]: NumberRule } = {
   maxToolCalls: { integer: true, min: 0 },
   // How many results a retrieval asks for.
   ragQueryK: { integer: true, min: 1 },
-  // Durations in ms; 0 disables the cache.
-  toolUnavailableTtlMs: { integer: false, min: 0 },
+  // A duration in ms; 0 disables the cache.
   toolResultCacheTtlMs: { integer: false, min: 0 },
   // A history longer than this is summarized; 0 = always.
   historyAutoSummarizeLimit: { integer: true, min: 0 },
@@ -92,7 +90,6 @@ const UPDATABLE_AGENT_NUMBER_FIELDS = [
   'maxIterations',
   'maxToolCalls',
   'ragQueryK',
-  'toolUnavailableTtlMs',
   'historyAutoSummarizeLimit',
 ] as const satisfies readonly AgentNumberField[];
 const UPDATABLE_AGENT_FLAG_FIELDS = [
@@ -193,6 +190,8 @@ export const START_NUMBER_RULES = {
   retiredGraceMs: { integer: true, min: 1000 },
   // A recursion depth; 0 = none (`stepper.maxDepth`).
   depth: { integer: true, min: 0 },
+  // A duration in ms: HeuristicToolAvailabilityPolicy's ttlMs (spec U8, D83 (5)).
+  toolUnavailableTtlMs: { integer: false, min: 0 },
 } as const satisfies Readonly<Record<string, NumberRule>>;
 
 /** `agent.streamMode`. */

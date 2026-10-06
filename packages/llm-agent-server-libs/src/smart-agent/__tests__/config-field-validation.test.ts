@@ -97,12 +97,6 @@ test('D83: every rule — the boundary passes, one step outside / a wrong type f
     ['agent.maxToolCalls', (v) => ({ maxToolCalls: v }), 0, [-1, 1.5, '3abc']],
     ['agent.ragQueryK', (v) => ({ ragQueryK: v }), 1, [0, 2.5, ' 5']],
     [
-      'agent.toolUnavailableTtlMs',
-      (v) => ({ toolUnavailableTtlMs: v }),
-      0,
-      [-1, Number.NaN, '10m'],
-    ],
-    [
       'agent.historyAutoSummarizeLimit',
       (v) => ({ historyAutoSummarizeLimit: v }),
       0,
@@ -1216,12 +1210,6 @@ test('D83 (5): the start config — every rule at its YAML path, the same error,
     ['agent.maxToolCalls', (v) => ({ agent: { maxToolCalls: v } }), 0, -1],
     ['agent.ragQueryK', (v) => ({ agent: { ragQueryK: v } }), 1, 2.5],
     [
-      'agent.toolUnavailableTtlMs',
-      (v) => ({ agent: { toolUnavailableTtlMs: v } }),
-      0,
-      '10m',
-    ],
-    [
       'agent.historyAutoSummarizeLimit',
       (v) => ({ agent: { historyAutoSummarizeLimit: v } }),
       0,
@@ -1647,6 +1635,11 @@ test('D83 (7): every start-only field — one valid and one invalid value, named
       'agent.contextBudgetTokens',
       { agent: { contextBudgetTokens: 0 } },
       { agent: { contextBudgetTokens: -1 } },
+    ],
+    [
+      'agent.toolUnavailableTtlMs',
+      { agent: { toolUnavailableTtlMs: 0 } },
+      { agent: { toolUnavailableTtlMs: '10m' } },
     ],
     [
       'agent.historyRecencyWindow',

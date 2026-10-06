@@ -27,10 +27,8 @@ import {
 } from '../../adapters/parse-tool-arguments.js';
 import type { IMetrics } from '../../metrics/types.js';
 import type { PendingToolResultsRegistry } from '../../policy/pending-tool-results-registry.js';
-import {
-  isToolContextUnavailableError,
-  type ToolAvailabilityRegistry,
-} from '../../policy/tool-availability-registry.js';
+import type { IToolAvailabilityPolicy } from '../../policy/tool-availability-policy.js';
+import type { ToolAvailabilityRegistry } from '../../policy/tool-availability-registry.js';
 import type { ISpan, ITracer } from '../../tracer/types.js';
 import type { IOutputValidator } from '../../validator/types.js';
 import { classifyToolResult } from './escalate-if-unavailable.js';
@@ -288,6 +286,8 @@ export interface IExecuteToolBatchArgs {
   metrics: IMetrics;
   parentSpan: ISpan; // toolLoopSpan (A) / parentSpan (B)
   toolAvailabilityRegistry: ToolAvailabilityRegistry;
+  /** Decides whether a failed internal tool is blocked for the session (spec U8). None → nothing is blocked. */
+  toolAvailabilityPolicy?: IToolAvailabilityPolicy;
   sessionId: string;
   externalToolNames: Set<string>;
   currentTools: LlmTool[];
@@ -314,6 +314,7 @@ export async function* executeToolBatchWithHeartbeat(
     metrics,
     parentSpan,
     toolAvailabilityRegistry,
+    toolAvailabilityPolicy,
     sessionId,
     externalToolNames,
     timingLog,
@@ -455,12 +456,19 @@ export async function* executeToolBatchWithHeartbeat(
       };
       return { escalated: true };
     }
-    if (
-      !res.ok &&
-      isToolContextUnavailableError(text) &&
-      !externalToolNames.has(tc.name)
-    ) {
-      const entry = toolAvailabilityRegistry.block(sessionId, tc.name, text);
+    // Spec U8: only an injected policy blocks a tool; an external
+    // (client-provided) tool is never offered to it (#91).
+    const block =
+      !res.ok && !externalToolNames.has(tc.name)
+        ? toolAvailabilityPolicy?.onToolError(tc.name, text)
+        : undefined;
+    if (block) {
+      const entry = toolAvailabilityRegistry.block(
+        sessionId,
+        tc.name,
+        text,
+        block.ttlMs,
+      );
       currentTools = currentTools.filter((t) => t.name !== tc.name);
       options?.sessionLogger?.logStep(`tool_blacklisted_${tc.name}`, {
         reason: text,

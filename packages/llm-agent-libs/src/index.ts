@@ -162,6 +162,13 @@ export {
   loadPlugins,
   mergePluginExports,
 } from './plugins/index.js';
+// ---------------------------------------------------------------------------
+// Policy
+// ---------------------------------------------------------------------------
+export {
+  HeuristicToolAvailabilityPolicy,
+  type IToolAvailabilityPolicy,
+} from './policy/tool-availability-policy.js';
 export {
   InMemoryKnowledgeBackend,
   type KnowledgeBackend,

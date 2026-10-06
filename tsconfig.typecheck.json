@@ -45,6 +45,7 @@
     "scripts/rag-eval/rag-eval.ts",
     "scripts/rag-eval/rerank-errors.ts",
     "test/repo/rag-eval-fallbacks.test.ts",
-    "packages/llm-agent-libs/src/utils/__tests__/lazy.typecheck.ts"
+    "packages/llm-agent-libs/src/utils/__tests__/lazy.typecheck.ts",
+    "packages/llm-agent-libs/src/__tests__/tool-availability-policy.typecheck.ts"
   ]
 }

@@ -203,8 +203,6 @@ export class ConfigReloadWatcher implements IConfigReloadWatcher {
     if (valid.maxToolCalls !== undefined)
       agentUpdate.maxToolCalls = valid.maxToolCalls;
     if (valid.ragQueryK !== undefined) agentUpdate.ragQueryK = valid.ragQueryK;
-    if (valid.toolUnavailableTtlMs !== undefined)
-      agentUpdate.toolUnavailableTtlMs = valid.toolUnavailableTtlMs;
     if (valid.showReasoning !== undefined)
       agentUpdate.showReasoning = valid.showReasoning;
     if (valid.historyAutoSummarizeLimit !== undefined)
