@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, it } from 'node:test';
@@ -61,11 +61,15 @@ describe('cli env files fail loud (spec §10.5.9 V8)', () => {
    */
   function runCliInTempDir(args: string[]) {
     const cwd = mkdtempSync(path.join(tmpdir(), 'cli-v8-'));
-    return spawnSync(
-      'node',
-      ['--import', import.meta.resolve('tsx/esm'), CLI, ...args],
-      { encoding: 'utf8', cwd },
-    );
+    try {
+      return spawnSync(
+        'node',
+        ['--import', import.meta.resolve('tsx/esm'), CLI, ...args],
+        { encoding: 'utf8', cwd },
+      );
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
   }
 
   it('--env-path naming a file that cannot be read → exit 1 with the path and the reason', () => {
@@ -78,6 +82,19 @@ describe('cli env files fail loud (spec §10.5.9 V8)', () => {
     const r = runCliInTempDir(['--env', '--secrets-dir', '/no/such/dir']);
     assert.equal(r.status, 1);
     assert.match(r.stderr, /cannot read secrets-dir \/no\/such\/dir: .*ENOENT/);
+  });
+
+  it('--env with a *.env entry that cannot be read → exit 1 naming it', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'cli-v8-secrets-'));
+    try {
+      // A directory named a.env: reading it fails with EISDIR.
+      mkdirSync(path.join(dir, 'a.env'));
+      const r = runCliInTempDir(['--env', '--secrets-dir', dir]);
+      assert.equal(r.status, 1);
+      assert.match(r.stderr, /cannot read env file .*a\.env/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('an absent implicit .env stays ignored (absent by design)', () => {

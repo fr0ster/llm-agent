@@ -62,6 +62,14 @@ export async function hydrateBundle(
     ) {
       throw corruptBundle(sessionId, 'is not an object');
     }
+    const bundle = parsed as Partial<SessionBundle>;
+    if (
+      typeof bundle.goal !== 'string' ||
+      bundle.budgets === null ||
+      typeof bundle.budgets !== 'object'
+    ) {
+      throw corruptBundle(sessionId, 'has no goal or budgets');
+    }
     return parsed as SessionBundle;
   }
   // No bundle persisted yet: a new session starts from a fresh one.

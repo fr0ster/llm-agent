@@ -189,7 +189,7 @@ test('reports rejected catalog rows and hydrates the rest', async () => {
   assert.match(all, /no store name/);
 });
 
-test('a failed catalog read fails the session’s creation with its RagError (spec §10.5.9 V1)', async () => {
+test('a failed catalog read fails the session’s creation, naming the provider, its RagError as cause (spec §10.5.9 V1)', async () => {
   const bad = catalogued('bad', []);
   const unreachable = new RagError('catalog unreachable');
   (bad.provider as { describeCollections: unknown }).describeCollections =
@@ -204,7 +204,11 @@ test('a failed catalog read fails the session’s creation with its RagError (sp
       globals: new SimpleRagRegistry(),
       providers,
     }),
-    (e: unknown) => e === unreachable,
+    (e: unknown) =>
+      e instanceof RagError &&
+      e.cause === unreachable &&
+      e.code === unreachable.code &&
+      /provider 'bad'/.test(e.message),
   );
 });
 

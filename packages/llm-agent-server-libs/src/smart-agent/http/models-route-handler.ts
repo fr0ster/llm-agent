@@ -1,8 +1,18 @@
+import { type IModelProvider, SmartAgentError } from '@mcp-abap-adt/llm-agent';
 import { jsonError } from './response-helpers.js';
 import type { RouteContext } from './route-table.js';
 
+/** A listing that threw, as the message and code `writeListingFailed` sends. */
+function thrownError(err: unknown): { message: string; code?: string } {
+  return {
+    message: err instanceof Error ? err.message : String(err),
+    code: err instanceof SmartAgentError ? err.code : undefined,
+  };
+}
+
 /**
- * A provider that could not list its models (spec §10.5.6 L7): 502 with the
+ * A provider that could not list its models — an `ok: false` result or a
+ * rejection (spec §10.5.6 L7): 502 with the
  * provider's message and code — never 200 with a placeholder or `[]`.
  */
 function writeListingFailed(
@@ -28,7 +38,13 @@ export async function handleModelsList(rc: RouteContext): Promise<void> {
     { id: 'smart-agent', object: 'model', owned_by: 'smart-agent' },
   ];
   if (rc.modelProvider) {
-    const result = await rc.modelProvider.getModels({ excludeEmbedding });
+    let result: Awaited<ReturnType<IModelProvider['getModels']>>;
+    try {
+      result = await rc.modelProvider.getModels({ excludeEmbedding });
+    } catch (err) {
+      writeListingFailed(rc, thrownError(err));
+      return;
+    }
     if (!result.ok) {
       writeListingFailed(rc, result.error);
       return;
@@ -62,7 +78,15 @@ export async function handleEmbeddingModelsList(
 ): Promise<void> {
   let data: Array<Record<string, unknown>> = [];
   if (rc.modelProvider?.getEmbeddingModels) {
-    const result = await rc.modelProvider.getEmbeddingModels();
+    let result: Awaited<
+      ReturnType<NonNullable<IModelProvider['getEmbeddingModels']>>
+    >;
+    try {
+      result = await rc.modelProvider.getEmbeddingModels();
+    } catch (err) {
+      writeListingFailed(rc, thrownError(err));
+      return;
+    }
     if (!result.ok) {
       writeListingFailed(rc, result.error);
       return;

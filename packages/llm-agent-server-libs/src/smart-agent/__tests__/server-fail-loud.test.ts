@@ -117,22 +117,42 @@ function hydrate(p: IRagProvider) {
 }
 
 describe('V1: a persisted collection that cannot be opened fails the session', () => {
-  it('openCollection ok:false → the creation rejects with that RagError', async () => {
-    const notFound = new CollectionNotFoundError('scratch_00000004');
+  /** A RagError naming the provider, collection and store, the original as cause, its code kept. */
+  function wrapping(original: RagError, ...names: RegExp[]) {
+    return (e: unknown) => {
+      assert.ok(e instanceof RagError, `got ${String(e)}`);
+      assert.equal(e.cause, original, 'the provider’s error is the cause');
+      assert.equal(e.code, original.code, 'the code is unchanged');
+      for (const n of names) assert.match(e.message, n);
+      return true;
+    };
+  }
+
+  it('openCollection ok:false → a RagError naming the collection and the store, the provider’s error as cause', async () => {
+    const notFound = new CollectionNotFoundError('elsewhere');
     await assert.rejects(
       hydrate(
         provider({
           openCollection: async () => ({ ok: false, error: notFound }),
         }),
       ),
-      (e: unknown) => {
-        assert.equal(e, notFound, 'the provider’s own error');
-        return true;
-      },
+      wrapping(notFound, /pg/, /'scratch'/, /scratch_00000004/),
     );
   });
 
-  it('describeCollections ok:false → the creation rejects with that RagError', async () => {
+  it('openCollection ok:false with a plain RagError (as the shipped providers return) → the collection is named', async () => {
+    const plain = new RagError('x', 'RAG_OPEN_ERROR');
+    await assert.rejects(
+      hydrate(
+        provider({
+          openCollection: async () => ({ ok: false, error: plain }),
+        }),
+      ),
+      wrapping(plain, /'scratch'/, /scratch_00000004/),
+    );
+  });
+
+  it('describeCollections ok:false → a RagError naming the provider, its error as cause', async () => {
     const err = new RagError('catalog unreachable', 'RAG_CATALOG_DOWN');
     await assert.rejects(
       hydrate(
@@ -140,7 +160,7 @@ describe('V1: a persisted collection that cannot be opened fails the session', (
           describeCollections: async () => ({ ok: false, error: err }),
         }),
       ),
-      (e: unknown) => e === err,
+      wrapping(err, /provider 'pg': describe/, /catalog unreachable/),
     );
   });
 
@@ -183,7 +203,12 @@ describe('V1: a persisted collection that cannot be opened fails the session', (
       ),
       (e: unknown) => {
         assert.ok(e instanceof RagError, `got ${String(e)}`);
+        assert.ok(
+          e.cause instanceof RagError,
+          'the registry’s error is the cause',
+        );
         assert.match(e.message, /'scratch'/);
+        assert.match(e.message, /scratch_00000005/);
         return true;
       },
     );
@@ -216,6 +241,18 @@ describe('V2: a malformed session bundle is STATE_CORRUPT', () => {
       metadata: { artifactType: 'controller-bundle' },
     });
     await assert.rejects(hydrateBundle(be, 's2'), corrupt(STATE_CORRUPT, /s2/));
+  });
+
+  it('a bundle line without goal or budgets ({}) → STATE_CORRUPT', async () => {
+    const be = memBackend();
+    await be.put('s3', {
+      content: '{}',
+      metadata: { artifactType: 'controller-bundle' },
+    });
+    await assert.rejects(
+      hydrateBundle(be, 's3'),
+      corrupt(STATE_CORRUPT, /s3/, /has no goal or budgets/),
+    );
   });
 });
 

@@ -59,6 +59,34 @@ describe('L7: the models routes fail loud', () => {
     assert.equal(body.error.code, 'LLM_HTTP_503');
   });
 
+  it('getModels rejecting → 502 jsonError with its code', async () => {
+    const { rc, reply } = rcWith({
+      getModels: async () => {
+        throw new LlmError('socket hang up', 'LLM_TRANSPORT');
+      },
+    });
+    await handleModelsList(rc);
+    assert.equal(reply.status, 502);
+    const body = JSON.parse(reply.body ?? '{}');
+    assert.match(body.error.message, /socket hang up/);
+    assert.equal(body.error.type, 'api_error');
+    assert.equal(body.error.code, 'LLM_TRANSPORT');
+  });
+
+  it('getEmbeddingModels rejecting (a plain Error) → 502 jsonError', async () => {
+    const { rc, reply } = rcWith({
+      getModels: async () => ({ ok: true, value: [] }),
+      getEmbeddingModels: async () => {
+        throw new Error('boom');
+      },
+    });
+    await handleEmbeddingModelsList(rc);
+    assert.equal(reply.status, 502);
+    const body = JSON.parse(reply.body ?? '{}');
+    assert.match(body.error.message, /boom/);
+    assert.equal(body.error.type, 'api_error');
+  });
+
   it('a successful listing still answers 200 with the models', async () => {
     const { rc, reply } = rcWith({
       getModels: async () => ({ ok: true, value: [{ id: 'gpt-x' }] }),

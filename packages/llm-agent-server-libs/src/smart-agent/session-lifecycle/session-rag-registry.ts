@@ -5,6 +5,7 @@ import {
   type IRagRegistry,
   type RagCollectionRecord,
   RagError,
+  SmartAgentError,
 } from '@mcp-abap-adt/llm-agent';
 import type { SessionGraphIdentity } from '@mcp-abap-adt/llm-agent-libs';
 import { SimpleRagRegistry } from '@mcp-abap-adt/llm-agent-rag';
@@ -42,8 +43,9 @@ export interface SessionRagRegistryInput {
  * decides which globals a caller may reach reads the record's attributes here.
  *
  * A catalog that cannot be read, or a collection of this identity that cannot
- * be opened or adopted, rejects with its `RagError` (spec §10.5.9 V1): the
- * session is not created without it.
+ * be opened or adopted, rejects with a `RagError` naming the provider and the
+ * collection, the original error as its `cause` and its code kept (spec
+ * §10.5.9 V1): the session is not created without it.
  *
  * The globals are copied in ONCE, when the session is created: a global added
  * to the deployment registry afterwards is not seen by a session already
@@ -100,7 +102,12 @@ export async function buildSessionRagRegistry(
     } catch (err) {
       throw hydrationError(err, `provider '${providerName}': describe`);
     }
-    if (!described.ok) throw described.error;
+    if (!described.ok) {
+      throw hydrationError(
+        described.error,
+        `provider '${providerName}': describe`,
+      );
+    }
     for (const row of described.value.rejected) {
       warnOnce(
         JSON.stringify(['rejected', providerName, row.storeName, row.reason]),
@@ -127,7 +134,7 @@ export async function buildSessionRagRegistry(
       } catch (err) {
         throw hydrationError(err, `${where}: open`);
       }
-      if (!opened.ok) throw opened.error;
+      if (!opened.ok) throw hydrationError(opened.error, `${where}: open`);
       try {
         registry.adopt(
           record,
@@ -144,16 +151,17 @@ export async function buildSessionRagRegistry(
 }
 
 /**
- * A failure thrown while hydrating: a `RagError` is the component's own typed
- * error and goes through unchanged (it names its collection); anything else
- * becomes a `RagError` naming where it failed, the original as its `cause`.
+ * A hydration failure as a `RagError` naming where it failed — the provider,
+ * and the collection and its store when one was being opened or adopted
+ * (spec §10.5.9 V1) — with the original as its `cause` and its code kept (a
+ * `SmartAgentError`'s code; `RAG_ERROR` for anything else).
  */
 function hydrationError(err: unknown, where: string): RagError {
-  if (err instanceof RagError) return err;
   const wrapped = new RagError(
     `session RAG hydration failed — ${where}: ${
       err instanceof Error ? err.message : String(err)
     }`,
+    err instanceof SmartAgentError ? err.code : undefined,
   );
   wrapped.cause = err;
   return wrapped;
