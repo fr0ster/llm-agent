@@ -12,6 +12,7 @@ import { describe, it, type TestContext } from 'node:test';
 import {
   emptyLoadedPlugins,
   HeuristicToolAvailabilityPolicy,
+  type IToolAvailabilityPolicy,
   SmartAgentBuilder,
 } from '@mcp-abap-adt/llm-agent-libs';
 import { resolveSmartServerConfig } from '../config.js';
@@ -59,18 +60,23 @@ function resolveFrom(
 
 type Built = { worker: boolean; policy: unknown };
 
-/** Every agent the server builds, with the tool availability policy its builder holds. */
+/** Every agent the server builds, with the tool availability policy injected into its builder. */
 async function builtAgents(cfg: SmartServerConfig): Promise<Built[]> {
   const proto = SmartAgentBuilder.prototype;
   const origBuild = proto.build;
+  const origWith = proto.withToolAvailabilityPolicy;
+  const injected = new WeakMap<SmartAgentBuilder, IToolAvailabilityPolicy>();
   const built: Built[] = [];
   let inWorker = 0;
+  proto.withToolAvailabilityPolicy = function (
+    this: SmartAgentBuilder,
+    policy: IToolAvailabilityPolicy,
+  ) {
+    injected.set(this, policy);
+    return origWith.call(this, policy);
+  };
   proto.build = function (this: SmartAgentBuilder) {
-    built.push({
-      worker: inWorker > 0,
-      policy: (this as unknown as { _toolAvailabilityPolicy?: unknown })
-        ._toolAvailabilityPolicy,
-    });
+    built.push({ worker: inWorker > 0, policy: injected.get(this) });
     return origBuild.call(this);
   };
   try {
@@ -91,6 +97,7 @@ async function builtAgents(cfg: SmartServerConfig): Promise<Built[]> {
     await handle.close();
   } finally {
     proto.build = origBuild;
+    proto.withToolAvailabilityPolicy = origWith;
   }
   assert.ok(
     built.some((b) => b.worker),

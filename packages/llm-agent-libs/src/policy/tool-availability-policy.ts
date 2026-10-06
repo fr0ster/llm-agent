@@ -22,6 +22,12 @@ export class HeuristicToolAvailabilityPolicy
   private readonly ttlMs: number;
 
   constructor(options: { readonly ttlMs: number }) {
+    // A NaN / Infinity TTL would block a tool for the whole session, silently.
+    if (!Number.isFinite(options.ttlMs) || options.ttlMs < 0) {
+      throw new RangeError(
+        `HeuristicToolAvailabilityPolicy: ttlMs must be a finite number >= 0, got ${options.ttlMs}`,
+      );
+    }
     this.ttlMs = options.ttlMs;
   }
 

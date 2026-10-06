@@ -18,4 +18,29 @@ describe('HeuristicToolAvailabilityPolicy', () => {
     const policy = new HeuristicToolAvailabilityPolicy({ ttlMs: 1000 });
     assert.equal(policy.onToolError('T', 'syntax error in line 3'), undefined);
   });
+
+  it('a ttlMs that is not a finite number >= 0 is refused at construction (a NaN would block for the whole session)', () => {
+    for (const ttlMs of [
+      Number.NaN,
+      Number.POSITIVE_INFINITY,
+      Number.NEGATIVE_INFINITY,
+      -1,
+    ]) {
+      assert.throws(
+        () => new HeuristicToolAvailabilityPolicy({ ttlMs }),
+        (err: unknown) =>
+          err instanceof RangeError &&
+          err.message ===
+            `HeuristicToolAvailabilityPolicy: ttlMs must be a finite number >= 0, got ${ttlMs}`,
+        String(ttlMs),
+      );
+    }
+    assert.deepEqual(
+      new HeuristicToolAvailabilityPolicy({ ttlMs: 0 }).onToolError(
+        'T',
+        'not found',
+      ),
+      { ttlMs: 0 },
+    );
+  });
 });

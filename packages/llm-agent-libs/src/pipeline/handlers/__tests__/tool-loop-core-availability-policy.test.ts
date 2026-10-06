@@ -189,6 +189,71 @@ describe('U8: the tool availability policy (DefaultPipeline)', () => {
   });
 });
 
+/** The legacy SmartAgent loop (no pipeline), two requests of one session. */
+async function runLegacy(policy: IToolAvailabilityPolicy | undefined) {
+  const llm = scriptedLlm();
+  const client = failingOnceClient();
+  const { deps } = makeDefaultDeps({ mcpClients: [client] });
+  const agent = new SmartAgent(
+    {
+      ...deps,
+      mainLlm: llm,
+      ...(policy ? { toolAvailabilityPolicy: policy } : {}),
+    },
+    { maxIterations: 5, mode: 'hard' },
+  );
+  const steps: Step[] = [];
+  const options = {
+    sessionId: 's-legacy',
+    sessionLogger: {
+      logStep(name: string, data: unknown) {
+        steps.push({ name, data });
+      },
+    },
+  } as CallOptions;
+  const first = await agent.process('use T', options);
+  assert.ok(first.ok, !first.ok ? first.error.message : '');
+  const second = await agent.process('use T again', options);
+  assert.ok(second.ok, !second.ok ? second.error.message : '');
+  return { llm, steps };
+}
+
+describe('U8: the tool availability policy (legacy SmartAgent loop, no pipeline)', () => {
+  it('no policy injected → nothing blocked: T stays offered in the next iteration and request', async () => {
+    const { llm, steps } = await runLegacy(undefined);
+    assert.deepEqual(blacklisted(steps), []);
+    assert.ok(llm.toolLists[0].includes('T'), 'T offered on the first call');
+    assert.ok(
+      llm.toolLists[1].includes('T'),
+      `T still offered in the next iteration: ${llm.toolLists[1]}`,
+    );
+    assert.ok(
+      llm.toolLists[2].includes('T'),
+      `T still offered in the next request: ${llm.toolLists[2]}`,
+    );
+  });
+
+  it('HeuristicToolAvailabilityPolicy injected → T blacklisted and filtered from the next iteration and request', async () => {
+    const before = Date.now();
+    const { llm, steps } = await runLegacy(
+      new HeuristicToolAvailabilityPolicy({ ttlMs: 60_000 }),
+    );
+    const step = blacklisted(steps);
+    assert.equal(step.length, 1);
+    const data = step[0].data as { reason: string; blockedUntil: number };
+    assert.equal(data.reason, 'object not found');
+    assert.ok(data.blockedUntil >= before + 60_000);
+    assert.ok(data.blockedUntil <= Date.now() + 60_000);
+    assert.ok(llm.toolLists[0].includes('T'));
+    assert.ok(
+      !llm.toolLists[1].includes('T'),
+      'filtered in the next iteration',
+    );
+    assert.ok(llm.toolLists[1].includes('U'), 'only T is filtered');
+    assert.ok(!llm.toolLists[2].includes('T'), 'filtered in the next request');
+  });
+});
+
 describe('U8: an external (client-provided) tool is never offered to the policy (#91)', () => {
   it('a failed call whose name is a client-provided tool → the policy is not asked, nothing blocked', async () => {
     const asked: string[] = [];
