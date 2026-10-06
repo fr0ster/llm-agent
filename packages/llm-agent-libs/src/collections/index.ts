@@ -8,6 +8,11 @@ export {
   ToolDefinitionSizeEstimator,
 } from './size-estimators.js';
 export { TokenBudgetCut } from './token-budget-cut.js';
+export {
+  NamedDiscriminator,
+  RequiredEnumDiscriminator,
+} from './tools/discriminators.js';
+export { EnumValueToolIndexer } from './tools/enum-value-tool-indexer.js';
 export { FacetedToolIndexer } from './tools/faceted-tool-indexer.js';
 export {
   NameTailFacet,
