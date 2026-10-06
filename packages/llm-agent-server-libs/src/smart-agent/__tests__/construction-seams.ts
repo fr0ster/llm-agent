@@ -7,14 +7,10 @@
  * Not a *.test.ts file, so the runner does not execute it; under __tests__, so the
  * package build does not emit it.
  */
-import {
-  type IEmbedder,
-  type ILlm,
-  InMemoryRag,
-  type IRag,
-} from '@mcp-abap-adt/llm-agent';
+import type { IEmbedder, ILlm, IRag } from '@mcp-abap-adt/llm-agent';
 import {
   type EmbedderResolutionOptions,
+  InMemoryRag,
   makeRag,
   resolveEmbedder,
 } from '@mcp-abap-adt/llm-agent-rag';

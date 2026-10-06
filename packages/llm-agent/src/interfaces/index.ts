@@ -1,4 +1,3 @@
-export type { IQueryExpander } from '../rag/query-expander.js';
 export {
   type AgentCallOptions,
   type BaseAgentLlmBridge,
@@ -153,6 +152,11 @@ export type {
   RagScope,
 } from './plugin.js';
 export type { IQueryEmbedding } from './query-embedding.js';
+export type { IQueryExpander } from './query-expander.js';
+export type {
+  IDocumentEnricher,
+  IQueryPreprocessor,
+} from './query-preprocessor.js';
 export type {
   EmbedderFactory,
   EmbedderFactoryConfig,

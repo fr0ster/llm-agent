@@ -54,7 +54,6 @@ import {
   CircuitBreakerLlm,
   collectServerDescriptors,
   defaultToolNamespace,
-  InMemoryRag,
   type IQueryEmbedder,
   type IRag,
   type IRagEditor,
@@ -65,11 +64,14 @@ import {
   QueryEmbedding,
   type RagCollectionMeta,
   type RagRegistryCreateCollectionParams,
+} from '@mcp-abap-adt/llm-agent';
+import { makeConnectionStrategy } from '@mcp-abap-adt/llm-agent-mcp';
+import {
+  InMemoryRag,
   ragStoreKey,
   SimpleRagProviderRegistry,
   SimpleRagRegistry,
-} from '@mcp-abap-adt/llm-agent';
-import { makeConnectionStrategy } from '@mcp-abap-adt/llm-agent-mcp';
+} from '@mcp-abap-adt/llm-agent-rag';
 import { SmartAgent, type SmartAgentConfig } from './agent.js';
 import type {
   BuilderMcpConfig,

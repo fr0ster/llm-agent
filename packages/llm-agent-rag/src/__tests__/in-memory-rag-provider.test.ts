@@ -1,0 +1,62 @@
+import assert from 'node:assert/strict';
+import { describe, it } from 'node:test';
+import {
+  DirectEditStrategy,
+  ImmutableEditStrategy,
+  UnsupportedScopeError,
+} from '@mcp-abap-adt/llm-agent';
+import { InMemoryRagProvider } from '../providers/in-memory-rag-provider.js';
+
+describe('InMemoryRagProvider', () => {
+  it('supports only session scope', () => {
+    const p = new InMemoryRagProvider({ name: 'mem' });
+    assert.deepEqual(p.supportedScopes, ['session']);
+  });
+
+  it('rejects non-session scopes', async () => {
+    const p = new InMemoryRagProvider({ name: 'mem' });
+    const res = await p.createCollection('x', { scope: 'global' });
+    assert.ok(!res.ok);
+    assert.ok(res.error instanceof UnsupportedScopeError);
+  });
+
+  it('creates editable InMemoryRag when editable=true (default)', async () => {
+    const p = new InMemoryRagProvider({ name: 'mem' });
+    const res = await p.createCollection('x', {
+      scope: 'session',
+      sessionId: 'S',
+    });
+    assert.ok(res.ok);
+    assert.ok(res.value.editor instanceof DirectEditStrategy);
+    const up = await res.value.editor.upsert('hello', { id: 'x1' });
+    assert.ok(up.ok && up.value.id.startsWith('S:'));
+  });
+
+  it('creates read-only when editable=false', async () => {
+    const p = new InMemoryRagProvider({ name: 'mem-ro', editable: false });
+    const res = await p.createCollection('x', {
+      scope: 'session',
+      sessionId: 'S',
+    });
+    assert.ok(res.ok);
+    assert.ok(res.value.editor instanceof ImmutableEditStrategy);
+  });
+});
+
+describe('InMemoryRagProvider configured scopes', () => {
+  it('accepts the scopes it is configured with, and only those', async () => {
+    const p = new InMemoryRagProvider({
+      name: 'p',
+      supportedScopes: ['session', 'user'],
+    });
+    assert.deepEqual(p.supportedScopes, ['session', 'user']);
+    const user = await p.createCollection('u', {
+      scope: 'user',
+      userId: 'alice',
+    });
+    assert.ok(user.ok);
+    const global = await p.createCollection('g', { scope: 'global' });
+    assert.ok(!global.ok);
+    assert.ok(global.error instanceof UnsupportedScopeError);
+  });
+});

@@ -2,7 +2,6 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
   type IEmbedder,
-  InMemoryRag,
   type IRagProvider,
   type IRagProviderRegistry,
   type IRagRegistry,
@@ -13,6 +12,7 @@ import type {
   SessionGraphIdentity,
 } from '@mcp-abap-adt/llm-agent-libs';
 import { makeLlm as makeTestLlm } from '@mcp-abap-adt/llm-agent-libs/testing';
+import { InMemoryRag } from '@mcp-abap-adt/llm-agent-rag';
 import { SmartServer, type SmartServerConfig } from '../smart-server.js';
 import { constructionSeams } from './construction-seams.js';
 

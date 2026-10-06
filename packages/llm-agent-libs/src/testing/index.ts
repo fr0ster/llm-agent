@@ -40,7 +40,6 @@ import {
   McpError,
   type McpTool,
   type McpToolResult,
-  NoopQueryExpander,
   NoopToolCache,
   RagError,
   type RagMetadata,
@@ -49,6 +48,7 @@ import {
   type Subprompt,
   ToolCache,
 } from '@mcp-abap-adt/llm-agent';
+import { NoopQueryExpander } from '@mcp-abap-adt/llm-agent-rag';
 import type { SmartAgent } from '../agent.js';
 import type { IMcpConnectionStrategy } from '../interfaces/mcp-connection-strategy.js';
 import { InMemoryMetrics } from '../metrics/in-memory-metrics.js';

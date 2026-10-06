@@ -10,7 +10,7 @@ import type {
   Result,
 } from '@mcp-abap-adt/llm-agent';
 
-import { InMemoryRag } from '@mcp-abap-adt/llm-agent';
+import { InMemoryRag } from '@mcp-abap-adt/llm-agent-rag';
 import { summarizeAndStore } from '../history-upsert.js';
 
 function makeFakeMemory(): IHistoryMemory & { entries: Map<string, string[]> } {

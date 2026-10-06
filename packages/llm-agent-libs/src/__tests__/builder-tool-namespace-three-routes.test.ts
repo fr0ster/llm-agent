@@ -17,13 +17,13 @@
  */
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import {
-  type ILlm,
-  type IMcpClient,
-  InMemoryRag,
-  type IToolNamespace,
-  type McpTool,
+import type {
+  ILlm,
+  IMcpClient,
+  IToolNamespace,
+  McpTool,
 } from '@mcp-abap-adt/llm-agent';
+import { InMemoryRag } from '@mcp-abap-adt/llm-agent-rag';
 import { SmartAgentBuilder } from '../builder.js';
 import type {
   IMcpConnectionStrategy,

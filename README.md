@@ -137,7 +137,7 @@ that name into a credential ([how](packages/llm-agent-server/README.md#credentia
 | [`@mcp-abap-adt/sap-aicore-llm`](packages/sap-aicore-llm/README.md) | SAP AI Core LLM provider via `@sap-ai-sdk/orchestration`. |
 | [`@mcp-abap-adt/ollama-llm`](packages/ollama-llm/README.md) | Ollama LLM provider (`OllamaProvider`, extends OpenAI-compatible). |
 | [`@mcp-abap-adt/openai-embedder`](packages/openai-embedder/README.md) | OpenAI embeddings (`OpenAiEmbedder`). |
-| [`@mcp-abap-adt/ollama-embedder`](packages/ollama-embedder/README.md) | Ollama embeddings + RAG (`OllamaEmbedder`, `OllamaRag`). |
+| [`@mcp-abap-adt/ollama-embedder`](packages/ollama-embedder/README.md) | Ollama embeddings (`OllamaEmbedder`). Build a store with `new VectorRag(symmetricEmbedder(new OllamaEmbedder(cfg)), cfg)`, `VectorRag` from `@mcp-abap-adt/llm-agent-rag`. |
 | [`@mcp-abap-adt/sap-aicore-embedder`](packages/sap-aicore-embedder/README.md) | SAP AI Core embeddings (`SapAiCoreEmbedder`). |
 | [`@mcp-abap-adt/qdrant-rag`](packages/qdrant-rag/README.md) | Qdrant vector store RAG (`QdrantRag`, `QdrantRagProvider`). |
 | [`@mcp-abap-adt/hana-vector-rag`](packages/hana-vector-rag/README.md) | SAP HANA Cloud Vector Engine RAG (`HanaVectorRag`, `HanaVectorRagProvider`). Optional peer. |

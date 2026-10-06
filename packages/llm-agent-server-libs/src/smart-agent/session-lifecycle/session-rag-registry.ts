@@ -1,12 +1,12 @@
-import {
-  type ILogger,
-  type IRagProvider,
-  type IRagProviderRegistry,
-  type IRagRegistry,
-  type RagCollectionRecord,
-  SimpleRagRegistry,
+import type {
+  ILogger,
+  IRagProvider,
+  IRagProviderRegistry,
+  IRagRegistry,
+  RagCollectionRecord,
 } from '@mcp-abap-adt/llm-agent';
 import type { SessionGraphIdentity } from '@mcp-abap-adt/llm-agent-libs';
+import { SimpleRagRegistry } from '@mcp-abap-adt/llm-agent-rag';
 
 export interface SessionRagRegistryInput {
   readonly identity: SessionGraphIdentity;

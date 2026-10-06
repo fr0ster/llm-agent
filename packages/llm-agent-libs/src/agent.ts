@@ -42,7 +42,6 @@ import {
   type IQueryExpander,
   isReadinessReporter,
   mergeOfferedTools,
-  NoopQueryExpander,
   NoopToolCache,
   normalizeExternalTools,
   OrchestratorError,
@@ -54,6 +53,7 @@ import {
   toolNameFromRecord,
   toToolCallDelta,
 } from '@mcp-abap-adt/llm-agent';
+import { NoopQueryExpander } from '@mcp-abap-adt/llm-agent-rag';
 import { RagOrchestrator } from './agent/rag-orchestrator.js';
 import { normalizeRequestOptions } from './agent-request-options.js';
 import type { LlmClassifierConfig } from './classifier/llm-classifier.js';

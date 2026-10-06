@@ -1,10 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import {
-  CircuitBreakerLlm,
-  InMemoryRag,
-  SimpleRagRegistry,
-} from '@mcp-abap-adt/llm-agent';
+import { CircuitBreakerLlm } from '@mcp-abap-adt/llm-agent';
+import { InMemoryRag, SimpleRagRegistry } from '@mcp-abap-adt/llm-agent-rag';
 import { SmartAgent } from '../agent.js';
 import { SmartAgentBuilder } from '../builder.js';
 import { makeDefaultDeps, makeLlm, makeRag } from '../testing/index.js';

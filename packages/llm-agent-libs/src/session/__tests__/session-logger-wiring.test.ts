@@ -4,7 +4,7 @@ import {
   InMemoryRagProvider,
   SimpleRagProviderRegistry,
   SimpleRagRegistry,
-} from '@mcp-abap-adt/llm-agent';
+} from '@mcp-abap-adt/llm-agent-rag';
 import { SessionGraphFactory } from '../session-graph-factory.js';
 
 test('the logger handed to buildAgent is the SAME instance the graph exposes', async () => {

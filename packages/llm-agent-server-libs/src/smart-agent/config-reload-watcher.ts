@@ -4,15 +4,12 @@
  * and RAG store weights).
  */
 
-import {
-  type IRag,
-  isRagDecorator,
-  type VectorRag,
-} from '@mcp-abap-adt/llm-agent';
+import { type IRag, isRagDecorator } from '@mcp-abap-adt/llm-agent';
 import {
   ConfigWatcher,
   type HotReloadableConfig,
 } from '@mcp-abap-adt/llm-agent-libs';
+import type { VectorRag } from '@mcp-abap-adt/llm-agent-rag';
 
 /** Decorator chains are short; the cap only guards a cyclic `inner`. */
 const MAX_DECORATOR_DEPTH = 16;

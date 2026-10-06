@@ -2,17 +2,19 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
   type ILogger,
-  InMemoryRag,
   type IRagEditor,
   type IRagProvider,
   type LogEvent,
   type RagCollectionRecord,
   RagError,
-  SimpleRagProviderRegistry,
-  SimpleRagRegistry,
 } from '@mcp-abap-adt/llm-agent';
 import { SmartAgentBuilder } from '@mcp-abap-adt/llm-agent-libs';
 import { makeLlm } from '@mcp-abap-adt/llm-agent-libs/testing';
+import {
+  InMemoryRag,
+  SimpleRagProviderRegistry,
+  SimpleRagRegistry,
+} from '@mcp-abap-adt/llm-agent-rag';
 import { buildSessionRagRegistry } from '../session-rag-registry.js';
 
 /** A catalogued provider over in-memory stores. */

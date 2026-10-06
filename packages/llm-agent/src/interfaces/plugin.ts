@@ -5,7 +5,6 @@
  * and extend classifier prompts without modifying core agent code.
  */
 
-import type { IQueryExpander } from '../rag/query-expander.js';
 import type { ILlmApiAdapter } from './api-adapter.js';
 import type { IClientAdapter } from './client-adapter.js';
 import type { IMcpClient } from './mcp-client.js';
@@ -13,6 +12,7 @@ import type {
   IPipelinePlugin,
   PipelinePluginFactory,
 } from './pipeline-plugin.js';
+import type { IQueryExpander } from './query-expander.js';
 import type { EmbedderFactory, IRag } from './rag.js';
 import type { IReranker } from './reranker.js';
 import type { ISkillManager } from './skill.js';

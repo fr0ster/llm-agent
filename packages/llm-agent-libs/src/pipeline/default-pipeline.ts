@@ -36,10 +36,10 @@ import type {
   SubAgentRegistry,
 } from '@mcp-abap-adt/llm-agent';
 import {
-  NoopQueryExpander,
   NoopToolCache,
   StreamingLlmCallStrategy,
 } from '@mcp-abap-adt/llm-agent';
+import { NoopQueryExpander } from '@mcp-abap-adt/llm-agent-rag';
 import type {
   OrchestratorError,
   SmartAgentConfig,

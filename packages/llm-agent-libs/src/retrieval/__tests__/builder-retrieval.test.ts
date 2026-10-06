@@ -3,7 +3,6 @@ import { describe, it } from 'node:test';
 import {
   type CallOptions,
   type ILlm,
-  InMemoryRag,
   type IRag,
   type IRagEditor,
   type IRagRegistry,
@@ -13,10 +12,10 @@ import {
   type RagCollectionScope,
   RagError,
   type RagResult,
-  SimpleRagRegistry,
   symmetricEmbedder,
   TextOnlyEmbedding,
 } from '@mcp-abap-adt/llm-agent';
+import { InMemoryRag, SimpleRagRegistry } from '@mcp-abap-adt/llm-agent-rag';
 import { SmartAgentBuilder } from '../../builder.js';
 import { makeLlm } from '../../testing/index.js';
 import {

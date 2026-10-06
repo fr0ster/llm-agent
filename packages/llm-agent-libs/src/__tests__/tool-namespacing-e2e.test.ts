@@ -42,7 +42,6 @@ import {
   type ILlm,
   type IMcpClient,
   type IMetrics,
-  InMemoryRag,
   type IPlanningStrategy,
   type LlmTool,
   type McpTool,
@@ -50,6 +49,7 @@ import {
   type Plan,
   type PlanStep,
 } from '@mcp-abap-adt/llm-agent';
+import { InMemoryRag } from '@mcp-abap-adt/llm-agent-rag';
 import { SmartAgentBuilder } from '../builder.js';
 import type {
   IMcpConnectionStrategy,

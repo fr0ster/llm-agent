@@ -17,7 +17,6 @@ import type {
   LlmTool,
   RagResult,
 } from '@mcp-abap-adt/llm-agent';
-import { InMemoryRag, SimpleRagRegistry } from '@mcp-abap-adt/llm-agent';
 import {
   emptyLoadedPlugins,
   hasRetrievalStrategy,
@@ -25,6 +24,7 @@ import {
   PASSAGE_QUESTION,
   TOOL_QUESTION,
 } from '@mcp-abap-adt/llm-agent-libs';
+import { InMemoryRag, SimpleRagRegistry } from '@mcp-abap-adt/llm-agent-rag';
 import { parse } from 'yaml';
 import { resolveSmartServerConfig } from '../config.js';
 import {

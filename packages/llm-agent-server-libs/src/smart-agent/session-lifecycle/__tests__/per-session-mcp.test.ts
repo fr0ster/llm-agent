@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import type { SessionAgentParts } from '@mcp-abap-adt/llm-agent-libs';
 import {
   InMemoryRagProvider,
   SimpleRagProviderRegistry,
   SimpleRagRegistry,
-} from '@mcp-abap-adt/llm-agent';
-import type { SessionAgentParts } from '@mcp-abap-adt/llm-agent-libs';
+} from '@mcp-abap-adt/llm-agent-rag';
 import { buildSessionLifecycle } from '../index.js';
 
 function makeRagRegistry() {

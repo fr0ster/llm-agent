@@ -2,12 +2,14 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
   GlobalUniqueIdStrategy,
-  InMemoryRagProvider,
   SessionScopedEditStrategy,
-  SimpleRagProviderRegistry,
-  SimpleRagRegistry,
   TextOnlyEmbedding,
 } from '@mcp-abap-adt/llm-agent';
+import {
+  InMemoryRagProvider,
+  SimpleRagProviderRegistry,
+  SimpleRagRegistry,
+} from '@mcp-abap-adt/llm-agent-rag';
 
 test('session artifact written via shared registry is visible under its sessionId, isolated from another', async () => {
   const providers = new SimpleRagProviderRegistry();

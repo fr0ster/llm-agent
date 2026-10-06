@@ -1,13 +1,11 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import type { ILogger, IRagRegistry, LogEvent } from '@mcp-abap-adt/llm-agent';
 import {
-  type ILogger,
   InMemoryRagProvider,
-  type IRagRegistry,
-  type LogEvent,
   SimpleRagProviderRegistry,
   SimpleRagRegistry,
-} from '@mcp-abap-adt/llm-agent';
+} from '@mcp-abap-adt/llm-agent-rag';
 import {
   type SessionAgentParts,
   SessionGraphFactory,

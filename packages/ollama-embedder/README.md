@@ -8,7 +8,6 @@ Ollama embedding provider for @mcp-abap-adt/llm-agent. Implements `IEmbedderBatc
 ## Exports
 
 - `OllamaEmbedder` — implements IEmbedderBatch, calls Ollama /api/embeddings and /api/embed (batch).
-- `OllamaRag` — convenience wrapper combining OllamaEmbedder with VectorRag.
 - `OllamaEmbedderConfig` — configuration type.
 
 ## Installation
@@ -20,7 +19,7 @@ npm install @mcp-abap-adt/ollama-embedder
 ## Usage
 
 ```ts
-import { OllamaEmbedder, OllamaRag } from '@mcp-abap-adt/ollama-embedder';
+import { OllamaEmbedder } from '@mcp-abap-adt/ollama-embedder';
 
 // Direct embedder usage
 const embedder = new OllamaEmbedder({
@@ -31,15 +30,11 @@ const embedder = new OllamaEmbedder({
 const result = await embedder.embed('Hello world');
 console.log(result.vector);
 
-// Convenience RAG wrapper
-const rag = new OllamaRag({
-  ollamaUrl: 'http://localhost:11434',
-  model: 'bge-m3',
-});
-
-const searchResults = await rag.query('What is Ollama?', documents);
-console.log(searchResults);
 ```
+
+To build a store on it, use `VectorRag` from `@mcp-abap-adt/llm-agent-rag`:
+`new VectorRag(symmetricEmbedder(new OllamaEmbedder(cfg)), cfg)` (`symmetricEmbedder`
+comes from `@mcp-abap-adt/llm-agent`).
 
 Optional peer dependency of @mcp-abap-adt/llm-agent-rag.
 

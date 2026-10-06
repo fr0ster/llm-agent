@@ -1,13 +1,15 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import type {
+  IMcpClient,
+  IMcpServer,
+  IRagRegistry,
+} from '@mcp-abap-adt/llm-agent';
 import {
-  type IMcpClient,
-  type IMcpServer,
   InMemoryRagProvider,
-  type IRagRegistry,
   SimpleRagProviderRegistry,
   SimpleRagRegistry,
-} from '@mcp-abap-adt/llm-agent';
+} from '@mcp-abap-adt/llm-agent-rag';
 import { SessionGraphFactory } from '../session-graph-factory.js';
 
 function makeRagRegistry(): IRagRegistry {

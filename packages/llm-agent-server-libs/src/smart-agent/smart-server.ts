@@ -59,7 +59,6 @@ import {
   type IStepExecutionControl,
   type IWaitStrategy,
   isReadinessReporter,
-  SimpleRagProviderRegistry,
   symmetricEmbedder,
   type ToolLoopContextStrategyFactory,
   withCircuitBreaker,
@@ -95,7 +94,10 @@ import {
   McpClientAdapter,
 } from '@mcp-abap-adt/llm-agent-mcp';
 import type { EmbedderResolutionOptions } from '@mcp-abap-adt/llm-agent-rag';
-import { prefetchEmbedderFactories } from '@mcp-abap-adt/llm-agent-rag';
+import {
+  prefetchEmbedderFactories,
+  SimpleRagProviderRegistry,
+} from '@mcp-abap-adt/llm-agent-rag';
 import { PACKAGE_VERSION } from '../generated/version.js';
 import { ConfigReloadWatcher } from './config-reload-watcher.js';
 import { handleAdapterRequest } from './http/adapter-route-handler.js';

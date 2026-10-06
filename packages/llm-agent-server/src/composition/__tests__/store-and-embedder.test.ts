@@ -3,12 +3,12 @@ import { describe, it } from 'node:test';
 import type { IBearerCredential } from '@mcp-abap-adt/interfaces-auth';
 import {
   type IEmbedder,
-  InMemoryRag,
   type IRag,
   type ISkillPluginHost,
   staticApiKey,
   staticLogin,
 } from '@mcp-abap-adt/llm-agent';
+import { InMemoryRag } from '@mcp-abap-adt/llm-agent-rag';
 import type {
   BuildSkillHostDeps,
   MakeRagInput,

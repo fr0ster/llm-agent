@@ -4,7 +4,7 @@ import {
   InMemoryRagProvider,
   SimpleRagProviderRegistry,
   SimpleRagRegistry,
-} from '@mcp-abap-adt/llm-agent';
+} from '@mcp-abap-adt/llm-agent-rag';
 import { buildSessionLifecycle } from '../smart-server.js';
 
 function makeRagRegistry() {

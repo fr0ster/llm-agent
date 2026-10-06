@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { InMemoryRag, type IRag } from '@mcp-abap-adt/llm-agent';
+import type { IRag } from '@mcp-abap-adt/llm-agent';
 import { EmbeddingRetrieval, StrategyRag } from '@mcp-abap-adt/llm-agent-libs';
+import { InMemoryRag } from '@mcp-abap-adt/llm-agent-rag';
 import {
   ConfigReloadWatcher,
   findWeightedStore,

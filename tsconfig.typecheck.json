@@ -34,9 +34,10 @@
     "packages/llm-agent/src/interfaces/__tests__/pipeline-plugin-contract.typecheck.ts",
     "packages/llm-agent-server-libs/src/pipelines/__tests__/server-context-lookups-only.typecheck.ts",
     "packages/llm-agent/src/rag/__tests__/rag-collection-owner.typecheck.ts",
-    "packages/llm-agent/src/rag/__tests__/rag-tool-identity.typecheck.ts",
+    "packages/llm-agent-rag/src/__typechecks__/rag-tool-identity.ts",
     "packages/llm-agent-server/scripts/check-models/*.ts",
-    "packages/llm-agent/src/rag/__tests__/embedder-roles.typecheck.ts",
+    "packages/llm-agent-rag/src/__typechecks__/embedder-roles.ts",
+    "packages/llm-agent-rag/src/__typechecks__/rag-implementations-moved.ts",
     "scripts/rag-eval/rag-eval.ts",
     "scripts/rag-eval/rerank-fallbacks.ts",
     "test/repo/rag-eval-fallbacks.test.ts"

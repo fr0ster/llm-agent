@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { type IRag, SimpleRagRegistry } from '@mcp-abap-adt/llm-agent';
+import type { IRag } from '@mcp-abap-adt/llm-agent';
+import { SimpleRagRegistry } from '@mcp-abap-adt/llm-agent-rag';
 import { SmartAgentBuilder } from '../builder.js';
 import { makeLlm } from '../testing/index.js';
 
