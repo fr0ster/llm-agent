@@ -10,6 +10,14 @@ import {
   type Result,
 } from '@mcp-abap-adt/llm-agent';
 import { assertPositiveInteger } from './assert-positive-integer.js';
+import {
+  batchByTokens,
+  DEFAULT_CONCURRENCY,
+  DEFAULT_MAX_BATCH_TOKENS,
+  estimateTokens,
+  runInWaves,
+  sortByScore,
+} from './batching.js';
 
 export const PROBABILITY_RERANK_DEFAULT_TASK =
   'Judge whether this passage helps answer the query given as the state.';
@@ -35,9 +43,6 @@ export const TOOL_QUESTION = Object.freeze({
   }),
 });
 
-const DEFAULT_MAX_BATCH_TOKENS = 48_000;
-const DEFAULT_CONCURRENCY = 4;
-
 export interface ProbabilityRerankerOptions {
   /** Override the default task wording. The passage is always sent alongside
    *  it — this never replaces the passage. */
@@ -48,8 +53,6 @@ export interface ProbabilityRerankerOptions {
   /** Max decide() calls in flight; a positive integer. Default 4. */
   concurrency?: number;
 }
-
-const estimateTokens = (s: string): number => Math.ceil(s.length / 4);
 
 /**
  * Rerank RAG results with a probability decision (spec §5.1): the query as the
@@ -89,41 +92,20 @@ export class ProbabilityReranker implements IReranker {
     const task = this.options.task ?? PROBABILITY_RERANK_DEFAULT_TASK;
     const criteria =
       this.options.criteria ?? PROBABILITY_RERANK_DEFAULT_CRITERIA;
-    const budget = this.maxBatchTokens;
-    const concurrency = this.concurrency;
-
     const fixed = estimateTokens(JSON.stringify({ task, criteria }));
-    const stateCost = estimateTokens(query);
-    const batches: number[][] = [];
-    let cur: number[] = [];
-    let used = stateCost;
-    results.forEach((r, i) => {
-      const cost = fixed + estimateTokens(r.text);
-      if (cur.length > 0 && used + cost > budget) {
-        batches.push(cur);
-        cur = [];
-        used = stateCost;
-      }
-      cur.push(i);
-      used += cost;
-    });
-    if (cur.length > 0) batches.push(cur);
-
+    const batches = batchByTokens(
+      estimateTokens(query),
+      results.map((r) => fixed + estimateTokens(r.text)),
+      this.maxBatchTokens,
+    );
+    const waves = await runInWaves(batches, this.concurrency, (idxs) =>
+      this.runBatch(query, results, idxs, task, criteria, options),
+    );
+    if (!waves.ok) return waves;
     const answers: Record<string, DecisionAnswer> = {};
-    for (let s = 0; s < batches.length; s += concurrency) {
-      const slice = batches.slice(s, s + concurrency);
-      const settled = await Promise.all(
-        slice.map((idxs) =>
-          this.runBatch(query, results, idxs, task, criteria, options),
-        ),
-      );
-      for (const res of settled) {
-        if (!res.ok) return res;
-        Object.assign(answers, res.value);
-      }
-    }
+    for (const w of waves.value) Object.assign(answers, w.value);
 
-    const scored: Array<{ r: RagResult; i: number }> = [];
+    const probability: number[] = [];
     for (let i = 0; i < results.length; i++) {
       const a = answers[`r${i}`];
       if (
@@ -139,10 +121,9 @@ export class ProbabilityReranker implements IReranker {
           ),
         };
       }
-      scored.push({ r: { ...results[i], score: a.probability }, i });
+      probability.push(a.probability);
     }
-    scored.sort((x, y) => y.r.score - x.r.score || x.i - y.i);
-    return { ok: true, value: scored.map((s) => s.r) };
+    return { ok: true, value: sortByScore(results, probability) };
   }
 
   private async runBatch(

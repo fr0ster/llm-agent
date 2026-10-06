@@ -8,3 +8,7 @@ export {
   type ProbabilityRerankerOptions,
   TOOL_QUESTION,
 } from './probability-reranker.js';
+export {
+  RelevanceReranker,
+  type RelevanceRerankerOptions,
+} from './relevance-reranker.js';
