@@ -13,6 +13,15 @@ export type {
   SmartAgentRagStores,
 } from './builder.js';
 export type { ISubpromptClassifier } from './classifier.js';
+export {
+  type IndexedRecord,
+  type ItemRef,
+  ownerKeyOf,
+  type RecordDraft,
+  type RecordOwner,
+  type ReservedRecordKey,
+  recordId,
+} from './collection-profile.js';
 export type { ContextPath } from './context-path.js';
 export type {
   EpicFailTrace,
