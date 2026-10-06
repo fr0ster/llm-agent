@@ -14,15 +14,17 @@ import {
   type ISourceSelector,
   type ItemRef,
   isIndexNoteSource,
-  type RagError,
+  ownerKeyOf,
+  RagError,
   type RagResult,
+  type RecordDraft,
+  type RecordOwner,
   type Result,
   recordId,
   type ToolItem,
 } from '@mcp-abap-adt/llm-agent';
 import { StrategyRag } from '../retrieval/strategy-rag.js';
 import {
-  duplicateItemsError,
   getItem,
   type PreparedItem,
   prepareItem,
@@ -53,6 +55,53 @@ export interface ComposedToolsProfileOptions {
 const reasonOf = (e: RagError): string =>
   e.code === 'TOO_MANY_RECORDS' ? 'too-many-records' : e.message;
 
+/** An item's owner-qualified id, for messages: `global/tool:read_file` (as record-writer's). */
+const itemLabel = (owner: RecordOwner, itemId: string): string => {
+  const key = ownerKeyOf(owner);
+  return `${owner.scope}${key ? `:${key}` : ''}/${itemId}`;
+};
+
+/**
+ * The batch's duplicate owner-qualified item ids as ONE error, or undefined (spec
+ * §3.3, D61), over EVERY item given — also those the indexer refused, so one version
+ * failing (e.g. `too-many-records`) never lets the other be written. A ToolItem
+ * carries no owner: it is the owner of the item's drafts. An item whose drafts were
+ * refused has no known owner, so it cannot be shown to be a different item: it
+ * counts as a duplicate of every entry with its item id.
+ */
+function duplicateBatchError(
+  entries: readonly { itemId: string; owner: RecordOwner | undefined }[],
+): RagError | undefined {
+  const byItem = new Map<string, (RecordOwner | undefined)[]>();
+  for (const e of entries) {
+    const owners = byItem.get(e.itemId);
+    if (owners) owners.push(e.owner);
+    else byItem.set(e.itemId, [e.owner]);
+  }
+  const dups: string[] = [];
+  for (const [itemId, owners] of byItem) {
+    if (owners.length < 2) continue;
+    const known = owners.filter((o): o is RecordOwner => o !== undefined);
+    if (known.length < owners.length) {
+      const labels = [...new Set(known.map((o) => itemLabel(o, itemId)))];
+      dups.push(
+        `${labels.length === 1 ? labels[0] : itemId} (${owners.length}×)`,
+      );
+      continue;
+    }
+    const counts = new Map<string, number>();
+    for (const o of known) {
+      const l = itemLabel(o, itemId);
+      counts.set(l, (counts.get(l) ?? 0) + 1);
+    }
+    for (const [l, n] of counts) if (n > 1) dups.push(`${l} (${n}×)`);
+  }
+  if (dups.length === 0) return undefined;
+  return new RagError(
+    `index: duplicate item ids in one batch, nothing read or written: ${dups.join(', ')}`,
+  );
+}
+
 class ToolsBinding implements IBoundCollection<ToolItem> {
   readonly rag: IRag;
   constructor(
@@ -75,17 +124,38 @@ class ToolsBinding implements IBoundCollection<ToolItem> {
     const failedItems: { itemId: string; reason: string }[] = [];
     const notes: ({ itemId: string } & IndexNote)[] = [];
     const prepared: { at: number; item: PreparedItem }[] = [];
+    // Pass 1 — the indexer's drafts for EVERY item (pure: no store read or write).
+    // `toRecords` returns a Result and may also reject: both are that item's failure.
+    const drafted: Result<readonly RecordDraft[], RagError>[] = [];
+    for (const tool of items) {
+      try {
+        drafted.push(await this.indexer.toRecords(tool, options));
+      } catch (err) {
+        drafted.push({ ok: false, error: toRagError(err) });
+      }
+    }
+    // Spec §3.3, D61: a duplicate owner-qualified item id anywhere in the batch →
+    // the batch is refused before any store read or write, nothing written.
+    const duplicates = duplicateBatchError(
+      items.map((tool, at) => {
+        const d = drafted[at];
+        return {
+          itemId: tool.itemId,
+          owner: d.ok ? d.value[0]?.owner : undefined,
+        };
+      }),
+    );
+    if (duplicates) return { ok: false, error: duplicates };
+    // Pass 2 — prepare each item; `notesFor` may throw: that item's failure, reported.
     for (const [at, tool] of items.entries()) {
       const fail = (reason: string) =>
         failedItems.push({ itemId: tool.itemId, reason });
-      // `toRecords` returns a Result and may also reject; `notesFor` may throw.
-      // Both failure paths fail THIS item, reported — never a rejected index().
+      const drafts = drafted[at];
+      if (!drafts.ok) {
+        fail(reasonOf(drafts.error));
+        continue;
+      }
       try {
-        const drafts = await this.indexer.toRecords(tool, options);
-        if (!drafts.ok) {
-          fail(reasonOf(drafts.error));
-          continue;
-        }
         const p = prepareItem(
           { itemId: tool.itemId, drafts: drafts.value },
           {
@@ -108,9 +178,6 @@ class ToolsBinding implements IBoundCollection<ToolItem> {
         fail(toRagError(err).message);
       }
     }
-    // Spec §3.3: two versions of one item in one batch → the batch is refused, nothing written.
-    const duplicates = duplicateItemsError(prepared.map((p) => p.item));
-    if (duplicates) return { ok: false, error: duplicates };
     // Write order (spec §3.3, D84): canonical (listing every id) → non-canonical →
     // stale deletes, every delete's Result checked (F3). NOT atomic (D13); readers
     // stay safe through hydration. A throw out of the store (e.g. its `writer()`)

@@ -84,7 +84,19 @@ describe('ComposedToolsProfile', () => {
       indexer: new FacetedToolIndexer([new SummaryFacet()]),
       collapse: new MaxScoreCollapse(),
     }).bind({ key: 'tools', rag });
-    await bound.index(TOOLS);
+    const five = [
+      ...TOOLS,
+      tool('write_file', 'Write a file to disk'),
+      tool('close_issue', 'Close an issue'),
+      tool('search_code', 'Search the code'),
+    ];
+    const ix = await bound.index(five);
+    assert.ok(ix.ok && ix.value.indexedItems === 5);
+    // The retrieval holds the generic default pool (D56).
+    assert.ok(
+      (bound.retrieval as unknown as { pool: unknown }).pool instanceof
+        ItemPool,
+    );
     const r = await bound.rag.query(new TextOnlyEmbedding('read file'), 2);
     assert.ok(r.ok);
     assert.equal(r.value.length, 2);
@@ -145,6 +157,40 @@ describe('ComposedToolsProfile', () => {
   });
 });
 
+describe('duplicate item ids are checked over the whole batch (spec §3.3, D61)', () => {
+  it('two versions of tool:make, one too coarse → { ok: false }, no canonical written', async () => {
+    const rag = new InMemoryRag();
+    const make = (values: string[]) =>
+      toolItemFromTool(
+        {
+          name: 'make',
+          description: 'Make',
+          inputSchema: {
+            properties: { kind: { enum: values } },
+            required: ['kind'],
+          },
+        },
+        { itemId: 'tool:make', originalName: 'make' },
+      );
+    const bound = profile({
+      indexer: new EnumValueToolIndexer(new FacetedToolIndexer([]), {
+        discriminator: new RequiredEnumDiscriminator(),
+        maxValues: 2,
+      }),
+    }).bind({ key: 'tools', rag });
+    const r = await bound.index([...TOOLS, make(['A', 'B', 'C']), make(['A'])]);
+    assert.ok(!r.ok);
+    assert.match(
+      r.error.message,
+      /duplicate item ids in one batch.*tool:make \(2×\)/,
+    );
+    for (const id of ['tool:make', 'tool:read_file', 'tool:list_issues']) {
+      const x = await rag.getById(recordId(G, id, 'full', 0));
+      assert.ok(x.ok && x.value === null, id);
+    }
+  });
+});
+
 describe('bindToolsProfile / toolsBindingOf', () => {
   it('binds once per store (server + builder), found through decorators', () => {
     const raw: IRag = new InMemoryRag();
@@ -152,6 +198,9 @@ describe('bindToolsProfile / toolsBindingOf', () => {
     const a = bindToolsProfile(p, { key: 'tools', rag: raw });
     const b = bindToolsProfile(p, { key: 'tools', rag: a.rag });
     assert.equal(a, b);
+    // The same raw store again → the same binding (spec §6.1: bind once).
+    const c = bindToolsProfile(p, { key: 'tools', rag: raw });
+    assert.equal(c, a);
     const decorated: IRag = {
       inner: a.rag,
       query: (e, k, o) => a.rag.query(e, k, o),
@@ -204,6 +253,8 @@ describe('stale records (F3) and notes (S1) in the binding', () => {
     });
     const r1 = await again.index(TOOLS);
     assert.ok(r1.ok);
+    assert.equal(r1.value.items, 2);
+    assert.equal(r1.value.indexedItems, 1);
     assert.deepEqual(
       r1.value.failedItems.map((f) => f.itemId),
       ['tool:read_file'],

@@ -12,7 +12,11 @@ import {
   StrategyRag,
 } from '../retrieval/strategy-rag.js';
 
+/** Bound store (the binding's `rag`) → its binding: what `toolsBindingOf` finds. */
 const BINDINGS = new WeakMap<IRag, IBoundCollection<ToolItem>>();
+/** The store a binding was made FOR (`target.rag`) → that binding: bind once (spec §6.1).
+ *  Separate from BINDINGS, so the raw store itself still carries no binding. */
+const BOUND_TARGETS = new WeakMap<IRag, IBoundCollection<ToolItem>>();
 
 /** The tools binding `rag` carries, or one of the stores it decorates (≤ 16 levels). */
 export function toolsBindingOf(
@@ -36,7 +40,7 @@ export function bindToolsProfile(
   profile: ICollectionProfile<ToolItem>,
   target: CollectionStore,
 ): IBoundCollection<ToolItem> {
-  const existing = toolsBindingOf(target.rag);
+  const existing = toolsBindingOf(target.rag) ?? BOUND_TARGETS.get(target.rag);
   if (existing) return existing;
   const bound = profile.bind(target);
   const rag = hasRetrievalStrategy(bound.rag)
@@ -55,5 +59,6 @@ export function bindToolsProfile(
           get: (ref, o) => bound.get(ref, o),
         };
   BINDINGS.set(rag, registered);
+  BOUND_TARGETS.set(target.rag, registered);
   return registered;
 }
