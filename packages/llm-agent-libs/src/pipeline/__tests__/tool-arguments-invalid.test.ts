@@ -336,3 +336,86 @@ describe('llm-adapter (OpenAI format): the LlmToolCall marks unparseable argumen
     assert.match(String(tools[0].content), CODE_RE);
   });
 });
+
+describe('a mixed round: the valid sibling runs, the bad call gets the error (fix round 1)', () => {
+  const mixed: StreamToolCall[] = [
+    { index: 0, id: 'c1', name: 'sum', arguments: BAD },
+    { index: 1, id: 'c2', name: 'sum', arguments: '{"a":1}' },
+  ];
+
+  function assertMixed(llm: { requests: Message[][] }, callCount: number) {
+    assert.equal(callCount, 1, 'the valid call runs exactly once');
+    const tools = toolMessages(llm.requests);
+    const bad = tools.find((m) => m.tool_call_id === 'c1');
+    const good = tools.find((m) => m.tool_call_id === 'c2');
+    assert.match(String(bad?.content), CODE_RE);
+    assert.ok(good, 'the valid call has its tool result');
+    assert.doesNotMatch(String(good.content), CODE_RE);
+  }
+
+  it('tool-loop (DefaultPipeline)', async () => {
+    const { r, llm, client } = await runThroughPipeline(mixed);
+    assert.ok(r.ok, !r.ok ? r.error.message : '');
+    assertMixed(llm, client.callCount);
+  });
+
+  it('legacy SmartAgent loop', async () => {
+    const llm = scriptedLlm(mixed);
+    const client = makeMcpClient([
+      { name: 'sum', description: 'sum', inputSchema: {} },
+    ]);
+    const { deps } = makeDefaultDeps({ mcpClients: [client] });
+    const agent = new SmartAgent(
+      { ...deps, mainLlm: llm },
+      { maxIterations: 5, mode: 'hard' },
+    );
+    const r = await agent.process('add');
+    assert.ok(r.ok, !r.ok ? r.error.message : '');
+    assertMixed(llm, client.callCount);
+  });
+});
+
+describe('legacy SmartAgent loop: external calls reach the consumer only after the check (fix round 1)', () => {
+  const EXTERNAL = {
+    name: 'GenerateFile',
+    description: 'Generate a file',
+    inputSchema: { type: 'object' as const, properties: {} },
+  };
+
+  it('an external call with bad JSON is not surfaced to the consumer', async () => {
+    const llm = scriptedLlm([
+      { index: 0, id: 'c1', name: 'GenerateFile', arguments: BAD },
+    ]);
+    const { deps } = makeDefaultDeps();
+    const agent = new SmartAgent(
+      { ...deps, mainLlm: llm },
+      { maxIterations: 5, mode: 'hard' },
+    );
+    const r = await agent.process('gen', { externalTools: [EXTERNAL] });
+    assert.ok(r.ok, !r.ok ? r.error.message : '');
+    assert.equal(r.value.toolCalls, undefined, 'no unchecked call surfaced');
+    const tools = toolMessages(llm.requests);
+    assert.match(String(tools[0]?.content), CODE_RE);
+  });
+
+  it('a valid external call is surfaced once, with its parsed arguments', async () => {
+    const llm = scriptedLlm([
+      { index: 0, id: 'c1', name: 'GenerateFile', arguments: '{"f":' },
+      { index: 0, arguments: '"x"}' },
+    ]);
+    const { deps } = makeDefaultDeps();
+    const agent = new SmartAgent(
+      { ...deps, mainLlm: llm },
+      { maxIterations: 5, mode: 'hard' },
+    );
+    const r = await agent.process('gen', { externalTools: [EXTERNAL] });
+    assert.ok(r.ok, !r.ok ? r.error.message : '');
+    assert.equal(r.value.stopReason, 'tool_calls');
+    assert.equal(r.value.toolCalls?.length, 1);
+    assert.equal(r.value.toolCalls?.[0].function.name, 'GenerateFile');
+    assert.deepEqual(
+      JSON.parse(r.value.toolCalls?.[0].function.arguments ?? ''),
+      { f: 'x' },
+    );
+  });
+});

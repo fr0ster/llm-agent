@@ -608,7 +608,7 @@ export class ToolLoopHandler implements IStageHandler {
       });
 
       // Spec §10.5.2 N2 (D87): argument text that does not parse marks the call.
-      const toolCalls = toolCallsFromAccumulated(toolCallsMap.values());
+      let toolCalls = toolCallsFromAccumulated(toolCallsMap.values());
 
       ctx.options?.sessionLogger?.logStep(
         `llm_response_iter_${iteration + 1}`,
@@ -688,7 +688,13 @@ export class ToolLoopHandler implements IStageHandler {
             queryText: ctx.inputText,
           })
         ).concat(controlTail);
-        continue;
+        // Spec N2: only the marked calls are refused; valid siblings of the
+        // same round still run (the LLM retries the refused one as any tool error).
+        toolCalls = toolCalls.filter((tc) => tc.argumentsError === undefined);
+        if (toolCalls.length === 0) continue;
+        // The refusal round carries this turn's assistant text; the round of the
+        // valid siblings must not repeat it.
+        content = '';
       }
 
       // -- Classify tool calls -----------------------------------------------

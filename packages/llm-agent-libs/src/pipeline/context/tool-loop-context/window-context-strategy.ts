@@ -61,6 +61,12 @@ export class WindowContextStrategy implements IToolLoopContextStrategy {
       this.rounds = [];
       return;
     }
+    if (state === null || typeof state !== 'object' || Array.isArray(state)) {
+      throw new OrchestratorError(
+        'tool-loop context (window): saved state is not an object',
+        PIPELINE_FAILURE_CODES.STATE_CORRUPT,
+      );
+    }
     if (state.version !== 1 || !Array.isArray(state.rounds)) {
       throw new OrchestratorError(
         `tool-loop context (window): saved state of version ${String(state.version)} cannot be restored`,

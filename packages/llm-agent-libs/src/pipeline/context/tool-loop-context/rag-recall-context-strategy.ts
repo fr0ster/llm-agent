@@ -83,6 +83,12 @@ export class RagRecallContextStrategy implements IToolLoopContextStrategy {
       this.counter = 0;
       return;
     }
+    if (state === null || typeof state !== 'object' || Array.isArray(state)) {
+      throw new OrchestratorError(
+        'tool-loop context (rag-recall): saved state is not an object',
+        PIPELINE_FAILURE_CODES.STATE_CORRUPT,
+      );
+    }
     const s = state as unknown as { last?: unknown; counter?: unknown };
     const lastOk =
       s.last === null || (typeof s.last === 'object' && !Array.isArray(s.last));

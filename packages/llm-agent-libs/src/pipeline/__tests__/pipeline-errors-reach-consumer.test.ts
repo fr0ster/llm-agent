@@ -3,8 +3,14 @@ import { describe, it } from 'node:test';
 import { OrchestratorError } from '@mcp-abap-adt/llm-agent';
 import { SmartAgent } from '../../agent.js';
 import type { IPipeline, PipelineResult } from '../../interfaces/pipeline.js';
-import { makeCapturingTracer, makeDefaultDeps } from '../../testing/index.js';
+import type { PendingToolResultsRegistry } from '../../policy/pending-tool-results-registry.js';
+import {
+  makeCapturingTracer,
+  makeDefaultDeps,
+  makeRag,
+} from '../../testing/index.js';
 import type { PipelineContext } from '../context.js';
+import { DefaultPipeline } from '../default-pipeline.js';
 import { PipelineExecutor } from '../executor.js';
 import { pipelineToStream } from '../pipeline-to-stream.js';
 import type { IStageHandler } from '../stage-handler.js';
@@ -159,6 +165,74 @@ describe('N1 — a pipeline error reaches the consumer (spec §10.5.2, D70)', ()
     const root = tracer.spans.find((s) => s.name === 'smart_agent.process');
     assert.equal(root?.status?.status, 'error');
     assert.match(root?.status?.message ?? '', /llm down/);
+    assert.equal(root?.ended, true);
+  });
+
+  it('pipelineToStream keeps the code of a rejected OrchestratorError (fix round 1)', async () => {
+    const pipeline = {
+      initialize: () => {},
+      execute: async () => {
+        throw new OrchestratorError('store gone', 'RAG_STORE_MISSING');
+      },
+    } as unknown as IPipeline;
+    const out = await collect(pipelineToStream(pipeline, 'q', [], undefined));
+    assert.equal(out.length, 1);
+    assert.ok(!out[0].ok && out[0].error.code === 'RAG_STORE_MISSING');
+  });
+
+  it('a real DefaultPipeline whose stage `when` condition throws gives {ok:false} (fix round 1)', async () => {
+    const { deps } = makeDefaultDeps({ ragStores: { facts: makeRag() } });
+    const throwingValue = {
+      valueOf(): number {
+        throw new Error('condition exploded');
+      },
+    };
+    const pipeline = new DefaultPipeline();
+    pipeline.initialize({
+      ...deps,
+      agentConfig: { ragTranslateEnabled: throwingValue },
+    } as never);
+    const agent = new SmartAgent({ ...deps, pipeline }, { maxIterations: 5 });
+    const r = await agent.process('hello');
+    assert.ok(!r.ok, 'the consumer receives the error');
+    assert.equal(r.error.code, 'PIPELINE_ERROR');
+    assert.match(r.error.message, /condition exploded/);
+  });
+
+  it('legacy loop: a rejected pending entry makes process() return {ok:false}, never reject (fix round 1)', async () => {
+    const { deps } = makeDefaultDeps({
+      llmResponses: [{ content: 'hi', finishReason: 'stop' }],
+    });
+    const tracer = makeCapturingTracer();
+    const agent = new SmartAgent(
+      { ...deps, tracer },
+      { maxIterations: 5, mode: 'hard' },
+    );
+    const promise = Promise.reject(new Error('lost'));
+    promise.catch(() => {});
+    (
+      agent as unknown as { pendingToolResults: PendingToolResultsRegistry }
+    ).pendingToolResults.set('default', {
+      assistantMessage: {
+        role: 'assistant',
+        content: null,
+        tool_calls: [
+          {
+            id: 'call_a',
+            type: 'function',
+            function: { name: 'A', arguments: '{}' },
+          },
+        ],
+      },
+      promise,
+      createdAt: Date.now(),
+    });
+    const r = await agent.process('hello');
+    assert.ok(!r.ok, 'process() returns the error');
+    assert.equal(r.error.code, 'PIPELINE_ERROR');
+    assert.match(r.error.message, /call_a/);
+    const root = tracer.spans.find((s) => s.name === 'smart_agent.process');
+    assert.equal(root?.status?.status, 'error');
     assert.equal(root?.ended, true);
   });
 });

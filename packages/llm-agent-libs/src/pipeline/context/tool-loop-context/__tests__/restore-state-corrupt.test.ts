@@ -50,6 +50,8 @@ const makers: Array<{
     name: 'WindowContextStrategy',
     make: () => new WindowContextStrategy(),
     corrupt: [
+      null,
+      'x',
       { version: 2, rounds: [] },
       { version: 1, rounds: 'x' },
     ],
@@ -59,6 +61,8 @@ const makers: Array<{
     name: 'LegacyAccumulateContextStrategy',
     make: () => new LegacyAccumulateContextStrategy(),
     corrupt: [
+      null,
+      'x',
       { version: 2, rounds: [] },
       { version: 1, rounds: 'x' },
     ],
@@ -68,6 +72,8 @@ const makers: Array<{
     name: 'LegacyTranscriptContextStrategy',
     make: () => new LegacyTranscriptContextStrategy({ rawMessages: [] }),
     corrupt: [
+      null,
+      'x',
       { version: 2, rawMessages: [], newRounds: [] },
       { version: 1, rawMessages: 'x', newRounds: [] },
     ],
@@ -81,6 +87,8 @@ const makers: Array<{
         { runId: 'run1' },
       ),
     corrupt: [
+      null,
+      'x',
       { version: 2, last: null, counter: 0 },
       { version: 1, last: null, counter: 'x' },
       { version: 1, last: [], counter: 0 },

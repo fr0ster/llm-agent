@@ -55,7 +55,11 @@ export async function* pipelineToStream(
     .catch((err) => {
       chunkQueue.push({
         ok: false,
-        error: new OrchestratorError(String(err), 'PIPELINE_ERROR'),
+        // A rejected OrchestratorError keeps its own code (spec D70).
+        error:
+          err instanceof OrchestratorError
+            ? err
+            : new OrchestratorError(String(err), 'PIPELINE_ERROR'),
       });
       done = true;
       if (resolveWait) {

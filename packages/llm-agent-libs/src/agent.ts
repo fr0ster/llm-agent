@@ -38,7 +38,6 @@ import type {
 } from '@mcp-abap-adt/llm-agent';
 import {
   type AgentCallOptions,
-  getStreamToolCallName,
   type IQueryExpander,
   isReadinessReporter,
   mergeOfferedTools,
@@ -776,8 +775,8 @@ export class SmartAgent {
    * chunk — set BEFORE that chunk is yielded. A consumer that stops at it
    * (`process()` returns on it; `for await … break`) closes this generator at the
    * yield, and no line after the yield ever runs. `ok` only after a stream that
-   * carried no error; a stream that throws leaves it `error` and rethrows. The
-   * caller's `finally` ends the span.
+   * carried no error; a stream that throws ends with an `{ ok: false }` item of
+   * the thrown error (never a rejection). The caller's `finally` ends the span.
    */
   private async *withRootStatus(
     stream: AsyncIterable<Result<LlmStreamChunk, OrchestratorError>>,
@@ -796,8 +795,18 @@ export class SmartAgent {
         yield chunk;
       }
     } catch (err) {
-      if (!failed) rootSpan.setStatus('error', String(err));
-      throw err;
+      // Spec §10.5.1 (N1): the consumer receives a failure as an `{ ok: false }`
+      // item — `process()` returns it, never rejects. An OrchestratorError keeps
+      // its code.
+      const error =
+        err instanceof OrchestratorError
+          ? err
+          : new OrchestratorError(String(err), 'PIPELINE_ERROR');
+      if (!failed) {
+        rootSpan.setStatus('error', `${error.code}: ${error.message}`);
+      }
+      yield { ok: false, error };
+      return;
     }
     if (!failed) rootSpan.setStatus('ok');
   }
@@ -1066,9 +1075,6 @@ export class SmartAgent {
         number,
         { id: string; name: string; arguments: string; argumentsError?: string }
       >();
-      // Track which streaming indices belong to external tools so that
-      // argument-only continuation deltas (no name field) are forwarded too.
-      const externalToolIndices = new Set<number>();
       for await (const chunkResult of stream) {
         if (!chunkResult.ok) {
           llmSpan.setStatus('error', chunkResult.error.message);
@@ -1090,7 +1096,6 @@ export class SmartAgent {
           content = '';
           iterationBuffer = '';
           toolCallsMap.clear();
-          externalToolIndices.clear();
           finishReason = undefined;
           continue;
         }
@@ -1106,24 +1111,6 @@ export class SmartAgent {
           }
         }
         if (chunk.toolCalls) {
-          // Register newly seen external tool indices
-          for (const tc of chunk.toolCalls) {
-            const name = getStreamToolCallName(tc);
-            if (name && externalToolNames.has(name)) {
-              const delta = toToolCallDelta(tc, 0);
-              externalToolIndices.add(delta.index);
-            }
-          }
-          const externalDeltas = chunk.toolCalls.filter((tc) => {
-            const delta = toToolCallDelta(tc, 0);
-            return externalToolIndices.has(delta.index);
-          });
-          if (externalDeltas.length > 0) {
-            yield {
-              ok: true,
-              value: { content: '', toolCalls: externalDeltas },
-            };
-          }
           for (const [
             fallbackIndex,
             rawToolCall,
@@ -1178,7 +1165,7 @@ export class SmartAgent {
         iterationBuffer = '';
       }
       // Spec §10.5.2 N2 (D87): argument text that does not parse marks the call.
-      const toolCalls = toolCallsFromAccumulated(toolCallsMap.values());
+      let toolCalls = toolCallsFromAccumulated(toolCallsMap.values());
       opts?.sessionLogger?.logStep(
         `llm_response_iter_${iteration + 1}`,
         {
@@ -1270,7 +1257,13 @@ export class SmartAgent {
         messages = (
           await strategy.form({ prefix: staticPrefix, queryText: _action.text })
         ).concat(controlTail);
-        continue;
+        // Spec N2: only the marked calls are refused; valid siblings of the
+        // same round still run (the LLM retries the refused one as any tool error).
+        toolCalls = toolCalls.filter((tc) => tc.argumentsError === undefined);
+        if (toolCalls.length === 0) continue;
+        // The refusal round carries this turn's assistant text; the round of the
+        // valid siblings must not repeat it.
+        content = '';
       }
       const {
         internalCalls,
@@ -1313,6 +1306,12 @@ export class SmartAgent {
         continue;
       }
       if (validExternalCalls.length > 0) {
+        // Spec D87/N2: external calls reach the consumer only here, after their
+        // arguments were checked — never as unchecked live deltas.
+        yield {
+          ok: true,
+          value: { content: '', toolCalls: validExternalCalls },
+        };
         // Mixed calls: fire internal tools async, store pending results
         if (internalCalls.length > 0) {
           fireInternalToolsAsync(

@@ -50,6 +50,12 @@ export class LegacyTranscriptContextStrategy
       this.newRounds = [];
       return;
     }
+    if (state === null || typeof state !== 'object' || Array.isArray(state)) {
+      throw new OrchestratorError(
+        'tool-loop context (legacy-transcript): saved state is not an object',
+        PIPELINE_FAILURE_CODES.STATE_CORRUPT,
+      );
+    }
     const s = state as unknown as {
       rawMessages?: unknown;
       newRounds?: unknown;
