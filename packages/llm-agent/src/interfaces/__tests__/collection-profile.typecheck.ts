@@ -3,7 +3,12 @@
 // Biome's line width is 80: each statement under a @ts-expect-error carries a
 // `biome-ignore format` line above the directive, so the formatter never splits it
 // and moves the error off the covered line (TS2578).
-import type { RecordDraft } from '../collection-profile.js';
+import type {
+  RecordDraft,
+  SharedItem,
+  SharedItemsStores,
+} from '../collection-profile.js';
+import type { IRag } from '../rag.js';
 
 export const _ok: RecordDraft = {
   text: 't',
@@ -27,3 +32,13 @@ export const _userNoId: RecordDraft = { text: 't', itemId: 'i', recordKind: 'ful
 // biome-ignore format: one statement per @ts-expect-error line
 // @ts-expect-error extras cannot set staleRecordIds (F3)
 export const _staleExtra: RecordDraft = { text: 't', itemId: 'i', recordKind: 'full', owner: { scope: 'global' }, metadata: { staleRecordIds: [] } };
+
+declare const rag: IRag;
+export const _userOnly: SharedItemsStores = { key: 'shared', user: rag };
+export const _globalOnly: SharedItemsStores = { key: 'shared', global: rag };
+// biome-ignore format: one statement per @ts-expect-error line
+// @ts-expect-error neither user nor global
+export const _neither: SharedItemsStores = { key: 'shared' };
+// biome-ignore format: one statement per @ts-expect-error line
+// @ts-expect-error a shared item cannot have session visibility
+export const _sessionItem: SharedItem = { itemId: 'i', text: 't', visibility: { scope: 'session', sessionId: 's' } };

@@ -15,6 +15,10 @@ export interface HealthComponentStatus {
     total: number;
     complete: boolean;
     clientFailures: number;
+    /** Records written (a profile writes several per tool). Absent without a profile. */
+    records?: number;
+    /** The tools profile's name. Absent without a profile. */
+    profile?: string;
   };
 }
 
