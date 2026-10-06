@@ -40,7 +40,10 @@ export class MaxScoreCollapse implements ICollapseRule {
     return [...groups.values()]
       .map((g) => {
         const sorted = [...g.hits].sort((a, b) => b.score - a.score);
-        return { ...g, hits: sorted, score: sorted[0]?.score ?? 0 };
+        const best = sorted[0];
+        // A group is created by its first hit, so it is never empty.
+        if (!best) throw new Error('MaxScoreCollapse: empty group');
+        return { ...g, hits: sorted, score: best.score };
       })
       .sort((a, b) => b.score - a.score || a.first - b.first)
       .map(({ source, owner, itemId, score, hits }) => ({

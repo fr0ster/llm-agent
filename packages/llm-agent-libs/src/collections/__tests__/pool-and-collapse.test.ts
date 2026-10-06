@@ -106,4 +106,57 @@ describe('MaxScoreCollapse', () => {
       ['x', 'y'],
     );
   });
+  it('an empty input collapses to nothing', () => {
+    assert.deepEqual(new MaxScoreCollapse().collapse([]), []);
+  });
+  it('hits without a string itemId or with a malformed owner are skipped', () => {
+    const out = new MaxScoreCollapse().collapse([
+      {
+        text: 't',
+        metadata: { visibility: 'global' },
+        score: 0.9,
+        source: 'p',
+      },
+      {
+        text: 't',
+        metadata: { visibility: 'global', itemId: 7 },
+        score: 0.9,
+        source: 'p',
+      },
+      hit('p', 'u', 0.9, { visibility: 'user' }),
+      hit('p', 'ok', 0.1),
+    ]);
+    assert.deepEqual(
+      out.map((c) => c.itemId),
+      ['ok'],
+    );
+  });
+  it('the same owner and itemId in two sources stay two items', () => {
+    const out = new MaxScoreCollapse().collapse([
+      hit('a', 'x', 0.5),
+      hit('b', 'x', 0.6),
+    ]);
+    assert.deepEqual(
+      out.map((c) => [c.source, c.itemId]),
+      [
+        ['b', 'x'],
+        ['a', 'x'],
+      ],
+    );
+  });
+  it('equal scores: hits inside an item keep input order, items keep first-seen order', () => {
+    const out = new MaxScoreCollapse().collapse([
+      hit('p', 'a', 0.5),
+      hit('p', 'b', 0.5),
+      { ...hit('p', 'a', 0.5), text: 'second' },
+    ]);
+    assert.deepEqual(
+      out.map((c) => c.itemId),
+      ['a', 'b'],
+    );
+    assert.deepEqual(
+      out[0]?.hits.map((h) => h.text),
+      ['a@0.5', 'second'],
+    );
+  });
 });
