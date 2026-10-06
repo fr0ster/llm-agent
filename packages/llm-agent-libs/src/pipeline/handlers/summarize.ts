@@ -11,6 +11,7 @@
  */
 
 import { OrchestratorError } from '@mcp-abap-adt/llm-agent';
+import { rejectionError } from '../../agent/rag-helpers.js';
 import type { ISpan } from '../../tracer/types.js';
 import type { PipelineContext } from '../context.js';
 import type { IStageHandler } from '../stage-handler.js';
@@ -45,11 +46,19 @@ export class SummarizeHandler implements IStageHandler {
       'Summarize the conversation so far in 2-3 sentences. Focus on the user goals and the current status of the task. Keep technical SAP terms as is.';
 
     const chatStart = Date.now();
-    const res = await ctx.helperLlm.chat(
-      [...toSummarize, { role: 'system' as const, content: prompt }],
-      [],
-      ctx.options,
-    );
+    const helperLlm = ctx.helperLlm;
+    let res: Awaited<ReturnType<typeof helperLlm.chat>>;
+    try {
+      res = await helperLlm.chat(
+        [...toSummarize, { role: 'system' as const, content: prompt }],
+        [],
+        ctx.options,
+      );
+    } catch (err) {
+      span.setStatus('error', String(err));
+      ctx.error = rejectionError('summarize', err, 'LLM_ERROR');
+      return false;
+    }
     ctx.requestLogger.logLlmCall({
       // Stamp requestId so this helper-LLM call is attributed to the active
       // request's per-traceId delta — without it, history-summarization tokens

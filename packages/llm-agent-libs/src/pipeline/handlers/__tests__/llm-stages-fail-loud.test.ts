@@ -107,7 +107,15 @@ describe('L1 translate', () => {
     const h = helper(() => Promise.reject(new LlmError('boom', 'LLM_ERROR')));
     const r = await agent({ helperLlm: h }).process(nonAscii);
     assert.ok(!r.ok);
+    assert.equal(r.error.code, 'LLM_ERROR');
     assert.match(r.error.message, /translate/);
+  });
+
+  it('a rejection with a typed code keeps that code', async () => {
+    const h = helper(() => Promise.reject(new LlmError('quota', 'LLM_QUOTA')));
+    const r = await agent({ helperLlm: h }).process(nonAscii);
+    assert.ok(!r.ok);
+    assert.equal(r.error.code, 'LLM_QUOTA');
   });
 });
 
@@ -130,6 +138,21 @@ describe('L2 expand', () => {
     assert.equal(ctx.error?.code, 'QUERY_EXPAND_ERROR');
     assert.equal(ctx.ragText, 'original query');
   });
+
+  it('a rejecting expander keeps its typed code and names the stage', async () => {
+    const expander: IQueryExpander = {
+      expand: () => Promise.reject(new RagError('boom', 'QUERY_EXPAND_ERROR')),
+    };
+    const ctx = {
+      ragText: 'original query',
+      config: { queryExpansionEnabled: true },
+      queryExpander: expander,
+      options: undefined,
+    } as unknown as PipelineContext;
+    assert.equal(await new ExpandHandler().execute(ctx, {}, span), false);
+    assert.equal(ctx.error?.code, 'QUERY_EXPAND_ERROR');
+    assert.match(ctx.error?.message ?? '', /expand/);
+  });
 });
 
 describe('L3 summarize', () => {
@@ -143,6 +166,14 @@ describe('L3 summarize', () => {
     const r = await agent({ helperLlm: h }).process(history);
     assert.ok(!r.ok);
     assert.equal(r.error.code, 'LLM_ERROR');
+    assert.match(r.error.message, /summarize/);
+  });
+
+  it('a rejecting summarizer keeps its typed code and names the stage', async () => {
+    const h = helper(() => Promise.reject(new LlmError('quota', 'LLM_QUOTA')));
+    const r = await agent({ helperLlm: h }).process(history);
+    assert.ok(!r.ok);
+    assert.equal(r.error.code, 'LLM_QUOTA');
     assert.match(r.error.message, /summarize/);
   });
 });

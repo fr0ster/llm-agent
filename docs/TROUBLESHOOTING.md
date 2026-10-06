@@ -210,7 +210,7 @@ npm run dev -- --config <path>   # any custom path
 **Fix.** The agent already invokes `_toEnglishForRag` (helper LLM translation) before embedding the query for the `tools` store specifically. Make sure:
 
 - The helper LLM (`pipeline.llm.helper`) is configured and the model is deployed.
-- `_toEnglishForRag` returns the translation, not the original. If translation fails (the helper LLM errors, or answers nothing), the request fails with `LLM_ERROR` naming the `translate` step — there is no silent fallback to the original text.
+- If translation fails (the helper LLM errors or answers nothing), the request fails with the LLM's error code (normally `LLM_ERROR`), naming the `translate` step; the original text is never used instead.
 
 If translation chain is unreliable, use a multilingual embedder instead — `bge-m3` (Ollama, recommended; set `model: bge-m3` explicitly) or `gemini-embedding` (SAP AI Core, multilingual). Both produce comparable cross-lingual similarity without translation.
 

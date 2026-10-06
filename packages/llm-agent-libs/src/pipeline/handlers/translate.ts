@@ -10,6 +10,7 @@
  */
 
 import { OrchestratorError } from '@mcp-abap-adt/llm-agent';
+import { rejectionError } from '../../agent/rag-helpers.js';
 import type { ISpan } from '../../tracer/types.js';
 import type { PipelineContext } from '../context.js';
 import type { IStageHandler } from '../stage-handler.js';
@@ -34,14 +35,21 @@ export class TranslateHandler implements IStageHandler {
 
     const llm = ctx.helperLlm || ctx.mainLlm;
     const chatStart = Date.now();
-    const res = await llm.chat(
-      [
-        { role: 'system' as const, content: prompt },
-        { role: 'user' as const, content: ctx.ragText },
-      ],
-      [],
-      ctx.options,
-    );
+    let res: Awaited<ReturnType<typeof llm.chat>>;
+    try {
+      res = await llm.chat(
+        [
+          { role: 'system' as const, content: prompt },
+          { role: 'user' as const, content: ctx.ragText },
+        ],
+        [],
+        ctx.options,
+      );
+    } catch (err) {
+      span.setStatus('error', String(err));
+      ctx.error = rejectionError('translate', err, 'LLM_ERROR');
+      return false;
+    }
     ctx.requestLogger.logLlmCall({
       component: 'translate',
       model: llm.model ?? 'unknown',

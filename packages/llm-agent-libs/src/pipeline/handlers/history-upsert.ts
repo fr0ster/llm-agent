@@ -36,7 +36,7 @@ export interface SummarizeAndStoreArgs {
 
 export async function summarizeAndStore(
   args: SummarizeAndStoreArgs,
-): Promise<Result<void, SmartAgentError>> {
+): Promise<Result<void, OrchestratorError>> {
   const { turn, summarizer, memory, rag, sessionId, options, log } = args;
 
   const result = await summarizer.summarize(turn, options);
@@ -133,10 +133,7 @@ export class HistoryUpsertHandler implements IStageHandler {
 
       if (!stored.ok) {
         span.setStatus('error', stored.error.message);
-        ctx.error =
-          stored.error instanceof OrchestratorError
-            ? stored.error
-            : new OrchestratorError(stored.error.message, stored.error.code);
+        ctx.error = stored.error;
         return false;
       }
       span.setStatus('ok');
