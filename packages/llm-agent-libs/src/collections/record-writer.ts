@@ -151,6 +151,11 @@ async function embedAll(
       records.map((r) => r.text),
       options,
     );
+    if (res.length !== records.length) {
+      return {
+        failure: `embedding returned ${res.length} vectors for ${records.length} texts`,
+      };
+    }
     return { vectors: new Map(records.map((r, i) => [r.id, res[i].vector])) };
   } catch (err) {
     return { failure: message(err) };
@@ -189,6 +194,10 @@ async function writeAll(
       return vector ? [{ ...r, vector }] : [];
     });
     if (batch.length === records.length) {
+      if (options?.signal?.aborted) {
+        for (const r of records) failed.set(r.id, 'aborted');
+        return failed;
+      }
       let error: string;
       try {
         const bulk = await writer.upsertManyPrecomputedRaw(batch, options);
@@ -364,7 +373,13 @@ export async function storeItems(
   const olds: (RagMetadata | undefined)[] = items.map(() => undefined);
   await Promise.all(
     items.map(async (it, i) => {
-      const r = await rag.getById(it.canonical.id, options);
+      let r: Result<RagResult | null, RagError>;
+      try {
+        r = await rag.getById(it.canonical.id, options);
+      } catch (err) {
+        failures[i] = `read-failed: ${message(err)}`;
+        return;
+      }
       if (!r.ok) {
         failures[i] = `read-failed: ${r.error.message}`;
         return;
@@ -426,6 +441,13 @@ export async function storeItems(
       if (stale[i].length === 0) return true;
       // Delete every stale id, each Result checked.
       const left = await deleteAll(rag, stale[i], options);
+      // Unchanged list (every delete failed): the canonical already lists exactly
+      // what is pending — no settle write (spec §3.3 step 4).
+      if (left.length === stale[i].length) {
+        failures[i] =
+          `cleanup-failed: ${left.length} stale record(s) kept for retry`;
+        return false;
+      }
       // Settle: the canonical lists exactly what is still pending. A failed settle
       // write is reported, never counted indexed (D76); the written-ahead superset
       // stays, and the retry's delete of an already-deleted id is a no-op.
@@ -487,6 +509,22 @@ export function asItem(
   };
 }
 
+const asRagError = (err: unknown): RagError =>
+  err instanceof RagError ? err : new RagError(message(err));
+
+/** `getById`, with a throw turned into its `Result` error (both failure paths). */
+async function readCanonical(
+  rag: IRag,
+  canonicalId: string,
+  options?: CallOptions,
+): Promise<Result<RagResult | null, RagError>> {
+  try {
+    return await rag.getById(canonicalId, options);
+  } catch (err) {
+    return { ok: false, error: asRagError(err) };
+  }
+}
+
 /** The item whole by its canonical id, or null — identity-checked against `filter` (spec §3.3). */
 export async function getItem(
   rag: IRag,
@@ -494,7 +532,7 @@ export async function getItem(
   filter: CallOptions | undefined,
   options?: CallOptions,
 ): Promise<Result<RagResult | null, RagError>> {
-  const r = await rag.getById(canonicalId, options);
+  const r = await readCanonical(rag, canonicalId, options);
   if (!r.ok) return r;
   const rec = r.value;
   if (
@@ -524,40 +562,49 @@ export async function removeItem(
       error: new RagError('store has no writer', 'RAG_READ_ONLY'),
     };
   }
-  const r = await rag.getById(canonicalId, options);
+  const r = await readCanonical(rag, canonicalId, options);
   if (!r.ok) return r;
   if (!r.value) return { ok: true, value: 0 };
   const meta = r.value.metadata;
   let n = 0;
-  let failed = 0;
-  const del = async (id: string): Promise<void> => {
+  /** One delete; its error (an `ok: false` or a throw — both count) or undefined. */
+  const del = async (id: string): Promise<RagError | undefined> => {
     try {
       const d = await writer.deleteByIdRaw(id, options);
-      if (!d.ok) failed++;
-      else if (d.value) n++;
-    } catch {
-      failed++;
+      if (!d.ok) return d.error;
+      if (d.value) n++;
+      return undefined;
+    } catch (err) {
+      return asRagError(err);
     }
   };
+  const errors: RagError[] = [];
   for (const id of new Set([
     ...listed(meta),
     ...listed(meta, 'staleRecordIds'),
   ])) {
-    await del(id);
+    const e = await del(id);
+    if (e) errors.push(e);
   }
-  if (failed > 0) {
+  // The first failure's code and message reach the caller.
+  const [first] = errors;
+  if (first) {
     return {
       ok: false,
       error: new RagError(
-        `remove: ${failed} record delete(s) failed; the item is kept so a retry finds them`,
+        `remove: ${errors.length} record delete(s) failed; the item is kept so a retry finds them: ${first.message}`,
+        first.code,
       ),
     };
   }
-  await del(canonicalId);
-  if (failed > 0) {
+  const canonicalError = await del(canonicalId);
+  if (canonicalError) {
     return {
       ok: false,
-      error: new RagError('remove: the canonical record delete failed'),
+      error: new RagError(
+        `remove: the canonical record delete failed: ${canonicalError.message}`,
+        canonicalError.code,
+      ),
     };
   }
   return { ok: true, value: n };

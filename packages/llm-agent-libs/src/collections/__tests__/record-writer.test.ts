@@ -5,8 +5,11 @@ import {
   type CallOptions,
   type IEmbedder,
   type IRag,
+  type IRagBackendWriter,
+  type IRetrievalEmbedder,
   RagError,
   type RagMetadata,
+  type RagResult,
   type RecordDraft,
   type RecordOwner,
   recordId,
@@ -16,6 +19,7 @@ import { InMemoryRag, VectorRag } from '@mcp-abap-adt/llm-agent-rag';
 import {
   duplicateItemsError,
   getItem,
+  isExpired,
   prepareItem,
   removeItem,
   storeItems,
@@ -740,5 +744,406 @@ describe('duplicate item ids in one batch are rejected (spec §3.3, §17.19)', (
       const x = await raw.getById(id);
       assert.ok(x.ok && x.value === null, id);
     }
+  });
+});
+
+interface StubParts {
+  readonly getById?: IRag['getById'];
+  /** Replaces parts of the per-record writer; `null` = the store has no writer. */
+  readonly writer?: Partial<IRagBackendWriter> | null;
+  readonly retrievalEmbedder?: IRetrievalEmbedder;
+}
+
+/**
+ * `inner` behind a per-record writer (no precomputed or bulk write unless `parts` adds
+ * one), with the given parts replaced. `log` records every default write and delete.
+ */
+function stub(
+  inner: InMemoryRag,
+  parts: StubParts = {},
+): { rag: IRag; log: string[] } {
+  const w = inner.writer();
+  const log: string[] = [];
+  const base: IRagBackendWriter = {
+    upsertRaw: async (id, text, meta, o) => {
+      log.push(`upsert ${id}`);
+      return w.upsertRaw(id, text, meta, o);
+    },
+    deleteByIdRaw: async (id, o) => {
+      log.push(`delete ${id}`);
+      return w.deleteByIdRaw(id, o);
+    },
+  };
+  const writer: IRagBackendWriter | undefined =
+    parts.writer === null ? undefined : { ...base, ...parts.writer };
+  const rag: IRag & { retrievalEmbedder?: IRetrievalEmbedder } = {
+    query: (e, k, o) => inner.query(e, k, o),
+    healthCheck: inner.healthCheck.bind(inner),
+    getById: parts.getById ?? ((id, o) => inner.getById(id, o)),
+    ...(writer ? { writer: () => writer } : {}),
+    ...(parts.retrievalEmbedder
+      ? { retrievalEmbedder: parts.retrievalEmbedder }
+      : {}),
+  };
+  return { rag, log };
+}
+
+const vec = (): { vector: number[] } => ({ vector: [1, 0] });
+
+describe('every failure mode is reported with its reason (spec §3.3, F3, D76)', () => {
+  const canonId = recordId(U_A, 'case-42', 'item', 0);
+  const note0 = recordId(U_A, 'case-42', 'note', 0);
+  const staleId = recordId(U_A, 'case-42', 'note', 1);
+  /** v1 (item + notes 0, 1) stored straight on a fresh store; v2 drops note 1. */
+  const replacing = async () => {
+    const inner = new InMemoryRag();
+    const v1 = prep([
+      draft('item', 'v1'),
+      draft('note', 'a'),
+      draft('note', 'b'),
+    ]);
+    const v2 = prep([draft('item', 'v2'), draft('note', 'a2')]);
+    assert.ok(v1.ok && v2.ok);
+    assert.deepEqual((await storeItems(inner, [v1.item])).indexed, [true]);
+    return { inner, v2: v2.item };
+  };
+  const present = async (rag: IRag, id: string): Promise<RagResult | null> => {
+    const x = await rag.getById(id);
+    assert.ok(x.ok);
+    return x.value;
+  };
+
+  it('read-failed: the canonical read answers ok: false', async () => {
+    const { rag, log } = stub(new InMemoryRag(), {
+      getById: async () => ({
+        ok: false as const,
+        error: new RagError('read down'),
+      }),
+    });
+    const p = prep([draft('item', 'c')]);
+    assert.ok(p.ok);
+    const r = await storeItems(rag, [p.item]);
+    assert.deepEqual(r.indexed, [false]);
+    assert.deepEqual(r.failures, ['read-failed: read down']);
+    assert.equal(r.records, 0);
+    assert.deepEqual(log, [], 'nothing written for an item whose read failed');
+  });
+
+  it('read-failed: the canonical read throws', async () => {
+    const { rag, log } = stub(new InMemoryRag(), {
+      getById: async () => {
+        throw new Error('read boom');
+      },
+    });
+    const p = prep([draft('item', 'c')]);
+    assert.ok(p.ok);
+    const r = await storeItems(rag, [p.item]);
+    assert.deepEqual(r.indexed, [false]);
+    assert.deepEqual(r.failures, ['read-failed: read boom']);
+    assert.equal(r.records, 0);
+    assert.deepEqual(log, [], 'nothing written for an item whose read failed');
+  });
+
+  it('getItem and removeItem: a throwing getById → ok: false; a thrown RagError keeps its code', async () => {
+    const coded = new RagError('coded down', 'RAG_TEST_CODE');
+    for (const thrown of [new Error('read boom'), coded]) {
+      const { rag } = stub(new InMemoryRag(), {
+        getById: async () => {
+          throw thrown;
+        },
+      });
+      for (const res of [
+        await getItem(rag, canonId, undefined),
+        await removeItem(rag, canonId),
+      ]) {
+        assert.equal(res.ok, false);
+        if (res.ok) continue;
+        assert.ok(res.error instanceof RagError);
+        assert.equal(res.error.message, thrown.message);
+        assert.equal(
+          res.error.code,
+          thrown === coded ? 'RAG_TEST_CODE' : 'RAG_ERROR',
+        );
+      }
+    }
+  });
+
+  it('a failed settle write → cleanup-failed naming the store error (D76)', async () => {
+    const { inner, v2 } = await replacing();
+    const w = inner.writer();
+    let canonWrites = 0;
+    const { rag } = stub(inner, {
+      writer: {
+        upsertRaw: async (id, text, meta, o) => {
+          if (id === canonId && ++canonWrites === 2) {
+            return { ok: false as const, error: new RagError('settle down') };
+          }
+          return w.upsertRaw(id, text, meta, o);
+        },
+      },
+    });
+    const r = await storeItems(rag, [v2]);
+    assert.deepEqual(r.indexed, [false]);
+    assert.deepEqual(r.failures, [
+      'cleanup-failed: the settled stale list was not written: settle down',
+    ]);
+    assert.equal(canonWrites, 2);
+    assert.equal(
+      await present(inner, staleId),
+      null,
+      'the stale record was deleted',
+    );
+    const canon = await present(inner, canonId);
+    assert.deepEqual(
+      canon?.metadata.staleRecordIds,
+      [staleId],
+      'the written-ahead superset stays',
+    );
+  });
+
+  it('a throwing deleteByIdRaw keeps the id: cleanup-failed, listed for retry', async () => {
+    const { inner, v2 } = await replacing();
+    const { rag } = stub(inner, {
+      writer: {
+        deleteByIdRaw: async () => {
+          throw new Error('delete boom');
+        },
+      },
+    });
+    const r = await storeItems(rag, [v2]);
+    assert.deepEqual(r.indexed, [false]);
+    assert.deepEqual(r.failures, [
+      'cleanup-failed: 1 stale record(s) kept for retry',
+    ]);
+    assert.ok(await present(inner, staleId));
+    const canon = await present(inner, canonId);
+    assert.deepEqual(canon?.metadata.staleRecordIds, [staleId]);
+  });
+
+  it('an unchanged stale list is not settled: no second canonical write', async () => {
+    const { inner, v2 } = await replacing();
+    const w = inner.writer();
+    const { rag, log } = stub(inner, {
+      writer: {
+        deleteByIdRaw: async (id, o) => {
+          log.push(`delete ${id}`);
+          return id === staleId
+            ? { ok: false as const, error: new RagError('delete down') }
+            : w.deleteByIdRaw(id, o);
+        },
+      },
+    });
+    const r = await storeItems(rag, [v2]);
+    assert.deepEqual(r.failures, [
+      'cleanup-failed: 1 stale record(s) kept for retry',
+    ]);
+    assert.deepEqual(log, [
+      `upsert ${canonId}`,
+      `upsert ${note0}`,
+      `delete ${staleId}`,
+    ]);
+  });
+
+  it('a throwing per-record upsertRaw → write-failed with the thrown message; the id is tracked', async () => {
+    const inner = new InMemoryRag();
+    const w = inner.writer();
+    const { rag } = stub(inner, {
+      writer: {
+        upsertRaw: async (id, text, meta, o) => {
+          if (id === note0) throw new Error('write boom');
+          return w.upsertRaw(id, text, meta, o);
+        },
+      },
+    });
+    const p = prep([draft('item', 'c'), draft('note', 'x')]);
+    assert.ok(p.ok);
+    const r = await storeItems(rag, [p.item]);
+    assert.deepEqual(r.indexed, [false]);
+    assert.deepEqual(r.failures, ['write-failed: write boom']);
+    const canon = await present(inner, canonId);
+    assert.deepEqual(canon?.metadata.recordIds, [note0]);
+  });
+
+  it('removeItem: a failed record delete keeps the first failure’s code and message; a throw counts', async () => {
+    for (const [fail, code, msg] of [
+      ['answer', 'RAG_DELETE_TEST', 'note down'],
+      ['throw', 'RAG_ERROR', 'note boom'],
+    ] as const) {
+      const inner = new InMemoryRag();
+      const p = prep([draft('item', 'c'), draft('note', 'x')]);
+      assert.ok(p.ok);
+      await storeItems(inner, [p.item]);
+      const w = inner.writer();
+      const { rag } = stub(inner, {
+        writer: {
+          deleteByIdRaw: async (id, o) => {
+            if (id !== note0) return w.deleteByIdRaw(id, o);
+            if (fail === 'throw') throw new Error(msg);
+            return { ok: false as const, error: new RagError(msg, code) };
+          },
+        },
+      });
+      const res = await removeItem(rag, canonId);
+      assert.equal(res.ok, false);
+      if (res.ok) continue;
+      assert.equal(res.error.code, code);
+      assert.equal(
+        res.error.message,
+        `remove: 1 record delete(s) failed; the item is kept so a retry finds them: ${msg}`,
+      );
+      assert.ok(await present(inner, canonId), 'the canonical is kept');
+    }
+  });
+
+  it('removeItem: a failed canonical delete → its code and message', async () => {
+    const inner = new InMemoryRag();
+    const p = prep([draft('item', 'c'), draft('note', 'x')]);
+    assert.ok(p.ok);
+    await storeItems(inner, [p.item]);
+    const w = inner.writer();
+    const { rag } = stub(inner, {
+      writer: {
+        deleteByIdRaw: async (id, o) =>
+          id === canonId
+            ? {
+                ok: false as const,
+                error: new RagError('canon down', 'RAG_DELETE_TEST'),
+              }
+            : w.deleteByIdRaw(id, o),
+      },
+    });
+    const res = await removeItem(rag, canonId);
+    assert.equal(res.ok, false);
+    if (res.ok) return;
+    assert.equal(res.error.code, 'RAG_DELETE_TEST');
+    assert.equal(
+      res.error.message,
+      'remove: the canonical record delete failed: canon down',
+    );
+  });
+
+  it('removeItem on a store without a writer → RAG_READ_ONLY', async () => {
+    const { rag } = stub(new InMemoryRag(), { writer: null });
+    const res = await removeItem(rag, canonId);
+    assert.equal(res.ok, false);
+    if (res.ok) return;
+    assert.equal(res.error.code, 'RAG_READ_ONLY');
+  });
+
+  /** A store whose embedder batches and whose writer takes precomputed vectors. */
+  const embedding = (embedDocuments: IRetrievalEmbedder['embedDocuments']) => {
+    const inner = new InMemoryRag();
+    const w = inner.writer();
+    const calls: string[] = [];
+    const { rag, log } = stub(inner, {
+      retrievalEmbedder: {
+        embedDocument: async () => vec(),
+        embedQuery: async () => vec(),
+        embedDocuments,
+      },
+      writer: {
+        upsertPrecomputedRaw: async (id, text, _v, meta, o) => {
+          calls.push(`precomputed ${id}`);
+          return w.upsertRaw(id, text, meta, o);
+        },
+      },
+    });
+    return { rag, log, calls, inner };
+  };
+
+  it('batchFailure: a failed embedDocuments is reported; the store embeds per record', async () => {
+    const { rag, log, calls } = embedding(async () => {
+      throw new Error('embed down');
+    });
+    const p = prep([draft('item', 'c'), draft('note', 'x')]);
+    assert.ok(p.ok);
+    const r = await storeItems(rag, [p.item]);
+    assert.equal(r.batchFailure, 'embed down');
+    assert.deepEqual(r.indexed, [true]);
+    assert.equal(r.records, 2);
+    assert.deepEqual(calls, [], 'no precomputed write without vectors');
+    assert.deepEqual(log, [`upsert ${canonId}`, `upsert ${note0}`]);
+  });
+
+  it('batchFailure: an embedder returning the wrong number of vectors is reported', async () => {
+    const { rag, calls } = embedding(async () => [vec()]);
+    const p = prep([draft('item', 'c'), draft('note', 'x')]);
+    assert.ok(p.ok);
+    const r = await storeItems(rag, [p.item]);
+    assert.equal(r.batchFailure, 'embedding returned 1 vectors for 2 texts');
+    assert.deepEqual(r.indexed, [true]);
+    assert.deepEqual(calls, []);
+  });
+
+  it('bulk path: an aborted signal writes nothing → write-failed: aborted', async () => {
+    const inner = new InMemoryRag();
+    const bulk: string[] = [];
+    const { rag } = stub(inner, {
+      retrievalEmbedder: {
+        embedDocument: async () => vec(),
+        embedQuery: async () => vec(),
+        embedDocuments: async (ts) => ts.map(vec),
+      },
+      writer: {
+        upsertManyPrecomputedRaw: async (items) => {
+          bulk.push(...items.map((i) => i.id));
+          return { ok: true as const, value: undefined };
+        },
+      },
+    });
+    const ac = new AbortController();
+    ac.abort();
+    const p = prep([draft('item', 'c'), draft('note', 'x')]);
+    assert.ok(p.ok);
+    const r = await storeItems(rag, [p.item], { signal: ac.signal });
+    assert.deepEqual(r.indexed, [false]);
+    assert.deepEqual(r.failures, ['write-failed: aborted']);
+    assert.deepEqual(bulk, []);
+  });
+
+  it('refusals: item-id-mismatch, no-records, two canonical drafts', () => {
+    const o = { canonicalKind: 'item', profile: 'p', maxRecordsPerItem: 5 };
+    assert.deepEqual(
+      prepareItem(
+        {
+          itemId: 'case-42',
+          drafts: [
+            draft('item', 'c'),
+            { ...draft('note', 'x'), itemId: 'case-9' },
+          ],
+        },
+        o,
+      ),
+      { ok: false, reason: 'item-id-mismatch' },
+    );
+    assert.deepEqual(prepareItem({ itemId: 'case-42', drafts: [] }, o), {
+      ok: false,
+      reason: 'no-records',
+    });
+    assert.deepEqual(
+      prepareItem(
+        { itemId: 'case-42', drafts: [draft('item', 'a'), draft('item', 'b')] },
+        o,
+      ),
+      {
+        ok: false,
+        reason: 'missing-canonical',
+      },
+    );
+  });
+
+  it('getItem: an expired item is not returned', async () => {
+    const rag = new InMemoryRag();
+    const old = prep([draft('item', 'c')], 5, 1);
+    assert.ok(old.ok);
+    await storeItems(rag, [old.item]);
+    assert.ok(isExpired({ ttl: 1 }));
+    const gone = await getItem(rag, canonId, undefined);
+    assert.ok(gone.ok && gone.value === null);
+    const live = prep([draft('item', 'c')], 5, Date.now() / 1000 + 3600);
+    assert.ok(live.ok);
+    await storeItems(rag, [live.item]);
+    const found = await getItem(rag, canonId, undefined);
+    assert.ok(found.ok && found.value?.text === 'c');
   });
 });
