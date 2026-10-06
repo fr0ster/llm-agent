@@ -31,11 +31,13 @@ import {
   recordId,
   type SourcedHit,
 } from '@mcp-abap-adt/llm-agent';
+import { callReranker, rerankFailedError } from '../retrieval/rerank-call.js';
 import { assertPositiveInteger } from '../util/assert-positive-integer.js';
-import { TopItemsCut } from './cuts.js';
+import { ScoreFloorCut, TopItemsCut } from './cuts.js';
 import { ItemPool } from './item-pool.js';
 import { itemKey, ownerFromMetadata } from './owner.js';
 import { asItem, isExpired } from './record-writer.js';
+import { checkRerankOutput } from './rerank-check.js';
 import { toRagError } from './to-rag-error.js';
 
 export interface StagedRetrievalOptions {
@@ -117,6 +119,20 @@ export function newRunContext(options?: CallOptions): RunContext {
   };
 }
 
+const OUTCOME_SEVERITY: Record<RunStats['rerankOutcome'], number> = {
+  none: 0,
+  ok: 1,
+  error: 2,
+};
+/** Keep the run's most severe rerank outcome across its `rank` calls. */
+function recordOutcome(
+  ctx: RunContext,
+  outcome: RunStats['rerankOutcome'],
+): void {
+  if (OUTCOME_SEVERITY[outcome] > OUTCOME_SEVERITY[ctx.stats.rerankOutcome])
+    ctx.stats.rerankOutcome = outcome;
+}
+
 /** The first `n` units per source (the pool) and the rest of what was fetched (the overflow), both in stage-1 order. */
 function splitPerSource(
   units: readonly Unit[],
@@ -188,6 +204,19 @@ export class StagedRetrieval implements IRetrievalStrategy {
     this.name = options.name;
     this.cut = options.cut ?? new TopItemsCut();
     this.pool = options.pool ?? new ItemPool();
+    // Spec §4.7 (F5): pinned items are unmeasured (D7) — a threshold calibrated on
+    // reranked scores must not see them. A failed rerank is an error (D71), so no
+    // stage-1 score ever reaches the cut under a reranker.
+    const rr = options.rerank;
+    if (
+      rr &&
+      this.cut instanceof ScoreFloorCut &&
+      (rr.keepStage1Top ?? 0) > 0
+    ) {
+      throw new Error(
+        'StagedRetrieval: keepStage1Top cannot be combined with ScoreFloorCut — keepStage1Top is unmeasured (D7); a threshold over a pinned head would let an unmeasured order decide what a calibrated threshold keeps',
+      );
+    }
   }
 
   async retrieve(
@@ -309,15 +338,103 @@ export class StagedRetrieval implements IRetrievalStrategy {
     return { ok: true, value: mergeByScore(got) };
   }
 
-  /** Stage-1 order; the reranker is added in Task 13. `pin` is false for the
-   *  replacements of orphans (Task 13: no keepStage1Top pins there). */
+  /**
+   * The reranker reads the ITEM text (spec §4.6): a canonical hit's text, else a
+   * non-canonical hit's `itemText` shortcut, else the canonical record (read
+   * now). Undefined = orphan (dropped before reranking).
+   */
+  private async itemText(
+    u: Unit,
+    ctx: RunContext,
+  ): Promise<Result<string | undefined, RagError>> {
+    if (!u.item) return { ok: true, value: u.hits[0]?.text };
+    const canonicalHit = u.hits.find(
+      (h) => h.metadata.recordKind === this.options.canonicalKind,
+    );
+    if (canonicalHit) return { ok: true, value: canonicalHit.text };
+    const shortcut = u.hits.find(
+      (h) => typeof h.metadata.itemText === 'string',
+    );
+    if (shortcut)
+      return { ok: true, value: String(shortcut.metadata.itemText) };
+    const c = await this.canonicalOf(u, ctx);
+    if (!c.ok) return c;
+    return { ok: true, value: c.value?.text };
+  }
+
   protected async rank(
     pooled: Unit[],
-    _text: string,
-    _ctx: RunContext,
-    _pin: boolean,
+    text: string,
+    ctx: RunContext,
+    pin: boolean,
   ): Promise<Result<Unit[], RagError>> {
-    return { ok: true, value: pooled };
+    const rr = this.options.rerank;
+    if (!rr || pooled.length === 0) return { ok: true, value: pooled };
+    // `IRag` has no batch get: the item-text reads (a canonical read per unit
+    // that needs one) run in parallel (spec §4.6); `canonicalOf` caches by unit
+    // key in `ctx`, so no read or orphan is counted twice. Pool order is kept.
+    const texts = await Promise.all(pooled.map((u) => this.itemText(u, ctx)));
+    const live: Unit[] = [];
+    const candidates: RagResult[] = [];
+    for (const [i, u] of pooled.entries()) {
+      const t = texts[i];
+      if (!t.ok) return t;
+      if (t.value === undefined) continue;
+      live.push(u);
+      candidates.push({
+        text: t.value,
+        metadata: { ...(u.hits[0]?.metadata ?? {}), id: u.key },
+        score: u.score,
+      });
+    }
+    // Task 4I's shared path: a reranker `ok: false`, a throw (`RERANK_THROWN`,
+    // capped) or an output that fails the check (`RERANK_ERROR`) → one failure.
+    const r = await callReranker(
+      rr.reranker,
+      text,
+      candidates,
+      ctx.options,
+      (out) => checkRerankOutput(candidates, out),
+    );
+    if (!r.ok) {
+      const failure = r.failure;
+      ctx.options?.sessionLogger?.logStep('retrieval_rerank_error', {
+        store: this.options.storeKey,
+        strategy: this.name,
+        code: failure.code,
+        message: failure.message,
+      });
+      ctx.stats.rerankError = `${failure.code}: ${failure.message}`;
+      // One behaviour (spec §9.3, D71): no stage-1 fallback.
+      recordOutcome(ctx, 'error');
+      return { ok: false, error: rerankFailedError(failure) };
+    }
+    const out = r.value;
+    recordOutcome(ctx, 'ok');
+    const byKey = new Map(live.map((u) => [u.key, u] as const));
+    const reranked: Unit[] = [];
+    for (const r of out) {
+      const u = byKey.get(String(r.metadata.id));
+      if (u) reranked.push({ ...u, score: r.score });
+    }
+    // Pins are the POOL's stage-1 places; the replacements of orphans (Task 12,
+    // `pin` false) are reranked without them (spec §4.6, §4.7, D67).
+    const keepTop = pin ? (rr.keepStage1Top ?? 0) : 0;
+    if (keepTop === 0) return { ok: true, value: reranked };
+    // Pinned items keep their stage-1 PLACE but carry their RERANKED score
+    // (spec §4.7, F5): one scale across the result. The output check above
+    // guarantees every live unit has a reranked entry.
+    const rerankedByKey = new Map(reranked.map((u) => [u.key, u] as const));
+    const head: Unit[] = [];
+    for (const u of live.slice(0, keepTop)) {
+      const scored = rerankedByKey.get(u.key);
+      if (scored) head.push({ ...scored, pinned: true });
+    }
+    const headKeys = new Set(head.map((u) => u.key));
+    return {
+      ok: true,
+      value: [...head, ...reranked.filter((u) => !headKeys.has(u.key))],
+    };
   }
 
   /** Hydrate in rank order, in parallel waves, until `keep` items: orphans never use up k. */

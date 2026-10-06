@@ -3,6 +3,7 @@
 export { FixedItemsCut, ScoreFloorCut, TopItemsCut } from './cuts.js';
 export { ItemPool } from './item-pool.js';
 export { MaxScoreCollapse } from './max-score-collapse.js';
+export { checkRerankOutput } from './rerank-check.js';
 export {
   CharsPerTokenEstimator,
   ToolDefinitionSizeEstimator,
