@@ -20,7 +20,7 @@ import type {
   LLMResponse,
   Message,
 } from '@mcp-abap-adt/llm-agent';
-import { BaseLLMProvider } from '@mcp-abap-adt/llm-agent';
+import { BaseLLMProvider, LlmError } from '@mcp-abap-adt/llm-agent';
 import {
   type ChatMessage,
   OrchestrationClient,
@@ -500,8 +500,8 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
     }
     try {
       // The configured credential, not the SDK's implicit AICORE_SERVICE_KEY
-      // lookup — without it a deployment on `<REF>_SERVICE_KEY` alone got the
-      // fallback below instead of the catalog.
+      // lookup — without it a deployment on `<REF>_SERVICE_KEY` alone could
+      // not reach the catalog.
       const destination = await buildDestination({
         apiBaseUrl: this.config.apiBaseUrl,
         credential: this.config.credential,
@@ -526,9 +526,14 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
       this.modelsCacheExpiry =
         Date.now() + SapCoreAIProvider.MODELS_CACHE_TTL_MS;
       return models;
-    } catch {
-      // Fallback to configured model if AI API is not available
-      return [{ id: this.model }];
+    } catch (e) {
+      // An unreachable catalog is an error, never the configured model as if
+      // the catalog had listed it (spec §10.5.6 L5). Nothing is cached, so the
+      // next call asks the catalog again.
+      throw new LlmError(
+        `model catalog unavailable: ${String(e)}`,
+        'LLM_ERROR',
+      );
     }
   }
 

@@ -984,3 +984,85 @@ describe('OpenAIProvider — sampling knobs', () => {
     assert.equal(bodies[0].max_tokens, 50);
   });
 });
+
+// ---------------------------------------------------------------------------
+// streamChat() — a malformed SSE line is an error (L6)
+// ---------------------------------------------------------------------------
+
+describe('OpenAIProvider — streamChat() malformed line (L6)', () => {
+  function streaming(chunks: string[]): OpenAIProvider {
+    const provider = new OpenAIProvider({
+      credential: staticApiKey('sk-test'),
+      model: 'gpt-4o',
+    });
+    // @ts-expect-error — stub axios for test
+    provider.client.post = async () => ({
+      data: (async function* () {
+        for (const c of chunks) yield Buffer.from(c);
+      })(),
+    });
+    return provider;
+  }
+  const good = (text: string) =>
+    `data: {"choices":[{"delta":{"content":"${text}"},"finish_reason":null}]}\n\n`;
+
+  it('a complete data line that is not JSON ends the stream with an error naming the line', async () => {
+    const provider = streaming([
+      good('Hello'),
+      'data: {"broken\n\n',
+      good('World'),
+      'data: [DONE]\n\n',
+    ]);
+    const contents: string[] = [];
+    await assert.rejects(
+      async () => {
+        for await (const chunk of provider.streamChat([
+          { role: 'user', content: 'hi' },
+        ])) {
+          contents.push(chunk.content);
+        }
+      },
+      (err: Error) => {
+        assert.match(err.message, /OpenAI Streaming error:/);
+        assert.match(err.message, /data: \{"broken/);
+        return true;
+      },
+    );
+    assert.deepEqual(contents, ['Hello']);
+  });
+
+  it('the error names only the first 200 characters of the line', async () => {
+    const long = `data: {"broken${'x'.repeat(500)}`;
+    const provider = streaming([`${long}\n\n`]);
+    await assert.rejects(
+      async () => {
+        for await (const _ of provider.streamChat([
+          { role: 'user', content: 'hi' },
+        ])) {
+          // drain
+        }
+      },
+      (err: Error) => {
+        assert.ok(err.message.includes(long.slice(0, 200)));
+        assert.ok(!err.message.includes(long.slice(0, 201)));
+        return true;
+      },
+    );
+  });
+
+  it('a chunk split across two reads and data: [DONE] still parse (kept)', async () => {
+    const whole = good('Hello');
+    const provider = streaming([
+      whole.slice(0, 20),
+      whole.slice(20),
+      'data: [DONE]\n\n',
+    ]);
+    const contents: string[] = [];
+    for await (const chunk of provider.streamChat([
+      { role: 'user', content: 'hi' },
+    ])) {
+      contents.push(chunk.content);
+    }
+    assert.deepEqual(contents, ['Hello']);
+  });
+});

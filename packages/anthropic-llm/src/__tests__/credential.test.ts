@@ -91,7 +91,12 @@ describe('AnthropicProvider credential', () => {
     globalThis.fetch = (async (_url: string, init?: RequestInit) => {
       const headers = init?.headers as Record<string, string> | undefined;
       seen.push(headers?.['x-api-key']);
-      return new Response('data: [DONE]\n\n', { status: 200 });
+      // Anthropic's own end of stream: `data: [DONE]` is OpenAI's marker, and
+      // a data line that is not JSON is now an error (spec §10.5.6 L6).
+      return new Response(
+        'event: message_stop\ndata: {"type":"message_stop"}\n\n',
+        { status: 200 },
+      );
     }) as typeof fetch;
     try {
       for await (const _c of p.streamChat([{ role: 'user', content: 'a' }])) {
