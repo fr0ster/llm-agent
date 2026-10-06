@@ -5,7 +5,22 @@ import type {
   Message,
   Result,
 } from '@mcp-abap-adt/llm-agent';
-import { OrchestratorError, SmartAgentError } from '@mcp-abap-adt/llm-agent';
+import {
+  OrchestratorError,
+  RagError,
+  SmartAgentError,
+} from '@mcp-abap-adt/llm-agent';
+
+/**
+ * A store query that REJECTED is that store's failure, like an `ok: false`
+ * (spec §10.5.4 R5/R6, §10.5.8 S-1/S-2): any SmartAgentError keeps its code
+ * (a RagError, an open breaker, …); anything else is QUERY_ERROR.
+ */
+export function storeRejection(err: unknown): SmartAgentError {
+  return err instanceof SmartAgentError
+    ? err
+    : new RagError(String(err), 'QUERY_ERROR');
+}
 
 /**
  * A helper call that REJECTED (the `Result` contract says it should not, but

@@ -864,6 +864,55 @@ test('S-8 + U2: a group whose build failed is re-committed by the next successfu
   assert.equal(hits.length, 1);
 });
 
+test('strict: false — a group omitted last load whose source then fails is reported (omitted + carried), no reload-guard error', async () => {
+  const provider = makeInMemoryStoreProvider({ embed });
+  let failC2 = true;
+  const orig = provider.forGroup.bind(provider);
+  provider.forGroup = (group: string): ISkillsStore => {
+    const store = orig(group);
+    if (group !== 'c2') return store;
+    return {
+      ...store,
+      async upsert(generation, records, options) {
+        if (failC2) throw new Error('c2 build fail');
+        return store.upsert(generation, records, options);
+      },
+    };
+  };
+  const state = { down: false };
+  const host = makeSkillPluginHost({
+    ...HOST_BASE,
+    storeProvider: provider,
+    strict: false,
+    sources: twoGroupSources(state),
+  });
+  // Load 1 (first load, no prior): c2's build fails → omitted, no catalog entry.
+  const first = await host.load();
+  assert.deepEqual(
+    first.omitted.map((o) => o.group),
+    ['c2'],
+  );
+
+  // Load 2: s2 (c2's owner) fails to acquire — c2 is reported, not a guard throw.
+  failC2 = false;
+  state.down = true;
+  const second = await host.load();
+  assert.equal(second.ok, false);
+  assert.equal(second.omitted.length, 1);
+  assert.equal(second.omitted[0].group, 'c2');
+  assert.match(second.omitted[0].reason, /source 's2' failed: Error: s2 down/);
+  assert.deepEqual(second.carried, [
+    { sourceId: 's2', reason: 'Error: s2 down' },
+  ]);
+
+  // Load 3: everything works → c2 committed and served.
+  state.down = false;
+  const third = await host.load();
+  assert.equal(third.ok, true);
+  const hits = await host.rag('c2').query('beta', { k: 5, threshold: 0 });
+  assert.equal(hits.length, 1);
+});
+
 // P2-A --------------------------------------------------------------------
 test('ingest: rag(g) is memoised — same reference, and the lazy dimension probe runs only ONCE across rag() calls', async () => {
   // Count embed calls so we can prove the wrapper's lazy dimension probe survives.

@@ -13,7 +13,7 @@ import type {
   RagResult,
   Result,
 } from '@mcp-abap-adt/llm-agent';
-import { RagError, SkillError } from '@mcp-abap-adt/llm-agent';
+import { RagError, SkillError, SmartAgentError } from '@mcp-abap-adt/llm-agent';
 import type { ISpan } from '../../../tracer/types.js';
 import type { PipelineContext } from '../../context.js';
 import { SkillSelectHandler } from '../skill-select.js';
@@ -129,6 +129,57 @@ describe('S-1 skill-select: a failing skill source fails the stage', () => {
     assert.equal(ok, false);
     assert.equal(c.error?.code, 'SKILL_ERROR');
     assert.match(c.error?.message ?? '', /skill "a".*gone/);
+  });
+
+  it('a store whose skill query rejects with a non-Rag SmartAgentError keeps its code', async () => {
+    const c = ctx(
+      {
+        tools: store(async () => {
+          throw new SmartAgentError('breaker open', 'CIRCUIT_OPEN');
+        }),
+      },
+      okList,
+    );
+    const ok = await new SkillSelectHandler().execute(c, {}, span);
+    assert.equal(ok, false);
+    assert.equal(c.error?.code, 'CIRCUIT_OPEN');
+    assert.match(c.error?.message ?? '', /"tools".*breaker open/);
+  });
+
+  it('listSkills rejecting with a plain Error → SKILL_ERROR', async () => {
+    const c = ctx({ tools: store(async () => ({ ok: true, value: [] })) }, {
+      listSkills: async () => {
+        throw new Error('list exploded');
+      },
+    } as unknown as ISkillManager);
+    const ok = await new SkillSelectHandler().execute(c, {}, span);
+    assert.equal(ok, false);
+    assert.equal(c.error?.code, 'SKILL_ERROR');
+    assert.match(c.error?.message ?? '', /list exploded/);
+  });
+
+  it('getContent rejecting with a SmartAgentError keeps its code, naming the skill', async () => {
+    const rejecting = {
+      ...skill('a'),
+      getContent: async () => {
+        throw new SmartAgentError('content gone', 'CONTENT_GONE');
+      },
+    } as unknown as ISkill;
+    const c = ctx(
+      {
+        tools: store(async () => ({
+          ok: true,
+          value: [
+            { text: 'x', score: 1, metadata: { id: 'skill:a' } } as RagResult,
+          ],
+        })),
+      },
+      manager({ ok: true, value: [rejecting] }),
+    );
+    const ok = await new SkillSelectHandler().execute(c, {}, span);
+    assert.equal(ok, false);
+    assert.equal(c.error?.code, 'CONTENT_GONE');
+    assert.match(c.error?.message ?? '', /skill "a".*content gone/);
   });
 
   it('a query that succeeded with no skill hits is an honest empty answer (kept)', async () => {

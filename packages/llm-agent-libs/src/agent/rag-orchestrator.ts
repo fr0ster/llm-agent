@@ -12,7 +12,6 @@ import {
   mergeOfferedTools,
   OrchestratorError,
   QueryEmbedding,
-  RagError,
   TextOnlyEmbedding,
   toolNameFromRecord,
 } from '@mcp-abap-adt/llm-agent';
@@ -20,6 +19,7 @@ import { callReranker, rerankFailedError } from '../retrieval/rerank-call.js';
 import type { ISpan } from '../tracer/types.js';
 import {
   rejectionError,
+  storeRejection,
   summarizeHistory,
   toEnglishForRag,
 } from './rag-helpers.js';
@@ -177,10 +177,7 @@ export class RagOrchestrator implements IRagOrchestrator {
               name,
               result: {
                 ok: false as const,
-                error:
-                  err instanceof RagError
-                    ? err
-                    : new RagError(String(err), 'QUERY_ERROR'),
+                error: storeRejection(err),
               },
             }),
           );
@@ -355,10 +352,7 @@ export class RagOrchestrator implements IRagOrchestrator {
                   name,
                   result: {
                     ok: false as const,
-                    error:
-                      err instanceof RagError
-                        ? err
-                        : new RagError(String(err), 'QUERY_ERROR'),
+                    error: storeRejection(err),
                   },
                 }),
               );

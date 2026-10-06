@@ -22,6 +22,7 @@ import {
   RagError,
   SkillError,
   SkillsIncompatibleError,
+  SmartAgentError,
   symmetricEmbedder,
 } from '@mcp-abap-adt/llm-agent';
 import { InMemoryRag } from '@mcp-abap-adt/llm-agent-rag';
@@ -146,6 +147,60 @@ describe('S-2 legacy orchestrator: a failing skill source is the request error',
     assert.ok(!r.ok);
     assert.equal(r.error.code, 'SKILL_ERROR');
     assert.match(r.error.message, /skill "a".*gone/);
+  });
+
+  it('the main RAG query rejecting with a non-Rag SmartAgentError keeps its code', async () => {
+    const r = await processWith(
+      twoPhaseStore(async () => {
+        throw new SmartAgentError('breaker open', 'CIRCUIT_OPEN');
+      }, empty),
+      manager({ ok: true, value: [skill('a')] }),
+    );
+    assert.ok(!r.ok);
+    assert.equal(r.error.code, 'CIRCUIT_OPEN');
+  });
+
+  it('the dedicated skill query rejecting with a non-Rag SmartAgentError keeps its code', async () => {
+    const r = await processWith(
+      twoPhaseStore(empty, async () => {
+        throw new SmartAgentError('breaker open', 'CIRCUIT_OPEN');
+      }),
+      manager({ ok: true, value: [skill('a')] }),
+    );
+    assert.ok(!r.ok);
+    assert.equal(r.error.code, 'CIRCUIT_OPEN');
+  });
+
+  it('listSkills rejecting with a plain Error → process() returns SKILL_ERROR', async () => {
+    const r = await processWith(twoPhaseStore(empty, empty), {
+      ...manager({ ok: true, value: [] }),
+      listSkills: async () => {
+        throw new Error('list exploded');
+      },
+    });
+    assert.ok(!r.ok);
+    assert.equal(r.error.code, 'SKILL_ERROR');
+    assert.match(r.error.message, /list exploded/);
+  });
+
+  it('getContent rejecting with a SmartAgentError keeps its code, naming the skill', async () => {
+    const hit = async () => ({
+      ok: true as const,
+      value: [{ text: 's', score: 1, metadata: { id: 'skill:a' } }],
+    });
+    const rejecting: ISkill = {
+      ...skill('a'),
+      getContent: async () => {
+        throw new SmartAgentError('content gone', 'CONTENT_GONE');
+      },
+    };
+    const r = await processWith(
+      twoPhaseStore(hit, hit),
+      manager({ ok: true, value: [rejecting] }),
+    );
+    assert.ok(!r.ok);
+    assert.equal(r.error.code, 'CONTENT_GONE');
+    assert.match(r.error.message, /skill "a".*content gone/);
   });
 });
 

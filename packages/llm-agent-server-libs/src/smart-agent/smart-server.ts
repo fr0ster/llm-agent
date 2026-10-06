@@ -599,7 +599,6 @@ export {
   buildSkillHostFromConfig,
   type IClosablePool,
   initSkillHost,
-  reportSkillLoad,
   validateServedGroups,
 } from './skill-plugins-host-factory.js';
 

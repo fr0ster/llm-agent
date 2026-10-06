@@ -280,23 +280,30 @@ function makeIngestHost(deps: IngestHostDeps): ISkillPluginHost {
     // is omitted whole with the reason, serving nothing old; the other groups
     // still commit. A failed source that owns no known group (a first load) has
     // no group to omit → the load throws, nothing committed.
+    // strict:false → a failed source's catalog groups are carried forward
+    // (below); a group it owns that the last load omitted has no catalog entry
+    // to carry, so it is omitted again with the reason (it keeps its place).
     const failedGroups = new Map<string, string>(); // group -> reason
-    if (strict && failedSourceIds.length) {
+    if (failedSourceIds.length) {
       const known = new Map<
         string,
         { info: SkillGroupInfo; sources: readonly string[] }
       >(_omittedLast);
       for (const e of prior.entries) {
         if (e.tombstone) continue;
-        known.set(e.collection.group, {
-          info: e.collection,
-          sources: e.sources,
-        });
+        if (strict) {
+          known.set(e.collection.group, {
+            info: e.collection,
+            sources: e.sources,
+          });
+        } else {
+          known.delete(e.collection.group); // carried forward instead
+        }
       }
       for (const id of failedSourceIds) {
         const reason = `source '${id}' failed: ${failureReason.get(id) as string}`;
         const owned = [...known].filter(([, k]) => k.sources.includes(id));
-        if (!owned.length) {
+        if (strict && !owned.length) {
           throw new Error(
             `strict ingest: ${reason} — it owns no known group, nothing committed`,
           );

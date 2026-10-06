@@ -24,9 +24,9 @@ import {
   OrchestratorError,
   PIPELINE_FAILURE_CODES,
   QueryEmbedding,
-  RagError,
   TextOnlyEmbedding,
 } from '@mcp-abap-adt/llm-agent';
+import { storeRejection } from '../../agent/rag-helpers.js';
 import type { ISpan } from '../../tracer/types.js';
 import type { PipelineContext } from '../context.js';
 import type { IStageHandler } from '../stage-handler.js';
@@ -111,11 +111,11 @@ export class RagQueryHandler implements IStageHandler {
     } catch (err) {
       // A store that rejects instead of answering `ok: false` fails the stage
       // the same way: named, with its own code (R5).
-      const msg = err instanceof Error ? err.message : String(err);
-      span.setAttribute('error', msg);
+      const failure = storeRejection(err);
+      span.setAttribute('error', failure.message);
       ctx.error = new OrchestratorError(
-        `rag-query: store "${storeName}" failed: ${msg}`,
-        err instanceof RagError ? err.code : 'QUERY_ERROR',
+        `rag-query: store "${storeName}" failed: ${failure.message}`,
+        failure.code,
       );
       return false;
     }

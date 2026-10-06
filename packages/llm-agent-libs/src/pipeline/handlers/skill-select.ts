@@ -17,10 +17,9 @@
 import {
   OrchestratorError,
   QueryEmbedding,
-  RagError,
   TextOnlyEmbedding,
 } from '@mcp-abap-adt/llm-agent';
-import { rejectionError } from '../../agent/rag-helpers.js';
+import { rejectionError, storeRejection } from '../../agent/rag-helpers.js';
 import type { ISpan } from '../../tracer/types.js';
 import type { PipelineContext } from '../context.js';
 import type { IStageHandler } from '../stage-handler.js';
@@ -63,10 +62,7 @@ export class SkillSelectHandler implements IStageHandler {
               name,
               result: {
                 ok: false as const,
-                error:
-                  err instanceof RagError
-                    ? err
-                    : new RagError(String(err), 'QUERY_ERROR'),
+                error: storeRejection(err),
               },
             }),
           ),
