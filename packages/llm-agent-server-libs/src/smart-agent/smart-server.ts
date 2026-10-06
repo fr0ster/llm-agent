@@ -510,7 +510,11 @@ function resolveSkillManager(
     case 'filesystem':
       return new FileSystemSkillManager(cfg.dirs ?? []);
     default:
-      return undefined;
+      // Spec §10.5.8 S-10, D89: a config built in code skips the YAML field
+      // validator — an unknown type still fails, never a server without skills.
+      throw new Error(
+        `skills.type: unknown skill manager '${String(type)}' — one of claude, codex, filesystem`,
+      );
   }
 }
 
@@ -595,6 +599,7 @@ export {
   buildSkillHostFromConfig,
   type IClosablePool,
   initSkillHost,
+  reportSkillLoad,
   validateServedGroups,
 } from './skill-plugins-host-factory.js';
 
@@ -1527,6 +1532,7 @@ export class SmartServer {
         buildHost,
         skillCfg,
         this._skillPgPools,
+        log,
       );
     }
 

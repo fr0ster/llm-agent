@@ -85,7 +85,9 @@ export interface SkillPluginsConfig {
   maxInjectChars: number;
   /** Chunking bound. Default 1500. */
   chunk: { maxChars: number };
-  /** true → a source failure aborts that group; false → carry-forward. Default false. */
+  /** true → a source failure fails its group (the group in `omitted`); false →
+   *  carry-forward of the failed source's prior data, reported in `carried`.
+   *  Default true (spec §10.5.12 U2). */
   strict: boolean;
   /** publishCatalog CAS retries on a concurrent-loader conflict. Default 3. */
   catalogCasMaxAttempts: number;
@@ -525,7 +527,7 @@ export function parseSkillPluginsConfig(raw: unknown): SkillPluginsConfig {
     threshold,
     maxInjectChars,
     chunk,
-    strict: raw.strict !== undefined ? Boolean(raw.strict) : false,
+    strict: raw.strict !== undefined ? Boolean(raw.strict) : true,
     catalogCasMaxAttempts,
     retiredGraceMs,
     orphanGraceMs,

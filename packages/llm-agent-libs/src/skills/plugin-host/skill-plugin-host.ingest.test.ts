@@ -233,6 +233,8 @@ test('carry-forward publishes a NEW generation', async () => {
   });
   const res = await hostB.load();
   assert.equal(res.ok, true);
+  // S-9: the carried-forward source is reported with its reason.
+  assert.deepEqual(res.carried, [{ sourceId: 's2', reason: 'Error: s2 down' }]);
   const afterB = await provider.readCatalog();
   const newGen = afterB.entries.find(
     (e) => e.collection.group === 'c1',
@@ -288,10 +290,10 @@ test('first-load build failure with NO prior → omit + partial result', async (
   assert.deepEqual(res.committed, ['c1']);
   assert.equal(res.omitted.length, 1);
   assert.equal(res.omitted[0].group, 'c2');
-  // c1 committed and serves; c2 serves nothing.
+  // c1 committed and serves; c2 keeps its place in groups() (U2) but serves nothing.
   assert.deepEqual(
     host.groups().map((g) => g.group),
-    ['c1'],
+    ['c1', 'c2'],
   );
   const c2hits = await host.rag('c2').query('beta', { k: 5, threshold: 0 });
   assert.equal(c2hits.length, 0);
@@ -369,9 +371,10 @@ test('collection-set reconciliation: removed collection tombstoned now, reclaime
 });
 
 // 6 -------------------------------------------------------------------------
-test('partial-commit orphan cleanup (P1.4)', async () => {
+test('partial-commit orphan cleanup (P1.4), strict: false keeps the prior pointer', async () => {
   // c2 has a PRIOR generation; its second build fails mid-way (upsert throws once) →
-  // commit keeps c2's prior pointer; the freshly-built gen is discarded in the finally.
+  // under strict: false the commit keeps c2's prior pointer (reported in omitted, S-8);
+  // the freshly-built gen is discarded in the finally.
   const provider = makeInMemoryStoreProvider({ embed });
 
   let c2UpsertCalls = 0;
@@ -434,10 +437,16 @@ test('partial-commit orphan cleanup (P1.4)', async () => {
     ...HOST_BASE,
     storeProvider: provider,
     servingMode: false,
+    strict: false,
     sources: mkSources(),
   });
   const resB = await hostB.load();
-  assert.equal(resB.ok, true); // committed===true (partial commit, c2 prior pointer kept)
+  // S-8: committed (partial commit, c2 prior pointer kept) but reported.
+  assert.equal(resB.ok, false);
+  assert.deepEqual(resB.committed.slice().sort(), ['c1', 'c2']);
+  assert.equal(resB.omitted.length, 1);
+  assert.equal(resB.omitted[0].group, 'c2');
+  assert.match(resB.omitted[0].reason, /c2 second upsert fail/);
   // The freshly-built (failed-mid) c2 generation was discarded even though committed===true.
   const builtMid = beganC2[beganC2.length - 1];
   assert.ok(discarded.includes(builtMid));
@@ -447,6 +456,96 @@ test('partial-commit orphan cleanup (P1.4)', async () => {
     after.entries.find((e) => e.collection.group === 'c2')?.generation,
     priorC2,
   );
+});
+
+// S-8 / U2 ---------------------------------------------------------------
+test('S-8: a failed build with a prior generation under the default strict → omitted, nothing old served', async () => {
+  const provider = makeInMemoryStoreProvider({ embed });
+  let c2Upserts = 0;
+  const orig = provider.forGroup.bind(provider);
+  provider.forGroup = (group: string): ISkillsStore => {
+    const store = orig(group);
+    if (group !== 'c2') return store;
+    return {
+      ...store,
+      async upsert(generation, records, options) {
+        c2Upserts++;
+        if (c2Upserts === 2) throw new Error('c2 rebuild fail');
+        return store.upsert(generation, records, options);
+      },
+    };
+  };
+  const mkSources = () => [
+    {
+      id: 's1',
+      source: makeStubSource({
+        collections: [info('c1')],
+        records: [rec('c1:a', 's1', 'c1', 'alpha')],
+      }),
+    },
+    {
+      id: 's2',
+      source: makeStubSource({
+        collections: [info('c2')],
+        records: [rec('c2:a', 's2', 'c2', 'beta')],
+      }),
+    },
+  ];
+  await makeSkillPluginHost({
+    ...HOST_BASE,
+    storeProvider: provider,
+    sources: mkSources(),
+  }).load();
+
+  const hostB = makeSkillPluginHost({
+    ...HOST_BASE,
+    storeProvider: provider,
+    servingMode: false,
+    sources: mkSources(),
+  });
+  const res = await hostB.load();
+  assert.equal(res.ok, false);
+  assert.deepEqual(res.committed, ['c1']);
+  assert.equal(res.omitted.length, 1);
+  assert.equal(res.omitted[0].group, 'c2');
+  assert.match(res.omitted[0].reason, /c2 rebuild fail/);
+  assert.equal(res.carried, undefined);
+  const after = await provider.readCatalog();
+  assert.equal(
+    after.entries.some((e) => e.collection.group === 'c2' && !e.tombstone),
+    false,
+  );
+  const c2hits = await hostB.rag('c2').query('beta', { k: 5, threshold: 0 });
+  assert.equal(c2hits.length, 0);
+});
+
+test('S-9: strict: false — a source whose acquire rejects is reported in carried', async () => {
+  const provider = makeInMemoryStoreProvider({ embed });
+  const host = makeSkillPluginHost({
+    ...HOST_BASE,
+    storeProvider: provider,
+    strict: false,
+    sources: [
+      {
+        id: 's1',
+        source: makeStubSource({
+          collections: [info('c1')],
+          records: [rec('c1:a', 's1', 'c1', 'alpha')],
+        }),
+      },
+      {
+        id: 'net-src',
+        source: makeStubSource(() => {
+          throw new Error('net');
+        }),
+      },
+    ],
+  });
+  const res = await host.load();
+  assert.deepEqual(res.carried, [
+    { sourceId: 'net-src', reason: 'Error: net' },
+  ]);
+  assert.deepEqual(res.committed, ['c1']);
 });
 
 // 7 -------------------------------------------------------------------------
@@ -552,7 +651,7 @@ test('exhausted CAS → throw, no orphans', async () => {
 });
 
 // 9 -------------------------------------------------------------------------
-test('strict:true source failure → throw, nothing committed', async () => {
+test('strict:true, first load: a failed source owning no known group → throw, nothing committed', async () => {
   const provider = makeInMemoryStoreProvider({ embed });
   let publishCalls = 0;
   const origPublish = provider.publishCatalog.bind(provider);
@@ -581,10 +680,188 @@ test('strict:true source failure → throw, nothing committed', async () => {
       },
     ],
   });
-  await assert.rejects(() => host.load());
+  await assert.rejects(
+    () => host.load(),
+    /source 's2' failed: Error: s2 down.*owns no known group/,
+  );
   assert.equal(publishCalls, 0);
   const cat = await provider.readCatalog();
   assert.equal(cat.entries.length, 0);
+});
+
+// U2 ----------------------------------------------------------------------
+/** A source that fails while `state.down` is true. */
+function toggleSource(
+  state: { down: boolean },
+  result: SkillIngestResult,
+): ISkillSource {
+  return {
+    async acquire(): Promise<SkillIngestResult> {
+      if (state.down) throw new Error('s2 down');
+      return result;
+    },
+  };
+}
+
+function twoGroupSources(state: { down: boolean }) {
+  return [
+    {
+      id: 's1',
+      source: makeStubSource({
+        collections: [info('c1')],
+        records: [rec('c1:a', 's1', 'c1', 'alpha')],
+      }),
+    },
+    {
+      id: 's2',
+      source: toggleSource(state, {
+        collections: [info('c2')],
+        records: [rec('c2:a', 's2', 'c2', 'beta')],
+      }),
+    },
+  ];
+}
+
+test('U2: default strict — a failed source fails its group (omitted, nothing old served), others commit, no carried', async () => {
+  const provider = makeInMemoryStoreProvider({ embed });
+  const state = { down: false };
+  await makeSkillPluginHost({
+    ...HOST_BASE,
+    storeProvider: provider,
+    sources: twoGroupSources(state),
+  }).load();
+
+  state.down = true;
+  const host = makeSkillPluginHost({
+    ...HOST_BASE,
+    storeProvider: provider,
+    sources: twoGroupSources(state),
+  });
+  const res = await host.load();
+  assert.equal(res.ok, false);
+  assert.deepEqual(res.committed, ['c1']);
+  assert.equal(res.omitted.length, 1);
+  assert.equal(res.omitted[0].group, 'c2');
+  assert.match(res.omitted[0].reason, /source 's2' failed: Error: s2 down/);
+  assert.equal(res.carried, undefined);
+  const cat = await provider.readCatalog();
+  assert.equal(
+    cat.entries.some((e) => e.collection.group === 'c2' && !e.tombstone),
+    false,
+  );
+  const c2hits = await host.rag('c2').query('beta', { k: 5, threshold: 0 });
+  assert.equal(c2hits.length, 0);
+  const c1hits = await host.rag('c1').query('alpha', { k: 5, threshold: 0 });
+  assert.equal(c1hits.length, 1);
+});
+
+test('U2: a group shared with a source that succeeded is omitted whole', async () => {
+  const provider = makeInMemoryStoreProvider({ embed });
+  const state = { down: false };
+  const shared = () => [
+    {
+      id: 's1',
+      source: makeStubSource({
+        collections: [info('c1')],
+        records: [rec('c1:s1', 's1', 'c1', 's1 body')],
+      }),
+    },
+    {
+      id: 's2',
+      source: toggleSource(state, {
+        collections: [info('c1')],
+        records: [rec('c1:s2', 's2', 'c1', 's2 body')],
+      }),
+    },
+  ];
+  await makeSkillPluginHost({
+    ...HOST_BASE,
+    storeProvider: provider,
+    sources: shared(),
+  }).load();
+  state.down = true;
+  const host = makeSkillPluginHost({
+    ...HOST_BASE,
+    storeProvider: provider,
+    sources: shared(),
+  });
+  const res = await host.load();
+  assert.equal(res.ok, false);
+  assert.deepEqual(res.committed, []);
+  assert.deepEqual(
+    res.omitted.map((o) => o.group),
+    ['c1'],
+  );
+  const hits = await host.rag('c1').query('body', { k: 10, threshold: 0 });
+  assert.equal(hits.length, 0);
+});
+
+test('U2: an omitted group keeps its place — the next successful load re-commits it (same serving host, no reload-guard error)', async () => {
+  const provider = makeInMemoryStoreProvider({ embed });
+  const state = { down: false };
+  const host = makeSkillPluginHost({
+    ...HOST_BASE,
+    storeProvider: provider,
+    sources: twoGroupSources(state),
+  });
+  assert.equal((await host.load()).ok, true);
+
+  state.down = true;
+  const failed = await host.load();
+  assert.equal(failed.ok, false);
+  assert.deepEqual(
+    host.groups().map((g) => g.group),
+    ['c1', 'c2'],
+  );
+  // a second failing reload still knows c2's owner (omitted again, no throw)
+  const failedAgain = await host.load();
+  assert.deepEqual(
+    failedAgain.omitted.map((o) => o.group),
+    ['c2'],
+  );
+
+  state.down = false;
+  const recovered = await host.load();
+  assert.equal(recovered.ok, true);
+  assert.deepEqual(recovered.committed.slice().sort(), ['c1', 'c2']);
+  const hits = await host.rag('c2').query('beta', { k: 5, threshold: 0 });
+  assert.equal(hits.length, 1);
+});
+
+test('S-8 + U2: a group whose build failed is re-committed by the next successful load (same serving host)', async () => {
+  const provider = makeInMemoryStoreProvider({ embed });
+  let failC2 = false;
+  const orig = provider.forGroup.bind(provider);
+  provider.forGroup = (group: string): ISkillsStore => {
+    const store = orig(group);
+    if (group !== 'c2') return store;
+    return {
+      ...store,
+      async upsert(generation, records, options) {
+        if (failC2) throw new Error('c2 build fail');
+        return store.upsert(generation, records, options);
+      },
+    };
+  };
+  const state = { down: false };
+  const host = makeSkillPluginHost({
+    ...HOST_BASE,
+    storeProvider: provider,
+    sources: twoGroupSources(state),
+  });
+  assert.equal((await host.load()).ok, true);
+  failC2 = true;
+  const failed = await host.load();
+  assert.equal(failed.ok, false);
+  assert.deepEqual(
+    failed.omitted.map((o) => o.group),
+    ['c2'],
+  );
+  failC2 = false;
+  const recovered = await host.load();
+  assert.equal(recovered.ok, true);
+  const hits = await host.rag('c2').query('beta', { k: 5, threshold: 0 });
+  assert.equal(hits.length, 1);
 });
 
 // P2-A --------------------------------------------------------------------

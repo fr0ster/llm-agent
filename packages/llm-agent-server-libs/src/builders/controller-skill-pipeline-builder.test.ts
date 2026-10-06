@@ -5,11 +5,14 @@ import type { SkillPluginsConfig } from '../smart-agent/skill-plugins-config.js'
 import type { BuildAgentDeps } from '../smart-agent/smart-server.js';
 import { ControllerSkillPipelineBuilder } from './controller-skill-pipeline-builder.js';
 
+/** An ok `SkillLoadResult` — the server acts on what `load()` returns. */
+const OK_LOAD = { committed: ['sap'], omitted: [], tombstoned: [], ok: true };
+
 function stubHost() {
   return {
     rag: () => ({ query: async () => [], activeManifest: async () => ({}) }),
     groups: () => [{ group: 'sap' }],
-    load: async () => {},
+    load: async () => OK_LOAD,
   } as unknown as import('@mcp-abap-adt/llm-agent').ISkillPluginHost;
 }
 
@@ -167,6 +170,7 @@ test('build(deps) with a prebuilt skillHost still routes through load/validate (
     ...stubHost(),
     load: async () => {
       loaded = true;
+      return OK_LOAD;
     },
   } as unknown as import('@mcp-abap-adt/llm-agent').ISkillPluginHost;
   const { close } = await new ControllerSkillPipelineBuilder()
@@ -223,7 +227,7 @@ test('build(): .withMcpClients forwards clients into deps (no connect runs)', as
             activeManifest: async () => ({}),
           }),
           groups: () => [{ group: 'sap' }],
-          load: async () => {},
+          load: async () => OK_LOAD,
         }) as unknown as import('@mcp-abap-adt/llm-agent').ISkillPluginHost,
       // If buildAgent were to self-connect MCP instead of using the injected
       // clients, THIS throws and fails the test.
@@ -263,7 +267,7 @@ test('build({makeLlm,embedder}) needs no AICORE_SERVICE_KEY and no models (provi
               activeManifest: async () => ({}),
             }),
             groups: () => [{ group: 'sap' }],
-            load: async () => {},
+            load: async () => OK_LOAD,
           }) as unknown as import('@mcp-abap-adt/llm-agent').ISkillPluginHost,
         connectMcp: async () => [],
       });
@@ -302,7 +306,7 @@ test('build(deps) with a keyed provider reads no key from the environment', asyn
               activeManifest: async () => ({}),
             }),
             groups: () => [{ group: 'sap' }],
-            load: async () => {},
+            load: async () => OK_LOAD,
           }) as unknown as import('@mcp-abap-adt/llm-agent').ISkillPluginHost,
         connectMcp: async () => [],
       });

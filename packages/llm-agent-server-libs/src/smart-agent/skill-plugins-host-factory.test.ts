@@ -21,6 +21,7 @@ import {
   buildSources,
   type IClosablePool,
   initSkillHost,
+  reportSkillLoad,
   type TransportFactories,
   validateServedGroups,
 } from './skill-plugins-host-factory.js';
@@ -407,6 +408,11 @@ test('validateServedGroups: no served subset configured passes (all groups)', ()
 
 // P1-B — initSkillHost ends captured pg pools on a startup failure.
 
+/** These cases load an ok result with nothing carried — nothing is logged. */
+const noLog = (event: Record<string, unknown>): void => {
+  assert.fail(`unexpected log event ${JSON.stringify(event)}`);
+};
+
 /** A fake pool that records whether end() ran (and may fail end()). */
 function makeFakePool(opts?: { failEnd?: boolean }): IClosablePool & {
   ended: boolean;
@@ -433,6 +439,7 @@ test('initSkillHost: success path returns the loaded+validated host (pools NOT e
     },
     cfgWith({ serveCollections: ['abap'], controllerSkillGroup: 'sql' }),
     pools,
+    noLog,
   );
 
   assert.equal(out, host, 'returns the built host');
@@ -454,7 +461,8 @@ test('initSkillHost: host.load() throwing ends captured pools and rethrows', asy
   } as unknown as ISkillPluginHost;
 
   await assert.rejects(
-    () => initSkillHost(async () => throwingHost, recallOnlyCfg(), pools),
+    () =>
+      initSkillHost(async () => throwingHost, recallOnlyCfg(), pools, noLog),
     /load boom/,
   );
   assert.equal(pool.ended, true, 'captured pool must be ended on failure');
@@ -472,6 +480,7 @@ test('initSkillHost: validateServedGroups throwing ends captured pools and rethr
         async () => host,
         cfgWith({ controllerSkillGroup: 'missing' }),
         pools,
+        noLog,
       ),
     /controllerSkillGroup 'missing' is not an available group/i,
   );
@@ -498,7 +507,8 @@ test('initSkillHost: one pool end() error does not mask the original (allSettled
   } as unknown as ISkillPluginHost;
 
   await assert.rejects(
-    () => initSkillHost(async () => throwingHost, recallOnlyCfg(), pools),
+    () =>
+      initSkillHost(async () => throwingHost, recallOnlyCfg(), pools, noLog),
     /original failure/,
     'the ORIGINAL error is rethrown, not the pool end() error',
   );
@@ -529,6 +539,7 @@ test('initSkillHost: incompatible controllerSkillGroup activeManifest REJECTS �
         async () => host,
         cfgWith({ serveCollections: ['abap'], controllerSkillGroup: 'sql' }),
         pools,
+        noLog,
       ),
     SkillsIncompatibleError,
   );
@@ -555,6 +566,7 @@ test('initSkillHost: compatible controllerSkillGroup activeManifest resolves →
     async () => host,
     cfgWith({ serveCollections: ['abap'], controllerSkillGroup: 'sql' }),
     pools,
+    noLog,
   );
 
   assert.equal(out, host, 'compatible controller group → host returned');
@@ -573,7 +585,12 @@ test('initSkillHost: no controllerSkillGroup → no eager probe', async () => {
     },
   }));
 
-  const out = await initSkillHost(async () => host, recallOnlyCfg(), pools);
+  const out = await initSkillHost(
+    async () => host,
+    recallOnlyCfg(),
+    pools,
+    noLog,
+  );
   assert.equal(out, host, 'host returned');
   assert.equal(probed, false, 'no controllerSkillGroup → no eager probe');
 });
@@ -721,4 +738,66 @@ test('skillPlugins.embedder.asymmetric is accepted for sap-ai-core only', () => 
       }),
     /supported for provider sap-ai-core only, not "openai"/,
   );
+});
+
+// U2 / S-8 / S-9 — the server never ignores host.load()'s result.
+
+function hostLoading(result: {
+  committed: string[];
+  omitted: { group: string; reason: string }[];
+  ok: boolean;
+  carried?: { sourceId: string; reason: string }[];
+}): ISkillPluginHost {
+  const base = hostWithGroups(result.committed);
+  return {
+    ...base,
+    load: async () => ({ ...result, tombstoned: [] }),
+  } as unknown as ISkillPluginHost;
+}
+
+test('initSkillHost: a startup load with ok:false rejects naming each omitted group and reason, pools ended', async () => {
+  const pool = makeFakePool();
+  const pools: IClosablePool[] = [pool];
+  await assert.rejects(
+    initSkillHost(
+      async () =>
+        hostLoading({
+          committed: ['abap'],
+          omitted: [
+            { group: 'sql', reason: "source 's2' failed: Error: down" },
+            { group: 'rap', reason: 'Error: build fail' },
+          ],
+          ok: false,
+        }),
+      recallOnlyCfg(),
+      pools,
+      noLog,
+    ),
+    /'sql' \(source 's2' failed: Error: down\).*'rap' \(Error: build fail\)/,
+  );
+  assert.equal(pool.ended, true);
+});
+
+test('initSkillHost: carried sources are logged as skill_plugins_carried', async () => {
+  const events: Record<string, unknown>[] = [];
+  const carried = [{ sourceId: 's2', reason: 'Error: net' }];
+  await initSkillHost(
+    async () =>
+      hostLoading({ committed: ['abap'], omitted: [], ok: true, carried }),
+    recallOnlyCfg(),
+    [],
+    (e) => events.push(e),
+  );
+  assert.deepEqual(events, [{ event: 'skill_plugins_carried', carried }]);
+});
+
+test('reportSkillLoad: a reload with ok:false logs skill_plugins_load_failed (no throw)', () => {
+  const events: Record<string, unknown>[] = [];
+  const omitted = [{ group: 'sql', reason: 'Error: down' }];
+  reportSkillLoad(
+    { committed: ['abap'], omitted, tombstoned: [], ok: false },
+    'reload',
+    (e) => events.push(e),
+  );
+  assert.deepEqual(events, [{ event: 'skill_plugins_load_failed', omitted }]);
 });

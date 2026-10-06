@@ -1270,6 +1270,14 @@ export class SmartAgentBuilder {
       let loadedPlugins: import('./plugins/types.js').LoadedPlugins | undefined;
       if (this._pluginLoader) {
         const plugins = await this._pluginLoader.load();
+        // Spec §10.5.8 S-6: a plugin that failed to load fails the build —
+        // never an agent missing the plugin's registrations.
+        if (plugins.errors.length > 0) {
+          throw new Error(
+            `plugin loader: ${plugins.errors.length} plugin(s) failed to load: ` +
+              plugins.errors.map((e) => `${e.file}: ${e.error}`).join('; '),
+          );
+        }
         loadedPlugins = plugins;
         if (plugins.reranker && !this._reranker) {
           this._reranker = plugins.reranker;
@@ -1290,7 +1298,7 @@ export class SmartAgentBuilder {
 
       // ---- Skill vectorization (optional) ------------------------------------
       if (this._skillManager && toolsRag && this._vectorizeSkills) {
-        await vectorizeSkills(this._skillManager, toolsRag, requestLogger, log);
+        await vectorizeSkills(this._skillManager, toolsRag, requestLogger);
       }
 
       // ---- Pipeline initialization -------------------------------------------

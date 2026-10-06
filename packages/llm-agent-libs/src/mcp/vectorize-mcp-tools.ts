@@ -33,6 +33,7 @@ import {
   DefaultWaitStrategy,
   defaultToolNamespace,
   defaultToolRecordKey,
+  SkillError,
 } from '@mcp-abap-adt/llm-agent';
 
 /**
@@ -93,20 +94,30 @@ async function writeOne(
       : await writer.upsertRaw(id, text, metadata, options);
   const ok = result?.ok === true;
   if (ok && vector === undefined) {
-    const est = Math.ceil(text.length / 4);
-    requestLogger.logLlmCall({
-      component: 'embedding',
-      model: 'embedder',
-      promptTokens: est,
-      completionTokens: 0,
-      totalTokens: est,
-      durationMs: Date.now() - start,
-      estimated: true,
-      scope: 'initialization',
-      detail,
-    });
+    logEstimatedEmbedding(requestLogger, text, start, detail);
   }
   return ok;
+}
+
+/** The estimated usage record of one sequential write (the write embeds the text). */
+function logEstimatedEmbedding(
+  requestLogger: IRequestLogger,
+  text: string,
+  start: number,
+  detail: 'tools' | 'skills',
+): void {
+  const est = Math.ceil(text.length / 4);
+  requestLogger.logLlmCall({
+    component: 'embedding',
+    model: 'embedder',
+    promptTokens: est,
+    completionTokens: 0,
+    totalTokens: est,
+    durationMs: Date.now() - start,
+    estimated: true,
+    scope: 'initialization',
+    detail,
+  });
 }
 
 export async function vectorizeMcpTools(
@@ -434,41 +445,43 @@ export async function vectorizeMcpTools(
   return summary;
 }
 
+/**
+ * Write the builder's skills into the tools store (spec §7.7). Spec S-5, D75: a
+ * failed listing, or a skill whose embedding / write fails (`ok: false` or a
+ * throw), REJECTS — with a SkillError naming the skill, the store's error as
+ * `cause` — at the first failing skill; no later skill is attempted. Nothing is
+ * left out with a warning: `build()`, the server's fills and `start()` fail with
+ * it. A writerless store is skipped (absent by design).
+ */
 export async function vectorizeSkills(
   skillManager: ISkillManager,
   toolsRag: IRag,
   requestLogger: IRequestLogger,
-  logger: ILogger | undefined,
 ): Promise<void> {
   const writer = toolsRag.writer?.();
   if (!writer) return;
   const skillsResult = await skillManager.listSkills();
-  if (!skillsResult.ok) return;
-  // Skills keep their per-item warning: unlike the tool catalog, a skill set is
-  // small, so there is no log-flooding problem to solve here, and #236's scope
-  // is the tool path.
+  if (!skillsResult.ok) throw skillsResult.error;
   for (const s of skillsResult.value) {
+    const id = `skill:${s.name}`;
     const text = `Skill: ${s.name}\n${s.description}`;
-    let ok = false;
+    const start = Date.now();
+    let failure: unknown;
     try {
-      ok = await writeOne(
-        writer,
-        `skill:${s.name}`,
-        text,
-        undefined,
-        requestLogger,
-        'skills',
-        { name: s.name },
-      );
-    } catch {
-      ok = false;
+      const res = await writer.upsertRaw(id, text, { name: s.name });
+      if (res.ok) logEstimatedEmbedding(requestLogger, text, start, 'skills');
+      else failure = res.error;
+    } catch (err) {
+      failure = err;
     }
-    if (!ok) {
-      logger?.log({
-        type: 'warning',
-        traceId: 'builder',
-        message: `Skill vectorization failed for "${s.name}"`,
-      });
+    if (failure !== undefined) {
+      const reason =
+        failure instanceof Error ? failure.message : String(failure);
+      const error = new SkillError(
+        `vectorizeSkills: skill "${s.name}" (${id}) could not be written into the tools store: ${reason}`,
+      );
+      error.cause = failure; // ES2022 Error.cause — no contract change (SkillError's constructor is unchanged)
+      throw error;
     }
   }
 }

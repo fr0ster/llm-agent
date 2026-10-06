@@ -93,36 +93,53 @@ export class FileSystemSkill implements ISkill {
 
 /**
  * Load a skill from a directory containing SKILL.md.
- * Returns undefined if SKILL.md doesn't exist.
+ * Returns undefined if SKILL.md doesn't exist (not a skill — absent by design).
+ * Spec §10.5.8 S-4: a SKILL.md that cannot be read or whose frontmatter cannot
+ * be parsed throws a SkillError naming the file.
  */
 export async function loadSkillFromDir(
   dir: string,
 ): Promise<FileSystemSkill | undefined> {
   const skillPath = join(dir, 'SKILL.md');
+  let raw: string;
   try {
-    const raw = await readFile(skillPath, 'utf-8');
-    const { meta, body } = parseFrontmatter<Record<string, unknown>>(raw);
-
-    const name =
-      typeof meta.name === 'string'
-        ? meta.name
-        : (dir.split('/').filter(Boolean).pop() ?? 'unknown');
-
-    const description =
-      typeof meta.description === 'string'
-        ? meta.description
-        : (body.split('\n')[0]?.slice(0, 120) ?? '');
-
-    const skillMeta: ISkillMeta = {
-      ...meta,
-      name,
-      description,
-    };
-
-    return new FileSystemSkill(dir, body, skillMeta);
-  } catch {
-    return undefined;
+    raw = await readFile(skillPath, 'utf-8');
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') return undefined;
+    throw skillFileError(skillPath, 'cannot be read', err);
   }
+  let parsed: ReturnType<typeof parseFrontmatter<Record<string, unknown>>>;
+  try {
+    parsed = parseFrontmatter<Record<string, unknown>>(raw);
+  } catch (err) {
+    throw skillFileError(skillPath, 'has invalid frontmatter', err);
+  }
+  const { meta, body } = parsed;
+
+  const name =
+    typeof meta.name === 'string'
+      ? meta.name
+      : (dir.split('/').filter(Boolean).pop() ?? 'unknown');
+
+  const description =
+    typeof meta.description === 'string'
+      ? meta.description
+      : (body.split('\n')[0]?.slice(0, 120) ?? '');
+
+  const skillMeta: ISkillMeta = {
+    ...meta,
+    name,
+    description,
+  };
+
+  return new FileSystemSkill(dir, body, skillMeta);
+}
+
+function skillFileError(file: string, what: string, err: unknown): SkillError {
+  const reason = err instanceof Error ? err.message : String(err);
+  const error = new SkillError(`skill file "${file}" ${what}: ${reason}`);
+  error.cause = err;
+  return error;
 }
 
 /** Recursively collect relative file paths under a directory. */

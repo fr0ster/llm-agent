@@ -54,7 +54,7 @@ test('lease: release(revision) is called in the finally on every non-null path',
   });
   await ragOk.query('q', { k: 1 });
   assert.deepEqual(ok.released(), ['g0']);
-  // incompatible path (no query, still releases)
+  // incompatible path (no query, throws, still releases)
   const bad = stubBackend({
     snapshot: async () => ({
       revision: 'g1',
@@ -70,11 +70,14 @@ test('lease: release(revision) is called in the finally on every non-null path',
     retrievalSchemaVersion: 1,
     dimension: 3,
   });
-  await ragBad.query('q', { k: 1 });
+  await assert.rejects(
+    () => ragBad.query('q', { k: 1 }),
+    (e) => e instanceof SkillsIncompatibleError,
+  );
   assert.deepEqual(bad.released(), ['g1']);
 });
 
-test('recallTimeoutMs: a query that outlives the deadline aborts → empty (no crash)', async () => {
+test('recallTimeoutMs: a query that outlives the deadline rejects (spec S-7: not an empty answer)', async () => {
   const backend = {
     activeSnapshot: async () => ({ revision: 'g0', manifest: MANIFEST }),
     release() {},
@@ -104,8 +107,11 @@ test('recallTimeoutMs: a query that outlives the deadline aborts → empty (no c
     dimension: 3,
     recallTimeoutMs: 20,
   });
-  const hits = await rag.query('q', { k: 1 }); // resolves to [] when the 20ms deadline fires
-  assert.deepEqual(hits, []);
+  // the 20ms deadline fires → the abort propagates
+  await assert.rejects(
+    () => rag.query('q', { k: 1 }),
+    (e) => (e as Error).name === 'AbortError',
+  );
 });
 
 test('compatible revision: embeds once, calls queryRevision', async () => {
@@ -132,7 +138,7 @@ test('compatible revision: embeds once, calls queryRevision', async () => {
   assert.equal(sb.queryCalls(), 1);
 });
 
-test('incompatible revision: query() degrades to empty (ZERO embeds), but activeManifest() THROWS', async () => {
+test('incompatible revision: query() THROWS (ZERO embeds), and activeManifest() THROWS', async () => {
   let embeds = 0;
   const sb = stubBackend({
     snapshot: async () => ({
@@ -152,9 +158,11 @@ test('incompatible revision: query() degrades to empty (ZERO embeds), but active
     retrievalSchemaVersion: 1,
     dimension: 3,
   });
-  // RUNTIME query() degrades to []
-  const hits = await rag.query('q', { k: 1 });
-  assert.equal(hits.length, 0);
+  // RUNTIME query() throws (spec S-7)
+  await assert.rejects(
+    () => rag.query('q', { k: 1 }),
+    (e) => e instanceof SkillsIncompatibleError,
+  );
   assert.equal(embeds, 0); // embed skipped on incompatible
   // EAGER activeManifest() THROWS (so recall-only load()/healthCheck can fail-fast)
   await assert.rejects(

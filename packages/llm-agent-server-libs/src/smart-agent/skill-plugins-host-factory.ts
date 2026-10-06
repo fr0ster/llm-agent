@@ -31,6 +31,7 @@ import type {
   ISkillsStoreProvider,
   SkillGroupInfo,
   SkillIngestResult,
+  SkillLoadResult,
   SkillRecord,
 } from '@mcp-abap-adt/llm-agent';
 import {
@@ -407,6 +408,33 @@ export function validateServedGroups(
   }
 }
 
+/**
+ * Act on a `host.load()` result — never ignore it (fail loud, spec §10.5.8
+ * S-8/S-9, U2). `carried` sources are always logged (`skill_plugins_carried`).
+ * An `ok: false` result fails the STARTUP load with an error naming each
+ * omitted group and its reason; a later load (a reload) logs
+ * `skill_plugins_load_failed` with the omitted entries instead — the server is
+ * already serving, and the omitted groups serve nothing old.
+ */
+export function reportSkillLoad(
+  result: SkillLoadResult,
+  phase: 'startup' | 'reload',
+  log: (event: Record<string, unknown>) => void,
+): void {
+  if (result.carried?.length) {
+    log({ event: 'skill_plugins_carried', carried: result.carried });
+  }
+  if (result.ok) return;
+  if (phase === 'startup') {
+    throw new Error(
+      `skillPlugins: load failed — omitted group(s): ${result.omitted
+        .map((o) => `'${o.group}' (${o.reason})`)
+        .join('; ')}`,
+    );
+  }
+  log({ event: 'skill_plugins_load_failed', omitted: result.omitted });
+}
+
 /** Minimal handle on a created pg pool — only `end()` is needed for cleanup. */
 export interface IClosablePool {
   end(): Promise<void>;
@@ -432,10 +460,11 @@ export async function initSkillHost(
   buildHost: () => Promise<ISkillPluginHost>,
   cfg: SkillPluginsConfig,
   pools: IClosablePool[],
+  log: (event: Record<string, unknown>) => void,
 ): Promise<ISkillPluginHost> {
   try {
     const host = await buildHost();
-    await host.load();
+    reportSkillLoad(await host.load(), 'startup', log);
     // Fail loud on a misconfigured served-group subset (a typo'd
     // serveCollections/controllerSkillGroup silently disables skills).
     validateServedGroups(host, cfg);

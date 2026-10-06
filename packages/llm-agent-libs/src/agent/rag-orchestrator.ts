@@ -348,16 +348,38 @@ export class RagOrchestrator implements IRagOrchestrator {
               const emb = this.deps.embedder
                 ? new QueryEmbedding(text, this.deps.embedder, opts)
                 : new TextOnlyEmbedding(text);
-              return store.query(emb, k, opts);
+              // A rejection is that store's failure too — kept with its name.
+              return store.query(emb, k, opts).then(
+                (r) => ({ name, result: r }),
+                (err: unknown) => ({
+                  name,
+                  result: {
+                    ok: false as const,
+                    error:
+                      err instanceof RagError
+                        ? err
+                        : new RagError(String(err), 'QUERY_ERROR'),
+                  },
+                }),
+              );
             }),
           );
-          for (const result of fallbackResults) {
-            if (result.ok) {
-              for (const r of result.value) {
-                const id = r.metadata.id as string;
-                if (id?.startsWith('skill:')) {
-                  ragSkillNames.add(id.slice(6));
-                }
+          // Spec §10.5.8 S-2: a failed skill query is the request's error,
+          // with the store's code — never "no skills".
+          for (const { name, result } of fallbackResults) {
+            if (!result.ok) {
+              return {
+                ok: false,
+                error: new OrchestratorError(
+                  `rag-orchestrator: skill query of store "${name}" failed: ${result.error.message}`,
+                  result.error.code,
+                ),
+              };
+            }
+            for (const r of result.value) {
+              const id = r.metadata.id as string;
+              if (id?.startsWith('skill:')) {
+                ragSkillNames.add(id.slice(6));
               }
             }
           }
@@ -370,32 +392,76 @@ export class RagOrchestrator implements IRagOrchestrator {
           }
         }
 
-        const allSkillsResult = await this.deps.skillManager.listSkills(opts);
-        if (allSkillsResult.ok) {
-          const allSkills = allSkillsResult.value;
-          const matched =
-            ragSkillNames.size > 0
-              ? allSkills.filter((s) => ragSkillNames.has(s.name))
-              : mode === 'hard'
-                ? allSkills
-                : [];
-          const contentParts: string[] = [];
-          for (const skill of matched) {
-            const contentResult = await skill.getContent(undefined, opts);
-            if (contentResult.ok && contentResult.value) {
-              contentParts.push(
-                `### Skill: ${skill.name}\n${contentResult.value}`,
-              );
-            }
-          }
-          skillContent = contentParts.join('\n\n');
-          opts?.sessionLogger?.logStep('skills_selected', {
-            totalSkills: allSkills.length,
-            ragMatchedSkills: [...ragSkillNames],
-            selectedCount: matched.length,
-            selectedNames: matched.map((s) => s.name),
-          });
+        let allSkillsResult: Awaited<
+          ReturnType<typeof this.deps.skillManager.listSkills>
+        >;
+        try {
+          allSkillsResult = await this.deps.skillManager.listSkills(opts);
+        } catch (err) {
+          return {
+            ok: false,
+            error: rejectionError(
+              'rag-orchestrator: listSkills',
+              err,
+              'SKILL_ERROR',
+            ),
+          };
         }
+        // Spec §10.5.8 S-2: a failed listing or a skill whose content cannot
+        // be read is the request's error — never a skill silently left out.
+        if (!allSkillsResult.ok) {
+          return {
+            ok: false,
+            error: new OrchestratorError(
+              `rag-orchestrator: listSkills failed: ${allSkillsResult.error.message}`,
+              allSkillsResult.error.code,
+            ),
+          };
+        }
+        const allSkills = allSkillsResult.value;
+        const matched =
+          ragSkillNames.size > 0
+            ? allSkills.filter((s) => ragSkillNames.has(s.name))
+            : mode === 'hard'
+              ? allSkills
+              : [];
+        const contentParts: string[] = [];
+        for (const skill of matched) {
+          let contentResult: Awaited<ReturnType<typeof skill.getContent>>;
+          try {
+            contentResult = await skill.getContent(undefined, opts);
+          } catch (err) {
+            return {
+              ok: false,
+              error: rejectionError(
+                `rag-orchestrator: skill "${skill.name}" content`,
+                err,
+                'SKILL_ERROR',
+              ),
+            };
+          }
+          if (!contentResult.ok) {
+            return {
+              ok: false,
+              error: new OrchestratorError(
+                `rag-orchestrator: skill "${skill.name}" content failed: ${contentResult.error.message}`,
+                contentResult.error.code,
+              ),
+            };
+          }
+          if (contentResult.value) {
+            contentParts.push(
+              `### Skill: ${skill.name}\n${contentResult.value}`,
+            );
+          }
+        }
+        skillContent = contentParts.join('\n\n');
+        opts?.sessionLogger?.logStep('skills_selected', {
+          totalSkills: allSkills.length,
+          ragMatchedSkills: [...ragSkillNames],
+          selectedCount: matched.length,
+          selectedNames: matched.map((s) => s.name),
+        });
       }
     } else {
       // If we're here, mode is definitely 'smart' (not 'hard' or 'pass')
