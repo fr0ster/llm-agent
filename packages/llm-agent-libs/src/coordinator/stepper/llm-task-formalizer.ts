@@ -72,10 +72,10 @@ export function parseTaskSpec(content: string, raw: string): ITaskSpec | null {
   } catch {
     return null;
   }
-  const objective =
-    typeof obj.objective === 'string' && obj.objective.trim()
-      ? obj.objective.trim()
-      : raw;
+  // Spec §10.5.7 C7: a reply without an objective is not a formalized task —
+  // never the raw prompt standing in for one.
+  if (typeof obj.objective !== 'string' || !obj.objective.trim()) return null;
+  const objective = obj.objective.trim();
   const scope =
     typeof obj.scope === 'string' && obj.scope.trim()
       ? obj.scope.trim()

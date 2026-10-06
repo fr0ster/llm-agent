@@ -68,7 +68,7 @@ export class LlmNeedResolver implements INeedResolver {
       throw coordinatorError(
         'need resolver',
         new ClassifierError(
-          `classifier answered malformed JSON: ${res.value.content.slice(0, 200)}`,
+          `classifier answered no JSON verdict with a boolean need: ${res.value.content.slice(0, 200)}`,
         ),
         'COORDINATOR_STEP_FAILED',
       );
@@ -82,16 +82,25 @@ export class LlmNeedResolver implements INeedResolver {
   }
 }
 
+/** Parse the classifier's verdict. Tolerates ```json fences and surrounding
+ *  prose (first `{` to last `}`, as `parseTaskSpec` does); a verdict without a
+ *  boolean `need` is malformed. */
 function parseClassification(
   content: string,
-): { need?: unknown; capability?: unknown } | undefined {
+): { need: boolean; capability?: unknown } | undefined {
+  const start = content.indexOf('{');
+  const end = content.lastIndexOf('}');
+  if (start === -1 || end <= start) return undefined;
   let parsed: unknown;
   try {
-    parsed = JSON.parse(content);
+    parsed = JSON.parse(content.slice(start, end + 1));
   } catch {
     return undefined;
   }
-  return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)
-    ? (parsed as { need?: unknown; capability?: unknown })
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed))
+    return undefined;
+  const verdict = parsed as { need?: unknown; capability?: unknown };
+  return typeof verdict.need === 'boolean'
+    ? { need: verdict.need, capability: verdict.capability }
     : undefined;
 }

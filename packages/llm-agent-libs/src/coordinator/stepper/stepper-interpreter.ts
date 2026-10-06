@@ -6,6 +6,7 @@ import type {
   LlmUsage,
   RunIdentity,
 } from '@mcp-abap-adt/llm-agent';
+import { OrchestratorError } from '@mcp-abap-adt/llm-agent';
 import { coordinatorError } from '../coordinator-error.js';
 
 /** Total cap on injected dependsOn-dataflow content per node — a backstop against
@@ -155,10 +156,24 @@ export class StepperInterpreter implements IStepperInterpreter {
         const settled = await Promise.allSettled(
           batch.slice(i, i + cap).map(runNode),
         );
-        const failed = settled.find(
-          (r): r is PromiseRejectedResult => r.status === 'rejected',
-        );
-        if (failed) throw failed.reason;
+        const failed = settled
+          .filter((r): r is PromiseRejectedResult => r.status === 'rejected')
+          .map((r) => r.reason as unknown);
+        if (failed.length === 1) throw failed[0];
+        if (failed.length > 1) {
+          // Every failing sibling is named — none is dropped for the first.
+          const e = new OrchestratorError(
+            `stepper interpreter: ${failed.length} steps failed: ${failed
+              .map((f) => (f instanceof Error ? f.message : String(f)))
+              .join(' | ')}`,
+            'COORDINATOR_STEP_FAILED',
+          );
+          e.cause = new AggregateError(
+            failed,
+            'stepper interpreter: steps failed',
+          );
+          throw e;
+        }
       }
     }
 

@@ -142,8 +142,11 @@ test('Finding 2: shared token ledger is charged by NON-executor roles too (plann
       return {
         ok: true as const,
         value: {
+          // One answer serves every role; `"need":false` is the need
+          // resolver's verdict (spec §10.5.7 C6: a verdict without a boolean
+          // `need` is a ClassifierError, no longer read as "no need").
           content:
-            '{"pass":true,"objective":"o","nodes":[{"id":"a","goal":"g"}]}',
+            '{"pass":true,"need":false,"objective":"o","nodes":[{"id":"a","goal":"g"}]}',
           usage,
         },
       };

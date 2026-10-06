@@ -69,7 +69,16 @@ export class LlmStepperPlanner implements IStepperPlanner {
     taskSpec?: ITaskSpec;
     signal?: AbortSignal;
   }): Promise<DagPlan> {
-    const facts = await input.knowledgeRag.query(input.prompt, { k: 8 });
+    let facts: Awaited<ReturnType<typeof input.knowledgeRag.query>>;
+    try {
+      facts = await input.knowledgeRag.query(input.prompt, { k: 8 });
+    } catch (err) {
+      throw coordinatorError(
+        'stepper planner: knowledge store query failed',
+        err,
+        'COORDINATOR_PLAN_FAILED',
+      );
+    }
     const factBlock = facts.length
       ? `Known facts (already in the knowledge store):\n${facts.map((f) => `- [${f.metadata.artifactType}] ${truncate(f.content, 400)}`).join('\n')}\n\n`
       : 'Known facts: (none yet)\n\n';

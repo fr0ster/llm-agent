@@ -369,3 +369,133 @@ describe('C7 LLM task formalizer', () => {
     );
   });
 });
+
+describe('fix round 1', () => {
+  it('C7 a parsed reply with no objective → rejects (no raw-prompt objective)', async () => {
+    const l = llm('{"constraints":["x"]}');
+    await assert.rejects(
+      () => new LlmTaskFormalizer(l.obj as never).formalize({ prompt: 'p' }),
+      isCoordinatorError(
+        'COORDINATOR_PLAN_FAILED',
+        /task formalizer.*unparseable/,
+      ),
+    );
+  });
+
+  it('C6 a fenced verdict is parsed — "no need" stays "no need"', async () => {
+    const l = llm('```json\n{"need":false,"capability":""}\n```');
+    assert.equal(
+      await new LlmNeedResolver(l.obj as never).resolve('the answer'),
+      undefined,
+    );
+  });
+
+  it('C6 a prose-wrapped need is parsed', async () => {
+    const l = llm('Verdict: {"need":true,"capability":"read includes"} done');
+    assert.deepEqual(
+      await new LlmNeedResolver(l.obj as never).resolve('partial'),
+      { queryToolsRag: 'read includes' },
+    );
+  });
+
+  for (const content of ['{}', '{"need":"yes","capability":"x"}']) {
+    it(`C6 ${content} (need not a boolean) → rejects carrying a ClassifierError`, async () => {
+      const l = llm(content);
+      await assert.rejects(
+        () => new LlmNeedResolver(l.obj as never).resolve('x'),
+        isCoordinatorError(
+          'COORDINATOR_STEP_FAILED',
+          /need resolver.*ClassifierError.*CLASSIFIER_ERROR/,
+        ),
+      );
+    });
+  }
+
+  it('C1 two failing siblings → one COORDINATOR_STEP_FAILED naming both', async () => {
+    const exec: IExecutor = {
+      name: 'e',
+      async execute() {
+        return { status: 'ok', usage: ZERO };
+      },
+    };
+    const plan: DagPlan = {
+      nodes: [
+        { id: 'a', goal: 'gather' },
+        { id: 'b', goal: 'left', dependsOn: ['a'] },
+        { id: 'c', goal: 'right', dependsOn: ['a'] },
+      ],
+      createdAt: 0,
+    };
+    let n = 0;
+    await assert.rejects(
+      () =>
+        new StepperInterpreter().interpret(plan, {
+          prompt: 'p',
+          knowledgeRag: knowledge({
+            async list(): Promise<never> {
+              throw new RagError('store down', 'RAG_UPSTREAM_ERROR');
+            },
+          }) as never,
+          toolsRag: okTools as never,
+          childSteppers: new Map(),
+          executor: exec,
+          budget: { depthRemaining: 3, tokens: new TokenLedger(100000) },
+          identity,
+          maxParallelSteps: 4,
+          mintStepperId: () => `s${n++}`,
+        }),
+      (e: unknown) =>
+        e instanceof OrchestratorError &&
+        e.code === 'COORDINATOR_STEP_FAILED' &&
+        /node 'b'/.test(e.message) &&
+        /node 'c'/.test(e.message) &&
+        e.cause instanceof AggregateError &&
+        e.cause.errors.length === 2,
+    );
+  });
+
+  const failingKnowledge = knowledge({
+    async query(): Promise<never> {
+      throw new RagError('facts down', 'RAG_UPSTREAM_ERROR');
+    },
+  });
+
+  it('C2 planner knowledgeRag.query throws → COORDINATOR_PLAN_FAILED', async () => {
+    const l = llm('{"nodes":[{"id":"a","goal":"x"}]}');
+    await assert.rejects(
+      () =>
+        new LlmStepperPlanner(l.obj as never).plan({
+          prompt: 'task',
+          knowledgeRag: failingKnowledge as never,
+          toolsRag: okTools as never,
+          parentPath: ['root'],
+          identity,
+        }),
+      (e: unknown) =>
+        isCoordinatorError(
+          'COORDINATOR_PLAN_FAILED',
+          /stepper planner: knowledge store query failed.*RAG_UPSTREAM_ERROR.*facts down/,
+        )(e) && (e as Error).cause instanceof RagError,
+    );
+    assert.equal(l.calls, 0);
+  });
+
+  it('C3 evaluator knowledgeRag.query throws → COORDINATOR_STEP_FAILED', async () => {
+    const l = llm('{"route":"executable","missing":[]}');
+    await assert.rejects(
+      () =>
+        new LlmEvaluator(l.obj as never).evaluate({
+          prompt: 'task',
+          knowledgeRag: failingKnowledge as never,
+          toolsRag: okTools as never,
+          identity,
+        }),
+      (e: unknown) =>
+        isCoordinatorError(
+          'COORDINATOR_STEP_FAILED',
+          /evaluator: knowledge store query failed.*RAG_UPSTREAM_ERROR.*facts down/,
+        )(e) && (e as Error).cause instanceof RagError,
+    );
+    assert.equal(l.calls, 0);
+  });
+});

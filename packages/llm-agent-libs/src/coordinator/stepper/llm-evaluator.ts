@@ -52,7 +52,16 @@ export class LlmEvaluator implements IEvaluator {
     identity: RunIdentity;
     signal?: AbortSignal;
   }): Promise<EvaluatorVerdict> {
-    const facts = await input.knowledgeRag.query(input.prompt, { k: 8 });
+    let facts: Awaited<ReturnType<typeof input.knowledgeRag.query>>;
+    try {
+      facts = await input.knowledgeRag.query(input.prompt, { k: 8 });
+    } catch (err) {
+      throw coordinatorError(
+        'evaluator: knowledge store query failed',
+        err,
+        'COORDINATOR_STEP_FAILED',
+      );
+    }
     const factBlock = facts.length
       ? `Known facts (already in the knowledge store):\n${facts
           .map(
