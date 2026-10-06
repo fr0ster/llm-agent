@@ -26,6 +26,7 @@ import {
   retrievalEmbedderOf,
 } from '@mcp-abap-adt/llm-agent';
 import { ownerMetadata } from './owner.js';
+import { toRagError } from './to-rag-error.js';
 
 /**
  * Every reserved key but `id` (the store writes it), explicitly `undefined`, under
@@ -509,9 +510,6 @@ export function asItem(
   };
 }
 
-const asRagError = (err: unknown): RagError =>
-  err instanceof RagError ? err : new RagError(message(err));
-
 /** `getById`, with a throw turned into its `Result` error (both failure paths). */
 async function readCanonical(
   rag: IRag,
@@ -521,7 +519,7 @@ async function readCanonical(
   try {
     return await rag.getById(canonicalId, options);
   } catch (err) {
-    return { ok: false, error: asRagError(err) };
+    return { ok: false, error: toRagError(err) };
   }
 }
 
@@ -575,7 +573,7 @@ export async function removeItem(
       if (d.value) n++;
       return undefined;
     } catch (err) {
-      return asRagError(err);
+      return toRagError(err);
     }
   };
   const errors: RagError[] = [];

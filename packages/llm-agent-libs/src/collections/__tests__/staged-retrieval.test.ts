@@ -8,6 +8,7 @@ import {
   RagError,
   type RetrievalSource,
   recordId,
+  SmartAgentError,
 } from '@mcp-abap-adt/llm-agent';
 import { InMemoryRag } from '@mcp-abap-adt/llm-agent-rag';
 import {
@@ -18,6 +19,7 @@ import {
   StagedRetrieval,
   type StagedRetrievalOptions,
 } from '../index.js';
+import { prepareItem, storeItems } from '../record-writer.js';
 import {
   G,
   ids,
@@ -448,6 +450,16 @@ describe('StagedRetrieval — pass-through records and fail loud', () => {
     assert.ok(!p.ok);
     assert.equal(p.error.code, 'RAG_ERROR');
     assert.match(p.error.message, /boom/);
+    // another SmartAgentError keeps its code (the shared to-RagError helper)
+    const typed: IRag = {
+      ...throwing,
+      query: async () =>
+        Promise.reject(new SmartAgentError('breaker open', 'CIRCUIT_OPEN')),
+    };
+    const t = await staged(primary(typed)).retrieve(typed, q('x'), 3);
+    assert.ok(!t.ok);
+    assert.equal(t.error.code, 'CIRCUIT_OPEN');
+    assert.match(t.error.message, /breaker open/);
   });
 
   it('a hydration read error is returned with its code — on both paths (Result error, rejection)', async () => {
@@ -513,5 +525,137 @@ describe('StagedRetrieval — pass-through records and fail loud', () => {
     const r = await staged(twice).retrieve(rag, q('needle'), 1);
     assert.ok(!r.ok);
     assert.match(r.error.message, /primary/);
+  });
+
+  it('an expired canonical record makes the item an orphan: dropped and replaced (§3.3, §4.6)', async () => {
+    const raw = new InMemoryRag();
+    const now = Date.now() / 1000;
+    const p = prepareItem(
+      {
+        itemId: 'E',
+        ttl: now + 3600,
+        drafts: [
+          { text: 'echo', itemId: 'E', recordKind: 'full', owner: G },
+          {
+            text: 'needle',
+            itemId: 'E',
+            recordKind: 'summary',
+            owner: G,
+            itemText: 'echo',
+          },
+        ],
+      },
+      { canonicalKind: 'full', profile: 'test', maxRecordsPerItem: 3 },
+    );
+    assert.ok(p.ok);
+    const stored = await storeItems(raw, [p.item]);
+    assert.deepEqual(stored.indexed, [true]);
+    // the canonical expires; the summary hit stays live
+    await raw
+      .writer()
+      .upsertRaw(recordId(G, 'E', 'full', 0), 'echo', { ttl: now - 10 });
+    await put(raw, 'Z', [['full', 'needle zulu']]);
+    const rag = scored(matchesOnly(raw), { E: 0.9, Z: 0.5 });
+    const r = await staged(primary(rag), { pool: undefined }).retrieve(
+      rag,
+      q('needle'),
+      1,
+    );
+    assert.deepEqual(ids(r), ['Z']);
+  });
+});
+
+describe('StagedRetrieval — deterministic order', () => {
+  /** One store whose hits come back in a fixed order with fixed scores. */
+  const fixed = (
+    hits: Array<[id: string, score: number]>,
+    raw: IRag,
+  ): IRag => ({
+    query: async (qq, k, o) => {
+      const r = await raw.query(qq, k, o);
+      if (!r.ok) return r;
+      const byId = new Map(r.value.map((x) => [String(x.metadata.id), x]));
+      return {
+        ok: true,
+        value: hits.flatMap(([id, score]) => {
+          const h = byId.get(id);
+          return h ? [{ ...h, score }] : [];
+        }),
+      };
+    },
+    healthCheck: (o) => raw.healthCheck(o),
+    getById: (id, o) => raw.getById(id, o),
+  });
+
+  it('a pass-through record and an item with one score tie by key, whatever order the store returned them in', async () => {
+    const raw = new InMemoryRag();
+    await raw
+      .writer()
+      .upsertRaw('skill:deploy', 'Skill: deploy needle', { name: 'deploy' });
+    await put(raw, 'A', [['full', 'needle alpha']]);
+    const a = recordId(G, 'A', 'full', 0);
+    const skillFirst = fixed(
+      [
+        ['skill:deploy', 0.5],
+        [a, 0.5],
+      ],
+      raw,
+    );
+    const itemFirst = fixed(
+      [
+        [a, 0.5],
+        ['skill:deploy', 0.5],
+      ],
+      raw,
+    );
+    const r1 = await staged(primary(skillFirst)).retrieve(
+      skillFirst,
+      q('needle'),
+      2,
+    );
+    const r2 = await staged(primary(itemFirst)).retrieve(
+      itemFirst,
+      q('needle'),
+      2,
+    );
+    assert.ok(r1.ok && r2.ok);
+    assert.equal(r1.value.length, 2);
+    assert.deepEqual(ids(r1), ids(r2));
+    // Ties break on the unit key, not on the unit kind: the item's key
+    // ["primary",…] sorts before the pass-through record's ["record","primary",…].
+    assert.deepEqual(ids(r1), ['A', 'skill:deploy']);
+    // k=1 keeps the same winner either way
+    const k1 = await staged(primary(skillFirst)).retrieve(
+      skillFirst,
+      q('needle'),
+      1,
+    );
+    const k2 = await staged(primary(itemFirst)).retrieve(
+      itemFirst,
+      q('needle'),
+      1,
+    );
+    assert.deepEqual(ids(k1), ids(k2));
+  });
+
+  it('the same retrieval run twice returns identical output', async () => {
+    const raw = new InMemoryRag();
+    await raw.writer().upsertRaw('skill:a', 'needle', { name: 'a' });
+    for (const id of ['B', 'C', 'D'])
+      await put(raw, id, [['full', `needle ${id}`]]);
+    const all = [
+      'skill:a',
+      ...['B', 'C', 'D'].map((x) => recordId(G, x, 'full', 0)),
+    ];
+    const rag = fixed(
+      all.map((id) => [id, 0.5]),
+      raw,
+    );
+    const s = staged(primary(rag));
+    const first = await s.retrieve(rag, q('needle'), 3);
+    const second = await s.retrieve(rag, q('needle'), 3);
+    assert.ok(first.ok);
+    assert.equal(first.value.length, 3);
+    assert.deepEqual(second, first);
   });
 });

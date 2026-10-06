@@ -36,6 +36,7 @@ import { TopItemsCut } from './cuts.js';
 import { ItemPool } from './item-pool.js';
 import { itemKey, ownerFromMetadata } from './owner.js';
 import { asItem, isExpired } from './record-writer.js';
+import { toRagError } from './to-rag-error.js';
 
 export interface StagedRetrievalOptions {
   /** Reported as `strategy`. */
@@ -152,17 +153,6 @@ function mergeByScore(got: readonly Hydrated[]): RagResult[] {
   return [...head, ...rest].map((h) => h.item);
 }
 
-/** A rejection of a Result-returning call, as its Result error: a RagError as is,
- *  another error's string `code` kept (fail loud: the component's code reaches the caller). */
-function rejected(err: unknown): RagError {
-  if (err instanceof RagError) return err;
-  const code = (err as { code?: unknown } | null)?.code;
-  const msg = err instanceof Error ? err.message : String(err);
-  return typeof code === 'string' && code.length > 0
-    ? new RagError(msg, code)
-    : new RagError(msg);
-}
-
 /** A Result-returning store call, handled on both failure paths (`ok: false` and a rejection). */
 async function settled<T>(
   call: () => Promise<Result<T, RagError>>,
@@ -170,7 +160,7 @@ async function settled<T>(
   try {
     return await call();
   } catch (err) {
-    return { ok: false, error: rejected(err) };
+    return { ok: false, error: toRagError(err) };
   }
 }
 
@@ -289,7 +279,9 @@ export class StagedRetrieval implements IRetrievalStrategy {
         },
       });
     }
-    units.sort((a, b) => b.score - a.score);
+    // Ties break on the unit key — deterministic, and the same for an item and a
+    // pass-through record (never by unit kind or the order units were built in).
+    units.sort((a, b) => b.score - a.score || a.key.localeCompare(b.key));
     // The pool is the first pool.items(k) units per source; the rest of what
     // was fetched is KEPT, in stage-1 order (spec §4.4, §4.6, D67).
     const { pooled, overflow } = splitPerSource(units, this.pool.items(poolK));
