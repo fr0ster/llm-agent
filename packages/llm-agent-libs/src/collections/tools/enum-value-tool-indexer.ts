@@ -14,9 +14,8 @@ import { assertPositiveInteger } from '../../util/assert-positive-integer.js';
 import { firstClause, nameWords, valueWords } from './derive-tool-facets.js';
 
 /**
- * Generic strategy in NO named composition (spec §7.3.2): it needs `maxValues`,
- * the consumer's number, and a consumer's evidence found it worse on one coarse
- * set. Adds one `value` record per string value of the tool's discriminating
+ * It is in no named composition (spec §7.3.2); it needs `maxValues`,
+ * the consumer's own number. Adds one `value` record per string value of the tool's discriminating
  * parameter. A tool with more values than `maxValues` fails
  * (`TOO_MANY_RECORDS`); values are never silently dropped. Like the inner
  * indexer it never rejects: a throw in its own derivation is an `ok: false`
@@ -43,9 +42,9 @@ export class EnumValueToolIndexer
     options?: CallOptions,
   ): Promise<Result<readonly RecordDraft[], RagError>> {
     // A decorator: the caller's options (abort signal, trace, user) reach the inner indexer.
-    const base = await this.inner.toRecords(tool, options);
-    if (!base.ok) return base;
     try {
+      const base = await this.inner.toRecords(tool, options);
+      if (!base.ok) return base;
       const p = this.opts.discriminator.select(tool);
       if (!p) return base;
       if (p.values.length > this.opts.maxValues) {

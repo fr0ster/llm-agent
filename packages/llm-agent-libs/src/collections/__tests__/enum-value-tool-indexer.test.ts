@@ -207,6 +207,22 @@ describe('EnumValueToolIndexer never rejects', () => {
     assert.ok(!r.ok && r.error.message.includes('selector exploded'));
     assert.ok(!r.ok && r.error.cause === boom);
   });
+  it('an inner indexer that rejects → ok:false with the cause', async () => {
+    const boom = new Error('inner rejected');
+    const inner: IItemIndexer<ToolItem> = {
+      name: 'x',
+      canonicalKind: 'full',
+      maxRecordsPerItem: 1,
+      toRecords: () => Promise.reject(boom),
+    };
+    const r = await new EnumValueToolIndexer(inner, {
+      discriminator: new RequiredEnumDiscriminator(),
+      maxValues: 5,
+    }).toRecords(coarse);
+    assert.equal(r.ok, false);
+    assert.ok(!r.ok && r.error.message.includes('inner rejected'));
+    assert.ok(!r.ok && r.error.cause === boom);
+  });
   it('an inner failure is returned unchanged', async () => {
     const inner: IItemIndexer<ToolItem> = {
       name: 'x',
@@ -258,6 +274,32 @@ describe('ambiguous-discriminator notes (S1)', () => {
       maxValues: 5,
     });
     assert.deepEqual(viaNamed.notesFor(ambiguous), []);
+  });
+  it('indexer level: ambiguity → inner records only; NamedDiscriminator picks the parameter', async () => {
+    const viaRequired = await new EnumValueToolIndexer(
+      new FacetedToolIndexer([]),
+      {
+        discriminator: new RequiredEnumDiscriminator(),
+        maxValues: 5,
+      },
+    ).toRecords(ambiguous);
+    assert.ok(viaRequired.ok);
+    assert.deepEqual(
+      viaRequired.value.map((d) => d.recordKind),
+      ['full'],
+    );
+    const viaNamed = await new EnumValueToolIndexer(
+      new FacetedToolIndexer([]),
+      {
+        discriminator: new NamedDiscriminator('kind'),
+        maxValues: 5,
+      },
+    ).toRecords(ambiguous);
+    assert.ok(viaNamed.ok);
+    assert.equal(
+      viaNamed.value.filter((d) => d.recordKind === 'value').length,
+      2,
+    );
   });
   it("forwards the inner indexer's notes too", () => {
     const inner = Object.assign(new FacetedToolIndexer([]), {
