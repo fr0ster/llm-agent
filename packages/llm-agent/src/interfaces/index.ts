@@ -241,6 +241,11 @@ export type {
   ToolCallEntry,
 } from './request-logger.js';
 export type { IReranker } from './reranker.js';
+export {
+  type IRetrievalEmbedderOwner,
+  isRetrievalEmbedderOwner,
+  retrievalEmbedderOf,
+} from './retrieval-embedder-owner.js';
 export type {
   IRagDecorator,
   IRetrievalStrategy,

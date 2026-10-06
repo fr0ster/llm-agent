@@ -5,6 +5,7 @@ import type {
   IRag,
   IRagBackendWriter,
   IRetrievalEmbedder,
+  IRetrievalEmbedderOwner,
 } from '@mcp-abap-adt/llm-agent';
 import {
   type CallOptions,
@@ -51,7 +52,7 @@ export interface VectorRagConfig {
   documentEnrichers?: IDocumentEnricher[];
 }
 
-export class VectorRag implements IRag {
+export class VectorRag implements IRag, IRetrievalEmbedderOwner {
   private records: (StoredRecord | null)[] = [];
   private readonly dedupThreshold: number;
   private readonly namespace?: string;
@@ -81,6 +82,11 @@ export class VectorRag implements IRag {
       });
     this.queryPreprocessors = config.queryPreprocessors ?? [];
     this.documentEnrichers = config.documentEnrichers ?? [];
+  }
+
+  /** IRetrievalEmbedderOwner: the embedder this store writes and searches with. */
+  get retrievalEmbedder(): IRetrievalEmbedder {
+    return this.embedder;
   }
 
   /** Update hybrid search weights at runtime (hot-reload). */
