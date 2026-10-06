@@ -58,14 +58,16 @@ test('query() returns [] when RAG returns 0 hits — never a catalog slice (spec
   assert.deepEqual(r, []);
 });
 
-test('eager catalog-load failure is swallowed; lookup() returns undefined', async () => {
+test('eager catalog-load failure rejects the handle (spec §10.5.9 V7)', async () => {
   const throwing = {
     listTools: async () => {
       throw new Error('boom');
     },
   } as never;
-  const h = await makeToolsRagHandle([throwing], undefined, undefined);
-  assert.equal(h.lookup('anything'), undefined);
+  await assert.rejects(
+    makeToolsRagHandle([throwing], undefined, undefined),
+    /boom/,
+  );
 });
 
 test('query(text, k, options) forwards options to toolsRag.query', async () => {

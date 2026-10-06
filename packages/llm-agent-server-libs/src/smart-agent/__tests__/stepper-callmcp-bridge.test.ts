@@ -241,6 +241,9 @@ test('bridge dispatched through buildStepperRoot: tool result reaches knowledgeR
     },
     registry: new Map(),
     makeLlm: async () => stubLlm as never,
+    // Every role resolves to this config (spec §10.5.9 V9: a role with no
+    // config is an error, never a stub); makeLlm returns the stub.
+    pipelineFallback: { provider: 'openai', model: 'stub' },
     knowledgeRagFor: () => knowledgeRag as never,
     toolsRag: {
       async query() {

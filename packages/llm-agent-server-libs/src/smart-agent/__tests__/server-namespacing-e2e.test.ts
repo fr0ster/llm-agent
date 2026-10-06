@@ -860,6 +860,9 @@ test('stepper pipeline: over a REAL boot, s1__Search routes to server 1 with the
       },
       registry: new Map(),
       makeLlm: async () => scriptedLlm,
+      // Every role resolves to this config (spec §10.5.9 V9: a role with no
+      // config is an error, never a stub); makeLlm returns the scripted LLM.
+      pipelineFallback: { provider: 'openai', model: 'scripted' },
       knowledgeRagFor: () => knowledgeRag as never,
       toolsRag: internals._toolsRagHandle as never,
       callMcp,

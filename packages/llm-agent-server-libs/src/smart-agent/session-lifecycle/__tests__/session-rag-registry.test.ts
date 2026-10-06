@@ -169,19 +169,12 @@ test('a caller without a userId gets no user collection', async () => {
   );
 });
 
-test('reports rejected catalog rows and a failed catalog read, and carries on', async () => {
-  const bad = catalogued('bad', []);
-  (bad.provider as { describeCollections: unknown }).describeCollections =
-    async () => ({
-      ok: false,
-      error: new RagError('catalog unreachable'),
-    });
+test('reports rejected catalog rows and hydrates the rest', async () => {
   const pg = catalogued('pg', records.slice(0, 1), [
     { storeName: 'junk_0000000009', reason: 'no scope' },
     { reason: 'no store name' },
   ]);
   const providers = new SimpleRagProviderRegistry();
-  providers.registerProvider(bad.provider);
   providers.registerProvider(pg.provider);
   const { log, messages } = logger();
   const reg = await buildSessionRagRegistry({
@@ -190,11 +183,29 @@ test('reports rejected catalog rows and a failed catalog read, and carries on', 
     providers,
     logger: log,
   });
-  assert.ok(reg.get('kb', 'global'), 'the healthy provider still hydrated');
+  assert.ok(reg.get('kb', 'global'), 'the catalogued global hydrated');
   const all = messages().join('\n');
-  assert.match(all, /catalog unreachable/);
   assert.match(all, /junk_0000000009.*no scope/);
   assert.match(all, /no store name/);
+});
+
+test('a failed catalog read fails the session’s creation with its RagError (spec §10.5.9 V1)', async () => {
+  const bad = catalogued('bad', []);
+  const unreachable = new RagError('catalog unreachable');
+  (bad.provider as { describeCollections: unknown }).describeCollections =
+    async () => ({ ok: false, error: unreachable });
+  const pg = catalogued('pg', records.slice(0, 1));
+  const providers = new SimpleRagProviderRegistry();
+  providers.registerProvider(bad.provider);
+  providers.registerProvider(pg.provider);
+  await assert.rejects(
+    buildSessionRagRegistry({
+      identity: { sessionId: 'S' },
+      globals: new SimpleRagRegistry(),
+      providers,
+    }),
+    (e: unknown) => e === unreachable,
+  );
 });
 
 test('a catalogued global that the deployment already configures is skipped, with a warning', async () => {
@@ -219,7 +230,7 @@ test('a catalogued global that the deployment already configures is skipped, wit
   assert.match(messages().join('\n'), /kb/);
 });
 
-test('a provider whose describeCollections throws, and a record whose openCollection throws, are logged and hydration continues', async () => {
+test('a provider whose describeCollections throws fails the session’s creation, naming the provider (spec §10.5.9 V1)', async () => {
   const throwing = {
     name: 'throwing',
     kind: 'vector',
@@ -237,7 +248,22 @@ test('a provider whose describeCollections throws, and a record whose openCollec
       error: new RagError('not expected'),
     }),
   } as unknown as IRagProvider;
+  const providers = new SimpleRagProviderRegistry();
+  providers.registerProvider(throwing);
+  await assert.rejects(
+    buildSessionRagRegistry({
+      identity: { sessionId: 'S' },
+      globals: new SimpleRagRegistry(),
+      providers,
+    }),
+    (e: unknown) =>
+      e instanceof RagError &&
+      /throwing/.test(e.message) &&
+      /describe boom/.test(e.message),
+  );
+});
 
+test('a record whose openCollection throws fails the session’s creation, naming the store (spec §10.5.9 V1)', async () => {
   // kb (global) and mine (user alice) — both belong to this identity.
   const pg = catalogued('pg', records.slice(0, 2));
   (pg.provider as { openCollection: unknown }).openCollection = async (
@@ -252,31 +278,19 @@ test('a provider whose describeCollections throws, and a record whose openCollec
       ? { ok: true, value: { rag, editor: {} as IRagEditor } }
       : { ok: false, error: new RagError(`gone: ${record.storeName}`) };
   };
-
   const providers = new SimpleRagProviderRegistry();
-  providers.registerProvider(throwing);
   providers.registerProvider(pg.provider);
-  const { log, messages } = logger();
-  const reg = await buildSessionRagRegistry({
-    identity: { sessionId: 'S', userId: 'alice' },
-    globals: new SimpleRagRegistry(),
-    providers,
-    logger: log,
-  });
-  assert.ok(
-    reg.get('kb', 'global'),
-    'a healthy provider and a healthy record still hydrate',
+  await assert.rejects(
+    buildSessionRagRegistry({
+      identity: { sessionId: 'S', userId: 'alice' },
+      globals: new SimpleRagRegistry(),
+      providers,
+    }),
+    (e: unknown) =>
+      e instanceof RagError &&
+      /mine_00000000002/.test(e.message) &&
+      /open boom/.test(e.message),
   );
-  assert.equal(
-    reg.get('mine', 'user'),
-    undefined,
-    'a record whose openCollection threw is not adopted',
-  );
-  const all = messages().join('\n');
-  assert.match(all, /throwing/);
-  assert.match(all, /describe boom/);
-  assert.match(all, /mine_00000000002/);
-  assert.match(all, /open boom/);
 });
 
 test('a provider without a catalog is skipped silently', async () => {

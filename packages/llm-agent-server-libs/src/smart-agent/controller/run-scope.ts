@@ -1,4 +1,8 @@
 import { createHash } from 'node:crypto';
+import {
+  OrchestratorError,
+  PIPELINE_FAILURE_CODES,
+} from '@mcp-abap-adt/llm-agent';
 import type { KnowledgeBackend } from '@mcp-abap-adt/llm-agent-libs';
 import type { SessionBundle } from './types.js';
 
@@ -76,15 +80,46 @@ export async function readTerminal(
     const e = entries[i];
     if (e.metadata.artifactType !== TERMINAL_ARTIFACT_TYPE) continue;
     if (e.metadata.runId !== runId) continue;
+    // Spec §10.5.9 V3: the run's latest terminal entry that cannot be parsed
+    // is STATE_CORRUPT — never skipped for an older one.
+    let parsed: unknown;
     try {
-      const parsed = JSON.parse(e.content) as TerminalEntry;
-      if (new Date(parsed.expiresAt).getTime() <= now) return undefined;
-      return parsed.terminalOutcome;
-    } catch {
-      // malformed — keep scanning backwards
+      parsed = JSON.parse(e.content);
+    } catch (err) {
+      throw corruptTerminal(
+        sessionId,
+        runId,
+        `does not parse (${err instanceof Error ? err.message : String(err)})`,
+      );
     }
+    if (
+      parsed === null ||
+      typeof parsed !== 'object' ||
+      typeof (parsed as Partial<TerminalEntry>).expiresAt !== 'string' ||
+      typeof (parsed as Partial<TerminalEntry>).terminalOutcome !== 'object'
+    ) {
+      throw corruptTerminal(
+        sessionId,
+        runId,
+        'has no expiresAt or terminalOutcome',
+      );
+    }
+    const entry = parsed as TerminalEntry;
+    if (new Date(entry.expiresAt).getTime() <= now) return undefined;
+    return entry.terminalOutcome;
   }
   return undefined;
+}
+
+function corruptTerminal(
+  sessionId: string,
+  runId: string,
+  why: string,
+): OrchestratorError {
+  return new OrchestratorError(
+    `controller terminal entry of run '${runId}' (session '${sessionId}') ${why}`,
+    PIPELINE_FAILURE_CODES.STATE_CORRUPT,
+  );
 }
 
 /** The runIds whose terminal entries are expired as of nowIso (backends without
@@ -103,7 +138,8 @@ export async function gcTerminal(
       if (new Date(parsed.expiresAt).getTime() <= now)
         expired.push(parsed.runId);
     } catch {
-      // ignore
+      // Cleanup: an unreadable entry is not collected here; the read of its
+      // run reports it (STATE_CORRUPT, spec §10.5.9 V3).
     }
   }
   return expired;

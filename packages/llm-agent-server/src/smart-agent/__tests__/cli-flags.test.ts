@@ -53,6 +53,43 @@ describe('cli env loading', () => {
   });
 });
 
+describe('cli env files fail loud (spec §10.5.9 V8)', () => {
+  /**
+   * Runs the CLI in a fresh temp dir: should it go on past its env files, it
+   * writes a config template into its cwd — never into the repository. tsx is
+   * resolved from this package: that cwd has no node_modules.
+   */
+  function runCliInTempDir(args: string[]) {
+    const cwd = mkdtempSync(path.join(tmpdir(), 'cli-v8-'));
+    return spawnSync(
+      'node',
+      ['--import', import.meta.resolve('tsx/esm'), CLI, ...args],
+      { encoding: 'utf8', cwd },
+    );
+  }
+
+  it('--env-path naming a file that cannot be read → exit 1 with the path and the reason', () => {
+    const r = runCliInTempDir(['--env-path', '/no/such/file']);
+    assert.equal(r.status, 1);
+    assert.match(r.stderr, /cannot read env file \/no\/such\/file: .*ENOENT/);
+  });
+
+  it('--env with a secrets-dir that cannot be read → exit 1 with the path and the reason', () => {
+    const r = runCliInTempDir(['--env', '--secrets-dir', '/no/such/dir']);
+    assert.equal(r.status, 1);
+    assert.match(r.stderr, /cannot read secrets-dir \/no\/such\/dir: .*ENOENT/);
+  });
+
+  it('an absent implicit .env stays ignored (absent by design)', () => {
+    // Neither flag, a cwd without .env, and a config path that cannot be
+    // written: the process stops at its config, naming it — not at an env file.
+    const r = runCliInTempDir(['--config', '/no/such/config.yaml']);
+    assert.notEqual(r.status, 0);
+    assert.match(r.stderr, /\/no\/such\/config\.yaml/);
+    assert.doesNotMatch(r.stderr, /env file/);
+  });
+});
+
 describe('cli strict flag parsing', () => {
   it('rejects a removed behavior flag (--llm-api-key)', () => {
     const r = runCli(['--llm-api-key', 'x']);

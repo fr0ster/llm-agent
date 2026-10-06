@@ -7,20 +7,8 @@ import {
   makeDefaultDeps,
   makeLlm as makeTestLlm,
 } from '@mcp-abap-adt/llm-agent-libs/testing';
-import type { BuildAgentDeps } from '../smart-server.js';
 import { SmartServer } from '../smart-server.js';
-import { constructionSeams } from './construction-seams.js';
-
-/** Every test here builds a real SmartServer; the seams are required now. */
-function makeLlmDeps(): Pick<BuildAgentDeps, 'makeLlm' | 'resolveEmbedder'> {
-  return {
-    ...constructionSeams,
-    makeLlm: async (cfg) => ({
-      ...makeTestLlm([{ content: 'ok' }]),
-      model: cfg.model ?? 'stub',
-    }),
-  };
-}
+import { httpRequest, makeLlmDeps } from './server-test-helpers.js';
 
 function makeResolver(results: Record<string, ILlm | Error>): IModelResolver {
   return {
@@ -31,48 +19,6 @@ function makeResolver(results: Record<string, ILlm | Error>): IModelResolver {
       return result;
     },
   };
-}
-
-function httpRequest(
-  port: number,
-  method: string,
-  path: string,
-  body?: unknown,
-): Promise<{ status: number; body: unknown; raw: string }> {
-  return new Promise((resolve, reject) => {
-    const bodyStr = body !== undefined ? JSON.stringify(body) : undefined;
-    const options = {
-      host: '127.0.0.1',
-      port,
-      method,
-      path,
-      headers: {
-        'Content-Type': 'application/json',
-        ...(bodyStr !== undefined
-          ? { 'Content-Length': Buffer.byteLength(bodyStr) }
-          : {}),
-      },
-    };
-    const req = request(options, (res) => {
-      const chunks: Buffer[] = [];
-      res.on('data', (chunk: Buffer) => chunks.push(chunk));
-      res.on('end', () => {
-        const text = Buffer.concat(chunks).toString('utf8');
-        let parsed: unknown;
-        try {
-          parsed = JSON.parse(text);
-        } catch {
-          parsed = text;
-        }
-        resolve({ status: res.statusCode ?? 0, body: parsed, raw: text });
-      });
-    });
-    req.on('error', reject);
-    if (bodyStr !== undefined) {
-      req.write(bodyStr);
-    }
-    req.end();
-  });
 }
 
 describe('SmartAgent.getAgentConfig', () => {

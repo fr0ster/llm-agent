@@ -30,6 +30,9 @@ const baseInput = {
   coordCfg: { mode: 'planned-react' },
   registry: new Map(),
   makeLlm: async () => stubLlm as never,
+  // Every role resolves to this config (spec §10.5.9 V9: a role with no
+  // config is an error, never a stub); makeLlm returns the stub.
+  pipelineFallback: { provider: 'openai', model: 'm' },
   knowledgeRagFor: () =>
     ({
       async query() {
@@ -318,6 +321,7 @@ test('pipelineFallback is used when llmMap is absent', async () => {
 // ── (б) nested flow nodes — structural recursion via buildFromComposition ──────
 const compDeps = {
   makeLlm: async () => stubLlm as never,
+  pipelineFallback: { provider: 'openai', model: 'm' },
   callMcp: async () => 'result',
   mintStepperId: (() => {
     let i = 0;

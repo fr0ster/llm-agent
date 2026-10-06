@@ -15,15 +15,14 @@ import { listedToolsOrThrow } from './listed-tools.js';
  * Build a real IToolsRagHandle over the tools RAG store + MCP catalog,
  * dispatching over the ALREADY-RESOLVED `clients`. Eagerly populates the
  * catalog so the SYNC `lookup(name)` contract returns a schema before any
- * `query()` runs. A catalog-load failure caches nothing: the eager load logs
- * it, and every `query()` lists again and rejects with the client's McpError
- * (spec §10.5.3 M9).
+ * `query()` runs. A client that cannot list its tools rejects the handle's
+ * construction with its McpError (spec §10.5.3 M9, §10.5.9 V7) — no handle
+ * without a catalog.
  */
 export async function makeToolsRagHandle(
   clients: IMcpClient[],
   toolsRag: IRag | undefined,
   resolvedEmbedder: IQueryEmbedder | undefined,
-  log?: (event: Record<string, unknown>) => void,
   namespaced?: { namespacedTools: readonly LlmTool[] },
 ): Promise<IToolsRagHandle> {
   const stepperMcpClients = clients ?? [];
@@ -41,8 +40,7 @@ export async function makeToolsRagHandle(
       }
     } else {
       // Spec §10.5.3 M9: a client that cannot list its tools is an error —
-      // the first failure is thrown and nothing is cached, so the next query
-      // lists again.
+      // the first failure is thrown and nothing is cached.
       const settled = await Promise.allSettled(
         stepperMcpClients.map((client) => client.listTools()),
       );
@@ -93,18 +91,8 @@ export async function makeToolsRagHandle(
   // F2: eagerly populate the MCP tool catalog at startup (MCP is connected
   // above), so the SYNC `lookup(name)` contract (IToolsRagHandle.lookup) returns
   // a tool schema BEFORE any `query()` runs. `ensureCatalog` is idempotent —
-  // later `query()` calls reuse the cached map. Guard against a catalog-load
-  // failure so startup never crashes: on failure `catalogCache` stays unset and
-  // `lookup` returns undefined (today's worst case), while the happy path works.
-  try {
-    await ensureCatalog();
-  } catch (err) {
-    log?.({
-      event: 'tools_catalog_eager_load_failed',
-      message:
-        'tools catalog eager-load failed; lookup() returns undefined until first query()',
-      error: err instanceof Error ? err.message : String(err),
-    });
-  }
+  // later `query()` calls reuse the cached map. A failed load rejects with the
+  // client's McpError, so the server's start fails (spec §10.5.9 V7).
+  await ensureCatalog();
   return handle;
 }

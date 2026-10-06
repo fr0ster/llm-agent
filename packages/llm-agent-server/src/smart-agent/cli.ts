@@ -143,32 +143,40 @@ const secretsDir =
 const envPath = args['env-path'] as string | undefined;
 const envScan = args.env === true;
 
-if (envPath) {
-  const result = configDotenv({ path: path.resolve(envPath), override: false });
-  if (!result.parsed) {
-    process.stderr.write(`Warning: could not load env file: ${envPath}\n`);
+// Spec §10.5.9 V8: an env file or secrets-dir the command line names
+// explicitly must be readable — exit 1 with the path and the reason.
+/** Load one explicitly named env file, or exit 1 naming it and why. */
+function loadEnvFileOrExit(file: string): void {
+  // dotenv reports an unreadable file in `error` (it still returns an empty
+  // `parsed`), so the error is what is checked.
+  const result = configDotenv({ path: path.resolve(file), override: false });
+  if (result.error) {
+    process.stderr.write(
+      `Error: cannot read env file ${file}: ${result.error.message}\n`,
+    );
+    process.exit(1);
   }
 }
+
+if (envPath) loadEnvFileOrExit(envPath);
 if (envScan) {
-  let entries: string[] = [];
+  let entries: string[];
   try {
     entries = fs
       .readdirSync(secretsDir)
       .filter((f) => f.endsWith('.env'))
       .sort();
-  } catch {
-    process.stderr.write(`Warning: secrets-dir not readable: ${secretsDir}\n`);
+  } catch (err) {
+    process.stderr.write(
+      `Error: cannot read secrets-dir ${secretsDir}: ${errorText(err)}\n`,
+    );
+    process.exit(1);
   }
-  for (const f of entries) {
-    const full = path.join(secretsDir, f);
-    const result = configDotenv({ path: full, override: false });
-    if (!result.parsed) {
-      process.stderr.write(`Warning: could not load env file: ${full}\n`);
-    }
-  }
+  for (const f of entries) loadEnvFileOrExit(path.join(secretsDir, f));
 }
 if (!envPath && !envScan) {
-  // Implicit .env in cwd — only when neither flag is given. ok if absent.
+  // Implicit .env in cwd — only when neither flag is given. Absent by design
+  // when missing (spec §10.5.9 V8): its result is not an error.
   configDotenv({ path: path.resolve('.env'), override: false });
 }
 

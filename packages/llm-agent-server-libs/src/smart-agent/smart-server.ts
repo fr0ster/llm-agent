@@ -2241,6 +2241,9 @@ export class SmartServer {
     //      declare their own store).
     // History RAG: only when the worker has its own cached instance — the
     // parent's history RAG is owned by the parent agent and is not shared.
+    // What this wire takes from the parent (spec §10.5.12 U10): kept — the
+    // consumer chose it by declaring none of its own — and logged below.
+    const shared: ('toolsRag' | 'mcpClients')[] = [];
     if (cached.toolsRag) {
       subBuilder = subBuilder.setToolsRag(cached.toolsRag);
       if (cached.historyRag) {
@@ -2248,6 +2251,7 @@ export class SmartServer {
       }
     } else if (injected?.toolsRag) {
       subBuilder = subBuilder.setToolsRag(injected.toolsRag);
+      shared.push('toolsRag');
     }
 
     if (subCfg.skillManager) {
@@ -2264,6 +2268,14 @@ export class SmartServer {
       subBuilder = subBuilder.withMcpClients(cached.mcpClients);
     } else if (injected?.mcpClients && injected.mcpClients.length > 0) {
       subBuilder = subBuilder.withMcpClients(injected.mcpClients);
+      shared.push('mcpClients');
+    }
+    if (shared.length > 0) {
+      (this.cfg.log ?? this.noop)({
+        event: 'worker_uses_shared_clients',
+        worker: name,
+        shared,
+      });
     }
 
     // rag.retrieval is server-wide: a worker's projection (named collections
@@ -2626,7 +2638,6 @@ export class SmartServer {
       this._sharedMcpClients ?? [],
       toolsRag,
       resolvedEmbedder,
-      this.cfg.log,
       this._namespacedTools
         ? { namespacedTools: this._namespacedTools }
         : undefined,
@@ -3077,29 +3088,33 @@ export class SmartServer {
       res.setHeader('Set-Cookie', resolved.setCookie);
     }
     const graph = await lifecycle.acquire(sessionId);
-    // Register/touch the session in the meta store so /v1/sessions, resume and
-    // delete reflect real chat/stream traffic (review Finding 3). Best-effort:
-    // a meta-store hiccup must never break the actual request.
     try {
+      // Register/touch the session in the meta store so /v1/sessions, resume
+      // and delete reflect real chat/stream traffic (review Finding 3). A
+      // failed write fails the request (spec §10.5.9 V5): the server's
+      // catch-all answers 500 jsonError, and the graph is released below.
       await recordSessionStart(
         this._sessionMetaStore,
         sessionId,
         new Date().toISOString(),
       );
-    } catch {
-      // swallow — session metadata is non-critical to serving the request
-    }
-    try {
       await fn(graph, sessionId, traceId);
     } finally {
+      // End-of-request cleanup (spec §10.5.9 V5): a failure here does not
+      // change the response already served — it is logged, never swallowed.
       try {
         await recordSessionEnd(
           this._sessionMetaStore,
           sessionId,
           new Date().toISOString(),
         );
-      } catch {
-        // swallow — see above
+      } catch (err) {
+        (this.cfg.log ?? this.noop)({
+          event: 'session_meta_end_failed',
+          sessionId,
+          traceId,
+          error: err instanceof Error ? err.message : String(err),
+        });
       }
       graph.logger.dropRequest(traceId);
       // Pass the graph instance — `invalidateAll()` may have detached this

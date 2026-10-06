@@ -1,6 +1,7 @@
 /**
- * Spec §10.5.3 M9 — the tools-RAG handle fails loud: a client that cannot list
- * its tools rejects `query` with its McpError (nothing cached), a failed store
+ * Spec §10.5.3 M9, §10.5.9 V7 — the tools-RAG handle fails loud: a client that
+ * cannot list its tools rejects the handle's eager catalog load with its
+ * McpError (nothing cached), a failed store
  * query rejects with its RagError, and zero hits is an honest empty answer.
  */
 import assert from 'node:assert/strict';
@@ -36,31 +37,32 @@ function switchable(tools: { name: string }[]): IMcpClient & {
   return c as unknown as IMcpClient & { up(): void; lists: number };
 }
 
-test('M9: a client failing listTools → query rejects with its McpError; nothing is cached', async () => {
+test('M9/V7: a client failing listTools → the handle rejects with its McpError; nothing is cached', async () => {
   const client = switchable([{ name: 'A' }]);
-  const h = await makeToolsRagHandle([client], undefined, undefined);
   await assert.rejects(
-    h.query('x', 5),
+    makeToolsRagHandle([client], undefined, undefined),
     (e: unknown) => e instanceof McpError && e.code === 'MCP_NOT_CONNECTED',
   );
   client.up();
   const listsBefore = client.lists;
-  const r = await h.query('x', 5);
+  const h = await makeToolsRagHandle([client], undefined, undefined);
   assert.equal(client.lists, listsBefore + 1, 'listed again — no cache');
   assert.deepEqual(
-    r.map((t) => t.name),
+    (await h.query('x', 5)).map((t) => t.name),
     ['A'],
   );
 });
 
-test('M9: a client that throws → query rejects with an McpError', async () => {
+test('M9/V7: a client that throws → the handle rejects with an McpError', async () => {
   const throwing = {
     listTools: async () => {
       throw new Error('boom');
     },
   } as unknown as IMcpClient;
-  const h = await makeToolsRagHandle([throwing], undefined, undefined);
-  await assert.rejects(h.query('x', 5), (e: unknown) => e instanceof McpError);
+  await assert.rejects(
+    makeToolsRagHandle([throwing], undefined, undefined),
+    (e: unknown) => e instanceof McpError,
+  );
 });
 
 test('M9: a failed toolsRag.query → query rejects with its RagError', async () => {

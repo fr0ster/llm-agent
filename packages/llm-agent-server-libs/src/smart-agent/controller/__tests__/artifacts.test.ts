@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
+  OrchestratorError,
+  PIPELINE_FAILURE_CODES,
+} from '@mcp-abap-adt/llm-agent';
+import {
   decisionId,
   decisionSlotId,
   decisionWinner,
@@ -195,7 +199,7 @@ test('writePlanDecision fails loud on malformed decisions (keyOf guards)', async
   );
 });
 
-test('readClaims drops a claim row missing writeOrdinal', async () => {
+test('readClaims: a claim row missing writeOrdinal is STATE_CORRUPT (spec §10.5.9 V4)', async () => {
   const be = fakeBackend();
   await be.put('sess', {
     content: '',
@@ -209,8 +213,13 @@ test('readClaims drops a claim row missing writeOrdinal', async () => {
       decisionId: 'd',
     },
   });
-  const claims = await readClaims(be as never, 'r');
-  assert.equal(claims.length, 0);
+  await assert.rejects(
+    readClaims(be as never, 'r'),
+    (e: unknown) =>
+      e instanceof OrchestratorError &&
+      e.code === PIPELINE_FAILURE_CODES.STATE_CORRUPT &&
+      /step 's1'/.test(e.message),
+  );
 });
 
 test('mintCreateStepIds assigns deterministic per-index stepIds', () => {

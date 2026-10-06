@@ -26,7 +26,6 @@ test('query() hits the catalog by exposed (namespaced) name when a snapshot is s
     [fakeClient([{ name: 'Search' }]), fakeClient([{ name: 'Search' }])],
     toolsRag,
     embedder,
-    undefined,
     { namespacedTools },
   );
   const r = await h.query('find search', 10);
@@ -51,7 +50,6 @@ test('a stale/foreign RAG record (no matching catalog entry) is skipped without 
     [fakeClient([{ name: 'Search' }])],
     toolsRag,
     embedder,
-    undefined,
     { namespacedTools },
   );
   const r = await h.query('find ghost', 10);
