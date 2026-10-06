@@ -104,7 +104,48 @@ describe('toolItemFromTool — a malformed schema fails loud', () => {
     assert.throws(() => bad({ properties: { a: { enum: 'x' } } }), /enum/);
     assert.throws(() => bad({ properties: { a: { oneOf: {} } } }), /oneOf/);
   });
+  it('anyOf that is not an array, or has a non-object entry', () => {
+    assert.throws(() => bad({ properties: { a: { anyOf: {} } } }), /anyOf/);
+    assert.throws(() => bad({ properties: { a: { anyOf: ['x'] } } }), /anyOf/);
+  });
+  it('the message names the tool', () => {
+    assert.throws(() => bad({ properties: 'a' }), /Tool "t"/);
+  });
   it('a oneOf entry that is not an object', () => {
     assert.throws(() => bad({ properties: { a: { oneOf: ['x'] } } }), /oneOf/);
+  });
+});
+
+describe('toolItemFromTool — valid shapes', () => {
+  const one = (p: unknown) =>
+    toolItemFromTool({ name: 't', inputSchema: { properties: { a: p } } }, ids)
+      .parameters[0];
+  it('boolean property schemas are parameters with nothing else', () => {
+    assert.deepEqual(one(true), { name: 'a', required: false, values: [] });
+    assert.deepEqual(one(false), { name: 'a', required: false, values: [] });
+  });
+  it('boolean oneOf / anyOf entries are skipped', () => {
+    assert.deepEqual(one({ oneOf: [true, false, { const: 'x' }] })?.values, [
+      { value: 'x' },
+    ]);
+    assert.deepEqual(one({ anyOf: [true, { const: 'y' }] })?.values, [
+      { value: 'y' },
+    ]);
+  });
+  it('anyOf success path', () => {
+    assert.deepEqual(one({ anyOf: [{ const: 'a', title: 'A' }] })?.values, [
+      { value: 'a', description: 'A' },
+    ]);
+  });
+  it('enum wins over oneOf', () => {
+    assert.deepEqual(one({ enum: ['e'], oneOf: [{ const: 'o' }] })?.values, [
+      { value: 'e' },
+    ]);
+  });
+  it('a nested object property is not recursed into', () => {
+    assert.deepEqual(
+      one({ type: 'object', properties: { inner: { enum: ['z'] } } }),
+      { name: 'a', required: false, values: [] },
+    );
   });
 });

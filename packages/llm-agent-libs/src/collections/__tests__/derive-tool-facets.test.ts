@@ -14,6 +14,9 @@ describe('nameWords — several naming styles, none privileged', () => {
     ['db.query', 'db query'],
     ['v2Fetch', 'v 2 fetch'],
     ['fetch', 'fetch'],
+    ['', ''],
+    ['__', ''],
+    ['HTTPServer', 'http server'],
     // labelled mcp-abap-adt examples
     ['GetWhereUsed', 'get where used'],
     ['GetATCFindings', 'get atc findings'],

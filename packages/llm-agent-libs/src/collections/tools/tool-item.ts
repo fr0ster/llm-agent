@@ -28,6 +28,7 @@ function readAlternatives(
   }
   const out: ToolParameterValue[] = [];
   for (const alt of raw) {
+    if (typeof alt === 'boolean') continue;
     if (!isObj(alt)) {
       throw malformed(
         tool,
@@ -67,17 +68,21 @@ function readParameters(tool: string, schema: Obj): ToolParameter[] {
   }
   let required = new Set<string>();
   if (schema.required !== undefined) {
-    if (
-      !Array.isArray(schema.required) ||
-      !schema.required.every((r) => typeof r === 'string')
-    ) {
+    const names: unknown[] = Array.isArray(schema.required)
+      ? schema.required
+      : [];
+    const strings = names.filter((r): r is string => typeof r === 'string');
+    if (!Array.isArray(schema.required) || strings.length !== names.length) {
       throw malformed(tool, '"required" is not an array of strings');
     }
-    required = new Set(schema.required as string[]);
+    required = new Set(strings);
   }
   return Object.entries(schema.properties).map(([name, raw]) => {
+    if (typeof raw === 'boolean') {
+      return { name, required: required.has(name), values: [] };
+    }
     if (!isObj(raw)) {
-      throw malformed(tool, `property "${name}" is not an object`);
+      throw malformed(tool, `property "${name}" is not an object or boolean`);
     }
     const description = text(raw.description);
     return {
