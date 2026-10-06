@@ -494,6 +494,18 @@
 > unchanged: an unset variable is `""`, never `null`, and fails a non-empty-string rule as before
 > (§10.5.9 *Config field rules*, *The start config*, V10, §13 B26, §14.1).
 >
+> **Amended 2026-10-06 (33)** for a review finding (§17.40, D83 (14)): **a reader checks a value's
+> shape before it reads a field of it — a `TypeError` from config input is a defect.** The section
+> readers run before the start's `done()`, with every issue only recorded, so a `null` or a wrong
+> shape already named still reaches them: `mcp: [null]` reached the name check, which read
+> `entry.name` before the entry's shape was checked, and the start threw a `TypeError` instead of
+> `mcp[0] has no value` — at start, on a reload, and in a worker file without its prefix. Now each
+> `mcp[]` entry goes through `check.list` and its closed-mapping check before a field of it is read,
+> and the name rules (a label, unique among the entries) are issues of the same `FieldCheck`; the
+> document is a mapping (`config must be a mapping`), an empty file `{}`; every other config reader
+> and validator was reviewed against the same rule, and a test gives every section, list item and
+> reload-table field a wrong shape (§10.5.9 *The start config*, *Cast-read fields*, §13 B27, §14.1).
+>
 > Every path that creates or refreshes a tools store is audited in §6.4. Earlier open choices are
 > settled by the recommendations applied in §17.9; the user may still overrule them.
 
@@ -3924,6 +3936,7 @@ are named as the key inside the pipeline's `config`, as the stepper's (D83 (7)).
 | `mcp[i].type` | one of `http`, `stdio`; absent = `http` | the consumer connects every entry that is not `stdio` as `http` — an entry's `none` (accepted by 30.1.0's check) connected as `http` |
 | `mcp[i].url`, `mcp[i].command` | non-empty string | an address / a command |
 | `mcp[i].args` | a list of strings | the stdio command's arguments, passed as `argv` (an empty argument is a valid argument) |
+| `mcp` (list form), `mcp[i].name` | a list, each item the closed mapping above, checked before any field of it is read; `name` a label matching `^[a-zA-Z0-9_-]+$`, unique among the entries (the later entry named) — issues of the same check (D83 (14)) | the tool-namespace prefix (`IToolNamespace`); 30.1.0's `validateMcpNames` read `entry.name` before the entry's shape (`mcp: [null]` → `TypeError`) and threw at the first bad label |
 | `llm.url`, `llm.model`, and each `llm.<role>.url` / `.model` of the map | non-empty string | the provider's base URL and the model name; the map's entry was spread by a cast, so a YAML number model reached the provider as a number |
 | `host` (`args.host`, else the YAML's `host`; named so) | non-empty string | the address the server listens on |
 | `mode` | one of `hard`, `pass`, `smart` | `SmartAgentBuilder.withMode` |
@@ -4050,9 +4063,11 @@ the whole config):
     every mapping entry and list item whose value is `null` is recorded as `<path> has no value`
     (`rag.embedder`, `llm.main`, `mcp.headers.Authorization`, `mcp[1].timeout`,
     `skillPlugins.store`, `pipeline.config.stepper.maxDepth`, `plugins[2]`). It runs before any
-    section is read, so the readers, `validateResolvedConfig`, the profile validator,
-    `skillPlugins`' parser and the selected pipeline's parser (which all run after the main
-    file's `done()`) never see a `null` from a file; a worker file goes through the same function
+    section is read, so `validateResolvedConfig`, the profile validator, `skillPlugins`' parser
+    and the selected pipeline's parser (which all run after the main file's `done()`) never see a
+    `null` from a file. The section readers run before `done()` — the walk only records — so they
+    do see it, and hand it to their check before reading a field of it (*amended by D83 (14)*,
+    next bullet); a worker file goes through the same function
     (its issues prefixed with the worker and its path). The whole document includes the sections
     the server does not read itself — a plugin factory's `pipeline.config` too: the server's YAML
     has one rule for a key with no value.
@@ -4065,13 +4080,57 @@ the whole config):
     (8)) and before the section shapes: `{"agent": null}` → 400 `invalid config — agent has no
     value` (30.1.0: `"agent" must be a JSON object`), `{"agent": {"maxIterations": null}}` → 400
     `invalid config — agent.maxIterations has no value`.
-  - **What is unchanged.** An empty file is still the empty document `{}` (no key). `${VAR}`:
+  - **What is unchanged.** An empty file is still the empty document `{}` (no key) — the
+    reload's `document ?? {}`; at start `loadYamlConfig` now reads it so too (D83 (14)). `${VAR}`:
     `resolveEnvVars` substitutes strings only and passes `null` through as `null`, so a key with
     no value stays one after substitution, and an unset variable with no default is `""` — never
     `null` — and fails a non-empty-string rule as before (`${VAR:-}` too). libs `ConfigWatcher`
     passes a `null` through as read (its extraction tests `!== undefined`; it validates nothing,
     D83 (10)). A `SmartServerConfig` built in code is not re-validated, except the session seed
     the server reads itself (D83 (12)), whose check names a `null` the same way.
+- **A reader checks a value's shape before it reads a field of it — a list item and the document
+  too (D83 (14), §17.40).** The section readers run before the main file's `done()` with every
+  issue so far only recorded, so a value already named (`mcp[0] has no value`, `rag must be a
+  mapping`) still reaches the readers after the one that named it. A reader therefore reads a
+  field only from a value its `FieldCheck` returned (`section` / `closed` / `map` / `list` and the
+  list's item check) or from the stand-in after a recorded issue (`?? {}`) — never from the raw
+  value — and a cross-entry rule (unique names) runs over the checked entries. **A `TypeError`
+  from config input is a defect:** it replaces the named `ConfigFieldError` with a message about
+  the code, and in a worker file it loses the worker's prefix. The sites this changes:
+  - **`mcp[]` entries.** The list goes through `check.list('mcp', …)` and each item through the
+    closed check of `mcp[i]` before any field of it is read. `mcp[i].name` is a rule of that
+    check — a label matching `^[a-zA-Z0-9_-]+$` (`mcp[i].name must be a label of letters, digits,
+    _ and -, got <value>`) — and the labels are unique among the entries (`mcp[i].name must be
+    unique among the mcp entries, got <value>`, the later entry named): issues in the same
+    `ConfigFieldError`, beside every other field. 30.1.0's `validateMcpNames` read `entry.name`
+    before any shape check (`mcp: [null]` → `TypeError: Cannot read properties of null`) and threw
+    its own `Error` at the first bad label.
+  - **The document.** The resolved document is a mapping — `config must be a mapping, got
+    <value>` (`config has no value` for a `null` handed in code) — checked by
+    `resolveSmartServerConfig` before anything is read (the start, the reload, a worker); a worker
+    file's document is checked before `parseSubAgents` reads a field of it, its issue prefixed with
+    the worker and its path. An empty file is `{}`: `loadYamlConfig` reads a file with no document
+    so, as the watcher does. 30.1.0: an empty start file was a `TypeError` (`null.coordinator`); a
+    scalar or a list read as no keys, and a worker file holding a string or a list was read
+    through its indices.
+  - **Reviewed and safe** — each reads a field only from a checked value, or reads only properties
+    of a non-`null` value whose shape issue the same check records: `checkStartConfig` /
+    `startConfigInput`; the readers of `llm` and `llm.<role>`, `rag` and its sections, `agent`
+    (`retry`, `toolSelection`), `skills`, `plugins`, `decision`, `pipeline.config`,
+    `knowledgeSeed`; `whenThrottledOption`; `skillPlugins`' parser; `parseWorkerLlm` and
+    `parseSubAgents`' entries; `resolvePipelineSelection`; the pipeline sections' parsers (a stepper
+    section that failed its check is read through `?.` / `?? {}`) and `parseControllerSubagents`;
+    the profiles reader and validator (§6.2) — whose `fill.corpus` that is not a mapping is now
+    named so, instead of read as `{}` with its three fields reported missing; `validateResolvedConfig`
+    (after `done()`, over a mapping document whose sections the readers checked); `PUT
+    /v1/config`; libs `ConfigWatcher`'s extraction. A `SmartServerConfig` built in code is typed
+    and not re-validated, as before.
+  - **The test** (§14.1): every mapping, list and list item of a document holding every section
+    the readers check, and every field of the reload table (and the controller's `budgets`), is
+    given `null`, a scalar and the other container in turn — the start always fails with a
+    `ConfigFieldError` naming that path, never a `TypeError`; the sections whose readers fail at
+    once with their own `Error` (*Reviewed and unchanged*, D83 (12) (6)) fail with that `Error`,
+    never a `TypeError`.
 - **A file reload runs this same validation (D83 (10), §17.36).** The reload's transaction calls
   `resolveSmartServerConfig({}, document, env, { configPath })` over the whole resolved document
   the watcher read (V6) — one rule set for the start and the reload, no reloadable-only
@@ -4778,6 +4837,7 @@ again, written either way.
   | B24 | a hot reload of a file whose `pipeline.config` is invalid for the selected pipeline, that selects another pipeline than the running one, or that changes a plugin factory's section (§10.5.9 *The start config*, D83 (11)) | the reload never looked at `pipeline.config` or `pipeline.name`: the file applied, the running pipeline kept its section, and the next start failed on the section (or switched pipeline) | the reload runs the selected pipeline's own section parser (a built-in's) over the reloaded section before anything applies — an invalid section fails the reload (`pipeline '<name>' config invalid — …`); another pipeline fails it (`pipeline change needs a restart — …`, with the new pipeline's section errors); a plugin factory's changed section fails it (no validation entry). A valid section passes and is applied at the next start | change the pipeline or a plugin pipeline's section with a restart, not a reload; keep `pipeline.config` valid at every save |
   | B25 | a config section present with the wrong shape — a scalar or a list where a mapping belongs, or `false` / `0` / `""` for a section (`skillPlugins.embedder: sap-ai-core`, `skillPlugins.chunk: 2000`, `skillPlugins: false`, `llm: x`, `rag.store: [a]`, `decision: typesafe`, a `knowledgeSeed` that is not a list), at start or on a hot reload (§10.5.9 *The start config*, D83 (12)) | read as absent: its default applied (the default embedder, `chunk.maxChars` 1500, no skill plugins) or the validator refused it later with a message about a missing key; the server's session seeding dropped a wrong `knowledgeSeed` | `<path> must be a mapping, got <value>` (or `must be a list`) in the same `ConfigFieldError` — the start fails, a reload fails (not ready). A section written with no value is an error (B26) | write the section as a mapping (`embedder: { provider: sap-ai-core }`, `chunk: { maxChars: 2000 }`), or leave it out for its default |
   | B26 | a key written with no value — `rag.embedder:`, `prompts:`, `agent:`, `skillPlugins.store:`, `mcp:`, `decision.model:`, a field (`maxIterations:`), an entry (`mcp.headers.X:`), a list item (`- `), or `~` / `null` written out; a JSON `null` in a `PUT /v1/config` body — at start, on a hot reload or on a `PUT` (§10.5.9 *The start config*, V10, D83 (13)) | most such keys read as absent and their default applied (`prompts:` → the built-in prompts, `rag.retrieval.<key>: { strategy: }` → `embedding`, `decision.model:` → no model); a few refused with a message of their own (`rag.embedder:`, `skillPlugins.store: store must be an object`); `"agent": null` in a `PUT` → `"agent" must be a JSON object` | `<path> has no value` in the same `ConfigFieldError` — the start fails (exit 1), a reload fails (not ready, nothing applied), a `PUT` answers 400 `invalid config — <path> has no value`. A default applies only to a key not written at all. An unset `${VAR}` is `""`, not `null` — unchanged (B20, B21) | **migration:** delete the key to take its default (`rag.embedder:` with nothing under it → remove the line), or give it a value; in a `PUT`, leave the key out instead of sending `null` |
+  | B27 | an `mcp[]` entry that is not a mapping (`mcp: [null]`, `mcp: [5]`), a bad or duplicate `mcp[i].name`, a config document that is not a mapping (a scalar or a list), an empty start file — at start, on a hot reload or in a worker file (§10.5.9 *The start config*, D83 (14)) | `mcp: [null]` and an empty start file: a `TypeError` (`Cannot read properties of null`); a bad label: `Error: Invalid mcp[i].name …` / `Duplicate mcp[].name …`, the first one only; a scalar or list document read as no keys (a worker's string or list read through its indices) | `ConfigFieldError` naming the path beside every other issue — `mcp[0] has no value`, `mcp[0] must be a mapping, got 5`, `mcp[i].name must be a label of letters, digits, _ and -, got …`, `mcp[i].name must be unique among the mcp entries, got …`, `config must be a mapping, got …` (a worker's prefixed with the worker and its path); an empty file is `{}` (no key) | write each entry as a mapping and each label once; a test that matched `/duplicate/i` or `Invalid mcp[…].name` matches the new messages |
 - **Named compositions carry no tuned numbers** (D55): `mcpToolsVariants` has `baseline`,
   `faceted` and `faceted-rerank`; pools and cuts default to the caller's k; `faceted-rerank`
   requires `poolItems`. New in this release, so nothing released changes.
@@ -5312,6 +5372,19 @@ again, written either way.
   `baseUrl:` → `decision.model has no value; decision.baseUrl has no value`) and
   `retrieval-config.test.ts` (`history: { strategy: null }` → `rag.retrieval.history.strategy has
   no value`; a worker whose `rag.retrieval:` has no value → refused, naming the worker).
+  A shape before a field (D83 (14)): every mapping, list and list item of one document holding
+  every section the start's readers check (both `mcp` forms), and every field of the reload table
+  and of the controller's `budgets`, given in turn `null`, a scalar and the other container (a
+  list item: `null`, a container and a scalar of the other type) → `resolveSmartServerConfig`
+  (the pipeline sections: their parsers) throws a `ConfigFieldError` with an issue naming that
+  path, never a `TypeError`; the paths generated by walking the document and from the rule tables,
+  the document itself passing first; the sections whose readers fail at once with their own
+  `Error` (D83 (12) (6)) → that `Error`, never a `TypeError`. `mcp: [~]` → exactly `mcp[0] has no
+  value` at start, on a reload (`config_reload_failed`, not ready, nothing applied) and in a
+  worker file (prefixed with the worker and its path); `mcp: [5]` → `mcp[0] must be a mapping,
+  got 5`; a bad label and a duplicate label → both named in one error; a worker file holding a
+  list → `config must be a mapping` prefixed; an empty start file → the start reads `{}`
+  (`llm: required`).
   `process()` on a pipeline that fails → the root span's
   status is `error`; a consumer that reads the stream only to the error chunk and closes it
   (`return()` on the iterator) → the root span is `error` and ended (D78).
@@ -6089,3 +6162,20 @@ a key that is not written.
 | # | Decision | Where |
 |---|---|---|
 | D83 (13) | **A key written with no value is an error everywhere; a default applies only when the key is absent (not written).** (1) **The rule** (the user's decision of 2026-10-06). A key whose value is `null` — YAML `key:` with nothing after it, `key: ~`, `key: null`, a list item `- ` with nothing after it, a JSON `null` in a `PUT /v1/config` body — is `<path> has no value` in the same `ConfigFieldError`, beside every other invalid field, at start, on a file reload and on `PUT` alike, whatever the key is: a section (`prompts:`, `agent:`, `rag.embedder:`, `skillPlugins.store:`, `skillPlugins.sources:`), a field, an entry of a map or an item of a list. It replaces "a section written with no value is absent" (D83, D83 (10) (5), D83 (12) (2)) and makes the fields' rule (D83: a field with no value fails) one message. (2) **Presence.** `present(value)` is `value !== undefined` — the key is written; a `null` is present, and an error. (3) **Where** (§10.5.9 *The start config*): `checkStartConfig` first walks the whole resolved document (`checkNoValue`, server-libs `config-fields.ts`, internal) before any section is read — the start, the reload (D83 (10)) and every worker file pass through it, so no later reader (`validateResolvedConfig`, the profile validator, `skillPlugins`' parser, the selected pipeline's parser) sees a `null` from a file; every `FieldCheck` check handed `null` records `<field> has no value` instead of its rule, once per field (the walk and the reader name a key once); `handleConfigUpdate` walks the body after the whole-config check and before the section shapes (400). The walk covers the whole document, the sections the server only passes on (a plugin factory's `pipeline.config`) included. (4) **Unchanged:** an empty file is `{}`; `resolveEnvVars` passes a `null` through and never makes one — an unset `${VAR}` is `""`, which a non-empty-string rule refuses as before (D83 (8)); libs `ConfigWatcher` passes a `null` as read (its extraction tests `!== undefined`); a `SmartServerConfig` built in code is not re-validated (its session seed, which the server checks itself, names a `null` the same way). (5) **Choices made while writing it in, for the user's review:** a list item with no value is included (it is written with no value like a key; its item rule already failed it, now with the one message); the walk includes a plugin factory's section (the user's "everywhere"); the message has no `, got null` (the value is the problem). No contract changes: `checkNoValue` is internal, and `FieldCheck` / `present` are internal to server-libs | §10.5.9 *Config field rules*, *Start-only fields*, *Cast-read fields*, *The start config*, V10, §13 B26, §14.1, D83 (10), (12) |
+
+### 17.40 Review finding on 2026-10-06 — a shape before a field; `mcp[]` entries (D83 (14))
+
+D83 (13) walks the document for a `null` first, but the walk only records: the section readers
+run before the main file's `done()`, so they meet the `null` too. `resolveMcpSection` ran
+`validateMcpNames` over the raw list before any entry's shape was checked, and it read
+`entry.name`: `mcp: [null]` threw `TypeError: Cannot read properties of null (reading 'name')`
+before `done()` — the named `ConfigFieldError` (`mcp[0] has no value`) was lost at start and on a
+reload, and in a worker file the issue lost its worker prefix too. The class is a reader that
+dereferences a config value before its shape is checked. A sweep of every config reader and
+validator (§10.5.9 *The start config*, the D83 (14) bullet) found one more site: the document
+itself — an empty start file is `null` (`null.coordinator`), and a scalar or a list document,
+the worker's included, was read as no keys or through its indices.
+
+| # | Decision | Where |
+|---|---|---|
+| D83 (14) | **A reader checks a value's shape before it reads a field of it; a `TypeError` from config input is a defect.** (1) **The rule.** A reader reads a field only from a value its `FieldCheck` returned, or from the stand-in after a recorded issue — never from the raw value — whether or not an earlier check already named the value: readers run before `done()`. A list's items are checked by the list's item check before a field of an item is read; a rule across items (unique labels) runs over the checked items, in the same `FieldCheck`. (2) **`mcp[]`.** `check.list('mcp', …)`, each item through the closed check of `mcp[i]`; `mcp[i].name` a label matching `^[a-zA-Z0-9_-]+$` and unique among the entries — issues, not thrown `Error`s; `validateMcpNames` goes. (3) **The document.** `resolveSmartServerConfig` checks that the document is a mapping before it reads anything (`config must be a mapping, got <value>`), and `parseSubAgents` checks a worker's document before reading a field of it (prefixed with the worker and its path); `loadYamlConfig` reads a file with no document as `{}` — what §10.5.9 already said of an empty file, and what the reload's watcher does. (4) **Reviewed and safe**: the readers and validators listed in §10.5.9; the profile validator's `fill.corpus` that is not a mapping is named so instead of read as `{}` (D83 (12)'s rule, found by the same sweep). (5) **The test**: a generated table of wrong shapes at every section, list item and reload-table field the readers know → always a `ConfigFieldError` naming the path, never a `TypeError`; the fail-at-once readers (D83 (12) (6)) → their own `Error`. No contract changes: every changed function is internal (`resolveMcpSection`, `checkMcpEntry`, `checkDocument`), and `loadYamlConfig` keeps its signature | §10.5.9 *The start config*, *Cast-read fields*, §13 B27, §14.1, D83 (12), (13) |
