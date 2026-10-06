@@ -6361,7 +6361,7 @@ Two gaps found in review (Tasks 4L and 4O) went to the user; both answers are in
 (2026-10-06).
 
 **Layer map.** Contracts (`llm-agent`): `LoadedPlugins.skipped?`, `IReranker.healthCheck?`,
-`IProbabilityDecision.healthCheck?`, `IRelevanceDecision.healthCheck?` — all additive and optional.
+`IProbabilityDecision.healthCheck?`, `IRelevanceDecision.healthCheck?`, and for /health to name a failing reranker `HealthComponentStatus.reranker?` and `IAgentHealthProbe`'s optional `rerankers` parameter — all additive and optional.
 Framework: `FileSystemPluginLoader` (libs), the four rerankers (`llm-agent-reranker`), the two
 decision providers (`typesafe-decision`, `sap-aicore-decision`). Libs: `SmartAgentBuilder.build()`
 (S-6), the agent's health probe. Server (`llm-agent-server-libs`): the start's plugin loading and its
