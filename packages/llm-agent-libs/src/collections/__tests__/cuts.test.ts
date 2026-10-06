@@ -130,3 +130,54 @@ describe('size estimators', () => {
     assert.throws(() => new CharsPerTokenEstimator(0));
   });
 });
+
+describe('cut edge cases', () => {
+  const floor3 = new ScoreFloorCut({
+    minItems: 3,
+    maxItems: 3,
+    minScore: 0.95,
+  });
+  const all = [
+    new TopItemsCut(),
+    new FixedItemsCut(3),
+    new ScoreFloorCut({ minItems: 1, maxItems: 3, minScore: 0.5 }),
+    floor3,
+    new TokenBudgetCut({ budgetTokens: 999 }),
+  ];
+  it('k=1 returns at most the top item for every cut', () => {
+    for (const c of all) assert.deepEqual(ids(c.cut(ranked, 1)), ['a']);
+  });
+  it('an empty pool gives an empty result for every cut', () => {
+    for (const c of all) assert.deepEqual(c.cut([], 5), []);
+  });
+  it('ScoreFloorCut keeps items whose score equals minScore, including ties', () => {
+    const tied = [
+      item('a', 0.9),
+      item('b', 0.5),
+      item('c', 0.5),
+      item('d', 0.5),
+      item('e', 0.4),
+    ];
+    const c = new ScoreFloorCut({ minItems: 1, maxItems: 10, minScore: 0.5 });
+    assert.deepEqual(ids(c.cut(tied, 10)), ['a', 'b', 'c', 'd']);
+  });
+  it('ScoreFloorCut with minItems 0 can return nothing', () => {
+    const c = new ScoreFloorCut({ minItems: 0, maxItems: 3, minScore: 0.95 });
+    assert.deepEqual(c.cut(ranked, 20), []);
+    const lenient = new ScoreFloorCut({
+      minItems: 0,
+      maxItems: 3,
+      minScore: 0.5,
+    });
+    assert.deepEqual(ids(lenient.cut(ranked, 20)), ['a', 'b']);
+  });
+  it('TokenBudgetCut refuses a non-finite or negative estimated size', () => {
+    for (const bad of [Number.NaN, -1]) {
+      const c = new TokenBudgetCut({
+        budgetTokens: 100,
+        estimator: { name: 'bad-est', estimate: () => bad },
+      });
+      assert.throws(() => c.cut(ranked, 5), /bad-est.*a|item/);
+    }
+  });
+});

@@ -46,6 +46,11 @@ export class TokenBudgetCut implements IItemCut, ISizeBoundedCut {
     for (const it of items) {
       if (out.length >= max) break;
       const size = this.estimator.estimate(it);
+      if (!Number.isFinite(size) || size < 0) {
+        throw new Error(
+          `TokenBudgetCut: estimator '${this.estimator.name}' returned ${size} for item '${String(it.metadata.id ?? it.text.slice(0, 40))}' (must be a finite number >= 0)`,
+        );
+      }
       if (used + size > this.budgetTokens) break;
       used += size;
       out.push(it);
