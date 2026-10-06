@@ -15,6 +15,12 @@ export {
 export { LlmProviderBridge } from './adapters/llm-provider-bridge.js';
 export { NonStreamingLlm } from './adapters/non-streaming-llm.js';
 export {
+  invalidArgumentsMessage,
+  type ParsedToolArguments,
+  parseToolArguments,
+  toolCallFromRaw,
+} from './adapters/parse-tool-arguments.js';
+export {
   wrapProbabilityDecision,
   wrapRelevanceDecision,
 } from './adapters/usage-logging-decision-model.js';

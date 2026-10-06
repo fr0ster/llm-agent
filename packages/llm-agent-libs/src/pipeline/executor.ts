@@ -18,7 +18,10 @@
  * ## Error handling
  *
  * If a handler returns `false` or sets `ctx.error`, the executor stops
- * processing and propagates the error back to the caller.
+ * processing and propagates the error back to the caller. A handler that
+ * throws — or a stage of an unknown type — sets `ctx.error` (the thrown
+ * `OrchestratorError`, or `PIPELINE_ERROR` naming the stage) unless a handler
+ * already set one (spec §10.5.2, D70).
  *
  * ## Tracing
  *
@@ -26,6 +29,7 @@
  * The span is passed to the handler for sub-span creation.
  */
 
+import { OrchestratorError } from '@mcp-abap-adt/llm-agent';
 import type { ISpan, ITracer } from '../tracer/types.js';
 import { evaluateCondition } from './condition-evaluator.js';
 import type { PipelineContext } from './context.js';
@@ -92,6 +96,16 @@ export class PipelineExecutor {
         ctx.options?.sessionLogger?.logStep(`stage_error_${stage.id}`, {
           error: String(err),
         });
+        // Spec §10.5.2 (D70): a failed stage is an ERROR the consumer receives —
+        // never only a span and a log line. A thrown OrchestratorError keeps its
+        // own code (e.g. MCP_UNAVAILABLE); a handler that already set one wins.
+        ctx.error ??=
+          err instanceof OrchestratorError
+            ? err
+            : new OrchestratorError(
+                `stage "${stage.id}" failed: ${String(err)}`,
+                'PIPELINE_ERROR',
+              );
         return false;
       }
 

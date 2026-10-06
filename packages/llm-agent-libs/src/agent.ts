@@ -83,12 +83,14 @@ import { runPassThrough } from './pipeline/handlers/pass-through.js';
 import {
   buildBlockedToolMessages,
   buildHallucinatedToolMessages,
+  buildInvalidArgumentsToolMessages,
   classifyToolCalls,
   executeToolBatchWithHeartbeat,
   filterAvailableTools,
   injectPendingResults,
   injectToolPriority,
   runOutputValidationReprompt,
+  toolCallsFromAccumulated,
 } from './pipeline/handlers/tool-loop-core.js';
 import { pipelineToStream } from './pipeline/pipeline-to-stream.js';
 import { fireInternalToolsAsync } from './policy/mixed-tool-call-handler.js';
@@ -674,16 +676,16 @@ export class SmartAgent {
             ? [{ role: 'user' as const, content: textOrMessages }]
             : textOrMessages;
         opts?.sessionLogger?.logStep('client_request', { textOrMessages });
-        for await (const chunk of runPassThrough(
-          this._mainLlm,
-          this.requestLogger,
-          passMessages,
-          externalTools,
-          opts,
-        )) {
-          yield chunk;
-        }
-        rootSpan.setStatus('ok');
+        yield* this.withRootStatus(
+          runPassThrough(
+            this._mainLlm,
+            this.requestLogger,
+            passMessages,
+            externalTools,
+            opts,
+          ),
+          rootSpan,
+        );
         rootSpan.end();
         return;
       }
@@ -696,8 +698,7 @@ export class SmartAgent {
           externalTools,
           opts,
         );
-        for await (const chunk of stream) yield chunk;
-        rootSpan.setStatus('ok');
+        yield* this.withRootStatus(stream, rootSpan);
         rootSpan.end();
         return;
       }
@@ -761,14 +762,44 @@ export class SmartAgent {
         finalTools,
         detectedAdapter,
       );
-      for await (const chunk of stream) yield chunk;
-      rootSpan.setStatus('ok');
+      yield* this.withRootStatus(stream, rootSpan);
     } finally {
       this.requestLogger.endRequest(traceId);
       rootSpan.end();
       timeoutCleanup?.();
       this.metrics.requestLatency.record(Date.now() - requestStart);
     }
+  }
+
+  /**
+   * Spec §10.5.2 (D70, D78): the root span is `error` from the first unsuccessful
+   * chunk — set BEFORE that chunk is yielded. A consumer that stops at it
+   * (`process()` returns on it; `for await … break`) closes this generator at the
+   * yield, and no line after the yield ever runs. `ok` only after a stream that
+   * carried no error; a stream that throws leaves it `error` and rethrows. The
+   * caller's `finally` ends the span.
+   */
+  private async *withRootStatus(
+    stream: AsyncIterable<Result<LlmStreamChunk, OrchestratorError>>,
+    rootSpan: ISpan,
+  ): AsyncIterable<Result<LlmStreamChunk, OrchestratorError>> {
+    let failed = false;
+    try {
+      for await (const chunk of stream) {
+        if (!chunk.ok && !failed) {
+          failed = true;
+          rootSpan.setStatus(
+            'error',
+            `${chunk.error.code}: ${chunk.error.message}`,
+          );
+        }
+        yield chunk;
+      }
+    } catch (err) {
+      if (!failed) rootSpan.setStatus('error', String(err));
+      throw err;
+    }
+    if (!failed) rootSpan.setStatus('ok');
   }
 
   private async *_runStreamingToolLoop(
@@ -1033,7 +1064,7 @@ export class SmartAgent {
       let finishReason: LlmFinishReason | undefined;
       const toolCallsMap = new Map<
         number,
-        { id: string; name: string; arguments: string }
+        { id: string; name: string; arguments: string; argumentsError?: string }
       >();
       // Track which streaming indices belong to external tools so that
       // argument-only continuation deltas (no name field) are forwarded too.
@@ -1112,6 +1143,14 @@ export class SmartAgent {
                 if (tc.arguments) ex.arguments += tc.arguments;
               }
             }
+            // A complete call an adapter marked (spec D87) keeps its mark.
+            if (
+              'argumentsError' in rawToolCall &&
+              rawToolCall.argumentsError !== undefined
+            ) {
+              const ex = toolCallsMap.get(tc.index);
+              if (ex) ex.argumentsError = rawToolCall.argumentsError;
+            }
           }
         }
         if (chunk.finishReason) finishReason = chunk.finishReason;
@@ -1138,15 +1177,8 @@ export class SmartAgent {
         }
         iterationBuffer = '';
       }
-      const toolCalls = Array.from(toolCallsMap.values()).map((tc) => {
-        let args = {};
-        try {
-          args = JSON.parse(tc.arguments);
-        } catch {
-          args = {};
-        }
-        return { id: tc.id, name: tc.name, arguments: args };
-      });
+      // Spec §10.5.2 N2 (D87): argument text that does not parse marks the call.
+      const toolCalls = toolCallsFromAccumulated(toolCallsMap.values());
       opts?.sessionLogger?.logStep(
         `llm_response_iter_${iteration + 1}`,
         {
@@ -1221,6 +1253,24 @@ export class SmartAgent {
           },
         };
         return;
+      }
+      // Refuse calls whose arguments did not parse (spec D87): never run with
+      // `{}` — the call's tool result is the error.
+      const invalidGroup = buildInvalidArgumentsToolMessages(
+        content,
+        toolCalls,
+        opts,
+      );
+      if (invalidGroup) {
+        await strategy.record({
+          assistant: invalidGroup.assistant,
+          results: invalidGroup.results,
+        });
+        controlTail.length = 0;
+        messages = (
+          await strategy.form({ prefix: staticPrefix, queryText: _action.text })
+        ).concat(controlTail);
+        continue;
       }
       const {
         internalCalls,

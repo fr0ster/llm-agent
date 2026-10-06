@@ -78,7 +78,7 @@ describe('LlmAdapter — success paths', () => {
     assert.deepEqual(r.value.toolCalls?.[0].arguments, { key: 'value' });
   });
 
-  it('OpenAI format — malformed JSON arguments → empty object', async () => {
+  it('OpenAI format — malformed JSON arguments → marked with argumentsError, arguments {}', async () => {
     const raw = {
       choices: [
         {
@@ -98,6 +98,8 @@ describe('LlmAdapter — success paths', () => {
     const r = await adapter.chat([USER]);
     assert.ok(r.ok);
     assert.deepEqual(r.value.toolCalls?.[0].arguments, {});
+    // Spec D87: the call is marked, so the tool loop refuses to run it.
+    assert.ok((r.value.toolCalls?.[0].argumentsError ?? '').length > 0);
   });
 
   it('malformed tool args emits parse diagnostic', async () => {

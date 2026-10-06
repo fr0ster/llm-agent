@@ -174,6 +174,10 @@ export type {
   PipelineFactoryDepsBase,
   PipelineFactoryKind,
 } from './pipeline-factory.js';
+export {
+  PIPELINE_FAILURE_CODES,
+  type PipelineFailureCode,
+} from './pipeline-failure-codes.js';
 export type {
   IPipelineContext,
   IPipelineInstance,

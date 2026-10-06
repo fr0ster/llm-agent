@@ -6,6 +6,10 @@ import type {
   ToolLoopContextBase,
   ToolRound,
 } from '@mcp-abap-adt/llm-agent';
+import {
+  OrchestratorError,
+  PIPELINE_FAILURE_CODES,
+} from '@mcp-abap-adt/llm-agent';
 
 export interface RagRecallDeps {
   record(round: ToolRound, options?: CallOptions): Promise<void>;
@@ -68,15 +72,33 @@ export class RagRecallContextStrategy implements IToolLoopContextStrategy {
     };
   }
 
+  /**
+   * No saved state starts empty (absent by design); a state of another version
+   * or of the wrong shape is `STATE_CORRUPT` — never a reset to `null` / `0`
+   * (spec D92).
+   */
   restore(state: SerializableStrategyState): void {
-    if (state?.version === 1) {
-      this.last = (state as unknown as { last: ToolRound | null }).last ?? null;
-      this.counter = Number(
-        (state as unknown as { counter?: number }).counter ?? 0,
-      );
-    } else {
+    if (state === undefined) {
       this.last = null;
       this.counter = 0;
+      return;
     }
+    const s = state as unknown as { last?: unknown; counter?: unknown };
+    const lastOk =
+      s.last === null || (typeof s.last === 'object' && !Array.isArray(s.last));
+    if (
+      state.version !== 1 ||
+      !lastOk ||
+      typeof s.counter !== 'number' ||
+      !Number.isInteger(s.counter) ||
+      s.counter < 0
+    ) {
+      throw new OrchestratorError(
+        `tool-loop context (rag-recall): saved state of version ${String(state.version)} cannot be restored`,
+        PIPELINE_FAILURE_CODES.STATE_CORRUPT,
+      );
+    }
+    this.last = s.last as ToolRound | null;
+    this.counter = s.counter;
   }
 }

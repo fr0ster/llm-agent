@@ -17,7 +17,14 @@ import type {
   Result,
   TimingEntry,
 } from '@mcp-abap-adt/llm-agent';
-import { OrchestratorError } from '@mcp-abap-adt/llm-agent';
+import {
+  OrchestratorError,
+  PIPELINE_FAILURE_CODES,
+} from '@mcp-abap-adt/llm-agent';
+import {
+  invalidArgumentsMessage,
+  toolCallFromRaw,
+} from '../../adapters/parse-tool-arguments.js';
 import type { IMetrics } from '../../metrics/types.js';
 import type { PendingToolResultsRegistry } from '../../policy/pending-tool-results-registry.js';
 import {
@@ -32,6 +39,8 @@ export type ParsedToolCall = {
   id: string;
   name: string;
   arguments: Record<string, unknown>;
+  /** Set when the argument text did not parse (spec D87) — the call is never run. */
+  argumentsError?: string;
 };
 
 export interface IClassifiedToolCalls {
@@ -161,6 +170,69 @@ export function buildBlockedToolMessages(
     toolNames: blockedCalls.map((tc) => tc.name),
   });
   return { assistant, results };
+}
+
+/**
+ * Spec §10.5.2 N2 (D87): the calls whose argument text did not parse are never
+ * run. Builds an assistant(tool_calls=invalid) + per-call error tool messages
+ * (`invalidArgumentsMessage`) and logs `tool_arguments_invalid` per call.
+ * Returns `null` when every call parsed.
+ */
+export function buildInvalidArgumentsToolMessages(
+  content: string,
+  toolCalls: ParsedToolCall[],
+  options?: CallOptions | undefined,
+): SyntheticToolGroup | null {
+  const invalid = toolCalls.filter((tc) => tc.argumentsError !== undefined);
+  if (invalid.length === 0) return null;
+  const assistant: Message = {
+    role: 'assistant' as const,
+    content: content || null,
+    tool_calls: invalid.map((tc) => ({
+      id: tc.id,
+      type: 'function' as const,
+      function: { name: tc.name, arguments: JSON.stringify(tc.arguments) },
+    })),
+  };
+  const results: Message[] = invalid.map((tc) => {
+    const error = tc.argumentsError ?? '';
+    options?.sessionLogger?.logStep('tool_arguments_invalid', {
+      tool: tc.name,
+      code: PIPELINE_FAILURE_CODES.TOOL_ARGUMENTS_JSON_PARSE_FAILED,
+      error,
+    });
+    return {
+      role: 'tool' as const,
+      content: invalidArgumentsMessage(tc.name, error),
+      tool_call_id: tc.id,
+    };
+  });
+  return { assistant, results };
+}
+
+/**
+ * The calls of one LLM turn, from the accumulated stream entries. A complete
+ * call an adapter already marked keeps its mark (no second parse); argument
+ * text is parsed here and marked when it does not parse (spec D87).
+ */
+export function toolCallsFromAccumulated(
+  entries: Iterable<{
+    id: string;
+    name: string;
+    arguments: string;
+    argumentsError?: string;
+  }>,
+): ParsedToolCall[] {
+  return Array.from(entries, (tc) =>
+    tc.argumentsError !== undefined
+      ? {
+          id: tc.id,
+          name: tc.name,
+          arguments: {},
+          argumentsError: tc.argumentsError,
+        }
+      : toolCallFromRaw(tc.id, tc.name, tc.arguments),
+  );
 }
 
 /** Build an assistant(tool_calls=ALL calls) + per-hallucination "not found"

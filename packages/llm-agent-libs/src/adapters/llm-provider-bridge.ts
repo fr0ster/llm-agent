@@ -14,6 +14,7 @@ import type {
   LLMProvider,
   Message,
 } from '@mcp-abap-adt/llm-agent';
+import { toolCallFromRaw } from './parse-tool-arguments.js';
 
 /**
  * Convert MCP-style tools to OpenAI function-call format.
@@ -143,17 +144,9 @@ export class LlmProviderBridge implements BaseAgentLlmBridge {
     if (toolCallMap.size > 0) {
       const toolCalls = [...toolCallMap.entries()]
         .sort(([a], [b]) => a - b)
-        .map(([, tc]) => ({
-          id: tc.id,
-          name: tc.name,
-          arguments: (() => {
-            try {
-              return JSON.parse(tc.arguments) as Record<string, unknown>;
-            } catch {
-              return {};
-            }
-          })(),
-        }));
+        // Spec §10.5.2 N2 (D87): unparseable argument text marks the call
+        // (`argumentsError`) — never a silent `{}` the tool loop would run.
+        .map(([, tc]) => toolCallFromRaw(tc.id, tc.name, tc.arguments));
       yield { type: 'tool_calls', toolCalls } as AgentStreamChunk;
     }
 

@@ -37,15 +37,12 @@ import type {
 } from '@mcp-abap-adt/llm-agent';
 import {
   NoopToolCache,
+  OrchestratorError,
   StreamingLlmCallStrategy,
 } from '@mcp-abap-adt/llm-agent';
 import { NoopQueryExpander } from '@mcp-abap-adt/llm-agent-rag';
 import { NoopReranker } from '@mcp-abap-adt/llm-agent-reranker';
-import type {
-  OrchestratorError,
-  SmartAgentConfig,
-  SmartAgentRagStores,
-} from '../agent.js';
+import type { SmartAgentConfig, SmartAgentRagStores } from '../agent.js';
 import { LlmClassifier } from '../classifier/llm-classifier.js';
 import { ContextAssembler } from '../context/context-assembler.js';
 import { ExplicitActivation } from '../coordinator/activation/explicit.js';
@@ -284,8 +281,14 @@ export class DefaultPipeline implements IPipeline {
     try {
       await this.executor.executeStages(this.stages, ctx, rootSpan);
     } catch (err) {
-      rootSpan.setStatus('error', String(err));
+      // Spec §10.5.2 (D70): anything the executor let through is an error the
+      // consumer receives, not only a span status.
+      ctx.error ??= new OrchestratorError(
+        `pipeline failed: ${String(err)}`,
+        'PIPELINE_ERROR',
+      );
     } finally {
+      if (ctx.error) rootSpan.setStatus('error', ctx.error.message);
       rootSpan.end();
     }
 

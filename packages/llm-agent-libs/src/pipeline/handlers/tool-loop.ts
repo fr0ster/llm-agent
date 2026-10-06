@@ -51,12 +51,14 @@ import { normalizeHeartbeatMs } from './normalize-heartbeat-ms.js';
 import {
   buildBlockedToolMessages,
   buildHallucinatedToolMessages,
+  buildInvalidArgumentsToolMessages,
   classifyToolCalls,
   executeToolBatchWithHeartbeat,
   filterAvailableTools,
   injectPendingResults,
   injectToolPriority,
   runOutputValidationReprompt,
+  toolCallsFromAccumulated,
 } from './tool-loop-core.js';
 
 function summarizeIterationMessages(
@@ -452,7 +454,7 @@ export class ToolLoopHandler implements IStageHandler {
       let finishReason: LlmFinishReason | undefined;
       const toolCallsMap = new Map<
         number,
-        { id: string; name: string; arguments: string }
+        { id: string; name: string; arguments: string; argumentsError?: string }
       >();
       // Track which streaming indices belong to external tools so that
       // argument-only continuation deltas (no name field) are forwarded too.
@@ -556,6 +558,14 @@ export class ToolLoopHandler implements IStageHandler {
                 if (tc.arguments) ex.arguments += tc.arguments;
               }
             }
+            // A complete call an adapter marked (spec D87) keeps its mark.
+            if (
+              'argumentsError' in rawToolCall &&
+              rawToolCall.argumentsError !== undefined
+            ) {
+              const ex = toolCallsMap.get(tc.index);
+              if (ex) ex.argumentsError = rawToolCall.argumentsError;
+            }
             if (tc.name && ctx.onPartial) {
               ctx.onPartial({
                 kind: 'mcp-call',
@@ -597,15 +607,8 @@ export class ToolLoopHandler implements IStageHandler {
         requestId: ctx.options?.trace?.traceId,
       });
 
-      const toolCalls = Array.from(toolCallsMap.values()).map((tc) => {
-        let args: Record<string, unknown> = {};
-        try {
-          args = JSON.parse(tc.arguments);
-        } catch {
-          args = {};
-        }
-        return { id: tc.id, name: tc.name, arguments: args };
-      });
+      // Spec §10.5.2 N2 (D87): argument text that does not parse marks the call.
+      const toolCalls = toolCallsFromAccumulated(toolCallsMap.values());
 
       ctx.options?.sessionLogger?.logStep(
         `llm_response_iter_${iteration + 1}`,
@@ -663,6 +666,29 @@ export class ToolLoopHandler implements IStageHandler {
           },
         });
         return true;
+      }
+
+      // -- Refuse calls whose arguments did not parse (spec D87) -------------
+      // Never run with `{}`: the call's tool result is the error, and the LLM
+      // sees it on the next iteration.
+      const invalidGroup = buildInvalidArgumentsToolMessages(
+        content,
+        toolCalls,
+        ctx.options,
+      );
+      if (invalidGroup) {
+        await strategy.record({
+          assistant: invalidGroup.assistant,
+          results: invalidGroup.results,
+        });
+        controlTail.length = 0;
+        messages = (
+          await strategy.form({
+            prefix: staticPrefix,
+            queryText: ctx.inputText,
+          })
+        ).concat(controlTail);
+        continue;
       }
 
       // -- Classify tool calls -----------------------------------------------
