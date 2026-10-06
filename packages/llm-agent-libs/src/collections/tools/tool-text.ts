@@ -42,10 +42,9 @@ export class SchemaToolText implements IToolTextComposer {
   readonly name = 'schema';
   compose(tool: ToolItem): string {
     const lines = tool.parameters.flatMap((p) => {
+      const clause = p.description ? firstClause(p.description) : '';
       const parts = [
-        ...(p.description && firstClause(p.description)
-          ? [firstClause(p.description)]
-          : []),
+        ...(clause ? [clause] : []),
         ...(p.values.length > 0
           ? [`values ${p.values.map((v) => v.value).join(', ')}`]
           : []),

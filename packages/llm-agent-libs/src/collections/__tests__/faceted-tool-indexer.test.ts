@@ -156,3 +156,84 @@ describe('provider text composers (F4) — the default stays C0', () => {
     assert.equal(summary.itemText, full.text);
   });
 });
+
+describe('fix round 1 — failures, empty facet text, parameterless tools', () => {
+  const bare = { ...tool, parameters: [] };
+  const noValues = {
+    ...tool,
+    parameters: [
+      { name: 'a', values: [] },
+      { name: 'b', values: [] },
+    ],
+  } as unknown as typeof tool;
+
+  it('a throwing facet.derive → ok:false, message names facet and item, cause kept', async () => {
+    const boom = new Error('boom');
+    const i = new FacetedToolIndexer([
+      {
+        kind: 'bad',
+        derive: () => {
+          throw boom;
+        },
+      },
+    ]);
+    const r = await i.toRecords(tool);
+    assert.equal(r.ok, false);
+    if (r.ok) return;
+    assert.equal(
+      r.error.message,
+      'facet "bad" failed for tool:listPullRequests: boom',
+    );
+    assert.equal(r.error.code, 'RAG_ERROR');
+    assert.equal(r.error.cause, boom);
+  });
+  it('a throwing composer → ok:false', async () => {
+    const i = new FacetedToolIndexer([], {
+      text: {
+        name: 'x',
+        compose: () => {
+          throw new Error('nope');
+        },
+      },
+    });
+    const r = await i.toRecords(tool);
+    assert.equal(r.ok, false);
+    if (r.ok) return;
+    assert.match(r.error.message, /failed for tool:listPullRequests: nope/);
+  });
+  it('a facet returning "" writes no record', async () => {
+    const r = await new FacetedToolIndexer([
+      { kind: 'empty', derive: () => '' },
+    ]).toRecords(tool);
+    assert.ok(r.ok);
+    assert.deepEqual(
+      r.value.map((d) => d.recordKind),
+      ['full'],
+    );
+  });
+  it('composers on a parameterless tool equal C0', () => {
+    assert.equal(new EnumValuesToolText().compose(bare), fullToolText(bare));
+    assert.equal(new SchemaToolText().compose(bare), fullToolText(bare));
+  });
+  it('composers on parameters without values or description add no lines', () => {
+    assert.equal(
+      new EnumValuesToolText().compose(noValues),
+      fullToolText(noValues),
+    );
+    assert.equal(
+      new SchemaToolText().compose(noValues),
+      fullToolText(noValues),
+    );
+  });
+  it('[Summary, Parameters] on a parameterless tool writes full and summary only', async () => {
+    const r = await new FacetedToolIndexer([
+      new SummaryFacet(),
+      new ParametersFacet(),
+    ]).toRecords(bare);
+    assert.ok(r.ok);
+    assert.deepEqual(
+      r.value.map((d) => d.recordKind),
+      ['full', 'summary'],
+    );
+  });
+});

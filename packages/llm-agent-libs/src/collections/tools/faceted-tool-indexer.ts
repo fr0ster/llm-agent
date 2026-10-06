@@ -1,20 +1,34 @@
 // packages/llm-agent-libs/src/collections/tools/faceted-tool-indexer.ts
-import type {
-  IItemIndexer,
-  IToolFacet,
-  IToolTextComposer,
+import {
+  type IItemIndexer,
+  type IToolFacet,
+  type IToolTextComposer,
   RagError,
-  RecordDraft,
-  Result,
-  ToolItem,
+  type RecordDraft,
+  type Result,
+  type ToolItem,
 } from '@mcp-abap-adt/llm-agent';
 import { ParameterNamesToolText } from './tool-text.js';
 
 const GLOBAL = { scope: 'global' } as const;
 
+function failure(
+  kind: string,
+  tool: ToolItem,
+  err: unknown,
+): { ok: false; error: RagError } {
+  const message = err instanceof Error ? err.message : String(err);
+  const error = new RagError(
+    `facet "${kind}" failed for ${tool.itemId}: ${message}`,
+  );
+  error.cause = err;
+  return { ok: false, error };
+}
+
 /**
  * `full` (canonical, not a facet — it cannot be left out) + one record per
- * facet that yields text. Tool catalogs are global. The `full` text comes from
+ * facet that yields text (`undefined` or `''` = no text for this item,
+ * so no record). A throwing facet or composer yields an `ok: false` Result (never skipped). Tool catalogs are global. The `full` text comes from
  * the injected provider text composer (F4); absent → C0 (30.1.0's text plus parameter names).
  */
 export class FacetedToolIndexer implements IItemIndexer<ToolItem> {
@@ -43,7 +57,12 @@ export class FacetedToolIndexer implements IItemIndexer<ToolItem> {
   async toRecords(
     tool: ToolItem,
   ): Promise<Result<readonly RecordDraft[], RagError>> {
-    const full = this.text.compose(tool);
+    let full: string;
+    try {
+      full = this.text.compose(tool);
+    } catch (err) {
+      return failure('full', tool, err);
+    }
     const drafts: RecordDraft[] = [
       {
         text: full,
@@ -54,7 +73,12 @@ export class FacetedToolIndexer implements IItemIndexer<ToolItem> {
       },
     ];
     for (const facet of this.facets) {
-      const text = facet.derive(tool);
+      let text: string | undefined;
+      try {
+        text = facet.derive(tool);
+      } catch (err) {
+        return failure(facet.kind, tool, err);
+      }
       if (!text) continue;
       drafts.push({
         text,
