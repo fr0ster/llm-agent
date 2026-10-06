@@ -62,15 +62,17 @@ const NO_REEXPORT = [
 ];
 
 test('no re-export of another package in the files this plan owns (D59)', () => {
-  const RE = /export\s+(?:type\s+)?(?:\*|\{[^}]*\})\s*from\s*'@mcp-abap-adt\//;
+  const RE =
+    /export\s+(?:type\s+)?(?:\*(?:\s+as\s+\w+)?|\{[^}]*\})\s*from\s*'@mcp-abap-adt\//;
   const offenders: string[] = [];
   for (const rel of NO_REEXPORT) {
     const p = join(ROOT, rel);
     let files: string[];
     try {
       files = statSync(p).isDirectory() ? [...tsFiles(p)] : [p];
-    } catch {
-      continue; // a package created by a later task
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code === 'ENOENT') continue; // a package created by a later task
+      throw e;
     }
     for (const f of files)
       if (RE.test(readFileSync(f, 'utf8'))) offenders.push(f);
