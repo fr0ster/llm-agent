@@ -26,6 +26,7 @@ import type {
   IRagProviderRegistry,
   IRagRegistry,
   IRequestLogger,
+  IReranker,
   IRetrievalStrategy,
   ISkillManager,
   ISubpromptClassifier,
@@ -43,7 +44,6 @@ import type {
 import type { OrchestratorError, SmartAgentConfig } from '../agent.js';
 import type { IMetrics } from '../metrics/types.js';
 import type { IPromptInjectionDetector, IToolPolicy } from '../policy/types.js';
-import type { IReranker } from '../reranker/types.js';
 import type { ISessionManager } from '../session/types.js';
 import type { ITracer } from '../tracer/types.js';
 import type { IOutputValidator } from '../validator/types.js';

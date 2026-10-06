@@ -40,6 +40,7 @@ import {
   StreamingLlmCallStrategy,
 } from '@mcp-abap-adt/llm-agent';
 import { NoopQueryExpander } from '@mcp-abap-adt/llm-agent-rag';
+import { NoopReranker } from '@mcp-abap-adt/llm-agent-reranker';
 import type {
   OrchestratorError,
   SmartAgentConfig,
@@ -57,7 +58,6 @@ import { NoopRequestLogger } from '../logger/noop-request-logger.js';
 import { NoopMetrics } from '../metrics/noop-metrics.js';
 import { PendingToolResultsRegistry } from '../policy/pending-tool-results-registry.js';
 import { ToolAvailabilityRegistry } from '../policy/tool-availability-registry.js';
-import { NoopReranker } from '../reranker/noop-reranker.js';
 import { applyRetrievalStrategy } from '../retrieval/index.js';
 import { ownBuiltInStore } from '../retrieval/strategy-rag.js';
 import { NoopSessionManager } from '../session/noop-session-manager.js';

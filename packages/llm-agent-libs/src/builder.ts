@@ -32,6 +32,7 @@ import type {
   IModelProvider,
   IQueryExpander,
   IRequestLogger,
+  IReranker,
   IRetrievalStrategy,
   ISkillManager,
   ISubAgent,
@@ -114,7 +115,6 @@ import type { DagCoordinatorHandlerDeps } from './pipeline/handlers/dag-coordina
 import type { IStageHandler } from './pipeline/stage-handler.js';
 import type { IPluginLoader } from './plugins/types.js';
 import type { IPromptInjectionDetector, IToolPolicy } from './policy/types.js';
-import type { IReranker } from './reranker/types.js';
 import { RateLimiterLlm } from './resilience/rate-limiter-llm.js';
 import { retryInsideBreakers } from './resilience/retry-llm.js';
 import { applyRetrievalStrategy } from './retrieval/index.js';

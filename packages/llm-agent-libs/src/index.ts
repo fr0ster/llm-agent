@@ -181,19 +181,6 @@ export {
   matches as matchesKnowledgeFilter,
 } from './rag/knowledge-rag.js';
 // ---------------------------------------------------------------------------
-// Reranker
-// ---------------------------------------------------------------------------
-export {
-  DECISION_RERANK_DEFAULT_CRITERIA,
-  DECISION_RERANK_DEFAULT_TASK,
-  DecisionReranker,
-  type DecisionRerankerOptions,
-  PASSAGE_QUESTION,
-  TOOL_QUESTION,
-} from './reranker/decision-reranker.js';
-export { LlmReranker } from './reranker/llm-reranker.js';
-export { NoopReranker } from './reranker/noop-reranker.js';
-// ---------------------------------------------------------------------------
 // Resilience
 // ---------------------------------------------------------------------------
 export { RateLimiterLlm } from './resilience/rate-limiter-llm.js';

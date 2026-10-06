@@ -7,10 +7,10 @@ import {
   type RagResult,
 } from '@mcp-abap-adt/llm-agent';
 import {
-  DecisionReranker,
   PASSAGE_QUESTION,
+  ProbabilityReranker,
   TOOL_QUESTION,
-} from '../decision-reranker.js';
+} from '../probability-reranker.js';
 
 const mk = (n: number, len = 10): RagResult[] =>
   Array.from({ length: n }, (_, i) => ({
@@ -50,7 +50,7 @@ function model(prob: (passage: string) => number, failOn?: number) {
   return { m, calls };
 }
 
-describe('DecisionReranker presets', () => {
+describe('ProbabilityReranker presets', () => {
   it('TOOL_QUESTION and PASSAGE_QUESTION are frozen and distinct', () => {
     assert.ok(
       Object.isFrozen(TOOL_QUESTION) && Object.isFrozen(PASSAGE_QUESTION),
@@ -59,16 +59,15 @@ describe('DecisionReranker presets', () => {
   });
 });
 
-describe('DecisionReranker batching', () => {
+describe('ProbabilityReranker batching', () => {
   it('splits by the token budget and merges by score', async () => {
     const { m, calls } = model(
       (p) => Number(p.slice(1).replace(/x+$/, '')) / 100,
     );
     const results = mk(30, 400);
-    const r = await new DecisionReranker(m, { maxBatchTokens: 1_000 }).rerank(
-      'q',
-      results,
-    );
+    const r = await new ProbabilityReranker(m, {
+      maxBatchTokens: 1_000,
+    }).rerank('q', results);
     assert.ok(r.ok);
     assert.ok(
       calls.length > 1,
@@ -84,22 +83,21 @@ describe('DecisionReranker batching', () => {
 
   it('one failed batch fails the call (no partial merge)', async () => {
     const { m } = model(() => 0.5, 2);
-    const r = await new DecisionReranker(m, { maxBatchTokens: 1_000 }).rerank(
-      'q',
-      mk(30, 400),
-    );
+    const r = await new ProbabilityReranker(m, {
+      maxBatchTokens: 1_000,
+    }).rerank('q', mk(30, 400));
     assert.ok(!r.ok);
     assert.equal(r.error.code, 'RERANK_ERROR');
   });
 
   it('small inputs are still one call', async () => {
     const { m, calls } = model(() => 0.5);
-    await new DecisionReranker(m).rerank('q', mk(5));
+    await new ProbabilityReranker(m).rerank('q', mk(5));
     assert.equal(calls.length, 1);
   });
 });
 
-describe('DecisionReranker option validation', () => {
+describe('ProbabilityReranker option validation', () => {
   for (const [field, v] of [
     ['maxBatchTokens', Number.NaN],
     ['maxBatchTokens', 0],
@@ -110,14 +108,14 @@ describe('DecisionReranker option validation', () => {
   ] as const) {
     it(`refuses ${field}: ${v} at construction`, () => {
       assert.throws(
-        () => new DecisionReranker(model(() => 0.5).m, { [field]: v }),
-        new RegExp(`DecisionReranker: ${field} must be a positive integer`),
+        () => new ProbabilityReranker(model(() => 0.5).m, { [field]: v }),
+        new RegExp(`ProbabilityReranker: ${field} must be a positive integer`),
       );
     });
   }
 
   it('a non-finite probability is an error, never an ok with a bad score', async () => {
-    const r = await new DecisionReranker(model(() => Number.NaN).m).rerank(
+    const r = await new ProbabilityReranker(model(() => Number.NaN).m).rerank(
       'q',
       mk(2),
     );

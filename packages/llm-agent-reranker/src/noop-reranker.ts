@@ -1,10 +1,10 @@
 import type {
   CallOptions,
+  IReranker,
   RagError,
   RagResult,
   Result,
 } from '@mcp-abap-adt/llm-agent';
-import type { IReranker } from './types.js';
 
 export class NoopReranker implements IReranker {
   async rerank(

@@ -67,6 +67,7 @@
     "@mcp-abap-adt/llm-agent-libs": "^30.1.0",
     "@mcp-abap-adt/llm-agent-mcp": "^30.1.0",
     "@mcp-abap-adt/llm-agent-rag": "^30.1.0",
+    "@mcp-abap-adt/llm-agent-reranker": "^30.1.0",
     "@mcp-abap-adt/sap-aicore-llm": "^30.1.0"
   },
   "peerDependenciesMeta": {

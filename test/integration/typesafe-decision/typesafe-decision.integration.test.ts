@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { type RagResult, staticApiKey } from '@mcp-abap-adt/llm-agent';
-import { DecisionReranker } from '@mcp-abap-adt/llm-agent-libs';
+import { ProbabilityReranker } from '@mcp-abap-adt/llm-agent-reranker';
 import { TypeSafeDecisionModel } from '@mcp-abap-adt/typesafe-decision';
 
 const KEY = process.env.DECISION_API_KEY;
@@ -63,7 +63,7 @@ describeLive('TypeSafe Jev — live (DECISION_API_KEY)', () => {
         score: 0.8,
       },
     ];
-    const r = await new DecisionReranker(model).rerank(
+    const r = await new ProbabilityReranker(model).rerank(
       'How do I reset my password?',
       passages,
     );

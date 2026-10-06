@@ -32,6 +32,7 @@ import type {
   IRagProviderRegistry,
   IRagRegistry,
   IRequestLogger,
+  IReranker,
   ISkill,
   ISkillManager,
   ISubpromptClassifier,
@@ -62,7 +63,6 @@ import type { IMetrics } from '../metrics/types.js';
 import type { PendingToolResultsRegistry } from '../policy/pending-tool-results-registry.js';
 import type { ToolAvailabilityRegistry } from '../policy/tool-availability-registry.js';
 import type { IPromptInjectionDetector, IToolPolicy } from '../policy/types.js';
-import type { IReranker } from '../reranker/types.js';
 import type { ISessionManager } from '../session/types.js';
 import type { ITracer } from '../tracer/types.js';
 import type { IOutputValidator } from '../validator/types.js';

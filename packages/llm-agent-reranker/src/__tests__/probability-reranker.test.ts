@@ -7,10 +7,10 @@ import {
   type RagResult,
 } from '@mcp-abap-adt/llm-agent';
 import {
-  DECISION_RERANK_DEFAULT_CRITERIA,
-  DECISION_RERANK_DEFAULT_TASK,
-  DecisionReranker,
-} from '../decision-reranker.js';
+  PROBABILITY_RERANK_DEFAULT_CRITERIA,
+  PROBABILITY_RERANK_DEFAULT_TASK,
+  ProbabilityReranker,
+} from '../probability-reranker.js';
 
 const results: RagResult[] = [
   { text: 'alpha', metadata: { id: 'a' }, score: 0.9 },
@@ -33,16 +33,16 @@ function fakeModel(probs: number[]) {
   return { model, seen };
 }
 
-describe('DECISION_RERANK_DEFAULT_CRITERIA', () => {
+describe('PROBABILITY_RERANK_DEFAULT_CRITERIA', () => {
   it('is frozen, so a consumer cannot change every reranker', () => {
-    assert.ok(Object.isFrozen(DECISION_RERANK_DEFAULT_CRITERIA));
+    assert.ok(Object.isFrozen(PROBABILITY_RERANK_DEFAULT_CRITERIA));
   });
 });
 
-describe('DecisionReranker', () => {
+describe('ProbabilityReranker', () => {
   it('empty input → unchanged, no call', async () => {
     const { model, seen } = fakeModel([]);
-    const r = await new DecisionReranker(model).rerank('q', []);
+    const r = await new ProbabilityReranker(model).rerank('q', []);
     assert.ok(r.ok);
     assert.deepEqual(r.value, []);
     assert.equal(seen.length, 0);
@@ -50,20 +50,20 @@ describe('DecisionReranker', () => {
 
   it('one call: query as state, one noul question per passage', async () => {
     const { model, seen } = fakeModel([0.1, 0.2, 0.3]);
-    await new DecisionReranker(model).rerank('the query', results);
+    await new ProbabilityReranker(model).rerank('the query', results);
     assert.equal(seen.length, 1);
     assert.equal(seen[0].state, 'the query');
     assert.deepEqual(Object.keys(seen[0].questions), ['r0', 'r1', 'r2']);
     assert.deepEqual(seen[0].questions.r1, {
       type: 'noul',
-      instructions: { task: DECISION_RERANK_DEFAULT_TASK, passage: 'beta' },
-      criteria: DECISION_RERANK_DEFAULT_CRITERIA,
+      instructions: { task: PROBABILITY_RERANK_DEFAULT_TASK, passage: 'beta' },
+      criteria: PROBABILITY_RERANK_DEFAULT_CRITERIA,
     });
   });
 
   it('scores = probability, sorted descending, text/metadata untouched', async () => {
     const { model } = fakeModel([0.2, 0.9, 0.5]);
-    const r = await new DecisionReranker(model).rerank('q', results);
+    const r = await new ProbabilityReranker(model).rerank('q', results);
     assert.ok(r.ok);
     assert.deepEqual(
       r.value.map((x) => [x.text, x.score, x.metadata.id]),
@@ -77,7 +77,7 @@ describe('DecisionReranker', () => {
 
   it('ties keep the original order (stable)', async () => {
     const { model } = fakeModel([0.5, 0.5, 0.5]);
-    const r = await new DecisionReranker(model).rerank('q', results);
+    const r = await new ProbabilityReranker(model).rerank('q', results);
     assert.ok(r.ok);
     assert.deepEqual(
       r.value.map((x) => x.text),
@@ -87,7 +87,7 @@ describe('DecisionReranker', () => {
 
   it('a task override keeps every passage', async () => {
     const { model, seen } = fakeModel([0.1, 0.2, 0.3]);
-    await new DecisionReranker(model, { task: 'Custom task' }).rerank(
+    await new ProbabilityReranker(model, { task: 'Custom task' }).rerank(
       'q',
       results,
     );
@@ -95,7 +95,7 @@ describe('DecisionReranker', () => {
       assert.deepEqual(seen[0].questions[`r${i}`], {
         type: 'noul',
         instructions: { task: 'Custom task', passage: res.text },
-        criteria: DECISION_RERANK_DEFAULT_CRITERIA,
+        criteria: PROBABILITY_RERANK_DEFAULT_CRITERIA,
       });
     });
   });
@@ -103,13 +103,13 @@ describe('DecisionReranker', () => {
   it('a criteria override replaces only the criteria', async () => {
     const { model, seen } = fakeModel([0.1, 0.2, 0.3]);
     const criteria = { true: 'relevant', false: 'irrelevant' };
-    await new DecisionReranker(model, { criteria }).rerank('q', results);
+    await new ProbabilityReranker(model, { criteria }).rerank('q', results);
     const q = seen[0].questions.r0;
     assert.equal(q.type, 'noul');
     if (q.type === 'noul') {
       assert.deepEqual(q.criteria, criteria);
       assert.deepEqual(q.instructions, {
-        task: DECISION_RERANK_DEFAULT_TASK,
+        task: PROBABILITY_RERANK_DEFAULT_TASK,
         passage: 'alpha',
       });
     }
@@ -122,7 +122,7 @@ describe('DecisionReranker', () => {
         error: new DecisionError('stale key', 'DECISION_AUTH'),
       }),
     };
-    const r = await new DecisionReranker(model).rerank('q', results);
+    const r = await new ProbabilityReranker(model).rerank('q', results);
     assert.ok(!r.ok);
     assert.equal(r.error.code, 'RERANK_ERROR');
     assert.match(r.error.message, /DECISION_AUTH/);
@@ -130,7 +130,7 @@ describe('DecisionReranker', () => {
 
   it('a missing answer → RERANK_ERROR', async () => {
     const { model } = fakeModel([0.1, 0.2]); // r2 missing
-    const r = await new DecisionReranker(model).rerank('q', results);
+    const r = await new ProbabilityReranker(model).rerank('q', results);
     assert.ok(!r.ok);
     assert.equal(r.error.code, 'RERANK_ERROR');
   });
@@ -150,7 +150,7 @@ describe('DecisionReranker', () => {
       },
     };
     const opts = { sessionId: 's-1' };
-    await new DecisionReranker(model).rerank('q', [results[0]], opts);
+    await new ProbabilityReranker(model).rerank('q', [results[0]], opts);
     assert.equal(got, opts);
   });
 });

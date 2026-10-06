@@ -68,6 +68,8 @@ export {
   type StopReason,
 } from '@mcp-abap-adt/llm-agent';
 
+import type { IReranker } from '@mcp-abap-adt/llm-agent';
+import { NoopReranker } from '@mcp-abap-adt/llm-agent-reranker';
 import type { IPipeline } from './interfaces/pipeline.js';
 import type { ILogger } from './logger/index.js';
 import { NoopRequestLogger } from './logger/noop-request-logger.js';
@@ -97,8 +99,6 @@ import type {
   IToolPolicy,
   SessionPolicy,
 } from './policy/types.js';
-import { NoopReranker } from './reranker/noop-reranker.js';
-import type { IReranker } from './reranker/types.js';
 import { NoopSessionManager } from './session/noop-session-manager.js';
 import type { ISessionManager } from './session/types.js';
 import { NoopTracer } from './tracer/noop-tracer.js';

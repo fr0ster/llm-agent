@@ -21,10 +21,12 @@ import {
   emptyLoadedPlugins,
   hasRetrievalStrategy,
   NoopRequestLogger,
-  PASSAGE_QUESTION,
-  TOOL_QUESTION,
 } from '@mcp-abap-adt/llm-agent-libs';
 import { InMemoryRag, SimpleRagRegistry } from '@mcp-abap-adt/llm-agent-rag';
+import {
+  PASSAGE_QUESTION,
+  TOOL_QUESTION,
+} from '@mcp-abap-adt/llm-agent-reranker';
 import { parse } from 'yaml';
 import { resolveSmartServerConfig } from '../config.js';
 import {

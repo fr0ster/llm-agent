@@ -5,15 +5,17 @@ import type {
   IRetrievalStrategy,
 } from '@mcp-abap-adt/llm-agent';
 import {
-  DecisionReranker,
   EmbeddingRetrieval,
-  LlmReranker,
-  PASSAGE_QUESTION,
   RerankAllRetrieval,
   RerankedRetrieval,
-  TOOL_QUESTION,
   wrapProbabilityDecision,
 } from '@mcp-abap-adt/llm-agent-libs';
+import {
+  LlmReranker,
+  PASSAGE_QUESTION,
+  ProbabilityReranker,
+  TOOL_QUESTION,
+} from '@mcp-abap-adt/llm-agent-reranker';
 import type {
   SmartServerDecisionConfig,
   SmartServerRetrievalConfig,
@@ -37,7 +39,7 @@ const MISSING_SEAM =
  * One retrieval strategy per configured store key (§13.4). Every listed store
  * gets a strategy — `embedding` included, so an explicit embedding store is
  * distinguishable from an unlisted one (precedence over the global reranker).
- * The decision model is built ONCE and shared; one `DecisionReranker` per
+ * The decision model is built ONCE and shared; one `ProbabilityReranker` per
  * distinct question wording.
  */
 export async function resolveRetrievalStrategies(
@@ -67,7 +69,7 @@ export async function resolveRetrievalStrategies(
         await input.makeDecisionModel(input.decisionCfg),
       );
     }
-    const reranker = new DecisionReranker(decisionModel, {
+    const reranker = new ProbabilityReranker(decisionModel, {
       task,
       criteria: preset.criteria,
     });

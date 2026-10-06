@@ -10,11 +10,13 @@ import {
 } from '@mcp-abap-adt/llm-agent';
 import {
   EmbeddingRetrieval,
-  PASSAGE_QUESTION,
   RerankAllRetrieval,
   RerankedRetrieval,
-  TOOL_QUESTION,
 } from '@mcp-abap-adt/llm-agent-libs';
+import {
+  PASSAGE_QUESTION,
+  TOOL_QUESTION,
+} from '@mcp-abap-adt/llm-agent-reranker';
 import { resolveRetrievalStrategies } from '../resolve-retrieval.js';
 
 const HITS: RagResult[] = [

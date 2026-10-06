@@ -1,13 +1,14 @@
-import type { ILlm, LlmResponse } from '@mcp-abap-adt/llm-agent';
 import {
   type CallOptions,
+  type ILlm,
+  type IReranker,
+  type LlmResponse,
   RagError,
   type RagResult,
   type Result,
 } from '@mcp-abap-adt/llm-agent';
-import { assertPositiveInteger } from '../util/assert-positive-integer.js';
-import { PASSAGE_QUESTION } from './decision-reranker.js';
-import type { IReranker } from './types.js';
+import { assertPositiveInteger } from './assert-positive-integer.js';
+import { PASSAGE_QUESTION } from './probability-reranker.js';
 
 const DEFAULT_BATCH_SIZE = 20;
 const DEFAULT_CONCURRENCY = 2;

@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { ILlm, RagResult } from '@mcp-abap-adt/llm-agent';
-import { makeLlm } from '../../testing/index.js';
 import { LlmReranker } from '../llm-reranker.js';
 import { NoopReranker } from '../noop-reranker.js';
+import { makeLlm } from './fake-llm.js';
 
 const sampleResults: RagResult[] = [
   { text: 'ABAP syntax for SELECT', metadata: {}, score: 0.8 },

@@ -3,18 +3,18 @@ import {
   type DecisionAnswer,
   type DecisionEntry,
   type IProbabilityDecision,
+  type IReranker,
   type NoulQuestion,
   RagError,
   type RagResult,
   type Result,
 } from '@mcp-abap-adt/llm-agent';
-import { assertPositiveInteger } from '../util/assert-positive-integer.js';
-import type { IReranker } from './types.js';
+import { assertPositiveInteger } from './assert-positive-integer.js';
 
-export const DECISION_RERANK_DEFAULT_TASK =
+export const PROBABILITY_RERANK_DEFAULT_TASK =
   'Judge whether this passage helps answer the query given as the state.';
 
-export const DECISION_RERANK_DEFAULT_CRITERIA: Readonly<{
+export const PROBABILITY_RERANK_DEFAULT_CRITERIA: Readonly<{
   true: DecisionEntry;
   false: DecisionEntry;
 }> = Object.freeze({
@@ -23,8 +23,8 @@ export const DECISION_RERANK_DEFAULT_CRITERIA: Readonly<{
 });
 
 export const PASSAGE_QUESTION = Object.freeze({
-  task: DECISION_RERANK_DEFAULT_TASK,
-  criteria: DECISION_RERANK_DEFAULT_CRITERIA,
+  task: PROBABILITY_RERANK_DEFAULT_TASK,
+  criteria: PROBABILITY_RERANK_DEFAULT_CRITERIA,
 });
 
 export const TOOL_QUESTION = Object.freeze({
@@ -38,7 +38,7 @@ export const TOOL_QUESTION = Object.freeze({
 const DEFAULT_MAX_BATCH_TOKENS = 48_000;
 const DEFAULT_CONCURRENCY = 4;
 
-export interface DecisionRerankerOptions {
+export interface ProbabilityRerankerOptions {
   /** Override the default task wording. The passage is always sent alongside
    *  it — this never replaces the passage. */
   task?: DecisionEntry;
@@ -52,27 +52,31 @@ export interface DecisionRerankerOptions {
 const estimateTokens = (s: string): number => Math.ceil(s.length / 4);
 
 /**
- * Rerank RAG results with a decision model: the query as the state, one
- * yes/no question per passage, batched under a token budget. `score` becomes
- * P(relevant). Any failed batch fails the whole call.
+ * Rerank RAG results with a probability decision (spec §5.1): the query as the
+ * state, one yes/no question per passage, batched under a token budget.
+ * `score` becomes P(relevant). Any failed batch fails the whole call.
  */
-export class DecisionReranker implements IReranker {
+export class ProbabilityReranker implements IReranker {
   private readonly maxBatchTokens: number;
   private readonly concurrency: number;
 
   /** @throws Error when `maxBatchTokens` or `concurrency` is not a positive integer. */
   constructor(
-    private readonly model: IProbabilityDecision,
-    private readonly options: DecisionRerankerOptions = {},
+    private readonly decision: IProbabilityDecision,
+    private readonly options: ProbabilityRerankerOptions = {},
   ) {
     this.maxBatchTokens = options.maxBatchTokens ?? DEFAULT_MAX_BATCH_TOKENS;
     this.concurrency = options.concurrency ?? DEFAULT_CONCURRENCY;
     assertPositiveInteger(
-      'DecisionReranker',
+      'ProbabilityReranker',
       'maxBatchTokens',
       this.maxBatchTokens,
     );
-    assertPositiveInteger('DecisionReranker', 'concurrency', this.concurrency);
+    assertPositiveInteger(
+      'ProbabilityReranker',
+      'concurrency',
+      this.concurrency,
+    );
   }
 
   async rerank(
@@ -82,8 +86,9 @@ export class DecisionReranker implements IReranker {
   ): Promise<Result<RagResult[], RagError>> {
     if (results.length === 0) return { ok: true, value: results };
 
-    const task = this.options.task ?? DECISION_RERANK_DEFAULT_TASK;
-    const criteria = this.options.criteria ?? DECISION_RERANK_DEFAULT_CRITERIA;
+    const task = this.options.task ?? PROBABILITY_RERANK_DEFAULT_TASK;
+    const criteria =
+      this.options.criteria ?? PROBABILITY_RERANK_DEFAULT_CRITERIA;
     const budget = this.maxBatchTokens;
     const concurrency = this.concurrency;
 
@@ -156,7 +161,10 @@ export class DecisionReranker implements IReranker {
         criteria,
       };
     }
-    const res = await this.model.decide({ state: query, questions }, options);
+    const res = await this.decision.decide(
+      { state: query, questions },
+      options,
+    );
     if (!res.ok) {
       return {
         ok: false,

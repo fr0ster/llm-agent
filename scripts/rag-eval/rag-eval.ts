@@ -52,16 +52,16 @@ import { NoopRequestLogger } from '../../packages/llm-agent-libs/src/logger/noop
 import { vectorizeMcpTools } from '../../packages/llm-agent-libs/src/mcp/vectorize-mcp-tools.js';
 import { DEFAULT_TOOL_SELECTION } from '../../packages/llm-agent-libs/src/pipeline/tool-selection/index.js';
 import {
-  DecisionReranker,
-  LlmReranker,
-  TOOL_QUESTION,
-} from '../../packages/llm-agent-libs/src/reranker/index.js';
-import {
   applyRetrievalStrategy,
   EmbeddingRetrieval,
   RerankAllRetrieval,
   RerankedRetrieval,
 } from '../../packages/llm-agent-libs/src/retrieval/index.js';
+import {
+  LlmReranker,
+  ProbabilityReranker,
+  TOOL_QUESTION,
+} from '../../packages/llm-agent-reranker/src/index.js';
 import { buildCompositionDeps } from '../../packages/llm-agent-server/src/composition/index.js';
 import {
   type SmartServerEmbedderConfig,
@@ -534,7 +534,7 @@ async function buildReranker(
   if (kind === 'decision') {
     const key = process.env.DECISION_API_KEY;
     if (!key) return 'DECISION_API_KEY is not set';
-    return new DecisionReranker(
+    return new ProbabilityReranker(
       new TypeSafeDecisionModel({ credential: staticApiKey(key) }),
       TOOL_QUESTION,
     );
