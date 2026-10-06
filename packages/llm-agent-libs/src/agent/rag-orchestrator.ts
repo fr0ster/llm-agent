@@ -18,7 +18,11 @@ import {
 } from '@mcp-abap-adt/llm-agent';
 import { callReranker, rerankFailedError } from '../retrieval/rerank-call.js';
 import type { ISpan } from '../tracer/types.js';
-import { summarizeHistory, toEnglishForRag } from './rag-helpers.js';
+import {
+  rejectionError,
+  summarizeHistory,
+  toEnglishForRag,
+} from './rag-helpers.js';
 import type {
   IRagOrchestrator,
   OrchestratedContext,
@@ -68,7 +72,8 @@ export class RagOrchestrator implements IRagOrchestrator {
         processedHistory,
         opts,
       );
-      if (sumResult.ok) processedHistory = sumResult.value;
+      if (!sumResult.ok) return sumResult;
+      processedHistory = sumResult.value;
       this.deps.sessionManager.reset();
     }
 
@@ -100,7 +105,7 @@ export class RagOrchestrator implements IRagOrchestrator {
       const translateStores = this.deps.translateQueryStores;
       let translatedText: string | undefined;
       if (translateStores && translateStores.size > 0) {
-        translatedText = await this.toEnglish(
+        const translation = await this.toEnglish(
           {
             helperLlm: this.deps.helperLlm,
             mainLlm: this.deps.mainLlm,
@@ -109,12 +114,34 @@ export class RagOrchestrator implements IRagOrchestrator {
           combinedActionText,
           opts,
         );
+        if (!translation.ok) return translation;
+        translatedText = translation.value;
         if (this.deps.config.queryExpansionEnabled) {
-          const expandResult = await this.deps.queryExpander.expand(
-            translatedText,
-            opts,
-          );
-          if (expandResult.ok) translatedText = expandResult.value;
+          let expandResult: Awaited<
+            ReturnType<RagOrchestratorDeps['queryExpander']['expand']>
+          >;
+          try {
+            expandResult = await this.deps.queryExpander.expand(
+              translatedText,
+              opts,
+            );
+          } catch (err) {
+            return {
+              ok: false,
+              error: rejectionError('expand', err, 'QUERY_EXPAND_ERROR'),
+            };
+          }
+          // Spec §10.5.6 L2: a failed expander is the request's error.
+          if (!expandResult.ok) {
+            return {
+              ok: false,
+              error: new OrchestratorError(
+                `expand: ${expandResult.error.message}`,
+                expandResult.error.code,
+              ),
+            };
+          }
+          translatedText = expandResult.value;
         }
       }
 
@@ -494,7 +521,8 @@ export class RagOrchestrator implements IRagOrchestrator {
         history,
         opts,
       );
-      if (res.ok) processedHistory = res.value;
+      if (!res.ok) return res;
+      processedHistory = res.value;
     }
 
     let subprompts: Subprompt[];

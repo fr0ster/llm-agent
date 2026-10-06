@@ -5,11 +5,10 @@ import type {
   IHistoryMemory,
   IHistorySummarizer,
   IRag,
-  LlmError,
-  RagError,
   Result,
 } from '@mcp-abap-adt/llm-agent';
 
+import { LlmError, RagError } from '@mcp-abap-adt/llm-agent';
 import { InMemoryRag } from '@mcp-abap-adt/llm-agent-rag';
 import { summarizeAndStore } from '../history-upsert.js';
 
@@ -139,7 +138,7 @@ describe('history-upsert: summarizeAndStore', () => {
     assert.deepEqual(memory.getRecent('s1', 10), ['summary text']);
   });
 
-  it('still pushes to memory when RAG upsertRaw fails (best-effort)', async () => {
+  it('a failing RAG upsertRaw is an error with the store code; memory is not updated (L4)', async () => {
     const memory = makeFakeMemory();
     const summarizer = makeFakeSummarizer('summary text');
     const rag: IRag = {
@@ -156,7 +155,7 @@ describe('history-upsert: summarizeAndStore', () => {
         return {
           upsertRaw: async () => ({
             ok: false as const,
-            error: { message: 'RAG down' } as RagError,
+            error: new RagError('RAG down', 'UPSERT_ERROR'),
           }),
           deleteByIdRaw: async () => ({ ok: true as const, value: false }),
         };
@@ -173,21 +172,23 @@ describe('history-upsert: summarizeAndStore', () => {
       timestamp: 1000,
     };
 
-    await summarizeAndStore({
+    const r = await summarizeAndStore({
       turn,
       summarizer,
       memory,
       rag,
       sessionId: 's1',
     });
-    assert.deepEqual(memory.getRecent('s1', 10), ['summary text']);
+    assert.ok(!r.ok);
+    assert.equal(r.error.code, 'UPSERT_ERROR');
+    assert.deepEqual(memory.getRecent('s1', 10), []);
   });
 
-  it('falls back to raw text when summarizer fails (best-effort)', async () => {
+  it('a failing summarizer is an error: nothing raw is stored or remembered (L4)', async () => {
     const memory = makeFakeMemory();
     const summarizer: IHistorySummarizer = {
       summarize: async () =>
-        ({ ok: false, error: { message: 'LLM down' } }) as Result<
+        ({ ok: false, error: new LlmError('LLM down') }) as Result<
           string,
           LlmError
         >,
@@ -204,16 +205,17 @@ describe('history-upsert: summarizeAndStore', () => {
       timestamp: 1000,
     };
 
-    await summarizeAndStore({
+    const r = await summarizeAndStore({
       turn,
       summarizer,
       memory,
       rag,
       sessionId: 's1',
     });
-    assert.deepEqual(memory.getRecent('s1', 10), ['do something → done it']);
-    assert.equal(rag.upserted.length, 1);
-    assert.equal(rag.upserted[0].text, 'do something → done it');
+    assert.ok(!r.ok);
+    assert.equal(r.error.code, 'LLM_ERROR');
+    assert.deepEqual(memory.getRecent('s1', 10), []);
+    assert.equal(rag.upserted.length, 0);
   });
 });
 

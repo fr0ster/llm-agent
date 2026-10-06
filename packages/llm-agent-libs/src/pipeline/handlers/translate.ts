@@ -9,6 +9,7 @@
  * - Text is shorter than 15 characters
  */
 
+import { OrchestratorError } from '@mcp-abap-adt/llm-agent';
 import type { ISpan } from '../../tracer/types.js';
 import type { PipelineContext } from '../context.js';
 import type { IStageHandler } from '../stage-handler.js';
@@ -51,10 +52,24 @@ export class TranslateHandler implements IStageHandler {
       requestId: ctx.options?.trace?.traceId,
     });
 
-    if (res.ok && res.value.content.trim()) {
-      ctx.ragText = res.value.content.trim();
-      span.setAttribute('translated', true);
+    // Spec §10.5.6 L1: a failed helper-LLM call is the stage's error — never
+    // the untranslated text standing in for a translation.
+    if (!res.ok) {
+      span.setStatus('error', res.error.message);
+      ctx.error = new OrchestratorError(
+        `translate: ${res.error.message}`,
+        res.error.code,
+      );
+      return false;
     }
+    const translated = res.value.content.trim();
+    if (!translated) {
+      span.setStatus('error', 'empty answer');
+      ctx.error = new OrchestratorError('translate: empty answer', 'LLM_ERROR');
+      return false;
+    }
+    ctx.ragText = translated;
+    span.setAttribute('translated', true);
 
     return true;
   }

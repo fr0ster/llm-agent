@@ -8,6 +8,7 @@
  * Skipped when `queryExpansionEnabled` is false.
  */
 
+import { OrchestratorError } from '@mcp-abap-adt/llm-agent';
 import type { ISpan } from '../../tracer/types.js';
 import type { PipelineContext } from '../context.js';
 import type { IStageHandler } from '../stage-handler.js';
@@ -24,10 +25,17 @@ export class ExpandHandler implements IStageHandler {
     }
 
     const result = await ctx.queryExpander.expand(ctx.ragText, ctx.options);
-    if (result.ok) {
-      ctx.ragText = result.value;
-      span.setAttribute('expanded', true);
+    // Spec §10.5.6 L2: a failed expander is the stage's error, with its code.
+    if (!result.ok) {
+      span.setStatus('error', result.error.message);
+      ctx.error = new OrchestratorError(
+        `expand: ${result.error.message}`,
+        result.error.code,
+      );
+      return false;
     }
+    ctx.ragText = result.value;
+    span.setAttribute('expanded', true);
 
     return true;
   }
