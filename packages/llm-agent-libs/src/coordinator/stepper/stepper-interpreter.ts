@@ -6,6 +6,7 @@ import type {
   LlmUsage,
   RunIdentity,
 } from '@mcp-abap-adt/llm-agent';
+import { coordinatorError } from '../coordinator-error.js';
 
 /** Total cap on injected dependsOn-dataflow content per node — a backstop against
  *  context explosion. dependsOn already scopes it to predecessors (selective);
@@ -149,7 +150,15 @@ export class StepperInterpreter implements IStepperInterpreter {
       if (batch.length === 0) break; // dependency deadlock — shouldn't happen with valid plans
       const cap = Math.max(1, ctx.maxParallelSteps || 1);
       for (let i = 0; i < batch.length; i += cap) {
-        await Promise.all(batch.slice(i, i + cap).map(runNode));
+        // Settle the whole batch before failing, so no sibling keeps running
+        // unobserved; the first failure then fails the run (spec §10.5.7 C1).
+        const settled = await Promise.allSettled(
+          batch.slice(i, i + cap).map(runNode),
+        );
+        const failed = settled.find(
+          (r): r is PromiseRejectedResult => r.status === 'rejected',
+        );
+        if (failed) throw failed.reason;
       }
     }
 
@@ -190,11 +199,17 @@ async function gatherDepsContext(
   for (const depId of deps) {
     const sid = stepperIdByNode.get(depId);
     if (!sid) continue;
-    let entries: ReadonlyArray<{ content: string }> = [];
+    let entries: ReadonlyArray<{ content: string }>;
     try {
       entries = await knowledgeRag.list({ stepperId: sid });
-    } catch {
-      continue; // store unavailable for this dep → skip it
+    } catch (err) {
+      // Spec §10.5.7 C1: a dependent step never runs without its
+      // prerequisites' output — the store failing fails the step.
+      throw coordinatorError(
+        `stepper interpreter: knowledge store list for node '${node.id}' (prerequisite '${depId}') failed`,
+        err,
+        'COORDINATOR_STEP_FAILED',
+      );
     }
     for (const e of entries) parts.push(e.content);
   }

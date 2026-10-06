@@ -10,6 +10,7 @@ import {
   mergeOfferedTools,
   renderTaskSpec,
 } from '@mcp-abap-adt/llm-agent';
+import { coordinatorError } from '../coordinator-error.js';
 
 export interface CyclicReActExecutorDeps {
   llm: import('@mcp-abap-adt/llm-agent').ILlm;
@@ -128,17 +129,24 @@ export class CyclicReActExecutor implements IExecutor {
     // executor is the only component that can surface guidance to the model that
     // actually chooses tools. Bounded k + per-fact truncation keep the prompt
     // lean; large fetched artifacts stay in the blackboard for the finalizer.
-    let factsPrefix = '';
+    // Spec §10.5.7 C4: a failing knowledge store fails the step — never a run
+    // without the guidance it holds.
+    let facts: Awaited<ReturnType<typeof knowledgeRag.query>>;
     try {
-      const facts = await knowledgeRag.query(prompt, { k: 5 });
-      if (facts.length > 0) {
-        factsPrefix = `${'Known facts and guidance (from the shared knowledge store):\n'}${facts
-          .map((f) => `- ${truncateFact(f.content, 300)}`)
-          .join('\n')}\n\n`;
-      }
-    } catch {
-      // knowledge store unavailable — proceed without the prefix
+      facts = await knowledgeRag.query(prompt, { k: 5 });
+    } catch (err) {
+      throw coordinatorError(
+        'executor: knowledge store query failed',
+        err,
+        'COORDINATOR_STEP_FAILED',
+      );
     }
+    const factsPrefix =
+      facts.length > 0
+        ? `${'Known facts and guidance (from the shared knowledge store):\n'}${facts
+            .map((f) => `- ${truncateFact(f.content, 300)}`)
+            .join('\n')}\n\n`
+        : '';
 
     const messages: Message[] = [
       {
@@ -344,8 +352,15 @@ export class CyclicReActExecutor implements IExecutor {
             try {
               if (await knowledgeRag.hasArtifact(identityKey))
                 priorContent = await knowledgeRag.getArtifact(identityKey);
-            } catch {
-              // store unavailable → fall through to a live fetch
+            } catch (err) {
+              // Spec §10.5.7 C5: a configured artifact store that does not
+              // work fails the step — a live re-fetch would hide it (and
+              // repeat the call the dedup exists to avoid).
+              throw coordinatorError(
+                `executor: artifact store lookup for ${toolName} (${identityKey}) failed`,
+                err,
+                'COORDINATOR_STEP_FAILED',
+              );
             }
             if (priorContent !== undefined) {
               fetched.add(identityKey);

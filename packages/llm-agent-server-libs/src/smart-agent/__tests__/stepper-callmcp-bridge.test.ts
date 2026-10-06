@@ -185,7 +185,19 @@ test('bridge dispatched through buildStepperRoot: tool result reaches knowledgeR
   const stubLlm = {
     name: 'stub',
     model: 'stub',
-    async chat() {
+    async chat(messages?: { content?: unknown }[]) {
+      // The need-resolver's classifier shares this LLM: answer its call with a
+      // well-formed "no need" verdict (spec §10.5.7 C6 — malformed classifier
+      // output now fails the step instead of reading as "no need").
+      if (
+        String(messages?.[0]?.content ?? '').startsWith(
+          'You decide whether an assistant answer is INCOMPLETE',
+        )
+      )
+        return {
+          ok: true as const,
+          value: { content: '{"need":false,"capability":""}' },
+        };
       llmCalls++;
       if (llmCalls === 1) {
         return {

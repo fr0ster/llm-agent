@@ -101,13 +101,19 @@ function emptyToolsRag() {
   };
 }
 
-/** Tools rag with one read-only tool. */
+/** Tools rag with one read-only tool. Each tool is a complete LlmTool (a
+ *  description is required — the planner renders it; spec §10.5.7 C2 no longer
+ *  swallows a failure while rendering the tools section). */
 function toolsRagWith(
   tools: Record<string, { name: string; readOnly?: boolean }>,
 ) {
   return {
     async query() {
-      return Object.values(tools);
+      return Object.values(tools).map((t) => ({
+        description: '',
+        inputSchema: {},
+        ...t,
+      }));
     },
     lookup(name: string) {
       return tools[name] as never;

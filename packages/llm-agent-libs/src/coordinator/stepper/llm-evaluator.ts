@@ -9,6 +9,7 @@ import type {
   RunIdentity,
 } from '@mcp-abap-adt/llm-agent';
 import { renderTaskSpec } from '@mcp-abap-adt/llm-agent';
+import { coordinatorError } from '../coordinator-error.js';
 
 /**
  * Task-agnostic Evaluator prompt. It judges the INPUT (the sub-prompt) against
@@ -60,20 +61,26 @@ export class LlmEvaluator implements IEvaluator {
           .join('\n')}\n\n`
       : 'Known facts: (none yet)\n\n';
 
-    let toolsBlock = '';
+    // Spec §10.5.7 C3: a failing tools store fails the step — never a verdict
+    // judged without the tools the agent could use.
+    let tools: Awaited<ReturnType<typeof input.toolsRag.query>>;
     try {
-      const tools = await input.toolsRag.query(input.prompt, 15);
-      if (tools.length > 0) {
-        toolsBlock =
-          `Available tools (the agent can call these to obtain data):\n` +
+      tools = await input.toolsRag.query(input.prompt, 15);
+    } catch (err) {
+      throw coordinatorError(
+        'evaluator: tools store query failed',
+        err,
+        'COORDINATOR_STEP_FAILED',
+      );
+    }
+    const toolsBlock =
+      tools.length > 0
+        ? `Available tools (the agent can call these to obtain data):\n` +
           tools
             .map((t) => `- ${t.name}: ${truncate(t.description ?? '', 200)}`)
             .join('\n') +
-          '\n\n';
-      }
-    } catch {
-      // toolsRag unavailable — omit gracefully (fewer obtainable options known)
-    }
+          '\n\n'
+        : '';
 
     const taskBlock = input.taskSpec
       ? `${renderTaskSpec(input.taskSpec)}\n\n`

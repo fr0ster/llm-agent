@@ -258,7 +258,7 @@ test('planner renders prompt correctly when toolsRag returns empty', async () =>
   assert.match(userMsg, /some task/);
 });
 
-test('planner renders prompt correctly when toolsRag throws', async () => {
+test('planner rejects when toolsRag throws — no plan without the tools section (spec §10.5.7 C2)', async () => {
   const { obj, calls } = llm(
     '{"objective":"o","nodes":[{"id":"a","goal":"x"}]}',
   );
@@ -273,17 +273,23 @@ test('planner renders prompt correctly when toolsRag throws', async () => {
     },
   };
 
-  await planner.plan({
-    prompt: 'some task',
-    knowledgeRag: ragWith([]) as never,
-    toolsRag: throwingToolsRag as never,
-    parentPath: ['root'],
-    identity: { traceId: 't', turnId: 'u', sessionId: 's', stepperId: 'n0' },
-  });
-
-  const userMsg =
-    calls[0].messages.find((m) => m.role === 'user')?.content ?? '';
-  // Graceful: no crash, no tools section
-  assert.doesNotMatch(userMsg, /Available tools/);
-  assert.match(userMsg, /some task/);
+  await assert.rejects(
+    () =>
+      planner.plan({
+        prompt: 'some task',
+        knowledgeRag: ragWith([]) as never,
+        toolsRag: throwingToolsRag as never,
+        parentPath: ['root'],
+        identity: {
+          traceId: 't',
+          turnId: 'u',
+          sessionId: 's',
+          stepperId: 'n0',
+        },
+      }),
+    (e: unknown) =>
+      (e as { code?: string }).code === 'COORDINATOR_PLAN_FAILED' &&
+      /rag unavailable/.test((e as Error).message),
+  );
+  assert.equal(calls.length, 0, 'the planner LLM is not called');
 });
