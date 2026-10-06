@@ -1,6 +1,13 @@
 // Compile-time assertions only: listed in tsconfig.typecheck.json, run by `npm run typecheck`.
-import type { IReranker } from '@mcp-abap-adt/llm-agent';
+import type {
+  ICollectionProfile,
+  IReranker,
+  ToolItem,
+} from '@mcp-abap-adt/llm-agent';
+import { ItemPool } from '../item-pool.js';
+import { MaxScoreCollapse } from '../max-score-collapse.js';
 import { mcpToolsVariants } from '../mcp-tools-variants.js';
+import { SharedItemsProfile } from '../shared-items-profile.js';
 
 declare const reranker: IReranker;
 export const _ok = mcpToolsVariants.facetedRerank({ reranker, poolItems: 20 });
@@ -22,3 +29,16 @@ export const _gone2 = mcpToolsVariants.facetedCohere;
 // biome-ignore format: one statement per @ts-expect-error line (a wrapped call moves the error off the covered line)
 // @ts-expect-error onFailure is not an option: a failed rerank is RERANK_ERROR (spec §9.3, D71)
 export const _noOnFailure = mcpToolsVariants.facetedRerank({ reranker, poolItems: 20, onFailure: 'stage1' });
+
+const shared = new SharedItemsProfile({
+  maxRecordsPerItem: 2,
+  pool: new ItemPool(5),
+  collapse: new MaxScoreCollapse(),
+});
+// @ts-expect-error a shared-items profile is not a tools profile
+export const _notTools: ICollectionProfile<ToolItem> = shared;
+// pool is optional: absent → ItemPool(), the caller's k (D56)
+export const _sharedNoPool = new SharedItemsProfile({
+  maxRecordsPerItem: 2,
+  collapse: new MaxScoreCollapse(),
+});

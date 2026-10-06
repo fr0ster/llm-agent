@@ -356,7 +356,14 @@ export class StagedRetrieval implements IRetrievalStrategy {
     poolK: number,
   ): Promise<Result<Hydrated[], RagError>> {
     const o = this.options;
-    const sources = await o.sources.sources(ctx.options);
+    // The selector may reject (e.g. a consumer's authorization lookup behind it):
+    // the retrieval's Result error with its code, never a rejected query.
+    let sources: readonly RetrievalSource[];
+    try {
+      sources = await o.sources.sources(ctx.options);
+    } catch (err) {
+      return { ok: false, error: toRagError(err) };
+    }
     const byName = new Map(sources.map((s) => [s.name, s] as const));
     ctx.stats.sources = sources.map((s) => s.name);
     // A hit belongs to the source it came from, by name (D50): two sources with

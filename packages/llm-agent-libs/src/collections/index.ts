@@ -17,6 +17,11 @@ export {
 } from './mcp-tools-variants.js';
 export { checkRerankOutput } from './rerank-check.js';
 export {
+  SHARED_ITEMS_PROFILE_NAME,
+  SharedItemsProfile,
+  type SharedItemsProfileOptions,
+} from './shared-items-profile.js';
+export {
   CharsPerTokenEstimator,
   ToolDefinitionSizeEstimator,
 } from './size-estimators.js';
