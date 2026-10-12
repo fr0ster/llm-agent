@@ -24,8 +24,8 @@
     "test": "node --import tsx/esm --test --test-reporter=spec 'src/**/*.test.ts'"
   },
   "dependencies": {
-    "pg": "^8.23.0",
-    "pg-connection-string": "^2.14.0"
+    "pg": "^8.23.1",
+    "pg-connection-string": "^2.14.1"
   },
   "devDependencies": {
     "@types/pg": "^8.23.1"
