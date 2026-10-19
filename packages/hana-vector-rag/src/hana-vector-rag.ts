@@ -11,6 +11,7 @@ import type {
 import {
   assertNonEmptyFilter,
   FallbackQueryEmbedding,
+  INVALID_ARGUMENT,
   type IRagFilteredDeleter,
   type IRagScanner,
   matchesRagIdentity,
@@ -24,7 +25,7 @@ import { resolveHanaConnectArgs } from './connection.js';
 import { SHARED_LAYOUT_NOT_DEPLOYED } from './error-codes.js';
 import { resolveHanaModule } from './hana-module.js';
 import { resolveLayout } from './layout.js';
-import { decodeLob } from './lob.js';
+import { decodeLob, withId } from './lob.js';
 import { deleteWhere, scanPage } from './scan-delete.js';
 import { assertCollectionName } from './schema.js';
 import { checkSharedTables } from './shared-check.js';
@@ -187,7 +188,8 @@ export class HanaVectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
   private failure(err: unknown, code: string): RagError {
     return err instanceof RagError &&
       (err.code === SHARED_LAYOUT_NOT_DEPLOYED ||
-        err.code === 'HEALTH_CHECK_ERROR')
+        err.code === 'HEALTH_CHECK_ERROR' ||
+        err.code === 'ABORTED')
       ? err
       : new RagError(String(err), code);
   }
@@ -306,6 +308,15 @@ export class HanaVectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
   ): Promise<Result<RagScanPage, RagError>> {
     if (options?.signal?.aborted)
       return { ok: false, error: new RagError('Aborted', 'ABORTED') };
+    const size = opts?.pageSize;
+    if (size !== undefined && !(Number.isInteger(size) && size > 0))
+      return {
+        ok: false,
+        error: new RagError(
+          'scan pageSize must be a positive integer',
+          INVALID_ARGUMENT,
+        ),
+      };
     try {
       await this.maybeEnsureSchema();
       const client = await this.client();
@@ -427,15 +438,4 @@ export class HanaVectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
         this.upsertPrecomputed(text, vector, { ...metadata, id }),
     };
   }
-}
-
-/**
- * upsert keeps the id in its own column and out of the JSON, so a read puts it
- * back: readers find a record's id in its metadata, as every other store
- * returns it (tool selection's toolNameFromRecord keys on it).
- */
-function withId(row: Record<string, unknown>): RagMetadata {
-  const raw = decodeLob(row.metadata);
-  const parsed = raw ? (JSON.parse(raw) as RagMetadata) : {};
-  return { ...parsed, id: String(row.id) };
 }

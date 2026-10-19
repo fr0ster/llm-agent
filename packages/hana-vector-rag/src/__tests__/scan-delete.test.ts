@@ -132,6 +132,84 @@ for (const layout of ['shared', 'per-collection'] as const) {
       assert.ok(hana.statements.some((s) => s.endsWith('LIMIT 2')));
     });
 
+    it('takes the id from the ID column, not from the metadata JSON', async () => {
+      const hana = storingHana({ dimension: DIM });
+      const store = open(hana, 'kb', layout);
+      const row = {
+        ID: 'real',
+        TEXT: 't',
+        VECTOR: Array(DIM).fill(0),
+        METADATA: JSON.stringify({ id: 'other', userId: 'u1' }),
+      };
+      if (layout === 'shared')
+        hana.insertRow('RAG_DOCUMENTS', { ...row, COLLECTION: 'kb' });
+      else hana.insertRow('kb', row);
+      const r = await store.scan();
+      assert.ok(r.ok);
+      assert.equal(r.value.records[0].id, 'real');
+      assert.equal(r.value.records[0].metadata.id, 'real');
+    });
+
+    it('refuses a pageSize that is not a positive integer, before any SQL', async () => {
+      const hana = storingHana({ dimension: DIM });
+      const store = open(hana, 'kb', layout);
+      const before = hana.statements.length;
+      for (const pageSize of [Number.NaN, Infinity, 0, -1, 2.5]) {
+        const r = await store.scan({ pageSize });
+        assert.ok(!r.ok);
+        assert.equal(r.error.code, INVALID_ARGUMENT);
+      }
+      assert.equal(hana.statements.length, before);
+    });
+
+    it('an aborted signal is ABORTED for scan and deleteWhere', async () => {
+      const hana = storingHana({ dimension: DIM });
+      const store = open(hana, 'kb', layout);
+      const signal = AbortSignal.abort();
+      const s = await store.scan(undefined, { signal });
+      assert.ok(!s.ok);
+      assert.equal(s.error.code, 'ABORTED');
+      const d = await store.deleteWhere({ userId: 'u1' }, { signal });
+      assert.ok(!d.ok);
+      assert.equal(d.error.code, 'ABORTED');
+    });
+
+    it('deleteWhere aborted between batches is ABORTED and says how many went', async () => {
+      const hana = storingHana({ dimension: DIM });
+      const ctl = new AbortController();
+      const client = {
+        ...hana.client,
+        exec: async (sql: string, params?: readonly unknown[]) => {
+          const r = await hana.client.exec(sql, params);
+          if (sql.startsWith('DELETE')) ctl.abort();
+          return r;
+        },
+      };
+      if (layout === 'per-collection') hana.createCollectionTable('kb');
+      const store = new HanaVectorRag(
+        {
+          collectionName: 'kb',
+          dimension: DIM,
+          credential: staticLogin('u', 'p'),
+          layout,
+          autoCreateSchema: false,
+          embedder,
+        },
+        client,
+      ) as Store;
+      for (let i = 0; i < 1500; i++) {
+        await put(store, `id${String(i).padStart(5, '0')}`, { userId: 'u1' });
+      }
+      const d = await store.deleteWhere(
+        { userId: 'u1' },
+        { signal: ctl.signal },
+      );
+      assert.ok(!d.ok);
+      assert.equal(d.error.code, 'ABORTED');
+      assert.match(d.error.message, /1000/);
+      assert.equal((await scanAll(store)).length, 500);
+    });
+
     it('a full last page is followed by an empty one', async () => {
       const hana = storingHana({ dimension: DIM });
       const store = open(hana, 'kb', layout);
