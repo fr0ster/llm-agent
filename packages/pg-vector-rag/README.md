@@ -87,6 +87,8 @@ follow the usual rule `[a-zA-Z_][a-zA-Z0-9_]{0,62}`; HDI namespaces do not apply
 `autoCreateSchema` is `false` by default in `shared`; setting it to `true` explicitly throws
 `RagError` `INVALID_CONFIG` at construction. The `vector` extension is then yours to install.
 
+The error codes are exported as constants — `SHARED_LAYOUT_NOT_DEPLOYED`, `INVALID_CONFIG`, `INVALID_VECTOR` — so a consumer can branch on `error.code === SHARED_LAYOUT_NOT_DEPLOYED` without a string literal. A `layout` other than `'per-collection'` or `'shared'` is `INVALID_CONFIG` at construction.
+
 ### Deploying the tables
 
 The package ships `ddl/shared-layout.sql` (published with it): `CREATE EXTENSION IF NOT EXISTS
@@ -102,8 +104,12 @@ generate the script:
 ```ts
 import { sharedLayoutSql } from '@mcp-abap-adt/pg-vector-rag';
 
-sharedLayoutSql({ dimension: 1024 }); // documentsTable, catalogTable, schema are optional
+sharedLayoutSql({ dimension: 1024 }); // documentsTable, catalogTable are optional
 ```
+
+`sharedLayoutSql` has no `schema` option and its statements are unqualified. To deploy into a schema
+set by the connection's `schema`, run the script with that schema first on the `search_path`
+(`SET search_path TO myschema;` before the script) or qualify the table names by hand.
 
 On its first operation (lazily; a success is remembered, a failure is retried) a store or provider
 checks that the tables exist and that the `vector` column has exactly the configured `dimension`.
@@ -126,7 +132,7 @@ names the lengths).
   the rows.
 - `deleteCollection` deletes the collection's documents first, then its record (the per-collection
   layout deletes the record first); `clearAll` deletes only that collection's rows.
-
+- **A handle is not tied to its collection.** In `shared`, a handle obtained before `deleteCollection` can still write: it only writes rows with its `collection` value, which no longer needs a record. Those rows become an orphan — listed by `listCollections`, and `createCollection` of that name returns `OrphanStoreError` until `adoptExisting: true` or the rows are removed. (In `per-collection` such a write fails, because the table is gone.) Consumers must drop the handles of a deleted collection.
 
 ## License
 

@@ -87,6 +87,8 @@ without a namespace.
 `autoCreateSchema` is `false` by default in `shared`; setting it to `true` explicitly throws
 `RagError` `INVALID_CONFIG` at construction.
 
+The error codes are exported as constants — `SHARED_LAYOUT_NOT_DEPLOYED`, `INVALID_CONFIG`, `INVALID_VECTOR` — so a consumer can branch on `error.code === SHARED_LAYOUT_NOT_DEPLOYED` without a string literal. A `layout` other than `'per-collection'` or `'shared'` is `INVALID_CONFIG` at construction.
+
 ### Deploying the tables
 
 The package ships `ddl/` (published with it):
@@ -95,7 +97,7 @@ The package ships `ddl/` (published with it):
 - `shared-layout.sql` — the same tables as plain SQL (catalog first), for a classic schema or
   manual use.
 
-Copy the three HDI files into the `src/` of your db module (next to your own artifacts) and run
+Copy the two `.hdbtable` files into the `src/` of your db module (next to your own artifacts) and **merge** the `hdbtable` plugin entry of the shipped `.hdiconfig` into the db module's existing `.hdiconfig` — do not copy it over your own file, which usually lists more plugins (create it from the shipped one only if the module has none). Then run
 `@sap/hdi-deploy` with the container's **design-time user** (`hdi_user`); on Cloud Foundry that is
 the deployer app bound to the HDI service instance. The application itself is bound to the same
 instance and connects as the **runtime user** (`..._RT`), which only needs `SELECT`, `INSERT`,
@@ -141,7 +143,7 @@ names the lengths).
   the rows.
 - `deleteCollection` deletes the collection's documents first, then its record (the per-collection
   layout deletes the record first); `clearAll` deletes only that collection's rows.
-
+- **A handle is not tied to its collection.** In `shared`, a handle obtained before `deleteCollection` can still write: it only writes rows with its `COLLECTION` value, which no longer needs a record. Those rows become an orphan — listed by `listCollections`, and `createCollection` of that name returns `OrphanStoreError` until `adoptExisting: true` or the rows are removed. (In `per-collection` such a write fails, because the table is gone.) Consumers must drop the handles of a deleted collection.
 
 ## Connections, and `clientFactory` for per-session hydration
 
