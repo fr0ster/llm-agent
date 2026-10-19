@@ -13,6 +13,7 @@ import {
   scanDeleteConformanceCases,
 } from '@mcp-abap-adt/llm-agent/testing/scan-delete-conformance';
 import { QdrantRag } from '../qdrant-rag.js';
+import { QdrantRagProvider } from '../qdrant-rag-provider.js';
 import { scrollFilter } from '../scan-delete.js';
 import { type QdrantStub, startQdrantStub } from './qdrant-stub.js';
 
@@ -38,8 +39,8 @@ async function open(): Promise<QdrantRag> {
 }
 
 // The shared kit over QdrantRag and a storing stub of the REST API; a second
-// QdrantRag on another collection of the same stub is the `sibling`. No
-// `catalog` seam here (Task 7).
+// QdrantRag on another collection of the same stub is the `sibling`; a
+// QdrantRagProvider over the same stub is the `catalog`.
 describe('QdrantRag — scan/delete conformance (stub)', () => {
   for (const c of scanDeleteConformanceCases) {
     it(c.name, async (t) => {
@@ -47,6 +48,27 @@ describe('QdrantRag — scan/delete conformance (stub)', () => {
         await c.run(async () => ({
           store: async () => (await open()) as ScanDeleteStore,
           sibling: async () => (await open()) as ScanDeleteStore,
+          catalog: async () => {
+            const provider = new QdrantRagProvider({
+              name: 'qdrant',
+              url: stub.baseUrl,
+              embedder,
+            });
+            return {
+              provider,
+              async create(name) {
+                // The store the record names must exist, as the provider
+                // would have created it; the record itself goes through
+                // createCollection.
+                const r = await provider.createCollection(name, {
+                  scope: 'user',
+                  userId: 'u1',
+                  attributes: { seeded: true },
+                });
+                if (!r.ok) throw r.error;
+              },
+            };
+          },
         }));
       } catch (err) {
         if (!isScanDeleteCaseSkipped(err)) throw err;

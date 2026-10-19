@@ -11,7 +11,7 @@ import type { HanaClient } from '../hana-vector-rag.js';
  * ... DESC` and `LIMIT` cut; `UPSERT ... WITH PRIMARY KEY` replaces by the
  * key and `INSERT` refuses a second row for one. It parses only the shapes
  * those statements use — `SELECT [DISTINCT] ... FROM ... [WHERE a = b | a > b | a IN (?, ...)
- * AND ...] [ORDER BY ...] [LIMIT n]`, `UPSERT`, `INSERT INTO`, `DELETE FROM` — and
+ * AND ...] [ORDER BY ...] [LIMIT n]`, `UPSERT`, `INSERT INTO`, `DELETE FROM`, `UPDATE ... SET c = [COALESCE(?, c)] ... WHERE` — and
  * throws on anything else, DDL included, so a store change that emits new SQL
  * fails loudly here instead of being silently mis-evaluated.
  */
@@ -138,7 +138,13 @@ type Statement =
       columns: string[];
       values: Operand[];
     }
-  | { kind: 'delete'; table: TableRef; where: Condition[] };
+  | { kind: 'delete'; table: TableRef; where: Condition[] }
+  | {
+      kind: 'update';
+      table: TableRef;
+      sets: Array<{ column: string; value: Operand; fallback?: Operand }>;
+      where: Condition[];
+    };
 
 class Parser {
   private pos = 0;
@@ -169,6 +175,30 @@ class Parser {
       this.expectWord('INTO');
       const table = this.tableRef();
       return { kind: 'insert', table, ...this.columnsAndValues() };
+    }
+    if (this.acceptWord('UPDATE')) {
+      const table = this.tableRef();
+      this.expectWord('SET');
+      const sets: Array<{
+        column: string;
+        value: Operand;
+        fallback?: Operand;
+      }> = [];
+      do {
+        const column = this.identifier();
+        this.expectPunct('=');
+        if (this.acceptWord('COALESCE')) {
+          this.expectPunct('(');
+          const value = this.operand();
+          this.expectPunct(',');
+          const fallback = this.operand();
+          this.expectPunct(')');
+          sets.push({ column, value, fallback });
+        } else {
+          sets.push({ column, value: this.operand() });
+        }
+      } while (this.acceptPunct(','));
+      return { kind: 'update', table, sets, where: this.where() };
     }
     if (this.acceptWord('DELETE')) {
       this.expectWord('FROM');
@@ -649,6 +679,28 @@ export function storingHana(opts: {
         });
         write(table, toRow(table, given), stmt.kind);
         return { rows: [], rowCount: 1 };
+      }
+      case 'update': {
+        const table = resolve(stmt.table);
+        let n = 0;
+        for (const r of table.rows) {
+          if (!matches(table, r, stmt.where, params)) continue;
+          const next: Row = { ...r };
+          for (const set of stmt.sets) {
+            const v = operandValue(set.value, table, r, params);
+            next[column(table, set.column)] =
+              set.fallback && v === null
+                ? operandValue(set.fallback, table, r, params)
+                : v;
+          }
+          // Key columns are never set here; a changed key would need a re-check.
+          for (const k of table.key)
+            if (next[k] !== r[k])
+              throw new Error('storing-hana: UPDATE of a key column');
+          Object.assign(r, next);
+          n++;
+        }
+        return { rows: [], rowCount: n };
       }
       case 'delete': {
         const table = resolve(stmt.table);

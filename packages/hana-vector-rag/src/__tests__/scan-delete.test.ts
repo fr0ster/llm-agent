@@ -17,6 +17,7 @@ import {
   scanDeleteConformanceCases,
 } from '@mcp-abap-adt/llm-agent/testing/scan-delete-conformance';
 import { HanaVectorRag } from '../hana-vector-rag.js';
+import { HanaVectorRagProvider } from '../hana-vector-rag-provider.js';
 import { perCollectionStoreSql, sharedStoreSql } from '../store-sql.js';
 import { type StoringHana, storingHana } from './storing-hana.js';
 
@@ -309,9 +310,41 @@ describe('HanaVectorRag scan/deleteWhere (shared check)', () => {
 for (const layout of ['shared', 'per-collection'] as const) {
   describe(`scan/delete conformance — HanaVectorRag ${layout} (storing fake)`, () => {
     const subject = async (): Promise<ScanDeleteSubject> => {
-      const hana = storingHana({ dimension: DIM });
+      const hana = storingHana({
+        dimension: DIM,
+        // The per-collection layout keeps its records in the default catalog.
+        ...(layout === 'per-collection'
+          ? { catalogTable: 'rag_collection_catalog' }
+          : {}),
+      });
       return {
         store: async () => open(hana, 'kit', layout),
+        catalog: async () => {
+          const provider = new HanaVectorRagProvider({
+            name: 'hana',
+            embedder,
+            connection: {
+              collectionName: '__unused',
+              dimension: DIM,
+              credential: staticLogin('u', 'p'),
+            },
+            layout,
+            ...(layout === 'per-collection' ? { autoCreateSchema: false } : {}),
+            clientFactory: () => hana.client,
+          });
+          return {
+            provider,
+            async create(name) {
+              if (layout === 'per-collection') hana.createCollectionTable(name);
+              const r = await provider.createCollection(name, {
+                scope: 'user',
+                userId: 'u1',
+                attributes: { seeded: true },
+              });
+              if (!r.ok) throw r.error;
+            },
+          };
+        },
         ...(layout === 'shared'
           ? { sibling: async () => open(hana, 'sib', layout) }
           : {}),

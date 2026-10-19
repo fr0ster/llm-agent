@@ -15,6 +15,8 @@ import { deleteRecordSql, selectRecordsSql } from './catalog.js';
 import {
   catalogRecordExists,
   duplicateRefusal,
+  type PreparedCatalogPatch,
+  updateCatalogRecord,
   writeCatalogRecord,
 } from './catalog-record.js';
 import type { HanaClient } from './hana-vector-rag.js';
@@ -131,6 +133,29 @@ export class SharedProviderOps {
       return {
         ok: false,
         error: new CatalogRecordDeleteError(name, String(err)),
+      };
+    }
+  }
+
+  /** The memoised check first (its failure is returned unchanged), then one UPDATE. */
+  async update(
+    client: HanaClient,
+    storeName: string,
+    patch: PreparedCatalogPatch,
+  ): Promise<Result<void, RagError>> {
+    const ready = await this.check(client);
+    if (!ready.ok) return ready;
+    try {
+      return await updateCatalogRecord(
+        client,
+        this.cfg.catalogTable,
+        storeName,
+        patch,
+      );
+    } catch (err) {
+      return {
+        ok: false,
+        error: new RagError(String(err), 'RAG_UPDATE_ERROR'),
       };
     }
   }

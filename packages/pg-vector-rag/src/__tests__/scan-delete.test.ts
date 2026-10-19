@@ -17,6 +17,7 @@ import {
   scanDeleteConformanceCases,
 } from '@mcp-abap-adt/llm-agent/testing/scan-delete-conformance';
 import { PgVectorRag } from '../pg-vector-rag.js';
+import { PgVectorRagProvider } from '../pg-vector-rag-provider.js';
 import { perCollectionStoreSql, sharedStoreSql } from '../store-sql.js';
 import { type StoringPg, storingPg } from './storing-pg.js';
 
@@ -335,6 +336,26 @@ for (const layout of ['shared', 'per-collection'] as const) {
       const pg = fake();
       return {
         store: async () => open(pg, 'kit', layout),
+        catalog: async () => {
+          const provider = new PgVectorRagProvider({
+            name: 'pg',
+            embedder,
+            connection: { collectionName: '__unused', dimension: DIM },
+            layout,
+            clientFactory: () => pg,
+          });
+          return {
+            provider,
+            async create(name) {
+              const r = await provider.createCollection(name, {
+                scope: 'user',
+                userId: 'u1',
+                attributes: { seeded: true },
+              });
+              if (!r.ok) throw r.error;
+            },
+          };
+        },
         ...(layout === 'shared'
           ? { sibling: async () => open(pg, 'sib', layout) }
           : {}),

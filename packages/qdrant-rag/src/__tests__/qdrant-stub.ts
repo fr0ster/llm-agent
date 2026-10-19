@@ -17,6 +17,8 @@ export type QdrantStub = {
   failOn?: (r: StubRequest) => boolean;
   /** Runs inside a points PUT to the catalog, before it is applied — a racing writer. */
   beforeCatalogWrite?: () => void;
+  /** Runs inside a set-payload request before it is applied — a racing delete. */
+  beforePayloadWrite?: () => void;
   close(): Promise<void>;
 };
 
@@ -80,7 +82,7 @@ export async function startQdrantStub(
       return;
     }
     const pts = r.path.match(
-      /^\/collections\/([^/]+)\/points(\/scroll|\/delete|\/search)?$/,
+      /^\/collections\/([^/]+)\/points(\/scroll|\/delete|\/search|\/payload)?$/,
     );
     if (pts) {
       const name = pts[1];
@@ -135,6 +137,18 @@ export async function startQdrantStub(
             next_page_offset: ids[start + limit] ?? null,
           },
         });
+        return;
+      }
+      if (r.method === 'POST' && action === '/payload') {
+        // Set payload by point id: keys are merged into an existing point; an
+        // id that is not there is skipped, never created (Qdrant's behaviour).
+        stub?.beforePayloadWrite?.();
+        const set = (body.payload ?? {}) as Record<string, unknown>;
+        for (const id of (body.points as string[] | undefined) ?? []) {
+          const p = c.points.get(id);
+          if (p) Object.assign(p.payload, set);
+        }
+        reply(200, { result: { status: 'completed' } });
         return;
       }
       if (r.method === 'POST' && action === '/delete') {

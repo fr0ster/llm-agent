@@ -2,9 +2,11 @@ import type { IApiKeyCredential } from '@mcp-abap-adt/interfaces-auth';
 import type {
   IIdStrategy,
   IRag,
+  IRagCatalogUpdater,
   IRagEditor,
   IRetrievalEmbedder,
   RagCatalogDescription,
+  RagCatalogPatch,
   RagCatalogRow,
   RagCollectionOwner,
   RagCollectionRecord,
@@ -17,7 +19,9 @@ import {
   DuplicateCollectionError,
   describeRagCatalogRows,
   encodeRagAttributes,
+  INVALID_ARGUMENT,
   OrphanStoreError,
+  RAG_COLLECTION_NOT_FOUND,
   RagError,
   type Result,
   ragOwnerKeys,
@@ -56,7 +60,10 @@ export interface QdrantRagProviderConfig {
   catalogCollection?: string;
 }
 
-export class QdrantRagProvider extends BaseRagProvider {
+export class QdrantRagProvider
+  extends BaseRagProvider
+  implements IRagCatalogUpdater
+{
   readonly name: string;
   readonly kind = 'vector';
   readonly editable: boolean;
@@ -190,6 +197,82 @@ export class QdrantRagProvider extends BaseRagProvider {
           err instanceof RagError
             ? err
             : new RagError(String(err), 'RAG_LIST_ERROR'),
+      };
+    }
+  }
+
+  /**
+   * Updates the display name and/or replaces the attributes of one record.
+   * An empty patch is refused before any request.
+   *
+   * The record is read first and, when absent, RAG_COLLECTION_NOT_FOUND is
+   * returned without a write: set-payload addresses the point by id and never
+   * creates one, but a missing id is a silent no-op in Qdrant, so it cannot
+   * tell "updated" from "nothing there". The read and the write are two
+   * requests, so a delete between them is possible; the record is therefore
+   * read once more after the write and, if it is gone, the call reports
+   * RAG_COLLECTION_NOT_FOUND rather than success (a delete that lands after
+   * that second read is an update followed by a delete, which is a valid order).
+   */
+  async updateCollection(
+    storeName: string,
+    patch: RagCatalogPatch,
+  ): Promise<Result<void, RagError>> {
+    if (patch.collectionName === undefined && patch.attributes === undefined) {
+      return {
+        ok: false,
+        error: new RagError(
+          'updateCollection needs collectionName or attributes',
+          INVALID_ARGUMENT,
+        ),
+      };
+    }
+    const notFound: Refusal = {
+      ok: false,
+      error: new RagError(
+        `no catalog record for store '${storeName}'`,
+        RAG_COLLECTION_NOT_FOUND,
+      ),
+    };
+    try {
+      if (!(await this.readRecord(storeName))) return notFound;
+      const payload: Record<string, unknown> = {
+        ...(patch.collectionName === undefined
+          ? {}
+          : { collection_name: patch.collectionName }),
+        ...(patch.attributes === undefined
+          ? {}
+          : {
+              attributes_json: encodeRagAttributes(
+                patch.attributes as Parameters<typeof encodeRagAttributes>[0],
+              ),
+            }),
+      };
+      const res = await this.request(
+        `/collections/${this.catalog}/points/payload?wait=true`,
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            payload,
+            points: [await deterministicUUID(storeName)],
+          }),
+        },
+      );
+      if (!res.ok) {
+        throw new RagError(
+          `Qdrant catalog update failed: HTTP ${res.status} ${await res.text()}`,
+          'RAG_UPDATE_ERROR',
+        );
+      }
+      if (!(await this.readRecord(storeName))) return notFound;
+      return { ok: true, value: undefined };
+    } catch (err) {
+      return {
+        ok: false,
+        error:
+          err instanceof RagError
+            ? err
+            : new RagError(String(err), 'RAG_UPDATE_ERROR'),
       };
     }
   }

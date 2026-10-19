@@ -1,4 +1,5 @@
 import type {
+  RagCatalogPatch,
   RagCollectionRecord,
   RagProviderCreateCollectionOptions,
   Result,
@@ -6,10 +7,16 @@ import type {
 import {
   DuplicateCollectionError,
   encodeRagAttributes,
-  type RagError,
+  INVALID_ARGUMENT,
+  RAG_COLLECTION_NOT_FOUND,
+  RagError,
   ragOwnerKeys,
 } from '@mcp-abap-adt/llm-agent';
-import { insertRecordSql, recordExistsSql } from './catalog.js';
+import {
+  insertRecordSql,
+  recordExistsSql,
+  updateRecordSql,
+} from './catalog.js';
 import type { PgClient } from './pg-vector-rag.js';
 
 /** The refusal for a collection that already has a record. */
@@ -72,4 +79,65 @@ export async function writeCatalogRecord(
     }
     return onFailure(err);
   }
+}
+
+/** A patch as the UPDATE binds it: NULL keeps the column. */
+export interface PreparedCatalogPatch {
+  collectionName: string | null;
+  attributesJson: string | null;
+}
+
+/** Refuses an empty patch (no key, or only undefined values) before any call. */
+export function prepareCatalogPatch(
+  patch: RagCatalogPatch,
+): Result<PreparedCatalogPatch, RagError> {
+  if (patch.collectionName === undefined && patch.attributes === undefined) {
+    return {
+      ok: false,
+      error: new RagError(
+        'updateCollection needs collectionName or attributes',
+        INVALID_ARGUMENT,
+      ),
+    };
+  }
+  return {
+    ok: true,
+    value: {
+      collectionName: patch.collectionName ?? null,
+      // The same encoding the create path writes.
+      attributesJson: encodeRagAttributes(
+        patch.attributes as Parameters<typeof encodeRagAttributes>[0],
+      ),
+    },
+  };
+}
+
+export function collectionNotFound(storeName: string): {
+  ok: false;
+  error: RagError;
+} {
+  return {
+    ok: false,
+    error: new RagError(
+      `no catalog record for store '${storeName}'`,
+      RAG_COLLECTION_NOT_FOUND,
+    ),
+  };
+}
+
+/** One UPDATE; zero rows updated is a missing record, and nothing is created. */
+export async function updateCatalogRecord(
+  client: PgClient,
+  table: string,
+  storeName: string,
+  patch: PreparedCatalogPatch,
+  schema?: string,
+): Promise<Result<void, RagError>> {
+  const { rowCount } = await client.query(updateRecordSql(table, schema), [
+    patch.collectionName,
+    patch.attributesJson,
+    storeName,
+  ]);
+  if (!rowCount) return collectionNotFound(storeName);
+  return { ok: true, value: undefined };
 }

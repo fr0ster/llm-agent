@@ -109,6 +109,8 @@ const RECORD_INSERT =
   /^INSERT INTO ((?:"[^"]+"[.])?"[^"]+") \(store_name, collection_name, scope, user_id, session_id, attributes_json\) VALUES \(\$1, \$2, \$3, \$4, \$5, \$6\)$/;
 const RECORD_SELECT =
   /^SELECT store_name AS "storeName", collection_name AS "name", scope AS "scope", user_id AS "userId", session_id AS "sessionId", attributes_json AS "attributesJson" FROM ((?:"[^"]+"[.])?"[^"]+") ORDER BY store_name$/;
+const RECORD_UPDATE =
+  /^UPDATE ((?:"[^"]+"[.])?"[^"]+") SET collection_name = COALESCE\(\$1, collection_name\), attributes_json = COALESCE\(\$2, attributes_json\) WHERE store_name = \$3$/;
 const RECORD_NAMES = /^SELECT store_name AS "s" FROM ((?:"[^"]+"[.])?"[^"]+")$/;
 const RECORD_DELETE =
   /^DELETE FROM ((?:"[^"]+"[.])?"[^"]+") WHERE store_name = \$1$/;
@@ -305,6 +307,16 @@ export function storingPg(opts: { sharedDimension?: number } = {}): StoringPg {
             attributesJson: p[5],
           }));
         return { rows: out, rowCount: out.length };
+      }
+      const update = sql.match(RECORD_UPDATE);
+      if (update) {
+        // Columns: store_name, collection_name, scope, user_id, session_id, attributes_json.
+        const row = recordsOf(update[1]).get(String(params[2]));
+        if (!row) return { rows: [], rowCount: 0 };
+        // COALESCE: a NULL parameter keeps the column.
+        if (params[0] !== null) row[1] = params[0];
+        if (params[1] !== null) row[5] = params[1];
+        return { rows: [], rowCount: 1 };
       }
       const names = sql.match(RECORD_NAMES);
       if (names) {
