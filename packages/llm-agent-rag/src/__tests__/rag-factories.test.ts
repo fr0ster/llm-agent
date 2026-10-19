@@ -108,3 +108,69 @@ describe('makeRag — an asymmetric retrieval embedder', () => {
     assert.deepEqual(seen, ['document:stored text', 'query:search text']);
   });
 });
+
+// makeRag has no injected-client seam (it builds the store from config and the
+// store connects lazily), so emitted SQL is not observable here. The layout and
+// documentsTable reach the store's constructor instead, which refuses
+// `layout: 'shared'` with an explicit `autoCreateSchema: true` — a refusal that
+// can only come from the store having been handed the layout.
+describe('makeRag: layout and documentsTable reach the SQL stores', () => {
+  const login = {
+    kind: 'secret-login' as const,
+    principal: 'u',
+    secret: async () => 'p',
+  };
+
+  it('hana-vector: shared layout is received by the store', async () => {
+    await assert.rejects(
+      () =>
+        makeRag({
+          type: 'hana-vector',
+          embedder: stubEmbedder,
+          collectionName: 'c',
+          host: 'h',
+          credential: login,
+          layout: 'shared',
+          autoCreateSchema: true,
+        }),
+      (err: unknown) => (err as { code?: string }).code === 'INVALID_CONFIG',
+    );
+  });
+
+  it('pg-vector: shared layout is received by the store', async () => {
+    await assert.rejects(
+      () =>
+        makeRag({
+          type: 'pg-vector',
+          embedder: stubEmbedder,
+          collectionName: 'c',
+          host: 'db',
+          layout: 'shared',
+          autoCreateSchema: true,
+        }),
+      (err: unknown) => (err as { code?: string }).code === 'INVALID_CONFIG',
+    );
+  });
+
+  it('both stores construct with layout shared and a documentsTable (no connection)', async () => {
+    const hana = await makeRag({
+      type: 'hana-vector',
+      embedder: stubEmbedder,
+      collectionName: 'c',
+      host: 'h',
+      credential: login,
+      layout: 'shared',
+      documentsTable: 'kb_docs',
+    });
+    const pg = await makeRag({
+      type: 'pg-vector',
+      embedder: stubEmbedder,
+      collectionName: 'c',
+      host: 'db',
+      layout: 'shared',
+      documentsTable: 'kb_docs',
+    });
+    assert.equal(typeof hana.query, 'function');
+    assert.equal(typeof pg.query, 'function');
+  });
+});

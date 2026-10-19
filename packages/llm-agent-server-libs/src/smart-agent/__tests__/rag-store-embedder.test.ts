@@ -399,3 +399,57 @@ describe('BuildAgentDeps.makeRag is the only way a store is built', () => {
     }
   });
 });
+
+describe('rag.store: shared table layout from YAML', () => {
+  const yamlWith = (store: Record<string, unknown>) => ({
+    llm,
+    rag: {
+      store: { type: 'pg-vector', collectionName: 'docs', ...store },
+      embedder: { provider: 'ollama', model: 'bge-m3' },
+    },
+  });
+
+  it('resolves layout and documentsTable', () => {
+    const cfg = resolveSmartServerConfig(
+      {},
+      yamlWith({ layout: 'shared', documentsTable: 'kb_docs' }),
+      {},
+    );
+    assert.deepEqual(cfg.rag?.store, {
+      type: 'pg-vector',
+      collectionName: 'docs',
+      layout: 'shared',
+      documentsTable: 'kb_docs',
+    });
+  });
+
+  it('resolves layout for hana-vector too', () => {
+    const cfg = resolveSmartServerConfig(
+      {},
+      {
+        llm,
+        rag: {
+          store: {
+            type: 'hana-vector',
+            collectionName: 'docs',
+            layout: 'shared',
+            credentialRef: 'HANA',
+          },
+          embedder: { provider: 'ollama', model: 'bge-m3' },
+        },
+      },
+      {},
+    );
+    assert.equal(
+      (cfg.rag?.store as { layout?: string } | undefined)?.layout,
+      'shared',
+    );
+  });
+
+  it('refuses an unknown layout, listing the two values', () => {
+    assert.throws(
+      () => resolveSmartServerConfig({}, yamlWith({ layout: 'other' }), {}),
+      /rag\.store\.layout.*per-collection, shared/,
+    );
+  });
+});

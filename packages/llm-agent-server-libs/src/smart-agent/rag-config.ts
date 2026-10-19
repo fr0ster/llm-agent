@@ -49,6 +49,9 @@ export interface PgVectorStoreConfig {
   connectTimeout?: number;
   dimension?: number;
   autoCreateSchema?: boolean;
+  /** `shared`: one documents table for all collections, created outside the app. */
+  layout?: 'per-collection' | 'shared';
+  documentsTable?: string;
   credentialRef?: string;
 }
 
@@ -64,6 +67,9 @@ export interface HanaVectorStoreConfig {
   connectTimeout?: number;
   dimension?: number;
   autoCreateSchema?: boolean;
+  /** `shared`: one documents table for all collections, created outside the app. */
+  layout?: 'per-collection' | 'shared';
+  documentsTable?: string;
   /** HANA has no anonymous login, so the root must resolve one (its default or this). */
   credentialRef?: string;
 }
