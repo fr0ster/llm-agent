@@ -27,14 +27,28 @@ after(async () => {
   await stub.close();
 });
 
+/**
+ * Creates a collection the way test/integration/qdrant-scan/run.mjs does on a
+ * live Qdrant: `PUT /collections/{name}` with the vector size and the
+ * distance `QdrantRag` creates its collections with. `QdrantRag.scan` never
+ * creates one, so a kit subject must exist before its first scan.
+ */
+async function createCollection(baseUrl: string, name: string): Promise<void> {
+  const res = await fetch(`${baseUrl}/collections/${name}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      vectors: { size: CONFORMANCE_EMBEDDING_DIM, distance: 'Cosine' },
+    }),
+  });
+  if (!res.ok) throw new Error(`create ${name}: HTTP ${res.status}`);
+}
+
 let n = 0;
 /** A store over a fresh, existing, empty collection of the shared stub. */
 async function open(): Promise<QdrantRag> {
   const collectionName = `scan_${n++}`;
-  stub.collections.set(collectionName, {
-    size: CONFORMANCE_EMBEDDING_DIM,
-    points: new Map(),
-  });
+  await createCollection(stub.baseUrl, collectionName);
   return new QdrantRag({ url: stub.baseUrl, collectionName, embedder });
 }
 

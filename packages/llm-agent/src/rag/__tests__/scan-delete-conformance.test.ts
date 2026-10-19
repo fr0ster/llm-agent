@@ -56,7 +56,13 @@ for (const [label, makeSubject] of subjects) {
 // exercised here even though no in-process store offers those seams.
 // ---------------------------------------------------------------------------
 
-type Flaw = 'none' | 'merge' | 'wrong-code' | 'accept-empty' | 'keys-empty';
+type Flaw =
+  | 'none'
+  | 'merge'
+  | 'wrong-code'
+  | 'accept-empty'
+  | 'keys-empty'
+  | 'accept-blank-name';
 
 /** A catalog-only provider over a Map, with an optional deliberate flaw. */
 function fakeCatalog(flaw: Flaw = 'none'): {
@@ -90,6 +96,14 @@ function fakeCatalog(flaw: Flaw = 'none'): {
             patch.attributes === undefined;
       if (empty && flaw !== 'accept-empty') {
         return { ok: false, error: new RagError('empty', INVALID_ARGUMENT) };
+      }
+      const name: unknown = patch.collectionName;
+      if (
+        flaw !== 'accept-blank-name' &&
+        name !== undefined &&
+        (typeof name !== 'string' || name.trim() === '')
+      ) {
+        return { ok: false, error: new RagError('name', INVALID_ARGUMENT) };
       }
       const rec = records.get(storeName);
       if (!rec) {
@@ -149,7 +163,7 @@ describe('scan/delete conformance kit — seams present', () => {
       scanDeleteConformanceCases
         .filter((x) => x.requires)
         .map((x) => x.requires),
-      ['sibling', 'catalog', 'catalog', 'catalog'],
+      ['sibling', 'catalog', 'catalog', 'catalog', 'catalog'],
     );
   });
 
@@ -181,6 +195,14 @@ describe('scan/delete conformance kit — seams present', () => {
     await assert.rejects(
       caseNamed('updateCollection refuses an empty patch').run(
         fullSubject('keys-empty'),
+      ),
+    );
+  });
+
+  it('rejects a catalog that accepts a blank collectionName', async () => {
+    await assert.rejects(
+      caseNamed('updateCollection refuses an invalid collectionName').run(
+        fullSubject('accept-blank-name'),
       ),
     );
   });

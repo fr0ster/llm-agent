@@ -2,9 +2,12 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
   DEFAULT_SCAN_PAGE_SIZE,
+  decodeIdScanCursor,
   INVALID_ARGUMENT,
   type IRagFilteredDeleter,
   type IRagScanner,
+  QueryEmbedding,
+  RagError,
   type RagScanRecord,
   staticLogin,
   symmetricEmbedder,
@@ -121,7 +124,7 @@ for (const layout of ['shared', 'per-collection'] as const) {
         first.value.records.map((r) => r.id),
         ['a', 'b'],
       );
-      assert.equal(first.value.cursor, 'b');
+      assert.equal(decodeIdScanCursor(first.value.cursor), 'b');
       assert.equal(first.value.records[0].metadata.id, 'a');
       assert.equal(first.value.records[0].text, 'text a');
       assert.ok(!('vector' in first.value.records[0]));
@@ -209,6 +212,81 @@ for (const layout of ['shared', 'per-collection'] as const) {
       assert.equal(d.error.code, 'ABORTED');
       assert.match(d.error.message, /1000/);
       assert.equal((await scanAll(store)).length, 500);
+    });
+
+    it('a malformed cursor is INVALID_ARGUMENT before any SQL', async () => {
+      const hana = storingHana({ dimension: DIM });
+      const store = open(hana, 'kb', layout);
+      await put(store, 'a');
+      const before = hana.statements.length;
+      // A raw id is not a cursor this store issued.
+      for (const cursor of ['a', 'not a cursor!', '']) {
+        const r = await store.scan({ cursor });
+        assert.ok(!r.ok);
+        assert.equal(r.error.code, INVALID_ARGUMENT);
+      }
+      assert.equal(hana.statements.length, before);
+    });
+
+    it('an ABORTED thrown inside an existing operation keeps its 30.2.0 code', async () => {
+      const hana = storingHana({ dimension: DIM });
+      if (layout === 'per-collection') hana.createCollectionTable('kb');
+      // A signal-bound embedder (RetryEmbedder) throws exactly this.
+      const aborting = symmetricEmbedder({
+        embed: async () => {
+          throw new RagError('Aborted', 'ABORTED');
+        },
+      });
+      const store = new HanaVectorRag(
+        {
+          collectionName: 'kb',
+          dimension: DIM,
+          credential: staticLogin('u', 'p'),
+          layout,
+          autoCreateSchema: false,
+          embedder: aborting,
+        },
+        hana.client,
+      ) as Store;
+      const u = await store.upsert('text', { id: 'a' });
+      assert.ok(!u.ok);
+      assert.equal(u.error.code, 'UPSERT_ERROR');
+      const q = await store.query(new QueryEmbedding('text', aborting), 3);
+      assert.ok(!q.ok);
+      assert.equal(q.error.code, 'QUERY_ERROR');
+    });
+
+    it('scan and deleteWhere pass an ABORTED from the driver through', async () => {
+      const hana = storingHana({ dimension: DIM });
+      let abort = false;
+      const client = {
+        ...hana.client,
+        query: async (sql: string, params?: readonly unknown[]) => {
+          if (abort && sql.startsWith('SELECT "ID"'))
+            throw new RagError('Aborted', 'ABORTED');
+          return hana.client.query(sql, params);
+        },
+      };
+      if (layout === 'per-collection') hana.createCollectionTable('kb');
+      const store = new HanaVectorRag(
+        {
+          collectionName: 'kb',
+          dimension: DIM,
+          credential: staticLogin('u', 'p'),
+          layout,
+          autoCreateSchema: false,
+          embedder,
+        },
+        client,
+      ) as Store;
+      await put(store, 'a', { userId: 'u1' });
+      abort = true;
+      const s = await store.scan();
+      assert.ok(!s.ok);
+      assert.equal(s.error.code, 'ABORTED');
+      const d = await store.deleteWhere({ userId: 'u1' });
+      assert.ok(!d.ok);
+      assert.equal(d.error.code, 'ABORTED');
     });
 
     it('a full last page is followed by an empty one', async () => {

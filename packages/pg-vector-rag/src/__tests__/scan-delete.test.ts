@@ -2,9 +2,11 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
   DEFAULT_SCAN_PAGE_SIZE,
+  decodeIdScanCursor,
   INVALID_ARGUMENT,
   type IRagFilteredDeleter,
   type IRagScanner,
+  QueryEmbedding,
   RagError,
   type RagScanRecord,
   symmetricEmbedder,
@@ -141,7 +143,10 @@ for (const layout of ['shared', 'per-collection'] as const) {
         first.value.records.map((r) => r.id),
         ['B', 'a'],
       );
-      assert.equal(first.value.cursor, first.value.records[1].id);
+      assert.equal(
+        decodeIdScanCursor(first.value.cursor),
+        first.value.records[1].id,
+      );
       assert.equal(first.value.records[1].metadata.id, 'a');
       assert.equal(first.value.records[1].text, 'text a');
       assert.ok(!('vector' in first.value.records[0]));
@@ -201,6 +206,77 @@ for (const layout of ['shared', 'per-collection'] as const) {
       assert.ok(!d.ok);
       assert.equal(d.error.code, 'ABORTED');
       assert.equal(pg.statements.length, before);
+    });
+
+    it('a malformed cursor is INVALID_ARGUMENT before any SQL', async () => {
+      const pg = fake();
+      const store = open(pg, 'kb', layout);
+      await put(store, 'a');
+      const before = pg.statements.length;
+      // A raw id is not a cursor this store issued.
+      for (const cursor of ['a', 'not a cursor!', '']) {
+        const r = await store.scan({ cursor });
+        assert.ok(!r.ok);
+        assert.equal(r.error.code, INVALID_ARGUMENT);
+      }
+      assert.equal(pg.statements.length, before);
+    });
+
+    it('an ABORTED thrown inside an existing operation keeps its 30.2.0 code', async () => {
+      const pg = fake();
+      // A signal-bound embedder (RetryEmbedder) throws exactly this.
+      const aborting = symmetricEmbedder({
+        embed: async () => {
+          throw new RagError('Aborted', 'ABORTED');
+        },
+      });
+      const store = new PgVectorRag(
+        {
+          collectionName: 'kb',
+          dimension: DIM,
+          layout,
+          autoCreateSchema: false,
+          embedder: aborting,
+        },
+        pg,
+      ) as Store;
+      const u = await store.upsert('text', { id: 'a' });
+      assert.ok(!u.ok);
+      assert.equal(u.error.code, 'UPSERT_ERROR');
+      const q = await store.query(new QueryEmbedding('text', aborting), 3);
+      assert.ok(!q.ok);
+      assert.equal(q.error.code, 'QUERY_ERROR');
+    });
+
+    it('scan and deleteWhere pass an ABORTED from the driver through', async () => {
+      const pg = fake();
+      let abort = false;
+      const client = {
+        ...pg,
+        query: async (sql: string, params?: readonly unknown[]) => {
+          if (abort && /^(SELECT "id"|DELETE)/.test(sql))
+            throw new RagError('Aborted', 'ABORTED');
+          return pg.query(sql, params);
+        },
+      };
+      const store = new PgVectorRag(
+        {
+          collectionName: 'kb',
+          dimension: DIM,
+          layout,
+          autoCreateSchema: false,
+          embedder,
+        },
+        client,
+      ) as Store;
+      await put(store, 'a', { userId: 'u1' });
+      abort = true;
+      const s = await store.scan();
+      assert.ok(!s.ok);
+      assert.equal(s.error.code, 'ABORTED');
+      const d = await store.deleteWhere({ userId: 'u1' });
+      assert.ok(!d.ok);
+      assert.equal(d.error.code, 'ABORTED');
     });
 
     it('a full last page is followed by an empty one', async () => {

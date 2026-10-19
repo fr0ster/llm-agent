@@ -7,6 +7,10 @@
  * - `scan` pages cover every record of the collection exactly once, expired
  *   records included; a page holds at most `pageSize` records and may be
  *   short or empty; only a missing `cursor` ends a scan; no vectors;
+ * - `scan` refuses a `pageSize` that is not a positive integer and a cursor it
+ *   did not issue with `INVALID_ARGUMENT`; `scan` and `deleteWhere` refuse a
+ *   filter value that is not a string with `INVALID_ARGUMENT`, and return
+ *   `ABORTED` for an aborted signal, all before touching a record;
  * - an insert between two pages never makes the scan skip or repeat a record
  *   that existed when the scan started;
  * - the `userId` / `sessionId` / `namespace` filter is strict string equality:
@@ -17,7 +21,8 @@
  * - a scanned id round-trips through `getById` and `deleteByIdRaw`;
  * - `updateCollection` replaces `attributes` as a whole and keeps `storeName`,
  *   `scope` and the owner; a missing record is `RAG_COLLECTION_NOT_FOUND`; an
- *   empty patch is `INVALID_ARGUMENT`.
+ *   empty patch and a `collectionName` that is not a non-empty string are
+ *   `INVALID_ARGUMENT`.
  *
  * Framework-agnostic: each case throws (`node:assert`) on a violation. A case
  * whose seam (`sibling`, `catalog`) the subject does not offer throws
@@ -443,6 +448,131 @@ export const scanDeleteConformanceCases: readonly ScanDeleteConformanceCase[] =
       },
     },
     {
+      name: 'scan refuses a non-positive-integer pageSize',
+      async run(makeSubject) {
+        const s = await makeSubject();
+        const store = await s.store();
+        await seed(store, [['only', { userId: 'u1' }]]);
+        for (const pageSize of [0, -1, 1.5, Number.NaN, Infinity]) {
+          const res = await store.scan({ pageSize });
+          assert.equal(res.ok, false, `pageSize ${pageSize} is refused`);
+          if (!res.ok)
+            assert.equal(
+              res.error.code,
+              INVALID_ARGUMENT,
+              `pageSize ${pageSize}`,
+            );
+        }
+        // A positive integer still works.
+        assert.deepEqual(await scanIds(store, { pageSize: 1 }), ['only']);
+      },
+    },
+    {
+      name: 'scan refuses a malformed cursor',
+      async run(makeSubject) {
+        const s = await makeSubject();
+        const store = await s.store();
+        await seed(store, [
+          ['m1', { userId: 'u1' }],
+          ['m2', { userId: 'u1' }],
+        ]);
+        for (const cursor of ['not a cursor!', '', '{"x":1}']) {
+          const res = await store.scan({ pageSize: 1, cursor });
+          assert.equal(
+            res.ok,
+            false,
+            `cursor ${JSON.stringify(cursor)} is refused`,
+          );
+          if (!res.ok)
+            assert.equal(
+              res.error.code,
+              INVALID_ARGUMENT,
+              `cursor ${JSON.stringify(cursor)}`,
+            );
+        }
+        // The cursors the store issues still page through everything.
+        assert.deepEqual(sorted(await scanIds(store, { pageSize: 1 })), [
+          'm1',
+          'm2',
+        ]);
+      },
+    },
+    {
+      name: 'scan and deleteWhere refuse a non-string filter value',
+      async run(makeSubject) {
+        const s = await makeSubject();
+        const store = await s.store();
+        await seed(store, FILTER_ROWS);
+        const bad = [
+          { userId: 1 },
+          { sessionId: true },
+          { namespace: null },
+          { userId: ['u1'] },
+          { userId: 'u1', sessionId: 1 },
+        ] as unknown as RagScanFilter[];
+        for (const filter of bad) {
+          const label = JSON.stringify(filter);
+          const scanned = await store.scan({ filter });
+          assert.equal(scanned.ok, false, `scan refuses ${label}`);
+          if (!scanned.ok)
+            assert.equal(scanned.error.code, INVALID_ARGUMENT, label);
+          const deleted = await store.deleteWhere(filter);
+          assert.equal(deleted.ok, false, `deleteWhere refuses ${label}`);
+          if (!deleted.ok)
+            assert.equal(deleted.error.code, INVALID_ARGUMENT, label);
+        }
+        assert.deepEqual(
+          sorted(await scanIds(store)),
+          sorted(ALL_FILTER_IDS),
+          'a refused deleteWhere deletes nothing',
+        );
+      },
+    },
+    {
+      name: 'scan and deleteWhere return ABORTED for an aborted signal',
+      async run(makeSubject) {
+        const s = await makeSubject();
+        const store = await s.store();
+        await seed(store, [
+          ['x1', { userId: 'u1' }],
+          ['x2', { userId: 'u1' }],
+        ]);
+        const ctrl = new AbortController();
+        ctrl.abort();
+        const scanned = await store.scan(
+          { pageSize: 1 },
+          { signal: ctrl.signal },
+        );
+        assert.equal(scanned.ok, false, 'an aborted scan fails');
+        if (!scanned.ok) assert.equal(scanned.error.code, 'ABORTED');
+        // The abort is checked first: an invalid pageSize or an empty filter
+        // still reports ABORTED.
+        const scanBad = await store.scan(
+          { pageSize: 0 },
+          { signal: ctrl.signal },
+        );
+        assert.equal(scanBad.ok, false);
+        if (!scanBad.ok) assert.equal(scanBad.error.code, 'ABORTED');
+        const deleted = await store.deleteWhere(
+          { userId: 'u1' },
+          { signal: ctrl.signal },
+        );
+        assert.equal(deleted.ok, false, 'an aborted deleteWhere fails');
+        if (!deleted.ok) assert.equal(deleted.error.code, 'ABORTED');
+        const deleteEmpty = await store.deleteWhere(
+          {},
+          { signal: ctrl.signal },
+        );
+        assert.equal(deleteEmpty.ok, false);
+        if (!deleteEmpty.ok) assert.equal(deleteEmpty.error.code, 'ABORTED');
+        assert.deepEqual(
+          sorted(await scanIds(store)),
+          ['x1', 'x2'],
+          'an aborted deleteWhere deletes nothing',
+        );
+      },
+    },
+    {
       name: 'deleteWhere stays inside its collection',
       requires: 'sibling',
       async run(makeSubject) {
@@ -591,6 +721,33 @@ export const scanDeleteConformanceCases: readonly ScanDeleteConformanceCase[] =
           if (!res.ok) assert.equal(res.error.code, INVALID_ARGUMENT);
         }
         assert.deepEqual(await catalogRecord(provider, n.empty), before);
+      },
+    },
+    {
+      name: 'updateCollection refuses an invalid collectionName',
+      requires: 'catalog',
+      async run(makeSubject) {
+        const { provider, create } = await requireCatalog(makeSubject);
+        const n = freshCatalogNames('badname');
+        await create(n.badname);
+        const before = await catalogRecord(provider, n.badname);
+        assert.ok(before, 'create() wrote a catalog record');
+        for (const collectionName of ['', '   ', 42, null]) {
+          const label = `collectionName ${JSON.stringify(collectionName)}`;
+          const patch = { collectionName } as unknown as RagCatalogPatch;
+          const res = await provider.updateCollection(n.badname, patch);
+          assert.equal(res.ok, false, `${label} is refused`);
+          if (!res.ok) assert.equal(res.error.code, INVALID_ARGUMENT, label);
+          // Refused as a whole: valid attributes beside it are not written.
+          const withAttrs = await provider.updateCollection(n.badname, {
+            ...patch,
+            attributes: { changed: true },
+          });
+          assert.equal(withAttrs.ok, false, `${label} with attributes`);
+          if (!withAttrs.ok)
+            assert.equal(withAttrs.error.code, INVALID_ARGUMENT, label);
+        }
+        assert.deepEqual(await catalogRecord(provider, n.badname), before);
       },
     },
   ];
