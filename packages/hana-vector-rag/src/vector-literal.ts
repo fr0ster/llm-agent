@@ -1,14 +1,15 @@
 import { RagError } from '@mcp-abap-adt/llm-agent';
 
 /**
- * The `TO_REAL_VECTOR` literal for a vector, refused before any SQL when its
- * length differs from the table's dimension or a component is not finite.
+ * The `TO_REAL_VECTOR` literal for a vector, refused before any SQL when a
+ * component is not finite or, when a `dimension` is given (the `shared`
+ * layout), its length differs from it.
  */
 export function hanaVectorLiteral(
   vec: readonly number[],
-  dimension: number,
+  dimension?: number,
 ): string {
-  if (vec.length !== dimension) {
+  if (dimension !== undefined && vec.length !== dimension) {
     throw new RagError(
       `Vector length ${vec.length} does not match the configured dimension ${dimension}`,
       'INVALID_VECTOR',

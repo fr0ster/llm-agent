@@ -59,6 +59,22 @@ describe('checkSharedTables', () => {
     assert.match(r.error.message, /1536/);
   });
 
+  it('a driver exception is HEALTH_CHECK_ERROR, not a layout finding', async () => {
+    const broken: HanaClient = {
+      exec: async () => ({ rowCount: 0 }),
+      close: async () => {},
+      query: async () => {
+        throw new Error('connection reset');
+      },
+    };
+    const r = await checkSharedTables(broken, {
+      ...base,
+      tables: ['RAG_DOCUMENTS'],
+    });
+    assert.ok(!r.ok);
+    assert.equal(r.error.code, 'HEALTH_CHECK_ERROR');
+  });
+
   it('uses the explicit schema, else CURRENT_SCHEMA; sends only SELECTs', async () => {
     const sqls: Recorded = [];
     await checkSharedTables(

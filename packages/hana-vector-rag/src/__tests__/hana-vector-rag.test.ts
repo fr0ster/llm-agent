@@ -52,7 +52,6 @@ describe('HanaVectorRag', () => {
     const rag = new HanaVectorRag(
       {
         collectionName: 'docs',
-        dimension: 3,
         embedder: symmetricEmbedder(makeEmbedder()),
         credential: staticLogin('u', 'p'),
       },
@@ -77,7 +76,6 @@ describe('HanaVectorRag', () => {
     const rag = new HanaVectorRag(
       {
         collectionName: 'docs',
-        dimension: 3,
         embedder: symmetricEmbedder(makeEmbedder()),
         credential: staticLogin('u', 'p'),
       },
@@ -104,7 +102,6 @@ describe('HanaVectorRag', () => {
     const rag = new HanaVectorRag(
       {
         collectionName: 'docs',
-        dimension: 3,
         embedder: symmetricEmbedder(makeEmbedder()),
         credential: staticLogin('u', 'p'),
       },
@@ -508,7 +505,10 @@ describe('HanaVectorRag shared layout and vector validation', () => {
     assert.ok((await rag.healthCheck()).ok);
     assert.ok(client.calls.length > 0);
     for (const c of client.calls)
-      assert.doesNotMatch(c.sql, /^\s*(CREATE|DROP|TRUNCATE|ALTER)\b/i);
+      assert.doesNotMatch(
+        c.sql,
+        /^\s*(CREATE|DROP|TRUNCATE|ALTER|IF NOT EXISTS)\b/i,
+      );
   });
 
   it('layout shared + autoCreateSchema true throws at construction', () => {
@@ -540,9 +540,11 @@ describe('HanaVectorRag shared layout and vector validation', () => {
     assert.match(r.error.message, /768/);
   });
 
+  const isData = (c: ExecCall) => /^\s*(SELECT "ID"|UPSERT)/.test(c.sql);
+
   it('a vector of the wrong length is refused before SQL', async () => {
-    const client = makeFakeClient();
-    const rag = plain(client);
+    const client = recordingClient();
+    const rag = mk(client);
     const up = await rag.upsertPrecomputed('t', [1, 2], { id: 'a' });
     assert.ok(!up.ok);
     assert.match(up.error.message, /2/);
@@ -552,7 +554,31 @@ describe('HanaVectorRag shared layout and vector validation', () => {
       1,
     );
     assert.ok(!q.ok);
-    assert.equal(client.calls.length, 0);
+    assert.equal(client.calls.filter(isData).length, 0);
+  });
+
+  it('per-collection still accepts a vector of another length', async () => {
+    const client = makeFakeClient();
+    const rag = plain(client);
+    assert.ok((await rag.upsertPrecomputed('t', [1, 2], { id: 'a' })).ok);
+    assert.ok(
+      (await rag.query({ text: 'q', toVector: async () => [1, 2, 3, 4] }, 1))
+        .ok,
+    );
+    assert.ok(client.calls.length >= 2);
+  });
+
+  it('a failed shared check reaches the caller with its own code', async () => {
+    const rag = mk(recordingClient({ dim: 768 }));
+    const q = await rag.query(
+      { text: 'q', toVector: async () => [1, 2, 3] },
+      1,
+    );
+    assert.ok(!q.ok);
+    assert.equal(q.error.code, 'SHARED_LAYOUT_NOT_DEPLOYED');
+    const up = await rag.upsertPrecomputed('t', [1, 2, 3], { id: 'a' });
+    assert.ok(!up.ok);
+    assert.equal(up.error.code, 'SHARED_LAYOUT_NOT_DEPLOYED');
   });
 
   it('a non-finite component is refused before SQL', async () => {

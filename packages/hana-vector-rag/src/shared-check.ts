@@ -50,7 +50,7 @@ export async function checkSharedTables(
   } catch (err) {
     return {
       ok: false,
-      error: new RagError(String(err), 'SHARED_LAYOUT_NOT_DEPLOYED'),
+      error: new RagError(String(err), 'HEALTH_CHECK_ERROR'),
     };
   }
 }

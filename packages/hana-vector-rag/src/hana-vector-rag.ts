@@ -184,8 +184,20 @@ export class HanaVectorRag implements IRag {
     await this.sharedCheck;
   }
 
+  /** The shared check's own error reaches the caller as is; anything else is wrapped in `code`. */
+  private failure(err: unknown, code: string): RagError {
+    return err instanceof RagError &&
+      (err.code === 'SHARED_LAYOUT_NOT_DEPLOYED' ||
+        err.code === 'HEALTH_CHECK_ERROR')
+      ? err
+      : new RagError(String(err), code);
+  }
+
   private vectorLiteral(vec: number[]): string {
-    return hanaVectorLiteral(vec, this.dimension);
+    return hanaVectorLiteral(
+      vec,
+      this.sql.layout === 'shared' ? this.dimension : undefined,
+    );
   }
 
   async query(
@@ -262,7 +274,7 @@ export class HanaVectorRag implements IRag {
       }
       return { ok: true, value: results };
     } catch (err) {
-      return { ok: false, error: new RagError(String(err), 'QUERY_ERROR') };
+      return { ok: false, error: this.failure(err, 'QUERY_ERROR') };
     }
   }
 
@@ -285,7 +297,7 @@ export class HanaVectorRag implements IRag {
         value: { text: decodeLob(row.text), metadata, score: 1 },
       };
     } catch (err) {
-      return { ok: false, error: new RagError(String(err), 'QUERY_ERROR') };
+      return { ok: false, error: this.failure(err, 'QUERY_ERROR') };
     }
   }
 
@@ -314,7 +326,7 @@ export class HanaVectorRag implements IRag {
       const { vector } = await this.embedder.embedDocument(text, options);
       return this.upsertKnown(text, vector, metadata);
     } catch (err) {
-      return { ok: false, error: new RagError(String(err), 'UPSERT_ERROR') };
+      return { ok: false, error: this.failure(err, 'UPSERT_ERROR') };
     }
   }
 
@@ -342,7 +354,7 @@ export class HanaVectorRag implements IRag {
       await client.exec(stmt.sql, stmt.params);
       return { ok: true, value: undefined };
     } catch (err) {
-      return { ok: false, error: new RagError(String(err), 'UPSERT_ERROR') };
+      return { ok: false, error: this.failure(err, 'UPSERT_ERROR') };
     }
   }
 
@@ -362,7 +374,7 @@ export class HanaVectorRag implements IRag {
         } catch (err) {
           return {
             ok: false,
-            error: new RagError(String(err), 'DELETE_ERROR'),
+            error: this.failure(err, 'DELETE_ERROR'),
           };
         }
       },
@@ -374,7 +386,7 @@ export class HanaVectorRag implements IRag {
           await client.exec(stmt.sql, stmt.params);
           return { ok: true, value: undefined };
         } catch (err) {
-          return { ok: false, error: new RagError(String(err), 'CLEAR_ERROR') };
+          return { ok: false, error: this.failure(err, 'CLEAR_ERROR') };
         }
       },
       upsertPrecomputedRaw: async (id, text, vector, metadata) =>
