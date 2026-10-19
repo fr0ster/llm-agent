@@ -20,6 +20,11 @@
       "types": "./dist/testing/shared-table-conformance.d.ts",
       "import": "./dist/testing/shared-table-conformance.js",
       "default": "./dist/testing/shared-table-conformance.js"
+    },
+    "./testing/scan-delete-conformance": {
+      "types": "./dist/testing/scan-delete-conformance.d.ts",
+      "import": "./dist/testing/scan-delete-conformance.js",
+      "default": "./dist/testing/scan-delete-conformance.js"
     }
   },
   "files": [
