@@ -1,5 +1,9 @@
 # @mcp-abap-adt/qdrant-rag
 
+## Unreleased
+
+**Added:** `QdrantRag.scan` (scroll with a payload filter, the offset is the cursor) / `deleteWhere` (scroll the matching ids, then delete them with `wait=true`) and `QdrantRagProvider.updateCollection` (a 404 from the catalog is `RAG_COLLECTION_NOT_FOUND`). Strict string-equality filters on `userId` / `sessionId` / `namespace`, expired records included, no vectors; a page may be short or empty and only a missing `cursor` ends a scan; `deleteWhere` refuses an empty filter and is exact against a snapshot, not atomic; `ABORTED` on an aborted `signal`; `updateCollection` replaces `attributes`, refuses an empty patch and returns `RAG_COLLECTION_NOT_FOUND` for a missing record. Live check: `npm run test:integration:qdrant-scan`, gated on `QDRANT_TEST_URL`. See the README.
+
 ## 30.2.0
 
 Lockstep release with the 30.2.0 line: an opt-in shared table layout for the SQL vector stores (`hana-vector-rag`, `pg-vector-rag` — one documents table plus the catalog, no runtime DDL, works in a SAP HANA HDI container) and HANA fixes. No change in this package — see the root CHANGELOG.

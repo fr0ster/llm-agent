@@ -29,6 +29,17 @@ the collection; `describeCollections` reads the catalog back.
 A collection created before this release has a collection and no record: take it over once with
 `createCollection(..., { adoptExisting: true })`.
 
+## Scan, filtered delete and catalog update
+
+The store implements `IRagScanner` and `IRagFilteredDeleter`, and the provider implements `IRagCatalogUpdater` (guards `isRagScanner`, `isRagFilteredDeleter`, `isRagCatalogUpdater` from `@mcp-abap-adt/llm-agent`). The library wrappers (`OverlayRag`, `SessionScopedRag`, ...) do not forward them; use the provider's handle.
+
+- `scan({ filter?, pageSize?, cursor? })` returns `{ records, cursor? }`: `id`, `text`, `metadata`, never a vector, expired records included. `filter` is strict string equality on `userId`, `sessionId`, `namespace`. `pageSize` is a positive integer (default `DEFAULT_SCAN_PAGE_SIZE`, 500), otherwise `INVALID_ARGUMENT`. **Only a missing `cursor` ends the scan**: a page may be short or empty while a cursor is still returned. `id` is `metadata.id` when the record has one, otherwise the Qdrant point id; the round trip into `getById` / `deleteById` is guaranteed only for records written with an id.
+- `deleteWhere(filter)` deletes the matching records of this collection only and returns `{ deleted }`. An empty filter is `INVALID_ARGUMENT`. It is exact against a snapshot, not atomic: it scrolls the matching point ids with a payload filter, then deletes them with `wait=true` in batches and returns exactly how many it deleted. A matching record inserted while it runs may survive; repeat the call if you need to.
+- An aborted `signal` gives `ABORTED` (`Aborted after deleting N record(s)` once a delete has started).
+- `updateCollection(storeName, { collectionName?, attributes? })` rewrites the catalog point's payload (the record is read first). `attributes` replaces the stored attributes as a whole; `storeName`, `scope` and the owner never change. A missing record is `RAG_COLLECTION_NOT_FOUND`, an empty patch `INVALID_ARGUMENT`, an attribute value that cannot be stored `RAG_INVALID_ATTRIBUTES`.
+`scan` uses `POST /collections/{c}/points/scroll` with the payload filter; the cursor is the scroll offset. A 404 on the catalog write is `RAG_COLLECTION_NOT_FOUND` too.
+See [INTEGRATION.md](../../docs/INTEGRATION.md#scan-filtered-delete-and-catalog-update).
+
 ## License
 
 **GNU Lesser General Public License v3.0 only** (`LGPL-3.0-only`) — see
