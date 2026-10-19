@@ -52,6 +52,7 @@ describe('HanaVectorRag', () => {
     const rag = new HanaVectorRag(
       {
         collectionName: 'docs',
+        dimension: 3,
         embedder: symmetricEmbedder(makeEmbedder()),
         credential: staticLogin('u', 'p'),
       },
@@ -76,6 +77,7 @@ describe('HanaVectorRag', () => {
     const rag = new HanaVectorRag(
       {
         collectionName: 'docs',
+        dimension: 3,
         embedder: symmetricEmbedder(makeEmbedder()),
         credential: staticLogin('u', 'p'),
       },
@@ -102,6 +104,7 @@ describe('HanaVectorRag', () => {
     const rag = new HanaVectorRag(
       {
         collectionName: 'docs',
+        dimension: 3,
         embedder: symmetricEmbedder(makeEmbedder()),
         credential: staticLogin('u', 'p'),
       },
@@ -430,5 +433,141 @@ describe('HanaVectorRag — session/user filter (security)', () => {
     assert.deepEqual(await q('delta epsilon'), ['new']);
     assert.equal(client.searches.length, before + 1);
     assert.match(client.searches[before], /LIMIT 1$/);
+  });
+});
+
+describe('HanaVectorRag shared layout and vector validation', () => {
+  function recordingClient(
+    opts: { dim?: number; failFirstCheck?: boolean } = {},
+  ) {
+    const calls: ExecCall[] = [];
+    let checkRounds = 0;
+    let failed = false;
+    const client: HanaClient & { calls: ExecCall[]; rounds: () => number } = {
+      calls,
+      rounds: () => checkRounds,
+      async exec(sql, params = []) {
+        calls.push({ sql, params });
+        return { rowCount: 1 };
+      },
+      async query(sql, params = []) {
+        calls.push({ sql, params });
+        if (sql.includes('SYS.TABLES')) {
+          checkRounds++;
+          if (opts.failFirstCheck && !failed) {
+            failed = true;
+            throw new Error('connection reset');
+          }
+          return [{ n: 1 }];
+        }
+        if (sql.includes('SYS.TABLE_COLUMNS')) return [{ dim: opts.dim ?? 3 }];
+        return [];
+      },
+      async close() {},
+    };
+    return client;
+  }
+  const mk = (
+    client: HanaClient,
+    extra: Partial<ConstructorParameters<typeof HanaVectorRag>[0]> = {},
+  ) =>
+    new HanaVectorRag(
+      {
+        collectionName: 'docs',
+        dimension: 3,
+        layout: 'shared',
+        embedder: symmetricEmbedder(makeEmbedder(3)),
+        credential: staticLogin('u', 'p'),
+        ...extra,
+      },
+      client,
+    );
+  const plain = (client: HanaClient) =>
+    new HanaVectorRag(
+      {
+        collectionName: 'docs',
+        dimension: 3,
+        autoCreateSchema: false,
+        embedder: symmetricEmbedder(makeEmbedder(3)),
+        credential: staticLogin('u', 'p'),
+      },
+      client,
+    );
+
+  it('shared store sends no DDL', async () => {
+    const client = recordingClient();
+    const rag = mk(client);
+    assert.ok((await rag.upsert('t', { id: 'a' })).ok);
+    assert.ok(
+      (await rag.query({ text: 'q', toVector: async () => [1, 2, 3] }, 3)).ok,
+    );
+    assert.ok((await rag.getById('a')).ok);
+    const w = rag.writer();
+    assert.ok((await w.deleteByIdRaw?.('a'))?.ok);
+    assert.ok((await w.clearAll?.())?.ok);
+    assert.ok((await rag.healthCheck()).ok);
+    assert.ok(client.calls.length > 0);
+    for (const c of client.calls)
+      assert.doesNotMatch(c.sql, /^\s*(CREATE|DROP|TRUNCATE|ALTER)\b/i);
+  });
+
+  it('layout shared + autoCreateSchema true throws at construction', () => {
+    assert.throws(
+      () => mk(recordingClient(), { autoCreateSchema: true }),
+      (err: Error & { code?: string }) => err.code === 'INVALID_CONFIG',
+    );
+  });
+
+  it('the shared check runs once and a success is memoised', async () => {
+    const client = recordingClient();
+    const rag = mk(client);
+    await rag.getById('a');
+    await rag.getById('b');
+    assert.equal(client.rounds(), 1);
+  });
+
+  it('a failed shared check is not memoised', async () => {
+    const client = recordingClient({ failFirstCheck: true });
+    const rag = mk(client);
+    assert.ok(!(await rag.getById('a')).ok);
+    assert.ok((await rag.getById('a')).ok);
+  });
+
+  it('a dimension mismatch in the database fails the operation', async () => {
+    const rag = mk(recordingClient({ dim: 768 }));
+    const r = await rag.getById('a');
+    assert.ok(!r.ok);
+    assert.match(r.error.message, /768/);
+  });
+
+  it('a vector of the wrong length is refused before SQL', async () => {
+    const client = makeFakeClient();
+    const rag = plain(client);
+    const up = await rag.upsertPrecomputed('t', [1, 2], { id: 'a' });
+    assert.ok(!up.ok);
+    assert.match(up.error.message, /2/);
+    assert.match(up.error.message, /3/);
+    const q = await rag.query(
+      { text: 'q', toVector: async () => [1, 2, 3, 4] },
+      1,
+    );
+    assert.ok(!q.ok);
+    assert.equal(client.calls.length, 0);
+  });
+
+  it('a non-finite component is refused before SQL', async () => {
+    const client = makeFakeClient();
+    const rag = plain(client);
+    const up = await rag.upsertPrecomputed('t', [1, Number.NaN, 3], {
+      id: 'a',
+    });
+    assert.ok(!up.ok);
+    assert.match(up.error.message, /index 1/);
+    const q = await rag.query(
+      { text: 'q', toVector: async () => [1, Number.POSITIVE_INFINITY, 3] },
+      1,
+    );
+    assert.ok(!q.ok);
+    assert.equal(client.calls.length, 0);
   });
 });
