@@ -56,7 +56,7 @@ for (const [label, makeSubject] of subjects) {
 // exercised here even though no in-process store offers those seams.
 // ---------------------------------------------------------------------------
 
-type Flaw = 'none' | 'merge' | 'wrong-code' | 'accept-empty';
+type Flaw = 'none' | 'merge' | 'wrong-code' | 'accept-empty' | 'keys-empty';
 
 /** A catalog-only provider over a Map, with an optional deliberate flaw. */
 function fakeCatalog(flaw: Flaw = 'none'): {
@@ -82,8 +82,12 @@ function fakeCatalog(flaw: Flaw = 'none'): {
       storeName: string,
       patch: RagCatalogPatch,
     ): Promise<Result<void, RagError>> {
+      // 'keys-empty' counts keys, so an all-undefined patch slips through.
       const empty =
-        patch.collectionName === undefined && patch.attributes === undefined;
+        flaw === 'keys-empty'
+          ? Object.keys(patch).length === 0
+          : patch.collectionName === undefined &&
+            patch.attributes === undefined;
       if (empty && flaw !== 'accept-empty') {
         return { ok: false, error: new RagError('empty', INVALID_ARGUMENT) };
       }
@@ -171,6 +175,43 @@ describe('scan/delete conformance kit — seams present', () => {
         fullSubject('accept-empty'),
       ),
     );
+  });
+
+  it('rejects a catalog that only refuses a patch with no keys', async () => {
+    await assert.rejects(
+      caseNamed('updateCollection refuses an empty patch').run(
+        fullSubject('keys-empty'),
+      ),
+    );
+  });
+
+  it('gives create() fresh SQL-identifier names on every run', async () => {
+    const seen: string[] = [];
+    const recording: () => Promise<ScanDeleteSubject> = async () => ({
+      store: async () => new InMemoryRag(),
+      catalog: async () => {
+        const inner = fakeCatalog();
+        return {
+          provider: inner.provider,
+          async create(name) {
+            seen.push(name);
+            await inner.create(name);
+          },
+        };
+      },
+    });
+    for (let round = 0; round < 2; round++) {
+      for (const c of scanDeleteConformanceCases.filter(
+        (x) => x.requires === 'catalog',
+      )) {
+        await c.run(recording);
+      }
+    }
+    assert.ok(seen.length > 0);
+    assert.equal(new Set(seen).size, seen.length, 'no name repeats');
+    for (const name of seen) {
+      assert.match(name, /^[a-zA-Z_][a-zA-Z0-9_]{0,62}$/);
+    }
   });
 
   it('rejects a deleteWhere that reaches the sibling', async () => {

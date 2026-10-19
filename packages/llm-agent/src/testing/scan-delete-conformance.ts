@@ -54,6 +54,7 @@ import {
   type IRagFilteredDeleter,
   type IRagScanner,
   RAG_COLLECTION_NOT_FOUND,
+  type RagCatalogPatch,
   type RagScanFilter,
   type RagScanRecord,
 } from '../interfaces/rag-scan.js';
@@ -77,6 +78,11 @@ export interface ScanDeleteSubject {
   /**
    * A provider with a catalog, and a way to create a catalog record named
    * `name` through it. Absent → the catalog cases are skipped.
+   *
+   * `create(name)` always receives a FRESH name, unique per case run
+   * (`scan_conf_<case>_<runId>`, a valid SQL identifier), so a runner needs no
+   * catalog cleanup between runs; it should still remove what it created when
+   * that is cheap.
    */
   catalog?(): Promise<{
     provider: IRagProvider & IRagCatalogUpdater;
@@ -189,6 +195,19 @@ async function catalogRecord(
   const res = await provider.describeCollections();
   if (!res.ok) throw res.error;
   return res.value.records.find((r) => r.storeName === storeName);
+}
+
+/**
+ * A catalog store name unique to one case run: `scan_conf_<tag>_<runId>`,
+ * matching `^[a-zA-Z_][a-zA-Z0-9_]{0,62}$`.
+ */
+function freshCatalogNames<T extends string>(...tags: T[]): Record<T, string> {
+  const runId = `${Date.now().toString(36)}${Math.random()
+    .toString(36)
+    .slice(2, 8)}`;
+  const names = {} as Record<T, string>;
+  for (const tag of tags) names[tag] = `scan_conf_${tag}_${runId}`;
+  return names;
 }
 
 async function requireCatalog(
@@ -494,45 +513,43 @@ export const scanDeleteConformanceCases: readonly ScanDeleteConformanceCase[] =
       requires: 'catalog',
       async run(makeSubject) {
         const { provider, create } = await requireCatalog(makeSubject);
-        await create('scan-conf-upd');
-        await create('scan-conf-other');
-        const before = await catalogRecord(provider, 'scan-conf-upd');
+        const n = freshCatalogNames('upd', 'other');
+        await create(n.upd);
+        await create(n.other);
+        const before = await catalogRecord(provider, n.upd);
         assert.ok(before, 'create() wrote a catalog record');
-        const otherBefore = await catalogRecord(provider, 'scan-conf-other');
+        const otherBefore = await catalogRecord(provider, n.other);
 
-        const first = await provider.updateCollection('scan-conf-upd', {
+        const first = await provider.updateCollection(n.upd, {
           attributes: { roles: ['reader'], tier: 1 },
         });
         if (!first.ok) throw first.error;
-        assert.deepEqual(
-          (await catalogRecord(provider, 'scan-conf-upd'))?.attributes,
-          { roles: ['reader'], tier: 1 },
-        );
+        assert.deepEqual((await catalogRecord(provider, n.upd))?.attributes, {
+          roles: ['reader'],
+          tier: 1,
+        });
 
         // A second write replaces the attributes as a whole: no merge.
-        const second = await provider.updateCollection('scan-conf-upd', {
+        const second = await provider.updateCollection(n.upd, {
           attributes: { owner: 'hub' },
         });
         if (!second.ok) throw second.error;
-        const after = await catalogRecord(provider, 'scan-conf-upd');
+        const after = await catalogRecord(provider, n.upd);
         assert.ok(after);
         assert.deepEqual(after, { ...before, attributes: { owner: 'hub' } });
 
         // collectionName changes the display name only.
-        const renamed = await provider.updateCollection('scan-conf-upd', {
+        const renamed = await provider.updateCollection(n.upd, {
           collectionName: 'Renamed display',
         });
         if (!renamed.ok) throw renamed.error;
-        assert.deepEqual(await catalogRecord(provider, 'scan-conf-upd'), {
+        assert.deepEqual(await catalogRecord(provider, n.upd), {
           ...before,
           name: 'Renamed display',
           attributes: { owner: 'hub' },
         });
         // Another record is untouched.
-        assert.deepEqual(
-          await catalogRecord(provider, 'scan-conf-other'),
-          otherBefore,
-        );
+        assert.deepEqual(await catalogRecord(provider, n.other), otherBefore);
       },
     },
     {
@@ -540,17 +557,15 @@ export const scanDeleteConformanceCases: readonly ScanDeleteConformanceCase[] =
       requires: 'catalog',
       async run(makeSubject) {
         const { provider, create } = await requireCatalog(makeSubject);
-        await create('scan-conf-present');
-        const res = await provider.updateCollection('scan-conf-absent', {
+        const n = freshCatalogNames('present', 'absent');
+        await create(n.present);
+        const res = await provider.updateCollection(n.absent, {
           attributes: { a: 1 },
         });
         assert.equal(res.ok, false, 'a missing record is an error');
         if (!res.ok) assert.equal(res.error.code, RAG_COLLECTION_NOT_FOUND);
         // The update created nothing.
-        assert.equal(
-          await catalogRecord(provider, 'scan-conf-absent'),
-          undefined,
-        );
+        assert.equal(await catalogRecord(provider, n.absent), undefined);
       },
     },
     {
@@ -558,16 +573,24 @@ export const scanDeleteConformanceCases: readonly ScanDeleteConformanceCase[] =
       requires: 'catalog',
       async run(makeSubject) {
         const { provider, create } = await requireCatalog(makeSubject);
-        await create('scan-conf-empty');
-        const before = await catalogRecord(provider, 'scan-conf-empty');
+        const n = freshCatalogNames('empty');
+        await create(n.empty);
+        const before = await catalogRecord(provider, n.empty);
         assert.ok(before, 'create() wrote a catalog record');
-        const res = await provider.updateCollection('scan-conf-empty', {});
-        assert.equal(res.ok, false, 'an empty patch is refused');
-        if (!res.ok) assert.equal(res.error.code, INVALID_ARGUMENT);
-        assert.deepEqual(
-          await catalogRecord(provider, 'scan-conf-empty'),
-          before,
-        );
+        // Both forms are empty: no key, and keys that are all undefined.
+        for (const patch of [
+          {},
+          { collectionName: undefined, attributes: undefined },
+        ] as RagCatalogPatch[]) {
+          const res = await provider.updateCollection(n.empty, patch);
+          assert.equal(
+            res.ok,
+            false,
+            `an empty patch is refused: ${JSON.stringify(Object.keys(patch))}`,
+          );
+          if (!res.ok) assert.equal(res.error.code, INVALID_ARGUMENT);
+        }
+        assert.deepEqual(await catalogRecord(provider, n.empty), before);
       },
     },
   ];
