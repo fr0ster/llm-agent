@@ -141,13 +141,20 @@ export async function startQdrantStub(
       }
       if (r.method === 'POST' && action === '/payload') {
         // Set payload by point id: keys are merged into an existing point; an
-        // id that is not there is skipped, never created (Qdrant's behaviour).
+        // id that is not there is a 404 and nothing is created (Qdrant's
+        // behaviour: "No point with id ... found").
         stub?.beforePayloadWrite?.();
         const set = (body.payload ?? {}) as Record<string, unknown>;
-        for (const id of (body.points as string[] | undefined) ?? []) {
-          const p = c.points.get(id);
-          if (p) Object.assign(p.payload, set);
+        const ids = (body.points as string[] | undefined) ?? [];
+        const absent = ids.find((id) => !c.points.has(id));
+        if (absent !== undefined) {
+          reply(404, {
+            status: { error: `Not found: No point with id ${absent} found` },
+          });
+          return;
         }
+        for (const id of ids)
+          Object.assign(c.points.get(id)?.payload ?? {}, set);
         reply(200, { result: { status: 'completed' } });
         return;
       }

@@ -27,6 +27,16 @@ const payloadOf = async (store: string) =>
   stub.collections.get(CATALOG)?.points.get(await deterministicUUID(store))
     ?.payload;
 
+const cyclic: Record<string, unknown> = {};
+cyclic.self = cyclic;
+const INVALID_ATTRIBUTES = [
+  { x: Number.NaN },
+  { x: undefined },
+  { x: new Date() },
+  { x: 10n },
+  cyclic,
+];
+
 describe('QdrantRagProvider.updateCollection', () => {
   it('an empty patch is INVALID_ARGUMENT before any request', async () => {
     const before = stub.requests.length;
@@ -39,6 +49,18 @@ describe('QdrantRagProvider.updateCollection', () => {
       assert.equal(r.error.code, INVALID_ARGUMENT);
     }
     assert.equal(stub.requests.length, before);
+  });
+
+  it('attributes that have no JSON form are RAG_INVALID_ATTRIBUTES with no request', async () => {
+    const mark = stub.requests.length;
+    for (const attributes of INVALID_ATTRIBUTES) {
+      const r = await provider().updateCollection('a', {
+        attributes: attributes as Record<string, unknown>,
+      });
+      assert.ok(!r.ok);
+      assert.equal(r.error.code, 'RAG_INVALID_ATTRIBUTES');
+    }
+    assert.equal(stub.requests.length, mark);
   });
 
   it('sets only the given keys on the catalog point, with wait=true semantics', async () => {
@@ -108,7 +130,14 @@ describe('QdrantRagProvider.updateCollection', () => {
       stub.collections.get(CATALOG)?.points.delete(id);
     };
     try {
+      const mark = stub.requests.length;
       const r = await p.updateCollection('upd_race', { collectionName: 'x' });
+      // The write was sent and the engine answered 404 (no such point).
+      assert.ok(
+        stub.requests
+          .slice(mark)
+          .some((q) => q.path.endsWith('/points/payload')),
+      );
       assert.ok(!r.ok);
       assert.equal(r.error.code, RAG_COLLECTION_NOT_FOUND);
       assert.equal(stub.collections.get(CATALOG)?.points.has(id), false);

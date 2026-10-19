@@ -25,6 +25,7 @@ import {
   RagError,
   type Result,
   ragOwnerKeys,
+  validateRagAttributes,
   validateRagOwner,
 } from '@mcp-abap-adt/llm-agent';
 import { deterministicUUID, QdrantRag } from './qdrant-rag.js';
@@ -206,13 +207,12 @@ export class QdrantRagProvider
    * An empty patch is refused before any request.
    *
    * The record is read first and, when absent, RAG_COLLECTION_NOT_FOUND is
-   * returned without a write: set-payload addresses the point by id and never
-   * creates one, but a missing id is a silent no-op in Qdrant, so it cannot
-   * tell "updated" from "nothing there". The read and the write are two
-   * requests, so a delete between them is possible; the record is therefore
-   * read once more after the write and, if it is gone, the call reports
-   * RAG_COLLECTION_NOT_FOUND rather than success (a delete that lands after
-   * that second read is an update followed by a delete, which is a valid order).
+   * returned without a write. Set-payload addresses the point by id and never
+   * creates one: Qdrant answers 404 when a listed point does not exist, and
+   * that 404 is RAG_COLLECTION_NOT_FOUND too, so a delete landing between the
+   * read and the write is reported correctly. The record is read once more
+   * after the write (kept as a belt-and-braces check); a delete after that is
+   * an update followed by a delete, which is a valid order.
    */
   async updateCollection(
     storeName: string,
@@ -227,6 +227,8 @@ export class QdrantRagProvider
         ),
       };
     }
+    const attributes = validateRagAttributes(patch.attributes);
+    if (!attributes.ok) return attributes;
     const notFound: Refusal = {
       ok: false,
       error: new RagError(
@@ -243,9 +245,7 @@ export class QdrantRagProvider
         ...(patch.attributes === undefined
           ? {}
           : {
-              attributes_json: encodeRagAttributes(
-                patch.attributes as Parameters<typeof encodeRagAttributes>[0],
-              ),
+              attributes_json: encodeRagAttributes(attributes.value),
             }),
       };
       const res = await this.request(
@@ -258,6 +258,7 @@ export class QdrantRagProvider
           }),
         },
       );
+      if (res.status === 404) return notFound;
       if (!res.ok) {
         throw new RagError(
           `Qdrant catalog update failed: HTTP ${res.status} ${await res.text()}`,

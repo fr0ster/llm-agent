@@ -11,6 +11,7 @@ import {
   RAG_COLLECTION_NOT_FOUND,
   RagError,
   ragOwnerKeys,
+  validateRagAttributes,
 } from '@mcp-abap-adt/llm-agent';
 import {
   insertRecordSql,
@@ -96,14 +97,17 @@ export function prepareCatalogPatch(
       ),
     };
   }
+  // The create path's check, before anything is encoded or sent: an
+  // un-encodable value (NaN, undefined, Date, BigInt, a cycle) is refused
+  // here rather than rewritten or thrown out of the Result.
+  const attributes = validateRagAttributes(patch.attributes);
+  if (!attributes.ok) return attributes;
   return {
     ok: true,
     value: {
       collectionName: patch.collectionName ?? null,
       // The same encoding the create path writes.
-      attributesJson: encodeRagAttributes(
-        patch.attributes as Parameters<typeof encodeRagAttributes>[0],
-      ),
+      attributesJson: encodeRagAttributes(attributes.value),
     },
   };
 }
