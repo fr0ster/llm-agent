@@ -22,7 +22,7 @@ describe('shared store SQL', () => {
     });
     assert.equal(
       scoped.sql,
-      `SELECT "id", "text", "metadata", "vector" <=> LIT AS score FROM "rag_documents" WHERE "collection" = $1 AND "metadata"->>'sessionId' = $2 AND "metadata"->>'userId' = $3 AND "metadata"->>'namespace' = $4 AND ${TTL_SHARED} $5 ORDER BY "vector" <=> LIT LIMIT 3`,
+      `SELECT "id", "text", "metadata", "vector" <=> LIT AS score FROM "rag_documents" WHERE "collection" = $1 AND CASE WHEN jsonb_typeof("metadata"->'sessionId') = 'string' THEN "metadata"->>'sessionId' END = $2 AND CASE WHEN jsonb_typeof("metadata"->'userId') = 'string' THEN "metadata"->>'userId' END = $3 AND CASE WHEN jsonb_typeof("metadata"->'namespace') = 'string' THEN "metadata"->>'namespace' END = $4 AND ${TTL_SHARED} $5 ORDER BY "vector" <=> LIT LIMIT 3`,
     );
     assert.deepEqual(scoped.params, ['docs', 's', 'u', 'ns', 5]);
   });

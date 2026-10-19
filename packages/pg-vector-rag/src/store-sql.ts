@@ -42,24 +42,33 @@ export interface PgStoreSql {
  *   row; a missing or non-numeric ttl never expires. The CASE keeps the float8
  *   cast away from a non-numeric value, which would fail the whole query.
  * `params` already holds what comes before them (the shared `collection`).
+ * `stringsOnly` (shared layout): the identity and namespace keys match only a
+ * JSON string, as HANA's strict `matchesRagIdentity` does - `->>` alone would
+ * coerce a JSON number or boolean to text, so `{ userId: 123 }` would match
+ * `'123'`. The CASE yields NULL for a non-string, and NULL = $n is not true.
  */
 function filterConditions(
   filter: PgSearchFilter,
   params: unknown[],
   metadata: string,
+  stringsOnly = false,
 ): string[] {
   const conditions: string[] = [];
+  const text = (key: string): string =>
+    stringsOnly
+      ? `CASE WHEN jsonb_typeof(${metadata}->'${key}') = 'string' THEN ${metadata}->>'${key}' END`
+      : `${metadata}->>'${key}'`;
   if (filter.identity?.sessionId !== undefined) {
     params.push(filter.identity.sessionId);
-    conditions.push(`${metadata}->>'sessionId' = $${params.length}`);
+    conditions.push(`${text('sessionId')} = $${params.length}`);
   }
   if (filter.identity?.userId !== undefined) {
     params.push(filter.identity.userId);
-    conditions.push(`${metadata}->>'userId' = $${params.length}`);
+    conditions.push(`${text('userId')} = $${params.length}`);
   }
   if (typeof filter.namespace === 'string') {
     params.push(filter.namespace);
-    conditions.push(`${metadata}->>'namespace' = $${params.length}`);
+    conditions.push(`${text('namespace')} = $${params.length}`);
   }
   params.push(filter.nowSecs);
   conditions.push(
@@ -119,7 +128,7 @@ export function sharedStoreSql(
       const params: unknown[] = [collection];
       const where = [
         '"collection" = $1',
-        ...filterConditions(filter, params, '"metadata"'),
+        ...filterConditions(filter, params, '"metadata"', true),
       ].join(' AND ');
       return {
         sql: `SELECT "id", "text", "metadata", "vector" <=> ${lit} AS score FROM ${table} WHERE ${where} ORDER BY "vector" <=> ${lit} LIMIT ${limit}`,

@@ -48,6 +48,9 @@ function cosineDistance(a: number[], b: number[]): number {
 
 const COLLECTION = /^"collection" = \$(\d+)$/;
 const EQ = /^metadata->>'([A-Za-z_]+)' = \$(\d+)$/;
+// Shared layout: the key matches only a JSON string (NULL otherwise).
+const EQ_STRING =
+  /^CASE WHEN jsonb_typeof\(metadata->'([A-Za-z_]+)'\) = 'string' THEN metadata->>'\1' END = \$(\d+)$/;
 const TTL =
   /^COALESCE\(CASE WHEN jsonb_typeof\(metadata->'ttl'\) = 'number' THEN \(metadata->>'ttl'\)::float8 END, 'infinity'::float8\) >= \$(\d+)$/;
 
@@ -67,6 +70,14 @@ function evaluate(
     // `->>` yields the text of a scalar; a missing key is NULL (not true).
     if (v === undefined || v === null) return false;
     return String(v) === String(params[Number(eq[2]) - 1]);
+  }
+  const eqString = cond.match(EQ_STRING);
+  if (eqString) {
+    const v = row.metadata[eqString[1]];
+    // Not a JSON string: the CASE is NULL, and NULL = $n is not true.
+    return (
+      typeof v === 'string' && v === String(params[Number(eqString[2]) - 1])
+    );
   }
   const ttl = cond.match(TTL);
   if (ttl) {
