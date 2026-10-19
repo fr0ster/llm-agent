@@ -51,10 +51,9 @@ function paddedEmbedder() {
   };
 }
 
-// The package's own createHanaClient does `(await import('@sap/hana-client'))
-// .createConnection`, which is undefined for this CommonJS module under ESM
-// (only `default` is exposed). Until that is fixed in the package, connect here
-// and hand the client to the store and provider (the HanaClient interface).
+// A raw runtime-user connection, only for the statements the store never
+// sends: orphan rows, cleanup and diagnostics. The stores and the provider
+// connect on their own, through the package.
 function connect(c) {
   const conn = hana.createConnection();
   const call =
@@ -152,10 +151,12 @@ try {
     `SYS.TABLE_COLUMNS.LENGTH reports dimension ${dims[0]?.dim} (configured ${SHIPPED_DIMENSION}; conformance embedder ${CONFORMANCE_EMBEDDING_DIM}, zero-padded)`,
   );
   total++;
-  const health = await new HanaVectorRag(
-    { ...connection, collectionName: 'probe', layout: 'shared', embedder },
-    client,
-  ).healthCheck();
+  const health = await new HanaVectorRag({
+    ...connection,
+    collectionName: 'probe',
+    layout: 'shared',
+    embedder,
+  }).healthCheck();
   if (health.ok) out('PASS startup check (shared tables + dimension)');
   else {
     failures.push(['startup check', health.error]);
@@ -166,16 +167,13 @@ try {
     out(`RAG_DOCUMENTS columns: ${JSON.stringify(rows)}`);
   }
   total++;
-  const wrong = await new HanaVectorRag(
-    {
-      ...connection,
-      collectionName: 'probe',
-      layout: 'shared',
-      dimension: SHIPPED_DIMENSION + 1,
-      embedder,
-    },
-    client,
-  ).healthCheck();
+  const wrong = await new HanaVectorRag({
+    ...connection,
+    collectionName: 'probe',
+    layout: 'shared',
+    dimension: SHIPPED_DIMENSION + 1,
+    embedder,
+  }).healthCheck();
   if (!wrong.ok && wrong.error.code === 'SHARED_LAYOUT_NOT_DEPLOYED')
     out(`PASS startup check rejects a wrong dimension: ${wrong.error.message}`);
   else {
@@ -205,15 +203,12 @@ try {
       const unprefix = (name) => name.slice(prefix.length);
       const store = (collection) =>
         padQuery(
-          new HanaVectorRag(
-            {
-              ...connection,
-              collectionName: p(collection),
-              layout: 'shared',
-              embedder,
-            },
-            client,
-          ),
+          new HanaVectorRag({
+            ...connection,
+            collectionName: p(collection),
+            layout: 'shared',
+            embedder,
+          }),
         );
       return {
         async openStore(collection) {
@@ -226,7 +221,6 @@ try {
             connection,
             defaultDimension: SHIPPED_DIMENSION,
             layout: 'shared',
-            clientFactory: () => client,
           });
           return {
             name: inner.name,
@@ -304,3 +298,6 @@ if (failures.length === 0) {
       out(`  ${name}: ${line}`);
   process.exitCode = 1;
 }
+// The stores' own connections keep the event loop alive; leave once the log
+// has flushed (the manifest's `sleep` keeps the container for log reading).
+setTimeout(() => process.exit(process.exitCode ?? 0), 1000);
