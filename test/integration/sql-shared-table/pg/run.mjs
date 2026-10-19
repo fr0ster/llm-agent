@@ -152,18 +152,27 @@ try {
   });
 
   // --- scan / deleteWhere / updateCollection kit, both layouts -------------
-  // The per-collection layout keeps its data tables in the connection's default
-  // schema (which, on a pooled connection that ran the deploy script's
-  // `SET search_path`, is the test schema); clean what the kit creates there
-  // before each subject and at the end.
+  // The per-collection layout ignores `schema` for its data tables, so this
+  // kit uses a client that sets search_path to the run's own schema on every
+  // statement: everything it creates lands there. The exact table names are
+  // tracked and only those are dropped (the schema itself goes at the end).
+  const pcTables = new Set();
+  const pcClient = {
+    async query(sql, params = []) {
+      const conn = await pool.connect();
+      try {
+        await conn.query(`SET search_path TO "${schema}", public`);
+        return await conn.query(sql, params);
+      } finally {
+        conn.release();
+      }
+    },
+    end: async () => {},
+  };
   const dropPerCollectionTables = async () => {
-    const found = await pool.query(
-      `SELECT schemaname, tablename FROM pg_tables WHERE schemaname IN ('public', '${schema}') AND tablename NOT IN ('rag_documents', 'rag_collections') AND (tablename = 'scan_a' OR tablename = 'rag_collection_catalog' OR tablename LIKE 'scan\_conf\_%')`,
-    );
-    for (const row of found.rows)
-      await pool.query(
-        `DROP TABLE IF EXISTS "${row.schemaname}"."${row.tablename}"`,
-      );
+    for (const table of pcTables)
+      await pool.query(`DROP TABLE IF EXISTS "${schema}"."${table}"`);
+    pcTables.clear();
   };
   const sharedScanSubject = async () => {
     await resetTables();
@@ -196,12 +205,13 @@ try {
         layout: 'per-collection',
         embedder,
       },
-      client,
+      pcClient,
     );
   const perCollectionScanSubject = async () => {
     await dropPerCollectionTables();
     return {
       async store() {
+        pcTables.add('scan_a');
         return perCollectionStore('scan_a');
       },
       async catalog() {
@@ -210,11 +220,13 @@ try {
           embedder,
           connection: { collectionName: '__unused', dimension: dim },
           defaultDimension: dim,
-          clientFactory: () => client,
+          clientFactory: () => pcClient,
         });
+        pcTables.add('rag_collection_catalog');
         return {
           provider,
           async create(name) {
+            pcTables.add(name);
             const res = await provider.createCollection(name, {
               scope: 'global',
             });

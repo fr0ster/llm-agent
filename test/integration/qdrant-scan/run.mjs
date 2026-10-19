@@ -114,7 +114,7 @@ try {
   for (const name of created) await dropCollection(name);
 }
 console.log(
-  `CONFORMANCE ${kit.failed === 0 ? 'PASS' : 'FAIL'} ${kit.ran - kit.failed}/${kit.ran} (qdrant scan/delete/catalog kit${kit.skipped ? `; ${kit.skipped} skipped` : ''})`,
+  `CONFORMANCE ${kit.failed > 0 ? 'FAIL' : kit.ran === 0 ? 'SKIP' : 'PASS'} ${kit.ran - kit.failed}/${kit.ran} (${kit.ran === 0 ? 'all skipped' : `qdrant scan/delete/catalog kit${kit.skipped ? `; ${kit.skipped} skipped` : ''}`})`,
 );
 if (failures.length > 0) {
   for (const [name, err] of failures)
