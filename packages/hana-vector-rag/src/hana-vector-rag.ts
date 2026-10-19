@@ -16,6 +16,7 @@ import {
 } from '@mcp-abap-adt/llm-agent';
 import type { HanaVectorRagConfig } from './connection.js';
 import { resolveHanaConnectArgs } from './connection.js';
+import { resolveHanaModule } from './hana-module.js';
 import { decodeLob } from './lob.js';
 import { assertCollectionName } from './schema.js';
 import { checkSharedTables } from './shared-check.js';
@@ -42,17 +43,7 @@ export async function createHanaClient(
   cfg: HanaVectorRagConfig,
 ): Promise<HanaClient> {
   const args = await resolveHanaConnectArgs(cfg);
-  const mod = (await import('@sap/hana-client')) as unknown as {
-    createConnection: () => {
-      connect: (opts: unknown, cb: (err: Error | null) => void) => void;
-      exec: (
-        sql: string,
-        params: unknown[],
-        cb: (err: Error | null, rows: unknown) => void,
-      ) => void;
-      disconnect: (cb: (err: Error | null) => void) => void;
-    };
-  };
+  const mod = resolveHanaModule(await import('@sap/hana-client'));
   const conn = mod.createConnection();
   await new Promise<void>((resolve, reject) =>
     conn.connect(args, (err) => (err ? reject(err) : resolve())),
