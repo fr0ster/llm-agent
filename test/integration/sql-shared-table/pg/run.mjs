@@ -17,6 +17,9 @@ const { CONFORMANCE_EMBEDDING_DIM, conformanceEmbedder } = await load(
 const { sharedTableConformanceCases } = await load(
   '@mcp-abap-adt/llm-agent/testing/shared-table-conformance',
 );
+const { scanDeleteConformanceCases, isScanDeleteCaseSkipped } = await load(
+  '@mcp-abap-adt/llm-agent/testing/scan-delete-conformance',
+);
 const { PgVectorRag, PgVectorRagProvider, sharedLayoutSql } = await load(
   '@mcp-abap-adt/pg-vector-rag',
 );
@@ -38,6 +41,8 @@ const dim = CONFORMANCE_EMBEDDING_DIM;
 const embedder = symmetricEmbedder(conformanceEmbedder());
 const failures = [];
 let total = 0;
+// One summary line per kit: [label, passed, ran, skipped].
+const kits = [];
 
 const resetTables = () =>
   pool.query(
@@ -125,6 +130,7 @@ try {
     console.log('FAIL startup check, wrong dimension');
   }
 
+  const sharedKitStart = { total };
   for (const c of sharedTableConformanceCases) {
     total++;
     try {
@@ -138,6 +144,114 @@ try {
       console.log(`FAIL ${c.name}`);
     }
   }
+  kits.push({
+    label: 'shared-table kit (incl. startup checks)',
+    ran: total - sharedKitStart.total + 2,
+    failed: failures.length,
+    skipped: 0,
+  });
+
+  // --- scan / deleteWhere / updateCollection kit, both layouts -------------
+  // The per-collection layout keeps its data tables in the connection's default
+  // schema (which, on a pooled connection that ran the deploy script's
+  // `SET search_path`, is the test schema); clean what the kit creates there
+  // before each subject and at the end.
+  const dropPerCollectionTables = async () => {
+    const found = await pool.query(
+      `SELECT schemaname, tablename FROM pg_tables WHERE schemaname IN ('public', '${schema}') AND tablename NOT IN ('rag_documents', 'rag_collections') AND (tablename = 'scan_a' OR tablename = 'rag_collection_catalog' OR tablename LIKE 'scan\_conf\_%')`,
+    );
+    for (const row of found.rows)
+      await pool.query(
+        `DROP TABLE IF EXISTS "${row.schemaname}"."${row.tablename}"`,
+      );
+  };
+  const sharedScanSubject = async () => {
+    await resetTables();
+    return {
+      async store() {
+        return storeOf('scan_a');
+      },
+      async sibling() {
+        return storeOf('scan_b');
+      },
+      async catalog() {
+        const provider = await subject().provider();
+        return {
+          provider,
+          async create(name) {
+            const res = await provider.createCollection(name, {
+              scope: 'global',
+            });
+            if (!res.ok) throw res.error;
+          },
+        };
+      },
+    };
+  };
+  const perCollectionStore = (collection) =>
+    new PgVectorRag(
+      {
+        collectionName: collection,
+        dimension: dim,
+        layout: 'per-collection',
+        embedder,
+      },
+      client,
+    );
+  const perCollectionScanSubject = async () => {
+    await dropPerCollectionTables();
+    return {
+      async store() {
+        return perCollectionStore('scan_a');
+      },
+      async catalog() {
+        const provider = new PgVectorRagProvider({
+          name: 'pg',
+          embedder,
+          connection: { collectionName: '__unused', dimension: dim },
+          defaultDimension: dim,
+          clientFactory: () => client,
+        });
+        return {
+          provider,
+          async create(name) {
+            const res = await provider.createCollection(name, {
+              scope: 'global',
+            });
+            if (!res.ok) throw res.error;
+          },
+        };
+      },
+    };
+  };
+  for (const [label, makeSubject] of [
+    ['scan/delete/catalog kit, shared layout', sharedScanSubject],
+    [
+      'scan/delete/catalog kit, per-collection layout',
+      perCollectionScanSubject,
+    ],
+  ]) {
+    const kit = { label, ran: 0, failed: 0, skipped: 0 };
+    for (const c of scanDeleteConformanceCases) {
+      try {
+        await c.run(makeSubject);
+        kit.ran++;
+        console.log(`PASS [${label}] ${c.name}`);
+      } catch (err) {
+        if (isScanDeleteCaseSkipped(err)) {
+          kit.skipped++;
+          console.log(`SKIP [${label}] ${c.name}: ${err.message}`);
+        } else {
+          kit.ran++;
+          kit.failed++;
+          failures.push([`[${label}] ${c.name}`, err]);
+          console.log(`FAIL [${label}] ${c.name}`);
+        }
+      }
+    }
+    kits.push(kit);
+  }
+  await dropPerCollectionTables();
 } catch (err) {
   failures.push(['setup', err]);
   total++;
@@ -150,10 +264,13 @@ try {
   await pool.end();
 }
 
-if (failures.length === 0) {
-  console.log(`CONFORMANCE PASS ${total}/${total}`);
-} else {
-  console.log(`CONFORMANCE FAIL ${total - failures.length}/${total}`);
+for (const k of kits) {
+  const pass = k.ran - k.failed;
+  console.log(
+    `CONFORMANCE ${k.failed === 0 ? 'PASS' : 'FAIL'} ${pass}/${k.ran} (${k.label}${k.skipped ? `; ${k.skipped} skipped, seam absent` : ''})`,
+  );
+}
+if (failures.length > 0) {
   for (const [name, err] of failures)
     console.log(`  ${name}: ${err?.stack ?? err}`);
   process.exitCode = 1;
