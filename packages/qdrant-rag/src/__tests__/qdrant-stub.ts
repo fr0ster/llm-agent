@@ -111,9 +111,21 @@ export async function startQdrantStub(
         return;
       }
       if (r.method === 'POST' && action === '/scroll') {
-        const ids = [...c.points.keys()].sort();
-        const start =
-          body.offset === undefined ? 0 : ids.indexOf(String(body.offset));
+        // Qdrant scrolls in point-id order; the offset is the first id to
+        // return (inclusive), the filter is applied inside the scroll.
+        const filter = body.filter as QdrantFilter | undefined;
+        const ids = [...c.points.keys()]
+          .sort()
+          .filter(
+            (id) =>
+              filter === undefined ||
+              matchesFilter(c.points.get(id)?.payload ?? {}, filter),
+          );
+        const first =
+          body.offset === undefined
+            ? 0
+            : ids.findIndex((id) => id >= String(body.offset));
+        const start = first === -1 ? ids.length : first;
         const limit = Number(body.limit ?? 10);
         reply(200, {
           result: {

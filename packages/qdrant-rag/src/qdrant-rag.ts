@@ -6,14 +6,22 @@ import type {
   IRetrievalEmbedder,
 } from '@mcp-abap-adt/llm-agent';
 import {
+  assertNonEmptyFilter,
   type CallOptions,
   FallbackQueryEmbedding,
+  INVALID_ARGUMENT,
+  type IRagFilteredDeleter,
+  type IRagScanner,
   RagError,
   type RagMetadata,
   type RagResult,
+  type RagScanFilter,
+  type RagScanPage,
   type Result,
   ragIdentityFilter,
 } from '@mcp-abap-adt/llm-agent';
+import { splitPayload } from './payload-record.js';
+import { deleteWhere, scanPage } from './scan-delete.js';
 
 /**
  * Derive a deterministic UUID from a stable string key using SHA-256.
@@ -53,7 +61,7 @@ export interface QdrantRagConfig {
   autoCreateCollection?: boolean;
 }
 
-export class QdrantRag implements IRag {
+export class QdrantRag implements IRag, IRagScanner, IRagFilteredDeleter {
   private readonly url: string;
   private readonly collectionName: string;
   private readonly embedder: IRetrievalEmbedder;
@@ -325,12 +333,7 @@ export class QdrantRag implements IRag {
       };
 
       const results: RagResult[] = (json.result ?? []).map((hit) => {
-        const { text: hitText, ...rest } = hit.payload;
-        return {
-          text: String(hitText ?? ''),
-          metadata: rest as RagMetadata,
-          score: hit.score,
-        };
+        return { ...splitPayload(hit.payload), score: hit.score };
       });
 
       return { ok: true, value: results };
@@ -369,19 +372,83 @@ export class QdrantRag implements IRag {
       };
       const hit = json.result?.[0];
       if (!hit) return { ok: true, value: null };
-      const { text: hitText, ...rest } = hit.payload;
       return {
         ok: true,
-        value: {
-          text: String(hitText ?? ''),
-          metadata: rest as RagMetadata,
-          score: 1,
-        },
+        value: { ...splitPayload(hit.payload), score: 1 },
       };
     } catch (err) {
       if (err instanceof RagError) return { ok: false, error: err };
       return { ok: false, error: new RagError(String(err), 'QUERY_ERROR') };
     }
+  }
+
+  async scan(
+    opts?: { filter?: RagScanFilter; pageSize?: number; cursor?: string },
+    options?: CallOptions,
+  ): Promise<Result<RagScanPage, RagError>> {
+    if (options?.signal?.aborted) {
+      return { ok: false, error: new RagError('Aborted', 'ABORTED') };
+    }
+    const size = opts?.pageSize;
+    if (size !== undefined && !(Number.isInteger(size) && size > 0)) {
+      return {
+        ok: false,
+        error: new RagError(
+          'scan pageSize must be a positive integer',
+          INVALID_ARGUMENT,
+        ),
+      };
+    }
+    try {
+      const page = await scanPage(
+        this._fetch.bind(this),
+        this.collectionName,
+        opts,
+        options?.signal,
+      );
+      return { ok: true, value: page };
+    } catch (err) {
+      return {
+        ok: false,
+        error: this._scanFailure(err, 'QUERY_ERROR', options),
+      };
+    }
+  }
+
+  async deleteWhere(
+    filter: RagScanFilter,
+    options?: CallOptions,
+  ): Promise<Result<{ deleted: number }, RagError>> {
+    if (options?.signal?.aborted) {
+      return { ok: false, error: new RagError('Aborted', 'ABORTED') };
+    }
+    const valid = assertNonEmptyFilter(filter);
+    if (!valid.ok) return valid;
+    try {
+      const deleted = await deleteWhere(
+        this._fetch.bind(this),
+        this.collectionName,
+        filter,
+        options?.signal,
+      );
+      return { ok: true, value: { deleted } };
+    } catch (err) {
+      return {
+        ok: false,
+        error: this._scanFailure(err, 'DELETE_ERROR', options),
+      };
+    }
+  }
+
+  /** A RagError passes through; an abort is ABORTED; anything else gets `code`. */
+  private _scanFailure(
+    err: unknown,
+    code: string,
+    options?: CallOptions,
+  ): RagError {
+    if (err instanceof RagError) return err;
+    if (options?.signal?.aborted) return new RagError('Aborted', 'ABORTED');
+    return new RagError(String(err), code);
   }
 
   async healthCheck(options?: CallOptions): Promise<Result<void, RagError>> {
