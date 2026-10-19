@@ -15,6 +15,11 @@
       "types": "./dist/testing/rag-filter-conformance.d.ts",
       "import": "./dist/testing/rag-filter-conformance.js",
       "default": "./dist/testing/rag-filter-conformance.js"
+    },
+    "./testing/shared-table-conformance": {
+      "types": "./dist/testing/shared-table-conformance.d.ts",
+      "import": "./dist/testing/shared-table-conformance.js",
+      "default": "./dist/testing/shared-table-conformance.js"
     }
   },
   "files": [

@@ -6,13 +6,16 @@ import type { PgClient } from '../pg-vector-rag.js';
  * metadata are evaluated with SQL semantics (`->>` of a missing key is NULL,
  * and NULL = $n is not true), rows are ordered by cosine distance and cut at
  * LIMIT. Both table layouts are understood: per-collection tables, and the
- * shared documents table told apart by its `"collection"` column. It knows
+ * shared documents table told apart by its `"collection"` column, with the
+ * provider's catalog statements on the shared catalog table. It knows
  * exactly the statement and condition shapes PgVectorRag emits and throws on
  * any other, so a store change that emits new SQL fails loudly here instead of
  * being silently mis-evaluated.
  */
 export type StoringPg = PgClient & {
   searches: Array<{ sql: string; params: readonly unknown[] }>;
+  /** Orphan setup: a row of the shared documents table, written past the store. */
+  insertSharedRow(row: Omit<Row, 'table'> & { table?: string }): void;
 };
 
 type Row = {
@@ -81,17 +84,49 @@ const SHARED_BY_ID =
   /^SELECT "id", "text", "metadata" FROM ((?:"[^"]+"[.])?"[^"]+") WHERE "collection" = \$1 AND "id" = \$2$/;
 const SHARED_DELETE =
   /^DELETE FROM ((?:"[^"]+"[.])?"[^"]+") WHERE "collection" = \$1(?: AND "id" = \$2)?$/;
+const COUNT_SHARED =
+  /^SELECT COUNT\(\*\) AS n FROM ((?:"[^"]+"[.])?"[^"]+") WHERE "collection" = \$1$/;
+const DISTINCT_COLLECTIONS =
+  /^SELECT DISTINCT "collection" AS "c" FROM ((?:"[^"]+"[.])?"[^"]+")$/;
+const RECORD_EXISTS =
+  /^SELECT 1 AS present FROM ((?:"[^"]+"[.])?"[^"]+") WHERE store_name = \$1$/;
+const RECORD_INSERT =
+  /^INSERT INTO ((?:"[^"]+"[.])?"[^"]+") \(store_name, collection_name, scope, user_id, session_id, attributes_json\) VALUES \(\$1, \$2, \$3, \$4, \$5, \$6\)$/;
+const RECORD_SELECT =
+  /^SELECT store_name AS "storeName", collection_name AS "name", scope AS "scope", user_id AS "userId", session_id AS "sessionId", attributes_json AS "attributesJson" FROM ((?:"[^"]+"[.])?"[^"]+") ORDER BY store_name$/;
+const RECORD_NAMES = /^SELECT store_name AS "s" FROM ((?:"[^"]+"[.])?"[^"]+")$/;
+const RECORD_DELETE =
+  /^DELETE FROM ((?:"[^"]+"[.])?"[^"]+") WHERE store_name = \$1$/;
+
 const SEARCH =
   /^SELECT (?:id, text, metadata|"id", "text", "metadata"), (?:vector|"vector") <=> .*? AS score FROM ((?:"[^"]+"[.])?"[^"]+")(?: WHERE (.*))? ORDER BY (?:vector|"vector") <=> .* LIMIT (\d+)$/;
 
 /** `sharedDimension`: what the startup check of a shared table finds (default: none, the check is not answered). */
 export function storingPg(opts: { sharedDimension?: number } = {}): StoringPg {
   const rows = new Map<string, Row>();
+  /** Catalog rows per table, keyed by store_name, in column order. */
+  const records = new Map<string, Map<string, unknown[]>>();
+  const recordsOf = (table: string): Map<string, unknown[]> => {
+    let r = records.get(table);
+    if (!r) {
+      r = new Map();
+      records.set(table, r);
+    }
+    return r;
+  };
   const searches: StoringPg['searches'] = [];
   const keyOf = (r: Pick<Row, 'table' | 'collection' | 'id'>): string =>
     JSON.stringify([r.table, r.collection ?? null, r.id]);
+  const sharedRows = (table: string): Row[] =>
+    [...rows.values()].filter(
+      (r) => r.table === table && r.collection !== undefined,
+    );
   return {
     searches,
+    insertSharedRow(row) {
+      const full: Row = { ...row, table: row.table ?? '"rag_documents"' };
+      rows.set(keyOf(full), full);
+    },
     async query(sql, params = []) {
       if (sql.startsWith('CREATE ')) return { rows: [], rowCount: 0 };
       if (opts.sharedDimension !== undefined) {
@@ -152,6 +187,60 @@ export function storingPg(opts: { sharedDimension?: number } = {}): StoringPg {
           }
         }
         return { rows: [], rowCount: n };
+      }
+      const count = sql.match(COUNT_SHARED);
+      if (count) {
+        const n = sharedRows(count[1]).filter(
+          (r) => r.collection === params[0],
+        ).length;
+        // pg hands a COUNT back as a bigint string.
+        return { rows: [{ n: String(n) }], rowCount: 1 };
+      }
+      const distinct = sql.match(DISTINCT_COLLECTIONS);
+      if (distinct) {
+        const names = new Set(sharedRows(distinct[1]).map((r) => r.collection));
+        const out = [...names].map((c) => ({ c }));
+        return { rows: out, rowCount: out.length };
+      }
+      const exists = sql.match(RECORD_EXISTS);
+      if (exists) {
+        const hit = recordsOf(exists[1]).has(String(params[0]));
+        return { rows: hit ? [{ present: 1 }] : [], rowCount: hit ? 1 : 0 };
+      }
+      const insert = sql.match(RECORD_INSERT);
+      if (insert) {
+        const table = recordsOf(insert[1]);
+        const key = String(params[0]);
+        if (table.has(key))
+          throw new Error(
+            'duplicate key value violates unique constraint (store_name)',
+          );
+        table.set(key, [...params]);
+        return { rows: [], rowCount: 1 };
+      }
+      const select = sql.match(RECORD_SELECT);
+      if (select) {
+        const out = [...recordsOf(select[1]).values()]
+          .sort((a, b) => String(a[0]).localeCompare(String(b[0])))
+          .map((p) => ({
+            storeName: p[0],
+            name: p[1],
+            scope: p[2],
+            userId: p[3],
+            sessionId: p[4],
+            attributesJson: p[5],
+          }));
+        return { rows: out, rowCount: out.length };
+      }
+      const names = sql.match(RECORD_NAMES);
+      if (names) {
+        const out = [...recordsOf(names[1]).keys()].map((s) => ({ s }));
+        return { rows: out, rowCount: out.length };
+      }
+      const delRecord = sql.match(RECORD_DELETE);
+      if (delRecord) {
+        const gone = recordsOf(delRecord[1]).delete(String(params[0]));
+        return { rows: [], rowCount: gone ? 1 : 0 };
       }
       const m = sql.match(SEARCH);
       if (m) {
