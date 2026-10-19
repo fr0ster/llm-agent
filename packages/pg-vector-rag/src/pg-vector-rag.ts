@@ -15,12 +15,15 @@ import {
 } from '@mcp-abap-adt/llm-agent';
 import type { PgVectorRagConfig } from './connection.js';
 import { resolvePgConnectArgs } from './connection.js';
+import { assertCollectionName, createExtensionSql } from './schema.js';
+import { checkSharedTables } from './shared-check.js';
+import { SHARED_DOCUMENTS_TABLE } from './shared-ddl.js';
 import {
-  assertCollectionName,
-  createExtensionSql,
-  createTableSql,
-  quoteIdent,
-} from './schema.js';
+  type PgStoreSql,
+  perCollectionStoreSql,
+  sharedStoreSql,
+} from './store-sql.js';
+import { pgVectorLiteral } from './vector-literal.js';
 
 export type { PgVectorRagConfig };
 
@@ -30,10 +33,6 @@ export interface PgClient {
     params?: readonly unknown[],
   ): Promise<{ rows: Array<Record<string, unknown>>; rowCount: number }>;
   end(): Promise<void>;
-}
-
-function vectorLiteral(vec: number[]): string {
-  return `'[${vec.join(',')}]'::vector`;
 }
 
 /** Opens the pool a handle, or a provider's catalog work, talks through. */
@@ -61,23 +60,37 @@ export async function createPgClient(
 }
 
 export class PgVectorRag implements IRag {
-  private readonly collectionName: string;
   private readonly dimension: number;
   private readonly embedder: IRetrievalEmbedder;
   private readonly autoCreateSchema: boolean;
   private readonly clientPromise: Promise<PgClient>;
   private schemaReady = false;
   private schemaPromise?: Promise<void>;
+  private readonly sql: PgStoreSql;
+  private readonly documentsTable: string;
+  private readonly schema?: string;
+  private sharedCheck?: Promise<void>;
 
   constructor(
     config: PgVectorRagConfig & { embedder: IRetrievalEmbedder },
     injectedClient?: PgClient,
   ) {
     assertCollectionName(config.collectionName);
-    this.collectionName = config.collectionName;
     this.dimension = config.dimension ?? 1536;
     this.embedder = config.embedder;
-    this.autoCreateSchema = config.autoCreateSchema ?? true;
+    const shared = config.layout === 'shared';
+    if (shared && config.autoCreateSchema === true) {
+      throw new RagError(
+        "autoCreateSchema: true is not allowed with layout: 'shared' — the shared tables are deployed outside the app",
+        'INVALID_CONFIG',
+      );
+    }
+    this.autoCreateSchema = config.autoCreateSchema ?? !shared;
+    this.documentsTable = config.documentsTable ?? SHARED_DOCUMENTS_TABLE;
+    this.schema = config.schema;
+    this.sql = shared
+      ? sharedStoreSql(config.collectionName, this.documentsTable)
+      : perCollectionStoreSql(config.collectionName, this.dimension);
     // Attach a no-op catch so the eager import never becomes an unhandledRejection.
     // The rejection is re-thrown when clientPromise is actually awaited.
     const driverPromise = injectedClient
@@ -91,8 +104,11 @@ export class PgVectorRag implements IRag {
     if (this.schemaReady) return;
     this.schemaPromise ??= (async () => {
       const client = await this.clientPromise;
-      await client.query(createExtensionSql());
-      await client.query(createTableSql(this.collectionName, this.dimension));
+      const ddl = this.sql.createTable();
+      if (ddl !== undefined) {
+        await client.query(createExtensionSql());
+        await client.query(ddl);
+      }
       this.schemaReady = true;
     })();
     await this.schemaPromise;
@@ -100,6 +116,41 @@ export class PgVectorRag implements IRag {
 
   private async maybeEnsureSchema(): Promise<void> {
     if (this.autoCreateSchema) await this.ensureSchema();
+    await this.ensureSharedDeployed();
+  }
+
+  /** `shared` only: the tables are deployed with the right dimension. A success is kept, a failure is not. */
+  private async ensureSharedDeployed(): Promise<void> {
+    if (this.sql.layout !== 'shared') return;
+    this.sharedCheck ??= (async () => {
+      const checked = await checkSharedTables(await this.clientPromise, {
+        schema: this.schema,
+        tables: [this.documentsTable],
+        documentsTable: this.documentsTable,
+        dimension: this.dimension,
+      });
+      if (!checked.ok) throw checked.error;
+    })().catch((err: unknown) => {
+      this.sharedCheck = undefined;
+      throw err;
+    });
+    await this.sharedCheck;
+  }
+
+  /** The shared check's own error reaches the caller as is; anything else is wrapped in `code`. */
+  private failure(err: unknown, code: string): RagError {
+    return err instanceof RagError &&
+      (err.code === 'SHARED_LAYOUT_NOT_DEPLOYED' ||
+        err.code === 'HEALTH_CHECK_ERROR')
+      ? err
+      : new RagError(String(err), code);
+  }
+
+  private vectorLiteral(vec: number[]): string {
+    return pgVectorLiteral(
+      vec,
+      this.sql.layout === 'shared' ? this.dimension : undefined,
+    );
   }
 
   async query(
@@ -114,41 +165,17 @@ export class PgVectorRag implements IRag {
       const safe = new FallbackQueryEmbedding(embedding, this.embedder);
       const vector = await safe.toVector();
       const client = await this.clientPromise;
-      const table = quoteIdent(this.collectionName);
-      const lit = vectorLiteral(vector);
-      // The filters, as parameterised conditions on the jsonb metadata (never
-      // interpolated) — the same contract VectorRag / QdrantRag apply:
-      // - session/user scope: `->>` yields NULL for a missing key, and
-      //   NULL = $n is not true, so an unowned row is excluded;
-      // - `ragFilter.namespace`: the same, on `metadata.namespace`;
-      // - expiry: a numeric `metadata.ttl` (epoch seconds) in the past drops
-      //   the row; a missing or non-numeric ttl never expires. The CASE keeps
-      //   the float8 cast away from a non-numeric value, which would fail the
-      //   whole query.
-      // The WHERE runs before ORDER BY … LIMIT: the table has no ANN index, so
-      // the scan is exact and LIMIT counts only matching rows.
-      const identity = ragIdentityFilter(options);
-      const targetNamespace = options?.ragFilter?.namespace;
-      const conditions: string[] = [];
-      const params: Array<string | number> = [];
-      if (identity?.sessionId !== undefined) {
-        params.push(identity.sessionId);
-        conditions.push(`metadata->>'sessionId' = $${params.length}`);
-      }
-      if (identity?.userId !== undefined) {
-        params.push(identity.userId);
-        conditions.push(`metadata->>'userId' = $${params.length}`);
-      }
-      if (typeof targetNamespace === 'string') {
-        params.push(targetNamespace);
-        conditions.push(`metadata->>'namespace' = $${params.length}`);
-      }
-      params.push(Date.now() / 1000);
-      conditions.push(
-        `COALESCE(CASE WHEN jsonb_typeof(metadata->'ttl') = 'number' THEN (metadata->>'ttl')::float8 END, 'infinity'::float8) >= $${params.length}`,
-      );
-      const where = ` WHERE ${conditions.join(' AND ')}`;
-      const sql = `SELECT id, text, metadata, vector <=> ${lit} AS score FROM ${table}${where} ORDER BY vector <=> ${lit} LIMIT ${Math.max(1, k)}`;
+      const lit = this.vectorLiteral(vector);
+      const rawNamespace = options?.ragFilter?.namespace;
+      // Session/user scope, `ragFilter.namespace` and expiry are conditions of
+      // the SQL itself (see store-sql.ts), evaluated before ORDER BY … LIMIT:
+      // the table has no ANN index, so the scan is exact and LIMIT counts only
+      // matching rows.
+      const { sql, params } = this.sql.search(lit, Math.max(1, k), {
+        identity: ragIdentityFilter(options),
+        namespace: typeof rawNamespace === 'string' ? rawNamespace : undefined,
+        nowSecs: Date.now() / 1000,
+      });
       const { rows } = await client.query(sql, params);
       const results: RagResult[] = rows.map((row) => ({
         text: String(row.text ?? ''),
@@ -157,7 +184,7 @@ export class PgVectorRag implements IRag {
       }));
       return { ok: true, value: results };
     } catch (err) {
-      return { ok: false, error: new RagError(String(err), 'QUERY_ERROR') };
+      return { ok: false, error: this.failure(err, 'QUERY_ERROR') };
     }
   }
 
@@ -170,10 +197,8 @@ export class PgVectorRag implements IRag {
     try {
       await this.maybeEnsureSchema();
       const client = await this.clientPromise;
-      const { rows } = await client.query(
-        `SELECT id, text, metadata FROM ${quoteIdent(this.collectionName)} WHERE id = $1`,
-        [id],
-      );
+      const stmt = this.sql.byId(id);
+      const { rows } = await client.query(stmt.sql, stmt.params);
       const row = rows[0];
       if (!row) return { ok: true, value: null };
       return {
@@ -185,19 +210,20 @@ export class PgVectorRag implements IRag {
         },
       };
     } catch (err) {
-      return { ok: false, error: new RagError(String(err), 'QUERY_ERROR') };
+      return { ok: false, error: this.failure(err, 'QUERY_ERROR') };
     }
   }
 
   async healthCheck(): Promise<Result<void, RagError>> {
     try {
+      await this.ensureSharedDeployed();
       const client = await this.clientPromise;
       await client.query('SELECT 1');
       return { ok: true, value: undefined };
     } catch (err) {
       return {
         ok: false,
-        error: new RagError(String(err), 'HEALTH_CHECK_ERROR'),
+        error: this.failure(err, 'HEALTH_CHECK_ERROR'),
       };
     }
   }
@@ -213,7 +239,7 @@ export class PgVectorRag implements IRag {
       const { vector } = await this.embedder.embedDocument(text, options);
       return this.upsertKnown(text, vector, metadata);
     } catch (err) {
-      return { ok: false, error: new RagError(String(err), 'UPSERT_ERROR') };
+      return { ok: false, error: this.failure(err, 'UPSERT_ERROR') };
     }
   }
 
@@ -231,16 +257,16 @@ export class PgVectorRag implements IRag {
     metadata: RagMetadata,
   ): Promise<Result<void, RagError>> {
     try {
+      const literal = this.vectorLiteral(vector);
       await this.maybeEnsureSchema();
       const client = await this.clientPromise;
       const id = metadata?.id ?? crypto.randomUUID();
       const { id: _omit, ...rest } = metadata ?? {};
-      const table = quoteIdent(this.collectionName);
-      const sql = `INSERT INTO ${table} (id, text, vector, metadata) VALUES ($1, $2, ${vectorLiteral(vector)}, $3::jsonb) ON CONFLICT (id) DO UPDATE SET text = EXCLUDED.text, vector = EXCLUDED.vector, metadata = EXCLUDED.metadata`;
-      await client.query(sql, [id, text, JSON.stringify(rest)]);
+      const stmt = this.sql.upsert(literal, id, text, JSON.stringify(rest));
+      await client.query(stmt.sql, stmt.params);
       return { ok: true, value: undefined };
     } catch (err) {
-      return { ok: false, error: new RagError(String(err), 'UPSERT_ERROR') };
+      return { ok: false, error: this.failure(err, 'UPSERT_ERROR') };
     }
   }
 
@@ -254,15 +280,13 @@ export class PgVectorRag implements IRag {
         try {
           await this.maybeEnsureSchema();
           const client = await this.clientPromise;
-          const res = await client.query(
-            `DELETE FROM ${quoteIdent(this.collectionName)} WHERE id = $1`,
-            [id],
-          );
+          const stmt = this.sql.deleteById(id);
+          const res = await client.query(stmt.sql, stmt.params);
           return { ok: true, value: res.rowCount > 0 };
         } catch (err) {
           return {
             ok: false,
-            error: new RagError(String(err), 'DELETE_ERROR'),
+            error: this.failure(err, 'DELETE_ERROR'),
           };
         }
       },
@@ -270,10 +294,11 @@ export class PgVectorRag implements IRag {
         try {
           await this.maybeEnsureSchema();
           const client = await this.clientPromise;
-          await client.query(`TRUNCATE ${quoteIdent(this.collectionName)}`);
+          const stmt = this.sql.clear();
+          await client.query(stmt.sql, stmt.params);
           return { ok: true, value: undefined };
         } catch (err) {
-          return { ok: false, error: new RagError(String(err), 'CLEAR_ERROR') };
+          return { ok: false, error: this.failure(err, 'CLEAR_ERROR') };
         }
       },
       upsertPrecomputedRaw: async (id, text, vector, metadata) =>

@@ -243,3 +243,163 @@ describe('PgVectorRag — session/user filter (security)', () => {
     assert.equal(params[0], hostile);
   });
 });
+
+describe('PgVectorRag shared layout and vector validation', () => {
+  function recordingClient(
+    opts: { dim?: number; failFirstCheck?: boolean } = {},
+  ) {
+    const calls: ExecCall[] = [];
+    let checkRounds = 0;
+    let failed = false;
+    const client: PgClient & { calls: ExecCall[]; rounds: () => number } = {
+      calls,
+      rounds: () => checkRounds,
+      async query(sql, params = []) {
+        calls.push({ sql, params });
+        if (sql.includes('pg_attribute'))
+          return { rows: [{ dim: opts.dim ?? 3 }], rowCount: 1 };
+        if (sql.startsWith('SELECT to_regclass')) {
+          checkRounds++;
+          if (opts.failFirstCheck && !failed) {
+            failed = true;
+            throw new Error('connection reset');
+          }
+          return { rows: [{ present: true }], rowCount: 1 };
+        }
+        return { rows: [], rowCount: 1 };
+      },
+      async end() {},
+    };
+    return client;
+  }
+  const mk = (
+    client: PgClient,
+    extra: Partial<ConstructorParameters<typeof PgVectorRag>[0]> = {},
+  ) =>
+    new PgVectorRag(
+      {
+        collectionName: 'docs',
+        dimension: 3,
+        layout: 'shared',
+        embedder: symmetricEmbedder(makeEmbedder(3)),
+        ...extra,
+      },
+      client,
+    );
+  const plain = (client: PgClient) =>
+    new PgVectorRag(
+      {
+        collectionName: 'docs',
+        dimension: 3,
+        autoCreateSchema: false,
+        embedder: symmetricEmbedder(makeEmbedder(3)),
+      },
+      client,
+    );
+
+  it('shared store sends no DDL', async () => {
+    const client = recordingClient();
+    const rag = mk(client);
+    assert.ok((await rag.upsert('t', { id: 'a' })).ok);
+    assert.ok(
+      (await rag.query({ text: 'q', toVector: async () => [1, 2, 3] }, 3)).ok,
+    );
+    assert.ok((await rag.getById('a')).ok);
+    const w = rag.writer();
+    assert.ok((await w.deleteByIdRaw?.('a'))?.ok);
+    assert.ok((await w.clearAll?.())?.ok);
+    assert.ok((await rag.healthCheck()).ok);
+    assert.ok(client.calls.length > 0);
+    for (const c of client.calls)
+      assert.doesNotMatch(
+        c.sql,
+        /^\s*(CREATE|DROP|TRUNCATE|ALTER|IF NOT EXISTS)\b/i,
+      );
+  });
+
+  it('layout shared + autoCreateSchema true throws at construction', () => {
+    assert.throws(
+      () => mk(recordingClient(), { autoCreateSchema: true }),
+      (err: Error & { code?: string }) => err.code === 'INVALID_CONFIG',
+    );
+  });
+
+  it('the shared check runs once and a success is memoised', async () => {
+    const client = recordingClient();
+    const rag = mk(client);
+    await rag.getById('a');
+    await rag.getById('b');
+    assert.equal(client.rounds(), 1);
+  });
+
+  it('a failed shared check is not memoised', async () => {
+    const client = recordingClient({ failFirstCheck: true });
+    const rag = mk(client);
+    assert.ok(!(await rag.getById('a')).ok);
+    assert.ok((await rag.getById('a')).ok);
+  });
+
+  it('a dimension mismatch in the database fails the operation', async () => {
+    const rag = mk(recordingClient({ dim: 768 }));
+    const r = await rag.getById('a');
+    assert.ok(!r.ok);
+    assert.match(r.error.message, /768/);
+  });
+
+  const isData = (c: ExecCall) => /^\s*(SELECT "id"|INSERT INTO)/.test(c.sql);
+
+  it('a vector of the wrong length is refused before SQL', async () => {
+    const client = recordingClient();
+    const rag = mk(client);
+    const up = await rag.upsertPrecomputed('t', [1, 2], { id: 'a' });
+    assert.ok(!up.ok);
+    assert.match(up.error.message, /2/);
+    assert.match(up.error.message, /3/);
+    const q = await rag.query(
+      { text: 'q', toVector: async () => [1, 2, 3, 4] },
+      1,
+    );
+    assert.ok(!q.ok);
+    assert.equal(client.calls.filter(isData).length, 0);
+  });
+
+  it('per-collection still accepts a vector of another length', async () => {
+    const client = makeFakeClient();
+    const rag = plain(client);
+    assert.ok((await rag.upsertPrecomputed('t', [1, 2], { id: 'a' })).ok);
+    assert.ok(
+      (await rag.query({ text: 'q', toVector: async () => [1, 2, 3, 4] }, 1))
+        .ok,
+    );
+    assert.ok(client.calls.length >= 2);
+  });
+
+  it('a failed shared check reaches the caller with its own code', async () => {
+    const rag = mk(recordingClient({ dim: 768 }));
+    const q = await rag.query(
+      { text: 'q', toVector: async () => [1, 2, 3] },
+      1,
+    );
+    assert.ok(!q.ok);
+    assert.equal(q.error.code, 'SHARED_LAYOUT_NOT_DEPLOYED');
+    const up = await rag.upsertPrecomputed('t', [1, 2, 3], { id: 'a' });
+    assert.ok(!up.ok);
+    assert.equal(up.error.code, 'SHARED_LAYOUT_NOT_DEPLOYED');
+  });
+
+  it('a non-finite component is refused before SQL', async () => {
+    const client = makeFakeClient();
+    const rag = plain(client);
+    const up = await rag.upsertPrecomputed('t', [1, Number.NaN, 3], {
+      id: 'a',
+    });
+    assert.ok(!up.ok);
+    assert.match(up.error.message, /index 1/);
+    const q = await rag.query(
+      { text: 'q', toVector: async () => [1, Number.POSITIVE_INFINITY, 3] },
+      1,
+    );
+    assert.ok(!q.ok);
+    assert.equal(client.calls.length, 0);
+  });
+});
