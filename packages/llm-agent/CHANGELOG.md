@@ -1,5 +1,9 @@
 # @mcp-abap-adt/llm-agent
 
+## Unreleased
+
+**Added:** `@mcp-abap-adt/llm-agent/testing/shared-table-conformance` — the conformance kit (`sharedTableConformanceCases`) both SQL vector stores run against the shared table layout, on fakes in their unit tests and on a real HANA HDI container and pgvector in `test/integration/sql-shared-table/`. No interface changed.
+
 ## 30.1.0
 
 `IDecisionModel` and its request/answer/error types (`DecisionError`, `DecisionErrorCode`); `LlmComponent` gains `'decision'` and `'rerank'` — an exhaustive `switch` over it, or a `Record<LlmComponent, …>`, must add both. `IRetrievalStrategy` (how one store turns a query into its top-k) and the optional `IRagDecorator { inner }` capability with `isRagDecorator`; `FallbackRag` implements `IRagDecorator`.

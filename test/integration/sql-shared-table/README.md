@@ -24,7 +24,7 @@ node hana/runner/pack.mjs       # -> hana/runner/vendor/*.tgz
 node hana/deployer/prepare.mjs  # -> hana/deployer/src/ (never edit by hand)
 
 # 2. Deploy the tables (HDI deployer uses the binding's hdi_user)
-(cd hana/deployer && npm install && cf push -f manifest.yml)
+(cd hana/deployer && cf push -f manifest.yml)
 cf logs sst-hdi-deployer --recent   # wait for: Deployment to container ... done
 
 # 3. Run the check (runtime user only, DML)

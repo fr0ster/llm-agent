@@ -1,5 +1,9 @@
 # @mcp-abap-adt/llm-agent-rag
 
+## Unreleased
+
+**Added:** `makeRag` accepts `layout` (`'per-collection' | 'shared'`) and `documentsTable` for the `hana-vector` and `pg-vector` stores and passes them to the store (see `@mcp-abap-adt/hana-vector-rag` / `pg-vector-rag`).
+
 ## 30.1.0
 
 Lockstep release with the 30.1.0 line: decision models (`IDecisionModel`, TypeSafe Jev), per-store retrieval strategies (`rag.retrieval`), session agents that carry the server's wiring, circuit breakers per `llm:` key, request cancellation on client disconnect. No change in this package — see the root CHANGELOG.

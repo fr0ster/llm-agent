@@ -51,6 +51,98 @@ Without those rights `createCollection` fails where it used to succeed. A collec
 this release has a table and no record: take it over once with
 `createCollection(..., { adoptExisting: true })`.
 
+## Shared table layout (HDI)
+
+By default every collection is its own table, created at runtime (`layout: 'per-collection'`).
+That cannot work in an **SAP HANA HDI container** (the standard `hana` / `hdi-shared` service on
+BTP): tables there are created only at deploy time, by the HDI deployer, and the application runs
+as the **runtime user**, which has DML rights but no DDL. For that case set `layout: 'shared'`: one
+documents table holds every collection (a `COLLECTION` column tells them apart) and one catalog
+table lists them. Both are deployed outside the app, and **no DDL statement ever reaches the
+database at runtime** (`CREATE`, `DROP`, `TRUNCATE`, `ALTER`). The default stays `per-collection`;
+without `layout` nothing changes.
+
+```yaml
+rag:
+  store:
+    type: hana-vector
+    connectionString: hdbsql://host:443
+    collectionName: llm_agent_docs   # the value of the COLLECTION column
+    dimension: 1536                  # must equal the deployed REAL_VECTOR(n)
+    layout: shared
+    # documentsTable: RAG_DOCUMENTS  # default
+    credentialRef: RAG_HANA
+```
+
+In code: `layout: 'shared'` and `documentsTable` on `HanaVectorRag` / `HanaVectorRagProvider`; the
+provider also takes `catalogTable`. In `shared` the defaults are `RAG_DOCUMENTS` and
+`RAG_COLLECTIONS` (exported as `SHARED_DOCUMENTS_TABLE`, `SHARED_CATALOG_TABLE`). Every shared
+identifier is quoted and upper case (`"RAG_DOCUMENTS"`, columns `"COLLECTION"`, `"ID"`, `"TEXT"`,
+`"VECTOR"`, `"METADATA"`, `"CREATED_AT"`; primary key `("COLLECTION", "ID")`). The tables are
+resolved in the connection's current schema, which for an HDI runtime user is the container
+schema. Table names follow the usual rule `[a-zA-Z_][a-zA-Z0-9_]{0,62}`; **HDI namespaces
+(`.hdinamespace`, `a.b::NAME`) are not supported in this release** — deploy into a container
+without a namespace.
+
+`autoCreateSchema` is `false` by default in `shared`; setting it to `true` explicitly throws
+`RagError` `INVALID_CONFIG` at construction.
+
+### Deploying the tables
+
+The package ships `ddl/` (published with it):
+
+- `RAG_DOCUMENTS.hdbtable`, `RAG_COLLECTIONS.hdbtable`, `.hdiconfig` — for the HDI deployer;
+- `shared-layout.sql` — the same tables as plain SQL (catalog first), for a classic schema or
+  manual use.
+
+Copy the three HDI files into the `src/` of your db module (next to your own artifacts) and run
+`@sap/hdi-deploy` with the container's **design-time user** (`hdi_user`); on Cloud Foundry that is
+the deployer app bound to the HDI service instance. The application itself is bound to the same
+instance and connects as the **runtime user** (`..._RT`), which only needs `SELECT`, `INSERT`,
+`UPDATE`, `DELETE` on the two tables. A working example is in
+`test/integration/sql-shared-table/` of the repository.
+
+### The dimension rule
+
+The shipped DDL is `REAL_VECTOR(1536)` (`SHIPPED_DIMENSION`). For an embedder with another
+dimension, generate the files instead of using the shipped ones:
+
+```ts
+import {
+  sharedCatalogHdbtable,
+  sharedDocumentsHdbtable,
+  sharedLayoutSql,
+} from '@mcp-abap-adt/hana-vector-rag';
+
+sharedDocumentsHdbtable('RAG_DOCUMENTS', 1024); // body of RAG_DOCUMENTS.hdbtable
+sharedCatalogHdbtable('RAG_COLLECTIONS');       // body of RAG_COLLECTIONS.hdbtable
+sharedLayoutSql({ dimension: 1024 });           // plain SQL (documentsTable, catalogTable optional)
+```
+
+On its first operation (lazily; a success is remembered, a failure is retried) a store or provider
+checks that the tables exist and that the `"VECTOR"` column has exactly the configured
+`dimension`. It reads the catalog views only; it never calls the embedder. A missing table or a
+different dimension fails every operation with `RagError` `SHARED_LAYOUT_NOT_DEPLOYED`, naming the
+table, the found and the expected dimension; a driver error during the check is
+`HEALTH_CHECK_ERROR`. `healthCheck()` runs the same check. A direct store checks the documents
+table only; the provider checks both.
+
+Vectors are validated before any SQL: a non-finite component is refused in both layouts, a length
+other than `dimension` only in `shared` (callers see `UPSERT_ERROR` / `QUERY_ERROR` whose message
+names the lengths).
+
+### Semantics
+
+- A direct store reads and writes its `collectionName` as the `COLLECTION` value and needs no
+  catalog row.
+- A collection "exists" when its catalog record exists or the documents table holds rows for it.
+  `listCollections` returns the union of both; `createCollection` for a name that has rows but no
+  record returns `OrphanStoreError` unless `adoptExisting: true`, which writes the record and keeps
+  the rows.
+- `deleteCollection` deletes the collection's documents first, then its record (the per-collection
+  layout deletes the record first); `clearAll` deletes only that collection's rows.
+
+
 ## Connections, and `clientFactory` for per-session hydration
 
 `openCollection` builds a collection's handles without a statement and without a connection; a

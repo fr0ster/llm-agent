@@ -670,6 +670,10 @@ record first, then the data.** If the record cannot be removed, nothing is delet
 fails with `CatalogRecordDeleteError` (`RAG_CATALOG_RECORD_DELETE`): `rag_delete_collection` answers
 `{ ok: false }`, and the registry re-registers the entry so the delete can be retried.
 
+With `layout: 'shared'` on `pg-vector-rag` / `hana-vector-rag` the order is the other way round: the
+collection's rows are deleted first, then its catalog record, so a failed delete leaves the record
+to retry. See the packages' "Shared table layout" README sections.
+
 **A store belongs to its owner.** A provider that keeps stores by name —
 Qdrant, a database — opens whatever is there when a name is created again, so
 the name the registry passes it is not the bare collection name. It is the
