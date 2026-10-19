@@ -1,17 +1,15 @@
 import type {
-  RagCatalogPatch,
   RagCollectionRecord,
   RagProviderCreateCollectionOptions,
   Result,
+  ValidatedRagCatalogPatch,
 } from '@mcp-abap-adt/llm-agent';
 import {
   DuplicateCollectionError,
   encodeRagAttributes,
-  INVALID_ARGUMENT,
-  RAG_COLLECTION_NOT_FOUND,
-  RagError,
+  type RagError,
+  ragCollectionNotFound,
   ragOwnerKeys,
-  validateRagAttributes,
 } from '@mcp-abap-adt/llm-agent';
 import {
   insertRecordSql,
@@ -78,65 +76,18 @@ export async function writeCatalogRecord(
   }
 }
 
-/** A patch as the UPDATE binds it: NULL keeps the column. */
-export interface PreparedCatalogPatch {
-  collectionName: string | null;
-  attributesJson: string | null;
-}
-
-/** Refuses an empty patch (no key, or only undefined values) before any call. */
-export function prepareCatalogPatch(
-  patch: RagCatalogPatch,
-): Result<PreparedCatalogPatch, RagError> {
-  if (patch.collectionName === undefined && patch.attributes === undefined) {
-    return {
-      ok: false,
-      error: new RagError(
-        'updateCollection needs collectionName or attributes',
-        INVALID_ARGUMENT,
-      ),
-    };
-  }
-  // The create path's check, before anything is encoded or sent: an
-  // un-encodable value (NaN, undefined, Date, BigInt, a cycle) is refused
-  // here rather than rewritten or thrown out of the Result.
-  const attributes = validateRagAttributes(patch.attributes);
-  if (!attributes.ok) return attributes;
-  return {
-    ok: true,
-    value: {
-      collectionName: patch.collectionName ?? null,
-      // The same encoding the create path writes.
-      attributesJson: encodeRagAttributes(attributes.value),
-    },
-  };
-}
-
-export function collectionNotFound(storeName: string): {
-  ok: false;
-  error: RagError;
-} {
-  return {
-    ok: false,
-    error: new RagError(
-      `no catalog record for store '${storeName}'`,
-      RAG_COLLECTION_NOT_FOUND,
-    ),
-  };
-}
-
 /** One UPDATE; zero rows updated is a missing record, and nothing is created. */
 export async function updateCatalogRecord(
   client: HanaClient,
   table: string,
   storeName: string,
-  patch: PreparedCatalogPatch,
+  patch: ValidatedRagCatalogPatch,
 ): Promise<Result<void, RagError>> {
   const { rowCount } = await client.exec(updateRecordSql(table), [
-    patch.collectionName,
-    patch.attributesJson,
+    patch.collectionName ?? null,
+    patch.attributesJson ?? null,
     storeName,
   ]);
-  if (rowCount === 0) return collectionNotFound(storeName);
+  if (rowCount === 0) return ragCollectionNotFound(storeName);
   return { ok: true, value: undefined };
 }

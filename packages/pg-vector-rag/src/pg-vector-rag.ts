@@ -10,6 +10,8 @@ import type {
 } from '@mcp-abap-adt/llm-agent';
 import {
   assertNonEmptyFilter,
+  assertScanOptions,
+  decodeIdScanCursor,
   FallbackQueryEmbedding,
   INVALID_ARGUMENT,
   type IRagFilteredDeleter,
@@ -150,10 +152,16 @@ export class PgVectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
   private failure(err: unknown, code: string): RagError {
     return err instanceof RagError &&
       (err.code === SHARED_LAYOUT_NOT_DEPLOYED ||
-        err.code === 'HEALTH_CHECK_ERROR' ||
-        err.code === 'ABORTED')
+        err.code === 'HEALTH_CHECK_ERROR')
       ? err
       : new RagError(String(err), code);
+  }
+
+  /** `failure` for `scan` / `deleteWhere`, which also pass `ABORTED` through. */
+  private scanFailure(err: unknown, code: string): RagError {
+    return err instanceof RagError && err.code === 'ABORTED'
+      ? err
+      : this.failure(err, code);
   }
 
   private vectorLiteral(vec: number[]): string {
@@ -230,21 +238,22 @@ export class PgVectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
   ): Promise<Result<RagScanPage, RagError>> {
     if (options?.signal?.aborted)
       return { ok: false, error: new RagError('Aborted', 'ABORTED') };
-    const size = opts?.pageSize;
-    if (size !== undefined && !(Number.isInteger(size) && size > 0))
+    const valid = assertScanOptions(opts);
+    if (!valid.ok) return valid;
+    if (
+      opts?.cursor !== undefined &&
+      decodeIdScanCursor(opts.cursor) === undefined
+    )
       return {
         ok: false,
-        error: new RagError(
-          'scan pageSize must be a positive integer',
-          INVALID_ARGUMENT,
-        ),
+        error: new RagError('Invalid scan cursor', INVALID_ARGUMENT),
       };
     try {
       await this.maybeEnsureSchema();
       const client = await this.clientPromise;
       return { ok: true, value: await scanPage(client, this.sql, opts) };
     } catch (err) {
-      return { ok: false, error: this.failure(err, 'QUERY_ERROR') };
+      return { ok: false, error: this.scanFailure(err, 'QUERY_ERROR') };
     }
   }
 
@@ -268,7 +277,7 @@ export class PgVectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
       const deleted = await deleteWhere(client, this.sql, filter);
       return { ok: true, value: { deleted } };
     } catch (err) {
-      return { ok: false, error: this.failure(err, 'DELETE_ERROR') };
+      return { ok: false, error: this.scanFailure(err, 'DELETE_ERROR') };
     }
   }
 

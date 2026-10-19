@@ -7,9 +7,9 @@ import type {
 } from '@mcp-abap-adt/llm-agent';
 import {
   assertNonEmptyFilter,
+  assertScanOptions,
   type CallOptions,
   FallbackQueryEmbedding,
-  INVALID_ARGUMENT,
   type IRagFilteredDeleter,
   type IRagScanner,
   RagError,
@@ -389,16 +389,8 @@ export class QdrantRag implements IRag, IRagScanner, IRagFilteredDeleter {
     if (options?.signal?.aborted) {
       return { ok: false, error: new RagError('Aborted', 'ABORTED') };
     }
-    const size = opts?.pageSize;
-    if (size !== undefined && !(Number.isInteger(size) && size > 0)) {
-      return {
-        ok: false,
-        error: new RagError(
-          'scan pageSize must be a positive integer',
-          INVALID_ARGUMENT,
-        ),
-      };
-    }
+    const valid = assertScanOptions(opts);
+    if (!valid.ok) return valid;
     try {
       const page = await scanPage(
         this._fetch.bind(this),

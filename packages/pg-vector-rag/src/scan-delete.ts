@@ -1,5 +1,9 @@
 import {
   DEFAULT_SCAN_PAGE_SIZE,
+  decodeIdScanCursor,
+  encodeIdScanCursor,
+  INVALID_ARGUMENT,
+  RagError,
   type RagScanFilter,
   type RagScanPage,
   type RagScanRecord,
@@ -26,12 +30,16 @@ export async function scanPage(
   opts?: { filter?: RagScanFilter; pageSize?: number; cursor?: string },
 ): Promise<RagScanPage> {
   const limit = opts?.pageSize ?? DEFAULT_SCAN_PAGE_SIZE;
-  const stmt = sql.scanPage(opts?.cursor, limit, opts?.filter);
+  const after =
+    opts?.cursor === undefined ? undefined : decodeIdScanCursor(opts.cursor);
+  if (opts?.cursor !== undefined && after === undefined)
+    throw new RagError('Invalid scan cursor', INVALID_ARGUMENT);
+  const stmt = sql.scanPage(after, limit, opts?.filter);
   const { rows } = await client.query(stmt.sql, stmt.params);
   const records = rows.map(toRecord);
   const last = rows[rows.length - 1];
   return rows.length >= limit && last
-    ? { records, cursor: String(last.id) }
+    ? { records, cursor: encodeIdScanCursor(String(last.id)) }
     : { records };
 }
 

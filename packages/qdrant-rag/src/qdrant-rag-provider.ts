@@ -19,13 +19,12 @@ import {
   DuplicateCollectionError,
   describeRagCatalogRows,
   encodeRagAttributes,
-  INVALID_ARGUMENT,
   OrphanStoreError,
-  RAG_COLLECTION_NOT_FOUND,
   RagError,
   type Result,
+  ragCollectionNotFound,
   ragOwnerKeys,
-  validateRagAttributes,
+  validateRagCatalogPatch,
   validateRagOwner,
 } from '@mcp-abap-adt/llm-agent';
 import { deterministicUUID, QdrantRag } from './qdrant-rag.js';
@@ -218,35 +217,19 @@ export class QdrantRagProvider
     storeName: string,
     patch: RagCatalogPatch,
   ): Promise<Result<void, RagError>> {
-    if (patch.collectionName === undefined && patch.attributes === undefined) {
-      return {
-        ok: false,
-        error: new RagError(
-          'updateCollection needs collectionName or attributes',
-          INVALID_ARGUMENT,
-        ),
-      };
-    }
-    const attributes = validateRagAttributes(patch.attributes);
-    if (!attributes.ok) return attributes;
-    const notFound: Refusal = {
-      ok: false,
-      error: new RagError(
-        `no catalog record for store '${storeName}'`,
-        RAG_COLLECTION_NOT_FOUND,
-      ),
-    };
+    const valid = validateRagCatalogPatch(patch);
+    if (!valid.ok) return valid;
+    const { collectionName, attributesJson } = valid.value;
+    const notFound: Refusal = ragCollectionNotFound(storeName);
     try {
       if (!(await this.readRecord(storeName))) return notFound;
       const payload: Record<string, unknown> = {
-        ...(patch.collectionName === undefined
+        ...(collectionName === undefined
           ? {}
-          : { collection_name: patch.collectionName }),
-        ...(patch.attributes === undefined
+          : { collection_name: collectionName }),
+        ...(attributesJson === undefined
           ? {}
-          : {
-              attributes_json: encodeRagAttributes(attributes.value),
-            }),
+          : { attributes_json: attributesJson }),
       };
       const res = await this.request(
         `/collections/${this.catalog}/points/payload?wait=true`,

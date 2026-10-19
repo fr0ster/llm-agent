@@ -4,6 +4,7 @@ import type {
   RagCollectionRecord,
   RagProviderCreateCollectionOptions,
   Result,
+  ValidatedRagCatalogPatch,
 } from '@mcp-abap-adt/llm-agent';
 import {
   CatalogRecordDeleteError,
@@ -15,7 +16,6 @@ import { deleteRecordSql, selectRecordsSql } from './catalog.js';
 import {
   catalogRecordExists,
   duplicateRefusal,
-  type PreparedCatalogPatch,
   updateCatalogRecord,
   writeCatalogRecord,
 } from './catalog-record.js';
@@ -141,7 +141,7 @@ export class SharedProviderOps {
   async update(
     client: HanaClient,
     storeName: string,
-    patch: PreparedCatalogPatch,
+    patch: ValidatedRagCatalogPatch,
   ): Promise<Result<void, RagError>> {
     const ready = await this.check(client);
     if (!ready.ok) return ready;

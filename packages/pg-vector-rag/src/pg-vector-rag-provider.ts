@@ -18,6 +18,8 @@ import {
   describeRagCatalogRows,
   OrphanStoreError,
   RagError,
+  ragCollectionNotFound,
+  validateRagCatalogPatch,
   validateRagOwner,
 } from '@mcp-abap-adt/llm-agent';
 import {
@@ -30,9 +32,7 @@ import {
 } from './catalog.js';
 import {
   catalogRecordExists,
-  collectionNotFound,
   duplicateRefusal,
-  prepareCatalogPatch,
   updateCatalogRecord,
   writeCatalogRecord,
 } from './catalog-record.js';
@@ -235,14 +235,14 @@ export class PgVectorRagProvider
     storeName: string,
     patch: RagCatalogPatch,
   ): Promise<Result<void, RagError>> {
-    const prepared = prepareCatalogPatch(patch);
+    const prepared = validateRagCatalogPatch(patch);
     if (!prepared.ok) return prepared;
     try {
       const client = await this.adminClient();
       if (this.shared)
         return await this.shared.update(client, storeName, prepared.value);
       if (!(await this.tableExists(client, this.catalogTable)))
-        return collectionNotFound(storeName);
+        return ragCollectionNotFound(storeName);
       return await updateCatalogRecord(
         client,
         this.catalogTable,
