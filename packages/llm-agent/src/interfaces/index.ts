@@ -179,6 +179,25 @@ export type {
   RagRegistryCreateCollectionParams,
 } from './rag.js';
 export { isBatchEmbedder, isBatchSizeLimited } from './rag.js';
+export type {
+  IRagCatalogUpdater,
+  IRagFilteredDeleter,
+  IRagScanner,
+  RagCatalogPatch,
+  RagScanFilter,
+  RagScanPage,
+  RagScanRecord,
+} from './rag-scan.js';
+export {
+  assertNonEmptyFilter,
+  DEFAULT_SCAN_PAGE_SIZE,
+  INVALID_ARGUMENT,
+  isRagCatalogUpdater,
+  isRagFilteredDeleter,
+  isRagScanner,
+  matchesScanFilter,
+  RAG_COLLECTION_NOT_FOUND,
+} from './rag-scan.js';
 export type { ILlmRateLimiter } from './rate-limiter.js';
 export {
   type IReadinessReporter,
