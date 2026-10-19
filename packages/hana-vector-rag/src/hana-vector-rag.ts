@@ -16,6 +16,7 @@ import {
 } from '@mcp-abap-adt/llm-agent';
 import type { HanaVectorRagConfig } from './connection.js';
 import { resolveHanaConnectArgs } from './connection.js';
+import { decodeLob } from './lob.js';
 import { assertCollectionName, createTableSql, quoteIdent } from './schema.js';
 
 export type { HanaVectorRagConfig };
@@ -160,7 +161,7 @@ export class HanaVectorRag implements IRag {
       const vector = await safe.toVector();
       const client = await this.client();
       const table = quoteIdent(this.collectionName);
-      const base = `SELECT id, text, metadata, COSINE_SIMILARITY(vector, ${this.vectorLiteral(vector)}) AS score FROM ${table} ORDER BY score DESC`;
+      const base = `SELECT id AS "id", text AS "text", metadata AS "metadata", COSINE_SIMILARITY(vector, ${this.vectorLiteral(vector)}) AS "score" FROM ${table} ORDER BY "score" DESC`;
       const identity = ragIdentityFilter(options);
       const rawNamespace = options?.ragFilter?.namespace;
       const targetNamespace =
@@ -199,7 +200,7 @@ export class HanaVectorRag implements IRag {
             continue;
           }
           picked.push({
-            text: String(row.text ?? ''),
+            text: decodeLob(row.text),
             metadata,
             score: Number(row.score ?? 0),
           });
@@ -234,7 +235,7 @@ export class HanaVectorRag implements IRag {
       await this.maybeEnsureSchema();
       const client = await this.client();
       const rows = await client.query(
-        `SELECT id, text, metadata FROM ${quoteIdent(this.collectionName)} WHERE id = ?`,
+        `SELECT id AS "id", text AS "text", metadata AS "metadata" FROM ${quoteIdent(this.collectionName)} WHERE id = ?`,
         [id],
       );
       const row = rows[0];
@@ -242,7 +243,7 @@ export class HanaVectorRag implements IRag {
       const metadata = withId(row);
       return {
         ok: true,
-        value: { text: String(row.text ?? ''), metadata, score: 1 },
+        value: { text: decodeLob(row.text), metadata, score: 1 },
       };
     } catch (err) {
       return { ok: false, error: new RagError(String(err), 'QUERY_ERROR') };
@@ -350,7 +351,7 @@ export class HanaVectorRag implements IRag {
  * returns it (tool selection's toolNameFromRecord keys on it).
  */
 function withId(row: Record<string, unknown>): RagMetadata {
-  const raw = row.metadata as string | null | undefined;
+  const raw = decodeLob(row.metadata);
   const parsed = raw ? (JSON.parse(raw) as RagMetadata) : {};
   return { ...parsed, id: String(row.id) };
 }

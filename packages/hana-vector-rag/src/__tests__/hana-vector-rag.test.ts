@@ -47,6 +47,81 @@ function makeFakeClient(
 }
 
 describe('HanaVectorRag', () => {
+  it('search SELECT quotes every alias', async () => {
+    const client = makeFakeClient();
+    const rag = new HanaVectorRag(
+      {
+        collectionName: 'docs',
+        embedder: symmetricEmbedder(makeEmbedder()),
+        credential: staticLogin('u', 'p'),
+      },
+      client,
+    );
+    const result = await rag.query(
+      { text: 'query', toVector: async () => [0.1, 0.2, 0.3] },
+      5,
+    );
+    assert.equal(result.ok, true);
+    const select = client.calls.find((c) => c.sql.startsWith('SELECT'));
+    assert.ok(select);
+    for (const alias of ['id', 'text', 'metadata', 'score']) {
+      assert.ok(select.sql.includes(`AS "${alias}"`));
+    }
+    assert.ok(select.sql.includes('ORDER BY "score" DESC'));
+    assert.ok(!select.sql.includes('AS score'));
+  });
+
+  it('getById SELECT quotes every alias', async () => {
+    const client = makeFakeClient();
+    const rag = new HanaVectorRag(
+      {
+        collectionName: 'docs',
+        embedder: symmetricEmbedder(makeEmbedder()),
+        credential: staticLogin('u', 'p'),
+      },
+      client,
+    );
+    const result = await rag.getById('a');
+    assert.equal(result.ok, true);
+    const select = client.calls.find((c) => c.sql.startsWith('SELECT'));
+    assert.ok(select);
+    for (const alias of ['id', 'text', 'metadata']) {
+      assert.ok(select.sql.includes(`AS "${alias}"`));
+    }
+  });
+
+  it('NCLOB values that arrive as Buffer are decoded', async () => {
+    const client = makeFakeClient([
+      {
+        id: 'a',
+        text: Buffer.from('hello'),
+        metadata: Buffer.from('{"k":1}'),
+        score: 0.9,
+      },
+    ]);
+    const rag = new HanaVectorRag(
+      {
+        collectionName: 'docs',
+        embedder: symmetricEmbedder(makeEmbedder()),
+        credential: staticLogin('u', 'p'),
+      },
+      client,
+    );
+    const search = await rag.query(
+      { text: 'query', toVector: async () => [0.1, 0.2, 0.3] },
+      5,
+    );
+    assert.ok(search.ok);
+    const lookup = await rag.getById('a');
+    assert.ok(lookup.ok);
+    assert.ok(lookup.value);
+    for (const result of [search.value[0], lookup.value]) {
+      assert.equal(result.text, 'hello');
+      assert.equal(result.metadata.k, 1);
+      assert.equal(result.metadata.id, 'a');
+    }
+  });
+
   it('ensureSchema runs CREATE TABLE only once', async () => {
     const client = makeFakeClient();
     const rag = new HanaVectorRag(
@@ -244,7 +319,11 @@ function makeStoringHana(): HanaClient & { searches: string[] } {
       return { rowCount: 1 };
     },
     async query(sql) {
-      if (!sql.startsWith('SELECT id, text, metadata, COSINE_SIMILARITY')) {
+      if (
+        !sql.startsWith(
+          'SELECT id AS "id", text AS "text", metadata AS "metadata", COSINE_SIMILARITY',
+        )
+      ) {
         return [];
       }
       searches.push(sql);
@@ -296,9 +375,9 @@ describe('HanaVectorRag — session/user filter (security)', () => {
     await rag.query(emb, 5);
     await rag.query(emb, 5, { ragFilter: { sessionId: 's1' } });
     await rag.query(emb, 5, { ragFilter: { userId: 'u1' } });
-    assert.match(client.searches[0], /ORDER BY score DESC LIMIT 5$/);
-    assert.match(client.searches[1], /ORDER BY score DESC$/);
-    assert.match(client.searches[2], /ORDER BY score DESC$/);
+    assert.match(client.searches[0], /ORDER BY "score" DESC LIMIT 5$/);
+    assert.match(client.searches[1], /ORDER BY "score" DESC$/);
+    assert.match(client.searches[2], /ORDER BY "score" DESC$/);
     // The filter value never reaches the SQL text.
     assert.ok(!client.searches[1].includes('s1'));
   });
@@ -316,7 +395,7 @@ describe('HanaVectorRag — session/user filter (security)', () => {
     );
     const emb = { text: 'q', toVector: async () => [0.1, 0.2, 0.3] };
     await rag.query(emb, 5, { ragFilter: { namespace: 'ns-secret' } });
-    assert.match(client.searches[0], /ORDER BY score DESC$/);
+    assert.match(client.searches[0], /ORDER BY "score" DESC$/);
     assert.ok(!client.searches[0].includes('ns-secret'));
   });
 
@@ -345,7 +424,7 @@ describe('HanaVectorRag — session/user filter (security)', () => {
     // so the store falls back to the unlimited query and finds 'new'.
     assert.deepEqual(await q('alpha beta gamma'), ['new']);
     assert.match(client.searches[0], /LIMIT 1$/);
-    assert.match(client.searches[1], /ORDER BY score DESC$/);
+    assert.match(client.searches[1], /ORDER BY "score" DESC$/);
     // Top-1 is live: one LIMIT query, no fallback.
     const before = client.searches.length;
     assert.deepEqual(await q('delta epsilon'), ['new']);
