@@ -1,0 +1,16 @@
+{
+  "name": "sst-hdi-deployer",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Throwaway HDI deployer for the shared-table layout: deploys the shipped ddl/ of @mcp-abap-adt/hana-vector-rag into the hdi-llm container.",
+  "scripts": {
+    "prepare-src": "node prepare.mjs",
+    "start": "node node_modules/@sap/hdi-deploy/deploy.js"
+  },
+  "dependencies": {
+    "@sap/hdi-deploy": "^5.7.0"
+  },
+  "engines": {
+    "node": "22.x"
+  }
+}

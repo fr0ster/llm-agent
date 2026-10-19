@@ -1,0 +1,10 @@
+applications:
+  - name: sst-hdi-deployer
+    memory: 256M
+    no-route: true
+    health-check-type: process
+    buildpacks:
+      - nodejs_buildpack
+    command: npm start; sleep 3600
+    services:
+      - hdi-llm
