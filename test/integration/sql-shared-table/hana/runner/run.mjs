@@ -269,8 +269,12 @@ try {
       };
     };
     try {
-      await wipe();
-      await kase.run(async () => subject());
+      // Every makeSubject() call must see empty tables: the filter case calls
+      // it once per sub-check, in the same collections.
+      await kase.run(async () => {
+        await wipe();
+        return subject();
+      });
       out(`PASS ${kase.name}`);
     } catch (err) {
       failures.push([kase.name, err]);
