@@ -19,6 +19,8 @@ export type QdrantStub = {
   beforeCatalogWrite?: () => void;
   /** Runs inside a set-payload request before it is applied — a racing delete. */
   beforePayloadWrite?: () => void;
+  /** Runs inside a points retrieve before it is answered — a racing delete. */
+  beforePointsRetrieve?: () => void;
   close(): Promise<void>;
 };
 
@@ -103,6 +105,7 @@ export async function startQdrantStub(
         return;
       }
       if (r.method === 'POST' && action === undefined) {
+        stub?.beforePointsRetrieve?.();
         const ids = body.ids as string[];
         reply(200, {
           result: ids.flatMap((id) => {
@@ -263,7 +266,11 @@ function holds(
     );
   }
   if ('match' in cond) {
-    return cond.key in payload && payload[cond.key] === cond.match.value;
+    // Qdrant's match.value also matches an element of an array payload value.
+    const v = payload[cond.key];
+    return Array.isArray(v)
+      ? v.includes(cond.match.value)
+      : cond.key in payload && v === cond.match.value;
   }
   if ('range' in cond) {
     const v = payload[cond.key];

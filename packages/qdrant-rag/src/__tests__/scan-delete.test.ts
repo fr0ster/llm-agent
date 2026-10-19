@@ -154,6 +154,98 @@ describe('QdrantRag — scan/delete requests', () => {
     assert.equal(stub.requests.length, 0);
   });
 
+  it('scan rejects a cursor that is not a Qdrant point offset before any request', async () => {
+    const store = await open();
+    stub.requests.length = 0;
+    for (const cursor of [
+      '1.5',
+      '-1',
+      'abc',
+      '"abc"',
+      '"1"',
+      '"not-a-uuid"',
+      '9007199254740993',
+      'null',
+      '{}',
+      '',
+    ]) {
+      const r = await store.scan({ cursor });
+      assert.ok(!r.ok, `cursor ${cursor} is refused`);
+      assert.equal(r.error.code, INVALID_ARGUMENT, cursor);
+    }
+    assert.equal(stub.requests.length, 0);
+  });
+
+  it('scan accepts an unsigned integer and a UUID cursor', async () => {
+    const store = await open();
+    stub.requests.length = 0;
+    for (const cursor of [
+      '0',
+      '42',
+      '"550e8400-e29b-41d4-a716-446655440000"',
+    ]) {
+      const r = await store.scan({ cursor });
+      assert.ok(r.ok, `cursor ${cursor} is accepted`);
+    }
+    assert.equal(stub.requests.length, 3);
+  });
+
+  it('scan drops a point whose identity value is an array, whatever the page', async () => {
+    const store = await open();
+    const w = store.writer();
+    await w.upsertRaw('arr', 'text', { userId: ['u1', 'u2'] });
+    await w.upsertRaw('one', 'text', { userId: 'u1' });
+    const r = await store.scan({ filter: { userId: 'u1' } });
+    assert.ok(r.ok);
+    assert.deepEqual(
+      r.value.records.map((x) => x.id),
+      ['one'],
+    );
+  });
+
+  it('deleteWhere counts only the ids still present at delete time', async () => {
+    const store = await open();
+    const name = (store as unknown as { collectionName: string })
+      .collectionName;
+    const points = stub.collections.get(name)?.points;
+    assert.ok(points);
+    const ids: string[] = [];
+    for (let i = 0; i < 10; i++) {
+      const id = `00000000-0000-0000-0000-${String(i).padStart(12, '0')}`;
+      ids.push(id);
+      points.set(id, { id, vector: [], payload: { text: 't', userId: 'c' } });
+    }
+    // Another caller deletes one point after the snapshot, before the batch.
+    stub.beforePointsRetrieve = () => {
+      points.delete(ids[3]);
+      stub.beforePointsRetrieve = undefined;
+    };
+    const r = await store.deleteWhere({ userId: 'c' });
+    stub.beforePointsRetrieve = undefined;
+    assert.ok(r.ok);
+    assert.equal(r.value.deleted, 9);
+    assert.equal(points.size, 0);
+    const del = stub.requests.filter((x) => x.path.endsWith('/points/delete'));
+    const last = del[del.length - 1];
+    assert.equal((last.body as { points: string[] }).points.length, 9);
+  });
+
+  it('deleteWhere never deletes a point whose identity value is an array', async () => {
+    const store = await open();
+    const w = store.writer();
+    await w.upsertRaw('arr', 'text', { userId: ['u1', 'u2'] });
+    await w.upsertRaw('one', 'text', { userId: 'u1' });
+    const r = await store.deleteWhere({ userId: 'u1' });
+    assert.ok(r.ok);
+    assert.equal(r.value.deleted, 1);
+    const left = await store.scan();
+    assert.ok(left.ok);
+    assert.deepEqual(
+      left.value.records.map((x) => x.id),
+      ['arr'],
+    );
+  });
+
   it('scan and deleteWhere return ABORTED for an aborted signal', async () => {
     const store = await open();
     const ctrl = new AbortController();

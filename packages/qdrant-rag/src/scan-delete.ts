@@ -1,6 +1,7 @@
 import {
   DEFAULT_SCAN_PAGE_SIZE,
   INVALID_ARGUMENT,
+  matchesScanFilter,
   RagError,
   type RagScanFilter,
   type RagScanPage,
@@ -47,10 +48,14 @@ export function scrollFilter(
 
 const encodeCursor = (offset: Offset): string => JSON.stringify(offset);
 
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** A Qdrant point offset is an unsigned integer or a UUID. */
 function decodeCursor(cursor: string): Offset {
   try {
     const v: unknown = JSON.parse(cursor);
-    if (typeof v === 'string' || typeof v === 'number') return v;
+    if (typeof v === 'number' && Number.isSafeInteger(v) && v >= 0) return v;
+    if (typeof v === 'string' && UUID.test(v)) return v;
   } catch {
     // fall through
   }
@@ -80,6 +85,13 @@ async function scroll(
   };
 }
 
+function strictMatch(
+  point: ScrollPoint,
+  filter: RagScanFilter | undefined,
+): boolean {
+  return matchesScanFilter(splitPayload(point.payload ?? {}).metadata, filter);
+}
+
 function toRecord(point: ScrollPoint): RagScanRecord {
   const { text, metadata } = splitPayload(point.payload ?? {});
   const stored = metadata.id;
@@ -98,6 +110,9 @@ export async function scanPage(
   signal?: AbortSignal,
 ): Promise<RagScanPage> {
   const filter = scrollFilter(opts.filter);
+  // Validate before any request.
+  const offset =
+    opts.cursor !== undefined ? decodeCursor(opts.cursor) : undefined;
   const { points, next } = await scroll(
     call,
     collection,
@@ -105,14 +120,17 @@ export async function scanPage(
       limit: opts.pageSize ?? DEFAULT_SCAN_PAGE_SIZE,
       with_payload: true,
       ...(filter ? { filter } : {}),
-      ...(opts.cursor !== undefined
-        ? { offset: decodeCursor(opts.cursor) }
-        : {}),
+      ...(offset !== undefined ? { offset } : {}),
     },
     signal,
     'QUERY_ERROR',
   );
-  const records = points.map(toRecord);
+  // The server-side match is a prefilter: Qdrant's match.value also matches
+  // an element of an array payload value, so apply the strict matcher here.
+  // A page may come back short or empty; only a missing cursor ends a scan.
+  const records = points
+    .filter((p) => strictMatch(p, opts.filter))
+    .map(toRecord);
   return next === undefined
     ? { records }
     : { records, cursor: encodeCursor(next) };
@@ -120,6 +138,33 @@ export async function scanPage(
 
 const aborted = (deleted: number): RagError =>
   new RagError(`Aborted after deleting ${deleted} record(s)`, 'ABORTED');
+
+/** The subset of `ids` that exists in the collection right now. */
+async function retrievePresent(
+  call: QdrantCall,
+  collection: string,
+  ids: Array<string | number>,
+  signal: AbortSignal | undefined,
+): Promise<Array<string | number>> {
+  const res = await call(
+    `/collections/${collection}/points`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ ids, with_payload: false, with_vector: false }),
+    },
+    signal,
+  );
+  if (!res.ok) {
+    throw new RagError(
+      `Qdrant retrieve failed: ${await res.text()}`,
+      'DELETE_ERROR',
+    );
+  }
+  const json = (await res.json()) as {
+    result?: Array<{ id: string | number }>;
+  };
+  return (json.result ?? []).map((p) => p.id);
+}
 
 /**
  * Snapshot the matching point ids with a scroll loop, then delete them in
@@ -140,23 +185,33 @@ export async function deleteWhere(
       collection,
       {
         limit: BATCH,
-        with_payload: false,
+        with_payload: true,
         filter: scrollFilter(filter),
         ...(offset !== undefined ? { offset } : {}),
       },
       signal,
       'DELETE_ERROR',
     );
-    for (const p of page.points) ids.push(p.id);
+    for (const p of page.points) if (strictMatch(p, filter)) ids.push(p.id);
     offset = page.next;
   } while (offset !== undefined);
 
   let deleted = 0;
   for (let i = 0; i < ids.length; i += BATCH) {
     if (signal?.aborted) throw aborted(deleted);
-    const batch = ids.slice(i, i + BATCH);
+    let batch: Array<string | number>;
     let res: Response;
     try {
+      // Delete only the ids still present, so the count is what this call
+      // removed. A concurrent delete of the same ids between the retrieve and
+      // the delete is the one window left: Qdrant has no server-side count.
+      batch = await retrievePresent(
+        call,
+        collection,
+        ids.slice(i, i + BATCH),
+        signal,
+      );
+      if (batch.length === 0) continue;
       res = await call(
         `/collections/${collection}/points/delete?wait=true`,
         { method: 'POST', body: JSON.stringify({ points: batch }) },

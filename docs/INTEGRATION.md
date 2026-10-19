@@ -690,7 +690,7 @@ The library wrappers (`OverlayRag`, `SessionScopedRag`, `ActiveFilteringRag`, th
 `deleteWhere` semantics:
 
 - An aborted `signal` is checked first; then an empty filter (no field set) is refused with `INVALID_ARGUMENT`; use `clearAll` to empty a store.
-- **Exact against a snapshot, not atomic.** It deletes the matching records that exist when it starts and returns how many it deleted (Qdrant returns no count: there it is the number of ids sent for deletion, which overcounts a point deleted concurrently). A matching record inserted while it runs may survive; repeat the call if you need to.
+- **Exact against a snapshot, not atomic.** It deletes the matching records that exist when it starts and returns how many it deleted (Qdrant returns no count: there it retrieves each batch of ids first and deletes and counts exactly those present, so the count is exact except for a concurrent delete of the same ids between that retrieve and the delete; its array-valued identity payloads are filtered out client-side to keep strict string equality). A matching record inserted while it runs may survive; repeat the call if you need to.
 - It never reaches outside its own collection (nor, with a store `namespace`, outside it).
 - Aborted after it started deleting (HANA and Qdrant, which delete in batches): `ABORTED` with the message `Aborted after deleting N record(s)`. PG deletes in one statement: the abort is checked only before it, so `ABORTED` there always means nothing was deleted (`Aborted after deleting 0 record(s)`).
 
