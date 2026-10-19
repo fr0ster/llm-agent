@@ -33,6 +33,12 @@ export interface PgVectorRagConfig {
   documentsTable?: string;
   poolMax?: number;
   connectTimeout?: number;
+  /**
+   * Called when the pool reports an error on an idle client (database
+   * restart, cut connection). Optional; default is to swallow it — `pg` drops
+   * the broken client and the next query reports the failure.
+   */
+  onPoolError?: (err: Error) => void;
 }
 
 export interface PgPoolConfig {

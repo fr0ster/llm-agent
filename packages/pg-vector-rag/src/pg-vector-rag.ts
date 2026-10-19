@@ -47,28 +47,50 @@ export interface PgClient {
   end(): Promise<void>;
 }
 
+interface PgPool {
+  query: PgClient['query'];
+  end: () => Promise<void>;
+  on(event: 'error', listener: (err: Error) => void): unknown;
+}
+
+/**
+ * Wraps a `pg` Pool as a `PgClient`. `pg` emits `'error'` on the pool when an
+ * idle client fails (database restart, cut connection); an `EventEmitter`
+ * without a listener turns that into an uncaught exception that kills the
+ * process. The listener never throws: pg drops the broken idle client itself,
+ * and the next query surfaces the failure through the normal Result path.
+ */
+export function openPgClient(
+  PoolCtor: new (a: unknown) => PgPool,
+  args: unknown,
+  onPoolError?: (err: Error) => void,
+): PgClient {
+  const pool = new PoolCtor(args);
+  pool.on('error', (err) => {
+    try {
+      onPoolError?.(err);
+    } catch {
+      // a reporter must never take the process down
+    }
+  });
+  return {
+    query: (sql, params = []) => pool.query(sql, params as unknown[]),
+    end: () => pool.end(),
+  };
+}
+
 /** Opens the pool a handle, or a provider's catalog work, talks through. */
 export async function createPgClient(
   cfg: PgVectorRagConfig,
 ): Promise<PgClient> {
   const args = await resolvePgConnectArgs(cfg);
   const mod = (await import('pg')) as unknown as {
-    default?: {
-      Pool: new (
-        a: unknown,
-      ) => { query: PgClient['query']; end: () => Promise<void> };
-    };
-    Pool?: new (
-      a: unknown,
-    ) => { query: PgClient['query']; end: () => Promise<void> };
+    default?: { Pool: new (a: unknown) => PgPool };
+    Pool?: new (a: unknown) => PgPool;
   };
   const PoolCtor = mod.Pool ?? mod.default?.Pool;
   if (!PoolCtor) throw new Error('pg module did not expose Pool');
-  const pool = new PoolCtor(args);
-  return {
-    query: (sql, params = []) => pool.query(sql, params as unknown[]),
-    end: () => pool.end(),
-  };
+  return openPgClient(PoolCtor, args, cfg.onPoolError);
 }
 
 export class PgVectorRag implements IRag, IRagScanner, IRagFilteredDeleter {

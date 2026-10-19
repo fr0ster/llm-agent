@@ -1,5 +1,9 @@
 # @mcp-abap-adt/pg-vector-rag
 
+## Unreleased
+
+**Fixed:** an idle-client error on the `pg` pool (database restart, cut connection) no longer crashes the process: every pool now has an `'error'` listener that never throws, and the failure surfaces on the next query. New optional `onPoolError` in `PgVectorRagConfig` to observe it (default: swallow).
+
 ## 30.3.0
 
 **Added:** `PgVectorRag.scan` / `deleteWhere` (both layouts; in `shared` the startup check runs first, no DDL) and `PgVectorRagProvider.updateCollection`; `deleteWhere` is one `DELETE ... RETURNING` with the strict predicates (per-collection `query` keeps its `->>` semantics). Strict string-equality filters on `userId` / `sessionId` / `namespace`, expired records included, no vectors; a page may be short or empty and only a missing `cursor` ends a scan; `deleteWhere` refuses an empty filter and is exact against a snapshot, not atomic; a cursor the store did not issue, a filter value that is not a string and a `collectionName` that is not a non-empty string are `INVALID_ARGUMENT`; `ABORTED` on an aborted `signal`; `updateCollection` replaces `attributes`, refuses an empty patch and returns `RAG_COLLECTION_NOT_FOUND` for a missing record. Verified live on PGlite with its pgvector extension (an in-process WASM Postgres), not on a server Postgres. See the README.
