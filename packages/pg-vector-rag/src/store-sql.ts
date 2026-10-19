@@ -1,4 +1,4 @@
-import { createTableSql, quoteIdent } from './schema.js';
+import { createTableSql, qualifiedTable, quoteIdent } from './schema.js';
 
 export type SqlStatement = { sql: string; params: unknown[] };
 
@@ -109,8 +109,9 @@ export function perCollectionStoreSql(
 export function sharedStoreSql(
   collection: string,
   documentsTable: string,
+  schema?: string,
 ): PgStoreSql {
-  const table = quoteIdent(documentsTable);
+  const table = qualifiedTable(documentsTable, schema);
   return {
     layout: 'shared',
     createTable: () => undefined,

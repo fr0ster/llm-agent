@@ -53,10 +53,11 @@ function evaluate(
   row: Row,
   params: readonly unknown[],
 ): boolean {
+  const shared = row.collection !== undefined;
   const coll = rawCond.match(COLLECTION);
   if (coll) return row.collection === params[Number(coll[1]) - 1];
   // The shared layout quotes the column; the semantics are the same.
-  const cond = rawCond.replaceAll('"metadata"', 'metadata');
+  const cond = shared ? rawCond.replaceAll('"metadata"', 'metadata') : rawCond;
   const eq = cond.match(EQ);
   if (eq) {
     const v = row.metadata[eq[1]];
@@ -74,14 +75,14 @@ function evaluate(
 }
 
 const SHARED_INSERT =
-  /^INSERT INTO "([^"]+)" \("collection", "id", "text", "vector", "metadata"\) VALUES \(\$1, \$2, \$3, .*, \$4::jsonb\) ON CONFLICT \("collection", "id"\) DO UPDATE SET /;
-const OWN_INSERT = /^INSERT INTO "([^"]+)" \(id, text, vector, metadata\)/;
+  /^INSERT INTO ((?:"[^"]+"[.])?"[^"]+") \("collection", "id", "text", "vector", "metadata"\) VALUES \(\$1, \$2, \$3, .*, \$4::jsonb\) ON CONFLICT \("collection", "id"\) DO UPDATE SET /;
+const OWN_INSERT = /^INSERT INTO ("[^"]+") \(id, text, vector, metadata\)/;
 const SHARED_BY_ID =
-  /^SELECT "id", "text", "metadata" FROM "([^"]+)" WHERE "collection" = \$1 AND "id" = \$2$/;
+  /^SELECT "id", "text", "metadata" FROM ((?:"[^"]+"[.])?"[^"]+") WHERE "collection" = \$1 AND "id" = \$2$/;
 const SHARED_DELETE =
-  /^DELETE FROM "([^"]+)" WHERE "collection" = \$1(?: AND "id" = \$2)?$/;
+  /^DELETE FROM ((?:"[^"]+"[.])?"[^"]+") WHERE "collection" = \$1(?: AND "id" = \$2)?$/;
 const SEARCH =
-  /^SELECT (?:id, text, metadata|"id", "text", "metadata"), (?:vector|"vector") <=> .*? AS score FROM "([^"]+)"(?: WHERE (.*))? ORDER BY (?:vector|"vector") <=> .* LIMIT (\d+)$/;
+  /^SELECT (?:id, text, metadata|"id", "text", "metadata"), (?:vector|"vector") <=> .*? AS score FROM ((?:"[^"]+"[.])?"[^"]+")(?: WHERE (.*))? ORDER BY (?:vector|"vector") <=> .* LIMIT (\d+)$/;
 
 /** `sharedDimension`: what the startup check of a shared table finds (default: none, the check is not answered). */
 export function storingPg(opts: { sharedDimension?: number } = {}): StoringPg {

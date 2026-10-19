@@ -2,7 +2,7 @@ import type { Result } from '@mcp-abap-adt/llm-agent';
 import { RagError } from '@mcp-abap-adt/llm-agent';
 import { tableExistsSql } from './catalog.js';
 import type { PgClient } from './pg-vector-rag.js';
-import { quoteIdent } from './schema.js';
+import { qualifiedTable } from './schema.js';
 
 const HINT =
   'Deploy the shared layout first (the package ddl/ files, or sharedLayoutSql()).';
@@ -27,9 +27,7 @@ export async function checkSharedTables(
   });
   try {
     const qualified = (table: string): string =>
-      opts.schema === undefined
-        ? quoteIdent(table)
-        : `"${opts.schema.replaceAll('"', '""')}".${quoteIdent(table)}`;
+      qualifiedTable(table, opts.schema);
     for (const table of opts.tables) {
       const { rows } = await client.query(tableExistsSql(), [qualified(table)]);
       if (rows[0]?.present !== true)

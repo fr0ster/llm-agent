@@ -313,7 +313,7 @@ describe('PgVectorRag shared layout and vector validation', () => {
     for (const c of client.calls)
       assert.doesNotMatch(
         c.sql,
-        /^\s*(CREATE|DROP|TRUNCATE|ALTER|IF NOT EXISTS)\b/i,
+        /^\s*(CREATE|DROP|TRUNCATE|ALTER)\b|\bIF NOT EXISTS\b/i,
       );
   });
 
@@ -335,8 +335,31 @@ describe('PgVectorRag shared layout and vector validation', () => {
   it('a failed shared check is not memoised', async () => {
     const client = recordingClient({ failFirstCheck: true });
     const rag = mk(client);
-    assert.ok(!(await rag.getById('a')).ok);
+    const first = await rag.getById('a');
+    assert.ok(!first.ok);
+    assert.equal(first.error.code, 'HEALTH_CHECK_ERROR');
     assert.ok((await rag.getById('a')).ok);
+  });
+
+  it('check and data statements resolve the same table, qualified by schema', async () => {
+    for (const [schema, name] of [
+      ['kb', '"kb"."rag_documents"'],
+      [undefined, '"rag_documents"'],
+    ] as const) {
+      const client = recordingClient();
+      const rag = mk(client, { schema });
+      await rag.upsertPrecomputed('t', [1, 2, 3], { id: 'a' });
+      await rag.query({ text: 'q', toVector: async () => [1, 2, 3] }, 1);
+      await rag.writer().clearAll?.();
+      const check = client.calls.filter((c) => c.sql.includes('to_regclass'));
+      assert.ok(check.length > 0);
+      for (const c of check) assert.equal(c.params[0], name);
+      for (const re of [/^INSERT INTO /, /^SELECT "id"/, /^DELETE FROM /]) {
+        const stmt = client.calls.find((c) => re.test(c.sql));
+        assert.ok(stmt, String(re));
+        assert.ok(stmt.sql.includes(` ${name} `), stmt.sql);
+      }
+    }
   });
 
   it('a dimension mismatch in the database fails the operation', async () => {

@@ -89,7 +89,11 @@ export class PgVectorRag implements IRag {
     this.documentsTable = config.documentsTable ?? SHARED_DOCUMENTS_TABLE;
     this.schema = config.schema;
     this.sql = shared
-      ? sharedStoreSql(config.collectionName, this.documentsTable)
+      ? sharedStoreSql(
+          config.collectionName,
+          this.documentsTable,
+          config.schema,
+        )
       : perCollectionStoreSql(config.collectionName, this.dimension);
     // Attach a no-op catch so the eager import never becomes an unhandledRejection.
     // The rejection is re-thrown when clientPromise is actually awaited.
