@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
+  CatalogRecordDeleteError,
   DuplicateCollectionError,
   OrphanStoreError,
   staticLogin,
@@ -19,6 +20,7 @@ interface Fake {
   docCount: Map<string, number>;
   failOn?: RegExp;
   dim: number;
+  docs: string;
 }
 
 function fake(): Fake {
@@ -28,6 +30,7 @@ function fake(): Fake {
     records: new Map(),
     docCount: new Map(),
     dim: 3,
+    docs: 'RAG_DOCUMENTS',
     client: undefined as unknown as HanaClient,
   };
   const run = (sql: string, params: readonly unknown[]) => {
@@ -38,16 +41,14 @@ function fake(): Fake {
     if (sql.includes('SYS.TABLE_COLUMNS')) return [{ dim: f.dim }];
     if (sql.startsWith('SELECT 1 AS "present"'))
       return f.records.has(String(params[0])) ? [{ present: 1 }] : [];
-    if (
-      /^SELECT COUNT\(\*\) AS "n" FROM "[A-Z_]+" WHERE "COLLECTION"/.test(sql)
-    )
+    if (sql.startsWith(`SELECT COUNT(*) AS "n" FROM "${f.docs}" WHERE`))
       return [{ n: f.docCount.get(String(params[0])) ?? 0 }];
     if (sql.startsWith('INSERT INTO "RAG_COLLECTIONS"')) {
       if (f.records.has(String(params[0]))) throw new Error('unique');
       f.records.set(String(params[0]), [...params]);
       return [{}];
     }
-    if (sql.startsWith('DELETE FROM "RAG_DOCUMENTS"')) {
+    if (sql.startsWith(`DELETE FROM "${f.docs}"`)) {
       f.docCount.delete(String(params[0]));
       return [{}];
     }
@@ -57,7 +58,7 @@ function fake(): Fake {
     }
     if (sql.startsWith('SELECT store_name AS "s"'))
       return [...f.records.keys()].map((s) => ({ s }));
-    if (sql.startsWith('SELECT DISTINCT "COLLECTION"'))
+    if (sql.startsWith(`SELECT DISTINCT "COLLECTION" AS "c" FROM "${f.docs}"`))
       return [...f.docCount.keys()].map((c) => ({ c }));
     if (sql.startsWith('SELECT store_name AS "storeName"'))
       return [...f.records.values()].map((p) => ({
@@ -236,12 +237,38 @@ describe('HanaVectorRagProvider, shared layout', () => {
     assert.ok(!f.calls.some((c) => DDL.test(c.sql)));
   });
 
-  it('a custom documentsTable is checked and used by the SQL', async () => {
+  it('a failed record delete after the documents delete is CatalogRecordDeleteError', async () => {
     const f = fake();
+    const p = provider(f);
+    await p.createCollection('kb', opts);
+    f.failOn = /^DELETE FROM "RAG_COLLECTIONS"/;
+    const r = await p.deleteCollection('kb');
+    assert.ok(!r.ok);
+    assert.ok(r.error instanceof CatalogRecordDeleteError);
+    assert.ok(
+      f.calls.some((c) => c.sql.startsWith('DELETE FROM "RAG_DOCUMENTS"')),
+    );
+  });
+
+  it('delete and list use a custom documentsTable', async () => {
+    const f = fake();
+    f.docs = 'MY_DOCS';
     f.tables.add('MY_DOCS');
+    f.tables.delete('RAG_DOCUMENTS');
     const p = provider(f, { documentsTable: 'MY_DOCS' });
-    const r = await p.createCollection('kb', opts);
+    await p.createCollection('kb', opts);
+    f.docCount.set('kb', 2);
+    f.docCount.set('other', 1);
+    const listed = await p.listCollections();
+    assert.ok(listed.ok);
+    assert.deepEqual(listed.value, ['kb', 'other']);
+    const r = await p.deleteCollection('kb');
     assert.ok(r.ok);
-    assert.ok(f.calls.some((c) => c.sql.includes('FROM "MY_DOCS"')));
+    assert.ok(
+      f.calls.some(
+        (c) => c.sql === 'DELETE FROM "MY_DOCS" WHERE "COLLECTION" = ?',
+      ),
+    );
+    assert.ok(!f.docCount.has('kb'));
   });
 });

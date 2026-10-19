@@ -14,24 +14,24 @@ import type {
 import {
   AbstractRagProvider,
   CatalogRecordDeleteError,
-  DuplicateCollectionError,
   describeRagCatalogRows,
-  encodeRagAttributes,
   OrphanStoreError,
   RagError,
-  ragOwnerKeys,
   validateRagOwner,
 } from '@mcp-abap-adt/llm-agent';
 import {
   createCatalogTableSql,
   DEFAULT_CATALOG_TABLE,
   deleteRecordSql,
-  insertRecordSql,
   probeTableSql,
-  recordExistsSql,
   selectRecordsSql,
   tableExistsSql,
 } from './catalog.js';
+import {
+  catalogRecordExists,
+  duplicateRefusal,
+  writeCatalogRecord,
+} from './catalog-record.js';
 import type { HanaVectorRagConfig } from './connection.js';
 import {
   createHanaClient,
@@ -121,8 +121,7 @@ function decodeRow(row: Record<string, unknown>): RagCatalogRow {
   const json = row.attributesJson;
   return {
     ...row,
-    attributesJson:
-      json === undefined || json === null ? json : decodeLob(json),
+    attributesJson: Buffer.isBuffer(json) ? decodeLob(json) : json,
   };
 }
 
@@ -333,36 +332,24 @@ export class HanaVectorRagProvider extends AbstractRagProvider {
     }
   }
 
-  private async writeRecord(
+  private writeRecord(
     client: HanaClient,
     record: RagCollectionRecord,
     opts: RagProviderCreateCollectionOptions,
   ): Promise<Result<void, RagError>> {
-    const { userId, sessionId } = ragOwnerKeys(record);
-    try {
-      await client.exec(insertRecordSql(this.catalogTable), [
-        record.storeName,
-        record.name,
-        record.scope,
-        userId ?? null,
-        sessionId ?? null,
-        encodeRagAttributes(record.attributes),
-      ]);
-      return { ok: true, value: undefined };
-    } catch (err) {
-      if (
-        await this.recordExists(client, record.storeName).catch(() => false)
-      ) {
-        return this.duplicate(record.storeName, opts);
-      }
-      return {
+    return writeCatalogRecord(
+      client,
+      this.catalogTable,
+      record,
+      opts,
+      (err) => ({
         ok: false,
         error: new OrphanStoreError(
           record.storeName,
           `its record could not be written (${String(err)}); the store is left in place until it is adopted with adoptExisting or removed`,
         ),
-      };
-    }
+      }),
+    );
   }
 
   private handles(storeName: string, owner: RagCollectionOwner): Handles {
@@ -386,13 +373,7 @@ export class HanaVectorRagProvider extends AbstractRagProvider {
     storeName: string,
     opts: RagProviderCreateCollectionOptions,
   ): Refusal {
-    return {
-      ok: false,
-      error: new DuplicateCollectionError(
-        opts.collectionName ?? storeName,
-        `store '${storeName}' already has a record`,
-      ),
-    };
+    return duplicateRefusal(storeName, opts);
   }
 
   private refuseCatalogName(name: string): Refusal | undefined {
@@ -448,13 +429,10 @@ export class HanaVectorRagProvider extends AbstractRagProvider {
     return Number(rows[0]?.n ?? 0) > 0;
   }
 
-  private async recordExists(
+  private recordExists(
     client: HanaClient,
     storeName: string,
   ): Promise<boolean> {
-    const rows = await client.query(recordExistsSql(this.catalogTable), [
-      storeName,
-    ]);
-    return rows.length > 0;
+    return catalogRecordExists(client, this.catalogTable, storeName);
   }
 }

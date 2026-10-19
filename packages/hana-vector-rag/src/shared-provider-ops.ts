@@ -7,19 +7,16 @@ import type {
 } from '@mcp-abap-adt/llm-agent';
 import {
   CatalogRecordDeleteError,
-  DuplicateCollectionError,
   describeRagCatalogRows,
-  encodeRagAttributes,
   OrphanStoreError,
   RagError,
-  ragOwnerKeys,
 } from '@mcp-abap-adt/llm-agent';
+import { deleteRecordSql, selectRecordsSql } from './catalog.js';
 import {
-  deleteRecordSql,
-  insertRecordSql,
-  recordExistsSql,
-  selectRecordsSql,
-} from './catalog.js';
+  catalogRecordExists,
+  duplicateRefusal,
+  writeCatalogRecord,
+} from './catalog-record.js';
 import type { HanaClient } from './hana-vector-rag.js';
 import { quoteIdent } from './schema.js';
 import { checkSharedTables } from './shared-check.js';
@@ -78,7 +75,8 @@ export class SharedProviderOps {
     if (!ready.ok) return ready;
     const name = record.storeName;
     try {
-      if (await this.recordExists(client, name)) return duplicate(name, opts);
+      if (await this.recordExists(client, name))
+        return duplicateRefusal(name, opts);
       if (opts.adoptExisting !== true) {
         const count = sharedStoreSql(name, this.cfg.documentsTable).countRows();
         const rows = await client.query(count.sql, count.params);
@@ -92,22 +90,16 @@ export class SharedProviderOps {
           };
         }
       }
-      const { userId, sessionId } = ragOwnerKeys(record);
-      try {
-        await client.exec(insertRecordSql(this.cfg.catalogTable), [
-          name,
-          record.name,
-          record.scope,
-          userId ?? null,
-          sessionId ?? null,
-          encodeRagAttributes(record.attributes),
-        ]);
-      } catch (err) {
-        if (await this.recordExists(client, name).catch(() => false))
-          return duplicate(name, opts);
-        throw err;
-      }
-      return { ok: true, value: undefined };
+      return await writeCatalogRecord(
+        client,
+        this.cfg.catalogTable,
+        record,
+        opts,
+        (err) => ({
+          ok: false,
+          error: new RagError(String(err), 'RAG_CREATE_ERROR'),
+        }),
+      );
     } catch (err) {
       return {
         ok: false,
@@ -164,26 +156,7 @@ export class SharedProviderOps {
     }
   }
 
-  private async recordExists(
-    client: HanaClient,
-    name: string,
-  ): Promise<boolean> {
-    const rows = await client.query(recordExistsSql(this.cfg.catalogTable), [
-      name,
-    ]);
-    return rows.length > 0;
+  private recordExists(client: HanaClient, name: string): Promise<boolean> {
+    return catalogRecordExists(client, this.cfg.catalogTable, name);
   }
-}
-
-function duplicate(
-  storeName: string,
-  opts: RagProviderCreateCollectionOptions,
-): Result<void, RagError> {
-  return {
-    ok: false,
-    error: new DuplicateCollectionError(
-      opts.collectionName ?? storeName,
-      `store '${storeName}' already has a record`,
-    ),
-  };
 }
