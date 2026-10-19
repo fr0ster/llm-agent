@@ -5,6 +5,7 @@ import {
   INVALID_ARGUMENT,
   type IRagFilteredDeleter,
   type IRagScanner,
+  RagError,
   type RagScanRecord,
   symmetricEmbedder,
 } from '@mcp-abap-adt/llm-agent';
@@ -77,11 +78,11 @@ describe('scan/delete SQL', () => {
   it('shared scanPage: collection, binary cursor, strict filter, schema-qualified', () => {
     const sql = sharedStoreSql('docs', 'rag_documents', 'rag');
     assert.deepEqual(sql.scanPage(undefined, 5), {
-      sql: 'SELECT "id", "text", "metadata" FROM "rag"."rag_documents" WHERE "collection" = $1 ORDER BY "id" COLLATE "C" LIMIT 5',
+      sql: 'SELECT "id", "text", "metadata" FROM "rag"."rag_documents" WHERE "collection" = $1 ORDER BY "id" LIMIT 5',
       params: ['docs'],
     });
     assert.deepEqual(sql.scanPage('k', 5, { userId: 'u1', namespace: 'ns' }), {
-      sql: `SELECT "id", "text", "metadata" FROM "rag"."rag_documents" WHERE "collection" = $1 AND "id" COLLATE "C" > $2 AND ${STRICT('userId', 3)} AND ${STRICT('namespace', 4)} ORDER BY "id" COLLATE "C" LIMIT 5`,
+      sql: `SELECT "id", "text", "metadata" FROM "rag"."rag_documents" WHERE "collection" = $1 AND "id" > $2 AND ${STRICT('userId', 3)} AND ${STRICT('namespace', 4)} ORDER BY "id" LIMIT 5`,
       params: ['docs', 'k', 'u1', 'ns'],
     });
   });
@@ -89,13 +90,24 @@ describe('scan/delete SQL', () => {
   it('per-collection scanPage has no collection predicate, same strict filter', () => {
     const sql = perCollectionStoreSql('docs', 3);
     assert.deepEqual(sql.scanPage(undefined, 5), {
-      sql: 'SELECT "id", "text", "metadata" FROM "docs" ORDER BY "id" COLLATE "C" LIMIT 5',
+      sql: 'SELECT "id", "text", "metadata" FROM "docs" ORDER BY "id" LIMIT 5',
       params: [],
     });
     assert.deepEqual(sql.scanPage('k', 5, { sessionId: 's1' }), {
-      sql: `SELECT "id", "text", "metadata" FROM "docs" WHERE "id" COLLATE "C" > $1 AND ${STRICT('sessionId', 2)} ORDER BY "id" COLLATE "C" LIMIT 5`,
+      sql: `SELECT "id", "text", "metadata" FROM "docs" WHERE "id" > $1 AND ${STRICT('sessionId', 2)} ORDER BY "id" LIMIT 5`,
       params: ['k', 's1'],
     });
+  });
+
+  it('the delete builder itself refuses an empty filter', () => {
+    for (const sql of [
+      sharedStoreSql('docs', 'rag_documents'),
+      perCollectionStoreSql('docs', 3),
+    ])
+      assert.throws(
+        () => sql.deleteWhere({}),
+        (e: unknown) => e instanceof RagError && e.code === INVALID_ARGUMENT,
+      );
   });
 
   it('deleteWhere is one DELETE ... RETURNING "id", scoped to the collection in shared', () => {
@@ -118,10 +130,9 @@ describe('scan/delete SQL', () => {
 
 for (const layout of ['shared', 'per-collection'] as const) {
   describe(`PgVectorRag scan/deleteWhere (${layout})`, () => {
-    it('pages by the id key in binary order, never returns a vector, id from the id column', async () => {
+    it('pages by the id key covering every record once, never returns a vector', async () => {
       const pg = fake();
       const store = open(pg, 'kb', layout);
-      // 'B' < 'a' in binary order, whatever the database collation.
       for (const id of ['c', 'a', 'e', 'B', 'd']) await put(store, id);
       const first = await store.scan({ pageSize: 2 });
       assert.ok(first.ok);
@@ -129,14 +140,14 @@ for (const layout of ['shared', 'per-collection'] as const) {
         first.value.records.map((r) => r.id),
         ['B', 'a'],
       );
-      assert.equal(first.value.cursor, 'a');
+      assert.equal(first.value.cursor, first.value.records[1].id);
       assert.equal(first.value.records[1].metadata.id, 'a');
       assert.equal(first.value.records[1].text, 'text a');
       assert.ok(!('vector' in first.value.records[0]));
-      assert.deepEqual(
-        (await scanAll(store, 2)).map((r) => r.id),
-        ['B', 'a', 'c', 'd', 'e'],
-      );
+      const all = (await scanAll(store, 2)).map((r) => r.id);
+      assert.equal(all.length, 5);
+      assert.deepEqual([...all].sort(), ['B', 'a', 'c', 'd', 'e']);
+      assert.equal(new Set(all).size, 5);
       assert.equal(DEFAULT_SCAN_PAGE_SIZE, 500);
       assert.ok(pg.statements.some((s) => s.endsWith('LIMIT 2')));
       assert.ok(pg.statements.some((s) => s.endsWith('LIMIT 500')) === false);
@@ -241,6 +252,21 @@ for (const layout of ['shared', 'per-collection'] as const) {
 }
 
 describe('PgVectorRag scan/deleteWhere (shared)', () => {
+  it('takes the id from the id column, not from the metadata JSON', async () => {
+    const pg = fake();
+    pg.insertSharedRow({
+      collection: 'kb',
+      id: 'real',
+      text: 't',
+      vector: Array(DIM).fill(0),
+      metadata: { id: 'other', userId: 'u1' },
+    });
+    const r = await open(pg, 'kb', 'shared').scan();
+    assert.ok(r.ok);
+    assert.equal(r.value.records[0].id, 'real');
+    assert.equal(r.value.records[0].metadata.id, 'real');
+  });
+
   it('an abort that lands after the check, before the DELETE, sends no DELETE', async () => {
     const pg = fake();
     const ctl = new AbortController();

@@ -115,12 +115,12 @@ const RECORD_DELETE =
 
 // scan/deleteWhere: strict string conditions, binary key-set cursor on the id.
 const SCAN =
-  /^SELECT "id", "text", "metadata" FROM ((?:"[^"]+"[.])?"[^"]+")(?: WHERE (.*))? ORDER BY "id" COLLATE "C" LIMIT (\d+)$/;
+  /^SELECT "id", "text", "metadata" FROM ((?:"[^"]+"[.])?"[^"]+")(?: WHERE (.*))? ORDER BY "id" LIMIT (\d+)$/;
 const DELETE_WHERE =
   /^DELETE FROM ((?:"[^"]+"[.])?"[^"]+") WHERE (.*) RETURNING "id"$/;
-const AFTER_KEY = /^"id" COLLATE "C" > \$(\d+)$/;
+const AFTER_KEY = /^"id" > \$(\d+)$/;
 
-/** Postgres' "C" collation: byte order of the UTF-8 text. */
+/** One total order on the key, shared by ORDER BY and the cursor comparison. */
 const byteCompare = (a: string, b: string): number =>
   Buffer.compare(Buffer.from(a), Buffer.from(b));
 

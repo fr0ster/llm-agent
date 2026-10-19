@@ -1,4 +1,8 @@
-import type { RagScanFilter } from '@mcp-abap-adt/llm-agent';
+import {
+  INVALID_ARGUMENT,
+  RagError,
+  type RagScanFilter,
+} from '@mcp-abap-adt/llm-agent';
 import { createTableSql, qualifiedTable, quoteIdent } from './schema.js';
 
 export type SqlStatement = { sql: string; params: unknown[] };
@@ -63,10 +67,11 @@ function scanFilterConditions(
 }
 
 /**
- * Binary ("C") order on the key, so the key-set cursor is stable whatever the
- * database collation, and the same order HANA's scan has.
+ * The primary key, in its own (default) collation: ORDER BY and the cursor
+ * comparison use the same one, so the order is a stable total order and the
+ * primary-key index serves every page. No COLLATE: it would defeat the index.
  */
-const BINARY_ID = '"id" COLLATE "C"';
+const KEY = '"id"';
 
 /** `params` already holds the collection (shared) or nothing (per-collection). */
 function scanSql(
@@ -80,12 +85,12 @@ function scanSql(
   if (params.length > 0) conditions.push('"collection" = $1');
   if (afterKey !== undefined) {
     params.push(afterKey);
-    conditions.push(`${BINARY_ID} > $${params.length}`);
+    conditions.push(`${KEY} > $${params.length}`);
   }
   conditions.push(...scanFilterConditions(filter, params));
   const where = conditions.length ? ` WHERE ${conditions.join(' AND ')}` : '';
   return {
-    sql: `SELECT "id", "text", "metadata" FROM ${table}${where} ORDER BY ${BINARY_ID} LIMIT ${limit}`,
+    sql: `SELECT "id", "text", "metadata" FROM ${table}${where} ORDER BY ${KEY} LIMIT ${limit}`,
     params,
   };
 }
@@ -97,7 +102,13 @@ function deleteWhereSql(
 ): SqlStatement {
   const conditions: string[] = [];
   if (params.length > 0) conditions.push('"collection" = $1');
-  conditions.push(...scanFilterConditions(filter, params));
+  const strict = scanFilterConditions(filter, params);
+  if (strict.length === 0)
+    throw new RagError(
+      'deleteWhere requires a non-empty filter',
+      INVALID_ARGUMENT,
+    );
+  conditions.push(...strict);
   return {
     sql: `DELETE FROM ${table} WHERE ${conditions.join(' AND ')} RETURNING "id"`,
     params,
