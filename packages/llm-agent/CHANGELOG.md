@@ -1,6 +1,6 @@
 # @mcp-abap-adt/llm-agent
 
-## Unreleased
+## 30.2.0
 
 **Added:** `@mcp-abap-adt/llm-agent/testing/shared-table-conformance` — the conformance kit (`sharedTableConformanceCases`) both SQL vector stores run against the shared table layout, on fakes in their unit tests and on a real HANA HDI container and on PGlite (with its pgvector extension) in `test/integration/sql-shared-table/`. No interface changed.
 

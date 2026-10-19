@@ -1,6 +1,6 @@
 # @mcp-abap-adt/llm-agent-server-libs
 
-## Unreleased
+## 30.2.0
 
 **Added:** `rag.store.layout` (`per-collection` | `shared`; validated, an unknown value is rejected) and `rag.store.documentsTable` for the `hana-vector` and `pg-vector` stores, resolved into the store config.
 

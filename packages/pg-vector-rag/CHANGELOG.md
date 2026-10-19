@@ -1,6 +1,6 @@
 # @mcp-abap-adt/pg-vector-rag
 
-## Unreleased
+## 30.2.0
 
 **Added:** opt-in `shared` table layout (`layout: 'per-collection' | 'shared'`, default `per-collection` and byte-identical SQL): one documents table (`rag_documents`, `documentsTable`) for all collections plus the catalog table (`rag_collections`, provider `catalogTable`), created outside the app, no DDL at runtime; every shared statement and the check are qualified with the connection's `schema`; `autoCreateSchema: true` with `shared` throws `INVALID_CONFIG`. Shipped `ddl/shared-layout.sql` (dimension 1536), generator `sharedLayoutSql` and constants `SHARED_DOCUMENTS_TABLE`, `SHARED_CATALOG_TABLE`, `SHIPPED_DIMENSION`. A lazy startup check (memoised on success, retried on failure) compares the tables and the `vector` dimension with the configured `dimension` and fails with `SHARED_LAYOUT_NOT_DEPLOYED`; a driver error in it is `HEALTH_CHECK_ERROR`. Vectors are validated before SQL: non-finite in both layouts, length only in `shared` (`INVALID_VECTOR`, surfaced as `UPSERT_ERROR` / `QUERY_ERROR`). Orphan / `adoptExisting` / list / delete semantics are translated to the shared layout. See the README.
 

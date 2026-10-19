@@ -1,5 +1,9 @@
 # @mcp-abap-adt/llm-agent-mcp
 
+## 30.2.0
+
+Lockstep release with the 30.2.0 line: an opt-in shared table layout for the SQL vector stores (`hana-vector-rag`, `pg-vector-rag` — one documents table plus the catalog, no runtime DDL, works in a SAP HANA HDI container) and HANA fixes. No change in this package — see the root CHANGELOG.
+
 ## 30.1.0
 
 `withAbort` (`adapter.ts`) no longer leaks an `abort` listener: the listener added to the caller's `AbortSignal` per MCP call is removed once the race settles (resolve, reject or abort). No other change.

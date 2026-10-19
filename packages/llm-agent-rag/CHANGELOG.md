@@ -1,6 +1,6 @@
 # @mcp-abap-adt/llm-agent-rag
 
-## Unreleased
+## 30.2.0
 
 **Added:** `makeRag` accepts `layout` (`'per-collection' | 'shared'`) and `documentsTable` for the `hana-vector` and `pg-vector` stores and passes them to the store (see `@mcp-abap-adt/hana-vector-rag` / `pg-vector-rag`).
 
