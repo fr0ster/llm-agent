@@ -32,6 +32,7 @@ import {
   writeCatalogRecord,
 } from './catalog-record.js';
 import type { PgVectorRagConfig } from './connection.js';
+import { resolveLayout } from './layout.js';
 import { createPgClient, type PgClient, PgVectorRag } from './pg-vector-rag.js';
 import {
   assertCollectionName,
@@ -117,14 +118,8 @@ export class PgVectorRagProvider extends AbstractRagProvider {
     this.embedder = cfg.embedder;
     this.connection = normalizeConnection(cfg.connection);
     this.defaultDimension = cfg.defaultDimension ?? 1536;
-    const shared = cfg.layout === 'shared';
-    if (shared && cfg.autoCreateSchema === true) {
-      throw new RagError(
-        "autoCreateSchema: true is not allowed with layout: 'shared' — the shared tables are deployed outside the app",
-        'INVALID_CONFIG',
-      );
-    }
-    this.layout = shared ? 'shared' : 'per-collection';
+    this.layout = resolveLayout(cfg.layout, cfg.autoCreateSchema);
+    const shared = this.layout === 'shared';
     this.documentsTable = cfg.documentsTable ?? SHARED_DOCUMENTS_TABLE;
     this.autoCreateSchema = cfg.autoCreateSchema ?? !shared;
     this.editable = cfg.editable ?? true;

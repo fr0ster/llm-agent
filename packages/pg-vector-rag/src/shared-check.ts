@@ -1,6 +1,7 @@
 import type { Result } from '@mcp-abap-adt/llm-agent';
 import { RagError } from '@mcp-abap-adt/llm-agent';
 import { tableExistsSql } from './catalog.js';
+import { SHARED_LAYOUT_NOT_DEPLOYED } from './error-codes.js';
 import type { PgClient } from './pg-vector-rag.js';
 import { qualifiedTable } from './schema.js';
 
@@ -23,7 +24,7 @@ export async function checkSharedTables(
 ): Promise<Result<void, RagError>> {
   const fail = (message: string): Result<void, RagError> => ({
     ok: false,
-    error: new RagError(`${message} ${HINT}`, 'SHARED_LAYOUT_NOT_DEPLOYED'),
+    error: new RagError(`${message} ${HINT}`, SHARED_LAYOUT_NOT_DEPLOYED),
   });
   try {
     const qualified = (table: string): string =>

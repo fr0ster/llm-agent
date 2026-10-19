@@ -1,4 +1,9 @@
 export { createCatalogTableSql, DEFAULT_CATALOG_TABLE } from './catalog.js';
+export {
+  INVALID_CONFIG,
+  INVALID_VECTOR,
+  SHARED_LAYOUT_NOT_DEPLOYED,
+} from './error-codes.js';
 export type { HanaVectorRagConfig } from './hana-vector-rag.js';
 export { createHanaClient, HanaVectorRag } from './hana-vector-rag.js';
 export type { HanaVectorRagProviderConfig } from './hana-vector-rag-provider.js';

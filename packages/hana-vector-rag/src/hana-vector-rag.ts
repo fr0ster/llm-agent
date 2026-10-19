@@ -16,7 +16,9 @@ import {
 } from '@mcp-abap-adt/llm-agent';
 import type { HanaVectorRagConfig } from './connection.js';
 import { resolveHanaConnectArgs } from './connection.js';
+import { SHARED_LAYOUT_NOT_DEPLOYED } from './error-codes.js';
 import { resolveHanaModule } from './hana-module.js';
+import { resolveLayout } from './layout.js';
 import { decodeLob } from './lob.js';
 import { assertCollectionName } from './schema.js';
 import { checkSharedTables } from './shared-check.js';
@@ -39,11 +41,16 @@ export interface HanaClient {
   close(): Promise<void>;
 }
 
+/**
+ * `loadModule` is a seam for tests only; production code leaves it to the
+ * default, which imports `@sap/hana-client`.
+ */
 export async function createHanaClient(
   cfg: HanaVectorRagConfig,
+  loadModule: () => Promise<unknown> = () => import('@sap/hana-client'),
 ): Promise<HanaClient> {
   const args = await resolveHanaConnectArgs(cfg);
-  const mod = resolveHanaModule(await import('@sap/hana-client'));
+  const mod = resolveHanaModule(await loadModule());
   const conn = mod.createConnection();
   await new Promise<void>((resolve, reject) =>
     conn.connect(args, (err) => (err ? reject(err) : resolve())),
@@ -99,13 +106,8 @@ export class HanaVectorRag implements IRag {
     assertCollectionName(config.collectionName);
     this.dimension = config.dimension ?? 1536;
     this.embedder = config.embedder;
-    const shared = config.layout === 'shared';
-    if (shared && config.autoCreateSchema === true) {
-      throw new RagError(
-        "autoCreateSchema: true is not allowed with layout: 'shared' — the shared tables are deployed outside the app",
-        'INVALID_CONFIG',
-      );
-    }
+    const shared =
+      resolveLayout(config.layout, config.autoCreateSchema) === 'shared';
     this.autoCreateSchema = config.autoCreateSchema ?? !shared;
     this.documentsTable = config.documentsTable ?? SHARED_DOCUMENTS_TABLE;
     this.sql = shared
@@ -178,7 +180,7 @@ export class HanaVectorRag implements IRag {
   /** The shared check's own error reaches the caller as is; anything else is wrapped in `code`. */
   private failure(err: unknown, code: string): RagError {
     return err instanceof RagError &&
-      (err.code === 'SHARED_LAYOUT_NOT_DEPLOYED' ||
+      (err.code === SHARED_LAYOUT_NOT_DEPLOYED ||
         err.code === 'HEALTH_CHECK_ERROR')
       ? err
       : new RagError(String(err), code);

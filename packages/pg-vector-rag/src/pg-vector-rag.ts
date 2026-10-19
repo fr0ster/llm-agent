@@ -15,6 +15,8 @@ import {
 } from '@mcp-abap-adt/llm-agent';
 import type { PgVectorRagConfig } from './connection.js';
 import { resolvePgConnectArgs } from './connection.js';
+import { SHARED_LAYOUT_NOT_DEPLOYED } from './error-codes.js';
+import { resolveLayout } from './layout.js';
 import { assertCollectionName, createExtensionSql } from './schema.js';
 import { checkSharedTables } from './shared-check.js';
 import { SHARED_DOCUMENTS_TABLE } from './shared-ddl.js';
@@ -78,13 +80,8 @@ export class PgVectorRag implements IRag {
     assertCollectionName(config.collectionName);
     this.dimension = config.dimension ?? 1536;
     this.embedder = config.embedder;
-    const shared = config.layout === 'shared';
-    if (shared && config.autoCreateSchema === true) {
-      throw new RagError(
-        "autoCreateSchema: true is not allowed with layout: 'shared' — the shared tables are deployed outside the app",
-        'INVALID_CONFIG',
-      );
-    }
+    const shared =
+      resolveLayout(config.layout, config.autoCreateSchema) === 'shared';
     this.autoCreateSchema = config.autoCreateSchema ?? !shared;
     this.documentsTable = config.documentsTable ?? SHARED_DOCUMENTS_TABLE;
     this.schema = config.schema;
@@ -144,7 +141,7 @@ export class PgVectorRag implements IRag {
   /** The shared check's own error reaches the caller as is; anything else is wrapped in `code`. */
   private failure(err: unknown, code: string): RagError {
     return err instanceof RagError &&
-      (err.code === 'SHARED_LAYOUT_NOT_DEPLOYED' ||
+      (err.code === SHARED_LAYOUT_NOT_DEPLOYED ||
         err.code === 'HEALTH_CHECK_ERROR')
       ? err
       : new RagError(String(err), code);
