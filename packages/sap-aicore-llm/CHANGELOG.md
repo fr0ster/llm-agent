@@ -1,5 +1,9 @@
 # @mcp-abap-adt/sap-aicore-llm
 
+## 30.3.1
+
+Lockstep release with the 30.3.1 line: `pg-vector-rag` no longer crashes the process on an idle-client pool error. No change in this package — see the root CHANGELOG.
+
 ## 30.3.0
 
 Lockstep release with the 30.3.0 line: `IRagScanner.scan`, `IRagFilteredDeleter.deleteWhere` and `IRagCatalogUpdater.updateCollection` on the RAG stores and catalog providers. No change in this package — see the root CHANGELOG.

@@ -1,5 +1,9 @@
 # @mcp-abap-adt/llm-agent
 
+## 30.3.1
+
+Lockstep release with the 30.3.1 line: `pg-vector-rag` no longer crashes the process on an idle-client pool error. No change in this package — see the root CHANGELOG.
+
 ## 30.3.0
 
 **Added:** `IRagScanner` / `isRagScanner`, `IRagFilteredDeleter` / `isRagFilteredDeleter`, `IRagCatalogUpdater` / `isRagCatalogUpdater`, `RagScanFilter`, `RagScanRecord`, `RagScanPage`, `RagCatalogPatch`, `DEFAULT_SCAN_PAGE_SIZE` and the error-code constants `RAG_COLLECTION_NOT_FOUND`, `INVALID_ARGUMENT`. Exported helpers for backend implementations (public API from this release): `assertNonEmptyFilter`, `assertScanFilter`, `assertScanOptions`, `matchesScanFilter`, `encodeIdScanCursor`, `decodeIdScanCursor`, `validateRagCatalogPatch` (type `ValidatedRagCatalogPatch`) and `ragCollectionNotFound`. `InMemoryRag` and `VectorRag` implement `scan` and `deleteWhere` (a store `namespace` bounds both) with the same refusals as the other backends (`ABORTED` first, then `INVALID_ARGUMENT` for a bad `pageSize`, filter value or cursor). `@mcp-abap-adt/llm-agent/testing/scan-delete-conformance` — the conformance kit (`scanDeleteConformanceCases`, `isScanDeleteCaseSkipped`) the stores and providers run on fakes and, in `test/integration/`, on SAP HANA Cloud (HDI), PGlite with pgvector and, when `QDRANT_TEST_URL` is set, Qdrant. No existing interface changed. See `docs/INTEGRATION.md`.

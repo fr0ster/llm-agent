@@ -9,6 +9,8 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [30.3.1] — 2026-10-19
+
 ### Fixed
 
 - **`pg-vector-rag`**: an idle-client error on the `pg` pool (database restart, cut connection) no longer crashes the consumer process. Pools get an `'error'` listener that never throws; optional `onPoolError` (sync or async; a rejection is swallowed) in `PgVectorRagConfig`. `hana-vector-rag` is unaffected (`@sap/hana-client` connections are callback-only, not event emitters).
