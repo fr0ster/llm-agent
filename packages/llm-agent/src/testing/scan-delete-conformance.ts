@@ -502,7 +502,16 @@ export const scanDeleteConformanceCases: readonly ScanDeleteConformanceCase[] =
           ['m1', { userId: 'u1' }],
           ['m2', { userId: 'u1' }],
         ]);
-        for (const cursor of ['not a cursor!', '', '{"x":1}']) {
+        // 'azow!' decodes (leniently) as a real key; the padded and the
+        // leading-zero forms are not what the store issued.
+        for (const cursor of [
+          'not a cursor!',
+          '',
+          '{"x":1}',
+          'azow!',
+          'azow=',
+          'azowMDA',
+        ]) {
           const res = await store.scan({ pageSize: 1, cursor });
           assert.equal(
             res.ok,

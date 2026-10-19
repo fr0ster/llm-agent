@@ -26,12 +26,17 @@ export function encodeScanCursor(key: number): string {
 }
 
 function decodeScanCursor(cursor: string): number | undefined {
+  if (!/^[A-Za-z0-9_-]+$/.test(cursor)) return undefined;
   const raw = Buffer.from(cursor, 'base64url').toString('utf8');
   if (!raw.startsWith(CURSOR_PREFIX)) return undefined;
   const digits = raw.slice(CURSOR_PREFIX.length);
   if (!/^\d+$/.test(digits)) return undefined;
   const n = Number(digits);
-  return Number.isSafeInteger(n) ? n : undefined;
+  // Only the canonical encoding is a cursor this module issued.
+  if (!Number.isSafeInteger(n) || encodeScanCursor(n) !== cursor) {
+    return undefined;
+  }
+  return n;
 }
 
 /**
