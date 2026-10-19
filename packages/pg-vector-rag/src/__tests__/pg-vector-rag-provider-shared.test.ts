@@ -20,6 +20,8 @@ interface Fake {
   records: Map<string, unknown[]>;
   docCount: Map<string, number>;
   failOn?: RegExp;
+  /** Runs inside the catalog INSERT, before it fails — another writer racing. */
+  beforeInsert?: () => void;
   dim: number;
   /** The configured documents table, quoted and qualified as the provider sends it. */
   docs: string;
@@ -53,6 +55,7 @@ function fake(schema?: string, docsName = 'rag_documents'): Fake {
     if (sql.startsWith(`SELECT COUNT(*) AS n FROM ${f.docs} WHERE`))
       return [{ n: f.docCount.get(String(params[0])) ?? 0 }];
     if (sql.startsWith(`INSERT INTO ${f.catalog} `)) {
+      f.beforeInsert?.();
       if (f.records.has(String(params[0]))) throw new Error('unique');
       f.records.set(String(params[0]), [...params]);
       return [];
@@ -168,6 +171,17 @@ for (const variant of [
       const r = await p.createCollection('kb', opts);
       assert.ok(!r.ok);
       assert.equal(r.error.code, 'RAG_CREATE_ERROR');
+    });
+
+    it('a failed insert that finds the record present is a DuplicateCollectionError', async () => {
+      const { f, p } = make();
+      f.beforeInsert = () => {
+        f.records.set('kb', ['kb']);
+        throw new Error('unique');
+      };
+      const r = await p.createCollection('kb', opts);
+      assert.ok(!r.ok);
+      assert.ok(r.error instanceof DuplicateCollectionError);
     });
 
     it('deleteCollection removes documents before the record', async () => {

@@ -79,7 +79,7 @@ export interface PgVectorRagProviderConfig {
   catalogTable?: string;
   /**
    * `per-collection` (default): one table per collection. `shared`: one
-   * documents table for all collections, deployed outside the app — no DDL
+   * documents table for all collections, deployed outside the app â€” no DDL
    * ever runs, and `autoCreateSchema: true` is refused.
    */
   layout?: 'per-collection' | 'shared';
@@ -120,7 +120,7 @@ export class PgVectorRagProvider extends AbstractRagProvider {
     const shared = cfg.layout === 'shared';
     if (shared && cfg.autoCreateSchema === true) {
       throw new RagError(
-        "autoCreateSchema: true is not allowed with layout: 'shared' — the shared tables are deployed outside the app",
+        "autoCreateSchema: true is not allowed with layout: 'shared' â€” the shared tables are deployed outside the app",
         'INVALID_CONFIG',
       );
     }
@@ -321,7 +321,7 @@ export class PgVectorRagProvider extends AbstractRagProvider {
   ): Promise<Result<void, RagError>> {
     // Never removed: between this failure and a removal another registry may
     // adopt the store and record it, and a removal would leave that record
-    // without data (§6.3).
+    // without data (Â§6.3).
     return writeCatalogRecord(
       client,
       this.catalogTable,
