@@ -38,11 +38,14 @@ import {
   type HanaClient,
   HanaVectorRag,
 } from './hana-vector-rag.js';
+import { decodeLob } from './lob.js';
 import {
   assertCollectionName,
   createTableSql,
   dropTableSql,
 } from './schema.js';
+import { SHARED_CATALOG_TABLE, SHARED_DOCUMENTS_TABLE } from './shared-ddl.js';
+import { SharedProviderOps } from './shared-provider-ops.js';
 
 type Handles = { rag: IRag; editor: IRagEditor };
 type Refusal = { ok: false; error: RagError };
@@ -85,8 +88,19 @@ export interface HanaVectorRagProviderConfig {
    * record's handle for every session.
    */
   clientFactory?: () => HanaClient;
-  /** The table holding one record per collection. Default `rag_collection_catalog`. */
+  /**
+   * The table holding one record per collection. Default
+   * `rag_collection_catalog`; `RAG_COLLECTIONS` in the `shared` layout.
+   */
   catalogTable?: string;
+  /**
+   * `per-collection` (default): one table per collection. `shared`: one
+   * documents table for all collections, deployed outside the app — no DDL
+   * ever runs, and `autoCreateSchema: true` is refused.
+   */
+  layout?: 'per-collection' | 'shared';
+  /** Documents table of the `shared` layout. Default `RAG_DOCUMENTS`. */
+  documentsTable?: string;
 }
 
 function normalizeConnection(
@@ -107,7 +121,8 @@ function decodeRow(row: Record<string, unknown>): RagCatalogRow {
   const json = row.attributesJson;
   return {
     ...row,
-    attributesJson: Buffer.isBuffer(json) ? json.toString('utf8') : json,
+    attributesJson:
+      json === undefined || json === null ? json : decodeLob(json),
   };
 }
 
@@ -123,6 +138,9 @@ export class HanaVectorRagProvider extends AbstractRagProvider {
   private readonly autoCreateSchema: boolean;
   private readonly clientFactory?: () => HanaClient;
   private readonly catalogTable: string;
+  private readonly layout: 'per-collection' | 'shared';
+  private readonly documentsTable: string;
+  private readonly shared?: SharedProviderOps;
   private ownClient?: Promise<HanaClient>;
   private catalogReady?: Promise<void>;
 
@@ -132,12 +150,32 @@ export class HanaVectorRagProvider extends AbstractRagProvider {
     this.embedder = cfg.embedder;
     this.connection = normalizeConnection(cfg.connection);
     this.defaultDimension = cfg.defaultDimension ?? 1536;
-    this.autoCreateSchema = cfg.autoCreateSchema ?? true;
+    const shared = cfg.layout === 'shared';
+    if (shared && cfg.autoCreateSchema === true) {
+      throw new RagError(
+        "autoCreateSchema: true is not allowed with layout: 'shared' — the shared tables are deployed outside the app",
+        'INVALID_CONFIG',
+      );
+    }
+    this.layout = shared ? 'shared' : 'per-collection';
+    this.documentsTable = cfg.documentsTable ?? SHARED_DOCUMENTS_TABLE;
+    this.autoCreateSchema = cfg.autoCreateSchema ?? !shared;
     this.editable = cfg.editable ?? true;
     this.supportedScopes = cfg.supportedScopes ?? ['session', 'user', 'global'];
     this.clientFactory = cfg.clientFactory;
-    this.catalogTable = cfg.catalogTable ?? DEFAULT_CATALOG_TABLE;
+    this.catalogTable =
+      cfg.catalogTable ??
+      (shared ? SHARED_CATALOG_TABLE : DEFAULT_CATALOG_TABLE);
     assertCollectionName(this.catalogTable);
+    if (shared) {
+      assertCollectionName(this.documentsTable);
+      this.shared = new SharedProviderOps({
+        catalogTable: this.catalogTable,
+        documentsTable: this.documentsTable,
+        schema: this.connection.schema,
+        dimension: this.dimension(),
+      });
+    }
     if (cfg.idStrategyFactory) this.idStrategyFactory = cfg.idStrategyFactory;
   }
 
@@ -152,6 +190,20 @@ export class HanaVectorRagProvider extends AbstractRagProvider {
     try {
       assertCollectionName(name);
       const client = await this.adminClient();
+      if (this.shared) {
+        const created = await this.shared.create(
+          client,
+          {
+            ...checked.value,
+            storeName: name,
+            name: opts.collectionName ?? name,
+            attributes: opts.attributes,
+          },
+          opts,
+        );
+        if (!created.ok) return created;
+        return { ok: true, value: this.handles(name, checked.value) };
+      }
       if (this.autoCreateSchema) await this.ensureCatalog(client);
       if (await this.recordExists(client, name))
         return this.duplicate(name, opts);
@@ -186,6 +238,7 @@ export class HanaVectorRagProvider extends AbstractRagProvider {
   > {
     try {
       const client = await this.adminClient();
+      if (this.shared) return await this.shared.describe(client, decodeRow);
       if (!(await this.tableExists(client, this.catalogTable))) {
         return { ok: true, value: { records: [], rejected: [] } };
       }
@@ -214,6 +267,7 @@ export class HanaVectorRagProvider extends AbstractRagProvider {
     let client: HanaClient;
     try {
       client = await this.adminClient();
+      if (this.shared) return await this.shared.delete(client, name);
       if (await this.tableExists(client, this.catalogTable)) {
         await client.exec(deleteRecordSql(this.catalogTable), [name]);
       }
@@ -237,6 +291,7 @@ export class HanaVectorRagProvider extends AbstractRagProvider {
   async listCollections(): Promise<Result<string[], RagError>> {
     try {
       const client = await this.adminClient();
+      if (this.shared) return await this.shared.list(client);
       const rows = await client.query(
         this.connection.schema
           ? 'SELECT TABLE_NAME FROM SYS.TABLES WHERE SCHEMA_NAME = ?'
@@ -318,6 +373,8 @@ export class HanaVectorRagProvider extends AbstractRagProvider {
         dimension: this.dimension(),
         // No handle creates its store: createCollection does, and only it.
         autoCreateSchema: false,
+        layout: this.layout,
+        documentsTable: this.documentsTable,
         embedder: this.embedder,
       },
       this.clientFactory?.(),
