@@ -22,6 +22,7 @@ import {
   ragCollectionNotFound,
   validateRagCatalogPatch,
   validateRagOwner,
+  validateRagStoreName,
 } from '@mcp-abap-adt/llm-agent';
 import {
   createCatalogTableSql,
@@ -260,6 +261,8 @@ export class HanaVectorRagProvider
     storeName: string,
     patch: RagCatalogPatch,
   ): Promise<Result<void, RagError>> {
+    const name = validateRagStoreName(storeName);
+    if (!name.ok) return name;
     const prepared = validateRagCatalogPatch(patch);
     if (!prepared.ok) return prepared;
     try {

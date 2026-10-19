@@ -14,6 +14,21 @@ export interface ValidatedRagCatalogPatch {
   attributesJson?: string | null;
 }
 
+/** A store name is a non-empty string; anything else is `INVALID_ARGUMENT`. */
+export function validateRagStoreName(
+  storeName: unknown,
+): Result<void, RagError> {
+  return typeof storeName === 'string' && storeName.trim() !== ''
+    ? { ok: true, value: undefined }
+    : {
+        ok: false,
+        error: new RagError(
+          'updateCollection storeName must be a non-empty string',
+          INVALID_ARGUMENT,
+        ),
+      };
+}
+
 /**
  * The checks every `IRagCatalogUpdater.updateCollection` runs before any
  * call: an empty patch (no key, or only undefined values) is
@@ -28,6 +43,7 @@ export function validateRagCatalogPatch(
   if (
     typeof patch !== 'object' ||
     patch === null ||
+    Array.isArray(patch) ||
     (patch.collectionName === undefined && patch.attributes === undefined)
   ) {
     return {
@@ -44,6 +60,19 @@ export function validateRagCatalogPatch(
       ok: false,
       error: new RagError(
         'updateCollection collectionName must be a non-empty string',
+        INVALID_ARGUMENT,
+      ),
+    };
+  }
+  const given: unknown = patch.attributes;
+  if (
+    given !== undefined &&
+    (typeof given !== 'object' || given === null || Array.isArray(given))
+  ) {
+    return {
+      ok: false,
+      error: new RagError(
+        'updateCollection attributes must be an object',
         INVALID_ARGUMENT,
       ),
     };

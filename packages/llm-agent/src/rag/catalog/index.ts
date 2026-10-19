@@ -2,6 +2,7 @@ export {
   ragCollectionNotFound,
   type ValidatedRagCatalogPatch,
   validateRagCatalogPatch,
+  validateRagStoreName,
 } from './patch.js';
 export {
   describeRagCatalogRows,

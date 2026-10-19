@@ -26,6 +26,7 @@ import {
   ragOwnerKeys,
   validateRagCatalogPatch,
   validateRagOwner,
+  validateRagStoreName,
 } from '@mcp-abap-adt/llm-agent';
 import { deterministicUUID, QdrantRag } from './qdrant-rag.js';
 
@@ -217,6 +218,8 @@ export class QdrantRagProvider
     storeName: string,
     patch: RagCatalogPatch,
   ): Promise<Result<void, RagError>> {
+    const name = validateRagStoreName(storeName);
+    if (!name.ok) return name;
     const valid = validateRagCatalogPatch(patch);
     if (!valid.ok) return valid;
     const { collectionName, attributesJson } = valid.value;

@@ -564,6 +564,112 @@ export const scanDeleteConformanceCases: readonly ScanDeleteConformanceCase[] =
       },
     },
     {
+      name: 'untyped inputs return INVALID_ARGUMENT, never throw',
+      async run(makeSubject) {
+        const s = await makeSubject();
+        const store = await s.store();
+        await seed(store, [
+          ['k1', { userId: 'u1' }],
+          ['k2', { userId: 'u2' }],
+        ]);
+        // What an untyped (JS) caller can pass; each goes through unknown.
+        const u = (v: unknown) => v as never;
+        const badScanOpts: unknown[] = [
+          null,
+          5,
+          'x',
+          true,
+          [],
+          { cursor: 123 },
+          { cursor: {} },
+          { cursor: null },
+          { pageSize: '5' },
+          { pageSize: null },
+          { filter: 5 },
+          { filter: 'u1' },
+          { filter: null },
+          { filter: [] },
+          { filter: { userId: 1 } },
+          { filter: { namespace: {} } },
+        ];
+        for (const opts of badScanOpts) {
+          const label = `scan(${JSON.stringify(opts)})`;
+          const res = await store.scan(u(opts));
+          assert.equal(res.ok, false, `${label} is refused`);
+          if (!res.ok) assert.equal(res.error.code, INVALID_ARGUMENT, label);
+        }
+        const badFilters: unknown[] = [
+          undefined,
+          null,
+          5,
+          'u1',
+          true,
+          [],
+          { userId: 1 },
+          { sessionId: null },
+          { namespace: ['n1'] },
+        ];
+        for (const filter of badFilters) {
+          const label = `deleteWhere(${JSON.stringify(filter)})`;
+          const res = await store.deleteWhere(u(filter));
+          assert.equal(res.ok, false, `${label} is refused`);
+          if (!res.ok) assert.equal(res.error.code, INVALID_ARGUMENT, label);
+        }
+        // A call-options argument without a usable signal is ignored.
+        for (const options of [null, 5, {}, { signal: {} }, { signal: 'x' }]) {
+          const res = await store.scan({ pageSize: 5 }, u(options));
+          assert.equal(
+            res.ok,
+            true,
+            `scan ignores options ${JSON.stringify(options)}`,
+          );
+        }
+        assert.deepEqual(
+          sorted(await scanIds(store)),
+          ['k1', 'k2'],
+          'a refused call touches nothing',
+        );
+
+        if (!s.catalog) return;
+        const { provider, create } = await s.catalog();
+        const n = freshCatalogNames('untyped');
+        await create(n.untyped);
+        const before = await catalogRecord(provider, n.untyped);
+        assert.ok(before, 'create() wrote a catalog record');
+        const badNames: unknown[] = [undefined, null, 5, '', '   ', {}, []];
+        for (const name of badNames) {
+          const label = `updateCollection(${JSON.stringify(name)})`;
+          const res = await provider.updateCollection(u(name), {
+            attributes: { changed: true },
+          });
+          assert.equal(res.ok, false, `${label} is refused`);
+          if (!res.ok) assert.equal(res.error.code, INVALID_ARGUMENT, label);
+        }
+        const badPatches: unknown[] = [
+          undefined,
+          null,
+          5,
+          'x',
+          true,
+          [],
+          { attributes: 5 },
+          { attributes: 'x' },
+          { attributes: null },
+          { attributes: [] },
+          { attributes: [{ a: 1 }] },
+          { collectionName: 5 },
+          { collectionName: {} },
+        ];
+        for (const patch of badPatches) {
+          const label = `updateCollection(patch ${JSON.stringify(patch)})`;
+          const res = await provider.updateCollection(n.untyped, u(patch));
+          assert.equal(res.ok, false, `${label} is refused`);
+          if (!res.ok) assert.equal(res.error.code, INVALID_ARGUMENT, label);
+        }
+        assert.deepEqual(await catalogRecord(provider, n.untyped), before);
+      },
+    },
+    {
       name: 'scan and deleteWhere return ABORTED for an aborted signal',
       async run(makeSubject) {
         const s = await makeSubject();

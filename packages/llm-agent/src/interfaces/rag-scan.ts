@@ -110,7 +110,7 @@ export function assertScanFilter(
   filter: RagScanFilter | undefined,
 ): Result<void, RagError> {
   if (filter === undefined) return { ok: true, value: undefined };
-  if (typeof filter !== 'object' || filter === null) {
+  if (typeof filter !== 'object' || filter === null || Array.isArray(filter)) {
     return invalid('the scan filter must be an object');
   }
   for (const f of FILTER_FIELDS) {
@@ -129,12 +129,22 @@ export function assertScanFilter(
 export function assertScanOptions(opts?: {
   filter?: RagScanFilter;
   pageSize?: number;
+  cursor?: string;
 }): Result<void, RagError> {
-  const size = opts?.pageSize;
+  if (opts === undefined) return { ok: true, value: undefined };
+  // Untyped callers: every input is checked, none may throw.
+  if (typeof opts !== 'object' || opts === null || Array.isArray(opts)) {
+    return invalid('scan options must be an object');
+  }
+  const cursor: unknown = opts.cursor;
+  if (cursor !== undefined && typeof cursor !== 'string') {
+    return invalid('scan cursor must be a string');
+  }
+  const size = opts.pageSize;
   if (size !== undefined && !(Number.isInteger(size) && size > 0)) {
     return invalid('scan pageSize must be a positive integer');
   }
-  return assertScanFilter(opts?.filter);
+  return assertScanFilter(opts.filter);
 }
 
 /**
@@ -144,7 +154,7 @@ export function assertScanOptions(opts?: {
 export function assertNonEmptyFilter(
   filter: RagScanFilter,
 ): Result<void, RagError> {
-  if (typeof filter !== 'object' || filter === null) {
+  if (typeof filter !== 'object' || filter === null || Array.isArray(filter)) {
     return invalid('deleteWhere requires a non-empty filter');
   }
   if (FILTER_FIELDS.every((f) => filter[f] === undefined)) {

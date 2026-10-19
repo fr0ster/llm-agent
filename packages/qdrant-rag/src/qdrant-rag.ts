@@ -99,7 +99,7 @@ export class QdrantRag implements IRag, IRagScanner, IRagFilteredDeleter {
       this.timeoutMs === undefined
         ? undefined
         : setTimeout(() => ctrl.abort(), this.timeoutMs);
-    if (signal) {
+    if (typeof signal?.addEventListener === 'function') {
       signal.addEventListener('abort', () => ctrl.abort(signal.reason), {
         once: true,
       });
