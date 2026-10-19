@@ -1,8 +1,13 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
+import { validateRagCatalogPatch } from '../rag/catalog/patch.js';
 import {
   assertNonEmptyFilter,
+  assertScanFilter,
+  assertScanOptions,
   DEFAULT_SCAN_PAGE_SIZE,
+  decodeIdScanCursor,
+  encodeIdScanCursor,
   INVALID_ARGUMENT,
   isRagCatalogUpdater,
   isRagFilteredDeleter,
@@ -56,6 +61,86 @@ describe('assertNonEmptyFilter', () => {
   });
   it('accepts a filter with a field', () => {
     assert.equal(assertNonEmptyFilter({ userId: 'u' }).ok, true);
+  });
+  it('rejects a non-string filter value with INVALID_ARGUMENT', () => {
+    const r = assertNonEmptyFilter({ userId: 1 } as unknown as {
+      userId: string;
+    });
+    assert.equal(r.ok, false);
+    if (!r.ok) assert.equal(r.error.code, INVALID_ARGUMENT);
+  });
+});
+
+describe('assertScanFilter / assertScanOptions', () => {
+  it('accepts no filter, an empty filter and string values', () => {
+    assert.equal(assertScanFilter(undefined).ok, true);
+    assert.equal(assertScanFilter({}).ok, true);
+    assert.equal(assertScanFilter({ userId: 'u', namespace: '' }).ok, true);
+  });
+  it('refuses null, a number, a boolean, an array', () => {
+    for (const v of [null, 1, true, ['u']]) {
+      const r = assertScanFilter({ sessionId: v } as unknown as {
+        sessionId: string;
+      });
+      assert.equal(r.ok, false, JSON.stringify(v));
+      if (!r.ok) assert.equal(r.error.code, INVALID_ARGUMENT);
+    }
+  });
+  it('pageSize must be a positive integer', () => {
+    assert.equal(assertScanOptions().ok, true);
+    assert.equal(assertScanOptions({ pageSize: 1 }).ok, true);
+    for (const pageSize of [0, -1, 1.5, Number.NaN, Infinity]) {
+      const r = assertScanOptions({ pageSize });
+      assert.equal(r.ok, false, String(pageSize));
+      if (!r.ok) assert.equal(r.error.code, INVALID_ARGUMENT);
+    }
+  });
+});
+
+describe('id scan cursor', () => {
+  it('round-trips any id', () => {
+    for (const id of ['a', '', 'with space', 'ü-ß', '550e8400-e29b']) {
+      assert.equal(decodeIdScanCursor(encodeIdScanCursor(id)), id);
+    }
+  });
+  it('rejects a cursor it did not issue', () => {
+    for (const c of ['', 'not a cursor!', 'b', '{"x":1}', 'aTp4=', 1]) {
+      assert.equal(decodeIdScanCursor(c), undefined, String(c));
+    }
+  });
+});
+
+describe('validateRagCatalogPatch', () => {
+  it('refuses an empty patch and an invalid collectionName', () => {
+    for (const patch of [
+      {},
+      { collectionName: undefined, attributes: undefined },
+      { collectionName: '' },
+      { collectionName: '  ' },
+      { collectionName: null },
+      { collectionName: 42 },
+    ]) {
+      const r = validateRagCatalogPatch(
+        patch as unknown as { collectionName?: string },
+      );
+      assert.equal(r.ok, false, JSON.stringify(patch));
+      if (!r.ok) assert.equal(r.error.code, INVALID_ARGUMENT);
+    }
+  });
+  it('keeps what is absent and encodes attributes as on create', () => {
+    assert.deepEqual(validateRagCatalogPatch({ collectionName: 'N' }), {
+      ok: true,
+      value: { collectionName: 'N' },
+    });
+    assert.deepEqual(validateRagCatalogPatch({ attributes: { a: 1 } }), {
+      ok: true,
+      value: { attributesJson: '{"a":1}' },
+    });
+  });
+  it('refuses attributes that cannot be stored', () => {
+    const r = validateRagCatalogPatch({ attributes: { a: Number.NaN } });
+    assert.equal(r.ok, false);
+    if (!r.ok) assert.equal(r.error.code, 'RAG_INVALID_ATTRIBUTES');
   });
 });
 

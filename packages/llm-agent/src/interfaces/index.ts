@@ -190,7 +190,11 @@ export type {
 } from './rag-scan.js';
 export {
   assertNonEmptyFilter,
+  assertScanFilter,
+  assertScanOptions,
   DEFAULT_SCAN_PAGE_SIZE,
+  decodeIdScanCursor,
+  encodeIdScanCursor,
   INVALID_ARGUMENT,
   isRagCatalogUpdater,
   isRagFilteredDeleter,

@@ -96,17 +96,84 @@ export function matchesScanFilter(
   return true;
 }
 
+const invalid = (message: string): { ok: false; error: RagError } => ({
+  ok: false,
+  error: new RagError(message, INVALID_ARGUMENT),
+});
+
+/**
+ * Each filter field that is set must be a string: `null`, a number or a
+ * boolean is `INVALID_ARGUMENT`, so a JS caller gets the same refusal from
+ * every backend instead of backend-specific matching.
+ */
+export function assertScanFilter(
+  filter: RagScanFilter | undefined,
+): Result<void, RagError> {
+  if (filter === undefined) return { ok: true, value: undefined };
+  if (typeof filter !== 'object' || filter === null) {
+    return invalid('the scan filter must be an object');
+  }
+  for (const f of FILTER_FIELDS) {
+    const value: unknown = filter[f];
+    if (value !== undefined && typeof value !== 'string') {
+      return invalid(`the scan filter field '${f}' must be a string`);
+    }
+  }
+  return { ok: true, value: undefined };
+}
+
+/**
+ * The checks `scan` runs before any backend call, after the abort check:
+ * `pageSize` is a positive integer when set, then {@link assertScanFilter}.
+ */
+export function assertScanOptions(opts?: {
+  filter?: RagScanFilter;
+  pageSize?: number;
+}): Result<void, RagError> {
+  const size = opts?.pageSize;
+  if (size !== undefined && !(Number.isInteger(size) && size > 0)) {
+    return invalid('scan pageSize must be a positive integer');
+  }
+  return assertScanFilter(opts?.filter);
+}
+
+/**
+ * The checks `deleteWhere` runs before any backend call, after the abort
+ * check: at least one filter field is set, then {@link assertScanFilter}.
+ */
 export function assertNonEmptyFilter(
   filter: RagScanFilter,
 ): Result<void, RagError> {
-  if (FILTER_FIELDS.every((f) => filter[f] === undefined)) {
-    return {
-      ok: false,
-      error: new RagError(
-        'deleteWhere requires a non-empty filter',
-        INVALID_ARGUMENT,
-      ),
-    };
+  if (typeof filter !== 'object' || filter === null) {
+    return invalid('deleteWhere requires a non-empty filter');
   }
-  return { ok: true, value: undefined };
+  if (FILTER_FIELDS.every((f) => filter[f] === undefined)) {
+    return invalid('deleteWhere requires a non-empty filter');
+  }
+  return assertScanFilter(filter);
+}
+
+const ID_CURSOR_PREFIX = 'i:';
+
+/**
+ * The scan cursor of a store keyed by a string id (HANA, PG): the last id of
+ * the page, prefixed and base64url-encoded, so a cursor the store did not
+ * issue is recognised.
+ */
+export function encodeIdScanCursor(id: string): string {
+  return Buffer.from(`${ID_CURSOR_PREFIX}${id}`, 'utf8').toString('base64url');
+}
+
+/** The id inside a cursor from {@link encodeIdScanCursor}; `undefined` when malformed. */
+export function decodeIdScanCursor(cursor: unknown): string | undefined {
+  if (typeof cursor !== 'string' || !/^[A-Za-z0-9_-]+$/.test(cursor)) {
+    return undefined;
+  }
+  const raw = Buffer.from(cursor, 'base64url').toString('utf8');
+  if (!raw.startsWith(ID_CURSOR_PREFIX)) return undefined;
+  // Only the canonical encoding is a cursor this module issued.
+  if (encodeIdScanCursor(raw.slice(ID_CURSOR_PREFIX.length)) !== cursor) {
+    return undefined;
+  }
+  return raw.slice(ID_CURSOR_PREFIX.length);
 }

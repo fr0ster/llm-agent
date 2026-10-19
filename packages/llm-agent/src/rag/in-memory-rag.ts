@@ -250,15 +250,19 @@ export class InMemoryRag implements IRag, IRagScanner, IRagFilteredDeleter {
 
   async scan(
     opts?: { filter?: RagScanFilter; pageSize?: number; cursor?: string },
-    _options?: CallOptions,
+    options?: CallOptions,
   ): Promise<Result<RagScanPage, RagError>> {
+    if (options?.signal?.aborted)
+      return { ok: false, error: new RagError('Aborted', 'ABORTED') };
     return scanKeyedPage(this.records, (m) => this.inStore(m), opts);
   }
 
   async deleteWhere(
     filter: RagScanFilter,
-    _options?: CallOptions,
+    options?: CallOptions,
   ): Promise<Result<{ deleted: number }, RagError>> {
+    if (options?.signal?.aborted)
+      return { ok: false, error: new RagError('Aborted', 'ABORTED') };
     const guard = assertNonEmptyFilter(filter);
     if (!guard.ok) return guard;
     const before = this.records.length;

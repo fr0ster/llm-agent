@@ -1,4 +1,5 @@
 import {
+  assertScanOptions,
   DEFAULT_SCAN_PAGE_SIZE,
   INVALID_ARGUMENT,
   matchesScanFilter,
@@ -27,20 +28,25 @@ export function encodeScanCursor(key: number): string {
 function decodeScanCursor(cursor: string): number | undefined {
   const raw = Buffer.from(cursor, 'base64url').toString('utf8');
   if (!raw.startsWith(CURSOR_PREFIX)) return undefined;
-  const n = Number(raw.slice(CURSOR_PREFIX.length));
-  return Number.isInteger(n) && n >= 0 ? n : undefined;
+  const digits = raw.slice(CURSOR_PREFIX.length);
+  if (!/^\d+$/.test(digits)) return undefined;
+  const n = Number(digits);
+  return Number.isSafeInteger(n) ? n : undefined;
 }
 
 /**
  * One page of a key-set scan over entries sorted by ascending `key`.
  * `inStore` is the store's own namespace boundary; expired records are kept.
  * The cursor is the last key returned; it is omitted only on the last page.
+ * `pageSize` and the filter are checked first, as every backend checks them.
  */
 export function scanKeyedPage(
   entries: Iterable<KeyedScanEntry>,
   inStore: (metadata: RagMetadata) => boolean,
   opts?: { filter?: RagScanFilter; pageSize?: number; cursor?: string },
 ): Result<RagScanPage, RagError> {
+  const valid = assertScanOptions(opts);
+  if (!valid.ok) return valid;
   let after = -1;
   if (opts?.cursor !== undefined) {
     const decoded = decodeScanCursor(opts.cursor);
@@ -52,10 +58,7 @@ export function scanKeyedPage(
     }
     after = decoded;
   }
-  const pageSize =
-    opts?.pageSize !== undefined && opts.pageSize > 0
-      ? Math.floor(opts.pageSize)
-      : DEFAULT_SCAN_PAGE_SIZE;
+  const pageSize = opts?.pageSize ?? DEFAULT_SCAN_PAGE_SIZE;
 
   const records: RagScanPage['records'] = [];
   let lastKey = -1;

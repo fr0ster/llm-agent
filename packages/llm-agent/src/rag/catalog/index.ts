@@ -1,4 +1,9 @@
 export {
+  ragCollectionNotFound,
+  type ValidatedRagCatalogPatch,
+  validateRagCatalogPatch,
+} from './patch.js';
+export {
   describeRagCatalogRows,
   encodeRagAttributes,
   parseRagCollectionRecord,
