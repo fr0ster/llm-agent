@@ -145,6 +145,20 @@ names the lengths).
   layout deletes the record first); `clearAll` deletes only that collection's rows.
 - **A handle is not tied to its collection.** In `shared`, a handle obtained before `deleteCollection` can still write: it only writes rows with its `COLLECTION` value, which no longer needs a record. Those rows become an orphan — listed by `listCollections`, and `createCollection` of that name returns `OrphanStoreError` until `adoptExisting: true` or the rows are removed. (In `per-collection` such a write fails, because the table is gone.) Consumers must drop the handles of a deleted collection.
 
+## Scan, filtered delete and catalog update
+
+The store implements `IRagScanner` and `IRagFilteredDeleter`, and the provider implements `IRagCatalogUpdater` (guards `isRagScanner`, `isRagFilteredDeleter`, `isRagCatalogUpdater` from `@mcp-abap-adt/llm-agent`). The library wrappers (`OverlayRag`, `SessionScopedRag`, ...) do not forward them; use the provider's handle.
+
+- `scan({ filter?, pageSize?, cursor? })` returns `{ records, cursor? }`: `id`, `text`, `metadata`, never a vector, expired records included. `filter` is strict string equality on `userId`, `sessionId`, `namespace`. `pageSize` is a positive integer (default `DEFAULT_SCAN_PAGE_SIZE`, 500), otherwise `INVALID_ARGUMENT`; a filter value that is not a string and a cursor this store did not issue are `INVALID_ARGUMENT` too. **Only a missing `cursor` ends the scan**: a page may be short or empty while a cursor is still returned. `id` is `metadata.id` when the record has one, otherwise the `ID` column; the round trip into `getById` / `deleteById` is guaranteed only for records written with an id.
+- `deleteWhere(filter)` deletes the matching records of this collection only and returns `{ deleted }`. An empty filter is `INVALID_ARGUMENT`. It is exact against a snapshot, not atomic: it selects the matching keys, filters them in the client with the strict rules (no `JSON_VALUE`, which would match `123` and `'123'` alike), deletes those keys in batches and returns exactly how many it deleted. A matching record inserted while it runs may survive; repeat the call if you need to.
+- An aborted `signal` gives `ABORTED` (`Aborted after deleting N record(s)` once a delete has started).
+- `updateCollection(storeName, { collectionName?, attributes? })` is one `UPDATE` of the catalog row by `store_name`. `attributes` replaces the stored attributes as a whole; `storeName`, `scope` and the owner never change. A missing record is `RAG_COLLECTION_NOT_FOUND`, an empty patch or a `collectionName` that is not a non-empty string `INVALID_ARGUMENT`, an attribute value that cannot be stored `RAG_INVALID_ATTRIBUTES`.
+
+In `shared` layout both run the startup check first and return its failure unchanged (`SHARED_LAYOUT_NOT_DEPLOYED` / `HEALTH_CHECK_ERROR`); no DDL runs, and `deleteWhere` stays inside its own `COLLECTION` value.
+
+The scan cursor is a key-set cursor on the primary key, stable under concurrent inserts; the filter is applied to each page in the client, which is why a page can come back short or empty.
+See [INTEGRATION.md](../../docs/INTEGRATION.md#scan-filtered-delete-and-catalog-update).
+
 ## Connections, and `clientFactory` for per-session hydration
 
 `openCollection` builds a collection's handles without a statement and without a connection; a

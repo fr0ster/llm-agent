@@ -53,3 +53,12 @@ export function selectRecordsSql(table: string): string {
 export function deleteRecordSql(table: string): string {
   return `DELETE FROM ${quoteIdent(table)} WHERE store_name = ?`;
 }
+
+/**
+ * Updates the display name and/or the attributes of one record. A NULL
+ * parameter keeps the column as it is; `store_name`, `scope` and the owner
+ * are never in the SET list. Zero rows updated means there is no record.
+ */
+export function updateRecordSql(table: string): string {
+  return `UPDATE ${quoteIdent(table)} SET collection_name = COALESCE(?, collection_name), attributes_json = COALESCE(?, attributes_json) WHERE store_name = ?`;
+}

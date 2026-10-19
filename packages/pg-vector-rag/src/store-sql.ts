@@ -1,3 +1,8 @@
+import {
+  INVALID_ARGUMENT,
+  RagError,
+  type RagScanFilter,
+} from '@mcp-abap-adt/llm-agent';
 import { createTableSql, qualifiedTable, quoteIdent } from './schema.js';
 
 export type SqlStatement = { sql: string; params: unknown[] };
@@ -30,6 +35,84 @@ export interface PgStoreSql {
   deleteById(id: string): SqlStatement;
   clear(): SqlStatement;
   countRows(): SqlStatement;
+  /** One page ordered by binary `"id"`, after `afterKey` when given, narrowed by `filter`. */
+  scanPage(
+    afterKey: string | undefined,
+    limit: number,
+    filter?: RagScanFilter,
+  ): SqlStatement;
+  /** Deletes every row of this collection matching `filter`, returning the deleted ids. */
+  deleteWhere(filter: RagScanFilter): SqlStatement;
+}
+
+/**
+ * The scan/delete filter as strict conditions: `userId`, `sessionId` and
+ * `namespace` match only a JSON string equal to the wanted value (a number or
+ * boolean never matches), in both layouts. No expiry: a scan sees expired rows.
+ */
+function scanFilterConditions(
+  filter: RagScanFilter | undefined,
+  params: unknown[],
+): string[] {
+  const conditions: string[] = [];
+  for (const key of ['userId', 'sessionId', 'namespace'] as const) {
+    const want = filter?.[key];
+    if (want === undefined) continue;
+    params.push(want);
+    conditions.push(
+      `CASE WHEN jsonb_typeof("metadata"->'${key}') = 'string' THEN "metadata"->>'${key}' END = $${params.length}`,
+    );
+  }
+  return conditions;
+}
+
+/**
+ * The primary key, in its own (default) collation: ORDER BY and the cursor
+ * comparison use the same one, so the order is a stable total order and the
+ * primary-key index serves every page. No COLLATE: it would defeat the index.
+ */
+const KEY = '"id"';
+
+/** `params` already holds the collection (shared) or nothing (per-collection). */
+function scanSql(
+  table: string,
+  params: unknown[],
+  afterKey: string | undefined,
+  limit: number,
+  filter: RagScanFilter | undefined,
+): SqlStatement {
+  const conditions: string[] = [];
+  if (params.length > 0) conditions.push('"collection" = $1');
+  if (afterKey !== undefined) {
+    params.push(afterKey);
+    conditions.push(`${KEY} > $${params.length}`);
+  }
+  conditions.push(...scanFilterConditions(filter, params));
+  const where = conditions.length ? ` WHERE ${conditions.join(' AND ')}` : '';
+  return {
+    sql: `SELECT "id", "text", "metadata" FROM ${table}${where} ORDER BY ${KEY} LIMIT ${limit}`,
+    params,
+  };
+}
+
+function deleteWhereSql(
+  table: string,
+  params: unknown[],
+  filter: RagScanFilter,
+): SqlStatement {
+  const conditions: string[] = [];
+  if (params.length > 0) conditions.push('"collection" = $1');
+  const strict = scanFilterConditions(filter, params);
+  if (strict.length === 0)
+    throw new RagError(
+      'deleteWhere requires a non-empty filter',
+      INVALID_ARGUMENT,
+    );
+  conditions.push(...strict);
+  return {
+    sql: `DELETE FROM ${table} WHERE ${conditions.join(' AND ')} RETURNING "id"`,
+    params,
+  };
 }
 
 /**
@@ -111,6 +194,9 @@ export function perCollectionStoreSql(
       sql: `SELECT COUNT(*) AS n FROM ${table}`,
       params: [],
     }),
+    scanPage: (afterKey, limit, filter) =>
+      scanSql(table, [], afterKey, limit, filter),
+    deleteWhere: (filter) => deleteWhereSql(table, [], filter),
   };
 }
 
@@ -155,5 +241,8 @@ export function sharedStoreSql(
       sql: `SELECT COUNT(*) AS n FROM ${table} WHERE "collection" = $1`,
       params: [collection],
     }),
+    scanPage: (afterKey, limit, filter) =>
+      scanSql(table, [collection], afterKey, limit, filter),
+    deleteWhere: (filter) => deleteWhereSql(table, [collection], filter),
   };
 }

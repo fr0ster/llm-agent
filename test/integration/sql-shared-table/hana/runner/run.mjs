@@ -28,12 +28,18 @@ import {
   conformanceEmbedder,
 } from '@mcp-abap-adt/llm-agent/testing/rag-filter-conformance';
 import { sharedTableConformanceCases } from '@mcp-abap-adt/llm-agent/testing/shared-table-conformance';
+import {
+  isScanDeleteCaseSkipped,
+  scanDeleteConformanceCases,
+} from '@mcp-abap-adt/llm-agent/testing/scan-delete-conformance';
 import hana from '@sap/hana-client';
 
 const out = (line) => console.log(`SST ${line}`);
 const SHIPPED_DIMENSION = 1536;
 const failures = [];
 let total = 0;
+// One summary line per kit.
+const kits = [];
 
 function pad(vector) {
   if (vector.length > SHIPPED_DIMENSION)
@@ -185,6 +191,7 @@ try {
   }
 
   let run = 0;
+  const sharedKitStart = { total };
   for (const kase of sharedTableConformanceCases) {
     total++;
     const prefix = `sst${Date.now()}c${++run}_`;
@@ -287,16 +294,240 @@ try {
       }
     }
   }
+  kits.push({
+    label: 'shared-table kit (incl. startup checks)',
+    ran: total - sharedKitStart.total + 2,
+    failed: failures.length,
+    skipped: 0,
+  });
+
+  // --- scan / deleteWhere / updateCollection kit, shared layout ------------
+  // The per-collection layout is not run here: it creates a table per
+  // collection (DDL), and this runner's runtime user has DML only. Its HANA
+  // statements are covered by the package's unit tests.
+  out(
+    'scan kit: per-collection layout NOT run (runtime user has no DDL); shared layout only',
+  );
+  const scanKit = {
+    label: 'scan/delete/catalog kit, shared layout',
+    ran: 0,
+    failed: 0,
+    skipped: 0,
+  };
+  const newProvider = () =>
+    new HanaVectorRagProvider({
+      name: 'hana',
+      embedder,
+      connection,
+      defaultDimension: SHIPPED_DIMENSION,
+      layout: 'shared',
+    });
+  // Catalog facade: store names get the case prefix on the way in and lose it
+  // on the way out, so the kit's exact assertions hold.
+  const catalogFacade = (prefix) => {
+    const inner = newProvider();
+    const p = (name) => `${prefix}${name}`;
+    const unprefix = (name) => name.slice(prefix.length);
+    return {
+      name: inner.name,
+      kind: inner.kind,
+      editable: inner.editable,
+      supportedScopes: inner.supportedScopes,
+      async createCollection(name, opts) {
+        return inner.createCollection(p(name), opts);
+      },
+      async deleteCollection(name) {
+        return inner.deleteCollection(p(name));
+      },
+      async updateCollection(name, patch) {
+        return inner.updateCollection(p(name), patch);
+      },
+      async describeCollections() {
+        const res = await inner.describeCollections();
+        if (!res.ok) return res;
+        return {
+          ok: true,
+          value: {
+            ...res.value,
+            records: res.value.records
+              .filter((r) => r.storeName.startsWith(prefix))
+              .map((r) => ({ ...r, storeName: unprefix(r.storeName) })),
+          },
+        };
+      },
+    };
+  };
+  const scanStore = (prefix, collection) =>
+    padQuery(
+      new HanaVectorRag({
+        ...connection,
+        collectionName: `${prefix}${collection}`,
+        layout: 'shared',
+        embedder,
+      }),
+    );
+  const wipePrefix = async (prefix) => {
+    await client.exec(
+      `DELETE FROM "RAG_DOCUMENTS" WHERE LEFT("COLLECTION", ?) = ?`,
+      [prefix.length, prefix],
+    );
+    await client.exec(
+      `DELETE FROM "RAG_COLLECTIONS" WHERE LEFT(STORE_NAME, ?) = ?`,
+      [prefix.length, prefix],
+    );
+  };
+  let scanRun = 0;
+  for (const kase of scanDeleteConformanceCases) {
+    const prefix = `sst${Date.now()}s${++scanRun}_`;
+    try {
+      await kase.run(async () => {
+        await wipePrefix(prefix);
+        return {
+          async store() {
+            return scanStore(prefix, 'scan_a');
+          },
+          async sibling() {
+            return scanStore(prefix, 'scan_b');
+          },
+          async catalog() {
+            const provider = catalogFacade(prefix);
+            return {
+              provider,
+              async create(name) {
+                const res = await provider.createCollection(name, {
+                  scope: 'global',
+                });
+                if (!res.ok) throw res.error;
+              },
+            };
+          },
+        };
+      });
+      scanKit.ran++;
+      out(`PASS [scan kit] ${kase.name}`);
+    } catch (err) {
+      if (isScanDeleteCaseSkipped(err)) {
+        scanKit.skipped++;
+        out(`SKIP [scan kit] ${kase.name}: ${err.message}`);
+      } else {
+        scanKit.ran++;
+        scanKit.failed++;
+        failures.push([`[scan kit] ${kase.name}`, err]);
+        out(`FAIL [scan kit] ${kase.name}`);
+      }
+    } finally {
+      try {
+        await wipePrefix(prefix);
+      } catch (err) {
+        out(`could not clean up ${prefix}*: ${err}`);
+      }
+    }
+  }
+  kits.push(scanKit);
+
+  // --- explicit extra checks (review watch items) --------------------------
+  const extras = { label: 'extra HANA checks', ran: 0, failed: 0, skipped: 0 };
+  const extra = async (name, fn) => {
+    extras.ran++;
+    const prefix = `sst${Date.now()}x${extras.ran}_`;
+    try {
+      await wipePrefix(prefix);
+      await fn(prefix);
+      out(`${name} OK`);
+    } catch (err) {
+      extras.failed++;
+      failures.push([`[extra] ${name}`, err]);
+      out(`FAIL ${name}`);
+    } finally {
+      await wipePrefix(prefix).catch(() => {});
+    }
+  };
+  const recordsOf = async (provider) => {
+    const res = await provider.describeCollections();
+    if (!res.ok) throw res.error;
+    return res.value.records;
+  };
+  const assertEq = (actual, expected, what) => {
+    if (JSON.stringify(actual) !== JSON.stringify(expected))
+      throw new Error(
+        `${what}: expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`,
+      );
+  };
+  // COALESCE(?, col) with a NULL bound parameter: NVARCHAR(5000) and NCLOB.
+  await extra('updateCollection name-only', async (prefix) => {
+    const provider = newProvider();
+    const store = `${prefix}upd_name`;
+    const created = await provider.createCollection(store, {
+      scope: 'global',
+      collectionName: 'Before',
+      attributes: { keep: 'yes', n: 1 },
+    });
+    if (!created.ok) throw created.error;
+    const patched = await provider.updateCollection(store, {
+      collectionName: 'Після ✓',
+    });
+    if (!patched.ok) throw patched.error;
+    const rec = (await recordsOf(provider)).find((r) => r.storeName === store);
+    assertEq(rec?.name, 'Після ✓', 'name');
+    assertEq(rec?.attributes, { keep: 'yes', n: 1 }, 'attributes untouched');
+  });
+  await extra('updateCollection attributes-only', async (prefix) => {
+    const provider = newProvider();
+    const store = `${prefix}upd_attr`;
+    const created = await provider.createCollection(store, {
+      scope: 'global',
+      collectionName: 'Stays',
+      attributes: { old: true },
+    });
+    if (!created.ok) throw created.error;
+    const big = { blob: 'я'.repeat(9000) }; // beyond NVARCHAR(5000): NCLOB
+    const patched = await provider.updateCollection(store, {
+      attributes: big,
+    });
+    if (!patched.ok) throw patched.error;
+    const rec = (await recordsOf(provider)).find((r) => r.storeName === store);
+    assertEq(rec?.name, 'Stays', 'name untouched');
+    assertEq(rec?.attributes, big, 'attributes replaced');
+  });
+  // Mixed-case and non-ASCII ids in a paged scan: each exactly once.
+  await extra('scan ordering mixed-case non-ASCII', async (prefix) => {
+    const store = scanStore(prefix, 'order');
+    const writer = store.writer();
+    const ids = ['B', 'a', 'é', 'Ж', 'z'];
+    for (const id of ids) {
+      const r = await writer.upsertRaw(id, `record ${id}`, {});
+      if (!r.ok) throw r.error;
+    }
+    const seen = [];
+    let cursor;
+    let pages = 0;
+    do {
+      const res = await store.scan({
+        pageSize: 2,
+        ...(cursor ? { cursor } : {}),
+      });
+      if (!res.ok) throw res.error;
+      seen.push(...res.value.records.map((r) => r.id));
+      cursor = res.value.cursor;
+      if (++pages > 20) throw new Error('scan never ended');
+    } while (cursor !== undefined);
+    assertEq([...seen].sort(), [...ids].sort(), 'each id exactly once');
+    out(`scan order returned ${JSON.stringify(seen)}`);
+  });
+  kits.push(extras);
   await client.close().catch(() => {});
 } catch (err) {
   failures.push(['setup', err]);
   total++;
 }
 
-if (failures.length === 0) {
-  out(`CONFORMANCE PASS ${total}/${total}`);
-} else {
-  out(`CONFORMANCE FAIL ${total - failures.length}/${total}`);
+for (const k of kits) {
+  const pass = k.ran - k.failed;
+  out(
+    `CONFORMANCE ${k.failed === 0 ? 'PASS' : 'FAIL'} ${pass}/${k.ran} (${k.label}${k.skipped ? `; ${k.skipped} skipped, seam absent` : ''})`,
+  );
+}
+if (failures.length > 0) {
   for (const [name, err] of failures)
     for (const line of String(err?.stack ?? err).split('\n'))
       out(`  ${name}: ${line}`);

@@ -17,6 +17,10 @@ export type QdrantStub = {
   failOn?: (r: StubRequest) => boolean;
   /** Runs inside a points PUT to the catalog, before it is applied — a racing writer. */
   beforeCatalogWrite?: () => void;
+  /** Runs inside a set-payload request before it is applied — a racing delete. */
+  beforePayloadWrite?: () => void;
+  /** Runs inside a points retrieve before it is answered — a racing delete. */
+  beforePointsRetrieve?: () => void;
   close(): Promise<void>;
 };
 
@@ -80,7 +84,7 @@ export async function startQdrantStub(
       return;
     }
     const pts = r.path.match(
-      /^\/collections\/([^/]+)\/points(\/scroll|\/delete|\/search)?$/,
+      /^\/collections\/([^/]+)\/points(\/scroll|\/delete|\/search|\/payload)?$/,
     );
     if (pts) {
       const name = pts[1];
@@ -101,6 +105,7 @@ export async function startQdrantStub(
         return;
       }
       if (r.method === 'POST' && action === undefined) {
+        stub?.beforePointsRetrieve?.();
         const ids = body.ids as string[];
         reply(200, {
           result: ids.flatMap((id) => {
@@ -111,9 +116,21 @@ export async function startQdrantStub(
         return;
       }
       if (r.method === 'POST' && action === '/scroll') {
-        const ids = [...c.points.keys()].sort();
-        const start =
-          body.offset === undefined ? 0 : ids.indexOf(String(body.offset));
+        // Qdrant scrolls in point-id order; the offset is the first id to
+        // return (inclusive), the filter is applied inside the scroll.
+        const filter = body.filter as QdrantFilter | undefined;
+        const ids = [...c.points.keys()]
+          .sort()
+          .filter(
+            (id) =>
+              filter === undefined ||
+              matchesFilter(c.points.get(id)?.payload ?? {}, filter),
+          );
+        const first =
+          body.offset === undefined
+            ? 0
+            : ids.findIndex((id) => id >= String(body.offset));
+        const start = first === -1 ? ids.length : first;
         const limit = Number(body.limit ?? 10);
         reply(200, {
           result: {
@@ -123,6 +140,25 @@ export async function startQdrantStub(
             next_page_offset: ids[start + limit] ?? null,
           },
         });
+        return;
+      }
+      if (r.method === 'POST' && action === '/payload') {
+        // Set payload by point id: keys are merged into an existing point; an
+        // id that is not there is a 404 and nothing is created (Qdrant's
+        // behaviour: "No point with id ... found").
+        stub?.beforePayloadWrite?.();
+        const set = (body.payload ?? {}) as Record<string, unknown>;
+        const ids = (body.points as string[] | undefined) ?? [];
+        const absent = ids.find((id) => !c.points.has(id));
+        if (absent !== undefined) {
+          reply(404, {
+            status: { error: `Not found: No point with id ${absent} found` },
+          });
+          return;
+        }
+        for (const id of ids)
+          Object.assign(c.points.get(id)?.payload ?? {}, set);
+        reply(200, { result: { status: 'completed' } });
         return;
       }
       if (r.method === 'POST' && action === '/delete') {
@@ -230,7 +266,11 @@ function holds(
     );
   }
   if ('match' in cond) {
-    return cond.key in payload && payload[cond.key] === cond.match.value;
+    // Qdrant's match.value also matches an element of an array payload value.
+    const v = payload[cond.key];
+    return Array.isArray(v)
+      ? v.includes(cond.match.value)
+      : cond.key in payload && v === cond.match.value;
   }
   if ('range' in cond) {
     const v = payload[cond.key];

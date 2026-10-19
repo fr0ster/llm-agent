@@ -9,9 +9,17 @@ import type {
   Result,
 } from '@mcp-abap-adt/llm-agent';
 import {
+  assertNonEmptyFilter,
+  assertScanOptions,
+  decodeIdScanCursor,
   FallbackQueryEmbedding,
+  INVALID_ARGUMENT,
+  type IRagFilteredDeleter,
+  type IRagScanner,
   matchesRagIdentity,
   RagError,
+  type RagScanFilter,
+  type RagScanPage,
   ragIdentityFilter,
 } from '@mcp-abap-adt/llm-agent';
 import type { HanaVectorRagConfig } from './connection.js';
@@ -19,7 +27,8 @@ import { resolveHanaConnectArgs } from './connection.js';
 import { SHARED_LAYOUT_NOT_DEPLOYED } from './error-codes.js';
 import { resolveHanaModule } from './hana-module.js';
 import { resolveLayout } from './layout.js';
-import { decodeLob } from './lob.js';
+import { decodeLob, withId } from './lob.js';
+import { deleteWhere, scanPage } from './scan-delete.js';
 import { assertCollectionName } from './schema.js';
 import { checkSharedTables } from './shared-check.js';
 import { SHARED_DOCUMENTS_TABLE } from './shared-ddl.js';
@@ -86,7 +95,7 @@ export async function createHanaClient(
   };
 }
 
-export class HanaVectorRag implements IRag {
+export class HanaVectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
   private readonly dimension: number;
   private readonly embedder: IRetrievalEmbedder;
   private readonly autoCreateSchema: boolean;
@@ -184,6 +193,13 @@ export class HanaVectorRag implements IRag {
         err.code === 'HEALTH_CHECK_ERROR')
       ? err
       : new RagError(String(err), code);
+  }
+
+  /** `failure` for `scan` / `deleteWhere`, which also pass `ABORTED` through. */
+  private scanFailure(err: unknown, code: string): RagError {
+    return err instanceof RagError && err.code === 'ABORTED'
+      ? err
+      : this.failure(err, code);
   }
 
   private vectorLiteral(vec: number[]): string {
@@ -294,6 +310,54 @@ export class HanaVectorRag implements IRag {
     }
   }
 
+  async scan(
+    opts?: { filter?: RagScanFilter; pageSize?: number; cursor?: string },
+    options?: CallOptions,
+  ): Promise<Result<RagScanPage, RagError>> {
+    if (options?.signal?.aborted)
+      return { ok: false, error: new RagError('Aborted', 'ABORTED') };
+    const valid = assertScanOptions(opts);
+    if (!valid.ok) return valid;
+    if (
+      opts?.cursor !== undefined &&
+      decodeIdScanCursor(opts.cursor) === undefined
+    )
+      return {
+        ok: false,
+        error: new RagError('Invalid scan cursor', INVALID_ARGUMENT),
+      };
+    try {
+      await this.maybeEnsureSchema();
+      const client = await this.client();
+      return { ok: true, value: await scanPage(client, this.sql, opts) };
+    } catch (err) {
+      return { ok: false, error: this.scanFailure(err, 'QUERY_ERROR') };
+    }
+  }
+
+  async deleteWhere(
+    filter: RagScanFilter,
+    options?: CallOptions,
+  ): Promise<Result<{ deleted: number }, RagError>> {
+    if (options?.signal?.aborted)
+      return { ok: false, error: new RagError('Aborted', 'ABORTED') };
+    const valid = assertNonEmptyFilter(filter);
+    if (!valid.ok) return valid;
+    try {
+      await this.maybeEnsureSchema();
+      const client = await this.client();
+      const deleted = await deleteWhere(
+        client,
+        this.sql,
+        filter,
+        options?.signal,
+      );
+      return { ok: true, value: { deleted } };
+    } catch (err) {
+      return { ok: false, error: this.scanFailure(err, 'DELETE_ERROR') };
+    }
+  }
+
   async healthCheck(): Promise<Result<void, RagError>> {
     try {
       await this.ensureSharedDeployed();
@@ -383,15 +447,4 @@ export class HanaVectorRag implements IRag {
         this.upsertPrecomputed(text, vector, { ...metadata, id }),
     };
   }
-}
-
-/**
- * upsert keeps the id in its own column and out of the JSON, so a read puts it
- * back: readers find a record's id in its metadata, as every other store
- * returns it (tool selection's toolNameFromRecord keys on it).
- */
-function withId(row: Record<string, unknown>): RagMetadata {
-  const raw = decodeLob(row.metadata);
-  const parsed = raw ? (JSON.parse(raw) as RagMetadata) : {};
-  return { ...parsed, id: String(row.id) };
 }

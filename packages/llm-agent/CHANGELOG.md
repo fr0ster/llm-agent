@@ -1,5 +1,9 @@
 # @mcp-abap-adt/llm-agent
 
+## 30.3.0
+
+**Added:** `IRagScanner` / `isRagScanner`, `IRagFilteredDeleter` / `isRagFilteredDeleter`, `IRagCatalogUpdater` / `isRagCatalogUpdater`, `RagScanFilter`, `RagScanRecord`, `RagScanPage`, `RagCatalogPatch`, `DEFAULT_SCAN_PAGE_SIZE` and the error-code constants `RAG_COLLECTION_NOT_FOUND`, `INVALID_ARGUMENT`. Exported helpers for backend implementations (public API from this release): `assertNonEmptyFilter`, `assertScanFilter`, `assertScanOptions`, `matchesScanFilter`, `encodeIdScanCursor`, `decodeIdScanCursor`, `validateRagCatalogPatch` (type `ValidatedRagCatalogPatch`) and `ragCollectionNotFound`. `InMemoryRag` and `VectorRag` implement `scan` and `deleteWhere` (a store `namespace` bounds both) with the same refusals as the other backends (`ABORTED` first, then `INVALID_ARGUMENT` for a bad `pageSize`, filter value or cursor). `@mcp-abap-adt/llm-agent/testing/scan-delete-conformance` — the conformance kit (`scanDeleteConformanceCases`, `isScanDeleteCaseSkipped`) the stores and providers run on fakes and, in `test/integration/`, on SAP HANA Cloud (HDI), PGlite with pgvector and, when `QDRANT_TEST_URL` is set, Qdrant. No existing interface changed. See `docs/INTEGRATION.md`.
+
 ## 30.2.0
 
 **Added:** `@mcp-abap-adt/llm-agent/testing/shared-table-conformance` — the conformance kit (`sharedTableConformanceCases`) both SQL vector stores run against the shared table layout, on fakes in their unit tests and on a real HANA HDI container and on PGlite (with its pgvector extension) in `test/integration/sql-shared-table/`. No interface changed.

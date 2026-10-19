@@ -3,6 +3,7 @@ import type {
   RagCollectionRecord,
   RagProviderCreateCollectionOptions,
   Result,
+  ValidatedRagCatalogPatch,
 } from '@mcp-abap-adt/llm-agent';
 import {
   CatalogRecordDeleteError,
@@ -14,6 +15,7 @@ import { deleteRecordSql, selectRecordsSql } from './catalog.js';
 import {
   catalogRecordExists,
   duplicateRefusal,
+  updateCatalogRecord,
   writeCatalogRecord,
 } from './catalog-record.js';
 import type { PgClient } from './pg-vector-rag.js';
@@ -135,6 +137,30 @@ export class SharedProviderOps {
       return {
         ok: false,
         error: new CatalogRecordDeleteError(name, String(err)),
+      };
+    }
+  }
+
+  /** The memoised check first (its failure is returned unchanged), then one UPDATE. */
+  async update(
+    client: PgClient,
+    storeName: string,
+    patch: ValidatedRagCatalogPatch,
+  ): Promise<Result<void, RagError>> {
+    const ready = await this.check(client);
+    if (!ready.ok) return ready;
+    try {
+      return await updateCatalogRecord(
+        client,
+        this.cfg.catalogTable,
+        storeName,
+        patch,
+        this.cfg.schema,
+      );
+    } catch (err) {
+      return {
+        ok: false,
+        error: new RagError(String(err), 'RAG_UPDATE_ERROR'),
       };
     }
   }

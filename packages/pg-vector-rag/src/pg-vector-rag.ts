@@ -9,14 +9,23 @@ import type {
   Result,
 } from '@mcp-abap-adt/llm-agent';
 import {
+  assertNonEmptyFilter,
+  assertScanOptions,
+  decodeIdScanCursor,
   FallbackQueryEmbedding,
+  INVALID_ARGUMENT,
+  type IRagFilteredDeleter,
+  type IRagScanner,
   RagError,
+  type RagScanFilter,
+  type RagScanPage,
   ragIdentityFilter,
 } from '@mcp-abap-adt/llm-agent';
 import type { PgVectorRagConfig } from './connection.js';
 import { resolvePgConnectArgs } from './connection.js';
 import { SHARED_LAYOUT_NOT_DEPLOYED } from './error-codes.js';
 import { resolveLayout } from './layout.js';
+import { deleteWhere, scanPage } from './scan-delete.js';
 import { assertCollectionName, createExtensionSql } from './schema.js';
 import { checkSharedTables } from './shared-check.js';
 import { SHARED_DOCUMENTS_TABLE } from './shared-ddl.js';
@@ -26,6 +35,7 @@ import {
   sharedStoreSql,
 } from './store-sql.js';
 import { pgVectorLiteral } from './vector-literal.js';
+import { withId } from './with-id.js';
 
 export type { PgVectorRagConfig };
 
@@ -61,7 +71,7 @@ export async function createPgClient(
   };
 }
 
-export class PgVectorRag implements IRag {
+export class PgVectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
   private readonly dimension: number;
   private readonly embedder: IRetrievalEmbedder;
   private readonly autoCreateSchema: boolean;
@@ -147,6 +157,13 @@ export class PgVectorRag implements IRag {
       : new RagError(String(err), code);
   }
 
+  /** `failure` for `scan` / `deleteWhere`, which also pass `ABORTED` through. */
+  private scanFailure(err: unknown, code: string): RagError {
+    return err instanceof RagError && err.code === 'ABORTED'
+      ? err
+      : this.failure(err, code);
+  }
+
   private vectorLiteral(vec: number[]): string {
     return pgVectorLiteral(
       vec,
@@ -212,6 +229,55 @@ export class PgVectorRag implements IRag {
       };
     } catch (err) {
       return { ok: false, error: this.failure(err, 'QUERY_ERROR') };
+    }
+  }
+
+  async scan(
+    opts?: { filter?: RagScanFilter; pageSize?: number; cursor?: string },
+    options?: CallOptions,
+  ): Promise<Result<RagScanPage, RagError>> {
+    if (options?.signal?.aborted)
+      return { ok: false, error: new RagError('Aborted', 'ABORTED') };
+    const valid = assertScanOptions(opts);
+    if (!valid.ok) return valid;
+    if (
+      opts?.cursor !== undefined &&
+      decodeIdScanCursor(opts.cursor) === undefined
+    )
+      return {
+        ok: false,
+        error: new RagError('Invalid scan cursor', INVALID_ARGUMENT),
+      };
+    try {
+      await this.maybeEnsureSchema();
+      const client = await this.clientPromise;
+      return { ok: true, value: await scanPage(client, this.sql, opts) };
+    } catch (err) {
+      return { ok: false, error: this.scanFailure(err, 'QUERY_ERROR') };
+    }
+  }
+
+  async deleteWhere(
+    filter: RagScanFilter,
+    options?: CallOptions,
+  ): Promise<Result<{ deleted: number }, RagError>> {
+    if (options?.signal?.aborted)
+      return { ok: false, error: new RagError('Aborted', 'ABORTED') };
+    const valid = assertNonEmptyFilter(filter);
+    if (!valid.ok) return valid;
+    try {
+      await this.maybeEnsureSchema();
+      const client = await this.clientPromise;
+      // One statement: an abort cannot land inside it, so it is checked here.
+      if (options?.signal?.aborted)
+        return {
+          ok: false,
+          error: new RagError('Aborted after deleting 0 record(s)', 'ABORTED'),
+        };
+      const deleted = await deleteWhere(client, this.sql, filter);
+      return { ok: true, value: { deleted } };
+    } catch (err) {
+      return { ok: false, error: this.scanFailure(err, 'DELETE_ERROR') };
     }
   }
 
@@ -306,13 +372,4 @@ export class PgVectorRag implements IRag {
         this.upsertPrecomputed(text, vector, { ...metadata, id }),
     };
   }
-}
-
-/**
- * upsert keeps the id in its own column and out of the jsonb, so a read puts
- * it back: readers find a record's id in its metadata, as every other store
- * returns it (tool selection's toolNameFromRecord keys on it).
- */
-function withId(row: Record<string, unknown>): RagMetadata {
-  return { ...((row.metadata as RagMetadata) ?? {}), id: String(row.id) };
 }

@@ -5,6 +5,14 @@ import type {
   IRetrievalEmbedder,
 } from '../interfaces/rag.js';
 import {
+  assertNonEmptyFilter,
+  type IRagFilteredDeleter,
+  type IRagScanner,
+  matchesScanFilter,
+  type RagScanFilter,
+  type RagScanPage,
+} from '../interfaces/rag-scan.js';
+import {
   type CallOptions,
   RagError,
   type RagMetadata,
@@ -15,6 +23,7 @@ import { matchesRagIdentity, ragIdentityFilter } from './identity-filter.js';
 import { InvertedIndex } from './inverted-index.js';
 import type { IDocumentEnricher, IQueryPreprocessor } from './preprocessor.js';
 import { FallbackQueryEmbedding, QueryEmbedding } from './query-embedding.js';
+import { scanKeyedPage } from './scan-support.js';
 import type {
   ISearchCandidate,
   ISearchContext,
@@ -48,7 +57,7 @@ export interface VectorRagConfig {
   documentEnrichers?: IDocumentEnricher[];
 }
 
-export class VectorRag implements IRag {
+export class VectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
   private records: (StoredRecord | null)[] = [];
   private readonly dedupThreshold: number;
   private readonly namespace?: string;
@@ -301,6 +310,52 @@ export class VectorRag implements IRag {
         ),
       };
     }
+  }
+
+  /** The store-configured namespace boundary, as `query` applies it. */
+  private inStore(metadata: RagMetadata): boolean {
+    return (
+      this.namespace === undefined ||
+      metadata.namespace === undefined ||
+      metadata.namespace === this.namespace
+    );
+  }
+
+  async scan(
+    opts?: { filter?: RagScanFilter; pageSize?: number; cursor?: string },
+    options?: CallOptions,
+  ): Promise<Result<RagScanPage, RagError>> {
+    if (options?.signal?.aborted)
+      return { ok: false, error: new RagError('Aborted', 'ABORTED') };
+    // The slot index is the stable key: a record keeps its slot until deleted.
+    const entries: { key: number; text: string; metadata: RagMetadata }[] = [];
+    this.records.forEach((r, key) => {
+      if (r !== null) entries.push({ key, text: r.text, metadata: r.metadata });
+    });
+    return scanKeyedPage(entries, (m) => this.inStore(m), opts);
+  }
+
+  async deleteWhere(
+    filter: RagScanFilter,
+    options?: CallOptions,
+  ): Promise<Result<{ deleted: number }, RagError>> {
+    if (options?.signal?.aborted)
+      return { ok: false, error: new RagError('Aborted', 'ABORTED') };
+    const guard = assertNonEmptyFilter(filter);
+    if (!guard.ok) return guard;
+    let deleted = 0;
+    for (let i = 0; i < this.records.length; i++) {
+      const r = this.records[i];
+      if (
+        r !== null &&
+        this.inStore(r.metadata) &&
+        matchesScanFilter(r.metadata, filter)
+      ) {
+        this.records[i] = null;
+        deleted++;
+      }
+    }
+    return { ok: true, value: { deleted } };
   }
 
   async getById(

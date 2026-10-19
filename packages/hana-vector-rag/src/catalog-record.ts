@@ -2,14 +2,20 @@ import type {
   RagCollectionRecord,
   RagProviderCreateCollectionOptions,
   Result,
+  ValidatedRagCatalogPatch,
 } from '@mcp-abap-adt/llm-agent';
 import {
   DuplicateCollectionError,
   encodeRagAttributes,
   type RagError,
+  ragCollectionNotFound,
   ragOwnerKeys,
 } from '@mcp-abap-adt/llm-agent';
-import { insertRecordSql, recordExistsSql } from './catalog.js';
+import {
+  insertRecordSql,
+  recordExistsSql,
+  updateRecordSql,
+} from './catalog.js';
 import type { HanaClient } from './hana-vector-rag.js';
 
 /** The refusal for a collection that already has a record. */
@@ -68,4 +74,20 @@ export async function writeCatalogRecord(
     }
     return onFailure(err);
   }
+}
+
+/** One UPDATE; zero rows updated is a missing record, and nothing is created. */
+export async function updateCatalogRecord(
+  client: HanaClient,
+  table: string,
+  storeName: string,
+  patch: ValidatedRagCatalogPatch,
+): Promise<Result<void, RagError>> {
+  const { rowCount } = await client.exec(updateRecordSql(table), [
+    patch.collectionName ?? null,
+    patch.attributesJson ?? null,
+    storeName,
+  ]);
+  if (rowCount === 0) return ragCollectionNotFound(storeName);
+  return { ok: true, value: undefined };
 }

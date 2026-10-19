@@ -1,6 +1,6 @@
 {
   "name": "@mcp-abap-adt/llm-agent",
-  "version": "30.2.0",
+  "version": "30.3.0",
   "description": "Core interfaces, types, and lightweight default implementations for LLM agent orchestration.",
   "type": "module",
   "main": "dist/index.js",
@@ -20,6 +20,11 @@
       "types": "./dist/testing/shared-table-conformance.d.ts",
       "import": "./dist/testing/shared-table-conformance.js",
       "default": "./dist/testing/shared-table-conformance.js"
+    },
+    "./testing/scan-delete-conformance": {
+      "types": "./dist/testing/scan-delete-conformance.d.ts",
+      "import": "./dist/testing/scan-delete-conformance.js",
+      "default": "./dist/testing/scan-delete-conformance.js"
     }
   },
   "files": [

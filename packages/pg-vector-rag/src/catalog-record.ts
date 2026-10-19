@@ -2,14 +2,20 @@ import type {
   RagCollectionRecord,
   RagProviderCreateCollectionOptions,
   Result,
+  ValidatedRagCatalogPatch,
 } from '@mcp-abap-adt/llm-agent';
 import {
   DuplicateCollectionError,
   encodeRagAttributes,
   type RagError,
+  ragCollectionNotFound,
   ragOwnerKeys,
 } from '@mcp-abap-adt/llm-agent';
-import { insertRecordSql, recordExistsSql } from './catalog.js';
+import {
+  insertRecordSql,
+  recordExistsSql,
+  updateRecordSql,
+} from './catalog.js';
 import type { PgClient } from './pg-vector-rag.js';
 
 /** The refusal for a collection that already has a record. */
@@ -72,4 +78,21 @@ export async function writeCatalogRecord(
     }
     return onFailure(err);
   }
+}
+
+/** One UPDATE; zero rows updated is a missing record, and nothing is created. */
+export async function updateCatalogRecord(
+  client: PgClient,
+  table: string,
+  storeName: string,
+  patch: ValidatedRagCatalogPatch,
+  schema?: string,
+): Promise<Result<void, RagError>> {
+  const { rowCount } = await client.query(updateRecordSql(table, schema), [
+    patch.collectionName ?? null,
+    patch.attributesJson ?? null,
+    storeName,
+  ]);
+  if (!rowCount) return ragCollectionNotFound(storeName);
+  return { ok: true, value: undefined };
 }

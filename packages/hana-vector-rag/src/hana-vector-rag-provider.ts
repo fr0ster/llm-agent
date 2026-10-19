@@ -1,9 +1,11 @@
 import type {
   IIdStrategy,
   IRag,
+  IRagCatalogUpdater,
   IRagEditor,
   IRetrievalEmbedder,
   RagCatalogDescription,
+  RagCatalogPatch,
   RagCatalogRow,
   RagCollectionOwner,
   RagCollectionRecord,
@@ -17,7 +19,10 @@ import {
   describeRagCatalogRows,
   OrphanStoreError,
   RagError,
+  ragCollectionNotFound,
+  validateRagCatalogPatch,
   validateRagOwner,
+  validateRagStoreName,
 } from '@mcp-abap-adt/llm-agent';
 import {
   createCatalogTableSql,
@@ -30,6 +35,7 @@ import {
 import {
   catalogRecordExists,
   duplicateRefusal,
+  updateCatalogRecord,
   writeCatalogRecord,
 } from './catalog-record.js';
 import type { HanaVectorRagConfig } from './connection.js';
@@ -126,7 +132,10 @@ function decodeRow(row: Record<string, unknown>): RagCatalogRow {
   };
 }
 
-export class HanaVectorRagProvider extends AbstractRagProvider {
+export class HanaVectorRagProvider
+  extends AbstractRagProvider
+  implements IRagCatalogUpdater
+{
   readonly name: string;
   readonly kind = 'vector';
   readonly editable: boolean;
@@ -240,6 +249,39 @@ export class HanaVectorRagProvider extends AbstractRagProvider {
       return { ok: true, value: describeRagCatalogRows(rows.map(decodeRow)) };
     } catch (err) {
       return { ok: false, error: new RagError(String(err), 'RAG_LIST_ERROR') };
+    }
+  }
+
+  /**
+   * Updates the display name and/or replaces the attributes of one record.
+   * An empty patch is refused before any statement; `shared` runs its memoised
+   * table check first. A missing record is RAG_COLLECTION_NOT_FOUND.
+   */
+  async updateCollection(
+    storeName: string,
+    patch: RagCatalogPatch,
+  ): Promise<Result<void, RagError>> {
+    const name = validateRagStoreName(storeName);
+    if (!name.ok) return name;
+    const prepared = validateRagCatalogPatch(patch);
+    if (!prepared.ok) return prepared;
+    try {
+      const client = await this.adminClient();
+      if (this.shared)
+        return await this.shared.update(client, storeName, prepared.value);
+      if (!(await this.tableExists(client, this.catalogTable)))
+        return ragCollectionNotFound(storeName);
+      return await updateCatalogRecord(
+        client,
+        this.catalogTable,
+        storeName,
+        prepared.value,
+      );
+    } catch (err) {
+      return {
+        ok: false,
+        error: new RagError(String(err), 'RAG_UPDATE_ERROR'),
+      };
     }
   }
 

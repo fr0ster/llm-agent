@@ -1,6 +1,14 @@
 import { randomUUID } from 'node:crypto';
 import type { IQueryEmbedding } from '../interfaces/query-embedding.js';
 import type { IRag, IRagBackendWriter } from '../interfaces/rag.js';
+import {
+  assertNonEmptyFilter,
+  type IRagFilteredDeleter,
+  type IRagScanner,
+  matchesScanFilter,
+  type RagScanFilter,
+  type RagScanPage,
+} from '../interfaces/rag-scan.js';
 import type {
   CallOptions,
   RagMetadata,
@@ -10,6 +18,7 @@ import type {
 import { RagError } from '../interfaces/types.js';
 import { matchesRagIdentity, ragIdentityFilter } from './identity-filter.js';
 import type { IDocumentEnricher, IQueryPreprocessor } from './preprocessor.js';
+import { scanKeyedPage } from './scan-support.js';
 import { tokenizeSearchText } from './tokenizer.js';
 
 // ---------------------------------------------------------------------------
@@ -64,6 +73,8 @@ export interface InMemoryRagConfig {
 // ---------------------------------------------------------------------------
 
 interface StoredRecord {
+  /** Monotonically increasing insertion key — the stable scan cursor. */
+  key: number;
   id: string;
   text: string;
   embedding: Map<string, number>;
@@ -74,8 +85,9 @@ interface StoredRecord {
 // InMemoryRag
 // ---------------------------------------------------------------------------
 
-export class InMemoryRag implements IRag {
+export class InMemoryRag implements IRag, IRagScanner, IRagFilteredDeleter {
   private records: StoredRecord[] = [];
+  private nextKey = 0;
   private readonly dedupThreshold: number;
   private readonly namespace?: string;
   private readonly queryPreprocessors: IQueryPreprocessor[];
@@ -154,6 +166,7 @@ export class InMemoryRag implements IRag {
     } else {
       // Push new record
       this.records.push({
+        key: this.nextKey++,
         id: randomUUID(),
         text: enrichedText,
         embedding,
@@ -226,6 +239,38 @@ export class InMemoryRag implements IRag {
       ok: true,
       value: { text: record.text, metadata: record.metadata, score: 1 },
     };
+  }
+
+  /** The store-configured namespace boundary, as `query` applies it. */
+  private inStore(metadata: RagMetadata): boolean {
+    return (
+      this.namespace === undefined || metadata.namespace === this.namespace
+    );
+  }
+
+  async scan(
+    opts?: { filter?: RagScanFilter; pageSize?: number; cursor?: string },
+    options?: CallOptions,
+  ): Promise<Result<RagScanPage, RagError>> {
+    if (options?.signal?.aborted)
+      return { ok: false, error: new RagError('Aborted', 'ABORTED') };
+    return scanKeyedPage(this.records, (m) => this.inStore(m), opts);
+  }
+
+  async deleteWhere(
+    filter: RagScanFilter,
+    options?: CallOptions,
+  ): Promise<Result<{ deleted: number }, RagError>> {
+    if (options?.signal?.aborted)
+      return { ok: false, error: new RagError('Aborted', 'ABORTED') };
+    const guard = assertNonEmptyFilter(filter);
+    if (!guard.ok) return guard;
+    const before = this.records.length;
+    this.records = this.records.filter(
+      (r) =>
+        !(this.inStore(r.metadata) && matchesScanFilter(r.metadata, filter)),
+    );
+    return { ok: true, value: { deleted: before - this.records.length } };
   }
 
   async healthCheck(): Promise<Result<void, RagError>> {

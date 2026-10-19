@@ -638,6 +638,90 @@ A collection shared by several users is a `global` with your own role-based acce
 | `VectorRagProvider` | `session` (default; set `supportedScopes` to change) | In-process hybrid vector + BM25; persists only in memory |
 | `QdrantRagProvider` | `session`, `user`, `global` | Backed by Qdrant; supports `deleteCollection` and `listCollections` |
 
+### Scan, filtered delete and catalog update
+
+**File:** `packages/llm-agent/src/interfaces/rag-scan.ts`
+
+Three small interfaces, each with a type guard, none of them part of `IRag` or `IRagProvider`:
+
+```ts
+interface RagScanFilter { userId?: string; sessionId?: string; namespace?: string }
+interface RagScanRecord { id: string; text: string; metadata: RagMetadata }   // no vector
+interface RagScanPage { records: RagScanRecord[]; cursor?: string }
+
+interface IRagScanner {                 // isRagScanner(x)
+  scan(opts?: { filter?: RagScanFilter; pageSize?: number; cursor?: string },
+       options?: CallOptions): Promise<Result<RagScanPage, RagError>>;
+}
+interface IRagFilteredDeleter {         // isRagFilteredDeleter(x)
+  deleteWhere(filter: RagScanFilter,
+              options?: CallOptions): Promise<Result<{ deleted: number }, RagError>>;
+}
+interface IRagCatalogUpdater {          // isRagCatalogUpdater(x)
+  updateCollection(storeName: string,
+                   patch: { collectionName?: string; attributes?: Record<string, unknown> }): Promise<Result<void, RagError>>;
+}
+```
+
+Also exported from `@mcp-abap-adt/llm-agent`: `DEFAULT_SCAN_PAGE_SIZE` (500) and the error-code constants `RAG_COLLECTION_NOT_FOUND` and `INVALID_ARGUMENT`, and the helpers a backend implementation uses so that every backend refuses the same input: `assertScanOptions` (`pageSize`, filter values), `assertNonEmptyFilter` (the `deleteWhere` filter), `assertScanFilter`, `matchesScanFilter` (strict matching in the client), `encodeIdScanCursor` / `decodeIdScanCursor` (a key-set cursor on a string id), `validateRagCatalogPatch` (type `ValidatedRagCatalogPatch`) and `ragCollectionNotFound` (`updateCollection`).
+
+Who implements what:
+
+| Interface | Implemented by |
+|---|---|
+| `IRagScanner`, `IRagFilteredDeleter` | `InMemoryRag`, `VectorRag`, `HanaVectorRag` and `PgVectorRag` (both layouts), `QdrantRag` |
+| `IRagCatalogUpdater` | `HanaVectorRagProvider`, `PgVectorRagProvider`, `QdrantRagProvider` |
+
+The library wrappers (`OverlayRag`, `SessionScopedRag`, `ActiveFilteringRag`, the editor) do **not** forward these interfaces: the guards return `false` for them. Reach the raw store through the provider's handle (`createCollection` / `openCollection`).
+
+`scan` semantics:
+
+- The filter is strict string equality on `userId`, `sessionId`, `namespace` (a field that is not set matches everything). A number `123` never matches `'123'`, `'U1'` never matches `'u1'`. This is the same on every backend and in both SQL layouts; PG per-collection `query` keeps its existing `->>` semantics, so the two can differ there. One Qdrant edge: its `match.value` also matches an element of an array payload (`userId: ['u1']` matches `'u1'`); identity fields are strings by convention.
+- A filter value that is not a string (`null`, a number, a boolean, an array) is refused with `INVALID_ARGUMENT` before any backend call, by `scan` and `deleteWhere` alike.
+- A store configured with a `namespace` (`InMemoryRag`, `VectorRag`) scans and deletes only inside it.
+- Expired records (`metadata.ttl` in the past) are **included**; vectors are never returned; no record is skipped or repeated.
+- **Only a missing `cursor` ends a scan.** A page may be short or even empty while a cursor is still returned: loop until `cursor` is absent, never until a page is short.
+- `pageSize` defaults to `DEFAULT_SCAN_PAGE_SIZE`. It must be a positive integer, otherwise `INVALID_ARGUMENT` (before any backend call).
+- A cursor is valid only for the store that issued it; a malformed one is `INVALID_ARGUMENT`.
+- `id` is the record's `metadata.id` when it has one, otherwise the backend's own key (SQL `ID`, Qdrant point id, an insertion key in `InMemoryRag`). The `scan` -> `getById` / `deleteById` round trip is guaranteed only for records written with an id; every provider and editor write has one.
+- `HanaVectorRag` and `PgVectorRag` in `shared` layout run the memoised startup check first and return its failure unchanged (`SHARED_LAYOUT_NOT_DEPLOYED` / `HEALTH_CHECK_ERROR`). No DDL runs.
+- An aborted `signal` returns `ABORTED`, checked first (before `pageSize` and the filter) and, where a call has several steps, between pages / batches.
+
+`deleteWhere` semantics:
+
+- An aborted `signal` is checked first; then an empty filter (no field set) is refused with `INVALID_ARGUMENT`; use `clearAll` to empty a store.
+- **Exact against a snapshot, not atomic.** It deletes the matching records that exist when it starts and returns how many it deleted (Qdrant returns no count: there it retrieves each batch of ids first and deletes and counts exactly those present, so the count is exact except for a concurrent delete of the same ids between that retrieve and the delete; its array-valued identity payloads are filtered out client-side to keep strict string equality). A matching record inserted while it runs may survive; repeat the call if you need to.
+- It never reaches outside its own collection (nor, with a store `namespace`, outside it).
+- Aborted after it started deleting (HANA and Qdrant, which delete in batches): `ABORTED` with the message `Aborted after deleting N record(s)`. PG deletes in one statement: the abort is checked only before it, so `ABORTED` there always means nothing was deleted (`Aborted after deleting 0 record(s)`).
+
+`updateCollection` semantics:
+
+- `attributes` **replaces** the stored attributes as a whole: read them with `describeCollections`, change them, write them back. They are validated like on create; an invalid value is `RAG_INVALID_ATTRIBUTES`.
+- `collectionName` changes the display name only. `storeName`, `scope` and the owner never change.
+- A missing record is `RAG_COLLECTION_NOT_FOUND` (Qdrant: a 404 from the catalog write counts too).
+- An empty patch, and a `collectionName` that is not a non-empty string (`''`, whitespace only, `null`, a number), are refused with `INVALID_ARGUMENT` before any call (`validateRagCatalogPatch`, the same check in every provider).
+
+Check your own store with the conformance kit. Each case asks for a fresh subject; optional seams `sibling` (another collection on the same storage, to prove `deleteWhere` stays inside its own) and `catalog` (a provider with a catalog and a way to create a record) enable more cases, and a case whose seam is absent throws `ScanDeleteCaseSkipped`, which a runner must report as skipped, not passed:
+
+```ts
+import { it } from 'node:test';
+import {
+  isScanDeleteCaseSkipped,
+  scanDeleteConformanceCases,
+} from '@mcp-abap-adt/llm-agent/testing/scan-delete-conformance';
+
+for (const c of scanDeleteConformanceCases) {
+  it(c.name, async (t) => {
+    try {
+      await c.run(async () => ({ store: async () => freshStore() /* , sibling, catalog */ }));
+    } catch (err) {
+      if (!isScanDeleteCaseSkipped(err)) throw err;
+      t.skip(err.message);
+    }
+  });
+}
+```
+
 ### Deleting a collection
 
 `IRagRegistry.deleteCollection(name)` — and with it `rag_delete_collection` and

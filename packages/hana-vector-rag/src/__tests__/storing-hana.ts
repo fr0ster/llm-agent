@@ -10,8 +10,8 @@ import type { HanaClient } from '../hana-vector-rag.js';
  * with the configured vector dimension; `COSINE_SIMILARITY` scores, `ORDER BY
  * ... DESC` and `LIMIT` cut; `UPSERT ... WITH PRIMARY KEY` replaces by the
  * key and `INSERT` refuses a second row for one. It parses only the shapes
- * those statements use — `SELECT [DISTINCT] ... FROM ... [WHERE a = b AND
- * ...] [ORDER BY ...] [LIMIT n]`, `UPSERT`, `INSERT INTO`, `DELETE FROM` — and
+ * those statements use — `SELECT [DISTINCT] ... FROM ... [WHERE a = b | a > b | a IN (?, ...)
+ * AND ...] [ORDER BY ...] [LIMIT n]`, `UPSERT`, `INSERT INTO`, `DELETE FROM`, `UPDATE ... SET c = [COALESCE(?, c)] ... WHERE` — and
  * throws on anything else, DDL included, so a store change that emits new SQL
  * fails loudly here instead of being silently mis-evaluated.
  */
@@ -21,6 +21,8 @@ export interface StoringHana {
   readonly statements: string[];
   /** Orphan setup: a row written past the store; `table` as HANA names it. */
   insertRow(table: string, row: Record<string, Value>): void;
+  /** Setup: the table a `per-collection` store reads and writes, as its owner created it. */
+  createCollectionTable(name: string): void;
 }
 
 export type Value = string | number | null | number[];
@@ -84,7 +86,7 @@ function tokenize(sql: string): Token[] {
       const text = m ? m[0] : ch;
       out.push({ kind: 'number', text });
       i += text.length;
-    } else if ('(),.*=?'.includes(ch)) {
+    } else if ('(),.*=?>'.includes(ch)) {
       out.push({ kind: 'punct', text: ch });
       i++;
     } else {
@@ -115,7 +117,9 @@ type Expr =
   | { kind: 'literal'; value: Value };
 
 type Projection = { expr: Expr; alias?: string };
-type Condition = { left: Operand; right: Operand };
+type Condition =
+  | { kind: 'cmp'; op: '=' | '>'; left: Operand; right: Operand }
+  | { kind: 'in'; left: Operand; items: Operand[] };
 type TableRef = { schema?: string; name: string };
 
 type Statement =
@@ -134,7 +138,13 @@ type Statement =
       columns: string[];
       values: Operand[];
     }
-  | { kind: 'delete'; table: TableRef; where: Condition[] };
+  | { kind: 'delete'; table: TableRef; where: Condition[] }
+  | {
+      kind: 'update';
+      table: TableRef;
+      sets: Array<{ column: string; value: Operand; fallback?: Operand }>;
+      where: Condition[];
+    };
 
 class Parser {
   private pos = 0;
@@ -165,6 +175,30 @@ class Parser {
       this.expectWord('INTO');
       const table = this.tableRef();
       return { kind: 'insert', table, ...this.columnsAndValues() };
+    }
+    if (this.acceptWord('UPDATE')) {
+      const table = this.tableRef();
+      this.expectWord('SET');
+      const sets: Array<{
+        column: string;
+        value: Operand;
+        fallback?: Operand;
+      }> = [];
+      do {
+        const column = this.identifier();
+        this.expectPunct('=');
+        if (this.acceptWord('COALESCE')) {
+          this.expectPunct('(');
+          const value = this.operand();
+          this.expectPunct(',');
+          const fallback = this.operand();
+          this.expectPunct(')');
+          sets.push({ column, value, fallback });
+        } else {
+          sets.push({ column, value: this.operand() });
+        }
+      } while (this.acceptPunct(','));
+      return { kind: 'update', table, sets, where: this.where() };
     }
     if (this.acceptWord('DELETE')) {
       this.expectWord('FROM');
@@ -211,8 +245,19 @@ class Parser {
     if (!this.acceptWord('WHERE')) return conditions;
     do {
       const left = this.operand();
-      this.expectPunct('=');
-      conditions.push({ left, right: this.operand() });
+      if (this.acceptWord('IN')) {
+        this.expectPunct('(');
+        const items: Operand[] = [];
+        do items.push(this.operand());
+        while (this.acceptPunct(','));
+        this.expectPunct(')');
+        conditions.push({ kind: 'in', left, items });
+      } else if (this.acceptPunct('>')) {
+        conditions.push({ kind: 'cmp', op: '>', left, right: this.operand() });
+      } else {
+        this.expectPunct('=');
+        conditions.push({ kind: 'cmp', op: '=', left, right: this.operand() });
+      }
     } while (this.acceptWord('AND'));
     return conditions;
   }
@@ -489,7 +534,17 @@ export function storingHana(opts: {
     }
   };
 
-  /** SQL `=`: NULL equals nothing. */
+  /** Binary string order, as HANA compares NVARCHAR. */
+  const compare = (x: Value, y: Value): number =>
+    typeof x === 'number' && typeof y === 'number'
+      ? x - y
+      : String(x) < String(y)
+        ? -1
+        : String(x) > String(y)
+          ? 1
+          : 0;
+
+  /** SQL comparison: NULL compares with nothing. */
   const matches = (
     table: Table,
     row: Row,
@@ -498,8 +553,15 @@ export function storingHana(opts: {
   ): boolean =>
     where.every((c) => {
       const l = operandValue(c.left, table, row, params);
+      if (l === null) return false;
+      if (c.kind === 'in')
+        return c.items.some((item) => {
+          const r = operandValue(item, table, row, params);
+          return r !== null && String(l) === String(r);
+        });
       const r = operandValue(c.right, table, row, params);
-      return l !== null && r !== null && String(l) === String(r);
+      if (r === null) return false;
+      return c.op === '>' ? compare(l, r) > 0 : String(l) === String(r);
     });
 
   const keyOf = (table: Table, row: Row): string =>
@@ -588,10 +650,7 @@ export function storingHana(opts: {
       pairs.sort((a, b) => {
         const x = value(a);
         const y = value(b);
-        const cmp =
-          typeof x === 'number' && typeof y === 'number'
-            ? x - y
-            : String(x).localeCompare(String(y));
+        const cmp = compare(x, y);
         return order.desc ? -cmp : cmp;
       });
     }
@@ -621,6 +680,28 @@ export function storingHana(opts: {
         write(table, toRow(table, given), stmt.kind);
         return { rows: [], rowCount: 1 };
       }
+      case 'update': {
+        const table = resolve(stmt.table);
+        let n = 0;
+        for (const r of table.rows) {
+          if (!matches(table, r, stmt.where, params)) continue;
+          const next: Row = { ...r };
+          for (const set of stmt.sets) {
+            const v = operandValue(set.value, table, r, params);
+            next[column(table, set.column)] =
+              set.fallback && v === null
+                ? operandValue(set.fallback, table, r, params)
+                : v;
+          }
+          // Key columns are never set here; a changed key would need a re-check.
+          for (const k of table.key)
+            if (next[k] !== r[k])
+              throw new Error('storing-hana: UPDATE of a key column');
+          Object.assign(r, next);
+          n++;
+        }
+        return { rows: [], rowCount: n };
+      }
       case 'delete': {
         const table = resolve(stmt.table);
         const before = table.rows.length;
@@ -643,6 +724,14 @@ export function storingHana(opts: {
         return run(sql, params).rows;
       },
       async close() {},
+    },
+    createCollectionTable(name) {
+      tables.set(`${schema}.${name}`, {
+        columns: ['ID', 'TEXT', 'VECTOR', 'METADATA', 'CREATED_AT'],
+        key: ['ID'],
+        lengths: { ID: 255, VECTOR: opts.dimension },
+        rows: [],
+      });
     },
     insertRow(table, row) {
       const t = resolve({ name: table });

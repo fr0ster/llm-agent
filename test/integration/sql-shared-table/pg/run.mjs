@@ -17,6 +17,9 @@ const { CONFORMANCE_EMBEDDING_DIM, conformanceEmbedder } = await load(
 const { sharedTableConformanceCases } = await load(
   '@mcp-abap-adt/llm-agent/testing/shared-table-conformance',
 );
+const { scanDeleteConformanceCases, isScanDeleteCaseSkipped } = await load(
+  '@mcp-abap-adt/llm-agent/testing/scan-delete-conformance',
+);
 const { PgVectorRag, PgVectorRagProvider, sharedLayoutSql } = await load(
   '@mcp-abap-adt/pg-vector-rag',
 );
@@ -38,6 +41,8 @@ const dim = CONFORMANCE_EMBEDDING_DIM;
 const embedder = symmetricEmbedder(conformanceEmbedder());
 const failures = [];
 let total = 0;
+// One summary line per kit: [label, passed, ran, skipped].
+const kits = [];
 
 const resetTables = () =>
   pool.query(
@@ -81,18 +86,38 @@ function subject() {
   };
 }
 
+const quoteIdent = (name) => `"${String(name).replaceAll('"', '""')}"`;
+// The run's schema first, then the schema pgvector is installed in: the
+// `vector` type and the `<=>` operator are referenced unqualified. Set once the
+// extension exists.
+let searchPath;
+async function pgvectorSearchPath() {
+  const { rows } = await pool.query(
+    `SELECT n.nspname AS "schema" FROM pg_extension e JOIN pg_namespace n ON n.oid = e.extnamespace WHERE e.extname = 'vector'`,
+  );
+  const extSchema = rows[0]?.schema;
+  if (!extSchema) throw new Error('the pgvector extension is not installed');
+  return extSchema === schema
+    ? quoteIdent(schema)
+    : `${quoteIdent(schema)}, ${quoteIdent(extSchema)}`;
+}
+
 try {
   await pool.query('CREATE EXTENSION IF NOT EXISTS vector');
   await pool.query(`CREATE SCHEMA "${schema}"`);
+  searchPath = await pgvectorSearchPath();
+  console.log(`search_path: ${searchPath}`);
   // The script is the deployed layout; apply it with the schema as search_path.
   const conn = await pool.connect();
   try {
-    await conn.query(`SET search_path TO "${schema}", public`);
+    await conn.query(`SET search_path TO ${searchPath}`);
     for (const stmt of sharedLayoutSql({ dimension: dim }).split(';\n')) {
       const sql = stmt.trim().replace(/;$/, '');
       if (sql) await conn.query(sql);
     }
   } finally {
+    // The connection goes back to the pool: leave no search_path behind.
+    await conn.query('RESET search_path');
     conn.release();
   }
 
@@ -125,6 +150,7 @@ try {
     console.log('FAIL startup check, wrong dimension');
   }
 
+  const sharedKitStart = { total };
   for (const c of sharedTableConformanceCases) {
     total++;
     try {
@@ -138,6 +164,128 @@ try {
       console.log(`FAIL ${c.name}`);
     }
   }
+  kits.push({
+    label: 'shared-table kit (incl. startup checks)',
+    ran: total - sharedKitStart.total + 2,
+    failed: failures.length,
+    skipped: 0,
+  });
+
+  // --- scan / deleteWhere / updateCollection kit, both layouts -------------
+  // The per-collection layout ignores `schema` for its data tables, so this
+  // kit uses a client that sets search_path to the run's own schema (then
+  // pgvector's schema, for the `vector` type) on every statement and resets
+  // it before the connection goes back: everything it creates lands there. The exact table names are
+  // tracked and only those are dropped (the schema itself goes at the end).
+  const pcTables = new Set();
+  const pcClient = {
+    async query(sql, params = []) {
+      const conn = await pool.connect();
+      try {
+        await conn.query(`SET search_path TO ${searchPath}`);
+        return await conn.query(sql, params);
+      } finally {
+        await conn.query('RESET search_path');
+        conn.release();
+      }
+    },
+    end: async () => {},
+  };
+  const dropPerCollectionTables = async () => {
+    for (const table of pcTables)
+      await pool.query(`DROP TABLE IF EXISTS "${schema}"."${table}"`);
+    pcTables.clear();
+  };
+  const sharedScanSubject = async () => {
+    await resetTables();
+    return {
+      async store() {
+        return storeOf('scan_a');
+      },
+      async sibling() {
+        return storeOf('scan_b');
+      },
+      async catalog() {
+        const provider = await subject().provider();
+        return {
+          provider,
+          async create(name) {
+            const res = await provider.createCollection(name, {
+              scope: 'global',
+            });
+            if (!res.ok) throw res.error;
+          },
+        };
+      },
+    };
+  };
+  const perCollectionStore = (collection) =>
+    new PgVectorRag(
+      {
+        collectionName: collection,
+        dimension: dim,
+        layout: 'per-collection',
+        embedder,
+      },
+      pcClient,
+    );
+  const perCollectionScanSubject = async () => {
+    await dropPerCollectionTables();
+    return {
+      async store() {
+        pcTables.add('scan_a');
+        return perCollectionStore('scan_a');
+      },
+      async catalog() {
+        const provider = new PgVectorRagProvider({
+          name: 'pg',
+          embedder,
+          connection: { collectionName: '__unused', dimension: dim },
+          defaultDimension: dim,
+          clientFactory: () => pcClient,
+        });
+        pcTables.add('rag_collection_catalog');
+        return {
+          provider,
+          async create(name) {
+            pcTables.add(name);
+            const res = await provider.createCollection(name, {
+              scope: 'global',
+            });
+            if (!res.ok) throw res.error;
+          },
+        };
+      },
+    };
+  };
+  for (const [label, makeSubject] of [
+    ['scan/delete/catalog kit, shared layout', sharedScanSubject],
+    [
+      'scan/delete/catalog kit, per-collection layout',
+      perCollectionScanSubject,
+    ],
+  ]) {
+    const kit = { label, ran: 0, failed: 0, skipped: 0 };
+    for (const c of scanDeleteConformanceCases) {
+      try {
+        await c.run(makeSubject);
+        kit.ran++;
+        console.log(`PASS [${label}] ${c.name}`);
+      } catch (err) {
+        if (isScanDeleteCaseSkipped(err)) {
+          kit.skipped++;
+          console.log(`SKIP [${label}] ${c.name}: ${err.message}`);
+        } else {
+          kit.ran++;
+          kit.failed++;
+          failures.push([`[${label}] ${c.name}`, err]);
+          console.log(`FAIL [${label}] ${c.name}`);
+        }
+      }
+    }
+    kits.push(kit);
+  }
+  await dropPerCollectionTables();
 } catch (err) {
   failures.push(['setup', err]);
   total++;
@@ -150,10 +298,13 @@ try {
   await pool.end();
 }
 
-if (failures.length === 0) {
-  console.log(`CONFORMANCE PASS ${total}/${total}`);
-} else {
-  console.log(`CONFORMANCE FAIL ${total - failures.length}/${total}`);
+for (const k of kits) {
+  const pass = k.ran - k.failed;
+  console.log(
+    `CONFORMANCE ${k.failed === 0 ? 'PASS' : 'FAIL'} ${pass}/${k.ran} (${k.label}${k.skipped ? `; ${k.skipped} skipped, seam absent` : ''})`,
+  );
+}
+if (failures.length > 0) {
   for (const [name, err] of failures)
     console.log(`  ${name}: ${err?.stack ?? err}`);
   process.exitCode = 1;

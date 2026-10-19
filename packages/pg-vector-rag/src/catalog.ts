@@ -52,3 +52,12 @@ export function selectRecordsSql(table: string, schema?: string): string {
 export function deleteRecordSql(table: string, schema?: string): string {
   return `DELETE FROM ${qualifiedTable(table, schema)} WHERE store_name = $1`;
 }
+
+/**
+ * Updates the display name and/or the attributes of one record. A NULL
+ * parameter keeps the column as it is; `store_name`, `scope` and the owner
+ * are never in the SET list. Zero rows updated means there is no record.
+ */
+export function updateRecordSql(table: string, schema?: string): string {
+  return `UPDATE ${qualifiedTable(table, schema)} SET collection_name = COALESCE($1, collection_name), attributes_json = COALESCE($2, attributes_json) WHERE store_name = $3`;
+}
