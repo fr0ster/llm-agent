@@ -1,5 +1,9 @@
 # @mcp-abap-adt/deepseek-llm
 
+## 30.2.0
+
+Lockstep release with the 30.2.0 line: an opt-in shared table layout for the SQL vector stores (`hana-vector-rag`, `pg-vector-rag` — one documents table plus the catalog, no runtime DDL, works in a SAP HANA HDI container) and HANA fixes. No change in this package — see the root CHANGELOG.
+
 ## 30.1.0
 
 Lockstep release with the 30.1.0 line: decision models (`IDecisionModel`, TypeSafe Jev), per-store retrieval strategies (`rag.retrieval`), session agents that carry the server's wiring, circuit breakers per `llm:` key, request cancellation on client disconnect. No change in this package — see the root CHANGELOG.

@@ -1,0 +1,20 @@
+{
+  "name": "sst-hana-runner",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Live check of the shared table layout on SAP HANA Cloud, run as a throwaway CF app bound to hdi-llm.",
+  "scripts": {
+    "pack": "node pack.mjs",
+    "start": "node run.mjs"
+  },
+  "dependencies": {
+    "@mcp-abap-adt/hana-vector-rag": "file:./vendor/mcp-abap-adt-hana-vector-rag.tgz",
+    "@mcp-abap-adt/interfaces-auth": "^2.1.0",
+    "@mcp-abap-adt/llm-agent": "file:./vendor/mcp-abap-adt-llm-agent.tgz",
+    "@sap/hana-client": "^2.30.27"
+  },
+  "engines": {
+    "node": "22.x"
+  }
+}

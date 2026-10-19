@@ -55,6 +55,85 @@ Without those rights `createCollection` fails where it used to succeed. A collec
 this release has a table and no record: take it over once with
 `createCollection(..., { adoptExisting: true })`.
 
+## Shared table layout
+
+By default every collection is its own table, created at runtime (`layout: 'per-collection'`). For
+deployments where the application account has no DDL rights, set `layout: 'shared'`: one documents
+table holds every collection (a `collection` column tells them apart) and one catalog table lists
+them. Both are created outside the app, and **no DDL statement ever reaches the database at
+runtime** (`CREATE`, `DROP`, `TRUNCATE`, `ALTER`, `IF NOT EXISTS`). The default stays
+`per-collection`; without `layout` nothing changes.
+
+```yaml
+rag:
+  store:
+    type: pg-vector
+    connectionString: postgres://host:5432/mydb
+    collectionName: llm_agent_docs   # the value of the "collection" column
+    dimension: 1536                  # must equal the deployed vector(n)
+    layout: shared
+    # documentsTable: rag_documents  # default
+    credentialRef: RAG_PG
+```
+
+In code: `layout: 'shared'` and `documentsTable` on `PgVectorRag` / `PgVectorRagProvider`; the
+provider also takes `catalogTable`. In `shared` the defaults are `rag_documents` and
+`rag_collections` (exported as `SHARED_DOCUMENTS_TABLE`, `SHARED_CATALOG_TABLE`). Every shared
+identifier is quoted and lower case (columns `"collection"`, `"id"`, `"text"`, `"vector"`,
+`"metadata"`, `"created_at"`; primary key `("collection", "id")`). When the connection sets
+`schema`, every shared statement and the startup check qualify the tables with it. Table names
+follow the usual rule `[a-zA-Z_][a-zA-Z0-9_]{0,62}`; HDI namespaces do not apply to Postgres.
+
+`autoCreateSchema` is `false` by default in `shared`; setting it to `true` explicitly throws
+`RagError` `INVALID_CONFIG` at construction. The `vector` extension is then yours to install.
+
+The error codes are exported as constants — `SHARED_LAYOUT_NOT_DEPLOYED`, `INVALID_CONFIG`, `INVALID_VECTOR` — so a consumer can branch on `error.code === SHARED_LAYOUT_NOT_DEPLOYED` without a string literal. A `layout` other than `'per-collection'` or `'shared'` is `INVALID_CONFIG` at construction.
+
+### Deploying the tables
+
+The package ships `ddl/shared-layout.sql` (published with it): `CREATE EXTENSION IF NOT EXISTS
+vector`, the catalog table, then the documents table, with the default names. Run it once as a
+privileged account (`psql -f node_modules/@mcp-abap-adt/pg-vector-rag/ddl/shared-layout.sql`); the
+application account then needs only `SELECT`, `INSERT`, `UPDATE`, `DELETE` on the two tables.
+
+### The dimension rule
+
+The shipped DDL is `vector(1536)` (`SHIPPED_DIMENSION`). For an embedder with another dimension,
+generate the script:
+
+```ts
+import { sharedLayoutSql } from '@mcp-abap-adt/pg-vector-rag';
+
+sharedLayoutSql({ dimension: 1024 }); // documentsTable, catalogTable are optional
+```
+
+`sharedLayoutSql` has no `schema` option and its statements are unqualified. To deploy into a schema
+set by the connection's `schema`, run the script with that schema first on the `search_path`
+(`SET search_path TO myschema;` before the script) or qualify the table names by hand.
+
+On its first operation (lazily; a success is remembered, a failure is retried) a store or provider
+checks that the tables exist and that the `vector` column has exactly the configured `dimension`.
+It never calls the embedder. A missing table or a different dimension fails every operation with
+`RagError` `SHARED_LAYOUT_NOT_DEPLOYED`, naming the table, the found and the expected dimension; a
+driver error during the check is `HEALTH_CHECK_ERROR`. `healthCheck()` runs the same check. A direct
+store checks the documents table only; the provider checks both.
+
+Vectors are validated before any SQL: a non-finite component is refused in both layouts, a length
+other than `dimension` only in `shared` (callers see `UPSERT_ERROR` / `QUERY_ERROR` whose message
+names the lengths).
+
+### Semantics
+
+- A direct store reads and writes its `collectionName` as the `collection` value and needs no
+  catalog row.
+- A collection "exists" when its catalog record exists or the documents table holds rows for it.
+  `listCollections` returns the union of both; `createCollection` for a name that has rows but no
+  record returns `OrphanStoreError` unless `adoptExisting: true`, which writes the record and keeps
+  the rows.
+- `deleteCollection` deletes the collection's documents first, then its record (the per-collection
+  layout deletes the record first); `clearAll` deletes only that collection's rows.
+- **A handle is not tied to its collection.** In `shared`, a handle obtained before `deleteCollection` can still write: it only writes rows with its `collection` value, which no longer needs a record. Those rows become an orphan — listed by `listCollections`, and `createCollection` of that name returns `OrphanStoreError` until `adoptExisting: true` or the rows are removed. (In `per-collection` such a write fails, because the table is gone.) Consumers must drop the handles of a deleted collection.
+
 ## License
 
 **GNU Lesser General Public License v3.0 only** (`LGPL-3.0-only`) — see

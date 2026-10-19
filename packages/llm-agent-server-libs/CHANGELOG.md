@@ -1,5 +1,9 @@
 # @mcp-abap-adt/llm-agent-server-libs
 
+## 30.2.0
+
+**Added:** `rag.store.layout` (`per-collection` | `shared`; validated, an unknown value is rejected) and `rag.store.documentsTable` for the `hana-vector` and `pg-vector` stores, resolved into the store config.
+
 ## 30.1.0
 
 `decision:` config section, `rag.retrieval.<store>` per-store strategies (server-wide, worker agents included; a worker config declaring it is rejected; `reranker: llm, llm: main` is accepted with a flat `llm:` block), optional `BuildAgentDeps.makeDecisionModel`, `resolveRetrievalStrategies`; the plugin reranker and `agent.toolSelection` now reach per-session and embedded agents; the controller / stepper tool selection goes through the `tools` strategy.

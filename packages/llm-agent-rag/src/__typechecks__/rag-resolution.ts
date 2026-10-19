@@ -28,6 +28,11 @@ const _missing: RagResolution = { type: 'hana-vector', embedder, collectionName:
 // @ts-expect-error — apiKey is not a member of any arm
 const _legacy: RagResolution = { type: 'qdrant', embedder, collectionName: 'c', url: 'http://localhost:6333', apiKey: 'k' };
 
+// layout is a closed set
+// biome-ignore format: one line — see the @ts-expect-error note above
+// @ts-expect-error — layout is per-collection | shared
+const _badLayout: RagResolution = { type: 'pg-vector', embedder, collectionName: 'c', layout: 'other' };
+
 // and the good cases must compile
 const _ok: readonly RagResolution[] = [
   {
@@ -50,6 +55,15 @@ const _ok: readonly RagResolution[] = [
     collectionName: 'c',
     host: 'h',
     credential: login,
+    layout: 'shared',
+    documentsTable: 'kb_docs',
+  },
+  {
+    type: 'pg-vector',
+    embedder: symmetricEmbedder(embedder),
+    collectionName: 'c',
+    layout: 'shared',
+    documentsTable: 'kb_docs',
   },
 ];
 
@@ -57,4 +71,5 @@ const _ok: readonly RagResolution[] = [
 void _wrongKind;
 void _missing;
 void _legacy;
+void _badLayout;
 void _ok;

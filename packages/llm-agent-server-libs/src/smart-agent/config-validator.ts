@@ -344,6 +344,25 @@ function checkRag(
         `rag.store.collectionName: required for rag.store.type ${ragType}`,
       );
     }
+    if (
+      (ragType === 'hana-vector' || ragType === 'pg-vector') &&
+      s.layout !== undefined &&
+      s.layout !== 'per-collection' &&
+      s.layout !== 'shared'
+    ) {
+      issues.push(
+        `rag.store.layout: "${String(s.layout)}" is invalid (one of: per-collection, shared)`,
+      );
+    }
+    if (
+      (ragType === 'hana-vector' || ragType === 'pg-vector') &&
+      s.layout === 'shared' &&
+      s.autoCreateSchema === true
+    ) {
+      issues.push(
+        'rag.store.autoCreateSchema: true is not allowed with rag.store.layout: shared — the shared tables are deployed outside the app',
+      );
+    }
     if (ragType !== 'in-memory') {
       for (const k of IN_MEMORY_ONLY_KEYS) {
         if (s[k] !== undefined) {

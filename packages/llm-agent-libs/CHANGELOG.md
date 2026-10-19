@@ -1,5 +1,9 @@
 # @mcp-abap-adt/llm-agent-libs
 
+## 30.2.0
+
+Lockstep release with the 30.2.0 line: an opt-in shared table layout for the SQL vector stores (`hana-vector-rag`, `pg-vector-rag` — one documents table plus the catalog, no runtime DDL, works in a SAP HANA HDI container) and HANA fixes. No change in this package — see the root CHANGELOG.
+
 ## 30.1.0
 
 `DecisionReranker` (batched by `maxBatchTokens`, `concurrency`; presets `TOOL_QUESTION` / `PASSAGE_QUESTION`) and `wrapDecisionModel`. Per-store retrieval strategies: `EmbeddingRetrieval`, `RerankedRetrieval`, `RerankAllRetrieval`, `StrategyRag`, `applyRetrievalStrategy`, `hasRetrievalStrategy`, `SmartAgentBuilder.withRetrievalStrategy` (it also reaches the default coordinator's sub-agent tool source); a reranker failure logs `retrieval_rerank_error { store, strategy, code, message }`. `RerankHandler` records global-reranker failures (`<store>.rerank_error`, `rerank_error` step) and skips stores with an explicit strategy.

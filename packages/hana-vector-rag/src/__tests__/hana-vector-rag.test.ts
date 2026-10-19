@@ -47,6 +47,81 @@ function makeFakeClient(
 }
 
 describe('HanaVectorRag', () => {
+  it('search SELECT quotes every alias', async () => {
+    const client = makeFakeClient();
+    const rag = new HanaVectorRag(
+      {
+        collectionName: 'docs',
+        embedder: symmetricEmbedder(makeEmbedder()),
+        credential: staticLogin('u', 'p'),
+      },
+      client,
+    );
+    const result = await rag.query(
+      { text: 'query', toVector: async () => [0.1, 0.2, 0.3] },
+      5,
+    );
+    assert.equal(result.ok, true);
+    const select = client.calls.find((c) => c.sql.startsWith('SELECT'));
+    assert.ok(select);
+    for (const alias of ['id', 'text', 'metadata', 'score']) {
+      assert.ok(select.sql.includes(`AS "${alias}"`));
+    }
+    assert.ok(select.sql.includes('ORDER BY "score" DESC'));
+    assert.ok(!select.sql.includes('AS score'));
+  });
+
+  it('getById SELECT quotes every alias', async () => {
+    const client = makeFakeClient();
+    const rag = new HanaVectorRag(
+      {
+        collectionName: 'docs',
+        embedder: symmetricEmbedder(makeEmbedder()),
+        credential: staticLogin('u', 'p'),
+      },
+      client,
+    );
+    const result = await rag.getById('a');
+    assert.equal(result.ok, true);
+    const select = client.calls.find((c) => c.sql.startsWith('SELECT'));
+    assert.ok(select);
+    for (const alias of ['id', 'text', 'metadata']) {
+      assert.ok(select.sql.includes(`AS "${alias}"`));
+    }
+  });
+
+  it('NCLOB values that arrive as Buffer are decoded', async () => {
+    const client = makeFakeClient([
+      {
+        id: 'a',
+        text: Buffer.from('hello'),
+        metadata: Buffer.from('{"k":1}'),
+        score: 0.9,
+      },
+    ]);
+    const rag = new HanaVectorRag(
+      {
+        collectionName: 'docs',
+        embedder: symmetricEmbedder(makeEmbedder()),
+        credential: staticLogin('u', 'p'),
+      },
+      client,
+    );
+    const search = await rag.query(
+      { text: 'query', toVector: async () => [0.1, 0.2, 0.3] },
+      5,
+    );
+    assert.ok(search.ok);
+    const lookup = await rag.getById('a');
+    assert.ok(lookup.ok);
+    assert.ok(lookup.value);
+    for (const result of [search.value[0], lookup.value]) {
+      assert.equal(result.text, 'hello');
+      assert.equal(result.metadata.k, 1);
+      assert.equal(result.metadata.id, 'a');
+    }
+  });
+
   it('ensureSchema runs CREATE TABLE only once', async () => {
     const client = makeFakeClient();
     const rag = new HanaVectorRag(
@@ -244,7 +319,11 @@ function makeStoringHana(): HanaClient & { searches: string[] } {
       return { rowCount: 1 };
     },
     async query(sql) {
-      if (!sql.startsWith('SELECT id, text, metadata, COSINE_SIMILARITY')) {
+      if (
+        !sql.startsWith(
+          'SELECT id AS "id", text AS "text", metadata AS "metadata", COSINE_SIMILARITY',
+        )
+      ) {
         return [];
       }
       searches.push(sql);
@@ -296,9 +375,9 @@ describe('HanaVectorRag — session/user filter (security)', () => {
     await rag.query(emb, 5);
     await rag.query(emb, 5, { ragFilter: { sessionId: 's1' } });
     await rag.query(emb, 5, { ragFilter: { userId: 'u1' } });
-    assert.match(client.searches[0], /ORDER BY score DESC LIMIT 5$/);
-    assert.match(client.searches[1], /ORDER BY score DESC$/);
-    assert.match(client.searches[2], /ORDER BY score DESC$/);
+    assert.match(client.searches[0], /ORDER BY "score" DESC LIMIT 5$/);
+    assert.match(client.searches[1], /ORDER BY "score" DESC$/);
+    assert.match(client.searches[2], /ORDER BY "score" DESC$/);
     // The filter value never reaches the SQL text.
     assert.ok(!client.searches[1].includes('s1'));
   });
@@ -316,7 +395,7 @@ describe('HanaVectorRag — session/user filter (security)', () => {
     );
     const emb = { text: 'q', toVector: async () => [0.1, 0.2, 0.3] };
     await rag.query(emb, 5, { ragFilter: { namespace: 'ns-secret' } });
-    assert.match(client.searches[0], /ORDER BY score DESC$/);
+    assert.match(client.searches[0], /ORDER BY "score" DESC$/);
     assert.ok(!client.searches[0].includes('ns-secret'));
   });
 
@@ -345,11 +424,195 @@ describe('HanaVectorRag — session/user filter (security)', () => {
     // so the store falls back to the unlimited query and finds 'new'.
     assert.deepEqual(await q('alpha beta gamma'), ['new']);
     assert.match(client.searches[0], /LIMIT 1$/);
-    assert.match(client.searches[1], /ORDER BY score DESC$/);
+    assert.match(client.searches[1], /ORDER BY "score" DESC$/);
     // Top-1 is live: one LIMIT query, no fallback.
     const before = client.searches.length;
     assert.deepEqual(await q('delta epsilon'), ['new']);
     assert.equal(client.searches.length, before + 1);
     assert.match(client.searches[before], /LIMIT 1$/);
+  });
+});
+
+describe('HanaVectorRag shared layout and vector validation', () => {
+  function recordingClient(
+    opts: { dim?: number; failFirstCheck?: boolean } = {},
+  ) {
+    const calls: ExecCall[] = [];
+    let checkRounds = 0;
+    let failed = false;
+    const client: HanaClient & { calls: ExecCall[]; rounds: () => number } = {
+      calls,
+      rounds: () => checkRounds,
+      async exec(sql, params = []) {
+        calls.push({ sql, params });
+        return { rowCount: 1 };
+      },
+      async query(sql, params = []) {
+        calls.push({ sql, params });
+        if (sql.includes('SYS.TABLES')) {
+          checkRounds++;
+          if (opts.failFirstCheck && !failed) {
+            failed = true;
+            throw new Error('connection reset');
+          }
+          return [{ n: 1 }];
+        }
+        if (sql.includes('SYS.TABLE_COLUMNS')) return [{ dim: opts.dim ?? 3 }];
+        return [];
+      },
+      async close() {},
+    };
+    return client;
+  }
+  const mk = (
+    client: HanaClient,
+    extra: Partial<ConstructorParameters<typeof HanaVectorRag>[0]> = {},
+  ) =>
+    new HanaVectorRag(
+      {
+        collectionName: 'docs',
+        dimension: 3,
+        layout: 'shared',
+        embedder: symmetricEmbedder(makeEmbedder(3)),
+        credential: staticLogin('u', 'p'),
+        ...extra,
+      },
+      client,
+    );
+  const plain = (client: HanaClient) =>
+    new HanaVectorRag(
+      {
+        collectionName: 'docs',
+        dimension: 3,
+        autoCreateSchema: false,
+        embedder: symmetricEmbedder(makeEmbedder(3)),
+        credential: staticLogin('u', 'p'),
+      },
+      client,
+    );
+
+  it('shared store sends no DDL', async () => {
+    const client = recordingClient();
+    const rag = mk(client);
+    assert.ok((await rag.upsert('t', { id: 'a' })).ok);
+    assert.ok(
+      (await rag.query({ text: 'q', toVector: async () => [1, 2, 3] }, 3)).ok,
+    );
+    assert.ok((await rag.getById('a')).ok);
+    const w = rag.writer();
+    assert.ok((await w.deleteByIdRaw?.('a'))?.ok);
+    assert.ok((await w.clearAll?.())?.ok);
+    assert.ok((await rag.healthCheck()).ok);
+    assert.ok(client.calls.length > 0);
+    for (const c of client.calls)
+      assert.doesNotMatch(
+        c.sql,
+        /^\s*(CREATE|DROP|TRUNCATE|ALTER|IF NOT EXISTS)\b/i,
+      );
+  });
+
+  it('an unknown layout throws INVALID_CONFIG naming the allowed values', () => {
+    assert.throws(
+      // biome-ignore lint/suspicious/noExplicitAny: deliberately wrong value
+      () => mk(recordingClient(), { layout: 'Shared' as any }),
+      (err: Error & { code?: string }) =>
+        err.code === 'INVALID_CONFIG' &&
+        /per-collection.*shared/.test(err.message),
+    );
+  });
+
+  it('layout shared + autoCreateSchema true throws at construction', () => {
+    assert.throws(
+      () => mk(recordingClient(), { autoCreateSchema: true }),
+      (err: Error & { code?: string }) => err.code === 'INVALID_CONFIG',
+    );
+  });
+
+  it('the shared check runs once and a success is memoised', async () => {
+    const client = recordingClient();
+    const rag = mk(client);
+    await rag.getById('a');
+    await rag.getById('b');
+    assert.equal(client.rounds(), 1);
+  });
+
+  it('a failed shared check is not memoised', async () => {
+    const client = recordingClient({ failFirstCheck: true });
+    const rag = mk(client);
+    assert.ok(!(await rag.getById('a')).ok);
+    assert.ok((await rag.getById('a')).ok);
+  });
+
+  it('a dimension mismatch in the database fails the operation', async () => {
+    const rag = mk(recordingClient({ dim: 768 }));
+    const r = await rag.getById('a');
+    assert.ok(!r.ok);
+    assert.match(r.error.message, /768/);
+  });
+
+  const isData = (c: ExecCall) => /^\s*(SELECT "ID"|UPSERT)/.test(c.sql);
+
+  it('a vector of the wrong length is refused before SQL', async () => {
+    const client = recordingClient();
+    const rag = mk(client);
+    const up = await rag.upsertPrecomputed('t', [1, 2], { id: 'a' });
+    assert.ok(!up.ok);
+    assert.match(up.error.message, /2/);
+    assert.match(up.error.message, /3/);
+    const q = await rag.query(
+      { text: 'q', toVector: async () => [1, 2, 3, 4] },
+      1,
+    );
+    assert.ok(!q.ok);
+    assert.equal(client.calls.filter(isData).length, 0);
+  });
+
+  it('per-collection still accepts a vector of another length', async () => {
+    const client = makeFakeClient();
+    const rag = plain(client);
+    assert.ok((await rag.upsertPrecomputed('t', [1, 2], { id: 'a' })).ok);
+    assert.ok(
+      (await rag.query({ text: 'q', toVector: async () => [1, 2, 3, 4] }, 1))
+        .ok,
+    );
+    assert.ok(client.calls.length >= 2);
+  });
+
+  it('a failed shared check reaches the caller with its own code', async () => {
+    const rag = mk(recordingClient({ dim: 768 }));
+    const q = await rag.query(
+      { text: 'q', toVector: async () => [1, 2, 3] },
+      1,
+    );
+    assert.ok(!q.ok);
+    assert.equal(q.error.code, 'SHARED_LAYOUT_NOT_DEPLOYED');
+    const up = await rag.upsertPrecomputed('t', [1, 2, 3], { id: 'a' });
+    assert.ok(!up.ok);
+    assert.equal(up.error.code, 'SHARED_LAYOUT_NOT_DEPLOYED');
+  });
+
+  it('healthCheck passes a failed shared check through with its own code and message', async () => {
+    const rag = mk(recordingClient({ dim: 768 }));
+    const h = await rag.healthCheck();
+    assert.ok(!h.ok);
+    assert.equal(h.error.code, 'SHARED_LAYOUT_NOT_DEPLOYED');
+    assert.ok(!h.error.message.startsWith('RagError'));
+    assert.match(h.error.message, /768/);
+  });
+
+  it('a non-finite component is refused before SQL', async () => {
+    const client = makeFakeClient();
+    const rag = plain(client);
+    const up = await rag.upsertPrecomputed('t', [1, Number.NaN, 3], {
+      id: 'a',
+    });
+    assert.ok(!up.ok);
+    assert.match(up.error.message, /index 1/);
+    const q = await rag.query(
+      { text: 'q', toVector: async () => [1, Number.POSITIVE_INFINITY, 3] },
+      1,
+    );
+    assert.ok(!q.ok);
+    assert.equal(client.calls.length, 0);
   });
 });

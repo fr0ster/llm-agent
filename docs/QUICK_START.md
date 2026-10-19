@@ -315,6 +315,25 @@ See `docs/examples/coordinator-orchestration.yaml` and `docs/examples/coordinato
 
 ---
 
+### SQL vector stores without DDL rights (shared table layout)
+
+`hana-vector` (an SAP HANA HDI container) and `pg-vector` can keep every collection in one
+table that is deployed outside the app, so no `CREATE`/`DROP` runs at runtime:
+
+```yaml
+rag:
+  store:
+    type: hana-vector        # or pg-vector
+    layout: shared           # default: per-collection
+    # documentsTable: RAG_DOCUMENTS   # pg-vector: rag_documents
+    dimension: 1536          # must equal the deployed column; the shipped DDL is 1536
+```
+
+Deploy the package's `ddl/` files first (HDI deployer for HANA, `psql -f` for Postgres); a missing
+table or a different dimension fails with `SHARED_LAYOUT_NOT_DEPLOYED`. Details: the
+[hana-vector-rag](../packages/hana-vector-rag/README.md#shared-table-layout-hdi) and
+[pg-vector-rag](../packages/pg-vector-rag/README.md#shared-table-layout) READMEs.
+
 ## Troubleshooting
 
 ### "credentialRef 'LLM' must hold a api-key credential for deepseek, got none"

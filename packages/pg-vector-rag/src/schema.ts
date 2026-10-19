@@ -39,3 +39,13 @@ export function createTableSql(
 export function dropTableSql(collection: string): string {
   return `DROP TABLE IF EXISTS ${quoteIdent(collection)}`;
 }
+
+/**
+ * The quoted name of a table, schema-qualified when a schema is given; else it
+ * resolves through the search_path. Both are validated like table names.
+ */
+export function qualifiedTable(table: string, schema?: string): string {
+  return schema === undefined
+    ? quoteIdent(table)
+    : `${quoteIdent(schema)}.${quoteIdent(table)}`;
+}

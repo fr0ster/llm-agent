@@ -197,7 +197,8 @@ function constructFromExtraFactory(
  *   - pg-vector: `PgVectorRagConfig` (`packages/pg-vector-rag/src/connection.ts`) —
  *     `connectionString?`, `host?`, `port?`, `database?`,
  *     `credential?: ISecretLoginCredential`, `schema?`, `collectionName`,
- *     `dimension?`, `autoCreateSchema?`, `poolMax?`, `connectTimeout?`.
+ *     `dimension?`, `autoCreateSchema?`, `layout?`, `documentsTable?`,
+ *     `poolMax?`, `connectTimeout?`.
  *   - hana-vector: `HanaVectorRagConfig` (`packages/hana-vector-rag/src/connection.ts`) —
  *     same shape as pg-vector's address/tuning fields, but
  *     `credential: ISecretLoginCredential` is **required** — HANA has no
@@ -249,6 +250,8 @@ export type RagResolution =
       connectTimeout?: number;
       dimension?: number;
       autoCreateSchema?: boolean;
+      layout?: 'per-collection' | 'shared';
+      documentsTable?: string;
     }
   | {
       type: 'hana-vector';
@@ -263,6 +266,8 @@ export type RagResolution =
       connectTimeout?: number;
       dimension?: number;
       autoCreateSchema?: boolean;
+      layout?: 'per-collection' | 'shared';
+      documentsTable?: string;
     };
 
 export interface RagResolutionOptions {

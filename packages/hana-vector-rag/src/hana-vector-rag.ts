@@ -16,7 +16,19 @@ import {
 } from '@mcp-abap-adt/llm-agent';
 import type { HanaVectorRagConfig } from './connection.js';
 import { resolveHanaConnectArgs } from './connection.js';
-import { assertCollectionName, createTableSql, quoteIdent } from './schema.js';
+import { SHARED_LAYOUT_NOT_DEPLOYED } from './error-codes.js';
+import { resolveHanaModule } from './hana-module.js';
+import { resolveLayout } from './layout.js';
+import { decodeLob } from './lob.js';
+import { assertCollectionName } from './schema.js';
+import { checkSharedTables } from './shared-check.js';
+import { SHARED_DOCUMENTS_TABLE } from './shared-ddl.js';
+import {
+  type HanaStoreSql,
+  perCollectionStoreSql,
+  sharedStoreSql,
+} from './store-sql.js';
+import { hanaVectorLiteral } from './vector-literal.js';
 
 export type { HanaVectorRagConfig };
 
@@ -29,21 +41,16 @@ export interface HanaClient {
   close(): Promise<void>;
 }
 
+/**
+ * `loadModule` is a seam for tests only; production code leaves it to the
+ * default, which imports `@sap/hana-client`.
+ */
 export async function createHanaClient(
   cfg: HanaVectorRagConfig,
+  loadModule: () => Promise<unknown> = () => import('@sap/hana-client'),
 ): Promise<HanaClient> {
   const args = await resolveHanaConnectArgs(cfg);
-  const mod = (await import('@sap/hana-client')) as unknown as {
-    createConnection: () => {
-      connect: (opts: unknown, cb: (err: Error | null) => void) => void;
-      exec: (
-        sql: string,
-        params: unknown[],
-        cb: (err: Error | null, rows: unknown) => void,
-      ) => void;
-      disconnect: (cb: (err: Error | null) => void) => void;
-    };
-  };
+  const mod = resolveHanaModule(await loadModule());
   const conn = mod.createConnection();
   await new Promise<void>((resolve, reject) =>
     conn.connect(args, (err) => (err ? reject(err) : resolve())),
@@ -80,7 +87,6 @@ export async function createHanaClient(
 }
 
 export class HanaVectorRag implements IRag {
-  private readonly collectionName: string;
   private readonly dimension: number;
   private readonly embedder: IRetrievalEmbedder;
   private readonly autoCreateSchema: boolean;
@@ -89,16 +95,24 @@ export class HanaVectorRag implements IRag {
   private clientPromise?: Promise<HanaClient>;
   private schemaReady = false;
   private schemaPromise?: Promise<void>;
+  private readonly sql: HanaStoreSql;
+  private readonly documentsTable: string;
+  private sharedCheck?: Promise<void>;
 
   constructor(
     config: HanaVectorRagConfig & { embedder: IRetrievalEmbedder },
     injectedClient?: HanaClient,
   ) {
     assertCollectionName(config.collectionName);
-    this.collectionName = config.collectionName;
     this.dimension = config.dimension ?? 1536;
     this.embedder = config.embedder;
-    this.autoCreateSchema = config.autoCreateSchema ?? true;
+    const shared =
+      resolveLayout(config.layout, config.autoCreateSchema) === 'shared';
+    this.autoCreateSchema = config.autoCreateSchema ?? !shared;
+    this.documentsTable = config.documentsTable ?? SHARED_DOCUMENTS_TABLE;
+    this.sql = shared
+      ? sharedStoreSql(config.collectionName, this.documentsTable)
+      : perCollectionStoreSql(config.collectionName, this.dimension);
     this.connectConfig = config;
     this.injectedClient = injectedClient;
   }
@@ -129,7 +143,8 @@ export class HanaVectorRag implements IRag {
     if (this.schemaReady) return;
     this.schemaPromise ??= (async () => {
       const client = await this.client();
-      await client.exec(createTableSql(this.collectionName, this.dimension));
+      const ddl = this.sql.createTable();
+      if (ddl !== undefined) await client.exec(ddl);
       this.schemaReady = true;
     })().catch((err: unknown) => {
       // Not kept: like client(), the next use tries again.
@@ -141,10 +156,41 @@ export class HanaVectorRag implements IRag {
 
   private async maybeEnsureSchema(): Promise<void> {
     if (this.autoCreateSchema) await this.ensureSchema();
+    await this.ensureSharedDeployed();
+  }
+
+  /** `shared` only: the tables are deployed with the right dimension. A success is kept, a failure is not. */
+  private async ensureSharedDeployed(): Promise<void> {
+    if (this.sql.layout !== 'shared') return;
+    this.sharedCheck ??= (async () => {
+      const checked = await checkSharedTables(await this.client(), {
+        schema: this.connectConfig.schema,
+        tables: [this.documentsTable],
+        documentsTable: this.documentsTable,
+        dimension: this.dimension,
+      });
+      if (!checked.ok) throw checked.error;
+    })().catch((err: unknown) => {
+      this.sharedCheck = undefined;
+      throw err;
+    });
+    await this.sharedCheck;
+  }
+
+  /** The shared check's own error reaches the caller as is; anything else is wrapped in `code`. */
+  private failure(err: unknown, code: string): RagError {
+    return err instanceof RagError &&
+      (err.code === SHARED_LAYOUT_NOT_DEPLOYED ||
+        err.code === 'HEALTH_CHECK_ERROR')
+      ? err
+      : new RagError(String(err), code);
   }
 
   private vectorLiteral(vec: number[]): string {
-    return `TO_REAL_VECTOR('[${vec.join(',')}]')`;
+    return hanaVectorLiteral(
+      vec,
+      this.sql.layout === 'shared' ? this.dimension : undefined,
+    );
   }
 
   async query(
@@ -159,8 +205,8 @@ export class HanaVectorRag implements IRag {
       const safe = new FallbackQueryEmbedding(embedding, this.embedder);
       const vector = await safe.toVector();
       const client = await this.client();
-      const table = quoteIdent(this.collectionName);
-      const base = `SELECT id, text, metadata, COSINE_SIMILARITY(vector, ${this.vectorLiteral(vector)}) AS score FROM ${table} ORDER BY score DESC`;
+      const literal = this.vectorLiteral(vector);
+      const base = this.sql.search(literal);
       const identity = ragIdentityFilter(options);
       const rawNamespace = options?.ragFilter?.namespace;
       const targetNamespace =
@@ -199,7 +245,7 @@ export class HanaVectorRag implements IRag {
             continue;
           }
           picked.push({
-            text: String(row.text ?? ''),
+            text: decodeLob(row.text),
             metadata,
             score: Number(row.score ?? 0),
           });
@@ -209,18 +255,19 @@ export class HanaVectorRag implements IRag {
       const scoped = identity !== undefined || targetNamespace !== undefined;
       let results: RagResult[];
       if (scoped) {
-        results = pick(await client.query(base)).picked;
+        results = pick(await client.query(base.sql, base.params)).picked;
       } else {
-        const page = await client.query(`${base} LIMIT ${limit}`);
+        const paged = this.sql.search(literal, limit);
+        const page = await client.query(paged.sql, paged.params);
         const first = pick(page);
         results =
           first.dropped && page.length >= limit
-            ? pick(await client.query(base)).picked
+            ? pick(await client.query(base.sql, base.params)).picked
             : first.picked;
       }
       return { ok: true, value: results };
     } catch (err) {
-      return { ok: false, error: new RagError(String(err), 'QUERY_ERROR') };
+      return { ok: false, error: this.failure(err, 'QUERY_ERROR') };
     }
   }
 
@@ -233,32 +280,28 @@ export class HanaVectorRag implements IRag {
     try {
       await this.maybeEnsureSchema();
       const client = await this.client();
-      const rows = await client.query(
-        `SELECT id, text, metadata FROM ${quoteIdent(this.collectionName)} WHERE id = ?`,
-        [id],
-      );
+      const stmt = this.sql.byId(id);
+      const rows = await client.query(stmt.sql, stmt.params);
       const row = rows[0];
       if (!row) return { ok: true, value: null };
       const metadata = withId(row);
       return {
         ok: true,
-        value: { text: String(row.text ?? ''), metadata, score: 1 },
+        value: { text: decodeLob(row.text), metadata, score: 1 },
       };
     } catch (err) {
-      return { ok: false, error: new RagError(String(err), 'QUERY_ERROR') };
+      return { ok: false, error: this.failure(err, 'QUERY_ERROR') };
     }
   }
 
   async healthCheck(): Promise<Result<void, RagError>> {
     try {
+      await this.ensureSharedDeployed();
       const client = await this.client();
       await client.query('SELECT 1 FROM DUMMY');
       return { ok: true, value: undefined };
     } catch (err) {
-      return {
-        ok: false,
-        error: new RagError(String(err), 'HEALTH_CHECK_ERROR'),
-      };
+      return { ok: false, error: this.failure(err, 'HEALTH_CHECK_ERROR') };
     }
   }
 
@@ -273,7 +316,7 @@ export class HanaVectorRag implements IRag {
       const { vector } = await this.embedder.embedDocument(text, options);
       return this.upsertKnown(text, vector, metadata);
     } catch (err) {
-      return { ok: false, error: new RagError(String(err), 'UPSERT_ERROR') };
+      return { ok: false, error: this.failure(err, 'UPSERT_ERROR') };
     }
   }
 
@@ -291,16 +334,17 @@ export class HanaVectorRag implements IRag {
     metadata: RagMetadata,
   ): Promise<Result<void, RagError>> {
     try {
+      const literal = this.vectorLiteral(vector);
       await this.maybeEnsureSchema();
       const client = await this.client();
       const id = metadata?.id ?? crypto.randomUUID();
       const { id: _omit, ...rest } = metadata ?? {};
       const metaJson = JSON.stringify(rest);
-      const sql = `UPSERT ${quoteIdent(this.collectionName)} (id, text, vector, metadata) VALUES (?, ?, ${this.vectorLiteral(vector)}, ?) WITH PRIMARY KEY`;
-      await client.exec(sql, [id, text, metaJson]);
+      const stmt = this.sql.upsert(literal, id, text, metaJson);
+      await client.exec(stmt.sql, stmt.params);
       return { ok: true, value: undefined };
     } catch (err) {
-      return { ok: false, error: new RagError(String(err), 'UPSERT_ERROR') };
+      return { ok: false, error: this.failure(err, 'UPSERT_ERROR') };
     }
   }
 
@@ -314,15 +358,13 @@ export class HanaVectorRag implements IRag {
         try {
           await this.maybeEnsureSchema();
           const client = await this.client();
-          const r = await client.exec(
-            `DELETE FROM ${quoteIdent(this.collectionName)} WHERE id = ?`,
-            [id],
-          );
+          const stmt = this.sql.deleteById(id);
+          const r = await client.exec(stmt.sql, stmt.params);
           return { ok: true, value: r.rowCount > 0 };
         } catch (err) {
           return {
             ok: false,
-            error: new RagError(String(err), 'DELETE_ERROR'),
+            error: this.failure(err, 'DELETE_ERROR'),
           };
         }
       },
@@ -330,12 +372,11 @@ export class HanaVectorRag implements IRag {
         try {
           await this.maybeEnsureSchema();
           const client = await this.client();
-          await client.exec(
-            `TRUNCATE TABLE ${quoteIdent(this.collectionName)}`,
-          );
+          const stmt = this.sql.clear();
+          await client.exec(stmt.sql, stmt.params);
           return { ok: true, value: undefined };
         } catch (err) {
-          return { ok: false, error: new RagError(String(err), 'CLEAR_ERROR') };
+          return { ok: false, error: this.failure(err, 'CLEAR_ERROR') };
         }
       },
       upsertPrecomputedRaw: async (id, text, vector, metadata) =>
@@ -350,7 +391,7 @@ export class HanaVectorRag implements IRag {
  * returns it (tool selection's toolNameFromRecord keys on it).
  */
 function withId(row: Record<string, unknown>): RagMetadata {
-  const raw = row.metadata as string | null | undefined;
+  const raw = decodeLob(row.metadata);
   const parsed = raw ? (JSON.parse(raw) as RagMetadata) : {};
   return { ...parsed, id: String(row.id) };
 }

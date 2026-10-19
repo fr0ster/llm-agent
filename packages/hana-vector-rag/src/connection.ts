@@ -31,6 +31,14 @@ export interface HanaVectorRagConfig {
   collectionName: string;
   dimension?: number;
   autoCreateSchema?: boolean;
+  /**
+   * Table layout. `per-collection` (default) is one table per collection;
+   * `shared` is one documents table for all collections, created outside the
+   * app, so no DDL ever runs at runtime.
+   */
+  layout?: 'per-collection' | 'shared';
+  /** Documents table of the `shared` layout. Default `RAG_DOCUMENTS`. */
+  documentsTable?: string;
   poolMax?: number;
   connectTimeout?: number;
 }

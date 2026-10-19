@@ -3,6 +3,17 @@ import { quoteIdent } from './schema.js';
 /** The table a HanaVectorRagProvider keeps one record per collection in, by default. */
 export const DEFAULT_CATALOG_TABLE = 'rag_collection_catalog';
 
+/** The catalog's column list, shared with the shipped shared-layout DDL. */
+export function catalogColumnsSql(): string {
+  return `    store_name NVARCHAR(63) PRIMARY KEY,
+    collection_name NVARCHAR(5000) NOT NULL,
+    scope NVARCHAR(16) NOT NULL,
+    user_id NVARCHAR(5000),
+    session_id NVARCHAR(5000),
+    attributes_json NCLOB,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP`;
+}
+
 /**
  * The catalog's DDL. No IF NOT EXISTS — a server-version capability on HANA
  * (spec §9.10): the provider checks for the table, creates it, and re-checks on
@@ -10,13 +21,7 @@ export const DEFAULT_CATALOG_TABLE = 'rag_collection_catalog';
  */
 export function createCatalogTableSql(table: string): string {
   return `CREATE TABLE ${quoteIdent(table)} (
-    store_name NVARCHAR(63) PRIMARY KEY,
-    collection_name NVARCHAR(5000) NOT NULL,
-    scope NVARCHAR(16) NOT NULL,
-    user_id NVARCHAR(5000),
-    session_id NVARCHAR(5000),
-    attributes_json NCLOB,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+${catalogColumnsSql()}
   )`;
 }
 

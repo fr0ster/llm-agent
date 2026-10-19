@@ -9,6 +9,20 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [30.2.0] — 2026-10-19
+
+### Added
+
+- **Shared table layout for the SQL vector stores.** `@mcp-abap-adt/hana-vector-rag` and `@mcp-abap-adt/pg-vector-rag` accept `layout: 'shared'` (default `per-collection`, unchanged): one documents table (`RAG_DOCUMENTS` / `rag_documents`, `documentsTable`) for all collections plus the catalog table (`RAG_COLLECTIONS` / `rag_collections`, provider `catalogTable`), deployed outside the app, so no DDL runs at runtime — for an SAP HANA HDI container, where the runtime user cannot create tables. `autoCreateSchema: true` with `shared` throws `INVALID_CONFIG`. The packages ship `ddl/` (HANA `.hdbtable` + `.hdiconfig` + SQL, PG SQL; dimension 1536) and export the generators `sharedDocumentsHdbtable`, `sharedCatalogHdbtable` (HANA), `sharedLayoutSql`, and `SHARED_DOCUMENTS_TABLE`, `SHARED_CATALOG_TABLE`, `SHIPPED_DIMENSION`. A lazy startup check compares the deployed column dimension with the configured `dimension` and fails with `SHARED_LAYOUT_NOT_DEPLOYED`. HDI namespaces are not supported. Verified live on SAP HANA Cloud (HDI container); the Postgres side was verified live on PGlite with its pgvector extension (an in-process WASM Postgres), not on a server Postgres. Export of the error codes `SHARED_LAYOUT_NOT_DEPLOYED`, `INVALID_CONFIG` and `INVALID_VECTOR` as constants from both packages; `layout` outside `per-collection` / `shared` is `INVALID_CONFIG`; the config validator rejects `layout: shared` with `autoCreateSchema: true`.
+- `rag.store.layout` and `rag.store.documentsTable` in the YAML config and in `makeRag` (`llm-agent-server-libs`, `llm-agent-rag`).
+- Conformance kit `@mcp-abap-adt/llm-agent/testing/shared-table-conformance`, and live checks in `test/integration/sql-shared-table/` (HDI deployer + runner for HANA, PGlite / `PG_TEST_URL` for Postgres).
+
+### Fixed
+
+- `hana-vector-rag`: result aliases are quoted — HANA folded them to upper case, so queries on a real HANA returned empty results.
+- `hana-vector-rag`: `@sap/hana-client`'s CommonJS export is loaded correctly under ESM; connecting used to throw `createConnection is not a function`.
+- `hana-vector-rag`: NCLOB values returned as a `Buffer` are decoded.
+
 ## [30.1.0] — 2026-10-04
 
 ### Added

@@ -1,5 +1,11 @@
 # @mcp-abap-adt/hana-vector-rag
 
+## 30.2.0
+
+**Added:** opt-in `shared` table layout (`layout: 'per-collection' | 'shared'`, default `per-collection` and byte-identical SQL): one documents table (`RAG_DOCUMENTS`, `documentsTable`) for all collections plus the catalog table (`RAG_COLLECTIONS`, provider `catalogTable`), both deployed outside the app, no DDL at runtime; `autoCreateSchema: true` with `shared` throws `INVALID_CONFIG`. Shipped `ddl/` (`RAG_DOCUMENTS.hdbtable`, `RAG_COLLECTIONS.hdbtable`, `.hdiconfig`, `shared-layout.sql`, dimension 1536) for an HDI container; generators `sharedDocumentsHdbtable`, `sharedCatalogHdbtable`, `sharedLayoutSql` and constants `SHARED_DOCUMENTS_TABLE`, `SHARED_CATALOG_TABLE`, `SHIPPED_DIMENSION` for another dimension. A lazy startup check (memoised on success, retried on failure) compares the tables and the `"VECTOR"` dimension with the configured `dimension` and fails with `SHARED_LAYOUT_NOT_DEPLOYED`; a driver error in it is `HEALTH_CHECK_ERROR` (`healthCheck()` keeps that error). Vectors are validated before SQL: non-finite in both layouts, length only in `shared` (`INVALID_VECTOR`, surfaced as `UPSERT_ERROR` / `QUERY_ERROR`). Orphan / `adoptExisting` / list / delete semantics are translated to the shared layout. HDI namespaces are not supported. See the README.
+
+**Fixed:** result aliases are quoted — HANA folded the unquoted ones to upper case, so a query on a real HANA returned empty results; `@sap/hana-client`'s CommonJS export is loaded correctly under ESM (connecting threw `createConnection is not a function`); NCLOB values that arrive as a `Buffer` are decoded.
+
 ## 30.1.0
 
 Lockstep release with the 30.1.0 line: decision models (`IDecisionModel`, TypeSafe Jev), per-store retrieval strategies (`rag.retrieval`), session agents that carry the server's wiring, circuit breakers per `llm:` key, request cancellation on client disconnect. No change in this package — see the root CHANGELOG.

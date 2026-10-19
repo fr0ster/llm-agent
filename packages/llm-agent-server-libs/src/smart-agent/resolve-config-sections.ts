@@ -235,6 +235,12 @@ function resolveRagStore(
             s.autoCreateSchema === true || s.autoCreateSchema === 'true',
         }
       : {}),
+    ...(has(s.layout)
+      ? { layout: s.layout as 'per-collection' | 'shared' }
+      : {}),
+    ...(has(s.documentsTable)
+      ? { documentsTable: String(s.documentsTable) }
+      : {}),
   };
   switch (s.type) {
     case 'in-memory':

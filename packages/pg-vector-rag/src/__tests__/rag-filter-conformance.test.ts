@@ -28,3 +28,22 @@ describe('PgVectorRag — filter conformance (storing fake)', () => {
     );
   }
 });
+
+describe('PgVectorRag — filter conformance, shared layout (storing fake)', () => {
+  for (const c of ragFilterConformanceCases) {
+    it(c.name, () =>
+      c.run(
+        async () =>
+          new PgVectorRag(
+            {
+              collectionName: 'docs',
+              dimension: CONFORMANCE_EMBEDDING_DIM,
+              layout: 'shared',
+              embedder: symmetricEmbedder(conformanceEmbedder()),
+            },
+            storingPg({ sharedDimension: CONFORMANCE_EMBEDDING_DIM }),
+          ),
+      ),
+    );
+  }
+});

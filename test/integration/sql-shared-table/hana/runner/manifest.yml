@@ -1,0 +1,10 @@
+applications:
+  - name: sst-hana-runner
+    memory: 512M
+    no-route: true
+    health-check-type: process
+    buildpacks:
+      - nodejs_buildpack
+    command: node run.mjs; sleep 3600
+    services:
+      - hdi-llm
