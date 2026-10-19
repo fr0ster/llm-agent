@@ -1,5 +1,9 @@
 # @mcp-abap-adt/llm-agent-rag
 
+## 30.3.0
+
+Lockstep release with the 30.3.0 line: `IRagScanner.scan`, `IRagFilteredDeleter.deleteWhere` and `IRagCatalogUpdater.updateCollection` on the RAG stores and catalog providers. No change in this package — see the root CHANGELOG.
+
 ## 30.2.0
 
 **Added:** `makeRag` accepts `layout` (`'per-collection' | 'shared'`) and `documentsTable` for the `hana-vector` and `pg-vector` stores and passes them to the store (see `@mcp-abap-adt/hana-vector-rag` / `pg-vector-rag`).
