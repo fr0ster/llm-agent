@@ -9,9 +9,14 @@ import type {
   Result,
 } from '@mcp-abap-adt/llm-agent';
 import {
+  assertNonEmptyFilter,
   FallbackQueryEmbedding,
+  type IRagFilteredDeleter,
+  type IRagScanner,
   matchesRagIdentity,
   RagError,
+  type RagScanFilter,
+  type RagScanPage,
   ragIdentityFilter,
 } from '@mcp-abap-adt/llm-agent';
 import type { HanaVectorRagConfig } from './connection.js';
@@ -20,6 +25,7 @@ import { SHARED_LAYOUT_NOT_DEPLOYED } from './error-codes.js';
 import { resolveHanaModule } from './hana-module.js';
 import { resolveLayout } from './layout.js';
 import { decodeLob } from './lob.js';
+import { deleteWhere, scanPage } from './scan-delete.js';
 import { assertCollectionName } from './schema.js';
 import { checkSharedTables } from './shared-check.js';
 import { SHARED_DOCUMENTS_TABLE } from './shared-ddl.js';
@@ -86,7 +92,7 @@ export async function createHanaClient(
   };
 }
 
-export class HanaVectorRag implements IRag {
+export class HanaVectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
   private readonly dimension: number;
   private readonly embedder: IRetrievalEmbedder;
   private readonly autoCreateSchema: boolean;
@@ -291,6 +297,44 @@ export class HanaVectorRag implements IRag {
       };
     } catch (err) {
       return { ok: false, error: this.failure(err, 'QUERY_ERROR') };
+    }
+  }
+
+  async scan(
+    opts?: { filter?: RagScanFilter; pageSize?: number; cursor?: string },
+    options?: CallOptions,
+  ): Promise<Result<RagScanPage, RagError>> {
+    if (options?.signal?.aborted)
+      return { ok: false, error: new RagError('Aborted', 'ABORTED') };
+    try {
+      await this.maybeEnsureSchema();
+      const client = await this.client();
+      return { ok: true, value: await scanPage(client, this.sql, opts) };
+    } catch (err) {
+      return { ok: false, error: this.failure(err, 'QUERY_ERROR') };
+    }
+  }
+
+  async deleteWhere(
+    filter: RagScanFilter,
+    options?: CallOptions,
+  ): Promise<Result<{ deleted: number }, RagError>> {
+    if (options?.signal?.aborted)
+      return { ok: false, error: new RagError('Aborted', 'ABORTED') };
+    const valid = assertNonEmptyFilter(filter);
+    if (!valid.ok) return valid;
+    try {
+      await this.maybeEnsureSchema();
+      const client = await this.client();
+      const deleted = await deleteWhere(
+        client,
+        this.sql,
+        filter,
+        options?.signal,
+      );
+      return { ok: true, value: { deleted } };
+    } catch (err) {
+      return { ok: false, error: this.failure(err, 'DELETE_ERROR') };
     }
   }
 

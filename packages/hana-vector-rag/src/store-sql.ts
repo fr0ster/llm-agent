@@ -18,7 +18,13 @@ export interface HanaStoreSql {
   deleteById(id: string): SqlStatement;
   clear(): SqlStatement;
   countRows(): SqlStatement;
+  /** One page of rows ordered by `"ID"`, after `afterKey` when given. */
+  scanPage(afterKey: string | undefined, limit: number): SqlStatement;
+  /** Deletes the given ids of this collection. */
+  deleteByIds(ids: string[]): SqlStatement;
 }
+
+const placeholders = (n: number): string => Array(n).fill('?').join(', ');
 
 const limitClause = (limit?: number): string =>
   limit === undefined ? '' : ` LIMIT ${limit}`;
@@ -52,6 +58,14 @@ export function perCollectionStoreSql(
     countRows: () => ({
       sql: `SELECT COUNT(*) AS "n" FROM ${table}`,
       params: [],
+    }),
+    scanPage: (afterKey, limit) => ({
+      sql: `SELECT "ID" AS "id", "TEXT" AS "text", "METADATA" AS "metadata" FROM ${table}${afterKey === undefined ? '' : ' WHERE "ID" > ?'} ORDER BY "ID" LIMIT ${limit}`,
+      params: afterKey === undefined ? [] : [afterKey],
+    }),
+    deleteByIds: (ids) => ({
+      sql: `DELETE FROM ${table} WHERE "ID" IN (${placeholders(ids.length)})`,
+      params: [...ids],
     }),
   };
 }
@@ -88,6 +102,14 @@ export function sharedStoreSql(
     countRows: () => ({
       sql: `SELECT COUNT(*) AS "n" FROM ${table} WHERE "COLLECTION" = ?`,
       params: [collection],
+    }),
+    scanPage: (afterKey, limit) => ({
+      sql: `SELECT "ID" AS "id", "TEXT" AS "text", "METADATA" AS "metadata" FROM ${table} WHERE "COLLECTION" = ?${afterKey === undefined ? '' : ' AND "ID" > ?'} ORDER BY "ID" LIMIT ${limit}`,
+      params: afterKey === undefined ? [collection] : [collection, afterKey],
+    }),
+    deleteByIds: (ids) => ({
+      sql: `DELETE FROM ${table} WHERE "COLLECTION" = ? AND "ID" IN (${placeholders(ids.length)})`,
+      params: [collection, ...ids],
     }),
   };
 }
