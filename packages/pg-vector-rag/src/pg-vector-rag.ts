@@ -58,17 +58,22 @@ interface PgPool {
  * idle client fails (database restart, cut connection); an `EventEmitter`
  * without a listener turns that into an uncaught exception that kills the
  * process. The listener never throws: pg drops the broken idle client itself,
- * and the next query surfaces the failure through the normal Result path.
+ * and the next query goes through the normal Result path (it may reconnect and
+ * succeed, or fail; it does not necessarily report the earlier error).
  */
 export function openPgClient(
   PoolCtor: new (a: unknown) => PgPool,
   args: unknown,
-  onPoolError?: (err: Error) => void,
+  onPoolError?: (err: Error) => void | Promise<void>,
 ): PgClient {
   const pool = new PoolCtor(args);
   pool.on('error', (err) => {
     try {
-      onPoolError?.(err);
+      const out: unknown = onPoolError?.(err);
+      // an async reporter may reject; a discarded rejection would end the process
+      if (out && typeof (out as PromiseLike<void>).then === 'function') {
+        Promise.resolve(out).catch(() => {});
+      }
     } catch {
       // a reporter must never take the process down
     }

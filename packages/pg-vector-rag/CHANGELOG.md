@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-**Fixed:** an idle-client error on the `pg` pool (database restart, cut connection) no longer crashes the process: every pool now has an `'error'` listener that never throws, and the failure surfaces on the next query. New optional `onPoolError` in `PgVectorRagConfig` to observe it (default: swallow).
+**Fixed:** an idle-client error on the `pg` pool (database restart, cut connection) no longer crashes the process: every pool now has an `'error'` listener that never throws, pg removes the broken client, and the next query may reconnect and succeed or fail through its Result. New optional `onPoolError` in `PgVectorRagConfig` to observe it (default: swallow).
 
 ## 30.3.0
 

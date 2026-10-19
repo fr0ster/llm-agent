@@ -36,9 +36,10 @@ export interface PgVectorRagConfig {
   /**
    * Called when the pool reports an error on an idle client (database
    * restart, cut connection). Optional; default is to swallow it — `pg` drops
-   * the broken client and the next query reports the failure.
+   * the broken client; the next query may reconnect and succeed, or fail through
+   * its Result.
    */
-  onPoolError?: (err: Error) => void;
+  onPoolError?: (err: Error) => void | Promise<void>;
 }
 
 export interface PgPoolConfig {
