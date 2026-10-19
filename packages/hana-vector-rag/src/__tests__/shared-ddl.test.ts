@@ -52,6 +52,25 @@ describe('shared-ddl (HANA)', () => {
     );
   });
 
+  it('honours custom table names and dimension', () => {
+    const documents = sharedDocumentsHdbtable('MY_DOCS', 3);
+    assert.ok(documents.startsWith('COLUMN TABLE "MY_DOCS" ('));
+    assert.ok(documents.includes('"VECTOR" REAL_VECTOR(3)'));
+    assert.ok(
+      sharedCatalogHdbtable('MY_CAT').startsWith('COLUMN TABLE "MY_CAT" ('),
+    );
+    const sql = sharedLayoutSql({
+      documentsTable: 'MY_DOCS',
+      catalogTable: 'MY_CAT',
+      dimension: 3,
+    });
+    assert.equal(
+      sql,
+      `CREATE ${sharedCatalogHdbtable('MY_CAT')};
+CREATE ${documents};`,
+    );
+  });
+
   it('rejects an invalid table name', () => {
     assert.throws(
       () => sharedDocumentsHdbtable('a-b', 3),

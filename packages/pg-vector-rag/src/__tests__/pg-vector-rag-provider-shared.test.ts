@@ -306,6 +306,14 @@ describe('PgVectorRagProvider, shared layout (construction and check)', () => {
     assert.ok(f.calls.every((c) => c.sql.startsWith('SELECT to_regclass')));
   });
 
+  it('an unknown layout is INVALID_CONFIG', () => {
+    assert.throws(
+      () => provider(fake(), { layout: 'Shared' }),
+      (e: { code?: string; message: string }) =>
+        e.code === 'INVALID_CONFIG' && /per-collection.*shared/.test(e.message),
+    );
+  });
+
   it('a check that cannot run is HEALTH_CHECK_ERROR', async () => {
     const f = fake();
     f.failOn = /to_regclass/;

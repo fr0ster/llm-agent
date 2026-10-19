@@ -317,6 +317,16 @@ describe('PgVectorRag shared layout and vector validation', () => {
       );
   });
 
+  it('an unknown layout throws INVALID_CONFIG naming the allowed values', () => {
+    assert.throws(
+      // biome-ignore lint/suspicious/noExplicitAny: deliberately wrong value
+      () => mk(recordingClient(), { layout: 'Shared' as any }),
+      (err: Error & { code?: string }) =>
+        err.code === 'INVALID_CONFIG' &&
+        /per-collection.*shared/.test(err.message),
+    );
+  });
+
   it('layout shared + autoCreateSchema true throws at construction', () => {
     assert.throws(
       () => mk(recordingClient(), { autoCreateSchema: true }),

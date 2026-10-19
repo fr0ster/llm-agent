@@ -114,6 +114,30 @@ describe('HanaVectorRagProvider, shared layout', () => {
     assert.equal(r.error.code, 'SHARED_LAYOUT_NOT_DEPLOYED');
   });
 
+  it('a check that cannot run is HEALTH_CHECK_ERROR', async () => {
+    const f = fake();
+    f.failOn = /SYS.TABLES/;
+    const r = await provider(f).listCollections();
+    assert.ok(!r.ok);
+    assert.equal(r.error.code, 'HEALTH_CHECK_ERROR');
+  });
+
+  it('a dimension mismatch is SHARED_LAYOUT_NOT_DEPLOYED', async () => {
+    const f = fake();
+    f.dim = 8;
+    const r = await provider(f).listCollections();
+    assert.ok(!r.ok);
+    assert.equal(r.error.code, 'SHARED_LAYOUT_NOT_DEPLOYED');
+  });
+
+  it('an unknown layout is INVALID_CONFIG', () => {
+    assert.throws(
+      () => provider(fake(), { layout: 'Shared' }),
+      (e: { code?: string; message: string }) =>
+        e.code === 'INVALID_CONFIG' && /per-collection.*shared/.test(e.message),
+    );
+  });
+
   it('every public method runs the check first', async () => {
     const f = fake();
     f.tables.clear();
