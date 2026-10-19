@@ -581,6 +581,15 @@ describe('HanaVectorRag shared layout and vector validation', () => {
     assert.equal(up.error.code, 'SHARED_LAYOUT_NOT_DEPLOYED');
   });
 
+  it('healthCheck passes a failed shared check through with its own code and message', async () => {
+    const rag = mk(recordingClient({ dim: 768 }));
+    const h = await rag.healthCheck();
+    assert.ok(!h.ok);
+    assert.equal(h.error.code, 'SHARED_LAYOUT_NOT_DEPLOYED');
+    assert.ok(!h.error.message.startsWith('RagError'));
+    assert.match(h.error.message, /768/);
+  });
+
   it('a non-finite component is refused before SQL', async () => {
     const client = makeFakeClient();
     const rag = plain(client);

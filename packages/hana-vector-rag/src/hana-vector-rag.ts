@@ -299,10 +299,7 @@ export class HanaVectorRag implements IRag {
       await client.query('SELECT 1 FROM DUMMY');
       return { ok: true, value: undefined };
     } catch (err) {
-      return {
-        ok: false,
-        error: new RagError(String(err), 'HEALTH_CHECK_ERROR'),
-      };
+      return { ok: false, error: this.failure(err, 'HEALTH_CHECK_ERROR') };
     }
   }
 
