@@ -20,7 +20,7 @@ const rootRequire = createRequire(resolve(root, 'package.json'));
 const load = (spec) => import(pathToFileURL(rootRequire.resolve(spec)).href);
 
 const { symmetricEmbedder } = await load('@mcp-abap-adt/llm-agent');
-const { conformanceEmbedder } = await load(
+const { CONFORMANCE_EMBEDDING_DIM, conformanceEmbedder } = await load(
   '@mcp-abap-adt/llm-agent/testing/rag-filter-conformance',
 );
 const { scanDeleteConformanceCases, isScanDeleteCaseSkipped } = await load(
@@ -44,8 +44,26 @@ const dropCollection = (name) =>
     () => {},
   );
 
-const storeOf = (name) => {
+// QdrantRag.scan never creates its collection (a missing one is an error),
+// so each subject's collection is created first, with the vector size and the
+// distance QdrantRag creates its collections with. The unit runner
+// (packages/qdrant-rag/src/__tests__/scan-delete.test.ts) creates its stub
+// collections with the same request.
+const createCollection = async (name) => {
+  const res = await fetch(`${url}/collections/${name}`, {
+    method: 'PUT',
+    headers,
+    body: JSON.stringify({
+      vectors: { size: CONFORMANCE_EMBEDDING_DIM, distance: 'Cosine' },
+    }),
+  });
+  if (!res.ok)
+    throw new Error(`create ${name}: HTTP ${res.status} ${await res.text()}`);
+};
+
+const storeOf = async (name) => {
   created.add(name);
+  await createCollection(name);
   return new QdrantRag({
     url,
     collectionName: name,
