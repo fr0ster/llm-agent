@@ -446,6 +446,33 @@ describe('rag.store: shared table layout from YAML', () => {
     );
   });
 
+  it('refuses layout shared with autoCreateSchema true, for both stores', () => {
+    for (const type of ['pg-vector', 'hana-vector']) {
+      assert.throws(
+        () =>
+          resolveSmartServerConfig(
+            {},
+            yamlWith({
+              type,
+              layout: 'shared',
+              autoCreateSchema: true,
+              credentialRef: 'HANA',
+            }),
+            {},
+          ),
+        /rag.store.autoCreateSchema.*shared/,
+      );
+    }
+  });
+
+  it('accepts layout shared with autoCreateSchema false', () => {
+    resolveSmartServerConfig(
+      {},
+      yamlWith({ layout: 'shared', autoCreateSchema: false }),
+      {},
+    );
+  });
+
   it('refuses an unknown layout, listing the two values', () => {
     assert.throws(
       () => resolveSmartServerConfig({}, yamlWith({ layout: 'other' }), {}),
