@@ -13,24 +13,24 @@ import type {
 import {
   AbstractRagProvider,
   CatalogRecordDeleteError,
-  DuplicateCollectionError,
   describeRagCatalogRows,
-  encodeRagAttributes,
   OrphanStoreError,
   RagError,
-  ragOwnerKeys,
   validateRagOwner,
 } from '@mcp-abap-adt/llm-agent';
 import {
   createCatalogTableSql,
   DEFAULT_CATALOG_TABLE,
   deleteRecordSql,
-  insertRecordSql,
   probeTableSql,
-  recordExistsSql,
   selectRecordsSql,
   tableExistsSql,
 } from './catalog.js';
+import {
+  catalogRecordExists,
+  duplicateRefusal,
+  writeCatalogRecord,
+} from './catalog-record.js';
 import type { PgVectorRagConfig } from './connection.js';
 import { createPgClient, type PgClient, PgVectorRag } from './pg-vector-rag.js';
 import {
@@ -40,6 +40,8 @@ import {
   dropTableSql,
   quoteIdent,
 } from './schema.js';
+import { SHARED_CATALOG_TABLE, SHARED_DOCUMENTS_TABLE } from './shared-ddl.js';
+import { SharedProviderOps } from './shared-provider-ops.js';
 
 type Handles = { rag: IRag; editor: IRagEditor };
 type Refusal = { ok: false; error: RagError };
@@ -70,8 +72,19 @@ export interface PgVectorRagProviderConfig {
    * handle opens its own.
    */
   clientFactory?: () => PgClient;
-  /** The table holding one record per collection. Default `rag_collection_catalog`. */
+  /**
+   * The table holding one record per collection. Default
+   * `rag_collection_catalog`; `rag_collections` in the `shared` layout.
+   */
   catalogTable?: string;
+  /**
+   * `per-collection` (default): one table per collection. `shared`: one
+   * documents table for all collections, deployed outside the app — no DDL
+   * ever runs, and `autoCreateSchema: true` is refused.
+   */
+  layout?: 'per-collection' | 'shared';
+  /** Documents table of the `shared` layout. Default `rag_documents`. */
+  documentsTable?: string;
 }
 
 function normalizeConnection(c: PgVectorRagConfig | string): PgVectorRagConfig {
@@ -92,6 +105,9 @@ export class PgVectorRagProvider extends AbstractRagProvider {
   private readonly autoCreateSchema: boolean;
   private readonly clientFactory?: () => PgClient;
   private readonly catalogTable: string;
+  private readonly layout: 'per-collection' | 'shared';
+  private readonly documentsTable: string;
+  private readonly shared?: SharedProviderOps;
   private ownClient?: Promise<PgClient>;
   private catalogReady?: Promise<void>;
 
@@ -101,12 +117,32 @@ export class PgVectorRagProvider extends AbstractRagProvider {
     this.embedder = cfg.embedder;
     this.connection = normalizeConnection(cfg.connection);
     this.defaultDimension = cfg.defaultDimension ?? 1536;
-    this.autoCreateSchema = cfg.autoCreateSchema ?? true;
+    const shared = cfg.layout === 'shared';
+    if (shared && cfg.autoCreateSchema === true) {
+      throw new RagError(
+        "autoCreateSchema: true is not allowed with layout: 'shared' — the shared tables are deployed outside the app",
+        'INVALID_CONFIG',
+      );
+    }
+    this.layout = shared ? 'shared' : 'per-collection';
+    this.documentsTable = cfg.documentsTable ?? SHARED_DOCUMENTS_TABLE;
+    this.autoCreateSchema = cfg.autoCreateSchema ?? !shared;
     this.editable = cfg.editable ?? true;
     this.supportedScopes = cfg.supportedScopes ?? ['session', 'user', 'global'];
     this.clientFactory = cfg.clientFactory;
-    this.catalogTable = cfg.catalogTable ?? DEFAULT_CATALOG_TABLE;
+    this.catalogTable =
+      cfg.catalogTable ??
+      (shared ? SHARED_CATALOG_TABLE : DEFAULT_CATALOG_TABLE);
     assertCollectionName(this.catalogTable);
+    if (shared) {
+      assertCollectionName(this.documentsTable);
+      this.shared = new SharedProviderOps({
+        catalogTable: this.catalogTable,
+        documentsTable: this.documentsTable,
+        schema: this.connection.schema,
+        dimension: this.dimension(),
+      });
+    }
     if (cfg.idStrategyFactory) this.idStrategyFactory = cfg.idStrategyFactory;
   }
 
@@ -125,6 +161,20 @@ export class PgVectorRagProvider extends AbstractRagProvider {
     try {
       assertCollectionName(name);
       const client = await this.adminClient();
+      if (this.shared) {
+        const created = await this.shared.create(
+          client,
+          {
+            ...checked.value,
+            storeName: name,
+            name: opts.collectionName ?? name,
+            attributes: opts.attributes,
+          },
+          opts,
+        );
+        if (!created.ok) return created;
+        return { ok: true, value: this.handles(name, checked.value) };
+      }
       if (this.autoCreateSchema) await this.ensureCatalog(client);
       if (await this.recordExists(client, name))
         return this.duplicate(name, opts);
@@ -162,6 +212,7 @@ export class PgVectorRagProvider extends AbstractRagProvider {
   > {
     try {
       const client = await this.adminClient();
+      if (this.shared) return await this.shared.describe(client);
       if (!(await this.tableExists(client, this.catalogTable))) {
         return { ok: true, value: { records: [], rejected: [] } };
       }
@@ -196,6 +247,7 @@ export class PgVectorRagProvider extends AbstractRagProvider {
     let client: PgClient;
     try {
       client = await this.adminClient();
+      if (this.shared) return await this.shared.delete(client, name);
       if (await this.tableExists(client, this.catalogTable)) {
         await client.query(deleteRecordSql(this.catalogTable), [name]);
       }
@@ -220,6 +272,7 @@ export class PgVectorRagProvider extends AbstractRagProvider {
   async listCollections(): Promise<Result<string[], RagError>> {
     try {
       const client = await this.adminClient();
+      if (this.shared) return await this.shared.list(client);
       const schema = this.connection.schema ?? 'public';
       const { rows } = await client.query(
         'SELECT table_name FROM information_schema.tables WHERE table_schema = $1',
@@ -261,40 +314,27 @@ export class PgVectorRagProvider extends AbstractRagProvider {
     }
   }
 
-  private async writeRecord(
+  private writeRecord(
     client: PgClient,
     record: RagCollectionRecord,
     opts: RagProviderCreateCollectionOptions,
   ): Promise<Result<void, RagError>> {
-    const { userId, sessionId } = ragOwnerKeys(record);
-    try {
-      await client.query(insertRecordSql(this.catalogTable), [
-        record.storeName,
-        record.name,
-        record.scope,
-        userId ?? null,
-        sessionId ?? null,
-        encodeRagAttributes(record.attributes),
-      ]);
-      return { ok: true, value: undefined };
-    } catch (err) {
-      // Lost to another registry's write: its record points at this store, which stays.
-      if (
-        await this.recordExists(client, record.storeName).catch(() => false)
-      ) {
-        return this.duplicate(record.storeName, opts);
-      }
-      // Never removed: between this failure and a removal another registry may
-      // adopt the store and record it, and a removal would leave that record
-      // without data (Â§6.3).
-      return {
+    // Never removed: between this failure and a removal another registry may
+    // adopt the store and record it, and a removal would leave that record
+    // without data (§6.3).
+    return writeCatalogRecord(
+      client,
+      this.catalogTable,
+      record,
+      opts,
+      (err) => ({
         ok: false,
         error: new OrphanStoreError(
           record.storeName,
           `its record could not be written (${String(err)}); the store is left in place until it is adopted with adoptExisting or removed`,
         ),
-      };
-    }
+      }),
+    );
   }
 
   private handles(storeName: string, owner: RagCollectionOwner): Handles {
@@ -305,6 +345,8 @@ export class PgVectorRagProvider extends AbstractRagProvider {
         dimension: this.dimension(),
         // No handle creates its store: createCollection does, and only it.
         autoCreateSchema: false,
+        layout: this.layout,
+        documentsTable: this.documentsTable,
         embedder: this.embedder,
       },
       this.clientFactory?.(),
@@ -316,13 +358,7 @@ export class PgVectorRagProvider extends AbstractRagProvider {
     storeName: string,
     opts: RagProviderCreateCollectionOptions,
   ): Refusal {
-    return {
-      ok: false,
-      error: new DuplicateCollectionError(
-        opts.collectionName ?? storeName,
-        `store '${storeName}' already has a record`,
-      ),
-    };
+    return duplicateRefusal(storeName, opts);
   }
 
   private refuseCatalogName(name: string): Refusal | undefined {
@@ -370,13 +406,7 @@ export class PgVectorRagProvider extends AbstractRagProvider {
     return rows[0]?.present === true;
   }
 
-  private async recordExists(
-    client: PgClient,
-    storeName: string,
-  ): Promise<boolean> {
-    const { rows } = await client.query(recordExistsSql(this.catalogTable), [
-      storeName,
-    ]);
-    return rows.length > 0;
+  private recordExists(client: PgClient, storeName: string): Promise<boolean> {
+    return catalogRecordExists(client, this.catalogTable, storeName);
   }
 }

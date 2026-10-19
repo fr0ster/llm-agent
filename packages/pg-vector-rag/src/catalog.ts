@@ -1,4 +1,4 @@
-import { quoteIdent } from './schema.js';
+import { qualifiedTable, quoteIdent } from './schema.js';
 
 /** The table a PgVectorRagProvider keeps one record per collection in, by default. */
 export const DEFAULT_CATALOG_TABLE = 'rag_collection_catalog';
@@ -36,19 +36,19 @@ export function probeTableSql(table: string): string {
   return `SELECT COUNT(*) AS n FROM ${quoteIdent(table)} WHERE 1 = 0`;
 }
 
-export function recordExistsSql(table: string): string {
-  return `SELECT 1 AS present FROM ${quoteIdent(table)} WHERE store_name = $1`;
+export function recordExistsSql(table: string, schema?: string): string {
+  return `SELECT 1 AS present FROM ${qualifiedTable(table, schema)} WHERE store_name = $1`;
 }
 
 /** Create-if-absent: the primary key refuses a second record for one store. */
-export function insertRecordSql(table: string): string {
-  return `INSERT INTO ${quoteIdent(table)} (store_name, collection_name, scope, user_id, session_id, attributes_json) VALUES ($1, $2, $3, $4, $5, $6)`;
+export function insertRecordSql(table: string, schema?: string): string {
+  return `INSERT INTO ${qualifiedTable(table, schema)} (store_name, collection_name, scope, user_id, session_id, attributes_json) VALUES ($1, $2, $3, $4, $5, $6)`;
 }
 
-export function selectRecordsSql(table: string): string {
-  return `SELECT store_name AS "storeName", collection_name AS "name", scope AS "scope", user_id AS "userId", session_id AS "sessionId", attributes_json AS "attributesJson" FROM ${quoteIdent(table)} ORDER BY store_name`;
+export function selectRecordsSql(table: string, schema?: string): string {
+  return `SELECT store_name AS "storeName", collection_name AS "name", scope AS "scope", user_id AS "userId", session_id AS "sessionId", attributes_json AS "attributesJson" FROM ${qualifiedTable(table, schema)} ORDER BY store_name`;
 }
 
-export function deleteRecordSql(table: string): string {
-  return `DELETE FROM ${quoteIdent(table)} WHERE store_name = $1`;
+export function deleteRecordSql(table: string, schema?: string): string {
+  return `DELETE FROM ${qualifiedTable(table, schema)} WHERE store_name = $1`;
 }
