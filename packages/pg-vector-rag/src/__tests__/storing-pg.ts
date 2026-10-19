@@ -14,6 +14,8 @@ import type { PgClient } from '../pg-vector-rag.js';
  */
 export type StoringPg = PgClient & {
   searches: Array<{ sql: string; params: readonly unknown[] }>;
+  /** Every statement received, in order. */
+  statements: string[];
   /** Orphan setup: a row of the shared documents table, written past the store. */
   insertSharedRow(row: Omit<Row, 'table'> & { table?: string }): void;
 };
@@ -91,6 +93,8 @@ function evaluate(
 const SHARED_INSERT =
   /^INSERT INTO ((?:"[^"]+"[.])?"[^"]+") \("collection", "id", "text", "vector", "metadata"\) VALUES \(\$1, \$2, \$3, .*, \$4::jsonb\) ON CONFLICT \("collection", "id"\) DO UPDATE SET /;
 const OWN_INSERT = /^INSERT INTO ("[^"]+") \(id, text, vector, metadata\)/;
+const OWN_BY_ID = /^SELECT id, text, metadata FROM ("[^"]+") WHERE id = \$1$/;
+const OWN_DELETE = /^DELETE FROM ("[^"]+") WHERE id = \$1$/;
 const SHARED_BY_ID =
   /^SELECT "id", "text", "metadata" FROM ((?:"[^"]+"[.])?"[^"]+") WHERE "collection" = \$1 AND "id" = \$2$/;
 const SHARED_DELETE =
@@ -109,6 +113,17 @@ const RECORD_NAMES = /^SELECT store_name AS "s" FROM ((?:"[^"]+"[.])?"[^"]+")$/;
 const RECORD_DELETE =
   /^DELETE FROM ((?:"[^"]+"[.])?"[^"]+") WHERE store_name = \$1$/;
 
+// scan/deleteWhere: strict string conditions, binary key-set cursor on the id.
+const SCAN =
+  /^SELECT "id", "text", "metadata" FROM ((?:"[^"]+"[.])?"[^"]+")(?: WHERE (.*))? ORDER BY "id" COLLATE "C" LIMIT (\d+)$/;
+const DELETE_WHERE =
+  /^DELETE FROM ((?:"[^"]+"[.])?"[^"]+") WHERE (.*) RETURNING "id"$/;
+const AFTER_KEY = /^"id" COLLATE "C" > \$(\d+)$/;
+
+/** Postgres' "C" collation: byte order of the UTF-8 text. */
+const byteCompare = (a: string, b: string): number =>
+  Buffer.compare(Buffer.from(a), Buffer.from(b));
+
 const SEARCH =
   /^SELECT (?:id, text, metadata|"id", "text", "metadata"), (?:vector|"vector") <=> .*? AS score FROM ((?:"[^"]+"[.])?"[^"]+")(?: WHERE (.*))? ORDER BY (?:vector|"vector") <=> .* LIMIT (\d+)$/;
 
@@ -126,6 +141,7 @@ export function storingPg(opts: { sharedDimension?: number } = {}): StoringPg {
     return r;
   };
   const searches: StoringPg['searches'] = [];
+  const statements: string[] = [];
   const keyOf = (r: Pick<Row, 'table' | 'collection' | 'id'>): string =>
     JSON.stringify([r.table, r.collection ?? null, r.id]);
   const sharedRows = (table: string): Row[] =>
@@ -134,11 +150,30 @@ export function storingPg(opts: { sharedDimension?: number } = {}): StoringPg {
     );
   return {
     searches,
+    statements,
     insertSharedRow(row) {
       const full: Row = { ...row, table: row.table ?? '"rag_documents"' };
       rows.set(keyOf(full), full);
     },
     async query(sql, params = []) {
+      statements.push(sql);
+      const matching = (table: string, where: string | undefined): Row[] => {
+        const conditions = where
+          ? where.replaceAll('"metadata"', 'metadata').split(' AND ')
+          : [];
+        return [...rows.values()]
+          .filter((r) => r.table === table)
+          .filter((r) =>
+            conditions.every((c) => {
+              const after = c.match(AFTER_KEY);
+              if (after)
+                return (
+                  byteCompare(r.id, String(params[Number(after[1]) - 1])) > 0
+                );
+              return evaluate(c, r, params);
+            }),
+          );
+      };
       if (sql.startsWith('CREATE ')) return { rows: [], rowCount: 0 };
       if (opts.sharedDimension !== undefined) {
         if (sql.includes('pg_attribute'))
@@ -173,6 +208,20 @@ export function storingPg(opts: { sharedDimension?: number } = {}): StoringPg {
         rows.set(keyOf(row), row);
         return { rows: [], rowCount: 1 };
       }
+      const ownById = sql.match(OWN_BY_ID);
+      if (ownById) {
+        const hit = rows.get(
+          keyOf({ table: ownById[1], id: String(params[0]) }),
+        );
+        return { rows: hit ? [hit] : [], rowCount: hit ? 1 : 0 };
+      }
+      const ownDelete = sql.match(OWN_DELETE);
+      if (ownDelete) {
+        const gone = rows.delete(
+          keyOf({ table: ownDelete[1], id: String(params[0]) }),
+        );
+        return { rows: [], rowCount: gone ? 1 : 0 };
+      }
       const byId = sql.match(SHARED_BY_ID);
       if (byId) {
         const hit = rows.get(
@@ -183,6 +232,20 @@ export function storingPg(opts: { sharedDimension?: number } = {}): StoringPg {
           }),
         );
         return { rows: hit ? [hit] : [], rowCount: hit ? 1 : 0 };
+      }
+      const scan = sql.match(SCAN);
+      if (scan) {
+        const out = matching(scan[1], scan[2])
+          .sort((a, b) => byteCompare(a.id, b.id))
+          .slice(0, Number(scan[3]))
+          .map((r) => ({ id: r.id, text: r.text, metadata: r.metadata }));
+        return { rows: out, rowCount: out.length };
+      }
+      const delWhere = sql.match(DELETE_WHERE);
+      if (delWhere) {
+        const hit = matching(delWhere[1], delWhere[2]);
+        for (const r of hit) rows.delete(keyOf(r));
+        return { rows: hit.map((r) => ({ id: r.id })), rowCount: hit.length };
       }
       const del = sql.match(SHARED_DELETE);
       if (del) {
