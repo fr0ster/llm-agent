@@ -3,6 +3,17 @@ import { quoteIdent } from './schema.js';
 /** The table a PgVectorRagProvider keeps one record per collection in, by default. */
 export const DEFAULT_CATALOG_TABLE = 'rag_collection_catalog';
 
+/** The catalog's column list, shared with the shipped shared-layout DDL. */
+export function catalogColumnsSql(): string {
+  return `    store_name VARCHAR(63) PRIMARY KEY,
+    collection_name TEXT NOT NULL,
+    scope VARCHAR(16) NOT NULL,
+    user_id TEXT,
+    session_id TEXT,
+    attributes_json TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW()`;
+}
+
 /**
  * The catalog's DDL. No IF NOT EXISTS: the provider checks for the table,
  * creates it, and re-checks on failure (spec §9.10). Exported so an operator
@@ -11,13 +22,7 @@ export const DEFAULT_CATALOG_TABLE = 'rag_collection_catalog';
  */
 export function createCatalogTableSql(table: string): string {
   return `CREATE TABLE ${quoteIdent(table)} (
-    store_name VARCHAR(63) PRIMARY KEY,
-    collection_name TEXT NOT NULL,
-    scope VARCHAR(16) NOT NULL,
-    user_id TEXT,
-    session_id TEXT,
-    attributes_json TEXT,
-    created_at TIMESTAMPTZ DEFAULT NOW()
+${catalogColumnsSql()}
   )`;
 }
 

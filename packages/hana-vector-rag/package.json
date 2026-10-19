@@ -14,6 +14,7 @@
   },
   "files": [
     "dist",
+    "ddl",
     "README.md",
     "LICENSE",
     "GPL-3.0.txt"
@@ -21,6 +22,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "clean": "tsc -p tsconfig.json --clean",
+    "ddl": "npx tsx scripts/write-ddl.ts",
     "test": "node --import tsx/esm --test --test-reporter=spec 'src/**/*.test.ts'"
   },
   "dependencies": {
