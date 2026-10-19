@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-**Added:** `QdrantRag.scan` (scroll with a payload filter, the offset is the cursor) / `deleteWhere` (scroll the matching ids, then delete them with `wait=true`) and `QdrantRagProvider.updateCollection` (a 404 from the catalog is `RAG_COLLECTION_NOT_FOUND`). Strict string-equality filters on `userId` / `sessionId` / `namespace`, expired records included, no vectors; a page may be short or empty and only a missing `cursor` ends a scan; `deleteWhere` refuses an empty filter and is exact against a snapshot, not atomic; `ABORTED` on an aborted `signal`; `updateCollection` replaces `attributes`, refuses an empty patch and returns `RAG_COLLECTION_NOT_FOUND` for a missing record. Live check: `npm run test:integration:qdrant-scan`, gated on `QDRANT_TEST_URL`. See the README.
+**Added:** `QdrantRag.scan` (scroll with a payload filter, the offset is the cursor) / `deleteWhere` (scroll the matching ids, then delete them with `wait=true`) and `QdrantRagProvider.updateCollection` (a 404 from the catalog is `RAG_COLLECTION_NOT_FOUND`). Strict string-equality filters on `userId` / `sessionId` / `namespace`, expired records included, no vectors; a page may be short or empty and only a missing `cursor` ends a scan; `deleteWhere` refuses an empty filter and is exact against a snapshot, not atomic; a filter value that is not a string and a `collectionName` that is not a non-empty string are `INVALID_ARGUMENT`; `ABORTED` on an aborted `signal`; `updateCollection` replaces `attributes`, refuses an empty patch and returns `RAG_COLLECTION_NOT_FOUND` for a missing record. Live check: `npm run test:integration:qdrant-scan`, gated on `QDRANT_TEST_URL`. See the README.
 
 ## 30.2.0
 
