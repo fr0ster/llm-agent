@@ -14,7 +14,8 @@
  * - an insert between two pages never makes the scan skip or repeat a record
  *   that existed when the scan started;
  * - the `userId` / `sessionId` / `namespace` filter is strict string equality:
- *   `123` (a number) never matches `'123'`, `'U1'` never matches `'u1'`;
+ *   `123` (a number) never matches `'123'`, `'U1'` never matches `'u1'`, an
+ *   array holding `'u1'` never matches `'u1'`;
  * - `deleteWhere` deletes exactly the matching records (expired included),
  *   returns how many, refuses an empty filter with `INVALID_ARGUMENT`, and
  *   never reaches another collection of the same backend storage;
@@ -316,6 +317,31 @@ export const scanDeleteConformanceCases: readonly ScanDeleteConformanceCase[] =
         assert.deepEqual(await ids({ userId: 'u1 ' }), ['padded']);
         assert.deepEqual(await ids({ userId: 'u' }), []);
         assert.deepEqual(await ids({ userId: 'nobody' }), []);
+      },
+    },
+    {
+      name: 'an array identity value is not matched',
+      async run(makeSubject) {
+        const s = await makeSubject();
+        const store = await s.store();
+        await seed(store, [
+          ['multi', { userId: ['u1', 'u2'], sessionId: ['s1'] }],
+          ['single', { userId: 'u1', sessionId: 's1' }],
+        ]);
+        // An array holding the value is not equal to it (Qdrant's own
+        // `match.value` would match an element).
+        assert.deepEqual(
+          await scanIds(store, { filter: { userId: 'u1' }, pageSize: 1 }),
+          ['single'],
+        );
+        assert.deepEqual(
+          await scanIds(store, { filter: { sessionId: 's1' }, pageSize: 1 }),
+          ['single'],
+        );
+        const res = await store.deleteWhere({ userId: 'u1' });
+        if (!res.ok) throw res.error;
+        assert.equal(res.value.deleted, 1, 'only the string match is deleted');
+        assert.deepEqual(await scanIds(store), ['multi']);
       },
     },
     {
