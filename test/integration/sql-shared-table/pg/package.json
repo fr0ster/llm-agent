@@ -1,0 +1,12 @@
+{
+  "name": "sql-shared-table-pg-integration",
+  "private": true,
+  "type": "module",
+  "description": "Live Postgres check of the shared table layout, on PGlite (Postgres in WASM) with pgvector.",
+  "dependencies": {
+    "@electric-sql/pglite": "^0.5.10",
+    "@electric-sql/pglite-pgvector": "^0.0.11",
+    "@electric-sql/pglite-socket": "^0.2.13",
+    "pg": "^8.23.0"
+  }
+}
