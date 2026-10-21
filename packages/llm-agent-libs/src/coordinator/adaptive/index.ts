@@ -1,4 +1,10 @@
 export {
+  type AdaptiveRunInput,
+  type AdaptiveRunResult,
+  DEFAULT_BUDGET,
+  runAdaptivePlan,
+} from './adaptive-interpreter.js';
+export {
   composeStepInput,
   HISTORY_MESSAGE_LIMIT,
   RESULT_CHAR_LIMIT,

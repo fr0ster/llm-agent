@@ -47,13 +47,17 @@ export {
   type HotReloadableConfig,
 } from './config/config-watcher.js';
 export {
+  type AdaptiveRunInput,
+  type AdaptiveRunResult,
   composeStepInput,
+  DEFAULT_BUDGET,
   fallbackPlan,
   HISTORY_MESSAGE_LIMIT,
   MAX_RUNS_CAP,
   parsePlan,
   parseVerdict,
   RESULT_CHAR_LIMIT,
+  runAdaptivePlan,
   validateSteps,
 } from './coordinator/adaptive/index.js';
 export {
