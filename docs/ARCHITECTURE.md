@@ -1399,6 +1399,7 @@ responsibilities differ by pipeline. The full landscape:
 | **stepper** (cyclic / planned / deep-stepper) | `IStepperPlanner` (`interfaces/stepper-planner.ts`) | `trivialPlanner` (`flow.planner.type: none`), `StaticPlanner` (`static`), `LlmStepperPlanner` (`llm`) | config-driven by `flow.planner.type`: `none` → `trivialPlanner` (single-node plan whose goal is the prompt), `static` → `StaticPlanner` (declarative `flow.plan`), `llm` → `LlmStepperPlanner` | `none`/`static`: **no**; `llm`: yes | no |
 | **DAG** | `IPlanner` (`interfaces/planner.ts`) | `LlmDagPlanner` | `LlmDagPlanner` | yes | via a separate `IErrorStrategy` (`ReplanErrorStrategy`, bounded by `maxReplans`) |
 | **controller** | `IControllerPlanner` (`controller/types.ts`) | `SmartExecutorPlanner`, `WeakExecutorPlanner` (extends Smart, finest-grain prompts) | `SmartExecutorPlanner` (`PlannerKind: smart-executor`) | yes | yes — replans on an executor/step failure |
+| **adaptive coordinator** (code-level `withStepperCoordinator`) | `IAdaptiveController` (`interfaces/adaptive-plan.ts`) | `LlmAdaptiveController` | caller-supplied controller | yes with `LlmAdaptiveController`; one initial planning call per request | only at explicit `revise` steps; check verdicts select planned branches, bounded by step run caps and request budget |
 
 Classification axes:
 
@@ -1411,8 +1412,9 @@ Classification axes:
   **controller** planner replans on a step failure; **DAG** replans through a
   pluggable `IErrorStrategy`; the **coordinator** (linear) replans only if the
   operator selects `ReplanOnErrorPlanning` (the default `OneShotPlanning` never
-  replans); **stepper** does not replan; the built-in **flat** pipeline has no
-  planner, so it never replans.
+  replans); **adaptive coordinator** revises only at planned `revise` steps;
+  **stepper** does not replan; the built-in **flat** pipeline has no planner, so
+  it never replans.
 - **Composition** — the **controller** is the composition component that wires
   planner/executor/reviewer/finalizer into a pipeline, so routing a tool error
   to the planner for a decision is a controller-composition concern, not a

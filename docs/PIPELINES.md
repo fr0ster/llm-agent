@@ -180,6 +180,151 @@ combination to match the task:
   same material per step (additive latency, redundant work). For **result-aware,
   context-accumulating** planning, use the `controller` pipeline instead.
 
+## Adaptive plan coordinator
+
+`AdaptiveCoordinatorHandler` is an optional code-level coordinator in
+`@mcp-abap-adt/llm-agent-libs`. It sits beside the `controller` pipeline; it does
+not replace it. It has its own sequential interpreter and is not built on the
+deprecated DAG/stepper interpreters. It uses the existing
+`withStepperCoordinator` builder slot and shares the DAG handler's `terminalUsage`
+helper. It is not a built-in YAML pipeline name.
+
+One LLM controller plans per request and sizes the plan: its default prompt asks
+for a literal answer for small talk, one work step plus an answer for simple
+requests, and a spec and multiple steps when useful for complex/declarative tasks.
+Checks, reactions to verdicts, revisions and questions are steps of that plan.
+`LlmAdaptiveController` takes an `ILlm` instance; it selects no model itself.
+Planning makes one LLM call; self-checks, revisions and stop reports make additional
+calls when reached.
+
+### Plan and execution
+
+An `AdaptivePlan` contains `steps`, `createdAt` and an optional `ITaskSpec` (`spec`).
+The handler sets `spec.raw` to the current request. Every step has a unique `id`
+and a `kind`:
+
+| Kind | Fields besides `id` and `kind` | Behaviour |
+|---|---|---|
+| `work` | `goal`, `worker`, optional `context`, `maxRuns` | Runs the named worker. |
+| `check` | `goal`, `worker`, `targets`, `onPass`, `onFail`, optional `onPartial`, `context`, `maxRuns` | Gets a `{ verdict: 'pass' \| 'fail' \| 'partial', reason }` from a worker, or from the controller with `worker: 'self'`, and branches. |
+| `ask` | `question` | Ends the turn with the question. |
+| `revise` | `reason`, optional `maxRuns` | Asks the controller to replace all remaining steps; replacement steps are validated and cannot reuse retained ids. |
+| `answer` | Exactly one of `from` or `text` | Answers with the latest successful result of `from`, or literal `text`. |
+
+Execution is sequential. Only a check can jump: a branch target is `next` (the
+following step), `end` (finish the plan), or an existing step id, including a
+backward jump. `next` and `end` are reserved and cannot be step ids. A partial
+verdict uses `onPartial ?? onFail`. The verdict reason is passed to the worker
+at the branch destination. Ending without an answer produces a stop report.
+
+The parser accepts integer `maxRuns` values from 1 through `MAX_RUNS_CAP` (5)
+for work, check and revise. Defaults are 1 for work/revise and 3 for check;
+ask/answer run once and have no `maxRuns` field. A repeated work step needs an
+explicit allowance. Exceeding a step's run limit stops execution with a report.
+An unparsable worker verdict counts as failure. A failed work step continues
+only if a later check lists it in `targets`; otherwise it stops with a report.
+
+Work/check steps can select a `context` object:
+
+| Field | Meaning |
+|---|---|
+| `spec?: boolean` | Include the rendered spec by default; `false` omits it. |
+| `history?: 'none' \| 'last-turn' \| 'all'` | `none` passes no messages; `last-turn` passes the last user message and a following assistant message if both exist; `all` (default) passes the last 20 messages. |
+| `results?: string[]` | Include selected latest results, in plan order. Checks also include their targets, deduplicated. Each output is limited to 8000 characters with an omission note. |
+| `note?: string` | Append a step-specific instruction. |
+
+The request and step goal always reach a worker. Truncated `all` history adds
+an omission note to the task. `worker: 'self'` checks receive the request, spec,
+check step and latest target records directly through `controller.check`, rather
+than the composed worker task/history.
+
+The default request budget is `{ maxSteps: 20, maxRevisions: 3,
+maxDurationMs: 300000 }`; override individual fields with `budget` in the handler
+dependencies. Step/time limits are checked before each step, so the duration
+limit does not interrupt an in-flight call. A stop calls `controller.report`;
+if reporting fails, deterministic text lists the stop reason and step records.
+
+If planning throws (including an invalid response parsed by
+`LlmAdaptiveController`), the handler logs `adaptive_plan_fallback` and uses a
+one-work-step fallback plan: `exec` runs the request with `history: 'all'`, then
+`answer` reads `exec`. The default fallback worker is `executor`, configurable
+with `fallbackWorker`; that worker must be registered. An `AbortError` from
+planning is propagated instead of falling back.
+
+### History and run records
+
+The handler removes a trailing user message equal to the current request from
+`ctx.history` before planning or composing worker input. Selected messages reach
+workers through optional `ISubAgentInput.history`. `SmartAgentSubAgent` passes
+non-empty history to `agent.process` as those messages followed by the current
+user prompt; with empty/no history it keeps the string-prompt call.
+
+A `RunRecord` holds `runId`, request, final plan, step records, outcome, optional
+stop reason and `finishedAt`. Each `StepRecord` holds step id/kind, run number,
+status, output, optional verdict/error and duration. Outcomes are `answered`,
+`asked`, `stopped` and `awaiting-external`.
+
+Supply `IRunRecordStore` (`load(sessionId)`, `save(sessionId, record)`) and a
+session id to persist runs. `InMemoryRunRecordStore` keeps only the latest record
+per session in a process-local map. The handler loads it as `previousRun` for the
+next planning call and saves the result before finalization, including questions
+and pending external calls. Store errors are logged as
+`adaptive_record_load_failed` / `adaptive_record_save_failed` and do not fail the
+request. This is context for a fresh plan, not automatic cursor resumption.
+`LlmAdaptiveController` includes the previous request, plan, outcome, stop reason
+and records (outputs capped at 500 characters); planning history is capped at
+20 messages and 1000 characters per message.
+
+### Streaming, finalization and external tools
+
+The interpreter forwards content only from a worker named by an answer's `from`
+in the current plan, and only on that worker step's first run. The handler forwards
+it live when there is no finalizer or when `finalizer.streamsInterpreterContent`
+is true. A re-run does not stream again. `ephemeral: true` content keeps its flag
+and does not count toward the streamed final answer; non-streaming accumulation
+also excludes it.
+
+Progress chunks use `LlmStreamChunk.status` (`StepStatus`): `stepId`, `kind`,
+`state` (`started`, `done`, `failed`), optional `goal` and check `verdict`. They
+carry `content: ''`, so they add no text to non-streaming results. An ordinary
+failing verdict can have state `done`; `failed` describes a failed step execution.
+
+Only an `answered` outcome invokes the optional finalizer, with request as
+`prompt`, `spec.objective ?? request` as `objective`, `interpreterOutput` and an
+execution trace of `{ nodeId, goal, output }`. An opted-in finalizer receives
+`interpreterContentStreamed`: true only when the answer source ran once and its
+non-ephemeral streamed text ends with the complete trimmed, non-empty answer
+(trailing stream whitespace ignored). It may skip re-emission only then; false
+requires emitting the final text even if earlier partial text was visible.
+Finalizers must emit content through `onPartial`; this handler does not emit
+`FinalizerResult.output`. Without a finalizer it emits the answer unless already
+fully streamed. Questions and stop reports bypass the finalizer.
+
+Workers receive `externalTools` and `externalResults`. A worker returning
+`status: 'awaiting-external'` ends the run, saves its record when configured,
+surfaces pending calls as indexed `toolCalls` with JSON-stringified arguments,
+and ends with `finishReason: 'tool_calls'`, bypassing the finalizer. Other outcomes
+end with `finishReason: 'stop'`; terminal chunks include usage when available.
+
+### Embedding
+
+Provide an `ILlm`, a configured builder, named `ISubAgent` workers and an optional
+`IFinalizer`. For example, with an `executor` registered in `workers`:
+
+```ts
+import {
+  AdaptiveCoordinatorHandler,
+  InMemoryRunRecordStore,
+  LlmAdaptiveController,
+} from '@mcp-abap-adt/llm-agent-libs';
+
+const runRecords = new InMemoryRunRecordStore();
+const handle = await builder.withStepperCoordinator(new AdaptiveCoordinatorHandler({
+  controller: new LlmAdaptiveController(llm), workers, finalizer, runRecords,
+})).build();
+// Supply the same sessionId on subsequent requests to load previousRun.
+```
+
 ## Adding a custom pipeline (plugin)
 
 A pipeline is an `IPipelinePlugin` (from `@mcp-abap-adt/llm-agent`): it names itself and builds

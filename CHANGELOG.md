@@ -9,6 +9,11 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Added
+
+- **`llm-agent` / `llm-agent-libs`**: adaptive plan coordinator. One LLM controller (`LlmAdaptiveController`) writes a plan per request and sizes it to the request: work, check (with a branch per verdict), ask, revise and answer steps, each with a run cap, executed sequentially by `runAdaptivePlan` under a request budget. `AdaptiveCoordinatorHandler` plugs into `builder.withStepperCoordinator(...)`; it falls back to a one-work-step plan when planning fails, keeps run records (`IRunRecordStore`, `InMemoryRunRecordStore`) so the next turn's plan sees the previous run, streams the answer source live, emits progress as `LlmStreamChunk.status`, and surfaces external tool calls. Sits beside the `controller` pipeline; not built on the deprecated `dag`/`stepper`.
+- **`llm-agent` / `llm-agent-libs`**: optional `ISubAgentInput.history`; `SmartAgentSubAgent` sends it to the wrapped agent before the task. Without it, behaviour is unchanged.
+
 ## [30.4.0] — 2026-10-21
 
 ### Added
