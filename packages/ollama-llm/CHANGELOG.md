@@ -1,5 +1,9 @@
 # @mcp-abap-adt/ollama-llm
 
+## 30.4.0
+
+Lockstep release with the 30.4.0 line: a DAG finalizer can stream the interpreter's content live (`IFinalizer.streamsInterpreterContent`, `FinalizerInput.interpreterContentStreamed`) — changes in `llm-agent` and `llm-agent-libs`; other packages are unchanged. See the root CHANGELOG.
+
 ## 30.3.1
 
 Lockstep release with the 30.3.1 line: `pg-vector-rag` no longer crashes the process on an idle-client pool error. No change in this package — see the root CHANGELOG.

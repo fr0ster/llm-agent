@@ -1,5 +1,9 @@
 # @mcp-abap-adt/pg-vector-rag
 
+## 30.4.0
+
+Lockstep release with the 30.4.0 line: a DAG finalizer can stream the interpreter's content live (`IFinalizer.streamsInterpreterContent`, `FinalizerInput.interpreterContentStreamed`) — changes in `llm-agent` and `llm-agent-libs`; other packages are unchanged. See the root CHANGELOG.
+
 ## 30.3.1
 
 **Fixed:** an idle-client error on the `pg` pool (database restart, cut connection) no longer crashes the process: every pool now has an `'error'` listener that never throws, pg removes the broken client, and the next query may reconnect and succeed or fail through its Result. New optional `onPoolError` in `PgVectorRagConfig` to observe it (default: swallow).
