@@ -46,6 +46,7 @@ export {
   type ConfigWatcherOptions,
   type HotReloadableConfig,
 } from './config/config-watcher.js';
+export { InMemoryRunRecordStore } from './coordinator/adaptive/in-memory-run-record-store.js';
 export {
   ADAPTIVE_CONTROLLER_SYSTEM,
   type AdaptiveRunInput,
@@ -144,6 +145,10 @@ export {
   WindowContextStrategy,
   type WindowContextStrategyOptions,
 } from './pipeline/context/tool-loop-context/index.js';
+export {
+  type AdaptiveCoordinatorDeps,
+  AdaptiveCoordinatorHandler,
+} from './pipeline/handlers/adaptive-coordinator.js';
 export { normalizeHeartbeatMs } from './pipeline/handlers/normalize-heartbeat-ms.js';
 // ---------------------------------------------------------------------------
 // Pipeline
