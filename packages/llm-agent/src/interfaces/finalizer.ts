@@ -36,7 +36,10 @@ export interface IFinalizer {
   readonly name: string;
   readonly model?: string;
   /** When true, the DAG coordinator forwards interpreter content deltas to the
-   *  client live for single-node plans only, as the plain tool-loop does. The
+   *  client live only for content of the plan's single node, as the plain tool-loop
+   *  does. If the interpreter replaces that node with a sub-plan, the sub-plan's
+   *  content is not forwarded and the finalizer receives false; the failed
+   *  node's earlier text stays visible. Content without a node ID is not forwarded. The
    *  finalizer may skip re-emission only when interpreterContentStreamed is true:
    *  the streamed text ends with the complete interpreter output. Multi-node
    *  plans do not forward content live and receive false. The finalizer may emit

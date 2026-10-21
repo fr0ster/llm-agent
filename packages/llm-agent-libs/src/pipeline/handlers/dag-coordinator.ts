@@ -307,18 +307,26 @@ export class DagCoordinatorHandler implements IStageHandler {
 
         // #166: by default only the finalizer yields client-facing content,
         // avoiding duplication of interpreter output and finalizer re-emission.
-        // A finalizer can opt into live content for single-node plans. Only a
+        // A finalizer can opt into live content from the original single node.
+        // Spliced sub-plan content is not forwarded. Only a
         // complete output suffix permits skipping re-emission. All progress goes
         // to the session log; non-content events are never yielded to the client here.
         const streamsInterpreterContent =
           this.finalizer.streamsInterpreterContent === true;
         const forwardInterpreterContent =
           streamsInterpreterContent && plan.nodes.length === 1;
+        const forwardNodeId = forwardInterpreterContent
+          ? plan.nodes[0].id
+          : undefined;
         let forwardedText = '';
         const interpreterOnPartial: OnPartial = (chunk) => {
           if (
             forwardInterpreterContent &&
             chunk.kind === 'content' &&
+            // DagPlanInterpreter assigns c.nodeId ?? n.id; missing IDs from
+            // other interpreters cannot establish ownership and are not forwarded.
+            chunk.nodeId !== undefined &&
+            chunk.nodeId === forwardNodeId &&
             chunk.delta.length > 0
           ) {
             ctx.yield({

@@ -10,6 +10,7 @@ import type {
   LlmStreamChunk,
   StreamChunk,
 } from '@mcp-abap-adt/llm-agent';
+import { SmartAgent } from '../../../agent.js';
 import { DagPlanInterpreter } from '../../../coordinator/dag/dag-plan-interpreter.js';
 import { SessionRequestLogger } from '../../../logger/session-request-logger.js';
 import { pipelineToStream } from '../../pipeline-to-stream.js';
@@ -27,6 +28,18 @@ for (const scenario of [
     deltas: ['Hel'],
     flag: false,
     content: 'HelHelloNOTICE',
+  },
+  {
+    name: 'missing node ID',
+    deltas: ['Hello'],
+    flag: false,
+    content: 'HelloNOTICE',
+  },
+  {
+    name: 'other node ID',
+    deltas: ['Hello'],
+    flag: false,
+    content: 'HelloNOTICE',
   },
   { name: 'no content', deltas: [], flag: false, content: 'HelloNOTICE' },
   {
@@ -126,11 +139,24 @@ for (const scenario of [
               ]
             : scenario.deltas;
           for (const delta of deltas) {
-            ctx.onPartial?.({ kind: 'content', nodeId: 'a', delta });
+            ctx.onPartial?.({
+              kind: 'content',
+              nodeId:
+                scenario.name === 'missing node ID'
+                  ? undefined
+                  : scenario.name === 'other node ID'
+                    ? 'other'
+                    : 'a',
+              delta,
+            });
           }
           assert.deepEqual(
             live,
-            currentPlan.nodes.length === 1 ? [...before, ...deltas] : before,
+            currentPlan.nodes.length === 1 &&
+              scenario.name !== 'missing node ID' &&
+              scenario.name !== 'other node ID'
+              ? [...before, ...deltas]
+              : before,
           );
           return {
             ok: !failed,
@@ -434,3 +460,108 @@ test('#166: the answer reaches the client once (finalizer only); interpreter nod
   const stop = yielded.find((y) => y.finishReason === 'stop');
   assert.ok(stop, 'final stop yield must be present');
 });
+
+for (const replan of [false, true]) {
+  test(`opt-in Agent.process accumulation and terminal usage: replan=${replan}`, async () => {
+    const logger = new SessionRequestLogger();
+    logger.startRequest('opt-in');
+    const chunks: LlmStreamChunk[] = [];
+    const worker: ISubAgent = {
+      name: 'w',
+      description: 'worker',
+      async run(input) {
+        if (input.task.includes('original') && replan) {
+          input.onPartial?.({ kind: 'content', delta: 'FAILED ' });
+          throw new Error('replace original');
+        }
+        const output = input.task.startsWith('Task: research')
+          ? 'INTERNAL RESEARCH'
+          : 'ANSWER';
+        input.onPartial?.({ kind: 'content', delta: output });
+        return { output };
+      },
+    };
+    const handler = new DagCoordinatorHandler({
+      planner: {
+        name: 'p',
+        async plan() {
+          return {
+            plan: {
+              objective: 'o',
+              nodes: [{ id: 'a', goal: 'original' }],
+              createdAt: 0,
+            },
+          };
+        },
+      },
+      interpreter: new DagPlanInterpreter(),
+      workers: new Map([['w', worker]]),
+      errorStrategy: {
+        name: 'replan',
+        async onNodeFailure() {
+          return {
+            action: 'replan',
+            subPlan: {
+              objective: 'recover',
+              nodes: [
+                { id: 'research', goal: 'research' },
+                { id: 'answer', goal: 'answer', dependsOn: ['research'] },
+              ],
+              createdAt: 0,
+            },
+          };
+        },
+      },
+      finalizer: {
+        name: 'notice',
+        streamsInterpreterContent: true,
+        async finalize(input) {
+          assert.equal(input.interpreterOutput, 'ANSWER');
+          assert.equal(input.interpreterContentStreamed, !replan);
+          const output = `${input.interpreterContentStreamed ? '' : input.interpreterOutput}NOTICE`;
+          input.onPartial?.({ kind: 'content', delta: output });
+          return {
+            output,
+            usage: { promptTokens: 2, completionTokens: 3, totalTokens: 5 },
+          };
+        },
+      },
+    });
+    const agent: SmartAgent = Object.create(SmartAgent.prototype);
+    agent.streamProcess = async function* () {
+      const handled = await handler.execute(
+        {
+          inputText: 'do',
+          sessionId: 's',
+          history: [],
+          requestLogger: logger,
+          options: { trace: { traceId: 'opt-in' } },
+          yield(chunk) {
+            assert.equal(chunk.ok, true);
+            if (chunk.ok) chunks.push(chunk.value);
+          },
+        } as Parameters<DagCoordinatorHandler['execute']>[0],
+        {},
+        {} as never,
+      );
+      assert.equal(handled, true);
+      for (const value of chunks) yield { ok: true, value };
+    };
+    const response = await agent.process('do');
+    assert.equal(response.ok, true);
+    if (!response.ok) return;
+    assert.equal(
+      response.value.content,
+      `${replan ? 'FAILED ' : ''}ANSWERNOTICE`,
+    );
+    assert.ok(
+      !chunks.some((chunk) => chunk.content?.includes('INTERNAL RESEARCH')),
+    );
+    if (replan)
+      assert.ok(chunks.some((chunk) => chunk.content === 'ANSWERNOTICE'));
+    assert.equal(chunks.filter((chunk) => chunk.usage).length, 1);
+    assert.equal(chunks.at(-1)?.finishReason, 'stop');
+    assert.equal(chunks.at(-1)?.usage?.totalTokens, 5);
+    assert.equal(response.value.usage?.totalTokens, 5);
+  });
+}
