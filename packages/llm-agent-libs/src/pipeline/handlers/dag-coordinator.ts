@@ -307,15 +307,17 @@ export class DagCoordinatorHandler implements IStageHandler {
 
         // #166: by default only the finalizer yields client-facing content,
         // avoiding duplication of interpreter output and finalizer re-emission.
-        // A finalizer can opt into live interpreter content and must then avoid
-        // re-emitting it. All interpreter progress still goes to the session log;
-        // non-content events are never yielded to the client here.
+        // A finalizer can opt into live content for single-node plans. Only a
+        // complete output suffix permits skipping re-emission. All progress goes
+        // to the session log; non-content events are never yielded to the client here.
         const streamsInterpreterContent =
           this.finalizer.streamsInterpreterContent === true;
-        let interpreterContentStreamed = false;
+        const forwardInterpreterContent =
+          streamsInterpreterContent && plan.nodes.length === 1;
+        let forwardedText = '';
         const interpreterOnPartial: OnPartial = (chunk) => {
           if (
-            streamsInterpreterContent &&
+            forwardInterpreterContent &&
             chunk.kind === 'content' &&
             chunk.delta.length > 0
           ) {
@@ -326,7 +328,7 @@ export class DagCoordinatorHandler implements IStageHandler {
                 ...(chunk.ephemeral ? { ephemeral: true } : {}),
               },
             });
-            if (!chunk.ephemeral) interpreterContentStreamed = true;
+            if (!chunk.ephemeral) forwardedText += chunk.delta;
           }
           ctx.options?.sessionLogger?.logStep('dag_stream', chunk);
         };
@@ -365,6 +367,10 @@ export class DagCoordinatorHandler implements IStageHandler {
                 );
           return false;
         }
+
+        const interpreterContentStreamed =
+          result.output.trim().length > 0 &&
+          forwardedText.trimEnd().endsWith(result.output.trim());
 
         if (result.ok) {
           // #171 (D2): no-finalizer branch. If the run settled with pending

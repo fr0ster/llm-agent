@@ -11,7 +11,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Added
 
-- **`llm-agent` / `llm-agent-libs`**: a DAG finalizer can stream the executor's answer live. `IFinalizer.streamsInterpreterContent` makes the coordinator forward interpreter content deltas to the client; `FinalizerInput.interpreterContentStreamed` tells the finalizer not to re-emit them. Default unchanged.
+- **`llm-agent` / `llm-agent-libs`**: a DAG finalizer can opt in to forward the interpreter's content deltas live (single-node plans). `IFinalizer.streamsInterpreterContent` enables forwarding; `FinalizerInput.interpreterContentStreamed` is true only when the streamed text ends with the full interpreter output, allowing the finalizer to skip re-emission. Default unchanged.
 
 ## [30.3.1] — 2026-10-19
 

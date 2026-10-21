@@ -7,11 +7,221 @@ import type {
   InterpretResult,
   IPlanner,
   ISubAgent,
+  LlmStreamChunk,
   StreamChunk,
 } from '@mcp-abap-adt/llm-agent';
 import { DagPlanInterpreter } from '../../../coordinator/dag/dag-plan-interpreter.js';
 import { SessionRequestLogger } from '../../../logger/session-request-logger.js';
+import { pipelineToStream } from '../../pipeline-to-stream.js';
 import { DagCoordinatorHandler } from '../dag-coordinator.js';
+
+for (const scenario of [
+  {
+    name: 'full answer',
+    deltas: ['Hel', 'lo'],
+    flag: true,
+    content: 'HelloNOTICE',
+  },
+  {
+    name: 'partial answer',
+    deltas: ['Hel'],
+    flag: false,
+    content: 'HelHelloNOTICE',
+  },
+  { name: 'no content', deltas: [], flag: false, content: 'HelloNOTICE' },
+  {
+    name: 'earlier tool-loop text',
+    deltas: ['Research', 'Hello  '],
+    flag: true,
+    content: 'ResearchHello  NOTICE',
+  },
+  {
+    name: 'empty output',
+    deltas: ['Research'],
+    output: '  ',
+    flag: false,
+    content: 'Research  NOTICE',
+  },
+  {
+    name: 'two nodes',
+    deltas: ['Research'],
+    multi: true,
+    output: 'Answer',
+    flag: false,
+    content: 'AnswerNOTICE',
+  },
+  {
+    name: 'revised attempt',
+    deltas: ['Hello'],
+    revise: true,
+    flag: true,
+    content: 'FailedHelloNOTICE',
+  },
+  {
+    name: 'revised partial attempt',
+    deltas: ['Hel'],
+    revise: true,
+    flag: false,
+    content: 'FailedHelloHelHelloNOTICE',
+  },
+  {
+    name: 'revised silent attempt',
+    deltas: [],
+    revise: true,
+    flag: false,
+    content: 'FailedHelloHelloNOTICE',
+  },
+  {
+    name: 'revised multi-node attempt',
+    deltas: ['Research'],
+    revise: true,
+    multi: true,
+    output: 'Answer',
+    flag: false,
+    content: 'FailedAnswerNOTICE',
+  },
+  {
+    name: 'pending external calls',
+    deltas: ['Hello'],
+    external: true,
+    flag: true,
+    content: 'Hello',
+  },
+]) {
+  test(`opt-in pipeline stream: ${scenario.name}`, async () => {
+    const plan: DagPlan = {
+      objective: 'o',
+      nodes: [{ id: 'a', goal: 'ga' }],
+      createdAt: 0,
+    };
+    const revisedPlan: DagPlan = {
+      ...plan,
+      nodes: scenario.multi
+        ? [...plan.nodes, { id: 'b', goal: 'gb', dependsOn: ['a'] }]
+        : plan.nodes,
+    };
+    let attempts = 0;
+    let finalized = 0;
+    const live: string[] = [];
+    const handler = new DagCoordinatorHandler({
+      planner: {
+        name: 'p',
+        async plan() {
+          return { plan: scenario.revise ? plan : revisedPlan };
+        },
+      },
+      workers: new Map(),
+      interpreter: {
+        name: 'i',
+        async interpret(currentPlan, ctx) {
+          attempts++;
+          const failed = scenario.revise && attempts === 1;
+          const before = [...live];
+          const deltas = failed
+            ? [
+                scenario.name === 'revised partial attempt' ||
+                scenario.name === 'revised silent attempt'
+                  ? 'FailedHello'
+                  : 'Failed',
+              ]
+            : scenario.deltas;
+          for (const delta of deltas) {
+            ctx.onPartial?.({ kind: 'content', nodeId: 'a', delta });
+          }
+          assert.deepEqual(
+            live,
+            currentPlan.nodes.length === 1 ? [...before, ...deltas] : before,
+          );
+          return {
+            ok: !failed,
+            output: scenario.output ?? 'Hello',
+            error: failed ? 'failed' : undefined,
+            nodeResults: {},
+            executedPlan: currentPlan,
+            executionOrder: [],
+            ...(scenario.external
+              ? {
+                  pendingExternalToolCalls: [
+                    { id: 'ext:1', name: 'lookup', arguments: { query: 'q' } },
+                  ],
+                }
+              : {}),
+          };
+        },
+      },
+      reviewer: {
+        name: 'r',
+        async review() {
+          return { verdict: { pass: true } };
+        },
+        async reviewExecutionFailure() {
+          return { decision: { action: 'revise', revisedPlan } };
+        },
+      },
+      finalizer: {
+        name: 'notice',
+        streamsInterpreterContent: true,
+        async finalize(input) {
+          finalized++;
+          assert.equal(input.interpreterContentStreamed, scenario.flag);
+          const output = `${input.interpreterContentStreamed ? '' : input.interpreterOutput}NOTICE`;
+          input.onPartial?.({ kind: 'content', delta: output });
+          return { output };
+        },
+      },
+    });
+    const chunks: LlmStreamChunk[] = [];
+    const stream = pipelineToStream(
+      {
+        initialize() {},
+        async execute(_input, history, options, yieldChunk) {
+          const handled = await handler.execute(
+            {
+              inputText: 'do',
+              sessionId: 's',
+              history,
+              options,
+              requestLogger: new SessionRequestLogger(),
+              yield(chunk) {
+                if (chunk.ok && chunk.value.content)
+                  live.push(chunk.value.content);
+                yieldChunk(chunk);
+              },
+            } as Parameters<DagCoordinatorHandler['execute']>[0],
+            {},
+            {} as never,
+          );
+          assert.equal(handled, true);
+          return { timing: [] };
+        },
+      },
+      'do',
+      [],
+      undefined,
+    );
+    for await (const chunk of stream) {
+      assert.equal(chunk.ok, true);
+      if (chunk.ok) chunks.push(chunk.value);
+    }
+    assert.equal(
+      chunks
+        .filter((c) => !c.ephemeral)
+        .map((c) => c.content ?? '')
+        .join(''),
+      scenario.content,
+    );
+    assert.equal(finalized, scenario.external ? 0 : 1);
+    assert.equal(
+      chunks.at(-1)?.finishReason,
+      scenario.external ? 'tool_calls' : 'stop',
+    );
+    if (scenario.external) {
+      assert.deepEqual(chunks.find((c) => c.toolCalls)?.toolCalls, [
+        { index: 0, id: 'ext:1', name: 'lookup', arguments: '{"query":"q"}' },
+      ]);
+    }
+  });
+}
 
 for (const mode of [
   'live',

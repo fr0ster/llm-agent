@@ -7,9 +7,11 @@ export interface FinalizerInput {
   objective: string;
   ancestorContext?: ContextPath;
   interpreterOutput: string;
-  /** True when the coordinator already forwarded at least one non-ephemeral
-   *  interpreter content delta to the client for this run. Only possible when
-   *  the finalizer set streamsInterpreterContent. */
+  /** True only when the non-ephemeral streamed text ends with the complete
+   *  interpreter output (trimmed and non-empty; trailing stream whitespace ignored).
+   *  Only possible with streamsInterpreterContent and a single-node plan in the
+   *  current interpretation attempt. False means the finalizer must re-emit the
+   *  output, even if a partial answer was already shown. */
   interpreterContentStreamed?: boolean;
   executionTrace: ReadonlyArray<{
     nodeId: string;
@@ -34,11 +36,16 @@ export interface IFinalizer {
   readonly name: string;
   readonly model?: string;
   /** When true, the DAG coordinator forwards interpreter content deltas to the
-   *  client live, as the plain tool-loop does. The finalizer must not re-emit
-   *  content already streamed; it may emit trailing content (e.g. a notice)
+   *  client live for single-node plans only, as the plain tool-loop does. The
+   *  finalizer may skip re-emission only when interpreterContentStreamed is true:
+   *  the streamed text ends with the complete interpreter output. Multi-node
+   *  plans do not forward content live and receive false. The finalizer may emit
+   *  trailing content (e.g. a notice)
    *  through onPartial. Content is live: when a failed step is revised and the
    *  plan runs again, the client has already seen the failed attempt's text,
-   *  as with a mid-stream retry in the plain tool-loop. */
+   *  as with a mid-stream retry in the plain tool-loop. On a turn ending with
+   *  pending external (client-executed) tool calls, the finalizer does not run:
+   *  content may already have streamed and no trailing notice is added. */
   readonly streamsInterpreterContent?: boolean;
   finalize(input: FinalizerInput): Promise<FinalizerResult>;
 }
