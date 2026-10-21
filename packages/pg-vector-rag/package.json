@@ -1,6 +1,6 @@
 {
   "name": "@mcp-abap-adt/pg-vector-rag",
-  "version": "30.4.0",
+  "version": "30.5.0",
   "description": "PgVectorRag (PostgreSQL + pgvector) and PgVectorRagProvider for @mcp-abap-adt/llm-agent.",
   "type": "module",
   "main": "dist/index.js",
@@ -42,6 +42,6 @@
   },
   "peerDependencies": {
     "@mcp-abap-adt/interfaces-auth": "^2.1.0",
-    "@mcp-abap-adt/llm-agent": "^30.4.0"
+    "@mcp-abap-adt/llm-agent": "^30.5.0"
   }
 }

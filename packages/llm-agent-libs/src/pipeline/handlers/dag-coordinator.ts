@@ -28,7 +28,10 @@ import type { PipelineContext } from '../context.js';
 import type { IStageHandler } from '../stage-handler.js';
 
 /** Canonical terminal-usage object: flat triple + per-model breakdown. */
-function terminalUsage(ctx: PipelineContext, traceId: string | undefined) {
+export function terminalUsage(
+  ctx: PipelineContext,
+  traceId: string | undefined,
+) {
   if (!traceId) return undefined;
   const s = ctx.requestLogger.getSummary(traceId);
   return { ...summaryToUsage(s), models: s.byModel };

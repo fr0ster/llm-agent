@@ -3,6 +3,7 @@
  */
 
 import type { Message } from '../types.js';
+import type { StepStatus } from './adaptive-plan.js';
 import type { IRequestLogger } from './request-logger.js';
 import type { OnPartial } from './streaming.js';
 
@@ -83,6 +84,8 @@ export interface TimingEntry {
 
 export interface LlmStreamChunk {
   content: string;
+  /** Progress event with empty content; ignored by non-streaming accumulation. */
+  status?: StepStatus;
   toolCalls?: StreamToolCall[];
   finishReason?: LlmFinishReason;
   usage?: LlmUsage & {

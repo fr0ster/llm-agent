@@ -1,4 +1,25 @@
 export type { IQueryExpander } from '../rag/query-expander.js';
+export type {
+  AdaptiveBudget,
+  AdaptivePlan,
+  AdaptiveStep,
+  AdaptiveStepKind,
+  AnswerStep,
+  AskStep,
+  BranchTarget,
+  CheckStep,
+  ControllerPlanInput,
+  IAdaptiveController,
+  IRunRecordStore,
+  ReviseStep,
+  RunOutcome,
+  RunRecord,
+  StepContextSpec,
+  StepRecord,
+  StepStatus,
+  Verdict,
+  WorkStep,
+} from './adaptive-plan.js';
 export {
   type AgentCallOptions,
   type BaseAgentLlmBridge,

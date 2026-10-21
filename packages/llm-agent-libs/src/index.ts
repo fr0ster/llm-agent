@@ -46,6 +46,23 @@ export {
   type ConfigWatcherOptions,
   type HotReloadableConfig,
 } from './config/config-watcher.js';
+export { InMemoryRunRecordStore } from './coordinator/adaptive/in-memory-run-record-store.js';
+export {
+  ADAPTIVE_CONTROLLER_SYSTEM,
+  type AdaptiveRunInput,
+  type AdaptiveRunResult,
+  composeStepInput,
+  DEFAULT_BUDGET,
+  fallbackPlan,
+  HISTORY_MESSAGE_LIMIT,
+  LlmAdaptiveController,
+  MAX_RUNS_CAP,
+  parsePlan,
+  parseVerdict,
+  RESULT_CHAR_LIMIT,
+  runAdaptivePlan,
+  validateSteps,
+} from './coordinator/adaptive/index.js';
 export {
   FINALIZER_SYSTEM,
   LlmFinalizer,
@@ -128,6 +145,10 @@ export {
   WindowContextStrategy,
   type WindowContextStrategyOptions,
 } from './pipeline/context/tool-loop-context/index.js';
+export {
+  type AdaptiveCoordinatorDeps,
+  AdaptiveCoordinatorHandler,
+} from './pipeline/handlers/adaptive-coordinator.js';
 export { normalizeHeartbeatMs } from './pipeline/handlers/normalize-heartbeat-ms.js';
 // ---------------------------------------------------------------------------
 // Pipeline

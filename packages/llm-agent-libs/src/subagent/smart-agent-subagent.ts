@@ -27,24 +27,29 @@ export class SmartAgentSubAgent implements ISubAgent {
       input.context && input.context.length > 0
         ? `${input.context}\n\n${input.task}`
         : input.task;
-    const res = await this.agent.process(prompt, {
-      sessionId: input.sessionId,
-      signal: input.signal,
-      trace: input.trace,
-      sessionLogger: input.sessionLogger,
-      onPartial: input.onPartial,
-      // Issue #167: forward the client's external (consumer-executed) tools into
-      // the worker's nested pipeline so it can emit a tool call the client
-      // fulfils, instead of narrating "tool unavailable".
-      ...(input.externalTools && input.externalTools.length > 0
-        ? { externalTools: [...input.externalTools] }
-        : {}),
-      // #171 (review#7): thread the validated extId→result map into the
-      // worker pipeline so a re-surfaced external call resolves from history.
-      ...(input.externalResults
-        ? { externalResults: input.externalResults }
-        : {}),
-    });
+    const res = await this.agent.process(
+      input.history?.length
+        ? [...input.history, { role: 'user', content: prompt }]
+        : prompt,
+      {
+        sessionId: input.sessionId,
+        signal: input.signal,
+        trace: input.trace,
+        sessionLogger: input.sessionLogger,
+        onPartial: input.onPartial,
+        // Issue #167: forward the client's external (consumer-executed) tools into
+        // the worker's nested pipeline so it can emit a tool call the client
+        // fulfils, instead of narrating "tool unavailable".
+        ...(input.externalTools && input.externalTools.length > 0
+          ? { externalTools: [...input.externalTools] }
+          : {}),
+        // #171 (review#7): thread the validated extId→result map into the
+        // worker pipeline so a re-surfaced external call resolves from history.
+        ...(input.externalResults
+          ? { externalResults: input.externalResults }
+          : {}),
+      },
+    );
 
     if (!res.ok) {
       throw res.error;

@@ -1,3 +1,4 @@
+import type { Message } from '../types.js';
 import type { EpicFailTrace } from './coordinator.js';
 import type { OnPartial } from './streaming.js';
 import type { LlmTool, LlmToolCall, LlmUsage } from './types.js';
@@ -18,6 +19,8 @@ export interface SubAgentCapabilities {
 
 export interface ISubAgentInput {
   task: string;
+  /** Conversation before the current request, selected by the coordinator. */
+  history?: Message[];
   /**
    * Assembled context preamble (required when capabilities.contextPolicy === 'required').
    *
