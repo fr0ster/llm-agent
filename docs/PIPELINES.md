@@ -235,14 +235,19 @@ Work/check steps can select a `context` object:
 
 The request and step goal always reach a worker. Truncated `all` history adds
 an omission note to the task. `worker: 'self'` checks receive the request, spec,
-check step and latest target records directly through `controller.check`, rather
-than the composed worker task/history.
+check step and latest target records through `controller.check`, plus the same
+composed `task` and selected `history` as a check worker (including the JSON
+instruction). Selected results outside targets are included; `context.spec: false`
+omits the spec from both the task and the direct spec field. The default controller
+includes the task and history in its check prompt.
 
 The default request budget is `{ maxSteps: 20, maxRevisions: 3,
 maxDurationMs: 300000 }`; override individual fields with `budget` in the handler
 dependencies. Step/time limits are checked before each step, so the duration
 limit does not interrupt an in-flight call. A stop calls `controller.report`;
 if reporting fails, deterministic text lists the stop reason and step records.
+Cancellation during reporting propagates, including when the report resolves after
+the signal aborts; it never produces a successful terminal chunk.
 
 If planning throws (including an invalid response parsed by
 `LlmAdaptiveController`), the handler logs `adaptive_plan_fallback` and uses a
@@ -305,6 +310,18 @@ Workers receive `externalTools` and `externalResults`. A worker returning
 surfaces pending calls as indexed `toolCalls` with JSON-stringified arguments,
 and ends with `finishReason: 'tool_calls'`, bypassing the finalizer. Other outcomes
 end with `finishReason: 'stop'`; terminal chunks include usage when available.
+
+Worker usage accounting matches DAG: workers log their own calls to the shared
+request logger. Returned `ISubAgentResult.usage` is collected by the interpreter
+for inspection but is not logged again by the handler, so workers that do not log
+themselves do not contribute to pipeline totals. Controller plan/check/revise
+parse errors retain response usage: the handler logs it once under planner or
+reviewer even on fallback; the interpreter also collects thrown check/revise
+usage in its result.
+
+For semantic history, `ctx.assistantText` holds the finalizer's returned output
+when finalized, otherwise the answer, question, or stop report. Awaiting external
+calls leave this field untouched, matching DAG.
 
 ### Embedding
 

@@ -135,6 +135,8 @@ export interface IAdaptiveController {
     spec?: ITaskSpec;
     step: CheckStep;
     targets: StepRecord[];
+    task?: string;
+    history?: Message[];
     signal?: AbortSignal;
   }): Promise<{ verdict: Verdict; usage?: LlmUsage }>;
   revise(input: {

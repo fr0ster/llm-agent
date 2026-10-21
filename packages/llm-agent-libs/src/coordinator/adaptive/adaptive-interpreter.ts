@@ -97,9 +97,11 @@ export async function runAdaptivePlan(
         stopReason,
         signal: input.signal,
       });
+      input.signal?.throwIfAborted();
       collect(report.usage);
       output = report.text;
     } catch {
+      input.signal?.throwIfAborted();
       output = [
         `Stopped: ${stopReason}`,
         ...records.map(
@@ -159,11 +161,26 @@ export async function runAdaptivePlan(
     };
 
     if (step.kind === 'work' || step.kind === 'check') {
+      // The composer uses map insertion order: retain current plan order even after jumps.
+      const orderedLatest = new Map(
+        plan.steps.flatMap((candidate) => {
+          const previous = latest.get(candidate.id);
+          return previous ? [[candidate.id, previous] as const] : [];
+        }),
+      );
       if (step.kind === 'check' && step.worker === 'self') {
         try {
           const checked = await input.controller.check({
             request: input.request,
-            spec: plan.spec,
+            spec: step.context?.spec === false ? undefined : plan.spec,
+            ...composeStepInput({
+              request: input.request,
+              spec: plan.spec,
+              step,
+              latest: orderedLatest,
+              history: input.history,
+              checkReason: reason,
+            }),
             step,
             targets: step.targets.flatMap((id) => {
               const target = latest.get(id);
@@ -176,6 +193,7 @@ export async function runAdaptivePlan(
           record.output = JSON.stringify(checked.verdict);
         } catch (error) {
           input.signal?.throwIfAborted();
+          collect((error as { usage?: LlmUsage } | null)?.usage);
           record.verdict = {
             verdict: 'fail',
             reason: `controller check failed: ${message(error)}`,
@@ -198,13 +216,6 @@ export async function runAdaptivePlan(
                   );
               }
             : undefined;
-        // The composer uses map insertion order: retain current plan order even after jumps.
-        const orderedLatest = new Map(
-          plan.steps.flatMap((candidate) => {
-            const previous = latest.get(candidate.id);
-            return previous ? [[candidate.id, previous] as const] : [];
-          }),
-        );
         try {
           const worker = input.workers.get(step.worker);
           if (!worker) throw new Error(`unknown worker ${step.worker}`);
@@ -315,6 +326,7 @@ export async function runAdaptivePlan(
       } catch (error) {
         input.signal?.throwIfAborted();
         record.status = 'failed';
+        collect((error as { usage?: LlmUsage } | null)?.usage);
         record.error = message(error);
         finish();
         return stop(`revise failed: ${record.error}`);

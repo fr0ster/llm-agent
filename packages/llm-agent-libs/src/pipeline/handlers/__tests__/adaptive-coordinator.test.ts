@@ -387,3 +387,227 @@ for (const live of [false, true]) {
     assert.equal(chunks.at(-1)?.finishReason, 'stop');
   });
 }
+
+const tokenUsage = { promptTokens: 10, completionTokens: 5, totalTokens: 15 };
+function regressionContext(signal?: AbortSignal) {
+  const chunks: LlmStreamChunk[] = [];
+  const logged: { component: string; totalTokens: number }[] = [];
+  const ctx = {
+    inputText: 'request',
+    history: [],
+    options: { signal },
+    requestLogger: {
+      logLlmCall(value: (typeof logged)[number]) {
+        logged.push(value);
+      },
+    },
+    yield(chunk: { ok: true; value: LlmStreamChunk }) {
+      chunks.push(chunk.value);
+    },
+  } as unknown as Parameters<AdaptiveCoordinatorHandler['execute']>[0];
+  return { ctx, chunks, logged };
+}
+function regressionController(
+  steps: AdaptivePlan['steps'],
+): IAdaptiveController {
+  return {
+    name: 'test',
+    async plan() {
+      return { plan: { steps, createdAt: 0 } };
+    },
+    async check() {
+      return { verdict: { verdict: 'pass', reason: 'ok' } };
+    },
+    async revise() {
+      return { steps: [] };
+    },
+    async report() {
+      return { text: 'stop report' };
+    },
+  };
+}
+
+test('abort during pending report sets ABORTED without successful terminal chunk', async () => {
+  const abort = new AbortController();
+  const { ctx, chunks } = regressionContext(abort.signal);
+  const controller = regressionController([]);
+  let release!: () => void;
+  let entered!: () => void;
+  const pending = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const reporting = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  controller.report = async () => {
+    entered();
+    await pending;
+    throw new Error('report failed');
+  };
+  const running = new AdaptiveCoordinatorHandler({
+    controller,
+    workers: new Map(),
+  }).execute(ctx, {}, {} as never);
+  await reporting;
+  abort.abort();
+  release();
+  assert.equal(await running, false);
+  assert.equal(ctx.error?.code, 'ABORTED');
+  assert.ok(!chunks.some((chunk) => chunk.finishReason));
+});
+
+for (const method of ['plan', 'check', 'revise'] as const) {
+  test(`${method} parse error usage logged once on fallback`, async () => {
+    const { ctx, chunks, logged } = regressionContext();
+    const steps: AdaptivePlan['steps'] =
+      method === 'check'
+        ? [
+            {
+              id: 'c',
+              kind: 'check',
+              goal: 'check',
+              worker: 'self',
+              targets: [],
+              onPass: 'next',
+              onFail: 'next',
+            },
+            { id: 'a', kind: 'answer', text: 'answer' },
+          ]
+        : [{ id: 'r', kind: 'revise', reason: 'revise' }];
+    const controller = regressionController(steps);
+    const invalid = new LlmAdaptiveController({
+      async chat() {
+        return { ok: true, value: { content: 'invalid', usage: tokenUsage } };
+      },
+      async *streamChat() {
+        yield { ok: true, value: { content: 'unused' } };
+      },
+    });
+    controller[method] = invalid[method].bind(
+      invalid,
+    ) as (typeof controller)[typeof method];
+    const handler = new AdaptiveCoordinatorHandler({
+      controller,
+      workers: new Map([
+        [
+          'executor',
+          {
+            name: 'executor',
+            async run() {
+              return { output: 'fallback answer' };
+            },
+          },
+        ],
+      ]),
+    });
+    assert.equal(await handler.execute(ctx, {}, {} as never), true);
+    assert.equal(logged.length, 1);
+    assert.equal(
+      logged[0]?.component,
+      method === 'check' ? 'reviewer' : 'planner',
+    );
+    assert.equal(logged[0]?.totalTokens, 15);
+    assert.equal(
+      chunks.map((chunk) => chunk.content).join(''),
+      method === 'plan'
+        ? 'fallback answer'
+        : method === 'check'
+          ? 'answer'
+          : 'stop report',
+    );
+  });
+}
+
+for (const selfLogs of [false, true]) {
+  test(`worker usage follows DAG ownership: selfLogs=${selfLogs}`, async () => {
+    const { ctx, logged } = regressionContext();
+    const controller = regressionController([
+      { id: 'w', kind: 'work', goal: 'work', worker: 'executor' },
+      { id: 'a', kind: 'answer', from: 'w' },
+    ]);
+    const handler = new AdaptiveCoordinatorHandler({
+      controller,
+      workers: new Map([
+        [
+          'executor',
+          {
+            name: 'executor',
+            async run() {
+              if (selfLogs)
+                ctx.requestLogger.logLlmCall({
+                  component: 'executor',
+                  model: 'worker',
+                  ...tokenUsage,
+                  durationMs: 0,
+                });
+              return { output: 'answer', usage: tokenUsage };
+            },
+          },
+        ],
+      ]),
+    });
+    assert.equal(await handler.execute(ctx, {}, {} as never), true);
+    assert.equal(logged.length, selfLogs ? 1 : 0);
+  });
+}
+
+for (const mode of [
+  'answer',
+  'ask',
+  'stop',
+  'finalized',
+  'external',
+] as const) {
+  test(`semantic history stores visible text: ${mode}`, async () => {
+    const { ctx } = regressionContext();
+    const steps: AdaptivePlan['steps'] =
+      mode === 'ask'
+        ? [{ id: 'q', kind: 'ask', question: 'question?' }]
+        : mode === 'stop'
+          ? []
+          : mode === 'external'
+            ? [{ id: 'w', kind: 'work', goal: 'work', worker: 'executor' }]
+            : [{ id: 'a', kind: 'answer', text: 'answer' }];
+    const handler = new AdaptiveCoordinatorHandler({
+      controller: regressionController(steps),
+      workers: new Map([
+        [
+          'executor',
+          {
+            name: 'executor',
+            async run() {
+              return {
+                output: 'internal',
+                status: 'awaiting-external' as const,
+              };
+            },
+          },
+        ],
+      ]),
+      ...(mode === 'finalized'
+        ? {
+            finalizer: {
+              name: 'final',
+              async finalize(input) {
+                input.onPartial?.({ kind: 'content', delta: 'final answer' });
+                return { output: 'final answer' };
+              },
+            },
+          }
+        : {}),
+    });
+    assert.equal(await handler.execute(ctx, {}, {} as never), true);
+    assert.equal(
+      ctx.assistantText,
+      mode === 'external'
+        ? undefined
+        : mode === 'finalized'
+          ? 'final answer'
+          : mode === 'ask'
+            ? 'question?'
+            : mode === 'stop'
+              ? 'stop report'
+              : 'answer',
+    );
+  });
+}

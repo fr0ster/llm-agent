@@ -230,3 +230,28 @@ test('custom system prompt is used for planning', async () => {
   );
   assert.equal(calls[0][0][0].content, 'Custom rules');
 });
+
+test('controller parse errors preserve response usage', async () => {
+  const controller = fake('invalid JSON').controller;
+  for (const invoke of [
+    () => controller.plan(input),
+    () => controller.check(checkInput),
+    () => controller.revise(reviseInput),
+  ])
+    await assert.rejects(invoke, (error: Error & { usage?: typeof usage }) => {
+      assert.deepEqual(error.usage, usage);
+      return true;
+    });
+});
+
+test('check prompt includes composed task and history', async () => {
+  const { controller, calls } = fake('{"verdict":"pass","reason":"ok"}');
+  await controller.check({
+    ...checkInput,
+    task: 'selected evidence',
+    history: [{ role: 'user', content: 'prior conversation' }],
+  });
+  const prompt = JSON.stringify(calls[0][0]);
+  assert.ok(prompt.includes('selected evidence'));
+  assert.ok(prompt.includes('prior conversation'));
+});

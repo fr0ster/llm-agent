@@ -464,3 +464,82 @@ test('work default run cap is one', async () => {
     'step a exceeded 1 runs',
   );
 });
+
+for (const rejects of [false, true]) {
+  test(`abort while report pending rejects: rejects=${rejects}`, async () => {
+    const { input, controller } = setup([work]);
+    const abort = new AbortController();
+    input.signal = abort.signal;
+    let release!: () => void;
+    let entered!: () => void;
+    const pending = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const reporting = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    controller.report = async () => {
+      entered();
+      await pending;
+      if (rejects) throw new Error('report failed');
+      return { text: 'report' };
+    };
+    const running = runAdaptivePlan(input);
+    await reporting;
+    abort.abort();
+    release();
+    await assert.rejects(
+      running,
+      (error: Error) => error.name === 'AbortError',
+    );
+  });
+}
+
+test('self check receives selected results outside targets and selected history', async () => {
+  const { input, controller } = setup(
+    [
+      work,
+      { ...work, id: 'b' },
+      {
+        ...check,
+        worker: 'self',
+        context: { results: ['b'], spec: false, history: 'none' },
+      },
+      answer,
+    ],
+    ['target', 'selected evidence'],
+  );
+  input.plan.spec = { objective: 'hidden spec', raw: 'request' };
+  controller.check = async (args) => {
+    assert.ok(
+      args.task?.includes('Result of b (done):\n---\nselected evidence'),
+    );
+    assert.ok(!args.task?.includes('hidden spec'));
+    assert.equal(args.spec, undefined);
+    assert.deepEqual(args.history, []);
+    return { verdict: { verdict: 'pass', reason: 'ok' } };
+  };
+  const result = await runAdaptivePlan(input);
+  assert.equal(result.records[2]?.verdict?.verdict, 'pass');
+});
+
+for (const method of ['check', 'revise'] as const) {
+  test(`${method} thrown usage is collected`, async () => {
+    const { input, controller } = setup(
+      method === 'check'
+        ? [
+            { ...check, worker: 'self', targets: [], onFail: 'z' },
+            { id: 'z', kind: 'answer', text: 'done' },
+          ]
+        : [revise],
+    );
+    controller[method] = async () => {
+      throw Object.assign(new Error('parse'), { usage });
+    };
+    const result = await runAdaptivePlan(input);
+    assert.equal(
+      result.usage.filter((item) => item === usage).length,
+      method === 'revise' ? 2 : 1,
+    );
+  });
+}

@@ -88,6 +88,11 @@ export class AdaptiveCoordinatorHandler implements IStageHandler {
         logUsage(planned.usage, 'planner', controller.model);
       } catch (error) {
         if (error instanceof Error && error.name === 'AbortError') throw error;
+        logUsage(
+          (error as { usage?: LlmUsage } | null)?.usage,
+          'planner',
+          controller.model,
+        );
         log('adaptive_plan_fallback', { message: message(error) });
         plan = fallbackPlan(request, this.deps.fallbackWorker ?? 'executor');
       }
@@ -107,14 +112,32 @@ export class AdaptiveCoordinatorHandler implements IStageHandler {
           model: controller.model,
           plan: (input) => controller.plan(input),
           check: async (input) => {
-            const value = await controller.check(input);
-            logUsage(value.usage, 'reviewer', controller.model);
-            return value;
+            try {
+              const value = await controller.check(input);
+              logUsage(value.usage, 'reviewer', controller.model);
+              return value;
+            } catch (error) {
+              logUsage(
+                (error as { usage?: LlmUsage } | null)?.usage,
+                'reviewer',
+                controller.model,
+              );
+              throw error;
+            }
           },
           revise: async (input) => {
-            const value = await controller.revise(input);
-            logUsage(value.usage, 'planner', controller.model);
-            return value;
+            try {
+              const value = await controller.revise(input);
+              logUsage(value.usage, 'planner', controller.model);
+              return value;
+            } catch (error) {
+              logUsage(
+                (error as { usage?: LlmUsage } | null)?.usage,
+                'planner',
+                controller.model,
+              );
+              throw error;
+            }
           },
           report: async (input) => {
             const value = await controller.report(input);
@@ -142,6 +165,7 @@ export class AdaptiveCoordinatorHandler implements IStageHandler {
             });
         },
       });
+      // Like DAG, workers own requestLogger accounting; never log returned worker usage here.
       log('adaptive_run', {
         outcome: result.outcome,
         stopReason: result.stopReason,
@@ -162,6 +186,8 @@ export class AdaptiveCoordinatorHandler implements IStageHandler {
           log('adaptive_record_save_failed', { message: message(error) });
         }
       }
+      if (result.outcome !== 'awaiting-external')
+        ctx.assistantText = result.output;
       if (result.outcome === 'awaiting-external') {
         ctx.yield({
           ok: true,
@@ -207,6 +233,7 @@ export class AdaptiveCoordinatorHandler implements IStageHandler {
               });
           },
         });
+        ctx.assistantText = finalized.output;
         logUsage(finalized.usage, 'finalizer', finalizer.model);
       } else if (result.outcome !== 'answered' || !result.answerStreamed) {
         ctx.yield({ ok: true, value: { content: result.output } });
@@ -225,7 +252,8 @@ export class AdaptiveCoordinatorHandler implements IStageHandler {
     } catch (error) {
       ctx.error = new OrchestratorError(
         message(error),
-        error instanceof Error && error.name === 'AbortError'
+        ctx.options?.signal?.aborted ||
+          (error instanceof Error && error.name === 'AbortError')
           ? 'ABORTED'
           : 'COORDINATOR_STEP_FAILED',
       );

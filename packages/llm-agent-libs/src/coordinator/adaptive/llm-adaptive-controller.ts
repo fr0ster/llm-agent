@@ -3,6 +3,7 @@ import type {
   ControllerPlanInput,
   IAdaptiveController,
   ILlm,
+  LlmUsage,
 } from '@mcp-abap-adt/llm-agent';
 import { HISTORY_MESSAGE_LIMIT } from './compose-step-input.js';
 import { lastObject, parsePlan, parseVerdict } from './parse-plan.js';
@@ -41,6 +42,11 @@ Simple one-work-step example (executor must be registered):
 {"steps":[{"id":"exec","kind":"work","goal":"Explain this object","worker":"executor"},{"id":"answer","kind":"answer","from":"exec"}]}
 Create/check/fix/recheck example (executor must be registered):
 {"spec":{"objective":"Create a correct draft"},"steps":[{"id":"create","kind":"work","goal":"Create draft","worker":"executor"},{"id":"check","kind":"check","goal":"Review draft","worker":"self","targets":["create"],"onPass":"answer","onFail":"fix"},{"id":"fix","kind":"work","goal":"Fix draft using review","worker":"executor","context":{"results":["create","check"]},"maxRuns":3},{"id":"recheck","kind":"check","goal":"Review fixed draft","worker":"self","targets":["fix"],"onPass":"fixedAnswer","onFail":"fix","maxRuns":3},{"id":"fixedAnswer","kind":"answer","from":"fix"},{"id":"answer","kind":"answer","from":"create"}]}`;
+
+function withUsage(error: Error, usage?: LlmUsage): Error {
+  if (usage) (error as Error & { usage?: LlmUsage }).usage = usage;
+  return error;
+}
 
 /** An ILlm-backed planner and reviewer; execution and fallback stay with callers. */
 export class LlmAdaptiveController implements IAdaptiveController {
@@ -102,7 +108,7 @@ export class LlmAdaptiveController implements IAdaptiveController {
     const parsed = parsePlan(response.content, {
       workers: input.workers.map((worker) => worker.name),
     });
-    if (!parsed.ok) throw new Error(parsed.error);
+    if (!parsed.ok) throw withUsage(new Error(parsed.error), response.usage);
     return { plan: parsed.value, usage: response.usage };
   }
 
@@ -114,7 +120,8 @@ export class LlmAdaptiveController implements IAdaptiveController {
       signal,
     );
     const verdict = parseVerdict(response.content);
-    if (!verdict) throw new Error('Unparsable verdict');
+    if (!verdict)
+      throw withUsage(new Error('Unparsable verdict'), response.usage);
     return { verdict, usage: response.usage };
   }
 
@@ -125,14 +132,25 @@ export class LlmAdaptiveController implements IAdaptiveController {
       JSON.stringify(context),
       signal,
     );
-    const parsed: unknown = lastObject(response.content);
+    let parsed: unknown;
+    try {
+      parsed = lastObject(response.content);
+    } catch (error) {
+      throw withUsage(
+        error instanceof Error ? error : new Error(String(error)),
+        response.usage,
+      );
+    }
     if (
       typeof parsed !== 'object' ||
       parsed === null ||
       !('steps' in parsed) ||
       !Array.isArray(parsed.steps)
     ) {
-      throw new Error('Revision requires a steps array');
+      throw withUsage(
+        new Error('Revision requires a steps array'),
+        response.usage,
+      );
     }
     // The interpreter validates workers, references, and taken ids before execution.
     return { steps: parsed.steps as AdaptiveStep[], usage: response.usage };
