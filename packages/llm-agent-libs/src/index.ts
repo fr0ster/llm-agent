@@ -47,12 +47,14 @@ export {
   type HotReloadableConfig,
 } from './config/config-watcher.js';
 export {
+  ADAPTIVE_CONTROLLER_SYSTEM,
   type AdaptiveRunInput,
   type AdaptiveRunResult,
   composeStepInput,
   DEFAULT_BUDGET,
   fallbackPlan,
   HISTORY_MESSAGE_LIMIT,
+  LlmAdaptiveController,
   MAX_RUNS_CAP,
   parsePlan,
   parseVerdict,

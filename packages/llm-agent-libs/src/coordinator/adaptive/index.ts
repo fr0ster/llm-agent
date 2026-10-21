@@ -10,6 +10,10 @@ export {
   RESULT_CHAR_LIMIT,
 } from './compose-step-input.js';
 export {
+  ADAPTIVE_CONTROLLER_SYSTEM,
+  LlmAdaptiveController,
+} from './llm-adaptive-controller.js';
+export {
   fallbackPlan,
   MAX_RUNS_CAP,
   parsePlan,

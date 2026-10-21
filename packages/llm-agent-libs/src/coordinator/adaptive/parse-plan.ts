@@ -59,8 +59,9 @@ const specSchema = z.object({
   raw: z.string().default(''),
 });
 
-// Scan balanced top-level objects, ignoring braces and escaped quotes in strings.
-function lastObject(raw: string): unknown {
+/** Parse the last balanced top-level JSON object in `raw`, ignoring braces
+ *  and escaped quotes inside strings. Throws when none is complete. */
+export function lastObject(raw: string): unknown {
   let start = -1;
   let depth = 0;
   let quoted = false;
