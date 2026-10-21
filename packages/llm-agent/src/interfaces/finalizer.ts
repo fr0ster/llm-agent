@@ -7,6 +7,12 @@ export interface FinalizerInput {
   objective: string;
   ancestorContext?: ContextPath;
   interpreterOutput: string;
+  /** True only when the non-ephemeral streamed text ends with the complete
+   *  interpreter output (trimmed and non-empty; trailing stream whitespace ignored).
+   *  Only possible with streamsInterpreterContent and a single-node plan in the
+   *  current interpretation attempt. False means the finalizer must re-emit the
+   *  output, even if a partial answer was already shown. */
+  interpreterContentStreamed?: boolean;
   executionTrace: ReadonlyArray<{
     nodeId: string;
     goal: string;
@@ -29,5 +35,20 @@ export interface FinalizerResult {
 export interface IFinalizer {
   readonly name: string;
   readonly model?: string;
+  /** When true, the DAG coordinator forwards interpreter content deltas to the
+   *  client live only for content of the plan's single node, as the plain tool-loop
+   *  does. If the interpreter replaces that node with a sub-plan, the sub-plan's
+   *  content is not forwarded and the finalizer receives false; the failed
+   *  node's earlier text stays visible. Content without a node ID is not forwarded. The
+   *  finalizer may skip re-emission only when interpreterContentStreamed is true:
+   *  the streamed text ends with the complete interpreter output. Multi-node
+   *  plans do not forward content live and receive false. The finalizer may emit
+   *  trailing content (e.g. a notice)
+   *  through onPartial. Content is live: when a failed step is revised and the
+   *  plan runs again, the client has already seen the failed attempt's text,
+   *  as with a mid-stream retry in the plain tool-loop. On a turn ending with
+   *  pending external (client-executed) tool calls, the finalizer does not run:
+   *  content may already have streamed and no trailing notice is added. */
+  readonly streamsInterpreterContent?: boolean;
   finalize(input: FinalizerInput): Promise<FinalizerResult>;
 }

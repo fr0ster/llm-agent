@@ -9,6 +9,12 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [30.4.0] — 2026-10-21
+
+### Added
+
+- **`llm-agent` / `llm-agent-libs`**: a DAG finalizer can opt in to forward the interpreter's content deltas live (single-node plans). `IFinalizer.streamsInterpreterContent` enables forwarding; `FinalizerInput.interpreterContentStreamed` is true only when the streamed text ends with the full interpreter output, allowing the finalizer to skip re-emission. Default unchanged.
+
 ## [30.3.1] — 2026-10-19
 
 ### Fixed
