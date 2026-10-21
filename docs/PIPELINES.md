@@ -311,13 +311,25 @@ surfaces pending calls as indexed `toolCalls` with JSON-stringified arguments,
 and ends with `finishReason: 'tool_calls'`, bypassing the finalizer. Other outcomes
 end with `finishReason: 'stop'`; terminal chunks include usage when available.
 
-Worker usage accounting matches DAG: workers log their own calls to the shared
-request logger. Returned `ISubAgentResult.usage` is collected by the interpreter
-for inspection but is not logged again by the handler, so workers that do not log
-themselves do not contribute to pipeline totals. Controller plan/check/revise
-parse errors retain response usage: the handler logs it once under planner or
-reviewer even on fallback; the interpreter also collects thrown check/revise
-usage in its result.
+Worker usage accounting defaults to DAG ownership: workers log their own calls
+and the handler does not log their returned usage again. Set
+`AdaptiveCoordinatorDeps.logWorkerUsage` to the names of workers that delegate
+accounting to the coordinator. The interpreter exposes `workerUsage` per executed
+worker step, including usage attached to thrown errors. The handler logs only
+listed workers, once per step, under `executor` (the logger has no `worker`
+component), using the returned `metadata.model` when present, otherwise `unknown`.
+Unlisted workers retain ownership, including in mixed runs. Controller
+plan/check/revise parse errors retain response usage: the handler logs it once
+under planner or reviewer even on fallback.
+
+A work or check worker returning `errorClass: 'epicfail'` terminates immediately:
+no check branch, retry, report, finalizer, or successful terminal chunk follows.
+The step is recorded as failed. An `AdaptiveEpicFailError` (an `OrchestratorError`
+with code `COORDINATOR_STEP_FAILED`) preserves the worker's `epicFailTrace`
+unchanged and carries the stopped run. When configured, the handler saves that
+run with outcome `stopped` and stop reason `step <id> epicfail` before surfacing
+the error through `ctx.error`. Returned usage is accounted for using the same
+ownership rules even on this fatal path.
 
 For semantic history, `ctx.assistantText` holds the finalizer's returned output
 when finalized, otherwise the answer, question, or stop report. Awaiting external

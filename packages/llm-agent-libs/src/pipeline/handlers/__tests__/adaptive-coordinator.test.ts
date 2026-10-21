@@ -611,3 +611,135 @@ for (const mode of [
     );
   });
 }
+
+for (const mode of ['listed', 'mixed', 'thrown'] as const) {
+  test(`explicit worker usage ownership: ${mode}`, async () => {
+    const { ctx, logged } = regressionContext();
+    const steps: AdaptivePlan['steps'] = [
+      { id: 'w', kind: 'work', goal: 'work', worker: 'executor' },
+      ...(mode === 'mixed'
+        ? [
+            {
+              id: 's',
+              kind: 'work' as const,
+              goal: 'work',
+              worker: 'self-logger',
+            },
+          ]
+        : []),
+      { id: 'a', kind: 'answer', from: 'w' },
+    ];
+    const handler = new AdaptiveCoordinatorHandler({
+      logWorkerUsage: new Set(['executor']),
+      controller: regressionController(steps),
+      workers: new Map([
+        [
+          'executor',
+          {
+            name: 'executor',
+            async run() {
+              if (mode === 'thrown')
+                throw Object.assign(new Error('failed'), { usage: tokenUsage });
+              return {
+                output: 'answer',
+                usage: tokenUsage,
+                metadata: { model: 'returned-model' },
+              };
+            },
+          },
+        ],
+        [
+          'self-logger',
+          {
+            name: 'self-logger',
+            async run() {
+              ctx.requestLogger.logLlmCall({
+                component: 'executor',
+                model: 'own',
+                ...tokenUsage,
+                durationMs: 0,
+              });
+              return { output: 'done', usage: tokenUsage };
+            },
+          },
+        ],
+      ]),
+    });
+    assert.equal(await handler.execute(ctx, {}, {} as never), true);
+    assert.equal(logged.length, mode === 'mixed' ? 2 : 1);
+    assert.equal(logged[0]?.totalTokens, 15);
+    assert.equal(logged[0]?.component, 'executor');
+    assert.equal(
+      (logged[mode === 'mixed' ? 1 : 0] as unknown as { model: string }).model,
+      mode === 'thrown' ? 'unknown' : 'returned-model',
+    );
+  });
+}
+
+for (const kind of ['work', 'check'] as const) {
+  test(`epicfail ${kind} stops before branching and saves failure`, async () => {
+    const { ctx, chunks, logged } = regressionContext();
+    ctx.sessionId = 'fatal';
+    const store = new InMemoryRunRecordStore();
+    const trace = {
+      stepId: 'nested',
+      agentName: 'worker',
+      attempts: [],
+      originalError: 'fatal cause',
+    };
+    let calls = 0;
+    const controller = regressionController([
+      kind === 'work'
+        ? { id: 'fatal', kind, goal: 'work', worker: 'executor' }
+        : {
+            id: 'fatal',
+            kind,
+            goal: 'check',
+            worker: 'executor',
+            targets: [],
+            onPass: 'next',
+            onFail: 'fatal',
+          },
+      { id: 'a', kind: 'answer', text: 'must not answer' },
+    ]);
+    controller.report = async () => {
+      throw new Error('must not report');
+    };
+    const handler = new AdaptiveCoordinatorHandler({
+      controller,
+      runRecords: store,
+      logWorkerUsage: new Set(['executor']),
+      workers: new Map([
+        [
+          'executor',
+          {
+            name: 'executor',
+            async run() {
+              calls++;
+              return {
+                output: 'fatal output',
+                errorClass: 'epicfail' as const,
+                epicFailTrace: trace,
+                usage: tokenUsage,
+              };
+            },
+          },
+        ],
+      ]),
+    });
+    assert.equal(await handler.execute(ctx, {}, {} as never), false);
+    assert.equal(calls, 1);
+    assert.equal(ctx.error?.code, 'COORDINATOR_STEP_FAILED');
+    assert.deepEqual(
+      (ctx.error as unknown as { epicFailTrace: unknown }).epicFailTrace,
+      trace,
+    );
+    assert.ok(!chunks.some((chunk) => chunk.finishReason));
+    assert.ok(!chunks.some((chunk) => chunk.content === 'must not answer'));
+    const saved = await store.load('fatal');
+    assert.equal(saved?.outcome, 'stopped');
+    assert.equal(saved?.stopReason, 'step fatal epicfail');
+    assert.equal(saved?.steps[0]?.status, 'failed');
+    assert.equal(logged.length, 1);
+  });
+}

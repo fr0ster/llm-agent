@@ -6,11 +6,13 @@ import type {
   IFinalizer,
   IRunRecordStore,
   ISubAgent,
+  LlmComponent,
   LlmUsage,
   RunRecord,
 } from '@mcp-abap-adt/llm-agent';
 import { OrchestratorError } from '../../agent.js';
 import {
+  AdaptiveEpicFailError,
   DEFAULT_BUDGET,
   runAdaptivePlan,
 } from '../../coordinator/adaptive/adaptive-interpreter.js';
@@ -28,6 +30,8 @@ export interface AdaptiveCoordinatorDeps {
   runRecords?: IRunRecordStore;
   budget?: Partial<AdaptiveBudget>;
   fallbackWorker?: string;
+  /** Workers whose returned usage is logged here instead of by the workers themselves. */
+  logWorkerUsage?: ReadonlySet<string>;
 }
 const message = (error: unknown) =>
   error instanceof Error ? error.message : String(error);
@@ -51,7 +55,7 @@ export class AdaptiveCoordinatorHandler implements IStageHandler {
       ctx.options?.sessionLogger?.logStep(key, data);
     const logUsage = (
       usage: LlmUsage | undefined,
-      component: 'planner' | 'reviewer' | 'finalizer',
+      component: LlmComponent,
       model?: string,
     ) => {
       if (usage)
@@ -102,6 +106,7 @@ export class AdaptiveCoordinatorHandler implements IStageHandler {
       });
       const forward =
         !finalizer || finalizer.streamsInterpreterContent === true;
+      let fatal: AdaptiveEpicFailError | undefined;
       const result = await runAdaptivePlan({
         request,
         history,
@@ -164,8 +169,16 @@ export class AdaptiveCoordinatorHandler implements IStageHandler {
               },
             });
         },
+      }).catch((error: unknown) => {
+        if (!(error instanceof AdaptiveEpicFailError)) throw error;
+        fatal = error;
+        return error.result;
       });
-      // Like DAG, workers own requestLogger accounting; never log returned worker usage here.
+      // Default to DAG ownership; only explicitly listed workers delegate accounting here.
+      for (const entry of result.workerUsage) {
+        if (this.deps.logWorkerUsage?.has(entry.worker))
+          logUsage(entry.usage, 'executor', entry.model);
+      }
       log('adaptive_run', {
         outcome: result.outcome,
         stopReason: result.stopReason,
@@ -186,6 +199,7 @@ export class AdaptiveCoordinatorHandler implements IStageHandler {
           log('adaptive_record_save_failed', { message: message(error) });
         }
       }
+      if (fatal) throw fatal;
       if (result.outcome !== 'awaiting-external')
         ctx.assistantText = result.output;
       if (result.outcome === 'awaiting-external') {
@@ -250,13 +264,16 @@ export class AdaptiveCoordinatorHandler implements IStageHandler {
       });
       return true;
     } catch (error) {
-      ctx.error = new OrchestratorError(
-        message(error),
-        ctx.options?.signal?.aborted ||
-          (error instanceof Error && error.name === 'AbortError')
-          ? 'ABORTED'
-          : 'COORDINATOR_STEP_FAILED',
-      );
+      ctx.error =
+        error instanceof OrchestratorError
+          ? error
+          : new OrchestratorError(
+              message(error),
+              ctx.options?.signal?.aborted ||
+                (error instanceof Error && error.name === 'AbortError')
+                ? 'ABORTED'
+                : 'COORDINATOR_STEP_FAILED',
+            );
       return false;
     }
   }

@@ -1,6 +1,7 @@
 import type {
   AdaptiveBudget,
   AdaptivePlan,
+  EpicFailTrace,
   IAdaptiveController,
   ISubAgent,
   ISubAgentInput,
@@ -12,6 +13,7 @@ import type {
   StepRecord,
   StepStatus,
 } from '@mcp-abap-adt/llm-agent';
+import { OrchestratorError } from '../../agent.js';
 import { composeStepInput } from './compose-step-input.js';
 import { parseVerdict, validateSteps } from './parse-plan.js';
 
@@ -43,7 +45,18 @@ export interface AdaptiveRunResult {
   stopReason?: string;
   answerStreamed: boolean;
   usage: LlmUsage[];
+  workerUsage: { worker: string; usage: LlmUsage; model?: string }[];
   pendingExternalToolCalls?: LlmToolCall[];
+}
+
+/** Fatal worker failure with the stopped run available for accounting and persistence. */
+export class AdaptiveEpicFailError extends OrchestratorError {
+  constructor(
+    readonly result: AdaptiveRunResult,
+    readonly epicFailTrace?: EpicFailTrace,
+  ) {
+    super(result.stopReason ?? 'epicfail', 'COORDINATOR_STEP_FAILED');
+  }
 }
 
 /** Default limits for one request. */
@@ -68,6 +81,7 @@ export async function runAdaptivePlan(
   const runs = new Map<string, number>();
   const streamed = new Map<string, string>();
   const usage: LlmUsage[] = [];
+  const workerUsage: AdaptiveRunResult['workerUsage'] = [];
   let cursor = 0;
   let revisions = 0;
   let checkReason: { checkId: string; reason: string } | undefined;
@@ -86,6 +100,7 @@ export async function runAdaptivePlan(
     records,
     answerStreamed,
     usage,
+    workerUsage,
   });
   const stop = async (stopReason: string): Promise<AdaptiveRunResult> => {
     let output: string;
@@ -237,6 +252,27 @@ export async function runAdaptivePlan(
             onPartial,
           });
           collect(worked.usage);
+          if (worked.usage)
+            workerUsage.push({
+              worker: step.worker,
+              usage: worked.usage,
+              model:
+                typeof worked.metadata?.model === 'string'
+                  ? worked.metadata.model
+                  : undefined,
+            });
+          if (worked.errorClass === 'epicfail') {
+            record.status = 'failed';
+            record.error = 'epicfail';
+            finish();
+            throw new AdaptiveEpicFailError(
+              {
+                ...result('stopped', ''),
+                stopReason: `step ${step.id} epicfail`,
+              },
+              worked.epicFailTrace,
+            );
+          }
           record.output = worked.output;
           if (worked.status === 'awaiting-external') {
             finish();
@@ -251,6 +287,16 @@ export async function runAdaptivePlan(
               reason: 'unparsable verdict',
             };
         } catch (error) {
+          if (error instanceof AdaptiveEpicFailError) throw error;
+          const failed = error as { usage?: LlmUsage; model?: string } | null;
+          if (failed?.usage) {
+            collect(failed.usage);
+            workerUsage.push({
+              worker: step.worker,
+              usage: failed.usage,
+              model: failed.model,
+            });
+          }
           input.signal?.throwIfAborted();
           record.status = 'failed';
           record.output = '';
