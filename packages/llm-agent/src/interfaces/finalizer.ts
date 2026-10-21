@@ -7,6 +7,10 @@ export interface FinalizerInput {
   objective: string;
   ancestorContext?: ContextPath;
   interpreterOutput: string;
+  /** True when the coordinator already forwarded at least one non-ephemeral
+   *  interpreter content delta to the client for this run. Only possible when
+   *  the finalizer set streamsInterpreterContent. */
+  interpreterContentStreamed?: boolean;
   executionTrace: ReadonlyArray<{
     nodeId: string;
     goal: string;
@@ -29,5 +33,10 @@ export interface FinalizerResult {
 export interface IFinalizer {
   readonly name: string;
   readonly model?: string;
+  /** When true, the DAG coordinator forwards interpreter content deltas to the
+   *  client live, as the plain tool-loop does. The finalizer must not re-emit
+   *  content already streamed; it may emit trailing content (e.g. a notice)
+   *  through onPartial. */
+  readonly streamsInterpreterContent?: boolean;
   finalize(input: FinalizerInput): Promise<FinalizerResult>;
 }

@@ -305,14 +305,29 @@ export class DagCoordinatorHandler implements IStageHandler {
           }
         }
 
-        // #166 fix: the FINALIZER is the single source of client-facing content.
-        // Previously ONE onPartial was passed to BOTH the interpreter and the
-        // finalizer, so a non-streaming client received the answer TWICE — once
-        // as streamed node content (A) and again as the finalizer's re-emission
-        // of the joined output (B). Now the interpreter's progress (node content,
-        // node-start/end, tool-call) goes to the session log ONLY; the finalizer's
-        // onPartial is the one that yields content to the client.
+        // #166: by default only the finalizer yields client-facing content,
+        // avoiding duplication of interpreter output and finalizer re-emission.
+        // A finalizer can opt into live interpreter content and must then avoid
+        // re-emitting it. All interpreter progress still goes to the session log;
+        // non-content events are never yielded to the client here.
+        const streamsInterpreterContent =
+          this.finalizer.streamsInterpreterContent === true;
+        let interpreterContentStreamed = false;
         const interpreterOnPartial: OnPartial = (chunk) => {
+          if (
+            streamsInterpreterContent &&
+            chunk.kind === 'content' &&
+            chunk.delta.length > 0
+          ) {
+            ctx.yield({
+              ok: true,
+              value: {
+                content: chunk.delta,
+                ...(chunk.ephemeral ? { ephemeral: true } : {}),
+              },
+            });
+            if (!chunk.ephemeral) interpreterContentStreamed = true;
+          }
           ctx.options?.sessionLogger?.logStep('dag_stream', chunk);
         };
         const finalizerOnPartial: OnPartial = (chunk) => {
@@ -409,6 +424,9 @@ export class DagCoordinatorHandler implements IStageHandler {
                 objective: executedPlan.objective ?? ctx.inputText,
                 ancestorContext,
                 interpreterOutput: result.output,
+                ...(streamsInterpreterContent
+                  ? { interpreterContentStreamed }
+                  : {}),
                 executionTrace,
                 sessionId: ctx.sessionId,
                 signal: ctx.options?.signal,
