@@ -47,6 +47,16 @@ export {
   type HotReloadableConfig,
 } from './config/config-watcher.js';
 export {
+  composeStepInput,
+  fallbackPlan,
+  HISTORY_MESSAGE_LIMIT,
+  MAX_RUNS_CAP,
+  parsePlan,
+  parseVerdict,
+  RESULT_CHAR_LIMIT,
+  validateSteps,
+} from './coordinator/adaptive/index.js';
+export {
   FINALIZER_SYSTEM,
   LlmFinalizer,
   PassthroughFinalizer,
