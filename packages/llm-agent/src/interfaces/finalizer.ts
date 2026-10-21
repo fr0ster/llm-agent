@@ -36,7 +36,9 @@ export interface IFinalizer {
   /** When true, the DAG coordinator forwards interpreter content deltas to the
    *  client live, as the plain tool-loop does. The finalizer must not re-emit
    *  content already streamed; it may emit trailing content (e.g. a notice)
-   *  through onPartial. */
+   *  through onPartial. Content is live: when a failed step is revised and the
+   *  plan runs again, the client has already seen the failed attempt's text,
+   *  as with a mid-stream retry in the plain tool-loop. */
   readonly streamsInterpreterContent?: boolean;
   finalize(input: FinalizerInput): Promise<FinalizerResult>;
 }
