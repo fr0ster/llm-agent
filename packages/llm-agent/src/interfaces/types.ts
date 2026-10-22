@@ -28,6 +28,8 @@ export interface CallOptions {
   sessionId?: string;
   userId?: string;
   signal?: AbortSignal;
+  /** Stop between tool-loop iterations without aborting in-flight calls. */
+  stopSignal?: AbortSignal;
   temperature?: number;
   maxTokens?: number;
   topP?: number;
@@ -88,6 +90,8 @@ export interface LlmStreamChunk {
   status?: StepStatus;
   toolCalls?: StreamToolCall[];
   finishReason?: LlmFinishReason;
+  /** Cooperative termination, independent of the provider finish reason. */
+  stopReason?: 'stopped';
   usage?: LlmUsage & {
     models?: Record<string, ModelUsageEntry>;
     components?: Record<string, ModelUsageEntry>;

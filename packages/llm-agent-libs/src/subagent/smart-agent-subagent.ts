@@ -34,6 +34,7 @@ export class SmartAgentSubAgent implements ISubAgent {
       {
         sessionId: input.sessionId,
         signal: input.signal,
+        stopSignal: input.stopSignal,
         trace: input.trace,
         sessionLogger: input.sessionLogger,
         onPartial: input.onPartial,
@@ -105,7 +106,7 @@ export class SmartAgentSubAgent implements ISubAgent {
       output: content,
       toolCalls: mappedToolCalls,
       usage: mappedUsage,
-      status: 'complete',
+      status: stopReason === 'stopped' ? 'stopped' : 'complete',
     };
   }
 }

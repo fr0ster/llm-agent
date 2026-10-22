@@ -26,6 +26,7 @@ export interface SmartAgentServerHandle {
 
 function mapStopReason(r: StopReason): 'stop' | 'length' | 'tool_calls' {
   switch (r) {
+    case 'stopped':
     case 'stop':
       return 'stop';
     case 'tool_calls':

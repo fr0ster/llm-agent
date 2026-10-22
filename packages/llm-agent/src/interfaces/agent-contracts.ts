@@ -12,6 +12,7 @@ export class OrchestratorError extends SmartAgentError {
 
 export type StopReason =
   | 'stop'
+  | 'stopped'
   | 'tool_calls'
   | 'iteration_limit'
   | 'tool_call_limit';

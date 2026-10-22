@@ -578,6 +578,7 @@ export class SmartAgent {
           }
         }
       }
+      if (chunk.value.stopReason === 'stopped') stopReason = 'stopped';
       if (chunk.value.finishReason === 'tool_calls') {
         stopReason = 'tool_calls';
       }
@@ -833,6 +834,22 @@ export class SmartAgent {
         toolLoopSpan.setStatus('error', 'Aborted');
         toolLoopSpan.end();
         yield { ok: false, error: new OrchestratorError('Aborted', 'ABORTED') };
+        return;
+      }
+      if (iteration > 0 && opts?.stopSignal?.aborted) {
+        timingLog.push({ phase: 'total', duration: Date.now() - loopStart });
+        toolLoopSpan.end();
+        const summary = this.requestLogger.getSummary(opts?.trace?.traceId);
+        yield {
+          ok: true,
+          value: {
+            content: '',
+            finishReason: 'stop',
+            stopReason: 'stopped',
+            usage: { ...summaryToUsage(summary), models: summary.byModel },
+            timing: timingLog,
+          },
+        };
         return;
       }
       if (iteration >= this.config.maxIterations) {
