@@ -118,7 +118,7 @@ export class TaskBoard {
         task.error =
           'external tool calls are not supported in background tasks';
         kind = 'failed';
-      } else kind = result.status === 'stopped' ? 'stopped' : 'done';
+      } else kind = result.stopped === true ? 'stopped' : 'done';
     } catch (error) {
       if (task.state === 'stopped') kind = 'stopped';
       else {

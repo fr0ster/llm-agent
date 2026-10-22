@@ -52,6 +52,7 @@ export class DialogueSession {
   private active?: Promise<void>;
   private closePromise?: Promise<void>;
   private savedAt = 0;
+  private persistence: Promise<void> = Promise.resolve();
 
   private constructor(private readonly opts: DialogueSessionOptions) {
     this.board = new TaskBoard({
@@ -123,6 +124,13 @@ export class DialogueSession {
     this.restart = undefined;
     this.conversation.push({ role: 'user', content: input });
     this.trim();
+    const messages = structuredClone(this.conversation);
+    if (this.plan !== undefined) {
+      messages.splice(messages.length - 1, 0, {
+        role: 'user',
+        content: `[plan]\n${this.plan}`,
+      });
+    }
     try {
       const result = await runInPlannerScope(
         {
@@ -134,7 +142,7 @@ export class DialogueSession {
           history: () => structuredClone(this.conversation),
         },
         () =>
-          this.opts.planner.process(structuredClone(this.conversation), {
+          this.opts.planner.process(messages, {
             ...user?.opts,
             sessionId: this.opts.id,
           }),
@@ -158,6 +166,12 @@ export class DialogueSession {
       }
       return message;
     } finally {
+      if (!this.closing) await this.persist();
+    }
+  }
+  private persist(): Promise<void> {
+    // Acknowledgements must follow any save that still contains pending replies.
+    this.persistence = this.persistence.then(async () => {
       if (!this.closing) {
         this.savedAt = this.now();
         try {
@@ -166,7 +180,8 @@ export class DialogueSession {
           this.warn(`Dialogue state save failed: ${String(error)}`);
         }
       }
-    }
+    });
+    return this.persistence;
   }
   private trim(): void {
     this.conversation = this.conversation.slice(-DIALOGUE_HISTORY_LIMIT);
@@ -182,7 +197,9 @@ export class DialogueSession {
     }
   }
   takePending(): PlannerMessage[] {
-    return structuredClone(this.pending.splice(0));
+    const pending = structuredClone(this.pending.splice(0));
+    void this.persist();
+    return pending;
   }
   snapshot(): DialogueState {
     return structuredClone({
@@ -208,6 +225,7 @@ export class DialogueSession {
     await this.board.stopAll();
     this.events = [];
     this.pending = [];
+    await this.persistence;
     await this.opts.store?.delete(this.opts.id);
   }
 }

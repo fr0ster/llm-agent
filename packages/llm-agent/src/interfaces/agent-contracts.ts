@@ -12,7 +12,6 @@ export class OrchestratorError extends SmartAgentError {
 
 export type StopReason =
   | 'stop'
-  | 'stopped'
   | 'tool_calls'
   | 'iteration_limit'
   | 'tool_call_limit';
@@ -22,6 +21,8 @@ export interface SmartAgentResponse {
   iterations: number;
   toolCallCount: number;
   stopReason: StopReason;
+  /** True when the tool loop ended cooperatively between iterations. */
+  stopped?: true;
   /** External tool calls requested by the LLM (OpenAI wire format). */
   toolCalls?: Array<{
     id: string;

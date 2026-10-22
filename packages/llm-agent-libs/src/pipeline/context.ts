@@ -73,7 +73,7 @@ import type { IOutputValidator } from '../validator/types.js';
 
 export interface PipelineContext {
   /** Set when the tool loop honours a cooperative stop at an iteration boundary. */
-  stopReason?: 'stopped';
+  stopped?: true;
   // -- Immutable input (set once at creation, never modified) ----------------
 
   /** Original user input (string or message array). */

@@ -75,9 +75,10 @@ export interface ISubAgentResult {
   epicFailTrace?: EpicFailTrace;
   /** Set to 'awaiting-external' when the worker emitted a client-provided
    *  (consumer-executed) external tool call and is waiting for its result
-   *  (#171), or 'stopped' after a cooperative stop.
-   *  Default/absent = 'complete'. */
-  status?: 'complete' | 'awaiting-external' | 'stopped';
+   *  (#171). Default/absent = 'complete'. */
+  status?: 'complete' | 'awaiting-external';
+  /** Cooperative termination with partial output; status remains complete. */
+  stopped?: true;
   /** The external tool calls the worker surfaced (deterministic `ext:` ids).
    *  Present iff status === 'awaiting-external'. */
   pendingExternalToolCalls?: LlmToolCall[];

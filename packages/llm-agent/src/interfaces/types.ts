@@ -91,7 +91,7 @@ export interface LlmStreamChunk {
   toolCalls?: StreamToolCall[];
   finishReason?: LlmFinishReason;
   /** Cooperative termination, independent of the provider finish reason. */
-  stopReason?: 'stopped';
+  stopped?: true;
   usage?: LlmUsage & {
     models?: Record<string, ModelUsageEntry>;
     components?: Record<string, ModelUsageEntry>;

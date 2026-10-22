@@ -210,7 +210,8 @@ for (const mode of ['stop', 'hard', 'none', 'pre-stopped']) {
     } else {
       assert.equal(last.ok, true);
       if (last.ok) assert.equal(last.value.finishReason, 'stop');
-      assert.equal(ctx.stopReason, mode === 'none' ? undefined : 'stopped');
+      if (last.ok)
+        assert.equal(last.value.stopped, mode === 'none' ? undefined : true);
       assert.equal(
         chunks
           .filter((c) => c.ok && !c.value.ephemeral)
@@ -223,7 +224,7 @@ for (const mode of ['stop', 'hard', 'none', 'pre-stopped']) {
 }
 
 for (const pipeline of [false, true]) {
-  test(`SmartAgent.process preserves partial output and stopped reason (pipeline=${pipeline})`, async () => {
+  test(`SmartAgent.process preserves partial output with normal stop reason and stopped marker (pipeline=${pipeline})`, async () => {
     const stop = new AbortController();
     let calls = 0;
     const stream = async function* (): AsyncIterable<
@@ -285,7 +286,8 @@ for (const pipeline of [false, true]) {
     assert.equal(result.ok, true);
     if (result.ok) {
       assert.equal(result.value.content, 'partial');
-      assert.equal(result.value.stopReason, 'stopped');
+      assert.equal(result.value.stopReason, 'stop');
+      assert.equal(result.value.stopped, true);
     }
     assert.equal(calls, 1);
   });

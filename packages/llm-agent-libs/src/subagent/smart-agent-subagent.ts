@@ -56,7 +56,7 @@ export class SmartAgentSubAgent implements ISubAgent {
       throw res.error;
     }
 
-    const { content, toolCalls, stopReason, usage } = res.value;
+    const { content, toolCalls, stopReason, usage, stopped } = res.value;
 
     const mappedUsage = usage
       ? {
@@ -106,7 +106,8 @@ export class SmartAgentSubAgent implements ISubAgent {
       output: content,
       toolCalls: mappedToolCalls,
       usage: mappedUsage,
-      status: stopReason === 'stopped' ? 'stopped' : 'complete',
+      status: 'complete',
+      ...(stopped ? { stopped } : {}),
     };
   }
 }

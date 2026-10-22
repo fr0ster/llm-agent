@@ -45,6 +45,7 @@ test('several completions during a busy user turn are listed once in order; sile
       async process(messages) {
         inputs.push(messages);
         if (inputs.length === 1) {
+          await tools.callTool('update_plan', { plan: 'parallel work' });
           await tools.callTool('delegate_task', { worker: 'w', goal: 'first' });
           await tools.callTool('delegate_task', {
             worker: 'w',
@@ -69,6 +70,7 @@ test('several completions during a busy user turn are listed once in order; sile
   await sent;
   await tick();
   assert.equal(inputs.length, 2);
+  assert.equal(inputs[1].at(-2)?.content, '[plan]\nparallel work');
   const note = String(inputs[1].at(-1)?.content);
   assert.equal((note.match(/ done:/g) ?? []).length, 2);
   assert.ok(note.indexOf('t2 (w) done') < note.indexOf('t1 (w) done'));
@@ -235,7 +237,11 @@ test('restore interrupts tasks, restart note appears once and NO_MESSAGE is reco
 });
 
 test('close stops tasks, waits for active turn, rejects queued sends and never saves its result', async () => {
-  const work = deferred<{ output: string; status: 'stopped' }>();
+  const work = deferred<{
+    output: string;
+    status: 'complete';
+    stopped: true;
+  }>();
   const entered = deferred();
   const release = deferred();
   const store = new InMemoryDialogueStateStore();
@@ -278,7 +284,7 @@ test('close stops tasks, waits for active turn, rejects queued sends and never s
   const closing = s.close();
   await tick();
   assert.equal(stopped, true);
-  work.resolve({ output: 'partial', status: 'stopped' });
+  work.resolve({ output: 'partial', status: 'complete', stopped: true });
   release.resolve();
   await Promise.all([active, queued, closing]);
   assert.equal(calls, 1);
@@ -317,5 +323,253 @@ test('history is bounded, snapshots and memory store are isolated, save errors a
   assert.ok(loaded);
   loaded.pending.push({ id: 'x', text: 'x', trigger: 'event', createdAt: 0 });
   assert.deepEqual((await store.load('copy'))?.pending, []);
+  await s.close();
+});
+
+test('plan tool state is injected before the last input, survives trimming and restore, and is never conversation history', async () => {
+  const store = new InMemoryDialogueStateStore();
+  const inputs: Message[][] = [];
+  const options = {
+    id: 'plan',
+    store,
+    board: { workers: new Map() },
+    planner: {
+      async process(messages: Message[]) {
+        inputs.push(messages);
+        if (inputs.length === 1)
+          await tools.callTool('update_plan', { plan: 'remember this' });
+        return { ok: true as const, value: { content: 'ok' } };
+      },
+    },
+  };
+  const s = await DialogueSession.open(options);
+  await s.send('set');
+  assert.equal(inputs[0].length, 1, 'no plan note before a plan is set');
+  for (let i = 0; i < 105; i++) await s.send(`next ${i}`);
+  for (const input of inputs.slice(1)) {
+    assert.deepEqual(input.at(-2), {
+      role: 'user',
+      content: '[plan]\nremember this',
+    });
+  }
+  assert.ok(
+    s
+      .snapshot()
+      .conversation.every((m) => !String(m.content).includes('[plan]')),
+  );
+  const restored = await DialogueSession.open(options);
+  await restored.send('restored');
+  assert.equal(inputs.at(-1)?.at(-2)?.content, '[plan]\nremember this');
+  await restored.close();
+  await s.close();
+});
+
+test('draining pending persists an acknowledgement after an in-flight save without concurrent writes', async () => {
+  const backing = new InMemoryDialogueStateStore();
+  const entered = deferred();
+  const release = deferred();
+  let saving = false;
+  let saves = 0;
+  await backing.save('ack', {
+    conversation: [],
+    tasks: [],
+    savedAt: 0,
+    pending: [{ id: 'p', text: 'delivered', trigger: 'event', createdAt: 0 }],
+  });
+  const options = {
+    id: 'ack',
+    board: { workers: new Map() },
+    store: {
+      load: (id: string) => backing.load(id),
+      delete: (id: string) => backing.delete(id),
+      async save(
+        id: string,
+        state: import('@mcp-abap-adt/llm-agent').DialogueState,
+      ) {
+        assert.equal(saving, false, 'saves must be serialized');
+        saving = true;
+        if (++saves === 1) {
+          entered.resolve();
+          await release.promise;
+        }
+        await backing.save(id, state);
+        saving = false;
+      },
+    },
+    planner: {
+      async process() {
+        return { ok: true as const, value: { content: 'ok' } };
+      },
+    },
+  };
+  const s = await DialogueSession.open(options);
+  const sent = s.send('save');
+  await entered.promise;
+  assert.equal(s.takePending().length, 1);
+  release.resolve();
+  await sent;
+  await tick();
+  assert.equal(saves, 2);
+  const reopened = await DialogueSession.open(options);
+  assert.deepEqual(reopened.takePending(), []);
+  await reopened.close();
+  await s.close();
+});
+
+test('draining pending saves even without another turn and swallows save failure', async () => {
+  const store = new InMemoryDialogueStateStore();
+  await store.save('drain', {
+    conversation: [],
+    tasks: [],
+    savedAt: 0,
+    pending: [{ id: 'p', text: 'p', trigger: 'event', createdAt: 0 }],
+  });
+  const options = {
+    id: 'drain',
+    store,
+    board: { workers: new Map() },
+    planner: {
+      async process() {
+        return { ok: true as const, value: { content: 'ok' } };
+      },
+    },
+  };
+  const s = await DialogueSession.open(options);
+  assert.equal(s.takePending().length, 1);
+  await tick();
+  const reopened = await DialogueSession.open(options);
+  assert.deepEqual(reopened.takePending(), []);
+  let warnings = 0;
+  await store.save('failed-drain', {
+    ...s.snapshot(),
+    pending: [{ id: 'failed-ack', text: 'p', trigger: 'event', createdAt: 0 }],
+  });
+  const failing = await DialogueSession.open({
+    ...options,
+    id: 'failed-drain',
+    logger: {
+      warn() {
+        warnings++;
+      },
+    },
+    store: {
+      ...options.store,
+      load: (id) => store.load(id),
+      delete: (id) => store.delete(id),
+      async save() {
+        throw new Error('offline');
+      },
+    },
+  });
+  assert.equal(failing.takePending().length, 1);
+  await tick();
+  assert.equal(warnings, 1);
+  await Promise.all([s.close(), reopened.close(), failing.close()]);
+});
+
+test('close stops and settles a task delegated by an already in-flight turn without an event turn', async () => {
+  const entered = deferred();
+  const delegate = deferred();
+  const started = deferred();
+  const stopped = deferred();
+  const settle = deferred();
+  let calls = 0;
+  let closed = false;
+  const s = await DialogueSession.open({
+    id: 'close-delegate',
+    board: {
+      workers: new Map([
+        [
+          'w',
+          {
+            name: 'w',
+            capabilities: { contextPolicy: 'optional' },
+            async run(input) {
+              input.stopSignal?.addEventListener('abort', () =>
+                stopped.resolve(),
+              );
+              started.resolve();
+              await settle.promise;
+              return { output: 'partial', status: 'complete', stopped: true };
+            },
+          },
+        ],
+      ]),
+    },
+    planner: {
+      async process() {
+        calls++;
+        entered.resolve();
+        await delegate.promise;
+        await tools.callTool('delegate_task', { worker: 'w', goal: 'late' });
+        await started.promise;
+        return { ok: true, value: { content: 'delegated' } };
+      },
+    },
+  });
+  const sent = s.send('go');
+  await entered.promise;
+  const closing = s.close().then(() => {
+    closed = true;
+  });
+  delegate.resolve();
+  await stopped.promise;
+  assert.equal(closed, false);
+  settle.resolve();
+  await Promise.all([sent, closing]);
+  await tick();
+  assert.equal(s.snapshot().tasks[0].state, 'stopped');
+  assert.equal(calls, 1);
+  assert.deepEqual(s.takePending(), []);
+});
+
+test('open restores queued tasks as interrupted and explains them on the next turn without rerunning', async () => {
+  const store = new InMemoryDialogueStateStore();
+  await store.save('queued', {
+    conversation: [],
+    pending: [],
+    savedAt: 0,
+    tasks: [
+      {
+        id: 't7',
+        worker: 'w',
+        goal: 'queued goal',
+        state: 'queued',
+        createdAt: 0,
+      },
+    ],
+  });
+  let runs = 0;
+  const s = await DialogueSession.open({
+    id: 'queued',
+    store,
+    board: {
+      workers: new Map([
+        [
+          'w',
+          {
+            name: 'w',
+            capabilities: { contextPolicy: 'optional' },
+            async run() {
+              runs++;
+              return { output: 'unexpected' };
+            },
+          },
+        ],
+      ]),
+    },
+    planner: {
+      async process(input) {
+        assert.match(
+          String(input.at(-1)?.content),
+          /^\[restart\] interrupted tasks: t7/,
+        );
+        return { ok: true, value: { content: 'checking' } };
+      },
+    },
+  });
+  assert.equal(s.snapshot().tasks[0].state, 'interrupted');
+  await s.send('continue');
+  assert.equal(runs, 0);
   await s.close();
 });

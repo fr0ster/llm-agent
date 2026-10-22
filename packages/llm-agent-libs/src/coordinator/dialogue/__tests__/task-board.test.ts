@@ -234,7 +234,9 @@ for (const [outcome, state] of [
           output: 'x'.repeat(4010),
           ...(outcome === 'epicfail'
             ? { errorClass: 'epicfail' as const }
-            : { status: outcome }),
+            : outcome === 'stopped'
+              ? { status: 'complete' as const, stopped: true as const }
+              : { status: outcome }),
         };
       },
       {
@@ -273,7 +275,7 @@ test('cooperative stop and stopAll wait for workers to settle', async () => {
     await new Promise<void>((r) => {
       finish = r;
     });
-    return { output: 'partial', status: 'stopped' };
+    return { output: 'partial', status: 'complete', stopped: true };
   });
   const id = start(board);
   await tick();

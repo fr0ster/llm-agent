@@ -364,10 +364,10 @@ pipeline. The consumer supplies the planner's `ILlm` and worker `ISubAgent`s.
 
 - **Cooperative stop:** optional `stopSignal` reaches the tool loop through agent
   call options and `ISubAgentInput`. After the first iteration, the loop checks it
-  between iterations, returns partial output with `stopReason: 'stopped'`, and
-  emits a terminal `finishReason: 'stop'`. It does not abort an in-flight LLM or
+  between iterations, returns partial output with `stopped: true` and the normal
+  `stopReason: 'stop'`, and emits a terminal `finishReason: 'stop'`. It does not abort an in-flight LLM or
   tool call. `signal` retains hard-abort behavior. `SmartAgentSubAgent` forwards
-  the signal and maps the result to `status: 'stopped'`.
+  the signal and maps the result to `status: 'complete', stopped: true`.
 - **`TaskBoard` + `SemaphorePool`:** `start()` returns a task record without
   awaiting the worker. Defaults are `maxConcurrent: 3` and `maxTasks: 50` per
   board; both must be positive integers. The task cap includes completed and
@@ -380,7 +380,7 @@ pipeline. The consumer supplies the planner's `ILlm` and worker `ISubAgent`s.
   A thrown worker error or `errorClass: 'epicfail'` fails the task;
   `awaiting-external` fails with
   `external tool calls are not supported in background tasks`. A worker result
-  with `status: 'stopped'` becomes `stopped`; other successful results become
+  with `stopped: true` becomes `stopped`; other successful results become
   `done`. Stopping a queued task marks it stopped immediately; stopping a running
   task requests cooperation, and its eventual result determines the outcome.
   Stored output keeps the first `TASK_OUTPUT_CHAR_LIMIT` (4000) characters plus
@@ -465,6 +465,7 @@ async function openUserSession(id: string) {
   const handle = await new SmartAgentBuilder({
     prompts: { system: DIALOGUE_PLANNER_SYSTEM },
   })
+    .withMode('hard') // Offer every MCP control tool without RAG selection.
     .withMainLlm(plannerLlm)
     .withMcpClients([new PlannerToolsClient()])
     .build(); // handle.agent is the planner SmartAgent
