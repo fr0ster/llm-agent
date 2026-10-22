@@ -1400,6 +1400,7 @@ responsibilities differ by pipeline. The full landscape:
 | **DAG** | `IPlanner` (`interfaces/planner.ts`) | `LlmDagPlanner` | `LlmDagPlanner` | yes | via a separate `IErrorStrategy` (`ReplanErrorStrategy`, bounded by `maxReplans`) |
 | **controller** | `IControllerPlanner` (`controller/types.ts`) | `SmartExecutorPlanner`, `WeakExecutorPlanner` (extends Smart, finest-grain prompts) | `SmartExecutorPlanner` (`PlannerKind: smart-executor`) | yes | yes — replans on an executor/step failure |
 | **adaptive coordinator** (code-level `withStepperCoordinator`) | `IAdaptiveController` (`interfaces/adaptive-plan.ts`) | `LlmAdaptiveController` | caller-supplied controller | yes with `LlmAdaptiveController`; one initial planning call per request | only at explicit `revise` steps; check verdicts select planned branches, bounded by step run caps and request budget |
+| **dialogue planner** (code-level building blocks; no YAML pipeline) | `PlannerAgent` (`coordinator/dialogue/dialogue-session.ts`) | Consumer-built `SmartAgent` with `PlannerToolsClient` and `DIALOGUE_PLANNER_SYSTEM`, driven by `DialogueSession` | caller-supplied planner | yes with `SmartAgent` | task outcomes trigger planner turns; the model can revise the plan and delegate again through tools |
 
 Classification axes:
 

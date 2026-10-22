@@ -9,6 +9,15 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Added
+
+- **`llm-agent` / `llm-agent-libs`**: dialogue planner building blocks: `TaskBoard` with per-board limits and a shared `SemaphorePool`, in-process `PlannerToolsClient` control tools and planner scope, `DialogueSession` with serialized user/outcome turns, pending event replies, state restoration through `IDialogueStateStore` / `InMemoryDialogueStateStore`, and `DIALOGUE_PLANNER_SYSTEM`. Code-level composition beside the adaptive coordinator; no YAML pipeline. See `docs/PIPELINES.md`.
+- **`llm-agent` / `llm-agent-libs`**: optional cooperative `stopSignal` on agent calls and subagent input; tool loops honor it between iterations after the first without aborting in-flight calls. `SmartAgentSubAgent` forwards it and preserves partial output.
+
+### Changed
+
+- `StopReason` gains `'stopped'`; exhaustive switches over `StopReason` must handle it. `ISubAgentResult.status` gains `'stopped'`.
+
 ## [30.5.0] — 2026-10-22
 
 ### Added

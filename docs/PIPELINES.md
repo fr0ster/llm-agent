@@ -354,6 +354,163 @@ const handle = await builder.withStepperCoordinator(new AdaptiveCoordinatorHandl
 // Supply the same sessionId on subsequent requests to load previousRun.
 ```
 
+## Dialogue planner
+
+The dialogue planner is a set of code-level building blocks in
+`@mcp-abap-adt/llm-agent-libs`, beside the adaptive coordinator. It is not a YAML
+pipeline. The consumer supplies the planner's `ILlm` and worker `ISubAgent`s.
+
+### Parts and rules
+
+- **Cooperative stop:** optional `stopSignal` reaches the tool loop through agent
+  call options and `ISubAgentInput`. After the first iteration, the loop checks it
+  between iterations, returns partial output with `stopReason: 'stopped'`, and
+  emits a terminal `finishReason: 'stop'`. It does not abort an in-flight LLM or
+  tool call. `signal` retains hard-abort behavior. `SmartAgentSubAgent` forwards
+  the signal and maps the result to `status: 'stopped'`.
+- **`TaskBoard` + `SemaphorePool`:** `start()` returns a task record without
+  awaiting the worker. Defaults are `maxConcurrent: 3` and `maxTasks: 50` per
+  board; both must be positive integers. The task cap includes completed and
+  restored records. Unknown workers and exceeding the task cap return errors
+  (`unknown worker <name>` / `task limit <n> reached`), surfaced as tool errors
+  to the planner. Tasks queue FIFO and run only after acquiring both a board
+  slot and an optional shared pool slot. A board slot can be held while waiting
+  for the shared pool. Default ids are `t1`, `t2`, ...; `newId` can override them.
+  States are `queued`, `running`, `done`, `failed`, `stopped`, `interrupted`.
+  A thrown worker error or `errorClass: 'epicfail'` fails the task;
+  `awaiting-external` fails with
+  `external tool calls are not supported in background tasks`. A worker result
+  with `status: 'stopped'` becomes `stopped`; other successful results become
+  `done`. Stopping a queued task marks it stopped immediately; stopping a running
+  task requests cooperation, and its eventual result determines the outcome.
+  Stored output keeps the first `TASK_OUTPUT_CHAR_LIMIT` (4000) characters plus
+  a `[cut: <n> characters omitted]` note, so events and `get_task` see bounded
+  output. Error strings from thrown exceptions are not cut by this limit.
+  The board emits `started`, `done`, `failed`, `stopped` events synchronously;
+  observer exceptions do not affect execution.
+- **`PlannerToolsClient` + planner scope:** an in-process `IMcpClient` exposes
+  `delegate_task`, `stop_task`, `get_task`, `list_tasks`, `update_plan`.
+  `runInPlannerScope` uses AsyncLocalStorage to bind the current board, plan and
+  history; `DialogueSession` establishes that scope for each planner turn.
+  Listing tools inside the scope includes worker names in `delegate_task`'s
+  schema. Tool calls outside it return an `isError` result (`no planner session`);
+  tool validation and board errors also become `isError` results.
+  Delegation history defaults to `none`; `last-turn` selects the last user
+  message and a following assistant message if present; `all` selects the last
+  20 messages. These are selected from the planner conversation, including event
+  notes, rather than a separate user-only history.
+- **`DialogueSession` + `IDialogueStateStore` / `InMemoryDialogueStateStore`:**
+  open one actor per user session. It serializes planner turns; `send()` resolves
+  with the reply to that user's own queued message. Queued user turns run FIFO
+  before the next event turn. Only outcomes (`done`, `failed`, `stopped`) wake the
+  planner; `started` does not. Buffered outcomes coalesce in arrival order into
+  one user-role `[task events]` note listing task id, worker, kind, goal and error
+  or output. Events arriving during a turn wait for a later event turn.
+  An event reply whose trimmed text equals `NO_MESSAGE` stays in conversation
+  history but is not delivered. Other event replies enter `pending` and invoke
+  `onMessage`; `takePending()` returns and clears that queue. User replies are
+  never suppressed by `NO_MESSAGE`.
+  Conversation history is capped at `DIALOGUE_HISTORY_LIMIT` (200 messages) on
+  restore and after each appended message. `snapshot()` contains conversation,
+  plan, task records, pending messages and `savedAt`. When a store is supplied,
+  each turn attempts a save, including failed turns, unless closing; save errors
+  are swallowed and reported through the optional logger. The in-memory store
+  clones state on load/save and is process-local. `open()` restores queued and
+  running tasks as `interrupted`, without rerunning them. The next turn's input
+  is prefixed with `[restart] interrupted tasks: <ids>` and a note that their
+  real state is unknown and must be checked before continuing.
+  `close()` rejects queued and future sends, prevents new turns, requests stops,
+  waits for the active turn and tasks to settle, then stops any tasks delegated
+  by that settling turn. It clears pending messages and deletes stored state;
+  it does not retain a final snapshot. Repeated calls share the close promise.
+- **`DIALOGUE_PLANNER_SYSTEM`:** prompt guidance covers dialogue, planning,
+  delegation and control: state goals rather than implementation details,
+  establish a specification for complex declarative requests, record/revise
+  plans, track task identities, react to results and answer in the user's
+  language. It asks the planner to delegate and answer without waiting, run only
+  independent work in parallel, sequence work sharing objects/locks/transports
+  or dependencies, use `NO_MESSAGE` for silent event turns, and discuss checks
+  after a restart. These are model instructions; the board enforces the numeric
+  limits, not dependency or resource-conflict detection.
+
+### Embedding example
+
+The resource scope below is consumer-supplied (for example, an AsyncLocalStorage
+connection scope read by the workers). `wrapRun` surrounds each actual worker run
+and releases its resources in `finally`.
+
+```ts
+import type { ILlm, ISubAgent, TaskRecord } from '@mcp-abap-adt/llm-agent';
+import {
+  DIALOGUE_PLANNER_SYSTEM,
+  DialogueSession,
+  InMemoryDialogueStateStore,
+  PlannerToolsClient,
+  SemaphorePool,
+  SmartAgentBuilder,
+} from '@mcp-abap-adt/llm-agent-libs';
+
+declare const plannerLlm: ILlm;
+declare const workers: ReadonlyMap<string, ISubAgent>;
+declare function openTaskResources(task: TaskRecord): Promise<{
+  scope<T>(run: () => Promise<T>): Promise<T>;
+  close(): Promise<void>;
+}>;
+
+// Shared across all user sessions in this process.
+const pool = new SemaphorePool(6);
+const store = new InMemoryDialogueStateStore();
+
+async function openUserSession(id: string) {
+  const handle = await new SmartAgentBuilder({
+    prompts: { system: DIALOGUE_PLANNER_SYSTEM },
+  })
+    .withMainLlm(plannerLlm)
+    .withMcpClients([new PlannerToolsClient()])
+    .build(); // handle.agent is the planner SmartAgent
+
+  const session = await DialogueSession.open({
+    id,
+    planner: handle.agent,
+    store,
+    board: {
+      workers,
+      maxConcurrent: 3,
+      maxTasks: 50,
+      pool,
+      baseInput: () => ({ sessionId: id }),
+      wrapRun: async (task, run) => {
+        const resources = await openTaskResources(task);
+        try {
+          return await resources.scope(run);
+        } finally {
+          await resources.close();
+        }
+      },
+    },
+  });
+  return {
+    session,
+    async close() {
+      try {
+        await session.close();
+      } finally {
+        await handle.close();
+      }
+    },
+  };
+}
+
+// Retain this object for this user session; do not reopen it per message.
+const userSession = await openUserSession('session-1');
+const reply = await userSession.session.send('Inspect the requested changes.');
+console.log(reply.text);
+// On later requests, also drain event replies, or supply onMessage for a push channel.
+console.log(userSession.session.takePending());
+// At session end (close deletes persisted dialogue state):
+await userSession.close();
+```
+
 ## Adding a custom pipeline (plugin)
 
 A pipeline is an `IPipelinePlugin` (from `@mcp-abap-adt/llm-agent`): it names itself and builds
