@@ -9,6 +9,8 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [30.6.0] — 2026-10-22
+
 ### Added
 
 - **`llm-agent` / `llm-agent-libs`**: dialogue planner building blocks: `TaskBoard` with per-board limits and a shared `SemaphorePool`, in-process `PlannerToolsClient` control tools and planner scope, `DialogueSession` with serialized user/outcome turns, pending event replies, state restoration through `IDialogueStateStore` / `InMemoryDialogueStateStore`, and `DIALOGUE_PLANNER_SYSTEM`. Code-level composition beside the adaptive coordinator; no YAML pipeline. See `docs/PIPELINES.md`.
