@@ -70,6 +70,7 @@ export {
   SubAgentStateOracle,
   TemplateFinalizer,
 } from './coordinator/dag/index.js';
+export * from './coordinator/dialogue/index.js';
 // ---------------------------------------------------------------------------
 // Coordinator strategies
 // ---------------------------------------------------------------------------

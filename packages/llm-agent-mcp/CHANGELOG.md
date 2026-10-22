@@ -1,5 +1,9 @@
 # @mcp-abap-adt/llm-agent-mcp
 
+## 30.6.0
+
+Lockstep release with the 30.6.0 line: dialogue planner building blocks (`TaskBoard`, `SemaphorePool`, `PlannerToolsClient`, `DialogueSession`, `DIALOGUE_PLANNER_SYSTEM`) and an optional cooperative `stopSignal` — changes in `llm-agent` and `llm-agent-libs`; other packages are unchanged. See the root CHANGELOG.
+
 ## 30.5.0
 
 Lockstep release with the 30.5.0 line: adaptive plan coordinator (`AdaptiveCoordinatorHandler`, `LlmAdaptiveController`, adaptive-plan interfaces, optional `ISubAgentInput.history` and `LlmStreamChunk.status`) — changes in `llm-agent` and `llm-agent-libs`; other packages are unchanged. See the root CHANGELOG.

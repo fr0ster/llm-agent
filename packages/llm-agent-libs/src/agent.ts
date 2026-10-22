@@ -539,6 +539,7 @@ export class SmartAgent {
       models?: Record<string, ModelUsageEntry>;
     } = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
     let stopReason: StopReason = 'stop';
+    let stopped: true | undefined;
     const collectedToolCalls: Array<{
       id: string;
       type: 'function';
@@ -578,6 +579,10 @@ export class SmartAgent {
           }
         }
       }
+      if (chunk.value.stopped) {
+        stopped = true;
+        stopReason = 'stop';
+      }
       if (chunk.value.finishReason === 'tool_calls') {
         stopReason = 'tool_calls';
       }
@@ -597,6 +602,7 @@ export class SmartAgent {
         iterations: 1,
         toolCallCount: collectedToolCalls.length,
         stopReason,
+        ...(stopped ? { stopped } : {}),
         ...(collectedToolCalls.length > 0
           ? { toolCalls: collectedToolCalls }
           : {}),
@@ -833,6 +839,22 @@ export class SmartAgent {
         toolLoopSpan.setStatus('error', 'Aborted');
         toolLoopSpan.end();
         yield { ok: false, error: new OrchestratorError('Aborted', 'ABORTED') };
+        return;
+      }
+      if (iteration > 0 && opts?.stopSignal?.aborted) {
+        timingLog.push({ phase: 'total', duration: Date.now() - loopStart });
+        toolLoopSpan.end();
+        const summary = this.requestLogger.getSummary(opts?.trace?.traceId);
+        yield {
+          ok: true,
+          value: {
+            content: '',
+            finishReason: 'stop',
+            stopped: true,
+            usage: { ...summaryToUsage(summary), models: summary.byModel },
+            timing: timingLog,
+          },
+        };
         return;
       }
       if (iteration >= this.config.maxIterations) {

@@ -21,6 +21,8 @@ export interface SmartAgentResponse {
   iterations: number;
   toolCallCount: number;
   stopReason: StopReason;
+  /** True when the tool loop ended cooperatively between iterations. */
+  stopped?: true;
   /** External tool calls requested by the LLM (OpenAI wire format). */
   toolCalls?: Array<{
     id: string;

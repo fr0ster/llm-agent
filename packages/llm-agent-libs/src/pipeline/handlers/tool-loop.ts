@@ -197,6 +197,27 @@ export class ToolLoopHandler implements IStageHandler {
         });
         return false;
       }
+      if (iteration > 0 && ctx.options?.stopSignal?.aborted) {
+        ctx.stopped = true;
+        timingLog.push({ phase: 'total', duration: Date.now() - loopStart });
+        ctx.timing.push(...timingLog);
+        ctx.yield({
+          ok: true,
+          value: {
+            content: '',
+            finishReason: 'stop',
+            stopped: true,
+            usage: {
+              ...usage,
+              models: ctx.requestLogger.getSummary().byModel,
+              components: ctx.requestLogger.getSummary().byComponent,
+              categories: ctx.requestLogger.getSummary().byCategory,
+            },
+            timing: timingLog,
+          },
+        });
+        return true;
+      }
       if (iteration >= maxIterations) {
         timingLog.push({ phase: 'total', duration: Date.now() - loopStart });
         ctx.timing.push(...timingLog);

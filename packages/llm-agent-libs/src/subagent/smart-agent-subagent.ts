@@ -34,6 +34,7 @@ export class SmartAgentSubAgent implements ISubAgent {
       {
         sessionId: input.sessionId,
         signal: input.signal,
+        stopSignal: input.stopSignal,
         trace: input.trace,
         sessionLogger: input.sessionLogger,
         onPartial: input.onPartial,
@@ -55,7 +56,7 @@ export class SmartAgentSubAgent implements ISubAgent {
       throw res.error;
     }
 
-    const { content, toolCalls, stopReason, usage } = res.value;
+    const { content, toolCalls, stopReason, usage, stopped } = res.value;
 
     const mappedUsage = usage
       ? {
@@ -106,6 +107,7 @@ export class SmartAgentSubAgent implements ISubAgent {
       toolCalls: mappedToolCalls,
       usage: mappedUsage,
       status: 'complete',
+      ...(stopped ? { stopped } : {}),
     };
   }
 }

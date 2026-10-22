@@ -33,6 +33,8 @@ export interface ISubAgentInput {
   context?: string;
   sessionId?: string;
   signal?: AbortSignal;
+  /** Stop at the next iteration boundary; never interrupts an in-flight call. */
+  stopSignal?: AbortSignal;
   /** Request correlation, threaded from the coordinator so worker token-log
    *  entries attribute to the same request delta (traceId). */
   trace?: { traceId: string };
@@ -75,6 +77,8 @@ export interface ISubAgentResult {
    *  (consumer-executed) external tool call and is waiting for its result
    *  (#171). Default/absent = 'complete'. */
   status?: 'complete' | 'awaiting-external';
+  /** Cooperative termination with partial output; status remains complete. */
+  stopped?: true;
   /** The external tool calls the worker surfaced (deterministic `ext:` ids).
    *  Present iff status === 'awaiting-external'. */
   pendingExternalToolCalls?: LlmToolCall[];
