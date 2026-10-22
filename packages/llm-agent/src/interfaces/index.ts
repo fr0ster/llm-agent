@@ -66,6 +66,16 @@ export type {
 } from './decision-model.js';
 export { DecisionError } from './decision-model.js';
 export type {
+  DialogueState,
+  IConcurrencyPool,
+  IDialogueStateStore,
+  PlannerMessage,
+  TaskEvent,
+  TaskRecord,
+  TaskRequest,
+  TaskState,
+} from './dialogue.js';
+export type {
   ErrorContext,
   ErrorReaction,
   IErrorStrategy,
