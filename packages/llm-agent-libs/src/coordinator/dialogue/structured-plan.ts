@@ -160,21 +160,14 @@ export function applyTaskEvent(
 export function planView(plan?: Plan): string {
   if (!plan) return '[plan] status: active\nnone';
   const priority = (step: PlanStep): number => {
-    if (
-      step.state === 'running' ||
-      step.state === 'checking' ||
-      (step.state === 'pending' && dependenciesDone(plan, step))
-    )
-      return 0;
-    if (step.state === 'pending') return 1;
-    if (step.state === 'failed' || step.state === 'blocked') return 2;
-    return 3;
+    if (step.state === 'pending' && dependenciesDone(plan, step)) return 0;
+    if (step.state === 'running' || step.state === 'checking') return 1;
+    if (step.state === 'pending') return 2;
+    if (step.state === 'failed' || step.state === 'blocked') return 3;
+    return 4;
   };
   const sorted = [...plan.steps].sort((a, b) => priority(a) - priority(b));
-  const visible = sorted.slice(
-    0,
-    Math.max(40, sorted.filter((s) => priority(s) === 0).length),
-  );
+  const visible = sorted.slice(0, 40);
   const collapsed = new Map<string, number>();
   for (const step of sorted.slice(visible.length))
     collapsed.set(step.state, (collapsed.get(step.state) ?? 0) + 1);

@@ -173,15 +173,18 @@ export class PlannerToolsClient implements IMcpClient {
             throw new Error(
               'checker requires a successful current work attempt (checking)',
             );
-          const workId = step && currentWorkTaskId(step);
-          const currentWork = workId ? scope.board.get(workId) : undefined;
+          const attemptId = isCheck
+            ? step?.check?.taskId
+            : step && currentWorkTaskId(step);
+          const currentAttempt = attemptId
+            ? scope.board.get(attemptId)
+            : undefined;
           if (
-            !isCheck &&
-            (currentWork?.state === 'queued' ||
-              currentWork?.state === 'running')
+            currentAttempt?.state === 'queued' ||
+            currentAttempt?.state === 'running'
           )
             throw new Error(
-              `work attempt ${workId} for ${step?.id} is ${currentWork.state}; stop it first with stop_task or wait for it to settle`,
+              `${isCheck ? 'check' : 'work'} attempt ${attemptId} for ${step?.id} is ${currentAttempt.state}; stop it first with stop_task or wait for it to settle`,
             );
           const result = scope.board.start({ worker, goal, context, history });
           if (!result.ok) throw new Error(result.error);
@@ -290,7 +293,11 @@ export class PlannerToolsClient implements IMcpClient {
             args.question === undefined
               ? undefined
               : requiredString(args, 'question');
-          if (status === 'waiting_user' && !question?.trim())
+          if (
+            args.steps !== undefined &&
+            status === 'waiting_user' &&
+            !question?.trim()
+          )
             throw new Error('waiting_user requires question');
           scope.setPlan(
             args.steps !== undefined

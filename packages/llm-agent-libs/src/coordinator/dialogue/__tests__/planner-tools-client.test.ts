@@ -251,7 +251,6 @@ test('update_plan validates status, defaults to active and advertises the enum',
             await call('update_plan', {
               plan: 'next',
               ...(status ? { status } : {}),
-              question: 'why?',
             })
           ).error,
           undefined,

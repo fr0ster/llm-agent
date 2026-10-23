@@ -17,6 +17,11 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 - Dialogue planner turns use a single bounded plan view and step-aware actions.
 
+### Migration
+
+- The dialogue planner exposes six control tools, including the new `get_plan`; update consumers that enumerate tools or assert their count.
+- `DialogueState.plan` now accepts a string or a structured plan object. Snapshots return structured objects; existing legacy string plans still restore.
+
 ## [30.7.0] — 2026-10-23
 
 ### Added
