@@ -8,7 +8,12 @@ import type {
 } from '@mcp-abap-adt/llm-agent';
 import { z } from 'zod';
 import { currentPlannerScope } from './planner-scope.js';
-import { dependenciesDone, mergePlan, stepSchema } from './structured-plan.js';
+import {
+  currentWorkTaskId,
+  dependenciesDone,
+  mergePlan,
+  stepSchema,
+} from './structured-plan.js';
 
 function textResult(
   value: unknown,
@@ -96,6 +101,28 @@ export class PlannerToolsClient implements IMcpClient {
           inputSchema: schema({}),
         },
         {
+          name: 'get_plan',
+          description:
+            'Read full plan steps, filtered by state and paged in plan order.',
+          inputSchema: schema({
+            state: {
+              type: 'string',
+              enum: [
+                'ready',
+                'pending',
+                'running',
+                'checking',
+                'done',
+                'failed',
+                'skipped',
+                'blocked',
+              ],
+            },
+            offset: { type: 'integer', minimum: 0, default: 0 },
+            limit: { type: 'integer', minimum: 1, default: 40 },
+          }),
+        },
+        {
           name: 'update_plan',
           description: 'Store the current plan.',
           inputSchema: schema(
@@ -146,6 +173,16 @@ export class PlannerToolsClient implements IMcpClient {
             throw new Error(
               'checker requires a successful current work attempt (checking)',
             );
+          const workId = step && currentWorkTaskId(step);
+          const currentWork = workId ? scope.board.get(workId) : undefined;
+          if (
+            !isCheck &&
+            (currentWork?.state === 'queued' ||
+              currentWork?.state === 'running')
+          )
+            throw new Error(
+              `work attempt ${workId} for ${step?.id} is ${currentWork.state}; stop it first with stop_task or wait for it to settle`,
+            );
           const result = scope.board.start({ worker, goal, context, history });
           if (!result.ok) throw new Error(result.error);
           if (step) {
@@ -194,6 +231,53 @@ export class PlannerToolsClient implements IMcpClient {
               state,
             })),
           );
+        case 'get_plan': {
+          const {
+            state,
+            offset = 0,
+            limit = 40,
+          } = z
+            .object({
+              state: z
+                .enum([
+                  'ready',
+                  'pending',
+                  'running',
+                  'checking',
+                  'done',
+                  'failed',
+                  'skipped',
+                  'blocked',
+                ])
+                .optional(),
+              offset: z.number().int().min(0).optional(),
+              limit: z.number().int().min(1).optional(),
+            })
+            .parse(args);
+          const plan = scope.getPlan();
+          if (typeof plan !== 'object')
+            return textResult({
+              plan: plan ?? null,
+              steps: [],
+              total: 0,
+              offset,
+              limit,
+            });
+          const steps = plan.steps.filter(
+            (step) =>
+              !state ||
+              (state === 'ready'
+                ? step.state === 'pending' && dependenciesDone(plan, step)
+                : step.state === state),
+          );
+          return textResult({
+            ...plan,
+            steps: steps.slice(offset, offset + limit),
+            total: steps.length,
+            offset,
+            limit,
+          });
+        }
         case 'update_plan': {
           const status = args.status ?? 'active';
           if (

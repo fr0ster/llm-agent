@@ -79,7 +79,7 @@ test('step merge retains state and task links, new ids pending, dependency valid
     s.state = 'done';
   });
   const view = planView(big);
-  assert.match(view, /10 older done\/skipped steps collapsed/);
+  assert.match(view, /10 done steps collapsed/);
   assert.equal(view.split('\n').filter((l) => /^s\d/.test(l)).length, 40);
   assert.doesNotMatch(view, /\[tasks\]/);
 });
@@ -220,7 +220,7 @@ for (const maxCorrections of [0, 1, 2]) {
           else
             assert.match(
               String(messages.at(-1)?.content),
-              /\[check\] Steps s1 are ready/,
+              /\[check\] Steps s1: first are ready/,
             );
           opts.onPartial?.({ kind: 'content', delta: `secret ${calls}` });
           return { ok: true, value: { content: `secret ${calls}` } };
@@ -275,7 +275,7 @@ test('event correction, waiting_user suppression/reset, auto done, structured sn
         } else if (calls === 3) {
           assert.match(
             String(messages.at(-1)?.content),
-            /\[check\] Steps s2 are ready/,
+            /\[check\] Steps s2: second are ready/,
           );
           await call('update_plan', {
             steps,
@@ -748,3 +748,196 @@ for (const by of ['planner', 'checker'] as const) {
     await session.close();
   });
 }
+
+test('active work cannot be replaced, even after a stop request, and dependents wait', async () => {
+  const plan = mergePlan(undefined, steps, 'active');
+  let finish!: (value: { output: string; stopped?: boolean }) => void;
+  const board = new TaskBoard({
+    workers: new Map([
+      [
+        'w',
+        {
+          name: 'w',
+          capabilities: { contextPolicy: 'optional' as const },
+          run: () =>
+            new Promise<{ output: string; stopped?: boolean }>((resolve) => {
+              finish = resolve;
+            }),
+        },
+      ],
+    ]),
+    onEvent: (event) => applyTaskEvent(plan, event),
+  });
+  await runInPlannerScope(
+    { board, getPlan: () => plan, setPlan() {}, history: () => [] },
+    async () => {
+      // Start directly so the duplicate call observes the queued state before yielding.
+      const first = board.start({ worker: 'w', goal: 'first' });
+      assert.ok(first.ok);
+      Object.assign(plan.steps[0], {
+        state: 'running',
+        workTaskId: first.value.id,
+        taskIds: [first.value.id],
+      });
+      const delegate = (step_id = 's1') =>
+        call('delegate_task', { worker: 'w', goal: 'retry', step_id });
+      const queued = await delegate();
+      assert.equal(queued.isError, true);
+      assert.match(
+        JSON.stringify(queued.content),
+        /queued; stop it first with stop_task or wait/,
+      );
+      await tick();
+      assert.equal(board.get('t1')?.state, 'running');
+      assert.equal((await delegate()).isError, true);
+      await call('stop_task', { task_id: 't1' });
+      assert.equal((await delegate()).isError, true);
+      assert.equal((await delegate('s2')).isError, true);
+      assert.equal(plan.steps[0].workTaskId, 't1');
+      assert.deepEqual(plan.steps[0].taskIds, ['t1']);
+      assert.equal(board.list().length, 1);
+      finish({ output: 'stopped', stopped: true });
+      await tick();
+      assert.equal((await delegate()).isError, undefined);
+      await tick();
+      assert.equal(plan.steps[0].workTaskId, 't2');
+      assert.equal((await delegate('s2')).isError, true);
+      finish({ output: 'retry complete' });
+      await tick();
+      assert.equal((await delegate('s2')).isError, undefined);
+      await tick();
+      finish({ output: 'dependent complete' });
+      await tick();
+    },
+  );
+  await board.stopAll();
+});
+
+test('view prioritizes actionable steps, counts every hidden state, and preserves all actionable details', () => {
+  const plan = mergePlan(
+    undefined,
+    [
+      ...Array.from({ length: 45 }, (_, i) => ({
+        id: `failed${i}`,
+        goal: 'failed goal',
+      })),
+      {
+        id: 'ready',
+        goal: 'action goal',
+        check: { by: 'planner', goal: 'verify action' },
+      },
+      { id: 'running', goal: 'running goal' },
+      { id: 'checking', goal: 'checking goal' },
+      { id: 'pending', goal: 'pending goal', dependsOn: ['failed0'] },
+      { id: 'blocked', goal: 'blocked goal' },
+    ],
+    'active',
+  );
+  plan.steps.slice(0, 45).forEach((s) => {
+    s.state = 'failed';
+  });
+  plan.steps[46].state = 'running';
+  plan.steps[47].state = 'checking';
+  plan.steps[49].state = 'blocked';
+  const view = planView(plan);
+  assert.match(
+    view,
+    /ready ready action goal; check by planner: verify action/,
+  );
+  assert.match(view, /running running running goal/);
+  assert.match(view, /checking checking checking goal/);
+  assert.match(view, /pending pending pending goal \(depends on failed0\)/);
+  assert.match(view, /9 failed steps collapsed/);
+  assert.match(view, /1 blocked steps collapsed/);
+  assert.equal(
+    view
+      .split('\n')
+      .filter((line) =>
+        /^(failed|ready|running|checking|pending|blocked)/.test(line),
+      ).length,
+    40,
+  );
+  plan.steps.forEach((s) => {
+    s.state = 'running';
+  });
+  assert.equal(planView(plan).split('\n').length, 51);
+});
+
+for (const state of ['failed', 'stopped', 'interrupted'] as const) {
+  test(`settled ${state} work permits retry`, async () => {
+    const plan = mergePlan(undefined, [steps[0]], 'active');
+    Object.assign(plan.steps[0], {
+      state: 'failed',
+      workTaskId: 't1',
+      taskIds: ['t1'],
+    });
+    const board = new TaskBoard({
+      workers: new Map([
+        [
+          'w',
+          {
+            name: 'w',
+            capabilities: { contextPolicy: 'optional' as const },
+            async run() {
+              return { output: 'ok' };
+            },
+          },
+        ],
+      ]),
+      onEvent: (event) => applyTaskEvent(plan, event),
+    });
+    board.restore([outcome('t1', state).task]);
+    await runInPlannerScope(
+      { board, getPlan: () => plan, setPlan() {}, history: () => [] },
+      async () => {
+        assert.equal(
+          (
+            await call('delegate_task', {
+              worker: 'w',
+              goal: 'retry',
+              step_id: 's1',
+            })
+          ).isError,
+          undefined,
+        );
+        assert.equal(plan.steps[0].workTaskId, 't2');
+      },
+    );
+    await tick();
+    await board.stopAll();
+  });
+}
+
+test('corrective notes include normalized and bounded ready goals', async () => {
+  let calls = 0;
+  const session = await DialogueSession.open({
+    id: 'trim-goal',
+    maxCorrections: 1,
+    board: { workers: new Map() },
+    planner: {
+      async process(messages) {
+        if (++calls === 1)
+          await call('update_plan', {
+            steps: [
+              { id: 'ready', goal: `  useful\n   goal ${'x'.repeat(300)}  ` },
+            ],
+          });
+        else {
+          const note = String(messages.at(-1)?.content);
+          assert.ok(
+            note.includes(
+              `[check] Steps ready: ${`useful goal ${'x'.repeat(300)}`.slice(0, 200)} are ready`,
+            ),
+          );
+          assert.ok(
+            !note.slice(note.indexOf('[check]')).includes('x'.repeat(201)),
+          );
+        }
+        return { ok: true, value: { content: 'ok' } };
+      },
+    },
+  });
+  await session.send('go');
+  assert.equal(calls, 2);
+  await session.close();
+});

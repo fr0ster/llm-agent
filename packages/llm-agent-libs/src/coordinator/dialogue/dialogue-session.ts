@@ -248,7 +248,7 @@ export class DialogueSession {
         const events = this.events.splice(0);
         this.appendInput(
           (idle
-            ? `[check] Steps ${ready.map((s) => s.id).join(', ')} are ready (all dependencies done) and nothing runs. Delegate them, skip them with a reason, or ask the user (status waiting_user).`
+            ? `[check] Steps ${ready.map((s) => `${s.id}: ${s.goal.replace(/\s+/g, ' ').trim().slice(0, 200)}`).join(', ')} are ready (all dependencies done) and nothing runs. Delegate them, skip them with a reason, or ask the user (status waiting_user).`
             : '[check] Review new task events before answering.') +
             (events.length ? `\n${this.eventNotes(events)}` : ''),
         );

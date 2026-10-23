@@ -11,10 +11,11 @@ import { DialogueSession } from '../dialogue-session.js';
 import { DIALOGUE_PLANNER_SYSTEM } from '../planner-prompt.js';
 import { PlannerToolsClient } from '../planner-tools-client.js';
 
-test('documented builder exposes exactly the five control tools and dispatches delegation inside a session', async () => {
+test('documented builder exposes exactly the six control tools and dispatches delegation inside a session', async () => {
   const expected = [
     'delegate_task',
     'stop_task',
+    'get_plan',
     'get_task',
     'list_tasks',
     'update_plan',

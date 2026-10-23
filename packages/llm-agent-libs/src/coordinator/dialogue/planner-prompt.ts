@@ -10,6 +10,7 @@ Sequence steps touching the same object, locks or transport, or depending on eac
 A [check] note means: delegate ready steps, skip them with a reason, or ask with status waiting_user and question.
 Use [plan] and the whole-turn [actions] record to avoid repeating control actions already performed.
 Record and revise the structured plan with update_plan({ steps, status?, question? }) (status active by default).
+Use get_plan({ state?, offset?, limit? }) to read full steps, including steps collapsed in [plan]; state ready selects actionable steps.
 Give each step a stable id, a result goal (the smallest checkable result), and dependsOn for prerequisites.
 Always delegate_task with step_id. Dependencies must be done before delegation. Skipped dependencies do not satisfy prerequisites; revise dependsOn when skipping changes the plan.
 Existing ids retain state and task history; use state overrides to retry or close a check.

@@ -159,22 +159,33 @@ export function applyTaskEvent(
 }
 export function planView(plan?: Plan): string {
   if (!plan) return '[plan] status: active\nnone';
-  const visible = [...plan.steps];
-  let collapsed = 0;
-  while (visible.length > 40) {
-    const index = visible.findIndex(
-      (s) => s.state === 'done' || s.state === 'skipped',
-    );
-    if (index < 0) break;
-    visible.splice(index, 1);
-    collapsed++;
-  }
+  const priority = (step: PlanStep): number => {
+    if (
+      step.state === 'running' ||
+      step.state === 'checking' ||
+      (step.state === 'pending' && dependenciesDone(plan, step))
+    )
+      return 0;
+    if (step.state === 'pending') return 1;
+    if (step.state === 'failed' || step.state === 'blocked') return 2;
+    return 3;
+  };
+  const sorted = [...plan.steps].sort((a, b) => priority(a) - priority(b));
+  const visible = sorted.slice(
+    0,
+    Math.max(40, sorted.filter((s) => priority(s) === 0).length),
+  );
+  const collapsed = new Map<string, number>();
+  for (const step of sorted.slice(visible.length))
+    collapsed.set(step.state, (collapsed.get(step.state) ?? 0) + 1);
   return [
     `[plan] status: ${plan.status}`,
     plan.question,
     plan.note,
-    collapsed ? `(${collapsed} older done/skipped steps collapsed)` : '',
-    ...visible.slice(0, 40).map((s) => {
+    ...[...collapsed].map(
+      ([state, count]) => `(${count} ${state} steps collapsed; use get_plan)`,
+    ),
+    ...visible.map((s) => {
       const current = currentAttemptIds(s);
       const work = currentWorkTaskId(s);
       const check = s.check?.taskId;
@@ -186,9 +197,6 @@ export function planView(plan?: Plan): string {
       ].filter(Boolean);
       return `${s.id} ${s.state === 'pending' && dependenciesDone(plan, s) ? 'ready' : s.state} ${s.goal.replace(/\s+/g, ' ')}${s.dependsOn?.length ? ` (depends on ${s.dependsOn.join(', ')})` : ''}${attempts.length ? ` (${attempts.join(', ')})` : ''}${s.check ? `; check by ${s.check.by}: ${s.check.goal.replace(/\s+/g, ' ').trim()}` : ''}${s.note ? ` ? ${s.note}` : ''}`;
     }),
-    visible.length > 40
-      ? `(${visible.length - 40} additional steps omitted)`
-      : '',
   ]
     .filter(Boolean)
     .join('\n');

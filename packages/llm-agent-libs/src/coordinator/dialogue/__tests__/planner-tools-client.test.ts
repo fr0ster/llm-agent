@@ -61,13 +61,20 @@ function setup(maxTasks = 50) {
     },
   };
 }
-test('offers exactly five JSON Schema tools and worker enum within scope', async () => {
+test('offers exactly six JSON Schema tools and worker enum within scope', async () => {
   const f = setup();
   const result = await runInPlannerScope(f.scope, () => client.listTools());
   assert.ok(result.ok);
   assert.deepEqual(
     result.value.map((tool) => tool.name),
-    ['delegate_task', 'stop_task', 'get_task', 'list_tasks', 'update_plan'],
+    [
+      'delegate_task',
+      'stop_task',
+      'get_task',
+      'list_tasks',
+      'get_plan',
+      'update_plan',
+    ],
   );
   for (const tool of result.value)
     assert.equal(tool.inputSchema.type, 'object');
@@ -283,4 +290,47 @@ test('legacy update_plan preserves the string-only setter contract', async () =>
   );
   assert.equal(stored, 'LEGACY TEXT');
   await f.board.stopAll();
+});
+
+test('get_plan pages full steps in plan order and validates filters and pagination', async () => {
+  const f = setup();
+  await runInPlannerScope(f.scope, async () => {
+    assert.equal((await call('get_plan')).json.plan, null);
+    await call('update_plan', {
+      steps: Array.from({ length: 55 }, (_, i) => ({
+        id: `s${i}`,
+        goal: `full goal ${i} ${'x'.repeat(300)}`,
+        ...(i ? { dependsOn: ['s0'] } : {}),
+        check: { by: 'planner', goal: 'full check' },
+      })),
+    });
+    const plan = f.getPlan() as DialoguePlan;
+    plan.steps[54].state = 'failed';
+    const page = (await call('get_plan', { offset: 40, limit: 20 })).json;
+    assert.equal(page.total, 55);
+    assert.deepEqual(
+      page.steps,
+      JSON.parse(JSON.stringify(plan.steps.slice(40))),
+    );
+    assert.deepEqual(
+      (await call('get_plan', { state: 'ready' })).json.steps,
+      JSON.parse(JSON.stringify([plan.steps[0]])),
+    );
+    assert.deepEqual(
+      (await call('get_plan', { state: 'failed' })).json.steps,
+      JSON.parse(JSON.stringify([plan.steps[54]])),
+    );
+    assert.equal((await call('get_plan', { state: 'pending' })).json.total, 54);
+    assert.deepEqual((await call('get_plan', { offset: 100 })).json.steps, []);
+    for (const args of [
+      { state: 'invalid' },
+      { offset: -1 },
+      { offset: 0.5 },
+      { limit: 0 },
+      { limit: '2' },
+    ])
+      assert.equal((await call('get_plan', args)).error, true);
+    await call('update_plan', { plan: 'legacy plan' });
+    assert.equal((await call('get_plan')).json.plan, 'legacy plan');
+  });
 });
