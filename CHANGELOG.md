@@ -21,6 +21,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 - The dialogue planner exposes six control tools, including the new `get_plan`; update consumers that enumerate tools or assert their count.
 - `DialogueState.plan` now accepts a string or a structured plan object. Snapshots return structured objects; existing legacy string plans still restore.
+- `DialogueState.taskSteps` is an optional task-ID-to-step-ID record that preserves ownership even after a step is removed. Consumers that validate persisted state must allow this field. Older snapshots rebuild ownership from retained steps.
 
 ## [30.7.0] — 2026-10-23
 

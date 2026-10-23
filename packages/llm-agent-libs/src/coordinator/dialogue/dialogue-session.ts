@@ -116,8 +116,14 @@ export class DialogueSession {
       session.pending = structuredClone(state.pending);
       session.savedAt = state.savedAt;
       const ids = session.board.restore(state.tasks);
+      if (state.taskSteps !== undefined) {
+        for (const [id, stepId] of Object.entries(state.taskSteps))
+          session.taskSteps.set(id, stepId);
+      } else {
+        for (const step of session.plan?.steps ?? [])
+          for (const id of step.taskIds) session.taskSteps.set(id, step.id);
+      }
       for (const step of session.plan?.steps ?? []) {
-        for (const id of step.taskIds) session.taskSteps.set(id, step.id);
         if (
           step.state !== 'skipped' &&
           currentAttemptIds(step).some((id) => ids.includes(id))
@@ -342,6 +348,7 @@ export class DialogueSession {
       plan: this.plan,
       planStatus: this.plan?.status,
       tasks: this.board.list(),
+      taskSteps: Object.fromEntries(this.taskSteps),
       pending: this.pending,
       savedAt: this.savedAt,
     });

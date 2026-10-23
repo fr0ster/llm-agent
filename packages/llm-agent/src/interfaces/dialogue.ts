@@ -74,6 +74,8 @@ export interface DialogueState {
   plan?: string | Plan;
   planStatus?: 'active' | 'waiting_user' | 'done';
   tasks: TaskRecord[];
+  /** Task ID to owning step ID, including steps removed from the plan. */
+  taskSteps?: Record<string, string>;
   pending: PlannerMessage[];
   savedAt: number;
 }

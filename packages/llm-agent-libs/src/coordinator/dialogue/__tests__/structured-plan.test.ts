@@ -444,6 +444,7 @@ test('structured restore preserves checker links and interrupts an unfinished ch
   });
   const restored = session.snapshot().plan as DialoguePlan;
   assert.deepEqual(restored.steps[0].taskIds, ['t1', 't2']);
+  assert.deepEqual(session.snapshot().taskSteps, { t1: 's1', t2: 's1' });
   assert.equal(restored.steps[0].check?.taskId, 't2');
   assert.equal(restored.steps[0].state, 'failed');
   assert.equal(session.snapshot().tasks[1].state, 'interrupted');
@@ -1252,6 +1253,34 @@ for (const remove of [false, true]) {
               'done',
             );
             if (remove) await call('update_plan', { steps: [] });
+            const store = new InMemoryDialogueStateStore();
+            // Exercise a JSON persistence boundary after the completed step is removed.
+            await store.save(
+              'round-trip',
+              JSON.parse(JSON.stringify(session.snapshot())),
+            );
+            const restored = await DialogueSession.open({
+              id: 'round-trip',
+              store,
+              board: { workers: new Map() },
+              planner: {
+                async process() {
+                  return { ok: true, value: { content: 'ok' } };
+                },
+              },
+            });
+            assert.deepEqual(restored.snapshot().taskSteps, { t1: 's1' });
+            // Completed tasks are not replayed on open; route the outcome explicitly.
+            const routed = (
+              restored as unknown as { eventNotes(events: TaskEvent[]): string }
+            ).eventNotes([outcome('t1', 'done', 'original outcome')]);
+            assert.match(
+              routed,
+              remove
+                ? /^\[actions\] task t1 for s1.*original outcome/
+                : /^\[task events\] task t1 for s1.*original outcome/,
+            );
+            await restored.close();
           } else {
             const text = String(messages.at(-1)?.content);
             assert.match(
