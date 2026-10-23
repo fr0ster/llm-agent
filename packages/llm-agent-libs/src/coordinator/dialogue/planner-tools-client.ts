@@ -140,15 +140,26 @@ export class PlannerToolsClient implements IMcpClient {
           if (structured && !step)
             throw new Error('step_id must identify a plan step');
           if (step && structured && !dependenciesDone(structured, step))
-            throw new Error(`dependencies for ${step.id} are not done/skipped`);
+            throw new Error(`dependencies for ${step.id} are not done`);
+          const isCheck = step?.check?.by === 'checker' && worker === 'checker';
+          if (isCheck && step?.state !== 'checking')
+            throw new Error(
+              'checker requires a successful current work attempt (checking)',
+            );
           const result = scope.board.start({ worker, goal, context, history });
           if (!result.ok) throw new Error(result.error);
           if (step) {
             step.taskIds.push(result.value.id);
-            step.state = 'running';
-            if (step.check?.by === 'checker' && worker === 'checker') {
+            if (isCheck && step.check) {
               step.check.taskId = result.value.id;
               delete step.check.verdict;
+            } else {
+              step.workTaskId = result.value.id;
+              step.state = 'running';
+              if (step.check) {
+                delete step.check.taskId;
+                delete step.check.verdict;
+              }
             }
           }
           scope.recordAction?.(
@@ -200,14 +211,9 @@ export class PlannerToolsClient implements IMcpClient {
           scope.setPlan(
             args.steps !== undefined
               ? mergePlan(scope.getPlan(), args.steps, status, question)
-              : {
-                  version: 1,
-                  steps: [],
-                  note: requiredString(args, 'plan'),
-                  status,
-                  question,
-                },
+              : requiredString(args, 'plan'),
             status,
+            question,
           );
           scope.recordAction?.('plan updated');
           return textResult({ ok: true });

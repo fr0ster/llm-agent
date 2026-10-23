@@ -56,6 +56,8 @@ export interface PlanStep {
     verdict?: 'pass' | 'fail';
     taskId?: string;
   };
+  /** Current work attempt, tracked separately from check.taskId. */
+  workTaskId?: string;
   taskIds: string[];
   note?: string;
 }

@@ -82,6 +82,7 @@ export function mergePlan(
         ...s,
         state: old ? (s.state ?? old.state) : 'pending',
         taskIds: old?.taskIds ?? [],
+        workTaskId: old?.workTaskId,
         note: s.note ?? old?.note,
         check,
       };
@@ -90,9 +91,7 @@ export function mergePlan(
 }
 export function dependenciesDone(plan: Plan, step: PlanStep): boolean {
   return (step.dependsOn ?? []).every((id) =>
-    plan.steps.some(
-      (s) => s.id === id && (s.state === 'done' || s.state === 'skipped'),
-    ),
+    plan.steps.some((s) => s.id === id && s.state === 'done'),
   );
 }
 export function readySteps(plan?: Plan): PlanStep[] {
@@ -102,6 +101,29 @@ export function readySteps(plan?: Plan): PlanStep[] {
     ) ?? []
   );
 }
+export function currentWorkTaskId(step: PlanStep): string | undefined {
+  return (
+    step.workTaskId ??
+    step.taskIds.filter((id) => id !== step.check?.taskId).at(-1)
+  );
+}
+export function currentAttemptIds(step: PlanStep): string[] {
+  const work = currentWorkTaskId(step);
+  const check = step.check?.taskId;
+  return [
+    work,
+    check && step.taskIds.indexOf(check) > step.taskIds.indexOf(work ?? '')
+      ? check
+      : undefined,
+  ].filter((id): id is string => id !== undefined);
+}
+export function recomputePlanStatus(plan?: Plan): void {
+  if (!plan?.steps.length) return;
+  if (plan.steps.every((s) => s.state === 'done' || s.state === 'skipped')) {
+    plan.status = 'done';
+    delete plan.question;
+  } else if (plan.status === 'done') plan.status = 'active';
+}
 export function applyTaskEvent(
   plan: Plan | undefined,
   { task, kind }: TaskEvent,
@@ -109,7 +131,7 @@ export function applyTaskEvent(
   const step = plan?.steps.find((s) => s.taskIds.includes(task.id));
   if (!step || kind === 'started') return;
   // Older retry outcomes cannot overwrite the current attempt.
-  if (step.taskIds.at(-1) !== task.id) return;
+  if (!currentAttemptIds(step).includes(task.id)) return;
   if (kind !== 'done') {
     step.state = 'failed';
     step.note = task.error ?? kind;

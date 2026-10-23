@@ -11,7 +11,13 @@ import type {
   TaskEvent,
 } from '@mcp-abap-adt/llm-agent';
 import { runInPlannerScope } from './planner-scope.js';
-import { applyTaskEvent, planView, readySteps } from './structured-plan.js';
+import {
+  applyTaskEvent,
+  currentAttemptIds,
+  planView,
+  readySteps,
+  recomputePlanStatus,
+} from './structured-plan.js';
 import { TaskBoard, type TaskBoardOptions } from './task-board.js';
 
 export const DIALOGUE_HISTORY_LIMIT = 200;
@@ -110,11 +116,12 @@ export class DialogueSession {
       session.savedAt = state.savedAt;
       const ids = session.board.restore(state.tasks);
       for (const step of session.plan?.steps ?? []) {
-        if (step.taskIds.some((id) => ids.includes(id))) {
+        if (currentAttemptIds(step).some((id) => ids.includes(id))) {
           step.state = 'failed';
           step.note = 'interrupted by restart';
         }
       }
+      recomputePlanStatus(session.plan);
       if (ids.length)
         session.restart = `[restart] interrupted tasks: ${ids.join(', ')} — their real state is unknown; check before continuing`;
     }
@@ -179,10 +186,10 @@ export class DialogueSession {
           {
             board: this.board,
             getPlan: () => this.plan,
-            setPlan: (plan, status = 'active') => {
+            setPlan: (plan, status = 'active', question) => {
               this.plan =
                 typeof plan === 'string'
-                  ? { version: 1, steps: [], note: plan, status }
+                  ? { version: 1, steps: [], note: plan, status, question }
                   : plan;
             },
             recordAction: (action, didStart) => {
@@ -211,15 +218,7 @@ export class DialogueSession {
           content: `[actions] ${actions.join(', ') || 'none'}`,
         });
         this.trim();
-        if (
-          this.plan?.steps.length &&
-          this.plan.steps.every(
-            (s) => s.state === 'done' || s.state === 'skipped',
-          )
-        ) {
-          this.plan.status = 'done';
-          delete this.plan.question;
-        }
+        recomputePlanStatus(this.plan);
         const ready = readySteps(this.plan);
         const canCheck =
           this.plan !== undefined &&
@@ -246,7 +245,7 @@ export class DialogueSession {
         const events = this.events.splice(0);
         this.appendInput(
           (idle
-            ? `[check] Steps ${ready.map((s) => s.id).join(', ')} are ready and nothing runs. Delegate them, skip them with a reason, or ask the user (status waiting_user).`
+            ? `[check] Steps ${ready.map((s) => s.id).join(', ')} are ready (all dependencies done) and nothing runs. Delegate them, skip them with a reason, or ask the user (status waiting_user).`
             : '[check] Review new task events before answering.') +
             (events.length ? `\n${this.eventNotes(events)}` : ''),
         );

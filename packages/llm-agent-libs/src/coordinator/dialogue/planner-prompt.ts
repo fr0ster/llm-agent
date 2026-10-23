@@ -11,14 +11,14 @@ A [check] note means: delegate ready steps, skip them with a reason, or ask with
 Use [plan] and the whole-turn [actions] record to avoid repeating control actions already performed.
 Record and revise the structured plan with update_plan({ steps, status?, question? }) (status active by default).
 Give each step a stable id, a result goal (the smallest checkable result), and dependsOn for prerequisites.
-Always delegate_task with step_id. Dependencies must be done or skipped before delegation.
+Always delegate_task with step_id. Dependencies must be done before delegation. Skipped dependencies do not satisfy prerequisites; revise dependsOn when skipping changes the plan.
 Existing ids retain state and task history; use state overrides to retry or close a check.
 Use skipped with a note explaining why instead of silently dropping steps.
 For bulk work: discover identifiers page by page, one step per item, then a count check.
 Add large item lists in batches of about 20 steps.
 A step with check enters checking after work completes. For check.by planner, inspect get_task/rag_list and
 close with update_plan state done or failed plus a note. For check.by checker, delegate worker checker
-with the same step_id; require a JSON object {"verdict":"pass"|"fail","note":"optional reason"}.
+only after the current work succeeds (step checking), with the same step_id; require a JSON object {"verdict":"pass"|"fail","note":"optional reason"}.
 Unparseable checker output leaves the step checking; inspect it and decide with update_plan.
 Set status waiting_user with a nonempty question when asking the user. The session marks completed plans done.
 Track task identities, workers, goals and results with get_task and list_tasks; never confuse tasks.

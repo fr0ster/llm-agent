@@ -129,7 +129,7 @@ test('all tool success paths return JSON and plan is stored', async () => {
     assert.deepEqual((await call('update_plan', { plan: 'the plan' })).json, {
       ok: true,
     });
-    assert.equal((f.getPlan() as DialoguePlan).note, 'the plan');
+    assert.equal(f.getPlan(), 'the plan');
   });
   await f.board.stopAll();
 });
@@ -210,8 +210,8 @@ test('concurrent async planner scopes remain isolated', async () => {
       }),
     ),
   );
-  assert.equal((a.getPlan() as DialoguePlan).note, '0');
-  assert.equal((b.getPlan() as DialoguePlan).note, '1');
+  assert.equal(a.getPlan(), '0');
+  assert.equal(b.getPlan(), '1');
   assert.equal(a.board.list()[0].goal, '0');
   assert.equal(b.board.list()[0].goal, '1');
   assert.equal((await call('list_tasks')).error, true);
@@ -250,13 +250,7 @@ test('update_plan validates status, defaults to active and advertises the enum',
           undefined,
         );
         assert.deepEqual(updates.at(-1), {
-          plan: {
-            version: 1,
-            steps: [],
-            note: 'next',
-            status: status ?? 'active',
-            question: 'why?',
-          },
+          plan: 'next',
           status: status ?? 'active',
         });
       }
@@ -268,4 +262,25 @@ test('update_plan validates status, defaults to active and advertises the enum',
       assert.equal(updates.length, 4);
     },
   );
+});
+
+test('legacy update_plan preserves the string-only setter contract', async () => {
+  const f = setup();
+  let stored = '';
+  await runInPlannerScope(
+    {
+      ...f.scope,
+      setPlan(value: string) {
+        stored = value.toUpperCase();
+      },
+    },
+    async () => {
+      assert.equal(
+        (await call('update_plan', { plan: 'legacy text' })).error,
+        undefined,
+      );
+    },
+  );
+  assert.equal(stored, 'LEGACY TEXT');
+  await f.board.stopAll();
 });

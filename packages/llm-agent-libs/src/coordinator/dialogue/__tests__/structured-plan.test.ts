@@ -54,10 +54,8 @@ test('step merge retains state and task links, new ids pending, dependency valid
     ['s2'],
   );
   plan.steps[1].state = 'skipped';
-  assert.deepEqual(
-    readySteps(plan).map((s) => s.id),
-    ['s2'],
-  );
+  assert.deepEqual(readySteps(plan), []);
+  assert.doesNotMatch(planView(plan), /s2 ready/);
   assert.throws(() =>
     mergePlan(plan, [{ id: 's', goal: 'x', dependsOn: ['missing'] }], 'active'),
   );
@@ -499,4 +497,170 @@ test('waiting_user suppresses corrections on an event turn with ready steps', as
     ['s2'],
   );
   await session.close();
+});
+
+test('checker cannot overtake work; retries ignore superseded work and check outcomes', async () => {
+  const plan = mergePlan(
+    undefined,
+    [{ ...steps[0], check: { by: 'checker', goal: 'verify' } }],
+    'active',
+  );
+  let finish!: (value: { output: string }) => void;
+  const board = new TaskBoard({
+    workers: new Map(
+      ['w', 'checker'].map((name) => [
+        name,
+        {
+          name,
+          capabilities: { contextPolicy: 'optional' as const },
+          run: () =>
+            name === 'checker'
+              ? Promise.resolve({ output: '{"verdict":"pass"}' })
+              : new Promise<{ output: string }>((resolve) => {
+                  finish = resolve;
+                }),
+        },
+      ]),
+    ),
+    onEvent: (event) => applyTaskEvent(plan, event),
+  });
+  await runInPlannerScope(
+    { board, getPlan: () => plan, setPlan() {}, history: () => [] },
+    async () => {
+      const delegate = (worker: string) =>
+        call('delegate_task', { worker, goal: 'work', step_id: 's1' });
+      assert.equal((await delegate('checker')).isError, true);
+      await delegate('w');
+      await tick();
+      assert.equal((await delegate('checker')).isError, true);
+      assert.deepEqual(plan.steps[0].taskIds, ['t1']);
+      finish({ output: 'finished' });
+      await tick();
+      assert.equal(plan.steps[0].state, 'checking');
+      await delegate('checker');
+      await tick();
+      assert.equal(plan.steps[0].state, 'done');
+      await delegate('w');
+      await tick();
+      applyTaskEvent(plan, outcome('t1', 'failed'));
+      applyTaskEvent(plan, outcome('t2', 'done', '{"verdict":"pass"}'));
+      assert.equal(plan.steps[0].state, 'running');
+      assert.equal((await delegate('checker')).isError, true);
+      finish({ output: 'retry finished' });
+      await tick();
+      assert.equal(plan.steps[0].state, 'checking');
+      await delegate('checker');
+      await tick();
+      assert.equal(plan.steps[0].state, 'done');
+    },
+  );
+  await board.stopAll();
+});
+
+test('appending a check never hides the current work failure', () => {
+  const plan = mergePlan(undefined, [steps[0]], 'active');
+  Object.assign(plan.steps[0], {
+    workTaskId: 't1',
+    taskIds: ['t1', 't2'],
+    check: { by: 'checker', goal: 'verify', taskId: 't2' },
+  });
+  applyTaskEvent(plan, outcome('t2', 'done', '{"verdict":"pass"}'));
+  applyTaskEvent(plan, outcome('t1', 'failed'));
+  assert.equal(plan.steps[0].state, 'failed');
+});
+
+for (const currentInterrupted of [false, true]) {
+  test(`restore reconciles current attempts and recomputes status (current interrupted: ${currentInterrupted})`, async () => {
+    const store = new InMemoryDialogueStateStore();
+    const plan = mergePlan(undefined, [steps[0]], 'done');
+    Object.assign(plan.steps[0], { state: 'done', taskIds: ['t1', 't2'] });
+    await store.save('attempts', {
+      plan,
+      tasks: [
+        outcome('t1', 'started').task,
+        outcome('t2', currentInterrupted ? 'started' : 'done').task,
+      ],
+      conversation: [],
+      pending: [],
+      savedAt: 0,
+    });
+    const session = await DialogueSession.open({
+      id: 'attempts',
+      store,
+      board: { workers: new Map() },
+      planner: {
+        async process() {
+          return { ok: true, value: { content: 'ok' } };
+        },
+      },
+    });
+    const restored = session.snapshot().plan as DialoguePlan;
+    assert.equal(
+      restored.steps[0].state,
+      currentInterrupted ? 'failed' : 'done',
+    );
+    assert.equal(restored.status, currentInterrupted ? 'active' : 'done');
+    await session.close();
+  });
+}
+
+test('skipped dependencies block delegation until the planner revises dependsOn', async () => {
+  let plan = mergePlan(undefined, steps, 'active');
+  plan.steps[0].state = 'skipped';
+  const board = new TaskBoard({
+    workers: new Map([
+      [
+        'w',
+        {
+          name: 'w',
+          capabilities: { contextPolicy: 'optional' },
+          async run() {
+            return { output: 'ok' };
+          },
+        },
+      ],
+    ]),
+    onEvent() {},
+  });
+  await runInPlannerScope(
+    {
+      board,
+      getPlan: () => plan,
+      setPlan(p) {
+        assert.equal(typeof p, 'object');
+        plan = p as DialoguePlan;
+      },
+      history: () => [],
+    },
+    async () => {
+      assert.equal(
+        (
+          await call('delegate_task', {
+            worker: 'w',
+            goal: 'second',
+            step_id: 's2',
+          })
+        ).isError,
+        true,
+      );
+      await call('update_plan', {
+        steps: [
+          { ...steps[0], state: 'skipped', note: 'unnecessary' },
+          { ...steps[1], dependsOn: [] },
+        ],
+      });
+      assert.match(planView(plan), /s2 ready/);
+      assert.equal(
+        (
+          await call('delegate_task', {
+            worker: 'w',
+            goal: 'second',
+            step_id: 's2',
+          })
+        ).isError,
+        undefined,
+      );
+    },
+  );
+  await board.stopAll();
 });

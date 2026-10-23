@@ -6,7 +6,11 @@ export interface PlannerScope {
   board: TaskBoard;
   recordAction?(action: string, started?: boolean): void;
   getPlan(): string | Plan | undefined;
-  setPlan(plan: string | Plan, status?: Plan['status']): void;
+  setPlan(
+    plan: string | Plan,
+    status?: Plan['status'],
+    question?: string,
+  ): void;
   history(): Message[];
 }
 const storage = new AsyncLocalStorage<PlannerScope>();
