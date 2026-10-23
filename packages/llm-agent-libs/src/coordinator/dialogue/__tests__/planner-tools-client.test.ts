@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import type { McpContentBlock, Message } from '@mcp-abap-adt/llm-agent';
+import type {
+  DialoguePlan,
+  McpContentBlock,
+  Message,
+} from '@mcp-abap-adt/llm-agent';
 import { PlannerToolsClient, runInPlannerScope, TaskBoard } from '../index.js';
 
 const client = new PlannerToolsClient();
@@ -15,7 +19,7 @@ async function call(name: string, args = {}) {
 }
 function setup(maxTasks = 50) {
   let history: Message[] | undefined;
-  let plan: string | undefined;
+  let plan: string | DialoguePlan | undefined;
   const board = new TaskBoard({
     workers: new Map([
       [
@@ -43,27 +47,34 @@ function setup(maxTasks = 50) {
     board,
     history: () => history,
     getPlan: () => plan,
-    setPlan: (value: string) => {
+    setPlan: (value: string | DialoguePlan) => {
       plan = value;
     },
     scopeHistory: messages,
     scope: {
       board,
       getPlan: () => plan,
-      setPlan: (value: string) => {
+      setPlan: (value: string | DialoguePlan) => {
         plan = value;
       },
       history: () => messages,
     },
   };
 }
-test('offers exactly five JSON Schema tools and worker enum within scope', async () => {
+test('offers exactly six JSON Schema tools and worker enum within scope', async () => {
   const f = setup();
   const result = await runInPlannerScope(f.scope, () => client.listTools());
   assert.ok(result.ok);
   assert.deepEqual(
     result.value.map((tool) => tool.name),
-    ['delegate_task', 'stop_task', 'get_task', 'list_tasks', 'update_plan'],
+    [
+      'delegate_task',
+      'stop_task',
+      'get_task',
+      'list_tasks',
+      'get_plan',
+      'update_plan',
+    ],
   );
   for (const tool of result.value)
     assert.equal(tool.inputSchema.type, 'object');
@@ -215,7 +226,7 @@ test('concurrent async planner scopes remain isolated', async () => {
 
 test('update_plan validates status, defaults to active and advertises the enum', async () => {
   const f = setup();
-  const updates: Array<{ plan: string; status: unknown }> = [];
+  const updates: Array<{ plan: string | DialoguePlan; status: unknown }> = [];
   await runInPlannerScope(
     {
       ...f.scope,
@@ -257,4 +268,68 @@ test('update_plan validates status, defaults to active and advertises the enum',
       assert.equal(updates.length, 4);
     },
   );
+});
+
+test('legacy update_plan preserves the string-only setter contract', async () => {
+  const f = setup();
+  let stored = '';
+  await runInPlannerScope(
+    {
+      ...f.scope,
+      setPlan(value: string) {
+        stored = value.toUpperCase();
+      },
+    },
+    async () => {
+      assert.equal(
+        (await call('update_plan', { plan: 'legacy text' })).error,
+        undefined,
+      );
+    },
+  );
+  assert.equal(stored, 'LEGACY TEXT');
+  await f.board.stopAll();
+});
+
+test('get_plan pages full steps in plan order and validates filters and pagination', async () => {
+  const f = setup();
+  await runInPlannerScope(f.scope, async () => {
+    assert.equal((await call('get_plan')).json.plan, null);
+    await call('update_plan', {
+      steps: Array.from({ length: 55 }, (_, i) => ({
+        id: `s${i}`,
+        goal: `full goal ${i} ${'x'.repeat(300)}`,
+        ...(i ? { dependsOn: ['s0'] } : {}),
+        check: { by: 'planner', goal: 'full check' },
+      })),
+    });
+    const plan = f.getPlan() as DialoguePlan;
+    plan.steps[54].state = 'failed';
+    const page = (await call('get_plan', { offset: 40, limit: 20 })).json;
+    assert.equal(page.total, 55);
+    assert.deepEqual(
+      page.steps,
+      JSON.parse(JSON.stringify(plan.steps.slice(40))),
+    );
+    assert.deepEqual(
+      (await call('get_plan', { state: 'ready' })).json.steps,
+      JSON.parse(JSON.stringify([plan.steps[0]])),
+    );
+    assert.deepEqual(
+      (await call('get_plan', { state: 'failed' })).json.steps,
+      JSON.parse(JSON.stringify([plan.steps[54]])),
+    );
+    assert.equal((await call('get_plan', { state: 'pending' })).json.total, 54);
+    assert.deepEqual((await call('get_plan', { offset: 100 })).json.steps, []);
+    for (const args of [
+      { state: 'invalid' },
+      { offset: -1 },
+      { offset: 0.5 },
+      { limit: 0 },
+      { limit: '2' },
+    ])
+      assert.equal((await call('get_plan', args)).error, true);
+    await call('update_plan', { plan: 'legacy plan' });
+    assert.equal((await call('get_plan')).json.plan, 'legacy plan');
+  });
 });

@@ -1,4 +1,5 @@
 import type {
+  DialoguePlanStep,
   IMcpClient,
   McpError,
   McpTool,
@@ -6,7 +7,24 @@ import type {
   Message,
   Result,
 } from '@mcp-abap-adt/llm-agent';
+import { z } from 'zod';
 import { currentPlannerScope } from './planner-scope.js';
+import { dependenciesDone, mergePlan, stepSchema } from './structured-plan.js';
+import type { TaskBoard } from './task-board.js';
+
+function assertNoActiveAttempt(step: DialoguePlanStep, board: TaskBoard): void {
+  for (const id of new Set([
+    ...step.taskIds,
+    step.workTaskId,
+    step.check?.taskId,
+  ])) {
+    const task = id ? board.get(id) : undefined;
+    if (task?.state === 'queued' || task?.state === 'running')
+      throw new Error(
+        `${id === step.check?.taskId ? 'check' : 'work'} attempt ${id} for ${step.id} is ${task.state}; stop it first with stop_task or wait for it to settle`,
+      );
+  }
+}
 
 function textResult(
   value: unknown,
@@ -43,6 +61,7 @@ function selectHistory(
 }
 export class PlannerToolsClient implements IMcpClient {
   async listTools(): Promise<Result<McpTool[], McpError>> {
+    const plan = currentPlannerScope()?.getPlan();
     const workers = currentPlannerScope()?.board.workerNames();
     const string = { type: 'string' };
     const schema = (
@@ -64,10 +83,17 @@ export class PlannerToolsClient implements IMcpClient {
             {
               worker: { ...string, ...(workers ? { enum: workers } : {}) },
               goal: string,
+              step_id: string,
               context: string,
               history: { type: 'string', enum: ['none', 'last-turn', 'all'] },
             },
-            ['worker', 'goal'],
+            [
+              'worker',
+              'goal',
+              ...(typeof plan === 'object' && plan.note === undefined
+                ? ['step_id']
+                : []),
+            ],
           ),
         },
         {
@@ -86,18 +112,42 @@ export class PlannerToolsClient implements IMcpClient {
           inputSchema: schema({}),
         },
         {
+          name: 'get_plan',
+          description:
+            'Read full plan steps, filtered by state and paged in plan order.',
+          inputSchema: schema({
+            state: {
+              type: 'string',
+              enum: [
+                'ready',
+                'pending',
+                'running',
+                'checking',
+                'done',
+                'failed',
+                'skipped',
+                'blocked',
+              ],
+            },
+            offset: { type: 'integer', minimum: 0, default: 0 },
+            limit: { type: 'integer', minimum: 1, default: 40 },
+          }),
+        },
+        {
           name: 'update_plan',
           description: 'Store the current plan.',
           inputSchema: schema(
             {
               plan: string,
+              steps: { type: 'array', items: z.toJSONSchema(stepSchema) },
+              question: string,
               status: {
                 type: 'string',
                 enum: ['active', 'waiting_user', 'done'],
                 default: 'active',
               },
             },
-            ['plan'],
+            [],
           ),
         },
       ],
@@ -119,9 +169,43 @@ export class PlannerToolsClient implements IMcpClient {
               ? undefined
               : requiredString(args, 'context');
           const history = selectHistory(scope.history(), args.history);
+          const plan = scope.getPlan();
+          const structured =
+            typeof plan === 'object' && plan.note === undefined
+              ? plan
+              : undefined;
+          const step = structured?.steps.find((s) => s.id === args.step_id);
+          if (structured && !step)
+            throw new Error('step_id must identify a plan step');
+          if (step && structured && !dependenciesDone(structured, step))
+            throw new Error(`dependencies for ${step.id} are not done`);
+          const isCheck = step?.check?.by === 'checker' && worker === 'checker';
+          if (step) assertNoActiveAttempt(step, scope.board);
+          if (isCheck && step?.state !== 'checking')
+            throw new Error(
+              'checker requires a successful current work attempt (checking)',
+            );
           const result = scope.board.start({ worker, goal, context, history });
           if (!result.ok) throw new Error(result.error);
-          scope.recordAction?.(`started ${result.value.id} (${worker})`, true);
+          if (step) {
+            scope.taskSteps?.set(result.value.id, step.id);
+            step.taskIds.push(result.value.id);
+            if (isCheck && step.check) {
+              step.check.taskId = result.value.id;
+              delete step.check.verdict;
+            } else {
+              step.workTaskId = result.value.id;
+              step.state = 'running';
+              if (step.check) {
+                delete step.check.taskId;
+                delete step.check.verdict;
+              }
+            }
+          }
+          scope.recordAction?.(
+            `started ${result.value.id}${step ? ` for ${step.id}` : ''} (${worker})`,
+            true,
+          );
           return textResult({
             task_id: result.value.id,
             state: result.value.state,
@@ -150,6 +234,53 @@ export class PlannerToolsClient implements IMcpClient {
               state,
             })),
           );
+        case 'get_plan': {
+          const {
+            state,
+            offset = 0,
+            limit = 40,
+          } = z
+            .object({
+              state: z
+                .enum([
+                  'ready',
+                  'pending',
+                  'running',
+                  'checking',
+                  'done',
+                  'failed',
+                  'skipped',
+                  'blocked',
+                ])
+                .optional(),
+              offset: z.number().int().min(0).optional(),
+              limit: z.number().int().min(1).optional(),
+            })
+            .parse(args);
+          const plan = scope.getPlan();
+          if (typeof plan !== 'object')
+            return textResult({
+              plan: plan ?? null,
+              steps: [],
+              total: 0,
+              offset,
+              limit,
+            });
+          const steps = plan.steps.filter(
+            (step) =>
+              !state ||
+              (state === 'ready'
+                ? step.state === 'pending' && dependenciesDone(plan, step)
+                : step.state === state),
+          );
+          return textResult({
+            ...plan,
+            steps: steps.slice(offset, offset + limit),
+            total: steps.length,
+            offset,
+            limit,
+          });
+        }
         case 'update_plan': {
           const status = args.status ?? 'active';
           if (
@@ -158,7 +289,38 @@ export class PlannerToolsClient implements IMcpClient {
             status !== 'done'
           )
             throw new Error('status must be active, waiting_user or done');
-          scope.setPlan(requiredString(args, 'plan'), status);
+          const question =
+            args.question === undefined
+              ? undefined
+              : requiredString(args, 'question');
+          if (
+            args.steps !== undefined &&
+            status === 'waiting_user' &&
+            !question?.trim()
+          )
+            throw new Error('waiting_user requires question');
+          const previous = scope.getPlan();
+          const next =
+            args.steps !== undefined
+              ? mergePlan(scope.getPlan(), args.steps, status, question)
+              : requiredString(args, 'plan');
+          if (typeof previous === 'object') {
+            for (const step of previous.steps) {
+              if (
+                typeof next === 'object' &&
+                next.steps.some((s) => s.id === step.id)
+              )
+                continue;
+              try {
+                assertNoActiveAttempt(step, scope.board);
+              } catch (error) {
+                throw new Error(
+                  `Cannot remove step ${step.id}: ${error instanceof Error ? error.message : String(error)}; stop the task first and wait for it to settle, or keep the step`,
+                );
+              }
+            }
+          }
+          scope.setPlan(next, status, question);
           scope.recordAction?.('plan updated');
           return textResult({ ok: true });
         }

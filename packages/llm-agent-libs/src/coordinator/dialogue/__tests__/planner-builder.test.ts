@@ -11,10 +11,11 @@ import { DialogueSession } from '../dialogue-session.js';
 import { DIALOGUE_PLANNER_SYSTEM } from '../planner-prompt.js';
 import { PlannerToolsClient } from '../planner-tools-client.js';
 
-test('documented builder exposes exactly the five control tools and dispatches delegation inside a session', async () => {
+test('documented builder exposes exactly the six control tools and dispatches delegation inside a session', async () => {
   const expected = [
     'delegate_task',
     'stop_task',
+    'get_plan',
     'get_task',
     'list_tasks',
     'update_plan',
@@ -25,11 +26,19 @@ test('documented builder exposes exactly the five control tools and dispatches d
       throw new Error('expected streaming');
     },
     async *streamChat(
-      _messages,
+      messages,
       tools,
     ): AsyncIterable<Result<LlmStreamChunk, LlmError>> {
       assert.deepEqual(tools?.map((t) => t.name).sort(), expected);
       calls++;
+      if (calls === 1 || calls === 3) {
+        const dialogue = messages.filter((m) => m.role !== 'system');
+        for (let i = 1; i < dialogue.length; i++)
+          assert.notEqual(dialogue[i].role, dialogue[i - 1].role);
+        assert.equal(dialogue.at(-1)?.role, 'user');
+        assert.match(String(dialogue.at(-1)?.content), /\[plan\] status:/);
+        assert.doesNotMatch(String(dialogue.at(-1)?.content), /\[tasks\]/);
+      }
       yield {
         ok: true,
         value:
@@ -80,6 +89,8 @@ test('documented builder exposes exactly the five control tools and dispatches d
   try {
     assert.equal((await session.send('delegate')).text, 'delegated');
     assert.equal(calls, 2, 'one process call executes the tool then answers');
+    assert.equal((await session.send('progress?')).text, 'delegated');
+    assert.equal(calls, 3);
     assert.equal(session.snapshot().tasks[0]?.goal, 'real builder goal');
   } finally {
     const closing = session.close();
