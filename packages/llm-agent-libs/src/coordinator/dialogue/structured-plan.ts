@@ -127,8 +127,12 @@ export function recomputePlanStatus(plan?: Plan): void {
 export function applyTaskEvent(
   plan: Plan | undefined,
   { task, kind }: TaskEvent,
+  taskSteps?: ReadonlyMap<string, string>,
 ): void {
-  const step = plan?.steps.find((s) => s.taskIds.includes(task.id));
+  const owner = taskSteps?.get(task.id);
+  const step = plan?.steps.find((s) =>
+    owner === undefined ? s.taskIds.includes(task.id) : s.id === owner,
+  );
   if (!step || step.state === 'skipped' || kind === 'started') return;
   // Older retry outcomes cannot overwrite the current attempt.
   if (!currentAttemptIds(step).includes(task.id)) return;

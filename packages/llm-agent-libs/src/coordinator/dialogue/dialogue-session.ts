@@ -55,6 +55,7 @@ export class DialogueSession {
   private readonly board: TaskBoard;
   private conversation: Message[] = [];
   private plan?: Plan;
+  private readonly taskSteps = new Map<string, string>();
   private pending: PlannerMessage[] = [];
   private readonly users: UserTurn[] = [];
   private events: TaskEvent[] = [];
@@ -74,7 +75,7 @@ export class DialogueSession {
     this.board = new TaskBoard({
       ...opts.board,
       onEvent: (event) => {
-        applyTaskEvent(this.plan, event);
+        applyTaskEvent(this.plan, event, this.taskSteps);
         // Only outcomes wake the planner; a start is visible via list_tasks.
         if (this.closing || event.kind === 'started') return;
         this.events.push(event);
@@ -116,6 +117,7 @@ export class DialogueSession {
       session.savedAt = state.savedAt;
       const ids = session.board.restore(state.tasks);
       for (const step of session.plan?.steps ?? []) {
+        for (const id of step.taskIds) session.taskSteps.set(id, step.id);
         if (
           step.state !== 'skipped' &&
           currentAttemptIds(step).some((id) => ids.includes(id))
@@ -188,6 +190,7 @@ export class DialogueSession {
         const result = await runInPlannerScope(
           {
             board: this.board,
+            taskSteps: this.taskSteps,
             getPlan: () => this.plan,
             setPlan: (plan, status = 'active', question) => {
               this.plan =
@@ -273,7 +276,15 @@ export class DialogueSession {
     }
   }
   private eventNotes(events: TaskEvent[]): string {
-    return `[task events]\n${events.map(({ kind, task }) => `task ${task.id} (${task.worker}) ${kind}: ${task.goal} — ${task.error ?? task.output ?? ''}`).join('\n')}`;
+    return events
+      .map(({ kind, task }) => {
+        const owner = this.taskSteps.get(task.id);
+        const removed =
+          owner !== undefined &&
+          !this.plan?.steps.some((step) => step.id === owner);
+        return `${removed ? '[actions]' : '[task events]'} task ${task.id}${owner ? ` for ${owner}` : ''} (${task.worker}) ${kind}: ${task.goal} — ${task.error ?? task.output ?? ''}`;
+      })
+      .join('\n');
   }
   private persist(): Promise<void> {
     // Acknowledgements must follow any save that still contains pending replies.

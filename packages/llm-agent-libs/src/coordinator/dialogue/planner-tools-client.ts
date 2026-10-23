@@ -188,6 +188,7 @@ export class PlannerToolsClient implements IMcpClient {
           const result = scope.board.start({ worker, goal, context, history });
           if (!result.ok) throw new Error(result.error);
           if (step) {
+            scope.taskSteps?.set(result.value.id, step.id);
             step.taskIds.push(result.value.id);
             if (isCheck && step.check) {
               step.check.taskId = result.value.id;
@@ -298,13 +299,28 @@ export class PlannerToolsClient implements IMcpClient {
             !question?.trim()
           )
             throw new Error('waiting_user requires question');
-          scope.setPlan(
+          const previous = scope.getPlan();
+          const next =
             args.steps !== undefined
               ? mergePlan(scope.getPlan(), args.steps, status, question)
-              : requiredString(args, 'plan'),
-            status,
-            question,
-          );
+              : requiredString(args, 'plan');
+          if (typeof previous === 'object') {
+            for (const step of previous.steps) {
+              if (
+                typeof next === 'object' &&
+                next.steps.some((s) => s.id === step.id)
+              )
+                continue;
+              try {
+                assertNoActiveAttempt(step, scope.board);
+              } catch (error) {
+                throw new Error(
+                  `Cannot remove step ${step.id}: ${error instanceof Error ? error.message : String(error)}; stop the task first and wait for it to settle, or keep the step`,
+                );
+              }
+            }
+          }
+          scope.setPlan(next, status, question);
           scope.recordAction?.('plan updated');
           return textResult({ ok: true });
         }

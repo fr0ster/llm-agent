@@ -4,6 +4,7 @@ import type { TaskBoard } from './task-board.js';
 
 export interface PlannerScope {
   board: TaskBoard;
+  taskSteps?: Map<string, string>;
   recordAction?(action: string, started?: boolean): void;
   getPlan(): string | Plan | undefined;
   setPlan(

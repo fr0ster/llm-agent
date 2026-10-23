@@ -1123,3 +1123,159 @@ test('active checker cannot be replaced while queued, running or awaiting cooper
   );
   await board.stopAll();
 });
+
+for (const attempt of ['work', 'check'] as const) {
+  test(`update_plan refuses removing active ${attempt} until stop settles`, async () => {
+    let plan = mergePlan(undefined, [steps[0]], 'active');
+    let finish!: (value: { output: string }) => void;
+    const board = new TaskBoard({
+      workers: new Map([
+        [
+          'w',
+          {
+            name: 'w',
+            capabilities: { contextPolicy: 'optional' as const },
+            run: () =>
+              new Promise<{ output: string }>((resolve) => {
+                finish = resolve;
+              }),
+          },
+        ],
+      ]),
+      onEvent: (event) => applyTaskEvent(plan, event),
+    });
+    await runInPlannerScope(
+      {
+        board,
+        getPlan: () => plan,
+        setPlan: (p) => {
+          plan = p as DialoguePlan;
+        },
+        history: () => [],
+      },
+      async () => {
+        const first = board.start({ worker: 'w', goal: 'held' });
+        assert.ok(first.ok);
+        plan.steps[0].taskIds = [first.value.id];
+        if (attempt === 'check')
+          plan.steps[0].check = {
+            by: 'checker',
+            goal: 'verify',
+            taskId: first.value.id,
+          };
+        else plan.steps[0].workTaskId = first.value.id;
+        const original = structuredClone(plan);
+        const refuse = async () => {
+          for (const replacement of [{ steps: [] }, { plan: 'replacement' }]) {
+            const result = await call('update_plan', replacement);
+            assert.equal(result.isError, true);
+            assert.match(
+              JSON.stringify(result.content),
+              /Cannot remove step s1.*stop the task first.*or keep the step/,
+            );
+            assert.deepEqual(plan, original);
+          }
+        };
+        await refuse();
+        await tick();
+        await refuse();
+        await call('stop_task', { task_id: first.value.id });
+        await refuse();
+        finish({ output: 'settled' });
+        await tick();
+        assert.equal(
+          (await call('update_plan', { steps: [] })).isError,
+          undefined,
+        );
+        assert.equal(
+          (await call('update_plan', { steps: [steps[0]] })).isError,
+          undefined,
+        );
+        assert.deepEqual(plan.steps[0].taskIds, []);
+        applyTaskEvent(
+          plan,
+          outcome(first.value.id, 'done'),
+          new Map([[first.value.id, 's1']]),
+        );
+        assert.equal(plan.steps[0].state, 'pending');
+        assert.equal(
+          (
+            await call('delegate_task', {
+              worker: 'w',
+              goal: 'retry',
+              step_id: 's1',
+            })
+          ).isError,
+          undefined,
+        );
+        await tick();
+        finish({ output: 'retry complete' });
+        await tick();
+      },
+    );
+    await board.stopAll();
+  });
+}
+
+for (const remove of [false, true]) {
+  test(`session routes outcome with ${remove ? 'removed' : 'retained'} step ownership`, async () => {
+    let calls = 0;
+    const session = await DialogueSession.open({
+      id: `ownership-${remove}`,
+      maxCorrections: 0,
+      board: {
+        workers: new Map([
+          [
+            'w',
+            {
+              name: 'w',
+              capabilities: { contextPolicy: 'optional' as const },
+              async run() {
+                return { output: 'original outcome' };
+              },
+            },
+          ],
+        ]),
+      },
+      planner: {
+        async process(messages) {
+          if (++calls === 1) {
+            await call('update_plan', { steps: [steps[0]] });
+            await call('delegate_task', {
+              step_id: 's1',
+              worker: 'w',
+              goal: 'first',
+            });
+            await tick();
+            assert.equal(
+              (session.snapshot().plan as DialoguePlan).steps[0].state,
+              'done',
+            );
+            if (remove) await call('update_plan', { steps: [] });
+          } else {
+            const text = String(messages.at(-1)?.content);
+            assert.match(
+              text,
+              remove
+                ? /\[actions\] task t1 for s1.*original outcome/
+                : /\[task events\] task t1 for s1.*original outcome/,
+            );
+            if (remove) {
+              assert.doesNotMatch(text, /\[task events\]/);
+              await call('update_plan', { steps: [steps[0]] });
+              assert.equal(
+                (session.snapshot().plan as DialoguePlan).steps[0].state,
+                'pending',
+              );
+            }
+          }
+          return { ok: true, value: { content: 'ok' } };
+        },
+      },
+    });
+    await session.send('go');
+    await tick();
+    assert.equal(calls, 2);
+    await session.close();
+  });
+}
