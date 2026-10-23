@@ -1,5 +1,9 @@
 # @mcp-abap-adt/sap-aicore-llm
 
+## 30.8.0
+
+Lockstep release with the 30.8.0 line: structured dialogue plan (steps with states, dependencies and checks, `get_plan`, every-turn check, optional `DialogueState.taskSteps`) — changes in `llm-agent` and `llm-agent-libs`; other packages are unchanged. See the root CHANGELOG.
+
 ## 30.7.0
 
 Lockstep release with the 30.7.0 line: dialogue planner turn truth (`[tasks]` board note, `[actions]` memory, explicit plan status on `update_plan`, end-of-turn check with bounded corrective turns, `DialogueSessionOptions.maxCorrections`, optional `DialogueState.planStatus`) — changes in `llm-agent` and `llm-agent-libs`; other packages are unchanged. See the root CHANGELOG.

@@ -9,13 +9,16 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [30.8.0] — 2026-10-23
+
 ### Added
 
-- Structured dialogue plans with dependencies, task links, checker verdicts, legacy restore, and bounded ready-step corrections.
+- **`llm-agent` / `llm-agent-libs`**: structured dialogue plan. The plan is a list of steps (`id`, `goal`, `dependsOn`, optional `worker` and `check`) with states `pending | running | checking | done | failed | skipped | blocked`. `update_plan({ steps, status?, question? })` merges by step id and refuses to remove a step with an active attempt; `delegate_task` takes `step_id`, refuses unmet dependencies (only `done` releases a dependent) and allows one active attempt per step across work and check. Step state follows its tasks; a step with a check goes `checking` and closes on the verdict — a delegated checker returns `{"verdict":"pass"|"fail","note"?}`, or the planner records it with `update_plan`. Explicit skips win over task outcomes. New control tool `get_plan({ state?, offset?, limit? })`.
+- **`llm-agent-libs`**: an end-of-turn check on every turn (user and event): ready steps, nothing running, nothing delegated and status not `waiting_user` → a bounded corrective turn naming the ready steps; all steps done → status `done`; `waiting_user` needs a `question` for structured plans.
 
 ### Changed
 
-- Dialogue planner turns use a single bounded plan view and step-aware actions.
+- **`llm-agent-libs`**: one `[plan]` view per turn replaces `[plan]` + `[tasks]`: status, up to 40 steps by priority (ready, running/checking, pending, failed/blocked) with current work/check task ids and check instructions; the rest collapsed into per-state counts. `[actions]` notes name step ids.
 
 ### Migration
 
