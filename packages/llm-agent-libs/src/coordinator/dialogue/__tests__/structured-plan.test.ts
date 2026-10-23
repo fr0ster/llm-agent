@@ -969,6 +969,87 @@ test('more than forty ready steps stay bounded and precede other active states',
   assert.doesNotMatch(view, /^ready40 /m);
 });
 
+for (const active of ['work', 'check'] as const) {
+  test(`${active === 'check' ? 'work-after-check' : 'check-after-work'} overlap is refused while queued, running or awaiting cooperative stop`, async () => {
+    const plan = mergePlan(
+      undefined,
+      [{ ...steps[0], check: { by: 'checker', goal: 'verify' } }],
+      'active',
+    );
+    const step = plan.steps[0];
+    let finish!: (value: { output: string }) => void;
+    const worker = {
+      name: 'held',
+      capabilities: { contextPolicy: 'optional' as const },
+      run: () =>
+        new Promise<{ output: string }>((resolve) => {
+          finish = resolve;
+        }),
+    };
+    const board = new TaskBoard({
+      workers: new Map([
+        ['w', worker],
+        ['checker', worker],
+      ]),
+      onEvent: (event) => applyTaskEvent(plan, event),
+    });
+    await runInPlannerScope(
+      { board, getPlan: () => plan, setPlan() {}, history: () => [] },
+      async () => {
+        if (active === 'check') {
+          Object.assign(step, {
+            state: 'checking',
+            workTaskId: 'work',
+            taskIds: ['work'],
+          });
+        }
+        const first = tools.callTool('delegate_task', {
+          worker: active === 'check' ? 'checker' : 'w',
+          goal: 'original',
+          step_id: 's1',
+        });
+        // Keep the check precondition valid so the overlap guard itself is exercised.
+        if (active === 'work') step.state = 'checking';
+        const before = structuredClone(step);
+        const delegate = () =>
+          call('delegate_task', {
+            worker: active === 'check' ? 'w' : 'checker',
+            goal: 'overlap',
+            step_id: 's1',
+          });
+        const queued = await delegate();
+        assert.equal(queued.isError, true);
+        assert.match(
+          JSON.stringify(queued.content),
+          new RegExp(`${active} attempt t1.*queued`),
+        );
+        assert.ok((await first).ok);
+        await tick();
+        assert.equal(board.get('t1')?.state, 'running');
+        assert.equal((await delegate()).isError, true);
+        await call('stop_task', { task_id: 't1' });
+        assert.equal(board.get('t1')?.state, 'running');
+        assert.equal((await delegate()).isError, true);
+        assert.deepEqual(step, before);
+        assert.equal(board.list().length, 1);
+        finish({
+          output: active === 'check' ? '{"verdict":"pass"}' : 'work complete',
+        });
+        await tick();
+        assert.equal(step.state, active === 'check' ? 'done' : 'checking');
+        if (active === 'check') assert.equal(step.check?.verdict, 'pass');
+        assert.equal((await delegate()).isError, undefined);
+        await tick();
+        finish({
+          output: active === 'work' ? '{"verdict":"pass"}' : 'retry complete',
+        });
+        await tick();
+      },
+    );
+    await board.stopAll();
+  });
+}
+
 test('active checker cannot be replaced while queued, running or awaiting cooperative stop', async () => {
   const plan = mergePlan(
     undefined,

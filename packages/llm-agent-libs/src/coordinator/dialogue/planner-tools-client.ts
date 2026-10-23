@@ -1,4 +1,5 @@
 import type {
+  DialoguePlanStep,
   IMcpClient,
   McpError,
   McpTool,
@@ -8,12 +9,22 @@ import type {
 } from '@mcp-abap-adt/llm-agent';
 import { z } from 'zod';
 import { currentPlannerScope } from './planner-scope.js';
-import {
-  currentWorkTaskId,
-  dependenciesDone,
-  mergePlan,
-  stepSchema,
-} from './structured-plan.js';
+import { dependenciesDone, mergePlan, stepSchema } from './structured-plan.js';
+import type { TaskBoard } from './task-board.js';
+
+function assertNoActiveAttempt(step: DialoguePlanStep, board: TaskBoard): void {
+  for (const id of new Set([
+    ...step.taskIds,
+    step.workTaskId,
+    step.check?.taskId,
+  ])) {
+    const task = id ? board.get(id) : undefined;
+    if (task?.state === 'queued' || task?.state === 'running')
+      throw new Error(
+        `${id === step.check?.taskId ? 'check' : 'work'} attempt ${id} for ${step.id} is ${task.state}; stop it first with stop_task or wait for it to settle`,
+      );
+  }
+}
 
 function textResult(
   value: unknown,
@@ -169,22 +180,10 @@ export class PlannerToolsClient implements IMcpClient {
           if (step && structured && !dependenciesDone(structured, step))
             throw new Error(`dependencies for ${step.id} are not done`);
           const isCheck = step?.check?.by === 'checker' && worker === 'checker';
+          if (step) assertNoActiveAttempt(step, scope.board);
           if (isCheck && step?.state !== 'checking')
             throw new Error(
               'checker requires a successful current work attempt (checking)',
-            );
-          const attemptId = isCheck
-            ? step?.check?.taskId
-            : step && currentWorkTaskId(step);
-          const currentAttempt = attemptId
-            ? scope.board.get(attemptId)
-            : undefined;
-          if (
-            currentAttempt?.state === 'queued' ||
-            currentAttempt?.state === 'running'
-          )
-            throw new Error(
-              `${isCheck ? 'check' : 'work'} attempt ${attemptId} for ${step?.id} is ${currentAttempt.state}; stop it first with stop_task or wait for it to settle`,
             );
           const result = scope.board.start({ worker, goal, context, history });
           if (!result.ok) throw new Error(result.error);
