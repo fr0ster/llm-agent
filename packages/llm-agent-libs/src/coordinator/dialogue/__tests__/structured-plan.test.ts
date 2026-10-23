@@ -10,6 +10,7 @@ import {
   mergePlan,
   planView,
   readySteps,
+  recomputePlanStatus,
 } from '../structured-plan.js';
 import { TaskBoard } from '../task-board.js';
 
@@ -545,6 +546,8 @@ test('checker cannot overtake work; retries ignore superseded work and check out
       applyTaskEvent(plan, outcome('t1', 'failed'));
       applyTaskEvent(plan, outcome('t2', 'done', '{"verdict":"pass"}'));
       assert.equal(plan.steps[0].state, 'running');
+      assert.match(planView(plan), /\(work t3, 2 older attempts\)/);
+      assert.doesNotMatch(planView(plan), /check t2/);
       assert.equal((await delegate('checker')).isError, true);
       finish({ output: 'retry finished' });
       await tick();
@@ -552,6 +555,8 @@ test('checker cannot overtake work; retries ignore superseded work and check out
       await delegate('checker');
       await tick();
       assert.equal(plan.steps[0].state, 'done');
+      assert.match(planView(plan), /\(work t3, check t4, 2 older attempts\)/);
+      assert.match(planView(plan), /check by checker: verify/);
     },
   );
   await board.stopAll();
@@ -664,3 +669,82 @@ test('skipped dependencies block delegation until the planner revises dependsOn'
   );
   await board.stopAll();
 });
+
+for (const by of ['planner', 'checker'] as const) {
+  test(`skips ignore work and check outcomes (${by})`, () => {
+    const plan = mergePlan(undefined, [steps[0]], 'done');
+    Object.assign(plan.steps[0], {
+      state: 'skipped',
+      note: 'no longer needed',
+      taskIds: ['t1', 't2'],
+      workTaskId: 't1',
+      check: { by, goal: 'verify', taskId: 't2' },
+    });
+    const before = structuredClone(plan);
+    delete before.question;
+    for (const id of ['t1', 't2']) {
+      for (const kind of [
+        'done',
+        'failed',
+        'stopped',
+        'interrupted',
+      ] as const) {
+        applyTaskEvent(
+          plan,
+          outcome(id, kind, '{"verdict":"pass","note":"checked"}'),
+        );
+        recomputePlanStatus(plan);
+        assert.deepEqual(plan, before);
+      }
+    }
+  });
+
+  test(`restore preserves skipped steps and injects current attempts and check instructions (${by})`, async () => {
+    const store = new InMemoryDialogueStateStore();
+    const plan = mergePlan(undefined, [steps[0]], 'done');
+    Object.assign(plan.steps[0], {
+      state: 'skipped',
+      note: 'no longer needed',
+      taskIds: ['t1', 't2', 't3', 't4'],
+      workTaskId: 't3',
+      check: { by, goal: '  inspect\n  the result  ', taskId: 't4' },
+    });
+    await store.save('skip-restore', {
+      plan,
+      tasks: ['t1', 't2', 't3', 't4'].map((id) => outcome(id, 'started').task),
+      conversation: [],
+      pending: [],
+      savedAt: 0,
+    });
+    let injected = false;
+    const session = await DialogueSession.open({
+      id: 'skip-restore',
+      store,
+      board: { workers: new Map() },
+      planner: {
+        async process(messages) {
+          const view = messages
+            .map((message) => String(message.content))
+            .join('\n');
+          assert.match(
+            view,
+            /s1 skipped first \(work t3, check t4, 2 older attempts\)/,
+          );
+          assert.ok(
+            view.includes(
+              `check by ${by}: inspect the result ? no longer needed`,
+            ),
+          );
+          injected = true;
+          return { ok: true, value: { content: 'ok' } };
+        },
+      },
+    });
+    delete plan.question;
+    assert.deepEqual(session.snapshot().plan, plan);
+    await session.send('show plan');
+    assert.equal(injected, true);
+    assert.deepEqual(session.snapshot().plan, plan);
+    await session.close();
+  });
+}

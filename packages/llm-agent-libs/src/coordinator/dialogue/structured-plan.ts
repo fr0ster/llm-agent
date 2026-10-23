@@ -129,7 +129,7 @@ export function applyTaskEvent(
   { task, kind }: TaskEvent,
 ): void {
   const step = plan?.steps.find((s) => s.taskIds.includes(task.id));
-  if (!step || kind === 'started') return;
+  if (!step || step.state === 'skipped' || kind === 'started') return;
   // Older retry outcomes cannot overwrite the current attempt.
   if (!currentAttemptIds(step).includes(task.id)) return;
   if (kind !== 'done') {
@@ -174,12 +174,18 @@ export function planView(plan?: Plan): string {
     plan.question,
     plan.note,
     collapsed ? `(${collapsed} older done/skipped steps collapsed)` : '',
-    ...visible
-      .slice(0, 40)
-      .map(
-        (s) =>
-          `${s.id} ${s.state === 'pending' && dependenciesDone(plan, s) ? 'ready' : s.state} ${s.goal.replace(/\s+/g, ' ')}${s.dependsOn?.length ? ` (depends on ${s.dependsOn.join(', ')})` : ''} (${s.taskIds.join(', ')})${s.note ? ` ? ${s.note}` : ''}`,
-      ),
+    ...visible.slice(0, 40).map((s) => {
+      const current = currentAttemptIds(s);
+      const work = currentWorkTaskId(s);
+      const check = s.check?.taskId;
+      const older = s.taskIds.filter((id) => !current.includes(id)).length;
+      const attempts = [
+        work ? `work ${work}` : '',
+        check && current.includes(check) ? `check ${check}` : '',
+        older ? `${older} older attempts` : '',
+      ].filter(Boolean);
+      return `${s.id} ${s.state === 'pending' && dependenciesDone(plan, s) ? 'ready' : s.state} ${s.goal.replace(/\s+/g, ' ')}${s.dependsOn?.length ? ` (depends on ${s.dependsOn.join(', ')})` : ''}${attempts.length ? ` (${attempts.join(', ')})` : ''}${s.check ? `; check by ${s.check.by}: ${s.check.goal.replace(/\s+/g, ' ').trim()}` : ''}${s.note ? ` ? ${s.note}` : ''}`;
+    }),
     visible.length > 40
       ? `(${visible.length - 40} additional steps omitted)`
       : '',

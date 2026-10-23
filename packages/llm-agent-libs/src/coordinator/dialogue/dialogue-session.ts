@@ -116,7 +116,10 @@ export class DialogueSession {
       session.savedAt = state.savedAt;
       const ids = session.board.restore(state.tasks);
       for (const step of session.plan?.steps ?? []) {
-        if (currentAttemptIds(step).some((id) => ids.includes(id))) {
+        if (
+          step.state !== 'skipped' &&
+          currentAttemptIds(step).some((id) => ids.includes(id))
+        ) {
           step.state = 'failed';
           step.note = 'interrupted by restart';
         }
