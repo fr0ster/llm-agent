@@ -4,8 +4,9 @@ import type { TaskBoard } from './task-board.js';
 
 export interface PlannerScope {
   board: TaskBoard;
+  recordAction?(action: string, started?: boolean): void;
   getPlan(): string | undefined;
-  setPlan(plan: string): void;
+  setPlan(plan: string, status?: 'active' | 'waiting_user' | 'done'): void;
   history(): Message[];
 }
 const storage = new AsyncLocalStorage<PlannerScope>();

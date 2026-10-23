@@ -6,6 +6,7 @@ import type {
   OnPartial,
   PlannerMessage,
   Result,
+  StreamChunk,
   TaskEvent,
 } from '@mcp-abap-adt/llm-agent';
 import { runInPlannerScope } from './planner-scope.js';
@@ -26,6 +27,8 @@ export interface PlannerAgent {
 }
 export interface DialogueSessionOptions {
   id: string;
+  /** Maximum corrective turns; zero disables end-of-turn checks. Default: 2. */
+  maxCorrections?: number;
   planner: PlannerAgent;
   board: Omit<TaskBoardOptions, 'onEvent'>;
   store?: IDialogueStateStore;
@@ -44,6 +47,7 @@ export class DialogueSession {
   private readonly board: TaskBoard;
   private conversation: Message[] = [];
   private plan?: string;
+  private planStatus?: DialogueState['planStatus'];
   private pending: PlannerMessage[] = [];
   private readonly users: UserTurn[] = [];
   private events: TaskEvent[] = [];
@@ -55,6 +59,11 @@ export class DialogueSession {
   private persistence: Promise<void> = Promise.resolve();
 
   private constructor(private readonly opts: DialogueSessionOptions) {
+    if (
+      !Number.isInteger(opts.maxCorrections ?? 2) ||
+      (opts.maxCorrections ?? 2) < 0
+    )
+      throw new Error('maxCorrections must be a non-negative integer');
     this.board = new TaskBoard({
       ...opts.board,
       onEvent: (event) => {
@@ -72,7 +81,20 @@ export class DialogueSession {
       session.conversation = structuredClone(
         state.conversation.slice(-DIALOGUE_HISTORY_LIMIT),
       );
+      session.conversation = session.conversation.reduce<Message[]>(
+        (messages, message) => {
+          const last = messages.at(-1);
+          if (last?.role === message.role)
+            last.content = `${last.content}\n${message.content}`;
+          else messages.push(message);
+          return messages;
+        },
+        [],
+      );
+      session.trim();
       session.plan = state.plan;
+      session.planStatus =
+        state.planStatus ?? (state.plan !== undefined ? 'active' : undefined);
       session.pending = structuredClone(state.pending);
       session.savedAt = state.savedAt;
       const ids = session.board.restore(state.tasks);
@@ -107,9 +129,7 @@ export class DialogueSession {
     while (!this.closing && (this.users.length || this.events.length)) {
       const user = this.users.shift();
       const events = user ? [] : this.events.splice(0);
-      const text = user
-        ? user.text
-        : `[task events]\n${events.map(({ kind, task }) => `task ${task.id} (${task.worker}) ${kind}: ${task.goal} — ${task.error ?? task.output ?? ''}`).join('\n')}`;
+      const text = user ? user.text : this.eventNotes(events);
       try {
         const message = await this.turn(text, user);
         user?.resolve(message);
@@ -122,40 +142,115 @@ export class DialogueSession {
   private async turn(text: string, user?: UserTurn): Promise<PlannerMessage> {
     const input = this.restart ? `${this.restart}\n${text}` : text;
     this.restart = undefined;
-    this.conversation.push({ role: 'user', content: input });
+    this.appendInput(input);
     this.trim();
-    const messages = structuredClone(this.conversation);
-    if (this.plan !== undefined) {
-      messages.splice(messages.length - 1, 0, {
-        role: 'user',
-        content: `[plan]\n${this.plan}`,
-      });
-    }
     try {
-      const result = await runInPlannerScope(
-        {
-          board: this.board,
-          getPlan: () => this.plan,
-          setPlan: (plan) => {
-            this.plan = plan;
+      let reply = '';
+      const actions: string[] = [];
+      let started = false;
+      for (let correction = 0; ; correction++) {
+        const messages = structuredClone(this.conversation);
+        const tasks = this.board.list();
+        const notes = [];
+        if (this.plan !== undefined)
+          notes.push(`[plan]\n${this.plan}\nstatus: ${this.planStatus}`);
+        notes.push(
+          `[tasks]\n${
+            tasks.length
+              ? tasks
+                  .slice(-30)
+                  .map(
+                    ({ id, worker, state, goal }) =>
+                      `${id} (${worker}) ${state}: ${goal.replace(/\s+/g, ' ').slice(0, 80)}`,
+                  )
+                  .join('\n')
+              : 'none'
+          }${tasks.length > 30 ? `\n(${tasks.length - 30} older tasks omitted)` : ''}`,
+        );
+        const last = messages.at(-1);
+        if (last) last.content = `${notes.join('\n')}\n${last.content}`;
+        const contentPartials: StreamChunk[] = [];
+        const result = await runInPlannerScope(
+          {
+            board: this.board,
+            getPlan: () => this.plan,
+            setPlan: (plan, status = 'active') => {
+              this.plan = plan;
+              this.planStatus = status;
+            },
+            recordAction: (action, didStart) => {
+              actions.push(action);
+              started ||= didStart === true;
+            },
+            history: () => structuredClone(this.conversation),
           },
-          history: () => structuredClone(this.conversation),
-        },
-        () =>
-          this.opts.planner.process(messages, {
-            ...user?.opts,
-            sessionId: this.opts.id,
-          }),
-      );
-      if (!result.ok) throw result.error;
+          () =>
+            this.opts.planner.process(messages, {
+              ...user?.opts,
+              sessionId: this.opts.id,
+              onPartial: user?.opts.onPartial
+                ? (chunk) => {
+                    if (chunk.kind === 'content') contentPartials.push(chunk);
+                    else user.opts.onPartial?.(chunk);
+                  }
+                : undefined,
+            }),
+        );
+        if (!result.ok) throw result.error;
+        reply = result.value.content;
+        this.conversation.push({ role: 'assistant', content: reply });
+        this.conversation.push({
+          role: 'user',
+          content: `[actions] ${actions.join(', ') || 'none'}`,
+        });
+        this.trim();
+        const idle =
+          !user &&
+          this.plan !== undefined &&
+          this.planStatus === 'active' &&
+          !started &&
+          this.events.length === 0 &&
+          !this.board
+            .list()
+            .some(
+              (task) => task.state === 'queued' || task.state === 'running',
+            );
+        const needsEvents =
+          !user &&
+          this.plan !== undefined &&
+          this.planStatus === 'active' &&
+          !started &&
+          this.events.length > 0 &&
+          !this.board
+            .list()
+            .some(
+              (task) => task.state === 'queued' || task.state === 'running',
+            );
+        const enabled = (this.opts.maxCorrections ?? 2) > 0 && !this.closing;
+        if (
+          !enabled ||
+          (!idle && !needsEvents) ||
+          correction >= (this.opts.maxCorrections ?? 2)
+        ) {
+          if (enabled && (idle || needsEvents))
+            this.warn(
+              'Dialogue correction limit reached: idle or pending events',
+            );
+          for (const chunk of contentPartials) user?.opts.onPartial?.(chunk);
+          break;
+        }
+        const events = this.events.splice(0);
+        this.appendInput(
+          '[check] Nothing is running or new task events need review. Delegate the next ready step, or set status waiting_user / done with update_plan.' +
+            (events.length ? `\n${this.eventNotes(events)}` : ''),
+        );
+      }
       const message: PlannerMessage = {
         id: randomUUID(),
-        text: result.value.content,
+        text: reply,
         createdAt: this.now(),
         trigger: user ? 'user' : 'event',
       };
-      this.conversation.push({ role: 'assistant', content: message.text });
-      this.trim();
       if (!user && !this.closing && message.text.trim() !== 'NO_MESSAGE') {
         this.pending.push(message);
         try {
@@ -168,6 +263,9 @@ export class DialogueSession {
     } finally {
       if (!this.closing) await this.persist();
     }
+  }
+  private eventNotes(events: TaskEvent[]): string {
+    return `[task events]\n${events.map(({ kind, task }) => `task ${task.id} (${task.worker}) ${kind}: ${task.goal} — ${task.error ?? task.output ?? ''}`).join('\n')}`;
   }
   private persist(): Promise<void> {
     // Acknowledgements must follow any save that still contains pending replies.
@@ -183,9 +281,27 @@ export class DialogueSession {
     });
     return this.persistence;
   }
-  private trim(): void {
-    this.conversation = this.conversation.slice(-DIALOGUE_HISTORY_LIMIT);
+  private appendInput(text: string): void {
+    const last = this.conversation.at(-1);
+    // Hub notes occupy the next user slot; merge input to preserve role alternation.
+    if (last?.role === 'user') last.content = `${last.content}\n${text}`;
+    else this.conversation.push({ role: 'user', content: text });
+    this.trim();
   }
+  private trim(): void {
+    // Remove complete reply/note pairs, never leave an orphaned actions note.
+    while (this.conversation.length > DIALOGUE_HISTORY_LIMIT)
+      this.conversation.splice(0, 2);
+    if (this.conversation[0]?.role === 'assistant') this.conversation.shift();
+    const first = this.conversation[0];
+    if (first && String(first.content).startsWith('[actions]')) {
+      const content = String(first.content);
+      const newline = content.indexOf('\n');
+      if (newline < 0) this.conversation.shift();
+      else first.content = content.slice(newline + 1);
+    }
+  }
+
   private now(): number {
     return (this.opts.now ?? Date.now)();
   }
@@ -205,6 +321,7 @@ export class DialogueSession {
     return structuredClone({
       conversation: this.conversation,
       plan: this.plan,
+      planStatus: this.planStatus,
       tasks: this.board.list(),
       pending: this.pending,
       savedAt: this.savedAt,

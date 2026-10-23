@@ -212,3 +212,49 @@ test('concurrent async planner scopes remain isolated', async () => {
   assert.equal(b.board.list()[0].goal, '1');
   assert.equal((await call('list_tasks')).error, true);
 });
+
+test('update_plan validates status, defaults to active and advertises the enum', async () => {
+  const f = setup();
+  const updates: Array<{ plan: string; status: unknown }> = [];
+  await runInPlannerScope(
+    {
+      ...f.scope,
+      setPlan(plan, status) {
+        updates.push({ plan, status });
+      },
+    },
+    async () => {
+      const listed = await client.listTools();
+      assert.ok(listed.ok);
+      const schema = listed.value.find(
+        (tool) => tool.name === 'update_plan',
+      )?.inputSchema;
+      assert.ok(schema);
+      assert.deepEqual(
+        (schema.properties as Record<string, { enum?: string[] }>).status.enum,
+        ['active', 'waiting_user', 'done'],
+      );
+      for (const status of [undefined, 'active', 'waiting_user', 'done']) {
+        assert.equal(
+          (
+            await call('update_plan', {
+              plan: 'next',
+              ...(status ? { status } : {}),
+            })
+          ).error,
+          undefined,
+        );
+        assert.deepEqual(updates.at(-1), {
+          plan: 'next',
+          status: status ?? 'active',
+        });
+      }
+      for (const status of ['invalid', 1, false])
+        assert.equal(
+          (await call('update_plan', { plan: 'next', status })).error,
+          true,
+        );
+      assert.equal(updates.length, 4);
+    },
+  );
+});

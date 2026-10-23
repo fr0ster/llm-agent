@@ -88,7 +88,17 @@ export class PlannerToolsClient implements IMcpClient {
         {
           name: 'update_plan',
           description: 'Store the current plan.',
-          inputSchema: schema({ plan: string }, ['plan']),
+          inputSchema: schema(
+            {
+              plan: string,
+              status: {
+                type: 'string',
+                enum: ['active', 'waiting_user', 'done'],
+                default: 'active',
+              },
+            },
+            ['plan'],
+          ),
         },
       ],
     };
@@ -111,15 +121,20 @@ export class PlannerToolsClient implements IMcpClient {
           const history = selectHistory(scope.history(), args.history);
           const result = scope.board.start({ worker, goal, context, history });
           if (!result.ok) throw new Error(result.error);
+          scope.recordAction?.(`started ${result.value.id} (${worker})`, true);
           return textResult({
             task_id: result.value.id,
             state: result.value.state,
           });
         }
-        case 'stop_task':
-          return textResult({
-            stopped: scope.board.stop(requiredString(args, 'task_id')),
-          });
+        case 'stop_task': {
+          const id = requiredString(args, 'task_id');
+          const stopped = scope.board.stop(id);
+          scope.recordAction?.(
+            `stop ${id} (${stopped ? 'requested' : 'not stopped'})`,
+          );
+          return textResult({ stopped });
+        }
         case 'get_task': {
           const id = requiredString(args, 'task_id');
           const task = scope.board.get(id);
@@ -135,9 +150,18 @@ export class PlannerToolsClient implements IMcpClient {
               state,
             })),
           );
-        case 'update_plan':
-          scope.setPlan(requiredString(args, 'plan'));
+        case 'update_plan': {
+          const status = args.status ?? 'active';
+          if (
+            status !== 'active' &&
+            status !== 'waiting_user' &&
+            status !== 'done'
+          )
+            throw new Error('status must be active, waiting_user or done');
+          scope.setPlan(requiredString(args, 'plan'), status);
+          scope.recordAction?.('plan updated');
           return textResult({ ok: true });
+        }
         default:
           throw new Error(`unknown tool ${name}`);
       }

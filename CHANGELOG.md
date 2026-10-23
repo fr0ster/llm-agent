@@ -9,6 +9,17 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [30.7.0] — 2026-10-23
+
+### Added
+
+- **`llm-agent-libs`**: dialogue planner turn truth. Every turn carries a transient `[tasks]` note with the task board next to `[plan]`, merged into the final user message. After each reply an `[actions]` note records the control tools that actually ran (or `none`) and is kept in the conversation, so later turns see facts, not only claims. `update_plan` takes an optional `status` (`active` | `waiting_user` | `done`). On an event turn whose plan is `active`, with nothing queued or running and nothing started during the turn, the session runs a bounded corrective turn with a `[check]` note (events that arrived meanwhile are included); the reply's content is buffered and only the accepted reply is streamed. `DialogueSessionOptions.maxCorrections` (default 2, `0` disables).
+- **`llm-agent`**: optional `DialogueState.planStatus`; states without it restore as `active` when a plan exists.
+
+### Changed
+
+- **`llm-agent-libs`**: `DIALOGUE_PLANNER_SYSTEM` explains `[tasks]`, `[actions]`, `[check]` and the plan status.
+
 ## [30.6.0] — 2026-10-22
 
 ### Added

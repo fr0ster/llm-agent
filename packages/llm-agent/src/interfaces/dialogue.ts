@@ -40,6 +40,7 @@ export interface PlannerMessage {
 export interface DialogueState {
   conversation: Message[];
   plan?: string;
+  planStatus?: 'active' | 'waiting_user' | 'done';
   tasks: TaskRecord[];
   pending: PlannerMessage[];
   savedAt: number;
