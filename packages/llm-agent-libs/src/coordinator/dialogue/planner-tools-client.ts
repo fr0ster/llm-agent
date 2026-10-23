@@ -88,7 +88,17 @@ export class PlannerToolsClient implements IMcpClient {
         {
           name: 'update_plan',
           description: 'Store the current plan.',
-          inputSchema: schema({ plan: string }, ['plan']),
+          inputSchema: schema(
+            {
+              plan: string,
+              status: {
+                type: 'string',
+                enum: ['active', 'waiting_user', 'done'],
+                default: 'active',
+              },
+            },
+            ['plan'],
+          ),
         },
       ],
     };
@@ -140,10 +150,18 @@ export class PlannerToolsClient implements IMcpClient {
               state,
             })),
           );
-        case 'update_plan':
-          scope.setPlan(requiredString(args, 'plan'));
+        case 'update_plan': {
+          const status = args.status ?? 'active';
+          if (
+            status !== 'active' &&
+            status !== 'waiting_user' &&
+            status !== 'done'
+          )
+            throw new Error('status must be active, waiting_user or done');
+          scope.setPlan(requiredString(args, 'plan'), status);
           scope.recordAction?.('plan updated');
           return textResult({ ok: true });
+        }
         default:
           throw new Error(`unknown tool ${name}`);
       }
