@@ -6,7 +6,9 @@ import type {
   Message,
   Result,
 } from '@mcp-abap-adt/llm-agent';
+import { z } from 'zod';
 import { currentPlannerScope } from './planner-scope.js';
+import { dependenciesDone, mergePlan, stepSchema } from './structured-plan.js';
 
 function textResult(
   value: unknown,
@@ -43,6 +45,7 @@ function selectHistory(
 }
 export class PlannerToolsClient implements IMcpClient {
   async listTools(): Promise<Result<McpTool[], McpError>> {
+    const plan = currentPlannerScope()?.getPlan();
     const workers = currentPlannerScope()?.board.workerNames();
     const string = { type: 'string' };
     const schema = (
@@ -64,10 +67,17 @@ export class PlannerToolsClient implements IMcpClient {
             {
               worker: { ...string, ...(workers ? { enum: workers } : {}) },
               goal: string,
+              step_id: string,
               context: string,
               history: { type: 'string', enum: ['none', 'last-turn', 'all'] },
             },
-            ['worker', 'goal'],
+            [
+              'worker',
+              'goal',
+              ...(typeof plan === 'object' && plan.note === undefined
+                ? ['step_id']
+                : []),
+            ],
           ),
         },
         {
@@ -91,13 +101,15 @@ export class PlannerToolsClient implements IMcpClient {
           inputSchema: schema(
             {
               plan: string,
+              steps: { type: 'array', items: z.toJSONSchema(stepSchema) },
+              question: string,
               status: {
                 type: 'string',
                 enum: ['active', 'waiting_user', 'done'],
                 default: 'active',
               },
             },
-            ['plan'],
+            [],
           ),
         },
       ],
@@ -119,9 +131,30 @@ export class PlannerToolsClient implements IMcpClient {
               ? undefined
               : requiredString(args, 'context');
           const history = selectHistory(scope.history(), args.history);
+          const plan = scope.getPlan();
+          const structured =
+            typeof plan === 'object' && plan.note === undefined
+              ? plan
+              : undefined;
+          const step = structured?.steps.find((s) => s.id === args.step_id);
+          if (structured && !step)
+            throw new Error('step_id must identify a plan step');
+          if (step && structured && !dependenciesDone(structured, step))
+            throw new Error(`dependencies for ${step.id} are not done/skipped`);
           const result = scope.board.start({ worker, goal, context, history });
           if (!result.ok) throw new Error(result.error);
-          scope.recordAction?.(`started ${result.value.id} (${worker})`, true);
+          if (step) {
+            step.taskIds.push(result.value.id);
+            step.state = 'running';
+            if (step.check?.by === 'checker' && worker === 'checker') {
+              step.check.taskId = result.value.id;
+              delete step.check.verdict;
+            }
+          }
+          scope.recordAction?.(
+            `started ${result.value.id}${step ? ` for ${step.id}` : ''} (${worker})`,
+            true,
+          );
           return textResult({
             task_id: result.value.id,
             state: result.value.state,
@@ -158,7 +191,24 @@ export class PlannerToolsClient implements IMcpClient {
             status !== 'done'
           )
             throw new Error('status must be active, waiting_user or done');
-          scope.setPlan(requiredString(args, 'plan'), status);
+          const question =
+            args.question === undefined
+              ? undefined
+              : requiredString(args, 'question');
+          if (status === 'waiting_user' && !question?.trim())
+            throw new Error('waiting_user requires question');
+          scope.setPlan(
+            args.steps !== undefined
+              ? mergePlan(scope.getPlan(), args.steps, status, question)
+              : {
+                  version: 1,
+                  steps: [],
+                  note: requiredString(args, 'plan'),
+                  status,
+                  question,
+                },
+            status,
+          );
           scope.recordAction?.('plan updated');
           return textResult({ ok: true });
         }

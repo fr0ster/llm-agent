@@ -1,0 +1,167 @@
+import type {
+  DialoguePlan as Plan,
+  DialoguePlanStep as PlanStep,
+  TaskEvent,
+} from '@mcp-abap-adt/llm-agent';
+import { z } from 'zod';
+
+export const stepSchema = z.object({
+  id: z.string().min(1),
+  goal: z.string().min(1),
+  dependsOn: z.array(z.string()).optional(),
+  worker: z.string().optional(),
+  state: z
+    .enum([
+      'pending',
+      'running',
+      'checking',
+      'done',
+      'failed',
+      'skipped',
+      'blocked',
+    ])
+    .optional(),
+  note: z.string().optional(),
+  check: z
+    .object({ by: z.enum(['planner', 'checker']), goal: z.string().min(1) })
+    .optional(),
+});
+export function mergePlan(
+  previous: string | Plan | undefined,
+  input: unknown,
+  status: Plan['status'],
+  question?: string,
+): Plan {
+  const steps = z.array(stepSchema).parse(input);
+  const ids = new Set(steps.map((s) => s.id));
+  if (ids.size !== steps.length) throw new Error('duplicate step id');
+  for (const s of steps) {
+    if (s.dependsOn?.some((id) => !ids.has(id) || id === s.id))
+      throw new Error('invalid dependency');
+    if (s.state === 'skipped' && !s.note?.trim())
+      throw new Error('skipped requires a note');
+  }
+  const visiting = new Set<string>();
+  const visited = new Set<string>();
+  const visit = (id: string) => {
+    if (visiting.has(id)) throw new Error('cyclic dependencies');
+    if (visited.has(id)) return;
+    visiting.add(id);
+    for (const dep of steps.find((s) => s.id === id)?.dependsOn ?? [])
+      visit(dep);
+    visiting.delete(id);
+    visited.add(id);
+  };
+  for (const id of ids) visit(id);
+  return {
+    version: 1,
+    status,
+    question,
+    steps: steps.map((s) => {
+      const old =
+        typeof previous === 'object'
+          ? previous.steps.find((o) => o.id === s.id)
+          : undefined;
+      if (
+        old?.state === 'checking' &&
+        (s.state === 'done' || s.state === 'failed') &&
+        !s.note?.trim()
+      )
+        throw new Error('closing a check requires a note');
+      const check = s.check
+        ? { ...old?.check, ...s.check }
+        : old?.check
+          ? { ...old.check }
+          : undefined;
+      if (
+        check?.by === 'planner' &&
+        (s.state === 'done' || s.state === 'failed')
+      )
+        check.verdict = s.state === 'done' ? 'pass' : 'fail';
+      return {
+        ...s,
+        state: old ? (s.state ?? old.state) : 'pending',
+        taskIds: old?.taskIds ?? [],
+        note: s.note ?? old?.note,
+        check,
+      };
+    }),
+  };
+}
+export function dependenciesDone(plan: Plan, step: PlanStep): boolean {
+  return (step.dependsOn ?? []).every((id) =>
+    plan.steps.some(
+      (s) => s.id === id && (s.state === 'done' || s.state === 'skipped'),
+    ),
+  );
+}
+export function readySteps(plan?: Plan): PlanStep[] {
+  return (
+    plan?.steps.filter(
+      (s) => s.state === 'pending' && dependenciesDone(plan, s),
+    ) ?? []
+  );
+}
+export function applyTaskEvent(
+  plan: Plan | undefined,
+  { task, kind }: TaskEvent,
+): void {
+  const step = plan?.steps.find((s) => s.taskIds.includes(task.id));
+  if (!step || kind === 'started') return;
+  // Older retry outcomes cannot overwrite the current attempt.
+  if (step.taskIds.at(-1) !== task.id) return;
+  if (kind !== 'done') {
+    step.state = 'failed';
+    step.note = task.error ?? kind;
+    return;
+  }
+  if (step.check?.taskId === task.id) {
+    step.state = 'checking';
+    try {
+      const verdict: unknown = JSON.parse(task.output ?? '');
+      const parsed = z
+        .object({
+          verdict: z.enum(['pass', 'fail']),
+          note: z.string().optional(),
+        })
+        .safeParse(verdict);
+      if (parsed.success) {
+        step.check.verdict = parsed.data.verdict;
+        step.state = parsed.data.verdict === 'pass' ? 'done' : 'failed';
+        step.note = parsed.data.note ?? parsed.data.verdict;
+      }
+    } catch {
+      /* The planner decides when a checker has no structured verdict. */
+    }
+  } else step.state = step.check ? 'checking' : 'done';
+}
+export function planView(plan?: Plan): string {
+  if (!plan) return '[plan] status: active\nnone';
+  const visible = [...plan.steps];
+  let collapsed = 0;
+  while (visible.length > 40) {
+    const index = visible.findIndex(
+      (s) => s.state === 'done' || s.state === 'skipped',
+    );
+    if (index < 0) break;
+    visible.splice(index, 1);
+    collapsed++;
+  }
+  return [
+    `[plan] status: ${plan.status}`,
+    plan.question,
+    plan.note,
+    collapsed ? `(${collapsed} older done/skipped steps collapsed)` : '',
+    ...visible
+      .slice(0, 40)
+      .map(
+        (s) =>
+          `${s.id} ${s.state === 'pending' && dependenciesDone(plan, s) ? 'ready' : s.state} ${s.goal.replace(/\s+/g, ' ')}${s.dependsOn?.length ? ` (depends on ${s.dependsOn.join(', ')})` : ''} (${s.taskIds.join(', ')})${s.note ? ` ? ${s.note}` : ''}`,
+      ),
+    visible.length > 40
+      ? `(${visible.length - 40} additional steps omitted)`
+      : '',
+  ]
+    .filter(Boolean)
+    .join('\n');
+}

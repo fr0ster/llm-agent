@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import type { McpContentBlock, Message } from '@mcp-abap-adt/llm-agent';
+import type {
+  DialoguePlan,
+  McpContentBlock,
+  Message,
+} from '@mcp-abap-adt/llm-agent';
 import { PlannerToolsClient, runInPlannerScope, TaskBoard } from '../index.js';
 
 const client = new PlannerToolsClient();
@@ -15,7 +19,7 @@ async function call(name: string, args = {}) {
 }
 function setup(maxTasks = 50) {
   let history: Message[] | undefined;
-  let plan: string | undefined;
+  let plan: string | DialoguePlan | undefined;
   const board = new TaskBoard({
     workers: new Map([
       [
@@ -43,14 +47,14 @@ function setup(maxTasks = 50) {
     board,
     history: () => history,
     getPlan: () => plan,
-    setPlan: (value: string) => {
+    setPlan: (value: string | DialoguePlan) => {
       plan = value;
     },
     scopeHistory: messages,
     scope: {
       board,
       getPlan: () => plan,
-      setPlan: (value: string) => {
+      setPlan: (value: string | DialoguePlan) => {
         plan = value;
       },
       history: () => messages,
@@ -125,7 +129,7 @@ test('all tool success paths return JSON and plan is stored', async () => {
     assert.deepEqual((await call('update_plan', { plan: 'the plan' })).json, {
       ok: true,
     });
-    assert.equal(f.getPlan(), 'the plan');
+    assert.equal((f.getPlan() as DialoguePlan).note, 'the plan');
   });
   await f.board.stopAll();
 });
@@ -206,8 +210,8 @@ test('concurrent async planner scopes remain isolated', async () => {
       }),
     ),
   );
-  assert.equal(a.getPlan(), '0');
-  assert.equal(b.getPlan(), '1');
+  assert.equal((a.getPlan() as DialoguePlan).note, '0');
+  assert.equal((b.getPlan() as DialoguePlan).note, '1');
   assert.equal(a.board.list()[0].goal, '0');
   assert.equal(b.board.list()[0].goal, '1');
   assert.equal((await call('list_tasks')).error, true);
@@ -215,7 +219,7 @@ test('concurrent async planner scopes remain isolated', async () => {
 
 test('update_plan validates status, defaults to active and advertises the enum', async () => {
   const f = setup();
-  const updates: Array<{ plan: string; status: unknown }> = [];
+  const updates: Array<{ plan: string | DialoguePlan; status: unknown }> = [];
   await runInPlannerScope(
     {
       ...f.scope,
@@ -240,12 +244,19 @@ test('update_plan validates status, defaults to active and advertises the enum',
             await call('update_plan', {
               plan: 'next',
               ...(status ? { status } : {}),
+              question: 'why?',
             })
           ).error,
           undefined,
         );
         assert.deepEqual(updates.at(-1), {
-          plan: 'next',
+          plan: {
+            version: 1,
+            steps: [],
+            note: 'next',
+            status: status ?? 'active',
+            question: 'why?',
+          },
           status: status ?? 'active',
         });
       }

@@ -37,9 +37,39 @@ export interface PlannerMessage {
   createdAt: number;
   trigger: 'user' | 'event';
 }
+export interface PlanStep {
+  id: string;
+  goal: string;
+  dependsOn?: string[];
+  worker?: string;
+  state:
+    | 'pending'
+    | 'running'
+    | 'checking'
+    | 'done'
+    | 'failed'
+    | 'skipped'
+    | 'blocked';
+  check?: {
+    by: 'planner' | 'checker';
+    goal: string;
+    verdict?: 'pass' | 'fail';
+    taskId?: string;
+  };
+  taskIds: string[];
+  note?: string;
+}
+export interface Plan {
+  version: 1;
+  steps: PlanStep[];
+  status: 'active' | 'waiting_user' | 'done';
+  question?: string;
+  /** Transitional free-text plan; not an executable step. */
+  note?: string;
+}
 export interface DialogueState {
   conversation: Message[];
-  plan?: string;
+  plan?: string | Plan;
   planStatus?: 'active' | 'waiting_user' | 'done';
   tasks: TaskRecord[];
   pending: PlannerMessage[];

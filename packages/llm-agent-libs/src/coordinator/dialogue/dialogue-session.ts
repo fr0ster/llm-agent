@@ -4,12 +4,14 @@ import type {
   IDialogueStateStore,
   Message,
   OnPartial,
+  DialoguePlan as Plan,
   PlannerMessage,
   Result,
   StreamChunk,
   TaskEvent,
 } from '@mcp-abap-adt/llm-agent';
 import { runInPlannerScope } from './planner-scope.js';
+import { applyTaskEvent, planView, readySteps } from './structured-plan.js';
 import { TaskBoard, type TaskBoardOptions } from './task-board.js';
 
 export const DIALOGUE_HISTORY_LIMIT = 200;
@@ -46,8 +48,7 @@ interface UserTurn {
 export class DialogueSession {
   private readonly board: TaskBoard;
   private conversation: Message[] = [];
-  private plan?: string;
-  private planStatus?: DialogueState['planStatus'];
+  private plan?: Plan;
   private pending: PlannerMessage[] = [];
   private readonly users: UserTurn[] = [];
   private events: TaskEvent[] = [];
@@ -67,6 +68,7 @@ export class DialogueSession {
     this.board = new TaskBoard({
       ...opts.board,
       onEvent: (event) => {
+        applyTaskEvent(this.plan, event);
         // Only outcomes wake the planner; a start is visible via list_tasks.
         if (this.closing || event.kind === 'started') return;
         this.events.push(event);
@@ -92,12 +94,27 @@ export class DialogueSession {
         [],
       );
       session.trim();
-      session.plan = state.plan;
-      session.planStatus =
-        state.planStatus ?? (state.plan !== undefined ? 'active' : undefined);
+      session.plan =
+        typeof state.plan === 'string'
+          ? {
+              version: 1,
+              steps: [],
+              note: state.plan,
+              status: state.planStatus ?? 'active',
+            }
+          : structuredClone(state.plan);
+      if (session.plan?.status === 'waiting_user' && !session.plan.question)
+        session.plan.question =
+          'Awaiting user response (restored legacy state)';
       session.pending = structuredClone(state.pending);
       session.savedAt = state.savedAt;
       const ids = session.board.restore(state.tasks);
+      for (const step of session.plan?.steps ?? []) {
+        if (step.taskIds.some((id) => ids.includes(id))) {
+          step.state = 'failed';
+          step.note = 'interrupted by restart';
+        }
+      }
       if (ids.length)
         session.restart = `[restart] interrupted tasks: ${ids.join(', ')} — their real state is unknown; check before continuing`;
     }
@@ -140,6 +157,10 @@ export class DialogueSession {
     }
   }
   private async turn(text: string, user?: UserTurn): Promise<PlannerMessage> {
+    if (user && this.plan) {
+      this.plan.status = 'active';
+      delete this.plan.question;
+    }
     const input = this.restart ? `${this.restart}\n${text}` : text;
     this.restart = undefined;
     this.appendInput(input);
@@ -150,23 +171,7 @@ export class DialogueSession {
       let started = false;
       for (let correction = 0; ; correction++) {
         const messages = structuredClone(this.conversation);
-        const tasks = this.board.list();
-        const notes = [];
-        if (this.plan !== undefined)
-          notes.push(`[plan]\n${this.plan}\nstatus: ${this.planStatus}`);
-        notes.push(
-          `[tasks]\n${
-            tasks.length
-              ? tasks
-                  .slice(-30)
-                  .map(
-                    ({ id, worker, state, goal }) =>
-                      `${id} (${worker}) ${state}: ${goal.replace(/\s+/g, ' ').slice(0, 80)}`,
-                  )
-                  .join('\n')
-              : 'none'
-          }${tasks.length > 30 ? `\n(${tasks.length - 30} older tasks omitted)` : ''}`,
-        );
+        const notes = [planView(this.plan)];
         const last = messages.at(-1);
         if (last) last.content = `${notes.join('\n')}\n${last.content}`;
         const contentPartials: StreamChunk[] = [];
@@ -175,8 +180,10 @@ export class DialogueSession {
             board: this.board,
             getPlan: () => this.plan,
             setPlan: (plan, status = 'active') => {
-              this.plan = plan;
-              this.planStatus = status;
+              this.plan =
+                typeof plan === 'string'
+                  ? { version: 1, steps: [], note: plan, status }
+                  : plan;
             },
             recordAction: (action, didStart) => {
               actions.push(action);
@@ -204,28 +211,25 @@ export class DialogueSession {
           content: `[actions] ${actions.join(', ') || 'none'}`,
         });
         this.trim();
-        const idle =
-          !user &&
+        if (
+          this.plan?.steps.length &&
+          this.plan.steps.every(
+            (s) => s.state === 'done' || s.state === 'skipped',
+          )
+        ) {
+          this.plan.status = 'done';
+          delete this.plan.question;
+        }
+        const ready = readySteps(this.plan);
+        const canCheck =
           this.plan !== undefined &&
-          this.planStatus === 'active' &&
+          this.plan.status !== 'waiting_user' &&
           !started &&
-          this.events.length === 0 &&
           !this.board
             .list()
-            .some(
-              (task) => task.state === 'queued' || task.state === 'running',
-            );
-        const needsEvents =
-          !user &&
-          this.plan !== undefined &&
-          this.planStatus === 'active' &&
-          !started &&
-          this.events.length > 0 &&
-          !this.board
-            .list()
-            .some(
-              (task) => task.state === 'queued' || task.state === 'running',
-            );
+            .some((t) => t.state === 'queued' || t.state === 'running');
+        const idle = canCheck && ready.length > 0;
+        const needsEvents = canCheck && this.events.length > 0;
         const enabled = (this.opts.maxCorrections ?? 2) > 0 && !this.closing;
         if (
           !enabled ||
@@ -241,7 +245,9 @@ export class DialogueSession {
         }
         const events = this.events.splice(0);
         this.appendInput(
-          '[check] Nothing is running or new task events need review. Delegate the next ready step, or set status waiting_user / done with update_plan.' +
+          (idle
+            ? `[check] Steps ${ready.map((s) => s.id).join(', ')} are ready and nothing runs. Delegate them, skip them with a reason, or ask the user (status waiting_user).`
+            : '[check] Review new task events before answering.') +
             (events.length ? `\n${this.eventNotes(events)}` : ''),
         );
       }
@@ -321,7 +327,7 @@ export class DialogueSession {
     return structuredClone({
       conversation: this.conversation,
       plan: this.plan,
-      planStatus: this.planStatus,
+      planStatus: this.plan?.status,
       tasks: this.board.list(),
       pending: this.pending,
       savedAt: this.savedAt,

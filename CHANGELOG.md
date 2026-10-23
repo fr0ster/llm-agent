@@ -9,6 +9,14 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Added
+
+- Structured dialogue plans with dependencies, task links, checker verdicts, legacy restore, and bounded ready-step corrections.
+
+### Changed
+
+- Dialogue planner turns use a single bounded plan view and step-aware actions.
+
 ## [30.7.0] — 2026-10-23
 
 ### Added

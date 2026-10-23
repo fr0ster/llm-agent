@@ -119,7 +119,10 @@ test('several completions during a busy user turn are listed once in order; sile
 
   assert.equal(inputs.length, 2);
 
-  assert.match(String(inputs[1].at(-1)?.content), /\[plan\]\nparallel work/);
+  assert.match(
+    String(inputs[1].at(-1)?.content),
+    /\[plan\] status: active\nparallel work/,
+  );
 
   const note = String(inputs[1].at(-1)?.content);
 
@@ -177,7 +180,10 @@ test('send answers in scope, records plan, forwards options and preserves user N
 
     planner: {
       async process(messages, opts) {
-        assert.equal(messages.at(-1)?.content, '[tasks]\nnone\nhello');
+        assert.equal(
+          messages.at(-1)?.content,
+          '[plan] status: active\nnone\nhello',
+        );
 
         assert.equal(opts.signal, signal);
 
@@ -190,7 +196,10 @@ test('send answers in scope, records plan, forwards options and preserves user N
 
   assert.equal((await s.send('hello', { signal })).text, 'NO_MESSAGE');
 
-  assert.equal(s.snapshot().plan, 'plan');
+  assert.equal(
+    (s.snapshot().plan as import('@mcp-abap-adt/llm-agent').DialoguePlan).note,
+    'plan',
+  );
 
   assert.equal(s.snapshot().conversation.length, 3);
 
@@ -555,12 +564,15 @@ test('plan tool state is injected before the last input, survives trimming and r
 
   await s.send('set');
 
-  assert.equal(inputs[0].at(-1)?.content, '[tasks]\nnone\nset');
+  assert.equal(inputs[0].at(-1)?.content, '[plan] status: active\nnone\nset');
 
   for (let i = 0; i < 105; i++) await s.send(`next ${i}`);
 
   for (const input of inputs.slice(1)) {
-    assert.match(String(input.at(-1)?.content), /\[plan\]\nremember this/);
+    assert.match(
+      String(input.at(-1)?.content),
+      /\[plan\] status: active\nremember this/,
+    );
   }
 
   assert.ok(
@@ -578,7 +590,7 @@ test('plan tool state is injected before the last input, survives trimming and r
   assert.match(
     String(inputs.at(-1)?.at(-1)?.content),
 
-    /\[plan\]\nremember this/,
+    /\[plan\] status: active\nremember this/,
   );
 
   await restored.close();
@@ -910,7 +922,7 @@ test('open restores queued tasks as interrupted and explains them on the next tu
   await s.close();
 });
 
-test('tasks snapshot includes only the recent thirty tasks and bounded single-line goals', async () => {
+test('legacy unlinked tasks do not introduce a separate tasks view', async () => {
   const store = new InMemoryDialogueStateStore();
 
   await store.save('board', {
@@ -944,13 +956,7 @@ test('tasks snapshot includes only the recent thirty tasks and bounded single-li
       async process(messages) {
         const note = String(messages.at(-1)?.content);
 
-        assert.ok(note.startsWith('[tasks]\nt3 (w) done: goal '));
-
-        assert.match(note, /2 older tasks omitted/);
-
-        assert.equal(note.split('\n').length, 33);
-
-        assert.ok(note.split('\n')[1].length < 110);
+        assert.equal(note, '[plan] status: active\nnone\nboard');
 
         return { ok: true, value: { content: 'ok' } };
       },
@@ -1005,7 +1011,7 @@ test('content waits for acceptance while progress stays live; failed drafts neve
 });
 
 for (const status of [undefined, 'active', 'waiting_user', 'done'] as const) {
-  test(`event idle uses persisted status ${status}; user prose never triggers checks`, async () => {
+  test(`legacy status ${status} restores and new user activates the note plan`, async () => {
     const store = new InMemoryDialogueStateStore();
     await store.save('status', {
       conversation: [
@@ -1050,26 +1056,26 @@ for (const status of [undefined, 'active', 'waiting_user', 'done'] as const) {
         },
       },
     });
+    assert.equal(s.snapshot().planStatus, status ?? 'active');
+    assert.equal(
+      (s.snapshot().plan as import('@mcp-abap-adt/llm-agent').DialoguePlan)
+        .note,
+      'next',
+    );
     await s.send('go');
     assert.equal(inputs.length, 1);
-    assert.equal(s.snapshot().planStatus, status ?? 'active');
+    assert.equal(s.snapshot().planStatus, 'active');
     work.resolve({ output: 'done' });
     await tick();
     await tick();
-    assert.equal(
-      inputs.length,
-      status === 'waiting_user' || status === 'done' ? 2 : 4,
-    );
-    assert.equal(
-      warnings.length,
-      status === 'waiting_user' || status === 'done' ? 0 : 1,
-    );
+    assert.equal(inputs.length, 2);
+    assert.equal(warnings.length, 0);
     assert.ok(
       warnings.every(
         (warning) => !warning.includes('secret') && !warning.includes('t999'),
       ),
     );
-    assert.equal((await store.load('status'))?.planStatus, status ?? 'active');
+    assert.equal((await store.load('status'))?.planStatus, 'active');
     await s.close();
   });
 }
@@ -1110,7 +1116,7 @@ for (const maxCorrections of [0, 1, 2]) {
     work.resolve({ output: 'done' });
     await tick();
     await tick();
-    assert.equal(calls, 2 + maxCorrections);
+    assert.equal(calls, 2);
     await s.close();
   });
 }
