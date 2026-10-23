@@ -26,6 +26,8 @@ export interface PlannerAgent {
 }
 export interface DialogueSessionOptions {
   id: string;
+  /** Maximum corrective turns; zero disables end-of-turn checks. Default: 2. */
+  maxCorrections?: number;
   planner: PlannerAgent;
   board: Omit<TaskBoardOptions, 'onEvent'>;
   store?: IDialogueStateStore;
@@ -55,6 +57,11 @@ export class DialogueSession {
   private persistence: Promise<void> = Promise.resolve();
 
   private constructor(private readonly opts: DialogueSessionOptions) {
+    if (
+      !Number.isInteger(opts.maxCorrections ?? 2) ||
+      (opts.maxCorrections ?? 2) < 0
+    )
+      throw new Error('maxCorrections must be a non-negative integer');
     this.board = new TaskBoard({
       ...opts.board,
       onEvent: (event) => {
@@ -72,6 +79,7 @@ export class DialogueSession {
       session.conversation = structuredClone(
         state.conversation.slice(-DIALOGUE_HISTORY_LIMIT),
       );
+      session.trim();
       session.plan = state.plan;
       session.pending = structuredClone(state.pending);
       session.savedAt = state.savedAt;
@@ -122,40 +130,96 @@ export class DialogueSession {
   private async turn(text: string, user?: UserTurn): Promise<PlannerMessage> {
     const input = this.restart ? `${this.restart}\n${text}` : text;
     this.restart = undefined;
-    this.conversation.push({ role: 'user', content: input });
+    this.appendInput(input);
     this.trim();
-    const messages = structuredClone(this.conversation);
-    if (this.plan !== undefined) {
-      messages.splice(messages.length - 1, 0, {
-        role: 'user',
-        content: `[plan]\n${this.plan}`,
-      });
-    }
     try {
-      const result = await runInPlannerScope(
-        {
-          board: this.board,
-          getPlan: () => this.plan,
-          setPlan: (plan) => {
-            this.plan = plan;
+      let reply = '';
+      for (let correction = 0; ; correction++) {
+        const messages = structuredClone(this.conversation);
+        const tasks = this.board.list();
+        const notes = [];
+        if (this.plan !== undefined) notes.push(`[plan]\n${this.plan}`);
+        notes.push(
+          `[tasks]\n${
+            tasks.length
+              ? tasks
+                  .slice(-30)
+                  .map(
+                    ({ id, worker, state, goal }) =>
+                      `${id} (${worker}) ${state}: ${goal.replace(/\s+/g, ' ').slice(0, 80)}`,
+                  )
+                  .join('\n')
+              : 'none'
+          }${tasks.length > 30 ? `\n(${tasks.length - 30} older tasks omitted)` : ''}`,
+        );
+        messages.splice(messages.length - 1, 0, {
+          role: 'user',
+          content: notes.join('\n'),
+        });
+        const actions: string[] = [];
+        let started = false;
+        const result = await runInPlannerScope(
+          {
+            board: this.board,
+            getPlan: () => this.plan,
+            setPlan: (plan) => {
+              this.plan = plan;
+            },
+            recordAction: (action, didStart) => {
+              actions.push(action);
+              started ||= didStart === true;
+            },
+            history: () => structuredClone(this.conversation),
           },
-          history: () => structuredClone(this.conversation),
-        },
-        () =>
-          this.opts.planner.process(messages, {
-            ...user?.opts,
-            sessionId: this.opts.id,
-          }),
-      );
-      if (!result.ok) throw result.error;
+          () =>
+            this.opts.planner.process(messages, {
+              ...user?.opts,
+              sessionId: this.opts.id,
+            }),
+        );
+        if (!result.ok) throw result.error;
+        reply = result.value.content;
+        this.conversation.push({ role: 'assistant', content: reply });
+        this.conversation.push({
+          role: 'user',
+          content: `[actions] ${actions.join(', ') || 'none'}`,
+        });
+        this.trim();
+        if ((this.opts.maxCorrections ?? 2) === 0 || this.closing) break;
+        const unknownIds = [...new Set(reply.match(/\bt\d+\b/g) ?? [])].filter(
+          (id) => !this.board.get(id),
+        );
+        // Plans are plain text: NO_MESSAGE is the explicit silent completion escape.
+        // Never infer completion from plan prose, or apply idle checks to user turns.
+        const idle =
+          !user &&
+          !!this.plan?.trim() &&
+          !started &&
+          reply.trim() !== 'NO_MESSAGE' &&
+          !this.board
+            .list()
+            .some(
+              (task) => task.state === 'queued' || task.state === 'running',
+            );
+        if (!unknownIds.length && !idle) break;
+        if (correction >= (this.opts.maxCorrections ?? 2)) {
+          this.warn(
+            `Dialogue correction limit reached: ${unknownIds.length ? 'unknownIds' : 'idle'}; ids: ${unknownIds.join(', ')}`,
+          );
+          break;
+        }
+        this.appendInput(
+          unknownIds.length
+            ? `[check] Your reply names tasks that do not exist: ${unknownIds.join(', ')}. Delegate them now with delegate_task, or correct the reply.`
+            : '[check] Nothing is running and this turn started nothing. Delegate the next ready step, ask the user, or reply that the plan is done.',
+        );
+      }
       const message: PlannerMessage = {
         id: randomUUID(),
-        text: result.value.content,
+        text: reply,
         createdAt: this.now(),
         trigger: user ? 'user' : 'event',
       };
-      this.conversation.push({ role: 'assistant', content: message.text });
-      this.trim();
       if (!user && !this.closing && message.text.trim() !== 'NO_MESSAGE') {
         this.pending.push(message);
         try {
@@ -183,9 +247,27 @@ export class DialogueSession {
     });
     return this.persistence;
   }
-  private trim(): void {
-    this.conversation = this.conversation.slice(-DIALOGUE_HISTORY_LIMIT);
+  private appendInput(text: string): void {
+    const last = this.conversation.at(-1);
+    // Hub notes occupy the next user slot; merge input to preserve role alternation.
+    if (last?.role === 'user') last.content = `${last.content}\n${text}`;
+    else this.conversation.push({ role: 'user', content: text });
+    this.trim();
   }
+  private trim(): void {
+    // Remove complete reply/note pairs, never leave an orphaned actions note.
+    while (this.conversation.length > DIALOGUE_HISTORY_LIMIT)
+      this.conversation.splice(0, 2);
+    if (this.conversation[0]?.role === 'assistant') this.conversation.shift();
+    const first = this.conversation[0];
+    if (first && String(first.content).startsWith('[actions]')) {
+      const content = String(first.content);
+      const newline = content.indexOf('\n');
+      if (newline < 0) this.conversation.shift();
+      else first.content = content.slice(newline + 1);
+    }
+  }
+
   private now(): number {
     return (this.opts.now ?? Date.now)();
   }

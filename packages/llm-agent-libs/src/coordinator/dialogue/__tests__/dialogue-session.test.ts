@@ -70,13 +70,13 @@ test('several completions during a busy user turn are listed once in order; sile
   await sent;
   await tick();
   assert.equal(inputs.length, 2);
-  assert.equal(inputs[1].at(-2)?.content, '[plan]\nparallel work');
+  assert.match(String(inputs[1].at(-2)?.content), /\[plan\]\nparallel work/);
   const note = String(inputs[1].at(-1)?.content);
   assert.equal((note.match(/ done:/g) ?? []).length, 2);
   assert.ok(note.indexOf('t2 (w) done') < note.indexOf('t1 (w) done'));
   assert.equal(pushes, 0);
   assert.deepEqual(s.takePending(), []);
-  assert.equal(s.snapshot().conversation.at(-1)?.content, '  NO_MESSAGE\n');
+  assert.equal(s.snapshot().conversation.at(-2)?.content, '  NO_MESSAGE\n');
   await s.close();
 });
 
@@ -115,7 +115,7 @@ test('send answers in scope, records plan, forwards options and preserves user N
   });
   assert.equal((await s.send('hello', { signal })).text, 'NO_MESSAGE');
   assert.equal(s.snapshot().plan, 'plan');
-  assert.equal(s.snapshot().conversation.length, 2);
+  assert.equal(s.snapshot().conversation.length, 3);
   await s.close();
 });
 
@@ -161,9 +161,7 @@ test('delegation returns before completion; busy events coalesce; users precede 
         return {
           ok: true,
           value: {
-            content: String(messages.at(-1)?.content).startsWith(
-              '[task events]',
-            )
+            content: String(messages.at(-1)?.content).includes('[task events]')
               ? 'progress'
               : 'user answer',
           },
@@ -187,7 +185,7 @@ test('delegation returns before completion; busy events coalesce; users precede 
   eventRelease.resolve();
   assert.equal((await user).text, 'user answer');
   await tick();
-  assert.equal(inputs[2].at(-1)?.content, 'question');
+  assert.ok(String(inputs[2].at(-1)?.content).endsWith('question'));
   const note = String(inputs[3].at(-1)?.content);
   assert.match(note, /task t2 \(w2\) done: goal two/);
   assert.doesNotMatch(note, /t1/);
@@ -230,8 +228,8 @@ test('restore interrupts tasks, restart note appears once and NO_MESSAGE is reco
     String(inputs[0].at(-1)?.content),
     /^\[restart\] interrupted tasks: t1/,
   );
-  assert.equal(inputs[1].at(-1)?.content, 'second');
-  assert.equal((await store.load('s'))?.conversation.length, 4);
+  assert.ok(String(inputs[1].at(-1)?.content).endsWith('second'));
+  assert.equal((await store.load('s'))?.conversation.length, 5);
   await s.close();
   assert.equal(await store.load('s'), undefined);
 });
@@ -313,11 +311,16 @@ test('history is bounded, snapshots and memory store are isolated, save errors a
     },
   });
   for (let i = 0; i < 110; i++) await s.send(String(i));
-  assert.equal(s.snapshot().conversation.length, 200);
+  assert.equal(s.snapshot().conversation.length, 199);
   assert.equal(saves, 110);
+  const history = s.snapshot().conversation;
+  assert.equal(history[0].role, 'user');
+  assert.ok(!String(history[0].content).startsWith('[actions]'));
+  for (let i = 1; i < history.length; i++)
+    assert.notEqual(history[i].role, history[i - 1].role);
   const snapshot = s.snapshot();
   snapshot.conversation.length = 0;
-  assert.equal(s.snapshot().conversation.length, 200);
+  assert.equal(s.snapshot().conversation.length, 199);
   await store.save('copy', s.snapshot());
   const loaded = await store.load('copy');
   assert.ok(loaded);
@@ -344,13 +347,10 @@ test('plan tool state is injected before the last input, survives trimming and r
   };
   const s = await DialogueSession.open(options);
   await s.send('set');
-  assert.equal(inputs[0].length, 1, 'no plan note before a plan is set');
+  assert.equal(inputs[0].at(-2)?.content, '[tasks]\nnone');
   for (let i = 0; i < 105; i++) await s.send(`next ${i}`);
   for (const input of inputs.slice(1)) {
-    assert.deepEqual(input.at(-2), {
-      role: 'user',
-      content: '[plan]\nremember this',
-    });
+    assert.match(String(input.at(-2)?.content), /\[plan\]\nremember this/);
   }
   assert.ok(
     s
@@ -359,7 +359,10 @@ test('plan tool state is injected before the last input, survives trimming and r
   );
   const restored = await DialogueSession.open(options);
   await restored.send('restored');
-  assert.equal(inputs.at(-1)?.at(-2)?.content, '[plan]\nremember this');
+  assert.match(
+    String(inputs.at(-1)?.at(-2)?.content),
+    /\[plan\]\nremember this/,
+  );
   await restored.close();
   await s.close();
 });
@@ -571,5 +574,175 @@ test('open restores queued tasks as interrupted and explains them on the next tu
   assert.equal(s.snapshot().tasks[0].state, 'interrupted');
   await s.send('continue');
   assert.equal(runs, 0);
+  await s.close();
+});
+
+test('unknown ids are corrected with real actions; notes survive restore and board injection is transient', async () => {
+  const store = new InMemoryDialogueStateStore();
+  const inputs: Message[][] = [];
+  const options = {
+    id: 'truth',
+    store,
+    board: {
+      workers: new Map([
+        [
+          'w',
+          {
+            name: 'w',
+            capabilities: { contextPolicy: 'optional' as const },
+            async run() {
+              return { output: 'done' };
+            },
+          },
+        ],
+      ]),
+    },
+    planner: {
+      async process(messages: Message[]) {
+        inputs.push(messages);
+        if (inputs.length === 1)
+          return { ok: true as const, value: { content: 'started t21' } };
+        if (inputs.length === 2) {
+          assert.match(String(messages.at(-1)?.content), /\[check\].*t21/);
+          await tools.callTool('update_plan', { plan: 'work' });
+          await tools.callTool('delegate_task', {
+            worker: 'w',
+            goal: 'do work',
+          });
+          await tools.callTool('stop_task', { task_id: 't1' });
+          return { ok: true as const, value: { content: 'started t1' } };
+        }
+        return { ok: true as const, value: { content: 'NO_MESSAGE' } };
+      },
+    },
+  };
+  const s = await DialogueSession.open(options);
+  assert.equal((await s.send('go')).text, 'started t1');
+  await tick();
+  const history = s.snapshot().conversation;
+  assert.ok(
+    history.some((m) =>
+      String(m.content).includes(
+        '[actions] plan updated, started t1 (w), stop t1',
+      ),
+    ),
+  );
+  assert.ok(history.every((m) => !String(m.content).includes('[tasks]')));
+  assert.ok(inputs.every((m) => String(m.at(-2)?.content).includes('[tasks]')));
+  const restored = await DialogueSession.open(options);
+  assert.deepEqual(restored.snapshot().conversation, history);
+  await restored.send('next');
+  assert.equal(
+    restored.snapshot().conversation.at(-1)?.content,
+    '[actions] none',
+  );
+  await restored.close();
+  await s.close();
+});
+
+test('unknown id corrections are bounded, warn without reply text, and can be disabled', async () => {
+  for (const maxCorrections of [undefined, 0]) {
+    let calls = 0;
+    const warnings: string[] = [];
+    const s = await DialogueSession.open({
+      id: 'bound',
+      maxCorrections,
+      board: { workers: new Map() },
+      logger: { warn: (m) => warnings.push(m) },
+      planner: {
+        async process() {
+          calls++;
+          return { ok: true, value: { content: 'secret lie t999' } };
+        },
+      },
+    });
+    assert.equal((await s.send('go')).text, 'secret lie t999');
+    assert.equal(calls, maxCorrections === 0 ? 1 : 3);
+    assert.equal(warnings.length, maxCorrections === 0 ? 0 : 1);
+    assert.ok(
+      warnings.every((m) => m.includes('unknownIds') && !m.includes('secret')),
+    );
+    await s.close();
+  }
+});
+
+test('idle correction applies only to non-silent event replies, never user turns', async () => {
+  const work = deferred<{ output: string }>();
+  const delivered: string[] = [];
+  let calls = 0;
+  const s = await DialogueSession.open({
+    id: 'idle',
+    onMessage: (m) => delivered.push(m.text),
+    board: {
+      workers: new Map([
+        [
+          'w',
+          {
+            name: 'w',
+            capabilities: { contextPolicy: 'optional' },
+            run: () => work.promise,
+          },
+        ],
+      ]),
+    },
+    planner: {
+      async process(messages) {
+        calls++;
+        if (calls === 1)
+          await tools.callTool('update_plan', { plan: 'next step' });
+        if (calls === 2)
+          await tools.callTool('delegate_task', { worker: 'w', goal: 'step' });
+        if (calls === 4) {
+          assert.match(
+            String(messages.at(-1)?.content),
+            /\[check\] Nothing is running/,
+          );
+          return { ok: true, value: { content: 'NO_MESSAGE' } };
+        }
+        return { ok: true, value: { content: 'waiting' } };
+      },
+    },
+  });
+  await s.send('plan');
+  assert.equal(calls, 1);
+  await s.send('start');
+  work.resolve({ output: 'done' });
+  await tick();
+  await tick();
+  assert.equal(calls, 4);
+  assert.deepEqual(delivered, []);
+  await s.close();
+});
+
+test('tasks snapshot includes only the recent thirty tasks and bounded single-line goals', async () => {
+  const store = new InMemoryDialogueStateStore();
+  await store.save('board', {
+    conversation: [],
+    pending: [],
+    savedAt: 0,
+    tasks: Array.from({ length: 32 }, (_, i) => ({
+      id: `t${i + 1}`,
+      worker: 'w',
+      state: 'done' as const,
+      goal: `goal\n${'x'.repeat(100)}`,
+      createdAt: i,
+    })),
+  });
+  const s = await DialogueSession.open({
+    id: 'board',
+    store,
+    board: { workers: new Map() },
+    planner: {
+      async process(messages) {
+        const note = String(messages.at(-2)?.content);
+        assert.ok(note.startsWith('[tasks]\nt3 (w) done: goal '));
+        assert.match(note, /2 older tasks omitted/);
+        assert.equal(note.split('\n').length, 32);
+        assert.ok(note.split('\n')[1].length < 110);
+        return { ok: true, value: { content: 'ok' } };
+      },
+    },
+  });
+  await s.send('board');
   await s.close();
 });
