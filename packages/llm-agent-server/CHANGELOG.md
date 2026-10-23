@@ -1,5 +1,9 @@
 # @mcp-abap-adt/llm-agent-server
 
+## 30.7.0
+
+Lockstep release with the 30.7.0 line: dialogue planner turn truth (`[tasks]` board note, `[actions]` memory, explicit plan status on `update_plan`, end-of-turn check with bounded corrective turns, `DialogueSessionOptions.maxCorrections`, optional `DialogueState.planStatus`) — changes in `llm-agent` and `llm-agent-libs`; other packages are unchanged. See the root CHANGELOG.
+
 ## 30.6.0
 
 Lockstep release with the 30.6.0 line: dialogue planner building blocks (`TaskBoard`, `SemaphorePool`, `PlannerToolsClient`, `DialogueSession`, `DIALOGUE_PLANNER_SYSTEM`) and an optional cooperative `stopSignal` — changes in `llm-agent` and `llm-agent-libs`; other packages are unchanged. See the root CHANGELOG.
