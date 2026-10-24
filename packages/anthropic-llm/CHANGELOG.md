@@ -1,5 +1,9 @@
 # @mcp-abap-adt/anthropic-llm
 
+## 30.9.0
+
+Lockstep release with the 30.9.0 line: dialogue plan enforcement — scope changes need user consent, batch steps carry items with a mandatory counted check, optional `maxItemsPerStep`, worker tool-budget reporting, idle active plans get corrective turns, and general done invariants — changes in `llm-agent`, `llm-agent-libs` and `llm-agent-server-libs`; other packages are unchanged. See the root CHANGELOG.
+
 ## 30.8.1
 
 Lockstep release with the 30.8.1 line: tool-loop fix — every tool call gets exactly one result when a parallel batch exceeds the tool-call budget or mixes known, unknown and external tools — changes in `llm-agent-libs`; other packages are unchanged. See the root CHANGELOG.

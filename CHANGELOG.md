@@ -9,6 +9,8 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [30.9.0] — 2026-10-24
+
 ### Added
 
 - **`llm-agent` / `llm-agent-libs`**: enforce dialogue scope consent, batch item checks and counts, optional batch size limits, and worker tool-budget reporting. Idle active plans receive corrective turns. Existing persisted states remain compatible.
