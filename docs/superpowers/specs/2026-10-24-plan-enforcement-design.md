@@ -18,7 +18,11 @@ Dialogue-folder tests run with `--test-concurrency=1`. Regression coverage inclu
 
 ## Completion invariants (round 2)
 
-- I1: `update_plan` may set done only from checking (or retain done), with `successfulWorkTaskId` equal to the current `workTaskId`, present in taskIds. Task events record this optional persisted marker only for work completing done; item budget exhaustion never qualifies. New work, pending retries and membership changes invalidate it. Legacy records restore without the marker but cannot manufacture completion.
+- I1: `update_plan` may set done only from checking (or retain done), with `successfulWorkTaskId` equal to the current `workTaskId`, present in taskIds. Task events record this optional persisted marker only for work completing done; item budget exhaustion never qualifies. New work, pending retries and membership changes invalidate it. Legacy checking records derive the marker on restore and lazily during plan updates only from current work task records completed as done (without budget exhaustion for item steps). Failed or interrupted work never qualifies. Unchanged legacy done steps remain valid without revalidation. Checker task events enforce the same current-success requirement.
 - I2: Checker-owned completion additionally requires pass and check.taskId among current attempts. Planner-owned checks close with a note.
 - I3: Ownership changes preserve state and clear check.taskId/verdict, excluding the old checker from attempts. Failed work requires pending and fresh successful work before closure. Running/checking transitions follow task events for all steps.
 - I4: Successful work without a check completes automatically. Budget-exhausted non-item work instead enters checking, retaining its existing check or creating a planner check.
+
+## Round 3 reopening and migration
+
+Reopening as pending requires all current work/check attempts to settle, matching item changes. Reopening clears check.taskId, check.verdict and successfulWorkTaskId; late checker results cannot complete the reopened step. Regression tests cover active work and checks, late passing events, mismatched success markers, persisted successful/failed/interrupted work, item budget exhaustion, and explicit retention of legacy done steps.

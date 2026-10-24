@@ -310,14 +310,15 @@ Verify exactly ${step.items.length} items, each with a stored/processed result: 
               const next = retained.find((s) => s.id === step.id);
               if (
                 next &&
-                JSON.stringify(next.items) === JSON.stringify(step.items)
+                JSON.stringify(next.items) === JSON.stringify(step.items) &&
+                next.state !== 'pending'
               )
                 continue;
               try {
                 assertNoActiveAttempt(step, scope.board);
               } catch (error) {
                 throw new Error(
-                  `Cannot ${next ? 'change items for' : 'remove'} step ${step.id}: ${error instanceof Error ? error.message : String(error)}; stop the task first and wait for it to settle, or keep the step`,
+                  `Cannot ${next ? 'reopen or change items for' : 'remove'} step ${step.id}: ${error instanceof Error ? error.message : String(error)}; stop the task first and wait for it to settle, or keep the step`,
                 );
               }
             }
@@ -328,6 +329,7 @@ Verify exactly ${step.items.length} items, each with a stored/processed result: 
                   consent:
                     typeof previous === 'object' && previous.scopeConsent,
                   maxItemsPerStep: scope.maxItemsPerStep,
+                  getTask: (id) => scope.board.get(id),
                 })
               : requiredString(args, 'plan');
           if (

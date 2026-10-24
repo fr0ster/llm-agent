@@ -1001,6 +1001,7 @@ for (const active of ['work', 'check'] as const) {
           Object.assign(step, {
             state: 'checking',
             workTaskId: 'work',
+            successfulWorkTaskId: 'work',
             taskIds: ['work'],
           });
         }
@@ -1061,6 +1062,7 @@ test('active checker cannot be replaced while queued, running or awaiting cooper
   Object.assign(step, {
     state: 'checking',
     workTaskId: 'work',
+    successfulWorkTaskId: 'work',
     taskIds: ['work'],
   });
   let finish!: (value: { output: string; stopped?: boolean }) => void;

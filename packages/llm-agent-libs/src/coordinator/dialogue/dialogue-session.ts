@@ -17,6 +17,7 @@ import {
   planView,
   readySteps,
   recomputePlanStatus,
+  restoreSuccessfulWork,
 } from './structured-plan.js';
 import { TaskBoard, type TaskBoardOptions } from './task-board.js';
 
@@ -130,6 +131,7 @@ export class DialogueSession {
           for (const id of step.taskIds) session.taskSteps.set(id, step.id);
       }
       for (const step of session.plan?.steps ?? []) {
+        restoreSuccessfulWork(step, (id) => session.board.get(id));
         if (
           step.state !== 'skipped' &&
           currentAttemptIds(step).some((id) => ids.includes(id))

@@ -15,6 +15,8 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Fixed
 
+- **llm-agent-libs**: reject reopening steps with active attempts, invalidate checker evidence on reopening, and enforce current successful work on checker events. Restore legacy success markers from completed task records and preserve unchanged legacy done steps.
+
 - **llm-agent / llm-agent-libs**: centralize dialogue completion invariants around persisted current-work success and current checker verdicts for every step. Ownership changes preserve state and clear checker evidence; exhausted non-item work cannot bypass its checker.
 
 - **llm-agent-libs**: reject batch membership changes during active attempts and invalidate settled attempts on membership changes. Check ownership changes require a fresh verdict. Preserve failed/stopped non-item outcomes on budget exhaustion and propagate budget metadata while awaiting external tools.

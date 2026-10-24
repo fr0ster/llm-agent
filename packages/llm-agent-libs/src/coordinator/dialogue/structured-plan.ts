@@ -2,6 +2,7 @@ import type {
   DialoguePlan as Plan,
   DialoguePlanStep as PlanStep,
   TaskEvent,
+  TaskRecord,
 } from '@mcp-abap-adt/llm-agent';
 import { z } from 'zod';
 
@@ -32,7 +33,11 @@ export function mergePlan(
   input: unknown,
   status: Plan['status'],
   question?: string,
-  options: { consent?: boolean; maxItemsPerStep?: number } = {},
+  options: {
+    consent?: boolean;
+    maxItemsPerStep?: number;
+    getTask?: (id: string) => TaskRecord | undefined;
+  } = {},
 ): Plan {
   const steps = z.array(stepSchema).parse(input);
   if (status === 'waiting_user' && !question?.trim())
@@ -91,10 +96,12 @@ export function mergePlan(
     status,
     question,
     steps: steps.map((s) => {
-      const old =
+      const persisted =
         typeof previous === 'object'
           ? previous.steps.find((o) => o.id === s.id)
           : undefined;
+      const old = persisted ? { ...persisted } : undefined;
+      if (old && options.getTask) restoreSuccessfulWork(old, options.getTask);
       if (
         old?.state === 'checking' &&
         (s.state === 'done' || s.state === 'failed') &&
@@ -129,7 +136,7 @@ export function mergePlan(
         throw new Error(
           'Changed batch items require reopening the step as pending and a fresh work/check attempt',
         );
-      if (old && itemsChanged && check) {
+      if (old && (itemsChanged || effectiveState === 'pending') && check) {
         delete check.taskId;
         delete check.verdict;
       }
@@ -142,7 +149,10 @@ export function mergePlan(
         throw new Error('Running/checking state follows actual work attempts');
       if (items && !check) throw new Error('Steps with items require a check');
       // Completion is based on the current work/check attempts, never state alone.
-      if (s.state === 'done') {
+      if (
+        s.state === 'done' &&
+        (old?.state !== 'done' || itemsChanged || ownershipChanged)
+      ) {
         if (old?.state !== 'checking' && old?.state !== 'done')
           throw new Error(
             'Done requires checking after successful work and a passing check',
@@ -210,6 +220,25 @@ export function currentWorkTaskId(step: PlanStep): string | undefined {
     step.taskIds.filter((id) => id !== step.check?.taskId).at(-1)
   );
 }
+// Only verified current persisted work may supply the optional legacy marker.
+export function restoreSuccessfulWork(
+  step: PlanStep,
+  getTask: (id: string) => TaskRecord | undefined,
+): void {
+  if (step.successfulWorkTaskId !== undefined || step.state === 'pending')
+    return;
+  const id = currentWorkTaskId(step);
+  const task = id ? getTask(id) : undefined;
+  if (
+    id &&
+    step.taskIds.includes(id) &&
+    task?.state === 'done' &&
+    !(step.items && task.budgetExhausted)
+  ) {
+    step.workTaskId = id;
+    step.successfulWorkTaskId = id;
+  }
+}
 export function currentAttemptIds(step: PlanStep): string[] {
   const work = currentWorkTaskId(step);
   const check = step.check?.taskId;
@@ -271,6 +300,12 @@ export function applyTaskEvent(
     return;
   }
   if (step.check?.taskId === task.id) {
+    if (
+      !step.workTaskId ||
+      step.successfulWorkTaskId !== step.workTaskId ||
+      !step.taskIds.includes(step.workTaskId)
+    )
+      return;
     step.state = 'checking';
     try {
       const verdict: unknown = JSON.parse(task.output ?? '');

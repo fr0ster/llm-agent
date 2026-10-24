@@ -65,6 +65,11 @@ for (const attempt of ['work', 'check'] as const) {
         const before = structuredClone(plan);
         assert.equal((await update({ steps: [changed] })).isError, true);
         assert.deepEqual(plan, before);
+        assert.equal(
+          (await update({ steps: [{ ...batch, state: 'pending' }] })).isError,
+          true,
+        );
+        assert.deepEqual(plan, before);
         await new Promise<void>((r) => setImmediate(r));
         assert.equal((await update({ steps: [changed] })).isError, true);
         finish({ output: '{"verdict":"pass","count":2}' });
@@ -465,6 +470,7 @@ for (const verdict of ['pass', 'fail']) {
     const plan = mergePlan(undefined, [batch], 'active');
     const step = plan.steps[0];
     step.workTaskId = 'w';
+    step.successfulWorkTaskId = 'w';
     step.taskIds = ['w', 'c'];
     step.check!.taskId = 'c';
     applyTaskEvent(
@@ -608,4 +614,121 @@ test('exhausted non-item work without a check can close through planner inspecti
     'active',
   );
   assert.equal(plan.steps[0].state, 'done');
+});
+
+test('reopening clears checker evidence and ignores its late passing result', () => {
+  let plan = mergePlan(undefined, [batch], 'active');
+  Object.assign(plan.steps[0], {
+    state: 'checking',
+    taskIds: ['w', 'c'],
+    workTaskId: 'w',
+    successfulWorkTaskId: 'w',
+    check: { ...batch.check, taskId: 'c', verdict: 'pass' },
+  });
+  plan = mergePlan(plan, [{ ...batch, state: 'pending' }], 'active');
+  assert.equal(plan.steps[0].successfulWorkTaskId, undefined);
+  assert.equal(plan.steps[0].check?.taskId, undefined);
+  assert.equal(plan.steps[0].check?.verdict, undefined);
+  applyTaskEvent(plan, event('c', '{"verdict":"pass","count":2}'));
+  assert.equal(plan.steps[0].state, 'pending');
+});
+
+for (const marker of [undefined, 'older']) {
+  test(`checker events require successful current work: ${marker}`, () => {
+    const plan = mergePlan(undefined, [batch], 'active');
+    Object.assign(plan.steps[0], {
+      state: 'checking',
+      taskIds: ['w', 'c'],
+      workTaskId: 'w',
+      successfulWorkTaskId: marker,
+      check: { ...batch.check, taskId: 'c' },
+    });
+    applyTaskEvent(plan, event('c', '{"verdict":"pass","count":2}'));
+    assert.equal(plan.steps[0].state, 'checking');
+    assert.equal(plan.steps[0].check?.verdict, undefined);
+  });
+}
+
+for (const state of [
+  'done',
+  'failed',
+  'interrupted',
+  'running',
+  'stopped',
+] as const) {
+  for (const budgetExhausted of [false, true]) {
+    test(
+      'legacy marker migration verifies work outcome: ' +
+        state +
+        '/' +
+        budgetExhausted,
+      async () => {
+        const input = {
+          ...batch,
+          check: { by: 'planner' as const, goal: 'Inspect' },
+        };
+        const plan = mergePlan(undefined, [input], 'active');
+        Object.assign(plan.steps[0], {
+          state: 'checking',
+          taskIds: ['w'],
+          workTaskId: 'w',
+        });
+        const task = { ...event('w').task, state, budgetExhausted };
+        const close = () =>
+          mergePlan(
+            plan,
+            [{ ...input, state: 'done', note: 'Verified' }],
+            'active',
+            undefined,
+            { getTask: () => task },
+          );
+        if (state === 'done' && !budgetExhausted) {
+          assert.equal(close().steps[0].successfulWorkTaskId, 'w');
+        } else assert.throws(close, /successful current work/);
+        const session = await DialogueSession.open({
+          id: 'legacy',
+          store: {
+            load: async () => ({
+              plan,
+              tasks: [task],
+              conversation: [],
+              pending: [],
+              savedAt: 0,
+            }),
+            save: async () => {},
+            delete: async () => {},
+          },
+          board: { workers: new Map() },
+          planner: {
+            process: async () => ({ ok: true, value: { content: 'ok' } }),
+          },
+        });
+        const restored = session.snapshot().plan as DialoguePlan;
+        assert.equal(
+          restored.steps[0].successfulWorkTaskId,
+          state === 'done' && !budgetExhausted ? 'w' : undefined,
+        );
+        if (state === 'done' && !budgetExhausted) {
+          assert.equal(
+            mergePlan(
+              restored,
+              [{ ...input, state: 'done', note: 'Verified' }],
+              'active',
+            ).steps[0].state,
+            'done',
+          );
+        }
+        await session.close();
+      },
+    );
+  }
+}
+
+test('unchanged legacy done steps can be explicitly retained without task evidence', () => {
+  const plan = mergePlan(undefined, [batch], 'active');
+  plan.steps[0].state = 'done';
+  assert.equal(
+    mergePlan(plan, [{ ...batch, state: 'done' }], 'active').steps[0].state,
+    'done',
+  );
 });

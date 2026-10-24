@@ -1,5 +1,9 @@
 # @mcp-abap-adt/llm-agent-libs
 
+## Unreleased
+
+- **llm-agent-libs**: reject reopening steps with active attempts, invalidate checker evidence on reopening, and enforce current successful work on checker events. Restore legacy success markers from completed task records and preserve unchanged legacy done steps.
+
 ## 30.8.1
 
 Lockstep release with the 30.8.1 line: tool-loop fix — every tool call gets exactly one result when a parallel batch exceeds the tool-call budget or mixes known, unknown and external tools — changes in `llm-agent-libs`; other packages are unchanged. See the root CHANGELOG.
