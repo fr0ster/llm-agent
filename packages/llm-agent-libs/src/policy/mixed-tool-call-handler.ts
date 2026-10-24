@@ -15,6 +15,12 @@ export interface MixedToolCallContext {
   toolCache: IToolCache;
   metrics: IMetrics;
   options?: CallOptions;
+  skippedCalls?: Array<{
+    id: string;
+    name: string;
+    arguments: Record<string, unknown>;
+  }>;
+  maxToolCalls?: number;
 }
 
 export function fireInternalToolsAsync(
@@ -31,7 +37,7 @@ export function fireInternalToolsAsync(
   const assistantMessage: Message = {
     role: 'assistant' as const,
     content: content || null,
-    tool_calls: internalCalls.map((tc) => ({
+    tool_calls: [...internalCalls, ...(ctx.skippedCalls ?? [])].map((tc) => ({
       id: tc.id,
       type: 'function' as const,
       function: {
@@ -77,7 +83,14 @@ export function fireInternalToolsAsync(
 
   registry.set(sessionId, {
     assistantMessage,
-    promise: internalPromise,
+    promise: internalPromise.then((results) => [
+      ...results,
+      ...(ctx.skippedCalls ?? []).map((tc) => ({
+        toolCallId: tc.id,
+        toolName: tc.name,
+        text: `Error: not executed: tool-call budget of ${ctx.maxToolCalls} for this request is exhausted; return what you have and report what is missing`,
+      })),
+    ]),
     createdAt: Date.now(),
   });
 }

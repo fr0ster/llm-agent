@@ -292,3 +292,158 @@ for (const pipeline of [false, true]) {
     assert.equal(calls, 1);
   });
 }
+
+for (const pipeline of [false, true]) {
+  for (const scenario of ['budget30', 'boundary', 'mixed']) {
+    test(`complete tool rounds: ${scenario} (pipeline=${pipeline})`, async () => {
+      const limit = scenario === 'boundary' ? 1 : 30;
+      const rounds = scenario === 'budget30' ? 4 : 1;
+      const size = scenario === 'budget30' ? 8 : 2;
+      let requests = 0;
+      let executed = 0;
+      let budgetErrors = 0;
+      const validate = (messages: Message[]) => {
+        for (let i = 0; i < messages.length; i++) {
+          const calls = messages[i].tool_calls;
+          if (!calls?.length) continue;
+          const results: Message[] = [];
+          while (messages[i + 1]?.role === 'tool') results.push(messages[++i]);
+          assert.deepEqual(
+            results.map((r) => r.tool_call_id).sort(),
+            calls.map((c) => c.id).sort(),
+          );
+        }
+      };
+      const stream = async function* (
+        messages: Message[],
+        tools?: LlmTool[],
+      ): AsyncIterable<Result<LlmStreamChunk, LlmError>> {
+        validate(messages);
+        requests++;
+        if (requests <= rounds) {
+          yield {
+            ok: true,
+            value: {
+              content: '',
+              finishReason: 'tool_calls',
+              toolCalls: Array.from({ length: size }, (_, index) => ({
+                index,
+                id: `${requests}-${index}`,
+                name: scenario === 'mixed' && index === 1 ? 'Ghost' : 'Work',
+                arguments: JSON.stringify({ id: `${requests}-${index}` }),
+              })),
+            },
+          };
+        } else {
+          budgetErrors = messages.filter(
+            (m) =>
+              m.role === 'tool' &&
+              String(m.content).includes('not executed: tool-call budget'),
+          ).length;
+          if (scenario !== 'mixed') assert.deepEqual(tools, []);
+          else
+            assert.ok(
+              messages.some(
+                (m) =>
+                  m.role === 'tool' && String(m.content).includes('not found'),
+              ),
+            );
+          yield { ok: true, value: { content: 'done', finishReason: 'stop' } };
+        }
+      };
+      const client: IMcpClient = {
+        async listTools() {
+          return {
+            ok: true,
+            value: [
+              {
+                name: 'Work',
+                description: 'work',
+                inputSchema: { type: 'object' },
+              },
+            ],
+          };
+        },
+        async callTool() {
+          executed++;
+          return { ok: true, value: { content: 'ok' } };
+        },
+      };
+      const base = makeCtx(async function* () {});
+      base.mainLlm.streamChat = stream;
+      base.config.maxIterations = 8;
+      base.config.maxToolCalls = limit;
+      base.llmCallStrategy = {
+        call: (_llm, messages, tools) => stream(messages, tools),
+      } as PipelineContext['llmCallStrategy'];
+      const { deps } = makeDefaultDeps({
+        assembler: makeAssembler([{ role: 'user', content: 'work' }]),
+        mcpClients: [client],
+      });
+      deps.mainLlm = base.mainLlm;
+      if (pipeline) {
+        deps.pipeline = {
+          initialize() {},
+          async execute(_input, _history, options, yieldChunk) {
+            const ctx = { ...base, options, yield: yieldChunk };
+            ctx.toolClientMap.set('Work', client);
+            await new ToolLoopHandler().execute(
+              ctx,
+              { heartbeatIntervalMs: 0 },
+              makeSpan(),
+            );
+            return { timing: ctx.timing };
+          },
+        };
+      }
+      const agent = new SmartAgent(deps, {
+        maxIterations: 8,
+        maxToolCalls: limit,
+        heartbeatIntervalMs: 0,
+      });
+      const result = await agent.process('work');
+      assert.equal(result.ok, true);
+      assert.equal(requests, rounds + 1);
+      assert.equal(executed, scenario === 'budget30' ? 30 : 1);
+      assert.equal(
+        budgetErrors,
+        scenario === 'budget30' ? 2 : scenario === 'boundary' ? 1 : 0,
+      );
+    });
+  }
+}
+
+test('summarize keeps an eight-result round intact across the recent boundary', async () => {
+  const { SummarizeHandler } = await import('../summarize.js');
+  const ctx = makeCtx(async function* () {});
+  const calls = Array.from({ length: 8 }, (_, i) => ({
+    id: `s${i}`,
+    type: 'function' as const,
+    function: { name: 'Work', arguments: '{}' },
+  }));
+  const round: Message[] = [
+    { role: 'assistant', content: null, tool_calls: calls },
+    ...calls.map((c) => ({
+      role: 'tool' as const,
+      tool_call_id: c.id,
+      content: 'ok',
+    })),
+  ];
+  ctx.history = [
+    { role: 'user', content: 'old' },
+    { role: 'assistant', content: 'old reply' },
+    ...round,
+    { role: 'assistant', content: 'done' },
+  ];
+  ctx.helperLlm = {
+    async chat(messages: Message[]) {
+      assert.deepEqual(messages.slice(0, -1), ctx.history.slice(0, 2));
+      return { ok: true, value: { content: 'summary', finishReason: 'stop' } };
+    },
+  } as ILlm;
+  await new SummarizeHandler().execute(ctx, { limit: 5 }, makeSpan());
+  assert.deepEqual(ctx.history.slice(1), [
+    ...round,
+    { role: 'assistant', content: 'done' },
+  ]);
+});

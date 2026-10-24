@@ -1,5 +1,9 @@
 # @mcp-abap-adt/llm-agent-rag
 
+## 30.8.1
+
+Lockstep release with the 30.8.1 line: tool-loop fix — every tool call gets exactly one result when a parallel batch exceeds the tool-call budget or mixes known, unknown and external tools — changes in `llm-agent-libs`; other packages are unchanged. See the root CHANGELOG.
+
 ## 30.8.0
 
 Lockstep release with the 30.8.0 line: structured dialogue plan (steps with states, dependencies and checks, `get_plan`, every-turn check, optional `DialogueState.taskSteps`) — changes in `llm-agent` and `llm-agent-libs`; other packages are unchanged. See the root CHANGELOG.
