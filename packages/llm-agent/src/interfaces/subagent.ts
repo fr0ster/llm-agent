@@ -15,6 +15,7 @@ export interface SubAgentCapabilities {
    * - 'forbidden': context must be omitted; the agent ignores any value passed.
    */
   contextPolicy: 'required' | 'optional' | 'forbidden';
+  maxToolCalls?: number;
 }
 
 export interface ISubAgentInput {
@@ -62,6 +63,10 @@ export interface ISubAgentInput {
 }
 
 export interface ISubAgentResult {
+  budgetExhausted?: boolean;
+  maxToolCalls?: number;
+  toolCallCount?: number;
+
   output: string;
   toolCalls?: LlmToolCall[];
   usage?: LlmUsage;

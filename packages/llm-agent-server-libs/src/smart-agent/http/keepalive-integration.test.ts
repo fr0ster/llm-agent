@@ -225,3 +225,49 @@ describe('#246 SSE keep-alive — /v1/messages (real adapter)', () => {
     );
   });
 });
+
+it('budget-only metadata before content does not emit an empty content delta', async () => {
+  const { res, writes } = fakeRes();
+  const agent = {
+    async *streamProcess() {
+      yield {
+        ok: true,
+        value: {
+          content: '',
+          budgetExhausted: true,
+          toolCallCount: 1,
+          maxToolCalls: 1,
+        },
+      };
+      yield { ok: true, value: { content: 'partial', finishReason: 'stop' } };
+    },
+  } as never;
+  await handleChat(
+    makeReq({
+      model: 'm',
+      stream: true,
+      messages: [{ role: 'user', content: 'hi' }],
+    }),
+    res,
+    new SessionRequestLogger(),
+    agent,
+    noop as never,
+    noop as never,
+    noop,
+    undefined,
+    undefined,
+    { agent: { heartbeatIntervalMs: 0 } } as never,
+  );
+  const data = writes
+    .filter((w) => w.startsWith('data: {'))
+    .map((w) => JSON.parse(w.slice(6)));
+  assert.equal(data[0].choices[0].delta.content, 'partial');
+  assert.ok(
+    !data.some((chunk) =>
+      chunk.choices.some(
+        (choice: { delta: { content?: string } }) =>
+          choice.delta.content === '',
+      ),
+    ),
+  );
+});

@@ -85,6 +85,10 @@ export interface TimingEntry {
 }
 
 export interface LlmStreamChunk {
+  budgetExhausted?: boolean;
+  maxToolCalls?: number;
+  toolCallCount?: number;
+
   content: string;
   /** Progress event with empty content; ignored by non-streaming accumulation. */
   status?: StepStatus;

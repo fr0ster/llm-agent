@@ -18,6 +18,9 @@ export interface TaskRecord {
   worker: string;
   goal: string;
   state: TaskState;
+  budgetExhausted?: boolean;
+  toolCalls?: number;
+  maxToolCalls?: number;
   output?: string;
   error?: string;
   createdAt: number;
@@ -40,6 +43,7 @@ export interface PlannerMessage {
 export interface PlanStep {
   id: string;
   goal: string;
+  items?: string[];
   dependsOn?: string[];
   worker?: string;
   state:
@@ -62,6 +66,8 @@ export interface PlanStep {
   note?: string;
 }
 export interface Plan {
+  /** One update may use consent after a user answers a waiting_user question. */
+  scopeConsent?: boolean;
   version: 1;
   steps: PlanStep[];
   status: 'active' | 'waiting_user' | 'done';

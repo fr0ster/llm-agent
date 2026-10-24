@@ -9,6 +9,14 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Added
+
+- **`llm-agent` / `llm-agent-libs`**: enforce dialogue scope consent, batch item checks and counts, optional batch size limits, and worker tool-budget reporting. Idle active plans receive corrective turns. Existing persisted states remain compatible.
+
+### Fixed
+
+- **`llm-agent-libs` / `llm-agent-server-libs`**: exhausted work without items requires checking (with a planner check created when absent); item checkers must report a count. Plan notes use a middle dot separator. Budget-only streaming chunks no longer start an empty HTTP content delta while budget metadata still reaches task results.
+
 ## [30.8.1] — 2026-10-24
 
 ### Fixed

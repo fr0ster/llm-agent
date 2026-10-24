@@ -163,7 +163,7 @@ export class PlannerToolsClient implements IMcpClient {
       switch (name) {
         case 'delegate_task': {
           const worker = requiredString(args, 'worker');
-          const goal = requiredString(args, 'goal');
+          let goal = requiredString(args, 'goal');
           const context =
             args.context === undefined
               ? undefined
@@ -185,8 +185,12 @@ export class PlannerToolsClient implements IMcpClient {
             throw new Error(
               'checker requires a successful current work attempt (checking)',
             );
+          if (isCheck && step?.items)
+            goal += `
+Verify exactly ${step.items.length} items, each with a stored/processed result: ${JSON.stringify(step.items)}. Return JSON with verdict, count and note.`;
           const result = scope.board.start({ worker, goal, context, history });
           if (!result.ok) throw new Error(result.error);
+          if (typeof plan === 'object') delete plan.scopeConsent;
           if (step) {
             scope.taskSteps?.set(result.value.id, step.id);
             step.taskIds.push(result.value.id);
@@ -293,24 +297,19 @@ export class PlannerToolsClient implements IMcpClient {
             args.question === undefined
               ? undefined
               : requiredString(args, 'question');
-          if (
-            args.steps !== undefined &&
-            status === 'waiting_user' &&
-            !question?.trim()
-          )
+          if (status === 'waiting_user' && !question?.trim())
             throw new Error('waiting_user requires question');
           const previous = scope.getPlan();
-          const next =
-            args.steps !== undefined
-              ? mergePlan(scope.getPlan(), args.steps, status, question)
-              : requiredString(args, 'plan');
           if (typeof previous === 'object') {
+            const retained =
+              args.steps === undefined
+                ? []
+                : z
+                    .array(stepSchema)
+                    .parse(args.steps)
+                    .map((s) => s.id);
             for (const step of previous.steps) {
-              if (
-                typeof next === 'object' &&
-                next.steps.some((s) => s.id === step.id)
-              )
-                continue;
+              if (retained.includes(step.id)) continue;
               try {
                 assertNoActiveAttempt(step, scope.board);
               } catch (error) {
@@ -320,6 +319,25 @@ export class PlannerToolsClient implements IMcpClient {
               }
             }
           }
+          const next =
+            args.steps !== undefined
+              ? mergePlan(previous, args.steps, status, question, {
+                  consent:
+                    typeof previous === 'object' && previous.scopeConsent,
+                  maxItemsPerStep: scope.maxItemsPerStep,
+                })
+              : requiredString(args, 'plan');
+          if (
+            typeof previous === 'object' &&
+            typeof next === 'string' &&
+            previous.steps.some(
+              (s) => (s.state !== 'done' && s.state !== 'skipped') || s.items,
+            ) &&
+            !previous.scopeConsent
+          )
+            throw new Error(
+              'Removing plan steps requires user consent after waiting_user with a question',
+            );
           scope.setPlan(next, status, question);
           scope.recordAction?.('plan updated');
           return textResult({ ok: true });

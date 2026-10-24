@@ -20,6 +20,10 @@ export class SmartAgentSubAgent implements ISubAgent {
     opts?: { description?: string },
   ) {
     this.description = opts?.description;
+    this.capabilities = {
+      contextPolicy: 'optional',
+      maxToolCalls: agent.maxToolCalls,
+    };
   }
 
   async run(input: ISubAgentInput): Promise<ISubAgentResult> {
@@ -104,6 +108,9 @@ export class SmartAgentSubAgent implements ISubAgent {
 
     return {
       output: content,
+      budgetExhausted: res.value.budgetExhausted,
+      toolCallCount: res.value.toolCallCount,
+      maxToolCalls: res.value.maxToolCalls,
       toolCalls: mappedToolCalls,
       usage: mappedUsage,
       status: 'complete',

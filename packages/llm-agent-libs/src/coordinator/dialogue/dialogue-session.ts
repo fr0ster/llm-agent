@@ -37,6 +37,7 @@ export interface DialogueSessionOptions {
   id: string;
   /** Maximum corrective turns; zero disables end-of-turn checks. Default: 2. */
   maxCorrections?: number;
+  maxItemsPerStep?: number;
   planner: PlannerAgent;
   board: Omit<TaskBoardOptions, 'onEvent'>;
   store?: IDialogueStateStore;
@@ -72,6 +73,11 @@ export class DialogueSession {
       (opts.maxCorrections ?? 2) < 0
     )
       throw new Error('maxCorrections must be a non-negative integer');
+    if (
+      opts.maxItemsPerStep !== undefined &&
+      (!Number.isInteger(opts.maxItemsPerStep) || opts.maxItemsPerStep < 1)
+    )
+      throw new Error('maxItemsPerStep must be a positive integer');
     this.board = new TaskBoard({
       ...opts.board,
       onEvent: (event) => {
@@ -176,6 +182,9 @@ export class DialogueSession {
   }
   private async turn(text: string, user?: UserTurn): Promise<PlannerMessage> {
     if (user && this.plan) {
+      if (this.plan.status === 'waiting_user' && this.plan.question?.trim())
+        this.plan.scopeConsent = true;
+      else delete this.plan.scopeConsent;
       this.plan.status = 'active';
       delete this.plan.question;
     }
@@ -189,13 +198,22 @@ export class DialogueSession {
       let started = false;
       for (let correction = 0; ; correction++) {
         const messages = structuredClone(this.conversation);
-        const notes = [planView(this.plan)];
+        const notes = [
+          planView(this.plan),
+          ...this.board.workerBudgetNotes(),
+          ...(this.opts.maxItemsPerStep === undefined
+            ? []
+            : [
+                `[environment] maxItemsPerStep: ${this.opts.maxItemsPerStep}; split larger batches`,
+              ]),
+        ];
         const last = messages.at(-1);
         if (last) last.content = `${notes.join('\n')}\n${last.content}`;
         const contentPartials: StreamChunk[] = [];
         const result = await runInPlannerScope(
           {
             board: this.board,
+            maxItemsPerStep: this.opts.maxItemsPerStep,
             taskSteps: this.taskSteps,
             getPlan: () => this.plan,
             setPlan: (plan, status = 'active', question) => {
@@ -234,7 +252,10 @@ export class DialogueSession {
         const ready = readySteps(this.plan);
         const canCheck =
           this.plan !== undefined &&
-          this.plan.status !== 'waiting_user' &&
+          this.plan.status === 'active' &&
+          !this.plan.steps.some(
+            (s) => s.state === 'running' || s.state === 'checking',
+          ) &&
           !started &&
           !this.board
             .list()
@@ -257,7 +278,7 @@ export class DialogueSession {
         const events = this.events.splice(0);
         this.appendInput(
           (idle
-            ? `[check] Steps ${ready.map((s) => `${s.id}: ${s.goal.replace(/\s+/g, ' ').trim().slice(0, 200)}`).join(', ')} are ready (all dependencies done) and nothing runs. Delegate them, skip them with a reason, or ask the user (status waiting_user).`
+            ? `[check] Steps ${ready.map((s) => `${s.id}: ${s.goal.replace(/\s+/g, ' ').trim().slice(0, 200)}`).join(', ')} are ready (all dependencies done) and nothing runs. Delegate them or set status waiting_user with your question; skipping or narrowing requires user consent.`
             : '[check] Review new task events before answering.') +
             (events.length ? `\n${this.eventNotes(events)}` : ''),
         );
@@ -288,7 +309,7 @@ export class DialogueSession {
         const removed =
           owner !== undefined &&
           !this.plan?.steps.some((step) => step.id === owner);
-        return `${removed ? '[actions]' : '[task events]'} task ${task.id}${owner ? ` for ${owner}` : ''} (${task.worker}) ${kind}: ${task.goal} — ${task.error ?? task.output ?? ''}`;
+        return `${removed ? '[actions]' : '[task events]'} task ${task.id}${owner ? ` for ${owner}` : ''} (${task.worker}) ${kind}: ${task.goal} — ${task.error ?? task.output ?? ''}${task.budgetExhausted ? `; worker hit the tool-call budget ${task.toolCalls ?? '?'}/${task.maxToolCalls ?? '?'}` : ''}`;
       })
       .join('\n');
   }

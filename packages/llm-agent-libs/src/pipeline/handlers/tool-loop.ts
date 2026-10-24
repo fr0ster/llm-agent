@@ -419,6 +419,15 @@ export class ToolLoopHandler implements IStageHandler {
       );
       if (maxToolCalls !== undefined && toolCallCount >= maxToolCalls) {
         currentTools = [];
+        ctx.yield({
+          ok: true,
+          value: {
+            content: '',
+            budgetExhausted: true,
+            toolCallCount,
+            maxToolCalls,
+          },
+        });
       }
 
       let iterPromptTokens = 0;
@@ -840,6 +849,17 @@ export class ToolLoopHandler implements IStageHandler {
               },
             );
             toolCallCount += batch.length;
+            if (maxToolCalls !== undefined && toolCallCount >= maxToolCalls) {
+              ctx.yield({
+                ok: true,
+                value: {
+                  content: '',
+                  budgetExhausted: true,
+                  toolCallCount,
+                  maxToolCalls: maxToolCalls,
+                },
+              });
+            }
             ctx.options?.sessionLogger?.logStep('mixed_tool_calls', {
               internal: internalCalls.map((tc) => tc.name),
               external: misses.map((tc) => tc.name),
@@ -983,6 +1003,17 @@ export class ToolLoopHandler implements IStageHandler {
       if (outcome.escalated) return false;
       currentTools = outcome.currentTools;
       toolCallCount = outcome.toolCallCount;
+      if (maxToolCalls !== undefined && toolCallCount >= maxToolCalls) {
+        ctx.yield({
+          ok: true,
+          value: {
+            content: '',
+            budgetExhausted: true,
+            toolCallCount,
+            maxToolCalls: maxToolCalls,
+          },
+        });
+      }
       const batchRound: ToolRound = {
         assistant: batchAssistantMsg,
         results: [

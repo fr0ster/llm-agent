@@ -1,0 +1,353 @@
+import assert from 'node:assert/strict';
+import { test } from 'node:test';
+import type { DialoguePlan, TaskEvent } from '@mcp-abap-adt/llm-agent';
+import { SmartAgent } from '../../../agent.js';
+import { SmartAgentSubAgent } from '../../../subagent/smart-agent-subagent.js';
+import { makeAssembler, makeDefaultDeps } from '../../../testing/index.js';
+import { DialogueSession } from '../dialogue-session.js';
+import { runInPlannerScope } from '../planner-scope.js';
+import { PlannerToolsClient } from '../planner-tools-client.js';
+import { applyTaskEvent, mergePlan, planView } from '../structured-plan.js';
+import { TaskBoard } from '../task-board.js';
+
+const tools = new PlannerToolsClient();
+const batch = {
+  id: 'batch',
+  goal: 'Store results',
+  items: ['a', 'b'],
+  check: { by: 'checker' as const, goal: 'Verify storage' },
+};
+async function update(args: Record<string, unknown>) {
+  const result = await tools.callTool('update_plan', args);
+  assert.ok(result.ok);
+  return result.value;
+}
+function event(id: string, output = ''): TaskEvent {
+  return {
+    kind: 'done',
+    task: {
+      id,
+      worker: 'w',
+      goal: 'work',
+      state: 'done',
+      createdAt: 0,
+      output,
+    },
+  };
+}
+
+for (const change of ['skip', 'remove', 'reduce', 'replace'] as const) {
+  test(`scope ${change} needs a user response after a waiting question; consent is consumed`, async () => {
+    let turn = 0;
+    const narrowed =
+      change === 'remove'
+        ? []
+        : [
+            {
+              ...batch,
+              ...(change === 'skip'
+                ? { state: 'skipped', note: 'User agreed' }
+                : {}),
+              ...(change === 'reduce' ? { items: ['a'] } : {}),
+              ...(change === 'replace' ? { items: ['a', 'c'] } : {}),
+            },
+          ];
+    const session = await DialogueSession.open({
+      id: change,
+      maxCorrections: 0,
+      board: { workers: new Map() },
+      planner: {
+        async process() {
+          turn++;
+          if (turn === 1) {
+            assert.equal((await update({ steps: [batch] })).isError, undefined);
+            assert.equal((await update({ steps: narrowed })).isError, true);
+            assert.equal(
+              (
+                await update({
+                  steps: [batch],
+                  status: 'waiting_user',
+                  question: 'May I narrow scope?',
+                })
+              ).isError,
+              undefined,
+            );
+            assert.equal((await update({ steps: narrowed })).isError, true);
+          } else {
+            assert.equal(
+              (await update({ steps: narrowed })).isError,
+              undefined,
+            );
+            assert.equal(
+              (session.snapshot().plan as DialoguePlan).scopeConsent,
+              undefined,
+            );
+          }
+          return { ok: true, value: { content: 'reply' } };
+        },
+      },
+    });
+    await session.send('Start');
+    await session.send('Yes');
+    await session.close();
+  });
+}
+
+test('items require a check, successful work and a passing checker verdict; short count overrides pass', () => {
+  assert.throws(
+    () =>
+      mergePlan(
+        undefined,
+        [{ id: 'b', goal: 'batch', items: ['a'] }],
+        'active',
+      ),
+    /require a check/,
+  );
+  const plan = mergePlan(undefined, [batch], 'active');
+  assert.throws(
+    () => mergePlan(plan, [{ ...batch, state: 'done' }], 'active'),
+    /passing check/,
+  );
+  const step = plan.steps[0];
+  step.workTaskId = 'w';
+  step.taskIds = ['w'];
+  step.state = 'running';
+  applyTaskEvent(plan, event('w'));
+  assert.equal(step.state, 'checking');
+  assert.throws(
+    () =>
+      mergePlan(
+        plan,
+        [{ ...batch, state: 'done', note: 'trust me' }],
+        'active',
+      ),
+    /passing checker/,
+  );
+  step.check!.taskId = 'c';
+  step.taskIds.push('c');
+  applyTaskEvent(plan, event('c', '{"verdict":"pass","count":1}'));
+  assert.equal(step.state, 'failed');
+  assert.equal(step.check!.verdict, 'fail');
+  assert.match(step.note!, /Count 1\/2/);
+  applyTaskEvent(plan, event('c', '{"verdict":"pass","count":2}'));
+  assert.equal(step.state, 'done');
+  assert.match(planView(plan), /items: 2/);
+});
+
+test('budget exhaustion reaches TaskBoard and fails a batch without checking, with split hint', async () => {
+  const plan = mergePlan(undefined, [batch], 'active');
+  const step = plan.steps[0];
+  const events: TaskEvent[] = [];
+  const board = new TaskBoard({
+    workers: new Map([
+      [
+        'w',
+        {
+          name: 'w',
+          capabilities: { contextPolicy: 'optional', maxToolCalls: 30 },
+          async run() {
+            return {
+              output: 'partial',
+              budgetExhausted: true,
+              toolCallCount: 30,
+              maxToolCalls: 30,
+            };
+          },
+        },
+      ],
+    ]),
+    onEvent(e) {
+      events.push(e);
+      applyTaskEvent(plan, e);
+    },
+  });
+  assert.match(board.workerBudgetNotes().join(), /30 calls per task/);
+  const started = board.start({ worker: 'w', goal: 'work' });
+  assert.ok(started.ok);
+  step.workTaskId = started.value.id;
+  step.taskIds.push(started.value.id);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(board.get(started.value.id)?.budgetExhausted, true);
+  assert.equal(events.at(-1)?.task.toolCalls, 30);
+  assert.equal(step.state, 'failed');
+  assert.equal(step.check?.taskId, undefined);
+  assert.match(planView(plan), /budget 30\/30; split/);
+  await board.stopAll();
+});
+
+test('checker goal includes immutable expected ids/count and configured batch limit rejects oversized updates', async () => {
+  let plan: DialoguePlan | undefined;
+  const board = new TaskBoard({
+    workers: new Map([
+      [
+        'checker',
+        {
+          name: 'checker',
+          capabilities: { contextPolicy: 'optional' },
+          async run(input) {
+            assert.match(input.task, /exactly 2 items/);
+            assert.match(input.task, /\["a","b"\]/);
+            return { output: '{"verdict":"pass","count":2}' };
+          },
+        },
+      ],
+    ]),
+    onEvent() {},
+  });
+  await runInPlannerScope(
+    {
+      board,
+      maxItemsPerStep: 1,
+      getPlan: () => plan,
+      setPlan: (p) => {
+        plan = p as DialoguePlan;
+      },
+      history: () => [],
+    },
+    async () => {
+      const refused = await update({ steps: [batch] });
+      assert.equal(refused.isError, true);
+      assert.match(JSON.stringify(refused), /split/);
+      assert.equal(plan, undefined);
+    },
+  );
+  plan = mergePlan(undefined, [batch], 'active');
+  plan.steps[0].state = 'checking';
+  await runInPlannerScope(
+    { board, getPlan: () => plan, setPlan() {}, history: () => [] },
+    async () => {
+      const result = await tools.callTool('delegate_task', {
+        step_id: 'batch',
+        worker: 'checker',
+        goal: 'Verify',
+      });
+      assert.ok(result.ok);
+      assert.equal(result.value.isError, undefined);
+    },
+  );
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(board.list()[0].state, 'done');
+  await board.stopAll();
+});
+
+for (const maxIterations of [1, 3]) {
+  test(`SmartAgent budget flag survives the worker adapter, including last iteration (${maxIterations})`, async () => {
+    let executed = 0;
+    const { deps } = makeDefaultDeps({
+      assembler: makeAssembler([{ role: 'user', content: 'work' }]),
+      llmResponses: [
+        {
+          content: '',
+          toolCalls: [
+            { id: 'one', name: 'Work', arguments: {} },
+            { id: 'two', name: 'Work', arguments: {} },
+          ],
+          finishReason: 'tool_calls',
+        },
+        { content: 'partial', finishReason: 'stop' },
+      ],
+      mcpClients: [
+        {
+          async listTools() {
+            return {
+              ok: true,
+              value: [{ name: 'Work', description: 'work', inputSchema: {} }],
+            };
+          },
+          async callTool() {
+            executed++;
+            return { ok: true, value: { content: 'stored' } };
+          },
+        },
+      ],
+    });
+    const worker = new SmartAgentSubAgent(
+      'w',
+      new SmartAgent(deps, {
+        maxToolCalls: 1,
+        maxIterations,
+        heartbeatIntervalMs: 0,
+      }),
+    );
+    assert.equal(worker.capabilities.maxToolCalls, 1);
+    const result = await worker.run({ task: 'work' });
+    assert.equal(result.budgetExhausted, true);
+    assert.equal(result.toolCallCount, 1);
+    assert.equal(result.maxToolCalls, 1);
+    assert.equal(executed, 1);
+  });
+}
+
+test('batch check cannot be bypassed with state overrides or changed completed membership', () => {
+  const plan = mergePlan(undefined, [batch], 'active');
+  for (const state of ['running', 'checking', 'done'])
+    assert.throws(() => mergePlan(plan, [{ ...batch, state }], 'active'));
+  Object.assign(plan.steps[0], {
+    state: 'done',
+    check: { ...batch.check, verdict: 'pass' },
+  });
+  assert.throws(
+    () => mergePlan(plan, [{ ...batch, items: ['a', 'b', 'c'] }], 'active'),
+    /fresh work/,
+  );
+  const reopened = mergePlan(
+    plan,
+    [{ ...batch, items: ['a', 'b', 'c'], state: 'pending' }],
+    'active',
+  );
+  assert.equal(reopened.steps[0].state, 'pending');
+});
+
+for (const by of [undefined, 'planner', 'checker'] as const) {
+  test(`exhausted non-item work enters checking with ${by ?? 'no'} existing check`, () => {
+    const plan = mergePlan(
+      undefined,
+      [
+        {
+          id: 's',
+          goal: 'Work',
+          ...(by ? { check: { by, goal: 'Inspect' } } : {}),
+        },
+      ],
+      'active',
+    );
+    const step = plan.steps[0];
+    step.workTaskId = 'w';
+    step.taskIds = ['w'];
+    step.state = 'running';
+    const done = event('w', 'partial');
+    Object.assign(done.task, {
+      budgetExhausted: true,
+      toolCalls: 3,
+      maxToolCalls: 3,
+    });
+    applyTaskEvent(plan, done);
+    const note =
+      'Worker hit the tool-call budget 3/3; verify the result is complete or split the step';
+    assert.equal(step.state, 'checking');
+    assert.deepEqual(step.check, {
+      by: by ?? 'planner',
+      goal: by ? 'Inspect' : note,
+    });
+    assert.equal(step.note, note);
+    assert.ok(planView(plan).includes(` \u00b7 ${note}`));
+    assert.ok(!planView(plan).includes(` ? ${note}`));
+  });
+}
+
+for (const verdict of ['pass', 'fail']) {
+  test(`item checker ${verdict} without count fails`, () => {
+    const plan = mergePlan(undefined, [batch], 'active');
+    const step = plan.steps[0];
+    step.workTaskId = 'w';
+    step.taskIds = ['w', 'c'];
+    step.check!.taskId = 'c';
+    applyTaskEvent(
+      plan,
+      event('c', JSON.stringify({ verdict, note: 'Checked' })),
+    );
+    assert.equal(step.state, 'failed');
+    assert.equal(step.check!.verdict, 'fail');
+    assert.equal(step.note, 'checker did not report count for 2 items');
+  });
+}
