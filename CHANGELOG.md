@@ -9,6 +9,10 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Fixed
+
+- **`llm-agent-libs`**: keep tool calls paired with results when parallel batches exceed the request budget or mix known and unknown tools, and preserve complete tool exchanges when summarizing history. Exhausted budgets lead to a final model request without tools.
+
 ## [30.8.0] — 2026-10-23
 
 ### Added

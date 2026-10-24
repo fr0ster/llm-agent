@@ -4,7 +4,8 @@
  * Reads: `ctx.history`, `ctx.helperLlm`
  * Writes: `ctx.history` (replaces with summarized version)
  *
- * Keeps the last 5 messages verbatim and summarizes the rest into a
+ * Keeps at least the last 5 messages, preserving whole tool exchanges,
+ * and summarizes the rest into a
  * single system message. Skips silently if no helper LLM is available
  * or history is too short.
  */
@@ -34,8 +35,14 @@ export class SummarizeHandler implements IStageHandler {
       return true;
     }
 
-    const toSummarize = ctx.history.slice(0, -5);
-    const recent = ctx.history.slice(-5);
+    // Keep the entire tool exchange when the recent-message boundary lands
+    // among its results. Both the helper request and retained history stay valid.
+    let boundary = Math.max(0, ctx.history.length - 5);
+    while (boundary > 0 && ctx.history[boundary]?.role === 'tool') {
+      boundary--;
+    }
+    const toSummarize = ctx.history.slice(0, boundary);
+    const recent = ctx.history.slice(boundary);
     if (toSummarize.length === 0) return true;
 
     const prompt =

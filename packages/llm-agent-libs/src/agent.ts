@@ -80,7 +80,6 @@ import { normalizeHeartbeatMs } from './pipeline/handlers/normalize-heartbeat-ms
 import { runPassThrough } from './pipeline/handlers/pass-through.js';
 import {
   buildBlockedToolMessages,
-  buildHallucinatedToolMessages,
   classifyToolCalls,
   executeToolBatchWithHeartbeat,
   filterAvailableTools,
@@ -1031,6 +1030,12 @@ export class SmartAgent {
         iteration,
         opts,
       );
+      if (
+        this.config.maxToolCalls !== undefined &&
+        toolCallCount >= this.config.maxToolCalls
+      ) {
+        currentTools = [];
+      }
       opts?.sessionLogger?.logStep(
         `llm_request_iter_${iteration + 1}`,
         {
@@ -1268,22 +1273,7 @@ export class SmartAgent {
         ).concat(controlTail);
         continue;
       }
-      if (hallucinations.length > 0) {
-        const group = buildHallucinatedToolMessages(
-          content,
-          toolCalls,
-          hallucinations,
-        );
-        await strategy.record({
-          assistant: group.assistant,
-          results: group.results,
-        });
-        controlTail.length = 0;
-        messages = (
-          await strategy.form({ prefix: staticPrefix, queryText: _action.text })
-        ).concat(controlTail);
-        continue;
-      }
+
       if (validExternalCalls.length > 0) {
         // Mixed calls: fire internal tools async, store pending results
         if (internalCalls.length > 0) {
@@ -1331,42 +1321,26 @@ export class SmartAgent {
       const batchAssistantMsg: Message = {
         role: 'assistant' as const,
         content: content || null,
-        tool_calls: internalCalls.map((tc) => ({
-          id: tc.id,
-          type: 'function' as const,
-          function: {
-            name: tc.name,
-            arguments: JSON.stringify(tc.arguments),
-          },
-        })),
+        tool_calls: toolCalls
+          .filter(
+            (tc) => internalCalls.includes(tc) || hallucinations.includes(tc),
+          )
+          .map((tc) => ({
+            id: tc.id,
+            type: 'function' as const,
+            function: {
+              name: tc.name,
+              arguments: JSON.stringify(tc.arguments),
+            },
+          })),
       };
       // Truncate batch to remaining budget
       const remaining =
         this.config.maxToolCalls !== undefined
           ? this.config.maxToolCalls - toolCallCount
           : internalCalls.length;
-      if (remaining <= 0) {
-        timingLog.push({ phase: 'total', duration: Date.now() - loopStart });
-        toolLoopSpan.addEvent('tool_call_limit_reached');
-        toolLoopSpan.end();
-        {
-          const summary = this.requestLogger.getSummary(opts?.trace?.traceId);
-          yield {
-            ok: true,
-            value: {
-              content: '',
-              finishReason: 'length',
-              usage: {
-                ...summaryToUsage(summary),
-                models: summary.byModel,
-              },
-              timing: timingLog,
-            },
-          };
-        }
-        return;
-      }
-      const batch = internalCalls.slice(0, remaining);
+      const batch = internalCalls.slice(0, Math.max(0, remaining));
+      const skipped = internalCalls.slice(batch.length);
       const heartbeatMs = normalizeHeartbeatMs(this.config.heartbeatIntervalMs);
 
       // Yield all progress messages before execution
@@ -1423,8 +1397,23 @@ export class SmartAgent {
       toolCallCount = outcome.toolCallCount;
       const batchRound: ToolRound = {
         assistant: batchAssistantMsg,
-        results: outcome.toolMessages,
-        meta: outcome.resultMeta,
+        results: [
+          ...outcome.toolMessages,
+          ...hallucinations.map((tc) => ({
+            role: 'tool' as const,
+            tool_call_id: tc.id,
+            content: `Error: Tool "${tc.name}" not found.`,
+          })),
+          ...skipped.map((tc) => ({
+            role: 'tool' as const,
+            tool_call_id: tc.id,
+            content: `Error: not executed: tool-call budget of ${this.config.maxToolCalls} for this request is exhausted; return what you have and report what is missing`,
+          })),
+        ],
+        meta: [
+          ...outcome.resultMeta,
+          ...[...hallucinations, ...skipped].map(() => ({ isError: true })),
+        ],
       };
       await strategy.record(batchRound);
       controlTail.length = 0;

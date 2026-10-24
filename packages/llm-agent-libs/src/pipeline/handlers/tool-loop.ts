@@ -50,7 +50,6 @@ import type { IStageHandler } from '../stage-handler.js';
 import { normalizeHeartbeatMs } from './normalize-heartbeat-ms.js';
 import {
   buildBlockedToolMessages,
-  buildHallucinatedToolMessages,
   classifyToolCalls,
   executeToolBatchWithHeartbeat,
   filterAvailableTools,
@@ -418,6 +417,9 @@ export class ToolLoopHandler implements IStageHandler {
         iteration,
         ctx.options,
       );
+      if (maxToolCalls !== undefined && toolCallCount >= maxToolCalls) {
+        currentTools = [];
+      }
 
       let iterPromptTokens = 0;
       let iterCompletionTokens = 0;
@@ -721,27 +723,6 @@ export class ToolLoopHandler implements IStageHandler {
         continue;
       }
 
-      // -- Handle hallucinated tools -----------------------------------------
-      if (hallucinations.length > 0) {
-        const group = buildHallucinatedToolMessages(
-          content,
-          toolCalls,
-          hallucinations,
-        );
-        await strategy.record({
-          assistant: group.assistant,
-          results: group.results,
-        });
-        controlTail.length = 0;
-        messages = (
-          await strategy.form({
-            prefix: staticPrefix,
-            queryText: ctx.inputText,
-          })
-        ).concat(controlTail);
-        continue;
-      }
-
       // -- Handle external (client-provided) tool calls (spec D1) ------------
       // Each external call is rewritten to a deterministic content-addressed id
       // (`externalToolCallId`). Two paths:
@@ -870,14 +851,18 @@ export class ToolLoopHandler implements IStageHandler {
       const batchAssistantMsg: Message = {
         role: 'assistant' as const,
         content: content || null,
-        tool_calls: internalCalls.map((tc) => ({
-          id: tc.id,
-          type: 'function' as const,
-          function: {
-            name: tc.name,
-            arguments: JSON.stringify(tc.arguments),
-          },
-        })),
+        tool_calls: toolCalls
+          .filter(
+            (tc) => internalCalls.includes(tc) || hallucinations.includes(tc),
+          )
+          .map((tc) => ({
+            id: tc.id,
+            type: 'function' as const,
+            function: {
+              name: tc.name,
+              arguments: JSON.stringify(tc.arguments),
+            },
+          })),
       };
 
       // Check tool call budget
@@ -885,26 +870,8 @@ export class ToolLoopHandler implements IStageHandler {
         maxToolCalls !== undefined
           ? maxToolCalls - toolCallCount
           : internalCalls.length;
-      if (remaining <= 0) {
-        timingLog.push({ phase: 'total', duration: Date.now() - loopStart });
-        ctx.timing.push(...timingLog);
-        ctx.yield({
-          ok: true,
-          value: {
-            content: '',
-            finishReason: 'length',
-            usage: {
-              ...usage,
-              models: ctx.requestLogger.getSummary().byModel,
-              components: ctx.requestLogger.getSummary().byComponent,
-            },
-            timing: timingLog,
-          },
-        });
-        return true;
-      }
-
-      const batch = internalCalls.slice(0, remaining);
+      const batch = internalCalls.slice(0, Math.max(0, remaining));
+      const skipped = internalCalls.slice(batch.length);
 
       // Yield progress messages
       for (const tc of batch) {
@@ -983,8 +950,23 @@ export class ToolLoopHandler implements IStageHandler {
       toolCallCount = outcome.toolCallCount;
       const batchRound: ToolRound = {
         assistant: batchAssistantMsg,
-        results: outcome.toolMessages,
-        meta: outcome.resultMeta,
+        results: [
+          ...outcome.toolMessages,
+          ...hallucinations.map((tc) => ({
+            role: 'tool' as const,
+            tool_call_id: tc.id,
+            content: `Error: Tool "${tc.name}" not found.`,
+          })),
+          ...skipped.map((tc) => ({
+            role: 'tool' as const,
+            tool_call_id: tc.id,
+            content: `Error: not executed: tool-call budget of ${maxToolCalls} for this request is exhausted; return what you have and report what is missing`,
+          })),
+        ],
+        meta: [
+          ...outcome.resultMeta,
+          ...[...hallucinations, ...skipped].map(() => ({ isError: true })),
+        ],
       };
       await strategy.record(batchRound);
       controlTail.length = 0;

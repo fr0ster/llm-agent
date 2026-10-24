@@ -163,18 +163,18 @@ export function buildBlockedToolMessages(
   return { assistant, results };
 }
 
-/** Build an assistant(tool_calls=ALL calls) + per-hallucination "not found"
+/** Build an assistant(tool_calls=hallucinations) + per-hallucination "not found"
  *  tool messages. Returns a `{ assistant, results }` group — the caller
  *  appends `group.assistant, ...group.results` to its message list. */
 export function buildHallucinatedToolMessages(
   content: string,
-  toolCalls: ParsedToolCall[],
+  _toolCalls: ParsedToolCall[],
   hallucinations: ParsedToolCall[],
 ): SyntheticToolGroup {
   const assistant: Message = {
     role: 'assistant' as const,
     content: content || null,
-    tool_calls: toolCalls.map((tc) => ({
+    tool_calls: hallucinations.map((tc) => ({
       id: tc.id,
       type: 'function' as const,
       function: { name: tc.name, arguments: JSON.stringify(tc.arguments) },

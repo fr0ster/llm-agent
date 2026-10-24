@@ -43,3 +43,17 @@ test('buildHallucinatedToolMessages returns an {assistant, results} group', () =
   assert.equal(g.results[0].role, 'tool');
   assert.ok((g.results[0] as { content: string }).content.includes('Ghost'));
 });
+
+test('standalone hallucination group advertises only calls it resolves', () => {
+  const ghost = { id: 'ghost', name: 'Ghost', arguments: {} };
+  const known = { id: 'known', name: 'Work', arguments: {} };
+  const group = buildHallucinatedToolMessages('', [known, ghost], [ghost]);
+  assert.deepEqual(
+    group.assistant.tool_calls?.map((call) => call.id),
+    ['ghost'],
+  );
+  assert.deepEqual(
+    group.results.map((result) => result.tool_call_id),
+    ['ghost'],
+  );
+});
