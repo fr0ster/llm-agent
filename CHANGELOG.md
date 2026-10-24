@@ -9,6 +9,8 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [30.9.1] — 2026-10-24
+
 ### Fixed
 
 - **llm-agent-libs**: recover idle running/checking dialogue steps with bounded corrective turns, accept checker verdicts wrapped in prose or JSON fences (outermost objects only; candidates with conflicting verdicts or counts are unusable), and expose unusable checker results with retry guidance. Require successful tool calls before claiming planner actions.
