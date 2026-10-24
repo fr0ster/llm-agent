@@ -163,7 +163,7 @@ export class PlannerToolsClient implements IMcpClient {
       switch (name) {
         case 'delegate_task': {
           const worker = requiredString(args, 'worker');
-          const goal = requiredString(args, 'goal');
+          let goal = requiredString(args, 'goal');
           const context =
             args.context === undefined
               ? undefined
@@ -185,8 +185,12 @@ export class PlannerToolsClient implements IMcpClient {
             throw new Error(
               'checker requires a successful current work attempt (checking)',
             );
+          if (isCheck && step?.items)
+            goal += `
+Verify exactly ${step.items.length} items, each with a stored/processed result: ${JSON.stringify(step.items)}. Return JSON with verdict, count and note.`;
           const result = scope.board.start({ worker, goal, context, history });
           if (!result.ok) throw new Error(result.error);
+          if (typeof plan === 'object') delete plan.scopeConsent;
           if (step) {
             scope.taskSteps?.set(result.value.id, step.id);
             step.taskIds.push(result.value.id);
@@ -195,6 +199,7 @@ export class PlannerToolsClient implements IMcpClient {
               delete step.check.verdict;
             } else {
               step.workTaskId = result.value.id;
+              delete step.successfulWorkTaskId;
               step.state = 'running';
               if (step.check) {
                 delete step.check.taskId;
@@ -293,33 +298,51 @@ export class PlannerToolsClient implements IMcpClient {
             args.question === undefined
               ? undefined
               : requiredString(args, 'question');
-          if (
-            args.steps !== undefined &&
-            status === 'waiting_user' &&
-            !question?.trim()
-          )
+          if (status === 'waiting_user' && !question?.trim())
             throw new Error('waiting_user requires question');
           const previous = scope.getPlan();
-          const next =
-            args.steps !== undefined
-              ? mergePlan(scope.getPlan(), args.steps, status, question)
-              : requiredString(args, 'plan');
           if (typeof previous === 'object') {
+            const retained =
+              args.steps === undefined
+                ? []
+                : z.array(stepSchema).parse(args.steps);
             for (const step of previous.steps) {
+              const next = retained.find((s) => s.id === step.id);
               if (
-                typeof next === 'object' &&
-                next.steps.some((s) => s.id === step.id)
+                next &&
+                JSON.stringify(next.items) === JSON.stringify(step.items) &&
+                next.state !== 'pending'
               )
                 continue;
               try {
                 assertNoActiveAttempt(step, scope.board);
               } catch (error) {
                 throw new Error(
-                  `Cannot remove step ${step.id}: ${error instanceof Error ? error.message : String(error)}; stop the task first and wait for it to settle, or keep the step`,
+                  `Cannot ${next ? 'reopen or change items for' : 'remove'} step ${step.id}: ${error instanceof Error ? error.message : String(error)}; stop the task first and wait for it to settle, or keep the step`,
                 );
               }
             }
           }
+          const next =
+            args.steps !== undefined
+              ? mergePlan(previous, args.steps, status, question, {
+                  consent:
+                    typeof previous === 'object' && previous.scopeConsent,
+                  maxItemsPerStep: scope.maxItemsPerStep,
+                  getTask: (id) => scope.board.get(id),
+                })
+              : requiredString(args, 'plan');
+          if (
+            typeof previous === 'object' &&
+            typeof next === 'string' &&
+            previous.steps.some(
+              (s) => (s.state !== 'done' && s.state !== 'skipped') || s.items,
+            ) &&
+            !previous.scopeConsent
+          )
+            throw new Error(
+              'Removing plan steps requires user consent after waiting_user with a question',
+            );
           scope.setPlan(next, status, question);
           scope.recordAction?.('plan updated');
           return textResult({ ok: true });

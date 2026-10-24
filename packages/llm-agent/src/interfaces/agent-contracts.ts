@@ -20,6 +20,9 @@ export interface SmartAgentResponse {
   content: string;
   iterations: number;
   toolCallCount: number;
+  budgetExhausted?: boolean;
+  maxToolCalls?: number;
+
   stopReason: StopReason;
   /** True when the tool loop ended cooperatively between iterations. */
   stopped?: true;

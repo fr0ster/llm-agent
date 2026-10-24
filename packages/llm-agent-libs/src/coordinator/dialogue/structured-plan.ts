@@ -2,6 +2,7 @@ import type {
   DialoguePlan as Plan,
   DialoguePlanStep as PlanStep,
   TaskEvent,
+  TaskRecord,
 } from '@mcp-abap-adt/llm-agent';
 import { z } from 'zod';
 
@@ -10,6 +11,7 @@ export const stepSchema = z.object({
   goal: z.string().min(1),
   dependsOn: z.array(z.string()).optional(),
   worker: z.string().optional(),
+  items: z.array(z.string().min(1)).optional(),
   state: z
     .enum([
       'pending',
@@ -31,8 +33,44 @@ export function mergePlan(
   input: unknown,
   status: Plan['status'],
   question?: string,
+  options: {
+    consent?: boolean;
+    maxItemsPerStep?: number;
+    getTask?: (id: string) => TaskRecord | undefined;
+  } = {},
 ): Plan {
   const steps = z.array(stepSchema).parse(input);
+  if (status === 'waiting_user' && !question?.trim())
+    throw new Error('waiting_user requires question');
+  const oldSteps = typeof previous === 'object' ? previous.steps : [];
+  const narrowing = oldSteps.some((old) => {
+    const next = steps.find((s) => s.id === old.id);
+    return (
+      (!next && old.state !== 'done' && old.state !== 'skipped') ||
+      (old.items?.some((item) => !next?.items?.includes(item)) ?? false)
+    );
+  });
+  if (
+    !options.consent &&
+    (narrowing ||
+      steps.some(
+        (s) =>
+          s.state === 'skipped' &&
+          oldSteps.find((old) => old.id === s.id)?.state !== 'skipped',
+      ))
+  )
+    throw new Error(
+      'Skipping or narrowing requires user consent: set waiting_user with a question and wait for a user message before updating the plan',
+    );
+  for (const step of steps) {
+    if (
+      options.maxItemsPerStep !== undefined &&
+      (step.items?.length ?? 0) > options.maxItemsPerStep
+    )
+      throw new Error(
+        `Step ${step.id} exceeds maxItemsPerStep ${options.maxItemsPerStep}; split the step`,
+      );
+  }
   const ids = new Set(steps.map((s) => s.id));
   if (ids.size !== steps.length) throw new Error('duplicate step id');
   for (const s of steps) {
@@ -58,10 +96,12 @@ export function mergePlan(
     status,
     question,
     steps: steps.map((s) => {
-      const old =
+      const persisted =
         typeof previous === 'object'
           ? previous.steps.find((o) => o.id === s.id)
           : undefined;
+      const old = persisted ? { ...persisted } : undefined;
+      if (old && options.getTask) restoreSuccessfulWork(old, options.getTask);
       if (
         old?.state === 'checking' &&
         (s.state === 'done' || s.state === 'failed') &&
@@ -73,6 +113,67 @@ export function mergePlan(
         : old?.check
           ? { ...old.check }
           : undefined;
+      const ownershipChanged =
+        !!old?.check && !!s.check && old.check.by !== s.check.by;
+      if (ownershipChanged && s.state !== undefined && s.state !== old?.state)
+        throw new Error(
+          'Changing check ownership requires a fresh check before completion',
+        );
+      if (ownershipChanged && check) {
+        delete check.taskId;
+        delete check.verdict;
+      }
+      const items = s.items;
+      const effectiveState = s.state ?? old?.state ?? 'pending';
+      const itemsChanged = JSON.stringify(old?.items) !== JSON.stringify(items);
+      if (
+        (items || old?.items) &&
+        old &&
+        itemsChanged &&
+        effectiveState !== 'pending' &&
+        effectiveState !== 'skipped'
+      )
+        throw new Error(
+          'Changed batch items require reopening the step as pending and a fresh work/check attempt',
+        );
+      if (old && (itemsChanged || effectiveState === 'pending') && check) {
+        delete check.taskId;
+        delete check.verdict;
+      }
+      if (items && new Set(items).size !== items.length)
+        throw new Error('Step items must be unique identifiers');
+      if (
+        (effectiveState === 'running' || effectiveState === 'checking') &&
+        effectiveState !== old?.state
+      )
+        throw new Error('Running/checking state follows actual work attempts');
+      if (items && !check) throw new Error('Steps with items require a check');
+      // Completion is based on the current work/check attempts, never state alone.
+      if (
+        s.state === 'done' &&
+        (old?.state !== 'done' || itemsChanged || ownershipChanged)
+      ) {
+        if (old?.state !== 'checking' && old?.state !== 'done')
+          throw new Error(
+            'Done requires checking after successful work and a passing check',
+          );
+        if (
+          itemsChanged ||
+          !old?.workTaskId ||
+          old.successfulWorkTaskId !== old.workTaskId ||
+          !old.taskIds.includes(old.workTaskId)
+        )
+          throw new Error('Done requires a successful current work attempt');
+        if (
+          check?.by === 'checker' &&
+          (check.verdict !== 'pass' ||
+            !check.taskId ||
+            !currentAttemptIds(old).includes(check.taskId))
+        )
+          throw new Error(
+            'Done requires a passing checker verdict from the current check attempt',
+          );
+      }
       if (
         check?.by === 'planner' &&
         (s.state === 'done' || s.state === 'failed')
@@ -80,9 +181,21 @@ export function mergePlan(
         check.verdict = s.state === 'done' ? 'pass' : 'fail';
       return {
         ...s,
-        state: old ? (s.state ?? old.state) : 'pending',
-        taskIds: old?.taskIds ?? [],
-        workTaskId: old?.workTaskId,
+        state: old
+          ? effectiveState
+          : s.state === 'skipped'
+            ? 'skipped'
+            : 'pending',
+        taskIds: itemsChanged
+          ? []
+          : (old?.taskIds ?? []).filter(
+              (id) => !ownershipChanged || id !== old?.check?.taskId,
+            ),
+        workTaskId: itemsChanged ? undefined : old?.workTaskId,
+        successfulWorkTaskId:
+          itemsChanged || effectiveState === 'pending'
+            ? undefined
+            : old?.successfulWorkTaskId,
         note: s.note ?? old?.note,
         check,
       };
@@ -106,6 +219,25 @@ export function currentWorkTaskId(step: PlanStep): string | undefined {
     step.workTaskId ??
     step.taskIds.filter((id) => id !== step.check?.taskId).at(-1)
   );
+}
+// Only verified current persisted work may supply the optional legacy marker.
+export function restoreSuccessfulWork(
+  step: PlanStep,
+  getTask: (id: string) => TaskRecord | undefined,
+): void {
+  if (step.successfulWorkTaskId !== undefined || step.state === 'pending')
+    return;
+  const id = currentWorkTaskId(step);
+  const task = id ? getTask(id) : undefined;
+  if (
+    id &&
+    step.taskIds.includes(id) &&
+    task?.state === 'done' &&
+    !(step.items && task.budgetExhausted)
+  ) {
+    step.workTaskId = id;
+    step.successfulWorkTaskId = id;
+  }
 }
 export function currentAttemptIds(step: PlanStep): string[] {
   const work = currentWorkTaskId(step);
@@ -136,12 +268,44 @@ export function applyTaskEvent(
   if (!step || step.state === 'skipped' || kind === 'started') return;
   // Older retry outcomes cannot overwrite the current attempt.
   if (!currentAttemptIds(step).includes(task.id)) return;
+  if (currentWorkTaskId(step) === task.id) {
+    step.workTaskId = task.id;
+    step.successfulWorkTaskId =
+      kind === 'done' &&
+      task.state === 'done' &&
+      !(step.items && task.budgetExhausted)
+        ? task.id
+        : undefined;
+  }
+  if (step.items && task.budgetExhausted) {
+    step.state = 'failed';
+    step.note = `Worker hit the tool-call budget ${task.toolCalls ?? '?'}/${task.maxToolCalls ?? '?'}; split the step (${step.items.length} items) before retrying`;
+    return;
+  }
+  if (
+    kind === 'done' &&
+    !step.items &&
+    task.budgetExhausted &&
+    currentWorkTaskId(step) === task.id
+  ) {
+    const note = `Worker hit the tool-call budget ${task.toolCalls ?? '?'}/${task.maxToolCalls ?? '?'}; verify the result is complete or split the step`;
+    step.state = 'checking';
+    step.check ??= { by: 'planner', goal: note };
+    step.note = note;
+    return;
+  }
   if (kind !== 'done') {
     step.state = 'failed';
     step.note = task.error ?? kind;
     return;
   }
   if (step.check?.taskId === task.id) {
+    if (
+      !step.workTaskId ||
+      step.successfulWorkTaskId !== step.workTaskId ||
+      !step.taskIds.includes(step.workTaskId)
+    )
+      return;
     step.state = 'checking';
     try {
       const verdict: unknown = JSON.parse(task.output ?? '');
@@ -149,9 +313,22 @@ export function applyTaskEvent(
         .object({
           verdict: z.enum(['pass', 'fail']),
           note: z.string().optional(),
+          count: z.number().optional(),
         })
         .safeParse(verdict);
       if (parsed.success) {
+        if (step.items && parsed.data.count === undefined) {
+          parsed.data.verdict = 'fail';
+          parsed.data.note = `checker did not report count for ${step.items.length} items`;
+        } else if (
+          step.items &&
+          parsed.data.count !== undefined &&
+          parsed.data.count < step.items.length
+        ) {
+          parsed.data.verdict = 'fail';
+          parsed.data.note =
+            `${parsed.data.note ?? ''} Count ${parsed.data.count}/${step.items.length}: missing item results`.trim();
+        }
         step.check.verdict = parsed.data.verdict;
         step.state = parsed.data.verdict === 'pass' ? 'done' : 'failed';
         step.note = parsed.data.note ?? parsed.data.verdict;
@@ -159,7 +336,7 @@ export function applyTaskEvent(
     } catch {
       /* The planner decides when a checker has no structured verdict. */
     }
-  } else step.state = step.check ? 'checking' : 'done';
+  } else step.state = step.check || step.items ? 'checking' : 'done';
 }
 export function planView(plan?: Plan): string {
   if (!plan) return '[plan] status: active\nnone';
@@ -192,7 +369,7 @@ export function planView(plan?: Plan): string {
         check && current.includes(check) ? `check ${check}` : '',
         older ? `${older} older attempts` : '',
       ].filter(Boolean);
-      return `${s.id} ${s.state === 'pending' && dependenciesDone(plan, s) ? 'ready' : s.state} ${s.goal.replace(/\s+/g, ' ')}${s.dependsOn?.length ? ` (depends on ${s.dependsOn.join(', ')})` : ''}${attempts.length ? ` (${attempts.join(', ')})` : ''}${s.check ? `; check by ${s.check.by}: ${s.check.goal.replace(/\s+/g, ' ').trim()}` : ''}${s.note ? ` ? ${s.note}` : ''}`;
+      return `${s.id} ${s.state === 'pending' && dependenciesDone(plan, s) ? 'ready' : s.state} ${s.goal.replace(/\s+/g, ' ')}${s.dependsOn?.length ? ` (depends on ${s.dependsOn.join(', ')})` : ''}${attempts.length ? ` (${attempts.join(', ')})` : ''}${s.items ? `; items: ${s.items.length}` : ''}${s.check ? `; check by ${s.check.by}: ${s.check.goal.replace(/\s+/g, ' ').trim()}` : ''}${s.note ? ` \u00b7 ${s.note}` : ''}`;
     }),
   ]
     .filter(Boolean)

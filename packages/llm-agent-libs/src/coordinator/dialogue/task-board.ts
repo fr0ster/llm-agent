@@ -48,6 +48,15 @@ export class TaskBoard {
     if (!Number.isInteger(this.maxTasks) || this.maxTasks < 1)
       throw new Error('maxTasks must be a positive integer');
   }
+  workerBudgetNotes(): string[] {
+    return [...this.opts.workers].flatMap(([name, worker]) =>
+      worker.capabilities.maxToolCalls === undefined
+        ? []
+        : [
+            `[environment] ${name} worker tool-call budget: ${worker.capabilities.maxToolCalls} calls per task`,
+          ],
+    );
+  }
   workerNames(): string[] {
     return [...this.opts.workers.keys()];
   }
@@ -111,6 +120,9 @@ export class TaskBoard {
         ? this.opts.wrapRun({ ...task }, run)
         : run());
       task.output = cutTaskOutput(result.output);
+      task.budgetExhausted = result.budgetExhausted;
+      task.toolCalls = result.toolCallCount;
+      task.maxToolCalls = result.maxToolCalls;
       if (result.errorClass === 'epicfail') {
         task.error = task.output || 'worker epicfail';
         kind = 'failed';

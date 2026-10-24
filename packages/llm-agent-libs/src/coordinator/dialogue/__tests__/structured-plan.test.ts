@@ -733,7 +733,7 @@ for (const by of ['planner', 'checker'] as const) {
           );
           assert.ok(
             view.includes(
-              `check by ${by}: inspect the result ? no longer needed`,
+              `check by ${by}: inspect the result \u00b7 no longer needed`,
             ),
           );
           injected = true;
@@ -1001,6 +1001,7 @@ for (const active of ['work', 'check'] as const) {
           Object.assign(step, {
             state: 'checking',
             workTaskId: 'work',
+            successfulWorkTaskId: 'work',
             taskIds: ['work'],
           });
         }
@@ -1061,6 +1062,7 @@ test('active checker cannot be replaced while queued, running or awaiting cooper
   Object.assign(step, {
     state: 'checking',
     workTaskId: 'work',
+    successfulWorkTaskId: 'work',
     taskIds: ['work'],
   });
   let finish!: (value: { output: string; stopped?: boolean }) => void;
@@ -1165,6 +1167,7 @@ for (const attempt of ['work', 'check'] as const) {
             taskId: first.value.id,
           };
         else plan.steps[0].workTaskId = first.value.id;
+        plan.scopeConsent = true;
         const original = structuredClone(plan);
         const refuse = async () => {
           for (const replacement of [{ steps: [] }, { plan: 'replacement' }]) {

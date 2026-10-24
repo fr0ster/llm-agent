@@ -333,6 +333,14 @@ export async function handleChat(
             total_tokens: chunk.value.usage.totalTokens,
           };
         }
+        // Budget-only chunks carry metadata, not a content delta.
+        if (
+          chunk.value.budgetExhausted &&
+          !chunk.value.content &&
+          !chunk.value.toolCalls &&
+          !chunk.value.finishReason
+        )
+          continue;
         const baseResponse = {
           id,
           object: 'chat.completion.chunk',

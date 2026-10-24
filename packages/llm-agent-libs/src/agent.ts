@@ -267,6 +267,10 @@ export class SmartAgent {
   private _helperLlm: ILlm | undefined;
   private _classifier: ISubpromptClassifier;
 
+  get maxToolCalls(): number | undefined {
+    return this.config.maxToolCalls;
+  }
+
   constructor(
     private readonly deps: SmartAgentDeps,
     private config: SmartAgentConfig,
@@ -539,6 +543,11 @@ export class SmartAgent {
     } = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
     let stopReason: StopReason = 'stop';
     let stopped: true | undefined;
+    let budget: {
+      budgetExhausted?: boolean;
+      maxToolCalls?: number;
+      toolCallCount?: number;
+    } = {};
     const collectedToolCalls: Array<{
       id: string;
       type: 'function';
@@ -578,6 +587,12 @@ export class SmartAgent {
           }
         }
       }
+      if (chunk.value.budgetExhausted)
+        budget = {
+          budgetExhausted: true,
+          maxToolCalls: chunk.value.maxToolCalls,
+          toolCallCount: chunk.value.toolCallCount,
+        };
       if (chunk.value.stopped) {
         stopped = true;
         stopReason = 'stop';
@@ -600,6 +615,7 @@ export class SmartAgent {
         content,
         iterations: 1,
         toolCallCount: collectedToolCalls.length,
+        ...budget,
         stopReason,
         ...(stopped ? { stopped } : {}),
         ...(collectedToolCalls.length > 0
@@ -1035,6 +1051,15 @@ export class SmartAgent {
         toolCallCount >= this.config.maxToolCalls
       ) {
         currentTools = [];
+        yield {
+          ok: true,
+          value: {
+            content: '',
+            budgetExhausted: true,
+            toolCallCount,
+            maxToolCalls: this.config.maxToolCalls,
+          },
+        };
       }
       opts?.sessionLogger?.logStep(
         `llm_request_iter_${iteration + 1}`,
@@ -1329,6 +1354,20 @@ export class SmartAgent {
             },
           );
           toolCallCount += batch.length;
+          if (
+            this.config.maxToolCalls !== undefined &&
+            toolCallCount >= this.config.maxToolCalls
+          ) {
+            yield {
+              ok: true,
+              value: {
+                content: '',
+                budgetExhausted: true,
+                toolCallCount,
+                maxToolCalls: this.config.maxToolCalls,
+              },
+            };
+          }
           opts?.sessionLogger?.logStep('mixed_tool_calls', {
             internal: internalCalls.map((tc) => tc.name),
             external: validExternalCalls.map((tc) => tc.name),
@@ -1428,6 +1467,20 @@ export class SmartAgent {
       if (outcome.escalated) return;
       currentTools = outcome.currentTools;
       toolCallCount = outcome.toolCallCount;
+      if (
+        this.config.maxToolCalls !== undefined &&
+        toolCallCount >= this.config.maxToolCalls
+      ) {
+        yield {
+          ok: true,
+          value: {
+            content: '',
+            budgetExhausted: true,
+            toolCallCount,
+            maxToolCalls: this.config.maxToolCalls,
+          },
+        };
+      }
       const batchRound: ToolRound = {
         assistant: batchAssistantMsg,
         results: [

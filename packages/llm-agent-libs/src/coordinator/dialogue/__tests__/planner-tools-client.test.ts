@@ -251,6 +251,7 @@ test('update_plan validates status, defaults to active and advertises the enum',
             await call('update_plan', {
               plan: 'next',
               ...(status ? { status } : {}),
+              ...(status === 'waiting_user' ? { question: 'Continue?' } : {}),
             })
           ).error,
           undefined,
@@ -329,6 +330,7 @@ test('get_plan pages full steps in plan order and validates filters and paginati
       { limit: '2' },
     ])
       assert.equal((await call('get_plan', args)).error, true);
+    plan.scopeConsent = true;
     await call('update_plan', { plan: 'legacy plan' });
     assert.equal((await call('get_plan')).json.plan, 'legacy plan');
   });
