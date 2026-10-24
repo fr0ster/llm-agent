@@ -134,22 +134,41 @@ for (const [index, wrap] of wrappers.entries()) {
   }
 }
 
-test('last balanced verdict wins in prose, but JSON fences take priority', () => {
+test('nested evidence never becomes the verdict', () => {
   const plan = checking();
   applyTaskEvent(
     plan,
     event(
       't15',
-      'First {"verdict":"fail"}, then {"verdict":"pass","note":"nested { text }","extra":{"a":1}}.',
+      'My verdict: {"verdict":"fail","note":"nested { text }","evidence":{"verdict":"pass"}}',
+    ),
+  );
+  assert.equal(plan.steps[0].state, 'failed');
+});
+
+test('conflicting top-level verdicts are unusable', () => {
+  for (const output of [
+    'Tool said:\n```json\n{"verdict":"pass"}\n```\nMy verdict: {"verdict":"fail"}',
+    'First {"verdict":"fail"}, then {"verdict":"pass"}.',
+  ]) {
+    const plan = checking();
+    applyTaskEvent(plan, event('t15', output));
+    assert.equal(plan.steps[0].state, 'checking');
+    assert.equal(plan.steps[0].check?.taskId, undefined);
+  }
+});
+
+test('repeated consistent verdicts use the last one', () => {
+  const plan = checking();
+  applyTaskEvent(
+    plan,
+    event(
+      't15',
+      'Draft {"verdict":"pass"} final {"verdict":"pass","note":"all stored"}',
     ),
   );
   assert.equal(plan.steps[0].state, 'done');
-  const fenced = checking();
-  applyTaskEvent(
-    fenced,
-    event('t15', '```json\n{"verdict":"fail"}\n``` Later {"verdict":"pass"}'),
-  );
-  assert.equal(fenced.steps[0].state, 'failed');
+  assert.equal(plan.steps[0].note, 'all stored');
 });
 
 for (const output of [

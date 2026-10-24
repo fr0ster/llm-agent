@@ -256,50 +256,46 @@ export function recomputePlanStatus(plan?: Plan): void {
     delete plan.question;
   } else if (plan.status === 'done') plan.status = 'active';
 }
-// Prefer explicit JSON before looking for an object embedded in prose.
+// The verdict is the whole output or the outermost JSON objects in prose or
+// fences. Nested objects are evidence; conflicting verdicts are unusable.
 function checkerVerdict(output: string): unknown {
-  const parse = (text: string): unknown => {
+  const parse = (text: string): { verdict: unknown } | undefined => {
     try {
       const value: unknown = JSON.parse(text);
       if (value && typeof value === 'object' && 'verdict' in value)
-        return value;
+        return value as { verdict: unknown };
     } catch {
-      // Try the next candidate.
+      // Not a verdict candidate.
     }
     return undefined;
   };
-  const whole = parse(output);
+  const whole = parse(output.trim());
   if (whole !== undefined) return whole;
-  for (const fence of output.matchAll(/```json\s*([\s\S]*?)```/gi)) {
-    const value = parse(fence[1]);
-    if (value !== undefined) return value;
-  }
-  // Scan from the last opening brace, respecting JSON strings and escapes.
-  for (
-    let start = output.lastIndexOf('{');
-    start >= 0;
-    start = output.lastIndexOf('{', start - 1)
-  ) {
-    let depth = 0;
-    let quoted = false;
-    let escaped = false;
-    for (let end = start; end < output.length; end++) {
-      const char = output[end];
-      if (quoted) {
-        if (escaped) escaped = false;
-        else if (char === '\\') escaped = true;
-        else if (char === '"') quoted = false;
-      } else if (char === '"') quoted = true;
-      else if (char === '{') depth++;
-      else if (char === '}' && --depth === 0) {
-        const value = parse(output.slice(start, end + 1));
-        if (value !== undefined) return value;
-        break;
+  const candidates: { verdict: unknown }[] = [];
+  let depth = 0;
+  let start = -1;
+  let quoted = false;
+  let escaped = false;
+  for (let i = 0; i < output.length; i++) {
+    const char = output[i];
+    if (depth === 0) {
+      if (char === '{') {
+        depth = 1;
+        start = i;
       }
+    } else if (quoted) {
+      if (escaped) escaped = false;
+      else if (char === '\\') escaped = true;
+      else if (char === '"') quoted = false;
+    } else if (char === '"') quoted = true;
+    else if (char === '{') depth++;
+    else if (char === '}' && --depth === 0) {
+      const value = parse(output.slice(start, i + 1));
+      if (value !== undefined) candidates.push(value);
     }
-    if (start === 0) break;
   }
-  return undefined;
+  if (new Set(candidates.map((c) => c.verdict)).size !== 1) return undefined;
+  return candidates.at(-1);
 }
 export function applyTaskEvent(
   plan: Plan | undefined,
