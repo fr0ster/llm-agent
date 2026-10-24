@@ -256,6 +256,51 @@ export function recomputePlanStatus(plan?: Plan): void {
     delete plan.question;
   } else if (plan.status === 'done') plan.status = 'active';
 }
+// Prefer explicit JSON before looking for an object embedded in prose.
+function checkerVerdict(output: string): unknown {
+  const parse = (text: string): unknown => {
+    try {
+      const value: unknown = JSON.parse(text);
+      if (value && typeof value === 'object' && 'verdict' in value)
+        return value;
+    } catch {
+      // Try the next candidate.
+    }
+    return undefined;
+  };
+  const whole = parse(output);
+  if (whole !== undefined) return whole;
+  for (const fence of output.matchAll(/```json\s*([\s\S]*?)```/gi)) {
+    const value = parse(fence[1]);
+    if (value !== undefined) return value;
+  }
+  // Scan from the last opening brace, respecting JSON strings and escapes.
+  for (
+    let start = output.lastIndexOf('{');
+    start >= 0;
+    start = output.lastIndexOf('{', start - 1)
+  ) {
+    let depth = 0;
+    let quoted = false;
+    let escaped = false;
+    for (let end = start; end < output.length; end++) {
+      const char = output[end];
+      if (quoted) {
+        if (escaped) escaped = false;
+        else if (char === '\\') escaped = true;
+        else if (char === '"') quoted = false;
+      } else if (char === '"') quoted = true;
+      else if (char === '{') depth++;
+      else if (char === '}' && --depth === 0) {
+        const value = parse(output.slice(start, end + 1));
+        if (value !== undefined) return value;
+        break;
+      }
+    }
+    if (start === 0) break;
+  }
+  return undefined;
+}
 export function applyTaskEvent(
   plan: Plan | undefined,
   { task, kind }: TaskEvent,
@@ -304,37 +349,40 @@ export function applyTaskEvent(
       !step.workTaskId ||
       step.successfulWorkTaskId !== step.workTaskId ||
       !step.taskIds.includes(step.workTaskId)
-    )
+    ) {
+      step.note = 'check ignored: current work has not succeeded';
       return;
+    }
     step.state = 'checking';
-    try {
-      const verdict: unknown = JSON.parse(task.output ?? '');
-      const parsed = z
-        .object({
-          verdict: z.enum(['pass', 'fail']),
-          note: z.string().optional(),
-          count: z.number().optional(),
-        })
-        .safeParse(verdict);
-      if (parsed.success) {
-        if (step.items && parsed.data.count === undefined) {
-          parsed.data.verdict = 'fail';
-          parsed.data.note = `checker did not report count for ${step.items.length} items`;
-        } else if (
-          step.items &&
-          parsed.data.count !== undefined &&
-          parsed.data.count < step.items.length
-        ) {
-          parsed.data.verdict = 'fail';
-          parsed.data.note =
-            `${parsed.data.note ?? ''} Count ${parsed.data.count}/${step.items.length}: missing item results`.trim();
-        }
-        step.check.verdict = parsed.data.verdict;
-        step.state = parsed.data.verdict === 'pass' ? 'done' : 'failed';
-        step.note = parsed.data.note ?? parsed.data.verdict;
+    const verdict = checkerVerdict(task.output ?? '');
+    const parsed = z
+      .object({
+        verdict: z.enum(['pass', 'fail']),
+        note: z.string().optional(),
+        count: z.number().optional(),
+      })
+      .safeParse(verdict);
+    if (parsed.success) {
+      if (step.items && parsed.data.count === undefined) {
+        parsed.data.verdict = 'fail';
+        parsed.data.note = `checker did not report count for ${step.items.length} items`;
+      } else if (
+        step.items &&
+        parsed.data.count !== undefined &&
+        parsed.data.count < step.items.length
+      ) {
+        parsed.data.verdict = 'fail';
+        parsed.data.note =
+          `${parsed.data.note ?? ''} Count ${parsed.data.count}/${step.items.length}: missing item results`.trim();
       }
-    } catch {
-      /* The planner decides when a checker has no structured verdict. */
+      step.check.verdict = parsed.data.verdict;
+      step.state = parsed.data.verdict === 'pass' ? 'done' : 'failed';
+      step.note = parsed.data.note ?? parsed.data.verdict;
+    } else {
+      step.note =
+        'checker returned no JSON verdict; re-delegate the checker or ask the user';
+      delete step.check.taskId;
+      delete step.check.verdict;
     }
   } else step.state = step.check || step.items ? 'checking' : 'done';
 }
