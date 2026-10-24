@@ -9,9 +9,11 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [30.8.1] — 2026-10-24
+
 ### Fixed
 
-- **`llm-agent-libs`**: keep tool calls paired with results when parallel batches exceed the request budget or mix known and unknown tools, and preserve complete tool exchanges when summarizing history. Exhausted budgets lead to a final model request without tools.
+- **`llm-agent-libs`**: every tool call gets exactly one result. When a parallel batch exceeded the tool-call budget, both tool loops recorded all calls but executed only those that fit, so the next request carried `tool_use` ids without `tool_result` and Anthropic models (e.g. via SAP AI Core) rejected it with 400. Skipped calls now get a budget-error result and an exhausted budget leads to a final model request without tools. Batches mixing known, unknown and external tools answer every call and respect the budget; history summarization splits only between complete tool exchanges.
 
 ## [30.8.0] — 2026-10-23
 
