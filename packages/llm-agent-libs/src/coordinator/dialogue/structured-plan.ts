@@ -106,11 +106,26 @@ export function mergePlan(
         : old?.check
           ? { ...old.check }
           : undefined;
+      const ownershipChanged =
+        !!old?.check && !!s.check && old.check.by !== s.check.by;
+      if (ownershipChanged && (s.state === 'done' || s.state === 'failed'))
+        throw new Error(
+          'Changing check ownership requires a fresh check before completion',
+        );
+      if (ownershipChanged && check) {
+        delete check.taskId;
+        delete check.verdict;
+      }
       const items = s.items;
-      const effectiveState = s.state ?? old?.state ?? 'pending';
+      const effectiveState =
+        s.state ??
+        (ownershipChanged && (old?.state === 'done' || old?.state === 'failed')
+          ? 'checking'
+          : old?.state) ??
+        'pending';
       const itemsChanged = JSON.stringify(old?.items) !== JSON.stringify(items);
       if (
-        items &&
+        (items || old?.items) &&
         old &&
         itemsChanged &&
         effectiveState !== 'pending' &&
@@ -119,11 +134,20 @@ export function mergePlan(
         throw new Error(
           'Changed batch items require reopening the step as pending and a fresh work/check attempt',
         );
+      if (old && itemsChanged && check) {
+        delete check.taskId;
+        delete check.verdict;
+      }
       if (items && new Set(items).size !== items.length)
         throw new Error('Step items must be unique identifiers');
       if (
         items &&
         (effectiveState === 'running' || effectiveState === 'checking') &&
+        !(
+          ownershipChanged &&
+          s.state === undefined &&
+          effectiveState === 'checking'
+        ) &&
         effectiveState !== old?.state
       )
         throw new Error(
@@ -163,12 +187,16 @@ export function mergePlan(
       return {
         ...s,
         state: old
-          ? (s.state ?? old.state)
+          ? effectiveState
           : s.state === 'skipped'
             ? 'skipped'
             : 'pending',
-        taskIds: old?.taskIds ?? [],
-        workTaskId: old?.workTaskId,
+        taskIds: itemsChanged
+          ? []
+          : (old?.taskIds ?? []).filter(
+              (id) => !ownershipChanged || id !== old?.check?.taskId,
+            ),
+        workTaskId: itemsChanged ? undefined : old?.workTaskId,
         note: s.note ?? old?.note,
         check,
       };
@@ -228,6 +256,7 @@ export function applyTaskEvent(
     return;
   }
   if (
+    kind === 'done' &&
     !step.items &&
     task.budgetExhausted &&
     currentWorkTaskId(step) === task.id

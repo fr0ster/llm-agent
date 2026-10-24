@@ -304,17 +304,19 @@ Verify exactly ${step.items.length} items, each with a stored/processed result: 
             const retained =
               args.steps === undefined
                 ? []
-                : z
-                    .array(stepSchema)
-                    .parse(args.steps)
-                    .map((s) => s.id);
+                : z.array(stepSchema).parse(args.steps);
             for (const step of previous.steps) {
-              if (retained.includes(step.id)) continue;
+              const next = retained.find((s) => s.id === step.id);
+              if (
+                next &&
+                JSON.stringify(next.items) === JSON.stringify(step.items)
+              )
+                continue;
               try {
                 assertNoActiveAttempt(step, scope.board);
               } catch (error) {
                 throw new Error(
-                  `Cannot remove step ${step.id}: ${error instanceof Error ? error.message : String(error)}; stop the task first and wait for it to settle, or keep the step`,
+                  `Cannot ${next ? 'change items for' : 'remove'} step ${step.id}: ${error instanceof Error ? error.message : String(error)}; stop the task first and wait for it to settle, or keep the step`,
                 );
               }
             }

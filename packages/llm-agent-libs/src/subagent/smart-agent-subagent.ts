@@ -95,6 +95,9 @@ export class SmartAgentSubAgent implements ISubAgent {
           output: content,
           usage: mappedUsage,
           status: 'awaiting-external',
+          budgetExhausted: res.value.budgetExhausted,
+          toolCallCount: res.value.toolCallCount,
+          maxToolCalls: res.value.maxToolCalls,
           pendingExternalToolCalls: pending,
         };
       }

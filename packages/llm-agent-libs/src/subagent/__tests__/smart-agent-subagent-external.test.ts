@@ -22,6 +22,34 @@ const ragAdd: LlmTool = {
   inputSchema: { type: 'object', properties: {} },
 };
 
+it('preserves exhausted internal budget while awaiting an external result', async () => {
+  const sub = new SmartAgentSubAgent(
+    'worker',
+    makeAgent({
+      content: '',
+      stopReason: 'tool_calls',
+      budgetExhausted: true,
+      toolCallCount: 2,
+      maxToolCalls: 2,
+      toolCalls: [
+        {
+          id: 'external',
+          type: 'function',
+          function: { name: 'rag_add', arguments: '{}' },
+        },
+      ],
+    }),
+  );
+  const result = await sub.run({
+    task: 'mixed batch',
+    externalTools: [ragAdd],
+  });
+  assert.equal(result.status, 'awaiting-external');
+  assert.equal(result.budgetExhausted, true);
+  assert.equal(result.toolCallCount, 2);
+  assert.equal(result.maxToolCalls, 2);
+});
+
 describe('SmartAgentSubAgent external-tool mapping', () => {
   it('maps a tool_calls stop on an external tool to awaiting-external with rewritten ext id', async () => {
     const agent = makeAgent({

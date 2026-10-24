@@ -110,3 +110,10 @@ hundreds of steps at once.
 
 1. **Plan size per turn:** up to 40 steps are shown; older `done`/`skipped` steps are collapsed into a count.
 2. **Who checks:** both — the planner itself or a separate checker process; the step closes on the check verdict.
+
+## Attempt invalidation and budget outcomes
+
+- Batch membership changes are refused while any linked attempt is queued or running, even with scope consent or an explicit pending state. After attempts settle, a membership change clears work/check links and verdicts; previous outcomes cannot complete the replacement batch.
+- Changing check ownership clears the previous checker task and verdict. The same update cannot close the step; a fresh verdict is required in a later update or check attempt.
+- Budget exhaustion sends completed non-item work to verification. Failed or stopped non-item work remains failed with its original error.
+- Subagent results carry budgetExhausted, toolCallCount and maxToolCalls for both complete and awaiting-external results.

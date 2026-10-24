@@ -15,6 +15,8 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Fixed
 
+- **llm-agent-libs**: reject batch membership changes during active attempts and invalidate settled attempts on membership changes. Check ownership changes require a fresh verdict. Preserve failed/stopped non-item outcomes on budget exhaustion and propagate budget metadata while awaiting external tools.
+
 - **`llm-agent-libs` / `llm-agent-server-libs`**: exhausted work without items requires checking (with a planner check created when absent); item checkers must report a count. Plan notes use a middle dot separator. Budget-only streaming chunks no longer start an empty HTTP content delta while budget metadata still reaches task results.
 
 ## [30.8.1] — 2026-10-24

@@ -17,6 +17,130 @@ const batch = {
   items: ['a', 'b'],
   check: { by: 'checker' as const, goal: 'Verify storage' },
 };
+
+for (const attempt of ['work', 'check'] as const) {
+  test(`membership changes reject active ${attempt} and invalidate settled attempts`, async () => {
+    let plan = mergePlan(undefined, [batch], 'active');
+    let finish!: (value: { output: string }) => void;
+    const board = new TaskBoard({
+      workers: new Map([
+        [
+          'w',
+          {
+            name: 'w',
+            capabilities: { contextPolicy: 'optional' as const },
+            run: () =>
+              new Promise<{ output: string }>((resolve) => {
+                finish = resolve;
+              }),
+          },
+        ],
+      ]),
+      onEvent: (e) => applyTaskEvent(plan, e),
+    });
+    await runInPlannerScope(
+      {
+        board,
+        getPlan: () => plan,
+        setPlan: (p) => {
+          plan = p as DialoguePlan;
+        },
+        history: () => [],
+      },
+      async () => {
+        const task = board.start({ worker: 'w', goal: 'held' });
+        assert.ok(task.ok);
+        const step = plan.steps[0];
+        step.taskIds = ['old-work', task.value.id];
+        step.workTaskId = attempt === 'work' ? task.value.id : 'old-work';
+        if (attempt === 'check' && step.check)
+          step.check.taskId = task.value.id;
+        step.state = attempt === 'work' ? 'running' : 'checking';
+        plan.scopeConsent = true;
+        const changed = {
+          ...batch,
+          items: ['a', 'replacement'],
+          state: 'pending',
+        };
+        const before = structuredClone(plan);
+        assert.equal((await update({ steps: [changed] })).isError, true);
+        assert.deepEqual(plan, before);
+        await new Promise<void>((r) => setImmediate(r));
+        assert.equal((await update({ steps: [changed] })).isError, true);
+        finish({ output: '{"verdict":"pass","count":2}' });
+        await new Promise<void>((r) => setImmediate(r));
+        assert.equal((await update({ steps: [changed] })).isError, undefined);
+        assert.deepEqual(plan.steps[0].taskIds, []);
+        assert.equal(plan.steps[0].workTaskId, undefined);
+        assert.equal(plan.steps[0].check?.taskId, undefined);
+        assert.equal(plan.steps[0].check?.verdict, undefined);
+        applyTaskEvent(
+          plan,
+          event(task.value.id, '{"verdict":"pass","count":2}'),
+          new Map([[task.value.id, batch.id]]),
+        );
+        assert.equal(plan.steps[0].state, 'pending');
+      },
+    );
+    await board.stopAll();
+  });
+}
+
+test('checker ownership changes require a separate fresh verdict', () => {
+  let plan = mergePlan(undefined, [batch], 'active');
+  Object.assign(plan.steps[0], {
+    state: 'checking',
+    taskIds: ['work', 'check'],
+    workTaskId: 'work',
+    check: { ...batch.check, taskId: 'check', verdict: 'pass' },
+  });
+  const changed = { ...batch, check: { by: 'planner', goal: 'Inspect' } };
+  assert.throws(
+    () =>
+      mergePlan(
+        plan,
+        [
+          {
+            ...changed,
+            state: 'done',
+            note: 'Looks good',
+          },
+        ],
+        'active',
+      ),
+    /fresh check/,
+  );
+  plan = mergePlan(plan, [changed], 'active');
+  assert.equal(plan.steps[0].check?.verdict, undefined);
+  assert.equal(plan.steps[0].check?.taskId, undefined);
+  applyTaskEvent(plan, event('check', '{"verdict":"pass","count":2}'));
+  assert.equal(plan.steps[0].state, 'checking');
+  plan = mergePlan(
+    plan,
+    [{ ...changed, state: 'done', note: 'Inspected' }],
+    'active',
+  );
+  assert.equal(plan.steps[0].check?.verdict, 'pass');
+  plan = mergePlan(plan, [batch], 'active');
+  assert.equal(plan.steps[0].state, 'checking');
+  assert.equal(plan.steps[0].check?.verdict, undefined);
+});
+
+for (const kind of ['failed', 'stopped'] as const) {
+  test(`budget exhaustion preserves ${kind} work outcome`, () => {
+    const plan = mergePlan(undefined, [{ id: 'work', goal: 'Work' }], 'active');
+    plan.steps[0].taskIds = ['task'];
+    const result = event('task');
+    result.kind = kind;
+    result.task.state = kind;
+    result.task.error = 'Original failure';
+    result.task.budgetExhausted = true;
+    applyTaskEvent(plan, result);
+    assert.equal(plan.steps[0].state, 'failed');
+    assert.equal(plan.steps[0].note, 'Original failure');
+    assert.equal(plan.steps[0].check, undefined);
+  });
+}
 async function update(args: Record<string, unknown>) {
   const result = await tools.callTool('update_plan', args);
   assert.ok(result.ok);
