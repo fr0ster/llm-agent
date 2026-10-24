@@ -62,6 +62,8 @@ export interface PlanStep {
   };
   /** Current work attempt, tracked separately from check.taskId. */
   workTaskId?: string;
+  /** Current work task observed completing successfully; absent for budget-failed items. */
+  successfulWorkTaskId?: string;
   taskIds: string[];
   note?: string;
 }

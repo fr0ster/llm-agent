@@ -92,6 +92,7 @@ test('checker ownership changes require a separate fresh verdict', () => {
     state: 'checking',
     taskIds: ['work', 'check'],
     workTaskId: 'work',
+    successfulWorkTaskId: 'work',
     check: { ...batch.check, taskId: 'check', verdict: 'pass' },
   });
   const changed = { ...batch, check: { by: 'planner', goal: 'Inspect' } };
@@ -122,7 +123,7 @@ test('checker ownership changes require a separate fresh verdict', () => {
   );
   assert.equal(plan.steps[0].check?.verdict, 'pass');
   plan = mergePlan(plan, [batch], 'active');
-  assert.equal(plan.steps[0].state, 'checking');
+  assert.equal(plan.steps[0].state, 'done');
   assert.equal(plan.steps[0].check?.verdict, undefined);
 });
 
@@ -475,3 +476,136 @@ for (const verdict of ['pass', 'fail']) {
     assert.equal(step.note, 'checker did not report count for 2 items');
   });
 }
+
+for (const items of [undefined, ['a', 'b']]) {
+  test(`completion invariants preserve failed work across ownership changes (${items ? 'items' : 'no items'})`, () => {
+    const input = { ...batch, items };
+    let plan = mergePlan(undefined, [input], 'active');
+    const step = plan.steps[0];
+    Object.assign(step, { workTaskId: 'w', taskIds: ['w'], state: 'running' });
+    const failed = event('w');
+    if (items) failed.task.budgetExhausted = true;
+    else {
+      failed.kind = 'failed';
+      failed.task.state = 'failed';
+    }
+    applyTaskEvent(plan, failed);
+    const changed = { ...input, check: { by: 'planner', goal: 'Inspect' } };
+    plan = mergePlan(plan, [changed], 'active');
+    assert.equal(plan.steps[0].state, 'failed');
+    assert.equal(plan.steps[0].check?.taskId, undefined);
+    assert.equal(plan.steps[0].check?.verdict, undefined);
+    for (const state of ['checking', 'done'])
+      assert.throws(() =>
+        mergePlan(plan, [{ ...changed, state, note: 'Approved' }], 'active'),
+      );
+    plan = mergePlan(plan, [{ ...changed, state: 'pending' }], 'active');
+    assert.throws(() =>
+      mergePlan(
+        plan,
+        [{ ...changed, state: 'done', note: 'Approved' }],
+        'active',
+      ),
+    );
+    Object.assign(plan.steps[0], {
+      workTaskId: 'retry',
+      taskIds: ['w', 'retry'],
+      state: 'running',
+    });
+    applyTaskEvent(plan, event('retry'));
+    plan = mergePlan(
+      plan,
+      [{ ...changed, state: 'done', note: 'Verified retry' }],
+      'active',
+    );
+    assert.equal(plan.steps[0].state, 'done');
+  });
+
+  test(`done requires current successful work and current checker (${items ? 'items' : 'no items'})`, () => {
+    const input = { ...batch, items };
+    let plan = mergePlan(undefined, [input], 'active');
+    Object.assign(plan.steps[0], {
+      workTaskId: 'w',
+      taskIds: ['w'],
+      state: 'checking',
+    });
+    const close = () =>
+      mergePlan(
+        plan,
+        [{ ...input, state: 'done', note: 'Verified' }],
+        'active',
+      );
+    assert.throws(close, /successful current work/);
+    const done = event('w');
+    done.task.budgetExhausted = !items;
+    applyTaskEvent(plan, done);
+    assert.throws(close, /passing checker/);
+    const check = plan.steps[0].check;
+    assert.ok(check);
+    check.verdict = 'pass';
+    check.taskId = 'stale';
+    assert.throws(close, /current check attempt/);
+    plan.steps[0].taskIds.push('c');
+    check.taskId = 'c';
+    applyTaskEvent(
+      plan,
+      event('c', JSON.stringify({ verdict: 'pass', count: 2 })),
+    );
+    plan = close();
+    assert.equal(plan.steps[0].state, 'done');
+  });
+}
+
+for (const state of [
+  'pending',
+  'running',
+  'checking',
+  'done',
+  'failed',
+  'blocked',
+  'skipped',
+] as const) {
+  test(`ownership changes preserve ${state} and invalidate the old checker`, () => {
+    const plan = mergePlan(undefined, [batch], 'active');
+    Object.assign(plan.steps[0], {
+      state,
+      note: 'Existing note',
+      workTaskId: 'w',
+      successfulWorkTaskId: 'w',
+      taskIds: ['w', 'c'],
+      check: { ...batch.check, taskId: 'c', verdict: 'pass' },
+    });
+    const changed = mergePlan(
+      plan,
+      [{ ...batch, check: { by: 'planner', goal: 'Inspect' } }],
+      'active',
+    );
+    assert.equal(changed.steps[0].state, state);
+    assert.equal(changed.steps[0].check?.taskId, undefined);
+    assert.equal(changed.steps[0].check?.verdict, undefined);
+    assert.equal(
+      changed.steps[0].successfulWorkTaskId,
+      state === 'pending' ? undefined : 'w',
+    );
+    applyTaskEvent(changed, event('c', '{"verdict":"pass","count":2}'));
+    assert.equal(changed.steps[0].state, state);
+  });
+}
+
+test('exhausted non-item work without a check can close through planner inspection', () => {
+  let plan = mergePlan(undefined, [{ id: 's', goal: 'Work' }], 'active');
+  Object.assign(plan.steps[0], { workTaskId: 'w', taskIds: ['w'] });
+  const done = event('w');
+  done.task.budgetExhausted = true;
+  applyTaskEvent(plan, done);
+  assert.throws(
+    () => mergePlan(plan, [{ id: 's', goal: 'Work', state: 'done' }], 'active'),
+    /note/,
+  );
+  plan = mergePlan(
+    plan,
+    [{ id: 's', goal: 'Work', state: 'done', note: 'Verified complete' }],
+    'active',
+  );
+  assert.equal(plan.steps[0].state, 'done');
+});

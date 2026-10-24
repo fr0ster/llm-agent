@@ -108,7 +108,7 @@ export function mergePlan(
           : undefined;
       const ownershipChanged =
         !!old?.check && !!s.check && old.check.by !== s.check.by;
-      if (ownershipChanged && (s.state === 'done' || s.state === 'failed'))
+      if (ownershipChanged && s.state !== undefined && s.state !== old?.state)
         throw new Error(
           'Changing check ownership requires a fresh check before completion',
         );
@@ -117,12 +117,7 @@ export function mergePlan(
         delete check.verdict;
       }
       const items = s.items;
-      const effectiveState =
-        s.state ??
-        (ownershipChanged && (old?.state === 'done' || old?.state === 'failed')
-          ? 'checking'
-          : old?.state) ??
-        'pending';
+      const effectiveState = s.state ?? old?.state ?? 'pending';
       const itemsChanged = JSON.stringify(old?.items) !== JSON.stringify(items);
       if (
         (items || old?.items) &&
@@ -141,44 +136,34 @@ export function mergePlan(
       if (items && new Set(items).size !== items.length)
         throw new Error('Step items must be unique identifiers');
       if (
-        items &&
         (effectiveState === 'running' || effectiveState === 'checking') &&
-        !(
-          ownershipChanged &&
-          s.state === undefined &&
-          effectiveState === 'checking'
-        ) &&
         effectiveState !== old?.state
       )
-        throw new Error(
-          'Batch running/checking state follows actual work attempts',
-        );
-      if (
-        items &&
-        effectiveState === 'done' &&
-        (itemsChanged || !old?.check || old.check.verdict !== 'pass') &&
-        old?.state !== 'checking'
-      )
-        throw new Error(
-          'Steps with items require successful work and a passing check before done',
-        );
+        throw new Error('Running/checking state follows actual work attempts');
       if (items && !check) throw new Error('Steps with items require a check');
-      if (
-        items &&
-        s.state === 'done' &&
-        old?.state !== 'checking' &&
-        old?.state !== 'done'
-      )
-        throw new Error(
-          'Steps with items require successful work and a passing check before done',
-        );
-      if (
-        items &&
-        s.state === 'done' &&
-        check?.by === 'checker' &&
-        check.verdict !== 'pass'
-      )
-        throw new Error('Steps with items require a passing checker verdict');
+      // Completion is based on the current work/check attempts, never state alone.
+      if (s.state === 'done') {
+        if (old?.state !== 'checking' && old?.state !== 'done')
+          throw new Error(
+            'Done requires checking after successful work and a passing check',
+          );
+        if (
+          itemsChanged ||
+          !old?.workTaskId ||
+          old.successfulWorkTaskId !== old.workTaskId ||
+          !old.taskIds.includes(old.workTaskId)
+        )
+          throw new Error('Done requires a successful current work attempt');
+        if (
+          check?.by === 'checker' &&
+          (check.verdict !== 'pass' ||
+            !check.taskId ||
+            !currentAttemptIds(old).includes(check.taskId))
+        )
+          throw new Error(
+            'Done requires a passing checker verdict from the current check attempt',
+          );
+      }
       if (
         check?.by === 'planner' &&
         (s.state === 'done' || s.state === 'failed')
@@ -197,6 +182,10 @@ export function mergePlan(
               (id) => !ownershipChanged || id !== old?.check?.taskId,
             ),
         workTaskId: itemsChanged ? undefined : old?.workTaskId,
+        successfulWorkTaskId:
+          itemsChanged || effectiveState === 'pending'
+            ? undefined
+            : old?.successfulWorkTaskId,
         note: s.note ?? old?.note,
         check,
       };
@@ -250,6 +239,15 @@ export function applyTaskEvent(
   if (!step || step.state === 'skipped' || kind === 'started') return;
   // Older retry outcomes cannot overwrite the current attempt.
   if (!currentAttemptIds(step).includes(task.id)) return;
+  if (currentWorkTaskId(step) === task.id) {
+    step.workTaskId = task.id;
+    step.successfulWorkTaskId =
+      kind === 'done' &&
+      task.state === 'done' &&
+      !(step.items && task.budgetExhausted)
+        ? task.id
+        : undefined;
+  }
   if (step.items && task.budgetExhausted) {
     step.state = 'failed';
     step.note = `Worker hit the tool-call budget ${task.toolCalls ?? '?'}/${task.maxToolCalls ?? '?'}; split the step (${step.items.length} items) before retrying`;

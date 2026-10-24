@@ -199,6 +199,7 @@ Verify exactly ${step.items.length} items, each with a stored/processed result: 
               delete step.check.verdict;
             } else {
               step.workTaskId = result.value.id;
+              delete step.successfulWorkTaskId;
               step.state = 'running';
               if (step.check) {
                 delete step.check.taskId;

@@ -15,3 +15,10 @@ Plan step notes use a middle dot separator (`\u00b7` in JavaScript), with questi
 ## Validation
 
 Dialogue-folder tests run with `--test-concurrency=1`. Regression coverage includes consent before/after a user response, item checks with missing/short counts, batch limits, budget propagation and failure, non-item budget checks with absent/planner/checker checks, middle dot note rendering, empty-delta suppression in HTTP streaming, and existing corrective-turn and legacy-state restoration cases. Both affected package builds and package-scoped typechecks are run sequentially.
+
+## Completion invariants (round 2)
+
+- I1: `update_plan` may set done only from checking (or retain done), with `successfulWorkTaskId` equal to the current `workTaskId`, present in taskIds. Task events record this optional persisted marker only for work completing done; item budget exhaustion never qualifies. New work, pending retries and membership changes invalidate it. Legacy records restore without the marker but cannot manufacture completion.
+- I2: Checker-owned completion additionally requires pass and check.taskId among current attempts. Planner-owned checks close with a note.
+- I3: Ownership changes preserve state and clear check.taskId/verdict, excluding the old checker from attempts. Failed work requires pending and fresh successful work before closure. Running/checking transitions follow task events for all steps.
+- I4: Successful work without a check completes automatically. Budget-exhausted non-item work instead enters checking, retaining its existing check or creating a planner check.
