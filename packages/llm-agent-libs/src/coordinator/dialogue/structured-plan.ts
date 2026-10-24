@@ -256,6 +256,50 @@ export function recomputePlanStatus(plan?: Plan): void {
     delete plan.question;
   } else if (plan.status === 'done') plan.status = 'active';
 }
+// The verdict is the whole output or the outermost JSON objects in prose or
+// fences. Nested objects are evidence; conflicting verdicts are unusable.
+function checkerVerdict(output: string): unknown {
+  const parse = (text: string): { verdict: unknown } | undefined => {
+    try {
+      const value: unknown = JSON.parse(text);
+      if (value && typeof value === 'object' && 'verdict' in value)
+        return value as { verdict: unknown };
+    } catch {
+      // Not a verdict candidate.
+    }
+    return undefined;
+  };
+  const whole = parse(output.trim());
+  if (whole !== undefined) return whole;
+  const candidates: { verdict: unknown }[] = [];
+  let depth = 0;
+  let start = -1;
+  let quoted = false;
+  let escaped = false;
+  for (let i = 0; i < output.length; i++) {
+    const char = output[i];
+    if (depth === 0) {
+      if (char === '{') {
+        depth = 1;
+        start = i;
+      }
+    } else if (quoted) {
+      if (escaped) escaped = false;
+      else if (char === '\\') escaped = true;
+      else if (char === '"') quoted = false;
+    } else if (char === '"') quoted = true;
+    else if (char === '{') depth++;
+    else if (char === '}' && --depth === 0) {
+      const value = parse(output.slice(start, i + 1));
+      if (value !== undefined) candidates.push(value);
+    }
+  }
+  // Every outcome field must agree: quoted evidence cannot change the result.
+  const outcome = (c: { verdict: unknown; count?: unknown }) =>
+    JSON.stringify([c.verdict, c.count]);
+  if (new Set(candidates.map(outcome)).size !== 1) return undefined;
+  return candidates.at(-1);
+}
 export function applyTaskEvent(
   plan: Plan | undefined,
   { task, kind }: TaskEvent,
@@ -304,37 +348,40 @@ export function applyTaskEvent(
       !step.workTaskId ||
       step.successfulWorkTaskId !== step.workTaskId ||
       !step.taskIds.includes(step.workTaskId)
-    )
+    ) {
+      step.note = 'check ignored: current work has not succeeded';
       return;
+    }
     step.state = 'checking';
-    try {
-      const verdict: unknown = JSON.parse(task.output ?? '');
-      const parsed = z
-        .object({
-          verdict: z.enum(['pass', 'fail']),
-          note: z.string().optional(),
-          count: z.number().optional(),
-        })
-        .safeParse(verdict);
-      if (parsed.success) {
-        if (step.items && parsed.data.count === undefined) {
-          parsed.data.verdict = 'fail';
-          parsed.data.note = `checker did not report count for ${step.items.length} items`;
-        } else if (
-          step.items &&
-          parsed.data.count !== undefined &&
-          parsed.data.count < step.items.length
-        ) {
-          parsed.data.verdict = 'fail';
-          parsed.data.note =
-            `${parsed.data.note ?? ''} Count ${parsed.data.count}/${step.items.length}: missing item results`.trim();
-        }
-        step.check.verdict = parsed.data.verdict;
-        step.state = parsed.data.verdict === 'pass' ? 'done' : 'failed';
-        step.note = parsed.data.note ?? parsed.data.verdict;
+    const verdict = checkerVerdict(task.output ?? '');
+    const parsed = z
+      .object({
+        verdict: z.enum(['pass', 'fail']),
+        note: z.string().optional(),
+        count: z.number().optional(),
+      })
+      .safeParse(verdict);
+    if (parsed.success) {
+      if (step.items && parsed.data.count === undefined) {
+        parsed.data.verdict = 'fail';
+        parsed.data.note = `checker did not report count for ${step.items.length} items`;
+      } else if (
+        step.items &&
+        parsed.data.count !== undefined &&
+        parsed.data.count < step.items.length
+      ) {
+        parsed.data.verdict = 'fail';
+        parsed.data.note =
+          `${parsed.data.note ?? ''} Count ${parsed.data.count}/${step.items.length}: missing item results`.trim();
       }
-    } catch {
-      /* The planner decides when a checker has no structured verdict. */
+      step.check.verdict = parsed.data.verdict;
+      step.state = parsed.data.verdict === 'pass' ? 'done' : 'failed';
+      step.note = parsed.data.note ?? parsed.data.verdict;
+    } else {
+      step.note =
+        'checker returned no JSON verdict; re-delegate the checker or ask the user';
+      delete step.check.taskId;
+      delete step.check.verdict;
     }
   } else step.state = step.check || step.items ? 'checking' : 'done';
 }

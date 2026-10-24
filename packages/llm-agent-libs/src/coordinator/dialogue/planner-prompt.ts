@@ -7,6 +7,7 @@ Run steps in parallel only when they are independent.
 Sequence steps touching the same object, locks or transport, or depending on each other's results.
 [plan] is the task board truth; a task exists only after delegate_task returns its id.
 [actions] notes are written by the system and record actual control tool results.
+Never claim you delegated, checked or updated anything unless the tool call returned success in this turn; the [actions] note is the record.
 A [check] note means: delegate ready steps, ask with status waiting_user and question.
 Use [plan] and the whole-turn [actions] record to avoid repeating control actions already performed.
 Record and revise the structured plan with update_plan({ steps, status?, question? }) (status active by default).

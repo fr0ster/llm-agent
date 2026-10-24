@@ -252,17 +252,23 @@ export class DialogueSession {
         this.trim();
         recomputePlanStatus(this.plan);
         const ready = readySteps(this.plan);
+        const stalled =
+          this.plan?.steps.filter(
+            (step) =>
+              (step.state === 'running' || step.state === 'checking') &&
+              !currentAttemptIds(step).some((id) => {
+                const task = this.board.get(id);
+                return task?.state === 'queued' || task?.state === 'running';
+              }),
+          ) ?? [];
         const canCheck =
           this.plan !== undefined &&
           this.plan.status === 'active' &&
-          !this.plan.steps.some(
-            (s) => s.state === 'running' || s.state === 'checking',
-          ) &&
           !started &&
           !this.board
             .list()
             .some((t) => t.state === 'queued' || t.state === 'running');
-        const idle = canCheck && ready.length > 0;
+        const idle = canCheck && (ready.length > 0 || stalled.length > 0);
         const needsEvents = canCheck && this.events.length > 0;
         const enabled = (this.opts.maxCorrections ?? 2) > 0 && !this.closing;
         if (
@@ -278,10 +284,25 @@ export class DialogueSession {
           break;
         }
         const events = this.events.splice(0);
+        const checks: string[] = [];
+        if (idle && ready.length)
+          checks.push(
+            `Steps ${ready.map((s) => `${s.id}: ${s.goal.replace(/\s+/g, ' ').trim().slice(0, 200)}`).join(', ')} are ready (all dependencies done) and nothing runs. Delegate them or set status waiting_user with your question; skipping or narrowing requires user consent.`,
+          );
+        if (idle)
+          for (const step of stalled)
+            checks.push(
+              step.state === 'running'
+                ? `Step ${step.id} is running and nothing runs: its work finished; review get_task and continue`
+                : step.successfulWorkTaskId === undefined ||
+                    step.successfulWorkTaskId !== step.workTaskId
+                  ? `Step ${step.id} is checking but its current work has not succeeded: re-delegate the work with step_id ${step.id} or ask the user`
+                  : step.check?.by === 'checker'
+                    ? `Step ${step.id} is checking and no check runs: delegate worker checker with step_id ${step.id}`
+                    : `Step ${step.id} is checking and no check runs: close it with update_plan state done or failed plus a note`,
+            );
         this.appendInput(
-          (idle
-            ? `[check] Steps ${ready.map((s) => `${s.id}: ${s.goal.replace(/\s+/g, ' ').trim().slice(0, 200)}`).join(', ')} are ready (all dependencies done) and nothing runs. Delegate them or set status waiting_user with your question; skipping or narrowing requires user consent.`
-            : '[check] Review new task events before answering.') +
+          `[check] ${checks.join('\n') || 'Review new task events before answering.'}` +
             (events.length ? `\n${this.eventNotes(events)}` : ''),
         );
       }

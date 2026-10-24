@@ -195,6 +195,8 @@ for (const verdict of ['pass', 'fail', 'invalid']) {
     );
     if (verdict !== 'invalid') assert.equal(plan.steps[0].note, 'reason');
     for (const kind of ['failed', 'stopped'] as const) {
+      // A malformed result clears the old check; model a fresh check attempt.
+      if (plan.steps[0].check) plan.steps[0].check.taskId = 't2';
       applyTaskEvent(plan, outcome('t2', kind));
       assert.equal(plan.steps[0].state, 'failed');
     }
