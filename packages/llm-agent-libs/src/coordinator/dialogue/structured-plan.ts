@@ -294,7 +294,10 @@ function checkerVerdict(output: string): unknown {
       if (value !== undefined) candidates.push(value);
     }
   }
-  if (new Set(candidates.map((c) => c.verdict)).size !== 1) return undefined;
+  // Every outcome field must agree: quoted evidence cannot change the result.
+  const outcome = (c: { verdict: unknown; count?: unknown }) =>
+    JSON.stringify([c.verdict, c.count]);
+  if (new Set(candidates.map(outcome)).size !== 1) return undefined;
   return candidates.at(-1);
 }
 export function applyTaskEvent(

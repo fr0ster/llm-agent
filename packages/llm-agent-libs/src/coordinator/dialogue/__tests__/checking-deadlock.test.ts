@@ -158,6 +158,19 @@ test('conflicting top-level verdicts are unusable', () => {
   }
 });
 
+test('conflicting counts are unusable even with equal verdicts', () => {
+  const plan = checking(['a', 'b']);
+  applyTaskEvent(
+    plan,
+    event(
+      't15',
+      'My verdict: {"verdict":"pass","count":1}\nEvidence:\n```json\n{"verdict":"pass","count":2}\n```',
+    ),
+  );
+  assert.equal(plan.steps[0].state, 'checking');
+  assert.equal(plan.steps[0].check?.taskId, undefined);
+});
+
 test('repeated consistent verdicts use the last one', () => {
   const plan = checking();
   applyTaskEvent(
