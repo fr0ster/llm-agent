@@ -625,3 +625,134 @@ test('collision: external tool named the same as a generated s0__Search throws t
     /tool "s0__Search" is both an internal MCP tool.*and a client-provided external tool/,
   );
 });
+
+function mixedStream(names: string[]) {
+  return async function* (): AsyncIterable<Result<LlmStreamChunk, LlmError>> {
+    yield {
+      ok: true,
+      value: {
+        content: '',
+        toolCalls: names.map((name, index) => ({
+          index,
+          id: `mixed_${index}`,
+          name,
+          arguments: '{}',
+        })),
+        finishReason: 'tool_calls',
+      },
+    };
+  };
+}
+
+for (const loop of ['pipeline', 'flat'] as const) {
+  for (const scenario of ['unknown', 'budget'] as const) {
+    test(`${loop}: external ${scenario === 'unknown' ? 'cache hit + unknown' : 'miss + internal budget'}`, async () => {
+      const { SmartAgent } = await import('../../../agent.js');
+      const { makeDefaultDeps } = await import('../../../testing/index.js');
+      const { LegacyAccumulateContextStrategy } = await import(
+        '../../context/tool-loop-context/index.js'
+      );
+      const rounds: import('@mcp-abap-adt/llm-agent').ToolRound[] = [];
+      const strategy = new LegacyAccumulateContextStrategy();
+      const record = strategy.record.bind(strategy);
+      strategy.record = async (round) => {
+        rounds.push(round);
+        await record(round);
+      };
+      let executed = 0;
+      const client: IMcpClient = {
+        async listTools() {
+          return {
+            ok: true,
+            value: [
+              {
+                name: 'Work',
+                description: 'work',
+                inputSchema: { type: 'object' },
+              },
+            ],
+          };
+        },
+        async callTool() {
+          executed++;
+          return { ok: true, value: { content: 'worked' } };
+        },
+      };
+      const streams =
+        scenario === 'unknown'
+          ? [mixedStream(['rag_add', 'Ghost']), stopStream()]
+          : [
+              mixedStream(['Work']),
+              mixedStream(['rag_add', 'Work', 'Work', 'Work']),
+              stopStream(),
+            ];
+      const externalResults =
+        scenario === 'unknown'
+          ? new Map([[externalToolCallId('rag_add', {}), 'cached']])
+          : undefined;
+      let pending: Awaited<ReturnType<PendingToolResultsRegistry['consume']>>;
+      if (loop === 'pipeline') {
+        const { ctx, captured } = makeCtx({
+          externalTools: [RAG_ADD],
+          externalResults,
+          streams,
+        });
+        ctx.config.maxToolCalls = 2;
+        ctx.toolClientMap.set('Work', client);
+        Object.assign(ctx, { toolLoopContextStrategyFactory: () => strategy });
+        await new ToolLoopHandler().execute(ctx, {}, makeSpan());
+        pending = await ctx.pendingToolResults.consume(ctx.sessionId);
+        if (scenario === 'unknown') {
+          assert.equal(captured.length, 2);
+          assert.equal(
+            captured[1].messages.filter((m) => m.tool_call_id === 'mixed_1')
+              .length,
+            1,
+          );
+        }
+      } else {
+        const { deps } = makeDefaultDeps({ mcpClients: [client] });
+        let index = 0;
+        deps.mainLlm = {
+          async chat() {
+            return { ok: true, value: { content: 'done' } };
+          },
+          streamChat: () => (streams[index++] ?? stopStream())(),
+        };
+        deps.toolLoopContextStrategyFactory = () => strategy;
+        const agent = new SmartAgent(deps, {
+          maxIterations: 5,
+          maxToolCalls: 2,
+          refreshToolsPerIteration: false,
+        });
+        const result = await agent.process('work', {
+          sessionId: 'mixed-flat',
+          externalTools: [RAG_ADD],
+          externalResults,
+        });
+        assert.ok(result.ok);
+        pending = await (
+          agent as unknown as { pendingToolResults: PendingToolResultsRegistry }
+        ).pendingToolResults.consume('mixed-flat');
+      }
+      if (scenario === 'unknown') {
+        const results = rounds
+          .flatMap((round) => round.results)
+          .filter((m) => m.tool_call_id === 'mixed_1');
+        assert.equal(results.length, 1);
+        assert.match(String(results[0].content), /Tool "Ghost" not found/);
+      } else {
+        assert.equal(executed, 2, 'only one slot remains for the mixed batch');
+        assert.ok(pending);
+        assert.deepEqual(
+          pending.results.map((r) => r.toolCallId),
+          ['mixed_1', 'mixed_2', 'mixed_3'],
+        );
+        assert.equal(pending.assistantMessage.tool_calls?.length, 3);
+        assert.match(pending.results[0].text, /worked/);
+        for (const skipped of pending.results.slice(1))
+          assert.match(skipped.text, /budget of 2.*exhausted/);
+      }
+    });
+  }
+}

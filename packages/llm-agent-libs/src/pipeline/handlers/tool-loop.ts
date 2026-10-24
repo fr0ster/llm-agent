@@ -723,6 +723,46 @@ export class ToolLoopHandler implements IStageHandler {
         continue;
       }
 
+      // Check tool call budget
+      const remaining =
+        maxToolCalls !== undefined
+          ? maxToolCalls - toolCallCount
+          : internalCalls.length;
+      const batch = internalCalls.slice(0, Math.max(0, remaining));
+      const skipped = internalCalls.slice(batch.length);
+
+      // Resolve unknown calls before an external hit can continue or a miss exits.
+      if (validExternalCalls.length > 0 && hallucinations.length > 0) {
+        const unknownCalls = hallucinations.splice(0);
+        await strategy.record({
+          assistant: {
+            role: 'assistant',
+            content: content || null,
+            tool_calls: unknownCalls.map((tc) => ({
+              id: tc.id,
+              type: 'function' as const,
+              function: {
+                name: tc.name,
+                arguments: JSON.stringify(tc.arguments),
+              },
+            })),
+          },
+          results: unknownCalls.map((tc) => ({
+            role: 'tool' as const,
+            tool_call_id: tc.id,
+            content: `Error: Tool "${tc.name}" not found.`,
+          })),
+          meta: unknownCalls.map(() => ({ isError: true })),
+        });
+        controlTail.length = 0;
+        messages = (
+          await strategy.form({
+            prefix: staticPrefix,
+            queryText: ctx.inputText,
+          })
+        ).concat(controlTail);
+      }
+
       // -- Handle external (client-provided) tool calls (spec D1) ------------
       // Each external call is rewritten to a deterministic content-addressed id
       // (`externalToolCallId`). Two paths:
@@ -787,7 +827,7 @@ export class ToolLoopHandler implements IStageHandler {
           if (internalCalls.length > 0) {
             fireInternalToolsAsync(
               content,
-              internalCalls,
+              batch,
               ctx.pendingToolResults,
               ctx.sessionId,
               {
@@ -795,8 +835,11 @@ export class ToolLoopHandler implements IStageHandler {
                 toolCache: ctx.toolCache,
                 metrics: ctx.metrics,
                 options: ctx.options,
+                skippedCalls: skipped,
+                maxToolCalls: maxToolCalls,
               },
             );
+            toolCallCount += batch.length;
             ctx.options?.sessionLogger?.logStep('mixed_tool_calls', {
               internal: internalCalls.map((tc) => tc.name),
               external: misses.map((tc) => tc.name),
@@ -864,14 +907,6 @@ export class ToolLoopHandler implements IStageHandler {
             },
           })),
       };
-
-      // Check tool call budget
-      const remaining =
-        maxToolCalls !== undefined
-          ? maxToolCalls - toolCallCount
-          : internalCalls.length;
-      const batch = internalCalls.slice(0, Math.max(0, remaining));
-      const skipped = internalCalls.slice(batch.length);
 
       // Yield progress messages
       for (const tc of batch) {
