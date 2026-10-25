@@ -1,5 +1,11 @@
 # @mcp-abap-adt/deepseek-llm
 
+## 30.10.0
+
+### Minor Changes
+
+- a8711a8: Support construction-bound and per-call usage recording through the OpenAI-compatible provider.
+
 ## 30.9.1
 
 Lockstep release with the 30.9.1 line: dialogue plans no longer stall in `checking` — idle checks cover running/checking steps without active attempts, checker verdicts are read from prose or JSON fences (outermost, consistent candidates only), unusable verdicts allow a fresh checker — changes in `llm-agent-libs`; other packages are unchanged. See the root CHANGELOG.

@@ -14,6 +14,15 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## 2026-10-26
+
+- `@mcp-abap-adt/llm-agent@30.11.0`
+- `@mcp-abap-adt/llm-agent-libs@30.11.0`
+- `@mcp-abap-adt/llm-agent-mcp@30.10.0`, `@mcp-abap-adt/llm-agent-server-libs@30.10.0`
+- `@mcp-abap-adt/openai-llm@30.10.0`, `@mcp-abap-adt/anthropic-llm@30.10.0`, `@mcp-abap-adt/deepseek-llm@30.10.0`, `@mcp-abap-adt/ollama-llm@30.10.0`, `@mcp-abap-adt/sap-aicore-llm@30.10.0`
+- `@mcp-abap-adt/openai-embedder@30.10.0`, `@mcp-abap-adt/ollama-embedder@30.10.0`, `@mcp-abap-adt/sap-aicore-embedder@30.10.0`
+- `@mcp-abap-adt/llm-usage@1.0.0`, `@mcp-abap-adt/llm-usage-pg@1.0.0`, `@mcp-abap-adt/llm-usage-hana@1.0.0`, `@mcp-abap-adt/llm-usage-sqlite@1.0.0` (first release)
+
 ## 2026-10-25 (2)
 
 - `@mcp-abap-adt/llm-signals@1.0.1`
