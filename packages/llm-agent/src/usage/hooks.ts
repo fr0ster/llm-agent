@@ -79,10 +79,16 @@ function safeCode(value: unknown): string | undefined {
 }
 function errorCode(error: unknown): string | undefined {
   if (!error || typeof error !== 'object') return undefined;
-  return (
-    safeCode('code' in error ? error.code : undefined) ??
-    safeCode('status' in error ? error.status : undefined)
-  );
+  // Getters on a provider error may throw; inspecting it must never replace
+  // the original failure.
+  try {
+    return (
+      safeCode('code' in error ? error.code : undefined) ??
+      safeCode('status' in error ? error.status : undefined)
+    );
+  } catch {
+    return undefined;
+  }
 }
 export function reportLlmRequest(
   opts: CallOptions | undefined,

@@ -145,3 +145,45 @@ test('missing and throwing recorders do not affect callers', () => {
     beginLlmRequest({ usage }, startOperation(), base).end({ outcome: 'ok' }),
   );
 });
+
+test('a provider error with throwing code or status getters does not make end() throw', () => {
+  const { usage, records } = recorder();
+  const hostile = new Error('provider body must not leak');
+  Object.defineProperty(hostile, 'code', {
+    get() {
+      throw new Error('getter');
+    },
+  });
+  Object.defineProperty(hostile, 'status', {
+    get() {
+      throw new Error('getter');
+    },
+  });
+  const op = startOperation();
+  assert.doesNotThrow(() =>
+    beginLlmRequest({ usage }, op, base).end({
+      outcome: 'error',
+      error: hostile,
+    }),
+  );
+  assert.doesNotThrow(() =>
+    beginEmbeddingRequest({ usage }, op, {
+      ...base,
+      inputs: 1,
+      inputChars: 1,
+      chunkPath: '',
+    }).end({ outcome: 'error', error: hostile }),
+  );
+  assert.equal(records.length, 2);
+  for (const r of records) {
+    assert.equal(r.outcome, 'error');
+    assert.equal((r as { errorCode?: string }).errorCode, undefined);
+    assert.ok(!JSON.stringify(r).includes('provider body'));
+  }
+  assert.doesNotThrow(() =>
+    beginLlmRequest(undefined, startOperation(), base).end({
+      outcome: 'error',
+      error: hostile,
+    }),
+  );
+});
