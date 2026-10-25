@@ -45,6 +45,7 @@
     "packages/llm-agent/src/interfaces/__tests__/usage.typecheck.ts",
     "packages/llm-signals/src/signals.test.ts",
     "packages/llm-agent-libs/src/coordinator/dialogue/__tests__/signals.test.ts",
+    "packages/llm-agent-libs/src/coordinator/dialogue/__tests__/usage.test.ts",
     "packages/llm-agent/src/interfaces/__tests__/signals.typecheck.ts",
     "packages/llm-agent/src/interfaces/dialogue-compatibility.test.ts",
     "packages/llm-agent/src/logger/normalise-logger.test.ts",

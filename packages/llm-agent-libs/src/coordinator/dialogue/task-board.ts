@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import type {
   DialogueSignals,
   IConcurrencyPool,
@@ -5,6 +6,7 @@ import type {
   ISubAgent,
   ISubAgentInput,
   ISubAgentResult,
+  IUsageRecorder,
   Result,
   TaskEvent,
   TaskRecord,
@@ -20,6 +22,8 @@ export function cutTaskOutput(output: string): string {
     : `${output.slice(0, TASK_OUTPUT_CHAR_LIMIT)}\n[cut: ${output.length - TASK_OUTPUT_CHAR_LIMIT} characters omitted]`;
 }
 export interface TaskBoardOptions {
+  usage?: IUsageRecorder;
+  boardId?: string;
   logger?: { warn(message: string): void };
   signals?: ISignalEmitter<DialogueSignals>;
   source?: string;
@@ -49,7 +53,11 @@ export class TaskBoard {
   private readonly boardPool: SemaphorePool;
   private readonly maxTasks: number;
   private counter = 0;
+  private readonly boardId: string;
+  private readonly taskUsage = new Map<string, IUsageRecorder>();
+  private readonly interruptedRecorded = new Set<string>();
   constructor(private readonly opts: TaskBoardOptions) {
+    this.boardId = opts.boardId ?? randomUUID();
     this.boardPool = new SemaphorePool(opts.maxConcurrent ?? 3);
     this.maxTasks = opts.maxTasks ?? 50;
     if (!Number.isInteger(this.maxTasks) || this.maxTasks < 1)
@@ -83,6 +91,12 @@ export class TaskBoard {
       createdAt: this.now(),
     };
     const entry = { task, request: req, stop: new AbortController() };
+    try {
+      const usage = this.opts.usage?.with({ taskId: id, role: req.worker });
+      if (usage) this.taskUsage.set(id, usage);
+    } catch {
+      /* Recording cannot affect task execution. */
+    }
     this.records.set(id, task);
     this.entries.set(id, entry);
     this.signalState(task);
@@ -122,12 +136,51 @@ export class TaskBoard {
     task: TaskRecord,
     previous: TaskState,
   ): void {
+    if (kind !== 'started') this.recordTask(task);
     this.signalState(task, previous);
     try {
       this.opts.onEvent({ kind, task: { ...task } });
     } catch {
       /* Observers cannot affect execution. */
     }
+  }
+  private recordTask(task: TaskRecord, interrupted = false): void {
+    try {
+      const usage =
+        this.taskUsage.get(task.id) ??
+        this.opts.usage?.with({ taskId: task.id, role: task.worker });
+      usage?.record({
+        kind: 'task',
+        context: {},
+        ...(interrupted
+          ? { id: `task:${this.boardId}:${task.id}:interrupted` }
+          : {}),
+        at: task.finishedAt,
+        taskId: task.id,
+        worker: task.worker,
+        state: task.state,
+        outcome:
+          task.state === 'done'
+            ? 'ok'
+            : task.state === 'failed'
+              ? 'error'
+              : 'aborted',
+        queuedMs:
+          (task.startedAt ?? task.finishedAt ?? task.createdAt) -
+          task.createdAt,
+        ...(!interrupted &&
+        task.startedAt !== undefined &&
+        task.finishedAt !== undefined
+          ? { runMs: task.finishedAt - task.startedAt }
+          : {}),
+        endKnown: !interrupted,
+        toolCalls: task.toolCalls,
+        budgetExhausted: task.budgetExhausted,
+      });
+    } catch {
+      /* Recording cannot affect task execution. */
+    }
+    this.taskUsage.delete(task.id);
   }
   private async execute(entry: Entry): Promise<void> {
     const { task, request, stop } = entry;
@@ -146,6 +199,9 @@ export class TaskBoard {
       const run = () =>
         worker.run({
           ...this.opts.baseInput?.(),
+          ...(this.taskUsage.has(task.id)
+            ? { usage: this.taskUsage.get(task.id) }
+            : {}),
           task: request.goal,
           context: request.context,
           history: request.history,
@@ -216,6 +272,10 @@ export class TaskBoard {
         task.state = 'interrupted';
         task.finishedAt = this.now();
         interrupted.push(task.id);
+        if (!this.interruptedRecorded.has(task.id)) {
+          this.interruptedRecorded.add(task.id);
+          this.recordTask(task, true);
+        }
       }
       this.records.set(task.id, task);
       const match = /^t(\d+)$/.exec(task.id);

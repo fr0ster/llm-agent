@@ -4,6 +4,7 @@ import type {
   DialogueState,
   IDialogueStateStore,
   ISignalEmitter,
+  IUsageRecorder,
   Message,
   OnPartial,
   DialoguePlan as Plan,
@@ -26,6 +27,7 @@ import { TaskBoard, type TaskBoardOptions } from './task-board.js';
 
 export const DIALOGUE_HISTORY_LIMIT = 200;
 export interface PlannerTurnOptions {
+  usage?: IUsageRecorder;
   sessionId?: string;
   onPartial?: OnPartial;
   signal?: AbortSignal;
@@ -38,6 +40,7 @@ export interface PlannerAgent {
   ): Promise<Result<{ content: string }, Error>>;
 }
 export interface DialogueSessionOptions {
+  usage?: IUsageRecorder;
   signals?: ISignalEmitter<DialogueSignals>;
   id: string;
   /** Maximum corrective turns; zero disables end-of-turn checks. Default: 2. */
@@ -64,6 +67,7 @@ export class DialogueSession {
   private readonly board: TaskBoard;
   private readonly signals: ISignalEmitter<DialogueSignals>;
   private turnActive = false;
+  private turnUsage?: IUsageRecorder;
   private lastActivity?: string;
   private lastPlan?: string;
   private emit<K extends SignalName<DialogueSignals>>(
@@ -129,8 +133,13 @@ export class DialogueSession {
     )
       throw new Error('maxItemsPerStep must be a positive integer');
     this.signals = opts.signals ?? { emit() {}, retire() {} };
+    const session = this;
     this.board = new TaskBoard({
       ...opts.board,
+      boardId: opts.id,
+      get usage() {
+        return session.turnUsage ?? opts.usage ?? opts.board.usage;
+      },
       logger: opts.logger ?? opts.board.logger,
       signals: this.signals,
       source: opts.id,
@@ -263,6 +272,13 @@ export class DialogueSession {
     }
   }
   private async turn(text: string, user?: UserTurn): Promise<PlannerMessage> {
+    this.turnUsage = (
+      user?.opts.usage ??
+      this.opts.usage ??
+      this.opts.board.usage
+    )?.with({
+      turnId: randomUUID(),
+    });
     if (user && this.plan) {
       if (this.plan.status === 'waiting_user' && this.plan.question?.trim())
         this.plan.scopeConsent = true;
@@ -317,6 +333,7 @@ export class DialogueSession {
             this.opts.planner.process(messages, {
               ...user?.opts,
               sessionId: this.opts.id,
+              usage: this.turnUsage?.with({ role: 'planner' }),
               onPartial: user?.opts.onPartial
                 ? (chunk) => {
                     if (chunk.kind === 'content') contentPartials.push(chunk);
