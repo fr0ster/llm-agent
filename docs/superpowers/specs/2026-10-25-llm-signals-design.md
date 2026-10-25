@@ -67,14 +67,14 @@ export type DisjointCatalogs<A extends object, B extends object> =
   - Producers emit a fresh copy (`structuredClone` of internal state), never a live reference.
   - Implementations hand the same payload object to every handler and to `last` / `lastAll`.
   - Handlers must not mutate it. The default bus deep-freezes it.
-- **Order of one emission:** retention is updated first, then handlers are dispatched. A handler that calls `last` therefore sees its own signal.
-  - Per bus, handlers see signals in emission order.
-  - A signal emitted from inside a handler is queued and dispatched after the current dispatch finishes.
+- **Order.** Signals and retirements go through one queue per bus, in emission order.
+  - The outermost `emit` (or `retire`) drains the queue before it returns. A call made from inside a handler only enqueues and returns at once; its entry is processed after the current dispatch finishes, still within the outermost call.
+  - Retention for a signal is updated when that signal reaches dispatch, just before its handlers run. A handler that calls `last` therefore sees its own signal, and later queued signals have not been applied yet.
 - **Retention is part of the contract.** `last` / `lastAll` return the latest signal per `(name, source, key)`.
   - An implementation that cannot retain (for example a pure bridge) implements only `ISignalEmitter`; it is not an `ISignalSubscriber`.
-- **`retire(source)`** takes effect after every signal of that source already queued has been dispatched. Handlers of a final signal (for example `dialogue.session.closed`) can still read the retained state. The source's retained signals are then dropped.
-  - Producers do not emit for a retired source. If one does, the signal is dispatched but not retained.
-- **Delivery is synchronous within `emit`**, including the queued re-entrant ones, unless an implementation documents otherwise; a deferring implementation must keep the order and the retire rule.
+- **`retire(source)`** is processed at its position in the queue. Every signal of that source queued before it has been dispatched, so handlers of a final signal (for example `dialogue.session.closed`) can still read the retained state. The source's retained signals are then dropped.
+  - A signal of the same source queued after the retirement starts a new generation: it is retained afresh, with nothing carried over from the retired one. A closed session id can thus be opened again on the same bus.
+- **Delivery is synchronous within the outermost `emit`** unless an implementation documents otherwise; a deferring implementation must keep the order and the retire rule.
   - Handlers must not do blocking work; they hand it off.
 - **No cross-process guarantee.** A bus is in-process; reaching other processes is the job of bridges.
 
@@ -128,7 +128,7 @@ Replacing everything means passing one's own `ISignalEmitter` / `ISignalBus`. Re
 |---|---|---|---|
 | `dialogue.turn.started` | `''` | `{ trigger: 'user' \| 'event' }` | A library turn begins, before its first planner call. |
 | `dialogue.turn.settled` | `''` | `{ trigger: 'user' \| 'event'; outcome: 'ok' \| 'failed'; messageId?: string; status?: 'active' \| 'waiting_user' \| 'done' }` | See "When `dialogue.turn.settled` is emitted" below. |
-| `dialogue.task.state` | task id | `{ task: TaskRecord; previous?: TaskState }` | When `TaskBoard.start()` creates the record (`queued`, before `execute()`), and after every later state change, including the cancellation of a queued task. |
+| `dialogue.task.state` | task id | `{ task: TaskRecord; previous?: TaskState }` | Once after `open()` for every restored record (unchanged terminal ones and those converted to `interrupted`, without `previous`), before the initial `activity`; when `TaskBoard.start()` creates a record (`queued`, before `execute()`); and after every later state change, including the cancellation of a queued task. |
 | `dialogue.activity` | `''` | `{ turnActive: boolean; queuedInputs: number; running: number; ready: number }` | Once after `open()` (after restoration and status recomputation), then whenever a field changes. |
 | `dialogue.plan.changed` | `''` | `{ status: 'active' \| 'waiting_user' \| 'done'; total: number; done: number }` | Once after `open()` when a plan exists, then whenever status, `total` or `done` changes. |
 | `dialogue.session.closed` | `''` | `{ reason?: string }` | On `close()`; the session then calls `retire(sessionId)`. |
@@ -167,12 +167,13 @@ When `dialogue.turn.settled` is emitted:
   - Re-entrant emits keep the order, and retention is updated before dispatch.
   - `last` works per `(name, source, key)`; `lastAll` returns one signal per `(name, key)` in emission order.
   - Payloads are frozen.
-  - `retire` drops retention only after queued signals of the source are dispatched, and a final-signal handler still reads the state.
-  - An emit after retire is dispatched but not retained.
+  - `retire` drops retention only after the queued signals of the source are dispatched, and a final-signal handler still reads the state.
+  - Signals after a retire start a fresh generation (close, then reopen with the same id).
+  - A nested emit only enqueues; the outermost call drains the queue, and retention is updated at dispatch.
   - The source filter works.
 - **Helpers.** `combineEmitters` keeps going when one emitter throws and fans out `retire`; `filterEmitter`.
 - **Producers, against the real `DialogueSession`.**
-  - Initial `activity` and `plan.changed` after `open()` and after a restore.
+  - Initial `task.state` for every restored record, then `activity` and `plan.changed`, after `open()` and after a restore.
   - `turn.settled` comes once per turn after its final persistence attempt, with `outcome: 'failed'` for a failed planner call, none for a turn cut by `close()`, and none for `takePending` saves.
   - An event turn's `turn.settled` comes after `onMessage`.
   - `task.state` reports `queued` at creation for a task blocked on the pool, keyed by task id. Two tasks are both retained.
