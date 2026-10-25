@@ -142,7 +142,7 @@ Replacing everything means passing one's own `ISignalEmitter` / `ISignalBus`. Re
 When `dialogue.turn.settled` is emitted:
 - **Placement.** It is emitted at the turn boundary in `drain()` after `turn()` returned or threw, never inside `persist()`. Saves made by `takePending()` therefore emit nothing.
 - **Persistence.** "After persistence" means after the turn's final persistence attempt has resolved; the store may have failed, which `persist()` already logs.
-- **Event turns.** An event turn's `onMessage` has run before it.
+- **Event turns.** When an event turn invokes `onMessage` (not for `NO_MESSAGE`, not for a failed planner call), that call has run before the settled signal.
 - **Outcome.**
   - A turn whose planner call failed settles with `outcome: 'failed'` and no `messageId`.
   - A turn cut by `close()` emits no settled signal; `dialogue.session.closed` follows instead.
@@ -175,7 +175,7 @@ When `dialogue.turn.settled` is emitted:
 - **Producers, against the real `DialogueSession`.**
   - Initial `task.state` for every restored record, then `activity` and `plan.changed`, after `open()` and after a restore.
   - `turn.settled` comes once per turn after its final persistence attempt, with `outcome: 'failed'` for a failed planner call, none for a turn cut by `close()`, and none for `takePending` saves.
-  - An event turn's `turn.settled` comes after `onMessage`.
+  - An event turn's `turn.settled` comes after `onMessage` when the turn invokes it; a `NO_MESSAGE` event turn still settles.
   - `task.state` reports `queued` at creation for a task blocked on the pool, keyed by task id. Two tasks are both retained.
   - `activity.ready` is still counted after `maxCorrections` is exhausted.
   - `plan.changed` fires when only `total` changes.
