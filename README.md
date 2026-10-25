@@ -336,10 +336,11 @@ Releases are made from `main`; the version bump reaches `main` through a PR.
    (for example `"@mcp-abap-adt/llm-agent": "^30.10.0"`). Add a dated
    package@version index entry to the root CHANGELOG.md.
 2. Open a PR with these changes and merge it into `main`.
-3. On an up-to-date `main` (`git checkout main && git pull`), the maintainer runs
-   `npm run release:publish`, which skips versions already on npm.
-4. On that `main` commit, create the signed per-package tags printed by the publish
-   script, for example
-   `git tag -s @mcp-abap-adt/llm-signals@1.0.0 -m "Release @mcp-abap-adt/llm-signals@1.0.0"`.
-5. Push those tags. The release workflow creates GitHub releases using each
-   package's changelog section. Publishing and signed tag creation remain manual.
+3. On the merged `main` commit, create a signed tag for every package whose version
+   changed, for example
+   `git tag -s @mcp-abap-adt/llm-signals@1.0.0 -m "Release @mcp-abap-adt/llm-signals@1.0.0"`,
+   and push them. The release workflow creates the GitHub releases from each
+   package's changelog section.
+4. On an up-to-date `main` (`git checkout main && git pull`), the maintainer runs
+   `npm run release:publish`, which skips versions already on npm. It prints tag
+   commands only for published versions that still have no tag.
