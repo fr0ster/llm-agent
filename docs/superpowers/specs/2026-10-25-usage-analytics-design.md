@@ -150,9 +150,10 @@ export interface IUsageControl {
   - Every await is raced against the same deadline, so `close` always resolves by it, even with a `send` or `close` that never resolves.
   - It resolves to disjoint counters:
     - `delivered`: sends that resolved;
-    - `unconfirmed`: records in sends still pending at the deadline, which may or may not have been written;
-    - `lost`: records never sent, or whose send definitively failed.
+    - `unconfirmed`: records whose delivery is ambiguous. That is a send still pending at the deadline, or a send that rejected after it may have reached the sink: an HTTP failure after the request body was sent, or a `combineSinks` batch where some sinks wrote. A record stays unconfirmed even after an earlier rejected attempt, until a later send of it resolves;
+    - `lost`: records never sent, or rejected before any sink could have received them (for example a connection refused).
   - Acknowledgements that arrive after the deadline are ignored and not recounted.
+  - Unconfirmed records are reported in `x.usage.lost` under a separate `unconfirmed` count, with the same affected range, so readers know the data may contain them or not.
   - The consumer logs an incomplete shutdown.
   - `flush` drains without closing.
 - **Content.** No content, and only the listed fields. `x.*` values are numbers, labels and flags, never text taken from content.
@@ -188,6 +189,7 @@ Per-path rules:
 - an MCP dispatch retried after a reconnect (two records);
 - an embedded tool handler: ok, a thrown error, cancellation and a returned `isError`;
 - shutdown with a `send` and a sink `close` that never resolve: `close` resolves by its deadline with the right counters;
+- shutdown after an HTTP send whose acknowledgement is lost, and after a `combineSinks` batch where one of two sinks wrote: those records count as `unconfirmed`, not as `lost`;
 - two concurrent TaskBoard tasks: each record carries its own `taskId`.
 
 Real provider packages are exercised with a mocked HTTP layer, not fake `ILlm`s only. The paths it covers:
@@ -198,7 +200,19 @@ Real provider packages are exercised with a mocked HTTP layer, not fake `ILlm`s 
 
 ### Operation metadata
 
-A logical LLM call or embedding operation is described by a `UsageOperation { operationId: string; attempt: number; chunk?: number; chunks?: number }`. It travels in call options (`CallOptions.usageOp`), next to the recorder.
+A logical LLM call or embedding operation is described by a `UsageOperation`. It travels in call options (`CallOptions.usageOp`), next to the recorder:
+
+```ts
+export interface UsageOperation {
+  operationId: string;
+  seq: { next(): number };     // shared by reference across copies; allocates physicalSeq
+  outerAttempt: number;        // 0 unless a library retry wrapper set it
+  providerAttempt: number;     // 0 unless a provider loop set it
+  chunkPath: string;           // '' at the top
+}
+```
+
+A provider called directly, with no library wrapper above it, finds no `usageOp`. It creates one itself (new `operationId`, a fresh counter, zeros, `''`), so direct calls are recorded the same way. The retry and chunking decorators replace the operation in the options they forward, with a copy carrying their coordinate; they do not forward the caller's object unchanged.
 
 - **Who sets what.**
   - The outermost library wrapper of a logical call creates the operation: `operationId`, plus a shared counter object that allocates `physicalSeq`.
