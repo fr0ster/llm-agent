@@ -177,7 +177,8 @@ for (const [name, error, expected] of [
   test(`delivery classification: ${name}`, async () => {
     const recorder = createUsageRecorder({
       transport: {
-        send() {
+        async send(batch) {
+          if (batch[0].kind === 'x.usage.lost') return;
           throw error;
         },
         async close() {},
@@ -186,9 +187,12 @@ for (const [name, error, expected] of [
       reservedLossCapacity: 0,
     });
     assert.doesNotThrow(() => recorder.record(input()));
-    const result = await recorder.close(30);
-    assert.ok(result[expected] >= 1);
-    assert.equal(result.delivered, 0);
+    const result = await recorder.close(500);
+    assert.deepEqual(result, {
+      delivered: 1,
+      lost: expected === 'lost' ? 1 : 0,
+      unconfirmed: expected === 'unconfirmed' ? 1 : 0,
+    });
   });
 }
 
@@ -208,7 +212,7 @@ test('hanging sends and close share a deadline; late acknowledgement ignored', a
   const start = Date.now();
   const result = await recorder.close(40);
   assert.ok(Date.now() - start < 250);
-  assert.equal(result.unconfirmed, 1);
+  assert.deepEqual(result, { delivered: 0, lost: 1, unconfirmed: 1 });
   resolve?.();
   await new Promise((r) => setTimeout(r, 5));
   assert.equal(recorder.stats().delivered, 0);
@@ -269,7 +273,11 @@ test('memory rejection is atomic; combineSinks classifies partial writes', async
     retryWindowMs: 0,
   });
   recorder.record(input('b'));
-  assert.ok((await recorder.close(100)).unconfirmed >= 1);
+  assert.deepEqual(await recorder.close(100), {
+    delivered: 0,
+    lost: 0,
+    unconfirmed: 2,
+  });
 });
 
 test('JSONL rotation, reopening, idempotence and exports', async () => {
@@ -357,4 +365,190 @@ test('signals use a fixed key and live-only delivery', async () => {
     ['live'],
   );
   unsubscribe();
+});
+
+async function settle() {
+  for (let i = 0; i < 30; i++) await Promise.resolve();
+}
+
+for (const ambiguous of [false, true]) {
+  test(`scheduled retries expire before resending (ambiguous=${ambiguous})`, async (t) => {
+    t.mock.timers.enable({
+      apis: ['Date', 'setTimeout', 'setInterval'],
+      now: 0,
+    });
+    const attempts: number[] = [];
+    const recorder = createUsageRecorder({
+      batchSize: 1,
+      flushMs: 200,
+      retryWindowMs: 30,
+      lossWindowMs: 100,
+      transport: {
+        async send(batch) {
+          if (batch[0].kind === 'x.usage.lost') return;
+          attempts.push(Date.now());
+          throw new UsageDeliveryError(
+            'failed',
+            ambiguous && attempts.length === 1,
+          );
+        },
+        async close() {},
+      },
+    });
+    recorder.record(input());
+    await settle();
+    t.mock.timers.tick(20);
+    await settle();
+    assert.deepEqual(attempts, [0, 20]);
+    t.mock.timers.tick(10);
+    await settle();
+    assert.equal(recorder.stats().lost.retryWindow, 1);
+    t.mock.timers.tick(200);
+    await settle();
+    assert.deepEqual(attempts, [0, 20]);
+    assert.deepEqual(await recorder.close(0), {
+      delivered: 1,
+      lost: ambiguous ? 0 : 1,
+      unconfirmed: ambiguous ? 1 : 0,
+    });
+  });
+}
+
+test('HTTP partial chunk delivery preserves ambiguity', async () => {
+  let calls = 0;
+  const transport = httpTransport({
+    url: 'http://collector',
+    batchSize: 1,
+    fetch: async () => {
+      if (++calls === 2)
+        throw new UsageDeliveryError('refused', false, 'REFUSED');
+      return new Response('', { status: 200 });
+    },
+  });
+  await assert.rejects(
+    transport.send([record('a'), record('b')]),
+    (error) =>
+      error instanceof UsageDeliveryError &&
+      error.possiblyDelivered &&
+      error.code === 'REFUSED',
+  );
+  assert.equal(calls, 2);
+});
+
+test('HTTP acknowledgement loss retries by timer and stores each id once', async (t) => {
+  t.mock.timers.enable({ apis: ['Date', 'setTimeout', 'setInterval'], now: 0 });
+  const sink = memorySink({ limit: 10 });
+  const bodies: string[] = [];
+  const recorder = createUsageRecorder({
+    batchSize: 1,
+    flushMs: 1000,
+    transport: httpTransport({
+      url: 'http://collector',
+      fetch: async (_url, init) => {
+        bodies.push(String(init?.body));
+        await sink.write(JSON.parse(String(init?.body)).records);
+        if (bodies.length === 1) throw Error('acknowledgement lost');
+        return new Response('', { status: 200 });
+      },
+    }),
+  });
+  recorder.record(input());
+  await settle();
+  assert.equal((await collect(sink.read(query))).length, 1);
+  t.mock.timers.tick(20);
+  await settle();
+  assert.equal(bodies.length, 2);
+  assert.equal(bodies[0], bodies[1]);
+  assert.deepEqual(
+    (await collect(sink.read(query))).map((r) => r.id),
+    ['a'],
+  );
+  assert.deepEqual(await recorder.close(0), {
+    delivered: 1,
+    lost: 0,
+    unconfirmed: 0,
+  });
+});
+
+test('reserved loss capacity exhaustion does not recursively generate evidence', async () => {
+  let clock = 0;
+  const batches: UsageRecord[][] = [];
+  const recorder = createUsageRecorder({
+    queueLimit: 1,
+    reservedLossCapacity: 1,
+    batchSize: 100,
+    lossWindowMs: 10,
+    now: () => clock,
+    instanceId: 'bounded',
+    transport: {
+      async send(batch) {
+        batches.push([...batch]);
+      },
+      async close() {},
+    },
+  });
+  recorder.record(input('accepted'));
+  recorder.record(input('lost-s'));
+  recorder.record({ ...input('lost-t'), context: { sessionId: 't' } });
+  clock = 10;
+  await recorder.flush(100);
+  assert.deepEqual(recorder.stats().lost, { overflow: 3 });
+  const records = batches.flat();
+  assert.deepEqual(
+    records.map((r) => r.id),
+    ['accepted', 'lost:bounded:s:0'],
+  );
+  assert.ok('values' in records[1]);
+  assert.equal(records[1].values['x.metric'], 1);
+  clock = 100;
+  await recorder.flush(100);
+  assert.equal(batches.flat().length, 2);
+  assert.deepEqual(await recorder.close(100), {
+    delivered: 2,
+    lost: 3,
+    unconfirmed: 0,
+  });
+});
+
+test('memory eviction removes oldest records while retries retain existing ids', async () => {
+  const sink = memorySink({ limit: 2 });
+  await sink.write([record('a'), record('b')]);
+  await sink.write([record('a'), record('c')]);
+  assert.deepEqual(
+    (await collect(sink.read(query))).map((r) => r.id),
+    ['b', 'c'],
+  );
+  await sink.write([record('d'), record('e'), record('f')]);
+  assert.deepEqual(
+    (await collect(sink.read(query))).map((r) => r.id),
+    ['e', 'f'],
+  );
+});
+
+test('shutdown counters partition delivered, definite loss and pending delivery', async () => {
+  const recorder = createUsageRecorder({
+    batchSize: 1,
+    transport: {
+      async send(batch) {
+        if (batch[0].id === 'delivered') return;
+        await hang();
+      },
+      async close() {},
+    },
+  });
+  recorder.record(input('delivered'));
+  await settle();
+  recorder.record({
+    ...input('invalid'),
+    values: { invalid: new Date() },
+  } as unknown as UsageInput);
+  recorder.record(input('pending'));
+  await settle();
+  assert.deepEqual(await recorder.close(0), {
+    delivered: 1,
+    lost: 2,
+    unconfirmed: 1,
+  });
+  assert.deepEqual(recorder.stats().lost, { invalid: 1, closeTimeout: 2 });
+  assert.equal(recorder.stats().buffered, 0);
 });

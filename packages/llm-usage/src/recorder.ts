@@ -95,6 +95,7 @@ export function createUsageRecorder(
   let running: Promise<void> | undefined;
   let pending: Entry[] = [];
   let nextAttempt = 0;
+  let retryTimer: ReturnType<typeof setTimeout> | undefined;
   let closedThrough = -Infinity;
   let closing:
     | Promise<{ delivered: number; lost: number; unconfirmed: number }>
@@ -175,7 +176,14 @@ export function createUsageRecorder(
       return Promise.resolve();
     running = Promise.resolve()
       .then(async () => {
-        while (!finished && queue.length && Date.now() >= nextAttempt) {
+        while (!finished && queue.length) {
+          for (const entry of [...queue]) {
+            if (entry.attempts && now() - entry.since >= retryWindowMs) {
+              queue.splice(queue.indexOf(entry), 1);
+              account(entry, 'retryWindow');
+            }
+          }
+          if (!queue.length || Date.now() < nextAttempt) break;
           pending = queue.slice(0, batchSize);
           try {
             await transport.send(structuredClone(pending.map((e) => e.record)));
@@ -209,6 +217,22 @@ export function createUsageRecorder(
       })
       .finally(() => {
         running = undefined;
+        if (retryTimer) clearTimeout(retryTimer);
+        if (!finished && queue.length && nextAttempt) {
+          const expiry = Math.min(
+            ...queue
+              .filter((entry) => entry.attempts > 0)
+              .map((entry) => entry.since + retryWindowMs),
+          );
+          retryTimer = setTimeout(
+            () => {
+              nextAttempt = Math.min(nextAttempt, Date.now());
+              void pump();
+            },
+            Math.max(0, Math.min(nextAttempt - Date.now(), expiry - now())),
+          );
+          retryTimer.unref();
+        }
       });
     return running;
   }
@@ -300,6 +324,7 @@ export function createUsageRecorder(
         // A pending send is ambiguous even if an earlier attempt was refused.
         for (const entry of pending) entry.ambiguous = true;
         finished = true;
+        if (retryTimer) clearTimeout(retryTimer);
         for (const entry of queue.splice(0)) account(entry, 'closeTimeout');
         emitLosses(true);
         // Evidence generated at the deadline cannot itself be delivered.

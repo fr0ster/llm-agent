@@ -81,7 +81,10 @@ export function httpTransport(
           sent = true;
         }
       } catch (error) {
-        if (error instanceof UsageDeliveryError) throw error;
+        if (error instanceof UsageDeliveryError) {
+          if (!sent || error.possiblyDelivered) throw error;
+          throw new UsageDeliveryError(error.message, true, error.code);
+        }
         const cause = error instanceof Error ? (error.cause ?? error) : error;
         const code =
           cause && typeof cause === 'object' && 'code' in cause
