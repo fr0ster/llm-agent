@@ -30,7 +30,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "clean": "tsc -p tsconfig.json --clean",
-    "test": "node --import tsx/esm --test --test-reporter=spec 'src/**/*.test.ts'"
+    "test": "node --import tsx/esm --test --test-concurrency=1 --test-reporter=spec \"src/**/*.test.ts\""
   },
   "dependencies": {
     "@opentelemetry/api": "^1.9.1",

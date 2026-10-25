@@ -64,6 +64,8 @@ export type DisjointCatalogs<A extends object, B extends object> =
   - `emit` and `retire` never throw and never await.
   - A handler that throws, or returns a rejected promise, affects neither the producer nor other handlers. Implementations report it to their own error sink.
 - **Payloads are immutable snapshots.**
+  - Payloads contain only plain objects, arrays, and string/number/boolean/null/undefined values. Map, Set, typed arrays/ArrayBuffer views, Date, and class instances are not allowed.
+  - Before retention and dispatch, the default bus recursively validates plain data. Invalid signals are neither retained nor dispatched; `onHandlerError` receives a TypeError naming the signal and payload path. `emit` still never throws.
   - Producers emit a fresh copy (`structuredClone` of internal state), never a live reference.
   - Implementations hand the same payload object to every handler and to `last` / `lastAll`.
   - Handlers must not mutate it. The default bus deep-freezes it.

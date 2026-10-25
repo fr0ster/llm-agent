@@ -16,6 +16,7 @@ npm run build
 
 PACKAGES=(
   llm-agent
+  llm-signals
   llm-agent-mcp
   llm-agent-rag
   openai-llm
