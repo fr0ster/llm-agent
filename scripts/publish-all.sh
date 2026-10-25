@@ -39,6 +39,7 @@ PACKAGES=(
 
 PUBLISHED=0
 SKIPPED=0
+PUBLISHED_TAGS=()
 
 for pkg in "${PACKAGES[@]}"; do
   echo
@@ -72,7 +73,15 @@ for pkg in "${PACKAGES[@]}"; do
     exit "$status"
   fi
   PUBLISHED=$((PUBLISHED + 1))
+  PUBLISHED_TAGS+=("$name@$version")
 done
 
 echo
 echo "Published: $PUBLISHED  Skipped: $SKIPPED"
+
+if [ "${#PUBLISHED_TAGS[@]}" -gt 0 ]; then
+  echo "Signed tags for the maintainer to create:"
+  for tag in "${PUBLISHED_TAGS[@]}"; do
+    printf 'git tag -s "%s" -m "Release %s"\n' "$tag" "$tag"
+  done
+fi

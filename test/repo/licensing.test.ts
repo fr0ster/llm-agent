@@ -181,21 +181,3 @@ test('the repo root declares the LGPL, and nothing shadows it', () => {
     'the root must expose exactly one licensee-scanned licence file',
   );
 });
-
-test('all published packages share one lockstep version', () => {
-  const versions = new Set(
-    publishedPackages().map(
-      ({ dir }) =>
-        (
-          JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8')) as {
-            version: string;
-          }
-        ).version,
-    ),
-  );
-  assert.equal(
-    versions.size,
-    1,
-    `expected one version across the monorepo, found: ${[...versions].join(', ')}`,
-  );
-});

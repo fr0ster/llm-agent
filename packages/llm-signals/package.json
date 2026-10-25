@@ -1,6 +1,6 @@
 {
   "name": "@mcp-abap-adt/llm-signals",
-  "version": "30.9.1",
+  "version": "1.0.0",
   "description": "Replaceable in-process signal bus and emitter composition helpers.",
   "type": "module",
   "main": "dist/index.js",
