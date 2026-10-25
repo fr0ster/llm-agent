@@ -20,6 +20,7 @@ export type Unsubscribe = () => void;
 
 /** Producer side: the only thing a producer depends on. */
 export interface ISignalEmitter<C extends object> {
+  /** Payloads are plain data: plain objects, arrays, string/number/boolean/null/undefined. */
   emit<K extends SignalName<C>>(
     name: K,
     payload: C[K],

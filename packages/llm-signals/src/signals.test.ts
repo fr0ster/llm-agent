@@ -139,3 +139,44 @@ test('helpers isolate emitters and predicate failures; retirement always fans ou
     }).emit('closed', {}, 's'),
   );
 });
+
+test('unsubscribing a later handler skips it in the current dispatch', () => {
+  const bus = createSignalBus<Catalog>();
+  let calls = 0;
+  let off = () => {};
+  bus.onAny(() => off());
+  off = bus.on('state', () => {
+    calls++;
+  });
+  bus.emit('state', { n: 1 }, 's');
+  assert.equal(calls, 0);
+});
+
+test('invalid payloads are reported without retention or dispatch', () => {
+  for (const value of [new Map(), new Uint8Array([1]), new Date()]) {
+    const errors: unknown[] = [];
+    const bus = createSignalBus<{ data: unknown }>({
+      onHandlerError(error, signal) {
+        errors.push(error);
+        assert.equal(signal.name, 'data');
+        throw Error('sink');
+      },
+    });
+    let calls = 0;
+    bus.onAny(() => {
+      calls++;
+    });
+    const valid = { nested: [{ value: 1, optional: undefined }, null, true] };
+    bus.emit('data', valid, 's');
+    assert.ok(Object.isFrozen(valid));
+    assert.ok(Object.isFrozen(valid.nested));
+    assert.ok(Object.isFrozen(valid.nested[0]));
+    const retained = bus.last('data', 's');
+    assert.doesNotThrow(() => bus.emit('data', { nested: [value] }, 's'));
+    assert.equal(calls, 1);
+    assert.equal(bus.last('data', 's'), retained);
+    assert.equal(errors.length, 1);
+    assert.ok(errors[0] instanceof TypeError);
+    assert.match(errors[0].message, /data.*payload\["nested"\]\["0"\]/);
+  }
+});

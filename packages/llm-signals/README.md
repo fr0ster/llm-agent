@@ -21,7 +21,12 @@ Replace the whole implementation with any `ISignalEmitter` or `ISignalBus`.
 Replace a part with `combineEmitters(bus, metricsEmitter)` or
 `filterEmitter(bus, (name, source) => source === 'chat')`. `noopEmitter()` disables
 emission. Producers clone snapshots; the default bus deep-freezes them and isolates
-handler failures. Nested emissions only enqueue; the outermost call drains the queue.
+handler failures. Payloads must be plain data: plain objects, arrays, and
+string/number/boolean/null/undefined values. The default bus recursively validates
+payloads before retention and dispatch. It drops invalid signals (including Map,
+Set, typed arrays/ArrayBuffer views, Date, and class instances) and reports a
+TypeError naming the signal and payload path through `onHandlerError`; `emit`
+never throws. Nested emissions only enqueue; the outermost call drains the queue.
 Retirement drops retained state at its queue position, allowing the same source id
 to start afresh. `last` and `lastAll` expose retained state without replaying handlers.
 

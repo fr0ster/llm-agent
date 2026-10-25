@@ -20,6 +20,7 @@ export function cutTaskOutput(output: string): string {
     : `${output.slice(0, TASK_OUTPUT_CHAR_LIMIT)}\n[cut: ${output.length - TASK_OUTPUT_CHAR_LIMIT} characters omitted]`;
 }
 export interface TaskBoardOptions {
+  logger?: { warn(message: string): void };
   signals?: ISignalEmitter<DialogueSignals>;
   source?: string;
   onStateChange?: () => void;
@@ -95,15 +96,25 @@ export class TaskBoard {
     return (this.opts.now ?? Date.now)();
   }
   private signalState(task: TaskRecord, previous?: TaskState): void {
-    this.opts.signals?.emit(
-      'dialogue.task.state',
-      structuredClone({
-        task,
-        ...(previous === undefined ? {} : { previous }),
-      }),
-      this.opts.source ?? '',
-      task.id,
-    );
+    try {
+      this.opts.signals?.emit(
+        'dialogue.task.state',
+        structuredClone({
+          task,
+          ...(previous === undefined ? {} : { previous }),
+        }),
+        this.opts.source ?? '',
+        task.id,
+      );
+    } catch {
+      try {
+        this.opts.logger?.warn(
+          'Dialogue signal emit failed: dialogue.task.state',
+        );
+      } catch {
+        /* Logging cannot affect execution. */
+      }
+    }
     this.opts.onStateChange?.();
   }
   private emit(

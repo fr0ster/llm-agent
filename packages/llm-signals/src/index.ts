@@ -20,6 +20,34 @@ function freeze(value: unknown, seen = new WeakSet<object>()): void {
     freeze(Reflect.get(value, key), seen);
   Object.freeze(value);
 }
+function validatePayload(
+  value: unknown,
+  name: string,
+  path = 'payload',
+  seen = new WeakSet<object>(),
+): void {
+  const invalid = () =>
+    new TypeError(`Signal ${name}: non-plain data at ${path}`);
+  if (value === null || value === undefined) return;
+  if (['string', 'number', 'boolean'].includes(typeof value)) return;
+  if (typeof value !== 'object') throw invalid();
+  const prototype = Object.getPrototypeOf(value);
+  if (
+    !Array.isArray(value) &&
+    prototype !== Object.prototype &&
+    prototype !== null
+  )
+    throw invalid();
+  if (seen.has(value)) return;
+  seen.add(value);
+  for (const key of Reflect.ownKeys(value)) {
+    const childPath = `${path}[${JSON.stringify(String(key))}]`;
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (typeof key === 'symbol' || !descriptor || !('value' in descriptor))
+      throw new TypeError(`Signal ${name}: non-plain data at ${childPath}`);
+    validatePayload(descriptor.value, name, childPath, seen);
+  }
+}
 export function noopEmitter<C extends object>(): ISignalEmitter<C> {
   return { emit() {}, retire() {} };
 }
@@ -79,7 +107,13 @@ export function createSignalBus<C extends object>(
           continue;
         }
         const signal = entry.signal;
-        safely(() => freeze(signal));
+        try {
+          validatePayload(signal.payload, signal.name);
+          freeze(signal);
+        } catch (error) {
+          report(error, signal);
+          continue;
+        }
         let source = retained.get(signal.source);
         if (!source) {
           source = new Map();
@@ -89,6 +123,7 @@ export function createSignalBus<C extends object>(
         source.delete(key);
         source.set(key, signal);
         for (const handler of [...handlers]) {
+          if (!handlers.has(handler)) continue;
           if (handler.name !== undefined && handler.name !== signal.name)
             continue;
           if (handler.source !== undefined && handler.source !== signal.source)

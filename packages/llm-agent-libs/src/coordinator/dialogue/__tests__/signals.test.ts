@@ -339,3 +339,105 @@ test('plan total changes emit and ready stays visible after corrections are exha
   assert.equal(board.get('t1')?.goal, 'original');
   await board.stopAll();
 });
+
+test('throwing session emitters preserve successful and failed sends and retirement', async () => {
+  for (const throwing of [false, true]) {
+    const warnings: string[] = [];
+    const retired: string[] = [];
+    let fail = false;
+    const session = await DialogueSession.open({
+      id: 's',
+      signals: throwing
+        ? {
+            emit(name) {
+              if (
+                name === 'dialogue.turn.started' ||
+                name === 'dialogue.session.closed'
+              )
+                throw Error('private payload contents');
+            },
+            retire(source) {
+              retired.push(source);
+              throw Error('private payload contents');
+            },
+          }
+        : undefined,
+      logger: {
+        warn(message) {
+          warnings.push(message);
+        },
+      },
+      board: { workers: new Map() },
+      planner: {
+        async process() {
+          if (fail) throw Error('planner');
+          return reply;
+        },
+      },
+    });
+    assert.equal((await session.send('hello')).text, 'ok');
+    fail = true;
+    await assert.rejects(session.send('fail'), /planner/);
+    await session.close();
+    assert.deepEqual(retired, throwing ? ['s'] : []);
+    assert.equal(warnings.length, throwing ? 4 : 0);
+    assert.ok(warnings.every((message) => !message.includes('private')));
+  }
+});
+
+test('throwing initial task signal does not prevent start or worker execution', async () => {
+  for (const throwing of [false, true]) {
+    let runs = 0;
+    let changes = 0;
+    const warnings: string[] = [];
+    const board = new TaskBoard({
+      signals: throwing
+        ? {
+            emit(name, payload) {
+              if (
+                name === 'dialogue.task.state' &&
+                (payload as DialogueSignals['dialogue.task.state']).task
+                  .state === 'queued'
+              )
+                throw Error('private payload contents');
+            },
+            retire() {},
+          }
+        : undefined,
+      logger: {
+        warn(message) {
+          warnings.push(message);
+          throw Error('logger');
+        },
+      },
+      onStateChange() {
+        changes++;
+      },
+      onEvent() {},
+      now: () => 1,
+      workers: new Map([
+        [
+          'w',
+          {
+            name: 'w',
+            capabilities: { contextPolicy: 'optional' },
+            async run() {
+              runs++;
+              return { output: 'done' };
+            },
+          },
+        ],
+      ]),
+    });
+    const result = board.start({ worker: 'w', goal: 'task' });
+    assert.ok(result.ok);
+    await tick();
+    assert.equal(runs, 1);
+    assert.equal(changes, 3);
+    assert.equal(board.get('t1')?.state, 'done');
+    assert.equal(board.get('t1')?.output, 'done');
+    assert.equal(warnings.length, throwing ? 1 : 0);
+    assert.ok(warnings.every((message) => !message.includes('private')));
+    await board.stopAll();
+  }
+});

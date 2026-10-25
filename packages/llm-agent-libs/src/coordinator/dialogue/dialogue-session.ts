@@ -71,7 +71,11 @@ export class DialogueSession {
     payload: DialogueSignals[K],
     key?: string,
   ): void {
-    this.signals.emit(name, structuredClone(payload), this.opts.id, key);
+    try {
+      this.signals.emit(name, structuredClone(payload), this.opts.id, key);
+    } catch {
+      this.warn(`Dialogue signal emit failed: ${name}`);
+    }
   }
   private changed(): void {
     const activity = {
@@ -127,6 +131,7 @@ export class DialogueSession {
     this.signals = opts.signals ?? { emit() {}, retire() {} };
     this.board = new TaskBoard({
       ...opts.board,
+      logger: opts.logger ?? opts.board.logger,
       signals: this.signals,
       source: opts.id,
       onStateChange: () => this.changed(),
@@ -498,7 +503,11 @@ export class DialogueSession {
       await this.opts.store?.delete(this.opts.id);
     } finally {
       this.emit('dialogue.session.closed', {});
-      this.signals.retire(this.opts.id);
+      try {
+        this.signals.retire(this.opts.id);
+      } catch {
+        this.warn('Dialogue signal retire failed');
+      }
     }
   }
 }
