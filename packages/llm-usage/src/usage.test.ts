@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readdir, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { setTimeout as delay } from 'node:timers/promises';
 import type {
   ISignalEmitter,
   ISignalSubscriber,
@@ -304,6 +305,62 @@ test('JSONL rotation, reopening, idempotence and exports', async () => {
     await collect(exportRecords(reopened.read(query), 'jsonl'))
   ).join('');
   assert.equal(jsonl.trim().split('\n').length, 2);
+});
+
+test('JSONL initialization failures are handled immediately and retained', async () => {
+  const path = join(temp, 'unreadable.jsonl');
+  // A directory cannot be read as a file, even when running with elevated access.
+  await mkdir(path);
+  const unhandled: unknown[] = [];
+  const onUnhandled = (error: unknown) => unhandled.push(error);
+  process.on('unhandledRejection', onUnhandled);
+  try {
+    const sink = jsonlFileSink({ path, rotateBytes: 1000 });
+    // Allow initialization to fail before attaching any operation handlers.
+    await delay(100);
+    let original: unknown;
+    await assert.rejects(collect(sink.read(query)), (error) => {
+      original = error;
+      return error instanceof Error;
+    });
+    for (let attempt = 0; attempt < 2; attempt++) {
+      await assert.rejects(
+        sink.write([record()]),
+        (error) =>
+          error instanceof UsageDeliveryError &&
+          error.possiblyDelivered === false &&
+          error.cause === original,
+      );
+      await assert.rejects(sink.close(), (error) => error === original);
+    }
+    assert.deepEqual(unhandled, []);
+  } finally {
+    process.off('unhandledRejection', onUnhandled);
+  }
+});
+
+test('JSONL skips malformed lines and recovers an unterminated final line', async () => {
+  const path = join(temp, 'truncated.jsonl');
+  await writeFile(
+    path,
+    `${JSON.stringify(record('existing'))}\nnot json\n\n{"id":"truncated`,
+  );
+  const sink = jsonlFileSink({ path, rotateBytes: 10000 });
+  await sink.write([record('existing'), record('new')]);
+  assert.deepEqual(
+    (await collect(sink.read(query))).map((r) => r.id),
+    ['existing', 'new'],
+  );
+  assert.deepEqual(sink.stats(), { skippedLines: 2 });
+  await sink.close();
+  const reopened = jsonlFileSink({ path, rotateBytes: 10000 });
+  await reopened.write([record('new'), record('later')]);
+  assert.deepEqual(
+    (await collect(reopened.read(query))).map((r) => r.id),
+    ['existing', 'new', 'later'],
+  );
+  assert.deepEqual(reopened.stats(), { skippedLines: 2 });
+  await reopened.close();
 });
 
 test('HTTP body and failure classification', async () => {

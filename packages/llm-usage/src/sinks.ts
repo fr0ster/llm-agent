@@ -42,11 +42,15 @@ export function memorySink(options: {
 export function jsonlFileSink(options: {
   path: string;
   rotateBytes: number;
-}): IUsageSink & IUsageReader {
+}): IUsageSink &
+  IUsageReader & { close(): Promise<void>; stats(): { skippedLines: number } } {
   let serial = Promise.resolve();
   let rotation = 0;
+  let skippedLines = 0;
+  let needsNewline = false;
+  let initializationFailure: { error: unknown } | undefined;
   const ids = new Set<string>();
-  async function* all(): AsyncIterable<UsageRecord> {
+  async function* all(initializing = false): AsyncIterable<UsageRecord> {
     const dir = dirname(options.path);
     const name = basename(options.path);
     let files: string[];
@@ -65,18 +69,44 @@ export function jsonlFileSink(options: {
     }
     for (const file of files) {
       const data = await readFile(join(dir, file), 'utf8');
-      for (const line of data.split('\n'))
-        if (line.trim()) yield JSON.parse(line) as UsageRecord;
+      if (initializing && file === name)
+        needsNewline = data.length > 0 && !data.endsWith('\n');
+      for (const line of data.split('\n')) {
+        if (!line.trim()) continue;
+        let record: UsageRecord;
+        try {
+          record = JSON.parse(line) as UsageRecord;
+        } catch {
+          if (initializing) skippedLines++;
+          continue;
+        }
+        yield record;
+      }
     }
   }
   const ready = (async () => {
-    for await (const record of all()) ids.add(record.id);
-  })();
+    for await (const record of all(true)) ids.add(record.id);
+  })().catch((error: unknown) => {
+    initializationFailure = { error };
+  });
   return {
+    stats() {
+      return { skippedLines };
+    },
     write(batch) {
       const snapshot = structuredClone([...batch]);
       const write = serial.then(async () => {
         await ready;
+        if (initializationFailure) {
+          const { error } = initializationFailure;
+          const failure = new UsageDeliveryError(
+            error instanceof Error ? error.message : String(error),
+            false,
+            (error as NodeJS.ErrnoException | null)?.code,
+          );
+          failure.cause = error;
+          throw failure;
+        }
         for (const record of snapshot) {
           if (ids.has(record.id)) continue;
           const line = `${JSON.stringify(record)}\n`;
@@ -94,8 +124,14 @@ export function jsonlFileSink(options: {
               options.path,
               `${options.path}.${Date.now()}.${rotation++}`,
             );
+            needsNewline = false;
           }
-          await appendFile(options.path, line, 'utf8');
+          await appendFile(
+            options.path,
+            `${needsNewline ? '\n' : ''}${line}`,
+            'utf8',
+          );
+          needsNewline = false;
           ids.add(record.id);
         }
       });
@@ -105,11 +141,13 @@ export function jsonlFileSink(options: {
     async *read(query) {
       await serial;
       await ready;
+      if (initializationFailure) throw initializationFailure.error;
       yield* selectUsage(all(), query);
     },
     async close() {
       await serial;
       await ready;
+      if (initializationFailure) throw initializationFailure.error;
     },
   };
 }

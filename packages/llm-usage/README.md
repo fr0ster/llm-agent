@@ -72,7 +72,12 @@ storage policy, not a recorder delivery failure.
 `<path>.<timestamp>.<counter>` before a record would cross the byte limit, and
 reads all rotations. One record may exceed the limit. Parent directories must
 exist. Use one writer per path. Reopening scans existing ids; retained ids consume
-memory. Neither sink implements a durable producer queue.
+memory. Malformed JSON lines are skipped; `sink.stats().skippedLines` counts those
+found during the initial scan (available after an operation completes). Appends
+separate an unterminated final line from new records. Initialization I/O failures
+are retained: reads and close reject with the original error, and writes reject
+with `UsageDeliveryError` (`possiblyDelivered: false`, original error in `cause`).
+Neither sink implements a durable producer queue.
 
 Readers deduplicate by id. Ordinary records match `[from, to)`, `kinds` and
 `sessionId`. Loss records match overlapping affected ranges regardless of their
