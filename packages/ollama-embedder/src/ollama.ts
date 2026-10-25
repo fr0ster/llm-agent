@@ -79,13 +79,16 @@ export class OllamaEmbedder implements IEmbedderBatch {
           embedding: number[];
           prompt_eval_count?: number;
         };
+        const result = { vector: json.embedding };
+        if (!Array.isArray(result.vector) || result.vector.length === 0)
+          throw new RagError('Invalid embedding response');
         request.end({
           outcome: 'ok',
           inputTokens: json.prompt_eval_count,
           tokensSource:
             json.prompt_eval_count === undefined ? 'unknown' : 'provider',
         });
-        return { vector: json.embedding };
+        return result;
       } catch (err: unknown) {
         request.end({
           outcome:
@@ -160,13 +163,20 @@ export class OllamaEmbedder implements IEmbedderBatch {
           embeddings: number[][];
           prompt_eval_count?: number;
         };
+        const result = json.embeddings.map((vector) => {
+          if (!Array.isArray(vector) || vector.length === 0)
+            throw new RagError('Invalid embedding response');
+          return { vector };
+        });
+        if (result.length === 0)
+          throw new RagError('Invalid embedding response');
         request.end({
           outcome: 'ok',
           inputTokens: json.prompt_eval_count,
           tokensSource:
             json.prompt_eval_count === undefined ? 'unknown' : 'provider',
         });
-        return json.embeddings.map((vector) => ({ vector }));
+        return result;
       } catch (err: unknown) {
         request.end({
           outcome:

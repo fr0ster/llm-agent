@@ -244,6 +244,7 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
       // multiplexing. A shared keepAlive agent can cause SAP AI Core to route a
       // response to the wrong in-flight request when concurrent requests share
       // the same XSUAA user (mirrors streamChat's per-stream agent below).
+      let client: ReturnType<SapCoreAIProvider['createClient']>;
       const response = await this.withThrottleRetry(
         async (handle) => {
           // No timeout of ours. Sixty seconds used to sit here, and it was a
@@ -256,11 +257,7 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
           // fresh on every attempt, inside this closure: a retry re-asks
           // rather than resending a token that may be why the previous
           // attempt failed.
-          const destination = await buildDestination({
-            apiBaseUrl: this.config.apiBaseUrl,
-            credential: this.config.credential,
-          });
-          const client = this.createClient(formatted, tools, destination);
+
           const callAgent = new https.Agent({ keepAlive: false });
           const response = await client.chatCompletion(undefined, {
             // The SDK forwards this middleware list to its single inference HTTP request.
@@ -269,14 +266,65 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
             httpsAgent: callAgent,
             signal: options?.signal,
           });
+          const toolCalls = response.getToolCalls();
+          const content = response.getContent() || '';
+          const finishReason = response.getFinishReason();
+
+          this.log?.debug('Received response from SAP AI SDK', {
+            finishReason,
+          });
+
+          const rawUsage = response.getTokenUsage() as
+            | {
+                prompt_tokens?: number;
+                completion_tokens?: number;
+                total_tokens?: number;
+              }
+            | undefined;
+          const usage = rawUsage
+            ? {
+                promptTokens: rawUsage.prompt_tokens ?? 0,
+                completionTokens: rawUsage.completion_tokens ?? 0,
+                totalTokens:
+                  rawUsage.total_tokens ??
+                  (rawUsage.prompt_tokens ?? 0) +
+                    (rawUsage.completion_tokens ?? 0),
+              }
+            : undefined;
+
+          const result = {
+            content,
+            finishReason,
+            ...(usage ? { usage } : {}),
+            raw: {
+              choices: [
+                {
+                  message: {
+                    role: 'assistant',
+                    content,
+                    ...(toolCalls ? { tool_calls: toolCalls } : {}),
+                  },
+                  finish_reason: finishReason,
+                },
+              ],
+              usage: rawUsage,
+            },
+          };
           handle.end({
             outcome: returnedSdkError(response) ? 'error' : 'ok',
             ...tokenFacts(response.getTokenUsage()),
           });
-          return response;
+          return result;
         },
         { signal: options?.signal },
         {
+          prepare: async () => {
+            const destination = await buildDestination({
+              apiBaseUrl: this.config.apiBaseUrl,
+              credential: this.config.credential,
+            });
+            client = this.createClient(formatted, tools, destination);
+          },
           opts: options,
           op: startOperation(options),
           bound: this.config.usage,
@@ -290,47 +338,7 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
         },
       );
 
-      const toolCalls = response.getToolCalls();
-      const content = response.getContent() || '';
-      const finishReason = response.getFinishReason();
-
-      this.log?.debug('Received response from SAP AI SDK', { finishReason });
-
-      const rawUsage = response.getTokenUsage() as
-        | {
-            prompt_tokens?: number;
-            completion_tokens?: number;
-            total_tokens?: number;
-          }
-        | undefined;
-      const usage = rawUsage
-        ? {
-            promptTokens: rawUsage.prompt_tokens ?? 0,
-            completionTokens: rawUsage.completion_tokens ?? 0,
-            totalTokens:
-              rawUsage.total_tokens ??
-              (rawUsage.prompt_tokens ?? 0) + (rawUsage.completion_tokens ?? 0),
-          }
-        : undefined;
-
-      return {
-        content,
-        finishReason,
-        ...(usage ? { usage } : {}),
-        raw: {
-          choices: [
-            {
-              message: {
-                role: 'assistant',
-                content,
-                ...(toolCalls ? { tool_calls: toolCalls } : {}),
-              },
-              finish_reason: finishReason,
-            },
-          ],
-          usage: rawUsage,
-        },
-      };
+      return response;
     } catch (error: unknown) {
       const detail = SapCoreAIProvider.extractErrorDetail(error);
       this.log?.error('SAP AI SDK API error', { error: detail });
@@ -396,16 +404,13 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
         model,
         keepAlive: false,
       });
+      let client: ReturnType<SapCoreAIProvider['createClient']>;
       const opened = await this.withThrottleRetry(
         async () => {
           // As above: the caller's signal is the deadline, and the SDK takes
           // it directly. The destination (and the credential's token()) is
           // rebuilt on every attempt, same as chat().
-          const destination = await buildDestination({
-            apiBaseUrl: this.config.apiBaseUrl,
-            credential: this.config.credential,
-          });
-          const client = this.createClient(formatted, tools, destination);
+
           this.log?.debug('SAP AI SDK streamChat client created', {
             model,
             toolCount,
@@ -420,6 +425,13 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
         },
         { signal: options?.signal },
         {
+          prepare: async () => {
+            const destination = await buildDestination({
+              apiBaseUrl: this.config.apiBaseUrl,
+              credential: this.config.credential,
+            });
+            client = this.createClient(formatted, tools, destination);
+          },
           opts: options,
           op: startOperation(options),
           bound: this.config.usage,

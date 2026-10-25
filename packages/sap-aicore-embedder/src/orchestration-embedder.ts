@@ -110,16 +110,17 @@ export class OrchestrationScenarioEmbedder implements IEmbedderBatch {
       });
       const usage = response.getTokenUsage?.();
       const embeddings = response.getEmbeddings();
+      if (!embeddings || embeddings.length === 0) {
+        throw new RagError('No embeddings returned from SAP AI Core');
+      }
+      const result = { vector: decodeEmbedding(embeddings[0].embedding) };
       request.end({
-        outcome: embeddings?.length ? 'ok' : 'error',
+        outcome: 'ok',
         inputTokens: usage?.prompt_tokens,
         tokensSource:
           usage?.prompt_tokens === undefined ? 'unknown' : 'provider',
       });
-      if (!embeddings || embeddings.length === 0) {
-        throw new RagError('No embeddings returned from SAP AI Core');
-      }
-      return { vector: decodeEmbedding(embeddings[0].embedding) };
+      return result;
     } catch (error) {
       request.end({
         outcome:
@@ -165,17 +166,20 @@ export class OrchestrationScenarioEmbedder implements IEmbedderBatch {
       });
       const usage = response.getTokenUsage?.();
       const embeddings = response.getEmbeddings();
-      request.end({
-        outcome: embeddings?.length ? 'ok' : 'error',
-        inputTokens: usage?.prompt_tokens,
-        tokensSource:
-          usage?.prompt_tokens === undefined ? 'unknown' : 'provider',
-      });
       if (!embeddings || embeddings.length === 0) {
         throw new RagError('No embeddings returned from SAP AI Core batch');
       }
       const sorted = [...embeddings].sort((a, b) => a.index - b.index);
-      return sorted.map((e) => ({ vector: decodeEmbedding(e.embedding) }));
+      const result = sorted.map((e) => ({
+        vector: decodeEmbedding(e.embedding),
+      }));
+      request.end({
+        outcome: 'ok',
+        inputTokens: usage?.prompt_tokens,
+        tokensSource:
+          usage?.prompt_tokens === undefined ? 'unknown' : 'provider',
+      });
+      return result;
     } catch (error) {
       request.end({
         outcome:

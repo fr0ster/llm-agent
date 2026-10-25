@@ -53,6 +53,8 @@ export interface LLMProvider {
 }
 
 export interface ProviderRequestUsage {
+  /** Resolve credentials and SDK setup before counting a network attempt. */
+  prepare?: () => Promise<void>;
   opts?: LLMCallOptions;
   op: UsageOperation;
   base: Parameters<typeof beginLlmRequest>[2];
@@ -301,6 +303,7 @@ export abstract class BaseLLMProvider<
   ): Promise<T | { response: T; handle: LlmRequestHandle }> {
     let attempt = 0;
     const physicalRequest = async () => {
+      await usage?.prepare?.();
       // Created inside the closure: quota waits that send no request emit no record.
       const handle = usage
         ? beginLlmRequest(

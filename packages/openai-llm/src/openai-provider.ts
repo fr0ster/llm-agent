@@ -159,6 +159,7 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
       const temperature = options?.temperature ?? this.config.temperature;
       const maxTokens = options?.maxTokens ?? this.config.maxTokens;
 
+      let headers: Record<string, string>;
       const response = await this.withThrottleRetry(
         async (handle) => {
           const response = await this.client.post(
@@ -175,16 +176,35 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
               ...(options?.topP !== undefined ? { top_p: options.topP } : {}),
               ...(options?.stop ? { stop: options.stop } : {}),
             },
-            { signal: options?.signal, headers: await this.authHeader() },
+            { signal: options?.signal, headers },
           );
+          const choice = response.data.choices[0];
+
+          const usage = response.data.usage
+            ? {
+                promptTokens: response.data.usage.prompt_tokens,
+                completionTokens: response.data.usage.completion_tokens,
+                totalTokens: response.data.usage.total_tokens,
+              }
+            : undefined;
+
+          const result = {
+            content: choice.message.content || '',
+            finishReason: choice.finish_reason,
+            raw: response.data,
+            usage,
+          };
           handle.end({
             outcome: response.data.error ? 'error' : 'ok',
             ...tokenFacts(response.data.usage),
           });
-          return response;
+          return result;
         },
         { model, signal: options?.signal },
         {
+          prepare: async () => {
+            headers = await this.authHeader();
+          },
           opts: options,
           op: startOperation(options),
           bound: this.config.usage,
@@ -198,22 +218,7 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
         },
       );
 
-      const choice = response.data.choices[0];
-
-      const usage = response.data.usage
-        ? {
-            promptTokens: response.data.usage.prompt_tokens,
-            completionTokens: response.data.usage.completion_tokens,
-            totalTokens: response.data.usage.total_tokens,
-          }
-        : undefined;
-
-      return {
-        content: choice.message.content || '',
-        finishReason: choice.finish_reason,
-        raw: response.data,
-        usage,
-      };
+      return response;
     } catch (error: unknown) {
       const message = axios.isAxiosError(error)
         ? (error.response?.data as { error?: { message?: string } })?.error
@@ -246,6 +251,7 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
       const temperature = options?.temperature ?? this.config.temperature;
       const maxTokens = options?.maxTokens ?? this.config.maxTokens;
 
+      let headers: Record<string, string>;
       const opened = await this.withThrottleRetry(
         async () =>
           this.client.post(
@@ -267,11 +273,14 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
             {
               responseType: 'stream',
               signal: options?.signal,
-              headers: await this.authHeader(),
+              headers,
             },
           ),
         { model, signal: options?.signal },
         {
+          prepare: async () => {
+            headers = await this.authHeader();
+          },
           opts: options,
           op: startOperation(options),
           bound: this.config.usage,

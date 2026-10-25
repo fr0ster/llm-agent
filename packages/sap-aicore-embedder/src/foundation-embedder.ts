@@ -83,11 +83,8 @@ export class FoundationModelsEmbedder implements IEmbedderBatch {
   }
 
   async embed(text: string, options?: CallOptions): Promise<IEmbedResult> {
-    const items = await this.requestEmbeddings([text], options);
-    if (items.length === 0) {
-      throw new RagError('No embeddings returned from SAP AI Core');
-    }
-    return { vector: decodeEmbedding(items[0].embedding) };
+    const results = await this.requestEmbeddings([text], options);
+    return results[0];
   }
 
   async embedBatch(
@@ -95,18 +92,13 @@ export class FoundationModelsEmbedder implements IEmbedderBatch {
     options?: CallOptions,
   ): Promise<IEmbedResult[]> {
     if (texts.length === 0) return [];
-    const items = await this.requestEmbeddings(texts, options);
-    if (items.length === 0) {
-      throw new RagError('No embeddings returned from SAP AI Core batch');
-    }
-    const sorted = [...items].sort((a, b) => a.index - b.index);
-    return sorted.map((item) => ({ vector: decodeEmbedding(item.embedding) }));
+    return this.requestEmbeddings(texts, options);
   }
 
   private async requestEmbeddings(
     input: string[],
     options?: CallOptions,
-  ): Promise<NormalizedItem[]> {
+  ): Promise<IEmbedResult[]> {
     // Asked fresh on every request — never cached on the instance — so a
     // rotating credential (client-credentials exchange, Entra ID, ...) keeps
     // rotating rather than being frozen at construction time.
@@ -160,15 +152,18 @@ export class FoundationModelsEmbedder implements IEmbedderBatch {
           counts?.length && counts.every((count) => count !== undefined)
             ? counts.reduce<number>((sum, count) => sum + (count ?? 0), 0)
             : undefined;
+        const result = this.processEmbeddings(
+          (json.predictions ?? []).map((p, i) => ({
+            embedding: p.embeddings?.values ?? [],
+            index: i,
+          })),
+        );
         request.end({
-          outcome: json.predictions?.length ? 'ok' : 'error',
+          outcome: 'ok',
           inputTokens,
           tokensSource: inputTokens === undefined ? 'unknown' : 'provider',
         });
-        return (json.predictions ?? []).map((p, i) => ({
-          embedding: p.embeddings?.values ?? [],
-          index: i,
-        }));
+        return result;
       }
 
       // azure-openai
@@ -188,13 +183,14 @@ export class FoundationModelsEmbedder implements IEmbedderBatch {
         );
       }
       const json = (await res.json()) as OpenAiEmbeddingsResponse;
+      const result = this.processEmbeddings(json.data ?? []);
       request.end({
-        outcome: json.data?.length ? 'ok' : 'error',
+        outcome: 'ok',
         inputTokens: json.usage?.prompt_tokens,
         tokensSource:
           json.usage?.prompt_tokens === undefined ? 'unknown' : 'provider',
       });
-      return json.data ?? [];
+      return result;
     } catch (error) {
       request.end({
         outcome:
@@ -206,6 +202,14 @@ export class FoundationModelsEmbedder implements IEmbedderBatch {
       });
       throw error;
     }
+  }
+
+  private processEmbeddings(items: NormalizedItem[]): IEmbedResult[] {
+    if (items.length === 0)
+      throw new RagError('No embeddings returned from SAP AI Core');
+    return [...items]
+      .sort((a, b) => a.index - b.index)
+      .map((item) => ({ vector: decodeEmbedding(item.embedding) }));
   }
 
   private getDeploymentId(token: string): Promise<string> {

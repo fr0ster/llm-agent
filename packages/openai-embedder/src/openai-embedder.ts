@@ -58,20 +58,22 @@ export class OpenAiEmbedder implements IEmbedderBatch {
     const op = startOperation(options);
 
     for (let attempt = 0; attempt < maxRetries; attempt++) {
-      const request = beginEmbeddingRequest(
-        options,
-        withProviderAttempt(op, attempt),
-        {
-          provider: 'openai',
-          model: this.model,
-          inputs: [text].length,
-          inputChars: [text].reduce((sum, value) => sum + value.length, 0),
-          granularity: 'request',
-          retriesVisible: true,
-        },
-        this.usage,
-      );
+      let request: ReturnType<typeof beginEmbeddingRequest> | undefined;
       try {
+        const authorization = await this.authorization();
+        request = beginEmbeddingRequest(
+          options,
+          withProviderAttempt(op, attempt),
+          {
+            provider: 'openai',
+            model: this.model,
+            inputs: [text].length,
+            inputChars: [text].reduce((sum, value) => sum + value.length, 0),
+            granularity: 'request',
+            retriesVisible: true,
+          },
+          this.usage,
+        );
         // The caller's signal and nothing else. A ceiling of our own would run
         // on every request and fire instead of whatever decided above us — a
         // caller waiting out a server's Retry-After, cut before the interval
@@ -80,7 +82,7 @@ export class OpenAiEmbedder implements IEmbedderBatch {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            Authorization: await this.authorization(),
+            Authorization: authorization,
           },
           body: JSON.stringify({ model: this.model, input: text }),
           signal: options?.signal,
@@ -99,22 +101,24 @@ export class OpenAiEmbedder implements IEmbedderBatch {
           data: Array<{ embedding: number[] }>;
           usage?: { prompt_tokens: number; total_tokens: number };
         };
-        request.end({
-          outcome: 'ok',
-          inputTokens: json.usage?.prompt_tokens,
-          tokensSource:
-            json.usage?.prompt_tokens === undefined ? 'unknown' : 'provider',
-        });
         const vector = json.data[0].embedding;
+        if (!Array.isArray(vector) || vector.length === 0)
+          throw new RagError('Invalid embedding response');
         const usage = json.usage
           ? {
               promptTokens: json.usage.prompt_tokens,
               totalTokens: json.usage.total_tokens,
             }
           : undefined;
+        request.end({
+          outcome: 'ok',
+          inputTokens: json.usage?.prompt_tokens,
+          tokensSource:
+            json.usage?.prompt_tokens === undefined ? 'unknown' : 'provider',
+        });
         return { vector, usage };
       } catch (err: unknown) {
-        request.end({
+        request?.end({
           outcome:
             options?.signal?.aborted ||
             (err instanceof Error && err.name === 'AbortError')
@@ -152,32 +156,34 @@ export class OpenAiEmbedder implements IEmbedderBatch {
       const maxRetries = 3;
 
       for (let attempt = 0; attempt < maxRetries; attempt++) {
-        const request = beginEmbeddingRequest(
-          options,
-          withProviderAttempt(
-            withChunk(
-              op,
-              start / chunkSize,
-              Math.ceil(texts.length / chunkSize),
-            ),
-            attempt,
-          ),
-          {
-            provider: 'openai',
-            model: this.model,
-            inputs: chunk.length,
-            inputChars: chunk.reduce((sum, value) => sum + value.length, 0),
-            granularity: 'request',
-            retriesVisible: true,
-          },
-          this.usage,
-        );
+        let request: ReturnType<typeof beginEmbeddingRequest> | undefined;
         try {
+          const authorization = await this.authorization();
+          request = beginEmbeddingRequest(
+            options,
+            withProviderAttempt(
+              withChunk(
+                op,
+                start / chunkSize,
+                Math.ceil(texts.length / chunkSize),
+              ),
+              attempt,
+            ),
+            {
+              provider: 'openai',
+              model: this.model,
+              inputs: chunk.length,
+              inputChars: chunk.reduce((sum, value) => sum + value.length, 0),
+              granularity: 'request',
+              retriesVisible: true,
+            },
+            this.usage,
+          );
           const res = await fetch(url, {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
-              Authorization: await this.authorization(),
+              Authorization: authorization,
             },
             body: JSON.stringify({ model: this.model, input: chunk }),
             signal: options?.signal,
@@ -196,13 +202,15 @@ export class OpenAiEmbedder implements IEmbedderBatch {
             data: Array<{ embedding: number[]; index: number }>;
             usage?: { prompt_tokens: number; total_tokens: number };
           };
-          request.end({
-            outcome: 'ok',
-            inputTokens: json.usage?.prompt_tokens,
-            tokensSource:
-              json.usage?.prompt_tokens === undefined ? 'unknown' : 'provider',
-          });
           const sorted = json.data.sort((a, b) => a.index - b.index);
+          if (
+            sorted.length === 0 ||
+            sorted.some(
+              (item) =>
+                !Array.isArray(item.embedding) || item.embedding.length === 0,
+            )
+          )
+            throw new RagError('Invalid embedding response');
           const chunkLen = sorted.length;
           const usagePerItem = json.usage
             ? {
@@ -216,10 +224,16 @@ export class OpenAiEmbedder implements IEmbedderBatch {
               usage: usagePerItem,
             };
           }
+          request.end({
+            outcome: 'ok',
+            inputTokens: json.usage?.prompt_tokens,
+            tokensSource:
+              json.usage?.prompt_tokens === undefined ? 'unknown' : 'provider',
+          });
           lastError = undefined;
           break;
         } catch (err: unknown) {
-          request.end({
+          request?.end({
             outcome:
               options?.signal?.aborted ||
               (err instanceof Error && err.name === 'AbortError')

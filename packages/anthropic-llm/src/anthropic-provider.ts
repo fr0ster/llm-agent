@@ -108,30 +108,59 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
         requestBody.tools = tools;
       }
 
+      let headers: Record<string, string>;
       const response = await this.withThrottleRetry(
         async (handle) => {
           const response = await this.client.post('/messages', requestBody, {
             signal: options?.signal,
-            headers: await this.authHeaders(),
+            headers,
           });
-          const usage = response.data.usage;
+          // Handle multi-block response (text + tool_use)
+          const content = response.data.content as Array<{
+            type?: string;
+            text?: string;
+          }>;
+          let textContent = '';
+          for (const block of content) {
+            if (block.type === 'text') textContent += block.text;
+          }
+
+          const rawUsage = response.data.usage;
+          const usage = rawUsage
+            ? {
+                promptTokens: rawUsage.input_tokens ?? 0,
+                completionTokens: rawUsage.output_tokens ?? 0,
+                totalTokens:
+                  (rawUsage.input_tokens ?? 0) + (rawUsage.output_tokens ?? 0),
+              }
+            : undefined;
+
+          const result = {
+            content: textContent,
+            finishReason: response.data.stop_reason,
+            raw: response.data,
+            usage,
+          };
           handle.end({
             outcome: response.data.error ? 'error' : 'ok',
             errorCode: response.data.error?.type,
             tokensSource:
-              usage?.input_tokens !== undefined ||
-              usage?.output_tokens !== undefined ||
-              usage?.cache_read_input_tokens !== undefined
+              rawUsage?.input_tokens !== undefined ||
+              rawUsage?.output_tokens !== undefined ||
+              rawUsage?.cache_read_input_tokens !== undefined
                 ? 'provider'
                 : 'unknown',
-            inputTokens: usage?.input_tokens,
-            outputTokens: usage?.output_tokens,
-            cachedInputTokens: usage?.cache_read_input_tokens,
+            inputTokens: rawUsage?.input_tokens,
+            outputTokens: rawUsage?.output_tokens,
+            cachedInputTokens: rawUsage?.cache_read_input_tokens,
           });
-          return response;
+          return result;
         },
         { model, signal: options?.signal },
         {
+          prepare: async () => {
+            headers = await this.authHeaders();
+          },
           opts: options,
           op: startOperation(options),
           bound: this.config.usage,
@@ -145,32 +174,7 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
         },
       );
 
-      // Handle multi-block response (text + tool_use)
-      const content = response.data.content as Array<{
-        type?: string;
-        text?: string;
-      }>;
-      let textContent = '';
-      for (const block of content) {
-        if (block.type === 'text') textContent += block.text;
-      }
-
-      const rawUsage = response.data.usage;
-      const usage = rawUsage
-        ? {
-            promptTokens: rawUsage.input_tokens ?? 0,
-            completionTokens: rawUsage.output_tokens ?? 0,
-            totalTokens:
-              (rawUsage.input_tokens ?? 0) + (rawUsage.output_tokens ?? 0),
-          }
-        : undefined;
-
-      return {
-        content: textContent,
-        finishReason: response.data.stop_reason,
-        raw: response.data,
-        usage,
-      };
+      return response;
     } catch (error: unknown) {
       const message = axios.isAxiosError(error)
         ? (error.response?.data as { error?: { message?: string } })?.error
@@ -214,13 +218,14 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
 
     const baseURL = this.config.baseURL || 'https://api.anthropic.com/v1';
     type OpenStream = Response & { body: ReadableStream<Uint8Array> };
+    let headers: Record<string, string>;
     const { response, handle } = await this.withThrottleRetry<OpenStream>(
       async () => {
         const res = await fetch(`${baseURL}/messages`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            'x-api-key': await this.config.credential.secret(),
+            ...headers,
             'anthropic-version': '2023-06-01',
           },
           body: JSON.stringify(requestBody),
@@ -246,6 +251,9 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
       },
       { model, signal: options?.signal },
       {
+        prepare: async () => {
+          headers = await this.authHeaders();
+        },
         opts: options,
         op: startOperation(options),
         bound: this.config.usage,
