@@ -1,0 +1,3 @@
+// Matches the operator DDL shipped in ddl/usage.sql.
+export const USAGE_DDL =
+  'CREATE TABLE USAGE_RECORDS (\n  "id" NVARCHAR(512) PRIMARY KEY,\n  "schema_version" INTEGER NOT NULL,\n  "at" BIGINT NOT NULL,\n  "kind" NVARCHAR(512) NOT NULL,\n  "session_id" NVARCHAR(512),\n  "user_id" NVARCHAR(512),\n  "turn_id" NVARCHAR(512),\n  "task_id" NVARCHAR(512),\n  "role" NVARCHAR(512),\n  "destination" NVARCHAR(512),\n  "outcome" NVARCHAR(512) NOT NULL,\n  "record_json" NCLOB NOT NULL\n);\nCREATE INDEX USAGE_RECORDS_AT_IDX ON USAGE_RECORDS ("at");\nCREATE INDEX USAGE_RECORDS_SESSION_ID_IDX ON USAGE_RECORDS ("session_id");\nCREATE INDEX USAGE_RECORDS_KIND_IDX ON USAGE_RECORDS ("kind");\n';
