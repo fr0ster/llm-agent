@@ -1393,6 +1393,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
         try {
           res = await deps.executor.send(messages, offeredTools, {
             ...ctx.options,
+            usage: ctx.options?.usage?.with({ role: 'executor' }),
             signal: callSignal,
           });
         } catch (e) {

@@ -410,7 +410,7 @@ export class SmartExecutorPlanner implements IControllerPlanner {
           },
         ],
         undefined,
-        diagnosticCallOptions(options, 'planner'),
+        diagnosticCallOptions(options, 'finalizer'),
       );
       logUsage?.('finalizer', res.usage);
       // Finalizer must produce content; an error or tool_call is NOT a successful
