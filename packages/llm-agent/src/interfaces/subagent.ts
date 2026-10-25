@@ -2,6 +2,7 @@ import type { Message } from '../types.js';
 import type { EpicFailTrace } from './coordinator.js';
 import type { OnPartial } from './streaming.js';
 import type { LlmTool, LlmToolCall, LlmUsage } from './types.js';
+import type { IUsageRecorder } from './usage.js';
 
 /**
  * Typed metadata that the planner/validator can read without invoking the
@@ -19,6 +20,7 @@ export interface SubAgentCapabilities {
 }
 
 export interface ISubAgentInput {
+  usage?: IUsageRecorder;
   task: string;
   /** Conversation before the current request, selected by the coordinator. */
   history?: Message[];

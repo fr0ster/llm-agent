@@ -1,3 +1,4 @@
+import type { IUsageRecorder, UsageOperation } from './interfaces/usage.js';
 /**
  * Core types for LLM Proxy
  */
@@ -103,6 +104,8 @@ export interface LLMProviderConfig {
 }
 
 export interface LLMCallOptions {
+  usage?: IUsageRecorder;
+  usageOp?: UsageOperation;
   /** Per-request model override. */
   model?: string;
   temperature?: number;
