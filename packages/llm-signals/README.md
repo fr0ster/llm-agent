@@ -1,5 +1,8 @@
 # @mcp-abap-adt/llm-signals
 
+[![Stand With Ukraine](https://raw.githubusercontent.com/vshymanskyy/StandWithUkraine/main/badges/StandWithUkraine.svg)](https://stand-with-ukraine.pp.ua)
+[![License: LGPL v3](https://img.shields.io/badge/License-LGPL_v3-blue.svg)](https://www.gnu.org/licenses/lgpl-3.0)
+
 An optional in-process signal bus with synchronous queued delivery, immutable payloads,
 source filters and latest retention per `(name, source, key)`. Contracts and the
 versioned dialogue catalog live in `@mcp-abap-adt/llm-agent`.
