@@ -20,6 +20,21 @@ function freeze(value: unknown, seen = new WeakSet<object>()): void {
     freeze(Reflect.get(value, key), seen);
   Object.freeze(value);
 }
+/**
+ * Whether `prototype` is some realm's `Object.prototype` (a vm context, a test
+ * runner sandbox, structuredClone across contexts). Reads data descriptors only,
+ * so no payload accessor runs: its own prototype is null, its `constructor` is a
+ * function named `Object`, and that function's `prototype` points back to it.
+ */
+function isObjectPrototype(prototype: object): boolean {
+  if (Object.getPrototypeOf(prototype) !== null) return false;
+  const ctor = Object.getOwnPropertyDescriptor(prototype, 'constructor')?.value;
+  if (typeof ctor !== 'function') return false;
+  return (
+    Object.getOwnPropertyDescriptor(ctor, 'name')?.value === 'Object' &&
+    Object.getOwnPropertyDescriptor(ctor, 'prototype')?.value === prototype
+  );
+}
 function validatePayload(
   value: unknown,
   name: string,
@@ -31,14 +46,13 @@ function validatePayload(
   if (value === null || value === undefined) return;
   if (['string', 'number', 'boolean'].includes(typeof value)) return;
   if (typeof value !== 'object') throw invalid();
-  // Realm-independent: a plain object from another realm (a vm context, a
-  // test runner sandbox, structuredClone across contexts) has that realm's
-  // Object.prototype, whose own prototype is null.
   const prototype = Object.getPrototypeOf(value);
-  const plainObject =
-    Object.prototype.toString.call(value) === '[object Object]' &&
-    (prototype === null || Object.getPrototypeOf(prototype) === null);
-  if (!Array.isArray(value) && !plainObject) throw invalid();
+  if (
+    !Array.isArray(value) &&
+    prototype !== null &&
+    !isObjectPrototype(prototype)
+  )
+    throw invalid();
   if (seen.has(value)) return;
   seen.add(value);
   for (const key of Reflect.ownKeys(value)) {

@@ -204,3 +204,35 @@ test('plain data from another realm is accepted, class instances from it are not
   assert.deepEqual(seen, [7]);
   assert.equal(errors.length, 1);
 });
+
+test('null-base class instances and tag getters are rejected without running accessors', () => {
+  const errors: unknown[] = [];
+  const bus = createSignalBus<Catalog>({
+    onHandlerError: (e) => errors.push(e),
+  });
+  const seen: number[] = [];
+  bus.on('state', (s) => {
+    seen.push(s.payload.n);
+  });
+  // The shape `class X extends null` produces: a prototype with a null
+  // prototype whose constructor is not Object.
+  function NullBase() {}
+  NullBase.prototype = Object.create(null, {
+    constructor: { value: NullBase },
+  });
+  const nullBase = Object.create(NullBase.prototype) as Catalog['state'];
+  Object.defineProperty(nullBase, 'n', { value: 1, enumerable: true });
+  bus.emit('state', nullBase, 'src');
+  let getterRan = false;
+  const tagged = { n: 2 };
+  Object.defineProperty(tagged, Symbol.toStringTag, {
+    get() {
+      getterRan = true;
+      return 'Object';
+    },
+  });
+  bus.emit('state', tagged as Catalog['state'], 'src');
+  assert.deepEqual(seen, []);
+  assert.equal(getterRan, false);
+  assert.equal(errors.length, 2);
+});
