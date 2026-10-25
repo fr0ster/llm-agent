@@ -236,3 +236,21 @@ test('null-base class instances and tag getters are rejected without running acc
   assert.equal(getterRan, false);
   assert.equal(errors.length, 2);
 });
+
+test('a null-base class named Object is rejected', async () => {
+  const { runInNewContext } = await import('node:vm');
+  const errors: unknown[] = [];
+  const bus = createSignalBus<Catalog>({
+    onHandlerError: (e) => errors.push(e),
+  });
+  const seen: number[] = [];
+  bus.on('state', (s) => {
+    seen.push(s.payload.n);
+  });
+  const forged = runInNewContext(
+    'const Object = function Object() {}; Object.prototype = globalThis.Object.create(null, { constructor: { value: Object } }); const v = globalThis.Object.create(Object.prototype); v.n = 3; v',
+  ) as Catalog['state'];
+  bus.emit('state', forged, 'src');
+  assert.deepEqual(seen, []);
+  assert.equal(errors.length, 1);
+});

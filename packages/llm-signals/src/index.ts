@@ -24,7 +24,10 @@ function freeze(value: unknown, seen = new WeakSet<object>()): void {
  * Whether `prototype` is some realm's `Object.prototype` (a vm context, a test
  * runner sandbox, structuredClone across contexts). Reads data descriptors only,
  * so no payload accessor runs: its own prototype is null, its `constructor` is a
- * function named `Object`, and that function's `prototype` points back to it.
+ * native function named `Object`, and that function's `prototype` points back to
+ * it. This guards against producer mistakes (Map, Date, class instances), not
+ * against deliberately forged objects such as proxies; producers emit
+ * structuredClone copies.
  */
 function isObjectPrototype(prototype: object): boolean {
   if (Object.getPrototypeOf(prototype) !== null) return false;
@@ -32,7 +35,8 @@ function isObjectPrototype(prototype: object): boolean {
   if (typeof ctor !== 'function') return false;
   return (
     Object.getOwnPropertyDescriptor(ctor, 'name')?.value === 'Object' &&
-    Object.getOwnPropertyDescriptor(ctor, 'prototype')?.value === prototype
+    Object.getOwnPropertyDescriptor(ctor, 'prototype')?.value === prototype &&
+    /\{\s*\[native code\]\s*\}\s*$/.test(Function.prototype.toString.call(ctor))
   );
 }
 function validatePayload(
