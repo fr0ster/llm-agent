@@ -180,3 +180,27 @@ test('invalid payloads are reported without retention or dispatch', () => {
     assert.match(errors[0].message, /data.*payload\["nested"\]\["0"\]/);
   }
 });
+
+test('plain data from another realm is accepted, class instances from it are not', async () => {
+  const { runInNewContext } = await import('node:vm');
+  const errors: unknown[] = [];
+  const bus = createSignalBus<Catalog>({
+    onHandlerError: (error) => errors.push(error),
+  });
+  const seen: number[] = [];
+  bus.on('state', (s) => {
+    seen.push(s.payload.n);
+  });
+  const foreign = runInNewContext(
+    '({ n: 7, nested: { value: 1 } })',
+  ) as Catalog['state'];
+  bus.emit('state', foreign, 'src');
+  assert.deepEqual(seen, [7]);
+  assert.equal(bus.last('state', 'src')?.payload.nested?.value, 1);
+  const instance = runInNewContext(
+    'new (class Foo { constructor() { this.n = 1; } })()',
+  ) as Catalog['state'];
+  bus.emit('state', instance, 'src');
+  assert.deepEqual(seen, [7]);
+  assert.equal(errors.length, 1);
+});

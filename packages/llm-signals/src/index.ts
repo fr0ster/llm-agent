@@ -31,13 +31,14 @@ function validatePayload(
   if (value === null || value === undefined) return;
   if (['string', 'number', 'boolean'].includes(typeof value)) return;
   if (typeof value !== 'object') throw invalid();
+  // Realm-independent: a plain object from another realm (a vm context, a
+  // test runner sandbox, structuredClone across contexts) has that realm's
+  // Object.prototype, whose own prototype is null.
   const prototype = Object.getPrototypeOf(value);
-  if (
-    !Array.isArray(value) &&
-    prototype !== Object.prototype &&
-    prototype !== null
-  )
-    throw invalid();
+  const plainObject =
+    Object.prototype.toString.call(value) === '[object Object]' &&
+    (prototype === null || Object.getPrototypeOf(prototype) === null);
+  if (!Array.isArray(value) && !plainObject) throw invalid();
   if (seen.has(value)) return;
   seen.add(value);
   for (const key of Reflect.ownKeys(value)) {
