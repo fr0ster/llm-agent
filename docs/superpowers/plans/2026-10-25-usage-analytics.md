@@ -61,7 +61,7 @@
   - **Non-streaming** physical attempt: begun and ended inside the retry closure, with `end` in `finally`.
   - **Streaming:**
     - An attempt that fails before the stream is open is begun and ended inside the retry closure (outcome `error`).
-    - The successful attempt's handle is returned with the open response and ended by the provider's stream generator in its `finally`: completion → `ok` with the usage from the final chunk; error → `error`; consumer `return()` → `aborted` with `closedEarly: true`.
+    - The successful attempt's handle is returned with the open response and ended by the provider's stream generator in its `finally`: completion → `ok` with the usage the provider accumulated across the stream's events; error → `error`; consumer `return()` → `aborted` with `closedEarly: true`.
   - `errorCode` comes from the error's `code` or `status` only.
 - **`beginEmbeddingRequest(opts, op, base, bound?)`:** the same for `embedding.call`.
 
@@ -156,6 +156,7 @@
 **Files:**
 - **LLM base:** `packages/llm-agent/src/llm/base-llm-provider.ts`. `withThrottleRetry` gains an optional usage argument `{ opts, op, base, bound }`. For each physical attempt it calls `beginLlmRequest` with `withProviderAttempt(op, n)`. A failed attempt is ended inside the closure. For non-streaming calls the successful attempt is ended there too. For streaming calls the successful attempt's handle is returned with the response, and the provider's stream generator ends it in `finally`.
 - **Construction-bound recorder:** each provider's config gains `usage?: IUsageRecorder`, used as `bound`.
+- **Stream token accumulation.** Each provider accumulates usage across its stream events, for example Anthropic input tokens in `message_start` and output tokens in `message_delta`. It ends the handle with the accumulated counts. On an error or an early close, the counts known so far are recorded, with `tokensSource: 'provider'` only for counts the provider actually sent.
 - **LLM providers:** `packages/openai-llm`, `packages/anthropic-llm`, `packages/sap-aicore-llm`, `packages/deepseek-llm`, `packages/ollama-llm`. Map provider usage to `inputTokens`, `outputTokens` and `cachedInputTokens` with `tokensSource: 'provider'`. Where a provider gets no usage: `'unknown'`. Providers that do not go through `withThrottleRetry` call the hooks directly.
 - **Embedders:** `packages/openai-embedder`, `packages/ollama-embedder`, `packages/sap-aicore-embedder` (foundation and orchestration). Record each physical request, inside their chunk and retry loops, with that request's exact provider total.
   - Remove the per-item token allocation from the data that goes into records. Existing return values are unchanged.
@@ -170,6 +171,7 @@
   - a 429 then success: two records with `providerAttempt` 0 and 1 and the same `operationId`;
   - stream ok, stream error, and an early `break` (`closedEarly`);
   - a 429 followed by a successful stream with an early `break`: exactly two records (error, then aborted with `closedEarly`);
+  - Anthropic stream with input tokens in `message_start` and output tokens in `message_delta`: the record carries both exact counts; on an early close after `message_start`, the input count is kept and the output count is absent;
   - the construction-bound recorder is used without call options, and a per-call `usage` overrides it;
   - **nested coordinates (OpenAI embedder, real package, mocked HTTP):**
     - `BatchChunkingEmbedder` over 3 outer chunks; `RetryBatchEmbedder` retrying the third chunk once; the provider splitting each outer chunk into 2 requests and getting one 429 on the first request of the last outer attempt;
