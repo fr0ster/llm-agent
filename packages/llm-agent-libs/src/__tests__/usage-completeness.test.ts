@@ -44,6 +44,7 @@ import { HistorySummarizer } from '../history/history-summarizer.js';
 import { SessionRequestLogger } from '../logger/session-request-logger.js';
 import { vectorizeMcpTools } from '../mcp/vectorize-mcp-tools.js';
 import { NoopMetrics } from '../metrics/noop-metrics.js';
+import { DefaultPipeline } from '../pipeline/default-pipeline.js';
 import { executeToolBatchWithHeartbeat } from '../pipeline/handlers/tool-loop-core.js';
 import { fireInternalToolsAsync } from '../policy/mixed-tool-call-handler.js';
 import { PendingToolResultsRegistry } from '../policy/pending-tool-results-registry.js';
@@ -93,6 +94,7 @@ function fixture() {
   let mode: Mode = 'ok';
   let content = result;
   let requests = 0;
+  let streamGate: Promise<void> | undefined;
   provider.client.defaults.adapter = async (config) => {
     requests++;
     if (mode === 'throttle') {
@@ -109,7 +111,18 @@ function fixture() {
             yield Buffer.from(
               `data: ${JSON.stringify(mode === 'returned' ? { error: { message: prompt } } : { choices: [{ delta: { content } }], usage: { prompt_tokens: 7, completion_tokens: 3 } })}\n\n`,
             );
+            await streamGate;
             if (mode === 'stream-error') throw new Error(document);
+            if (mode === 'early') {
+              await new Promise<void>((resolve) => {
+                if (config.signal?.aborted) resolve();
+                else
+                  config.signal?.addEventListener?.('abort', () => resolve(), {
+                    once: true,
+                  });
+              });
+              throw new DOMException(prompt, 'AbortError');
+            }
             yield Buffer.from('data: [DONE]\n\n');
           })()
         : mode === 'returned'
@@ -125,6 +138,13 @@ function fixture() {
     provider,
     llm: new LlmAdapter(new LlmProviderBridge(provider)),
     requests: () => requests,
+    pauseStream: () => {
+      let release!: () => void;
+      streamGate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      return release;
+    },
     mode: (next: Mode) => {
       mode = next;
     },
@@ -391,18 +411,73 @@ test('library LLM call paths terminate at the real provider with no content', as
     f.mode('ok');
   }
   f.content(result);
+  const pipeline = new DefaultPipeline();
+  const execute = pipeline.execute.bind(pipeline);
+  let completion: ReturnType<typeof execute> | undefined;
+  pipeline.execute = (...args) => {
+    completion = execute(...args);
+    return completion;
+  };
   const handle = await new SmartAgentBuilder({ skipModelValidation: true })
     .withMainLlm(f.llm)
+    .setPipeline(pipeline)
     .build();
   try {
-    const before = f.requests();
-    const count = f.records.length;
-    await new SmartAgentSubAgent('smart', handle.agent).run({
-      task: prompt,
-      usage: f.usage,
-    });
-    assert.ok(f.requests() > before);
-    assert.equal(f.records.length - count, f.requests() - before);
+    for (const mode of [
+      'ok',
+      'returned',
+      'throw',
+      'abort',
+      'stream-error',
+      'early',
+    ] as const) {
+      // Closing the pipeline consumer leaves the physical provider stream running.
+      f.mode(mode === 'early' ? 'ok' : mode);
+      const release = mode === 'early' ? f.pauseStream() : undefined;
+      const before = f.requests();
+      const count = f.records.length;
+      await Promise.allSettled([
+        (async () => {
+          if (mode === 'early') {
+            for await (const chunk of handle.agent.streamProcess(prompt, {
+              usage: f.usage,
+            })) {
+              if (chunk) break;
+            }
+          } else {
+            await new SmartAgentSubAgent('smart', handle.agent).run({
+              task: prompt,
+              usage: f.usage,
+            });
+          }
+        })(),
+      ]);
+      if (mode === 'early') {
+        assert.ok(f.requests() > before);
+        assert.equal(f.records.length, count);
+        release?.();
+      }
+      assert.ok(completion);
+      await completion;
+      const calls = f.records.slice(count);
+      assert.ok(f.requests() > before, mode);
+      assert.equal(calls.length, f.requests() - before, mode);
+      assert.ok(
+        calls.every(
+          (r) =>
+            r.kind === 'llm.call' &&
+            r.context.role === 'tool-loop' &&
+            r.outcome ===
+              (mode === 'ok' || mode === 'early'
+                ? 'ok'
+                : mode === 'abort'
+                  ? 'aborted'
+                  : 'error'),
+        ),
+        mode,
+      );
+      assert.ok(calls.every((r) => r.kind === 'llm.call' && !r.closedEarly));
+    }
   } finally {
     await handle.close();
   }
@@ -412,8 +487,12 @@ test('library LLM call paths terminate at the real provider with no content', as
 test('real embedding HTTP covers RAG indexing, query and tool vectorization', async (t) => {
   const { usage, records } = collector();
   let requests = 0;
+  let mode: Mode = 'ok';
   t.mock.method(globalThis, 'fetch', async () => {
     requests++;
+    if (mode === 'returned') return new Response(document, { status: 500 });
+    if (mode === 'abort') throw new DOMException(prompt, 'AbortError');
+    if (mode === 'throw') throw new Error(document);
     return Response.json({
       data: [{ embedding: [1, 0], index: 0 }],
       usage: { prompt_tokens: 11 },
@@ -427,32 +506,64 @@ test('real embedding HTTP covers RAG indexing, query and tool vectorization', as
     embedDocument: embedder.embed.bind(embedder),
     embedQuery: embedder.embed.bind(embedder),
   });
-  await rag.upsert(document, { id: 'doc' }, { usage });
-  await rag.query(new TextOnlyEmbedding(prompt), 1, { usage });
-  await vectorizeMcpTools(
+  const paths: Array<[string, () => Promise<unknown>]> = [
+    ['indexing', () => rag.upsert(document, { id: 'doc' }, { usage })],
+    ['query', () => rag.query(new TextOnlyEmbedding(prompt), 1, { usage })],
     [
-      {
-        listTools: async () => ({
-          ok: true,
-          value: [{ name: 'read', description: document, inputSchema: {} }],
-        }),
-        callTool: async () => ({ ok: true, value: { content: result } }),
-      },
+      'tool vectorization',
+      () =>
+        vectorizeMcpTools(
+          [
+            {
+              listTools: async () => ({
+                ok: true,
+                value: [
+                  { name: 'read', description: document, inputSchema: {} },
+                ],
+              }),
+              callTool: async () => ({ ok: true, value: { content: result } }),
+            },
+          ],
+          rag,
+          new SessionRequestLogger(),
+          undefined,
+          undefined,
+          { usage },
+        ),
     ],
-    rag,
-    new SessionRequestLogger(),
-    undefined,
-    undefined,
-    { usage },
-  );
-  assert.equal(requests, 3);
+  ];
+  for (const [name, run] of paths) {
+    for (const next of ['ok', 'returned', 'throw', 'abort'] as const) {
+      mode = next;
+      const before = requests;
+      const count = records.length;
+      await Promise.allSettled([run()]);
+      const calls = records.slice(count);
+      assert.equal(
+        requests - before,
+        next === 'ok' || next === 'abort' ? 1 : 3,
+        `${name}: ${next}`,
+      );
+      assert.equal(calls.length, requests - before, `${name}: ${next}`);
+      assert.ok(
+        calls.every(
+          (r) =>
+            r.kind === 'embedding.call' &&
+            r.context.role === 'embedding' &&
+            r.outcome ===
+              (next === 'ok' ? 'ok' : next === 'abort' ? 'aborted' : 'error'),
+        ),
+        `${name}: ${next}`,
+      );
+    }
+  }
   assert.equal(records.length, requests);
   assert.ok(
     records.every(
       (r) =>
         r.kind === 'embedding.call' &&
-        r.inputTokens === 11 &&
-        r.tokensSource === 'provider',
+        (r.outcome !== 'ok' ||
+          (r.inputTokens === 11 && r.tokensSource === 'provider')),
     ),
   );
   contentFree(records);
@@ -461,38 +572,57 @@ test('real embedding HTTP covers RAG indexing, query and tool vectorization', as
 test('DAG planner and stepper checker use real provider requests', async () => {
   const f = fixture();
   f.content('{"nodes":[{"id":"one","goal":"work"}]}');
-  await new LlmDagPlanner(f.llm).plan({
-    prompt,
-    agents: [],
-    sessionId: 's',
-    usage: f.usage,
-  });
-  f.content('{"route":"executable","missing":[]}');
-  await new LlmEvaluator(f.llm).evaluate({
-    prompt,
-    usage: f.usage,
-    identity: {
-      traceId: 'trace',
-      turnId: 'turn',
+  const plan = () =>
+    new LlmDagPlanner(f.llm).plan({
+      prompt,
+      agents: [],
       sessionId: 's',
-      stepperId: 'stepper',
-    },
-    knowledgeRag: {
-      query: async () => [],
-      list: async () => [],
-      write: async () => {},
-      fingerprint: () => 'test',
-    },
-    toolsRag: { query: async () => [], lookup: () => undefined },
-  });
-  assert.equal(f.requests(), 2);
-  assert.deepEqual(
-    f.records.map((r) => [r.kind, r.context.role, r.outcome]),
-    [
-      ['llm.call', 'planner', 'ok'],
-      ['llm.call', 'evaluator', 'ok'],
-    ],
-  );
+      usage: f.usage,
+    });
+  f.content('{"route":"executable","missing":[]}');
+  const evaluate = () =>
+    new LlmEvaluator(f.llm).evaluate({
+      prompt,
+      usage: f.usage,
+      identity: {
+        traceId: 'trace',
+        turnId: 'turn',
+        sessionId: 's',
+        stepperId: 'stepper',
+      },
+      knowledgeRag: {
+        query: async () => [],
+        list: async () => [],
+        write: async () => {},
+        fingerprint: () => 'test',
+      },
+      toolsRag: { query: async () => [], lookup: () => undefined },
+    });
+  for (const [role, response, run] of [
+    ['planner', '{"nodes":[{"id":"one","goal":"work"}]}', plan],
+    ['evaluator', '{"route":"executable","missing":[]}', evaluate],
+  ] as const) {
+    f.content(response);
+    for (const mode of ['ok', 'returned', 'throw', 'abort'] as const) {
+      f.mode(mode);
+      const before = f.requests();
+      const count = f.records.length;
+      await Promise.allSettled([run()]);
+      const calls = f.records.slice(count);
+      assert.equal(f.requests() - before, 1, `${role}: ${mode}`);
+      assert.equal(calls.length, 1, `${role}: ${mode}`);
+      assert.deepEqual(
+        calls.map((r) => [r.kind, r.context.role, r.outcome]),
+        [
+          [
+            'llm.call',
+            role,
+            mode === 'ok' ? 'ok' : mode === 'abort' ? 'aborted' : 'error',
+          ],
+        ],
+      );
+    }
+  }
   contentFree(f.records);
 });
 
@@ -683,109 +813,173 @@ test('embedded handler outcomes and network reconnect count physical MCP dispatc
   }
 });
 
-test('tool-loop, coordinator tool callback and mixed handler reach MCP boundaries', async () => {
-  const { usage, records } = collector();
-  let requests = 0;
-  const client = new McpClientAdapter(
-    new MCPClientWrapper({
-      transport: 'embedded',
-      callToolHandler: async () => {
-        requests++;
-        return { content: result };
-      },
-    }),
-  );
-  const tc = { id: 'id', name: 'read', arguments: { text: argument } };
-  const options: CallOptions = { usage };
-  const tracer = new NoopTracer();
-  const metrics = new NoopMetrics();
-  const { ToolCache } = await import('@mcp-abap-adt/llm-agent');
-  const cache = new ToolCache();
-  for await (const _ of executeToolBatchWithHeartbeat({
-    batch: [tc],
-    toolClientMap: new Map([['read', client]]),
-    toolCache: cache,
-    tracer,
-    metrics,
-    parentSpan: tracer.startSpan('test'),
-    toolAvailabilityRegistry: new ToolAvailabilityRegistry(),
-    sessionId: 's',
-    externalToolNames: new Set(),
-    currentTools: [],
-    toolCallCount: 0,
-    timingLog: [],
-    heartbeatMs: null,
-    options,
-  })) {
-  }
-  const registry = new PendingToolResultsRegistry();
-  fireInternalToolsAsync('', [tc], registry, 's', {
-    toolClientMap: new Map([['read', client]]),
-    toolCache: new ToolCache(),
-    metrics,
-    options,
-  });
-  await registry.consume('s');
-  const f = fixture();
-  let llmCalls = 0;
-  f.provider.client.defaults.adapter = async (config) => ({
-    config,
-    status: 200,
-    statusText: 'OK',
-    headers: {},
-    data: {
-      choices: [
-        {
-          message:
-            llmCalls++ === 0
-              ? {
-                  content: '',
-                  tool_calls: [
-                    {
-                      id: 'id',
-                      type: 'function',
-                      function: {
-                        name: 'read',
-                        arguments: JSON.stringify({ text: argument }),
+for (const mode of ['ok', 'returned', 'throw', 'abort'] as const) {
+  test(`tool-loop, coordinator tool callback and mixed handler reach MCP boundaries: ${mode}`, async () => {
+    const { usage, records } = collector();
+    let requests = 0;
+    let controller = new AbortController();
+    const client = new McpClientAdapter(
+      new MCPClientWrapper({
+        transport: 'embedded',
+        callToolHandler: async () => {
+          requests++;
+          if (mode === 'abort') controller.abort();
+          if (mode === 'throw' || mode === 'abort') throw new Error(argument);
+          return { content: result, isError: mode === 'returned' };
+        },
+      }),
+    );
+    const tc = { id: 'id', name: 'read', arguments: { text: argument } };
+    const options: CallOptions = { usage, signal: controller.signal };
+    const tracer = new NoopTracer();
+    const metrics = new NoopMetrics();
+    const { ToolCache } = await import('@mcp-abap-adt/llm-agent');
+    const cache = new ToolCache();
+    const runBatch = async () => {
+      for await (const _ of executeToolBatchWithHeartbeat({
+        batch: [tc],
+        toolClientMap: new Map([['read', client]]),
+        toolCache: cache,
+        tracer,
+        metrics,
+        parentSpan: tracer.startSpan('test'),
+        toolAvailabilityRegistry: new ToolAvailabilityRegistry(),
+        sessionId: 's',
+        externalToolNames: new Set(),
+        currentTools: [],
+        toolCallCount: 0,
+        timingLog: [],
+        heartbeatMs: null,
+        options,
+      })) {
+      }
+    };
+    await runBatch();
+    assert.equal(requests, 1);
+    assert.equal(records.length, 1);
+    if (mode === 'ok') {
+      const beforeHit = records.length;
+      const beforeRequests = requests;
+      await runBatch();
+      assert.equal(requests, beforeRequests);
+      assert.equal(records.length - beforeHit, 1);
+      const hit = records.at(-1);
+      assert.ok(hit?.kind === 'tool.call');
+      assert.equal(hit.dispatched, false);
+      assert.equal(hit.outcome, 'ok');
+      assert.equal(hit.context.role, 'tool-loop');
+      contentFree(records);
+    }
+    controller = new AbortController();
+    options.signal = controller.signal;
+    const beforeMixed = records.length;
+    const registry = new PendingToolResultsRegistry();
+    fireInternalToolsAsync('', [tc], registry, 's', {
+      toolClientMap: new Map([['read', client]]),
+      toolCache: new ToolCache(),
+      metrics,
+      options,
+    });
+    await registry.consume('s');
+    assert.equal(requests, 2);
+    assert.equal(records.length - beforeMixed, 1);
+    controller = new AbortController();
+    const beforeCoordinator = records.length;
+    const f = fixture();
+    let llmCalls = 0;
+    f.provider.client.defaults.adapter = async (config) => ({
+      config,
+      status: 200,
+      statusText: 'OK',
+      headers: {},
+      data: {
+        choices: [
+          {
+            message:
+              llmCalls++ === 0
+                ? {
+                    content: '',
+                    tool_calls: [
+                      {
+                        id: 'id',
+                        type: 'function',
+                        function: {
+                          name: 'read',
+                          arguments: JSON.stringify({ text: argument }),
+                        },
                       },
-                    },
-                  ],
-                }
-              : { content: result },
-        },
-      ],
-    },
-  });
-  await new SelfDispatch(f.llm).dispatch(
-    { id: 's', goal: prompt, status: 'pending' },
-    {
-      inputText: prompt,
-      registry: new Map(),
-      stepResults: {},
-      sessionId: 's',
-      usage,
-      selectedTools: [
-        {
-          name: 'read',
-          description: document,
-          inputSchema: { type: 'object', properties: {} },
-        },
-      ],
-      callTool: async (name, args, _signal, opts) => {
-        const r = await client.callTool(
-          name,
-          args as Record<string, unknown>,
-          opts,
-        );
-        return r.ok ? JSON.stringify(r.value.content) : '';
+                    ],
+                  }
+                : { content: result },
+          },
+        ],
       },
-    },
-  );
-  assert.equal(requests, 3);
-  assert.equal(records.filter((r) => r.kind === 'tool.call').length, requests);
-  assert.equal(records.filter((r) => r.kind === 'llm.call').length, llmCalls);
-  contentFree(records);
-});
+    });
+    await new SelfDispatch(f.llm).dispatch(
+      { id: 's', goal: prompt, status: 'pending' },
+      {
+        inputText: prompt,
+        registry: new Map(),
+        stepResults: {},
+        sessionId: 's',
+        usage,
+        selectedTools: [
+          {
+            name: 'read',
+            description: document,
+            inputSchema: { type: 'object', properties: {} },
+          },
+        ],
+        callTool: async (name, args, _signal, opts) => {
+          const r = await client.callTool(
+            name,
+            args as Record<string, unknown>,
+            { ...opts, signal: controller.signal },
+          );
+          return r.ok ? JSON.stringify(r.value.content) : '';
+        },
+      },
+    );
+    assert.equal(requests, 3);
+    assert.equal(
+      records.slice(beforeCoordinator).filter((r) => r.kind === 'tool.call')
+        .length,
+      1,
+    );
+    assert.ok(
+      records
+        .filter((r) => r.kind === 'llm.call')
+        .every((r) => r.context.role === 'executor' && r.outcome === 'ok'),
+    );
+    assert.equal(
+      records.filter((r) => r.kind === 'tool.call').length,
+      requests + (mode === 'ok' ? 1 : 0),
+    );
+    assert.equal(records.filter((r) => r.kind === 'llm.call').length, llmCalls);
+    const dispatched = records.filter(
+      (r) => r.kind === 'tool.call' && r.dispatched,
+    );
+    assert.equal(dispatched.length, requests);
+    assert.deepEqual(
+      dispatched.map((r) => [r.context.role, r.outcome]),
+      [
+        [
+          'tool-loop',
+          mode === 'ok' ? 'ok' : mode === 'abort' ? 'aborted' : 'error',
+        ],
+        [
+          'tool-loop',
+          mode === 'ok' ? 'ok' : mode === 'abort' ? 'aborted' : 'error',
+        ],
+        [
+          'executor',
+          mode === 'ok' ? 'ok' : mode === 'abort' ? 'aborted' : 'error',
+        ],
+      ],
+    );
+    contentFree(records);
+  });
+}
 
 test('concurrent TaskBoard workers retain their task context through real HTTP', async () => {
   const f = fixture();
