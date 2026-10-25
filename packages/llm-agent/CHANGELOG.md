@@ -1,5 +1,15 @@
 # @mcp-abap-adt/llm-agent
 
+## 30.11.0
+
+### Minor Changes
+
+- a8711a8: Support construction-bound usage recorders and physical-attempt instrumentation in the LLM provider retry boundary, including stream handle transfer.
+- 67dabe5: Propagate usage recorders through library call options and worker adapters, narrow component roles, and preserve shared operation coordinates across retries and embedding chunks.
+  
+  Document recorder injection and replaceable collection components, and verify library call paths, physical outcomes, content exclusion and shutdown semantics with real providers over mocked HTTP.
+- deb263f: Add usage analytics contracts, request lifecycle hooks, and optional recorder and operation fields.
+
 ## 30.10.0
 
 ### Minor Changes

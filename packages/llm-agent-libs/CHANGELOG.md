@@ -1,5 +1,15 @@
 # @mcp-abap-adt/llm-agent-libs
 
+## 30.11.0
+
+### Minor Changes
+
+- 8144174: Record task terminal transitions and propagate isolated dialogue turn and worker usage context.
+- 880c930: Record usage for each MCP dispatch and embedded handler execution, and for tool-loop cache hits.
+- 67dabe5: Propagate usage recorders through library call options and worker adapters, narrow component roles, and preserve shared operation coordinates across retries and embedding chunks.
+  
+  Document recorder injection and replaceable collection components, and verify library call paths, physical outcomes, content exclusion and shutdown semantics with real providers over mocked HTTP.
+
 ## 30.10.0
 
 ### Minor Changes

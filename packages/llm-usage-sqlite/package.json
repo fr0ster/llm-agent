@@ -33,7 +33,7 @@
     "access": "public"
   },
   "peerDependencies": {
-    "@mcp-abap-adt/llm-agent": "^30.10.0",
+    "@mcp-abap-adt/llm-agent": "^30.11.0",
     "@mcp-abap-adt/llm-usage": "^1.0.0"
   },
   "engines": {

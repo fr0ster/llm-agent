@@ -32,6 +32,6 @@
     "access": "public"
   },
   "peerDependencies": {
-    "@mcp-abap-adt/llm-agent": "^30.10.0"
+    "@mcp-abap-adt/llm-agent": "^30.11.0"
   }
 }
