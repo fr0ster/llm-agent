@@ -108,6 +108,14 @@ export interface IUsageTransport {
   close(): Promise<void>;
 }
 
+/**
+ * A failed send or write rejects with this error when it knows whether the batch may have
+ * reached storage. Any other rejection is treated conservatively as `possiblyDelivered: true`.
+ */
+export class UsageDeliveryError extends Error {
+  constructor(message: string, readonly possiblyDelivered: boolean, readonly code?: string) { super(message); }
+}
+
 /** Storage. `write` is idempotent by `id`: writing a record twice stores it once. */
 export interface IUsageSink {
   write(batch: readonly UsageRecord[]): Promise<void>;
@@ -152,6 +160,11 @@ export interface IUsageControl {
     - `delivered`: sends that resolved;
     - `unconfirmed`: records whose delivery is ambiguous. That is a send still pending at the deadline, or a send that rejected after it may have reached the sink: an HTTP failure after the request body was sent, or a `combineSinks` batch where some sinks wrote. A record stays unconfirmed even after an earlier rejected attempt, until a later send of it resolves;
     - `lost`: records never sent, or rejected before any sink could have received them (for example a connection refused).
+  - **Classification.**
+    - Transports and sinks reject with `UsageDeliveryError`. Use `possiblyDelivered: false` only when the batch certainly did not reach storage, for example a connection refused before the request was sent or a validation failure before the write.
+    - `combineSinks` rejects with `possiblyDelivered: true` as soon as any sink may have written.
+    - Transports pass on a sink's classification, or `true` when they cannot know.
+    - The recorder classifies any other error as `possiblyDelivered: true`. Unknown failures are therefore unconfirmed, never lost.
   - Acknowledgements that arrive after the deadline are ignored and not recounted.
   - Unconfirmed records are reported in `x.usage.lost` under a separate `unconfirmed` count, with the same affected range, so readers know the data may contain them or not.
   - The consumer logs an incomplete shutdown.
@@ -190,6 +203,7 @@ Per-path rules:
 - an embedded tool handler: ok, a thrown error, cancellation and a returned `isError`;
 - shutdown with a `send` and a sink `close` that never resolve: `close` resolves by its deadline with the right counters;
 - shutdown after an HTTP send whose acknowledgement is lost, and after a `combineSinks` batch where one of two sinks wrote: those records count as `unconfirmed`, not as `lost`;
+- classification through the public contracts: a custom transport rejecting with a plain `Error` (unconfirmed), with `UsageDeliveryError(possiblyDelivered: false)` (lost), and a custom sink inside `combineSinks` (propagated);
 - two concurrent TaskBoard tasks: each record carries its own `taskId`.
 
 Real provider packages are exercised with a mocked HTTP layer, not fake `ILlm`s only. The paths it covers:
