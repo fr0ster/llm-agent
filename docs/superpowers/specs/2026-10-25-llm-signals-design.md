@@ -6,142 +6,178 @@ Date: 2026-10-25. Status: draft for review.
 
 Library components report facts about their own state, for example that a dialogue turn has settled or that a task changed state. Consumers build their own exchange schemes on those facts: a chat server that holds a response open, an MCP subagent that reports progress, a CLI spinner, a metrics bridge. The library stays agnostic to these schemes.
 
-Three rules follow:
+The design follows three rules:
 
 1. **Contracts first.** Producers and consumers depend only on interfaces in `@mcp-abap-adt/llm-agent`, never on an implementation.
 2. **Replaceable.** A consumer can replace the whole signal implementation, or a part of it (wrap, fan out, filter), without changing any producer.
-3. **No consumer-specific signals.** A signal states a fact of the producing component in the component's own terms. Nothing names a transport, a protocol, a UI or a particular consumer.
+3. **No consumer-specific signals.** A signal states a fact of the producing component in that component's own terms. Nothing names a transport, a protocol, a UI or a particular consumer.
 
 ## Contracts (`@mcp-abap-adt/llm-agent`, `src/interfaces/signals.ts`)
 
 ```ts
-/** A catalog maps signal names to payload types. */
-export type SignalCatalog = Record<string, unknown>;
-export type SignalName<C extends SignalCatalog> = Extract<keyof C, string>;
+/** A catalog is any object type mapping signal names to payload types; interfaces work, no index signature needed. */
+export type SignalName<C extends object> = Extract<keyof C, string>;
 
-export interface Signal<C extends SignalCatalog, K extends SignalName<C> = SignalName<C>> {
+export interface Signal<C extends object, K extends SignalName<C>> {
   name: K;
-  payload: C[K];
+  payload: Readonly<C[K]>;
   /** Producer instance, e.g. the dialogue session id. */
   source: string;
+  /** Entity within the source for retention, e.g. a task id; '' when the signal is about the source itself. */
+  key: string;
   /** Emission time, ms since epoch. */
   at: number;
 }
-export type SignalHandler<C extends SignalCatalog, K extends SignalName<C> = SignalName<C>> =
-  (signal: Signal<C, K>) => void | Promise<void>;
+/** Any signal of the catalog, as a discriminated union on `name` (narrowing `name` narrows `payload`). */
+export type AnySignal<C extends object> = { [K in SignalName<C>]: Signal<C, K> }[SignalName<C>];
+
 export type Unsubscribe = () => void;
 
 /** Producer side: the only thing a producer depends on. */
-export interface ISignalEmitter<C extends SignalCatalog> {
-  emit<K extends SignalName<C>>(name: K, payload: C[K], source: string): void;
-  /** The producer instance has ended; implementations may drop its retained state. */
-  retire?(source: string): void;
+export interface ISignalEmitter<C extends object> {
+  emit<K extends SignalName<C>>(name: K, payload: C[K], source: string, key?: string): void;
+  /** The producer instance has ended. */
+  retire(source: string): void;
 }
 
 /** Consumer side. */
-export interface ISignalSubscriber<C extends SignalCatalog> {
-  on<K extends SignalName<C>>(name: K, handler: SignalHandler<C, K>, filter?: { source?: string }): Unsubscribe;
-  onAny(handler: SignalHandler<C>, filter?: { source?: string }): Unsubscribe;
-  /** The last signal of this name from this source, if retained. */
-  last<K extends SignalName<C>>(name: K, source: string): Signal<C, K> | undefined;
-  /** The last retained signal of every name from this source, in emission order: a resync point. */
-  lastAll(source: string): Signal<C>[];
+export interface ISignalSubscriber<C extends object> {
+  on<K extends SignalName<C>>(name: K, handler: (s: Signal<C, K>) => void | Promise<void>, filter?: { source?: string }): Unsubscribe;
+  /** Wildcard handlers must ignore names they do not know: new names are added within a major. */
+  onAny(handler: (s: AnySignal<C>) => void | Promise<void>, filter?: { source?: string }): Unsubscribe;
+  /** The latest retained signal for (name, source, key). */
+  last<K extends SignalName<C>>(name: K, source: string, key?: string): Signal<C, K> | undefined;
+  /** Every retained signal of the source, one per (name, key), in emission order. */
+  lastAll(source: string): AnySignal<C>[];
 }
 
-export interface ISignalBus<C extends SignalCatalog> extends ISignalEmitter<C>, ISignalSubscriber<C> {}
+export interface ISignalBus<C extends object> extends ISignalEmitter<C>, ISignalSubscriber<C> {}
+
+/** Compile-time guard: resolves to `never` when two catalogs share a name. */
+export type DisjointCatalogs<A extends object, B extends object> =
+  Extract<keyof A, keyof B> extends never ? A & B : never;
 ```
 
 ### Semantics every implementation must keep
 
 - **The producer is never affected.**
-  - `emit` never throws and never awaits.
+  - `emit` and `retire` never throw and never await.
   - A handler that throws, or returns a rejected promise, affects neither the producer nor other handlers. Implementations report it to their own error sink.
-- **Order.**
+- **Payloads are immutable snapshots.**
+  - Producers emit a fresh copy (`structuredClone` of internal state), never a live reference.
+  - Implementations hand the same payload object to every handler and to `last` / `lastAll`.
+  - Handlers must not mutate it. The default bus deep-freezes it.
+- **Order of one emission:** retention is updated first, then handlers are dispatched. A handler that calls `last` therefore sees its own signal.
   - Per bus, handlers see signals in emission order.
-  - A signal emitted from inside a handler is dispatched after the current dispatch finishes, so the order is still emission order.
-- **Delivery.**
-  - Dispatch is synchronous within `emit`, unless an implementation documents otherwise; a deferring implementation must still keep the order.
+  - A signal emitted from inside a handler is queued and dispatched after the current dispatch finishes.
+- **Retention is part of the contract.** `last` / `lastAll` return the latest signal per `(name, source, key)`.
+  - An implementation that cannot retain (for example a pure bridge) implements only `ISignalEmitter`; it is not an `ISignalSubscriber`.
+- **`retire(source)`** takes effect after every signal of that source already queued has been dispatched. Handlers of a final signal (for example `dialogue.session.closed`) can still read the retained state. The source's retained signals are then dropped.
+  - Producers do not emit for a retired source. If one does, the signal is dispatched but not retained.
+- **Delivery is synchronous within `emit`**, including the queued re-entrant ones, unless an implementation documents otherwise; a deferring implementation must keep the order and the retire rule.
   - Handlers must not do blocking work; they hand it off.
-- **Retention.**
-  - `last()` returns the latest signal per `(name, source)`.
-  - `retire(source)` lets an implementation drop the retained signals of that source.
-  - Retention is what lets state-like signals (see `dialogue.activity`) be read on demand without a separate query API.
-- **No delivery guarantee across processes.** A bus is in-process. Bridges to other systems are consumer implementations of `ISignalEmitter`.
+- **No cross-process guarantee.** A bus is in-process; reaching other processes is the job of bridges.
 
-### Names, catalogs and conflicts
+### Direction, queries and external clients
+
+- **One way by design.** Signals flow from producer to consumers only. The bus has no request channel into a producer.
+- **Queries.** A question about current state is answered from retained signals (`last`, `lastAll`). A complete picture comes from the producer's own state API, for example `DialogueSession.snapshot()`.
+- **Commands.** Requests that change something (stop a task, send a message) stay the producer's ordinary methods and tools. They are not signals.
+- **External clients.** Clients outside the process never see the bus. A consumer in the process bridges it to the client's transport: SSE, MCP notifications such as `notifications/progress`, a webhook, OpenTelemetry.
+  - **What the bridge owns:** ids, ordering across reconnects, acknowledgements and retries.
+  - **A client that reconnects** is resynced from `lastAll(source)`. Retention per `(name, source, key)` keeps one latest state per entity, for example per task. Alternatively, the bridge seeds the client from the producer's state API.
+  - **Live signals** continue after the resync.
+  - **Two-way exchange** is the bridge's protocol, not the library's.
+
+### Names, ownership and evolution
 
 - **Name format.** Names are `<namespace>.<topic>[.<event>]`.
-  - Library-owned namespaces are reserved: `dialogue.`, and later ones such as `agent.` and `rag.`.
-  - Consumers use their own namespace (for example `hub.`).
-- **Catalog evolution.** Each producer publishes its catalog as a type. Consumers combine catalogs by intersection (`DialogueSignals & MySignals`); disjoint namespaces make conflicts impossible by construction.
+- **Ownership.** Each namespace is owned by exactly one package, which publishes its catalog:
+  - `dialogue.` → `@mcp-abap-adt/llm-agent-libs`, catalog type in `@mcp-abap-adt/llm-agent`;
+  - later ones such as `agent.` and `rag.` are registered in this document;
+  - consumers use a namespace of their own (for example `hub.`) and never emit names in a library namespace.
+- **Combining catalogs:** `DisjointCatalogs<A, B>`, which fails to compile when two catalogs share a name.
 - **Additive only within a major version.**
   - New signals may be added. New payload fields may be added only as optional.
   - No field is removed or changes meaning.
   - A change that is not additive uses a new name; the old name is deprecated and kept until the next major.
-- **Catalog version.** Each catalog exports a version constant (`DIALOGUE_SIGNALS_VERSION = 1`) that increases with each additive release, for consumers that want to assert a minimum.
-
-### Direction, queries and external clients
-
-- **One way by design.** Signals flow from producer to consumers only; the bus has no request channel into a producer.
-- **Queries.** A question about current state is answered from retained signals (`last`, `lastAll`) or the producer's own state API (for example `DialogueSession.snapshot()`), never by asking the producer through the bus.
-- **Commands.** Requests that change something (stop a task, send a message) stay the producer's ordinary methods and tools. They are not signals.
-- **External clients.** Clients outside the process never see the bus. A consumer in the process bridges it to the client's transport: SSE, MCP notifications such as `notifications/progress`, a webhook, OpenTelemetry. The bridge is an `ISignalEmitter` (push), or an `ISignalSubscriber` user (subscribe and forward).
-  - **Its own transport.** It owns everything about that transport: ids, ordering across reconnects, acknowledgements, retries.
-  - **Client questions.** When a client asks "what is the state now?", the bridge answers from `last` / `lastAll`.
-  - **Reconnects.** A client that reconnects is resynced from `lastAll(source)` before live signals continue.
-  - **Same contract.** The contract is therefore enough for external clients without a two-way bus; two-way exchange is the bridge's protocol, not the library's.
+  - Because names may be added, wildcard handlers must have a default branch.
+- **Catalog version.** Each catalog exports a version constant (`DIALOGUE_SIGNALS_VERSION = 1`). It increases with each additive release, for consumers that want to assert a minimum.
 
 ## Implementation (`@mcp-abap-adt/llm-signals`, new package)
 
-The package has no dependencies other than the contracts. Every part is optional and replaceable:
+The package depends only on the contracts. Every part is optional and replaceable:
 
-- `createSignalBus<C>(opts?: { onHandlerError?: (error: unknown, signal: Signal<C>) => void; retain?: boolean }): ISignalBus<C>` is the in-process bus with the semantics above. `retain` defaults to true.
-- `combineEmitters<C>(...emitters: ISignalEmitter<C>[]): ISignalEmitter<C>` fans out to several emitters, for example the default bus plus a metrics bridge. One emitter failing does not stop the others.
-- `filterEmitter<C>(emitter, predicate: (name, payload, source) => boolean): ISignalEmitter<C>` passes on only the signals that match.
-- `noopEmitter: ISignalEmitter<any>` drops everything; it is the producers' default.
+- `createSignalBus<C extends object>(opts?: { onHandlerError?: (error: unknown, signal: AnySignal<C>) => void }): ISignalBus<C>` is the in-process bus with the semantics above, including retention and the deep freeze.
+- `combineEmitters<C extends object>(...emitters: ISignalEmitter<C>[]): ISignalEmitter<C>` fans out `emit` and `retire`, for example to the default bus plus a metrics bridge. One emitter failing does not stop the others.
+- `filterEmitter<C extends object>(emitter: ISignalEmitter<C>, predicate: (name: SignalName<C>, source: string) => boolean): ISignalEmitter<C>` passes on only the signals that match; `retire` always passes.
 
 Replacing everything means passing one's own `ISignalEmitter` / `ISignalBus`. Replacing a part means composing these helpers with one's own emitters.
 
+**Build.** The package joins the monorepo's explicit root build, clean and publish lists. The contracts are exported through the existing `interfaces/index.ts` barrel.
+
 ## Producers (`@mcp-abap-adt/llm-agent-libs`)
 
-- **Injection.** `DialogueSessionOptions.signals?: ISignalEmitter<DialogueSignals>`. When it is absent, the producers use a no-op emitter. `llm-agent-libs` therefore does not depend on `llm-signals`.
+- **Injection.** `DialogueSessionOptions.signals?: ISignalEmitter<DialogueSignals>`. When it is absent, the producers use an inline no-op emitter. `llm-agent-libs` therefore does not depend on `llm-signals`.
 - **TaskBoard.** It receives the same emitter from DialogueSession. The source is the session id (`DialogueSessionOptions.id`).
-- **Existing callbacks stay.** `onMessage`, the board's internal `onEvent` and the store keep working; signals are additive. No version-breaking change.
+- **Existing callbacks stay.** `onMessage`, the board's internal `onEvent` and the store keep working; signals are additive, with no version-breaking change.
 
 ### Dialogue catalog v1 (`src/interfaces/dialogue-signals.ts` in `@mcp-abap-adt/llm-agent`)
 
-| Name | Payload | When |
-|---|---|---|
-| `dialogue.turn.started` | `{ trigger: 'user' \| 'event' }` | A library turn begins (before its first planner call). |
-| `dialogue.turn.settled` | `{ trigger: 'user' \| 'event'; messageId?: string; status?: 'active' \| 'waiting_user' \| 'done' }` | After the correction loop, status recomputation and the turn's final persistence; for an event turn also after `onMessage`. Saves triggered by `takePending()` emit nothing. |
-| `dialogue.task.state` | `{ task: TaskRecord; previous?: TaskState }` | When a TaskBoard record is created (`queued`) and after every state change, including the cancellation of a queued task. |
-| `dialogue.activity` | `{ turnActive: boolean; queuedInputs: number; running: number; ready: number }` | Whenever a field changes. `running` counts `queued` and `running` tasks; `ready` is the number of plan steps ready to start. Read the current value with `last('dialogue.activity', sessionId)`. |
-| `dialogue.plan.changed` | `{ status: 'active' \| 'waiting_user' \| 'done'; total: number; done: number }` | When the plan's status or the number of done steps changes. |
-| `dialogue.session.closed` | `{ reason?: string }` | On `close()`; the session then calls `retire(sessionId)`. |
+| Name | Key | Payload | When |
+|---|---|---|---|
+| `dialogue.turn.started` | `''` | `{ trigger: 'user' \| 'event' }` | A library turn begins, before its first planner call. |
+| `dialogue.turn.settled` | `''` | `{ trigger: 'user' \| 'event'; outcome: 'ok' \| 'failed'; messageId?: string; status?: 'active' \| 'waiting_user' \| 'done' }` | See "When `dialogue.turn.settled` is emitted" below. |
+| `dialogue.task.state` | task id | `{ task: TaskRecord; previous?: TaskState }` | When `TaskBoard.start()` creates the record (`queued`, before `execute()`), and after every later state change, including the cancellation of a queued task. |
+| `dialogue.activity` | `''` | `{ turnActive: boolean; queuedInputs: number; running: number; ready: number }` | Once after `open()` (after restoration and status recomputation), then whenever a field changes. |
+| `dialogue.plan.changed` | `''` | `{ status: 'active' \| 'waiting_user' \| 'done'; total: number; done: number }` | Once after `open()` when a plan exists, then whenever status, `total` or `done` changes. |
+| `dialogue.session.closed` | `''` | `{ reason?: string }` | On `close()`; the session then calls `retire(sessionId)`. |
+
+`dialogue.activity` fields:
+- `turnActive`: a library turn is in progress, corrections included.
+- `queuedInputs`: waiting user sends plus waiting task events. A restart note is not counted on its own; it is prepended to the next input.
+- `running`: tasks in state `queued` or `running`.
+- `ready`: `readySteps(plan).length`, whether or not the correction loop may still act on them.
+
+When `dialogue.turn.settled` is emitted:
+- **Placement.** It is emitted at the turn boundary in `drain()` after `turn()` returned or threw, never inside `persist()`. Saves made by `takePending()` therefore emit nothing.
+- **Persistence.** "After persistence" means after the turn's final persistence attempt has resolved; the store may have failed, which `persist()` already logs.
+- **Event turns.** An event turn's `onMessage` has run before it.
+- **Outcome.**
+  - A turn whose planner call failed settles with `outcome: 'failed'` and no `messageId`.
+  - A turn cut by `close()` emits no settled signal; `dialogue.session.closed` follows instead.
 
 `DIALOGUE_SIGNALS_VERSION = 1`.
 
 ## Example consumers (non-normative)
 
-- **A chat server** ends an open response when `dialogue.turn.settled` reports `done` or `waiting_user`, or when `last('dialogue.activity')` shows nothing active, queued, running or ready. It keeps the session alive while `running > 0`.
+- **A chat server** keeps a response open while work goes on. It ends the response when `dialogue.turn.settled` reports `done` or `waiting_user`, or when `last('dialogue.activity', id)` shows nothing active, queued, running or ready. It keeps the session alive while `running > 0`.
 - **An MCP subagent** reports progress from `dialogue.plan.changed` and returns when a settled turn reports `done`.
-- **A metrics bridge** passes a `combineEmitters(bus, otelEmitter)` to the session.
+- **A metrics bridge** passes `combineEmitters(bus, otelEmitter)` to the session.
 
 ## Validation
 
-- **Contracts:** type tests that catalogs compose by intersection, and that `on` / `last` / `emit` are typed per name.
-- **Bus:**
-  - a throwing or rejecting handler isolates the failure;
-  - re-entrant emits keep the order;
-  - `last` per source;
-  - `lastAll` returns one signal per name, in emission order;
-  - `retire` drops the source's retained signals;
-  - a filter by source.
-- **Helpers:** `combineEmitters` keeps going when one emitter throws; `filterEmitter`.
-- **Producers, against the real `DialogueSession`:**
-  - `turn.settled` once per turn, after the final persistence, and not for `takePending` saves;
-  - an event turn's `turn.settled` comes after `onMessage`;
-  - `task.state` reports `queued` at creation for a task blocked on the pool;
-  - `activity.ready` is still counted after `maxCorrections` is exhausted;
-  - `session.closed` followed by `retire`;
-  - with no emitter given, behaviour is identical to today.
+- **Contracts (type tests).**
+  - Interface catalogs and intersected catalogs both satisfy the constraint.
+  - `AnySignal` narrows `payload` by `name`.
+  - A mismatched name and payload does not compile.
+  - `DisjointCatalogs` fails on a shared name.
+- **Bus.**
+  - A throwing or rejecting handler isolates the failure.
+  - Re-entrant emits keep the order, and retention is updated before dispatch.
+  - `last` works per `(name, source, key)`; `lastAll` returns one signal per `(name, key)` in emission order.
+  - Payloads are frozen.
+  - `retire` drops retention only after queued signals of the source are dispatched, and a final-signal handler still reads the state.
+  - An emit after retire is dispatched but not retained.
+  - The source filter works.
+- **Helpers.** `combineEmitters` keeps going when one emitter throws and fans out `retire`; `filterEmitter`.
+- **Producers, against the real `DialogueSession`.**
+  - Initial `activity` and `plan.changed` after `open()` and after a restore.
+  - `turn.settled` comes once per turn after its final persistence attempt, with `outcome: 'failed'` for a failed planner call, none for a turn cut by `close()`, and none for `takePending` saves.
+  - An event turn's `turn.settled` comes after `onMessage`.
+  - `task.state` reports `queued` at creation for a task blocked on the pool, keyed by task id. Two tasks are both retained.
+  - `activity.ready` is still counted after `maxCorrections` is exhausted.
+  - `plan.changed` fires when only `total` changes.
+  - A payload mutation by a handler does not reach the producer.
+  - `session.closed` is followed by `retire`.
+  - With no emitter given, behaviour is identical to today.
