@@ -1,10 +1,5 @@
 # @mcp-abap-adt/llm-agent-libs
 
-## Unreleased
-
-- Emit immutable dialogue lifecycle, task, activity and plan snapshots through an optional emitter.
-- **llm-agent-libs**: reject reopening steps with active attempts, invalidate checker evidence on reopening, and enforce current successful work on checker events. Restore legacy success markers from completed task records and preserve unchanged legacy done steps.
-
 ## 30.9.1
 
 Lockstep release with the 30.9.1 line: dialogue plans no longer stall in `checking` — idle checks cover running/checking steps without active attempts, checker verdicts are read from prose or JSON fences (outermost, consistent candidates only), unusable verdicts allow a fresh checker — changes in `llm-agent-libs`; other packages are unchanged. See the root CHANGELOG.
@@ -12,6 +7,10 @@ Lockstep release with the 30.9.1 line: dialogue plans no longer stall in `checki
 ## 30.9.0
 
 Lockstep release with the 30.9.0 line: dialogue plan enforcement — scope changes need user consent, batch steps carry items with a mandatory counted check, optional `maxItemsPerStep`, worker tool-budget reporting, idle active plans get corrective turns, and general done invariants — changes in `llm-agent`, `llm-agent-libs` and `llm-agent-server-libs`; other packages are unchanged. See the root CHANGELOG.
+
+## Unreleased
+
+- **llm-agent-libs**: reject reopening steps with active attempts, invalidate checker evidence on reopening, and enforce current successful work on checker events. Restore legacy success markers from completed task records and preserve unchanged legacy done steps.
 
 ## 30.8.1
 

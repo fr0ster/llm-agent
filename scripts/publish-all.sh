@@ -39,6 +39,24 @@ PACKAGES=(
 
 PUBLISHED=0
 SKIPPED=0
+PUBLISHED_TAGS=()
+
+# A version on npm still needs its tag when neither the per-package tag nor the
+# legacy lockstep tag (v<version>) exists locally, e.g. after a publish run that
+# failed half-way and was re-run.
+needs_tag() {
+  ! git rev-parse -q --verify "refs/tags/$1@$2" >/dev/null &&
+    ! git rev-parse -q --verify "refs/tags/v$2" >/dev/null
+}
+
+print_tags() {
+  if [ "${#PUBLISHED_TAGS[@]}" -gt 0 ]; then
+    echo "Signed tags for the maintainer to create (on this main commit):"
+    for tag in "${PUBLISHED_TAGS[@]}"; do
+      printf 'git tag -s "%s" -m "Release %s"\n' "$tag" "$tag"
+    done
+  fi
+}
 
 for pkg in "${PACKAGES[@]}"; do
   echo
@@ -50,6 +68,7 @@ for pkg in "${PACKAGES[@]}"; do
   if npm view "$name@$version" version >/dev/null 2>&1; then
     echo "    already on npm — skipping"
     SKIPPED=$((SKIPPED + 1))
+    if needs_tag "$name" "$version"; then PUBLISHED_TAGS+=("$name@$version"); fi
     continue
   fi
 
@@ -69,10 +88,14 @@ for pkg in "${PACKAGES[@]}"; do
     echo "Already-published packages are detected and skipped on the next run." >&2
     echo >&2
     echo "Published before failure: $PUBLISHED  Skipped: $SKIPPED" >&2
+    print_tags >&2
     exit "$status"
   fi
   PUBLISHED=$((PUBLISHED + 1))
+  PUBLISHED_TAGS+=("$name@$version")
 done
 
 echo
 echo "Published: $PUBLISHED  Skipped: $SKIPPED"
+
+print_tags

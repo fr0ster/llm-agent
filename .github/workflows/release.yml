@@ -1,10 +1,9 @@
 name: Release
 
-# Triggers on semantic version tags (v*). Creates a GitHub release automatically.
-# npm publish remains manual until changesets automation is wired up in a future version.
+# npm publishing and signed tag creation remain manual.
 on:
   push:
-    tags: ['v*']
+    tags: ['@mcp-abap-adt/*@*', 'v*']
 
 permissions:
   contents: write
@@ -12,21 +11,27 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-latest
-
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
-      - name: Generate release notes
-        id: notes
-        run: |
-          PREV_TAG=$(git tag --sort=-v:refname | sed -n '2p')
-          if [ -n "$PREV_TAG" ]; then
-            echo "prev=$PREV_TAG" >> "$GITHUB_OUTPUT"
-          fi
+      - name: Extract package release notes
+        if: startsWith(github.ref_name, '@mcp-abap-adt/')
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: node scripts/package-release-notes.mjs "$RELEASE_TAG" > "$RUNNER_TEMP/release-notes.md"
 
-      - name: Create GitHub release
+      - name: Create package GitHub release
+        if: startsWith(github.ref_name, '@mcp-abap-adt/')
+        uses: softprops/action-gh-release@v3
+        with:
+          name: ${{ github.ref_name }}
+          body_path: ${{ runner.temp }}/release-notes.md
+          generate_release_notes: false
+
+      - name: Create historical GitHub release
+        if: startsWith(github.ref_name, 'v')
         uses: softprops/action-gh-release@v3
         with:
           generate_release_notes: true

@@ -1,5 +1,10 @@
 # Changelog
 
+From this release onward, packages are versioned independently. Each package's
+`packages/<pkg>/CHANGELOG.md` is the source of truth. This root file keeps only
+an index of new releases (date and package@version list); existing history below
+is preserved.
+
 All notable changes to this project will be documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).

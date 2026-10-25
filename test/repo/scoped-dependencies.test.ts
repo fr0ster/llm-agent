@@ -15,7 +15,7 @@
  *     a PEER, never a regular dependency. npm then installs the consumer's one
  *     copy, and a version outside the range fails the install with ERESOLVE
  *     instead of nesting a second copy.
- *   - Every package declares the same range for the same package.
+ *   - Package ranges may have different minimums but must accept a common version.
  *   - `@mcp-abap-adt/llm-agent-server` is the binary: it is the root of its own
  *     tree, so it depends on all of them regularly and must itself provide every
  *     required peer of the libraries it ships.
@@ -114,7 +114,7 @@ test('every imported @mcp-abap-adt/* package is declared', () => {
   assert.deepEqual(missing, []);
 });
 
-test('every package declares the same range for the same @mcp-abap-adt/* package', () => {
+test('scoped dependency ranges accept a common version', () => {
   const ranges = new Map<string, Map<string, string[]>>();
   for (const { pkg } of workspacePackages()) {
     const sections = [pkg.dependencies, pkg.peerDependencies];
@@ -128,7 +128,15 @@ test('every package declares the same range for the same @mcp-abap-adt/* package
     }
   }
   const differing = [...ranges]
-    .filter(([, byRange]) => byRange.size > 1)
+    .filter(([, byRange]) => {
+      if (byRange.size <= 1) return false;
+      // Independent releases can raise a minimum without changing older consumers.
+      // For our stable caret ranges, a common major guarantees an intersection.
+      const majors = [...byRange.keys()].map(range =>
+        /^\^(\d+)\.\d+\.\d+$/.exec(range)?.[1],
+      );
+      return majors.some(major => !major || major === '0') || new Set(majors).size > 1;
+    })
     .map(
       ([name, byRange]) =>
         `${name}: ${JSON.stringify(Object.fromEntries(byRange))}`,

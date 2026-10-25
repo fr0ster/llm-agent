@@ -320,3 +320,26 @@ it.
 **Upgrading from v21, from an MIT release, or redistributing these packages?**
 [docs/LICENSING.md](docs/LICENSING.md) has the case-by-case breakdown and the
 migration steps.
+
+## Releasing
+
+Add a changeset in each PR with `npm run changeset`: select affected packages,
+choose semantic version bumps, and describe the changes. Packages have independent
+versions and their own `packages/<pkg>/CHANGELOG.md` files.
+
+Releases are made from `main`; the version bump reaches `main` through a PR.
+
+1. On a short-lived branch from `main`, run `npm run release:version` to apply
+   changesets, update internal ranges and per-package changelogs, and refresh the
+   lockfile. Peer ranges are raised only when they fall out of range, so raise by
+   hand the peer range of every package that needs a feature of the new version
+   (for example `"@mcp-abap-adt/llm-agent": "^30.10.0"`). Add a dated
+   package@version index entry to the root CHANGELOG.md.
+2. Open a PR with these changes and merge it into `main`.
+3. On an up-to-date `main` (`git checkout main && git pull`), the maintainer runs
+   `npm run release:publish`, which skips versions already on npm.
+4. On that `main` commit, create the signed per-package tags printed by the publish
+   script, for example
+   `git tag -s @mcp-abap-adt/llm-signals@1.0.0 -m "Release @mcp-abap-adt/llm-signals@1.0.0"`.
+5. Push those tags. The release workflow creates GitHub releases using each
+   package's changelog section. Publishing and signed tag creation remain manual.
