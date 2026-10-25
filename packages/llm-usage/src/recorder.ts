@@ -342,6 +342,8 @@ export function createUsageRecorder(
         buffered: queue.length,
         delivered,
         lost: { ...lost },
+        unconfirmed:
+          unconfirmed + queue.filter((entry) => entry.ambiguous).length,
         lastErrorCode,
       };
     },
