@@ -35,3 +35,15 @@ Apply `ddl/usage.sql` before use when `autoCreateSchema: false`.
 Failed batches may have partially written; retries are safe by id.
 
 Options: `host`/`port` (443), or an address-only `connectionString` (`hdbsql://host:port`); required `credential: { principal, secret() }`, optional `schema`, `connectTimeout` (30000 ms). TLS and certificate validation are enabled. Credentials resolve at connection time. `autoCreateSchema` defaults to false for HDI deployments; an operator applies the shipped DDL. Setting it to true creates missing tables/indexes with DDL privileges. An injected `client` supports `exec`/`close` and is closed by the sink. Live tests run only with a `VCAP_SERVICES` hana binding, as in the SQL shared-table integration runner; use a dedicated test schema with DDL privileges.
+
+## Wiring and replacement
+
+Connect a sink to producers with
+`createUsageRecorder({ transport: directTransport(sink) })` from
+`@mcp-abap-adt/llm-usage`, then pass `{ usage: recorder }` in call options.
+Keep the recorder and replace its transport or sink, or implement
+`IUsageRecorder` to replace collection completely. Close the recorder once at
+shutdown and inspect its delivered/lost/unconfirmed counters. A signal transport
+is best effort and does not acknowledge storage writes. See the
+[usage overview](../../docs/USAGE_ANALYTICS.md) and linked design for guarantees,
+loss evidence, content exclusions and the completeness test.

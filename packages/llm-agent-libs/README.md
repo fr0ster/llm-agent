@@ -59,3 +59,18 @@ library* stay free and that your users can substitute their own build.
 Versions up to and including v20.9.5 were MIT and stay MIT; the change is not
 retroactive. Full detail, including what to do if you redistribute:
 [docs/LICENSING.md](https://github.com/fr0ster/llm-agent/blob/main/docs/LICENSING.md).
+
+## Usage analytics
+
+Pass `{ usage: recorder.with({ sessionId, userId }) }` as the second argument
+of `SmartAgent.process` or in `CallOptions` for component calls. DialogueSession
+accepts `usage` in its open options; TaskBoard scopes workers with their task id
+and role. Worker adapters forward `input.usage`. A caller's recorder survives
+normalization and adapter layers. Retry and chunk wrappers preserve one logical
+operation while providers record each physical request separately.
+
+Use `@mcp-abap-adt/llm-usage` for buffered collection or implement
+`IUsageRecorder` from `@mcp-abap-adt/llm-agent` to replace it. See the
+[usage overview](../../docs/USAGE_ANALYTICS.md) for injection, replaceable
+transports/sinks, shutdown and loss semantics. Usage records exclude content;
+request logging is a separate API with different data and retention needs.

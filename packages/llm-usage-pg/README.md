@@ -34,3 +34,15 @@ Apply `ddl/usage.sql` before use when `autoCreateSchema: false`.
 Failed batches may have partially written; retries are safe by id.
 
 Options extend `pg.PoolConfig` (host, port, database, user, password callback, SSL, connectionString, pool limits and timeouts). `schema` selects an existing schema (default public). `autoCreateSchema` defaults to true and creates the table/indexes, not the database schema. An injected `client` with `query`/`end` can replace the owned pool; it is closed by the sink. Idle pool errors are consumed; `onPoolError` optionally observes them. Tests use PGlite 0.5.10 from the integration lockfile.
+
+## Wiring and replacement
+
+Connect a sink to producers with
+`createUsageRecorder({ transport: directTransport(sink) })` from
+`@mcp-abap-adt/llm-usage`, then pass `{ usage: recorder }` in call options.
+Keep the recorder and replace its transport or sink, or implement
+`IUsageRecorder` to replace collection completely. Close the recorder once at
+shutdown and inspect its delivered/lost/unconfirmed counters. A signal transport
+is best effort and does not acknowledge storage writes. See the
+[usage overview](../../docs/USAGE_ANALYTICS.md) and linked design for guarantees,
+loss evidence, content exclusions and the completeness test.
