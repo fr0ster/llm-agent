@@ -180,3 +180,77 @@ test('invalid payloads are reported without retention or dispatch', () => {
     assert.match(errors[0].message, /data.*payload\["nested"\]\["0"\]/);
   }
 });
+
+test('plain data from another realm is accepted, class instances from it are not', async () => {
+  const { runInNewContext } = await import('node:vm');
+  const errors: unknown[] = [];
+  const bus = createSignalBus<Catalog>({
+    onHandlerError: (error) => errors.push(error),
+  });
+  const seen: number[] = [];
+  bus.on('state', (s) => {
+    seen.push(s.payload.n);
+  });
+  const foreign = runInNewContext(
+    '({ n: 7, nested: { value: 1 } })',
+  ) as Catalog['state'];
+  bus.emit('state', foreign, 'src');
+  assert.deepEqual(seen, [7]);
+  assert.equal(bus.last('state', 'src')?.payload.nested?.value, 1);
+  const instance = runInNewContext(
+    'new (class Foo { constructor() { this.n = 1; } })()',
+  ) as Catalog['state'];
+  bus.emit('state', instance, 'src');
+  assert.deepEqual(seen, [7]);
+  assert.equal(errors.length, 1);
+});
+
+test('null-base class instances and tag getters are rejected without running accessors', () => {
+  const errors: unknown[] = [];
+  const bus = createSignalBus<Catalog>({
+    onHandlerError: (e) => errors.push(e),
+  });
+  const seen: number[] = [];
+  bus.on('state', (s) => {
+    seen.push(s.payload.n);
+  });
+  // The shape `class X extends null` produces: a prototype with a null
+  // prototype whose constructor is not Object.
+  function NullBase() {}
+  NullBase.prototype = Object.create(null, {
+    constructor: { value: NullBase },
+  });
+  const nullBase = Object.create(NullBase.prototype) as Catalog['state'];
+  Object.defineProperty(nullBase, 'n', { value: 1, enumerable: true });
+  bus.emit('state', nullBase, 'src');
+  let getterRan = false;
+  const tagged = { n: 2 };
+  Object.defineProperty(tagged, Symbol.toStringTag, {
+    get() {
+      getterRan = true;
+      return 'Object';
+    },
+  });
+  bus.emit('state', tagged as Catalog['state'], 'src');
+  assert.deepEqual(seen, []);
+  assert.equal(getterRan, false);
+  assert.equal(errors.length, 2);
+});
+
+test('a null-base class named Object is rejected', async () => {
+  const { runInNewContext } = await import('node:vm');
+  const errors: unknown[] = [];
+  const bus = createSignalBus<Catalog>({
+    onHandlerError: (e) => errors.push(e),
+  });
+  const seen: number[] = [];
+  bus.on('state', (s) => {
+    seen.push(s.payload.n);
+  });
+  const forged = runInNewContext(
+    'const Object = function Object() {}; Object.prototype = globalThis.Object.create(null, { constructor: { value: Object } }); const v = globalThis.Object.create(Object.prototype); v.n = 3; v',
+  ) as Catalog['state'];
+  bus.emit('state', forged, 'src');
+  assert.deepEqual(seen, []);
+  assert.equal(errors.length, 1);
+});
