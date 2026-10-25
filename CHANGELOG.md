@@ -14,6 +14,12 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## 2026-10-25
+
+- `@mcp-abap-adt/llm-agent@30.10.0`
+- `@mcp-abap-adt/llm-agent-libs@30.10.0`
+- `@mcp-abap-adt/llm-signals@1.0.0` (first release)
+
 ## [30.9.1] — 2026-10-24
 
 ### Fixed

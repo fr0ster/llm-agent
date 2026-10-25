@@ -1,5 +1,11 @@
 # @mcp-abap-adt/llm-agent
 
+## 30.10.0
+
+### Minor Changes
+
+- Add generic signal contracts (`ISignalEmitter`, `ISignalSubscriber`, `ISignalBus`, `Signal`, `AnySignal`, `DisjointCatalogs`) and the version 1 dialogue signal catalog (`DialogueSignals`, `DIALOGUE_SIGNALS_VERSION`).
+
 ## 30.9.1
 
 Lockstep release with the 30.9.1 line: dialogue plans no longer stall in `checking` — idle checks cover running/checking steps without active attempts, checker verdicts are read from prose or JSON fences (outermost, consistent candidates only), unusable verdicts allow a fresh checker — changes in `llm-agent-libs`; other packages are unchanged. See the root CHANGELOG.
