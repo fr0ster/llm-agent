@@ -3,6 +3,7 @@ import type {
   CallOptions,
   IEmbedderBatch,
   IEmbedResult,
+  IUsageRecorder,
 } from '@mcp-abap-adt/llm-agent';
 import { FoundationModelsEmbedder } from './foundation-embedder.js';
 import {
@@ -13,6 +14,7 @@ import {
 export type SapAiCoreEmbedderScenario = 'foundation-models' | 'orchestration';
 
 export interface SapAiCoreEmbedderConfig {
+  usage?: IUsageRecorder;
   /** Embedding model name (e.g. 'text-embedding-3-small', 'gemini-embedding') */
   model: string;
   /** SAP AI Core resource group. Default: 'default'. */
@@ -62,6 +64,7 @@ export class SapAiCoreEmbedder implements IEmbedderBatch {
     if (scenario === 'orchestration') {
       this.backend = new OrchestrationScenarioEmbedder({
         model: config.model,
+        usage: config.usage,
         resourceGroup: config.resourceGroup,
         credential: config.credential,
         apiBaseUrl: config.apiBaseUrl,
@@ -72,6 +75,7 @@ export class SapAiCoreEmbedder implements IEmbedderBatch {
     } else {
       this.backend = new FoundationModelsEmbedder({
         model: config.model,
+        usage: config.usage,
         resourceGroup: config.resourceGroup,
         credential: config.credential,
         apiBaseUrl: config.apiBaseUrl,

@@ -1,9 +1,16 @@
 import type { IBearerCredential } from '@mcp-abap-adt/interfaces-auth';
 import type { IEmbedderBatch, IEmbedResult } from '@mcp-abap-adt/llm-agent';
-import { type CallOptions, RagError } from '@mcp-abap-adt/llm-agent';
+import {
+  beginEmbeddingRequest,
+  type CallOptions,
+  type IUsageRecorder,
+  RagError,
+  startOperation,
+} from '@mcp-abap-adt/llm-agent';
 import { decodeEmbedding } from './decode-embedding.js';
 
 export interface OrchestrationScenarioEmbedderConfig {
+  usage?: IUsageRecorder;
   model: string;
   resourceGroup?: string;
   /**
@@ -56,6 +63,7 @@ async function buildDestination(cfg: {
 
 export class OrchestrationScenarioEmbedder implements IEmbedderBatch {
   private readonly model: string;
+  private readonly usage?: IUsageRecorder;
   private readonly resourceGroup?: string;
   private readonly apiBaseUrl: string;
   private readonly credential: IBearerCredential;
@@ -63,6 +71,7 @@ export class OrchestrationScenarioEmbedder implements IEmbedderBatch {
 
   constructor(config: OrchestrationScenarioEmbedderConfig) {
     this.model = config.model;
+    this.usage = config.usage;
     this.resourceGroup = config.resourceGroup;
     this.apiBaseUrl = config.apiBaseUrl;
     this.credential = config.credential;
@@ -73,23 +82,60 @@ export class OrchestrationScenarioEmbedder implements IEmbedderBatch {
     return this.inputType ? { input, type: this.inputType } : { input };
   }
 
-  async embed(text: string, _options?: CallOptions): Promise<IEmbedResult> {
+  async embed(text: string, options?: CallOptions): Promise<IEmbedResult> {
     const destination = await buildDestination({
       apiBaseUrl: this.apiBaseUrl,
       credential: this.credential,
     });
     const client = await this.createClient(destination);
-    const response = await client.embed(this.typed(text));
-    const embeddings = response.getEmbeddings();
-    if (!embeddings || embeddings.length === 0) {
-      throw new RagError('No embeddings returned from SAP AI Core');
+    const input = [text];
+    const request = beginEmbeddingRequest(
+      options,
+      startOperation(options),
+      {
+        provider: 'sap-aicore',
+        model: this.model,
+        inputs: input.length,
+        inputChars: input.reduce((sum, value) => sum + value.length, 0),
+        // Empty request middleware below disables inference retry middleware.
+        granularity: 'request',
+        retriesVisible: true,
+      },
+      this.usage,
+    );
+    try {
+      const response = await client.embed(this.typed(text), {
+        signal: options?.signal,
+        middleware: [],
+      });
+      const usage = response.getTokenUsage?.();
+      const embeddings = response.getEmbeddings();
+      request.end({
+        outcome: embeddings?.length ? 'ok' : 'error',
+        inputTokens: usage?.prompt_tokens,
+        tokensSource:
+          usage?.prompt_tokens === undefined ? 'unknown' : 'provider',
+      });
+      if (!embeddings || embeddings.length === 0) {
+        throw new RagError('No embeddings returned from SAP AI Core');
+      }
+      return { vector: decodeEmbedding(embeddings[0].embedding) };
+    } catch (error) {
+      request.end({
+        outcome:
+          options?.signal?.aborted ||
+          (error instanceof Error && error.name === 'AbortError')
+            ? 'aborted'
+            : 'error',
+        error,
+      });
+      throw error;
     }
-    return { vector: decodeEmbedding(embeddings[0].embedding) };
   }
 
   async embedBatch(
     texts: string[],
-    _options?: CallOptions,
+    options?: CallOptions,
   ): Promise<IEmbedResult[]> {
     if (texts.length === 0) return [];
     const destination = await buildDestination({
@@ -97,13 +143,50 @@ export class OrchestrationScenarioEmbedder implements IEmbedderBatch {
       credential: this.credential,
     });
     const client = await this.createClient(destination);
-    const response = await client.embed(this.typed(texts));
-    const embeddings = response.getEmbeddings();
-    if (!embeddings || embeddings.length === 0) {
-      throw new RagError('No embeddings returned from SAP AI Core batch');
+    const input = texts;
+    const request = beginEmbeddingRequest(
+      options,
+      startOperation(options),
+      {
+        provider: 'sap-aicore',
+        model: this.model,
+        inputs: input.length,
+        inputChars: input.reduce((sum, value) => sum + value.length, 0),
+        // Empty request middleware below disables inference retry middleware.
+        granularity: 'request',
+        retriesVisible: true,
+      },
+      this.usage,
+    );
+    try {
+      const response = await client.embed(this.typed(texts), {
+        signal: options?.signal,
+        middleware: [],
+      });
+      const usage = response.getTokenUsage?.();
+      const embeddings = response.getEmbeddings();
+      request.end({
+        outcome: embeddings?.length ? 'ok' : 'error',
+        inputTokens: usage?.prompt_tokens,
+        tokensSource:
+          usage?.prompt_tokens === undefined ? 'unknown' : 'provider',
+      });
+      if (!embeddings || embeddings.length === 0) {
+        throw new RagError('No embeddings returned from SAP AI Core batch');
+      }
+      const sorted = [...embeddings].sort((a, b) => a.index - b.index);
+      return sorted.map((e) => ({ vector: decodeEmbedding(e.embedding) }));
+    } catch (error) {
+      request.end({
+        outcome:
+          options?.signal?.aborted ||
+          (error instanceof Error && error.name === 'AbortError')
+            ? 'aborted'
+            : 'error',
+        error,
+      });
+      throw error;
     }
-    const sorted = [...embeddings].sort((a, b) => a.index - b.index);
-    return sorted.map((e) => ({ vector: decodeEmbedding(e.embedding) }));
   }
 
   /**

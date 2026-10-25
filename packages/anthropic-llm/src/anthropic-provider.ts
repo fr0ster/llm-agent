@@ -10,7 +10,7 @@ import type {
   LLMResponse,
   Message,
 } from '@mcp-abap-adt/llm-agent';
-import { BaseLLMProvider } from '@mcp-abap-adt/llm-agent';
+import { BaseLLMProvider, startOperation } from '@mcp-abap-adt/llm-agent';
 import axios, { type AxiosInstance } from 'axios';
 
 export interface AnthropicConfig extends LLMProviderConfig {
@@ -109,12 +109,40 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
       }
 
       const response = await this.withThrottleRetry(
-        async () =>
-          this.client.post('/messages', requestBody, {
+        async (handle) => {
+          const response = await this.client.post('/messages', requestBody, {
             signal: options?.signal,
             headers: await this.authHeaders(),
-          }),
+          });
+          const usage = response.data.usage;
+          handle.end({
+            outcome: response.data.error ? 'error' : 'ok',
+            errorCode: response.data.error?.type,
+            tokensSource:
+              usage?.input_tokens !== undefined ||
+              usage?.output_tokens !== undefined ||
+              usage?.cache_read_input_tokens !== undefined
+                ? 'provider'
+                : 'unknown',
+            inputTokens: usage?.input_tokens,
+            outputTokens: usage?.output_tokens,
+            cachedInputTokens: usage?.cache_read_input_tokens,
+          });
+          return response;
+        },
         { model, signal: options?.signal },
+        {
+          opts: options,
+          op: startOperation(options),
+          bound: this.config.usage,
+          base: {
+            provider: 'anthropic',
+            model,
+            stream: false,
+            granularity: 'request',
+            retriesVisible: true,
+          },
+        },
       );
 
       // Handle multi-block response (text + tool_use)
@@ -186,7 +214,7 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
 
     const baseURL = this.config.baseURL || 'https://api.anthropic.com/v1';
     type OpenStream = Response & { body: ReadableStream<Uint8Array> };
-    const response = await this.withThrottleRetry<OpenStream>(
+    const { response, handle } = await this.withThrottleRetry<OpenStream>(
       async () => {
         const res = await fetch(`${baseURL}/messages`, {
           method: 'POST',
@@ -203,21 +231,42 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
           const text = await res.text().catch(() => '');
           const error = new Error(
             `Anthropic streaming error: HTTP ${res.status} — ${text}`,
-          ) as Error & { response?: { status: number; headers: Headers } };
+          ) as Error & {
+            status?: number;
+            response?: { status: number; headers: Headers };
+          };
           // This is the one path on fetch rather than axios. The shared policy
           // reads the status and Retry-After off the axios shape, so give it one;
           // Headers already answers to the same case-insensitive get().
+          error.status = res.status;
           error.response = { status: res.status, headers: res.headers };
           throw error;
         }
         return res as OpenStream;
       },
       { model, signal: options?.signal },
+      {
+        opts: options,
+        op: startOperation(options),
+        bound: this.config.usage,
+        base: {
+          provider: 'anthropic',
+          model,
+          stream: true,
+          granularity: 'request',
+          retriesVisible: true,
+        },
+      },
     );
 
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
+    let completed = false;
+    let streamError: unknown;
+    let inputTokens: number | undefined;
+    let outputTokens: number | undefined;
+    let cachedInputTokens: number | undefined;
 
     // Anthropic streams tool_use as discrete content blocks: a
     // `content_block_start` with type=tool_use carries id+name, then a series
@@ -230,7 +279,10 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
     try {
       while (true) {
         const { done, value } = await reader.read();
-        if (done) break;
+        if (done) {
+          completed = true;
+          break;
+        }
 
         buffer += decoder.decode(value, { stream: true });
         const lines = buffer.split('\n');
@@ -252,6 +304,19 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
           const data = trimmed.slice(6);
           try {
             const parsed = JSON.parse(data);
+            const eventUsage = parsed.message?.usage ?? parsed.usage;
+            if (eventUsage) {
+              inputTokens = eventUsage.input_tokens ?? inputTokens;
+              outputTokens = eventUsage.output_tokens ?? outputTokens;
+              cachedInputTokens =
+                eventUsage.cache_read_input_tokens ?? cachedInputTokens;
+            }
+            if (
+              parsed.delta?.text ||
+              parsed.content_block?.type === 'tool_use' ||
+              parsed.delta?.partial_json
+            )
+              handle.firstToken();
             if (
               eventType === 'content_block_delta' &&
               parsed.delta?.type === 'text_delta'
@@ -323,9 +388,14 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
                   : undefined,
               };
             } else if (eventType === 'error') {
-              const error = parsed.error as { message?: string } | undefined;
-              throw new Error(
-                `Anthropic stream error: ${error?.message ?? 'unknown'}`,
+              const error = parsed.error as
+                | { message?: string; type?: string }
+                | undefined;
+              throw Object.assign(
+                new Error(
+                  `Anthropic stream error: ${error?.message ?? 'unknown'}`,
+                ),
+                { code: error?.type },
               );
             } else {
               yield { content: '', raw: parsed };
@@ -341,7 +411,31 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
           }
         }
       }
+    } catch (error) {
+      streamError = error;
+      throw error;
     } finally {
+      handle.end({
+        outcome: streamError
+          ? options?.signal?.aborted ||
+            (streamError instanceof Error && streamError.name === 'AbortError')
+            ? 'aborted'
+            : 'error'
+          : completed
+            ? 'ok'
+            : 'aborted',
+        error: streamError,
+        closedEarly: !completed && !streamError,
+        inputTokens,
+        outputTokens,
+        cachedInputTokens,
+        tokensSource:
+          inputTokens !== undefined ||
+          outputTokens !== undefined ||
+          cachedInputTokens !== undefined
+            ? 'provider'
+            : 'unknown',
+      });
       reader.releaseLock();
     }
   }

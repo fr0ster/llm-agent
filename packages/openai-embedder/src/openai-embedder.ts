@@ -1,8 +1,17 @@
 import type { IApiKeyCredential } from '@mcp-abap-adt/interfaces-auth';
 import type { IEmbedderBatch, IEmbedResult } from '@mcp-abap-adt/llm-agent';
-import { type CallOptions, RagError } from '@mcp-abap-adt/llm-agent';
+import {
+  beginEmbeddingRequest,
+  type CallOptions,
+  type IUsageRecorder,
+  RagError,
+  startOperation,
+  withChunk,
+  withProviderAttempt,
+} from '@mcp-abap-adt/llm-agent';
 
 export interface OpenAiEmbedderConfig {
+  usage?: IUsageRecorder;
   /**
    * Asked for fresh on every request — never cached — so a rotating key
    * rotates and a resolved-once secret is never frozen for the object's
@@ -19,6 +28,7 @@ export class OpenAiEmbedder implements IEmbedderBatch {
   private readonly baseURL: string;
   private readonly credential: IApiKeyCredential;
   readonly model: string;
+  private readonly usage?: IUsageRecorder;
 
   constructor(config: OpenAiEmbedderConfig) {
     if (!config.credential) {
@@ -33,6 +43,7 @@ export class OpenAiEmbedder implements IEmbedderBatch {
       '',
     );
     this.model = config.model;
+    this.usage = config.usage;
   }
 
   /** Asked per request, from the field — there is no config object to pass. */
@@ -44,8 +55,22 @@ export class OpenAiEmbedder implements IEmbedderBatch {
     const url = `${this.baseURL}/embeddings`;
     let lastError: Error | undefined;
     const maxRetries = 3;
+    const op = startOperation(options);
 
     for (let attempt = 0; attempt < maxRetries; attempt++) {
+      const request = beginEmbeddingRequest(
+        options,
+        withProviderAttempt(op, attempt),
+        {
+          provider: 'openai',
+          model: this.model,
+          inputs: [text].length,
+          inputChars: [text].reduce((sum, value) => sum + value.length, 0),
+          granularity: 'request',
+          retriesVisible: true,
+        },
+        this.usage,
+      );
       try {
         // The caller's signal and nothing else. A ceiling of our own would run
         // on every request and fire instead of whatever decided above us — a
@@ -62,6 +87,7 @@ export class OpenAiEmbedder implements IEmbedderBatch {
         });
 
         if (!res.ok) {
+          request.end({ outcome: 'error', errorCode: String(res.status) });
           const errorText = await res.text();
           throw new RagError(
             `OpenAI embed error: HTTP ${res.status} - ${errorText}`,
@@ -73,6 +99,12 @@ export class OpenAiEmbedder implements IEmbedderBatch {
           data: Array<{ embedding: number[] }>;
           usage?: { prompt_tokens: number; total_tokens: number };
         };
+        request.end({
+          outcome: 'ok',
+          inputTokens: json.usage?.prompt_tokens,
+          tokensSource:
+            json.usage?.prompt_tokens === undefined ? 'unknown' : 'provider',
+        });
         const vector = json.data[0].embedding;
         const usage = json.usage
           ? {
@@ -82,6 +114,14 @@ export class OpenAiEmbedder implements IEmbedderBatch {
           : undefined;
         return { vector, usage };
       } catch (err: unknown) {
+        request.end({
+          outcome:
+            options?.signal?.aborted ||
+            (err instanceof Error && err.name === 'AbortError')
+              ? 'aborted'
+              : 'error',
+          error: err,
+        });
         lastError = err instanceof Error ? err : new Error(String(err));
         if (err instanceof Error && err.name === 'AbortError') throw err;
         const delay = 500 * 2 ** attempt;
@@ -101,6 +141,7 @@ export class OpenAiEmbedder implements IEmbedderBatch {
   ): Promise<IEmbedResult[]> {
     if (texts.length === 0) return [];
 
+    const op = startOperation(options);
     const chunkSize = 100;
     const results: IEmbedResult[] = new Array(texts.length);
 
@@ -111,6 +152,26 @@ export class OpenAiEmbedder implements IEmbedderBatch {
       const maxRetries = 3;
 
       for (let attempt = 0; attempt < maxRetries; attempt++) {
+        const request = beginEmbeddingRequest(
+          options,
+          withProviderAttempt(
+            withChunk(
+              op,
+              start / chunkSize,
+              Math.ceil(texts.length / chunkSize),
+            ),
+            attempt,
+          ),
+          {
+            provider: 'openai',
+            model: this.model,
+            inputs: chunk.length,
+            inputChars: chunk.reduce((sum, value) => sum + value.length, 0),
+            granularity: 'request',
+            retriesVisible: true,
+          },
+          this.usage,
+        );
         try {
           const res = await fetch(url, {
             method: 'POST',
@@ -123,6 +184,7 @@ export class OpenAiEmbedder implements IEmbedderBatch {
           });
 
           if (!res.ok) {
+            request.end({ outcome: 'error', errorCode: String(res.status) });
             const errorText = await res.text();
             throw new RagError(
               `OpenAI batch embed error: HTTP ${res.status} - ${errorText}`,
@@ -134,6 +196,12 @@ export class OpenAiEmbedder implements IEmbedderBatch {
             data: Array<{ embedding: number[]; index: number }>;
             usage?: { prompt_tokens: number; total_tokens: number };
           };
+          request.end({
+            outcome: 'ok',
+            inputTokens: json.usage?.prompt_tokens,
+            tokensSource:
+              json.usage?.prompt_tokens === undefined ? 'unknown' : 'provider',
+          });
           const sorted = json.data.sort((a, b) => a.index - b.index);
           const chunkLen = sorted.length;
           const usagePerItem = json.usage
@@ -151,6 +219,14 @@ export class OpenAiEmbedder implements IEmbedderBatch {
           lastError = undefined;
           break;
         } catch (err: unknown) {
+          request.end({
+            outcome:
+              options?.signal?.aborted ||
+              (err instanceof Error && err.name === 'AbortError')
+                ? 'aborted'
+                : 'error',
+            error: err,
+          });
           lastError = err instanceof Error ? err : new Error(String(err));
           if (err instanceof Error && err.name === 'AbortError') throw err;
           const delay = 500 * 2 ** attempt;

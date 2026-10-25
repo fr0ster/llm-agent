@@ -10,6 +10,12 @@ import type {
   LLMResponse,
   Message,
 } from '@mcp-abap-adt/llm-agent';
+import type { IUsageRecorder, UsageOperation } from '../interfaces/usage.js';
+import {
+  beginLlmRequest,
+  type LlmRequestHandle,
+  withProviderAttempt,
+} from '../usage/hooks.js';
 import {
   preserveThrottled,
   runWithThrottleRetry,
@@ -44,6 +50,13 @@ export interface LLMProvider {
    * Get embedding models. Best-effort; may return empty array.
    */
   getEmbeddingModels?(): Promise<string[] | IModelInfo[]>;
+}
+
+export interface ProviderRequestUsage {
+  opts?: LLMCallOptions;
+  op: UsageOperation;
+  base: Parameters<typeof beginLlmRequest>[2];
+  bound?: IUsageRecorder;
 }
 
 export abstract class BaseLLMProvider<
@@ -247,15 +260,84 @@ export abstract class BaseLLMProvider<
 
   /** Wrap one provider call in the shared policy. */
   protected withThrottleRetry<T>(
+    fn: (handle: LlmRequestHandle) => Promise<T>,
+    extra:
+      | {
+          model?: string;
+          signal?: AbortSignal;
+          onRetry?: ThrottleRetryOptions['onRetry'];
+        }
+      | undefined,
+    usage: ProviderRequestUsage & { base: { stream: true } },
+  ): Promise<{ response: T; handle: LlmRequestHandle }>;
+  protected withThrottleRetry<T>(
+    fn: (handle: LlmRequestHandle) => Promise<T>,
+    extra:
+      | {
+          model?: string;
+          signal?: AbortSignal;
+          onRetry?: ThrottleRetryOptions['onRetry'];
+        }
+      | undefined,
+    usage: ProviderRequestUsage,
+  ): Promise<T>;
+  protected withThrottleRetry<T>(
     fn: () => Promise<T>,
+    extra?: {
+      model?: string;
+      signal?: AbortSignal;
+      onRetry?: ThrottleRetryOptions['onRetry'];
+    },
+  ): Promise<T>;
+  protected withThrottleRetry<T>(
+    fn: (handle: LlmRequestHandle) => Promise<T>,
     extra?: {
       /** The model this call actually uses, when it overrides the configured one. */
       model?: string;
       signal?: AbortSignal;
       onRetry?: ThrottleRetryOptions['onRetry'];
     },
-  ): Promise<T> {
-    return runWithThrottleRetry(fn, {
+    usage?: ProviderRequestUsage,
+  ): Promise<T | { response: T; handle: LlmRequestHandle }> {
+    let attempt = 0;
+    const physicalRequest = async () => {
+      // Created inside the closure: quota waits that send no request emit no record.
+      const handle = usage
+        ? beginLlmRequest(
+            usage.opts,
+            withProviderAttempt(usage.op, attempt++),
+            usage.base,
+            usage.bound ?? this.config.usage,
+          )
+        : undefined;
+      let opened = false;
+      let failure: unknown;
+      let failed = false;
+      try {
+        // Calls without instrumentation retain the original callback contract.
+        const response = await (handle
+          ? fn(handle)
+          : (fn as () => Promise<T>)());
+        opened = true;
+        return usage?.base.stream && handle ? { response, handle } : response;
+      } catch (error) {
+        failed = true;
+        failure = error;
+        throw error;
+      } finally {
+        if (!opened || !usage?.base.stream) {
+          handle?.end({
+            outcome: failed
+              ? requestAborted(failure, extra?.signal)
+                ? 'aborted'
+                : 'error'
+              : 'ok',
+            error: failure,
+          });
+        }
+      }
+    };
+    return runWithThrottleRetry(physicalRequest, {
       key: this.quotaKey(extra?.model),
       strategy: this.config.whenThrottled,
       isThrottled: (e: unknown) => this.isThrottled(e),
@@ -263,6 +345,19 @@ export abstract class BaseLLMProvider<
       signal: extra?.signal,
       onRetry: extra?.onRetry,
     });
+  }
+}
+
+function requestAborted(error: unknown, signal?: AbortSignal): boolean {
+  if (signal?.aborted) return true;
+  try {
+    return (
+      error instanceof Error &&
+      (error.name === 'AbortError' ||
+        ('code' in error && error.code === 'ERR_CANCELED'))
+    );
+  } catch {
+    return false;
   }
 }
 

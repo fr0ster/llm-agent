@@ -20,7 +20,12 @@ import type {
   LLMResponse,
   Message,
 } from '@mcp-abap-adt/llm-agent';
-import { BaseLLMProvider } from '@mcp-abap-adt/llm-agent';
+import {
+  BaseLLMProvider,
+  type LlmRequestFacts,
+  type LlmRequestHandle,
+  startOperation,
+} from '@mcp-abap-adt/llm-agent';
 import {
   type ChatMessage,
   OrchestrationClient,
@@ -240,7 +245,7 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
       // response to the wrong in-flight request when concurrent requests share
       // the same XSUAA user (mirrors streamChat's per-stream agent below).
       const response = await this.withThrottleRetry(
-        async () => {
+        async (handle) => {
           // No timeout of ours. Sixty seconds used to sit here, and it was a
           // guess about somebody else's model, prompt and tool loop — a large
           // input legitimately outruns it, and the call then died for a reason
@@ -257,12 +262,32 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
           });
           const client = this.createClient(formatted, tools, destination);
           const callAgent = new https.Agent({ keepAlive: false });
-          return client.chatCompletion(undefined, {
+          const response = await client.chatCompletion(undefined, {
+            // The SDK forwards this middleware list to its single inference HTTP request.
+            // Disable middleware retries so the provider owns every attempt.
+            middleware: [],
             httpsAgent: callAgent,
             signal: options?.signal,
           });
+          handle.end({
+            outcome: returnedSdkError(response) ? 'error' : 'ok',
+            ...tokenFacts(response.getTokenUsage()),
+          });
+          return response;
         },
         { signal: options?.signal },
+        {
+          opts: options,
+          op: startOperation(options),
+          bound: this.config.usage,
+          base: {
+            provider: 'SAP AI Core',
+            model: this.modelOverride ?? this.model,
+            stream: false,
+            granularity: 'request',
+            retriesVisible: true,
+          },
+        },
       );
 
       const toolCalls = response.getToolCalls();
@@ -337,6 +362,11 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
     const model = this.modelOverride ?? this.model;
     const messageSummary = SapCoreAIProvider.summarizeMessages(messages);
     const toolCount = tools?.length || 0;
+    let request: LlmRequestHandle | undefined;
+    let completed = false;
+    let returnedError = false;
+    let failure: unknown;
+    let facts: Partial<LlmRequestFacts> = {};
     let streamOpened = false;
     let chunkIndex = 0;
     let emittedContentChunks = 0;
@@ -366,7 +396,7 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
         model,
         keepAlive: false,
       });
-      const streamResponse = await this.withThrottleRetry(
+      const opened = await this.withThrottleRetry(
         async () => {
           // As above: the caller's signal is the deadline, and the SDK takes
           // it directly. The destination (and the credential's token()) is
@@ -384,11 +414,26 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
           // The SDK takes the signal as its own second parameter, so an abort
           // ends the stream itself and not only the waiting around it.
           return client.stream(undefined, options?.signal, undefined, {
+            middleware: [],
             httpsAgent: streamAgent,
           });
         },
         { signal: options?.signal },
+        {
+          opts: options,
+          op: startOperation(options),
+          bound: this.config.usage,
+          base: {
+            provider: 'SAP AI Core',
+            model,
+            stream: true,
+            granularity: 'request',
+            retriesVisible: true,
+          },
+        },
       );
+      request = opened.handle;
+      const streamResponse = opened.response;
       streamOpened = true;
       this.log?.debug('SAP AI SDK streamChat stream opened', {
         model,
@@ -398,6 +443,7 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
 
       for await (const chunk of streamResponse.stream) {
         chunkIndex += 1;
+        if (returnedSdkError(chunk)) returnedError = true;
         // TokenUsage is only available in the final chunk (final_result.usage)
         const tokenUsage = chunk.getTokenUsage() as
           | {
@@ -406,6 +452,7 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
               total_tokens: number;
             }
           | undefined;
+        if (tokenUsage) facts = { ...facts, ...tokenFacts(tokenUsage) };
         const deltaContent = chunk.getDeltaContent() || '';
         if (deltaContent) {
           emittedContentChunks += 1;
@@ -430,6 +477,7 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
               arguments: tc.function?.arguments,
             }))
           : undefined;
+        if (deltaContent || toolCalls?.length) request.firstToken();
         this.log?.debug('SAP AI SDK streamChat chunk received', {
           model,
           chunkIndex,
@@ -462,6 +510,7 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
             : {}),
         };
       }
+      completed = true;
       this.log?.debug('SAP AI SDK streamChat completed', {
         model,
         chunkCount: chunkIndex,
@@ -469,6 +518,7 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
         emittedContentChars,
       });
     } catch (error: unknown) {
+      failure = error;
       this.log?.error('SAP AI SDK streaming error', {
         model,
         resourceGroup: this.resourceGroup ?? 'default',
@@ -486,6 +536,20 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
         new Error(`SAP AI SDK streaming error: ${detail}`),
       );
     } finally {
+      request?.end({
+        ...facts,
+        outcome: failure
+          ? options?.signal?.aborted || isAbortError(failure)
+            ? 'aborted'
+            : 'error'
+          : completed
+            ? returnedError
+              ? 'error'
+              : 'ok'
+            : 'aborted',
+        error: failure,
+        ...(!completed && !failure ? { closedEarly: true } : {}),
+      });
       this.modelOverride = undefined;
     }
   }
@@ -676,4 +740,45 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
       };
     });
   }
+}
+
+function tokenFacts(usage?: {
+  prompt_tokens?: number;
+  completion_tokens?: number;
+  prompt_tokens_details?: { cached_tokens?: number };
+}): Partial<LlmRequestFacts> {
+  return usage &&
+    (usage.prompt_tokens !== undefined ||
+      usage.completion_tokens !== undefined ||
+      usage.prompt_tokens_details?.cached_tokens !== undefined)
+    ? {
+        ...(usage.prompt_tokens !== undefined
+          ? { inputTokens: usage.prompt_tokens }
+          : {}),
+        ...(usage.completion_tokens !== undefined
+          ? { outputTokens: usage.completion_tokens }
+          : {}),
+        ...(usage.prompt_tokens_details?.cached_tokens !== undefined
+          ? { cachedInputTokens: usage.prompt_tokens_details.cached_tokens }
+          : {}),
+        tokensSource: 'provider',
+      }
+    : {};
+}
+
+function returnedSdkError(response: { _data?: unknown }): boolean {
+  return (
+    !!response._data &&
+    typeof response._data === 'object' &&
+    'error' in response._data &&
+    !!response._data.error
+  );
+}
+
+function isAbortError(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  return (
+    ('name' in error && error.name === 'AbortError') ||
+    ('code' in error && error.code === 'ERR_CANCELED')
+  );
 }

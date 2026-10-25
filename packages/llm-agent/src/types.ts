@@ -77,6 +77,8 @@ export interface LLMResponse {
 }
 
 export interface LLMProviderConfig {
+  /** Recorder used when a call does not supply its own recorder. */
+  usage?: IUsageRecorder;
   /**
    * Which 429 gate this provider's calls share, when the default is not what you
    * meant.
