@@ -1,173 +1,253 @@
 # Usage analytics: contract first, replaceable transport and storage
 
-Date: 2026-10-25. Status: draft for review.
+Date: 2026-10-25. Status: draft for review (revision 3, after two review rounds).
 
 ## Intent
 
-Consumers of llm-agent need to know what their work really costs: LLM and embedding tokens, tool calls, task work, and, on the consumer side, sessions, storage and process resources.
+Consumers of llm-agent need to know what their work really costs: LLM and embedding calls, tool calls, task work and, on the consumer side, sessions, storage and process resources.
 
-The first consumer, cloud-llm-hub, collects raw per-session statistics now and decides later which analysis to run, starting with Python and maybe Grafana. The aim is to answer, from measured data, "which subaccount parameters does a customer need for N users". The library stays agnostic: it records facts in its own terms and does not know where they go.
+The first consumer, cloud-llm-hub, collects raw per-session statistics now and decides later which analysis to run (Python first, maybe Grafana), in order to answer from measured data which subaccount parameters N users need.
+
+The library stays agnostic: it records facts in its own terms and does not know where they go.
 
 ## Goals
 
-- A contract in `@mcp-abap-adt/llm-agent` for recording usage, independent of transport and storage.
-- Library components record every usage they cause: every LLM call, embedding call, tool call and task. A missing record is a defect.
-- Replaceable implementations in separate llm-agent packages: a recorder, transports and sinks. A consumer can replace any of them with its own.
-- Raw, append-only records rich enough for any later aggregation.
+- **Contract.** A contract in `@mcp-abap-adt/llm-agent` for recording usage, independent of transport and storage.
+- **Completeness.** Every physical LLM call, embedding request, MCP tool dispatch and task end the library causes produces exactly one record, whatever the outcome: success, returned error, thrown error, cancellation, early stream close. A missing record is a defect.
+- **Replaceable implementations.** A recorder, transports and per-database sinks live in separate llm-agent packages. A consumer can replace any of them.
+- **Raw records.** Raw, append-only records, rich enough for any later aggregation.
 
 ## Non-goals
 
-- Forecast models, sizing calculators and dashboards.
-- Billing or quotas.
-- Real-time reactions; that is what signals are for.
+- Forecast models, sizing calculators, dashboards, billing, quotas, real-time reactions. Real-time reactions are what signals are for.
+- Durable buffering inside the producer process. Durability starts at the sink.
 
-## Anti-goals (failure even if it works)
+## Anti-goals
 
-- **Incomplete records.** An LLM or embedding call path that records nothing, so totals are silently low.
-- **A visible cost to the producer.** Recording that slows down or breaks the producer, or grows without bound.
-- **Sensitive content in records.** Conversation text, prompts, tool arguments or results, credentials or tokens.
+- Totals that are silently low: an unrecorded path, or a loss that is not accounted for.
+- A visible cost to the producer, or unbounded memory.
+- Content in records: conversation text, prompts, tool arguments or results, documents, credentials, tokens.
 
-## Relation to signals
+## Relation to signals and to `IRequestLogger`
 
-Signals (`@mcp-abap-adt/llm-signals`) are a one-way information bus: current state, retained latest values, subscriptions.
+**Signals** (`@mcp-abap-adt/llm-signals`) are a one-way information bus for current state. **Analytics** is an append-only journal for later analysis, a level above any transport. The two contracts are separate.
 
-Analytics is a level above any transport. It is an append-only journal of usage records, kept for later analysis, where completeness matters. It may be implemented over different transports: in-process, the signal bus, REST, OpenTelemetry. The two contracts are separate, and analytics does not depend on signals.
+**`IRequestLogger`** stays as it is, as the diagnostic and request-summary logger. It is not the analytics source.
 
-## Layers
+- It lacks facts records need: provider, stream flag, outcome, inputs, physical attempts. Its wrappers also log only on success.
+- Analytics records are produced by dedicated boundary instrumentation (below).
+- Existing logger call sites are not converted, so nothing is counted twice.
 
-1. **Contract** (`@mcp-abap-adt/llm-agent`, `src/interfaces/usage.ts`): what a usage record is, and how a producer records one (`IUsageRecorder`). Library components and consumers depend only on this.
-2. **Transport**: how a record reaches storage. Implementations are replaceable: direct in-process, over a signal bus, HTTP to a collector, OpenTelemetry later.
-3. **Storage and export** (`IUsageSink`): where records are kept and how they are read back for analysis.
-
-## Contract
+## Contract (`@mcp-abap-adt/llm-agent`, `src/interfaces/usage.ts`)
 
 ```ts
 export const USAGE_SCHEMA_VERSION = 1;
 
-/** Who and where. Only identifiers and labels, never content. */
+/** Who and where. Identifiers and labels only, never content. */
 export interface UsageContext {
-  sessionId?: string;
-  userId?: string;          // consumer-defined identifier; consumers may hash it
-  turnId?: string;          // one planner turn or one request
-  taskId?: string;
-  role?: string;            // e.g. 'planner', 'executor', 'checker', 'classifier', 'embedder'
+  sessionId?: string; userId?: string; turnId?: string; taskId?: string;
+  requestId?: string; traceId?: string;
+  role?: string;            // the existing LlmComponent names where they apply: planner, executor, classifier, …
   destination?: string;
-  traceId?: string;
-  [label: string]: string | undefined;   // further consumer labels (additive)
+  [label: string]: string | undefined;   // additional consumer labels
 }
 
-interface UsageRecordBase {
+interface Base {
   schema: typeof USAGE_SCHEMA_VERSION;
-  id: string;               // unique per record (for dedupe across retries)
-  at: number;               // ms since epoch, end of the measured operation
+  id: string;              // unique; stable across retries of delivery
+  at: number;              // ms since epoch, end of the operation
   context: UsageContext;
   outcome: 'ok' | 'error' | 'aborted';
-  errorCode?: string;       // a code, never a provider error body
+  errorCode?: string;      // a code, never a provider body
 }
 
-export type UsageRecord =
-  | (UsageRecordBase & { kind: 'llm.call'; provider: string; model: string; stream: boolean;
-      inputTokens?: number; outputTokens?: number; cachedInputTokens?: number;
-      tokensSource: 'provider' | 'estimate' | 'unknown';
-      durationMs: number; firstTokenMs?: number; retries?: number; throttledMs?: number })
-  | (UsageRecordBase & { kind: 'embedding.call'; provider: string; model: string;
-      inputs: number; inputChars: number; inputTokens?: number;
-      tokensSource: 'provider' | 'estimate' | 'unknown'; durationMs: number })
-  | (UsageRecordBase & { kind: 'tool.call'; server?: string; tool: string;
-      durationMs: number; requestBytes?: number; responseBytes?: number })
-  | (UsageRecordBase & { kind: 'task'; worker: string; state: TaskState;
-      queuedMs: number; runMs: number; toolCalls?: number; budgetExhausted?: boolean })
-  | (UsageRecordBase & { kind: `x.${string}`; values: Record<string, number | string | boolean> });
+type LlmCall = Base & { kind: 'llm.call';
+  operationId: string; attempt: number;              // one logical call → n physical attempts
+  provider: string; model: string; stream: boolean;
+  inputTokens?: number; outputTokens?: number; cachedInputTokens?: number;
+  tokensSource: 'provider' | 'estimate' | 'unknown';
+  durationMs: number; firstTokenMs?: number; throttledMs?: number;
+  closedEarly?: boolean };                            // stream consumer stopped before the end
+type EmbeddingCall = Base & { kind: 'embedding.call';
+  operationId: string; attempt: number; chunk: number; chunks: number;
+  provider: string; model: string; inputs: number; inputChars: number;
+  inputTokens?: number; tokensSource: 'provider' | 'estimate' | 'unknown';   // exact provider total of this request
+  durationMs: number };
+type ToolCall = Base & { kind: 'tool.call';
+  server?: string; tool: string; dispatched: boolean;        // false: served from cache, no MCP request
+  transportOutcome: 'ok' | 'error' | 'aborted';              // the MCP request
+  toolOutcome?: 'ok' | 'error';                              // isError of the tool result
+  durationMs: number; requestBytes?: number; responseBytes?: number };
+type TaskEnd = Base & { kind: 'task';
+  taskId: string; worker: string; state: TaskState;
+  queuedMs?: number; runMs?: number; endKnown: boolean;      // false: interrupted by a crash, end time unknown
+  toolCalls?: number; budgetExhausted?: boolean };
+type Extension = Base & { kind: `x.${string}`; values: Record<string, number | string | boolean> };
 
-/** Producer side: the only thing a producer depends on. */
+export type UsageRecord = LlmCall | EmbeddingCall | ToolCall | TaskEnd | Extension;
+
+/** Distributive: each variant keeps its own required fields. */
+export type UsageInput = UsageRecord extends infer R
+  ? R extends UsageRecord ? Omit<R, 'schema' | 'id' | 'at'> & Partial<Pick<R, 'id' | 'at'>> : never : never;
+
+/** Producer side. */
 export interface IUsageRecorder {
-  record(record: Omit<UsageRecord, 'schema' | 'id' | 'at'> & Partial<Pick<UsageRecordBase, 'id' | 'at'>>): void;
-  /** A recorder whose records carry this context merged over the parent's. */
+  record(input: UsageInput): void;          // never throws, never awaits
   with(context: UsageContext): IUsageRecorder;
 }
 
-/** Storage side. */
+/** Delivery between recorder and sink. `send` resolves only when the sink has written the batch. */
+export interface IUsageTransport {
+  send(batch: readonly UsageRecord[]): Promise<void>;
+  close(): Promise<void>;
+}
+
+/** Storage. `write` is idempotent by `id`: writing a record twice stores it once. */
 export interface IUsageSink {
-  write(records: readonly UsageRecord[]): Promise<void>;
-  flush?(): Promise<void>;
+  write(batch: readonly UsageRecord[]): Promise<void>;
   close?(): Promise<void>;
+}
+
+/** Lifecycle and health of a running recorder implementation (not needed by producers). */
+export interface IUsageControl {
+  flush(timeoutMs: number): Promise<void>;
+  close(timeoutMs: number): Promise<{ delivered: number; lost: number; unconfirmed: number }>;
+  stats(): { buffered: number; delivered: number; lost: Record<string, number>; lastErrorCode?: string };
 }
 ```
 
-### Rules every implementation keeps
+### Rules
 
-- **Producer safety.** `record` never throws, never awaits and returns at once. A failing transport or sink never affects the producer.
-- **Bounded memory.** Buffering is bounded. When records are dropped, the drop is itself recorded: a `x.usage.dropped` record with counts per kind, emitted when possible. This way losses are visible in the data instead of silently lowering totals.
-- **Delivery.** Records go to a sink at least once; the record `id` lets the sink deduplicate. A graceful shutdown flushes.
-- **Content.** No content of any kind, and only the listed fields. `x.*` kinds are for consumer measurements and carry only numbers, labels and flags, never text taken from content.
-- **Evolution.** The schema is additive within a version: new kinds and optional fields may be added. Readers ignore unknown kinds and fields.
-- **Token counts.**
-  - Provider-reported counts are recorded as such (`tokensSource: 'provider'`).
-  - When a provider reports none, the producer records `'unknown'`, or an estimate marked `'estimate'`. It never records a guessed count as if the provider had reported it.
+- **Snapshots.**
+  - `record` and `with` copy their inputs (`structuredClone`). Later mutation by the caller changes nothing already recorded.
+  - Values are plain data only.
+  - The recorder fills in `schema`, `id` and `at`.
+- **Producer safety.** `record` never throws or awaits. A failing transport or sink never affects the producer.
+- **Delivery (precise).** A record is *accepted* when `record` returns and it is in the recorder's bounded queue. It is *delivered* when a `send` that carried it resolved, which means the sink wrote it. Accepted records are delivered at least once while the process lives and the sink becomes writable within the retry window. Sinks are idempotent by `id`, so retries do not inflate totals.
+- **Loss accounting (best effort, stated plainly).** A record is *lost* when the queue overflows, the retry window expires, or a close times out.
+  - Losses are counted per `(sessionId or '', kind)` in fixed windows (`lossWindowMs`).
+  - When a window closes, the recorder emits one `x.usage.lost` record per session with losses in it. Its id is `lost:<recorderInstanceId>:<sessionId>:<windowStart>`, so a retried emission is stored once.
+  - Losses after a window closed belong to the next window. At close, the open window is closed early and emitted.
+  - A loss record that itself cannot be delivered is not re-reported as a loss (no recursion). It is counted only in `stats().lost` and in the close result.
+  - Loss counters live in a bounded map. On overflow, the oldest session counters merge into a session `''` counter.
+  - **How readers use them.** A session-filtered analysis must also consult the `''` loss records of the same windows; they mark that some session's data in that window is incomplete without saying which.
+  - **Crashes.** A crash loses accepted records without any loss record. Consumers detect it from their own lifecycle records, for example a session without a close record.
+  - **The guarantee is therefore:** delivered records are exact, and losses are reported when the reporting path works. It is not a guarantee that every loss is visible in the data.
+- **Shutdown.**
+  - `IUsageControl.close` stops accepting, closes the open loss window, drains the queue through the transport within the timeout, and accounts the rest as lost. It then closes the transport, then the sinks.
+  - It resolves to `{ delivered, lost, unconfirmed }`, so the consumer can log an incomplete shutdown.
+  - `flush` drains without closing.
+- **Content.** No content, and only the listed fields. `x.*` values are numbers, labels and flags, never text taken from content.
+- **Evolution.** The schema only grows: new kinds and optional fields may be added, and readers ignore unknown ones.
+- **Tokens.**
+  - `'provider'` only for counts the provider reported for that physical request, unmodified. Embedding batch totals are never split into per-item estimates.
+  - Otherwise `'estimate'`, or `'unknown'`.
 
-### Relation to the existing `IRequestLogger`
+## Instrumentation (where the library records)
 
-The library already calls `IRequestLogger` (`logLlmCall`, `logRagQuery`, `logToolCall`) at about two dozen places. Each call carries a `component` (planner, executor, classifier, embedding, …), the tokens with an `estimated` flag, and the duration. Those call sites are the choke points; the new contract adds no second set. *(My call: no double counting, no breaking change.)*
+There is one owner per operation: a boundary decorator. Nothing else records that operation.
 
-- **Adapter.** `@mcp-abap-adt/llm-usage` ships `usageRequestLogger(recorder, inner?)`, an `IRequestLogger` that turns each call into a usage record and optionally forwards it to an inner logger.
-  - LLM calls become `llm.call`, with `role` set to the existing `LlmComponent` name.
-  - Embedding entries become `embedding.call`.
-  - Tool calls become `tool.call`.
-  - RAG queries become `x.rag.query` with counts and duration only. The query text is dropped (no-content rule).
-  - `estimated: true` maps to `tokensSource: 'estimate'`.
-- **Gaps.** Where the completeness test finds an LLM, embedding or tool path that does not reach `IRequestLogger`, the fix is to make it reach the logger; the path does not call the recorder directly.
-- **Context.** Context that `IRequestLogger` entries lack (`sessionId`, `turnId`, `taskId`) comes from the recorder bound by the consumer (`with`). Library components narrow it where they know more.
-- **Tasks.** Task records (`task`) come from TaskBoard directly, because it has no `IRequestLogger` path.
-- **Unchanged.** `IRequestLogger` itself and `llm-agent-server-libs` usage logging stay as they are.
+| Operation | Owner (boundary) | Record |
+|---|---|---|
+| LLM call | each provider package, at its physical request: inside its own retry closures (for example `withThrottleRetry` in the OpenAI and SAP providers), through a shared hook `reportLlmRequest(op, facts)` from `@mcp-abap-adt/llm-agent` | one `llm.call` per physical HTTP or SDK request, recorded in `finally`, so a returned error, a throw, an abort or an early stream close (`closedEarly`) all produce a record. For SDK-delegating providers whose SDK retries internally, the SDK retries are disabled where the SDK allows it; otherwise the SDK call is recorded as one attempt with `retries` unknown |
+| Embedding request | each embedder provider package, at its physical request (inside its own chunk and retry loops), through `reportEmbeddingRequest(op, facts)` | one `embedding.call` per physical request, with that request's exact provider token total, or `unknown` when the provider reports none |
+| MCP tool dispatch | `McpClientWrapper`, around each internal request (`performCall`): the first try, after a reconnect, after a session reset | one `tool.call` per request, with `transportOutcome` and `toolOutcome` from `isError`; cache hits are recorded by the tool-call cache as `dispatched: false` |
+| Task end | `TaskBoard` | one `task` at the terminal transition |
 
-### Where the library records
+Per-path rules:
+- **Tasks:**
+  - a queued task stopped before start has `queuedMs` = finish − created and no `runMs`;
+  - tasks converted to `interrupted` by `restore` are recorded once at restore, with `endKnown: false` and no `runMs`. Their id is stable and globally unique: `task:<boardId>:<taskId>:interrupted`, where `boardId` is the persisted owner identity of the board (the dialogue session id), so two sessions restoring the same board-local `t1` do not collide;
+  - already-terminal restored tasks are not recorded again.
+- **Direct calls to an injected LLM** (for example `HistorySummarizer`) are covered because the physical request is recorded inside the provider.
 
-- **LLM calls.** Every `ILlm` chat and stream call made by library components, whatever the caller: SmartAgent, planner, executor, checker, classifier, summarizer, translator, query expander, finalizer, step reviewer. The record carries the role. The builder chooses the single choke point, or points, that guarantee this. A test enumerates the library's LLM call paths and fails when one does not record.
-- **Embedding calls.** Every embedding call made through library embedders and RAG components (indexing and query).
-- **Tool calls.** Every MCP tool call the library dispatches.
-- **Tasks.** Every TaskBoard task, at its terminal state, including stopped and interrupted tasks.
+**The completeness test** enumerates the library's call paths with fake providers and asserts one record per physical operation for each outcome:
+- ok, returned error, thrown error, abort, early stream close;
+- a retry with three attempts;
+- a batch split into three chunks with a failure in the last;
+- nested outer chunking plus inner provider retries;
+- provider-internal throttle retries (a 429, then success: two records);
+- an MCP dispatch retried after a reconnect (two records);
+- two concurrent TaskBoard tasks: each record carries its own `taskId`.
 
-**Context.** Context flows from the consumer. A consumer passes a recorder that is already bound to its context (`recorder.with({ sessionId, userId, … })`). Library components narrow it further (`with({ role, turnId, taskId })`) where they know more. Components get the recorder through their existing options or constructors. When none is given they use an inline no-op, so behaviour without a recorder is unchanged.
+Real provider packages are exercised with a mocked HTTP layer, not fake `ILlm`s only. The paths it covers:
+- SmartAgent and the planner, executor and checker workers;
+- the classifier, summarizer, translator, query expander, finalizer and step reviewer;
+- RAG indexing and query, and tool vectorization;
+- tool-loop dispatch, the coordinator's tool calls and the mixed tool-call handler.
 
-## Packages (implementations)
+### Operation metadata
 
-- **`@mcp-abap-adt/llm-usage`** (new):
-  - `createUsageRecorder({ transport, now?, idFactory?, bufferLimit? })`: the default recorder, with bounded buffering and drop accounting;
-  - `usageRequestLogger(recorder, inner?)`: the `IRequestLogger` adapter described above;
-  - `noopRecorder`;
-  - `combineSinks(...sinks)`: fan-out; one failing sink does not stop the others;
-  - transports:
-    - `directTransport(sink, { batchSize, flushMs })`: in-process;
-    - `httpTransport({ url, headers, batchSize, flushMs, retry })`: POSTs JSON batches to a collector;
-    - `signalTransport(emitter)`: publishes records over an `ISignalEmitter`, with a matching `signalSource(subscriber, sink)` on the receiving side;
-  - simple sinks:
-    - `memorySink({ limit })` with `read({ from?, to?, kinds? })` and `export('jsonl' | 'csv')`;
-    - `jsonlFileSink({ path, rotateBytes })`.
-- **`@mcp-abap-adt/llm-usage-sql`** (new): table sinks for PostgreSQL, HANA and SQLite.
-  - It follows the store pattern of the existing `pg-vector-rag` / `hana-vector-rag` packages.
-  - One append-only table, holding the common columns plus the kind-specific payload as JSON.
-  - Indexes on `at`, `session_id` and `kind`.
-  - A read API `read({ from, to, kinds, sessionId? })` for export, and retention by age (`deleteOlderThan(ms)`).
-  - SQLite is for consumers without a database server, for example a single container without persistence. It uses Node's built-in `node:sqlite` where available, so the package carries no native dependency. *(My call.)*
-  - The DDL ships with the package for all three databases. Creating the table at runtime is `autoCreateSchema`: on by default for PostgreSQL and SQLite, off for HANA, where an operator applies the DDL to the HDI container, as with the vector stores.
+A logical LLM call or embedding operation is described by a `UsageOperation { operationId: string; attempt: number; chunk?: number; chunks?: number }`. It travels in call options (`CallOptions.usageOp`), next to the recorder.
 
-A consumer may replace any of these with its own transport or sink: the contract is all that the library depends on.
+- **Who sets what.**
+  - The outermost library wrapper of a logical call creates the `operationId`.
+  - `RetryLlm` and `RetryEmbedder` set `attempt` for each outer attempt.
+  - `BatchChunkingEmbedder` sets `chunk` and `chunks` for each chunk.
+  - A provider's own internal retry or chunk loop increments `attempt` or sets `chunk` on a copy of the operation for each physical request.
+- **What the hook records.** The hook records whatever the operation carries at the physical request. Nested outer chunking with inner retries therefore yields one record per request, all sharing the `operationId`.
+
+### Context propagation
+
+- **Call options.** `CallOptions` gains `usage?: IUsageRecorder`, an additive field.
+  - Every library component passes it down unchanged, or narrowed with `with(...)`.
+  - `normalizeRequestOptions` keeps a caller-provided recorder instead of replacing it.
+- **Turns and tasks.**
+  - The dialogue session narrows it with `turnId` for each turn.
+  - `TaskBoard` narrows it with `taskId` and the worker role, and passes it in a new additive worker-input field `ISubAgentInput.usage`. Every worker adapter (`SmartAgentSubAgent` and the others) forwards it into the call options it builds.
+  - Workers pass it on to their LLM and tool calls.
+- **MCP calls.** `McpClientAdapter` forwards `CallOptions.usage` to `McpClientWrapper.callTool` through an additive options parameter (next to the signal).
+- **Boundary instrumentation** takes the recorder from the call options. If none is given they use the recorder bound at construction. If that is missing too, they use a no-op, so behaviour without a recorder is unchanged.
+
+## Packages
+
+**`@mcp-abap-adt/llm-usage`** (no database drivers):
+- **Recorder:** `createUsageRecorder({ transport, queueLimit, retryWindowMs, lossWindowMs, now?, idFactory? })` returns `IUsageRecorder & IUsageControl`; plus `noopRecorder`.
+- **Transports:**
+  - `directTransport(sink, { batchSize, flushMs })`: acknowledged by the sink write;
+  - `httpTransport({ url, headers, batchSize, flushMs })`: acknowledged by the collector's 2xx after it wrote the batch, with a documented request/response format;
+  - `signalTransport` (best effort):
+    - it is *not acknowledged*;
+    - it publishes each batch under one fixed key, so the bus retains only the latest batch and receivers must consume live;
+    - its records count as delivered when emitted;
+    - meant for in-process fan-out where loss is acceptable, and documented as such.
+- **Sinks:**
+  - `memorySink({ limit })` and `jsonlFileSink({ path, rotateBytes })`;
+  - reading and export deduplicate by `id`;
+  - `combineSinks(...)` acknowledges only when every sink wrote, and a failing sink fails the batch, which is retried and is idempotent.
+- **Reading:** `read({ from, to, kinds, sessionId? })` and `export('jsonl' | 'csv')` helpers, shared by all sinks.
+
+**Database sinks**, one package per database, each depending only on the contract and its own driver:
+- **`@mcp-abap-adt/llm-usage-pg`.**
+- **`@mcp-abap-adt/llm-usage-hana`** (`@sap/hana-client`).
+- **`@mcp-abap-adt/llm-usage-sqlite`** (`node:sqlite`).
+  - Requires Node ≥ 22.13 and checks the capability at construction, failing with a clear error otherwise.
+  - Writes run in a worker thread so the synchronous API does not block the event loop.
+- **What all three share:**
+  - one append-only table with the common columns and the kind payload as JSON;
+  - primary key `id`, inserts that ignore duplicates;
+  - indexes on `at`, `session_id` and `kind`;
+  - `read(...)` and `deleteOlderThan(ms)`;
+  - DDL shipped in the package, with `autoCreateSchema` on by default for PostgreSQL and SQLite and off for HANA (an operator applies the DDL to the HDI container, as with the vector stores).
 
 ## Validation
 
-- **Contract type tests:** kinds narrow by `kind`; `x.*` records accept only number, string and boolean values.
-- **Recorder:**
-  - `record` never throws, even with a throwing transport;
-  - buffering stays bounded;
-  - drops produce a `x.usage.dropped` record;
-  - `with` merges context;
-  - ids are unique.
-- **Transports:**
-  - direct batching and flush;
-  - HTTP retry with dedupe ids;
-  - signal transport round-trip.
-- **Sinks:**
-  - memory and JSONL read/export, including CSV columns;
-  - SQL sinks on PGlite, SQLite and, under the existing HANA test gating, HANA: append, read by window and kind, retention.
-- **Completeness (library):** every LLM call path, embedding path, tool dispatch and task end records exactly once, with the right role. Records hold no content: a test feeds distinctive prompt, tool and argument strings and asserts that none appear in any record.
+- **Types.**
+  - Valid producer inputs per kind compile.
+  - A missing kind field or a wrong field fails to compile.
+  - `x.*` values reject objects.
+- **Recorder.**
+  - `record` never throws, even with a throwing transport.
+  - Inputs are snapshots: mutation after `record` does not reach the sink.
+  - The queue stays bounded.
+  - Every loss reason (overflow, retry window, close timeout) yields `x.usage.lost` for the right session and window, emitted once even when its delivery is retried.
+  - Shutdown order works.
+- **Transports.**
+  - Direct and HTTP: a batch is acknowledged only after the write; a lost acknowledgement causes a retry without a duplicate stored.
+  - Signal transport: the documented best-effort behaviour.
+- **Sinks.**
+  - Memory, JSONL, PGlite, SQLite and, under the existing HANA test gating, HANA: idempotent writes, reads by window, kind and session, CSV columns, retention.
+  - SQLite: rejected on an unsupported Node; writes run off the main thread.
+- **Completeness:** the test above.
+- **Content:** distinctive prompt, document, argument and result strings never appear in any record.
 - **No recorder given:** behaviour is identical to today.
