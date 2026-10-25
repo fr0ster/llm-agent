@@ -11,8 +11,17 @@ set -uo pipefail
 cd "$(dirname "$0")/.."
 
 echo ">>> Clean + rebuild before publish"
-npm run clean
-npm run build
+# A failed clean or build must stop the run: publishing would otherwise ship
+# whatever dist/ is left over from an earlier build.
+if ! npm run clean; then
+  echo "ERROR: 'npm run clean' failed; nothing was published." >&2
+  exit 1
+fi
+if ! npm run build; then
+  echo "ERROR: 'npm run build' failed; nothing was published." >&2
+  echo "After a pull that adds packages or dependencies, run 'npm ci' first." >&2
+  exit 1
+fi
 
 PACKAGES=(
   llm-agent
