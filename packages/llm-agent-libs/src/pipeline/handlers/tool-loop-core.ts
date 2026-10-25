@@ -271,6 +271,21 @@ export async function* executeToolBatchWithHeartbeat(
     const wasCached = !!cachedValue;
     const res = cachedValue
       ? (() => {
+          try {
+            options?.usage?.with({ role: 'tool-loop' }).record({
+              kind: 'tool.call',
+              context: {},
+              tool: tc.name,
+              dispatched: false,
+              embedded: false,
+              outcome: cachedValue.isError ? 'error' : 'ok',
+              transportOutcome: 'ok',
+              toolOutcome: cachedValue.isError ? 'error' : 'ok',
+              durationMs: Date.now() - toolStart,
+            });
+          } catch {
+            /* Analytics must not affect cache hits. */
+          }
           metrics.toolCacheHitCount.add();
           toolSpan.setAttribute('cache', 'hit');
           return { ok: true as const, value: cachedValue };

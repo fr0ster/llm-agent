@@ -6,8 +6,10 @@
 
 import type {
   IMcpRequestHeadersStrategy,
+  IUsageRecorder,
   ToolCall,
   ToolResult,
+  UsageInput,
 } from '@mcp-abap-adt/llm-agent';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
@@ -77,6 +79,9 @@ export type TransportType =
   | 'embedded';
 
 export interface MCPClientConfig {
+  /** Default recorder; a per-call recorder takes precedence. */
+  usage?: IUsageRecorder;
+
   /** Stable, human-readable label used as the namespace prefix for this server's colliding tools. */
   name?: string;
 
@@ -447,6 +452,7 @@ export class MCPClientWrapper {
   async callTool(
     toolCall: ToolCall,
     signal?: AbortSignal,
+    usageOpts?: { usage?: IUsageRecorder },
   ): Promise<ToolResult> {
     // For embedded mode, use direct handler or server instance
     if (this.detectedTransport === 'embedded') {
@@ -457,17 +463,15 @@ export class MCPClientWrapper {
           // The signal goes to the handler, not just around it. Embedded is
           // the path where the tool runs in this very process, so a handler
           // that ignores it keeps working after the caller has been answered.
-          result = await this.config.callToolHandler(
-            toolCall.name,
-            toolCall.arguments,
-            signal,
+          const handler = this.config.callToolHandler.bind(this.config);
+          result = await this.recordDispatch(toolCall, signal, usageOpts, () =>
+            handler(toolCall.name, toolCall.arguments, signal),
           );
         } else if (this.config.toolCallHandler) {
           // Use provided handler
-          result = await this.config.toolCallHandler(
-            toolCall.name,
-            toolCall.arguments,
-            signal,
+          const handler = this.config.toolCallHandler.bind(this.config);
+          result = await this.recordDispatch(toolCall, signal, usageOpts, () =>
+            handler(toolCall.name, toolCall.arguments, signal),
           );
         } else {
           throw new Error(
@@ -508,22 +512,24 @@ export class MCPClientWrapper {
       if (!this.client) {
         await this.connect();
       }
-      const response = await this.client?.callTool(
-        { name: toolCall.name, arguments: toolCall.arguments },
-        undefined,
-        {
-          // The caller's deadline reaches the request itself. Racing it
-          // outside would answer the caller and leave an ABAP write chain
-          // running with its lock still held.
-          ...(signal ? { signal } : {}),
-          timeout: resolveToolTimeout(toolCall.name, this.config),
-          resetTimeoutOnProgress: true,
-        },
-      );
-      if (!response) {
-        throw new Error('MCP callTool returned no response');
-      }
-      return response;
+      return this.recordDispatch(toolCall, signal, usageOpts, async () => {
+        const response = await this.client?.callTool(
+          { name: toolCall.name, arguments: toolCall.arguments },
+          undefined,
+          {
+            // The caller's deadline reaches the request itself. Racing it
+            // outside would answer the caller and leave an ABAP write chain
+            // running with its lock still held.
+            ...(signal ? { signal } : {}),
+            timeout: resolveToolTimeout(toolCall.name, this.config),
+            resetTimeoutOnProgress: true,
+          },
+        );
+        if (!response) {
+          throw new Error('MCP callTool returned no response');
+        }
+        return response;
+      });
     };
 
     try {
@@ -589,6 +595,94 @@ export class MCPClientWrapper {
     }
   }
 
+  /** Record only executions, excluding connection setup and recovery. */
+  private async recordDispatch<T>(
+    toolCall: ToolCall,
+    signal: AbortSignal | undefined,
+    usageOpts: { usage?: IUsageRecorder } | undefined,
+    dispatch: () => Promise<T>,
+  ): Promise<T> {
+    const recorder = usageOpts?.usage ?? this.config.usage;
+    if (!recorder) return dispatch();
+    const started = performance.now();
+    let outcome: 'ok' | 'error' | 'aborted' = 'error';
+    let toolOutcome: 'ok' | 'error' | undefined;
+    let responseBytes: number | undefined;
+    let errorCode: string | undefined;
+    const requestBytes = serializedBytes({
+      name: toolCall.name,
+      arguments: toolCall.arguments,
+    });
+    try {
+      const response = await dispatch();
+      responseBytes = serializedBytes(response);
+      try {
+        toolOutcome =
+          typeof response === 'object' &&
+          response !== null &&
+          'isError' in response &&
+          response.isError === true
+            ? 'error'
+            : 'ok';
+      } catch {
+        /* Inspecting an unusual result must not change the dispatch outcome. */
+      }
+      outcome = 'ok';
+      return response;
+    } catch (error) {
+      outcome =
+        signal?.aborted ||
+        (error instanceof Error && error.name === 'AbortError')
+          ? 'aborted'
+          : 'error';
+      try {
+        if (typeof error === 'object' && error !== null) {
+          for (const key of ['code', 'status'] as const) {
+            const value =
+              key in error
+                ? (error as Record<string, unknown>)[key]
+                : undefined;
+            const code =
+              typeof value === 'number' && Number.isFinite(value)
+                ? String(value)
+                : value;
+            if (
+              typeof code === 'string' &&
+              /^[A-Za-z0-9_.:-]{1,128}$/.test(code)
+            ) {
+              errorCode = code;
+              break;
+            }
+          }
+        }
+      } catch {
+        /* Error inspection must preserve the original failure. */
+      }
+      throw error;
+    } finally {
+      try {
+        const record: UsageInput = {
+          kind: 'tool.call',
+          context: {},
+          server: this.config.name,
+          tool: toolCall.name,
+          dispatched: true,
+          embedded: this.detectedTransport === 'embedded',
+          outcome: outcome === 'ok' ? (toolOutcome ?? 'ok') : outcome,
+          transportOutcome: outcome,
+          toolOutcome,
+          errorCode,
+          durationMs: performance.now() - started,
+          requestBytes,
+          responseBytes,
+        };
+        recorder.record(record);
+      } catch {
+        /* Analytics must not affect tool execution. */
+      }
+    }
+  }
+
   /**
    * Execute multiple tool calls
    */
@@ -630,5 +724,17 @@ export class MCPClientWrapper {
       await this.client.close();
       this.client = null;
     }
+  }
+}
+
+/** Serialization is best effort: unsupported data must not fail a call. */
+function serializedBytes(value: unknown): number | undefined {
+  try {
+    const serialized = JSON.stringify(value);
+    return serialized === undefined
+      ? undefined
+      : Buffer.byteLength(serialized, 'utf8');
+  } catch {
+    return undefined;
   }
 }

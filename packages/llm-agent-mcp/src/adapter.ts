@@ -90,6 +90,7 @@ export class McpClientAdapter implements IMcpClient {
             arguments: args,
           },
           options?.signal,
+          { usage: options?.usage },
         ),
         options?.signal,
         () => new McpError('Aborted', 'ABORTED'),
