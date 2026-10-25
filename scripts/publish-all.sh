@@ -92,7 +92,7 @@ for pkg in "${PACKAGES[@]}"; do
     exit "$status"
   fi
   PUBLISHED=$((PUBLISHED + 1))
-  PUBLISHED_TAGS+=("$name@$version")
+  if needs_tag "$name" "$version"; then PUBLISHED_TAGS+=("$name@$version"); fi
 done
 
 echo
