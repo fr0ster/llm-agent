@@ -1,12 +1,15 @@
 import { randomUUID } from 'node:crypto';
 import type {
+  DialogueSignals,
   DialogueState,
   IDialogueStateStore,
+  ISignalEmitter,
   Message,
   OnPartial,
   DialoguePlan as Plan,
   PlannerMessage,
   Result,
+  SignalName,
   StreamChunk,
   TaskEvent,
 } from '@mcp-abap-adt/llm-agent';
@@ -35,12 +38,16 @@ export interface PlannerAgent {
   ): Promise<Result<{ content: string }, Error>>;
 }
 export interface DialogueSessionOptions {
+  signals?: ISignalEmitter<DialogueSignals>;
   id: string;
   /** Maximum corrective turns; zero disables end-of-turn checks. Default: 2. */
   maxCorrections?: number;
   maxItemsPerStep?: number;
   planner: PlannerAgent;
-  board: Omit<TaskBoardOptions, 'onEvent'>;
+  board: Omit<
+    TaskBoardOptions,
+    'onEvent' | 'signals' | 'source' | 'onStateChange'
+  >;
   store?: IDialogueStateStore;
   onMessage?: (message: PlannerMessage) => void;
   now?: () => number;
@@ -55,6 +62,44 @@ interface UserTurn {
 
 export class DialogueSession {
   private readonly board: TaskBoard;
+  private readonly signals: ISignalEmitter<DialogueSignals>;
+  private turnActive = false;
+  private lastActivity?: string;
+  private lastPlan?: string;
+  private emit<K extends SignalName<DialogueSignals>>(
+    name: K,
+    payload: DialogueSignals[K],
+    key?: string,
+  ): void {
+    this.signals.emit(name, structuredClone(payload), this.opts.id, key);
+  }
+  private changed(): void {
+    const activity = {
+      turnActive: this.turnActive,
+      queuedInputs: this.users.length + this.events.length,
+      running: this.board
+        .list()
+        .filter((t) => t.state === 'queued' || t.state === 'running').length,
+      ready: readySteps(this.plan).length,
+    };
+    const encoded = JSON.stringify(activity);
+    if (encoded !== this.lastActivity) {
+      this.lastActivity = encoded;
+      this.emit('dialogue.activity', activity);
+    }
+    if (this.plan) {
+      const plan = {
+        status: this.plan.status,
+        total: this.plan.steps.length,
+        done: this.plan.steps.filter((s) => s.state === 'done').length,
+      };
+      const encodedPlan = JSON.stringify(plan);
+      if (encodedPlan !== this.lastPlan) {
+        this.lastPlan = encodedPlan;
+        this.emit('dialogue.plan.changed', plan);
+      }
+    }
+  }
   private conversation: Message[] = [];
   private plan?: Plan;
   private readonly taskSteps = new Map<string, string>();
@@ -79,13 +124,19 @@ export class DialogueSession {
       (!Number.isInteger(opts.maxItemsPerStep) || opts.maxItemsPerStep < 1)
     )
       throw new Error('maxItemsPerStep must be a positive integer');
+    this.signals = opts.signals ?? { emit() {}, retire() {} };
     this.board = new TaskBoard({
       ...opts.board,
+      signals: this.signals,
+      source: opts.id,
+      onStateChange: () => this.changed(),
       onEvent: (event) => {
         applyTaskEvent(this.plan, event, this.taskSteps);
+        this.changed();
         // Only outcomes wake the planner; a start is visible via list_tasks.
         if (this.closing || event.kind === 'started') return;
         this.events.push(event);
+        this.changed();
         this.schedule();
       },
     });
@@ -144,6 +195,9 @@ export class DialogueSession {
       if (ids.length)
         session.restart = `[restart] interrupted tasks: ${ids.join(', ')} — their real state is unknown; check before continuing`;
     }
+    for (const task of session.board.list())
+      session.emit('dialogue.task.state', { task }, task.id);
+    session.changed();
     return session;
   }
   send(
@@ -154,6 +208,7 @@ export class DialogueSession {
       return Promise.reject(new Error('dialogue session closed'));
     return new Promise((resolve, reject) => {
       this.users.push({ text, opts, resolve, reject });
+      this.changed();
       this.schedule();
     });
   }
@@ -173,12 +228,32 @@ export class DialogueSession {
       const user = this.users.shift();
       const events = user ? [] : this.events.splice(0);
       const text = user ? user.text : this.eventNotes(events);
+      const trigger = user ? 'user' : 'event';
+      this.turnActive = true;
+      this.changed();
+      this.emit('dialogue.turn.started', { trigger });
       try {
         const message = await this.turn(text, user);
+        if (!this.closing)
+          this.emit('dialogue.turn.settled', {
+            trigger,
+            outcome: 'ok',
+            messageId: message.id,
+            status: this.plan?.status,
+          });
         user?.resolve(message);
       } catch (error) {
+        if (!this.closing)
+          this.emit('dialogue.turn.settled', {
+            trigger,
+            outcome: 'failed',
+            status: this.plan?.status,
+          });
         user?.reject(error);
         if (!user) this.warn(`Dialogue event turn failed: ${String(error)}`);
+      } finally {
+        this.turnActive = false;
+        this.changed();
       }
     }
   }
@@ -189,6 +264,7 @@ export class DialogueSession {
       else delete this.plan.scopeConsent;
       this.plan.status = 'active';
       delete this.plan.question;
+      this.changed();
     }
     const input = this.restart ? `${this.restart}\n${text}` : text;
     this.restart = undefined;
@@ -223,10 +299,12 @@ export class DialogueSession {
                 typeof plan === 'string'
                   ? { version: 1, steps: [], note: plan, status, question }
                   : plan;
+              this.changed();
             },
             recordAction: (action, didStart) => {
               actions.push(action);
               started ||= didStart === true;
+              this.changed();
             },
             history: () => structuredClone(this.conversation),
           },
@@ -251,6 +329,7 @@ export class DialogueSession {
         });
         this.trim();
         recomputePlanStatus(this.plan);
+        this.changed();
         const ready = readySteps(this.plan);
         const stalled =
           this.plan?.steps.filter(
@@ -284,6 +363,7 @@ export class DialogueSession {
           break;
         }
         const events = this.events.splice(0);
+        this.changed();
         const checks: string[] = [];
         if (idle && ready.length)
           checks.push(
@@ -403,6 +483,7 @@ export class DialogueSession {
     this.events = [];
     for (const user of this.users.splice(0))
       user.reject(new Error('dialogue session closed'));
+    this.changed();
     this.closePromise = this.finishClose();
     return this.closePromise;
   }
@@ -413,6 +494,11 @@ export class DialogueSession {
     this.events = [];
     this.pending = [];
     await this.persistence;
-    await this.opts.store?.delete(this.opts.id);
+    try {
+      await this.opts.store?.delete(this.opts.id);
+    } finally {
+      this.emit('dialogue.session.closed', {});
+      this.signals.retire(this.opts.id);
+    }
   }
 }

@@ -1,5 +1,7 @@
 import type {
+  DialogueSignals,
   IConcurrencyPool,
+  ISignalEmitter,
   ISubAgent,
   ISubAgentInput,
   ISubAgentResult,
@@ -7,6 +9,7 @@ import type {
   TaskEvent,
   TaskRecord,
   TaskRequest,
+  TaskState,
 } from '@mcp-abap-adt/llm-agent';
 import { SemaphorePool } from './semaphore-pool.js';
 
@@ -17,6 +20,9 @@ export function cutTaskOutput(output: string): string {
     : `${output.slice(0, TASK_OUTPUT_CHAR_LIMIT)}\n[cut: ${output.length - TASK_OUTPUT_CHAR_LIMIT} characters omitted]`;
 }
 export interface TaskBoardOptions {
+  signals?: ISignalEmitter<DialogueSignals>;
+  source?: string;
+  onStateChange?: () => void;
   workers: ReadonlyMap<string, ISubAgent>;
   maxConcurrent?: number;
   maxTasks?: number;
@@ -78,6 +84,7 @@ export class TaskBoard {
     const entry = { task, request: req, stop: new AbortController() };
     this.records.set(id, task);
     this.entries.set(id, entry);
+    this.signalState(task);
     // The board semaphore owns the FIFO queue, including cancellation.
     const promise = this.execute(entry);
     this.running.add(promise);
@@ -87,7 +94,24 @@ export class TaskBoard {
   private now(): number {
     return (this.opts.now ?? Date.now)();
   }
-  private emit(kind: TaskEvent['kind'], task: TaskRecord): void {
+  private signalState(task: TaskRecord, previous?: TaskState): void {
+    this.opts.signals?.emit(
+      'dialogue.task.state',
+      structuredClone({
+        task,
+        ...(previous === undefined ? {} : { previous }),
+      }),
+      this.opts.source ?? '',
+      task.id,
+    );
+    this.opts.onStateChange?.();
+  }
+  private emit(
+    kind: TaskEvent['kind'],
+    task: TaskRecord,
+    previous: TaskState,
+  ): void {
+    this.signalState(task, previous);
     try {
       this.opts.onEvent({ kind, task: { ...task } });
     } catch {
@@ -105,7 +129,7 @@ export class TaskBoard {
       if (stop.signal.aborted) return;
       task.state = 'running';
       task.startedAt = this.now();
-      this.emit('started', task);
+      this.emit('started', task, 'queued');
       const worker = this.opts.workers.get(task.worker);
       if (!worker) throw new Error(`unknown worker ${task.worker}`);
       const run = () =>
@@ -142,9 +166,10 @@ export class TaskBoard {
       releaseBoard?.();
       this.entries.delete(task.id);
       if (task.state !== 'stopped') {
+        const previous = task.state;
         task.state = kind;
         task.finishedAt = this.now();
-        this.emit(kind, task);
+        this.emit(kind, task, previous);
       }
     }
   }
@@ -155,7 +180,7 @@ export class TaskBoard {
     if (entry.task.state === 'queued') {
       entry.task.state = 'stopped';
       entry.task.finishedAt = this.now();
-      this.emit('stopped', entry.task);
+      this.emit('stopped', entry.task, 'queued');
     }
     return true;
   }

@@ -77,6 +77,7 @@ export type {
   TaskRequest,
   TaskState,
 } from './dialogue.js';
+export * from './dialogue-signals.js';
 export type {
   ErrorContext,
   ErrorReaction,
@@ -267,6 +268,7 @@ export type {
 } from './review.js';
 export type { ISessionManager } from './session.js';
 export type { SessionIdentity } from './session-identity.js';
+export * from './signals.js';
 export type {
   ISkill,
   ISkillManager,
