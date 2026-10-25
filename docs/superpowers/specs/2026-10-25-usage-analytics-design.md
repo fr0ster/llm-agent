@@ -1,6 +1,6 @@
 # Usage analytics: contract first, replaceable transport and storage
 
-Date: 2026-10-25. Status: draft for review (revision 3, after two review rounds).
+Date: 2026-10-25. Status: draft for review (revision 4, after three review rounds).
 
 ## Intent
 
@@ -14,6 +14,7 @@ The library stays agnostic: it records facts in its own terms and does not know 
 
 - **Contract.** A contract in `@mcp-abap-adt/llm-agent` for recording usage, independent of transport and storage.
 - **Completeness.** Every physical LLM call, embedding request, MCP tool dispatch and task end the library causes produces exactly one record, whatever the outcome: success, returned error, thrown error, cancellation, early stream close. A missing record is a defect.
+  - The one stated exception: an SDK that retries internally and cannot be told not to is recorded per SDK call (`granularity: 'sdk-call'`, `retriesVisible: false`).
 - **Replaceable implementations.** A recorder, transports and per-database sinks live in separate llm-agent packages. A consumer can replace any of them.
 - **Raw records.** Raw, append-only records, rich enough for any later aggregation.
 
@@ -62,19 +63,24 @@ interface Base {
 }
 
 type LlmCall = Base & { kind: 'llm.call';
-  operationId: string; attempt: number;              // one logical call → n physical attempts
+  operationId: string; physicalSeq: number;         // 0,1,2… unique per physical request within the operation
+  outerAttempt: number; providerAttempt: number;    // library retry attempt, provider-internal retry attempt
+  granularity: 'request' | 'sdk-call'; retriesVisible: boolean;   // sdk-call: one SDK call that may hide retries
   provider: string; model: string; stream: boolean;
   inputTokens?: number; outputTokens?: number; cachedInputTokens?: number;
   tokensSource: 'provider' | 'estimate' | 'unknown';
   durationMs: number; firstTokenMs?: number; throttledMs?: number;
   closedEarly?: boolean };                            // stream consumer stopped before the end
 type EmbeddingCall = Base & { kind: 'embedding.call';
-  operationId: string; attempt: number; chunk: number; chunks: number;
+  operationId: string; physicalSeq: number; outerAttempt: number; providerAttempt: number;
+  chunkPath: string;                                // e.g. '2/3>1/4': outer chunk 2 of 3, provider chunk 1 of 4
+  granularity: 'request' | 'sdk-call'; retriesVisible: boolean;
   provider: string; model: string; inputs: number; inputChars: number;
   inputTokens?: number; tokensSource: 'provider' | 'estimate' | 'unknown';   // exact provider total of this request
   durationMs: number };
 type ToolCall = Base & { kind: 'tool.call';
   server?: string; tool: string; dispatched: boolean;        // false: served from cache, no MCP request
+  embedded: boolean;                                          // true: an embedded handler, no network request
   transportOutcome: 'ok' | 'error' | 'aborted';              // the MCP request
   toolOutcome?: 'ok' | 'error';                              // isError of the tool result
   durationMs: number; requestBytes?: number; responseBytes?: number };
@@ -127,15 +133,27 @@ export interface IUsageControl {
 - **Loss accounting (best effort, stated plainly).** A record is *lost* when the queue overflows, the retry window expires, or a close times out.
   - Losses are counted per `(sessionId or '', kind)` in fixed windows (`lossWindowMs`).
   - When a window closes, the recorder emits one `x.usage.lost` record per session with losses in it. Its id is `lost:<recorderInstanceId>:<sessionId>:<windowStart>`, so a retried emission is stored once.
+  - Its values hold the counts per kind and `affectedFrom` / `affectedTo`: the minimum and maximum `at` of the lost records. A loss recognized after midnight for a request that ended before midnight therefore still points at the request's time.
+  - Readers select loss records whose affected range overlaps the period they analyse.
   - Losses after a window closed belong to the next window. At close, the open window is closed early and emitted.
   - A loss record that itself cannot be delivered is not re-reported as a loss (no recursion). It is counted only in `stats().lost` and in the close result.
   - Loss counters live in a bounded map. On overflow, the oldest session counters merge into a session `''` counter.
-  - **How readers use them.** A session-filtered analysis must also consult the `''` loss records of the same windows; they mark that some session's data in that window is incomplete without saying which.
+  - **How readers use them.** A session-filtered analysis must also consult `''` loss records whose affected range overlaps. They mark that some session's data in that range is incomplete, without saying which.
   - **Crashes.** A crash loses accepted records without any loss record. Consumers detect it from their own lifecycle records, for example a session without a close record.
   - **The guarantee is therefore:** delivered records are exact, and losses are reported when the reporting path works. It is not a guarantee that every loss is visible in the data.
 - **Shutdown.**
-  - `IUsageControl.close` stops accepting, closes the open loss window, drains the queue through the transport within the timeout, and accounts the rest as lost. It then closes the transport, then the sinks.
-  - It resolves to `{ delivered, lost, unconfirmed }`, so the consumer can log an incomplete shutdown.
+  - `IUsageControl.close(timeoutMs)` has one deadline for the whole shutdown:
+    1. stop accepting;
+    2. close the open loss window;
+    3. drain the queue through the transport;
+    4. close the transport, then the sinks.
+  - Every await is raced against the same deadline, so `close` always resolves by it, even with a `send` or `close` that never resolves.
+  - It resolves to disjoint counters:
+    - `delivered`: sends that resolved;
+    - `unconfirmed`: records in sends still pending at the deadline, which may or may not have been written;
+    - `lost`: records never sent, or whose send definitively failed.
+  - Acknowledgements that arrive after the deadline are ignored and not recounted.
+  - The consumer logs an incomplete shutdown.
   - `flush` drains without closing.
 - **Content.** No content, and only the listed fields. `x.*` values are numbers, labels and flags, never text taken from content.
 - **Evolution.** The schema only grows: new kinds and optional fields may be added, and readers ignore unknown ones.
@@ -149,9 +167,9 @@ There is one owner per operation: a boundary decorator. Nothing else records tha
 
 | Operation | Owner (boundary) | Record |
 |---|---|---|
-| LLM call | each provider package, at its physical request: inside its own retry closures (for example `withThrottleRetry` in the OpenAI and SAP providers), through a shared hook `reportLlmRequest(op, facts)` from `@mcp-abap-adt/llm-agent` | one `llm.call` per physical HTTP or SDK request, recorded in `finally`, so a returned error, a throw, an abort or an early stream close (`closedEarly`) all produce a record. For SDK-delegating providers whose SDK retries internally, the SDK retries are disabled where the SDK allows it; otherwise the SDK call is recorded as one attempt with `retries` unknown |
-| Embedding request | each embedder provider package, at its physical request (inside its own chunk and retry loops), through `reportEmbeddingRequest(op, facts)` | one `embedding.call` per physical request, with that request's exact provider token total, or `unknown` when the provider reports none |
-| MCP tool dispatch | `McpClientWrapper`, around each internal request (`performCall`): the first try, after a reconnect, after a session reset | one `tool.call` per request, with `transportOutcome` and `toolOutcome` from `isError`; cache hits are recorded by the tool-call cache as `dispatched: false` |
+| LLM call | each provider package, at its physical request: inside its own retry closures (for example `withThrottleRetry` in the OpenAI and SAP providers), through a shared hook `reportLlmRequest(op, facts)` from `@mcp-abap-adt/llm-agent` | one `llm.call` per physical HTTP or SDK request, recorded in `finally`, so a returned error, a throw, an abort or an early stream close (`closedEarly`) all produce a record. For SDK-delegating providers whose SDK retries internally, the SDK retries are disabled where the SDK allows it (then `granularity: 'request'`); otherwise the SDK call is one record with `granularity: 'sdk-call'`, `retriesVisible: false` |
+| Embedding request | each embedder provider package, at its physical request (inside its own chunk and retry loops), through `reportEmbeddingRequest(op, facts)` | one `embedding.call` per physical request, with that request's exact provider token total, or `unknown` when the provider reports none; SDK-delegating embedders follow the same `granularity` rule as LLM providers |
+| MCP tool dispatch | `McpClientWrapper`, around each internal request (`performCall`): the first try, after a reconnect, after a session reset; and around each embedded-handler execution (`embedded: true`), including thrown errors, cancellation and a returned `isError` | one `tool.call` per request, with `transportOutcome` and `toolOutcome` from `isError`; cache hits are recorded by the tool-call cache as `dispatched: false` |
 | Task end | `TaskBoard` | one `task` at the terminal transition |
 
 Per-path rules:
@@ -168,6 +186,8 @@ Per-path rules:
 - nested outer chunking plus inner provider retries;
 - provider-internal throttle retries (a 429, then success: two records);
 - an MCP dispatch retried after a reconnect (two records);
+- an embedded tool handler: ok, a thrown error, cancellation and a returned `isError`;
+- shutdown with a `send` and a sink `close` that never resolve: `close` resolves by its deadline with the right counters;
 - two concurrent TaskBoard tasks: each record carries its own `taskId`.
 
 Real provider packages are exercised with a mocked HTTP layer, not fake `ILlm`s only. The paths it covers:
@@ -181,11 +201,13 @@ Real provider packages are exercised with a mocked HTTP layer, not fake `ILlm`s 
 A logical LLM call or embedding operation is described by a `UsageOperation { operationId: string; attempt: number; chunk?: number; chunks?: number }`. It travels in call options (`CallOptions.usageOp`), next to the recorder.
 
 - **Who sets what.**
-  - The outermost library wrapper of a logical call creates the `operationId`.
-  - `RetryLlm` and `RetryEmbedder` set `attempt` for each outer attempt.
-  - `BatchChunkingEmbedder` sets `chunk` and `chunks` for each chunk.
-  - A provider's own internal retry or chunk loop increments `attempt` or sets `chunk` on a copy of the operation for each physical request.
-- **What the hook records.** The hook records whatever the operation carries at the physical request. Nested outer chunking with inner retries therefore yields one record per request, all sharing the `operationId`.
+  - The outermost library wrapper of a logical call creates the operation: `operationId`, plus a shared counter object that allocates `physicalSeq`.
+  - Library retry wrappers (`RetryLlm`, `RetryEmbedder`, `RetryBatchEmbedder`) set `outerAttempt`.
+  - `BatchChunkingEmbedder` appends its coordinate to `chunkPath`.
+  - A provider's own internal loops set `providerAttempt` and append their chunk coordinate to `chunkPath`. They work on a copy that shares the counter, so they never overwrite outer coordinates.
+- **What the hook records.** Each physical request takes the next `physicalSeq` from the shared counter.
+- **Uniqueness.** `(operationId, physicalSeq)` is unique. The other fields say where in the nesting the request sits.
+- **Test.** Nested outer chunking plus outer and provider retries, asserting the exact coordinate values.
 
 ### Context propagation
 
