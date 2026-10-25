@@ -20,10 +20,11 @@ export interface ISubagentClient {
  * evaluator). These roles rely on STRUCTURED output (JSON plans, verdicts) —
  * generation params (`model`/`temperature`/`maxTokens`/`topP`/`stop`) built from
  * the client request body must NOT reach them, only the diagnostic-only fields
- * needed for tracing/cancellation. `undefined` in → `undefined` out.
+ * needed for tracing, cancellation, and usage accounting. `undefined` in → `undefined` out.
  */
 export function diagnosticCallOptions(
   opts?: CallOptions,
+  role?: string,
 ): CallOptions | undefined {
   if (!opts) return undefined;
   const out: CallOptions = {};
@@ -31,6 +32,9 @@ export function diagnosticCallOptions(
   if (opts.trace !== undefined) out.trace = opts.trace;
   if (opts.sessionId !== undefined) out.sessionId = opts.sessionId;
   if (opts.signal !== undefined) out.signal = opts.signal;
+  if (opts.usage !== undefined)
+    out.usage = role ? opts.usage.with({ role }) : opts.usage;
+  if (opts.usageOp !== undefined) out.usageOp = opts.usageOp;
   return out;
 }
 

@@ -1,4 +1,5 @@
 import {
+  type CallOptions,
   type IEvaluator,
   type IKnowledgeRagHandle,
   type ILlm,
@@ -58,6 +59,7 @@ export interface BuildStepperRootInput {
     name: string,
     args: unknown,
     signal?: AbortSignal,
+    options?: CallOptions,
   ) => Promise<string>;
   /** Monotonically-unique stepper-ID minter. */
   mintStepperId: () => string;
@@ -119,6 +121,7 @@ export interface BuildFromCompositionDeps {
     name: string,
     args: unknown,
     signal?: AbortSignal,
+    options?: CallOptions,
   ) => Promise<string>;
   mintStepperId: () => string;
   /** Optional per-role LLM map (legacy server path). */

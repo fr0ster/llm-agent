@@ -163,7 +163,8 @@ export class ControllerFactory
       backend: deps.backend,
       knowledgeRagFor: deps.knowledgeRagFor,
       embedder: deps.embedder,
-      callMcp: (name, args, signal) => deps.callMcp(name, args, signal),
+      callMcp: (name, args, signal, options) =>
+        deps.callMcp(name, args, signal, options),
       selectTools: deps.selectTools,
       ...(deps.isExternalTool ? { isExternalTool: deps.isExternalTool } : {}),
       ...(deps.skillsRecall ? { skillsRecall: deps.skillsRecall } : {}),

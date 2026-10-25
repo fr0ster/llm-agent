@@ -15,6 +15,7 @@ type CallMcp = (
   name: string,
   args: unknown,
   signal?: AbortSignal,
+  options?: CallOptions,
 ) => Promise<McpCallResult>;
 
 type AuxCallTool = (
@@ -101,17 +102,16 @@ export function composeAuxiliaryBridge(
   domainBridge: CallMcp,
 ): CallMcp {
   const auxNames = new Set(auxDefs.map((d) => d.name));
-  return async (name, args, signal) => {
-    if (!auxNames.has(name)) return domainBridge(name, args, signal);
+  return async (name, args, signal, options) => {
+    if (!auxNames.has(name)) return domainBridge(name, args, signal, options);
     const safeArgs =
       args != null && typeof args === 'object' && !Array.isArray(args)
         ? (args as Record<string, unknown>)
         : {};
-    const result = await auxCallTool(
-      name,
-      safeArgs,
-      signal ? { signal } : undefined,
-    );
+    const result = await auxCallTool(name, safeArgs, {
+      ...options,
+      signal: signal ?? options?.signal,
+    });
     if (!result.ok) return { text: result.error.message, isError: true };
     const { content, isError } = result.value;
     return {

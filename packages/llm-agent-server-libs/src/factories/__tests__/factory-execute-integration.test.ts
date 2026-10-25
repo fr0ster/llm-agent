@@ -18,14 +18,20 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type {
+  CallOptions,
   IKnowledgeRagHandle,
+  IMcpClient,
   ISpan,
   IToolsRagHandle,
+  IUsageRecorder,
   LlmStreamChunk,
   OrchestratorError,
   Result,
 } from '@mcp-abap-adt/llm-agent';
 import type { PipelineContext } from '@mcp-abap-adt/llm-agent-libs';
+import { composeAuxiliaryBridge } from '../../mcp/compose-auxiliary.js';
+import { buildNamespacedMcpBridge } from '../../smart-agent/mcp/namespaced-bridge.js';
+import { buildMcpBridge } from '../../smart-agent/smart-server.js';
 import { CyclicFactory } from '../cyclic-factory.js';
 
 // ---------------------------------------------------------------------------
@@ -279,3 +285,147 @@ test('CyclicFactory execute() integration: handler runs end-to-end with stubs', 
   );
   assert.ok(stopChunks.length > 0, 'a terminal stop chunk was yielded');
 });
+
+for (const namespaced of [false, true]) {
+  test(`cyclic factory forwards usage through ${namespaced ? 'namespaced' : 'plain'} MCP and auxiliary bridges`, async () => {
+    const usage: IUsageRecorder = {
+      record() {},
+      with(context) {
+        assert.ok(context.role);
+        roles.push(context.role);
+        return this;
+      },
+    };
+    const roles: string[] = [];
+    const signal = new AbortController().signal;
+    let seen: CallOptions | undefined;
+    const client = {
+      async listTools() {
+        return {
+          ok: true,
+          value: [
+            {
+              name: 'lookup',
+              description: 'Lookup',
+              inputSchema: { type: 'object' },
+            },
+          ],
+        };
+      },
+      async callTool(_name: string, _args: unknown, options?: CallOptions) {
+        seen = options;
+        return {
+          ok: true,
+          value: { content: [{ type: 'text', text: 'found' }] },
+        };
+      },
+    } as unknown as IMcpClient;
+    const bridge = namespaced
+      ? buildNamespacedMcpBridge(new Map([['lookup', client]]))
+      : buildMcpBridge([client]);
+    const callMcp = composeAuxiliaryBridge(
+      [],
+      async () => {
+        throw new Error('unexpected auxiliary call');
+      },
+      bridge,
+    );
+    let calls = 0;
+    const llm = {
+      ...stubLlm,
+      async chat() {
+        return {
+          ok: true as const,
+          value: {
+            content: 'done',
+            toolCalls:
+              calls++ === 0
+                ? [{ id: 't1', name: 'lookup', arguments: {} }]
+                : [],
+          },
+        };
+      },
+    };
+    const built = await new CyclicFactory().build(factoryCfg, {
+      ...factoryDeps,
+      makeRoleLlm: async () => llm as never,
+      callMcp,
+      toolsRag: {
+        async query() {
+          return [
+            {
+              name: 'lookup',
+              description: 'Lookup',
+              inputSchema: { type: 'object' },
+            },
+          ];
+        },
+        lookup() {
+          return undefined;
+        },
+      },
+    });
+    const ctx = { ...makeCtx(), options: { usage, signal } };
+    await built.handler.execute(ctx, {}, stubSpan);
+    assert.ok(seen, 'MCP client was called');
+    assert.equal(seen.usage, usage);
+    assert.equal(seen.signal, signal);
+    assert.ok(roles.includes('tool-loop'));
+    assert.ok(roles.includes('finalizer'));
+  });
+}
+
+for (const namespaced of [false, true]) {
+  test(`MCP bridge preserves all optional call options (${namespaced ? 'namespaced' : 'plain'})`, async () => {
+    const usage: IUsageRecorder = {
+      record() {},
+      with() {
+        return this;
+      },
+    };
+    const usageOp = {
+      operationId: 'bridge',
+      outerAttempt: 0,
+      providerAttempt: 0,
+      chunkPath: '',
+      seq: { next: () => 0 },
+    };
+    const signal = new AbortController().signal;
+    const explicitSignal = new AbortController().signal;
+    const seen: CallOptions[] = [];
+    const client = {
+      async listTools() {
+        return { ok: true, value: [{ name: 'lookup' }] };
+      },
+      async callTool(_name: string, _args: unknown, options?: CallOptions) {
+        assert.ok(options);
+        seen.push(options);
+        return { ok: true, value: { content: [] } };
+      },
+    } as unknown as IMcpClient;
+    const bridge = namespaced
+      ? buildNamespacedMcpBridge(new Map([['lookup', client]]))
+      : buildMcpBridge([client]);
+    const callMcp = composeAuxiliaryBridge(
+      [
+        {
+          name: 'aux',
+          description: 'Auxiliary',
+          inputSchema: { type: 'object' },
+        },
+      ],
+      client.callTool.bind(client),
+      bridge,
+    );
+    for (const name of ['lookup', 'aux']) {
+      await callMcp(name, {}, undefined, { usage, usageOp, signal });
+      await callMcp(name, {}, explicitSignal, { usage, usageOp, signal });
+    }
+    assert.equal(seen.length, 4);
+    seen.forEach((options, i) => {
+      assert.equal(options.usage, usage);
+      assert.equal(options.usageOp, usageOp);
+      assert.equal(options.signal, i % 2 === 0 ? signal : explicitSignal);
+    });
+  });
+}

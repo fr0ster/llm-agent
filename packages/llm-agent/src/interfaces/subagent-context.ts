@@ -1,5 +1,6 @@
 import type { PlanStep } from './coordinator.js';
 import type { ISubAgent } from './subagent.js';
+import type { CallOptions } from './types.js';
 import type { IUsageRecorder } from './usage.js';
 
 /**
@@ -13,6 +14,7 @@ export interface SubAgentContextRequest {
   inputText: string;
   sessionId: string;
   usage?: IUsageRecorder;
+  usageOp?: CallOptions['usageOp'];
   signal?: AbortSignal;
 }
 

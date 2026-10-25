@@ -833,9 +833,10 @@ export class SmartAgentBuilder {
     resolve: () => IRag = () => rag as IRag,
   ): SubAgentRetrievalSource | undefined {
     if (!rag || !embedder) return undefined;
-    return async (text, k, signal) => {
-      const embedding = new QueryEmbedding(text, embedder, { signal });
-      const queryRes = await resolve().query(embedding, k, { signal });
+    return async (text, k, signal, options) => {
+      const callOptions = { ...options, signal: signal ?? options?.signal };
+      const embedding = new QueryEmbedding(text, embedder, callOptions);
+      const queryRes = await resolve().query(embedding, k, callOptions);
       return queryRes.ok ? queryRes.value : [];
     };
   }

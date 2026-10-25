@@ -1,6 +1,6 @@
 import type { ILlm } from './llm.js';
 import type { IStageHandler } from './plugin.js';
-import type { McpCallResult } from './types.js';
+import type { CallOptions, McpCallResult } from './types.js';
 
 export type PipelineFactoryKind =
   | 'linear'
@@ -25,6 +25,7 @@ export interface PipelineFactoryDepsBase {
     name: string,
     args: unknown,
     signal?: AbortSignal,
+    options?: CallOptions,
   ) => Promise<McpCallResult>;
 }
 

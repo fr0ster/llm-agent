@@ -1,12 +1,16 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { symmetricEmbedder } from '@mcp-abap-adt/llm-agent';
+import {
+  type CallOptions,
+  type IUsageRecorder,
+  symmetricEmbedder,
+} from '@mcp-abap-adt/llm-agent';
 import { establishTargetState } from '../target-state.js';
 
 test('establishTargetState forwards options to embedder.embed', async () => {
-  const seen: unknown[] = [];
+  const seen: (CallOptions | undefined)[] = [];
   const embedder = symmetricEmbedder({
-    embed: async (_t: string, o?: unknown) => {
+    embed: async (_t: string, o?: CallOptions) => {
       seen.push(o);
       return { vector: [1, 0, 0] };
     },
@@ -14,7 +18,16 @@ test('establishTargetState forwards options to embedder.embed', async () => {
   const evaluator = {
     send: async () => ({ kind: 'content' as const, content: 'Goal: X' }),
   };
-  const opts = { trace: { traceId: 'r1' } };
+  const roles: string[] = [];
+  const usage: IUsageRecorder = {
+    record() {},
+    with(context) {
+      assert.ok(context.role);
+      roles.push(context.role);
+      return this;
+    },
+  };
+  const opts = { trace: { traceId: 'r1' }, usage };
   await establishTargetState(
     { evaluator, embedder } as never,
     'do X',
@@ -22,6 +35,10 @@ test('establishTargetState forwards options to embedder.embed', async () => {
     opts as never,
   );
   assert.equal(seen.length, 2);
-  assert.deepEqual(seen[0], opts);
-  assert.deepEqual(seen[1], opts);
+  for (const options of seen) {
+    assert.equal(options?.trace, opts.trace);
+    assert.equal(options?.usage, usage);
+  }
+  assert.ok(roles.includes('evaluator'));
+  assert.ok(roles.includes('embedding'));
 });
