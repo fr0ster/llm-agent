@@ -78,7 +78,7 @@ export class TranslatePreprocessor implements IQueryPreprocessor {
           { role: 'user' as const, content: text },
         ],
         [],
-        options,
+        { ...options, usage: options?.usage?.with({ role: 'translate' }) },
       );
       if (this.requestLogger) {
         this.requestLogger.logLlmCall({
@@ -135,7 +135,7 @@ export class ExpandPreprocessor implements IQueryPreprocessor {
           { role: 'user' as const, content: text },
         ],
         [],
-        options,
+        { ...options, usage: options?.usage?.with({ role: 'query-expander' }) },
       );
       if (this.requestLogger) {
         this.requestLogger.logLlmCall({
@@ -209,7 +209,7 @@ export class IntentEnricher implements IDocumentEnricher {
           { role: 'user' as const, content: text },
         ],
         [],
-        options,
+        { ...options, usage: options?.usage?.with({ role: 'helper' }) },
       );
       if (this.requestLogger) {
         this.requestLogger.logLlmCall({

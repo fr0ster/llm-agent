@@ -35,6 +35,7 @@ export class ReplanErrorStrategy implements IErrorStrategy {
       prompt: `${ctx.task}\n\nThis task needs decomposition: ${error.reason}`,
       agents: ctx.agents,
       sessionId: ctx.sessionId,
+      usage: ctx.usage,
       signal: ctx.signal,
     });
     return { action: 'replan', subPlan };

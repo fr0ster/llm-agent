@@ -1,6 +1,7 @@
 import type { IKnowledgeRagHandle, IToolsRagHandle } from './knowledge-rag.js';
 import type { RunIdentity } from './stepper.js';
 import type { ITaskSpec } from './task-spec.js';
+import type { IUsageRecorder } from './usage.js';
 
 /**
  * The Evaluator's verdict on a (sub-)prompt — the 18.1 control spine. Distinct
@@ -43,6 +44,7 @@ export interface IEvaluator {
     toolsRag: IToolsRagHandle;
     taskSpec?: ITaskSpec;
     identity: RunIdentity;
+    usage?: IUsageRecorder;
     signal?: AbortSignal;
   }): Promise<EvaluatorVerdict>;
 }

@@ -20,6 +20,8 @@ import {
   type LlmStreamChunk,
   type LlmTool,
   type Result,
+  startOperation,
+  withOuterAttempt,
 } from '@mcp-abap-adt/llm-agent';
 
 export interface RetryOptions {
@@ -64,12 +66,16 @@ export class RetryLlm implements ILlm {
     tools?: LlmTool[],
     options?: CallOptions,
   ): Promise<Result<LlmResponse, LlmError>> {
+    const op = startOperation(options);
     for (let attempt = 0; ; attempt++) {
       if (options?.signal?.aborted) {
         return { ok: false, error: new LlmError('Aborted', 'ABORTED') };
       }
 
-      const result = await this.inner.chat(messages, tools, options);
+      const result = await this.inner.chat(messages, tools, {
+        ...options,
+        usageOp: withOuterAttempt(op, attempt),
+      });
 
       if (
         result.ok ||
@@ -88,6 +94,7 @@ export class RetryLlm implements ILlm {
     tools?: LlmTool[],
     options?: CallOptions,
   ): AsyncIterable<Result<LlmStreamChunk, LlmError>> {
+    const op = startOperation(options);
     for (let attempt = 0; ; attempt++) {
       if (options?.signal?.aborted) {
         yield { ok: false, error: new LlmError('Aborted', 'ABORTED') };
@@ -97,7 +104,10 @@ export class RetryLlm implements ILlm {
       let chunksYielded = 0;
       let shouldRetry = false;
 
-      for await (const chunk of this.attemptStream(messages, tools, options)) {
+      for await (const chunk of this.attemptStream(messages, tools, {
+        ...options,
+        usageOp: withOuterAttempt(op, attempt),
+      })) {
         if (chunk.ok) {
           chunksYielded++;
           yield chunk;

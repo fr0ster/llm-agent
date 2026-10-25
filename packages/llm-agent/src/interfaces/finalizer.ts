@@ -1,6 +1,7 @@
 import type { ContextPath } from './context-path.js';
 import type { OnPartial } from './streaming.js';
 import type { LlmUsage } from './types.js';
+import type { IUsageRecorder } from './usage.js';
 
 export interface FinalizerInput {
   prompt: string;
@@ -19,6 +20,7 @@ export interface FinalizerInput {
     output: string;
   }>;
   sessionId?: string;
+  usage?: IUsageRecorder;
   signal?: AbortSignal;
   trace?: { traceId: string };
   /** Optional streaming sink for finalizer-produced content.

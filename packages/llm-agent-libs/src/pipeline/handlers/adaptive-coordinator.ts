@@ -86,6 +86,7 @@ export class AdaptiveCoordinatorHandler implements IStageHandler {
             description,
           })),
           previousRun,
+          usage: ctx.options?.usage,
           signal: ctx.options?.signal,
         });
         plan = planned.plan;
@@ -152,6 +153,7 @@ export class AdaptiveCoordinatorHandler implements IStageHandler {
         },
         budget: { ...DEFAULT_BUDGET, ...this.deps.budget },
         sessionId: ctx.sessionId,
+        usage: ctx.options?.usage,
         signal: ctx.options?.signal,
         trace: ctx.options?.trace,
         sessionLogger: ctx.options?.sessionLogger,
@@ -234,6 +236,7 @@ export class AdaptiveCoordinatorHandler implements IStageHandler {
             };
           }),
           sessionId: ctx.sessionId,
+          usage: ctx.options?.usage,
           signal: ctx.options?.signal,
           trace: ctx.options?.trace,
           onPartial: (chunk) => {

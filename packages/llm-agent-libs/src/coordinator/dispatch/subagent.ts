@@ -58,6 +58,7 @@ export class SubAgentDispatch implements IDispatchStrategy {
         agent: sub,
         inputText: ctx.inputText,
         sessionId: ctx.sessionId,
+        usage: ctx.usage,
         signal: ctx.signal,
       });
       context = built.context.length > 0 ? built.context : undefined;
@@ -83,6 +84,7 @@ export class SubAgentDispatch implements IDispatchStrategy {
         task,
         context,
         sessionId: ctx.sessionId,
+        usage: ctx.usage,
         signal: ctx.signal,
       });
 

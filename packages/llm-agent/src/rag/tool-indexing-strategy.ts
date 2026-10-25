@@ -97,7 +97,7 @@ export class IntentToolIndexing implements IToolIndexingStrategy {
           { role: 'user' as const, content: inputText },
         ],
         [],
-        options,
+        { ...options, usage: options?.usage?.with({ role: 'helper' }) },
       );
       if (this.requestLogger) {
         this.requestLogger.logLlmCall({

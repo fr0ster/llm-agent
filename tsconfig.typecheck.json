@@ -17,6 +17,10 @@
   // added to this list by hand.
   "include": [
     "packages/llm-usage/src/**/*.ts",
+    "packages/llm-agent/src/resilience/usage-propagation.test.ts",
+    "packages/llm-agent-libs/src/__tests__/usage-propagation.test.ts",
+    "packages/llm-agent-libs/src/__tests__/usage-propagation-components.test.ts",
+    "packages/llm-agent-libs/src/coordinator/__tests__/usage-propagation.test.ts",
     "packages/llm-agent/src/interfaces/__tests__/usage.typecheck.ts",
     "packages/llm-signals/src/signals.test.ts",
     "packages/llm-agent-libs/src/coordinator/dialogue/__tests__/signals.test.ts",

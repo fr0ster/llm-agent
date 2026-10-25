@@ -26,6 +26,7 @@ export interface AdaptiveRunInput {
   controller: IAdaptiveController;
   budget: AdaptiveBudget;
   sessionId?: string;
+  usage?: ISubAgentInput['usage'];
   signal?: AbortSignal;
   trace?: { traceId: string };
   sessionLogger?: ISubAgentInput['sessionLogger'];
@@ -110,6 +111,7 @@ export async function runAdaptivePlan(
         plan,
         records,
         stopReason,
+        usage: input.usage,
         signal: input.signal,
       });
       input.signal?.throwIfAborted();
@@ -201,6 +203,7 @@ export async function runAdaptivePlan(
               const target = latest.get(id);
               return target ? [target] : [];
             }),
+            usage: input.usage,
             signal: input.signal,
           });
           collect(checked.usage);
@@ -244,6 +247,7 @@ export async function runAdaptivePlan(
               checkReason: reason,
             }),
             sessionId: input.sessionId,
+            usage: input.usage,
             signal: input.signal,
             trace: input.trace,
             sessionLogger: input.sessionLogger,
@@ -356,6 +360,7 @@ export async function runAdaptivePlan(
           plan,
           records,
           reason: step.reason,
+          usage: input.usage,
           signal: input.signal,
         });
         collect(revised.usage);

@@ -1,8 +1,10 @@
 import type { LlmUsage } from './types.js';
+import type { IUsageRecorder } from './usage.js';
 
 export interface StateOracleInput {
   query: string;
   sessionId?: string;
+  usage?: IUsageRecorder;
   signal?: AbortSignal;
   trace?: { traceId: string };
   sessionLogger?: { logStep(name: string, data: unknown, area?: string): void };

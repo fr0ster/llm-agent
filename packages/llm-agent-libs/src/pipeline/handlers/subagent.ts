@@ -67,6 +67,7 @@ export class SubAgentHandler implements IStageHandler {
     try {
       result = await sub.run({
         task,
+        usage: ctx.options?.usage,
         sessionId: ctx.sessionId,
         signal,
       });

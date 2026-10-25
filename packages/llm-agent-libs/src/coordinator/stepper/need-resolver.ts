@@ -1,4 +1,4 @@
-import type { ILlm, INeedResolver } from '@mcp-abap-adt/llm-agent';
+import type { CallOptions, ILlm, INeedResolver } from '@mcp-abap-adt/llm-agent';
 
 const NEED_RE =
   /\bI (?:can'?t|cannot|am unable to|need to|lack (?:a|the) (?:tool|way) to)\s+(.+?)[.!]?$/i;
@@ -32,13 +32,14 @@ export const CLASSIFY_SYSTEM =
  *  small classifier call). */
 export class LlmNeedResolver implements INeedResolver {
   constructor(private readonly llm: ILlm) {}
-  async resolve(response: string) {
+  async resolve(response: string, options?: CallOptions) {
     const res = await this.llm.chat(
       [
         { role: 'system', content: CLASSIFY_SYSTEM },
         { role: 'user', content: response },
       ],
       [],
+      { ...options, usage: options?.usage?.with({ role: 'classifier' }) },
     );
     if (res.ok === false) return undefined;
     try {

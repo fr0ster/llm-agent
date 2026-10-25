@@ -135,7 +135,10 @@ export class LlmReranker implements IReranker {
     ];
     const started = Date.now();
     try {
-      const res = await this.llm.chat(messages, [], options);
+      const res = await this.llm.chat(messages, [], {
+        ...options,
+        usage: options?.usage?.with({ role: 'rerank' }),
+      });
       if (!res.ok) {
         return {
           ok: false,

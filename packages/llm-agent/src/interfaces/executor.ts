@@ -4,6 +4,7 @@ import type { Budget, RunIdentity } from './stepper.js';
 import type { StreamChunk } from './streaming.js';
 import type { ITaskSpec } from './task-spec.js';
 import type { LlmTool, LlmUsage } from './types.js';
+import type { IUsageRecorder } from './usage.js';
 
 export interface IExecutor {
   readonly name: string;
@@ -38,6 +39,7 @@ export interface IExecutor {
     /** Executor is a LEAF; ignores depthRemaining, stops when budget.tokens.exhausted(). */
     budget: Budget;
     identity: RunIdentity;
+    usage?: IUsageRecorder;
     signal?: AbortSignal;
     sessionLogger?: {
       logStep(name: string, data: unknown, area?: string): void;

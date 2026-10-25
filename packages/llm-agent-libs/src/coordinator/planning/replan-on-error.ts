@@ -72,7 +72,11 @@ Respond with ONLY a JSON object:
         { role: 'user', content: 'Build the revised plan now.' },
       ],
       [],
-      { signal: ctx.signal, sessionId: ctx.sessionId },
+      {
+        usage: ctx.usage?.with({ role: 'planner' }),
+        signal: ctx.signal,
+        sessionId: ctx.sessionId,
+      },
     );
     if (!response.ok) throw response.error;
 

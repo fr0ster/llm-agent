@@ -12,7 +12,10 @@ function documentBatch(
   return isBatchEmbedder(embedder)
     ? {
         embedDocuments: (texts: string[], options?: CallOptions) =>
-          embedder.embedBatch(texts, options),
+          embedder.embedBatch(texts, {
+            ...options,
+            usage: options?.usage?.with({ role: 'embedding' }),
+          }),
       }
     : {};
 }
@@ -24,9 +27,17 @@ function documentBatch(
  */
 export function symmetricEmbedder(embedder: IEmbedder): IRetrievalEmbedder {
   return {
-    embedDocument: (text, options) => embedder.embed(text, options),
+    embedDocument: (text, options) =>
+      embedder.embed(text, {
+        ...options,
+        usage: options?.usage?.with({ role: 'embedding' }),
+      }),
     ...documentBatch(embedder),
-    embedQuery: (text, options) => embedder.embed(text, options),
+    embedQuery: (text, options) =>
+      embedder.embed(text, {
+        ...options,
+        usage: options?.usage?.with({ role: 'embedding' }),
+      }),
   };
 }
 
@@ -41,8 +52,16 @@ export function asymmetricEmbedder(halves: {
   query: IEmbedder;
 }): IRetrievalEmbedder {
   return {
-    embedDocument: (text, options) => halves.document.embed(text, options),
+    embedDocument: (text, options) =>
+      halves.document.embed(text, {
+        ...options,
+        usage: options?.usage?.with({ role: 'embedding' }),
+      }),
     ...documentBatch(halves.document),
-    embedQuery: (text, options) => halves.query.embed(text, options),
+    embedQuery: (text, options) =>
+      halves.query.embed(text, {
+        ...options,
+        usage: options?.usage?.with({ role: 'embedding' }),
+      }),
   };
 }

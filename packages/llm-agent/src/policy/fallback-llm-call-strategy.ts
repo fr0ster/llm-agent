@@ -7,6 +7,8 @@ import {
   type LlmTool,
   type Message,
   type Result,
+  startOperation,
+  withOuterAttempt,
 } from '@mcp-abap-adt/llm-agent';
 import type { AnyLogger } from '../logger/normalise-logger.js';
 import { normaliseLogger } from '../logger/normalise-logger.js';
@@ -38,8 +40,11 @@ export class FallbackLlmCallStrategy implements ILlmCallStrategy {
     tools: LlmTool[],
     options?: CallOptions,
   ): AsyncIterable<Result<LlmStreamChunk, LlmError>> {
+    const op = startOperation(options);
+    const initialOptions = { ...options, usageOp: { ...op } };
+    const fallbackOptions = { ...options, usageOp: withOuterAttempt(op, 1) };
     if (this.streamingDisabled) {
-      yield* this.nonStreaming.call(llm, messages, tools, options);
+      yield* this.nonStreaming.call(llm, messages, tools, initialOptions);
       return;
     }
 
@@ -51,7 +56,7 @@ export class FallbackLlmCallStrategy implements ILlmCallStrategy {
         llm,
         messages,
         tools,
-        options,
+        initialOptions,
       )) {
         if (!chunk.ok) {
           if (isCallerCancellation(options?.signal)) {
@@ -73,7 +78,7 @@ export class FallbackLlmCallStrategy implements ILlmCallStrategy {
         // partial content that the consumer may have streamed to the client.
         // We yield a reset signal so the consumer can discard partial state.
         yield { ok: true, value: { content: '', reset: true } };
-        yield* this.nonStreaming.call(llm, messages, tools, options);
+        yield* this.nonStreaming.call(llm, messages, tools, fallbackOptions);
       }
     } catch (err: unknown) {
       // Streaming threw an exception (e.g. SSE disconnect, network error)
@@ -86,7 +91,7 @@ export class FallbackLlmCallStrategy implements ILlmCallStrategy {
       this.logFallback(errMsg, err);
       this.streamingDisabled = true;
       yield { ok: true, value: { content: '', reset: true } };
-      yield* this.nonStreaming.call(llm, messages, tools, options);
+      yield* this.nonStreaming.call(llm, messages, tools, fallbackOptions);
     }
   }
 

@@ -19,6 +19,7 @@ import type { CallOptions } from '../interfaces/types.js';
 import { RagError } from '../interfaces/types.js';
 import type { IWaitStrategy } from '../interfaces/wait-strategy.js';
 import { DefaultWaitStrategy } from '../interfaces/wait-strategy.js';
+import { startOperation, withOuterAttempt } from '../usage/hooks.js';
 
 export interface EmbedderRetryOptions {
   /** Maximum number of retries (total calls = maxAttempts + 1). Default: 3. */
@@ -115,19 +116,26 @@ export class RetryEmbedder implements IEmbedder {
   }
 
   async embed(text: string, options?: CallOptions): Promise<IEmbedResult> {
-    return this.run(() => this.inner.embed(text, options), options);
+    return this.run(
+      (attemptOptions) => this.inner.embed(text, attemptOptions),
+      options,
+    );
   }
 
   protected async run<T>(
-    call: () => Promise<T>,
+    call: (options: CallOptions) => Promise<T>,
     options?: CallOptions,
   ): Promise<T> {
+    const op = startOperation(options);
     for (let attempt = 0; ; attempt++) {
       if (options?.signal?.aborted) {
         throw new RagError('Aborted', 'ABORTED');
       }
       try {
-        return await call();
+        return await call({
+          ...options,
+          usageOp: withOuterAttempt(op, attempt),
+        });
       } catch (err) {
         if (attempt >= this.opts.maxAttempts || !this.isRetryable(err))
           throw err;
@@ -171,7 +179,10 @@ export class RetryBatchEmbedder
     texts: string[],
     options?: CallOptions,
   ): Promise<IEmbedResult[]> {
-    return this.run(() => this.inner.embedBatch(texts, options), options);
+    return this.run(
+      (attemptOptions) => this.inner.embedBatch(texts, attemptOptions),
+      options,
+    );
   }
 }
 

@@ -353,6 +353,8 @@ export class LlmAdapter implements ILlm, IModelProvider {
 
       const agentOptions = options
         ? {
+            usage: options.usage,
+            usageOp: options.usageOp,
             temperature: options.temperature,
             maxTokens: options.maxTokens,
             topP: options.topP,
@@ -408,6 +410,8 @@ export class LlmAdapter implements ILlm, IModelProvider {
 
       const agentOptions = options
         ? {
+            usage: options.usage,
+            usageOp: options.usageOp,
             temperature: options.temperature,
             maxTokens: options.maxTokens,
             topP: options.topP,

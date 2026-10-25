@@ -22,6 +22,7 @@ export class LlmTaskFormalizer implements ITaskFormalizer {
 
   async formalize(input: {
     prompt: string;
+    usage?: Parameters<ITaskFormalizer['formalize']>[0]['usage'];
     signal?: AbortSignal;
   }): Promise<ITaskSpec> {
     const fallback: ITaskSpec = { objective: input.prompt, raw: input.prompt };
@@ -32,7 +33,7 @@ export class LlmTaskFormalizer implements ITaskFormalizer {
           { role: 'user', content: input.prompt },
         ] as never,
         [] as never,
-        { signal: input.signal },
+        { usage: input.usage?.with({ role: 'planner' }), signal: input.signal },
       );
       if ((res as { ok: boolean }).ok === false) return fallback;
       const content = (res as { value: { content: string } }).value.content;

@@ -2,6 +2,7 @@ import type { IKnowledgeRagHandle, IToolsRagHandle } from './knowledge-rag.js';
 import type { StreamChunk } from './streaming.js';
 import type { ITaskSpec } from './task-spec.js';
 import type { LlmTool, LlmUsage } from './types.js';
+import type { IUsageRecorder } from './usage.js';
 
 /** Identity carried through every layer so executors can stamp
  *  KnowledgeEntryMetadata and the coordinator can attribute streaming
@@ -57,6 +58,7 @@ export interface IStepperInput {
   /** The Evaluator's named gaps (`needs`) for this task — threaded so the
    *  executor's tool-search is keyed on what is needed (18.1 needs-driven search). */
   evaluatorNeeds?: readonly string[];
+  usage?: IUsageRecorder;
   signal?: AbortSignal;
   sessionLogger?: { logStep(name: string, data: unknown, area?: string): void };
   onProgress?: (event: StreamChunk) => void;

@@ -39,7 +39,10 @@ export class TranslateHandler implements IStageHandler {
         { role: 'user' as const, content: ctx.ragText },
       ],
       [],
-      ctx.options,
+      {
+        ...ctx.options,
+        usage: ctx.options?.usage?.with({ role: 'translate' }),
+      },
     );
     ctx.requestLogger.logLlmCall({
       component: 'translate',

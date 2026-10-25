@@ -43,7 +43,7 @@ export class LlmQueryExpander implements IQueryExpander {
           { role: 'user' as const, content: query },
         ],
         [],
-        options,
+        { ...options, usage: options?.usage?.with({ role: 'query-expander' }) },
       );
       if (this.requestLogger) {
         this.requestLogger.logLlmCall({

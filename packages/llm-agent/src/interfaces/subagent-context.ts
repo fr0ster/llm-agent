@@ -1,5 +1,6 @@
 import type { PlanStep } from './coordinator.js';
 import type { ISubAgent } from './subagent.js';
+import type { IUsageRecorder } from './usage.js';
 
 /**
  * Inputs to a single context-build invocation. Provided by the dispatcher
@@ -11,6 +12,7 @@ export interface SubAgentContextRequest {
   agent: ISubAgent;
   inputText: string;
   sessionId: string;
+  usage?: IUsageRecorder;
   signal?: AbortSignal;
 }
 

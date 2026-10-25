@@ -78,6 +78,7 @@ export class Stepper implements IStepper {
       evaluatorNeeds: input.evaluatorNeeds,
       maxParallelSteps,
       mintStepperId,
+      usage: input.usage,
       signal: input.signal,
       sessionLogger: input.sessionLogger,
       onProgress: input.onProgress,
@@ -93,6 +94,7 @@ export class Stepper implements IStepper {
         toolsRag: input.toolsRag,
         taskSpec: input.taskSpec,
         identity: input.identity,
+        usage: input.usage,
         signal: input.signal,
       });
       input.sessionLogger?.logStep('evaluator_verdict', {
@@ -137,6 +139,7 @@ export class Stepper implements IStepper {
       identity: input.identity,
       agents: childAgentCatalog,
       taskSpec: input.taskSpec,
+      usage: input.usage,
       signal: input.signal,
     });
     // Log the parsed plan GRAPH (id, goal, dependsOn, agent) so the executed DAG
@@ -159,6 +162,7 @@ export class Stepper implements IStepper {
         plan,
         agents: [],
         sessionId: input.identity.sessionId,
+        usage: input.usage,
         signal: input.signal,
       } as never);
       // On rejection, a bounded replan could be added here (17.0 semantics).

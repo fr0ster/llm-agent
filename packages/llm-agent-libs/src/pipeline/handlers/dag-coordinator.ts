@@ -197,6 +197,7 @@ export class DagCoordinatorHandler implements IStageHandler {
             const ans = await this.deps.stateOracle.query({
               query: (err as NeedInfoSignal).query,
               sessionId: ctx.sessionId,
+              usage: ctx.options?.usage,
               signal: ctx.options?.signal,
               trace: ctx.options?.trace,
               sessionLogger: ctx.options?.sessionLogger,
@@ -237,6 +238,7 @@ export class DagCoordinatorHandler implements IStageHandler {
           agents,
           ancestorContext,
           sessionId: ctx.sessionId,
+          usage: ctx.options?.usage,
           signal: ctx.options?.signal,
         }),
       );
@@ -272,6 +274,7 @@ export class DagCoordinatorHandler implements IStageHandler {
                 agents,
                 ancestorContext,
                 sessionId: ctx.sessionId,
+                usage: ctx.options?.usage,
                 signal: ctx.options?.signal,
               }),
             );
@@ -299,6 +302,7 @@ export class DagCoordinatorHandler implements IStageHandler {
                 ancestorContext,
                 reviewerFeedback: verdict.feedback,
                 sessionId: ctx.sessionId,
+                usage: ctx.options?.usage,
                 signal: ctx.options?.signal,
               }),
             );
@@ -356,6 +360,7 @@ export class DagCoordinatorHandler implements IStageHandler {
             inputText: ctx.inputText,
             workers: this.deps.workers,
             sessionId: ctx.sessionId,
+            usage: ctx.options?.usage,
             signal: ctx.options?.signal,
             errorStrategy: this.deps.errorStrategy ?? new AbortErrorStrategy(),
             ancestorContext,
@@ -446,6 +451,7 @@ export class DagCoordinatorHandler implements IStageHandler {
                   : {}),
                 executionTrace,
                 sessionId: ctx.sessionId,
+                usage: ctx.options?.usage,
                 signal: ctx.options?.signal,
                 trace: ctx.options?.trace,
                 onPartial: finalizerOnPartial,
@@ -498,6 +504,7 @@ export class DagCoordinatorHandler implements IStageHandler {
               agents,
               ancestorContext,
               sessionId: ctx.sessionId,
+              usage: ctx.options?.usage,
               signal: ctx.options?.signal,
             }),
           );

@@ -17,6 +17,7 @@ import type {
   IEmbedResult,
 } from '@mcp-abap-adt/llm-agent';
 import { isBatchEmbedder, RagError } from '@mcp-abap-adt/llm-agent';
+import { startOperation } from '../usage/hooks.js';
 import { isCallerCancellation } from './caller-cancellation.js';
 import type { CircuitBreaker } from './circuit-breaker.js';
 
@@ -32,7 +33,10 @@ export class CircuitBreakerEmbedderBase implements IEmbedder {
       throw new RagError('Embedder circuit breaker is open', 'CIRCUIT_OPEN');
     }
     try {
-      const result = await this.inner.embed(text, options);
+      const result = await this.inner.embed(text, {
+        ...options,
+        usageOp: { ...startOperation(options) },
+      });
       if (!isCallerCancellation(options?.signal)) {
         this.breaker.recordSuccess();
       }
@@ -70,7 +74,10 @@ export class CircuitBreakerEmbedder
       );
     }
     try {
-      const result = await this.inner.embedBatch(texts, options);
+      const result = await this.inner.embedBatch(texts, {
+        ...options,
+        usageOp: { ...startOperation(options) },
+      });
       if (!isCallerCancellation(options?.signal)) {
         this.breaker.recordSuccess();
       }

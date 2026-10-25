@@ -189,10 +189,10 @@ export class VectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
         const eResult = await enricher.enrich(enrichedText, options);
         if (eResult.ok) enrichedText = eResult.value;
       }
-      const { vector } = await this.embedder.embedDocument(
-        enrichedText,
-        options,
-      );
+      const { vector } = await this.embedder.embedDocument(enrichedText, {
+        ...options,
+        usage: options?.usage?.with({ role: 'embedding' }),
+      });
       return this.upsertKnownVector(enrichedText, vector, metadata);
     } catch (err) {
       if (err instanceof RagError) return { ok: false, error: err };
@@ -235,7 +235,7 @@ export class VectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
       const effectiveEmbedding =
         searchText !== text
           ? new QueryEmbedding(searchText, this.embedder, options)
-          : new FallbackQueryEmbedding(embedding, this.embedder);
+          : new FallbackQueryEmbedding(embedding, this.embedder, options);
       const queryVector = await effectiveEmbedding.toVector();
       const targetNamespace = options?.ragFilter?.namespace;
       const identity = ragIdentityFilter(options);
@@ -299,7 +299,10 @@ export class VectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
 
   async healthCheck(options?: CallOptions): Promise<Result<void, RagError>> {
     try {
-      await this.embedder.embedQuery('ping', options);
+      await this.embedder.embedQuery('ping', {
+        ...options,
+        usage: options?.usage?.with({ role: 'embedding' }),
+      });
       return { ok: true, value: undefined };
     } catch (err) {
       return {

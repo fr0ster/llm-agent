@@ -1,5 +1,6 @@
 import {
   artifactIdentityKey,
+  type CallOptions,
   ClarifySignal,
   type IExecutor,
   type INeedResolver,
@@ -18,6 +19,7 @@ export interface CyclicReActExecutorDeps {
     name: string,
     args: unknown,
     signal?: AbortSignal,
+    options?: CallOptions,
   ) => Promise<string>;
   component: LlmComponent;
   maxIterations: number;
@@ -130,7 +132,10 @@ export class CyclicReActExecutor implements IExecutor {
     // lean; large fetched artifacts stay in the blackboard for the finalizer.
     let factsPrefix = '';
     try {
-      const facts = await knowledgeRag.query(prompt, { k: 5 });
+      const facts = await knowledgeRag.query(prompt, {
+        k: 5,
+        options: { signal, usage: input.usage },
+      });
       if (facts.length > 0) {
         factsPrefix = `${'Known facts and guidance (from the shared knowledge store):\n'}${facts
           .map((f) => `- ${truncateFact(f.content, 300)}`)
@@ -182,7 +187,10 @@ export class CyclicReActExecutor implements IExecutor {
       //     when needs are mixed in). Single-intent queries each match their tool
       //     cleanly; the union covers both intents without lexical collision.
       const seedQuery = `${taskAnchor ? `${renderTaskSpec(taskSpec as NonNullable<typeof taskSpec>)}\n` : ''}${factsPrefix}${prompt}`;
-      const seeded = await toolsRag.query(seedQuery, 10);
+      const seeded = await toolsRag.query(seedQuery, 10, {
+        signal,
+        usage: input.usage,
+      });
       for (const t of seeded) tools.push(t as LlmTool);
       let needSeeded = 0;
       if (input.evaluatorNeeds && input.evaluatorNeeds.length > 0) {
@@ -190,6 +198,7 @@ export class CyclicReActExecutor implements IExecutor {
         const byNeeds = await toolsRag.query(
           input.evaluatorNeeds.join('; '),
           10,
+          { signal, usage: input.usage },
         );
         for (const t of byNeeds)
           if (!have.has((t as LlmTool).name)) {
@@ -269,7 +278,10 @@ export class CyclicReActExecutor implements IExecutor {
         component,
         model: llm.model ?? 'unknown',
       });
-      const res = await llm.chat(messages, tools, { signal });
+      const res = await llm.chat(messages, tools, {
+        signal,
+        usage: input.usage?.with({ role: this.deps.component }),
+      });
       onProgress?.({
         kind: 'llm-call-end',
         source: ref,
@@ -369,7 +381,9 @@ export class CyclicReActExecutor implements IExecutor {
             tool: toolName,
             args: tc.arguments,
           });
-          const result = await callMcp(toolName, tc.arguments, signal);
+          const result = await callMcp(toolName, tc.arguments, signal, {
+            usage: input.usage?.with({ role: component }),
+          });
           fetched.add(identityKey);
           onProgress?.({
             kind: 'mcp-result',
@@ -378,20 +392,23 @@ export class CyclicReActExecutor implements IExecutor {
             durationMs: 0,
             bytes: result.length,
           });
-          await knowledgeRag.write({
-            content: result,
-            metadata: {
-              traceId: identity.traceId,
-              turnId: identity.turnId,
-              stepperId: identity.stepperId,
-              parentStepperId: identity.parentStepperId,
-              task: prompt,
-              artifactType: 'mcp-result',
-              toolName,
-              identityKey,
-              createdAt: nowIso(),
+          await knowledgeRag.write(
+            {
+              content: result,
+              metadata: {
+                traceId: identity.traceId,
+                turnId: identity.turnId,
+                stepperId: identity.stepperId,
+                parentStepperId: identity.parentStepperId,
+                task: prompt,
+                artifactType: 'mcp-result',
+                toolName,
+                identityKey,
+                createdAt: nowIso(),
+              },
             },
-          });
+            { signal, usage: input.usage },
+          );
           messages.push({
             role: 'tool',
             content: result,
@@ -409,10 +426,16 @@ export class CyclicReActExecutor implements IExecutor {
       // results would false-positive. We re-query ONLY when the classifier says
       // the model expressed a need.
       const need = needResolver
-        ? await needResolver.resolve(v.content ?? '')
+        ? await needResolver.resolve(v.content ?? '', {
+            signal,
+            usage: input.usage,
+          })
         : undefined;
       if (need?.queryToolsRag) {
-        const found = await toolsRag.query(need.queryToolsRag, 5);
+        const found = await toolsRag.query(need.queryToolsRag, 5, {
+          signal,
+          usage: input.usage,
+        });
         const have = new Set(tools.map((t) => t.name));
         let added = 0;
         for (const t of found)
@@ -462,18 +485,21 @@ export class CyclicReActExecutor implements IExecutor {
       }
 
       // Clean final answer → write + return ok.
-      await knowledgeRag.write({
-        content: v.content ?? '',
-        metadata: {
-          traceId: identity.traceId,
-          turnId: identity.turnId,
-          stepperId: identity.stepperId,
-          parentStepperId: identity.parentStepperId,
-          task: prompt,
-          artifactType: 'analysis-finding',
-          createdAt: nowIso(),
+      await knowledgeRag.write(
+        {
+          content: v.content ?? '',
+          metadata: {
+            traceId: identity.traceId,
+            turnId: identity.turnId,
+            stepperId: identity.stepperId,
+            parentStepperId: identity.parentStepperId,
+            task: prompt,
+            artifactType: 'analysis-finding',
+            createdAt: nowIso(),
+          },
         },
-      });
+        { signal, usage: input.usage },
+      );
       return { status: 'ok', usage };
     }
     return { status: 'incomplete', missing: ['max iterations reached'], usage };

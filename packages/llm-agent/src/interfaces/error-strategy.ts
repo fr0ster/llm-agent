@@ -1,5 +1,6 @@
 import type { DagPlan, PlanNode } from './dag-plan.js';
 import type { PlannerCatalogEntry } from './planner.js';
+import type { IUsageRecorder } from './usage.js';
 
 export interface ErrorContext {
   /** The composed task the failed node was given. */
@@ -8,6 +9,7 @@ export interface ErrorContext {
   remainingReplans: number;
   agents: PlannerCatalogEntry[];
   sessionId: string;
+  usage?: IUsageRecorder;
   signal?: AbortSignal;
 }
 

@@ -76,6 +76,7 @@ export class LlmReviewStrategy implements IReviewStrategy {
     const res = await this.agent.run({
       task,
       sessionId: input.sessionId,
+      usage: input.usage?.with({ role: 'reviewer' }),
       signal: input.signal,
     });
 
@@ -160,6 +161,7 @@ export class LlmReviewStrategy implements IReviewStrategy {
     const res = await this.executionAgent.run({
       task,
       sessionId: input.sessionId,
+      usage: input.usage?.with({ role: 'reviewer' }),
       signal: input.signal,
     });
 

@@ -1,6 +1,7 @@
 import type { ContextPath } from './context-path.js';
 import type { DagPlan } from './dag-plan.js';
 import type { LlmUsage } from './types.js';
+import type { IUsageRecorder } from './usage.js';
 
 export interface PlannerCatalogEntry {
   name: string;
@@ -11,6 +12,7 @@ export interface PlannerInput {
   prompt: string;
   agents: PlannerCatalogEntry[];
   sessionId: string;
+  usage?: IUsageRecorder;
   signal?: AbortSignal;
   ancestorContext?: ContextPath;
   reviewerFeedback?: string;

@@ -86,6 +86,7 @@ async function writeOne(
   metadata: RagMetadata = {},
   options?: CallOptions,
 ): Promise<boolean> {
+  options = { ...options, usage: options?.usage?.with({ role: 'embedding' }) };
   const start = Date.now();
   const result =
     vector && writer.upsertPrecomputedRaw
@@ -270,7 +271,10 @@ export async function vectorizeMcpTools(
     const start = Date.now();
     try {
       // Tool descriptions are what the store holds: documents.
-      const results = await storeEmbedder.embedDocuments(texts, options);
+      const results = await storeEmbedder.embedDocuments(texts, {
+        ...options,
+        usage: options?.usage?.with({ role: 'embedding' }),
+      });
       vectors = results.map((r) => r.vector);
       const real = results.reduce<{ p: number; t: number } | null>(
         (a, r) =>
@@ -439,10 +443,11 @@ export async function vectorizeSkills(
   toolsRag: IRag,
   requestLogger: IRequestLogger,
   logger: ILogger | undefined,
+  options?: CallOptions,
 ): Promise<void> {
   const writer = toolsRag.writer?.();
   if (!writer) return;
-  const skillsResult = await skillManager.listSkills();
+  const skillsResult = await skillManager.listSkills(options);
   if (!skillsResult.ok) return;
   // Skills keep their per-item warning: unlike the tool catalog, a skill set is
   // small, so there is no log-flooding problem to solve here, and #236's scope
@@ -459,6 +464,7 @@ export async function vectorizeSkills(
         requestLogger,
         'skills',
         { name: s.name },
+        options,
       );
     } catch {
       ok = false;

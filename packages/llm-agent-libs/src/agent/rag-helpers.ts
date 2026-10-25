@@ -33,7 +33,7 @@ export async function toEnglishForRag(
       { role: 'user' as const, content: text },
     ],
     [],
-    opts,
+    { ...opts, usage: opts?.usage?.with({ role: 'translate' }) },
   );
   return res.ok && res.value.content.trim() ? res.value.content.trim() : text;
 }
@@ -67,7 +67,7 @@ export async function summarizeHistory(
       },
     ],
     [],
-    opts,
+    { ...opts, usage: opts?.usage?.with({ role: 'helper' }) },
   );
   deps.requestLogger.logLlmCall({
     component: 'helper',

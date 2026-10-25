@@ -1,3 +1,4 @@
+import { startOperation } from '@mcp-abap-adt/llm-agent';
 /**
  * NonStreamingLlm — ILlm decorator that converts streamChat() to chat().
  *
@@ -39,7 +40,10 @@ export class NonStreamingLlm implements ILlm {
     tools?: LlmTool[],
     options?: CallOptions,
   ): Promise<Result<LlmResponse, LlmError>> {
-    return this.inner.chat(messages, tools, options);
+    return this.inner.chat(messages, tools, {
+      ...options,
+      usageOp: { ...startOperation(options) },
+    });
   }
 
   async *streamChat(
@@ -47,7 +51,10 @@ export class NonStreamingLlm implements ILlm {
     tools?: LlmTool[],
     options?: CallOptions,
   ): AsyncIterable<Result<LlmStreamChunk, LlmError>> {
-    const result = await this.inner.chat(messages, tools, options);
+    const result = await this.inner.chat(messages, tools, {
+      ...options,
+      usageOp: { ...startOperation(options) },
+    });
     if (!result.ok) {
       yield result;
       return;

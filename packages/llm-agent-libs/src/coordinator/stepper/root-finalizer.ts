@@ -1,3 +1,4 @@
+import type { IUsageRecorder } from '@mcp-abap-adt/llm-agent';
 import {
   type IKnowledgeRagHandle,
   type ILlm,
@@ -18,6 +19,7 @@ export class RootFinalizer {
     knowledgeRag: IKnowledgeRagHandle;
     turnId: string;
     scope?: 'turn' | 'session';
+    usage?: IUsageRecorder;
     signal?: AbortSignal;
     onProgress?: (event: StreamChunk) => void;
   }): Promise<{ output: string; usage?: LlmUsage }> {
@@ -36,7 +38,7 @@ export class RootFinalizer {
         { role: 'user', content: user },
       ] as never,
       [] as never,
-      { signal: input.signal },
+      { usage: input.usage?.with({ role: 'finalizer' }), signal: input.signal },
     )) {
       if (chunk.ok === false)
         throw new Error(chunk.error?.message ?? 'finalizer stream error');

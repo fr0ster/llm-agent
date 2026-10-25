@@ -1,3 +1,4 @@
+import type { IUsageRecorder } from './usage.js';
 /**
  * TaskSpec — the formalized overall task.
  *
@@ -30,6 +31,7 @@ export interface ITaskFormalizer {
   readonly name: string;
   formalize(input: {
     prompt: string;
+    usage?: IUsageRecorder;
     signal?: AbortSignal;
   }): Promise<ITaskSpec>;
 }
