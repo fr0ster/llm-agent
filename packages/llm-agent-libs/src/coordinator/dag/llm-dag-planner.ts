@@ -233,6 +233,7 @@ export class LlmDagPlanner implements IPlanner {
     const res = await this.agent.run({
       task,
       sessionId: input.sessionId,
+      usage: input.usage?.with({ role: 'planner' }),
       signal: input.signal,
     });
 

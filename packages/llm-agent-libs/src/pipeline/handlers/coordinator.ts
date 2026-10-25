@@ -57,6 +57,7 @@ export class CoordinatorHandler implements IStageHandler {
       activeSkillMeta: collectActiveSkillMeta(ctx),
       registry,
       stepResults: {},
+      usage: ctx.options?.usage,
       signal: ctx.options?.signal,
       sessionId: ctx.sessionId,
       // #157: thread the per-request RAG-selected tools + an MCP executor so a
@@ -303,13 +304,20 @@ function buildCallTool(
 ): ICoordinatorContext['callTool'] | undefined {
   const map = ctx.toolClientMap;
   if (!map || map.size === 0) return undefined;
-  return async (name: string, args: unknown) => {
+  return async (name, args, signal, callOptions) => {
     const client = map.get(name);
     if (!client) return `Tool not found: ${name}`;
     const r = await client.callTool(
       name,
       (args ?? {}) as Record<string, unknown>,
-      ctx.options,
+      {
+        ...ctx.options,
+        ...callOptions,
+        signal: signal ?? ctx.options?.signal,
+        usage: (callOptions?.usage ?? ctx.options?.usage)?.with({
+          role: 'executor',
+        }),
+      },
     );
     if (!r.ok) return r.error.message;
     return typeof r.value.content === 'string'

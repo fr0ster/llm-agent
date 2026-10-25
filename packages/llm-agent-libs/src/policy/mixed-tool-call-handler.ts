@@ -54,7 +54,10 @@ export function fireInternalToolsAsync(
         if (!client) {
           return { toolCallId: tc.id, toolName: tc.name, text: '' };
         }
-        const res = await client.callTool(tc.name, tc.arguments, ctx.options);
+        const res = await client.callTool(tc.name, tc.arguments, {
+          ...ctx.options,
+          usage: ctx.options?.usage?.with({ role: 'tool-loop' }),
+        });
         const text = !res.ok
           ? res.error.message
           : typeof res.value.content === 'string'

@@ -3,12 +3,15 @@ import { describe, it } from 'node:test';
 import {
   externalToolCallId,
   type IKnowledgeRagHandle,
+  type IUsageRecorder,
   type KnowledgeEntry,
   type LlmStreamChunk,
   type LlmTool,
   type Message,
   type Result,
   symmetricEmbedder,
+  type UsageContext,
+  type UsageInput,
 } from '@mcp-abap-adt/llm-agent';
 import type {
   KnowledgeBackend,
@@ -170,6 +173,93 @@ const toolCall = (
 // ---------------------------------------------------------------------------
 
 describe('ControllerCoordinatorHandler', () => {
+  it('records executor and plan-completion finalizer usage in their own scopes', async () => {
+    const records: UsageInput[] = [];
+    const recorder = (context: UsageContext): IUsageRecorder => ({
+      record(input) {
+        records.push({ ...input, context: { ...context, ...input.context } });
+      },
+      with(extra) {
+        return recorder({ ...context, ...extra });
+      },
+    });
+    const usageOp = {
+      operationId: 'controller-role-test',
+      seq: { next: () => 0 },
+      outerAttempt: 0,
+      providerAttempt: 0,
+      chunkPath: '',
+    };
+    const h = harness({
+      evaluator: [{ kind: 'content', content: 'Goal' }],
+      planner: [],
+      executor: [],
+    });
+    let plannerCalls = 0;
+    h.deps.planner = {
+      async send(_messages, _tools, options) {
+        assert.equal(options?.usageOp, usageOp);
+        options?.usage?.record({
+          kind: 'test.planner',
+          outcome: 'ok',
+          context: {},
+          values: {},
+        });
+        return {
+          kind: 'content',
+          content:
+            plannerCalls++ === 0
+              ? JSON.stringify({ plan: [{ name: 's1', instructions: 'do' }] })
+              : 'finished',
+        };
+      },
+    };
+    h.deps.executor = {
+      async send(_messages, _tools, options) {
+        assert.equal(options?.usageOp, usageOp);
+        assert.ok(options?.signal);
+        options?.usage?.record({
+          kind: 'test.executor',
+          outcome: 'ok',
+          context: {},
+          values: {},
+        });
+        return { kind: 'content', content: 'did s1' };
+      },
+    };
+    const { ctx, captured } = fakeCtx({
+      options: {
+        usage: recorder({ sessionId: 'sess-1', role: 'caller' }),
+        usageOp,
+      },
+    });
+
+    assert.equal(
+      await new ControllerCoordinatorHandler(h.deps).execute(
+        ctx,
+        {},
+        undefined,
+      ),
+      true,
+    );
+    assert.ok(
+      captured.some(
+        (c) =>
+          c.ok &&
+          c.value.finishReason === 'stop' &&
+          c.value.content === 'finished',
+      ),
+    );
+    assert.deepEqual(
+      records.map((r) => [r.kind, r.context.role, r.context.sessionId]),
+      [
+        ['test.planner', 'planner', 'sess-1'],
+        ['test.executor', 'executor', 'sess-1'],
+        ['test.planner', 'finalizer', 'sess-1'],
+      ],
+    );
+  });
+
   it('happy: goal → one step → done', async () => {
     const h = harness({
       evaluator: [{ kind: 'content', content: 'Goal: do the thing' }],

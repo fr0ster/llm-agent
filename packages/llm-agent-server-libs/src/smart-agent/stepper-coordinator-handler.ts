@@ -131,6 +131,7 @@ export class StepperCoordinatorHandler implements IStageHandler {
       ? await built.taskFormalizer.formalize({
           prompt: ctx.inputText,
           signal: ctx.options?.signal,
+          usage: ctx.options?.usage,
         })
       : undefined;
     if (taskSpec)
@@ -145,12 +146,10 @@ export class StepperCoordinatorHandler implements IStageHandler {
     //     stage error).
     // If a stateOracle is configured in future, it would be routed there instead
     // of the retry-with-guidance path.
-    // Request-bound toolsRag facade: injects ctx.options (requestLogger + trace)
-    // into query() so the wrapped embedder logs the Stepper's internal toolsRag
-    // query-embeddings against this request — without threading CallOptions
-    // through IStepperInput and every child contract.
+    // Retain request diagnostics while honoring each Stepper call's usage context.
     const boundToolsRag: IToolsRagHandle = {
-      query: (text, k) => toolsRag.query(text, k, ctx.options),
+      query: (text, k, options) =>
+        toolsRag.query(text, k, { ...ctx.options, ...options }),
       lookup: (name) => toolsRag.lookup(name),
     };
     const runOnce = async (prompt: string): Promise<IStepperResult> =>
@@ -168,6 +167,7 @@ export class StepperCoordinatorHandler implements IStageHandler {
         // stops the planner/executor/child-Stepper path, and the sessionLogger
         // so per-step logging (executor_tool_seed, etc.) reaches the request log.
         signal: ctx.options?.signal,
+        usage: ctx.options?.usage,
         sessionLogger: ctx.options?.sessionLogger,
         onProgress: (c) => {
           if (c.kind === 'content') {
@@ -260,6 +260,7 @@ export class StepperCoordinatorHandler implements IStageHandler {
         knowledgeRag,
         turnId: identity.turnId,
         signal: ctx.options?.signal,
+        usage: ctx.options?.usage,
         onProgress: (c) => {
           if (c.kind === 'content') {
             ctx.yield({ ok: true, value: { content: c.delta } });

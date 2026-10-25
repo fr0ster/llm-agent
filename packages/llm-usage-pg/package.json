@@ -1,0 +1,46 @@
+{
+  "name": "@mcp-abap-adt/llm-usage-pg",
+  "version": "1.0.0",
+  "description": "PG usage analytics sink and reader.",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "ddl",
+    "README.md",
+    "LICENSE",
+    "GPL-3.0.txt"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "clean": "tsc -b tsconfig.json --clean",
+    "test": "node --import tsx/esm --test --test-reporter=spec \"src/**/*.test.ts\""
+  },
+  "license": "LGPL-3.0-only",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/fr0ster/llm-agent.git"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "peerDependencies": {
+    "@mcp-abap-adt/llm-agent": "^30.10.0",
+    "@mcp-abap-adt/llm-usage": "^1.0.0"
+  },
+  "dependencies": {
+    "pg": "8.23.0"
+  },
+  "devDependencies": {
+    "@types/pg": "8.23.1",
+    "@electric-sql/pglite": "0.5.10"
+  }
+}

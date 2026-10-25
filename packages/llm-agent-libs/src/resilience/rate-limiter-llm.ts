@@ -1,3 +1,4 @@
+import { startOperation } from '@mcp-abap-adt/llm-agent';
 /**
  * RateLimiterLlm — ILlm decorator that throttles outbound requests.
  *
@@ -40,7 +41,10 @@ export class RateLimiterLlm implements ILlm {
     options?: CallOptions,
   ): Promise<Result<LlmResponse, LlmError>> {
     await this.limiter.acquire();
-    return this.inner.chat(messages, tools, options);
+    return this.inner.chat(messages, tools, {
+      ...options,
+      usageOp: { ...startOperation(options) },
+    });
   }
 
   async *streamChat(
@@ -49,6 +53,9 @@ export class RateLimiterLlm implements ILlm {
     options?: CallOptions,
   ): AsyncIterable<Result<LlmStreamChunk, LlmError>> {
     await this.limiter.acquire();
-    yield* this.inner.streamChat(messages, tools, options);
+    yield* this.inner.streamChat(messages, tools, {
+      ...options,
+      usageOp: { ...startOperation(options) },
+    });
   }
 }

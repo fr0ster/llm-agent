@@ -39,7 +39,7 @@ export class LinearPipelinePlugin implements IPipelinePlugin {
     };
     const { handler } = await new LinearFactory().build(deps, {
       makeRoleLlm: (role) => ctx.resolveLlm(role),
-      callMcp: (n, a, sig) => ctx.callMcp(n, a, sig),
+      callMcp: (n, a, sig, o) => ctx.callMcp(n, a, sig, o),
     });
     const builder = registerSkillSources(await ctx.createAgentBuilder(), ctx);
     const handle = await builder.withStepperCoordinator(handler).build();

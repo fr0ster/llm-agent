@@ -5,7 +5,8 @@ import type {
   ISubAgentResult,
   SubAgentRegistry,
 } from './subagent.js';
-import type { LlmTool, LlmUsage } from './types.js';
+import type { CallOptions, LlmTool, LlmUsage } from './types.js';
+import type { IUsageRecorder } from './usage.js';
 
 export interface PlanStep {
   id: string;
@@ -85,6 +86,7 @@ export interface ICoordinatorContext {
   registry: SubAgentRegistry;
   plan?: Plan;
   stepResults: Record<string, StepResult>;
+  usage?: IUsageRecorder;
   signal?: AbortSignal;
   sessionId: string;
   /**
@@ -104,6 +106,7 @@ export interface ICoordinatorContext {
     name: string,
     args: unknown,
     signal?: AbortSignal,
+    options?: CallOptions,
   ) => Promise<string>;
 }
 

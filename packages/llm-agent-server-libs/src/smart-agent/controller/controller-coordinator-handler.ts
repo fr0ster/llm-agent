@@ -134,6 +134,7 @@ export interface ControllerHandlerDeps {
     toolName: string,
     args: unknown,
     signal?: AbortSignal,
+    options?: CallOptions,
   ) => Promise<McpCallResult>;
   /**
    * Semantic tool selection over the vectorized MCP catalog (toolsRag): returns
@@ -1392,6 +1393,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
         try {
           res = await deps.executor.send(messages, offeredTools, {
             ...ctx.options,
+            usage: ctx.options?.usage?.with({ role: 'executor' }),
             signal: callSignal,
           });
         } catch (e) {
@@ -1409,7 +1411,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
                 hint: deps.config.subagents.reviewer?.hint,
                 logUsage,
                 maxDigestChars: cfg.maxDigestChars ?? 500,
-                callOptions: diagnosticCallOptions(ctx.options),
+                callOptions: diagnosticCallOptions(ctx.options, 'reviewer'),
               })
             : {
                 kind: 'outcome',
@@ -1448,7 +1450,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
               hint: deps.config.subagents.reviewer?.hint,
               logUsage,
               maxDigestChars: cfg.maxDigestChars ?? 500,
-              callOptions: diagnosticCallOptions(ctx.options),
+              callOptions: diagnosticCallOptions(ctx.options, 'reviewer'),
             });
           }
 
@@ -1640,7 +1642,11 @@ export class ControllerCoordinatorHandler implements IStageHandler {
         let result: McpCallResult;
         const mcpCallStartedAt = Date.now();
         try {
-          result = await deps.callMcp(name, args, callSignal);
+          result = await deps.callMcp(name, args, callSignal, {
+            ...ctx.options,
+            signal: callSignal,
+            usage: ctx.options?.usage?.with({ role: 'executor' }),
+          });
         } catch (mcpErr) {
           ctx.options?.sessionLogger?.logStep(
             'mcp_tool_call',
@@ -2058,7 +2064,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
               logUsage,
               log: (m) => dlog(m),
               skillsBlock,
-              callOptions: diagnosticCallOptions(ctx.options),
+              callOptions: diagnosticCallOptions(ctx.options, 'finalizer'),
             },
           );
           // Empty-but-ok finalizer output is a JUDGE failure (spec), not a valid

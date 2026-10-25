@@ -1,5 +1,6 @@
 import type {
   AdaptiveStep,
+  CallOptions,
   ControllerPlanInput,
   IAdaptiveController,
   ILlm,
@@ -62,14 +63,14 @@ export class LlmAdaptiveController implements IAdaptiveController {
     this.systemPrompt = opts?.systemPrompt ?? ADAPTIVE_CONTROLLER_SYSTEM;
   }
 
-  private async chat(system: string, content: string, signal?: AbortSignal) {
+  private async chat(system: string, content: string, options?: CallOptions) {
     const result = await this.llm.chat(
       [
         { role: 'system', content: system },
         { role: 'user', content },
       ],
       undefined,
-      { signal },
+      options,
     );
     if (!result.ok) throw new Error(result.error.message);
     return result.value;
@@ -103,7 +104,7 @@ export class LlmAdaptiveController implements IAdaptiveController {
         `Previous run:\n${JSON.stringify(previousRun ?? null)}`,
         `Current request:\n${input.request}`,
       ].join('\n\n'),
-      input.signal,
+      { signal: input.signal, usage: input.usage?.with({ role: 'planner' }) },
     );
     const parsed = parsePlan(response.content, {
       workers: input.workers.map((worker) => worker.name),
@@ -113,11 +114,11 @@ export class LlmAdaptiveController implements IAdaptiveController {
   }
 
   async check(input: Parameters<IAdaptiveController['check']>[0]) {
-    const { signal, ...context } = input;
+    const { signal, usage, ...context } = input;
     const response = await this.chat(
       'Judge the target records against the request, spec and check goal. Return JSON only: {"verdict":"pass|fail|partial","reason":"..."}.',
       JSON.stringify(context),
-      signal,
+      { signal, usage: usage?.with({ role: 'reviewer' }) },
     );
     const verdict = parseVerdict(response.content);
     if (!verdict)
@@ -126,11 +127,11 @@ export class LlmAdaptiveController implements IAdaptiveController {
   }
 
   async revise(input: Parameters<IAdaptiveController['revise']>[0]) {
-    const { signal, ...context } = input;
+    const { signal, usage, ...context } = input;
     const response = await this.chat(
       `${this.systemPrompt}\nFor this call return {"steps":[...]} with steps for the remainder only. Do not reuse executed ids in records or the current revise step's id. References may use retained step ids.`,
       JSON.stringify(context),
-      signal,
+      { signal, usage: usage?.with({ role: 'planner' }) },
     );
     let parsed: unknown;
     try {
@@ -157,11 +158,11 @@ export class LlmAdaptiveController implements IAdaptiveController {
   }
 
   async report(input: Parameters<IAdaptiveController['report']>[0]) {
-    const { signal, ...context } = input;
+    const { signal, usage, ...context } = input;
     const response = await this.chat(
       "Report in plain text in the request's language: what was done, what was not, and why the run stopped. Ground claims in the records; do not present unfinished work as complete.",
       JSON.stringify(context),
-      signal,
+      { signal, usage: usage?.with({ role: 'finalizer' }) },
     );
     return { text: response.content, usage: response.usage };
   }

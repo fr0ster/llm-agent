@@ -80,7 +80,11 @@ export class LlmFinalizer implements IFinalizer {
     const { signal, sessionId } = input;
     let buf = '';
     let usage: LlmUsage | undefined;
-    const stream = this.llm.streamChat(messages, [], { signal, sessionId });
+    const stream = this.llm.streamChat(messages, [], {
+      signal,
+      sessionId,
+      usage: input.usage?.with({ role: 'finalizer' }),
+    });
     for await (const chunk of stream) {
       if (chunk.ok === false)
         throw new Error(chunk.error?.message ?? 'streamChat failed');

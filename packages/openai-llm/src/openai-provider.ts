@@ -10,7 +10,12 @@ import type {
   LLMResponse,
   Message,
 } from '@mcp-abap-adt/llm-agent';
-import { BaseLLMProvider } from '@mcp-abap-adt/llm-agent';
+import {
+  BaseLLMProvider,
+  type LlmRequestFacts,
+  type LlmRequestHandle,
+  startOperation,
+} from '@mcp-abap-adt/llm-agent';
 import axios, { type AxiosInstance } from 'axios';
 
 export interface OpenAIConfig extends LLMProviderConfig {
@@ -154,9 +159,10 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
       const temperature = options?.temperature ?? this.config.temperature;
       const maxTokens = options?.maxTokens ?? this.config.maxTokens;
 
+      let headers: Record<string, string>;
       const response = await this.withThrottleRetry(
-        async () =>
-          this.client.post(
+        async (handle) => {
+          const response = await this.client.post(
             '/chat/completions',
             {
               model,
@@ -170,27 +176,49 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
               ...(options?.topP !== undefined ? { top_p: options.topP } : {}),
               ...(options?.stop ? { stop: options.stop } : {}),
             },
-            { signal: options?.signal, headers: await this.authHeader() },
-          ),
+            { signal: options?.signal, headers },
+          );
+          const choice = response.data.choices[0];
+
+          const usage = response.data.usage
+            ? {
+                promptTokens: response.data.usage.prompt_tokens,
+                completionTokens: response.data.usage.completion_tokens,
+                totalTokens: response.data.usage.total_tokens,
+              }
+            : undefined;
+
+          const result = {
+            content: choice.message.content || '',
+            finishReason: choice.finish_reason,
+            raw: response.data,
+            usage,
+          };
+          handle.end({
+            outcome: response.data.error ? 'error' : 'ok',
+            ...tokenFacts(response.data.usage),
+          });
+          return result;
+        },
         { model, signal: options?.signal },
+        {
+          prepare: async () => {
+            headers = await this.authHeader();
+          },
+          opts: options,
+          op: startOperation(options),
+          bound: this.config.usage,
+          base: {
+            provider: this.providerName,
+            model,
+            stream: false,
+            granularity: 'request',
+            retriesVisible: true,
+          },
+        },
       );
 
-      const choice = response.data.choices[0];
-
-      const usage = response.data.usage
-        ? {
-            promptTokens: response.data.usage.prompt_tokens,
-            completionTokens: response.data.usage.completion_tokens,
-            totalTokens: response.data.usage.total_tokens,
-          }
-        : undefined;
-
-      return {
-        content: choice.message.content || '',
-        finishReason: choice.finish_reason,
-        raw: response.data,
-        usage,
-      };
+      return response;
     } catch (error: unknown) {
       const message = axios.isAxiosError(error)
         ? (error.response?.data as { error?: { message?: string } })?.error
@@ -210,6 +238,11 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
     tools?: unknown[],
     options?: LLMCallOptions,
   ): AsyncIterable<LLMResponse> {
+    let request: LlmRequestHandle | undefined;
+    let completed = false;
+    let returnedError = false;
+    let failure: unknown;
+    let facts: Partial<LlmRequestFacts> = {};
     try {
       const model = options?.model ?? this.model;
       // Unset knobs are not sent: the model applies its own default. A
@@ -218,7 +251,8 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
       const temperature = options?.temperature ?? this.config.temperature;
       const maxTokens = options?.maxTokens ?? this.config.maxTokens;
 
-      const response = await this.withThrottleRetry(
+      let headers: Record<string, string>;
+      const opened = await this.withThrottleRetry(
         async () =>
           this.client.post(
             '/chat/completions',
@@ -239,11 +273,28 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
             {
               responseType: 'stream',
               signal: options?.signal,
-              headers: await this.authHeader(),
+              headers,
             },
           ),
         { model, signal: options?.signal },
+        {
+          prepare: async () => {
+            headers = await this.authHeader();
+          },
+          opts: options,
+          op: startOperation(options),
+          bound: this.config.usage,
+          base: {
+            provider: this.providerName,
+            model,
+            stream: true,
+            granularity: 'request',
+            retriesVisible: true,
+          },
+        },
       );
+      request = opened.handle;
+      const response = opened.response;
 
       const stream = response.data;
       let buffer = '';
@@ -262,6 +313,8 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
 
           try {
             const parsed = JSON.parse(data);
+            if (parsed.error) returnedError = true;
+            if (parsed.usage) facts = { ...facts, ...tokenFacts(parsed.usage) };
             const choice = parsed.choices?.[0];
             if (choice?.delta) {
               const deltaToolCalls = choice.delta.tool_calls as
@@ -279,6 +332,8 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
                     arguments: tc.function?.arguments,
                   }))
                 : undefined;
+              if (choice.delta.content || toolCalls?.length)
+                request.firstToken();
               yield {
                 content: choice.delta.content || '',
                 finishReason: choice.finish_reason,
@@ -309,7 +364,9 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
           }
         }
       }
+      completed = true;
     } catch (error: unknown) {
+      failure = error;
       const message = axios.isAxiosError(error)
         ? (error.response?.data as { error?: { message?: string } })?.error
             ?.message || error.message
@@ -320,6 +377,21 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
         error,
         new Error(`${this.providerName} Streaming error: ${message}`),
       );
+    } finally {
+      request?.end({
+        ...facts,
+        outcome: failure
+          ? options?.signal?.aborted || isAbortError(failure)
+            ? 'aborted'
+            : 'error'
+          : completed
+            ? returnedError
+              ? 'error'
+              : 'ok'
+            : 'aborted',
+        error: failure,
+        ...(!completed && !failure ? { closedEarly: true } : {}),
+      });
     }
   }
 
@@ -397,4 +469,43 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
 
     return formatted;
   }
+}
+
+function tokenFacts(usage?: {
+  prompt_tokens?: number;
+  completion_tokens?: number;
+  prompt_tokens_details?: { cached_tokens?: number };
+  prompt_cache_hit_tokens?: number;
+}): Partial<LlmRequestFacts> {
+  return usage &&
+    (usage.prompt_tokens !== undefined ||
+      usage.completion_tokens !== undefined ||
+      usage.prompt_tokens_details?.cached_tokens !== undefined ||
+      usage.prompt_cache_hit_tokens !== undefined)
+    ? {
+        ...(usage.prompt_tokens !== undefined
+          ? { inputTokens: usage.prompt_tokens }
+          : {}),
+        ...(usage.completion_tokens !== undefined
+          ? { outputTokens: usage.completion_tokens }
+          : {}),
+        ...((usage.prompt_tokens_details?.cached_tokens ??
+          usage.prompt_cache_hit_tokens) !== undefined
+          ? {
+              cachedInputTokens:
+                usage.prompt_tokens_details?.cached_tokens ??
+                usage.prompt_cache_hit_tokens,
+            }
+          : {}),
+        tokensSource: 'provider',
+      }
+    : {};
+}
+
+function isAbortError(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  return (
+    ('name' in error && error.name === 'AbortError') ||
+    ('code' in error && error.code === 'ERR_CANCELED')
+  );
 }

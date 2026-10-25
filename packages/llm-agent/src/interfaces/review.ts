@@ -3,12 +3,14 @@ import type { DagPlan } from './dag-plan.js';
 import type { NodeResult } from './interpreter.js';
 import type { PlannerCatalogEntry } from './planner.js';
 import type { LlmUsage } from './types.js';
+import type { IUsageRecorder } from './usage.js';
 
 export interface ReviewInput {
   prompt: string;
   plan: DagPlan;
   agents: PlannerCatalogEntry[];
   sessionId: string;
+  usage?: IUsageRecorder;
   signal?: AbortSignal;
   ancestorContext?: ContextPath;
 }
@@ -37,6 +39,7 @@ export interface ExecutionFailureInput {
   error: string;
   agents: PlannerCatalogEntry[];
   sessionId: string;
+  usage?: IUsageRecorder;
   signal?: AbortSignal;
   ancestorContext?: ContextPath;
 }

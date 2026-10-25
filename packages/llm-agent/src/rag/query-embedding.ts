@@ -22,7 +22,10 @@ export class QueryEmbedding implements IQueryEmbedding {
   }
 
   private _getResult(): Promise<IEmbedResult> {
-    this._result ??= this.embedder.embedQuery(this.text, this.options);
+    this._result ??= this.embedder.embedQuery(this.text, {
+      ...this.options,
+      usage: this.options?.usage?.with({ role: 'embedding' }),
+    });
     return this._result;
   }
 
@@ -65,6 +68,7 @@ export class FallbackQueryEmbedding implements IQueryEmbedding {
   constructor(
     private readonly inner: IQueryEmbedding,
     private readonly fallback: IQueryEmbedder,
+    private readonly options?: CallOptions,
   ) {}
 
   get text(): string {
@@ -72,9 +76,14 @@ export class FallbackQueryEmbedding implements IQueryEmbedding {
   }
 
   toVector(): Promise<number[]> {
-    this._vector ??= this.inner
-      .toVector()
-      .catch(() => this.fallback.embedQuery(this.text).then((r) => r.vector));
+    this._vector ??= this.inner.toVector().catch(() =>
+      this.fallback
+        .embedQuery(this.text, {
+          ...this.options,
+          usage: this.options?.usage?.with({ role: 'embedding' }),
+        })
+        .then((r) => r.vector),
+    );
     return this._vector;
   }
 }

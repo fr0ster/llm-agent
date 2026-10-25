@@ -10,6 +10,7 @@ import type {
 import type { StreamChunk } from './streaming.js';
 import type { ITaskSpec } from './task-spec.js';
 import type { LlmTool } from './types.js';
+import type { IUsageRecorder } from './usage.js';
 
 export interface IStepperInterpreter {
   readonly name: string;
@@ -31,6 +32,7 @@ export interface IStepperInterpreter {
       evaluatorNeeds?: readonly string[];
       maxParallelSteps: number;
       mintStepperId: () => string;
+      usage?: IUsageRecorder;
       signal?: AbortSignal;
       sessionLogger?: {
         logStep(name: string, data: unknown, area?: string): void;

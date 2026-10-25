@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type {
+  CallOptions,
   ISubAgent,
+  IUsageRecorder,
   PlanStep,
   RagResult,
   SubAgentContextRequest,
@@ -125,4 +127,43 @@ describe('DefaultSubAgentContextBuilder', () => {
     assert.equal(res.context, '');
     assert.deepEqual(res.sources, []);
   });
+});
+
+it('forwards usage, usageOp and cancellation to both retrieval sources', async () => {
+  const usage: IUsageRecorder = {
+    record() {},
+    with() {
+      return this;
+    },
+  };
+  const usageOp = {
+    operationId: 'context',
+    outerAttempt: 0,
+    chunkPath: '',
+    providerAttempt: 0,
+    seq: { next: () => 0 },
+  };
+  const signal = new AbortController().signal;
+  const seen: CallOptions[] = [];
+  const source: SubAgentRetrievalSource = async (
+    _text,
+    _k,
+    positionalSignal,
+    options,
+  ) => {
+    assert.equal(positionalSignal, signal);
+    assert.ok(options);
+    seen.push(options);
+    return [];
+  };
+  await new DefaultSubAgentContextBuilder({
+    projectSource: source,
+    toolSource: source,
+  }).build(makeReq({ usage, usageOp, signal }));
+  assert.equal(seen.length, 2);
+  for (const options of seen) {
+    assert.equal(options.usage, usage);
+    assert.equal(options.usageOp, usageOp);
+    assert.equal(options.signal, signal);
+  }
 });

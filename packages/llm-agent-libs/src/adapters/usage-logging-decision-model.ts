@@ -6,6 +6,7 @@ import type {
   IDecisionModel,
   Result,
 } from '@mcp-abap-adt/llm-agent';
+import { startOperation } from '@mcp-abap-adt/llm-agent';
 
 const BRAND = Symbol.for('@mcp-abap-adt/usage-logging-decision-model');
 
@@ -22,7 +23,11 @@ class UsageLoggingDecisionModel implements IDecisionModel {
     options?: CallOptions,
   ): Promise<Result<DecisionResult, DecisionError>> {
     const started = Date.now();
-    const r = await this.inner.decide(request, options);
+    const r = await this.inner.decide(request, {
+      ...options,
+      usageOp: { ...startOperation(options) },
+      usage: options?.usage?.with({ role: 'decision' }),
+    });
     const logger = options?.requestLogger;
     if (!r.ok || !logger) return r;
     const usage = r.value.usage;

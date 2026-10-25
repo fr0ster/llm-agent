@@ -1,4 +1,5 @@
 import type {
+  CallOptions,
   IMcpClient,
   IMcpFailureClassifier,
   McpCallResult,
@@ -86,8 +87,14 @@ export function buildNamespacedMcpBridge(
   name: string,
   args: unknown,
   signal?: AbortSignal,
+  options?: CallOptions,
 ) => Promise<McpCallResult> {
-  return async (name: string, args: unknown, signal?: AbortSignal) => {
+  return async (
+    name: string,
+    args: unknown,
+    signal?: AbortSignal,
+    options?: CallOptions,
+  ) => {
     const client = toolClientMap.get(name);
     if (!client) return { text: `Tool not found: ${name}`, isError: true };
 
@@ -95,7 +102,7 @@ export function buildNamespacedMcpBridge(
       args != null && typeof args === 'object' && !Array.isArray(args)
         ? (args as Record<string, unknown>)
         : {};
-    const opts = signal ? { signal } : undefined;
+    const opts = { ...options, signal: signal ?? options?.signal };
     const probe = client.healthCheck
       ? () => client.healthCheck!(opts).then((r) => (r.ok ? r.value : false))
       : undefined;

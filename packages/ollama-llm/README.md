@@ -28,3 +28,19 @@ library* stay free and that your users can substitute their own build.
 Versions up to and including v20.9.5 were MIT and stay MIT; the change is not
 retroactive. Full detail, including what to do if you redistribute:
 [docs/LICENSING.md](https://github.com/fr0ster/llm-agent/blob/main/docs/LICENSING.md).
+
+## Usage analytics
+
+Provider configuration accepts `usage?: IUsageRecorder` from
+`@mcp-abap-adt/llm-agent`. A call's `{ usage }` overrides the bound recorder;
+without either, collection is a no-op. Library adapters forward these options.
+Records describe physical requests inside retry/chunk loops, with a shared
+`operationId`, unique `physicalSeq`, attempt coordinates and embedding
+`chunkPath`. Token totals are the exact provider values for each request,
+or marked unknown when unavailable. No prompt, document, argument, result or
+credential content is recorded. Streams also record failures, cancellation
+and early consumer close (`closedEarly: true`).
+
+Use the buffered recorder from `@mcp-abap-adt/llm-usage`, or supply your own
+`IUsageRecorder`. See the [usage overview](../../docs/USAGE_ANALYTICS.md) for
+injection, replaceable transports/sinks and delivery/loss semantics.

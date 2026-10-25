@@ -17,6 +17,10 @@ npm run build
 PACKAGES=(
   llm-agent
   llm-signals
+  llm-usage
+  llm-usage-pg
+  llm-usage-hana
+  llm-usage-sqlite
   llm-agent-mcp
   llm-agent-rag
   openai-llm

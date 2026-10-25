@@ -39,7 +39,10 @@ export class HistorySummarizer implements IHistorySummarizer {
       },
     ];
 
-    const result = await this.llm.chat(messages, undefined, options);
+    const result = await this.llm.chat(messages, undefined, {
+      ...options,
+      usage: options?.usage?.with({ role: 'helper' }),
+    });
     if (!result.ok) return result;
     return { ok: true, value: result.value.content.trim() };
   }

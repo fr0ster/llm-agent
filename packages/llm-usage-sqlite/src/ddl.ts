@@ -1,0 +1,3 @@
+// Matches the operator DDL shipped in ddl/usage.sql.
+export const USAGE_DDL =
+  'CREATE TABLE IF NOT EXISTS USAGE_RECORDS (\n  id TEXT PRIMARY KEY,\n  schema_version INTEGER NOT NULL,\n  at BIGINT NOT NULL,\n  kind TEXT NOT NULL,\n  session_id TEXT,\n  user_id TEXT,\n  turn_id TEXT,\n  task_id TEXT,\n  role TEXT,\n  destination TEXT,\n  outcome TEXT NOT NULL,\n  record_json TEXT NOT NULL\n);\nCREATE INDEX IF NOT EXISTS USAGE_RECORDS_AT_IDX ON USAGE_RECORDS (at);\nCREATE INDEX IF NOT EXISTS USAGE_RECORDS_SESSION_ID_IDX ON USAGE_RECORDS (session_id);\nCREATE INDEX IF NOT EXISTS USAGE_RECORDS_KIND_IDX ON USAGE_RECORDS (kind);\n';

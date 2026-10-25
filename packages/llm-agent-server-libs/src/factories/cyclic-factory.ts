@@ -62,7 +62,7 @@ export async function buildStepperCoordinator(
         // The stepper root's callMcp contract is text-only; flatten the bridge's
         // McpCallResult to its text here (the stepper path does not consume
         // tool-level isError today — controller path #213 does).
-        callMcp: (n, a, s) => deps.callMcp(n, a, s).then((r) => r.text),
+        callMcp: (n, a, s, o) => deps.callMcp(n, a, s, o).then((r) => r.text),
         mintStepperId: deps.mintStepperId,
         registry: deps.registry ?? new Map(),
         logLlmCall,

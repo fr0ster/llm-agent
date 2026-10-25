@@ -6,6 +6,7 @@ import type {
   ILlm,
   ITaskSpec,
   IToolsRagHandle,
+  IUsageRecorder,
   RunIdentity,
 } from '@mcp-abap-adt/llm-agent';
 import { renderTaskSpec } from '@mcp-abap-adt/llm-agent';
@@ -49,9 +50,13 @@ export class LlmEvaluator implements IEvaluator {
     toolsRag: IToolsRagHandle;
     taskSpec?: ITaskSpec;
     identity: RunIdentity;
+    usage?: IUsageRecorder;
     signal?: AbortSignal;
   }): Promise<EvaluatorVerdict> {
-    const facts = await input.knowledgeRag.query(input.prompt, { k: 8 });
+    const facts = await input.knowledgeRag.query(input.prompt, {
+      k: 8,
+      options: { signal: input.signal, usage: input.usage },
+    });
     const factBlock = facts.length
       ? `Known facts (already in the knowledge store):\n${facts
           .map(
@@ -62,7 +67,10 @@ export class LlmEvaluator implements IEvaluator {
 
     let toolsBlock = '';
     try {
-      const tools = await input.toolsRag.query(input.prompt, 15);
+      const tools = await input.toolsRag.query(input.prompt, 15, {
+        signal: input.signal,
+        usage: input.usage,
+      });
       if (tools.length > 0) {
         toolsBlock =
           `Available tools (the agent can call these to obtain data):\n` +
@@ -87,7 +95,7 @@ export class LlmEvaluator implements IEvaluator {
         { role: 'user', content: user },
       ] as never,
       [] as never,
-      { signal: input.signal },
+      { usage: input.usage?.with({ role: 'evaluator' }), signal: input.signal },
     );
     if (res.ok === false)
       throw new Error(

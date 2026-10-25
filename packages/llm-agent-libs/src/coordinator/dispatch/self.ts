@@ -61,7 +61,11 @@ export class SelfDispatch implements IDispatchStrategy {
           { role: 'user', content: userMsg },
         ],
         [],
-        { signal: ctx.signal, sessionId: ctx.sessionId },
+        {
+          usage: ctx.usage?.with({ role: 'executor' }),
+          signal: ctx.signal,
+          sessionId: ctx.sessionId,
+        },
       );
       if (!res.ok) throw res.error;
       return {
@@ -113,6 +117,7 @@ export class SelfDispatch implements IDispatchStrategy {
 
     for (let iter = 0; iter < MAX_TOOL_ITERATIONS; iter++) {
       const res = await this.llm.chat(messages, tools, {
+        usage: ctx.usage?.with({ role: 'executor' }),
         signal: ctx.signal,
         sessionId: ctx.sessionId,
       });
@@ -134,7 +139,9 @@ export class SelfDispatch implements IDispatchStrategy {
         })),
       });
       for (const tc of toolCalls) {
-        const out = await callTool(tc.name, tc.arguments ?? {}, ctx.signal);
+        const out = await callTool(tc.name, tc.arguments ?? {}, ctx.signal, {
+          usage: ctx.usage?.with({ role: 'executor' }),
+        });
         messages.push({ role: 'tool', content: out, tool_call_id: tc.id });
       }
     }
@@ -142,6 +149,7 @@ export class SelfDispatch implements IDispatchStrategy {
     // Iteration cap hit: one final tool-free turn so we answer from what was
     // gathered instead of returning empty.
     const final = await this.llm.chat(messages, [], {
+      usage: ctx.usage?.with({ role: 'executor' }),
       signal: ctx.signal,
       sessionId: ctx.sessionId,
     });

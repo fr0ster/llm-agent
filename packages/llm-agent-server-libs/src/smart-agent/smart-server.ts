@@ -9,6 +9,7 @@ import { createRequire } from 'node:module';
 import { resolve as pathResolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type {
+  CallOptions,
   EmbedderFactory,
   IClientAdapter,
   IEmbedder,
@@ -736,13 +737,19 @@ export function buildMcpBridge(
   name: string,
   args: unknown,
   signal?: AbortSignal,
+  options?: CallOptions,
 ) => Promise<McpCallResult> {
-  return async (name: string, args: unknown, signal?: AbortSignal) => {
+  return async (
+    name: string,
+    args: unknown,
+    signal?: AbortSignal,
+    options?: CallOptions,
+  ) => {
     const safeArgs =
       args != null && typeof args === 'object' && !Array.isArray(args)
         ? (args as Record<string, unknown>)
         : {};
-    const opts = signal ? { signal } : undefined;
+    const opts = { ...options, signal: signal ?? options?.signal };
     for (const client of clients) {
       const probe = client.healthCheck
         ? () => client.healthCheck!(opts).then((r) => (r.ok ? r.value : false))
@@ -2406,6 +2413,7 @@ export class SmartServer {
     name: string,
     args: unknown,
     signal?: AbortSignal,
+    options?: CallOptions,
   ) => Promise<McpCallResult>;
 
   /** callMcp bridge over the shared connected MCP clients (empty when none). */
@@ -2413,6 +2421,7 @@ export class SmartServer {
     name: string,
     args: unknown,
     signal?: AbortSignal,
+    options?: CallOptions,
   ): Promise<McpCallResult> {
     // Namespaced routing (#244 Task 8): when the authoritative snapshot has
     // provenance (collision path took effect), dispatch namespaced exposed
@@ -2431,12 +2440,12 @@ export class SmartServer {
           this._mcpFailureClassifier,
         );
       }
-      return this._namespacedCallMcpBridge(name, args, signal);
+      return this._namespacedCallMcpBridge(name, args, signal, options);
     }
     return buildMcpBridge(
       this._sharedMcpClients ?? [],
       this._mcpFailureClassifier,
-    )(name, args, signal);
+    )(name, args, signal, options);
   }
 
   private _mintStepperId(): string {
@@ -2815,7 +2824,7 @@ export class SmartServer {
       // via PipelineContext.externalTools inside the coordinator handler.
       toolsRag: this._toolsRagHandle, // undefined → EMPTY_TOOLS_RAG via factory
       ragRegistry: scope.parts.ragRegistry,
-      callMcp: (n, a, s) => this.callMcp(n, a, s),
+      callMcp: (n, a, s, o) => this.callMcp(n, a, s, o),
       mcpClients: scope.parts.mcpClients,
       ...(toolClientMap ? { toolClientMap } : {}),
       mcpFailureClassifier: this._mcpFailureClassifier,

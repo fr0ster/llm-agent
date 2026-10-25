@@ -1,3 +1,4 @@
+import type { IUsageRecorder, UsageOperation } from './interfaces/usage.js';
 /**
  * Core types for LLM Proxy
  */
@@ -76,6 +77,8 @@ export interface LLMResponse {
 }
 
 export interface LLMProviderConfig {
+  /** Recorder used when a call does not supply its own recorder. */
+  usage?: IUsageRecorder;
   /**
    * Which 429 gate this provider's calls share, when the default is not what you
    * meant.
@@ -103,6 +106,8 @@ export interface LLMProviderConfig {
 }
 
 export interface LLMCallOptions {
+  usage?: IUsageRecorder;
+  usageOp?: UsageOperation;
   /** Per-request model override. */
   model?: string;
   temperature?: number;

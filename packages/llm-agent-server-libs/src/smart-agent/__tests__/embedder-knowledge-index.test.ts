@@ -3,7 +3,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
-import { symmetricEmbedder } from '@mcp-abap-adt/llm-agent';
+import { type CallOptions, symmetricEmbedder } from '@mcp-abap-adt/llm-agent';
 import { makeKnowledgeSemanticIndex } from '../embedder-knowledge-index.js';
 import { JsonlKnowledgeBackend } from '../jsonl-knowledge-backend.js';
 
@@ -65,9 +65,9 @@ describe('makeKnowledgeSemanticIndex — infra artifact skip (Finding 1)', () =>
   });
 
   it('query forwards CallOptions to the embedder (Finding 3)', async () => {
-    const receivedOptions: unknown[] = [];
+    const receivedOptions: (CallOptions | undefined)[] = [];
     const optCapture = symmetricEmbedder({
-      embed: async (t: string, options?: unknown) => {
+      embed: async (t: string, options?: CallOptions) => {
         receivedOptions.push(options);
         return { vector: VOCAB[t.trim().toLowerCase()] ?? [0, 0, 0] };
       },
@@ -80,7 +80,7 @@ describe('makeKnowledgeSemanticIndex — infra artifact skip (Finding 1)', () =>
     const sentinel = { requestLogger: 'LOGGER' as unknown };
     await idx.query('s', 'alpha', 10, undefined, sentinel as never);
     assert.ok(
-      receivedOptions.some((o) => o === sentinel),
+      receivedOptions.some((o) => o?.requestLogger === sentinel.requestLogger),
       'options sentinel forwarded to embed on query',
     );
   });
@@ -88,9 +88,9 @@ describe('makeKnowledgeSemanticIndex — infra artifact skip (Finding 1)', () =>
 
 describe('makeKnowledgeSemanticIndex — write-time options forwarding (Finding A)', () => {
   it('upsert forwards CallOptions to the embedder for an indexed (non-infra) entry', async () => {
-    const receivedUpsertOptions: unknown[] = [];
+    const receivedUpsertOptions: (CallOptions | undefined)[] = [];
     const optCapture = symmetricEmbedder({
-      embed: async (t: string, options?: unknown) => {
+      embed: async (t: string, options?: CallOptions) => {
         receivedUpsertOptions.push(options);
         return { vector: VOCAB[t.trim().toLowerCase()] ?? [0, 0, 0] };
       },
@@ -106,7 +106,9 @@ describe('makeKnowledgeSemanticIndex — write-time options forwarding (Finding 
       sentinel as never,
     );
     assert.ok(
-      receivedUpsertOptions.some((o) => o === sentinel),
+      receivedUpsertOptions.some(
+        (o) => o?.requestLogger === sentinel.requestLogger,
+      ),
       'options sentinel forwarded to embed on upsert',
     );
   });

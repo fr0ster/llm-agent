@@ -53,7 +53,7 @@ export class SummarizeHandler implements IStageHandler {
     const res = await ctx.helperLlm.chat(
       [...toSummarize, { role: 'system' as const, content: prompt }],
       [],
-      ctx.options,
+      { ...ctx.options, usage: ctx.options?.usage?.with({ role: 'helper' }) },
     );
     ctx.requestLogger.logLlmCall({
       // Stamp requestId so this helper-LLM call is attributed to the active

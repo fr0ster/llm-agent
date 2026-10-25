@@ -1,3 +1,4 @@
+import type { IUsageRecorder, UsageOperation } from './usage.js';
 /**
  * Shared types for Smart Orchestrated Agent contracts.
  */
@@ -24,6 +25,8 @@ export interface TraceContext {
 }
 
 export interface CallOptions {
+  usage?: IUsageRecorder;
+  usageOp?: UsageOperation;
   trace?: TraceContext;
   sessionId?: string;
   userId?: string;

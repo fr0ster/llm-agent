@@ -18,7 +18,7 @@ import type {
   IStepExecutionControl,
 } from './step-execution-control.js';
 import type { ToolLoopContextStrategyFactory } from './tool-loop-context-strategy.js';
-import type { McpCallResult } from './types.js';
+import type { CallOptions, McpCallResult } from './types.js';
 import type { IWaitStrategy } from './wait-strategy.js';
 
 /** A value that may already be resolved or arrive as a promise. */
@@ -61,6 +61,7 @@ export interface IPipelineContext {
     name: string,
     args: unknown,
     signal?: AbortSignal,
+    options?: CallOptions,
   ): Promise<McpCallResult>;
   mcpClients?: IMcpClient[];
   /** Namespaced-tool-name → owning MCP client, for dispatching a namespaced

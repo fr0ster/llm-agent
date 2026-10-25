@@ -37,6 +37,7 @@ export class SmartAgentSubAgent implements ISubAgent {
         : prompt,
       {
         sessionId: input.sessionId,
+        usage: input.usage,
         signal: input.signal,
         stopSignal: input.stopSignal,
         trace: input.trace,

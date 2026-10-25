@@ -118,7 +118,10 @@ export class LlmClassifier implements ISubpromptClassifier {
       ];
       const chatStart = Date.now();
       const llmResult = await withAbort(
-        this.llm.chat(messages, [], options),
+        this.llm.chat(messages, [], {
+          ...options,
+          usage: options?.usage?.with({ role: 'classifier' }),
+        }),
         options?.signal,
         () => new ClassifierError('Aborted', 'ABORTED'),
       );

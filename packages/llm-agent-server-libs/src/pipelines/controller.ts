@@ -266,7 +266,8 @@ export class ControllerPipelinePlugin implements IPipelinePlugin {
     // from `ctx.externalTools`, so we do NOT wire `isExternalTool` here.
     const deps: ControllerFactoryDeps = {
       makeRoleLlm: makeControllerRoleLlm(this.settings.subagents, ctx),
-      callMcp: (name, args, signal) => auxCallMcp(name, args, signal),
+      callMcp: (name, args, signal, options) =>
+        auxCallMcp(name, args, signal, options),
       backend: ctx.stepperKnowledgeBackend,
       knowledgeRagFor: (sessionId) => ctx.knowledgeRagFor(sessionId),
       embedder: ctx.embedder,

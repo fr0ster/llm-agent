@@ -8,6 +8,7 @@ import {
   brandResilient,
   getResilienceMetadata,
   isBatchEmbedder,
+  startOperation,
 } from '@mcp-abap-adt/llm-agent';
 
 const BRAND = Symbol.for('@mcp-abap-adt/usage-logging-embedder');
@@ -43,7 +44,11 @@ class UsageLoggingEmbedder implements IEmbedder {
   readonly [BRAND] = true;
   constructor(protected readonly inner: IEmbedder) {}
   async embed(text: string, options?: CallOptions): Promise<IEmbedResult> {
-    const r = await this.inner.embed(text, options);
+    const r = await this.inner.embed(text, {
+      ...options,
+      usageOp: { ...startOperation(options) },
+      usage: options?.usage?.with({ role: 'embedding' }),
+    });
     logEmbed(options, text, r.usage);
     return r;
   }
@@ -60,7 +65,11 @@ class UsageLoggingBatchEmbedder
     texts: string[],
     options?: CallOptions,
   ): Promise<IEmbedResult[]> {
-    const results = await this.inner.embedBatch(texts, options);
+    const results = await this.inner.embedBatch(texts, {
+      ...options,
+      usageOp: { ...startOperation(options) },
+      usage: options?.usage?.with({ role: 'embedding' }),
+    });
     const logger = options?.requestLogger;
     if (logger) {
       let prompt = 0;

@@ -9,6 +9,7 @@ import type {
   Message,
   Result,
 } from '@mcp-abap-adt/llm-agent';
+import { startOperation } from '@mcp-abap-adt/llm-agent';
 
 /**
  * An ILlm decorator that reports token usage after every `chat` or `streamChat`
@@ -42,7 +43,10 @@ export class LoggingLlm implements ILlm {
     options?: CallOptions,
   ): Promise<Result<LlmResponse, LlmError>> {
     const start = Date.now();
-    const result = await this.inner.chat(messages, tools, options);
+    const result = await this.inner.chat(messages, tools, {
+      ...options,
+      usageOp: { ...startOperation(options) },
+    });
     const durationMs = Date.now() - start;
     if (result.ok && result.value.usage) {
       this.logUsage(result.value.usage, durationMs);
@@ -61,7 +65,10 @@ export class LoggingLlm implements ILlm {
     let accTotal = 0;
     let hasUsage = false;
 
-    for await (const chunk of this.inner.streamChat(messages, tools, options)) {
+    for await (const chunk of this.inner.streamChat(messages, tools, {
+      ...options,
+      usageOp: { ...startOperation(options) },
+    })) {
       if (chunk.ok && chunk.value.usage) {
         accPrompt += chunk.value.usage.promptTokens;
         accCompletion += chunk.value.usage.completionTokens;

@@ -21,6 +21,7 @@ export function normalizeRequestOptions(
   requestLogger: IRequestLogger,
 ): CallOptions {
   return {
+    // Keep caller-owned usage and usageOp references alongside all other options.
     ...opts,
     trace: { ...opts?.trace, traceId },
     requestLogger,

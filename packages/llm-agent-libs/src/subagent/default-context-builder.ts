@@ -1,4 +1,5 @@
 import type {
+  CallOptions,
   ISubAgentContextBuilder,
   RagResult,
   SubAgentContextRequest,
@@ -16,6 +17,7 @@ export type SubAgentRetrievalSource = (
   text: string,
   k: number,
   signal?: AbortSignal,
+  options?: CallOptions,
 ) => Promise<RagResult[]>;
 
 export interface DefaultSubAgentContextBuilderConfig {
@@ -58,6 +60,7 @@ export class DefaultSubAgentContextBuilder implements ISubAgentContextBuilder {
           req.task,
           topKProject,
           req.signal,
+          { signal: req.signal, usage: req.usage, usageOp: req.usageOp },
         );
         for (const r of results.slice(0, topKProject)) {
           parts.push(r.text);
@@ -77,6 +80,7 @@ export class DefaultSubAgentContextBuilder implements ISubAgentContextBuilder {
           req.task,
           topKTool,
           req.signal,
+          { signal: req.signal, usage: req.usage, usageOp: req.usageOp },
         );
         for (const r of results.slice(0, topKTool)) {
           parts.push(r.text);

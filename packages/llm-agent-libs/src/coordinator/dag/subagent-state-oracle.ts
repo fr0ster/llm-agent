@@ -27,6 +27,7 @@ export class SubAgentStateOracle implements IStateOracle {
     const res = await this.inner.run({
       task: input.query,
       sessionId: input.sessionId,
+      usage: input.usage?.with({ role: 'oracle' }),
       signal: input.signal,
       trace: input.trace,
       sessionLogger: input.sessionLogger,

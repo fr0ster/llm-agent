@@ -632,7 +632,10 @@ export function makeQdrantStoreProvider(
         const createdAt = now();
         const points: QdrantPoint[] = [];
         for (const record of records) {
-          const vector = await embed(record.retrievalText, options);
+          const vector = await embed(record.retrievalText, {
+            ...options,
+            usage: options?.usage?.with({ role: 'embedding' }),
+          });
           points.push({
             id: pid(generation, record.id),
             vector,

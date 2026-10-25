@@ -106,6 +106,7 @@ export class DagPlanInterpreter
             const res = await this.resolveWorker(n, ctx).run({
               task,
               sessionId: ctx.sessionId,
+              usage: ctx.usage,
               signal: ctx.signal,
               trace: ctx.trace,
               sessionLogger: ctx.sessionLogger,
@@ -217,6 +218,7 @@ export class DagPlanInterpreter
               description: w.description,
             })),
             sessionId: ctx.sessionId,
+            usage: ctx.usage,
             signal: ctx.signal,
           },
         );

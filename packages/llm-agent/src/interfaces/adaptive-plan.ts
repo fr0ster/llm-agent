@@ -1,6 +1,7 @@
 import type { Message } from '../types.js';
 import type { ITaskSpec } from './task-spec.js';
 import type { LlmUsage } from './types.js';
+import type { IUsageRecorder } from './usage.js';
 
 /** The action performed by an adaptive plan step. */
 export type AdaptiveStepKind = 'work' | 'check' | 'ask' | 'revise' | 'answer';
@@ -121,6 +122,7 @@ export interface ControllerPlanInput {
   history: Message[];
   workers: { name: string; description?: string }[];
   previousRun?: RunRecord;
+  usage?: IUsageRecorder;
   signal?: AbortSignal;
 }
 /** Plans, checks, revises, and reports on adaptive execution. */
@@ -137,6 +139,7 @@ export interface IAdaptiveController {
     targets: StepRecord[];
     task?: string;
     history?: Message[];
+    usage?: IUsageRecorder;
     signal?: AbortSignal;
   }): Promise<{ verdict: Verdict; usage?: LlmUsage }>;
   revise(input: {
@@ -144,6 +147,7 @@ export interface IAdaptiveController {
     plan: AdaptivePlan;
     records: StepRecord[];
     reason: string;
+    usage?: IUsageRecorder;
     signal?: AbortSignal;
   }): Promise<{ steps: AdaptiveStep[]; usage?: LlmUsage }>;
   report(input: {
@@ -151,6 +155,7 @@ export interface IAdaptiveController {
     plan: AdaptivePlan;
     records: StepRecord[];
     stopReason: string;
+    usage?: IUsageRecorder;
     signal?: AbortSignal;
   }): Promise<{ text: string; usage?: LlmUsage }>;
 }

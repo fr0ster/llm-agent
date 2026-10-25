@@ -14,6 +14,7 @@ import {
   type LlmTool,
   type Result,
 } from '@mcp-abap-adt/llm-agent';
+import { startOperation } from '../usage/hooks.js';
 import { isCallerCancellation } from './caller-cancellation.js';
 import type { CircuitBreaker } from './circuit-breaker.js';
 
@@ -49,7 +50,10 @@ export class CircuitBreakerLlm implements ILlm {
         error: new LlmError('Circuit breaker is open', 'CIRCUIT_OPEN'),
       };
     }
-    const result = await this.inner.chat(messages, tools, options);
+    const result = await this.inner.chat(messages, tools, {
+      ...options,
+      usageOp: { ...startOperation(options) },
+    });
     if (isCallerCancellation(options?.signal)) {
       return result; // the caller's cancellation says nothing about the LLM
     }
@@ -75,11 +79,10 @@ export class CircuitBreakerLlm implements ILlm {
     }
     let hadError = false;
     try {
-      for await (const chunk of this.inner.streamChat(
-        messages,
-        tools,
-        options,
-      )) {
+      for await (const chunk of this.inner.streamChat(messages, tools, {
+        ...options,
+        usageOp: { ...startOperation(options) },
+      })) {
         if (!chunk.ok) {
           hadError = true;
           if (!isCallerCancellation(options?.signal)) {

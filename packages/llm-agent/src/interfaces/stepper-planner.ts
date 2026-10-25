@@ -2,6 +2,7 @@ import type { DagPlan } from './dag-plan.js';
 import type { IKnowledgeRagHandle, IToolsRagHandle } from './knowledge-rag.js';
 import type { RunIdentity } from './stepper.js';
 import type { ITaskSpec } from './task-spec.js';
+import type { IUsageRecorder } from './usage.js';
 
 export interface IStepperPlanner {
   readonly name: string;
@@ -24,6 +25,7 @@ export interface IStepperPlanner {
      * emits only leaves (executor-handled), i.e. flat planned-react behaviour.
      */
     agents?: ReadonlyArray<{ name: string; description?: string }>;
+    usage?: IUsageRecorder;
     signal?: AbortSignal;
   }): Promise<DagPlan>;
 }

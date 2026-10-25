@@ -4,6 +4,7 @@ import type { IErrorStrategy } from './error-strategy.js';
 import type { OnPartial } from './streaming.js';
 import type { ISubAgent } from './subagent.js';
 import type { LlmTool, LlmToolCall } from './types.js';
+import type { IUsageRecorder } from './usage.js';
 
 export interface IInterpreter<TInput, TOutput> {
   readonly name: string;
@@ -14,6 +15,7 @@ export interface InterpretContext {
   inputText: string;
   workers: ReadonlyMap<string, ISubAgent>;
   sessionId: string;
+  usage?: IUsageRecorder;
   signal?: AbortSignal;
   /** Reaction to a node failure (abort | replan). Always populated by the
    *  caller; defaults to AbortErrorStrategy. */

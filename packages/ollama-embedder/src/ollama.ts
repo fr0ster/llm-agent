@@ -1,13 +1,18 @@
 import type { IEmbedderBatch, IEmbedResult } from '@mcp-abap-adt/llm-agent';
 import {
+  beginEmbeddingRequest,
   type CallOptions,
+  type IUsageRecorder,
   RagError,
+  startOperation,
   symmetricEmbedder,
   VectorRag,
   type VectorRagConfig,
+  withProviderAttempt,
 } from '@mcp-abap-adt/llm-agent';
 
 export interface OllamaEmbedderConfig {
+  usage?: IUsageRecorder;
   /** Default: 'http://localhost:11434' */
   ollamaUrl?: string;
   /** Required: embedding model name (e.g. 'bge-m3'). No default — must be set explicitly. */
@@ -17,6 +22,7 @@ export interface OllamaEmbedderConfig {
 export class OllamaEmbedder implements IEmbedderBatch {
   private readonly ollamaUrl: string;
   readonly model: string;
+  private readonly usage?: IUsageRecorder;
 
   constructor(config: OllamaEmbedderConfig) {
     if (!config?.model) {
@@ -24,6 +30,7 @@ export class OllamaEmbedder implements IEmbedderBatch {
     }
     this.ollamaUrl = config.ollamaUrl ?? 'http://localhost:11434';
     this.model = config.model;
+    this.usage = config.usage;
   }
 
   async embed(text: string, options?: CallOptions): Promise<IEmbedResult> {
@@ -31,8 +38,22 @@ export class OllamaEmbedder implements IEmbedderBatch {
 
     let lastError: Error | undefined;
     const maxRetries = 3;
+    const op = startOperation(options);
 
     for (let attempt = 0; attempt < maxRetries; attempt++) {
+      const request = beginEmbeddingRequest(
+        options,
+        withProviderAttempt(op, attempt),
+        {
+          provider: 'ollama',
+          model: this.model,
+          inputs: [text].length,
+          inputChars: [text].reduce((sum, value) => sum + value.length, 0),
+          granularity: 'request',
+          retriesVisible: true,
+        },
+        this.usage,
+      );
       try {
         // The caller's signal and nothing else. A ceiling of our own would run
         // on every request and fire instead of whatever decided above us — a
@@ -46,6 +67,7 @@ export class OllamaEmbedder implements IEmbedderBatch {
         });
 
         if (!res.ok) {
+          request.end({ outcome: 'error', errorCode: String(res.status) });
           const errorText = await res.text();
           throw new RagError(
             `Ollama embed error: HTTP ${res.status} - ${errorText}`,
@@ -53,9 +75,29 @@ export class OllamaEmbedder implements IEmbedderBatch {
           );
         }
 
-        const json = (await res.json()) as { embedding: number[] };
-        return { vector: json.embedding };
+        const json = (await res.json()) as {
+          embedding: number[];
+          prompt_eval_count?: number;
+        };
+        const result = { vector: json.embedding };
+        if (!Array.isArray(result.vector) || result.vector.length === 0)
+          throw new RagError('Invalid embedding response');
+        request.end({
+          outcome: 'ok',
+          inputTokens: json.prompt_eval_count,
+          tokensSource:
+            json.prompt_eval_count === undefined ? 'unknown' : 'provider',
+        });
+        return result;
       } catch (err: unknown) {
+        request.end({
+          outcome:
+            options?.signal?.aborted ||
+            (err instanceof Error && err.name === 'AbortError')
+              ? 'aborted'
+              : 'error',
+          error: err,
+        });
         lastError = err instanceof Error ? err : new Error(String(err));
         if (err instanceof Error && err.name === 'AbortError') throw err;
 
@@ -80,8 +122,22 @@ export class OllamaEmbedder implements IEmbedderBatch {
     const url = `${this.ollamaUrl}/api/embed`;
     let lastError: Error | undefined;
     const maxRetries = 3;
+    const op = startOperation(options);
 
     for (let attempt = 0; attempt < maxRetries; attempt++) {
+      const request = beginEmbeddingRequest(
+        options,
+        withProviderAttempt(op, attempt),
+        {
+          provider: 'ollama',
+          model: this.model,
+          inputs: texts.length,
+          inputChars: texts.reduce((sum, value) => sum + value.length, 0),
+          granularity: 'request',
+          retriesVisible: true,
+        },
+        this.usage,
+      );
       try {
         // The caller's signal and nothing else. A ceiling of our own would run
         // on every request and fire instead of whatever decided above us — a
@@ -95,6 +151,7 @@ export class OllamaEmbedder implements IEmbedderBatch {
         });
 
         if (!res.ok) {
+          request.end({ outcome: 'error', errorCode: String(res.status) });
           const errorText = await res.text();
           throw new RagError(
             `Ollama batch embed error: HTTP ${res.status} - ${errorText}`,
@@ -102,9 +159,33 @@ export class OllamaEmbedder implements IEmbedderBatch {
           );
         }
 
-        const json = (await res.json()) as { embeddings: number[][] };
-        return json.embeddings.map((vector) => ({ vector }));
+        const json = (await res.json()) as {
+          embeddings: number[][];
+          prompt_eval_count?: number;
+        };
+        const result = json.embeddings.map((vector) => {
+          if (!Array.isArray(vector) || vector.length === 0)
+            throw new RagError('Invalid embedding response');
+          return { vector };
+        });
+        if (result.length === 0)
+          throw new RagError('Invalid embedding response');
+        request.end({
+          outcome: 'ok',
+          inputTokens: json.prompt_eval_count,
+          tokensSource:
+            json.prompt_eval_count === undefined ? 'unknown' : 'provider',
+        });
+        return result;
       } catch (err: unknown) {
+        request.end({
+          outcome:
+            options?.signal?.aborted ||
+            (err instanceof Error && err.name === 'AbortError')
+              ? 'aborted'
+              : 'error',
+          error: err,
+        });
         lastError = err instanceof Error ? err : new Error(String(err));
         if (err instanceof Error && err.name === 'AbortError') throw err;
         const delay = 500 * 2 ** attempt;

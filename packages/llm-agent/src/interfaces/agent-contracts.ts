@@ -62,6 +62,8 @@ export interface BaseAgentLlmBridge {
     messages: Message[],
     tools: unknown[],
     options?: {
+      usage?: CallOptions['usage'];
+      usageOp?: CallOptions['usageOp'];
       temperature?: number;
       maxTokens?: number;
       topP?: number;
@@ -78,6 +80,8 @@ export interface BaseAgentLlmBridge {
     messages: Message[],
     tools: unknown[],
     options?: {
+      usage?: CallOptions['usage'];
+      usageOp?: CallOptions['usageOp'];
       temperature?: number;
       maxTokens?: number;
       topP?: number;

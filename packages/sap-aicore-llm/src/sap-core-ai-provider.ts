@@ -20,7 +20,12 @@ import type {
   LLMResponse,
   Message,
 } from '@mcp-abap-adt/llm-agent';
-import { BaseLLMProvider } from '@mcp-abap-adt/llm-agent';
+import {
+  BaseLLMProvider,
+  type LlmRequestFacts,
+  type LlmRequestHandle,
+  startOperation,
+} from '@mcp-abap-adt/llm-agent';
 import {
   type ChatMessage,
   OrchestrationClient,
@@ -239,8 +244,9 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
       // multiplexing. A shared keepAlive agent can cause SAP AI Core to route a
       // response to the wrong in-flight request when concurrent requests share
       // the same XSUAA user (mirrors streamChat's per-stream agent below).
+      let client: ReturnType<SapCoreAIProvider['createClient']>;
       const response = await this.withThrottleRetry(
-        async () => {
+        async (handle) => {
           // No timeout of ours. Sixty seconds used to sit here, and it was a
           // guess about somebody else's model, prompt and tool loop — a large
           // input legitimately outruns it, and the call then died for a reason
@@ -251,61 +257,88 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
           // fresh on every attempt, inside this closure: a retry re-asks
           // rather than resending a token that may be why the previous
           // attempt failed.
-          const destination = await buildDestination({
-            apiBaseUrl: this.config.apiBaseUrl,
-            credential: this.config.credential,
-          });
-          const client = this.createClient(formatted, tools, destination);
+
           const callAgent = new https.Agent({ keepAlive: false });
-          return client.chatCompletion(undefined, {
+          const response = await client.chatCompletion(undefined, {
+            // The SDK forwards this middleware list to its single inference HTTP request.
+            // Disable middleware retries so the provider owns every attempt.
+            middleware: [],
             httpsAgent: callAgent,
             signal: options?.signal,
           });
+          const toolCalls = response.getToolCalls();
+          const content = response.getContent() || '';
+          const finishReason = response.getFinishReason();
+
+          this.log?.debug('Received response from SAP AI SDK', {
+            finishReason,
+          });
+
+          const rawUsage = response.getTokenUsage() as
+            | {
+                prompt_tokens?: number;
+                completion_tokens?: number;
+                total_tokens?: number;
+              }
+            | undefined;
+          const usage = rawUsage
+            ? {
+                promptTokens: rawUsage.prompt_tokens ?? 0,
+                completionTokens: rawUsage.completion_tokens ?? 0,
+                totalTokens:
+                  rawUsage.total_tokens ??
+                  (rawUsage.prompt_tokens ?? 0) +
+                    (rawUsage.completion_tokens ?? 0),
+              }
+            : undefined;
+
+          const result = {
+            content,
+            finishReason,
+            ...(usage ? { usage } : {}),
+            raw: {
+              choices: [
+                {
+                  message: {
+                    role: 'assistant',
+                    content,
+                    ...(toolCalls ? { tool_calls: toolCalls } : {}),
+                  },
+                  finish_reason: finishReason,
+                },
+              ],
+              usage: rawUsage,
+            },
+          };
+          handle.end({
+            outcome: returnedSdkError(response) ? 'error' : 'ok',
+            ...tokenFacts(response.getTokenUsage()),
+          });
+          return result;
         },
         { signal: options?.signal },
+        {
+          prepare: async () => {
+            const destination = await buildDestination({
+              apiBaseUrl: this.config.apiBaseUrl,
+              credential: this.config.credential,
+            });
+            client = this.createClient(formatted, tools, destination);
+          },
+          opts: options,
+          op: startOperation(options),
+          bound: this.config.usage,
+          base: {
+            provider: 'SAP AI Core',
+            model: this.modelOverride ?? this.model,
+            stream: false,
+            granularity: 'request',
+            retriesVisible: true,
+          },
+        },
       );
 
-      const toolCalls = response.getToolCalls();
-      const content = response.getContent() || '';
-      const finishReason = response.getFinishReason();
-
-      this.log?.debug('Received response from SAP AI SDK', { finishReason });
-
-      const rawUsage = response.getTokenUsage() as
-        | {
-            prompt_tokens?: number;
-            completion_tokens?: number;
-            total_tokens?: number;
-          }
-        | undefined;
-      const usage = rawUsage
-        ? {
-            promptTokens: rawUsage.prompt_tokens ?? 0,
-            completionTokens: rawUsage.completion_tokens ?? 0,
-            totalTokens:
-              rawUsage.total_tokens ??
-              (rawUsage.prompt_tokens ?? 0) + (rawUsage.completion_tokens ?? 0),
-          }
-        : undefined;
-
-      return {
-        content,
-        finishReason,
-        ...(usage ? { usage } : {}),
-        raw: {
-          choices: [
-            {
-              message: {
-                role: 'assistant',
-                content,
-                ...(toolCalls ? { tool_calls: toolCalls } : {}),
-              },
-              finish_reason: finishReason,
-            },
-          ],
-          usage: rawUsage,
-        },
-      };
+      return response;
     } catch (error: unknown) {
       const detail = SapCoreAIProvider.extractErrorDetail(error);
       this.log?.error('SAP AI SDK API error', { error: detail });
@@ -337,6 +370,11 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
     const model = this.modelOverride ?? this.model;
     const messageSummary = SapCoreAIProvider.summarizeMessages(messages);
     const toolCount = tools?.length || 0;
+    let request: LlmRequestHandle | undefined;
+    let completed = false;
+    let returnedError = false;
+    let failure: unknown;
+    let facts: Partial<LlmRequestFacts> = {};
     let streamOpened = false;
     let chunkIndex = 0;
     let emittedContentChunks = 0;
@@ -366,16 +404,13 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
         model,
         keepAlive: false,
       });
-      const streamResponse = await this.withThrottleRetry(
+      let client: ReturnType<SapCoreAIProvider['createClient']>;
+      const opened = await this.withThrottleRetry(
         async () => {
           // As above: the caller's signal is the deadline, and the SDK takes
           // it directly. The destination (and the credential's token()) is
           // rebuilt on every attempt, same as chat().
-          const destination = await buildDestination({
-            apiBaseUrl: this.config.apiBaseUrl,
-            credential: this.config.credential,
-          });
-          const client = this.createClient(formatted, tools, destination);
+
           this.log?.debug('SAP AI SDK streamChat client created', {
             model,
             toolCount,
@@ -384,11 +419,33 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
           // The SDK takes the signal as its own second parameter, so an abort
           // ends the stream itself and not only the waiting around it.
           return client.stream(undefined, options?.signal, undefined, {
+            middleware: [],
             httpsAgent: streamAgent,
           });
         },
         { signal: options?.signal },
+        {
+          prepare: async () => {
+            const destination = await buildDestination({
+              apiBaseUrl: this.config.apiBaseUrl,
+              credential: this.config.credential,
+            });
+            client = this.createClient(formatted, tools, destination);
+          },
+          opts: options,
+          op: startOperation(options),
+          bound: this.config.usage,
+          base: {
+            provider: 'SAP AI Core',
+            model,
+            stream: true,
+            granularity: 'request',
+            retriesVisible: true,
+          },
+        },
       );
+      request = opened.handle;
+      const streamResponse = opened.response;
       streamOpened = true;
       this.log?.debug('SAP AI SDK streamChat stream opened', {
         model,
@@ -398,6 +455,7 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
 
       for await (const chunk of streamResponse.stream) {
         chunkIndex += 1;
+        if (returnedSdkError(chunk)) returnedError = true;
         // TokenUsage is only available in the final chunk (final_result.usage)
         const tokenUsage = chunk.getTokenUsage() as
           | {
@@ -406,6 +464,7 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
               total_tokens: number;
             }
           | undefined;
+        if (tokenUsage) facts = { ...facts, ...tokenFacts(tokenUsage) };
         const deltaContent = chunk.getDeltaContent() || '';
         if (deltaContent) {
           emittedContentChunks += 1;
@@ -430,6 +489,7 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
               arguments: tc.function?.arguments,
             }))
           : undefined;
+        if (deltaContent || toolCalls?.length) request.firstToken();
         this.log?.debug('SAP AI SDK streamChat chunk received', {
           model,
           chunkIndex,
@@ -462,6 +522,7 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
             : {}),
         };
       }
+      completed = true;
       this.log?.debug('SAP AI SDK streamChat completed', {
         model,
         chunkCount: chunkIndex,
@@ -469,6 +530,7 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
         emittedContentChars,
       });
     } catch (error: unknown) {
+      failure = error;
       this.log?.error('SAP AI SDK streaming error', {
         model,
         resourceGroup: this.resourceGroup ?? 'default',
@@ -486,6 +548,20 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
         new Error(`SAP AI SDK streaming error: ${detail}`),
       );
     } finally {
+      request?.end({
+        ...facts,
+        outcome: failure
+          ? options?.signal?.aborted || isAbortError(failure)
+            ? 'aborted'
+            : 'error'
+          : completed
+            ? returnedError
+              ? 'error'
+              : 'ok'
+            : 'aborted',
+        error: failure,
+        ...(!completed && !failure ? { closedEarly: true } : {}),
+      });
       this.modelOverride = undefined;
     }
   }
@@ -676,4 +752,45 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
       };
     });
   }
+}
+
+function tokenFacts(usage?: {
+  prompt_tokens?: number;
+  completion_tokens?: number;
+  prompt_tokens_details?: { cached_tokens?: number };
+}): Partial<LlmRequestFacts> {
+  return usage &&
+    (usage.prompt_tokens !== undefined ||
+      usage.completion_tokens !== undefined ||
+      usage.prompt_tokens_details?.cached_tokens !== undefined)
+    ? {
+        ...(usage.prompt_tokens !== undefined
+          ? { inputTokens: usage.prompt_tokens }
+          : {}),
+        ...(usage.completion_tokens !== undefined
+          ? { outputTokens: usage.completion_tokens }
+          : {}),
+        ...(usage.prompt_tokens_details?.cached_tokens !== undefined
+          ? { cachedInputTokens: usage.prompt_tokens_details.cached_tokens }
+          : {}),
+        tokensSource: 'provider',
+      }
+    : {};
+}
+
+function returnedSdkError(response: { _data?: unknown }): boolean {
+  return (
+    !!response._data &&
+    typeof response._data === 'object' &&
+    'error' in response._data &&
+    !!response._data.error
+  );
+}
+
+function isAbortError(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  return (
+    ('name' in error && error.name === 'AbortError') ||
+    ('code' in error && error.code === 'ERR_CANCELED')
+  );
 }

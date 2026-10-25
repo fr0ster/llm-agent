@@ -101,3 +101,17 @@ library* stay free and that your users can substitute their own build.
 Versions up to and including v20.9.5 were MIT and stay MIT; the change is not
 retroactive. Full detail, including what to do if you redistribute:
 [docs/LICENSING.md](https://github.com/fr0ster/llm-agent/blob/main/docs/LICENSING.md).
+
+## Usage analytics
+
+`MCPClientWrapper` accepts a construction-bound `usage` recorder. Override it
+per dispatch with `callTool(toolCall, signal, { usage })`; existing two-argument
+calls still work. `McpClientAdapter.callTool(name, args, { usage })` forwards it.
+Each internal request, including reconnect/session-reset retries, and each
+embedded handler execution produces one `tool.call`. Returned `isError`, throws
+and cancellation are distinguished from transport success. Cache hits in the
+library tool loop use `dispatched: false`. Only metadata and byte counts are
+recorded, never arguments or result content.
+
+See the [usage overview](../../docs/USAGE_ANALYTICS.md) for the contract,
+recorder injection, delivery guarantees and replaceable collection components.

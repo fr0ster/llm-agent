@@ -5,6 +5,7 @@ import type {
   IStepperPlanner,
   ITaskSpec,
   IToolsRagHandle,
+  IUsageRecorder,
   RunIdentity,
 } from '@mcp-abap-adt/llm-agent';
 import { renderTaskSpec } from '@mcp-abap-adt/llm-agent';
@@ -66,16 +67,23 @@ export class LlmStepperPlanner implements IStepperPlanner {
     identity: RunIdentity;
     agents?: ReadonlyArray<{ name: string; description?: string }>;
     taskSpec?: ITaskSpec;
+    usage?: IUsageRecorder;
     signal?: AbortSignal;
   }): Promise<DagPlan> {
-    const facts = await input.knowledgeRag.query(input.prompt, { k: 8 });
+    const facts = await input.knowledgeRag.query(input.prompt, {
+      k: 8,
+      options: { signal: input.signal, usage: input.usage },
+    });
     const factBlock = facts.length
       ? `Known facts (already in the knowledge store):\n${facts.map((f) => `- [${f.metadata.artifactType}] ${truncate(f.content, 400)}`).join('\n')}\n\n`
       : 'Known facts: (none yet)\n\n';
 
     let toolsBlock = '';
     try {
-      const tools = await input.toolsRag.query(input.prompt, 15);
+      const tools = await input.toolsRag.query(input.prompt, 15, {
+        signal: input.signal,
+        usage: input.usage,
+      });
       if (tools.length > 0) {
         toolsBlock =
           `Available tools (workers can call these to FETCH data):\n` +
@@ -132,7 +140,7 @@ export class LlmStepperPlanner implements IStepperPlanner {
         { role: 'user', content: user },
       ] as never,
       [] as never,
-      { signal: input.signal },
+      { usage: input.usage?.with({ role: 'planner' }), signal: input.signal },
     );
     if (res.ok === false)
       throw new Error(

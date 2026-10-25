@@ -24,7 +24,11 @@ import type {
   IEmbedder,
   IEmbedResult,
   ILlm,
+  IQueryEmbedding,
+  IRag,
   ISubAgent,
+  IUsageRecorder,
+  LlmError,
   LlmStreamChunk,
   LlmTool,
   Result,
@@ -52,7 +56,7 @@ function stubLlm(): ILlm {
       _messages: unknown[],
       _tools?: LlmTool[],
       _options?: CallOptions,
-    ): AsyncGenerator<Result<LlmStreamChunk, Error>> {
+    ): AsyncGenerator<Result<LlmStreamChunk, LlmError>> {
       yield {
         ok: true as const,
         value: { content: 'ok', finishReason: 'stop' as const },
@@ -148,4 +152,56 @@ describe('SmartAgentBuilder — auto-toolsRag → subagent context-builder wirin
       await handle.close();
     }
   });
+});
+
+it('built-in retrieval source forwards usage options through QueryEmbedding to the embedder', async () => {
+  const { SmartAgentBuilder } = await import('../builder.js');
+  const usage: IUsageRecorder = {
+    record() {},
+    with() {
+      return this;
+    },
+  };
+  const usageOp = {
+    operationId: 'retrieval',
+    outerAttempt: 0,
+    providerAttempt: 0,
+    chunkPath: '',
+    seq: { next: () => 0 },
+  };
+  const signal = new AbortController().signal;
+  let embedOptions: CallOptions | undefined;
+  let queryOptions: CallOptions | undefined;
+  const rag = {
+    async query(embedding: IQueryEmbedding, _k: number, options?: CallOptions) {
+      queryOptions = options;
+      await embedding.toVector();
+      return { ok: true, value: [] };
+    },
+  } as unknown as IRag;
+  const builder = new SmartAgentBuilder({ skipModelValidation: true });
+  const source = (
+    builder as unknown as {
+      buildRetrievalSource(
+        rag: IRag,
+        embedder: {
+          embedQuery(
+            text: string,
+            options?: CallOptions,
+          ): Promise<IEmbedResult>;
+        },
+      ): NonNullable<DefaultSubAgentContextBuilderConfig['toolSource']>;
+    }
+  ).buildRetrievalSource(rag, {
+    async embedQuery(_text, options) {
+      embedOptions = options;
+      return { vector: [1] };
+    },
+  });
+  await source('query', 3, signal, { usage, usageOp });
+  for (const options of [queryOptions, embedOptions]) {
+    assert.equal(options?.usage, usage);
+    assert.equal(options?.usageOp, usageOp);
+    assert.equal(options?.signal, signal);
+  }
 });

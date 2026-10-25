@@ -495,7 +495,10 @@ export class ToolLoopHandler implements IStageHandler {
         ctx.mainLlm,
         messages,
         currentTools,
-        ctx.options,
+        {
+          ...ctx.options,
+          usage: ctx.options?.usage?.with({ role: 'tool-loop' }),
+        },
       );
 
       let chunksSeen = 0;

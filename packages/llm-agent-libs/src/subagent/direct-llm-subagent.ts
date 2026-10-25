@@ -59,6 +59,7 @@ export class DirectLlmSubAgent implements ISubAgent {
     ];
 
     const res = await this.llm.chat(messages, [], {
+      usage: input.usage,
       signal: input.signal,
       sessionId: input.sessionId,
     });

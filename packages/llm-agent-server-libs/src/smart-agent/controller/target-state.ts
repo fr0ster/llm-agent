@@ -68,7 +68,7 @@ export async function establishTargetState(
       { role: 'user', content: prompt },
     ],
     undefined,
-    diagnosticCallOptions(options),
+    diagnosticCallOptions(options, 'evaluator'),
   );
   const target = r.kind === 'content' ? r.content : '';
 

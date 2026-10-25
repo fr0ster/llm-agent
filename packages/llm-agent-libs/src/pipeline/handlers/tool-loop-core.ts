@@ -271,12 +271,30 @@ export async function* executeToolBatchWithHeartbeat(
     const wasCached = !!cachedValue;
     const res = cachedValue
       ? (() => {
+          try {
+            options?.usage?.with({ role: 'tool-loop' }).record({
+              kind: 'tool.call',
+              context: {},
+              tool: tc.name,
+              dispatched: false,
+              embedded: false,
+              outcome: cachedValue.isError ? 'error' : 'ok',
+              transportOutcome: 'ok',
+              toolOutcome: cachedValue.isError ? 'error' : 'ok',
+              durationMs: Date.now() - toolStart,
+            });
+          } catch {
+            /* Analytics must not affect cache hits. */
+          }
           metrics.toolCacheHitCount.add();
           toolSpan.setAttribute('cache', 'hit');
           return { ok: true as const, value: cachedValue };
         })()
       : await (async () => {
-          const r = await client.callTool(tc.name, tc.arguments, options);
+          const r = await client.callTool(tc.name, tc.arguments, {
+            ...options,
+            usage: options?.usage?.with({ role: 'tool-loop' }),
+          });
           if (r.ok) toolCache.set(tc.name, tc.arguments, r.value);
           return r;
         })();
@@ -361,8 +379,9 @@ export async function* executeToolBatchWithHeartbeat(
     // FAIL LOUD on an MCP availability failure — yield an error chunk (→ the
     // caller returns ok:false) instead of feeding "MCP error" to the LLM.
     const tcClient = toolClientMap.get(tc.name);
-    const probe = tcClient?.healthCheck
-      ? () => tcClient.healthCheck!().then((hr) => (hr.ok ? hr.value : false))
+    const healthCheck = tcClient?.healthCheck?.bind(tcClient);
+    const probe = healthCheck
+      ? () => healthCheck(options).then((hr) => (hr.ok ? hr.value : false))
       : undefined;
     const decision = await classifyToolResult(
       res,

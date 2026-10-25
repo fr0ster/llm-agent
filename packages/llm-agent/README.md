@@ -51,3 +51,25 @@ library* stay free and that your users can substitute their own build.
 Versions up to and including v20.9.5 were MIT and stay MIT; the change is not
 retroactive. Full detail, including what to do if you redistribute:
 [docs/LICENSING.md](https://github.com/fr0ster/llm-agent/blob/main/docs/LICENSING.md).
+
+## Usage analytics
+
+The additive usage contract is exported here: `USAGE_SCHEMA_VERSION` (1),
+`UsageContext`, the discriminated `UsageRecord`/`UsageInput` unions,
+`UsageOperation`, `IUsageRecorder`, `IUsageControl`, `IUsageTransport`,
+`IUsageSink` and `UsageDeliveryError`. Record kinds are `llm.call`,
+`embedding.call`, `tool.call`, `task` and scalar-valued `x.*` extensions.
+`UsageInput` requires each kind's fields; the recorder supplies schema, id and time.
+
+`IUsageRecorder.record(input): void` never throws or awaits. `with(context)`
+returns an isolated scoped recorder. `CallOptions` and `LLMCallOptions` accept
+optional `usage` and `usageOp`; `ISubAgentInput` accepts `usage`.
+`noopUsageRecorder` is the dependency-free default. Providers own physical
+request records, MCP owns dispatch records, and TaskBoard owns task ends;
+wrappers propagate context and operation coordinates rather than double-recording.
+
+Implement `IUsageRecorder` to replace collection completely, or use
+`@mcp-abap-adt/llm-usage` and replace only its transport or sink. The
+[usage overview](../../docs/USAGE_ANALYTICS.md) links the design, examples,
+delivery and loss guarantees, and the completeness suite. Records and custom
+labels must never contain prompts, documents, tool arguments, results or secrets.
