@@ -1,4 +1,8 @@
-import type { IUsageSink, UsageRecord } from '@mcp-abap-adt/llm-agent';
+import {
+  type IUsageSink,
+  UsageDeliveryError,
+  type UsageRecord,
+} from '@mcp-abap-adt/llm-agent';
 import {
   type IUsageReader,
   selectUsage,
@@ -79,15 +83,39 @@ export function createPgUsageSink(opts: PgUsageSinkOptions = {}): IUsageSink &
     return next;
   };
   return {
-    write(batch) {
-      const values = batch.map(recordValues);
-      return run(async () => {
-        for (const row of values)
-          await client.query(
-            `INSERT INTO ${table} (${COLUMNS}) VALUES (${row.map((_, i) => `$${i + 1}`).join(', ')}) ON CONFLICT (id) DO NOTHING`,
-            row,
-          );
-      });
+    async write(batch) {
+      let attempted = false;
+      let completed = false;
+      try {
+        const values = batch.map(recordValues);
+        await run(async () => {
+          for (const row of values) {
+            attempted = true;
+            await client.query(
+              `INSERT INTO ${table} (${COLUMNS}) VALUES (${row.map((_, i) => `$${i + 1}`).join(', ')}) ON CONFLICT (id) DO NOTHING`,
+              row,
+            );
+            completed = true;
+          }
+        });
+      } catch (error) {
+        const code = String(
+          (error as { code?: unknown })?.code ?? 'WRITE_FAILED',
+        );
+        const rejected = [
+          '42P01',
+          'ECONNREFUSED',
+          '23502',
+          '23514',
+          '22P02',
+          '22003',
+        ].includes(code);
+        throw new UsageDeliveryError(
+          error instanceof Error ? error.message : String(error),
+          completed || (attempted && !rejected),
+          code,
+        );
+      }
     },
     async *read(query: UsageQuery) {
       const rows = await run(

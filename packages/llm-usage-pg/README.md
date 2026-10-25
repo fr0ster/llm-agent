@@ -10,7 +10,13 @@ JSON record and indexed common columns in `USAGE_RECORDS`.
 import { createPgUsageSink } from '@mcp-abap-adt/llm-usage-pg';
 import { exportRecords } from '@mcp-abap-adt/llm-usage';
 
-const sink = createPgUsageSink({'path: 'usage.sqlite'' if db=='sqlite' else '/* connection options */'});
+const sink = createPgUsageSink({
+  host: 'localhost',
+  port: 5432,
+  database: 'analytics',
+  user: 'analytics',
+  password: () => process.env.PGPASSWORD ?? '',
+});
 await sink.write(records);
 for await (const line of exportRecords(sink.read({ from, to, sessionId }), 'csv')) {
   process.stdout.write(line);

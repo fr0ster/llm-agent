@@ -1,8 +1,12 @@
 import assert from 'node:assert/strict';
+import { execFile } from 'node:child_process';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { test } from 'node:test';
+import { promisify } from 'node:util';
+import { UsageDeliveryError } from '@mcp-abap-adt/llm-agent';
 import { exportRecords, usageReaderConformance } from '@mcp-abap-adt/llm-usage';
 import { USAGE_DDL } from './ddl.js';
 import { collect, metric } from './fixtures.js';
@@ -73,7 +77,10 @@ test('missing table gives a clear error', async () => {
   try {
     await assert.rejects(
       sink.write([metric()]),
-      /USAGE_RECORDS.*ddl\/usage.sql/,
+      (error: unknown) =>
+        error instanceof UsageDeliveryError &&
+        !error.possiblyDelivered &&
+        /USAGE_RECORDS.*ddl\/usage.sql/.test(error.message),
     );
   } finally {
     await sink.close();
@@ -118,4 +125,62 @@ test('shipped DDL matches automatic schema', async () => {
     ).replaceAll('\r\n', '\n'),
     USAGE_DDL,
   );
+});
+
+test('worker loads when parent uses --input-type=module', async () => {
+  const entry = new URL('../dist/index.js', import.meta.url).href;
+  await promisify(execFile)(process.execPath, [
+    '--input-type=module',
+    '--eval',
+    `
+    import { createSqliteUsageSink } from ${JSON.stringify(entry)};
+    const sink = createSqliteUsageSink({ path: ':memory:' });
+    await sink.write([]);
+    await sink.close();
+  `,
+  ]);
+});
+test('validation failures are definitely not delivered', async () => {
+  const sink = createSqliteUsageSink({ path: ':memory:' });
+  try {
+    const record = metric();
+    Object.defineProperty(record, 'context', {
+      get() {
+        throw new Error('invalid record');
+      },
+    });
+    await assert.rejects(
+      sink.write([record]),
+      (error: unknown) =>
+        error instanceof UsageDeliveryError &&
+        !error.possiblyDelivered &&
+        error.code === 'VALIDATION_FAILED',
+    );
+  } finally {
+    await sink.close();
+  }
+});
+
+test('a rolled back partial batch preserves definite failure and code across the worker', async () => {
+  const sink = await fixture();
+  try {
+    await sink.write([]);
+    const db = new DatabaseSync(sink.path);
+    try {
+      db.exec(`CREATE TRIGGER reject_second BEFORE INSERT ON USAGE_RECORDS
+        WHEN NEW.id = 'second' BEGIN SELECT RAISE(ABORT, 'rejected record'); END`);
+    } finally {
+      db.close();
+    }
+    await assert.rejects(
+      sink.write([metric('first'), metric('second')]),
+      (error: unknown) =>
+        error instanceof UsageDeliveryError &&
+        !error.possiblyDelivered &&
+        error.code === 'ERR_SQLITE_ERROR',
+    );
+    assert.deepEqual(await collect(sink.read({ from: 0, to: 20 })), []);
+  } finally {
+    await sink.close();
+  }
 });

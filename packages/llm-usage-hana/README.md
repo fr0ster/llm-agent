@@ -10,7 +10,14 @@ JSON record and indexed common columns in `USAGE_RECORDS`.
 import { createHanaUsageSink } from '@mcp-abap-adt/llm-usage-hana';
 import { exportRecords } from '@mcp-abap-adt/llm-usage';
 
-const sink = createHanaUsageSink({'path: 'usage.sqlite'' if db=='sqlite' else '/* connection options */'});
+const sink = createHanaUsageSink({
+  host: 'hana.example.com',
+  port: 443,
+  credential: {
+    principal: 'ANALYTICS',
+    secret: () => process.env.HANA_PASSWORD ?? '',
+  },
+});
 await sink.write(records);
 for await (const line of exportRecords(sink.read({ from, to, sessionId }), 'csv')) {
   process.stdout.write(line);

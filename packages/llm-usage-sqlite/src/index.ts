@@ -1,6 +1,10 @@
 import { createRequire } from 'node:module';
 import { Worker } from 'node:worker_threads';
-import type { IUsageSink, UsageRecord } from '@mcp-abap-adt/llm-agent';
+import {
+  type IUsageSink,
+  UsageDeliveryError,
+  type UsageRecord,
+} from '@mcp-abap-adt/llm-agent';
 import {
   type IUsageReader,
   selectUsage,
@@ -41,15 +45,24 @@ export function createSqliteUsageSink(
     !(opts.capabilityProbe ?? hasSqlite)()
   )
     throw new Error('llm-usage-sqlite requires node:sqlite (Node >= 22.13)');
-  const worker = new Worker(`(${sqliteWorker.toString()})()`, {
-    eval: true,
-    workerData: {
-      path: opts.path,
-      autoCreateSchema: opts.autoCreateSchema ?? true,
-      ddl: USAGE_DDL,
-      columns: COLUMNS,
+  const worker = new Worker(
+    new URL(
+      `data:text/javascript,${encodeURIComponent(
+        `import { parentPort, workerData } from 'node:worker_threads';
+import { DatabaseSync } from 'node:sqlite';
+(${sqliteWorker.toString()})(parentPort, workerData, DatabaseSync);`,
+      )}`,
+    ),
+    {
+      execArgv: [],
+      workerData: {
+        path: opts.path,
+        autoCreateSchema: opts.autoCreateSchema ?? true,
+        ddl: USAGE_DDL,
+        columns: COLUMNS,
+      },
     },
-  });
+  );
   let sequence = 0;
   let failure: Error | undefined;
   let closed = false;
@@ -69,10 +82,23 @@ export function createSqliteUsageSink(
   );
   worker.on(
     'message',
-    (message: { id: number; result?: unknown; error?: string }) => {
+    (message: {
+      id: number;
+      result?: unknown;
+      error?: string;
+      possiblyDelivered?: boolean;
+      code?: string;
+    }) => {
       const request = pending.get(message.id);
       pending.delete(message.id);
-      if (message.error) request?.reject(new Error(message.error));
+      if (message.error)
+        request?.reject(
+          new UsageDeliveryError(
+            message.error,
+            message.possiblyDelivered ?? true,
+            message.code,
+          ),
+        );
       else request?.resolve(message.result);
     },
   );
@@ -88,7 +114,9 @@ export function createSqliteUsageSink(
         worker.postMessage({ id, op, ...data });
       } catch (error) {
         pending.delete(id);
-        reject(error);
+        reject(
+          new UsageDeliveryError(String(error), false, 'SERIALIZATION_FAILED'),
+        );
       }
     });
   };
@@ -96,7 +124,20 @@ export function createSqliteUsageSink(
     closed ? Promise.reject(new Error('Usage sink is closed')) : send(op, data);
   return {
     async write(batch) {
-      await run('write', { values: batch.map(recordValues) });
+      let values: ReturnType<typeof recordValues>[];
+      try {
+        values = batch.map(recordValues);
+      } catch (error) {
+        throw new UsageDeliveryError(String(error), false, 'VALIDATION_FAILED');
+      }
+      if (closed)
+        throw new UsageDeliveryError('Usage sink is closed', false, 'CLOSED');
+      try {
+        await run('write', { values });
+      } catch (error) {
+        if (error instanceof UsageDeliveryError) throw error;
+        throw new UsageDeliveryError(String(error), true, 'WORKER_FAILED');
+      }
     },
     async *read(query: UsageQuery) {
       const rows = (await run('read', { from: query.from, to: query.to })) as {

@@ -10,7 +10,7 @@ JSON record and indexed common columns in `USAGE_RECORDS`.
 import { createSqliteUsageSink } from '@mcp-abap-adt/llm-usage-sqlite';
 import { exportRecords } from '@mcp-abap-adt/llm-usage';
 
-const sink = createSqliteUsageSink({'path: 'usage.sqlite'' if db=='sqlite' else '/* connection options */'});
+const sink = createSqliteUsageSink({ path: 'usage.sqlite' });
 await sink.write(records);
 for await (const line of exportRecords(sink.read({ from, to, sessionId }), 'csv')) {
   process.stdout.write(line);

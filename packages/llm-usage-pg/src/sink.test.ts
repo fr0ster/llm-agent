@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { test } from 'node:test';
 import { PGlite } from '@electric-sql/pglite';
+import { UsageDeliveryError } from '@mcp-abap-adt/llm-agent';
 import { exportRecords, usageReaderConformance } from '@mcp-abap-adt/llm-usage';
 import { USAGE_DDL } from './ddl.js';
 import { collect, metric } from './fixtures.js';
@@ -88,7 +89,10 @@ test('missing table gives a clear error and can recover after deployment', async
   try {
     await assert.rejects(
       sink.write([metric()]),
-      /USAGE_RECORDS.*ddl\/usage.sql/,
+      (error: unknown) =>
+        error instanceof UsageDeliveryError &&
+        !error.possiblyDelivered &&
+        /USAGE_RECORDS.*ddl\/usage.sql/.test(error.message),
     );
     await db.exec(USAGE_DDL);
     await sink.write([metric()]);
@@ -116,3 +120,58 @@ test('schema names are quoted safely', async () => {
     await sink.close();
   }
 });
+
+for (const scenario of [
+  'setup',
+  'refused',
+  'missing',
+  'partial',
+  'unknown',
+  'validation',
+]) {
+  test(`delivery classification: ${scenario}`, async () => {
+    let inserts = 0;
+    const sink = createPgUsageSink({
+      autoCreateSchema: false,
+      client: {
+        async query(sql) {
+          if (scenario === 'setup')
+            throw Object.assign(new Error('connection refused'), {
+              code: 'ECONNREFUSED',
+            });
+          if (sql.startsWith('INSERT')) {
+            inserts++;
+            if (scenario !== 'partial' || inserts === 2)
+              throw Object.assign(new Error('insert failed'), {
+                code:
+                  scenario === 'missing'
+                    ? '42P01'
+                    : scenario === 'refused'
+                      ? 'ECONNREFUSED'
+                      : 'UNKNOWN',
+              });
+          }
+          return { rows: [] };
+        },
+        async end() {},
+      },
+    });
+    try {
+      const record = metric();
+      if (scenario === 'validation')
+        Object.defineProperty(record, 'context', {
+          get() {
+            throw new Error('invalid record');
+          },
+        });
+      await assert.rejects(
+        sink.write([record, metric('second')]),
+        (error: unknown) =>
+          error instanceof UsageDeliveryError &&
+          error.possiblyDelivered === ['partial', 'unknown'].includes(scenario),
+      );
+    } finally {
+      await sink.close();
+    }
+  });
+}

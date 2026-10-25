@@ -1,4 +1,8 @@
-import type { IUsageSink, UsageRecord } from '@mcp-abap-adt/llm-agent';
+import {
+  type IUsageSink,
+  UsageDeliveryError,
+  type UsageRecord,
+} from '@mcp-abap-adt/llm-agent';
 import {
   type IUsageReader,
   selectUsage,
@@ -124,20 +128,39 @@ export function createHanaUsageSink(opts: HanaUsageSinkOptions): IUsageSink &
     return next;
   };
   return {
-    write(batch) {
-      const values = batch.map(recordValues);
-      return run(async (c) => {
-        for (const row of values) {
-          try {
-            await c.exec(
-              `INSERT INTO ${table} (${COLUMNS}) VALUES (${row.map(() => '?').join(', ')})`,
-              row,
-            );
-          } catch (error) {
-            if (Number((error as { code?: number }).code) !== 301) throw error;
+    async write(batch) {
+      let attempted = false;
+      let completed = false;
+      try {
+        const values = batch.map(recordValues);
+        await run(async (c) => {
+          for (const row of values) {
+            try {
+              attempted = true;
+              await c.exec(
+                `INSERT INTO ${table} (${COLUMNS}) VALUES (${row.map(() => '?').join(', ')})`,
+                row,
+              );
+            } catch (error) {
+              if (Number((error as { code?: number }).code) !== 301)
+                throw error;
+            }
+            completed = true;
           }
-        }
-      });
+        });
+      } catch (error) {
+        const code = String(
+          (error as { code?: unknown })?.code ?? 'WRITE_FAILED',
+        );
+        const rejected = ['259', '287', '274', '339', 'ECONNREFUSED'].includes(
+          code,
+        );
+        throw new UsageDeliveryError(
+          error instanceof Error ? error.message : String(error),
+          completed || (attempted && !rejected),
+          code,
+        );
+      }
     },
     async *read(query: UsageQuery) {
       const rows = await run(

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { test } from 'node:test';
+import { UsageDeliveryError } from '@mcp-abap-adt/llm-agent';
 import { exportRecords, usageReaderConformance } from '@mcp-abap-adt/llm-usage';
 import { USAGE_DDL } from './ddl.js';
 import { collect, metric } from './fixtures.js';
@@ -21,7 +22,10 @@ test('HANA defaults to operator-deployed schema, diagnoses missing table and ret
   try {
     await assert.rejects(
       sink.write([metric()]),
-      /USAGE_RECORDS.*ddl\/usage.sql/,
+      (error: unknown) =>
+        error instanceof UsageDeliveryError &&
+        !error.possiblyDelivered &&
+        /USAGE_RECORDS.*ddl\/usage.sql/.test(error.message),
     );
     assert.ok(statements.every((sql) => !sql.includes('CREATE')));
     deployed = true;
@@ -193,3 +197,58 @@ test('HANA live idempotence, export and retention', {
     await sink.close();
   }
 });
+
+for (const scenario of [
+  'setup',
+  'refused',
+  'missing',
+  'partial',
+  'unknown',
+  'validation',
+]) {
+  test(`delivery classification: ${scenario}`, async () => {
+    let inserts = 0;
+    const sink = createHanaUsageSink({
+      autoCreateSchema: false,
+      client: {
+        async exec(sql) {
+          if (scenario === 'setup')
+            throw Object.assign(new Error('connection refused'), {
+              code: 'ECONNREFUSED',
+            });
+          if (sql.startsWith('INSERT')) {
+            inserts++;
+            if (scenario !== 'partial' || inserts === 2)
+              throw Object.assign(new Error('insert failed'), {
+                code:
+                  scenario === 'missing'
+                    ? '259'
+                    : scenario === 'refused'
+                      ? 'ECONNREFUSED'
+                      : 'UNKNOWN',
+              });
+          }
+          return [];
+        },
+        async close() {},
+      },
+    });
+    try {
+      const record = metric();
+      if (scenario === 'validation')
+        Object.defineProperty(record, 'context', {
+          get() {
+            throw new Error('invalid record');
+          },
+        });
+      await assert.rejects(
+        sink.write([record, metric('second')]),
+        (error: unknown) =>
+          error instanceof UsageDeliveryError &&
+          error.possiblyDelivered === ['partial', 'unknown'].includes(scenario),
+      );
+    } finally {
+      await sink.close();
+    }
+  });
+}

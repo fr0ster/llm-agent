@@ -1,10 +1,15 @@
 /** Self-contained worker entry, serialized after TypeScript has removed types. */
-export function sqliteWorker(): void {
-  const { parentPort, workerData } =
-    require('node:worker_threads') as typeof import('node:worker_threads');
-  const { DatabaseSync } =
-    require('node:sqlite') as typeof import('node:sqlite');
-  const db = new DatabaseSync(workerData.path);
+export function sqliteWorker(
+  parentPort: import('node:worker_threads').MessagePort | null,
+  workerData: {
+    path: string;
+    autoCreateSchema: boolean;
+    ddl: string;
+    columns: string;
+  },
+  DatabaseSync: typeof import('node:sqlite').DatabaseSync,
+): void {
+  let db: import('node:sqlite').DatabaseSync;
   const port = parentPort;
   if (!port) throw new Error('SQLite worker requires parentPort');
   let ready = false;
@@ -18,7 +23,9 @@ export function sqliteWorker(): void {
       to?: number;
       cutoff?: number;
     }) => {
+      let possiblyDelivered = false;
       try {
+        db ??= new DatabaseSync(workerData.path);
         if (message.op === 'close') {
           db.close();
           port.postMessage({ id: message.id });
@@ -44,10 +51,12 @@ export function sqliteWorker(): void {
           );
           db.exec('BEGIN');
           try {
+            possiblyDelivered = true;
             for (const row of message.values ?? []) insert.run(...row);
             db.exec('COMMIT');
           } catch (error) {
             db.exec('ROLLBACK');
+            possiblyDelivered = false;
             throw error;
           }
         } else if (message.op === 'read') {
@@ -67,6 +76,8 @@ export function sqliteWorker(): void {
       } catch (error) {
         port.postMessage({
           id: message.id,
+          possiblyDelivered,
+          code: String((error as { code?: unknown })?.code ?? 'SQLITE_FAILED'),
           error: error instanceof Error ? error.message : String(error),
         });
       }
