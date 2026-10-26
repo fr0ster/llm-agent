@@ -1,5 +1,12 @@
 # @mcp-abap-adt/ollama-llm
 
+## 30.10.1
+
+### Patch Changes
+
+- 57766c7: Record the size of messages and tool definitions actually sent on every LLM request, and export request shape in usage CSV. DeepSeek and Ollama inherit the OpenAI provider change through internal dependency patch releases.
+- Requires `@mcp-abap-adt/llm-agent` `^30.13.0` and `@mcp-abap-adt/openai-llm` `^30.11.0`.
+
 ## 30.10.0
 
 ### Minor Changes
