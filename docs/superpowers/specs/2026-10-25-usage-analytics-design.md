@@ -284,6 +284,7 @@ A provider called directly, with no library wrapper above it, finds no `usageOp`
 - **`@mcp-abap-adt/llm-usage-pg`.**
 - **`@mcp-abap-adt/llm-usage-hana`** (`@sap/hana-client`).
 - **`@mcp-abap-adt/llm-usage-sqlite`** (`node:sqlite`).
+  - `snapshot()` streams a consistent copy of the database (`VACUUM INTO` a temporary file) for download, because the file lives on the instance's disk; export is a backend-specific option of this package only.
   - Requires Node ≥ 22.13 and checks the capability at construction, failing with a clear error otherwise.
   - Writes run in a worker thread so the synchronous API does not block the event loop.
 - **What all three share:**

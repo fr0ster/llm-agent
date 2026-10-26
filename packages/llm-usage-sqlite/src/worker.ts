@@ -22,6 +22,7 @@ export function sqliteWorker(
       from?: number;
       to?: number;
       cutoff?: number;
+      path?: string;
     }) => {
       let possiblyDelivered = false;
       try {
@@ -59,6 +60,9 @@ export function sqliteWorker(
             possiblyDelivered = false;
             throw error;
           }
+        } else if (message.op === 'snapshot') {
+          if (!message.path) throw new Error('Snapshot path is required');
+          db.prepare('VACUUM INTO ?').run(message.path);
         } else if (message.op === 'read') {
           result = db
             .prepare(

@@ -29,6 +29,21 @@ Failed batches may have partially written; retries are safe by id.
 
 Options: required `path` (or `:memory:`), `autoCreateSchema` (default true). Requires Node >= 22.13 with `node:sqlite`; construction fails clearly otherwise. Database opening, DDL, reads, inserts, retention and close all run in a worker thread. Operations are serialized and acknowledged after completion. `capabilityProbe` is a test seam for unsupported runtimes.
 
+## Database downloads
+
+On Cloud Foundry and other hosts with ephemeral instance disks, restarts or
+restages can lose the local database. Administrators can download a consistent
+copy with `const stream = await sink.snapshot()`. The result is a web
+`ReadableStream<Uint8Array>` suitable for an HTTP response or saving locally;
+the downloaded file opens in any SQLite tool.
+
+The worker serializes `VACUUM INTO` with writes, using a bound path parameter.
+The copy lives in a unique directory under `os.tmpdir()` and is removed when
+the stream ends, errors, or is cancelled. Consume or cancel the stream to release
+its temporary file. Writes and reads continue while the copy is streamed.
+Calling `snapshot()` after `close()` rejects. This optional export capability
+belongs only to this SQLite package, not `llm-usage` or the PG/HANA sinks.
+
 ## Wiring and replacement
 
 Connect a sink to producers with

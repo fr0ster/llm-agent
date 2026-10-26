@@ -1,4 +1,7 @@
+import { mkdtemp, rm } from 'node:fs/promises';
 import { createRequire } from 'node:module';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { Worker } from 'node:worker_threads';
 import {
   type IUsageSink,
@@ -12,7 +15,14 @@ import {
 } from '@mcp-abap-adt/llm-usage';
 import { USAGE_DDL } from './ddl.js';
 import { COLUMNS, recordValues } from './records.js';
+import { snapshotStream } from './snapshot.js';
 import { sqliteWorker } from './worker.js';
+
+export interface SqliteUsageSink extends IUsageSink, IUsageReader {
+  deleteOlderThan(ms: number): Promise<number>;
+  snapshot(): Promise<ReadableStream<Uint8Array>>;
+  close(): Promise<void>;
+}
 
 export interface SqliteUsageSinkOptions {
   path: string;
@@ -33,11 +43,7 @@ function hasSqlite(): boolean {
 
 export function createSqliteUsageSink(
   opts: SqliteUsageSinkOptions,
-): IUsageSink &
-  IUsageReader & {
-    deleteOlderThan(ms: number): Promise<number>;
-    close(): Promise<void>;
-  } {
+): SqliteUsageSink {
   const [major, minor] = process.versions.node.split('.').map(Number);
   if (
     major < 22 ||
@@ -123,6 +129,22 @@ import { DatabaseSync } from 'node:sqlite';
   const run = (op: string, data: Record<string, unknown>) =>
     closed ? Promise.reject(new Error('Usage sink is closed')) : send(op, data);
   return {
+    async snapshot(): Promise<ReadableStream<Uint8Array>> {
+      if (closed) throw new Error('Usage sink is closed');
+      const directory = await mkdtemp(join(tmpdir(), 'usage-sqlite-snapshot-'));
+      const path = join(directory, 'snapshot.sqlite');
+      try {
+        await run('snapshot', { path });
+        return await snapshotStream(path, directory);
+      } catch (error) {
+        const failure =
+          error instanceof Error ? error : new Error(String(error));
+        await rm(directory, { recursive: true, force: true }).catch(
+          (): void => {},
+        );
+        throw failure;
+      }
+    },
     async write(batch) {
       let values: ReturnType<typeof recordValues>[];
       try {
