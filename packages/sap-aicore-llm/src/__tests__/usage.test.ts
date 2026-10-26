@@ -353,9 +353,9 @@ test('request shape matches captured payload on success, errors, retries and ear
       const stringifySpy = t.mock.method(
         JSON,
         'stringify',
-        (value, ...args) => {
-          if (value === tools) shapeComputations++;
-          return stringify(value, ...args);
+        (...args: Parameters<typeof JSON.stringify>) => {
+          if (args[0] === tools) shapeComputations++;
+          return stringify(...args);
         },
       );
       const run = async () => {

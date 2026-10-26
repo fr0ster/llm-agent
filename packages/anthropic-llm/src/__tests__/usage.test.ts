@@ -258,16 +258,20 @@ it('request shape matches captured payload on success, errors, retries and early
           };
       };
       if (stream) {
-        t.mock.method(globalThis, 'fetch', async (_url, init) => {
-          payloads.push(JSON.parse(String(init?.body)));
-          if (mode === 'retry' && attempts++ === 0)
-            return new Response('', {
-              status: 429,
-              headers: { 'retry-after': '0.001' },
-            });
-          if (mode === 'error') throw new Error('transport failed');
-          return new Response(start + delta + end);
-        });
+        t.mock.method(
+          globalThis,
+          'fetch',
+          async (_url: Parameters<typeof fetch>[0], init?: RequestInit) => {
+            payloads.push(JSON.parse(String(init?.body)));
+            if (mode === 'retry' && attempts++ === 0)
+              return new Response('', {
+                status: 429,
+                headers: { 'retry-after': '0.001' },
+              });
+            if (mode === 'error') throw new Error('transport failed');
+            return new Response(start + delta + end);
+          },
+        );
       } else {
         provider.client.post = (async (
           _url: string,
@@ -283,9 +287,9 @@ it('request shape matches captured payload on success, errors, retries and early
       const stringifySpy = t.mock.method(
         JSON,
         'stringify',
-        (value, ...args) => {
-          if (value === tools) shapeComputations++;
-          return stringify(value, ...args);
+        (...args: Parameters<typeof JSON.stringify>) => {
+          if (args[0] === tools) shapeComputations++;
+          return stringify(...args);
         },
       );
       const run = async () => {
