@@ -526,7 +526,8 @@ function isAbortError(error: unknown): boolean {
   );
 }
 
-interface OpenAIWireMessage {
+/** One message as the OpenAI chat completions payload carries it. */
+export interface OpenAIWireMessage {
   role: Message['role'];
   content: string | null;
   tool_calls?: Message['tool_calls'];
