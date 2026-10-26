@@ -10,6 +10,7 @@ import type {
   Signal,
 } from '@mcp-abap-adt/llm-agent';
 import {
+  requestShape,
   UsageDeliveryError,
   type UsageInput,
   type UsageRecord,
@@ -28,7 +29,13 @@ import {
   usageReaderConformance,
 } from './index.js';
 
-const input = (id = 'a', at = 10): UsageInput => ({
+const input = (
+  id = 'a',
+  at = 10,
+): Extract<UsageInput, { kind: `x.${string}` }> & {
+  id: string;
+  at: number;
+} => ({
   id,
   at,
   kind: 'x.metric',
@@ -36,8 +43,15 @@ const input = (id = 'a', at = 10): UsageInput => ({
   context: { sessionId: 's' },
   values: { n: 1 },
 });
-const record = (id = 'a', at = 10): UsageRecord =>
-  ({ ...input(id, at), schema: 1 }) as UsageRecord;
+const record = (id = 'a', at = 10): UsageRecord => ({
+  ...input(id, at),
+  schema: 1,
+});
+function invalidValues(): Record<string, number> {
+  const values = { bad: 1 };
+  Object.setPrototypeOf(values, new Date());
+  return values;
+}
 async function collect<T>(source: AsyncIterable<T>): Promise<T[]> {
   const out: T[] = [];
   for await (const value of source) out.push(value);
@@ -95,8 +109,8 @@ test('rejected snapshots cannot throw through record', async () => {
   });
   const invalid = {
     ...input(),
-    values: { bad: new Date() },
-  } as unknown as UsageInput;
+    values: invalidValues(),
+  };
   assert.doesNotThrow(() => recorder.record(invalid));
   assert.equal(recorder.stats().lost.invalid, 1);
   await recorder.close(100);
@@ -174,7 +188,7 @@ for (const [name, error, expected] of [
   ['unknown', Error('failure'), 'unconfirmed'],
   ['refused', new UsageDeliveryError('refused', false), 'lost'],
   ['ambiguous', new UsageDeliveryError('ack lost', true), 'unconfirmed'],
-] as const) {
+] satisfies ReadonlyArray<readonly [string, Error, string]>) {
   test(`delivery classification: ${name}`, async () => {
     const recorder = createUsageRecorder({
       transport: {
@@ -311,17 +325,20 @@ test('JSONL initialization failures are handled immediately and retained', async
   const path = join(temp, 'unreadable.jsonl');
   // A directory cannot be read as a file, even when running with elevated access.
   await mkdir(path);
-  const unhandled: unknown[] = [];
-  const onUnhandled = (error: unknown) => unhandled.push(error);
+  let unhandled = 0;
+  const onUnhandled = () => {
+    unhandled++;
+  };
   process.on('unhandledRejection', onUnhandled);
   try {
     const sink = jsonlFileSink({ path, rotateBytes: 1000 });
     // Allow initialization to fail before attaching any operation handlers.
     await delay(100);
-    let original: unknown;
+    let original: Error | undefined;
     await assert.rejects(collect(sink.read(query)), (error) => {
+      if (!(error instanceof Error)) return false;
       original = error;
-      return error instanceof Error;
+      return true;
     });
     for (let attempt = 0; attempt < 2; attempt++) {
       await assert.rejects(
@@ -333,7 +350,7 @@ test('JSONL initialization failures are handled immediately and retained', async
       );
       await assert.rejects(sink.close(), (error) => error === original);
     }
-    assert.deepEqual(unhandled, []);
+    assert.equal(unhandled, 0);
   } finally {
     process.off('unhandledRejection', onUnhandled);
   }
@@ -377,7 +394,7 @@ test('HTTP body and failure classification', async () => {
   for (const [error, possible] of [
     [new Error('refused', { cause: { code: 'ECONNREFUSED' } }), false],
     [Error('lost ack'), true],
-  ] as const) {
+  ] satisfies ReadonlyArray<readonly [Error, boolean]>) {
     await assert.rejects(
       httpTransport({
         url: 'http://collector',
@@ -403,14 +420,23 @@ test('signals use a fixed key and live-only delivery', async () => {
     },
     retire() {},
   };
-  const subscriber = {
-    on(_name: string, next: typeof handler) {
-      handler = next;
+  const subscriber: ISignalSubscriber<UsageSignals> = {
+    on(name, next) {
+      handler = (signal) => next({ ...signal, name });
       return () => {
         handler = undefined;
       };
     },
-  } as ISignalSubscriber<UsageSignals>;
+    onAny() {
+      return () => {};
+    },
+    last() {
+      return undefined;
+    },
+    lastAll() {
+      return [];
+    },
+  };
   const sink = memorySink({ limit: 10 });
   const transport = signalTransport(emitter, 'source');
   await transport.send([record('missed')]);
@@ -661,8 +687,8 @@ test('shutdown counters partition delivered, definite loss and pending delivery'
   await settle();
   recorder.record({
     ...input('invalid'),
-    values: { invalid: new Date() },
-  } as unknown as UsageInput);
+    values: invalidValues(),
+  });
   recorder.record(input('pending'));
   await settle();
   assert.deepEqual(await recorder.close(0), {
@@ -672,4 +698,45 @@ test('shutdown counters partition delivered, definite loss and pending delivery'
   });
   assert.deepEqual(recorder.stats().lost, { invalid: 1, closeTimeout: 2 });
   assert.equal(recorder.stats().buffered, 0);
+});
+
+test('CSV exports every request-shape column and its value', async () => {
+  const shape = requestShape(
+    [{ role: 'user', content: 'hello' }],
+    [{ name: 'tool' }],
+  );
+  const call: UsageRecord = {
+    schema: 1,
+    id: 'shape',
+    at: 10,
+    kind: 'llm.call',
+    context: {},
+    outcome: 'ok',
+    operationId: 'op',
+    physicalSeq: 0,
+    outerAttempt: 0,
+    providerAttempt: 0,
+    granularity: 'request',
+    retriesVisible: true,
+    provider: 'test',
+    model: 'test',
+    stream: false,
+    tokensSource: 'unknown',
+    durationMs: 0,
+    ...shape,
+  };
+  const rows = await collect(
+    exportRecords(
+      (async function* () {
+        yield call;
+      })(),
+      'csv',
+    ),
+  );
+  const columns = rows[0].trim().split(',');
+  const values = rows[1].trim().split(',');
+  for (const [key, value] of Object.entries(shape)) {
+    assert.ok(columns.includes(key), key);
+    assert.equal(values[columns.indexOf(key)], `"${value}"`, key);
+  }
 });

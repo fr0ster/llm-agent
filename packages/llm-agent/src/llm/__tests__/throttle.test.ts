@@ -1,15 +1,11 @@
 import assert from 'node:assert/strict';
 import { getEventListeners } from 'node:events';
 import { beforeEach, describe, it } from 'node:test';
-import type {
-  LLMCallOptions,
-  LLMResponse,
-  Message,
-} from '../../interfaces/index.js';
 import {
   type IThrottleStrategy,
   WaitAsTold,
 } from '../../interfaces/throttle-strategy.js';
+import type { LLMCallOptions, LLMResponse, Message } from '../../types.js';
 import { BaseLLMProvider } from '../base-llm-provider.js';
 import {
   GATE_IDLE_TTL_MS,
@@ -35,11 +31,32 @@ const tooManyRequests = (retryAfter?: string) => ({
 });
 
 const isThrottled = (e: unknown) =>
-  (e as { response?: { status?: number } })?.response?.status === 429;
+  typeof e === 'object' &&
+  e !== null &&
+  'response' in e &&
+  typeof e.response === 'object' &&
+  e.response !== null &&
+  'status' in e.response &&
+  e.response.status === 429;
 
 const retryAfterSeconds = (e: unknown) => {
-  const raw = (e as { response?: { headers?: Record<string, string> } })
-    ?.response?.headers?.['retry-after'];
+  if (
+    typeof e !== 'object' ||
+    e === null ||
+    !('response' in e) ||
+    typeof e.response !== 'object' ||
+    e.response === null ||
+    !('headers' in e.response)
+  )
+    return undefined;
+  const headers = e.response.headers;
+  if (
+    typeof headers !== 'object' ||
+    headers === null ||
+    !('retry-after' in headers)
+  )
+    return undefined;
+  const raw = headers['retry-after'];
   return raw === undefined ? undefined : Number(raw);
 };
 
@@ -636,7 +653,7 @@ describe('preserveThrottled', () => {
 
   it('carries the facts onto the provider error', () => {
     const original = Object.assign(new Error('429'), {
-      throttled: true as const,
+      throttled: true,
       attempts: 4,
       retryAfterSeconds: 12,
     });
@@ -658,7 +675,7 @@ class ProbeProvider extends BaseLLMProvider {
   }
   async *streamChat(
     _messages: Message[],
-    _tools?: unknown[],
+    _tools?: Parameters<BaseLLMProvider['chat']>[1],
     _options?: LLMCallOptions,
   ): AsyncIterable<LLMResponse> {
     yield { content: '' };
@@ -675,7 +692,51 @@ class ProbeProvider extends BaseLLMProvider {
 }
 
 describe('BaseLLMProvider rate-limit hooks', () => {
-  const provider = new ProbeProvider({ apiKey: 'k', model: 'some-model' });
+  const provider = new ProbeProvider({ model: 'some-model' });
+
+  it('reads SAP SDK wrapped axios throttling and Retry-After', () => {
+    const error = { name: 'ErrorWithCause', cause: tooManyRequests('7') };
+    assert.equal(provider.saysRateLimited(error), true);
+    assert.equal(provider.readsRetryAfter(error), 7);
+  });
+
+  it('reads throttling and Retry-After through two wrappers', () => {
+    const error = { cause: { cause: tooManyRequests('8') } };
+    assert.equal(provider.saysRateLimited(error), true);
+    assert.equal(provider.readsRetryAfter(error), 8);
+  });
+
+  it('stops at a cycle in the cause chain', () => {
+    const error: { cause?: object } = {};
+    error.cause = { cause: error };
+    assert.equal(provider.saysRateLimited(error), false);
+    assert.equal(provider.readsRetryAfter(error), undefined);
+  });
+
+  it('keeps top-level status and Retry-After ahead of the cause', () => {
+    const error = {
+      status: 503,
+      response: { headers: { 'Retry-After': '2' } },
+      cause: tooManyRequests('9'),
+    };
+    assert.equal(provider.saysRateLimited(error), false);
+    assert.equal(provider.readsRetryAfter(error), 2);
+  });
+
+  it('inspects at most five objects and stops at non-object causes', () => {
+    let error: ReturnType<typeof tooManyRequests> | { cause: object } =
+      tooManyRequests('7');
+    for (let i = 0; i < 4; i += 1) error = { cause: error };
+    assert.equal(provider.saysRateLimited(error), true);
+    assert.equal(provider.readsRetryAfter(error), 7);
+    error = { cause: error };
+    assert.equal(provider.saysRateLimited(error), false);
+    assert.equal(provider.readsRetryAfter(error), undefined);
+    for (const cause of [undefined, null, '429', 429]) {
+      assert.equal(provider.saysRateLimited({ cause }), false);
+      assert.equal(provider.readsRetryAfter({ cause }), undefined);
+    }
+  });
 
   it('recognises 429 wherever the transport put it', () => {
     assert.equal(provider.saysRateLimited({ response: { status: 429 } }), true);

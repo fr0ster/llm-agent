@@ -8,7 +8,11 @@ import type {
   LLMProviderConfig,
   Message,
 } from '@mcp-abap-adt/llm-agent';
-import { type OpenAIConfig, OpenAIProvider } from '@mcp-abap-adt/openai-llm';
+import {
+  type OpenAIConfig,
+  OpenAIProvider,
+  type OpenAIWireMessage,
+} from '@mcp-abap-adt/openai-llm';
 
 export interface DeepSeekConfig extends LLMProviderConfig {
   /**
@@ -61,14 +65,12 @@ export class DeepSeekProvider extends OpenAIProvider {
   /**
    * Stricter formatMessages — tracks known tool_call_ids and drops orphans.
    */
-  protected override formatMessages(
-    messages: Message[],
-  ): Array<Record<string, unknown>> {
-    const formatted: Array<Record<string, unknown>> = [];
+  protected override formatMessages(messages: Message[]): OpenAIWireMessage[] {
+    const formatted: OpenAIWireMessage[] = [];
     const knownToolCallIds = new Set<string>();
 
     for (const msg of messages) {
-      const entry: Record<string, unknown> = {
+      const entry: OpenAIWireMessage = {
         role: msg.role,
         content: msg.content ?? '',
       };

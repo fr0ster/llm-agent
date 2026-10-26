@@ -122,3 +122,5 @@ export {
   toToolCallDelta,
 } from './tool-call-deltas.js';
 export * from './usage/hooks.js';
+
+export * from './usage/request-shape.js';

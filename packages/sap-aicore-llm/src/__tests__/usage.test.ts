@@ -1,14 +1,20 @@
 import assert from 'node:assert/strict';
+import { once } from 'node:events';
+import { createServer } from 'node:http';
 import { test } from 'node:test';
 import {
   type IUsageRecorder,
+  type Message,
+  requestShape,
   resetQuotaGates,
+  type ShapeMessage,
   type UsageInput,
   WaitAsTold,
 } from '@mcp-abap-adt/llm-agent';
+import type { OrchestrationClient } from '@sap-ai-sdk/orchestration';
 import { SapCoreAIProvider } from '../sap-core-ai-provider.js';
 
-const messages = [{ role: 'user' as const, content: 'private prompt' }];
+const messages: Message[] = [{ role: 'user', content: 'private prompt' }];
 const tokenUsage = { prompt_tokens: 5, completion_tokens: 3, total_tokens: 8 };
 const response = {
   getContent: () => 'private output',
@@ -16,7 +22,7 @@ const response = {
   getToolCalls: () => undefined,
   getTokenUsage: () => tokenUsage,
 };
-function setup() {
+function setup(apiBaseUrl = 'https://example.invalid') {
   const records: UsageInput[] = [];
   const usage: IUsageRecorder = {
     record: (r) => records.push(r),
@@ -24,7 +30,7 @@ function setup() {
   };
   const provider = new SapCoreAIProvider({
     model: 'test',
-    apiBaseUrl: 'https://example.invalid',
+    apiBaseUrl,
     credential: { kind: 'bearer', token: async () => 'secret' },
     usage,
     whenThrottled: new WaitAsTold(),
@@ -233,18 +239,25 @@ test('SAP stream AbortError without a signal is aborted', async () => {
 
 test('SAP explicitly disables SDK retry middleware for chat and streams', async () => {
   const { provider } = setup();
-  const configs: unknown[] = [];
+  const configs: Array<
+    NonNullable<Parameters<OrchestrationClient['chatCompletion']>[1]>
+  > = [];
   Object.defineProperty(provider, 'createClient', {
     value: () => ({
-      chatCompletion: async (_request: unknown, config: unknown) => {
+      chatCompletion: async (
+        _request: Parameters<OrchestrationClient['chatCompletion']>[0],
+        config: NonNullable<
+          Parameters<OrchestrationClient['chatCompletion']>[1]
+        >,
+      ) => {
         configs.push(config);
         return response;
       },
       stream: async (
-        _request: unknown,
-        _signal: unknown,
-        _options: unknown,
-        config: unknown,
+        _request: Parameters<OrchestrationClient['stream']>[0],
+        _signal: Parameters<OrchestrationClient['stream']>[1],
+        _options: Parameters<OrchestrationClient['stream']>[2],
+        config: NonNullable<Parameters<OrchestrationClient['stream']>[3]>,
       ) => {
         configs.push(config);
         return { stream: (async function* () {})() };
@@ -255,6 +268,163 @@ test('SAP explicitly disables SDK retry middleware for chat and streams', async 
   for await (const _ of provider.streamChat(messages)) {
   }
   assert.equal(configs.length, 2);
-  for (const config of configs)
-    assert.deepEqual((config as { middleware: unknown[] }).middleware, []);
+  for (const config of configs) assert.deepEqual(config.middleware, []);
+});
+
+test('request shape matches captured payload on success, errors, retries and early close', async (t) => {
+  for (const stream of [false, true]) {
+    for (const mode of ['ok', 'error', 'retry', 'early']) {
+      resetQuotaGates();
+      const input: Message[] = [
+        { role: 'system', content: 'first' },
+        { role: 'system', content: 'second omitted only on Anthropic' },
+        { role: 'user', content: 'question' },
+        {
+          role: 'assistant',
+          content: null,
+          tool_calls: [
+            {
+              id: 'call',
+              type: 'function',
+              function: { name: 'lookup', arguments: '{}' },
+            },
+          ],
+        },
+        { role: 'tool', content: 'orphan' },
+        { role: 'tool', content: 'result', tool_call_id: 'call' },
+      ];
+      const tools = [
+        {
+          type: 'function',
+          function: { name: 'lookup', parameters: { type: 'object' } },
+        },
+      ];
+      const payloads: Array<{
+        template: ShapeMessage[];
+        tools?: typeof tools;
+      }> = [];
+      let attempts = 0;
+      // Exercise the real SDK, including deployment discovery and body construction.
+      const server = createServer(async (request, reply) => {
+        reply.setHeader('content-type', 'application/json');
+        if (request.method === 'GET') {
+          reply.end(JSON.stringify({ resources: [{ id: 'shape-test' }] }));
+          return;
+        }
+        let body = '';
+        for await (const chunk of request) body += chunk;
+        const payload: {
+          config: {
+            modules: {
+              prompt_templating: { prompt: (typeof payloads)[number] };
+            };
+          };
+        } = JSON.parse(body);
+        payloads.push(payload.config.modules.prompt_templating.prompt);
+        if (mode === 'error' || (mode === 'retry' && attempts++ === 0)) {
+          reply.writeHead(mode === 'error' ? 400 : 429, {
+            'retry-after': '0.001',
+          });
+          reply.end(JSON.stringify({ error: { message: 'transport failed' } }));
+          return;
+        }
+        const choice = { index: 0, finish_reason: 'stop' };
+        if (stream) {
+          reply.setHeader('content-type', 'text/event-stream');
+          reply.end(
+            `data: ${JSON.stringify({
+              final_result: {
+                choices: [{ ...choice, delta: { content: 'hello' } }],
+              },
+            })}\n\n`,
+          );
+        } else {
+          reply.end(
+            JSON.stringify({
+              final_result: {
+                choices: [
+                  {
+                    ...choice,
+                    message: { role: 'assistant', content: 'hello' },
+                  },
+                ],
+                usage: tokenUsage,
+              },
+            }),
+          );
+        }
+      });
+      server.listen(0, '127.0.0.1');
+      await once(server, 'listening');
+      t.after(async () => {
+        server.closeAllConnections();
+        await new Promise<void>((resolve, reject) => {
+          server.close((error) => (error ? reject(error) : resolve()));
+        });
+      });
+      const address = server.address();
+      assert.ok(address && typeof address !== 'string');
+      const { provider, records } = setup(`http://127.0.0.1:${address.port}`);
+      let shapeComputations = 0;
+      const stringify = JSON.stringify;
+      const stringifySpy = t.mock.method(
+        JSON,
+        'stringify',
+        (
+          value: object | string | number | boolean | null,
+          replacer?: (string | number)[] | null,
+          space?: string | number,
+        ) => {
+          if (value === tools) shapeComputations++;
+          return stringify(value, replacer, space);
+        },
+      );
+      const run = async () => {
+        if (stream) {
+          for await (const _ of provider.streamChat(input, tools)) {
+            if (mode === 'early') break;
+          }
+        } else await provider.chat(input, tools);
+      };
+      if (mode === 'error') await assert.rejects(run());
+      else await run();
+      stringifySpy.mock.restore();
+      assert.equal(
+        shapeComputations,
+        1,
+        'shape is computed once across all attempts',
+      );
+      assert.equal(records.length, mode === 'retry' ? 2 : 1);
+      assert.equal(payloads.length, records.length);
+      for (let i = 0; i < records.length; i++) {
+        const payload = payloads[i];
+        const expected = requestShape(payload.template, payload.tools);
+        assert.equal(payload.template.length, 6);
+        assert.deepEqual(payload.tools, tools);
+        const record = records[i];
+        if (record.kind !== 'llm.call') throw new Error('wrong kind');
+        for (const key of [
+          'inputMessages',
+          'systemMessages',
+          'userMessages',
+          'assistantMessages',
+          'toolMessages',
+          'inputChars',
+          'systemChars',
+          'userChars',
+          'assistantChars',
+          'toolChars',
+          'toolDefs',
+          'toolDefsChars',
+        ] satisfies ReadonlyArray<keyof typeof expected>)
+          assert.equal(record[key], expected[key], key);
+        assert.equal(record.inputMessages, 6);
+        assert.equal(record.systemMessages, 2);
+      }
+      if (stream && mode === 'early') {
+        const record = records[0];
+        if (record.kind === 'llm.call') assert.equal(record.closedEarly, true);
+      }
+    }
+  }
 });

@@ -42,6 +42,19 @@ type LlmCall = Base & {
   durationMs: number;
   firstTokenMs?: number;
   throttledMs?: number;
+  // Sizes of the messages and tool definitions actually sent; never content.
+  inputMessages?: number;
+  systemMessages?: number;
+  userMessages?: number;
+  assistantMessages?: number;
+  toolMessages?: number;
+  inputChars?: number;
+  systemChars?: number;
+  userChars?: number;
+  assistantChars?: number;
+  toolChars?: number;
+  toolDefs?: number;
+  toolDefsChars?: number;
   closedEarly?: boolean;
 }; // stream consumer stopped before the end
 type EmbeddingCall = Base & {

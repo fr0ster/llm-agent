@@ -3,7 +3,10 @@ import { Readable } from 'node:stream';
 import { test } from 'node:test';
 import {
   type IUsageRecorder,
+  type Message,
+  requestShape,
   resetQuotaGates,
+  type ShapeMessage,
   staticApiKey,
   type UsageInput,
   WaitAsTold,
@@ -24,7 +27,7 @@ function setup() {
   });
   return { provider, records, usage };
 }
-const messages = [{ role: 'user' as const, content: 'private prompt' }];
+const messages: Message[] = [{ role: 'user', content: 'private prompt' }];
 const response = {
   data: {
     choices: [{ message: { content: 'private result' } }],
@@ -248,5 +251,134 @@ test('stream AbortError and Axios cancellation without a signal are aborted', as
     });
     assert.equal(records.length, 1);
     assert.equal(records[0].outcome, 'aborted');
+  }
+});
+
+test('request shape matches captured payload on success, errors, retries and early close', async (t) => {
+  for (const stream of [false, true]) {
+    for (const mode of ['ok', 'error', 'retry', 'early']) {
+      resetQuotaGates();
+      const { provider, records } = setup();
+      const input: Message[] = [
+        { role: 'system', content: 'first' },
+        { role: 'system', content: 'second omitted only on Anthropic' },
+        { role: 'user', content: 'question' },
+        {
+          role: 'assistant',
+          content: null,
+          tool_calls: [
+            {
+              id: 'call',
+              type: 'function',
+              function: { name: 'lookup', arguments: '{}' },
+            },
+          ],
+        },
+        { role: 'tool', content: 'orphan' },
+        { role: 'tool', content: 'result', tool_call_id: 'call' },
+      ];
+      const tools = [
+        {
+          type: 'function',
+          function: { name: 'lookup', parameters: { type: 'object' } },
+        },
+      ];
+      const payloads: Array<{
+        messages: ShapeMessage[];
+        tools?: typeof tools;
+        system?: string;
+      }> = [];
+      let attempts = 0;
+      const fail = () => {
+        if (mode === 'error') throw new Error('transport failed');
+        if (mode === 'retry' && attempts++ === 0)
+          throw {
+            status: 429,
+            response: { status: 429, headers: { 'retry-after': '0.001' } },
+          };
+      };
+      Object.defineProperty(provider.client, 'post', {
+        value: async (_url: string, body: (typeof payloads)[number]) => {
+          payloads.push(body);
+          fail();
+          return stream
+            ? {
+                data: Readable.from([
+                  'data: {"choices":[{"delta":{"content":"hello"}}]}\n\n',
+                ]),
+              }
+            : response;
+        },
+      });
+      let shapeComputations = 0;
+      const stringify = JSON.stringify;
+      const stringifySpy = t.mock.method(
+        JSON,
+        'stringify',
+        (
+          value: object | string | number | boolean | null,
+          replacer?: (string | number)[] | null,
+          space?: string | number,
+        ) => {
+          if (value === tools) shapeComputations++;
+          return stringify(value, replacer, space);
+        },
+      );
+      const run = async () => {
+        if (stream) {
+          for await (const _ of provider.streamChat(input, tools)) {
+            if (mode === 'early') break;
+          }
+        } else await provider.chat(input, tools);
+      };
+      if (mode === 'error') await assert.rejects(run());
+      else await run();
+      stringifySpy.mock.restore();
+      assert.equal(
+        shapeComputations,
+        1,
+        'shape is computed once across all attempts',
+      );
+      assert.equal(records.length, mode === 'retry' ? 2 : 1);
+      assert.equal(payloads.length, records.length);
+      for (let i = 0; i < records.length; i++) {
+        const payload = payloads[i];
+        const sent: ShapeMessage[] = [
+          ...(payload.system !== undefined
+            ? [
+                {
+                  role: 'system',
+                  content: payload.system,
+                } satisfies ShapeMessage,
+              ]
+            : []),
+          ...payload.messages,
+        ];
+        const expected = requestShape(sent, payload.tools);
+        const record = records[i];
+        if (record.kind !== 'llm.call') throw new Error('wrong kind');
+        for (const key of [
+          'inputMessages',
+          'systemMessages',
+          'userMessages',
+          'assistantMessages',
+          'toolMessages',
+          'inputChars',
+          'systemChars',
+          'userChars',
+          'assistantChars',
+          'toolChars',
+          'toolDefs',
+          'toolDefsChars',
+        ] satisfies ReadonlyArray<keyof typeof expected>)
+          assert.equal(record[key], expected[key], key);
+        assert.equal(record.inputMessages, 5);
+        assert.equal(record.systemMessages, 2);
+      }
+      if (stream && mode === 'early') {
+        const record = records[0];
+        if (record.kind === 'llm.call') assert.equal(record.closedEarly, true);
+      }
+    }
   }
 });

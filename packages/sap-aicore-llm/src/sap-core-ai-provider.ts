@@ -22,8 +22,11 @@ import type {
 } from '@mcp-abap-adt/llm-agent';
 import {
   BaseLLMProvider,
+  type beginLlmRequest,
   type LlmRequestFacts,
   type LlmRequestHandle,
+  requestShape,
+  type ShapeMessage,
   startOperation,
 } from '@mcp-abap-adt/llm-agent';
 import {
@@ -230,6 +233,7 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
     tools?: unknown[],
     options?: LLMCallOptions,
   ): Promise<LLMResponse> {
+    const model = this.modelOverride ?? this.model;
     try {
       this.log?.debug('Sending chat request via SAP AI SDK', {
         model: this.modelOverride ?? this.model,
@@ -245,6 +249,7 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
       // response to the wrong in-flight request when concurrent requests share
       // the same XSUAA user (mirrors streamChat's per-stream agent below).
       let client: ReturnType<SapCoreAIProvider['createClient']>;
+      let shape: ReturnType<typeof requestShape> | undefined;
       const response = await this.withThrottleRetry(
         async (handle) => {
           // No timeout of ours. Sixty seconds used to sit here, and it was a
@@ -328,12 +333,18 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
           opts: options,
           op: startOperation(options),
           bound: this.config.usage,
-          base: {
-            provider: 'SAP AI Core',
-            model: this.modelOverride ?? this.model,
-            stream: false,
-            granularity: 'request',
-            retriesVisible: true,
+          get base(): Parameters<typeof beginLlmRequest>[2] & {
+            stream: false;
+          } {
+            shape ??= requestShape(formatted.map(shapeMessage), tools);
+            return {
+              ...shape,
+              provider: 'SAP AI Core',
+              model,
+              stream: false,
+              granularity: 'request',
+              retriesVisible: true,
+            };
           },
         },
       );
@@ -405,6 +416,7 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
         keepAlive: false,
       });
       let client: ReturnType<SapCoreAIProvider['createClient']>;
+      let shape: ReturnType<typeof requestShape> | undefined;
       const opened = await this.withThrottleRetry(
         async () => {
           // As above: the caller's signal is the deadline, and the SDK takes
@@ -435,12 +447,16 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
           opts: options,
           op: startOperation(options),
           bound: this.config.usage,
-          base: {
-            provider: 'SAP AI Core',
-            model,
-            stream: true,
-            granularity: 'request',
-            retriesVisible: true,
+          get base(): Parameters<typeof beginLlmRequest>[2] & { stream: true } {
+            shape ??= requestShape(formatted.map(shapeMessage), tools);
+            return {
+              ...shape,
+              provider: 'SAP AI Core',
+              model,
+              stream: true,
+              granularity: 'request',
+              retriesVisible: true,
+            };
           },
         },
       );
@@ -721,8 +737,10 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
   /**
    * Format messages for the SAP AI SDK (OpenAI-compatible format).
    */
-  private formatMessages(messages: Message[]): ChatMessage[] {
-    return messages.map((msg): ChatMessage => {
+  private formatMessages(
+    messages: Message[],
+  ): Array<Exclude<ChatMessage, { role: 'developer' }>> {
+    return messages.map((msg): Exclude<ChatMessage, { role: 'developer' }> => {
       if (
         msg.role === 'assistant' &&
         msg.tool_calls &&
@@ -793,4 +811,14 @@ function isAbortError(error: unknown): boolean {
     ('name' in error && error.name === 'AbortError') ||
     ('code' in error && error.code === 'ERR_CANCELED')
   );
+}
+
+function shapeMessage(
+  message: Exclude<ChatMessage, { role: 'developer' }>,
+): ShapeMessage {
+  return {
+    role: message.role,
+    content: typeof message.content === 'string' ? message.content : undefined,
+    ...('tool_calls' in message ? { tool_calls: message.tool_calls } : {}),
+  };
 }

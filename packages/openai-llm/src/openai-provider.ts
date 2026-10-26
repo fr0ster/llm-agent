@@ -12,8 +12,10 @@ import type {
 } from '@mcp-abap-adt/llm-agent';
 import {
   BaseLLMProvider,
+  type beginLlmRequest,
   type LlmRequestFacts,
   type LlmRequestHandle,
+  requestShape,
   startOperation,
 } from '@mcp-abap-adt/llm-agent';
 import axios, { type AxiosInstance } from 'axios';
@@ -153,20 +155,23 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
   ): Promise<LLMResponse> {
     try {
       const model = options?.model ?? this.model;
+      const providerName = this.providerName;
       // Unset knobs are not sent: the model applies its own default. A
       // forced one breaks models that accept only theirs (gpt-5 and o-series
       // reject any temperature but 1).
       const temperature = options?.temperature ?? this.config.temperature;
       const maxTokens = options?.maxTokens ?? this.config.maxTokens;
 
+      const sent = this.formatMessages(messages);
       let headers: Record<string, string>;
+      let shape: ReturnType<typeof requestShape> | undefined;
       const response = await this.withThrottleRetry(
         async (handle) => {
           const response = await this.client.post(
             '/chat/completions',
             {
               model,
-              messages: this.formatMessages(messages),
+              messages: sent,
               tools: tools && tools.length > 0 ? tools : undefined,
               tool_choice: tools && tools.length > 0 ? 'auto' : undefined,
               ...(temperature !== undefined ? { temperature } : {}),
@@ -208,12 +213,18 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
           opts: options,
           op: startOperation(options),
           bound: this.config.usage,
-          base: {
-            provider: this.providerName,
-            model,
-            stream: false,
-            granularity: 'request',
-            retriesVisible: true,
+          get base(): Parameters<typeof beginLlmRequest>[2] & {
+            stream: false;
+          } {
+            shape ??= requestShape(sent, tools);
+            return {
+              ...shape,
+              provider: providerName,
+              model,
+              stream: false,
+              granularity: 'request',
+              retriesVisible: true,
+            };
           },
         },
       );
@@ -245,20 +256,23 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
     let facts: Partial<LlmRequestFacts> = {};
     try {
       const model = options?.model ?? this.model;
+      const providerName = this.providerName;
       // Unset knobs are not sent: the model applies its own default. A
       // forced one breaks models that accept only theirs (gpt-5 and o-series
       // reject any temperature but 1).
       const temperature = options?.temperature ?? this.config.temperature;
       const maxTokens = options?.maxTokens ?? this.config.maxTokens;
 
+      const sent = this.formatMessages(messages);
       let headers: Record<string, string>;
+      let shape: ReturnType<typeof requestShape> | undefined;
       const opened = await this.withThrottleRetry(
         async () =>
           this.client.post(
             '/chat/completions',
             {
               model,
-              messages: this.formatMessages(messages),
+              messages: sent,
               tools: tools && tools.length > 0 ? tools : undefined,
               tool_choice: tools && tools.length > 0 ? 'auto' : undefined,
               ...(temperature !== undefined ? { temperature } : {}),
@@ -284,12 +298,16 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
           opts: options,
           op: startOperation(options),
           bound: this.config.usage,
-          base: {
-            provider: this.providerName,
-            model,
-            stream: true,
-            granularity: 'request',
-            retriesVisible: true,
+          get base(): Parameters<typeof beginLlmRequest>[2] & { stream: true } {
+            shape ??= requestShape(sent, tools);
+            return {
+              ...shape,
+              provider: providerName,
+              model,
+              stream: true,
+              granularity: 'request',
+              retriesVisible: true,
+            };
           },
         },
       );
@@ -432,17 +450,15 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
   /**
    * Format messages for OpenAI API with strict protocol enforcement.
    */
-  protected formatMessages(
-    messages: Message[],
-  ): Array<Record<string, unknown>> {
-    const formatted: Array<Record<string, unknown>> = [];
+  protected formatMessages(messages: Message[]): OpenAIWireMessage[] {
+    const formatted: OpenAIWireMessage[] = [];
 
     for (const msg of messages) {
       if (msg.role === 'tool' && !msg.tool_call_id) {
         continue;
       }
 
-      const entry: Record<string, unknown> = {
+      const entry: OpenAIWireMessage = {
         role: msg.role,
         content: msg.content ?? '',
       };
@@ -508,4 +524,12 @@ function isAbortError(error: unknown): boolean {
     ('name' in error && error.name === 'AbortError') ||
     ('code' in error && error.code === 'ERR_CANCELED')
   );
+}
+
+/** One message as the OpenAI chat completions payload carries it. */
+export interface OpenAIWireMessage {
+  role: Message['role'];
+  content: string | null;
+  tool_calls?: Message['tool_calls'];
+  tool_call_id?: string;
 }
