@@ -48,6 +48,8 @@ evidence. Delivered records are exact; a missing loss record cannot prove
 completeness. `close(timeoutMs)` has one deadline and returns disjoint delivered,
 lost and unconfirmed counts. Unknown delivery errors, lost acknowledgements and
 partial fan-out writes are unconfirmed until a successful retry resolves them.
+`stats().unconfirmed` counts both buffered ambiguous records and records given
+up while ambiguous; after `close()` it equals the returned `unconfirmed`.
 Custom implementations use `UsageDeliveryError(..., false)` only for a batch
 known never to have reached storage.
 

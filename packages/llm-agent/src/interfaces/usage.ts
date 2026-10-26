@@ -145,6 +145,8 @@ export interface IUsageControl {
     buffered: number;
     delivered: number;
     lost: Record<string, number>;
+    /** Delivery is ambiguous right now: buffered after a possibly-delivered failure, or given up while ambiguous. */
+    unconfirmed?: number;
     lastErrorCode?: string;
   };
 }

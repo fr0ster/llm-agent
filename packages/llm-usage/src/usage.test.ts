@@ -428,6 +428,70 @@ async function settle() {
   for (let i = 0; i < 30; i++) await Promise.resolve();
 }
 
+for (const error of [
+  new UsageDeliveryError('ack lost', true),
+  new Error('unknown delivery'),
+]) {
+  test(`stats tracks buffered ambiguity until a successful resend: ${error.message}`, async (t) => {
+    t.mock.timers.enable({
+      apis: ['Date', 'setTimeout', 'setInterval'],
+      now: 0,
+    });
+    let attempts = 0;
+    const recorder = createUsageRecorder({
+      batchSize: 1,
+      transport: {
+        async send() {
+          attempts++;
+          if (attempts === 1) throw error;
+          if (attempts === 2) throw new UsageDeliveryError('refused', false);
+        },
+        async close() {},
+      },
+    });
+    recorder.record(input());
+    await settle();
+    assert.equal(recorder.stats().buffered, 1);
+    assert.equal(recorder.stats().unconfirmed, 1);
+    t.mock.timers.tick(20);
+    await settle();
+    assert.equal(attempts, 2);
+    assert.equal(recorder.stats().unconfirmed, 1);
+    t.mock.timers.tick(40);
+    await settle();
+    assert.equal(attempts, 3);
+    assert.equal(recorder.stats().unconfirmed, 0);
+    assert.equal(recorder.stats().delivered, 1);
+    await recorder.close(0);
+  });
+}
+
+for (const possiblyDelivered of [false, true]) {
+  test(`stats matches close after a failed send (possiblyDelivered=${possiblyDelivered})`, async (t) => {
+    t.mock.timers.enable({
+      apis: ['Date', 'setTimeout', 'setInterval'],
+      now: 0,
+    });
+    const recorder = createUsageRecorder({
+      batchSize: 1,
+      transport: {
+        async send() {
+          throw new UsageDeliveryError('failed', possiblyDelivered);
+        },
+        async close() {},
+      },
+    });
+    recorder.record(input());
+    await settle();
+    assert.equal(recorder.stats().buffered, 1);
+    assert.equal(recorder.stats().unconfirmed, possiblyDelivered ? 1 : 0);
+    const result = await recorder.close(0);
+    assert.equal(result.unconfirmed, possiblyDelivered ? 1 : 0);
+    assert.equal(recorder.stats().unconfirmed, result.unconfirmed);
+    assert.equal(recorder.stats().buffered, 0);
+  });
+}
+
 for (const ambiguous of [false, true]) {
   test(`scheduled retries expire before resending (ambiguous=${ambiguous})`, async (t) => {
     t.mock.timers.enable({
