@@ -1,6 +1,6 @@
 # Usage analytics: contract first, replaceable transport and storage
 
-Date: 2026-10-25. Status: draft for review (revision 4, after three review rounds).
+Date: 2026-10-25. Status: implemented (1.0.0); revision 5 adds the request shape of `llm.call`.
 
 ## Intent
 
@@ -70,7 +70,13 @@ type LlmCall = Base & { kind: 'llm.call';
   inputTokens?: number; outputTokens?: number; cachedInputTokens?: number;
   tokensSource: 'provider' | 'estimate' | 'unknown';
   durationMs: number; firstTokenMs?: number; throttledMs?: number;
-  closedEarly?: boolean };                            // stream consumer stopped before the end
+  closedEarly?: boolean;                              // stream consumer stopped before the end
+  // Request shape (revision 5): sizes of what the request carried, never the content.
+  inputMessages?: number;                           // messages sent: systemMessages + userMessages + assistantMessages + toolMessages
+  systemMessages?: number; userMessages?: number; assistantMessages?: number; toolMessages?: number;
+  inputChars?: number;                              // characters of the messages sent: systemChars + userChars + assistantChars + toolChars
+  systemChars?: number; userChars?: number; assistantChars?: number; toolChars?: number;
+  toolDefs?: number; toolDefsChars?: number };      // tool definitions offered, and the length of their JSON
 type EmbeddingCall = Base & { kind: 'embedding.call';
   operationId: string; physicalSeq: number; outerAttempt: number; providerAttempt: number;
   chunkPath: string;                                // e.g. '2/3>1/4': outer chunk 2 of 3, provider chunk 1 of 4
@@ -171,6 +177,13 @@ export interface IUsageControl {
   - `flush` drains without closing.
 - **Content.** No content, and only the listed fields. `x.*` values are numbers, labels and flags, never text taken from content.
 - **Evolution.** The schema only grows: new kinds and optional fields may be added, and readers ignore unknown ones.
+- **Request shape** (`llm.call`).
+  - **What is measured: what is sent.** A provider first applies its own filtering (for example Anthropic keeps only the first system message and drops assistant `tool_calls`; OpenAI drops tool messages without `tool_call_id`), then measures the messages, and the message fields, that its payload actually carries, with the shared core helper `requestShape(messages, tools)`. A provider that drops a field passes the message without it. Supplied but unsent text is never counted.
+  - Every provider passes the result into the request's base facts, so each physical request, including each retry, carries it.
+  - Characters are UTF-16 code units (`string.length`). A message counts its `content`; an assistant message also counts the `name` and `arguments` of its `tool_calls`, when they are sent. Messages are attributed by their `role`.
+  - `toolDefs` is the number of tool definitions sent; `toolDefsChars` is the length of `JSON.stringify` of them, computed per request, without caching, because callers may change the array or its schemas between calls.
+  - The fields are present whenever the provider knows its messages, independent of `tokensSource`: the context size is visible for providers that report no tokens.
+  - Sizes only. They count, never copy.
 - **Tokens.**
   - `'provider'` only for counts the provider reported for that physical request, unmodified. Embedding batch totals are never split into per-item estimates.
   - Otherwise `'estimate'`, or `'unknown'`.
@@ -265,7 +278,7 @@ A provider called directly, with no library wrapper above it, finds no `usageOp`
   - `memorySink({ limit })` and `jsonlFileSink({ path, rotateBytes })`;
   - reading and export deduplicate by `id`;
   - `combineSinks(...)` acknowledges only when every sink wrote, and a failing sink fails the batch, which is retried and is idempotent.
-- **Reading:** `read({ from, to, kinds, sessionId? })` and `export('jsonl' | 'csv')` helpers, shared by all sinks.
+- **Reading:** `read({ from, to, kinds, sessionId? })` and `export('jsonl' | 'csv')` helpers, shared by all sinks. The CSV has one column per record field, the request-shape fields included (`inputChars` is shared with `embedding.call`).
 
 **Database sinks**, one package per database, each depending only on the contract and its own driver:
 - **`@mcp-abap-adt/llm-usage-pg`.**
@@ -298,6 +311,7 @@ A provider called directly, with no library wrapper above it, finds no `usageOp`
 - **Sinks.**
   - Memory, JSONL, PGlite, SQLite and, under the existing HANA test gating, HANA: idempotent writes, reads by window, kind and session, CSV columns, retention.
   - SQLite: rejected on an unsupported Node; writes run off the main thread.
+- **Request shape:** `requestShape` counts messages and characters per role, tool-call arguments and tool definitions exactly, and recomputes after the tools array or a nested schema changed; every provider's `llm.call` equals the shape of its transport payload (several system messages and assistant tool calls on Anthropic, a tool message without `tool_call_id` on OpenAI), including on retries and errors.
 - **Completeness:** the test above.
 - **Content:** distinctive prompt, document, argument and result strings never appear in any record.
 - **No recorder given:** behaviour is identical to today.
