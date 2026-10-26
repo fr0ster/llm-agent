@@ -1,5 +1,15 @@
 # @mcp-abap-adt/llm-agent
 
+## 30.13.0
+
+### Minor Changes
+
+- 57766c7: Record the size of messages and tool definitions actually sent on every LLM request, and export request shape in usage CSV. DeepSeek and Ollama inherit the OpenAI provider change through internal dependency patch releases.
+
+### Patch Changes
+
+- 795e048: Recognize HTTP 429 and Retry-After through the error cause chain (SAP AI SDK wraps axios errors).
+
 ## 30.12.0
 
 ### Minor Changes
