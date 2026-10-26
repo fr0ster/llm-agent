@@ -1,5 +1,11 @@
 # @mcp-abap-adt/llm-agent
 
+## 30.12.0
+
+### Minor Changes
+
+- 34cd979: Expose current unconfirmed delivery counts in usage recorder stats.
+
 ## 30.11.0
 
 ### Minor Changes
