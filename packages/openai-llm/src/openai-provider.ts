@@ -14,6 +14,7 @@ import {
   BaseLLMProvider,
   type LlmRequestFacts,
   type LlmRequestHandle,
+  requestShape,
   startOperation,
 } from '@mcp-abap-adt/llm-agent';
 import axios, { type AxiosInstance } from 'axios';
@@ -153,20 +154,23 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
   ): Promise<LLMResponse> {
     try {
       const model = options?.model ?? this.model;
+      const providerName = this.providerName;
       // Unset knobs are not sent: the model applies its own default. A
       // forced one breaks models that accept only theirs (gpt-5 and o-series
       // reject any temperature but 1).
       const temperature = options?.temperature ?? this.config.temperature;
       const maxTokens = options?.maxTokens ?? this.config.maxTokens;
 
+      const sent = this.formatMessages(messages) as unknown as Message[];
       let headers: Record<string, string>;
+      let shape: ReturnType<typeof requestShape> | undefined;
       const response = await this.withThrottleRetry(
         async (handle) => {
           const response = await this.client.post(
             '/chat/completions',
             {
               model,
-              messages: this.formatMessages(messages),
+              messages: sent,
               tools: tools && tools.length > 0 ? tools : undefined,
               tool_choice: tools && tools.length > 0 ? 'auto' : undefined,
               ...(temperature !== undefined ? { temperature } : {}),
@@ -208,12 +212,16 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
           opts: options,
           op: startOperation(options),
           bound: this.config.usage,
-          base: {
-            provider: this.providerName,
-            model,
-            stream: false,
-            granularity: 'request',
-            retriesVisible: true,
+          get base() {
+            shape ??= requestShape(sent, tools);
+            return {
+              ...shape,
+              provider: providerName,
+              model,
+              stream: false as const,
+              granularity: 'request' as const,
+              retriesVisible: true,
+            };
           },
         },
       );
@@ -245,20 +253,23 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
     let facts: Partial<LlmRequestFacts> = {};
     try {
       const model = options?.model ?? this.model;
+      const providerName = this.providerName;
       // Unset knobs are not sent: the model applies its own default. A
       // forced one breaks models that accept only theirs (gpt-5 and o-series
       // reject any temperature but 1).
       const temperature = options?.temperature ?? this.config.temperature;
       const maxTokens = options?.maxTokens ?? this.config.maxTokens;
 
+      const sent = this.formatMessages(messages) as unknown as Message[];
       let headers: Record<string, string>;
+      let shape: ReturnType<typeof requestShape> | undefined;
       const opened = await this.withThrottleRetry(
         async () =>
           this.client.post(
             '/chat/completions',
             {
               model,
-              messages: this.formatMessages(messages),
+              messages: sent,
               tools: tools && tools.length > 0 ? tools : undefined,
               tool_choice: tools && tools.length > 0 ? 'auto' : undefined,
               ...(temperature !== undefined ? { temperature } : {}),
@@ -284,12 +295,16 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
           opts: options,
           op: startOperation(options),
           bound: this.config.usage,
-          base: {
-            provider: this.providerName,
-            model,
-            stream: true,
-            granularity: 'request',
-            retriesVisible: true,
+          get base() {
+            shape ??= requestShape(sent, tools);
+            return {
+              ...shape,
+              provider: providerName,
+              model,
+              stream: true as const,
+              granularity: 'request' as const,
+              retriesVisible: true,
+            };
           },
         },
       );

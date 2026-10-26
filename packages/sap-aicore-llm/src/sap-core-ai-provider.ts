@@ -24,6 +24,7 @@ import {
   BaseLLMProvider,
   type LlmRequestFacts,
   type LlmRequestHandle,
+  requestShape,
   startOperation,
 } from '@mcp-abap-adt/llm-agent';
 import {
@@ -230,6 +231,7 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
     tools?: unknown[],
     options?: LLMCallOptions,
   ): Promise<LLMResponse> {
+    const model = this.modelOverride ?? this.model;
     try {
       this.log?.debug('Sending chat request via SAP AI SDK', {
         model: this.modelOverride ?? this.model,
@@ -245,6 +247,7 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
       // response to the wrong in-flight request when concurrent requests share
       // the same XSUAA user (mirrors streamChat's per-stream agent below).
       let client: ReturnType<SapCoreAIProvider['createClient']>;
+      let shape: ReturnType<typeof requestShape> | undefined;
       const response = await this.withThrottleRetry(
         async (handle) => {
           // No timeout of ours. Sixty seconds used to sit here, and it was a
@@ -328,12 +331,16 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
           opts: options,
           op: startOperation(options),
           bound: this.config.usage,
-          base: {
-            provider: 'SAP AI Core',
-            model: this.modelOverride ?? this.model,
-            stream: false,
-            granularity: 'request',
-            retriesVisible: true,
+          get base() {
+            shape ??= requestShape(formatted as unknown as Message[], tools);
+            return {
+              ...shape,
+              provider: 'SAP AI Core',
+              model,
+              stream: false as const,
+              granularity: 'request' as const,
+              retriesVisible: true,
+            };
           },
         },
       );
@@ -405,6 +412,7 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
         keepAlive: false,
       });
       let client: ReturnType<SapCoreAIProvider['createClient']>;
+      let shape: ReturnType<typeof requestShape> | undefined;
       const opened = await this.withThrottleRetry(
         async () => {
           // As above: the caller's signal is the deadline, and the SDK takes
@@ -435,12 +443,16 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
           opts: options,
           op: startOperation(options),
           bound: this.config.usage,
-          base: {
-            provider: 'SAP AI Core',
-            model,
-            stream: true,
-            granularity: 'request',
-            retriesVisible: true,
+          get base() {
+            shape ??= requestShape(formatted as unknown as Message[], tools);
+            return {
+              ...shape,
+              provider: 'SAP AI Core',
+              model,
+              stream: true as const,
+              granularity: 'request' as const,
+              retriesVisible: true,
+            };
           },
         },
       );

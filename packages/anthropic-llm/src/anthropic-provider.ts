@@ -10,7 +10,11 @@ import type {
   LLMResponse,
   Message,
 } from '@mcp-abap-adt/llm-agent';
-import { BaseLLMProvider, startOperation } from '@mcp-abap-adt/llm-agent';
+import {
+  BaseLLMProvider,
+  requestShape,
+  startOperation,
+} from '@mcp-abap-adt/llm-agent';
 import axios, { type AxiosInstance } from 'axios';
 
 export interface AnthropicConfig extends LLMProviderConfig {
@@ -88,10 +92,13 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
       const systemMessage = messages.find((m) => m.role === 'system');
       const conversationMessages = messages.filter((m) => m.role !== 'system');
 
+      const sent = this.formatMessages(
+        conversationMessages,
+      ) as unknown as Message[];
       const model = options?.model ?? this.model;
       const requestBody: Record<string, unknown> = {
         model,
-        messages: this.formatMessages(conversationMessages),
+        messages: sent,
         // The Messages API requires max_tokens, so it keeps a default;
         // temperature is sent only when set (claude-opus-4-7+ accept only 1).
         max_tokens: options?.maxTokens ?? this.config.maxTokens ?? 4096,
@@ -109,6 +116,7 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
       }
 
       let headers: Record<string, string>;
+      let shape: ReturnType<typeof requestShape> | undefined;
       const response = await this.withThrottleRetry(
         async (handle) => {
           const response = await this.client.post('/messages', requestBody, {
@@ -164,12 +172,29 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
           opts: options,
           op: startOperation(options),
           bound: this.config.usage,
-          base: {
-            provider: 'anthropic',
-            model,
-            stream: false,
-            granularity: 'request',
-            retriesVisible: true,
+          get base() {
+            shape ??= requestShape(
+              [
+                ...(systemMessage
+                  ? [
+                      {
+                        role: 'system' as const,
+                        content: systemMessage.content,
+                      },
+                    ]
+                  : []),
+                ...sent,
+              ],
+              tools,
+            );
+            return {
+              ...shape,
+              provider: 'anthropic',
+              model,
+              stream: false as const,
+              granularity: 'request' as const,
+              retriesVisible: true,
+            };
           },
         },
       );
@@ -197,10 +222,13 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
     const systemMessage = messages.find((m) => m.role === 'system');
     const conversationMessages = messages.filter((m) => m.role !== 'system');
 
+    const sent = this.formatMessages(
+      conversationMessages,
+    ) as unknown as Message[];
     const model = options?.model ?? this.model;
     const requestBody: Record<string, unknown> = {
       model,
-      messages: this.formatMessages(conversationMessages),
+      messages: sent,
       max_tokens: options?.maxTokens ?? this.config.maxTokens ?? 4096,
       ...temperatureParam(options?.temperature ?? this.config.temperature),
       stream: true,
@@ -219,6 +247,7 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
     const baseURL = this.config.baseURL || 'https://api.anthropic.com/v1';
     type OpenStream = Response & { body: ReadableStream<Uint8Array> };
     let headers: Record<string, string>;
+    let shape: ReturnType<typeof requestShape> | undefined;
     const { response, handle } = await this.withThrottleRetry<OpenStream>(
       async () => {
         const res = await fetch(`${baseURL}/messages`, {
@@ -257,12 +286,29 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
         opts: options,
         op: startOperation(options),
         bound: this.config.usage,
-        base: {
-          provider: 'anthropic',
-          model,
-          stream: true,
-          granularity: 'request',
-          retriesVisible: true,
+        get base() {
+          shape ??= requestShape(
+            [
+              ...(systemMessage
+                ? [
+                    {
+                      role: 'system' as const,
+                      content: systemMessage.content,
+                    },
+                  ]
+                : []),
+              ...sent,
+            ],
+            tools,
+          );
+          return {
+            ...shape,
+            provider: 'anthropic',
+            model,
+            stream: true as const,
+            granularity: 'request' as const,
+            retriesVisible: true,
+          };
         },
       },
     );

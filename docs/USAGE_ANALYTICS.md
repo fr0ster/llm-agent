@@ -69,3 +69,11 @@ The [completeness suite](../packages/llm-agent-libs/src/__tests__/usage-complete
 uses real OpenAI LLM and embedding packages over mocked HTTP, real library
 components and MCP boundaries, and distinctive content sentinels. Run it with
 `node --import tsx/esm --test --test-concurrency=1 packages/llm-agent-libs/src/__tests__/usage-completeness.test.ts`.
+
+Each `llm.call` records its request shape: message counts and character counts per role,
+plus total `inputMessages` and `inputChars`, and `toolDefs` and `toolDefsChars` for the
+tool definitions actually sent. Providers measure after their payload filtering, including
+assistant tool-call names and arguments only when sent. Characters use UTF-16
+`string.length`; tool definition characters use `JSON.stringify(tools).length`.
+These sizes are present on retries, errors and early stream closes, independently of
+token availability. No message content or tool definitions are stored in usage records.

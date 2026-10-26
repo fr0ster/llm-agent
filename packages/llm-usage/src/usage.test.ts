@@ -10,6 +10,7 @@ import type {
   Signal,
 } from '@mcp-abap-adt/llm-agent';
 import {
+  requestShape,
   UsageDeliveryError,
   type UsageInput,
   type UsageRecord,
@@ -672,4 +673,45 @@ test('shutdown counters partition delivered, definite loss and pending delivery'
   });
   assert.deepEqual(recorder.stats().lost, { invalid: 1, closeTimeout: 2 });
   assert.equal(recorder.stats().buffered, 0);
+});
+
+test('CSV exports every request-shape column and its value', async () => {
+  const shape = requestShape(
+    [{ role: 'user', content: 'hello' }],
+    [{ name: 'tool' }],
+  );
+  const call: UsageRecord = {
+    schema: 1,
+    id: 'shape',
+    at: 10,
+    kind: 'llm.call',
+    context: {},
+    outcome: 'ok',
+    operationId: 'op',
+    physicalSeq: 0,
+    outerAttempt: 0,
+    providerAttempt: 0,
+    granularity: 'request',
+    retriesVisible: true,
+    provider: 'test',
+    model: 'test',
+    stream: false,
+    tokensSource: 'unknown',
+    durationMs: 0,
+    ...shape,
+  };
+  const rows = await collect(
+    exportRecords(
+      (async function* () {
+        yield call;
+      })(),
+      'csv',
+    ),
+  );
+  const columns = rows[0].trim().split(',');
+  const values = rows[1].trim().split(',');
+  for (const [key, value] of Object.entries(shape)) {
+    assert.ok(columns.includes(key), key);
+    assert.equal(values[columns.indexOf(key)], `"${value}"`, key);
+  }
 });
