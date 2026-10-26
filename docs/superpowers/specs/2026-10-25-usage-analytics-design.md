@@ -1,6 +1,6 @@
 # Usage analytics: contract first, replaceable transport and storage
 
-Date: 2026-10-25. Status: draft for review (revision 4, after three review rounds).
+Date: 2026-10-25. Status: implemented (1.0.0); revision 5 adds the request shape of `llm.call`.
 
 ## Intent
 
@@ -70,7 +70,12 @@ type LlmCall = Base & { kind: 'llm.call';
   inputTokens?: number; outputTokens?: number; cachedInputTokens?: number;
   tokensSource: 'provider' | 'estimate' | 'unknown';
   durationMs: number; firstTokenMs?: number; throttledMs?: number;
-  closedEarly?: boolean };                            // stream consumer stopped before the end
+  closedEarly?: boolean;                              // stream consumer stopped before the end
+  // Request shape (revision 5): sizes of what the request carried, never the content.
+  inputMessages?: number;                           // messages in the request
+  inputChars?: number;                              // characters of all messages: systemChars + userChars + assistantChars + toolChars
+  systemChars?: number; userChars?: number; assistantChars?: number; toolChars?: number;
+  toolDefs?: number; toolDefsChars?: number };      // tool definitions offered, and the length of their JSON
 type EmbeddingCall = Base & { kind: 'embedding.call';
   operationId: string; physicalSeq: number; outerAttempt: number; providerAttempt: number;
   chunkPath: string;                                // e.g. '2/3>1/4': outer chunk 2 of 3, provider chunk 1 of 4
@@ -171,6 +176,11 @@ export interface IUsageControl {
   - `flush` drains without closing.
 - **Content.** No content, and only the listed fields. `x.*` values are numbers, labels and flags, never text taken from content.
 - **Evolution.** The schema only grows: new kinds and optional fields may be added, and readers ignore unknown ones.
+- **Request shape** (`llm.call`).
+  - Measured by a shared core helper `requestShape(messages, tools)` on the messages and tool definitions the provider received for that request, before provider-specific encoding. Every provider passes it into the request's base facts, so each physical request, including each retry, carries it.
+  - Characters are UTF-16 code units (`string.length`). A message counts its `content`; an assistant message also counts the `name` and `arguments` of its `tool_calls`. Messages are attributed by their `role`. `toolDefsChars` is the length of `JSON.stringify` of the tool definitions, cached per tools array so a repeated array is not serialized again.
+  - The fields are present whenever the provider knows its messages, independent of `tokensSource`: the context size is visible for providers that report no tokens.
+  - Sizes only. They count, never copy.
 - **Tokens.**
   - `'provider'` only for counts the provider reported for that physical request, unmodified. Embedding batch totals are never split into per-item estimates.
   - Otherwise `'estimate'`, or `'unknown'`.
@@ -265,7 +275,7 @@ A provider called directly, with no library wrapper above it, finds no `usageOp`
   - `memorySink({ limit })` and `jsonlFileSink({ path, rotateBytes })`;
   - reading and export deduplicate by `id`;
   - `combineSinks(...)` acknowledges only when every sink wrote, and a failing sink fails the batch, which is retried and is idempotent.
-- **Reading:** `read({ from, to, kinds, sessionId? })` and `export('jsonl' | 'csv')` helpers, shared by all sinks.
+- **Reading:** `read({ from, to, kinds, sessionId? })` and `export('jsonl' | 'csv')` helpers, shared by all sinks. The CSV has one column per record field, the request-shape fields included (`inputChars` is shared with `embedding.call`).
 
 **Database sinks**, one package per database, each depending only on the contract and its own driver:
 - **`@mcp-abap-adt/llm-usage-pg`.**
@@ -298,6 +308,7 @@ A provider called directly, with no library wrapper above it, finds no `usageOp`
 - **Sinks.**
   - Memory, JSONL, PGlite, SQLite and, under the existing HANA test gating, HANA: idempotent writes, reads by window, kind and session, CSV columns, retention.
   - SQLite: rejected on an unsupported Node; writes run off the main thread.
+- **Request shape:** `requestShape` counts each role, tool-call arguments and tool definitions exactly; every provider's `llm.call` carries the shape, including on retries and errors.
 - **Completeness:** the test above.
 - **Content:** distinctive prompt, document, argument and result strings never appear in any record.
 - **No recorder given:** behaviour is identical to today.
