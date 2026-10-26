@@ -7,12 +7,14 @@ import {
   type Message,
   requestShape,
   resetQuotaGates,
+  type ShapeMessage,
   type UsageInput,
   WaitAsTold,
 } from '@mcp-abap-adt/llm-agent';
+import type { OrchestrationClient } from '@sap-ai-sdk/orchestration';
 import { SapCoreAIProvider } from '../sap-core-ai-provider.js';
 
-const messages = [{ role: 'user' as const, content: 'private prompt' }];
+const messages: Message[] = [{ role: 'user', content: 'private prompt' }];
 const tokenUsage = { prompt_tokens: 5, completion_tokens: 3, total_tokens: 8 };
 const response = {
   getContent: () => 'private output',
@@ -237,18 +239,25 @@ test('SAP stream AbortError without a signal is aborted', async () => {
 
 test('SAP explicitly disables SDK retry middleware for chat and streams', async () => {
   const { provider } = setup();
-  const configs: unknown[] = [];
+  const configs: Array<
+    NonNullable<Parameters<OrchestrationClient['chatCompletion']>[1]>
+  > = [];
   Object.defineProperty(provider, 'createClient', {
     value: () => ({
-      chatCompletion: async (_request: unknown, config: unknown) => {
+      chatCompletion: async (
+        _request: Parameters<OrchestrationClient['chatCompletion']>[0],
+        config: NonNullable<
+          Parameters<OrchestrationClient['chatCompletion']>[1]
+        >,
+      ) => {
         configs.push(config);
         return response;
       },
       stream: async (
-        _request: unknown,
-        _signal: unknown,
-        _options: unknown,
-        config: unknown,
+        _request: Parameters<OrchestrationClient['stream']>[0],
+        _signal: Parameters<OrchestrationClient['stream']>[1],
+        _options: Parameters<OrchestrationClient['stream']>[2],
+        config: NonNullable<Parameters<OrchestrationClient['stream']>[3]>,
       ) => {
         configs.push(config);
         return { stream: (async function* () {})() };
@@ -259,8 +268,7 @@ test('SAP explicitly disables SDK retry middleware for chat and streams', async 
   for await (const _ of provider.streamChat(messages)) {
   }
   assert.equal(configs.length, 2);
-  for (const config of configs)
-    assert.deepEqual((config as { middleware: unknown[] }).middleware, []);
+  for (const config of configs) assert.deepEqual(config.middleware, []);
 });
 
 test('request shape matches captured payload on success, errors, retries and early close', async (t) => {
@@ -291,7 +299,10 @@ test('request shape matches captured payload on success, errors, retries and ear
           function: { name: 'lookup', parameters: { type: 'object' } },
         },
       ];
-      const payloads: Array<{ template: Message[]; tools?: unknown[] }> = [];
+      const payloads: Array<{
+        template: ShapeMessage[];
+        tools?: typeof tools;
+      }> = [];
       let attempts = 0;
       // Exercise the real SDK, including deployment discovery and body construction.
       const server = createServer(async (request, reply) => {
@@ -302,7 +313,13 @@ test('request shape matches captured payload on success, errors, retries and ear
         }
         let body = '';
         for await (const chunk of request) body += chunk;
-        const payload = JSON.parse(body);
+        const payload: {
+          config: {
+            modules: {
+              prompt_templating: { prompt: (typeof payloads)[number] };
+            };
+          };
+        } = JSON.parse(body);
         payloads.push(payload.config.modules.prompt_templating.prompt);
         if (mode === 'error' || (mode === 'retry' && attempts++ === 0)) {
           reply.writeHead(mode === 'error' ? 400 : 429, {
@@ -353,9 +370,13 @@ test('request shape matches captured payload on success, errors, retries and ear
       const stringifySpy = t.mock.method(
         JSON,
         'stringify',
-        (...args: Parameters<typeof JSON.stringify>) => {
-          if (args[0] === tools) shapeComputations++;
-          return stringify(...args);
+        (
+          value: object | string | number | boolean | null,
+          replacer?: (string | number)[] | null,
+          space?: string | number,
+        ) => {
+          if (value === tools) shapeComputations++;
+          return stringify(value, replacer, space);
         },
       );
       const run = async () => {
@@ -382,7 +403,20 @@ test('request shape matches captured payload on success, errors, retries and ear
         assert.deepEqual(payload.tools, tools);
         const record = records[i];
         if (record.kind !== 'llm.call') throw new Error('wrong kind');
-        for (const key of Object.keys(expected) as Array<keyof typeof expected>)
+        for (const key of [
+          'inputMessages',
+          'systemMessages',
+          'userMessages',
+          'assistantMessages',
+          'toolMessages',
+          'inputChars',
+          'systemChars',
+          'userChars',
+          'assistantChars',
+          'toolChars',
+          'toolDefs',
+          'toolDefsChars',
+        ] satisfies ReadonlyArray<keyof typeof expected>)
           assert.equal(record[key], expected[key], key);
         assert.equal(record.inputMessages, 6);
         assert.equal(record.systemMessages, 2);

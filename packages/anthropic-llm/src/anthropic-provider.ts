@@ -12,7 +12,9 @@ import type {
 } from '@mcp-abap-adt/llm-agent';
 import {
   BaseLLMProvider,
+  type beginLlmRequest,
   requestShape,
+  type ShapeMessage,
   startOperation,
 } from '@mcp-abap-adt/llm-agent';
 import axios, { type AxiosInstance } from 'axios';
@@ -92,9 +94,7 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
       const systemMessage = messages.find((m) => m.role === 'system');
       const conversationMessages = messages.filter((m) => m.role !== 'system');
 
-      const sent = this.formatMessages(
-        conversationMessages,
-      ) as unknown as Message[];
+      const sent = this.formatMessages(conversationMessages);
       const model = options?.model ?? this.model;
       const requestBody: Record<string, unknown> = {
         model,
@@ -172,15 +172,17 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
           opts: options,
           op: startOperation(options),
           bound: this.config.usage,
-          get base() {
+          get base(): Parameters<typeof beginLlmRequest>[2] & {
+            stream: false;
+          } {
             shape ??= requestShape(
               [
                 ...(systemMessage
                   ? [
                       {
-                        role: 'system' as const,
+                        role: 'system',
                         content: systemMessage.content,
-                      },
+                      } satisfies ShapeMessage,
                     ]
                   : []),
                 ...sent,
@@ -191,8 +193,8 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
               ...shape,
               provider: 'anthropic',
               model,
-              stream: false as const,
-              granularity: 'request' as const,
+              stream: false,
+              granularity: 'request',
               retriesVisible: true,
             };
           },
@@ -222,9 +224,7 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
     const systemMessage = messages.find((m) => m.role === 'system');
     const conversationMessages = messages.filter((m) => m.role !== 'system');
 
-    const sent = this.formatMessages(
-      conversationMessages,
-    ) as unknown as Message[];
+    const sent = this.formatMessages(conversationMessages);
     const model = options?.model ?? this.model;
     const requestBody: Record<string, unknown> = {
       model,
@@ -286,15 +286,15 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
         opts: options,
         op: startOperation(options),
         bound: this.config.usage,
-        get base() {
+        get base(): Parameters<typeof beginLlmRequest>[2] & { stream: true } {
           shape ??= requestShape(
             [
               ...(systemMessage
                 ? [
                     {
-                      role: 'system' as const,
+                      role: 'system',
                       content: systemMessage.content,
-                    },
+                    } satisfies ShapeMessage,
                   ]
                 : []),
               ...sent,
@@ -305,8 +305,8 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
             ...shape,
             provider: 'anthropic',
             model,
-            stream: true as const,
-            granularity: 'request' as const,
+            stream: true,
+            granularity: 'request',
             retriesVisible: true,
           };
         },
@@ -510,7 +510,9 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
   /**
    * Format messages for Anthropic API
    */
-  private formatMessages(messages: Message[]): Array<Record<string, unknown>> {
+  private formatMessages(
+    messages: Message[],
+  ): Array<{ role: 'user' | 'assistant'; content: string | null }> {
     return messages.map((msg) => ({
       role: msg.role === 'assistant' ? 'assistant' : 'user',
       content: msg.content,

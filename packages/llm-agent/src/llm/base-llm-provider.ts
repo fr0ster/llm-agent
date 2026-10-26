@@ -379,13 +379,17 @@ function fingerprint(secret: string | undefined): string {
 /** Status of an axios-shaped error, or undefined when it is shaped otherwise. */
 function httpStatusOf(error: unknown): number | undefined {
   for (const current of errorCauseChain(error)) {
-    const e = current as {
-      response?: { status?: unknown };
-      status?: unknown;
-      statusCode?: unknown;
-    };
+    const response = 'response' in current ? current.response : undefined;
+    const status =
+      response && typeof response === 'object' && 'status' in response
+        ? response.status
+        : undefined;
     // axios keeps it under response; several SDKs hoist it onto the error itself.
-    for (const candidate of [e?.response?.status, e?.status, e?.statusCode]) {
+    for (const candidate of [
+      status,
+      'status' in current ? current.status : undefined,
+      'statusCode' in current ? current.statusCode : undefined,
+    ]) {
       if (typeof candidate === 'number') return candidate;
     }
   }
@@ -395,17 +399,20 @@ function httpStatusOf(error: unknown): number | undefined {
 /** One response header, case-insensitively, from an axios-shaped error. */
 function headerOf(error: unknown, name: string): string | undefined {
   for (const current of errorCauseChain(error)) {
-    const headers = (current as { response?: { headers?: unknown } })?.response
-      ?.headers;
-    if (!headers || typeof headers !== 'object') continue;
+    const response = 'response' in current ? current.response : undefined;
+    const headers =
+      response && typeof response === 'object' && 'headers' in response
+        ? response.headers
+        : undefined;
+    if (!isErrorProperties(headers)) continue;
     // AxiosHeaders exposes a get(); a plain object does not.
-    const get = (headers as { get?: (n: string) => unknown }).get;
+    const get = 'get' in headers ? headers.get : undefined;
     if (typeof get === 'function') {
-      const v = get.call(headers, name);
+      const v: unknown = get.call(headers, name);
       if (v !== undefined && v !== null) return String(v);
       continue;
     }
-    for (const [k, v] of Object.entries(headers as Record<string, unknown>)) {
+    for (const [k, v] of Object.entries(headers)) {
       if (k.toLowerCase() === name && v !== undefined && v !== null)
         return String(v);
     }
@@ -421,6 +428,11 @@ function* errorCauseChain(error: unknown): Generator<object> {
     if (!current || typeof current !== 'object' || seen.has(current)) return;
     seen.add(current);
     yield current;
-    current = (current as { cause?: unknown }).cause;
+    current = 'cause' in current ? current.cause : undefined;
   }
+}
+
+/** Narrow arbitrary thrown-error properties before reading response headers. */
+function isErrorProperties(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object';
 }

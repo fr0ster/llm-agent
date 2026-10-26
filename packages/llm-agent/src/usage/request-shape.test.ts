@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import type { Message } from '../types.js';
 import { requestShape } from './request-shape.js';
 
 test('counts each role and totals using UTF-16 lengths', () => {
@@ -29,7 +30,7 @@ test('counts each role and totals using UTF-16 lengths', () => {
 });
 
 test('null assistant content counts only tool-call names and arguments', () => {
-  const shape = requestShape([
+  const messages: Message[] = [
     {
       role: 'assistant',
       content: null,
@@ -46,7 +47,8 @@ test('null assistant content counts only tool-call names and arguments', () => {
         },
       ],
     },
-  ]);
+  ];
+  const shape = requestShape(messages);
   assert.equal(shape.assistantMessages, 1);
   assert.equal(shape.assistantChars, 15);
   assert.equal(shape.inputChars, 15);

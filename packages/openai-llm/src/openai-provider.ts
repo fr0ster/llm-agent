@@ -12,6 +12,7 @@ import type {
 } from '@mcp-abap-adt/llm-agent';
 import {
   BaseLLMProvider,
+  type beginLlmRequest,
   type LlmRequestFacts,
   type LlmRequestHandle,
   requestShape,
@@ -161,7 +162,7 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
       const temperature = options?.temperature ?? this.config.temperature;
       const maxTokens = options?.maxTokens ?? this.config.maxTokens;
 
-      const sent = this.formatMessages(messages) as unknown as Message[];
+      const sent = this.formatMessages(messages);
       let headers: Record<string, string>;
       let shape: ReturnType<typeof requestShape> | undefined;
       const response = await this.withThrottleRetry(
@@ -212,14 +213,16 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
           opts: options,
           op: startOperation(options),
           bound: this.config.usage,
-          get base() {
+          get base(): Parameters<typeof beginLlmRequest>[2] & {
+            stream: false;
+          } {
             shape ??= requestShape(sent, tools);
             return {
               ...shape,
               provider: providerName,
               model,
-              stream: false as const,
-              granularity: 'request' as const,
+              stream: false,
+              granularity: 'request',
               retriesVisible: true,
             };
           },
@@ -260,7 +263,7 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
       const temperature = options?.temperature ?? this.config.temperature;
       const maxTokens = options?.maxTokens ?? this.config.maxTokens;
 
-      const sent = this.formatMessages(messages) as unknown as Message[];
+      const sent = this.formatMessages(messages);
       let headers: Record<string, string>;
       let shape: ReturnType<typeof requestShape> | undefined;
       const opened = await this.withThrottleRetry(
@@ -295,14 +298,14 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
           opts: options,
           op: startOperation(options),
           bound: this.config.usage,
-          get base() {
+          get base(): Parameters<typeof beginLlmRequest>[2] & { stream: true } {
             shape ??= requestShape(sent, tools);
             return {
               ...shape,
               provider: providerName,
               model,
-              stream: true as const,
-              granularity: 'request' as const,
+              stream: true,
+              granularity: 'request',
               retriesVisible: true,
             };
           },
@@ -447,17 +450,15 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
   /**
    * Format messages for OpenAI API with strict protocol enforcement.
    */
-  protected formatMessages(
-    messages: Message[],
-  ): Array<Record<string, unknown>> {
-    const formatted: Array<Record<string, unknown>> = [];
+  protected formatMessages(messages: Message[]): OpenAIWireMessage[] {
+    const formatted: OpenAIWireMessage[] = [];
 
     for (const msg of messages) {
       if (msg.role === 'tool' && !msg.tool_call_id) {
         continue;
       }
 
-      const entry: Record<string, unknown> = {
+      const entry: OpenAIWireMessage = {
         role: msg.role,
         content: msg.content ?? '',
       };
@@ -523,4 +524,11 @@ function isAbortError(error: unknown): boolean {
     ('name' in error && error.name === 'AbortError') ||
     ('code' in error && error.code === 'ERR_CANCELED')
   );
+}
+
+interface OpenAIWireMessage {
+  role: Message['role'];
+  content: string | null;
+  tool_calls?: Message['tool_calls'];
+  tool_call_id?: string;
 }

@@ -1,5 +1,11 @@
 import type { UsageRecord } from '../interfaces/usage.js';
-import type { Message } from '../types.js';
+export interface ShapeMessage {
+  role: 'system' | 'user' | 'assistant' | 'tool';
+  content?: string | null;
+  tool_calls?: ReadonlyArray<{
+    function: { name: string; arguments: string };
+  }>;
+}
 
 export type RequestShape = Pick<
   Extract<UsageRecord, { kind: 'llm.call' }>,
@@ -18,9 +24,9 @@ export type RequestShape = Pick<
 >;
 
 /** Measure UTF-16 lengths only, without retaining message or tool content. */
-export function requestShape(
-  messages: readonly Message[],
-  tools?: readonly unknown[],
+export function requestShape<TTool>(
+  messages: readonly ShapeMessage[],
+  tools?: readonly TTool[],
 ): RequestShape {
   const shape = {
     inputMessages: 0,

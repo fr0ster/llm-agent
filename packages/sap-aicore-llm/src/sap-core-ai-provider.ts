@@ -22,9 +22,11 @@ import type {
 } from '@mcp-abap-adt/llm-agent';
 import {
   BaseLLMProvider,
+  type beginLlmRequest,
   type LlmRequestFacts,
   type LlmRequestHandle,
   requestShape,
+  type ShapeMessage,
   startOperation,
 } from '@mcp-abap-adt/llm-agent';
 import {
@@ -331,14 +333,16 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
           opts: options,
           op: startOperation(options),
           bound: this.config.usage,
-          get base() {
-            shape ??= requestShape(formatted as unknown as Message[], tools);
+          get base(): Parameters<typeof beginLlmRequest>[2] & {
+            stream: false;
+          } {
+            shape ??= requestShape(formatted.map(shapeMessage), tools);
             return {
               ...shape,
               provider: 'SAP AI Core',
               model,
-              stream: false as const,
-              granularity: 'request' as const,
+              stream: false,
+              granularity: 'request',
               retriesVisible: true,
             };
           },
@@ -443,14 +447,14 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
           opts: options,
           op: startOperation(options),
           bound: this.config.usage,
-          get base() {
-            shape ??= requestShape(formatted as unknown as Message[], tools);
+          get base(): Parameters<typeof beginLlmRequest>[2] & { stream: true } {
+            shape ??= requestShape(formatted.map(shapeMessage), tools);
             return {
               ...shape,
               provider: 'SAP AI Core',
               model,
-              stream: true as const,
-              granularity: 'request' as const,
+              stream: true,
+              granularity: 'request',
               retriesVisible: true,
             };
           },
@@ -733,8 +737,10 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
   /**
    * Format messages for the SAP AI SDK (OpenAI-compatible format).
    */
-  private formatMessages(messages: Message[]): ChatMessage[] {
-    return messages.map((msg): ChatMessage => {
+  private formatMessages(
+    messages: Message[],
+  ): Array<Exclude<ChatMessage, { role: 'developer' }>> {
+    return messages.map((msg): Exclude<ChatMessage, { role: 'developer' }> => {
       if (
         msg.role === 'assistant' &&
         msg.tool_calls &&
@@ -805,4 +811,14 @@ function isAbortError(error: unknown): boolean {
     ('name' in error && error.name === 'AbortError') ||
     ('code' in error && error.code === 'ERR_CANCELED')
   );
+}
+
+function shapeMessage(
+  message: Exclude<ChatMessage, { role: 'developer' }>,
+): ShapeMessage {
+  return {
+    role: message.role,
+    content: typeof message.content === 'string' ? message.content : undefined,
+    ...('tool_calls' in message ? { tool_calls: message.tool_calls } : {}),
+  };
 }
