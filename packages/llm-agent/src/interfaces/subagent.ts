@@ -1,7 +1,7 @@
 import type { Message } from '../types.js';
 import type { EpicFailTrace } from './coordinator.js';
 import type { OnPartial } from './streaming.js';
-import type { LlmTool, LlmToolCall, LlmUsage } from './types.js';
+import type { LlmTool, LlmToolCall, TokenUsage } from './types.js';
 import type { IUsageRecorder } from './usage.js';
 
 /**
@@ -71,7 +71,7 @@ export interface ISubAgentResult {
 
   output: string;
   toolCalls?: LlmToolCall[];
-  usage?: LlmUsage;
+  usage?: TokenUsage;
   metadata?: Record<string, unknown>;
   /**
    * When set to 'epicfail', the parent coordinator must not retry/replan.

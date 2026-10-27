@@ -17,7 +17,7 @@ import type {
   Result,
   TimingEntry,
 } from '@mcp-abap-adt/llm-agent';
-import { OrchestratorError } from '@mcp-abap-adt/llm-agent';
+import { OrchestratorError, scopedUsage } from '@mcp-abap-adt/llm-agent';
 import type { IMetrics } from '../../metrics/types.js';
 import type { PendingToolResultsRegistry } from '../../policy/pending-tool-results-registry.js';
 import {
@@ -272,7 +272,7 @@ export async function* executeToolBatchWithHeartbeat(
     const res = cachedValue
       ? (() => {
           try {
-            options?.usage?.with({ role: 'tool-loop' }).record({
+            options?.usage?.with({ component: 'tool-loop' }).record({
               kind: 'tool.call',
               context: {},
               tool: tc.name,
@@ -293,7 +293,7 @@ export async function* executeToolBatchWithHeartbeat(
       : await (async () => {
           const r = await client.callTool(tc.name, tc.arguments, {
             ...options,
-            usage: options?.usage?.with({ role: 'tool-loop' }),
+            usage: scopedUsage(options?.usage, { component: 'tool-loop' }),
           });
           if (r.ok) toolCache.set(tc.name, tc.arguments, r.value);
           return r;

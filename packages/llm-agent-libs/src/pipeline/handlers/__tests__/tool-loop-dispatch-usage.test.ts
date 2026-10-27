@@ -19,7 +19,8 @@ for (const isError of [false, true]) {
         records.push(r);
       },
       with: (context) => {
-        assert.equal(context.role, 'tool-loop');
+        assert.equal(context.role, undefined);
+        assert.equal(context.component, 'tool-loop');
         return usage;
       },
     };

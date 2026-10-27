@@ -243,6 +243,10 @@ export interface LlmUsage {
   totalTokens: number;
 }
 
+export interface TokenUsage extends LlmUsage {
+  models?: Record<string, ModelUsageEntry>;
+}
+
 export interface ModelUsageEntry {
   promptTokens: number;
   completionTokens: number;

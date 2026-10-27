@@ -16,7 +16,7 @@ export class SmartAgentSubAgent implements ISubAgent {
 
   constructor(
     public readonly name: string,
-    private readonly agent: SmartAgent,
+    private readonly agent: Pick<SmartAgent, 'process' | 'maxToolCalls'>,
     opts?: { description?: string },
   ) {
     this.description = opts?.description;
@@ -68,6 +68,7 @@ export class SmartAgentSubAgent implements ISubAgent {
           promptTokens: usage.promptTokens,
           completionTokens: usage.completionTokens,
           totalTokens: usage.totalTokens,
+          ...(usage.models ? { models: usage.models } : {}),
         }
       : undefined;
 

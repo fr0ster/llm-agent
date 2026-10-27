@@ -8,6 +8,7 @@ import type {
   OrchestratorError,
   Result,
 } from '@mcp-abap-adt/llm-agent';
+import { scopedUsage } from '@mcp-abap-adt/llm-agent';
 import { summaryToUsage } from '../../logger/session-request-logger.js';
 
 export async function* runPassThrough(
@@ -26,7 +27,7 @@ export async function* runPassThrough(
   );
   const stream = llm.streamChat(messages, externalTools, {
     ...opts,
-    usage: opts?.usage?.with({ role: 'tool-loop' }),
+    usage: scopedUsage(opts?.usage, { component: 'tool-loop' }),
   });
   let passContent = '';
   const passToolCalls: unknown[] = [];

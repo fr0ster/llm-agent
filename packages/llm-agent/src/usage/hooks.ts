@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { CallOptions } from '../interfaces/types.js';
 import type {
   IUsageRecorder,
+  UsageContext,
   UsageInput,
   UsageOperation,
 } from '../interfaces/usage.js';
@@ -12,6 +13,18 @@ export const noopUsageRecorder: IUsageRecorder = {
     return noopUsageRecorder;
   },
 };
+/** Derive a scoped recorder; a failing recorder yields `undefined` instead of throwing. */
+export function scopedUsage(
+  usage: IUsageRecorder | undefined,
+  context: UsageContext,
+): IUsageRecorder | undefined {
+  try {
+    return usage?.with(context);
+  } catch {
+    // Recording cannot affect execution.
+    return undefined;
+  }
+}
 export function resolveRecorder(
   opts?: { usage?: IUsageRecorder },
   bound?: IUsageRecorder,

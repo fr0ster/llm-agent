@@ -156,7 +156,7 @@ test('pipeline translator, summarizer and pass-through forward recorder and oper
     seen.map(
       (opts) => (opts.usage as ReturnType<typeof recorder>).context.role,
     ),
-    ['translate', 'helper', 'tool-loop'],
+    ['translate', 'helper', undefined],
   );
   for (const opts of seen) assert.equal(opts.usageOp, usageOp);
 });
@@ -189,7 +189,7 @@ test('mixed tool-call handler forwards task recorder and operation to MCP', asyn
   assert.ok(captured);
   assert.deepEqual((captured.usage as ReturnType<typeof recorder>).context, {
     taskId: 'task',
-    role: 'tool-loop',
+    component: 'tool-loop',
   });
 });
 
