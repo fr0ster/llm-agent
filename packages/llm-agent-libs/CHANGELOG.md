@@ -1,5 +1,11 @@
 # @mcp-abap-adt/llm-agent-libs
 
+## 30.12.0
+
+### Minor Changes
+
+- def5507: Report dialogue planner and worker token usage while preserving request context and caller roles.
+
 ## 30.11.0
 
 ### Minor Changes
