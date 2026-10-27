@@ -38,6 +38,7 @@ import {
   externalToolCallId,
   getStreamToolCallName,
   mergeOfferedTools,
+  scopedUsage,
   toolNameFromRecord,
   toToolCallDelta,
 } from '@mcp-abap-adt/llm-agent';
@@ -497,7 +498,7 @@ export class ToolLoopHandler implements IStageHandler {
         currentTools,
         {
           ...ctx.options,
-          usage: ctx.options?.usage?.with({ component: 'tool-loop' }),
+          usage: scopedUsage(ctx.options?.usage, { component: 'tool-loop' }),
         },
       );
 

@@ -119,3 +119,70 @@ for (const role of ['planner', undefined]) {
     }
   });
 }
+
+test('a recorder whose with() throws cannot stop tool-loop LLM or tool calls', async () => {
+  const usage: IUsageRecorder = {
+    record() {},
+    with() {
+      throw new Error('recorder unavailable');
+    },
+  };
+  let streamed = 0;
+  let called = 0;
+  const llm: ILlm = {
+    async chat() {
+      return { ok: true, value: { content: 'ok', finishReason: 'stop' } };
+    },
+    async *streamChat() {
+      streamed++;
+      yield { ok: true, value: { content: 'ok' } };
+    },
+  };
+  for await (const chunk of runPassThrough(
+    llm,
+    new SessionRequestLogger(),
+    [],
+    [],
+    { usage },
+  ))
+    assert.ok(chunk.ok);
+  const client: IMcpClient = {
+    async listTools() {
+      return { ok: true, value: [] };
+    },
+    async callTool() {
+      called++;
+      return { ok: true, value: { content: 'ok' } };
+    },
+  };
+  const call = { id: 'c', name: 'tool', arguments: {} };
+  const registry = new PendingToolResultsRegistry();
+  fireInternalToolsAsync('', [call], registry, 's', {
+    toolClientMap: new Map([['tool', client]]),
+    toolCache: new ToolCache(),
+    metrics: new NoopMetrics(),
+    options: { usage },
+  });
+  await registry.consume('s');
+  const tracer = new NoopTracer();
+  const run = executeToolBatchWithHeartbeat({
+    batch: [call],
+    toolClientMap: new Map([['tool', client]]),
+    toolCache: new ToolCache(),
+    tracer,
+    metrics: new NoopMetrics(),
+    parentSpan: tracer.startSpan('test'),
+    toolAvailabilityRegistry: new ToolAvailabilityRegistry(),
+    sessionId: 's',
+    externalToolNames: new Set(),
+    currentTools: [],
+    toolCallCount: 0,
+    timingLog: [],
+    heartbeatMs: null,
+    options: { usage },
+  });
+  let next = await run.next();
+  while (!next.done) next = await run.next();
+  assert.equal(streamed, 1);
+  assert.equal(called, 2);
+});

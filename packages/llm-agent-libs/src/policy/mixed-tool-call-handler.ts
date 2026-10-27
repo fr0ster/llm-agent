@@ -4,6 +4,7 @@ import type {
   IToolCache,
   Message,
 } from '@mcp-abap-adt/llm-agent';
+import { scopedUsage } from '@mcp-abap-adt/llm-agent';
 import type { IMetrics } from '../metrics/types.js';
 import type {
   PendingToolResult,
@@ -56,7 +57,7 @@ export function fireInternalToolsAsync(
         }
         const res = await client.callTool(tc.name, tc.arguments, {
           ...ctx.options,
-          usage: ctx.options?.usage?.with({ component: 'tool-loop' }),
+          usage: scopedUsage(ctx.options?.usage, { component: 'tool-loop' }),
         });
         const text = !res.ok
           ? res.error.message

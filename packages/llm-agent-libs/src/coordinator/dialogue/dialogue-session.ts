@@ -13,11 +13,11 @@ import type {
   SignalName,
   StreamChunk,
   TaskEvent,
-  UsageContext,
 } from '@mcp-abap-adt/llm-agent';
 import {
   addTokenUsage,
   type PlannerMessageUsage,
+  scopedUsage,
   type TokenUsage,
 } from '@mcp-abap-adt/llm-agent';
 import { runInPlannerScope } from './planner-scope.js';
@@ -285,9 +285,9 @@ export class DialogueSession {
     const origin = consumed
       .map((event) => this.board.originRecorder(event.task.id))
       .find((recorder) => recorder !== undefined);
-    this.turnUsage = this.scopeUsage(
-      { turnId: randomUUID() },
+    this.turnUsage = scopedUsage(
       origin ?? user?.opts.usage ?? this.opts.usage ?? this.opts.board.usage,
+      { turnId: randomUUID() },
     );
     if (user && this.plan) {
       if (this.plan.status === 'waiting_user' && this.plan.question?.trim())
@@ -344,7 +344,7 @@ export class DialogueSession {
             this.opts.planner.process(messages, {
               ...user?.opts,
               sessionId: this.opts.id,
-              usage: this.scopeUsage({ role: 'planner' }, this.turnUsage),
+              usage: scopedUsage(this.turnUsage, { role: 'planner' }),
               onPartial: user?.opts.onPartial
                 ? (chunk) => {
                     if (chunk.kind === 'content') contentPartials.push(chunk);
@@ -502,17 +502,6 @@ export class DialogueSession {
     }
   }
 
-  private scopeUsage(
-    context: UsageContext,
-    usage?: IUsageRecorder,
-  ): IUsageRecorder | undefined {
-    try {
-      return usage?.with(context);
-    } catch {
-      // Recording cannot affect dialogue execution.
-      return undefined;
-    }
-  }
   private now(): number {
     return (this.opts.now ?? Date.now)();
   }
