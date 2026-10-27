@@ -404,12 +404,15 @@ test('a user turn without token usage has no usage object', async () => {
 
 test('corrective planner calls sum usage within a user turn', async () => {
   let calls = 0;
+  let now = 100;
   const session = await DialogueSession.open({
     id: 's',
+    now: () => now,
     board: { workers: new Map() },
     planner: {
       async process() {
         calls++;
+        now += calls === 1 ? 10 : 5;
         const scope = currentPlannerScope();
         assert.ok(scope);
         scope.setPlan({
@@ -424,6 +427,7 @@ test('corrective planner calls sum usage within a user turn', async () => {
   });
   const reply = await session.send('go');
   assert.equal(calls, 2);
+  assert.equal(reply.usage?.plannerMs, 15);
   assert.deepEqual(reply.usage?.planner, {
     promptTokens: 4,
     completionTokens: 6,
@@ -438,6 +442,54 @@ test('corrective planner calls sum usage within a user turn', async () => {
     },
   });
   await session.close();
+});
+
+test('queued user turns exclude queue wait from planner timing', async () => {
+  let now = 100;
+  let calls = 0;
+  let releaseFirst: () => void = () => {};
+  const blocked = new Promise<void>((resolve) => {
+    releaseFirst = resolve;
+  });
+  let notifyStarted: () => void = () => {};
+  const started = new Promise<void>((resolve) => {
+    notifyStarted = resolve;
+  });
+  const session = await DialogueSession.open({
+    id: 'queued-timing',
+    now: () => now,
+    board: { workers: new Map() },
+    planner: {
+      async process() {
+        calls++;
+        if (calls === 1) {
+          now += 10;
+          notifyStarted();
+          await blocked;
+        } else {
+          now += 7;
+        }
+        return { ok: true, value: { content: 'ok', usage: tokens } };
+      },
+    },
+  });
+  try {
+    const first = session.send('a');
+    await started;
+    const second = session.send('b');
+    assert.equal(calls, 1);
+    now += 100;
+    releaseFirst();
+    const [firstReply, secondReply] = await Promise.all([first, second]);
+    assert.equal(calls, 2);
+    assert.equal(firstReply.createdAt, 210);
+    assert.equal(firstReply.usage?.plannerMs, 110);
+    assert.equal(secondReply.createdAt, 217);
+    assert.equal(secondReply.usage?.plannerMs, 7);
+  } finally {
+    releaseFirst();
+    await session.close();
+  }
 });
 
 test('a corrective user turn reports the task events it consumes exactly once', async () => {
