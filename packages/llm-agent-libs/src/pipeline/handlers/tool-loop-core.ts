@@ -267,7 +267,10 @@ export async function* executeToolBatchWithHeartbeat(
       parent: parentSpan,
       attributes: { 'tool.name': tc.name },
     });
-    const cachedValue = toolCache.get(tc.name, tc.arguments);
+    const cacheable = client.cacheable !== false;
+    const cachedValue = cacheable
+      ? toolCache.get(tc.name, tc.arguments)
+      : undefined;
     const wasCached = !!cachedValue;
     const res = cachedValue
       ? (() => {
@@ -295,7 +298,7 @@ export async function* executeToolBatchWithHeartbeat(
             ...options,
             usage: scopedUsage(options?.usage, { component: 'tool-loop' }),
           });
-          if (r.ok) toolCache.set(tc.name, tc.arguments, r.value);
+          if (r.ok && cacheable) toolCache.set(tc.name, tc.arguments, r.value);
           return r;
         })();
     const text = !res.ok

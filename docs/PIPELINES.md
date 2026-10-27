@@ -360,6 +360,34 @@ The dialogue planner is a set of code-level building blocks in
 `@mcp-abap-adt/llm-agent-libs`, beside the adaptive coordinator. It is not a YAML
 pipeline. The consumer supplies the planner's `ILlm` and worker `ISubAgent`s.
 
+### Wait mode
+
+`DialogueSession.open` accepts non-negative integer `waitTickMs` (default 30,000)
+and `longTaskMs` (default 300,000); zero disables each independently. A second
+active-task status read (`get_task` or `list_tasks`) in one turn, with no outcome
+between reads, returns its tool result and ends the planner loop through a
+turn-owned cooperative `stopSignal`. The caller's `stopSignal` is combined with
+it; hard cancellation via `signal` is preserved. No further model call or
+correction runs. The reply retains planner text or lists active task ids/workers
+in a waiting note. Finished-task reads never count. The actions record includes
+`wait (turn ended: tasks running)`.
+
+While tasks are queued or running, ticks emit catalog v1 `dialogue.wait`:
+`{ tasks: Array<{ id; worker; goal; state: 'queued' | 'running'; elapsedMs;
+toolCalls?; maxToolCalls? }> }`. Elapsed time uses `startedAt`, else `createdAt`.
+Ticks make no planner calls. Running tasks generate a `long_running` event at
+`longTaskMs` and again after each further interval. Its task-event note asks the
+planner to check and keep waiting, stop, or re-delegate, and includes elapsed
+time and known tool counts. These events carry no usage, do not change plans,
+and do not contribute to `PlannerMessage.usage.tasks`; `NO_MESSAGE` is allowed.
+Events for tasks that settled before consumption are dropped.
+
+Timers stop on settlement and close, never keep the process alive, and are not
+persisted. Restore interrupts active tasks, so it starts no wait clock for them.
+Tests can inject `now` and `scheduleTimer(callback, delayMs)`, which returns a
+cancellation function. Signal failures are caught and logged without affecting work.
+`DIALOGUE_SIGNALS_VERSION` remains 1 because this catalog addition is additive.
+
 ### Parts and rules
 
 - **Cooperative stop:** optional `stopSignal` reaches the tool loop through agent
@@ -402,8 +430,8 @@ pipeline. The consumer supplies the planner's `ILlm` and worker `ISubAgent`s.
 - **`DialogueSession` + `IDialogueStateStore` / `InMemoryDialogueStateStore`:**
   open one actor per user session. It serializes planner turns; `send()` resolves
   with the reply to that user's own queued message. Queued user turns run FIFO
-  before the next event turn. Only outcomes (`done`, `failed`, `stopped`) wake the
-  planner; `started` does not. Buffered outcomes coalesce in arrival order into
+  before the next event turn. Outcomes (`done`, `failed`, `stopped`) and non-terminal `long_running` events
+  wake the planner; `started` does not. Buffered outcomes coalesce in arrival order into
   one user-role `[task events]` note listing task id, worker, kind, goal and error
   or output. Events arriving during a turn wait for a later event turn.
   An event reply whose trimmed text equals `NO_MESSAGE` stays in conversation

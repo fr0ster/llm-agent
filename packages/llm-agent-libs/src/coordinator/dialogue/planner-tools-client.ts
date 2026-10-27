@@ -60,6 +60,8 @@ function selectHistory(
   return structuredClone(reply ? [messages[index], reply] : [messages[index]]);
 }
 export class PlannerToolsClient implements IMcpClient {
+  readonly cacheable = false;
+
   async listTools(): Promise<Result<McpTool[], McpError>> {
     const plan = currentPlannerScope()?.getPlan();
     const workers = currentPlannerScope()?.board.workerNames();
@@ -228,9 +230,19 @@ Verify exactly ${step.items.length} items, each with a stored/processed result: 
           const id = requiredString(args, 'task_id');
           const task = scope.board.get(id);
           if (!task) throw new Error(`unknown task ${id}`);
+          if (task.state === 'queued' || task.state === 'running')
+            scope.statusRead?.();
           return textResult(task);
         }
         case 'list_tasks':
+          if (
+            scope.board
+              .list()
+              .some(
+                (task) => task.state === 'queued' || task.state === 'running',
+              )
+          )
+            scope.statusRead?.();
           return textResult(
             scope.board.list().map(({ id, worker, goal, state }) => ({
               id,

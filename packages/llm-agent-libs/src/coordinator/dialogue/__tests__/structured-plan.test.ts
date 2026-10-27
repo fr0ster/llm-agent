@@ -36,7 +36,7 @@ function outcome(
       id,
       worker: 'w',
       goal: 'work',
-      state: kind === 'started' ? 'running' : kind,
+      state: kind === 'started' || kind === 'long_running' ? 'running' : kind,
       createdAt: 0,
       output,
     },

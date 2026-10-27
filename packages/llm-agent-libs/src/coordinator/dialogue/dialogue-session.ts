@@ -37,6 +37,7 @@ export interface PlannerTurnOptions {
   sessionId?: string;
   onPartial?: OnPartial;
   signal?: AbortSignal;
+  stopSignal?: AbortSignal;
   trace?: { traceId: string };
 }
 export interface PlannerAgent {
@@ -51,6 +52,12 @@ export interface DialogueSessionOptions {
   id: string;
   /** Maximum corrective turns; zero disables end-of-turn checks. Default: 2. */
   maxCorrections?: number;
+  /** Wait status interval; zero disables signals. Default: 30,000 ms. */
+  waitTickMs?: number;
+  /** Running-task wake interval; zero disables wakes. Default: 300,000 ms. */
+  longTaskMs?: number;
+  /** Schedule once and return cancellation. Defaults to an unref'ed timeout. */
+  scheduleTimer?: (callback: () => void, delayMs: number) => () => void;
   maxItemsPerStep?: number;
   planner: PlannerAgent;
   board: Omit<
@@ -88,6 +95,7 @@ export class DialogueSession {
     }
   }
   private changed(): void {
+    this.updateWaitClock();
     const activity = {
       turnActive: this.turnActive,
       queuedInputs: this.users.length + this.events.length,
@@ -126,8 +134,123 @@ export class DialogueSession {
   private closePromise?: Promise<void>;
   private savedAt = 0;
   private persistence: Promise<void> = Promise.resolve();
+  private cancelTimer?: () => void;
+  private nextTickAt?: number;
+  private readonly longNotifiedAt = new Map<string, number>();
+  private outcomeVersion = 0;
+
+  private updateWaitClock(): void {
+    this.cancelTimer?.();
+    this.cancelTimer = undefined;
+    const tasks = this.board
+      .list()
+      .filter((task) => task.state === 'queued' || task.state === 'running');
+    if (this.closing || !tasks.length) {
+      this.nextTickAt = undefined;
+      return;
+    }
+    const now = this.now();
+    const tickMs = this.opts.waitTickMs ?? 30_000;
+    const longMs = this.opts.longTaskMs ?? 300_000;
+    const deadlines: number[] = [];
+    if (tickMs > 0) {
+      this.nextTickAt ??= now + tickMs;
+      deadlines.push(this.nextTickAt);
+    }
+    if (longMs > 0)
+      for (const task of tasks)
+        if (task.state === 'running')
+          deadlines.push(
+            (this.longNotifiedAt.get(task.id) ??
+              task.startedAt ??
+              task.createdAt) + longMs,
+          );
+    if (!deadlines.length) return;
+    const callback = () => {
+      this.cancelTimer = undefined;
+      this.waitTick();
+    };
+    const delay = Math.min(
+      2_147_483_647,
+      Math.max(0, Math.min(...deadlines) - now),
+    );
+    if (this.opts.scheduleTimer)
+      this.cancelTimer = this.opts.scheduleTimer(callback, delay);
+    else {
+      const timer = setTimeout(callback, delay);
+      timer.unref();
+      this.cancelTimer = () => clearTimeout(timer);
+    }
+  }
+  private waitTick(): void {
+    if (this.closing) return;
+    const now = this.now();
+    const tasks: DialogueSignals['dialogue.wait']['tasks'] = this.board
+      .list()
+      .flatMap((task) =>
+        task.state === 'queued' || task.state === 'running'
+          ? [
+              {
+                id: task.id,
+                worker: task.worker,
+                goal: task.goal,
+                state: task.state,
+                elapsedMs: Math.max(
+                  0,
+                  now - (task.startedAt ?? task.createdAt),
+                ),
+                ...(task.toolCalls === undefined
+                  ? {}
+                  : { toolCalls: task.toolCalls }),
+                ...(task.maxToolCalls === undefined
+                  ? {}
+                  : { maxToolCalls: task.maxToolCalls }),
+              },
+            ]
+          : [],
+      );
+    if (
+      tasks.length &&
+      this.nextTickAt !== undefined &&
+      now >= this.nextTickAt
+    ) {
+      this.nextTickAt = now + (this.opts.waitTickMs ?? 30_000);
+      this.emit('dialogue.wait', { tasks });
+    }
+    const longMs = this.opts.longTaskMs ?? 300_000;
+    if (longMs > 0)
+      for (const task of this.board.list()) {
+        if (
+          task.state !== 'running' ||
+          now -
+            (this.longNotifiedAt.get(task.id) ??
+              task.startedAt ??
+              task.createdAt) <
+            longMs
+        )
+          continue;
+        this.longNotifiedAt.set(task.id, now);
+        delete task.usage;
+        this.events.push({ kind: 'long_running', task });
+      }
+    this.changed();
+    if (this.events.length) this.schedule();
+  }
+  private liveEvents(events: TaskEvent[]): TaskEvent[] {
+    return events.filter(
+      (event) =>
+        event.kind !== 'long_running' ||
+        this.board.get(event.task.id)?.state === 'running',
+    );
+  }
 
   private constructor(private readonly opts: DialogueSessionOptions) {
+    for (const [name, value] of [
+      ['waitTickMs', opts.waitTickMs ?? 30_000],
+      ['longTaskMs', opts.longTaskMs ?? 300_000],
+    ] as const)
+      if (!Number.isInteger(value) || value < 0)
+        throw new Error(`${name} must be a non-negative integer`);
     if (
       !Number.isInteger(opts.maxCorrections ?? 2) ||
       (opts.maxCorrections ?? 2) < 0
@@ -155,6 +278,7 @@ export class DialogueSession {
         this.changed();
         // Only outcomes wake the planner; a start is visible via list_tasks.
         if (this.closing || event.kind === 'started') return;
+        if (event.kind !== 'long_running') this.outcomeVersion++;
         this.events.push(event);
         this.changed();
         this.schedule();
@@ -246,7 +370,8 @@ export class DialogueSession {
   private async drain(): Promise<void> {
     while (!this.closing && (this.users.length || this.events.length)) {
       const user = this.users.shift();
-      const events = user ? [] : this.events.splice(0);
+      const events = user ? [] : this.liveEvents(this.events.splice(0));
+      if (!user && !events.length) continue;
       const text = user ? user.text : this.eventNotes(events);
       const trigger = user ? 'user' : 'event';
       this.turnActive = true;
@@ -283,6 +408,7 @@ export class DialogueSession {
     consumed: TaskEvent[] = [],
   ): Promise<PlannerMessage> {
     const origin = consumed
+      .filter((event) => event.kind !== 'started')
       .map((event) => this.board.originRecorder(event.task.id))
       .find((recorder) => recorder !== undefined);
     this.turnUsage = scopedUsage(
@@ -306,6 +432,12 @@ export class DialogueSession {
       let plannerUsage: TokenUsage | undefined;
       const actions: string[] = [];
       let started = false;
+      const waitStop = new AbortController();
+      const stopSignal = user?.opts.stopSignal
+        ? AbortSignal.any([user.opts.stopSignal, waitStop.signal])
+        : waitStop.signal;
+      let lastReadVersion: number | undefined;
+      let partialText = '';
       for (let correction = 0; ; correction++) {
         const messages = structuredClone(this.conversation);
         const notes = [
@@ -325,6 +457,14 @@ export class DialogueSession {
             board: this.board,
             maxItemsPerStep: this.opts.maxItemsPerStep,
             taskSteps: this.taskSteps,
+            statusRead: () => {
+              if (waitStop.signal.aborted) return;
+              if (lastReadVersion === this.outcomeVersion) {
+                actions.push('wait (turn ended: tasks running)');
+                waitStop.abort();
+              }
+              lastReadVersion = this.outcomeVersion;
+            },
             getPlan: () => this.plan,
             setPlan: (plan, status = 'active', question) => {
               this.plan =
@@ -343,19 +483,39 @@ export class DialogueSession {
           () =>
             this.opts.planner.process(messages, {
               ...user?.opts,
+              stopSignal,
               sessionId: this.opts.id,
               usage: scopedUsage(this.turnUsage, { role: 'planner' }),
-              onPartial: user?.opts.onPartial
-                ? (chunk) => {
-                    if (chunk.kind === 'content') contentPartials.push(chunk);
-                    else user.opts.onPartial?.(chunk);
-                  }
-                : undefined,
+              onPartial: (chunk) => {
+                if (chunk.kind === 'content') {
+                  contentPartials.push(chunk);
+                  partialText += chunk.delta;
+                } else user?.opts.onPartial?.(chunk);
+              },
             }),
-        );
-        if (!result.ok) throw result.error;
-        plannerUsage = addTokenUsage(plannerUsage, result.value.usage);
-        reply = result.value.content;
+        ).catch((error: Error) => {
+          if (!waitStop.signal.aborted || user?.opts.signal?.aborted)
+            throw error;
+          return {
+            ok: true as const,
+            value: { content: partialText, usage: undefined },
+          };
+        });
+        const waiting = waitStop.signal.aborted && !user?.opts.signal?.aborted;
+        if (!result.ok && !waiting) throw result.error;
+        if (result.ok)
+          plannerUsage = addTokenUsage(plannerUsage, result.value.usage);
+        reply = result.ok ? result.value.content : partialText;
+        if (waiting && !reply.trim())
+          reply = partialText.trim()
+            ? partialText
+            : `Waiting for ${this.board
+                .list()
+                .filter(
+                  (task) => task.state === 'queued' || task.state === 'running',
+                )
+                .map((task) => `${task.id} (${task.worker})`)
+                .join(', ')}.`;
         this.conversation.push({ role: 'assistant', content: reply });
         this.conversation.push({
           role: 'user',
@@ -383,7 +543,8 @@ export class DialogueSession {
             .some((t) => t.state === 'queued' || t.state === 'running');
         const idle = canCheck && (ready.length > 0 || stalled.length > 0);
         const needsEvents = canCheck && this.events.length > 0;
-        const enabled = (this.opts.maxCorrections ?? 2) > 0 && !this.closing;
+        const enabled =
+          (this.opts.maxCorrections ?? 2) > 0 && !this.closing && !waiting;
         if (
           !enabled ||
           (!idle && !needsEvents) ||
@@ -396,7 +557,7 @@ export class DialogueSession {
           for (const chunk of contentPartials) user?.opts.onPartial?.(chunk);
           break;
         }
-        const events = this.events.splice(0);
+        const events = this.liveEvents(this.events.splice(0));
         consumed.push(...events);
         this.changed();
         const checks: string[] = [];
@@ -423,7 +584,8 @@ export class DialogueSession {
       }
       const tasks: NonNullable<PlannerMessageUsage['tasks']> = [];
       const seen = new Set<string>();
-      for (const { task } of consumed) {
+      for (const { task, kind } of consumed) {
+        if (kind === 'long_running' || kind === 'started') continue;
         if (task.usage && !seen.has(task.id)) {
           seen.add(task.id);
           tasks.push({ id: task.id, worker: task.worker, usage: task.usage });
@@ -459,6 +621,17 @@ export class DialogueSession {
   private eventNotes(events: TaskEvent[]): string {
     return events
       .map(({ kind, task }) => {
+        if (kind === 'long_running') {
+          const seconds = Math.floor(
+            Math.max(0, this.now() - (task.startedAt ?? task.createdAt)) / 1000,
+          );
+          const elapsed = `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
+          const calls =
+            task.toolCalls === undefined
+              ? ''
+              : ` (${task.toolCalls}${task.maxToolCalls === undefined ? '' : `/${task.maxToolCalls}`} tool calls)`;
+          return `[task events] ${task.id} (${task.worker}) is still running after ${elapsed}${calls}: check it and decide: keep waiting, stop_task, or re-delegate`;
+        }
         const owner = this.taskSteps.get(task.id);
         const removed =
           owner !== undefined &&

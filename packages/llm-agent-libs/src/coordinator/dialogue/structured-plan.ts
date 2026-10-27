@@ -309,7 +309,13 @@ export function applyTaskEvent(
   const step = plan?.steps.find((s) =>
     owner === undefined ? s.taskIds.includes(task.id) : s.id === owner,
   );
-  if (!step || step.state === 'skipped' || kind === 'started') return;
+  if (
+    !step ||
+    step.state === 'skipped' ||
+    kind === 'started' ||
+    kind === 'long_running'
+  )
+    return;
   // Older retry outcomes cannot overwrite the current attempt.
   if (!currentAttemptIds(step).includes(task.id)) return;
   if (currentWorkTaskId(step) === task.id) {

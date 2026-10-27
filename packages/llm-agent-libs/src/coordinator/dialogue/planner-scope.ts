@@ -6,6 +6,7 @@ export interface PlannerScope {
   board: TaskBoard;
   maxItemsPerStep?: number;
   taskSteps?: Map<string, string>;
+  statusRead?(): void;
   recordAction?(action: string, started?: boolean): void;
   getPlan(): string | Plan | undefined;
   setPlan(

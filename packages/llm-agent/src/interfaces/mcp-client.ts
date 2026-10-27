@@ -7,6 +7,9 @@ import type {
 } from './types.js';
 
 export interface IMcpClient {
+  /** Set to false to bypass tool result cache reads and writes for this client. */
+  readonly cacheable?: boolean;
+
   listTools(options?: CallOptions): Promise<Result<McpTool[], McpError>>;
 
   callTool(

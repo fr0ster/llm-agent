@@ -472,3 +472,60 @@ test('a recorder that throws while deriving context cannot break a dialogue turn
   assert.deepEqual((await session.send('go')).usage, { planner: tokens });
   await session.close();
 });
+
+test('long-running wake retains the originating request recorder without task usage', async () => {
+  const { usage, records } = recorder();
+  let now = 0;
+  let fire: (() => void) | undefined;
+  let finish!: (result: ISubAgentResult) => void;
+  const pending = new Promise<ISubAgentResult>((resolve) => {
+    finish = resolve;
+  });
+  let calls = 0;
+  const session = await DialogueSession.open({
+    id: 's',
+    usage,
+    maxCorrections: 0,
+    waitTickMs: 0,
+    longTaskMs: 10,
+    now: () => now,
+    scheduleTimer(callback) {
+      fire = callback;
+      return () => {
+        fire = undefined;
+      };
+    },
+    board: { now: () => now, workers: new Map([['w', worker(() => pending)]]) },
+    planner: {
+      async process(_messages, opts) {
+        llm(opts.usage);
+        if (++calls === 1) {
+          const scope = currentPlannerScope();
+          assert.ok(scope);
+          start(scope.board);
+        }
+        return { ok: true, value: { content: 'update', usage: tokens } };
+      },
+    },
+  });
+  try {
+    await session.send('go', {
+      usage: usage.with({ requestId: 'wake-request' }),
+    });
+    now = 10;
+    assert.ok(fire);
+    fire();
+    await tick();
+    const planners = records.filter(
+      (record) =>
+        record.kind === 'llm.call' && record.context.role === 'planner',
+    );
+    assert.equal(planners.length, 2);
+    assert.equal(planners[1].context.requestId, 'wake-request');
+    assert.notEqual(planners[1].context.turnId, planners[0].context.turnId);
+    assert.deepEqual(session.takePending()[0]?.usage, { planner: tokens });
+  } finally {
+    finish({ output: 'done' });
+    await session.close();
+  }
+});

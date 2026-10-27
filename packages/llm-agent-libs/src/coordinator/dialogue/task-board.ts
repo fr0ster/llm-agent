@@ -138,7 +138,7 @@ export class TaskBoard {
     this.opts.onStateChange?.();
   }
   private emit(
-    kind: TaskEvent['kind'],
+    kind: Exclude<TaskEvent['kind'], 'long_running'>,
     task: TaskRecord,
     previous: TaskState,
   ): void {
@@ -192,7 +192,7 @@ export class TaskBoard {
     const { task, request, stop } = entry;
     let releaseBoard: (() => void) | undefined;
     let releasePool: (() => void) | undefined;
-    let kind: TaskEvent['kind'] = 'failed';
+    let kind: 'done' | 'failed' | 'stopped' = 'failed';
     try {
       releaseBoard = await this.boardPool.acquire(stop.signal);
       releasePool = await this.opts.pool?.acquire(stop.signal);

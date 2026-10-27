@@ -73,3 +73,16 @@ Implement `IUsageRecorder` to replace collection completely, or use
 [usage overview](../../docs/USAGE_ANALYTICS.md) links the design, examples,
 delivery and loss guarantees, and the completeness suite. Records and custom
 labels must never contain prompts, documents, tool arguments, results or secrets.
+
+## Dialogue wait contracts
+
+`TaskEvent.kind` includes `started`, terminal `done` / `failed` / `stopped`, and
+non-terminal `long_running`. The latter does not change task or plan state and
+carries no usage; only terminal outcomes contribute to `PlannerMessage.usage.tasks`.
+
+`DialogueSignals` catalog v1 adds `dialogue.wait` without changing
+`DIALOGUE_SIGNALS_VERSION`: this is an additive signal. Its payload is
+`{ tasks: Array<{ id: string; worker: string; goal: string; state: 'queued' | 'running';
+elapsedMs: number; toolCalls?: number; maxToolCalls?: number }> }`.
+Elapsed time starts at `startedAt`, falling back to `createdAt`.
+See [dialogue planner behavior and options](../../docs/PIPELINES.md#dialogue-planner).
