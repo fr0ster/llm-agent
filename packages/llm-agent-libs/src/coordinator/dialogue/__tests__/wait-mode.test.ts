@@ -597,6 +597,7 @@ test('stale long-running events are dropped before the event turn; only outcomes
       id: 't1',
       worker: 'executor',
       usage: { promptTokens: 3, completionTokens: 2, totalTokens: 5 },
+      durationMs: 20,
     },
   ]);
   assert.equal(clock.size, 0);

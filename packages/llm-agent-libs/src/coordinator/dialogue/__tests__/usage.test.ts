@@ -320,18 +320,24 @@ test('dialogue reports planner and consumed task usage and preserves origin requ
   for (const requestScoped of [true, false]) {
     const { usage, records } = recorder();
     let calls = 0;
+    let now = 100;
+    let finish!: (result: ISubAgentResult) => void;
+    const taskResult = new Promise<ISubAgentResult>((resolve) => {
+      finish = resolve;
+    });
     const session = await DialogueSession.open({
       id: 's',
+      now: () => now,
       usage,
       maxCorrections: 0,
       board: {
-        workers: new Map([
-          ['w', worker(async () => ({ output: 'done', usage: tokens }))],
-        ]),
+        workers: new Map([['w', worker(() => taskResult)]]),
+        now: () => now,
       },
       planner: {
         async process(_messages, opts) {
           calls++;
+          now += calls === 1 ? 25 : 7;
           llm(opts.usage);
           if (calls === 1) {
             const scope = currentPlannerScope();
@@ -346,13 +352,17 @@ test('dialogue reports planner and consumed task usage and preserves origin requ
       'go',
       requestScoped ? { usage: usage.with({ requestId: 'r1' }) } : {},
     );
-    assert.deepEqual(reply.usage, { planner: tokens });
+    assert.deepEqual(reply.usage, { planner: tokens, plannerMs: 25 });
+    assert.equal(reply.createdAt, 125);
+    now = 1125;
+    finish({ output: 'done', usage: tokens });
     await tick();
     const event = session.takePending()[0];
     assert.ok(event);
     assert.deepEqual(event.usage, {
       planner: tokens,
-      tasks: [{ id: 't1', worker: 'w', usage: tokens }],
+      plannerMs: 7,
+      tasks: [{ id: 't1', worker: 'w', usage: tokens, durationMs: 1000 }],
     });
     const planners = records.filter(
       (record) =>
@@ -366,6 +376,28 @@ test('dialogue reports planner and consumed task usage and preserves origin requ
     assert.equal(planners[1].context.sessionId, 's');
     assert.notEqual(planners[1].context.turnId, planners[0].context.turnId);
     assert.equal(planners[1].context.taskId, undefined);
+    await session.close();
+  }
+});
+
+test('a user turn without token usage has no usage object', async () => {
+  let now = 100;
+  const session = await DialogueSession.open({
+    id: 'no-usage',
+    now: () => now,
+    board: { workers: new Map() },
+    planner: {
+      async process() {
+        now += 25;
+        return { ok: true, value: { content: 'ok' } };
+      },
+    },
+  });
+  try {
+    const message = await session.send('go');
+    assert.equal(message.usage, undefined);
+    assert.equal(message.createdAt, 125);
+  } finally {
     await session.close();
   }
 });
@@ -412,7 +444,9 @@ test('a corrective user turn reports the task events it consumes exactly once', 
   let calls = 0;
   const session = await DialogueSession.open({
     id: 's',
+    now: () => 0,
     board: {
+      now: () => 0,
       workers: new Map([
         ['w', worker(async () => ({ output: 'done', usage: tokens }))],
       ]),
@@ -446,7 +480,8 @@ test('a corrective user turn reports the task events it consumes exactly once', 
   const reply = await session.send('go');
   assert.equal(calls, 2);
   assert.deepEqual(reply.usage, {
-    tasks: [{ id: 't1', worker: 'w', usage: tokens }],
+    plannerMs: 0,
+    tasks: [{ id: 't1', worker: 'w', usage: tokens, durationMs: 0 }],
   });
   assert.deepEqual(session.takePending(), []);
   await session.close();
@@ -461,6 +496,7 @@ test('a recorder that throws while deriving context cannot break a dialogue turn
   };
   const session = await DialogueSession.open({
     id: 's',
+    now: () => 0,
     usage,
     board: { workers: new Map() },
     planner: {
@@ -469,7 +505,10 @@ test('a recorder that throws while deriving context cannot break a dialogue turn
       },
     },
   });
-  assert.deepEqual((await session.send('go')).usage, { planner: tokens });
+  assert.deepEqual((await session.send('go')).usage, {
+    planner: tokens,
+    plannerMs: 0,
+  });
   await session.close();
 });
 
@@ -523,7 +562,10 @@ test('long-running wake retains the originating request recorder without task us
     assert.equal(planners.length, 2);
     assert.equal(planners[1].context.requestId, 'wake-request');
     assert.notEqual(planners[1].context.turnId, planners[0].context.turnId);
-    assert.deepEqual(session.takePending()[0]?.usage, { planner: tokens });
+    assert.deepEqual(session.takePending()[0]?.usage, {
+      planner: tokens,
+      plannerMs: 0,
+    });
   } finally {
     finish({ output: 'done' });
     await session.close();

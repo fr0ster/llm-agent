@@ -38,7 +38,15 @@ export interface IConcurrencyPool {
 }
 export interface PlannerMessageUsage {
   planner?: TokenUsage;
-  tasks?: Array<{ id: string; worker: string; usage: TokenUsage }>;
+  /** Wall-clock time of the planner turn that produced this message, ms. */
+  plannerMs?: number;
+  tasks?: Array<{
+    id: string;
+    worker: string;
+    usage: TokenUsage;
+    /** finishedAt - startedAt of the task, ms; absent when either timestamp is missing. */
+    durationMs?: number;
+  }>;
 }
 export interface PlannerMessage {
   usage?: PlannerMessageUsage;
