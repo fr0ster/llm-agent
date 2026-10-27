@@ -812,6 +812,8 @@ export class SmartAgent {
     });
     let toolCallCount = 0;
     let messages = initialMessages;
+    // Retain tool-round text that has not been streamed until a cooperative stop.
+    let stoppedContent = '';
     const usage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
     const externalToolNames = new Set(externalTools.map((t) => t.name));
     const timingLog: TimingEntry[] = [];
@@ -863,7 +865,11 @@ export class SmartAgent {
         yield {
           ok: true,
           value: {
-            content: '',
+            content: stoppedContent.trim()
+              ? clientAdapter
+                ? clientAdapter.wrapResponse(stoppedContent)
+                : stoppedContent
+              : '',
             finishReason: 'stop',
             stopped: true,
             usage: { ...summaryToUsage(summary), models: summary.byModel },
@@ -1190,6 +1196,11 @@ export class SmartAgent {
         }
         iterationBuffer = '';
       }
+      if (
+        finishReason === 'tool_calls' &&
+        (clientAdapter || this.config.streamMode === 'final')
+      )
+        stoppedContent += content;
       const toolCalls = Array.from(toolCallsMap.values()).map((tc) => {
         let args = {};
         try {

@@ -30,7 +30,7 @@ export interface TaskRecord {
   finishedAt?: number;
 }
 export interface TaskEvent {
-  kind: 'started' | 'done' | 'failed' | 'stopped';
+  kind: 'started' | 'done' | 'failed' | 'stopped' | 'long_running';
   task: TaskRecord;
 }
 export interface IConcurrencyPool {

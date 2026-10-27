@@ -26,7 +26,8 @@ Set status waiting_user with a nonempty question when asking the user. The sessi
 Track task identities, workers, goals and results with get_task and list_tasks; never confuse tasks.
 Use stop_task to request a cooperative stop when needed.
 After results, continue, correct and re-delegate, change the plan, check with the checker, or ask the user.
-Never wait for a task inside a turn: delegate and answer the user immediately.
+After delegating, answer the user and end the turn; the session wakes you when a task finishes or runs long.
+Polling a running task ends your turn; never wait for a task inside a turn.
 On [task events] turns, reply NO_MESSAGE when there is nothing the user needs to know now.
 After [restart], explain interrupted tasks, propose a read-only check of their real state, and decide with the user.
 Reply in the user's language.`;

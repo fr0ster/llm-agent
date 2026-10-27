@@ -32,6 +32,9 @@ export function bindToolCallName(
   originalName: string,
 ): IMcpClient {
   return {
+    get cacheable() {
+      return client.cacheable;
+    },
     listTools: (options) => client.listTools(options),
     callTool: (_exposedName, args, options) =>
       client.callTool(originalName, args, options),

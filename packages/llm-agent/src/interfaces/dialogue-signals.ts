@@ -2,6 +2,18 @@ import type { TaskRecord, TaskState } from './dialogue.js';
 
 export const DIALOGUE_SIGNALS_VERSION = 1;
 export interface DialogueSignals {
+  /** Additive catalog v1 signal; ticks do not call the planner. */
+  'dialogue.wait': {
+    tasks: Array<{
+      id: string;
+      worker: string;
+      goal: string;
+      state: 'queued' | 'running';
+      elapsedMs: number;
+      toolCalls?: number;
+      maxToolCalls?: number;
+    }>;
+  };
   'dialogue.turn.started': { trigger: 'user' | 'event' };
   'dialogue.turn.settled': {
     trigger: 'user' | 'event';

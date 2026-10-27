@@ -64,7 +64,8 @@ export function fireInternalToolsAsync(
           : typeof res.value.content === 'string'
             ? res.value.content
             : JSON.stringify(res.value.content);
-        if (res.ok) ctx.toolCache.set(tc.name, tc.arguments, res.value);
+        if (res.ok && client.cacheable !== false)
+          ctx.toolCache.set(tc.name, tc.arguments, res.value);
         ctx.metrics.toolCallCount.add();
         ctx.options?.sessionLogger?.logStep(
           `mcp_call_${tc.name}`,

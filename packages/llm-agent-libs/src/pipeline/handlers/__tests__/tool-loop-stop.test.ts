@@ -223,74 +223,98 @@ for (const mode of ['stop', 'hard', 'none', 'pre-stopped']) {
   });
 }
 
-for (const pipeline of [false, true]) {
-  test(`SmartAgent.process preserves partial output with normal stop reason and stopped marker (pipeline=${pipeline})`, async () => {
-    const stop = new AbortController();
-    let calls = 0;
-    const stream = async function* (): AsyncIterable<
-      Result<LlmStreamChunk, LlmError>
-    > {
-      calls++;
-      yield {
-        ok: true,
-        value: {
-          content: 'partial',
-          toolCalls: [{ id: 'c1', name: 'Work', arguments: {} }],
-          finishReason: 'tool_calls',
-        },
-      };
-    };
-    const client: IMcpClient = {
-      async listTools() {
-        return {
+for (const streamMode of ['full', 'final'] as const) {
+  for (const pipeline of [false, true]) {
+    test(`SmartAgent.process preserves partial output with normal stop reason and stopped marker (pipeline=${pipeline}, streamMode=${streamMode})`, async () => {
+      const stop = new AbortController();
+      let calls = 0;
+      const stream = async function* (): AsyncIterable<
+        Result<LlmStreamChunk, LlmError>
+      > {
+        calls++;
+        yield {
           ok: true,
-          value: [{ name: 'Work', description: 'work', inputSchema: {} }],
+          value: {
+            content: 'partial',
+            toolCalls: [{ id: 'c1', name: 'Work', arguments: {} }],
+            finishReason: 'tool_calls',
+          },
         };
-      },
-      async callTool(_name, _args, options) {
-        assert.equal(options?.signal?.aborted, false);
-        stop.abort();
-        return { ok: true, value: { content: 'done' } };
-      },
-    };
-    const base = makeCtx(stream);
-    const { deps } = makeDefaultDeps({
-      assembler: makeAssembler([{ role: 'user', content: 'work' }]),
-      mcpClients: [client],
-    });
-    deps.mainLlm = base.mainLlm;
-    if (pipeline) {
-      deps.pipeline = {
-        initialize() {},
-        async execute(_input, _history, options, yieldChunk) {
-          assert.equal(options?.stopSignal, stop.signal);
-          const ctx = { ...base, options, yield: yieldChunk };
-          ctx.toolClientMap.set('Work', client);
-          await new ToolLoopHandler().execute(
-            ctx,
-            { heartbeatIntervalMs: 0 },
-            makeSpan(),
-          );
-          return { timing: ctx.timing };
+      };
+      const client: IMcpClient = {
+        async listTools() {
+          return {
+            ok: true,
+            value: [{ name: 'Work', description: 'work', inputSchema: {} }],
+          };
+        },
+        async callTool(_name, _args, options) {
+          assert.equal(options?.signal?.aborted, false);
+          stop.abort();
+          return { ok: true, value: { content: 'done' } };
         },
       };
-    }
-    const agent = new SmartAgent(deps, {
-      maxIterations: 3,
-      heartbeatIntervalMs: 0,
+      const base = makeCtx(stream);
+      const { deps } = makeDefaultDeps({
+        assembler: makeAssembler([{ role: 'user', content: 'work' }]),
+        mcpClients: [client],
+      });
+      deps.mainLlm = base.mainLlm;
+      let detected = false;
+      if (!pipeline)
+        deps.clientAdapters = [
+          {
+            name: 'test',
+            detect(prompt: string) {
+              detected = prompt === 'adapter';
+              return detected;
+            },
+            wrapResponse(content: string) {
+              return `[${content}]`;
+            },
+          },
+        ];
+      if (pipeline) {
+        deps.pipeline = {
+          initialize() {},
+          async execute(_input, _history, options, yieldChunk) {
+            assert.equal(options?.stopSignal, stop.signal);
+            const ctx = { ...base, options, yield: yieldChunk };
+            ctx.toolClientMap.set('Work', client);
+            await new ToolLoopHandler().execute(
+              ctx,
+              { heartbeatIntervalMs: 0 },
+              makeSpan(),
+            );
+            return { timing: ctx.timing };
+          },
+        };
+      }
+      const agent = new SmartAgent(deps, {
+        streamMode,
+        maxIterations: 3,
+        heartbeatIntervalMs: 0,
+      });
+      const result = await agent.process(
+        [
+          { role: 'system', content: 'adapter' },
+          { role: 'user', content: 'work' },
+        ],
+        {
+          stopSignal: stop.signal,
+          signal: new AbortController().signal,
+        },
+      );
+      assert.equal(result.ok, true);
+      if (result.ok) {
+        assert.equal(result.value.content, pipeline ? 'partial' : '[partial]');
+        assert.equal(detected, !pipeline);
+        assert.equal(result.value.stopReason, 'stop');
+        assert.equal(result.value.stopped, true);
+      }
+      assert.equal(calls, 1);
     });
-    const result = await agent.process('work', {
-      stopSignal: stop.signal,
-      signal: new AbortController().signal,
-    });
-    assert.equal(result.ok, true);
-    if (result.ok) {
-      assert.equal(result.value.content, 'partial');
-      assert.equal(result.value.stopReason, 'stop');
-      assert.equal(result.value.stopped, true);
-    }
-    assert.equal(calls, 1);
-  });
+  }
 }
 
 for (const pipeline of [false, true]) {

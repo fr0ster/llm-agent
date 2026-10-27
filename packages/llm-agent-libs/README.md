@@ -74,3 +74,24 @@ Use `@mcp-abap-adt/llm-usage` for buffered collection or implement
 [usage overview](../../docs/USAGE_ANALYTICS.md) for injection, replaceable
 transports/sinks, shutdown and loss semantics. Usage records exclude content;
 request logging is a separate API with different data and retention needs.
+
+## Dialogue wait mode
+
+`DialogueSession.open` accepts `waitTickMs` (default 30,000) and `longTaskMs`
+(default 300,000). Both are non-negative integers; zero disables that feature
+independently. While tasks are queued or running, wait ticks emit `dialogue.wait`
+without calling the planner. Running tasks wake it through non-terminal
+`long_running` events once per `longTaskMs`; settled tasks' queued wake events
+are discarded. Long-running events carry no task usage and allow `NO_MESSAGE`.
+Timers stop when no tasks remain active and on close. Restored tasks become
+interrupted, so no timer runs for them. Timers are unref'ed; `now` and the optional
+`scheduleTimer(callback, delayMs)` cancellation-function factory support fake clocks.
+
+A second `get_task` on active work or `list_tasks` with active work in the same
+turn ends the turn unless a task outcome intervened. Finished-task reads and
+other tools do not count. The session aborts a turn-owned cooperative `stopSignal`,
+combined with the caller's `stopSignal`. SmartAgent's tool loop answers the tool
+call, then returns accumulated text and usage before another model call. The
+session suppresses corrections and uses a waiting note if no text was produced;
+`[actions]` records `wait (turn ended: tasks running)`. Caller `signal` retains
+hard cancellation behavior. See [the dialogue guide](../../docs/PIPELINES.md#dialogue-planner).
