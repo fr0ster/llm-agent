@@ -320,18 +320,24 @@ test('dialogue reports planner and consumed task usage and preserves origin requ
   for (const requestScoped of [true, false]) {
     const { usage, records } = recorder();
     let calls = 0;
+    let now = 100;
+    let finish!: (result: ISubAgentResult) => void;
+    const taskResult = new Promise<ISubAgentResult>((resolve) => {
+      finish = resolve;
+    });
     const session = await DialogueSession.open({
       id: 's',
+      now: () => now,
       usage,
       maxCorrections: 0,
       board: {
-        workers: new Map([
-          ['w', worker(async () => ({ output: 'done', usage: tokens }))],
-        ]),
+        workers: new Map([['w', worker(() => taskResult)]]),
+        now: () => now,
       },
       planner: {
         async process(_messages, opts) {
           calls++;
+          now += calls === 1 ? 25 : 7;
           llm(opts.usage);
           if (calls === 1) {
             const scope = currentPlannerScope();
@@ -346,13 +352,17 @@ test('dialogue reports planner and consumed task usage and preserves origin requ
       'go',
       requestScoped ? { usage: usage.with({ requestId: 'r1' }) } : {},
     );
-    assert.deepEqual(reply.usage, { planner: tokens });
+    assert.deepEqual(reply.usage, { planner: tokens, plannerMs: 25 });
+    assert.equal(reply.createdAt, 125);
+    now = 1125;
+    finish({ output: 'done', usage: tokens });
     await tick();
     const event = session.takePending()[0];
     assert.ok(event);
     assert.deepEqual(event.usage, {
       planner: tokens,
-      tasks: [{ id: 't1', worker: 'w', usage: tokens }],
+      plannerMs: 7,
+      tasks: [{ id: 't1', worker: 'w', usage: tokens, durationMs: 1000 }],
     });
     const planners = records.filter(
       (record) =>
@@ -370,14 +380,39 @@ test('dialogue reports planner and consumed task usage and preserves origin requ
   }
 });
 
+test('a user turn without token usage has no usage object', async () => {
+  let now = 100;
+  const session = await DialogueSession.open({
+    id: 'no-usage',
+    now: () => now,
+    board: { workers: new Map() },
+    planner: {
+      async process() {
+        now += 25;
+        return { ok: true, value: { content: 'ok' } };
+      },
+    },
+  });
+  try {
+    const message = await session.send('go');
+    assert.equal(message.usage, undefined);
+    assert.equal(message.createdAt, 125);
+  } finally {
+    await session.close();
+  }
+});
+
 test('corrective planner calls sum usage within a user turn', async () => {
   let calls = 0;
+  let now = 100;
   const session = await DialogueSession.open({
     id: 's',
+    now: () => now,
     board: { workers: new Map() },
     planner: {
       async process() {
         calls++;
+        now += calls === 1 ? 10 : 5;
         const scope = currentPlannerScope();
         assert.ok(scope);
         scope.setPlan({
@@ -392,6 +427,7 @@ test('corrective planner calls sum usage within a user turn', async () => {
   });
   const reply = await session.send('go');
   assert.equal(calls, 2);
+  assert.equal(reply.usage?.plannerMs, 15);
   assert.deepEqual(reply.usage?.planner, {
     promptTokens: 4,
     completionTokens: 6,
@@ -408,11 +444,61 @@ test('corrective planner calls sum usage within a user turn', async () => {
   await session.close();
 });
 
+test('queued user turns exclude queue wait from planner timing', async () => {
+  let now = 100;
+  let calls = 0;
+  let releaseFirst: () => void = () => {};
+  const blocked = new Promise<void>((resolve) => {
+    releaseFirst = resolve;
+  });
+  let notifyStarted: () => void = () => {};
+  const started = new Promise<void>((resolve) => {
+    notifyStarted = resolve;
+  });
+  const session = await DialogueSession.open({
+    id: 'queued-timing',
+    now: () => now,
+    board: { workers: new Map() },
+    planner: {
+      async process() {
+        calls++;
+        if (calls === 1) {
+          now += 10;
+          notifyStarted();
+          await blocked;
+        } else {
+          now += 7;
+        }
+        return { ok: true, value: { content: 'ok', usage: tokens } };
+      },
+    },
+  });
+  try {
+    const first = session.send('a');
+    await started;
+    const second = session.send('b');
+    assert.equal(calls, 1);
+    now += 100;
+    releaseFirst();
+    const [firstReply, secondReply] = await Promise.all([first, second]);
+    assert.equal(calls, 2);
+    assert.equal(firstReply.createdAt, 210);
+    assert.equal(firstReply.usage?.plannerMs, 110);
+    assert.equal(secondReply.createdAt, 217);
+    assert.equal(secondReply.usage?.plannerMs, 7);
+  } finally {
+    releaseFirst();
+    await session.close();
+  }
+});
+
 test('a corrective user turn reports the task events it consumes exactly once', async () => {
   let calls = 0;
   const session = await DialogueSession.open({
     id: 's',
+    now: () => 0,
     board: {
+      now: () => 0,
       workers: new Map([
         ['w', worker(async () => ({ output: 'done', usage: tokens }))],
       ]),
@@ -446,7 +532,8 @@ test('a corrective user turn reports the task events it consumes exactly once', 
   const reply = await session.send('go');
   assert.equal(calls, 2);
   assert.deepEqual(reply.usage, {
-    tasks: [{ id: 't1', worker: 'w', usage: tokens }],
+    plannerMs: 0,
+    tasks: [{ id: 't1', worker: 'w', usage: tokens, durationMs: 0 }],
   });
   assert.deepEqual(session.takePending(), []);
   await session.close();
@@ -461,6 +548,7 @@ test('a recorder that throws while deriving context cannot break a dialogue turn
   };
   const session = await DialogueSession.open({
     id: 's',
+    now: () => 0,
     usage,
     board: { workers: new Map() },
     planner: {
@@ -469,7 +557,10 @@ test('a recorder that throws while deriving context cannot break a dialogue turn
       },
     },
   });
-  assert.deepEqual((await session.send('go')).usage, { planner: tokens });
+  assert.deepEqual((await session.send('go')).usage, {
+    planner: tokens,
+    plannerMs: 0,
+  });
   await session.close();
 });
 
@@ -523,7 +614,10 @@ test('long-running wake retains the originating request recorder without task us
     assert.equal(planners.length, 2);
     assert.equal(planners[1].context.requestId, 'wake-request');
     assert.notEqual(planners[1].context.turnId, planners[0].context.turnId);
-    assert.deepEqual(session.takePending()[0]?.usage, { planner: tokens });
+    assert.deepEqual(session.takePending()[0]?.usage, {
+      planner: tokens,
+      plannerMs: 0,
+    });
   } finally {
     finish({ output: 'done' });
     await session.close();

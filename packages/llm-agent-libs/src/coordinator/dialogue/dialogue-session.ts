@@ -407,6 +407,7 @@ export class DialogueSession {
     user?: UserTurn,
     consumed: TaskEvent[] = [],
   ): Promise<PlannerMessage> {
+    const turnStartedAt = this.now();
     const origin = consumed
       .filter((event) => event.kind !== 'started')
       .map((event) => this.board.originRecorder(event.task.id))
@@ -588,13 +589,23 @@ export class DialogueSession {
         if (kind === 'long_running' || kind === 'started') continue;
         if (task.usage && !seen.has(task.id)) {
           seen.add(task.id);
-          tasks.push({ id: task.id, worker: task.worker, usage: task.usage });
+          tasks.push({
+            id: task.id,
+            worker: task.worker,
+            usage: task.usage,
+            ...(typeof task.startedAt === 'number' &&
+            typeof task.finishedAt === 'number'
+              ? { durationMs: Math.max(0, task.finishedAt - task.startedAt) }
+              : {}),
+          });
         }
       }
+      const createdAt = this.now();
       const message: PlannerMessage = {
         ...(plannerUsage || tasks.length
           ? {
               usage: {
+                plannerMs: Math.max(0, createdAt - turnStartedAt),
                 ...(plannerUsage ? { planner: plannerUsage } : {}),
                 ...(tasks.length ? { tasks } : {}),
               },
@@ -602,7 +613,7 @@ export class DialogueSession {
           : {}),
         id: randomUUID(),
         text: reply,
-        createdAt: this.now(),
+        createdAt,
         trigger: user ? 'user' : 'event',
       };
       if (!user && !this.closing && message.text.trim() !== 'NO_MESSAGE') {
