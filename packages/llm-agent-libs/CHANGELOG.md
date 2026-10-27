@@ -1,5 +1,11 @@
 # @mcp-abap-adt/llm-agent-libs
 
+## 30.14.0
+
+### Minor Changes
+
+- bc4b801: Report planner turn wall-clock time and completed task duration using the dialogue session clock.
+
 ## 30.13.0
 
 ### Minor Changes

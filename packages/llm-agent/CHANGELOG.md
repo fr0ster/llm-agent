@@ -1,5 +1,11 @@
 # @mcp-abap-adt/llm-agent
 
+## 30.16.0
+
+### Minor Changes
+
+- bc4b801: Add optional planner turn and task duration fields to PlannerMessageUsage.
+
 ## 30.15.0
 
 ### Minor Changes
