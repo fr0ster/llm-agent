@@ -13,6 +13,12 @@ import type {
   SignalName,
   StreamChunk,
   TaskEvent,
+  UsageContext,
+} from '@mcp-abap-adt/llm-agent';
+import {
+  addTokenUsage,
+  type PlannerMessageUsage,
+  type TokenUsage,
 } from '@mcp-abap-adt/llm-agent';
 import { runInPlannerScope } from './planner-scope.js';
 import {
@@ -37,7 +43,7 @@ export interface PlannerAgent {
   process(
     input: Message[],
     opts: PlannerTurnOptions,
-  ): Promise<Result<{ content: string }, Error>>;
+  ): Promise<Result<{ content: string; usage?: TokenUsage }, Error>>;
 }
 export interface DialogueSessionOptions {
   usage?: IUsageRecorder;
@@ -247,7 +253,7 @@ export class DialogueSession {
       this.changed();
       this.emit('dialogue.turn.started', { trigger });
       try {
-        const message = await this.turn(text, user);
+        const message = await this.turn(text, user, events);
         if (!this.closing)
           this.emit('dialogue.turn.settled', {
             trigger,
@@ -271,14 +277,18 @@ export class DialogueSession {
       }
     }
   }
-  private async turn(text: string, user?: UserTurn): Promise<PlannerMessage> {
-    this.turnUsage = (
-      user?.opts.usage ??
-      this.opts.usage ??
-      this.opts.board.usage
-    )?.with({
-      turnId: randomUUID(),
-    });
+  private async turn(
+    text: string,
+    user?: UserTurn,
+    consumed: TaskEvent[] = [],
+  ): Promise<PlannerMessage> {
+    const origin = consumed
+      .map((event) => this.board.originRecorder(event.task.id))
+      .find((recorder) => recorder !== undefined);
+    this.turnUsage = this.scopeUsage(
+      { turnId: randomUUID() },
+      origin ?? user?.opts.usage ?? this.opts.usage ?? this.opts.board.usage,
+    );
     if (user && this.plan) {
       if (this.plan.status === 'waiting_user' && this.plan.question?.trim())
         this.plan.scopeConsent = true;
@@ -293,6 +303,7 @@ export class DialogueSession {
     this.trim();
     try {
       let reply = '';
+      let plannerUsage: TokenUsage | undefined;
       const actions: string[] = [];
       let started = false;
       for (let correction = 0; ; correction++) {
@@ -333,7 +344,7 @@ export class DialogueSession {
             this.opts.planner.process(messages, {
               ...user?.opts,
               sessionId: this.opts.id,
-              usage: this.turnUsage?.with({ role: 'planner' }),
+              usage: this.scopeUsage({ role: 'planner' }, this.turnUsage),
               onPartial: user?.opts.onPartial
                 ? (chunk) => {
                     if (chunk.kind === 'content') contentPartials.push(chunk);
@@ -343,6 +354,7 @@ export class DialogueSession {
             }),
         );
         if (!result.ok) throw result.error;
+        plannerUsage = addTokenUsage(plannerUsage, result.value.usage);
         reply = result.value.content;
         this.conversation.push({ role: 'assistant', content: reply });
         this.conversation.push({
@@ -385,6 +397,7 @@ export class DialogueSession {
           break;
         }
         const events = this.events.splice(0);
+        consumed.push(...events);
         this.changed();
         const checks: string[] = [];
         if (idle && ready.length)
@@ -408,7 +421,23 @@ export class DialogueSession {
             (events.length ? `\n${this.eventNotes(events)}` : ''),
         );
       }
+      const tasks: NonNullable<PlannerMessageUsage['tasks']> = [];
+      const seen = new Set<string>();
+      for (const { task } of consumed) {
+        if (task.usage && !seen.has(task.id)) {
+          seen.add(task.id);
+          tasks.push({ id: task.id, worker: task.worker, usage: task.usage });
+        }
+      }
       const message: PlannerMessage = {
+        ...(plannerUsage || tasks.length
+          ? {
+              usage: {
+                ...(plannerUsage ? { planner: plannerUsage } : {}),
+                ...(tasks.length ? { tasks } : {}),
+              },
+            }
+          : {}),
         id: randomUUID(),
         text: reply,
         createdAt: this.now(),
@@ -473,6 +502,17 @@ export class DialogueSession {
     }
   }
 
+  private scopeUsage(
+    context: UsageContext,
+    usage?: IUsageRecorder,
+  ): IUsageRecorder | undefined {
+    try {
+      return usage?.with(context);
+    } catch {
+      // Recording cannot affect dialogue execution.
+      return undefined;
+    }
+  }
   private now(): number {
     return (this.opts.now ?? Date.now)();
   }

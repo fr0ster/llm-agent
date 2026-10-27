@@ -497,7 +497,7 @@ export class ToolLoopHandler implements IStageHandler {
         currentTools,
         {
           ...ctx.options,
-          usage: ctx.options?.usage?.with({ role: 'tool-loop' }),
+          usage: ctx.options?.usage?.with({ component: 'tool-loop' }),
         },
       );
 

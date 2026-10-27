@@ -1,4 +1,5 @@
 import type { Message } from '../types.js';
+import type { TokenUsage } from './types.js';
 
 export type TaskState =
   | 'queued'
@@ -14,6 +15,7 @@ export interface TaskRequest {
   history?: Message[];
 }
 export interface TaskRecord {
+  usage?: TokenUsage;
   id: string;
   worker: string;
   goal: string;
@@ -34,7 +36,12 @@ export interface TaskEvent {
 export interface IConcurrencyPool {
   acquire(signal?: AbortSignal): Promise<() => void>;
 }
+export interface PlannerMessageUsage {
+  planner?: TokenUsage;
+  tasks?: Array<{ id: string; worker: string; usage: TokenUsage }>;
+}
 export interface PlannerMessage {
+  usage?: PlannerMessageUsage;
   id: string;
   text: string;
   createdAt: number;

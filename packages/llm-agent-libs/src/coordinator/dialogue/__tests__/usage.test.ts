@@ -7,6 +7,8 @@ import {
   type ISubAgentResult,
   type IUsageRecorder,
   startOperation,
+  type TaskEvent,
+  type TokenUsage,
   type UsageContext,
   type UsageInput,
 } from '@mcp-abap-adt/llm-agent';
@@ -259,6 +261,214 @@ test('tasks and dialogue work without a recorder', async () => {
       },
     },
   });
-  assert.equal((await session.send('hi')).text, 'ok');
+  const reply = await session.send('hi');
+  assert.equal(reply.text, 'ok');
+  assert.equal(Object.hasOwn(reply, 'usage'), false);
+  await session.close();
+});
+
+const tokens: TokenUsage = {
+  promptTokens: 2,
+  completionTokens: 3,
+  totalTokens: 5,
+  models: {
+    model: {
+      promptTokens: 2,
+      completionTokens: 3,
+      totalTokens: 5,
+      requests: 1,
+    },
+  },
+};
+
+test('task result usage reaches terminal events, get/list and restore; absent stays absent', async () => {
+  for (const usage of [tokens, undefined]) {
+    for (const outcome of ['done', 'failed', 'stopped']) {
+      const events: TaskEvent[] = [];
+      const board = new TaskBoard({
+        workers: new Map([
+          [
+            'w',
+            worker(async () => ({
+              output: 'ok',
+              ...(usage ? { usage } : {}),
+              ...(outcome === 'failed' ? { errorClass: 'epicfail' } : {}),
+              ...(outcome === 'stopped' ? { stopped: true } : {}),
+            })),
+          ],
+        ]),
+        onEvent(event) {
+          events.push(event);
+        },
+      });
+      const id = start(board);
+      await tick();
+      const terminal = events.find((event) => event.kind === outcome);
+      assert.ok(terminal);
+      assert.deepEqual(terminal.task.usage, usage);
+      assert.deepEqual(board.get(id)?.usage, usage);
+      assert.deepEqual(board.list()[0].usage, usage);
+      assert.equal(Object.hasOwn(terminal.task, 'usage'), usage !== undefined);
+      const restored = new TaskBoard({ workers: new Map(), onEvent() {} });
+      restored.restore(board.list());
+      assert.deepEqual(restored.get(id)?.usage, usage);
+    }
+  }
+});
+
+test('dialogue reports planner and consumed task usage and preserves origin request context', async () => {
+  for (const requestScoped of [true, false]) {
+    const { usage, records } = recorder();
+    let calls = 0;
+    const session = await DialogueSession.open({
+      id: 's',
+      usage,
+      maxCorrections: 0,
+      board: {
+        workers: new Map([
+          ['w', worker(async () => ({ output: 'done', usage: tokens }))],
+        ]),
+      },
+      planner: {
+        async process(_messages, opts) {
+          calls++;
+          llm(opts.usage);
+          if (calls === 1) {
+            const scope = currentPlannerScope();
+            assert.ok(scope);
+            start(scope.board);
+          }
+          return { ok: true, value: { content: 'ok', usage: tokens } };
+        },
+      },
+    });
+    const reply = await session.send(
+      'go',
+      requestScoped ? { usage: usage.with({ requestId: 'r1' }) } : {},
+    );
+    assert.deepEqual(reply.usage, { planner: tokens });
+    await tick();
+    const event = session.takePending()[0];
+    assert.ok(event);
+    assert.deepEqual(event.usage, {
+      planner: tokens,
+      tasks: [{ id: 't1', worker: 'w', usage: tokens }],
+    });
+    const planners = records.filter(
+      (record) =>
+        record.kind === 'llm.call' && record.context.role === 'planner',
+    );
+    assert.equal(planners.length, 2);
+    assert.equal(
+      planners[1].context.requestId,
+      requestScoped ? 'r1' : undefined,
+    );
+    assert.equal(planners[1].context.sessionId, 's');
+    assert.notEqual(planners[1].context.turnId, planners[0].context.turnId);
+    assert.equal(planners[1].context.taskId, undefined);
+    await session.close();
+  }
+});
+
+test('corrective planner calls sum usage within a user turn', async () => {
+  let calls = 0;
+  const session = await DialogueSession.open({
+    id: 's',
+    board: { workers: new Map() },
+    planner: {
+      async process() {
+        calls++;
+        const scope = currentPlannerScope();
+        assert.ok(scope);
+        scope.setPlan({
+          version: 1,
+          status: calls === 1 ? 'active' : 'waiting_user',
+          question: 'Proceed?',
+          steps: [{ id: 'step', goal: 'work', state: 'pending', taskIds: [] }],
+        });
+        return { ok: true, value: { content: 'ok', usage: tokens } };
+      },
+    },
+  });
+  const reply = await session.send('go');
+  assert.equal(calls, 2);
+  assert.deepEqual(reply.usage?.planner, {
+    promptTokens: 4,
+    completionTokens: 6,
+    totalTokens: 10,
+    models: {
+      model: {
+        promptTokens: 4,
+        completionTokens: 6,
+        totalTokens: 10,
+        requests: 2,
+      },
+    },
+  });
+  await session.close();
+});
+
+test('a corrective user turn reports the task events it consumes exactly once', async () => {
+  let calls = 0;
+  const session = await DialogueSession.open({
+    id: 's',
+    board: {
+      workers: new Map([
+        ['w', worker(async () => ({ output: 'done', usage: tokens }))],
+      ]),
+    },
+    planner: {
+      async process() {
+        calls++;
+        const scope = currentPlannerScope();
+        assert.ok(scope);
+        if (calls === 1) {
+          scope.setPlan({
+            version: 1,
+            status: 'active',
+            steps: [
+              { id: 'next', goal: 'next', state: 'pending', taskIds: [] },
+            ],
+          });
+          start(scope.board);
+          await tick();
+        } else
+          scope.setPlan({
+            version: 1,
+            status: 'waiting_user',
+            question: 'Next?',
+            steps: [],
+          });
+        return { ok: true, value: { content: 'ok' } };
+      },
+    },
+  });
+  const reply = await session.send('go');
+  assert.equal(calls, 2);
+  assert.deepEqual(reply.usage, {
+    tasks: [{ id: 't1', worker: 'w', usage: tokens }],
+  });
+  assert.deepEqual(session.takePending(), []);
+  await session.close();
+});
+
+test('a recorder that throws while deriving context cannot break a dialogue turn', async () => {
+  const usage: IUsageRecorder = {
+    record() {},
+    with() {
+      throw new Error('recorder unavailable');
+    },
+  };
+  const session = await DialogueSession.open({
+    id: 's',
+    usage,
+    board: { workers: new Map() },
+    planner: {
+      async process() {
+        return { ok: true, value: { content: 'ok', usage: tokens } };
+      },
+    },
+  });
+  assert.deepEqual((await session.send('go')).usage, { planner: tokens });
   await session.close();
 });

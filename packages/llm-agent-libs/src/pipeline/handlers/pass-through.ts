@@ -26,7 +26,7 @@ export async function* runPassThrough(
   );
   const stream = llm.streamChat(messages, externalTools, {
     ...opts,
-    usage: opts?.usage?.with({ role: 'tool-loop' }),
+    usage: opts?.usage?.with({ component: 'tool-loop' }),
   });
   let passContent = '';
   const passToolCalls: unknown[] = [];

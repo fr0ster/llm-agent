@@ -54,6 +54,10 @@ export class TaskBoard {
   private readonly maxTasks: number;
   private counter = 0;
   private readonly boardId: string;
+  private readonly originUsage = new Map<string, IUsageRecorder>();
+  originRecorder(taskId: string): IUsageRecorder | undefined {
+    return this.originUsage.get(taskId);
+  }
   private readonly taskUsage = new Map<string, IUsageRecorder>();
   private readonly interruptedRecorded = new Set<string>();
   constructor(private readonly opts: TaskBoardOptions) {
@@ -92,7 +96,9 @@ export class TaskBoard {
     };
     const entry = { task, request: req, stop: new AbortController() };
     try {
-      const usage = this.opts.usage?.with({ taskId: id, role: req.worker });
+      const origin = this.opts.usage;
+      if (origin) this.originUsage.set(id, origin);
+      const usage = origin?.with({ taskId: id, role: req.worker });
       if (usage) this.taskUsage.set(id, usage);
     } catch {
       /* Recording cannot affect task execution. */
@@ -210,6 +216,7 @@ export class TaskBoard {
       const result = await (this.opts.wrapRun
         ? this.opts.wrapRun({ ...task }, run)
         : run());
+      if (result.usage) task.usage = result.usage;
       task.output = cutTaskOutput(result.output);
       task.budgetExhausted = result.budgetExhausted;
       task.toolCalls = result.toolCallCount;
@@ -265,6 +272,7 @@ export class TaskBoard {
   restore(records: TaskRecord[]): string[] {
     if (this.entries.size)
       throw new Error('cannot restore while tasks are active');
+    this.originUsage.clear();
     const interrupted: string[] = [];
     for (const record of records) {
       const task = { ...record };

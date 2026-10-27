@@ -466,7 +466,8 @@ test('library LLM call paths terminate at the real provider with no content', as
         calls.every(
           (r) =>
             r.kind === 'llm.call' &&
-            r.context.role === 'tool-loop' &&
+            r.context.component === 'tool-loop' &&
+            r.context.role === undefined &&
             r.outcome ===
               (mode === 'ok' || mode === 'early'
                 ? 'ok'
@@ -867,7 +868,8 @@ for (const mode of ['ok', 'returned', 'throw', 'abort'] as const) {
       assert.ok(hit?.kind === 'tool.call');
       assert.equal(hit.dispatched, false);
       assert.equal(hit.outcome, 'ok');
-      assert.equal(hit.context.role, 'tool-loop');
+      assert.equal(hit.context.role, undefined);
+      assert.equal(hit.context.component, 'tool-loop');
       contentFree(records);
     }
     controller = new AbortController();
@@ -964,11 +966,11 @@ for (const mode of ['ok', 'returned', 'throw', 'abort'] as const) {
       dispatched.map((r) => [r.context.role, r.outcome]),
       [
         [
-          'tool-loop',
+          undefined,
           mode === 'ok' ? 'ok' : mode === 'abort' ? 'aborted' : 'error',
         ],
         [
-          'tool-loop',
+          undefined,
           mode === 'ok' ? 'ok' : mode === 'abort' ? 'aborted' : 'error',
         ],
         [

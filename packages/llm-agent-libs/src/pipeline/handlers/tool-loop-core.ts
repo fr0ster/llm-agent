@@ -272,7 +272,7 @@ export async function* executeToolBatchWithHeartbeat(
     const res = cachedValue
       ? (() => {
           try {
-            options?.usage?.with({ role: 'tool-loop' }).record({
+            options?.usage?.with({ component: 'tool-loop' }).record({
               kind: 'tool.call',
               context: {},
               tool: tc.name,
@@ -293,7 +293,7 @@ export async function* executeToolBatchWithHeartbeat(
       : await (async () => {
           const r = await client.callTool(tc.name, tc.arguments, {
             ...options,
-            usage: options?.usage?.with({ role: 'tool-loop' }),
+            usage: options?.usage?.with({ component: 'tool-loop' }),
           });
           if (r.ok) toolCache.set(tc.name, tc.arguments, r.value);
           return r;
