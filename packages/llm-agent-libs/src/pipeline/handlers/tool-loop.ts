@@ -853,6 +853,13 @@ export class ToolLoopHandler implements IStageHandler {
               },
             );
             toolCallCount += batch.length;
+            if (batch.length > 0) {
+              try {
+                ctx.options?.onToolCallCount?.(toolCallCount, maxToolCalls);
+              } catch {
+                /* Observers cannot affect execution. */
+              }
+            }
             if (maxToolCalls !== undefined && toolCallCount >= maxToolCalls) {
               ctx.yield({
                 ok: true,
@@ -1006,7 +1013,14 @@ export class ToolLoopHandler implements IStageHandler {
       const outcome = step.value;
       if (outcome.escalated) return false;
       currentTools = outcome.currentTools;
-      toolCallCount = outcome.toolCallCount;
+      if (outcome.toolCallCount !== toolCallCount) {
+        toolCallCount = outcome.toolCallCount;
+        try {
+          ctx.options?.onToolCallCount?.(toolCallCount, maxToolCalls);
+        } catch {
+          /* Observers cannot affect execution. */
+        }
+      }
       if (maxToolCalls !== undefined && toolCallCount >= maxToolCalls) {
         ctx.yield({
           ok: true,

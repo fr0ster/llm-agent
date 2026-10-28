@@ -555,7 +555,18 @@ export class SmartAgent {
     }> = [];
     // Map streaming index → position in collectedToolCalls for delta correlation
     const indexToPosition = new Map<number, number>();
-    for await (const chunk of this.streamProcess(textOrMessages, options)) {
+    let executedToolCallCount: number | undefined;
+    const streamOptions: AgentCallOptions = {
+      ...options,
+      onToolCallCount: (count, max) => {
+        executedToolCallCount = count;
+        options?.onToolCallCount?.(count, max);
+      },
+    };
+    for await (const chunk of this.streamProcess(
+      textOrMessages,
+      streamOptions,
+    )) {
       if (!chunk.ok) return chunk;
       if (chunk.value.content && !chunk.value.ephemeral)
         content += chunk.value.content;
@@ -614,7 +625,7 @@ export class SmartAgent {
       value: {
         content,
         iterations: 1,
-        toolCallCount: collectedToolCalls.length,
+        toolCallCount: executedToolCallCount ?? collectedToolCalls.length,
         ...budget,
         stopReason,
         ...(stopped ? { stopped } : {}),
@@ -1365,6 +1376,13 @@ export class SmartAgent {
             },
           );
           toolCallCount += batch.length;
+          if (batch.length > 0) {
+            try {
+              opts?.onToolCallCount?.(toolCallCount, this.config.maxToolCalls);
+            } catch {
+              /* Observers cannot affect execution. */
+            }
+          }
           if (
             this.config.maxToolCalls !== undefined &&
             toolCallCount >= this.config.maxToolCalls
@@ -1477,7 +1495,14 @@ export class SmartAgent {
       });
       if (outcome.escalated) return;
       currentTools = outcome.currentTools;
-      toolCallCount = outcome.toolCallCount;
+      if (outcome.toolCallCount !== toolCallCount) {
+        toolCallCount = outcome.toolCallCount;
+        try {
+          opts?.onToolCallCount?.(toolCallCount, this.config.maxToolCalls);
+        } catch {
+          /* Observers cannot affect execution. */
+        }
+      }
       if (
         this.config.maxToolCalls !== undefined &&
         toolCallCount >= this.config.maxToolCalls

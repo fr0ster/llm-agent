@@ -38,3 +38,26 @@ test('SmartAgentSubAgent retains per-model usage including requests', async () =
     usage,
   );
 });
+
+test('SmartAgentSubAgent forwards the tool-call count callback', async () => {
+  const onToolCallCount = (_count: number, _max?: number): void => {};
+  const agent: Pick<SmartAgent, 'process' | 'maxToolCalls'> = {
+    maxToolCalls: 40,
+    async process(_input, options) {
+      assert.equal(options?.onToolCallCount, onToolCallCount);
+      return {
+        ok: true,
+        value: {
+          content: 'ok',
+          iterations: 1,
+          toolCallCount: 0,
+          stopReason: 'stop',
+        },
+      };
+    },
+  };
+  await new SmartAgentSubAgent('w', agent).run({
+    task: 'work',
+    onToolCallCount,
+  });
+});

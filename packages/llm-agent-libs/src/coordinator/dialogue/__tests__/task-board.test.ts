@@ -290,3 +290,45 @@ test('cooperative stop and stopAll wait for workers to settle', async () => {
   await stopping;
   assert.equal(board.get(id)?.state, 'stopped');
 });
+
+test('running tasks expose live tool counts and preserve the base observer', async () => {
+  const releases: (() => void)[] = [];
+  const worker: ISubAgent = {
+    name: 'w',
+    capabilities: { contextPolicy: 'optional', maxToolCalls: 40 },
+    async run(input) {
+      await new Promise<void>((resolve) => releases.push(resolve));
+      input.onToolCallCount?.(3, 40);
+      input.onToolCallCount?.(4);
+      await new Promise<void>((resolve) => releases.push(resolve));
+      return { output: 'done', toolCallCount: 5, maxToolCalls: 50 };
+    },
+  };
+  const observed: number[] = [];
+  const board = new TaskBoard({
+    workers: new Map([['w', worker]]),
+    onEvent() {},
+    baseInput: () => ({
+      onToolCallCount(count) {
+        assert.equal(board.list()[0].toolCalls, count);
+        observed.push(count);
+        throw new Error('observer failed');
+      },
+    }),
+  });
+  const id = start(board);
+  await tick();
+  assert.equal(board.get(id)?.toolCalls, undefined);
+  assert.equal(board.get(id)?.maxToolCalls, 40);
+  releases.shift()?.();
+  await tick();
+  assert.equal(board.get(id)?.state, 'running');
+  assert.equal(board.get(id)?.toolCalls, 4);
+  assert.equal(board.get(id)?.maxToolCalls, 40);
+  assert.deepEqual(observed, [3, 4]);
+  releases.shift()?.();
+  await tick();
+  assert.equal(board.get(id)?.state, 'done');
+  assert.equal(board.get(id)?.toolCalls, 5);
+  assert.equal(board.get(id)?.maxToolCalls, 50);
+});

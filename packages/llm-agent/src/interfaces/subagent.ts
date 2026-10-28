@@ -52,6 +52,10 @@ export interface ISubAgentInput {
    *  Fire-and-forget — implementations must never let the callback throw
    *  break the run. Absence preserves today's silent behaviour. */
   onPartial?: OnPartial;
+  /** Called when the request's executed tool-call count changes (the result's
+   *  toolCallCount), with configured maxToolCalls. Fire-and-forget; callback
+   *  exceptions must never break the run. */
+  onToolCallCount?: (count: number, max?: number) => void;
   /** Client-provided external (consumer-executed) tools from the request, e.g.
    *  create_file / rag_add. Threaded from the coordinator into the worker's
    *  nested pipeline so the worker can emit a tool call the client fulfils

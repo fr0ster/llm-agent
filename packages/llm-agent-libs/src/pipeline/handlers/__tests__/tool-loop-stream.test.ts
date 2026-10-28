@@ -356,3 +356,49 @@ test('#246 caller #1: ToolLoopHandler with heartbeatIntervalMs 0 → no heartbea
     'disabled interval → no heartbeat chunk from the batch executor',
   );
 });
+
+for (const throws of [false, true]) {
+  test(`pipeline reports executed tool counts (throwing observer: ${throws})`, async () => {
+    let round = 0;
+    const counts: Array<[number, number | undefined]> = [];
+    const ctx = makeCtx(async function* (): AsyncIterable<
+      Result<LlmStreamChunk, LlmError>
+    > {
+      round++;
+      yield {
+        ok: true,
+        value:
+          round <= 2
+            ? {
+                content: '',
+                toolCalls: [
+                  { id: `call-${round}`, name: 'Read', arguments: {} },
+                ],
+                finishReason: 'tool_calls',
+              }
+            : { content: 'done', finishReason: 'stop' },
+      };
+    });
+    assert.ok(ctx.options);
+    ctx.options.onToolCallCount = (count, max) => {
+      counts.push([count, max]);
+      if (throws) throw new Error('observer failed');
+    };
+    ctx.toolClientMap.set('Read', {
+      async listTools() {
+        return { ok: true, value: [] };
+      },
+      async callTool() {
+        return { ok: true, value: { content: 'read' } };
+      },
+    });
+    assert.equal(
+      await new ToolLoopHandler().execute(ctx, {}, makeSpan()),
+      true,
+    );
+    assert.deepEqual(counts, [
+      [1, 5],
+      [2, 5],
+    ]);
+  });
+}

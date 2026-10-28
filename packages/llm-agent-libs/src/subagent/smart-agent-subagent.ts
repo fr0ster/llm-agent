@@ -43,6 +43,7 @@ export class SmartAgentSubAgent implements ISubAgent {
         trace: input.trace,
         sessionLogger: input.sessionLogger,
         onPartial: input.onPartial,
+        onToolCallCount: input.onToolCallCount,
         // Issue #167: forward the client's external (consumer-executed) tools into
         // the worker's nested pipeline so it can emit a tool call the client
         // fulfils, instead of narrating "tool unavailable".

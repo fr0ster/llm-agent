@@ -202,9 +202,12 @@ export class TaskBoard {
       this.emit('started', task, 'queued');
       const worker = this.opts.workers.get(task.worker);
       if (!worker) throw new Error(`unknown worker ${task.worker}`);
+      if (worker.capabilities?.maxToolCalls !== undefined)
+        task.maxToolCalls = worker.capabilities.maxToolCalls;
+      const baseInput = this.opts.baseInput?.();
       const run = () =>
         worker.run({
-          ...this.opts.baseInput?.(),
+          ...baseInput,
           ...(this.taskUsage.has(task.id)
             ? { usage: this.taskUsage.get(task.id) }
             : {}),
@@ -212,6 +215,15 @@ export class TaskBoard {
           context: request.context,
           history: request.history,
           stopSignal: stop.signal,
+          onToolCallCount: (count, max) => {
+            task.toolCalls = count;
+            if (max !== undefined) task.maxToolCalls = max;
+            try {
+              baseInput?.onToolCallCount?.(count, max);
+            } catch {
+              /* Observers cannot affect execution. */
+            }
+          },
         });
       const result = await (this.opts.wrapRun
         ? this.opts.wrapRun({ ...task }, run)
