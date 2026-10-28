@@ -722,6 +722,8 @@ for (const by of ['planner', 'checker'] as const) {
     let injected = false;
     const session = await DialogueSession.open({
       id: 'skip-restore',
+      // Today's restore path; prepared mode resets a done plan at the first request boundary.
+      plannerContext: 'conversation',
       store,
       board: { workers: new Map() },
       planner: {

@@ -182,9 +182,8 @@ export class DialogueSession {
       this.updateRequestPlan();
       open.closedAt = this.now();
       open.closedPlan = structuredClone(this.plan);
-      // Preserve restored legacy plans and the notes sent with raw history.
-      if (this.opts.plannerContext !== 'conversation' && !open.legacy)
-        this.plan = undefined;
+      // Preserve the notes sent with raw conversation history.
+      if (this.opts.plannerContext !== 'conversation') this.plan = undefined;
       open = undefined;
     }
     if (!open) {

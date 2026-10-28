@@ -31,7 +31,8 @@ workers get earlier results by reference.
     `done` (status, not inferred from steps); the plan status is not `waiting_user`; the request's latest
     session turn ended with a successful planner reply (`lastTurnOk`, persisted on the record; a failed
     turn keeps the request open so a retry joins; legacy requests count as ok); no task of the session
-    is queued or running; and no task event is queued.
+    is queued or running; and no task event is queued. The automatic boundary resets the (done or absent)
+    plan to empty, legacy requests included, so the new request never inherits its restrictions.
   - **Explicit (planner decides).** Otherwise the input joins the open request. When the planner sees
     that the input starts unrelated work, it calls the planner tool `new_request()`. Eligibility is
     enforced by the session (tool error otherwise): only in a user turn; only in the first planner call
