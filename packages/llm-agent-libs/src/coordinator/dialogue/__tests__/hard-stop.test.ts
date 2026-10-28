@@ -132,6 +132,42 @@ test('hard stop releases an uncooperative worker and ignores late results', asyn
   );
 });
 
+test('hard stop prevents worker start after a delayed wrapRun resumes', async () => {
+  let release = () => {};
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let wrapped = false;
+  let workerCalls = 0;
+  const f = setup(
+    async () => {
+      workerCalls++;
+      return { output: 'late' };
+    },
+    {
+      hardStopAfterMs: 0,
+      wrapRun: async (_task, run) => {
+        wrapped = true;
+        await gate;
+        return run();
+      },
+    },
+  );
+  await tick();
+  assert.equal(wrapped, true);
+  await f.board.stopAll();
+  assert.equal(f.board.get(f.id)?.state, 'stopped');
+  const stopped = f.board.get(f.id);
+  release();
+  await tick();
+  assert.equal(workerCalls, 0);
+  assert.deepEqual(f.board.get(f.id), stopped);
+  assert.deepEqual(
+    f.events.map((event) => event.kind),
+    ['started', 'stopped'],
+  );
+});
+
 test('base input cancellation remains connected', async () => {
   const base = new AbortController();
   let signal: AbortSignal | undefined;

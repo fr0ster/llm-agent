@@ -223,8 +223,9 @@ export class TaskBoard {
       if (worker.capabilities?.maxToolCalls !== undefined)
         task.maxToolCalls = worker.capabilities.maxToolCalls;
       const baseInput = this.opts.baseInput?.();
-      const run = () =>
-        worker.run({
+      const run = () => {
+        if (hard.signal.aborted) throw hard.signal.reason;
+        return worker.run({
           ...baseInput,
           ...(this.taskUsage.has(task.id)
             ? { usage: this.taskUsage.get(task.id) }
@@ -257,6 +258,7 @@ export class TaskBoard {
             }
           },
         });
+      };
       const aborted = new Promise<never>((_, reject) => {
         const onAbort = () => reject(hard.signal.reason);
         hard.signal.addEventListener('abort', onAbort, { once: true });
