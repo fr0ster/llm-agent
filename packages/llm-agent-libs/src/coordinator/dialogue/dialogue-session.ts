@@ -27,6 +27,12 @@ import {
   boundRequestTranscript,
   DefaultPlannerContextBuilder,
 } from './planner-context-builder.js';
+import { PlannerMemoryWriter } from './planner-memory.js';
+import {
+  type PlannerRetrievalOptions,
+  retrievePlannerContext,
+  validateRetrievalOptions,
+} from './planner-retrieval.js';
 import { runInPlannerScope } from './planner-scope.js';
 import {
   applyTaskEvent,
@@ -59,7 +65,7 @@ export interface PlannerAgent {
     opts: PlannerTurnOptions,
   ): Promise<Result<{ content: string; usage?: TokenUsage }, Error>>;
 }
-export interface DialogueSessionOptions {
+export interface DialogueSessionOptions extends PlannerRetrievalOptions {
   /** Request-scoped prepared context by default; conversation preserves legacy planner input. */
   plannerContext?: 'prepared' | 'conversation';
   /** Overrides the default builder in prepared mode only. */
@@ -143,6 +149,8 @@ export class DialogueSession {
       }
     }
   }
+  private readonly memoryWriter?: PlannerMemoryWriter;
+  private readonly taskRequests = new Map<string, string>();
   private requests: PlannerRequestRecord[] = [];
   private requestSeq = 0;
   private messages: PlannerMessage[] = [];
@@ -235,6 +243,13 @@ export class DialogueSession {
     request: PlannerRequestRecord,
   ): void {
     if (message.text.trim() === 'NO_MESSAGE') return;
+    this.memoryWriter?.enqueue(
+      'planner-reply',
+      request.id,
+      message.id,
+      message.text,
+      { usage: this.turnUsage },
+    );
     this.messages.push(structuredClone(message));
     request.replies.push(message.id);
     request.replies = request.replies.slice(-50);
@@ -395,6 +410,13 @@ export class DialogueSession {
       (!Number.isInteger(opts.maxItemsPerStep) || opts.maxItemsPerStep < 1)
     )
       throw new Error('maxItemsPerStep must be a positive integer');
+    validateRetrievalOptions(opts);
+    if (opts.plannerMemory)
+      this.memoryWriter = new PlannerMemoryWriter(
+        opts.id,
+        opts.plannerMemory,
+        (message) => this.warn(message),
+      );
     this.contextBuilder =
       opts.plannerContextBuilder ?? new DefaultPlannerContextBuilder();
     this.signals = opts.signals ?? { emit() {}, retire() {} };
@@ -412,6 +434,28 @@ export class DialogueSession {
       source: opts.id,
       onStateChange: () => this.changed(),
       onEvent: (event) => {
+        const owner =
+          this.taskRequests.get(event.task.id) ?? this.openRequest?.id;
+        if (owner) {
+          this.taskRequests.set(event.task.id, owner);
+          if (
+            event.kind === 'done' ||
+            event.kind === 'failed' ||
+            event.kind === 'stopped'
+          )
+            this.memoryWriter?.enqueue(
+              'planner-task',
+              owner,
+              event.task.id,
+              `${event.task.goal}: ${event.task.output ?? event.task.error ?? ''}`,
+              {
+                usage:
+                  this.board.originRecorder(event.task.id) ??
+                  this.turnUsage ??
+                  opts.usage,
+              },
+            );
+        }
         applyTaskEvent(this.plan, event, this.taskSteps);
         recomputePlanStatus(this.plan);
         this.changed();
@@ -579,6 +623,7 @@ export class DialogueSession {
     user?: UserTurn,
     consumed: TaskEvent[] = [],
   ): Promise<PlannerMessage> {
+    const previousRequest = this.openRequest;
     const request = this.beginRequest(text, user !== undefined);
     request.lastTurnOk = false;
     const turnStartedAt = this.now();
@@ -590,6 +635,17 @@ export class DialogueSession {
       origin ?? user?.opts.usage ?? this.opts.usage ?? this.opts.board.usage,
       { turnId: randomUUID() },
     );
+    if (previousRequest && previousRequest !== request) {
+      this.memoryWriter?.enqueue(
+        'planner-plan',
+        previousRequest.id,
+        previousRequest.id,
+        previousRequest.closedPlan?.steps
+          .map((step) => `${step.goal} ? ${step.state} ? ${step.note ?? ''}`)
+          .join('\n') ?? '',
+        { usage: this.turnUsage },
+      );
+    }
     if (user && this.plan) {
       if (this.plan.status === 'waiting_user' && this.plan.question?.trim())
         this.plan.scopeConsent = true;
@@ -603,6 +659,33 @@ export class DialogueSession {
     this.appendInput(input);
     this.trim();
     try {
+      const projected = new DefaultPlannerContextBuilder().build({
+        open: request,
+        memory: [],
+        knowledge: [],
+        notes: [],
+      });
+      const elided = projected.some((message) =>
+        /\[(?:elided|cut:|stored cut:|dropped) /.test(message.content ?? ''),
+      );
+      const retrieved = await retrievePlannerContext(
+        this.opts,
+        this.opts.id,
+        request.id,
+        user
+          ? text
+          : `${request.transcript[0]?.content ?? request.text}\n${text}`,
+        elided,
+        { usage: this.turnUsage, signal: user?.opts.signal },
+        (message) => this.warn(message),
+      );
+      retrieved.memory = retrieved.memory.map((entry) => ({
+        ...entry,
+        ...(entry.kind === 'planner-reply' &&
+        !this.messages.some((message) => message.id === entry.sourceId)
+          ? { expired: true }
+          : {}),
+      }));
       let reply = '';
       let plannerUsage: TokenUsage | undefined;
       const actions: string[] = [];
@@ -628,8 +711,9 @@ export class DialogueSession {
             ? structuredClone(this.conversation)
             : this.contextBuilder.build({
                 open: structuredClone(request),
-                memory: [],
-                knowledge: [],
+                ...retrieved,
+                memoryCharBudget: this.opts.memoryCharBudget,
+                knowledgeCharBudget: this.opts.knowledgeCharBudget,
                 notes,
               });
         if (this.opts.plannerContext === 'conversation') {
@@ -817,6 +901,14 @@ export class DialogueSession {
       }
       return message;
     } finally {
+      if (user)
+        this.memoryWriter?.enqueue(
+          'planner-input',
+          request.id,
+          randomUUID(),
+          text,
+          { usage: this.turnUsage },
+        );
       if (!this.closing) await this.persist();
     }
   }
@@ -922,6 +1014,7 @@ export class DialogueSession {
     // Stop immediately, then stop again for tasks delegated by the settling turn.
     await Promise.all([this.board.stopAll(), this.active]);
     await this.board.stopAll();
+    await this.memoryWriter?.close();
     this.events = [];
     this.pending = [];
     await this.persistence;

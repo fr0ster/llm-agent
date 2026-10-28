@@ -141,6 +141,8 @@ export interface PlannerRequestRecord {
   legacy?: true;
 }
 export interface PlannerMemoryEntry {
+  /** The archived message is no longer available in full. */
+  expired?: boolean;
   kind: 'planner-input' | 'planner-reply' | 'planner-task' | 'planner-plan';
   requestId: string;
   sourceId: string;
@@ -163,6 +165,8 @@ export interface IPlannerKnowledge {
   ): Promise<PlannerKnowledgeEntry[]>;
 }
 export interface PlannerContextInput {
+  memoryCharBudget?: number;
+  knowledgeCharBudget?: number;
   open?: PlannerRequestRecord;
   memory: readonly PlannerMemoryEntry[];
   knowledge: readonly PlannerKnowledgeEntry[];
