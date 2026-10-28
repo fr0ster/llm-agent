@@ -64,6 +64,9 @@ export interface DialogueSessionOptions {
   longTaskMs?: number;
   /** Schedule once and return cancellation. Defaults to an unref'ed timeout. */
   scheduleTimer?: (callback: () => void, delayMs: number) => () => void;
+  /** After stop(), abort in-flight work after this grace period. Default: 60,000 ms;
+   * zero aborts immediately; negative or NaN values use the default. */
+  hardStopAfterMs?: number;
   maxItemsPerStep?: number;
   planner: PlannerAgent;
   board: Omit<
@@ -278,6 +281,8 @@ export class DialogueSession {
     const session = this;
     this.board = new TaskBoard({
       ...opts.board,
+      hardStopAfterMs: opts.hardStopAfterMs ?? opts.board.hardStopAfterMs,
+      scheduleTimer: opts.scheduleTimer ?? opts.board.scheduleTimer,
       boardId: opts.id,
       get usage() {
         return session.turnUsage ?? opts.usage ?? opts.board.usage;

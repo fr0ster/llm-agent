@@ -31,6 +31,11 @@ export interface TaskBoardOptions {
   workers: ReadonlyMap<string, ISubAgent>;
   maxConcurrent?: number;
   maxTasks?: number;
+  /** After stop(), abort in-flight work after this grace period. Default: 60,000 ms;
+   * zero aborts immediately; negative or NaN values use the default. */
+  hardStopAfterMs?: number;
+  /** Schedule once and return cancellation. Defaults to an unref'ed timeout. */
+  scheduleTimer?: (callback: () => void, delayMs: number) => () => void;
   pool?: IConcurrencyPool;
   onEvent: (event: TaskEvent) => void;
   wrapRun?: (
@@ -45,6 +50,8 @@ interface Entry {
   task: TaskRecord;
   request: TaskRequest;
   stop: AbortController;
+  hard: AbortController;
+  cancelHardStop?: () => void;
 }
 export class TaskBoard {
   private readonly records = new Map<string, TaskRecord>();
@@ -53,6 +60,7 @@ export class TaskBoard {
   private readonly boardPool: SemaphorePool;
   private readonly maxTasks: number;
   private counter = 0;
+  private readonly hardStopAfterMs: number;
   private readonly boardId: string;
   private readonly originUsage = new Map<string, IUsageRecorder>();
   originRecorder(taskId: string): IUsageRecorder | undefined {
@@ -61,6 +69,10 @@ export class TaskBoard {
   private readonly taskUsage = new Map<string, IUsageRecorder>();
   private readonly interruptedRecorded = new Set<string>();
   constructor(private readonly opts: TaskBoardOptions) {
+    this.hardStopAfterMs =
+      Number.isFinite(opts.hardStopAfterMs) && (opts.hardStopAfterMs ?? -1) >= 0
+        ? (opts.hardStopAfterMs ?? 60_000)
+        : 60_000;
     this.boardId = opts.boardId ?? randomUUID();
     this.boardPool = new SemaphorePool(opts.maxConcurrent ?? 3);
     this.maxTasks = opts.maxTasks ?? 50;
@@ -94,7 +106,12 @@ export class TaskBoard {
       state: 'queued',
       createdAt: this.now(),
     };
-    const entry = { task, request: req, stop: new AbortController() };
+    const entry: Entry = {
+      task,
+      request: req,
+      stop: new AbortController(),
+      hard: new AbortController(),
+    };
     try {
       const origin = this.opts.usage;
       if (origin) this.originUsage.set(id, origin);
@@ -189,7 +206,8 @@ export class TaskBoard {
     this.taskUsage.delete(task.id);
   }
   private async execute(entry: Entry): Promise<void> {
-    const { task, request, stop } = entry;
+    const { task, request, stop, hard } = entry;
+    let removeAbortListener: (() => void) | undefined;
     let releaseBoard: (() => void) | undefined;
     let releasePool: (() => void) | undefined;
     let kind: 'done' | 'failed' | 'stopped' = 'failed';
@@ -205,8 +223,9 @@ export class TaskBoard {
       if (worker.capabilities?.maxToolCalls !== undefined)
         task.maxToolCalls = worker.capabilities.maxToolCalls;
       const baseInput = this.opts.baseInput?.();
-      const run = () =>
-        worker.run({
+      const run = () => {
+        if (hard.signal.aborted) throw hard.signal.reason;
+        return worker.run({
           ...baseInput,
           ...(this.taskUsage.has(task.id)
             ? { usage: this.taskUsage.get(task.id) }
@@ -214,8 +233,12 @@ export class TaskBoard {
           task: request.goal,
           context: request.context,
           history: request.history,
+          signal: baseInput?.signal
+            ? AbortSignal.any([baseInput.signal, hard.signal])
+            : hard.signal,
           stopSignal: stop.signal,
           onToolsSelected: (selected, available) => {
+            if (hard.signal.aborted || task.state !== 'running') return;
             task.toolsSelected = selected;
             task.toolsAvailable = available;
             try {
@@ -225,6 +248,7 @@ export class TaskBoard {
             }
           },
           onToolCallCount: (count, max) => {
+            if (hard.signal.aborted || task.state !== 'running') return;
             task.toolCalls = count;
             if (max !== undefined) task.maxToolCalls = max;
             try {
@@ -234,9 +258,21 @@ export class TaskBoard {
             }
           },
         });
-      const result = await (this.opts.wrapRun
-        ? this.opts.wrapRun({ ...task }, run)
-        : run());
+      };
+      const aborted = new Promise<never>((_, reject) => {
+        const onAbort = () => reject(hard.signal.reason);
+        hard.signal.addEventListener('abort', onAbort, { once: true });
+        removeAbortListener = () =>
+          hard.signal.removeEventListener('abort', onAbort);
+        if (hard.signal.aborted) onAbort();
+      });
+      const result = await Promise.race([
+        Promise.resolve().then(() =>
+          this.opts.wrapRun ? this.opts.wrapRun({ ...task }, run) : run(),
+        ),
+        aborted,
+      ]);
+      if (hard.signal.aborted) throw hard.signal.reason;
       if (result.usage) task.usage = result.usage;
       task.output = cutTaskOutput(result.output);
       task.budgetExhausted = result.budgetExhausted;
@@ -253,12 +289,17 @@ export class TaskBoard {
         kind = 'failed';
       } else kind = result.stopped === true ? 'stopped' : 'done';
     } catch (error) {
-      if (task.state === 'stopped') kind = 'stopped';
+      if (hard.signal.aborted) {
+        kind = 'stopped';
+        task.error = `stopped: in-flight work aborted after ${this.hardStopAfterMs} ms`;
+      } else if (task.state === 'stopped') kind = 'stopped';
       else {
         kind = 'failed';
         task.error = error instanceof Error ? error.message : String(error);
       }
     } finally {
+      entry.cancelHardStop?.();
+      removeAbortListener?.();
       releasePool?.();
       releaseBoard?.();
       this.entries.delete(task.id);
@@ -278,6 +319,21 @@ export class TaskBoard {
       entry.task.state = 'stopped';
       entry.task.finishedAt = this.now();
       this.emit('stopped', entry.task, 'queued');
+    } else if (entry.task.state === 'running') {
+      const abort = () => {
+        if (entry.task.state === 'running') entry.hard.abort();
+      };
+      if (this.hardStopAfterMs === 0) abort();
+      else if (this.opts.scheduleTimer)
+        entry.cancelHardStop = this.opts.scheduleTimer(
+          abort,
+          this.hardStopAfterMs,
+        );
+      else {
+        const timer = setTimeout(abort, this.hardStopAfterMs);
+        timer.unref();
+        entry.cancelHardStop = () => clearTimeout(timer);
+      }
     }
     return true;
   }
