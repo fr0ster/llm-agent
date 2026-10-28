@@ -3,12 +3,14 @@ import type {
   DialogueSignals,
   DialogueState,
   IDialogueStateStore,
+  IPlannerContextBuilder,
   ISignalEmitter,
   IUsageRecorder,
   Message,
   OnPartial,
   DialoguePlan as Plan,
   PlannerMessage,
+  PlannerRequestRecord,
   Result,
   SignalName,
   StreamChunk,
@@ -20,6 +22,11 @@ import {
   scopedUsage,
   type TokenUsage,
 } from '@mcp-abap-adt/llm-agent';
+import {
+  appendRequestMessage,
+  boundRequestTranscript,
+  DefaultPlannerContextBuilder,
+} from './planner-context-builder.js';
 import { runInPlannerScope } from './planner-scope.js';
 import {
   applyTaskEvent,
@@ -53,6 +60,10 @@ export interface PlannerAgent {
   ): Promise<Result<{ content: string; usage?: TokenUsage }, Error>>;
 }
 export interface DialogueSessionOptions {
+  /** Request-scoped prepared context by default; conversation preserves legacy planner input. */
+  plannerContext?: 'prepared' | 'conversation';
+  /** Overrides the default builder in prepared mode only. */
+  plannerContextBuilder?: IPlannerContextBuilder;
   usage?: IUsageRecorder;
   signals?: ISignalEmitter<DialogueSignals>;
   id: string;
@@ -104,6 +115,7 @@ export class DialogueSession {
     }
   }
   private changed(): void {
+    this.updateRequestPlan();
     this.updateWaitClock();
     const activity = {
       turnActive: this.turnActive,
@@ -129,6 +141,113 @@ export class DialogueSession {
         this.lastPlan = encodedPlan;
         this.emit('dialogue.plan.changed', plan);
       }
+    }
+  }
+  private requests: PlannerRequestRecord[] = [];
+  private requestSeq = 0;
+  private messages: PlannerMessage[] = [];
+  private readonly contextBuilder: IPlannerContextBuilder;
+  private get openRequest(): PlannerRequestRecord | undefined {
+    return this.requests.find((record) => record.closedAt === undefined);
+  }
+  private updateRequestPlan(): void {
+    const open = this.openRequest;
+    if (!open) return;
+    open.plan = this.plan
+      ? {
+          status: this.plan.status,
+          steps: this.plan.steps.length,
+          done: this.plan.steps.filter((step) => step.state === 'done').length,
+          failed: this.plan.steps.filter((step) => step.state === 'failed')
+            .length,
+          skipped: this.plan.steps.filter((step) => step.state === 'skipped')
+            .length,
+        }
+      : undefined;
+  }
+  private beginRequest(text: string, user: boolean): PlannerRequestRecord {
+    let open = this.openRequest;
+    const automatic =
+      user &&
+      this.plan?.status !== 'waiting_user' &&
+      (!this.plan ||
+        (!this.plan.steps.length && !this.plan.note) ||
+        this.plan.status === 'done') &&
+      open?.lastTurnOk === true &&
+      !this.events.length &&
+      !this.board
+        .list()
+        .some((task) => task.state === 'queued' || task.state === 'running');
+    if (open && automatic) {
+      this.updateRequestPlan();
+      open.closedAt = this.now();
+      open.closedPlan = structuredClone(this.plan);
+      // Preserve restored legacy plans and the notes sent with raw history.
+      if (this.opts.plannerContext !== 'conversation' && !open.legacy)
+        this.plan = undefined;
+      open = undefined;
+    }
+    if (!open) {
+      open = {
+        id: `r${++this.requestSeq}`,
+        openedAt: this.now(),
+        text: text.slice(0, 20_000),
+        replies: [],
+        transcript: [],
+      };
+      this.requests.push(open);
+    }
+    this.retainRequests();
+    return open;
+  }
+  private retainRequests(): void {
+    let size = this.requests.reduce(
+      (total, record) =>
+        total +
+        (record.closedAt === undefined
+          ? 0
+          : JSON.stringify(record.transcript).length +
+            JSON.stringify(record.closedPlan ?? null).length),
+      0,
+    );
+    for (const record of this.requests) {
+      record.text = record.text.slice(0, 20_000);
+      record.replies = record.replies.slice(-50);
+      if (size <= 2_000_000) continue;
+      if (record.closedAt === undefined || record.transcriptExpired) continue;
+      size -=
+        JSON.stringify(record.transcript).length +
+        JSON.stringify(record.closedPlan ?? null).length -
+        6;
+      record.transcript = [];
+      delete record.closedPlan;
+      record.transcriptExpired = true;
+    }
+    while (this.requests.length > 200) {
+      const index = this.requests.findIndex(
+        (record) => record.closedAt !== undefined,
+      );
+      if (index < 0) break;
+      this.requests.splice(index, 1);
+    }
+  }
+  private archive(
+    message: PlannerMessage,
+    request: PlannerRequestRecord,
+  ): void {
+    if (message.text.trim() === 'NO_MESSAGE') return;
+    this.messages.push(structuredClone(message));
+    request.replies.push(message.id);
+    request.replies = request.replies.slice(-50);
+    this.trimArchive();
+  }
+  private trimArchive(): void {
+    let size = this.messages.reduce(
+      (total, item) => total + item.text.length,
+      0,
+    );
+    while (size > 2_000_000 && this.messages.length) {
+      size -= this.messages.shift()?.text.length ?? 0;
     }
   }
   private conversation: Message[] = [];
@@ -277,6 +396,8 @@ export class DialogueSession {
       (!Number.isInteger(opts.maxItemsPerStep) || opts.maxItemsPerStep < 1)
     )
       throw new Error('maxItemsPerStep must be a positive integer');
+    this.contextBuilder =
+      opts.plannerContextBuilder ?? new DefaultPlannerContextBuilder();
     this.signals = opts.signals ?? { emit() {}, retire() {} };
     const session = this;
     this.board = new TaskBoard({
@@ -293,6 +414,7 @@ export class DialogueSession {
       onStateChange: () => this.changed(),
       onEvent: (event) => {
         applyTaskEvent(this.plan, event, this.taskSteps);
+        recomputePlanStatus(this.plan);
         this.changed();
         // Only outcomes wake the planner; a start is visible via list_tasks.
         if (this.closing || event.kind === 'started') return;
@@ -334,6 +456,39 @@ export class DialogueSession {
         session.plan.question =
           'Awaiting user response (restored legacy state)';
       session.pending = structuredClone(state.pending);
+      session.messages = structuredClone(state.messages ?? state.pending);
+      session.trimArchive();
+      session.requests = structuredClone(
+        state.requests ?? [
+          {
+            id: 'r1',
+            openedAt: state.savedAt,
+            text:
+              state.conversation
+                .find((message) => message.role === 'user')
+                ?.content?.slice(0, 20_000) ?? '',
+            replies: [],
+            transcript: [],
+            legacy: true,
+            lastTurnOk: true,
+          },
+        ],
+      );
+      if (state.requests === undefined) {
+        const legacy = session.requests[0];
+        for (const message of state.conversation)
+          appendRequestMessage(legacy, message);
+      }
+      for (const record of session.requests) {
+        record.text = record.text.slice(0, 20_000);
+        record.replies = record.replies.slice(-50);
+        boundRequestTranscript(record);
+      }
+      session.requestSeq = Math.max(
+        state.requestSeq ?? 0,
+        ...session.requests.map((record) => Number(record.id.slice(1)) || 0),
+      );
+      session.retainRequests();
       session.savedAt = state.savedAt;
       const ids = session.board.restore(state.tasks);
       if (state.taskSteps !== undefined) {
@@ -425,6 +580,8 @@ export class DialogueSession {
     user?: UserTurn,
     consumed: TaskEvent[] = [],
   ): Promise<PlannerMessage> {
+    const request = this.beginRequest(text, user !== undefined);
+    request.lastTurnOk = false;
     const turnStartedAt = this.now();
     const origin = consumed
       .filter((event) => event.kind !== 'started')
@@ -458,7 +615,6 @@ export class DialogueSession {
       let lastReadVersion: number | undefined;
       let partialText = '';
       for (let correction = 0; ; correction++) {
-        const messages = structuredClone(this.conversation);
         const notes = [
           planView(this.plan),
           ...this.board.workerBudgetNotes(),
@@ -468,8 +624,19 @@ export class DialogueSession {
                 `[environment] maxItemsPerStep: ${this.opts.maxItemsPerStep}; split larger batches`,
               ]),
         ];
-        const last = messages.at(-1);
-        if (last) last.content = `${notes.join('\n')}\n${last.content}`;
+        const messages =
+          this.opts.plannerContext === 'conversation'
+            ? structuredClone(this.conversation)
+            : this.contextBuilder.build({
+                open: structuredClone(request),
+                memory: [],
+                knowledge: [],
+                notes,
+              });
+        if (this.opts.plannerContext === 'conversation') {
+          const last = messages.at(-1);
+          if (last) last.content = `${notes.join('\n')}\n${last.content}`;
+        }
         const contentPartials: StreamChunk[] = [];
         const result = await runInPlannerScope(
           {
@@ -535,6 +702,11 @@ export class DialogueSession {
                 )
                 .map((task) => `${task.id} (${task.worker})`)
                 .join(', ')}.`;
+        appendRequestMessage(request, { role: 'assistant', content: reply });
+        appendRequestMessage(request, {
+          role: 'user',
+          content: `[actions] ${actions.join(', ') || 'none'}`,
+        });
         this.conversation.push({ role: 'assistant', content: reply });
         this.conversation.push({
           role: 'user',
@@ -634,6 +806,8 @@ export class DialogueSession {
         createdAt,
         trigger: user ? 'user' : 'event',
       };
+      request.lastTurnOk = true;
+      this.archive(message, request);
       if (!user && !this.closing && message.text.trim() !== 'NO_MESSAGE') {
         this.pending.push(message);
         try {
@@ -684,6 +858,8 @@ export class DialogueSession {
     return this.persistence;
   }
   private appendInput(text: string): void {
+    const open = this.openRequest;
+    if (open) appendRequestMessage(open, { role: 'user', content: text });
     const last = this.conversation.at(-1);
     // Hub notes occupy the next user slot; merge input to preserve role alternation.
     if (last?.role === 'user') last.content = `${last.content}\n${text}`;
@@ -721,6 +897,9 @@ export class DialogueSession {
   }
   snapshot(): DialogueState {
     return structuredClone({
+      requests: this.requests,
+      requestSeq: this.requestSeq,
+      messages: this.messages,
       conversation: this.conversation,
       plan: this.plan,
       planStatus: this.plan?.status,

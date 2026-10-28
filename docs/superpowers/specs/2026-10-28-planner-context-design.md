@@ -27,7 +27,7 @@ workers get earlier results by reference.
 - **Request**: a logical unit of work owned by the session's single plan. The decision is made when a
   queued user input is consumed by `turn()` (not when `send()` enqueues it), before the turn changes the
   plan. Two ways close a request and open the next:
-  - **Automatic (simple case only).** The input opens a new request when all hold: the plan is absent or
+  - **Automatic (simple case only).** The input opens a new request when all hold: the plan is absent (no plan, or a structured plan with no steps and no note) or
     `done` (status, not inferred from steps); the plan status is not `waiting_user`; the request's latest
     session turn ended with a successful planner reply (`lastTurnOk`, persisted on the record; a failed
     turn keeps the request open so a retry joins; legacy requests count as ok); no task of the session

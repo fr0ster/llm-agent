@@ -1,5 +1,6 @@
 import type { Message } from '../types.js';
-import type { TokenUsage } from './types.js';
+import type { IQueryEmbedding } from './query-embedding.js';
+import type { CallOptions, TokenUsage } from './types.js';
 
 export type TaskState =
   | 'queued'
@@ -102,6 +103,9 @@ export interface Plan {
   note?: string;
 }
 export interface DialogueState {
+  requests?: PlannerRequestRecord[];
+  requestSeq?: number;
+  messages?: PlannerMessage[];
   conversation: Message[];
   plan?: string | Plan;
   planStatus?: 'active' | 'waiting_user' | 'done';
@@ -115,4 +119,55 @@ export interface IDialogueStateStore {
   load(id: string): Promise<DialogueState | undefined>;
   save(id: string, s: DialogueState): Promise<void>;
   delete(id: string): Promise<void>;
+}
+
+export interface PlannerRequestRecord {
+  id: string;
+  openedAt: number;
+  closedAt?: number;
+  text: string;
+  plan?: {
+    status: 'active' | 'waiting_user' | 'done';
+    steps: number;
+    done: number;
+    failed: number;
+    skipped: number;
+  };
+  replies: string[];
+  lastTurnOk?: boolean;
+  closedPlan?: Plan;
+  transcriptExpired?: true;
+  transcript: Message[];
+  legacy?: true;
+}
+export interface PlannerMemoryEntry {
+  kind: 'planner-input' | 'planner-reply' | 'planner-task' | 'planner-plan';
+  requestId: string;
+  sourceId: string;
+  offset: number;
+  text: string;
+}
+export interface PlannerKnowledgeEntry {
+  collection: string;
+  id: string;
+  text: string;
+}
+/** Read-only planning knowledge collection. */
+export interface IPlannerKnowledge {
+  readonly name: string;
+  readonly embeddingKey?: string;
+  search(
+    query: { text: string; embedding?: IQueryEmbedding },
+    k: number,
+    options?: CallOptions,
+  ): Promise<PlannerKnowledgeEntry[]>;
+}
+export interface PlannerContextInput {
+  open?: PlannerRequestRecord;
+  memory: readonly PlannerMemoryEntry[];
+  knowledge: readonly PlannerKnowledgeEntry[];
+  notes: string[];
+}
+export interface IPlannerContextBuilder {
+  build(input: PlannerContextInput): Message[];
 }
