@@ -65,6 +65,8 @@ const rangeSchema = z.object({
   limit: z.number().int().positive().optional(),
 });
 function page(text: string, offset = 0, limit = 8_000) {
+  if (offset > text.length)
+    throw new Error(`offset ${offset} is beyond the end (${text.length})`);
   const end = Math.min(text.length, offset + Math.min(limit, 32_000));
   return {
     offset,

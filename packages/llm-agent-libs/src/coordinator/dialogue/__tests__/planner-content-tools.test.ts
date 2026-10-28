@@ -139,6 +139,10 @@ test('archive pages have defaults, capped limits, stable transcript rendering an
       ])
         assert.equal((await call(name, args)).error, true);
     }
+    assert.equal(
+      (await call('get_message', { id: 'a', offset: 1_000_000 })).error,
+      true,
+    );
   });
   assert.equal(f.reads(), 0);
 });
