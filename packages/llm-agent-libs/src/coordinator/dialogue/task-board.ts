@@ -202,9 +202,12 @@ export class TaskBoard {
       this.emit('started', task, 'queued');
       const worker = this.opts.workers.get(task.worker);
       if (!worker) throw new Error(`unknown worker ${task.worker}`);
+      if (worker.capabilities?.maxToolCalls !== undefined)
+        task.maxToolCalls = worker.capabilities.maxToolCalls;
+      const baseInput = this.opts.baseInput?.();
       const run = () =>
         worker.run({
-          ...this.opts.baseInput?.(),
+          ...baseInput,
           ...(this.taskUsage.has(task.id)
             ? { usage: this.taskUsage.get(task.id) }
             : {}),
@@ -212,6 +215,24 @@ export class TaskBoard {
           context: request.context,
           history: request.history,
           stopSignal: stop.signal,
+          onToolsSelected: (selected, available) => {
+            task.toolsSelected = selected;
+            task.toolsAvailable = available;
+            try {
+              baseInput?.onToolsSelected?.(selected, available);
+            } catch {
+              /* Observers cannot affect execution. */
+            }
+          },
+          onToolCallCount: (count, max) => {
+            task.toolCalls = count;
+            if (max !== undefined) task.maxToolCalls = max;
+            try {
+              baseInput?.onToolCallCount?.(count, max);
+            } catch {
+              /* Observers cannot affect execution. */
+            }
+          },
         });
       const result = await (this.opts.wrapRun
         ? this.opts.wrapRun({ ...task }, run)
@@ -219,8 +240,10 @@ export class TaskBoard {
       if (result.usage) task.usage = result.usage;
       task.output = cutTaskOutput(result.output);
       task.budgetExhausted = result.budgetExhausted;
-      task.toolCalls = result.toolCallCount;
-      task.maxToolCalls = result.maxToolCalls;
+      if (result.toolCallCount !== undefined)
+        task.toolCalls = result.toolCallCount;
+      if (result.maxToolCalls !== undefined)
+        task.maxToolCalls = result.maxToolCalls;
       if (result.errorClass === 'epicfail') {
         task.error = task.output || 'worker epicfail';
         kind = 'failed';

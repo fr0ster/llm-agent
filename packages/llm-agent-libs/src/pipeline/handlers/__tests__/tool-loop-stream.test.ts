@@ -25,7 +25,7 @@ import type {
   Result,
   ToolCallEntry,
 } from '@mcp-abap-adt/llm-agent';
-import { NoopToolCache } from '@mcp-abap-adt/llm-agent';
+import { McpError, NoopToolCache } from '@mcp-abap-adt/llm-agent';
 import { PendingToolResultsRegistry } from '../../../policy/pending-tool-results-registry.js';
 import { ToolAvailabilityRegistry } from '../../../policy/tool-availability-registry.js';
 import type { ISpan } from '../../../tracer/types.js';
@@ -356,3 +356,92 @@ test('#246 caller #1: ToolLoopHandler with heartbeatIntervalMs 0 → no heartbea
     'disabled interval → no heartbeat chunk from the batch executor',
   );
 });
+
+for (const throws of [false, true]) {
+  test(`pipeline reports count before escalation (throwing observer: ${throws})`, async () => {
+    const counts: Array<[number, number | undefined]> = [];
+    const ctx: PipelineContext = {
+      ...makeCtx(async function* (): AsyncIterable<
+        Result<LlmStreamChunk, LlmError>
+      > {
+        yield {
+          ok: true,
+          value: {
+            content: '',
+            toolCalls: [
+              { id: 'one', name: 'Read', arguments: {} },
+              { id: 'two', name: 'Read', arguments: {} },
+            ],
+            finishReason: 'tool_calls',
+          },
+        };
+      }),
+      mcpFailureClassifier: { classify: async () => 'unavailable' },
+      options: {
+        onToolCallCount(count, max) {
+          counts.push([count, max]);
+          if (throws) throw new Error('observer failed');
+        },
+      },
+    };
+    ctx.toolClientMap.set('Read', {
+      async listTools() {
+        return { ok: true, value: [] };
+      },
+      async callTool() {
+        return { ok: false, error: new McpError('unavailable', 'MCP_ERROR') };
+      },
+    });
+    assert.equal(
+      await new ToolLoopHandler().execute(ctx, {}, makeSpan()),
+      false,
+    );
+    assert.deepEqual(counts, [[2, 5]]);
+  });
+}
+
+for (const throws of [false, true]) {
+  test(`pipeline reports executed tool counts (throwing observer: ${throws})`, async () => {
+    let round = 0;
+    const counts: Array<[number, number | undefined]> = [];
+    const ctx = makeCtx(async function* (): AsyncIterable<
+      Result<LlmStreamChunk, LlmError>
+    > {
+      round++;
+      yield {
+        ok: true,
+        value:
+          round <= 2
+            ? {
+                content: '',
+                toolCalls: [
+                  { id: `call-${round}`, name: 'Read', arguments: {} },
+                ],
+                finishReason: 'tool_calls',
+              }
+            : { content: 'done', finishReason: 'stop' },
+      };
+    });
+    assert.ok(ctx.options);
+    ctx.options.onToolCallCount = (count, max) => {
+      counts.push([count, max]);
+      if (throws) throw new Error('observer failed');
+    };
+    ctx.toolClientMap.set('Read', {
+      async listTools() {
+        return { ok: true, value: [] };
+      },
+      async callTool() {
+        return { ok: true, value: { content: 'read' } };
+      },
+    });
+    assert.equal(
+      await new ToolLoopHandler().execute(ctx, {}, makeSpan()),
+      true,
+    );
+    assert.deepEqual(counts, [
+      [1, 5],
+      [2, 5],
+    ]);
+  });
+}

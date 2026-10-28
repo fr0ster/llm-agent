@@ -81,6 +81,7 @@ export class RagOrchestrator implements IRagOrchestrator {
       mode === 'hard' || (hasActions && (hasMcpClients || hasRagStores));
 
     let finalTools: LlmTool[] = [];
+    let toolsAvailable = externalTools.length;
     let retrieved: {
       ragResults: Record<string, RagResult[]>;
       tools: McpTool[];
@@ -179,6 +180,7 @@ export class RagOrchestrator implements IRagOrchestrator {
       }
 
       const { tools: mcpTools } = await this.deps.mcpToolRegistry.resolve(opts);
+      toolsAvailable = mcpTools.length + externalTools.length;
 
       // Collect all RAG results for tool discovery
       const allRagResults = Object.values(rerankedMap).flat();
@@ -403,6 +405,7 @@ export class RagOrchestrator implements IRagOrchestrator {
       value: {
         retrieved,
         finalTools,
+        toolsAvailable,
         skillContent,
         assembledMessages: assembleResult.value,
         mainAction,
@@ -482,6 +485,13 @@ export class RagOrchestrator implements IRagOrchestrator {
       this.deps.metrics.classifierIntentCount.add(1, { intent: sp.type });
     }
     const { toolClientMap } = await this.deps.mcpToolRegistry.resolve(opts);
-    return { ok: true, value: { subprompts, processedHistory, toolClientMap } };
+    return {
+      ok: true,
+      value: {
+        subprompts,
+        processedHistory,
+        toolClientMap,
+      },
+    };
   }
 }

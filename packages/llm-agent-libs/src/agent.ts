@@ -555,7 +555,18 @@ export class SmartAgent {
     }> = [];
     // Map streaming index → position in collectedToolCalls for delta correlation
     const indexToPosition = new Map<number, number>();
-    for await (const chunk of this.streamProcess(textOrMessages, options)) {
+    let executedToolCallCount: number | undefined;
+    const streamOptions: AgentCallOptions = {
+      ...options,
+      onToolCallCount: (count, max) => {
+        executedToolCallCount = count;
+        options?.onToolCallCount?.(count, max);
+      },
+    };
+    for await (const chunk of this.streamProcess(
+      textOrMessages,
+      streamOptions,
+    )) {
       if (!chunk.ok) return chunk;
       if (chunk.value.content && !chunk.value.ephemeral)
         content += chunk.value.content;
@@ -614,7 +625,8 @@ export class SmartAgent {
       value: {
         content,
         iterations: 1,
-        toolCallCount: collectedToolCalls.length,
+        // Executed internal tool calls; when none executed, calls surfaced to the caller.
+        toolCallCount: executedToolCallCount ?? collectedToolCalls.length,
         ...budget,
         stopReason,
         ...(stopped ? { stopped } : {}),
@@ -764,6 +776,7 @@ export class SmartAgent {
       const {
         retrieved,
         finalTools,
+        toolsAvailable,
         assembledMessages,
         mainAction,
         toolClientMap,
@@ -780,6 +793,7 @@ export class SmartAgent {
         sessionId,
         externalTools,
         finalTools,
+        toolsAvailable,
         detectedAdapter,
       );
       for await (const chunk of stream) yield chunk;
@@ -805,12 +819,16 @@ export class SmartAgent {
     sessionId: string,
     externalTools: LlmTool[],
     activeTools: LlmTool[],
+    toolsAvailable: number,
     clientAdapter?: IClientAdapter,
   ): AsyncIterable<Result<LlmStreamChunk, OrchestratorError>> {
     const toolLoopSpan = this.tracer.startSpan('smart_agent.tool_loop', {
       parent: parentSpan,
     });
     let toolCallCount = 0;
+    let lastToolsSelected: number | undefined;
+    let lastToolsAvailable: number | undefined;
+    let available = toolsAvailable;
     let messages = initialMessages;
     // Retain tool-round text that has not been streamed until a cooperative stop.
     let stoppedContent = '';
@@ -906,6 +924,7 @@ export class SmartAgent {
           attributes: { 'llm.iteration': iteration + 1 },
         });
         const refreshed = await this.mcpToolRegistry.resolve(opts);
+        available = refreshed.tools.length + externalTools.length;
         const prevNames = [...toolClientMap.keys()];
         toolClientMap.clear();
         for (const [name, client] of refreshed.toolClientMap) {
@@ -1017,6 +1036,7 @@ export class SmartAgent {
 
               if (newToolNames.size > 0) {
                 const refreshed = await this.mcpToolRegistry.resolve(opts);
+                available = refreshed.tools.length + externalTools.length;
                 const newMcpTools = refreshed.tools.filter((t) =>
                   newToolNames.has(t.name),
                 );
@@ -1081,6 +1101,18 @@ export class SmartAgent {
       });
       this.metrics.llmCallCount.add();
       const llmCallStart = Date.now();
+      if (
+        currentTools.length !== lastToolsSelected ||
+        available !== lastToolsAvailable
+      ) {
+        lastToolsSelected = currentTools.length;
+        lastToolsAvailable = available;
+        try {
+          opts?.onToolsSelected?.(currentTools.length, available);
+        } catch {
+          /* Observers cannot affect execution. */
+        }
+      }
       const stream = this.defaultLlmCallStrategy.call(
         this._mainLlm,
         messages,
@@ -1365,6 +1397,13 @@ export class SmartAgent {
             },
           );
           toolCallCount += batch.length;
+          if (batch.length > 0) {
+            try {
+              opts?.onToolCallCount?.(toolCallCount, this.config.maxToolCalls);
+            } catch {
+              /* Observers cannot affect execution. */
+            }
+          }
           if (
             this.config.maxToolCalls !== undefined &&
             toolCallCount >= this.config.maxToolCalls
@@ -1454,6 +1493,7 @@ export class SmartAgent {
         heartbeatMs,
         options: opts,
         mcpFailureClassifier: this.deps.mcpFailureClassifier,
+        maxToolCalls: this.config.maxToolCalls,
         onToolExecuted: (r) => {
           const traceId = opts?.trace?.traceId ?? 'agent-tool-loop';
           const isError = !r.res?.ok || (r.res.ok && !!r.res.value.isError);
@@ -1476,8 +1516,15 @@ export class SmartAgent {
         },
       });
       if (outcome.escalated) return;
+      if (outcome.toolCallCount !== toolCallCount) {
+        toolCallCount = outcome.toolCallCount;
+        try {
+          opts?.onToolCallCount?.(toolCallCount, this.config.maxToolCalls);
+        } catch {
+          /* Observers cannot affect execution. */
+        }
+      }
       currentTools = outcome.currentTools;
-      toolCallCount = outcome.toolCallCount;
       if (
         this.config.maxToolCalls !== undefined &&
         toolCallCount >= this.config.maxToolCalls

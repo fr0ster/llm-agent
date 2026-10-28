@@ -71,6 +71,14 @@ export interface CallOptions {
    * values so the calling layer can render live progress.
    */
   onPartial?: OnPartial;
+  /** Called when the request's executed tool-call count changes (the result's
+   *  toolCallCount), with configured maxToolCalls. Fire-and-forget; callback
+   *  exceptions must never break the run. */
+  onToolCallCount?: (count: number, max?: number) => void;
+  /** Reports tool definitions offered per round and all available MCP plus external
+   * tools before selection/filters, only when either count changes. Fire-and-forget;
+   * observer exceptions never interrupt execution. */
+  onToolsSelected?: (selected: number, available: number) => void;
 }
 
 export interface ToolHeartbeat {

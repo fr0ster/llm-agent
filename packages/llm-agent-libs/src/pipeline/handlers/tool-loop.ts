@@ -153,6 +153,8 @@ export class ToolLoopHandler implements IStageHandler {
     const externalToolNames = new Set(externalTools.map((t) => t.name));
 
     let toolCallCount = 0;
+    let lastToolsSelected: number | undefined;
+    let lastToolsAvailable: number | undefined;
     let messages = ctx.assembledMessages;
     const usage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
     const timingLog: TimingEntry[] = [];
@@ -491,6 +493,19 @@ export class ToolLoopHandler implements IStageHandler {
       // argument-only continuation deltas (no name field) are forwarded too.
       const externalToolIndices = new Set<number>();
 
+      const available = ctx.mcpTools.length + externalTools.length;
+      if (
+        currentTools.length !== lastToolsSelected ||
+        available !== lastToolsAvailable
+      ) {
+        lastToolsSelected = currentTools.length;
+        lastToolsAvailable = available;
+        try {
+          ctx.options?.onToolsSelected?.(currentTools.length, available);
+        } catch {
+          /* Observers cannot affect execution. */
+        }
+      }
       // Delegate to ILlmCallStrategy — handles streaming, non-streaming, or fallback
       const llmStream = ctx.llmCallStrategy.call(
         ctx.mainLlm,
@@ -853,6 +868,13 @@ export class ToolLoopHandler implements IStageHandler {
               },
             );
             toolCallCount += batch.length;
+            if (batch.length > 0) {
+              try {
+                ctx.options?.onToolCallCount?.(toolCallCount, maxToolCalls);
+              } catch {
+                /* Observers cannot affect execution. */
+              }
+            }
             if (maxToolCalls !== undefined && toolCallCount >= maxToolCalls) {
               ctx.yield({
                 ok: true,
@@ -960,6 +982,7 @@ export class ToolLoopHandler implements IStageHandler {
         heartbeatMs,
         options: ctx.options,
         mcpFailureClassifier: ctx.mcpFailureClassifier,
+        maxToolCalls,
         onToolExecuted: (r) => {
           // Stamp requestId so tool executions land in the per-traceId delta
           // bucket — without it, `getSummary(traceId).toolCalls` stays 0 even
@@ -1005,8 +1028,15 @@ export class ToolLoopHandler implements IStageHandler {
       }
       const outcome = step.value;
       if (outcome.escalated) return false;
+      if (outcome.toolCallCount !== toolCallCount) {
+        toolCallCount = outcome.toolCallCount;
+        try {
+          ctx.options?.onToolCallCount?.(toolCallCount, maxToolCalls);
+        } catch {
+          /* Observers cannot affect execution. */
+        }
+      }
       currentTools = outcome.currentTools;
-      toolCallCount = outcome.toolCallCount;
       if (maxToolCalls !== undefined && toolCallCount >= maxToolCalls) {
         ctx.yield({
           ok: true,

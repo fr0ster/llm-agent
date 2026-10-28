@@ -199,7 +199,7 @@ export type ToolExecResult = {
 export type ToolResultMeta = { identityKey?: string; isError: boolean };
 
 export type BatchOutcome =
-  | { escalated: true }
+  | { escalated: true; toolCallCount: number }
   | {
       escalated: false;
       currentTools: LlmTool[];
@@ -221,6 +221,7 @@ export interface IExecuteToolBatchArgs {
   currentTools: LlmTool[];
   toolCallCount: number;
   timingLog: TimingEntry[]; // pushed into (per-tool timing)
+  maxToolCalls?: number;
   heartbeatMs: number | null;
   options: CallOptions | undefined;
   onToolExecuted?: (r: ToolExecResult) => void; // B: logToolCall; A: omitted
@@ -396,6 +397,16 @@ export async function* executeToolBatchWithHeartbeat(
       // appears in the timing log. onToolExecuted fires exactly once here;
       // the end-of-loop call is skipped because we return early.
       onToolExecuted?.(r);
+      // Every result in the concurrent batch has settled, including later calls.
+      toolCallCount =
+        args.toolCallCount + results.filter((r) => r.res !== null).length;
+      if (toolCallCount !== args.toolCallCount) {
+        try {
+          options?.onToolCallCount?.(toolCallCount, args.maxToolCalls);
+        } catch {
+          /* Observers cannot affect execution. */
+        }
+      }
       yield {
         ok: false,
         error: new OrchestratorError(
@@ -403,7 +414,10 @@ export async function* executeToolBatchWithHeartbeat(
           'MCP_UNAVAILABLE',
         ),
       };
-      return { escalated: true };
+      return {
+        escalated: true,
+        toolCallCount,
+      };
     }
     if (
       !res.ok &&
