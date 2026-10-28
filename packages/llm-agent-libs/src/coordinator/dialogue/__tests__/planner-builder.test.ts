@@ -11,6 +11,26 @@ import { DialogueSession } from '../dialogue-session.js';
 import { DIALOGUE_PLANNER_SYSTEM } from '../planner-prompt.js';
 import { PlannerToolsClient } from '../planner-tools-client.js';
 
+test('planner prompt requires result delegation and planned verification', () => {
+  for (const rule of [
+    'Plan the whole request up front',
+    'done criterion',
+    'plan a check by another subagent',
+    'the worker that did the work never checks itself',
+    'Plan checks in proportion to risk',
+    'Do not add checks the plan did not foresee unless a result shows a concrete problem',
+    'Delegate results, not tool calls',
+    'one parallel wave',
+    'Never redo delegated work',
+    're-delegate only for a failure or a concrete gap',
+    'then store once',
+    'no extra rounds',
+    'plan a check of the processed/stored count',
+    'check with the checker when the plan foresees it',
+  ])
+    assert.ok(DIALOGUE_PLANNER_SYSTEM.includes(rule), rule);
+});
+
 test('documented builder exposes exactly the six control tools and dispatches delegation inside a session', async () => {
   const expected = [
     'delegate_task',
