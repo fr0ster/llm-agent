@@ -1036,6 +1036,7 @@ export class SmartAgent {
 
               if (newToolNames.size > 0) {
                 const refreshed = await this.mcpToolRegistry.resolve(opts);
+                available = refreshed.tools.length + externalTools.length;
                 const newMcpTools = refreshed.tools.filter((t) =>
                   newToolNames.has(t.name),
                 );

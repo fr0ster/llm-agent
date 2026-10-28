@@ -53,7 +53,7 @@ export class RagOrchestrator implements IRagOrchestrator {
       return initResult;
     }
     let { processedHistory } = initResult.value;
-    const { subprompts, toolClientMap, toolsAvailable } = initResult.value;
+    const { subprompts, toolClientMap } = initResult.value;
 
     // Token budget check — summarize if over budget
     if (this.deps.sessionManager.isOverBudget()) {
@@ -81,6 +81,7 @@ export class RagOrchestrator implements IRagOrchestrator {
       mode === 'hard' || (hasActions && (hasMcpClients || hasRagStores));
 
     let finalTools: LlmTool[] = [];
+    let toolsAvailable = externalTools.length;
     let retrieved: {
       ragResults: Record<string, RagResult[]>;
       tools: McpTool[];
@@ -179,6 +180,7 @@ export class RagOrchestrator implements IRagOrchestrator {
       }
 
       const { tools: mcpTools } = await this.deps.mcpToolRegistry.resolve(opts);
+      toolsAvailable = mcpTools.length + externalTools.length;
 
       // Collect all RAG results for tool discovery
       const allRagResults = Object.values(rerankedMap).flat();
@@ -403,7 +405,7 @@ export class RagOrchestrator implements IRagOrchestrator {
       value: {
         retrieved,
         finalTools,
-        toolsAvailable: toolsAvailable + externalTools.length,
+        toolsAvailable,
         skillContent,
         assembledMessages: assembleResult.value,
         mainAction,
@@ -422,7 +424,6 @@ export class RagOrchestrator implements IRagOrchestrator {
         subprompts: Subprompt[];
         processedHistory: Message[];
         toolClientMap: Map<string, IMcpClient>;
-        toolsAvailable: number;
       },
       OrchestratorError
     >
@@ -483,15 +484,13 @@ export class RagOrchestrator implements IRagOrchestrator {
     for (const sp of subprompts) {
       this.deps.metrics.classifierIntentCount.add(1, { intent: sp.type });
     }
-    const { toolClientMap, tools } =
-      await this.deps.mcpToolRegistry.resolve(opts);
+    const { toolClientMap } = await this.deps.mcpToolRegistry.resolve(opts);
     return {
       ok: true,
       value: {
         subprompts,
         processedHistory,
         toolClientMap,
-        toolsAvailable: tools.length,
       },
     };
   }

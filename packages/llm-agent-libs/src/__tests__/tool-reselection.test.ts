@@ -15,6 +15,64 @@ import { makeAssembler, makeDefaultDeps, makeRag } from '../testing/index.js';
 // ---------------------------------------------------------------------------
 
 describe('Per-iteration RAG tool re-selection', () => {
+  it('updates availability from the RAG re-selection snapshot without refresh', async () => {
+    const tools = ['CreateClass', 'Two', 'Three', 'Four', 'Five'].map(
+      (name) => ({
+        name,
+        description: name,
+        inputSchema: { type: 'object' },
+      }),
+    );
+    let resolves = 0;
+    const { deps } = makeDefaultDeps({
+      mcpClients: [
+        {
+          async listTools() {
+            return {
+              ok: true as const,
+              value: ++resolves <= 2 ? tools.slice(0, 3) : tools,
+            };
+          },
+          async callTool() {
+            return { ok: true as const, value: { content: 'error: retry' } };
+          },
+        },
+      ],
+      ragStores: {
+        tools: makeRag(
+          tools.map((tool) => ({
+            text: tool.name,
+            score: 1,
+            metadata: { id: `tool:${tool.name}` },
+          })),
+        ),
+      },
+    });
+    deps.mainLlm = makeToolCallThenStopLlm('CreateClass', 'error: retry');
+    const agent = new SmartAgent(deps, {
+      maxIterations: 3,
+      mode: 'hard',
+      refreshToolsPerIteration: false,
+      toolReselectPerIteration: true,
+    });
+    const rounds: Array<{ selected: number; available: number }> = [];
+    await agent.process('create a class', {
+      sessionId: 'changing-reselection-catalogue',
+      externalTools: [
+        { name: 'External', description: 'external', inputSchema: {} },
+      ],
+      onToolsSelected: (selected, available) =>
+        rounds.push({ selected, available }),
+    });
+
+    assert.equal(resolves, 3);
+    assert.deepEqual(rounds, [
+      { selected: 4, available: 4 },
+      { selected: 6, available: 6 },
+    ]);
+    assert.ok(rounds.every(({ selected, available }) => selected <= available));
+  });
+
   /**
    * Helper: build a streaming LLM that yields a tool call on the first
    * iteration, then a final text response on the second.

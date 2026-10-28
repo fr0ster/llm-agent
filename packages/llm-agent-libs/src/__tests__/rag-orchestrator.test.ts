@@ -96,7 +96,7 @@ function ragDocs(): RagResult[] {
   ];
 }
 
-function makeOrchestrator() {
+function makeOrchestrator(mcpToolRegistry?: IMcpToolRegistry) {
   return new RagOrchestrator({
     mainLlm: makeLlm([]),
     helperLlm: undefined,
@@ -110,10 +110,9 @@ function makeOrchestrator() {
     queryExpander: makeQueryExpander(),
     sessionManager: makeSessionManager(),
     toolAvailabilityRegistry: new ToolAvailabilityRegistry(),
-    mcpToolRegistry: makeToolRegistry([
-      mcpTool('GetProgram'),
-      mcpTool('GetInclude'),
-    ]),
+    mcpToolRegistry:
+      mcpToolRegistry ??
+      makeToolRegistry([mcpTool('GetProgram'), mcpTool('GetInclude')]),
     requestLogger: new NoopRequestLogger(),
     ragStores: { kb: makeRag(ragDocs()) },
     embedder: undefined,
@@ -129,6 +128,31 @@ function makeOrchestrator() {
 const opts: { opts: CallOptions | undefined } = { opts: undefined };
 
 describe('RagOrchestrator.orchestrate()', () => {
+  it('reports availability from the selection snapshot when the catalogue grows', async () => {
+    const tools = ['GetProgram', 'Two', 'Three', 'Four', 'Five'].map(mcpTool);
+    let resolves = 0;
+    const registry = makeToolRegistry(tools);
+    registry.resolve = async () => ({
+      tools: ++resolves === 1 ? tools.slice(0, 3) : tools,
+      toolClientMap: new Map<string, IMcpClient>(),
+    });
+    const result = await makeOrchestrator(registry).orchestrate(
+      'read program',
+      {
+        opts: undefined,
+        rootSpan: new NoopTracer().startSpan('root'),
+        sessionId: 'changing-catalogue',
+        mode: 'hard',
+        externalTools: [mcpTool('External')],
+      },
+    );
+
+    assert.ok(result.ok);
+    assert.equal(resolves, 2);
+    assert.equal(result.value.toolsAvailable, 6);
+    assert.ok(result.value.finalTools.length <= result.value.toolsAvailable);
+  });
+
   it('selects RAG-matched tools, injects the matched skill, and assembles context', async () => {
     const orch = makeOrchestrator();
     const rootSpan = new NoopTracer().startSpan('root', { traceId: 't' });
