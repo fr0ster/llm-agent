@@ -36,6 +36,12 @@ export interface PlannerTurnOptions {
   usage?: IUsageRecorder;
   sessionId?: string;
   onPartial?: OnPartial;
+  /** Live executed tool-call count; observer exceptions never interrupt execution. */
+  onToolCallCount?: (count: number, max?: number) => void;
+  /** Reports tool definitions offered per round and all available MCP plus external
+   * tools before selection/filters, only when either count changes. Fire-and-forget;
+   * observer exceptions never interrupt execution. */
+  onToolsSelected?: (selected: number, available: number) => void;
   signal?: AbortSignal;
   stopSignal?: AbortSignal;
   trace?: { traceId: string };
@@ -199,6 +205,13 @@ export class DialogueSession {
                   0,
                   now - (task.startedAt ?? task.createdAt),
                 ),
+                ...(task.state !== 'running' || task.toolsSelected === undefined
+                  ? {}
+                  : { toolsSelected: task.toolsSelected }),
+                ...(task.state !== 'running' ||
+                task.toolsAvailable === undefined
+                  ? {}
+                  : { toolsAvailable: task.toolsAvailable }),
                 ...(task.toolCalls === undefined
                   ? {}
                   : { toolCalls: task.toolCalls }),

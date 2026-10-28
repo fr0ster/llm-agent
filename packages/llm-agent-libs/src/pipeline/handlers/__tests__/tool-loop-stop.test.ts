@@ -471,3 +471,70 @@ test('summarize keeps an eight-result round intact across the recent boundary', 
     { role: 'assistant', content: 'done' },
   ]);
 });
+
+for (const maxToolCalls of [1, 5]) {
+  for (const throws of [false, true]) {
+    test(`pipeline reports tools offered (budget=${maxToolCalls}, throws=${throws})`, async () => {
+      let rounds = 0;
+      const reports: number[][] = [];
+      const offered: number[] = [];
+      const ctx = makeCtx(async function* () {
+        rounds++;
+        yield {
+          ok: true,
+          value:
+            rounds === 1
+              ? {
+                  content: '',
+                  toolCalls: [
+                    { index: 0, id: 't', name: 'Read', arguments: '{}' },
+                  ],
+                  finishReason: 'tool_calls',
+                }
+              : { content: 'done', finishReason: 'stop' },
+        };
+      });
+      ctx.mcpTools = ['Read', 'Write', 'Delete'].map((name) => ({
+        name,
+        description: name,
+        inputSchema: { type: 'object' },
+      }));
+      ctx.activeTools = [
+        { name: 'Read', description: 'read', inputSchema: { type: 'object' } },
+      ];
+      ctx.toolClientMap.set('Read', {
+        async listTools() {
+          return { ok: true, value: ctx.mcpTools };
+        },
+        async callTool() {
+          return { ok: true, value: { content: 'ok' } };
+        },
+      });
+      const strategy = ctx.llmCallStrategy;
+      ctx.llmCallStrategy = {
+        call(llm, messages, tools, options) {
+          offered.push(tools.length);
+          return strategy.call(llm, messages, tools, options);
+        },
+      };
+      ctx.options = {
+        onToolsSelected(selected, available) {
+          reports.push([selected, available]);
+          if (throws) throw new Error('observer failed');
+        },
+      };
+      await new ToolLoopHandler().execute(ctx, { maxToolCalls }, makeSpan());
+      assert.equal(rounds, 2);
+      assert.deepEqual(offered, maxToolCalls === 1 ? [1, 0] : [1, 1]);
+      assert.deepEqual(
+        reports,
+        maxToolCalls === 1
+          ? [
+              [1, 3],
+              [0, 3],
+            ]
+          : [[1, 3]],
+      );
+    });
+  }
+}

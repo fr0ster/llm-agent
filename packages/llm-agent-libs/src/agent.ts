@@ -776,6 +776,7 @@ export class SmartAgent {
       const {
         retrieved,
         finalTools,
+        toolsAvailable,
         assembledMessages,
         mainAction,
         toolClientMap,
@@ -792,6 +793,7 @@ export class SmartAgent {
         sessionId,
         externalTools,
         finalTools,
+        toolsAvailable,
         detectedAdapter,
       );
       for await (const chunk of stream) yield chunk;
@@ -817,12 +819,16 @@ export class SmartAgent {
     sessionId: string,
     externalTools: LlmTool[],
     activeTools: LlmTool[],
+    toolsAvailable: number,
     clientAdapter?: IClientAdapter,
   ): AsyncIterable<Result<LlmStreamChunk, OrchestratorError>> {
     const toolLoopSpan = this.tracer.startSpan('smart_agent.tool_loop', {
       parent: parentSpan,
     });
     let toolCallCount = 0;
+    let lastToolsSelected: number | undefined;
+    let lastToolsAvailable: number | undefined;
+    let available = toolsAvailable;
     let messages = initialMessages;
     // Retain tool-round text that has not been streamed until a cooperative stop.
     let stoppedContent = '';
@@ -918,6 +924,7 @@ export class SmartAgent {
           attributes: { 'llm.iteration': iteration + 1 },
         });
         const refreshed = await this.mcpToolRegistry.resolve(opts);
+        available = refreshed.tools.length + externalTools.length;
         const prevNames = [...toolClientMap.keys()];
         toolClientMap.clear();
         for (const [name, client] of refreshed.toolClientMap) {
@@ -1093,6 +1100,18 @@ export class SmartAgent {
       });
       this.metrics.llmCallCount.add();
       const llmCallStart = Date.now();
+      if (
+        currentTools.length !== lastToolsSelected ||
+        available !== lastToolsAvailable
+      ) {
+        lastToolsSelected = currentTools.length;
+        lastToolsAvailable = available;
+        try {
+          opts?.onToolsSelected?.(currentTools.length, available);
+        } catch {
+          /* Observers cannot affect execution. */
+        }
+      }
       const stream = this.defaultLlmCallStrategy.call(
         this._mainLlm,
         messages,

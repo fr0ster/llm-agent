@@ -60,6 +60,7 @@ export interface OrchestrateOptions {
 export interface OrchestratedContext {
   retrieved: { ragResults: Record<string, RagResult[]>; tools: McpTool[] };
   finalTools: LlmTool[];
+  toolsAvailable: number;
   skillContent: string;
   assembledMessages: Message[];
   mainAction: Subprompt;

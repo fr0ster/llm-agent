@@ -201,3 +201,60 @@ describe('Loop A characterization — reselect read-only keeps full set + skip l
     );
   });
 });
+
+for (const maxToolCalls of [1, 5]) {
+  for (const throws of [false, true]) {
+    it(`reports tools offered across rounds (budget=${maxToolCalls}, throws=${throws})`, async () => {
+      const offered: number[] = [];
+      const reports: number[][] = [];
+      const llm = makeToolThenStopLlm('CreateClass', (_round, tools) =>
+        offered.push(tools.length),
+      );
+      const { deps } = makeDefaultDeps({
+        mcpClients: [
+          {
+            async listTools() {
+              return {
+                ok: true,
+                value: ['CreateClass', 'ReadClass', 'DeleteClass'].map(
+                  (name) => ({
+                    name,
+                    description: name,
+                    inputSchema: { type: 'object' },
+                  }),
+                ),
+              };
+            },
+            async callTool() {
+              return { ok: true, value: { content: 'ok' } };
+            },
+          },
+        ],
+      });
+      deps.mainLlm = llm;
+      const agent = new SmartAgent(deps, {
+        mode: 'hard',
+        maxIterations: 3,
+        maxToolCalls,
+      });
+      const result = await agent.process('work', {
+        onToolsSelected(selected, available) {
+          reports.push([selected, available]);
+          if (throws) throw new Error('observer failed');
+        },
+      });
+      assert.equal(result.ok, true);
+      assert.equal(offered.length, 2);
+      assert.deepEqual(
+        reports,
+        maxToolCalls === 1
+          ? [
+              [offered[0], 3],
+              [0, 3],
+            ]
+          : [[offered[0], 3]],
+      );
+      assert.equal(offered[0], 3);
+    });
+  }
+}

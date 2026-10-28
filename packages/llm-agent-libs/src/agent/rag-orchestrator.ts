@@ -53,7 +53,7 @@ export class RagOrchestrator implements IRagOrchestrator {
       return initResult;
     }
     let { processedHistory } = initResult.value;
-    const { subprompts, toolClientMap } = initResult.value;
+    const { subprompts, toolClientMap, toolsAvailable } = initResult.value;
 
     // Token budget check — summarize if over budget
     if (this.deps.sessionManager.isOverBudget()) {
@@ -403,6 +403,7 @@ export class RagOrchestrator implements IRagOrchestrator {
       value: {
         retrieved,
         finalTools,
+        toolsAvailable: toolsAvailable + externalTools.length,
         skillContent,
         assembledMessages: assembleResult.value,
         mainAction,
@@ -421,6 +422,7 @@ export class RagOrchestrator implements IRagOrchestrator {
         subprompts: Subprompt[];
         processedHistory: Message[];
         toolClientMap: Map<string, IMcpClient>;
+        toolsAvailable: number;
       },
       OrchestratorError
     >
@@ -481,7 +483,16 @@ export class RagOrchestrator implements IRagOrchestrator {
     for (const sp of subprompts) {
       this.deps.metrics.classifierIntentCount.add(1, { intent: sp.type });
     }
-    const { toolClientMap } = await this.deps.mcpToolRegistry.resolve(opts);
-    return { ok: true, value: { subprompts, processedHistory, toolClientMap } };
+    const { toolClientMap, tools } =
+      await this.deps.mcpToolRegistry.resolve(opts);
+    return {
+      ok: true,
+      value: {
+        subprompts,
+        processedHistory,
+        toolClientMap,
+        toolsAvailable: tools.length,
+      },
+    };
   }
 }

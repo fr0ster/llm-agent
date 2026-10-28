@@ -707,3 +707,70 @@ for (const option of ['waitTickMs', 'longTaskMs'] as const) {
     }
   });
 }
+
+test('wait ticks include live tools-in-context counts', async () => {
+  const task = work();
+  const h = await clockSession({
+    board: {
+      workers: new Map([
+        [
+          'executor',
+          {
+            ...task.worker,
+            run(input) {
+              input.onToolsSelected?.(18, 120);
+              return task.worker.run(input);
+            },
+          },
+        ],
+      ]),
+    },
+  });
+  try {
+    await h.clock.advance(30_000);
+    assert.equal(h.waits[0]?.tasks[0]?.toolsSelected, 18);
+    assert.equal(h.waits[0]?.tasks[0]?.toolsAvailable, 120);
+  } finally {
+    task.finish({ output: 'done' });
+    await h.session.close();
+  }
+});
+
+test('planner receives user observers and event turns receive none', async () => {
+  const task = work();
+  const count = () => {};
+  const selected = () => {};
+  let turns = 0;
+  const session = await DialogueSession.open({
+    id: 'planner-observers',
+    board: { workers: new Map([['executor', task.worker]]) },
+    planner: {
+      async process(_messages, options) {
+        turns++;
+        assert.equal(options.onToolCallCount, turns === 1 ? count : undefined);
+        assert.equal(
+          options.onToolsSelected,
+          turns === 1 ? selected : undefined,
+        );
+        if (turns === 1)
+          await tools.callTool('delegate_task', {
+            worker: 'executor',
+            goal: 'job',
+          });
+        return { ok: true, value: { content: 'NO_MESSAGE' } };
+      },
+    },
+  });
+  try {
+    await session.send('go', {
+      onToolCallCount: count,
+      onToolsSelected: selected,
+    });
+    task.finish({ output: 'done' });
+    await flush();
+    await flush();
+    assert.equal(turns, 2);
+  } finally {
+    await session.close();
+  }
+});

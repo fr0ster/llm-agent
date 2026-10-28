@@ -22,6 +22,10 @@ export interface TaskRecord {
   state: TaskState;
   budgetExhausted?: boolean;
   toolCalls?: number;
+  /** Tool definitions offered in the latest LLM round. */
+  toolsSelected?: number;
+  /** Available MCP and external tools before selection/filters. */
+  toolsAvailable?: number;
   maxToolCalls?: number;
   output?: string;
   error?: string;

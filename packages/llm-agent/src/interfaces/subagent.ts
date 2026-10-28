@@ -56,6 +56,10 @@ export interface ISubAgentInput {
    *  toolCallCount), with configured maxToolCalls. Fire-and-forget; callback
    *  exceptions must never break the run. */
   onToolCallCount?: (count: number, max?: number) => void;
+  /** Reports tool definitions offered per round and all available MCP plus external
+   * tools before selection/filters, only when either count changes. Fire-and-forget;
+   * observer exceptions never interrupt execution. */
+  onToolsSelected?: (selected: number, available: number) => void;
   /** Client-provided external (consumer-executed) tools from the request, e.g.
    *  create_file / rag_add. Threaded from the coordinator into the worker's
    *  nested pipeline so the worker can emit a tool call the client fulfils

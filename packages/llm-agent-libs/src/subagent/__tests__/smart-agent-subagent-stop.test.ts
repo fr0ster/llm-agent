@@ -26,3 +26,27 @@ test('SmartAgentSubAgent maps stop to complete with partial output and a stopped
   assert.equal(result.stopped, true);
   assert.equal(result.output, 'partial');
 });
+
+test('SmartAgentSubAgent forwards live tool observers', async () => {
+  const counts: number[] = [];
+  const selected: number[][] = [];
+  const onToolCallCount = (count: number) => {
+    counts.push(count);
+  };
+  const onToolsSelected = (count: number, available: number) => {
+    selected.push([count, available]);
+  };
+  const worker = new SmartAgentSubAgent('worker', {
+    maxToolCalls: 40,
+    async process(_input, options) {
+      assert.equal(options?.onToolCallCount, onToolCallCount);
+      assert.equal(options?.onToolsSelected, onToolsSelected);
+      options?.onToolCallCount?.(2, 40);
+      options?.onToolsSelected?.(3, 10);
+      return { ok: true, value: { content: 'done' } };
+    },
+  });
+  await worker.run({ task: 'work', onToolCallCount, onToolsSelected });
+  assert.deepEqual(counts, [2]);
+  assert.deepEqual(selected, [[3, 10]]);
+});

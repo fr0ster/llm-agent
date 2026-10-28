@@ -75,6 +75,10 @@ export interface CallOptions {
    *  toolCallCount), with configured maxToolCalls. Fire-and-forget; callback
    *  exceptions must never break the run. */
   onToolCallCount?: (count: number, max?: number) => void;
+  /** Reports tool definitions offered per round and all available MCP plus external
+   * tools before selection/filters, only when either count changes. Fire-and-forget;
+   * observer exceptions never interrupt execution. */
+  onToolsSelected?: (selected: number, available: number) => void;
 }
 
 export interface ToolHeartbeat {

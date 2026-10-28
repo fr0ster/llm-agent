@@ -153,6 +153,8 @@ export class ToolLoopHandler implements IStageHandler {
     const externalToolNames = new Set(externalTools.map((t) => t.name));
 
     let toolCallCount = 0;
+    let lastToolsSelected: number | undefined;
+    let lastToolsAvailable: number | undefined;
     let messages = ctx.assembledMessages;
     const usage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
     const timingLog: TimingEntry[] = [];
@@ -491,6 +493,19 @@ export class ToolLoopHandler implements IStageHandler {
       // argument-only continuation deltas (no name field) are forwarded too.
       const externalToolIndices = new Set<number>();
 
+      const available = ctx.mcpTools.length + externalTools.length;
+      if (
+        currentTools.length !== lastToolsSelected ||
+        available !== lastToolsAvailable
+      ) {
+        lastToolsSelected = currentTools.length;
+        lastToolsAvailable = available;
+        try {
+          ctx.options?.onToolsSelected?.(currentTools.length, available);
+        } catch {
+          /* Observers cannot affect execution. */
+        }
+      }
       // Delegate to ILlmCallStrategy — handles streaming, non-streaming, or fallback
       const llmStream = ctx.llmCallStrategy.call(
         ctx.mainLlm,

@@ -316,6 +316,7 @@ test('running tasks expose live tool counts and preserve the base observer', asy
       await new Promise<void>((resolve) => releases.push(resolve));
       input.onToolCallCount?.(3, 40);
       input.onToolCallCount?.(4);
+      input.onToolsSelected?.(3, 120);
       await new Promise<void>((resolve) => releases.push(resolve));
       return { output: 'done', toolCallCount: 5, maxToolCalls: 50 };
     },
@@ -325,6 +326,11 @@ test('running tasks expose live tool counts and preserve the base observer', asy
     workers: new Map([['w', worker]]),
     onEvent() {},
     baseInput: () => ({
+      onToolsSelected(selected, available) {
+        assert.equal(board.list()[0].toolsSelected, selected);
+        assert.equal(board.list()[0].toolsAvailable, available);
+        throw new Error('observer failed');
+      },
       onToolCallCount(count) {
         assert.equal(board.list()[0].toolCalls, count);
         observed.push(count);
@@ -340,6 +346,8 @@ test('running tasks expose live tool counts and preserve the base observer', asy
   await tick();
   assert.equal(board.get(id)?.state, 'running');
   assert.equal(board.get(id)?.toolCalls, 4);
+  assert.equal(board.get(id)?.toolsSelected, 3);
+  assert.equal(board.get(id)?.toolsAvailable, 120);
   assert.equal(board.get(id)?.maxToolCalls, 40);
   assert.deepEqual(observed, [3, 4]);
   releases.shift()?.();

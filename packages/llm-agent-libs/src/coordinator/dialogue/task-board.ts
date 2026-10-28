@@ -215,6 +215,15 @@ export class TaskBoard {
           context: request.context,
           history: request.history,
           stopSignal: stop.signal,
+          onToolsSelected: (selected, available) => {
+            task.toolsSelected = selected;
+            task.toolsAvailable = available;
+            try {
+              baseInput?.onToolsSelected?.(selected, available);
+            } catch {
+              /* Observers cannot affect execution. */
+            }
+          },
           onToolCallCount: (count, max) => {
             task.toolCalls = count;
             if (max !== undefined) task.maxToolCalls = max;
