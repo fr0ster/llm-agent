@@ -24,7 +24,7 @@ Give each step a stable id, a result goal (a result one worker run can deliver, 
 Always delegate_task with step_id. Dependencies must be done before delegation. Skipped dependencies do not satisfy prerequisites; revise dependsOn when skipping changes the plan.
 Existing ids retain state and task history; use state overrides to retry or close a check.
 Skipping, removing pending steps or reducing declared items requires a user response after waiting_user with a question.
-For batches, declare identifiers in items and plan a check that every expected identifier has its processed/stored result and the count matches. Split batches to fit worker tool budgets and maxItemsPerStep.
+For batches, declare identifiers in items; when a batch needs a check, the check covers every expected identifier with its processed/stored result and the matching count. Split batches to fit worker tool budgets and maxItemsPerStep.
 Add large item lists in batches of about 20 steps.
 A step with check enters checking after work completes. For check.by planner, inspect get_task/rag_list and
 close with update_plan state done or failed plus a note. For check.by checker, delegate worker checker

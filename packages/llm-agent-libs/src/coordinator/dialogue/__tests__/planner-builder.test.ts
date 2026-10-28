@@ -25,7 +25,7 @@ test('planner prompt requires result delegation and planned verification', () =>
     're-delegate only for a failure or a concrete gap',
     'then store once',
     'no extra rounds',
-    'every expected identifier has its processed/stored result and the count matches',
+    'the check covers every expected identifier with its processed/stored result and the matching count',
     'A light check that only reads the result may be done by you',
     'check with the checker when the plan foresees it',
   ])
