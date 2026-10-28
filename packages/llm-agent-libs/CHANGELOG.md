@@ -1,5 +1,12 @@
 # @mcp-abap-adt/llm-agent-libs
 
+## 30.17.0
+
+### Minor Changes
+
+- bb26ff8: Abort stopped dialogue tasks after a configurable grace period, cancelling in-flight work and ignoring late results.
+- 58cfcdd: The dialogue planner reads requests literally: side-effect actions only when the request, a skill or a user answer asks for them, and it asks the user when unsure.
+
 ## 30.16.0
 
 ### Minor Changes
