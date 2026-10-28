@@ -67,7 +67,7 @@ test('offers exactly six JSON Schema tools and worker enum within scope', async 
   assert.ok(result.ok);
   assert.equal(
     result.value.find((tool) => tool.name === 'delegate_task')?.description,
-    'Delegate a result to a worker: goal = the result, context = constraints, facts and the done criterion; a planned check is a separate checker task.',
+    'Delegate a result to a worker: goal = the result, context = constraints, facts and the done criterion; a planned independent check is a separate checker task.',
   );
   assert.deepEqual(
     result.value.map((tool) => tool.name),

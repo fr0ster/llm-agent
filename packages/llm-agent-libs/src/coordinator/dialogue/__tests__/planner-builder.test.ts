@@ -25,7 +25,8 @@ test('planner prompt requires result delegation and planned verification', () =>
     're-delegate only for a failure or a concrete gap',
     'then store once',
     'no extra rounds',
-    'plan a check of the processed/stored count',
+    'every expected identifier has its processed/stored result and the count matches',
+    'A light check that only reads the result may be done by you',
     'check with the checker when the plan foresees it',
   ])
     assert.ok(DIALOGUE_PLANNER_SYSTEM.includes(rule), rule);

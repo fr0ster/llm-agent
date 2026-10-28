@@ -81,7 +81,7 @@ export class PlannerToolsClient implements IMcpClient {
         {
           name: 'delegate_task',
           description:
-            'Delegate a result to a worker: goal = the result, context = constraints, facts and the done criterion; a planned check is a separate checker task.',
+            'Delegate a result to a worker: goal = the result, context = constraints, facts and the done criterion; a planned independent check is a separate checker task.',
           inputSchema: schema(
             {
               worker: { ...string, ...(workers ? { enum: workers } : {}) },
