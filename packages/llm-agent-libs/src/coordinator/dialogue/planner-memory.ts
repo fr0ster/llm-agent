@@ -91,14 +91,19 @@ export class PlannerMemoryWriter {
                       documents,
                       options,
                     )
-                  : await Promise.all(
-                      documents.map((text) =>
-                        this.config.documentEmbedder.embedDocument(
-                          text,
-                          options,
-                        ),
-                      ),
-                    )
+                  : await (async () => {
+                      const embeddings = [];
+                      for (const text of documents) {
+                        signal.throwIfAborted();
+                        embeddings.push(
+                          await this.config.documentEmbedder.embedDocument(
+                            text,
+                            options,
+                          ),
+                        );
+                      }
+                      return embeddings;
+                    })()
                 : undefined;
             signal.throwIfAborted();
             if (embeds && embeds.length !== batch.length)

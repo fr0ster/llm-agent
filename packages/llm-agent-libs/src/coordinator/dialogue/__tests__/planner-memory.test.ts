@@ -98,6 +98,57 @@ test('writer chunks raw data, uses batch document embeddings, deterministic ids 
   assert.ok(components.includes('planner-memory'));
 });
 
+test('non-batching document embeddings run one at a time in chunk order', async () => {
+  const rag = new InMemoryRag();
+  const backend = rag.writer();
+  assert.ok(backend);
+  let active = 0;
+  let maximum = 0;
+  const documents: string[] = [];
+  const writer: IRagBackendWriter = {
+    upsertRaw: backend.upsertRaw.bind(backend),
+    deleteByIdRaw: backend.deleteByIdRaw.bind(backend),
+    async upsertPrecomputedRaw(id, text, _vector, metadata, options) {
+      return backend.upsertRaw(id, text, metadata, options);
+    },
+  };
+  const memory = new PlannerMemoryWriter(
+    'sequential',
+    {
+      rag: {
+        query: rag.query.bind(rag),
+        getById: rag.getById.bind(rag),
+        healthCheck: rag.healthCheck.bind(rag),
+        writer: () => writer,
+      },
+      queryEmbedder,
+      documentEmbedder: {
+        async embedDocument(text) {
+          active++;
+          maximum = Math.max(maximum, active);
+          documents.push(text);
+          await tick();
+          active--;
+          return { vector: [2] };
+        },
+      },
+    },
+    warn,
+  );
+  memory.enqueue(
+    'planner-input',
+    'r1',
+    'i1',
+    `${'a'.repeat(2000)}${'b'.repeat(2000)}c`,
+    {},
+  );
+  await memory.close();
+  assert.equal(maximum, 1);
+  assert.deepEqual(documents, ['a'.repeat(2000), 'b'.repeat(2000), 'c']);
+  const last = await rag.getById('planner:sequential:planner-input:i1:4000');
+  assert.ok(last.ok && last.value?.text === 'c');
+});
+
 test('read-only memory warns once and never embeds; raw-only writers need no document embedding', async () => {
   let calls = 0;
   const rag = new InMemoryRag();
@@ -261,6 +312,46 @@ test('retrieval isolates failing and hanging sources and ignores late completion
   );
 });
 
+for (const timeout of [
+  2_147_483_647,
+  2_147_483_648,
+  Number.MAX_SAFE_INTEGER,
+  0,
+  -1,
+  1.5,
+  NaN,
+  Infinity,
+])
+  test(`retrieval timer handles timeout boundary: ${timeout}`, async (context) => {
+    context.mock.timers.enable({ apis: ['setTimeout'] });
+    const config = {
+      retrievalTimeoutMs: timeout,
+      plannerKnowledge: [
+        { name: 'hang', search: () => new Promise<[]>(() => {}) },
+      ],
+    };
+    assert.doesNotThrow(() => validateRetrievalOptions(config));
+    let settled = false;
+    const retrieval = retrievePlannerContext(
+      config,
+      's',
+      'r1',
+      'query',
+      false,
+      {},
+      warn,
+    ).then((result) => {
+      settled = true;
+      return result;
+    });
+    await tick();
+    context.mock.timers.tick((timeout === 2_147_483_647 ? timeout : 3_000) - 1);
+    await tick();
+    assert.equal(settled, false);
+    context.mock.timers.tick(1);
+    assert.deepEqual(await retrieval, { memory: [], knowledge: [] });
+  });
+
 test('builder escapes retrieved data, labels expired excerpts and includes labels in split budgets', () => {
   const input = {
     open: {
@@ -392,7 +483,7 @@ test('write timeout aborts and skips late embedding; oldest queued chunks are dr
     },
     (message) => notes.push(message),
   );
-  memory.enqueue('planner-input', 'r1', 'hang', 'hanging', {});
+  memory.enqueue('planner-input', 'r1', 'hang', 'h'.repeat(4000), {});
   await tick();
   memory.enqueue('planner-reply', 'r1', 'large', 'x'.repeat(402_000), {});
   context.mock.timers.tick(30_000);
@@ -400,6 +491,7 @@ test('write timeout aborts and skips late embedding; oldest queued chunks are dr
   assert.equal(firstSignal?.aborted, true);
   release?.({ vector: [2] });
   await memory.close();
+  assert.equal(calls, 201);
   const late = await rag.getById('planner:s:planner-input:hang:0');
   assert.ok(late.ok && late.value === null);
   const dropped = await rag.getById('planner:s:planner-reply:large:0');

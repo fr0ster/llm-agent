@@ -64,11 +64,6 @@ export function validateRetrievalOptions(
     ['knowledgeK', options.knowledgeK ?? 4, 10],
     ['memoryCharBudget', options.memoryCharBudget ?? 12_000, 12_000],
     ['knowledgeCharBudget', options.knowledgeCharBudget ?? 12_000, 12_000],
-    [
-      'retrievalTimeoutMs',
-      options.retrievalTimeoutMs ?? 3_000,
-      Number.MAX_SAFE_INTEGER,
-    ],
   ] as const) {
     if (!Number.isSafeInteger(value) || value < 1 || value > maximum)
       throw new Error(`${name} must be an integer between 1 and ${maximum}`);
@@ -230,7 +225,12 @@ export async function retrievePlannerContext(
           );
         await Promise.all(jobs);
       },
-      config.retrievalTimeoutMs ?? 3_000,
+      Number.isSafeInteger(config.retrievalTimeoutMs) &&
+        config.retrievalTimeoutMs !== undefined &&
+        config.retrievalTimeoutMs >= 1 &&
+        config.retrievalTimeoutMs <= 2_147_483_647
+        ? config.retrievalTimeoutMs
+        : 3_000,
       options.signal,
     );
   } catch {
