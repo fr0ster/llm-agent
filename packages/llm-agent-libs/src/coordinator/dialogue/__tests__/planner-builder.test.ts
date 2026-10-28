@@ -32,7 +32,10 @@ test('planner prompt requires result delegation and planned verification', () =>
     'ask the user (update_plan status waiting_user with a question) before acting',
     'no extra rounds',
     'the check covers every expected identifier with its processed/stored result and the matching count',
-    'A light check that only reads the result may be done by you',
+    "Your tokens cost more than the workers'",
+    'Prefer check.by checker',
+    'Skills and planning guidance may define other or deeper verification',
+    'Never delegate a task only to close a step',
     'check with the checker when the plan foresees it',
   ])
     assert.ok(DIALOGUE_PLANNER_SYSTEM.includes(rule), rule);
