@@ -61,7 +61,7 @@ function setup(maxTasks = 50) {
     },
   };
 }
-test('offers exactly six JSON Schema tools and worker enum within scope', async () => {
+test('offers exactly nine JSON Schema tools and worker enum within scope', async () => {
   const f = setup();
   const result = await runInPlannerScope(f.scope, () => client.listTools());
   assert.ok(result.ok);
@@ -73,6 +73,9 @@ test('offers exactly six JSON Schema tools and worker enum within scope', async 
     result.value.map((tool) => tool.name),
     [
       'delegate_task',
+      'get_message',
+      'get_request',
+      'search_knowledge',
       'stop_task',
       'get_task',
       'list_tasks',

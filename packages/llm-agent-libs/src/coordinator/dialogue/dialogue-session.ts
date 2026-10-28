@@ -26,6 +26,7 @@ import {
   appendRequestMessage,
   boundRequestTranscript,
   DefaultPlannerContextBuilder,
+  renderPlannerRetrieval,
 } from './planner-context-builder.js';
 import { PlannerMemoryWriter } from './planner-memory.js';
 import {
@@ -746,6 +747,40 @@ export class DialogueSession {
               actions.push(action);
               started ||= didStart === true;
               this.changed();
+            },
+            getMessage: (id) =>
+              this.messages.find((message) => message.id === id),
+            getRequest: (id) =>
+              this.requests.find((record) => record.id === id),
+            searchKnowledge: async (query, collection, k) => {
+              const sources = this.opts.plannerKnowledge ?? [];
+              if (
+                collection !== undefined &&
+                !sources.some((source) => source.name === collection)
+              )
+                throw new Error(`unknown knowledge collection ${collection}`);
+              const result = await retrievePlannerContext(
+                {
+                  ...this.opts,
+                  plannerMemory: undefined,
+                  plannerKnowledge: sources.filter(
+                    (source) =>
+                      collection === undefined || source.name === collection,
+                  ),
+                  knowledgeK: k,
+                },
+                this.opts.id,
+                request.id,
+                query,
+                false,
+                { ...user?.opts, usage: this.turnUsage },
+                (message) => this.warn(message),
+              );
+              return renderPlannerRetrieval({
+                memory: [],
+                knowledge: result.knowledge,
+                notes: [],
+              }).join('\n');
             },
             history: () => structuredClone(this.conversation),
           },

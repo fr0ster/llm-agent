@@ -17,6 +17,7 @@
   // added to this list by hand.
   "include": [
     "packages/llm-agent-libs/src/coordinator/dialogue/__tests__/planner-memory.test.ts",
+    "packages/llm-agent-libs/src/coordinator/dialogue/__tests__/planner-content-tools.test.ts",
     "packages/llm-agent-libs/src/coordinator/dialogue/__tests__/hard-stop.test.ts",
     "packages/llm-agent/src/token-usage.test.ts",
     "packages/llm-agent-libs/src/subagent/__tests__/smart-agent-subagent-usage.test.ts",
