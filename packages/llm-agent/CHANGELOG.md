@@ -1,5 +1,11 @@
 # @mcp-abap-adt/llm-agent
 
+## 30.17.0
+
+### Minor Changes
+
+- 08036ba: Expose executed tool-call counts and tools-in-context counts for running dialogue tasks, and forward both observers to planner turns from user send options.
+
 ## 30.16.0
 
 ### Minor Changes
