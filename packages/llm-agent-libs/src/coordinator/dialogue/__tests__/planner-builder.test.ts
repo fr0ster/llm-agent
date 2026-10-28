@@ -33,7 +33,7 @@ test('planner prompt requires result delegation and planned verification', () =>
     'no extra rounds',
     'the check covers every expected identifier with its processed/stored result and the matching count',
     "Your tokens cost more than the workers'",
-    'Prefer check.by checker',
+    "Prefer check.by checker; check.by planner only when the verdict needs nothing beyond the task's short result",
     'Skills and planning guidance may define other or deeper verification',
     'Never delegate a task only to close a step',
     'check with the checker when the plan foresees it',
