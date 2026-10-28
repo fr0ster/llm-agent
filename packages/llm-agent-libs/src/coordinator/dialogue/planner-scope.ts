@@ -8,6 +8,9 @@ import type {
 import type { TaskBoard } from './task-board.js';
 
 export interface PlannerScope {
+  beforeTool?(name: string): void;
+  newRequest?(): void;
+  ownTask?(id: string): void;
   board: TaskBoard;
   maxItemsPerStep?: number;
   taskSteps?: Map<string, string>;

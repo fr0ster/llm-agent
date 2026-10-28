@@ -671,3 +671,395 @@ test('suppressed event replies stay out of the archive while delivery acknowledg
   assert.deepEqual(session.snapshot().requests?.[0].replies, [reply.id]);
   await session.close();
 });
+
+test('new_request discards the old call, rebuilds retrieval, and archives replies under the new request', async () => {
+  const store = new InMemoryDialogueStateStore();
+  await store.save(
+    'boundary',
+    state({ version: 1, status: 'active', steps: [], note: 'OLD PLAN' }),
+  );
+  let calls = 0;
+  let searches = 0;
+  const partials: string[] = [];
+  const session = await DialogueSession.open({
+    id: 'boundary',
+    store,
+    maxCorrections: 0,
+    board: { workers: new Map() },
+    plannerKnowledge: [
+      {
+        name: 'guide',
+        async search() {
+          searches++;
+          return [];
+        },
+      },
+    ],
+    planner: {
+      async process(messages, opts) {
+        calls++;
+        if (calls === 1) {
+          opts.onPartial?.({ kind: 'content', delta: 'DISCARD' });
+          const result = await tools.callTool('new_request', {});
+          assert.ok(result.ok && !result.value.isError);
+          assert.ok(opts.stopSignal?.aborted);
+          const rejected = await tools.callTool('update_plan', { plan: 'BAD' });
+          assert.ok(rejected.ok && rejected.value.isError);
+          return { ok: true, value: { content: 'DISCARD' } };
+        }
+        const context = messages.map((message) => message.content).join('\n');
+        assert.doesNotMatch(context, /legacy input|OLD PLAN|DISCARD/);
+        assert.match(context, /new work/);
+        const updated = await tools.callTool('update_plan', {
+          steps: [{ id: 'new', goal: 'new result' }],
+        });
+        assert.ok(updated.ok && !updated.value.isError);
+        opts.onPartial?.({ kind: 'content', delta: 'new reply' });
+        return { ok: true, value: { content: 'new reply' } };
+      },
+    },
+  });
+  try {
+    const reply = await session.send('new work', {
+      onPartial(chunk) {
+        if (chunk.kind === 'content') partials.push(chunk.delta);
+      },
+    });
+    assert.equal(reply.text, 'new reply');
+    assert.deepEqual(partials, ['new reply']);
+    assert.equal(calls, 2);
+    assert.equal(searches, 2);
+    const snapshot = session.snapshot();
+    assert.equal(snapshot.requests?.length, 2);
+    assert.equal(snapshot.requests?.[0].closedPlan?.note, 'OLD PLAN');
+    assert.equal(snapshot.requests?.[0].transcript.length, 1);
+    assert.deepEqual(snapshot.requests?.[1].replies, [reply.id]);
+    assert.equal(snapshot.requests?.[1].transcript[0].content, 'new work');
+    assert.equal(
+      typeof snapshot.plan === 'object' && snapshot.plan.steps[0].id,
+      'new',
+    );
+  } finally {
+    await session.close();
+  }
+});
+
+for (const prior of [
+  'get_plan',
+  'list_tasks',
+  'get_request',
+  'unknown_tool',
+  'waiting_user',
+] as const) {
+  test(`new_request rejects after ${prior}`, async () => {
+    const store = new InMemoryDialogueStateStore();
+    await store.save(
+      prior,
+      state({
+        version: 1,
+        status: prior === 'waiting_user' ? 'waiting_user' : 'active',
+        question: 'Answer?',
+        steps: [],
+        note: 'old',
+      }),
+    );
+    const session = await DialogueSession.open({
+      id: prior,
+      store,
+      maxCorrections: 0,
+      board: { workers: new Map() },
+      planner: {
+        async process() {
+          if (prior !== 'waiting_user')
+            await tools.callTool(prior, { id: 'r1' });
+          const rejected = await tools.callTool('new_request', {});
+          assert.ok(rejected.ok && rejected.value.isError);
+          return { ok: true, value: { content: 'same request' } };
+        },
+      },
+    });
+    try {
+      await session.send('answer');
+      assert.equal(session.snapshot().requests?.length, 1);
+    } finally {
+      await session.close();
+    }
+  });
+}
+
+for (const order of [
+  ['new_request', 'update_plan', 'delegate_task'],
+  ['new_request', 'delegate_task', 'update_plan'],
+  ['update_plan', 'new_request', 'delegate_task'],
+  ['update_plan', 'delegate_task', 'new_request'],
+  ['delegate_task', 'new_request', 'update_plan'],
+  ['delegate_task', 'update_plan', 'new_request'],
+]) {
+  test(`mixed round executes only new_request with dispatch order ${order.join(', ')}`, async () => {
+    let calls = 0;
+    const session = await DialogueSession.open({
+      id: 'mixed',
+      maxCorrections: 0,
+      board: { workers: new Map() },
+      planner: {
+        async process(_messages, options) {
+          if (calls++ === 0) {
+            const round = [
+              { name: 'new_request', arguments: {} },
+              { name: 'update_plan', arguments: { plan: 'must not execute' } },
+              {
+                name: 'delegate_task',
+                arguments: { worker: 'w', goal: 'must not execute' },
+              },
+            ];
+            const rejected = options.toolRoundGuard?.(round);
+            assert.deepEqual(
+              [...(rejected ?? [])].map(([index]) => index),
+              [1, 2],
+            );
+            for (const name of order) {
+              const call = round.find((item) => item.name === name);
+              assert.ok(call);
+              // Calling handlers directly also checks defence in depth, regardless of execution order.
+              const result = await tools.callTool(call.name, call.arguments);
+              assert.ok(result.ok);
+              assert.equal(
+                result.value.isError === true,
+                name !== 'new_request',
+              );
+              if (name !== 'new_request')
+                assert.match(
+                  JSON.stringify(result.value),
+                  /new request started; continue in the next call/,
+                );
+            }
+            const later = options.toolRoundGuard?.(round);
+            assert.deepEqual(
+              [...(later ?? [])].map(([index]) => index),
+              [0, 1, 2],
+            );
+          }
+          return { ok: true, value: { content: 'reply' } };
+        },
+      },
+    });
+    try {
+      await session.send('new work');
+      assert.equal(session.snapshot().tasks.length, 0);
+      assert.equal(session.snapshot().plan, undefined);
+      assert.equal(session.snapshot().requests?.length, 2);
+      assert.equal(calls, 2);
+    } finally {
+      await session.close();
+    }
+  });
+}
+
+test('old tasks survive the boundary, wait normally, label events, and preserve reused steps and archived plans', async () => {
+  let finish: (value: { output: string }) => void = () => {
+    throw new Error('worker not started');
+  };
+  const result = new Promise<{ output: string }>((resolve) => {
+    finish = resolve;
+  });
+  const contexts: string[] = [];
+  let calls = 0;
+  const session = await DialogueSession.open({
+    id: 'old-tasks',
+    maxCorrections: 0,
+    waitTickMs: 0,
+    longTaskMs: 0,
+    board: {
+      workers: new Map([
+        [
+          'w',
+          {
+            name: 'w',
+            capabilities: { contextPolicy: 'optional' },
+            run: () => result,
+          },
+        ],
+      ]),
+    },
+    planner: {
+      async process(messages, opts) {
+        calls++;
+        contexts.push(messages.map((message) => message.content).join('\n'));
+        if (calls === 1) {
+          await tools.callTool('update_plan', {
+            steps: [{ id: 'same', goal: 'old goal' }],
+          });
+          await tools.callTool('delegate_task', {
+            worker: 'w',
+            goal: 'old task',
+            step_id: 'same',
+          });
+        } else if (calls === 2) {
+          const boundary = await tools.callTool('new_request', {});
+          assert.ok(boundary.ok && !boundary.value.isError);
+        } else if (calls === 3) {
+          const updated = await tools.callTool('update_plan', {
+            steps: [{ id: 'same', goal: 'new goal' }],
+          });
+          assert.ok(updated.ok && !updated.value.isError);
+          await tools.callTool('list_tasks', {});
+          assert.equal(opts.stopSignal?.aborted, false);
+          await tools.callTool('list_tasks', {});
+          assert.equal(opts.stopSignal?.aborted, true);
+        } else {
+          const rejected = await tools.callTool('new_request', {});
+          assert.ok(rejected.ok && rejected.value.isError);
+        }
+        return { ok: true, value: { content: 'reply' } };
+      },
+    },
+  });
+  try {
+    await session.send('old work');
+    await session.send('new work');
+    const before = session.snapshot();
+    const archived = structuredClone(before.requests?.[0].closedPlan);
+    assert.equal(before.taskRequests?.t1, 'r1');
+    finish({ output: 'old result' });
+    for (let i = 0; i < 20 && calls < 4; i++) await tick();
+    assert.equal(calls, 4);
+    assert.match(contexts[3], /\[task events\] from r1:/);
+    const after = session.snapshot();
+    assert.deepEqual(after.requests?.[0].closedPlan, archived);
+    assert.equal(after.requests?.[0].plan?.done, 1);
+    assert.equal(
+      typeof after.plan === 'object' && after.plan.steps[0].state,
+      'pending',
+    );
+    const store = new InMemoryDialogueStateStore();
+    await store.save('restored-owner', after);
+    const restored = await DialogueSession.open({
+      id: 'restored-owner',
+      store,
+      board: { workers: new Map() },
+      planner: {
+        async process() {
+          return { ok: true, value: { content: 'reply' } };
+        },
+      },
+    });
+    assert.deepEqual(restored.snapshot().taskRequests, after.taskRequests);
+    await restored.close();
+  } finally {
+    finish({ output: 'cleanup' });
+    await session.close();
+  }
+});
+
+test('a corrective call cannot start a new request', async () => {
+  let calls = 0;
+  const session = await DialogueSession.open({
+    id: 'correction-boundary',
+    maxCorrections: 1,
+    board: { workers: new Map() },
+    planner: {
+      async process() {
+        calls++;
+        if (calls === 1)
+          await tools.callTool('update_plan', {
+            steps: [{ id: 'ready', goal: 'ready work' }],
+          });
+        else {
+          const rejected = await tools.callTool('new_request', {});
+          assert.ok(rejected.ok && rejected.value.isError);
+        }
+        return { ok: true, value: { content: 'reply' } };
+      },
+    },
+  });
+  try {
+    await session.send('work');
+    assert.equal(calls, 2);
+    assert.equal(session.snapshot().requests?.length, 1);
+  } finally {
+    await session.close();
+  }
+});
+
+test('new_request archives a failed plan and permits replacement without consent', async () => {
+  const store = new InMemoryDialogueStateStore();
+  await store.save(
+    'failed-boundary',
+    state({
+      version: 1,
+      status: 'active',
+      steps: [
+        {
+          id: 'failed',
+          goal: 'old failure',
+          state: 'failed',
+          taskIds: [],
+          dependsOn: [],
+        },
+      ],
+    }),
+  );
+  let calls = 0;
+  const session = await DialogueSession.open({
+    id: 'failed-boundary',
+    store,
+    maxCorrections: 0,
+    board: { workers: new Map() },
+    planner: {
+      async process() {
+        calls++;
+        const result =
+          calls === 1
+            ? await tools.callTool('new_request', {})
+            : await tools.callTool('update_plan', {
+                steps: [{ id: 'replacement', goal: 'unrelated result' }],
+              });
+        assert.ok(result.ok && !result.value.isError);
+        return { ok: true, value: { content: 'reply' } };
+      },
+    },
+  });
+  try {
+    await session.send('unrelated work');
+    const snapshot = session.snapshot();
+    assert.equal(snapshot.requests?.[0].closedPlan?.steps[0].state, 'failed');
+    assert.equal(
+      typeof snapshot.plan === 'object' && snapshot.plan.steps[0].id,
+      'replacement',
+    );
+  } finally {
+    await session.close();
+  }
+});
+
+for (const placement of ['second-call', 'second-round'] as const) {
+  test(`round guard rejects new_request as ${placement} before handlers execute`, async () => {
+    const session = await DialogueSession.open({
+      id: placement,
+      maxCorrections: 0,
+      board: { workers: new Map() },
+      planner: {
+        async process(_messages, options) {
+          const ordinary = { name: 'get_plan', arguments: {} };
+          const boundary = { name: 'new_request', arguments: {} };
+          if (placement === 'second-round')
+            options.toolRoundGuard?.([ordinary]);
+          const round =
+            placement === 'second-call' ? [ordinary, boundary] : [boundary];
+          const rejected = options.toolRoundGuard?.(round);
+          assert.match(
+            rejected?.get(round.indexOf(boundary)) ?? '',
+            /requires the first tool/,
+          );
+          return { ok: true, value: { content: 'same request' } };
+        },
+      },
+    });
+    try {
+      await session.send('keep working');
+      assert.equal(session.snapshot().requests?.length, 1);
+    } finally {
+      await session.close();
+    }
+  });
+}

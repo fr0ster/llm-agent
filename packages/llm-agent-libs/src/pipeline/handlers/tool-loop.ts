@@ -863,6 +863,7 @@ export class ToolLoopHandler implements IStageHandler {
                 toolCache: ctx.toolCache,
                 metrics: ctx.metrics,
                 options: ctx.options,
+                roundCalls: toolCalls,
                 skippedCalls: skipped,
                 maxToolCalls: maxToolCalls,
               },
@@ -968,6 +969,7 @@ export class ToolLoopHandler implements IStageHandler {
       // Execute tool calls concurrently with heartbeat (shared core).
       const batchGen = executeToolBatchWithHeartbeat({
         batch,
+        roundCalls: toolCalls,
         toolClientMap: ctx.toolClientMap,
         toolCache: ctx.toolCache,
         tracer: ctx.tracer,

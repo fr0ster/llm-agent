@@ -112,6 +112,8 @@ export interface DialogueState {
   tasks: TaskRecord[];
   /** Task ID to owning step ID, including steps removed from the plan. */
   taskSteps?: Record<string, string>;
+  /** Persisted task ownership, including closed requests. */
+  taskRequests?: Record<string, string>;
   pending: PlannerMessage[];
   savedAt: number;
 }

@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type {
+  CallOptions,
   DialogueSignals,
   DialogueState,
   IDialogueStateStore,
@@ -47,6 +48,7 @@ import { TaskBoard, type TaskBoardOptions } from './task-board.js';
 
 export const DIALOGUE_HISTORY_LIMIT = 200;
 export interface PlannerTurnOptions {
+  toolRoundGuard?: CallOptions['toolRoundGuard'];
   usage?: IUsageRecorder;
   sessionId?: string;
   onPartial?: OnPartial;
@@ -457,7 +459,36 @@ export class DialogueSession {
               },
             );
         }
-        applyTaskEvent(this.plan, event, this.taskSteps);
+        if (owner === this.openRequest?.id) {
+          applyTaskEvent(this.plan, event, this.taskSteps);
+        } else {
+          const closed = this.requests.find((record) => record.id === owner);
+          if (closed?.plan && closed.closedPlan) {
+            const progress = structuredClone(closed.closedPlan);
+            for (const task of this.board.list()) {
+              if (this.taskRequests.get(task.id) !== owner) continue;
+              if (
+                task.state === 'done' ||
+                task.state === 'failed' ||
+                task.state === 'stopped'
+              )
+                applyTaskEvent(
+                  progress,
+                  { kind: task.state, task },
+                  this.taskSteps,
+                );
+            }
+            closed.plan.done = progress.steps.filter(
+              (step) => step.state === 'done',
+            ).length;
+            closed.plan.failed = progress.steps.filter(
+              (step) => step.state === 'failed',
+            ).length;
+            closed.plan.skipped = progress.steps.filter(
+              (step) => step.state === 'skipped',
+            ).length;
+          }
+        }
         recomputePlanStatus(this.plan);
         this.changed();
         // Only outcomes wake the planner; a start is visible via list_tasks.
@@ -534,6 +565,12 @@ export class DialogueSession {
       );
       session.retainRequests();
       session.savedAt = state.savedAt;
+      for (const [id, owner] of Object.entries(state.taskRequests ?? {}))
+        session.taskRequests.set(id, owner);
+      for (const task of state.tasks) {
+        if (!session.taskRequests.has(task.id) && session.openRequest)
+          session.taskRequests.set(task.id, session.openRequest.id);
+      }
       const ids = session.board.restore(state.tasks);
       if (state.taskSteps !== undefined) {
         for (const [id, stepId] of Object.entries(state.taskSteps))
@@ -625,7 +662,9 @@ export class DialogueSession {
     consumed: TaskEvent[] = [],
   ): Promise<PlannerMessage> {
     const previousRequest = this.openRequest;
-    const request = this.beginRequest(text, user !== undefined);
+    const waitingAtEntry = this.plan?.status === 'waiting_user';
+    let request = this.beginRequest(text, user !== undefined);
+    const entryTurnOk = request.lastTurnOk;
     request.lastTurnOk = false;
     const turnStartedAt = this.now();
     const origin = consumed
@@ -642,7 +681,7 @@ export class DialogueSession {
         previousRequest.id,
         previousRequest.id,
         previousRequest.closedPlan?.steps
-          .map((step) => `${step.goal} ? ${step.state} ? ${step.note ?? ''}`)
+          .map((step) => `${step.goal} — ${step.state} — ${step.note ?? ''}`)
           .join('\n') ?? '',
         { usage: this.turnUsage },
       );
@@ -669,7 +708,7 @@ export class DialogueSession {
       const elided = projected.some((message) =>
         /\[(?:elided|cut:|stored cut:|dropped) /.test(message.content ?? ''),
       );
-      const retrieved = await retrievePlannerContext(
+      let retrieved = await retrievePlannerContext(
         this.opts,
         this.opts.id,
         request.id,
@@ -697,7 +736,55 @@ export class DialogueSession {
         : waitStop.signal;
       let lastReadVersion: number | undefined;
       let partialText = '';
+      let callIndex = 0;
+      let didRestart = false;
       for (let correction = 0; ; correction++) {
+        const callStop = new AbortController();
+        let restarting = false;
+        let toolCount = 0;
+        let reserved = false;
+        let roundCount = 0;
+        let restartDelivered = false;
+        const startRequest = (fromTool = false) => {
+          if (
+            !user ||
+            callIndex !== 0 ||
+            didRestart ||
+            waitingAtEntry ||
+            toolCount !== (fromTool ? 1 : 0)
+          )
+            throw new Error(
+              'new_request requires the first tool of the first planner call in a user turn, once, and never an answer to waiting_user',
+            );
+          this.updateRequestPlan();
+          request.transcript.pop();
+          request.closedAt = this.now();
+          request.closedPlan = structuredClone(this.plan);
+          request.lastTurnOk = entryTurnOk;
+          this.memoryWriter?.enqueue(
+            'planner-plan',
+            request.id,
+            request.id,
+            request.closedPlan?.steps
+              .map(
+                (step) => `${step.goal} — ${step.state} — ${step.note ?? ''}`,
+              )
+              .join('\n') ?? '',
+            { usage: this.turnUsage },
+          );
+          this.plan = undefined;
+          request = this.beginRequest(text, false);
+          request.lastTurnOk = false;
+          appendRequestMessage(request, { role: 'user', content: text });
+          partialText = '';
+          contentPartials.length = 0;
+          lastReadVersion = undefined;
+          didRestart = true;
+          restarting = true;
+          callStop.abort();
+          this.retainRequests();
+          this.changed();
+        };
         const notes = [
           planView(this.plan),
           ...this.board.workerBudgetNotes(),
@@ -724,6 +811,26 @@ export class DialogueSession {
         const contentPartials: StreamChunk[] = [];
         const result = await runInPlannerScope(
           {
+            beforeTool: (name) => {
+              if (
+                (reserved || restarting) &&
+                (name !== 'new_request' || !reserved || restartDelivered)
+              )
+                throw new Error(
+                  'new request started; continue in the next call',
+                );
+              if (!reserved && !restarting) toolCount++;
+            },
+            newRequest: () => {
+              if (reserved && !restartDelivered) {
+                startRequest();
+                restartDelivered = true;
+                return;
+              }
+              startRequest(true);
+              restartDelivered = true;
+            },
+            ownTask: (id) => this.taskRequests.set(id, request.id),
             board: this.board,
             maxItemsPerStep: this.opts.maxItemsPerStep,
             taskSteps: this.taskSteps,
@@ -787,10 +894,53 @@ export class DialogueSession {
           () =>
             this.opts.planner.process(messages, {
               ...user?.opts,
-              stopSignal,
+              toolRoundGuard: (calls) => {
+                const firstRound = roundCount++ === 0;
+                if (
+                  firstRound &&
+                  toolCount === 0 &&
+                  user &&
+                  callIndex === 0 &&
+                  !didRestart &&
+                  !waitingAtEntry &&
+                  calls[0]?.name === 'new_request' &&
+                  Object.keys(calls[0].arguments).length === 0
+                ) {
+                  reserved = true;
+                  // Reserve the boundary now; the tool handler performs the effect.
+                }
+                if (reserved || restarting) {
+                  return new Map(
+                    calls.flatMap((_, index) =>
+                      reserved && firstRound && index === 0
+                        ? []
+                        : [
+                            [
+                              index,
+                              'new request started; continue in the next call',
+                            ] as const,
+                          ],
+                    ),
+                  );
+                }
+                return new Map(
+                  calls.flatMap((call, index) =>
+                    call.name === 'new_request'
+                      ? [
+                          [
+                            index,
+                            'new_request requires the first tool of the first planner call in a user turn, once, and never an answer to waiting_user',
+                          ] as const,
+                        ]
+                      : [],
+                  ),
+                );
+              },
+              stopSignal: AbortSignal.any([stopSignal, callStop.signal]),
               sessionId: this.opts.id,
               usage: scopedUsage(this.turnUsage, { role: 'planner' }),
               onPartial: (chunk) => {
+                if (restarting) return;
                 if (chunk.kind === 'content') {
                   contentPartials.push(chunk);
                   partialText += chunk.delta;
@@ -798,17 +948,35 @@ export class DialogueSession {
               },
             }),
         ).catch((error: Error) => {
-          if (!waitStop.signal.aborted || user?.opts.signal?.aborted)
+          if (
+            (!waitStop.signal.aborted && !restarting) ||
+            user?.opts.signal?.aborted
+          )
             throw error;
           return {
             ok: true as const,
             value: { content: partialText, usage: undefined },
           };
         });
-        const waiting = waitStop.signal.aborted && !user?.opts.signal?.aborted;
-        if (!result.ok && !waiting) throw result.error;
+        callIndex++;
         if (result.ok)
           plannerUsage = addTokenUsage(plannerUsage, result.value.usage);
+        if (restarting) {
+          retrieved = await retrievePlannerContext(
+            this.opts,
+            this.opts.id,
+            request.id,
+            text,
+            false,
+            { usage: this.turnUsage, signal: user?.opts.signal },
+            (message) => this.warn(message),
+          );
+          correction--;
+          continue;
+        }
+        const waiting = waitStop.signal.aborted && !user?.opts.signal?.aborted;
+        if (!result.ok && !waiting) throw result.error;
+
         reply = result.ok ? result.value.content : partialText;
         if (waiting && !reply.trim())
           reply = partialText.trim()
@@ -950,6 +1118,11 @@ export class DialogueSession {
   private eventNotes(events: TaskEvent[]): string {
     return events
       .map(({ kind, task }) => {
+        const requestId = this.taskRequests.get(task.id);
+        const label =
+          requestId && requestId !== this.openRequest?.id
+            ? `[task events] from ${requestId}:`
+            : '[task events]';
         if (kind === 'long_running') {
           const seconds = Math.floor(
             Math.max(0, this.now() - (task.startedAt ?? task.createdAt)) / 1000,
@@ -959,13 +1132,13 @@ export class DialogueSession {
             task.toolCalls === undefined
               ? ''
               : ` (${task.toolCalls}${task.maxToolCalls === undefined ? '' : `/${task.maxToolCalls}`} tool calls)`;
-          return `[task events] ${task.id} (${task.worker}) is still running after ${elapsed}${calls}: check it and decide: keep waiting, stop_task, or re-delegate`;
+          return `${label} ${task.id} (${task.worker}) is still running after ${elapsed}${calls}: check it and decide: keep waiting, stop_task, or re-delegate`;
         }
         const owner = this.taskSteps.get(task.id);
         const removed =
           owner !== undefined &&
           !this.plan?.steps.some((step) => step.id === owner);
-        return `${removed ? '[actions]' : '[task events]'} task ${task.id}${owner ? ` for ${owner}` : ''} (${task.worker}) ${kind}: ${task.goal} — ${task.error ?? task.output ?? ''}${task.budgetExhausted ? `; worker hit the tool-call budget ${task.toolCalls ?? '?'}/${task.maxToolCalls ?? '?'}` : ''}`;
+        return `${label !== '[task events]' ? label : removed ? '[actions]' : '[task events]'} task ${task.id}${owner ? ` for ${owner}` : ''} (${task.worker}) ${kind}: ${task.goal} — ${task.error ?? task.output ?? ''}${task.budgetExhausted ? `; worker hit the tool-call budget ${task.toolCalls ?? '?'}/${task.maxToolCalls ?? '?'}` : ''}`;
       })
       .join('\n');
   }
@@ -1031,6 +1204,7 @@ export class DialogueSession {
       planStatus: this.plan?.status,
       tasks: this.board.list(),
       taskSteps: Object.fromEntries(this.taskSteps),
+      taskRequests: Object.fromEntries(this.taskRequests),
       pending: this.pending,
       savedAt: this.savedAt,
     });

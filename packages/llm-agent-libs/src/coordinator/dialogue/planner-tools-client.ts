@@ -95,6 +95,11 @@ export class PlannerToolsClient implements IMcpClient {
       ok: true,
       value: [
         {
+          name: 'new_request',
+          description: 'Start unrelated work in a new request; call first.',
+          inputSchema: schema({}),
+        },
+        {
           name: 'delegate_task',
           description:
             'Delegate a result to a worker: goal = the result, context = constraints, facts and the done criterion; a planned independent check is a separate checker task.',
@@ -214,7 +219,16 @@ export class PlannerToolsClient implements IMcpClient {
     try {
       const scope = currentPlannerScope();
       if (!scope) throw new Error('no planner session');
+      scope.beforeTool?.(name);
       switch (name) {
+        case 'new_request':
+          z.object({}).strict().parse(args);
+          if (!scope.newRequest) throw new Error('new_request is unavailable');
+          scope.newRequest();
+          return textResult({
+            ok: true,
+            message: 'new request started; continue in the next call',
+          });
         case 'delegate_task': {
           const worker = requiredString(args, 'worker');
           let goal = requiredString(args, 'goal');
@@ -285,6 +299,7 @@ export class PlannerToolsClient implements IMcpClient {
 Verify exactly ${step.items.length} items, each with a stored/processed result: ${JSON.stringify(step.items)}. Return JSON with verdict, count and note.`;
           const result = scope.board.start({ worker, goal, context, history });
           if (!result.ok) throw new Error(result.error);
+          scope.ownTask?.(result.value.id);
           if (typeof plan === 'object') delete plan.scopeConsent;
           if (step) {
             scope.taskSteps?.set(result.value.id, step.id);

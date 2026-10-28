@@ -61,7 +61,7 @@ function setup(maxTasks = 50) {
     },
   };
 }
-test('offers exactly nine JSON Schema tools and worker enum within scope', async () => {
+test('offers exactly ten JSON Schema tools and worker enum within scope', async () => {
   const f = setup();
   const result = await runInPlannerScope(f.scope, () => client.listTools());
   assert.ok(result.ok);
@@ -72,6 +72,7 @@ test('offers exactly nine JSON Schema tools and worker enum within scope', async
   assert.deepEqual(
     result.value.map((tool) => tool.name),
     [
+      'new_request',
       'delegate_task',
       'get_message',
       'get_request',
@@ -85,13 +86,11 @@ test('offers exactly nine JSON Schema tools and worker enum within scope', async
   );
   for (const tool of result.value)
     assert.equal(tool.inputSchema.type, 'object');
+  const delegate = result.value.find((tool) => tool.name === 'delegate_task');
+  assert.ok(delegate);
   assert.deepEqual(
-    (
-      result.value[0].inputSchema.properties as Record<
-        string,
-        { enum?: string[] }
-      >
-    ).worker.enum,
+    (delegate.inputSchema.properties as Record<string, { enum?: string[] }>)
+      .worker.enum,
     ['w'],
   );
 });

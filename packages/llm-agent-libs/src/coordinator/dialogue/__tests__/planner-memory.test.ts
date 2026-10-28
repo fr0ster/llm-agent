@@ -679,7 +679,7 @@ test('closed plans are indexed raw on the boundary and write failure does not fa
   await tick();
   const plan = await rag.getById('planner:plans-memory:planner-plan:r1:0');
   assert.ok(plan.ok && plan.value);
-  assert.equal(plan.value.text, 'raw goal ? done ? raw note');
+  assert.equal(plan.value.text, 'raw goal — done — raw note');
   await session.close();
   const backend = rag.writer();
   assert.ok(backend);

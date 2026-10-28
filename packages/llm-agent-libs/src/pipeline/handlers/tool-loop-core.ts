@@ -34,6 +34,19 @@ export type ParsedToolCall = {
   arguments: Record<string, unknown>;
 };
 
+/** Evaluate the complete round before dispatch, including calls outside the batch. */
+export function guardToolRound(
+  calls: ParsedToolCall[],
+  options?: CallOptions,
+): ReadonlyMap<number, string> | undefined {
+  try {
+    return options?.toolRoundGuard?.(calls);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return new Map(calls.map((_, index) => [index, message]));
+  }
+}
+
 export interface IClassifiedToolCalls {
   internalCalls: ParsedToolCall[];
   validExternalCalls: ParsedToolCall[];
@@ -210,6 +223,7 @@ export type BatchOutcome =
 
 export interface IExecuteToolBatchArgs {
   batch: ParsedToolCall[];
+  roundCalls?: ParsedToolCall[];
   toolClientMap: Map<string, IMcpClient>;
   toolCache: IToolCache;
   tracer: ITracer;
@@ -253,7 +267,25 @@ export async function* executeToolBatchWithHeartbeat(
   let currentTools = args.currentTools;
   let toolCallCount = args.toolCallCount;
 
+  const round = args.roundCalls ?? batch;
+  const rejections = guardToolRound(round, options);
   const toolExecPromises = batch.map(async (tc): Promise<ToolExecResult> => {
+    const rejection = rejections?.get(round.indexOf(tc));
+    if (rejection !== undefined) {
+      return {
+        tc,
+        text: rejection,
+        res: {
+          ok: true,
+          value: {
+            content: [{ type: 'text', text: rejection }],
+            isError: true,
+          },
+        },
+        duration: 0,
+        cached: false,
+      };
+    }
     const toolStart = Date.now();
     options?.sessionLogger?.logStep(
       `mcp_call_${tc.name}`,

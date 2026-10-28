@@ -42,8 +42,9 @@ test('planner prompt requires result delegation and planned verification', () =>
     assert.ok(DIALOGUE_PLANNER_SYSTEM.includes(rule), rule);
 });
 
-test('documented builder exposes exactly the nine control tools and dispatches delegation inside a session', async () => {
+test('documented builder exposes exactly the ten control tools and dispatches delegation inside a session', async () => {
   const expected = [
+    'new_request',
     'delegate_task',
     'get_message',
     'get_request',

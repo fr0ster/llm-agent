@@ -6,6 +6,10 @@ import type {
 } from '@mcp-abap-adt/llm-agent';
 import { scopedUsage } from '@mcp-abap-adt/llm-agent';
 import type { IMetrics } from '../metrics/types.js';
+import {
+  guardToolRound,
+  type ParsedToolCall,
+} from '../pipeline/handlers/tool-loop-core.js';
 import type {
   PendingToolResult,
   PendingToolResultsRegistry,
@@ -16,6 +20,7 @@ export interface MixedToolCallContext {
   toolCache: IToolCache;
   metrics: IMetrics;
   options?: CallOptions;
+  roundCalls?: ParsedToolCall[];
   skippedCalls?: Array<{
     id: string;
     name: string;
@@ -48,9 +53,18 @@ export function fireInternalToolsAsync(
     })),
   };
 
+  const round = ctx.roundCalls ?? internalCalls;
+  const rejections = guardToolRound(round, ctx.options);
   const internalPromise = Promise.all(
     internalCalls.map(async (tc): Promise<PendingToolResult> => {
       try {
+        const rejection = rejections?.get(round.indexOf(tc));
+        if (rejection !== undefined)
+          return {
+            toolCallId: tc.id,
+            toolName: tc.name,
+            text: `Error: ${rejection}`,
+          };
         const client = ctx.toolClientMap.get(tc.name);
         if (!client) {
           return { toolCallId: tc.id, toolName: tc.name, text: '' };

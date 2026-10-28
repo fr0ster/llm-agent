@@ -1392,6 +1392,7 @@ export class SmartAgent {
               toolCache: this.toolCache,
               metrics: this.metrics,
               options: opts,
+              roundCalls: toolCalls,
               skippedCalls: skipped,
               maxToolCalls: this.config.maxToolCalls,
             },
@@ -1479,6 +1480,7 @@ export class SmartAgent {
       // Execute all tool calls concurrently with heartbeat (shared core).
       const outcome = yield* executeToolBatchWithHeartbeat({
         batch,
+        roundCalls: toolCalls,
         toolClientMap,
         toolCache: this.toolCache,
         tracer: this.tracer,
