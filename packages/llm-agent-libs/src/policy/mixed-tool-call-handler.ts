@@ -21,6 +21,7 @@ export interface MixedToolCallContext {
   metrics: IMetrics;
   options?: CallOptions;
   roundCalls?: ParsedToolCall[];
+  roundRejections?: ReadonlyMap<number, string>;
   skippedCalls?: Array<{
     id: string;
     name: string;
@@ -54,7 +55,7 @@ export function fireInternalToolsAsync(
   };
 
   const round = ctx.roundCalls ?? internalCalls;
-  const rejections = guardToolRound(round, ctx.options);
+  const rejections = ctx.roundRejections ?? guardToolRound(round, ctx.options);
   const internalPromise = Promise.all(
     internalCalls.map(async (tc): Promise<PendingToolResult> => {
       try {

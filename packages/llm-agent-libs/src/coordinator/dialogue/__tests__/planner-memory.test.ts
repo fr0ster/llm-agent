@@ -783,3 +783,50 @@ test('builder omits open-request memory until its projection is elided', () => {
   input.open.transcript[0].content = 'x'.repeat(30_000);
   assert.match(builder.build(input)[0].content ?? '', /session memory/);
 });
+
+test('restart retrieval keeps expired planner replies labelled excerpt-only', async () => {
+  const rag = new InMemoryRag();
+  const memory = { rag, queryEmbedder, documentEmbedder };
+  const writer = new PlannerMemoryWriter('restart-expired', memory, warn);
+  writer.enqueue(
+    'planner-reply',
+    'archived-request',
+    'expired-reply',
+    'old reply excerpt',
+    {},
+  );
+  await writer.close();
+  let calls = 0;
+  const session = await DialogueSession.open({
+    id: 'restart-expired',
+    maxCorrections: 0,
+    board: { workers: new Map() },
+    plannerMemory: memory,
+    planner: {
+      async process(messages) {
+        calls++;
+        const context = messages.map((message) => message.content).join('\n');
+        assert.match(context, /old reply excerpt/);
+        assert.match(context, /expired: excerpt only/);
+        if (calls === 1) {
+          const result = await new PlannerToolsClient().callTool(
+            'new_request',
+            {},
+          );
+          assert.ok(result.ok && !result.value.isError);
+        }
+        return {
+          ok: true,
+          value: { content: calls === 1 ? 'discard' : 'done' },
+        };
+      },
+    },
+  });
+  try {
+    const reply = await session.send('new task');
+    assert.equal(reply.text, 'done');
+    assert.equal(calls, 2);
+  } finally {
+    await session.close();
+  }
+});

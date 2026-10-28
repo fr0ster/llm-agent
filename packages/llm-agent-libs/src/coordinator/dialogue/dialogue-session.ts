@@ -719,13 +719,16 @@ export class DialogueSession {
         { usage: this.turnUsage, signal: user?.opts.signal },
         (message) => this.warn(message),
       );
-      retrieved.memory = retrieved.memory.map((entry) => ({
-        ...entry,
-        ...(entry.kind === 'planner-reply' &&
-        !this.messages.some((message) => message.id === entry.sourceId)
-          ? { expired: true }
-          : {}),
-      }));
+      const postprocessRetrieval = () => {
+        retrieved.memory = retrieved.memory.map((entry) => ({
+          ...entry,
+          ...(entry.kind === 'planner-reply' &&
+          !this.messages.some((message) => message.id === entry.sourceId)
+            ? { expired: true }
+            : {}),
+        }));
+      };
+      postprocessRetrieval();
       let reply = '';
       let plannerUsage: TokenUsage | undefined;
       const actions: string[] = [];
@@ -971,6 +974,7 @@ export class DialogueSession {
             { usage: this.turnUsage, signal: user?.opts.signal },
             (message) => this.warn(message),
           );
+          postprocessRetrieval();
           correction--;
           continue;
         }

@@ -83,6 +83,7 @@ import {
   classifyToolCalls,
   executeToolBatchWithHeartbeat,
   filterAvailableTools,
+  guardToolRound,
   injectPendingResults,
   injectToolPriority,
   runOutputValidationReprompt,
@@ -1177,7 +1178,7 @@ export class SmartAgent {
             const delta = toToolCallDelta(tc, 0);
             return externalToolIndices.has(delta.index);
           });
-          if (externalDeltas.length > 0) {
+          if (!opts?.toolRoundGuard && externalDeltas.length > 0) {
             yield {
               ok: true,
               value: { content: '', toolCalls: externalDeltas },
@@ -1317,6 +1318,8 @@ export class SmartAgent {
         };
         return;
       }
+      const roundRejections =
+        guardToolRound(toolCalls, opts) ?? new Map<number, string>();
       const {
         internalCalls,
         validExternalCalls,
@@ -1329,6 +1332,46 @@ export class SmartAgent {
         this.toolAvailabilityRegistry,
         sessionId,
       );
+      // Rejected external calls are resolved locally before any call is surfaced.
+      const rejectedExternal = validExternalCalls.filter((tc) =>
+        roundRejections.has(toolCalls.indexOf(tc)),
+      );
+      if (rejectedExternal.length > 0) {
+        await strategy.record({
+          assistant: {
+            role: 'assistant',
+            content: content || null,
+            tool_calls: rejectedExternal.map((tc) => ({
+              id: tc.id,
+              type: 'function' as const,
+              function: {
+                name: tc.name,
+                arguments: JSON.stringify(tc.arguments),
+              },
+            })),
+          },
+          results: rejectedExternal.map((tc) => ({
+            role: 'tool' as const,
+            tool_call_id: tc.id,
+            content: `Error: ${roundRejections.get(toolCalls.indexOf(tc))}`,
+          })),
+          meta: rejectedExternal.map(() => ({ isError: true })),
+        });
+        for (const tc of rejectedExternal) {
+          validExternalCalls.splice(validExternalCalls.indexOf(tc), 1);
+        }
+        controlTail.length = 0;
+        messages = (
+          await strategy.form({ prefix: staticPrefix, queryText: _action.text })
+        ).concat(controlTail);
+        if (
+          validExternalCalls.length === 0 &&
+          internalCalls.length === 0 &&
+          blockedCalls.length === 0 &&
+          hallucinations.length === 0
+        )
+          continue;
+      }
       if (blockedCalls.length > 0) {
         const group = buildBlockedToolMessages(content, blockedCalls, opts);
         await strategy.record({
@@ -1380,6 +1423,20 @@ export class SmartAgent {
       }
 
       if (validExternalCalls.length > 0) {
+        if (opts?.toolRoundGuard) {
+          yield {
+            ok: true,
+            value: {
+              content: '',
+              toolCalls: validExternalCalls.map((tc, index) => ({
+                index,
+                id: tc.id,
+                name: tc.name,
+                arguments: JSON.stringify(tc.arguments),
+              })),
+            },
+          };
+        }
         // Mixed calls: fire internal tools async, store pending results
         if (internalCalls.length > 0) {
           fireInternalToolsAsync(
@@ -1393,6 +1450,7 @@ export class SmartAgent {
               metrics: this.metrics,
               options: opts,
               roundCalls: toolCalls,
+              roundRejections,
               skippedCalls: skipped,
               maxToolCalls: this.config.maxToolCalls,
             },
@@ -1481,6 +1539,7 @@ export class SmartAgent {
       const outcome = yield* executeToolBatchWithHeartbeat({
         batch,
         roundCalls: toolCalls,
+        roundRejections,
         toolClientMap,
         toolCache: this.toolCache,
         tracer: this.tracer,

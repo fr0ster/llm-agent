@@ -224,6 +224,7 @@ export type BatchOutcome =
 export interface IExecuteToolBatchArgs {
   batch: ParsedToolCall[];
   roundCalls?: ParsedToolCall[];
+  roundRejections?: ReadonlyMap<number, string>;
   toolClientMap: Map<string, IMcpClient>;
   toolCache: IToolCache;
   tracer: ITracer;
@@ -268,7 +269,7 @@ export async function* executeToolBatchWithHeartbeat(
   let toolCallCount = args.toolCallCount;
 
   const round = args.roundCalls ?? batch;
-  const rejections = guardToolRound(round, options);
+  const rejections = args.roundRejections ?? guardToolRound(round, options);
   const toolExecPromises = batch.map(async (tc): Promise<ToolExecResult> => {
     const rejection = rejections?.get(round.indexOf(tc));
     if (rejection !== undefined) {
