@@ -250,7 +250,7 @@ export function currentAttemptIds(step: PlanStep): string[] {
   ].filter((id): id is string => id !== undefined);
 }
 export function recomputePlanStatus(plan?: Plan): void {
-  if (!plan?.steps.length) return;
+  if (!plan?.steps.length || plan.status === 'waiting_user') return;
   if (plan.steps.every((s) => s.state === 'done' || s.state === 'skipped')) {
     plan.status = 'done';
     delete plan.question;

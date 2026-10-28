@@ -54,6 +54,7 @@ import {
   classifyToolCalls,
   executeToolBatchWithHeartbeat,
   filterAvailableTools,
+  guardToolRound,
   injectPendingResults,
   injectToolPriority,
   runOutputValidationReprompt,
@@ -717,6 +718,8 @@ export class ToolLoopHandler implements IStageHandler {
       }
 
       // -- Classify tool calls -----------------------------------------------
+      const roundRejections =
+        guardToolRound(toolCalls, ctx.options) ?? new Map<number, string>();
       const {
         internalCalls,
         validExternalCalls,
@@ -731,6 +734,49 @@ export class ToolLoopHandler implements IStageHandler {
       );
 
       // -- Handle blocked tools ----------------------------------------------
+      // Rejected external calls are resolved locally before any call is surfaced.
+      const rejectedExternal = validExternalCalls.filter((tc) =>
+        roundRejections.has(toolCalls.indexOf(tc)),
+      );
+      if (rejectedExternal.length > 0) {
+        await strategy.record({
+          assistant: {
+            role: 'assistant',
+            content: content || null,
+            tool_calls: rejectedExternal.map((tc) => ({
+              id: tc.id,
+              type: 'function' as const,
+              function: {
+                name: tc.name,
+                arguments: JSON.stringify(tc.arguments),
+              },
+            })),
+          },
+          results: rejectedExternal.map((tc) => ({
+            role: 'tool' as const,
+            tool_call_id: tc.id,
+            content: `Error: ${roundRejections.get(toolCalls.indexOf(tc))}`,
+          })),
+          meta: rejectedExternal.map(() => ({ isError: true })),
+        });
+        for (const tc of rejectedExternal) {
+          validExternalCalls.splice(validExternalCalls.indexOf(tc), 1);
+        }
+        controlTail.length = 0;
+        messages = (
+          await strategy.form({
+            prefix: staticPrefix,
+            queryText: ctx.inputText,
+          })
+        ).concat(controlTail);
+        if (
+          validExternalCalls.length === 0 &&
+          internalCalls.length === 0 &&
+          blockedCalls.length === 0 &&
+          hallucinations.length === 0
+        )
+          continue;
+      }
       if (blockedCalls.length > 0) {
         const group = buildBlockedToolMessages(
           content,
@@ -863,6 +909,8 @@ export class ToolLoopHandler implements IStageHandler {
                 toolCache: ctx.toolCache,
                 metrics: ctx.metrics,
                 options: ctx.options,
+                roundCalls: toolCalls,
+                roundRejections,
                 skippedCalls: skipped,
                 maxToolCalls: maxToolCalls,
               },
@@ -968,6 +1016,8 @@ export class ToolLoopHandler implements IStageHandler {
       // Execute tool calls concurrently with heartbeat (shared core).
       const batchGen = executeToolBatchWithHeartbeat({
         batch,
+        roundCalls: toolCalls,
+        roundRejections,
         toolClientMap: ctx.toolClientMap,
         toolCache: ctx.toolCache,
         tracer: ctx.tracer,

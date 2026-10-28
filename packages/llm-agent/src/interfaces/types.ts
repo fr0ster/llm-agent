@@ -33,6 +33,12 @@ export interface CallOptions {
   signal?: AbortSignal;
   /** Stop between tool-loop iterations without aborting in-flight calls. */
   stopSignal?: AbortSignal;
+  /** Called once before any tool in a round executes. Each returned call index
+   * rejects that call with an error result instead of executing it. A thrown
+   * error rejects every call with its message. Absent: every call executes. */
+  toolRoundGuard?: (
+    calls: ReadonlyArray<{ name: string; arguments: Record<string, unknown> }>,
+  ) => ReadonlyMap<number, string> | undefined;
   temperature?: number;
   maxTokens?: number;
   topP?: number;

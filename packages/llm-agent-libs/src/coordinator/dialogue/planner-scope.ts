@@ -1,8 +1,16 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
-import type { Message, DialoguePlan as Plan } from '@mcp-abap-adt/llm-agent';
+import type {
+  Message,
+  DialoguePlan as Plan,
+  PlannerMessage,
+  PlannerRequestRecord,
+} from '@mcp-abap-adt/llm-agent';
 import type { TaskBoard } from './task-board.js';
 
 export interface PlannerScope {
+  beforeTool?(name: string): void;
+  newRequest?(): void;
+  ownTask?(id: string): void;
   board: TaskBoard;
   maxItemsPerStep?: number;
   taskSteps?: Map<string, string>;
@@ -14,6 +22,13 @@ export interface PlannerScope {
     status?: Plan['status'],
     question?: string,
   ): void;
+  getMessage?(id: string): PlannerMessage | undefined;
+  getRequest?(id: string): PlannerRequestRecord | undefined;
+  searchKnowledge?(
+    query: string,
+    collection?: string,
+    k?: number,
+  ): Promise<string>;
   history(): Message[];
 }
 const storage = new AsyncLocalStorage<PlannerScope>();

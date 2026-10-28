@@ -1031,6 +1031,7 @@ for (const status of [undefined, 'active', 'waiting_user', 'done'] as const) {
     const warnings: string[] = [];
     const s = await DialogueSession.open({
       id: 'status',
+      ...(status === 'done' ? { plannerContext: 'conversation' as const } : {}),
       store,
       logger: { warn: (message) => warnings.push(message) },
       board: {
@@ -1079,6 +1080,148 @@ for (const status of [undefined, 'active', 'waiting_user', 'done'] as const) {
     await s.close();
   });
 }
+
+test('prepared context resets a restored completed batch plan for unrelated work', async () => {
+  const store = new InMemoryDialogueStateStore();
+  await store.save('legacy-batch', {
+    conversation: [{ role: 'user', content: 'old batch' }],
+    plan: {
+      version: 1,
+      status: 'done',
+      steps: [
+        {
+          id: 'old',
+          goal: 'old batch',
+          items: ['first', 'second'],
+          state: 'done',
+          taskIds: [],
+          dependsOn: [],
+        },
+      ],
+    },
+    tasks: [],
+    pending: [],
+    savedAt: 0,
+  });
+  const s = await DialogueSession.open({
+    id: 'legacy-batch',
+    store,
+    maxCorrections: 0,
+    board: { workers: new Map() },
+    planner: {
+      async process() {
+        assert.equal(s.snapshot().plan, undefined);
+        const result = await tools.callTool('update_plan', {
+          steps: [{ id: 'new', goal: 'unrelated work' }],
+        });
+        assert.ok(!result.isError, JSON.stringify(result));
+        return { ok: true, value: { content: 'new work accepted' } };
+      },
+    },
+  });
+  try {
+    await s.send('unrelated work');
+    const state = s.snapshot();
+    assert.equal(state.requests?.length, 2);
+    assert.equal(state.requests?.[0].legacy, true);
+    assert.equal(state.requests?.[0].closedPlan?.steps[0].id, 'old');
+    assert.equal(state.requests?.[1].id, 'r2');
+    assert.equal(
+      (state.plan as import('@mcp-abap-adt/llm-agent').DialoguePlan).steps[0]
+        .id,
+      'new',
+    );
+  } finally {
+    await s.close();
+  }
+});
+
+test('task completion preserves a pending question and a queued answer grants consent in the same request', async () => {
+  const work = deferred<{ output: string }>();
+  const entered = deferred();
+  const release = deferred();
+  let calls = 0;
+  const question = 'May I change the scope?';
+  const s = await DialogueSession.open({
+    id: 'waiting-answer',
+    maxCorrections: 0,
+    board: {
+      workers: new Map([
+        [
+          'w',
+          {
+            name: 'w',
+            capabilities: { contextPolicy: 'optional' },
+            run: () => work.promise,
+          },
+        ],
+      ]),
+    },
+    planner: {
+      async process() {
+        calls++;
+        if (calls === 1) {
+          const steps = [{ id: 'work', goal: 'work' }];
+          assert.ok(!(await tools.callTool('update_plan', { steps })).isError);
+          assert.ok(
+            !(
+              await tools.callTool('delegate_task', {
+                worker: 'w',
+                goal: 'work',
+                step_id: 'work',
+              })
+            ).isError,
+          );
+          assert.ok(
+            !(
+              await tools.callTool('update_plan', {
+                steps,
+                status: 'waiting_user',
+                question,
+              })
+            ).isError,
+          );
+          entered.resolve();
+          await release.promise;
+          return { ok: true, value: { content: question } };
+        }
+        if (calls === 2) {
+          const state = s.snapshot();
+          const plan =
+            state.plan as import('@mcp-abap-adt/llm-agent').DialoguePlan;
+          assert.equal(plan.scopeConsent, true);
+          assert.equal(plan.status, 'active');
+          assert.equal(plan.question, undefined);
+          assert.equal(state.requests?.length, 1);
+          assert.equal(state.requests?.[0].id, 'r1');
+          assert.ok(!state.requests?.[0].closedAt);
+        }
+        return { ok: true, value: { content: 'NO_MESSAGE' } };
+      },
+    },
+  });
+  try {
+    const first = s.send('start work');
+    await entered.promise;
+    work.resolve({ output: 'done' });
+    await tick();
+    const plan = s.snapshot()
+      .plan as import('@mcp-abap-adt/llm-agent').DialoguePlan;
+    assert.equal(plan.steps[0].state, 'done');
+    assert.equal(plan.status, 'waiting_user');
+    assert.equal(plan.question, question);
+    const answer = s.send('yes');
+    release.resolve();
+    await first;
+    await answer;
+    assert.ok(calls >= 2);
+    assert.equal(s.snapshot().requests?.length, 1);
+  } finally {
+    release.resolve();
+    work.resolve({ output: 'done' });
+    await s.close();
+  }
+});
 
 for (const maxCorrections of [0, 1, 2]) {
   test(`idle bound ${maxCorrections} and silent replies do not imply completion`, async () => {
