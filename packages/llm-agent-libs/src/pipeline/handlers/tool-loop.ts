@@ -967,6 +967,7 @@ export class ToolLoopHandler implements IStageHandler {
         heartbeatMs,
         options: ctx.options,
         mcpFailureClassifier: ctx.mcpFailureClassifier,
+        maxToolCalls,
         onToolExecuted: (r) => {
           // Stamp requestId so tool executions land in the per-traceId delta
           // bucket — without it, `getSummary(traceId).toolCalls` stays 0 even
@@ -1012,7 +1013,6 @@ export class ToolLoopHandler implements IStageHandler {
       }
       const outcome = step.value;
       if (outcome.escalated) return false;
-      currentTools = outcome.currentTools;
       if (outcome.toolCallCount !== toolCallCount) {
         toolCallCount = outcome.toolCallCount;
         try {
@@ -1021,6 +1021,7 @@ export class ToolLoopHandler implements IStageHandler {
           /* Observers cannot affect execution. */
         }
       }
+      currentTools = outcome.currentTools;
       if (maxToolCalls !== undefined && toolCallCount >= maxToolCalls) {
         ctx.yield({
           ok: true,

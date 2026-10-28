@@ -291,6 +291,22 @@ test('cooperative stop and stopAll wait for workers to settle', async () => {
   assert.equal(board.get(id)?.state, 'stopped');
 });
 
+for (const finalCount of [undefined, 5]) {
+  test(`task preserves live counts unless result defines them (${finalCount})`, async () => {
+    const board = fixture(async (input) => {
+      input.onToolCallCount?.(3, 40);
+      return finalCount === undefined
+        ? { output: 'done' }
+        : { output: 'done', toolCallCount: finalCount };
+    });
+    const id = start(board);
+    await tick();
+    assert.equal(board.get(id)?.state, 'done');
+    assert.equal(board.get(id)?.toolCalls, finalCount ?? 3);
+    assert.equal(board.get(id)?.maxToolCalls, 40);
+  });
+}
+
 test('running tasks expose live tool counts and preserve the base observer', async () => {
   const releases: (() => void)[] = [];
   const worker: ISubAgent = {

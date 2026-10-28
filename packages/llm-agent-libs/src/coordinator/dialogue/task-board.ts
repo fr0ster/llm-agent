@@ -231,8 +231,10 @@ export class TaskBoard {
       if (result.usage) task.usage = result.usage;
       task.output = cutTaskOutput(result.output);
       task.budgetExhausted = result.budgetExhausted;
-      task.toolCalls = result.toolCallCount;
-      task.maxToolCalls = result.maxToolCalls;
+      if (result.toolCallCount !== undefined)
+        task.toolCalls = result.toolCallCount;
+      if (result.maxToolCalls !== undefined)
+        task.maxToolCalls = result.maxToolCalls;
       if (result.errorClass === 'epicfail') {
         task.error = task.output || 'worker epicfail';
         kind = 'failed';

@@ -625,6 +625,7 @@ export class SmartAgent {
       value: {
         content,
         iterations: 1,
+        // Executed internal tool calls; when none executed, calls surfaced to the caller.
         toolCallCount: executedToolCallCount ?? collectedToolCalls.length,
         ...budget,
         stopReason,
@@ -1472,6 +1473,7 @@ export class SmartAgent {
         heartbeatMs,
         options: opts,
         mcpFailureClassifier: this.deps.mcpFailureClassifier,
+        maxToolCalls: this.config.maxToolCalls,
         onToolExecuted: (r) => {
           const traceId = opts?.trace?.traceId ?? 'agent-tool-loop';
           const isError = !r.res?.ok || (r.res.ok && !!r.res.value.isError);
@@ -1494,7 +1496,6 @@ export class SmartAgent {
         },
       });
       if (outcome.escalated) return;
-      currentTools = outcome.currentTools;
       if (outcome.toolCallCount !== toolCallCount) {
         toolCallCount = outcome.toolCallCount;
         try {
@@ -1503,6 +1504,7 @@ export class SmartAgent {
           /* Observers cannot affect execution. */
         }
       }
+      currentTools = outcome.currentTools;
       if (
         this.config.maxToolCalls !== undefined &&
         toolCallCount >= this.config.maxToolCalls
