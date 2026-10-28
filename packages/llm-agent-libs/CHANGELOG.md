@@ -1,5 +1,18 @@
 # @mcp-abap-adt/llm-agent-libs
 
+## 30.18.0
+
+### Minor Changes
+
+- dd8e7a8: Prepare planner context from bounded request transcripts, with a persisted request journal and final message archive. Retain conversation mode for compatibility.
+  
+  Index live session inputs, replies, finished tasks and closed plans into optional planner memory. Retrieve session memory and curated planning knowledge once per turn with bounded, escaped context blocks, deadlines and embedding usage attribution.
+  
+  Add paged message and request reads, bounded delegation inputs by message id, and on-demand planning knowledge search in both planner context modes.
+  
+  Add explicit new_request boundaries with controlled planner restarts and persist task request ownership so late task events cannot mutate a new request plan.
+- 2dec4c6: The dialogue planner prompt notes that planner tokens cost more than workers', prefers checker tasks over planner checks, leaves deeper verification to skills and planning guidance, and forbids tasks that only close a step.
+
 ## 30.17.0
 
 ### Minor Changes
