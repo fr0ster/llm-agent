@@ -12,15 +12,11 @@ import { dependenciesDone, mergePlan, stepSchema } from './structured-plan.js';
 import type { TaskBoard } from './task-board.js';
 
 function assertNoActiveAttempt(step: DialoguePlanStep, board: TaskBoard): void {
-  for (const id of new Set([
-    ...step.taskIds,
-    step.workTaskId,
-    step.check?.taskId,
-  ])) {
+  for (const id of new Set([...step.taskIds, step.workTaskId])) {
     const task = id ? board.get(id) : undefined;
     if (task?.state === 'queued' || task?.state === 'running')
       throw new Error(
-        `${id === step.check?.taskId ? 'check' : 'work'} attempt ${id} for ${step.id} is ${task.state}; stop it first with stop_task or wait for it to settle`,
+        `Task attempt ${id} for ${step.id} is ${task.state}; stop it first with stop_task or wait for it to settle`,
       );
   }
 }
@@ -105,6 +101,15 @@ export class PlannerToolsClient implements IMcpClient {
           inputSchema: schema({ task_id: string }, ['task_id']),
         },
         {
+          name: 'deliver',
+          description:
+            'Return a completed task result verbatim to the user, once per planner call.',
+          inputSchema: schema(
+            { task_id: string, note: { type: 'string', maxLength: 1000 } },
+            ['task_id'],
+          ),
+        },
+        {
           name: 'get_task',
           description: 'Get a task and its bounded output.',
           inputSchema: schema({ task_id: string }, ['task_id']),
@@ -125,7 +130,6 @@ export class PlannerToolsClient implements IMcpClient {
                 'ready',
                 'pending',
                 'running',
-                'checking',
                 'done',
                 'failed',
                 'skipped',
@@ -180,8 +184,8 @@ export class PlannerToolsClient implements IMcpClient {
                 `${name} is not supported; put what the step needs in context`,
               );
           const worker = requiredString(args, 'worker');
-          let goal = requiredString(args, 'goal');
-          const context =
+          const goal = requiredString(args, 'goal');
+          let context =
             args.context === undefined
               ? undefined
               : requiredString(args, 'context');
@@ -195,15 +199,55 @@ export class PlannerToolsClient implements IMcpClient {
             throw new Error('step_id must identify a plan step');
           if (step && structured && !dependenciesDone(structured, step))
             throw new Error(`dependencies for ${step.id} are not done`);
-          const isCheck = step?.check?.by === 'checker' && worker === 'checker';
-          if (step) assertNoActiveAttempt(step, scope.board);
-          if (isCheck && step?.state !== 'checking')
+          const isCheck = step?.worker === 'checker';
+          if (step && (worker === 'checker') !== isCheck)
             throw new Error(
-              'checker requires a successful current work attempt (checking)',
+              'Check steps (worker checker) must use the separate read-only checker worker; non-check steps cannot use checker. The worker that did the work never checks it.',
             );
-          if (isCheck && step?.items)
-            goal += `
-Verify exactly ${step.items.length} items, each with a stored/processed result: ${JSON.stringify(step.items)}. Return JSON with verdict, count and note.`;
+          if (isCheck && !step?.dependsOn?.length)
+            throw new Error(
+              'A check step requires dependsOn identifying the steps to check',
+            );
+          if (step) assertNoActiveAttempt(step, scope.board);
+          const checkedTaskIds: Record<string, string> = {};
+          if (step && structured) {
+            const sources = (step.dependsOn ?? []).map((id) =>
+              structured.steps.find((s) => s.id === id),
+            );
+            const blocks: string[] = [];
+            let size = 0;
+            for (const source of sources) {
+              if (!source) throw new Error('dependency step is missing');
+              const id = source.successfulWorkTaskId;
+              const task = id ? scope.board.get(id) : undefined;
+              if (task?.state !== 'done')
+                throw new Error(
+                  `step ${source.id} has no successful work result`,
+                );
+              if (isCheck && task.worker === worker)
+                throw new Error(
+                  'The worker that did the work never checks it; checked work must be a separate non-checker task',
+                );
+              if (isCheck) checkedTaskIds[source.id] = task.id;
+              const block = [
+                `${isCheck ? '[result to check: step' : '[result of step'} ${source.id} (task ${task.id})]\n${task.output ?? ''}`,
+                isCheck && source.items
+                  ? `Expected items for step ${source.id}: ${JSON.stringify(source.items)}; expected count: ${source.items.length}. Return JSON with verdict, count and note.`
+                  : undefined,
+              ]
+                .filter(Boolean)
+                .join('\n');
+              const nextSize = size + block.length + (blocks.length ? 2 : 0);
+              if (nextSize > 120_000)
+                throw new Error(
+                  `result of step ${source.id} (task ${task.id}) requires ${block.length} characters; total ${nextSize} exceeds 120000 (already ${size}); split or narrow the step`,
+                );
+              blocks.push(block);
+              size = nextSize;
+            }
+            if (blocks.length)
+              context = [context, ...blocks].filter(Boolean).join('\n\n');
+          }
           const result = scope.board.start({ worker, goal, context });
           if (!result.ok) throw new Error(result.error);
           scope.ownTask?.(result.value.id);
@@ -211,18 +255,11 @@ Verify exactly ${step.items.length} items, each with a stored/processed result: 
           if (step) {
             scope.taskSteps?.set(result.value.id, step.id);
             step.taskIds.push(result.value.id);
-            if (isCheck && step.check) {
-              step.check.taskId = result.value.id;
-              delete step.check.verdict;
-            } else {
-              step.workTaskId = result.value.id;
-              delete step.successfulWorkTaskId;
-              step.state = 'running';
-              if (step.check) {
-                delete step.check.taskId;
-                delete step.check.verdict;
-              }
-            }
+            step.workTaskId = result.value.id;
+            delete step.successfulWorkTaskId;
+            delete step.verdict;
+            step.checkedTaskIds = isCheck ? checkedTaskIds : undefined;
+            step.state = 'running';
           }
           scope.recordAction?.(
             `started ${result.value.id}${step ? ` for ${step.id}` : ''} (${worker})`,
@@ -256,6 +293,18 @@ Verify exactly ${step.items.length} items, each with a stored/processed result: 
             `stop ${id} (${stopped ? 'requested' : 'not stopped'})`,
           );
           return textResult({ stopped });
+        }
+        case 'deliver': {
+          const { task_id, note } = z
+            .object({
+              task_id: z.string(),
+              note: z.string().max(1000).optional(),
+            })
+            .strict()
+            .parse(args);
+          if (!scope.deliver) throw new Error('deliver is unavailable');
+          scope.deliver(task_id, note);
+          return textResult({ delivered: task_id });
         }
         case 'get_task': {
           const id = requiredString(args, 'task_id');
@@ -294,7 +343,6 @@ Verify exactly ${step.items.length} items, each with a stored/processed result: 
                   'ready',
                   'pending',
                   'running',
-                  'checking',
                   'done',
                   'failed',
                   'skipped',

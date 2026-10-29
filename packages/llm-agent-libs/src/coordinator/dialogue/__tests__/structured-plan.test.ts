@@ -14,6 +14,12 @@ import {
 } from '../structured-plan.js';
 import { TaskBoard } from '../task-board.js';
 
+function getPlan(session: DialogueSession): DialoguePlan {
+  const plan = session.snapshot().plan;
+  assert.ok(typeof plan === 'object');
+  return plan;
+}
+
 const tools = new PlannerToolsClient();
 const tick = () => new Promise<void>((r) => setImmediate(r));
 async function call(name: string, args: Record<string, unknown>) {
@@ -27,11 +33,11 @@ const steps = [
 ];
 function outcome(
   id: string,
-  kind: TaskEvent['kind'],
+  kind: TaskEvent['kind'] | 'interrupted',
   output?: string,
 ): TaskEvent {
   return {
-    kind,
+    kind: kind === 'interrupted' ? 'failed' : kind,
     task: {
       id,
       worker: 'w',
@@ -84,8 +90,16 @@ test('step merge retains state and task links, new ids pending, dependency valid
   assert.doesNotMatch(view, /\[tasks\]/);
 });
 
-test('delegation requires step id, refuses dependencies, links work and checker, action notes include steps', async () => {
-  let plan = mergePlan(undefined, steps, 'active');
+test('delegation assigns work and checking to separate steps and enforces worker roles', async () => {
+  const plan = mergePlan(
+    undefined,
+    [
+      steps[0],
+      { id: 'verify', goal: 'verify', worker: 'checker', dependsOn: ['s1'] },
+    ],
+    'active',
+  );
+  const contexts: string[] = [];
   const actions: string[] = [];
   const board = new TaskBoard({
     workers: new Map(
@@ -94,8 +108,9 @@ test('delegation requires step id, refuses dependencies, links work and checker,
         {
           name,
           capabilities: { contextPolicy: 'optional' as const },
-          async run() {
-            return { output: '{"verdict":"pass"}' };
+          async run(input: { context?: string }) {
+            contexts.push(input.context ?? '');
+            return { output: name === 'checker' ? 'PASS' : 'work result' };
           },
         },
       ]),
@@ -106,99 +121,77 @@ test('delegation requires step id, refuses dependencies, links work and checker,
     {
       board,
       getPlan: () => plan,
-      setPlan: (p) => {
-        assert.equal(typeof p, 'object');
-        plan = p as DialoguePlan;
-      },
+      setPlan() {},
       recordAction: (a) => actions.push(a),
     },
     async () => {
+      for (const args of [
+        { worker: 'w', goal: 'x' },
+        { worker: 'checker', goal: 'x', step_id: 's1' },
+        { worker: 'w', goal: 'x', step_id: 'verify' },
+        { worker: 'checker', goal: 'x', step_id: 'verify' },
+      ])
+        assert.equal((await call('delegate_task', args)).isError, true);
       assert.equal(
-        (await call('delegate_task', { worker: 'w', goal: 'x' })).isError,
-        true,
-      );
-      assert.equal(
-        (await call('delegate_task', { step_id: 's2', worker: 'w', goal: 'x' }))
-          .isError,
-        true,
-      );
-      assert.equal(
-        (await call('delegate_task', { step_id: 's1', worker: 'w', goal: 'x' }))
-          .isError,
+        (
+          await call('delegate_task', {
+            worker: 'w',
+            goal: 'work',
+            step_id: 's1',
+          })
+        ).isError,
         undefined,
       );
-      assert.equal(plan.steps[0].state, 'running');
       await tick();
       assert.equal(plan.steps[0].state, 'done');
-      assert.deepEqual(plan.steps[0].taskIds, ['t1']);
-      await call('update_plan', {
-        steps: [
-          steps[0],
-          { ...steps[1], check: { by: 'checker', goal: 'verify' } },
-        ],
-      });
-      await call('delegate_task', { step_id: 's2', worker: 'w', goal: 'x' });
-      await tick();
-      assert.equal(plan.steps[1].state, 'checking');
-      await call('delegate_task', {
-        step_id: 's2',
-        worker: 'checker',
-        goal: 'verify',
-      });
+      assert.equal(
+        (
+          await call('delegate_task', {
+            worker: 'checker',
+            goal: 'verify',
+            step_id: 'verify',
+          })
+        ).isError,
+        undefined,
+      );
       await tick();
       assert.equal(plan.steps[1].state, 'done');
-      assert.equal(plan.steps[1].check?.verdict, 'pass');
-      assert.deepEqual(plan.steps[1].taskIds, ['t2', 't3']);
-      assert.ok(actions.includes('started t3 for s2 (checker)'));
-      assert.equal(
-        (await call('update_plan', { steps, status: 'waiting_user' })).isError,
-        true,
+      assert.equal(plan.steps[1].verdict, 'pass');
+      assert.deepEqual(
+        plan.steps.map((step) => step.taskIds),
+        [['t1'], ['t2']],
       );
+      assert.match(
+        contexts[1],
+        /\[result to check: step s1 \(task t1\)\]\nwork result/,
+      );
+      assert.ok(actions.includes('started t2 for verify (checker)'));
     },
   );
   await board.stopAll();
 });
 
-for (const verdict of ['pass', 'fail', 'invalid']) {
-  test(`checker ${verdict} and planner verdict override`, () => {
-    let plan = mergePlan(
+for (const output of [
+  'PASS',
+  'FAIL',
+  '{"verdict":"pass"}',
+  '{"verdict":"fail","note":"reason"}',
+  'invalid',
+]) {
+  test(`separate checker result ${output}`, () => {
+    const plan = mergePlan(
       undefined,
-      [{ ...steps[0], check: { by: 'planner', goal: 'inspect' } }],
+      [{ id: 'verify', goal: 'verify', worker: 'checker' }],
       'active',
     );
     plan.steps[0].taskIds = ['t1'];
-    applyTaskEvent(plan, outcome('t1', 'done', 'work'));
-    assert.equal(plan.steps[0].state, 'checking');
-    plan = mergePlan(
-      plan,
-      [{ ...steps[0], state: 'done', note: 'inspected' }],
-      'active',
-    );
-    assert.equal(plan.steps[0].state, 'done');
-    assert.equal(plan.steps[0].note, 'inspected');
-    plan.steps[0].check = { by: 'checker', goal: 'verify', taskId: 't2' };
-    plan.steps[0].taskIds.push('t2');
-    applyTaskEvent(
-      plan,
-      outcome(
-        't2',
-        'done',
-        verdict === 'invalid'
-          ? 'PASS'
-          : JSON.stringify({ verdict, note: 'reason' }),
-      ),
-    );
+    applyTaskEvent(plan, outcome('t1', 'done', output));
     assert.equal(
       plan.steps[0].state,
-      verdict === 'pass' ? 'done' : verdict === 'fail' ? 'failed' : 'checking',
+      output === 'PASS' || output === '{"verdict":"pass"}' ? 'done' : 'failed',
     );
-    if (verdict !== 'invalid') assert.equal(plan.steps[0].note, 'reason');
-    for (const kind of ['failed', 'stopped'] as const) {
-      // A malformed result clears the old check; model a fresh check attempt.
-      if (plan.steps[0].check) plan.steps[0].check.taskId = 't2';
-      applyTaskEvent(plan, outcome('t2', kind));
-      assert.equal(plan.steps[0].state, 'failed');
-    }
+    if (output === 'invalid')
+      assert.match(plan.steps[0].note ?? '', /unusable verdict/);
   });
 }
 
@@ -301,7 +294,7 @@ test('event correction, waiting_user suppression/reset, auto done, structured sn
   await tick();
   await tick();
   assert.equal(calls, 3);
-  assert.equal((s.snapshot().plan as DialoguePlan).status, 'waiting_user');
+  assert.equal(getPlan(s).status, 'waiting_user');
   const restored = await DialogueSession.open({
     id: 'events',
     store,
@@ -312,12 +305,9 @@ test('event correction, waiting_user suppression/reset, auto done, structured sn
       },
     },
   });
-  assert.deepEqual(
-    (restored.snapshot().plan as DialoguePlan).steps[0].taskIds,
-    ['t1'],
-  );
+  assert.deepEqual(getPlan(restored).steps[0].taskIds, ['t1']);
   await s.send('yes');
-  assert.equal((s.snapshot().plan as DialoguePlan).status, 'done');
+  assert.equal(getPlan(s).status, 'done');
   await restored.close();
   await s.close();
 });
@@ -348,87 +338,33 @@ test('waiting_user ends user turn without correction; new user resets status', a
   await s.close();
 });
 
-test('planner-as-checker closes through update_plan with state and note', async () => {
-  let calls = 0;
-  const session = await DialogueSession.open({
-    id: 'planner-check',
-    board: {
-      workers: new Map([
-        [
-          'w',
-          {
-            name: 'w',
-            capabilities: { contextPolicy: 'optional' },
-            async run() {
-              return { output: 'result to inspect' };
-            },
-          },
-        ],
-      ]),
-    },
-    planner: {
-      async process() {
-        calls++;
-        const checked = [
-          { ...steps[0], check: { by: 'planner', goal: 'inspect result' } },
-        ];
-        if (calls === 1) {
-          await call('update_plan', { steps: checked });
-          await call('delegate_task', {
-            step_id: 's1',
-            worker: 'w',
-            goal: 'work',
-          });
-        } else {
-          const before = session.snapshot().plan as DialoguePlan;
-          assert.equal(before.steps[0].state, 'checking');
-          assert.equal(
-            (
-              await call('update_plan', {
-                steps: [{ ...checked[0], state: 'done' }],
-              })
-            ).isError,
-            true,
-          );
-          await call('get_task', { task_id: before.steps[0].taskIds[0] });
-          assert.equal(
-            (
-              await call('update_plan', {
-                steps: [
-                  { ...checked[0], state: 'done', note: 'result verified' },
-                ],
-              })
-            ).isError,
-            undefined,
-          );
-        }
-        return { ok: true, value: { content: 'ok' } };
-      },
-    },
-  });
-  await session.send('go');
-  await tick();
-  await tick();
-  const plan = session.snapshot().plan as DialoguePlan;
-  assert.equal(plan.status, 'done');
-  assert.equal(plan.steps[0].check?.verdict, 'pass');
-  assert.equal(plan.steps[0].note, 'result verified');
-  await session.close();
-});
-
-test('structured restore preserves checker links and interrupts an unfinished check', async () => {
+test('structured restore preserves separate checker history and interrupts its unfinished attempt', async () => {
   const store = new InMemoryDialogueStateStore();
   const plan = mergePlan(
     undefined,
-    [{ ...steps[0], check: { by: 'checker', goal: 'verify' } }],
+    [
+      steps[0],
+      { id: 'verify', goal: 'verify', worker: 'checker', dependsOn: ['s1'] },
+    ],
     'active',
   );
-  plan.steps[0].state = 'running';
-  plan.steps[0].taskIds = ['t1', 't2'];
-  if (plan.steps[0].check) plan.steps[0].check.taskId = 't2';
+  Object.assign(plan.steps[0], {
+    state: 'done',
+    taskIds: ['t1'],
+    workTaskId: 't1',
+  });
+  Object.assign(plan.steps[1], {
+    state: 'running',
+    taskIds: ['t2'],
+    workTaskId: 't2',
+    checkedTaskIds: { s1: 't1' },
+  });
   await store.save('restore-check', {
     plan,
-    tasks: [outcome('t1', 'done').task, outcome('t2', 'started').task],
+    tasks: [
+      outcome('t1', 'done').task,
+      { ...outcome('t2', 'started').task, worker: 'checker' },
+    ],
     conversation: [],
     pending: [],
     savedAt: 0,
@@ -443,11 +379,11 @@ test('structured restore preserves checker links and interrupts an unfinished ch
       },
     },
   });
-  const restored = session.snapshot().plan as DialoguePlan;
-  assert.deepEqual(restored.steps[0].taskIds, ['t1', 't2']);
-  assert.deepEqual(session.snapshot().taskSteps, { t1: 's1', t2: 's1' });
-  assert.equal(restored.steps[0].check?.taskId, 't2');
-  assert.equal(restored.steps[0].state, 'failed');
+  const restored = session.snapshot().plan;
+  assert.ok(typeof restored === 'object');
+  assert.equal(restored.steps[0].state, 'done');
+  assert.equal(restored.steps[1].state, 'failed');
+  assert.deepEqual(session.snapshot().taskSteps, { t1: 's1', t2: 'verify' });
   assert.equal(session.snapshot().tasks[1].state, 'interrupted');
   await session.close();
 });
@@ -496,84 +432,38 @@ test('waiting_user suppresses corrections on an event turn with ready steps', as
   await tick();
   assert.equal(calls, 2);
   assert.deepEqual(
-    readySteps(session.snapshot().plan as DialoguePlan).map((s) => s.id),
+    readySteps(getPlan(session)).map((s) => s.id),
     ['s2'],
   );
   await session.close();
 });
 
-test('checker cannot overtake work; retries ignore superseded work and check outcomes', async () => {
+test('late checker events never overwrite the work step or a newer checker attempt', () => {
   const plan = mergePlan(
     undefined,
-    [{ ...steps[0], check: { by: 'checker', goal: 'verify' } }],
+    [
+      steps[0],
+      { id: 'verify', goal: 'verify', worker: 'checker', dependsOn: ['s1'] },
+    ],
     'active',
   );
-  let finish!: (value: { output: string }) => void;
-  const board = new TaskBoard({
-    workers: new Map(
-      ['w', 'checker'].map((name) => [
-        name,
-        {
-          name,
-          capabilities: { contextPolicy: 'optional' as const },
-          run: () =>
-            name === 'checker'
-              ? Promise.resolve({ output: '{"verdict":"pass"}' })
-              : new Promise<{ output: string }>((resolve) => {
-                  finish = resolve;
-                }),
-        },
-      ]),
-    ),
-    onEvent: (event) => applyTaskEvent(plan, event),
-  });
-  await runInPlannerScope(
-    { board, getPlan: () => plan, setPlan() {} },
-    async () => {
-      const delegate = (worker: string) =>
-        call('delegate_task', { worker, goal: 'work', step_id: 's1' });
-      assert.equal((await delegate('checker')).isError, true);
-      await delegate('w');
-      await tick();
-      assert.equal((await delegate('checker')).isError, true);
-      assert.deepEqual(plan.steps[0].taskIds, ['t1']);
-      finish({ output: 'finished' });
-      await tick();
-      assert.equal(plan.steps[0].state, 'checking');
-      await delegate('checker');
-      await tick();
-      assert.equal(plan.steps[0].state, 'done');
-      await delegate('w');
-      await tick();
-      applyTaskEvent(plan, outcome('t1', 'failed'));
-      applyTaskEvent(plan, outcome('t2', 'done', '{"verdict":"pass"}'));
-      assert.equal(plan.steps[0].state, 'running');
-      assert.match(planView(plan), /\(work t3, 2 older attempts\)/);
-      assert.doesNotMatch(planView(plan), /check t2/);
-      assert.equal((await delegate('checker')).isError, true);
-      finish({ output: 'retry finished' });
-      await tick();
-      assert.equal(plan.steps[0].state, 'checking');
-      await delegate('checker');
-      await tick();
-      assert.equal(plan.steps[0].state, 'done');
-      assert.match(planView(plan), /\(work t3, check t4, 2 older attempts\)/);
-      assert.match(planView(plan), /check by checker: verify/);
-    },
-  );
-  await board.stopAll();
-});
-
-test('appending a check never hides the current work failure', () => {
-  const plan = mergePlan(undefined, [steps[0]], 'active');
   Object.assign(plan.steps[0], {
-    workTaskId: 't1',
-    taskIds: ['t1', 't2'],
-    check: { by: 'checker', goal: 'verify', taskId: 't2' },
+    workTaskId: 'work',
+    taskIds: ['work'],
+    state: 'running',
   });
-  applyTaskEvent(plan, outcome('t2', 'done', '{"verdict":"pass"}'));
-  applyTaskEvent(plan, outcome('t1', 'failed'));
+  Object.assign(plan.steps[1], {
+    workTaskId: 'new',
+    taskIds: ['old', 'new'],
+    state: 'running',
+  });
+  applyTaskEvent(plan, outcome('old', 'done', 'PASS'));
+  assert.equal(plan.steps[1].state, 'running');
+  applyTaskEvent(plan, outcome('work', 'failed'));
+  applyTaskEvent(plan, outcome('new', 'done', 'FAIL'));
   assert.equal(plan.steps[0].state, 'failed');
+  assert.equal(plan.steps[1].state, 'pending');
+  assert.match(plan.steps[1].note ?? '', /Checked results changed/);
 });
 
 for (const currentInterrupted of [false, true]) {
@@ -601,7 +491,8 @@ for (const currentInterrupted of [false, true]) {
         },
       },
     });
-    const restored = session.snapshot().plan as DialoguePlan;
+    const restored = session.snapshot().plan;
+    assert.ok(typeof restored === 'object');
     assert.equal(
       restored.steps[0].state,
       currentInterrupted ? 'failed' : 'done',
@@ -634,8 +525,8 @@ test('skipped dependencies block delegation until the planner revises dependsOn'
       board,
       getPlan: () => plan,
       setPlan(p) {
-        assert.equal(typeof p, 'object');
-        plan = p as DialoguePlan;
+        assert.ok(typeof p === 'object');
+        plan = p;
       },
     },
     async () => {
@@ -671,7 +562,7 @@ test('skipped dependencies block delegation until the planner revises dependsOn'
   await board.stopAll();
 });
 
-for (const by of ['planner', 'checker'] as const) {
+for (const by of ['w', 'checker'] as const) {
   test(`skips ignore work and check outcomes (${by})`, () => {
     const plan = mergePlan(undefined, [steps[0]], 'done');
     Object.assign(plan.steps[0], {
@@ -679,7 +570,7 @@ for (const by of ['planner', 'checker'] as const) {
       note: 'no longer needed',
       taskIds: ['t1', 't2'],
       workTaskId: 't1',
-      check: { by, goal: 'verify', taskId: 't2' },
+      worker: by,
     });
     const before = structuredClone(plan);
     delete before.question;
@@ -708,7 +599,7 @@ for (const by of ['planner', 'checker'] as const) {
       note: 'no longer needed',
       taskIds: ['t1', 't2', 't3', 't4'],
       workTaskId: 't3',
-      check: { by, goal: '  inspect\n  the result  ', taskId: 't4' },
+      worker: by,
     });
     await store.save('skip-restore', {
       plan,
@@ -729,15 +620,8 @@ for (const by of ['planner', 'checker'] as const) {
           const view = messages
             .map((message) => String(message.content))
             .join('\n');
-          assert.match(
-            view,
-            /s1 skipped first \(work t3, check t4, 2 older attempts\)/,
-          );
-          assert.ok(
-            view.includes(
-              `check by ${by}: inspect the result \u00b7 no longer needed`,
-            ),
-          );
+          assert.match(view, /s1 skipped first \(work t3, 3 older attempts\)/);
+          assert.match(view, /no longer needed/);
           injected = true;
           return { ok: true, value: { content: 'ok' } };
         },
@@ -754,7 +638,7 @@ for (const by of ['planner', 'checker'] as const) {
 
 test('active work cannot be replaced, even after a stop request, and dependents wait', async () => {
   const plan = mergePlan(undefined, steps, 'active');
-  let finish!: (value: { output: string; stopped?: boolean }) => void;
+  let finish!: (value: { output: string; stopped?: true }) => void;
   const board = new TaskBoard({
     workers: new Map([
       [
@@ -763,7 +647,7 @@ test('active work cannot be replaced, even after a stop request, and dependents 
           name: 'w',
           capabilities: { contextPolicy: 'optional' as const },
           run: () =>
-            new Promise<{ output: string; stopped?: boolean }>((resolve) => {
+            new Promise<{ output: string; stopped?: true }>((resolve) => {
               finish = resolve;
             }),
         },
@@ -827,7 +711,7 @@ test('view prioritizes actionable steps, counts every hidden state, and preserve
       {
         id: 'ready',
         goal: 'action goal',
-        check: { by: 'planner', goal: 'verify action' },
+        worker: 'checker',
       },
       { id: 'running', goal: 'running goal' },
       { id: 'checking', goal: 'checking goal' },
@@ -840,15 +724,12 @@ test('view prioritizes actionable steps, counts every hidden state, and preserve
     s.state = 'failed';
   });
   plan.steps[46].state = 'running';
-  plan.steps[47].state = 'checking';
+  plan.steps[47].state = 'running';
   plan.steps[49].state = 'blocked';
   const view = planView(plan);
-  assert.match(
-    view,
-    /ready ready action goal; check by planner: verify action/,
-  );
+  assert.match(view, /ready ready action goal/);
   assert.match(view, /running running running goal/);
-  assert.match(view, /checking checking checking goal/);
+  assert.match(view, /checking running checking goal/);
   assert.match(view, /pending pending pending goal \(depends on failed0\)/);
   assert.match(view, /9 failed steps collapsed/);
   assert.match(view, /1 blocked steps collapsed/);
@@ -960,174 +841,84 @@ test('more than forty ready steps stay bounded and precede other active states',
     'active',
   );
   plan.steps[0].state = 'running';
-  plan.steps[1].state = 'checking';
+  plan.steps[1].state = 'running';
   const view = planView(plan);
   assert.equal(
     view.split('\n').filter((line) => /^ready\d+ ready /.test(line)).length,
     40,
   );
   assert.match(view, /5 pending steps collapsed; use get_plan/);
-  assert.match(view, /1 running steps collapsed; use get_plan/);
-  assert.match(view, /1 checking steps collapsed; use get_plan/);
+  assert.match(view, /2 running steps collapsed; use get_plan/);
   assert.doesNotMatch(view, /^ready40 /m);
 });
 
-for (const active of ['work', 'check'] as const) {
-  test(`${active === 'check' ? 'work-after-check' : 'check-after-work'} overlap is refused while queued, running or awaiting cooperative stop`, async () => {
+for (const worker of ['w', 'checker']) {
+  test(`active ${worker} step cannot be replaced until its cooperative stop settles`, async () => {
     const plan = mergePlan(
       undefined,
-      [{ ...steps[0], check: { by: 'checker', goal: 'verify' } }],
+      [
+        { id: 'source', goal: 'source' },
+        { id: 's1', goal: 'task', worker, dependsOn: ['source'] },
+      ],
       'active',
     );
-    const step = plan.steps[0];
-    let finish!: (value: { output: string }) => void;
-    const worker = {
-      name: 'held',
-      capabilities: { contextPolicy: 'optional' as const },
-      run: () =>
-        new Promise<{ output: string }>((resolve) => {
-          finish = resolve;
-        }),
-    };
+    Object.assign(plan.steps[0], {
+      state: 'done',
+      taskIds: ['source'],
+      successfulWorkTaskId: 'source',
+    });
+    let finish!: (value: { output: string; stopped?: true }) => void;
     const board = new TaskBoard({
       workers: new Map([
-        ['w', worker],
-        ['checker', worker],
+        [
+          worker,
+          {
+            name: worker,
+            capabilities: { contextPolicy: 'optional' as const },
+            run: () =>
+              new Promise<{ output: string; stopped?: true }>((resolve) => {
+                finish = resolve;
+              }),
+          },
+        ],
       ]),
-      onEvent: (event) => applyTaskEvent(plan, event),
+      onEvent: (e) => applyTaskEvent(plan, e),
     });
+    board.restore([outcome('source', 'done', 'source result').task]);
     await runInPlannerScope(
       { board, getPlan: () => plan, setPlan() {} },
       async () => {
-        if (active === 'check') {
-          Object.assign(step, {
-            state: 'checking',
-            workTaskId: 'work',
-            successfulWorkTaskId: 'work',
-            taskIds: ['work'],
-          });
-        }
+        const delegate = () =>
+          call('delegate_task', { worker, goal: 'task', step_id: 's1' });
         const first = tools.callTool('delegate_task', {
-          worker: active === 'check' ? 'checker' : 'w',
-          goal: 'original',
+          worker,
+          goal: 'task',
           step_id: 's1',
         });
-        // Keep the check precondition valid so the overlap guard itself is exercised.
-        if (active === 'work') step.state = 'checking';
-        const before = structuredClone(step);
-        const delegate = () =>
-          call('delegate_task', {
-            worker: active === 'check' ? 'w' : 'checker',
-            goal: 'overlap',
-            step_id: 's1',
-          });
         const queued = await delegate();
         assert.equal(queued.isError, true);
-        assert.match(
-          JSON.stringify(queued.content),
-          new RegExp(`${active} attempt t1.*queued`),
-        );
+        assert.match(JSON.stringify(queued.content), /Task attempt .*queued/);
         assert.ok((await first).ok);
         await tick();
-        assert.equal(board.get('t1')?.state, 'running');
         assert.equal((await delegate()).isError, true);
-        await call('stop_task', { task_id: 't1' });
-        assert.equal(board.get('t1')?.state, 'running');
+        const id = plan.steps[1].workTaskId;
+        assert.ok(id);
+        await call('stop_task', { task_id: id });
         assert.equal((await delegate()).isError, true);
-        assert.deepEqual(step, before);
-        assert.equal(board.list().length, 1);
-        finish({
-          output: active === 'check' ? '{"verdict":"pass"}' : 'work complete',
-        });
+        assert.equal(board.list().length, 2);
+        finish({ output: 'stopped', stopped: true });
         await tick();
-        assert.equal(step.state, active === 'check' ? 'done' : 'checking');
-        if (active === 'check') assert.equal(step.check?.verdict, 'pass');
+        assert.equal(plan.steps[1].state, 'failed');
         assert.equal((await delegate()).isError, undefined);
         await tick();
-        finish({
-          output: active === 'work' ? '{"verdict":"pass"}' : 'retry complete',
-        });
+        finish({ output: worker === 'checker' ? 'PASS' : 'work result' });
         await tick();
+        assert.equal(plan.steps[1].state, 'done');
       },
     );
     await board.stopAll();
   });
 }
-
-test('active checker cannot be replaced while queued, running or awaiting cooperative stop', async () => {
-  const plan = mergePlan(
-    undefined,
-    [{ ...steps[0], check: { by: 'checker', goal: 'verify' } }],
-    'active',
-  );
-  const step = plan.steps[0];
-  Object.assign(step, {
-    state: 'checking',
-    workTaskId: 'work',
-    successfulWorkTaskId: 'work',
-    taskIds: ['work'],
-  });
-  let finish!: (value: { output: string; stopped?: boolean }) => void;
-  const board = new TaskBoard({
-    workers: new Map([
-      [
-        'checker',
-        {
-          name: 'checker',
-          capabilities: { contextPolicy: 'optional' as const },
-          run: () =>
-            new Promise<{ output: string; stopped?: boolean }>((resolve) => {
-              finish = resolve;
-            }),
-        },
-      ],
-    ]),
-    onEvent: (event) => applyTaskEvent(plan, event),
-  });
-  await runInPlannerScope(
-    { board, getPlan: () => plan, setPlan() {} },
-    async () => {
-      // Start without yielding so the first duplicate observes the queued checker.
-      const first = tools.callTool('delegate_task', {
-        worker: 'checker',
-        goal: 'verify',
-        step_id: 's1',
-      });
-      const delegate = () =>
-        call('delegate_task', {
-          worker: 'checker',
-          goal: 'duplicate',
-          step_id: 's1',
-        });
-      const queued = await delegate();
-      assert.equal(queued.isError, true);
-      assert.match(JSON.stringify(queued.content), /check attempt t1.*queued/);
-      assert.ok((await first).ok);
-      await tick();
-      assert.equal(board.get('t1')?.state, 'running');
-      assert.equal((await delegate()).isError, true);
-      await call('stop_task', { task_id: 't1' });
-      assert.equal(board.get('t1')?.state, 'running');
-      assert.equal((await delegate()).isError, true);
-      assert.equal(step.check?.taskId, 't1');
-      assert.deepEqual(step.taskIds, ['work', 't1']);
-      assert.equal(board.list().length, 1);
-      finish({ output: 'stopped', stopped: true });
-      await tick();
-      assert.equal(step.state, 'failed');
-      // A settled checker can be retried after the planner reopens the check.
-      step.state = 'checking';
-      assert.equal((await delegate()).isError, undefined);
-      assert.equal(step.check?.taskId, 't2');
-      await tick();
-      finish({ output: '{"verdict":"pass"}' });
-      await tick();
-      assert.equal(step.state, 'done');
-      assert.equal(step.check?.verdict, 'pass');
-    },
-  );
-  await board.stopAll();
-});
 
 for (const attempt of ['work', 'check'] as const) {
   test(`update_plan refuses removing active ${attempt} until stop settles`, async () => {
@@ -1154,20 +945,16 @@ for (const attempt of ['work', 'check'] as const) {
         board,
         getPlan: () => plan,
         setPlan: (p) => {
-          plan = p as DialoguePlan;
+          assert.ok(typeof p === 'object');
+          plan = p;
         },
       },
       async () => {
         const first = board.start({ worker: 'w', goal: 'held' });
         assert.ok(first.ok);
         plan.steps[0].taskIds = [first.value.id];
-        if (attempt === 'check')
-          plan.steps[0].check = {
-            by: 'checker',
-            goal: 'verify',
-            taskId: first.value.id,
-          };
-        else plan.steps[0].workTaskId = first.value.id;
+        plan.steps[0].worker = attempt === 'check' ? 'checker' : 'w';
+        plan.steps[0].workTaskId = first.value.id;
         plan.scopeConsent = true;
         const original = structuredClone(plan);
         const refuse = async () => {
@@ -1252,10 +1039,7 @@ for (const remove of [false, true]) {
               goal: 'first',
             });
             await tick();
-            assert.equal(
-              (session.snapshot().plan as DialoguePlan).steps[0].state,
-              'done',
-            );
+            assert.equal(getPlan(session).steps[0].state, 'done');
             if (remove) await call('update_plan', { steps: [] });
             const store = new InMemoryDialogueStateStore();
             // Exercise a JSON persistence boundary after the completed step is removed.
@@ -1274,15 +1058,11 @@ for (const remove of [false, true]) {
               },
             });
             assert.deepEqual(restored.snapshot().taskSteps, { t1: 's1' });
-            // Completed tasks are not replayed on open; route the outcome explicitly.
-            const routed = (
-              restored as unknown as { eventNotes(events: TaskEvent[]): string }
-            ).eventNotes([outcome('t1', 'done', 'original outcome')]);
-            assert.match(
-              routed,
-              remove
-                ? /^\[actions\] task t1 for s1.*original outcome/
-                : /^\[task events\] task t1 for s1.*original outcome/,
+            // Verify the persisted ownership through the public snapshot. The event
+            // is observed by the original session's next planner turn below.
+            assert.equal(
+              restored.snapshot().tasks[0].output,
+              'original outcome',
             );
             await restored.close();
           } else {
@@ -1290,16 +1070,13 @@ for (const remove of [false, true]) {
             assert.match(
               text,
               remove
-                ? /\[actions\] task t1 for s1.*original outcome/
-                : /\[task events\] task t1 for s1.*original outcome/,
+                ? /\[actions\] task t1 for s1/
+                : /\[task events\] task t1 for s1/,
             );
             if (remove) {
               assert.doesNotMatch(text, /\[task events\]/);
               await call('update_plan', { steps: [steps[0]] });
-              assert.equal(
-                (session.snapshot().plan as DialoguePlan).steps[0].state,
-                'pending',
-              );
+              assert.equal(getPlan(session).steps[0].state, 'pending');
             }
           }
           return { ok: true, value: { content: 'ok' } };

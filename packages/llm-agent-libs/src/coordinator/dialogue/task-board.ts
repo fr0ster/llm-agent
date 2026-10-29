@@ -15,11 +15,14 @@ import type {
 } from '@mcp-abap-adt/llm-agent';
 import { SemaphorePool } from './semaphore-pool.js';
 
-export const TASK_OUTPUT_CHAR_LIMIT = 4000;
-export function cutTaskOutput(output: string): string {
-  return output.length <= TASK_OUTPUT_CHAR_LIMIT
+export const TASK_OUTPUT_CHAR_LIMIT = 60_000;
+export function cutTaskOutput(
+  output: string,
+  limit = TASK_OUTPUT_CHAR_LIMIT,
+): string {
+  return output.length <= limit
     ? output
-    : `${output.slice(0, TASK_OUTPUT_CHAR_LIMIT)}\n[cut: ${output.length - TASK_OUTPUT_CHAR_LIMIT} characters omitted]`;
+    : `${output.slice(0, limit)}\n[cut: ${output.length - limit} characters omitted]`;
 }
 export interface TaskBoardOptions {
   usage?: IUsageRecorder;
@@ -31,6 +34,7 @@ export interface TaskBoardOptions {
   workers: ReadonlyMap<string, ISubAgent>;
   maxConcurrent?: number;
   maxTasks?: number;
+  taskOutputChars?: number;
   /** After stop(), abort in-flight work after this grace period. Default: 60,000 ms;
    * zero aborts immediately; negative or NaN values use the default. */
   hardStopAfterMs?: number;
@@ -73,6 +77,11 @@ export class TaskBoard {
       Number.isFinite(opts.hardStopAfterMs) && (opts.hardStopAfterMs ?? -1) >= 0
         ? (opts.hardStopAfterMs ?? 60_000)
         : 60_000;
+    if (
+      !Number.isInteger(opts.taskOutputChars ?? TASK_OUTPUT_CHAR_LIMIT) ||
+      (opts.taskOutputChars ?? TASK_OUTPUT_CHAR_LIMIT) < 1
+    )
+      throw new Error('taskOutputChars must be a positive integer');
     this.boardId = opts.boardId ?? randomUUID();
     this.boardPool = new SemaphorePool(opts.maxConcurrent ?? 3);
     this.maxTasks = opts.maxTasks ?? 50;
@@ -274,7 +283,7 @@ export class TaskBoard {
       ]);
       if (hard.signal.aborted) throw hard.signal.reason;
       if (result.usage) task.usage = result.usage;
-      task.output = cutTaskOutput(result.output);
+      task.output = cutTaskOutput(result.output, this.opts.taskOutputChars);
       task.budgetExhausted = result.budgetExhausted;
       if (result.toolCallCount !== undefined)
         task.toolCalls = result.toolCallCount;
@@ -355,6 +364,8 @@ export class TaskBoard {
     const interrupted: string[] = [];
     for (const record of records) {
       const task = { ...record };
+      if (task.output !== undefined)
+        task.output = cutTaskOutput(task.output, this.opts.taskOutputChars);
       if (task.state === 'running' || task.state === 'queued') {
         task.state = 'interrupted';
         task.finishedAt = this.now();

@@ -23,6 +23,7 @@ test('planner exposes exactly the semantic-only tools and rejects removed argume
           'delegate_task',
           'search_knowledge',
           'stop_task',
+          'deliver',
           'get_task',
           'list_tasks',
           'get_plan',

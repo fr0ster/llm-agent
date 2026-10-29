@@ -323,3 +323,62 @@ entry scheme, retrieves top-k per request, and the summariser and auto-summarisa
 - Opaque message ids (existing UUIDs); request ids `r<n>` from a persisted counter.
 - Earlier content is read only through semantic retrieval; workers retrieve it themselves.
 - `conversation` mode compatibility covers the planner message array, not the tool list or prompt lines.
+
+
+## Task result flow and verbatim delivery
+
+`taskOutputChars` on the session or board is a positive integer, default 60,000.
+The board stores bounded output with an omitted-character marker. Finished task
+results are attached to the reporting planner call after context projection, so
+transcript projection cannot truncate them. Persisted event summaries retain task
+identities, not result bodies. Later calls can request the output with `get_task`.
+Task memory still indexes the raw stored result in chunks.
+
+Delegation appends dependency successful work results in `dependsOn` order after
+the planner brief. Verification is a separate ordinary plan step with worker
+`checker` and `dependsOn` identifying the checked steps. The work task never checks
+itself: delegation rejects a check step sent to any other worker and a work step
+sent to `checker`. Dependency labels are `[result to check: step <id> (task <tid>)]`
+for checker steps and `[result of step <id> (task <tid>)]` otherwise. Batch check
+context includes expected identifiers and counts derived from the source steps; the aggregate labelled payload is limited to 120,000
+characters. An overflow rejects delegation with sizes and the offending step.
+Independent and legacy unstructured tasks receive no extra context.
+
+`deliver({ task_id, note? })` accepts a done task owned by the current request,
+whose associated step is done. If check steps depend on that step, the latest
+check attempts must include a passing done check and none may be failed. A step without checks requires only done. The optional note is
+at most 1,000 characters and precedes the exact stored output with a blank line.
+One successful delivery is permitted per planner process call; separate calls
+append deliveries in order, separated by a blank line. Delivery replaces all
+planner prose in the turn, clears buffered content chunks and partial text, and
+suppresses later content chunks. At turn completion the accumulated delivery is
+emitted as one content partial, persisted, archived and indexed as the planner
+reply. Wait-mode fallback cannot replace a delivery. A new_request boundary is
+restricted to the first tool of the first call, so it cannot follow a delivery;
+its restarted call can deliver only tasks of the new request. The existing
+new_request tool-round guard remains authoritative; duplicate deliveries are
+rejected synchronously in the scoped tool handler even within one tool round.
+
+
+Checker results are JSON with verdict, optional count and note, or PASS/FAIL.
+A failing or unusable verdict fails the check step with a note. A missing or short
+batch count fails even with a passing verdict. A failed check leads to a fix step
+and a new check depending on that fix; its corrected result can then be delivered.
+Checks are proportional to risk, with skills and planning guidance able to require
+deeper verification. Public plan steps have no per-step `check` attribute or
+`checking` state. `verdict` belongs to a checker step and records its latest result.
+The successful task link remains available for dependency result forwarding.
+
+Restoring old plans drops `check` metadata. A legacy `checking` step becomes `done`
+with a note that its legacy check was not run; the planner may add a check step.
+Other legacy step states and task history are retained.
+
+Each check attempt stores `checkedTaskIds`, mapping dependency step IDs to the exact
+successful task IDs forwarded at delegation. A verdict counts for delivery only
+while every source ID still matches. A newer successful source result resets its
+stale checks to pending, clears their verdicts, and records a note to delegate them
+again. Late outcomes of stale checks cannot pass them. Persisted checks without
+source bindings must be rerun. Malformed verdict candidates invalidate the whole
+verdict, even alongside a valid candidate; conflicting outcomes also fail.
+Checker/worker role restrictions apply only to structured plan steps; legacy
+text plans and unstructured tasks retain their delegation behavior.

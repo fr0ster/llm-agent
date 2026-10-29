@@ -13,13 +13,13 @@ import { PlannerToolsClient } from '../planner-tools-client.js';
 
 test('planner prompt requires result delegation and planned verification', () => {
   for (const rule of [
-    'The worker receives only goal, context and the step',
+    'The worker receives your brief',
     'use search_knowledge when you need more',
     'A worker can search the session',
     'Plan the whole request up front',
     'done criterion',
-    'plan a check by another subagent',
-    'the worker that did the work never checks itself',
+    'Verification is planned as separate check steps (worker checker, dependsOn the checked steps)',
+    'The worker that did the work never checks it',
     'Plan checks in proportion to risk',
     'Do not add checks the plan did not foresee unless a result shows a concrete problem',
     'Delegate results, not tool calls',
@@ -36,7 +36,7 @@ test('planner prompt requires result delegation and planned verification', () =>
     'no extra rounds',
     'the check covers every expected identifier with its processed/stored result and the matching count',
     "Your tokens cost more than the workers'",
-    "Prefer check.by checker; check.by planner only when the verdict needs nothing beyond the task's short result",
+    'A failed check requires a fix step plus a new check depending on the fix',
     'Skills and planning guidance may define other or deeper verification',
     'Never delegate a task only to close a step',
     'check with the checker when the plan foresees it',
@@ -44,13 +44,14 @@ test('planner prompt requires result delegation and planned verification', () =>
     assert.ok(DIALOGUE_PLANNER_SYSTEM.includes(rule), rule);
 });
 
-test('documented builder exposes exactly the eight control tools and dispatches delegation inside a session', async () => {
+test('documented builder exposes the control tools and dispatches delegation inside a session', async () => {
   const expected = [
     'new_request',
     'delegate_task',
     'search_knowledge',
     'stop_task',
     'get_plan',
+    'deliver',
     'get_task',
     'list_tasks',
     'update_plan',

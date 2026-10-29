@@ -24,76 +24,72 @@ function checking(items?: string[]): DialoguePlan {
   const plan = mergePlan(
     undefined,
     [
+      { id: 'source', goal: 'work', items },
       {
         id: 'verify_stored_count',
         goal: 'Verify storage',
-        items,
-        check: { by: 'checker', goal: 'Verify' },
+        worker: 'checker',
+        dependsOn: ['source'],
       },
     ],
     'active',
   );
   Object.assign(plan.steps[0], {
-    state: 'checking',
-    taskIds: ['t14', 't15'],
+    state: 'done',
+    taskIds: ['t14'],
     workTaskId: 't14',
     successfulWorkTaskId: 't14',
   });
-  if (plan.steps[0].check) plan.steps[0].check.taskId = 't15';
+  Object.assign(plan.steps[1], {
+    state: 'running',
+    taskIds: ['t15'],
+    workTaskId: 't15',
+    checkedTaskIds: { source: 't14' },
+  });
   return plan;
 }
 
-for (const state of ['checking', 'running'] as const) {
-  for (const by of ['checker', 'planner'] as const) {
-    for (const maxCorrections of [0, 1, 2]) {
-      test(`idle ${state}/${by} corrects at most ${maxCorrections} times`, async () => {
-        const plan = checking();
-        const step = plan.steps[0];
-        step.state = state;
-        if (step.check) step.check.by = by;
-        let calls = 0;
-        const session = await DialogueSession.open({
-          id: 'stalled',
-          maxCorrections,
-          store: {
-            load: async () => ({
-              plan,
-              tasks: [event('t14').task, event('t15').task],
-              conversation: [],
-              pending: [],
-              savedAt: 0,
-            }),
-            save: async () => {},
-            delete: async () => {},
+for (const state of ['pending', 'running'] as const) {
+  for (const maxCorrections of [0, 1, 2]) {
+    test(`idle separate check ${state} corrects at most ${maxCorrections} times`, async () => {
+      const plan = checking();
+      plan.steps[1].state = state;
+      let calls = 0;
+      const session = await DialogueSession.open({
+        id: 'stalled',
+        maxCorrections,
+        store: {
+          load: async () => ({
+            plan,
+            tasks: [{ ...event('t14').task, worker: 'w' }, event('t15').task],
+            conversation: [],
+            pending: [],
+            savedAt: 0,
+          }),
+          save: async () => {},
+          delete: async () => {},
+        },
+        board: { workers: new Map() },
+        planner: {
+          async process(messages) {
+            if (++calls > 1) {
+              const note = String(messages.at(-1)?.content);
+              assert.match(note, /\[check\] Step/);
+              assert.match(
+                note,
+                state === 'running'
+                  ? /its task finished; review get_task/
+                  : /are ready.*Delegate them/,
+              );
+            }
+            return { ok: true, value: { content: 'Launching checker' } };
           },
-          board: { workers: new Map() },
-          planner: {
-            async process(messages) {
-              if (++calls > 1) {
-                const note = String(messages.at(-1)?.content);
-                assert.match(note, /\[check\] Step verify_stored_count/);
-                assert.ok(
-                  note.includes(
-                    state === 'running'
-                      ? 'its work finished; review get_task and continue'
-                      : by === 'checker'
-                        ? 'delegate worker checker with step_id verify_stored_count'
-                        : 'close it with update_plan state done or failed plus a note',
-                  ),
-                );
-              }
-              return { ok: true, value: { content: 'Launching checker' } };
-            },
-          },
-        });
-        try {
-          await session.send('continue');
-          assert.equal(calls, 1 + maxCorrections);
-        } finally {
-          await session.close();
-        }
+        },
       });
-    }
+      await session.send('continue');
+      assert.equal(calls, 1 + maxCorrections);
+      await session.close();
+    });
   }
 }
 
@@ -121,7 +117,7 @@ for (const [index, wrap] of wrappers.entries()) {
           ),
         );
         assert.equal(
-          plan.steps[0].state,
+          plan.steps[1].state,
           verdict === 'pass' && count === 2 ? 'done' : 'failed',
         );
       });
@@ -129,7 +125,7 @@ for (const [index, wrap] of wrappers.entries()) {
     test(`checker wrapper ${index}, ${verdict} without items`, () => {
       const plan = checking();
       applyTaskEvent(plan, event('t15', wrap(JSON.stringify({ verdict }))));
-      assert.equal(plan.steps[0].state, verdict === 'pass' ? 'done' : 'failed');
+      assert.equal(plan.steps[1].state, verdict === 'pass' ? 'done' : 'failed');
     });
   }
 }
@@ -143,7 +139,7 @@ test('nested evidence never becomes the verdict', () => {
       'My verdict: {"verdict":"fail","note":"nested { text }","evidence":{"verdict":"pass"}}',
     ),
   );
-  assert.equal(plan.steps[0].state, 'failed');
+  assert.equal(plan.steps[1].state, 'failed');
 });
 
 test('conflicting top-level verdicts are unusable', () => {
@@ -153,8 +149,8 @@ test('conflicting top-level verdicts are unusable', () => {
   ]) {
     const plan = checking();
     applyTaskEvent(plan, event('t15', output));
-    assert.equal(plan.steps[0].state, 'checking');
-    assert.equal(plan.steps[0].check?.taskId, undefined);
+    assert.equal(plan.steps[1].state, 'failed');
+    assert.equal(plan.steps[1].verdict, 'fail');
   }
 });
 
@@ -167,8 +163,8 @@ test('conflicting counts are unusable even with equal verdicts', () => {
       'My verdict: {"verdict":"pass","count":1}\nEvidence:\n```json\n{"verdict":"pass","count":2}\n```',
     ),
   );
-  assert.equal(plan.steps[0].state, 'checking');
-  assert.equal(plan.steps[0].check?.taskId, undefined);
+  assert.equal(plan.steps[1].state, 'failed');
+  assert.equal(plan.steps[1].verdict, 'fail');
 });
 
 test('repeated consistent verdicts use the last one', () => {
@@ -180,27 +176,22 @@ test('repeated consistent verdicts use the last one', () => {
       'Draft {"verdict":"pass"} final {"verdict":"pass","note":"all stored"}',
     ),
   );
-  assert.equal(plan.steps[0].state, 'done');
-  assert.equal(plan.steps[0].note, 'all stored');
+  assert.equal(plan.steps[1].state, 'done');
+  assert.equal(plan.steps[1].note, 'all stored');
 });
 
-for (const output of [
-  'PASS',
-  '{"verdict":"unknown"}',
-  '```json\ninvalid\n```',
-  '',
-]) {
+for (const output of ['{"verdict":"unknown"}', '```json\ninvalid\n```', '']) {
   test(`unusable checker result allows fresh delegation: ${output}`, async () => {
     const plan = checking();
     applyTaskEvent(plan, event('t15', output));
-    const step = plan.steps[0];
-    assert.equal(step.state, 'checking');
+    const step = plan.steps[1];
+    assert.equal(step.state, 'failed');
     assert.equal(
       step.note,
-      'checker returned no JSON verdict; re-delegate the checker or ask the user',
+      'Checker returned an unusable verdict; plan a fix step and a new check',
     );
-    assert.equal(step.check?.taskId, undefined);
-    assert.equal(step.check?.verdict, undefined);
+    assert.equal(step.workTaskId, 't15');
+    assert.equal(step.verdict, 'fail');
     const board = new TaskBoard({
       workers: new Map([
         [
@@ -216,6 +207,7 @@ for (const output of [
       ]),
       onEvent: (e) => applyTaskEvent(plan, e),
     });
+    board.restore([{ ...event('t14', 'source result').task, worker: 'w' }]);
     try {
       await runInPlannerScope(
         { board, getPlan: () => plan, setPlan() {} },
@@ -230,7 +222,7 @@ for (const output of [
           );
           assert.ok(result.ok);
           assert.equal(result.value.isError, undefined);
-          assert.ok(step.check?.taskId);
+          assert.ok(step.workTaskId);
         },
       );
       await new Promise<void>((resolve) => setImmediate(resolve));
@@ -241,13 +233,10 @@ for (const output of [
   });
 }
 
-test('checker result without successful current work explains why it is ignored', () => {
+test('checker outcome only changes its own step', () => {
   const plan = checking();
-  delete plan.steps[0].successfulWorkTaskId;
-  applyTaskEvent(plan, event('t15', '{"verdict":"pass"}'));
-  assert.equal(plan.steps[0].state, 'checking');
-  assert.equal(
-    plan.steps[0].note,
-    'check ignored: current work has not succeeded',
-  );
+  const source = structuredClone(plan.steps[0]);
+  applyTaskEvent(plan, event('t15', 'PASS'));
+  assert.equal(plan.steps[1].state, 'done');
+  assert.deepEqual(plan.steps[0], source);
 });
