@@ -1415,7 +1415,8 @@ for (const mode of [
                 {
                   id: 'verify',
                   goal: 'Verify',
-                  worker: 'checker',
+                  worker: 'audit',
+                  result: 'verdict',
                   dependsOn: ['step'],
                   checkedTaskIds: { step: 't1' },
                   state:

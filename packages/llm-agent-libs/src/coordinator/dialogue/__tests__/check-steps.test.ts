@@ -8,17 +8,29 @@ import { PlannerToolsClient } from '../planner-tools-client.js';
 import {
   applyTaskEvent,
   deliveryChecksPassed,
-  mergePlan,
+  mergePlan as mergeStructuredPlan,
   readySteps,
 } from '../structured-plan.js';
 import { TaskBoard } from '../task-board.js';
+
+import { profileHost } from './profile-test-host.js';
+
+function mergePlan(
+  ...args: Parameters<typeof mergeStructuredPlan>
+): DialoguePlan {
+  return mergeStructuredPlan(args[0], args[1], args[2], args[3], {
+    resolveResult: (name) =>
+      name === 'audit' || name === 'checker' ? 'verdict' : 'report',
+    ...args[4],
+  });
+}
 
 const steps = [
   { id: 'work', goal: 'Produce result', worker: 'writer' },
   {
     id: 'check',
     goal: 'Verify result',
-    worker: 'checker',
+    worker: 'audit',
     dependsOn: ['work'],
   },
 ];
@@ -43,7 +55,7 @@ function finish(
 ): void {
   const step = plan.steps.find((s) => s.id === stepId);
   assert.ok(step);
-  if (step.worker === 'checker')
+  if (step.worker === 'audit')
     step.checkedTaskIds = Object.fromEntries(
       (step.dependsOn ?? []).map((id) => [
         id,
@@ -71,7 +83,7 @@ test('failed check leads to a fix and a new check with independent results', asy
     {
       id: 'recheck',
       goal: 'Check corrected result',
-      worker: 'checker',
+      worker: 'audit',
       dependsOn: ['fix'],
     },
   ];
@@ -83,19 +95,21 @@ test('failed check leads to a fix and a new check with independent results', asy
   finish(plan, 'fix', 'fixed', 'corrected result');
   let context = '';
   const board = new TaskBoard({
-    workers: new Map([
-      [
-        'checker',
-        {
-          name: 'checker',
-          capabilities: { contextPolicy: 'optional' as const },
-          async run(input: { context?: string }) {
-            context = input.context ?? '';
-            return { output: 'PASS' };
+    ...profileHost(
+      new Map([
+        [
+          'audit',
+          {
+            name: 'audit',
+            capabilities: { contextPolicy: 'optional' as const },
+            async run(input: { context?: string }) {
+              context = input.context ?? '';
+              return { output: 'PASS' };
+            },
           },
-        },
-      ],
-    ]),
+        ],
+      ]),
+    ),
     onEvent: (e) => applyTaskEvent(plan, e),
   });
   board.restore([done('fixed', 'corrected result').task]);
@@ -104,7 +118,7 @@ test('failed check leads to a fix and a new check with independent results', asy
     async () => {
       const result = await new PlannerToolsClient().callTool('delegate_task', {
         step_id: 'recheck',
-        worker: 'checker',
+        worker: 'audit',
         goal: 'Check corrected result',
       });
       assert.ok(result.ok);
@@ -147,21 +161,37 @@ test('delivery permits unchecked results and requires passing current attempts o
   assert.equal(deliveryChecksPassed(two, 'work'), false);
 });
 
-test('checker refuses a source result produced by the checker worker', async () => {
+test('audit refuses a source result produced by the audit worker', async () => {
   const plan = mergePlan(undefined, steps, 'active');
   Object.assign(plan.steps[0], {
     state: 'done',
     taskIds: ['source'],
     successfulWorkTaskId: 'source',
   });
-  const board = new TaskBoard({ workers: new Map(), onEvent() {} });
-  board.restore([{ ...done('source', 'result').task, worker: 'checker' }]);
+  const board = new TaskBoard({
+    ...profileHost(
+      new Map([
+        [
+          'audit',
+          {
+            name: 'audit',
+            capabilities: { contextPolicy: 'optional' },
+            async run() {
+              throw new Error('must not run');
+            },
+          },
+        ],
+      ]),
+    ),
+    onEvent() {},
+  });
+  board.restore([{ ...done('source', 'result').task, worker: 'audit' }]);
   await runInPlannerScope(
     { board, getPlan: () => plan, setPlan() {} },
     async () => {
       const result = await new PlannerToolsClient().callTool('delegate_task', {
         step_id: 'check',
-        worker: 'checker',
+        worker: 'audit',
         goal: 'Verify',
       });
       assert.ok(result.ok);

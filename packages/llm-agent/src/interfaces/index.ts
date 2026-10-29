@@ -27,6 +27,7 @@ export {
   type SmartAgentResponse,
   type StopReason,
 } from './agent-contracts.js';
+export * from './agent-profile.js';
 export type { HistoryEntry, IContextAssembler } from './assembler.js';
 export type { IAuxiliaryMcpTools } from './auxiliary-mcp-tools.js';
 export type {

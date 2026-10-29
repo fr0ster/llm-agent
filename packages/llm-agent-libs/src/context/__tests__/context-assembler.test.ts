@@ -64,7 +64,7 @@ describe('ContextAssembler — empty retrieved', () => {
 // ---------------------------------------------------------------------------
 
 describe('ContextAssembler — facts only', () => {
-  it('system message contains ## Known Facts', async () => {
+  it('request message contains ## Known Facts', async () => {
     const assembler = new ContextAssembler();
     const r = await assembler.assemble(
       ACTION,
@@ -75,15 +75,15 @@ describe('ContextAssembler — facts only', () => {
       [],
     );
     assert.ok(r.ok);
-    const sys = r.value.find((m) => m.role === 'system');
-    assert.ok(sys, 'system message should exist');
-    assert.ok(sys.content.includes('## Known Facts'));
-    assert.ok(sys.content.includes('Water boils at 100°C'));
+    const request = r.value.find((m) => m.role === 'user');
+    assert.ok(request, 'request message should exist');
+    assert.ok(request.content.includes('## Known Facts'));
+    assert.ok(request.content.includes('Water boils at 100°C'));
   });
 });
 
 describe('ContextAssembler — feedback only', () => {
-  it('system message contains ## Feedback', async () => {
+  it('request message contains ## Feedback', async () => {
     const assembler = new ContextAssembler();
     const r = await assembler.assemble(
       ACTION,
@@ -94,15 +94,15 @@ describe('ContextAssembler — feedback only', () => {
       [],
     );
     assert.ok(r.ok);
-    const sys = r.value.find((m) => m.role === 'system');
-    assert.ok(sys, 'system message should exist');
-    assert.ok(sys.content.includes('## Feedback'));
-    assert.ok(sys.content.includes('Your last answer was wrong'));
+    const request = r.value.find((m) => m.role === 'user');
+    assert.ok(request, 'request message should exist');
+    assert.ok(request.content.includes('## Feedback'));
+    assert.ok(request.content.includes('Your last answer was wrong'));
   });
 });
 
 describe('ContextAssembler — state only', () => {
-  it('system message contains ## Current State', async () => {
+  it('request message contains ## Current State', async () => {
     const assembler = new ContextAssembler();
     const r = await assembler.assemble(
       ACTION,
@@ -113,10 +113,10 @@ describe('ContextAssembler — state only', () => {
       [],
     );
     assert.ok(r.ok);
-    const sys = r.value.find((m) => m.role === 'system');
-    assert.ok(sys, 'system message should exist');
-    assert.ok(sys.content.includes('## Current State'));
-    assert.ok(sys.content.includes('User prefers dark mode'));
+    const request = r.value.find((m) => m.role === 'user');
+    assert.ok(request, 'request message should exist');
+    assert.ok(request.content.includes('## Current State'));
+    assert.ok(request.content.includes('User prefers dark mode'));
   });
 });
 
@@ -142,7 +142,7 @@ describe('ContextAssembler — tools only', () => {
 // ---------------------------------------------------------------------------
 
 describe('ContextAssembler — all sections', () => {
-  it('system message contains all 4 headers and user msg has action text', async () => {
+  it('request message contains all 4 headers and user msg has action text', async () => {
     const assembler = new ContextAssembler();
     const r = await assembler.assemble(
       ACTION,
@@ -157,16 +157,16 @@ describe('ContextAssembler — all sections', () => {
       [],
     );
     assert.ok(r.ok);
-    const sys = r.value.find((m) => m.role === 'system');
-    assert.ok(sys);
-    assert.ok(sys.content.includes('## Known Facts'));
-    assert.ok(sys.content.includes('## Feedback'));
-    assert.ok(sys.content.includes('## Current State'));
-    assert.ok(!sys.content.includes('## Available Tools'));
+    const request = r.value.find((m) => m.role === 'user');
+    assert.ok(request);
+    assert.ok(request.content.includes('## Known Facts'));
+    assert.ok(request.content.includes('## Feedback'));
+    assert.ok(request.content.includes('## Current State'));
+    assert.ok(!request.content.includes('## Available Tools'));
 
     const userMsg = r.value.find((m) => m.role === 'user');
     assert.ok(userMsg);
-    assert.equal(userMsg.content, ACTION.text);
+    assert.ok(userMsg.content.endsWith(ACTION.text));
   });
 });
 
@@ -205,7 +205,7 @@ describe('ContextAssembler — tool results', () => {
 // ---------------------------------------------------------------------------
 
 describe('ContextAssembler — sort by score', () => {
-  it('facts with higher score appear first in system message', async () => {
+  it('facts with higher score appear first in request message', async () => {
     const assembler = new ContextAssembler();
     const r = await assembler.assemble(
       ACTION,
@@ -222,11 +222,11 @@ describe('ContextAssembler — sort by score', () => {
       [],
     );
     assert.ok(r.ok);
-    const sys = r.value.find((m) => m.role === 'system');
-    assert.ok(sys);
-    const highIdx = sys.content.indexOf('High score fact');
-    const midIdx = sys.content.indexOf('Mid score fact');
-    const lowIdx = sys.content.indexOf('Low score fact');
+    const request = r.value.find((m) => m.role === 'user');
+    assert.ok(request);
+    const highIdx = request.content.indexOf('High score fact');
+    const midIdx = request.content.indexOf('Mid score fact');
+    const lowIdx = request.content.indexOf('Low score fact');
     assert.ok(highIdx < midIdx, 'high score should appear before mid score');
     assert.ok(midIdx < lowIdx, 'mid score should appear before low score');
   });
@@ -245,10 +245,10 @@ describe('ContextAssembler — provenance', () => {
       [],
     );
     assert.ok(r.ok);
-    const sys = r.value.find((m) => m.role === 'system');
-    assert.ok(sys);
+    const request = r.value.find((m) => m.role === 'user');
+    assert.ok(request);
     assert.ok(
-      !sys.content.includes('[score:'),
+      !request.content.includes('[score:'),
       'should not include score annotation',
     );
   });
@@ -261,10 +261,10 @@ describe('ContextAssembler — provenance', () => {
       [],
     );
     assert.ok(r.ok);
-    const sys = r.value.find((m) => m.role === 'system');
-    assert.ok(sys);
+    const request = r.value.find((m) => m.role === 'user');
+    assert.ok(request);
     assert.ok(
-      sys.content.includes('[score: 0.92]'),
+      request.content.includes('[score: 0.92]'),
       'should include score annotation',
     );
   });
@@ -293,12 +293,13 @@ describe('ContextAssembler — snapshot', () => {
 
     assert.equal(r.value[0].role, 'system');
     assert.ok(r.value[0].content.includes('You are a helpful assistant.'));
-    assert.ok(r.value[0].content.includes('## Known Facts'));
-    assert.ok(r.value[0].content.includes('[score: 0.95]'));
+    assert.ok(!r.value[0].content.includes('## Known Facts'));
+    assert.ok(r.value[1].content.includes('## Known Facts'));
+    assert.ok(r.value[1].content.includes('[score: 0.95]'));
     assert.ok(!r.value[0].content.includes('## Available Tools'));
 
     assert.equal(r.value[1].role, 'user');
-    assert.equal(r.value[1].content, 'Calculate 2+2.');
+    assert.ok(r.value[1].content.endsWith('Calculate 2+2.'));
 
     assert.equal(r.value[2].role, 'tool');
     assert.equal(r.value[2].content, 'calc: 4');
@@ -325,13 +326,13 @@ describe('ContextAssembler — token budget', () => {
       [],
     );
     assert.ok(r.ok);
-    const sys = r.value.find((m) => m.role === 'system');
-    assert.ok(sys);
-    assert.ok(sys.content.includes('Fact A'));
-    assert.ok(sys.content.includes('Feedback B'));
-    assert.ok(sys.content.includes('State C'));
+    const request = r.value.find((m) => m.role === 'user');
+    assert.ok(request);
+    assert.ok(request.content.includes('Fact A'));
+    assert.ok(request.content.includes('Feedback B'));
+    assert.ok(request.content.includes('State C'));
     // Tool descriptions no longer in system prompt — passed via LLM tools parameter
-    assert.ok(!sys.content.includes('tool1'));
+    assert.ok(!request.content.includes('tool1'));
   });
 
   it('tools overflow — tools at end of list dropped first', async () => {
@@ -395,10 +396,10 @@ describe('ContextAssembler — token budget', () => {
       [],
     );
     assert.ok(r.ok);
-    const sys = r.value.find((m) => m.role === 'system');
-    if (sys) {
-      const hasHigh = sys.content.includes('High importance fact');
-      const hasLow = sys.content.includes('Low importance fact');
+    const request = r.value.find((m) => m.role === 'user');
+    if (request) {
+      const hasHigh = request.content.includes('High importance fact');
+      const hasLow = request.content.includes('Low importance fact');
       if (hasHigh) {
         assert.ok(
           !hasLow,
@@ -473,7 +474,7 @@ describe('ContextAssembler — systemPromptPreamble', () => {
     assert.ok(sys.content.includes('You are a precise assistant.'));
   });
 
-  it('preamble and context sections joined with double newline', async () => {
+  it('preamble remains static and context sections use the request', async () => {
     const assembler = new ContextAssembler({
       systemPromptPreamble: 'Preamble text.',
     });
@@ -490,14 +491,13 @@ describe('ContextAssembler — systemPromptPreamble', () => {
       'should contain preamble',
     );
     assert.ok(
-      sys.content.includes('## Known Facts'),
-      'should contain context section',
+      r.value[1].content.includes('## Known Facts'),
+      'request should contain context section',
     );
     // Preamble should come before context sections
     assert.ok(
-      sys.content.indexOf('Preamble text.') <
-        sys.content.indexOf('## Known Facts'),
-      'preamble should precede context',
+      !sys.content.includes('## Known Facts'),
+      'system preamble should exclude dynamic context',
     );
   });
 });
@@ -522,11 +522,11 @@ describe('ContextAssembler — recent actions', () => {
       [],
     );
     assert.ok(r.ok);
-    const sys = r.value.find((m) => m.role === 'system');
-    assert.ok(sys);
-    assert.ok(sys.content.includes('## Recent Actions'));
-    assert.ok(sys.content.includes('Created class ZCL_TEST'));
-    assert.ok(sys.content.includes('Added method GET_DATA'));
+    const request = r.value.find((m) => m.role === 'user');
+    assert.ok(request);
+    assert.ok(request.content.includes('## Recent Actions'));
+    assert.ok(request.content.includes('Created class ZCL_TEST'));
+    assert.ok(request.content.includes('Added method GET_DATA'));
   });
 
   it('no ## Recent Actions when recentActions empty', async () => {
@@ -537,9 +537,9 @@ describe('ContextAssembler — recent actions', () => {
       [],
     );
     assert.ok(r.ok);
-    const sys = r.value.find((m) => m.role === 'system');
-    if (sys) {
-      assert.ok(!sys.content.includes('## Recent Actions'));
+    const request = r.value.find((m) => m.role === 'user');
+    if (request) {
+      assert.ok(!request.content.includes('## Recent Actions'));
     }
   });
 });
@@ -562,10 +562,10 @@ describe('ContextAssembler — relevant history from RAG', () => {
       [],
     );
     assert.ok(r.ok);
-    const sys = r.value.find((m) => m.role === 'system');
-    assert.ok(sys);
-    assert.ok(sys.content.includes('## Relevant History'));
-    assert.ok(sys.content.includes('ZCL_OLD'));
+    const request = r.value.find((m) => m.role === 'user');
+    assert.ok(request);
+    assert.ok(request.content.includes('## Relevant History'));
+    assert.ok(request.content.includes('ZCL_OLD'));
   });
 });
 

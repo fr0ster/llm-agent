@@ -12,6 +12,7 @@ export interface DirectLlmSubAgentOptions {
   /** Deployment IANA time zone. Default: UTC. */
   timeZone?: string;
   systemPrompt: string;
+  workerBase?: string;
   description?: string;
   contextPolicy?: 'required' | 'optional' | 'forbidden';
 }
@@ -37,7 +38,9 @@ export class DirectLlmSubAgent implements ISubAgent {
     this.description = opts.description;
     this.assembler = new ContextAssembler({
       timeZone: opts.timeZone,
-      systemPromptPreamble: opts.systemPrompt,
+      systemPromptPreamble: [opts.workerBase, opts.systemPrompt]
+        .filter((part) => part !== undefined)
+        .join('\n\n'),
     });
     this.capabilities = {
       contextPolicy: opts.contextPolicy ?? 'required',

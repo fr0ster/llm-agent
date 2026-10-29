@@ -1,4 +1,5 @@
 import type { Message } from '../types.js';
+import type { WorkerProfile } from './agent-profile.js';
 import type { IQueryEmbedding } from './query-embedding.js';
 import type { CallOptions, TokenUsage } from './types.js';
 
@@ -10,6 +11,7 @@ export type TaskState =
   | 'stopped'
   | 'interrupted';
 export interface TaskRequest {
+  result?: WorkerProfile['result'];
   /** Owning request start in epoch milliseconds; preserved across tool rounds and queued tasks. */
   requestStartedAt?: number;
   worker: string;
@@ -17,6 +19,7 @@ export interface TaskRequest {
   context?: string;
 }
 export interface TaskRecord {
+  result?: WorkerProfile['result'];
   usage?: TokenUsage;
   id: string;
   worker: string;
@@ -67,6 +70,7 @@ export interface PlannerMessage {
   trigger: 'user' | 'event';
 }
 export interface PlanStep {
+  result?: WorkerProfile['result'];
   id: string;
   goal: string;
   items?: string[];

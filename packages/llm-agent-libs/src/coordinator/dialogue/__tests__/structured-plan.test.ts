@@ -7,12 +7,24 @@ import { runInPlannerScope } from '../planner-scope.js';
 import { PlannerToolsClient } from '../planner-tools-client.js';
 import {
   applyTaskEvent,
-  mergePlan,
+  mergePlan as mergeStructuredPlan,
   planView,
   readySteps,
   recomputePlanStatus,
 } from '../structured-plan.js';
 import { TaskBoard } from '../task-board.js';
+
+import { profileHost } from './profile-test-host.js';
+
+function mergePlan(
+  ...args: Parameters<typeof mergeStructuredPlan>
+): DialoguePlan {
+  return mergeStructuredPlan(args[0], args[1], args[2], args[3], {
+    resolveResult: (name) =>
+      name === 'audit' || name === 'checker' ? 'verdict' : 'report',
+    ...args[4],
+  });
+}
 
 function getPlan(session: DialogueSession): DialoguePlan {
   const plan = session.snapshot().plan;
@@ -95,25 +107,27 @@ test('delegation assigns work and checking to separate steps and enforces worker
     undefined,
     [
       steps[0],
-      { id: 'verify', goal: 'verify', worker: 'checker', dependsOn: ['s1'] },
+      { id: 'verify', goal: 'verify', worker: 'audit', dependsOn: ['s1'] },
     ],
     'active',
   );
   const contexts: string[] = [];
   const actions: string[] = [];
   const board = new TaskBoard({
-    workers: new Map(
-      ['w', 'checker'].map((name) => [
-        name,
-        {
+    ...profileHost(
+      new Map(
+        ['w', 'audit'].map((name) => [
           name,
-          capabilities: { contextPolicy: 'optional' as const },
-          async run(input: { context?: string }) {
-            contexts.push(input.context ?? '');
-            return { output: name === 'checker' ? 'PASS' : 'work result' };
+          {
+            name,
+            capabilities: { contextPolicy: 'optional' as const },
+            async run(input: { context?: string }) {
+              contexts.push(input.context ?? '');
+              return { output: name === 'audit' ? 'PASS' : 'work result' };
+            },
           },
-        },
-      ]),
+        ]),
+      ),
     ),
     onEvent: (e) => applyTaskEvent(plan, e),
   });
@@ -127,9 +141,9 @@ test('delegation assigns work and checking to separate steps and enforces worker
     async () => {
       for (const args of [
         { worker: 'w', goal: 'x' },
-        { worker: 'checker', goal: 'x', step_id: 's1' },
+        { worker: 'audit', goal: 'x', step_id: 's1' },
         { worker: 'w', goal: 'x', step_id: 'verify' },
-        { worker: 'checker', goal: 'x', step_id: 'verify' },
+        { worker: 'audit', goal: 'x', step_id: 'verify' },
       ])
         assert.equal((await call('delegate_task', args)).isError, true);
       assert.equal(
@@ -147,7 +161,7 @@ test('delegation assigns work and checking to separate steps and enforces worker
       assert.equal(
         (
           await call('delegate_task', {
-            worker: 'checker',
+            worker: 'audit',
             goal: 'verify',
             step_id: 'verify',
           })
@@ -165,7 +179,7 @@ test('delegation assigns work and checking to separate steps and enforces worker
         contexts[1],
         /\[result to check: step s1 \(task t1\)\]\nwork result/,
       );
-      assert.ok(actions.includes('started t2 for verify (checker)'));
+      assert.ok(actions.includes('started t2 for verify (audit)'));
     },
   );
   await board.stopAll();
@@ -178,13 +192,16 @@ for (const output of [
   '{"verdict":"fail","note":"reason"}',
   'invalid',
 ]) {
-  test(`separate checker result ${output}`, () => {
+  test(`separate audit result ${output}`, () => {
     const plan = mergePlan(
       undefined,
-      [{ id: 'verify', goal: 'verify', worker: 'checker' }],
+      [{ id: 'verify', goal: 'verify', worker: 'audit' }],
       'active',
+      undefined,
+      { resolveResult: () => 'verdict' },
     );
     plan.steps[0].taskIds = ['t1'];
+    plan.steps[0].workTaskId = 't1';
     applyTaskEvent(plan, outcome('t1', 'done', output));
     assert.equal(
       plan.steps[0].state,
@@ -338,13 +355,13 @@ test('waiting_user ends user turn without correction; new user resets status', a
   await s.close();
 });
 
-test('structured restore preserves separate checker history and interrupts its unfinished attempt', async () => {
+test('structured restore preserves separate audit history and interrupts its unfinished attempt', async () => {
   const store = new InMemoryDialogueStateStore();
   const plan = mergePlan(
     undefined,
     [
       steps[0],
-      { id: 'verify', goal: 'verify', worker: 'checker', dependsOn: ['s1'] },
+      { id: 'verify', goal: 'verify', worker: 'audit', dependsOn: ['s1'] },
     ],
     'active',
   );
@@ -363,7 +380,7 @@ test('structured restore preserves separate checker history and interrupts its u
     plan,
     tasks: [
       outcome('t1', 'done').task,
-      { ...outcome('t2', 'started').task, worker: 'checker' },
+      { ...outcome('t2', 'started').task, worker: 'audit' },
     ],
     conversation: [],
     pending: [],
@@ -438,12 +455,12 @@ test('waiting_user suppresses corrections on an event turn with ready steps', as
   await session.close();
 });
 
-test('late checker events never overwrite the work step or a newer checker attempt', () => {
+test('late audit events never overwrite the work step or a newer audit attempt', () => {
   const plan = mergePlan(
     undefined,
     [
       steps[0],
-      { id: 'verify', goal: 'verify', worker: 'checker', dependsOn: ['s1'] },
+      { id: 'verify', goal: 'verify', worker: 'audit', dependsOn: ['s1'] },
     ],
     'active',
   );
@@ -563,7 +580,7 @@ test('skipped dependencies block delegation until the planner revises dependsOn'
 });
 
 for (const by of ['w', 'checker'] as const) {
-  test(`skips ignore work and check outcomes (${by})`, () => {
+  test(`legacy skips ignore work and check outcomes (${by})`, () => {
     const plan = mergePlan(undefined, [steps[0]], 'done');
     Object.assign(plan.steps[0], {
       state: 'skipped',
@@ -591,7 +608,7 @@ for (const by of ['w', 'checker'] as const) {
     }
   });
 
-  test(`restore preserves skipped steps and injects current attempts and check instructions (${by})`, async () => {
+  test(`legacy restore preserves skipped steps and injects current attempts and check instructions (${by})`, async () => {
     const store = new InMemoryDialogueStateStore();
     const plan = mergePlan(undefined, [steps[0]], 'done');
     Object.assign(plan.steps[0], {
@@ -711,7 +728,7 @@ test('view prioritizes actionable steps, counts every hidden state, and preserve
       {
         id: 'ready',
         goal: 'action goal',
-        worker: 'checker',
+        worker: 'audit',
       },
       { id: 'running', goal: 'running goal' },
       { id: 'checking', goal: 'checking goal' },
@@ -852,7 +869,7 @@ test('more than forty ready steps stay bounded and precede other active states',
   assert.doesNotMatch(view, /^ready40 /m);
 });
 
-for (const worker of ['w', 'checker']) {
+for (const worker of ['w', 'audit']) {
   test(`active ${worker} step cannot be replaced until its cooperative stop settles`, async () => {
     const plan = mergePlan(
       undefined,
@@ -869,19 +886,21 @@ for (const worker of ['w', 'checker']) {
     });
     let finish!: (value: { output: string; stopped?: true }) => void;
     const board = new TaskBoard({
-      workers: new Map([
-        [
-          worker,
-          {
-            name: worker,
-            capabilities: { contextPolicy: 'optional' as const },
-            run: () =>
-              new Promise<{ output: string; stopped?: true }>((resolve) => {
-                finish = resolve;
-              }),
-          },
-        ],
-      ]),
+      ...profileHost(
+        new Map([
+          [
+            worker,
+            {
+              name: worker,
+              capabilities: { contextPolicy: 'optional' as const },
+              run: () =>
+                new Promise<{ output: string; stopped?: true }>((resolve) => {
+                  finish = resolve;
+                }),
+            },
+          ],
+        ]),
+      ),
       onEvent: (e) => applyTaskEvent(plan, e),
     });
     board.restore([outcome('source', 'done', 'source result').task]);
@@ -897,7 +916,10 @@ for (const worker of ['w', 'checker']) {
         });
         const queued = await delegate();
         assert.equal(queued.isError, true);
-        assert.match(JSON.stringify(queued.content), /Task attempt .*queued/);
+        assert.match(
+          JSON.stringify(queued.content),
+          /Task attempt .*(queued|being reserved)/,
+        );
         assert.ok((await first).ok);
         await tick();
         assert.equal((await delegate()).isError, true);
@@ -911,7 +933,7 @@ for (const worker of ['w', 'checker']) {
         assert.equal(plan.steps[1].state, 'failed');
         assert.equal((await delegate()).isError, undefined);
         await tick();
-        finish({ output: worker === 'checker' ? 'PASS' : 'work result' });
+        finish({ output: worker === 'audit' ? 'PASS' : 'work result' });
         await tick();
         assert.equal(plan.steps[1].state, 'done');
       },
@@ -953,7 +975,8 @@ for (const attempt of ['work', 'check'] as const) {
         const first = board.start({ worker: 'w', goal: 'held' });
         assert.ok(first.ok);
         plan.steps[0].taskIds = [first.value.id];
-        plan.steps[0].worker = attempt === 'check' ? 'checker' : 'w';
+        plan.steps[0].worker = attempt === 'check' ? 'audit' : 'w';
+        plan.steps[0].result = attempt === 'check' ? 'verdict' : 'report';
         plan.steps[0].workTaskId = first.value.id;
         plan.scopeConsent = true;
         const original = structuredClone(plan);

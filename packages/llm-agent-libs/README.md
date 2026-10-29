@@ -103,3 +103,74 @@ call, then returns accumulated text and usage before another model call. The
 session suppresses corrections and uses a waiting note if no text was produced;
 `[actions]` records `wait (turn ended: tasks running)`. Caller `signal` retains
 hard cancellation behavior. See [the dialogue guide](../../docs/PIPELINES.md#dialogue-planner).
+
+### Host-owned agent profiles
+
+Supply `profileSource` and `profileRunner` together to `DialogueSession.open` or
+`TaskBoard`. Legacy `workers` maps and planner instances remain supported. Profile
+mode needs no workers-map entry for a new function. A standalone profile board uses
+`await board.startTask(request)`; `board.start(request)` preserves the synchronous
+legacy API. `profileTimeoutMs` defaults to 3000 milliseconds per source resolution.
+
+The source implements the public `IAgentProfileSource` contract: `list()` returns
+enabled names, descriptions and result kinds; `get(name)` performs an exact,
+case-sensitive lookup and distinguishes missing from disabled records; `getPrompts()`
+returns optional host worker base and planner text. Empty strings are explicit text;
+only absent planner text selects `DIALOGUE_PLANNER_SYSTEM`. Errors fail closed.
+Do not use a positive TTL or stale-while-revalidate: check current revision and
+availability on every lookup. Immutable revision bodies may then be cached by the host.
+
+Discovery refreshes before every planner call, including corrective calls. Delegation
+validates the enabled name and full record. After acquiring its concurrency slot, a
+task reloads its profile and prompts, so queued edits apply. A changed result kind
+fails that attempt and requires reopening the step. Running tasks retain a snapshot.
+Profile source failures never substitute a legacy worker or stale prompt.
+
+The runner implements `IAgentProfileRunner`. `createWorker` constructs a task-scoped
+agent from `workerBase` followed by `profile.systemPrompt`. Route these through
+`ContextAssembler.systemPromptPreamble`; `DirectLlmSubAgent` accepts `workerBase`
+alongside `systemPrompt`. Library protocol guidance follows this static text.
+Retrieved skills, extra fragments, brief, dependency results and request time belong
+in request content. `preparePlanner` applies the resolved `systemPrompt` to a fresh
+call-scoped planner, replacing its default text. Reusable provider clients are fine;
+mutable per-task prompts and tool settings must never be shared.
+
+Profiles request permissions; they do not grant them. The runner must intersect the
+requested policy with a code-owned ceiling. `all` means all within that ceiling;
+omitted `allow` leaves it unchanged; `deny` wins. The host defines exact tool names
+and read-only classes and rejects unsupported policies. Verdict workers always have
+a read-only ceiling. Filter offered definitions and enforce authorization on every
+execution path, including direct calls, MCP, external tools, nested delegation and
+resumed calls. An allowed tool must not indirectly broaden privileges. The library
+cannot sandbox an arbitrary host agent.
+
+The library profile tests keep a contract fixture proving that policies reach the
+runner unchanged. Host conformance tests live in the host and cover ceiling
+intersection, deny precedence, verdict read-only limits, offered-definition filtering
+and enforcement across direct, MCP, external, nested and resumed calls.
+
+Assign independent checks to profiles with `result: 'verdict'`; other functions use
+`result: 'report'`. Structured plans bind roles through library resolution, require
+successful independent report sources and retain delivery restrictions even when
+profiles are removed. Additive persisted role fields keep completed attempts auditable
+without saving prompt bodies or tool authorization. Legacy checker records normalize
+to verdict without changing names or source bindings. Explicit-source hosts restoring
+these records must expose an enabled verdict alias named `checker`, or explicitly
+reopen and reassign those steps.
+
+For manual host integration, add a RAG record with a new exact name and description,
+select it through the planner, edit its prompt and tool policy, and verify that the
+next task uses the revision and narrowed tools. Disable it and verify a named tool
+error with no worker invocation. This requires the host's real source and enforcing
+runner; no new library environment variables or RAG backend are supplied.
+
+An executable in-memory RAG host integration fixture lives in
+`src/coordinator/dialogue/__tests__/agent-profiles.test.ts`, named
+`RAG-backed host integration: exact discovery, prompt/policy edits and disablement reach actual runner assembly`.
+Run it from the repository root with
+`node --import tsx/esm --test --test-name-pattern="RAG-backed host integration" packages/llm-agent-libs/src/coordinator/dialogue/__tests__/agent-profiles.test.ts`.
+It stores and edits exact profile records in `InMemoryRag`, delegates through planner
+tools, assembles the refreshed worker prompt, computes permissions for two host-owned
+direct tools, rejects a denied direct call, and disables the record without starting
+another task. This fixture does not establish enforcement in a production host or
+through MCP, external, nested or resumed routing; those remain host obligations.

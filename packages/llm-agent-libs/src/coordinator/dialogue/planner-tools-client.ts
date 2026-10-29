@@ -7,11 +7,23 @@ import type {
   Result,
 } from '@mcp-abap-adt/llm-agent';
 import { z } from 'zod';
-import { currentPlannerScope } from './planner-scope.js';
-import { dependenciesDone, mergePlan, stepSchema } from './structured-plan.js';
+import { currentPlannerScope, type PlannerScope } from './planner-scope.js';
+import {
+  dependenciesDone,
+  mergePlan,
+  resultKind,
+  stepSchema,
+} from './structured-plan.js';
 import type { TaskBoard } from './task-board.js';
 
+const reservedDelegations = new WeakMap<PlannerScope, number>();
+const reservedSteps = new WeakSet<DialoguePlanStep>();
+
 function assertNoActiveAttempt(step: DialoguePlanStep, board: TaskBoard): void {
+  if (reservedSteps.has(step))
+    throw new Error(
+      `Task attempt for ${step.id} is being reserved; wait for it to settle`,
+    );
   for (const id of new Set([...step.taskIds, step.workTaskId])) {
     const task = id ? board.get(id) : undefined;
     if (task?.state === 'queued' || task?.state === 'running')
@@ -43,7 +55,10 @@ export class PlannerToolsClient implements IMcpClient {
 
   async listTools(): Promise<Result<McpTool[], McpError>> {
     const plan = currentPlannerScope()?.getPlan();
-    const workers = currentPlannerScope()?.board.workerNames();
+    const profiles = await currentPlannerScope()?.board.discover({
+      signal: currentPlannerScope()?.signal,
+    });
+    const workers = profiles?.map((p) => p.name);
     const string = { type: 'string' };
     const schema = (
       properties: Record<string, unknown>,
@@ -64,8 +79,7 @@ export class PlannerToolsClient implements IMcpClient {
         },
         {
           name: 'delegate_task',
-          description:
-            'Delegate a result to a worker: goal = the result, context = constraints, facts and the done criterion; a planned independent check is a separate checker task.',
+          description: `Delegate a result to a worker: goal = the result, context = constraints, facts and the done criterion; an independent check uses a separate verdict profile.\n${JSON.stringify(profiles ?? [])}`,
           inputSchema: schema(
             {
               worker: { ...string, ...(workers ? { enum: workers } : {}) },
@@ -169,14 +183,24 @@ export class PlannerToolsClient implements IMcpClient {
       if (!scope) throw new Error('no planner session');
       scope.beforeTool?.(name);
       switch (name) {
-        case 'new_request':
+        case 'new_request': {
           z.object({}).strict().parse(args);
           if (!scope.newRequest) throw new Error('new_request is unavailable');
+          const plan = scope.getPlan();
+          if (
+            reservedDelegations.has(scope) ||
+            (typeof plan === 'object' &&
+              plan.steps.some((step) => reservedSteps.has(step)))
+          )
+            throw new Error(
+              'Cannot start a new request while a task attempt is being reserved',
+            );
           scope.newRequest();
           return textResult({
             ok: true,
             message: 'new request started; continue in the next call',
           });
+        }
         case 'delegate_task': {
           for (const name of ['inputs', 'history'])
             if (Object.hasOwn(args, name))
@@ -199,81 +223,112 @@ export class PlannerToolsClient implements IMcpClient {
             throw new Error('step_id must identify a plan step');
           if (step && structured && !dependenciesDone(structured, step))
             throw new Error(`dependencies for ${step.id} are not done`);
-          const isCheck = step?.worker === 'checker';
-          if (step && (worker === 'checker') !== isCheck)
-            throw new Error(
-              'Check steps (worker checker) must use the separate read-only checker worker; non-check steps cannot use checker. The worker that did the work never checks it.',
-            );
-          if (isCheck && !step?.dependsOn?.length)
-            throw new Error(
-              'A check step requires dependsOn identifying the steps to check',
-            );
-          if (step) assertNoActiveAttempt(step, scope.board);
-          const checkedTaskIds: Record<string, string> = {};
-          if (step && structured) {
-            const sources = (step.dependsOn ?? []).map((id) =>
-              structured.steps.find((s) => s.id === id),
-            );
-            const blocks: string[] = [];
-            let size = 0;
-            for (const source of sources) {
-              if (!source) throw new Error('dependency step is missing');
-              const id = source.successfulWorkTaskId;
-              const task = id ? scope.board.get(id) : undefined;
-              if (task?.state !== 'done')
-                throw new Error(
-                  `step ${source.id} has no successful work result`,
-                );
-              if (isCheck && task.worker === worker)
-                throw new Error(
-                  'The worker that did the work never checks it; checked work must be a separate non-checker task',
-                );
-              if (isCheck) checkedTaskIds[source.id] = task.id;
-              const block = [
-                `${isCheck ? '[result to check: step' : '[result of step'} ${source.id} (task ${task.id})]\n${task.output ?? ''}`,
-                isCheck && source.items
-                  ? `Expected items for step ${source.id}: ${JSON.stringify(source.items)}; expected count: ${source.items.length}. Return JSON with verdict, count and note.`
-                  : undefined,
-              ]
-                .filter(Boolean)
-                .join('\n');
-              const nextSize = size + block.length + (blocks.length ? 2 : 0);
-              if (nextSize > 120_000)
-                throw new Error(
-                  `result of step ${source.id} (task ${task.id}) requires ${block.length} characters; total ${nextSize} exceeds 120000 (already ${size}); split or narrow the step`,
-                );
-              blocks.push(block);
-              size = nextSize;
-            }
-            if (blocks.length)
-              context = [context, ...blocks].filter(Boolean).join('\n\n');
-          }
-          const result = scope.board.start({
-            worker,
-            goal,
-            context,
-            requestStartedAt: scope.requestStartedAt,
-          });
-          if (!result.ok) throw new Error(result.error);
-          scope.ownTask?.(result.value.id);
-          if (typeof plan === 'object') delete plan.scopeConsent;
           if (step) {
-            scope.taskSteps?.set(result.value.id, step.id);
-            step.taskIds.push(result.value.id);
-            step.workTaskId = result.value.id;
-            delete step.successfulWorkTaskId;
-            delete step.verdict;
-            step.checkedTaskIds = isCheck ? checkedTaskIds : undefined;
-            step.state = 'running';
+            assertNoActiveAttempt(step, scope.board);
+            reservedSteps.add(step);
           }
-          scope.recordAction?.(
-            `started ${result.value.id}${step ? ` for ${step.id}` : ''} (${worker})`,
-            true,
+          reservedDelegations.set(
+            scope,
+            (reservedDelegations.get(scope) ?? 0) + 1,
           );
-          return textResult({
-            task_id: result.value.id,
-            state: result.value.state,
-          });
+          try {
+            const profile = scope.board.profiles
+              ? await scope.board.resolveWorker(worker, {
+                  signal: scope.signal,
+                })
+              : scope.board.legacySummary(worker);
+            const isCheck =
+              step !== undefined && resultKind(step) === 'verdict';
+            if (step && step.worker !== undefined && step.worker !== worker)
+              throw new Error(`step ${step.id} is assigned to ${step.worker}`);
+            if (step && isCheck !== (profile.result === 'verdict'))
+              throw new Error(
+                'Step result kind must match the selected profile; update and reopen the step',
+              );
+            if (isCheck && !step?.dependsOn?.length)
+              throw new Error(
+                'A check step requires dependsOn identifying the steps to check',
+              );
+            const checkedTaskIds: Record<string, string> = {};
+            if (step && structured) {
+              const sources = (step.dependsOn ?? []).map((id) =>
+                structured.steps.find((s) => s.id === id),
+              );
+              const blocks: string[] = [];
+              let size = 0;
+              for (const source of sources) {
+                if (!source) throw new Error('dependency step is missing');
+                const id = source.successfulWorkTaskId;
+                const task = id ? scope.board.get(id) : undefined;
+                if (task?.state !== 'done')
+                  throw new Error(
+                    `step ${source.id} has no successful work result`,
+                  );
+                if (
+                  isCheck &&
+                  (task.worker === worker || resultKind(task) !== 'report')
+                )
+                  throw new Error(
+                    'The worker that did the work never checks it; checked work must be a separate report task',
+                  );
+                if (isCheck) checkedTaskIds[source.id] = task.id;
+                const block = [
+                  `${isCheck ? '[result to check: step' : '[result of step'} ${source.id} (task ${task.id})]\n${task.output ?? ''}`,
+                  isCheck && source.items
+                    ? `Expected items for step ${source.id}: ${JSON.stringify(source.items)}; expected count: ${source.items.length}. Return JSON with verdict, count and note.`
+                    : undefined,
+                ]
+                  .filter(Boolean)
+                  .join('\n');
+                const nextSize = size + block.length + (blocks.length ? 2 : 0);
+                if (nextSize > 120_000)
+                  throw new Error(
+                    `result of step ${source.id} (task ${task.id}) requires ${block.length} characters; total ${nextSize} exceeds 120000 (already ${size}); split or narrow the step`,
+                  );
+                blocks.push(block);
+                size = nextSize;
+              }
+              if (blocks.length)
+                context = [context, ...blocks].filter(Boolean).join('\n\n');
+            }
+            const request = {
+              worker,
+              result: profile.result,
+              goal,
+              context,
+              requestStartedAt: scope.requestStartedAt,
+            };
+            const result = scope.board.profiles
+              ? await scope.board.startTask(request, { signal: scope.signal })
+              : scope.board.start(request);
+            if (!result.ok) throw new Error(result.error);
+            scope.ownTask?.(result.value.id);
+            if (typeof plan === 'object') delete plan.scopeConsent;
+            if (step) {
+              step.worker ??= worker;
+              step.result = profile.result;
+              scope.taskSteps?.set(result.value.id, step.id);
+              step.taskIds.push(result.value.id);
+              step.workTaskId = result.value.id;
+              delete step.successfulWorkTaskId;
+              delete step.verdict;
+              step.checkedTaskIds = isCheck ? checkedTaskIds : undefined;
+              step.state = 'running';
+            }
+            scope.recordAction?.(
+              `started ${result.value.id}${step ? ` for ${step.id}` : ''} (${worker})`,
+              true,
+            );
+            return textResult({
+              task_id: result.value.id,
+              state: result.value.state,
+            });
+          } finally {
+            const remaining = (reservedDelegations.get(scope) ?? 1) - 1;
+            if (remaining) reservedDelegations.set(scope, remaining);
+            else reservedDelegations.delete(scope);
+            if (step) reservedSteps.delete(step);
+          }
         }
         case 'search_knowledge': {
           const { query, collection, k } = z
@@ -397,6 +452,14 @@ export class PlannerToolsClient implements IMcpClient {
           if (status === 'waiting_user' && !question?.trim())
             throw new Error('waiting_user requires question');
           const previous = scope.getPlan();
+          const previousSnapshot = JSON.stringify(previous);
+          if (
+            typeof previous === 'object' &&
+            previous.steps.some((step) => reservedSteps.has(step))
+          )
+            throw new Error(
+              'Cannot update the plan while a task attempt is being reserved',
+            );
           if (typeof previous === 'object') {
             const retained =
               args.steps === undefined
@@ -407,7 +470,10 @@ export class PlannerToolsClient implements IMcpClient {
               if (
                 next &&
                 JSON.stringify(next.items) === JSON.stringify(step.items) &&
-                next.state !== 'pending'
+                next.state !== 'pending' &&
+                (next.worker ?? step.worker) === step.worker &&
+                JSON.stringify(next.dependsOn ?? []) ===
+                  JSON.stringify(step.dependsOn ?? [])
               )
                 continue;
               try {
@@ -419,12 +485,42 @@ export class PlannerToolsClient implements IMcpClient {
               }
             }
           }
+          const resolved = new Map<string, 'report' | 'verdict'>();
+          if (args.steps !== undefined) {
+            for (const step of z.array(stepSchema).parse(args.steps)) {
+              if (step.worker && !resolved.has(step.worker))
+                resolved.set(
+                  step.worker,
+                  (scope.board.profiles
+                    ? await scope.board.resolveWorker(step.worker, {
+                        signal: scope.signal,
+                      })
+                    : scope.board.legacySummary(step.worker)
+                  ).result,
+                );
+            }
+          }
+          if (
+            scope.getPlan() !== previous ||
+            JSON.stringify(previous) !== previousSnapshot ||
+            (typeof previous === 'object' &&
+              previous.steps.some((step) => reservedSteps.has(step)))
+          )
+            throw new Error(
+              'Plan changed or a task attempt is being reserved; retry the plan update',
+            );
           const next =
             args.steps !== undefined
               ? mergePlan(previous, args.steps, status, question, {
                   consent:
                     typeof previous === 'object' && previous.scopeConsent,
                   maxItemsPerStep: scope.maxItemsPerStep,
+                  resolveResult: (worker) => {
+                    const kind = resolved.get(worker);
+                    if (!kind)
+                      throw new Error(`profile ${worker} is unavailable`);
+                    return kind;
+                  },
                   getTask: (id) => scope.board.get(id),
                 })
               : requiredString(args, 'plan');

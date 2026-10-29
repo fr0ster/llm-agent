@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { DialoguePlan, McpContentBlock } from '@mcp-abap-adt/llm-agent';
 import { PlannerToolsClient, runInPlannerScope, TaskBoard } from '../index.js';
+import { profileHost } from './profile-test-host.js';
 
 const client = new PlannerToolsClient();
 async function call(name: string, args = {}) {
@@ -52,7 +53,7 @@ test('offers JSON Schema tools and worker enum within scope', async () => {
   assert.ok(result.ok);
   assert.equal(
     result.value.find((tool) => tool.name === 'delegate_task')?.description,
-    'Delegate a result to a worker: goal = the result, context = constraints, facts and the done criterion; a planned independent check is a separate checker task.',
+    'Delegate a result to a worker: goal = the result, context = constraints, facts and the done criterion; an independent check uses a separate verdict profile.\n[{"name":"w","description":"w","result":"report"}]',
   );
   assert.deepEqual(
     result.value.map((tool) => tool.name),
@@ -287,21 +288,23 @@ test('get_plan pages full steps in plan order and validates filters and paginati
   });
 });
 
-test('dependency and checker results are appended after briefs with a total bound', async () => {
+test('dependency and audit results are appended after briefs with a total bound', async () => {
   const contexts: (string | undefined)[] = [];
   const board = new TaskBoard({
-    workers: new Map(
-      ['w', 'checker'].map((name) => [
-        name,
-        {
+    ...profileHost(
+      new Map(
+        ['w', 'audit'].map((name) => [
           name,
-          capabilities: { contextPolicy: 'optional' as const },
-          async run(input: import('@mcp-abap-adt/llm-agent').ISubAgentInput) {
-            contexts.push(input.context);
-            return { output: 'ok' };
+          {
+            name,
+            capabilities: { contextPolicy: 'optional' as const },
+            async run(input: import('@mcp-abap-adt/llm-agent').ISubAgentInput) {
+              contexts.push(input.context);
+              return { output: 'ok' };
+            },
           },
-        },
-      ]),
+        ]),
+      ),
     ),
     taskOutputChars: 130_000,
     onEvent() {},
@@ -372,7 +375,8 @@ test('dependency and checker results are appended after briefs with a total boun
         goal: 'check',
         state: 'pending',
         taskIds: [],
-        worker: 'checker',
+        worker: 'audit',
+        result: 'verdict',
         dependsOn: ['a'],
       },
       { id: 'independent', goal: 'independent', state: 'pending', taskIds: [] },
@@ -407,7 +411,8 @@ test('dependency and checker results are appended after briefs with a total boun
       assert.equal(
         (
           await call('delegate_task', {
-            worker: 'checker',
+            worker: 'audit',
+            result: 'verdict',
             goal: 'verify',
             step_id: 'check',
           })

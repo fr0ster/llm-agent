@@ -244,8 +244,10 @@ security property supplied by prompt wording.
 - Legacy workers maps, text/unstructured tasks and persisted checker plans restore;
   additive snapshots round-trip; removed profiles cannot bypass verification. Preserve
   current source binding, old check/checking, request ownership and delivery tests.
-- Host hook conformance: all cannot exceed ceiling, deny wins, verdict read-only ceiling,
-  disabled tool calls fail even if invoked directly, and external/nested paths obey it.
+- Host hook conformance tests live in the host: all cannot exceed ceiling, deny wins,
+  verdict read-only ceiling, offered-definition filtering, and disabled tool calls fail
+  across direct, MCP, external, nested and resumed execution paths. The library keeps
+  only a contract fixture proving that policies reach the runner unchanged.
 - Manual integration: add a host RAG profile without code changes, select it by its
   description, edit prompt/tools, run the next task and observe the new instructions
   and narrowed tools. Disable it and observe a named error with no worker run.

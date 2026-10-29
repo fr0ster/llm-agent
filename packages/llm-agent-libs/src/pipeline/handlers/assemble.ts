@@ -82,14 +82,24 @@ export class AssembleHandler implements IStageHandler {
 
     ctx.assembledMessages = result.value;
 
-    // Inject skill content into system message (post-assembly)
+    // Matched skills vary by request and must not change the static system prefix.
     if (ctx.skillContent) {
-      const sysMsg = ctx.assembledMessages.find((m) => m.role === 'system');
-      if (sysMsg) {
-        sysMsg.content += `\n\n## Active Skills\n${ctx.skillContent}`;
+      let requestIndex = ctx.assembledMessages.length - 1;
+      while (
+        requestIndex >= 0 &&
+        ctx.assembledMessages[requestIndex].role !== 'user'
+      ) {
+        requestIndex--;
+      }
+      if (requestIndex >= 0) {
+        const request = ctx.assembledMessages[requestIndex];
+        ctx.assembledMessages[requestIndex] = {
+          ...request,
+          content: `${request.content}\n\n## Active Skills\n${ctx.skillContent}`,
+        };
       } else {
-        ctx.assembledMessages.unshift({
-          role: 'system',
+        ctx.assembledMessages.push({
+          role: 'user',
           content: `## Active Skills\n${ctx.skillContent}`,
         });
       }
