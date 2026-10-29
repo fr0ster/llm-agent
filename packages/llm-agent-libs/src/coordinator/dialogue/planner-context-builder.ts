@@ -34,7 +34,7 @@ export function renderPlannerRetrieval(input: PlannerContextInput): string[] {
     'session memory',
     input.memory.map(
       (entry) =>
-        `(${escapePlannerData(`${entry.kind} ${entry.sourceId} ${entry.requestId} offset ${entry.offset}${entry.expired ? ' expired: excerpt only' : ''}`)}) ${escapePlannerData(entry.text)}`,
+        `(${escapePlannerData(`${entry.kind} ${entry.sourceId} ${entry.requestId} offset ${entry.offset}`)}) ${escapePlannerData(entry.text)}`,
     ),
     input.memoryCharBudget ?? 12_000,
   );
@@ -81,12 +81,13 @@ export function appendRequestMessage(
   const content = stored.content ?? '';
   if (content.length > 150_000)
     stored.content = `${content.slice(0, 150_000)}[stored cut: 150000 of ${content.length} characters]`;
+  record.transcript ??= [];
   record.transcript.push(stored);
   boundRequestTranscript(record);
 }
 
 export function boundRequestTranscript(record: PlannerRequestRecord): void {
-  const messages = record.transcript;
+  const messages = record.transcript ?? [];
   let dropped = 0;
   const previous = messages[1];
   const match =
@@ -119,18 +120,15 @@ export class DefaultPlannerContextBuilder implements IPlannerContextBuilder {
   build(input: PlannerContextInput): Message[] {
     const record = input.open;
     if (!record) return [];
-    let offset = 0;
-    const parts = record.transcript.map((message) => {
+    const parts = (record.transcript ?? []).map((message) => {
       const content = message.content ?? '';
       const storedCut =
         /\[stored cut: 150000 of \d+ characters\]$/.exec(content)?.[0] ?? '';
-      const start = offset + message.role.length + 2;
-      offset = start + content.length + 2;
       return {
         ...structuredClone(message),
         content:
           content.length > 20_000
-            ? `${content.slice(0, 20_000)}[cut: 20000 of ${content.length}; get_request ${record.id} offset ${start + 20_000}]${storedCut}`
+            ? `${content.slice(0, 20_000)}[cut: 20000 of ${content.length}]${storedCut}`
             : content,
       };
     });
@@ -142,8 +140,7 @@ export class DefaultPlannerContextBuilder implements IPlannerContextBuilder {
     // Reserve space for the elision note and for separators introduced by merging.
     for (; index > 0; index--) {
       const part = parts[index];
-      const markerSize =
-        `[elided ${index - 1} messages; get_request ${record.id}]`.length;
+      const markerSize = `[elided ${index - 1} messages]`.length;
       if (
         size + part.content.length + markerSize + selected.length + 2 >
         60_000
@@ -155,7 +152,7 @@ export class DefaultPlannerContextBuilder implements IPlannerContextBuilder {
     if (index > 0)
       selected.splice(1, 0, {
         role: 'user',
-        content: `[elided ${index} messages; get_request ${record.id}]`,
+        content: `[elided ${index} messages]`,
       });
     const messages: Message[] = [];
     for (const part of selected) {

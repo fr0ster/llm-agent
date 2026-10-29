@@ -20,7 +20,6 @@ const record = (): PlannerRequestRecord => ({
   id: 'r1',
   openedAt: 1,
   text: 'first',
-  replies: [],
   transcript: [{ role: 'user', content: 'first' }],
 });
 const project = (open: PlannerRequestRecord): Message[] =>
@@ -70,8 +69,8 @@ test('projection cuts individual parts before merging, preserves newest input an
   const text = messages.map((message) => message.content).join('');
   assert.ok(size(messages) <= 60_000);
   assert.match(text, /^FIRST/);
-  assert.match(text, /cut: 20000 of 30005; get_request r1 offset 20006/);
-  assert.match(text, /elided \d+ messages; get_request r1/);
+  assert.match(text, /cut: 20000 of 30005/);
+  assert.match(text, /elided \d+ messages/);
   assert.match(text, /NOTE/);
   assert.match(text, /LATEST$/);
   for (let i = 1; i < messages.length; i++)
@@ -182,17 +181,16 @@ test('a planless answer followed by a new input opens a new request', async () =
       },
     },
   });
-  const first = await session.send('first');
-  const second = await session.send('second');
+  await session.send('first');
+  await session.send('second');
   assert.deepEqual(
     session.snapshot().requests?.map((request) => ({
       id: request.id,
       text: request.text,
-      replies: request.replies,
     })),
     [
-      { id: 'r1', text: 'first', replies: [first.id] },
-      { id: 'r2', text: 'second', replies: [second.id] },
+      { id: 'r1', text: 'first' },
+      { id: 'r2', text: 'second' },
     ],
   );
   await session.close();
@@ -264,8 +262,6 @@ test('corrective calls rebuild context containing intermediate replies, actions 
   assert.match(text, /intermediate/);
   assert.match(text, /\[actions\]/);
   assert.match(text, /\[check\]/);
-  assert.equal(session.snapshot().messages?.length, 1);
-  assert.equal(session.snapshot().messages?.[0].text, 'final');
   await session.close();
 });
 
@@ -290,7 +286,6 @@ test('legacy restore opens one bounded legacy request; next done-plan input star
   assert.equal(saved.requests?.[1].id, 'r2');
   const restored = await DialogueSession.open(options);
   assert.deepEqual(restored.snapshot().requests, saved.requests);
-  assert.deepEqual(restored.snapshot().messages, saved.messages);
   await restored.send('next');
   assert.equal(restored.snapshot().requests?.at(-1)?.id, 'r3');
   await restored.close();
@@ -323,54 +318,7 @@ test('conversation mode uses raw merged history and bypasses custom builder', as
   await session.close();
 });
 
-test('archive evicts independently of pending, omits NO_MESSAGE and bounds request fields and records', async () => {
-  const store = new InMemoryDialogueStateStore();
-  const pending = {
-    id: 'old',
-    text: 'a'.repeat(2_000_000),
-    createdAt: 1,
-    trigger: 'event' as const,
-  };
-  await store.save('archive', {
-    ...state(),
-    requests: [],
-    requestSeq: 99,
-    pending: [pending],
-    messages: [pending],
-  });
-  let calls = 0;
-  const session = await DialogueSession.open({
-    id: 'archive',
-    store,
-    board: { workers: new Map() },
-    planner: {
-      async process() {
-        return {
-          ok: true,
-          value: { content: ++calls === 2 ? 'NO_MESSAGE' : 'reply' },
-        };
-      },
-    },
-  });
-  const first = await session.send('x'.repeat(30_000));
-  assert.deepEqual(
-    session.snapshot().messages?.map((message) => message.id),
-    [first.id],
-  );
-  assert.equal(session.snapshot().pending[0].id, 'old');
-  assert.equal(session.snapshot().requests?.[0].text.length, 20_000);
-  await session.send('silent');
-  assert.deepEqual(
-    session.snapshot().messages?.map((message) => message.id),
-    [first.id],
-  );
-  for (let i = 0; i < 205; i++) await session.send(`request ${i}`);
-  assert.equal(session.snapshot().requests?.length, 200);
-  assert.equal(session.snapshot().requestSeq, 306);
-  await session.close();
-});
-
-test('events join open request and replies are archived before delivery and save', async () => {
+test('events join open request and replies are pending before delivery and save', async () => {
   let finish: (value: { output: string }) => void = () => {
     throw new Error('not initialized');
   };
@@ -385,11 +333,8 @@ test('events join open request and replies are archived before delivery and save
     store,
     onMessage(message) {
       assert.ok(
-        session
-          .snapshot()
-          .messages?.some((archived) => archived.id === message.id),
+        session.snapshot().pending.some((pending) => pending.id === message.id),
       );
-      assert.ok(session.snapshot().requests?.[0].replies.includes(message.id));
       delivered = true;
     },
     board: {
@@ -424,84 +369,10 @@ test('events join open request and replies are archived before delivery and save
   await tick();
   assert.equal(session.snapshot().requests?.length, 1);
   assert.ok(
-    (await store.load('events'))?.messages?.some(
+    (await store.load('events'))?.pending.some(
       (message) => message.trigger === 'event',
     ),
   );
-  await session.close();
-});
-
-test('request retention includes serialized closed plans and preserves expired metadata', async () => {
-  const store = new InMemoryDialogueStateStore();
-  const requests = Array.from(
-    { length: 8 },
-    (_, index): PlannerRequestRecord => ({
-      ...record(),
-      id: `r${index + 1}`,
-      closedAt: index + 2,
-      closedPlan: {
-        version: 1,
-        status: 'done',
-        steps: [],
-        note: 'p'.repeat(300_000),
-      },
-    }),
-  );
-  await store.save('retention', { ...state(), requests, requestSeq: 40 });
-  const session = await DialogueSession.open({
-    id: 'retention',
-    store,
-    board: { workers: new Map() },
-    planner: {
-      async process() {
-        return { ok: true, value: { content: 'ok' } };
-      },
-    },
-  });
-  const retained = session.snapshot().requests ?? [];
-  assert.equal(retained[0].transcriptExpired, true);
-  assert.deepEqual(retained[0].transcript, []);
-  assert.equal(retained[0].closedPlan, undefined);
-  assert.equal(retained[0].text, 'first');
-  assert.ok(
-    retained.reduce(
-      (sum, request) =>
-        sum +
-        JSON.stringify(request.transcript).length +
-        JSON.stringify(request.closedPlan ?? null).length,
-      0,
-    ) <= 2_000_000,
-  );
-  await session.send('next');
-  assert.equal(session.snapshot().requests?.at(-1)?.id, 'r41');
-  await session.close();
-});
-
-test('reply ids are limited to newest 50 in an active request; custom builder runs for each call', async () => {
-  let builds = 0;
-  const session = await DialogueSession.open({
-    id: 'reply-limit',
-    maxCorrections: 0,
-    plannerContextBuilder: {
-      build(input) {
-        builds++;
-        assert.deepEqual(input.memory, []);
-        assert.deepEqual(input.knowledge, []);
-        return builder.build(input);
-      },
-    },
-    board: { workers: new Map() },
-    planner: {
-      async process() {
-        await tools.callTool('update_plan', { plan: 'keep active' });
-        return { ok: true, value: { content: 'reply' } };
-      },
-    },
-  });
-  const ids: string[] = [];
-  for (let i = 0; i < 55; i++) ids.push((await session.send(`input ${i}`)).id);
-  assert.equal(builds, 55);
-  assert.deepEqual(session.snapshot().requests?.[0].replies, ids.slice(-50));
   await session.close();
 });
 
@@ -537,10 +408,10 @@ test('input enqueued in flight cannot change the owning request of the current r
   const second = session.send('second');
   assert.equal(session.snapshot().requests?.length, 1);
   release();
-  const [a, b] = await Promise.all([first, second]);
+  await Promise.all([first, second]);
   assert.deepEqual(
-    session.snapshot().requests?.map((request) => request.replies),
-    [[a.id], [b.id]],
+    session.snapshot().requests?.map((request) => request.id),
+    ['r1', 'r2'],
   );
   await session.close();
 });
@@ -625,7 +496,7 @@ test('task outcomes update request counters before a busy planner turn finishes;
   await session.close();
 });
 
-test('suppressed event replies stay out of the archive while delivery acknowledgements preserve archived replies', async () => {
+test('suppressed event replies stay out of pending delivery', async () => {
   let finish: (value: { output: string }) => void = () => {
     throw new Error('not initialized');
   };
@@ -658,21 +529,17 @@ test('suppressed event replies stay out of the archive while delivery acknowledg
       },
     },
   });
-  const reply = await session.send('first');
+  await session.send('first');
   finish({ output: 'result' });
   for (let i = 0; i < 10 && calls < 2; i++) await tick();
   await tick();
   assert.equal(calls, 2);
   assert.deepEqual(session.takePending(), []);
-  assert.deepEqual(
-    session.snapshot().messages?.map((message) => message.id),
-    [reply.id],
-  );
-  assert.deepEqual(session.snapshot().requests?.[0].replies, [reply.id]);
+  assert.ok(!Object.hasOwn(session.snapshot(), 'messages'));
   await session.close();
 });
 
-test('new_request discards the old call, rebuilds retrieval, and archives replies under the new request', async () => {
+test('new_request discards the old call, rebuilds retrieval, and keeps only the new request transcript', async () => {
   const store = new InMemoryDialogueStateStore();
   await store.save(
     'boundary',
@@ -731,9 +598,7 @@ test('new_request discards the old call, rebuilds retrieval, and archives replie
     assert.equal(searches, 2);
     const snapshot = session.snapshot();
     assert.equal(snapshot.requests?.length, 2);
-    assert.equal(snapshot.requests?.[0].closedPlan?.note, 'OLD PLAN');
-    assert.equal(snapshot.requests?.[0].transcript.length, 1);
-    assert.deepEqual(snapshot.requests?.[1].replies, [reply.id]);
+    assert.equal(snapshot.requests?.[0].transcript, undefined);
     assert.equal(snapshot.requests?.[1].transcript[0].content, 'new work');
     assert.equal(
       typeof snapshot.plan === 'object' && snapshot.plan.steps[0].id,
@@ -747,7 +612,6 @@ test('new_request discards the old call, rebuilds retrieval, and archives replie
 for (const prior of [
   'get_plan',
   'list_tasks',
-  'get_request',
   'unknown_tool',
   'waiting_user',
 ] as const) {
@@ -855,7 +719,7 @@ for (const order of [
   });
 }
 
-test('old tasks survive the boundary, wait normally, label events, and preserve reused steps and archived plans', async () => {
+test('old tasks survive the boundary, wait normally, label events, and preserve reused steps', async () => {
   let finish: (value: { output: string }) => void = () => {
     throw new Error('worker not started');
   };
@@ -918,15 +782,13 @@ test('old tasks survive the boundary, wait normally, label events, and preserve 
     await session.send('old work');
     await session.send('new work');
     const before = session.snapshot();
-    const archived = structuredClone(before.requests?.[0].closedPlan);
     assert.equal(before.taskRequests?.t1, 'r1');
     finish({ output: 'old result' });
     for (let i = 0; i < 20 && calls < 4; i++) await tick();
     assert.equal(calls, 4);
     assert.match(contexts[3], /\[task events\] from r1:/);
     const after = session.snapshot();
-    assert.deepEqual(after.requests?.[0].closedPlan, archived);
-    assert.equal(after.requests?.[0].plan?.done, 1);
+    assert.equal(after.requests?.[0].plan?.done, 0);
     assert.equal(
       typeof after.plan === 'object' && after.plan.steps[0].state,
       'pending',
@@ -981,7 +843,7 @@ test('a corrective call cannot start a new request', async () => {
   }
 });
 
-test('new_request archives a failed plan and permits replacement without consent', async () => {
+test('new_request closes a failed plan and permits replacement without consent', async () => {
   const store = new InMemoryDialogueStateStore();
   await store.save(
     'failed-boundary',
@@ -1022,7 +884,6 @@ test('new_request archives a failed plan and permits replacement without consent
   try {
     await session.send('unrelated work');
     const snapshot = session.snapshot();
-    assert.equal(snapshot.requests?.[0].closedPlan?.steps[0].state, 'failed');
     assert.equal(
       typeof snapshot.plan === 'object' && snapshot.plan.steps[0].id,
       'replacement',

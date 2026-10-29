@@ -222,7 +222,8 @@ export class TaskBoard {
       if (!worker) throw new Error(`unknown worker ${task.worker}`);
       if (worker.capabilities?.maxToolCalls !== undefined)
         task.maxToolCalls = worker.capabilities.maxToolCalls;
-      const baseInput = this.opts.baseInput?.();
+      // Workers get the brief only; earlier content they retrieve themselves.
+      const { history: _history, ...baseInput } = this.opts.baseInput?.() ?? {};
       const run = () => {
         if (hard.signal.aborted) throw hard.signal.reason;
         return worker.run({
@@ -232,7 +233,6 @@ export class TaskBoard {
             : {}),
           task: request.goal,
           context: request.context,
-          history: request.history,
           signal: baseInput?.signal
             ? AbortSignal.any([baseInput.signal, hard.signal])
             : hard.signal,

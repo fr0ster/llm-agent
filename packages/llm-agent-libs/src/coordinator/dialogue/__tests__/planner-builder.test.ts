@@ -13,10 +13,9 @@ import { PlannerToolsClient } from '../planner-tools-client.js';
 
 test('planner prompt requires result delegation and planned verification', () => {
   for (const rule of [
-    'Read more with get_message / get_request only when the current request needs it',
+    'The worker receives only goal, context and the step',
     'use search_knowledge when you need more',
-    'pass its message id in delegate_task inputs instead of copying it',
-    'change only what the request asks',
+    'A worker can search the session',
     'Plan the whole request up front',
     'done criterion',
     'plan a check by another subagent',
@@ -45,12 +44,10 @@ test('planner prompt requires result delegation and planned verification', () =>
     assert.ok(DIALOGUE_PLANNER_SYSTEM.includes(rule), rule);
 });
 
-test('documented builder exposes exactly the ten control tools and dispatches delegation inside a session', async () => {
+test('documented builder exposes exactly the eight control tools and dispatches delegation inside a session', async () => {
   const expected = [
     'new_request',
     'delegate_task',
-    'get_message',
-    'get_request',
     'search_knowledge',
     'stop_task',
     'get_plan',

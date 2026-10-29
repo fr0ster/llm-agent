@@ -218,7 +218,7 @@ for (const output of [
     });
     try {
       await runInPlannerScope(
-        { board, getPlan: () => plan, setPlan() {}, history: () => [] },
+        { board, getPlan: () => plan, setPlan() {} },
         async () => {
           const result = await new PlannerToolsClient().callTool(
             'delegate_task',

@@ -1,10 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import type {
-  DialoguePlan,
-  McpContentBlock,
-  Message,
-} from '@mcp-abap-adt/llm-agent';
+import type { DialoguePlan, McpContentBlock } from '@mcp-abap-adt/llm-agent';
 import { PlannerToolsClient, runInPlannerScope, TaskBoard } from '../index.js';
 
 const client = new PlannerToolsClient();
@@ -18,7 +14,6 @@ async function call(name: string, args = {}) {
   };
 }
 function setup(maxTasks = 50) {
-  let history: Message[] | undefined;
   let plan: string | DialoguePlan | undefined;
   const board = new TaskBoard({
     workers: new Map([
@@ -27,8 +22,7 @@ function setup(maxTasks = 50) {
         {
           name: 'w',
           capabilities: { contextPolicy: 'optional' as const },
-          async run(input) {
-            history = input.history;
+          async run() {
             return { output: 'ok' };
           },
         },
@@ -37,31 +31,22 @@ function setup(maxTasks = 50) {
     maxTasks,
     onEvent() {},
   });
-  const messages: Message[] = [
-    { role: 'user', content: 'old' },
-    { role: 'assistant', content: 'old reply' },
-    { role: 'user', content: 'new' },
-    { role: 'assistant', content: 'new reply' },
-  ];
   return {
     board,
-    history: () => history,
     getPlan: () => plan,
     setPlan: (value: string | DialoguePlan) => {
       plan = value;
     },
-    scopeHistory: messages,
     scope: {
       board,
       getPlan: () => plan,
       setPlan: (value: string | DialoguePlan) => {
         plan = value;
       },
-      history: () => messages,
     },
   };
 }
-test('offers exactly ten JSON Schema tools and worker enum within scope', async () => {
+test('offers exactly eight JSON Schema tools and worker enum within scope', async () => {
   const f = setup();
   const result = await runInPlannerScope(f.scope, () => client.listTools());
   assert.ok(result.ok);
@@ -74,8 +59,6 @@ test('offers exactly ten JSON Schema tools and worker enum within scope', async 
     [
       'new_request',
       'delegate_task',
-      'get_message',
-      'get_request',
       'search_knowledge',
       'stop_task',
       'get_task',
@@ -146,45 +129,6 @@ test('all tool success paths return JSON and plan is stored', async () => {
   });
   await f.board.stopAll();
 });
-for (const mode of ['none', 'last-turn', 'all'] as const) {
-  test(`history selection ${mode}`, async () => {
-    const f = setup();
-    await runInPlannerScope(f.scope, () =>
-      call('delegate_task', { worker: 'w', goal: 'g', history: mode }),
-    );
-    await new Promise<void>((r) => setImmediate(r));
-    assert.deepEqual(
-      f.history(),
-      mode === 'none'
-        ? undefined
-        : mode === 'all'
-          ? f.scopeHistory
-          : f.scopeHistory.slice(2),
-    );
-  });
-}
-test('all history is bounded to twenty and last-turn supports unanswered user', async () => {
-  const f = setup();
-  f.scopeHistory.splice(
-    0,
-    f.scopeHistory.length,
-    ...Array.from(
-      { length: 25 },
-      (_, i): Message => ({ role: 'user', content: String(i) }),
-    ),
-  );
-  await runInPlannerScope(f.scope, () =>
-    call('delegate_task', { worker: 'w', goal: 'g', history: 'all' }),
-  );
-  await new Promise<void>((r) => setImmediate(r));
-  assert.equal(f.history()?.length, 20);
-  await runInPlannerScope(f.scope, () =>
-    call('delegate_task', { worker: 'w', goal: 'g', history: 'last-turn' }),
-  );
-  await new Promise<void>((r) => setImmediate(r));
-  assert.deepEqual(f.history(), [f.scopeHistory.at(-1)]);
-});
-
 test('queued stop succeeds and get_task preserves the original cut note', async () => {
   const f = setup();
   f.board.restore([
