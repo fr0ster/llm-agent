@@ -4,7 +4,6 @@ import type {
   McpError,
   McpTool,
   McpToolResult,
-  Message,
   Result,
 } from '@mcp-abap-adt/llm-agent';
 import { z } from 'zod';
@@ -43,38 +42,6 @@ function requiredString(args: Record<string, unknown>, key: string): string {
   if (typeof value !== 'string') throw new Error(`${key} must be a string`);
   return value;
 }
-function selectHistory(
-  messages: Message[],
-  mode: unknown,
-): Message[] | undefined {
-  if (mode === undefined || mode === 'none') return undefined;
-  if (mode === 'all') return structuredClone(messages.slice(-20));
-  if (mode !== 'last-turn')
-    throw new Error('history must be none, last-turn or all');
-  let index = messages.length - 1;
-  while (index >= 0 && messages[index].role !== 'user') index--;
-  if (index < 0) return [];
-  const reply = messages
-    .slice(index + 1)
-    .find((message) => message.role === 'assistant');
-  return structuredClone(reply ? [messages[index], reply] : [messages[index]]);
-}
-const rangeSchema = z.object({
-  id: z.string(),
-  offset: z.number().int().nonnegative().optional(),
-  limit: z.number().int().positive().optional(),
-});
-function page(text: string, offset = 0, limit = 8_000) {
-  if (offset > text.length)
-    throw new Error(`offset ${offset} is beyond the end (${text.length})`);
-  const end = Math.min(text.length, offset + Math.min(limit, 32_000));
-  return {
-    offset,
-    total: text.length,
-    ...(end < text.length ? { next: end } : {}),
-    text: text.slice(offset, end),
-  };
-}
 export class PlannerToolsClient implements IMcpClient {
   readonly cacheable = false;
 
@@ -109,12 +76,6 @@ export class PlannerToolsClient implements IMcpClient {
               goal: string,
               step_id: string,
               context: string,
-              inputs: {
-                type: 'array',
-                maxItems: 5,
-                items: z.toJSONSchema(rangeSchema),
-              },
-              history: { type: 'string', enum: ['none', 'last-turn', 'all'] },
             },
             [
               'worker',
@@ -125,23 +86,6 @@ export class PlannerToolsClient implements IMcpClient {
             ],
           ),
         },
-        ...['get_message', 'get_request'].map((name) => ({
-          name,
-          description: 'Read archived session content, paged by characters.',
-          inputSchema: schema(
-            {
-              id: string,
-              offset: { type: 'integer', minimum: 0, default: 0 },
-              limit: {
-                type: 'integer',
-                minimum: 1,
-                maximum: 32_000,
-                default: 8_000,
-              },
-            },
-            ['id'],
-          ),
-        })),
         {
           name: 'search_knowledge',
           description:
@@ -230,54 +174,17 @@ export class PlannerToolsClient implements IMcpClient {
             message: 'new request started; continue in the next call',
           });
         case 'delegate_task': {
+          for (const name of ['inputs', 'history'])
+            if (Object.hasOwn(args, name))
+              throw new Error(
+                `${name} is not supported; put what the step needs in context`,
+              );
           const worker = requiredString(args, 'worker');
           let goal = requiredString(args, 'goal');
-          let context =
+          const context =
             args.context === undefined
               ? undefined
               : requiredString(args, 'context');
-          const inputs = z
-            .array(rangeSchema)
-            .max(5)
-            .optional()
-            .parse(args.inputs);
-          const seen = new Set<string>();
-          const blocks: string[] = [];
-          let size = 0;
-          for (const input of inputs ?? []) {
-            if (seen.has(input.id))
-              throw new Error(`duplicate input ${input.id}`);
-            seen.add(input.id);
-            const message = scope.getMessage?.(input.id);
-            if (!message)
-              throw new Error(`unknown or expired message ${input.id}`);
-            const offset = input.offset ?? 0;
-            const limit = input.limit ?? 40_000;
-            const total = message.text.length;
-            if (offset > total)
-              throw new Error(
-                `input ${input.id}: total ${total}, offset ${offset} is out of range`,
-              );
-            const remaining = total - offset;
-            if (input.limit === undefined && remaining > limit)
-              throw new Error(
-                `input ${input.id}: total ${total}, allowed size ${limit}; specify a range`,
-              );
-            const end = Math.min(total, offset + limit);
-            const label = `[input ${input.id} ${offset}-${end} of ${total}]\n`;
-            const allowed =
-              120_000 - size - label.length - (blocks.length ? 2 : 0);
-            if (Math.min(remaining, limit) > allowed)
-              throw new Error(
-                `input ${input.id}: total ${total}, allowed size ${Math.max(0, allowed)}`,
-              );
-            blocks.push(label + message.text.slice(offset, end));
-            size += blocks.at(-1)?.length ?? 0;
-            if (blocks.length > 1) size += 2;
-          }
-          if (blocks.length)
-            context = [context, ...blocks].filter(Boolean).join('\n\n');
-          const history = selectHistory(scope.history(), args.history);
           const plan = scope.getPlan();
           const structured =
             typeof plan === 'object' && plan.note === undefined
@@ -297,7 +204,7 @@ export class PlannerToolsClient implements IMcpClient {
           if (isCheck && step?.items)
             goal += `
 Verify exactly ${step.items.length} items, each with a stored/processed result: ${JSON.stringify(step.items)}. Return JSON with verdict, count and note.`;
-          const result = scope.board.start({ worker, goal, context, history });
+          const result = scope.board.start({ worker, goal, context });
           if (!result.ok) throw new Error(result.error);
           scope.ownTask?.(result.value.id);
           if (typeof plan === 'object') delete plan.scopeConsent;
@@ -324,46 +231,6 @@ Verify exactly ${step.items.length} items, each with a stored/processed result: 
           return textResult({
             task_id: result.value.id,
             state: result.value.state,
-          });
-        }
-        case 'get_message': {
-          const { id, offset, limit } = rangeSchema.parse(args);
-          const message = scope.getMessage?.(id);
-          if (!message) throw new Error(`unknown or expired message ${id}`);
-          return textResult({
-            id,
-            createdAt: message.createdAt,
-            ...page(message.text, offset, limit),
-          });
-        }
-        case 'get_request': {
-          const { id, offset, limit } = rangeSchema.parse(args);
-          const request = scope.getRequest?.(id);
-          if (!request) throw new Error(`unknown request ${id}`);
-          const metadata = {
-            id,
-            openedAt: request.openedAt,
-            closedAt: request.closedAt,
-            plan: request.plan,
-            replies: request.replies.slice(-20),
-            text: request.text.slice(0, 2_000),
-          };
-          return textResult({
-            ...metadata,
-            ...(request.transcriptExpired
-              ? { note: 'transcript expired' }
-              : {
-                  transcript: page(
-                    request.transcript
-                      .map(
-                        (message) =>
-                          `${message.role}: ${message.content ?? ''}`,
-                      )
-                      .join('\n\n'),
-                    offset,
-                    limit,
-                  ),
-                }),
           });
         }
         case 'search_knowledge': {

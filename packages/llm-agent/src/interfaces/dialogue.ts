@@ -13,7 +13,6 @@ export interface TaskRequest {
   worker: string;
   goal: string;
   context?: string;
-  history?: Message[];
 }
 export interface TaskRecord {
   usage?: TokenUsage;
@@ -105,7 +104,6 @@ export interface Plan {
 export interface DialogueState {
   requests?: PlannerRequestRecord[];
   requestSeq?: number;
-  messages?: PlannerMessage[];
   conversation: Message[];
   plan?: string | Plan;
   planStatus?: 'active' | 'waiting_user' | 'done';
@@ -135,16 +133,12 @@ export interface PlannerRequestRecord {
     failed: number;
     skipped: number;
   };
-  replies: string[];
   lastTurnOk?: boolean;
-  closedPlan?: Plan;
-  transcriptExpired?: true;
-  transcript: Message[];
+  /** Present only while the request is open. */
+  transcript?: Message[];
   legacy?: true;
 }
 export interface PlannerMemoryEntry {
-  /** The archived message is no longer available in full. */
-  expired?: boolean;
   kind: 'planner-input' | 'planner-reply' | 'planner-task' | 'planner-plan';
   requestId: string;
   sourceId: string;

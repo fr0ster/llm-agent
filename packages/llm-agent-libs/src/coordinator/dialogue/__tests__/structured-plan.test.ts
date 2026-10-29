@@ -110,7 +110,6 @@ test('delegation requires step id, refuses dependencies, links work and checker,
         assert.equal(typeof p, 'object');
         plan = p as DialoguePlan;
       },
-      history: () => [],
       recordAction: (a) => actions.push(a),
     },
     async () => {
@@ -529,7 +528,7 @@ test('checker cannot overtake work; retries ignore superseded work and check out
     onEvent: (event) => applyTaskEvent(plan, event),
   });
   await runInPlannerScope(
-    { board, getPlan: () => plan, setPlan() {}, history: () => [] },
+    { board, getPlan: () => plan, setPlan() {} },
     async () => {
       const delegate = (worker: string) =>
         call('delegate_task', { worker, goal: 'work', step_id: 's1' });
@@ -638,7 +637,6 @@ test('skipped dependencies block delegation until the planner revises dependsOn'
         assert.equal(typeof p, 'object');
         plan = p as DialoguePlan;
       },
-      history: () => [],
     },
     async () => {
       assert.equal(
@@ -774,7 +772,7 @@ test('active work cannot be replaced, even after a stop request, and dependents 
     onEvent: (event) => applyTaskEvent(plan, event),
   });
   await runInPlannerScope(
-    { board, getPlan: () => plan, setPlan() {}, history: () => [] },
+    { board, getPlan: () => plan, setPlan() {} },
     async () => {
       // Start directly so the duplicate call observes the queued state before yielding.
       const first = board.start({ worker: 'w', goal: 'first' });
@@ -894,7 +892,7 @@ for (const state of ['failed', 'stopped', 'interrupted'] as const) {
     });
     board.restore([outcome('t1', state).task]);
     await runInPlannerScope(
-      { board, getPlan: () => plan, setPlan() {}, history: () => [] },
+      { board, getPlan: () => plan, setPlan() {} },
       async () => {
         assert.equal(
           (
@@ -999,7 +997,7 @@ for (const active of ['work', 'check'] as const) {
       onEvent: (event) => applyTaskEvent(plan, event),
     });
     await runInPlannerScope(
-      { board, getPlan: () => plan, setPlan() {}, history: () => [] },
+      { board, getPlan: () => plan, setPlan() {} },
       async () => {
         if (active === 'check') {
           Object.assign(step, {
@@ -1087,7 +1085,7 @@ test('active checker cannot be replaced while queued, running or awaiting cooper
     onEvent: (event) => applyTaskEvent(plan, event),
   });
   await runInPlannerScope(
-    { board, getPlan: () => plan, setPlan() {}, history: () => [] },
+    { board, getPlan: () => plan, setPlan() {} },
     async () => {
       // Start without yielding so the first duplicate observes the queued checker.
       const first = tools.callTool('delegate_task', {
@@ -1158,7 +1156,6 @@ for (const attempt of ['work', 'check'] as const) {
         setPlan: (p) => {
           plan = p as DialoguePlan;
         },
-        history: () => [],
       },
       async () => {
         const first = board.start({ worker: 'w', goal: 'held' });

@@ -1124,7 +1124,6 @@ test('prepared context resets a restored completed batch plan for unrelated work
     const state = s.snapshot();
     assert.equal(state.requests?.length, 2);
     assert.equal(state.requests?.[0].legacy, true);
-    assert.equal(state.requests?.[0].closedPlan?.steps[0].id, 'old');
     assert.equal(state.requests?.[1].id, 'r2');
     assert.equal(
       (state.plan as import('@mcp-abap-adt/llm-agent').DialoguePlan).steps[0]

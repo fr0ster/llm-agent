@@ -45,7 +45,6 @@ for (const attempt of ['work', 'check'] as const) {
         setPlan: (p) => {
           plan = p as DialoguePlan;
         },
-        history: () => [],
       },
       async () => {
         const task = board.start({ worker: 'w', goal: 'held' });
@@ -332,7 +331,6 @@ test('checker goal includes immutable expected ids/count and configured batch li
       setPlan: (p) => {
         plan = p as DialoguePlan;
       },
-      history: () => [],
     },
     async () => {
       const refused = await update({ steps: [batch] });
@@ -344,7 +342,7 @@ test('checker goal includes immutable expected ids/count and configured batch li
   plan = mergePlan(undefined, [batch], 'active');
   plan.steps[0].state = 'checking';
   await runInPlannerScope(
-    { board, getPlan: () => plan, setPlan() {}, history: () => [] },
+    { board, getPlan: () => plan, setPlan() {} },
     async () => {
       const result = await tools.callTool('delegate_task', {
         step_id: 'batch',

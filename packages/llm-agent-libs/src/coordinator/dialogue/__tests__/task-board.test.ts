@@ -128,6 +128,7 @@ test('base input is forwarded and task-specific values override it', async () =>
         sessionId: 'session',
         task: 'wrong',
         context: 'wrong',
+        history: [{ role: 'user', content: 'earlier conversation' }],
         stopSignal: new AbortController().signal,
       }),
     },
@@ -136,13 +137,12 @@ test('base input is forwarded and task-specific values override it', async () =>
     worker: 'w',
     goal: 'correct',
     context: 'context',
-    history: [{ role: 'user', content: 'history' }],
   });
   await tick();
   assert.equal(received?.sessionId, 'session');
   assert.equal(received?.task, 'correct');
   assert.equal(received?.context, 'context');
-  assert.deepEqual(received?.history, [{ role: 'user', content: 'history' }]);
+  assert.equal(received?.history, undefined);
 });
 
 test('semaphore validates limits, aborts waiters, and releases idempotently in FIFO order', async () => {
