@@ -15,6 +15,7 @@ export {
 } from './planner-retrieval.js';
 export { type PlannerScope, runInPlannerScope } from './planner-scope.js';
 export { PlannerToolsClient } from './planner-tools-client.js';
+export { formatRequestTime, REQUEST_TIME_GUIDANCE } from './request-time.js';
 export { SemaphorePool } from './semaphore-pool.js';
 export {
   TASK_OUTPUT_CHAR_LIMIT,

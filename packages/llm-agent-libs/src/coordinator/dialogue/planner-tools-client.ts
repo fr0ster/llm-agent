@@ -248,7 +248,12 @@ export class PlannerToolsClient implements IMcpClient {
             if (blocks.length)
               context = [context, ...blocks].filter(Boolean).join('\n\n');
           }
-          const result = scope.board.start({ worker, goal, context });
+          const result = scope.board.start({
+            worker,
+            goal,
+            context,
+            requestStartedAt: scope.requestStartedAt,
+          });
           if (!result.ok) throw new Error(result.error);
           scope.ownTask?.(result.value.id);
           if (typeof plan === 'object') delete plan.scopeConsent;

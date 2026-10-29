@@ -45,6 +45,14 @@ import {
 
 See `docs/ARCHITECTURE.md` for the full SmartAgent package layout.
 
+## Request time
+
+The shared `ContextAssembler` adds static `REQUEST_TIME_GUIDANCE` to the system prompt, including when no other system content exists. Each SmartAgent string request gets one `[request time] YYYY-MM-DD HH:mm +HH:mm (Zone)` line in request content, derived from its existing request start timestamp and reused across tool rounds. Message-array callers own their request time context unless they explicitly pass `requestStartedAt`. The timestamp never enters the system prompt, keeping its static guidance cacheable.
+
+Use one deployment `timeZone` (default `UTC`) consistently in `SmartAgentConfig` and `DialogueSessionOptions`. The builder forwards the agent setting to `ContextAssemblerConfig`; standalone assemblers and `DirectLlmSubAgentOptions` also accept it. Invalid zones throw a `RangeError` naming `timeZone` at construction.
+
+Dialogue workers inherit the owning request's `openedAt` through task options, even when queued. The session inserts the planner's line in both prepared and conversation modes using the session zone, without changing stored history or passing `requestStartedAt` to the planner. Hosts no longer append guidance to worker prompts. Direct calls to `ContextAssembler.assemble` or `DirectLlmSubAgent.run` should pass the existing request start as `requestStartedAt` in options or input respectively; these paths never read a clock. The assembler always inserts the line when this option is given, regardless of timestamp-like text already in client content or history.
+
 ## License
 
 **GNU Lesser General Public License v3.0 only** (`LGPL-3.0-only`) — see

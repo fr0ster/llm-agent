@@ -175,6 +175,7 @@ test('send answers in scope, records plan, forwards options and preserves user N
 
   const s = await DialogueSession.open({
     id: 's',
+    now: () => 0,
 
     board: { workers: new Map() },
 
@@ -182,7 +183,7 @@ test('send answers in scope, records plan, forwards options and preserves user N
       async process(messages, opts) {
         assert.equal(
           messages.at(-1)?.content,
-          '[plan] status: active\nnone\nhello',
+          '[request time] 1970-01-01 00:00 +00:00 (UTC)\n[plan] status: active\nnone\nhello',
         );
 
         assert.equal(opts.signal, signal);
@@ -543,6 +544,7 @@ test('plan tool state is injected before the last input, survives trimming and r
 
   const options = {
     id: 'plan',
+    now: () => 0,
 
     store,
 
@@ -564,7 +566,10 @@ test('plan tool state is injected before the last input, survives trimming and r
 
   await s.send('set');
 
-  assert.equal(inputs[0].at(-1)?.content, '[plan] status: active\nnone\nset');
+  assert.equal(
+    inputs[0].at(-1)?.content,
+    '[request time] 1970-01-01 00:00 +00:00 (UTC)\n[plan] status: active\nnone\nset',
+  );
 
   for (let i = 0; i < 105; i++) await s.send(`next ${i}`);
 
@@ -947,6 +952,7 @@ test('legacy unlinked tasks do not introduce a separate tasks view', async () =>
 
   const s = await DialogueSession.open({
     id: 'board',
+    now: () => 0,
 
     store,
 
@@ -956,7 +962,10 @@ test('legacy unlinked tasks do not introduce a separate tasks view', async () =>
       async process(messages) {
         const note = String(messages.at(-1)?.content);
 
-        assert.equal(note, '[plan] status: active\nnone\nboard');
+        assert.equal(
+          note,
+          '[request time] 1970-01-01 00:00 +00:00 (UTC)\n[plan] status: active\nnone\nboard',
+        );
 
         return { ok: true, value: { content: 'ok' } };
       },

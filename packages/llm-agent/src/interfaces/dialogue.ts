@@ -10,6 +10,8 @@ export type TaskState =
   | 'stopped'
   | 'interrupted';
 export interface TaskRequest {
+  /** Owning request start in epoch milliseconds; preserved across tool rounds and queued tasks. */
+  requestStartedAt?: number;
   worker: string;
   goal: string;
   context?: string;

@@ -13,11 +13,15 @@ import {
   type ToolCallRecord,
 } from '@mcp-abap-adt/llm-agent';
 
+import { validateTimeZone, withRequestTime } from './request-time.js';
+
 // ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
 
 export interface ContextAssemblerConfig {
+  /** Deployment IANA time zone for request dates. Default: UTC. */
+  timeZone?: string;
   /** chars/4 token budget. No limit when undefined. */
   maxTokens?: number;
   /** Preamble prepended before context sections in system message. */
@@ -183,6 +187,7 @@ function applyTokenBudget(
 // ---------------------------------------------------------------------------
 
 export class ContextAssembler implements IContextAssembler {
+  private readonly timeZone: string;
   private readonly maxTokens: number | undefined;
   private readonly systemPromptPreamble: string | undefined;
   private readonly includeProvenance: boolean;
@@ -192,6 +197,8 @@ export class ContextAssembler implements IContextAssembler {
   private readonly historyRecencyWindow: number | undefined;
 
   constructor(config?: ContextAssemblerConfig) {
+    this.timeZone = config?.timeZone ?? 'UTC';
+    validateTimeZone(this.timeZone);
     this.maxTokens = config?.maxTokens;
     this.systemPromptPreamble = config?.systemPromptPreamble;
     this.includeProvenance = config?.includeProvenance ?? false;
@@ -248,17 +255,15 @@ export class ContextAssembler implements IContextAssembler {
       const preamble = this.systemPromptPreamble ?? '';
       const toolGuidance =
         'Use available tools when they can accomplish the task. When an action is impossible with available tools — say so clearly and do not attempt it.';
-      if (preamble || systemContent || this.showReasoning) {
-        const parts = [
-          preamble,
-          toolGuidance,
-          this.showReasoning
-            ? this.reasoningInstruction || DEFAULT_REASONING_INSTRUCTION
-            : '',
-          systemContent,
-        ].filter(Boolean);
-        messages.push({ role: 'system', content: parts.join('\n\n') });
-      }
+      const parts = [
+        preamble,
+        toolGuidance,
+        this.showReasoning
+          ? this.reasoningInstruction || DEFAULT_REASONING_INSTRUCTION
+          : '',
+        systemContent,
+      ].filter(Boolean);
+      messages.push({ role: 'system', content: parts.join('\n\n') });
 
       // Separate regular messages from tool call records
       const regularMessages: Message[] = [];
@@ -292,7 +297,15 @@ export class ContextAssembler implements IContextAssembler {
       }
       messages.push(...toolMessages);
 
-      return { ok: true, value: messages };
+      return {
+        ok: true,
+        value: withRequestTime(
+          messages,
+          options?.requestStartedAt,
+          this.timeZone,
+          action.text,
+        ),
+      };
     } catch (err) {
       return {
         ok: false,

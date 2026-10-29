@@ -295,6 +295,7 @@ test('legacy restore opens one bounded legacy request; next done-plan input star
 test('conversation mode uses raw merged history and bypasses custom builder', async () => {
   const session = await DialogueSession.open({
     id: 'conversation',
+    now: () => Date.parse('2026-10-29T15:39:59.999Z'),
     plannerContext: 'conversation',
     plannerContextBuilder: {
       build() {
@@ -307,7 +308,8 @@ test('conversation mode uses raw merged history and bypasses custom builder', as
         const raw = session.snapshot().conversation;
         const expected = structuredClone(raw);
         const last = expected.at(-1);
-        if (last) last.content = `[plan] status: active\nnone\n${last.content}`;
+        if (last)
+          last.content = `[request time] 2026-10-29 15:39 +00:00 (UTC)\n[plan] status: active\nnone\n${last.content}`;
         assert.deepEqual(messages, expected);
         return { ok: true, value: { content: 'reply' } };
       },

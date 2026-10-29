@@ -1292,6 +1292,7 @@ export class SmartAgentBuilder {
 
       // ---- Assembler --------------------------------------------------------
       const assemblerCfg: ContextAssemblerConfig = {
+        timeZone: agentCfg.timeZone,
         maxTokens: agentCfg.contextBudgetTokens,
         showReasoning: agentCfg.showReasoning,
         reasoningInstruction: this.cfg.prompts?.reasoning,

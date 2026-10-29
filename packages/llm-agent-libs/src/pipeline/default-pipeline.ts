@@ -209,7 +209,9 @@ export class DefaultPipeline implements IPipeline {
     this.resolvedTracer = deps.tracer ?? new NoopTracer();
     this.resolvedClassifier =
       deps.classifier ?? new LlmClassifier(deps.classifierLlm ?? deps.mainLlm);
-    this.resolvedAssembler = deps.assembler ?? new ContextAssembler();
+    this.resolvedAssembler =
+      deps.assembler ??
+      new ContextAssembler({ timeZone: deps.agentConfig?.timeZone });
     this.resolvedReranker = deps.reranker ?? new NoopReranker();
     this.resolvedQueryExpander = deps.queryExpander ?? new NoopQueryExpander();
     this.resolvedToolCache = deps.toolCache ?? new NoopToolCache();

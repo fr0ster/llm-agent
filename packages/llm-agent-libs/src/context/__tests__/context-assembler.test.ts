@@ -6,6 +6,7 @@ import type {
   ToolCallRecord,
 } from '@mcp-abap-adt/llm-agent';
 import { ContextAssembler } from '../context-assembler.js';
+import { REQUEST_TIME_GUIDANCE } from '../request-time.js';
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -37,21 +38,24 @@ const EMPTY = { ragResults: {}, tools: [] as McpTool[] };
 // ---------------------------------------------------------------------------
 
 describe('ContextAssembler — empty retrieved', () => {
-  it('produces only a user message when all sections empty', async () => {
+  it('produces static guidance and a user message when all sections empty', async () => {
     const assembler = new ContextAssembler();
     const r = await assembler.assemble(ACTION, EMPTY, []);
     assert.ok(r.ok);
-    assert.equal(r.value.length, 1);
-    assert.equal(r.value[0].role, 'user');
-    assert.equal(r.value[0].content, ACTION.text);
+    assert.equal(r.value.length, 2);
+    assert.equal(r.value[0].role, 'system');
+    assert.ok(r.value[0].content?.includes(REQUEST_TIME_GUIDANCE));
+    assert.equal(r.value[1].role, 'user');
+    assert.equal(r.value[1].content, ACTION.text);
   });
 
-  it('no system message when retrieved is empty and no preamble', async () => {
+  it('guidance emits a system message when retrieved is empty and no preamble', async () => {
     const assembler = new ContextAssembler();
     const r = await assembler.assemble(ACTION, EMPTY, []);
     assert.ok(r.ok);
     const systemMsgs = r.value.filter((m) => m.role === 'system');
-    assert.equal(systemMsgs.length, 0);
+    assert.equal(systemMsgs.length, 1);
+    assert.ok(systemMsgs[0].content?.includes(REQUEST_TIME_GUIDANCE));
   });
 });
 

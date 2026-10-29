@@ -1,25 +1,42 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import type { ILlm, Message, Result } from '@mcp-abap-adt/llm-agent';
+import type {
+  ILlm,
+  LlmError,
+  LlmResponse,
+  LlmStreamChunk,
+  Message,
+  Result,
+} from '@mcp-abap-adt/llm-agent';
+import {
+  formatRequestTime,
+  REQUEST_TIME_GUIDANCE,
+} from '../../context/request-time.js';
 import { DirectLlmSubAgent } from '../direct-llm-subagent.js';
 
-class CapturingLlm {
+class CapturingLlm implements ILlm {
   capturedMessages?: Message[];
-  // biome-ignore lint/suspicious/noExplicitAny: minimal mock
-  async chat(messages: Message[]): Promise<Result<any, Error>> {
+  async chat(messages: Message[]): Promise<Result<LlmResponse, LlmError>> {
     this.capturedMessages = messages;
     return {
       ok: true,
-      value: { content: 'response', usage: undefined, toolCalls: [] },
+      value: {
+        content: 'response',
+        finishReason: 'stop',
+        usage: undefined,
+        toolCalls: [],
+      },
     };
   }
-  // biome-ignore lint/suspicious/noExplicitAny: minimal mock
-  async *stream(): AsyncGenerator<any> {}
+  async *streamChat(): AsyncIterable<Result<LlmStreamChunk, LlmError>> {}
+  async healthCheck(): Promise<Result<boolean, LlmError>> {
+    return { ok: true, value: true };
+  }
 }
 
 describe('DirectLlmSubAgent', () => {
   it('declares capabilities with contextPolicy=required by default', () => {
-    const llm = new CapturingLlm() as unknown as ILlm;
+    const llm = new CapturingLlm();
     const sub = new DirectLlmSubAgent('reviewer', llm, {
       systemPrompt: 'You are a code reviewer.',
     });
@@ -28,7 +45,7 @@ describe('DirectLlmSubAgent', () => {
 
   it('uses systemPrompt + context + task as messages', async () => {
     const llm = new CapturingLlm();
-    const sub = new DirectLlmSubAgent('reviewer', llm as unknown as ILlm, {
+    const sub = new DirectLlmSubAgent('reviewer', llm, {
       systemPrompt: 'You are a code reviewer.',
     });
 
@@ -55,7 +72,7 @@ describe('DirectLlmSubAgent', () => {
 
   it('errors when context is missing and contextPolicy is required', async () => {
     const llm = new CapturingLlm();
-    const sub = new DirectLlmSubAgent('reviewer', llm as unknown as ILlm, {
+    const sub = new DirectLlmSubAgent('reviewer', llm, {
       systemPrompt: 'sys',
     });
 
@@ -71,18 +88,25 @@ describe('DirectLlmSubAgent', () => {
 
   it('allows missing context when contextPolicy is optional', async () => {
     const llm = new CapturingLlm();
-    const sub = new DirectLlmSubAgent('flex', llm as unknown as ILlm, {
+    const sub = new DirectLlmSubAgent('flex', llm, {
       systemPrompt: 'sys',
       contextPolicy: 'optional',
     });
 
     const res = await sub.run({
+      requestStartedAt: 0,
       task: 'do the thing',
       sessionId: 's',
     });
 
     assert.equal(res.output, 'response');
     assert.equal(llm.capturedMessages?.[1].role, 'user');
-    assert.equal(llm.capturedMessages?.[1].content, 'do the thing');
+    assert.equal(
+      llm.capturedMessages?.[1].content,
+      `${formatRequestTime(0)}\n\ndo the thing`,
+    );
+    assert.ok(
+      llm.capturedMessages?.[0].content?.includes(REQUEST_TIME_GUIDANCE),
+    );
   });
 });
