@@ -46,7 +46,7 @@ function setup(maxTasks = 50) {
     },
   };
 }
-test('offers exactly eight JSON Schema tools and worker enum within scope', async () => {
+test('offers JSON Schema tools and worker enum within scope', async () => {
   const f = setup();
   const result = await runInPlannerScope(f.scope, () => client.listTools());
   assert.ok(result.ok);
@@ -61,6 +61,7 @@ test('offers exactly eight JSON Schema tools and worker enum within scope', asyn
       'delegate_task',
       'search_knowledge',
       'stop_task',
+      'deliver',
       'get_task',
       'list_tasks',
       'get_plan',
@@ -284,4 +285,152 @@ test('get_plan pages full steps in plan order and validates filters and paginati
     await call('update_plan', { plan: 'legacy plan' });
     assert.equal((await call('get_plan')).json.plan, 'legacy plan');
   });
+});
+
+test('dependency and checker results are appended after briefs with a total bound', async () => {
+  const contexts: (string | undefined)[] = [];
+  const board = new TaskBoard({
+    workers: new Map(
+      ['w', 'checker'].map((name) => [
+        name,
+        {
+          name,
+          capabilities: { contextPolicy: 'optional' as const },
+          async run(input: import('@mcp-abap-adt/llm-agent').ISubAgentInput) {
+            contexts.push(input.context);
+            return { output: 'ok' };
+          },
+        },
+      ]),
+    ),
+    taskOutputChars: 130_000,
+    onEvent() {},
+  });
+  board.restore([
+    {
+      id: 'a',
+      worker: 'w',
+      goal: 'a',
+      state: 'done',
+      output: 'alpha',
+      createdAt: 0,
+    },
+    {
+      id: 'b',
+      worker: 'w',
+      goal: 'b',
+      state: 'done',
+      output: 'beta',
+      createdAt: 0,
+    },
+    {
+      id: 'big',
+      worker: 'w',
+      goal: 'big',
+      state: 'done',
+      output: 'x'.repeat(120_000),
+      createdAt: 0,
+    },
+  ]);
+  const plan: DialoguePlan = {
+    version: 1,
+    status: 'active',
+    steps: [
+      {
+        id: 'a',
+        goal: 'a',
+        state: 'done',
+        taskIds: ['a'],
+        workTaskId: 'a',
+        successfulWorkTaskId: 'a',
+      },
+      {
+        id: 'b',
+        goal: 'b',
+        state: 'done',
+        taskIds: ['b'],
+        workTaskId: 'b',
+        successfulWorkTaskId: 'b',
+      },
+      {
+        id: 'big',
+        goal: 'big',
+        state: 'done',
+        taskIds: ['big'],
+        workTaskId: 'big',
+        successfulWorkTaskId: 'big',
+      },
+      {
+        id: 'next',
+        goal: 'next',
+        state: 'pending',
+        taskIds: [],
+        dependsOn: ['b', 'a'],
+      },
+      {
+        id: 'check',
+        goal: 'check',
+        state: 'pending',
+        taskIds: [],
+        worker: 'checker',
+        dependsOn: ['a'],
+      },
+      { id: 'independent', goal: 'independent', state: 'pending', taskIds: [] },
+      {
+        id: 'overflow',
+        goal: 'overflow',
+        state: 'pending',
+        taskIds: [],
+        dependsOn: ['big'],
+      },
+    ],
+  };
+  await runInPlannerScope(
+    { board, getPlan: () => plan, setPlan() {} },
+    async () => {
+      assert.equal(
+        (
+          await call('delegate_task', {
+            worker: 'w',
+            goal: 'next',
+            step_id: 'next',
+            context: 'brief',
+          })
+        ).error,
+        undefined,
+      );
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.equal(
+        contexts[0],
+        'brief\n\n[result of step b (task b)]\nbeta\n\n[result of step a (task a)]\nalpha',
+      );
+      assert.equal(
+        (
+          await call('delegate_task', {
+            worker: 'checker',
+            goal: 'verify',
+            step_id: 'check',
+          })
+        ).error,
+        undefined,
+      );
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.equal(contexts[1], '[result to check: step a (task a)]\nalpha');
+      await call('delegate_task', {
+        worker: 'w',
+        goal: 'independent',
+        step_id: 'independent',
+        context: 'brief',
+      });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.equal(contexts[2], 'brief');
+      const overflow = await call('delegate_task', {
+        worker: 'w',
+        goal: 'overflow',
+        step_id: 'overflow',
+      });
+      assert.equal(overflow.error, true);
+      assert.match(overflow.json.error, /step big.*120000/);
+    },
+  );
 });

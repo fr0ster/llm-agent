@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 
 import { test } from 'node:test';
 
-import type { Message } from '@mcp-abap-adt/llm-agent';
+import { InMemoryRag, type Message } from '@mcp-abap-adt/llm-agent';
 
 import { DialogueSession } from '../dialogue-session.js';
 
@@ -314,12 +314,12 @@ test('delegation returns before completion; busy events coalesce; users precede 
 
   assert.match(note, /task t2 \(w2\) done: goal two/);
 
-  assert.doesNotMatch(note, /task t1/);
+  assert.doesNotMatch(note, /task t1 \(w1\) done result:/);
 
   assert.equal(
     (String(inputs[1].at(-1)?.content).match(/\[cut:/g) ?? []).length,
 
-    1,
+    0,
   );
 
   assert.equal(s.takePending().length, 2);
@@ -1302,7 +1302,8 @@ test('correction consumes new events, preserves whole-turn actions and counts ea
         } else if (calls === 3) {
           const note = String(messages.at(-1)?.content);
           assert.match(note, /\[check\]/);
-          assert.match(note, /task t2 \(w\) done: second . second result/);
+          assert.match(note, /task t2 \(w\) done: second/);
+          assert.match(note, /task t2 \(w\) done result:\nsecond result/);
           assert.match(note, /\[actions\] plan updated/);
           await tools.callTool('delegate_task', { worker: 'w', goal: 'third' });
           third.resolve({ output: 'third result' });
@@ -1348,4 +1349,345 @@ test('correction consumes new events, preserves whole-turn actions and counts ea
   );
   assert.equal(runs, 3);
   await s.close();
+});
+
+for (const mode of [
+  'success',
+  'running',
+  'pending',
+  'check-pending',
+  'check-failed',
+  'check-passed',
+  'other-request',
+  'restart',
+  'wait',
+] as const)
+  test(`deliver validates ownership and completion, replaces streamed prose: ${mode}`, async () => {
+    const store = new InMemoryDialogueStateStore();
+    const rag = new InMemoryRag();
+    const output = 'Exact [document]\n  whitespace\n';
+    await store.save('delivery', {
+      requests: [
+        {
+          id: 'r1',
+          openedAt: 0,
+          text: 'request',
+          transcript: [{ role: 'user', content: 'request' }],
+        },
+      ],
+      requestSeq: 1,
+      conversation: [{ role: 'user', content: 'request' }],
+      tasks: [
+        {
+          id: 't1',
+          worker: 'w',
+          goal: 'document',
+          state: mode === 'running' ? 'running' : 'done',
+          output,
+          createdAt: 0,
+        },
+      ],
+      taskRequests: { t1: mode === 'other-request' ? 'old' : 'r1' },
+      taskSteps: { t1: 'step' },
+      plan: {
+        version: 1,
+        status: 'active',
+        steps: [
+          {
+            id: 'step',
+            goal: 'document',
+            state: mode === 'pending' ? 'pending' : 'done',
+            taskIds: ['t1'],
+            workTaskId: 't1',
+            successfulWorkTaskId: 't1',
+          },
+          ...(mode.startsWith('check-')
+            ? [
+                {
+                  id: 'verify',
+                  goal: 'Verify',
+                  worker: 'checker',
+                  dependsOn: ['step'],
+                  checkedTaskIds: { step: 't1' },
+                  state:
+                    mode === 'check-passed'
+                      ? ('done' as const)
+                      : mode === 'check-failed'
+                        ? ('failed' as const)
+                        : ('pending' as const),
+                  verdict:
+                    mode === 'check-passed'
+                      ? ('pass' as const)
+                      : mode === 'check-failed'
+                        ? ('fail' as const)
+                        : undefined,
+                  taskIds: [],
+                },
+              ]
+            : []),
+        ],
+      },
+      pending: [],
+      savedAt: 0,
+    });
+    let calls = 0;
+    const partials: string[] = [];
+    const session = await DialogueSession.open({
+      id: 'delivery',
+      plannerMemory: {
+        rag,
+        queryEmbedder: {
+          async embedQuery() {
+            return { vector: [1] };
+          },
+        },
+        documentEmbedder: {
+          async embedDocument() {
+            return { vector: [1] };
+          },
+        },
+      },
+      store,
+      maxCorrections: 0,
+      board: { workers: new Map() },
+      planner: {
+        async process(_messages, opts) {
+          calls++;
+          if (mode === 'restart' && calls === 1) {
+            await tools.callTool('new_request', {});
+            return { ok: true, value: { content: 'discarded restart prose' } };
+          }
+          opts.onPartial?.({ kind: 'content', delta: 'invented prose' });
+          const result = await tools.callTool('deliver', {
+            task_id: 't1',
+            note: 'Here',
+          });
+          assert.ok(result.ok);
+          const allowed =
+            mode === 'success' || mode === 'check-passed' || mode === 'wait';
+          assert.equal(result.value.isError === true, !allowed);
+          if (allowed) {
+            const duplicate = await tools.callTool('deliver', {
+              task_id: 't1',
+            });
+            assert.ok(duplicate.ok && duplicate.value.isError);
+          }
+          if (mode === 'wait') {
+            // No active tasks: status reads leave the delivered result intact.
+            await tools.callTool('list_tasks', {});
+            await tools.callTool('list_tasks', {});
+          }
+          opts.onPartial?.({ kind: 'content', delta: 'more invented prose' });
+          return { ok: true, value: { content: 'invented final answer' } };
+        },
+      },
+    });
+    try {
+      const reply = await session.send('continue', {
+        onPartial(chunk) {
+          if (chunk.kind === 'content') partials.push(chunk.delta);
+        },
+      });
+      if (mode === 'success' || mode === 'check-passed' || mode === 'wait') {
+        assert.equal(reply.text, `Here\n\n${output}`);
+        assert.deepEqual(partials, [reply.text]);
+        assert.ok(
+          session
+            .snapshot()
+            .conversation.some(
+              (message) =>
+                message.role === 'assistant' && message.content === reply.text,
+            ),
+        );
+      }
+      if (mode === 'restart') assert.equal(calls, 2);
+    } finally {
+      await session.close();
+    }
+  });
+
+test('full task event results bypass projection once and remain available via get_task', async () => {
+  const output = `${'large result '.repeat(3000)}END`;
+  const reported = deferred();
+  const seen: string[] = [];
+  let calls = 0;
+  const session = await DialogueSession.open({
+    id: 'once',
+    maxCorrections: 0,
+    board: {
+      workers: new Map([
+        [
+          'w',
+          {
+            name: 'w',
+            capabilities: { contextPolicy: 'optional' },
+            async run() {
+              return { output };
+            },
+          },
+        ],
+      ]),
+    },
+    planner: {
+      async process(messages) {
+        calls++;
+        seen.push(messages.map((message) => message.content).join('\n'));
+        if (calls === 1) {
+          await tools.callTool('delegate_task', {
+            worker: 'w',
+            goal: 'document',
+          });
+        } else if (calls === 2) {
+          assert.ok(seen[1].includes(output));
+          reported.resolve();
+        } else {
+          assert.ok(!seen.at(-1)?.includes(output));
+          const result = await tools.callTool('get_task', { task_id: 't1' });
+          assert.ok(result.ok);
+          assert.ok(JSON.stringify(result.value).includes('END'));
+        }
+        return { ok: true, value: { content: 'NO_MESSAGE' } };
+      },
+    },
+  });
+  try {
+    await session.send('document');
+    await reported.promise;
+    await session.send('follow up');
+  } finally {
+    await session.close();
+  }
+});
+
+test('delivery after new_request indexes the verbatim reply in memory', async () => {
+  const rag = new InMemoryRag();
+  let calls = 0;
+  const session = await DialogueSession.open({
+    id: 'restart-delivery',
+    maxCorrections: 0,
+    plannerMemory: {
+      rag,
+      queryEmbedder: {
+        async embedQuery() {
+          return { vector: [1] };
+        },
+      },
+      documentEmbedder: {
+        async embedDocument() {
+          return { vector: [1] };
+        },
+      },
+    },
+    board: {
+      workers: new Map([
+        [
+          'w',
+          {
+            name: 'w',
+            capabilities: { contextPolicy: 'optional' },
+            async run() {
+              return { output: 'Verbatim\n  output' };
+            },
+          },
+        ],
+      ]),
+    },
+    planner: {
+      async process(_messages, opts) {
+        if (++calls > 2) return { ok: true, value: { content: 'NO_MESSAGE' } };
+        if (calls === 1) {
+          await tools.callTool('new_request', {});
+          return { ok: true, value: { content: 'discard' } };
+        }
+        const delegated = await tools.callTool('delegate_task', {
+          worker: 'w',
+          goal: 'answer',
+        });
+        assert.ok(delegated.ok && !delegated.value.isError);
+        await tick();
+        opts.onPartial?.({ kind: 'content', delta: 'discard' });
+        const result = await tools.callTool('deliver', { task_id: 't1' });
+        assert.ok(result.ok && !result.value.isError);
+        return { ok: true, value: { content: 'discard' } };
+      },
+    },
+  });
+  // Completion events may trigger another planner turn; isolate the reply under test.
+  const reply = await session.send('new work');
+  await session.close();
+  assert.equal(reply.text, 'Verbatim\n  output');
+  const indexed = await rag.getById(
+    `planner:restart-delivery:planner-reply:${reply.id}:0`,
+  );
+  assert.ok(indexed.ok);
+  assert.equal(indexed.value?.text, reply.text);
+});
+
+test('deliver survives wait-mode cancellation with another task running', async () => {
+  const store = new InMemoryDialogueStateStore();
+  await store.save('wait-delivery', {
+    requests: [
+      {
+        id: 'r1',
+        openedAt: 0,
+        text: 'request',
+        transcript: [{ role: 'user', content: 'request' }],
+      },
+    ],
+    requestSeq: 1,
+    conversation: [],
+    tasks: [
+      {
+        id: 't1',
+        worker: 'w',
+        goal: 'answer',
+        state: 'done',
+        output: '  exact\n',
+        createdAt: 0,
+      },
+    ],
+    taskRequests: { t1: 'r1' },
+    pending: [],
+    savedAt: 0,
+  });
+  const session = await DialogueSession.open({
+    id: 'wait-delivery',
+    store,
+    maxCorrections: 0,
+    hardStopAfterMs: 0,
+    board: {
+      workers: new Map([
+        [
+          'w',
+          {
+            name: 'w',
+            capabilities: { contextPolicy: 'optional' },
+            run: () =>
+              new Promise<import('@mcp-abap-adt/llm-agent').ISubAgentResult>(
+                () => {},
+              ),
+          },
+        ],
+      ]),
+    },
+    planner: {
+      async process(_messages, opts) {
+        await tools.callTool('delegate_task', {
+          worker: 'w',
+          goal: 'background',
+        });
+        const delivered = await tools.callTool('deliver', { task_id: 't1' });
+        assert.ok(delivered.ok && !delivered.value.isError);
+        await tools.callTool('list_tasks', {});
+        await tools.callTool('list_tasks', {});
+        assert.ok(opts.stopSignal?.aborted);
+        throw new Error('planner stopped while waiting');
+      },
+    },
+  });
+  try {
+    assert.equal((await session.send('continue')).text, '  exact\n');
+  } finally {
+    await session.close();
+  }
 });

@@ -61,6 +61,7 @@ test('events are synchronous snapshots with bounded output and deterministic tim
   const events: TaskEvent[] = [];
   let clock = 10;
   const board = fixture(async () => ({ output: 'a'.repeat(4005) }), {
+    taskOutputChars: 4000,
     now: () => clock++,
     newId: () => 'custom',
     onEvent: (event: TaskEvent) => events.push(event),
@@ -231,7 +232,7 @@ for (const [outcome, state] of [
       async () => {
         if (outcome === 'throw') throw new Error('broken');
         return {
-          output: 'x'.repeat(4010),
+          output: 'x'.repeat(TASK_OUTPUT_CHAR_LIMIT + 10),
           ...(outcome === 'epicfail'
             ? { errorClass: 'epicfail' as const }
             : outcome === 'stopped'
@@ -355,4 +356,31 @@ test('running tasks expose live tool counts and preserve the base observer', asy
   assert.equal(board.get(id)?.state, 'done');
   assert.equal(board.get(id)?.toolCalls, 5);
   assert.equal(board.get(id)?.maxToolCalls, 50);
+});
+
+test('task output bound defaults to 60000 and validates configured values', async () => {
+  for (const taskOutputChars of [
+    0,
+    -1,
+    1.5,
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+  ])
+    assert.throws(
+      () => fixture(async () => ({ output: '' }), { taskOutputChars }),
+      /taskOutputChars/,
+    );
+  const board = fixture(async () => ({ output: 'x'.repeat(60_005) }));
+  const id = start(board);
+  await tick();
+  assert.equal(
+    board.get(id)?.output,
+    `${'x'.repeat(60_000)}\n[cut: 5 characters omitted]`,
+  );
+  const small = fixture(async () => ({ output: 'abcdef' }), {
+    taskOutputChars: 3,
+  });
+  const smallId = start(small);
+  await tick();
+  assert.equal(small.get(smallId)?.output, 'abc\n[cut: 3 characters omitted]');
 });

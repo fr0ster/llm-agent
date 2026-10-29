@@ -16,6 +16,10 @@
   // test added to either package that needs type-checking in CI must be
   // added to this list by hand.
   "include": [
+    "packages/llm-agent-libs/src/coordinator/dialogue/__tests__/structured-plan.test.ts",
+    "packages/llm-agent-libs/src/coordinator/dialogue/__tests__/checking-deadlock.test.ts",
+    "packages/llm-agent-libs/src/coordinator/dialogue/__tests__/plan-enforcement.test.ts",
+    "packages/llm-agent-libs/src/coordinator/dialogue/__tests__/check-steps.test.ts",
     "packages/llm-agent-libs/src/__tests__/tool-round-guard.test.ts",
     "packages/llm-agent-libs/src/coordinator/dialogue/__tests__/planner-memory.test.ts",
     "packages/llm-agent-libs/src/coordinator/dialogue/__tests__/planner-content-tools.test.ts",

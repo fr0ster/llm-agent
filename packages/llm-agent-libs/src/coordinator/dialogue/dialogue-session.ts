@@ -39,9 +39,11 @@ import { runInPlannerScope } from './planner-scope.js';
 import {
   applyTaskEvent,
   currentAttemptIds,
+  deliveryChecksPassed,
   planView,
   readySteps,
   recomputePlanStatus,
+  restoreLegacyStep,
   restoreSuccessfulWork,
 } from './structured-plan.js';
 import { TaskBoard, type TaskBoardOptions } from './task-board.js';
@@ -88,6 +90,7 @@ export interface DialogueSessionOptions extends PlannerRetrievalOptions {
    * zero aborts immediately; negative or NaN values use the default. */
   hardStopAfterMs?: number;
   maxItemsPerStep?: number;
+  taskOutputChars?: number;
   planner: PlannerAgent;
   board: Omit<
     TaskBoardOptions,
@@ -107,6 +110,7 @@ interface UserTurn {
 
 export class DialogueSession {
   private readonly board: TaskBoard;
+  private readonly resultEvents: string[] = [];
   private readonly signals: ISignalEmitter<DialogueSignals>;
   private turnActive = false;
   private turnUsage?: IUsageRecorder;
@@ -393,6 +397,7 @@ export class DialogueSession {
     const session = this;
     this.board = new TaskBoard({
       ...opts.board,
+      taskOutputChars: opts.taskOutputChars ?? opts.board.taskOutputChars,
       hardStopAfterMs: opts.hardStopAfterMs ?? opts.board.hardStopAfterMs,
       scheduleTimer: opts.scheduleTimer ?? opts.board.scheduleTimer,
       boardId: opts.id,
@@ -526,6 +531,7 @@ export class DialogueSession {
           for (const id of step.taskIds) session.taskSteps.set(id, step.id);
       }
       for (const step of session.plan?.steps ?? []) {
+        restoreLegacyStep(step);
         restoreSuccessfulWork(step, (id) => session.board.get(id));
         if (
           step.state !== 'skipped' &&
@@ -667,6 +673,7 @@ export class DialogueSession {
         (message) => this.warn(message),
       );
       let reply = '';
+      const deliveries: string[] = [];
       let plannerUsage: TokenUsage | undefined;
       const actions: string[] = [];
       let started = false;
@@ -681,6 +688,7 @@ export class DialogueSession {
       for (let correction = 0; ; correction++) {
         const callStop = new AbortController();
         let restarting = false;
+        let delivered = false;
         let toolCount = 0;
         let reserved = false;
         let roundCount = 0;
@@ -747,6 +755,13 @@ export class DialogueSession {
           const last = messages.at(-1);
           if (last) last.content = `${notes.join('\n')}\n${last.content}`;
         }
+        const resultEvents = this.resultEvents.splice(0);
+        if (resultEvents.length) {
+          const last = messages.at(-1);
+          if (last) last.content += `\n${resultEvents.join('\n')}`;
+          else
+            messages.push({ role: 'user', content: resultEvents.join('\n') });
+        }
         const contentPartials: StreamChunk[] = [];
         const result = await runInPlannerScope(
           {
@@ -768,6 +783,40 @@ export class DialogueSession {
               }
               startRequest(true);
               restartDelivered = true;
+            },
+            deliver: (id, note) => {
+              if (delivered)
+                throw new Error('only one deliver per planner call');
+              const task = this.board.get(id);
+              if (!task || this.taskRequests.get(id) !== request.id)
+                throw new Error(
+                  `task ${id} does not belong to the current request`,
+                );
+              if (task.state !== 'done')
+                throw new Error(`task ${id} is not done`);
+              const stepId = this.taskSteps.get(id);
+              if (
+                stepId &&
+                this.plan?.steps.find((step) => step.id === stepId)?.state !==
+                  'done'
+              )
+                throw new Error(
+                  `step ${stepId} is not done (check may be pending)`,
+                );
+              if (
+                stepId &&
+                this.plan &&
+                !deliveryChecksPassed(this.plan, stepId)
+              )
+                throw new Error(
+                  `step ${stepId} requires passing latest check steps before delivery`,
+                );
+              deliveries.push(
+                `${note ? `${note}\n\n` : ''}${task.output ?? ''}`,
+              );
+              delivered = true;
+              partialText = '';
+              contentPartials.length = 0;
             },
             ownTask: (id) => this.taskRequests.set(id, request.id),
             board: this.board,
@@ -876,6 +925,7 @@ export class DialogueSession {
               onPartial: (chunk) => {
                 if (restarting) return;
                 if (chunk.kind === 'content') {
+                  if (delivered) return;
                   contentPartials.push(chunk);
                   partialText += chunk.delta;
                 } else user?.opts.onPartial?.(chunk);
@@ -911,8 +961,12 @@ export class DialogueSession {
         const waiting = waitStop.signal.aborted && !user?.opts.signal?.aborted;
         if (!result.ok && !waiting) throw result.error;
 
-        reply = result.ok ? result.value.content : partialText;
-        if (waiting && !reply.trim())
+        reply = deliveries.length
+          ? deliveries.join('\n\n')
+          : result.ok
+            ? result.value.content
+            : partialText;
+        if (waiting && !deliveries.length && !reply.trim())
           reply = partialText.trim()
             ? partialText
             : `Waiting for ${this.board
@@ -939,7 +993,7 @@ export class DialogueSession {
         const stalled =
           this.plan?.steps.filter(
             (step) =>
-              (step.state === 'running' || step.state === 'checking') &&
+              step.state === 'running' &&
               !currentAttemptIds(step).some((id) => {
                 const task = this.board.get(id);
                 return task?.state === 'queued' || task?.state === 'running';
@@ -965,7 +1019,10 @@ export class DialogueSession {
             this.warn(
               'Dialogue correction limit reached: idle or pending events',
             );
-          for (const chunk of contentPartials) user?.opts.onPartial?.(chunk);
+          if (deliveries.length)
+            user?.opts.onPartial?.({ kind: 'content', delta: reply });
+          else
+            for (const chunk of contentPartials) user?.opts.onPartial?.(chunk);
           break;
         }
         const events = this.liveEvents(this.events.splice(0));
@@ -979,14 +1036,7 @@ export class DialogueSession {
         if (idle)
           for (const step of stalled)
             checks.push(
-              step.state === 'running'
-                ? `Step ${step.id} is running and nothing runs: its work finished; review get_task and continue`
-                : step.successfulWorkTaskId === undefined ||
-                    step.successfulWorkTaskId !== step.workTaskId
-                  ? `Step ${step.id} is checking but its current work has not succeeded: re-delegate the work with step_id ${step.id} or ask the user`
-                  : step.check?.by === 'checker'
-                    ? `Step ${step.id} is checking and no check runs: delegate worker checker with step_id ${step.id}`
-                    : `Step ${step.id} is checking and no check runs: close it with update_plan state done or failed plus a note`,
+              `Step ${step.id} is running and nothing runs: its task finished; review get_task and continue`,
             );
         this.appendInput(
           `[check] ${checks.join('\n') || 'Review new task events before answering.'}` +
@@ -1068,11 +1118,15 @@ export class DialogueSession {
               : ` (${task.toolCalls}${task.maxToolCalls === undefined ? '' : `/${task.maxToolCalls}`} tool calls)`;
           return `${label} ${task.id} (${task.worker}) is still running after ${elapsed}${calls}: check it and decide: keep waiting, stop_task, or re-delegate`;
         }
+        if (task.output !== undefined)
+          this.resultEvents.push(
+            `${label} task ${task.id} (${task.worker}) ${kind} result:\n${task.output}`,
+          );
         const owner = this.taskSteps.get(task.id);
         const removed =
           owner !== undefined &&
           !this.plan?.steps.some((step) => step.id === owner);
-        return `${label !== '[task events]' ? label : removed ? '[actions]' : '[task events]'} task ${task.id}${owner ? ` for ${owner}` : ''} (${task.worker}) ${kind}: ${task.goal} — ${task.error ?? task.output ?? ''}${task.budgetExhausted ? `; worker hit the tool-call budget ${task.toolCalls ?? '?'}/${task.maxToolCalls ?? '?'}` : ''}`;
+        return `${label !== '[task events]' ? label : removed ? '[actions]' : '[task events]'} task ${task.id}${owner ? ` for ${owner}` : ''} (${task.worker}) ${kind}: ${task.goal} — ${(task.error !== task.output ? task.error : undefined) ?? (task.output === undefined ? '' : '(result reported once; use get_task to read again)')}${task.budgetExhausted ? `; worker hit the tool-call budget ${task.toolCalls ?? '?'}/${task.maxToolCalls ?? '?'}` : ''}`;
       })
       .join('\n');
   }

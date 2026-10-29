@@ -70,21 +70,12 @@ export interface PlanStep {
   items?: string[];
   dependsOn?: string[];
   worker?: string;
-  state:
-    | 'pending'
-    | 'running'
-    | 'checking'
-    | 'done'
-    | 'failed'
-    | 'skipped'
-    | 'blocked';
-  check?: {
-    by: 'planner' | 'checker';
-    goal: string;
-    verdict?: 'pass' | 'fail';
-    taskId?: string;
-  };
-  /** Current work attempt, tracked separately from check.taskId. */
+  state: 'pending' | 'running' | 'done' | 'failed' | 'skipped' | 'blocked';
+  /** Parsed result of a separate checker step. */
+  verdict?: 'pass' | 'fail';
+  /** Source step IDs mapped to the exact task results sent to this check. */
+  checkedTaskIds?: Record<string, string>;
+  /** Current task attempt. */
   workTaskId?: string;
   /** Current work task observed completing successfully; absent for budget-failed items. */
   successfulWorkTaskId?: string;

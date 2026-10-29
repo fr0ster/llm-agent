@@ -13,20 +13,9 @@ export const stepSchema = z.object({
   worker: z.string().optional(),
   items: z.array(z.string().min(1)).optional(),
   state: z
-    .enum([
-      'pending',
-      'running',
-      'checking',
-      'done',
-      'failed',
-      'skipped',
-      'blocked',
-    ])
+    .enum(['pending', 'running', 'done', 'failed', 'skipped', 'blocked'])
     .optional(),
   note: z.string().optional(),
-  check: z
-    .object({ by: z.enum(['planner', 'checker']), goal: z.string().min(1) })
-    .optional(),
 });
 export function mergePlan(
   previous: string | Plan | undefined,
@@ -102,29 +91,22 @@ export function mergePlan(
           : undefined;
       const old = persisted ? { ...persisted } : undefined;
       if (old && options.getTask) restoreSuccessfulWork(old, options.getTask);
-      if (
-        old?.state === 'checking' &&
-        (s.state === 'done' || s.state === 'failed') &&
-        !s.note?.trim()
-      )
-        throw new Error('closing a check requires a note');
-      const check = s.check
-        ? { ...old?.check, ...s.check }
-        : old?.check
-          ? { ...old.check }
-          : undefined;
-      const ownershipChanged =
-        !!old?.check && !!s.check && old.check.by !== s.check.by;
-      if (ownershipChanged && s.state !== undefined && s.state !== old?.state)
-        throw new Error(
-          'Changing check ownership requires a fresh check before completion',
-        );
-      if (ownershipChanged && check) {
-        delete check.taskId;
-        delete check.verdict;
-      }
       const items = s.items;
       const effectiveState = s.state ?? old?.state ?? 'pending';
+      const roleChanged =
+        (s.worker === 'checker') !== (old?.worker === 'checker');
+      const dependenciesChanged =
+        JSON.stringify(s.dependsOn ?? []) !==
+        JSON.stringify(old?.dependsOn ?? []);
+      if (
+        old &&
+        (roleChanged || dependenciesChanged) &&
+        effectiveState !== 'pending' &&
+        effectiveState !== 'skipped'
+      )
+        throw new Error(
+          'Changing worker role or dependencies requires reopening the step as pending',
+        );
       const itemsChanged = JSON.stringify(old?.items) !== JSON.stringify(items);
       if (
         (items || old?.items) &&
@@ -136,49 +118,12 @@ export function mergePlan(
         throw new Error(
           'Changed batch items require reopening the step as pending and a fresh work/check attempt',
         );
-      if (old && (itemsChanged || effectiveState === 'pending') && check) {
-        delete check.taskId;
-        delete check.verdict;
-      }
       if (items && new Set(items).size !== items.length)
         throw new Error('Step items must be unique identifiers');
-      if (
-        (effectiveState === 'running' || effectiveState === 'checking') &&
-        effectiveState !== old?.state
-      )
-        throw new Error('Running/checking state follows actual work attempts');
-      if (items && !check) throw new Error('Steps with items require a check');
-      // Completion is based on the current work/check attempts, never state alone.
-      if (
-        s.state === 'done' &&
-        (old?.state !== 'done' || itemsChanged || ownershipChanged)
-      ) {
-        if (old?.state !== 'checking' && old?.state !== 'done')
-          throw new Error(
-            'Done requires checking after successful work and a passing check',
-          );
-        if (
-          itemsChanged ||
-          !old?.workTaskId ||
-          old.successfulWorkTaskId !== old.workTaskId ||
-          !old.taskIds.includes(old.workTaskId)
-        )
-          throw new Error('Done requires a successful current work attempt');
-        if (
-          check?.by === 'checker' &&
-          (check.verdict !== 'pass' ||
-            !check.taskId ||
-            !currentAttemptIds(old).includes(check.taskId))
-        )
-          throw new Error(
-            'Done requires a passing checker verdict from the current check attempt',
-          );
-      }
-      if (
-        check?.by === 'planner' &&
-        (s.state === 'done' || s.state === 'failed')
-      )
-        check.verdict = s.state === 'done' ? 'pass' : 'fail';
+      if (effectiveState === 'running' && effectiveState !== old?.state)
+        throw new Error('Running state follows actual work attempts');
+      if (s.state === 'done' && old?.state !== 'done')
+        throw new Error('Done requires a successful current task result');
       return {
         ...s,
         state: old
@@ -186,18 +131,21 @@ export function mergePlan(
           : s.state === 'skipped'
             ? 'skipped'
             : 'pending',
-        taskIds: itemsChanged
-          ? []
-          : (old?.taskIds ?? []).filter(
-              (id) => !ownershipChanged || id !== old?.check?.taskId,
-            ),
+        taskIds: itemsChanged ? [] : (old?.taskIds ?? []),
         workTaskId: itemsChanged ? undefined : old?.workTaskId,
         successfulWorkTaskId:
           itemsChanged || effectiveState === 'pending'
             ? undefined
             : old?.successfulWorkTaskId,
+        checkedTaskIds:
+          itemsChanged || effectiveState === 'pending'
+            ? undefined
+            : old?.checkedTaskIds,
         note: s.note ?? old?.note,
-        check,
+        verdict:
+          itemsChanged || effectiveState === 'pending'
+            ? undefined
+            : old?.verdict,
       };
     }),
   };
@@ -215,10 +163,7 @@ export function readySteps(plan?: Plan): PlanStep[] {
   );
 }
 export function currentWorkTaskId(step: PlanStep): string | undefined {
-  return (
-    step.workTaskId ??
-    step.taskIds.filter((id) => id !== step.check?.taskId).at(-1)
-  );
+  return step.workTaskId ?? step.taskIds.at(-1);
 }
 // Only verified current persisted work may supply the optional legacy marker.
 export function restoreSuccessfulWork(
@@ -240,15 +185,34 @@ export function restoreSuccessfulWork(
   }
 }
 export function currentAttemptIds(step: PlanStep): string[] {
-  const work = currentWorkTaskId(step);
-  const check = step.check?.taskId;
-  return [
-    work,
-    check && step.taskIds.indexOf(check) > step.taskIds.indexOf(work ?? '')
-      ? check
-      : undefined,
-  ].filter((id): id is string => id !== undefined);
+  const id = currentWorkTaskId(step);
+  return id ? [id] : [];
 }
+/** Normalize persisted pre-check-step plans without changing their work history. */
+export function restoreLegacyStep(step: PlanStep): void {
+  if ('check' in step) {
+    const legacy = z
+      .object({ taskId: z.string().optional() })
+      .safeParse(step.check);
+    if (!step.workTaskId)
+      step.workTaskId = step.taskIds
+        .filter(
+          (id) => id !== (legacy.success ? legacy.data.taskId : undefined),
+        )
+        .at(-1);
+    delete step.check;
+  }
+  if (String(step.state) === 'checking') {
+    step.state = 'done';
+    step.note = [
+      step.note,
+      'Legacy check was not run; plan a separate check step if needed',
+    ]
+      .filter(Boolean)
+      .join('; ');
+  }
+}
+
 export function recomputePlanStatus(plan?: Plan): void {
   if (!plan?.steps.length || plan.status === 'waiting_user') return;
   if (plan.steps.every((s) => s.state === 'done' || s.state === 'skipped')) {
@@ -258,20 +222,24 @@ export function recomputePlanStatus(plan?: Plan): void {
 }
 // The verdict is the whole output or the outermost JSON objects in prose or
 // fences. Nested objects are evidence; conflicting verdicts are unusable.
-function checkerVerdict(output: string): unknown {
-  const parse = (text: string): { verdict: unknown } | undefined => {
+const verdictSchema = z.object({
+  verdict: z.enum(['pass', 'fail']),
+  count: z.number().int().nonnegative().optional(),
+  note: z.string().optional(),
+});
+type CheckerVerdict = z.infer<typeof verdictSchema>;
+function checkerVerdict(output: string): CheckerVerdict | undefined {
+  const parse = (text: string): CheckerVerdict | undefined => {
     try {
-      const value: unknown = JSON.parse(text);
-      if (value && typeof value === 'object' && 'verdict' in value)
-        return value as { verdict: unknown };
+      const value = verdictSchema.safeParse(JSON.parse(text));
+      return value.success ? value.data : undefined;
     } catch {
-      // Not a verdict candidate.
+      return undefined;
     }
-    return undefined;
   };
   const whole = parse(output.trim());
   if (whole !== undefined) return whole;
-  const candidates: { verdict: unknown }[] = [];
+  const candidates: CheckerVerdict[] = [];
   let depth = 0;
   let start = -1;
   let quoted = false;
@@ -291,14 +259,32 @@ function checkerVerdict(output: string): unknown {
     else if (char === '{') depth++;
     else if (char === '}' && --depth === 0) {
       const value = parse(output.slice(start, i + 1));
-      if (value !== undefined) candidates.push(value);
+      if (value === undefined) return undefined;
+      candidates.push(value);
     }
   }
+  if (depth !== 0) return undefined;
   // Every outcome field must agree: quoted evidence cannot change the result.
-  const outcome = (c: { verdict: unknown; count?: unknown }) =>
-    JSON.stringify([c.verdict, c.count]);
+  const outcome = (c: CheckerVerdict) => JSON.stringify([c.verdict, c.count]);
   if (new Set(candidates.map(outcome)).size !== 1) return undefined;
   return candidates.at(-1);
+}
+function checkSourcesCurrent(plan: Plan, step: PlanStep): boolean {
+  return (step.dependsOn ?? []).every((id) => {
+    const source = plan.steps.find((s) => s.id === id);
+    return (
+      source?.successfulWorkTaskId !== undefined &&
+      step.checkedTaskIds?.[id] === source.successfulWorkTaskId
+    );
+  });
+}
+function resetStaleCheck(step: PlanStep): void {
+  step.state = 'pending';
+  delete step.verdict;
+  delete step.successfulWorkTaskId;
+  delete step.checkedTaskIds;
+  step.note =
+    'Checked results changed; delegate this check again for the current results';
 }
 export function applyTaskEvent(
   plan: Plan | undefined,
@@ -318,6 +304,10 @@ export function applyTaskEvent(
     return;
   // Older retry outcomes cannot overwrite the current attempt.
   if (!currentAttemptIds(step).includes(task.id)) return;
+  if (step.worker === 'checker' && plan && !checkSourcesCurrent(plan, step)) {
+    resetStaleCheck(step);
+    return;
+  }
   if (currentWorkTaskId(step) === task.id) {
     step.workTaskId = task.id;
     step.successfulWorkTaskId =
@@ -327,75 +317,87 @@ export function applyTaskEvent(
         ? task.id
         : undefined;
   }
+  if (step.successfulWorkTaskId && plan) {
+    for (const check of plan.steps) {
+      if (
+        check.worker === 'checker' &&
+        check.state !== 'skipped' &&
+        check.dependsOn?.includes(step.id) &&
+        !checkSourcesCurrent(plan, check)
+      )
+        resetStaleCheck(check);
+    }
+  }
   if (step.items && task.budgetExhausted) {
     step.state = 'failed';
     step.note = `Worker hit the tool-call budget ${task.toolCalls ?? '?'}/${task.maxToolCalls ?? '?'}; split the step (${step.items.length} items) before retrying`;
     return;
   }
-  if (
-    kind === 'done' &&
-    !step.items &&
-    task.budgetExhausted &&
-    currentWorkTaskId(step) === task.id
-  ) {
-    const note = `Worker hit the tool-call budget ${task.toolCalls ?? '?'}/${task.maxToolCalls ?? '?'}; verify the result is complete or split the step`;
-    step.state = 'checking';
-    step.check ??= { by: 'planner', goal: note };
-    step.note = note;
-    return;
-  }
   if (kind !== 'done') {
+    if (step.worker === 'checker') step.verdict = 'fail';
     step.state = 'failed';
     step.note = task.error ?? kind;
     return;
   }
-  if (step.check?.taskId === task.id) {
-    if (
-      !step.workTaskId ||
-      step.successfulWorkTaskId !== step.workTaskId ||
-      !step.taskIds.includes(step.workTaskId)
-    ) {
-      step.note = 'check ignored: current work has not succeeded';
-      return;
-    }
-    step.state = 'checking';
-    const verdict = checkerVerdict(task.output ?? '');
+  if (step.worker === 'checker') {
+    const output = task.output?.trim() ?? '';
+    const verdict = /^(PASS|FAIL)$/i.test(output)
+      ? { verdict: output.toLowerCase() }
+      : checkerVerdict(output);
     const parsed = z
       .object({
         verdict: z.enum(['pass', 'fail']),
         note: z.string().optional(),
-        count: z.number().optional(),
+        count: z.number().int().nonnegative().optional(),
       })
       .safeParse(verdict);
-    if (parsed.success) {
-      if (step.items && parsed.data.count === undefined) {
-        parsed.data.verdict = 'fail';
-        parsed.data.note = `checker did not report count for ${step.items.length} items`;
-      } else if (
-        step.items &&
-        parsed.data.count !== undefined &&
-        parsed.data.count < step.items.length
-      ) {
-        parsed.data.verdict = 'fail';
-        parsed.data.note =
-          `${parsed.data.note ?? ''} Count ${parsed.data.count}/${step.items.length}: missing item results`.trim();
-      }
-      step.check.verdict = parsed.data.verdict;
-      step.state = parsed.data.verdict === 'pass' ? 'done' : 'failed';
-      step.note = parsed.data.note ?? parsed.data.verdict;
-    } else {
+    const expected = (step.dependsOn ?? []).flatMap(
+      (id) => plan?.steps.find((s) => s.id === id)?.items ?? [],
+    );
+    if (!parsed.success) {
+      step.verdict = 'fail';
+      step.state = 'failed';
       step.note =
-        'checker returned no JSON verdict; re-delegate the checker or ask the user';
-      delete step.check.taskId;
-      delete step.check.verdict;
+        'Checker returned an unusable verdict; plan a fix step and a new check';
+    } else {
+      const short =
+        expected.length > 0 && (parsed.data.count ?? -1) < expected.length;
+      step.verdict = short ? 'fail' : parsed.data.verdict;
+      step.state = step.verdict === 'pass' ? 'done' : 'failed';
+      step.note = short
+        ? `Count ${parsed.data.count ?? 'missing'}/${expected.length}: missing item results`
+        : (parsed.data.note ?? parsed.data.verdict);
     }
-  } else step.state = step.check || step.items ? 'checking' : 'done';
+  } else {
+    step.state = 'done';
+    if (task.budgetExhausted)
+      step.note = `Worker hit the tool-call budget ${task.toolCalls ?? '?'}/${task.maxToolCalls ?? '?'}; verify the result is complete or split the step`;
+  }
 }
+/** Require a passing check and no failing latest check attempts. */
+export function deliveryChecksPassed(plan: Plan, stepId: string): boolean {
+  const checks = plan.steps.filter(
+    (s) => s.worker === 'checker' && s.dependsOn?.includes(stepId),
+  );
+  if (!checks.length) return true;
+  const latest = checks.filter(
+    (s) => !checks.some((next) => next.dependsOn?.includes(s.id)),
+  );
+  return (
+    latest.some(
+      (s) =>
+        s.state === 'done' &&
+        s.verdict === 'pass' &&
+        checkSourcesCurrent(plan, s),
+    ) && !latest.some((s) => s.state === 'failed' || s.verdict === 'fail')
+  );
+}
+
 export function planView(plan?: Plan): string {
   if (!plan) return '[plan] status: active\nnone';
   const priority = (step: PlanStep): number => {
     if (step.state === 'pending' && dependenciesDone(plan, step)) return 0;
-    if (step.state === 'running' || step.state === 'checking') return 1;
+    if (step.state === 'running') return 1;
     if (step.state === 'pending') return 2;
     if (step.state === 'failed' || step.state === 'blocked') return 3;
     return 4;
@@ -415,14 +417,12 @@ export function planView(plan?: Plan): string {
     ...visible.map((s) => {
       const current = currentAttemptIds(s);
       const work = currentWorkTaskId(s);
-      const check = s.check?.taskId;
       const older = s.taskIds.filter((id) => !current.includes(id)).length;
       const attempts = [
         work ? `work ${work}` : '',
-        check && current.includes(check) ? `check ${check}` : '',
         older ? `${older} older attempts` : '',
       ].filter(Boolean);
-      return `${s.id} ${s.state === 'pending' && dependenciesDone(plan, s) ? 'ready' : s.state} ${s.goal.replace(/\s+/g, ' ')}${s.dependsOn?.length ? ` (depends on ${s.dependsOn.join(', ')})` : ''}${attempts.length ? ` (${attempts.join(', ')})` : ''}${s.items ? `; items: ${s.items.length}` : ''}${s.check ? `; check by ${s.check.by}: ${s.check.goal.replace(/\s+/g, ' ').trim()}` : ''}${s.note ? ` \u00b7 ${s.note}` : ''}`;
+      return `${s.id} ${s.state === 'pending' && dependenciesDone(plan, s) ? 'ready' : s.state} ${s.goal.replace(/\s+/g, ' ')}${s.dependsOn?.length ? ` (depends on ${s.dependsOn.join(', ')})` : ''}${attempts.length ? ` (${attempts.join(', ')})` : ''}${s.items ? `; items: ${s.items.length}` : ''}${s.note ? ` \u00b7 ${s.note}` : ''}`;
     }),
   ]
     .filter(Boolean)

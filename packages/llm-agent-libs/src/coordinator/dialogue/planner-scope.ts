@@ -6,6 +6,7 @@ export interface PlannerScope {
   beforeTool?(name: string): void;
   newRequest?(): void;
   ownTask?(id: string): void;
+  deliver?(id: string, note?: string): void;
   board: TaskBoard;
   maxItemsPerStep?: number;
   taskSteps?: Map<string, string>;

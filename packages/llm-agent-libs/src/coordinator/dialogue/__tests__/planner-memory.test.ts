@@ -634,7 +634,7 @@ test('finished tasks index raw bounded output; event retrieval uses first input 
   );
   assert.ok(chunk.ok && chunk.value);
   assert.equal(chunk.value.metadata.requestId, 'r1');
-  assert.ok(chunk.value.text.length < 1000);
+  assert.equal(chunk.value.text, 'x'.repeat(2000));
   assert.match(queries[1], /^first input\n\[task events\]/);
   await session.close();
 });
