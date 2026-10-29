@@ -36,6 +36,7 @@ export class SmartAgentSubAgent implements ISubAgent {
         ? [...input.history, { role: 'user', content: prompt }]
         : prompt,
       {
+        requestStartedAt: input.requestStartedAt,
         sessionId: input.sessionId,
         usage: input.usage,
         signal: input.signal,

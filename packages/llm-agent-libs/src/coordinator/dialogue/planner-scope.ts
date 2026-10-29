@@ -8,6 +8,8 @@ export interface PlannerScope {
   ownTask?(id: string): void;
   deliver?(id: string, note?: string): void;
   board: TaskBoard;
+  /** Captured from the owning request, never from task start time. */
+  requestStartedAt?: number;
   maxItemsPerStep?: number;
   taskSteps?: Map<string, string>;
   statusRead?(): void;

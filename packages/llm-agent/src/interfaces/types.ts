@@ -25,6 +25,8 @@ export interface TraceContext {
 }
 
 export interface CallOptions {
+  /** Owning request start in epoch milliseconds; preserved across tool rounds and queued tasks. */
+  requestStartedAt?: number;
   usage?: IUsageRecorder;
   usageOp?: UsageOperation;
   trace?: TraceContext;

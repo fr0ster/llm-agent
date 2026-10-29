@@ -36,6 +36,7 @@ import {
   validateRetrievalOptions,
 } from './planner-retrieval.js';
 import { runInPlannerScope } from './planner-scope.js';
+import { formatRequestTime, validateTimeZone } from './request-time.js';
 import {
   applyTaskEvent,
   currentAttemptIds,
@@ -71,6 +72,8 @@ export interface PlannerAgent {
   ): Promise<Result<{ content: string; usage?: TokenUsage }, Error>>;
 }
 export interface DialogueSessionOptions extends PlannerRetrievalOptions {
+  /** IANA time zone for request time formatting. Default: UTC. */
+  timeZone?: string;
   /** Request-scoped prepared context by default; conversation preserves legacy planner input. */
   plannerContext?: 'prepared' | 'conversation';
   /** Overrides the default builder in prepared mode only. */
@@ -368,6 +371,7 @@ export class DialogueSession {
   }
 
   private constructor(private readonly opts: DialogueSessionOptions) {
+    validateTimeZone(opts.timeZone ?? 'UTC');
     for (const [name, value] of [
       ['waitTickMs', opts.waitTickMs ?? 30_000],
       ['longTaskMs', opts.longTaskMs ?? 300_000],
@@ -753,7 +757,15 @@ export class DialogueSession {
               });
         if (this.opts.plannerContext === 'conversation') {
           const last = messages.at(-1);
-          if (last) last.content = `${notes.join('\n')}\n${last.content}`;
+          const line = formatRequestTime(request.openedAt, this.opts.timeZone);
+          if (last)
+            last.content = `${line}\n${notes.join('\n')}\n${last.content}`;
+          else messages.push({ role: 'user', content: line });
+        } else {
+          const line = formatRequestTime(request.openedAt, this.opts.timeZone);
+          const firstUser = messages.find((message) => message.role === 'user');
+          if (firstUser) firstUser.content = `${line}\n${firstUser.content}`;
+          else messages.push({ role: 'user', content: line });
         }
         const resultEvents = this.resultEvents.splice(0);
         if (resultEvents.length) {
@@ -820,6 +832,7 @@ export class DialogueSession {
             },
             ownTask: (id) => this.taskRequests.set(id, request.id),
             board: this.board,
+            requestStartedAt: request.openedAt,
             maxItemsPerStep: this.opts.maxItemsPerStep,
             taskSteps: this.taskSteps,
             statusRead: () => {

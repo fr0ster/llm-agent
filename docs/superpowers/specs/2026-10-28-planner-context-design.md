@@ -382,3 +382,15 @@ source bindings must be rerun. Malformed verdict candidates invalidate the whole
 verdict, even alongside a valid candidate; conflicting outcomes also fail.
 Checker/worker role restrictions apply only to structured plan steps; legacy
 text plans and unstructured tasks retain their delegation behavior.
+
+## Request time
+
+Every prepared planner call receives one `[request time] YYYY-MM-DD HH:mm +HH:mm (Zone)` line derived from the current request's existing `openedAt`. Minute precision omits seconds without advancing the request date. `DialogueSessionOptions.timeZone` is an optional deployment IANA zone, defaults to UTC, and is validated with `Intl.DateTimeFormat` at construction.
+
+Delegation captures the owning request timestamp in task options before queueing, including checker tasks. Task start times do not affect it. Restore, tool rounds and wait wake-ups reuse `openedAt`. Custom prepared builders also receive the line through session composition. Dialogue legacy text plans share the same delegation mechanism.
+
+`DIALOGUE_PLANNER_SYSTEM` includes static `REQUEST_TIME_GUIDANCE` to use the request date as a rough now, never as an elapsed-time clock, and never invent dates. No formatted timestamp enters a system prompt.
+
+The library adds static `REQUEST_TIME_GUIDANCE` to every agent's system prompt and one formatted line to request content, preserving it across tool rounds. Even without a preamble or retrieved context, the guidance now emits a system message. Hosts do not append guidance. `SmartAgentConfig.timeZone`, `ContextAssemblerConfig.timeZone`, `DirectLlmSubAgentOptions.timeZone`, and `DialogueSessionOptions.timeZone` configure the same deployment zone (UTC by default), using one validation function. Configure these consistently for the deployment.
+
+SmartAgent uses its existing request start timestamp, passed as `CallOptions.requestStartedAt`; direct assembler callers supply that option when assembling a request. Dialogue delegation captures `openedAt` in `TaskRequest.requestStartedAt`, passes it through `ISubAgentInput` to workers, and never prefixes the delegate context. Queued workers retain the owning request time. Prepared planner context keeps its single line; assembly recognizes that line and does not add another. Direct LLM workers use the same assembler and receive the timestamp through their input. Direct assembler and direct worker callers supply the existing owning request start timestamp; these assembly paths never read a clock.

@@ -3,11 +3,14 @@ import type {
   ISubAgent,
   ISubAgentInput,
   ISubAgentResult,
-  Message,
   SubAgentCapabilities,
 } from '@mcp-abap-adt/llm-agent';
 
+import { ContextAssembler } from '../context/context-assembler.js';
+
 export interface DirectLlmSubAgentOptions {
+  /** Deployment IANA time zone. Default: UTC. */
+  timeZone?: string;
   systemPrompt: string;
   description?: string;
   contextPolicy?: 'required' | 'optional' | 'forbidden';
@@ -24,7 +27,7 @@ export interface DirectLlmSubAgentOptions {
 export class DirectLlmSubAgent implements ISubAgent {
   public readonly description?: string;
   public readonly capabilities: SubAgentCapabilities;
-  private readonly systemPrompt: string;
+  private readonly assembler: ContextAssembler;
 
   constructor(
     public readonly name: string,
@@ -32,7 +35,10 @@ export class DirectLlmSubAgent implements ISubAgent {
     opts: DirectLlmSubAgentOptions,
   ) {
     this.description = opts.description;
-    this.systemPrompt = opts.systemPrompt;
+    this.assembler = new ContextAssembler({
+      timeZone: opts.timeZone,
+      systemPromptPreamble: opts.systemPrompt,
+    });
     this.capabilities = {
       contextPolicy: opts.contextPolicy ?? 'required',
     };
@@ -53,12 +59,15 @@ export class DirectLlmSubAgent implements ISubAgent {
         ? `${input.context}\n\n${input.task}`
         : input.task;
 
-    const messages: Message[] = [
-      { role: 'system', content: this.systemPrompt },
-      { role: 'user', content: userContent },
-    ];
+    const assembled = await this.assembler.assemble(
+      { type: 'action', text: userContent },
+      { ragResults: {}, tools: [] },
+      [],
+      { requestStartedAt: input.requestStartedAt, signal: input.signal },
+    );
+    if (!assembled.ok) throw assembled.error;
 
-    const res = await this.llm.chat(messages, [], {
+    const res = await this.llm.chat(assembled.value, [], {
       usage: input.usage,
       signal: input.signal,
       sessionId: input.sessionId,

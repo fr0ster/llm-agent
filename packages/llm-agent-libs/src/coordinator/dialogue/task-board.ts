@@ -240,6 +240,7 @@ export class TaskBoard {
           ...(this.taskUsage.has(task.id)
             ? { usage: this.taskUsage.get(task.id) }
             : {}),
+          requestStartedAt: request.requestStartedAt ?? task.createdAt,
           task: request.goal,
           context: request.context,
           signal: baseInput?.signal

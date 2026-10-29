@@ -20,6 +20,8 @@ export interface SubAgentCapabilities {
 }
 
 export interface ISubAgentInput {
+  /** Owning request start in epoch milliseconds; preserved across tool rounds and queued tasks. */
+  requestStartedAt?: number;
   usage?: IUsageRecorder;
   task: string;
   /** Conversation before the current request, selected by the coordinator. */

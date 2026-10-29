@@ -58,6 +58,7 @@ import { RagOrchestrator } from './agent/rag-orchestrator.js';
 import { normalizeRequestOptions } from './agent-request-options.js';
 import type { LlmClassifierConfig } from './classifier/llm-classifier.js';
 import { LlmClassifier } from './classifier/llm-classifier.js';
+import { validateTimeZone, withRequestTime } from './context/request-time.js';
 import { buildAgentHealthSnapshot } from './health/agent-health.js';
 import type { IMcpConnectionStrategy } from './interfaces/mcp-connection-strategy.js';
 
@@ -159,6 +160,8 @@ export interface SmartAgentDeps {
   toolLoopContextStrategyFactory?: ToolLoopContextStrategyFactory;
 }
 export interface SmartAgentConfig {
+  /** Deployment IANA time zone for request dates. Default: UTC. */
+  timeZone?: string;
   maxIterations: number;
   maxToolCalls?: number;
   toolUnavailableTtlMs?: number;
@@ -276,6 +279,7 @@ export class SmartAgent {
     private readonly deps: SmartAgentDeps,
     private config: SmartAgentConfig,
   ) {
+    validateTimeZone(this.config.timeZone ?? 'UTC');
     this.toolAvailabilityRegistry = new ToolAvailabilityRegistry(
       this.config.toolUnavailableTtlMs,
     );
@@ -674,6 +678,14 @@ export class SmartAgent {
     // per-request logger, so every downstream logLlmCall is request-scoped and
     // the embedder-boundary wrapper can attribute embedding spend.
     opts = normalizeRequestOptions(opts, traceId, this.requestLogger);
+    // Message-array callers own their context, including request time, unless
+    // they explicitly request insertion through call options.
+    opts = {
+      ...opts,
+      requestStartedAt:
+        options?.requestStartedAt ??
+        (typeof textOrMessages === 'string' ? requestStart : undefined),
+    };
 
     const mode = this.config.mode || 'smart';
 
@@ -711,7 +723,11 @@ export class SmartAgent {
         for await (const chunk of runPassThrough(
           this._mainLlm,
           this.requestLogger,
-          passMessages,
+          withRequestTime(
+            passMessages,
+            opts.requestStartedAt,
+            this.config.timeZone,
+          ),
           externalTools,
           opts,
         )) {

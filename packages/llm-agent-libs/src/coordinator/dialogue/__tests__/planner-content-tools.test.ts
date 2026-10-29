@@ -65,6 +65,7 @@ for (const plannerContext of ['prepared', 'conversation'] as const) {
     const received: ISubAgentInput[] = [];
     const session = await DialogueSession.open({
       id: plannerContext,
+      now: () => 0,
       plannerContext,
       maxCorrections: 0,
       board: {
@@ -98,6 +99,7 @@ for (const plannerContext of ['prepared', 'conversation'] as const) {
       await new Promise<void>((resolve) => setImmediate(resolve));
       assert.equal(received[0].task, 'result');
       assert.equal(received[0].context, 'brief');
+      assert.equal(received[0].requestStartedAt, 0);
       assert.equal(received[0].history, undefined);
     } finally {
       await session.close();
