@@ -1,5 +1,11 @@
 # @mcp-abap-adt/qdrant-rag
 
+## 30.10.0
+
+### Minor Changes
+
+- 7ee1426: Add optional paginated RAG listing with detached JSON metadata, scoped cursors, strict identity filters, and shared conformance tests for all four backends. Add bounded provider-private SQL record caches with fixed TTL and per-record write invalidation.
+
 ## 30.9.1
 
 Lockstep release with the 30.9.1 line: dialogue plans no longer stall in `checking` — idle checks cover running/checking steps without active attempts, checker verdicts are read from prose or JSON fences (outermost, consistent candidates only), unusable verdicts allow a fresh checker — changes in `llm-agent-libs`; other packages are unchanged. See the root CHANGELOG.
