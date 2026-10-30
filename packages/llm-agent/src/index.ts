@@ -74,6 +74,7 @@ export {
   type IToolNamespace,
   type ToolNamespaceContext,
 } from './interfaces/tool-namespace.js';
+export * from './interfaces/tool-trace.js';
 export type { AnyLogger } from './logger/normalise-logger.js';
 export { isTextLogger, normaliseLogger } from './logger/normalise-logger.js';
 export type { ITextLogger } from './logger/text-logger.js';
@@ -129,5 +130,6 @@ export {
   getStreamToolCallName,
   toToolCallDelta,
 } from './tool-call-deltas.js';
+export * from './tool-trace.js';
 export * from './usage/hooks.js';
 export * from './usage/request-shape.js';

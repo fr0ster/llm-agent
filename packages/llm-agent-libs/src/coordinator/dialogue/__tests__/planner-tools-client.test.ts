@@ -420,7 +420,10 @@ test('dependency and audit results are appended after briefs with a total bound'
         undefined,
       );
       await new Promise<void>((resolve) => setImmediate(resolve));
-      assert.equal(contexts[1], '[result to check: step a (task a)]\nalpha');
+      assert.match(
+        contexts[1] ?? '',
+        /^The tool trace is evidence of what was actually done[^\n]*\n\n\[result to check: step a \(task a\)\]\nalpha\n\[tools used by task a\]\ntool trace unavailable$/,
+      );
       await call('delegate_task', {
         worker: 'w',
         goal: 'independent',

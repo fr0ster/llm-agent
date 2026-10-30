@@ -1,3 +1,4 @@
+import { markExternalTraceUnavailable } from '@mcp-abap-adt/llm-agent';
 /**
  * ToolLoopHandler — streaming LLM call + MCP tool execution loop.
  *
@@ -862,6 +863,7 @@ export class ToolLoopHandler implements IStageHandler {
         // HIT path: inject matched pairs (assistant tool_call + tool result),
         // each correlated by the SAME extId, and resolve them in-conversation.
         if (hits.length > 0) {
+          markExternalTraceUnavailable(ctx.options?.onToolTrace);
           const hitAssistant: Message = {
             role: 'assistant' as const,
             content: null,

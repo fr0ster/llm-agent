@@ -17,6 +17,11 @@ import type {
   TaskState,
   WorkerProfileSummary,
 } from '@mcp-abap-adt/llm-agent';
+import {
+  normalizeToolTrace,
+  ToolTraceCollector,
+  type ToolTraceEntry,
+} from '@mcp-abap-adt/llm-agent';
 import { ProfileResolver } from './profile-resolver.js';
 import { SemaphorePool } from './semaphore-pool.js';
 
@@ -211,7 +216,7 @@ export class TaskBoard {
     const promise = this.execute(entry);
     this.running.add(promise);
     void promise.finally(() => this.running.delete(promise));
-    return { ok: true, value: { ...task } };
+    return { ok: true, value: structuredClone(task) };
   }
   private now(): number {
     return (this.opts.now ?? Date.now)();
@@ -246,7 +251,7 @@ export class TaskBoard {
     if (kind !== 'started') this.recordTask(task);
     this.signalState(task, previous);
     try {
-      this.opts.onEvent({ kind, task: { ...task } });
+      this.opts.onEvent({ kind, task: structuredClone(task) });
     } catch {
       /* Observers cannot affect execution. */
     }
@@ -294,6 +299,8 @@ export class TaskBoard {
     let removeAbortListener: (() => void) | undefined;
     let releaseBoard: (() => void) | undefined;
     let releasePool: (() => void) | undefined;
+    const observed = new ToolTraceCollector();
+    let authoritative = false;
     let kind: 'done' | 'failed' | 'stopped' = 'failed';
     try {
       releaseBoard = await this.boardPool.acquire(stop.signal);
@@ -341,6 +348,15 @@ export class TaskBoard {
             ? AbortSignal.any([baseInput.signal, hard.signal])
             : hard.signal,
           stopSignal: stop.signal,
+          onToolTrace: (entry: ToolTraceEntry) => {
+            if (hard.signal.aborted || task.state !== 'running') return;
+            observed.observe(entry);
+            try {
+              baseInput.onToolTrace?.(entry);
+            } catch {
+              /* Observers cannot affect execution. */
+            }
+          },
           onToolsSelected: (selected, available) => {
             if (hard.signal.aborted || task.state !== 'running') return;
             task.toolsSelected = selected;
@@ -377,6 +393,10 @@ export class TaskBoard {
         aborted,
       ]);
       if (hard.signal.aborted) throw hard.signal.reason;
+      if (result.toolTrace) {
+        task.toolTrace = normalizeToolTrace(result.toolTrace);
+        authoritative = true;
+      }
       if (result.usage) task.usage = result.usage;
       task.output = cutTaskOutput(result.output, this.opts.taskOutputChars);
       task.budgetExhausted = result.budgetExhausted;
@@ -402,6 +422,8 @@ export class TaskBoard {
         task.error = error instanceof Error ? error.message : String(error);
       }
     } finally {
+      const fallback = observed.finalize(false);
+      if (!authoritative && fallback.entries.length) task.toolTrace = fallback;
       entry.cancelHardStop?.();
       removeAbortListener?.();
       releasePool?.();
@@ -447,10 +469,10 @@ export class TaskBoard {
   }
   get(id: string): TaskRecord | undefined {
     const task = this.records.get(id);
-    return task && { ...task };
+    return task && structuredClone(task);
   }
   list(): TaskRecord[] {
-    return [...this.records.values()].map((task) => ({ ...task }));
+    return [...this.records.values()].map((task) => structuredClone(task));
   }
   restore(records: TaskRecord[]): string[] {
     if (this.entries.size)
@@ -459,7 +481,10 @@ export class TaskBoard {
     const interrupted: string[] = [];
     for (const record of records) {
       const task = {
-        ...record,
+        ...structuredClone(record),
+        ...(record.toolTrace
+          ? { toolTrace: normalizeToolTrace(record.toolTrace) }
+          : {}),
         result:
           record.result ?? (record.worker === 'checker' ? 'verdict' : 'report'),
       } satisfies TaskRecord;

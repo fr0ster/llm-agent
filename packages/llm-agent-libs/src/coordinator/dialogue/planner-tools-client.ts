@@ -15,6 +15,10 @@ import {
   stepSchema,
 } from './structured-plan.js';
 import type { TaskBoard } from './task-board.js';
+import {
+  renderToolTrace,
+  VERDICT_EVIDENCE_GUIDANCE,
+} from './tool-trace-render.js';
 
 const reservedDelegations = new WeakMap<PlannerScope, number>();
 const reservedSteps = new WeakSet<DialoguePlanStep>();
@@ -249,13 +253,18 @@ export class PlannerToolsClient implements IMcpClient {
               throw new Error(
                 'A check step requires dependsOn identifying the steps to check',
               );
+            if (profile.result === 'verdict' && !isCheck)
+              context = [context, VERDICT_EVIDENCE_GUIDANCE]
+                .filter(Boolean)
+                .join('\n\n');
             const checkedTaskIds: Record<string, string> = {};
             if (step && structured) {
               const sources = (step.dependsOn ?? []).map((id) =>
                 structured.steps.find((s) => s.id === id),
               );
               const blocks: string[] = [];
-              let size = 0;
+              if (isCheck) blocks.push(VERDICT_EVIDENCE_GUIDANCE);
+              let size = blocks.join('\n\n').length;
               for (const source of sources) {
                 if (!source) throw new Error('dependency step is missing');
                 const id = source.successfulWorkTaskId;
@@ -274,6 +283,9 @@ export class PlannerToolsClient implements IMcpClient {
                 if (isCheck) checkedTaskIds[source.id] = task.id;
                 const block = [
                   `${isCheck ? '[result to check: step' : '[result of step'} ${source.id} (task ${task.id})]\n${task.output ?? ''}`,
+                  isCheck
+                    ? renderToolTrace(task.id, task.toolTrace)
+                    : undefined,
                   isCheck && source.items
                     ? `Expected items for step ${source.id}: ${JSON.stringify(source.items)}; expected count: ${source.items.length}. Return JSON with verdict, count and note.`
                     : undefined,

@@ -17,7 +17,11 @@ import type {
   Result,
   TimingEntry,
 } from '@mcp-abap-adt/llm-agent';
-import { OrchestratorError, scopedUsage } from '@mcp-abap-adt/llm-agent';
+import {
+  OrchestratorError,
+  recordToolInvocation,
+  scopedUsage,
+} from '@mcp-abap-adt/llm-agent';
 import type { IMetrics } from '../../metrics/types.js';
 import type { PendingToolResultsRegistry } from '../../policy/pending-tool-results-registry.js';
 import {
@@ -328,10 +332,23 @@ export async function* executeToolBatchWithHeartbeat(
           return { ok: true as const, value: cachedValue };
         })()
       : await (async () => {
-          const r = await client.callTool(tc.name, tc.arguments, {
-            ...options,
-            usage: scopedUsage(options?.usage, { component: 'tool-loop' }),
-          });
+          const r = await recordToolInvocation(
+            options?.onToolTrace,
+            tc.name,
+            tc.arguments,
+            () =>
+              client.callTool(tc.name, tc.arguments, {
+                ...options,
+                usage: scopedUsage(options?.usage, { component: 'tool-loop' }),
+              }),
+            (result) => ({
+              failed: !result.ok || !!result.value.isError,
+              value: result.ok ? result.value : result.error,
+              error: result.ok
+                ? 'MCP tool returned isError'
+                : result.error.message,
+            }),
+          );
           if (r.ok && cacheable) toolCache.set(tc.name, tc.arguments, r.value);
           return r;
         })();
