@@ -40,6 +40,7 @@ import {
 import type { PgVectorRagConfig } from './connection.js';
 import { resolveLayout } from './layout.js';
 import { createPgClient, type PgClient, PgVectorRag } from './pg-vector-rag.js';
+import { RecordCache, type RecordCacheOptions } from './record-cache.js';
 import {
   assertCollectionName,
   createExtensionSql,
@@ -54,6 +55,7 @@ type Handles = { rag: IRag; editor: IRagEditor };
 type Refusal = { ok: false; error: RagError };
 
 export interface PgVectorRagProviderConfig {
+  recordCache?: RecordCacheOptions;
   name: string;
   embedder: IRetrievalEmbedder;
   connection: PgVectorRagConfig | string;
@@ -109,6 +111,7 @@ export class PgVectorRagProvider
   readonly editable: boolean;
   readonly supportedScopes: readonly RagCollectionScope[];
 
+  private readonly recordCache: RecordCache;
   private readonly embedder: IRetrievalEmbedder;
   private readonly connection: PgVectorRagConfig;
   private readonly defaultDimension: number;
@@ -126,6 +129,9 @@ export class PgVectorRagProvider
     this.name = cfg.name;
     this.embedder = cfg.embedder;
     this.connection = normalizeConnection(cfg.connection);
+    this.recordCache = new RecordCache(
+      cfg.recordCache ?? this.connection.recordCache,
+    );
     this.defaultDimension = cfg.defaultDimension ?? 1536;
     this.layout = resolveLayout(cfg.layout, cfg.autoCreateSchema);
     const shared = this.layout === 'shared';
@@ -284,7 +290,10 @@ export class PgVectorRagProvider
     let client: PgClient;
     try {
       client = await this.adminClient();
-      if (this.shared) return await this.shared.delete(client, name);
+      if (this.shared)
+        return await this.shared.delete(client, name, () =>
+          this.recordCache.beginDeleteStore(this.cacheIdentity(name)),
+        );
       if (await this.tableExists(client, this.catalogTable)) {
         await client.query(deleteRecordSql(this.catalogTable), [name]);
       }
@@ -296,7 +305,14 @@ export class PgVectorRagProvider
       };
     }
     try {
-      await client.query(dropTableSql(name));
+      const settled = this.recordCache.beginDeleteStore(
+        this.cacheIdentity(name),
+      );
+      try {
+        await client.query(dropTableSql(name));
+      } finally {
+        settled();
+      }
       return { ok: true, value: undefined };
     } catch (err) {
       return {
@@ -374,6 +390,20 @@ export class PgVectorRagProvider
     );
   }
 
+  /** Release cached records and prevent active handles from repopulating them. */
+  close(): void {
+    this.recordCache.close();
+  }
+
+  private cacheIdentity(name: string): string {
+    return JSON.stringify([
+      this.connection.schema ?? null,
+      this.layout,
+      this.documentsTable,
+      name,
+    ]);
+  }
+
   private handles(storeName: string, owner: RagCollectionOwner): Handles {
     const rag = new PgVectorRag(
       {
@@ -387,6 +417,7 @@ export class PgVectorRagProvider
         embedder: this.embedder,
       },
       this.clientFactory?.(),
+      this.recordCache.store(this.cacheIdentity(storeName)),
     );
     return { rag, editor: this.buildEditor(rag, this.pickIdStrategy(owner)) };
   }

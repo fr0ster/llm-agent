@@ -1,6 +1,8 @@
 import type { ISecretLoginCredential } from '@mcp-abap-adt/interfaces-auth';
+import type { RecordCacheOptions } from './record-cache.js';
 
 export interface HanaVectorRagConfig {
+  recordCache?: RecordCacheOptions;
   /** The ADDRESS only. A string carrying credentials is refused below. */
   connectionString?: string;
   host?: string;

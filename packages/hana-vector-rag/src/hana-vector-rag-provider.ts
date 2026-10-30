@@ -46,6 +46,7 @@ import {
 } from './hana-vector-rag.js';
 import { resolveLayout } from './layout.js';
 import { decodeLob } from './lob.js';
+import { RecordCache, type RecordCacheOptions } from './record-cache.js';
 import {
   assertCollectionName,
   createTableSql,
@@ -58,6 +59,7 @@ type Handles = { rag: IRag; editor: IRagEditor };
 type Refusal = { ok: false; error: RagError };
 
 export interface HanaVectorRagProviderConfig {
+  recordCache?: RecordCacheOptions;
   name: string;
   embedder: IRetrievalEmbedder;
   /**
@@ -141,6 +143,7 @@ export class HanaVectorRagProvider
   readonly editable: boolean;
   readonly supportedScopes: readonly RagCollectionScope[];
 
+  private readonly recordCache: RecordCache;
   private readonly embedder: IRetrievalEmbedder;
   private readonly connection: HanaVectorRagConfig;
   private readonly defaultDimension: number;
@@ -158,6 +161,9 @@ export class HanaVectorRagProvider
     this.name = cfg.name;
     this.embedder = cfg.embedder;
     this.connection = normalizeConnection(cfg.connection);
+    this.recordCache = new RecordCache(
+      cfg.recordCache ?? this.connection.recordCache,
+    );
     this.defaultDimension = cfg.defaultDimension ?? 1536;
     this.layout = resolveLayout(cfg.layout, cfg.autoCreateSchema);
     const shared = this.layout === 'shared';
@@ -303,7 +309,10 @@ export class HanaVectorRagProvider
     let client: HanaClient;
     try {
       client = await this.adminClient();
-      if (this.shared) return await this.shared.delete(client, name);
+      if (this.shared)
+        return await this.shared.delete(client, name, () =>
+          this.recordCache.beginDeleteStore(this.cacheIdentity(name)),
+        );
       if (await this.tableExists(client, this.catalogTable)) {
         await client.exec(deleteRecordSql(this.catalogTable), [name]);
       }
@@ -314,7 +323,14 @@ export class HanaVectorRagProvider
       };
     }
     try {
-      await client.exec(dropTableSql(name));
+      const settled = this.recordCache.beginDeleteStore(
+        this.cacheIdentity(name),
+      );
+      try {
+        await client.exec(dropTableSql(name));
+      } finally {
+        settled();
+      }
       return { ok: true, value: undefined };
     } catch (err) {
       return {
@@ -389,6 +405,20 @@ export class HanaVectorRagProvider
     );
   }
 
+  /** Release cached records and prevent active handles from repopulating them. */
+  close(): void {
+    this.recordCache.close();
+  }
+
+  private cacheIdentity(name: string): string {
+    return JSON.stringify([
+      this.connection.schema ?? null,
+      this.layout,
+      this.documentsTable,
+      name,
+    ]);
+  }
+
   private handles(storeName: string, owner: RagCollectionOwner): Handles {
     const rag = new HanaVectorRag(
       {
@@ -402,6 +432,7 @@ export class HanaVectorRagProvider
         embedder: this.embedder,
       },
       this.clientFactory?.(),
+      this.recordCache.store(this.cacheIdentity(storeName)),
     );
     return { rag, editor: this.buildEditor(rag, this.pickIdStrategy(owner)) };
   }

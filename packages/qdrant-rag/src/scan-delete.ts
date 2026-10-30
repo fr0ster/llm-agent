@@ -68,6 +68,7 @@ async function scroll(
   body: Record<string, unknown>,
   signal: AbortSignal | undefined,
   code: string,
+  strict = false,
 ): Promise<{ points: ScrollPoint[]; next?: Offset }> {
   const res = await call(
     `/collections/${collection}/points/scroll`,
@@ -78,7 +79,40 @@ async function scroll(
     throw new RagError(`Qdrant scroll failed: ${await res.text()}`, code);
   }
   const json = (await res.json()) as ScrollBody;
+  if (
+    strict &&
+    (!json ||
+      typeof json !== 'object' ||
+      !json.result ||
+      !Array.isArray(json.result.points) ||
+      json.result.points.some(
+        (point) =>
+          !point ||
+          typeof point !== 'object' ||
+          !(
+            (typeof point.id === 'string' && UUID.test(point.id)) ||
+            (typeof point.id === 'number' &&
+              Number.isSafeInteger(point.id) &&
+              point.id >= 0)
+          ) ||
+          (point.payload !== undefined &&
+            (typeof point.payload !== 'object' ||
+              point.payload === null ||
+              Array.isArray(point.payload))),
+      ))
+  )
+    throw new RagError('Malformed Qdrant scroll response', code);
   const next = json.result?.next_page_offset;
+  if (
+    strict &&
+    next !== undefined &&
+    next !== null &&
+    !(
+      (typeof next === 'string' && UUID.test(next)) ||
+      (typeof next === 'number' && Number.isSafeInteger(next) && next >= 0)
+    )
+  )
+    throw new RagError('Malformed Qdrant scroll offset', code);
   return {
     points: json.result?.points ?? [],
     next: next === null || next === undefined ? undefined : next,
@@ -108,6 +142,7 @@ export async function scanPage(
   collection: string,
   opts: { filter?: RagScanFilter; pageSize?: number; cursor?: string } = {},
   signal?: AbortSignal,
+  strict = false,
 ): Promise<RagScanPage> {
   const filter = scrollFilter(opts.filter);
   // Validate before any request.
@@ -124,6 +159,7 @@ export async function scanPage(
     },
     signal,
     'QUERY_ERROR',
+    strict,
   );
   // The server-side match is a prefilter: Qdrant's match.value also matches
   // an element of an array payload value, so apply the strict matcher here.

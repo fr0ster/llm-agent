@@ -114,12 +114,18 @@ export class SharedProviderOps {
   async delete(
     client: HanaClient,
     name: string,
+    beginDeletion?: () => () => void,
   ): Promise<Result<void, RagError>> {
     const ready = await this.check(client);
     if (!ready.ok) return ready;
     try {
       const clear = sharedStoreSql(name, this.cfg.documentsTable).clear();
-      await client.exec(clear.sql, clear.params);
+      const settled = beginDeletion?.();
+      try {
+        await client.exec(clear.sql, clear.params);
+      } finally {
+        settled?.();
+      }
     } catch (err) {
       return {
         ok: false,

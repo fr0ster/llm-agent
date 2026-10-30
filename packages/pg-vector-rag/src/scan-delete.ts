@@ -9,6 +9,7 @@ import {
   type RagScanRecord,
 } from '@mcp-abap-adt/llm-agent';
 import type { PgClient } from './pg-vector-rag.js';
+import type { StoreCache } from './record-cache.js';
 import type { PgStoreSql } from './store-sql.js';
 import { withId } from './with-id.js';
 
@@ -43,13 +44,50 @@ export async function scanPage(
     : { records };
 }
 
-/** One `DELETE ... RETURNING "id"`; the count is the rows it returned. */
+/** Lock the selected ids, invalidate precisely those ids, and delete only that selection. */
 export async function deleteWhere(
   client: PgClient,
   sql: PgStoreSql,
   filter: RagScanFilter,
+  cache: StoreCache,
+  signal?: AbortSignal,
 ): Promise<number> {
-  const stmt = sql.deleteWhere(filter);
-  const { rows } = await client.query(stmt.sql, stmt.params);
-  return rows.length;
+  const settled: Array<() => void> = [];
+  const work = async (connection: PgClient): Promise<number> => {
+    const stmt = sql.deleteWhere(filter);
+    const selection = stmt.sql
+      .replace(/^DELETE FROM /, 'SELECT "id" FROM ')
+      .replace(/ RETURNING "id"$/, ' FOR UPDATE');
+    const { rows } = await connection.query(selection, stmt.params);
+    if (signal?.aborted) throw new RagError('Aborted', 'ABORTED');
+    const ids = rows.map((row) => String(row.id));
+    if (!ids.length) return 0;
+    settled.push(cache.beginWrite(ids));
+    const params = [...stmt.params, ids];
+    // One array parameter avoids PostgreSQL's bind-parameter ceiling for large selections.
+    const deletion = stmt.sql.replace(
+      ' RETURNING "id"',
+      ` AND "id" = ANY($${stmt.params.length + 1}::varchar[]) RETURNING "id"`,
+    );
+    return (await connection.query(deletion, params)).rows.length;
+  };
+  try {
+    if (client.transaction) return await client.transaction(work);
+    // Injected clients are dedicated connections when they do not supply a transaction runner.
+    await client.query('BEGIN');
+    try {
+      const count = await work(client);
+      await client.query('COMMIT');
+      return count;
+    } catch (error) {
+      try {
+        await client.query('ROLLBACK');
+      } catch {
+        /* Keep the original error. */
+      }
+      throw error;
+    }
+  } finally {
+    for (const done of settled) done();
+  }
 }

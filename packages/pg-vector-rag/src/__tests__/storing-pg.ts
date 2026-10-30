@@ -130,7 +130,9 @@ const SEARCH =
   /^SELECT (?:id, text, metadata|"id", "text", "metadata"), (?:vector|"vector") <=> .*? AS score FROM ((?:"[^"]+"[.])?"[^"]+")(?: WHERE (.*))? ORDER BY (?:vector|"vector") <=> .* LIMIT (\d+)$/;
 
 /** `sharedDimension`: what the startup check of a shared table finds (default: none, the check is not answered). */
-export function storingPg(opts: { sharedDimension?: number } = {}): StoringPg {
+export function storingPg(
+  opts: { sharedDimension?: number; schema?: string; database?: string } = {},
+): StoringPg {
   const rows = new Map<string, Row>();
   /** Catalog rows per table, keyed by store_name, in column order. */
   const records = new Map<string, Map<string, unknown[]>>();
@@ -159,6 +161,27 @@ export function storingPg(opts: { sharedDimension?: number } = {}): StoringPg {
     },
     async query(sql, params = []) {
       statements.push(sql);
+      if (sql.includes('AS "listDatabase"'))
+        return {
+          rows: [
+            {
+              listDatabase: opts.database ?? 'catalog_a',
+              listSchema: opts.schema ?? 'tenant_a',
+              listHost: 'localhost',
+              listPort: 5432,
+            },
+          ],
+          rowCount: 1,
+        };
+      if (/^(BEGIN|COMMIT|ROLLBACK)$/.test(sql))
+        return { rows: [], rowCount: 0 };
+      sql = sql
+        .replaceAll(' COLLATE "C"', '')
+        .replace(
+          'SELECT "id", "metadata", "text"',
+          'SELECT "id", "text", "metadata"',
+        )
+        .replace('SELECT "id", "metadata"', 'SELECT "id", "text", "metadata"');
       const matching = (table: string, where: string | undefined): Row[] => {
         const conditions = where
           ? where.replaceAll('"metadata"', 'metadata').split(' AND ')
@@ -167,6 +190,19 @@ export function storingPg(opts: { sharedDimension?: number } = {}): StoringPg {
           .filter((r) => r.table === table)
           .filter((r) =>
             conditions.every((c) => {
+              const array = c.match(/^"id" = ANY\(\$(\d+)::varchar\[\]\)$/);
+              if (array) {
+                const ids = params[Number(array[1]) - 1];
+                return Array.isArray(ids) && ids.includes(r.id);
+              }
+              const inside = c.match(/^"id" IN \((.*)\)$/);
+              if (inside)
+                return inside[1]
+                  .split(', ')
+                  .some(
+                    (placeholder) =>
+                      r.id === params[Number(placeholder.slice(1)) - 1],
+                  );
               const after = c.match(AFTER_KEY);
               if (after)
                 return (
@@ -176,6 +212,14 @@ export function storingPg(opts: { sharedDimension?: number } = {}): StoringPg {
             }),
           );
       };
+      const clearTable = sql.match(
+        /^(?:TRUNCATE |DROP TABLE IF EXISTS )("[^"]+")$/,
+      );
+      if (clearTable) {
+        for (const [key, row] of rows)
+          if (row.table === clearTable[1]) rows.delete(key);
+        return { rows: [], rowCount: 0 };
+      }
       if (sql.startsWith('CREATE ')) return { rows: [], rowCount: 0 };
       if (opts.sharedDimension !== undefined) {
         if (sql.includes('pg_attribute'))
@@ -234,6 +278,15 @@ export function storingPg(opts: { sharedDimension?: number } = {}): StoringPg {
           }),
         );
         return { rows: hit ? [hit] : [], rowCount: hit ? 1 : 0 };
+      }
+      const selection = sql.match(
+        /^SELECT "id" FROM ((?:"[^"]+"[.])?"[^"]+") WHERE (.*) FOR UPDATE$/,
+      );
+      if (selection) {
+        const out = matching(selection[1], selection[2]).map((row) => ({
+          id: row.id,
+        }));
+        return { rows: out, rowCount: out.length };
       }
       const scan = sql.match(SCAN);
       if (scan) {

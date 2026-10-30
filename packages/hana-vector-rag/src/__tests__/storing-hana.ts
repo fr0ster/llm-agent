@@ -48,6 +48,8 @@ type Token =
   | { kind: 'punct'; text: string };
 
 function tokenize(sql: string): Token[] {
+  // TO_BINARY preserves the fake's existing binary string comparison on ids.
+  sql = sql.replace(/TO_BINARY\(("ID"|\?)\)/g, '$1');
   const out: Token[] = [];
   let i = 0;
   while (i < sql.length) {
@@ -414,6 +416,7 @@ function cosineSimilarity(a: number[], b: number[]): number {
  */
 export function storingHana(opts: {
   dimension: number;
+  database?: string;
   schema?: string;
   documentsTable?: string;
   catalogTable?: string;
@@ -664,6 +667,16 @@ export function storingHana(opts: {
     params: readonly unknown[],
   ): { rows: Row[]; rowCount: number } => {
     statements.push(sql);
+    const clearTable = sql.match(
+      /^(TRUNCATE TABLE|DROP TABLE(?: IF EXISTS)?) "([^"]+)"$/,
+    );
+    if (clearTable) {
+      const table = resolve({ name: clearTable[2] });
+      table.rows = [];
+      if (clearTable[1].startsWith('DROP TABLE'))
+        tables.delete(`${schema}.${clearTable[2]}`);
+      return { rows: [], rowCount: 0 };
+    }
     const stmt = new Parser(tokenize(sql), sql).parse();
     switch (stmt.kind) {
       case 'select': {
@@ -721,6 +734,16 @@ export function storingHana(opts: {
         return { rowCount: run(sql, params).rowCount };
       },
       async query(sql, params = []) {
+        if (sql.includes('AS "listDatabase"')) {
+          statements.push(sql);
+          return [
+            {
+              listDatabase: opts.database ?? 'catalog_a',
+              listHost: 'localhost',
+              listSchema: schema,
+            },
+          ];
+        }
         return run(sql, params).rows;
       },
       async close() {},

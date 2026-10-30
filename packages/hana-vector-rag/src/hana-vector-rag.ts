@@ -12,12 +12,20 @@ import {
   assertNonEmptyFilter,
   assertScanOptions,
   decodeIdScanCursor,
+  decodeListCursor,
+  encodeListCursor,
   FallbackQueryEmbedding,
   INVALID_ARGUMENT,
   type IRagFilteredDeleter,
   type IRagScanner,
+  listCursorScope,
+  listMetadata,
   matchesRagIdentity,
+  matchesScanFilter,
+  prepareList,
   RagError,
+  type RagListPage,
+  type RagListParams,
   type RagScanFilter,
   type RagScanPage,
   ragIdentityFilter,
@@ -28,8 +36,9 @@ import { SHARED_LAYOUT_NOT_DEPLOYED } from './error-codes.js';
 import { resolveHanaModule } from './hana-module.js';
 import { resolveLayout } from './layout.js';
 import { decodeLob, withId } from './lob.js';
+import { RecordCache, type StoreCache } from './record-cache.js';
 import { deleteWhere, scanPage } from './scan-delete.js';
-import { assertCollectionName } from './schema.js';
+import { assertCollectionName, quoteIdent } from './schema.js';
 import { checkSharedTables } from './shared-check.js';
 import { SHARED_DOCUMENTS_TABLE } from './shared-ddl.js';
 import {
@@ -96,6 +105,10 @@ export async function createHanaClient(
 }
 
 export class HanaVectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
+  private readonly cache: StoreCache;
+  private readonly listStore: string;
+  private listIdentity?: Promise<string>;
+  private readonly listTable: string;
   private readonly dimension: number;
   private readonly embedder: IRetrievalEmbedder;
   private readonly autoCreateSchema: boolean;
@@ -111,10 +124,19 @@ export class HanaVectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
   constructor(
     config: HanaVectorRagConfig & { embedder: IRetrievalEmbedder },
     injectedClient?: HanaClient,
+    cache?: StoreCache,
   ) {
     assertCollectionName(config.collectionName);
     this.dimension = config.dimension ?? 1536;
     this.embedder = config.embedder;
+    this.listStore = JSON.stringify([
+      'hana-vector-rag',
+      config.layout ?? 'per-collection',
+      config.documentsTable ?? null,
+      config.collectionName,
+    ]);
+    this.cache =
+      cache ?? new RecordCache(config.recordCache).store(this.listStore);
     const shared =
       resolveLayout(config.layout, config.autoCreateSchema) === 'shared';
     this.autoCreateSchema = config.autoCreateSchema ?? !shared;
@@ -122,6 +144,9 @@ export class HanaVectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
     this.sql = shared
       ? sharedStoreSql(config.collectionName, this.documentsTable)
       : perCollectionStoreSql(config.collectionName, this.dimension);
+    this.listTable = quoteIdent(
+      shared ? this.documentsTable : config.collectionName,
+    );
     this.connectConfig = config;
     this.injectedClient = injectedClient;
   }
@@ -293,20 +318,112 @@ export class HanaVectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
   ): Promise<Result<RagResult | null, RagError>> {
     if (options?.signal?.aborted)
       return { ok: false, error: new RagError('Aborted', 'ABORTED') };
+    const cached = options?.ragFilter ? undefined : this.cache.get(id);
+    if (cached) return { ok: true, value: cached };
+    const lease = this.cache.beginRead(id);
+    let admitted: RagResult | undefined;
     try {
       await this.maybeEnsureSchema();
       const client = await this.client();
+      if (options?.signal?.aborted) throw new RagError('Aborted', 'ABORTED');
       const stmt = this.sql.byId(id);
       const rows = await client.query(stmt.sql, stmt.params);
+      if (options?.signal?.aborted) throw new RagError('Aborted', 'ABORTED');
       const row = rows[0];
       if (!row) return { ok: true, value: null };
-      const metadata = withId(row);
+      admitted = { text: decodeLob(row.text), metadata: withId(row), score: 1 };
+      return { ok: true, value: admitted };
+    } catch (err) {
+      return { ok: false, error: this.scanFailure(err, 'QUERY_ERROR') };
+    } finally {
+      this.cache.endRead(id, lease, options?.ragFilter ? undefined : admitted);
+    }
+  }
+
+  /** HANA statements use unqualified table names in the connection's current schema. */
+  private resolvedListStore(): Promise<string> {
+    this.listIdentity ??= (async () => {
+      await this.maybeEnsureSchema();
+      const client = await this.client();
+      const rows = await client.query(
+        `SELECT DATABASE_NAME AS "listDatabase", HOST AS "listHost", CURRENT_SCHEMA AS "listSchema" FROM SYS.M_DATABASE`,
+      );
+      const row = rows[0];
+      if (
+        !row ||
+        typeof row.listDatabase !== 'string' ||
+        typeof row.listSchema !== 'string' ||
+        typeof row.listHost !== 'string'
+      )
+        throw new Error('Cannot resolve listing store identity');
+      return JSON.stringify([
+        this.listStore,
+        row.listDatabase,
+        row.listSchema,
+        row.listHost,
+        this.listTable,
+      ]);
+    })().catch((error: unknown) => {
+      this.listIdentity = undefined;
+      throw error instanceof Error ? error : new Error(String(error));
+    });
+    return this.listIdentity;
+  }
+
+  async list(
+    params: RagListParams = {},
+    options?: CallOptions,
+  ): Promise<Result<RagListPage, RagError>> {
+    try {
+      const { filter, conflict, limit } = prepareList(params, options);
+      if (options?.signal?.aborted) throw new RagError('Aborted', 'ABORTED');
+      const store = await this.resolvedListStore();
+      if (options?.signal?.aborted) throw new RagError('Aborted', 'ABORTED');
+      const scope = listCursorScope(store, filter, conflict);
+      const after =
+        params.cursor === undefined
+          ? undefined
+          : decodeListCursor(scope, params.cursor);
+      if (conflict) return { ok: true, value: { records: [] } };
+      await this.maybeEnsureSchema();
+      const client = await this.client();
+      if (options?.signal?.aborted) throw new RagError('Aborted', 'ABORTED');
+      const stmt = this.sql.listPage(
+        after,
+        limit,
+        params.includeText ?? false,
+        filter,
+      );
+      const rows = await client.query(stmt.sql, stmt.params);
+      if (options?.signal?.aborted) throw new RagError('Aborted', 'ABORTED');
+      const records: RagListPage['records'] = [];
+      for (const row of rows) {
+        const metadata = withId(row);
+        if (!matchesScanFilter(metadata, filter)) continue;
+        records.push({
+          id: String(row.id),
+          metadata: listMetadata(metadata),
+          ...(params.includeText ? { text: decodeLob(row.text) } : {}),
+        });
+      }
+      const last = rows[rows.length - 1];
       return {
         ok: true,
-        value: { text: decodeLob(row.text), metadata, score: 1 },
+        value: {
+          records,
+          ...(last && rows.length === limit
+            ? { cursor: encodeListCursor(scope, String(last.id)) }
+            : {}),
+        },
       };
-    } catch (err) {
-      return { ok: false, error: this.failure(err, 'QUERY_ERROR') };
+    } catch (error) {
+      return {
+        ok: false,
+        error:
+          error instanceof RagError
+            ? error
+            : this.failure(error, 'QUERY_ERROR'),
+      };
     }
   }
 
@@ -351,6 +468,7 @@ export class HanaVectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
         this.sql,
         filter,
         options?.signal,
+        this.cache,
       );
       return { ok: true, value: { deleted } };
     } catch (err) {
@@ -405,7 +523,12 @@ export class HanaVectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
       const { id: _omit, ...rest } = metadata ?? {};
       const metaJson = JSON.stringify(rest);
       const stmt = this.sql.upsert(literal, id, text, metaJson);
-      await client.exec(stmt.sql, stmt.params);
+      const settled = this.cache.beginWrite([id]);
+      try {
+        await client.exec(stmt.sql, stmt.params);
+      } finally {
+        settled();
+      }
       return { ok: true, value: undefined };
     } catch (err) {
       return { ok: false, error: this.failure(err, 'UPSERT_ERROR') };
@@ -423,7 +546,13 @@ export class HanaVectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
           await this.maybeEnsureSchema();
           const client = await this.client();
           const stmt = this.sql.deleteById(id);
-          const r = await client.exec(stmt.sql, stmt.params);
+          const settled = this.cache.beginWrite([id]);
+          let r: { rowCount: number };
+          try {
+            r = await client.exec(stmt.sql, stmt.params);
+          } finally {
+            settled();
+          }
           return { ok: true, value: r.rowCount > 0 };
         } catch (err) {
           return {
@@ -437,7 +566,12 @@ export class HanaVectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
           await this.maybeEnsureSchema();
           const client = await this.client();
           const stmt = this.sql.clear();
-          await client.exec(stmt.sql, stmt.params);
+          const settled = this.cache.beginClear();
+          try {
+            await client.exec(stmt.sql, stmt.params);
+          } finally {
+            settled();
+          }
           return { ok: true, value: undefined };
         } catch (err) {
           return { ok: false, error: this.failure(err, 'CLEAR_ERROR') };

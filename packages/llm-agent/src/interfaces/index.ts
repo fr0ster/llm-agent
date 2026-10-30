@@ -205,6 +205,7 @@ export type {
   IIdStrategy,
   IQueryEmbedder,
   IRag,
+  IRagBackendReader,
   IRagBackendWriter,
   IRagEditor,
   IRagProvider,
@@ -217,6 +218,10 @@ export type {
   RagCollectionRecord,
   RagCollectionScope,
   RagJsonValue,
+  RagListMetadata,
+  RagListPage,
+  RagListParams,
+  RagListRecord,
   RagProviderCreateCollectionOptions,
   RagRegistryCreateCollectionParams,
 } from './rag.js';

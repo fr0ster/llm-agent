@@ -17,6 +17,12 @@ export interface PgSearchFilter {
 
 /** The SQL a `PgVectorRag` sends, per table layout. */
 export interface PgStoreSql {
+  listPage(
+    after: string | undefined,
+    limit: number,
+    includeText: boolean,
+    filter?: RagScanFilter,
+  ): SqlStatement;
   readonly layout: 'per-collection' | 'shared';
   /** `undefined` in `shared`: no DDL ever reaches the client. */
   createTable(): string | undefined;
@@ -167,6 +173,8 @@ export function perCollectionStoreSql(
 ): PgStoreSql {
   const table = quoteIdent(collection);
   return {
+    listPage: (after, limit, includeText, filter) =>
+      listSql(table, [], after, limit, includeText, filter),
     layout: 'per-collection',
     createTable: () => createTableSql(collection, dimension),
     search: (lit, limit, filter) => {
@@ -208,6 +216,8 @@ export function sharedStoreSql(
 ): PgStoreSql {
   const table = qualifiedTable(documentsTable, schema);
   return {
+    listPage: (after, limit, includeText, filter) =>
+      listSql(table, [collection], after, limit, includeText, filter),
     layout: 'shared',
     createTable: () => undefined,
     search: (lit, limit, filter) => {
@@ -244,5 +254,25 @@ export function sharedStoreSql(
     scanPage: (afterKey, limit, filter) =>
       scanSql(table, [collection], afterKey, limit, filter),
     deleteWhere: (filter) => deleteWhereSql(table, [collection], filter),
+  };
+}
+
+function listSql(
+  table: string,
+  params: string[],
+  after: string | undefined,
+  limit: number,
+  includeText: boolean,
+  filter?: RagScanFilter,
+): SqlStatement {
+  const conditions: string[] = params.length ? ['"collection" = $1'] : [];
+  if (after !== undefined) {
+    params.push(after);
+    conditions.push(`"id" COLLATE "C" > $${params.length} COLLATE "C"`);
+  }
+  conditions.push(...scanFilterConditions(filter, params));
+  return {
+    sql: `SELECT "id", "metadata"${includeText ? ', "text"' : ''} FROM ${table}${conditions.length ? ` WHERE ${conditions.join(' AND ')}` : ''} ORDER BY "id" COLLATE "C" LIMIT ${limit}`,
+    params,
   };
 }

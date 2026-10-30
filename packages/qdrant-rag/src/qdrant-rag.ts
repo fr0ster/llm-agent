@@ -9,10 +9,17 @@ import {
   assertNonEmptyFilter,
   assertScanOptions,
   type CallOptions,
+  decodeListCursor,
+  encodeListCursor,
   FallbackQueryEmbedding,
   type IRagFilteredDeleter,
   type IRagScanner,
+  listCursorScope,
+  listMetadata,
+  prepareList,
   RagError,
+  type RagListPage,
+  type RagListParams,
   type RagMetadata,
   type RagResult,
   type RagScanFilter,
@@ -379,6 +386,56 @@ export class QdrantRag implements IRag, IRagScanner, IRagFilteredDeleter {
     } catch (err) {
       if (err instanceof RagError) return { ok: false, error: err };
       return { ok: false, error: new RagError(String(err), 'QUERY_ERROR') };
+    }
+  }
+
+  async list(
+    params: RagListParams = {},
+    options?: CallOptions,
+  ): Promise<Result<RagListPage, RagError>> {
+    try {
+      const { filter, conflict, limit } = prepareList(params, options);
+      const scope = listCursorScope(
+        `qdrant:${this.url}:${this.collectionName}`,
+        filter,
+        conflict,
+      );
+      const cursor =
+        params.cursor === undefined
+          ? undefined
+          : decodeListCursor(scope, params.cursor);
+      if (conflict) return { ok: true, value: { records: [] } };
+      const page = await scanPage(
+        this._fetch.bind(this),
+        this.collectionName,
+        { filter, pageSize: limit, cursor },
+        options?.signal,
+        true,
+      );
+      const records = page.records.map((record) => ({
+        id: record.id,
+        metadata: listMetadata(record.metadata),
+        ...(params.includeText ? { text: record.text } : {}),
+      }));
+      if (options?.signal?.aborted) throw new RagError('Aborted', 'ABORTED');
+      return {
+        ok: true,
+        value: {
+          records,
+          ...(page.cursor === undefined
+            ? {}
+            : { cursor: encodeListCursor(scope, page.cursor) }),
+        },
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        error: options?.signal?.aborted
+          ? new RagError('Aborted', 'ABORTED')
+          : error instanceof RagError
+            ? error
+            : new RagError(String(error), 'QUERY_ERROR'),
+      };
     }
   }
 

@@ -12,11 +12,19 @@ import {
   assertNonEmptyFilter,
   assertScanOptions,
   decodeIdScanCursor,
+  decodeListCursor,
+  encodeListCursor,
   FallbackQueryEmbedding,
   INVALID_ARGUMENT,
   type IRagFilteredDeleter,
   type IRagScanner,
+  listCursorScope,
+  listMetadata,
+  matchesScanFilter,
+  prepareList,
   RagError,
+  type RagListPage,
+  type RagListParams,
   type RagScanFilter,
   type RagScanPage,
   ragIdentityFilter,
@@ -25,8 +33,13 @@ import type { PgVectorRagConfig } from './connection.js';
 import { resolvePgConnectArgs } from './connection.js';
 import { SHARED_LAYOUT_NOT_DEPLOYED } from './error-codes.js';
 import { resolveLayout } from './layout.js';
+import { RecordCache, type StoreCache } from './record-cache.js';
 import { deleteWhere, scanPage } from './scan-delete.js';
-import { assertCollectionName, createExtensionSql } from './schema.js';
+import {
+  assertCollectionName,
+  createExtensionSql,
+  qualifiedTable,
+} from './schema.js';
 import { checkSharedTables } from './shared-check.js';
 import { SHARED_DOCUMENTS_TABLE } from './shared-ddl.js';
 import {
@@ -40,6 +53,7 @@ import { withId } from './with-id.js';
 export type { PgVectorRagConfig };
 
 export interface PgClient {
+  transaction?<T>(work: (client: PgClient) => Promise<T>): Promise<T>;
   query(
     sql: string,
     params?: readonly unknown[],
@@ -48,6 +62,7 @@ export interface PgClient {
 }
 
 interface PgPool {
+  connect(): Promise<{ query: PgClient['query']; release(): void }>;
   query: PgClient['query'];
   end: () => Promise<void>;
   on(event: 'error', listener: (err: Error) => void): unknown;
@@ -81,6 +96,28 @@ export function openPgClient(
   return {
     query: (sql, params = []) => pool.query(sql, params as unknown[]),
     end: () => pool.end(),
+    transaction: async (work) => {
+      const connection = await pool.connect();
+      const client: PgClient = {
+        query: (sql, params) => connection.query(sql, params),
+        end: async () => {},
+      };
+      try {
+        await client.query('BEGIN');
+        const result = await work(client);
+        await client.query('COMMIT');
+        return result;
+      } catch (error) {
+        try {
+          await client.query('ROLLBACK');
+        } catch {
+          /* Preserve the original failure. */
+        }
+        throw error;
+      } finally {
+        connection.release();
+      }
+    },
   };
 }
 
@@ -99,6 +136,10 @@ export async function createPgClient(
 }
 
 export class PgVectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
+  private readonly cache: StoreCache;
+  private readonly listStore: string;
+  private listIdentity?: Promise<string>;
+  private readonly listTable: string;
   private readonly dimension: number;
   private readonly embedder: IRetrievalEmbedder;
   private readonly autoCreateSchema: boolean;
@@ -113,15 +154,27 @@ export class PgVectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
   constructor(
     config: PgVectorRagConfig & { embedder: IRetrievalEmbedder },
     injectedClient?: PgClient,
+    cache?: StoreCache,
   ) {
     assertCollectionName(config.collectionName);
     this.dimension = config.dimension ?? 1536;
     this.embedder = config.embedder;
+    this.listStore = JSON.stringify([
+      'pg-vector-rag',
+      config.layout ?? 'per-collection',
+      config.documentsTable ?? null,
+      config.collectionName,
+    ]);
+    this.cache =
+      cache ?? new RecordCache(config.recordCache).store(this.listStore);
     const shared =
       resolveLayout(config.layout, config.autoCreateSchema) === 'shared';
     this.autoCreateSchema = config.autoCreateSchema ?? !shared;
     this.documentsTable = config.documentsTable ?? SHARED_DOCUMENTS_TABLE;
     this.schema = config.schema;
+    this.listTable = shared
+      ? qualifiedTable(this.documentsTable, config.schema)
+      : qualifiedTable(config.collectionName);
     this.sql = shared
       ? sharedStoreSql(
           config.collectionName,
@@ -239,23 +292,122 @@ export class PgVectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
   ): Promise<Result<RagResult | null, RagError>> {
     if (options?.signal?.aborted)
       return { ok: false, error: new RagError('Aborted', 'ABORTED') };
+    const cached = options?.ragFilter ? undefined : this.cache.get(id);
+    if (cached) return { ok: true, value: cached };
+    const lease = this.cache.beginRead(id);
+    let admitted: RagResult | undefined;
     try {
       await this.maybeEnsureSchema();
       const client = await this.clientPromise;
+      if (options?.signal?.aborted) throw new RagError('Aborted', 'ABORTED');
       const stmt = this.sql.byId(id);
       const { rows } = await client.query(stmt.sql, stmt.params);
+      if (options?.signal?.aborted) throw new RagError('Aborted', 'ABORTED');
       const row = rows[0];
       if (!row) return { ok: true, value: null };
+      admitted = {
+        text: String(row.text ?? ''),
+        metadata: withId(row),
+        score: 1,
+      };
+      return { ok: true, value: admitted };
+    } catch (err) {
+      return { ok: false, error: this.scanFailure(err, 'QUERY_ERROR') };
+    } finally {
+      this.cache.endRead(id, lease, options?.ragFilter ? undefined : admitted);
+    }
+  }
+
+  /** Resolve search_path and connection defaults once per handle. */
+  private resolvedListStore(): Promise<string> {
+    this.listIdentity ??= (async () => {
+      await this.maybeEnsureSchema();
+      const client = await this.clientPromise;
+      const { rows } = await client.query(
+        `SELECT current_database() AS "listDatabase", n.nspname AS "listSchema",
+          inet_server_addr()::text AS "listHost", inet_server_port() AS "listPort"
+         FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+         WHERE c.oid = to_regclass($1)`,
+        [this.listTable],
+      );
+      const row = rows[0];
+      if (
+        !row ||
+        typeof row.listDatabase !== 'string' ||
+        typeof row.listSchema !== 'string' ||
+        (row.listHost !== null && typeof row.listHost !== 'string') ||
+        (row.listPort !== null && typeof row.listPort !== 'number')
+      )
+        throw new Error('Cannot resolve listing store identity');
+      return JSON.stringify([
+        this.listStore,
+        row.listDatabase,
+        row.listSchema,
+        row.listHost,
+        row.listPort,
+        this.listTable,
+      ]);
+    })().catch((error: unknown) => {
+      this.listIdentity = undefined;
+      throw error instanceof Error ? error : new Error(String(error));
+    });
+    return this.listIdentity;
+  }
+
+  async list(
+    params: RagListParams = {},
+    options?: CallOptions,
+  ): Promise<Result<RagListPage, RagError>> {
+    try {
+      const { filter, conflict, limit } = prepareList(params, options);
+      if (options?.signal?.aborted) throw new RagError('Aborted', 'ABORTED');
+      const store = await this.resolvedListStore();
+      if (options?.signal?.aborted) throw new RagError('Aborted', 'ABORTED');
+      const scope = listCursorScope(store, filter, conflict);
+      const after =
+        params.cursor === undefined
+          ? undefined
+          : decodeListCursor(scope, params.cursor);
+      if (conflict) return { ok: true, value: { records: [] } };
+      await this.maybeEnsureSchema();
+      const client = await this.clientPromise;
+      if (options?.signal?.aborted) throw new RagError('Aborted', 'ABORTED');
+      const stmt = this.sql.listPage(
+        after,
+        limit,
+        params.includeText ?? false,
+        filter,
+      );
+      const { rows } = await client.query(stmt.sql, stmt.params);
+      if (options?.signal?.aborted) throw new RagError('Aborted', 'ABORTED');
+      const records: RagListPage['records'] = [];
+      for (const row of rows) {
+        const metadata = withId(row);
+        if (!matchesScanFilter(metadata, filter)) continue;
+        records.push({
+          id: String(row.id),
+          metadata: listMetadata(metadata),
+          ...(params.includeText ? { text: String(row.text ?? '') } : {}),
+        });
+      }
+      const last = rows[rows.length - 1];
       return {
         ok: true,
         value: {
-          text: String(row.text ?? ''),
-          metadata: withId(row),
-          score: 1,
+          records,
+          ...(last && rows.length === limit
+            ? { cursor: encodeListCursor(scope, String(last.id)) }
+            : {}),
         },
       };
-    } catch (err) {
-      return { ok: false, error: this.failure(err, 'QUERY_ERROR') };
+    } catch (error) {
+      return {
+        ok: false,
+        error:
+          error instanceof RagError
+            ? error
+            : this.failure(error, 'QUERY_ERROR'),
+      };
     }
   }
 
@@ -301,7 +453,13 @@ export class PgVectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
           ok: false,
           error: new RagError('Aborted after deleting 0 record(s)', 'ABORTED'),
         };
-      const deleted = await deleteWhere(client, this.sql, filter);
+      const deleted = await deleteWhere(
+        client,
+        this.sql,
+        filter,
+        this.cache,
+        options?.signal,
+      );
       return { ok: true, value: { deleted } };
     } catch (err) {
       return { ok: false, error: this.scanFailure(err, 'DELETE_ERROR') };
@@ -357,7 +515,12 @@ export class PgVectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
       const id = metadata?.id ?? crypto.randomUUID();
       const { id: _omit, ...rest } = metadata ?? {};
       const stmt = this.sql.upsert(literal, id, text, JSON.stringify(rest));
-      await client.query(stmt.sql, stmt.params);
+      const settled = this.cache.beginWrite([id]);
+      try {
+        await client.query(stmt.sql, stmt.params);
+      } finally {
+        settled();
+      }
       return { ok: true, value: undefined };
     } catch (err) {
       return { ok: false, error: this.failure(err, 'UPSERT_ERROR') };
@@ -375,7 +538,13 @@ export class PgVectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
           await this.maybeEnsureSchema();
           const client = await this.clientPromise;
           const stmt = this.sql.deleteById(id);
-          const res = await client.query(stmt.sql, stmt.params);
+          const settled = this.cache.beginWrite([id]);
+          let res: { rowCount: number };
+          try {
+            res = await client.query(stmt.sql, stmt.params);
+          } finally {
+            settled();
+          }
           return { ok: true, value: res.rowCount > 0 };
         } catch (err) {
           return {
@@ -389,7 +558,12 @@ export class PgVectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
           await this.maybeEnsureSchema();
           const client = await this.clientPromise;
           const stmt = this.sql.clear();
-          await client.query(stmt.sql, stmt.params);
+          const settled = this.cache.beginClear();
+          try {
+            await client.query(stmt.sql, stmt.params);
+          } finally {
+            settled();
+          }
           return { ok: true, value: undefined };
         } catch (err) {
           return { ok: false, error: this.failure(err, 'CLEAR_ERROR') };
