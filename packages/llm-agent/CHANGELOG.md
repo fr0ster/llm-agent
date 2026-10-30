@@ -1,5 +1,11 @@
 # @mcp-abap-adt/llm-agent
 
+## 30.24.0
+
+### Minor Changes
+
+- 5b01527: Expose bounded, redacted worker tool traces and provide execution evidence to verdict workers.
+
 ## 30.23.0
 
 ### Minor Changes
