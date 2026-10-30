@@ -6,13 +6,15 @@ import { runInPlannerScope } from '../planner-scope.js';
 import { PlannerToolsClient } from '../planner-tools-client.js';
 import { applyTaskEvent, mergePlan } from '../structured-plan.js';
 import { TaskBoard } from '../task-board.js';
+import { profileHost } from './profile-test-host.js';
 
 function event(id: string, output = ''): TaskEvent {
   return {
     kind: 'done',
     task: {
       id,
-      worker: 'checker',
+      worker: 'audit',
+      result: 'verdict',
       goal: 'verify',
       state: 'done',
       createdAt: 0,
@@ -28,11 +30,14 @@ function checking(items?: string[]): DialoguePlan {
       {
         id: 'verify_stored_count',
         goal: 'Verify storage',
-        worker: 'checker',
+        worker: 'audit',
+        result: 'verdict',
         dependsOn: ['source'],
       },
     ],
     'active',
+    undefined,
+    { resolveResult: (name) => (name === 'audit' ? 'verdict' : 'report') },
   );
   Object.assign(plan.steps[0], {
     state: 'done',
@@ -61,7 +66,10 @@ for (const state of ['pending', 'running'] as const) {
         store: {
           load: async () => ({
             plan,
-            tasks: [{ ...event('t14').task, worker: 'w' }, event('t15').task],
+            tasks: [
+              { ...event('t14').task, worker: 'w', result: 'report' },
+              event('t15').task,
+            ],
             conversation: [],
             pending: [],
             savedAt: 0,
@@ -82,7 +90,7 @@ for (const state of ['pending', 'running'] as const) {
                   : /are ready.*Delegate them/,
               );
             }
-            return { ok: true, value: { content: 'Launching checker' } };
+            return { ok: true, value: { content: 'Launching audit' } };
           },
         },
       });
@@ -101,7 +109,7 @@ const wrappers = [
 for (const [index, wrap] of wrappers.entries()) {
   for (const verdict of ['pass', 'fail'] as const) {
     for (const count of [undefined, 1, 2]) {
-      test(`checker wrapper ${index}, ${verdict}, count ${count} preserves batch rules`, () => {
+      test(`audit wrapper ${index}, ${verdict}, count ${count} preserves batch rules`, () => {
         const plan = checking(['a', 'b']);
         applyTaskEvent(
           plan,
@@ -122,7 +130,7 @@ for (const [index, wrap] of wrappers.entries()) {
         );
       });
     }
-    test(`checker wrapper ${index}, ${verdict} without items`, () => {
+    test(`audit wrapper ${index}, ${verdict} without items`, () => {
       const plan = checking();
       applyTaskEvent(plan, event('t15', wrap(JSON.stringify({ verdict }))));
       assert.equal(plan.steps[1].state, verdict === 'pass' ? 'done' : 'failed');
@@ -181,7 +189,7 @@ test('repeated consistent verdicts use the last one', () => {
 });
 
 for (const output of ['{"verdict":"unknown"}', '```json\ninvalid\n```', '']) {
-  test(`unusable checker result allows fresh delegation: ${output}`, async () => {
+  test(`unusable audit result allows fresh delegation: ${output}`, async () => {
     const plan = checking();
     applyTaskEvent(plan, event('t15', output));
     const step = plan.steps[1];
@@ -193,21 +201,25 @@ for (const output of ['{"verdict":"unknown"}', '```json\ninvalid\n```', '']) {
     assert.equal(step.workTaskId, 't15');
     assert.equal(step.verdict, 'fail');
     const board = new TaskBoard({
-      workers: new Map([
-        [
-          'checker',
-          {
-            name: 'checker',
-            capabilities: { contextPolicy: 'optional' as const },
-            async run() {
-              return { output: '{"verdict":"pass"}' };
+      ...profileHost(
+        new Map([
+          [
+            'audit',
+            {
+              name: 'audit',
+              capabilities: { contextPolicy: 'optional' as const },
+              async run() {
+                return { output: '{"verdict":"pass"}' };
+              },
             },
-          },
-        ],
-      ]),
+          ],
+        ]),
+      ),
       onEvent: (e) => applyTaskEvent(plan, e),
     });
-    board.restore([{ ...event('t14', 'source result').task, worker: 'w' }]);
+    board.restore([
+      { ...event('t14', 'source result').task, worker: 'w', result: 'report' },
+    ]);
     try {
       await runInPlannerScope(
         { board, getPlan: () => plan, setPlan() {} },
@@ -215,7 +227,8 @@ for (const output of ['{"verdict":"unknown"}', '```json\ninvalid\n```', '']) {
           const result = await new PlannerToolsClient().callTool(
             'delegate_task',
             {
-              worker: 'checker',
+              worker: 'audit',
+              result: 'verdict',
               goal: 'Verify again',
               step_id: step.id,
             },
@@ -233,7 +246,7 @@ for (const output of ['{"verdict":"unknown"}', '```json\ninvalid\n```', '']) {
   });
 }
 
-test('checker outcome only changes its own step', () => {
+test('audit outcome only changes its own step', () => {
   const plan = checking();
   const source = structuredClone(plan.steps[0]);
   applyTaskEvent(plan, event('t15', 'PASS'));

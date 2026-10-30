@@ -90,6 +90,7 @@ describe('DirectLlmSubAgent', () => {
     const llm = new CapturingLlm();
     const sub = new DirectLlmSubAgent('flex', llm, {
       systemPrompt: 'sys',
+      workerBase: 'host base',
       contextPolicy: 'optional',
     });
 
@@ -100,6 +101,9 @@ describe('DirectLlmSubAgent', () => {
     });
 
     assert.equal(res.output, 'response');
+    const system = llm.capturedMessages?.[0].content ?? '';
+    assert.ok(system.startsWith('host base\n\nsys'));
+    assert.ok(system.indexOf('sys') < system.indexOf(REQUEST_TIME_GUIDANCE));
     assert.equal(llm.capturedMessages?.[1].role, 'user');
     assert.equal(
       llm.capturedMessages?.[1].content,

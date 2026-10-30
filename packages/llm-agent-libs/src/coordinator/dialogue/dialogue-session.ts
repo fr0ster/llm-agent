@@ -3,6 +3,8 @@ import type {
   CallOptions,
   DialogueSignals,
   DialogueState,
+  IAgentProfileRunner,
+  IAgentProfileSource,
   IDialogueStateStore,
   IPlannerContextBuilder,
   ISignalEmitter,
@@ -31,6 +33,10 @@ import {
 } from './planner-context-builder.js';
 import { PlannerMemoryWriter } from './planner-memory.js';
 import {
+  composePlannerPrompt,
+  DIALOGUE_PLANNER_SYSTEM,
+} from './planner-prompt.js';
+import {
   type PlannerRetrievalOptions,
   retrievePlannerContext,
   validateRetrievalOptions,
@@ -39,13 +45,16 @@ import { runInPlannerScope } from './planner-scope.js';
 import { formatRequestTime, validateTimeZone } from './request-time.js';
 import {
   applyTaskEvent,
+  checkSourcesCurrent,
   currentAttemptIds,
   deliveryChecksPassed,
   planView,
   readySteps,
   recomputePlanStatus,
+  resetStaleCheck,
   restoreLegacyStep,
   restoreSuccessfulWork,
+  resultKind,
 } from './structured-plan.js';
 import { TaskBoard, type TaskBoardOptions } from './task-board.js';
 
@@ -94,7 +103,10 @@ export interface DialogueSessionOptions extends PlannerRetrievalOptions {
   hardStopAfterMs?: number;
   maxItemsPerStep?: number;
   taskOutputChars?: number;
-  planner: PlannerAgent;
+  planner?: PlannerAgent;
+  profileSource?: IAgentProfileSource;
+  profileRunner?: IAgentProfileRunner;
+  profileTimeoutMs?: number;
   board: Omit<
     TaskBoardOptions,
     'onEvent' | 'signals' | 'source' | 'onStateChange'
@@ -401,6 +413,9 @@ export class DialogueSession {
     const session = this;
     this.board = new TaskBoard({
       ...opts.board,
+      profileSource: opts.profileSource ?? opts.board.profileSource,
+      profileRunner: opts.profileRunner ?? opts.board.profileRunner,
+      profileTimeoutMs: opts.profileTimeoutMs ?? opts.board.profileTimeoutMs,
       taskOutputChars: opts.taskOutputChars ?? opts.board.taskOutputChars,
       hardStopAfterMs: opts.hardStopAfterMs ?? opts.board.hardStopAfterMs,
       scheduleTimer: opts.scheduleTimer ?? opts.board.scheduleTimer,
@@ -543,6 +558,17 @@ export class DialogueSession {
         ) {
           step.state = 'failed';
           step.note = 'interrupted by restart';
+        }
+      }
+      // Source markers must all be restored before validating dependent evidence.
+      if (session.plan) {
+        for (const step of session.plan.steps) {
+          if (
+            resultKind(step) === 'verdict' &&
+            step.state !== 'skipped' &&
+            !checkSourcesCurrent(session.plan, step)
+          )
+            resetStaleCheck(step);
         }
       }
       recomputePlanStatus(session.plan);
@@ -736,7 +762,33 @@ export class DialogueSession {
           this.retainRequests();
           this.changed();
         };
+        let planner = this.opts.planner;
+        let profileNote: string | undefined;
+        if (this.board.profiles) {
+          const discovery = await this.board.profiles.discovery({
+            signal: user?.opts.signal,
+          });
+          profileNote = `[worker profiles] ${JSON.stringify(discovery.profiles)}`;
+          const runner =
+            this.opts.profileRunner ?? this.opts.board.profileRunner;
+          if (!runner) throw new Error('profileRunner is required');
+          planner = await this.board.profiles.call(
+            (options) =>
+              runner.preparePlanner(
+                {
+                  systemPrompt: composePlannerPrompt(
+                    discovery.prompts.planner ?? DIALOGUE_PLANNER_SYSTEM,
+                  ),
+                },
+                options,
+              ),
+            { signal: user?.opts.signal },
+          );
+        }
+        if (!planner) throw new Error('planner is required');
+        const callPlanner = planner;
         const notes = [
+          ...(profileNote === undefined ? [] : [profileNote]),
           planView(this.plan),
           ...this.board.workerBudgetNotes(),
           ...(this.opts.maxItemsPerStep === undefined
@@ -832,6 +884,7 @@ export class DialogueSession {
             },
             ownTask: (id) => this.taskRequests.set(id, request.id),
             board: this.board,
+            signal: user?.opts.signal,
             requestStartedAt: request.openedAt,
             maxItemsPerStep: this.opts.maxItemsPerStep,
             taskSteps: this.taskSteps,
@@ -888,7 +941,7 @@ export class DialogueSession {
             },
           },
           () =>
-            this.opts.planner.process(messages, {
+            callPlanner.process(messages, {
               ...user?.opts,
               toolRoundGuard: (calls) => {
                 const firstRound = roundCount++ === 0;

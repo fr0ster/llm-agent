@@ -6,6 +6,13 @@ import type {
 } from '@mcp-abap-adt/llm-agent';
 import { z } from 'zod';
 
+export function resultKind(record: {
+  result?: 'report' | 'verdict';
+  worker?: string;
+}): 'report' | 'verdict' {
+  return record.result ?? (record.worker === 'checker' ? 'verdict' : 'report');
+}
+
 export const stepSchema = z.object({
   id: z.string().min(1),
   goal: z.string().min(1),
@@ -25,6 +32,7 @@ export function mergePlan(
   options: {
     consent?: boolean;
     maxItemsPerStep?: number;
+    resolveResult?: (worker: string) => 'report' | 'verdict';
     getTask?: (id: string) => TaskRecord | undefined;
   } = {},
 ): Plan {
@@ -80,7 +88,7 @@ export function mergePlan(
     visited.add(id);
   };
   for (const id of ids) visit(id);
-  return {
+  const merged: Plan = {
     version: 1,
     status,
     question,
@@ -93,8 +101,14 @@ export function mergePlan(
       if (old && options.getTask) restoreSuccessfulWork(old, options.getTask);
       const items = s.items;
       const effectiveState = s.state ?? old?.state ?? 'pending';
+      const worker = s.worker ?? old?.worker;
+      const result = s.worker
+        ? (options.resolveResult?.(s.worker) ?? resultKind(s))
+        : old
+          ? resultKind(old)
+          : 'report';
       const roleChanged =
-        (s.worker === 'checker') !== (old?.worker === 'checker');
+        result !== (old ? resultKind(old) : 'report') || worker !== old?.worker;
       const dependenciesChanged =
         JSON.stringify(s.dependsOn ?? []) !==
         JSON.stringify(old?.dependsOn ?? []);
@@ -107,6 +121,17 @@ export function mergePlan(
         throw new Error(
           'Changing worker role or dependencies requires reopening the step as pending',
         );
+      if (
+        old &&
+        (roleChanged || dependenciesChanged || effectiveState === 'pending') &&
+        options.getTask
+      ) {
+        for (const id of new Set([...old.taskIds, old.workTaskId])) {
+          const task = id ? options.getTask(id) : undefined;
+          if (task?.state === 'running' || task?.state === 'queued')
+            throw new Error('Cannot change an active attempt; stop it first');
+        }
+      }
       const itemsChanged = JSON.stringify(old?.items) !== JSON.stringify(items);
       if (
         (items || old?.items) &&
@@ -124,31 +149,38 @@ export function mergePlan(
         throw new Error('Running state follows actual work attempts');
       if (s.state === 'done' && old?.state !== 'done')
         throw new Error('Done requires a successful current task result');
+      const identityChanged = roleChanged || dependenciesChanged;
+      const clearEvidence =
+        itemsChanged || identityChanged || effectiveState === 'pending';
       return {
         ...s,
+        worker,
+        result,
         state: old
           ? effectiveState
           : s.state === 'skipped'
             ? 'skipped'
             : 'pending',
-        taskIds: itemsChanged ? [] : (old?.taskIds ?? []),
-        workTaskId: itemsChanged ? undefined : old?.workTaskId,
-        successfulWorkTaskId:
-          itemsChanged || effectiveState === 'pending'
-            ? undefined
-            : old?.successfulWorkTaskId,
-        checkedTaskIds:
-          itemsChanged || effectiveState === 'pending'
-            ? undefined
-            : old?.checkedTaskIds,
+        taskIds: itemsChanged || identityChanged ? [] : (old?.taskIds ?? []),
+        workTaskId: clearEvidence ? undefined : old?.workTaskId,
+        successfulWorkTaskId: clearEvidence
+          ? undefined
+          : old?.successfulWorkTaskId,
+        checkedTaskIds: clearEvidence ? undefined : old?.checkedTaskIds,
         note: s.note ?? old?.note,
-        verdict:
-          itemsChanged || effectiveState === 'pending'
-            ? undefined
-            : old?.verdict,
+        verdict: clearEvidence ? undefined : old?.verdict,
       };
     }),
   };
+  for (const step of merged.steps) {
+    if (
+      resultKind(step) === 'verdict' &&
+      (step.verdict || step.checkedTaskIds) &&
+      !checkSourcesCurrent(merged, step)
+    )
+      resetStaleCheck(step);
+  }
+  return merged;
 }
 export function dependenciesDone(plan: Plan, step: PlanStep): boolean {
   return (step.dependsOn ?? []).every((id) =>
@@ -163,7 +195,10 @@ export function readySteps(plan?: Plan): PlanStep[] {
   );
 }
 export function currentWorkTaskId(step: PlanStep): string | undefined {
-  return step.workTaskId ?? step.taskIds.at(-1);
+  return (
+    step.workTaskId ??
+    (step.state === 'pending' ? undefined : step.taskIds.at(-1))
+  );
 }
 // Only verified current persisted work may supply the optional legacy marker.
 export function restoreSuccessfulWork(
@@ -190,6 +225,7 @@ export function currentAttemptIds(step: PlanStep): string[] {
 }
 /** Normalize persisted pre-check-step plans without changing their work history. */
 export function restoreLegacyStep(step: PlanStep): void {
+  step.result ??= resultKind(step);
   if ('check' in step) {
     const legacy = z
       .object({ taskId: z.string().optional() })
@@ -269,7 +305,7 @@ function checkerVerdict(output: string): CheckerVerdict | undefined {
   if (new Set(candidates.map(outcome)).size !== 1) return undefined;
   return candidates.at(-1);
 }
-function checkSourcesCurrent(plan: Plan, step: PlanStep): boolean {
+export function checkSourcesCurrent(plan: Plan, step: PlanStep): boolean {
   return (step.dependsOn ?? []).every((id) => {
     const source = plan.steps.find((s) => s.id === id);
     return (
@@ -278,9 +314,10 @@ function checkSourcesCurrent(plan: Plan, step: PlanStep): boolean {
     );
   });
 }
-function resetStaleCheck(step: PlanStep): void {
+export function resetStaleCheck(step: PlanStep): void {
   step.state = 'pending';
   delete step.verdict;
+  delete step.workTaskId;
   delete step.successfulWorkTaskId;
   delete step.checkedTaskIds;
   step.note =
@@ -304,7 +341,11 @@ export function applyTaskEvent(
     return;
   // Older retry outcomes cannot overwrite the current attempt.
   if (!currentAttemptIds(step).includes(task.id)) return;
-  if (step.worker === 'checker' && plan && !checkSourcesCurrent(plan, step)) {
+  if (
+    resultKind(step) === 'verdict' &&
+    plan &&
+    !checkSourcesCurrent(plan, step)
+  ) {
     resetStaleCheck(step);
     return;
   }
@@ -320,7 +361,7 @@ export function applyTaskEvent(
   if (step.successfulWorkTaskId && plan) {
     for (const check of plan.steps) {
       if (
-        check.worker === 'checker' &&
+        resultKind(check) === 'verdict' &&
         check.state !== 'skipped' &&
         check.dependsOn?.includes(step.id) &&
         !checkSourcesCurrent(plan, check)
@@ -329,17 +370,18 @@ export function applyTaskEvent(
     }
   }
   if (step.items && task.budgetExhausted) {
+    if ((task.result ?? resultKind(step)) === 'verdict') step.verdict = 'fail';
     step.state = 'failed';
     step.note = `Worker hit the tool-call budget ${task.toolCalls ?? '?'}/${task.maxToolCalls ?? '?'}; split the step (${step.items.length} items) before retrying`;
     return;
   }
   if (kind !== 'done') {
-    if (step.worker === 'checker') step.verdict = 'fail';
+    if (resultKind(step) === 'verdict') step.verdict = 'fail';
     step.state = 'failed';
     step.note = task.error ?? kind;
     return;
   }
-  if (step.worker === 'checker') {
+  if ((task.result ?? resultKind(step)) === 'verdict') {
     const output = task.output?.trim() ?? '';
     const verdict = /^(PASS|FAIL)$/i.test(output)
       ? { verdict: output.toLowerCase() }
@@ -377,7 +419,7 @@ export function applyTaskEvent(
 /** Require a passing check and no failing latest check attempts. */
 export function deliveryChecksPassed(plan: Plan, stepId: string): boolean {
   const checks = plan.steps.filter(
-    (s) => s.worker === 'checker' && s.dependsOn?.includes(stepId),
+    (s) => resultKind(s) === 'verdict' && s.dependsOn?.includes(stepId),
   );
   if (!checks.length) return true;
   const latest = checks.filter(

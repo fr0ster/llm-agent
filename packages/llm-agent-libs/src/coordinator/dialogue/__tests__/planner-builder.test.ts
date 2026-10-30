@@ -18,7 +18,7 @@ test('planner prompt requires result delegation and planned verification', () =>
     'A worker can search the session',
     'Plan the whole request up front',
     'done criterion',
-    'Verification is planned as separate check steps (worker checker, dependsOn the checked steps)',
+    'Verification is planned as separate check steps (a verdict profile, dependsOn the checked steps)',
     'The worker that did the work never checks it',
     'Plan checks in proportion to risk',
     'Do not add checks the plan did not foresee unless a result shows a concrete problem',
@@ -39,7 +39,7 @@ test('planner prompt requires result delegation and planned verification', () =>
     'A failed check requires a fix step plus a new check depending on the fix',
     'Skills and planning guidance may define other or deeper verification',
     'Never delegate a task only to close a step',
-    'check with the checker when the plan foresees it',
+    'check with the verdict worker when the plan foresees it',
   ])
     assert.ok(DIALOGUE_PLANNER_SYSTEM.includes(rule), rule);
 });

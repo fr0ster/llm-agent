@@ -55,7 +55,7 @@ export function withRequestTime(
   } else if (!messages[systemIndex].content?.includes(REQUEST_TIME_GUIDANCE)) {
     messages[systemIndex] = {
       ...messages[systemIndex],
-      content: `${REQUEST_TIME_GUIDANCE}\n\n${messages[systemIndex].content ?? ''}`,
+      content: `${messages[systemIndex].content ?? ''}\n\n${REQUEST_TIME_GUIDANCE}`,
     };
   }
   if (requestStartedAt !== undefined) {

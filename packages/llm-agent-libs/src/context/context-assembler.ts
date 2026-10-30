@@ -24,7 +24,7 @@ export interface ContextAssemblerConfig {
   timeZone?: string;
   /** chars/4 token budget. No limit when undefined. */
   maxTokens?: number;
-  /** Preamble prepended before context sections in system message. */
+  /** Host base and function prompt forming the static system prefix. */
   systemPromptPreamble?: string;
   /** Emit RAG scores as annotations for observability. Default: false. */
   includeProvenance?: boolean;
@@ -104,8 +104,8 @@ function titleCase(key: string): string {
   return key.replace(/[_-]/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
-/** Combine all sections into system message content */
-function buildSystemContent(
+/** Combine retrieved sections into request content */
+function buildRequestContent(
   ragResults: Record<string, RagResult[]>,
   provenance: boolean,
   sectionHeaders: Record<string, string>,
@@ -157,7 +157,7 @@ function applyTokenBudget(
   const storeKeys = Object.keys(mutableResults);
 
   const totalTokens = (): number => {
-    const content = buildSystemContent(
+    const content = buildRequestContent(
       mutableResults,
       provenance,
       sectionHeaders,
@@ -244,7 +244,7 @@ export class ContextAssembler implements IContextAssembler {
         );
       }
 
-      const systemContent = buildSystemContent(
+      const requestContent = buildRequestContent(
         finalResults,
         this.includeProvenance,
         this.sectionHeaders,
@@ -261,7 +261,6 @@ export class ContextAssembler implements IContextAssembler {
         this.showReasoning
           ? this.reasoningInstruction || DEFAULT_REASONING_INSTRUCTION
           : '',
-        systemContent,
       ].filter(Boolean);
       messages.push({ role: 'system', content: parts.join('\n\n') });
 
@@ -294,6 +293,16 @@ export class ContextAssembler implements IContextAssembler {
         messages.push(...windowedMessages);
       } else {
         messages.push({ role: 'user', content: action.text });
+      }
+      if (requestContent) {
+        let index = messages.length - 1;
+        while (index >= 0 && messages[index].role !== 'user') index--;
+        if (index >= 0)
+          messages[index] = {
+            ...messages[index],
+            content: `${requestContent}\n\n${messages[index].content}`,
+          };
+        else messages.push({ role: 'user', content: requestContent });
       }
       messages.push(...toolMessages);
 

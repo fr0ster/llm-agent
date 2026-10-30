@@ -184,7 +184,7 @@ export interface PipelineContext {
   activeTools: LlmTool[];
   /** Skills selected for the current request. */
   selectedSkills: ISkill[];
-  /** Rendered skill content to inject into the system prompt. */
+  /** Rendered skill content to inject into request content. */
   skillContent: string;
   /** Arguments passed to skills (e.g. from slash-command invocation). */
   skillArgs: string;

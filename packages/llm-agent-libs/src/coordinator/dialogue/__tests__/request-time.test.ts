@@ -254,7 +254,7 @@ test('custom prepared builders receive session-composed request time', async () 
   await session.close();
 });
 
-test('queued executor and checker capture the delegation request time', async () => {
+test('queued executor and audit capture the delegation request time', async () => {
   let release: () => void = () => {
     throw new Error('not initialized');
   };
@@ -284,7 +284,7 @@ test('queued executor and checker capture the delegation request time', async ()
   const board = new TaskBoard({
     workers: new Map([
       ['executor', worker],
-      ['checker', { ...worker, name: 'checker' }],
+      ['audit', { ...worker, name: 'audit' }],
     ]),
     maxConcurrent: 1,
     onEvent() {},
@@ -301,7 +301,7 @@ test('queued executor and checker capture the delegation request time', async ()
         setPlan() {},
       },
       async () => {
-        for (const name of ['executor', 'checker']) {
+        for (const name of ['executor', 'audit']) {
           const result = await tools.callTool('delegate_task', {
             worker: name,
             goal: 'Result',
@@ -368,7 +368,7 @@ test('wait-mode completion wake keeps planner and both worker roles on request t
     board: {
       workers: new Map([
         ['executor', worker],
-        ['checker', { ...worker, name: 'checker' }],
+        ['audit', { ...worker, name: 'audit' }],
       ]),
     },
     planner: {
@@ -384,7 +384,7 @@ test('wait-mode completion wake keeps planner and both worker roles on request t
           await tools.callTool('list_tasks', {});
         } else if (inputs.length === 2) {
           await tools.callTool('delegate_task', {
-            worker: 'checker',
+            worker: 'audit',
             goal: 'Check result',
           });
           wake();
@@ -413,7 +413,7 @@ test('wait-mode completion wake keeps planner and both worker roles on request t
 test('planner and library-configured dialogue worker guidance contains no timestamp', async () => {
   assert.ok(DIALOGUE_PLANNER_SYSTEM.includes(REQUEST_TIME_GUIDANCE));
   assert.ok(!DIALOGUE_PLANNER_SYSTEM.includes('[request time]'));
-  for (const role of ['executor', 'checker']) {
+  for (const role of ['executor', 'audit']) {
     const result = await new ContextAssembler({
       systemPromptPreamble: `You are the ${role}.`,
     }).assemble(
@@ -694,7 +694,7 @@ test('pass mode adds static guidance to all inputs and request time only when ow
   const original = structuredClone(messages);
   assert.ok((await agent.process(messages)).ok);
   const expected = structuredClone(original);
-  expected[0].content = `${REQUEST_TIME_GUIDANCE}\n\nCustom guidance`;
+  expected[0].content = `Custom guidance\n\n${REQUEST_TIME_GUIDANCE}`;
   assert.deepEqual(inputs[1], expected);
   assert.ok((await agent.process(messages, { requestStartedAt: 0 })).ok);
   expected[3].content = `${formatRequestTime(0, 'Asia/Tbilisi')}\n\nCurrent`;

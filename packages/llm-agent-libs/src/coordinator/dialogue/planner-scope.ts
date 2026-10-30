@@ -3,6 +3,7 @@ import type { DialoguePlan as Plan } from '@mcp-abap-adt/llm-agent';
 import type { TaskBoard } from './task-board.js';
 
 export interface PlannerScope {
+  signal?: AbortSignal;
   beforeTool?(name: string): void;
   newRequest?(): void;
   ownTask?(id: string): void;

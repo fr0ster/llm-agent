@@ -1,6 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import type {
+  CallOptions,
   DialogueSignals,
+  IAgentProfileRunner,
+  IAgentProfileSource,
   IConcurrencyPool,
   ISignalEmitter,
   ISubAgent,
@@ -12,7 +15,9 @@ import type {
   TaskRecord,
   TaskRequest,
   TaskState,
+  WorkerProfileSummary,
 } from '@mcp-abap-adt/llm-agent';
+import { ProfileResolver } from './profile-resolver.js';
 import { SemaphorePool } from './semaphore-pool.js';
 
 export const TASK_OUTPUT_CHAR_LIMIT = 60_000;
@@ -31,7 +36,10 @@ export interface TaskBoardOptions {
   signals?: ISignalEmitter<DialogueSignals>;
   source?: string;
   onStateChange?: () => void;
-  workers: ReadonlyMap<string, ISubAgent>;
+  workers?: ReadonlyMap<string, ISubAgent>;
+  profileSource?: IAgentProfileSource;
+  profileRunner?: IAgentProfileRunner;
+  profileTimeoutMs?: number;
   maxConcurrent?: number;
   maxTasks?: number;
   taskOutputChars?: number;
@@ -72,7 +80,15 @@ export class TaskBoard {
   }
   private readonly taskUsage = new Map<string, IUsageRecorder>();
   private readonly interruptedRecorded = new Set<string>();
+  readonly profiles?: ProfileResolver;
   constructor(private readonly opts: TaskBoardOptions) {
+    if (!!opts.profileSource !== !!opts.profileRunner)
+      throw new Error('profileSource and profileRunner are required together');
+    if (opts.profileSource)
+      this.profiles = new ProfileResolver(
+        opts.profileSource,
+        opts.profileTimeoutMs,
+      );
     this.hardStopAfterMs =
       Number.isFinite(opts.hardStopAfterMs) && (opts.hardStopAfterMs ?? -1) >= 0
         ? (opts.hardStopAfterMs ?? 60_000)
@@ -89,7 +105,7 @@ export class TaskBoard {
       throw new Error('maxTasks must be a positive integer');
   }
   workerBudgetNotes(): string[] {
-    return [...this.opts.workers].flatMap(([name, worker]) =>
+    return [...(this.opts.workers ?? [])].flatMap(([name, worker]) =>
       worker.capabilities.maxToolCalls === undefined
         ? []
         : [
@@ -98,10 +114,68 @@ export class TaskBoard {
     );
   }
   workerNames(): string[] {
-    return [...this.opts.workers.keys()];
+    return [...(this.opts.workers?.keys() ?? [])];
   }
+  legacySummary(name: string): WorkerProfileSummary {
+    const worker = this.opts.workers?.get(name);
+    if (!worker) throw new Error(`unknown worker ${name}`);
+    return {
+      name,
+      description: worker.description ?? name,
+      result: name === 'checker' ? 'verdict' : 'report',
+    };
+  }
+  async discover(options?: CallOptions): Promise<WorkerProfileSummary[]> {
+    if (this.profiles) return (await this.profiles.discovery(options)).profiles;
+    return [...(this.opts.workers ?? [])].map(([name, worker]) => ({
+      name,
+      description: worker.description ?? name,
+      result: name === 'checker' ? 'verdict' : 'report',
+    }));
+  }
+  async resolveWorker(
+    name: string,
+    options?: CallOptions,
+  ): Promise<WorkerProfileSummary> {
+    if (!this.profiles) return this.legacySummary(name);
+    try {
+      return await this.profiles.selection(name, options);
+    } catch (error) {
+      throw new Error(
+        `profile ${name}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+  /** Fresh, validated entry point for profile-mode and legacy hosts. */
+  async startTask(
+    req: TaskRequest,
+    options?: CallOptions,
+  ): Promise<Result<TaskRecord, string>> {
+    try {
+      const profile = await this.resolveWorker(req.worker, options);
+      if (req.result !== undefined && req.result !== profile.result)
+        throw new Error(
+          `profile ${req.worker} result kind changed; reopen the step`,
+        );
+      return this.enqueue({ ...req, result: profile.result });
+    } catch (error) {
+      return {
+        ok: false,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
+  /** Synchronous compatibility entry point for legacy workers maps. */
   start(req: TaskRequest): Result<TaskRecord, string> {
-    if (!this.opts.workers.has(req.worker))
+    if (this.profiles)
+      return {
+        ok: false,
+        error: 'profile mode requires await board.startTask(request)',
+      };
+    return this.enqueue(req);
+  }
+  private enqueue(req: TaskRequest): Result<TaskRecord, string> {
+    if (!this.profiles && !this.opts.workers?.has(req.worker))
       return { ok: false, error: `unknown worker ${req.worker}` };
     if (this.records.size >= this.maxTasks)
       return { ok: false, error: `task limit ${this.maxTasks} reached` };
@@ -111,6 +185,7 @@ export class TaskBoard {
     const task: TaskRecord = {
       id,
       worker: req.worker,
+      result: req.result ?? (req.worker === 'checker' ? 'verdict' : 'report'),
       goal: req.goal,
       state: 'queued',
       createdAt: this.now(),
@@ -227,7 +302,26 @@ export class TaskBoard {
       task.state = 'running';
       task.startedAt = this.now();
       this.emit('started', task, 'queued');
-      const worker = this.opts.workers.get(task.worker);
+      let worker = this.opts.workers?.get(task.worker);
+      const runner = this.opts.profileRunner;
+      if (this.profiles && runner) {
+        try {
+          const input = await this.profiles.execution(task.worker, {
+            signal: hard.signal,
+          });
+          if (input.profile.result !== task.result)
+            throw new Error('result kind changed; reopen the step');
+          const created = await this.profiles.call(
+            (options) => runner.createWorker(structuredClone(input), options),
+            { signal: hard.signal },
+          );
+          worker = created;
+        } catch (error) {
+          throw new Error(
+            `profile ${task.worker}: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
+      }
       if (!worker) throw new Error(`unknown worker ${task.worker}`);
       if (worker.capabilities?.maxToolCalls !== undefined)
         task.maxToolCalls = worker.capabilities.maxToolCalls;
@@ -364,7 +458,11 @@ export class TaskBoard {
     this.originUsage.clear();
     const interrupted: string[] = [];
     for (const record of records) {
-      const task = { ...record };
+      const task = {
+        ...record,
+        result:
+          record.result ?? (record.worker === 'checker' ? 'verdict' : 'report'),
+      } satisfies TaskRecord;
       if (task.output !== undefined)
         task.output = cutTaskOutput(task.output, this.opts.taskOutputChars);
       if (task.state === 'running' || task.state === 'queued') {

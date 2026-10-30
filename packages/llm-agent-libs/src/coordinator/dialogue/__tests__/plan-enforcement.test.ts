@@ -1,14 +1,29 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import type { TaskEvent } from '@mcp-abap-adt/llm-agent';
+import type { DialoguePlan, TaskEvent } from '@mcp-abap-adt/llm-agent';
 import { SmartAgent } from '../../../agent.js';
 import { SmartAgentSubAgent } from '../../../subagent/smart-agent-subagent.js';
 import { makeAssembler, makeDefaultDeps } from '../../../testing/index.js';
 import { DialogueSession } from '../dialogue-session.js';
 import { runInPlannerScope } from '../planner-scope.js';
 import { PlannerToolsClient } from '../planner-tools-client.js';
-import { applyTaskEvent, mergePlan, planView } from '../structured-plan.js';
+import {
+  applyTaskEvent,
+  mergePlan as mergeStructuredPlan,
+  planView,
+} from '../structured-plan.js';
 import { TaskBoard } from '../task-board.js';
+
+import { profileHost } from './profile-test-host.js';
+
+function mergePlan(
+  ...args: Parameters<typeof mergeStructuredPlan>
+): DialoguePlan {
+  return mergeStructuredPlan(args[0], args[1], args[2], args[3], {
+    resolveResult: (name) => (name === 'audit' ? 'verdict' : 'report'),
+    ...args[4],
+  });
+}
 
 const tools = new PlannerToolsClient();
 const batch = {
@@ -52,7 +67,8 @@ for (const attempt of ['work', 'check'] as const) {
         const step = plan.steps[0];
         step.taskIds = ['old-work', task.value.id];
         step.workTaskId = attempt === 'work' ? task.value.id : 'old-work';
-        step.worker = attempt === 'check' ? 'checker' : 'w';
+        step.worker = attempt === 'check' ? 'audit' : 'w';
+        step.result = attempt === 'check' ? 'verdict' : 'report';
         step.workTaskId = task.value.id;
         step.state = 'running';
         plan.scopeConsent = true;
@@ -89,10 +105,10 @@ for (const attempt of ['work', 'check'] as const) {
   });
 }
 
-test('checker role cannot change while retaining successful evidence', () => {
+test('audit role cannot change while retaining successful evidence', () => {
   const plan = mergePlan(
     undefined,
-    [{ id: 'verify', goal: 'Verify', worker: 'checker' }],
+    [{ id: 'verify', goal: 'Verify', worker: 'audit' }],
     'active',
   );
   Object.assign(plan.steps[0], {
@@ -112,7 +128,7 @@ test('checker role cannot change while retaining successful evidence', () => {
   );
   const reopened = mergePlan(
     plan,
-    [{ id: 'verify', goal: 'Verify', worker: 'checker', state: 'pending' }],
+    [{ id: 'verify', goal: 'Verify', worker: 'audit', state: 'pending' }],
     'active',
   );
   assert.equal(reopened.steps[0].verdict, undefined);
@@ -123,6 +139,8 @@ for (const kind of ['failed', 'stopped'] as const) {
   test(`budget exhaustion preserves ${kind} work outcome`, () => {
     const plan = mergePlan(undefined, [{ id: 'work', goal: 'Work' }], 'active');
     plan.steps[0].taskIds = ['task'];
+
+    plan.steps[0].workTaskId = 'task';
     const result = event('task');
     result.kind = kind;
     result.task.state = kind;
@@ -209,17 +227,19 @@ for (const change of ['skip', 'remove', 'reduce', 'replace'] as const) {
   });
 }
 
-test('batch work completes independently; a short checker count fails its separate step', () => {
+test('batch work completes independently; a short audit count fails its separate step', () => {
   const plan = mergePlan(
     undefined,
     [
       batch,
-      { id: 'verify', goal: 'Verify', worker: 'checker', dependsOn: ['batch'] },
+      { id: 'verify', goal: 'Verify', worker: 'audit', dependsOn: ['batch'] },
     ],
     'active',
   );
   const [work, check] = plan.steps;
   work.taskIds = ['w'];
+
+  work.workTaskId = 'w';
   applyTaskEvent(plan, event('w', 'stored'));
   assert.equal(work.state, 'done');
   assert.throws(
@@ -231,7 +251,7 @@ test('batch work completes independently; a short checker count fails its separa
           {
             id: 'verify',
             goal: 'Verify',
-            worker: 'checker',
+            worker: 'audit',
             dependsOn: ['batch'],
             state: 'done',
           },
@@ -241,6 +261,8 @@ test('batch work completes independently; a short checker count fails its separa
     /successful current/,
   );
   check.taskIds = ['c'];
+
+  check.workTaskId = 'c';
   check.checkedTaskIds = { batch: 'w' };
   applyTaskEvent(plan, event('c', '{"verdict":"pass","count":1}'));
   assert.equal(check.state, 'failed');
@@ -290,12 +312,12 @@ test('budget exhaustion reaches TaskBoard and fails a batch without checking, wi
   await board.stopAll();
 });
 
-test('checker context includes expected batch ids/count and batch size limit rejects oversized updates', async () => {
+test('audit context includes expected batch ids/count and batch size limit rejects oversized updates', async () => {
   const plan = mergePlan(
     undefined,
     [
       batch,
-      { id: 'verify', goal: 'Verify', worker: 'checker', dependsOn: ['batch'] },
+      { id: 'verify', goal: 'Verify', worker: 'audit', dependsOn: ['batch'] },
     ],
     'active',
   );
@@ -307,19 +329,21 @@ test('checker context includes expected batch ids/count and batch size limit rej
   });
   let context = '';
   const board = new TaskBoard({
-    workers: new Map([
-      [
-        'checker',
-        {
-          name: 'checker',
-          capabilities: { contextPolicy: 'optional' as const },
-          async run(input: { context?: string }) {
-            context = input.context ?? '';
-            return { output: '{"verdict":"pass","count":2}' };
+    ...profileHost(
+      new Map([
+        [
+          'audit',
+          {
+            name: 'audit',
+            capabilities: { contextPolicy: 'optional' as const },
+            async run(input: { context?: string }) {
+              context = input.context ?? '';
+              return { output: '{"verdict":"pass","count":2}' };
+            },
           },
-        },
-      ],
-    ]),
+        ],
+      ]),
+    ),
     onEvent: (e) => applyTaskEvent(plan, e),
   });
   board.restore([event('work', 'stored a and b').task]);
@@ -332,7 +356,7 @@ test('checker context includes expected batch ids/count and batch size limit rej
         true,
       );
       const result = await tools.callTool('delegate_task', {
-        worker: 'checker',
+        worker: 'audit',
         step_id: 'verify',
         goal: 'Verify',
       });
@@ -428,6 +452,8 @@ for (const items of [undefined, ['a', 'b']]) {
       'active',
     );
     plan.steps[0].taskIds = ['w'];
+
+    plan.steps[0].workTaskId = 'w';
     const result = event('w', 'partial');
     result.task.budgetExhausted = true;
     applyTaskEvent(plan, result);
@@ -437,7 +463,7 @@ for (const items of [undefined, ['a', 'b']]) {
 }
 
 for (const count of [undefined, 0, 1, 2]) {
-  test(`batch checker count ${count}`, () => {
+  test(`batch audit count ${count}`, () => {
     const plan = mergePlan(
       undefined,
       [
@@ -445,7 +471,7 @@ for (const count of [undefined, 0, 1, 2]) {
         {
           id: 'verify',
           goal: 'Verify',
-          worker: 'checker',
+          worker: 'audit',
           dependsOn: ['batch'],
         },
       ],
@@ -454,6 +480,8 @@ for (const count of [undefined, 0, 1, 2]) {
     plan.steps[0].successfulWorkTaskId = 'w';
     plan.steps[1].checkedTaskIds = { batch: 'w' };
     plan.steps[1].taskIds = ['c'];
+
+    plan.steps[1].workTaskId = 'c';
     applyTaskEvent(
       plan,
       event('c', JSON.stringify({ verdict: 'pass', count })),
