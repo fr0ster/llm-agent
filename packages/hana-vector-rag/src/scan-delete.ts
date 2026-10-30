@@ -11,6 +11,7 @@ import {
 } from '@mcp-abap-adt/llm-agent';
 import type { HanaClient } from './hana-vector-rag.js';
 import { decodeLob, withId } from './lob.js';
+import type { StoreCache } from './record-cache.js';
 import type { HanaStoreSql } from './store-sql.js';
 
 /** Ids per `DELETE ... IN (...)`. */
@@ -59,6 +60,7 @@ export async function deleteWhere(
   sql: HanaStoreSql,
   filter: RagScanFilter,
   signal?: AbortSignal,
+  cache?: StoreCache,
 ): Promise<number> {
   const ids: string[] = [];
   let deleted = 0;
@@ -78,8 +80,14 @@ export async function deleteWhere(
   } while (cursor !== undefined);
   for (let i = 0; i < ids.length; i += DELETE_BATCH_SIZE) {
     checkAbort();
-    const stmt = sql.deleteByIds(ids.slice(i, i + DELETE_BATCH_SIZE));
-    deleted += (await client.exec(stmt.sql, stmt.params)).rowCount;
+    const batch = ids.slice(i, i + DELETE_BATCH_SIZE);
+    const stmt = sql.deleteByIds(batch);
+    const settled = cache?.beginWrite(batch);
+    try {
+      deleted += (await client.exec(stmt.sql, stmt.params)).rowCount;
+    } finally {
+      settled?.();
+    }
   }
   return deleted;
 }

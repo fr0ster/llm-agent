@@ -346,3 +346,32 @@ Releases are made from `main`; the version bump reaches `main` through a PR.
 4. On an up-to-date `main` (`git checkout main && git pull && npm ci`), the maintainer runs
    `npm run release:publish`, which skips versions already on npm. It prints tag
    commands only for published versions that still have no tag.
+
+## Listing RAG records
+
+`InMemoryRag`, `VectorRag` and `QdrantRag` support optional `IRag.list(params?, options?)`.
+Listing reads the store directly without embeddings or a cache, including expired
+records. PostgreSQL and HANA support is planned for a later stage.
+
+```typescript
+if (rag.list) {
+  let cursor: string | undefined;
+  do {
+    const result = await rag.list({ cursor, limit: 100, includeText: true });
+    if (!result.ok) throw result.error;
+    for (const record of result.value.records) console.log(record.id, record.text);
+    cursor = result.value.cursor;
+  } while (cursor !== undefined);
+}
+```
+
+`limit` defaults to 100 and accepts integers from 1 to 1000. Text is omitted unless
+`includeText` is true. Results contain detached finite JSON metadata and no scores
+or vectors; unsupported stored metadata returns `RAG_INVALID_METADATA`. Filters use
+strict string equality on `userId`, `sessionId` and `namespace`, intersected with
+`CallOptions.ragFilter`. Conflicting constraints return an empty terminal page.
+Cursors are opaque and bound to the backend, store and effective filter. Keep the
+filter unchanged between pages; changing the limit or text projection is allowed.
+Pages may be short or empty with a cursor; only its absence means completion.
+Ordering is stable within an unchanged backend store, without snapshot isolation
+across pages. Pass `CallOptions.signal` to cancel with an `ABORTED` result.

@@ -162,3 +162,47 @@ library* stay free and that your users can substitute their own build.
 Versions up to and including v20.9.5 were MIT and stay MIT; the change is not
 retroactive. Full detail, including what to do if you redistribute:
 [docs/LICENSING.md](https://github.com/fr0ster/llm-agent/blob/main/docs/LICENSING.md).
+
+## Listing and record cache
+
+`PgVectorRag.list(params?, options?)` lists records directly from the database in
+bounded keyset pages in both layouts. `limit` defaults to 100 (range 1–1000);
+`includeText` defaults to false. Filters support strict string equality on `userId`,
+`sessionId`, and `namespace`, intersected with `options.ragFilter`. Expired records
+are included. Pass the returned opaque `cursor` to continue; only an absent cursor
+means completion, and filtered pages can be empty. Cursors are bound to the backend,
+physical store and effective filter. Concurrent changes can affect subsequent pages.
+Listing returns detached finite JSON metadata and no vectors or scores. It supports
+`options.signal`; a non-cancellable SQL operation settles and its late result is suppressed.
+
+Both `PgVectorRagConfig` and `PgVectorRagProviderConfig` accept:
+
+```ts
+recordCache: { maxEntries: 1000, maxBytes: 16 * 1024 * 1024, ttlMs: 5000 }
+// Or recordCache: false to disable it.
+```
+
+These are the defaults; each option must be a positive finite safe integer. The
+provider option overrides the connection option. Standalone collections have their
+own cache; all handles from one provider share its bounded LRU and invalidation
+coordinator. `provider.close()` releases cache entries and retires active cache handles.
+The byte bound counts serialized UTF-8 records; oversized or unsafe legacy metadata
+records are skipped. Misses and errors are never cached. Returned records are detached.
+
+Only successful full `getById` reads are cached. TTL starts when the originating
+read starts and never slides on access. External writes can remain invisible to
+`getById` until TTL expires (plus backend visibility delay); an expired read failure
+returns an error. `list`, `scan`, and `query` always read the database and never fill
+this cache. Scoped `getById` calls bypass it.
+
+Writes evict only their submitted ids before submission and after settlement, even
+on failure or uncertain commit. Reads overlapping those writes cannot refill their
+entries. Filtered deletion derives ids from database records. Clearing or deleting a
+store evicts that store while preserving other stores. There is no cross-process
+coherence, revision check, locking protocol for edits, or snapshot across pages.
+Submit complete replacement text and metadata for edits; caches are read conveniences.
+
+The opt-in `rag-list-live.test.ts` tests run both layouts and two-provider TTL
+visibility against a real database. Set `RAG_SQL_LISTING_INTEGRATION=1` and `PG_TEST_URL`
+when running the package tests. They require DDL rights for temporary, uniquely
+named test tables and remove those tables afterwards. Normal test runs skip them.

@@ -1,6 +1,11 @@
-import { randomUUID } from 'node:crypto';
+import { randomUUID as listStoreId, randomUUID } from 'node:crypto';
 import type { IQueryEmbedding } from '../interfaces/query-embedding.js';
-import type { IRag, IRagBackendWriter } from '../interfaces/rag.js';
+import type {
+  IRag,
+  IRagBackendWriter,
+  RagListPage,
+  RagListParams,
+} from '../interfaces/rag.js';
 import {
   assertNonEmptyFilter,
   type IRagFilteredDeleter,
@@ -17,6 +22,7 @@ import type {
 } from '../interfaces/types.js';
 import { RagError } from '../interfaces/types.js';
 import { matchesRagIdentity, ragIdentityFilter } from './identity-filter.js';
+import { listKeyedPage } from './list-support.js';
 import type { IDocumentEnricher, IQueryPreprocessor } from './preprocessor.js';
 import { scanKeyedPage } from './scan-support.js';
 import { tokenizeSearchText } from './tokenizer.js';
@@ -86,6 +92,7 @@ interface StoredRecord {
 // ---------------------------------------------------------------------------
 
 export class InMemoryRag implements IRag, IRagScanner, IRagFilteredDeleter {
+  private readonly listStore = listStoreId();
   private records: StoredRecord[] = [];
   private nextKey = 0;
   private readonly dedupThreshold: number;
@@ -121,6 +128,20 @@ export class InMemoryRag implements IRag, IRagScanner, IRagFilteredDeleter {
       ...metadata,
       namespace: effectiveNamespace,
     };
+
+    // Generated IDs remain reserved while their anonymous record exists.
+    if (
+      this.records.some(
+        (r) => r.metadata.id === undefined && r.id === metadata.id,
+      )
+    )
+      return {
+        ok: false,
+        error: new RagError(
+          'ID belongs to an anonymous record',
+          'INVALID_ARGUMENT',
+        ),
+      };
 
     // Idempotent upsert: if metadata.id matches, replace in-place
     if (metadata.id) {
@@ -167,7 +188,7 @@ export class InMemoryRag implements IRag, IRagScanner, IRagFilteredDeleter {
       // Push new record
       this.records.push({
         key: this.nextKey++,
-        id: randomUUID(),
+        id: this.newRecordId(),
         text: enrichedText,
         embedding,
         metadata: resolvedMetadata,
@@ -175,6 +196,14 @@ export class InMemoryRag implements IRag, IRagScanner, IRagFilteredDeleter {
     }
 
     return { ok: true, value: undefined };
+  }
+
+  private newRecordId(): string {
+    let id: string;
+    do {
+      id = randomUUID();
+    } while (this.records.some((r) => (r.metadata.id ?? r.id) === id));
+    return id;
   }
 
   async query(
@@ -233,7 +262,7 @@ export class InMemoryRag implements IRag, IRagScanner, IRagFilteredDeleter {
     id: string,
     _options?: CallOptions,
   ): Promise<Result<RagResult | null, RagError>> {
-    const record = this.records.find((r) => r.metadata.id === id);
+    const record = this.records.find((r) => (r.metadata.id ?? r.id) === id);
     if (!record) return { ok: true, value: null };
     return {
       ok: true,
@@ -245,6 +274,19 @@ export class InMemoryRag implements IRag, IRagScanner, IRagFilteredDeleter {
   private inStore(metadata: RagMetadata): boolean {
     return (
       this.namespace === undefined || metadata.namespace === this.namespace
+    );
+  }
+
+  async list(
+    params?: RagListParams,
+    options?: CallOptions,
+  ): Promise<Result<RagListPage, RagError>> {
+    return listKeyedPage(
+      this.records,
+      (metadata) => this.inStore(metadata),
+      this.listStore,
+      params,
+      options,
     );
   }
 
@@ -288,7 +330,9 @@ export class InMemoryRag implements IRag, IRagScanner, IRagFilteredDeleter {
         return res.ok ? { ok: true, value: undefined } : res;
       },
       deleteByIdRaw: async (id) => {
-        const idx = this.records.findIndex((r) => r.metadata.id === id);
+        const idx = this.records.findIndex(
+          (r) => (r.metadata.id ?? r.id) === id,
+        );
         if (idx === -1) return { ok: true, value: false };
         this.records.splice(idx, 1);
         return { ok: true, value: true };

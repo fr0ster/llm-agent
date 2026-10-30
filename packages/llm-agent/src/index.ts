@@ -84,6 +84,13 @@ export { FallbackLlmCallStrategy } from './policy/fallback-llm-call-strategy.js'
 export { NonStreamingLlmCallStrategy } from './policy/non-streaming-llm-call-strategy.js';
 export { StreamingLlmCallStrategy } from './policy/streaming-llm-call-strategy.js';
 export {
+  decodeListCursor,
+  encodeListCursor,
+  listCursorScope,
+  listMetadata,
+  prepareList,
+} from './rag/list-support.js';
+export {
   BatchChunkingEmbedder,
   DEFAULT_MAX_BATCH_SIZE,
 } from './resilience/batch-chunking-embedder.js';

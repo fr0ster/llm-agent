@@ -115,12 +115,18 @@ export class SharedProviderOps {
   async delete(
     client: PgClient,
     name: string,
+    beginDeletion?: () => () => void,
   ): Promise<Result<void, RagError>> {
     const ready = await this.check(client);
     if (!ready.ok) return ready;
     try {
       const clear = this.store(name).clear();
-      await client.query(clear.sql, clear.params);
+      const settled = beginDeletion?.();
+      try {
+        await client.query(clear.sql, clear.params);
+      } finally {
+        settled?.();
+      }
     } catch (err) {
       return {
         ok: false,

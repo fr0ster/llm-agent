@@ -1,8 +1,11 @@
+import { randomUUID as listStoreId, randomUUID } from 'node:crypto';
 import type { IQueryEmbedding } from '../interfaces/query-embedding.js';
 import type {
   IRag,
   IRagBackendWriter,
   IRetrievalEmbedder,
+  RagListPage,
+  RagListParams,
 } from '../interfaces/rag.js';
 import {
   assertNonEmptyFilter,
@@ -21,6 +24,7 @@ import {
 } from '../interfaces/types.js';
 import { matchesRagIdentity, ragIdentityFilter } from './identity-filter.js';
 import { InvertedIndex } from './inverted-index.js';
+import { listKeyedPage } from './list-support.js';
 import type { IDocumentEnricher, IQueryPreprocessor } from './preprocessor.js';
 import { FallbackQueryEmbedding, QueryEmbedding } from './query-embedding.js';
 import { scanKeyedPage } from './scan-support.js';
@@ -34,6 +38,7 @@ import { WeightedFusionStrategy } from './search-strategy.js';
 import { tokenizeSearchText } from './tokenizer.js';
 
 interface StoredRecord {
+  id: string;
   text: string;
   vector: number[];
   metadata: RagMetadata;
@@ -58,6 +63,7 @@ export interface VectorRagConfig {
 }
 
 export class VectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
+  private readonly listStore = listStoreId();
   private records: (StoredRecord | null)[] = [];
   private readonly dedupThreshold: number;
   private readonly namespace?: string;
@@ -127,6 +133,21 @@ export class VectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
     vector: number[],
     metadata: RagMetadata,
   ): Result<void, RagError> {
+    // Generated IDs remain reserved while their anonymous record exists.
+    if (
+      this.records.some(
+        (r) =>
+          r !== null && r.metadata.id === undefined && r.id === metadata.id,
+      )
+    )
+      return {
+        ok: false,
+        error: new RagError(
+          'ID belongs to an anonymous record',
+          'INVALID_ARGUMENT',
+        ),
+      };
+
     // Idempotent upsert: if metadata.id matches, replace in-place
     if (metadata.id) {
       for (let i = 0; i < this.records.length; i++) {
@@ -159,9 +180,14 @@ export class VectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
     // Reuse a tombstone slot if available
     const freeIdx = this.records.indexOf(null);
     if (freeIdx !== -1) {
-      this.records[freeIdx] = { text, vector, metadata };
+      this.records[freeIdx] = {
+        id: this.newRecordId(),
+        text,
+        vector,
+        metadata,
+      };
     } else {
-      this.records.push({ text, vector, metadata });
+      this.records.push({ id: this.newRecordId(), text, vector, metadata });
     }
     return { ok: true, value: undefined };
   }
@@ -212,6 +238,16 @@ export class VectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
       if (err instanceof RagError) return { ok: false, error: err };
       return { ok: false, error: new RagError(String(err), 'UPSERT_ERROR') };
     }
+  }
+
+  private newRecordId(): string {
+    let id: string;
+    do {
+      id = randomUUID();
+    } while (
+      this.records.some((r) => r !== null && (r.metadata.id ?? r.id) === id)
+    );
+    return id;
   }
 
   async query(
@@ -324,6 +360,32 @@ export class VectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
     );
   }
 
+  async list(
+    params?: RagListParams,
+    options?: CallOptions,
+  ): Promise<Result<RagListPage, RagError>> {
+    return listKeyedPage(
+      this.listEntries(),
+      (metadata) => this.inStore(metadata),
+      this.listStore,
+      params,
+      options,
+    );
+  }
+
+  private *listEntries() {
+    for (let key = 0; key < this.records.length; key++) {
+      const record = this.records[key];
+      if (record !== null)
+        yield {
+          key,
+          id: record.id,
+          text: record.text,
+          metadata: record.metadata,
+        };
+    }
+  }
+
   async scan(
     opts?: { filter?: RagScanFilter; pageSize?: number; cursor?: string },
     options?: CallOptions,
@@ -366,7 +428,7 @@ export class VectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
     _options?: CallOptions,
   ): Promise<Result<RagResult | null, RagError>> {
     for (const r of this.records) {
-      if (r !== null && r.metadata.id === id) {
+      if (r !== null && (r.metadata.id ?? r.id) === id) {
         return {
           ok: true,
           value: { text: r.text, metadata: r.metadata, score: 1 },
@@ -385,7 +447,7 @@ export class VectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
       deleteByIdRaw: async (id) => {
         for (let i = 0; i < this.records.length; i++) {
           const r = this.records[i];
-          if (r !== null && r.metadata.id === id) {
+          if (r !== null && (r.metadata.id ?? r.id) === id) {
             this.records[i] = null;
             return { ok: true, value: true };
           }

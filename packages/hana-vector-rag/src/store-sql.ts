@@ -1,9 +1,16 @@
+import type { RagScanFilter } from '@mcp-abap-adt/llm-agent';
 import { createTableSql, quoteIdent } from './schema.js';
 
 export type SqlStatement = { sql: string; params: unknown[] };
 
 /** The SQL a `HanaVectorRag` sends, per table layout. */
 export interface HanaStoreSql {
+  listPage(
+    after: string | undefined,
+    limit: number,
+    includeText: boolean,
+    filter?: RagScanFilter,
+  ): SqlStatement;
   readonly layout: 'per-collection' | 'shared';
   /** `undefined` in `shared`: no DDL ever reaches the client. */
   createTable(): string | undefined;
@@ -36,6 +43,8 @@ export function perCollectionStoreSql(
 ): HanaStoreSql {
   const table = quoteIdent(collection);
   return {
+    listPage: (after, limit, includeText) =>
+      listSql(table, [], after, limit, includeText),
     layout: 'per-collection',
     createTable: () => createTableSql(collection, dimension),
     search: (lit, limit) => ({
@@ -77,6 +86,8 @@ export function sharedStoreSql(
 ): HanaStoreSql {
   const table = quoteIdent(documentsTable);
   return {
+    listPage: (after, limit, includeText) =>
+      listSql(table, [collection], after, limit, includeText),
     layout: 'shared',
     createTable: () => undefined,
     search: (lit, limit) => ({
@@ -111,5 +122,23 @@ export function sharedStoreSql(
       sql: `DELETE FROM ${table} WHERE "COLLECTION" = ? AND "ID" IN (${placeholders(ids.length)})`,
       params: [collection, ...ids],
     }),
+  };
+}
+
+function listSql(
+  table: string,
+  params: string[],
+  after: string | undefined,
+  limit: number,
+  includeText: boolean,
+): SqlStatement {
+  const conditions: string[] = params.length ? ['"COLLECTION" = ?'] : [];
+  if (after !== undefined) {
+    conditions.push('TO_BINARY("ID") > TO_BINARY(?)');
+    params.push(after);
+  }
+  return {
+    sql: `SELECT "ID" AS "id", "METADATA" AS "metadata"${includeText ? ', "TEXT" AS "text"' : ''} FROM ${table}${conditions.length ? ` WHERE ${conditions.join(' AND ')}` : ''} ORDER BY TO_BINARY("ID") LIMIT ${limit}`,
+    params,
   };
 }

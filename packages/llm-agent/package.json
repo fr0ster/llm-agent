@@ -25,6 +25,11 @@
       "types": "./dist/testing/scan-delete-conformance.d.ts",
       "import": "./dist/testing/scan-delete-conformance.js",
       "default": "./dist/testing/scan-delete-conformance.js"
+    },
+    "./testing/rag-list-conformance": {
+      "types": "./dist/testing/rag-list-conformance.d.ts",
+      "import": "./dist/testing/rag-list-conformance.js",
+      "default": "./dist/testing/rag-list-conformance.js"
     }
   },
   "files": [

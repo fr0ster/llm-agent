@@ -1,4 +1,5 @@
 import type { IQueryEmbedding } from './query-embedding.js';
+import type { RagScanFilter } from './rag-scan.js';
 import type {
   CallOptions,
   RagError,
@@ -66,7 +67,36 @@ export interface EmbedderFactoryConfig {
  */
 export type EmbedderFactory = (cfg: EmbedderFactoryConfig) => IEmbedder;
 
+export interface RagListParams {
+  cursor?: string;
+  limit?: number;
+  includeText?: boolean;
+  filter?: RagScanFilter;
+}
+export interface RagListMetadata {
+  id?: string;
+  ttl?: number;
+  namespace?: string;
+  [key: string]: RagJsonValue | undefined;
+}
+export interface RagListRecord {
+  id: string;
+  metadata: RagListMetadata;
+  text?: string;
+}
+export interface RagListPage {
+  records: RagListRecord[];
+  cursor?: string;
+}
+export interface IRagBackendReader {
+  list(
+    params?: RagListParams,
+    options?: CallOptions,
+  ): Promise<Result<RagListPage, RagError>>;
+}
+
 export interface IRag {
+  list?: IRagBackendReader['list'];
   /**
    * Top-`k` records for `embedding`.
    *
