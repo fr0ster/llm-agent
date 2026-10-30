@@ -126,6 +126,12 @@ alone do not make an observed run incomplete: they have not executed yet.
 
 ## Bounds and redaction
 
+Redaction is best-effort defence in depth for persisted traces and checker context.
+The executor LLM already sees raw tool results, so the trace stays within the same
+trust boundary. Recognizers cover sensitive keys, embedded JSON, credential
+assignments and header lines, with cross-field replacement of collected values
+(longest first, at least 4 characters).
+
 Define shared defaults as constants; configuration is not required for this release:
 ```ts
 export const TOOL_TRACE_MAX_ENTRIES = 50;

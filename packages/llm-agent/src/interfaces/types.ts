@@ -1,3 +1,4 @@
+import type { ToolTraceEntry } from './tool-trace.js';
 import type { IUsageRecorder, UsageOperation } from './usage.js';
 /**
  * Shared types for Smart Orchestrated Agent contracts.
@@ -25,6 +26,7 @@ export interface TraceContext {
 }
 
 export interface CallOptions {
+  onToolTrace?: (entry: ToolTraceEntry) => void;
   /** Owning request start in epoch milliseconds; preserved across tool rounds and queued tasks. */
   requestStartedAt?: number;
   usage?: IUsageRecorder;

@@ -4,7 +4,7 @@ import type {
   IToolCache,
   Message,
 } from '@mcp-abap-adt/llm-agent';
-import { scopedUsage } from '@mcp-abap-adt/llm-agent';
+import { recordToolInvocation, scopedUsage } from '@mcp-abap-adt/llm-agent';
 import type { IMetrics } from '../metrics/types.js';
 import {
   guardToolRound,
@@ -70,10 +70,25 @@ export function fireInternalToolsAsync(
         if (!client) {
           return { toolCallId: tc.id, toolName: tc.name, text: '' };
         }
-        const res = await client.callTool(tc.name, tc.arguments, {
-          ...ctx.options,
-          usage: scopedUsage(ctx.options?.usage, { component: 'tool-loop' }),
-        });
+        const res = await recordToolInvocation(
+          ctx.options?.onToolTrace,
+          tc.name,
+          tc.arguments,
+          () =>
+            client.callTool(tc.name, tc.arguments, {
+              ...ctx.options,
+              usage: scopedUsage(ctx.options?.usage, {
+                component: 'tool-loop',
+              }),
+            }),
+          (result) => ({
+            failed: !result.ok || !!result.value.isError,
+            value: result.ok ? result.value : result.error,
+            error: result.ok
+              ? 'MCP tool returned isError'
+              : result.error.message,
+          }),
+        );
         const text = !res.ok
           ? res.error.message
           : typeof res.value.content === 'string'

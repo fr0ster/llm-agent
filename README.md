@@ -375,3 +375,5 @@ filter unchanged between pages; changing the limit or text projection is allowed
 Pages may be short or empty with a cursor; only its absence means completion.
 Ordering is stable within an unchanged backend store, without snapshot isolation
 across pages. Pass `CallOptions.signal` to cancel with an `ABORTED` result.
+
+Worker results (`ISubAgentResult`) and persisted `TaskRecord` records may include `toolTrace`: bounded, redacted execution evidence with dispatch sequences, outcomes, omissions and a completeness flag. `ISubAgentInput.onToolTrace` and `CallOptions.onToolTrace` observe dispatch and settlement entries by sequence. Verdict steps receive this evidence automatically; hosts executing external tools must supply their own normalized trace.

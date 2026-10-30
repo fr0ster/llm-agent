@@ -1,10 +1,14 @@
 import {
   externalToolCallId,
+  hasExternalTraceGap,
   type ISubAgent,
   type ISubAgentInput,
   type ISubAgentResult,
   type LlmToolCall,
+  normalizeToolTraceEntry,
   type SubAgentCapabilities,
+  ToolTraceCollector,
+  type ToolTraceEntry,
 } from '@mcp-abap-adt/llm-agent';
 import type { SmartAgent } from '../agent.js';
 
@@ -27,102 +31,128 @@ export class SmartAgentSubAgent implements ISubAgent {
   }
 
   async run(input: ISubAgentInput): Promise<ISubAgentResult> {
-    const prompt =
-      input.context && input.context.length > 0
-        ? `${input.context}\n\n${input.task}`
-        : input.task;
-    const res = await this.agent.process(
-      input.history?.length
-        ? [...input.history, { role: 'user', content: prompt }]
-        : prompt,
-      {
-        requestStartedAt: input.requestStartedAt,
-        sessionId: input.sessionId,
-        usage: input.usage,
-        signal: input.signal,
-        stopSignal: input.stopSignal,
-        trace: input.trace,
-        sessionLogger: input.sessionLogger,
-        onPartial: input.onPartial,
-        onToolCallCount: input.onToolCallCount,
-        onToolsSelected: input.onToolsSelected,
-        // Issue #167: forward the client's external (consumer-executed) tools into
-        // the worker's nested pipeline so it can emit a tool call the client
-        // fulfils, instead of narrating "tool unavailable".
-        ...(input.externalTools && input.externalTools.length > 0
-          ? { externalTools: [...input.externalTools] }
-          : {}),
-        // #171 (review#7): thread the validated extId→result map into the
-        // worker pipeline so a re-surfaced external call resolves from history.
-        ...(input.externalResults
-          ? { externalResults: input.externalResults }
-          : {}),
-      },
-    );
+    const collector = new ToolTraceCollector();
+    let observing = true;
+    const onToolTrace = (entry: ToolTraceEntry): void => {
+      if (!observing) return;
+      collector.observe(entry);
+      try {
+        input.onToolTrace?.(normalizeToolTraceEntry(entry));
+      } catch {
+        /* Observers cannot affect execution. */
+      }
+    };
+    try {
+      const prompt =
+        input.context && input.context.length > 0
+          ? `${input.context}\n\n${input.task}`
+          : input.task;
+      const res = await this.agent.process(
+        input.history?.length
+          ? [...input.history, { role: 'user', content: prompt }]
+          : prompt,
+        {
+          requestStartedAt: input.requestStartedAt,
+          sessionId: input.sessionId,
+          usage: input.usage,
+          signal: input.signal,
+          stopSignal: input.stopSignal,
+          trace: input.trace,
+          sessionLogger: input.sessionLogger,
+          onPartial: input.onPartial,
+          onToolCallCount: input.onToolCallCount,
+          onToolsSelected: input.onToolsSelected,
+          onToolTrace,
+          // Issue #167: forward the client's external (consumer-executed) tools into
+          // the worker's nested pipeline so it can emit a tool call the client
+          // fulfils, instead of narrating "tool unavailable".
+          ...(input.externalTools && input.externalTools.length > 0
+            ? { externalTools: [...input.externalTools] }
+            : {}),
+          // #171 (review#7): thread the validated extId→result map into the
+          // worker pipeline so a re-surfaced external call resolves from history.
+          ...(input.externalResults
+            ? { externalResults: input.externalResults }
+            : {}),
+        },
+      );
 
-    if (!res.ok) {
-      throw res.error;
-    }
+      if (!res.ok) {
+        throw res.error;
+      }
 
-    const { content, toolCalls, stopReason, usage, stopped } = res.value;
+      const { content, toolCalls, stopReason, usage, stopped } = res.value;
 
-    const mappedUsage = usage
-      ? {
-          promptTokens: usage.promptTokens,
-          completionTokens: usage.completionTokens,
-          totalTokens: usage.totalTokens,
-          ...(usage.models ? { models: usage.models } : {}),
+      const mappedUsage = usage
+        ? {
+            promptTokens: usage.promptTokens,
+            completionTokens: usage.completionTokens,
+            totalTokens: usage.totalTokens,
+            ...(usage.models ? { models: usage.models } : {}),
+          }
+        : undefined;
+
+      // Issue #171: when the worker tool-loop stops on a client-provided
+      // (consumer-executed) external tool call, it surfaces the call instead of
+      // executing it. Translate that stop into a typed awaiting-external result
+      // with deterministic `ext:` ids the client can correlate. Internal MCP
+      // calls are executed inside the worker loop and never reach here.
+      if (stopReason === 'tool_calls' && toolCalls && toolCalls.length > 0) {
+        const extNames = new Set(
+          (input.externalTools ?? []).map((t) => t.name),
+        );
+        const pending: LlmToolCall[] = toolCalls
+          .filter((tc) => extNames.has(tc.function.name))
+          .map((tc) => {
+            const args = JSON.parse(tc.function.arguments) as Record<
+              string,
+              unknown
+            >;
+            return {
+              id: externalToolCallId(tc.function.name, args),
+              name: tc.function.name,
+              arguments: args,
+            };
+          });
+        if (pending.length > 0) {
+          return {
+            toolTrace: collector.finalize(!hasExternalTraceGap(onToolTrace)),
+            output: content,
+            usage: mappedUsage,
+            status: 'awaiting-external',
+            budgetExhausted: res.value.budgetExhausted,
+            toolCallCount: res.value.toolCallCount,
+            maxToolCalls: res.value.maxToolCalls,
+            pendingExternalToolCalls: pending,
+          };
         }
-      : undefined;
+      }
 
-    // Issue #171: when the worker tool-loop stops on a client-provided
-    // (consumer-executed) external tool call, it surfaces the call instead of
-    // executing it. Translate that stop into a typed awaiting-external result
-    // with deterministic `ext:` ids the client can correlate. Internal MCP
-    // calls are executed inside the worker loop and never reach here.
-    if (stopReason === 'tool_calls' && toolCalls && toolCalls.length > 0) {
-      const extNames = new Set((input.externalTools ?? []).map((t) => t.name));
-      const pending: LlmToolCall[] = toolCalls
-        .filter((tc) => extNames.has(tc.function.name))
-        .map((tc) => {
-          const args = JSON.parse(tc.function.arguments) as Record<
+      const mappedToolCalls: LlmToolCall[] | undefined = toolCalls?.map(
+        (tc) => ({
+          id: tc.id,
+          name: tc.function.name,
+          arguments: JSON.parse(tc.function.arguments) as Record<
             string,
             unknown
-          >;
-          return {
-            id: externalToolCallId(tc.function.name, args),
-            name: tc.function.name,
-            arguments: args,
-          };
-        });
-      if (pending.length > 0) {
-        return {
-          output: content,
-          usage: mappedUsage,
-          status: 'awaiting-external',
-          budgetExhausted: res.value.budgetExhausted,
-          toolCallCount: res.value.toolCallCount,
-          maxToolCalls: res.value.maxToolCalls,
-          pendingExternalToolCalls: pending,
-        };
-      }
+          >,
+        }),
+      );
+
+      return {
+        toolTrace: collector.finalize(!hasExternalTraceGap(onToolTrace)),
+        output: content,
+        budgetExhausted: res.value.budgetExhausted,
+        toolCallCount: res.value.toolCallCount,
+        maxToolCalls: res.value.maxToolCalls,
+        toolCalls: mappedToolCalls,
+        usage: mappedUsage,
+        status: 'complete',
+        ...(stopped ? { stopped } : {}),
+      };
+    } finally {
+      observing = false;
+      collector.finalize(false);
     }
-
-    const mappedToolCalls: LlmToolCall[] | undefined = toolCalls?.map((tc) => ({
-      id: tc.id,
-      name: tc.function.name,
-      arguments: JSON.parse(tc.function.arguments) as Record<string, unknown>,
-    }));
-
-    return {
-      output: content,
-      budgetExhausted: res.value.budgetExhausted,
-      toolCallCount: res.value.toolCallCount,
-      maxToolCalls: res.value.maxToolCalls,
-      toolCalls: mappedToolCalls,
-      usage: mappedUsage,
-      status: 'complete',
-      ...(stopped ? { stopped } : {}),
-    };
   }
 }

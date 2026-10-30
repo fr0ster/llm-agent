@@ -1568,3 +1568,5 @@ See `docs/examples/coordinator-orchestration.yaml` for a complete configuration.
   large by design — the residuals are the fluent-builder setters + `build()` composition
   root, and the streaming tool-loop, respectively. Any further extraction must stay
   component-shaped (Principle 1/6), not ad-hoc.
+
+Worker results (`ISubAgentResult`) and persisted `TaskRecord` records may include `toolTrace`: bounded, redacted execution evidence with dispatch sequences, outcomes, omissions and a completeness flag. `ISubAgentInput.onToolTrace` and `CallOptions.onToolTrace` observe dispatch and settlement entries by sequence. Verdict steps receive this evidence automatically; hosts executing external tools must supply their own normalized trace.
