@@ -417,7 +417,7 @@ cancellation function. Signal failures are caught and logged without affecting w
   The board emits `started`, `done`, `failed`, `stopped` events synchronously;
   observer exceptions do not affect execution.
 - **`PlannerToolsClient` + planner scope:** an in-process `IMcpClient` exposes
-  `delegate_task`, `stop_task`, `get_task`, `list_tasks`, `update_plan`.
+  `delegate_task`, `stop_task`, `get_task`, `list_tasks`, `plan_update`.
   `runInPlannerScope` uses AsyncLocalStorage to bind the current board, plan and
   history; `DialogueSession` establishes that scope for each planner turn.
   Listing tools inside the scope includes worker names in `delegate_task`'s

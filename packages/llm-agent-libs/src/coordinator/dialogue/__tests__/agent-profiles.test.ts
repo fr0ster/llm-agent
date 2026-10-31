@@ -470,7 +470,7 @@ test('delegation reservations reject plan replacement and release after failed r
       });
       await entered.promise;
       for (const [name, args] of [
-        ['update_plan', { steps: [] }],
+        ['plan_update', { steps: [] }],
         ['new_request', {}],
       ] as const) {
         const response = await client.callTool(name, args);
@@ -534,7 +534,7 @@ test('plan updates revalidate after a concurrent delegation binds its task', asy
       },
       async () => {
         const client = new PlannerToolsClient();
-        const pendingUpdate = client.callTool('update_plan', { steps: [keep] });
+        const pendingUpdate = client.callTool('plan_update', { steps: [keep] });
         await entered.promise;
         const delegated = await client.callTool('delegate_task', {
           worker: 'author',
@@ -858,7 +858,7 @@ test('discovery advertises arbitrary report/verdict functions and binds library-
           ?.description ?? '',
         /Function audit/,
       );
-      const update = await client.callTool('update_plan', {
+      const update = await client.callTool('plan_update', {
         steps: [
           { id: 'work', goal: 'write', worker: 'author' },
           { id: 'check', goal: 'verify', worker: 'audit', dependsOn: ['work'] },
@@ -1760,7 +1760,7 @@ test('corrective planner calls rediscover fresh text and source errors prevent r
       return ok({
         async process() {
           const update = await new PlannerToolsClient().callTool(
-            'update_plan',
+            'plan_update',
             { steps: [{ id: 'pending', goal: 'work' }] },
           );
           assert.ok(update.ok && !update.value.isError);

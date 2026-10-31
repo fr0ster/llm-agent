@@ -32,7 +32,7 @@ test('planner prompt requires result delegation and planned verification', () =>
     'without authorizing more writes',
     'Execution steps (which reads, searches, workers and checks) are yours to choose',
     'Producing a document or an answer means returning it to the user',
-    'ask the user (update_plan status waiting_user with a question) before acting',
+    'ask the user (plan_update status waiting_user with a question) before acting',
     'no extra rounds',
     'the check covers every expected identifier with its processed/stored result and the matching count',
     "Your tokens cost more than the workers'",
@@ -50,11 +50,11 @@ test('documented builder exposes the control tools and dispatches delegation ins
     'delegate_task',
     'search_knowledge',
     'stop_task',
-    'get_plan',
+    'plan_get',
     'deliver',
     'get_task',
     'list_tasks',
-    'update_plan',
+    'plan_update',
   ].sort();
   let calls = 0;
   const llm: ILlm = {

@@ -153,7 +153,7 @@ for (const kind of ['failed', 'stopped'] as const) {
   });
 }
 async function update(args: Record<string, unknown>) {
-  const result = await tools.callTool('update_plan', args);
+  const result = await tools.callTool('plan_update', args);
   assert.ok(result.ok);
   return result.value;
 }

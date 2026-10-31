@@ -454,7 +454,7 @@ export function planView(plan?: Plan): string {
     plan.question,
     plan.note,
     ...[...collapsed].map(
-      ([state, count]) => `(${count} ${state} steps collapsed; use get_plan)`,
+      ([state, count]) => `(${count} ${state} steps collapsed; use plan_get)`,
     ),
     ...visible.map((s) => {
       const current = currentAttemptIds(s);
