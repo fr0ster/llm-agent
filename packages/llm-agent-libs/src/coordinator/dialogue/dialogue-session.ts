@@ -380,7 +380,7 @@ export class DialogueSession {
           continue;
         this.longNotifiedAt.set(task.id, now);
         delete task.usage;
-        this.events.push({ kind: 'long_running', task });
+        this.enqueueEvent({ kind: 'long_running', task });
       }
     this.changed();
     if (this.events.length) this.schedule();
@@ -391,6 +391,24 @@ export class DialogueSession {
         event.kind !== 'long_running' ||
         this.board.get(event.task.id)?.state === 'running',
     );
+  }
+
+  private enqueueEvent(event: TaskEvent): void {
+    if (this.externalCoordinator) {
+      const index =
+        event.kind === 'long_running'
+          ? this.deferredEvents.findIndex(
+              (pending) =>
+                pending.kind === 'long_running' &&
+                pending.task.id === event.task.id,
+            )
+          : -1;
+      if (index >= 0) this.deferredEvents[index] = event;
+      else this.deferredEvents.push(event);
+    } else this.events.push(event);
+    this.changed();
+    if (this.externalCoordinator) void this.persist();
+    this.schedule();
   }
 
   private constructor(private readonly opts: DialogueSessionOptions) {
@@ -469,11 +487,7 @@ export class DialogueSession {
         // Only outcomes wake the planner; a start is visible via list_tasks.
         if (this.closing || event.kind === 'started') return;
         if (event.kind !== 'long_running') this.outcomeVersion++;
-        if (this.externalCoordinator) this.deferredEvents.push(event);
-        else this.events.push(event);
-        this.changed();
-        if (this.externalCoordinator) void this.persist();
-        this.schedule();
+        this.enqueueEvent(event);
       },
     });
   }
@@ -613,6 +627,11 @@ export class DialogueSession {
   ): PlannerScope {
     return {
       planAuthor: this.opts.planAuthor,
+      authorOptions: {
+        usage: options.usage ?? this.opts.usage ?? this.opts.board.usage,
+        sessionId: this.opts.id,
+        trace: options.trace,
+      },
       newRequest: () => {
         throw new Error('not available outside a coordinator turn');
       },
@@ -675,7 +694,7 @@ export class DialogueSession {
   callTool(
     name: string,
     args: Record<string, unknown>,
-    opts: { signal?: AbortSignal } = {},
+    opts: Pick<CallOptions, 'signal' | 'usage' | 'trace'> = {},
   ): Promise<Result<McpToolResult, McpError>> {
     const refuse = (
       message: string,

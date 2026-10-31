@@ -107,6 +107,16 @@ export class ProfilePlanAuthor implements IPlanAuthor {
     let code: PlanAuthorError['code'] = 'unavailable';
     try {
       options?.signal?.throwIfAborted();
+      const runner = this.opts.runner;
+      const preparePlanAuthor = runner.preparePlanAuthor;
+      if (!preparePlanAuthor)
+        return {
+          ok: false,
+          error: {
+            code: 'unavailable',
+            message: 'profile runner cannot prepare a plan author',
+          },
+        };
       const resolver = new ProfileResolver(this.opts.source);
       const prompts = await resolver.call(
         (opts) => this.opts.source.getPrompts(opts),
@@ -117,8 +127,7 @@ export class ProfilePlanAuthor implements IPlanAuthor {
           ? (prompts.plannerCreate ?? PLAN_CREATE_SYSTEM)
           : (prompts.plannerRevise ?? PLAN_REVISE_SYSTEM);
       const agent = await resolver.call(
-        (opts) =>
-          this.opts.runner.preparePlanAuthor({ mode, systemPrompt }, opts),
+        (opts) => preparePlanAuthor.call(runner, { mode, systemPrompt }, opts),
         options,
       );
       const notes = (await this.opts.notes?.(options)) ?? [];
@@ -175,6 +184,7 @@ export class ProfilePlanAuthor implements IPlanAuthor {
       return {
         ok: true,
         value: mergePlan(current, steps, next.status, next.question, {
+          consent: current?.scopeConsent,
           resolveResult: (worker, stepId) => {
             const done = current?.steps.find(
               (step) => step.id === stepId && step.state === 'done',

@@ -51,7 +51,7 @@ export interface IAgentProfileRunner {
     options?: CallOptions,
   ): Promise<Result<ISubAgent, AgentProfileError>>;
   /** Fresh author agent; hosts enforce read-only knowledge tools, with no SAP tools. */
-  preparePlanAuthor(
+  preparePlanAuthor?(
     input: { systemPrompt: string; mode: 'create' | 'revise' },
     options?: CallOptions,
   ): Promise<Result<ISmartAgent, AgentProfileError>>;

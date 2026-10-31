@@ -3,6 +3,7 @@ import { test } from 'node:test';
 import type {
   AgentPrompts,
   DialoguePlan,
+  IAgentProfileRunner,
   ISmartAgent,
   WorkerProfile,
 } from '@mcp-abap-adt/llm-agent';
@@ -56,6 +57,84 @@ function fixture(output: string, prompts: AgentPrompts = {}) {
   };
 }
 const output = '{"steps":[{"id":"s1","goal":"read","worker":"executor"}]}';
+for (const mode of ['create', 'revise'] as const) {
+  test(`${mode} is unavailable when the runner cannot prepare a plan author`, async () => {
+    const host = profileHost(new Map());
+    const runner: IAgentProfileRunner = {
+      createWorker: host.profileRunner.createWorker,
+      preparePlanner: host.profileRunner.preparePlanner,
+    };
+    const author = new ProfilePlanAuthor({
+      source: host.profileSource,
+      runner,
+    });
+    const result =
+      mode === 'create'
+        ? await author.create({ goal: 'read' })
+        : await author.revise({
+            plan: { version: 1, status: 'active', steps: [] },
+            change: 'read',
+          });
+    assert.deepEqual(result, {
+      ok: false,
+      error: {
+        code: 'unavailable',
+        message: 'profile runner cannot prepare a plan author',
+      },
+    });
+  });
+}
+
+for (const change of ['skip', 'remove', 'reduce items'] as const) {
+  for (const consent of [true, undefined]) {
+    test(`revise ${change} ${consent ? 'uses recorded consent' : 'requires consent'}`, async () => {
+      const plan: DialoguePlan = {
+        version: 1,
+        status: 'active',
+        scopeConsent: consent,
+        steps: [
+          {
+            id: 's1',
+            goal: 'read',
+            worker: 'executor',
+            state: 'pending',
+            taskIds: [],
+            items: ['one', 'two'],
+          },
+        ],
+      };
+      const snapshot = structuredClone(plan);
+      const steps =
+        change === 'remove'
+          ? []
+          : [
+              {
+                ...plan.steps[0],
+                ...(change === 'skip'
+                  ? { state: 'skipped', note: 'User approved skipping' }
+                  : { items: ['one'] }),
+              },
+            ];
+      const result = await fixture(JSON.stringify({ steps })).author.revise({
+        plan,
+        change,
+      });
+      if (consent) {
+        assert.ok(result.ok);
+        if (change === 'remove') assert.deepEqual(result.value.steps, []);
+        else if (change === 'skip')
+          assert.equal(result.value.steps[0].state, 'skipped');
+        else assert.deepEqual(result.value.steps[0].items, ['one']);
+      } else {
+        assert.ok(!result.ok);
+        assert.equal(result.error.code, 'invalid');
+        assert.match(result.error.message, /requires user consent/);
+      }
+      assert.deepEqual(plan, snapshot);
+    });
+  }
+}
+
 test('create returns a plan parsed from the author JSON', async () => {
   const result = await fixture(output).author.create({ goal: 'read' });
   assert.ok(result.ok);

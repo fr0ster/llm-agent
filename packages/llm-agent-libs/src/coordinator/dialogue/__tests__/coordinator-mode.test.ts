@@ -2,15 +2,19 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type {
   AgentPrompts,
+  CallOptions,
   IPlanAuthor,
+  IUsageRecorder,
   McpError,
   McpToolResult,
   Result,
+  UsageInput,
 } from '@mcp-abap-adt/llm-agent';
 import { DIALOGUE_COORDINATOR_SYSTEM } from '../coordinator-prompt.js';
 import { DialogueSession } from '../dialogue-session.js';
 import { InMemoryDialogueStateStore } from '../in-memory-dialogue-state-store.js';
 import { composePlannerPrompt } from '../planner-prompt.js';
+import { PlannerToolsClient } from '../planner-tools-client.js';
 import { profileHost } from './profile-test-host.js';
 
 const author: IPlanAuthor = {
@@ -380,3 +384,102 @@ test('headless task outcome survives restore and is delivered exactly once', asy
     await session.close();
   }
 });
+
+for (const mode of ['turn', 'callTool', 'callTool override'] as const) {
+  test(`${mode} records plan_create and plan_revise author calls with session and trace`, async () => {
+    const records: UsageInput[] = [];
+    const usage: IUsageRecorder = {
+      record(input) {
+        records.push(input);
+      },
+      with() {
+        return this;
+      },
+    };
+    const trace = { traceId: 'author-trace' };
+    const signal = new AbortController().signal;
+    const seen: string[] = [];
+    function record(name: string, options?: CallOptions) {
+      assert.equal(options?.sessionId, 'author-accounting');
+      assert.equal(options?.trace, trace);
+      assert.equal(options?.signal, signal);
+      assert.ok(options?.usage);
+      options.usage.record({
+        kind: 'llm.call',
+        context: {},
+        outcome: 'ok',
+        operationId: name,
+        physicalSeq: 0,
+        outerAttempt: 0,
+        providerAttempt: 0,
+        granularity: 'request',
+        retriesVisible: true,
+        provider: 'stub',
+        model: 'stub',
+        stream: false,
+        inputTokens: 3,
+        outputTokens: 2,
+        tokensSource: 'provider',
+        durationMs: 1,
+      });
+      seen.push(name);
+    }
+    const planAuthor: IPlanAuthor = {
+      async create(input, options) {
+        record('create', options);
+        return author.create(input, options);
+      },
+      async revise(input, options) {
+        record('revise', options);
+        return author.revise(input, options);
+      },
+    };
+    const session = await DialogueSession.open({
+      id: 'author-accounting',
+      board: {},
+      // One planner call per turn: end-of-turn corrections would repeat the stub's tool calls.
+      maxCorrections: 0,
+      planAuthor,
+      usage: mode === 'callTool' ? usage : undefined,
+      planner: {
+        async process() {
+          const client = new PlannerToolsClient();
+          for (const [name, args] of [
+            ['plan_create', { goal: 'read' }],
+            ['plan_revise', { change: 'continue' }],
+          ] as const) {
+            const result = await client.callTool(name, args);
+            assert.ok(result.ok);
+            assert.ok(!result.value.isError);
+          }
+          return { ok: true, value: { content: 'ready' } };
+        },
+      },
+    });
+    try {
+      if (mode === 'turn') await session.send('read', { usage, trace, signal });
+      else {
+        const options = {
+          trace,
+          signal,
+          usage: mode === 'callTool override' ? usage : undefined,
+        };
+        for (const [name, args] of [
+          ['plan_create', { goal: 'read' }],
+          ['plan_revise', { change: 'continue' }],
+        ] as const) {
+          const result = await session.callTool(name, args, options);
+          assert.ok(result.ok);
+          assert.ok(!result.value.isError);
+        }
+      }
+      assert.deepEqual(seen, ['create', 'revise']);
+      assert.deepEqual(
+        records.filter((r) => r.kind === 'llm.call').map((r) => r.operationId),
+        ['create', 'revise'],
+      );
+    } finally {
+      await session.close();
+    }
+  });
+}

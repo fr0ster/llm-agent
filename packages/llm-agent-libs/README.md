@@ -95,7 +95,9 @@ prompt itself. Without `planAuthor`, the existing planner mode is preserved.
 `revise({ plan, change, brief? }, options?)` return a typed plan or author error.
 It selects `plannerCreate` / `plannerRevise` from source prompts, falling back to
 `PLAN_CREATE_SYSTEM` / `PLAN_REVISE_SYSTEM`, and calls `runner.preparePlanAuthor`
-for a fresh tool loop. The host enforces read-only knowledge tools and excludes
+for a fresh tool loop. This runner method is optional; when absent, the author
+returns `unavailable` with `profile runner cannot prepare a plan author`.
+The host enforces read-only knowledge tools and excludes
 SAP tools at definition and execution time. Revisions retain completed work;
 invalid output leaves the session plan unchanged.
 

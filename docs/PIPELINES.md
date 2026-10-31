@@ -370,7 +370,9 @@ accepts the current plan and requested change. Both return a typed
 `Result<DialoguePlan, PlanAuthorError>` (`invalid`, `unavailable`, `aborted`).
 `ProfilePlanAuthor({ source, runner, notes? })` resolves fresh prompts and calls
 `runner.preparePlanAuthor({ systemPrompt, mode: 'create' | 'revise' })` for each
-operation. `plannerCreate` / `plannerRevise` override `PLAN_CREATE_SYSTEM` /
+operation. This runner method is optional; when absent, the author returns
+`unavailable` with `profile runner cannot prepare a plan author`.
+`plannerCreate` / `plannerRevise` override `PLAN_CREATE_SYSTEM` /
 `PLAN_REVISE_SYSTEM`; optional `notes(options)` supplies environment or worker
 context. The agent runs a tool loop and returns one JSON object with `steps`,
 optional `question` and `status`. Revisions preserve completed steps and their

@@ -470,7 +470,10 @@ export class PlannerToolsClient implements IMcpClient {
                 })
                 .strict()
                 .parse(args);
-              return author.create(brief, { signal: scope.signal });
+              return author.create(brief, {
+                ...scope.authorOptions,
+                signal: scope.signal,
+              });
             }
             if (typeof previous !== 'object' || previous.note !== undefined)
               throw new Error('plan_revise requires a structured plan');
@@ -489,7 +492,7 @@ export class PlannerToolsClient implements IMcpClient {
                     ? change
                     : `${change}\n\nContext:\n${context}`,
               },
-              { signal: scope.signal },
+              { ...scope.authorOptions, signal: scope.signal },
             );
           })();
           if (!result.ok)
