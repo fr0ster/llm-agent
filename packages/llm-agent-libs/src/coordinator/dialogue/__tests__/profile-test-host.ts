@@ -39,6 +39,15 @@ export function profileHost(workers: ReadonlyMap<string, ISubAgent>): {
           ? { ok: true, value: agent }
           : { ok: false, error: { code: 'missing', message: profile.name } };
       },
+      async preparePlanAuthor() {
+        return {
+          ok: false,
+          error: {
+            code: 'unavailable',
+            message: 'No plan author in this fixture',
+          },
+        };
+      },
       async preparePlanner() {
         return {
           ok: false,

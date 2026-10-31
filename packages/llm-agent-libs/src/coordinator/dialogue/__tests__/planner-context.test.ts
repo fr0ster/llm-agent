@@ -126,7 +126,7 @@ for (const status of ['absent', 'done', 'active', 'waiting_user'] as const) {
         async process(messages) {
           inputs.push(messages);
           if (inputs.length === 1 && status !== 'absent')
-            await tools.callTool('update_plan', {
+            await tools.callTool('plan_update', {
               plan: 'work',
               status,
               ...(status === 'waiting_user' ? { question: 'Which?' } : {}),
@@ -205,12 +205,12 @@ test('a failed latest turn keeps retries in the same request even after earlier 
       async process() {
         calls++;
         if (calls === 1)
-          await tools.callTool('update_plan', {
+          await tools.callTool('plan_update', {
             plan: 'work',
             status: 'active',
           });
         if (calls === 2) {
-          await tools.callTool('update_plan', { plan: 'work', status: 'done' });
+          await tools.callTool('plan_update', { plan: 'work', status: 'done' });
           return { ok: false, error: new Error('failure') };
         }
         return { ok: true, value: { content: 'reply' } };
@@ -235,13 +235,13 @@ test('corrective calls rebuild context containing intermediate replies, actions 
       async process(messages) {
         inputs.push(messages);
         if (inputs.length === 1)
-          await tools.callTool('update_plan', {
+          await tools.callTool('plan_update', {
             steps: [{ id: 's1', goal: 'do work', state: 'pending' }],
           });
         else
           assert.equal(
             (
-              await tools.callTool('update_plan', {
+              await tools.callTool('plan_update', {
                 steps: [{ id: 's1', goal: 'do work', state: 'pending' }],
                 status: 'waiting_user',
                 question: 'Proceed?',
@@ -459,7 +459,7 @@ test('task outcomes update request counters before a busy planner turn finishes;
         if (calls === 1) {
           assert.equal(
             (
-              await tools.callTool('update_plan', {
+              await tools.callTool('plan_update', {
                 steps: [{ id: 's', goal: 'work' }],
               })
             ).isError,
@@ -572,14 +572,14 @@ test('new_request discards the old call, rebuilds retrieval, and keeps only the 
           const result = await tools.callTool('new_request', {});
           assert.ok(result.ok && !result.value.isError);
           assert.ok(opts.stopSignal?.aborted);
-          const rejected = await tools.callTool('update_plan', { plan: 'BAD' });
+          const rejected = await tools.callTool('plan_update', { plan: 'BAD' });
           assert.ok(rejected.ok && rejected.value.isError);
           return { ok: true, value: { content: 'DISCARD' } };
         }
         const context = messages.map((message) => message.content).join('\n');
         assert.doesNotMatch(context, /legacy input|OLD PLAN|DISCARD/);
         assert.match(context, /new work/);
-        const updated = await tools.callTool('update_plan', {
+        const updated = await tools.callTool('plan_update', {
           steps: [{ id: 'new', goal: 'new result' }],
         });
         assert.ok(updated.ok && !updated.value.isError);
@@ -612,7 +612,7 @@ test('new_request discards the old call, rebuilds retrieval, and keeps only the 
 });
 
 for (const prior of [
-  'get_plan',
+  'plan_get',
   'list_tasks',
   'unknown_tool',
   'waiting_user',
@@ -654,12 +654,12 @@ for (const prior of [
 }
 
 for (const order of [
-  ['new_request', 'update_plan', 'delegate_task'],
-  ['new_request', 'delegate_task', 'update_plan'],
-  ['update_plan', 'new_request', 'delegate_task'],
-  ['update_plan', 'delegate_task', 'new_request'],
-  ['delegate_task', 'new_request', 'update_plan'],
-  ['delegate_task', 'update_plan', 'new_request'],
+  ['new_request', 'plan_update', 'delegate_task'],
+  ['new_request', 'delegate_task', 'plan_update'],
+  ['plan_update', 'new_request', 'delegate_task'],
+  ['plan_update', 'delegate_task', 'new_request'],
+  ['delegate_task', 'new_request', 'plan_update'],
+  ['delegate_task', 'plan_update', 'new_request'],
 ]) {
   test(`mixed round executes only new_request with dispatch order ${order.join(', ')}`, async () => {
     let calls = 0;
@@ -672,7 +672,7 @@ for (const order of [
           if (calls++ === 0) {
             const round = [
               { name: 'new_request', arguments: {} },
-              { name: 'update_plan', arguments: { plan: 'must not execute' } },
+              { name: 'plan_update', arguments: { plan: 'must not execute' } },
               {
                 name: 'delegate_task',
                 arguments: { worker: 'w', goal: 'must not execute' },
@@ -752,7 +752,7 @@ test('old tasks survive the boundary, wait normally, label events, and preserve 
         calls++;
         contexts.push(messages.map((message) => message.content).join('\n'));
         if (calls === 1) {
-          await tools.callTool('update_plan', {
+          await tools.callTool('plan_update', {
             steps: [{ id: 'same', goal: 'old goal' }],
           });
           await tools.callTool('delegate_task', {
@@ -764,7 +764,7 @@ test('old tasks survive the boundary, wait normally, label events, and preserve 
           const boundary = await tools.callTool('new_request', {});
           assert.ok(boundary.ok && !boundary.value.isError);
         } else if (calls === 3) {
-          const updated = await tools.callTool('update_plan', {
+          const updated = await tools.callTool('plan_update', {
             steps: [{ id: 'same', goal: 'new goal' }],
           });
           assert.ok(updated.ok && !updated.value.isError);
@@ -825,7 +825,7 @@ test('a corrective call cannot start a new request', async () => {
       async process() {
         calls++;
         if (calls === 1)
-          await tools.callTool('update_plan', {
+          await tools.callTool('plan_update', {
             steps: [{ id: 'ready', goal: 'ready work' }],
           });
         else {
@@ -875,7 +875,7 @@ test('new_request closes a failed plan and permits replacement without consent',
         const result =
           calls === 1
             ? await tools.callTool('new_request', {})
-            : await tools.callTool('update_plan', {
+            : await tools.callTool('plan_update', {
                 steps: [{ id: 'replacement', goal: 'unrelated result' }],
               });
         assert.ok(result.ok && !result.value.isError);
@@ -903,7 +903,7 @@ for (const placement of ['second-call', 'second-round'] as const) {
       board: { workers: new Map() },
       planner: {
         async process(_messages, options) {
-          const ordinary = { name: 'get_plan', arguments: {} };
+          const ordinary = { name: 'plan_get', arguments: {} };
           const boundary = { name: 'new_request', arguments: {} };
           if (placement === 'second-round')
             options.toolRoundGuard?.([ordinary]);

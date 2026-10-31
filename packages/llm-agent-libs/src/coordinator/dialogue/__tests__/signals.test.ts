@@ -293,7 +293,7 @@ test('plan total changes emit and ready stays visible after corrections are exha
     planner: {
       async process() {
         calls++;
-        await tools.callTool('update_plan', {
+        await tools.callTool('plan_update', {
           steps: [
             { id: 'a', goal: 'a' },
             ...(calls > 1 ? [{ id: 'b', goal: 'b' }] : []),

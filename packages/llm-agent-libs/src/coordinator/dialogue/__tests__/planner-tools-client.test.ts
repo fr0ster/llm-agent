@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import type { DialoguePlan, McpContentBlock } from '@mcp-abap-adt/llm-agent';
+import type {
+  DialoguePlan,
+  IPlanAuthor,
+  McpContentBlock,
+} from '@mcp-abap-adt/llm-agent';
 import { PlannerToolsClient, runInPlannerScope, TaskBoard } from '../index.js';
 import { profileHost } from './profile-test-host.js';
 
@@ -65,8 +69,8 @@ test('offers JSON Schema tools and worker enum within scope', async () => {
       'deliver',
       'get_task',
       'list_tasks',
-      'get_plan',
-      'update_plan',
+      'plan_get',
+      'plan_update',
     ],
   );
   for (const tool of result.value)
@@ -124,7 +128,7 @@ test('all tool success paths return JSON and plan is stored', async () => {
     assert.deepEqual((await call('stop_task', { task_id: 'missing' })).json, {
       stopped: false,
     });
-    assert.deepEqual((await call('update_plan', { plan: 'the plan' })).json, {
+    assert.deepEqual((await call('plan_update', { plan: 'the plan' })).json, {
       ok: true,
     });
     assert.equal(f.getPlan(), 'the plan');
@@ -164,7 +168,7 @@ test('concurrent async planner scopes remain isolated', async () => {
     [a, b].map((f, index) =>
       runInPlannerScope(f.scope, async () => {
         await new Promise<void>((resolve) => setImmediate(resolve));
-        await call('update_plan', { plan: String(index) });
+        await call('plan_update', { plan: String(index) });
         await call('delegate_task', { worker: 'w', goal: String(index) });
       }),
     ),
@@ -176,7 +180,7 @@ test('concurrent async planner scopes remain isolated', async () => {
   assert.equal((await call('list_tasks')).error, true);
 });
 
-test('update_plan validates status, defaults to active and advertises the enum', async () => {
+test('plan_update validates status, defaults to active and advertises the enum', async () => {
   const f = setup();
   const updates: Array<{ plan: string | DialoguePlan; status: unknown }> = [];
   await runInPlannerScope(
@@ -190,7 +194,7 @@ test('update_plan validates status, defaults to active and advertises the enum',
       const listed = await client.listTools();
       assert.ok(listed.ok);
       const schema = listed.value.find(
-        (tool) => tool.name === 'update_plan',
+        (tool) => tool.name === 'plan_update',
       )?.inputSchema;
       assert.ok(schema);
       assert.deepEqual(
@@ -200,7 +204,7 @@ test('update_plan validates status, defaults to active and advertises the enum',
       for (const status of [undefined, 'active', 'waiting_user', 'done']) {
         assert.equal(
           (
-            await call('update_plan', {
+            await call('plan_update', {
               plan: 'next',
               ...(status ? { status } : {}),
               ...(status === 'waiting_user' ? { question: 'Continue?' } : {}),
@@ -215,7 +219,7 @@ test('update_plan validates status, defaults to active and advertises the enum',
       }
       for (const status of ['invalid', 1, false])
         assert.equal(
-          (await call('update_plan', { plan: 'next', status })).error,
+          (await call('plan_update', { plan: 'next', status })).error,
           true,
         );
       assert.equal(updates.length, 4);
@@ -223,7 +227,7 @@ test('update_plan validates status, defaults to active and advertises the enum',
   );
 });
 
-test('legacy update_plan preserves the string-only setter contract', async () => {
+test('legacy plan_update preserves the string-only setter contract', async () => {
   const f = setup();
   let stored = '';
   await runInPlannerScope(
@@ -235,7 +239,7 @@ test('legacy update_plan preserves the string-only setter contract', async () =>
     },
     async () => {
       assert.equal(
-        (await call('update_plan', { plan: 'legacy text' })).error,
+        (await call('plan_update', { plan: 'legacy text' })).error,
         undefined,
       );
     },
@@ -244,11 +248,11 @@ test('legacy update_plan preserves the string-only setter contract', async () =>
   await f.board.stopAll();
 });
 
-test('get_plan pages full steps in plan order and validates filters and pagination', async () => {
+test('plan_get pages full steps in plan order and validates filters and pagination', async () => {
   const f = setup();
   await runInPlannerScope(f.scope, async () => {
-    assert.equal((await call('get_plan')).json.plan, null);
-    await call('update_plan', {
+    assert.equal((await call('plan_get')).json.plan, null);
+    await call('plan_update', {
       steps: Array.from({ length: 55 }, (_, i) => ({
         id: `s${i}`,
         goal: `full goal ${i} ${'x'.repeat(300)}`,
@@ -258,22 +262,22 @@ test('get_plan pages full steps in plan order and validates filters and paginati
     });
     const plan = f.getPlan() as DialoguePlan;
     plan.steps[54].state = 'failed';
-    const page = (await call('get_plan', { offset: 40, limit: 20 })).json;
+    const page = (await call('plan_get', { offset: 40, limit: 20 })).json;
     assert.equal(page.total, 55);
     assert.deepEqual(
       page.steps,
       JSON.parse(JSON.stringify(plan.steps.slice(40))),
     );
     assert.deepEqual(
-      (await call('get_plan', { state: 'ready' })).json.steps,
+      (await call('plan_get', { state: 'ready' })).json.steps,
       JSON.parse(JSON.stringify([plan.steps[0]])),
     );
     assert.deepEqual(
-      (await call('get_plan', { state: 'failed' })).json.steps,
+      (await call('plan_get', { state: 'failed' })).json.steps,
       JSON.parse(JSON.stringify([plan.steps[54]])),
     );
-    assert.equal((await call('get_plan', { state: 'pending' })).json.total, 54);
-    assert.deepEqual((await call('get_plan', { offset: 100 })).json.steps, []);
+    assert.equal((await call('plan_get', { state: 'pending' })).json.total, 54);
+    assert.deepEqual((await call('plan_get', { offset: 100 })).json.steps, []);
     for (const args of [
       { state: 'invalid' },
       { offset: -1 },
@@ -281,10 +285,10 @@ test('get_plan pages full steps in plan order and validates filters and paginati
       { limit: 0 },
       { limit: '2' },
     ])
-      assert.equal((await call('get_plan', args)).error, true);
+      assert.equal((await call('plan_get', args)).error, true);
     plan.scopeConsent = true;
-    await call('update_plan', { plan: 'legacy plan' });
-    assert.equal((await call('get_plan')).json.plan, 'legacy plan');
+    await call('plan_update', { plan: 'legacy plan' });
+    assert.equal((await call('plan_get')).json.plan, 'legacy plan');
   });
 });
 
@@ -441,4 +445,320 @@ test('dependency and audit results are appended after briefs with a total bound'
       assert.match(overflow.json.error, /step big.*120000/);
     },
   );
+});
+
+function planningAuthor(plan: DialoguePlan): IPlanAuthor {
+  return {
+    async create() {
+      return { ok: true, value: plan };
+    },
+    async revise() {
+      return { ok: true, value: plan };
+    },
+  };
+}
+const authorPlan: DialoguePlan = {
+  version: 1,
+  status: 'active',
+  steps: [{ id: 's1', goal: 'read', state: 'pending', taskIds: [] }],
+};
+
+test('plan_create stores the author plan and lists planning tools only with an author', async () => {
+  const f = setup();
+  await runInPlannerScope(f.scope, async () => {
+    const listed = await client.listTools();
+    assert.ok(listed.ok);
+    assert.ok(
+      !listed.value.some((tool) =>
+        ['plan_create', 'plan_revise'].includes(tool.name),
+      ),
+    );
+    for (const name of ['plan_create', 'plan_revise']) {
+      assert.deepEqual(await call(name), {
+        error: true,
+        json: { error: 'plan author is unavailable' },
+      });
+    }
+  });
+  await runInPlannerScope(
+    { ...f.scope, planAuthor: planningAuthor(authorPlan) },
+    async () => {
+      const listed = await client.listTools();
+      assert.ok(listed.ok);
+      for (const name of [
+        'plan_create',
+        'plan_revise',
+        'plan_get',
+        'plan_update',
+      ])
+        assert.ok(listed.value.some((tool) => tool.name === name));
+      assert.equal(
+        (await call('plan_create', { goal: 'read', references: ['r1'] })).error,
+        undefined,
+      );
+      const plan = f.getPlan();
+      assert.ok(typeof plan === 'object');
+      assert.equal(plan.steps[0].id, 's1');
+    },
+  );
+});
+
+test('plan_revise merges and stores finished work even when author reopens it', async () => {
+  const f = setup();
+  const done: DialoguePlan = {
+    ...authorPlan,
+    steps: [
+      {
+        ...authorPlan.steps[0],
+        state: 'done',
+        taskIds: ['t1'],
+        successfulWorkTaskId: 't1',
+      },
+    ],
+  };
+  f.setPlan(done);
+  await runInPlannerScope(
+    { ...f.scope, planAuthor: planningAuthor(authorPlan) },
+    async () => {
+      assert.equal(
+        (await call('plan_revise', { change: 'continue' })).error,
+        undefined,
+      );
+      const plan = f.getPlan();
+      assert.ok(typeof plan === 'object');
+      assert.equal(plan.steps[0].state, 'done');
+      assert.deepEqual(plan.steps[0].taskIds, ['t1']);
+      assert.equal(plan.steps[0].successfulWorkTaskId, 't1');
+    },
+  );
+});
+
+test('plan_revise requires a structured plan and author errors leave it unchanged', async () => {
+  const f = setup();
+  const author: IPlanAuthor = {
+    async create() {
+      return { ok: false, error: { code: 'invalid', message: 'bad JSON' } };
+    },
+    async revise() {
+      return { ok: false, error: { code: 'invalid', message: 'bad JSON' } };
+    },
+  };
+  await runInPlannerScope({ ...f.scope, planAuthor: author }, async () => {
+    assert.equal((await call('plan_revise', { change: 'revise' })).error, true);
+    f.setPlan(authorPlan);
+    for (const [name, args] of [
+      ['plan_create', { goal: 'new' }],
+      ['plan_revise', { change: 'revise' }],
+    ] as const) {
+      const result = await call(name, args);
+      assert.equal(result.error, true);
+      assert.match(result.json.error, /invalid/);
+      assert.equal(f.getPlan(), authorPlan);
+    }
+  });
+});
+
+test('plan_create is refused while an attempt is reserved, like new_request', async () => {
+  const f = setup();
+  const host = profileHost(new Map());
+  let release = () => {};
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let entered = () => {};
+  const ready = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  const board = new TaskBoard({ ...host, onEvent() {} });
+  board.resolveWorker = async () => {
+    entered();
+    await gate;
+    throw new Error('reservation released');
+  };
+  await runInPlannerScope(
+    {
+      ...f.scope,
+      board,
+      newRequest() {},
+      planAuthor: planningAuthor(authorPlan),
+    },
+    async () => {
+      const pending = call('delegate_task', { worker: 'w', goal: 'read' });
+      await ready;
+      for (const name of ['new_request', 'plan_create']) {
+        const result = await call(
+          name,
+          name === 'plan_create' ? { goal: 'new' } : {},
+        );
+        assert.equal(result.error, true);
+        assert.match(result.json.error, /being reserved/);
+        assert.equal(f.getPlan(), undefined);
+      }
+      release();
+      await pending;
+    },
+  );
+});
+
+test('invalid authored steps and stale author results leave the plan unchanged', async () => {
+  const f = setup();
+  f.setPlan(authorPlan);
+  const invalid: DialoguePlan = {
+    ...authorPlan,
+    steps: [authorPlan.steps[0], authorPlan.steps[0]],
+  };
+  await runInPlannerScope(
+    { ...f.scope, planAuthor: planningAuthor(invalid) },
+    async () => {
+      assert.equal((await call('plan_create', { goal: 'new' })).error, true);
+      assert.equal(f.getPlan(), authorPlan);
+    },
+  );
+  const newer: DialoguePlan = {
+    ...authorPlan,
+    status: 'waiting_user',
+    question: 'Continue?',
+  };
+  const author: IPlanAuthor = {
+    async create() {
+      f.setPlan(newer);
+      return { ok: true, value: authorPlan };
+    },
+    async revise() {
+      f.setPlan(newer);
+      return { ok: true, value: authorPlan };
+    },
+  };
+  await runInPlannerScope({ ...f.scope, planAuthor: author }, async () => {
+    assert.equal((await call('plan_create', { goal: 'new' })).error, true);
+    assert.equal(f.getPlan(), newer);
+  });
+});
+
+test('plan_create refuses active tasks without calling the author', async () => {
+  const f = setup();
+  let release = () => {};
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let entered = () => {};
+  const ready = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  const board = new TaskBoard({
+    workers: new Map([
+      [
+        'w',
+        {
+          name: 'w',
+          capabilities: { contextPolicy: 'optional' as const },
+          async run() {
+            entered();
+            await gate;
+            return { output: 'ok' };
+          },
+        },
+      ],
+    ]),
+    onEvent() {},
+  });
+  let authorCalls = 0;
+  const author: IPlanAuthor = {
+    ...planningAuthor(authorPlan),
+    async create() {
+      authorCalls++;
+      return { ok: true, value: authorPlan };
+    },
+  };
+  try {
+    await runInPlannerScope(
+      { ...f.scope, board, planAuthor: author },
+      async () => {
+        const delegated = await call('delegate_task', {
+          worker: 'w',
+          goal: 'read',
+        });
+        assert.equal(delegated.error, undefined);
+        await ready;
+        assert.equal(board.get(delegated.json.task_id)?.state, 'running');
+        f.setPlan(authorPlan);
+        assert.equal((await call('plan_create', { goal: 'new' })).error, true);
+        assert.equal(authorCalls, 0);
+        assert.equal(f.getPlan(), authorPlan);
+      },
+    );
+  } finally {
+    release();
+    await board.stopAll();
+  }
+});
+
+test('plan_create refuses a task started while the author is pending', async () => {
+  const f = setup();
+  let releaseAuthor = () => {};
+  const authorGate = new Promise<void>((resolve) => {
+    releaseAuthor = resolve;
+  });
+  let authorEntered = () => {};
+  const authorReady = new Promise<void>((resolve) => {
+    authorEntered = resolve;
+  });
+  let releaseWorker = () => {};
+  const workerGate = new Promise<void>((resolve) => {
+    releaseWorker = resolve;
+  });
+  const board = new TaskBoard({
+    workers: new Map([
+      [
+        'w',
+        {
+          name: 'w',
+          capabilities: { contextPolicy: 'optional' as const },
+          async run() {
+            await workerGate;
+            return { output: 'ok' };
+          },
+        },
+      ],
+    ]),
+    onEvent() {},
+  });
+  const author: IPlanAuthor = {
+    ...planningAuthor(authorPlan),
+    async create() {
+      authorEntered();
+      await authorGate;
+      return { ok: true, value: authorPlan };
+    },
+  };
+  try {
+    await runInPlannerScope(
+      { ...f.scope, board, planAuthor: author },
+      async () => {
+        const previous = f.getPlan();
+        const pending = call('plan_create', { goal: 'new' });
+        await authorReady;
+        const delegated = await call('delegate_task', {
+          worker: 'w',
+          goal: 'read',
+        });
+        assert.equal(delegated.error, undefined);
+        const state = board.get(delegated.json.task_id)?.state;
+        assert.ok(state === 'queued' || state === 'running');
+        releaseAuthor();
+        assert.deepEqual(await pending, {
+          error: true,
+          json: {
+            error:
+              'Cannot create a plan while tasks are active; stop them first or wait for them to settle',
+          },
+        });
+        assert.equal(f.getPlan(), previous);
+      },
+    );
+  } finally {
+    releaseAuthor();
+    releaseWorker();
+    await board.stopAll();
+  }
 });

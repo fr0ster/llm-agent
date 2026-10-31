@@ -180,6 +180,12 @@ export type {
   PipelinePluginFactory,
 } from './pipeline-plugin.js';
 export type {
+  IPlanAuthor,
+  PlanAuthorError,
+  PlanBrief,
+  PlanRevisionInput,
+} from './plan-author.js';
+export type {
   IPlanner,
   PlannerCatalogEntry,
   PlannerInput,

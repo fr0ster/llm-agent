@@ -111,6 +111,8 @@ export interface DialogueState {
   taskSteps?: Record<string, string>;
   /** Persisted task ownership, including closed requests. */
   taskRequests?: Record<string, string>;
+  /** Undelivered task events; absent in older snapshots. */
+  pendingEvents?: TaskEvent[];
   pending: PlannerMessage[];
   savedAt: number;
 }

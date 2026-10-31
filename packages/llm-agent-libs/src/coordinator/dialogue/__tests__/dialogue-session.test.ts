@@ -69,7 +69,7 @@ test('several completions during a busy user turn are listed once in order; sile
         inputs.push(messages);
 
         if (inputs.length === 1) {
-          await tools.callTool('update_plan', { plan: 'parallel work' });
+          await tools.callTool('plan_update', { plan: 'parallel work' });
 
           await tools.callTool('delegate_task', { worker: 'w', goal: 'first' });
 
@@ -88,7 +88,7 @@ test('several completions during a busy user turn are listed once in order; sile
           return { ok: true, value: { content: 'accepted' } };
         }
 
-        await tools.callTool('update_plan', {
+        await tools.callTool('plan_update', {
           plan: 'parallel work',
 
           status: 'done',
@@ -188,7 +188,7 @@ test('send answers in scope, records plan, forwards options and preserves user N
 
         assert.equal(opts.signal, signal);
 
-        await tools.callTool('update_plan', { plan: 'plan' });
+        await tools.callTool('plan_update', { plan: 'plan' });
 
         return { ok: true, value: { content: 'NO_MESSAGE' } };
       },
@@ -555,7 +555,7 @@ test('plan tool state is injected before the last input, survives trimming and r
         inputs.push(messages);
 
         if (inputs.length === 1)
-          await tools.callTool('update_plan', { plan: 'remember this' });
+          await tools.callTool('plan_update', { plan: 'remember this' });
 
         return { ok: true as const, value: { content: 'ok' } };
       },
@@ -1120,7 +1120,7 @@ test('prepared context resets a restored completed batch plan for unrelated work
     planner: {
       async process() {
         assert.equal(s.snapshot().plan, undefined);
-        const result = await tools.callTool('update_plan', {
+        const result = await tools.callTool('plan_update', {
           steps: [{ id: 'new', goal: 'unrelated work' }],
         });
         assert.ok(!result.isError, JSON.stringify(result));
@@ -1170,7 +1170,7 @@ test('task completion preserves a pending question and a queued answer grants co
         calls++;
         if (calls === 1) {
           const steps = [{ id: 'work', goal: 'work' }];
-          assert.ok(!(await tools.callTool('update_plan', { steps })).isError);
+          assert.ok(!(await tools.callTool('plan_update', { steps })).isError);
           assert.ok(
             !(
               await tools.callTool('delegate_task', {
@@ -1182,7 +1182,7 @@ test('task completion preserves a pending question and a queued answer grants co
           );
           assert.ok(
             !(
-              await tools.callTool('update_plan', {
+              await tools.callTool('plan_update', {
                 steps,
                 status: 'waiting_user',
                 question,
@@ -1253,7 +1253,7 @@ for (const maxCorrections of [0, 1, 2]) {
       planner: {
         async process() {
           if (++calls === 1) {
-            await tools.callTool('update_plan', { plan: '' });
+            await tools.callTool('plan_update', { plan: '' });
             await tools.callTool('delegate_task', {
               worker: 'w',
               goal: 'first',
@@ -1298,14 +1298,14 @@ test('correction consumes new events, preserves whole-turn actions and counts ea
         inputs.push(messages);
         calls++;
         if (calls === 1) {
-          await tools.callTool('update_plan', { plan: 'steps' });
+          await tools.callTool('plan_update', { plan: 'steps' });
           await tools.callTool('delegate_task', { worker: 'w', goal: 'first' });
           await tools.callTool('delegate_task', {
             worker: 'w',
             goal: 'second',
           });
         } else if (calls === 2) {
-          await tools.callTool('update_plan', { plan: 'continue' });
+          await tools.callTool('plan_update', { plan: 'continue' });
           second.resolve({ output: 'second result' });
           await tick();
         } else if (calls === 3) {
@@ -1318,7 +1318,7 @@ test('correction consumes new events, preserves whole-turn actions and counts ea
           third.resolve({ output: 'third result' });
           await tick();
         } else {
-          await tools.callTool('update_plan', {
+          await tools.callTool('plan_update', {
             plan: 'complete',
             status: 'done',
           });

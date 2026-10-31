@@ -11,6 +11,7 @@ import { currentPlannerScope, type PlannerScope } from './planner-scope.js';
 import {
   dependenciesDone,
   mergePlan,
+  planView,
   resultKind,
   stepSchema,
 } from './structured-plan.js';
@@ -22,6 +23,22 @@ import {
 
 const reservedDelegations = new WeakMap<PlannerScope, number>();
 const reservedSteps = new WeakSet<DialoguePlanStep>();
+
+function attemptReserved(scope: PlannerScope): boolean {
+  const plan = scope.getPlan();
+  return (
+    reservedDelegations.has(scope) ||
+    (typeof plan === 'object' &&
+      plan.steps.some((step) => reservedSteps.has(step)))
+  );
+}
+
+const authoredPlanSchema = z.object({
+  version: z.literal(1),
+  steps: z.array(stepSchema),
+  status: z.enum(['active', 'waiting_user', 'done']),
+  question: z.string().optional(),
+});
 
 function assertNoActiveAttempt(step: DialoguePlanStep, board: TaskBoard): void {
   if (reservedSteps.has(step))
@@ -76,6 +93,30 @@ export class PlannerToolsClient implements IMcpClient {
     return {
       ok: true,
       value: [
+        ...(currentPlannerScope()?.planAuthor
+          ? [
+              {
+                name: 'plan_create',
+                description: 'Ask the planner to create and store a plan.',
+                inputSchema: schema(
+                  {
+                    goal: string,
+                    context: string,
+                    references: { type: 'array', items: string },
+                  },
+                  ['goal'],
+                ),
+              },
+              {
+                name: 'plan_revise',
+                description:
+                  'Ask the planner to revise the current structured plan.',
+                inputSchema: schema({ change: string, context: string }, [
+                  'change',
+                ]),
+              },
+            ]
+          : []),
         {
           name: 'new_request',
           description: 'Start unrelated work in a new request; call first.',
@@ -138,7 +179,7 @@ export class PlannerToolsClient implements IMcpClient {
           inputSchema: schema({}),
         },
         {
-          name: 'get_plan',
+          name: 'plan_get',
           description:
             'Read full plan steps, filtered by state and paged in plan order.',
           inputSchema: schema({
@@ -159,8 +200,8 @@ export class PlannerToolsClient implements IMcpClient {
           }),
         },
         {
-          name: 'update_plan',
-          description: 'Store the current plan.',
+          name: 'plan_update',
+          description: 'Edit the current plan directly, without the planner.',
           inputSchema: schema(
             {
               plan: string,
@@ -185,17 +226,13 @@ export class PlannerToolsClient implements IMcpClient {
     try {
       const scope = currentPlannerScope();
       if (!scope) throw new Error('no planner session');
+      scope.signal?.throwIfAborted();
       scope.beforeTool?.(name);
       switch (name) {
         case 'new_request': {
           z.object({}).strict().parse(args);
           if (!scope.newRequest) throw new Error('new_request is unavailable');
-          const plan = scope.getPlan();
-          if (
-            reservedDelegations.has(scope) ||
-            (typeof plan === 'object' &&
-              plan.steps.some((step) => reservedSteps.has(step)))
-          )
+          if (attemptReserved(scope))
             throw new Error(
               'Cannot start a new request while a task attempt is being reserved',
             );
@@ -241,6 +278,7 @@ export class PlannerToolsClient implements IMcpClient {
                   signal: scope.signal,
                 })
               : scope.board.legacySummary(worker);
+            scope.signal?.throwIfAborted();
             const isCheck =
               step !== undefined && resultKind(step) === 'verdict';
             if (step && step.worker !== undefined && step.worker !== worker)
@@ -310,6 +348,7 @@ export class PlannerToolsClient implements IMcpClient {
               context,
               requestStartedAt: scope.requestStartedAt,
             };
+            scope.signal?.throwIfAborted();
             const result = scope.board.profiles
               ? await scope.board.startTask(request, { signal: scope.signal })
               : scope.board.start(request);
@@ -403,7 +442,129 @@ export class PlannerToolsClient implements IMcpClient {
               state,
             })),
           );
-        case 'get_plan': {
+        case 'plan_create':
+        case 'plan_revise': {
+          const author = scope.planAuthor;
+          if (!author) throw new Error('plan author is unavailable');
+          const previous = scope.getPlan();
+          const snapshot = JSON.stringify(previous);
+          if (attemptReserved(scope))
+            throw new Error(
+              'Cannot author a plan while a task attempt is being reserved',
+            );
+          if (name === 'plan_create') {
+            for (const task of scope.board.list()) {
+              if (task.state === 'queued' || task.state === 'running')
+                throw new Error(
+                  'Cannot create a plan while tasks are active; stop them first or wait for them to settle',
+                );
+            }
+          }
+          const result = await (async () => {
+            if (name === 'plan_create') {
+              const brief = z
+                .object({
+                  goal: z.string(),
+                  context: z.string().optional(),
+                  references: z.array(z.string()).optional(),
+                })
+                .strict()
+                .parse(args);
+              return author.create(brief, { signal: scope.signal });
+            }
+            if (typeof previous !== 'object' || previous.note !== undefined)
+              throw new Error('plan_revise requires a structured plan');
+            const { change, context } = z
+              .object({
+                change: z.string(),
+                context: z.string().optional(),
+              })
+              .strict()
+              .parse(args);
+            return author.revise(
+              {
+                plan: structuredClone(previous),
+                change:
+                  context === undefined
+                    ? change
+                    : `${change}\n\nContext:\n${context}`,
+              },
+              { signal: scope.signal },
+            );
+          })();
+          if (!result.ok)
+            throw new Error(`${result.error.code}: ${result.error.message}`);
+          scope.signal?.throwIfAborted();
+          if (
+            scope.getPlan() !== previous ||
+            JSON.stringify(previous) !== snapshot ||
+            attemptReserved(scope)
+          )
+            throw new Error(
+              'Plan changed or a task attempt is being reserved; retry the planning call',
+            );
+          if (name === 'plan_create') {
+            for (const task of scope.board.list()) {
+              if (task.state === 'queued' || task.state === 'running')
+                throw new Error(
+                  'Cannot create a plan while tasks are active; stop them first or wait for them to settle',
+                );
+            }
+          }
+          const authored = authoredPlanSchema.parse(result.value);
+          const current =
+            name === 'plan_revise' && typeof previous === 'object'
+              ? previous
+              : undefined;
+          const steps = authored.steps.map(
+            (step) =>
+              current?.steps.find(
+                (old) => old.id === step.id && old.state === 'done',
+              ) ?? step,
+          );
+          for (const done of current?.steps.filter(
+            (step) => step.state === 'done',
+          ) ?? []) {
+            if (!steps.some((step) => step.id === done.id)) steps.push(done);
+          }
+          if (current) {
+            for (const step of current.steps) {
+              const next = steps.find((candidate) => candidate.id === step.id);
+              if (
+                !next ||
+                next.state === 'pending' ||
+                next.worker !== step.worker ||
+                JSON.stringify(next.items) !== JSON.stringify(step.items) ||
+                JSON.stringify(next.dependsOn ?? []) !==
+                  JSON.stringify(step.dependsOn ?? [])
+              )
+                assertNoActiveAttempt(step, scope.board);
+            }
+          }
+          const plan = mergePlan(
+            current,
+            steps,
+            authored.status,
+            authored.question,
+            {
+              consent: current?.scopeConsent,
+              maxItemsPerStep: scope.maxItemsPerStep,
+              resolveResult: (worker, id) =>
+                current?.steps.find(
+                  (step) => step.id === id && step.state === 'done',
+                )?.result ??
+                result.value.steps.find(
+                  (step) => step.id === id && step.worker === worker,
+                )?.result ??
+                resultKind({ worker }),
+              getTask: (id) => scope.board.get(id),
+            },
+          );
+          scope.setPlan(plan, plan.status, plan.question);
+          scope.recordAction?.('plan updated');
+          return textResult({ ok: true, plan: planView(plan) });
+        }
+        case 'plan_get': {
           const {
             state,
             offset = 0,
@@ -449,7 +610,7 @@ export class PlannerToolsClient implements IMcpClient {
             limit,
           });
         }
-        case 'update_plan': {
+        case 'plan_update': {
           const status = args.status ?? 'active';
           if (
             status !== 'active' &&
@@ -521,6 +682,7 @@ export class PlannerToolsClient implements IMcpClient {
             throw new Error(
               'Plan changed or a task attempt is being reserved; retry the plan update',
             );
+          scope.signal?.throwIfAborted();
           const next =
             args.steps !== undefined
               ? mergePlan(previous, args.steps, status, question, {
@@ -547,6 +709,7 @@ export class PlannerToolsClient implements IMcpClient {
             throw new Error(
               'Removing plan steps requires user consent after waiting_user with a question',
             );
+          scope.signal?.throwIfAborted();
           scope.setPlan(next, status, question);
           scope.recordAction?.('plan updated');
           return textResult({ ok: true });
@@ -556,7 +719,13 @@ export class PlannerToolsClient implements IMcpClient {
       }
     } catch (error) {
       return textResult(
-        { error: error instanceof Error ? error.message : String(error) },
+        {
+          error: currentPlannerScope()?.signal?.aborted
+            ? 'aborted'
+            : error instanceof Error
+              ? error.message
+              : String(error),
+        },
         true,
       );
     }

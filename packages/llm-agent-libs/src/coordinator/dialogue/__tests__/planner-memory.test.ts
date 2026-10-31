@@ -553,11 +553,11 @@ test('corrective calls reuse retrieval while seeing newly projected transcript',
         calls++;
         assert.match(messages[0].content ?? '', /guidance/);
         if (calls === 1)
-          await tools.callTool('update_plan', {
+          await tools.callTool('plan_update', {
             steps: [{ id: 's1', goal: 'work' }],
           });
         else
-          await tools.callTool('update_plan', {
+          await tools.callTool('plan_update', {
             steps: [{ id: 's1', goal: 'work' }],
             status: 'waiting_user',
             question: 'Proceed?',

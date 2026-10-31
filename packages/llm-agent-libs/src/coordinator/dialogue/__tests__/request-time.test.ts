@@ -107,11 +107,11 @@ for (const timeZone of [undefined, 'Asia/Tbilisi']) {
           inputs.push(messages);
           now += 86_400_000;
           if (inputs.length === 1) {
-            await tools.callTool('update_plan', {
+            await tools.callTool('plan_update', {
               steps: [{ id: 'work', goal: 'Result' }],
             });
           } else {
-            await tools.callTool('update_plan', {
+            await tools.callTool('plan_update', {
               steps: [{ id: 'work', goal: 'Result' }],
               status: 'waiting_user',
               question: 'Continue?',
@@ -465,12 +465,12 @@ for (const plannerContext of ['prepared', 'conversation'] as const) {
         {
           content: '',
           finishReason: 'tool_calls',
-          toolCalls: [{ id: 'one', name: 'get_plan', arguments: {} }],
+          toolCalls: [{ id: 'one', name: 'plan_get', arguments: {} }],
         },
         {
           content: '',
           finishReason: 'tool_calls',
-          toolCalls: [{ id: 'two', name: 'get_plan', arguments: {} }],
+          toolCalls: [{ id: 'two', name: 'plan_get', arguments: {} }],
         },
         { content: 'Done' },
       ],
@@ -529,7 +529,7 @@ test('explicit new_request refreshes the timestamp from the existing session clo
         inputs.push(messages);
         calls++;
         if (calls === 1) {
-          const result = await tools.callTool('update_plan', {
+          const result = await tools.callTool('plan_update', {
             plan: 'Keep request active',
           });
           assert.ok(result.ok && !result.value.isError);
@@ -570,7 +570,7 @@ for (const pipelineEnabled of [false, true]) {
         {
           content: '',
           finishReason: 'tool_calls',
-          toolCalls: [{ id: 'one', name: 'get_plan', arguments: {} }],
+          toolCalls: [{ id: 'one', name: 'plan_get', arguments: {} }],
         },
         { content: 'Done' },
         { content: 'Worker done' },

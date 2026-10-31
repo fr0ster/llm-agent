@@ -1400,7 +1400,26 @@ responsibilities differ by pipeline. The full landscape:
 | **DAG** | `IPlanner` (`interfaces/planner.ts`) | `LlmDagPlanner` | `LlmDagPlanner` | yes | via a separate `IErrorStrategy` (`ReplanErrorStrategy`, bounded by `maxReplans`) |
 | **controller** | `IControllerPlanner` (`controller/types.ts`) | `SmartExecutorPlanner`, `WeakExecutorPlanner` (extends Smart, finest-grain prompts) | `SmartExecutorPlanner` (`PlannerKind: smart-executor`) | yes | yes — replans on an executor/step failure |
 | **adaptive coordinator** (code-level `withStepperCoordinator`) | `IAdaptiveController` (`interfaces/adaptive-plan.ts`) | `LlmAdaptiveController` | caller-supplied controller | yes with `LlmAdaptiveController`; one initial planning call per request | only at explicit `revise` steps; check verdicts select planned branches, bounded by step run caps and request budget |
-| **dialogue planner** (code-level building blocks; no YAML pipeline) | `PlannerAgent` (`coordinator/dialogue/dialogue-session.ts`) | Consumer-built `SmartAgent` with `PlannerToolsClient` and `DIALOGUE_PLANNER_SYSTEM`, driven by `DialogueSession` | caller-supplied planner | yes with `SmartAgent` | task outcomes and periodic long-running events trigger planner turns; wait ticks emit status without LLM calls; repeated active-task polling ends the turn; the model can revise the plan and delegate again through tools |
+| **dialogue planner** (code-level building blocks; no YAML pipeline) | `PlannerAgent` (`coordinator/dialogue/dialogue-session.ts`) | Consumer-built `SmartAgent` with `PlannerToolsClient`, driven by `DialogueSession`; optional `IPlanAuthor` splits planning from coordination | caller-supplied planner | yes with `SmartAgent` | task outcomes and periodic long-running events trigger planner turns; wait ticks emit status without LLM calls; repeated active-task polling ends the turn; the model can revise the plan and delegate again through tools |
+
+The dialogue split uses a stateless `IPlanAuthor` (`create` / `revise`) returning
+`DialoguePlan`. `ProfilePlanAuthor` prepares a fresh author tool loop through the
+host runner, selecting `plannerCreate` / `plannerRevise` prompts or
+`PLAN_CREATE_SYSTEM` / `PLAN_REVISE_SYSTEM`. The host enforces read-only knowledge
+tools and excludes SAP tools at definition and execution time. Revisions preserve
+completed work; invalid output does not replace the session plan.
+
+With `DialogueSessionOptions.planAuthor`, the dialogue agent coordinates through
+`plan_create` / `plan_revise`; `plan_get` reads plan state and `plan_update` edits it
+without an LLM call. Profile mode uses `prompts.coordinator ??
+DIALOGUE_COORDINATOR_SYSTEM`; without an author it retains the existing planner
+prompt. `DialogueSession.callTool()` exposes the same session plan and task board
+to external coordinators without an LLM turn, persisting state and emitting normal
+signals. It refuses calls during active/queued turns or another tool call;
+`new_request` / `deliver` remain turn-only. External task events are persisted in
+`pendingEvents` and consumed by the next user `send()`, without autonomous LLM
+wake-ups. See [Dialogue planner](PIPELINES.md#dialogue-planner) for contracts and
+tool arguments.
 
 Classification axes:
 
