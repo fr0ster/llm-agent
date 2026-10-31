@@ -358,7 +358,52 @@ const handle = await builder.withStepperCoordinator(new AdaptiveCoordinatorHandl
 
 The dialogue planner is a set of code-level building blocks in
 `@mcp-abap-adt/llm-agent-libs`, beside the adaptive coordinator. It is not a YAML
-pipeline. The consumer supplies the planner's `ILlm` and worker `ISubAgent`s.
+pipeline. The consumer supplies the planner's `ILlm` and worker `ISubAgent`s,
+or host-owned profiles. With `planAuthor`, the dialogue agent coordinates the
+conversation and delegates planning to a separate author.
+
+### Plan author and coordinator mode
+
+`IPlanAuthor` (from `@mcp-abap-adt/llm-agent`) is stateless: `create(brief, options?)`
+accepts `{ goal, context?, references? }`; `revise({ plan, change, brief? }, options?)`
+accepts the current plan and requested change. Both return a typed
+`Result<DialoguePlan, PlanAuthorError>` (`invalid`, `unavailable`, `aborted`).
+`ProfilePlanAuthor({ source, runner, notes? })` resolves fresh prompts and calls
+`runner.preparePlanAuthor({ systemPrompt, mode: 'create' | 'revise' })` for each
+operation. `plannerCreate` / `plannerRevise` override `PLAN_CREATE_SYSTEM` /
+`PLAN_REVISE_SYSTEM`; optional `notes(options)` supplies environment or worker
+context. The agent runs a tool loop and returns one JSON object with `steps`,
+optional `question` and `status`. Revisions preserve completed steps and their
+successful task identities. Invalid author output leaves the session plan unchanged.
+
+The host runner must enforce a read-only knowledge-tool ceiling (for example,
+`rag_search`, `rag_read`, `collection_records`, `collections_list`), with no SAP
+tools, both when offering tools and executing them. Prompt instructions alone do
+not enforce this restriction; the library cannot sandbox the host agent.
+
+Pass `planAuthor` to `DialogueSession.open` to select coordinator mode. In profile
+mode, `preparePlanner` receives the composed `prompts.coordinator ??
+DIALOGUE_COORDINATOR_SYSTEM`, never a fallback to `prompts.planner`. This prompt
+covers conversation and orchestration; planning goes through `plan_create` and
+`plan_revise`. A caller-supplied planner instance owns its prompt and should use
+`DIALOGUE_COORDINATOR_SYSTEM`. Without `planAuthor`, the existing planner prompt
+and behavior remain in effect.
+
+### External coordinators
+
+`session.callTool(name, args, { signal? }?)` runs a `PlannerToolsClient` operation
+against the same session plan and task board without an LLM turn or planner agent.
+It returns `Promise<Result<McpToolResult, McpError>>`, persists state and emits the
+same plan/task signals. Refusals are tool results with `isError: true`: an active
+or queued coordinator turn reports `session is busy with a coordinator turn`;
+another tool call reports `session is busy with a tool call`. Calls are refused,
+not queued. `new_request` and `deliver` are turn-only and return
+`not available outside a coordinator turn`.
+
+External tool use defers task events instead of waking a dialogue LLM. These
+remain in snapshot/store `pendingEvents` across restore; the next `send()` resumes
+dialogue mode and consumes them with the user turn. `pendingEvents` holds task
+events, distinct from the pending reply messages returned by `takePending()`.
 
 ### Wait mode
 
@@ -417,9 +462,18 @@ cancellation function. Signal failures are caught and logged without affecting w
   The board emits `started`, `done`, `failed`, `stopped` events synchronously;
   observer exceptions do not affect execution.
 - **`PlannerToolsClient` + planner scope:** an in-process `IMcpClient` exposes
-  `delegate_task`, `stop_task`, `get_task`, `list_tasks`, `plan_update`.
+  `delegate_task`, `stop_task`, `get_task`, `list_tasks`, `search_knowledge`,
+  `new_request`, `deliver`, `plan_get`, `plan_update`, plus `plan_create` and
+  `plan_revise` when a plan author is configured. `plan_create` takes
+  `{ goal, context?, references? }` and stores the authored plan; it refuses
+  replacement while task attempts are reserved, queued or running. `plan_revise`
+  takes `{ change, context? }`, requires a structured plan, and merges revisions
+  while retaining completed work. `plan_get` reads filtered, paged steps;
+  `plan_update` edits the plan directly without an LLM call. The former names
+  `get_plan` / `update_plan` are removed, with no aliases.
   `runInPlannerScope` uses AsyncLocalStorage to bind the current board, plan and
-  history; `DialogueSession` establishes that scope for each planner turn.
+  history; `DialogueSession` establishes that scope for each planner turn or
+  external `callTool()` operation.
   Listing tools inside the scope includes worker names in `delegate_task`'s
   schema. Tool calls outside it return an `isError` result (`no planner session`);
   tool validation and board errors also become `isError` results.
