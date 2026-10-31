@@ -32,7 +32,7 @@ export function mergePlan(
   options: {
     consent?: boolean;
     maxItemsPerStep?: number;
-    resolveResult?: (worker: string) => 'report' | 'verdict';
+    resolveResult?: (worker: string, stepId: string) => 'report' | 'verdict';
     getTask?: (id: string) => TaskRecord | undefined;
   } = {},
 ): Plan {
@@ -103,7 +103,7 @@ export function mergePlan(
       const effectiveState = s.state ?? old?.state ?? 'pending';
       const worker = s.worker ?? old?.worker;
       const result = s.worker
-        ? (options.resolveResult?.(s.worker) ?? resultKind(s))
+        ? (options.resolveResult?.(s.worker, s.id) ?? resultKind(s))
         : old
           ? resultKind(old)
           : 'report';

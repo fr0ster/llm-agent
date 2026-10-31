@@ -25,6 +25,9 @@ export interface AgentProfileError {
 export interface AgentPrompts {
   workerBase?: string;
   planner?: string;
+  coordinator?: string;
+  plannerCreate?: string;
+  plannerRevise?: string;
 }
 /** Exact, fresh lookups of enabled profiles; no positive TTL or stale fallback. */
 export interface IAgentProfileSource {
@@ -47,6 +50,11 @@ export interface IAgentProfileRunner {
     input: { profile: WorkerProfile; workerBase?: string },
     options?: CallOptions,
   ): Promise<Result<ISubAgent, AgentProfileError>>;
+  /** Fresh author agent; hosts enforce read-only knowledge tools, with no SAP tools. */
+  preparePlanAuthor(
+    input: { systemPrompt: string; mode: 'create' | 'revise' },
+    options?: CallOptions,
+  ): Promise<Result<ISmartAgent, AgentProfileError>>;
   preparePlanner(
     input: { systemPrompt: string },
     options?: CallOptions,

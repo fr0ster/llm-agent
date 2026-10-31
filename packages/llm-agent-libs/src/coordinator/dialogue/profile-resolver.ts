@@ -30,9 +30,12 @@ const profileSchema = summarySchema.extend({
 const promptsSchema = z.object({
   workerBase: z.string().optional(),
   planner: z.string().optional(),
+  coordinator: z.string().optional(),
+  plannerCreate: z.string().optional(),
+  plannerRevise: z.string().optional(),
 });
 
-class ProfileSourceError extends Error {
+export class ProfileSourceError extends Error {
   readonly code: AgentProfileError['code'];
   constructor(error: AgentProfileError) {
     super(`profile source ${error.code}: ${error.message}`);

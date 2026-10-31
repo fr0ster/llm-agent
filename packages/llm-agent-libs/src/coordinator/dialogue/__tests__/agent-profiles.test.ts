@@ -133,6 +133,15 @@ function runner(
         run,
       });
     },
+    async preparePlanAuthor() {
+      return {
+        ok: false,
+        error: {
+          code: 'unavailable',
+          message: 'No plan author in this fixture',
+        },
+      };
+    },
     async preparePlanner() {
       return {
         ok: false,
@@ -1100,6 +1109,15 @@ test('planner runner failures preserve state for retry and never invoke a planne
       profileSource: new Source(),
       profileRunner: {
         ...runner(async () => ({ output: '' })),
+        async preparePlanAuthor() {
+          return {
+            ok: false,
+            error: {
+              code: 'unavailable',
+              message: 'No plan author in this fixture',
+            },
+          };
+        },
         async preparePlanner() {
           if (throws) throw new Error('planner construction failed');
           return {
@@ -1211,6 +1229,15 @@ for (const passing of [false, true]) {
       maxCorrections: 0,
       profileRunner: {
         ...runner(async () => ({ output: '' })),
+        async preparePlanAuthor() {
+          return {
+            ok: false,
+            error: {
+              code: 'unavailable',
+              message: 'No plan author in this fixture',
+            },
+          };
+        },
         async preparePlanner() {
           return ok({
             async process() {
@@ -1537,6 +1564,15 @@ test('planner text refreshes every call, including empty text, in both context m
     };
     const profileRunner: IAgentProfileRunner = {
       ...runner(async () => ({ output: '' })),
+      async preparePlanAuthor() {
+        return {
+          ok: false,
+          error: {
+            code: 'unavailable',
+            message: 'No plan author in this fixture',
+          },
+        };
+      },
       async preparePlanner({ systemPrompt }) {
         systems.push(systemPrompt);
         const agent: ISmartAgent = {
@@ -1710,6 +1746,15 @@ test('corrective planner calls rediscover fresh text and source errors prevent r
   const systems: string[] = [];
   const profileRunner: IAgentProfileRunner = {
     ...runner(async () => ({ output: '' })),
+    async preparePlanAuthor() {
+      return {
+        ok: false,
+        error: {
+          code: 'unavailable',
+          message: 'No plan author in this fixture',
+        },
+      };
+    },
     async preparePlanner(input) {
       systems.push(input.systemPrompt);
       return ok({
