@@ -162,6 +162,7 @@ export class TaskBoard {
         throw new Error(
           `profile ${req.worker} result kind changed; reopen the step`,
         );
+      options?.signal?.throwIfAborted();
       return this.enqueue({ ...req, result: profile.result });
     } catch (error) {
       return {

@@ -6,9 +6,12 @@ import type {
   IAgentProfileRunner,
   IAgentProfileSource,
   IDialogueStateStore,
+  IPlanAuthor,
   IPlannerContextBuilder,
   ISignalEmitter,
   IUsageRecorder,
+  McpError,
+  McpToolResult,
   Message,
   OnPartial,
   DialoguePlan as Plan,
@@ -25,6 +28,7 @@ import {
   scopedUsage,
   type TokenUsage,
 } from '@mcp-abap-adt/llm-agent';
+import { DIALOGUE_COORDINATOR_SYSTEM } from './coordinator-prompt.js';
 import {
   appendRequestMessage,
   boundRequestTranscript,
@@ -41,7 +45,8 @@ import {
   retrievePlannerContext,
   validateRetrievalOptions,
 } from './planner-retrieval.js';
-import { runInPlannerScope } from './planner-scope.js';
+import { type PlannerScope, runInPlannerScope } from './planner-scope.js';
+import { PlannerToolsClient } from './planner-tools-client.js';
 import { formatRequestTime, validateTimeZone } from './request-time.js';
 import {
   applyTaskEvent,
@@ -104,6 +109,7 @@ export interface DialogueSessionOptions extends PlannerRetrievalOptions {
   maxItemsPerStep?: number;
   taskOutputChars?: number;
   planner?: PlannerAgent;
+  planAuthor?: IPlanAuthor;
   profileSource?: IAgentProfileSource;
   profileRunner?: IAgentProfileRunner;
   profileTimeoutMs?: number;
@@ -128,6 +134,10 @@ export class DialogueSession {
   private readonly resultEvents: string[] = [];
   private readonly signals: ISignalEmitter<DialogueSignals>;
   private turnActive = false;
+  private externalCoordinator = false;
+  // Outcomes deferred while no coordinator turn runs accompany the next user.
+  private deferredEvents: TaskEvent[] = [];
+  private toolActive?: Promise<Result<McpToolResult, McpError>>;
   private turnUsage?: IUsageRecorder;
   private lastActivity?: string;
   private lastPlan?: string;
@@ -147,7 +157,8 @@ export class DialogueSession {
     this.updateWaitClock();
     const activity = {
       turnActive: this.turnActive,
-      queuedInputs: this.users.length + this.events.length,
+      queuedInputs:
+        this.users.length + this.events.length + this.deferredEvents.length,
       running: this.board
         .list()
         .filter((t) => t.state === 'queued' || t.state === 'running').length,
@@ -369,7 +380,7 @@ export class DialogueSession {
           continue;
         this.longNotifiedAt.set(task.id, now);
         delete task.usage;
-        this.events.push({ kind: 'long_running', task });
+        this.enqueueEvent({ kind: 'long_running', task });
       }
     this.changed();
     if (this.events.length) this.schedule();
@@ -380,6 +391,24 @@ export class DialogueSession {
         event.kind !== 'long_running' ||
         this.board.get(event.task.id)?.state === 'running',
     );
+  }
+
+  private enqueueEvent(event: TaskEvent): void {
+    if (this.externalCoordinator) {
+      const index =
+        event.kind === 'long_running'
+          ? this.deferredEvents.findIndex(
+              (pending) =>
+                pending.kind === 'long_running' &&
+                pending.task.id === event.task.id,
+            )
+          : -1;
+      if (index >= 0) this.deferredEvents[index] = event;
+      else this.deferredEvents.push(event);
+    } else this.events.push(event);
+    this.changed();
+    if (this.externalCoordinator) void this.persist();
+    this.schedule();
   }
 
   private constructor(private readonly opts: DialogueSessionOptions) {
@@ -458,9 +487,7 @@ export class DialogueSession {
         // Only outcomes wake the planner; a start is visible via list_tasks.
         if (this.closing || event.kind === 'started') return;
         if (event.kind !== 'long_running') this.outcomeVersion++;
-        this.events.push(event);
-        this.changed();
-        this.schedule();
+        this.enqueueEvent(event);
       },
     });
   }
@@ -495,6 +522,7 @@ export class DialogueSession {
         session.plan.question =
           'Awaiting user response (restored legacy state)';
       session.pending = structuredClone(state.pending);
+      session.deferredEvents = structuredClone(state.pendingEvents ?? []);
       session.requests = (
         state.requests ?? [
           {
@@ -587,13 +615,117 @@ export class DialogueSession {
     if (this.closing)
       return Promise.reject(new Error('dialogue session closed'));
     return new Promise((resolve, reject) => {
+      this.externalCoordinator = false;
       this.users.push({ text, opts, resolve, reject });
       this.changed();
       this.schedule();
     });
   }
+  private createPlannerScope(
+    request: PlannerRequestRecord | undefined,
+    options: CallOptions = {},
+  ): PlannerScope {
+    return {
+      planAuthor: this.opts.planAuthor,
+      authorOptions: {
+        usage: options.usage ?? this.opts.usage ?? this.opts.board.usage,
+        sessionId: this.opts.id,
+        trace: options.trace,
+      },
+      newRequest: () => {
+        throw new Error('not available outside a coordinator turn');
+      },
+      deliver: () => {
+        throw new Error('not available outside a coordinator turn');
+      },
+      ownTask: (id) => {
+        const owner =
+          request ??
+          this.openRequest ??
+          this.beginRequest(this.board.get(id)?.goal ?? '', false);
+        this.taskRequests.set(id, owner.id);
+      },
+      recordAction: () => this.changed(),
+      board: this.board,
+      signal: options.signal,
+      requestStartedAt: request?.openedAt,
+      maxItemsPerStep: this.opts.maxItemsPerStep,
+      taskSteps: this.taskSteps,
+      getPlan: () => this.plan,
+      setPlan: (plan, status = 'active', question) => {
+        this.plan =
+          typeof plan === 'string'
+            ? { version: 1, steps: [], note: plan, status, question }
+            : plan;
+        this.changed();
+      },
+      searchKnowledge: async (query, collection, k) => {
+        const sources = this.opts.plannerKnowledge ?? [];
+        if (
+          collection !== undefined &&
+          !sources.some((source) => source.name === collection)
+        )
+          throw new Error(`unknown knowledge collection ${collection}`);
+        const result = await retrievePlannerContext(
+          {
+            ...this.opts,
+            plannerMemory: undefined,
+            plannerKnowledge: sources.filter(
+              (source) =>
+                collection === undefined || source.name === collection,
+            ),
+            knowledgeK: k,
+          },
+          this.opts.id,
+          request?.id ?? this.opts.id,
+          query,
+          false,
+          options,
+          (message) => this.warn(message),
+        );
+        return renderPlannerRetrieval({
+          memory: [],
+          knowledge: result.knowledge,
+          notes: [],
+        }).join('\n');
+      },
+    };
+  }
+  callTool(
+    name: string,
+    args: Record<string, unknown>,
+    opts: Pick<CallOptions, 'signal' | 'usage' | 'trace'> = {},
+  ): Promise<Result<McpToolResult, McpError>> {
+    const refuse = (
+      message: string,
+    ): Promise<Result<McpToolResult, McpError>> =>
+      Promise.resolve({
+        ok: true,
+        value: { isError: true, content: [{ type: 'text', text: message }] },
+      });
+    if (opts.signal?.aborted) return refuse('aborted');
+    if (this.turnActive || this.active || this.users.length)
+      return refuse('session is busy with a coordinator turn');
+    if (this.toolActive) return refuse('session is busy with a tool call');
+    if (this.closing) return refuse('dialogue session closed');
+    if (name === 'new_request' || name === 'deliver')
+      return refuse('not available outside a coordinator turn');
+    this.externalCoordinator = true;
+    const operation = runInPlannerScope(
+      this.createPlannerScope(this.openRequest, opts),
+      () => new PlannerToolsClient().callTool(name, args),
+    );
+    this.toolActive = operation.finally(async () => {
+      this.changed();
+      if (!opts.signal?.aborted) await this.persist();
+      this.toolActive = undefined;
+      if (this.users.length) this.schedule();
+    });
+    return this.toolActive;
+  }
   private schedule(): void {
-    if (this.active || this.closing) return;
+    if (this.active || this.toolActive || this.closing) return;
+    if (this.externalCoordinator && !this.users.length) return;
     // Defer draining so synchronous task events are batched together.
     this.active = Promise.resolve()
       .then(() => this.drain())
@@ -604,11 +736,17 @@ export class DialogueSession {
       });
   }
   private async drain(): Promise<void> {
-    while (!this.closing && (this.users.length || this.events.length)) {
+    while (
+      !this.closing &&
+      (this.users.length || (!this.externalCoordinator && this.events.length))
+    ) {
       const user = this.users.shift();
-      const events = user ? [] : this.liveEvents(this.events.splice(0));
+      const events = this.liveEvents(
+        user ? this.deferredEvents.splice(0) : this.events.splice(0),
+      );
       if (!user && !events.length) continue;
-      const text = user ? user.text : this.eventNotes(events);
+      const notes = this.eventNotes(events);
+      const text = user ? [user.text, notes].filter(Boolean).join('\n') : notes;
       const trigger = user ? 'user' : 'event';
       this.turnActive = true;
       this.changed();
@@ -646,7 +784,10 @@ export class DialogueSession {
     const previousRequest = this.openRequest;
     const previousPlan = this.plan;
     const waitingAtEntry = this.plan?.status === 'waiting_user';
-    let request = this.beginRequest(text, user !== undefined);
+    let request = this.beginRequest(
+      text,
+      user !== undefined && consumed.length === 0,
+    );
     const entryTurnOk = request.lastTurnOk;
     request.lastTurnOk = false;
     const turnStartedAt = this.now();
@@ -777,7 +918,10 @@ export class DialogueSession {
               runner.preparePlanner(
                 {
                   systemPrompt: composePlannerPrompt(
-                    discovery.prompts.planner ?? DIALOGUE_PLANNER_SYSTEM,
+                    this.opts.planAuthor
+                      ? (discovery.prompts.coordinator ??
+                          DIALOGUE_COORDINATOR_SYSTEM)
+                      : (discovery.prompts.planner ?? DIALOGUE_PLANNER_SYSTEM),
                   ),
                 },
                 options,
@@ -829,6 +973,10 @@ export class DialogueSession {
         const contentPartials: StreamChunk[] = [];
         const result = await runInPlannerScope(
           {
+            ...this.createPlannerScope(request, {
+              ...user?.opts,
+              usage: this.turnUsage,
+            }),
             beforeTool: (name) => {
               if (
                 (reserved || restarting) &&
@@ -882,12 +1030,6 @@ export class DialogueSession {
               partialText = '';
               contentPartials.length = 0;
             },
-            ownTask: (id) => this.taskRequests.set(id, request.id),
-            board: this.board,
-            signal: user?.opts.signal,
-            requestStartedAt: request.openedAt,
-            maxItemsPerStep: this.opts.maxItemsPerStep,
-            taskSteps: this.taskSteps,
             statusRead: () => {
               if (waitStop.signal.aborted) return;
               if (lastReadVersion === this.outcomeVersion) {
@@ -896,48 +1038,10 @@ export class DialogueSession {
               }
               lastReadVersion = this.outcomeVersion;
             },
-            getPlan: () => this.plan,
-            setPlan: (plan, status = 'active', question) => {
-              this.plan =
-                typeof plan === 'string'
-                  ? { version: 1, steps: [], note: plan, status, question }
-                  : plan;
-              this.changed();
-            },
             recordAction: (action, didStart) => {
               actions.push(action);
               started ||= didStart === true;
               this.changed();
-            },
-            searchKnowledge: async (query, collection, k) => {
-              const sources = this.opts.plannerKnowledge ?? [];
-              if (
-                collection !== undefined &&
-                !sources.some((source) => source.name === collection)
-              )
-                throw new Error(`unknown knowledge collection ${collection}`);
-              const result = await retrievePlannerContext(
-                {
-                  ...this.opts,
-                  plannerMemory: undefined,
-                  plannerKnowledge: sources.filter(
-                    (source) =>
-                      collection === undefined || source.name === collection,
-                  ),
-                  knowledgeK: k,
-                },
-                this.opts.id,
-                request.id,
-                query,
-                false,
-                { ...user?.opts, usage: this.turnUsage },
-                (message) => this.warn(message),
-              );
-              return renderPlannerRetrieval({
-                memory: [],
-                knowledge: result.knowledge,
-                notes: [],
-              }).join('\n');
             },
           },
           () =>
@@ -1259,6 +1363,7 @@ export class DialogueSession {
       taskSteps: Object.fromEntries(this.taskSteps),
       taskRequests: Object.fromEntries(this.taskRequests),
       pending: this.pending,
+      pendingEvents: this.deferredEvents,
       savedAt: this.savedAt,
     });
   }
@@ -1266,6 +1371,7 @@ export class DialogueSession {
     if (this.closePromise) return this.closePromise;
     this.closing = true;
     this.events = [];
+    this.deferredEvents = [];
     for (const user of this.users.splice(0))
       user.reject(new Error('dialogue session closed'));
     this.changed();
@@ -1274,10 +1380,11 @@ export class DialogueSession {
   }
   private async finishClose(): Promise<void> {
     // Stop immediately, then stop again for tasks delegated by the settling turn.
-    await Promise.all([this.board.stopAll(), this.active]);
+    await Promise.all([this.board.stopAll(), this.active, this.toolActive]);
     await this.board.stopAll();
     await this.memoryWriter?.close();
     this.events = [];
+    this.deferredEvents = [];
     this.pending = [];
     await this.persistence;
     try {

@@ -26,8 +26,8 @@ test('planner exposes exactly the semantic-only tools and rejects removed argume
           'deliver',
           'get_task',
           'list_tasks',
-          'get_plan',
-          'update_plan',
+          'plan_get',
+          'plan_update',
         ],
       );
       const delegate = listed.value.find(

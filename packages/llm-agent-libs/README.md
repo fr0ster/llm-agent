@@ -83,6 +83,40 @@ Use `@mcp-abap-adt/llm-usage` for buffered collection or implement
 transports/sinks, shutdown and loss semantics. Usage records exclude content;
 request logging is a separate API with different data and retention needs.
 
+## Dialogue coordination and planning
+
+Pass an `IPlanAuthor` to `DialogueSession.open({ planAuthor, ... })` to separate
+planning from conversation. Profile mode selects `prompts.coordinator ??
+DIALOGUE_COORDINATOR_SYSTEM`; a supplied planner instance should use that coordinator
+prompt itself. Without `planAuthor`, the existing planner mode is preserved.
+
+`ProfilePlanAuthor({ source, runner, notes? })` implements the stateless core
+`IPlanAuthor`: `create({ goal, context?, references? }, options?)` and
+`revise({ plan, change, brief? }, options?)` return a typed plan or author error.
+It selects `plannerCreate` / `plannerRevise` from source prompts, falling back to
+`PLAN_CREATE_SYSTEM` / `PLAN_REVISE_SYSTEM`, and calls `runner.preparePlanAuthor`
+for a fresh tool loop. This runner method is optional; when absent, the author
+returns `unavailable` with `profile runner cannot prepare a plan author`.
+The host enforces read-only knowledge tools and excludes
+SAP tools at definition and execution time. Revisions retain completed work;
+invalid output leaves the session plan unchanged.
+
+`PlannerToolsClient` exposes `plan_create`, `plan_revise` only with an author,
+plus `plan_get`, `plan_update`, `delegate_task`, `get_task`, `list_tasks`,
+`stop_task`, `search_knowledge`, `new_request` and `deliver`. `plan_create` stores
+a new authored plan; `plan_revise` merges a revision of the current structured
+plan. `plan_get` reads filtered, paged steps; `plan_update` edits without an LLM
+call. `get_plan` / `update_plan` have been removed without aliases.
+
+External coordinators can use `session.callTool(name, args, { signal? }?)` without
+a planner turn or planner agent. It returns `Result<McpToolResult, McpError>`,
+persists state and emits normal plan/task signals. Busy sessions refuse calls
+with `isError: true` rather than queueing them; `new_request` / `deliver` are
+turn-only. Task events stay in persisted `pendingEvents` without waking the LLM;
+the next user `send()` consumes them and resumes dialogue mode. These events are
+separate from pending replies read by `takePending()`. See the
+[dialogue guide](../../docs/PIPELINES.md#dialogue-planner) for details.
+
 ## Dialogue wait mode
 
 `DialogueSession.open` accepts `waitTickMs` (default 30,000) and `longTaskMs`
@@ -115,8 +149,9 @@ legacy API. `profileTimeoutMs` defaults to 3000 milliseconds per source resoluti
 The source implements the public `IAgentProfileSource` contract: `list()` returns
 enabled names, descriptions and result kinds; `get(name)` performs an exact,
 case-sensitive lookup and distinguishes missing from disabled records; `getPrompts()`
-returns optional host worker base and planner text. Empty strings are explicit text;
-only absent planner text selects `DIALOGUE_PLANNER_SYSTEM`. Errors fail closed.
+returns optional `workerBase`, `planner`, `coordinator`, `plannerCreate` and
+`plannerRevise` text. Empty strings are explicit text; absent fields select the
+corresponding library defaults. Errors fail closed.
 Do not use a positive TTL or stale-while-revalidate: check current revision and
 availability on every lookup. Immutable revision bodies may then be cached by the host.
 

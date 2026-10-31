@@ -1,9 +1,15 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
-import type { DialoguePlan as Plan } from '@mcp-abap-adt/llm-agent';
+import type {
+  CallOptions,
+  IPlanAuthor,
+  DialoguePlan as Plan,
+} from '@mcp-abap-adt/llm-agent';
 import type { TaskBoard } from './task-board.js';
 
 export interface PlannerScope {
   signal?: AbortSignal;
+  authorOptions?: Pick<CallOptions, 'usage' | 'sessionId' | 'trace'>;
+  planAuthor?: IPlanAuthor;
   beforeTool?(name: string): void;
   newRequest?(): void;
   ownTask?(id: string): void;

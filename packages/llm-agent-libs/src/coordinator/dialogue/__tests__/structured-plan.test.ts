@@ -227,7 +227,7 @@ for (const maxCorrections of [0, 1, 2]) {
           calls++;
           for (let i = 1; i < messages.length; i++)
             assert.notEqual(messages[i].role, messages[i - 1].role);
-          if (calls === 1) await call('update_plan', { steps });
+          if (calls === 1) await call('plan_update', { steps });
           else
             assert.match(
               String(messages.at(-1)?.content),
@@ -277,7 +277,7 @@ test('event correction, waiting_user suppression/reset, auto done, structured sn
       async process(messages) {
         calls++;
         if (calls === 1) {
-          await call('update_plan', { steps });
+          await call('plan_update', { steps });
           await call('delegate_task', {
             step_id: 's1',
             worker: 'w',
@@ -288,14 +288,14 @@ test('event correction, waiting_user suppression/reset, auto done, structured sn
             String(messages.at(-1)?.content),
             /\[check\] Steps s2: second are ready/,
           );
-          await call('update_plan', {
+          await call('plan_update', {
             steps,
             status: 'waiting_user',
             question: 'Proceed?',
           });
         } else if (calls === 4) {
           assert.match(String(messages.at(-1)?.content), /status: active/);
-          await call('update_plan', {
+          await call('plan_update', {
             steps: [
               steps[0],
               { ...steps[1], state: 'skipped', note: 'unnecessary' },
@@ -339,7 +339,7 @@ test('waiting_user ends user turn without correction; new user resets status', a
         calls++;
         if (calls === 2)
           assert.match(String(messages.at(-1)?.content), /status: active/);
-        await call('update_plan', {
+        await call('plan_update', {
           steps,
           status: 'waiting_user',
           question: 'Which one?',
@@ -428,7 +428,7 @@ test('waiting_user suppresses corrections on an event turn with ready steps', as
     planner: {
       async process() {
         if (++calls === 1) {
-          await call('update_plan', {
+          await call('plan_update', {
             steps,
             status: 'waiting_user',
             question: 'Continue after this?',
@@ -557,7 +557,7 @@ test('skipped dependencies block delegation until the planner revises dependsOn'
         ).isError,
         true,
       );
-      await call('update_plan', {
+      await call('plan_update', {
         steps: [
           { ...steps[0], state: 'skipped', note: 'unnecessary' },
           { ...steps[1], dependsOn: [] },
@@ -762,7 +762,7 @@ test('view prioritizes actionable steps, counts every hidden state, and preserve
     s.state = 'running';
   });
   assert.equal(planView(plan).split('\n').length, 42);
-  assert.match(planView(plan), /10 running steps collapsed; use get_plan/);
+  assert.match(planView(plan), /10 running steps collapsed; use plan_get/);
 });
 
 for (const state of ['failed', 'stopped', 'interrupted'] as const) {
@@ -819,7 +819,7 @@ test('corrective notes include normalized and bounded ready goals', async () => 
     planner: {
       async process(messages) {
         if (++calls === 1)
-          await call('update_plan', {
+          await call('plan_update', {
             steps: [
               { id: 'ready', goal: `  useful\n   goal ${'x'.repeat(300)}  ` },
             ],
@@ -864,8 +864,8 @@ test('more than forty ready steps stay bounded and precede other active states',
     view.split('\n').filter((line) => /^ready\d+ ready /.test(line)).length,
     40,
   );
-  assert.match(view, /5 pending steps collapsed; use get_plan/);
-  assert.match(view, /2 running steps collapsed; use get_plan/);
+  assert.match(view, /5 pending steps collapsed; use plan_get/);
+  assert.match(view, /2 running steps collapsed; use plan_get/);
   assert.doesNotMatch(view, /^ready40 /m);
 });
 
@@ -943,7 +943,7 @@ for (const worker of ['w', 'audit']) {
 }
 
 for (const attempt of ['work', 'check'] as const) {
-  test(`update_plan refuses removing active ${attempt} until stop settles`, async () => {
+  test(`plan_update refuses removing active ${attempt} until stop settles`, async () => {
     let plan = mergePlan(undefined, [steps[0]], 'active');
     let finish!: (value: { output: string }) => void;
     const board = new TaskBoard({
@@ -982,7 +982,7 @@ for (const attempt of ['work', 'check'] as const) {
         const original = structuredClone(plan);
         const refuse = async () => {
           for (const replacement of [{ steps: [] }, { plan: 'replacement' }]) {
-            const result = await call('update_plan', replacement);
+            const result = await call('plan_update', replacement);
             assert.equal(result.isError, true);
             assert.match(
               JSON.stringify(result.content),
@@ -999,11 +999,11 @@ for (const attempt of ['work', 'check'] as const) {
         finish({ output: 'settled' });
         await tick();
         assert.equal(
-          (await call('update_plan', { steps: [] })).isError,
+          (await call('plan_update', { steps: [] })).isError,
           undefined,
         );
         assert.equal(
-          (await call('update_plan', { steps: [steps[0]] })).isError,
+          (await call('plan_update', { steps: [steps[0]] })).isError,
           undefined,
         );
         assert.deepEqual(plan.steps[0].taskIds, []);
@@ -1055,7 +1055,7 @@ for (const remove of [false, true]) {
       planner: {
         async process(messages) {
           if (++calls === 1) {
-            await call('update_plan', { steps: [steps[0]] });
+            await call('plan_update', { steps: [steps[0]] });
             await call('delegate_task', {
               step_id: 's1',
               worker: 'w',
@@ -1063,7 +1063,7 @@ for (const remove of [false, true]) {
             });
             await tick();
             assert.equal(getPlan(session).steps[0].state, 'done');
-            if (remove) await call('update_plan', { steps: [] });
+            if (remove) await call('plan_update', { steps: [] });
             const store = new InMemoryDialogueStateStore();
             // Exercise a JSON persistence boundary after the completed step is removed.
             await store.save(
@@ -1098,7 +1098,7 @@ for (const remove of [false, true]) {
             );
             if (remove) {
               assert.doesNotMatch(text, /\[task events\]/);
-              await call('update_plan', { steps: [steps[0]] });
+              await call('plan_update', { steps: [steps[0]] });
               assert.equal(getPlan(session).steps[0].state, 'pending');
             }
           }

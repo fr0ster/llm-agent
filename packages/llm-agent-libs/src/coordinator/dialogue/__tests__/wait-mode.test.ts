@@ -13,6 +13,7 @@ import {
   DialogueSession,
   type DialogueSessionOptions,
 } from '../dialogue-session.js';
+import { InMemoryDialogueStateStore } from '../in-memory-dialogue-state-store.js';
 import { PlannerToolsClient } from '../planner-tools-client.js';
 import { applyTaskEvent } from '../structured-plan.js';
 
@@ -66,6 +67,70 @@ class Clock {
     await flush();
   }
 }
+
+test('external timer events stay coalesced and persisted until the next send', async () => {
+  const clock = new Clock();
+  const task = work();
+  const store = new InMemoryDialogueStateStore();
+  const inputs: Message[][] = [];
+  const session = await DialogueSession.open({
+    id: 'external-clock',
+    store,
+    now: clock.now,
+    scheduleTimer: clock.schedule,
+    waitTickMs: 10,
+    longTaskMs: 20,
+    maxCorrections: 0,
+    board: { workers: new Map([['executor', task.worker]]), now: clock.now },
+    planner: {
+      async process(messages) {
+        inputs.push(structuredClone(messages));
+        return { ok: true, value: { content: 'NO_MESSAGE' } };
+      },
+    },
+  });
+  try {
+    await session.callTool('delegate_task', {
+      worker: 'executor',
+      goal: 'job',
+    });
+    await flush();
+    for (let tick = 0; tick < 5; tick++) {
+      await clock.advance(20);
+      assert.equal(inputs.length, 0);
+      const pending = session.snapshot().pendingEvents;
+      assert.equal(pending?.length, 1);
+      assert.equal(pending?.[0].kind, 'long_running');
+      assert.deepEqual(
+        (await store.load('external-clock'))?.pendingEvents,
+        pending,
+      );
+    }
+    await session.send('review');
+    await flush();
+    assert.equal(inputs.length, 1);
+    assert.equal(
+      JSON.stringify(inputs[0]).split('is still running').length - 1,
+      1,
+    );
+    assert.deepEqual(session.snapshot().pendingEvents, []);
+    assert.deepEqual((await store.load('external-clock'))?.pendingEvents, []);
+    // Finish first: a task still running in resumed dialogue mode gets a fresh,
+    // legitimate long-running note; this checks the deferred one is not repeated.
+    task.finish({ output: 'done' });
+    await flush();
+    await session.send('continue');
+    await flush();
+    // The completion wakes a regular turn too. Later inputs may replay the first
+    // user message as history; the new (last) message never repeats the note.
+    assert.ok(inputs.length >= 2);
+    for (const later of inputs.slice(1))
+      assert.ok(!(later.at(-1)?.content ?? '').includes('is still running'));
+  } finally {
+    task.finish({ output: 'done' });
+    await session.close();
+  }
+});
 
 for (const streamMode of ['full', 'final'] as const) {
   for (const { content, adapterEnabled } of [

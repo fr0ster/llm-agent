@@ -133,6 +133,15 @@ function runner(
         run,
       });
     },
+    async preparePlanAuthor() {
+      return {
+        ok: false,
+        error: {
+          code: 'unavailable',
+          message: 'No plan author in this fixture',
+        },
+      };
+    },
     async preparePlanner() {
       return {
         ok: false,
@@ -461,7 +470,7 @@ test('delegation reservations reject plan replacement and release after failed r
       });
       await entered.promise;
       for (const [name, args] of [
-        ['update_plan', { steps: [] }],
+        ['plan_update', { steps: [] }],
         ['new_request', {}],
       ] as const) {
         const response = await client.callTool(name, args);
@@ -525,7 +534,7 @@ test('plan updates revalidate after a concurrent delegation binds its task', asy
       },
       async () => {
         const client = new PlannerToolsClient();
-        const pendingUpdate = client.callTool('update_plan', { steps: [keep] });
+        const pendingUpdate = client.callTool('plan_update', { steps: [keep] });
         await entered.promise;
         const delegated = await client.callTool('delegate_task', {
           worker: 'author',
@@ -849,7 +858,7 @@ test('discovery advertises arbitrary report/verdict functions and binds library-
           ?.description ?? '',
         /Function audit/,
       );
-      const update = await client.callTool('update_plan', {
+      const update = await client.callTool('plan_update', {
         steps: [
           { id: 'work', goal: 'write', worker: 'author' },
           { id: 'check', goal: 'verify', worker: 'audit', dependsOn: ['work'] },
@@ -1100,6 +1109,15 @@ test('planner runner failures preserve state for retry and never invoke a planne
       profileSource: new Source(),
       profileRunner: {
         ...runner(async () => ({ output: '' })),
+        async preparePlanAuthor() {
+          return {
+            ok: false,
+            error: {
+              code: 'unavailable',
+              message: 'No plan author in this fixture',
+            },
+          };
+        },
         async preparePlanner() {
           if (throws) throw new Error('planner construction failed');
           return {
@@ -1211,6 +1229,15 @@ for (const passing of [false, true]) {
       maxCorrections: 0,
       profileRunner: {
         ...runner(async () => ({ output: '' })),
+        async preparePlanAuthor() {
+          return {
+            ok: false,
+            error: {
+              code: 'unavailable',
+              message: 'No plan author in this fixture',
+            },
+          };
+        },
         async preparePlanner() {
           return ok({
             async process() {
@@ -1537,6 +1564,15 @@ test('planner text refreshes every call, including empty text, in both context m
     };
     const profileRunner: IAgentProfileRunner = {
       ...runner(async () => ({ output: '' })),
+      async preparePlanAuthor() {
+        return {
+          ok: false,
+          error: {
+            code: 'unavailable',
+            message: 'No plan author in this fixture',
+          },
+        };
+      },
       async preparePlanner({ systemPrompt }) {
         systems.push(systemPrompt);
         const agent: ISmartAgent = {
@@ -1710,12 +1746,21 @@ test('corrective planner calls rediscover fresh text and source errors prevent r
   const systems: string[] = [];
   const profileRunner: IAgentProfileRunner = {
     ...runner(async () => ({ output: '' })),
+    async preparePlanAuthor() {
+      return {
+        ok: false,
+        error: {
+          code: 'unavailable',
+          message: 'No plan author in this fixture',
+        },
+      };
+    },
     async preparePlanner(input) {
       systems.push(input.systemPrompt);
       return ok({
         async process() {
           const update = await new PlannerToolsClient().callTool(
-            'update_plan',
+            'plan_update',
             { steps: [{ id: 'pending', goal: 'work' }] },
           );
           assert.ok(update.ok && !update.value.isError);
