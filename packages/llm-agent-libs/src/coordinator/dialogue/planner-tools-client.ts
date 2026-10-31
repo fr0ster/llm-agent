@@ -226,6 +226,7 @@ export class PlannerToolsClient implements IMcpClient {
     try {
       const scope = currentPlannerScope();
       if (!scope) throw new Error('no planner session');
+      scope.signal?.throwIfAborted();
       scope.beforeTool?.(name);
       switch (name) {
         case 'new_request': {
@@ -277,6 +278,7 @@ export class PlannerToolsClient implements IMcpClient {
                   signal: scope.signal,
                 })
               : scope.board.legacySummary(worker);
+            scope.signal?.throwIfAborted();
             const isCheck =
               step !== undefined && resultKind(step) === 'verdict';
             if (step && step.worker !== undefined && step.worker !== worker)
@@ -346,6 +348,7 @@ export class PlannerToolsClient implements IMcpClient {
               context,
               requestStartedAt: scope.requestStartedAt,
             };
+            scope.signal?.throwIfAborted();
             const result = scope.board.profiles
               ? await scope.board.startTask(request, { signal: scope.signal })
               : scope.board.start(request);
@@ -679,6 +682,7 @@ export class PlannerToolsClient implements IMcpClient {
             throw new Error(
               'Plan changed or a task attempt is being reserved; retry the plan update',
             );
+          scope.signal?.throwIfAborted();
           const next =
             args.steps !== undefined
               ? mergePlan(previous, args.steps, status, question, {
@@ -705,6 +709,7 @@ export class PlannerToolsClient implements IMcpClient {
             throw new Error(
               'Removing plan steps requires user consent after waiting_user with a question',
             );
+          scope.signal?.throwIfAborted();
           scope.setPlan(next, status, question);
           scope.recordAction?.('plan updated');
           return textResult({ ok: true });
@@ -714,7 +719,13 @@ export class PlannerToolsClient implements IMcpClient {
       }
     } catch (error) {
       return textResult(
-        { error: error instanceof Error ? error.message : String(error) },
+        {
+          error: currentPlannerScope()?.signal?.aborted
+            ? 'aborted'
+            : error instanceof Error
+              ? error.message
+              : String(error),
+        },
         true,
       );
     }

@@ -1,3 +1,4 @@
+export { DIALOGUE_COORDINATOR_SYSTEM } from './coordinator-prompt.js';
 export {
   DIALOGUE_HISTORY_LIMIT,
   DialogueSession,
