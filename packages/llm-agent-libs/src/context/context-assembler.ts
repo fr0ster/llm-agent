@@ -6,11 +6,15 @@ import type {
 import {
   AssemblerError,
   type CallOptions,
+  formatTrustTag,
   type McpTool,
   type RagResult,
   type Result,
   type Subprompt,
   type ToolCallRecord,
+  type ToolTrust,
+  toModelToolMessage,
+  toModelToolMessages,
 } from '@mcp-abap-adt/llm-agent';
 
 import { validateTimeZone, withRequestTime } from './request-time.js';
@@ -20,6 +24,8 @@ import { validateTimeZone, withRequestTime } from './request-time.js';
 // ---------------------------------------------------------------------------
 
 export interface ContextAssemblerConfig {
+  /** Resolve trust for model-facing tool history without changing stored records. */
+  toolTrust?: ToolTrust;
   /** Deployment IANA time zone for request dates. Default: UTC. */
   timeZone?: string;
   /** chars/4 token budget. No limit when undefined. */
@@ -71,7 +77,7 @@ const DEFAULT_SECTION_HEADERS: Record<string, string> = {
 // ---------------------------------------------------------------------------
 
 /** Type guard: ToolCallRecord has `call` and `result`, Message has `role`. */
-function isToolCallRecord(item: unknown): item is ToolCallRecord {
+function isToolCallRecord(item: HistoryEntry): item is ToolCallRecord {
   return (
     typeof item === 'object' &&
     item !== null &&
@@ -87,10 +93,14 @@ function estimateTokens(text: string): number {
 
 /** Single RagResult → "- <text> [score: 0.92]" (provenance) or "- <text>" */
 function formatRagEntry(r: RagResult, provenance: boolean): string {
+  const tag =
+    typeof r.metadata.trust === 'number'
+      ? `${formatTrustTag(typeof r.metadata.source === 'string' ? r.metadata.source : undefined, r.metadata.trust)} `
+      : '';
   if (provenance) {
-    return `- ${r.text} [score: ${r.score.toFixed(2)}]`;
+    return `- ${tag}${r.text} [score: ${r.score.toFixed(2)}]`;
   }
-  return `- ${r.text}`;
+  return `- ${tag}${r.text}`;
 }
 
 /** Header + entries → "## Header\n- e1\n- e2" or '' if entries empty */
@@ -195,8 +205,10 @@ export class ContextAssembler implements IContextAssembler {
   private readonly reasoningInstruction: string | undefined;
   private readonly sectionHeaders: Record<string, string>;
   private readonly historyRecencyWindow: number | undefined;
+  private readonly toolTrust: ToolTrust | undefined;
 
   constructor(config?: ContextAssemblerConfig) {
+    this.toolTrust = config?.toolTrust;
     this.timeZone = config?.timeZone ?? 'UTC';
     validateTimeZone(this.timeZone);
     this.maxTokens = config?.maxTokens;
@@ -272,10 +284,16 @@ export class ContextAssembler implements IContextAssembler {
         if (isToolCallRecord(item)) {
           const raw = item.result.content;
           const text = typeof raw === 'string' ? raw : JSON.stringify(raw);
-          toolMessages.push({
-            role: 'tool',
-            content: `${item.call.name}: ${text}`,
-          });
+          toolMessages.push(
+            toModelToolMessage(
+              {
+                role: 'tool',
+                content: `${item.call.name}: ${text}`,
+              },
+              this.toolTrust,
+              item.call.name,
+            ),
+          );
         } else if (item.role !== 'system') {
           regularMessages.push(item);
         }
@@ -283,11 +301,13 @@ export class ContextAssembler implements IContextAssembler {
 
       // Apply recency window — keep only the last N messages from client history.
       // Older messages are excluded; they are available via RAG stores if needed.
+      // Resolve tool names before their assistant declarations can be windowed out.
+      const modelHistory = toModelToolMessages(regularMessages, this.toolTrust);
       const windowedMessages =
         this.historyRecencyWindow !== undefined &&
-        regularMessages.length > this.historyRecencyWindow
-          ? regularMessages.slice(-this.historyRecencyWindow)
-          : regularMessages;
+        modelHistory.length > this.historyRecencyWindow
+          ? modelHistory.slice(-this.historyRecencyWindow)
+          : modelHistory;
 
       if (windowedMessages.length > 0) {
         messages.push(...windowedMessages);

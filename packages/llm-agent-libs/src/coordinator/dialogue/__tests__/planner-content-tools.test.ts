@@ -1,13 +1,57 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { DialogueState, ISubAgentInput } from '@mcp-abap-adt/llm-agent';
+import { makeRag } from '../../../testing/index.js';
 import { DialogueSession } from '../dialogue-session.js';
 import { InMemoryDialogueStateStore } from '../in-memory-dialogue-state-store.js';
+import { RagPlannerKnowledge } from '../planner-retrieval.js';
 import { runInPlannerScope } from '../planner-scope.js';
 import { PlannerToolsClient } from '../planner-tools-client.js';
 import { TaskBoard } from '../task-board.js';
 
 const tools = new PlannerToolsClient();
+
+test('search_knowledge renders projected metadata trust and keeps untrusted labels unchanged', async () => {
+  const source = new RagPlannerKnowledge(
+    'kb',
+    makeRag([
+      {
+        text: 'trusted',
+        score: 1,
+        metadata: { id: 'r1', source: 'user:kb/r1', trust: 4 },
+      },
+      { text: 'legacy', score: 0.9, metadata: { id: 'r2', source: 'ignored' } },
+    ]),
+    {
+      async embedQuery() {
+        return { vector: [1] };
+      },
+    },
+  );
+  let rendered = '';
+  const session = await DialogueSession.open({
+    id: 'trust-search',
+    board: { workers: new Map() },
+    plannerKnowledge: [source],
+    maxCorrections: 0,
+    planner: {
+      async process() {
+        const result = await tools.callTool('search_knowledge', { query: 'q' });
+        assert.ok(result.ok);
+        rendered = JSON.stringify(result.value.content);
+        return { ok: true, value: { content: 'done' } };
+      },
+    },
+  });
+  try {
+    await session.send('q');
+    assert.match(rendered, /\(user:kb\/r1; trust 4\) trusted/);
+    assert.match(rendered, /\(kb\/r2\) legacy/);
+    assert.doesNotMatch(rendered, /ignored/);
+  } finally {
+    await session.close();
+  }
+});
 
 test('planner exposes exactly the semantic-only tools and rejects removed arguments and tools', async () => {
   const board = new TaskBoard({ workers: new Map(), onEvent() {} });

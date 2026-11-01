@@ -1,4 +1,7 @@
-import { markExternalTraceUnavailable } from '@mcp-abap-adt/llm-agent';
+import {
+  markExternalTraceUnavailable,
+  toModelToolMessages,
+} from '@mcp-abap-adt/llm-agent';
 /**
  * ToolLoopHandler — streaming LLM call + MCP tool execution loop.
  *
@@ -196,7 +199,11 @@ export class ToolLoopHandler implements IStageHandler {
       await strategy.record(pendingRound);
     }
     messages = (
-      await strategy.form({ prefix: staticPrefix, queryText: ctx.inputText })
+      await strategy.form({
+        prefix: staticPrefix,
+        toolTrust: ctx.config.toolTrust,
+        queryText: ctx.inputText,
+      })
     ).concat(controlTail);
 
     for (let iteration = 0; ; iteration++) {
@@ -519,7 +526,7 @@ export class ToolLoopHandler implements IStageHandler {
       // Delegate to ILlmCallStrategy — handles streaming, non-streaming, or fallback
       const llmStream = ctx.llmCallStrategy.call(
         ctx.mainLlm,
-        messages,
+        toModelToolMessages(messages, ctx.config.toolTrust),
         currentTools,
         {
           ...ctx.options,
@@ -690,6 +697,7 @@ export class ToolLoopHandler implements IStageHandler {
               messages,
               currentTools,
               ctx.options,
+              ctx.config.toolTrust,
             );
       const iterationEnd =
         finishReason === 'tool_calls' && toolCalls.length > 0
@@ -716,6 +724,7 @@ export class ToolLoopHandler implements IStageHandler {
           messages = (
             await strategy.form({
               prefix: staticPrefix,
+              toolTrust: ctx.config.toolTrust,
               queryText: ctx.inputText,
             })
           ).concat(controlTail);
@@ -799,6 +808,7 @@ export class ToolLoopHandler implements IStageHandler {
         messages = (
           await strategy.form({
             prefix: staticPrefix,
+            toolTrust: ctx.config.toolTrust,
             queryText: ctx.inputText,
           })
         ).concat(controlTail);
@@ -824,6 +834,7 @@ export class ToolLoopHandler implements IStageHandler {
         messages = (
           await strategy.form({
             prefix: staticPrefix,
+            toolTrust: ctx.config.toolTrust,
             queryText: ctx.inputText,
           })
         ).concat(controlTail);
@@ -865,6 +876,7 @@ export class ToolLoopHandler implements IStageHandler {
         messages = (
           await strategy.form({
             prefix: staticPrefix,
+            toolTrust: ctx.config.toolTrust,
             queryText: ctx.inputText,
           })
         ).concat(controlTail);
@@ -921,6 +933,7 @@ export class ToolLoopHandler implements IStageHandler {
           messages = (
             await strategy.form({
               prefix: staticPrefix,
+              toolTrust: ctx.config.toolTrust,
               queryText: ctx.inputText,
             })
           ).concat(controlTail);
@@ -1156,7 +1169,11 @@ export class ToolLoopHandler implements IStageHandler {
       await strategy.record(batchRound);
       controlTail.length = 0;
       messages = (
-        await strategy.form({ prefix: staticPrefix, queryText: ctx.inputText })
+        await strategy.form({
+          prefix: staticPrefix,
+          toolTrust: ctx.config.toolTrust,
+          queryText: ctx.inputText,
+        })
       ).concat(controlTail);
     }
   }

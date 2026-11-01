@@ -1,7 +1,9 @@
 import {
+  formatTrustTag,
   normalizeToolTrace,
   TOOL_TRACE_RENDER_CHARS,
   type ToolTrace,
+  type ToolTrust,
 } from '@mcp-abap-adt/llm-agent';
 
 export const VERDICT_EVIDENCE_GUIDANCE =
@@ -24,7 +26,11 @@ function quote(text: string, limit = 1200): string {
     : `${escaped.slice(0, limit - 14)}...[truncated]`;
 }
 
-export function renderToolTrace(taskId: string, trace?: ToolTrace): string {
+export function renderToolTrace(
+  taskId: string,
+  trace?: ToolTrace,
+  toolTrust?: ToolTrust,
+): string {
   const label = `[tools used by task ${quote(taskId, 200)}]`;
   if (!trace) return `${label}\ntool trace unavailable`;
   const normalized = normalizeToolTrace(trace);
@@ -39,16 +45,25 @@ export function renderToolTrace(taskId: string, trace?: ToolTrace): string {
     normalized.complete
   )
     return `${heading}\nno tools were called`;
-  const rendered = normalized.entries.map((entry) =>
-    [
+  let tagged = false;
+  const rendered = normalized.entries.map((entry) => {
+    const rawName = trace.entries.find(
+      (raw) => raw.sequence === entry.sequence,
+    )?.toolName;
+    const trust = toolTrust?.(rawName ?? entry.toolName);
+    if (trust) tagged = true;
+    const tag = trust ? `${formatTrustTag(trust.source, trust.trust)} ` : '';
+    return [
       `${entry.sequence}. ${quote(entry.toolName, 400)} | ${entry.outcome === 'unsettled' ? 'outcome unknown (unsettled)' : entry.outcome}`,
       `   arguments: ${quote(entry.arguments)}`,
       ...(entry.outcome === 'error'
         ? [`   error: ${quote(entry.error, 900)}`]
         : []),
-      `   result: ${quote(entry.resultExcerpt, 900)}`,
-    ].join('\n'),
-  );
+      trust
+        ? `   ${tag}result: "${quote(entry.resultExcerpt, 900)}"`
+        : `   result: ${quote(entry.resultExcerpt, 900)}`,
+    ].join('\n');
+  });
   let omitted = 0;
   const compose = (): string =>
     [
@@ -63,7 +78,10 @@ export function renderToolTrace(taskId: string, trace?: ToolTrace): string {
         : []),
       ...rendered,
     ].join('\n');
-  while (compose().length > TOOL_TRACE_RENDER_CHARS && rendered.length > 2) {
+  while (
+    compose().length > TOOL_TRACE_RENDER_CHARS &&
+    rendered.length > (tagged ? 0 : 2)
+  ) {
     rendered.splice(Math.floor(rendered.length / 2), 1);
     omitted++;
   }

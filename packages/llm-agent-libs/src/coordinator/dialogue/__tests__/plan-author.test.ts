@@ -5,6 +5,7 @@ import type {
   DialoguePlan,
   IAgentProfileRunner,
   ISmartAgent,
+  TrustMap,
   WorkerProfile,
 } from '@mcp-abap-adt/llm-agent';
 import { PLAN_CREATE_SYSTEM } from '../plan-author-prompt.js';
@@ -27,7 +28,11 @@ function fixture(output: string, prompts: AgentPrompts = {}) {
       ? { ok: true, value: profile }
       : { ok: false, error: { code: 'missing', message: name } };
   };
-  const calls: { systemPrompt: string; mode: 'create' | 'revise' }[] = [];
+  const calls: {
+    systemPrompt: string;
+    mode: 'create' | 'revise';
+    trust?: TrustMap;
+  }[] = [];
   const agent: ISmartAgent = {
     async process() {
       return {
@@ -57,6 +62,30 @@ function fixture(output: string, prompts: AgentPrompts = {}) {
   };
 }
 const output = '{"steps":[{"id":"s1","goal":"read","worker":"executor"}]}';
+for (const mode of ['create', 'revise'] as const) {
+  test(`${mode} forwards only its own profile trust map`, async () => {
+    const prompts: AgentPrompts = {
+      trust: {
+        coordinator: { system: 1 },
+        plannerCreate: { system: 2 },
+        plannerRevise: { system: 3 },
+      },
+    };
+    const f = fixture(output, prompts);
+    const result =
+      mode === 'create'
+        ? await f.author.create({ goal: 'read' })
+        : await f.author.revise({
+            plan: { version: 1, status: 'active', steps: [] },
+            change: 'read',
+          });
+    assert.ok(result.ok);
+    assert.deepEqual(
+      f.calls[0].trust,
+      mode === 'create' ? { system: 2 } : { system: 3 },
+    );
+  });
+}
 for (const mode of ['create', 'revise'] as const) {
   test(`${mode} is unavailable when the runner cannot prepare a plan author`, async () => {
     const host = profileHost(new Map());

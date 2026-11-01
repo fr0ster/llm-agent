@@ -96,7 +96,10 @@ function ragDocs(): RagResult[] {
   ];
 }
 
-function makeOrchestrator(mcpToolRegistry?: IMcpToolRegistry) {
+function makeOrchestrator(
+  mcpToolRegistry?: IMcpToolRegistry,
+  documents = ragDocs(),
+) {
   return new RagOrchestrator({
     mainLlm: makeLlm([]),
     helperLlm: undefined,
@@ -114,7 +117,7 @@ function makeOrchestrator(mcpToolRegistry?: IMcpToolRegistry) {
       mcpToolRegistry ??
       makeToolRegistry([mcpTool('GetProgram'), mcpTool('GetInclude')]),
     requestLogger: new NoopRequestLogger(),
-    ragStores: { kb: makeRag(ragDocs()) },
+    ragStores: { kb: makeRag(documents) },
     embedder: undefined,
     assembler: makeAssembler([
       { role: 'system', content: 'SYSTEM PROMPT' },
@@ -128,6 +131,22 @@ function makeOrchestrator(mcpToolRegistry?: IMcpToolRegistry) {
 const opts: { opts: CallOptions | undefined } = { opts: undefined };
 
 describe('RagOrchestrator.orchestrate()', () => {
+  it('hard mode loads no skills without a semantic match', async () => {
+    const result = await makeOrchestrator(undefined, []).orchestrate('q', {
+      opts: undefined,
+      rootSpan: new NoopTracer().startSpan('root'),
+      sessionId: 'no-match',
+      mode: 'hard',
+      externalTools: [],
+    });
+    assert.ok(result.ok);
+    assert.equal(result.value.skillContent, '');
+    assert.ok(
+      result.value.assembledMessages.every(
+        (message) => !message.content?.includes('STEP 1: call GetProgram'),
+      ),
+    );
+  });
   it('reports availability from the selection snapshot when the catalogue grows', async () => {
     const tools = ['GetProgram', 'Two', 'Three', 'Four', 'Five'].map(mcpTool);
     let resolves = 0;

@@ -2,6 +2,7 @@ import {
   type CallOptions,
   type DecisionAnswer,
   type DecisionEntry,
+  formatTrustTag,
   type IDecisionModel,
   type NoulQuestion,
   RagError,
@@ -51,6 +52,11 @@ export interface DecisionRerankerOptions {
 
 const estimateTokens = (s: string): number => Math.ceil(s.length / 4);
 
+const renderPassage = (result: RagResult): string =>
+  typeof result.metadata.trust === 'number'
+    ? `${formatTrustTag(typeof result.metadata.source === 'string' ? result.metadata.source : undefined, result.metadata.trust)} ${result.text}`
+    : result.text;
+
 /**
  * Rerank RAG results with a decision model: the query as the state, one
  * yes/no question per passage, batched under a token budget. `score` becomes
@@ -93,7 +99,7 @@ export class DecisionReranker implements IReranker {
     let cur: number[] = [];
     let used = stateCost;
     results.forEach((r, i) => {
-      const cost = fixed + estimateTokens(r.text);
+      const cost = fixed + estimateTokens(renderPassage(r));
       if (cur.length > 0 && used + cost > budget) {
         batches.push(cur);
         cur = [];
@@ -152,7 +158,7 @@ export class DecisionReranker implements IReranker {
     for (const i of idxs) {
       questions[`r${i}`] = {
         type: 'noul',
-        instructions: { task, passage: results[i].text },
+        instructions: { task, passage: renderPassage(results[i]) },
         criteria,
       };
     }

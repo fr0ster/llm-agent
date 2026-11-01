@@ -140,6 +140,8 @@ export interface PlannerRequestRecord {
   legacy?: true;
 }
 export interface PlannerMemoryEntry {
+  trust?: number;
+  source?: string;
   kind: 'planner-input' | 'planner-reply' | 'planner-task' | 'planner-plan';
   requestId: string;
   sourceId: string;
@@ -147,6 +149,8 @@ export interface PlannerMemoryEntry {
   text: string;
 }
 export interface PlannerKnowledgeEntry {
+  trust?: number;
+  source?: string;
   collection: string;
   id: string;
   text: string;

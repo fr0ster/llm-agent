@@ -21,6 +21,7 @@ import type {
   SignalName,
   StreamChunk,
   TaskEvent,
+  ToolTrust,
 } from '@mcp-abap-adt/llm-agent';
 import {
   addTokenUsage,
@@ -86,6 +87,8 @@ export interface PlannerAgent {
   ): Promise<Result<{ content: string; usage?: TokenUsage }, Error>>;
 }
 export interface DialogueSessionOptions extends PlannerRetrievalOptions {
+  /** Resolve provenance for model-facing tool evidence and task projections. */
+  toolTrust?: ToolTrust;
   /** IANA time zone for request time formatting. Default: UTC. */
   timeZone?: string;
   /** Request-scoped prepared context by default; conversation preserves legacy planner input. */
@@ -627,6 +630,7 @@ export class DialogueSession {
   ): PlannerScope {
     return {
       planAuthor: this.opts.planAuthor,
+      toolTrust: this.opts.toolTrust,
       authorOptions: {
         usage: options.usage ?? this.opts.usage ?? this.opts.board.usage,
         sessionId: this.opts.id,
@@ -917,6 +921,9 @@ export class DialogueSession {
             (options) =>
               runner.preparePlanner(
                 {
+                  ...(discovery.prompts.trust?.coordinator === undefined
+                    ? {}
+                    : { trust: discovery.prompts.trust.coordinator }),
                   systemPrompt: composePlannerPrompt(
                     this.opts.planAuthor
                       ? (discovery.prompts.coordinator ??

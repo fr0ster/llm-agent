@@ -1,3 +1,4 @@
+import type { TrustMap } from '../trust.js';
 import type { ISmartAgent } from './builder.js';
 import type { ISubAgent } from './subagent.js';
 import type { CallOptions, Result } from './types.js';
@@ -7,6 +8,7 @@ export type WorkerToolPolicy =
   | 'read-only'
   | { allow?: string[]; deny?: string[] };
 export interface WorkerProfile {
+  trust?: TrustMap;
   name: string;
   description: string;
   systemPrompt: string;
@@ -23,6 +25,11 @@ export interface AgentProfileError {
   message: string;
 }
 export interface AgentPrompts {
+  trust?: {
+    coordinator?: TrustMap;
+    plannerCreate?: TrustMap;
+    plannerRevise?: TrustMap;
+  };
   workerBase?: string;
   planner?: string;
   coordinator?: string;
@@ -52,11 +59,24 @@ export interface IAgentProfileRunner {
   ): Promise<Result<ISubAgent, AgentProfileError>>;
   /** Fresh author agent; hosts enforce read-only knowledge tools, with no SAP tools. */
   preparePlanAuthor?(
-    input: { systemPrompt: string; mode: 'create' | 'revise' },
+    input: {
+      systemPrompt: string;
+      mode: 'create' | 'revise';
+      trust?: TrustMap;
+    },
     options?: CallOptions,
   ): Promise<Result<ISmartAgent, AgentProfileError>>;
   preparePlanner(
-    input: { systemPrompt: string },
+    input: { systemPrompt: string; trust?: TrustMap },
     options?: CallOptions,
   ): Promise<Result<ISmartAgent, AgentProfileError>>;
+}
+
+/** Host construction seam for a fresh, read-only plan author. */
+export interface AgentProfileRunnerHost {
+  buildPlanAuthor(input: {
+    systemPrompt: string;
+    mode: 'create' | 'revise';
+    trust?: TrustMap;
+  }): Promise<Result<ISmartAgent, AgentProfileError>>;
 }

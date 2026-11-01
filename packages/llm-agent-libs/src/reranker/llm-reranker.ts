@@ -1,6 +1,7 @@
 import type { ILlm, LlmResponse } from '@mcp-abap-adt/llm-agent';
 import {
   type CallOptions,
+  formatTrustTag,
   RagError,
   type RagResult,
   type Result,
@@ -125,7 +126,12 @@ export class LlmReranker implements IReranker {
     options?: CallOptions,
   ): Promise<Result<number[], RagError>> {
     const task = this.opts.question?.task ?? PASSAGE_QUESTION.task;
-    const passages = items.map((r, i) => `[${i}] ${r.text}`).join('\n\n');
+    const passages = items
+      .map(
+        (r, i) =>
+          `[${i}] ${typeof r.metadata.trust === 'number' ? `${formatTrustTag(typeof r.metadata.source === 'string' ? r.metadata.source : undefined, r.metadata.trust)} ` : ''}${r.text}`,
+      )
+      .join('\n\n');
     const messages = [
       { role: 'system' as const, content: systemPrompt(task) },
       {

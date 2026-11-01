@@ -211,7 +211,10 @@ export class DefaultPipeline implements IPipeline {
       deps.classifier ?? new LlmClassifier(deps.classifierLlm ?? deps.mainLlm);
     this.resolvedAssembler =
       deps.assembler ??
-      new ContextAssembler({ timeZone: deps.agentConfig?.timeZone });
+      new ContextAssembler({
+        timeZone: deps.agentConfig?.timeZone,
+        toolTrust: deps.agentConfig?.toolTrust,
+      });
     this.resolvedReranker = deps.reranker ?? new NoopReranker();
     this.resolvedQueryExpander = deps.queryExpander ?? new NoopQueryExpander();
     this.resolvedToolCache = deps.toolCache ?? new NoopToolCache();

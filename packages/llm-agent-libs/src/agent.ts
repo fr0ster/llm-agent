@@ -51,6 +51,7 @@ import {
   type StopReason,
   StreamingLlmCallStrategy,
   TextOnlyEmbedding,
+  toModelToolMessages,
   toolNameFromRecord,
   toToolCallDelta,
 } from '@mcp-abap-adt/llm-agent';
@@ -160,6 +161,7 @@ export interface SmartAgentDeps {
   toolLoopContextStrategyFactory?: ToolLoopContextStrategyFactory;
 }
 export interface SmartAgentConfig {
+  toolTrust?: import('@mcp-abap-adt/llm-agent').ToolTrust;
   /** Deployment IANA time zone for request dates. Default: UTC. */
   timeZone?: string;
   maxIterations: number;
@@ -742,6 +744,7 @@ export class SmartAgent {
           ),
           externalTools,
           opts,
+          this.config.toolTrust,
         )) {
           yield chunk;
         }
@@ -900,7 +903,11 @@ export class SmartAgent {
       await strategy.record(pendingRound);
     }
     messages = (
-      await strategy.form({ prefix: staticPrefix, queryText: _action.text })
+      await strategy.form({
+        prefix: staticPrefix,
+        toolTrust: this.config.toolTrust,
+        queryText: _action.text,
+      })
     ).concat(controlTail);
 
     for (let iteration = 0; ; iteration++) {
@@ -1146,7 +1153,7 @@ export class SmartAgent {
       }
       const stream = this.defaultLlmCallStrategy.call(
         this._mainLlm,
-        messages,
+        toModelToolMessages(messages, this.config.toolTrust),
         currentTools,
         opts,
       );
@@ -1262,6 +1269,7 @@ export class SmartAgent {
               messages,
               currentTools,
               opts,
+              this.config.toolTrust,
             );
       const iterationEnd =
         finishReason === 'tool_calls' && toolCallsMap.size > 0
@@ -1315,6 +1323,7 @@ export class SmartAgent {
           messages = (
             await strategy.form({
               prefix: staticPrefix,
+              toolTrust: this.config.toolTrust,
               queryText: _action.text,
             })
           ).concat(controlTail);
@@ -1410,7 +1419,11 @@ export class SmartAgent {
         }
         controlTail.length = 0;
         messages = (
-          await strategy.form({ prefix: staticPrefix, queryText: _action.text })
+          await strategy.form({
+            prefix: staticPrefix,
+            toolTrust: this.config.toolTrust,
+            queryText: _action.text,
+          })
         ).concat(controlTail);
         if (
           validExternalCalls.length === 0 &&
@@ -1428,7 +1441,11 @@ export class SmartAgent {
         });
         controlTail.length = 0;
         messages = (
-          await strategy.form({ prefix: staticPrefix, queryText: _action.text })
+          await strategy.form({
+            prefix: staticPrefix,
+            toolTrust: this.config.toolTrust,
+            queryText: _action.text,
+          })
         ).concat(controlTail);
         continue;
       }
@@ -1466,7 +1483,11 @@ export class SmartAgent {
         });
         controlTail.length = 0;
         messages = (
-          await strategy.form({ prefix: staticPrefix, queryText: _action.text })
+          await strategy.form({
+            prefix: staticPrefix,
+            toolTrust: this.config.toolTrust,
+            queryText: _action.text,
+          })
         ).concat(controlTail);
       }
 
@@ -1671,7 +1692,11 @@ export class SmartAgent {
       await strategy.record(batchRound);
       controlTail.length = 0;
       messages = (
-        await strategy.form({ prefix: staticPrefix, queryText: _action.text })
+        await strategy.form({
+          prefix: staticPrefix,
+          toolTrust: this.config.toolTrust,
+          queryText: _action.text,
+        })
       ).concat(controlTail);
     }
   }

@@ -126,8 +126,19 @@ export class ProfilePlanAuthor implements IPlanAuthor {
         mode === 'create'
           ? (prompts.plannerCreate ?? PLAN_CREATE_SYSTEM)
           : (prompts.plannerRevise ?? PLAN_REVISE_SYSTEM);
+      const trust =
+        prompts.trust?.[mode === 'create' ? 'plannerCreate' : 'plannerRevise'];
       const agent = await resolver.call(
-        (opts) => preparePlanAuthor.call(runner, { mode, systemPrompt }, opts),
+        (opts) =>
+          preparePlanAuthor.call(
+            runner,
+            {
+              mode,
+              systemPrompt,
+              ...(trust === undefined ? {} : { trust }),
+            },
+            opts,
+          ),
         options,
       );
       const notes = (await this.opts.notes?.(options)) ?? [];

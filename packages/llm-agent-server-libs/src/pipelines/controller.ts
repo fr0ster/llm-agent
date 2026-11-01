@@ -26,7 +26,6 @@ import { DefaultStepExecutionControl } from '../smart-agent/controller/default-s
 import { writeArtifact } from '../smart-agent/controller/memorizer.js';
 import { NoopRunExecutionControl } from '../smart-agent/controller/noop-run-execution-control.js';
 import {
-  buildRecallBlock,
   RECALL_K_MCP,
   RECALL_MAX_CHARS_MCP,
   runScopedRecall,
@@ -221,6 +220,12 @@ export class ControllerPipelinePlugin implements IPipelinePlugin {
                 // later same-identityKey fetch cannot supersede a stale earlier one
                 // when createdAt ties (all mcp writes in a step share createdAt).
                 writeOrdinal: round.ordinal,
+                toolResults: round.results.map((result) => ({
+                  toolName: round.assistant.tool_calls?.find(
+                    (call) => call.id === result.tool_call_id,
+                  )?.function.name,
+                  content: String(result.content ?? ''),
+                })),
                 content: round.results
                   .map((r) => String(r.content ?? ''))
                   .join('\n'),
@@ -237,14 +242,23 @@ export class ControllerPipelinePlugin implements IPipelinePlugin {
               ['mcp-result'],
               options,
             );
-            return (
-              buildRecallBlock(
-                rows.filter(
-                  (r) => !excludeRoundIds.includes(String(r.metadata?.roundId)),
+            return {
+              rounds: rows
+                .filter(
+                  (row) =>
+                    !excludeRoundIds.includes(String(row.metadata?.roundId)),
+                )
+                .map(
+                  (row) =>
+                    row.metadata.toolResults ?? [
+                      {
+                        toolName: row.metadata.toolName,
+                        content: row.content,
+                      },
+                    ],
                 ),
-                RECALL_MAX_CHARS_MCP,
-              ) ?? ''
-            );
+              maxChars: RECALL_MAX_CHARS_MCP,
+            };
           },
         },
         { runId },

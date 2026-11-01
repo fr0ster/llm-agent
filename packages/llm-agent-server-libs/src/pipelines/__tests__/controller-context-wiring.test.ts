@@ -7,8 +7,13 @@ import type {
   ToolLoopContextStrategyFactory,
   ToolRound,
 } from '@mcp-abap-adt/llm-agent';
+import { toModelToolMessage } from '@mcp-abap-adt/llm-agent';
 import { RagRecallContextStrategy } from '@mcp-abap-adt/llm-agent-libs';
 import { ControllerFactory } from '../../factories/controller-factory.js';
+import {
+  buildRecallBlock,
+  RECALL_MAX_CHARS_MCP,
+} from '../../smart-agent/controller/recall.js';
 import { controllerPlugin, fakeControllerServerCtx } from './fixtures.js';
 
 // The RagRecall factory is constructed inside ControllerPipelinePlugin.build and
@@ -106,6 +111,82 @@ describe('controller context wiring — RagRecall factory', () => {
     assert.ok(writes[0].metadata.roundId);
     assert.equal(writes[0].metadata.roundId, round.roundId);
     assert.match(writes[0].content, /RESULT-BODY/);
+  });
+
+  it('recall matches buildRecallBlock byte for byte without toolTrust', async () => {
+    const factory = await buildAndCaptureFactory();
+    const cases = [
+      [['a'.repeat(1000), 'b'.repeat(1000)]],
+      [['a'.repeat(1000)], ['b'.repeat(1000)], ['c']],
+      [
+        ['', 'a', ''],
+        ['b', '', 'c'],
+      ],
+      [[], [''], ['', '']],
+      [['a'.repeat(1999), 'b']],
+      [['a'.repeat(2000)], ['b']],
+      [['a'.repeat(2001)], ['b']],
+      [],
+    ];
+    for (const rounds of cases) {
+      const hits: KnowledgeEntry[] = rounds.map((contents, index) => ({
+        content: contents.join('\n'),
+        metadata: {
+          ...META,
+          artifactType: 'mcp-result',
+          roundId: `prior-${index}`,
+          identityKey: `prior-${index}`,
+          toolResults: contents.map((content, toolIndex) => ({
+            toolName: `T${toolIndex}`,
+            content,
+          })),
+        },
+      }));
+      const strategy = factory({
+        run: {
+          rag: {
+            write: async () => {},
+            query: async () => hits,
+            list: async () => [],
+            fingerprint: () => 'regression',
+          } satisfies IKnowledgeRagHandle,
+          runId: 'regression',
+          meta: META,
+          stepName: 's',
+        },
+      });
+      await strategy.record(aRound('TAIL'));
+      const messages = await strategy.form({ prefix: [] });
+      const expected = buildRecallBlock(hits, RECALL_MAX_CHARS_MCP);
+      assert.equal(
+        messages.find((message) => message.role === 'user')?.content,
+        expected,
+      );
+      if (rounds === cases[0]) {
+        assert.equal(
+          expected,
+          `Relevant prior context:\n${'a'.repeat(1000)}\n${'b'.repeat(999)}`,
+        );
+        const toolTrust = (name: string) => ({
+          source: `system:${name}`,
+          trust: 4.5,
+        });
+        const trusted = await strategy.form({ prefix: [], toolTrust });
+        const projected = ['a'.repeat(1000), 'b'.repeat(999)].map(
+          (content, index) =>
+            toModelToolMessage(
+              { role: 'tool', content },
+              toolTrust,
+              `T${index}`,
+            ).content,
+        );
+        assert.equal(
+          trusted[0].content,
+          `Relevant prior context:\n${projected.join('\n')}`,
+        );
+        assert.equal(String(trusted[0].content).match(/\[source:/g)?.length, 2);
+      }
+    }
   });
 
   it('record stamps the mcp-result artifact with writeOrdinal from round.ordinal (latest-fetch dedup)', async () => {

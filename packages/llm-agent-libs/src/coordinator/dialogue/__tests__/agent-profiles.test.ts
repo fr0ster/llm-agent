@@ -120,6 +120,24 @@ class Source implements IAgentProfileSource {
     return ok(this.prompts);
   }
 }
+
+test('profile resolver preserves worker trust maps for execution', async () => {
+  const source = new Source();
+  source.records[0].trust = { system: 4.5, docs: 3 };
+  const resolver = new ProfileResolver(source);
+  assert.deepEqual((await resolver.selection('author')).trust, {
+    system: 4.5,
+    docs: 3,
+  });
+  assert.deepEqual((await resolver.get('author')).trust, {
+    system: 4.5,
+    docs: 3,
+  });
+  assert.deepEqual((await resolver.execution('author')).profile.trust, {
+    system: 4.5,
+    docs: 3,
+  });
+});
 function runner(
   run: ISubAgent['run'],
   snapshots: WorkerProfile[] = [],
@@ -308,6 +326,49 @@ test('selected semantic skills stay in request content through SkillSelectHandle
     );
   }
   assert.equal(systems[0], systems[1]);
+});
+
+test('hard mode does not load skills without a retrieval match', async () => {
+  let loaded = false;
+  const skill = {
+    name: 'unmatched',
+    description: 'unmatched',
+    meta: { name: 'unmatched', description: 'unmatched' },
+    async getContent() {
+      loaded = true;
+      return { ok: true as const, value: 'unwanted' };
+    },
+    async listResources() {
+      return { ok: true as const, value: [] };
+    },
+    async readResource() {
+      return { ok: true as const, value: '' };
+    },
+  };
+  const ctx = assemblyContext({
+    config: { mode: 'hard', maxIterations: 1 },
+    ragResults: {},
+    ragStores: {},
+    skillManager: {
+      async listSkills() {
+        return { ok: true, value: [skill] };
+      },
+      async getSkill() {
+        return { ok: true, value: skill };
+      },
+      async matchSkills() {
+        return { ok: true, value: [skill] };
+      },
+    },
+  });
+  await new SkillSelectHandler().execute(
+    ctx,
+    {},
+    new NoopTracer().startSpan('skills'),
+  );
+  assert.deepEqual(ctx.selectedSkills, []);
+  assert.equal(ctx.skillContent, '');
+  assert.equal(loaded, false);
 });
 
 test('skill assembly preserves caller history across repeated empty requests', async () => {

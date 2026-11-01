@@ -8,7 +8,11 @@ import type {
   OrchestratorError,
   Result,
 } from '@mcp-abap-adt/llm-agent';
-import { scopedUsage } from '@mcp-abap-adt/llm-agent';
+import {
+  scopedUsage,
+  type ToolTrust,
+  toModelToolMessages,
+} from '@mcp-abap-adt/llm-agent';
 import { summaryToUsage } from '../../logger/session-request-logger.js';
 
 export async function* runPassThrough(
@@ -17,6 +21,7 @@ export async function* runPassThrough(
   messages: Message[],
   externalTools: LlmTool[],
   opts: CallOptions | undefined,
+  toolTrust?: ToolTrust,
 ): AsyncIterable<Result<LlmStreamChunk, OrchestratorError>> {
   const passStart = Date.now();
   const traceId2 = opts?.trace?.traceId;
@@ -25,10 +30,14 @@ export async function* runPassThrough(
     { messages, tools: externalTools ?? [] },
     'llm',
   );
-  const stream = llm.streamChat(messages, externalTools, {
-    ...opts,
-    usage: scopedUsage(opts?.usage, { component: 'tool-loop' }),
-  });
+  const stream = llm.streamChat(
+    toModelToolMessages(messages, toolTrust),
+    externalTools,
+    {
+      ...opts,
+      usage: scopedUsage(opts?.usage, { component: 'tool-loop' }),
+    },
+  );
   let passContent = '';
   const passToolCalls: unknown[] = [];
   let accPrompt = 0;
