@@ -1,5 +1,11 @@
 # @mcp-abap-adt/llm-agent-libs
 
+## 30.25.0
+
+### Minor Changes
+
+- 4b6ae40: Add typed iteration-end stream boundaries to distinguish tool-round progress from final answers. SmartAgent.process, worker task results, and dialogue coordinator replies exclude pre-tool text when a final iteration completes, while retaining accumulated text as a fallback when a call ends before that iteration. DefaultPipeline now honours streamMode: 'final'; full-mode content delivery remains immediate.
+
 ## 30.24.0
 
 ### Minor Changes
