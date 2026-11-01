@@ -398,6 +398,12 @@ export class SmartAgentBuilder {
     return this;
   }
 
+  /** Resolve trust for informational tool results at the model boundary. */
+  withToolTrust(toolTrust: import('@mcp-abap-adt/llm-agent').ToolTrust): this {
+    this.cfg.agent = { ...this.cfg.agent, toolTrust };
+    return this;
+  }
+
   /** Set a tool execution policy (allow/deny list). */
   withToolPolicy(policy: IToolPolicy): this {
     this._toolPolicy = policy;
@@ -1292,6 +1298,7 @@ export class SmartAgentBuilder {
 
       // ---- Assembler --------------------------------------------------------
       const assemblerCfg: ContextAssemblerConfig = {
+        toolTrust: agentCfg.toolTrust,
         timeZone: agentCfg.timeZone,
         maxTokens: agentCfg.contextBudgetTokens,
         showReasoning: agentCfg.showReasoning,

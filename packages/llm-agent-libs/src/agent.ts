@@ -51,6 +51,7 @@ import {
   type StopReason,
   StreamingLlmCallStrategy,
   TextOnlyEmbedding,
+  toModelToolMessages,
   toolNameFromRecord,
   toToolCallDelta,
 } from '@mcp-abap-adt/llm-agent';
@@ -160,6 +161,7 @@ export interface SmartAgentDeps {
   toolLoopContextStrategyFactory?: ToolLoopContextStrategyFactory;
 }
 export interface SmartAgentConfig {
+  toolTrust?: import('@mcp-abap-adt/llm-agent').ToolTrust;
   /** Deployment IANA time zone for request dates. Default: UTC. */
   timeZone?: string;
   maxIterations: number;
@@ -742,6 +744,7 @@ export class SmartAgent {
           ),
           externalTools,
           opts,
+          this.config.toolTrust,
         )) {
           yield chunk;
         }
@@ -1146,7 +1149,7 @@ export class SmartAgent {
       }
       const stream = this.defaultLlmCallStrategy.call(
         this._mainLlm,
-        messages,
+        toModelToolMessages(messages, this.config.toolTrust),
         currentTools,
         opts,
       );
@@ -1262,6 +1265,7 @@ export class SmartAgent {
               messages,
               currentTools,
               opts,
+              this.config.toolTrust,
             );
       const iterationEnd =
         finishReason === 'tool_calls' && toolCallsMap.size > 0

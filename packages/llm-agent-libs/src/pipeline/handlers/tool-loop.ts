@@ -1,4 +1,7 @@
-import { markExternalTraceUnavailable } from '@mcp-abap-adt/llm-agent';
+import {
+  markExternalTraceUnavailable,
+  toModelToolMessages,
+} from '@mcp-abap-adt/llm-agent';
 /**
  * ToolLoopHandler — streaming LLM call + MCP tool execution loop.
  *
@@ -519,7 +522,7 @@ export class ToolLoopHandler implements IStageHandler {
       // Delegate to ILlmCallStrategy — handles streaming, non-streaming, or fallback
       const llmStream = ctx.llmCallStrategy.call(
         ctx.mainLlm,
-        messages,
+        toModelToolMessages(messages, ctx.config.toolTrust),
         currentTools,
         {
           ...ctx.options,
@@ -690,6 +693,7 @@ export class ToolLoopHandler implements IStageHandler {
               messages,
               currentTools,
               ctx.options,
+              ctx.config.toolTrust,
             );
       const iterationEnd =
         finishReason === 'tool_calls' && toolCalls.length > 0

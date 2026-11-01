@@ -48,6 +48,12 @@ export async function scanDirsForSkills(
         await enrichSkill(skill, skillDir);
       }
 
+      const previous = byName.get(skill.name);
+      if (previous && previous.meta.kind !== skill.meta.kind) {
+        throw new Error(
+          `Skill ${skill.name} has conflicting kind values across directories`,
+        );
+      }
       byName.set(skill.name, skill);
     }
   }

@@ -31,6 +31,7 @@ export {
 } from './llm/throttle.js';
 export { NeedsDecompositionError } from './needs-decomposition-error.js';
 export * from './rag/index.js';
+export * from './trust.js';
 export * from './types.js';
 
 // --- Library helpers (moved from @mcp-abap-adt/llm-agent-server) ---

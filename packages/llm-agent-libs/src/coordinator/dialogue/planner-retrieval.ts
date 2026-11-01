@@ -50,6 +50,12 @@ export class RagPlannerKnowledge implements IPlannerKnowledge {
       collection: this.name,
       id: entry.metadata.id ?? '',
       text: entry.text,
+      ...(typeof entry.metadata.trust === 'number'
+        ? { trust: entry.metadata.trust }
+        : {}),
+      ...(typeof entry.metadata.source === 'string'
+        ? { source: entry.metadata.source }
+        : {}),
     }));
   }
 }
@@ -183,6 +189,12 @@ export async function retrievePlannerContext(
                         sourceId: meta.sourceId,
                         offset: meta.offset,
                         text: entry.text,
+                        ...(typeof meta.trust === 'number'
+                          ? { trust: meta.trust }
+                          : {}),
+                        ...(typeof meta.source === 'string'
+                          ? { source: meta.source }
+                          : {}),
                       },
                     ];
                   })

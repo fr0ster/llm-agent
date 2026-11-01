@@ -298,12 +298,7 @@ export class RagOrchestrator implements IRagOrchestrator {
         const allSkillsResult = await this.deps.skillManager.listSkills(opts);
         if (allSkillsResult.ok) {
           const allSkills = allSkillsResult.value;
-          const matched =
-            ragSkillNames.size > 0
-              ? allSkills.filter((s) => ragSkillNames.has(s.name))
-              : mode === 'hard'
-                ? allSkills
-                : [];
+          const matched = allSkills.filter((s) => ragSkillNames.has(s.name));
           const contentParts: string[] = [];
           for (const skill of matched) {
             const contentResult = await skill.getContent(undefined, opts);

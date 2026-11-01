@@ -6,6 +6,7 @@ import type {
   McpToolResult,
   Result,
 } from '@mcp-abap-adt/llm-agent';
+import { formatTrustTag } from '@mcp-abap-adt/llm-agent';
 import { z } from 'zod';
 import { currentPlannerScope, type PlannerScope } from './planner-scope.js';
 import {
@@ -73,6 +74,10 @@ function requiredString(args: Record<string, unknown>, key: string): string {
 }
 export class PlannerToolsClient implements IMcpClient {
   readonly cacheable = false;
+
+  constructor(
+    private readonly toolTrust?: import('@mcp-abap-adt/llm-agent').ToolTrust,
+  ) {}
 
   async listTools(): Promise<Result<McpTool[], McpError>> {
     const plan = currentPlannerScope()?.getPlan();
@@ -322,7 +327,7 @@ export class PlannerToolsClient implements IMcpClient {
                 const block = [
                   `${isCheck ? '[result to check: step' : '[result of step'} ${source.id} (task ${task.id})]\n${task.output ?? ''}`,
                   isCheck
-                    ? renderToolTrace(task.id, task.toolTrace)
+                    ? renderToolTrace(task.id, task.toolTrace, this.toolTrust)
                     : undefined,
                   isCheck && source.items
                     ? `Expected items for step ${source.id}: ${JSON.stringify(source.items)}; expected count: ${source.items.length}. Return JSON with verdict, count and note.`
@@ -423,7 +428,25 @@ export class PlannerToolsClient implements IMcpClient {
           if (!task) throw new Error(`unknown task ${id}`);
           if (task.state === 'queued' || task.state === 'running')
             scope.statusRead?.();
-          return textResult(task);
+          return textResult(
+            this.toolTrust && task.toolTrace
+              ? {
+                  ...task,
+                  toolTrace: {
+                    ...task.toolTrace,
+                    entries: task.toolTrace.entries.map((entry) => {
+                      const trust = this.toolTrust?.(entry.toolName);
+                      return trust
+                        ? {
+                            ...entry,
+                            resultExcerpt: `${formatTrustTag(trust.source, trust.trust)}\n${entry.resultExcerpt}`,
+                          }
+                        : entry;
+                    }),
+                  },
+                }
+              : task,
+          );
         }
         case 'list_tasks':
           if (

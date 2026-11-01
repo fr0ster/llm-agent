@@ -1608,3 +1608,46 @@ See `docs/examples/coordinator-orchestration.yaml` for a complete configuration.
   component-shaped (Principle 1/6), not ad-hoc.
 
 Worker results (`ISubAgentResult`) and persisted `TaskRecord` records may include `toolTrace`: bounded, redacted execution evidence with dispatch sequences, outcomes, omissions and a completeness flag. `ISubAgentInput.onToolTrace` and `CallOptions.onToolTrace` observe dispatch and settlement entries by sequence. Verdict steps receive this evidence automatically; hosts executing external tools must supply their own normalized trace.
+
+## Source trust at model boundaries
+
+The core package exports `normalizeTrust`, `formatTrust`, `escapeTrustName` and
+`formatTrustTag`. Trust values range from 0 to 5 with at most one decimal;
+validation does not round values. Tags use `[source: <source>; trust <value>]`,
+escape brackets in source names, and use `unknown` when no source is supplied.
+The library accepts effective trust supplied by the host; it does not resolve
+class defaults or use trust to filter or score relevance.
+
+Planner retrieval copies numeric `metadata.trust` and string `metadata.source`
+onto knowledge and memory entries. Planner labels include the source class and
+trust when supplied, with the existing collection/record or memory label as the
+fallback. `ContextAssembler` and both LLM rerankers prepend the shared tag to
+retrieved informational content. Without numeric trust their rendering stays
+unchanged.
+
+`ToolTrust` resolves a tool name to an optional source and trust value.
+`SmartAgentBuilder.withToolTrust` and `DialogueSessionOptions.toolTrust` pass the
+resolver to model-facing tool rendering. Live messages, pending-result injection,
+context-strategy replay and assembled tool history receive a tagged projection.
+Message history is projected before recency windowing can remove tool-call
+declarations. Projected message objects are tracked so a later model boundary
+does not tag the same copy again; stored raw messages are never marked.
+Stored rounds, pending results, execution callbacks, session logging, outcome
+parsing, traces and truncation counts retain raw text. Checker evidence puts the
+whole tag outside the JSON-quoted excerpt and reserves its length in the enclosing
+budget. `get_task` projects tool-trace results into a copy without changing the
+board's stored task. Tools without a resolver result retain their original text.
+
+`WorkerProfile.trust` carries an opaque `TrustMap`. `AgentPrompts.trust` keeps
+distinct `coordinator`, `plannerCreate` and `plannerRevise` maps. Profile resolution
+preserves these maps; `DialogueSession` passes the coordinator map to
+`preparePlanner`, and `ProfilePlanAuthor` passes the map selected by mode to
+`preparePlanAuthor`. The exported `AgentProfileRunnerHost.buildPlanAuthor`
+construction contract also accepts the selected map. Hosts validate map classes
+and values and resolve effective trust independently for each role.
+
+Hard-mode skill selection loads only explicitly matched names. A request with no
+matching skill name loads no skills; it no longer loads every available skill.
+Informational skills are selected semantically. Discovery rejects a skill name
+that appears in multiple directories with different front matter kinds before
+deduplicating names.

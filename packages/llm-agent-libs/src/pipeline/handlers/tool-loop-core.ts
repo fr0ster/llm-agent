@@ -21,6 +21,8 @@ import {
   OrchestratorError,
   recordToolInvocation,
   scopedUsage,
+  type ToolTrust,
+  toModelToolMessages,
 } from '@mcp-abap-adt/llm-agent';
 import type { IMetrics } from '../../metrics/types.js';
 import type { PendingToolResultsRegistry } from '../../policy/pending-tool-results-registry.js';
@@ -520,10 +522,11 @@ export async function runOutputValidationReprompt(
   messages: Message[],
   currentTools: LlmTool[],
   options: CallOptions | undefined,
+  toolTrust?: ToolTrust,
 ): Promise<IReprompt> {
   const valResult = await outputValidator.validate(
     content,
-    { messages, tools: currentTools },
+    { messages: toModelToolMessages(messages, toolTrust), tools: currentTools },
     options,
   );
   if (valResult.ok && !valResult.value.valid) {

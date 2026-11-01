@@ -5,7 +5,7 @@
  * Writes: `ctx.selectedSkills`, `ctx.skillContent`
  *
  * Uses RAG fact IDs with the `skill:` prefix to identify relevant skills.
- * Falls back to all skills in `hard` mode, none otherwise.
+ * Loads only semantically matched skills, including in hard mode.
  *
  * If no `ctx.skillManager` is configured, this handler is a no-op.
  */
@@ -25,8 +25,6 @@ export class SkillSelectHandler implements IStageHandler {
       span.setAttribute('skipped', true);
       return true;
     }
-
-    const mode = ctx.config.mode || 'smart';
 
     // Discover skills from all RAG results
     const allRagResults = Object.values(ctx.ragResults).flat();
@@ -77,13 +75,8 @@ export class SkillSelectHandler implements IStageHandler {
 
     const allSkills = allSkillsResult.value;
 
-    // Select skills based on RAG matches or fallback
-    ctx.selectedSkills =
-      ragSkillNames.size > 0
-        ? allSkills.filter((s) => ragSkillNames.has(s.name))
-        : mode === 'hard'
-          ? allSkills
-          : [];
+    // Informational skills are selected only by retrieval.
+    ctx.selectedSkills = allSkills.filter((s) => ragSkillNames.has(s.name));
 
     // Load content for selected skills
     const contentParts: string[] = [];

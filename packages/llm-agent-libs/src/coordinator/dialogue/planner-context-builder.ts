@@ -4,6 +4,7 @@ import type {
   PlannerContextInput,
   PlannerRequestRecord,
 } from '@mcp-abap-adt/llm-agent';
+import { formatTrust } from '@mcp-abap-adt/llm-agent';
 
 /** Escape bracket delimiters in retrieved data, including source labels. */
 export const escapePlannerData = (text: string): string =>
@@ -34,7 +35,7 @@ export function renderPlannerRetrieval(input: PlannerContextInput): string[] {
     'session memory',
     input.memory.map(
       (entry) =>
-        `(${escapePlannerData(`${entry.kind} ${entry.sourceId} ${entry.requestId} offset ${entry.offset}`)}) ${escapePlannerData(entry.text)}`,
+        `(${escapePlannerData(typeof entry.trust === 'number' && entry.source !== undefined ? entry.source : `${entry.kind} ${entry.sourceId} ${entry.requestId} offset ${entry.offset}`)}${typeof entry.trust === 'number' ? `; trust ${formatTrust(entry.trust)}` : ''}) ${escapePlannerData(entry.text)}`,
     ),
     input.memoryCharBudget ?? 12_000,
   );
@@ -51,7 +52,7 @@ export function renderPlannerRetrieval(input: PlannerContextInput): string[] {
     for (const entry of input.knowledge.filter(
       (item) => item.collection === collections[index],
     )) {
-      const label = `(${escapePlannerData(entry.collection)}/${escapePlannerData(entry.id)}) `;
+      const label = `(${escapePlannerData(typeof entry.trust === 'number' && entry.source !== undefined ? entry.source : `${entry.collection}/${entry.id}`)}${typeof entry.trust === 'number' ? `; trust ${formatTrust(entry.trust)}` : ''}) `;
       const available = share - used - (selected.length ? 1 : 0);
       if (available <= label.length) break;
       const line =

@@ -8,6 +8,7 @@ import type {
   McpError,
   McpToolResult,
   Result,
+  TrustMap,
   UsageInput,
 } from '@mcp-abap-adt/llm-agent';
 import { DIALOGUE_COORDINATOR_SYSTEM } from '../coordinator-prompt.js';
@@ -51,7 +52,7 @@ function text(result: Result<McpToolResult, McpError>): string {
 for (const [name, prompts, planAuthor, expected] of [
   [
     'coordinator mode uses the coordinator prompt',
-    { coordinator: 'C' },
+    { coordinator: 'C', trust: { coordinator: { docs: 4 } } },
     author,
     'C',
   ],
@@ -71,8 +72,11 @@ for (const [name, prompts, planAuthor, expected] of [
   test(name, async () => {
     const host = profileHost(new Map());
     let system = '';
+    let trust: TrustMap | undefined;
     host.profileSource.getPrompts = async () => ({ ok: true, value: prompts });
-    host.profileRunner.preparePlanner = async ({ systemPrompt }) => {
+    host.profileRunner.preparePlanner = async (input) => {
+      const { systemPrompt } = input;
+      trust = input.trust;
       system = systemPrompt;
       return {
         ok: true,
@@ -101,6 +105,7 @@ for (const [name, prompts, planAuthor, expected] of [
     try {
       await session.send('hello');
       assert.equal(system, composePlannerPrompt(expected));
+      assert.deepEqual(trust, prompts.trust?.coordinator);
       if (expected === DIALOGUE_COORDINATOR_SYSTEM)
         assert.ok(!system.includes('PLANNER ONLY'));
     } finally {

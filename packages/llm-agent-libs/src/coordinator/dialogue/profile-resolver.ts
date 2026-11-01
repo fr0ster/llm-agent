@@ -15,6 +15,7 @@ const summarySchema = z.object({
   result: z.enum(['report', 'verdict']),
 });
 const profileSchema = summarySchema.extend({
+  trust: z.record(z.string(), z.number()).optional(),
   systemPrompt: z.string(),
   tools: z.union([
     z.literal('all'),
@@ -28,6 +29,13 @@ const profileSchema = summarySchema.extend({
   ]),
 });
 const promptsSchema = z.object({
+  trust: z
+    .object({
+      coordinator: z.record(z.string(), z.number()).optional(),
+      plannerCreate: z.record(z.string(), z.number()).optional(),
+      plannerRevise: z.record(z.string(), z.number()).optional(),
+    })
+    .optional(),
   workerBase: z.string().optional(),
   planner: z.string().optional(),
   coordinator: z.string().optional(),
