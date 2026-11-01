@@ -17,6 +17,12 @@ test('interpreter wraps worker.run with nodeId-annotated onPartial and emits ste
     capabilities: { contextPolicy: 'optional' },
     async run(input) {
       input.onPartial?.({ kind: 'content', delta: 'X' });
+      input.onPartial?.({ kind: 'iteration-end', outcome: 'retry' });
+      input.onPartial?.({
+        kind: 'iteration-end',
+        nodeId: 'nested',
+        outcome: 'final',
+      });
       return { output: 'X' };
     },
   };
@@ -40,6 +46,8 @@ test('interpreter wraps worker.run with nodeId-annotated onPartial and emits ste
       goal: 'ga',
     },
     { kind: 'content', nodeId: 'a', delta: 'X' },
+    { kind: 'iteration-end', nodeId: 'a', outcome: 'retry' },
+    { kind: 'iteration-end', nodeId: 'nested', outcome: 'final' },
     { kind: 'stepper-done', source: { stepperId: 'a', name: 'a' }, ok: true },
   ]);
 });

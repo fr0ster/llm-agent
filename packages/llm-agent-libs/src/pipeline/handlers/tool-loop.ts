@@ -155,6 +155,12 @@ export class ToolLoopHandler implements IStageHandler {
     const externalToolNames = new Set(externalTools.map((t) => t.name));
 
     let toolCallCount = 0;
+    let progressContent = '';
+    const emitProgressFallback = (): void => {
+      if (ctx.config.streamMode !== 'final' || !progressContent) return;
+      ctx.yield({ ok: true, value: { content: progressContent } });
+      ctx.onPartial?.({ kind: 'content', delta: progressContent });
+    };
     let lastToolsSelected: number | undefined;
     let lastToolsAvailable: number | undefined;
     let messages = ctx.assembledMessages;
@@ -202,6 +208,7 @@ export class ToolLoopHandler implements IStageHandler {
         return false;
       }
       if (iteration > 0 && ctx.options?.stopSignal?.aborted) {
+        emitProgressFallback();
         ctx.stopped = true;
         timingLog.push({ phase: 'total', duration: Date.now() - loopStart });
         ctx.timing.push(...timingLog);
@@ -223,6 +230,7 @@ export class ToolLoopHandler implements IStageHandler {
         return true;
       }
       if (iteration >= maxIterations) {
+        emitProgressFallback();
         timingLog.push({ phase: 'total', duration: Date.now() - loopStart });
         ctx.timing.push(...timingLog);
         ctx.yield({
@@ -557,6 +565,11 @@ export class ToolLoopHandler implements IStageHandler {
         const chunk = chunkResult.value;
         // Mid-stream retry or fallback reset: discard accumulated state
         if (chunk.reset) {
+          ctx.yield({
+            ok: true,
+            value: { content: '', iterationEnd: 'retry' },
+          });
+          ctx.onPartial?.({ kind: 'iteration-end', outcome: 'retry' });
           content = '';
           toolCallsMap.clear();
           externalToolIndices.clear();
@@ -568,8 +581,10 @@ export class ToolLoopHandler implements IStageHandler {
         }
         if (chunk.content) {
           content += chunk.content;
-          ctx.yield({ ok: true, value: { content: chunk.content } });
-          if (ctx.onPartial) {
+          if (ctx.config.streamMode !== 'final') {
+            ctx.yield({ ok: true, value: { content: chunk.content } });
+          }
+          if (ctx.onPartial && ctx.config.streamMode !== 'final') {
             ctx.onPartial({
               kind: 'content',
               delta: chunk.content,
@@ -666,15 +681,32 @@ export class ToolLoopHandler implements IStageHandler {
         'llm',
       );
 
+      const val =
+        finishReason === 'tool_calls' && toolCalls.length > 0
+          ? { reprompt: false, messages }
+          : await runOutputValidationReprompt(
+              ctx.outputValidator,
+              content,
+              messages,
+              currentTools,
+              ctx.options,
+            );
+      const iterationEnd =
+        finishReason === 'tool_calls' && toolCalls.length > 0
+          ? 'tool_calls'
+          : val.reprompt
+            ? 'retry'
+            : 'final';
+      if (iterationEnd === 'tool_calls') progressContent += content;
+      else if (iterationEnd === 'final' && ctx.config.streamMode === 'final') {
+        ctx.yield({ ok: true, value: { content } });
+        ctx.onPartial?.({ kind: 'content', delta: content });
+      }
+      ctx.yield({ ok: true, value: { content: '', iterationEnd } });
+      ctx.onPartial?.({ kind: 'iteration-end', outcome: iterationEnd });
+
       // -- No tool calls: validate and finish --------------------------------
       if (finishReason !== 'tool_calls' || toolCalls.length === 0) {
-        const val = await runOutputValidationReprompt(
-          ctx.outputValidator,
-          content,
-          messages,
-          currentTools,
-          ctx.options,
-        );
         if (val.reprompt) {
           // Reprompt pairs (assistant+user correction) go into controlTail, NOT
           // into the strategy — they are ephemeral and survive only until the
@@ -944,6 +976,7 @@ export class ToolLoopHandler implements IStageHandler {
 
           // Surface the external calls with their deterministic extId so the
           // consumer executes them and re-sends results (correlated on resume).
+          emitProgressFallback();
           ctx.yield({
             ok: true,
             value: {

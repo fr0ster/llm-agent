@@ -540,6 +540,8 @@ export class SmartAgent {
     options?: AgentCallOptions,
   ): Promise<Result<SmartAgentResponse, OrchestratorError>> {
     let content = '';
+    let progressContent = '';
+    let finalIteration = false;
     const totalUsage: {
       promptTokens: number;
       completionTokens: number;
@@ -575,6 +577,16 @@ export class SmartAgent {
       if (!chunk.ok) return chunk;
       if (chunk.value.content && !chunk.value.ephemeral)
         content += chunk.value.content;
+      if (chunk.value.iterationEnd === 'tool_calls') {
+        progressContent += content;
+        content = '';
+        finalIteration = false;
+      } else if (chunk.value.iterationEnd === 'retry') {
+        content = '';
+        finalIteration = false;
+      } else if (chunk.value.iterationEnd === 'final') {
+        finalIteration = true;
+      }
       if (chunk.value.toolCalls) {
         for (const tc of chunk.value.toolCalls) {
           const delta = toToolCallDelta(tc, collectedToolCalls.length);
@@ -628,7 +640,7 @@ export class SmartAgent {
     return {
       ok: true,
       value: {
-        content,
+        content: finalIteration ? content : progressContent + content,
         iterations: 1,
         // Executed internal tool calls; when none executed, calls surfaced to the caller.
         toolCallCount: executedToolCallCount ?? collectedToolCalls.length,
@@ -849,6 +861,12 @@ export class SmartAgent {
     let messages = initialMessages;
     // Retain tool-round text that has not been streamed until a cooperative stop.
     let stoppedContent = '';
+    const bufferedFallback = (): string =>
+      stoppedContent.trim()
+        ? clientAdapter
+          ? clientAdapter.wrapResponse(stoppedContent)
+          : stoppedContent
+        : '';
     const usage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
     const externalToolNames = new Set(externalTools.map((t) => t.name));
     const timingLog: TimingEntry[] = [];
@@ -900,11 +918,7 @@ export class SmartAgent {
         yield {
           ok: true,
           value: {
-            content: stoppedContent.trim()
-              ? clientAdapter
-                ? clientAdapter.wrapResponse(stoppedContent)
-                : stoppedContent
-              : '',
+            content: bufferedFallback(),
             finishReason: 'stop',
             stopped: true,
             usage: { ...summaryToUsage(summary), models: summary.byModel },
@@ -922,7 +936,7 @@ export class SmartAgent {
           yield {
             ok: true,
             value: {
-              content: '',
+              content: bufferedFallback(),
               finishReason: 'length',
               usage: {
                 ...summaryToUsage(summary),
@@ -1163,6 +1177,8 @@ export class SmartAgent {
         const chunk = chunkResult.value;
         // Mid-stream retry: discard accumulated state and restart accumulation
         if (chunk.reset) {
+          yield { ok: true, value: { content: '', iterationEnd: 'retry' } };
+          opts?.onPartial?.({ kind: 'iteration-end', outcome: 'retry' });
           content = '';
           iterationBuffer = '';
           toolCallsMap.clear();
@@ -1237,13 +1253,33 @@ export class SmartAgent {
         phase: `llm_call_${iteration + 1}`,
         duration: llmCallDuration,
       });
+      const val =
+        finishReason === 'tool_calls' && toolCallsMap.size > 0
+          ? { reprompt: false, messages }
+          : await runOutputValidationReprompt(
+              this.outputValidator,
+              content,
+              messages,
+              currentTools,
+              opts,
+            );
+      const iterationEnd =
+        finishReason === 'tool_calls' && toolCallsMap.size > 0
+          ? 'tool_calls'
+          : val.reprompt
+            ? 'retry'
+            : 'final';
       // In 'final' mode: yield buffered content only if this is the last iteration
       if (this.config.streamMode === 'final' && iterationBuffer) {
-        if (finishReason !== 'tool_calls') {
+        if (iterationEnd === 'final') {
           // Final iteration — stream the buffered content
           yield { ok: true, value: { content: iterationBuffer } };
         }
         iterationBuffer = '';
+      }
+      if (iterationEnd !== 'final') {
+        yield { ok: true, value: { content: '', iterationEnd } };
+        opts?.onPartial?.({ kind: 'iteration-end', outcome: iterationEnd });
       }
       if (
         finishReason === 'tool_calls' &&
@@ -1270,13 +1306,6 @@ export class SmartAgent {
       );
       if (finishReason !== 'tool_calls' || toolCalls.length === 0) {
         // Output validation
-        const val = await runOutputValidationReprompt(
-          this.outputValidator,
-          content,
-          messages,
-          currentTools,
-          opts,
-        );
         if (val.reprompt) {
           // Reprompt pairs (assistant+user correction) go into controlTail, NOT
           // into the strategy — they are ephemeral and survive only until the
@@ -1315,6 +1344,9 @@ export class SmartAgent {
             value: { content: clientAdapter.wrapResponse(content) },
           };
         }
+
+        yield { ok: true, value: { content: '', iterationEnd: 'final' } };
+        opts?.onPartial?.({ kind: 'iteration-end', outcome: 'final' });
 
         timingLog.push({ phase: 'total', duration: Date.now() - loopStart });
         toolLoopSpan.setStatus('ok');
@@ -1507,7 +1539,7 @@ export class SmartAgent {
           yield {
             ok: true,
             value: {
-              content: '',
+              content: bufferedFallback(),
               finishReason: 'tool_calls',
               usage: {
                 ...summaryToUsage(summary),

@@ -7,6 +7,8 @@ test('StreamChunk discriminated union accepts every kind', () => {
     switch (c.kind) {
       case 'content':
         return c.delta.length;
+      case 'iteration-end':
+        return c.outcome.length;
       case 'stepper-spawned':
         return c.source.stepperId.length + c.goal.length;
       case 'stepper-done':
@@ -25,6 +27,8 @@ test('StreamChunk discriminated union accepts every kind', () => {
   };
   const ref = { stepperId: 'abc', name: 'root' };
   accept({ kind: 'content', delta: 'x' });
+  accept({ kind: 'iteration-end', outcome: 'tool_calls' });
+  accept({ kind: 'iteration-end', outcome: 'final' });
   accept({ kind: 'stepper-spawned', source: ref, goal: 'g' });
   accept({ kind: 'stepper-done', source: ref, ok: true });
   accept({ kind: 'mcp-call', source: ref, tool: 'GetProgram' });

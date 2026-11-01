@@ -317,7 +317,8 @@ export class DagCoordinatorHandler implements IStageHandler {
         // A finalizer can opt into live content from the original single node.
         // Spliced sub-plan content is not forwarded. Only a
         // complete output suffix permits skipping re-emission. All progress goes
-        // to the session log; non-content events are never yielded to the client here.
+        // to the session log; only matching content and discard boundaries are
+        // forwarded to the client here.
         const streamsInterpreterContent =
           this.finalizer.streamsInterpreterContent === true;
         const forwardInterpreterContent =
@@ -327,6 +328,21 @@ export class DagCoordinatorHandler implements IStageHandler {
           : undefined;
         let forwardedText = '';
         const interpreterOnPartial: OnPartial = (chunk) => {
+          if (
+            forwardInterpreterContent &&
+            chunk.kind === 'iteration-end' &&
+            chunk.nodeId !== undefined &&
+            chunk.nodeId === forwardNodeId &&
+            chunk.outcome !== 'final'
+          ) {
+            ctx.yield({
+              ok: true,
+              value: { content: '', iterationEnd: chunk.outcome },
+            });
+            forwardedText = '';
+          }
+          // Worker completion does not complete the outer response. Defer its
+          // final boundary until the coordinator has finished the finalizer.
           if (
             forwardInterpreterContent &&
             chunk.kind === 'content' &&
@@ -468,6 +484,7 @@ export class DagCoordinatorHandler implements IStageHandler {
             value: {
               content: '',
               finishReason: 'stop',
+              ...(forwardInterpreterContent ? { iterationEnd: 'final' } : {}),
               ...(usage ? { usage } : {}),
             },
           });
