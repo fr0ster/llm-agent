@@ -30,6 +30,12 @@ export interface StepperRef {
  */
 export type StreamChunk =
   | { kind: 'content'; nodeId?: string; delta: string; ephemeral?: boolean }
+  /** Classifies preceding content since the previous boundary in this stream. */
+  | {
+      kind: 'iteration-end';
+      nodeId?: string;
+      outcome: 'tool_calls' | 'retry' | 'final';
+    }
   // --- 18.0 Stepper progress events ---
   | { kind: 'stepper-spawned'; source: StepperRef; goal: string }
   | { kind: 'stepper-done'; source: StepperRef; ok: boolean }

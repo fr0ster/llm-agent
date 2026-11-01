@@ -106,6 +106,10 @@ export interface TimingEntry {
 }
 
 export interface LlmStreamChunk {
+  /** Retroactive boundary for this iteration's text. Tool-round text is progress.
+   * Retain it only as a fallback if the call ends without a final iteration.
+   * Retry boundaries discard rejected text, including from fallback content. */
+  iterationEnd?: 'tool_calls' | 'retry' | 'final';
   budgetExhausted?: boolean;
   maxToolCalls?: number;
   toolCallCount?: number;

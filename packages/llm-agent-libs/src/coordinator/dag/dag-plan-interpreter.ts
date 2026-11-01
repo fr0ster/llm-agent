@@ -88,7 +88,7 @@ export class DagPlanInterpreter
           const workerOnPartial = outerOnPartial
             ? (c: StreamChunk) => {
                 const annotated: StreamChunk = (() => {
-                  if (c.kind === 'content') {
+                  if (c.kind === 'content' || c.kind === 'iteration-end') {
                     return { ...c, nodeId: c.nodeId ?? n.id };
                   }
                   return c;

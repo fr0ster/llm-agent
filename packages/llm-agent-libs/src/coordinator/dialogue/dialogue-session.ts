@@ -971,6 +971,9 @@ export class DialogueSession {
             messages.push({ role: 'user', content: resultEvents.join('\n') });
         }
         const contentPartials: StreamChunk[] = [];
+        const progressPartials: StreamChunk[] = [];
+        let progressText = '';
+        let finalIteration = false;
         const result = await runInPlannerScope(
           {
             ...this.createPlannerScope(request, {
@@ -1094,7 +1097,21 @@ export class DialogueSession {
               usage: scopedUsage(this.turnUsage, { role: 'planner' }),
               onPartial: (chunk) => {
                 if (restarting) return;
-                if (chunk.kind === 'content') {
+                if (chunk.kind === 'iteration-end' && !chunk.nodeId) {
+                  if (chunk.outcome === 'tool_calls') {
+                    progressText += partialText;
+                    progressPartials.push(...contentPartials);
+                    partialText = '';
+                    contentPartials.length = 0;
+                    finalIteration = false;
+                  } else if (chunk.outcome === 'retry') {
+                    partialText = '';
+                    contentPartials.length = 0;
+                    finalIteration = false;
+                  } else finalIteration = true;
+                  return;
+                }
+                if (chunk.kind === 'content' && !chunk.nodeId) {
                   if (delivered) return;
                   contentPartials.push(chunk);
                   partialText += chunk.delta;
@@ -1109,7 +1126,12 @@ export class DialogueSession {
             throw error;
           return {
             ok: true as const,
-            value: { content: partialText, usage: undefined },
+            value: {
+              content: finalIteration
+                ? partialText
+                : progressText + partialText,
+              usage: undefined,
+            },
           };
         });
         callIndex++;
@@ -1130,6 +1152,10 @@ export class DialogueSession {
         }
         const waiting = waitStop.signal.aborted && !user?.opts.signal?.aborted;
         if (!result.ok && !waiting) throw result.error;
+        if (!finalIteration) {
+          partialText = progressText + partialText;
+          contentPartials.unshift(...progressPartials);
+        }
 
         reply = deliveries.length
           ? deliveries.join('\n\n')

@@ -16,6 +16,94 @@ import { SessionRequestLogger } from '../../../logger/session-request-logger.js'
 import { pipelineToStream } from '../../pipeline-to-stream.js';
 import { DagCoordinatorHandler } from '../dag-coordinator.js';
 
+for (const mode of ['single', 'multi', 'disabled'] as const) {
+  test(`DAG worker iteration boundaries preserve outer response ownership: ${mode}`, async () => {
+    const chunks: LlmStreamChunk[] = [];
+    const worker: ISubAgent = {
+      name: 'w',
+      description: 'worker',
+      async run(input) {
+        input.onPartial?.({ kind: 'content', delta: 'Checking…' });
+        input.onPartial?.({ kind: 'iteration-end', outcome: 'tool_calls' });
+        input.onPartial?.({ kind: 'content', delta: 'Failed attempt' });
+        input.onPartial?.({ kind: 'iteration-end', outcome: 'retry' });
+        input.onPartial?.({ kind: 'content', delta: 'Answer' });
+        input.onPartial?.({ kind: 'iteration-end', outcome: 'final' });
+        return { output: 'Answer' };
+      },
+    };
+    const handler = new DagCoordinatorHandler({
+      planner: {
+        name: 'p',
+        async plan() {
+          return {
+            plan: {
+              objective: 'o',
+              nodes:
+                mode === 'multi'
+                  ? [
+                      { id: 'a', goal: 'first' },
+                      { id: 'b', goal: 'last', dependsOn: ['a'] },
+                    ]
+                  : [{ id: 'a', goal: 'answer' }],
+              createdAt: 0,
+            },
+          };
+        },
+      },
+      interpreter: new DagPlanInterpreter(),
+      workers: new Map([['w', worker]]),
+      finalizer: {
+        name: 'notice',
+        streamsInterpreterContent: mode !== 'disabled',
+        async finalize(input) {
+          assert.ok(!chunks.some((chunk) => chunk.iterationEnd === 'final'));
+          assert.equal(
+            input.interpreterContentStreamed,
+            mode === 'single' ? true : mode === 'multi' ? false : undefined,
+          );
+          const output = `${input.interpreterContentStreamed ? '' : input.interpreterOutput}NOTICE`;
+          input.onPartial?.({ kind: 'content', delta: output });
+          return { output };
+        },
+      },
+    });
+    const agent: SmartAgent = Object.create(SmartAgent.prototype);
+    agent.streamProcess = async function* () {
+      const handled = await handler.execute(
+        {
+          inputText: 'do',
+          sessionId: 's',
+          history: [],
+          requestLogger: new SessionRequestLogger(),
+          yield(chunk) {
+            assert.ok(chunk.ok);
+            chunks.push(chunk.value);
+          },
+        } as Parameters<DagCoordinatorHandler['execute']>[0],
+        {},
+        {} as never,
+      );
+      assert.equal(handled, true);
+      for (const value of chunks) yield { ok: true, value };
+    };
+    const response = await agent.process('do');
+    assert.ok(response.ok);
+    assert.equal(response.value.content, 'AnswerNOTICE');
+    assert.deepEqual(
+      chunks.flatMap((chunk) =>
+        chunk.iterationEnd ? [chunk.iterationEnd] : [],
+      ),
+      mode === 'single' ? ['tool_calls', 'retry', 'final'] : [],
+    );
+    assert.equal(chunks.at(-1)?.finishReason, 'stop');
+    if (mode === 'single') {
+      assert.equal(chunks.at(-1)?.iterationEnd, 'final');
+      assert.equal(chunks.at(-2)?.content, 'NOTICE');
+    }
+  });
+}
+
 for (const scenario of [
   {
     name: 'full answer',

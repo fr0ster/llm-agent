@@ -793,7 +793,26 @@ Configured via `SmartAgentConfig.mode` and `SmartServerMode`:
 Configured via `SmartAgentConfig.streamMode`:
 
 - `full` (default): all chunks streamed immediately, including intermediate tool loop iterations.
-- `final`: intermediate iterations are buffered and discarded; only the final response is streamed. External tool calls and heartbeats are always streamed regardless of mode. Useful for clients (Cline, Goose) that accumulate chunks in their context window.
+- `final`: intermediate iterations are buffered and discarded; only the final response is streamed. External tool calls and heartbeats are always streamed regardless of mode. Useful for clients (Cline, Goose) that accumulate chunks in their context window. Both the legacy loop and DefaultPipeline honour this mode.
+
+Each completed tool-loop iteration emits an empty `LlmStreamChunk` with
+`iterationEnd: 'tool_calls' | 'retry' | 'final'`, and the corresponding `onPartial` event
+`{ kind: 'iteration-end', outcome: 'tool_calls' | 'retry' | 'final' }`. A tool-call
+boundary retroactively classifies the preceding iteration's text as progress.
+Validation emits `retry` before a reprompt, discarding the rejected iteration from reply buffers. Final-only streams publish content after validation accepts it. Worker content and iteration boundaries carry their node ID and are forwarded live without entering the coordinator reply buffers.
+In `full` mode, content still arrives immediately; consumers should keep a
+separate current-iteration buffer and discard tool-round text from the answer.
+Even an empty final iteration supersedes earlier progress. `SmartAgent.process()`,
+worker task results, and persisted/displayed dialogue replies use only final
+iteration content. DialogueSession also discards its coordinator's buffered
+tool-round partials before forwarding the reply.
+
+If a budget, iteration limit, external-tool handoff, or cooperative stop ends a
+call without a final iteration, `process()` retains accumulated progress as a
+fallback instead of returning an empty answer. In pipeline `final` mode, buffered
+progress is released at a stop, iteration limit, or external-tool handoff (the
+pipeline previously streamed that text regardless of mode). The legacy loop also
+releases its buffered fallback at these exits, preserving adapter wrapping.
 
 Both SSE surfaces (`/v1/chat/completions`, `/v1/messages`) run an idle keep-alive
 watchdog: if no chunk is written for `agent.heartbeatIntervalMs` (default 5000ms;
