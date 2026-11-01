@@ -147,7 +147,9 @@ describe('controller context wiring — RagRecall factory', () => {
           rag: {
             write: async () => {},
             query: async () => hits,
-          } as unknown as IKnowledgeRagHandle,
+            list: async () => [],
+            fingerprint: () => 'regression',
+          } satisfies IKnowledgeRagHandle,
           runId: 'regression',
           meta: META,
           stepName: 's',
