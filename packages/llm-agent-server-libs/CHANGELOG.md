@@ -1,5 +1,11 @@
 # @mcp-abap-adt/llm-agent-server-libs
 
+## 30.10.1
+
+### Patch Changes
+
+- Controller recall returns per-round raw tool results so llm-agent-libs can tag recalled results with trust; output is unchanged without a trust resolver. Requires `@mcp-abap-adt/llm-agent` ^30.27.0 and `@mcp-abap-adt/llm-agent-libs` ^30.26.0.
+
 ## 30.10.0
 
 ### Minor Changes
