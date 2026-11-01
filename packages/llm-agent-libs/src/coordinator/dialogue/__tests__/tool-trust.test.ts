@@ -109,9 +109,9 @@ const factories: Array<[string, ToolLoopContextStrategyFactory]> = [
           },
           async recall(_query, excluded) {
             return {
-              results: rounds
+              rounds: rounds
                 .filter((round) => !excluded.includes(round.roundId ?? ''))
-                .flatMap((round) =>
+                .map((round) =>
                   round.results.map((result) => {
                     assert.equal(result.content, rawText);
                     return {

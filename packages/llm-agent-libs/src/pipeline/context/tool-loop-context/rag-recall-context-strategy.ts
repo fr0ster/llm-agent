@@ -10,7 +10,7 @@ import { toModelToolMessage } from '@mcp-abap-adt/llm-agent';
 
 export interface RagRecallDeps {
   record(round: ToolRound, options?: CallOptions): Promise<void>;
-  /** Return named raw results for trust projection; strings are legacy preformatted context. */
+  /** Return rounds of named raw results for trust projection; strings are legacy preformatted context. */
   recall(
     queryText: string,
     excludeRoundIds: string[],
@@ -18,7 +18,7 @@ export interface RagRecallDeps {
   ): Promise<
     | string
     | {
-        results: Array<{ toolName?: string; content: string }>;
+        rounds: Array<Array<{ toolName?: string; content: string }>>;
         maxChars?: number;
       }
   >;
@@ -68,20 +68,45 @@ export class RagRecallContextStrategy implements IToolLoopContextStrategy {
     } else {
       let remaining = block.maxChars ?? Number.POSITIVE_INFINITY;
       const parts: string[] = [];
-      for (const result of block.results) {
-        if (remaining <= 0) break;
-        const content = result.content.slice(0, remaining);
-        remaining -= content.length;
-        if (!content) continue;
-        parts.push(
-          String(
-            toModelToolMessage(
-              { role: 'tool', content },
-              base.toolTrust,
-              result.toolName,
-            ).content,
-          ),
-        );
+      for (const round of block.rounds) {
+        const raw = round.map((result) => result.content).join('\n');
+        if (!raw.length) continue;
+        const truncated = raw.length > remaining;
+        const content = truncated ? raw.slice(0, remaining) : raw;
+        if (!base.toolTrust) {
+          parts.push(content);
+        } else {
+          // Slice raw round text first: trust tags never consume the budget.
+          const projected: string[] = [];
+          let offset = 0;
+          for (const [index, result] of round.entries()) {
+            if (index > 0) {
+              if (offset >= content.length) break;
+              projected.push('\n');
+              offset++;
+            }
+            if (offset >= content.length && result.content.length > 0) break;
+            projected.push(
+              String(
+                toModelToolMessage(
+                  {
+                    role: 'tool',
+                    content: content.slice(
+                      offset,
+                      offset + result.content.length,
+                    ),
+                  },
+                  base.toolTrust,
+                  result.toolName,
+                ).content,
+              ),
+            );
+            offset += result.content.length;
+          }
+          parts.push(projected.join(''));
+        }
+        if (truncated) break;
+        remaining -= raw.length;
       }
       if (parts.length)
         out.push({

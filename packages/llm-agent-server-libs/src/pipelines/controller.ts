@@ -243,12 +243,12 @@ export class ControllerPipelinePlugin implements IPipelinePlugin {
               options,
             );
             return {
-              results: rows
+              rounds: rows
                 .filter(
                   (row) =>
                     !excludeRoundIds.includes(String(row.metadata?.roundId)),
                 )
-                .flatMap(
+                .map(
                   (row) =>
                     row.metadata.toolResults ?? [
                       {
