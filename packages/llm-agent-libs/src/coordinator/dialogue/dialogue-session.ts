@@ -630,6 +630,7 @@ export class DialogueSession {
   ): PlannerScope {
     return {
       planAuthor: this.opts.planAuthor,
+      toolTrust: this.opts.toolTrust,
       authorOptions: {
         usage: options.usage ?? this.opts.usage ?? this.opts.board.usage,
         sessionId: this.opts.id,
@@ -716,7 +717,7 @@ export class DialogueSession {
     this.externalCoordinator = true;
     const operation = runInPlannerScope(
       this.createPlannerScope(this.openRequest, opts),
-      () => new PlannerToolsClient(this.opts.toolTrust).callTool(name, args),
+      () => new PlannerToolsClient().callTool(name, args),
     );
     this.toolActive = operation.finally(async () => {
       this.changed();

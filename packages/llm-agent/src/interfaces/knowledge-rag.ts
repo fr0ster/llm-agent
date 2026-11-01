@@ -51,6 +51,8 @@ export interface KnowledgeEntryMetadata {
    *  fetch dedup): `roundId` labels ONE record()d round so recall can exclude the
    *  raw-tail round (already injected verbatim) by roundId. */
   roundId?: string;
+  /** Raw per-result text and recorded tool names for trust-aware recall. */
+  toolResults?: Array<{ toolName?: string; content: string }>;
 }
 
 export interface KnowledgeEntry {

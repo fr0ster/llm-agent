@@ -55,6 +55,7 @@ test('checker evidence preserves a complete long trust tag within its budget', (
 
 import {
   type ILlm,
+  type ISubAgent,
   type Message,
   type ToolLoopContextStrategyFactory,
   type ToolRound,
@@ -70,9 +71,11 @@ import { DefaultPipeline } from '../../../pipeline/default-pipeline.js';
 import { injectPendingResults } from '../../../pipeline/handlers/tool-loop-core.js';
 import { PendingToolResultsRegistry } from '../../../policy/pending-tool-results-registry.js';
 import { makeDefaultDeps } from '../../../testing/index.js';
-import { runInPlannerScope } from '../planner-scope.js';
+import { DialogueSession } from '../dialogue-session.js';
+import { currentPlannerScope, runInPlannerScope } from '../planner-scope.js';
 import { PlannerToolsClient } from '../planner-tools-client.js';
 import { TaskBoard } from '../task-board.js';
+import { profileHost } from './profile-test-host.js';
 
 const toolTrust = (name: string) => ({ source: `system:${name}`, trust: 4.5 });
 const rawText = 'raw...[truncated]';
@@ -97,16 +100,34 @@ const factories: Array<[string, ToolLoopContextStrategyFactory]> = [
   ['window', () => new WindowContextStrategy()],
   [
     'rag',
-    () =>
-      new RagRecallContextStrategy(
+    () => {
+      const rounds: ToolRound[] = [];
+      return new RagRecallContextStrategy(
         {
-          async record() {},
-          async recall() {
-            return '';
+          async record(round) {
+            rounds.push(round);
+          },
+          async recall(_query, excluded) {
+            return {
+              results: rounds
+                .filter((round) => !excluded.includes(round.roundId ?? ''))
+                .flatMap((round) =>
+                  round.results.map((result) => {
+                    assert.equal(result.content, rawText);
+                    return {
+                      toolName: round.assistant.tool_calls?.find(
+                        (call) => call.id === result.tool_call_id,
+                      )?.function.name,
+                      content: String(result.content),
+                    };
+                  }),
+                ),
+            };
           },
         },
         { runId: 'trust' },
-      ),
+      );
+    },
   ],
 ];
 for (const path of ['streaming', 'pipeline']) {
@@ -198,6 +219,21 @@ for (const path of ['streaming', 'pipeline']) {
         for (const messages of seen.slice(1)) {
           for (const message of messages.filter((item) => item.role === 'tool'))
             assert.equal(message.content, taggedText);
+        }
+        if (strategyName === 'rag') {
+          const recalled = seen[2].find(
+            (message) =>
+              message.role === 'user' &&
+              String(message.content).startsWith('Relevant prior context:'),
+          );
+          assert.equal(
+            recalled?.content,
+            `Relevant prior context:\n${taggedText}`,
+          );
+          assert.equal(
+            String(recalled?.content).split('[source:').length - 1,
+            1,
+          );
         }
         assert.equal(recorded.length, 2);
         for (const round of recorded)
@@ -311,4 +347,140 @@ test('pass-through and validation project tool messages without changing raw con
   );
   assert.equal(result.messages[1].content, rawText);
   assert.equal(raw[1].content, rawText);
+});
+
+test('session resolver tags internal planner get_task and checker evidence', async () => {
+  let evidence = '';
+  let checked = false;
+  const host = profileHost(
+    new Map<string, ISubAgent>([
+      [
+        'audit',
+        {
+          name: 'audit',
+          capabilities: { contextPolicy: 'optional' },
+          async run(input) {
+            evidence = input.context ?? '';
+            return { output: 'PASS' };
+          },
+        },
+      ],
+    ]),
+  );
+  host.profileRunner.preparePlanner = async () => ({
+    ok: true,
+    value: {
+      async process() {
+        if (checked)
+          return {
+            ok: true,
+            value: {
+              content: 'NO_MESSAGE',
+              iterations: 1,
+              toolCallCount: 0,
+              stopReason: 'stop',
+            },
+          };
+        checked = true;
+        const scope = currentPlannerScope();
+        assert.ok(scope);
+        scope.board.restore([
+          {
+            id: 'source',
+            worker: 'reader',
+            result: 'report',
+            goal: 'read',
+            state: 'done',
+            output: 'done',
+            createdAt: 0,
+            toolTrace: {
+              complete: true,
+              omittedCount: 0,
+              entries: [
+                {
+                  sequence: 1,
+                  toolName: 'GetClass',
+                  arguments: '{}',
+                  outcome: 'ok',
+                  resultExcerpt: rawText,
+                },
+              ],
+            },
+          },
+        ]);
+        scope.setPlan({
+          version: 1,
+          status: 'active',
+          steps: [
+            {
+              id: 'read',
+              goal: 'read',
+              result: 'report',
+              worker: 'reader',
+              state: 'done',
+              taskIds: ['source'],
+              successfulWorkTaskId: 'source',
+            },
+            {
+              id: 'check',
+              goal: 'check',
+              result: 'verdict',
+              worker: 'audit',
+              state: 'pending',
+              taskIds: [],
+              dependsOn: ['read'],
+            },
+          ],
+        });
+        const client = new PlannerToolsClient();
+        const task = await client.callTool('get_task', { task_id: 'source' });
+        assert.ok(task.ok);
+        assert.ok(
+          JSON.stringify(task.value.content).includes(
+            'source: system:GetClass; trust 4.5',
+          ),
+        );
+        const delegated = await client.callTool('delegate_task', {
+          step_id: 'check',
+          worker: 'audit',
+          goal: 'check',
+        });
+        assert.ok(delegated.ok);
+        assert.equal(delegated.value.isError, undefined);
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        assert.match(
+          evidence,
+          /\[source: system:GetClass; trust 4\.5\] result:/,
+        );
+        assert.equal(evidence.split('[source:').length - 1, 1);
+        assert.equal(
+          scope.board.get('source')?.toolTrace?.entries[0].resultExcerpt,
+          rawText,
+        );
+        return {
+          ok: true,
+          value: {
+            content: 'checked',
+            iterations: 1,
+            toolCallCount: 0,
+            stopReason: 'stop',
+          },
+        };
+      },
+      async *streamProcess() {},
+    },
+  });
+  const session = await DialogueSession.open({
+    id: 'internal-trust',
+    toolTrust,
+    maxCorrections: 0,
+    ...host,
+    board: { workers: new Map() },
+  });
+  try {
+    await session.send('check the result');
+    assert.ok(checked);
+  } finally {
+    await session.close();
+  }
 });

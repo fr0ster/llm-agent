@@ -903,7 +903,11 @@ export class SmartAgent {
       await strategy.record(pendingRound);
     }
     messages = (
-      await strategy.form({ prefix: staticPrefix, queryText: _action.text })
+      await strategy.form({
+        prefix: staticPrefix,
+        toolTrust: this.config.toolTrust,
+        queryText: _action.text,
+      })
     ).concat(controlTail);
 
     for (let iteration = 0; ; iteration++) {
@@ -1319,6 +1323,7 @@ export class SmartAgent {
           messages = (
             await strategy.form({
               prefix: staticPrefix,
+              toolTrust: this.config.toolTrust,
               queryText: _action.text,
             })
           ).concat(controlTail);
@@ -1414,7 +1419,11 @@ export class SmartAgent {
         }
         controlTail.length = 0;
         messages = (
-          await strategy.form({ prefix: staticPrefix, queryText: _action.text })
+          await strategy.form({
+            prefix: staticPrefix,
+            toolTrust: this.config.toolTrust,
+            queryText: _action.text,
+          })
         ).concat(controlTail);
         if (
           validExternalCalls.length === 0 &&
@@ -1432,7 +1441,11 @@ export class SmartAgent {
         });
         controlTail.length = 0;
         messages = (
-          await strategy.form({ prefix: staticPrefix, queryText: _action.text })
+          await strategy.form({
+            prefix: staticPrefix,
+            toolTrust: this.config.toolTrust,
+            queryText: _action.text,
+          })
         ).concat(controlTail);
         continue;
       }
@@ -1470,7 +1483,11 @@ export class SmartAgent {
         });
         controlTail.length = 0;
         messages = (
-          await strategy.form({ prefix: staticPrefix, queryText: _action.text })
+          await strategy.form({
+            prefix: staticPrefix,
+            toolTrust: this.config.toolTrust,
+            queryText: _action.text,
+          })
         ).concat(controlTail);
       }
 
@@ -1675,7 +1692,11 @@ export class SmartAgent {
       await strategy.record(batchRound);
       controlTail.length = 0;
       messages = (
-        await strategy.form({ prefix: staticPrefix, queryText: _action.text })
+        await strategy.form({
+          prefix: staticPrefix,
+          toolTrust: this.config.toolTrust,
+          queryText: _action.text,
+        })
       ).concat(controlTail);
     }
   }

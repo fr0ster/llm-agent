@@ -1,3 +1,4 @@
+import type { ToolTrust } from '../trust.js';
 import type { Message } from '../types.js';
 import type { CallOptions } from './types.js';
 
@@ -11,6 +12,7 @@ export interface ToolRound {
 
 export interface ToolLoopContextBase {
   prefix: Message[];
+  toolTrust?: ToolTrust;
   queryText?: string;
 }
 

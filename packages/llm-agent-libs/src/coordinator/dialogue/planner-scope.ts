@@ -3,11 +3,13 @@ import type {
   CallOptions,
   IPlanAuthor,
   DialoguePlan as Plan,
+  ToolTrust,
 } from '@mcp-abap-adt/llm-agent';
 import type { TaskBoard } from './task-board.js';
 
 export interface PlannerScope {
   signal?: AbortSignal;
+  toolTrust?: ToolTrust;
   authorOptions?: Pick<CallOptions, 'usage' | 'sessionId' | 'trace'>;
   planAuthor?: IPlanAuthor;
   beforeTool?(name: string): void;

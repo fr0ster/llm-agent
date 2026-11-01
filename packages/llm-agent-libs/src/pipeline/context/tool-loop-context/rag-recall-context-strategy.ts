@@ -6,14 +6,22 @@ import type {
   ToolLoopContextBase,
   ToolRound,
 } from '@mcp-abap-adt/llm-agent';
+import { toModelToolMessage } from '@mcp-abap-adt/llm-agent';
 
 export interface RagRecallDeps {
   record(round: ToolRound, options?: CallOptions): Promise<void>;
+  /** Return named raw results for trust projection; strings are legacy preformatted context. */
   recall(
     queryText: string,
     excludeRoundIds: string[],
     options?: CallOptions,
-  ): Promise<string>;
+  ): Promise<
+    | string
+    | {
+        results: Array<{ toolName?: string; content: string }>;
+        maxChars?: number;
+      }
+  >;
 }
 export interface RagRecallStrategyRunDeps {
   runId: string;
@@ -55,7 +63,32 @@ export class RagRecallContextStrategy implements IToolLoopContextStrategy {
       [this.last.roundId as string],
       options,
     );
-    if (block) out.push({ role: 'user', content: block });
+    if (typeof block === 'string') {
+      if (block) out.push({ role: 'user', content: block });
+    } else {
+      let remaining = block.maxChars ?? Number.POSITIVE_INFINITY;
+      const parts: string[] = [];
+      for (const result of block.results) {
+        if (remaining <= 0) break;
+        const content = result.content.slice(0, remaining);
+        remaining -= content.length;
+        if (!content) continue;
+        parts.push(
+          String(
+            toModelToolMessage(
+              { role: 'tool', content },
+              base.toolTrust,
+              result.toolName,
+            ).content,
+          ),
+        );
+      }
+      if (parts.length)
+        out.push({
+          role: 'user',
+          content: `Relevant prior context:\n${parts.join('\n')}`,
+        });
+    }
     out.push(this.last.assistant, ...this.last.results);
     return out;
   }

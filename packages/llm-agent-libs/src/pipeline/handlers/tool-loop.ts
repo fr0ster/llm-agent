@@ -199,7 +199,11 @@ export class ToolLoopHandler implements IStageHandler {
       await strategy.record(pendingRound);
     }
     messages = (
-      await strategy.form({ prefix: staticPrefix, queryText: ctx.inputText })
+      await strategy.form({
+        prefix: staticPrefix,
+        toolTrust: ctx.config.toolTrust,
+        queryText: ctx.inputText,
+      })
     ).concat(controlTail);
 
     for (let iteration = 0; ; iteration++) {
@@ -720,6 +724,7 @@ export class ToolLoopHandler implements IStageHandler {
           messages = (
             await strategy.form({
               prefix: staticPrefix,
+              toolTrust: ctx.config.toolTrust,
               queryText: ctx.inputText,
             })
           ).concat(controlTail);
@@ -803,6 +808,7 @@ export class ToolLoopHandler implements IStageHandler {
         messages = (
           await strategy.form({
             prefix: staticPrefix,
+            toolTrust: ctx.config.toolTrust,
             queryText: ctx.inputText,
           })
         ).concat(controlTail);
@@ -828,6 +834,7 @@ export class ToolLoopHandler implements IStageHandler {
         messages = (
           await strategy.form({
             prefix: staticPrefix,
+            toolTrust: ctx.config.toolTrust,
             queryText: ctx.inputText,
           })
         ).concat(controlTail);
@@ -869,6 +876,7 @@ export class ToolLoopHandler implements IStageHandler {
         messages = (
           await strategy.form({
             prefix: staticPrefix,
+            toolTrust: ctx.config.toolTrust,
             queryText: ctx.inputText,
           })
         ).concat(controlTail);
@@ -925,6 +933,7 @@ export class ToolLoopHandler implements IStageHandler {
           messages = (
             await strategy.form({
               prefix: staticPrefix,
+              toolTrust: ctx.config.toolTrust,
               queryText: ctx.inputText,
             })
           ).concat(controlTail);
@@ -1160,7 +1169,11 @@ export class ToolLoopHandler implements IStageHandler {
       await strategy.record(batchRound);
       controlTail.length = 0;
       messages = (
-        await strategy.form({ prefix: staticPrefix, queryText: ctx.inputText })
+        await strategy.form({
+          prefix: staticPrefix,
+          toolTrust: ctx.config.toolTrust,
+          queryText: ctx.inputText,
+        })
       ).concat(controlTail);
     }
   }

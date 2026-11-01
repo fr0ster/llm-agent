@@ -231,6 +231,7 @@ export class PlannerToolsClient implements IMcpClient {
     try {
       const scope = currentPlannerScope();
       if (!scope) throw new Error('no planner session');
+      const toolTrust = this.toolTrust ?? scope.toolTrust;
       scope.signal?.throwIfAborted();
       scope.beforeTool?.(name);
       switch (name) {
@@ -327,7 +328,7 @@ export class PlannerToolsClient implements IMcpClient {
                 const block = [
                   `${isCheck ? '[result to check: step' : '[result of step'} ${source.id} (task ${task.id})]\n${task.output ?? ''}`,
                   isCheck
-                    ? renderToolTrace(task.id, task.toolTrace, this.toolTrust)
+                    ? renderToolTrace(task.id, task.toolTrace, toolTrust)
                     : undefined,
                   isCheck && source.items
                     ? `Expected items for step ${source.id}: ${JSON.stringify(source.items)}; expected count: ${source.items.length}. Return JSON with verdict, count and note.`
@@ -429,13 +430,13 @@ export class PlannerToolsClient implements IMcpClient {
           if (task.state === 'queued' || task.state === 'running')
             scope.statusRead?.();
           return textResult(
-            this.toolTrust && task.toolTrace
+            toolTrust && task.toolTrace
               ? {
                   ...task,
                   toolTrace: {
                     ...task.toolTrace,
                     entries: task.toolTrace.entries.map((entry) => {
-                      const trust = this.toolTrust?.(entry.toolName);
+                      const trust = toolTrust(entry.toolName);
                       return trust
                         ? {
                             ...entry,
