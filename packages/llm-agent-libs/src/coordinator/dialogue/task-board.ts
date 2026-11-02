@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type {
+  AgentProfileError,
   CallOptions,
   DialogueSignals,
   IAgentProfileRunner,
@@ -109,6 +110,14 @@ export class TaskBoard {
     if (!Number.isInteger(this.maxTasks) || this.maxTasks < 1)
       throw new Error('maxTasks must be a positive integer');
   }
+  validateModel(model: string): Result<void, AgentProfileError> {
+    return (
+      this.opts.profileRunner?.validateModel?.(model) ?? {
+        ok: true,
+        value: undefined,
+      }
+    );
+  }
   workerBudgetNotes(): string[] {
     return [...(this.opts.workers ?? [])].flatMap(([name, worker]) =>
       worker.capabilities.maxToolCalls === undefined
@@ -191,6 +200,7 @@ export class TaskBoard {
     const task: TaskRecord = {
       id,
       worker: req.worker,
+      ...(req.model === undefined ? {} : { model: req.model }),
       result: req.result ?? (req.worker === 'checker' ? 'verdict' : 'report'),
       goal: req.goal,
       state: 'queued',
@@ -320,7 +330,16 @@ export class TaskBoard {
           if (input.profile.result !== task.result)
             throw new Error('result kind changed; reopen the step');
           const created = await this.profiles.call(
-            (options) => runner.createWorker(structuredClone(input), options),
+            (options) =>
+              runner.createWorker(
+                {
+                  ...structuredClone(input),
+                  ...(request.model === undefined
+                    ? {}
+                    : { model: request.model }),
+                },
+                options,
+              ),
             { signal: hard.signal },
           );
           worker = created;

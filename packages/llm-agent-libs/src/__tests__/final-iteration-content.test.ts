@@ -15,6 +15,7 @@ function agentFor(
   streamMode: 'full' | 'final' = 'full',
   finalAnswer = 'Final answer',
   maxIterations = 3,
+  roundText = ['Let me check. ', 'Checking again. '],
 ): SmartAgent {
   const client: IMcpClient = {
     async listTools() {
@@ -31,12 +32,12 @@ function agentFor(
     mcpClients: [client],
     llmResponses: [
       {
-        content: 'Let me check. ',
+        content: roundText[0],
         toolCalls: [{ id: 'a', name: 'check', arguments: { round: 1 } }],
         finishReason: 'tool_calls',
       },
       {
-        content: 'Checking again. ',
+        content: roundText[1],
         toolCalls: [{ id: 'b', name: 'check', arguments: { round: 2 } }],
         finishReason: 'tool_calls',
       },
@@ -547,6 +548,54 @@ for (const mode of ['full', 'final'] as const) {
       assert.deepEqual(committed, [expected]);
       assert.deepEqual(partialCommits, [expected]);
       assert.equal(pending, expected);
+    });
+  }
+}
+
+// The legacy loop (pipeline=false) keeps its released stop fallback; the hub uses the pipeline.
+for (const pipeline of [true]) {
+  for (const roundText of [
+    ['Thinking in English.', 'Waiting for the result.'],
+    ['Work started.', ''],
+  ]) {
+    test(`dialogue stop keeps the latest non-empty reply (${roundText[0]}, pipeline=${pipeline})`, async () => {
+      const agent = agentFor(pipeline, 'full', '', 3, roundText);
+      const expected = roundText[1] || roundText[0];
+      const session = await DialogueSession.open({
+        id: 'waiting-fallback',
+        maxCorrections: 0,
+        board: { workers: new Map() },
+        planner: {
+          async process(messages, options) {
+            const stop = new AbortController();
+            return agent.process(messages, {
+              ...options,
+              stopSignal: stop.signal,
+              onToolCallCount(count) {
+                if (count === 2) stop.abort();
+              },
+            });
+          },
+        },
+      });
+      const displayed: string[] = [];
+      try {
+        const reply = await session.send('go', {
+          onPartial(chunk) {
+            if (chunk.kind === 'content') displayed.push(chunk.delta);
+          },
+        });
+        assert.equal(reply.text, expected);
+        assert.ok(!reply.text.includes('Thinking in English.'));
+        // Live display is asserted for the pipeline path the hub uses; the
+        // legacy loop keeps its released partial behaviour.
+        if (pipeline) {
+          assert.equal(displayed.join(''), expected);
+          assert.ok(!displayed.join('').includes('Thinking in English.'));
+        }
+      } finally {
+        await session.close();
+      }
     });
   }
 }

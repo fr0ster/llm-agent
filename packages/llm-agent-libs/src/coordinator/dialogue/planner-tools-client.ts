@@ -134,6 +134,7 @@ export class PlannerToolsClient implements IMcpClient {
             {
               worker: { ...string, ...(workers ? { enum: workers } : {}) },
               goal: string,
+              model: string,
               step_id: string,
               context: string,
             },
@@ -256,6 +257,21 @@ export class PlannerToolsClient implements IMcpClient {
               );
           const worker = requiredString(args, 'worker');
           const goal = requiredString(args, 'goal');
+          const model =
+            args.model === undefined
+              ? undefined
+              : requiredString(args, 'model');
+          if (model !== undefined) {
+            const validation = scope.board.validateModel(model);
+            if (!validation.ok)
+              return textResult(
+                {
+                  error: validation.error.code,
+                  message: validation.error.message,
+                },
+                true,
+              );
+          }
           let context =
             args.context === undefined
               ? undefined
@@ -349,6 +365,7 @@ export class PlannerToolsClient implements IMcpClient {
             }
             const request = {
               worker,
+              ...(model === undefined ? {} : { model }),
               result: profile.result,
               goal,
               context,

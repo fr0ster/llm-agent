@@ -9,7 +9,7 @@ import { type FileSystemSkill, loadSkillFromDir } from './filesystem-skill.js';
 
 /**
  * Scan multiple directories for skill subdirectories, load each, and return
- * the resulting skills. Duplicate names from later directories override earlier ones.
+ * the resulting skills. Duplicate identities keep the first skill and emit a warning.
  *
  * @param dirs - Directories to scan for skill subdirectories.
  * @param normalizeMeta - Optional function to normalize vendor-specific frontmatter keys.
@@ -20,7 +20,7 @@ export async function scanDirsForSkills(
   normalizeMeta?: (meta: ISkillMeta) => ISkillMeta,
   enrichSkill?: (skill: FileSystemSkill, dir: string) => Promise<void>,
 ): Promise<ISkill[]> {
-  const byName = new Map<string, ISkill>();
+  const byIdentity = new Map<string, ISkill>();
 
   for (const baseDir of dirs) {
     let entries: string[];
@@ -48,15 +48,17 @@ export async function scanDirsForSkills(
         await enrichSkill(skill, skillDir);
       }
 
-      const previous = byName.get(skill.name);
-      if (previous && previous.meta.kind !== skill.meta.kind) {
-        throw new Error(
-          `Skill ${skill.name} has conflicting kind values across directories`,
+      const identity =
+        typeof skill.meta.id === 'string' ? skill.meta.id : entry;
+      if (byIdentity.has(identity)) {
+        console.warn(
+          `Duplicate skill identity ${identity} in ${skillDir}; keeping the first skill`,
         );
+        continue;
       }
-      byName.set(skill.name, skill);
+      byIdentity.set(identity, skill);
     }
   }
 
-  return [...byName.values()];
+  return [...byIdentity.values()];
 }

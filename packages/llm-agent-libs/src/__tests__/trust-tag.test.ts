@@ -264,7 +264,7 @@ test('ContextAssembler projects message history before windowing without double 
   assert.equal(history[1].content, 'raw');
 });
 
-test('skill discovery rejects duplicate names with different kinds before deduplication', async () => {
+test('skill discovery preserves distinct identities with shared names and different kinds', async () => {
   const root = await mkdtemp(join(tmpdir(), 'trust-skills-'));
   try {
     const dirs = [join(root, 'a'), join(root, 'b')];
@@ -272,10 +272,15 @@ test('skill discovery rejects duplicate names with different kinds before dedupl
       await mkdir(join(dir, 'skill'), { recursive: true });
       await writeFile(
         join(dir, 'skill', 'SKILL.md'),
-        `---\nname: duplicate\ndescription: test\nkind: ${index ? 'informational' : 'base'}\n---\nbody`,
+        `---\nname: duplicate\nid: skill-${index}\ndescription: test\nkind: ${index ? 'informational' : 'base'}\n---\nbody`,
       );
     }
-    await assert.rejects(scanDirsForSkills(dirs), /duplicate.*kind/i);
+    const skills = await scanDirsForSkills(dirs);
+    assert.equal(skills.length, 2);
+    assert.deepEqual(
+      skills.map((skill) => skill.meta.kind),
+      ['base', 'informational'],
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }

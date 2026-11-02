@@ -814,6 +814,14 @@ progress is released at a stop, iteration limit, or external-tool handoff (the
 pipeline previously streamed that text regardless of mode). The legacy loop also
 releases its buffered fallback at these exits, preserving adapter wrapping.
 
+For dialogue coordinator replies without a completed final iteration, the latest
+non-empty iteration supplies the reply instead of accumulated tool-round text.
+Empty polling iterations preserve an earlier non-empty reply, including a waiting
+reply at a cooperative stop. A completed final iteration remains authoritative.
+Validation retries and provider resets continue to discard rejected or abandoned
+partials. This dialogue reply rule does not change `process()` or tool-loop
+fallbacks.
+
 Both SSE surfaces (`/v1/chat/completions`, `/v1/messages`) run an idle keep-alive
 watchdog: if no chunk is written for `agent.heartbeatIntervalMs` (default 5000ms;
 `<= 0`/invalid disables), a `: keep-alive` comment is emitted so intermediaries do
@@ -1648,6 +1656,15 @@ and values and resolve effective trust independently for each role.
 
 Hard-mode skill selection loads only explicitly matched names. A request with no
 matching skill name loads no skills; it no longer loads every available skill.
-Informational skills are selected semantically. Discovery rejects a skill name
-that appears in multiple directories with different front matter kinds before
-deduplicating names.
+Informational skills are selected semantically. Directory discovery keys skills by
+front matter `id`, falling back to the directory name. Different identities with
+the same display name survive regardless of `kind`. Duplicate identities keep
+the first discovered skill and emit a warning.
+
+Worker profiles may specify an optional `model`. The `delegate_task` tool accepts
+an optional `model` override, stores it on the task record, and forwards it to
+`IAgentProfileRunner.createWorker`. Hosts resolve the override against the profile
+model and their default. When supplied, the runner's optional synchronous
+`validateModel(model)` hook runs before profile lookup and enqueueing. A rejected
+model returns a `MODEL_NOT_ALLOWED` tool error and creates no task. Omitting the
+model preserves the existing worker construction input.
