@@ -102,7 +102,7 @@ export interface DialogueSessionOptions extends PlannerRetrievalOptions {
   maxCorrections?: number;
   /** Wait status interval; zero disables signals. Default: 30,000 ms. */
   waitTickMs?: number;
-  /** Running-task wake interval; zero disables wakes. Default: 300,000 ms. */
+  /** Optional running-task wake interval; zero disables wakes. Default: disabled. */
   longTaskMs?: number;
   /** Schedule once and return cancellation. Defaults to an unref'ed timeout. */
   scheduleTimer?: (callback: () => void, delayMs: number) => () => void;
@@ -116,6 +116,7 @@ export interface DialogueSessionOptions extends PlannerRetrievalOptions {
   profileSource?: IAgentProfileSource;
   profileRunner?: IAgentProfileRunner;
   profileTimeoutMs?: number;
+  stallNoticeMs?: number;
   board: Omit<
     TaskBoardOptions,
     'onEvent' | 'signals' | 'source' | 'onStateChange'
@@ -296,7 +297,7 @@ export class DialogueSession {
     }
     const now = this.now();
     const tickMs = this.opts.waitTickMs ?? 30_000;
-    const longMs = this.opts.longTaskMs ?? 300_000;
+    const longMs = this.opts.longTaskMs ?? 0;
     const deadlines: number[] = [];
     if (tickMs > 0) {
       this.nextTickAt ??= now + tickMs;
@@ -369,7 +370,7 @@ export class DialogueSession {
       this.nextTickAt = now + (this.opts.waitTickMs ?? 30_000);
       this.emit('dialogue.wait', { tasks });
     }
-    const longMs = this.opts.longTaskMs ?? 300_000;
+    const longMs = this.opts.longTaskMs ?? 0;
     if (longMs > 0)
       for (const task of this.board.list()) {
         if (
@@ -392,7 +393,10 @@ export class DialogueSession {
     return events.filter(
       (event) =>
         event.kind !== 'long_running' ||
-        this.board.get(event.task.id)?.state === 'running',
+        (this.board.get(event.task.id)?.state === 'running' &&
+          (!event.stalled ||
+            this.board.get(event.task.id)?.lastActivityAt ===
+              event.task.lastActivityAt)),
     );
   }
 
@@ -403,7 +407,8 @@ export class DialogueSession {
           ? this.deferredEvents.findIndex(
               (pending) =>
                 pending.kind === 'long_running' &&
-                pending.task.id === event.task.id,
+                pending.task.id === event.task.id &&
+                pending.stalled === event.stalled,
             )
           : -1;
       if (index >= 0) this.deferredEvents[index] = event;
@@ -418,7 +423,7 @@ export class DialogueSession {
     validateTimeZone(opts.timeZone ?? 'UTC');
     for (const [name, value] of [
       ['waitTickMs', opts.waitTickMs ?? 30_000],
-      ['longTaskMs', opts.longTaskMs ?? 300_000],
+      ['longTaskMs', opts.longTaskMs ?? 0],
     ] as const)
       if (!Number.isInteger(value) || value < 0)
         throw new Error(`${name} must be a non-negative integer`);
@@ -445,9 +450,11 @@ export class DialogueSession {
     const session = this;
     this.board = new TaskBoard({
       ...opts.board,
+      now: opts.now ?? opts.board.now,
       profileSource: opts.profileSource ?? opts.board.profileSource,
       profileRunner: opts.profileRunner ?? opts.board.profileRunner,
       profileTimeoutMs: opts.profileTimeoutMs ?? opts.board.profileTimeoutMs,
+      ...('stallNoticeMs' in opts ? { stallNoticeMs: opts.stallNoticeMs } : {}),
       taskOutputChars: opts.taskOutputChars ?? opts.board.taskOutputChars,
       hardStopAfterMs: opts.hardStopAfterMs ?? opts.board.hardStopAfterMs,
       scheduleTimer: opts.scheduleTimer ?? opts.board.scheduleTimer,
@@ -694,6 +701,10 @@ export class DialogueSession {
         }).join('\n');
       },
     };
+  }
+  /** Hosts can report content-free progress for custom background workers. */
+  noteActivity(taskId: string, action: string): boolean {
+    return this.board.noteActivity(taskId, action);
   }
   callTool(
     name: string,
@@ -1316,12 +1327,14 @@ export class DialogueSession {
   }
   private eventNotes(events: TaskEvent[]): string {
     return events
-      .map(({ kind, task }) => {
+      .map(({ kind, task, stalled }) => {
         const requestId = this.taskRequests.get(task.id);
         const label =
           requestId && requestId !== this.openRequest?.id
             ? `[task events] from ${requestId}:`
             : '[task events]';
+        if (stalled)
+          return `${label} - ${task.id} ${task.worker}: no activity for ${Math.floor(Math.max(0, this.now() - (task.lastActivityAt ?? task.startedAt ?? task.createdAt)) / 60000)}m (last: ${task.currentAction ?? 'worker'})`;
         if (kind === 'long_running') {
           const seconds = Math.floor(
             Math.max(0, this.now() - (task.startedAt ?? task.createdAt)) / 1000,

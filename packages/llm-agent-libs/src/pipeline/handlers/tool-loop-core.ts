@@ -293,6 +293,7 @@ export async function* executeToolBatchWithHeartbeat(
         cached: false,
       };
     }
+    options?.onActivity?.(`tool ${tc.name}`);
     const toolStart = Date.now();
     options?.sessionLogger?.logStep(
       `mcp_call_${tc.name}`,

@@ -1133,6 +1133,7 @@ export class SmartAgent {
         },
         'llm',
       );
+      opts?.onActivity?.('llm call');
       const llmSpan = this.tracer.startSpan('smart_agent.llm_call', {
         parent: toolLoopSpan,
         attributes: { 'llm.iteration': iteration + 1 },

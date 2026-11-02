@@ -11,6 +11,9 @@ import type {
 import { QueryEmbedding, scopedUsage } from '@mcp-abap-adt/llm-agent';
 
 export interface PlannerMemoryOptions {
+  /** Optional deadlines for indexing and draining pending writes on close. */
+  writeTimeoutMs?: number;
+  closeTimeoutMs?: number;
   rag: IRag;
   queryEmbedder: IQueryEmbedder;
   documentEmbedder: IDocumentEmbedder;
@@ -79,7 +82,7 @@ export function validateRetrievalOptions(
 /** Bound even implementations that ignore cancellation; observe late rejections. */
 export async function withDeadline<T>(
   work: (signal: AbortSignal) => Promise<T>,
-  timeout: number,
+  timeout: number | undefined,
   parent?: AbortSignal,
 ): Promise<T> {
   const controller = new AbortController();
@@ -98,7 +101,8 @@ export async function withDeadline<T>(
         onAbort = () =>
           reject(new Error('Planner operation cancelled or timed out'));
         signal.addEventListener('abort', onAbort, { once: true });
-        timer = setTimeout(() => controller.abort(), timeout);
+        if (timeout !== undefined)
+          timer = setTimeout(() => controller.abort(), timeout);
         if (signal.aborted) onAbort();
       }),
     ]);
@@ -237,12 +241,13 @@ export async function retrievePlannerContext(
           );
         await Promise.all(jobs);
       },
-      Number.isSafeInteger(config.retrievalTimeoutMs) &&
-        config.retrievalTimeoutMs !== undefined &&
+      // Opt-in only: an absent or invalid value never invents a deadline.
+      config.retrievalTimeoutMs !== undefined &&
+        Number.isSafeInteger(config.retrievalTimeoutMs) &&
         config.retrievalTimeoutMs >= 1 &&
         config.retrievalTimeoutMs <= 2_147_483_647
         ? config.retrievalTimeoutMs
-        : 3_000,
+        : undefined,
       options.signal,
     );
   } catch {

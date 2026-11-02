@@ -107,7 +107,6 @@ test('runs work then answer and forwards worker context', async () => {
   assert.deepEqual(DEFAULT_BUDGET, {
     maxSteps: 20,
     maxRevisions: 3,
-    maxDurationMs: 300000,
   });
 });
 test('check pass follows onPass', async () => {
@@ -428,7 +427,7 @@ test('non-answer worker content does not stream', async () => {
   assert.equal((await runAdaptivePlan(input)).answerStreamed, false);
 });
 test('awaiting-external ends the run', async () => {
-  const pending = [{ id: 'ext:1', name: 'external', arguments: '{}' }];
+  const pending = [{ id: 'ext:1', name: 'external', arguments: {} }];
   const { input } = setup(undefined, [
     {
       output: '',
@@ -543,3 +542,15 @@ for (const method of ['check', 'revise'] as const) {
     );
   });
 }
+
+test('omitting duration budget allows work beyond five minutes', async () => {
+  const { input } = setup([work, check, answer], ['Hello', verdict()]);
+  delete input.budget.maxDurationMs;
+  let clock = 0;
+  input.now = () => {
+    clock += 600_000;
+    return clock;
+  };
+  const result = await runAdaptivePlan(input);
+  assert.notEqual(result.stopReason, 'budget: time');
+});

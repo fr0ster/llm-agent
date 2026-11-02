@@ -1863,3 +1863,66 @@ test('corrective planner calls rediscover fresh text and source errors prevent r
     await session.close();
   }
 });
+
+for (const timeoutMs of [undefined, 3_000])
+  test(`slow planner preparation with profileTimeoutMs ${timeoutMs}`, async (context) => {
+    context.mock.timers.enable({ apis: ['setTimeout'] });
+    const entered = completion();
+    const release = completion();
+    let called = false;
+    const session = await DialogueSession.open({
+      id: 'slow-planner',
+      board: {},
+      maxCorrections: 0,
+      profileSource: new Source(),
+      profileTimeoutMs: timeoutMs,
+      profileRunner: {
+        ...runner(async () => ({ output: '' })),
+        async preparePlanner() {
+          entered.resolve();
+          await release.promise;
+          const agent: ISmartAgent = {
+            async process() {
+              called = true;
+              return {
+                ok: true,
+                value: {
+                  content: 'ready',
+                  iterations: 1,
+                  toolCallCount: 0,
+                  stopReason: 'stop',
+                },
+              };
+            },
+            async *streamProcess() {},
+          };
+          return ok(agent);
+        },
+      },
+    });
+    const pending = session.send('hello');
+    const checked =
+      timeoutMs === undefined ? pending : assert.rejects(pending, /deadline/);
+    await entered.promise;
+    context.mock.timers.tick(4_000);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    release.resolve();
+    await checked;
+    assert.equal(called, timeoutMs === undefined);
+    await session.close();
+  });
+
+test('profile discovery waits beyond three seconds by default', async (context) => {
+  context.mock.timers.enable({ apis: ['setTimeout'] });
+  const source = new Source();
+  const release = completion();
+  const list = source.list.bind(source);
+  source.list = async () => {
+    await release.promise;
+    return list();
+  };
+  const pending = new ProfileResolver(source).discovery();
+  context.mock.timers.tick(4_000);
+  release.resolve();
+  assert.ok((await pending).profiles.length > 0);
+});

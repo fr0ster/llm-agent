@@ -84,7 +84,7 @@ test('events are synchronous snapshots with bounded output and deterministic tim
       board.get(id)?.startedAt,
       board.get(id)?.finishedAt,
     ],
-    [10, 11, 12],
+    [10, 11, 13],
   );
   const record = board.get(id);
   if (record) record.goal = 'changed';
@@ -384,3 +384,70 @@ test('task output bound defaults to 60000 and validates configured values', asyn
   await tick();
   assert.equal(small.get(smallId)?.output, 'abc\n[cut: 3 characters omitted]');
 });
+
+test('stall notices occur once per idle episode, reset on activity and never abort', async (context) => {
+  context.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+  const events: TaskEvent[] = [];
+  let release = () => {};
+  let signal: AbortSignal | undefined;
+  const board = fixture(
+    async (input) => {
+      signal = input.signal;
+      input.onActivity?.('tool GetProgram');
+      await new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      return { output: 'ok' };
+    },
+    { stallNoticeMs: 100, onEvent: (event: TaskEvent) => events.push(event) },
+  );
+  const id = start(board);
+  await tick();
+  const initial = board.get(id)?.lastActivityAt;
+  context.mock.timers.tick(99);
+  assert.equal(events.filter((event) => event.stalled).length, 0);
+  assert.equal(board.get(id)?.idleMs, 99);
+  context.mock.timers.tick(1);
+  assert.equal(events.filter((event) => event.stalled).length, 1);
+  context.mock.timers.tick(1000);
+  assert.equal(events.filter((event) => event.stalled).length, 1);
+  assert.equal(signal?.aborted, false);
+  assert.equal(board.get(id)?.state, 'running');
+  assert.equal(board.noteActivity(id, 'llm call'), true);
+  assert.notEqual(board.get(id)?.lastActivityAt, initial);
+  assert.equal(board.list()[0]?.currentAction, 'llm call');
+  assert.equal(board.list()[0]?.idleMs, 0);
+  context.mock.timers.tick(100);
+  assert.equal(events.filter((event) => event.stalled).length, 2);
+  assert.equal(signal?.aborted, false);
+  release();
+  await tick();
+  context.mock.timers.tick(1000);
+  assert.equal(events.filter((event) => event.stalled).length, 2);
+  assert.equal(board.noteActivity(id, 'late'), false);
+});
+
+for (const stallNoticeMs of [0, undefined])
+  test(`explicit stallNoticeMs ${stallNoticeMs} disables notices`, async (context) => {
+    context.mock.timers.enable({ apis: ['setTimeout'] });
+    const events: TaskEvent[] = [];
+    let release = () => {};
+    const board = fixture(
+      async () => {
+        await new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        return { output: 'ok' };
+      },
+      { stallNoticeMs, onEvent: (event: TaskEvent) => events.push(event) },
+    );
+    start(board);
+    await tick();
+    context.mock.timers.tick(600_000);
+    assert.equal(
+      events.some((event) => event.stalled),
+      false,
+    );
+    release();
+    await tick();
+  });

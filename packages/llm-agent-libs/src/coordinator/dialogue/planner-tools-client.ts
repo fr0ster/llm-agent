@@ -476,12 +476,27 @@ export class PlannerToolsClient implements IMcpClient {
           )
             scope.statusRead?.();
           return textResult(
-            scope.board.list().map(({ id, worker, goal, state }) => ({
-              id,
-              worker,
-              goal,
-              state,
-            })),
+            scope.board
+              .list()
+              .map(
+                ({
+                  id,
+                  worker,
+                  goal,
+                  state,
+                  lastActivityAt,
+                  idleMs,
+                  currentAction,
+                }) => ({
+                  ...(state === 'running'
+                    ? { lastActivityAt, idleMs, currentAction }
+                    : {}),
+                  id,
+                  worker,
+                  goal,
+                  state,
+                }),
+              ),
           );
         case 'plan_create':
         case 'plan_revise': {

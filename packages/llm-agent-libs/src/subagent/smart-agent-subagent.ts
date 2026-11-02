@@ -60,6 +60,7 @@ export class SmartAgentSubAgent implements ISubAgent {
           trace: input.trace,
           sessionLogger: input.sessionLogger,
           onPartial: input.onPartial,
+          onActivity: input.onActivity,
           onToolCallCount: input.onToolCallCount,
           onToolsSelected: input.onToolsSelected,
           onToolTrace,

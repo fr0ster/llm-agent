@@ -46,6 +46,8 @@ export interface TaskBoardOptions {
   profileSource?: IAgentProfileSource;
   profileRunner?: IAgentProfileRunner;
   profileTimeoutMs?: number;
+  /** Omitted: 300000 ms. Zero or explicit undefined disables notices. */
+  stallNoticeMs?: number;
   maxConcurrent?: number;
   maxTasks?: number;
   taskOutputChars?: number;
@@ -70,6 +72,7 @@ interface Entry {
   stop: AbortController;
   hard: AbortController;
   cancelHardStop?: () => void;
+  cancelStall?: () => void;
 }
 export class TaskBoard {
   private readonly records = new Map<string, TaskRecord>();
@@ -95,6 +98,13 @@ export class TaskBoard {
         opts.profileSource,
         opts.profileTimeoutMs,
       );
+    if (
+      opts.stallNoticeMs !== undefined &&
+      (!Number.isSafeInteger(opts.stallNoticeMs) ||
+        opts.stallNoticeMs < 0 ||
+        opts.stallNoticeMs > 2_147_483_647)
+    )
+      throw new Error('stallNoticeMs must be a nonnegative timer duration');
     this.hardStopAfterMs =
       Number.isFinite(opts.hardStopAfterMs) && (opts.hardStopAfterMs ?? -1) >= 0
         ? (opts.hardStopAfterMs ?? 60_000)
@@ -197,6 +207,7 @@ export class TaskBoard {
     const id = this.opts.newId?.() ?? `t${++this.counter}`;
     if (this.records.has(id))
       return { ok: false, error: `duplicate task id ${id}` };
+    const createdAt = this.now();
     const task: TaskRecord = {
       id,
       worker: req.worker,
@@ -204,7 +215,8 @@ export class TaskBoard {
       result: req.result ?? (req.worker === 'checker' ? 'verdict' : 'report'),
       goal: req.goal,
       state: 'queued',
-      createdAt: this.now(),
+      lastActivityAt: createdAt,
+      createdAt,
     };
     const entry: Entry = {
       task,
@@ -319,6 +331,7 @@ export class TaskBoard {
       if (stop.signal.aborted) return;
       task.state = 'running';
       task.startedAt = this.now();
+      this.noteActivity(task.id, 'worker preparation');
       this.emit('started', task, 'queued');
       let worker = this.opts.workers?.get(task.worker);
       const runner = this.opts.profileRunner;
@@ -368,8 +381,17 @@ export class TaskBoard {
             ? AbortSignal.any([baseInput.signal, hard.signal])
             : hard.signal,
           stopSignal: stop.signal,
+          onActivity: (action) => {
+            this.noteActivity(task.id, action);
+            try {
+              baseInput.onActivity?.(action);
+            } catch {
+              /* Observers cannot affect execution. */
+            }
+          },
           onToolTrace: (entry: ToolTraceEntry) => {
             if (hard.signal.aborted || task.state !== 'running') return;
+            this.noteActivity(task.id, `tool ${entry.toolName} completed`);
             observed.observe(entry);
             try {
               baseInput.onToolTrace?.(entry);
@@ -444,6 +466,7 @@ export class TaskBoard {
     } finally {
       const fallback = observed.finalize(false);
       if (!authoritative && fallback.entries.length) task.toolTrace = fallback;
+      entry.cancelStall?.();
       entry.cancelHardStop?.();
       removeAbortListener?.();
       releasePool?.();
@@ -456,6 +479,38 @@ export class TaskBoard {
         this.emit(kind, task, previous);
       }
     }
+  }
+  /** Report observed progress without including prompts, arguments or results. */
+  noteActivity(taskId: string, action: string): boolean {
+    const entry = this.entries.get(taskId);
+    if (entry?.task.state !== 'running') return false;
+    entry.cancelStall?.();
+    entry.task.lastActivityAt = this.now();
+    entry.task.currentAction = action.slice(0, 120);
+    const delay =
+      'stallNoticeMs' in this.opts ? this.opts.stallNoticeMs : 300_000;
+    if (delay !== undefined && delay > 0) {
+      const notice = () => {
+        if (entry.task.state !== 'running') return;
+        try {
+          this.opts.onEvent({
+            kind: 'long_running',
+            stalled: true,
+            task: structuredClone(entry.task),
+          });
+        } catch {
+          /* Observers cannot affect execution. */
+        }
+      };
+      if (this.opts.scheduleTimer)
+        entry.cancelStall = this.opts.scheduleTimer(notice, delay);
+      else {
+        const timer = setTimeout(notice, delay);
+        timer.unref();
+        entry.cancelStall = () => clearTimeout(timer);
+      }
+    }
+    return true;
   }
   stop(taskId: string): boolean {
     const entry = this.entries.get(taskId);
@@ -489,10 +544,27 @@ export class TaskBoard {
   }
   get(id: string): TaskRecord | undefined {
     const task = this.records.get(id);
-    return task && structuredClone(task);
+    return (
+      task &&
+      structuredClone({
+        ...task,
+        ...(task.state === 'running'
+          ? {
+              idleMs: Math.max(
+                0,
+                this.now() -
+                  (task.lastActivityAt ?? task.startedAt ?? task.createdAt),
+              ),
+            }
+          : {}),
+      })
+    );
   }
   list(): TaskRecord[] {
-    return [...this.records.values()].map((task) => structuredClone(task));
+    return [...this.records.keys()].flatMap((id) => {
+      const task = this.get(id);
+      return task ? [task] : [];
+    });
   }
   restore(records: TaskRecord[]): string[] {
     if (this.entries.size)

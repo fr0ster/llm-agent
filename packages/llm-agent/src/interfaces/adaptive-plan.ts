@@ -106,7 +106,7 @@ export interface IRunRecordStore {
 export interface AdaptiveBudget {
   maxSteps: number;
   maxRevisions: number;
-  maxDurationMs: number;
+  maxDurationMs?: number;
 }
 /** A progress event emitted by an adaptive step. */
 export interface StepStatus {

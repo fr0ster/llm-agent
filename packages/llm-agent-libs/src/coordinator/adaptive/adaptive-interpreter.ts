@@ -64,7 +64,6 @@ export class AdaptiveEpicFailError extends OrchestratorError {
 export const DEFAULT_BUDGET: AdaptiveBudget = {
   maxSteps: 20,
   maxRevisions: 3,
-  maxDurationMs: 300000,
 };
 
 const message = (error: unknown): string =>
@@ -133,7 +132,10 @@ export async function runAdaptivePlan(
   while (cursor < plan.steps.length) {
     input.signal?.throwIfAborted();
     if (records.length >= input.budget.maxSteps) return stop('budget: steps');
-    if (now() - startedAt >= input.budget.maxDurationMs)
+    if (
+      input.budget.maxDurationMs !== undefined &&
+      now() - startedAt >= input.budget.maxDurationMs
+    )
       return stop('budget: time');
     const step = plan.steps[cursor];
     if (!step) break;

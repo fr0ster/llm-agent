@@ -493,6 +493,7 @@ export class ToolLoopHandler implements IStageHandler {
         )}`,
       });
 
+      ctx.options?.onActivity?.('llm call');
       const llmSpan = ctx.tracer.startSpan('smart_agent.llm_call', {
         parent: parentSpan,
         attributes: { 'llm.iteration': iteration + 1 },

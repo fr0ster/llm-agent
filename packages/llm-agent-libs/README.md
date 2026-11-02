@@ -120,7 +120,7 @@ separate from pending replies read by `takePending()`. See the
 ## Dialogue wait mode
 
 `DialogueSession.open` accepts `waitTickMs` (default 30,000) and `longTaskMs`
-(default 300,000). Both are non-negative integers; zero disables that feature
+(default disabled; set a positive interval for periodic running-task wakes). Both are non-negative integers; zero disables that feature
 independently. While tasks are queued or running, wait ticks emit `dialogue.wait`
 without calling the planner. Running tasks wake it through non-terminal
 `long_running` events once per `longTaskMs`; settled tasks' queued wake events
@@ -128,6 +128,25 @@ are discarded. Long-running events carry no task usage and allow `NO_MESSAGE`.
 Timers stop when no tasks remain active and on close. Restored tasks become
 interrupted, so no timer runs for them. Timers are unref'ed; `now` and the optional
 `scheduleTimer(callback, delayMs)` cancellation-function factory support fake clocks.
+
+Task supervision uses `stallNoticeMs` on the session or board (omitted: 300,000 ms;
+zero or explicitly undefined: disabled). Running records and `get_task`/`list_tasks`
+include `lastActivityAt` (epoch ms), computed `idleMs`, and `currentAction` when
+known. Older snapshots may lack activity fields. Built-in workers report LLM and
+tool-call starts and observed tool completions. Custom workers should call
+`input.onActivity?.('tool GetProgram')`; hosts can call
+`board.noteActivity(taskId, action)` or `session.noteActivity(taskId, action)`.
+Labels are capped at 120 characters and must contain no prompts, tool arguments,
+results or user content. Without host instrumentation, a custom worker's last
+action remains `worker preparation`.
+
+After the inactivity threshold, one `long_running` task event with `stalled: true`
+is delivered through the usual task-events path. Activity restarts the threshold;
+settled tasks and notices superseded by activity are discarded before consumption.
+A notice never aborts a task. The planner decides whether to wait for a known long
+operation or use `stop_task` and `delegate_task` again, optionally changing worker
+or model, and briefly tells the user its decision. Periodic `longTaskMs` notices
+remain an explicit, independent option.
 
 A second `get_task` on active work or `list_tasks` with active work in the same
 turn ends the turn unless a task outcome intervened. Finished-task reads and
@@ -144,7 +163,14 @@ Supply `profileSource` and `profileRunner` together to `DialogueSession.open` or
 `TaskBoard`. Legacy `workers` maps and planner instances remain supported. Profile
 mode needs no workers-map entry for a new function. A standalone profile board uses
 `await board.startTask(request)`; `board.start(request)` preserves the synchronous
-legacy API. `profileTimeoutMs` defaults to 3000 milliseconds per source resolution.
+legacy API. `profileTimeoutMs` is optional: omitted or undefined means no deadline,
+including discovery and the full `preparePlanner`/worker preparation call. The
+caller's `AbortSignal` still cancels promptly, even if the source ignores it.
+An explicit positive value enables the previous deadline behavior; explicitly
+invalid values throw. `retrievalTimeoutMs` also defaults to no deadline. Adaptive
+plans have no default duration limit; set `budget.maxDurationMs` to opt in.
+Planner-memory writes and close drain without deadlines by default; optional
+`plannerMemory.writeTimeoutMs` and `plannerMemory.closeTimeoutMs` restore bounds.
 
 The source implements the public `IAgentProfileSource` contract: `list()` returns
 enabled names, descriptions and result kinds; `get(name)` performs an exact,

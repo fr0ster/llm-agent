@@ -38,11 +38,17 @@ export interface TaskRecord {
   maxToolCalls?: number;
   output?: string;
   error?: string;
+  /** Epoch milliseconds of the latest observed progress; optional for older snapshots. */
+  lastActivityAt?: number;
+  currentAction?: string;
+  idleMs?: number;
   createdAt: number;
   startedAt?: number;
   finishedAt?: number;
 }
 export interface TaskEvent {
+  /** An informational inactivity notice; never aborts work. */
+  stalled?: boolean;
   kind: 'started' | 'done' | 'failed' | 'stopped' | 'long_running';
   task: TaskRecord;
 }

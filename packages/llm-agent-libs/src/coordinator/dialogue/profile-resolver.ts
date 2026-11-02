@@ -54,9 +54,12 @@ export class ProfileSourceError extends Error {
 export class ProfileResolver {
   constructor(
     readonly source: IAgentProfileSource,
-    readonly timeoutMs = 3_000,
+    readonly timeoutMs?: number,
   ) {
-    if (!Number.isFinite(timeoutMs) || timeoutMs <= 0)
+    if (
+      timeoutMs !== undefined &&
+      (!Number.isFinite(timeoutMs) || timeoutMs <= 0)
+    )
       throw new Error('profileTimeoutMs must be positive');
   }
   async call<T>(
@@ -68,10 +71,13 @@ export class ProfileResolver {
       ? AbortSignal.any([controller.signal, options.signal])
       : controller.signal;
     let removeListener: (() => void) | undefined;
-    const timer = setTimeout(
-      () => controller.abort(new Error('profile deadline expired')),
-      this.timeoutMs,
-    );
+    const timer =
+      this.timeoutMs === undefined
+        ? undefined
+        : setTimeout(
+            () => controller.abort(new Error('profile deadline expired')),
+            this.timeoutMs,
+          );
     try {
       const aborted = new Promise<never>((_, reject) => {
         const abort = () =>
