@@ -167,7 +167,8 @@ legacy API. `profileTimeoutMs` is optional: omitted or undefined means no deadli
 including discovery and the full `preparePlanner`/worker preparation call. The
 caller's `AbortSignal` still cancels promptly, even if the source ignores it.
 An explicit positive value enables the previous deadline behavior; explicitly
-invalid values throw. `retrievalTimeoutMs` also defaults to no deadline. Adaptive
+non-positive or non-finite values throw; fractional values and values above
+2,147,483,647 mean no deadline. `retrievalTimeoutMs` also defaults to no deadline. Adaptive
 plans have no default duration limit; set `budget.maxDurationMs` to opt in.
 Planner-memory writes and close drain without deadlines by default; optional
 `plannerMemory.writeTimeoutMs` and `plannerMemory.closeTimeoutMs` restore bounds.

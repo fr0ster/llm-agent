@@ -554,3 +554,14 @@ test('omitting duration budget allows work beyond five minutes', async () => {
   const result = await runAdaptivePlan(input);
   assert.notEqual(result.stopReason, 'budget: time');
 });
+
+for (const maxDurationMs of [NaN, -1, 0, 1.5, Infinity, 2_147_483_648]) {
+  test(`invalid duration ${maxDurationMs} does not stop work`, async () => {
+    const { input, calls } = setup();
+    let clock = 0;
+    input.now = () => (clock += 3_000_000_000);
+    input.budget.maxDurationMs = maxDurationMs;
+    assert.equal((await runAdaptivePlan(input)).outcome, 'answered');
+    assert.equal(calls.length, 1);
+  });
+}

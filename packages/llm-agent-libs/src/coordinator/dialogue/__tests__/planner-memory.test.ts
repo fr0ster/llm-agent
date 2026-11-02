@@ -866,54 +866,103 @@ test('retrieval waits beyond three seconds by default', async (context) => {
   assert.equal((await pending).knowledge[0]?.text, 'found');
 });
 
-test('memory indexing and close have no default deadlines', async (context) => {
-  context.mock.timers.enable({ apis: ['setTimeout'] });
-  const rag = new InMemoryRag();
-  const backend = rag.writer();
-  assert.ok(backend);
-  const proxy: IRag = {
-    query: rag.query.bind(rag),
-    getById: rag.getById.bind(rag),
-    healthCheck: rag.healthCheck.bind(rag),
-    writer: () => ({
-      upsertRaw: backend.upsertRaw.bind(backend),
-      deleteByIdRaw: backend.deleteByIdRaw.bind(backend),
-      upsertPrecomputedRaw(id, text, _vector, metadata, options) {
-        return backend.upsertRaw(id, text, metadata, options);
-      },
-    }),
-  };
-  let release = () => {};
-  let signal: AbortSignal | undefined;
-  const memory = new PlannerMemoryWriter(
-    's',
-    {
-      rag: proxy,
-      queryEmbedder,
-      documentEmbedder: {
-        async embedDocument(_text, options) {
-          signal = options?.signal;
-          await new Promise<void>((resolve) => {
-            release = resolve;
-          });
-          return { vector: [1] };
+for (const timeout of [undefined, NaN, -1, 0, 1.5, Infinity, 2_147_483_648])
+  test(`memory indexing and close ignore absent or invalid deadline ${timeout}`, async (context) => {
+    context.mock.timers.enable({ apis: ['setTimeout'] });
+    const rag = new InMemoryRag();
+    const backend = rag.writer();
+    assert.ok(backend);
+    const proxy: IRag = {
+      query: rag.query.bind(rag),
+      getById: rag.getById.bind(rag),
+      healthCheck: rag.healthCheck.bind(rag),
+      writer: () => ({
+        upsertRaw: backend.upsertRaw.bind(backend),
+        deleteByIdRaw: backend.deleteByIdRaw.bind(backend),
+        upsertPrecomputedRaw(id, text, _vector, metadata, options) {
+          return backend.upsertRaw(id, text, metadata, options);
+        },
+      }),
+    };
+    let release = () => {};
+    let signal: AbortSignal | undefined;
+    const memory = new PlannerMemoryWriter(
+      's',
+      {
+        writeTimeoutMs: timeout,
+        closeTimeoutMs: timeout,
+        rag: proxy,
+        queryEmbedder,
+        documentEmbedder: {
+          async embedDocument(_text, options) {
+            signal = options?.signal;
+            await new Promise<void>((resolve) => {
+              release = resolve;
+            });
+            return { vector: [1] };
+          },
         },
       },
-    },
-    warn,
-  );
-  memory.enqueue('planner-input', 'r', 'i', 'input', {});
-  await tick();
-  let closed = false;
-  const closing = memory.close().then(() => {
-    closed = true;
+      warn,
+    );
+    memory.enqueue('planner-input', 'r', 'i', 'input', {});
+    await tick();
+    let closed = false;
+    const closing = memory.close().then(() => {
+      closed = true;
+    });
+    context.mock.timers.tick(60_000);
+    await tick();
+    assert.equal(closed, false);
+    assert.equal(signal?.aborted, false);
+    release();
+    await closing;
+    const stored = await rag.getById('planner:s:planner-input:i:0');
+    assert.ok(stored.ok && stored.value);
   });
-  context.mock.timers.tick(60_000);
-  await tick();
-  assert.equal(closed, false);
-  assert.equal(signal?.aborted, false);
-  release();
-  await closing;
-  const stored = await rag.getById('planner:s:planner-input:i:0');
-  assert.ok(stored.ok && stored.value);
-});
+
+for (const option of ['writeTimeoutMs', 'closeTimeoutMs'] as const) {
+  test(`valid ${option} still expires`, async (context) => {
+    context.mock.timers.enable({ apis: ['setTimeout'] });
+    let signal: AbortSignal | undefined;
+    const messages: string[] = [];
+    // A precomputed-vector writer makes the memory writer call the embedder.
+    const rag = new InMemoryRag();
+    const backend = rag.writer();
+    assert.ok(backend);
+    const proxy: IRag = {
+      query: rag.query.bind(rag),
+      getById: rag.getById.bind(rag),
+      healthCheck: rag.healthCheck.bind(rag),
+      writer: () => ({
+        upsertRaw: backend.upsertRaw.bind(backend),
+        deleteByIdRaw: backend.deleteByIdRaw.bind(backend),
+        upsertPrecomputedRaw(id, text, _vector, metadata, options) {
+          return backend.upsertRaw(id, text, metadata, options);
+        },
+      }),
+    };
+    const memory = new PlannerMemoryWriter(
+      's',
+      {
+        rag: proxy,
+        queryEmbedder,
+        documentEmbedder: {
+          async embedDocument(_text, options) {
+            signal = options?.signal;
+            return new Promise<never>(() => {});
+          },
+        },
+        [option]: 5,
+      },
+      (message) => messages.push(message),
+    );
+    memory.enqueue('planner-input', 'r', 'i', 'input', {});
+    await tick();
+    const closing = memory.close();
+    context.mock.timers.tick(5);
+    await closing;
+    assert.equal(signal?.aborted, true);
+    assert.ok(messages.some((message) => /timed out|deadline/.test(message)));
+  });
+}

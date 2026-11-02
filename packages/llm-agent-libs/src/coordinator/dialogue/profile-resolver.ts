@@ -8,6 +8,7 @@ import type {
   WorkerProfileSummary,
 } from '@mcp-abap-adt/llm-agent';
 import { z } from 'zod';
+import { optionalDeadlineMs } from '../optional-deadline.js';
 
 const summarySchema = z.object({
   name: z.string().min(1),
@@ -71,12 +72,13 @@ export class ProfileResolver {
       ? AbortSignal.any([controller.signal, options.signal])
       : controller.signal;
     let removeListener: (() => void) | undefined;
+    const deadline = optionalDeadlineMs(this.timeoutMs);
     const timer =
-      this.timeoutMs === undefined
+      deadline === undefined
         ? undefined
         : setTimeout(
             () => controller.abort(new Error('profile deadline expired')),
-            this.timeoutMs,
+            deadline,
           );
     try {
       const aborted = new Promise<never>((_, reject) => {
