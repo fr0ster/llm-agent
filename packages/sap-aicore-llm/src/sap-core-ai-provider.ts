@@ -64,7 +64,10 @@ async function withHttpErrorCapture<T>(
           candidate && typeof candidate === 'object' && 'headers' in candidate
             ? candidate.headers
             : undefined;
-        const retryAfter = readRetryAfter(headers);
+        const retryAfter =
+          headers && typeof headers === 'object'
+            ? readRetryAfter(headers)
+            : undefined;
         response = {
           status,
           headers:
@@ -87,8 +90,7 @@ async function withHttpErrorCapture<T>(
   }
 }
 
-function readRetryAfter(headers: unknown): string | undefined {
-  if (!headers || typeof headers !== 'object') return undefined;
+function readRetryAfter(headers: object): string | undefined {
   const value =
     'get' in headers && typeof headers.get === 'function'
       ? headers.get('retry-after')
