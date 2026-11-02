@@ -34,6 +34,7 @@ function setup(apiBaseUrl = 'https://example.invalid') {
     credential: { kind: 'bearer', token: async () => 'secret' },
     usage,
     whenThrottled: new WaitAsTold(),
+    transientRetryDelayMs: 0,
   });
   return { provider, records };
 }
@@ -159,7 +160,8 @@ test('SAP thrown errors and aborts are recorded with safe codes', async () => {
     assert.equal(records.length, 1);
     assert.equal(records[0].outcome, aborted ? 'aborted' : 'error');
     assert.equal(records[0].errorCode, 'E_SAP');
-    assert.doesNotMatch(JSON.stringify(records), /private/);
+    if (records[0].kind !== 'llm.call') throw new Error('wrong kind');
+    assert.equal('errorMessage' in records[0], false);
   }
 });
 
@@ -268,8 +270,74 @@ test('SAP explicitly disables SDK retry middleware for chat and streams', async 
   for await (const _ of provider.streamChat(messages)) {
   }
   assert.equal(configs.length, 2);
-  for (const config of configs) assert.deepEqual(config.middleware, []);
+  for (const config of configs) {
+    assert.equal(config.middleware?.length, 1);
+    assert.equal(typeof config.middleware?.[0], 'function');
+  }
 });
+
+for (const mode of ['empty429', 'empty503', 'json429']) {
+  test(`SAP real streaming HTTP ${mode} preserves status and retries`, async (t) => {
+    resetQuotaGates();
+    let posts = 0;
+    const server = createServer((request, reply) => {
+      request.resume();
+      request.on('end', () => {
+        if (request.method === 'GET') {
+          reply.setHeader('content-type', 'application/json');
+          reply.end(JSON.stringify({ resources: [{ id: 'retry-test' }] }));
+          return;
+        }
+        if (++posts === 1) {
+          reply.writeHead(mode === 'empty503' ? 503 : 429, {
+            ...(mode === 'empty503' ? {} : { 'retry-after': '1' }),
+            'content-type': 'application/json',
+          });
+          reply.end(
+            mode === 'json429'
+              ? JSON.stringify({
+                  error: { code: 429, message: 'Too many requests' },
+                })
+              : undefined,
+          );
+          return;
+        }
+        reply.writeHead(200, { 'content-type': 'text/event-stream' });
+        reply.end(
+          `data: ${JSON.stringify({ final_result: { choices: [{ index: 0, delta: { content: 'hello' }, finish_reason: 'stop' }], usage: tokenUsage } })}\n\ndata: [DONE]\n\n`,
+        );
+      });
+    });
+    server.listen(0, '127.0.0.1');
+    await once(server, 'listening');
+    t.after(async () => {
+      server.closeAllConnections();
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => (error ? reject(error) : resolve()));
+      });
+    });
+    const address = server.address();
+    assert.ok(address && typeof address !== 'string');
+    const { provider, records } = setup(`http://127.0.0.1:${address.port}`);
+    const started = Date.now();
+    let content = '';
+    for await (const chunk of provider.streamChat(messages))
+      content += chunk.content ?? '';
+    assert.equal(content, 'hello');
+    assert.equal(posts, 2);
+    if (mode !== 'empty503') assert.ok(Date.now() - started >= 1000);
+    const calls = records.filter((record) => record.kind === 'llm.call');
+    assert.deepEqual(
+      calls.map((record) => record.outcome),
+      ['error', 'ok'],
+    );
+    assert.equal(calls[0].errorStatus, mode === 'empty503' ? 503 : 429);
+    assert.deepEqual(
+      calls.map((record) => record.providerAttempt),
+      [0, 1],
+    );
+  });
+}
 
 test('request shape matches captured payload on success, errors, retries and early close', async (t) => {
   for (const stream of [false, true]) {
@@ -427,4 +495,167 @@ test('request shape matches captured payload on success, errors, retries and ear
       }
     }
   }
+});
+
+for (const streaming of [false, true]) {
+  for (const failure of [
+    Object.assign(new SyntaxError('Unexpected end of JSON input'), {
+      response: undefined,
+    }),
+    ...[500, 502, 503, 504].map((status) =>
+      Object.assign(new Error('Unavailable'), { response: { status } }),
+    ),
+  ]) {
+    test(`SAP retries immediate ${failure.name} ${failure.response?.status ?? ''}, stream=${streaming}`, async () => {
+      const { provider, records } = setup();
+      let calls = 0;
+      Object.defineProperty(provider, 'createClient', {
+        value: () => ({
+          chatCompletion: async () => {
+            if (calls++ === 0) throw failure;
+            return response;
+          },
+          stream: async () => ({
+            stream: (async function* () {
+              if (calls++ === 0) throw failure;
+              yield {
+                getDeltaContent: () => 'ok',
+                getFinishReason: () => 'stop',
+                getTokenUsage: () => tokenUsage,
+              };
+            })(),
+          }),
+        }),
+      });
+      if (streaming) {
+        for await (const chunk of provider.streamChat(messages))
+          assert.equal(chunk.content, 'ok');
+      } else await provider.chat(messages);
+      assert.equal(calls, 2);
+      const usage = records.filter((r) => r.kind === 'llm.call');
+      assert.deepEqual(
+        usage.map((r) => r.providerAttempt),
+        [0, 1],
+      );
+      assert.deepEqual(
+        usage.map((r) => r.physicalSeq),
+        [0, 1],
+      );
+      assert.equal(usage[0].errorName, failure.name);
+      assert.equal(usage[0].errorStatus, failure.response?.status);
+    });
+  }
+}
+
+test('SAP never retries a transient failure after yielding a chunk', async () => {
+  const { provider, records } = setup();
+  let calls = 0;
+  Object.defineProperty(provider, 'createClient', {
+    value: () => ({
+      stream: async () => {
+        calls++;
+        return {
+          stream: (async function* () {
+            yield {
+              getDeltaContent: () => 'first',
+              getFinishReason: () => undefined,
+              getTokenUsage: () => undefined,
+            };
+            throw new SyntaxError('Unexpected end of JSON input');
+          })(),
+        };
+      },
+    }),
+  });
+  await assert.rejects(async () => {
+    for await (const chunk of provider.streamChat(messages))
+      assert.equal(chunk.content, 'first');
+  });
+  assert.equal(calls, 1);
+  assert.equal(records.length, 1);
+});
+
+for (const streaming of [false, true]) {
+  test(`SAP never retries aborts, stream=${streaming}`, async () => {
+    const { provider, records } = setup();
+    let calls = 0;
+    const abort = async () => {
+      calls++;
+      throw new DOMException('Aborted', 'AbortError');
+    };
+    Object.defineProperty(provider, 'createClient', {
+      value: () => ({ chatCompletion: abort, stream: abort }),
+    });
+    await assert.rejects(async () => {
+      if (streaming) {
+        for await (const _ of provider.streamChat(messages)) {
+        }
+      } else await provider.chat(messages);
+    });
+    assert.equal(calls, 1);
+    assert.equal(records[0].outcome, 'aborted');
+  });
+}
+
+test('SAP stops after one transient retry and preserves the final cause', async () => {
+  const { provider, records } = setup();
+  let calls = 0;
+  Object.defineProperty(provider, 'createClient', {
+    value: () => ({
+      chatCompletion: async () => {
+        calls++;
+        throw new Error('SDK wrapper', {
+          cause: new SyntaxError('Unexpected end of JSON input'),
+        });
+      },
+    }),
+  });
+  await assert.rejects(provider.chat(messages));
+  assert.equal(calls, 2);
+  assert.deepEqual(
+    records.filter((r) => r.kind === 'llm.call').map((r) => r.errorName),
+    ['SyntaxError', 'SyntaxError'],
+  );
+});
+
+test('SAP transient retry wait honours Retry-After and abort signals', async () => {
+  const { provider, records } = setup();
+  const controller = new AbortController();
+  let calls = 0;
+  Object.defineProperty(provider, 'createClient', {
+    value: () => ({
+      chatCompletion: async () => {
+        calls++;
+        setTimeout(() => controller.abort(), 10);
+        throw Object.assign(new Error('Unavailable'), {
+          response: { status: 503, headers: { 'retry-after': '60' } },
+        });
+      },
+    }),
+  });
+  await assert.rejects(
+    provider.chat(messages, undefined, { signal: controller.signal }),
+  );
+  assert.equal(calls, 1);
+  assert.equal(records.length, 1);
+});
+
+test('SAP retries can be disabled', async () => {
+  const provider = new SapCoreAIProvider({
+    model: 'test',
+    apiBaseUrl: 'https://example.invalid',
+    credential: { kind: 'bearer', token: async () => 'secret' },
+    transientMaxRetries: 0,
+  });
+  let calls = 0;
+  Object.defineProperty(provider, 'createClient', {
+    value: () => ({
+      chatCompletion: async () => {
+        calls++;
+        throw new SyntaxError('Unexpected end of JSON input');
+      },
+    }),
+  });
+  await assert.rejects(provider.chat(messages));
+  assert.equal(calls, 1);
 });

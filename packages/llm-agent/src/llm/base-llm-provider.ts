@@ -1,3 +1,4 @@
+import { setTimeout as delay } from 'node:timers/promises';
 /**
  * Base interface for LLM providers
  */
@@ -211,6 +212,10 @@ export abstract class BaseLLMProvider<
     }`;
   }
 
+  protected transientRetry(): { maxRetries: number; delayMs: number } {
+    return { maxRetries: 0, delayMs: 1500 };
+  }
+
   /** Is this "too many requests" rather than a real failure? */
   protected isThrottled(error: unknown): boolean {
     return httpStatusOf(error) === 429;
@@ -340,7 +345,35 @@ export abstract class BaseLLMProvider<
         }
       }
     };
-    return runWithThrottleRetry(physicalRequest, {
+    let transientAttempts = 0;
+    const requestWithTransientRetry = async () => {
+      for (;;) {
+        extra?.signal?.throwIfAborted();
+        try {
+          return await physicalRequest();
+        } catch (error) {
+          const policy = this.transientRetry();
+          if (
+            requestAborted(error, extra?.signal) ||
+            transientAttempts >= policy.maxRetries ||
+            !isTransientFailure(
+              error instanceof Error ||
+                (typeof error === 'object' && error !== null)
+                ? error
+                : undefined,
+            )
+          )
+            throw error;
+          transientAttempts += 1;
+          await delay(
+            (this.retryAfterSeconds(error) ?? policy.delayMs / 1000) * 1000,
+            undefined,
+            { signal: extra?.signal },
+          );
+        }
+      }
+    };
+    return runWithThrottleRetry(requestWithTransientRetry, {
       key: this.quotaKey(extra?.model),
       strategy: this.config.whenThrottled,
       isThrottled: (e: unknown) => this.isThrottled(e),
@@ -435,4 +468,31 @@ function* errorCauseChain(error: unknown): Generator<object> {
 /** Narrow arbitrary thrown-error properties before reading response headers. */
 function isErrorProperties(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object';
+}
+
+function isTransientFailure(error: object | undefined): boolean {
+  for (const current of errorCauseChain(error)) {
+    if (
+      ('name' in current &&
+        ['AbortError', 'CanceledError'].includes(String(current.name))) ||
+      ('code' in current &&
+        ['ERR_CANCELED', 'ABORT_ERR'].includes(String(current.code)))
+    )
+      return false;
+  }
+  const status = httpStatusOf(error);
+  if (status !== undefined) return [500, 502, 503, 504].includes(status);
+  for (const current of errorCauseChain(error)) {
+    if (current instanceof SyntaxError) return true;
+    const message = 'message' in current ? String(current.message) : '';
+    const code = 'code' in current ? String(current.code) : '';
+    if (
+      /JSON.*(?:parse|input|position)|(?:parse|unexpected).*JSON|ECONNRESET|socket hang up|ETIMEDOUT/i.test(
+        message,
+      ) ||
+      ['ECONNRESET', 'ETIMEDOUT'].includes(code)
+    )
+      return true;
+  }
+  return false;
 }

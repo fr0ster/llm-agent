@@ -67,3 +67,6 @@ with hidden retries use `granularity: 'sdk-call'` and `retriesVisible: false`.
 Use the buffered recorder from `@mcp-abap-adt/llm-usage`, or supply your own
 `IUsageRecorder`. See the [usage overview](../../docs/USAGE_ANALYTICS.md) for
 injection, replaceable transports/sinks and delivery/loss semantics.
+
+
+SAP AI Core retries transient failures before the first response chunk once by default. This covers HTTP 500/502/503/504 and statusless JSON parsing errors, ECONNRESET, socket hang up and ETIMEDOUT. Configure `transientMaxRetries` (default `1`, `0` disables) and `transientRetryDelayMs` (default `1500`) on `SapCoreAIConfig`. Retry-After overrides the delay; waiting honours the abort signal. Aborts and failures after the first chunk are never retried. HTTP 429 continues through the existing throttle strategy. Every physical attempt has its own usage record, with increasing `providerAttempt` and `physicalSeq`.

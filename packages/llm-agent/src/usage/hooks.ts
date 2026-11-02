@@ -186,6 +186,9 @@ export function beginLlmRequest(
           durationMs: performance.now() - started,
           firstTokenMs,
           ...rest,
+          ...(facts.outcome === 'error' && error && typeof error === 'object'
+            ? usageErrorDetail(error)
+            : {}),
           errorCode:
             safeCode(facts.errorCode ?? base.errorCode) ?? errorCode(error),
         },
@@ -217,6 +220,9 @@ export function beginEmbeddingRequest(
           ...base,
           durationMs: performance.now() - started,
           ...rest,
+          ...(facts.outcome === 'error' && error && typeof error === 'object'
+            ? usageErrorDetail(error)
+            : {}),
           errorCode:
             safeCode(facts.errorCode ?? base.errorCode) ?? errorCode(error),
         },
@@ -224,4 +230,41 @@ export function beginEmbeddingRequest(
       );
     },
   };
+}
+
+interface DiagnosticError {
+  name?: string;
+  message?: string;
+  status?: number;
+  statusCode?: number;
+  response?: { status?: number };
+  cause?: DiagnosticError;
+}
+
+function usageErrorDetail(error: object): {
+  errorStatus?: number;
+  errorName?: string;
+} {
+  try {
+    const seen = new Set<object>();
+    let current: DiagnosticError | undefined = error;
+    let root: DiagnosticError = error;
+    let errorStatus: number | undefined;
+    while (current && typeof current === 'object' && !seen.has(current)) {
+      seen.add(current);
+      const status =
+        current.response?.status ?? current.status ?? current.statusCode;
+      if (typeof status === 'number' && Number.isFinite(status))
+        errorStatus ??= status;
+      root = current;
+      current = current.cause;
+    }
+    // Never a message: SDK messages may quote the request or the response.
+    return {
+      errorStatus,
+      errorName: safeCode(root.name),
+    };
+  } catch {
+    return {};
+  }
 }

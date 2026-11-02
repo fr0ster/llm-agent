@@ -1,3 +1,4 @@
+import { withInputCap } from './input-cap-embedder.js';
 /**
  * Composition of the embedder resilience chain, and the metadata that travels
  * with it.
@@ -60,6 +61,8 @@ export function brandResilient(
 }
 
 export interface ComposeResilienceOptions {
+  /** Maximum characters for single-input embed calls. Default: 24000; 0 disables. */
+  maxInputChars?: number;
   /** A cap a human configured. ONLY this may trigger the conflict check. */
   explicitMaxBatchSize?: number;
   /** Provider-derived or default cap; never triggers the conflict check. */
@@ -96,7 +99,10 @@ export function composeResilientEmbedder(
     options?.fallbackMaxBatchSize ??
     (isBatchSizeLimited(inner) ? inner.maxBatchSize : DEFAULT_MAX_BATCH_SIZE);
 
-  const retried = withRetry(inner, options?.retry);
+  const retried = withInputCap(
+    withRetry(inner, options?.retry),
+    options?.maxInputChars,
+  );
   const batchCapable = isBatchEmbedder(retried);
   const composed = batchCapable
     ? new BatchChunkingEmbedder(retried, cap)

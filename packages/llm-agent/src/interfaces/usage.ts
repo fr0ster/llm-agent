@@ -24,56 +24,64 @@ interface Base {
   errorCode?: string; // a code, never a provider body
 }
 
-type LlmCall = Base & {
-  kind: 'llm.call';
-  operationId: string;
-  physicalSeq: number; // 0,1,2… unique per physical request within the operation
-  outerAttempt: number;
-  providerAttempt: number; // library retry attempt, provider-internal retry attempt
-  granularity: 'request' | 'sdk-call';
-  retriesVisible: boolean; // sdk-call: one SDK call that may hide retries
-  provider: string;
-  model: string;
-  stream: boolean;
-  inputTokens?: number;
-  outputTokens?: number;
-  cachedInputTokens?: number;
-  tokensSource: 'provider' | 'estimate' | 'unknown';
-  durationMs: number;
-  firstTokenMs?: number;
-  throttledMs?: number;
-  // Sizes of the messages and tool definitions actually sent; never content.
-  inputMessages?: number;
-  systemMessages?: number;
-  userMessages?: number;
-  assistantMessages?: number;
-  toolMessages?: number;
-  inputChars?: number;
-  systemChars?: number;
-  userChars?: number;
-  assistantChars?: number;
-  toolChars?: number;
-  toolDefs?: number;
-  toolDefsChars?: number;
-  closedEarly?: boolean;
-}; // stream consumer stopped before the end
-type EmbeddingCall = Base & {
-  kind: 'embedding.call';
-  operationId: string;
-  physicalSeq: number;
-  outerAttempt: number;
-  providerAttempt: number;
-  chunkPath: string; // e.g. '2/3>1/4': outer chunk 2 of 3, provider chunk 1 of 4
-  granularity: 'request' | 'sdk-call';
-  retriesVisible: boolean;
-  provider: string;
-  model: string;
-  inputs: number;
-  inputChars: number;
-  inputTokens?: number;
-  tokensSource: 'provider' | 'estimate' | 'unknown'; // exact provider total of this request
-  durationMs: number;
-};
+interface UsageErrorDetail {
+  errorStatus?: number;
+  /** Root-cause class name; never a message, which may quote the request. */
+  errorName?: string;
+}
+
+type LlmCall = Base &
+  UsageErrorDetail & {
+    kind: 'llm.call';
+    operationId: string;
+    physicalSeq: number; // 0,1,2… unique per physical request within the operation
+    outerAttempt: number;
+    providerAttempt: number; // library retry attempt, provider-internal retry attempt
+    granularity: 'request' | 'sdk-call';
+    retriesVisible: boolean; // sdk-call: one SDK call that may hide retries
+    provider: string;
+    model: string;
+    stream: boolean;
+    inputTokens?: number;
+    outputTokens?: number;
+    cachedInputTokens?: number;
+    tokensSource: 'provider' | 'estimate' | 'unknown';
+    durationMs: number;
+    firstTokenMs?: number;
+    throttledMs?: number;
+    // Sizes of the messages and tool definitions actually sent; never content.
+    inputMessages?: number;
+    systemMessages?: number;
+    userMessages?: number;
+    assistantMessages?: number;
+    toolMessages?: number;
+    inputChars?: number;
+    systemChars?: number;
+    userChars?: number;
+    assistantChars?: number;
+    toolChars?: number;
+    toolDefs?: number;
+    toolDefsChars?: number;
+    closedEarly?: boolean;
+  }; // stream consumer stopped before the end
+type EmbeddingCall = Base &
+  UsageErrorDetail & {
+    kind: 'embedding.call';
+    operationId: string;
+    physicalSeq: number;
+    outerAttempt: number;
+    providerAttempt: number;
+    chunkPath: string; // e.g. '2/3>1/4': outer chunk 2 of 3, provider chunk 1 of 4
+    granularity: 'request' | 'sdk-call';
+    retriesVisible: boolean;
+    provider: string;
+    model: string;
+    inputs: number;
+    inputChars: number;
+    inputTokens?: number;
+    tokensSource: 'provider' | 'estimate' | 'unknown'; // exact provider total of this request
+    durationMs: number;
+  };
 type ToolCall = Base & {
   kind: 'tool.call';
   server?: string;

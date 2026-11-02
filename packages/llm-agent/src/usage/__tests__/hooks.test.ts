@@ -171,7 +171,6 @@ test('a provider error with throwing code or status getters does not make end() 
       ...base,
       inputs: 1,
       inputChars: 1,
-      chunkPath: '',
     }).end({ outcome: 'error', error: hostile }),
   );
   assert.equal(records.length, 2);
@@ -186,4 +185,32 @@ test('a provider error with throwing code or status getters does not make end() 
       error: hostile,
     }),
   );
+});
+
+test('LLM and embedding failures include bounded root-cause details and nested status', () => {
+  const { usage, records } = recorder();
+  const root = Object.assign(new SyntaxError('Unexpected end of JSON input'), {
+    response: { status: 503, data: 'private body' },
+  });
+  const error = new Error('SDK wrapper', { cause: root });
+  beginLlmRequest({ usage }, startOperation(), base).end({
+    outcome: 'error',
+    error,
+  });
+  beginEmbeddingRequest({ usage }, startOperation(), {
+    provider: 'test',
+    model: 'model',
+    inputs: 1,
+    inputChars: 5,
+    granularity: 'request',
+    retriesVisible: true,
+  }).end({ outcome: 'error', error });
+  for (const record of records) {
+    if (record.kind !== 'llm.call' && record.kind !== 'embedding.call')
+      throw new Error('wrong kind');
+    assert.equal(record.errorStatus, 503);
+    assert.equal(record.errorName, 'SyntaxError');
+    assert.equal('errorMessage' in record, false);
+  }
+  assert.doesNotMatch(JSON.stringify(records), /private body/);
 });

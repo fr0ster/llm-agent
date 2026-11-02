@@ -115,3 +115,6 @@ filter unchanged between pages; changing the limit or text projection is allowed
 Pages may be short or empty with a cursor; only its absence means completion.
 Ordering is stable within an unchanged backend store, without snapshot isolation
 across pages. Pass `CallOptions.signal` to cancel with an `ABORTED` result.
+
+
+`composeResilientEmbedder` accepts `maxInputChars` (default `24000`, `0` disables). Single-input `embed` calls keep only the beginning of oversized input before calling the provider, including query embeddings built by the library. Batch document inputs are unchanged. Input-too-long errors are not retried. Usage schema 1 now includes optional `errorStatus`, `errorName` and `errorMessage` on failed LLM and embedding calls. These report the HTTP status from the cause chain and the root-cause name and message (at most 300 characters), with quoted data, URLs and credentials redacted. Request bodies and headers are never serialized.
