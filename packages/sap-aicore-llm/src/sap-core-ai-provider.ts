@@ -34,6 +34,74 @@ import {
   OrchestrationClient,
 } from '@sap-ai-sdk/orchestration';
 
+// Structural Cloud SDK middleware contract; forward the request/response intact.
+type HttpMiddleware = (options: {
+  fn: (config: object) => Promise<object>;
+}) => (config: object) => Promise<object>;
+
+/** Keep HTTP metadata when the SDK replaces an empty error body with a parse error. */
+async function withHttpErrorCapture<T>(
+  run: (middleware: HttpMiddleware) => Promise<T>,
+): Promise<T> {
+  // Only the status and Retry-After: never the body, headers or request config.
+  let response:
+    | { status: number; headers: { 'retry-after'?: string } }
+    | undefined;
+  const middleware: HttpMiddleware = (options) => async (config) => {
+    try {
+      return await options.fn(config);
+    } catch (error) {
+      const candidate =
+        error && typeof error === 'object' && 'response' in error
+          ? error.response
+          : undefined;
+      const status =
+        candidate && typeof candidate === 'object' && 'status' in candidate
+          ? candidate.status
+          : undefined;
+      if (typeof status === 'number') {
+        const headers =
+          candidate && typeof candidate === 'object' && 'headers' in candidate
+            ? candidate.headers
+            : undefined;
+        const retryAfter =
+          headers && typeof headers === 'object'
+            ? readRetryAfter(headers)
+            : undefined;
+        response = {
+          status,
+          headers:
+            retryAfter === undefined ? {} : { 'retry-after': retryAfter },
+        };
+      }
+      throw error;
+    }
+  };
+  try {
+    return await run(middleware);
+  } catch (error) {
+    if (response) {
+      throw Object.assign(
+        error instanceof Error ? error : new Error(String(error)),
+        { response },
+      );
+    }
+    throw error;
+  }
+}
+
+function readRetryAfter(headers: object): string | undefined {
+  const value =
+    'get' in headers && typeof headers.get === 'function'
+      ? headers.get('retry-after')
+      : Object.entries(headers).find(
+          ([name]) => name.toLowerCase() === 'retry-after',
+        )?.[1];
+  return typeof value === 'string' || typeof value === 'number'
+    ? String(value)
+    : undefined;
+}
+
 /** The constructed-destination shape the SAP AI SDK documents. */
 export interface SapCoreAIDestination {
   url: string;
@@ -56,6 +124,10 @@ export interface SapCoreAICatalogModel {
 }
 
 export interface SapCoreAIConfig extends LLMProviderConfig {
+  /** Retries before the first response chunk. Default: 1; 0 disables. */
+  transientMaxRetries?: number;
+  /** Delay in milliseconds unless Retry-After is present. Default: 1500. */
+  transientRetryDelayMs?: number;
   /**
    * The bearer credential presented to SAP AI Core. Asked for fresh on every
    * call via `buildDestination` — never cached here, so a rotating token
@@ -130,6 +202,13 @@ export function orchestrationModelParams(
  * A new OrchestrationClient is created per call because tools may change between calls.
  */
 export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
+  protected override transientRetry(): { maxRetries: number; delayMs: number } {
+    return {
+      maxRetries: this.config.transientMaxRetries ?? 1,
+      delayMs: this.config.transientRetryDelayMs ?? 1500,
+    };
+  }
+
   readonly model: string;
   readonly resourceGroup?: string;
   private log?: SapCoreAIConfig['log'];
@@ -223,6 +302,16 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
     if (!config.model) {
       throw new Error("SAP AI Core provider requires a 'model'");
     }
+    if (
+      !Number.isSafeInteger(config.transientMaxRetries ?? 1) ||
+      (config.transientMaxRetries ?? 1) < 0 ||
+      !Number.isFinite(config.transientRetryDelayMs ?? 1500) ||
+      (config.transientRetryDelayMs ?? 1500) < 0
+    ) {
+      throw new RangeError(
+        'Transient retry count and delay must be nonnegative; count must be an integer',
+      );
+    }
     this.model = config.model;
     this.resourceGroup = config.resourceGroup;
     this.log = config.log;
@@ -264,13 +353,15 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
           // attempt failed.
 
           const callAgent = new https.Agent({ keepAlive: false });
-          const response = await client.chatCompletion(undefined, {
-            // The SDK forwards this middleware list to its single inference HTTP request.
-            // Disable middleware retries so the provider owns every attempt.
-            middleware: [],
-            httpsAgent: callAgent,
-            signal: options?.signal,
-          });
+          const response = await withHttpErrorCapture((middleware) =>
+            client.chatCompletion(undefined, {
+              // The SDK forwards this middleware list to its single inference HTTP request.
+              // Disable middleware retries so the provider owns every attempt.
+              middleware: [middleware],
+              httpsAgent: callAgent,
+              signal: options?.signal,
+            }),
+          );
           const toolCalls = response.getToolCalls();
           const content = response.getContent() || '';
           const finishReason = response.getFinishReason();
@@ -418,23 +509,54 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
       let client: ReturnType<SapCoreAIProvider['createClient']>;
       let shape: ReturnType<typeof requestShape> | undefined;
       const opened = await this.withThrottleRetry(
-        async () => {
-          // As above: the caller's signal is the deadline, and the SDK takes
-          // it directly. The destination (and the credential's token()) is
-          // rebuilt on every attempt, same as chat().
+        async () =>
+          withHttpErrorCapture(async (middleware) => {
+            // As above: the caller's signal is the deadline, and the SDK takes
+            // it directly. The destination (and the credential's token()) is
+            // rebuilt on every attempt, same as chat().
 
-          this.log?.debug('SAP AI SDK streamChat client created', {
-            model,
-            toolCount,
-          });
-          const streamAgent = new https.Agent({ keepAlive: false });
-          // The SDK takes the signal as its own second parameter, so an abort
-          // ends the stream itself and not only the waiting around it.
-          return client.stream(undefined, options?.signal, undefined, {
-            middleware: [],
-            httpsAgent: streamAgent,
-          });
-        },
+            this.log?.debug('SAP AI SDK streamChat client created', {
+              model,
+              toolCount,
+            });
+            const streamAgent = new https.Agent({ keepAlive: false });
+            // The SDK takes the signal as its own second parameter, so an abort
+            // ends the stream itself and not only the waiting around it.
+            const response = await client.stream(
+              undefined,
+              options?.signal,
+              undefined,
+              {
+                middleware: [middleware],
+                httpsAgent: streamAgent,
+              },
+            );
+            const iterator = response.stream[Symbol.asyncIterator]();
+            try {
+              const first = await iterator.next();
+              return {
+                stream: (async function* () {
+                  try {
+                    if (!first.done) yield first.value;
+                    while (!first.done) {
+                      const next = await iterator.next();
+                      if (next.done) break;
+                      yield next.value;
+                    }
+                  } finally {
+                    await iterator.return?.();
+                  }
+                })(),
+              };
+            } catch (error) {
+              try {
+                await iterator.return?.();
+              } catch {
+                /* Preserve the request failure. */
+              }
+              throw error;
+            }
+          }),
         { signal: options?.signal },
         {
           prepare: async () => {

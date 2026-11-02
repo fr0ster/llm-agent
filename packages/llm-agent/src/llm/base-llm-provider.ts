@@ -211,6 +211,10 @@ export abstract class BaseLLMProvider<
     }`;
   }
 
+  protected transientRetry(): { maxRetries: number; delayMs: number } {
+    return { maxRetries: 0, delayMs: 1500 };
+  }
+
   /** Is this "too many requests" rather than a real failure? */
   protected isThrottled(error: unknown): boolean {
     return httpStatusOf(error) === 429;
@@ -340,6 +344,7 @@ export abstract class BaseLLMProvider<
         }
       }
     };
+    const transient = this.transientRetry();
     return runWithThrottleRetry(physicalRequest, {
       key: this.quotaKey(extra?.model),
       strategy: this.config.whenThrottled,
@@ -347,6 +352,20 @@ export abstract class BaseLLMProvider<
       retryAfterSeconds: (e: unknown) => this.retryAfterSeconds(e),
       signal: extra?.signal,
       onRetry: extra?.onRetry,
+      // Inside the throttle loop: every retry passes the shared gate again and
+      // the call's throttle attempts and waited time carry over.
+      transient: {
+        maxRetries: transient.maxRetries,
+        isTransient: (e: unknown) =>
+          !requestAborted(e, extra?.signal) &&
+          isTransientFailure(
+            e instanceof Error || (typeof e === 'object' && e !== null)
+              ? e
+              : undefined,
+          ),
+        delayMs: (e: unknown) =>
+          (this.retryAfterSeconds(e) ?? transient.delayMs / 1000) * 1000,
+      },
     });
   }
 }
@@ -435,4 +454,31 @@ function* errorCauseChain(error: unknown): Generator<object> {
 /** Narrow arbitrary thrown-error properties before reading response headers. */
 function isErrorProperties(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object';
+}
+
+function isTransientFailure(error: object | undefined): boolean {
+  for (const current of errorCauseChain(error)) {
+    if (
+      ('name' in current &&
+        ['AbortError', 'CanceledError'].includes(String(current.name))) ||
+      ('code' in current &&
+        ['ERR_CANCELED', 'ABORT_ERR'].includes(String(current.code)))
+    )
+      return false;
+  }
+  const status = httpStatusOf(error);
+  if (status !== undefined) return [500, 502, 503, 504].includes(status);
+  for (const current of errorCauseChain(error)) {
+    if (current instanceof SyntaxError) return true;
+    const message = 'message' in current ? String(current.message) : '';
+    const code = 'code' in current ? String(current.code) : '';
+    if (
+      /JSON.*(?:parse|input|position)|(?:parse|unexpected).*JSON|ECONNRESET|socket hang up|ETIMEDOUT/i.test(
+        message,
+      ) ||
+      ['ECONNRESET', 'ETIMEDOUT'].includes(code)
+    )
+      return true;
+  }
+  return false;
 }

@@ -36,6 +36,7 @@ export type EmbedderResolution =
       credential: IApiKeyCredential;
       url?: string;
       maxBatchSize?: number;
+      maxInputChars?: number;
       factory?: never;
     }
   | {
@@ -51,6 +52,7 @@ export type EmbedderResolution =
        */
       inputType?: 'document' | 'query';
       maxBatchSize?: number;
+      maxInputChars?: number;
       factory?: never;
     }
   | {
@@ -59,6 +61,7 @@ export type EmbedderResolution =
       model: string;
       url?: string;
       maxBatchSize?: number;
+      maxInputChars?: number;
       credential?: never;
       factory?: never;
     }
@@ -68,6 +71,7 @@ export type EmbedderResolution =
       model?: string;
       timeoutMs?: number;
       maxBatchSize?: number;
+      maxInputChars?: number;
       provider?: never;
       credential?: never;
     };

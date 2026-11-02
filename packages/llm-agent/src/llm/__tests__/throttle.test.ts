@@ -63,6 +63,63 @@ const retryAfterSeconds = (e: unknown) => {
 beforeEach(() => resetQuotaGates());
 
 describe('runWithThrottleRetry', () => {
+  it('keeps throttle attempts across a transient retry in between', async () => {
+    const replies = [
+      tooManyRequests('0.01'),
+      new Error('503'),
+      tooManyRequests('0.01'),
+    ];
+    let calls = 0;
+    await assert.rejects(
+      runWithThrottleRetry(
+        async () => {
+          const reply = replies[calls];
+          calls += 1;
+          if (reply) throw reply;
+          return 'ok';
+        },
+        {
+          key: 'k-transient',
+          strategy: new WaitAsTold({ maxAttempts: 2 }),
+          isThrottled,
+          retryAfterSeconds,
+          transient: {
+            maxRetries: 1,
+            isTransient: (e) => e instanceof Error && e.message === '503',
+            delayMs: () => 1,
+          },
+        },
+      ),
+      (error: unknown) =>
+        isThrottledError(error) &&
+        error.reason === 'attempts' &&
+        error.attempts === 2,
+    );
+    assert.equal(calls, 3);
+  });
+
+  it('retries a transient failure once inside the loop, then succeeds', async () => {
+    let calls = 0;
+    const out = await runWithThrottleRetry(
+      async () => {
+        calls += 1;
+        if (calls === 1) throw new Error('503');
+        return 'ok';
+      },
+      {
+        key: 'k-transient-ok',
+        isThrottled,
+        transient: {
+          maxRetries: 1,
+          isTransient: (e) => e instanceof Error && e.message === '503',
+          delayMs: () => 1,
+        },
+      },
+    );
+    assert.equal(out, 'ok');
+    assert.equal(calls, 2);
+  });
+
   it('passes a successful call straight through', async () => {
     let calls = 0;
     const out = await runWithThrottleRetry(

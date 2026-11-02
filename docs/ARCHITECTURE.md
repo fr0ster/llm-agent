@@ -1669,3 +1669,10 @@ model and their default. When supplied, the runner's optional synchronous
 `validateModel(model)` hook runs before profile lookup and enqueueing. A rejected
 model returns a `MODEL_NOT_ALLOWED` tool error and creates no task. Omitting the
 model preserves the existing worker construction input.
+
+
+SAP AI Core retries transient failures before the first SDK chunk once by default: HTTP 500/502/503/504, or statusless JSON parsing and connection failures (ECONNRESET, socket hang up, ETIMEDOUT). Configure transientMaxRetries (1, 0 disables) and transientRetryDelayMs (1500). Retry-After overrides the delay. Signals cancel requests and retry waits; aborts and failures after any chunk do not retry. The existing 429 throttle policy is unchanged. Each physical request records its providerAttempt and physicalSeq.
+
+Usage schema 1 adds optional errorStatus and errorName to failed LLM and embedding calls: the HTTP status from the cause chain and the root-cause class name. No error message is stored, since SDK messages may quote the request or the response. CSV exports include the fields; old records remain valid.
+
+Default embedder composition truncates single-input calls to the beginning of the input before the provider and retry layers. maxInputChars defaults to 24000 (0 disables), and embedder factory resolution forwards this option. Batch document calls retain their inputs. Input-too-long errors bypass retries.

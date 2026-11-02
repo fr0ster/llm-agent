@@ -27,6 +27,7 @@
  * enters this path.
  */
 
+import { setTimeout as delay } from 'node:timers/promises';
 import {
   type IThrottleStrategy,
   ReportThrottling,
@@ -304,6 +305,15 @@ export interface ThrottleRetryOptions {
     delayMs: number;
     retryAfterSeconds?: number;
   }) => void;
+  /**
+   * Transient failures (not a 429) retried inside the same loop, so each retry
+   * passes the shared gate again and keeps this call's throttle counters.
+   */
+  transient?: {
+    maxRetries: number;
+    isTransient: (error: unknown) => boolean;
+    delayMs: (error: unknown) => number;
+  };
 }
 
 /**
@@ -401,6 +411,7 @@ async function attemptWithGate<T>(
   const strategy = opts.strategy ?? defaultStrategy;
   let attempt = 0;
   let waited = 0;
+  let transientAttempts = 0;
   // True when the wait ahead is one this caller already chose, in the catch
   // below. Without it the gate would ask the strategy a second time about a
   // refusal it had just answered, and report the same event twice.
@@ -440,7 +451,21 @@ async function attemptWithGate<T>(
     try {
       return await fn();
     } catch (error) {
-      if (!opts.isThrottled(error)) throw error;
+      if (!opts.isThrottled(error)) {
+        const transient = opts.transient;
+        if (
+          !transient ||
+          opts.signal?.aborted ||
+          transientAttempts >= transient.maxRetries ||
+          !transient.isTransient(error)
+        )
+          throw error;
+        transientAttempts += 1;
+        await delay(transient.delayMs(error), undefined, {
+          signal: opts.signal,
+        });
+        continue;
+      }
 
       attempt += 1;
       const retryAfter = opts.retryAfterSeconds?.(error);

@@ -48,6 +48,8 @@ export const USAGE_CSV_COLUMNS = [
   'kind',
   'outcome',
   'errorCode',
+  'errorStatus',
+  'errorName',
   'context.sessionId',
   'context.userId',
   'context.turnId',

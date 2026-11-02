@@ -102,3 +102,6 @@ shutdown and inspect its delivered/lost/unconfirmed counters. A signal transport
 is best effort and does not acknowledge storage writes. See the
 [usage overview](../../docs/USAGE_ANALYTICS.md) and linked design for guarantees,
 loss evidence, content exclusions and the completeness test.
+
+
+Usage schema 1 remains backward compatible with optional `errorStatus` (HTTP status anywhere in the cause chain) and `errorName` (root-cause class name) on `llm.call` and `embedding.call` errors. No error message is stored: SDK messages may quote the request or the response. JSON storage retains these optional fields; CSV exports include corresponding columns. Older records remain valid without them.

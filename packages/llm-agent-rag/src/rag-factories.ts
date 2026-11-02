@@ -98,10 +98,11 @@ export interface EmbedderResolutionOptions {
  */
 export function composeEmbedder(
   raw: IEmbedder,
-  opts?: { maxBatchSize?: number; logger?: AnyLogger },
+  opts?: { maxBatchSize?: number; maxInputChars?: number; logger?: AnyLogger },
 ): IEmbedder {
   return composeResilientEmbedder(raw, {
     explicitMaxBatchSize: opts?.maxBatchSize,
+    maxInputChars: opts?.maxInputChars,
     fallbackMaxBatchSize: isBatchSizeLimited(raw)
       ? raw.maxBatchSize
       : DEFAULT_MAX_BATCH_SIZE,
@@ -148,6 +149,7 @@ export function resolveEmbedder(
       : constructBuiltInEmbedder(cfg);
   return composeEmbedder(raw, {
     maxBatchSize: cfg.maxBatchSize,
+    maxInputChars: cfg.maxInputChars,
     logger: options?.logger,
   });
 }

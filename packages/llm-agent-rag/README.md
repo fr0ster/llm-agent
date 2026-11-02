@@ -83,3 +83,6 @@ library* stay free and that your users can substitute their own build.
 Versions up to and including v20.9.5 were MIT and stay MIT; the change is not
 retroactive. Full detail, including what to do if you redistribute:
 [docs/LICENSING.md](https://github.com/fr0ster/llm-agent/blob/main/docs/LICENSING.md).
+
+
+Embedder resolution accepts `maxInputChars` on every factory configuration, including injected instances. The default is `24000`; `0` disables the cap. Single-input `embed` calls truncate to the beginning of the input before provider invocation; batch document calls retain their inputs. Input-too-long failures do not retry.

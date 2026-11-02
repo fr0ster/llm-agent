@@ -145,6 +145,19 @@ export class RetryEmbedder implements IEmbedder {
   }
 
   protected isRetryable(err: unknown): boolean {
+    const seen = new Set<object>();
+    let current = err;
+    while (current && typeof current === 'object' && !seen.has(current)) {
+      seen.add(current);
+      const message = 'message' in current ? String(current.message) : '';
+      if (
+        /input.{0,30}(?:too long|too large|exceed)|maximum context length|context_length_exceeded|too many tokens|max(?:imum)?[_ ](?:input[_ ])?(?:tokens|length)/i.test(
+          message,
+        )
+      )
+        return false;
+      current = 'cause' in current ? current.cause : undefined;
+    }
     return isRetryableStatus(err, this.opts.retryOn);
   }
 
