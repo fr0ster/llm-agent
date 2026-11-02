@@ -84,6 +84,8 @@ export interface CallOptions {
   /** Called when the request's executed tool-call count changes (the result's
    *  toolCallCount), with configured maxToolCalls. Fire-and-forget; callback
    *  exceptions must never break the run. */
+  /** Short content-free activity label, e.g. llm call or tool GetProgram. */
+  onActivity?: (action: string) => void;
   onToolCallCount?: (count: number, max?: number) => void;
   /** Reports tool definitions offered per round and all available MCP plus external
    * tools before selection/filters, only when either count changes. Fire-and-forget;

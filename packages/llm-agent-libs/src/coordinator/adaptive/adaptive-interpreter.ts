@@ -64,7 +64,6 @@ export class AdaptiveEpicFailError extends OrchestratorError {
 export const DEFAULT_BUDGET: AdaptiveBudget = {
   maxSteps: 20,
   maxRevisions: 3,
-  maxDurationMs: 300000,
 };
 
 const message = (error: unknown): string =>
@@ -76,6 +75,15 @@ export async function runAdaptivePlan(
 ): Promise<AdaptiveRunResult> {
   const now = input.now ?? Date.now;
   const startedAt = now();
+  // Compared with elapsed time, not a Node timer: any positive finite value
+  // is a valid budget; anything else means no budget.
+  const requestedDurationMs = input.budget.maxDurationMs;
+  const maxDurationMs =
+    requestedDurationMs !== undefined &&
+    Number.isFinite(requestedDurationMs) &&
+    requestedDurationMs > 0
+      ? requestedDurationMs
+      : undefined;
   const plan: AdaptivePlan = { ...input.plan, steps: [...input.plan.steps] };
   const records: StepRecord[] = [];
   const latest = new Map<string, StepRecord>();
@@ -133,7 +141,7 @@ export async function runAdaptivePlan(
   while (cursor < plan.steps.length) {
     input.signal?.throwIfAborted();
     if (records.length >= input.budget.maxSteps) return stop('budget: steps');
-    if (now() - startedAt >= input.budget.maxDurationMs)
+    if (maxDurationMs !== undefined && now() - startedAt >= maxDurationMs)
       return stop('budget: time');
     const step = plan.steps[cursor];
     if (!step) break;

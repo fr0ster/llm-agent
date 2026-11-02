@@ -48,14 +48,18 @@ On [task events] turns, reply NO_MESSAGE when there is nothing the user needs to
 After [restart], explain interrupted tasks, propose a read-only check of their real state, and decide with the user.
 Reply in the user's language.`;
 
+const STALL_SUPERVISION_GUIDANCE = `When a task event reports no activity, decide whether to keep waiting for a known long operation or stop_task and delegate_task again, optionally with another worker/model. Tell the user briefly what you decided. Inactivity never aborts work automatically.`;
+
 const PLANNER_PROTOCOL_GUIDANCE = `Delegate background work with delegate_task using an enabled profile name and the assigned step_id. Independent verification uses a separate verdict-profile step depending on successful report steps; the doing worker never checks its own work. Use plan_update to assign workers and reopen changed steps. Deliver completed results verbatim with deliver, once per planner call. Tool validation and recorded plan/task state are authoritative.`;
 
 /** Append only invariant protocol guidance to the host-owned planner prompt. */
 export function composePlannerPrompt(text: string): string {
   return [
     text,
-    ...[PLANNER_PROTOCOL_GUIDANCE, REQUEST_TIME_GUIDANCE].filter(
-      (guidance) => !text.includes(guidance),
-    ),
+    ...[
+      PLANNER_PROTOCOL_GUIDANCE,
+      REQUEST_TIME_GUIDANCE,
+      STALL_SUPERVISION_GUIDANCE,
+    ].filter((guidance) => !text.includes(guidance)),
   ].join('\n\n');
 }

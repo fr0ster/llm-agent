@@ -245,7 +245,7 @@ for (const streamMode of ['full', 'final'] as const) {
           assert.equal(settled[0]?.outcome, 'ok');
           assert.equal(reads.length, 2);
           assert.match(reads[0], /running/);
-          assert.equal(reads[1], reads[0]);
+          assert.match(reads[1], /running/);
           assert.match(
             String(session.snapshot().conversation.at(-1)?.content),
             /wait \(turn ended: tasks running\)/,
@@ -373,6 +373,8 @@ async function clockSession(options: Partial<DialogueSessionOptions> = {}) {
   const messages: import('@mcp-abap-adt/llm-agent').PlannerMessage[] = [];
   const session = await DialogueSession.open({
     id: 'clock',
+    stallNoticeMs: 0,
+    longTaskMs: 300_000,
     now: clock.now,
     scheduleTimer: clock.schedule,
     onMessage: (message) => {
@@ -836,6 +838,79 @@ test('planner receives user observers and event turns receive none', async () =>
     await flush();
     assert.equal(turns, 2);
   } finally {
+    await session.close();
+  }
+});
+
+test('planner task tools expose activity and stall events resume after progress', async () => {
+  const clock = new Clock();
+  const task = work();
+  const inputs: Message[][] = [];
+  const session = await DialogueSession.open({
+    id: 'stall-supervision',
+    now: clock.now,
+    scheduleTimer: clock.schedule,
+    waitTickMs: 0,
+    stallNoticeMs: 100,
+    maxCorrections: 0,
+    board: { workers: new Map([['executor', task.worker]]), now: clock.now },
+    planner: {
+      async process(messages) {
+        inputs.push(structuredClone(messages));
+        return { ok: true, value: { content: 'NO_MESSAGE' } };
+      },
+    },
+  });
+  try {
+    const delegated = await session.callTool('delegate_task', {
+      worker: 'executor',
+      goal: 'job',
+    });
+    assert.ok(delegated.ok);
+    await flush();
+    assert.equal(session.noteActivity('t1', 'tool GetProgram'), true);
+    await clock.advance(99);
+    for (const [name, args] of [
+      ['get_task', { task_id: 't1' }],
+      ['list_tasks', {}],
+    ] as const) {
+      const result = await session.callTool(name, args);
+      assert.ok(result.ok);
+      const content = result.value.content;
+      assert.ok(Array.isArray(content));
+      const text = content
+        .filter((item) => item.type === 'text')
+        .map((item) => item.text)
+        .join('');
+      assert.match(text, /"lastActivityAt":\s*0/);
+      assert.match(text, /"idleMs":\s*99/);
+      assert.match(text, /"currentAction":\s*"tool GetProgram"/);
+    }
+    await clock.advance(1);
+    assert.equal(session.snapshot().pendingEvents?.length, 1);
+    await clock.advance(1000);
+    assert.equal(session.snapshot().pendingEvents?.length, 1);
+    await session.send('review');
+    assert.match(
+      JSON.stringify(inputs),
+      /no activity for 0m \(last: tool GetProgram\)/,
+    );
+    await flush();
+    await session.callTool('list_tasks', {});
+    assert.equal(session.noteActivity('t1', 'llm call'), true);
+    await clock.advance(100);
+    assert.equal(session.snapshot().pendingEvents?.length, 1);
+    session.noteActivity('t1', 'tool GetProgram');
+    const before = inputs.length;
+    await session.send('review current status');
+    assert.doesNotMatch(
+      JSON.stringify(inputs.slice(before)),
+      /no activity for 0m \(last: llm call\)/,
+    );
+    assert.equal(session.snapshot().tasks[0]?.state, 'running');
+  } finally {
+    task.finish({ output: 'ok' });
+    await flush();
     await session.close();
   }
 });

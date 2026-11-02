@@ -493,6 +493,11 @@ export class ToolLoopHandler implements IStageHandler {
         )}`,
       });
 
+      try {
+        ctx.options?.onActivity?.('llm call');
+      } catch {
+        // Supervision is informational: an observer must never fail the work.
+      }
       const llmSpan = ctx.tracer.startSpan('smart_agent.llm_call', {
         parent: parentSpan,
         attributes: { 'llm.iteration': iteration + 1 },

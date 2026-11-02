@@ -147,8 +147,10 @@ export class PlannerMemoryWriter {
                 if (!result.ok) throw result.error;
               }
           },
-          30_000,
-          this.controller.signal,
+          this.config.writeTimeoutMs,
+          first.options.signal
+            ? AbortSignal.any([this.controller.signal, first.options.signal])
+            : this.controller.signal,
         );
       } catch {
         this.warn('Planner memory write failed or timed out; chunks dropped');
@@ -159,7 +161,7 @@ export class PlannerMemoryWriter {
     try {
       await withDeadline(async () => {
         await this.active;
-      }, 5_000);
+      }, this.config.closeTimeoutMs);
     } catch {
       this.warn(
         'Planner memory close deadline reached; remaining writes dropped',

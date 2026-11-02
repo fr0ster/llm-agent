@@ -117,9 +117,13 @@ test('all tool success paths return JSON and plan is stored', async () => {
     });
     assert.deepEqual(delegated.json, { task_id: 't1', state: 'queued' });
     const listed = (await call('list_tasks')).json;
+    // Running tasks carry activity facts for supervision.
     assert.deepEqual(Object.keys(listed[0]).sort(), [
+      'currentAction',
       'goal',
       'id',
+      'idleMs',
+      'lastActivityAt',
       'state',
       'worker',
     ]);

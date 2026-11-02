@@ -241,9 +241,8 @@ instruction). Selected results outside targets are included; `context.spec: fals
 omits the spec from both the task and the direct spec field. The default controller
 includes the task and history in its check prompt.
 
-The default request budget is `{ maxSteps: 20, maxRevisions: 3,
-maxDurationMs: 300000 }`; override individual fields with `budget` in the handler
-dependencies. Step/time limits are checked before each step, so the duration
+The default request budget is `{ maxSteps: 20, maxRevisions: 3 }`, with no
+duration deadline; opt in with `budget.maxDurationMs` in the handler dependencies. Step/time limits are checked before each step, so the duration
 limit does not interrupt an in-flight call. A stop calls `controller.report`;
 if reporting fails, deterministic text lists the stop reason and step records.
 Cancellation during reporting propagates, including when the report resolves after
@@ -410,7 +409,7 @@ events, distinct from the pending reply messages returned by `takePending()`.
 ### Wait mode
 
 `DialogueSession.open` accepts non-negative integer `waitTickMs` (default 30,000)
-and `longTaskMs` (default 300,000); zero disables each independently. A second
+and optional `longTaskMs` (default disabled); zero disables each independently. A second
 active-task status read (`get_task` or `list_tasks`) in one turn, with no outcome
 between reads, returns its tool result and ends the planner loop through a
 turn-owned cooperative `stopSignal`. The caller's `stopSignal` is combined with
@@ -422,7 +421,7 @@ in a waiting note. Finished-task reads never count. The actions record includes
 While tasks are queued or running, ticks emit catalog v1 `dialogue.wait`:
 `{ tasks: Array<{ id; worker; goal; state: 'queued' | 'running'; elapsedMs;
 toolCalls?; maxToolCalls? }> }`. Elapsed time uses `startedAt`, else `createdAt`.
-Ticks make no planner calls. Running tasks generate a `long_running` event at
+Ticks make no planner calls. When explicitly enabled, running tasks generate a `long_running` event at
 `longTaskMs` and again after each further interval. Its task-event note asks the
 planner to check and keep waiting, stop, or re-delegate, and includes elapsed
 time and known tool counts. These events carry no usage, do not change plans,
@@ -434,6 +433,26 @@ persisted. Restore interrupts active tasks, so it starts no wait clock for them.
 Tests can inject `now` and `scheduleTimer(callback, delayMs)`, which returns a
 cancellation function. Signal failures are caught and logged without affecting work.
 `DIALOGUE_SIGNALS_VERSION` remains 1 because this catalog addition is additive.
+
+### Worker activity supervision
+
+`stallNoticeMs` on the session or board defaults to 300,000 ms when omitted;
+zero or explicit undefined disables it. Running task tools expose `lastActivityAt`,
+`idleMs` and `currentAction`. Built-in LLM/tool loops report activity automatically;
+custom workers use `input.onActivity(action)`, and hosts can use
+`board.noteActivity(taskId, action)` or `session.noteActivity(taskId, action)`.
+Use short content-free labels such as `llm call` or `tool GetProgram`.
+
+Each idle episode produces one informational `long_running` task event marked
+`stalled: true`. Activity resets the threshold and makes queued older notices
+stale. Nothing is killed by this timer. Planner guidance asks it to decide whether
+the operation warrants waiting or whether to stop and re-delegate, and tell the
+user briefly. Events follow the same delivery and persistence path as task outcomes.
+
+Profile discovery/preparation and planner retrieval have no default deadline;
+`profileTimeoutMs` and `retrievalTimeoutMs` explicitly opt in. Planner-memory
+`writeTimeoutMs` and `closeTimeoutMs` are also opt-in. Caller cancellation still
+propagates.
 
 ### Parts and rules
 
