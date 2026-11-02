@@ -27,12 +27,12 @@
  * enters this path.
  */
 
+import { setTimeout as delay } from 'node:timers/promises';
 import {
   type IThrottleStrategy,
   ReportThrottling,
   type ThrottleDecision,
 } from '../interfaces/throttle-strategy.js';
-import { setTimeout as delay } from 'node:timers/promises';
 import { DefaultWaitStrategy } from '../interfaces/wait-strategy.js';
 
 /** Nothing waits unless the consumer says so. */
