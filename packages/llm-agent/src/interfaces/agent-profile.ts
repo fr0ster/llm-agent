@@ -8,6 +8,7 @@ export type WorkerToolPolicy =
   | 'read-only'
   | { allow?: string[]; deny?: string[] };
 export interface WorkerProfile {
+  model?: string;
   trust?: TrustMap;
   name: string;
   description: string;
@@ -21,7 +22,12 @@ export interface WorkerProfileSummary {
   result: WorkerProfile['result'];
 }
 export interface AgentProfileError {
-  code: 'missing' | 'disabled' | 'unavailable' | 'invalid';
+  code:
+    | 'missing'
+    | 'disabled'
+    | 'unavailable'
+    | 'invalid'
+    | 'MODEL_NOT_ALLOWED';
   message: string;
 }
 export interface AgentPrompts {
@@ -53,8 +59,10 @@ export interface IAgentProfileSource {
  * Verdict workers always have a read-only ceiling. Deny wins over allow.
  * Supplied base/profile text must use the context assembler's static preamble. */
 export interface IAgentProfileRunner {
+  /** Synchronous host model policy, checked before a task is queued. */
+  validateModel?(model: string): Result<void, AgentProfileError>;
   createWorker(
-    input: { profile: WorkerProfile; workerBase?: string },
+    input: { profile: WorkerProfile; workerBase?: string; model?: string },
     options?: CallOptions,
   ): Promise<Result<ISubAgent, AgentProfileError>>;
   /** Fresh author agent; hosts enforce read-only knowledge tools, with no SAP tools. */

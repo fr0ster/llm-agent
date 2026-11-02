@@ -978,8 +978,8 @@ export class DialogueSession {
             messages.push({ role: 'user', content: resultEvents.join('\n') });
         }
         const contentPartials: StreamChunk[] = [];
-        const progressPartials: StreamChunk[] = [];
-        let progressText = '';
+        let lastIterationText = '';
+        let lastIterationPartials: StreamChunk[] = [];
         let finalIteration = false;
         const result = await runInPlannerScope(
           {
@@ -1106,15 +1106,21 @@ export class DialogueSession {
                 if (restarting) return;
                 if (chunk.kind === 'iteration-end' && !chunk.nodeId) {
                   if (chunk.outcome === 'tool_calls') {
-                    progressText += partialText;
-                    progressPartials.push(...contentPartials);
+                    // Empty polls preserve the latest non-empty reply; later
+                    // text replaces earlier pre-tool reasoning.
+                    if (partialText.trim()) {
+                      lastIterationText = partialText;
+                      lastIterationPartials = [...contentPartials];
+                    }
+                    finalIteration = false;
                     partialText = '';
                     contentPartials.length = 0;
-                    finalIteration = false;
                   } else if (chunk.outcome === 'retry') {
+                    lastIterationText = '';
+                    lastIterationPartials = [];
+                    finalIteration = false;
                     partialText = '';
                     contentPartials.length = 0;
-                    finalIteration = false;
                   } else finalIteration = true;
                   return;
                 }
@@ -1136,7 +1142,9 @@ export class DialogueSession {
             value: {
               content: finalIteration
                 ? partialText
-                : progressText + partialText,
+                : partialText.trim()
+                  ? partialText
+                  : lastIterationText,
               usage: undefined,
             },
           };
@@ -1157,18 +1165,22 @@ export class DialogueSession {
           correction--;
           continue;
         }
+        if (!finalIteration && !partialText.trim()) {
+          partialText = lastIterationText;
+          contentPartials.splice(
+            0,
+            contentPartials.length,
+            ...lastIterationPartials,
+          );
+        }
         const waiting = waitStop.signal.aborted && !user?.opts.signal?.aborted;
         if (!result.ok && !waiting) throw result.error;
-        if (!finalIteration) {
-          partialText = progressText + partialText;
-          contentPartials.unshift(...progressPartials);
-        }
 
         reply = deliveries.length
           ? deliveries.join('\n\n')
-          : result.ok
+          : finalIteration && result.ok
             ? result.value.content
-            : partialText;
+            : partialText || (result.ok ? result.value.content : '');
         if (waiting && !deliveries.length && !reply.trim())
           reply = partialText.trim()
             ? partialText

@@ -12,6 +12,7 @@ export type TaskState =
   | 'stopped'
   | 'interrupted';
 export interface TaskRequest {
+  model?: string;
   result?: WorkerProfile['result'];
   /** Owning request start in epoch milliseconds; preserved across tool rounds and queued tasks. */
   requestStartedAt?: number;
@@ -20,6 +21,7 @@ export interface TaskRequest {
   context?: string;
 }
 export interface TaskRecord {
+  model?: string;
   toolTrace?: ToolTrace;
   result?: WorkerProfile['result'];
   usage?: TokenUsage;
