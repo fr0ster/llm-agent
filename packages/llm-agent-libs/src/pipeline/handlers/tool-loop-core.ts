@@ -293,7 +293,11 @@ export async function* executeToolBatchWithHeartbeat(
         cached: false,
       };
     }
-    options?.onActivity?.(`tool ${tc.name}`);
+    try {
+      options?.onActivity?.(`tool ${tc.name}`);
+    } catch {
+      // Supervision is informational: an observer must never fail the work.
+    }
     const toolStart = Date.now();
     options?.sessionLogger?.logStep(
       `mcp_call_${tc.name}`,

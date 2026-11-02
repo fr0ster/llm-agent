@@ -1133,7 +1133,11 @@ export class SmartAgent {
         },
         'llm',
       );
-      opts?.onActivity?.('llm call');
+      try {
+        opts?.onActivity?.('llm call');
+      } catch {
+        // Supervision is informational: an observer must never fail the work.
+      }
       const llmSpan = this.tracer.startSpan('smart_agent.llm_call', {
         parent: toolLoopSpan,
         attributes: { 'llm.iteration': iteration + 1 },

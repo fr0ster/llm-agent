@@ -70,7 +70,11 @@ export class DirectLlmSubAgent implements ISubAgent {
     );
     if (!assembled.ok) throw assembled.error;
 
-    input.onActivity?.('llm call');
+    try {
+      input.onActivity?.('llm call');
+    } catch {
+      // Supervision is informational: an observer must never fail the work.
+    }
     const res = await this.llm.chat(assembled.value, [], {
       usage: input.usage,
       signal: input.signal,

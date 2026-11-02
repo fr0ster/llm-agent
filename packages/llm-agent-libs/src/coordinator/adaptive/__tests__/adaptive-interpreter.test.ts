@@ -555,7 +555,8 @@ test('omitting duration budget allows work beyond five minutes', async () => {
   assert.notEqual(result.stopReason, 'budget: time');
 });
 
-for (const maxDurationMs of [NaN, -1, 0, 1.5, Infinity, 2_147_483_648]) {
+// Elapsed-time budgets: any positive finite value is valid, the rest means none.
+for (const maxDurationMs of [NaN, -1, 0, Infinity]) {
   test(`invalid duration ${maxDurationMs} does not stop work`, async () => {
     const { input, calls } = setup();
     let clock = 0;

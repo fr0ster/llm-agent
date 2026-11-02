@@ -14,7 +14,6 @@ import type {
   StepStatus,
 } from '@mcp-abap-adt/llm-agent';
 import { OrchestratorError } from '../../agent.js';
-import { optionalDeadlineMs } from '../optional-deadline.js';
 import { composeStepInput } from './compose-step-input.js';
 import { parseVerdict, validateSteps } from './parse-plan.js';
 
@@ -76,7 +75,15 @@ export async function runAdaptivePlan(
 ): Promise<AdaptiveRunResult> {
   const now = input.now ?? Date.now;
   const startedAt = now();
-  const maxDurationMs = optionalDeadlineMs(input.budget.maxDurationMs);
+  // Compared with elapsed time, not a Node timer: any positive finite value
+  // is a valid budget; anything else means no budget.
+  const requestedDurationMs = input.budget.maxDurationMs;
+  const maxDurationMs =
+    requestedDurationMs !== undefined &&
+    Number.isFinite(requestedDurationMs) &&
+    requestedDurationMs > 0
+      ? requestedDurationMs
+      : undefined;
   const plan: AdaptivePlan = { ...input.plan, steps: [...input.plan.steps] };
   const records: StepRecord[] = [];
   const latest = new Map<string, StepRecord>();
