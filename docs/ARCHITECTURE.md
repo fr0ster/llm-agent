@@ -820,7 +820,8 @@ Empty polling iterations preserve an earlier non-empty reply, including a waitin
 reply at a cooperative stop. A completed final iteration remains authoritative.
 Validation retries and provider resets continue to discard rejected or abandoned
 partials. This dialogue reply rule does not change `process()` or tool-loop
-fallbacks.
+fallbacks. It relies on per-iteration content partials (`streamMode: 'full'`, the default);
+with `streamMode: 'final'` the stop fallback still arrives as accumulated text.
 
 Both SSE surfaces (`/v1/chat/completions`, `/v1/messages`) run an idle keep-alive
 watchdog: if no chunk is written for `agent.heartbeatIntervalMs` (default 5000ms;
