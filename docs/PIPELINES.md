@@ -452,7 +452,7 @@ user briefly. Events follow the same delivery and persistence path as task outco
 Profile discovery/preparation and planner retrieval have no default deadline;
 `profileTimeoutMs` and `retrievalTimeoutMs` explicitly opt in. Planner-memory
 `writeTimeoutMs` and `closeTimeoutMs` are also opt-in. Caller cancellation still
-propagates. See [the deadline inventory](NO_DEADLINES_PR_NOTES.md).
+propagates.
 
 ### Parts and rules
 
