@@ -1,4 +1,3 @@
-import { setTimeout as delay } from 'node:timers/promises';
 /**
  * Base interface for LLM providers
  */
@@ -345,46 +344,29 @@ export abstract class BaseLLMProvider<
         }
       }
     };
-    // Every physical attempt, a transient retry included, passes the shared
-    // quota gate again: a 429 seen by another caller meanwhile holds this one too.
-    const throttled = () =>
-      runWithThrottleRetry(physicalRequest, {
-        key: this.quotaKey(extra?.model),
-        strategy: this.config.whenThrottled,
-        isThrottled: (e: unknown) => this.isThrottled(e),
-        retryAfterSeconds: (e: unknown) => this.retryAfterSeconds(e),
-        signal: extra?.signal,
-        onRetry: extra?.onRetry,
-      });
-    let transientAttempts = 0;
-    const withTransientRetry = async () => {
-      for (;;) {
-        extra?.signal?.throwIfAborted();
-        try {
-          return await throttled();
-        } catch (error) {
-          const policy = this.transientRetry();
-          if (
-            requestAborted(error, extra?.signal) ||
-            transientAttempts >= policy.maxRetries ||
-            !isTransientFailure(
-              error instanceof Error ||
-                (typeof error === 'object' && error !== null)
-                ? error
-                : undefined,
-            )
-          )
-            throw error;
-          transientAttempts += 1;
-          await delay(
-            (this.retryAfterSeconds(error) ?? policy.delayMs / 1000) * 1000,
-            undefined,
-            { signal: extra?.signal },
-          );
-        }
-      }
-    };
-    return withTransientRetry();
+    const transient = this.transientRetry();
+    return runWithThrottleRetry(physicalRequest, {
+      key: this.quotaKey(extra?.model),
+      strategy: this.config.whenThrottled,
+      isThrottled: (e: unknown) => this.isThrottled(e),
+      retryAfterSeconds: (e: unknown) => this.retryAfterSeconds(e),
+      signal: extra?.signal,
+      onRetry: extra?.onRetry,
+      // Inside the throttle loop: every retry passes the shared gate again and
+      // the call's throttle attempts and waited time carry over.
+      transient: {
+        maxRetries: transient.maxRetries,
+        isTransient: (e: unknown) =>
+          !requestAborted(e, extra?.signal) &&
+          isTransientFailure(
+            e instanceof Error || (typeof e === 'object' && e !== null)
+              ? e
+              : undefined,
+          ),
+        delayMs: (e: unknown) =>
+          (this.retryAfterSeconds(e) ?? transient.delayMs / 1000) * 1000,
+      },
+    });
   }
 }
 
