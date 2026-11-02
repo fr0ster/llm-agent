@@ -345,12 +345,23 @@ export abstract class BaseLLMProvider<
         }
       }
     };
+    // Every physical attempt, a transient retry included, passes the shared
+    // quota gate again: a 429 seen by another caller meanwhile holds this one too.
+    const throttled = () =>
+      runWithThrottleRetry(physicalRequest, {
+        key: this.quotaKey(extra?.model),
+        strategy: this.config.whenThrottled,
+        isThrottled: (e: unknown) => this.isThrottled(e),
+        retryAfterSeconds: (e: unknown) => this.retryAfterSeconds(e),
+        signal: extra?.signal,
+        onRetry: extra?.onRetry,
+      });
     let transientAttempts = 0;
-    const requestWithTransientRetry = async () => {
+    const withTransientRetry = async () => {
       for (;;) {
         extra?.signal?.throwIfAborted();
         try {
-          return await physicalRequest();
+          return await throttled();
         } catch (error) {
           const policy = this.transientRetry();
           if (
@@ -373,14 +384,7 @@ export abstract class BaseLLMProvider<
         }
       }
     };
-    return runWithThrottleRetry(requestWithTransientRetry, {
-      key: this.quotaKey(extra?.model),
-      strategy: this.config.whenThrottled,
-      isThrottled: (e: unknown) => this.isThrottled(e),
-      retryAfterSeconds: (e: unknown) => this.retryAfterSeconds(e),
-      signal: extra?.signal,
-      onRetry: extra?.onRetry,
-    });
+    return withTransientRetry();
   }
 }
 

@@ -43,14 +43,33 @@ type HttpMiddleware = (options: {
 async function withHttpErrorCapture<T>(
   run: (middleware: HttpMiddleware) => Promise<T>,
 ): Promise<T> {
-  let response: object | undefined;
+  // Only the status and Retry-After: never the body, headers or request config.
+  let response:
+    | { status: number; headers: { 'retry-after'?: string } }
+    | undefined;
   const middleware: HttpMiddleware = (options) => async (config) => {
     try {
       return await options.fn(config);
     } catch (error) {
-      if (error && typeof error === 'object' && 'response' in error) {
-        const candidate = error.response;
-        if (candidate && typeof candidate === 'object') response = candidate;
+      const candidate =
+        error && typeof error === 'object' && 'response' in error
+          ? error.response
+          : undefined;
+      const status =
+        candidate && typeof candidate === 'object' && 'status' in candidate
+          ? candidate.status
+          : undefined;
+      if (typeof status === 'number') {
+        const headers =
+          candidate && typeof candidate === 'object' && 'headers' in candidate
+            ? candidate.headers
+            : undefined;
+        const retryAfter = readRetryAfter(headers);
+        response = {
+          status,
+          headers:
+            retryAfter === undefined ? {} : { 'retry-after': retryAfter },
+        };
       }
       throw error;
     }
@@ -66,6 +85,19 @@ async function withHttpErrorCapture<T>(
     }
     throw error;
   }
+}
+
+function readRetryAfter(headers: unknown): string | undefined {
+  if (!headers || typeof headers !== 'object') return undefined;
+  const value =
+    'get' in headers && typeof headers.get === 'function'
+      ? headers.get('retry-after')
+      : Object.entries(headers).find(
+          ([name]) => name.toLowerCase() === 'retry-after',
+        )?.[1];
+  return typeof value === 'string' || typeof value === 'number'
+    ? String(value)
+    : undefined;
 }
 
 /** The constructed-destination shape the SAP AI SDK documents. */
