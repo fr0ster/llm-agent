@@ -1,5 +1,11 @@
 # @mcp-abap-adt/sap-aicore-llm
 
+## 30.12.0
+
+### Minor Changes
+
+- 94e1af6: SAP AI Core streaming: recover the HTTP status and Retry-After of an empty-body error response, so an empty 429 takes the throttle path instead of failing with "Unexpected end of JSON input". Retry transient failures (5xx, unreadable error bodies, connection resets) once before the first response chunk, with visible physical attempts. Usage records of failed LLM and embedding calls carry errorStatus and errorName (no message text); CSV exports include both. Cap single embedding inputs at 24000 characters by default (maxInputChars) and stop retrying input-too-long errors.
+
 ## 30.11.0
 
 ### Minor Changes
