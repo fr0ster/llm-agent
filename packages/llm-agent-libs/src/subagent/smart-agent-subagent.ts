@@ -57,6 +57,7 @@ export class SmartAgentSubAgent implements ISubAgent {
           usage: input.usage,
           signal: input.signal,
           stopSignal: input.stopSignal,
+          dialogueTask: input.dialogueTask,
           trace: input.trace,
           sessionLogger: input.sessionLogger,
           onPartial: input.onPartial,

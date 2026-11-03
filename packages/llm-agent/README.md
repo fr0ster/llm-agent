@@ -87,6 +87,52 @@ elapsedMs: number; toolCalls?: number; maxToolCalls?: number }> }`.
 Elapsed time starts at `startedAt`, falling back to `createdAt`.
 See [dialogue planner behavior and options](../../docs/PIPELINES.md#dialogue-planner).
 
+## Dialogue task completion signals
+
+Catalog v1 also adds `dialogue.task.finish` without changing
+`DIALOGUE_SIGNALS_VERSION`. Its payload is
+`{ taskId: string; output: string; tool?: string }`, addressed with the dialogue
+session id as `source` and task id as retention `key`.
+
+`DialogueSession.open({ id, signals, ... })` passes a per-run
+`IDialogueTaskContext` through `ISubAgentInput.dialogueTask` and
+`CallOptions.dialogueTask`, including calls to host MCP tools. A host tool can use:
+
+```typescript
+import { finishDialogueTask, type CallOptions } from '@mcp-abap-adt/llm-agent';
+
+function submitVerdict(output: string, options?: CallOptions): void {
+  // Persist the verdict first, then finish the current worker successfully.
+  if (options?.dialogueTask) {
+    finishDialogueTask(options.dialogueTask, output, 'submit_verdict');
+  }
+}
+```
+
+The helper signature is `finishDialogueTask(task: IDialogueTaskContext,
+output: string, tool?: string): void`. The context exposes `taskId`, `source`,
+`signals: ISignalEmitter<DialogueSignals>` and `readFinish()`.
+Hosts may instead call `task.signals.emit('dialogue.task.finish',
+{ taskId: task.taskId, output }, task.source, task.taskId)` directly.
+For custom worker dispatch, `createDialogueTaskContext(signals, source, taskId)`
+creates the context immediately before each run; never reuse it across retries.
+
+Both pipeline and legacy tool loops read retained state after a complete tool
+batch, before the next LLM call. Completion returns the supplied output with
+`finishReason: 'stop'`, no stopped marker or pending calls, and normal TaskBoard
+`done` state, preserving usage, timing, counters and tool evidence. In-flight
+tools complete normally. The retained signal object captured immediately before
+`worker.run` is ignored by identity, so stale signals cannot finish a retried run
+and a fresh emission in the same millisecond still counts. Retention must return
+the same immutable object until a new emission replaces it.
+
+Use a retention-capable bus such as `createSignalBus<DialogueSignals>()` from
+`@mcp-abap-adt/llm-signals`. Without a bus, with `noopEmitter`, or with a foreign
+emitter without `last()`, normal completion continues, including the extra LLM
+call. Emitter wrappers that expose only `emit`/`retire` also lose retention;
+pass the original bus to the dialogue. Finish signals for other sources or task
+ids are ignored. No subscription or async notification delivery is required.
+
 ## Listing RAG records
 
 `InMemoryRag`, `VectorRag` and `QdrantRag` support optional `IRag.list(params?, options?)`.

@@ -19,6 +19,7 @@ import type {
   WorkerProfileSummary,
 } from '@mcp-abap-adt/llm-agent';
 import {
+  createDialogueTaskContext,
   normalizeToolTrace,
   ToolTraceCollector,
   type ToolTraceEntry,
@@ -381,6 +382,13 @@ export class TaskBoard {
             ? AbortSignal.any([baseInput.signal, hard.signal])
             : hard.signal,
           stopSignal: stop.signal,
+          dialogueTask: this.opts.signals
+            ? createDialogueTaskContext(
+                this.opts.signals,
+                this.opts.source ?? '',
+                task.id,
+              )
+            : undefined,
           onActivity: (action) => {
             this.noteActivity(task.id, action);
             try {

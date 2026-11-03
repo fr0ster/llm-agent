@@ -86,6 +86,7 @@ export type {
   TaskState,
 } from './dialogue.js';
 export * from './dialogue-signals.js';
+export * from './dialogue-task-context.js';
 export type {
   ErrorContext,
   ErrorReaction,

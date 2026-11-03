@@ -7,6 +7,20 @@ An optional in-process signal bus with synchronous queued delivery, immutable pa
 source filters and latest retention per `(name, source, key)`. Contracts and the
 versioned dialogue catalog live in `@mcp-abap-adt/llm-agent`.
 
+Catalog v1 includes the additive `dialogue.task.finish` signal:
+`{ taskId: string; output: string; tool?: string }`. Emit with the dialogue session
+id as source and taskId as key. The default bus retains it synchronously during
+`emit`; workers check `last('dialogue.task.finish', source, taskId)` after the
+tool batch and before the next LLM call, completing successfully with the supplied
+output. The retained object captured before worker.run is excluded by identity;
+each emission creates a fresh immutable object, so same-millisecond emissions
+are unambiguous and stale signals do not finish a retried run.
+
+No bus, `noopEmitter`, foreign emitters without `last()`, and emitter-only wrappers
+(`combineEmitters` / `filterEmitter`) preserve normal behavior, including the
+extra LLM call. Pass the retention-capable bus itself to `DialogueSession.open`.
+Sources and task keys isolate workers. See the [host API and example](../llm-agent/README.md#dialogue-task-completion-signals).
+
 ```ts
 import type { DialogueSignals } from '@mcp-abap-adt/llm-agent';
 import { DialogueSession } from '@mcp-abap-adt/llm-agent-libs';

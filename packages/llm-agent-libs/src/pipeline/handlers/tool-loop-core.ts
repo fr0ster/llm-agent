@@ -40,6 +40,14 @@ export type ParsedToolCall = {
   arguments: Record<string, unknown>;
 };
 
+/** Shared iteration boundary: finish only after the first complete tool round. */
+export function readTaskFinish(
+  options: CallOptions | undefined,
+  iteration: number,
+) {
+  return iteration > 0 ? options?.dialogueTask?.readFinish() : undefined;
+}
+
 /** Evaluate the complete round before dispatch, including calls outside the batch. */
 export function guardToolRound(
   calls: ParsedToolCall[],
