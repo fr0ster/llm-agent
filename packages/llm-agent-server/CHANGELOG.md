@@ -1,5 +1,20 @@
 # @mcp-abap-adt/llm-agent-server
 
+## 30.9.2
+
+### Patch Changes
+
+- 4505cf7: Upgrade the MCP SDK to ^1.32.2 to address GHSA-46jr-4wx8-v453. Upgrade the TypeSafe AI SDK to ^0.7.0 and allow optional decision token counts, mapping nullable usage to undefined while preserving numeric counts, including zero.
+- Updated dependencies [4505cf7]
+- Updated dependencies [4505cf7]
+- Updated dependencies [4505cf7]
+- Updated dependencies [4505cf7]
+  - @mcp-abap-adt/sap-aicore-llm@30.13.0
+  - @mcp-abap-adt/llm-agent-libs@30.29.0
+  - @mcp-abap-adt/llm-agent@30.31.0
+  - @mcp-abap-adt/llm-agent-mcp@30.10.1
+  - @mcp-abap-adt/typesafe-decision@30.9.2
+
 ## 30.9.1
 
 Lockstep release with the 30.9.1 line: dialogue plans no longer stall in `checking` — idle checks cover running/checking steps without active attempts, checker verdicts are read from prose or JSON fences (outermost, consistent candidates only), unusable verdicts allow a fresh checker — changes in `llm-agent-libs`; other packages are unchanged. See the root CHANGELOG.

@@ -1,5 +1,15 @@
 # @mcp-abap-adt/llm-agent
 
+## 30.31.0
+
+### Minor Changes
+
+- 4505cf7: Extend planner transcripts with persisted compact answer references and usage contracts with optional cache read and creation token counters.
+
+### Patch Changes
+
+- 4505cf7: Upgrade the MCP SDK to ^1.32.2 to address GHSA-46jr-4wx8-v453. Upgrade the TypeSafe AI SDK to ^0.7.0 and allow optional decision token counts, mapping nullable usage to undefined while preserving numeric counts, including zero.
+
 ## 30.30.0
 
 ### Minor Changes

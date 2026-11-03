@@ -1,5 +1,11 @@
 # @mcp-abap-adt/sap-aicore-llm
 
+## 30.13.0
+
+### Minor Changes
+
+- 4505cf7: Add opt-in Anthropic caching for stable system prompts and tools, preserve message metadata, and report cache reads/writes for streaming and non-streaming calls.
+
 ## 30.12.0
 
 ### Minor Changes
