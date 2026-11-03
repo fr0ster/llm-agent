@@ -91,8 +91,8 @@ See [dialogue planner behavior and options](../../docs/PIPELINES.md#dialogue-pla
 
 Catalog v1 also adds `dialogue.task.finish` without changing
 `DIALOGUE_SIGNALS_VERSION`. Its payload is
-`{ taskId: string; output: string; tool?: string }`, addressed with the dialogue
-session id as `source` and task id as retention `key`.
+`{ taskId: string; runId: string; output: string; tool?: string }`, addressed with the dialogue
+session id as `source` and unique run id as retention `key`.
 
 `DialogueSession.open({ id, signals, ... })` passes a per-run
 `IDialogueTaskContext` through `ISubAgentInput.dialogueTask` and
@@ -110,21 +110,27 @@ function submitVerdict(output: string, options?: CallOptions): void {
 ```
 
 The helper signature is `finishDialogueTask(task: IDialogueTaskContext,
-output: string, tool?: string): void`. The context exposes `taskId`, `source`,
+output: string, tool?: string): void`. The context exposes `taskId`, `runId`, `source`,
 `signals: ISignalEmitter<DialogueSignals>` and `readFinish()`.
 Hosts may instead call `task.signals.emit('dialogue.task.finish',
-{ taskId: task.taskId, output }, task.source, task.taskId)` directly.
+{ taskId: task.taskId, runId: task.runId, output }, task.source, task.runId)` directly.
 For custom worker dispatch, `createDialogueTaskContext(signals, source, taskId)`
 creates the context immediately before each run; never reuse it across retries.
 
 Both pipeline and legacy tool loops read retained state after a complete tool
-batch, before the next LLM call. Completion returns the supplied output with
+batch and before every LLM call, including the first. Completion returns the supplied output with
 `finishReason: 'stop'`, no stopped marker or pending calls, and normal TaskBoard
 `done` state, preserving usage, timing, counters and tool evidence. In-flight
-tools complete normally. The retained signal object captured immediately before
-`worker.run` is ignored by identity, so stale signals cannot finish a retried run
-and a fresh emission in the same millisecond still counts. Retention must return
-the same immutable object until a new emission replaces it.
+tools complete normally. Each context receives a unique `runId`; only signals
+matching that run, source, key and task id are accepted. This excludes both retained
+signals and late emissions through old contexts, even when a task id is reused.
+Retention is per run, so a late old finish cannot overwrite the current finish.
+The final check follows synchronous `onActivity` and `onToolsSelected` callbacks.
+An already started LLM call is not interrupted.
+Retention is per run, so a late old finish cannot overwrite the current finish.
+The final check follows synchronous `onActivity` and `onToolsSelected` callbacks.
+An already started LLM call is not interrupted.
+No timestamp or retained-object identity baseline is needed.
 
 Use a retention-capable bus such as `createSignalBus<DialogueSignals>()` from
 `@mcp-abap-adt/llm-signals`. Without a bus, with `noopEmitter`, or with a foreign

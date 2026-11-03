@@ -8,13 +8,13 @@ source filters and latest retention per `(name, source, key)`. Contracts and the
 versioned dialogue catalog live in `@mcp-abap-adt/llm-agent`.
 
 Catalog v1 includes the additive `dialogue.task.finish` signal:
-`{ taskId: string; output: string; tool?: string }`. Emit with the dialogue session
-id as source and taskId as key. The default bus retains it synchronously during
-`emit`; workers check `last('dialogue.task.finish', source, taskId)` after the
-tool batch and before the next LLM call, completing successfully with the supplied
-output. The retained object captured before worker.run is excluded by identity;
-each emission creates a fresh immutable object, so same-millisecond emissions
-are unambiguous and stale signals do not finish a retried run.
+`{ taskId: string; runId: string; output: string; tool?: string }`. Emit with the dialogue session
+id as source and runId as key (`finishDialogueTask` does this). The default bus retains it
+synchronously during `emit`; workers check `last('dialogue.task.finish', source, runId)`
+after the tool batch and before every LLM call, including the first, completing successfully
+with the supplied output. Each task context has a unique runId; workers accept
+only matching runIds, sources, keys and task ids. Retained finishes and late
+emissions from old contexts cannot finish a new run with the same task id.
 
 No bus, `noopEmitter`, foreign emitters without `last()`, and emitter-only wrappers
 (`combineEmitters` / `filterEmitter`) preserve normal behavior, including the

@@ -40,12 +40,12 @@ export type ParsedToolCall = {
   arguments: Record<string, unknown>;
 };
 
-/** Shared iteration boundary: finish only after the first complete tool round. */
+/** Shared boundary: honor this run's finish before every LLM call. */
 export function readTaskFinish(
   options: CallOptions | undefined,
-  iteration: number,
+  _iteration: number,
 ) {
-  return iteration > 0 ? options?.dialogueTask?.readFinish() : undefined;
+  return options?.dialogueTask?.readFinish();
 }
 
 /** Evaluate the complete round before dispatch, including calls outside the batch. */

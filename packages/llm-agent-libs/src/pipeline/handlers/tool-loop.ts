@@ -536,27 +536,11 @@ export class ToolLoopHandler implements IStageHandler {
         )}`,
       });
 
-      const taskFinish = readTaskFinish(ctx.options, iteration);
-      if (taskFinish) {
-        // Task output is authoritative: skip validation reprompts. Pipeline output
-        // uses its normal events/finalization; this loop has no adapter or stream hook.
-        ctx.yield({ ok: true, value: { content: taskFinish.output } });
-        ctx.onPartial?.({ kind: 'content', delta: taskFinish.output });
-        ctx.yield({ ok: true, value: { content: '', iterationEnd: 'final' } });
-        ctx.onPartial?.({ kind: 'iteration-end', outcome: 'final' });
-        return finalize(taskFinish.output, 'stop');
-      }
       try {
         ctx.options?.onActivity?.('llm call');
       } catch {
         // Supervision is informational: an observer must never fail the work.
       }
-      const llmSpan = ctx.tracer.startSpan('smart_agent.llm_call', {
-        parent: parentSpan,
-        attributes: { 'llm.iteration': iteration + 1 },
-      });
-      ctx.metrics.llmCallCount.add();
-      const llmCallStart = Date.now();
 
       let content = '';
       let finishReason: LlmFinishReason | undefined;
@@ -581,6 +565,22 @@ export class ToolLoopHandler implements IStageHandler {
           /* Observers cannot affect execution. */
         }
       }
+      const taskFinish = readTaskFinish(ctx.options, iteration);
+      if (taskFinish) {
+        // Task output is authoritative: skip validation reprompts. Pipeline output
+        // uses its normal events/finalization; this loop has no adapter or stream hook.
+        ctx.yield({ ok: true, value: { content: taskFinish.output } });
+        ctx.onPartial?.({ kind: 'content', delta: taskFinish.output });
+        ctx.yield({ ok: true, value: { content: '', iterationEnd: 'final' } });
+        ctx.onPartial?.({ kind: 'iteration-end', outcome: 'final' });
+        return finalize(taskFinish.output, 'stop');
+      }
+      const llmSpan = ctx.tracer.startSpan('smart_agent.llm_call', {
+        parent: parentSpan,
+        attributes: { 'llm.iteration': iteration + 1 },
+      });
+      ctx.metrics.llmCallCount.add();
+      const llmCallStart = Date.now();
       // Delegate to ILlmCallStrategy — handles streaming, non-streaming, or fallback
       const llmStream = ctx.llmCallStrategy.call(
         ctx.mainLlm,

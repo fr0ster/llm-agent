@@ -1219,27 +1219,11 @@ export class SmartAgent {
         },
         'llm',
       );
-      const taskFinish = readTaskFinish(opts, iteration);
-      if (taskFinish) {
-        // Task output is authoritative: validation reprompts must not restart a finished task.
-        opts?.onPartial?.({ kind: 'content', delta: taskFinish.output });
-        if (!clientAdapter && !this.config.onBeforeStream) {
-          yield { ok: true, value: { content: taskFinish.output } };
-        }
-        yield* finalize(taskFinish.output, 'stop');
-        return;
-      }
       try {
         opts?.onActivity?.('llm call');
       } catch {
         // Supervision is informational: an observer must never fail the work.
       }
-      const llmSpan = this.tracer.startSpan('smart_agent.llm_call', {
-        parent: toolLoopSpan,
-        attributes: { 'llm.iteration': iteration + 1 },
-      });
-      this.metrics.llmCallCount.add();
-      const llmCallStart = Date.now();
       if (
         currentTools.length !== lastToolsSelected ||
         available !== lastToolsAvailable
@@ -1252,6 +1236,22 @@ export class SmartAgent {
           /* Observers cannot affect execution. */
         }
       }
+      const taskFinish = readTaskFinish(opts, iteration);
+      if (taskFinish) {
+        // Task output is authoritative: validation reprompts must not restart a finished task.
+        opts?.onPartial?.({ kind: 'content', delta: taskFinish.output });
+        if (!clientAdapter && !this.config.onBeforeStream) {
+          yield { ok: true, value: { content: taskFinish.output } };
+        }
+        yield* finalize(taskFinish.output, 'stop');
+        return;
+      }
+      const llmSpan = this.tracer.startSpan('smart_agent.llm_call', {
+        parent: toolLoopSpan,
+        attributes: { 'llm.iteration': iteration + 1 },
+      });
+      this.metrics.llmCallCount.add();
+      const llmCallStart = Date.now();
       const stream = this.defaultLlmCallStrategy.call(
         this._mainLlm,
         toModelToolMessages(messages, this.config.toolTrust),

@@ -5,6 +5,7 @@ import {
   createDialogueTaskContext,
   type DialogueSignals,
   finishDialogueTask,
+  type IDialogueTaskContext,
   type IMcpClient,
   type LlmStreamChunk,
 } from '@mcp-abap-adt/llm-agent';
@@ -19,6 +20,43 @@ import { SmartAgentSubAgent } from '../subagent/smart-agent-subagent.js';
 import { makeAssembler, makeDefaultDeps } from '../testing/index.js';
 
 for (const pipeline of [false, true]) {
+  for (const streamMode of ['full', 'final'] as const) {
+    test(`finish during first preparation skips LLM: pipeline=${pipeline}, stream=${streamMode}`, async () => {
+      const bus = createSignalBus<DialogueSignals>();
+      const task = createDialogueTaskContext(bus, 's', 't1');
+      let lists = 0;
+      const client: IMcpClient = {
+        async listTools() {
+          lists++;
+          await new Promise<void>((resolve) => setImmediate(resolve));
+          finishDialogueTask(task, 'finished during preparation');
+          return { ok: true, value: [] };
+        },
+        async callTool() {
+          assert.fail('no tool should be called');
+        },
+      };
+      const { deps, llm } = makeDefaultDeps({
+        mcpClients: [client],
+        llmResponses: [{ content: 'unexpected', finishReason: 'stop' }],
+      });
+      const config = { maxIterations: 3, streamMode, heartbeatIntervalMs: 0 };
+      if (pipeline) {
+        const flow = new DefaultPipeline();
+        flow.initialize({ ...deps, agentConfig: config });
+        deps.pipeline = flow;
+      }
+      const agent = new SmartAgent(deps, config);
+      const result = await agent.process('work', { dialogueTask: task });
+      assert.ok(lists > 0);
+      assert.ok(result.ok);
+      assert.equal(result.value.content, 'finished during preparation');
+      assert.equal(result.value.stopReason, 'stop');
+      assert.equal(result.value.stopped, undefined);
+      assert.equal(result.value.toolCalls, undefined);
+      assert.equal(llm.callCount, 0);
+    });
+  }
   for (const scenario of [
     'finish',
     'empty-output',
@@ -39,7 +77,7 @@ for (const pipeline of [false, true]) {
         if (scenario === 'stale') {
           bus.emit(
             'dialogue.task.finish',
-            { taskId: 't1', output: 'old' },
+            { taskId: 't1', runId: 'previous-run', output: 'old' },
             's',
             't1',
           );
@@ -142,7 +180,7 @@ for (const pipeline of [false, true]) {
   }
 }
 
-test('a fresh emission in the baseline millisecond is accepted, the previous run is ignored', (t) => {
+test('run identity accepts same-millisecond finishes and excludes previous runs', (t) => {
   t.mock.method(Date, 'now', () => 123);
   const bus = createSignalBus<DialogueSignals>();
   finishDialogueTask(createDialogueTaskContext(bus, 's', 't'), 'old');
@@ -161,11 +199,10 @@ for (const pipeline of [false, true]) {
     test(`finish during catalogue wait: pipeline=${pipeline}, stream=${streamMode}`, async () => {
       const bus = createSignalBus<DialogueSignals>();
       const task = createDialogueTaskContext(bus, 's', 't1');
-      let lists = 0;
       const client: IMcpClient = {
         cacheable: false,
         async listTools() {
-          if (++lists > 1) {
+          if (llm.callCount > 0) {
             await new Promise<void>((resolve) => setImmediate(resolve));
             finishDialogueTask(task, 'finished during refresh');
           }
@@ -308,13 +345,14 @@ test('legacy finish uses the stream hook and client adapter', async () => {
     contents.filter((content) => content === '[hook: verdict]').length,
     1,
   );
-  assert.equal(llm.callCount, 1);
+  assert.equal(llm.callCount, 0);
 });
 
 for (const pipeline of [false, true]) {
   test(`TaskBoard rerun with the same id ignores previous finish: pipeline=${pipeline}`, async () => {
     const bus = createSignalBus<DialogueSignals>();
     let runs = 0;
+    let oldContext: IDialogueTaskContext | undefined;
     const client: IMcpClient = {
       cacheable: false,
       async listTools() {
@@ -324,9 +362,15 @@ for (const pipeline of [false, true]) {
         };
       },
       async callTool(_name, _args, options) {
+        assert.ok(options?.dialogueTask);
         if (runs === 1) {
-          assert.ok(options?.dialogueTask);
+          oldContext = options.dialogueTask;
           finishDialogueTask(options.dialogueTask, 'first run finish');
+        } else {
+          assert.ok(oldContext);
+          assert.notEqual(oldContext.runId, options.dialogueTask.runId);
+          finishDialogueTask(oldContext, 'late finish from previous run');
+          assert.equal(options.dialogueTask.readFinish(), undefined);
         }
         return { ok: true, value: { content: 'settled' } };
       },
@@ -382,4 +426,54 @@ for (const pipeline of [false, true]) {
     }
     assert.equal(llm.callCount, 3);
   });
+}
+
+for (const pipeline of [false, true]) {
+  for (const trigger of [
+    'current-then-old',
+    'activity',
+    'tools-selected',
+  ] as const) {
+    for (const streamMode of ['full', 'final'] as const) {
+      test(`finish immediately before LLM: ${trigger}, pipeline=${pipeline}, stream=${streamMode}`, async () => {
+        const bus = createSignalBus<DialogueSignals>();
+        const old = createDialogueTaskContext(bus, 's', 't');
+        const current = createDialogueTaskContext(bus, 's', 't');
+        if (trigger === 'current-then-old') {
+          finishDialogueTask(current, 'current output');
+          finishDialogueTask(old, 'late old output');
+        }
+        const { deps, llm } = makeDefaultDeps({
+          llmResponses: [{ content: 'unexpected', finishReason: 'stop' }],
+        });
+        const config = { maxIterations: 3, streamMode, heartbeatIntervalMs: 0 };
+        if (pipeline) {
+          const flow = new DefaultPipeline();
+          flow.initialize({ ...deps, agentConfig: config });
+          deps.pipeline = flow;
+        }
+        let callbacks = 0;
+        const result = await new SmartAgent(deps, config).process('work', {
+          dialogueTask: current,
+          onActivity(activity) {
+            if (trigger === 'activity' && activity === 'llm call') {
+              callbacks++;
+              finishDialogueTask(current, 'current output');
+            }
+          },
+          onToolsSelected() {
+            if (trigger === 'tools-selected') {
+              callbacks++;
+              finishDialogueTask(current, 'current output');
+            }
+          },
+        });
+        assert.ok(result.ok);
+        assert.equal(result.value.content, 'current output');
+        assert.equal(result.value.stopReason, 'stop');
+        assert.equal(llm.callCount, 0);
+        if (trigger !== 'current-then-old') assert.equal(callbacks, 1);
+      });
+    }
+  }
 }

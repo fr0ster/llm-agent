@@ -259,3 +259,15 @@ another task. This fixture does not establish enforcement in a production host o
 through MCP, external, nested or resumed routing; those remain host obligations.
 
 For `get_task` with `view: 'full'`, `error_offset` and `error_limit` independently page the retained error. `errorLength`, `errorOffset`, and `nextErrorOffset` describe that page (`nextErrorOffset: null` at the end). Output paging remains independent.
+
+## Dialogue task completion
+
+Both worker tool loops consume retained `dialogue.task.finish` signals before
+each LLM strategy call, including the first, after synchronous `onActivity` and
+`onToolsSelected` callbacks. Signals use the dialogue session as `source` and the
+unique context `runId` as retention `key`; payload `taskId` and `runId` must match
+the current context. A late old finish cannot overwrite the current run finish.
+In-flight tool batches settle normally; already started LLM calls are not
+interrupted. Without retention, ordinary LLM completion continues. See the
+[contracts package guide](../llm-agent/README.md#dialogue-task-completion-signals)
+for host tool emission and successful settlement behavior.

@@ -1,18 +1,20 @@
+import { randomUUID } from 'node:crypto';
 import type { DialogueSignals } from './dialogue-signals.js';
 import type { ISignalEmitter, ISignalSubscriber } from './signals.js';
 
 /** Per-run addressing and optional retained finish capability, also passed to tools. */
 export interface IDialogueTaskContext {
   readonly taskId: string;
+  readonly runId: string;
   readonly source: string;
   readonly signals: ISignalEmitter<DialogueSignals>;
   readFinish(): Readonly<DialogueSignals['dialogue.task.finish']> | undefined;
 }
 
 /**
- * Create once immediately before worker.run. The retained object present at entry
- * is excluded by identity, even when a new emission has the same millisecond.
- * Retention returns immutable signal objects; each emission creates a new object.
+ * Create once immediately before worker.run. A unique runId excludes both retained
+ * finishes and late emissions from previous runs with the same source/taskId.
+ * No retained-object baseline is needed: only this context's runId is accepted.
  * Emitters without last() preserve the ordinary LLM completion path.
  */
 export function createDialogueTaskContext(
@@ -21,19 +23,20 @@ export function createDialogueTaskContext(
   source: string,
   taskId: string,
 ): IDialogueTaskContext {
-  const initial = signals.last?.('dialogue.task.finish', source, taskId);
+  const runId = randomUUID();
   return {
     signals,
     source,
     taskId,
+    runId,
     readFinish() {
-      const signal = signals.last?.('dialogue.task.finish', source, taskId);
+      const signal = signals.last?.('dialogue.task.finish', source, runId);
       if (
         !signal ||
-        signal === initial ||
         signal.source !== source ||
-        signal.key !== taskId ||
-        signal.payload.taskId !== taskId
+        signal.key !== runId ||
+        signal.payload.taskId !== taskId ||
+        signal.payload.runId !== runId
       )
         return undefined;
       return signal.payload;
@@ -49,8 +52,13 @@ export function finishDialogueTask(
 ): void {
   task.signals.emit(
     'dialogue.task.finish',
-    { taskId: task.taskId, output, ...(tool === undefined ? {} : { tool }) },
+    {
+      taskId: task.taskId,
+      runId: task.runId,
+      output,
+      ...(tool === undefined ? {} : { tool }),
+    },
     task.source,
-    task.taskId,
+    task.runId,
   );
 }
