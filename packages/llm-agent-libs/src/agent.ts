@@ -88,6 +88,7 @@ import {
   guardToolRound,
   injectPendingResults,
   injectToolPriority,
+  readTaskFinish,
   runOutputValidationReprompt,
 } from './pipeline/handlers/tool-loop-core.js';
 import { pipelineToStream } from './pipeline/pipeline-to-stream.js';
@@ -934,12 +935,73 @@ export class SmartAgent {
       })
     ).concat(controlTail);
 
+    const finalize = async function* (
+      this: SmartAgent,
+      content: string,
+      finishReason: LlmFinishReason | undefined,
+    ): AsyncIterable<Result<LlmStreamChunk, OrchestratorError>> {
+      opts?.sessionLogger?.logStep('final_response', { content, usage });
+
+      // onBeforeStream hook — consumer transforms content before streaming
+      if (this.config.onBeforeStream) {
+        const hookCtx: StreamHookContext = { messages };
+        for await (const chunk of this.config.onBeforeStream(
+          content,
+          hookCtx,
+        )) {
+          if (clientAdapter) {
+            yield {
+              ok: true,
+              value: { content: clientAdapter.wrapResponse(chunk) },
+            };
+          } else {
+            yield { ok: true, value: { content: chunk } };
+          }
+        }
+      } else if (clientAdapter && content) {
+        yield {
+          ok: true,
+          value: { content: clientAdapter.wrapResponse(content) },
+        };
+      }
+
+      yield { ok: true, value: { content: '', iterationEnd: 'final' } };
+      opts?.onPartial?.({ kind: 'iteration-end', outcome: 'final' });
+
+      timingLog.push({ phase: 'total', duration: Date.now() - loopStart });
+      toolLoopSpan.setStatus('ok');
+      toolLoopSpan.end();
+      const summary = this.requestLogger.getSummary(opts?.trace?.traceId);
+      yield {
+        ok: true,
+        value: {
+          content: '',
+          finishReason: finishReason || 'stop',
+          usage: {
+            ...summaryToUsage(summary),
+            models: summary.byModel,
+          },
+          timing: timingLog,
+        },
+      };
+      return;
+    }.bind(this);
     for (let iteration = 0; ; iteration++) {
       let iterationBuffer = '';
       if (opts?.signal?.aborted) {
         toolLoopSpan.setStatus('error', 'Aborted');
         toolLoopSpan.end();
         yield { ok: false, error: new OrchestratorError('Aborted', 'ABORTED') };
+        return;
+      }
+      const earlyTaskFinish = readTaskFinish(opts, iteration);
+      if (earlyTaskFinish) {
+        // Task output is authoritative: validation reprompts must not restart a finished task.
+        opts?.onPartial?.({ kind: 'content', delta: earlyTaskFinish.output });
+        if (!clientAdapter && !this.config.onBeforeStream) {
+          yield { ok: true, value: { content: earlyTaskFinish.output } };
+        }
+        yield* finalize(earlyTaskFinish.output, 'stop');
         return;
       }
       if (iteration > 0 && opts?.stopSignal?.aborted) {
@@ -1162,12 +1224,6 @@ export class SmartAgent {
       } catch {
         // Supervision is informational: an observer must never fail the work.
       }
-      const llmSpan = this.tracer.startSpan('smart_agent.llm_call', {
-        parent: toolLoopSpan,
-        attributes: { 'llm.iteration': iteration + 1 },
-      });
-      this.metrics.llmCallCount.add();
-      const llmCallStart = Date.now();
       if (
         currentTools.length !== lastToolsSelected ||
         available !== lastToolsAvailable
@@ -1180,6 +1236,22 @@ export class SmartAgent {
           /* Observers cannot affect execution. */
         }
       }
+      const taskFinish = readTaskFinish(opts, iteration);
+      if (taskFinish) {
+        // Task output is authoritative: validation reprompts must not restart a finished task.
+        opts?.onPartial?.({ kind: 'content', delta: taskFinish.output });
+        if (!clientAdapter && !this.config.onBeforeStream) {
+          yield { ok: true, value: { content: taskFinish.output } };
+        }
+        yield* finalize(taskFinish.output, 'stop');
+        return;
+      }
+      const llmSpan = this.tracer.startSpan('smart_agent.llm_call', {
+        parent: toolLoopSpan,
+        attributes: { 'llm.iteration': iteration + 1 },
+      });
+      this.metrics.llmCallCount.add();
+      const llmCallStart = Date.now();
       const stream = this.defaultLlmCallStrategy.call(
         this._mainLlm,
         toModelToolMessages(messages, this.config.toolTrust),
@@ -1358,50 +1430,7 @@ export class SmartAgent {
           ).concat(controlTail);
           continue;
         }
-        opts?.sessionLogger?.logStep('final_response', { content, usage });
-
-        // onBeforeStream hook — consumer transforms content before streaming
-        if (this.config.onBeforeStream) {
-          const hookCtx: StreamHookContext = { messages };
-          for await (const chunk of this.config.onBeforeStream(
-            content,
-            hookCtx,
-          )) {
-            if (clientAdapter) {
-              yield {
-                ok: true,
-                value: { content: clientAdapter.wrapResponse(chunk) },
-              };
-            } else {
-              yield { ok: true, value: { content: chunk } };
-            }
-          }
-        } else if (clientAdapter && content) {
-          yield {
-            ok: true,
-            value: { content: clientAdapter.wrapResponse(content) },
-          };
-        }
-
-        yield { ok: true, value: { content: '', iterationEnd: 'final' } };
-        opts?.onPartial?.({ kind: 'iteration-end', outcome: 'final' });
-
-        timingLog.push({ phase: 'total', duration: Date.now() - loopStart });
-        toolLoopSpan.setStatus('ok');
-        toolLoopSpan.end();
-        const summary = this.requestLogger.getSummary(opts?.trace?.traceId);
-        yield {
-          ok: true,
-          value: {
-            content: '',
-            finishReason: finishReason || 'stop',
-            usage: {
-              ...summaryToUsage(summary),
-              models: summary.byModel,
-            },
-            timing: timingLog,
-          },
-        };
+        yield* finalize(content, finishReason);
         return;
       }
       const roundRejections =

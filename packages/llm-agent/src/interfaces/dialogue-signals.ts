@@ -2,6 +2,22 @@ import type { TaskRecord, TaskState } from './dialogue.js';
 
 export const DIALOGUE_SIGNALS_VERSION = 1;
 export interface DialogueSignals {
+  /**
+   * Additive catalog v1 signal. Successful task output; key = runId and source
+   * = dialogue session id. Workers read retained state before each LLM call,
+   * including the first. Only the current context's unique runId is accepted,
+   * excluding retained and late finishes from previous runs. Per-run retention
+   * prevents late old emissions from overwriting the current finish. The final
+   * check follows synchronous activity and tools-selected callbacks; an already
+   * started LLM call is not interrupted. No bus, noopEmitter,
+   * or a foreign emitter without last() keeps the ordinary extra LLM call.
+   */
+  'dialogue.task.finish': {
+    taskId: string;
+    runId: string;
+    output: string;
+    tool?: string;
+  };
   /** Additive catalog v1 signal; ticks do not call the planner. */
   'dialogue.wait': {
     tasks: Array<{

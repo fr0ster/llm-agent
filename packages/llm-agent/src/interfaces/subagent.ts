@@ -1,5 +1,6 @@
 import type { Message } from '../types.js';
 import type { EpicFailTrace } from './coordinator.js';
+import type { IDialogueTaskContext } from './dialogue-task-context.js';
 import type { OnPartial } from './streaming.js';
 import type { ToolTrace, ToolTraceEntry } from './tool-trace.js';
 import type { LlmTool, LlmToolCall, TokenUsage } from './types.js';
@@ -21,6 +22,7 @@ export interface SubAgentCapabilities {
 }
 
 export interface ISubAgentInput {
+  dialogueTask?: IDialogueTaskContext;
   onToolTrace?: (entry: ToolTraceEntry) => void;
   /** Owning request start in epoch milliseconds; preserved across tool rounds and queued tasks. */
   requestStartedAt?: number;

@@ -1,3 +1,4 @@
+import type { IDialogueTaskContext } from './dialogue-task-context.js';
 import type { ToolTraceEntry } from './tool-trace.js';
 import type { IUsageRecorder, UsageOperation } from './usage.js';
 /**
@@ -26,6 +27,7 @@ export interface TraceContext {
 }
 
 export interface CallOptions {
+  dialogueTask?: IDialogueTaskContext;
   onToolTrace?: (entry: ToolTraceEntry) => void;
   /** Owning request start in epoch milliseconds; preserved across tool rounds and queued tasks. */
   requestStartedAt?: number;

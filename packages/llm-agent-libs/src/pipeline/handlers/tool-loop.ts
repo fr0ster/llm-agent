@@ -61,6 +61,7 @@ import {
   guardToolRound,
   injectPendingResults,
   injectToolPriority,
+  readTaskFinish,
   runOutputValidationReprompt,
 } from './tool-loop-core.js';
 
@@ -206,6 +207,38 @@ export class ToolLoopHandler implements IStageHandler {
       })
     ).concat(controlTail);
 
+    const finalize = (
+      content: string,
+      finishReason: LlmFinishReason | undefined,
+    ): boolean => {
+      ctx.assistantText = content;
+      const summary = ctx.requestLogger.getSummary();
+      ctx.options?.sessionLogger?.logStep('final_response', {
+        content,
+        usage,
+        byComponent: summary.byComponent,
+        byModel: summary.byModel,
+        byCategory: summary.byCategory,
+      });
+      timingLog.push({ phase: 'total', duration: Date.now() - loopStart });
+      ctx.timing.push(...timingLog);
+
+      ctx.yield({
+        ok: true,
+        value: {
+          content: '',
+          finishReason: finishReason || 'stop',
+          usage: {
+            ...usage,
+            models: ctx.requestLogger.getSummary().byModel,
+            components: ctx.requestLogger.getSummary().byComponent,
+            categories: ctx.requestLogger.getSummary().byCategory,
+          },
+          timing: timingLog,
+        },
+      });
+      return true;
+    };
     for (let iteration = 0; ; iteration++) {
       if (ctx.options?.signal?.aborted) {
         ctx.yield({
@@ -213,6 +246,16 @@ export class ToolLoopHandler implements IStageHandler {
           error: new OrchestratorError('Aborted', 'ABORTED'),
         });
         return false;
+      }
+      const earlyTaskFinish = readTaskFinish(ctx.options, iteration);
+      if (earlyTaskFinish) {
+        // Task output is authoritative: skip validation reprompts. Pipeline output
+        // uses its normal events/finalization; this loop has no adapter or stream hook.
+        ctx.yield({ ok: true, value: { content: earlyTaskFinish.output } });
+        ctx.onPartial?.({ kind: 'content', delta: earlyTaskFinish.output });
+        ctx.yield({ ok: true, value: { content: '', iterationEnd: 'final' } });
+        ctx.onPartial?.({ kind: 'iteration-end', outcome: 'final' });
+        return finalize(earlyTaskFinish.output, 'stop');
       }
       if (iteration > 0 && ctx.options?.stopSignal?.aborted) {
         emitProgressFallback();
@@ -498,12 +541,6 @@ export class ToolLoopHandler implements IStageHandler {
       } catch {
         // Supervision is informational: an observer must never fail the work.
       }
-      const llmSpan = ctx.tracer.startSpan('smart_agent.llm_call', {
-        parent: parentSpan,
-        attributes: { 'llm.iteration': iteration + 1 },
-      });
-      ctx.metrics.llmCallCount.add();
-      const llmCallStart = Date.now();
 
       let content = '';
       let finishReason: LlmFinishReason | undefined;
@@ -528,6 +565,22 @@ export class ToolLoopHandler implements IStageHandler {
           /* Observers cannot affect execution. */
         }
       }
+      const taskFinish = readTaskFinish(ctx.options, iteration);
+      if (taskFinish) {
+        // Task output is authoritative: skip validation reprompts. Pipeline output
+        // uses its normal events/finalization; this loop has no adapter or stream hook.
+        ctx.yield({ ok: true, value: { content: taskFinish.output } });
+        ctx.onPartial?.({ kind: 'content', delta: taskFinish.output });
+        ctx.yield({ ok: true, value: { content: '', iterationEnd: 'final' } });
+        ctx.onPartial?.({ kind: 'iteration-end', outcome: 'final' });
+        return finalize(taskFinish.output, 'stop');
+      }
+      const llmSpan = ctx.tracer.startSpan('smart_agent.llm_call', {
+        parent: parentSpan,
+        attributes: { 'llm.iteration': iteration + 1 },
+      });
+      ctx.metrics.llmCallCount.add();
+      const llmCallStart = Date.now();
       // Delegate to ILlmCallStrategy — handles streaming, non-streaming, or fallback
       const llmStream = ctx.llmCallStrategy.call(
         ctx.mainLlm,
@@ -735,33 +788,7 @@ export class ToolLoopHandler implements IStageHandler {
           ).concat(controlTail);
           continue;
         }
-        ctx.assistantText = content;
-        const summary = ctx.requestLogger.getSummary();
-        ctx.options?.sessionLogger?.logStep('final_response', {
-          content,
-          usage,
-          byComponent: summary.byComponent,
-          byModel: summary.byModel,
-          byCategory: summary.byCategory,
-        });
-        timingLog.push({ phase: 'total', duration: Date.now() - loopStart });
-        ctx.timing.push(...timingLog);
-
-        ctx.yield({
-          ok: true,
-          value: {
-            content: '',
-            finishReason: finishReason || 'stop',
-            usage: {
-              ...usage,
-              models: ctx.requestLogger.getSummary().byModel,
-              components: ctx.requestLogger.getSummary().byComponent,
-              categories: ctx.requestLogger.getSummary().byCategory,
-            },
-            timing: timingLog,
-          },
-        });
-        return true;
+        return finalize(content, finishReason);
       }
 
       // -- Classify tool calls -----------------------------------------------
