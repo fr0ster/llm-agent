@@ -112,6 +112,8 @@ export interface DialogueState {
   requests?: PlannerRequestRecord[];
   requestSeq?: number;
   conversation: Message[];
+  /** Conversation entries beginning with a session-generated actions line. */
+  conversationLeadingActions?: number[];
   plan?: string | Plan;
   planStatus?: 'active' | 'waiting_user' | 'done';
   tasks: TaskRecord[];
@@ -143,8 +145,15 @@ export interface PlannerRequestRecord {
     skipped: number;
   };
   lastTurnOk?: boolean;
+  /** Failed tasks explicitly acknowledged by the coordinator, including removed steps. */
+  resolvedFailures?: string[];
   /** Present only while the request is open. */
-  transcript?: Message[];
+  transcript?: (Message & {
+    /** Compact planner projection of a verbatim delivered answer; content stays complete. */
+    plannerReference?: string;
+    /** Session-generated metadata; absent on verbatim user and assistant messages. */
+    internalKind?: 'actions' | 'events' | 'note';
+  })[];
   legacy?: true;
 }
 export interface PlannerMemoryEntry {

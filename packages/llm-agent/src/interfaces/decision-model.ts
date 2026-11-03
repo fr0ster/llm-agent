@@ -71,7 +71,7 @@ export interface DecisionResult {
   answers: Record<string, DecisionAnswer>;
   /** The model that actually answered (e.g. `jev-1.13.0` for `jev-latest`). */
   model: string;
-  usage?: { inputTokens: number; outputTokens: number };
+  usage?: { inputTokens?: number; outputTokens?: number };
 }
 
 export type DecisionErrorCode =

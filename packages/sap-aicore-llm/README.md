@@ -34,6 +34,29 @@ const provider = new SapCoreAIProvider({
 including each retry attempt — never cached on the provider instance, so a
 rotating token keeps rotating.
 
+## Anthropic prompt caching
+
+Set `promptCaching: 'system'` on `SapCoreAIConfig` to mark the last system text
+block with an ephemeral cache breakpoint. `'system+tools'` also marks the last
+tool definition. The default is `'off'`. Only effective model names identifying
+Anthropic Claude receive automatic markers. Messages, metadata and tools are
+preserved without mutating caller input.
+
+```ts
+const llm = new SapCoreAIProvider({
+  ...serviceKeyCredential(process.env.AICORE_SERVICE_KEY!),
+  model: 'anthropic--claude-4-opus',
+  promptCaching: 'system+tools',
+});
+```
+
+Keep system instructions and tools stable between calls. The SDK receives
+`cache_control: { type: 'ephemeral' }` with the service's default cache lifetime.
+Enabling markers does not guarantee cache hits. Streaming and non-streaming
+responses and usage records expose optional `cachedInputTokens` and
+`cacheCreationInputTokens` when SAP reports reads/writes. Prompt/completion totals
+remain unchanged.
+
 ## License
 
 **GNU Lesser General Public License v3.0 only** (`LGPL-3.0-only`) — see

@@ -45,6 +45,7 @@ type LlmCall = Base &
     inputTokens?: number;
     outputTokens?: number;
     cachedInputTokens?: number;
+    cacheCreationInputTokens?: number;
     tokensSource: 'provider' | 'estimate' | 'unknown';
     durationMs: number;
     firstTokenMs?: number;

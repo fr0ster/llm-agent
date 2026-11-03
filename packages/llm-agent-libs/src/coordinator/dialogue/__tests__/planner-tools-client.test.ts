@@ -153,7 +153,7 @@ test('queued stop succeeds and get_task preserves the original cut note', async 
   ]);
   await runInPlannerScope(f.scope, async () => {
     assert.equal(
-      (await call('get_task', { task_id: 'saved' })).json.output,
+      (await call('get_task', { task_id: 'saved', view: 'full' })).json.output,
       `${'x'.repeat(4000)}\n[cut: 10 characters omitted]`,
     );
     const id = f.board.start({ worker: 'w', goal: 'queued' });
@@ -284,6 +284,9 @@ test('plan_get pages full steps in plan order and validates filters and paginati
     assert.deepEqual((await call('plan_get', { offset: 100 })).json.steps, []);
     for (const args of [
       { state: 'invalid' },
+      { error_offset: -1 },
+      { error_limit: 0 },
+      { error_limit: 1.5 },
       { offset: -1 },
       { offset: 0.5 },
       { limit: 0 },
@@ -765,4 +768,114 @@ test('plan_create refuses a task started while the author is pending', async () 
     releaseWorker();
     await board.stopAll();
   }
+});
+
+test('get_task defaults to compact output and offers full, paged and explicit trace views', async () => {
+  const f = setup();
+  const output = '0123456789'.repeat(2000);
+  const error = `${'diagnostic '.repeat(300)}DIAGNOSTIC_SUFFIX`;
+  const toolTrace = {
+    complete: true,
+    omittedCount: 0,
+    entries: [
+      {
+        sequence: 1,
+        toolName: 'read',
+        arguments: '{}',
+        outcome: 'ok' as const,
+        resultExcerpt: 'evidence',
+      },
+    ],
+  };
+  f.board.restore([
+    {
+      id: 'large',
+      worker: 'w',
+      goal: 'large report',
+      state: 'done',
+      createdAt: 1,
+      output,
+      error,
+      toolTrace,
+    },
+  ]);
+  await runInPlannerScope(f.scope, async () => {
+    const compact = (await call('get_task', { task_id: 'large' })).json;
+    assert.ok(compact.output.length <= 1200);
+    assert.match(compact.output, /truncated, 20000 chars/);
+    assert.equal(compact.outputLength, output.length);
+    assert.ok(compact.error.length <= 1200);
+    assert.equal(compact.errorLength, error.length);
+    assert.equal(
+      (await call('get_task', { task_id: 'large', view: 'full' })).json.error,
+      error,
+    );
+    const diagnostic = (
+      await call('get_task', {
+        task_id: 'large',
+        view: 'full',
+        error_offset: error.length - 17,
+        error_limit: 17,
+      })
+    ).json;
+    assert.equal(diagnostic.error, 'DIAGNOSTIC_SUFFIX');
+    assert.equal(diagnostic.nextErrorOffset, null);
+    assert.equal(diagnostic.output, output);
+    const errorPage = (
+      await call('get_task', {
+        task_id: 'large',
+        view: 'full',
+        error_offset: 1300,
+        error_limit: 20,
+      })
+    ).json;
+    assert.equal(errorPage.error, error.slice(1300, 1320));
+    assert.equal(errorPage.nextErrorOffset, 1320);
+    assert.equal(compact.fetchMore.view, 'full');
+    assert.equal(compact.toolTrace, undefined);
+    assert.deepEqual(
+      (await call('get_task', { task_id: 'large', include_trace: true })).json
+        .toolTrace,
+      toolTrace,
+    );
+    assert.equal(
+      (await call('get_task', { task_id: 'large', view: 'full' })).json.output,
+      output,
+    );
+    const page = (
+      await call('get_task', {
+        task_id: 'large',
+        view: 'full',
+        offset: 13,
+        limit: 27,
+      })
+    ).json;
+    assert.equal(page.output, output.slice(13, 40));
+    assert.equal(page.nextOffset, 40);
+    assert.equal(
+      (
+        await call('get_task', {
+          task_id: 'large',
+          view: 'full',
+          offset: output.length,
+        })
+      ).json.nextOffset,
+      null,
+    );
+    for (const args of [
+      { error_offset: -1 },
+      { error_limit: 0 },
+      { error_limit: 1.5 },
+      { offset: -1 },
+      { limit: 0 },
+      { limit: 1.5 },
+      { view: 'invalid' },
+    ])
+      assert.equal(
+        (await call('get_task', { task_id: 'large', ...args })).error,
+        true,
+      );
+    assert.equal(f.board.get('large')?.output, output);
+  });
+  await f.board.stopAll();
 });

@@ -51,7 +51,7 @@ test('builder preserves fresh messages, omits empty blocks, adds notes and does 
   assert.deepEqual(builder.build({ memory: [], knowledge: [], notes: [] }), []);
 });
 
-test('projection cuts individual parts before merging, preserves newest input and elides chronologically within 60000', () => {
+test('projection preserves assistant replies and user inputs verbatim', () => {
   const open = record();
   open.transcript[0].content = `FIRST${'a'.repeat(30_000)}`;
   for (let i = 0; i < 12; i++)
@@ -67,10 +67,11 @@ test('projection cuts individual parts before merging, preserves newest input an
   const before = structuredClone(open);
   const messages = project(open);
   const text = messages.map((message) => message.content).join('');
-  assert.ok(size(messages) <= 60_000);
+  for (const message of open.transcript ?? [])
+    assert.ok(text.includes(message.content ?? ''));
   assert.match(text, /^FIRST/);
-  assert.match(text, /cut: 20000 of 30005/);
-  assert.match(text, /elided \d+ messages/);
+  assert.ok(text.includes(open.transcript?.[0].content ?? ''));
+  assert.ok(text.includes(`middle 11 ${'b'.repeat(10_000)}`));
   assert.match(text, /NOTE/);
   assert.match(text, /LATEST$/);
   for (let i = 1; i < messages.length; i++)
@@ -921,6 +922,467 @@ for (const placement of ['second-call', 'second-round'] as const) {
     try {
       await session.send('keep working');
       assert.equal(session.snapshot().requests?.length, 1);
+    } finally {
+      await session.close();
+    }
+  });
+}
+
+test('projection preserves corrections, consent, ownership, errors and current plan; history stays complete', () => {
+  const open = record();
+  appendRequestMessage(open, {
+    role: 'user',
+    content:
+      'Correction: use only approved records. I consent to dropping step B.',
+  });
+  appendRequestMessage(open, {
+    role: 'user',
+    internalKind: 'events',
+    content: '[task events] from r0: task old (w) running',
+  });
+  appendRequestMessage(open, {
+    role: 'user',
+    internalKind: 'events',
+    content: '[task events] from r0: task old (w) done; outcome: success',
+  });
+  appendRequestMessage(open, {
+    role: 'user',
+    content:
+      '[task events] task failed (w) failed: permission denied; needs user action',
+  });
+  const output = 'delivered report'.repeat(4000);
+  appendRequestMessage(open, {
+    role: 'assistant',
+    content: output,
+    plannerReference:
+      '[delivered] task old done; output length: 64000; use get_task',
+  });
+  const before = structuredClone(open);
+  const projected = builder.build({
+    open,
+    memory: [],
+    knowledge: [],
+    notes: ['[plan] keep A; B skipped with consent'],
+  });
+  const text = projected.map((message) => message.content).join('\n');
+  assert.match(
+    text,
+    /Correction: use only approved records. I consent to dropping step B./,
+  );
+  assert.match(text, /from r0: task old.*done/);
+  assert.doesNotMatch(text, /task old.*running/);
+  assert.match(text, /permission denied; needs user action/);
+  assert.match(text, /keep A; B skipped with consent/);
+  assert.match(text, /\[delivered\] task old done/);
+  assert.ok(!text.includes(output));
+  assert.deepEqual(open, before);
+  assert.deepEqual(project(structuredClone(open)), project(open));
+});
+
+test('restart restores delivered-answer references, complete history and paged task output', async () => {
+  const store = new InMemoryDialogueStateStore();
+  const output = 'retained report '.repeat(2000);
+  const saved = state({
+    version: 1,
+    steps: [],
+    status: 'active',
+    note: 'current plan',
+  });
+  saved.requests = [
+    {
+      id: 'r1',
+      openedAt: 1,
+      text: 'first',
+      transcript: [
+        { role: 'user', content: 'first' },
+        {
+          role: 'assistant',
+          content: output,
+          plannerReference: '[delivered] task saved done; use get_task',
+        },
+        {
+          role: 'user',
+          content: 'Correction: only approved data. Yes, I consent.',
+        },
+        {
+          role: 'user',
+          content:
+            '[task events] task broken failed: unresolved permission error',
+        },
+      ],
+    },
+  ];
+  saved.tasks = [
+    {
+      id: 'saved',
+      worker: 'w',
+      goal: 'report',
+      state: 'done',
+      createdAt: 1,
+      output,
+    },
+  ];
+  await store.save('lean-restart', saved);
+  const session = await DialogueSession.open({
+    id: 'lean-restart',
+    store,
+    board: { workers: new Map() },
+    planner: {
+      async process(messages) {
+        const text = messages.map((message) => message.content).join('\n');
+        assert.ok(!text.includes(output));
+        assert.match(text, /\[delivered\] task saved/);
+        assert.match(text, /Correction: only approved data. Yes, I consent./);
+        assert.match(text, /unresolved permission error/);
+        assert.match(text, /current plan/);
+        const result = await tools.callTool('get_task', {
+          task_id: 'saved',
+          view: 'full',
+          offset: 10,
+          limit: 50,
+        });
+        assert.ok(result.ok);
+        assert.ok(JSON.stringify(result.value).includes(output.slice(10, 60)));
+        return { ok: true, value: { content: 'continued' } };
+      },
+    },
+  });
+  try {
+    await session.send('continue');
+    assert.equal(
+      session.snapshot().requests?.[0].transcript?.[1].content,
+      output,
+    );
+  } finally {
+    await session.close();
+  }
+});
+
+test('intentional answer compaction does not retrieve the full answer back into context', () => {
+  const open = record();
+  const output = 'large answer '.repeat(3000);
+  appendRequestMessage(open, {
+    role: 'assistant',
+    content: output,
+    plannerReference: '[delivered] task saved; use get_task',
+  });
+  const projected = builder.build({
+    open,
+    knowledge: [],
+    notes: [],
+    memory: [
+      {
+        kind: 'planner-reply',
+        requestId: open.id,
+        sourceId: 'saved',
+        offset: 0,
+        text: output,
+      },
+    ],
+  });
+  assert.ok(!JSON.stringify(projected).includes(output));
+  assert.ok(!JSON.stringify(projected).includes('session memory'));
+});
+
+test('projection retains a long consent request ending in a period after follow-up events', () => {
+  const open = record();
+  const question = `${'Context. '.repeat(300)}Please confirm removal of step B.`;
+  appendRequestMessage(open, { role: 'assistant', content: question });
+  appendRequestMessage(open, {
+    role: 'user',
+    content: '[task events] task a done',
+  });
+  appendRequestMessage(open, { role: 'user', content: 'yes' });
+  assert.ok(JSON.stringify(project(open)).includes(question));
+  assert.ok(JSON.stringify(project(structuredClone(open))).includes(question));
+});
+
+for (const restart of [false, true]) {
+  test(`delivery note survives projection and next turn verbatim (restart: ${restart})`, async () => {
+    const store = new InMemoryDialogueStateStore();
+    const saved = state({
+      version: 1,
+      steps: [],
+      status: 'active',
+      note: 'Review the report and confirm removal of step B.',
+    });
+    // Resume the request that owns the completed task, before its first delivery.
+    saved.requests = [record()];
+    saved.requestSeq = 1;
+    saved.taskRequests = { saved: 'r1' };
+    const output = 'report body '.repeat(2000);
+    const note = `${'Review context. '.repeat(40)}Please confirm removal of step B.`;
+    saved.tasks = [
+      {
+        id: 'saved',
+        worker: 'w',
+        goal: 'report',
+        state: 'done',
+        createdAt: 1,
+        output,
+      },
+    ];
+    await store.save('delivery-note', saved);
+    let checked = false;
+    let calls = 0;
+    const checkContext = (messages: Message[]): void => {
+      const text = messages.map((message) => message.content).join('\n');
+      assert.ok(text.includes(note));
+      assert.ok(text.includes('[delivered]'));
+      assert.ok(!text.includes(output));
+      checked = true;
+    };
+    const session = await DialogueSession.open({
+      id: 'delivery-note',
+      store,
+      maxCorrections: 0,
+      board: { workers: new Map() },
+      planner: {
+        async process(messages) {
+          if (calls++ > 0) {
+            checkContext(messages);
+            return { ok: true, value: { content: 'approved' } };
+          }
+          const delivered = await tools.callTool('deliver', {
+            task_id: 'saved',
+            note,
+          });
+          assert.ok(delivered.ok && !delivered.value.isError);
+          return { ok: true, value: { content: 'discarded' } };
+        },
+      },
+    });
+    let persisted: DialogueState | undefined;
+    try {
+      const reply = await session.send('report');
+      assert.equal(reply.text, `${note}\n\n${output}`);
+      const open = session.snapshot().requests?.at(-1);
+      assert.ok(open);
+      const projected = project(open)
+        .map((message) => message.content)
+        .join('\n');
+      assert.ok(projected.includes(note));
+      assert.ok(projected.includes('[delivered]'));
+      assert.ok(!projected.includes(output));
+      if (restart) {
+        persisted = await store.load('delivery-note');
+        assert.ok(persisted);
+        const persistedRequest = persisted.requests?.at(-1);
+        assert.ok(persistedRequest);
+        assert.ok(
+          project(persistedRequest).some((message) =>
+            message.content?.includes(note),
+          ),
+        );
+      } else {
+        await session.send('yes');
+        assert.ok(checked);
+      }
+    } finally {
+      await session.close();
+    }
+    if (!restart) return;
+    // close() deletes state; restore the checkpoint to model a process restart.
+    assert.ok(persisted);
+    await store.save('delivery-note', persisted);
+    const restored = await DialogueSession.open({
+      id: 'delivery-note',
+      store,
+      maxCorrections: 0,
+      board: { workers: new Map() },
+      planner: {
+        async process(messages) {
+          checkContext(messages);
+          return { ok: true, value: { content: 'approved' } };
+        },
+      },
+    });
+    try {
+      await restored.send('yes');
+      assert.ok(checked);
+    } finally {
+      await restored.close();
+    }
+  });
+}
+
+for (const label of ['actions', 'task events']) {
+  test(`removed step failure survives later turns and restart (${label})`, async () => {
+    const store = new InMemoryDialogueStateStore();
+    const saved = state({ version: 1, steps: [], status: 'active' });
+    const open = record();
+    appendRequestMessage(open, {
+      role: 'user',
+      content: `[${label}] task broken for removed (w) failed: permission denied; use get_task`,
+    });
+    appendRequestMessage(open, {
+      role: 'assistant',
+      content: 'Please resolve access.',
+    });
+    appendRequestMessage(open, {
+      role: 'user',
+      internalKind: 'actions',
+      content: '[actions] plan updated',
+    });
+    appendRequestMessage(open, {
+      role: 'assistant',
+      content: 'Waiting for access.',
+    });
+    saved.requests = [open];
+    saved.requestSeq = 1;
+    saved.tasks = [
+      {
+        id: 'broken',
+        worker: 'w',
+        goal: 'removed work',
+        state: 'failed',
+        error: 'permission denied',
+        createdAt: 1,
+      },
+    ];
+    saved.taskRequests = { broken: 'r1' };
+    saved.taskSteps = { broken: 'removed' };
+    await store.save('removed-failure', saved);
+    const options = {
+      id: 'removed-failure',
+      store,
+      maxCorrections: 0,
+      board: { workers: new Map() },
+      planner: {
+        async process(messages: Message[]) {
+          const text = messages.map((message) => message.content).join('\n');
+          assert.match(
+            text,
+            /task broken for removed .*failed: permission denied/,
+          );
+          assert.doesNotMatch(text, /\[actions\] plan updated/);
+          return { ok: true as const, value: { content: 'Still waiting.' } };
+        },
+      },
+    };
+    const session = await DialogueSession.open(options);
+    let checkpoint: DialogueState;
+    try {
+      await session.send('continue');
+      checkpoint = session.snapshot();
+    } finally {
+      await session.close();
+    }
+    await store.save('removed-failure', checkpoint);
+    const restored = await DialogueSession.open(options);
+    try {
+      await restored.send('continue after restart');
+    } finally {
+      await restored.close();
+    }
+  });
+}
+
+test('user messages resembling internal notes remain verbatim, including legacy restore', () => {
+  const open = record();
+  for (const content of [
+    '[actions] Do not delete records',
+    '[task events] task a failed: keep this constraint',
+    '[dropped 12 earlier messages]',
+  ]) {
+    appendRequestMessage(open, { role: 'user', content });
+  }
+  for (let i = 0; i < 4; i++)
+    appendRequestMessage(open, { role: 'assistant', content: 'later' });
+  const text = JSON.stringify(project(structuredClone(open)));
+  assert.ok(text.includes('[actions] Do not delete records'));
+  assert.ok(text.includes('[task events] task a failed: keep this constraint'));
+  assert.ok(text.includes('[dropped 12 earlier messages]'));
+});
+
+for (const removed of [false, true]) {
+  test(`resolved failures allow automatic request closure (removed: ${removed})`, async () => {
+    const store = new InMemoryDialogueStateStore();
+    const saved = state({ version: 1, steps: [], status: 'done' });
+    const open = record();
+    open.lastTurnOk = true;
+    appendRequestMessage(open, {
+      role: 'user',
+      internalKind: 'events',
+      content: '[task events] task broken failed: denied',
+    });
+    saved.requests = [open];
+    saved.taskRequests = { broken: 'r1', retry: 'r1' };
+    saved.taskSteps = { broken: 'work', retry: 'work' };
+    saved.tasks = [
+      {
+        id: 'broken',
+        worker: 'w',
+        goal: 'work',
+        state: 'failed',
+        error: 'denied',
+        createdAt: 1,
+      },
+    ];
+    if (!removed) {
+      saved.tasks.push({
+        id: 'retry',
+        worker: 'w',
+        goal: 'work',
+        state: 'done',
+        createdAt: 2,
+        output: 'success',
+      });
+      saved.plan = {
+        version: 1,
+        status: 'done',
+        steps: [
+          {
+            id: 'work',
+            goal: 'work',
+            state: 'done',
+            taskIds: ['broken', 'retry'],
+            dependsOn: [],
+          },
+        ],
+      };
+    }
+    await store.save('resolved', saved);
+    let resolveFailure = false;
+    const session = await DialogueSession.open({
+      id: 'resolved',
+      store,
+      maxCorrections: 0,
+      board: { workers: new Map() },
+      planner: {
+        async process() {
+          if (resolveFailure) {
+            const updated = await tools.callTool('plan_update', {
+              steps: [],
+              status: 'done',
+            });
+            assert.ok(updated.ok && !updated.value.isError);
+          }
+          return { ok: true, value: { content: 'Task broken is resolved.' } };
+        },
+      },
+    });
+    try {
+      if (removed) {
+        await session.send('handle failure');
+        assert.equal(session.snapshot().requests?.length, 1);
+        assert.equal(
+          session.snapshot().requests?.[0].resolvedFailures,
+          undefined,
+        );
+        resolveFailure = true;
+        await session.send('resolve the removed step');
+        resolveFailure = false;
+        assert.ok(
+          session.snapshot().requests?.[0].resolvedFailures?.includes('broken'),
+        );
+      }
+      await session.send('unrelated request');
+      const requests = session.snapshot().requests;
+      assert.equal(requests?.length, 2);
+      assert.ok(requests?.[0].closedAt !== undefined);
+      assert.equal(requests?.[1].text, 'unrelated request');
+      assert.ok(!JSON.stringify(requests?.[1].transcript).includes('denied'));
     } finally {
       await session.close();
     }

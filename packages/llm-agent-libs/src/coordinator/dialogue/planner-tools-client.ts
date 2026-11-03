@@ -17,6 +17,7 @@ import {
   stepSchema,
 } from './structured-plan.js';
 import type { TaskBoard } from './task-board.js';
+import { compactText } from './task-reference.js';
 import {
   renderToolTrace,
   VERDICT_EVIDENCE_GUIDANCE,
@@ -168,16 +169,36 @@ export class PlannerToolsClient implements IMcpClient {
         {
           name: 'deliver',
           description:
-            'Return a completed task result verbatim to the user, once per planner call.',
+            'Return a completed task result verbatim to the user, once per planner call. Optional resolves lists known failed task IDs in the current request to explicitly resolve.',
           inputSchema: schema(
-            { task_id: string, note: { type: 'string', maxLength: 1000 } },
+            {
+              task_id: string,
+              note: { type: 'string', maxLength: 1000 },
+              resolves: { type: 'array', items: string },
+            },
             ['task_id'],
           ),
         },
         {
           name: 'get_task',
-          description: 'Get a task and its bounded output.',
-          inputSchema: schema({ task_id: string }, ['task_id']),
+          description:
+            'Read a compact task summary. Use view full for retained output and error; offset/limit page output, error_offset/error_limit page error; include_trace retrieves tool evidence.',
+          inputSchema: schema(
+            {
+              task_id: string,
+              view: {
+                type: 'string',
+                enum: ['compact', 'full'],
+                default: 'compact',
+              },
+              offset: { type: 'integer', minimum: 0 },
+              limit: { type: 'integer', minimum: 1 },
+              error_offset: { type: 'integer', minimum: 0 },
+              error_limit: { type: 'integer', minimum: 1 },
+              include_trace: { type: 'boolean', default: false },
+            },
+            ['task_id'],
+          ),
         },
         {
           name: 'list_tasks',
@@ -429,31 +450,121 @@ export class PlannerToolsClient implements IMcpClient {
           return textResult({ stopped });
         }
         case 'deliver': {
-          const { task_id, note } = z
+          const { task_id, note, resolves } = z
             .object({
               task_id: z.string(),
               note: z.string().max(1000).optional(),
+              resolves: z.array(z.string()).optional(),
             })
             .strict()
             .parse(args);
           if (!scope.deliver) throw new Error('deliver is unavailable');
-          scope.deliver(task_id, note);
+          scope.deliver(task_id, note, resolves);
           return textResult({ delivered: task_id });
         }
         case 'get_task': {
-          const id = requiredString(args, 'task_id');
+          const {
+            task_id: id,
+            view = 'compact',
+            offset = 0,
+            limit,
+            error_offset = 0,
+            error_limit,
+            include_trace = false,
+          } = z
+            .object({
+              task_id: z.string(),
+              view: z.enum(['compact', 'full']).optional(),
+              offset: z.number().int().nonnegative().optional(),
+              limit: z.number().int().positive().optional(),
+              error_offset: z.number().int().nonnegative().optional(),
+              error_limit: z.number().int().positive().optional(),
+              include_trace: z.boolean().optional(),
+            })
+            .strict()
+            .parse(args);
           const task = scope.board.get(id);
           if (!task) throw new Error(`unknown task ${id}`);
           if (task.state === 'queued' || task.state === 'running')
             scope.statusRead?.();
-          return textResult(
-            toolTrust && task.toolTrace
+          const output = task.output ?? '';
+          const page =
+            view === 'full'
+              ? output.slice(
+                  offset,
+                  limit === undefined ? undefined : offset + limit,
+                )
+              : compactText(output, 1200);
+          const error =
+            view === 'full'
+              ? task.error?.slice(
+                  error_offset,
+                  error_limit === undefined
+                    ? undefined
+                    : error_offset + error_limit,
+                )
+              : task.error === undefined
+                ? undefined
+                : compactText(task.error, 1200);
+          const verdict = z
+            .object({
+              verdict: z.string().optional(),
+              count: z.number().optional(),
+            })
+            .safeParse(
+              ((): object | string | number | boolean | null => {
+                try {
+                  return JSON.parse(output);
+                } catch {
+                  return null;
+                }
+              })(),
+            );
+          return textResult({
+            id: task.id,
+            worker: task.worker,
+            goal: compactText(task.goal, 400),
+            state: task.state,
+            result: task.result,
+            lastActivityAt: task.lastActivityAt,
+            idleMs: task.idleMs,
+            currentAction: task.currentAction,
+            budgetExhausted: task.budgetExhausted,
+            toolCalls: task.toolCalls,
+            maxToolCalls: task.maxToolCalls,
+            output: page,
+            error,
+            errorLength: task.error?.length ?? 0,
+            ...(verdict.success ? verdict.data : {}),
+            outputLength: output.length,
+            ...(view === 'full'
               ? {
-                  ...task,
+                  offset,
+                  errorOffset: error_offset,
+                  nextErrorOffset:
+                    error_offset + (error?.length ?? 0) <
+                    (task.error?.length ?? 0)
+                      ? error_offset + (error?.length ?? 0)
+                      : null,
+                  nextOffset:
+                    offset + page.length < output.length
+                      ? offset + page.length
+                      : null,
+                }
+              : {}),
+            fetchMore: {
+              tool: 'get_task',
+              task_id: id,
+              view: 'full',
+              offset: 0,
+              limit: 12000,
+            },
+            ...(include_trace && task.toolTrace
+              ? {
                   toolTrace: {
                     ...task.toolTrace,
                     entries: task.toolTrace.entries.map((entry) => {
-                      const trust = toolTrust(entry.toolName);
+                      const trust = toolTrust?.(entry.toolName);
                       return trust
                         ? {
                             ...entry,
@@ -463,8 +574,8 @@ export class PlannerToolsClient implements IMcpClient {
                     }),
                   },
                 }
-              : task,
-          );
+              : {}),
+          });
         }
         case 'list_tasks':
           if (
@@ -644,6 +755,7 @@ export class PlannerToolsClient implements IMcpClient {
               offset: z.number().int().min(0).optional(),
               limit: z.number().int().min(1).optional(),
             })
+            .strict()
             .parse(args);
           const plan = scope.getPlan();
           if (typeof plan !== 'object')

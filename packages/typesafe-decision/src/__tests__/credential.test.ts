@@ -23,7 +23,12 @@ describe('TypeSafeDecisionModel credential', () => {
       credential: rotating,
       fetch: f.fetch,
     });
-    const req = { state: 's', questions: { a: { type: 'noul' as const } } };
+    const req = {
+      state: 's',
+      questions: {
+        a: { type: 'noul' as const, instructions: 'Is this true?' },
+      },
+    };
     await m.decide(req);
     await m.decide(req);
     assert.deepEqual(
@@ -63,7 +68,7 @@ describe('TypeSafeDecisionModel credential', () => {
         });
         const r = await m.decide({
           state: 's',
-          questions: { a: { type: 'noul' } },
+          questions: { a: { type: 'noul', instructions: 'Is this true?' } },
         });
         assert.ok(r.ok);
         const call = f.calls[0];

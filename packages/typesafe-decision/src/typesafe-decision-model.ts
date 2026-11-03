@@ -107,8 +107,8 @@ export class TypeSafeDecisionModel implements IDecisionModel {
       };
       if (raw.usage) {
         value.usage = {
-          inputTokens: raw.usage.input_tokens,
-          outputTokens: raw.usage.output_tokens,
+          inputTokens: raw.usage.input_tokens ?? undefined,
+          outputTokens: raw.usage.output_tokens ?? undefined,
         };
       }
       return { ok: true, value };
