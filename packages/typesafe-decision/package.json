@@ -1,6 +1,6 @@
 {
   "name": "@mcp-abap-adt/typesafe-decision",
-  "version": "30.9.1",
+  "version": "30.9.2",
   "description": "TypeSafe AI (Jev) decision-model provider (IDecisionModel) for @mcp-abap-adt/llm-agent.",
   "type": "module",
   "main": "dist/index.js",
