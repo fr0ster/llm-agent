@@ -108,6 +108,27 @@ a new authored plan; `plan_revise` merges a revision of the current structured
 plan. `plan_get` reads filtered, paged steps; `plan_update` edits without an LLM
 call. `get_plan` / `update_plan` have been removed without aliases.
 
+`get_task({ task_id })` returns identity, state, verdict/count when present,
+activity/budget information, output length, and a preview of at most 1,200
+characters including a truncation marker. Errors are also bounded. Use
+`get_task({ task_id, view: 'full' })` for retained output and the full retained error; add `offset` and `limit`
+to page by character offset. `nextOffset: null` marks the end. Set
+`include_trace: true` for tool evidence with trust annotations. A `fetchMore`
+example is included. Storage and direct dependency inputs to workers/checkers
+keep their existing retained output limits.
+
+Completion events carry an outcome of at most 400 characters and output length.
+Request context projects consumed events as references/current state, keeps recent
+deltas, and uses compact references for delivered answers. User corrections,
+consent, unresolved errors, request ownership and the current plan stay visible.
+Verbatim replies remain in persisted history under existing storage bounds;
+projection never rewrites that history. References survive restart.
+`plannerContext: 'conversation'` explicitly selects the legacy projection.
+
+`SmartAgent.process()` and `streamProcess()` without `sessionId` use a fresh
+request identity and clear pending tool results and availability entries when the
+request ends. Supply an explicit `sessionId` to continue tool rounds across calls.
+
 External coordinators can use `session.callTool(name, args, { signal? }?)` without
 a planner turn or planner agent. It returns `Result<McpToolResult, McpError>`,
 persists state and emits normal plan/task signals. Busy sessions refuse calls
@@ -236,3 +257,5 @@ tools, assembles the refreshed worker prompt, computes permissions for two host-
 direct tools, rejects a denied direct call, and disables the record without starting
 another task. This fixture does not establish enforcement in a production host or
 through MCP, external, nested or resumed routing; those remain host obligations.
+
+For `get_task` with `view: 'full'`, `error_offset` and `error_limit` independently page the retained error. `errorLength`, `errorOffset`, and `nextErrorOffset` describe that page (`nextErrorOffset: null` at the end). Output paging remains independent.

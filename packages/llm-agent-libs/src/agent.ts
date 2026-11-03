@@ -717,7 +717,17 @@ export class SmartAgent {
         );
       }
     }
-    const sessionId = options?.sessionId ?? 'default';
+    const ephemeralSession = options?.sessionId === undefined;
+    const sessionId = options?.sessionId ?? randomUUID();
+    const pipelinePendingResults =
+      opts.pendingToolResults instanceof PendingToolResultsRegistry
+        ? opts.pendingToolResults
+        : this.pendingToolResults;
+    const pipelineToolAvailability =
+      opts.toolAvailability instanceof ToolAvailabilityRegistry
+        ? opts.toolAvailability
+        : this.toolAvailabilityRegistry;
+    opts = { ...opts, sessionId };
     const externalTools = normalizeExternalTools(options?.externalTools);
     opts?.sessionLogger?.logStep('external_tools_normalized', {
       rawCount: options?.externalTools?.length ?? 0,
@@ -759,7 +769,11 @@ export class SmartAgent {
           this.deps.pipeline,
           textOrMessages,
           externalTools,
-          opts,
+          {
+            ...opts,
+            pendingToolResults: pipelinePendingResults,
+            toolAvailability: pipelineToolAvailability,
+          },
         );
         for await (const chunk of stream) yield chunk;
         rootSpan.setStatus('ok');
@@ -831,6 +845,16 @@ export class SmartAgent {
       for await (const chunk of stream) yield chunk;
       rootSpan.setStatus('ok');
     } finally {
+      if (ephemeralSession) {
+        const pendingResults = this.deps.pipeline
+          ? pipelinePendingResults
+          : this.pendingToolResults;
+        const toolAvailability = this.deps.pipeline
+          ? pipelineToolAvailability
+          : this.toolAvailabilityRegistry;
+        pendingResults.clear(sessionId);
+        toolAvailability.clear(sessionId);
+      }
       this.requestLogger.endRequest(traceId);
       rootSpan.end();
       timeoutCleanup?.();

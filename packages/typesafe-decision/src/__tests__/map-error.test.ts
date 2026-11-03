@@ -11,7 +11,10 @@ async function codeFor(status: number) {
     maxRetries: 0,
     fetch: f.fetch,
   });
-  const r = await m.decide({ state: 's', questions: { a: { type: 'noul' } } });
+  const r = await m.decide({
+    state: 's',
+    questions: { a: { type: 'noul', instructions: 'Is this true?' } },
+  });
   assert.ok(!r.ok);
   return r.error;
 }
@@ -47,7 +50,7 @@ describe('non-HTTP failures', () => {
     });
     const r = await m.decide({
       state: 's',
-      questions: { a: { type: 'noul' } },
+      questions: { a: { type: 'noul', instructions: 'Is this true?' } },
     });
     assert.ok(!r.ok);
     assert.equal(r.error.code, 'DECISION_UNAVAILABLE');
@@ -63,7 +66,7 @@ describe('non-HTTP failures', () => {
     });
     const r = await m.decide({
       state: 's',
-      questions: { a: { type: 'noul' } },
+      questions: { a: { type: 'noul', instructions: 'Is this true?' } },
     });
     assert.ok(!r.ok);
     assert.equal(r.error.code, 'DECISION_UNAVAILABLE');
@@ -81,7 +84,10 @@ describe('non-HTTP failures', () => {
       fetch: b.fetch,
     });
     const r = await m.decide(
-      { state: 's', questions: { a: { type: 'noul' } } },
+      {
+        state: 's',
+        questions: { a: { type: 'noul', instructions: 'Is this true?' } },
+      },
       { signal: ac.signal },
     );
     assert.ok(!r.ok);
@@ -97,7 +103,10 @@ describe('non-HTTP failures', () => {
       fetch: b.fetch,
     });
     const p = m.decide(
-      { state: 's', questions: { a: { type: 'noul' } } },
+      {
+        state: 's',
+        questions: { a: { type: 'noul', instructions: 'Is this true?' } },
+      },
       { signal: ac.signal },
     );
     await b.entered; // the request is inside fetch now
@@ -150,7 +159,7 @@ describe('messages', () => {
       });
       const r = await m.decide({
         state: 'PRIVATE-STATE-TEXT',
-        questions: { a: { type: 'noul' } },
+        questions: { a: { type: 'noul', instructions: 'Is this true?' } },
       });
       assert.ok(!r.ok);
       assert.doesNotMatch(r.error.message, /sk-SECRET-123/);
@@ -171,7 +180,7 @@ describe('messages', () => {
     });
     const r = await m.decide({
       state: 's',
-      questions: { a: { type: 'noul' } },
+      questions: { a: { type: 'noul', instructions: 'Is this true?' } },
     });
     assert.ok(!r.ok);
     assert.match(r.error.message, /req-123/);

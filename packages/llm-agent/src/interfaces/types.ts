@@ -262,6 +262,8 @@ export type StreamToolCall = LlmToolCall | LlmToolCallDelta;
 export type LlmFinishReason = 'stop' | 'tool_calls' | 'length' | 'error';
 
 export interface LlmUsage {
+  cachedInputTokens?: number;
+  cacheCreationInputTokens?: number;
   promptTokens: number;
   completionTokens: number;
   totalTokens: number;

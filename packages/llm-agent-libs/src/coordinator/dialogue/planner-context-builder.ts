@@ -76,7 +76,7 @@ const textSize = (messages: readonly Message[]): number =>
 /** Append independent parts, preserving the first input and the newest part. */
 export function appendRequestMessage(
   record: PlannerRequestRecord,
-  message: Message,
+  message: NonNullable<PlannerRequestRecord['transcript']>[number],
 ): void {
   const stored = structuredClone(message);
   const content = stored.content ?? '';
@@ -92,7 +92,7 @@ export function boundRequestTranscript(record: PlannerRequestRecord): void {
   let dropped = 0;
   const previous = messages[1];
   const match =
-    previous?.role === 'user'
+    previous?.internalKind === 'note'
       ? /^\[dropped (\d+) earlier messages\]$/.exec(previous.content ?? '')
       : null;
   if (match) {
@@ -113,48 +113,76 @@ export function boundRequestTranscript(record: PlannerRequestRecord): void {
     messages.splice(1, 0, {
       role: 'user',
       content: `[dropped ${dropped} earlier messages]`,
+      internalKind: 'note',
     });
 }
 
-/** Bounded chronological projection; the supplied record is never modified. */
+/** Project task references and recent deltas while preserving user constraints. */
 export class DefaultPlannerContextBuilder implements IPlannerContextBuilder {
   build(input: PlannerContextInput): Message[] {
     const record = input.open;
     if (!record) return [];
-    const parts = (record.transcript ?? []).map((message) => {
-      const content = message.content ?? '';
-      const storedCut =
-        /\[stored cut: 150000 of \d+ characters\]$/.exec(content)?.[0] ?? '';
+    const transcript = record.transcript ?? [];
+    const latestEvent = new Map<string, number>();
+    transcript.forEach((message, index) => {
+      if (!message.internalKind) return;
+      for (const line of (message.content ?? '').split('\n')) {
+        const id = /^\[task events\].*?\btask (\S+)/.exec(line)?.[1];
+        if (id) latestEvent.set(id, index);
+      }
+    });
+    const parts = transcript.map((message, index) => {
+      const original = message.plannerReference ?? message.content ?? '';
+      // Assistant prose can contain pending consent or unresolved issues. Only
+      // compact explicit delivery references and consumed user-role events.
+      const content =
+        message.role === 'assistant' || !message.internalKind
+          ? original
+          : original
+              .split('\n')
+              .filter((line) => {
+                if (
+                  /^\[actions\]/.test(line) &&
+                  index < transcript.length - 2 &&
+                  !/^\[actions\] task \S+.*\b(failed|error|interrupted)\b/.test(
+                    line,
+                  )
+                )
+                  return false;
+                const id = /^\[task events\].*?\btask (\S+)/.exec(line)?.[1];
+                return (
+                  !id ||
+                  latestEvent.get(id) === index ||
+                  /\b(failed|error|interrupted)\b/.test(line)
+                );
+              })
+              .map((line) => {
+                if (
+                  index >= transcript.length - 2 ||
+                  !/^\[task events\]/.test(line)
+                )
+                  return line;
+                const state = line.replace('[task events]', '[task state]');
+                return /\b(failed|error|interrupted)\b/.test(line)
+                  ? state
+                  : state.replace(
+                      /; outcome: .*; use get_task to read output/,
+                      '; outcome consumed; use get_task to read output',
+                    );
+              })
+              .join('\n');
+      const {
+        plannerReference: _reference,
+        internalKind: _internal,
+        ...stored
+      } = structuredClone(message);
       return {
-        ...structuredClone(message),
-        content:
-          content.length > 20_000
-            ? `${content.slice(0, 20_000)}[cut: 20000 of ${content.length}]${storedCut}`
-            : content,
+        ...stored,
+        content,
       };
     });
-    if (!parts.length) return [];
-    const first = parts[0];
-    const selected: Message[] = [first];
-    let size = first.content.length;
-    let index = parts.length - 1;
-    // Reserve space for the elision note and for separators introduced by merging.
-    for (; index > 0; index--) {
-      const part = parts[index];
-      const markerSize = `[elided ${index - 1} messages]`.length;
-      if (
-        size + part.content.length + markerSize + selected.length + 2 >
-        60_000
-      )
-        break;
-      selected.splice(1, 0, part);
-      size += part.content.length;
-    }
-    if (index > 0)
-      selected.splice(1, 0, {
-        role: 'user',
-        content: `[elided ${index} messages]`,
-      });
+    const selected = parts.filter((part) => part.content.length > 0);
+    if (!selected.length) return [];
     const messages: Message[] = [];
     for (const part of selected) {
       const last = messages.at(-1);
@@ -165,13 +193,13 @@ export class DefaultPlannerContextBuilder implements IPlannerContextBuilder {
     const last = messages.at(-1);
     if (last && input.notes.length)
       last.content = `${input.notes.join('\n')}\n${last.content}`;
-    const projectionElided = selected.some((message) =>
-      /\[(?:elided|cut:|stored cut:|dropped) /.test(message.content ?? ''),
+    const storageElided = transcript.some((message) =>
+      /\[(?:stored cut:|dropped) /.test(message.content ?? ''),
     );
     const blocks = renderPlannerRetrieval({
       ...input,
       memory: input.memory.filter(
-        (entry) => entry.requestId !== record.id || projectionElided,
+        (entry) => entry.requestId !== record.id || storageElided,
       ),
     });
     if (blocks.length && messages[0])

@@ -763,7 +763,7 @@ test('knowledge-only retrieval shares only a defined matching embedding key', as
   }
 });
 
-test('builder omits open-request memory until its projection is elided', () => {
+test('builder omits open-request memory until stored input is elided', () => {
   const input = {
     open: {
       id: 'r1',
@@ -786,6 +786,8 @@ test('builder omits open-request memory until its projection is elided', () => {
   const builder = new DefaultPlannerContextBuilder();
   assert.doesNotMatch(builder.build(input)[0].content ?? '', /session memory/);
   input.open.transcript[0].content = 'x'.repeat(30_000);
+  assert.doesNotMatch(builder.build(input)[0].content ?? '', /session memory/);
+  input.open.transcript[0].content = '[dropped 2 earlier messages]';
   assert.match(builder.build(input)[0].content ?? '', /session memory/);
 });
 

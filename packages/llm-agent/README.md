@@ -118,3 +118,14 @@ across pages. Pass `CallOptions.signal` to cancel with an `ABORTED` result.
 
 
 `composeResilientEmbedder` accepts `maxInputChars` (default `24000`, `0` disables). Single-input `embed` calls keep only the beginning of oversized input before calling the provider, including query embeddings built by the library. Batch document inputs are unchanged. Input-too-long errors are not retried. Usage schema 1 now includes optional `errorStatus` and `errorName` on failed LLM and embedding calls: the HTTP status from the cause chain and the root-cause class name. No error message is stored, since SDK messages may quote the request or the response.
+
+## Planner references and cache usage
+
+An open `PlannerRequestRecord.transcript` may carry a `plannerReference` alongside
+an assistant message: a compact projection of a delivered answer. `content`
+retains the verbatim reply. Persistence preserves both across restart; the
+reference is not sent as provider message metadata.
+
+`LlmUsage` and `llm.call` usage records accept optional `cachedInputTokens` and
+`cacheCreationInputTokens`. SAP AI Core normalizes reported cache reads/writes
+for streaming and non-streaming calls. Missing counters are omitted.

@@ -30,8 +30,10 @@ import {
   startOperation,
 } from '@mcp-abap-adt/llm-agent';
 import {
+  type ChatCompletionTool,
   type ChatMessage,
   OrchestrationClient,
+  type OrchestrationModuleConfig,
 } from '@sap-ai-sdk/orchestration';
 
 // Structural Cloud SDK middleware contract; forward the request/response intact.
@@ -124,6 +126,8 @@ export interface SapCoreAICatalogModel {
 }
 
 export interface SapCoreAIConfig extends LLMProviderConfig {
+  /** Anthropic cache breakpoints on stable prefixes. Default: off. */
+  promptCaching?: 'off' | 'system' | 'system+tools';
   /** Retries before the first response chunk. Default: 1; 0 disables. */
   transientMaxRetries?: number;
   /** Delay in milliseconds unless Retry-After is present. Default: 1500. */
@@ -375,10 +379,15 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
                 prompt_tokens?: number;
                 completion_tokens?: number;
                 total_tokens?: number;
+                prompt_tokens_details?: {
+                  cached_tokens?: number;
+                  cache_creation_tokens?: number;
+                };
               }
             | undefined;
           const usage = rawUsage
             ? {
+                ...cacheUsage(rawUsage),
                 promptTokens: rawUsage.prompt_tokens ?? 0,
                 completionTokens: rawUsage.completion_tokens ?? 0,
                 totalTokens:
@@ -600,6 +609,10 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
               prompt_tokens: number;
               completion_tokens: number;
               total_tokens: number;
+              prompt_tokens_details?: {
+                cached_tokens?: number;
+                cache_creation_tokens?: number;
+              };
             }
           | undefined;
         if (tokenUsage) facts = { ...facts, ...tokenFacts(tokenUsage) };
@@ -638,6 +651,7 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
           finishReason,
           usage: tokenUsage
             ? {
+                ...cacheUsage(tokenUsage),
                 promptTokens: tokenUsage.prompt_tokens || 0,
                 completionTokens: tokenUsage.completion_tokens || 0,
                 totalTokens: tokenUsage.total_tokens || 0,
@@ -652,6 +666,7 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
           ...(tokenUsage
             ? {
                 usage: {
+                  ...cacheUsage(tokenUsage),
                   promptTokens: tokenUsage.prompt_tokens || 0,
                   completionTokens: tokenUsage.completion_tokens || 0,
                   totalTokens: tokenUsage.total_tokens || 0,
@@ -835,16 +850,55 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
     tools: unknown[] | undefined,
     destination: SapCoreAIDestination,
   ): OrchestrationClient {
-    // biome-ignore lint/suspicious/noExplicitAny: SDK model type is a string literal union but the API accepts any model name
-    const orchConfig: any = {
+    const caching = this.config.promptCaching ?? 'off';
+    const anthropic = /(?:^|[/.:-])(?:anthropic|claude)(?:[/.:-]|$)/i.test(
+      this.modelOverride ?? this.model,
+    );
+    const lastSystem = messages.reduce(
+      (last, message, index) => (message.role === 'system' ? index : last),
+      -1,
+    );
+    const template = messages.map((message, index) => {
+      if (
+        !anthropic ||
+        caching === 'off' ||
+        message.role !== 'system' ||
+        index !== lastSystem
+      )
+        return message;
+      const content: Exclude<typeof message.content, string> =
+        typeof message.content === 'string'
+          ? [{ type: 'text' as const, text: message.content }]
+          : message.content.map((block) => ({ ...block }));
+      const last = content.at(-1);
+      if (last)
+        content[content.length - 1] = {
+          ...last,
+          cache_control: { type: 'ephemeral' },
+        };
+      return { ...message, content };
+    });
+    const cachedTools =
+      anthropic && caching === 'system+tools'
+        ? tools?.map((tool, index) =>
+            index === tools.length - 1 &&
+            tool !== null &&
+            typeof tool === 'object'
+              ? { ...tool, cache_control: { type: 'ephemeral' } }
+              : tool,
+          )
+        : tools;
+    const orchConfig: OrchestrationModuleConfig = {
       promptTemplating: {
         model: {
           name: this.modelOverride ?? this.model,
           params: orchestrationModelParams(this.config, !!tools?.length),
         },
         prompt: {
-          template: messages,
-          ...(tools?.length ? { tools } : {}),
+          template,
+          ...(cachedTools?.length
+            ? { tools: cachedTools as ChatCompletionTool[] }
+            : {}),
         },
       },
     };
@@ -869,6 +923,7 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
         msg.tool_calls.length > 0
       ) {
         return {
+          ...msg,
           role: 'assistant' as const,
           content: msg.content || undefined,
           tool_calls: msg.tool_calls,
@@ -877,6 +932,7 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
 
       if (msg.role === 'tool' && msg.tool_call_id) {
         return {
+          ...msg,
           role: 'tool' as const,
           content:
             typeof msg.content === 'string'
@@ -887,6 +943,7 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
       }
 
       return {
+        ...msg,
         role: msg.role as 'user' | 'system',
         content: msg.content ?? '',
       };
@@ -897,12 +954,16 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
 function tokenFacts(usage?: {
   prompt_tokens?: number;
   completion_tokens?: number;
-  prompt_tokens_details?: { cached_tokens?: number };
+  prompt_tokens_details?: {
+    cached_tokens?: number;
+    cache_creation_tokens?: number;
+  };
 }): Partial<LlmRequestFacts> {
   return usage &&
     (usage.prompt_tokens !== undefined ||
       usage.completion_tokens !== undefined ||
-      usage.prompt_tokens_details?.cached_tokens !== undefined)
+      usage.prompt_tokens_details?.cached_tokens !== undefined ||
+      usage.prompt_tokens_details?.cache_creation_tokens !== undefined)
     ? {
         ...(usage.prompt_tokens !== undefined
           ? { inputTokens: usage.prompt_tokens }
@@ -912,6 +973,12 @@ function tokenFacts(usage?: {
           : {}),
         ...(usage.prompt_tokens_details?.cached_tokens !== undefined
           ? { cachedInputTokens: usage.prompt_tokens_details.cached_tokens }
+          : {}),
+        ...(usage.prompt_tokens_details?.cache_creation_tokens !== undefined
+          ? {
+              cacheCreationInputTokens:
+                usage.prompt_tokens_details.cache_creation_tokens,
+            }
           : {}),
         tokensSource: 'provider',
       }
@@ -942,5 +1009,22 @@ function shapeMessage(
     role: message.role,
     content: typeof message.content === 'string' ? message.content : undefined,
     ...('tool_calls' in message ? { tool_calls: message.tool_calls } : {}),
+  };
+}
+
+function cacheUsage(usage: {
+  prompt_tokens_details?: {
+    cached_tokens?: number;
+    cache_creation_tokens?: number;
+  };
+}): { cachedInputTokens?: number; cacheCreationInputTokens?: number } {
+  const details = usage.prompt_tokens_details;
+  return {
+    ...(details?.cached_tokens === undefined
+      ? {}
+      : { cachedInputTokens: details.cached_tokens }),
+    ...(details?.cache_creation_tokens === undefined
+      ? {}
+      : { cacheCreationInputTokens: details.cache_creation_tokens }),
   };
 }

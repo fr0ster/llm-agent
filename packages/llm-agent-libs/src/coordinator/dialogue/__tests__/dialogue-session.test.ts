@@ -537,6 +537,37 @@ test('history is bounded, snapshots and memory store are isolated, save errors a
   await s.close();
 });
 
+test('history trimming preserves user action prefixes and restores isolated action markers', async () => {
+  const store = new InMemoryDialogueStateStore();
+  const options = {
+    id: 'action-prefix',
+    store,
+    board: { workers: new Map() },
+    planner: {
+      async process() {
+        return { ok: true as const, value: { content: 'ok' } };
+      },
+    },
+  };
+  const session = await DialogueSession.open(options);
+  for (let i = 0; i < 110; i++) await session.send(`[actions] user ${i}`);
+  const snapshot = session.snapshot();
+  assert.equal(snapshot.conversation.length, 199);
+  assert.equal(snapshot.conversation[0].content, '[actions] user 11');
+  assert.ok(snapshot.conversationLeadingActions?.includes(198));
+  snapshot.conversationLeadingActions.length = 0;
+  assert.ok(session.snapshot().conversationLeadingActions?.includes(198));
+
+  const restored = await DialogueSession.open(options);
+  await restored.send('[actions] user 110');
+  const history = restored.snapshot().conversation;
+  assert.equal(history.length, 199);
+  assert.equal(history[0].content, '[actions] user 12');
+  assert.equal(history.at(-3)?.content, '[actions] none\n[actions] user 110');
+  await restored.close();
+  await session.close();
+});
+
 test('plan tool state is injected before the last input, survives trimming and restore, and is never conversation history', async () => {
   const store = new InMemoryDialogueStateStore();
 
@@ -1312,7 +1343,7 @@ test('correction consumes new events, preserves whole-turn actions and counts ea
           const note = String(messages.at(-1)?.content);
           assert.match(note, /\[check\]/);
           assert.match(note, /task t2 \(w\) done: second/);
-          assert.match(note, /task t2 \(w\) done result:\nsecond result/);
+          assert.match(note, /outcome: second result/);
           assert.match(note, /\[actions\] plan updated/);
           await tools.callTool('delegate_task', { worker: 'w', goal: 'third' });
           third.resolve({ output: 'third result' });
@@ -1516,7 +1547,7 @@ for (const mode of [
     }
   });
 
-test('full task event results bypass projection once and remain available via get_task', async () => {
+test('task events inject compact outcomes once and retain full output via get_task', async () => {
   const output = `${'large result '.repeat(3000)}END`;
   const reported = deferred();
   const seen: string[] = [];
@@ -1548,11 +1579,17 @@ test('full task event results bypass projection once and remain available via ge
             goal: 'document',
           });
         } else if (calls === 2) {
-          assert.ok(seen[1].includes(output));
+          assert.ok(!seen[1].includes(output));
+          assert.equal(seen[1].split('outcome:').length - 1, 1);
+          assert.match(seen[1], /output length: 39003/);
+          assert.match(seen[1], /truncated, 39003 chars/);
           reported.resolve();
         } else {
           assert.ok(!seen.at(-1)?.includes(output));
-          const result = await tools.callTool('get_task', { task_id: 't1' });
+          const result = await tools.callTool('get_task', {
+            task_id: 't1',
+            view: 'full',
+          });
           assert.ok(result.ok);
           assert.ok(JSON.stringify(result.value).includes('END'));
         }

@@ -9,6 +9,10 @@ export interface ToolBlockEntry {
 export class ToolAvailabilityRegistry {
   private readonly sessions = new Map<string, Map<string, ToolBlockEntry>>();
 
+  clear(sessionId: string): void {
+    this.sessions.delete(sessionId);
+  }
+
   constructor(private readonly defaultTtlMs = 10 * 60 * 1000) {}
 
   getBlockedToolNames(sessionId: string, now = Date.now()): Set<string> {

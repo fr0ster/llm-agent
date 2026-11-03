@@ -56,7 +56,10 @@ describe('TypeSafeDecisionModel — request mapping', () => {
       baseUrl: 'https://proxy.example/typesafe/',
       fetch: f.fetch,
     });
-    await m.decide({ state: 's', questions: { a: { type: 'noul' } } });
+    await m.decide({
+      state: 's',
+      questions: { a: { type: 'noul', instructions: 'Is this true?' } },
+    });
     assert.equal(f.calls[0].url, 'https://proxy.example/typesafe/v1/systemone');
     assert.equal(f.calls[0].body.model, 'jev-1.13.0');
     assert.equal(m.model, 'jev-1.13.0');
@@ -64,6 +67,38 @@ describe('TypeSafeDecisionModel — request mapping', () => {
 });
 
 describe('TypeSafeDecisionModel — response mapping', () => {
+  for (const [input, output] of [
+    [null, null],
+    [null, 3],
+    [12, null],
+    [12, 3],
+    [0, 0],
+  ] as const) {
+    it(`maps usage ${input}/${output} without converting unknown counts to numbers`, async () => {
+      const f = fakeFetch(() => ({
+        status: 200,
+        body: {
+          model: 'jev-latest',
+          answers: { a: { type: 'noul', noul: 0.8 } },
+          usage: { input_tokens: input, output_tokens: output },
+        },
+      }));
+      const m = new TypeSafeDecisionModel({
+        credential: staticApiKey('k'),
+        fetch: f.fetch,
+      });
+      const r = await m.decide({
+        state: 's',
+        questions: { a: { type: 'noul', instructions: 'Is this true?' } },
+      });
+      assert.ok(r.ok, r.ok ? '' : r.error.message);
+      assert.deepEqual(r.value.usage, {
+        inputTokens: input ?? undefined,
+        outputTokens: output ?? undefined,
+      });
+    });
+  }
+
   it('renames noul to probability, drops legend, numeric score keys, camelCase usage', async () => {
     const f = fakeFetch(() =>
       okBody({
@@ -84,7 +119,7 @@ describe('TypeSafeDecisionModel — response mapping', () => {
     const r = await m.decide({
       state: 's',
       questions: {
-        a: { type: 'noul' },
+        a: { type: 'noul', instructions: 'Is this true?' },
         c: { type: 'score', criteria: ['lo', 'mid', 'hi'] },
       },
     });
@@ -114,7 +149,10 @@ describe('TypeSafeDecisionModel — response mapping', () => {
     });
     const r = await m.decide({
       state: 's',
-      questions: { a: { type: 'noul' }, b: { type: 'noul' } },
+      questions: {
+        a: { type: 'noul', instructions: 'Is this true?' },
+        b: { type: 'noul', instructions: 'Is this true?' },
+      },
     });
     assert.ok(!r.ok);
     assert.equal(r.error.code, 'DECISION_ERROR');
@@ -138,7 +176,7 @@ describe('TypeSafeDecisionModel — response mapping', () => {
     });
     const r = await m.decide({
       state: 's',
-      questions: { a: { type: 'noul' } },
+      questions: { a: { type: 'noul', instructions: 'Is this true?' } },
     });
     assert.ok(!r.ok);
     assert.equal(r.error.code, 'DECISION_ERROR');
@@ -153,7 +191,10 @@ describe('TypeSafeDecisionModel — unset is not sent', () => {
       credential: staticApiKey('k'),
       fetch: f.fetch,
     });
-    await m.decide({ state: 's', questions: { a: { type: 'noul' } } });
+    await m.decide({
+      state: 's',
+      questions: { a: { type: 'noul', instructions: 'Is this true?' } },
+    });
     assert.equal(f.calls.length, 3);
   });
 
@@ -164,7 +205,10 @@ describe('TypeSafeDecisionModel — unset is not sent', () => {
       maxRetries: 0,
       fetch: f.fetch,
     });
-    await m.decide({ state: 's', questions: { a: { type: 'noul' } } });
+    await m.decide({
+      state: 's',
+      questions: { a: { type: 'noul', instructions: 'Is this true?' } },
+    });
     assert.equal(f.calls.length, 1);
   });
 });
@@ -183,8 +227,8 @@ describe('TypeSafeDecisionModel — question keys are data, not prototype slots'
       fetch: f.fetch,
     });
     const questions = Object.fromEntries([
-      ['__proto__', { type: 'noul' as const }],
-      ['normal', { type: 'noul' as const }],
+      ['__proto__', { type: 'noul' as const, instructions: 'Is this true?' }],
+      ['normal', { type: 'noul' as const, instructions: 'Is this true?' }],
     ]);
     const r = await m.decide({ state: 's', questions });
     assert.deepEqual(Object.keys(f.calls[0].body.questions as object).sort(), [

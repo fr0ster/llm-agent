@@ -63,6 +63,7 @@ import {
   resultKind,
 } from './structured-plan.js';
 import { TaskBoard, type TaskBoardOptions } from './task-board.js';
+import { compactText, taskReference } from './task-reference.js';
 
 export const DIALOGUE_HISTORY_LIMIT = 200;
 export interface PlannerTurnOptions {
@@ -135,7 +136,6 @@ interface UserTurn {
 
 export class DialogueSession {
   private readonly board: TaskBoard;
-  private readonly resultEvents: string[] = [];
   private readonly signals: ISignalEmitter<DialogueSignals>;
   private turnActive = false;
   private externalCoordinator = false;
@@ -209,6 +209,45 @@ export class DialogueSession {
         }
       : undefined;
   }
+  private unresolvedFailures(
+    request: PlannerRequestRecord | undefined,
+  ): string[] {
+    if (!request) return [];
+    return this.board
+      .list()
+      .filter((task) => {
+        if (
+          this.taskRequests.get(task.id) !== request.id ||
+          request.resolvedFailures?.includes(task.id) ||
+          (task.state !== 'failed' &&
+            task.state !== 'interrupted' &&
+            task.error === undefined)
+        )
+          return false;
+        const stepId = this.taskSteps.get(task.id);
+        const step = this.plan?.steps.find((entry) => entry.id === stepId);
+        if (step?.state === 'done' || step?.state === 'skipped') return false;
+        return (
+          !step ||
+          !(
+            currentAttemptIds(step).length > 0 &&
+            currentAttemptIds(step).every(
+              (id) => this.board.get(id)?.state === 'done',
+            )
+          )
+        );
+      })
+      .map((task) => task.id);
+  }
+  private resolveFailures(request = this.openRequest): void {
+    if (!request) return;
+    request.resolvedFailures = [
+      ...new Set([
+        ...(request.resolvedFailures ?? []),
+        ...this.unresolvedFailures(request),
+      ]),
+    ];
+  }
   private beginRequest(text: string, user: boolean): PlannerRequestRecord {
     let open = this.openRequest;
     const automatic =
@@ -218,6 +257,7 @@ export class DialogueSession {
         (!this.plan.steps.length && !this.plan.note) ||
         this.plan.status === 'done') &&
       open?.lastTurnOk === true &&
+      !this.unresolvedFailures(open).length &&
       !this.events.length &&
       !this.board
         .list()
@@ -269,6 +309,7 @@ export class DialogueSession {
     );
   }
   private conversation: Message[] = [];
+  private readonly leadingActions = new WeakSet<Message>();
   private plan?: Plan;
   private readonly taskSteps = new Map<string, string>();
   private pending: PlannerMessage[] = [];
@@ -508,6 +549,11 @@ export class DialogueSession {
       session.conversation = structuredClone(
         state.conversation.slice(-DIALOGUE_HISTORY_LIMIT),
       );
+      const offset = state.conversation.length - session.conversation.length;
+      session.conversation.forEach((message, index) => {
+        if (state.conversationLeadingActions?.includes(index + offset))
+          session.leadingActions.add(message);
+      });
       session.conversation = session.conversation.reduce<Message[]>(
         (messages, message) => {
           const last = messages.at(-1);
@@ -554,8 +600,15 @@ export class DialogueSession {
           ? { transcript: structuredClone(record.transcript ?? []) }
           : { closedAt: record.closedAt }),
         text: record.text.slice(0, 20_000),
-        plan: structuredClone(record.plan),
-        lastTurnOk: record.lastTurnOk,
+        ...(Object.hasOwn(record, 'plan')
+          ? { plan: structuredClone(record.plan) }
+          : {}),
+        ...(Object.hasOwn(record, 'lastTurnOk')
+          ? { lastTurnOk: record.lastTurnOk }
+          : {}),
+        ...(Object.hasOwn(record, 'resolvedFailures')
+          ? { resolvedFailures: structuredClone(record.resolvedFailures) }
+          : {}),
         ...(record.legacy ? { legacy: true as const } : {}),
       }));
       if (state.requests === undefined) {
@@ -668,6 +721,7 @@ export class DialogueSession {
           typeof plan === 'string'
             ? { version: 1, steps: [], note: plan, status, question }
             : plan;
+        if (this.plan?.status === 'done') this.resolveFailures(request);
         this.changed();
       },
       searchKnowledge: async (query, collection, k) => {
@@ -800,7 +854,7 @@ export class DialogueSession {
     const previousPlan = this.plan;
     const waitingAtEntry = this.plan?.status === 'waiting_user';
     let request = this.beginRequest(
-      text,
+      user?.text ?? text,
       user !== undefined && consumed.length === 0,
     );
     const entryTurnOk = request.lastTurnOk;
@@ -833,9 +887,13 @@ export class DialogueSession {
       delete this.plan.question;
       this.changed();
     }
-    const input = this.restart ? `${this.restart}\n${text}` : text;
+    if (this.restart) this.appendInput(this.restart, 'note');
     this.restart = undefined;
-    this.appendInput(input);
+    if (user) {
+      this.appendInput(user.text);
+      const notes = this.eventNotes(consumed);
+      if (notes) this.appendInput(notes, 'events');
+    } else this.appendInput(text, 'events');
     this.trim();
     try {
       const projected = new DefaultPlannerContextBuilder().build({
@@ -860,6 +918,7 @@ export class DialogueSession {
       );
       let reply = '';
       const deliveries: string[] = [];
+      const deliveryReferences: string[] = [];
       let plannerUsage: TokenUsage | undefined;
       const actions: string[] = [];
       let started = false;
@@ -891,6 +950,7 @@ export class DialogueSession {
               'new_request requires the first tool of the first planner call in a user turn, once, and never an answer to waiting_user',
             );
           this.updateRequestPlan();
+          this.resolveFailures(request);
           request.closedAt = this.now();
           delete request.transcript;
           request.lastTurnOk = entryTurnOk;
@@ -906,9 +966,19 @@ export class DialogueSession {
             { usage: this.turnUsage },
           );
           this.plan = undefined;
-          request = this.beginRequest(text, false);
+          request = this.beginRequest(user.text, false);
           request.lastTurnOk = false;
-          appendRequestMessage(request, { role: 'user', content: text });
+          appendRequestMessage(request, {
+            role: 'user',
+            content: user.text,
+          });
+          const eventNotes = this.eventNotes(consumed);
+          if (eventNotes)
+            appendRequestMessage(request, {
+              role: 'user',
+              content: eventNotes,
+              internalKind: 'events',
+            });
           partialText = '';
           contentPartials.length = 0;
           lastReadVersion = undefined;
@@ -981,13 +1051,6 @@ export class DialogueSession {
           if (firstUser) firstUser.content = `${line}\n${firstUser.content}`;
           else messages.push({ role: 'user', content: line });
         }
-        const resultEvents = this.resultEvents.splice(0);
-        if (resultEvents.length) {
-          const last = messages.at(-1);
-          if (last) last.content += `\n${resultEvents.join('\n')}`;
-          else
-            messages.push({ role: 'user', content: resultEvents.join('\n') });
-        }
         const contentPartials: StreamChunk[] = [];
         let lastIterationText = '';
         let lastIterationPartials: StreamChunk[] = [];
@@ -1017,7 +1080,7 @@ export class DialogueSession {
               startRequest(true);
               restartDelivered = true;
             },
-            deliver: (id, note) => {
+            deliver: (id, note, resolves = []) => {
               if (delivered)
                 throw new Error('only one deliver per planner call');
               const task = this.board.get(id);
@@ -1044,6 +1107,25 @@ export class DialogueSession {
                 throw new Error(
                   `step ${stepId} requires passing latest check steps before delivery`,
                 );
+              for (const failureId of resolves) {
+                const failure = this.board.get(failureId);
+                if (
+                  !failure ||
+                  this.taskRequests.get(failureId) !== request.id ||
+                  (failure.state !== 'failed' &&
+                    failure.state !== 'interrupted' &&
+                    failure.error === undefined)
+                )
+                  throw new Error(
+                    `task ${failureId} is not a known failed task in the current request`,
+                  );
+              }
+              request.resolvedFailures = [
+                ...new Set([...(request.resolvedFailures ?? []), ...resolves]),
+              ];
+              deliveryReferences.push(
+                `${note ? `${note}\n\n` : ''}[delivered] ${taskReference(task)}`,
+              );
               deliveries.push(
                 `${note ? `${note}\n\n` : ''}${task.output ?? ''}`,
               );
@@ -1202,16 +1284,25 @@ export class DialogueSession {
                 )
                 .map((task) => `${task.id} (${task.worker})`)
                 .join(', ')}.`;
-        appendRequestMessage(request, { role: 'assistant', content: reply });
+        appendRequestMessage(request, {
+          role: 'assistant',
+          content: reply,
+          ...(deliveryReferences.length
+            ? { plannerReference: deliveryReferences.join('\n') }
+            : {}),
+        });
         appendRequestMessage(request, {
           role: 'user',
           content: `[actions] ${actions.join(', ') || 'none'}`,
+          internalKind: 'actions',
         });
         this.conversation.push({ role: 'assistant', content: reply });
-        this.conversation.push({
+        const actionMessage: Message = {
           role: 'user',
           content: `[actions] ${actions.join(', ') || 'none'}`,
-        });
+        };
+        this.leadingActions.add(actionMessage);
+        this.conversation.push(actionMessage);
         this.trim();
         recomputePlanStatus(this.plan);
         this.changed();
@@ -1267,6 +1358,7 @@ export class DialogueSession {
         this.appendInput(
           `[check] ${checks.join('\n') || 'Review new task events before answering.'}` +
             (events.length ? `\n${this.eventNotes(events)}` : ''),
+          'note',
         );
       }
       const tasks: NonNullable<PlannerMessageUsage['tasks']> = [];
@@ -1346,15 +1438,11 @@ export class DialogueSession {
               : ` (${task.toolCalls}${task.maxToolCalls === undefined ? '' : `/${task.maxToolCalls}`} tool calls)`;
           return `${label} ${task.id} (${task.worker}) is still running after ${elapsed}${calls}: check it and decide: keep waiting, stop_task, or re-delegate`;
         }
-        if (task.output !== undefined)
-          this.resultEvents.push(
-            `${label} task ${task.id} (${task.worker}) ${kind} result:\n${task.output}`,
-          );
         const owner = this.taskSteps.get(task.id);
         const removed =
           owner !== undefined &&
           !this.plan?.steps.some((step) => step.id === owner);
-        return `${label !== '[task events]' ? label : removed ? '[actions]' : '[task events]'} task ${task.id}${owner ? ` for ${owner}` : ''} (${task.worker}) ${kind}: ${task.goal} — ${(task.error !== task.output ? task.error : undefined) ?? (task.output === undefined ? '' : '(result reported once; use get_task to read again)')}${task.budgetExhausted ? `; worker hit the tool-call budget ${task.toolCalls ?? '?'}/${task.maxToolCalls ?? '?'}` : ''}`;
+        return `${label !== '[task events]' ? label : removed && task.state !== 'failed' && task.state !== 'interrupted' && task.error === undefined ? '[actions]' : '[task events]'} task ${task.id}${owner ? ` for ${owner}` : ''} (${task.worker}) ${kind}: ${compactText(task.goal, 200)} — ${taskReference(task)}${task.budgetExhausted ? `; worker hit the tool-call budget ${task.toolCalls ?? '?'}/${task.maxToolCalls ?? '?'}` : ''}`;
       })
       .join('\n');
   }
@@ -1372,9 +1460,14 @@ export class DialogueSession {
     });
     return this.persistence;
   }
-  private appendInput(text: string): void {
+  private appendInput(text: string, internalKind?: 'events' | 'note'): void {
     const open = this.openRequest;
-    if (open) appendRequestMessage(open, { role: 'user', content: text });
+    if (open)
+      appendRequestMessage(open, {
+        role: 'user',
+        content: text,
+        ...(internalKind ? { internalKind } : {}),
+      });
     const last = this.conversation.at(-1);
     // Hub notes occupy the next user slot; merge input to preserve role alternation.
     if (last?.role === 'user') last.content = `${last.content}\n${text}`;
@@ -1387,11 +1480,14 @@ export class DialogueSession {
       this.conversation.splice(0, 2);
     if (this.conversation[0]?.role === 'assistant') this.conversation.shift();
     const first = this.conversation[0];
-    if (first && String(first.content).startsWith('[actions]')) {
-      const content = String(first.content);
+    if (first && this.leadingActions.has(first)) {
+      const content = first.content ?? '';
       const newline = content.indexOf('\n');
       if (newline < 0) this.conversation.shift();
-      else first.content = content.slice(newline + 1);
+      else {
+        first.content = content.slice(newline + 1);
+        this.leadingActions.delete(first);
+      }
     }
   }
 
@@ -1415,6 +1511,9 @@ export class DialogueSession {
       requests: this.requests,
       requestSeq: this.requestSeq,
       conversation: this.conversation,
+      conversationLeadingActions: this.conversation.flatMap((message, index) =>
+        this.leadingActions.has(message) ? [index] : [],
+      ),
       plan: this.plan,
       planStatus: this.plan?.status,
       tasks: this.board.list(),

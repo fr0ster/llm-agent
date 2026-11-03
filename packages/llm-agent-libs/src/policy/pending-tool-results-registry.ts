@@ -15,6 +15,10 @@ export interface PendingToolCallsEntry {
 export class PendingToolResultsRegistry {
   private readonly sessions = new Map<string, PendingToolCallsEntry>();
 
+  clear(sessionId: string): void {
+    this.sessions.delete(sessionId);
+  }
+
   constructor(private readonly ttlMs = 5 * 60 * 1000) {}
 
   set(sessionId: string, entry: PendingToolCallsEntry): void {

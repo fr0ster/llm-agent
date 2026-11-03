@@ -148,6 +148,91 @@ describe('Mixed internal + external tool calls', () => {
     );
   });
 
+  it('isolates two process calls without sessionId after a mixed tool round', async () => {
+    let capturedMessages: Message[] = [];
+
+    const streamLlm = {
+      callCount: 0,
+      async chat() {
+        return {
+          ok: true as const,
+          value: { content: '', finishReason: 'stop' as const },
+        };
+      },
+      async *streamChat(
+        msgs: Message[],
+      ): AsyncIterable<Result<LlmStreamChunk, LlmError>> {
+        streamLlm.callCount++;
+        capturedMessages = msgs;
+        if (streamLlm.callCount === 1) {
+          yield {
+            ok: true,
+            value: {
+              content: 'I will read the class and write the file.',
+              toolCalls: [
+                {
+                  id: 'call_1',
+                  name: 'ReadClass',
+                  arguments: { class: 'ZCL_TEST' },
+                },
+                {
+                  id: 'call_2',
+                  name: 'write_file',
+                  arguments: { path: 'hello.md', content: 'Hello' },
+                },
+              ],
+              finishReason: 'tool_calls',
+            },
+          };
+        } else {
+          yield {
+            ok: true,
+            value: { content: 'Done!', finishReason: 'stop' },
+          };
+        }
+      },
+      async healthCheck() {
+        return { ok: true as const, value: true };
+      },
+    };
+
+    const mcpClient = makeMcpClient(
+      [{ name: 'ReadClass', description: 'Read ABAP class', inputSchema: {} }],
+      new Map([['ReadClass', { content: 'class ZCL_TEST { method1() {} }' }]]),
+    );
+
+    const { deps } = makeDefaultDeps({
+      llmResponses: [{ content: 'unused' }],
+      mcpClients: [mcpClient],
+    });
+    deps.mainLlm = streamLlm;
+    const agent = new SmartAgent(deps, DEFAULT_CONFIG);
+
+    const externalTools = [
+      {
+        name: 'write_file',
+        description: 'Write file',
+        inputSchema: {
+          type: 'object',
+          properties: { path: { type: 'string' }, content: { type: 'string' } },
+        },
+      },
+    ];
+
+    const first = await agent.process('Create file hello.md', {
+      externalTools,
+    });
+    assert.ok(first.ok);
+
+    const r2 = await agent.process('Unrelated second request', {
+      externalTools,
+    });
+    assert.ok(r2.ok);
+    assert.equal(streamLlm.callCount, 2);
+    assert.ok(!capturedMessages.some((message) => message.role === 'tool'));
+    assert.ok(!JSON.stringify(capturedMessages).includes('ZCL_TEST'));
+  });
+
   it('external-only calls still work (no pending results)', async () => {
     const streamLlm = {
       async chat() {

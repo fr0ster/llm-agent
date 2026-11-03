@@ -33,6 +33,36 @@ function model(withUsage: boolean): IDecisionModel {
 }
 
 describe('wrapDecisionModel', () => {
+  for (const usage of [
+    { inputTokens: undefined, outputTokens: undefined },
+    { inputTokens: undefined, outputTokens: 3 },
+    { inputTokens: 12, outputTokens: undefined },
+    { inputTokens: 0, outputTokens: 0 },
+  ]) {
+    it(`keeps totals consistent for optional usage ${JSON.stringify(usage)}`, async () => {
+      const { calls, logger } = recordingLogger();
+      const inner: IDecisionModel = {
+        decide: async () => ({
+          ok: true,
+          value: { answers: {}, model: 'jev-latest', usage },
+        }),
+      };
+      await wrapDecisionModel(inner).decide(req, { requestLogger: logger });
+      assert.equal(calls.length, 1);
+      const entry = calls[0];
+      assert.equal(
+        entry.promptTokens,
+        usage.inputTokens ?? Math.ceil(JSON.stringify(req).length / 4),
+      );
+      assert.equal(entry.completionTokens, usage.outputTokens ?? 0);
+      assert.equal(
+        entry.totalTokens,
+        entry.promptTokens + entry.completionTokens,
+      );
+      assert.ok(Number.isFinite(entry.totalTokens));
+    });
+  }
+
   it('logs one decision entry with measured usage', async () => {
     const { calls, logger } = recordingLogger();
     const r = await wrapDecisionModel(model(true)).decide(req, {

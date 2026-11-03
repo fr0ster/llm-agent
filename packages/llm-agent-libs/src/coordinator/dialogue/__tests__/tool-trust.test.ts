@@ -289,7 +289,10 @@ test('get_task tags a response copy and preserves the board trace', async () => 
   const result = await runInPlannerScope(
     { board, getPlan: () => undefined, setPlan() {} },
     () =>
-      new PlannerToolsClient(toolTrust).callTool('get_task', { task_id: 't' }),
+      new PlannerToolsClient(toolTrust).callTool('get_task', {
+        task_id: 't',
+        include_trace: true,
+      }),
   );
   assert.ok(result.ok);
   assert.ok(
@@ -433,7 +436,10 @@ test('session resolver tags internal planner get_task and checker evidence', asy
           ],
         });
         const client = new PlannerToolsClient();
-        const task = await client.callTool('get_task', { task_id: 'source' });
+        const task = await client.callTool('get_task', {
+          task_id: 'source',
+          include_trace: true,
+        });
         assert.ok(task.ok);
         assert.ok(
           JSON.stringify(task.value.content).includes(
