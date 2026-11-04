@@ -1,5 +1,16 @@
 # @mcp-abap-adt/llm-agent-libs
 
+## 30.32.0
+
+### Minor Changes
+
+- 33dde39: Add optional immutable task result storage with bounded coordinator notices,
+  reference-based dependency hand-off, full-record delivery and compact planner
+  memory. Provide a default submit_report tool and retained dialogue signal bus.
+  Recognize trailing checker verdicts after worker progress text.
+
+- Requires `@mcp-abap-adt/llm-agent` 30.33.0 or later (peer dependency) for the task result store types.
+
 ## 30.31.1
 
 ### Patch Changes
