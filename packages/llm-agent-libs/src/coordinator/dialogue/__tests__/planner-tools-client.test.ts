@@ -128,7 +128,10 @@ test('all tool success paths return JSON and plan is stored', async () => {
       'worker',
     ]);
     assert.equal(listed[0].id, 't1');
-    assert.equal((await call('get_task', { task_id: 't1' })).json.goal, 'g');
+    assert.match(
+      (await call('get_task', { task_id: 't1' })).json.notice,
+      /goal: g/,
+    );
     assert.deepEqual((await call('stop_task', { task_id: 'missing' })).json, {
       stopped: false,
     });
@@ -139,7 +142,7 @@ test('all tool success paths return JSON and plan is stored', async () => {
   });
   await f.board.stopAll();
 });
-test('queued stop succeeds and get_task preserves the original cut note', async () => {
+test('queued stop succeeds and get_task leaves retained output unchanged', async () => {
   const f = setup();
   f.board.restore([
     {
@@ -152,8 +155,12 @@ test('queued stop succeeds and get_task preserves the original cut note', async 
     },
   ]);
   await runInPlannerScope(f.scope, async () => {
+    assert.match(
+      (await call('get_task', { task_id: 'saved' })).json.notice,
+      /truncated/,
+    );
     assert.equal(
-      (await call('get_task', { task_id: 'saved', view: 'full' })).json.output,
+      f.board.get('saved')?.output,
       `${'x'.repeat(4000)}\n[cut: 10 characters omitted]`,
     );
     const id = f.board.start({ worker: 'w', goal: 'queued' });
@@ -770,112 +777,163 @@ test('plan_create refuses a task started while the author is pending', async () 
   }
 });
 
-test('get_task defaults to compact output and offers full, paged and explicit trace views', async () => {
+test('get_task returns a bounded notice, rejects removed views and preserves explicit trace', async () => {
   const f = setup();
-  const output = '0123456789'.repeat(2000);
-  const error = `${'diagnostic '.repeat(300)}DIAGNOSTIC_SUFFIX`;
-  const toolTrace = {
-    complete: true,
-    omittedCount: 0,
-    entries: [
-      {
-        sequence: 1,
-        toolName: 'read',
-        arguments: '{}',
-        outcome: 'ok' as const,
-        resultExcerpt: 'evidence',
-      },
-    ],
-  };
+  const toolTrace = { complete: true, omittedCount: 0, entries: [] };
   f.board.restore([
     {
       id: 'large',
       worker: 'w',
-      goal: 'large report',
+      goal: 'g'.repeat(400),
       state: 'done',
       createdAt: 1,
-      output,
-      error,
+      result: 'verdict',
+      summary: 's'.repeat(900),
+      output: JSON.stringify({ verdict: 'pass' }),
+      error: 'e'.repeat(2000),
+      resultRef: { collection: 'task-results', record: 'large', chars: 70000 },
       toolTrace,
     },
   ]);
   await runInPlannerScope(f.scope, async () => {
-    const compact = (await call('get_task', { task_id: 'large' })).json;
-    assert.ok(compact.output.length <= 1200);
-    assert.match(compact.output, /truncated, 20000 chars/);
-    assert.equal(compact.outputLength, output.length);
-    assert.ok(compact.error.length <= 1200);
-    assert.equal(compact.errorLength, error.length);
+    const tools = await client.listTools();
+    assert.ok(tools.ok);
+    const schema = tools.value.find(
+      (tool) => tool.name === 'get_task',
+    )?.inputSchema;
+    assert.deepEqual(Object.keys(schema?.properties ?? {}).sort(), [
+      'include_trace',
+      'task_id',
+    ]);
+    const result = (await call('get_task', { task_id: 'large' })).json;
+    assert.deepEqual(Object.keys(result), ['notice']);
+    assert.match(result.notice, /kind: verdict; verdict: pass/);
+    assert.match(result.notice, /chars: 70000; result: task-results\/large/);
     assert.equal(
-      (await call('get_task', { task_id: 'large', view: 'full' })).json.error,
-      error,
+      result.notice.split('summary: ')[1].split('; chars:')[0].length,
+      600,
     );
-    const diagnostic = (
-      await call('get_task', {
-        task_id: 'large',
-        view: 'full',
-        error_offset: error.length - 17,
-        error_limit: 17,
-      })
-    ).json;
-    assert.equal(diagnostic.error, 'DIAGNOSTIC_SUFFIX');
-    assert.equal(diagnostic.nextErrorOffset, null);
-    assert.equal(diagnostic.output, output);
-    const errorPage = (
-      await call('get_task', {
-        task_id: 'large',
-        view: 'full',
-        error_offset: 1300,
-        error_limit: 20,
-      })
-    ).json;
-    assert.equal(errorPage.error, error.slice(1300, 1320));
-    assert.equal(errorPage.nextErrorOffset, 1320);
-    assert.equal(compact.fetchMore.view, 'full');
-    assert.equal(compact.toolTrace, undefined);
+    assert.equal(
+      result.notice.split('goal: ')[1].split('; error:')[0].length,
+      200,
+    );
+    assert.equal(result.notice.split('; error: ')[1].length, 600);
+    assert.ok(!result.notice.includes('get_task'));
+    const listed = (await call('list_tasks')).json;
+    assert.equal(listed[0].goal.length, 200);
+    assert.match(listed[0].goal, /truncated, 400 chars/);
     assert.deepEqual(
       (await call('get_task', { task_id: 'large', include_trace: true })).json
         .toolTrace,
       toolTrace,
     );
-    assert.equal(
-      (await call('get_task', { task_id: 'large', view: 'full' })).json.output,
-      output,
-    );
-    const page = (
-      await call('get_task', {
-        task_id: 'large',
-        view: 'full',
-        offset: 13,
-        limit: 27,
-      })
-    ).json;
-    assert.equal(page.output, output.slice(13, 40));
-    assert.equal(page.nextOffset, 40);
-    assert.equal(
-      (
-        await call('get_task', {
-          task_id: 'large',
-          view: 'full',
-          offset: output.length,
-        })
-      ).json.nextOffset,
-      null,
-    );
     for (const args of [
-      { error_offset: -1 },
-      { error_limit: 0 },
-      { error_limit: 1.5 },
-      { offset: -1 },
-      { limit: 0 },
-      { limit: 1.5 },
-      { view: 'invalid' },
-    ])
+      { view: 'full' },
+      { view: 'compact' },
+      { offset: 0 },
+      { limit: 20 },
+      { error_offset: 0 },
+      { error_limit: 20 },
+      { include_trace: 'yes' },
+    ]) {
       assert.equal(
         (await call('get_task', { task_id: 'large', ...args })).error,
         true,
       );
-    assert.equal(f.board.get('large')?.output, output);
+    }
   });
   await f.board.stopAll();
 });
+
+for (const state of ['queued', 'running'] as const) {
+  test(`get_task preserves ${state} supervision metadata without result text`, async () => {
+    const f = setup();
+    f.board.get = () => ({
+      id: 'active',
+      worker: 'w',
+      goal: 'g'.repeat(500),
+      state,
+      result: 'report',
+      createdAt: 0,
+      lastActivityAt: 0,
+      idleMs: 99,
+      currentAction: 'tool action '.repeat(30),
+      budgetExhausted: false,
+      toolCalls: 2,
+      maxToolCalls: 5,
+      output: 'private output',
+      error: 'private error',
+    });
+    await runInPlannerScope(f.scope, async () => {
+      const { notice, ...metadata } = (
+        await call('get_task', { task_id: 'active' })
+      ).json;
+      assert.match(notice, new RegExp(`task active \\(w\\) ${state}`));
+      assert.deepEqual(metadata, {
+        id: 'active',
+        worker: 'w',
+        goal: `${'g'.repeat(177)} [truncated, 500 chars]`,
+        state,
+        result: 'report',
+        lastActivityAt: 0,
+        idleMs: 99,
+        currentAction: `${'tool action '.repeat(30).slice(0, 97)} [truncated, 360 chars]`,
+        budgetExhausted: false,
+        toolCalls: 2,
+        maxToolCalls: 5,
+        outputLength: 14,
+        errorLength: 13,
+      });
+    });
+  });
+}
+
+test('task without store keeps compact outcome in notice and budget note', async () => {
+  const f = setup();
+  f.board.restore([
+    {
+      id: 'legacy',
+      worker: 'w',
+      goal: 'g',
+      state: 'done',
+      createdAt: 1,
+      output: 'compact outcome '.repeat(100),
+      budgetExhausted: true,
+      toolCalls: 5,
+      maxToolCalls: 5,
+    },
+  ]);
+  await runInPlannerScope(f.scope, async () => {
+    const { notice } = (await call('get_task', { task_id: 'legacy' })).json;
+    assert.match(notice, /summary: compact outcome/);
+    assert.equal(notice.split('summary: ')[1].split('; chars:')[0].length, 600);
+    assert.match(notice, /chars: 1600; result: not stored/);
+    assert.match(notice, /worker hit the tool-call budget 5\/5/);
+  });
+  await f.board.stopAll();
+});
+
+for (const output of ['PASS', ' fail ', '{"verdict":"pass"}']) {
+  test(`get_task notice reads shared verdict: ${output}`, async () => {
+    const f = setup();
+    f.board.restore([
+      {
+        id: 'verdict',
+        worker: 'w',
+        goal: 'check',
+        state: 'done',
+        createdAt: 1,
+        result: 'verdict',
+        output,
+      },
+    ]);
+    await runInPlannerScope(f.scope, async () => {
+      const { notice } = (await call('get_task', { task_id: 'verdict' })).json;
+      assert.match(
+        notice,
+        output.trim() === 'fail' ? /verdict: fail/ : /verdict: pass/,
+      );
+    });
+    await f.board.stopAll();
+  });
+}

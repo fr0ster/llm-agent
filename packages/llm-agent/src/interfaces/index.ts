@@ -358,6 +358,13 @@ export type {
   SubAgentContextRequest,
   SubAgentContextResult,
 } from './subagent-context.js';
+export type {
+  ITaskResultStore,
+  TaskResultEntry,
+  TaskResultOutcome,
+  TaskResultRef,
+  TaskResultStoreError,
+} from './task-result-store.js';
 export type { ITaskFormalizer, ITaskSpec } from './task-spec.js';
 export { renderTaskSpec } from './task-spec.js';
 export {

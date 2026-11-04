@@ -108,16 +108,46 @@ a new authored plan; `plan_revise` merges a revision of the current structured
 plan. `plan_get` reads filtered, paged steps; `plan_update` edits without an LLM
 call. `get_plan` / `update_plan` have been removed without aliases.
 
-`get_task({ task_id })` returns identity, state, verdict/count when present,
-activity/budget information, output length, and a preview of at most 1,200
-characters including a truncation marker. Errors are also bounded. Use
-`get_task({ task_id, view: 'full' })` for retained output and the full retained error; add `offset` and `limit`
-to page by character offset. `nextOffset: null` marks the end. Set
-`include_trace: true` for tool evidence with trust annotations. A `fetchMore`
-example is included. Storage and direct dependency inputs to workers/checkers
-keep their existing retained output limits.
+`get_task({ task_id })` returns a `notice` containing task identity, worker, state,
+result kind, verdict when present, summary (at most 600 characters), character
+count and stored result reference. Goals are bounded to 200 characters and errors
+to 600. Tasks without a summary retain a compact outcome in the notice.
+Set `include_trace: true` for tool evidence with trust annotations. Full-output
+views and pagination are unavailable; use normal record read tools for concrete
+gaps that the summary cannot decide.
 
-Completion events carry an outcome of at most 400 characters and output length.
+Pass `resultStore: ITaskResultStore` to `DialogueSession.open` for immutable full
+task results. `put(entry, options?)` returns a `TaskResultRef` (collection, record,
+character count); `read(ref, options?)` returns full text. Writes resolve only
+after the record is readable; identical retries return the existing reference,
+while different output for the same id returns `exists`. Other store errors are
+`unavailable` and `aborted`. Finalisation determines the outcome, stores uncut
+output (error text for failures), then sets state,
+reference and summary before publishing the event. A failed write turns `done`
+into `failed`; stopped/failed outcomes remain unsuccessful without a reference.
+Aborting the write interrupts the task. Store calls have no added timeout and
+use the call's abort signal for cancellation.
+
+Dependencies with `resultRef` receive a reference and bounded summary, without
+inline output; checks also receive tool evidence and expected items. Legacy tasks
+without references receive text on every delegation, subject to the existing
+120,000-character legacy context cap. `deliver` reads the full record; a read
+failure returns a tool error and delivers nothing. Without a store, text hand-off
+and delivery from `task.output` remain available.
+
+Report workers get a default `submit_report({ summary, result? })`; host tools of
+that name take precedence. Summary must be nonempty and at most 600 characters.
+Omitting `result` uses all collected report text; no collected text is an error.
+Without an explicit summary, the first 600 output characters are used. Verdict
+summaries retain verdict/count and trim the note. The session defaults to the
+built-in `createMemorySignalBus`, retaining finish payloads (including summaries)
+per signal name/source/run until retired.
+
+Planner memory stores bounded task notices and delivery note/notice projections,
+rather than full result bodies. Persisted history retains replies within its
+existing bounds.
+
+Completion events carry the same bounded notice.
 Request context projects consumed events as references/current state, keeps recent
 deltas, and uses compact references for delivered answers. User corrections,
 consent, unresolved errors, request ownership and the current plan stay visible.
@@ -266,8 +296,6 @@ tools, assembles the refreshed worker prompt, computes permissions for two host-
 direct tools, rejects a denied direct call, and disables the record without starting
 another task. This fixture does not establish enforcement in a production host or
 through MCP, external, nested or resumed routing; those remain host obligations.
-
-For `get_task` with `view: 'full'`, `error_offset` and `error_limit` independently page the retained error. `errorLength`, `errorOffset`, and `nextErrorOffset` describe that page (`nextErrorOffset: null` at the end). Output paging remains independent.
 
 ## Dialogue task completion
 

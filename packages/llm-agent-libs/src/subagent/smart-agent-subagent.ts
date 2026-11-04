@@ -11,6 +11,7 @@ import {
   type ToolTraceEntry,
 } from '@mcp-abap-adt/llm-agent';
 import type { SmartAgent } from '../agent.js';
+import { resolveWorkerSummary } from '../coordinator/dialogue/submit-report-tool.js';
 
 export class SmartAgentSubAgent implements ISubAgent {
   public readonly description?: string;
@@ -59,6 +60,9 @@ export class SmartAgentSubAgent implements ISubAgent {
           signal: input.signal,
           stopSignal: input.stopSignal,
           dialogueTask: input.dialogueTask,
+          ...(input.dialogueTask?.result === 'report'
+            ? { dialogueReportText: () => assistantTexts.join('\n\n') }
+            : {}),
           trace: input.trace,
           sessionLogger: input.sessionLogger,
           onPartial: input.onPartial,
@@ -88,8 +92,9 @@ export class SmartAgentSubAgent implements ISubAgent {
       }
 
       const { content, toolCalls, stopReason, usage, stopped } = res.value;
+      const finish = input.dialogueTask?.readFinish();
       const output =
-        input.dialogueTask?.readFinish()?.output ??
+        finish?.output ??
         (assistantTexts.length > 0 ? assistantTexts.join('\n\n') : content);
 
       const mappedUsage = usage
@@ -127,6 +132,7 @@ export class SmartAgentSubAgent implements ISubAgent {
           return {
             toolTrace: collector.finalize(!hasExternalTraceGap(onToolTrace)),
             output,
+            summary: resolveWorkerSummary(output, finish?.summary).summary,
             usage: mappedUsage,
             status: 'awaiting-external',
             budgetExhausted: res.value.budgetExhausted,
@@ -151,6 +157,7 @@ export class SmartAgentSubAgent implements ISubAgent {
       return {
         toolTrace: collector.finalize(!hasExternalTraceGap(onToolTrace)),
         output,
+        summary: resolveWorkerSummary(output, finish?.summary).summary,
         budgetExhausted: res.value.budgetExhausted,
         toolCallCount: res.value.toolCallCount,
         maxToolCalls: res.value.maxToolCalls,

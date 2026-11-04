@@ -17,7 +17,7 @@ import {
   resultStepSchema,
 } from './structured-plan.js';
 import type { TaskBoard } from './task-board.js';
-import { compactText } from './task-reference.js';
+import { compactText, taskNotice } from './task-reference.js';
 import {
   renderToolTrace,
   VERDICT_EVIDENCE_GUIDANCE,
@@ -182,19 +182,10 @@ export class PlannerToolsClient implements IMcpClient {
         {
           name: 'get_task',
           description:
-            'Read a compact task summary. Use view full for retained output and error; offset/limit page output, error_offset/error_limit page error; include_trace retrieves tool evidence.',
+            'Read a bounded task notice with summary and stored result reference; include_trace retrieves tool evidence for checks.',
           inputSchema: schema(
             {
               task_id: string,
-              view: {
-                type: 'string',
-                enum: ['compact', 'full'],
-                default: 'compact',
-              },
-              offset: { type: 'integer', minimum: 0 },
-              limit: { type: 'integer', minimum: 1 },
-              error_offset: { type: 'integer', minimum: 0 },
-              error_limit: { type: 'integer', minimum: 1 },
               include_trace: { type: 'boolean', default: false },
             },
             ['task_id'],
@@ -346,6 +337,8 @@ export class PlannerToolsClient implements IMcpClient {
               const blocks: string[] = [];
               if (isCheck) blocks.push(VERDICT_EVIDENCE_GUIDANCE);
               let size = blocks.join('\n\n').length;
+              let legacyBlocks = 0;
+              let hasReferences = false;
               for (const source of sources) {
                 if (!source) throw new Error('dependency step is missing');
                 const id = source.successfulWorkTaskId;
@@ -362,8 +355,12 @@ export class PlannerToolsClient implements IMcpClient {
                     'The worker that did the work never checks it; checked work must be a separate report task',
                   );
                 if (isCheck) checkedTaskIds[source.id] = task.id;
+                const label = `${isCheck ? '[result to check: step' : '[result of step'} ${source.id} (task ${task.id})]`;
+                const ref = task.resultRef;
                 const block = [
-                  `${isCheck ? '[result to check: step' : '[result of step'} ${source.id} (task ${task.id})]\n${task.output ?? ''}`,
+                  ref
+                    ? `${label} record ${ref.collection}/${ref.record}, ${ref.chars} chars. Summary: ${task.summary ?? ''}`
+                    : `${label}\n${task.output ?? ''}`,
                   isCheck
                     ? renderToolTrace(task.id, task.toolTrace, toolTrust)
                     : undefined,
@@ -373,14 +370,24 @@ export class PlannerToolsClient implements IMcpClient {
                 ]
                   .filter(Boolean)
                   .join('\n');
-                const nextSize = size + block.length + (blocks.length ? 2 : 0);
-                if (nextSize > 120_000)
-                  throw new Error(
-                    `result of step ${source.id} (task ${task.id}) requires ${block.length} characters; total ${nextSize} exceeds 120000 (already ${size}); split or narrow the step`,
-                  );
+                if (ref) {
+                  hasReferences = true;
+                } else {
+                  const nextSize =
+                    size + block.length + (legacyBlocks || isCheck ? 2 : 0);
+                  if (nextSize > 120_000)
+                    throw new Error(
+                      `result of step ${source.id} (task ${task.id}) requires ${block.length} characters; total ${nextSize} exceeds 120000 (already ${size}); split or narrow the step`,
+                    );
+                  size = nextSize;
+                  legacyBlocks++;
+                }
                 blocks.push(block);
-                size = nextSize;
               }
+              if (hasReferences)
+                blocks.push(
+                  'Read referenced records with your RAG read tools (rag_read by id / collection_records) when you need their content.',
+                );
               if (blocks.length)
                 context = [context, ...blocks].filter(Boolean).join('\n\n');
             }
@@ -458,26 +465,13 @@ export class PlannerToolsClient implements IMcpClient {
             .strict()
             .parse(args);
           if (!scope.deliver) throw new Error('deliver is unavailable');
-          scope.deliver(task_id, note, resolves);
+          await scope.deliver(task_id, note, resolves);
           return textResult({ delivered: task_id });
         }
         case 'get_task': {
-          const {
-            task_id: id,
-            view = 'compact',
-            offset = 0,
-            limit,
-            error_offset = 0,
-            error_limit,
-            include_trace = false,
-          } = z
+          const { task_id: id, include_trace = false } = z
             .object({
               task_id: z.string(),
-              view: z.enum(['compact', 'full']).optional(),
-              offset: z.number().int().nonnegative().optional(),
-              limit: z.number().int().positive().optional(),
-              error_offset: z.number().int().nonnegative().optional(),
-              error_limit: z.number().int().positive().optional(),
               include_trace: z.boolean().optional(),
             })
             .strict()
@@ -486,78 +480,28 @@ export class PlannerToolsClient implements IMcpClient {
           if (!task) throw new Error(`unknown task ${id}`);
           if (task.state === 'queued' || task.state === 'running')
             scope.statusRead?.();
-          const output = task.output ?? '';
-          const page =
-            view === 'full'
-              ? output.slice(
-                  offset,
-                  limit === undefined ? undefined : offset + limit,
-                )
-              : compactText(output, 1200);
-          const error =
-            view === 'full'
-              ? task.error?.slice(
-                  error_offset,
-                  error_limit === undefined
-                    ? undefined
-                    : error_offset + error_limit,
-                )
-              : task.error === undefined
-                ? undefined
-                : compactText(task.error, 1200);
-          const verdict = z
-            .object({
-              verdict: z.string().optional(),
-              count: z.number().optional(),
-            })
-            .safeParse(
-              ((): object | string | number | boolean | null => {
-                try {
-                  return JSON.parse(output);
-                } catch {
-                  return null;
-                }
-              })(),
-            );
           return textResult({
-            id: task.id,
-            worker: task.worker,
-            goal: compactText(task.goal, 400),
-            state: task.state,
-            result: task.result,
-            lastActivityAt: task.lastActivityAt,
-            idleMs: task.idleMs,
-            currentAction: task.currentAction,
-            budgetExhausted: task.budgetExhausted,
-            toolCalls: task.toolCalls,
-            maxToolCalls: task.maxToolCalls,
-            output: page,
-            error,
-            errorLength: task.error?.length ?? 0,
-            ...(verdict.success ? verdict.data : {}),
-            outputLength: output.length,
-            ...(view === 'full'
+            notice: taskNotice(task),
+            ...(task.state === 'queued' || task.state === 'running'
               ? {
-                  offset,
-                  errorOffset: error_offset,
-                  nextErrorOffset:
-                    error_offset + (error?.length ?? 0) <
-                    (task.error?.length ?? 0)
-                      ? error_offset + (error?.length ?? 0)
-                      : null,
-                  nextOffset:
-                    offset + page.length < output.length
-                      ? offset + page.length
-                      : null,
+                  id: task.id,
+                  worker: task.worker,
+                  goal: compactText(task.goal, 200),
+                  state: task.state,
+                  result: task.result,
+                  lastActivityAt: task.lastActivityAt,
+                  idleMs: task.idleMs,
+                  currentAction:
+                    task.currentAction === undefined
+                      ? undefined
+                      : compactText(task.currentAction, 120),
+                  budgetExhausted: task.budgetExhausted,
+                  toolCalls: task.toolCalls,
+                  maxToolCalls: task.maxToolCalls,
+                  outputLength: task.output?.length ?? 0,
+                  errorLength: task.error?.length ?? 0,
                 }
               : {}),
-            fetchMore: {
-              tool: 'get_task',
-              task_id: id,
-              view: 'full',
-              offset: 0,
-              limit: 12000,
-            },
             ...(include_trace && task.toolTrace
               ? {
                   toolTrace: {
@@ -599,11 +543,18 @@ export class PlannerToolsClient implements IMcpClient {
                   currentAction,
                 }) => ({
                   ...(state === 'running'
-                    ? { lastActivityAt, idleMs, currentAction }
+                    ? {
+                        lastActivityAt,
+                        idleMs,
+                        currentAction:
+                          currentAction === undefined
+                            ? undefined
+                            : compactText(currentAction, 120),
+                      }
                     : {}),
                   id,
                   worker,
-                  goal,
+                  goal: compactText(goal, 200),
                   state,
                 }),
               ),
@@ -766,7 +717,12 @@ export class PlannerToolsClient implements IMcpClient {
           );
           return textResult({
             ...plan,
-            steps: steps.slice(offset, offset + limit),
+            steps: steps.slice(offset, offset + limit).map((step) => ({
+              ...step,
+              ...(step.note === undefined
+                ? {}
+                : { note: compactText(step.note, 600) }),
+            })),
             total: steps.length,
             offset,
             limit,

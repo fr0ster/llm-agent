@@ -477,9 +477,9 @@ propagates.
   with `stopped: true` becomes `stopped`; other successful results become
   `done`. Stopping a queued task marks it stopped immediately; stopping a running
   task requests cooperation, and its eventual result determines the outcome.
-  Stored output keeps the first `TASK_OUTPUT_CHAR_LIMIT` (4000) characters plus
-  a `[cut: <n> characters omitted]` note, so events and `get_task` see bounded
-  output. Error strings from thrown exceptions are not cut by this limit.
+  The in-memory task output keeps the first `TASK_OUTPUT_CHAR_LIMIT` (4000)
+  characters plus a `[cut: <n> characters omitted]` note. Events and `get_task` expose bounded
+  notices instead. Error strings from thrown exceptions are not cut by this limit.
   The board emits `started`, `done`, `failed`, `stopped` events synchronously;
   observer exceptions do not affect execution.
 - **`PlannerToolsClient` + planner scope:** an in-process `IMcpClient` exposes
@@ -508,10 +508,11 @@ propagates.
   before the next event turn. Outcomes (`done`, `failed`, `stopped`) and non-terminal `long_running` events
   wake the planner; `started` does not. Buffered outcomes coalesce in arrival order into
   one user-role `[task events]` note listing task identity, state, a short outcome
-  (at most 400 characters), output length and a `get_task` reference. Full output
-  stays on the board. `get_task` defaults to a 1,200-character preview;
-  `view: "full"` retrieves retained output, optionally paged with `offset`/`limit`.
-  `include_trace: true` retrieves evidence. Request projection replaces consumed
+  (summary at most 600 characters), result kind, verdict, character count and
+  stored result reference. Goals are bounded to 200 characters and diagnostics
+  to 600. `get_task` returns the same bounded notice; `include_trace` adds tool
+  evidence for checks. Read stored records with normal read tools for concrete gaps.
+  Request projection replaces consumed
   outcomes and delivered answers with references while preserving corrections,
   consent, unresolved errors, ownership and the current plan. Persisted history
   keeps complete replies within its existing storage bounds. Events arriving during a turn wait for a later event turn.
@@ -620,6 +621,39 @@ console.log(userSession.session.takePending());
 // At session end (close deletes persisted dialogue state):
 await userSession.close();
 ```
+
+### Dialogue task result storage
+
+Pass `resultStore: ITaskResultStore` to `DialogueSession.open` for immutable full
+task results. `put(entry, options?)` returns a `TaskResultRef` (collection, record,
+character count); `read(ref, options?)` returns full text. Writes resolve only
+after the record is readable; identical retries return the existing reference,
+while different output for the same id returns `exists`. Other store errors are
+`unavailable` and `aborted`. Finalisation determines the outcome, stores uncut
+output (error text for failures), then sets state,
+reference and summary before publishing the event. A failed write turns `done`
+into `failed`; stopped/failed outcomes remain unsuccessful without a reference.
+Aborting the write interrupts the task. Store calls have no added timeout and
+use the call's abort signal for cancellation.
+
+Dependencies with `resultRef` receive a reference and bounded summary, without
+inline output; checks also receive tool evidence and expected items. Legacy tasks
+without references receive text on every delegation, subject to the existing
+120,000-character legacy context cap. `deliver` reads the full record; a read
+failure returns a tool error and delivers nothing. Without a store, text hand-off
+and delivery from `task.output` remain available.
+
+Report workers get a default `submit_report({ summary, result? })`; host tools of
+that name take precedence. Summary must be nonempty and at most 600 characters.
+Omitting `result` uses all collected report text; no collected text is an error.
+Without an explicit summary, the first 600 output characters are used. Verdict
+summaries retain verdict/count and trim the note. The session defaults to the
+built-in `createMemorySignalBus`, retaining finish payloads (including summaries)
+per signal name/source/run until retired.
+
+Planner memory stores bounded task notices and delivery note/notice projections,
+rather than full result bodies. Persisted history retains replies within its
+existing bounds.
 
 ## Adding a custom pipeline (plugin)
 

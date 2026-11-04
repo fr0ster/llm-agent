@@ -1,5 +1,9 @@
 # Planner context — design
 
+> Task result transport is superseded by [results via RAG](2026-11-04-results-via-rag-design.md).
+> Current store, notice, delegation, delivery and memory contracts are documented in
+> [Dialogue task result storage](../../PIPELINES.md#dialogue-task-result-storage).
+
 ## Intent
 
 The dialogue planner gets a context prepared for the current request, not the whole conversation.

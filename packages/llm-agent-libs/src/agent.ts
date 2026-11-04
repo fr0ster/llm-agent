@@ -60,6 +60,7 @@ import { normalizeRequestOptions } from './agent-request-options.js';
 import type { LlmClassifierConfig } from './classifier/llm-classifier.js';
 import { LlmClassifier } from './classifier/llm-classifier.js';
 import { validateTimeZone, withRequestTime } from './context/request-time.js';
+import { withSubmitReport } from './coordinator/dialogue/submit-report-tool.js';
 import { buildAgentHealthSnapshot } from './health/agent-health.js';
 import type { IMcpConnectionStrategy } from './interfaces/mcp-connection-strategy.js';
 
@@ -1189,6 +1190,12 @@ export class SmartAgent {
         }
       }
 
+      currentTools = await withSubmitReport(
+        currentTools,
+        toolClientMap,
+        opts,
+        externalTools,
+      );
       currentTools = filterAvailableTools(
         this.toolAvailabilityRegistry,
         sessionId,

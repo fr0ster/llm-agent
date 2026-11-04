@@ -9,6 +9,7 @@ import { DialogueSession } from '../dialogue-session.js';
 import { InMemoryDialogueStateStore } from '../in-memory-dialogue-state-store.js';
 
 import { PlannerToolsClient } from '../planner-tools-client.js';
+import { taskNotice } from '../task-reference.js';
 
 function deferred<T = void>() {
   let resolve!: (value: T) => void;
@@ -1343,7 +1344,7 @@ test('correction consumes new events, preserves whole-turn actions and counts ea
           const note = String(messages.at(-1)?.content);
           assert.match(note, /\[check\]/);
           assert.match(note, /task t2 \(w\) done: second/);
-          assert.match(note, /outcome: second result/);
+          assert.match(note, /summary: second result/);
           assert.match(note, /\[actions\] plan updated/);
           await tools.callTool('delegate_task', { worker: 'w', goal: 'third' });
           third.resolve({ output: 'third result' });
@@ -1532,6 +1533,22 @@ for (const mode of [
       if (mode === 'success' || mode === 'check-passed' || mode === 'wait') {
         assert.equal(reply.text, `Here\n\n${output}`);
         assert.deepEqual(partials, [reply.text]);
+        const delivered = session
+          .snapshot()
+          .requests?.flatMap((request) => request.transcript ?? [])
+          .find((message) =>
+            message.plannerReference?.includes('[delivered]'),
+          )?.plannerReference;
+        assert.ok(delivered);
+        assert.match(
+          delivered,
+          /\[delivered\] task t1 \(w\) done; kind: report; summary:/,
+        );
+        assert.match(
+          delivered,
+          /; chars: \d+; result: not stored; goal: document/,
+        );
+        assert.ok(!delivered.includes('get_task'));
         assert.ok(
           session
             .snapshot()
@@ -1547,7 +1564,7 @@ for (const mode of [
     }
   });
 
-test('task events inject compact outcomes once and retain full output via get_task', async () => {
+test('task events inject bounded notices without get_task hints', async () => {
   const output = `${'large result '.repeat(3000)}END`;
   const reported = deferred();
   const seen: string[] = [];
@@ -1580,18 +1597,18 @@ test('task events inject compact outcomes once and retain full output via get_ta
           });
         } else if (calls === 2) {
           assert.ok(!seen[1].includes(output));
-          assert.equal(seen[1].split('outcome:').length - 1, 1);
-          assert.match(seen[1], /output length: 39003/);
+          assert.equal(seen[1].split('summary:').length - 1, 1);
+          assert.match(seen[1], /chars: 39003/);
           assert.match(seen[1], /truncated, 39003 chars/);
           reported.resolve();
         } else {
           assert.ok(!seen.at(-1)?.includes(output));
           const result = await tools.callTool('get_task', {
             task_id: 't1',
-            view: 'full',
           });
           assert.ok(result.ok);
-          assert.ok(JSON.stringify(result.value).includes('END'));
+          assert.ok(!JSON.stringify(result.value).includes('END'));
+          assert.ok(!seen[1].includes('use get_task to read output'));
         }
         return { ok: true, value: { content: 'NO_MESSAGE' } };
       },
@@ -1606,7 +1623,7 @@ test('task events inject compact outcomes once and retain full output via get_ta
   }
 });
 
-test('delivery after new_request indexes the verbatim reply in memory', async () => {
+test('delivery after new_request indexes the notice in memory', async () => {
   const rag = new InMemoryRag();
   let calls = 0;
   const session = await DialogueSession.open({
@@ -1667,7 +1684,10 @@ test('delivery after new_request indexes the verbatim reply in memory', async ()
     `planner:restart-delivery:planner-reply:${reply.id}:0`,
   );
   assert.ok(indexed.ok);
-  assert.equal(indexed.value?.text, reply.text);
+  assert.equal(
+    indexed.value?.text,
+    `[delivered] ${taskNotice(session.snapshot().tasks[0])}`,
+  );
 });
 
 test('deliver survives wait-mode cancellation with another task running', async () => {
@@ -1738,3 +1758,162 @@ test('deliver survives wait-mode cancellation with another task running', async 
     await session.close();
   }
 });
+
+for (const mode of [
+  'record',
+  'read-error',
+  'read-throw',
+  'read-retry',
+  'no-store',
+  'no-ref',
+] as const) {
+  test(`delivery from results: ${mode}`, async () => {
+    const state = new InMemoryDialogueStateStore();
+    const rag = new InMemoryRag();
+    const full = `${'R'.repeat(69_997)}END`;
+    const output = full.slice(0, 60_000);
+    const ref = {
+      collection: 'task-results',
+      record: 't1',
+      chars: full.length,
+    };
+    await state.save('record-delivery', {
+      requests: [{ id: 'r1', openedAt: 0, text: 'request', transcript: [] }],
+      requestSeq: 1,
+      conversation: [],
+      tasks: [
+        {
+          id: 't1',
+          worker: 'w',
+          goal: 'document',
+          state: 'done',
+          output,
+          summary: 'Compact summary',
+          createdAt: 0,
+          ...(mode === 'no-ref' ? {} : { resultRef: ref }),
+        },
+      ],
+      taskRequests: { t1: 'r1' },
+      pending: [],
+      savedAt: 0,
+    });
+    const controller = new AbortController();
+    let reads = 0;
+    let retry = false;
+    const session = await DialogueSession.open({
+      id: 'record-delivery',
+      store: state,
+      maxCorrections: 0,
+      plannerMemory: {
+        rag,
+        queryEmbedder: {
+          async embedQuery() {
+            return { vector: [1] };
+          },
+        },
+        documentEmbedder: {
+          async embedDocument() {
+            return { vector: [1] };
+          },
+        },
+      },
+      ...(mode === 'no-store'
+        ? {}
+        : {
+            resultStore: {
+              async put() {
+                return { ok: true as const, value: ref };
+              },
+              async read(actual, options) {
+                reads++;
+                assert.deepEqual(actual, ref);
+                assert.equal(options?.signal, controller.signal);
+                if (!retry && mode === 'read-throw')
+                  throw new Error('backend disconnected');
+                if (!retry && (mode === 'read-error' || mode === 'read-retry'))
+                  return {
+                    ok: false as const,
+                    error: {
+                      code: 'unavailable' as const,
+                      message: 'backend disconnected',
+                    },
+                  };
+                return { ok: true as const, value: full };
+              },
+            },
+          }),
+      board: { workers: new Map() },
+      planner: {
+        async process() {
+          const result = await tools.callTool('deliver', {
+            task_id: 't1',
+            note: 'Here',
+          });
+          assert.ok(result.ok);
+          if (
+            !retry &&
+            (mode === 'read-error' ||
+              mode === 'read-throw' ||
+              mode === 'read-retry')
+          ) {
+            assert.ok(result.value.isError);
+            assert.match(
+              JSON.stringify(result.value),
+              /task t1.*storage.*backend disconnected/,
+            );
+            if (mode !== 'read-retry')
+              return { ok: true, value: { content: 'Storage unavailable' } };
+            retry = true;
+            const retried = await tools.callTool('deliver', {
+              task_id: 't1',
+              note: 'Here',
+            });
+            assert.ok(retried.ok && !retried.value.isError);
+            return { ok: true, value: { content: 'discard' } };
+          }
+          assert.ok(!result.value.isError);
+          return { ok: true, value: { content: 'discard' } };
+        },
+      },
+    });
+    try {
+      const reply = await session.send('continue', {
+        signal: controller.signal,
+      });
+      if (mode === 'read-error' || mode === 'read-throw') {
+        assert.equal(reply.text, 'Storage unavailable');
+        assert.ok(
+          !JSON.stringify(session.snapshot().requests).includes('[delivered]'),
+        );
+        assert.deepEqual(session.takePending(), []);
+      } else {
+        assert.equal(
+          reply.text,
+          `Here\n\n${mode === 'record' || mode === 'read-retry' ? full : output}`,
+        );
+      }
+      await session.close();
+      const indexed = await rag.getById(
+        `planner:record-delivery:planner-reply:${reply.id}:0`,
+      );
+      assert.ok(indexed.ok && indexed.value);
+      if (mode !== 'read-error' && mode !== 'read-throw') {
+        assert.equal(
+          indexed.value.text,
+          `Here\n\n[delivered] ${taskNotice(session.snapshot().tasks[0])}`,
+        );
+        assert.ok(!indexed.value.text.includes('R'.repeat(1000)));
+      }
+      assert.equal(
+        reads,
+        mode === 'no-store' || mode === 'no-ref'
+          ? 0
+          : mode === 'read-retry'
+            ? 2
+            : 1,
+      );
+    } finally {
+      await session.close();
+    }
+  });
+}

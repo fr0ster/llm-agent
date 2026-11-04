@@ -279,8 +279,12 @@ for (const malformed of [
   for (const output of [
     `${malformed} {"verdict":"pass"}`,
     `{"verdict":"pass"} ${malformed}`,
+    `${malformed}\n\n{"verdict":"pass"}`,
+    `${malformed}\n\n{"verdict":"pass","count":5}`,
+    `${malformed}\n\nPASS`,
+    `{"evidence":${malformed}}\n\n{"verdict":"pass"}`,
   ]) {
-    test(`malformed candidate invalidates the whole verdict: ${output}`, () => {
+    test(`malformed verdict prefix or combined objects are unusable: ${output}`, () => {
       const plan = mergePlan(undefined, steps, 'active');
       finish(plan, 'work', 'source', 'result');
       finish(plan, 'check', 'check-task', output);
@@ -289,6 +293,18 @@ for (const malformed of [
       assert.match(plan.steps[1].note ?? '', /unusable verdict/);
     });
   }
+  test(`whole verdict ignores nested evidence fields: ${malformed}`, () => {
+    const plan = mergePlan(undefined, steps, 'active');
+    finish(plan, 'work', 'source', 'result');
+    finish(
+      plan,
+      'check',
+      'check-task',
+      `{"verdict":"pass","evidence":${malformed}}`,
+    );
+    assert.equal(plan.steps[1].state, 'done');
+    assert.equal(plan.steps[1].verdict, 'pass');
+  });
 }
 
 for (const plan of [

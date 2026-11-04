@@ -1,6 +1,7 @@
 import type { Message } from '../types.js';
 import type { WorkerProfile } from './agent-profile.js';
 import type { IQueryEmbedding } from './query-embedding.js';
+import type { TaskResultRef } from './task-result-store.js';
 import type { ToolTrace } from './tool-trace.js';
 import type { CallOptions, TokenUsage } from './types.js';
 
@@ -36,7 +37,12 @@ export interface TaskRecord {
   /** Available MCP and external tools before selection/filters. */
   toolsAvailable?: number;
   maxToolCalls?: number;
+  checkerVerdict?:
+    | { verdict: 'pass' | 'fail'; count?: number; note?: string }
+    | { unusable: true };
   output?: string;
+  resultRef?: TaskResultRef;
+  summary?: string;
   error?: string;
   /** Epoch milliseconds of the latest observed progress; optional for older snapshots. */
   lastActivityAt?: number;

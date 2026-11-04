@@ -7,6 +7,7 @@ export {
   type PlannerTurnOptions,
 } from './dialogue-session.js';
 export { InMemoryDialogueStateStore } from './in-memory-dialogue-state-store.js';
+export { createMemorySignalBus } from './memory-signal-bus.js';
 export {
   PLAN_CREATE_SYSTEM,
   PLAN_REVISE_SYSTEM,
@@ -23,6 +24,13 @@ export { PlannerToolsClient } from './planner-tools-client.js';
 export { ProfilePlanAuthor } from './profile-plan-author.js';
 export { formatRequestTime, REQUEST_TIME_GUIDANCE } from './request-time.js';
 export { SemaphorePool } from './semaphore-pool.js';
+export {
+  createSubmitReportClient,
+  resolveVerdictSummary,
+  resolveWorkerSummary,
+  submitReportSchema,
+  submitReportTool,
+} from './submit-report-tool.js';
 export {
   TASK_OUTPUT_CHAR_LIMIT,
   TaskBoard,

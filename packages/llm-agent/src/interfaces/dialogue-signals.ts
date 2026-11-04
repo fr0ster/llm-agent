@@ -16,6 +16,7 @@ export interface DialogueSignals {
     taskId: string;
     runId: string;
     output: string;
+    summary?: string;
     tool?: string;
   };
   /** Additive catalog v1 signal; ticks do not call the planner. */

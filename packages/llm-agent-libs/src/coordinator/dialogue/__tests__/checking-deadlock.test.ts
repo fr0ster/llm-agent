@@ -103,8 +103,8 @@ for (const state of ['pending', 'running'] as const) {
 
 const wrappers = [
   (json: string) => json,
-  (json: string) => `I checked the results: ${json} End of report.`,
-  (json: string) => `Results:\n\x60\x60\x60json\n${json}\n\x60\x60\x60\nDone.`,
+  (json: string) => `I checked the results.\n\n${json}`,
+  (json: string) => `Results:\n\n\x60\x60\x60json\n${json}\n\x60\x60\x60`,
 ];
 for (const [index, wrap] of wrappers.entries()) {
   for (const verdict of ['pass', 'fail'] as const) {
@@ -175,7 +175,7 @@ test('conflicting counts are unusable even with equal verdicts', () => {
   assert.equal(plan.steps[1].verdict, 'fail');
 });
 
-test('repeated consistent verdicts use the last one', () => {
+test('repeated agreeing verdicts in prose are unusable', () => {
   const plan = checking();
   applyTaskEvent(
     plan,
@@ -184,8 +184,8 @@ test('repeated consistent verdicts use the last one', () => {
       'Draft {"verdict":"pass"} final {"verdict":"pass","note":"all stored"}',
     ),
   );
-  assert.equal(plan.steps[1].state, 'done');
-  assert.equal(plan.steps[1].note, 'all stored');
+  assert.equal(plan.steps[1].state, 'failed');
+  assert.match(plan.steps[1].note ?? '', /unusable verdict/);
 });
 
 for (const output of ['{"verdict":"unknown"}', '```json\ninvalid\n```', '']) {

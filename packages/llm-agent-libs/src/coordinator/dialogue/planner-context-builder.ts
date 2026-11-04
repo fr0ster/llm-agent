@@ -163,12 +163,7 @@ export class DefaultPlannerContextBuilder implements IPlannerContextBuilder {
                 )
                   return line;
                 const state = line.replace('[task events]', '[task state]');
-                return /\b(failed|error|interrupted)\b/.test(line)
-                  ? state
-                  : state.replace(
-                      /; outcome: .*; use get_task to read output/,
-                      '; outcome consumed; use get_task to read output',
-                    );
+                return state;
               })
               .join('\n');
       const {

@@ -2,6 +2,7 @@ import {
   markExternalTraceUnavailable,
   toModelToolMessages,
 } from '@mcp-abap-adt/llm-agent';
+import { withSubmitReport } from '../../coordinator/dialogue/submit-report-tool.js';
 /**
  * ToolLoopHandler — streaming LLM call + MCP tool execution loop.
  *
@@ -471,6 +472,13 @@ export class ToolLoopHandler implements IStageHandler {
           reselectSpan.end();
         }
       }
+
+      currentTools = await withSubmitReport(
+        currentTools,
+        ctx.toolClientMap,
+        ctx.options,
+        externalTools,
+      );
 
       // Filter tools per iteration
       currentTools = filterAvailableTools(

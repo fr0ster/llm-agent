@@ -5,6 +5,7 @@ import type {
   TaskRecord,
 } from '@mcp-abap-adt/llm-agent';
 import { z } from 'zod';
+import { compactText } from './task-reference.js';
 
 export function resultKind(record: {
   result?: 'report' | 'verdict';
@@ -267,54 +268,71 @@ export function recomputePlanStatus(plan?: Plan): void {
     delete plan.question;
   } else if (plan.status === 'done') plan.status = 'active';
 }
-// The verdict is the whole output or the outermost JSON objects in prose or
-// fences. Nested objects are evidence; conflicting verdicts are unusable.
+// Accept only a whole verdict or a trailing verdict after marker-free progress.
 const verdictSchema = z.object({
   verdict: z.enum(['pass', 'fail']),
   count: z.number().int().nonnegative().optional(),
   note: z.string().optional(),
 });
 type CheckerVerdict = z.infer<typeof verdictSchema>;
-function checkerVerdict(output: string): CheckerVerdict | undefined {
-  const parse = (text: string): CheckerVerdict | undefined => {
-    try {
-      const value = verdictSchema.safeParse(JSON.parse(text));
-      return value.success ? value.data : undefined;
-    } catch {
-      return undefined;
-    }
-  };
-  const whole = parse(output.trim());
+export function checkerVerdict(output: string): CheckerVerdict | undefined {
+  const whole = parseCheckerVerdict(output);
   if (whole !== undefined) return whole;
-  const candidates: CheckerVerdict[] = [];
-  let depth = 0;
-  let start = -1;
-  let quoted = false;
-  let escaped = false;
-  for (let i = 0; i < output.length; i++) {
-    const char = output[i];
-    if (depth === 0) {
-      if (char === '{') {
-        depth = 1;
-        start = i;
-      }
-    } else if (quoted) {
-      if (escaped) escaped = false;
-      else if (char === '\\') escaped = true;
-      else if (char === '"') quoted = false;
-    } else if (char === '"') quoted = true;
-    else if (char === '{') depth++;
-    else if (char === '}' && --depth === 0) {
-      const value = parse(output.slice(start, i + 1));
-      if (value === undefined) return undefined;
-      candidates.push(value);
+  // Try shortest trailing segments first, preserving JSON whitespace.
+  const boundaries = [...output.matchAll(/\r?\n[^\S\r\n]*\r?\n/g)];
+  for (const boundary of boundaries.reverse()) {
+    const verdict = parseCheckerVerdict(
+      output.slice(boundary.index + boundary[0].length),
+    );
+    if (verdict !== undefined) {
+      // Conservatively reject JSON/escapes, including braces in code snippets.
+      const prefix = output.slice(0, boundary.index).normalize('NFKC');
+      return /[{}\\]|verdict|\b(?:PASS|FAIL)\b/i.test(prefix)
+        ? undefined
+        : verdict;
     }
   }
-  if (depth !== 0) return undefined;
-  // Every outcome field must agree: quoted evidence cannot change the result.
-  const outcome = (c: CheckerVerdict) => JSON.stringify([c.verdict, c.count]);
-  if (new Set(candidates.map(outcome)).size !== 1) return undefined;
-  return candidates.at(-1);
+  return undefined;
+}
+// JSON.parse discards duplicate keys, so inspect top-level keys before parsing.
+function hasDuplicateVerdictKeys(text: string): boolean {
+  const seen = new Set<string>();
+  let depth = 0;
+  for (let i = 0; i < text.length; i++) {
+    const char = text[i];
+    if (char === '"') {
+      const start = i++;
+      while (i < text.length) {
+        if (text[i] === '\\') i += 2;
+        else if (text[i] === '"') break;
+        else i++;
+      }
+      if (depth === 1 && /^\s*:/.test(text.slice(i + 1))) {
+        const key: string = JSON.parse(text.slice(start, i + 1));
+        if (key === 'verdict' || key === 'count' || key === 'note') {
+          if (seen.has(key)) return true;
+          seen.add(key);
+        }
+      }
+    } else if (char === '{' || char === '[') depth++;
+    else if (char === '}' || char === ']') depth--;
+  }
+  return false;
+}
+function parseCheckerVerdict(output: string): CheckerVerdict | undefined {
+  let text = output.trim();
+  if (/^(PASS|FAIL)$/i.test(text))
+    return { verdict: text.toLowerCase() as 'pass' | 'fail' };
+  const fence = /^```(?:json)?\s*\r?\n([\s\S]*?)\r?\n```$/i.exec(text);
+  if (fence) text = fence[1].trim();
+  try {
+    if (!text.startsWith('{') || hasDuplicateVerdictKeys(text))
+      return undefined;
+    const value = verdictSchema.safeParse(JSON.parse(text));
+    return value.success ? value.data : undefined;
+  } catch {
+    return undefined;
+  }
 }
 export function checkSourcesCurrent(plan: Plan, step: PlanStep): boolean {
   return (step.dependsOn ?? []).every((id) => {
@@ -383,20 +401,20 @@ export function applyTaskEvent(
   if (step.items && task.budgetExhausted) {
     if ((task.result ?? resultKind(step)) === 'verdict') step.verdict = 'fail';
     step.state = 'failed';
-    step.note = `Worker hit the tool-call budget ${task.toolCalls ?? '?'}/${task.maxToolCalls ?? '?'}; split the step (${step.items.length} items) before retrying`;
+    step.note = compactText(
+      `Worker hit the tool-call budget ${task.toolCalls ?? '?'}/${task.maxToolCalls ?? '?'}; split the step (${step.items.length} items) before retrying`,
+      600,
+    );
     return;
   }
   if (kind !== 'done') {
     if (resultKind(step) === 'verdict') step.verdict = 'fail';
     step.state = 'failed';
-    step.note = task.error ?? kind;
+    step.note = compactText(task.error ?? kind, 600);
     return;
   }
   if ((task.result ?? resultKind(step)) === 'verdict') {
-    const output = task.output?.trim() ?? '';
-    const verdict = /^(PASS|FAIL)$/i.test(output)
-      ? { verdict: output.toLowerCase() }
-      : checkerVerdict(output);
+    const verdict = task.checkerVerdict ?? checkerVerdict(task.output ?? '');
     const parsed = z
       .object({
         verdict: z.enum(['pass', 'fail']),
@@ -417,14 +435,20 @@ export function applyTaskEvent(
         expected.length > 0 && (parsed.data.count ?? -1) < expected.length;
       step.verdict = short ? 'fail' : parsed.data.verdict;
       step.state = step.verdict === 'pass' ? 'done' : 'failed';
-      step.note = short
-        ? `Count ${parsed.data.count ?? 'missing'}/${expected.length}: missing item results`
-        : (parsed.data.note ?? parsed.data.verdict);
+      step.note = compactText(
+        short
+          ? `Count ${parsed.data.count ?? 'missing'}/${expected.length}: missing item results`
+          : (parsed.data.note ?? parsed.data.verdict),
+        600,
+      );
     }
   } else {
     step.state = 'done';
     if (task.budgetExhausted)
-      step.note = `Worker hit the tool-call budget ${task.toolCalls ?? '?'}/${task.maxToolCalls ?? '?'}; verify the result is complete or split the step`;
+      step.note = compactText(
+        `Worker hit the tool-call budget ${task.toolCalls ?? '?'}/${task.maxToolCalls ?? '?'}; verify the result is complete or split the step`,
+        600,
+      );
   }
 }
 /** Require a passing check and no failing latest check attempts. */
@@ -475,7 +499,7 @@ export function planView(plan?: Plan): string {
         work ? `work ${work}` : '',
         older ? `${older} older attempts` : '',
       ].filter(Boolean);
-      return `${s.id} ${s.state === 'pending' && dependenciesDone(plan, s) ? 'ready' : s.state} ${s.goal.replace(/\s+/g, ' ')}${s.dependsOn?.length ? ` (depends on ${s.dependsOn.join(', ')})` : ''}${attempts.length ? ` (${attempts.join(', ')})` : ''}${s.items ? `; items: ${s.items.length}` : ''}${s.note ? ` \u00b7 ${s.note}` : ''}`;
+      return `${s.id} ${s.state === 'pending' && dependenciesDone(plan, s) ? 'ready' : s.state} ${s.goal.replace(/\s+/g, ' ')}${s.dependsOn?.length ? ` (depends on ${s.dependsOn.join(', ')})` : ''}${attempts.length ? ` (${attempts.join(', ')})` : ''}${s.items ? `; items: ${s.items.length}` : ''}${s.note ? ` \u00b7 ${compactText(s.note, 600)}` : ''}`;
     }),
   ]
     .filter(Boolean)

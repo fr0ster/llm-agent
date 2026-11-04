@@ -27,6 +27,8 @@ export interface TraceContext {
 }
 
 export interface CallOptions {
+  /** Current report worker accepted text, read only when submit_report omits result. */
+  dialogueReportText?: () => string;
   /** Accepted assistant content, including tool-call rounds; excludes discarded replies. */
   onAssistantResponse?: (content: string) => void;
   dialogueTask?: IDialogueTaskContext;

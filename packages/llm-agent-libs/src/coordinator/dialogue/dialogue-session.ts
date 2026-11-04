@@ -9,6 +9,7 @@ import type {
   IPlanAuthor,
   IPlannerContextBuilder,
   ISignalEmitter,
+  ITaskResultStore,
   IUsageRecorder,
   McpError,
   McpToolResult,
@@ -30,6 +31,7 @@ import {
   type TokenUsage,
 } from '@mcp-abap-adt/llm-agent';
 import { DIALOGUE_COORDINATOR_SYSTEM } from './coordinator-prompt.js';
+import { createMemorySignalBus } from './memory-signal-bus.js';
 import {
   appendRequestMessage,
   boundRequestTranscript,
@@ -63,7 +65,7 @@ import {
   resultKind,
 } from './structured-plan.js';
 import { TaskBoard, type TaskBoardOptions } from './task-board.js';
-import { compactText, taskReference } from './task-reference.js';
+import { compactText, taskNotice } from './task-reference.js';
 
 export const DIALOGUE_HISTORY_LIMIT = 200;
 export interface PlannerTurnOptions {
@@ -112,6 +114,7 @@ export interface DialogueSessionOptions extends PlannerRetrievalOptions {
   hardStopAfterMs?: number;
   maxItemsPerStep?: number;
   taskOutputChars?: number;
+  resultStore?: ITaskResultStore;
   planner?: PlannerAgent;
   planAuthor?: IPlanAuthor;
   profileSource?: IAgentProfileSource;
@@ -120,7 +123,7 @@ export interface DialogueSessionOptions extends PlannerRetrievalOptions {
   stallNoticeMs?: number;
   board: Omit<
     TaskBoardOptions,
-    'onEvent' | 'signals' | 'source' | 'onStateChange'
+    'onEvent' | 'signals' | 'source' | 'onStateChange' | 'stepOf'
   >;
   store?: IDialogueStateStore;
   onMessage?: (message: PlannerMessage) => void;
@@ -298,13 +301,14 @@ export class DialogueSession {
   private indexReply(
     message: PlannerMessage,
     request: PlannerRequestRecord,
+    memoryText = message.text,
   ): void {
     if (message.text.trim() === 'NO_MESSAGE') return;
     this.memoryWriter?.enqueue(
       'planner-reply',
       request.id,
       message.id,
-      message.text,
+      memoryText,
       { usage: this.turnUsage },
     );
   }
@@ -487,7 +491,7 @@ export class DialogueSession {
       );
     this.contextBuilder =
       opts.plannerContextBuilder ?? new DefaultPlannerContextBuilder();
-    this.signals = opts.signals ?? { emit() {}, retire() {} };
+    this.signals = opts.signals ?? createMemorySignalBus();
     const session = this;
     this.board = new TaskBoard({
       ...opts.board,
@@ -496,6 +500,8 @@ export class DialogueSession {
       profileRunner: opts.profileRunner ?? opts.board.profileRunner,
       profileTimeoutMs: opts.profileTimeoutMs ?? opts.board.profileTimeoutMs,
       ...('stallNoticeMs' in opts ? { stallNoticeMs: opts.stallNoticeMs } : {}),
+      resultStore: opts.resultStore ?? opts.board.resultStore,
+      stepOf: (taskId) => this.taskSteps.get(taskId),
       taskOutputChars: opts.taskOutputChars ?? opts.board.taskOutputChars,
       hardStopAfterMs: opts.hardStopAfterMs ?? opts.board.hardStopAfterMs,
       scheduleTimer: opts.scheduleTimer ?? opts.board.scheduleTimer,
@@ -521,7 +527,7 @@ export class DialogueSession {
               'planner-task',
               owner,
               event.task.id,
-              `${event.task.goal}: ${event.task.output ?? event.task.error ?? ''}`,
+              taskNotice(event.task),
               {
                 usage:
                   this.board.originRecorder(event.task.id) ??
@@ -1080,7 +1086,7 @@ export class DialogueSession {
               startRequest(true);
               restartDelivered = true;
             },
-            deliver: (id, note, resolves = []) => {
+            deliver: async (id, note, resolves = []) => {
               if (delivered)
                 throw new Error('only one deliver per planner call');
               const task = this.board.get(id);
@@ -1120,15 +1126,34 @@ export class DialogueSession {
                     `task ${failureId} is not a known failed task in the current request`,
                   );
               }
+              let output = task.output ?? '';
+              const store =
+                this.opts.resultStore ?? this.opts.board.resultStore;
+              if (task.resultRef && store) {
+                try {
+                  const result = await store.read(task.resultRef, {
+                    signal: user?.opts.signal,
+                  });
+                  if (!result.ok)
+                    throw new Error(
+                      `${result.error.code}: ${result.error.message}`,
+                    );
+                  output = result.value;
+                } catch (error) {
+                  throw new Error(
+                    `task ${id} storage read failed: ${String(error)}`,
+                  );
+                }
+              }
+              if (delivered)
+                throw new Error('only one deliver per planner call');
               request.resolvedFailures = [
                 ...new Set([...(request.resolvedFailures ?? []), ...resolves]),
               ];
               deliveryReferences.push(
-                `${note ? `${note}\n\n` : ''}[delivered] ${taskReference(task)}`,
+                `${note ? `${note}\n\n` : ''}[delivered] ${taskNotice(task)}`,
               );
-              deliveries.push(
-                `${note ? `${note}\n\n` : ''}${task.output ?? ''}`,
-              );
+              deliveries.push(`${note ? `${note}\n\n` : ''}${output}`);
               delivered = true;
               partialText = '';
               contentPartials.length = 0;
@@ -1395,7 +1420,11 @@ export class DialogueSession {
         trigger: user ? 'user' : 'event',
       };
       request.lastTurnOk = true;
-      this.indexReply(message, request);
+      this.indexReply(
+        message,
+        request,
+        deliveryReferences.length ? deliveryReferences.join('\n\n') : reply,
+      );
       if (!user && !this.closing && message.text.trim() !== 'NO_MESSAGE') {
         this.pending.push(message);
         try {
@@ -1442,7 +1471,7 @@ export class DialogueSession {
         const removed =
           owner !== undefined &&
           !this.plan?.steps.some((step) => step.id === owner);
-        return `${label !== '[task events]' ? label : removed && task.state !== 'failed' && task.state !== 'interrupted' && task.error === undefined ? '[actions]' : '[task events]'} task ${task.id}${owner ? ` for ${owner}` : ''} (${task.worker}) ${kind}: ${compactText(task.goal, 200)} — ${taskReference(task)}${task.budgetExhausted ? `; worker hit the tool-call budget ${task.toolCalls ?? '?'}/${task.maxToolCalls ?? '?'}` : ''}`;
+        return `${label !== '[task events]' ? label : removed && task.state !== 'failed' && task.state !== 'interrupted' && task.error === undefined ? '[actions]' : '[task events]'} task ${task.id}${owner ? ` for ${owner}` : ''} (${task.worker}) ${kind}: ${compactText(task.goal, 200)} — ${taskNotice(task)}`;
       })
       .join('\n');
   }

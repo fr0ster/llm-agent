@@ -15,7 +15,7 @@ export interface PlannerScope {
   beforeTool?(name: string): void;
   newRequest?(): void;
   ownTask?(id: string): void;
-  deliver?(id: string, note?: string, resolves?: string[]): void;
+  deliver?(id: string, note?: string, resolves?: string[]): Promise<void>;
   board: TaskBoard;
   /** Captured from the owning request, never from task start time. */
   requestStartedAt?: number;
