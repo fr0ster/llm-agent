@@ -10,6 +10,7 @@ import {
   deliveryChecksPassed,
   mergePlan as mergeStructuredPlan,
   readySteps,
+  resultKind,
 } from '../structured-plan.js';
 import { TaskBoard } from '../task-board.js';
 
@@ -362,4 +363,94 @@ test('a running multi-source check cannot pass after either source changes', () 
   finish(plan, 'check', 'c2', 'PASS');
   assert.equal(deliveryChecksPassed(plan, 'work'), true);
   assert.equal(deliveryChecksPassed(plan, 'other'), true);
+});
+
+test('explicit verdict without worker delegates only to a verdict profile', async () => {
+  const plan = mergeStructuredPlan(
+    undefined,
+    [
+      { id: 'work', goal: 'Produce result', result: 'report' },
+      {
+        id: 'check',
+        goal: 'Verify result',
+        result: 'verdict',
+        dependsOn: ['work'],
+      },
+    ],
+    'active',
+    undefined,
+    {
+      resolveResult: () => {
+        throw new Error('Unexpected legacy resolution');
+      },
+    },
+  );
+  finish(plan, 'work', 'source', 'complete result');
+  const board = new TaskBoard({
+    ...profileHost(
+      new Map(
+        ['writer', 'audit'].map((name) => [
+          name,
+          {
+            name,
+            capabilities: { contextPolicy: 'optional' as const },
+            async run() {
+              return { output: 'PASS' };
+            },
+          },
+        ]),
+      ),
+    ),
+    onEvent() {},
+  });
+  board.restore([done('source', 'complete result').task]);
+  try {
+    await runInPlannerScope(
+      { board, getPlan: () => plan, setPlan() {} },
+      async () => {
+        const client = new PlannerToolsClient();
+        const rejected = await client.callTool('delegate_task', {
+          step_id: 'check',
+          worker: 'writer',
+          goal: 'Verify result',
+        });
+        assert.ok(rejected.ok);
+        assert.equal(rejected.value.isError, true);
+        assert.match(
+          JSON.stringify(rejected.value),
+          /Step check requires result kind verdict; profile writer produces report. Choose a verdict profile/,
+        );
+        assert.equal(plan.steps[1].worker, undefined);
+        const accepted = await client.callTool('delegate_task', {
+          step_id: 'check',
+          worker: 'audit',
+          goal: 'Verify result',
+        });
+        assert.ok(accepted.ok);
+        assert.equal(accepted.value.isError, undefined);
+        assert.equal(plan.steps[1].result, 'verdict');
+      },
+    );
+  } finally {
+    await board.stopAll();
+  }
+});
+
+test('legacy checker plans retain verdict kind unless explicitly overridden', () => {
+  assert.equal(resultKind({ worker: 'checker' }), 'verdict');
+  assert.equal(resultKind({ worker: 'checker', result: 'report' }), 'report');
+  const plan = mergeStructuredPlan(
+    undefined,
+    [
+      { id: 'work', goal: 'Produce result' },
+      {
+        id: 'check',
+        goal: 'Verify result',
+        worker: 'checker',
+        dependsOn: ['work'],
+      },
+    ],
+    'active',
+  );
+  assert.equal(plan.steps[1].result, 'verdict');
 });

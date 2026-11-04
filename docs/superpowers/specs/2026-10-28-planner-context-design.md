@@ -335,10 +335,11 @@ identities, not result bodies. Later calls can request the output with `get_task
 Task memory still indexes the raw stored result in chunks.
 
 Delegation appends dependency successful work results in `dependsOn` order after
-the planner brief. Verification is a separate ordinary plan step with worker
-`checker` and `dependsOn` identifying the checked steps. The work task never checks
-itself: delegation rejects a check step sent to any other worker and a work step
-sent to `checker`. Dependency labels are `[result to check: step <id> (task <tid>)]`
+the planner brief. Verification is a separate ordinary plan step with result
+`verdict` and `dependsOn` identifying the checked steps. The coordinator selects
+a matching profile at delegation; plan authors describe results only. The work task never checks
+itself: delegation rejects a profile whose result kind (`report` or `verdict`) does not match the step; a stored legacy assignment must also match
+the assigned worker. Dependency labels are `[result to check: step <id> (task <tid>)]`
 for checker steps and `[result of step <id> (task <tid>)]` otherwise. Batch check
 context includes expected identifiers and counts derived from the source steps; the aggregate labelled payload is limited to 120,000
 characters. An overflow rejects delegation with sizes and the offending step.

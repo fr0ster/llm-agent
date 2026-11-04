@@ -554,19 +554,9 @@ test('delegation reservations reject plan replacement and release after failed r
   await board.stopAll();
 });
 
-test('plan updates revalidate after a concurrent delegation binds its task', async () => {
+test('plan updates cannot remove an active attempt and do not resolve suggested workers', async () => {
   const source = new Source();
-  const entered = completion();
-  const resolveUpdate = completion();
   const finishTask = completion();
-  const get = source.get.bind(source);
-  source.get = async (name) => {
-    if (name === 'audit') {
-      entered.resolve();
-      await resolveUpdate.promise;
-    }
-    return get(name);
-  };
   const board = new TaskBoard({
     profileSource: source,
     profileRunner: runner(async () => {
@@ -595,18 +585,18 @@ test('plan updates revalidate after a concurrent delegation binds its task', asy
       },
       async () => {
         const client = new PlannerToolsClient();
-        const pendingUpdate = client.callTool('plan_update', { steps: [keep] });
-        await entered.promise;
         const delegated = await client.callTool('delegate_task', {
           worker: 'author',
           goal: 'write',
           step_id: 'work',
         });
         assert.ok(delegated.ok && !delegated.value.isError);
-        resolveUpdate.resolve();
-        const update = await pendingUpdate;
+        source.get = async () => {
+          throw new Error('plan updates must not resolve workers');
+        };
+        const update = await client.callTool('plan_update', { steps: [keep] });
         assert.ok(update.ok && update.value.isError);
-        assert.match(JSON.stringify(update.value), /Plan changed/);
+        assert.match(JSON.stringify(update.value), /stop the task first/);
         assert.equal(plan.steps[0].workTaskId, 't1');
       },
     );
@@ -922,14 +912,20 @@ test('discovery advertises arbitrary report/verdict functions and binds library-
       const update = await client.callTool('plan_update', {
         steps: [
           { id: 'work', goal: 'write', worker: 'author' },
-          { id: 'check', goal: 'verify', worker: 'audit', dependsOn: ['work'] },
+          {
+            id: 'check',
+            goal: 'verify',
+            result: 'verdict',
+            worker: 'audit',
+            dependsOn: ['work'],
+          },
         ],
       });
       assert.ok(update.ok && !update.value.isError);
       assert.ok(typeof plan === 'object');
       assert.equal(plan.steps[1]?.result, 'verdict');
       const mismatch = await client.callTool('delegate_task', {
-        worker: 'research',
+        worker: 'audit',
         goal: 'write',
         step_id: 'work',
       });
@@ -949,7 +945,12 @@ test('discovery advertises arbitrary report/verdict functions and binds library-
 test('arbitrary verdict names retain delivery gates across source retries, stale events and renaming', () => {
   const input = [
     { id: 'work', goal: 'write', worker: 'author' },
-    { id: 'check', goal: 'verify', worker: 'audit', dependsOn: ['work'] },
+    {
+      id: 'check',
+      goal: 'verify',
+      worker: 'audit',
+      dependsOn: ['work'],
+    },
   ];
   const plan = mergePlan(undefined, input, 'active', undefined, {
     resolveResult: (name) => (name === 'audit' ? 'verdict' : 'report'),

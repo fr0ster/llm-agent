@@ -232,8 +232,17 @@ runner unchanged. Host conformance tests live in the host and cover ceiling
 intersection, deny precedence, verdict read-only limits, offered-definition filtering
 and enforcement across direct, MCP, external, nested and resumed calls.
 
-Assign independent checks to profiles with `result: 'verdict'`; other functions use
-`result: 'report'`. Structured plans bind roles through library resolution, require
+Plan authors describe results only: `id`, `goal` (result and done criterion),
+`dependsOn`, `result?: 'report' | 'verdict'`, `items`, `state`, and `note`.
+Verification uses `result: 'verdict'` with dependsOn identifying the checked steps;
+a verification step is separate from the steps it checks. Authors do not assign workers
+or execution methods. The coordinator chooses a profile from the delegate_task list
+by result kind and goal, without plan_update to assign it. Delegation requires a
+matching profile result kind (report by default). The profile belongs to each task
+attempt, allowing retries with another compatible profile. Author output and plan_update strip worker fields. Stored legacy worker
+assignments remain enforced until the step result kind changes, which drops the
+assignment; explicit results do not resolve their kind from a profile.
+Structured plans require
 successful independent report sources and retain delivery restrictions even when
 profiles are removed. Additive persisted role fields keep completed attempts auditable
 without saving prompt bodies or tool authorization. Legacy checker records normalize

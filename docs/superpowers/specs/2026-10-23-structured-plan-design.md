@@ -24,7 +24,7 @@ interface PlanStep {
   id: string;            // planner-chosen, stable: "s1", "list-dumps", ...
   goal: string;          // the result to produce (not the way)
   dependsOn?: string[];  // step ids that must be done first
-  worker?: string;       // intended worker (executor | checker | …), optional
+  result?: 'report' | 'verdict'; // result kind; coordinator chooses the worker
   state: 'pending' | 'running' | 'checking' | 'done' | 'failed' | 'skipped' | 'blocked';
   check?: { by: 'planner' | 'checker'; goal: string; verdict?: 'pass' | 'fail'; taskId?: string };
   taskIds: string[];     // tasks delegated for this step (retries keep history)

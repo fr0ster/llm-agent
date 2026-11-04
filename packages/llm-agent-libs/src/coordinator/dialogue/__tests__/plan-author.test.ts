@@ -8,7 +8,10 @@ import type {
   TrustMap,
   WorkerProfile,
 } from '@mcp-abap-adt/llm-agent';
-import { PLAN_CREATE_SYSTEM } from '../plan-author-prompt.js';
+import {
+  PLAN_CREATE_SYSTEM,
+  PLAN_REVISE_SYSTEM,
+} from '../plan-author-prompt.js';
 import { ProfilePlanAuthor } from '../profile-plan-author.js';
 import { profileHost } from './profile-test-host.js';
 
@@ -345,10 +348,17 @@ test('unchanged revision preserves a done custom verdict step', async () => {
 });
 
 for (const mode of ['create', 'revise'] as const) {
-  test(`${mode} resolves a new custom verdict step from the profile source`, async () => {
+  test(`${mode} uses an explicit verdict and strips the suggested worker`, async () => {
     const { author } = fixture(
       JSON.stringify({
-        steps: [{ id: 'review', goal: 'Review', worker: 'reviewer' }],
+        steps: [
+          {
+            id: 'review',
+            goal: 'Review',
+            result: 'verdict',
+            worker: 'reviewer',
+          },
+        ],
       }),
     );
     const result =
@@ -362,7 +372,7 @@ for (const mode of ['create', 'revise'] as const) {
     assert.equal(result.value.steps[0].result, 'verdict');
   });
 
-  test(`${mode} rejects an unknown worker through profile selection`, async () => {
+  test(`${mode} strips an unknown worker without profile selection`, async () => {
     const { author } = fixture(
       JSON.stringify({
         steps: [{ id: 'unknown', goal: 'Review', worker: 'unknown' }],
@@ -375,13 +385,12 @@ for (const mode of ['create', 'revise'] as const) {
             plan: { version: 1, status: 'active', steps: [] },
             change: 'Add review',
           });
-    assert.ok(!result.ok);
-    assert.equal(result.error.code, 'invalid');
-    assert.equal(result.error.message, 'profile source missing: unknown');
+    assert.ok(result.ok);
+    assert.equal(result.value.steps[0].worker, undefined);
   });
 }
 
-test('done step result wins while a new step uses the current profile result', async () => {
+test('done step result wins while a new step uses its explicit result', async () => {
   const plan: DialoguePlan = {
     version: 1,
     status: 'active',
@@ -398,7 +407,14 @@ test('done step result wins while a new step uses the current profile result', a
   };
   const result = await fixture(
     JSON.stringify({
-      steps: [{ id: 'new', goal: 'New review', worker: 'reviewer' }],
+      steps: [
+        {
+          id: 'new',
+          goal: 'New review',
+          result: 'verdict',
+          worker: 'reviewer',
+        },
+      ],
     }),
   ).author.revise({ plan, change: 'Add review' });
   assert.ok(result.ok);
@@ -416,7 +432,7 @@ test('done step result wins while a new step uses the current profile result', a
   );
 });
 
-test('profile lookup outage after valid author JSON is unavailable', async () => {
+test('unused worker lookup outage does not block author output', async () => {
   const { author, source } = fixture(
     '{"steps":[{"id":"s1","goal":"review","worker":"reviewer"}]}',
   );
@@ -425,15 +441,49 @@ test('profile lookup outage after valid author JSON is unavailable', async () =>
     error: { code: 'unavailable', message: 'store down' },
   });
   const result = await author.create({ goal: 'review' });
-  assert.ok(!result.ok);
-  assert.equal(result.error.code, 'unavailable');
+  assert.ok(result.ok);
+  assert.equal(result.value.steps[0].worker, undefined);
 });
 
-test('unknown worker after valid author JSON stays invalid', async () => {
+test('unknown worker after valid author JSON is stripped', async () => {
   const { author } = fixture(
     '{"steps":[{"id":"s1","goal":"x","worker":"ghost"}]}',
   );
   const result = await author.create({ goal: 'x' });
-  assert.ok(!result.ok);
-  assert.equal(result.error.code, 'invalid');
+  assert.ok(result.ok);
+  assert.equal(result.value.steps[0].worker, undefined);
+});
+
+for (const prompt of [PLAN_CREATE_SYSTEM, PLAN_REVISE_SYSTEM]) {
+  test(`results-only author contract: ${prompt.slice(0, 6)}`, () => {
+    assert.doesNotMatch(prompt, /profile|"worker"|assign/i);
+    assert.match(prompt, /"result"\?:"report"\|"verdict"/);
+    assert.match(prompt, /verification step is separate/);
+  });
+}
+
+test('author accepts result kinds without workers or profile discovery', async () => {
+  const f = fixture(
+    JSON.stringify({
+      steps: [
+        { id: 'work', goal: 'Produce a complete report', result: 'report' },
+        {
+          id: 'check',
+          goal: 'Verify the report is complete',
+          result: 'verdict',
+          dependsOn: ['work'],
+        },
+      ],
+    }),
+  );
+  f.source.list = async () => {
+    throw new Error('Unexpected profile discovery');
+  };
+  f.source.get = async () => {
+    throw new Error('Unexpected profile selection');
+  };
+  const result = await f.author.create({ goal: 'Produce a verified report' });
+  assert.ok(result.ok);
+  assert.equal(result.value.steps[1].result, 'verdict');
+  assert.equal(result.value.steps[1].worker, undefined);
 });
