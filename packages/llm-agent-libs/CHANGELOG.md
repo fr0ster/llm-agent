@@ -1,5 +1,11 @@
 # @mcp-abap-adt/llm-agent-libs
 
+## 30.32.1
+
+### Patch Changes
+
+- c898449: Release worker capacity before result storage and allow explicit stops or session cancellation to interrupt pending result writes, even when the store ignores cancellation.
+
 ## 30.32.0
 
 ### Minor Changes
