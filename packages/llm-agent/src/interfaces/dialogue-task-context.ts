@@ -49,6 +49,7 @@ export function finishDialogueTask(
   task: IDialogueTaskContext,
   output: string,
   tool?: string,
+  summary?: string,
 ): void {
   task.signals.emit(
     'dialogue.task.finish',
@@ -57,6 +58,7 @@ export function finishDialogueTask(
       runId: task.runId,
       output,
       ...(tool === undefined ? {} : { tool }),
+      ...(summary === undefined ? {} : { summary }),
     },
     task.source,
     task.runId,

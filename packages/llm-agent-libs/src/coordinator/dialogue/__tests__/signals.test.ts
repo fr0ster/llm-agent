@@ -4,10 +4,16 @@ import type {
   AnySignal,
   DialogueSignals,
   DialogueState,
+  ISignalBus,
   ISignalEmitter,
+} from '@mcp-abap-adt/llm-agent';
+import {
+  finishDialogueTask,
+  type IDialogueTaskContext,
 } from '@mcp-abap-adt/llm-agent';
 import { createSignalBus } from '../../../../../llm-signals/src/index.js';
 import { DialogueSession } from '../dialogue-session.js';
+import { createMemorySignalBus } from '../memory-signal-bus.js';
 import { PlannerToolsClient } from '../planner-tools-client.js';
 import { TaskBoard } from '../task-board.js';
 
@@ -21,6 +27,104 @@ function deferred<T>() {
 }
 const tools = new PlannerToolsClient();
 const reply = { ok: true as const, value: { content: 'ok' } };
+
+test('default session bus retains finish; late finish after close is not retained', async () => {
+  let context: IDialogueTaskContext | undefined;
+  const finished = deferred<void>();
+  const session = await DialogueSession.open({
+    id: 's',
+    board: {
+      workers: new Map([
+        [
+          'w',
+          {
+            name: 'w',
+            capabilities: { contextPolicy: 'optional' as const },
+            async run(input) {
+              context = input.dialogueTask;
+              assert.ok(context);
+              finishDialogueTask(context, 'R', 'submit_report', 'S');
+              finished.resolve();
+              return { output: 'R' };
+            },
+          },
+        ],
+      ]),
+    },
+    planner: {
+      async process() {
+        if (!context)
+          await tools.callTool('delegate_task', { worker: 'w', goal: 'work' });
+        return reply;
+      },
+    },
+  });
+  try {
+    await session.send('go');
+    await finished.promise;
+    assert.ok(context);
+    assert.equal(context.readFinish()?.output, 'R');
+    assert.equal(context.readFinish()?.summary, 'S');
+  } finally {
+    await session.close();
+  }
+  assert.equal(context?.readFinish(), undefined);
+  assert.ok(context);
+  finishDialogueTask(context, 'late');
+  const bus = context.signals as ISignalBus<DialogueSignals>;
+  assert.equal(context.readFinish(), undefined);
+  assert.equal(
+    bus.last('dialogue.task.finish', context.source, context.runId),
+    undefined,
+  );
+  assert.deepEqual(bus.lastAll(context.source), []);
+});
+
+test('memory bus does not retain signals emitted after source retirement', () => {
+  const bus = createMemorySignalBus();
+  bus.retire('s');
+  bus.emit(
+    'dialogue.task.finish',
+    { taskId: 't', runId: 'r', output: 'late' },
+    's',
+    'r',
+  );
+  assert.equal(bus.last('dialogue.task.finish', 's', 'r'), undefined);
+  assert.deepEqual(bus.lastAll('s'), []);
+});
+
+test('memory bus retains latest signals by name, source and key and retires a source', () => {
+  const bus = createMemorySignalBus();
+  const emit = (source: string, key: string, output: string) =>
+    bus.emit(
+      'dialogue.task.finish',
+      { taskId: key, runId: key, output },
+      source,
+      key,
+    );
+  emit('s', 'a', 'old');
+  emit('s', 'b', 'other key');
+  emit('other', 'a', 'other source');
+  emit('s', 'a', 'new');
+  bus.emit(
+    'dialogue.activity',
+    { turnActive: false, queuedInputs: 0, running: 0, ready: 0 },
+    's',
+    'a',
+  );
+  assert.equal(
+    bus.last('dialogue.task.finish', 's', 'a')?.payload.output,
+    'new',
+  );
+  assert.equal(bus.lastAll('s').length, 3);
+  bus.retire('s');
+  assert.equal(bus.last('dialogue.task.finish', 's', 'a'), undefined);
+  assert.deepEqual(bus.lastAll('s'), []);
+  assert.equal(
+    bus.last('dialogue.task.finish', 'other', 'a')?.payload.output,
+    'other source',
+  );
+});
 function harness() {
   const bus = createSignalBus<DialogueSignals>();
   const signals: AnySignal<DialogueSignals>[] = [];

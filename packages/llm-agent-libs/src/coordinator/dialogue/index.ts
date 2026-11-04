@@ -7,6 +7,7 @@ export {
   type PlannerTurnOptions,
 } from './dialogue-session.js';
 export { InMemoryDialogueStateStore } from './in-memory-dialogue-state-store.js';
+export { createMemorySignalBus } from './memory-signal-bus.js';
 export {
   PLAN_CREATE_SYSTEM,
   PLAN_REVISE_SYSTEM,

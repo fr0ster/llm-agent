@@ -30,6 +30,7 @@ import {
   type TokenUsage,
 } from '@mcp-abap-adt/llm-agent';
 import { DIALOGUE_COORDINATOR_SYSTEM } from './coordinator-prompt.js';
+import { createMemorySignalBus } from './memory-signal-bus.js';
 import {
   appendRequestMessage,
   boundRequestTranscript,
@@ -487,7 +488,7 @@ export class DialogueSession {
       );
     this.contextBuilder =
       opts.plannerContextBuilder ?? new DefaultPlannerContextBuilder();
-    this.signals = opts.signals ?? { emit() {}, retire() {} };
+    this.signals = opts.signals ?? createMemorySignalBus();
     const session = this;
     this.board = new TaskBoard({
       ...opts.board,

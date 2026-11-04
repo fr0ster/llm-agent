@@ -87,6 +87,7 @@ export interface ISubAgentResult {
   toolCallCount?: number;
 
   output: string;
+  summary?: string;
   toolCalls?: LlmToolCall[];
   usage?: TokenUsage;
   metadata?: Record<string, unknown>;
