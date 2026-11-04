@@ -123,7 +123,7 @@ for (const pipeline of [false, true]) {
     });
   }
 
-  test(`task board stores only the worker final answer (pipeline=${pipeline})`, async () => {
+  test(`task board stores worker tool-round texts in order followed by the final answer (pipeline=${pipeline})`, async () => {
     let finish!: () => void;
     const done = new Promise<void>((resolve) => {
       finish = resolve;
@@ -140,7 +140,10 @@ for (const pipeline of [false, true]) {
       const task = board.start({ worker: 'worker', goal: 'check' });
       assert.ok(task.ok);
       await done;
-      assert.equal(board.get(task.value.id)?.output, 'Final answer');
+      assert.equal(
+        board.get(task.value.id)?.output,
+        'Let me check. \n\nChecking again. \n\nFinal answer',
+      );
     } finally {
       await board.stopAll();
     }
@@ -257,10 +260,32 @@ test('dialogue discards tool-round partials before displaying the final iteratio
 function validationAgent(
   pipeline: boolean,
   streamMode: 'full' | 'final',
+  withToolRound = false,
 ): SmartAgent {
   const { deps } = makeDefaultDeps({
-    mcpClients: [],
+    mcpClients: [
+      {
+        async listTools() {
+          return {
+            ok: true,
+            value: [{ name: 'check', description: 'Check', inputSchema: {} }],
+          };
+        },
+        async callTool() {
+          return { ok: true, value: { content: 'checked' } };
+        },
+      },
+    ],
     llmResponses: [
+      ...(withToolRound
+        ? [
+            {
+              content: 'Checking first',
+              toolCalls: [{ id: 'check', name: 'check', arguments: {} }],
+              finishReason: 'tool_calls' as const,
+            },
+          ]
+        : []),
       { content: 'Rejected A', finishReason: 'stop' },
       { content: 'Accepted B', finishReason: 'stop' },
     ],
@@ -311,6 +336,17 @@ for (const pipeline of [false, true]) {
       assert.equal(
         content.join(''),
         mode === 'final' ? 'Accepted B' : 'Rejected AAccepted B',
+      );
+    });
+
+    test(`worker keeps tool-round text and accepted final but drops validation retry (pipeline=${pipeline}, mode=${mode})`, async () => {
+      const worker = new SmartAgentSubAgent(
+        'worker',
+        validationAgent(pipeline, mode, true),
+      );
+      assert.equal(
+        (await worker.run({ task: 'go' })).output,
+        'Checking first\n\nAccepted B',
       );
     });
 
@@ -429,6 +465,11 @@ for (const pipeline of [false, true]) {
       const result = await resetAgent(pipeline, mode).process('go');
       assert.ok(result.ok);
       assert.equal(result.value.content, 'Replacement');
+      const worker = new SmartAgentSubAgent(
+        'worker',
+        resetAgent(pipeline, mode),
+      );
+      assert.equal((await worker.run({ task: 'go' })).output, 'Replacement');
       const boundaries: string[] = [];
       const partials: StreamChunk[] = [];
       for await (const chunk of resetAgent(pipeline, mode).streamProcess('go', {

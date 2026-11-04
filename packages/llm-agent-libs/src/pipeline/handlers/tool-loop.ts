@@ -763,6 +763,9 @@ export class ToolLoopHandler implements IStageHandler {
           : val.reprompt
             ? 'retry'
             : 'final';
+      if (iterationEnd !== 'retry') {
+        ctx.options?.onAssistantResponse?.(content);
+      }
       if (iterationEnd === 'tool_calls') progressContent += content;
       else if (iterationEnd === 'final' && ctx.config.streamMode === 'final') {
         ctx.yield({ ok: true, value: { content } });

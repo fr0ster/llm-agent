@@ -1378,6 +1378,9 @@ export class SmartAgent {
           : val.reprompt
             ? 'retry'
             : 'final';
+      if (iterationEnd !== 'retry') {
+        opts?.onAssistantResponse?.(content);
+      }
       // In 'final' mode: yield buffered content only if this is the last iteration
       if (this.config.streamMode === 'final' && iterationBuffer) {
         if (iterationEnd === 'final') {

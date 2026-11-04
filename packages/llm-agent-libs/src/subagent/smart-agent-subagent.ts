@@ -32,6 +32,7 @@ export class SmartAgentSubAgent implements ISubAgent {
 
   async run(input: ISubAgentInput): Promise<ISubAgentResult> {
     const collector = new ToolTraceCollector();
+    const assistantTexts: string[] = [];
     let observing = true;
     const onToolTrace = (entry: ToolTraceEntry): void => {
       if (!observing) return;
@@ -61,6 +62,9 @@ export class SmartAgentSubAgent implements ISubAgent {
           trace: input.trace,
           sessionLogger: input.sessionLogger,
           onPartial: input.onPartial,
+          onAssistantResponse: (content) => {
+            if (content) assistantTexts.push(content);
+          },
           onActivity: input.onActivity,
           onToolCallCount: input.onToolCallCount,
           onToolsSelected: input.onToolsSelected,
@@ -84,6 +88,9 @@ export class SmartAgentSubAgent implements ISubAgent {
       }
 
       const { content, toolCalls, stopReason, usage, stopped } = res.value;
+      const output =
+        input.dialogueTask?.readFinish()?.output ??
+        (assistantTexts.length > 0 ? assistantTexts.join('\n\n') : content);
 
       const mappedUsage = usage
         ? {
@@ -119,7 +126,7 @@ export class SmartAgentSubAgent implements ISubAgent {
         if (pending.length > 0) {
           return {
             toolTrace: collector.finalize(!hasExternalTraceGap(onToolTrace)),
-            output: content,
+            output,
             usage: mappedUsage,
             status: 'awaiting-external',
             budgetExhausted: res.value.budgetExhausted,
@@ -143,7 +150,7 @@ export class SmartAgentSubAgent implements ISubAgent {
 
       return {
         toolTrace: collector.finalize(!hasExternalTraceGap(onToolTrace)),
-        output: content,
+        output,
         budgetExhausted: res.value.budgetExhausted,
         toolCallCount: res.value.toolCallCount,
         maxToolCalls: res.value.maxToolCalls,
