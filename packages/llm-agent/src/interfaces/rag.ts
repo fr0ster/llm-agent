@@ -259,6 +259,8 @@ export type RagCollectionRecord = {
 
 /** IRagProvider.createCollection's options. */
 export type RagProviderCreateCollectionOptions = RagCollectionOwner & {
+  /** Vector size for the new store; when omitted, the provider determines it. */
+  dimension?: number;
   /** The logical name; `name` is the store name. Absent → the provider records `name`. */
   collectionName?: string;
   attributes?: RagJsonValue;

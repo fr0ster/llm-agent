@@ -91,7 +91,7 @@ export class QdrantRagProvider
   }
 
   /**
-   * Creates the collection — sized by one probe embedding — with a request that
+   * Creates the collection — sized explicitly or by one probe embedding — with a request that
    * fails if it exists, then commits the creation by writing the record last,
    * create-if-absent (§6.3).
    */
@@ -99,6 +99,18 @@ export class QdrantRagProvider
     name: string,
     opts: RagProviderCreateCollectionOptions,
   ): Promise<Result<Handles, RagError>> {
+    if (
+      opts.dimension !== undefined &&
+      (!Number.isInteger(opts.dimension) || opts.dimension <= 0)
+    ) {
+      return {
+        ok: false,
+        error: new RagError(
+          'Collection dimension must be a positive integer',
+          'RAG_CREATE_ERROR',
+        ),
+      };
+    }
     const checked = this.checkCreateOptions(opts);
     if (!checked.ok) return checked;
     const refused = this.refuseCatalogName(name);
@@ -359,14 +371,13 @@ export class QdrantRagProvider
     name: string,
     opts: RagProviderCreateCollectionOptions,
   ): Promise<Result<void, RagError>> {
-    // Qdrant fixes a collection's vector size at creation and IRetrievalEmbedder
-    // declares none, so one probe embedding learns it — once per collection
-    // created, none per write.
-    const { vector } = await this.embedder.embedDocument(DIMENSION_PROBE);
+    const dimension =
+      opts.dimension ??
+      (await this.embedder.embedDocument(DIMENSION_PROBE)).vector.length;
     const res = await this.request(`/collections/${name}`, {
       method: 'PUT',
       body: JSON.stringify({
-        vectors: { size: vector.length, distance: 'Cosine' },
+        vectors: { size: dimension, distance: 'Cosine' },
       }),
     });
     if (res.ok) return { ok: true, value: undefined };

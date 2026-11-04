@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { IEmbedder } from '@mcp-abap-adt/llm-agent';
-import { staticLogin, symmetricEmbedder } from '@mcp-abap-adt/llm-agent';
+import {
+  RagError,
+  staticLogin,
+  symmetricEmbedder,
+} from '@mcp-abap-adt/llm-agent';
 import type { HanaClient } from '../hana-vector-rag.js';
 import { HanaVectorRagProvider } from '../hana-vector-rag-provider.js';
 
@@ -37,6 +41,63 @@ function makeFakeClient(
 }
 
 describe('HanaVectorRagProvider', () => {
+  for (const layout of ['per-collection', 'shared'] as const) {
+    it(`rejects a mismatched dimension before SQL in ${layout} layout`, async () => {
+      const client = makeFakeClient();
+      const provider = new HanaVectorRagProvider({
+        name: 'test',
+        embedder: symmetricEmbedder(makeEmbedder()),
+        connection: {
+          collectionName: '__ignored',
+          host: 'h',
+          credential: staticLogin('u', 'p'),
+
+          dimension: 3,
+        },
+        defaultDimension: 8,
+        layout,
+        clientFactory: () => client,
+      });
+      const result = await provider.createCollection('docs', {
+        scope: 'global',
+        dimension: 8,
+      });
+      assert.ok(!result.ok);
+      assert.ok(result.error instanceof RagError);
+      assert.match(result.error.message, /dimension 8.*configured dimension 3/);
+      assert.equal(client.calls.length, 0);
+    });
+  }
+
+  it('accepts a dimension equal to the configured dimension', async () => {
+    const client = makeFakeClient();
+    const provider = new HanaVectorRagProvider({
+      name: 'test',
+      embedder: symmetricEmbedder(makeEmbedder()),
+      connection: {
+        collectionName: '__ignored',
+        host: 'h',
+        credential: staticLogin('u', 'p'),
+
+        dimension: 3,
+      },
+      defaultDimension: 8,
+      autoCreateSchema: true,
+      clientFactory: () => client,
+    });
+    const result = await provider.createCollection('docs', {
+      scope: 'global',
+      dimension: 3,
+    });
+    assert.ok(result.ok);
+    assert.ok(
+      client.calls.some(
+        (call) =>
+          call.sql.includes('CREATE TABLE') && call.sql.includes('"docs"'),
+      ),
+    );
+  });
+
   it('createCollection returns rag + editor, runs schema bootstrap when autoCreateSchema=true', async () => {
     const client = makeFakeClient();
     const provider = new HanaVectorRagProvider({
