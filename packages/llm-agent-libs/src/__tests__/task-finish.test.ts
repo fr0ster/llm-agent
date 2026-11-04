@@ -168,7 +168,10 @@ for (const pipeline of [false, true]) {
         await done;
         const task = board.get('t1');
         assert.equal(task?.state, 'done');
-        assert.equal(task.output, finishes ? output : 'normal response');
+        assert.equal(
+          task.output,
+          finishes ? output : 'progress\n\nnormal response',
+        );
         assert.equal(task.toolCalls, 1);
         assert.equal(toolCalls, 1);
         assert.equal(llm.callCount, finishes ? 1 : 2);

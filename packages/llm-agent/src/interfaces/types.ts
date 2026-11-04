@@ -27,6 +27,8 @@ export interface TraceContext {
 }
 
 export interface CallOptions {
+  /** Accepted assistant content, including tool-call rounds; excludes discarded replies. */
+  onAssistantResponse?: (content: string) => void;
   dialogueTask?: IDialogueTaskContext;
   onToolTrace?: (entry: ToolTraceEntry) => void;
   /** Owning request start in epoch milliseconds; preserved across tool rounds and queued tasks. */
