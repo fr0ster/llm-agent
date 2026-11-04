@@ -1,5 +1,11 @@
 # @mcp-abap-adt/llm-agent-libs
 
+## 30.31.1
+
+### Patch Changes
+
+- c51886b: Preserve all assistant text in worker task results, including reports returned alongside tool calls. Keep chat responses and explicit task finish output unchanged.
+
 ## 30.31.0
 
 ### Minor Changes
