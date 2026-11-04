@@ -1,5 +1,11 @@
 # @mcp-abap-adt/llm-agent
 
+## 30.34.0
+
+### Minor Changes
+
+- 14cf152: Add an optional collection vector dimension so Qdrant can create stores without an embedding probe. Reject invalid Qdrant dimensions and dimensions that differ from the configured HANA or PostgreSQL vector size.
+
 ## 30.33.0
 
 ### Minor Changes
