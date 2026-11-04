@@ -80,6 +80,8 @@ interface Entry {
   request: TaskRequest;
   stop: AbortController;
   hard: AbortController;
+  put?: AbortController;
+  cancelResultWrite?: boolean;
   cancelHardStop?: () => void;
   cancelStall?: () => void;
 }
@@ -493,6 +495,10 @@ export class TaskBoard {
       }
     } finally {
       entry.cancelHardStop?.();
+      removeAbortListener?.();
+      // Result storage is I/O and must not occupy worker capacity.
+      releasePool?.();
+      releaseBoard?.();
       const fallback = observed.finalize(false);
       if (!authoritative && fallback.entries.length) task.toolTrace = fallback;
       entry.cancelStall?.();
@@ -506,6 +512,7 @@ export class TaskBoard {
         task.state !== 'stopped' &&
         (rawOutput !== undefined || task.error !== undefined)
       ) {
+        const resultStore = this.opts.resultStore;
         const output =
           kind === 'failed'
             ? (rawError ?? task.error ?? rawOutput ?? '')
@@ -517,28 +524,45 @@ export class TaskBoard {
         const summary = verdict
           ? resolveVerdictSummary(verdict)
           : resolveWorkerSummary(output, finishSummary).summary;
-        const putSignal = baseSignal;
+        // A previous cooperative worker stop still permits its final write.
+        // Subsequent explicit stops cancel the active write, independently of hard stop.
+        entry.put = new AbortController();
+        if (entry.cancelResultWrite) entry.put.abort();
+        const putSignal = baseSignal
+          ? AbortSignal.any([baseSignal, entry.put.signal])
+          : entry.put.signal;
         let abortedDuringPut = false;
+        let rejectPut!: (reason: unknown) => void;
+        const abortedPut = new Promise<never>((_, reject) => {
+          rejectPut = reject;
+        });
         const onPutAbort = () => {
           abortedDuringPut = true;
+          rejectPut(putSignal.reason);
         };
-        putSignal?.addEventListener('abort', onPutAbort, { once: true });
+        putSignal.addEventListener('abort', onPutAbort, { once: true });
+        if (putSignal.aborted) onPutAbort();
         try {
-          const stored = await this.opts.resultStore.put(
-            {
-              id: task.id,
-              stepId: this.opts.stepOf?.(task.id),
-              worker: task.worker,
-              goal: task.goal,
-              result: task.result ?? 'report',
-              outcome: kind,
-              budgetExhausted: task.budgetExhausted,
-              ...(verdict ? { verdict: verdict.verdict } : {}),
-              summary,
-              output,
-            },
-            { signal: putSignal },
-          );
+          const stored = await Promise.race([
+            abortedPut,
+            Promise.resolve().then(() =>
+              resultStore.put(
+                {
+                  id: task.id,
+                  stepId: this.opts.stepOf?.(task.id),
+                  worker: task.worker,
+                  goal: task.goal,
+                  result: task.result ?? 'report',
+                  outcome: kind,
+                  budgetExhausted: task.budgetExhausted,
+                  ...(verdict ? { verdict: verdict.verdict } : {}),
+                  summary,
+                  output,
+                },
+                { signal: putSignal },
+              ),
+            ),
+          ]);
           if (
             abortedDuringPut ||
             (!stored.ok && stored.error.code === 'aborted')
@@ -557,14 +581,12 @@ export class TaskBoard {
             task.error = `result storage failed: ${error instanceof Error ? error.message : String(error)}`;
           }
         } finally {
-          putSignal?.removeEventListener('abort', onPutAbort);
+          putSignal.removeEventListener('abort', onPutAbort);
+          entry.put = undefined;
         }
         task.summary = summary;
         if (interrupted) kind = 'stopped';
       }
-      removeAbortListener?.();
-      releasePool?.();
-      releaseBoard?.();
       this.entries.delete(task.id);
       if (task.state !== 'stopped') {
         const previous = task.state;
@@ -608,7 +630,13 @@ export class TaskBoard {
   }
   stop(taskId: string): boolean {
     const entry = this.entries.get(taskId);
-    if (!entry || entry.stop.signal.aborted) return false;
+    if (!entry) return false;
+    if (entry.put) {
+      if (entry.put.signal.aborted) return false;
+      entry.put.abort();
+      return true;
+    }
+    if (entry.stop.signal.aborted) return false;
     entry.stop.abort();
     if (entry.task.state === 'queued') {
       entry.task.state = 'stopped';
@@ -633,7 +661,10 @@ export class TaskBoard {
     return true;
   }
   async stopAll(): Promise<void> {
-    for (const id of this.entries.keys()) this.stop(id);
+    for (const [id, entry] of this.entries) {
+      entry.cancelResultWrite = true;
+      this.stop(id);
+    }
     await Promise.all([...this.running]);
   }
   get(id: string): TaskRecord | undefined {

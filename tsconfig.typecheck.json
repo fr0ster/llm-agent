@@ -17,6 +17,12 @@
   // added to this list by hand.
   "include": [
     "packages/llm-agent-libs/src/coordinator/dialogue/__tests__/submit-report.test.ts",
+    "packages/llm-agent-libs/src/coordinator/dialogue/__tests__/task-results.test.ts",
+    "packages/llm-agent-libs/src/coordinator/dialogue/__tests__/delegation-profiles.test.ts",
+    "packages/llm-agent-libs/src/coordinator/dialogue/__tests__/dialogue-session.test.ts",
+    "packages/llm-agent-libs/src/coordinator/dialogue/__tests__/planner-context.test.ts",
+    "packages/llm-agent-libs/src/coordinator/dialogue/__tests__/planner-tools-client.test.ts",
+    "packages/llm-agent/src/interfaces/__tests__/task-result-store.test.ts",
     "packages/llm-agent/src/interfaces/dialogue-task-context.test.ts",
     "packages/llm-agent-libs/src/__tests__/task-finish.test.ts",
     "packages/llm-agent-libs/src/__tests__/pipeline-request-isolation.test.ts",

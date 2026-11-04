@@ -11,6 +11,12 @@ import { InMemoryDialogueStateStore } from '../in-memory-dialogue-state-store.js
 import { PlannerToolsClient } from '../planner-tools-client.js';
 import { taskNotice } from '../task-reference.js';
 
+function toolValue(
+  result: Awaited<ReturnType<PlannerToolsClient['callTool']>>,
+) {
+  assert.ok(result.ok);
+  return result.value;
+}
 function deferred<T = void>() {
   let resolve!: (value: T) => void;
 
@@ -556,6 +562,7 @@ test('history trimming preserves user action prefixes and restores isolated acti
   assert.equal(snapshot.conversation.length, 199);
   assert.equal(snapshot.conversation[0].content, '[actions] user 11');
   assert.ok(snapshot.conversationLeadingActions?.includes(198));
+  assert.ok(snapshot.conversationLeadingActions);
   snapshot.conversationLeadingActions.length = 0;
   assert.ok(session.snapshot().conversationLeadingActions?.includes(198));
 
@@ -1155,7 +1162,8 @@ test('prepared context resets a restored completed batch plan for unrelated work
         const result = await tools.callTool('plan_update', {
           steps: [{ id: 'new', goal: 'unrelated work' }],
         });
-        assert.ok(!result.isError, JSON.stringify(result));
+        assert.ok(result.ok, JSON.stringify(result));
+        assert.ok(!result.value.isError, JSON.stringify(result.value));
         return { ok: true, value: { content: 'new work accepted' } };
       },
     },
@@ -1202,23 +1210,25 @@ test('task completion preserves a pending question and a queued answer grants co
         calls++;
         if (calls === 1) {
           const steps = [{ id: 'work', goal: 'work' }];
-          assert.ok(!(await tools.callTool('plan_update', { steps })).isError);
           assert.ok(
-            !(
+            !toolValue(await tools.callTool('plan_update', { steps })).isError,
+          );
+          assert.ok(
+            !toolValue(
               await tools.callTool('delegate_task', {
                 worker: 'w',
                 goal: 'work',
                 step_id: 'work',
-              })
+              }),
             ).isError,
           );
           assert.ok(
-            !(
+            !toolValue(
               await tools.callTool('plan_update', {
                 steps,
                 status: 'waiting_user',
                 question,
-              })
+              }),
             ).isError,
           );
           entered.resolve();
@@ -1448,7 +1458,7 @@ for (const mode of [
                   id: 'verify',
                   goal: 'Verify',
                   worker: 'audit',
-                  result: 'verdict',
+                  result: 'verdict' as const,
                   dependsOn: ['step'],
                   checkedTaskIds: { step: 't1' },
                   state:

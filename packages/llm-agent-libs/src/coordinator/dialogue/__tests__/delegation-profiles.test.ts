@@ -178,6 +178,7 @@ for (const mode of [
                   : summary(name, options);
               workers.set('checker', {
                 name: 'checker',
+                capabilities: { contextPolicy: 'optional' },
                 async run() {
                   return { output: 'PASS' };
                 },

@@ -14,6 +14,12 @@ import {
 } from '../planner-context-builder.js';
 import { PlannerToolsClient } from '../planner-tools-client.js';
 
+function toolValue(
+  result: Awaited<ReturnType<PlannerToolsClient['callTool']>>,
+) {
+  assert.ok(result.ok);
+  return result.value;
+}
 const tools = new PlannerToolsClient();
 const builder = new DefaultPlannerContextBuilder();
 const record = (): PlannerRequestRecord => ({
@@ -53,6 +59,7 @@ test('builder preserves fresh messages, omits empty blocks, adds notes and does 
 
 test('projection preserves assistant replies and user inputs verbatim', () => {
   const open = record();
+  assert.ok(open.transcript);
   open.transcript[0].content = `FIRST${'a'.repeat(30_000)}`;
   for (let i = 0; i < 12; i++)
     appendRequestMessage(open, {
@@ -110,6 +117,7 @@ test('size bound drops middle parts without merging independent user inputs', ()
       content: String(i).repeat(100_000),
     });
   appendRequestMessage(open, { role: 'user', content: 'short follow-up' });
+  assert.ok(open.transcript);
   assert.ok(size(open.transcript) <= 400_000);
   assert.equal(open.transcript[0].content, 'first');
   assert.equal(open.transcript.at(-1)?.content, 'short follow-up');
@@ -153,10 +161,9 @@ for (const status of ['absent', 'done', 'active', 'waiting_user'] as const) {
     );
     if (separate) {
       assert.ok(size(inputs[1]) < 1000);
-      assert.equal(
-        session.snapshot().requests?.[1].transcript[0].content,
-        'second',
-      );
+      const request = session.snapshot().requests?.[1];
+      assert.ok(request?.transcript);
+      assert.equal(request.transcript[0].content, 'second');
       assert.ok(
         !inputs[1].some((message) => message.content?.includes('[actions]')),
       );
@@ -241,12 +248,12 @@ test('corrective calls rebuild context containing intermediate replies, actions 
           });
         else
           assert.equal(
-            (
+            toolValue(
               await tools.callTool('plan_update', {
                 steps: [{ id: 's1', goal: 'do work', state: 'pending' }],
                 status: 'waiting_user',
                 question: 'Proceed?',
-              })
+              }),
             ).isError,
             undefined,
           );
@@ -459,20 +466,20 @@ test('task outcomes update request counters before a busy planner turn finishes;
         calls++;
         if (calls === 1) {
           assert.equal(
-            (
+            toolValue(
               await tools.callTool('plan_update', {
                 steps: [{ id: 's', goal: 'work' }],
-              })
+              }),
             ).isError,
             undefined,
           );
           assert.equal(
-            (
+            toolValue(
               await tools.callTool('delegate_task', {
                 worker: 'w',
                 goal: 'work',
                 step_id: 's',
-              })
+              }),
             ).isError,
             undefined,
           );
@@ -602,7 +609,9 @@ test('new_request discards the old call, rebuilds retrieval, and keeps only the 
     const snapshot = session.snapshot();
     assert.equal(snapshot.requests?.length, 2);
     assert.equal(snapshot.requests?.[0].transcript, undefined);
-    assert.equal(snapshot.requests?.[1].transcript[0].content, 'new work');
+    const request = snapshot.requests?.[1];
+    assert.ok(request?.transcript);
+    assert.equal(request.transcript[0].content, 'new work');
     assert.equal(
       typeof snapshot.plan === 'object' && snapshot.plan.steps[0].id,
       'new',

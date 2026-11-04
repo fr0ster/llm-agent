@@ -1,18 +1,21 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type {
+  DialoguePlanStep,
   ISubAgentInput,
   ISubAgentResult,
   ITaskResultStore,
-  PlanStep,
   TaskEvent,
   TaskResultEntry,
 } from '@mcp-abap-adt/llm-agent';
 import { DialogueSession } from '../dialogue-session.js';
 import { PlannerToolsClient } from '../planner-tools-client.js';
+import { SemaphorePool } from '../semaphore-pool.js';
 import { applyTaskEvent } from '../structured-plan.js';
 import { TaskBoard, type TaskBoardOptions } from '../task-board.js';
 import { taskNotice } from '../task-reference.js';
+
+type PlanStep = DialoguePlanStep;
 
 const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
 function deferred<T>() {
@@ -319,7 +322,8 @@ test('stepId comes from the session map', async () => {
             goal: 'goal',
             step_id: 'work',
           });
-          assert.ok(!result.isError);
+          assert.ok(result.ok);
+          assert.ok(!result.value.isError);
           await tick();
         }
         return { ok: true, value: { content: 'NO_MESSAGE' } };
@@ -407,7 +411,10 @@ for (const withStore of [false, true]) {
       taskIds: [id],
       workTaskId: id,
     };
-    applyTaskEvent({ status: 'active', steps: [step] }, { kind: 'done', task });
+    applyTaskEvent(
+      { version: 1, status: 'active', steps: [step] },
+      { kind: 'done', task },
+    );
     assert.equal(step.state, 'done');
     assert.equal(step.verdict, 'pass');
   });
@@ -440,7 +447,10 @@ for (const withStore of [false, true]) {
       taskIds: [id],
       workTaskId: id,
     };
-    applyTaskEvent({ status: 'active', steps: [step] }, { kind: 'done', task });
+    applyTaskEvent(
+      { version: 1, status: 'active', steps: [step] },
+      { kind: 'done', task },
+    );
     assert.equal(step.state, 'failed');
     assert.equal(step.verdict, 'fail');
     assert.match(step.note ?? '', /unusable verdict/);
@@ -449,10 +459,167 @@ for (const withStore of [false, true]) {
     const { checkerVerdict: _retained, ...legacy } = task;
     assert.doesNotMatch(taskNotice(legacy), /verdict: pass/);
     applyTaskEvent(
-      { status: 'active', steps: [step] },
+      { version: 1, status: 'active', steps: [step] },
       { kind: 'done', task: legacy },
     );
     assert.equal(step.state, 'failed');
     assert.equal(step.verdict, 'fail');
   });
 }
+
+test('hung put releases both slots before stop interrupts it', async () => {
+  const events: TaskEvent[] = [];
+  const signals: AbortSignal[] = [];
+  const goals: string[] = [];
+  const b = board(
+    async (input) => {
+      goals.push(input.task);
+      return { output: 'ok' };
+    },
+    {
+      maxConcurrent: 1,
+      pool: new SemaphorePool(1),
+      hardStopAfterMs: 0,
+      resultStore: store((_entry, options) => {
+        assert.ok(options?.signal);
+        signals.push(options.signal);
+        return new Promise(() => {});
+      }),
+      onEvent: (event) => events.push(event),
+    },
+  );
+  const first = start(b);
+  const second = start(b);
+  await tick();
+  assert.equal(goals.length, 2);
+  assert.equal(signals.length, 2);
+  assert.equal(b.get(first)?.state, 'running');
+  assert.equal(b.stop(first), true);
+  await tick();
+  assert.equal(signals[0].aborted, true);
+  assert.equal(b.get(first)?.state, 'interrupted');
+  assert.equal(b.get(first)?.resultRef, undefined);
+  assert.deepEqual(
+    events
+      .filter((e) => e.task.id === first)
+      .map((e) => [e.kind, e.task.state]),
+    [
+      ['started', 'running'],
+      ['stopped', 'interrupted'],
+    ],
+  );
+  await b.stopAll();
+  assert.equal(b.get(second)?.state, 'interrupted');
+});
+
+for (const settlement of ['resolve', 'reject'] as const) {
+  test(`late put ${settlement} after stopAll cannot change final state`, async () => {
+    const gate = deferred<Awaited<ReturnType<ITaskResultStore['put']>>>();
+    let reject!: (reason: Error) => void;
+    const failure = new Promise<never>((_, r) => {
+      reject = r;
+    });
+    const events: TaskEvent[] = [];
+    const b = board(async () => ({ output: 'ok' }), {
+      resultStore: store(() =>
+        settlement === 'resolve' ? gate.promise : failure,
+      ),
+      onEvent: (event) => events.push(event),
+    });
+    const id = start(b);
+    await tick();
+    await b.stopAll();
+    const final = b.get(id);
+    assert.equal(final?.state, 'interrupted');
+    assert.equal(final?.resultRef, undefined);
+    if (settlement === 'resolve')
+      gate.resolve({
+        ok: true,
+        value: {
+          collection: 'results',
+          record: id,
+          chars: 2,
+        },
+      });
+    else reject(new Error('late storage failure'));
+    await tick();
+    assert.deepEqual(b.get(id), final);
+    assert.equal(events.length, 2);
+  });
+}
+
+test('base signal interrupts a put that ignores cancellation', async () => {
+  const controller = new AbortController();
+  const b = board(async () => ({ output: 'ok' }), {
+    baseInput: () => ({ signal: controller.signal }),
+    resultStore: store(() => new Promise(() => {})),
+  });
+  const id = start(b);
+  await tick();
+  controller.abort();
+  await tick();
+  assert.equal(b.get(id)?.state, 'interrupted');
+  await b.stopAll();
+});
+
+test('session close resolves with a hung result write', async () => {
+  const tools = new PlannerToolsClient();
+  let delegated = false;
+  const session = await DialogueSession.open({
+    id: 'hung-result-close',
+    resultStore: store(() => new Promise(() => {})),
+    board: {
+      workers: new Map([
+        [
+          'w',
+          {
+            name: 'w',
+            capabilities: { contextPolicy: 'optional' },
+            async run() {
+              return { output: 'ok' };
+            },
+          },
+        ],
+      ]),
+    },
+    planner: {
+      async process() {
+        if (!delegated) {
+          delegated = true;
+          const result = await tools.callTool('delegate_task', {
+            worker: 'w',
+            goal: 'goal',
+          });
+          assert.ok(result.ok);
+          assert.ok(!result.value.isError);
+          await tick();
+        }
+        return { ok: true, value: { content: 'NO_MESSAGE' } };
+      },
+    },
+  });
+  await session.send('go');
+  await tick();
+  await session.close();
+  assert.equal(session.snapshot().tasks[0]?.state, 'interrupted');
+});
+
+test('stopAll also interrupts a write begun by a cooperatively stopping worker', async () => {
+  const b = board(
+    async (input) => {
+      await new Promise<void>((resolve) => {
+        input.stopSignal?.addEventListener('abort', () => resolve(), {
+          once: true,
+        });
+      });
+      return { output: 'partial', stopped: true };
+    },
+    {
+      resultStore: store(() => new Promise(() => {})),
+    },
+  );
+  const id = start(b);
+  await tick();
+  await b.stopAll();
+  assert.equal(b.get(id)?.state, 'interrupted');
+});
