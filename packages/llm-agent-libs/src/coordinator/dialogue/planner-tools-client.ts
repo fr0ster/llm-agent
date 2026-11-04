@@ -337,6 +337,8 @@ export class PlannerToolsClient implements IMcpClient {
               const blocks: string[] = [];
               if (isCheck) blocks.push(VERDICT_EVIDENCE_GUIDANCE);
               let size = blocks.join('\n\n').length;
+              let legacyBlocks = 0;
+              let hasReferences = false;
               for (const source of sources) {
                 if (!source) throw new Error('dependency step is missing');
                 const id = source.successfulWorkTaskId;
@@ -353,8 +355,12 @@ export class PlannerToolsClient implements IMcpClient {
                     'The worker that did the work never checks it; checked work must be a separate report task',
                   );
                 if (isCheck) checkedTaskIds[source.id] = task.id;
+                const label = `${isCheck ? '[result to check: step' : '[result of step'} ${source.id} (task ${task.id})]`;
+                const ref = task.resultRef;
                 const block = [
-                  `${isCheck ? '[result to check: step' : '[result of step'} ${source.id} (task ${task.id})]\n${task.output ?? ''}`,
+                  ref
+                    ? `${label} record ${ref.collection}/${ref.record}, ${ref.chars} chars. Summary: ${task.summary ?? ''}`
+                    : `${label}\n${task.output ?? ''}`,
                   isCheck
                     ? renderToolTrace(task.id, task.toolTrace, toolTrust)
                     : undefined,
@@ -364,14 +370,24 @@ export class PlannerToolsClient implements IMcpClient {
                 ]
                   .filter(Boolean)
                   .join('\n');
-                const nextSize = size + block.length + (blocks.length ? 2 : 0);
-                if (nextSize > 120_000)
-                  throw new Error(
-                    `result of step ${source.id} (task ${task.id}) requires ${block.length} characters; total ${nextSize} exceeds 120000 (already ${size}); split or narrow the step`,
-                  );
+                if (ref) {
+                  hasReferences = true;
+                } else {
+                  const nextSize =
+                    size + block.length + (legacyBlocks || isCheck ? 2 : 0);
+                  if (nextSize > 120_000)
+                    throw new Error(
+                      `result of step ${source.id} (task ${task.id}) requires ${block.length} characters; total ${nextSize} exceeds 120000 (already ${size}); split or narrow the step`,
+                    );
+                  size = nextSize;
+                  legacyBlocks++;
+                }
                 blocks.push(block);
-                size = nextSize;
               }
+              if (hasReferences)
+                blocks.push(
+                  'Read referenced records with your RAG read tools (rag_read by id / collection_records) when you need their content.',
+                );
               if (blocks.length)
                 context = [context, ...blocks].filter(Boolean).join('\n\n');
             }
