@@ -567,7 +567,7 @@ export class TaskBoard {
             abortedDuringPut ||
             (!stored.ok && stored.error.code === 'aborted')
           ) {
-            interrupted = true;
+            interrupted = kind !== 'stopped';
           } else if (stored.ok) {
             task.resultRef = stored.value;
           } else if (kind === 'done') {
@@ -575,7 +575,7 @@ export class TaskBoard {
             task.error = `result storage failed: ${stored.error.message}`;
           }
         } catch (error) {
-          if (abortedDuringPut) interrupted = true;
+          if (abortedDuringPut) interrupted = kind !== 'stopped';
           else if (kind === 'done') {
             kind = 'failed';
             task.error = `result storage failed: ${error instanceof Error ? error.message : String(error)}`;
