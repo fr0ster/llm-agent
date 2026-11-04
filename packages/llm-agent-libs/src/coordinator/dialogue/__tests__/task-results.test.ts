@@ -45,6 +45,10 @@ const failure: ITaskResultStore['put'] = async () => ({
   ok: false,
   error: { code: 'unavailable', message: 'offline' },
 });
+const aborted: ITaskResultStore['put'] = async () => ({
+  ok: false,
+  error: { code: 'aborted', message: 'cancelled' },
+});
 function board(
   run: (input: ISubAgentInput) => Promise<ISubAgentResult>,
   options: Partial<TaskBoardOptions> = {},
@@ -134,8 +138,8 @@ test('stopped with failed put stays stopped without ref', async () => {
   assert.equal(b.get(id)?.resultRef, undefined);
 });
 
-for (const put of [success, failure]) {
-  test(`hard stop before put stays stopped with ${put === success ? 'successful' : 'failed'} storage`, async () => {
+for (const put of [success, failure, aborted]) {
+  test(`hard stop before put stays stopped with ${put === success ? 'successful' : put === aborted ? 'aborted' : 'failed'} storage`, async () => {
     const entries: TaskResultEntry[] = [];
     let putSignal: AbortSignal | undefined;
     const b = board(() => new Promise(() => {}), {
@@ -232,6 +236,123 @@ for (const mode of ['signal', 'returned'] as const) {
     assert.equal(b.get(id)?.state, 'interrupted');
     assert.equal(b.get(id)?.resultRef, undefined);
   });
+}
+
+for (const outcome of ['done', 'failed', 'stopped'] as const) {
+  for (const cancellation of ['returned', 'stop'] as const) {
+    test(`${outcome} run handles ${cancellation} put abort`, async () => {
+      const gate = deferred<void>();
+      const events: TaskEvent[] = [];
+      const b = board(
+        async () => {
+          if (outcome === 'failed') throw new Error('worker failed');
+          return {
+            output: 'partial',
+            ...(outcome === 'stopped' ? { stopped: true as const } : {}),
+          };
+        },
+        {
+          resultStore: store(async () => {
+            await gate.promise;
+            return {
+              ok: false,
+              error: { code: 'aborted', message: 'cancelled' },
+            };
+          }),
+          onEvent: (event) => events.push(event),
+        },
+      );
+      const id = start(b);
+      await tick();
+      if (cancellation === 'stop') assert.equal(b.stop(id), true);
+      gate.resolve();
+      await tick();
+      assert.equal(
+        b.get(id)?.state,
+        outcome === 'stopped' ? 'stopped' : 'interrupted',
+      );
+      assert.equal(b.get(id)?.resultRef, undefined);
+      assert.equal(events.length, 2);
+    });
+  }
+}
+
+for (const stopped of [false, true]) {
+  test(`stop during run preserves worker outcome on aborted put (worker stopped: ${stopped})`, async () => {
+    const gate = deferred<void>();
+    const entries: TaskResultEntry[] = [];
+    const b = board(
+      async () => {
+        await gate.promise;
+        return {
+          output: 'partial',
+          ...(stopped ? { stopped: true as const } : {}),
+        };
+      },
+      {
+        resultStore: store(async (entry) => {
+          entries.push(entry);
+          return {
+            ok: false,
+            error: { code: 'aborted', message: 'cancelled' },
+          };
+        }),
+      },
+    );
+    const id = start(b);
+    await tick();
+    assert.equal(b.stop(id), true);
+    gate.resolve();
+    await tick();
+    assert.equal(entries[0]?.outcome, stopped ? 'stopped' : 'done');
+    assert.equal(b.get(id)?.state, stopped ? 'stopped' : 'interrupted');
+    assert.equal(b.get(id)?.resultRef, undefined);
+  });
+}
+
+for (const storage of ['none', 'success'] as const) {
+  for (const outcome of ['done', 'epicfail'] as const) {
+    test(`late stop keeps complete ${outcome} result with ${storage} storage`, async () => {
+      const gate = deferred<void>();
+      const entries: TaskResultEntry[] = [];
+      const b = board(
+        async () => {
+          await gate.promise;
+          return {
+            output: 'complete',
+            ...(outcome === 'epicfail'
+              ? { errorClass: 'epicfail' as const }
+              : {}),
+          };
+        },
+        storage === 'success'
+          ? {
+              resultStore: store(async (entry) => {
+                entries.push(entry);
+                return success(entry);
+              }),
+            }
+          : {},
+      );
+      const id = start(b);
+      await tick();
+      assert.equal(b.stop(id), true);
+      gate.resolve();
+      await tick();
+      const expected = outcome === 'done' ? 'done' : 'failed';
+      assert.equal(b.get(id)?.state, expected);
+      assert.equal(b.get(id)?.output, 'complete');
+      if (storage === 'success') {
+        assert.equal(entries[0]?.outcome, expected);
+        assert.deepEqual(b.get(id)?.resultRef, {
+          collection: 'results',
+          record: id,
+          chars: 'complete'.length,
+        });
+      } else assert.equal(b.get(id)?.resultRef, undefined);
+      if (outcome === 'epicfail') assert.equal(b.get(id)?.error, 'complete');
+    });
+  }
 }
 
 test('failed task stores error text with outcome failed', async () => {
@@ -604,7 +725,7 @@ test('session close resolves with a hung result write', async () => {
   assert.equal(session.snapshot().tasks[0]?.state, 'interrupted');
 });
 
-test('stopAll also interrupts a write begun by a cooperatively stopping worker', async () => {
+test('stopAll cancels a cooperatively stopping worker write while keeping stopped', async () => {
   const b = board(
     async (input) => {
       await new Promise<void>((resolve) => {
@@ -621,5 +742,6 @@ test('stopAll also interrupts a write begun by a cooperatively stopping worker',
   const id = start(b);
   await tick();
   await b.stopAll();
-  assert.equal(b.get(id)?.state, 'interrupted');
+  assert.equal(b.get(id)?.state, 'stopped');
+  assert.equal(b.get(id)?.resultRef, undefined);
 });
