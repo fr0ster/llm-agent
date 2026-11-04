@@ -192,6 +192,15 @@ export class HanaVectorRagProvider
     name: string,
     opts: RagProviderCreateCollectionOptions,
   ): Promise<Result<Handles, RagError>> {
+    if (opts.dimension !== undefined && opts.dimension !== this.dimension()) {
+      return {
+        ok: false,
+        error: new RagError(
+          `Collection dimension ${opts.dimension} does not match configured dimension ${this.dimension()}`,
+          'RAG_CREATE_ERROR',
+        ),
+      };
+    }
     const checked = this.checkCreateOptions(opts);
     if (!checked.ok) return checked;
     const refused = this.refuseCatalogName(name);

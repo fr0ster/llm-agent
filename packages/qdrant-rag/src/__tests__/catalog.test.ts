@@ -7,6 +7,7 @@ import type {
 } from '@mcp-abap-adt/llm-agent';
 import {
   CatalogRecordDeleteError,
+  RagError,
   symmetricEmbedder,
 } from '@mcp-abap-adt/llm-agent';
 import { deterministicUUID, QdrantRag } from '../qdrant-rag.js';
@@ -70,6 +71,42 @@ async function seedRecord(
 }
 
 describe('qdrant catalog: createCollection', () => {
+  it('uses the explicit dimension in the PUT body without embedding', () =>
+    withStub(async (stub) => {
+      const embedder: IEmbedder = {
+        async embed() {
+          assert.fail('explicit dimension must not call the embedder');
+        },
+      };
+      const result = await providerOn(stub, embedder).createCollection(STORE, {
+        ...createOpts,
+        dimension: 128,
+      });
+      assert.ok(result.ok);
+      const request = stub.requests.find(is('PUT', `/collections/${STORE}`));
+      assert.deepEqual(request?.body, {
+        vectors: { size: 128, distance: 'Cosine' },
+      });
+    }));
+
+  for (const dimension of [0, -1, 1.5, NaN, Infinity, -Infinity]) {
+    it(`rejects invalid dimension ${dimension} before any request`, () =>
+      withStub(async (stub) => {
+        const embedder = new CountingEmbedder();
+        const result = await providerOn(stub, embedder).createCollection(
+          STORE,
+          {
+            ...createOpts,
+            dimension,
+          },
+        );
+        assert.ok(!result.ok);
+        assert.ok(result.error instanceof RagError);
+        assert.equal(stub.requests.length, 0);
+        assert.equal(embedder.calls, 0);
+      }));
+  }
+
   it('creates the collection with the probe size, then records it last, spending one embedding', () =>
     withStub(async (stub) => {
       const embedder = new CountingEmbedder(3);
