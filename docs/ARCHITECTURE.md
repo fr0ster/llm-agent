@@ -1449,6 +1449,20 @@ signals. It refuses calls during active/queued turns or another tool call;
 wake-ups. See [Dialogue planner](PIPELINES.md#dialogue-planner) for contracts and
 tool arguments.
 
+Dialogue task results can use `ITaskResultStore`: `put` stores full output before
+state/reference/summary publication; `read` supplies `deliver`, which returns a
+tool error and delivers nothing on read failure. Failed writes turn `done` into
+`failed`; cancellation interrupts finalisation. Coordinator events and `get_task`
+show bounded notices: identity, state, result kind, verdict, character count,
+record reference, summary/error (at most 600 characters) and goal (at most 200).
+Dependencies receive references and summaries, with text fallback for legacy
+tasks. Without a store, delivery uses `task.output`. Planner memory keeps compact
+notices and delivery projections. Report workers get default `submit_report`
+(host tools take precedence), with summary at most 600 characters and optional
+result. The built-in retained signal bus carries completion summaries. See
+[Dialogue task result storage](PIPELINES.md#dialogue-task-result-storage) for
+store operations and failure semantics.
+
 Classification axes:
 
 - **LLM vs static** — three planners need no planner LLM: `StaticPlanner` (emits a

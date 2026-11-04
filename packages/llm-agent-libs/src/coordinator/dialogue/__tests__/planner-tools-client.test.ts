@@ -872,7 +872,7 @@ for (const state of ['queued', 'running'] as const) {
       assert.deepEqual(metadata, {
         id: 'active',
         worker: 'w',
-        goal: `${'g'.repeat(377)} [truncated, 500 chars]`,
+        goal: `${'g'.repeat(177)} [truncated, 500 chars]`,
         state,
         result: 'report',
         lastActivityAt: 0,

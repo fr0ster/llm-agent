@@ -4,12 +4,15 @@ import type {
   ISubAgentInput,
   ISubAgentResult,
   ITaskResultStore,
+  PlanStep,
   TaskEvent,
   TaskResultEntry,
 } from '@mcp-abap-adt/llm-agent';
 import { DialogueSession } from '../dialogue-session.js';
 import { PlannerToolsClient } from '../planner-tools-client.js';
+import { applyTaskEvent } from '../structured-plan.js';
 import { TaskBoard, type TaskBoardOptions } from '../task-board.js';
+import { taskNotice } from '../task-reference.js';
 
 const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
 function deferred<T>() {
@@ -102,6 +105,8 @@ test('put receives raw uncut output', async () => {
   assert.equal(entries.length, 1);
   assert.equal(entries[0].output.length, 70000);
   assert.equal(entries[0].summary.length, 600);
+  assert.match(entries[0].summary, / \[summary truncated\]$/);
+  assert.equal(b.get(id)?.summary, entries[0].summary);
   assert.match(b.get(id)?.output ?? '', /cut: 10000/);
 });
 
@@ -261,7 +266,7 @@ test('verdict entry has parsed verdict and verdict summary', async () => {
   const entries: TaskResultEntry[] = [];
   const b = board(
     async () => ({
-      output: 'Evidence: {"verdict":"fail","count":2,"note":"missing item"}',
+      output: 'Evidence:\n\n{"verdict":"fail","count":2,"note":"missing item"}',
       summary: 'ignored',
     }),
     {
@@ -381,3 +386,73 @@ test('epicfail stores uncut error text while keeping the legacy bounded error', 
   assert.equal(entries[0].outcome, 'failed');
   assert.match(b.get(id)?.error ?? '', /cut: 10000/);
 });
+
+for (const withStore of [false, true]) {
+  test(`long verdict output stays consistent with notice and plan (store: ${withStore})`, async () => {
+    const b = board(
+      async () => ({ output: 'x'.repeat(70000) + '\n\nPASS' }),
+      withStore ? { resultStore: store(success) } : {},
+    );
+    const id = start(b, 'verdict');
+    await tick();
+    const task = b.get(id)!;
+    assert.deepEqual(task.checkerVerdict, { verdict: 'pass' });
+    assert.ok(!task.output?.includes('PASS'));
+    assert.match(taskNotice(task), /verdict: pass/);
+    const step: PlanStep = {
+      id: 'check',
+      goal: 'check',
+      result: 'verdict',
+      state: 'running',
+      taskIds: [id],
+      workTaskId: id,
+    };
+    applyTaskEvent({ status: 'active', steps: [step] }, { kind: 'done', task });
+    assert.equal(step.state, 'done');
+    assert.equal(step.verdict, 'pass');
+  });
+}
+
+for (const withStore of [false, true]) {
+  test(`rejected raw verdict stays unusable after output truncation (store: ${withStore})`, async () => {
+    const b = board(
+      async () => ({
+        output:
+          '{"verdict":"pass"}\n\n' +
+          'x'.repeat(70000) +
+          '\n\n{"verdict":"fail"}',
+      }),
+      withStore ? { resultStore: store(success) } : {},
+    );
+    const id = start(b, 'verdict');
+    await tick();
+    const task = b.get(id)!;
+    assert.deepEqual(task.checkerVerdict, { unusable: true });
+    assert.ok(task.output?.includes('{"verdict":"pass"}'));
+    assert.ok(!task.output?.includes('{"verdict":"fail"}'));
+    assert.match(taskNotice(task), /verdict: unusable/);
+    assert.doesNotMatch(taskNotice(task), /verdict: pass/);
+    const step: PlanStep = {
+      id: 'check',
+      goal: 'check',
+      result: 'verdict',
+      state: 'running',
+      taskIds: [id],
+      workTaskId: id,
+    };
+    applyTaskEvent({ status: 'active', steps: [step] }, { kind: 'done', task });
+    assert.equal(step.state, 'failed');
+    assert.equal(step.verdict, 'fail');
+    assert.match(step.note ?? '', /unusable verdict/);
+
+    // Legacy records still parse their output, which now rejects embedded JSON.
+    const { checkerVerdict: _retained, ...legacy } = task;
+    assert.doesNotMatch(taskNotice(legacy), /verdict: pass/);
+    applyTaskEvent(
+      { status: 'active', steps: [step] },
+      { kind: 'done', task: legacy },
+    );
+    assert.equal(step.state, 'failed');
+    assert.equal(step.verdict, 'fail');
+  });
+}

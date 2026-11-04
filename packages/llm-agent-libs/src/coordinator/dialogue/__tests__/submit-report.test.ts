@@ -132,7 +132,8 @@ test('worker without submit_report returns the bounded fallback summary', async 
   );
   const response = await worker.run({ task: 'Write a report' });
   assert.equal(response.output, output);
-  assert.equal(response.summary, output.slice(0, 600));
+  assert.equal(response.summary, output.slice(0, 580) + ' [summary truncated]');
+  assert.equal(response.summary.length, 600);
   assert.equal(resolveWorkerSummary(response.output).truncated, true);
 });
 
@@ -288,9 +289,9 @@ for (const scenario of [
   });
 }
 
-test('fallback summary is the first 600 characters and records truncation', () => {
+test('fallback summary fits 600 characters with a visible truncation marker', () => {
   assert.deepEqual(resolveWorkerSummary('x'.repeat(700)), {
-    summary: 'x'.repeat(600),
+    summary: 'x'.repeat(580) + ' [summary truncated]',
     truncated: true,
   });
   assert.deepEqual(resolveWorkerSummary('short'), {

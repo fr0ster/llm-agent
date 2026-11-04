@@ -7,6 +7,7 @@ import { runInPlannerScope } from '../planner-scope.js';
 import { PlannerToolsClient } from '../planner-tools-client.js';
 import {
   applyTaskEvent,
+  checkerVerdict,
   mergePlan as mergeStructuredPlan,
   planView,
   readySteps,
@@ -1155,3 +1156,116 @@ for (const source of ['error', 'verdict', 'coordinator'] as const) {
     });
   }
 }
+
+test('checker verdict accepts progress followed by PASS or FAIL', () => {
+  assert.deepEqual(checkerVerdict('Checking...\n\nPASS'), { verdict: 'pass' });
+  assert.deepEqual(checkerVerdict('Checking...\n\nfail'), { verdict: 'fail' });
+});
+
+test('checker verdict preserves inner blank lines in trailing JSON', () => {
+  assert.deepEqual(
+    checkerVerdict(
+      'Checking in progress...\n\n{\n  "verdict": "pass",\n\n  "count": 2,\n  "note": "Checked"\n}',
+    ),
+    { verdict: 'pass', count: 2, note: 'Checked' },
+  );
+});
+
+test('checker verdict keeps garbage unusable', () => {
+  assert.equal(checkerVerdict('Checking...\n\ngarbage'), undefined);
+});
+
+test('checker verdict rejects escaped JSON prefixes with LF or CRLF', () => {
+  for (const newline of ['\n', '\r\n']) {
+    for (const trailing of ['PASS', '{"verdict":"pass"}']) {
+      const output = `{"ver\\u0064ict":"f\\u0061il"}${newline}${newline}${trailing}`;
+      assert.equal(checkerVerdict(output), undefined, output);
+    }
+  }
+});
+
+test('checker verdict conservatively rejects braces or escapes in progress', () => {
+  // Code snippets with braces are intentionally unusable under this rule.
+  for (const prefix of [
+    'const value = { count: 2 };',
+    'Checking {',
+    'Checking }',
+    'Checking \\',
+  ]) {
+    assert.equal(checkerVerdict(`${prefix}\n\nPASS`), undefined, prefix);
+  }
+});
+
+test('checker verdict rejects compatibility-form prefix markers after NFKC normalization', () => {
+  for (const prefix of ['ＦＡＩＬ', 'ＰＡＳＳ', 'ｖｅｒｄｉｃｔ', '𝐅𝐀𝐈𝐋']) {
+    assert.equal(checkerVerdict(`${prefix}\n\nPASS`), undefined, prefix);
+  }
+});
+
+test('checker verdict rejects any prefix markers, including agreeing duplicate verdicts', () => {
+  for (const output of [
+    '{"verdict":"fail"}\n\n{"verdict":"pass"}',
+    '{"verdict":"pass"}\n\nFAIL',
+    '{"verdict":"fail"}\n\nPASS',
+    'Checking {progress}\r\n\r\nFAIL\r\n\r\npass',
+    '{"verdict":"pass"}\n\n{"verdict":"pass"}',
+    '{"verdict":"pass"}\n\nPASS',
+    'PASS\n\nPASS',
+    '{"verdict":"pass","count":5,"note":"first"}\n\n{"verdict":"pass","count":5,"note":"second"}',
+    '{"verdict":"fail",}\n\n{"verdict":"pass"}',
+    '{"verdict":"fail"\n\n{"verdict":"pass"}',
+    'The final verdict is FAIL because checks failed.\n\nPASS',
+    'A failure mentions FAIL here.\n\nPASS',
+    'No verdict yet.\n\nPASS',
+  ])
+    assert.equal(checkerVerdict(output), undefined, output);
+});
+
+test('checker verdict rejects duplicate top-level verdict, count, or note keys', () => {
+  for (const output of [
+    '{"verdict":"fail","verdict":"pass"}',
+    '{"verdict":"pass","count":-1,"count":5}',
+    '{"verdict":"pass","note":"first","note":"second"}',
+    '{"verdict":"pass","verdict":"pass"}',
+    '{"verdict":"pass","ver\\u0064ict":"pass"}',
+  ]) {
+    assert.equal(checkerVerdict(output), undefined, output);
+    assert.equal(checkerVerdict(`Checking...\n\n${output}`), undefined);
+    assert.equal(checkerVerdict(`\`\`\`json\n${output}\n\`\`\``), undefined);
+  }
+});
+
+test('checker verdict accepts whole fenced JSON and ignores key-like text inside notes', () => {
+  assert.deepEqual(
+    checkerVerdict('```json\n{"verdict":"pass","count":2}\n```'),
+    {
+      verdict: 'pass',
+      count: 2,
+    },
+  );
+  const note = 'Quoted "verdict": "fail" and braces { }';
+  assert.deepEqual(checkerVerdict(JSON.stringify({ verdict: 'pass', note })), {
+    verdict: 'pass',
+    note,
+  });
+});
+
+test('checker verdict does not extract embedded JSON from prose', () => {
+  assert.equal(checkerVerdict('Result: {"verdict":"pass"}'), undefined);
+  assert.equal(checkerVerdict('{"verdict":"pass"} finished'), undefined);
+});
+
+// Count disagreements remain unusable under the stricter prefix-marker rule.
+test('checker verdict rejects repeated verdicts with differing or missing batch counts', () => {
+  for (const counts of [
+    [1, 5],
+    [5, 1],
+    [1, undefined],
+    [undefined, 1],
+  ]) {
+    const output = counts
+      .map((count) => JSON.stringify({ verdict: 'pass', count }))
+      .join('\n\n');
+    assert.equal(checkerVerdict(output), undefined);
+  }
+});

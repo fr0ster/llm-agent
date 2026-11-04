@@ -496,6 +496,11 @@ export class TaskBoard {
       const fallback = observed.finalize(false);
       if (!authoritative && fallback.entries.length) task.toolTrace = fallback;
       entry.cancelStall?.();
+      if (task.result === 'verdict') {
+        task.checkerVerdict = checkerVerdict(rawOutput ?? '') ?? {
+          unusable: true,
+        };
+      }
       if (
         this.opts.resultStore &&
         task.state !== 'stopped' &&
@@ -506,7 +511,9 @@ export class TaskBoard {
             ? (rawError ?? task.error ?? rawOutput ?? '')
             : (rawOutput ?? task.error ?? '');
         const verdict =
-          task.result === 'verdict' ? checkerVerdict(output) : undefined;
+          task.checkerVerdict && 'verdict' in task.checkerVerdict
+            ? task.checkerVerdict
+            : undefined;
         const summary = verdict
           ? resolveVerdictSummary(verdict)
           : resolveWorkerSummary(output, finishSummary).summary;

@@ -15,8 +15,15 @@ export function resolveWorkerSummary(
   output: string,
   finishSummary?: string,
 ): { summary: string; truncated: boolean } {
+  const marker = ' [summary truncated]';
   return finishSummary === undefined
-    ? { summary: output.slice(0, 600), truncated: output.length > 600 }
+    ? {
+        summary:
+          output.length > 600
+            ? output.slice(0, 600 - marker.length) + marker
+            : output,
+        truncated: output.length > 600,
+      }
     : {
         summary: finishSummary.slice(0, 600),
         truncated: finishSummary.length > 600,

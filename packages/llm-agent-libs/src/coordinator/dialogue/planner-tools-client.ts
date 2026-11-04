@@ -486,7 +486,7 @@ export class PlannerToolsClient implements IMcpClient {
               ? {
                   id: task.id,
                   worker: task.worker,
-                  goal: compactText(task.goal, 400),
+                  goal: compactText(task.goal, 200),
                   state: task.state,
                   result: task.result,
                   lastActivityAt: task.lastActivityAt,

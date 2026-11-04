@@ -1,5 +1,9 @@
 # Structured planner plan — design (draft)
 
+> Task result transport is superseded by [results via RAG](2026-11-04-results-via-rag-design.md).
+> Current store, notice, delegation, delivery and memory contracts are documented in
+> [Dialogue task result storage](../../PIPELINES.md#dialogue-task-result-storage).
+
 Date: 2026-10-23. Status: draft; decisions in "Decisions" taken 2026-10-23. Scope: llm-agent dialogue planner (`DialogueSession`, `PlannerToolsClient`,
 `DIALOGUE_PLANNER_SYSTEM`) and the cloud-llm-hub dialogue coordinator + WebUI.
 

@@ -37,6 +37,9 @@ export interface TaskRecord {
   /** Available MCP and external tools before selection/filters. */
   toolsAvailable?: number;
   maxToolCalls?: number;
+  checkerVerdict?:
+    | { verdict: 'pass' | 'fail'; count?: number; note?: string }
+    | { unusable: true };
   output?: string;
   resultRef?: TaskResultRef;
   summary?: string;
