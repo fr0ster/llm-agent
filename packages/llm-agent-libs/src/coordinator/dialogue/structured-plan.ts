@@ -10,6 +10,7 @@ export function resultKind(record: {
   result?: 'report' | 'verdict';
   worker?: string;
 }): 'report' | 'verdict' {
+  // Legacy stored plans and tasks used the checker worker name as the result kind.
   return record.result ?? (record.worker === 'checker' ? 'verdict' : 'report');
 }
 
@@ -18,12 +19,16 @@ export const stepSchema = z.object({
   goal: z.string().min(1),
   dependsOn: z.array(z.string()).optional(),
   worker: z.string().optional(),
+  result: z.enum(['report', 'verdict']).optional(),
   items: z.array(z.string().min(1)).optional(),
   state: z
     .enum(['pending', 'running', 'done', 'failed', 'skipped', 'blocked'])
     .optional(),
   note: z.string().optional(),
 });
+// New plan input describes results; assignments are only read from stored state.
+export const resultStepSchema = stepSchema.omit({ worker: true });
+
 export function mergePlan(
   previous: string | Plan | undefined,
   input: unknown,
@@ -101,12 +106,18 @@ export function mergePlan(
       if (old && options.getTask) restoreSuccessfulWork(old, options.getTask);
       const items = s.items;
       const effectiveState = s.state ?? old?.state ?? 'pending';
-      const worker = s.worker ?? old?.worker;
-      const result = s.worker
-        ? (options.resolveResult?.(s.worker, s.id) ?? resultKind(s))
-        : old
-          ? resultKind(old)
-          : 'report';
+      const result =
+        s.result ??
+        (s.worker
+          ? (options.resolveResult?.(s.worker, s.id) ?? resultKind(s))
+          : old
+            ? resultKind(old)
+            : 'report');
+      // A result change releases any stored legacy assignment.
+      const worker =
+        old && result !== resultKind(old)
+          ? undefined
+          : (s.worker ?? old?.worker);
       const roleChanged =
         result !== (old ? resultKind(old) : 'report') || worker !== old?.worker;
       const dependenciesChanged =

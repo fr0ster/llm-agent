@@ -14,7 +14,7 @@ import {
   mergePlan,
   planView,
   resultKind,
-  stepSchema,
+  resultStepSchema,
 } from './structured-plan.js';
 import type { TaskBoard } from './task-board.js';
 import { compactText } from './task-reference.js';
@@ -37,7 +37,7 @@ function attemptReserved(scope: PlannerScope): boolean {
 
 const authoredPlanSchema = z.object({
   version: z.literal(1),
-  steps: z.array(stepSchema),
+  steps: z.array(resultStepSchema),
   status: z.enum(['active', 'waiting_user', 'done']),
   question: z.string().optional(),
 });
@@ -232,7 +232,7 @@ export class PlannerToolsClient implements IMcpClient {
           inputSchema: schema(
             {
               plan: string,
-              steps: { type: 'array', items: z.toJSONSchema(stepSchema) },
+              steps: { type: 'array', items: z.toJSONSchema(resultStepSchema) },
               question: string,
               status: {
                 type: 'string',
@@ -328,7 +328,7 @@ export class PlannerToolsClient implements IMcpClient {
               throw new Error(`step ${step.id} is assigned to ${step.worker}`);
             if (step && isCheck !== (profile.result === 'verdict'))
               throw new Error(
-                'Step result kind must match the selected profile; update and reopen the step',
+                `Step ${step.id} requires result kind ${resultKind(step)}; profile ${worker} produces ${profile.result}. Choose a ${resultKind(step)} profile`,
               );
             if (isCheck && !step?.dependsOn?.length)
               throw new Error(
@@ -400,8 +400,7 @@ export class PlannerToolsClient implements IMcpClient {
             scope.ownTask?.(result.value.id);
             if (typeof plan === 'object') delete plan.scopeConsent;
             if (step) {
-              step.worker ??= worker;
-              step.result = profile.result;
+              step.result ??= profile.result;
               scope.taskSteps?.set(result.value.id, step.id);
               step.taskIds.push(result.value.id);
               step.workTaskId = result.value.id;
@@ -703,7 +702,7 @@ export class PlannerToolsClient implements IMcpClient {
               if (
                 !next ||
                 next.state === 'pending' ||
-                next.worker !== step.worker ||
+                (next.result ?? resultKind(step)) !== resultKind(step) ||
                 JSON.stringify(next.items) !== JSON.stringify(step.items) ||
                 JSON.stringify(next.dependsOn ?? []) !==
                   JSON.stringify(step.dependsOn ?? [])
@@ -719,14 +718,6 @@ export class PlannerToolsClient implements IMcpClient {
             {
               consent: current?.scopeConsent,
               maxItemsPerStep: scope.maxItemsPerStep,
-              resolveResult: (worker, id) =>
-                current?.steps.find(
-                  (step) => step.id === id && step.state === 'done',
-                )?.result ??
-                result.value.steps.find(
-                  (step) => step.id === id && step.worker === worker,
-                )?.result ??
-                resultKind({ worker }),
               getTask: (id) => scope.board.get(id),
             },
           );
@@ -808,14 +799,14 @@ export class PlannerToolsClient implements IMcpClient {
             const retained =
               args.steps === undefined
                 ? []
-                : z.array(stepSchema).parse(args.steps);
+                : z.array(resultStepSchema).parse(args.steps);
             for (const step of previous.steps) {
               const next = retained.find((s) => s.id === step.id);
               if (
                 next &&
                 JSON.stringify(next.items) === JSON.stringify(step.items) &&
                 next.state !== 'pending' &&
-                (next.worker ?? step.worker) === step.worker &&
+                (next.result ?? resultKind(step)) === resultKind(step) &&
                 JSON.stringify(next.dependsOn ?? []) ===
                   JSON.stringify(step.dependsOn ?? [])
               )
@@ -827,21 +818,6 @@ export class PlannerToolsClient implements IMcpClient {
                   `Cannot ${next ? 'reopen or change items for' : 'remove'} step ${step.id}: ${error instanceof Error ? error.message : String(error)}; stop the task first and wait for it to settle, or keep the step`,
                 );
               }
-            }
-          }
-          const resolved = new Map<string, 'report' | 'verdict'>();
-          if (args.steps !== undefined) {
-            for (const step of z.array(stepSchema).parse(args.steps)) {
-              if (step.worker && !resolved.has(step.worker))
-                resolved.set(
-                  step.worker,
-                  (scope.board.profiles
-                    ? await scope.board.resolveWorker(step.worker, {
-                        signal: scope.signal,
-                      })
-                    : scope.board.legacySummary(step.worker)
-                  ).result,
-                );
             }
           }
           if (
@@ -856,18 +832,18 @@ export class PlannerToolsClient implements IMcpClient {
           scope.signal?.throwIfAborted();
           const next =
             args.steps !== undefined
-              ? mergePlan(previous, args.steps, status, question, {
-                  consent:
-                    typeof previous === 'object' && previous.scopeConsent,
-                  maxItemsPerStep: scope.maxItemsPerStep,
-                  resolveResult: (worker) => {
-                    const kind = resolved.get(worker);
-                    if (!kind)
-                      throw new Error(`profile ${worker} is unavailable`);
-                    return kind;
+              ? mergePlan(
+                  previous,
+                  z.array(resultStepSchema).parse(args.steps),
+                  status,
+                  question,
+                  {
+                    consent:
+                      typeof previous === 'object' && previous.scopeConsent,
+                    maxItemsPerStep: scope.maxItemsPerStep,
+                    getTask: (id) => scope.board.get(id),
                   },
-                  getTask: (id) => scope.board.get(id),
-                })
+                )
               : requiredString(args, 'plan');
           if (
             typeof previous === 'object' &&

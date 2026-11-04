@@ -15,16 +15,11 @@ import {
   PLAN_REVISE_SYSTEM,
 } from './plan-author-prompt.js';
 import { ProfileResolver, ProfileSourceError } from './profile-resolver.js';
-import {
-  mergePlan,
-  planView,
-  resultKind,
-  stepSchema,
-} from './structured-plan.js';
+import { mergePlan, planView, resultStepSchema } from './structured-plan.js';
 
 const outputSchema = z
   .object({
-    steps: z.array(stepSchema),
+    steps: z.array(resultStepSchema),
     question: z.string().optional(),
     status: z.enum(['active', 'waiting_user', 'done']).default('active'),
   })
@@ -183,28 +178,10 @@ export class ProfilePlanAuthor implements IPlanAuthor {
             : 0;
         steps.splice(index, 0, done);
       }
-      const resolved = new Map<string, 'report' | 'verdict'>();
-      for (const step of steps) {
-        if (step.state === 'done' || !step.worker || resolved.has(step.worker))
-          continue;
-        resolved.set(
-          step.worker,
-          (await resolver.selection(step.worker, options)).result,
-        );
-      }
       return {
         ok: true,
         value: mergePlan(current, steps, next.status, next.question, {
           consent: current?.scopeConsent,
-          resolveResult: (worker, stepId) => {
-            const done = current?.steps.find(
-              (step) => step.id === stepId && step.state === 'done',
-            );
-            if (done) return resultKind(done);
-            const kind = resolved.get(worker);
-            if (!kind) throw new Error(`profile ${worker} is unavailable`);
-            return kind;
-          },
         }),
       };
     } catch (error) {
