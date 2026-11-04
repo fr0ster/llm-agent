@@ -9,6 +9,7 @@ import type {
   IPlanAuthor,
   IPlannerContextBuilder,
   ISignalEmitter,
+  ITaskResultStore,
   IUsageRecorder,
   McpError,
   McpToolResult,
@@ -113,6 +114,7 @@ export interface DialogueSessionOptions extends PlannerRetrievalOptions {
   hardStopAfterMs?: number;
   maxItemsPerStep?: number;
   taskOutputChars?: number;
+  resultStore?: ITaskResultStore;
   planner?: PlannerAgent;
   planAuthor?: IPlanAuthor;
   profileSource?: IAgentProfileSource;
@@ -121,7 +123,7 @@ export interface DialogueSessionOptions extends PlannerRetrievalOptions {
   stallNoticeMs?: number;
   board: Omit<
     TaskBoardOptions,
-    'onEvent' | 'signals' | 'source' | 'onStateChange'
+    'onEvent' | 'signals' | 'source' | 'onStateChange' | 'stepOf'
   >;
   store?: IDialogueStateStore;
   onMessage?: (message: PlannerMessage) => void;
@@ -497,6 +499,8 @@ export class DialogueSession {
       profileRunner: opts.profileRunner ?? opts.board.profileRunner,
       profileTimeoutMs: opts.profileTimeoutMs ?? opts.board.profileTimeoutMs,
       ...('stallNoticeMs' in opts ? { stallNoticeMs: opts.stallNoticeMs } : {}),
+      resultStore: opts.resultStore ?? opts.board.resultStore,
+      stepOf: (taskId) => this.taskSteps.get(taskId),
       taskOutputChars: opts.taskOutputChars ?? opts.board.taskOutputChars,
       hardStopAfterMs: opts.hardStopAfterMs ?? opts.board.hardStopAfterMs,
       scheduleTimer: opts.scheduleTimer ?? opts.board.scheduleTimer,

@@ -10,6 +10,7 @@ import type {
   ISubAgent,
   ISubAgentInput,
   ISubAgentResult,
+  ITaskResultStore,
   IUsageRecorder,
   Result,
   TaskEvent,
@@ -26,6 +27,11 @@ import {
 } from '@mcp-abap-adt/llm-agent';
 import { ProfileResolver } from './profile-resolver.js';
 import { SemaphorePool } from './semaphore-pool.js';
+import { checkerVerdict } from './structured-plan.js';
+import {
+  resolveVerdictSummary,
+  resolveWorkerSummary,
+} from './submit-report-tool.js';
 
 export const TASK_OUTPUT_CHAR_LIMIT = 60_000;
 export function cutTaskOutput(
@@ -37,6 +43,8 @@ export function cutTaskOutput(
     : `${output.slice(0, limit)}\n[cut: ${output.length - limit} characters omitted]`;
 }
 export interface TaskBoardOptions {
+  resultStore?: ITaskResultStore;
+  stepOf?: (taskId: string) => string | undefined;
   usage?: IUsageRecorder;
   boardId?: string;
   logger?: { warn(message: string): void };
@@ -325,6 +333,11 @@ export class TaskBoard {
     let releasePool: (() => void) | undefined;
     const observed = new ToolTraceCollector();
     let authoritative = false;
+    let rawOutput: string | undefined;
+    let finishSummary: string | undefined;
+    let rawError: string | undefined;
+    let interrupted = false;
+    let baseSignal: AbortSignal | undefined;
     let kind: 'done' | 'failed' | 'stopped' = 'failed';
     try {
       releaseBoard = await this.boardPool.acquire(stop.signal);
@@ -368,6 +381,7 @@ export class TaskBoard {
         task.maxToolCalls = worker.capabilities.maxToolCalls;
       // Workers get the brief only; earlier content they retrieve themselves.
       const { history: _history, ...baseInput } = this.opts.baseInput?.() ?? {};
+      baseSignal = baseInput.signal;
       const run = () => {
         if (hard.signal.aborted) throw hard.signal.reason;
         return worker.run({
@@ -451,6 +465,8 @@ export class TaskBoard {
         authoritative = true;
       }
       if (result.usage) task.usage = result.usage;
+      rawOutput = result.output;
+      finishSummary = result.summary;
       task.output = cutTaskOutput(result.output, this.opts.taskOutputChars);
       task.budgetExhausted = result.budgetExhausted;
       if (result.toolCallCount !== undefined)
@@ -458,6 +474,7 @@ export class TaskBoard {
       if (result.maxToolCalls !== undefined)
         task.maxToolCalls = result.maxToolCalls;
       if (result.errorClass === 'epicfail') {
+        rawError = result.output || 'worker epicfail';
         task.error = task.output || 'worker epicfail';
         kind = 'failed';
       } else if (result.status === 'awaiting-external') {
@@ -475,17 +492,83 @@ export class TaskBoard {
         task.error = error instanceof Error ? error.message : String(error);
       }
     } finally {
+      entry.cancelHardStop?.();
       const fallback = observed.finalize(false);
       if (!authoritative && fallback.entries.length) task.toolTrace = fallback;
       entry.cancelStall?.();
-      entry.cancelHardStop?.();
+      if (
+        this.opts.resultStore &&
+        task.state !== 'stopped' &&
+        (rawOutput !== undefined || task.error !== undefined)
+      ) {
+        const output =
+          kind === 'failed'
+            ? (rawError ?? task.error ?? rawOutput ?? '')
+            : (rawOutput ?? task.error ?? '');
+        const text = output.trim();
+        const verdict =
+          task.result === 'verdict'
+            ? text.toUpperCase() === 'PASS'
+              ? { verdict: 'pass' as const }
+              : text.toUpperCase() === 'FAIL'
+                ? { verdict: 'fail' as const }
+                : checkerVerdict(output)
+            : undefined;
+        const summary = verdict
+          ? resolveVerdictSummary(verdict)
+          : resolveWorkerSummary(output, finishSummary).summary;
+        const putSignal = baseSignal;
+        let abortedDuringPut = false;
+        const onPutAbort = () => {
+          abortedDuringPut = true;
+        };
+        putSignal?.addEventListener('abort', onPutAbort, { once: true });
+        try {
+          const stored = await this.opts.resultStore.put(
+            {
+              id: task.id,
+              stepId: this.opts.stepOf?.(task.id),
+              worker: task.worker,
+              goal: task.goal,
+              result: task.result ?? 'report',
+              outcome: kind,
+              budgetExhausted: task.budgetExhausted,
+              ...(verdict ? { verdict: verdict.verdict } : {}),
+              summary,
+              output,
+            },
+            { signal: putSignal },
+          );
+          if (
+            abortedDuringPut ||
+            (!stored.ok && stored.error.code === 'aborted')
+          ) {
+            interrupted = true;
+          } else if (stored.ok) {
+            task.resultRef = stored.value;
+          } else if (kind === 'done') {
+            kind = 'failed';
+            task.error = `result storage failed: ${stored.error.message}`;
+          }
+        } catch (error) {
+          if (abortedDuringPut) interrupted = true;
+          else if (kind === 'done') {
+            kind = 'failed';
+            task.error = `result storage failed: ${error instanceof Error ? error.message : String(error)}`;
+          }
+        } finally {
+          putSignal?.removeEventListener('abort', onPutAbort);
+        }
+        task.summary = summary;
+        if (interrupted) kind = 'stopped';
+      }
       removeAbortListener?.();
       releasePool?.();
       releaseBoard?.();
       this.entries.delete(task.id);
       if (task.state !== 'stopped') {
         const previous = task.state;
-        task.state = kind;
+        task.state = interrupted ? 'interrupted' : kind;
         task.finishedAt = this.now();
         this.emit(kind, task, previous);
       }

@@ -275,7 +275,7 @@ const verdictSchema = z.object({
   note: z.string().optional(),
 });
 type CheckerVerdict = z.infer<typeof verdictSchema>;
-function checkerVerdict(output: string): CheckerVerdict | undefined {
+export function checkerVerdict(output: string): CheckerVerdict | undefined {
   const parse = (text: string): CheckerVerdict | undefined => {
     try {
       const value = verdictSchema.safeParse(JSON.parse(text));

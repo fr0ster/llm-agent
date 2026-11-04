@@ -1,0 +1,383 @@
+import assert from 'node:assert/strict';
+import { test } from 'node:test';
+import type {
+  ISubAgentInput,
+  ISubAgentResult,
+  ITaskResultStore,
+  TaskEvent,
+  TaskResultEntry,
+} from '@mcp-abap-adt/llm-agent';
+import { DialogueSession } from '../dialogue-session.js';
+import { PlannerToolsClient } from '../planner-tools-client.js';
+import { TaskBoard, type TaskBoardOptions } from '../task-board.js';
+
+const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((r) => {
+    resolve = r;
+  });
+  return { promise, resolve };
+}
+function store(put: ITaskResultStore['put']): ITaskResultStore {
+  return {
+    put,
+    async read() {
+      return { ok: true, value: '' };
+    },
+  };
+}
+const success: ITaskResultStore['put'] = async (entry) => ({
+  ok: true,
+  value: {
+    collection: 'results',
+    record: entry.id,
+    chars: entry.output.length,
+  },
+});
+const failure: ITaskResultStore['put'] = async () => ({
+  ok: false,
+  error: { code: 'unavailable', message: 'offline' },
+});
+function board(
+  run: (input: ISubAgentInput) => Promise<ISubAgentResult>,
+  options: Partial<TaskBoardOptions> = {},
+) {
+  return new TaskBoard({
+    workers: new Map([
+      ['w', { name: 'w', capabilities: { contextPolicy: 'optional' }, run }],
+    ]),
+    onEvent() {},
+    ...options,
+  });
+}
+function start(b: TaskBoard, result: 'report' | 'verdict' = 'report') {
+  const task = b.start({ worker: 'w', goal: 'goal', result });
+  assert.ok(task.ok);
+  return task.value.id;
+}
+
+test('put happens before done is published', async () => {
+  const order: string[] = [];
+  const events: TaskEvent[] = [];
+  const gate = deferred<void>();
+  const b = board(
+    async () => ({ output: 'full', summary: 'brief', budgetExhausted: true }),
+    {
+      resultStore: store(async (entry, options) => {
+        order.push('put');
+        await gate.promise;
+        order.push('stored');
+        return success(entry, options);
+      }),
+      onEvent(event) {
+        order.push(event.kind);
+        events.push(event);
+      },
+    },
+  );
+  const id = start(b);
+  await tick();
+  assert.equal(b.get(id)?.state, 'running');
+  assert.equal(b.get(id)?.summary, undefined);
+  gate.resolve();
+  await tick();
+  assert.deepEqual(order, ['started', 'put', 'stored', 'done']);
+  const done = events.find((event) => event.kind === 'done');
+  assert.equal(done?.task.summary, 'brief');
+  assert.ok(done?.task.resultRef);
+  assert.equal(b.get(id)?.budgetExhausted, true);
+});
+
+test('put receives raw uncut output', async () => {
+  const entries: TaskResultEntry[] = [];
+  const b = board(async () => ({ output: 'a'.repeat(70000) }), {
+    resultStore: store(async (entry) => {
+      entries.push(entry);
+      return success(entry);
+    }),
+  });
+  const id = start(b);
+  await tick();
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0].output.length, 70000);
+  assert.equal(entries[0].summary.length, 600);
+  assert.match(b.get(id)?.output ?? '', /cut: 10000/);
+});
+
+test('put failure turns done into failed', async () => {
+  const b = board(async () => ({ output: 'ok' }), {
+    resultStore: store(failure),
+  });
+  const id = start(b);
+  await tick();
+  assert.equal(b.get(id)?.state, 'failed');
+  assert.match(b.get(id)?.error ?? '', /storage/);
+  assert.equal(b.get(id)?.resultRef, undefined);
+});
+
+test('stopped with failed put stays stopped without ref', async () => {
+  const b = board(async () => ({ output: 'partial', stopped: true }), {
+    resultStore: store(failure),
+  });
+  const id = start(b);
+  await tick();
+  assert.equal(b.get(id)?.state, 'stopped');
+  assert.equal(b.get(id)?.resultRef, undefined);
+});
+
+for (const put of [success, failure]) {
+  test(`hard stop before put stays stopped with ${put === success ? 'successful' : 'failed'} storage`, async () => {
+    const entries: TaskResultEntry[] = [];
+    let putSignal: AbortSignal | undefined;
+    const b = board(() => new Promise(() => {}), {
+      hardStopAfterMs: 0,
+      resultStore: store(async (entry, options) => {
+        entries.push(entry);
+        putSignal = options?.signal;
+        return put(entry, options);
+      }),
+    });
+    const id = start(b);
+    await tick();
+    b.stop(id);
+    await tick();
+    assert.equal(entries.length, 1);
+    assert.equal(entries[0].outcome, 'stopped');
+    assert.match(entries[0].output, /stopped: in-flight work aborted/);
+    assert.equal(putSignal?.aborted ?? false, false);
+    assert.equal(b.get(id)?.state, 'stopped');
+    assert.equal(!!b.get(id)?.resultRef, put === success);
+  });
+}
+
+test('slow put after cooperative finish outlives the hard-stop timer', async () => {
+  const gate = deferred<void>();
+  const timers: { fire: () => void; cancelled: boolean }[] = [];
+  const entries: TaskResultEntry[] = [];
+  let workerSignal: AbortSignal | undefined;
+  let putSignal: AbortSignal | undefined;
+  const b = board(
+    async (input) => {
+      workerSignal = input.signal;
+      await new Promise<void>((resolve) => {
+        input.stopSignal?.addEventListener('abort', () => resolve(), {
+          once: true,
+        });
+      });
+      return { output: 'partial', stopped: true };
+    },
+    {
+      stallNoticeMs: undefined,
+      hardStopAfterMs: 25,
+      scheduleTimer(fire) {
+        const timer = { fire, cancelled: false };
+        timers.push(timer);
+        return () => {
+          timer.cancelled = true;
+        };
+      },
+      resultStore: store(async (entry, options) => {
+        entries.push(entry);
+        putSignal = options?.signal;
+        await gate.promise;
+        return success(entry, options);
+      }),
+    },
+  );
+  const id = start(b);
+  await tick();
+  b.stop(id);
+  await tick();
+  assert.equal(timers.length, 1);
+  assert.equal(timers[0].cancelled, true);
+  for (const timer of timers) if (!timer.cancelled) timer.fire();
+  assert.equal(workerSignal?.aborted, false);
+  assert.equal(putSignal?.aborted ?? false, false);
+  assert.equal(b.get(id)?.state, 'running');
+  assert.equal(entries[0].output, 'partial');
+  assert.equal(entries[0].outcome, 'stopped');
+  gate.resolve();
+  await tick();
+  assert.equal(b.get(id)?.state, 'stopped');
+  assert.ok(b.get(id)?.resultRef);
+});
+
+for (const mode of ['signal', 'returned'] as const) {
+  test(`abort during put (${mode}) becomes interrupted without ref`, async () => {
+    const gate = deferred<void>();
+    const session = new AbortController();
+    const b = board(async () => ({ output: 'ok' }), {
+      baseInput: () => ({ signal: session.signal }),
+      resultStore: store(async (entry, options) => {
+        await gate.promise;
+        return mode === 'returned'
+          ? { ok: false, error: { code: 'aborted', message: 'cancelled' } }
+          : success(entry, options);
+      }),
+    });
+    const id = start(b);
+    await tick();
+    if (mode === 'signal') session.abort();
+    gate.resolve();
+    await tick();
+    assert.equal(b.get(id)?.state, 'interrupted');
+    assert.equal(b.get(id)?.resultRef, undefined);
+  });
+}
+
+test('failed task stores error text with outcome failed', async () => {
+  const entries: TaskResultEntry[] = [];
+  const b = board(
+    async () => {
+      throw new Error('worker error');
+    },
+    {
+      resultStore: store(async (entry) => {
+        entries.push(entry);
+        return success(entry);
+      }),
+    },
+  );
+  const id = start(b);
+  await tick();
+  assert.equal(entries[0].output, 'worker error');
+  assert.equal(entries[0].outcome, 'failed');
+  assert.equal(b.get(id)?.state, 'failed');
+  assert.ok(b.get(id)?.resultRef);
+});
+
+test('no store preserves legacy behaviour', async () => {
+  const b = board(async () => ({ output: 'ok', summary: 'brief' }));
+  const id = start(b);
+  await tick();
+  assert.equal(b.get(id)?.state, 'done');
+  assert.equal(b.get(id)?.output, 'ok');
+  assert.equal(b.get(id)?.summary, undefined);
+  assert.equal(b.get(id)?.resultRef, undefined);
+});
+
+test('verdict entry has parsed verdict and verdict summary', async () => {
+  const entries: TaskResultEntry[] = [];
+  const b = board(
+    async () => ({
+      output: 'Evidence: {"verdict":"fail","count":2,"note":"missing item"}',
+      summary: 'ignored',
+    }),
+    {
+      resultStore: store(async (entry) => {
+        entries.push(entry);
+        return success(entry);
+      }),
+    },
+  );
+  start(b, 'verdict');
+  await tick();
+  assert.equal(entries[0].verdict, 'fail');
+  assert.equal(entries[0].summary, 'fail; count: 2; note: missing item');
+});
+
+test('stepId comes from the session map', async () => {
+  const entries: TaskResultEntry[] = [];
+  const tools = new PlannerToolsClient();
+  let delegated = false;
+  const session = await DialogueSession.open({
+    id: 'results-step',
+    maxCorrections: 0,
+    resultStore: store(async (entry) => {
+      entries.push(entry);
+      return success(entry);
+    }),
+    board: {
+      workers: new Map([
+        [
+          'w',
+          {
+            name: 'w',
+            capabilities: { contextPolicy: 'optional' },
+            async run() {
+              return { output: 'ok' };
+            },
+          },
+        ],
+      ]),
+    },
+    planner: {
+      async process() {
+        if (!delegated) {
+          delegated = true;
+          await tools.callTool('plan_update', {
+            steps: [{ id: 'work', goal: 'goal', worker: 'w' }],
+          });
+          const result = await tools.callTool('delegate_task', {
+            worker: 'w',
+            goal: 'goal',
+            step_id: 'work',
+          });
+          assert.ok(!result.isError);
+          await tick();
+        }
+        return { ok: true, value: { content: 'NO_MESSAGE' } };
+      },
+    },
+  });
+  await session.send('go');
+  await tick();
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0].stepId, 'work');
+  await session.close();
+});
+
+for (const stopped of [false, true]) {
+  test(`thrown storage error preserves ${stopped ? 'stopped' : 'failed'} outcome`, async () => {
+    let puts = 0;
+    const b = board(
+      async () => {
+        if (!stopped) throw new Error('worker failed');
+        return { output: 'partial', stopped: true };
+      },
+      {
+        resultStore: store(async () => {
+          puts++;
+          throw new Error('offline');
+        }),
+      },
+    );
+    const id = start(b);
+    await tick();
+    assert.equal(puts, 1);
+    assert.equal(b.get(id)?.state, stopped ? 'stopped' : 'failed');
+    assert.equal(b.get(id)?.resultRef, undefined);
+    if (!stopped) assert.equal(b.get(id)?.error, 'worker failed');
+  });
+}
+
+test('thrown put failure turns done into failed', async () => {
+  const b = board(async () => ({ output: 'ok' }), {
+    resultStore: store(async () => {
+      throw new Error('offline');
+    }),
+  });
+  const id = start(b);
+  await tick();
+  assert.equal(b.get(id)?.state, 'failed');
+  assert.match(b.get(id)?.error ?? '', /storage.*offline/);
+  assert.equal(b.get(id)?.resultRef, undefined);
+});
+
+test('epicfail stores uncut error text while keeping the legacy bounded error', async () => {
+  const entries: TaskResultEntry[] = [];
+  const output = 'e'.repeat(70000);
+  const b = board(async () => ({ output, errorClass: 'epicfail' }), {
+    resultStore: store(async (entry) => {
+      entries.push(entry);
+      return success(entry);
+    }),
+  });
+  const id = start(b);
+  await tick();
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0].output, output);
+  assert.equal(entries[0].outcome, 'failed');
+  assert.match(b.get(id)?.error ?? '', /cut: 10000/);
+});
