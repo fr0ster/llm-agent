@@ -4,6 +4,8 @@ import type { ISignalEmitter, ISignalSubscriber } from './signals.js';
 
 /** Per-run addressing and optional retained finish capability, also passed to tools. */
 export interface IDialogueTaskContext {
+  /** Result kind supplied by the dialogue board; absent outside board workers. */
+  readonly result?: 'report' | 'verdict';
   readonly taskId: string;
   readonly runId: string;
   readonly source: string;

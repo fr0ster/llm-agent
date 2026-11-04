@@ -383,11 +383,14 @@ export class TaskBoard {
             : hard.signal,
           stopSignal: stop.signal,
           dialogueTask: this.opts.signals
-            ? createDialogueTaskContext(
-                this.opts.signals,
-                this.opts.source ?? '',
-                task.id,
-              )
+            ? {
+                ...createDialogueTaskContext(
+                  this.opts.signals,
+                  this.opts.source ?? '',
+                  task.id,
+                ),
+                result: task.result,
+              }
             : undefined,
           onActivity: (action) => {
             this.noteActivity(task.id, action);

@@ -25,6 +25,13 @@ export { ProfilePlanAuthor } from './profile-plan-author.js';
 export { formatRequestTime, REQUEST_TIME_GUIDANCE } from './request-time.js';
 export { SemaphorePool } from './semaphore-pool.js';
 export {
+  createSubmitReportClient,
+  resolveVerdictSummary,
+  resolveWorkerSummary,
+  submitReportSchema,
+  submitReportTool,
+} from './submit-report-tool.js';
+export {
   TASK_OUTPUT_CHAR_LIMIT,
   TaskBoard,
   type TaskBoardOptions,
