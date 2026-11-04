@@ -5,6 +5,7 @@
 ### Patch Changes
 
 - c51886b: Preserve all assistant text in worker task results, including reports returned alongside tool calls. Keep chat responses and explicit task finish output unchanged.
+- Requires `@mcp-abap-adt/llm-agent` 30.32.1 or later (peer dependency), which adds `CallOptions.onAssistantResponse`.
 
 ## 30.31.0
 
