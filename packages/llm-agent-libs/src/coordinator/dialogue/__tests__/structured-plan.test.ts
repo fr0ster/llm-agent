@@ -1112,3 +1112,46 @@ for (const remove of [false, true]) {
     await session.close();
   });
 }
+
+for (const source of ['error', 'verdict', 'coordinator'] as const) {
+  for (const note of ['short note', 'x'.repeat(2000)]) {
+    test(`${source} step notes are bounded in task events, plan view and plan_get (${note.length} chars)`, async () => {
+      const plan = mergePlan(undefined, [{ id: 's1', goal: 'work' }], 'active');
+      const step = plan.steps[0];
+      step.taskIds = ['t1'];
+      step.workTaskId = 't1';
+      if (source === 'coordinator') step.note = note;
+      else {
+        const event = outcome(
+          't1',
+          source === 'error' ? 'failed' : 'done',
+          JSON.stringify({ verdict: 'fail', note }),
+        );
+        if (source === 'error') event.task.error = note;
+        else step.result = 'verdict';
+        applyTaskEvent(plan, event);
+      }
+      const retained = structuredClone(plan);
+      const expectedLength = Math.min(note.length, 600);
+      assert.equal(
+        step.note?.length,
+        source === 'coordinator' ? note.length : expectedLength,
+      );
+      const rendered = planView(plan).split(' \u00b7 ')[1];
+      assert.equal(rendered.length, expectedLength);
+      if (note.length < 600) assert.equal(rendered, note);
+      const board = new TaskBoard({ workers: new Map(), onEvent() {} });
+      await runInPlannerScope(
+        { board, getPlan: () => plan, setPlan() {} },
+        async () => {
+          const response = await call('plan_get', {});
+          const blocks = response.content as { text: string }[];
+          const projected = JSON.parse(blocks[0].text).steps[0].note;
+          assert.equal(projected, rendered);
+        },
+      );
+      assert.deepEqual(plan, retained);
+      await board.stopAll();
+    });
+  }
+}

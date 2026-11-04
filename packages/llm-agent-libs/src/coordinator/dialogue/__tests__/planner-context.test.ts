@@ -979,7 +979,7 @@ test('projection preserves corrections, consent, ownership, errors and current p
   assert.deepEqual(project(structuredClone(open)), project(open));
 });
 
-test('restart restores delivered-answer references, complete history and paged task output', async () => {
+test('restart restores delivered-answer references, complete history and bounded task notice', async () => {
   const store = new InMemoryDialogueStateStore();
   const output = 'retained report '.repeat(2000);
   const saved = state({
@@ -1037,9 +1037,6 @@ test('restart restores delivered-answer references, complete history and paged t
         assert.match(text, /current plan/);
         const result = await tools.callTool('get_task', {
           task_id: 'saved',
-          view: 'full',
-          offset: 10,
-          limit: 50,
         });
         assert.ok(result.ok);
         assert.ok(JSON.stringify(result.value).includes(output.slice(10, 60)));

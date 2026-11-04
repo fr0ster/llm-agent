@@ -505,15 +505,8 @@ export class TaskBoard {
           kind === 'failed'
             ? (rawError ?? task.error ?? rawOutput ?? '')
             : (rawOutput ?? task.error ?? '');
-        const text = output.trim();
         const verdict =
-          task.result === 'verdict'
-            ? text.toUpperCase() === 'PASS'
-              ? { verdict: 'pass' as const }
-              : text.toUpperCase() === 'FAIL'
-                ? { verdict: 'fail' as const }
-                : checkerVerdict(output)
-            : undefined;
+          task.result === 'verdict' ? checkerVerdict(output) : undefined;
         const summary = verdict
           ? resolveVerdictSummary(verdict)
           : resolveWorkerSummary(output, finishSummary).summary;

@@ -5,6 +5,7 @@ import type {
   TaskRecord,
 } from '@mcp-abap-adt/llm-agent';
 import { z } from 'zod';
+import { compactText } from './task-reference.js';
 
 export function resultKind(record: {
   result?: 'report' | 'verdict';
@@ -276,6 +277,9 @@ const verdictSchema = z.object({
 });
 type CheckerVerdict = z.infer<typeof verdictSchema>;
 export function checkerVerdict(output: string): CheckerVerdict | undefined {
+  const text = output.trim().toUpperCase();
+  if (text === 'PASS') return { verdict: 'pass' };
+  if (text === 'FAIL') return { verdict: 'fail' };
   const parse = (text: string): CheckerVerdict | undefined => {
     try {
       const value = verdictSchema.safeParse(JSON.parse(text));
@@ -383,13 +387,16 @@ export function applyTaskEvent(
   if (step.items && task.budgetExhausted) {
     if ((task.result ?? resultKind(step)) === 'verdict') step.verdict = 'fail';
     step.state = 'failed';
-    step.note = `Worker hit the tool-call budget ${task.toolCalls ?? '?'}/${task.maxToolCalls ?? '?'}; split the step (${step.items.length} items) before retrying`;
+    step.note = compactText(
+      `Worker hit the tool-call budget ${task.toolCalls ?? '?'}/${task.maxToolCalls ?? '?'}; split the step (${step.items.length} items) before retrying`,
+      600,
+    );
     return;
   }
   if (kind !== 'done') {
     if (resultKind(step) === 'verdict') step.verdict = 'fail';
     step.state = 'failed';
-    step.note = task.error ?? kind;
+    step.note = compactText(task.error ?? kind, 600);
     return;
   }
   if ((task.result ?? resultKind(step)) === 'verdict') {
@@ -417,14 +424,20 @@ export function applyTaskEvent(
         expected.length > 0 && (parsed.data.count ?? -1) < expected.length;
       step.verdict = short ? 'fail' : parsed.data.verdict;
       step.state = step.verdict === 'pass' ? 'done' : 'failed';
-      step.note = short
-        ? `Count ${parsed.data.count ?? 'missing'}/${expected.length}: missing item results`
-        : (parsed.data.note ?? parsed.data.verdict);
+      step.note = compactText(
+        short
+          ? `Count ${parsed.data.count ?? 'missing'}/${expected.length}: missing item results`
+          : (parsed.data.note ?? parsed.data.verdict),
+        600,
+      );
     }
   } else {
     step.state = 'done';
     if (task.budgetExhausted)
-      step.note = `Worker hit the tool-call budget ${task.toolCalls ?? '?'}/${task.maxToolCalls ?? '?'}; verify the result is complete or split the step`;
+      step.note = compactText(
+        `Worker hit the tool-call budget ${task.toolCalls ?? '?'}/${task.maxToolCalls ?? '?'}; verify the result is complete or split the step`,
+        600,
+      );
   }
 }
 /** Require a passing check and no failing latest check attempts. */
@@ -475,7 +488,7 @@ export function planView(plan?: Plan): string {
         work ? `work ${work}` : '',
         older ? `${older} older attempts` : '',
       ].filter(Boolean);
-      return `${s.id} ${s.state === 'pending' && dependenciesDone(plan, s) ? 'ready' : s.state} ${s.goal.replace(/\s+/g, ' ')}${s.dependsOn?.length ? ` (depends on ${s.dependsOn.join(', ')})` : ''}${attempts.length ? ` (${attempts.join(', ')})` : ''}${s.items ? `; items: ${s.items.length}` : ''}${s.note ? ` \u00b7 ${s.note}` : ''}`;
+      return `${s.id} ${s.state === 'pending' && dependenciesDone(plan, s) ? 'ready' : s.state} ${s.goal.replace(/\s+/g, ' ')}${s.dependsOn?.length ? ` (depends on ${s.dependsOn.join(', ')})` : ''}${attempts.length ? ` (${attempts.join(', ')})` : ''}${s.items ? `; items: ${s.items.length}` : ''}${s.note ? ` \u00b7 ${compactText(s.note, 600)}` : ''}`;
     }),
   ]
     .filter(Boolean)

@@ -508,10 +508,11 @@ propagates.
   before the next event turn. Outcomes (`done`, `failed`, `stopped`) and non-terminal `long_running` events
   wake the planner; `started` does not. Buffered outcomes coalesce in arrival order into
   one user-role `[task events]` note listing task identity, state, a short outcome
-  (at most 400 characters), output length and a `get_task` reference. Full output
-  stays on the board. `get_task` defaults to a 1,200-character preview;
-  `view: "full"` retrieves retained output, optionally paged with `offset`/`limit`.
-  `include_trace: true` retrieves evidence. Request projection replaces consumed
+  (summary at most 600 characters), result kind, verdict, character count and
+  stored result reference. Goals are bounded to 200 characters and diagnostics
+  to 600. `get_task` returns the same bounded notice; `include_trace` adds tool
+  evidence for checks. Read stored records with normal read tools for concrete gaps.
+  Request projection replaces consumed
   outcomes and delivered answers with references while preserving corrections,
   consent, unresolved errors, ownership and the current plan. Persisted history
   keeps complete replies within its existing storage bounds. Events arriving during a turn wait for a later event turn.

@@ -65,7 +65,7 @@ import {
   resultKind,
 } from './structured-plan.js';
 import { TaskBoard, type TaskBoardOptions } from './task-board.js';
-import { compactText, taskReference } from './task-reference.js';
+import { compactText, taskNotice } from './task-reference.js';
 
 export const DIALOGUE_HISTORY_LIMIT = 200;
 export interface PlannerTurnOptions {
@@ -1129,7 +1129,7 @@ export class DialogueSession {
                 ...new Set([...(request.resolvedFailures ?? []), ...resolves]),
               ];
               deliveryReferences.push(
-                `${note ? `${note}\n\n` : ''}[delivered] ${taskReference(task)}`,
+                `${note ? `${note}\n\n` : ''}[delivered] ${taskNotice(task)}`,
               );
               deliveries.push(
                 `${note ? `${note}\n\n` : ''}${task.output ?? ''}`,
@@ -1447,7 +1447,7 @@ export class DialogueSession {
         const removed =
           owner !== undefined &&
           !this.plan?.steps.some((step) => step.id === owner);
-        return `${label !== '[task events]' ? label : removed && task.state !== 'failed' && task.state !== 'interrupted' && task.error === undefined ? '[actions]' : '[task events]'} task ${task.id}${owner ? ` for ${owner}` : ''} (${task.worker}) ${kind}: ${compactText(task.goal, 200)} — ${taskReference(task)}${task.budgetExhausted ? `; worker hit the tool-call budget ${task.toolCalls ?? '?'}/${task.maxToolCalls ?? '?'}` : ''}`;
+        return `${label !== '[task events]' ? label : removed && task.state !== 'failed' && task.state !== 'interrupted' && task.error === undefined ? '[actions]' : '[task events]'} task ${task.id}${owner ? ` for ${owner}` : ''} (${task.worker}) ${kind}: ${compactText(task.goal, 200)} — ${taskNotice(task)}`;
       })
       .join('\n');
   }
