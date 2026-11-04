@@ -465,7 +465,7 @@ export class PlannerToolsClient implements IMcpClient {
             .strict()
             .parse(args);
           if (!scope.deliver) throw new Error('deliver is unavailable');
-          scope.deliver(task_id, note, resolves);
+          await scope.deliver(task_id, note, resolves);
           return textResult({ delivered: task_id });
         }
         case 'get_task': {

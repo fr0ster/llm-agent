@@ -21,6 +21,7 @@ import {
   withDeadline,
 } from '../planner-retrieval.js';
 import { PlannerToolsClient } from '../planner-tools-client.js';
+import { taskNotice } from '../task-reference.js';
 
 const queryEmbedder: IQueryEmbedder = {
   async embedQuery() {
@@ -580,7 +581,7 @@ test('corrective calls reuse retrieval while seeing newly projected transcript',
   await session.close();
 });
 
-test('finished tasks index raw bounded output; event retrieval uses first input plus event note', async () => {
+test('planner-task memory stores notice not output; event retrieval uses first input plus event note', async () => {
   const rag = new InMemoryRag();
   let finish: ((value: { output: string }) => void) | undefined;
   const work = new Promise<{ output: string }>((resolve) => {
@@ -637,12 +638,15 @@ test('finished tasks index raw bounded output; event retrieval uses first input 
   finish?.({ output: 'x'.repeat(10_000) });
   await delivery;
   await tick();
-  const chunk = await rag.getById(
-    'planner:events-memory:planner-task:task1:4000',
-  );
+  const chunk = await rag.getById('planner:events-memory:planner-task:task1:0');
   assert.ok(chunk.ok && chunk.value);
   assert.equal(chunk.value.metadata.requestId, 'r1');
-  assert.equal(chunk.value.text, 'x'.repeat(2000));
+  assert.equal(chunk.value.text, taskNotice(session.snapshot().tasks[0]));
+  assert.ok(!chunk.value.text.includes('x'.repeat(1000)));
+  const overflow = await rag.getById(
+    'planner:events-memory:planner-task:task1:4000',
+  );
+  assert.ok(overflow.ok && !overflow.value);
   assert.match(queries[1], /^first input\n\[task events\]/);
   await session.close();
 });

@@ -301,13 +301,14 @@ export class DialogueSession {
   private indexReply(
     message: PlannerMessage,
     request: PlannerRequestRecord,
+    memoryText = message.text,
   ): void {
     if (message.text.trim() === 'NO_MESSAGE') return;
     this.memoryWriter?.enqueue(
       'planner-reply',
       request.id,
       message.id,
-      message.text,
+      memoryText,
       { usage: this.turnUsage },
     );
   }
@@ -526,7 +527,7 @@ export class DialogueSession {
               'planner-task',
               owner,
               event.task.id,
-              `${event.task.goal}: ${event.task.output ?? event.task.error ?? ''}`,
+              taskNotice(event.task),
               {
                 usage:
                   this.board.originRecorder(event.task.id) ??
@@ -1085,7 +1086,7 @@ export class DialogueSession {
               startRequest(true);
               restartDelivered = true;
             },
-            deliver: (id, note, resolves = []) => {
+            deliver: async (id, note, resolves = []) => {
               if (delivered)
                 throw new Error('only one deliver per planner call');
               const task = this.board.get(id);
@@ -1125,15 +1126,34 @@ export class DialogueSession {
                     `task ${failureId} is not a known failed task in the current request`,
                   );
               }
+              let output = task.output ?? '';
+              const store =
+                this.opts.resultStore ?? this.opts.board.resultStore;
+              if (task.resultRef && store) {
+                try {
+                  const result = await store.read(task.resultRef, {
+                    signal: user?.opts.signal,
+                  });
+                  if (!result.ok)
+                    throw new Error(
+                      `${result.error.code}: ${result.error.message}`,
+                    );
+                  output = result.value;
+                } catch (error) {
+                  throw new Error(
+                    `task ${id} storage read failed: ${String(error)}`,
+                  );
+                }
+              }
+              if (delivered)
+                throw new Error('only one deliver per planner call');
               request.resolvedFailures = [
                 ...new Set([...(request.resolvedFailures ?? []), ...resolves]),
               ];
               deliveryReferences.push(
                 `${note ? `${note}\n\n` : ''}[delivered] ${taskNotice(task)}`,
               );
-              deliveries.push(
-                `${note ? `${note}\n\n` : ''}${task.output ?? ''}`,
-              );
+              deliveries.push(`${note ? `${note}\n\n` : ''}${output}`);
               delivered = true;
               partialText = '';
               contentPartials.length = 0;
@@ -1400,7 +1420,11 @@ export class DialogueSession {
         trigger: user ? 'user' : 'event',
       };
       request.lastTurnOk = true;
-      this.indexReply(message, request);
+      this.indexReply(
+        message,
+        request,
+        deliveryReferences.length ? deliveryReferences.join('\n\n') : reply,
+      );
       if (!user && !this.closing && message.text.trim() !== 'NO_MESSAGE') {
         this.pending.push(message);
         try {
