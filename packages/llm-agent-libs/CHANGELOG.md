@@ -1,5 +1,11 @@
 # @mcp-abap-adt/llm-agent-libs
 
+## 30.32.2
+
+### Patch Changes
+
+- 220fead: Keep stopped task outcomes when writing partial results fails or is aborted.
+
 ## 30.32.1
 
 ### Patch Changes
