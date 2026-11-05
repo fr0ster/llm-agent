@@ -1317,7 +1317,12 @@ for (const passing of [false, true]) {
                 const duplicate = await client.callTool('deliver', {
                   task_id: 't1',
                 });
-                assert.ok(duplicate.ok && duplicate.value.isError);
+                // A repeated delivery of the same task is a no-op, not an error loop.
+                assert.ok(duplicate.ok && !duplicate.value.isError);
+                assert.match(
+                  JSON.stringify(duplicate.value),
+                  /already delivered/,
+                );
               }
               return {
                 ok: true,

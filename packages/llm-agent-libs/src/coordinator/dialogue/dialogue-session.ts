@@ -615,6 +615,9 @@ export class DialogueSession {
         ...(Object.hasOwn(record, 'resolvedFailures')
           ? { resolvedFailures: structuredClone(record.resolvedFailures) }
           : {}),
+        ...(record.deliveredTaskIds === undefined
+          ? {}
+          : { deliveredTaskIds: [...record.deliveredTaskIds] }),
         ...(record.legacy ? { legacy: true as const } : {}),
       }));
       if (state.requests === undefined) {
@@ -925,6 +928,8 @@ export class DialogueSession {
       let reply = '';
       const deliveries: string[] = [];
       const deliveryReferences: string[] = [];
+      // Deduplicate within this turn, but persist delivery only once it succeeds.
+      const pendingDeliveryIds = new Set<string>();
       let plannerUsage: TokenUsage | undefined;
       const actions: string[] = [];
       let started = false;
@@ -1087,6 +1092,11 @@ export class DialogueSession {
               restartDelivered = true;
             },
             deliver: async (id, note, resolves = []) => {
+              if (
+                request.deliveredTaskIds?.includes(id) ||
+                pendingDeliveryIds.has(id)
+              )
+                return `task ${id} was already delivered`;
               if (delivered)
                 throw new Error('only one deliver per planner call');
               const task = this.board.get(id);
@@ -1145,8 +1155,14 @@ export class DialogueSession {
                   );
                 }
               }
+              if (
+                request.deliveredTaskIds?.includes(id) ||
+                pendingDeliveryIds.has(id)
+              )
+                return `task ${id} was already delivered`;
               if (delivered)
                 throw new Error('only one deliver per planner call');
+              pendingDeliveryIds.add(id);
               request.resolvedFailures = [
                 ...new Set([...(request.resolvedFailures ?? []), ...resolves]),
               ];
@@ -1432,6 +1448,10 @@ export class DialogueSession {
         } catch (error) {
           this.warn(`Dialogue onMessage failed: ${String(error)}`);
         }
+      }
+      if (pendingDeliveryIds.size) {
+        request.deliveredTaskIds ??= [];
+        request.deliveredTaskIds.push(...pendingDeliveryIds);
       }
       return message;
     } finally {
