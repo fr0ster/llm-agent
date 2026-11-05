@@ -615,6 +615,9 @@ export class DialogueSession {
         ...(Object.hasOwn(record, 'resolvedFailures')
           ? { resolvedFailures: structuredClone(record.resolvedFailures) }
           : {}),
+        ...(record.deliveredTaskIds === undefined
+          ? {}
+          : { deliveredTaskIds: [...record.deliveredTaskIds] }),
         ...(record.legacy ? { legacy: true as const } : {}),
       }));
       if (state.requests === undefined) {
@@ -1087,6 +1090,8 @@ export class DialogueSession {
               restartDelivered = true;
             },
             deliver: async (id, note, resolves = []) => {
+              if (request.deliveredTaskIds?.includes(id))
+                return `task ${id} was already delivered`;
               if (delivered)
                 throw new Error('only one deliver per planner call');
               const task = this.board.get(id);
@@ -1145,8 +1150,12 @@ export class DialogueSession {
                   );
                 }
               }
+              if (request.deliveredTaskIds?.includes(id))
+                return `task ${id} was already delivered`;
               if (delivered)
                 throw new Error('only one deliver per planner call');
+              request.deliveredTaskIds ??= [];
+              request.deliveredTaskIds.push(id);
               request.resolvedFailures = [
                 ...new Set([...(request.resolvedFailures ?? []), ...resolves]),
               ];

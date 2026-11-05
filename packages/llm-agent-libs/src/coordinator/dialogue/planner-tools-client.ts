@@ -1,4 +1,5 @@
 import type {
+  DialoguePlan,
   DialoguePlanStep,
   IMcpClient,
   McpError,
@@ -13,6 +14,7 @@ import {
   dependenciesDone,
   mergePlan,
   planView,
+  recomputePlanStatus,
   resultKind,
   resultStepSchema,
 } from './structured-plan.js';
@@ -465,8 +467,11 @@ export class PlannerToolsClient implements IMcpClient {
             .strict()
             .parse(args);
           if (!scope.deliver) throw new Error('deliver is unavailable');
-          await scope.deliver(task_id, note, resolves);
-          return textResult({ delivered: task_id });
+          const message = await scope.deliver(task_id, note, resolves);
+          return textResult({
+            delivered: task_id,
+            ...(message ? { message } : {}),
+          });
         }
         case 'get_task': {
           const { task_id: id, include_trace = false } = z
@@ -751,7 +756,11 @@ export class PlannerToolsClient implements IMcpClient {
             throw new Error(
               'Cannot update the plan while a task attempt is being reserved',
             );
-          if (typeof previous === 'object') {
+          const statusOnly =
+            typeof previous === 'object' &&
+            args.steps === undefined &&
+            args.plan === undefined;
+          if (typeof previous === 'object' && !statusOnly) {
             const retained =
               args.steps === undefined
                 ? []
@@ -786,7 +795,7 @@ export class PlannerToolsClient implements IMcpClient {
               'Plan changed or a task attempt is being reserved; retry the plan update',
             );
           scope.signal?.throwIfAborted();
-          const next =
+          const next: string | DialoguePlan =
             args.steps !== undefined
               ? mergePlan(
                   previous,
@@ -800,7 +809,10 @@ export class PlannerToolsClient implements IMcpClient {
                     getTask: (id) => scope.board.get(id),
                   },
                 )
-              : requiredString(args, 'plan');
+              : statusOnly
+                ? { ...previous, status, question }
+                : requiredString(args, 'plan');
+          if (statusOnly && typeof next === 'object') recomputePlanStatus(next);
           if (
             typeof previous === 'object' &&
             typeof next === 'string' &&

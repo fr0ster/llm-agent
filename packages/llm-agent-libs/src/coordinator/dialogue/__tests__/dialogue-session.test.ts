@@ -1522,7 +1522,11 @@ for (const mode of [
             const duplicate = await tools.callTool('deliver', {
               task_id: 't1',
             });
-            assert.ok(duplicate.ok && duplicate.value.isError);
+            assert.ok(duplicate.ok && !duplicate.value.isError);
+            assert.match(
+              JSON.stringify(duplicate.value.content),
+              /already delivered/,
+            );
           }
           if (mode === 'wait') {
             // No active tasks: status reads leave the delivered result intact.
@@ -1927,3 +1931,136 @@ for (const mode of [
     }
   });
 }
+
+test('repeated delivery of the same task across correction calls is emitted once', async () => {
+  const store = new InMemoryDialogueStateStore();
+  const output = 'Unique t10 report output';
+  await store.save('dedupe', {
+    requests: [{ id: 'r1', openedAt: 0, text: 'request' }],
+    requestSeq: 1,
+    conversation: [],
+    tasks: [
+      {
+        id: 't10',
+        worker: 'w',
+        goal: 'Report',
+        state: 'done',
+        output,
+        createdAt: 0,
+      },
+    ],
+    taskRequests: { t10: 'r1' },
+    taskSteps: { t10: 'report' },
+    plan: {
+      version: 1,
+      status: 'active',
+      steps: [
+        {
+          id: 'report',
+          goal: 'Report',
+          state: 'done',
+          taskIds: ['t10'],
+          workTaskId: 't10',
+          successfulWorkTaskId: 't10',
+        },
+        {
+          id: 'check',
+          goal: 'Check',
+          result: 'verdict',
+          state: 'done',
+          dependsOn: ['report'],
+          checkedTaskIds: { report: 't10' },
+          verdict: 'pass',
+          taskIds: [],
+        },
+        {
+          id: 'leftover',
+          goal: 'Remaining work',
+          state: 'pending',
+          taskIds: [],
+        },
+      ],
+    },
+    pending: [],
+    savedAt: 0,
+  });
+  let calls = 0;
+  let reset = false;
+  let resetStarted = false;
+  const open = () =>
+    DialogueSession.open({
+      id: 'dedupe',
+      store,
+      maxCorrections: 1,
+      board: { workers: new Map() },
+      planner: {
+        async process() {
+          if (reset) {
+            if (resetStarted)
+              return { ok: true, value: { content: 'NO_MESSAGE' } };
+            resetStarted = true;
+            assert.ok(
+              !toolValue(await tools.callTool('new_request', {})).isError,
+            );
+            const oldTask = toolValue(
+              await tools.callTool('deliver', { task_id: 't10' }),
+            );
+            assert.ok(oldTask.isError);
+            assert.match(JSON.stringify(oldTask.content), /does not belong/);
+            return { ok: true, value: { content: 'NO_MESSAGE' } };
+          }
+          calls++;
+          const result = toolValue(
+            await tools.callTool('deliver', {
+              task_id: 't10',
+              note: 'Report note',
+            }),
+          );
+          assert.ok(
+            !result.isError,
+            `${calls}: ${JSON.stringify(result.content)}`,
+          );
+          if (calls > 1)
+            assert.match(JSON.stringify(result.content), /already delivered/);
+          return { ok: true, value: { content: 'NO_MESSAGE' } };
+        },
+      },
+    });
+  let session = await open();
+  try {
+    const first = await session.send('continue');
+    assert.equal(calls, 2);
+    assert.equal(first.text, `Report note\n\n${output}`);
+    assert.equal(
+      (await session.send('continue again')).text.includes(output),
+      false,
+    );
+    assert.deepEqual(session.snapshot().requests?.[0].deliveredTaskIds, [
+      't10',
+    ]);
+    const persisted = await store.load('dedupe');
+    assert.deepEqual(persisted?.requests?.[0].deliveredTaskIds, ['t10']);
+    assert.ok(persisted);
+    await session.close();
+    await store.save('dedupe', persisted);
+    session = await open();
+    assert.equal(
+      (await session.send('continue after restore')).text.includes(output),
+      false,
+    );
+    assert.deepEqual(session.snapshot().requests?.[0].deliveredTaskIds, [
+      't10',
+    ]);
+    reset = true;
+    await session.send('start a new request');
+    assert.equal(
+      session
+        .snapshot()
+        .requests?.find((request) => request.closedAt === undefined)
+        ?.deliveredTaskIds,
+      undefined,
+    );
+  } finally {
+    await session.close();
+  }
+});

@@ -153,6 +153,8 @@ export interface PlannerRequestRecord {
   lastTurnOk?: boolean;
   /** Failed tasks explicitly acknowledged by the coordinator, including removed steps. */
   resolvedFailures?: string[];
+  /** Task outputs already delivered in this request. */
+  deliveredTaskIds?: string[];
   /** Present only while the request is open. */
   transcript?: (Message & {
     /** Compact planner projection of a verbatim delivered answer; content stays complete. */

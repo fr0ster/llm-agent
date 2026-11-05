@@ -937,3 +937,45 @@ for (const output of ['PASS', ' fail ', '{"verdict":"pass"}']) {
     await f.board.stopAll();
   });
 }
+
+test('status-only update preserves structured steps', async () => {
+  const f = setup();
+  const plan: DialoguePlan = {
+    version: 1,
+    status: 'active',
+    steps: [{ id: 'report', goal: 'Report', state: 'pending', taskIds: [] }],
+  };
+  f.setPlan(plan);
+  const steps = structuredClone(plan.steps);
+  await runInPlannerScope(f.scope, async () => {
+    for (const args of [
+      { status: 'active' },
+      { status: 'waiting_user', question: 'q' },
+      { status: 'done' },
+    ]) {
+      assert.ok(!(await call('plan_update', args)).error);
+      const updated = f.getPlan();
+      assert.ok(updated && typeof updated === 'object');
+      assert.deepEqual(updated.steps, steps);
+      assert.equal(
+        updated.status,
+        args.status === 'done' ? 'active' : args.status,
+      );
+      assert.equal(updated.question, args.question);
+    }
+    assert.ok((await call('plan_update', { status: 'waiting_user' })).error);
+    assert.ok(
+      (await call('plan_update', { status: 'waiting_user', question: ' ' }))
+        .error,
+    );
+    const updated = f.getPlan();
+    assert.ok(updated && typeof updated === 'object');
+    updated.steps[0].state = 'done';
+    const settled = structuredClone(updated.steps);
+    assert.ok(!(await call('plan_update', { status: 'done' })).error);
+    const done = f.getPlan();
+    assert.ok(done && typeof done === 'object');
+    assert.equal(done.status, 'done');
+    assert.deepEqual(done.steps, settled);
+  });
+});
