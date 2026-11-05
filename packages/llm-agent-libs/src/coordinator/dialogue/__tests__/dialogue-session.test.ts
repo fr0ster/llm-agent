@@ -1932,6 +1932,94 @@ for (const mode of [
   });
 }
 
+for (const restore of [false, true]) {
+  test(`failed planner turn allows delivery retry (restore: ${restore})`, async () => {
+    const store = new InMemoryDialogueStateStore();
+    const output = 'Unique t1 output after failed delivery';
+    await store.save('failed-delivery', {
+      requests: [{ id: 'r1', openedAt: 0, text: 'request' }],
+      requestSeq: 1,
+      conversation: [],
+      tasks: [
+        {
+          id: 't1',
+          worker: 'w',
+          goal: 'Report',
+          state: 'done',
+          output,
+          createdAt: 0,
+        },
+      ],
+      taskRequests: { t1: 'r1' },
+      pending: [],
+      savedAt: 0,
+    });
+    let fail = true;
+    const open = () =>
+      DialogueSession.open({
+        id: 'failed-delivery',
+        store,
+        board: { workers: new Map() },
+        planner: {
+          async process() {
+            const result = toolValue(
+              await tools.callTool('deliver', { task_id: 't1' }),
+            );
+            assert.ok(!result.isError);
+            assert.doesNotMatch(
+              JSON.stringify(result.content),
+              /already delivered/,
+            );
+            if (fail)
+              return {
+                ok: false,
+                error: new Error('planner failed after deliver'),
+              };
+            const duplicate = toolValue(
+              await tools.callTool('deliver', { task_id: 't1' }),
+            );
+            assert.match(
+              JSON.stringify(duplicate.content),
+              /already delivered/,
+            );
+            return { ok: true, value: { content: 'NO_MESSAGE' } };
+          },
+        },
+      });
+    let session = await open();
+    try {
+      await assert.rejects(
+        session.send('deliver report'),
+        /planner failed after deliver/,
+      );
+      assert.equal(
+        session.snapshot().requests?.[0].deliveredTaskIds?.includes('t1') ??
+          false,
+        false,
+      );
+      if (restore) {
+        const persisted = await store.load('failed-delivery');
+        assert.ok(persisted);
+        assert.equal(
+          persisted.requests?.[0].deliveredTaskIds?.includes('t1') ?? false,
+          false,
+        );
+        await session.close();
+        await store.save('failed-delivery', persisted);
+        session = await open();
+      }
+      fail = false;
+      const reply = await session.send('retry report');
+      assert.equal(reply.text, output);
+      assert.deepEqual(session.snapshot().requests?.[0].deliveredTaskIds, [
+        't1',
+      ]);
+    } finally {
+      await session.close();
+    }
+  });
+}
+
 test('repeated delivery of the same task across correction calls is emitted once', async () => {
   const store = new InMemoryDialogueStateStore();
   const output = 'Unique t10 report output';

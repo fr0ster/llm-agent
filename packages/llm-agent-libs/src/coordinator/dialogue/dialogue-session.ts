@@ -928,6 +928,8 @@ export class DialogueSession {
       let reply = '';
       const deliveries: string[] = [];
       const deliveryReferences: string[] = [];
+      // Deduplicate within this turn, but persist delivery only once it succeeds.
+      const pendingDeliveryIds = new Set<string>();
       let plannerUsage: TokenUsage | undefined;
       const actions: string[] = [];
       let started = false;
@@ -1090,7 +1092,10 @@ export class DialogueSession {
               restartDelivered = true;
             },
             deliver: async (id, note, resolves = []) => {
-              if (request.deliveredTaskIds?.includes(id))
+              if (
+                request.deliveredTaskIds?.includes(id) ||
+                pendingDeliveryIds.has(id)
+              )
                 return `task ${id} was already delivered`;
               if (delivered)
                 throw new Error('only one deliver per planner call');
@@ -1150,12 +1155,14 @@ export class DialogueSession {
                   );
                 }
               }
-              if (request.deliveredTaskIds?.includes(id))
+              if (
+                request.deliveredTaskIds?.includes(id) ||
+                pendingDeliveryIds.has(id)
+              )
                 return `task ${id} was already delivered`;
               if (delivered)
                 throw new Error('only one deliver per planner call');
-              request.deliveredTaskIds ??= [];
-              request.deliveredTaskIds.push(id);
+              pendingDeliveryIds.add(id);
               request.resolvedFailures = [
                 ...new Set([...(request.resolvedFailures ?? []), ...resolves]),
               ];
@@ -1441,6 +1448,10 @@ export class DialogueSession {
         } catch (error) {
           this.warn(`Dialogue onMessage failed: ${String(error)}`);
         }
+      }
+      if (pendingDeliveryIds.size) {
+        request.deliveredTaskIds ??= [];
+        request.deliveredTaskIds.push(...pendingDeliveryIds);
       }
       return message;
     } finally {
