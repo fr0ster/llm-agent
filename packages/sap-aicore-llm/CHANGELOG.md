@@ -1,5 +1,11 @@
 # @mcp-abap-adt/sap-aicore-llm
 
+## 30.14.0
+
+### Minor Changes
+
+- 4ae99fe: Expose optional provider scenario identifiers on model info. Preserve SAP AI Core catalog allowed scenarios, add a fresh getModelCatalog method that propagates original failures without changing the best-effort getModels cache, and export isOrchestrationChatModel for chat allowlists.
+
 ## 30.13.0
 
 ### Minor Changes
