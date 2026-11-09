@@ -57,6 +57,30 @@ responses and usage records expose optional `cachedInputTokens` and
 `cacheCreationInputTokens` when SAP reports reads/writes. Prompt/completion totals
 remain unchanged.
 
+## Model catalog for chat allowlists
+
+`await provider.getModelCatalog()` queries the tenant's `foundation-models`
+catalog with a fresh token from the configured credential. It bypasses the
+best-effort model cache and rejects with the original error on credential or
+catalog failure, so callers can log the cause and retry. It never updates the
+cache. Existing `getModels()` caching and configured-model fallback are unchanged.
+
+```typescript
+import { isOrchestrationChatModel } from '@mcp-abap-adt/sap-aicore-llm';
+
+const allowlist = (await provider.getModelCatalog())
+  .filter(isOrchestrationChatModel)
+  .map((info) => info.id);
+```
+
+Model info exposes catalog `allowedScenarios` as the optional, provider-neutral
+`scenarios: string[]` field. The SAP catalog entry type retains `scenarioId` and
+optional `executableId`; the shared interface carries only scenario identifiers.
+The helper requires `text-generation`, the `orchestration` scenario, and no
+`deprecated: true` flag on the selected version (latest, otherwise first).
+Missing capabilities or scenarios are excluded. This checks catalog eligibility;
+it does not send an inference request.
+
 ## License
 
 **GNU Lesser General Public License v3.0 only** (`LGPL-3.0-only`) — see

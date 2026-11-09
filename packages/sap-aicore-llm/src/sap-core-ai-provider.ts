@@ -116,6 +116,7 @@ export interface SapCoreAICatalogModel {
   model: string;
   displayName?: string;
   provider?: string;
+  allowedScenarios?: { scenarioId: string; executableId?: string }[];
   versions?: {
     isLatest?: boolean;
     deprecated?: boolean;
@@ -123,6 +124,15 @@ export interface SapCoreAICatalogModel {
     contextLength?: number;
     streamingSupported?: boolean;
   }[];
+}
+
+/** Catalog eligibility for orchestration chat; missing capability/scenario is excluded. */
+export function isOrchestrationChatModel(info: IModelInfo): boolean {
+  return (
+    info.capabilities?.includes('text-generation') === true &&
+    info.scenarios?.includes('orchestration') === true &&
+    info.deprecated !== true
+  );
 }
 
 export interface SapCoreAIConfig extends LLMProviderConfig {
@@ -728,29 +738,7 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
       return this.modelsCache;
     }
     try {
-      // The configured credential, not the SDK's implicit AICORE_SERVICE_KEY
-      // lookup — without it a deployment on `<REF>_SERVICE_KEY` alone got the
-      // fallback below instead of the catalog.
-      const destination = await buildDestination({
-        apiBaseUrl: this.config.apiBaseUrl,
-        credential: this.config.credential,
-      });
-      const models: IModelInfo[] = [];
-      for (const r of await this.queryModelCatalog(destination)) {
-        const latest = r.versions?.find((v) => v.isLatest) ?? r.versions?.[0];
-        if (!latest) continue;
-        models.push({
-          id: r.model,
-          displayName: r.displayName,
-          owned_by: r.provider,
-          provider: r.provider,
-          capabilities: latest.capabilities,
-          contextLength: latest.contextLength,
-          streamingSupported: latest.streamingSupported,
-          deprecated: latest.deprecated,
-        });
-      }
-
+      const models = await this.getModelCatalog();
       this.modelsCache = models;
       this.modelsCacheExpiry =
         Date.now() + SapCoreAIProvider.MODELS_CACHE_TTL_MS;
@@ -759,6 +747,34 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
       // Fallback to configured model if AI API is not available
       return [{ id: this.model }];
     }
+  }
+
+  /** Fetch a fresh catalog. Failures propagate unchanged and never update the cache. */
+  public async getModelCatalog(): Promise<IModelInfo[]> {
+    // Resolve the configured credential rather than the SDK's implicit
+    // AICORE_SERVICE_KEY lookup, including on each explicit catalog retry.
+    const destination = await buildDestination({
+      apiBaseUrl: this.config.apiBaseUrl,
+      credential: this.config.credential,
+    });
+    const models: IModelInfo[] = [];
+    for (const r of await this.queryModelCatalog(destination)) {
+      const latest = r.versions?.find((v) => v.isLatest) ?? r.versions?.[0];
+      if (!latest) continue;
+      models.push({
+        id: r.model,
+        displayName: r.displayName,
+        owned_by: r.provider,
+        provider: r.provider,
+        capabilities: latest.capabilities,
+        scenarios: r.allowedScenarios?.map((scenario) => scenario.scenarioId),
+        contextLength: latest.contextLength,
+        streamingSupported: latest.streamingSupported,
+        deprecated: latest.deprecated,
+      });
+    }
+
+    return models;
   }
 
   /**

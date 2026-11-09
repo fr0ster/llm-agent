@@ -31,6 +31,7 @@
     "packages/llm-agent/src/resilience/input-cap-embedder.test.ts",
     "packages/llm-agent/src/usage/__tests__/hooks.test.ts",
     "packages/sap-aicore-llm/src/__tests__/usage.test.ts",
+    "packages/sap-aicore-llm/src/__tests__/model-catalog.test.ts",
     "packages/llm-agent-libs/src/__tests__/worker-model.test.ts",
     "packages/llm-agent-libs/src/__tests__/final-iteration-content.test.ts",
     "packages/llm-agent/src/trust.test.ts",

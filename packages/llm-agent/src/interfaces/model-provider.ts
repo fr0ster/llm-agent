@@ -10,6 +10,8 @@ export interface IModelInfo {
   displayName?: string;
   provider?: string;
   capabilities?: string[];
+  /** Provider catalog scenario identifiers through which this model is available. */
+  scenarios?: string[];
   contextLength?: number;
   streamingSupported?: boolean;
   deprecated?: boolean;
