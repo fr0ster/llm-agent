@@ -362,7 +362,7 @@ export interface ToolCallRecord {
 
 export interface RagMetadata {
   /** Positive ownership discriminant; absent legacy tags never match owner queries. */
-  ownerScope?: RagCollectionOwner['scope'];
+  ownerScope?: RagCollectionOwner['scope'] | 'invalid';
   id?: string;
   /** Unix timestamp (seconds) after which this record is considered expired. */
   ttl?: number;

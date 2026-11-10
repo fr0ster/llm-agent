@@ -16,6 +16,7 @@ import {
   type IRagScanner,
   listCursorScope,
   listMetadata,
+  matchesRagIdentity,
   prepareList,
   RagError,
   type RagListPage,
@@ -26,7 +27,7 @@ import {
   type RagScanPage,
   type Result,
   ragIdentityFilter,
-  tagRagMetadata,
+  validateRagMetadata,
 } from '@mcp-abap-adt/llm-agent';
 import { splitPayload } from './payload-record.js';
 import type { QdrantCondition, QdrantFilter } from './query-filter.js';
@@ -208,6 +209,7 @@ export class QdrantRag implements IRag, IRagScanner, IRagFilteredDeleter {
     options?: CallOptions,
   ): Promise<Result<void, RagError>> {
     try {
+      metadata = validateRagMetadata(metadata);
       if (this.autoCreateCollection) {
         await this._ensureCollection(vector.length, options?.signal);
       }
@@ -217,7 +219,7 @@ export class QdrantRag implements IRag, IRagScanner, IRagFilteredDeleter {
         : crypto.randomUUID();
       const payload: RagMetadata = {
         text,
-        ...tagRagMetadata(metadata),
+        ...validateRagMetadata(metadata),
       };
 
       const res = await this._fetch(
@@ -376,7 +378,12 @@ export class QdrantRag implements IRag, IRagScanner, IRagFilteredDeleter {
         return { ...splitPayload(hit.payload), score: hit.score };
       });
 
-      return { ok: true, value: results };
+      return {
+        ok: true,
+        value: results.filter((record) =>
+          matchesRagIdentity(record.metadata, ragIdentityFilter(options)),
+        ),
+      };
     } catch (err) {
       if (err instanceof RagError) return { ok: false, error: err };
       return { ok: false, error: new RagError(String(err), 'QUERY_ERROR') };
@@ -633,6 +640,7 @@ export class QdrantRag implements IRag, IRagScanner, IRagFilteredDeleter {
       upsertManyPrecomputedRaw: async (items, options) => {
         if (items.length === 0) return { ok: true, value: undefined };
         try {
+          for (const item of items) validateRagMetadata(item.metadata);
           if (this.autoCreateCollection) {
             await this._ensureCollection(
               items[0].vector.length,
@@ -643,7 +651,7 @@ export class QdrantRag implements IRag, IRagScanner, IRagFilteredDeleter {
             items.map(async ({ id, text, vector, metadata }) => ({
               id: await deterministicUUID(id),
               vector,
-              payload: { text, ...tagRagMetadata(metadata), id },
+              payload: { text, ...validateRagMetadata(metadata), id },
             })),
           );
           // One PUT for the whole batch — Qdrant accepts many points per

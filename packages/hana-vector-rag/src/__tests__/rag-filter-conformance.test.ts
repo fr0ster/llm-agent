@@ -5,6 +5,7 @@ import {
   conformanceEmbedder,
   ragFilterConformanceCases,
   ragOwnerFilterConformanceCases,
+  ragRawOwnerConformanceCase,
 } from '@mcp-abap-adt/llm-agent/testing/rag-filter-conformance';
 import { HanaVectorRag } from '../hana-vector-rag.js';
 import { storingHana } from './storing-hana.js';
@@ -30,3 +31,32 @@ for (const layout of ['per-collection', 'shared'] as const)
           db.client,
         );
       }));
+
+for (const layout of ['shared', 'per-collection'] as const)
+  test(`HANA ${layout} shared raw conflicting-owner records are excluded and writes refused`, async () => {
+    const db = storingHana({ dimension: 64 });
+    if (layout === 'per-collection') db.createCollectionTable('raw');
+    const rag = new HanaVectorRag(
+      {
+        collectionName: 'raw',
+        layout,
+        dimension: 64,
+        autoCreateSchema: false,
+        credential: staticLogin('u', 'p'),
+        embedder: symmetricEmbedder(conformanceEmbedder()),
+      },
+      db.client,
+    );
+    await ragRawOwnerConformanceCase({
+      rag,
+      async insertRaw(r) {
+        db.insertRow(layout === 'shared' ? 'RAG_DOCUMENTS' : 'raw', {
+          ...(layout === 'shared' ? { COLLECTION: 'raw' } : {}),
+          ID: r.id,
+          TEXT: r.text,
+          VECTOR: (await conformanceEmbedder().embed(r.text)).vector,
+          METADATA: JSON.stringify({ ...r.metadata, id: r.id }),
+        });
+      },
+    });
+  });

@@ -21,6 +21,10 @@ for (const item of ragAccessStoreConformanceCases)
     await item.run(async () => {
       const stores = createHanaVectorRagAccessStores(provider);
       let hook: RagAccessBarrierHook = async () => {};
+      let raceHooks = {
+        deletionPaused: async () => {},
+        creationPaused: async () => {},
+      };
       const transaction = db.client.transaction?.bind(db.client);
       assert.ok(transaction);
       const creationClient: typeof db.client = {
@@ -29,15 +33,38 @@ for (const item of ragAccessStoreConformanceCases)
         exec: db.client.exec.bind(db.client),
         transaction: async (work) => {
           await hook('creation');
+          await raceHooks.creationPaused();
           return transaction(work);
         },
       };
       db.client.transaction = async (work) => {
         await hook('deletion');
-        return transaction(work);
+        return transaction(async (connection) =>
+          work({
+            ...connection,
+            query: async (sql, params) => {
+              const rows = await connection.query(sql, params);
+              if (sql.includes("WHERE scope = 'role'"))
+                await raceHooks.deletionPaused();
+              return rows;
+            },
+          }),
+        );
       };
       return {
         ...stores,
+        deletionSerializesCreation: true,
+        setDeletionRaceHooks(hooks) {
+          raceHooks = hooks;
+        },
+        async rawCatalogRoleIds() {
+          const sql = `SELECT role_id FROM "rag_collection_catalog" WHERE scope = 'role'`;
+          return (await db.client.query(sql)).map((row) => String(row.role_id));
+        },
+        async rawAssignmentRoleIds() {
+          const sql = 'SELECT role_id FROM "rag_role_assignments"';
+          return (await db.client.query(sql)).map((row) => String(row.role_id));
+        },
         setBarrierHook(next) {
           hook = next;
         },

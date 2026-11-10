@@ -89,7 +89,11 @@ export function matchesRagIdentity(
 ): boolean {
   if (!filter) return true;
   const scope = filter.ownerScope;
-  if (metadata.ownerScope !== scope) return false;
+  if (
+    metadata.ownerScope !== scope ||
+    tagRagMetadata(metadata).ownerScope === 'invalid'
+  )
+    return false;
   if (filter.owner) {
     const owner = filter.owner;
     if (owner.scope === 'session' && metadata.sessionId !== owner.sessionId)
@@ -130,6 +134,17 @@ export function tagRagMetadata(metadata: RagMetadata): RagMetadata {
     !valid ||
     (metadata.ownerScope !== undefined && metadata.ownerScope !== scope)
   )
-    return { ...metadata, ownerScope: undefined };
+    return { ...metadata, ownerScope: 'invalid' };
   return { ...metadata, ownerScope: scope };
+}
+
+/** Refuse malformed caller writes; migration uses tagRagMetadata to quarantine instead. */
+export function validateRagMetadata(metadata: RagMetadata): RagMetadata {
+  const tagged = tagRagMetadata(metadata);
+  if (tagged.ownerScope === 'invalid')
+    throw new RagError(
+      'Conflicting owner scope and identity keys',
+      'INVALID_ARGUMENT',
+    );
+  return tagged;
 }

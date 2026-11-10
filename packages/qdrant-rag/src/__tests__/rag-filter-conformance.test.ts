@@ -5,6 +5,7 @@ import {
   conformanceEmbedder,
   ragFilterConformanceCases,
   ragOwnerFilterConformanceCases,
+  ragRawOwnerConformanceCase,
 } from '@mcp-abap-adt/llm-agent/testing/rag-filter-conformance';
 import { QdrantRag } from '../qdrant-rag.js';
 import { type QdrantStub, startQdrantStub } from './qdrant-stub.js';
@@ -89,13 +90,14 @@ describe('QdrantRag — filter conformance (stub)', () => {
     });
     for (const key of ['sessionId', 'userId', 'roleId']) {
       for (const value of [null, []]) {
-        assert.ok(
+        assert.equal(
           (
             await rag.upsert('quarterly revenue forecast', {
               id: `${key}_${JSON.stringify(value)}`,
               [key]: value,
             })
           ).ok,
+          false,
         );
       }
     }
@@ -148,4 +150,29 @@ describe('QdrantRag — filter conformance (stub)', () => {
       stub.version = '1.17.0';
     }
   });
+});
+
+it('Qdrant shared raw conflicting-owner records are excluded and writes refused', async () => {
+  const stub = await startQdrantStub();
+  try {
+    const points = new Map<string, import('./qdrant-stub.js').StubPoint>();
+    stub.collections.set('raw', { size: 64, points });
+    const rag = new QdrantRag({
+      url: stub.baseUrl,
+      collectionName: 'raw',
+      embedder: symmetricEmbedder(conformanceEmbedder()),
+    });
+    await ragRawOwnerConformanceCase({
+      rag,
+      async insertRaw(r) {
+        points.set(r.id, {
+          id: r.id,
+          vector: (await conformanceEmbedder().embed(r.text)).vector,
+          payload: { ...r.metadata, id: r.id, text: r.text },
+        });
+      },
+    });
+  } finally {
+    await stub.close();
+  }
 });

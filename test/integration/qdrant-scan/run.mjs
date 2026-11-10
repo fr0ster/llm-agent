@@ -20,13 +20,13 @@ const rootRequire = createRequire(resolve(root, 'package.json'));
 const load = (spec) => import(pathToFileURL(rootRequire.resolve(spec)).href);
 
 const { symmetricEmbedder } = await load('@mcp-abap-adt/llm-agent');
-const { CONFORMANCE_EMBEDDING_DIM, conformanceEmbedder } = await load(
+const { CONFORMANCE_EMBEDDING_DIM, conformanceEmbedder, registerRawRecordInsert } = await load(
   '@mcp-abap-adt/llm-agent/testing/rag-filter-conformance',
 );
 const { scanDeleteConformanceCases, isScanDeleteCaseSkipped } = await load(
   '@mcp-abap-adt/llm-agent/testing/scan-delete-conformance',
 );
-const { QdrantRag, QdrantRagProvider } = await load('@mcp-abap-adt/qdrant-rag');
+const { QdrantRag, QdrantRagProvider, deterministicUUID } = await load('@mcp-abap-adt/qdrant-rag');
 
 const apiKey = process.env.QDRANT_TEST_API_KEY;
 const credential = apiKey ? { secret: async () => apiKey } : undefined;
@@ -64,11 +64,17 @@ const createCollection = async (name) => {
 const storeOf = async (name) => {
   created.add(name);
   await createCollection(name);
-  return new QdrantRag({
+  return registerRawRecordInsert(new QdrantRag({
     url,
     collectionName: name,
     embedder,
     ...(credential ? { credential } : {}),
+  }), async r => {
+    const response = await fetch(`${url}/collections/${name}/points?wait=true`, {
+      method: 'PUT', headers,
+      body: JSON.stringify({ points: [{ id: await deterministicUUID(r.id), vector: (await conformanceEmbedder().embed(r.text)).vector, payload: { ...r.metadata, id: r.id, text: r.text } }] }),
+    });
+    if (!response.ok) throw new Error(`raw fixture insertion failed: ${response.status}`);
   });
 };
 

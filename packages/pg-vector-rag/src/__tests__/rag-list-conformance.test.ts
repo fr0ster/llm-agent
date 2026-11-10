@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { staticLogin, symmetricEmbedder } from '@mcp-abap-adt/llm-agent';
+import { registerRawRecordInsert } from '@mcp-abap-adt/llm-agent/testing/rag-filter-conformance';
 import { ragListConformanceCases } from '@mcp-abap-adt/llm-agent/testing/rag-list-conformance';
 import { PgVectorRag } from '../pg-vector-rag.js';
 import { storingPg } from './storing-pg.js';
@@ -14,17 +15,32 @@ for (const layout of ['per-collection', 'shared'] as const) {
         await test.run(async () => {
           const collectionName = `collection_${sequence++}`;
 
-          return new PgVectorRag(
-            {
-              collectionName,
-              layout,
-              dimension: 3,
-              autoCreateSchema: false,
-              embedder: symmetricEmbedder({
-                embed: async () => ({ vector: [1, 0, 0] }),
-              }),
+          return registerRawRecordInsert(
+            new PgVectorRag(
+              {
+                collectionName,
+                layout,
+                dimension: 3,
+                autoCreateSchema: false,
+                embedder: symmetricEmbedder({
+                  embed: async () => ({ vector: [1, 0, 0] }),
+                }),
+              },
+              db,
+            ),
+            async (r) => {
+              db.insertSharedRow({
+                table:
+                  layout === 'shared'
+                    ? '"rag_documents"'
+                    : `"${collectionName}"`,
+                ...(layout === 'shared' ? { collection: collectionName } : {}),
+                id: r.id,
+                text: r.text,
+                vector: [1, 0, 0],
+                metadata: r.metadata,
+              });
             },
-            db,
           );
         });
       });

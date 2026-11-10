@@ -6,13 +6,17 @@ import {
   symmetricEmbedder,
 } from '@mcp-abap-adt/llm-agent';
 import {
+  registerRawRecordInsert,
+  seedLegacyRagRecord,
+} from '@mcp-abap-adt/llm-agent/testing/rag-filter-conformance';
+import {
   CONFORMANCE_EMBEDDING_DIM,
   conformanceEmbedder,
   isScanDeleteCaseSkipped,
   type ScanDeleteStore,
   scanDeleteConformanceCases,
 } from '@mcp-abap-adt/llm-agent/testing/scan-delete-conformance';
-import { QdrantRag } from '../qdrant-rag.js';
+import { deterministicUUID, QdrantRag } from '../qdrant-rag.js';
 import { QdrantRagProvider } from '../qdrant-rag-provider.js';
 import { scrollFilter } from '../scan-delete.js';
 import { type QdrantStub, startQdrantStub } from './qdrant-stub.js';
@@ -49,7 +53,19 @@ let n = 0;
 async function open(): Promise<QdrantRag> {
   const collectionName = `scan_${n++}`;
   await createCollection(stub.baseUrl, collectionName);
-  return new QdrantRag({ url: stub.baseUrl, collectionName, embedder });
+  return registerRawRecordInsert(
+    new QdrantRag({ url: stub.baseUrl, collectionName, embedder }),
+    async (r) => {
+      const collection = stub.collections.get(collectionName);
+      assert.ok(collection);
+      const id = await deterministicUUID(r.id);
+      collection.points.set(id, {
+        id,
+        vector: (await conformanceEmbedder().embed(r.text)).vector,
+        payload: { ...r.metadata, id: r.id, text: r.text },
+      });
+    },
+  );
 }
 
 // The shared kit over QdrantRag and a storing stub of the REST API; a second
@@ -193,7 +209,7 @@ describe('QdrantRag — scan/delete requests', () => {
   it('scan drops a point whose identity value is an array, whatever the page', async () => {
     const store = await open();
     const w = store.writer();
-    await w.upsertRaw('arr', 'text', { userId: ['u1', 'u2'] });
+    await seedLegacyRagRecord(store, 'arr', 'text', { userId: ['u1', 'u2'] });
     await w.upsertRaw('one', 'text', { userId: 'u1' });
     const r = await store.scan({ filter: { userId: 'u1' } });
     assert.ok(r.ok);
@@ -233,7 +249,7 @@ describe('QdrantRag — scan/delete requests', () => {
   it('deleteWhere never deletes a point whose identity value is an array', async () => {
     const store = await open();
     const w = store.writer();
-    await w.upsertRaw('arr', 'text', { userId: ['u1', 'u2'] });
+    await seedLegacyRagRecord(store, 'arr', 'text', { userId: ['u1', 'u2'] });
     await w.upsertRaw('one', 'text', { userId: 'u1' });
     const r = await store.deleteWhere({ userId: 'u1' });
     assert.ok(r.ok);

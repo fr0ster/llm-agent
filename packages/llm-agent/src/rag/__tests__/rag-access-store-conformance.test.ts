@@ -10,7 +10,27 @@ for (const entry of ragAccessStoreConformanceCases) {
         name: 'memory',
         supportedScopes: ['role'],
       });
+      let raceHooks = {
+        deletionPaused: async () => {},
+        creationPaused: async () => {},
+      };
       return {
+        deletionSerializesCreation: true,
+        setDeletionRaceHooks(hooks) {
+          raceHooks = hooks;
+        },
+        async rawCatalogRoleIds() {
+          const result = await provider.describeCollections();
+          assert.ok(result.ok);
+          return result.value.records.flatMap((r) =>
+            r.scope === 'role' ? [r.roleId] : [],
+          );
+        },
+        async rawAssignmentRoleIds() {
+          const result = await provider.roles.rolesOf('u');
+          assert.ok(result.ok);
+          return [...result.value];
+        },
         roles: {
           listRoles: () => provider.roles.listRoles(),
           async createRole(role) {
@@ -26,13 +46,17 @@ for (const entry of ragAccessStoreConformanceCases) {
               );
             return result;
           },
-          deleteRole: (id) => provider.roles.deleteRole(id),
+          deleteRole: async (id) => {
+            await raceHooks.deletionPaused();
+            return provider.roles.deleteRole(id);
+          },
           assign: (user, role) => provider.roles.assign(user, role),
           revoke: (user, role) => provider.roles.revoke(user, role),
           rolesOf: (user) => provider.roles.rolesOf(user),
         },
         bindings: provider.bindings,
         async createRoleCollection(roleId) {
+          await raceHooks.creationPaused();
           const result = await provider.createCollection(`docs_${roleId}`, {
             scope: 'role',
             roleId,

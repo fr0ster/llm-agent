@@ -3,6 +3,7 @@ import { staticLogin, symmetricEmbedder } from '@mcp-abap-adt/llm-agent';
 import {
   CONFORMANCE_EMBEDDING_DIM,
   conformanceEmbedder,
+  registerRawRecordInsert,
 } from '@mcp-abap-adt/llm-agent/testing/rag-filter-conformance';
 import {
   type SharedTableSubject,
@@ -22,14 +23,25 @@ function subject(): SharedTableSubject {
   };
   return {
     async openStore(collection) {
-      return new HanaVectorRag(
-        {
-          ...connection,
-          collectionName: collection,
-          layout: 'shared',
-          embedder,
+      return registerRawRecordInsert(
+        new HanaVectorRag(
+          {
+            ...connection,
+            collectionName: collection,
+            layout: 'shared',
+            embedder,
+          },
+          hana.client,
+        ),
+        async (r) => {
+          hana.insertRow('RAG_DOCUMENTS', {
+            COLLECTION: collection,
+            ID: r.id,
+            TEXT: r.text,
+            VECTOR: (await conformanceEmbedder().embed(r.text)).vector,
+            METADATA: JSON.stringify(r.metadata),
+          });
         },
-        hana.client,
       );
     },
     async provider() {

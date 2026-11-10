@@ -21,6 +21,10 @@ for (const item of ragAccessStoreConformanceCases)
       await item.run(async () => {
         const stores = createPgVectorRagAccessStores(f.provider);
         let hook: RagAccessBarrierHook = async () => {};
+        let raceHooks = {
+          deletionPaused: async () => {},
+          creationPaused: async () => {},
+        };
         const transaction = f.client.transaction?.bind(f.client);
         assert.ok(transaction);
         const creationClient: typeof f.client = {
@@ -29,15 +33,42 @@ for (const item of ragAccessStoreConformanceCases)
           end: async () => {},
           transaction: async (work) => {
             await hook('creation');
+            await raceHooks.creationPaused();
             return transaction(work);
           },
         };
         f.client.transaction = async (work) => {
           await hook('deletion');
-          return transaction(work);
+          return transaction(async (connection) =>
+            work({
+              ...connection,
+              query: async (sql, params) => {
+                const rows = await connection.query(sql, params);
+                if (sql.includes("WHERE scope = 'role'"))
+                  await raceHooks.deletionPaused();
+                return rows;
+              },
+            }),
+          );
         };
         return {
           ...stores,
+          deletionSerializesCreation: true,
+          setDeletionRaceHooks(hooks) {
+            raceHooks = hooks;
+          },
+          async rawCatalogRoleIds() {
+            const sql = `SELECT role_id FROM "rag_collection_catalog" WHERE scope = 'role'`;
+            return (await f.client.query(sql)).rows.map((row) =>
+              String(row.role_id),
+            );
+          },
+          async rawAssignmentRoleIds() {
+            const sql = 'SELECT role_id FROM "rag_role_assignments"';
+            return (await f.client.query(sql)).rows.map((row) =>
+              String(row.role_id),
+            );
+          },
           setBarrierHook(next) {
             hook = next;
           },

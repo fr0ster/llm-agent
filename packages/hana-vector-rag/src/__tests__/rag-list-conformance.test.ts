@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { staticLogin, symmetricEmbedder } from '@mcp-abap-adt/llm-agent';
+import { registerRawRecordInsert } from '@mcp-abap-adt/llm-agent/testing/rag-filter-conformance';
 import { ragListConformanceCases } from '@mcp-abap-adt/llm-agent/testing/rag-list-conformance';
 import { HanaVectorRag } from '../hana-vector-rag.js';
 import { storingHana } from './storing-hana.js';
@@ -15,18 +16,34 @@ for (const layout of ['per-collection', 'shared'] as const) {
           const collectionName = `collection_${sequence++}`;
           if (layout === 'per-collection')
             db.createCollectionTable(collectionName);
-          return new HanaVectorRag(
-            {
-              collectionName,
-              layout,
-              dimension: 3,
-              autoCreateSchema: false,
-              credential: staticLogin('u', 'p'),
-              embedder: symmetricEmbedder({
-                embed: async () => ({ vector: [1, 0, 0] }),
-              }),
+          return registerRawRecordInsert(
+            new HanaVectorRag(
+              {
+                collectionName,
+                layout,
+                dimension: 3,
+                autoCreateSchema: false,
+                credential: staticLogin('u', 'p'),
+                embedder: symmetricEmbedder({
+                  embed: async () => ({ vector: [1, 0, 0] }),
+                }),
+              },
+              db.client,
+            ),
+            async (r) => {
+              db.insertRow(
+                layout === 'shared' ? 'RAG_DOCUMENTS' : collectionName,
+                {
+                  ...(layout === 'shared'
+                    ? { COLLECTION: collectionName }
+                    : {}),
+                  ID: r.id,
+                  TEXT: r.text,
+                  VECTOR: [1, 0, 0],
+                  METADATA: JSON.stringify(r.metadata),
+                },
+              );
             },
-            db.client,
           );
         });
       });

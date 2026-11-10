@@ -50,17 +50,32 @@ Role collection creation writes its catalog intent, then verifies that the role
 exists and is not tombstoned. A refusal compensates by removing its catalog record.
 Assignments carry the persisted role generation token, so a delayed write cannot
 grant membership after a role id is deleted and recreated.
-Deletion first tombstones the role, then checks catalog ownership. An in-use role
-has its tombstone removed and returns `RoleInUseError`; otherwise assignments and
-the role are deleted. Tombstones grant no membership or new collections. Re-running
-`deleteRole` after a crash completes or reverts the tombstone. An orphan catalog
-intent is refused on reopen/hydration and reported by migration. No persistent
-lock, lease, timer or instance-wide manual recovery is used.
+Roles use an immutable revision chain with deterministic `(roleId, revision)` point
+ids. Each transition inserts the next revision with `insert_only` and verifies its
+unique fence: exactly one transition wins. The states are `active`, `deleting(token)`
+and `deleted`. Deletion checks the catalog and clears assignments only while holding
+a deleting revision; each side effect is followed by a transition from that revision.
+A failed transition stops the stale deleter. An in-use role returns to active only
+through a transition from the same deleting revision and returns `RoleInUseError`.
+
+Membership and collection creation require active state. Creation persists its own
+catalog intent before reading the current role revision and compensates its intent
+on refusal. A later `deleteRole` takes over a crashed deletion by transitioning to a
+new deleting token. A stale assignment deletion already in flight can reduce
+permissions after takeover/reversion, but its failed fence prevents role deletion
+and orphaned collections. Revision points remain persisted, including logical
+deletions and recreations; they are not removed or compacted by this protocol.
+No lease, timer or instance-wide recovery is used. Orphan catalog intents remain
+refused on reopen/hydration and are reported by migration.
 
 Every valid new record carries a positive `ownerScope` tag. Queries match this scope
 and its required identity before top-k. Global queries use `ownerScope = 'global'`
 and have no exact-version gate or missing-field predicate. Records without a scope,
-with mismatched scope/identity, or conflicting keys fail closed.
+with mismatched scope/identity, or conflicting keys fail closed. Writers refuse
+inconsistent owners (including precomputed and batch paths). Migration marks
+conflicting stored owners as `ownerScope: 'invalid'` and reports each record.
+Shared read validation rejects all extra owner keys, including null keys on global
+records; backend query predicates remain positive equalities.
 
 These backend stores provide ownership persistence, not server authorization.
 The core access layer must also approve every request; global management requires

@@ -20,6 +20,7 @@ import {
   type IRagScanner,
   listCursorScope,
   listMetadata,
+  matchesRagIdentity,
   matchesScanFilter,
   prepareList,
   RagError,
@@ -28,7 +29,7 @@ import {
   type RagScanFilter,
   type RagScanPage,
   ragIdentityFilter,
-  tagRagMetadata,
+  validateRagMetadata,
 } from '@mcp-abap-adt/llm-agent';
 import type { PgVectorRagConfig } from './connection.js';
 import { resolvePgConnectArgs } from './connection.js';
@@ -281,7 +282,12 @@ export class PgVectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
         metadata: withId(row),
         score: 1 - Number(row.score ?? 0),
       }));
-      return { ok: true, value: results };
+      return {
+        ok: true,
+        value: results.filter((record) =>
+          matchesRagIdentity(record.metadata, ragIdentityFilter(options)),
+        ),
+      };
     } catch (err) {
       return { ok: false, error: this.failure(err, 'QUERY_ERROR') };
     }
@@ -510,11 +516,12 @@ export class PgVectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
     metadata: RagMetadata,
   ): Promise<Result<void, RagError>> {
     try {
+      metadata = validateRagMetadata(metadata);
       const literal = this.vectorLiteral(vector);
       await this.maybeEnsureSchema();
       const client = await this.clientPromise;
       const id = metadata?.id ?? crypto.randomUUID();
-      const { id: _omit, ...rest } = tagRagMetadata(metadata);
+      const { id: _omit, ...rest } = validateRagMetadata(metadata);
       const stmt = this.sql.upsert(literal, id, text, JSON.stringify(rest));
       const settled = this.cache.beginWrite([id]);
       try {

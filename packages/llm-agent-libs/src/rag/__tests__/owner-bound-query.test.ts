@@ -299,3 +299,25 @@ it('forwards the positive global owner predicate before top-k and keeps its defe
     ['global'],
   );
 });
+
+it('ownerBoundQuery rejects a global-tagged foreign result carrying a private id', async () => {
+  const result = await ownerBoundQuery(
+    {
+      name: 'global',
+      owner: { scope: 'global' },
+      rag: makeRag([
+        {
+          text: 'private',
+          score: 1,
+          metadata: { ownerScope: 'global', userId: 'other' },
+        },
+      ]),
+    },
+    embedding,
+    10,
+    { caller },
+    testRagAccess(),
+  );
+  assert.ok(result.ok);
+  assert.deepEqual(result.value, []);
+});

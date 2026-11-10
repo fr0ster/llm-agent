@@ -79,17 +79,23 @@ or global access contract.
 All backends apply a positive record `ownerScope` equality and the required identity
 before top-k; missing or mismatched tags fail closed. Migration backfills valid legacy
 records and reports conflicting keys without exposing them. Global filtering has no
-Qdrant exact-version restriction.
+Qdrant exact-version restriction. Full-owner validation rejects extra identity keys
+at write time and on scoped reads, including a global tag carrying a private id.
+Migration quarantines conflicting stored owners with the non-queryable `invalid`
+tag and reports them. Backend predicates retain positive equality filters.
 
-Qdrant uses symmetric write-intent-then-verify: collection creation writes the catalog
-before checking the role; deletion tombstones the role before checking its collections.
-Tombstones grant no membership and accept no new collection. A refused creation
-compensates its own catalog record; an in-use deletion removes its tombstone. Strong
-ordered writes, all-replica reads and full replica acknowledgements are required.
-After a crash, re-running deletion completes or reverts the tombstone; missing-role
-catalog intents are refused on reopen/hydration and reported by migration. No persistent
-role lock or manual instance-wide recovery is required. Bindings retain deterministic
-insert-only points and compare-after-write (Qdrant >= 1.17.0). See
+Qdrant persists a collection's catalog intent before verifying an active role.
+Roles use immutable revision points: insert-only next revisions and unique fences
+serialize state transitions through active, deleting(token), and deleted. Deleters
+check their revision after every side effect and stop if fenced. Reverting a deletion
+or taking over a crashed deleter requires a transition from the current deleting
+revision. A stale in-flight assignment deletion may reduce permissions after
+reversion; its failed fence prevents subsequent role removal, preserving the role
+of every surviving collection. Revision history is retained, without leases or timers.
+Strong ordered writes, all-replica reads and full replica acknowledgements are
+required. Missing-role catalog intents are refused on reopen/hydration and reported
+by migration. Bindings retain deterministic insert-only points and compare-after-write
+(Qdrant >= 1.17.0). See
 [Qdrant access persistence](../packages/qdrant-rag/README.md#collection-access-persistence).
 This backend work does not complete the later server-wiring tasks.
 

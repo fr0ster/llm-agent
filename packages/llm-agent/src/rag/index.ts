@@ -5,6 +5,7 @@ export {
   matchesRagIdentity,
   ragIdentityFilter,
   tagRagMetadata,
+  validateRagMetadata,
 } from './identity-filter.js';
 export type { InMemoryRagConfig } from './in-memory-rag.js';
 export { InMemoryRag } from './in-memory-rag.js';

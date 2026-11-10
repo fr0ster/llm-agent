@@ -8,6 +8,7 @@ import {
   matchesRagIdentity,
   ragIdentityFilter,
 } from '../rag/identity-filter.js';
+import { conflictingOwnerRecords } from './rag-filter-conformance.js';
 
 export interface RagMigrationConformanceHarness {
   /** A current-release catalog with valid and invalid owners, prepared by the backend. */
@@ -38,12 +39,18 @@ export const ragMigrationConformanceCases = [
         { id: 'role-record', metadata: { roleId: 'r1' } },
         { id: 'global-record', metadata: {} },
         { id: 'conflict-record', metadata: { sessionId: 's1', userId: 'u1' } },
+        ...conflictingOwnerRecords,
       ]);
       const first = await h.migrate();
       assert.ok(first.ok);
       assert.deepEqual(
         first.value.reported.map((row) => row.storeName).sort(),
-        [...h.invalidStoreNames, recordStore].sort(),
+        [
+          ...h.invalidStoreNames,
+          ...Array<string>(1 + conflictingOwnerRecords.length).fill(
+            recordStore,
+          ),
+        ].sort(),
       );
       for (const row of first.value.reported) assert.ok(row.reason.length > 0);
       const description = await h.describe();
@@ -67,7 +74,7 @@ export const ragMigrationConformanceCases = [
         owners(h.expectedRecords),
       );
       const records = await h.recordMetadata();
-      assert.equal(records.length, 5);
+      assert.equal(records.length, 5 + conflictingOwnerRecords.length);
       for (const [id, scope] of [
         ['session-record', 'session'],
         ['user-record', 'user'],
@@ -81,7 +88,12 @@ export const ragMigrationConformanceCases = [
       }
       const conflict = records.find((r) => r.id === 'conflict-record');
       assert.ok(conflict);
-      assert.equal(conflict.metadata.ownerScope, undefined);
+      assert.equal(conflict.metadata.ownerScope, 'invalid');
+      for (const record of conflictingOwnerRecords)
+        assert.equal(
+          records.find((r) => r.id === record.id)?.metadata.ownerScope,
+          'invalid',
+        );
       for (const filter of [
         { sessionId: 's1' },
         { userId: 'u1' },

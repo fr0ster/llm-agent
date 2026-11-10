@@ -30,8 +30,20 @@ export function createQdrantRagAccessStores(provider: QdrantRagProvider): {
     listRoles: () =>
       run(async () => {
         const db = await provider.accessPersistence();
-        return (await db.rows('rag_roles'))
-          .filter((row) => row.tombstone !== 'true')
+        const ids = new Set(
+          (await db.rows('rag_roles')).map((row) => row.role_id),
+        );
+        const current = await Promise.all(
+          [...ids].map(async (id) => {
+            if (typeof id !== 'string')
+              throw new QdrantAccessRefusal('Invalid role id');
+            return db.roleState(id);
+          }),
+        );
+        return current
+          .filter(
+            (row): row is NonNullable<typeof row> => row?.state === 'active',
+          )
           .map((row) => {
             if (
               typeof row.role_id !== 'string' ||
@@ -56,47 +68,67 @@ export function createQdrantRagAccessStores(provider: QdrantRagProvider): {
       run(async () => {
         const db = await provider.accessPersistence();
 
-        if (await db.read('rag_roles', role.roleId))
-          throw new QdrantAccessRefusal('Role already exists');
+        const current = await db.roleState(role.roleId);
         const token = crypto.randomUUID();
-        await db.insert('rag_roles', role.roleId, {
+        const payload = {
           role_id: role.roleId,
           name: role.name,
           description: role.description,
           token,
-        });
-        if ((await db.read('rag_roles', role.roleId))?.token !== token)
-          throw new RagError('Role already exists', 'RAG_ACCESS_STORE_ERROR');
+          state: 'active',
+          revision: '0',
+        };
+        if (current) {
+          if (
+            current.state !== 'deleted' ||
+            !(await db.transitionRole(current, 'active', payload))
+          )
+            throw new QdrantAccessRefusal('Role already exists');
+        } else {
+          await db.insert('rag_roles', role.roleId, payload);
+          if ((await db.roleState(role.roleId))?.token !== token)
+            throw new QdrantAccessRefusal('Role already exists');
+        }
         return role;
       }),
     deleteRole: (roleId) =>
       run(async () => {
         const db = await provider.accessPersistence();
-        const role = await db.read('rag_roles', roleId);
-        if (!role) return;
-        await db.patch('rag_roles', roleId, { tombstone: 'true' });
-        if (
-          (await db.rows(db.catalog)).some(
-            (row) => row.scope === 'role' && row.role_id === roleId,
-          )
-        ) {
-          await db.patch('rag_roles', roleId, { tombstone: null });
-          throw new RoleInUseError();
+        const role = await db.roleState(roleId);
+        if (!role || role.state === 'deleted') return;
+        let held = await db.transitionRole(role, 'deleting', {
+          deletion_token: crypto.randomUUID(),
+        });
+        if (!held) throw new QdrantAccessRefusal('Role deletion fenced');
+        const inUse = (await db.rows(db.catalog)).some(
+          (row) => row.scope === 'role' && row.role_id === roleId,
+        );
+        const checked = await db.transitionRole(
+          held,
+          inUse ? 'active' : 'deleting',
+        );
+        if (!checked) throw new QdrantAccessRefusal('Role deletion fenced');
+        held = checked;
+        if (inUse) throw new RoleInUseError();
+        const assignments = await db.rows('rag_role_assignments');
+        const scanned = await db.transitionRole(held, 'deleting');
+        if (!scanned) throw new QdrantAccessRefusal('Role deletion fenced');
+        held = scanned;
+        for (const row of assignments) {
+          if (row.role_id !== roleId) continue;
+          if (typeof row.user_id !== 'string')
+            throw new QdrantAccessRefusal('Invalid persisted assignment');
+          // A stale deletion can only reduce permissions; its next CAS prevents role removal.
+          await db.remove(
+            'rag_role_assignments',
+            JSON.stringify([row.user_id, roleId]),
+          );
+          const removed = await db.transitionRole(held, 'deleting');
+          if (!removed) throw new QdrantAccessRefusal('Role deletion fenced');
+          held = removed;
         }
-        for (const row of await db.rows('rag_role_assignments')) {
-          if (row.role_id === roleId) {
-            if (typeof row.user_id !== 'string')
-              throw new RagError(
-                'Invalid persisted assignment',
-                'RAG_ACCESS_STORE_ERROR',
-              );
-            await db.remove(
-              'rag_role_assignments',
-              JSON.stringify([row.user_id, roleId]),
-            );
-          }
-        }
-        await db.remove('rag_roles', roleId);
+        if (!(await db.transitionRole(held, 'deleted')))
+          throw new QdrantAccessRefusal('Role deletion fenced');
       }),
     assign: (userId, roleId) =>
       run(async () => {
@@ -147,10 +179,10 @@ export function createQdrantRagAccessStores(provider: QdrantRagProvider): {
               'RAG_ACCESS_STORE_ERROR',
             );
           // A partial failed deletion must never grant membership in a missing role.
-          const role = await db.read('rag_roles', row.role_id);
+          const role = await db.roleState(row.role_id);
           if (
             role?.role_id === row.role_id &&
-            role.tombstone !== 'true' &&
+            role.state === 'active' &&
             typeof role.token === 'string' &&
             role.token === row.role_token
           )

@@ -38,6 +38,7 @@ import {
 import {
   conformanceEmbedder,
   ragFilterConformanceCases,
+  seedLegacyRagRecord,
 } from './rag-filter-conformance.js';
 
 /** One backend in the `shared` layout: stores and a provider over the same tables. */
@@ -182,7 +183,7 @@ export const sharedTableConformanceCases: readonly SharedTableConformanceCase[] 
               const res = await writer.upsertRaw(
                 'neighbour-owned',
                 'quarterly revenue forecast owned',
-                { sessionId: 's1', userId: 'u1', namespace: 'a' },
+                { sessionId: 's1', namespace: 'a' },
               );
               if (!res.ok) throw res.error;
               return s.openStore('docs');
@@ -207,12 +208,12 @@ export const sharedTableConformanceCases: readonly SharedTableConformanceCase[] 
           ['bool', { userId: true, namespace: true }],
         ];
         for (const [id, meta] of rows) {
-          const res = await writer.upsertRaw(
+          await seedLegacyRagRecord(
+            rag,
             id,
             'quarterly revenue forecast',
             meta,
           );
-          if (!res.ok) throw res.error;
         }
         const embedder = conformanceEmbedder();
         const ids = async (

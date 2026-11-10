@@ -39,6 +39,7 @@
 import assert from 'node:assert/strict';
 import type { IEmbedder, IRag } from '../interfaces/rag.js';
 import type { CallOptions, RagMetadata } from '../interfaces/types.js';
+import { tagRagMetadata } from '../rag/identity-filter.js';
 
 /** A record a conformance case seeds. `metadata.id` identifies it in results. */
 export interface ConformanceRecord {
@@ -97,9 +98,21 @@ export function conformanceEmbedder(): IEmbedder {
 async function seed(rag: IRag, records: ConformanceRecord[]): Promise<void> {
   const writer = rag.writer?.();
   if (!writer) throw new Error('store under test exposes no writer()');
+  if (
+    records.every((r) => tagRagMetadata(r.metadata).ownerScope === 'invalid')
+  ) {
+    const initialized = await writer.upsertRaw(
+      '__expired_fixture__',
+      'expired fixture',
+      { ttl: -1 },
+    );
+    if (!initialized.ok) throw initialized.error;
+  }
   for (const r of records) {
     const res = await writer.upsertRaw(r.id, r.text, r.metadata);
-    if (!res.ok) throw res.error;
+    if (tagRagMetadata(r.metadata).ownerScope === 'invalid')
+      assert.equal(res.ok, false);
+    else if (!res.ok) throw res.error;
   }
 }
 
@@ -200,12 +213,12 @@ export const ragFilterConformanceCases: readonly RagFilterConformanceCase[] = [
         {
           id: 's1-a',
           text: 'hotel savanna acacia',
-          metadata: { sessionId: 's1', userId: 'u1' },
+          metadata: { sessionId: 's1' },
         },
         {
           id: 's2-a',
           text: 'india reef coral',
-          metadata: { sessionId: 's2', userId: 'u2' },
+          metadata: { sessionId: 's2' },
         },
       ]);
       assert.deepEqual(await queryIds(rag, Q, 10), ['s1-a', 's2-a']);
@@ -523,3 +536,126 @@ export const ragOwnerFilterConformanceCases: readonly RagFilterConformanceCase[]
       },
     },
   ];
+
+/** Malformed stored records must be inserted through a backend raw hook, bypassing its writer. */
+export const conflictingOwnerRecords: readonly ConformanceRecord[] = [
+  {
+    id: 'global-user',
+    text: Q,
+    metadata: { ownerScope: 'global', userId: 'u' },
+  },
+  {
+    id: 'global-session',
+    text: Q,
+    metadata: { ownerScope: 'global', sessionId: 's' },
+  },
+  {
+    id: 'global-role',
+    text: Q,
+    metadata: { ownerScope: 'global', roleId: 'r' },
+  },
+  {
+    id: 'global-null',
+    text: Q,
+    metadata: { ownerScope: 'global', userId: null },
+  },
+  {
+    id: 'session-user',
+    text: Q,
+    metadata: { ownerScope: 'session', sessionId: 's', userId: 'u' },
+  },
+  {
+    id: 'session-role',
+    text: Q,
+    metadata: { ownerScope: 'session', sessionId: 's', roleId: 'r' },
+  },
+  {
+    id: 'user-role',
+    text: Q,
+    metadata: { ownerScope: 'user', userId: 'u', roleId: 'r' },
+  },
+  {
+    id: 'role-session',
+    text: Q,
+    metadata: { ownerScope: 'role', roleId: 'r', sessionId: 's' },
+  },
+];
+
+export async function ragRawOwnerConformanceCase(h: {
+  rag: IRag;
+  insertRaw(record: ConformanceRecord): Promise<void>;
+}): Promise<void> {
+  for (const record of conflictingOwnerRecords) await h.insertRaw(record);
+  for (const owner of [
+    { scope: 'global' },
+    { scope: 'session', sessionId: 's' },
+    { scope: 'user', userId: 'u' },
+    { scope: 'role', roleId: 'r' },
+  ] as const)
+    assert.deepEqual(await queryIds(h.rag, Q, 100, { owner }), []);
+  const writer = h.rag.writer?.();
+  assert.ok(writer);
+  for (const record of conflictingOwnerRecords) {
+    assert.equal(
+      (await writer.upsertRaw(record.id, record.text, record.metadata)).ok,
+      false,
+      `${record.id} must be refused`,
+    );
+    const vector = (await conformanceEmbedder().embed(record.text)).vector;
+    if (writer.upsertPrecomputedRaw)
+      assert.equal(
+        (
+          await writer.upsertPrecomputedRaw(
+            record.id,
+            record.text,
+            vector,
+            record.metadata,
+          )
+        ).ok,
+        false,
+      );
+    if (writer.upsertManyPrecomputedRaw)
+      assert.equal(
+        (await writer.upsertManyPrecomputedRaw([{ ...record, vector }])).ok,
+        false,
+      );
+  }
+}
+
+const rawRecordHooks = new WeakMap<
+  IRag,
+  (record: ConformanceRecord) => Promise<void>
+>();
+
+/** Test-only raw insertion seam for legacy scan/list fixtures with malformed ownership. */
+export function registerRawRecordInsert<T extends IRag>(
+  rag: T,
+  insert: (record: ConformanceRecord) => Promise<void>,
+): T {
+  rawRecordHooks.set(rag, insert);
+  return rag;
+}
+
+export async function seedLegacyRagRecord(
+  rag: IRag,
+  id: string,
+  text: string,
+  metadata: RagMetadata,
+): Promise<void> {
+  const hook = rawRecordHooks.get(rag);
+  if (tagRagMetadata(metadata).ownerScope === 'invalid' && hook) {
+    await hook({ id, text, metadata });
+    return;
+  }
+  const writer = rag.writer?.();
+  assert.ok(writer);
+  const invalid = tagRagMetadata(metadata).ownerScope === 'invalid';
+  const result = await writer.upsertRaw(id, text, invalid ? {} : metadata);
+  if (!result.ok) throw result.error;
+  if (invalid) {
+    // The memory backends return their stored metadata through unfiltered getById.
+    const stored = await rag.getById(id);
+    assert.ok(stored.ok && stored.value);
+    Object.assign(stored.value.metadata, metadata, { ownerScope: 'invalid' });
+  }
+}

@@ -45,3 +45,27 @@ test('positive ownerScope is mandatory and mismatched scope/id fails closed', ()
     true,
   );
 });
+
+test('full-owner consistency rejects conflicting stored tags and ids', () => {
+  for (const metadata of [
+    { ownerScope: 'global', userId: 'u' },
+    { ownerScope: 'global', sessionId: null },
+    { ownerScope: 'session', sessionId: 's', userId: 'u' },
+    { ownerScope: 'session', sessionId: 's', roleId: 'r' },
+    { ownerScope: 'user', userId: 'u', roleId: 'r' },
+  ] as const) {
+    for (const owner of [
+      { scope: 'global' },
+      { scope: 'session', sessionId: 's' },
+      { scope: 'user', userId: 'u' },
+      { scope: 'role', roleId: 'r' },
+    ] as const)
+      assert.equal(
+        matchesRagIdentity(
+          metadata,
+          ragIdentityFilter({ ragFilter: { owner } }),
+        ),
+        false,
+      );
+  }
+});

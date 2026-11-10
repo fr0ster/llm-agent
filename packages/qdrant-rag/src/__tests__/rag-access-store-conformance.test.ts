@@ -25,6 +25,8 @@ for (const entry of ragAccessStoreConformanceCases) {
         const provider = new QdrantRagProvider(config);
         const other = new QdrantRagProvider(config);
         assert.ok((await migrateQdrantRagAccess(provider)).ok);
+        const persistence = await provider.accessPersistence();
+        const otherPersistence = await other.accessPersistence();
         const stores = createQdrantRagAccessStores(provider);
         const roles = {
           ...stores.roles,
@@ -52,6 +54,41 @@ for (const entry of ragAccessStoreConformanceCases) {
         };
         return {
           roles,
+          deletionSerializesCreation: false,
+          setDeletionRaceHooks(hooks) {
+            {
+              const db = persistence;
+              const rows = db.rows.bind(db);
+              let first = true;
+              db.rows = async (collection) => {
+                if (collection === 'rag_role_assignments' && first) {
+                  first = false;
+                  await hooks.deletionPaused();
+                }
+                return rows(collection);
+              };
+            }
+            {
+              const db = otherPersistence;
+              const requireRole = db.requireRole.bind(db);
+              db.requireRole = async (roleId) => {
+                await hooks.creationPaused();
+                return requireRole(roleId);
+              };
+            }
+          },
+          async rawCatalogRoleIds() {
+            const db = await provider.accessPersistence();
+            return (await db.rows(db.catalog))
+              .filter((row) => row.scope === 'role')
+              .map((row) => String(row.role_id));
+          },
+          async rawAssignmentRoleIds() {
+            const db = await provider.accessPersistence();
+            return (await db.rows('rag_role_assignments')).map((row) =>
+              String(row.role_id),
+            );
+          },
           bindings: {
             bind: (sessionId, userId) =>
               createQdrantRagAccessStores(other).bindings.bind(
@@ -126,7 +163,9 @@ test('Qdrant tombstoned role grants no membership, refuses creation and deleteRo
     );
     assert.ok((await stores.roles.assign('u', 'r')).ok);
     const db = await provider.accessPersistence();
-    await db.patch('rag_roles', 'r', { tombstone: 'true' });
+    const current = await db.roleState('r');
+    assert.ok(current);
+    assert.ok(await db.transitionRole(current, 'deleting'));
     const membership = await stores.roles.rolesOf('u');
     assert.ok(membership.ok);
     assert.equal(membership.value.has('r'), false);
@@ -141,7 +180,7 @@ test('Qdrant tombstoned role grants no membership, refuses creation and deleteRo
       false,
     );
     assert.ok((await stores.roles.deleteRole('r')).ok);
-    assert.equal(await db.read('rag_roles', 'r'), undefined);
+    assert.equal((await db.roleState('r'))?.state, 'deleted');
     assert.equal(stub.collections.has('rag_role_locks'), false);
   } finally {
     await stub.close();
@@ -379,7 +418,8 @@ for (const first of ['creation', 'deletion'] as const) {
               path === '/collections/rag_collection_catalog/points' &&
               init?.method === 'PUT') ||
               (first === 'deletion' &&
-                path === '/collections/rag_roles/points/payload'))
+                path === '/collections/rag_roles/points' &&
+                init?.method === 'PUT'))
           ) {
             paused = true;
             entered.release();
@@ -520,3 +560,101 @@ test('Qdrant refused creation compensates only its own catalog write intent', as
     await stub.close();
   }
 });
+
+for (const pause of ['scan', 'assignment-delete'] as const)
+  test(`Qdrant D1/C/D2 cannot strand a catalog intent without an active role: ${pause}`, async () => {
+    const stub = await startQdrantStub();
+    const d1Entered = controlledBarrier();
+    const d1Resume = controlledBarrier();
+    const cEntered = controlledBarrier();
+    const cResume = controlledBarrier();
+    try {
+      const config = {
+        name: 'fence',
+        url: stub.baseUrl,
+        embedder: symmetricEmbedder(conformanceEmbedder()),
+      };
+      const a = new QdrantRagProvider(config);
+      const b = new QdrantRagProvider(config);
+      const roles = createQdrantRagAccessStores(a).roles;
+      assert.ok((await roles.createRole({ roleId: 'r', name: 'Role' })).ok);
+      assert.ok((await roles.assign('u', 'r')).ok);
+      const db = await a.accessPersistence();
+      const other = await b.accessPersistence();
+      const rows = db.rows.bind(db);
+      let paused = false;
+      const intercept = mock.method(db, 'rows', async (collection: string) => {
+        if (
+          pause === 'scan' &&
+          collection === 'rag_role_assignments' &&
+          !paused
+        ) {
+          paused = true;
+          d1Entered.release();
+          await d1Resume.promise;
+        }
+        return rows(collection);
+      });
+      const remove = db.remove.bind(db);
+      const removalGate = mock.method(
+        db,
+        'remove',
+        async (collection: string, key: string) => {
+          if (
+            pause === 'assignment-delete' &&
+            collection === 'rag_role_assignments' &&
+            !paused
+          ) {
+            paused = true;
+            d1Entered.release();
+            await d1Resume.promise;
+          }
+          return remove(collection, key);
+        },
+      );
+      const requireRole = other.requireRole.bind(other);
+      const creationGate = mock.method(
+        other,
+        'requireRole',
+        async (roleId: string) => {
+          cEntered.release();
+          await cResume.promise;
+          return requireRole(roleId);
+        },
+      );
+      const d1 = roles.deleteRole('r');
+      await d1Entered.promise;
+      const c = b.createCollection('docs', {
+        scope: 'role',
+        roleId: 'r',
+        dimension: 64,
+      });
+      await cEntered.promise;
+      assert.equal((await roles.deleteRole('r')).ok, false);
+      cResume.release();
+      const created = await c;
+      d1Resume.release();
+      await d1;
+      const catalog = await db.rows(db.catalog);
+      const active = await roles.listRoles();
+      assert.ok(active.ok);
+      for (const row of catalog)
+        if (row.scope === 'role')
+          assert.ok(
+            active.value.some((role) => role.roleId === row.role_id),
+            'raw catalog requires active role',
+          );
+      const assignments = await roles.rolesOf('u');
+      assert.ok(assignments.ok);
+      assert.ok(created.ok);
+      assert.equal((await db.roleState('r'))?.state, 'active');
+      assert.equal(assignments.value.has('r'), pause === 'scan');
+      removalGate.mock.restore();
+      intercept.mock.restore();
+      creationGate.mock.restore();
+    } finally {
+      d1Resume.release();
+      cResume.release();
+      await stub.close();
+    }
+  });

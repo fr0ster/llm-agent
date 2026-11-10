@@ -121,6 +121,14 @@ export class InMemoryRag implements IRag, IRagScanner, IRagFilteredDeleter {
     }
 
     metadata = tagRagMetadata(metadata);
+    if (metadata.ownerScope === 'invalid')
+      return {
+        ok: false,
+        error: new RagError(
+          'Conflicting owner scope and identity keys',
+          'INVALID_ARGUMENT',
+        ),
+      };
     let enrichedText = text;
     for (const enricher of this.documentEnrichers) {
       const eResult = await enricher.enrich(enrichedText, options);
@@ -152,12 +160,21 @@ export class InMemoryRag implements IRag, IRagScanner, IRagFilteredDeleter {
     if (metadata.id) {
       const idx = this.records.findIndex((r) => r.metadata.id === metadata.id);
       if (idx !== -1) {
-        this.records[idx].text = enrichedText;
-        this.records[idx].embedding = embedding;
-        this.records[idx].metadata = tagRagMetadata({
+        const merged = tagRagMetadata({
           ...this.records[idx].metadata,
           ...resolvedMetadata,
         });
+        if (merged.ownerScope === 'invalid')
+          return {
+            ok: false,
+            error: new RagError(
+              'Conflicting owner scope and identity keys',
+              'INVALID_ARGUMENT',
+            ),
+          };
+        this.records[idx].text = enrichedText;
+        this.records[idx].embedding = embedding;
+        this.records[idx].metadata = merged;
         return { ok: true, value: undefined };
       }
     }
@@ -178,7 +195,11 @@ export class InMemoryRag implements IRag, IRagScanner, IRagFilteredDeleter {
     // Find record with cosine similarity >= dedupThreshold
     let dupRecord: StoredRecord | undefined;
     for (const r of candidates) {
-      if (cosineSimilarity(embedding, r.embedding) >= this.dedupThreshold) {
+      if (
+        tagRagMetadata({ ...r.metadata, ...resolvedMetadata }).ownerScope !==
+          'invalid' &&
+        cosineSimilarity(embedding, r.embedding) >= this.dedupThreshold
+      ) {
         dupRecord = r;
         break;
       }

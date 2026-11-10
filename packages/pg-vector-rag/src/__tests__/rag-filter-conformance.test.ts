@@ -5,6 +5,7 @@ import {
   conformanceEmbedder,
   ragFilterConformanceCases,
   ragOwnerFilterConformanceCases,
+  ragRawOwnerConformanceCase,
 } from '@mcp-abap-adt/llm-agent/testing/rag-filter-conformance';
 import { PgVectorRag } from '../pg-vector-rag.js';
 import { sharedLayoutSql } from '../shared-ddl.js';
@@ -88,3 +89,47 @@ for (const layout of ['shared', 'per-collection'] as const)
         await f.close();
       }
     });
+
+for (const layout of ['shared', 'per-collection'] as const)
+  it(`PG live ${layout} shared raw conflicting-owner records are excluded and writes refused`, {
+    skip: !process.env.PG_TEST_URL,
+  }, async () => {
+    const f = await accessFixture();
+    try {
+      await f.client.query('CREATE EXTENSION IF NOT EXISTS vector');
+      for (const sql of sharedLayoutSql({ dimension: 64 })
+        .split(';')
+        .filter((s) => s.trim()))
+        await f.client.query(sql);
+      const rag = new PgVectorRag(
+        {
+          collectionName: 'raw',
+          layout,
+          dimension: 64,
+          embedder: symmetricEmbedder(conformanceEmbedder()),
+        },
+        f.client,
+      );
+      if (layout === 'per-collection') await rag.ensureSchema();
+      await ragRawOwnerConformanceCase({
+        rag,
+        async insertRaw(r) {
+          await f.client.query(
+            layout === 'shared'
+              ? `INSERT INTO rag_documents (collection, id, text, vector, metadata) VALUES ('raw', $1, $2, $3::vector, $4::jsonb)`
+              : `INSERT INTO raw (id, text, vector, metadata) VALUES ($1, $2, $3::vector, $4::jsonb)`,
+            [
+              r.id,
+              r.text,
+              JSON.stringify(
+                (await conformanceEmbedder().embed(r.text)).vector,
+              ),
+              JSON.stringify(r.metadata),
+            ],
+          );
+        },
+      });
+    } finally {
+      await f.close();
+    }
+  });

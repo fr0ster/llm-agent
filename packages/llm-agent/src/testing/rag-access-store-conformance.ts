@@ -14,6 +14,13 @@ export type RagAccessBarrierHook = (
 ) => Promise<void>;
 
 export interface RagAccessStoreHarness {
+  deletionSerializesCreation: boolean;
+  setDeletionRaceHooks(hooks: {
+    deletionPaused(): Promise<void>;
+    creationPaused(): Promise<void>;
+  }): void;
+  rawCatalogRoleIds(): Promise<readonly string[]>;
+  rawAssignmentRoleIds(): Promise<readonly string[]>;
   roles: IRagRoleStore;
   bindings: ISessionBindingStore;
   createRoleCollection(roleId: string): Promise<Result<void, RagError>>;
@@ -38,6 +45,76 @@ function barrier() {
 
 export const ragAccessStoreConformanceCases: readonly RagAccessStoreConformanceCase[] =
   [
+    {
+      name: 'D1/C/D2 role deletion and collection creation never leave an inactive referenced role',
+      async run(make) {
+        const h = await make();
+        assert.ok(
+          (await h.roles.createRole({ roleId: 'race', name: 'Race' })).ok,
+        );
+        assert.ok((await h.roles.assign('u', 'race')).ok);
+        const d1Entered = barrier();
+        const d1Resume = barrier();
+        const cEntered = barrier();
+        const cResume = barrier();
+        let firstDeletion = true;
+        h.setDeletionRaceHooks({
+          async deletionPaused() {
+            if (!firstDeletion) return;
+            firstDeletion = false;
+            d1Entered.release();
+            await d1Resume.promise;
+          },
+          async creationPaused() {
+            cEntered.release();
+            await cResume.promise;
+          },
+        });
+        const d1 = h.roles.deleteRole('race');
+        await d1Entered.promise;
+        const c = h.createRoleCollection('race');
+        await cEntered.promise;
+        const d2 = h.roles.deleteRole('race');
+        try {
+          if (h.deletionSerializesCreation) {
+            // SQL creation cannot persist its intent past D1's row lock.
+            d1Resume.release();
+            cResume.release();
+            await Promise.all([d1, c, d2]);
+          } else {
+            assert.equal((await d2).ok, false);
+            cResume.release();
+            assert.ok((await c).ok);
+            d1Resume.release();
+            assert.equal(
+              (await d1).ok,
+              false,
+              'the stale deleter must be fenced',
+            );
+          }
+        } finally {
+          d1Resume.release();
+          cResume.release();
+        }
+        const roles = await h.roles.listRoles();
+        const assignments = await h.roles.rolesOf('u');
+        assert.ok(roles.ok && assignments.ok);
+        const active = roles.value.some((role) => role.roleId === 'race');
+        for (const record of await h.collections())
+          if (record.scope === 'role' && record.roleId === 'race')
+            assert.ok(active);
+        for (const roleId of await h.rawCatalogRoleIds())
+          if (roleId === 'race')
+            assert.ok(active, 'raw catalog must reference an active role');
+        if (!active) {
+          assert.equal(assignments.value.has('race'), false);
+          assert.equal(
+            (await h.rawAssignmentRoleIds()).includes('race'),
+            false,
+          );
+        }
+      },
+    },
     {
       name: 'creating a role-owned catalog record for a missing role is refused',
       async run(make) {

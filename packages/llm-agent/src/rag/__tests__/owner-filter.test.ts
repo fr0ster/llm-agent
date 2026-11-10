@@ -13,7 +13,10 @@ test('in-memory applies role and positive global predicates before top-k, includ
     ['query global second', {}],
     ['query tagged null', { roleId: null }],
   ] as const) {
-    assert.ok((await rag.upsert(text, metadata)).ok);
+    assert.equal(
+      (await rag.upsert(text, metadata)).ok,
+      !('roleId' in metadata && metadata.roleId === null),
+    );
   }
   const global = await rag.query(new TextOnlyEmbedding('query'), 2, {
     ragFilter: { owner: { scope: 'global' } },

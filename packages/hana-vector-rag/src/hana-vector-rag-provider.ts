@@ -519,7 +519,7 @@ export class HanaVectorRagProvider
         const tagged = tagRagMetadata(metadata);
         const storeName =
           this.layout === 'shared' ? String(row.collection) : name;
-        if (tagged.ownerScope === undefined)
+        if (tagged.ownerScope === 'invalid')
           reported.push({
             storeName,
             reason: `Conflicting owner keys on record ${row.id}`,

@@ -3,6 +3,7 @@ import { symmetricEmbedder } from '@mcp-abap-adt/llm-agent';
 import {
   CONFORMANCE_EMBEDDING_DIM,
   conformanceEmbedder,
+  registerRawRecordInsert,
 } from '@mcp-abap-adt/llm-agent/testing/rag-filter-conformance';
 import {
   type SharedTableSubject,
@@ -17,14 +18,25 @@ function subject(): SharedTableSubject {
   const embedder = symmetricEmbedder(conformanceEmbedder());
   return {
     async openStore(collection) {
-      return new PgVectorRag(
-        {
-          collectionName: collection,
-          dimension: CONFORMANCE_EMBEDDING_DIM,
-          layout: 'shared',
-          embedder,
+      return registerRawRecordInsert(
+        new PgVectorRag(
+          {
+            collectionName: collection,
+            dimension: CONFORMANCE_EMBEDDING_DIM,
+            layout: 'shared',
+            embedder,
+          },
+          client,
+        ),
+        async (r) => {
+          client.insertSharedRow({
+            collection,
+            id: r.id,
+            text: r.text,
+            vector: (await conformanceEmbedder().embed(r.text)).vector,
+            metadata: r.metadata,
+          });
         },
-        client,
       );
     },
     async provider() {

@@ -11,7 +11,7 @@ const rootRequire = createRequire(resolve(root, 'package.json'));
 const load = (spec) => import(pathToFileURL(rootRequire.resolve(spec)).href);
 
 const { symmetricEmbedder } = await load('@mcp-abap-adt/llm-agent');
-const { CONFORMANCE_EMBEDDING_DIM, conformanceEmbedder } = await load(
+const { CONFORMANCE_EMBEDDING_DIM, conformanceEmbedder, registerRawRecordInsert } = await load(
   '@mcp-abap-adt/llm-agent/testing/rag-filter-conformance',
 );
 const { sharedTableConformanceCases } = await load(
@@ -50,7 +50,7 @@ const resetTables = () =>
   );
 
 function storeOf(collection, dimension = dim) {
-  return new PgVectorRag(
+  return registerRawRecordInsert(new PgVectorRag(
     {
       collectionName: collection,
       dimension,
@@ -59,7 +59,9 @@ function storeOf(collection, dimension = dim) {
       embedder,
     },
     client,
-  );
+  ), async r => {
+    await client.query(`INSERT INTO "${schema}".rag_documents (collection, id, text, vector, metadata) VALUES ($1, $2, $3, $4::vector, $5::jsonb)`, [collection, r.id, r.text, JSON.stringify((await conformanceEmbedder().embed(r.text)).vector), JSON.stringify(r.metadata)]);
+  });
 }
 
 function subject() {
@@ -220,7 +222,7 @@ try {
     };
   };
   const perCollectionStore = (collection) =>
-    new PgVectorRag(
+    registerRawRecordInsert(new PgVectorRag(
       {
         collectionName: collection,
         dimension: dim,
@@ -228,7 +230,12 @@ try {
         embedder,
       },
       pcClient,
-    );
+    ), async r => {
+      // Initialize the test table through a valid write before raw fixture insertion.
+      const store = new PgVectorRag({ collectionName: collection, dimension: dim, embedder }, pcClient);
+      await store.ensureSchema();
+      await pcClient.query(`INSERT INTO "${collection}" (id, text, vector, metadata) VALUES ($1, $2, $3::vector, $4::jsonb)`, [r.id, r.text, JSON.stringify((await conformanceEmbedder().embed(r.text)).vector), JSON.stringify(r.metadata)]);
+    });
   const perCollectionScanSubject = async () => {
     await dropPerCollectionTables();
     return {

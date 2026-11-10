@@ -15,6 +15,42 @@ export function isAccessCollectionName(name: string): boolean {
     (internal) => name === internal || name.endsWith(`_${internal}`),
   );
 }
+export type QdrantRoleRevision = AccessPayload & {
+  role_id: string;
+  token: string;
+  revision: string;
+} & (
+    | { state: 'active' }
+    | { state: 'deleting'; deletion_token: string }
+    | { state: 'deleted' }
+  );
+
+function roleRevision(
+  payload: AccessPayload,
+  roleId: string,
+  revision: number,
+): QdrantRoleRevision {
+  if (payload.role_id !== roleId || typeof payload.token !== 'string')
+    throw new QdrantAccessRefusal('Invalid role identity');
+  const base = {
+    ...payload,
+    role_id: roleId,
+    token: payload.token,
+    revision: String(revision),
+  };
+  const state =
+    payload.state ?? (payload.tombstone === 'true' ? 'deleting' : 'active');
+  if (state === 'active') return { ...base, state };
+  if (state === 'deleted') return { ...base, state };
+  if (state === 'deleting')
+    return {
+      ...base,
+      state,
+      deletion_token: payload.deletion_token ?? payload.token,
+    };
+  throw new QdrantAccessRefusal('Invalid role state');
+}
+
 type Point = { id: string; payload?: AccessPayload };
 type Request = (path: string, init?: RequestInit) => Promise<Response>;
 /** A definite access refusal. */
@@ -265,11 +301,63 @@ export class QdrantAccessPersistence {
     );
   }
 
+  /** Immutable revision points fence every role transition across instances. */
+  async roleState(roleId: string): Promise<QdrantRoleRevision | undefined> {
+    let current = await this.read('rag_roles', roleId);
+    if (!current) return undefined;
+    let revision = 0;
+    for (;;) {
+      const next = await this.read(
+        'rag_roles',
+        JSON.stringify([roleId, revision + 1]),
+      );
+      if (!next) return roleRevision(current, roleId, revision);
+      if (next.role_id !== roleId || next.revision !== String(revision + 1))
+        throw new QdrantAccessRefusal('Invalid role revision');
+      current = next;
+      revision += 1;
+    }
+  }
+
+  async transitionRole(
+    current: QdrantRoleRevision,
+    state: 'active' | 'deleting' | 'deleted',
+    changes: AccessPayload = {},
+  ): Promise<QdrantRoleRevision | undefined> {
+    if (
+      (current.state === 'active' && state !== 'deleting') ||
+      (current.state === 'deleted' && state !== 'active')
+    )
+      throw new QdrantAccessRefusal('Invalid role transition');
+    const roleId = current.role_id;
+    const revision = Number(current.revision) + 1;
+    if (
+      typeof roleId !== 'string' ||
+      !Number.isSafeInteger(revision) ||
+      revision < 1
+    )
+      throw new QdrantAccessRefusal('Invalid role revision');
+    const key = JSON.stringify([roleId, revision]);
+    const fence = crypto.randomUUID();
+    const next = {
+      ...current,
+      ...changes,
+      state,
+      revision: String(revision),
+      fence,
+    };
+    await this.insert('rag_roles', key, next);
+    const stored = await this.read('rag_roles', key);
+    return stored?.fence === fence
+      ? roleRevision(next, roleId, revision)
+      : undefined;
+  }
+
   async requireRole(roleId: string): Promise<AccessPayload> {
-    const role = await this.read('rag_roles', roleId);
+    const role = await this.roleState(roleId);
     if (
       role?.role_id !== roleId ||
-      role.tombstone === 'true' ||
+      role.state !== 'active' ||
       typeof role.token !== 'string'
     )
       throw new QdrantAccessRefusal('Role does not exist');

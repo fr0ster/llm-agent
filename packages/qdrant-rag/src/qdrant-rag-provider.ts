@@ -274,7 +274,7 @@ export class QdrantRagProvider
         for (const point of body.result.points) {
           const metadata = point.payload ?? {};
           const tagged = tagRagMetadata(metadata);
-          if (tagged.ownerScope === undefined)
+          if (tagged.ownerScope === 'invalid')
             reported.push({
               storeName,
               reason: `Conflicting owner keys on record ${point.id}`,
