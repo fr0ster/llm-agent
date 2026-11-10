@@ -7,6 +7,8 @@ import type {
   Result,
 } from '@mcp-abap-adt/llm-agent';
 import { SmartAgentBuilder } from '../../../builder.js';
+import { unwrapBuilderResult } from '../../../builder-types.js';
+import { testCallOptions, testRequestAccess } from '../../../testing/index.js';
 import { DialogueSession } from '../dialogue-session.js';
 import { DIALOGUE_PLANNER_SYSTEM } from '../planner-prompt.js';
 import { PlannerToolsClient } from '../planner-tools-client.js';
@@ -99,15 +101,18 @@ test('documented builder exposes the control tools and dispatches delegation ins
     skipModelValidation: true,
     prompts: { system: DIALOGUE_PLANNER_SYSTEM },
   })
+    .withRagAccess(testRequestAccess)
     .withMode('hard')
     .withMainLlm(llm)
     .withMcpClients([new PlannerToolsClient()])
-    .build();
+    .build()
+    .then(unwrapBuilderResult);
   let resolveWork!: (result: { output: string }) => void;
   const work = new Promise<{ output: string }>((resolve) => {
     resolveWork = resolve;
   });
   const session = await DialogueSession.open({
+    caller: testCallOptions({ sessionId: 'builder' }).caller,
     id: 'builder',
     planner: handle.agent,
     board: {

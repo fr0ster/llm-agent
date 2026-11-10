@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import type { IRag, RagListPage, RagListParams } from '../interfaces/rag.js';
 import type { CallOptions } from '../interfaces/types.js';
+import { seedLegacyRagRecord } from './rag-filter-conformance.js';
 
 export interface RagListConformanceCase {
   readonly name: string;
@@ -20,18 +21,13 @@ async function seed(store: IRag): Promise<void> {
   const writer = store.writer?.();
   assert.ok(writer);
   for (let i = 0; i < 6; i++) {
-    const result = await writer.upsertRaw(
-      `id-${i}`,
-      i === 0 ? '' : `text-${i}`,
-      {
-        userId: i % 2 ? 'other' : 'owner',
-        sessionId: 'session',
-        namespace: 'ns',
-        ttl: 1,
-        nested: { values: [1, 2] },
-      },
-    );
-    if (!result.ok) throw result.error;
+    await seedLegacyRagRecord(store, `id-${i}`, i === 0 ? '' : `text-${i}`, {
+      userId: i % 2 ? 'other' : 'owner',
+      sessionId: 'session',
+      namespace: 'ns',
+      ttl: 1,
+      nested: { values: [1, 2] },
+    });
   }
 }
 async function traverse(store: IRag, params: RagListParams): Promise<string[]> {
@@ -198,8 +194,7 @@ export const ragListConformanceCases: readonly RagListConformanceCase[] = [
         ['boolean', { userId: true }],
         ['owned', { userId: 'owner', sessionId: 's', namespace: 'n' }],
       ] as const) {
-        const result = await writer.upsertRaw(id, id, metadata);
-        assert.ok(result.ok);
+        await seedLegacyRagRecord(store, id, id, metadata);
       }
       const result = await page(
         store,

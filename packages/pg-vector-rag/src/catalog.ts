@@ -10,6 +10,7 @@ export function catalogColumnsSql(): string {
     scope VARCHAR(16) NOT NULL,
     user_id TEXT,
     session_id TEXT,
+    role_id TEXT,
     attributes_json TEXT,
     created_at TIMESTAMPTZ DEFAULT NOW()`;
 }
@@ -42,11 +43,11 @@ export function recordExistsSql(table: string, schema?: string): string {
 
 /** Create-if-absent: the primary key refuses a second record for one store. */
 export function insertRecordSql(table: string, schema?: string): string {
-  return `INSERT INTO ${qualifiedTable(table, schema)} (store_name, collection_name, scope, user_id, session_id, attributes_json) VALUES ($1, $2, $3, $4, $5, $6)`;
+  return `INSERT INTO ${qualifiedTable(table, schema)} (store_name, collection_name, scope, user_id, session_id, attributes_json, role_id) VALUES ($1, $2, $3, $4, $5, $6, $7)`;
 }
 
 export function selectRecordsSql(table: string, schema?: string): string {
-  return `SELECT store_name AS "storeName", collection_name AS "name", scope AS "scope", user_id AS "userId", session_id AS "sessionId", attributes_json AS "attributesJson" FROM ${qualifiedTable(table, schema)} ORDER BY store_name`;
+  return `SELECT store_name AS "storeName", collection_name AS "name", scope AS "scope", user_id AS "userId", session_id AS "sessionId", role_id AS "roleId", attributes_json AS "attributesJson" FROM ${qualifiedTable(table, schema)} ORDER BY store_name`;
 }
 
 export function deleteRecordSql(table: string, schema?: string): string {

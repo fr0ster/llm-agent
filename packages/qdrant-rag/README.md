@@ -29,6 +29,58 @@ the collection; `describeCollections` reads the catalog back.
 A collection created before this release has a collection and no record: take it over once with
 `createCollection(..., { adoptExisting: true })`.
 
+## Collection access persistence
+
+`createQdrantRagAccessStores(provider)` supplies roles, assignments and immutable
+session bindings. `migrateQdrantRagAccess(provider)` initializes access collections,
+indexes catalog `role_id` and record `ownerScope` as keywords, backfills record
+scope from existing identity keys, and reports invalid catalog owners and conflicting
+record keys. Conflicting records remain unmatched. Re-running migration is idempotent.
+
+The default catalog uses `rag_roles`, `rag_role_assignments` and
+`rag_session_bindings`. Custom catalogs prefix these names with `<catalog>_`.
+These collections are reserved and hidden from collection lists.
+
+Bindings use deterministic point ids, insert-only writes and compare-after-write;
+access persistence requires Qdrant >= 1.17.0 for insert-only support. Catalog/access
+writes use `wait=true&ordering=strong`, reads use `consistency=all`, and initialization
+requires equal replication and write-consistency factors.
+
+Role collection creation writes its catalog intent, then verifies that the role
+exists and is not tombstoned. A refusal compensates by removing its catalog record.
+Assignments carry the persisted role generation token, so a delayed write cannot
+grant membership after a role id is deleted and recreated.
+Roles use an immutable revision chain with deterministic `(roleId, revision)` point
+ids. Each transition inserts the next revision with `insert_only` and verifies its
+unique fence: exactly one transition wins. The states are `active`, `deleting(token)`
+and `deleted`. Deletion checks the catalog and clears assignments only while holding
+a deleting revision; each side effect is followed by a transition from that revision.
+A failed transition stops the stale deleter. An in-use role returns to active only
+through a transition from the same deleting revision and returns `RoleInUseError`.
+
+Membership and collection creation require active state. Creation persists its own
+catalog intent before reading the current role revision and compensates its intent
+on refusal. A later `deleteRole` takes over a crashed deletion by transitioning to a
+new deleting token. A stale assignment deletion already in flight can reduce
+permissions after takeover/reversion, but its failed fence prevents role deletion
+and orphaned collections. Revision points remain persisted, including logical
+deletions and recreations; they are not removed or compacted by this protocol.
+No lease, timer or instance-wide recovery is used. Orphan catalog intents remain
+refused on reopen/hydration and are reported by migration.
+
+Every valid new record carries a positive `ownerScope` tag. Queries match this scope
+and its required identity before top-k. Global queries use `ownerScope = 'global'`
+and have no exact-version gate or missing-field predicate. Records without a scope,
+with mismatched scope/identity, or conflicting keys fail closed. Writers refuse
+inconsistent owners (including precomputed and batch paths). Migration marks
+conflicting stored owners as `ownerScope: 'invalid'` and reports each record.
+Shared read validation rejects all extra owner keys, including null keys on global
+records; backend query predicates remain positive equalities.
+
+These backend stores provide ownership persistence, not server authorization.
+The core access layer must also approve every request; global management requires
+both the trusted caller's admin flag and the server decision.
+
 ## Scan, filtered delete and catalog update
 
 The store implements `IRagScanner` and `IRagFilteredDeleter`, and the provider implements `IRagCatalogUpdater` (guards `isRagScanner`, `isRagFilteredDeleter`, `isRagCatalogUpdater` from `@mcp-abap-adt/llm-agent`). The library wrappers (`OverlayRag`, `SessionScopedRag`, ...) do not forward them; use the provider's handle.

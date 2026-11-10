@@ -7,6 +7,7 @@ import type {
   RagResult,
   Result,
 } from '@mcp-abap-adt/llm-agent';
+import { testCallOptions, testRequestAccess } from '../../../testing/index.js';
 import type { ISpan } from '../../../tracer/types.js';
 import type { PipelineContext } from '../../context.js';
 import { RagQueryHandler } from '../rag-query.js';
@@ -35,9 +36,16 @@ function store(seen: { calls: CallOptions[] }): IRag {
 
 function ctx(rag: IRag, userId?: string): PipelineContext {
   return {
+    ragAccess: testRequestAccess,
     ragText: 'q',
-    ragStores: { mem: rag },
-    options: userId ? { userId } : undefined,
+    ragStores: {
+      mem: {
+        name: 'mem',
+        owner: { scope: 'user', userId: userId ?? 'alice' },
+        rag,
+      },
+    },
+    options: userId ? testCallOptions({ userId }) : undefined,
     sessionId: 's1',
     config: { ragQueryK: 5 },
     metrics: { ragQueryCount: { add() {} } },
@@ -66,8 +74,8 @@ describe('RagQueryHandler scope: user', () => {
       { store: 'mem', scope: 'user' },
       span,
     );
-    assert.equal(cont, true);
+    assert.equal(cont, false);
     assert.equal(seen.calls.length, 0);
-    assert.deepEqual(c.ragResults.mem, []);
+    assert.equal(c.error?.code, 'RAG_ACCESS_DENIED');
   });
 });

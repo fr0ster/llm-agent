@@ -28,6 +28,7 @@ export function diagnosticCallOptions(
 ): CallOptions | undefined {
   if (!opts) return undefined;
   const out: CallOptions = {};
+  if (opts.caller !== undefined) out.caller = opts.caller;
   if (opts.sessionLogger !== undefined) out.sessionLogger = opts.sessionLogger;
   if (opts.trace !== undefined) out.trace = opts.trace;
   if (opts.sessionId !== undefined) out.sessionId = opts.sessionId;

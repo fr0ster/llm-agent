@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { ICoordinatorContext, ISkillMeta } from '@mcp-abap-adt/llm-agent';
+import { testCallOptions } from '../../../testing/index.js';
 import { SkillStepsPlanning } from '../skill-steps.js';
 
 function makeCtx(activeSkillMeta?: ISkillMeta): ICoordinatorContext {
   return {
+    options: testCallOptions({ sessionId: 'test' }),
     inputText: 'x',
     registry: new Map(),
     stepResults: {},

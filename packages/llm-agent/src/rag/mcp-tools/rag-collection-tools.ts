@@ -8,26 +8,21 @@ import type {
   RagCollectionScope,
   RagJsonValue,
 } from '../../interfaces/rag.js';
+import type {
+  RagAccess,
+  RagAccessMode,
+  RagCaller,
+} from '../../interfaces/rag-access.js';
+import { checkRagAccess, visibleOwnerFilter } from '../access/check-access.js';
 import {
   AmbiguousCollectionError,
-  CatalogRecordDeleteError,
-  CollectionNotFoundError,
-  DeleteUnsupportedError,
+  CollectionDataDeleteError,
 } from '../corrections/errors.js';
 import {
   buildCorrectionMetadata,
   deprecateMetadata,
 } from '../corrections/metadata.js';
-
-/**
- * The caller these entries were built for (§5.1). Declared here rather than
- * imported: llm-agent-libs' SessionGraphIdentity is the same shape, but the
- * dependency runs libs → llm-agent, one way. A consumer hands one straight in.
- */
-export interface RagCallerIdentity {
-  readonly sessionId: string;
-  readonly userId?: string;
-}
+import { reservedGlobalNameError } from '../registry/store-key.js';
 
 /**
  * Free-form per-call context. It carries no identity: the entries were built
@@ -36,7 +31,7 @@ export interface RagCallerIdentity {
  * signature takes them — and nothing reads them.
  */
 export interface RagToolContext {
-  [key: string]: unknown;
+  [key: string]: RagJsonValue | undefined;
 }
 
 export interface RagToolEntry {
@@ -47,18 +42,14 @@ export interface RagToolEntry {
   };
   handler: (
     context: RagToolContext,
-    args: Record<string, unknown>,
-  ) => Promise<unknown>;
+    args: Record<string, RagJsonValue | undefined>,
+  ) => Promise<RagJsonValue | object>;
 }
 
 export interface RagCollectionToolOptions {
   registry: IRagRegistry;
-  /**
-   * Required. It narrows the address space to this caller's collections and
-   * the globals the registry holds; an absent identity would mean "do not
-   * narrow", which is everyone's address space reached by forgetting a field.
-   */
-  identity: RagCallerIdentity;
+  caller: RagCaller;
+  access: RagAccess;
   /** When given, rag_create_collection is offered, creating through these providers. */
   providerRegistry?: IRagProviderRegistry;
   /**
@@ -76,7 +67,7 @@ export interface RagCollectionToolOptions {
 type Refusal = { ok: false; error: string; code?: string };
 
 const scopeArg = z
-  .enum(['session', 'user', 'global'])
+  .enum(['session', 'user', 'role', 'global'])
   .optional()
   .describe(
     'Which collection of that name, when several scopes hold one (rag_list_collections shows each scope).',
@@ -85,37 +76,86 @@ const scopeArg = z
 export function buildRagCollectionToolEntries(
   opts: RagCollectionToolOptions,
 ): RagToolEntry[] {
-  const { registry, identity } = opts;
+  const { registry, caller, access } = opts;
 
   const scopeOf = (m: RagCollectionMeta): RagCollectionScope =>
     m.scope ?? 'global';
 
-  /** This caller's collections, and the globals it was given (§5.1). */
-  const addressable = (): RagCollectionMeta[] =>
-    registry.list().filter((m) => {
-      const scope = scopeOf(m);
-      if (scope === 'session') return m.sessionId === identity.sessionId;
-      if (scope === 'user') {
-        return identity.userId !== undefined && m.userId === identity.userId;
-      }
-      return true;
-    });
+  const ownerOf = (m: RagCollectionMeta): RagCollectionOwner | undefined => {
+    switch (scopeOf(m)) {
+      case 'session':
+        return m.sessionId
+          ? { scope: 'session', sessionId: m.sessionId }
+          : undefined;
+      case 'user':
+        return m.userId ? { scope: 'user', userId: m.userId } : undefined;
+      case 'role':
+        return m.roleId ? { scope: 'role', roleId: m.roleId } : undefined;
+      case 'global':
+        return { scope: 'global' };
+    }
+  };
+  const addressable = async (): Promise<RagCollectionMeta[]> => {
+    try {
+      const roles = await access.roles.rolesOf(caller.userId);
+      if (!roles.ok) return [];
+      const visible = visibleOwnerFilter(caller, roles.value);
+      return registry.list().filter((m) => {
+        if (reservedGlobalNameError(scopeOf(m), m.name)) return false;
+        const owner = ownerOf(m);
+        return owner !== undefined && visible(owner);
+      });
+    } catch {
+      return [];
+    }
+  };
+  const authorize = async (
+    meta: RagCollectionMeta,
+    mode: RagAccessMode,
+    owner = ownerOf(meta),
+  ): Promise<Refusal | undefined> => {
+    if (!owner)
+      return {
+        ok: false,
+        code: 'RAG_ACCESS_DENIED',
+        error: 'RagAccessDeniedError: RAG access denied',
+      };
+    const result = await checkRagAccess(
+      caller,
+      { name: meta.name, owner },
+      mode,
+      access,
+    );
+    return result.ok
+      ? undefined
+      : {
+          ok: false,
+          code: result.error.code,
+          error: `${result.error.name}: ${result.error.message}`,
+        };
+  };
 
   /**
    * The one addressable collection a name (and scope) means. Another caller's
    * collection neither resolves nor makes a name ambiguous: it is absent.
    */
-  const resolve = (
-    name: unknown,
-    scope: unknown,
-  ):
-    | { ok: true; meta: RagCollectionMeta; scope: RagCollectionScope }
-    | Refusal => {
+  const resolve = async (
+    name: RagJsonValue | undefined,
+    scope: RagJsonValue | undefined,
+  ): Promise<
+    | {
+        ok: true;
+        meta: RagCollectionMeta;
+        scope: RagCollectionScope;
+        owner: RagCollectionOwner;
+      }
+    | Refusal
+  > => {
     if (typeof name !== 'string' || name === '') {
       return { ok: false, error: 'collection is required' };
     }
     const wanted = typeof scope === 'string' ? scope : undefined;
-    const matches = addressable().filter(
+    const matches = (await addressable()).filter(
       (m) => m.name === name && (wanted === undefined || scopeOf(m) === wanted),
     );
     if (matches.length === 0) {
@@ -133,26 +173,31 @@ export function buildRagCollectionToolEntries(
         name,
         matches.map(scopeOf),
       );
-      return { ok: false, code: ambiguous.code, error: ambiguous.message };
-    }
-    return { ok: true, meta: matches[0], scope: scopeOf(matches[0]) };
-  };
-
-  const resolveEditor = (
-    name: unknown,
-    scope: unknown,
-  ): { ok: true; editor: IRagEditor } | Refusal => {
-    const r = resolve(name, scope);
-    if (!r.ok) return r;
-    // Reachable licenses reading, never writing: no framework tool mutates a
-    // global, whatever its authorization value (§5.1).
-    if (r.scope === 'global') {
       return {
         ok: false,
-        error: 'Global collections cannot be modified via MCP',
+        code: ambiguous.code,
+        error: `${ambiguous.name}: ${ambiguous.message}`,
       };
     }
-    const editor = registry.getEditor(r.meta.name, r.scope);
+    const owner = ownerOf(matches[0]);
+    if (!owner)
+      return {
+        ok: false,
+        error: 'Collection owner is invalid',
+        code: 'RAG_ACCESS_DENIED',
+      };
+    return { ok: true, meta: matches[0], scope: scopeOf(matches[0]), owner };
+  };
+
+  const resolveEditor = async (
+    name: RagJsonValue | undefined,
+    scope: RagJsonValue | undefined,
+  ): Promise<{ ok: true; editor: IRagEditor } | Refusal> => {
+    const r = await resolve(name, scope);
+    if (!r.ok) return r;
+    const denied = await authorize(r.meta, 'write', r.owner);
+    if (denied) return denied;
+    const editor = registry.getEditor(r.meta.name, r.scope, r.owner);
     if (!editor) {
       return { ok: false, error: `Collection '${r.meta.name}' is read-only` };
     }
@@ -166,13 +211,14 @@ export function buildRagCollectionToolEntries(
       inputSchema: {
         collection: z.string(),
         scope: scopeArg,
+        roleId: z.string().optional(),
         text: z.string(),
         canonicalKey: z.string(),
         tags: z.array(z.string()).optional(),
       },
     },
     handler: async (_ctx, args) => {
-      const r = resolveEditor(args.collection, args.scope);
+      const r = await resolveEditor(args.collection, args.scope);
       if (!r.ok) return r;
       const res = await r.editor.upsert(String(args.text), {
         canonicalKey: String(args.canonicalKey),
@@ -192,6 +238,7 @@ export function buildRagCollectionToolEntries(
       inputSchema: {
         collection: z.string(),
         scope: scopeArg,
+        roleId: z.string().optional(),
         predecessorId: z.string(),
         predecessorCanonicalKey: z.string(),
         newText: z.string(),
@@ -199,7 +246,7 @@ export function buildRagCollectionToolEntries(
       },
     },
     handler: async (_ctx, args) => {
-      const r = resolveEditor(args.collection, args.scope);
+      const r = await resolveEditor(args.collection, args.scope);
       if (!r.ok) return r;
       const predecessorMeta = {
         canonicalKey: String(args.predecessorCanonicalKey),
@@ -235,13 +282,14 @@ export function buildRagCollectionToolEntries(
       inputSchema: {
         collection: z.string(),
         scope: scopeArg,
+        roleId: z.string().optional(),
         id: z.string(),
         canonicalKey: z.string(),
         reason: z.string(),
       },
     },
     handler: async (_ctx, args) => {
-      const r = resolveEditor(args.collection, args.scope);
+      const r = await resolveEditor(args.collection, args.scope);
       if (!r.ok) return r;
       const meta = deprecateMetadata(
         { canonicalKey: String(args.canonicalKey) },
@@ -263,17 +311,21 @@ export function buildRagCollectionToolEntries(
       description:
         'List the RAG collections you can address, each with its scope, with optional scope/provider filters.',
       inputSchema: {
-        scope: z.enum(['session', 'user', 'global']).optional(),
+        scope: z.enum(['session', 'user', 'role', 'global']).optional(),
         provider: z.string().optional(),
       },
     },
     handler: async (_ctx, args) => {
-      const metas = addressable().filter((m) => {
+      const metas = (await addressable()).filter((m) => {
         if (args.scope && scopeOf(m) !== args.scope) return false;
         if (args.provider && m.providerName !== args.provider) return false;
         return true;
       });
-      return { ok: true, collections: metas };
+      const collections: RagCollectionMeta[] = [];
+      for (const meta of metas) {
+        if (!(await authorize(meta, 'read'))) collections.push(meta);
+      }
+      return { ok: true, collections };
     },
   };
 
@@ -281,56 +333,46 @@ export function buildRagCollectionToolEntries(
     toolDefinition: {
       name: 'rag_describe_collection',
       description: 'Return the metadata of a RAG collection by name.',
-      inputSchema: { name: z.string(), scope: scopeArg },
+      inputSchema: {
+        name: z.string(),
+        scope: scopeArg,
+        roleId: z.string().optional(),
+      },
     },
     handler: async (_ctx, args) => {
-      const r = resolve(args.name, args.scope);
-      return r.ok ? { ok: true, meta: r.meta } : r;
+      const r = await resolve(args.name, args.scope);
+      if (!r.ok) return r;
+      return (await authorize(r.meta, 'read')) ?? { ok: true, meta: r.meta };
     },
   };
 
   const deleteTool: RagToolEntry = {
     toolDefinition: {
       name: 'rag_delete_collection',
-      description: 'Delete a RAG collection you own (session or user scope).',
-      inputSchema: { name: z.string(), scope: scopeArg },
+      description: 'Delete a RAG collection you are permitted to manage.',
+      inputSchema: {
+        name: z.string(),
+        scope: scopeArg,
+        roleId: z.string().optional(),
+      },
     },
     handler: async (_ctx, args) => {
       // Owner keys are compared by resolve(): a collection that is not this
       // caller's is not in its address space.
-      const r = resolve(args.name, args.scope);
+      const r = await resolve(args.name, args.scope);
       if (!r.ok) return r;
-      if (r.scope === 'global') {
+      const denied = await authorize(r.meta, 'write', r.owner);
+      if (denied) return denied;
+      const name = r.meta.name;
+      const res = await registry.deleteCollection(name, r.scope, r.owner);
+      if (res.ok) return { ok: true };
+      if (res.error instanceof CollectionDataDeleteError) {
         return {
-          ok: false,
-          error: 'Global collections cannot be deleted via MCP',
+          ok: true,
+          warning: `Collection '${name}' was removed, but its data could not be deleted: ${res.error.message}`,
         };
       }
-      const name = r.meta.name;
-      const res = await registry.deleteCollection(name, r.scope);
-      if (res.ok) return { ok: true };
-      if (res.error instanceof CollectionNotFoundError) {
-        return { ok: false, error: res.error.message };
-      }
-      if (res.error instanceof CatalogRecordDeleteError) {
-        // Its record could not be removed, so nothing was: record and data are
-        // intact and the registry has it again. A failed deletion to retry —
-        // not a removal with a data problem.
-        return { ok: false, error: res.error.message };
-      }
-      if (res.error instanceof DeleteUnsupportedError) {
-        // Nothing could reach the collection's store: its provider is not
-        // registered, or has no way to delete. Its catalog record was never
-        // touched, so the collection is not gone — it comes back on the next
-        // hydration. Reporting ok:true would claim a removal that did not happen.
-        return { ok: false, code: res.error.code, error: res.error.message };
-      }
-      // The record is gone and the collection unregistered: it is gone for the
-      // caller, and the orphaned data is reported as what it is.
-      return {
-        ok: true,
-        warning: `Collection '${name}' was removed, but its data could not be deleted: ${res.error.message}`,
-      };
+      return { ok: false, code: res.error.code, error: res.error.message };
     },
   };
 
@@ -348,14 +390,12 @@ export function buildRagCollectionToolEntries(
     const createTool: RagToolEntry = {
       toolDefinition: {
         name: 'rag_create_collection',
-        description:
-          'Create a new RAG collection of your own, for this session or for you.',
+        description: 'Create a RAG collection in an authorized scope.',
         inputSchema: {
           provider: z.string(),
           name: z.string(),
-          // No 'global': creating one would put a collection into every
-          // caller's address space, and that is a consumer's decision (§5.1).
-          scope: z.enum(['session', 'user']),
+          scope: z.enum(['session', 'user', 'role', 'global']),
+          roleId: z.string().optional(),
           displayName: z.string().optional(),
           description: z.string().optional(),
           tags: z.array(z.string()).optional(),
@@ -373,20 +413,50 @@ export function buildRagCollectionToolEntries(
         // is checked here too, for a caller that did not apply the schema.
         let owner: RagCollectionOwner;
         if (args.scope === 'session') {
-          owner = { scope: 'session', sessionId: identity.sessionId };
+          owner = { scope: 'session', sessionId: caller.sessionId };
         } else if (args.scope === 'user') {
-          if (!identity.userId) {
+          if (!caller.userId) {
             return {
               ok: false,
               error:
                 'A user collection needs a caller with a userId, and this one has none',
             };
           }
-          owner = { scope: 'user', userId: identity.userId };
+          owner = { scope: 'user', userId: caller.userId };
+        } else if (args.scope === 'role' && typeof args.roleId === 'string') {
+          if (!caller.isAdmin)
+            return {
+              ok: false,
+              code: 'RAG_ACCESS_DENIED',
+              error:
+                'RagAccessDeniedError: Role collection creation requires an admin',
+            };
+          owner = { scope: 'role', roleId: args.roleId };
+        } else if (args.scope === 'global') {
+          owner = { scope: 'global' };
         } else {
-          return { ok: false, error: "scope must be 'session' or 'user'" };
+          return { ok: false, error: 'A valid scope and owner are required' };
         }
         const name = String(args.name);
+        const reserved = reservedGlobalNameError(owner.scope, name);
+        if (reserved)
+          return {
+            ok: false,
+            code: reserved.code,
+            error: `${reserved.name}: ${reserved.message}`,
+          };
+        const permission = await checkRagAccess(
+          caller,
+          { name, owner },
+          'write',
+          access,
+        );
+        if (!permission.ok)
+          return {
+            ok: false,
+            code: permission.error.code,
+            error: `${permission.error.name}: ${permission.error.message}`,
+          };
         const attributes = opts.attributesFor?.({ name, ...owner });
         const res = await registry.createCollection({
           providerName,

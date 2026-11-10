@@ -26,10 +26,11 @@ import type { IOutputValidator } from './validator.js';
  * Lifecycle scope of a RAG store provided by a plugin.
  *
  * - `'global'`  — shared across all users and sessions; evicted only on restart.
+ * - `'role'`    - scoped to a library-managed RAG role.
  * - `'user'`    — scoped to a single user; evicted when the user session ends.
  * - `'session'` — scoped to a single conversation session; evicted when the session ends.
  */
-export type RagScope = 'global' | 'user' | 'session';
+export type RagScope = 'global' | 'user' | 'role' | 'session';
 
 // ---------------------------------------------------------------------------
 // IRagStoreConfig

@@ -1,3 +1,8 @@
+import type { RagAccess } from '@mcp-abap-adt/llm-agent';
+import {
+  reservedGlobalNameError,
+  validateRagOwner,
+} from '@mcp-abap-adt/llm-agent';
 /**
  * SmartAgentBuilder — fluent builder for SmartAgent.
  *
@@ -7,10 +12,13 @@
  * resolved externally by the composition root (SmartServer, CLI).
  *
  * Usage:
- *   const handle = await new SmartAgentBuilder()
+ *   const result = await new SmartAgentBuilder()
+ *     .withRagAccess(ragAccess)
  *     .withMainLlm(myLlm)
  *     .setToolsRag(myRag)
  *     .build();
+ *   if (!result.ok) throw result.error;
+ *   const handle = result.value;
  */
 
 import type {
@@ -66,6 +74,7 @@ import {
   normaliseLogger,
   QueryEmbedding,
   type RagCollectionMeta,
+  type RagCollectionOwner,
   type RagRegistryCreateCollectionParams,
   ragStoreKey,
   SimpleRagProviderRegistry,
@@ -76,9 +85,9 @@ import { SmartAgent, type SmartAgentConfig } from './agent.js';
 import type {
   BuilderMcpConfig,
   SmartAgentBuilderConfig,
-  SmartAgentHandle,
+  SmartAgentBuildResult,
 } from './builder-types.js';
-import { isModelProvider } from './builder-types.js';
+import { BuilderConfigError, isModelProvider } from './builder-types.js';
 import {
   LlmClassifier,
   type LlmClassifierConfig,
@@ -135,8 +144,10 @@ export type {
   BuilderMcpConfig,
   BuilderPromptsConfig,
   SmartAgentBuilderConfig,
+  SmartAgentBuildResult,
   SmartAgentHandle,
 } from './builder-types.js';
+export { BuilderConfigError, unwrapBuilderResult } from './builder-types.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -175,6 +186,7 @@ function isGuardedBy(store: IRag, breaker: CircuitBreaker): boolean {
 // ---------------------------------------------------------------------------
 
 export class SmartAgentBuilder {
+  private _ragAccess?: RagAccess;
   private readonly cfg: SmartAgentBuilderConfig;
 
   // All components injected via fluent setters
@@ -251,6 +263,11 @@ export class SmartAgentBuilder {
   // -------------------------------------------------------------------------
 
   /** Set the main LLM used in the tool loop (required). */
+  withRagAccess(access: RagAccess): this {
+    this._ragAccess = access;
+    return this;
+  }
+
   withMainLlm(llm: ILlm): this {
     this._mainLlm = llm;
     return this;
@@ -298,7 +315,10 @@ export class SmartAgentBuilder {
     return this;
   }
 
-  /** Register a static (pre-built) RAG collection by name. */
+  /**
+   * Register a static RAG collection. build() requires meta.scope and its
+   * scope-specific owner identifier; missing ownership is a BuilderConfigError.
+   */
   addRagCollection(params: {
     name: string;
     rag: IRag;
@@ -847,8 +867,52 @@ export class SmartAgentBuilder {
     };
   }
 
-  async build(): Promise<SmartAgentHandle> {
+  async build(): Promise<SmartAgentBuildResult> {
     const log = this._logger;
+
+    if (!this._ragAccess) {
+      return {
+        ok: false,
+        error: new BuilderConfigError('ragAccess is required'),
+      };
+    }
+    // Validate before model calls, registry mutations or external resources.
+    const staticCollections: Array<
+      Parameters<SmartAgentBuilder['addRagCollection']>[0] & {
+        owner: RagCollectionOwner;
+      }
+    > = [];
+    for (const collection of this._staticCollections) {
+      const owner = validateRagOwner(collection.meta);
+      if (!owner.ok) {
+        return {
+          ok: false,
+          error: new BuilderConfigError(
+            `Collection '${collection.name}': ${owner.error.message}`,
+          ),
+        };
+      }
+      const identity = owner.value;
+      const reserved = reservedGlobalNameError(identity.scope, collection.name);
+      if (reserved) return { ok: false, error: reserved };
+      const ownerId =
+        identity.scope === 'session'
+          ? identity.sessionId
+          : identity.scope === 'user'
+            ? identity.userId
+            : identity.scope === 'role'
+              ? identity.roleId
+              : undefined;
+      if (ownerId !== undefined && !ownerId.trim()) {
+        return {
+          ok: false,
+          error: new BuilderConfigError(
+            `Collection '${collection.name}': a ${identity.scope} collection needs a non-empty owner identifier`,
+          ),
+        };
+      }
+      staticCollections.push({ ...collection, owner: identity });
+    }
 
     // ---- Validate required dependencies -----------------------------------
     const mainLlm = this._mainLlm;
@@ -967,25 +1031,10 @@ export class SmartAgentBuilder {
     // `idempotent: true` and are skipped when already present. Ordinary callers
     // leave it unset so a genuine name collision still surfaces instead of
     // silently keeping the old RAG/editor/meta.
-    for (const c of this._staticCollections) {
-      if (c.idempotent && ragRegistry.get(c.name, c.meta?.scope ?? 'global'))
+    for (const c of staticCollections) {
+      if (c.idempotent && ragRegistry.get(c.name, c.owner.scope, c.owner))
         continue;
       ragRegistry.register(c.name, c.rag, c.editor, c.meta);
-    }
-
-    // Mirror the built-in toolsRag / historyRag into the registry so the projection preserves
-    // ragStores.tools / ragStores.history behavior that existing handlers rely on.
-    if (toolsRag && !ragRegistry.get('tools', 'global')) {
-      ragRegistry.register('tools', toolsRag, undefined, {
-        displayName: 'tools',
-        scope: 'global',
-      });
-    }
-    if (historyRag && !ragRegistry.get('history', 'global')) {
-      ragRegistry.register('history', historyRag, undefined, {
-        displayName: 'history',
-        scope: 'global',
-      });
     }
 
     // Create any queued dynamic collections at startup.
@@ -1003,17 +1052,50 @@ export class SmartAgentBuilder {
     // configuration naming one keeps working — and a user or session collection
     // is keyed user/<name> or session/<name>, so one name in several scopes gives
     // several keys and nothing overwrites anything (§6.4).
+    let projectedHistoryRag = historyRag;
+    let projectedToolsRag = toolsRag;
     const ragStores: SmartAgentRagStores = {};
     const rebuildProjection = () => {
       for (const k of Object.keys(ragStores)) delete ragStores[k];
       for (const m of ragRegistry.list()) {
+        if (reservedGlobalNameError(m.scope ?? 'global', m.name)) continue;
         const r = ragRegistry.get(m.name, m.scope ?? 'global');
         if (!r) continue;
         // An explicit per-store strategy wraps the projected store only — the
         // registry entry stays as registered; idempotent through IRagDecorator.
         const key = ragStoreKey(m);
         const strategy = this._retrievalStrategies.get(key);
-        ragStores[key] = strategy ? applyRetrievalStrategy(r, strategy) : r;
+        const parsedOwner = validateRagOwner({
+          ...m,
+          scope: m.scope ?? 'global',
+        });
+        const owner = parsedOwner.ok ? parsedOwner.value : undefined;
+        if (!owner) continue;
+        ragStores[key] = {
+          name: m.name,
+          owner,
+          rag: strategy ? applyRetrievalStrategy(r, strategy) : r,
+        };
+      }
+      if (projectedToolsRag) {
+        const strategy = this._retrievalStrategies.get('tools');
+        ragStores.tools = {
+          name: 'tools',
+          owner: { scope: 'internal' },
+          rag: strategy
+            ? applyRetrievalStrategy(projectedToolsRag, strategy)
+            : projectedToolsRag,
+        };
+      }
+      if (projectedHistoryRag) {
+        const strategy = this._retrievalStrategies.get('history');
+        ragStores.history = {
+          name: 'history',
+          owner: { scope: 'session', perRequest: true },
+          rag: strategy
+            ? applyRetrievalStrategy(projectedHistoryRag, strategy)
+            : projectedHistoryRag,
+        };
       }
     };
     rebuildProjection();
@@ -1057,6 +1139,28 @@ export class SmartAgentBuilder {
           onStateChange: cbCfg.onStateChange ?? makeOnStateChange('embedder'),
         });
       circuitBreakers.push(embedderBreaker);
+      if (
+        historyRag &&
+        !(this._sharedBreakers && isGuardedBy(historyRag, embedderBreaker))
+      ) {
+        projectedHistoryRag = new FallbackRag(
+          historyRag,
+          new InMemoryRag(),
+          embedderBreaker,
+        );
+        rebuildProjection();
+      }
+      if (
+        toolsRag &&
+        !(this._sharedBreakers && isGuardedBy(toolsRag, embedderBreaker))
+      ) {
+        projectedToolsRag = new FallbackRag(
+          toolsRag,
+          new InMemoryRag(),
+          embedderBreaker,
+        );
+        rebuildProjection();
+      }
       // list() is a snapshot, so changing entries while iterating is safe.
       for (const meta of ragRegistry.list()) {
         const scope = meta.scope ?? 'global';
@@ -1329,14 +1433,6 @@ export class SmartAgentBuilder {
               ? { prompt: agentCfg.historyTurnSummaryPrompt }
               : undefined,
           );
-
-        if (historyRag && !ragRegistry.get('history', 'global')) {
-          ragRegistry.register('history', historyRag, undefined, {
-            displayName: 'history',
-            scope: 'global',
-          });
-          // ragStores projection updates via mutation listener.
-        }
       }
 
       // ---- Plugin loader (optional) -------------------------------------------
@@ -1394,7 +1490,7 @@ export class SmartAgentBuilder {
             ownBuiltInStore(
               toolsRag as IRag,
               ownTools as IRag,
-              ragStores.tools,
+              ragStores.tools?.rag,
             ),
         );
         const defaultContextBuilder = new DefaultSubAgentContextBuilder({
@@ -1433,6 +1529,7 @@ export class SmartAgentBuilder {
         toolsRag,
         historyRag,
         ragStores,
+        ragAccess: this._ragAccess,
         retrievalStrategies: Object.fromEntries(this._retrievalStrategies),
         ragRegistry,
         ragProviderRegistry,
@@ -1471,6 +1568,7 @@ export class SmartAgentBuilder {
           helperLlm: this._helperLlm,
           mcpClients,
           ragStores,
+          ragAccess: this._ragAccess,
           ragRegistry,
           ragProviderRegistry,
           classifier,
@@ -1556,59 +1654,63 @@ export class SmartAgentBuilder {
       }
 
       return {
-        agent,
-        chat: (messages, tools, options) =>
-          agent.currentMainLlm.chat(messages, tools, options),
-        streamChat: (messages, tools, options) =>
-          agent.currentMainLlm.streamChat(messages, tools, options),
-        requestLogger,
-        close: async () => {
-          // Best-effort, like every other teardown routine in this codebase
-          // (SessionGraph.dispose(), SessionGraphFactory's per-stop loop): a
-          // failure in ONE resource must not stop the rest from being torn
-          // down, and close() itself never throws — it is routinely awaited
-          // in a `finally` block, where a raised error would either mask
-          // whatever the `try` block was doing or force every caller to wrap
-          // a routine cleanup call in its own try/catch. Failures are never
-          // swallowed SILENTLY, though: both surface through `log` (or
-          // console.warn without one), the same pattern used everywhere else
-          // teardown failures are reported in this branch.
-          const warn = (message: string) => {
-            if (log) {
-              log.log({ type: 'warning', traceId: 'builder', message });
-            } else {
-              console.warn(`[builder] ${message}`);
+        ok: true,
+        value: {
+          agent,
+          chat: (messages, tools, options) =>
+            agent.currentMainLlm.chat(messages, tools, options),
+          streamChat: (messages, tools, options) =>
+            agent.currentMainLlm.streamChat(messages, tools, options),
+          requestLogger,
+          close: async () => {
+            // Best-effort, like every other teardown routine in this codebase
+            // (SessionGraph.dispose(), SessionGraphFactory's per-stop loop): a
+            // failure in ONE resource must not stop the rest from being torn
+            // down, and close() itself never throws — it is routinely awaited
+            // in a `finally` block, where a raised error would either mask
+            // whatever the `try` block was doing or force every caller to wrap
+            // a routine cleanup call in its own try/catch. Failures are never
+            // swallowed SILENTLY, though: both surface through `log` (or
+            // console.warn without one), the same pattern used everywhere else
+            // teardown failures are reported in this branch.
+            const warn = (message: string) => {
+              if (log) {
+                log.log({ type: 'warning', traceId: 'builder', message });
+              } else {
+                console.warn(`[builder] ${message}`);
+              }
+            };
+            try {
+              await connectionStrategy?.dispose?.();
+            } catch (err) {
+              const message = err instanceof Error ? err.message : String(err);
+              warn(`close_connection_strategy_dispose_failed: ${message}`);
             }
-          };
-          try {
-            await connectionStrategy?.dispose?.();
-          } catch (err) {
-            const message = err instanceof Error ? err.message : String(err);
-            warn(`close_connection_strategy_dispose_failed: ${message}`);
-          }
-          await stopAll(closeFns, (err) => {
-            const message = err instanceof Error ? err.message : String(err);
-            warn(`close_mcp_stop_failed: ${message}`);
-          });
+            await stopAll(closeFns, (err) => {
+              const message = err instanceof Error ? err.message : String(err);
+              warn(`close_mcp_stop_failed: ${message}`);
+            });
+          },
+          circuitBreakers,
+          ragStores,
+
+          ragRegistry,
+          mcpClients,
+          modelProvider,
+          getApiAdapter: (name: string) => apiAdapters.get(name),
+          listApiAdapters: () => [...apiAdapters.keys()],
+          // Absent (not just undefined-valued) on the caller-provided-`mcpClients`
+          // branch, where `resolved` is undefined and namespacing was never
+          // computed — matches the SmartAgentHandle field docs.
+          ...(resolved
+            ? {
+                namespacedTools,
+                toolProvenance,
+                mcpClientDescriptors: resolved.clientDescriptors,
+                configuredSlotCount: resolved.configuredSlotCount,
+              }
+            : {}),
         },
-        circuitBreakers,
-        ragStores,
-        ragRegistry,
-        mcpClients,
-        modelProvider,
-        getApiAdapter: (name: string) => apiAdapters.get(name),
-        listApiAdapters: () => [...apiAdapters.keys()],
-        // Absent (not just undefined-valued) on the caller-provided-`mcpClients`
-        // branch, where `resolved` is undefined and namespacing was never
-        // computed — matches the SmartAgentHandle field docs.
-        ...(resolved
-          ? {
-              namespacedTools,
-              toolProvenance,
-              mcpClientDescriptors: resolved.clientDescriptors,
-              configuredSlotCount: resolved.configuredSlotCount,
-            }
-          : {}),
       };
     } catch (err) {
       // Everything from here down (model validation was already done above)

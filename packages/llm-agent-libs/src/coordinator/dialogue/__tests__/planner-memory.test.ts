@@ -10,6 +10,7 @@ import type {
 } from '@mcp-abap-adt/llm-agent';
 import { InMemoryRag } from '@mcp-abap-adt/llm-agent';
 import { ragFilterConformanceCases } from '@mcp-abap-adt/llm-agent/testing/rag-filter-conformance';
+import { testCallOptions } from '../../../testing/index.js';
 import { DialogueSession } from '../dialogue-session.js';
 import { InMemoryDialogueStateStore } from '../in-memory-dialogue-state-store.js';
 import { DefaultPlannerContextBuilder } from '../planner-context-builder.js';
@@ -403,6 +404,7 @@ test('session indexes live inputs and replies, restores without indexing, retrie
   let searches = 0;
   const queries: string[] = [];
   const config = {
+    caller: { sessionId: 'live', userId: 'test-user', isAdmin: false },
     id: 'live',
     store,
     maxCorrections: 0,
@@ -546,6 +548,9 @@ test('corrective calls reuse retrieval while seeing newly projected transcript',
   let calls = 0;
   const tools = new PlannerToolsClient();
   const session = await DialogueSession.open({
+    caller: testCallOptions({
+      caller: { sessionId: 'corrections', userId: 'test-user', isAdmin: false },
+    }).caller,
     id: 'corrections',
     board: { workers: new Map() },
     plannerKnowledge: [
@@ -595,6 +600,13 @@ test('planner-task memory stores notice not output; event retrieval uses first i
   const tools = new PlannerToolsClient();
   let calls = 0;
   const session = await DialogueSession.open({
+    caller: testCallOptions({
+      caller: {
+        sessionId: 'events-memory',
+        userId: 'test-user',
+        isAdmin: false,
+      },
+    }).caller,
     id: 'events-memory',
     maxCorrections: 0,
     onMessage() {
@@ -674,6 +686,13 @@ test('closed plans are indexed raw on the boundary and write failure does not fa
     },
   });
   const session = await DialogueSession.open({
+    caller: testCallOptions({
+      caller: {
+        sessionId: 'plans-memory',
+        userId: 'test-user',
+        isAdmin: false,
+      },
+    }).caller,
     id: 'plans-memory',
     store,
     maxCorrections: 0,
@@ -706,6 +725,13 @@ test('closed plans are indexed raw on the boundary and write failure does not fa
   };
   const notes: string[] = [];
   const failing = await DialogueSession.open({
+    caller: testCallOptions({
+      caller: {
+        sessionId: 'broken-memory',
+        userId: 'test-user',
+        isAdmin: false,
+      },
+    }).caller,
     id: 'broken-memory',
     maxCorrections: 0,
     board: { workers: new Map() },
@@ -809,6 +835,13 @@ test('restart retrieval keeps semantic planner replies without archive labels', 
   await writer.close();
   let calls = 0;
   const session = await DialogueSession.open({
+    caller: testCallOptions({
+      caller: {
+        sessionId: 'restart-expired',
+        userId: 'test-user',
+        isAdmin: false,
+      },
+    }).caller,
     id: 'restart-expired',
     maxCorrections: 0,
     board: { workers: new Map() },

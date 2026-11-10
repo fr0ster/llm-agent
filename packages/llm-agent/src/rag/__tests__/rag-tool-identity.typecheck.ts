@@ -1,29 +1,26 @@
-// Compile-time assertions only; under __tests__ so the package build neither compiles nor ships it.
+// Compile-time assertions: caller and access are mandatory.
 import type { IRagRegistry } from '../../interfaces/rag.js';
-import {
-  buildRagCollectionToolEntries,
-  type RagCallerIdentity,
-} from '../mcp-tools/rag-collection-tools.js';
+import type { RagCaller } from '../../interfaces/rag-access.js';
+import { testRagAccess } from '../../testing/rag-access-testing.js';
+import { buildRagCollectionToolEntries } from '../mcp-tools/rag-collection-tools.js';
 
 declare const registry: IRagRegistry;
-
-// @ts-expect-error — identity is required: an unnarrowed address space must not be reachable by omission
+const caller: RagCaller = { sessionId: 's', userId: 'u', isAdmin: false };
+const access = testRagAccess();
+// @ts-expect-error caller and access are required
 buildRagCollectionToolEntries({ registry });
-
-const identity: RagCallerIdentity = { sessionId: 's' };
-buildRagCollectionToolEntries({ registry, identity });
-
-// llm-agent-libs' SessionGraphIdentity is the same shape and passes straight in
-const fromLibs: { readonly sessionId: string; readonly userId?: string } = {
-  sessionId: 's',
-  userId: 'u',
-};
-buildRagCollectionToolEntries({ registry, identity: fromLibs });
-
-// the consumer's attributes callback receives the owner union
+// @ts-expect-error access is required
+buildRagCollectionToolEntries({ registry, caller });
+// @ts-expect-error caller is required
+buildRagCollectionToolEntries({ registry, access });
+// @ts-expect-error an incomplete caller is refused
+buildRagCollectionToolEntries({ registry, caller: { sessionId: 's' }, access });
+// @ts-expect-error identity is no longer an option
+buildRagCollectionToolEntries({ registry, identity: caller, access });
 buildRagCollectionToolEntries({
   registry,
-  identity,
+  caller,
+  access,
   attributesFor: (created) =>
     created.scope === 'user' ? { owner: created.userId } : undefined,
 });

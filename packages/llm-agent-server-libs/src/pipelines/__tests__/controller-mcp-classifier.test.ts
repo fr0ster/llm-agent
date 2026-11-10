@@ -28,6 +28,7 @@ import {
   symmetricEmbedder,
 } from '@mcp-abap-adt/llm-agent';
 import { InMemoryKnowledgeBackend } from '@mcp-abap-adt/llm-agent-libs';
+import { testCallOptions } from '../../../../llm-agent-libs/src/testing/index.js';
 import { makeKnowledgeSemanticIndex } from '../../smart-agent/embedder-knowledge-index.js';
 import { controllerPlugin, fakeControllerServerCtx } from './fixtures.js';
 
@@ -159,7 +160,10 @@ describe('pipeline: controller — MCP failure classifier wiring', () => {
     const inst = await plugin.build(ctx);
 
     const captured: string[] = [];
-    for await (const chunk of inst.agent.streamProcess('do the thing')) {
+    for await (const chunk of inst.agent.streamProcess(
+      'do the thing',
+      testCallOptions(),
+    )) {
       if (chunk.ok && typeof chunk.value.content === 'string')
         captured.push(chunk.value.content);
     }

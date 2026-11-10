@@ -25,11 +25,13 @@ import {
   type McpTool,
 } from '@mcp-abap-adt/llm-agent';
 import { SmartAgentBuilder } from '../builder.js';
+import { unwrapBuilderResult } from '../builder-types.js';
 import type {
   IMcpConnectionStrategy,
   McpClientDescriptor,
 } from '../interfaces/mcp-connection-strategy.js';
 import type { IMcpToolRegistry } from '../mcp/tool-registry.js';
+import { testCallOptions, testRequestAccess } from '../testing/index.js';
 
 // A DISTINCTIVE custom strategy: UPPERCASES the prefix on a collision.
 // `defaultToolNamespace` would produce `primary__Search` / `secondary__Search`
@@ -94,13 +96,15 @@ test('withToolNamespace() reaches all THREE consumers: registry, startup vectori
   const toolsRag = new InMemoryRag();
 
   const handle = await new SmartAgentBuilder()
+    .withRagAccess(testRequestAccess)
     .withMainLlm(makeStubLlm())
     .withMcpConnectionStrategy(connectionStrategy)
     .setToolsRag(toolsRag)
     .withToolNamespace(custom)
     .withMode('hard')
     .withClassification(false)
-    .build();
+    .build()
+    .then(unwrapBuilderResult);
 
   // ---- Route 1: internal registry resolve() exposed name -----------------
   // `mcpToolRegistry` is a private field of the concrete SmartAgent class —
@@ -135,13 +139,16 @@ test('withToolNamespace() reaches all THREE consumers: registry, startup vectori
 
   // ---- Route 3: pipeline ctx — first-load tool-select ---------------------
   const steps: Array<{ name: string; data: unknown }> = [];
-  const res = await handle.agent.process('hello', {
-    sessionLogger: {
-      logStep(name: string, data: unknown) {
-        steps.push({ name, data });
+  const res = await handle.agent.process(
+    'hello',
+    testCallOptions({
+      sessionLogger: {
+        logStep(name: string, data: unknown) {
+          steps.push({ name, data });
+        },
       },
-    },
-  });
+    }),
+  );
   assert.equal(res.ok, true, 'process() must complete successfully');
   const toolsSelected = steps.find((s) => s.name === 'tools_selected');
   assert.ok(toolsSelected, 'tools_selected step must be logged');
@@ -174,12 +181,14 @@ test('without withToolNamespace(), all three routes fall back to defaultToolName
   const toolsRag = new InMemoryRag();
 
   const handle = await new SmartAgentBuilder()
+    .withRagAccess(testRequestAccess)
     .withMainLlm(makeStubLlm())
     .withMcpConnectionStrategy(connectionStrategy)
     .setToolsRag(toolsRag)
     .withMode('hard')
     .withClassification(false)
-    .build();
+    .build()
+    .then(unwrapBuilderResult);
 
   const registry = (
     handle.agent as unknown as { mcpToolRegistry: IMcpToolRegistry }

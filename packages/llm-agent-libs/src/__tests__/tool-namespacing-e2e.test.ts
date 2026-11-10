@@ -51,6 +51,7 @@ import {
   type PlanStep,
 } from '@mcp-abap-adt/llm-agent';
 import { SmartAgentBuilder } from '../builder.js';
+import { unwrapBuilderResult } from '../builder-types.js';
 import type {
   IMcpConnectionStrategy,
   McpClientDescriptor,
@@ -63,6 +64,7 @@ import {
 import { ScoreThresholdToolSelection } from '../pipeline/tool-selection/index.js';
 import { fireInternalToolsAsync } from '../policy/mixed-tool-call-handler.js';
 import { PendingToolResultsRegistry } from '../policy/pending-tool-results-registry.js';
+import { testCallOptions, testRequestAccess } from '../testing/index.js';
 import type { ISpan } from '../tracer/types.js';
 
 // ---------------------------------------------------------------------------
@@ -178,6 +180,7 @@ test('#244 e2e — route 1 (tool-loop executor): a RAG hit for server 1s Search 
   };
 
   const handle = await new SmartAgentBuilder()
+    .withRagAccess(testRequestAccess)
     .withMainLlm(mainLlm)
     .withMcpConnectionStrategy(connectionStrategy)
     .setToolsRag(toolsRag)
@@ -187,9 +190,13 @@ test('#244 e2e — route 1 (tool-loop executor): a RAG hit for server 1s Search 
     .withToolSelectionStrategy(new ScoreThresholdToolSelection(0.0001))
     .withMode('smart')
     .withClassification(false)
-    .build();
+    .build()
+    .then(unwrapBuilderResult);
 
-  const res = await handle.agent.process('hurricane temperature forecast');
+  const res = await handle.agent.process(
+    'hurricane temperature forecast',
+    testCallOptions(),
+  );
   assert.equal(res.ok, true, 'process() must complete successfully');
 
   assert.deepEqual(
@@ -298,7 +305,7 @@ test('#244 e2e — route 3 (coordinator buildCallTool / SelfDispatch executor): 
     inputText: 'search for the forecast',
     sessionId: 'session-coordinator',
     assembledMessages: [],
-    options: undefined,
+    options: testCallOptions({ sessionId: 'session-coordinator' }),
     toolClientMap,
     activeTools: [{ name: 's1__Search' }] as unknown as LlmTool[],
     yield(chunk: {

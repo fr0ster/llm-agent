@@ -1,3 +1,5 @@
+import { TestSmartServer as SmartServer } from './rag-identity-fixture.js';
+
 /**
  * Fix #14: PUT /v1/config (and hot-reload) must invalidate per-session
  * SmartAgent graphs + the worker-LLM cache so the next request observes
@@ -17,7 +19,6 @@ import { request } from 'node:http';
 import { describe, it } from 'node:test';
 import type { ILlm, IModelResolver } from '@mcp-abap-adt/llm-agent';
 import { makeLlm as makeTestLlm } from '@mcp-abap-adt/llm-agent-libs/testing';
-import { SmartServer } from '../smart-server.js';
 import { constructionSeams } from './construction-seams.js';
 
 /** Every test here builds a real SmartServer; the seams are required now. */

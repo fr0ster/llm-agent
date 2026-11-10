@@ -18,6 +18,8 @@ import type {
   McpToolResult,
   Result,
 } from '@mcp-abap-adt/llm-agent';
+import { testRagAccess } from '@mcp-abap-adt/llm-agent/testing/rag-access-testing';
+import { unwrapBuilderResult } from '../builder-types.js';
 import type { LoadedPlugins } from '../plugins/types.js';
 import { emptyLoadedPlugins, mergePluginExports } from '../plugins/types.js';
 
@@ -84,9 +86,11 @@ describe('SmartAgentBuilder.withMcpClients()', () => {
     const clientB = stubMcpClient('b');
 
     const handle = await new SmartAgentBuilder({})
+      .withRagAccess(testRagAccess())
       .withMainLlm(stubLlm())
       .withMcpClients([clientA, clientB])
-      .build();
+      .build()
+      .then(unwrapBuilderResult);
 
     try {
       // Agent exposes mcpClients via healthCheck — use listTools to verify
@@ -105,8 +109,10 @@ describe('SmartAgentBuilder.withMcpClients()', () => {
     const { SmartAgentBuilder } = await import('../builder.js');
 
     const handle = await new SmartAgentBuilder({})
+      .withRagAccess(testRagAccess())
       .withMainLlm(stubLlm())
-      .build();
+      .build()
+      .then(unwrapBuilderResult);
 
     try {
       const health = await handle.agent.healthCheck();

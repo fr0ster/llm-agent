@@ -1,3 +1,4 @@
+import { TestSmartServer as SmartServer } from './rag-identity-fixture.js';
 /**
  * #244 Task 7 — `_embeddedSessionParts` threads the shared
  * `_sharedMcpClientDescriptors`/`_configuredSlotCount` (captured from whichever
@@ -8,8 +9,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { IEmbedder, ILlm, IRagRegistry } from '@mcp-abap-adt/llm-agent';
-import type { SessionAgentParts } from '@mcp-abap-adt/llm-agent-libs';
-import { SmartServer, type SmartServerConfig } from '../smart-server.js';
+import type { SmartServerConfig } from '../smart-server.js';
 import { constructionSeams } from './construction-seams.js';
 
 const cannedLlm = {
@@ -24,13 +24,6 @@ const cfg = {
   skipModelValidation: true,
   llm: { main: { provider: 'openai', model: 'gpt-4o' } },
 } as unknown as SmartServerConfig;
-
-interface Internals {
-  _embeddedSessionParts: (
-    mcpClients: unknown,
-    ragRegistry: IRagRegistry,
-  ) => SessionAgentParts;
-}
 
 test('_embeddedSessionParts result carries mcpClientDescriptors/configuredSlotCount matching the shared descriptor-producing seam', async () => {
   const descriptors = [
@@ -54,7 +47,7 @@ test('_embeddedSessionParts result carries mcpClientDescriptors/configuredSlotCo
   const built = await server._buildEmbeddedAgent();
   try {
     const stubRagRegistry = {} as IRagRegistry;
-    const parts = (server as unknown as Internals)._embeddedSessionParts(
+    const parts = await server['_embeddedSessionParts'](
       undefined,
       stubRagRegistry,
     );

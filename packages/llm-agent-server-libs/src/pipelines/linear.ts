@@ -3,6 +3,7 @@ import type {
   IPipelinePlugin,
 } from '@mcp-abap-adt/llm-agent';
 import type { CoordinatorHandlerDeps } from '@mcp-abap-adt/llm-agent-libs';
+import { unwrapBuilderResult } from '@mcp-abap-adt/llm-agent-libs';
 import { LinearFactory } from '../factories/index.js';
 import type { LinearPipelineSettings } from '../smart-agent/pipeline-settings.js';
 import {
@@ -42,7 +43,10 @@ export class LinearPipelinePlugin implements IPipelinePlugin {
       callMcp: (n, a, sig, o) => ctx.callMcp(n, a, sig, o),
     });
     const builder = registerSkillSources(await ctx.createAgentBuilder(), ctx);
-    const handle = await builder.withStepperCoordinator(handler).build();
+    const handle = await builder
+      .withStepperCoordinator(handler)
+      .build()
+      .then(unwrapBuilderResult);
     return { agent: handle.agent, close: () => handle.close() };
   }
 }

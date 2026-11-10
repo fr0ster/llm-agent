@@ -9,6 +9,7 @@ import { runInPlannerScope } from '../coordinator/dialogue/planner-scope.js';
 import { PlannerToolsClient } from '../coordinator/dialogue/planner-tools-client.js';
 import { TaskBoard } from '../coordinator/dialogue/task-board.js';
 import { scanDirsForSkills } from '../skills/skill-utils.js';
+import { testCallOptions } from '../testing/index.js';
 
 for (const model of ['m2', undefined, 'blocked']) {
   test(`delegate_task model: ${model}`, async () => {
@@ -23,6 +24,8 @@ for (const model of ['m2', undefined, 'blocked']) {
     const inputs: Parameters<IAgentProfileRunner['createWorker']>[0][] = [];
     const validated: string[] = [];
     const board: TaskBoard = new TaskBoard({
+      caller: testCallOptions({ sessionId: 'test-session' }).caller,
+      baseInput: () => testCallOptions({ sessionId: 'test-session' }),
       ...host,
       profileRunner: {
         ...host.profileRunner,

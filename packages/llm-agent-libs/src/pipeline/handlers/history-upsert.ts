@@ -1,3 +1,4 @@
+import { stampRagOwner } from '@mcp-abap-adt/llm-agent';
 /**
  * HistoryUpsertHandler — post-tool-loop pipeline stage.
  *
@@ -56,10 +57,7 @@ export async function summarizeAndStore(
     const upsertResult = await ragWriter.upsertRaw(
       `turn:${sessionId}:${turn.turnIndex}`,
       summary,
-      {
-        sessionId,
-        ...(options?.userId !== undefined ? { userId: options.userId } : {}),
-      },
+      stampRagOwner({}, { scope: 'session', sessionId }),
       options,
     );
     if (!upsertResult.ok) {
@@ -106,7 +104,7 @@ export class HistoryUpsertHandler implements IStageHandler {
         turn,
         summarizer: ctx.historySummarizer,
         memory: ctx.historyMemory,
-        rag: historyRag,
+        rag: historyRag.rag,
         sessionId: ctx.sessionId,
         options: ctx.options,
         log: (msg, data) =>

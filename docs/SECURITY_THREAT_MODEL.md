@@ -55,51 +55,71 @@ responsibility of the MCP server implementation and the consumer's security poli
 **Threat:** RAG records from one tenant/user/session are returned in query results for a different
 tenant/user/session, causing cross-tenant data leakage.
 
-**Mitigation:** `SessionPolicy.namespace` ensures all upserted records are tagged with a
-caller-provided namespace string. `InMemoryRag.query()` filters results by namespace when one is
-present on the stored record.
+**Mitigation:** The collection isolation contract in AS-6 enforces mandatory owner
+filters independently of namespace tagging. `SessionPolicy.namespace` remains an
+additional consumer-provided partition, not an authenticated identity.
 
-**Limitation:** The namespace value is provided by the consumer at construction time. The library
-does not authenticate or validate namespace values — a buggy or malicious consumer can supply an
-incorrect namespace. The library does not enforce cross-tenant isolation at the storage level;
-that is the responsibility of the RAG store implementation used in production.
+**Limitation:** The consumer must derive namespace values from trusted state.
+Custom stores must implement the mandatory owner-filter contract; direct backend
+access and authentication remain the host's responsibility.
 
 ---
 
 ### AS-6: Cross-caller access through the RAG collection tools
 
-**Threat:** A caller's model names another caller's collection in a RAG collection tool and reads
-or writes it. Distinct from AS-4, which is about records returned by `query`: this is about the
-collection-management tools themselves.
+**Threat:** A model or caller names another owner's collection, forges a role or
+identity, or reuses a session to read or mutate another caller's data.
 
-**State: mitigated** (`f0be5135`, "the collection tools are built for one caller").
+**Guarantee:** One discriminated owner model covers session, user, role and global
+collections. Access is ownership AND the server's `canRead`/`canWrite` decision,
+checked in collection tools, registry hydration and both retrieval paths. Session
+owners must match the caller's session; user owners must match its user; role
+owners require membership from the library's assignments table only. Global
+reads require the decision; global creation and writes additionally require
+`caller.isAdmin`. Admin status never bypasses another owner's boundary. A server
+decision can narrow access only; allowing cannot widen ownership.
 
-**What was wrong (before v27)** (`packages/llm-agent/src/rag/mcp-tools/rag-collection-tools.ts`,
-v26 line numbers): five of seven handlers took the `RagToolContext` they were given and ignored
-it — `rag_add` (`:61`), `rag_correct` (`:87`), `rag_deprecate` (`:128`), `rag_list_collections`
-(`:155`) and `rag_describe_collection` (`:171`). They resolved any name against the registry they
-were built with, so against a shared registry they reached every registered collection.
-`rag_create_collection` (`:266`) and `rag_delete_collection` (`:200`, `:208`) did use the owner
-keys, and the latter also refused global deletes outright — that pair was the intended shape.
+**Fail closed:** Missing caller identity, denied or failing decisions, failed
+role lookups and conflicting session bindings refuse access. There is no implicit
+fallback to another session, user or shared identity. SmartServer requires a
+trusted `callerResolver` and `ragAccess` at startup, resolves the cookie session,
+binds its real user before graph acquisition and refreshes role visibility on
+requests. Revocation is checked again at retrieval. Builder configuration requires
+`withRagAccess`, explicit static collection owners and handling its `build()` Result.
 
-**Mitigation — construction, not a check — for `session`/`user` collections; addressing, not access
-control, for `global`.** Per architecture principle 8, the tool entries are built with the caller's
-identity bound in — **required, not optional**, so that an unnarrowed address space cannot be
-reached by omitting a field. For `session`/`user` scope this settles the whole question: the only
-collections a caller's tools can address are its own; another caller's collection is absent rather
-than refused. For `global` scope it settles only who may **write**: every global a caller's registry
-holds is readable through the tools — there is no per-collection authorization field, so a
-role-restricted read is not something the framework can check, and it does not claim to. Role-based
-read access to a shared global is the assembly's responsibility, built by choosing which globals go
-into a given caller's registry, not a check inside the framework. Three rules make the write/delete
-side of this complete, and all are part of it:
+**Record isolation:** Every record carries a positive `ownerScope` tag. Scoped
+queries match that tag and the owner identity before top-k; global records carry
+no private identity keys. Migration backfills valid legacy records and retags
+conflicting owners `invalid`, unmatched by scoped queries, with an administrative
+report. Missing-role catalog entries are refused. `history` and `tools` are
+reserved in every scope. Built-in history is an implicit per-session store owned
+by the request's session, never global, and always session-filtered. History
+requires a matching persisted session-to-user binding but skips the server read
+decision. The internal tool catalog also skips that decision; both stores still
+require a valid binding. Reads never create session bindings. Copying history to a user
+collection is outside this release.
 
-- **No framework tool mutates or deletes a `global` collection, ever.** Deciding who may change
-  shared data is policy for every consumer to set, not a rule this framework invents once.
-- **One source of caller identity.** `RagToolContext`'s declared `sessionId?`/`userId?` are removed, so a per-call value cannot disagree with the identity bound at construction — `rag_create_collection` no longer reads owner keys from that context, which would create a collection owned by an identity the address space was never narrowed to. Its `[key: string]: unknown` index signature keeps existing call sites compiling.
-- **Each session owns its collection registry** (`SmartServer` supplies `ragRegistryFactory`), so two callers' same-named collections never meet in one registry.
+**Server duties and limits:** The host authenticates the user, supplies the trusted
+resolver and `isAdmin`, implements the decision, and uses persistent access stores
+from its catalog persistence. Request headers, prompts and tool arguments cannot
+supply RAG role membership. The host must protect raw backend credentials and
+out-of-band writes; direct storage access is outside these enforcement paths.
+Custom stores must honor the mandatory owner contract. In-memory bindings and
+roles do not survive restart. The CLI's `--local-user-id` test-helper mode is
+explicit single-user local use only, not production authentication.
 
-Design and migration: [MIGRATION-v27.md](MIGRATION-v27.md) items 6, 7, 10, 11; `docs/ARCHITECTURE.md` principle 8.
+**Role lifecycle and backend limits:** Role deletion is refused while the role
+owns collections. PostgreSQL and HANA use row locks; Qdrant uses catalog intent
+and an immutable revision-chain CAS, with no persistent lock or timeout-based
+recovery. Its revision chain grows without compaction. Qdrant requires strong
+ordered writes, all-replica reads and full replica acknowledgements; insert-only
+session binding points require Qdrant >= 1.17.0, but positive global filters have
+no exact-version restriction. HANA reads all owner candidates before app-side
+top-k, with a possible memory/latency cost. PostgreSQL was checked with PGlite;
+HANA and Qdrant validation used mocks/fakes, not live services.
+
+See [MIGRATION-v31.md](MIGRATION-v31.md) and
+[Qdrant access persistence](../packages/qdrant-rag/README.md#collection-access-persistence).
 
 ---
 
@@ -147,8 +167,10 @@ Do not enable it for data that may not leave the deployment. `rag.retrieval.hist
 per-session requests, so an explicit `history: { strategy: embedding }` entry keeps session history out of a global
 (plugin / `withReranker`) reranker; without an entry the global reranker still sees it.
 
-**Session isolation of history.** All sessions share one history store; isolation rests on the `sessionId` filter
-of `IRag` (the `rag-history` stage queries with `scope: 'session'`). A custom `IRag` used as the history store
+**Session isolation of history.** History is logically an implicit per-session store, even when
+physical storage is shared. Ownership comes from the request caller, with a mandatory positive
+`ownerScope` tag and `sessionId` filter; history bypasses the server read decision but still requires
+a matching persisted session-to-user binding. A custom `IRag` used as the history store
 **must** honour that filter, otherwise one session reads another's history. Every built-in store does.
 
 ---
@@ -167,9 +189,30 @@ of `IRag` (the `rag-history` stage queries with `scope: 'session'`). A custom `I
 
 ## Out of Scope
 
-- Multi-tenant storage isolation beyond namespace tagging
+- Authentication and protection of direct, out-of-band backend access
 - LLM output moderation (hallucination, bias, harmful content)
 - Network-level security (TLS, firewall rules, VPC isolation)
 - Operational concerns (audit logging to SIEM, alert thresholds, incident response)
 
 These are the responsibility of the consumer. See deployment documentation for guidance.
+
+
+### SmartServer caller identity and hydration (#304, Task 8)
+
+SmartServer requires a trusted caller resolver and RAG access stores/decision
+interface before startup. It mints or resolves the cookie session, resolves the
+real user/admin identity, binds the session to that user in the configured
+persistence, and only then acquires its session graph. Resolver, binding and
+acquisition failures return HTTP 403. Graph reuse also refuses a changed user,
+including concurrent builds. There is no header-selected or shared fallback user.
+
+Catalog hydration admits only collections that pass ownership and the server's
+read decision. Each request refreshes visibility using library-owned role
+assignments; revocation hides a role collection in an already open session.
+Retrieval still rechecks access at execution, so retaining a store reference
+does not preserve revoked permissions. Missing-role catalog entries are skipped
+and reported once per server. Session metadata stores the authenticated user ID.
+The host must supply access stores from its catalog persistence to preserve
+bindings across restarts and instances. In-memory stores provide process-local
+persistence only. The CLI's explicit single-user local flag uses test access
+helpers and is not for production.

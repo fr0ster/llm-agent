@@ -1,4 +1,5 @@
 import type { HanaClient } from '../hana-vector-rag.js';
+import { transactionalHanaClient } from '../role-transaction.js';
 
 /**
  * A HANA client that stores the rows of the `shared` layout's two tables and
@@ -109,6 +110,7 @@ function unsupported(sql: string): Error {
 type Operand =
   | { kind: 'column'; name: string }
   | { kind: 'param'; index: number }
+  | { kind: 'json'; column: string; key: string; wrapped: boolean }
   | { kind: 'currentSchema' }
   | { kind: 'literal'; value: Value };
 
@@ -121,7 +123,8 @@ type Expr =
 type Projection = { expr: Expr; alias?: string };
 type Condition =
   | { kind: 'cmp'; op: '=' | '>'; left: Operand; right: Operand }
-  | { kind: 'in'; left: Operand; items: Operand[] };
+  | { kind: 'in'; left: Operand; items: Operand[] }
+  | { kind: 'isNull'; left: Operand };
 type TableRef = { schema?: string; name: string };
 
 type Statement =
@@ -247,7 +250,10 @@ class Parser {
     if (!this.acceptWord('WHERE')) return conditions;
     do {
       const left = this.operand();
-      if (this.acceptWord('IN')) {
+      if (this.acceptWord('IS')) {
+        this.expectWord('NULL');
+        conditions.push({ kind: 'isNull', left });
+      } else if (this.acceptWord('IN')) {
         this.expectPunct('(');
         const items: Operand[] = [];
         do items.push(this.operand());
@@ -287,7 +293,39 @@ class Parser {
     return this.operand();
   }
 
+  private jsonOperand(wrapped: boolean): Operand {
+    this.expectWord(wrapped ? 'JSON_QUERY' : 'JSON_VALUE');
+    this.expectPunct('(');
+    const column = this.identifier();
+    this.expectPunct(',');
+    const path = this.expect('string').text;
+    if (!wrapped) {
+      this.expectWord('RETURNING');
+      this.expectWord('NVARCHAR');
+      this.expectPunct('(');
+      this.expect('number');
+      this.expectPunct(')');
+    }
+    if (wrapped) {
+      this.expectWord('WITH');
+      this.expectWord('UNCONDITIONAL');
+      this.expectWord('ARRAY');
+      this.expectWord('WRAPPER');
+      this.expectWord('NULL');
+      this.expectWord('ON');
+      this.expectWord('EMPTY');
+      this.expectWord('ERROR');
+      this.expectWord('ON');
+      this.expectWord('ERROR');
+    }
+    this.expectPunct(')');
+    if (!/^\$\.[A-Za-z]+$/.test(path)) throw unsupported(this.sql);
+    return { kind: 'json', column, key: path.slice(2), wrapped };
+  }
+
   private operand(): Operand {
+    if (this.peekWord('JSON_VALUE')) return this.jsonOperand(false);
+    if (this.peekWord('JSON_QUERY')) return this.jsonOperand(true);
     if (this.acceptPunct('?')) return { kind: 'param', index: this.params++ };
     if (this.acceptWord('CURRENT_SCHEMA')) return { kind: 'currentSchema' };
     const t = this.tokens[this.pos];
@@ -416,6 +454,7 @@ function cosineSimilarity(a: number[], b: number[]): number {
  */
 export function storingHana(opts: {
   dimension: number;
+  legacyCatalog?: boolean;
   database?: string;
   schema?: string;
   documentsTable?: string;
@@ -448,6 +487,7 @@ export function storingHana(opts: {
           'SCOPE',
           'USER_ID',
           'SESSION_ID',
+          ...(opts.legacyCatalog ? [] : ['ROLE_ID']),
           'ATTRIBUTES_JSON',
           'CREATED_AT',
         ],
@@ -526,6 +566,22 @@ export function storingHana(opts: {
           throw new Error('storing-hana: not all parameters bound');
         return params[op.index] as Value;
       }
+      case 'json': {
+        if (!row) throw new Error('JSON operand needs a row');
+        const raw = row[column(table, op.column)];
+        const data: Record<string, Value> =
+          typeof raw === 'string' ? JSON.parse(raw) : {};
+        if (op.wrapped)
+          return Object.hasOwn(data, op.key)
+            ? JSON.stringify([data[op.key]])
+            : null;
+        const value = data[op.key];
+        return value === undefined ||
+          value === null ||
+          typeof value === 'object'
+          ? null
+          : String(value);
+      }
       case 'currentSchema':
         return schema;
       case 'literal':
@@ -556,6 +612,7 @@ export function storingHana(opts: {
   ): boolean =>
     where.every((c) => {
       const l = operandValue(c.left, table, row, params);
+      if (c.kind === 'isNull') return l === null;
       if (l === null) return false;
       if (c.kind === 'in')
         return c.items.some((item) => {
@@ -677,7 +734,51 @@ export function storingHana(opts: {
         tables.delete(`${schema}.${clearTable[2]}`);
       return { rows: [], rowCount: 0 };
     }
-    const stmt = new Parser(tokenize(sql), sql).parse();
+    if (sql === 'ROLLBACK' && snapshot) {
+      tables.clear();
+      for (const [key, table] of snapshot) tables.set(key, table);
+    }
+    if (sql === 'COMMIT' || sql === 'ROLLBACK') {
+      snapshot = undefined;
+      return { rows: [], rowCount: 0 };
+    }
+    const create = /^CREATE TABLE "([^"]+)"/.exec(sql);
+    if (create) {
+      const key = `${schema}.${create[1]}`;
+      if (tables.has(key)) throw new Error('Duplicate table');
+      const columns = [
+        ...sql.matchAll(
+          /(?:\(|,)\s*([a-z_]+)\s+(?:NVARCHAR|NCLOB|TIMESTAMP|REAL_VECTOR)/g,
+        ),
+      ].map((m) => m[1].toUpperCase());
+      const primary = /PRIMARY KEY \(([^)]+)\)/.exec(sql);
+      const inline = /([a-z_]+) NVARCHAR\(\d+\) PRIMARY KEY/.exec(sql);
+      tables.set(key, {
+        columns,
+        key: primary
+          ? primary[1].split(', ').map((c) => c.toUpperCase())
+          : inline
+            ? [inline[1].toUpperCase()]
+            : [],
+        lengths: {},
+        rows: [],
+      });
+      return { rows: [], rowCount: 0 };
+    }
+    const alter =
+      /^ALTER TABLE "([^"]+)" ADD \(role_id NVARCHAR\(5000\)\)$/.exec(sql);
+    if (alter) {
+      const table = resolve({ name: alter[1] });
+      if (table.columns.includes('ROLE_ID'))
+        throw new Error('Duplicate column');
+      table.columns.push('ROLE_ID');
+      for (const row of table.rows) row.ROLE_ID = null;
+      return { rows: [], rowCount: 0 };
+    }
+    const stmt = new Parser(
+      tokenize(sql.replace(/ FOR UPDATE$/, '')),
+      sql,
+    ).parse();
     switch (stmt.kind) {
       case 'select': {
         const rows = select(stmt, params);
@@ -726,28 +827,34 @@ export function storingHana(opts: {
     }
   };
 
+  let snapshot: Map<string, Table> | undefined;
   const statements: string[] = [];
   return {
     statements,
-    client: {
-      async exec(sql, params = []) {
-        return { rowCount: run(sql, params).rowCount };
+    client: transactionalHanaClient(
+      {
+        async exec(sql, params = []) {
+          return { rowCount: run(sql, params).rowCount };
+        },
+        async query(sql, params = []) {
+          if (sql.includes('AS "listDatabase"')) {
+            statements.push(sql);
+            return [
+              {
+                listDatabase: opts.database ?? 'catalog_a',
+                listHost: 'localhost',
+                listSchema: schema,
+              },
+            ];
+          }
+          return run(sql, params).rows;
+        },
+        async close() {},
       },
-      async query(sql, params = []) {
-        if (sql.includes('AS "listDatabase"')) {
-          statements.push(sql);
-          return [
-            {
-              listDatabase: opts.database ?? 'catalog_a',
-              listHost: 'localhost',
-              listSchema: schema,
-            },
-          ];
-        }
-        return run(sql, params).rows;
+      (enabled) => {
+        if (!enabled) snapshot = structuredClone(tables);
       },
-      async close() {},
-    },
+    ),
     createCollectionTable(name) {
       tables.set(`${schema}.${name}`, {
         columns: ['ID', 'TEXT', 'VECTOR', 'METADATA', 'CREATED_AT'],

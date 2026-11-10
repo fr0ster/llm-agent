@@ -22,7 +22,11 @@ import {
   type RagResult,
   type Result,
 } from '../interfaces/types.js';
-import { matchesRagIdentity, ragIdentityFilter } from './identity-filter.js';
+import {
+  matchesRagIdentity,
+  ragIdentityFilter,
+  tagRagMetadata,
+} from './identity-filter.js';
 import { InvertedIndex } from './inverted-index.js';
 import { listKeyedPage } from './list-support.js';
 import type { IDocumentEnricher, IQueryPreprocessor } from './preprocessor.js';
@@ -134,6 +138,15 @@ export class VectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
     metadata: RagMetadata,
   ): Result<void, RagError> {
     // Generated IDs remain reserved while their anonymous record exists.
+    metadata = tagRagMetadata(metadata);
+    if (metadata.ownerScope === 'invalid')
+      return {
+        ok: false,
+        error: new RagError(
+          'Conflicting owner scope and identity keys',
+          'INVALID_ARGUMENT',
+        ),
+      };
     if (
       this.records.some(
         (r) =>
@@ -154,9 +167,18 @@ export class VectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
         const slot = this.records[i];
         if (slot === null) continue;
         if (slot.metadata.id === metadata.id) {
+          const merged = tagRagMetadata({ ...slot.metadata, ...metadata });
+          if (merged.ownerScope === 'invalid')
+            return {
+              ok: false,
+              error: new RagError(
+                'Conflicting owner scope and identity keys',
+                'INVALID_ARGUMENT',
+              ),
+            };
           slot.text = text;
           slot.vector = vector;
-          slot.metadata = { ...slot.metadata, ...metadata };
+          slot.metadata = merged;
           return { ok: true, value: undefined };
         }
       }
@@ -169,10 +191,14 @@ export class VectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
     for (let i = 0; !metadata.id && i < this.records.length; i++) {
       const slot = this.records[i];
       if (slot === null || slot.metadata.id) continue;
-      if (this.cosine(slot.vector, vector) >= this.dedupThreshold) {
+      if (
+        tagRagMetadata({ ...slot.metadata, ...metadata }).ownerScope !==
+          'invalid' &&
+        this.cosine(slot.vector, vector) >= this.dedupThreshold
+      ) {
         slot.text = text;
         slot.vector = vector;
-        slot.metadata = { ...slot.metadata, ...metadata };
+        slot.metadata = tagRagMetadata({ ...slot.metadata, ...metadata });
         return { ok: true, value: undefined };
       }
     }

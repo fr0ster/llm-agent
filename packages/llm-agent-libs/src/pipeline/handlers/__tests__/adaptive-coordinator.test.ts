@@ -9,8 +9,10 @@ import type {
   Message,
 } from '@mcp-abap-adt/llm-agent';
 import { SmartAgentBuilder } from '../../../builder.js';
+import { unwrapBuilderResult } from '../../../builder-types.js';
 import { InMemoryRunRecordStore } from '../../../coordinator/adaptive/in-memory-run-record-store.js';
 import { LlmAdaptiveController } from '../../../coordinator/adaptive/llm-adaptive-controller.js';
+import { testCallOptions, testRequestAccess } from '../../../testing/index.js';
 import { DefaultPipeline } from '../../default-pipeline.js';
 import { pipelineToStream } from '../../pipeline-to-stream.js';
 import { AdaptiveCoordinatorHandler } from '../adaptive-coordinator.js';
@@ -130,6 +132,7 @@ for (const mode of [
     });
     const pipeline = new DefaultPipeline({ stepperCoordinator: handler });
     const handle = await new SmartAgentBuilder({ skipModelValidation: true })
+      .withRagAccess(testRequestAccess)
       .withMainLlm({
         async chat() {
           throw new Error('unexpected LLM');
@@ -142,7 +145,8 @@ for (const mode of [
       .withClassification(false)
       .setPipeline(pipeline)
       .withStepperCoordinator(handler)
-      .build();
+      .build()
+      .then(unwrapBuilderResult);
     const chunks: LlmStreamChunk[] = [];
     const prior: Message[] = [
       { role: 'user', content: 'old' },
@@ -160,7 +164,7 @@ for (const mode of [
       pipeline,
       [...prior, { role: 'user', content: 'request' }],
       [],
-      options as never,
+      testCallOptions(options),
     )) {
       assert.equal(chunk.ok, true);
       if (chunk.ok) chunks.push(chunk.value);
@@ -209,7 +213,10 @@ for (const mode of [
       );
       assert.ok(saved?.runId);
     }
-    const response = await handle.agent.process('next', options as never);
+    const response = await handle.agent.process(
+      'next',
+      testCallOptions(options),
+    );
     assert.equal(response.ok, true);
     assert.ok(!inputs[1]?.history.some((m) => m.content === 'next'));
     if (mode !== 'save-fail' && mode !== 'load-fail')
@@ -256,6 +263,7 @@ for (const form of ['messages', 'string'] as const) {
       },
     });
     const handle = await new SmartAgentBuilder({ skipModelValidation: true })
+      .withRagAccess(testRequestAccess)
       .withMainLlm({
         async chat() {
           throw new Error('unused');
@@ -271,7 +279,8 @@ for (const form of ['messages', 'string'] as const) {
           return handler.execute(ctx, config, span);
         },
       })
-      .build();
+      .build()
+      .then(unwrapBuilderResult);
     const prior: Message[] = [
       { role: 'user', content: 'old' },
       { role: 'assistant', content: 'reply' },
@@ -279,6 +288,7 @@ for (const form of ['messages', 'string'] as const) {
     const current: Message = { role: 'user', content: 'request' };
     const result = await handle.agent.process(
       form === 'messages' ? [...prior, current] : 'request',
+      testCallOptions(),
     );
     assert.equal(result.ok, true);
     if (result.ok) assert.equal(result.value.content, 'Hi');
@@ -319,6 +329,8 @@ for (const abort of [false, true]) {
       },
     });
     const ctx = {
+      options: testCallOptions({ sessionId: 'regression' }),
+      sessionId: 'regression',
       inputText: 'request',
       history: [],
       yield() {
@@ -376,6 +388,8 @@ for (const live of [false, true]) {
       },
     });
     const ctx = {
+      options: testCallOptions({ sessionId: 'regression' }),
+      sessionId: 'regression',
       inputText: 'request',
       history: [],
       yield(chunk: { ok: true; value: LlmStreamChunk }) {
@@ -395,7 +409,8 @@ function regressionContext(signal?: AbortSignal) {
   const ctx = {
     inputText: 'request',
     history: [],
-    options: { signal },
+    options: testCallOptions({ sessionId: 'regression', signal }),
+    sessionId: 'regression',
     requestLogger: {
       logLlmCall(value: (typeof logged)[number]) {
         logged.push(value);

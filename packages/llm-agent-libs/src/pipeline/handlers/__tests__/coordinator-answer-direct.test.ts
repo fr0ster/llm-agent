@@ -7,6 +7,7 @@ import type {
   PlanStep,
   StepResult,
 } from '@mcp-abap-adt/llm-agent';
+import { testCallOptions } from '../../../testing/index.js';
 import { CoordinatorHandler } from '../coordinator.js';
 
 function emptyPlanPlanning(
@@ -52,13 +53,16 @@ function makeCtx(inputText: string) {
   const ctx = {
     inputText,
     sessionId: 't',
-    options: {
-      sessionLogger: {
-        logStep: (step: string, payload: Record<string, unknown>) => {
-          logged.push({ step, payload });
+    options: testCallOptions({
+      sessionId: 't',
+      ...{
+        sessionLogger: {
+          logStep: (step: string, payload: Record<string, unknown>) => {
+            logged.push({ step, payload });
+          },
         },
       },
-    },
+    }),
     yield: (c: {
       ok: boolean;
       value: { content: string; finishReason?: string };

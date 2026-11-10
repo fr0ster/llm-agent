@@ -1,3 +1,4 @@
+import { TestSmartServer as SmartServer } from '../../__tests__/rag-identity-fixture.js';
 /**
  * #244 Task 4 — descriptor-producing connectors + seam detection/precedence.
  *
@@ -21,7 +22,6 @@ import { constructionSeams } from '../../__tests__/construction-seams.js';
 import {
   connectMcpClientsFromConfig,
   connectMcpClientsWithDescriptorsFromConfig,
-  SmartServer,
   type SmartServerConfig,
 } from '../../smart-server.js';
 import { buildSessionMcpClients } from '../build-session-mcp-clients.js';

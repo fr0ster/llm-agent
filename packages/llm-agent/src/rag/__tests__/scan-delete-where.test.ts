@@ -7,7 +7,10 @@ import {
   type IRagScanner,
 } from '../../interfaces/rag-scan.js';
 import type { RagMetadata } from '../../interfaces/types.js';
-import { conformanceEmbedder } from '../../testing/rag-filter-conformance.js';
+import {
+  conformanceEmbedder,
+  seedLegacyRagRecord,
+} from '../../testing/rag-filter-conformance.js';
 import { InMemoryRag } from '../in-memory-rag.js';
 import { symmetricEmbedder } from '../retrieval-embedder.js';
 import { VectorRag } from '../vector-rag.js';
@@ -56,8 +59,7 @@ async function seed(
   const w = store.writer?.();
   assert.ok(w);
   for (const [id, meta] of rows) {
-    const res = await w.upsertRaw(id, `text ${id}`, meta);
-    assert.ok(res.ok);
+    await seedLegacyRagRecord(store, id, `text ${id}`, meta);
   }
 }
 

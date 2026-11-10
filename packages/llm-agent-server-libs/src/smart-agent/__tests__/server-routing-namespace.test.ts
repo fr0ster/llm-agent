@@ -37,13 +37,14 @@ import {
   type SessionAgentParts,
   SessionRequestLogger,
 } from '@mcp-abap-adt/llm-agent-libs';
+import { testCallOptions } from '../../../../llm-agent-libs/src/testing/index.js';
 import { fakeControllerServerCtx } from '../../pipelines/__tests__/fixtures.js';
 import { ControllerPipelinePlugin } from '../../pipelines/controller.js';
 import type { IServerPipelineContext } from '../../pipelines/server-context.js';
 import { makeKnowledgeSemanticIndex } from '../../smart-agent/embedder-knowledge-index.js';
 import { parseControllerSettings } from '../pipeline-settings.js';
-import { SmartServer } from '../smart-server.js';
 import { constructionSeams } from './construction-seams.js';
+import { TestSmartServer as SmartServer } from './rag-identity-fixture.js';
 
 // ---------------------------------------------------------------------------
 // Fakes
@@ -209,7 +210,10 @@ async function runController(
 
   const inst = await plugin.build(fullCtx);
   try {
-    for await (const chunk of inst.agent.streamProcess('search stuff')) {
+    for await (const chunk of inst.agent.streamProcess(
+      'search stuff',
+      testCallOptions(),
+    )) {
       void chunk;
     }
   } finally {

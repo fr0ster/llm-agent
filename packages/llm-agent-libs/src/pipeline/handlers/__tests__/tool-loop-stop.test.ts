@@ -21,7 +21,12 @@ import { NoopToolCache } from '@mcp-abap-adt/llm-agent';
 import { SmartAgent } from '../../../agent.js';
 import { PendingToolResultsRegistry } from '../../../policy/pending-tool-results-registry.js';
 import { ToolAvailabilityRegistry } from '../../../policy/tool-availability-registry.js';
-import { makeAssembler, makeDefaultDeps } from '../../../testing/index.js';
+import {
+  makeAssembler,
+  makeDefaultDeps,
+  testCallOptions,
+  testRequestAccess,
+} from '../../../testing/index.js';
 import type { ISpan } from '../../../tracer/types.js';
 import type { PipelineContext } from '../../context.js';
 import { ToolLoopHandler } from '../tool-loop.js';
@@ -76,6 +81,7 @@ function makeCtx(
   const yielded: Result<LlmStreamChunk, unknown>[] = [];
 
   return {
+    ragAccess: testRequestAccess,
     config: {
       maxIterations: 3,
       maxToolCalls: 5,
@@ -83,7 +89,10 @@ function makeCtx(
       mode: 'smart',
       refreshToolsPerIteration: false,
     } as PipelineContext['config'],
-    options: {} as CallOptions,
+    options: testCallOptions({
+      sessionId: 's-stream',
+      ...testCallOptions({} as CallOptions),
+    }),
     sessionId: 's-stream',
     mcpClients: [],
     mainLlm,
@@ -300,10 +309,10 @@ for (const streamMode of ['full', 'final'] as const) {
           { role: 'system', content: 'adapter' },
           { role: 'user', content: 'work' },
         ],
-        {
+        testCallOptions({
           stopSignal: stop.signal,
           signal: new AbortController().signal,
-        },
+        }),
       );
       assert.equal(result.ok, true);
       if (result.ok) {
@@ -425,7 +434,7 @@ for (const pipeline of [false, true]) {
         maxToolCalls: limit,
         heartbeatIntervalMs: 0,
       });
-      const result = await agent.process('work');
+      const result = await agent.process('work', testCallOptions());
       assert.equal(result.ok, true);
       assert.equal(requests, rounds + 1);
       assert.equal(executed, scenario === 'budget30' ? 30 : 1);

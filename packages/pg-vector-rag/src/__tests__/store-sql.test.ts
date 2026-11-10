@@ -16,15 +16,15 @@ describe('shared store SQL', () => {
     );
     assert.deepEqual(plain.params, ['docs', 99]);
     const scoped = sql.search('LIT', 3, {
-      identity: { sessionId: 's', userId: 'u' },
+      identity: { ownerScope: 'session', sessionId: 's', userId: 'u' },
       namespace: 'ns',
       nowSecs: 5,
     });
     assert.equal(
       scoped.sql,
-      `SELECT "id", "text", "metadata", "vector" <=> LIT AS score FROM "rag_documents" WHERE "collection" = $1 AND CASE WHEN jsonb_typeof("metadata"->'sessionId') = 'string' THEN "metadata"->>'sessionId' END = $2 AND CASE WHEN jsonb_typeof("metadata"->'userId') = 'string' THEN "metadata"->>'userId' END = $3 AND CASE WHEN jsonb_typeof("metadata"->'namespace') = 'string' THEN "metadata"->>'namespace' END = $4 AND ${TTL_SHARED} $5 ORDER BY "vector" <=> LIT LIMIT 3`,
+      `SELECT "id", "text", "metadata", "vector" <=> LIT AS score FROM "rag_documents" WHERE "collection" = $1 AND CASE WHEN jsonb_typeof("metadata"->'ownerScope') = 'string' THEN "metadata"->>'ownerScope' END = $2 AND CASE WHEN jsonb_typeof("metadata"->'sessionId') = 'string' THEN "metadata"->>'sessionId' END = $3 AND CASE WHEN jsonb_typeof("metadata"->'userId') = 'string' THEN "metadata"->>'userId' END = $4 AND CASE WHEN jsonb_typeof("metadata"->'namespace') = 'string' THEN "metadata"->>'namespace' END = $5 AND ${TTL_SHARED} $6 ORDER BY "vector" <=> LIT LIMIT 3`,
     );
-    assert.deepEqual(scoped.params, ['docs', 's', 'u', 'ns', 5]);
+    assert.deepEqual(scoped.params, ['docs', 'session', 's', 'u', 'ns', 5]);
   });
 
   it('upsert writes the collection column', () => {
@@ -82,13 +82,13 @@ describe('per-collection store SQL', () => {
     });
     assert.deepEqual(
       sql.search('LIT', 1, {
-        identity: { sessionId: 's', userId: 'u' },
+        identity: { ownerScope: 'session', sessionId: 's', userId: 'u' },
         namespace: 'ns',
         nowSecs: 42,
       }),
       {
-        sql: `SELECT id, text, metadata, vector <=> LIT AS score FROM "docs" WHERE metadata->>'sessionId' = $1 AND metadata->>'userId' = $2 AND metadata->>'namespace' = $3 AND ${TTL} $4 ORDER BY vector <=> LIT LIMIT 1`,
-        params: ['s', 'u', 'ns', 42],
+        sql: `SELECT id, text, metadata, vector <=> LIT AS score FROM "docs" WHERE CASE WHEN jsonb_typeof(metadata->'ownerScope') = 'string' THEN metadata->>'ownerScope' END = $1 AND CASE WHEN jsonb_typeof(metadata->'sessionId') = 'string' THEN metadata->>'sessionId' END = $2 AND CASE WHEN jsonb_typeof(metadata->'userId') = 'string' THEN metadata->>'userId' END = $3 AND CASE WHEN jsonb_typeof(metadata->'namespace') = 'string' THEN metadata->>'namespace' END = $4 AND ${TTL} $5 ORDER BY vector <=> LIT LIMIT 1`,
+        params: ['session', 's', 'u', 'ns', 42],
       },
     );
     assert.deepEqual(sql.byId('a'), {

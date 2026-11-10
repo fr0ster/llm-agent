@@ -10,6 +10,14 @@ import {
   makeSubagentClient,
 } from '../subagent-client.js';
 
+test('controller roles preserve the same trusted caller', () => {
+  const caller = { sessionId: 'session', userId: 'user', isAdmin: false };
+  assert.equal(
+    diagnosticCallOptions({ caller, sessionId: caller.sessionId })?.caller,
+    caller,
+  );
+});
+
 test('makeSubagentClient forwards options (signal) to llm.chat', async () => {
   let seen: CallOptions | undefined;
   const llm = {

@@ -1,3 +1,6 @@
+import { testCallOptions } from '../../../../llm-agent-libs/src/testing/index.js';
+import { TestSmartServer as SmartServer } from './rag-identity-fixture.js';
+
 /**
  * #244 Task 9 — end-to-end acceptance: two REAL (in-process, real sockets)
  * MCP servers exposing the SAME tool name (`Search`) must both stay
@@ -73,7 +76,6 @@ import { buildNamespacedMcpBridge } from '../mcp/namespaced-bridge.js';
 import { parseControllerSettings } from '../pipeline-settings.js';
 import {
   connectMcpClientsWithDescriptorsFromConfig,
-  SmartServer,
   type SmartServerMcpConfig,
 } from '../smart-server.js';
 import { constructionSeams } from './construction-seams.js';
@@ -757,7 +759,10 @@ test('controller pipeline: over a REAL boot, s1__Search routes to the SESSION cl
 
     const inst = await plugin.build(fullCtx);
     try {
-      for await (const chunk of inst.agent.streamProcess('search stuff')) {
+      for await (const chunk of inst.agent.streamProcess(
+        'search stuff',
+        testCallOptions(),
+      )) {
         void chunk;
       }
     } finally {

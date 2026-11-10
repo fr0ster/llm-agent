@@ -12,6 +12,10 @@ import {
   symmetricEmbedder,
 } from '@mcp-abap-adt/llm-agent';
 import {
+  registerRawRecordInsert,
+  seedLegacyRagRecord,
+} from '@mcp-abap-adt/llm-agent/testing/rag-filter-conformance';
+import {
   CONFORMANCE_EMBEDDING_DIM,
   conformanceEmbedder,
   isScanDeleteCaseSkipped,
@@ -36,15 +40,27 @@ function open(
   layout: Layout,
   dimension = DIM,
 ): Store {
-  return new PgVectorRag(
-    {
-      collectionName: collection,
-      dimension,
-      layout,
-      autoCreateSchema: false,
-      embedder,
+  return registerRawRecordInsert(
+    new PgVectorRag(
+      {
+        collectionName: collection,
+        dimension,
+        layout,
+        autoCreateSchema: false,
+        embedder,
+      },
+      pg,
+    ),
+    async (r) => {
+      pg.insertSharedRow({
+        table: layout === 'shared' ? '"rag_documents"' : `"${collection}"`,
+        ...(layout === 'shared' ? { collection } : {}),
+        id: r.id,
+        text: r.text,
+        vector: Array<number>(dimension).fill(1),
+        metadata: r.metadata,
+      });
     },
-    pg,
   ) as Store;
 }
 
@@ -55,8 +71,7 @@ async function put(
   id: string,
   metadata: Record<string, unknown> = {},
 ): Promise<void> {
-  const r = await store.upsert(`text ${id}`, { ...metadata, id });
-  assert.ok(r.ok);
+  await seedLegacyRagRecord(store, id, `text ${id}`, metadata);
 }
 
 async function scanAll(

@@ -23,6 +23,9 @@ import {
   makeMcpClient,
   makeMetadataRag,
   makeRag,
+  ownedTestStores,
+  testCallOptions,
+  testRequestAccess,
 } from '../testing/index.js';
 
 const DEFAULT_CONFIG = { maxIterations: 5 };
@@ -40,13 +43,14 @@ describe('Regression — ragQueryK config propagated to all stores', () => {
     const feedback = makeMetadataRag();
     const state = makeMetadataRag();
     const { deps } = makeDefaultDeps({
+      ragAccess: testRequestAccess,
       classifier: makeClassifier([
         { type: 'action', text: 'Find SAP details', context: 'sap-abap' },
       ]),
-      ragStores: { facts, feedback, state },
+      ragStores: ownedTestStores({ facts, feedback, state }),
     });
     const agent = new SmartAgent(deps, { ...DEFAULT_CONFIG, ragQueryK: 2 });
-    await agent.process('test');
+    await agent.process('test', testCallOptions());
     assert.ok(facts.queryCalls.length > 0);
     assert.equal(facts.queryCalls[0].k, 2);
     assert.equal(feedback.queryCalls[0].k, 2);
@@ -76,7 +80,7 @@ describe('Regression — tool call with empty arguments accepted', () => {
       ],
     });
     const agent = new SmartAgent(deps, { ...DEFAULT_CONFIG, mode: 'hard' });
-    const r = await agent.process('test');
+    const r = await agent.process('test', testCallOptions());
     assert.ok(r.ok);
     assert.equal(client.callCount, 1);
     assert.ok(r.value.content.endsWith('done'));
@@ -139,7 +143,7 @@ describe('Regression — fragmented stream tool arguments are accumulated by ind
     });
     deps.mainLlm = streamLlm;
     const agent = new SmartAgent(deps, DEFAULT_CONFIG);
-    const r = await agent.process('sum');
+    const r = await agent.process('sum', testCallOptions());
     assert.ok(r.ok);
     assert.deepEqual(capturedArgs, { a: 1, b: 2 });
     assert.ok(r.value.content.endsWith('done'));
@@ -172,7 +176,7 @@ describe('Regression — duplicate tool name from two clients: both reachable vi
       ],
     });
     const agent = new SmartAgent(deps, DEFAULT_CONFIG);
-    const r = await agent.process('test');
+    const r = await agent.process('test', testCallOptions());
     assert.ok(r.ok);
     assert.equal(client1.callCount, 0, 'client1 should not be called');
     assert.equal(client2.callCount, 1, 'client2 should be called');
@@ -206,7 +210,7 @@ describe('Regression — multiple tool calls execute in one iteration', () => {
       ],
     });
     const agent = new SmartAgent(deps, { ...DEFAULT_CONFIG, mode: 'hard' });
-    const r = await agent.process('test');
+    const r = await agent.process('test', testCallOptions());
     assert.ok(r.ok);
     assert.equal(client.callCount, 2, 'both tools should call MCP client');
   });
@@ -254,7 +258,7 @@ describe('Regression — context assembled once before tool loop', () => {
       ],
     });
     const agent = new SmartAgent(deps, { ...DEFAULT_CONFIG, mode: 'hard' });
-    const r = await agent.process('test');
+    const r = await agent.process('test', testCallOptions());
     assert.ok(r.ok);
     assert.equal(assemblerCallCount, 1);
     assert.equal(r.value.stopReason, 'stop');
@@ -283,7 +287,7 @@ describe('Regression — helperLlm called for history summarization', () => {
       ...DEFAULT_CONFIG,
       historyAutoSummarizeLimit: 5,
     });
-    const r = await agent.process(messages);
+    const r = await agent.process(messages, testCallOptions());
     assert.ok(r.ok);
     assert.ok(
       helperLlm.callCount >= 1,
@@ -311,7 +315,7 @@ describe('helperLlm — summarization', () => {
       ...DEFAULT_CONFIG,
       historyAutoSummarizeLimit: 5,
     });
-    const r = await agent.process(messages);
+    const r = await agent.process(messages, testCallOptions());
     assert.ok(r.ok);
     assert.equal(
       helperLlm.callCount,
@@ -330,7 +334,7 @@ describe('helperLlm — summarization', () => {
       ...DEFAULT_CONFIG,
       historyAutoSummarizeLimit: 5,
     });
-    const r = await agent.process(messages);
+    const r = await agent.process(messages, testCallOptions());
     assert.ok(r.ok, 'should succeed without helperLlm');
   });
 });
@@ -345,18 +349,22 @@ describe('helperLlm — RAG translation', () => {
       { content: 'Show me transaction SE38 information', finishReason: 'stop' },
     ]);
     const { deps } = makeDefaultDeps({
+      ragAccess: testRequestAccess,
       classifier: makeClassifier([
         {
           type: 'action',
           text: 'Покажи мне информацию о транзакции SE38',
         },
       ]),
-      ragStores: { tools: makeRag() },
+      ragStores: ownedTestStores({ tools: makeRag() }),
     });
     deps.helperLlm = helperLlm;
     deps.translateQueryStores = new Set(['tools']);
     const agent = new SmartAgent(deps, { ...DEFAULT_CONFIG, mode: 'hard' });
-    const r = await agent.process('Покажи мне информацию о транзакции SE38');
+    const r = await agent.process(
+      'Покажи мне информацию о транзакции SE38',
+      testCallOptions(),
+    );
     assert.ok(r.ok);
     assert.ok(
       helperLlm.callCount >= 1,
@@ -366,6 +374,7 @@ describe('helperLlm — RAG translation', () => {
 
   it('mainLlm used as fallback when no helperLlm for translation', async () => {
     const { deps, llm } = makeDefaultDeps({
+      ragAccess: testRequestAccess,
       classifier: makeClassifier([
         {
           type: 'action',
@@ -379,11 +388,14 @@ describe('helperLlm — RAG translation', () => {
         },
         { content: 'Here is the info', finishReason: 'stop' },
       ],
-      ragStores: { tools: makeRag() },
+      ragStores: ownedTestStores({ tools: makeRag() }),
     });
     deps.translateQueryStores = new Set(['tools']);
     const agent = new SmartAgent(deps, { ...DEFAULT_CONFIG, mode: 'hard' });
-    const r = await agent.process('Покажи мне информацию о транзакции SE38');
+    const r = await agent.process(
+      'Покажи мне информацию о транзакции SE38',
+      testCallOptions(),
+    );
     assert.ok(r.ok);
     assert.ok(
       llm.callCount >= 2,
@@ -405,7 +417,10 @@ describe('helperLlm — RAG translation', () => {
     });
     deps.helperLlm = helperLlm;
     const agent = new SmartAgent(deps, { ...DEFAULT_CONFIG, mode: 'hard' });
-    const r = await agent.process('Show me transaction SE38 information');
+    const r = await agent.process(
+      'Show me transaction SE38 information',
+      testCallOptions(),
+    );
     assert.ok(r.ok);
     assert.equal(
       helperLlm.callCount,
@@ -462,6 +477,7 @@ describe('Regression — multiple action subprompts merged into one', () => {
     const agent = new SmartAgent(deps, DEFAULT_CONFIG);
     const r = await agent.process(
       'Read table T100 and check its transport history',
+      testCallOptions(),
     );
     assert.ok(r.ok);
     assert.ok(capturedAction, 'assembler should have been called');
@@ -511,7 +527,7 @@ describe('Regression — multiple action subprompts merged into one', () => {
       llmResponses: [{ content: 'done', finishReason: 'stop' }],
     });
     const agent = new SmartAgent(deps, DEFAULT_CONFIG);
-    const r = await agent.process('Read table T100');
+    const r = await agent.process('Read table T100', testCallOptions());
     assert.ok(r.ok);
     assert.ok(capturedAction, 'assembler should have been called');
     assert.equal(capturedAction?.text, 'Read content of table T100');
@@ -532,9 +548,10 @@ describe('Regression — smartAgentEnabled=true behaves identically to undefined
     const r1 = await new SmartAgent(deps1, {
       ...DEFAULT_CONFIG,
       smartAgentEnabled: true,
-    }).process('do something');
+    }).process('do something', testCallOptions());
     const r2 = await new SmartAgent(deps2, DEFAULT_CONFIG).process(
       'do something',
+      testCallOptions(),
     );
 
     assert.ok(r1.ok);
@@ -554,15 +571,21 @@ describe('Regression — ragQueryK propagated through DefaultPipeline', () => {
     const llm = makeLlm([{ content: 'done', finishReason: 'stop' }]);
     const pipeline = new DefaultPipeline();
     pipeline.initialize({
+      ragAccess: testRequestAccess,
       mainLlm: llm,
       mcpClients: [],
       toolsRag,
       agentConfig: { maxIterations: 10, ragQueryK: 42 },
     });
     const chunks: unknown[] = [];
-    await pipeline.execute('test', [], undefined, (chunk) => {
-      chunks.push(chunk);
-    });
+    await pipeline.execute(
+      'test',
+      [],
+      testCallOptions(testCallOptions(undefined)),
+      (chunk) => {
+        chunks.push(chunk);
+      },
+    );
     assert.ok(
       toolsRag.queryCalls.length > 0,
       'toolsRag should have been queried',
@@ -575,14 +598,20 @@ describe('Regression — ragQueryK propagated through DefaultPipeline', () => {
     const llm = makeLlm([{ content: 'done', finishReason: 'stop' }]);
     const pipeline = new DefaultPipeline();
     pipeline.initialize({
+      ragAccess: testRequestAccess,
       mainLlm: llm,
       mcpClients: [],
       toolsRag,
     });
     const chunks: unknown[] = [];
-    await pipeline.execute('test', [], undefined, (chunk) => {
-      chunks.push(chunk);
-    });
+    await pipeline.execute(
+      'test',
+      [],
+      testCallOptions(testCallOptions(undefined)),
+      (chunk) => {
+        chunks.push(chunk);
+      },
+    );
     assert.ok(
       toolsRag.queryCalls.length > 0,
       'toolsRag should have been queried',

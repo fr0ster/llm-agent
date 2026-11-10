@@ -50,6 +50,7 @@ describe('DirectLlmSubAgent', () => {
     });
 
     const res = await sub.run({
+      caller: { sessionId: 'sess-1', userId: 'test-user', isAdmin: false },
       task: 'Review this snippet',
       context: 'function foo() { return 42; }',
       sessionId: 'sess-1',
@@ -79,6 +80,7 @@ describe('DirectLlmSubAgent', () => {
     await assert.rejects(
       () =>
         sub.run({
+          caller: { sessionId: 's', userId: 'test-user', isAdmin: false },
           task: 'do',
           sessionId: 's',
         }),
@@ -95,6 +97,7 @@ describe('DirectLlmSubAgent', () => {
     });
 
     const res = await sub.run({
+      caller: { sessionId: 's', userId: 'test-user', isAdmin: false },
       requestStartedAt: 0,
       task: 'do the thing',
       sessionId: 's',

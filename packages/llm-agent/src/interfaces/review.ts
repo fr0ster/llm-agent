@@ -6,6 +6,7 @@ import type { LlmUsage } from './types.js';
 import type { IUsageRecorder } from './usage.js';
 
 export interface ReviewInput {
+  caller: import('./rag-access.js').RagCaller;
   prompt: string;
   plan: DagPlan;
   agents: PlannerCatalogEntry[];
@@ -30,6 +31,7 @@ export interface ReviewResult {
 
 /** Input to the reviewer when a node FAILED during execution (slice 4a). */
 export interface ExecutionFailureInput {
+  caller: import('./rag-access.js').RagCaller;
   objective?: string;
   /** The plan as it stands now. */
   plan: DagPlan;

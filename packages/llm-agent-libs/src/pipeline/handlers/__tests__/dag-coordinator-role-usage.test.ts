@@ -15,6 +15,7 @@ import type {
 import { ClarifySignal, NeedInfoSignal } from '@mcp-abap-adt/llm-agent';
 import { SubAgentStateOracle } from '../../../coordinator/dag/subagent-state-oracle.js';
 import { SessionRequestLogger } from '../../../logger/session-request-logger.js';
+import { testCallOptions } from '../../../testing/index.js';
 import { DagCoordinatorHandler } from '../dag-coordinator.js';
 
 /**
@@ -50,7 +51,7 @@ function makeCtxWithLogger(traceId: string) {
     inputText: 'hi',
     sessionId: 't',
     requestLogger: logger,
-    options: { trace: { traceId } },
+    options: testCallOptions({ sessionId: 't', ...{ trace: { traceId } } }),
     yield: (c: {
       ok: boolean;
       value: {

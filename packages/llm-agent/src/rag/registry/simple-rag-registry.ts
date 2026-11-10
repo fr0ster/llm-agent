@@ -27,6 +27,7 @@ import {
   SessionCloseIncompleteError,
 } from '../corrections/errors.js';
 import { ImmutableEditStrategy } from '../strategies/edit/immutable.js';
+import { ownerBoundEditor } from './owner-bound-editor.js';
 import { reservedGlobalNameError } from './store-key.js';
 
 /**
@@ -44,7 +45,7 @@ import { reservedGlobalNameError } from './store-key.js';
  * digits and underscores, not starting with a digit, at most 63 characters
  * (PostgreSQL, HANA).
  */
-function storeNameFor(
+export function storeNameFor(
   params: { readonly collectionName: string } & RagCollectionOwner,
 ): string {
   const owner =
@@ -52,7 +53,9 @@ function storeNameFor(
       ? params.sessionId
       : params.scope === 'user'
         ? params.userId
-        : '';
+        : params.scope === 'role'
+          ? params.roleId
+          : '';
   const digest = createHash('sha256')
     .update(JSON.stringify([params.scope, owner, params.collectionName]))
     .digest('hex')
@@ -70,19 +73,30 @@ interface Entry {
   storeName: string;
 }
 
-/** A collection is its scope and its name (§6.4); the owner is the registry's own. */
-function keyOf(scope: RagCollectionScope, name: string): string {
-  return JSON.stringify([scope, name]);
+/** Role collections include their owner; other scopes retain their existing keys. */
+function keyOf(
+  scope: RagCollectionScope,
+  name: string,
+  roleId?: string,
+): string {
+  return JSON.stringify(
+    scope === 'role' ? [scope, name, roleId] : [scope, name],
+  );
 }
 
-const SCOPES: readonly RagCollectionScope[] = ['global', 'user', 'session'];
+const SCOPES: readonly RagCollectionScope[] = [
+  'global',
+  'user',
+  'session',
+  'role',
+];
 
 type Found =
   | { ok: true; found?: { key: string; entry: Entry } }
   | { ok: false; error: AmbiguousCollectionError };
 
 export class SimpleRagRegistry implements IRagRegistry {
-  /** Keyed by keyOf(scope, name). */
+  /** Keyed by scope and name, plus roleId for role collections. */
   protected readonly entries = new Map<string, Entry>();
   /**
    * Keys (scope, name) whose deletion is running. Absent to get, getEditor and
@@ -114,27 +128,46 @@ export class SimpleRagRegistry implements IRagRegistry {
    * entry of the one scope holding it — or AmbiguousCollectionError naming
    * every scope that does. Never a silent precedence between scopes.
    */
-  protected find(name: string, scope?: RagCollectionScope): Found {
-    if (scope) {
-      const key = keyOf(scope, name);
-      const entry = this.entries.get(key);
-      return { ok: true, found: entry ? { key, entry } : undefined };
+  protected find(
+    name: string,
+    scope?: RagCollectionScope,
+    owner?: RagCollectionOwner,
+  ): Found {
+    const ownerKeys = owner ? ragOwnerKeys(owner) : undefined;
+    const matches = Array.from(this.entries.entries()).filter(
+      ([, entry]) =>
+        entry.meta.name === name &&
+        (!scope || entry.meta.scope === scope) &&
+        (!owner ||
+          (entry.meta.scope === owner.scope &&
+            entry.meta.sessionId === ownerKeys?.sessionId &&
+            entry.meta.userId === ownerKeys?.userId &&
+            entry.meta.roleId === ownerKeys?.roleId)),
+    );
+    if (matches.length > 1) {
+      return {
+        ok: false,
+        error: new AmbiguousCollectionError(
+          name,
+          SCOPES.filter((s) =>
+            matches.some(([, entry]) => entry.meta.scope === s),
+          ),
+        ),
+      };
     }
-    const held = SCOPES.filter((s) => this.entries.has(keyOf(s, name)));
-    if (held.length > 1) {
-      return { ok: false, error: new AmbiguousCollectionError(name, held) };
-    }
-    if (held.length === 0) return { ok: true };
-    const key = keyOf(held[0], name);
-    const entry = this.entries.get(key) as Entry;
-    return { ok: true, found: { key, entry } };
+    const match = matches[0];
+    return {
+      ok: true,
+      found: match ? { key: match[0], entry: match[1] } : undefined,
+    };
   }
 
   private findOrThrow(
     name: string,
     scope?: RagCollectionScope,
+    owner?: RagCollectionOwner,
   ): { key: string; entry: Entry } | undefined {
-    const f = this.find(name, scope);
+    const f = this.find(name, scope, owner);
     if (!f.ok) throw f.error;
     return f.found;
   }
@@ -147,6 +180,11 @@ export class SimpleRagRegistry implements IRagRegistry {
   }
 
   private insert(key: string, entry: Entry): void {
+    if (entry.editor) {
+      const owner = validateRagOwner(entry.meta);
+      if (!owner.ok) throw owner.error;
+      entry.editor = ownerBoundEditor(entry.editor, owner.value);
+    }
     this.entries.set(key, entry);
     this.fireMutation();
   }
@@ -160,7 +198,7 @@ export class SimpleRagRegistry implements IRagRegistry {
     const scope = meta?.scope ?? 'global';
     const reserved = reservedGlobalNameError(scope, name);
     if (reserved) throw reserved;
-    const key = keyOf(scope, name);
+    const key = keyOf(scope, name, meta?.roleId);
     if (this.isTaken(key)) {
       throw new DuplicateCollectionError(
         name,
@@ -181,6 +219,7 @@ export class SimpleRagRegistry implements IRagRegistry {
         scope,
         sessionId: meta?.sessionId,
         userId: meta?.userId,
+        roleId: meta?.roleId,
         providerName: meta?.providerName,
         tags: meta?.tags,
       },
@@ -204,7 +243,11 @@ export class SimpleRagRegistry implements IRagRegistry {
     if (!owner.ok) throw owner.error;
     const reserved = reservedGlobalNameError(owner.value.scope, record.name);
     if (reserved) throw reserved;
-    const key = keyOf(owner.value.scope, record.name);
+    const key = keyOf(
+      owner.value.scope,
+      record.name,
+      owner.value.scope === 'role' ? owner.value.roleId : undefined,
+    );
     if (this.isTaken(key)) {
       throw new DuplicateCollectionError(
         record.name,
@@ -228,20 +271,32 @@ export class SimpleRagRegistry implements IRagRegistry {
     });
   }
 
-  unregister(name: string, scope?: RagCollectionScope): boolean {
-    const found = this.findOrThrow(name, scope);
+  unregister(
+    name: string,
+    scope?: RagCollectionScope,
+    owner?: RagCollectionOwner,
+  ): boolean {
+    const found = this.findOrThrow(name, scope, owner);
     if (!found) return false;
     this.entries.delete(found.key);
     this.fireMutation();
     return true;
   }
 
-  get(name: string, scope?: RagCollectionScope): IRag | undefined {
-    return this.findOrThrow(name, scope)?.entry.rag;
+  get(
+    name: string,
+    scope?: RagCollectionScope,
+    owner?: RagCollectionOwner,
+  ): IRag | undefined {
+    return this.findOrThrow(name, scope, owner)?.entry.rag;
   }
 
-  getEditor(name: string, scope?: RagCollectionScope): IRagEditor | undefined {
-    return this.findOrThrow(name, scope)?.entry.editor;
+  getEditor(
+    name: string,
+    scope?: RagCollectionScope,
+    owner?: RagCollectionOwner,
+  ): IRagEditor | undefined {
+    return this.findOrThrow(name, scope, owner)?.entry.editor;
   }
 
   /**
@@ -251,12 +306,17 @@ export class SimpleRagRegistry implements IRagRegistry {
    * FallbackRag: re-registering would set the store name to the logical name
    * and drop the provider, so a hydrated collection's delete would miss its
    * store and its catalog record would come back (§6.3). The scope is
-   * required, so the lookup is never ambiguous. False when the entry is
-   * absent — including one currently reserved by an in-flight deletion (it is
+   * required; an owner selects between role collections of the same name.
+   * False when the entry is absent — including one currently reserved by an in-flight deletion (it is
    * gone from `entries` already); never re-inserts.
    */
-  replaceRag(name: string, scope: RagCollectionScope, rag: IRag): boolean {
-    const found = this.findOrThrow(name, scope);
+  replaceRag(
+    name: string,
+    scope: RagCollectionScope,
+    rag: IRag,
+    owner?: RagCollectionOwner,
+  ): boolean {
+    const found = this.findOrThrow(name, scope, owner);
     if (!found) return false;
     found.entry.rag = rag;
     this.fireMutation();
@@ -302,7 +362,11 @@ export class SimpleRagRegistry implements IRagRegistry {
 
     // Preflight duplicate check, counting creations still running: two at
     // once would share one store.
-    const key = keyOf(owner.value.scope, params.collectionName);
+    const key = keyOf(
+      owner.value.scope,
+      params.collectionName,
+      owner.value.scope === 'role' ? owner.value.roleId : undefined,
+    );
     if (this.isTaken(key)) {
       return {
         ok: false,
@@ -397,8 +461,9 @@ export class SimpleRagRegistry implements IRagRegistry {
   async deleteCollection(
     name: string,
     scope?: RagCollectionScope,
+    owner?: RagCollectionOwner,
   ): Promise<Result<void, RagError>> {
-    const f = this.find(name, scope);
+    const f = this.find(name, scope, owner);
     if (!f.ok) return { ok: false, error: f.error };
     if (!f.found) {
       return { ok: false, error: new CollectionNotFoundError(name) };

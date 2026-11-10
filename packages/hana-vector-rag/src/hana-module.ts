@@ -1,4 +1,5 @@
 export interface HanaConnection {
+  setAutoCommit?: (enabled: boolean) => void;
   connect: (opts: unknown, cb: (err: Error | null) => void) => void;
   exec: (
     sql: string,

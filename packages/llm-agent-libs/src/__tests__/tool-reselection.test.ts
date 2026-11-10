@@ -8,7 +8,14 @@ import type {
   Result,
 } from '@mcp-abap-adt/llm-agent';
 import { SmartAgent } from '../agent.js';
-import { makeAssembler, makeDefaultDeps, makeRag } from '../testing/index.js';
+import {
+  makeAssembler,
+  makeDefaultDeps,
+  makeRag,
+  ownedTestStores,
+  testCallOptions,
+  testRequestAccess,
+} from '../testing/index.js';
 
 // ---------------------------------------------------------------------------
 // Per-iteration RAG tool re-selection
@@ -25,6 +32,7 @@ describe('Per-iteration RAG tool re-selection', () => {
     );
     let resolves = 0;
     const { deps } = makeDefaultDeps({
+      ragAccess: testRequestAccess,
       mcpClients: [
         {
           async listTools() {
@@ -38,7 +46,7 @@ describe('Per-iteration RAG tool re-selection', () => {
           },
         },
       ],
-      ragStores: {
+      ragStores: ownedTestStores({
         tools: makeRag(
           tools.map((tool) => ({
             text: tool.name,
@@ -46,7 +54,7 @@ describe('Per-iteration RAG tool re-selection', () => {
             metadata: { id: `tool:${tool.name}` },
           })),
         ),
-      },
+      }),
     });
     deps.mainLlm = makeToolCallThenStopLlm('CreateClass', 'error: retry');
     const agent = new SmartAgent(deps, {
@@ -56,14 +64,17 @@ describe('Per-iteration RAG tool re-selection', () => {
       toolReselectPerIteration: true,
     });
     const rounds: Array<{ selected: number; available: number }> = [];
-    await agent.process('create a class', {
-      sessionId: 'changing-reselection-catalogue',
-      externalTools: [
-        { name: 'External', description: 'external', inputSchema: {} },
-      ],
-      onToolsSelected: (selected, available) =>
-        rounds.push({ selected, available }),
-    });
+    await agent.process(
+      'create a class',
+      testCallOptions({
+        sessionId: 'changing-reselection-catalogue',
+        externalTools: [
+          { name: 'External', description: 'external', inputSchema: {} },
+        ],
+        onToolsSelected: (selected, available) =>
+          rounds.push({ selected, available }),
+      }),
+    );
 
     assert.equal(resolves, 3);
     assert.deepEqual(rounds, [
@@ -142,6 +153,7 @@ describe('Per-iteration RAG tool re-selection', () => {
     ]);
 
     const { deps } = makeDefaultDeps({
+      ragAccess: testRequestAccess,
       assembler: makeAssembler([
         {
           role: 'system',
@@ -149,7 +161,7 @@ describe('Per-iteration RAG tool re-selection', () => {
         },
         { role: 'user', content: 'create a class' },
       ]),
-      ragStores: { tools: toolsRag },
+      ragStores: ownedTestStores({ tools: toolsRag }),
       mcpClients: [
         {
           async listTools() {
@@ -185,7 +197,10 @@ describe('Per-iteration RAG tool re-selection', () => {
       // toolReselectPerIteration defaults to undefined (falsy)
     });
 
-    await agent.process('create a class', { sessionId: 'no-reselect' });
+    await agent.process(
+      'create a class',
+      testCallOptions({ sessionId: 'no-reselect' }),
+    );
 
     // RAG tools store should NOT have been queried for re-selection
     assert.equal(
@@ -208,6 +223,7 @@ describe('Per-iteration RAG tool re-selection', () => {
     ]);
 
     const { deps } = makeDefaultDeps({
+      ragAccess: testRequestAccess,
       assembler: makeAssembler([
         {
           role: 'system',
@@ -215,7 +231,7 @@ describe('Per-iteration RAG tool re-selection', () => {
         },
         { role: 'user', content: 'create a class' },
       ]),
-      ragStores: { tools: toolsRag },
+      ragStores: ownedTestStores({ tools: toolsRag }),
       mcpClients: [
         {
           async listTools() {
@@ -251,7 +267,10 @@ describe('Per-iteration RAG tool re-selection', () => {
       toolReselectPerIteration: true,
     });
 
-    await agent.process('create a class', { sessionId: 'reselect-on' });
+    await agent.process(
+      'create a class',
+      testCallOptions({ sessionId: 'reselect-on' }),
+    );
 
     // The tools RAG should have been queried during iteration > 0
     // makeRag doesn't track queryCalls by default, but makeMetadataRag does.
@@ -274,6 +293,7 @@ describe('Per-iteration RAG tool re-selection', () => {
     ]);
 
     const { deps } = makeDefaultDeps({
+      ragAccess: testRequestAccess,
       assembler: makeAssembler([
         {
           role: 'system',
@@ -281,7 +301,7 @@ describe('Per-iteration RAG tool re-selection', () => {
         },
         { role: 'user', content: 'search classes' },
       ]),
-      ragStores: { tools: toolsRag },
+      ragStores: ownedTestStores({ tools: toolsRag }),
       mcpClients: [
         {
           async listTools() {
@@ -312,14 +332,17 @@ describe('Per-iteration RAG tool re-selection', () => {
       toolReselectPerIteration: true,
     });
 
-    await agent.process('search classes', {
-      sessionId: 'readonly-skip',
-      sessionLogger: {
-        logStep(step: string, data: Record<string, unknown>) {
-          logSteps.push({ step, data });
+    await agent.process(
+      'search classes',
+      testCallOptions({
+        sessionId: 'readonly-skip',
+        sessionLogger: {
+          logStep(step: string, data: Record<string, unknown>) {
+            logSteps.push({ step, data });
+          },
         },
-      },
-    });
+      }),
+    );
 
     // Check that the skip log was recorded
     const skipLog = logSteps.find((l) => l.step === 'tools_reselect_skipped');

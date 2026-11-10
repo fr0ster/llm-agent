@@ -8,7 +8,7 @@ import { PlannerToolsClient } from '../coordinator/dialogue/planner-tools-client
 import { TaskBoard } from '../coordinator/dialogue/task-board.js';
 import { DefaultPipeline } from '../pipeline/default-pipeline.js';
 import { SmartAgentSubAgent } from '../subagent/smart-agent-subagent.js';
-import { makeDefaultDeps } from '../testing/index.js';
+import { makeDefaultDeps, testCallOptions } from '../testing/index.js';
 
 function agentFor(
   pipeline: boolean,
@@ -61,7 +61,10 @@ function agentFor(
 for (const pipeline of [false, true]) {
   for (const mode of ['full', 'final'] as const) {
     test(`process returns only the final iteration (pipeline=${pipeline}, mode=${mode})`, async () => {
-      const result = await agentFor(pipeline, mode).process('check twice');
+      const result = await agentFor(pipeline, mode).process(
+        'check twice',
+        testCallOptions(),
+      );
       assert.ok(result.ok);
       assert.equal(result.value.content, 'Final answer');
       assert.equal(result.value.toolCallCount, 2);
@@ -73,9 +76,9 @@ for (const pipeline of [false, true]) {
       const partials: StreamChunk[] = [];
       for await (const chunk of agentFor(pipeline, mode).streamProcess(
         'check',
-        {
+        testCallOptions({
           onPartial: (event) => partials.push(event),
-        },
+        }),
       )) {
         assert.ok(chunk.ok);
         if (chunk.value.content && !chunk.value.ephemeral)
@@ -98,25 +101,34 @@ for (const pipeline of [false, true]) {
     });
 
     test(`empty final iteration discards progress (pipeline=${pipeline}, mode=${mode})`, async () => {
-      const result = await agentFor(pipeline, mode, '').process('check');
+      const result = await agentFor(pipeline, mode, '').process(
+        'check',
+        testCallOptions(),
+      );
       assert.ok(result.ok);
       assert.equal(result.value.content, '');
     });
 
     test(`iteration limit preserves fallback text (pipeline=${pipeline}, mode=${mode})`, async () => {
-      const result = await agentFor(pipeline, mode, '', 2).process('check');
+      const result = await agentFor(pipeline, mode, '', 2).process(
+        'check',
+        testCallOptions(),
+      );
       assert.ok(result.ok);
       assert.equal(result.value.content, 'Let me check. Checking again. ');
     });
 
     test(`cooperative stop preserves progress fallback (pipeline=${pipeline}, mode=${mode})`, async () => {
       const stop = new AbortController();
-      const result = await agentFor(pipeline, mode).process('check', {
-        stopSignal: stop.signal,
-        onToolCallCount(count) {
-          if (count === 2) stop.abort();
-        },
-      });
+      const result = await agentFor(pipeline, mode).process(
+        'check',
+        testCallOptions({
+          stopSignal: stop.signal,
+          onToolCallCount(count) {
+            if (count === 2) stop.abort();
+          },
+        }),
+      );
       assert.ok(result.ok);
       assert.equal(result.value.content, 'Let me check. Checking again. ');
       assert.equal(result.value.stopped, true);
@@ -129,6 +141,8 @@ for (const pipeline of [false, true]) {
       finish = resolve;
     });
     const board = new TaskBoard({
+      caller: testCallOptions({ sessionId: 'test-session' }).caller,
+      baseInput: () => testCallOptions({ sessionId: 'test-session' }),
       workers: new Map([
         ['worker', new SmartAgentSubAgent('worker', agentFor(pipeline))],
       ]),
@@ -161,6 +175,13 @@ for (const pipeline of [false, true]) {
     });
     let calls = 0;
     const session = await DialogueSession.open({
+      caller: testCallOptions({
+        caller: {
+          sessionId: 'final-iteration',
+          userId: 'test-user',
+          isAdmin: false,
+        },
+      }).caller,
       id: 'final-iteration',
       store,
       maxCorrections: 0,
@@ -191,7 +212,7 @@ for (const pipeline of [false, true]) {
               goal: 'check',
             });
           }
-          return agentFor(pipeline).process(messages, options);
+          return agentFor(pipeline).process(messages, testCallOptions(options));
         },
       },
     });
@@ -226,6 +247,13 @@ for (const pipeline of [false, true]) {
 
 test('dialogue discards tool-round partials before displaying the final iteration', async () => {
   const session = await DialogueSession.open({
+    caller: testCallOptions({
+      caller: {
+        sessionId: 'interrupted-final',
+        userId: 'test-user',
+        isAdmin: false,
+      },
+    }).caller,
     id: 'interrupted-final',
     maxCorrections: 0,
     board: { workers: new Map() },
@@ -314,18 +342,34 @@ function validationAgent(
 for (const pipeline of [false, true]) {
   for (const mode of ['full', 'final'] as const) {
     test(`validation retry discards rejected answer (pipeline=${pipeline}, mode=${mode})`, async () => {
-      const result = await validationAgent(pipeline, mode).process('go');
+      const result = await validationAgent(pipeline, mode).process(
+        'go',
+        testCallOptions(),
+      );
       assert.ok(result.ok);
       assert.equal(result.value.content, 'Accepted B');
       const worker = new SmartAgentSubAgent(
         'worker',
         validationAgent(pipeline, mode),
       );
-      assert.equal((await worker.run({ task: 'go' })).output, 'Accepted B');
+      assert.equal(
+        (
+          await worker.run({
+            caller: {
+              sessionId: 'test-session',
+              userId: 'test-user',
+              isAdmin: false,
+            },
+            task: 'go',
+          })
+        ).output,
+        'Accepted B',
+      );
       const content: string[] = [];
       const boundaries: string[] = [];
       for await (const chunk of validationAgent(pipeline, mode).streamProcess(
         'go',
+        testCallOptions(),
       )) {
         assert.ok(chunk.ok);
         if (chunk.value.content && !chunk.value.ephemeral)
@@ -345,13 +389,29 @@ for (const pipeline of [false, true]) {
         validationAgent(pipeline, mode, true),
       );
       assert.equal(
-        (await worker.run({ task: 'go' })).output,
+        (
+          await worker.run({
+            caller: {
+              sessionId: 'test-session',
+              userId: 'test-user',
+              isAdmin: false,
+            },
+            task: 'go',
+          })
+        ).output,
         'Checking first\n\nAccepted B',
       );
     });
 
     test(`dialogue discards validation retry partials (pipeline=${pipeline}, mode=${mode})`, async () => {
       const session = await DialogueSession.open({
+        caller: testCallOptions({
+          caller: {
+            sessionId: 'validation-retry',
+            userId: 'test-user',
+            isAdmin: false,
+          },
+        }).caller,
         id: 'validation-retry',
         maxCorrections: 0,
         board: { workers: new Map() },
@@ -380,6 +440,13 @@ for (const pipeline of [false, true]) {
 test('dialogue forwards worker events live without changing coordinator reply buffers', async () => {
   const events: StreamChunk[] = [];
   const session = await DialogueSession.open({
+    caller: testCallOptions({
+      caller: {
+        sessionId: 'worker-boundaries',
+        userId: 'test-user',
+        isAdmin: false,
+      },
+    }).caller,
     id: 'worker-boundaries',
     maxCorrections: 0,
     board: { workers: new Map() },
@@ -462,19 +529,37 @@ function resetAgent(
 for (const pipeline of [false, true]) {
   for (const mode of ['full', 'final'] as const) {
     test(`provider reset discards abandoned reply (pipeline=${pipeline}, mode=${mode})`, async () => {
-      const result = await resetAgent(pipeline, mode).process('go');
+      const result = await resetAgent(pipeline, mode).process(
+        'go',
+        testCallOptions(),
+      );
       assert.ok(result.ok);
       assert.equal(result.value.content, 'Replacement');
       const worker = new SmartAgentSubAgent(
         'worker',
         resetAgent(pipeline, mode),
       );
-      assert.equal((await worker.run({ task: 'go' })).output, 'Replacement');
+      assert.equal(
+        (
+          await worker.run({
+            caller: {
+              sessionId: 'test-session',
+              userId: 'test-user',
+              isAdmin: false,
+            },
+            task: 'go',
+          })
+        ).output,
+        'Replacement',
+      );
       const boundaries: string[] = [];
       const partials: StreamChunk[] = [];
-      for await (const chunk of resetAgent(pipeline, mode).streamProcess('go', {
-        onPartial: (event) => partials.push(event),
-      })) {
+      for await (const chunk of resetAgent(pipeline, mode).streamProcess(
+        'go',
+        testCallOptions({
+          onPartial: (event) => partials.push(event),
+        }),
+      )) {
         assert.ok(chunk.ok);
         if (chunk.value.iterationEnd) boundaries.push(chunk.value.iterationEnd);
       }
@@ -486,6 +571,13 @@ for (const pipeline of [false, true]) {
         boundaries,
       );
       const session = await DialogueSession.open({
+        caller: testCallOptions({
+          caller: {
+            sessionId: 'provider-reset',
+            userId: 'test-user',
+            isAdmin: false,
+          },
+        }).caller,
         id: 'provider-reset',
         maxCorrections: 0,
         board: { workers: new Map() },
@@ -512,7 +604,7 @@ for (const pipeline of [false, true]) {
       const partialCommitted: string[] = [];
       for await (const chunk of validationAgent(pipeline, mode).streamProcess(
         'go',
-        {
+        testCallOptions({
           onPartial(event) {
             if (event.kind === 'content') partialPending += event.delta;
             if (event.kind === 'iteration-end') {
@@ -521,7 +613,7 @@ for (const pipeline of [false, true]) {
               partialPending = '';
             }
           },
-        },
+        }),
       )) {
         assert.ok(chunk.ok);
         if (!chunk.value.ephemeral) pending += chunk.value.content;
@@ -573,13 +665,13 @@ for (const mode of ['full', 'final'] as const) {
           { role: 'system', content: 'adapter' },
           { role: 'user', content: 'go' },
         ],
-        {
+        testCallOptions({
           onPartial(event) {
             if (event.kind === 'iteration-end' && event.outcome === 'final') {
               partialCommits.push(pending);
             }
           },
-        },
+        }),
       )) {
         assert.ok(chunk.ok);
         if (!chunk.value.ephemeral) pending += chunk.value.content;
@@ -603,19 +695,29 @@ for (const pipeline of [true]) {
       const agent = agentFor(pipeline, 'full', '', 3, roundText);
       const expected = roundText[1] || roundText[0];
       const session = await DialogueSession.open({
+        caller: testCallOptions({
+          caller: {
+            sessionId: 'waiting-fallback',
+            userId: 'test-user',
+            isAdmin: false,
+          },
+        }).caller,
         id: 'waiting-fallback',
         maxCorrections: 0,
         board: { workers: new Map() },
         planner: {
           async process(messages, options) {
             const stop = new AbortController();
-            return agent.process(messages, {
-              ...options,
-              stopSignal: stop.signal,
-              onToolCallCount(count) {
-                if (count === 2) stop.abort();
-              },
-            });
+            return agent.process(
+              messages,
+              testCallOptions({
+                ...options,
+                stopSignal: stop.signal,
+                onToolCallCount(count) {
+                  if (count === 2) stop.abort();
+                },
+              }),
+            );
           },
         },
       });

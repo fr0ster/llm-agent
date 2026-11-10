@@ -26,8 +26,8 @@ test('per-session usage is independent and resets on evict', async () => {
     buildAgent: async () => undefined,
   });
 
-  const g1 = await lc.acquire('s1');
-  const g2 = await lc.acquire('s2');
+  const g1 = await lc.acquire({ sessionId: 's1', userId: 'test-user' });
+  const g2 = await lc.acquire({ sessionId: 's2', userId: 'test-user' });
 
   g1.logger.startRequest('r1');
   g1.logger.logLlmCall({

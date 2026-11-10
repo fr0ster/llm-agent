@@ -5,6 +5,7 @@ import {
   makeCapturingMetrics,
   makeClassifier,
   makeDefaultDeps,
+  testCallOptions,
 } from '../../testing/index.js';
 import { InMemoryMetrics } from '../in-memory-metrics.js';
 import { NoopMetrics } from '../noop-metrics.js';
@@ -92,7 +93,7 @@ describe('Pipeline metrics instrumentation', () => {
     const { deps } = makeDefaultDeps({ metrics });
     const agent = new SmartAgent(deps, DEFAULT_CONFIG);
 
-    await agent.process('hello');
+    await agent.process('hello', testCallOptions());
 
     const snap = metrics.snapshot();
     assert.equal(snap.requestCount.total, 1);
@@ -109,7 +110,7 @@ describe('Pipeline metrics instrumentation', () => {
     const { deps } = makeDefaultDeps({ classifier, metrics });
     const agent = new SmartAgent(deps, DEFAULT_CONFIG);
 
-    await agent.process('hello');
+    await agent.process('hello', testCallOptions());
 
     const snap = metrics.snapshot();
     assert.equal(snap.classifierIntentCount.total, 2);
@@ -125,7 +126,7 @@ describe('Pipeline metrics instrumentation', () => {
     const { deps } = makeDefaultDeps({ metrics });
     const agent = new SmartAgent(deps, DEFAULT_CONFIG);
 
-    await agent.process('hello');
+    await agent.process('hello', testCallOptions());
 
     const snap = metrics.snapshot();
     assert.ok(snap.llmCallCount.total >= 1);
@@ -136,7 +137,7 @@ describe('Pipeline metrics instrumentation', () => {
     const { deps } = makeDefaultDeps();
     const agent = new SmartAgent(deps, DEFAULT_CONFIG);
 
-    const result = await agent.process('hello');
+    const result = await agent.process('hello', testCallOptions());
     assert.ok(result.ok);
   });
 });

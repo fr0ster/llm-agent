@@ -8,7 +8,11 @@ import {
 import { createSignalBus } from '../../../../llm-signals/src/index.js';
 import { SmartAgent } from '../../agent.js';
 import { DefaultPipeline } from '../../pipeline/default-pipeline.js';
-import { makeAssembler, makeDefaultDeps } from '../../testing/index.js';
+import {
+  makeAssembler,
+  makeDefaultDeps,
+  testCallOptions,
+} from '../../testing/index.js';
 import { SmartAgentSubAgent } from '../smart-agent-subagent.js';
 
 for (const pipeline of [false, true]) {
@@ -89,12 +93,13 @@ for (const pipeline of [false, true]) {
         }
         const agent = new SmartAgent(deps, config);
         if (scenario === 'chat') {
-          const result = await agent.process('work');
+          const result = await agent.process('work', testCallOptions());
           assert.ok(result.ok);
           assert.equal(result.value.content, finalText);
           return;
         }
         const result = await new SmartAgentSubAgent('worker', agent).run({
+          caller: testCallOptions({ sessionId: 'test-session' }).caller,
           task: 'work',
           dialogueTask: task,
           ...(scenario === 'external'

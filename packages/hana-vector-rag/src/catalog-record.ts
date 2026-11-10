@@ -7,7 +7,7 @@ import type {
 import {
   DuplicateCollectionError,
   encodeRagAttributes,
-  type RagError,
+  RagError,
   ragCollectionNotFound,
   ragOwnerKeys,
 } from '@mcp-abap-adt/llm-agent';
@@ -17,6 +17,7 @@ import {
   updateRecordSql,
 } from './catalog.js';
 import type { HanaClient } from './hana-vector-rag.js';
+import { roleTransaction } from './role-transaction.js';
 
 /** The refusal for a collection that already has a record. */
 export function duplicateRefusal(
@@ -51,20 +52,37 @@ export async function writeCatalogRecord(
   table: string,
   record: RagCollectionRecord,
   opts: RagProviderCreateCollectionOptions,
-  onFailure: (err: unknown) => { ok: false; error: RagError },
+  onFailure: (err: Error) => { ok: false; error: RagError },
 ): Promise<Result<void, RagError>> {
   const { userId, sessionId } = ragOwnerKeys(record);
   try {
-    await client.exec(insertRecordSql(table), [
-      record.storeName,
-      record.name,
-      record.scope,
-      userId ?? null,
-      sessionId ?? null,
-      encodeRagAttributes(record.attributes),
-    ]);
+    const insert = async (connection: HanaClient) => {
+      if (record.scope === 'role') {
+        const rows = await connection.query(
+          'SELECT role_id FROM "rag_roles" WHERE role_id = ? FOR UPDATE',
+          [record.roleId],
+        );
+        if (!rows.length)
+          throw new RagError(
+            'Collection owner role does not exist',
+            'RAG_ROLE_NOT_FOUND',
+          );
+      }
+      await connection.exec(insertRecordSql(table), [
+        record.storeName,
+        record.name,
+        record.scope,
+        userId ?? null,
+        sessionId ?? null,
+        encodeRagAttributes(record.attributes),
+        record.scope === 'role' ? record.roleId : null,
+      ]);
+    };
+    if (record.scope === 'role') await roleTransaction(client, insert);
+    else await insert(client);
     return { ok: true, value: undefined };
   } catch (err) {
+    if (err instanceof RagError) return { ok: false, error: err };
     if (
       await catalogRecordExists(client, table, record.storeName).catch(
         () => false,
@@ -72,7 +90,7 @@ export async function writeCatalogRecord(
     ) {
       return duplicateRefusal(record.storeName, opts);
     }
-    return onFailure(err);
+    return onFailure(err instanceof Error ? err : new Error(String(err)));
   }
 }
 

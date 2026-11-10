@@ -13,6 +13,10 @@ import {
   symmetricEmbedder,
 } from '@mcp-abap-adt/llm-agent';
 import {
+  registerRawRecordInsert,
+  seedLegacyRagRecord,
+} from '@mcp-abap-adt/llm-agent/testing/rag-filter-conformance';
+import {
   CONFORMANCE_EMBEDDING_DIM,
   conformanceEmbedder,
   isScanDeleteCaseSkipped,
@@ -37,16 +41,27 @@ function open(
   dimension = DIM,
 ): Store {
   if (layout === 'per-collection') hana.createCollectionTable(collection);
-  return new HanaVectorRag(
-    {
-      collectionName: collection,
-      dimension,
-      credential: staticLogin('u', 'p'),
-      layout,
-      autoCreateSchema: false,
-      embedder,
+  return registerRawRecordInsert(
+    new HanaVectorRag(
+      {
+        collectionName: collection,
+        dimension,
+        credential: staticLogin('u', 'p'),
+        layout,
+        autoCreateSchema: false,
+        embedder,
+      },
+      hana.client,
+    ),
+    async (r) => {
+      hana.insertRow(layout === 'shared' ? 'RAG_DOCUMENTS' : collection, {
+        ...(layout === 'shared' ? { COLLECTION: collection } : {}),
+        ID: r.id,
+        TEXT: r.text,
+        VECTOR: Array<number>(dimension).fill(1),
+        METADATA: JSON.stringify(r.metadata),
+      });
     },
-    hana.client,
   ) as Store;
 }
 
@@ -55,8 +70,7 @@ async function put(
   id: string,
   metadata: Record<string, unknown> = {},
 ): Promise<void> {
-  const r = await store.upsert(`text ${id}`, { ...metadata, id });
-  assert.ok(r.ok);
+  await seedLegacyRagRecord(store, id, `text ${id}`, metadata);
 }
 
 async function scanAll(

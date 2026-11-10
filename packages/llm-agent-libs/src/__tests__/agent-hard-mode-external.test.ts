@@ -12,7 +12,7 @@ import type {
   Result,
 } from '@mcp-abap-adt/llm-agent';
 import { SmartAgent } from '../agent.js';
-import { makeDefaultDeps } from '../testing/index.js';
+import { makeDefaultDeps, testCallOptions } from '../testing/index.js';
 
 const EXTERNAL_TOOL: LlmTool = {
   name: 'client_write_file',
@@ -55,10 +55,13 @@ describe('D4 — flat SmartAgent hard mode keeps client external tools', () => {
     // mode is a SmartAgent config option, not a per-request option
     const agent = new SmartAgent(deps, { maxIterations: 5, mode: 'hard' });
 
-    const result = await agent.process('do something', {
-      externalTools: [EXTERNAL_TOOL],
-      sessionId: 'test-hard-d4',
-    });
+    const result = await agent.process(
+      'do something',
+      testCallOptions({
+        externalTools: [EXTERNAL_TOOL],
+        sessionId: 'test-hard-d4',
+      }),
+    );
 
     assert.ok(result.ok, 'request should succeed');
     assert.ok(
@@ -81,10 +84,13 @@ describe('D4 — flat SmartAgent hard mode keeps client external tools', () => {
     // mode:smart is the default, external tools should always be included
     const agent = new SmartAgent(deps, { maxIterations: 5, mode: 'smart' });
 
-    const result = await agent.process('do something', {
-      externalTools: [EXTERNAL_TOOL],
-      sessionId: 'test-smart-d4',
-    });
+    const result = await agent.process(
+      'do something',
+      testCallOptions({
+        externalTools: [EXTERNAL_TOOL],
+        sessionId: 'test-smart-d4',
+      }),
+    );
 
     assert.ok(result.ok, 'request should succeed');
     assert.ok(

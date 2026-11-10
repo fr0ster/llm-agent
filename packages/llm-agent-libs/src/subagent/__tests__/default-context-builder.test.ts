@@ -35,6 +35,7 @@ function makeReq(
   const step: PlanStep = { id: 's1', goal: 'do the thing', status: 'pending' };
   return {
     task: 'do the thing',
+    caller: { sessionId: 'sess-1', userId: 'test-user', isAdmin: false },
     step,
     agent: makeAgent(),
     inputText: 'user request',

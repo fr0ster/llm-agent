@@ -19,7 +19,12 @@ import {
   TextOnlyEmbedding,
 } from '@mcp-abap-adt/llm-agent';
 import { SmartAgentBuilder } from '../../builder.js';
-import { makeLlm } from '../../testing/index.js';
+import { unwrapBuilderResult } from '../../builder-types.js';
+import {
+  makeLlm,
+  testCallOptions,
+  testRequestAccess,
+} from '../../testing/index.js';
 import {
   applyRetrievalStrategy,
   EmbeddingRetrieval,
@@ -143,12 +148,14 @@ describe('SmartAgentBuilder.withRetrievalStrategy', () => {
     const tools = new InMemoryRag();
     const { strategy, calls } = spyStrategy();
     const handle = await new SmartAgentBuilder({})
+      .withRagAccess(testRequestAccess)
       .withMainLlm(makeLlm([{ content: 'ok' }]))
       .setToolsRag(tools)
       .withRetrievalStrategy('tools', strategy)
-      .build();
+      .build()
+      .then(unwrapBuilderResult);
     try {
-      const projected = handle.ragStores.tools;
+      const projected = handle.ragStores.tools.rag;
       assert.ok(projected);
       assert.equal(hasRetrievalStrategy(projected), true);
       await projected.query(q, 3);
@@ -171,6 +178,7 @@ describe('SmartAgentBuilder.withRetrievalStrategy', () => {
     );
     const { reranker, calls } = countingReranker();
     const handle = await new SmartAgentBuilder({})
+      .withRagAccess(testRequestAccess)
       .withMainLlm(makeLlm([{ content: 'ok' }]))
       .setRagRegistry(reg)
       .withCircuitBreaker()
@@ -178,9 +186,10 @@ describe('SmartAgentBuilder.withRetrievalStrategy', () => {
         'docs',
         new RerankedRetrieval(reranker, { storeName: 'docs' }),
       )
-      .build();
+      .build()
+      .then(unwrapBuilderResult);
     try {
-      const projected = handle.ragStores.docs;
+      const projected = handle.ragStores.docs.rag;
       assert.ok(projected instanceof StrategyRag);
       assert.ok(projected.inner instanceof FallbackRag);
       assert.ok(
@@ -202,13 +211,15 @@ describe('SmartAgentBuilder.withRetrievalStrategy', () => {
       strategy,
     );
     const handle = await new SmartAgentBuilder({})
+      .withRagAccess(testRequestAccess)
       .withMainLlm(makeLlm([{ content: 'ok' }]))
       .setToolsRag(tools)
       .withCircuitBreaker()
       .withRetrievalStrategy('tools', strategy)
-      .build();
+      .build()
+      .then(unwrapBuilderResult);
     try {
-      const projected = handle.ragStores.tools;
+      const projected = handle.ragStores.tools.rag;
       assert.ok(projected instanceof FallbackRag);
       assert.equal(projected.inner, tools);
       assert.equal(hasRetrievalStrategy(projected), true);
@@ -232,6 +243,7 @@ describe('SmartAgentBuilder.withRetrievalStrategy', () => {
       scope: 'global',
     });
     const handle = await new SmartAgentBuilder({})
+      .withRagAccess(testRequestAccess)
       .withMainLlm(makeLlm([{ content: 'ok' }]))
       .setRagRegistry(reg)
       .setToolsRag(toolsStore)
@@ -240,10 +252,11 @@ describe('SmartAgentBuilder.withRetrievalStrategy', () => {
         'docs',
         new RerankedRetrieval(docs.reranker, { storeName: 'docs' }),
       )
-      .build();
+      .build()
+      .then(unwrapBuilderResult);
     try {
-      const pTools = handle.ragStores.tools;
-      const pDocs = handle.ragStores.docs;
+      const pTools = handle.ragStores.tools.rag;
+      const pDocs = handle.ragStores.docs.rag;
       assert.ok(pTools instanceof FallbackRag);
       assert.ok(pDocs instanceof StrategyRag);
       // Writes fan out to the fallback too, so it is not empty once open.
@@ -284,14 +297,16 @@ describe('SmartAgentBuilder.withRetrievalStrategy', () => {
   it('custom registry with setMutationListener: a collection registered after build is projected and wrapped', async () => {
     const reg = new ListeningRegistry();
     const handle = await new SmartAgentBuilder({})
+      .withRagAccess(testRequestAccess)
       .withMainLlm(makeLlm([{ content: 'ok' }]))
       .setRagRegistry(reg)
       .withRetrievalStrategy('kb', new EmbeddingRetrieval())
-      .build();
+      .build()
+      .then(unwrapBuilderResult);
     try {
       const kb = new InMemoryRag();
       reg.register('kb', kb, undefined, { displayName: 'kb', scope: 'global' });
-      const projected = handle.ragStores.kb;
+      const projected = handle.ragStores.kb.rag;
       assert.ok(projected instanceof StrategyRag);
       assert.equal(projected.inner, kb);
       assert.equal(reg.get('kb', 'global'), kb, 'registry not mutated');
@@ -303,10 +318,12 @@ describe('SmartAgentBuilder.withRetrievalStrategy', () => {
   it('custom registry without setMutationListener: a collection registered after build is not projected, nothing throws', async () => {
     const reg = new PlainRegistry();
     const handle = await new SmartAgentBuilder({})
+      .withRagAccess(testRequestAccess)
       .withMainLlm(makeLlm([{ content: 'ok' }]))
       .setRagRegistry(reg)
       .withRetrievalStrategy('kb', new EmbeddingRetrieval())
-      .build();
+      .build()
+      .then(unwrapBuilderResult);
     try {
       reg.register('kb', new InMemoryRag(), undefined, {
         displayName: 'kb',
@@ -340,6 +357,7 @@ describe('withRetrievalStrategy on the real request path (DefaultPipeline)', () 
   it('an explicit history strategy keeps history out of the reranker; tools without one are still reranked', async () => {
     const { reranker, calls } = countingReranker();
     const handle = await new SmartAgentBuilder({ skipModelValidation: true })
+      .withRagAccess(testRequestAccess)
       .withMainLlm(stubLlm())
       .withEmbedder(
         symmetricEmbedder({
@@ -352,9 +370,10 @@ describe('withRetrievalStrategy on the real request path (DefaultPipeline)', () 
       .setHistoryRag(primaryStore([hit('history-hit', 0.9)]))
       .withRetrievalStrategy('history', new EmbeddingRetrieval())
       .withReranker(reranker)
-      .build();
+      .build()
+      .then(unwrapBuilderResult);
     try {
-      await handle.agent.process('hello', { sessionId: 's1' });
+      await handle.agent.process('hello', testCallOptions({ sessionId: 's1' }));
       const seen = calls.flat();
       assert.ok(seen.includes('tool-hit'), 'tools is still reranked');
       assert.ok(
@@ -369,6 +388,7 @@ describe('withRetrievalStrategy on the real request path (DefaultPipeline)', () 
   it("an explicit tools strategy is what the pipeline's tools query goes through", async () => {
     const { strategy, calls } = spyStrategy();
     const handle = await new SmartAgentBuilder({ skipModelValidation: true })
+      .withRagAccess(testRequestAccess)
       .withMainLlm(stubLlm())
       .withEmbedder(
         symmetricEmbedder({
@@ -379,9 +399,10 @@ describe('withRetrievalStrategy on the real request path (DefaultPipeline)', () 
       )
       .setToolsRag(primaryStore([hit('tool-hit', 0.9)]))
       .withRetrievalStrategy('tools', strategy)
-      .build();
+      .build()
+      .then(unwrapBuilderResult);
     try {
-      await handle.agent.process('hello', { sessionId: 's1' });
+      await handle.agent.process('hello', testCallOptions({ sessionId: 's1' }));
       assert.ok(calls.length >= 1, 'the tools query went through the strategy');
     } finally {
       await handle.close();
@@ -393,6 +414,7 @@ describe('withRetrievalStrategy reaches the legacy coordinator tool source', () 
   async function toolSourceOf(withStrategy: boolean) {
     const { strategy, calls } = spyStrategy();
     let builder = new SmartAgentBuilder({ skipModelValidation: true })
+      .withRagAccess(testRequestAccess)
       .withMainLlm(stubLlm())
       .withEmbedder(
         symmetricEmbedder({
@@ -405,7 +427,7 @@ describe('withRetrievalStrategy reaches the legacy coordinator tool source', () 
       .withCoordinator({});
     if (withStrategy)
       builder = builder.withRetrievalStrategy('tools', strategy);
-    const handle = await builder.build();
+    const handle = await builder.build().then(unwrapBuilderResult);
     const pipeline = (
       handle.agent as unknown as { deps: { pipeline: unknown } }
     ).deps.pipeline as { coordinator?: { dispatch?: unknown } };
@@ -471,14 +493,20 @@ describe("a worker's own store keeps priority under a retrieval strategy", () =>
   async function workerOverParentRegistry(withCoordinator: boolean) {
     const seen: string[] = [];
     const registry = new SimpleRagRegistry();
-    // The parent's tools are already in the shared registry …
-    registry.register('tools', labelledStore('parent', seen), undefined, {
-      displayName: 'tools',
-      scope: 'global',
-    });
+    // Build the parent over the shared registry; its tools remain internal.
+    const parent = unwrapBuilderResult(
+      await new SmartAgentBuilder({ skipModelValidation: true })
+        .withRagAccess(testRequestAccess)
+        .withMainLlm(stubLlm())
+        .setRagRegistry(registry)
+        .setToolsRag(labelledStore('parent', seen))
+        .build(),
+    );
+    await parent.close();
     const { strategy, calls } = spyStrategy();
     // … and the worker brings its own tools plus an explicit strategy.
     let builder = new SmartAgentBuilder({ skipModelValidation: true })
+      .withRagAccess(testRequestAccess)
       .withMainLlm(stubLlm())
       .withEmbedder(
         symmetricEmbedder({
@@ -491,14 +519,14 @@ describe("a worker's own store keeps priority under a retrieval strategy", () =>
       .setToolsRag(labelledStore('worker', seen))
       .withRetrievalStrategy('tools', strategy);
     if (withCoordinator) builder = builder.withCoordinator({});
-    const handle = await builder.build();
+    const handle = await builder.build().then(unwrapBuilderResult);
     return { handle, seen, calls };
   }
 
   it('the pipeline queries the worker tools, through the strategy, never the parent', async () => {
     const { handle, seen, calls } = await workerOverParentRegistry(false);
     try {
-      await handle.agent.process('hello', { sessionId: 's1' });
+      await handle.agent.process('hello', testCallOptions({ sessionId: 's1' }));
       assert.ok(seen.includes('worker'), 'the worker store was queried');
       assert.ok(!seen.includes('parent'), 'the parent store was not queried');
       assert.ok(calls.length >= 1, 'the strategy was applied');
@@ -547,6 +575,7 @@ describe("a worker's own store keeps priority under a retrieval strategy", () =>
     const seen: string[] = [];
     const { strategy, calls } = spyStrategy();
     const handle = await new SmartAgentBuilder({ skipModelValidation: true })
+      .withRagAccess(testRequestAccess)
       .withMainLlm(stubLlm())
       .withEmbedder(
         symmetricEmbedder({
@@ -558,12 +587,13 @@ describe("a worker's own store keeps priority under a retrieval strategy", () =>
       .setToolsRag(labelledStore('own', seen))
       .withRetrievalStrategy('tools', strategy)
       .withCircuitBreaker({})
-      .build();
+      .build()
+      .then(unwrapBuilderResult);
     try {
-      const projected = handle.ragStores.tools;
+      const projected = handle.ragStores.tools.rag;
       assert.ok(projected instanceof StrategyRag);
       assert.ok(projected.inner instanceof FallbackRag);
-      await handle.agent.process('hello', { sessionId: 's1' });
+      await handle.agent.process('hello', testCallOptions({ sessionId: 's1' }));
       assert.ok(seen.includes('own'));
       assert.ok(calls.length >= 1);
     } finally {

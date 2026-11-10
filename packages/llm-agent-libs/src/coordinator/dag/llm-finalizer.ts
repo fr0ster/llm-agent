@@ -77,12 +77,13 @@ export class LlmFinalizer implements IFinalizer {
       { role: 'system', content: this.systemPrompt },
       { role: 'user', content: renderUserMessage(input) },
     ];
-    const { signal, sessionId } = input;
+    const { signal, sessionId, caller } = input;
     let buf = '';
     let usage: LlmUsage | undefined;
     const stream = this.llm.streamChat(messages, [], {
       signal,
       sessionId,
+      caller,
       usage: input.usage?.with({ role: 'finalizer' }),
     });
     for await (const chunk of stream) {

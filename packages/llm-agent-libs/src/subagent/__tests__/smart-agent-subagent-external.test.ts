@@ -6,6 +6,7 @@ import {
   type LlmTool,
 } from '@mcp-abap-adt/llm-agent';
 import type { SmartAgent } from '../../agent.js';
+import { testCallOptions } from '../../testing/index.js';
 import { SmartAgentSubAgent } from '../smart-agent-subagent.js';
 
 function makeAgent(value: unknown): SmartAgent {
@@ -41,6 +42,7 @@ it('preserves exhausted internal budget while awaiting an external result', asyn
     }),
   );
   const result = await sub.run({
+    caller: testCallOptions({ sessionId: 'test-session' }).caller,
     task: 'mixed batch',
     externalTools: [ragAdd],
   });
@@ -67,6 +69,7 @@ describe('SmartAgentSubAgent external-tool mapping', () => {
     });
     const sub = new SmartAgentSubAgent('worker', agent);
     const input: ISubAgentInput = {
+      caller: testCallOptions({ sessionId: 'test-session' }).caller,
       task: 'do it',
       externalTools: [ragAdd],
     };
@@ -92,7 +95,10 @@ describe('SmartAgentSubAgent external-tool mapping', () => {
     });
     const sub = new SmartAgentSubAgent('worker', agent);
 
-    const res = await sub.run({ task: 'do it' });
+    const res = await sub.run({
+      caller: testCallOptions({ sessionId: 'test-session' }).caller,
+      task: 'do it',
+    });
 
     assert.notEqual(res.status, 'awaiting-external');
     assert.equal(res.pendingExternalToolCalls, undefined);

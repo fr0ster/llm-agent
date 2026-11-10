@@ -1,9 +1,12 @@
 import assert from 'node:assert/strict';
 import { after, before, describe, it, mock } from 'node:test';
 import { symmetricEmbedder } from '@mcp-abap-adt/llm-agent';
-import { conformanceEmbedder } from '@mcp-abap-adt/llm-agent/testing/rag-filter-conformance';
+import {
+  conformanceEmbedder,
+  registerRawRecordInsert,
+} from '@mcp-abap-adt/llm-agent/testing/rag-filter-conformance';
 import { ragListConformanceCases } from '@mcp-abap-adt/llm-agent/testing/rag-list-conformance';
-import { QdrantRag } from '../qdrant-rag.js';
+import { deterministicUUID, QdrantRag } from '../qdrant-rag.js';
 import { type QdrantStub, startQdrantStub } from './qdrant-stub.js';
 
 let stub: QdrantStub;
@@ -28,11 +31,23 @@ describe('Qdrant listing conformance (stub)', () => {
           },
         );
         if (!response.ok) throw new Error('Failed to create collection');
-        return new QdrantRag({
-          url: stub.baseUrl,
-          collectionName,
-          embedder: symmetricEmbedder(conformanceEmbedder()),
-        });
+        return registerRawRecordInsert(
+          new QdrantRag({
+            url: stub.baseUrl,
+            collectionName,
+            embedder: symmetricEmbedder(conformanceEmbedder()),
+          }),
+          async (r) => {
+            const collection = stub.collections.get(collectionName);
+            assert.ok(collection);
+            const id = await deterministicUUID(r.id);
+            collection.points.set(id, {
+              id,
+              vector: (await conformanceEmbedder().embed(r.text)).vector,
+              payload: { ...r.metadata, id: r.id, text: r.text },
+            });
+          },
+        );
       }),
     );
 });

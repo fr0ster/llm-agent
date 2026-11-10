@@ -66,6 +66,8 @@ function evaluate(
   if (coll) return row.collection === params[Number(coll[1]) - 1];
   // The shared layout quotes the column; the semantics are the same.
   const cond = shared ? rawCond.replaceAll('"metadata"', 'metadata') : rawCond;
+  const absent = cond.match(/^NOT \(metadata \? '([A-Za-z_]+)'\)$/);
+  if (absent) return !Object.hasOwn(row.metadata, absent[1]);
   const eq = cond.match(EQ);
   if (eq) {
     const v = row.metadata[eq[1]];
@@ -106,9 +108,9 @@ const DISTINCT_COLLECTIONS =
 const RECORD_EXISTS =
   /^SELECT 1 AS present FROM ((?:"[^"]+"[.])?"[^"]+") WHERE store_name = \$1$/;
 const RECORD_INSERT =
-  /^INSERT INTO ((?:"[^"]+"[.])?"[^"]+") \(store_name, collection_name, scope, user_id, session_id, attributes_json\) VALUES \(\$1, \$2, \$3, \$4, \$5, \$6\)$/;
+  /^INSERT INTO ((?:"[^"]+"[.])?"[^"]+") \(store_name, collection_name, scope, user_id, session_id, attributes_json, role_id\) VALUES \(\$1, \$2, \$3, \$4, \$5, \$6, \$7\)$/;
 const RECORD_SELECT =
-  /^SELECT store_name AS "storeName", collection_name AS "name", scope AS "scope", user_id AS "userId", session_id AS "sessionId", attributes_json AS "attributesJson" FROM ((?:"[^"]+"[.])?"[^"]+") ORDER BY store_name$/;
+  /^SELECT store_name AS "storeName", collection_name AS "name", scope AS "scope", user_id AS "userId", session_id AS "sessionId", role_id AS "roleId", attributes_json AS "attributesJson" FROM ((?:"[^"]+"[.])?"[^"]+") ORDER BY store_name$/;
 const RECORD_UPDATE =
   /^UPDATE ((?:"[^"]+"[.])?"[^"]+") SET collection_name = COALESCE\(\$1, collection_name\), attributes_json = COALESCE\(\$2, attributes_json\) WHERE store_name = \$3$/;
 const RECORD_NAMES = /^SELECT store_name AS "s" FROM ((?:"[^"]+"[.])?"[^"]+")$/;
@@ -358,6 +360,7 @@ export function storingPg(
             userId: p[3],
             sessionId: p[4],
             attributesJson: p[5],
+            roleId: p[6],
           }));
         return { rows: out, rowCount: out.length };
       }

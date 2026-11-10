@@ -4,6 +4,7 @@ import { describe, it } from 'node:test';
 import type { LlmError, LlmStreamChunk, Result } from '@mcp-abap-adt/llm-agent';
 import { SmartAgent } from '@mcp-abap-adt/llm-agent-libs';
 import { makeDefaultDeps } from '@mcp-abap-adt/llm-agent-libs/testing';
+import { testCallOptions } from '../../../../llm-agent-libs/src/testing/index.js';
 import { SmartAgentServer } from '../server.js';
 
 const DEFAULT_CONFIG = { maxIterations: 5 };
@@ -149,9 +150,12 @@ describe('External tool propagation — SmartAgent.process()', () => {
       },
     ];
 
-    const r = await agent.process('What is the weather in Berlin?', {
-      externalTools,
-    });
+    const r = await agent.process(
+      'What is the weather in Berlin?',
+      testCallOptions({
+        externalTools,
+      }),
+    );
 
     assert.ok(r.ok, 'process() should succeed');
     assert.equal(r.value.stopReason, 'tool_calls');
@@ -216,9 +220,12 @@ describe('External tool propagation — SmartAgent.process()', () => {
     ];
 
     const chunks: LlmStreamChunk[] = [];
-    for await (const chunk of agent.streamProcess('search for test', {
-      externalTools,
-    })) {
+    for await (const chunk of agent.streamProcess(
+      'search for test',
+      testCallOptions({
+        externalTools,
+      }),
+    )) {
       if (chunk.ok) chunks.push(chunk.value);
     }
 

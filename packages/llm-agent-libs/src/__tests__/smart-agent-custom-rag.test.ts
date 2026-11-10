@@ -19,7 +19,7 @@ describe('SmartAgent.addRagStore()', () => {
     const { agent, deps } = makeAgent();
     const store = makeRag([]);
     agent.addRagStore('kb', store);
-    assert.equal((deps.ragStores as Record<string, unknown>).kb, store);
+    assert.equal(deps.ragStores.kb.rag, store);
   });
 
   it('overwrites an existing custom store with the same name', () => {
@@ -28,7 +28,7 @@ describe('SmartAgent.addRagStore()', () => {
     const store2 = makeRag([]);
     agent.addRagStore('kb', store1);
     agent.addRagStore('kb', store2);
-    assert.equal((deps.ragStores as Record<string, unknown>).kb, store2);
+    assert.equal(deps.ragStores.kb.rag, store2);
   });
 
   it('throws when trying to overwrite built-in "tools" store', () => {

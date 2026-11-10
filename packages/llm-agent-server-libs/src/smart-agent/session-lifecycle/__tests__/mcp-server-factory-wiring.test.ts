@@ -57,7 +57,7 @@ describe('buildSessionLifecycle — per-session MCP servers', () => {
     });
 
     try {
-      await lifecycle.acquire('s1');
+      await lifecycle.acquire({ sessionId: 's1', userId: 'test-user' });
       assert.deepEqual(seen, ['s1']);
       assert.equal(clientBuilderCalls, 0);
     } finally {
@@ -85,7 +85,7 @@ describe('buildSessionLifecycle — per-session MCP servers', () => {
     });
 
     try {
-      await lifecycle.acquire('s1');
+      await lifecycle.acquire({ sessionId: 's1', userId: 'test-user' });
       // `mcpSharedClient` only ever gated `buildPerSessionMcpClients`; a
       // caller wanting one shared server returns the same instance each time.
       assert.deepEqual(seen, ['s1']);
@@ -121,7 +121,10 @@ describe('buildSessionLifecycle — per-session MCP servers', () => {
       },
     });
 
-    const graph = await lifecycle.acquire('s1');
+    const graph = await lifecycle.acquire({
+      sessionId: 's1',
+      userId: 'test-user',
+    });
     lifecycle.release('s1', graph);
     await lifecycle.disposeAll();
 
@@ -152,7 +155,10 @@ describe('buildSessionLifecycle — per-session MCP servers', () => {
       ],
     });
 
-    const graph = await lifecycle.acquire('s1');
+    const graph = await lifecycle.acquire({
+      sessionId: 's1',
+      userId: 'test-user',
+    });
     lifecycle.release('s1', graph);
     await lifecycle.disposeAll();
 
@@ -171,7 +177,7 @@ describe('buildSessionLifecycle — per-session MCP servers', () => {
     });
 
     try {
-      await lifecycle.acquire('s1');
+      await lifecycle.acquire({ sessionId: 's1', userId: 'test-user' });
       assert.equal(clientBuilderCalls, 1);
     } finally {
       await lifecycle.disposeAll();

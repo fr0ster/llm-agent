@@ -17,7 +17,11 @@ import { SmartAgent } from '../agent.js';
 import { TaskBoard } from '../coordinator/dialogue/task-board.js';
 import { DefaultPipeline } from '../pipeline/default-pipeline.js';
 import { SmartAgentSubAgent } from '../subagent/smart-agent-subagent.js';
-import { makeAssembler, makeDefaultDeps } from '../testing/index.js';
+import {
+  makeAssembler,
+  makeDefaultDeps,
+  testCallOptions,
+} from '../testing/index.js';
 
 for (const pipeline of [false, true]) {
   for (const streamMode of ['full', 'final'] as const) {
@@ -47,7 +51,10 @@ for (const pipeline of [false, true]) {
         deps.pipeline = flow;
       }
       const agent = new SmartAgent(deps, config);
-      const result = await agent.process('work', { dialogueTask: task });
+      const result = await agent.process(
+        'work',
+        testCallOptions({ dialogueTask: task }),
+      );
       assert.ok(lists > 0);
       assert.ok(result.ok);
       assert.equal(result.value.content, 'finished during preparation');
@@ -143,7 +150,7 @@ for (const pipeline of [false, true]) {
         const worker = new SmartAgentSubAgent('w', {
           maxToolCalls: agent.maxToolCalls,
           async process(input, options) {
-            const result = await agent.process(input, options);
+            const result = await agent.process(input, testCallOptions(options));
             assert.ok(result.ok);
             assert.equal(result.value.stopReason, 'stop');
             assert.equal(result.value.stopped, undefined);
@@ -156,6 +163,8 @@ for (const pipeline of [false, true]) {
           settled = resolve;
         });
         const board = new TaskBoard({
+          caller: testCallOptions({ sessionId: 'test-session' }).caller,
+          baseInput: () => testCallOptions({ sessionId: 'test-session' }),
           workers: new Map([['w', worker]]),
           signals: scenario === 'no-bus' ? undefined : signals,
           source: 's',
@@ -264,7 +273,10 @@ for (const pipeline of [false, true]) {
           if (event.kind === 'iteration-end') partials.push(event.outcome);
         },
       };
-      for await (const chunk of agent.streamProcess('work', options)) {
+      for await (const chunk of agent.streamProcess(
+        'work',
+        testCallOptions(options),
+      )) {
         assert.ok(chunk.ok);
         chunks.push(chunk.value);
       }
@@ -338,7 +350,7 @@ test('legacy finish uses the stream hook and client adapter', async () => {
       { role: 'system', content: 'adapter' },
       { role: 'user', content: 'work' },
     ],
-    { dialogueTask: task },
+    testCallOptions({ dialogueTask: task }),
   )) {
     assert.ok(chunk.ok);
     contents.push(chunk.value.content);
@@ -413,6 +425,8 @@ for (const pipeline of [false, true]) {
         settle = resolve;
       });
       const board = new TaskBoard({
+        caller: testCallOptions({ sessionId: 'test-session' }).caller,
+        baseInput: () => testCallOptions({ sessionId: 'test-session' }),
         workers: new Map([['w', worker]]),
         signals: bus,
         source: 's',
@@ -456,21 +470,24 @@ for (const pipeline of [false, true]) {
           deps.pipeline = flow;
         }
         let callbacks = 0;
-        const result = await new SmartAgent(deps, config).process('work', {
-          dialogueTask: current,
-          onActivity(activity) {
-            if (trigger === 'activity' && activity === 'llm call') {
-              callbacks++;
-              finishDialogueTask(current, 'current output');
-            }
-          },
-          onToolsSelected() {
-            if (trigger === 'tools-selected') {
-              callbacks++;
-              finishDialogueTask(current, 'current output');
-            }
-          },
-        });
+        const result = await new SmartAgent(deps, config).process(
+          'work',
+          testCallOptions({
+            dialogueTask: current,
+            onActivity(activity) {
+              if (trigger === 'activity' && activity === 'llm call') {
+                callbacks++;
+                finishDialogueTask(current, 'current output');
+              }
+            },
+            onToolsSelected() {
+              if (trigger === 'tools-selected') {
+                callbacks++;
+                finishDialogueTask(current, 'current output');
+              }
+            },
+          }),
+        );
         assert.ok(result.ok);
         assert.equal(result.value.content, 'current output');
         assert.equal(result.value.stopReason, 'stop');

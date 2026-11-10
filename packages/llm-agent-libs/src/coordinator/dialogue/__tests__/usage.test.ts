@@ -12,6 +12,7 @@ import {
   type UsageContext,
   type UsageInput,
 } from '@mcp-abap-adt/llm-agent';
+import { testCallOptions } from '../../../testing/index.js';
 import { DialogueSession } from '../dialogue-session.js';
 import { currentPlannerScope } from '../planner-scope.js';
 import { TaskBoard } from '../task-board.js';
@@ -54,6 +55,8 @@ test('records every terminal transition exactly once with timing and no content'
     const { usage, records } = recorder();
     let clock = 10;
     const board = new TaskBoard({
+      caller: testCallOptions({ sessionId: 'test-session' }).caller,
+      baseInput: () => testCallOptions({ sessionId: 'test-session' }),
       usage,
       now: () => clock++,
       maxConcurrent: 1,
@@ -140,6 +143,13 @@ test('restore uses stable session identities, records only interrupted transitio
   ];
   for (const id of ['a', 'a', 'b']) {
     const session = await DialogueSession.open({
+      caller: testCallOptions({
+        caller: {
+          sessionId: 'test-session',
+          userId: 'test-user',
+          isAdmin: false,
+        },
+      }).caller,
       id,
       usage,
       board: { workers: new Map() },
@@ -170,6 +180,8 @@ test('restore uses stable session identities, records only interrupted transitio
     }
   }
   const board = new TaskBoard({
+    caller: testCallOptions({ sessionId: 'test-session' }).caller,
+    baseInput: () => testCallOptions({ sessionId: 'test-session' }),
     usage,
     boardId: 'c',
     workers: new Map(),
@@ -188,6 +200,9 @@ test('concurrent workers keep the originating turn and their own task context', 
   const { usage, records } = recorder();
   const releases: (() => void)[] = [];
   const session = await DialogueSession.open({
+    caller: testCallOptions({
+      caller: { sessionId: 's', userId: 'test-user', isAdmin: false },
+    }).caller,
     id: 's',
     usage,
     board: {
@@ -237,6 +252,8 @@ test('concurrent workers keep the originating turn and their own task context', 
 
 test('tasks and dialogue work without a recorder', async () => {
   const board = new TaskBoard({
+    caller: testCallOptions({ sessionId: 'test-session' }).caller,
+    baseInput: () => testCallOptions({ sessionId: 'test-session' }),
     workers: new Map([
       [
         'w',
@@ -252,6 +269,9 @@ test('tasks and dialogue work without a recorder', async () => {
   await tick();
   assert.equal(board.get(id)?.state, 'done');
   const session = await DialogueSession.open({
+    caller: testCallOptions({
+      caller: { sessionId: 's', userId: 'test-user', isAdmin: false },
+    }).caller,
     id: 's',
     board: { workers: new Map() },
     planner: {
@@ -286,6 +306,8 @@ test('task result usage reaches terminal events, get/list and restore; absent st
     for (const outcome of ['done', 'failed', 'stopped']) {
       const events: TaskEvent[] = [];
       const board = new TaskBoard({
+        caller: testCallOptions({ sessionId: 'test-session' }).caller,
+        baseInput: () => testCallOptions({ sessionId: 'test-session' }),
         workers: new Map([
           [
             'w',
@@ -309,7 +331,12 @@ test('task result usage reaches terminal events, get/list and restore; absent st
       assert.deepEqual(board.get(id)?.usage, usage);
       assert.deepEqual(board.list()[0].usage, usage);
       assert.equal(Object.hasOwn(terminal.task, 'usage'), usage !== undefined);
-      const restored = new TaskBoard({ workers: new Map(), onEvent() {} });
+      const restored = new TaskBoard({
+        caller: testCallOptions({ sessionId: 'test-session' }).caller,
+        baseInput: () => testCallOptions({ sessionId: 'test-session' }),
+        workers: new Map(),
+        onEvent() {},
+      });
       restored.restore(board.list());
       assert.deepEqual(restored.get(id)?.usage, usage);
     }
@@ -326,6 +353,9 @@ test('dialogue reports planner and consumed task usage and preserves origin requ
       finish = resolve;
     });
     const session = await DialogueSession.open({
+      caller: testCallOptions({
+        caller: { sessionId: 's', userId: 'test-user', isAdmin: false },
+      }).caller,
       id: 's',
       now: () => now,
       usage,
@@ -383,6 +413,9 @@ test('dialogue reports planner and consumed task usage and preserves origin requ
 test('a user turn without token usage has no usage object', async () => {
   let now = 100;
   const session = await DialogueSession.open({
+    caller: testCallOptions({
+      caller: { sessionId: 'no-usage', userId: 'test-user', isAdmin: false },
+    }).caller,
     id: 'no-usage',
     now: () => now,
     board: { workers: new Map() },
@@ -406,6 +439,9 @@ test('corrective planner calls sum usage within a user turn', async () => {
   let calls = 0;
   let now = 100;
   const session = await DialogueSession.open({
+    caller: testCallOptions({
+      caller: { sessionId: 's', userId: 'test-user', isAdmin: false },
+    }).caller,
     id: 's',
     now: () => now,
     board: { workers: new Map() },
@@ -456,6 +492,13 @@ test('queued user turns exclude queue wait from planner timing', async () => {
     notifyStarted = resolve;
   });
   const session = await DialogueSession.open({
+    caller: testCallOptions({
+      caller: {
+        sessionId: 'queued-timing',
+        userId: 'test-user',
+        isAdmin: false,
+      },
+    }).caller,
     id: 'queued-timing',
     now: () => now,
     board: { workers: new Map() },
@@ -495,6 +538,9 @@ test('queued user turns exclude queue wait from planner timing', async () => {
 test('a corrective user turn reports the task events it consumes exactly once', async () => {
   let calls = 0;
   const session = await DialogueSession.open({
+    caller: testCallOptions({
+      caller: { sessionId: 's', userId: 'test-user', isAdmin: false },
+    }).caller,
     id: 's',
     now: () => 0,
     board: {
@@ -547,6 +593,9 @@ test('a recorder that throws while deriving context cannot break a dialogue turn
     },
   };
   const session = await DialogueSession.open({
+    caller: testCallOptions({
+      caller: { sessionId: 's', userId: 'test-user', isAdmin: false },
+    }).caller,
     id: 's',
     now: () => 0,
     usage,
@@ -574,6 +623,9 @@ test('long-running wake retains the originating request recorder without task us
   });
   let calls = 0;
   const session = await DialogueSession.open({
+    caller: testCallOptions({
+      caller: { sessionId: 's', userId: 'test-user', isAdmin: false },
+    }).caller,
     id: 's',
     usage,
     maxCorrections: 0,

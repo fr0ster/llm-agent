@@ -13,8 +13,9 @@ import {
   type SmartServerEmbedderConfig,
   toMakeRagInput,
 } from '../rag-config.js';
-import { SmartServer, type SmartServerConfig } from '../smart-server.js';
+import type { SmartServerConfig } from '../smart-server.js';
 import { constructionSeams } from './construction-seams.js';
+import { TestSmartServer as SmartServer } from './rag-identity-fixture.js';
 
 const llm = { provider: 'ollama', model: 'qwen2.5' };
 const stubEmbedder = {

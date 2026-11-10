@@ -1,3 +1,4 @@
+import { denyRagAccess, ownerBoundQuery } from '../../rag/owner-bound-query.js';
 /**
  * ToolSelectHandler — selects MCP tools based on RAG results.
  *
@@ -85,10 +86,20 @@ export class ToolSelectHandler implements IStageHandler {
       const queryResults = await Promise.all(
         storeEntries.map(async ([name, store]) => ({
           name,
-          result: await store.query(embedding, k, ctx.options),
+          result: await ownerBoundQuery(
+            store,
+            embedding,
+            k,
+            ctx.options ?? {},
+            ctx.ragAccess ?? denyRagAccess,
+          ),
         })),
       );
       for (const { name, result } of queryResults) {
+        if (!result.ok) {
+          ctx.error = result.error;
+          return false;
+        }
         if (result.ok) {
           ctx.ragResults[name] = result.value;
         }

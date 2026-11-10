@@ -65,6 +65,7 @@ export class SelfDispatch implements IDispatchStrategy {
           usage: ctx.usage?.with({ role: 'executor' }),
           signal: ctx.signal,
           sessionId: ctx.sessionId,
+          caller: ctx.caller,
         },
       );
       if (!res.ok) throw res.error;
@@ -120,6 +121,7 @@ export class SelfDispatch implements IDispatchStrategy {
         usage: ctx.usage?.with({ role: 'executor' }),
         signal: ctx.signal,
         sessionId: ctx.sessionId,
+        caller: ctx.caller,
       });
       if (!res.ok) throw res.error;
       add(res.value.usage);
@@ -140,6 +142,8 @@ export class SelfDispatch implements IDispatchStrategy {
       });
       for (const tc of toolCalls) {
         const out = await callTool(tc.name, tc.arguments ?? {}, ctx.signal, {
+          caller: ctx.caller,
+          sessionId: ctx.sessionId,
           usage: ctx.usage?.with({ role: 'executor' }),
         });
         messages.push({ role: 'tool', content: out, tool_call_id: tc.id });
@@ -152,6 +156,7 @@ export class SelfDispatch implements IDispatchStrategy {
       usage: ctx.usage?.with({ role: 'executor' }),
       signal: ctx.signal,
       sessionId: ctx.sessionId,
+      caller: ctx.caller,
     });
     if (!final.ok) throw final.error;
     add(final.value.usage);

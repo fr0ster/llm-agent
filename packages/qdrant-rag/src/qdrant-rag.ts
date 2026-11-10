@@ -16,6 +16,7 @@ import {
   type IRagScanner,
   listCursorScope,
   listMetadata,
+  matchesRagIdentity,
   prepareList,
   RagError,
   type RagListPage,
@@ -26,8 +27,10 @@ import {
   type RagScanPage,
   type Result,
   ragIdentityFilter,
+  validateRagMetadata,
 } from '@mcp-abap-adt/llm-agent';
 import { splitPayload } from './payload-record.js';
+import type { QdrantCondition, QdrantFilter } from './query-filter.js';
 import { deleteWhere, scanPage } from './scan-delete.js';
 
 /**
@@ -157,6 +160,7 @@ export class QdrantRag implements IRag, IRagScanner, IRagFilteredDeleter {
         if (err instanceof RagError) throw err;
         // JSON parsing or transient read failures — let the next upsert surface them naturally.
       }
+      await this.ensureOwnerScopeIndex(signal);
       this.collectionEnsured = true;
       return;
     }
@@ -178,7 +182,24 @@ export class QdrantRag implements IRag, IRagScanner, IRagFilteredDeleter {
         'UPSERT_ERROR',
       );
     }
+    await this.ensureOwnerScopeIndex(signal);
     this.collectionEnsured = true;
+  }
+
+  private async ensureOwnerScopeIndex(signal?: AbortSignal): Promise<void> {
+    const response = await this._fetch(
+      `/collections/${this.collectionName}/index?wait=true`,
+      {
+        method: 'PUT',
+        body: JSON.stringify({
+          field_name: 'ownerScope',
+          field_schema: 'keyword',
+        }),
+      },
+      signal,
+    );
+    if (!response.ok)
+      throw new RagError('Owner scope index failed', 'UPSERT_ERROR');
   }
 
   private async upsertKnownVector(
@@ -188,6 +209,7 @@ export class QdrantRag implements IRag, IRagScanner, IRagFilteredDeleter {
     options?: CallOptions,
   ): Promise<Result<void, RagError>> {
     try {
+      metadata = validateRagMetadata(metadata);
       if (this.autoCreateCollection) {
         await this._ensureCollection(vector.length, options?.signal);
       }
@@ -195,9 +217,9 @@ export class QdrantRag implements IRag, IRagScanner, IRagFilteredDeleter {
       const pointId = metadata?.id
         ? await deterministicUUID(metadata.id)
         : crypto.randomUUID();
-      const payload: Record<string, unknown> = {
+      const payload: RagMetadata = {
         text,
-        ...metadata,
+        ...validateRagMetadata(metadata),
       };
 
       const res = await this._fetch(
@@ -266,7 +288,7 @@ export class QdrantRag implements IRag, IRagScanner, IRagFilteredDeleter {
       const safe = new FallbackQueryEmbedding(embedding, this.embedder);
       const vector = await safe.toVector();
 
-      const must: unknown[] = [];
+      const must: QdrantCondition[] = [];
       const targetNamespace = options?.ragFilter?.namespace;
       if (targetNamespace !== undefined) {
         must.push({ key: 'namespace', match: { value: targetNamespace } });
@@ -274,7 +296,12 @@ export class QdrantRag implements IRag, IRagScanner, IRagFilteredDeleter {
       const nowSecs = Math.floor(Date.now() / 1000);
       must.push({ key: 'ttl', range: { gt: nowSecs } });
 
-      const body: Record<string, unknown> = {
+      const body: {
+        vector: number[];
+        limit: number;
+        with_payload: boolean;
+        filter?: QdrantFilter;
+      } = {
         vector,
         limit: k,
         with_payload: true,
@@ -285,7 +312,15 @@ export class QdrantRag implements IRag, IRagScanner, IRagFilteredDeleter {
       // point is never returned to a scoped query. Qdrant applies the filter
       // inside the search, so `limit: k` counts only matching points.
       const identity = ragIdentityFilter(options);
-      const identityMust: unknown[] = [];
+      const identityMust: QdrantCondition[] = [];
+      if (identity?.ownerScope !== undefined)
+        identityMust.push({
+          key: 'ownerScope',
+          match: { value: identity.ownerScope },
+        });
+      if (identity?.roleId !== undefined) {
+        identityMust.push({ key: 'roleId', match: { value: identity.roleId } });
+      }
       if (identity?.sessionId !== undefined) {
         identityMust.push({
           key: 'sessionId',
@@ -335,7 +370,7 @@ export class QdrantRag implements IRag, IRagScanner, IRagFilteredDeleter {
       const json = (await res.json()) as {
         result: Array<{
           score: number;
-          payload: Record<string, unknown>;
+          payload: RagMetadata;
         }>;
       };
 
@@ -343,7 +378,12 @@ export class QdrantRag implements IRag, IRagScanner, IRagFilteredDeleter {
         return { ...splitPayload(hit.payload), score: hit.score };
       });
 
-      return { ok: true, value: results };
+      return {
+        ok: true,
+        value: results.filter((record) =>
+          matchesRagIdentity(record.metadata, ragIdentityFilter(options)),
+        ),
+      };
     } catch (err) {
       if (err instanceof RagError) return { ok: false, error: err };
       return { ok: false, error: new RagError(String(err), 'QUERY_ERROR') };
@@ -375,7 +415,7 @@ export class QdrantRag implements IRag, IRagScanner, IRagFilteredDeleter {
         };
       }
       const json = (await res.json()) as {
-        result: Array<{ id: string; payload: Record<string, unknown> }>;
+        result: Array<{ id: string; payload: RagMetadata }>;
       };
       const hit = json.result?.[0];
       if (!hit) return { ok: true, value: null };
@@ -600,6 +640,7 @@ export class QdrantRag implements IRag, IRagScanner, IRagFilteredDeleter {
       upsertManyPrecomputedRaw: async (items, options) => {
         if (items.length === 0) return { ok: true, value: undefined };
         try {
+          for (const item of items) validateRagMetadata(item.metadata);
           if (this.autoCreateCollection) {
             await this._ensureCollection(
               items[0].vector.length,
@@ -610,7 +651,7 @@ export class QdrantRag implements IRag, IRagScanner, IRagFilteredDeleter {
             items.map(async ({ id, text, vector, metadata }) => ({
               id: await deterministicUUID(id),
               vector,
-              payload: { text, ...metadata, id },
+              payload: { text, ...validateRagMetadata(metadata), id },
             })),
           );
           // One PUT for the whole batch — Qdrant accepts many points per

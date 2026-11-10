@@ -19,6 +19,8 @@ import type {
   Result,
 } from '@mcp-abap-adt/llm-agent';
 import { symmetricEmbedder } from '@mcp-abap-adt/llm-agent';
+import { unwrapBuilderResult } from '../builder-types.js';
+import { testCallOptions, testRequestAccess } from '../testing/index.js';
 
 // ---------------------------------------------------------------------------
 // Minimal stubs (same pattern as builder-context-builder-wiring.test.ts)
@@ -77,6 +79,7 @@ describe('SmartAgentBuilder.withToolSelectionStrategy', () => {
     const handle = await new SmartAgentBuilder({
       skipModelValidation: true,
     })
+      .withRagAccess(testRequestAccess)
       .withMainLlm(stubLlm())
       .withEmbedder(symmetricEmbedder(stubEmbedder()))
       .withMcpClients([
@@ -126,12 +129,16 @@ describe('SmartAgentBuilder.withToolSelectionStrategy', () => {
         },
       })
       .withToolSelectionStrategy(recording)
-      .build();
+      .build()
+      .then(unwrapBuilderResult);
 
     try {
-      await handle.agent.process('do something', {
-        sessionId: 'test-strategy',
-      });
+      await handle.agent.process(
+        'do something',
+        testCallOptions({
+          sessionId: 'test-strategy',
+        }),
+      );
       assert.ok(
         selectCalled,
         'injected tool-selection strategy should be invoked during dispatch',

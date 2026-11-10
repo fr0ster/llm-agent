@@ -7,6 +7,8 @@ import type {
   LlmTool,
   Result,
 } from '@mcp-abap-adt/llm-agent';
+import { testRagAccess } from '@mcp-abap-adt/llm-agent/testing/rag-access-testing';
+import { unwrapBuilderResult } from '../builder-types.js';
 import { HybridDispatch } from '../coordinator/dispatch/hybrid.js';
 
 function stubLlm(): ILlm {
@@ -36,9 +38,11 @@ describe('SmartAgentBuilder — default coordinator dispatch', () => {
     const mainStub = stubLlm();
     const plannerStub = stubLlm(); // distinct instance from mainStub
     const handle = await new SmartAgentBuilder({ skipModelValidation: true })
+      .withRagAccess(testRagAccess())
       .withMainLlm(mainStub)
       .withCoordinator({ plannerLlm: plannerStub })
-      .build();
+      .build()
+      .then(unwrapBuilderResult);
     try {
       const pipeline = (
         handle.agent as unknown as { deps: { pipeline: unknown } }

@@ -17,6 +17,8 @@ import type {
   Result,
 } from '@mcp-abap-adt/llm-agent';
 import { symmetricEmbedder } from '@mcp-abap-adt/llm-agent';
+import { testRagAccess } from '@mcp-abap-adt/llm-agent/testing/rag-access-testing';
+import { unwrapBuilderResult } from '../builder-types.js';
 import type { IPipeline, PipelineDeps } from '../interfaces/pipeline.js';
 
 function stubMcpClient(id: string): IMcpClient {
@@ -87,9 +89,11 @@ describe('SmartAgentBuilder.withMcpServers()', () => {
     const log: string[] = [];
 
     const handle = await new SmartAgentBuilder({})
+      .withRagAccess(testRagAccess())
       .withMainLlm(stubLlm())
       .withMcpServers([stubServer('a', log), stubServer('b', log)])
-      .build();
+      .build()
+      .then(unwrapBuilderResult);
 
     try {
       assert.deepEqual(log, ['start:a', 'start:b']);
@@ -120,9 +124,11 @@ describe('SmartAgentBuilder.withMcpServers()', () => {
     await assert.rejects(
       () =>
         new SmartAgentBuilder({})
+          .withRagAccess(testRagAccess())
           .withMainLlm(stubLlm())
           .withMcpServers([described, stubServer('e', log)])
-          .build(),
+          .build()
+          .then(unwrapBuilderResult),
       /descriptor/i,
     );
 
@@ -137,10 +143,12 @@ describe('SmartAgentBuilder.withMcpServers()', () => {
     await assert.rejects(
       () =>
         new SmartAgentBuilder({})
+          .withRagAccess(testRagAccess())
           .withMainLlm(stubLlm())
           .withMcpClients([stubMcpClient('c')])
           .withMcpServers([stubServer('a', log)])
-          .build(),
+          .build()
+          .then(unwrapBuilderResult),
       /withMcpClients/,
     );
   });
@@ -160,9 +168,11 @@ describe('SmartAgentBuilder.withMcpServers()', () => {
     await assert.rejects(
       () =>
         new SmartAgentBuilder({})
+          .withRagAccess(testRagAccess())
           .withMainLlm(stubLlm())
           .withMcpServers([stubServer('a', log), failing])
-          .build(),
+          .build()
+          .then(unwrapBuilderResult),
       /spawn failed/,
     );
 
@@ -175,9 +185,11 @@ describe('SmartAgentBuilder.withMcpServers()', () => {
     const { SmartAgentBuilder } = await import('../builder.js');
 
     const handle = await new SmartAgentBuilder({})
+      .withRagAccess(testRagAccess())
       .withMainLlm(stubLlm())
       .withMcpClients([stubMcpClient('c')])
-      .build();
+      .build()
+      .then(unwrapBuilderResult);
 
     try {
       const health = await handle.agent.healthCheck();
@@ -204,6 +216,7 @@ describe('SmartAgentBuilder.withMcpServers()', () => {
     };
 
     const handle = await new SmartAgentBuilder({ skipModelValidation: true })
+      .withRagAccess(testRagAccess())
       .withMainLlm(stubLlm())
       .withLogger({
         log: (e) => {
@@ -211,7 +224,8 @@ describe('SmartAgentBuilder.withMcpServers()', () => {
         },
       })
       .withMcpServers([failingFirst, stubServer('b', log)])
-      .build();
+      .build()
+      .then(unwrapBuilderResult);
 
     // close() must not throw despite the first server's stop() rejecting —
     // see the report for the "should close() throw" reasoning.
@@ -242,6 +256,7 @@ describe('SmartAgentBuilder.withMcpServers()', () => {
     };
 
     const handle = await new SmartAgentBuilder({ skipModelValidation: true })
+      .withRagAccess(testRagAccess())
       .withMainLlm(stubLlm())
       .withLogger({
         log: (e) => {
@@ -250,7 +265,8 @@ describe('SmartAgentBuilder.withMcpServers()', () => {
       })
       .withMcpConnectionStrategy(throwingStrategy)
       .withMcpServers([stubServer('a', log), stubServer('b', log)])
-      .build();
+      .build()
+      .then(unwrapBuilderResult);
 
     await handle.close();
 
@@ -280,10 +296,12 @@ describe('SmartAgentBuilder.withMcpServers()', () => {
     await assert.rejects(
       () =>
         new SmartAgentBuilder({ skipModelValidation: true })
+          .withRagAccess(testRagAccess())
           .withMainLlm(stubLlm())
           .setPipeline(throwingPipeline)
           .withMcpServers([stubServer('a', log), stubServer('b', log)])
-          .build(),
+          .build()
+          .then(unwrapBuilderResult),
       /pipeline init failed/,
     );
 
@@ -299,13 +317,15 @@ describe('SmartAgentBuilder.withMcpServers()', () => {
     const log: string[] = [];
 
     const handle = await new SmartAgentBuilder({ skipModelValidation: true })
+      .withRagAccess(testRagAccess())
       .withMainLlm(stubLlm())
       .withEmbedder(symmetricEmbedder(stubEmbedder()))
       // Deliberately no .setToolsRag(...): the builder must auto-create one
       // because an embedder AND an injected MCP source (servers, not just
       // clients) are both present.
       .withMcpServers([stubServer('a', log)])
-      .build();
+      .build()
+      .then(unwrapBuilderResult);
 
     try {
       assert.ok(
@@ -341,10 +361,12 @@ describe('SmartAgentBuilder.withMcpServers()', () => {
     };
 
     const handle = await new SmartAgentBuilder({ skipModelValidation: true })
+      .withRagAccess(testRagAccess())
       .withMainLlm(stubLlm())
       .setPipeline(recordingPipeline)
       .withMcpServers([described])
-      .build();
+      .build()
+      .then(unwrapBuilderResult);
 
     try {
       assert.deepEqual(seenDescriptors, [{ slotIndex: 0, label: 'abap' }]);

@@ -41,8 +41,8 @@ function makeRegistry(
 
 test('acquire is lazy and stable per id', async () => {
   const { reg } = makeRegistry();
-  const a = await reg.acquire('s1');
-  const a2 = await reg.acquire('s1');
+  const a = await reg.acquire({ sessionId: 's1', userId: 'test-user' });
+  const a2 = await reg.acquire({ sessionId: 's1', userId: 'test-user' });
   assert.equal(a, a2);
   assert.equal(a.activeRequests, 2);
   assert.equal(reg.size, 1);
@@ -51,7 +51,10 @@ test('acquire is lazy and stable per id', async () => {
 test('SINGLE-FLIGHT: concurrent acquire of the same NEW sessionId builds exactly once and returns the same graph instance', async () => {
   const counter = { n: 0 };
   const { reg } = makeRegistry({}, counter);
-  const [g1, g2] = await Promise.all([reg.acquire('new'), reg.acquire('new')]);
+  const [g1, g2] = await Promise.all([
+    reg.acquire({ sessionId: 'new', userId: 'test-user' }),
+    reg.acquire({ sessionId: 'new', userId: 'test-user' }),
+  ]);
   assert.equal(
     counter.n,
     1,
@@ -64,7 +67,7 @@ test('SINGLE-FLIGHT: concurrent acquire of the same NEW sessionId builds exactly
 
 test('idle-TTL evicts only unpinned graphs and disposes', async () => {
   const { reg, disposed } = makeRegistry({ idleTtlMs: 0 });
-  await reg.acquire('s1'); // pinned (active=1)
+  await reg.acquire({ sessionId: 's1', userId: 'test-user' }); // pinned (active=1)
   await reg.evictIdle();
   assert.deepEqual(disposed, []); // pinned -> not evicted
   reg.release('s1');
@@ -75,11 +78,11 @@ test('idle-TTL evicts only unpinned graphs and disposes', async () => {
 
 test('LRU cap evicts the least-recently-used unpinned graph', async () => {
   const { reg, disposed } = makeRegistry({ maxSessions: 2, idleTtlMs: 10_000 });
-  await reg.acquire('s1');
+  await reg.acquire({ sessionId: 's1', userId: 'test-user' });
   reg.release('s1');
-  await reg.acquire('s2');
+  await reg.acquire({ sessionId: 's2', userId: 'test-user' });
   reg.release('s2');
-  await reg.acquire('s3');
+  await reg.acquire({ sessionId: 's3', userId: 'test-user' });
   reg.release('s3'); // over cap -> evict LRU (s1)
   await reg.flushEvictions();
   assert.deepEqual(disposed, ['s1']);
@@ -88,8 +91,8 @@ test('LRU cap evicts the least-recently-used unpinned graph', async () => {
 
 test('DRAIN: pinned LRU candidate over cap is marked, then disposed on release at refcount 0', async () => {
   const { reg, disposed } = makeRegistry({ maxSessions: 1, idleTtlMs: 10_000 });
-  const g1 = await reg.acquire('s1'); // pinned (active=1)
-  await reg.acquire('s2');
+  const g1 = await reg.acquire({ sessionId: 's1', userId: 'test-user' }); // pinned (active=1)
+  await reg.acquire({ sessionId: 's2', userId: 'test-user' });
   reg.release('s2'); // over cap; s1 pinned -> MARK s1, don't dispose yet
   await reg.flushEvictions();
   assert.deepEqual(disposed, [], 'pinned graph not disposed while in-flight');
@@ -108,11 +111,11 @@ test('release uses a non-creating lookup (unknown session never resurrected)', (
 
 test('disposeAll closes the registry; subsequent acquire rejects with SESSION_REGISTRY_CLOSED', async () => {
   const { reg } = makeRegistry();
-  await reg.acquire('s1');
+  await reg.acquire({ sessionId: 's1', userId: 'test-user' });
   reg.release('s1');
   await reg.disposeAll();
   await assert.rejects(
-    () => reg.acquire('s2'),
+    () => reg.acquire({ sessionId: 's2', userId: 'test-user' }),
     (err: unknown) => {
       // OrchestratorError carries code='SESSION_REGISTRY_CLOSED'.
       const e = err as { code?: string; message?: string };
@@ -152,7 +155,7 @@ test('disposeAll awaits in-flight builds so a graph resolving after disposal is 
     factory: slowFactory,
   });
   // Kick off an acquire without awaiting — its build is now pending.
-  const acquired = reg.acquire('slow');
+  const acquired = reg.acquire({ sessionId: 'slow', userId: 'test-user' });
   // Schedule disposeAll concurrently; it must await the pending build.
   const dispose = reg.disposeAll();
   // Let microtasks settle, then release the gate so the build resolves.
@@ -195,7 +198,7 @@ test('Fix #19: race — in-flight build invalidated by invalidateAll() is dispos
   });
 
   // Caller A: gated acquire.
-  const acquirePromise = reg.acquire('s1');
+  const acquirePromise = reg.acquire({ sessionId: 's1', userId: 'test-user' });
   // Caller B: config-reload invalidation while the build is still pending.
   await Promise.resolve();
   await reg.invalidateAll();
@@ -245,7 +248,7 @@ test('race: in-flight acquire rejects when disposeAll completes during the build
     factory: gatedFactory,
   });
   // Caller A: kick off an acquire whose build is gated.
-  const acquirePromise = reg.acquire('s1');
+  const acquirePromise = reg.acquire({ sessionId: 's1', userId: 'test-user' });
   // Caller B: disposeAll starts; it awaits pendingBuilds.
   const disposePromise = reg.disposeAll();
   // Allow microtasks to run so disposeAll is parked on Promise.allSettled.
@@ -302,12 +305,12 @@ test('Fix #20: stale invalidated build does NOT evict the newer in-flight build 
   });
 
   // Step 1: kick off acquire A (build A gated).
-  const acquireA = reg.acquire('s1');
+  const acquireA = reg.acquire({ sessionId: 's1', userId: 'test-user' });
   // Step 2: invalidateAll while A is still pending.
   await Promise.resolve();
   await reg.invalidateAll();
   // Step 3: kick off acquire B (a fresh build because pendingBuilds was cleared).
-  const acquireB = reg.acquire('s1');
+  const acquireB = reg.acquire({ sessionId: 's1', userId: 'test-user' });
   await Promise.resolve();
   assert.equal(calls, 2, 'a fresh build was started for s1 after invalidate');
 
@@ -327,7 +330,7 @@ test('Fix #20: stale invalidated build does NOT evict the newer in-flight build 
   await reg.flushEvictions();
 
   // Step 5: a concurrent third acquire MUST join build B (single-flight).
-  const acquireC = reg.acquire('s1');
+  const acquireC = reg.acquire({ sessionId: 's1', userId: 'test-user' });
 
   // Now resolve B. B should publish into graphs, and both B and C acquires
   // return the same graph instance.
@@ -354,4 +357,40 @@ test('Fix #20: stale invalidated build does NOT evict the newer in-flight build 
 
   // Build A's resolved graph was disposed (orphan); B's was not.
   assert.deepEqual(disposed, ['A:s1']);
+});
+
+test('acquire refuses a changed user while the same session graph is still building', async () => {
+  let entered = () => {};
+  let release = () => {};
+  const barrier = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  const hold = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const factory = fakeFactory([]);
+  const reg = new SessionRegistry({
+    idleTtlMs: 1000,
+    maxSessions: 10,
+    factory: {
+      build: async (identity) => {
+        entered();
+        await hold;
+        return factory.build(identity);
+      },
+    },
+  });
+  const first = reg.acquire({ sessionId: 's1', userId: 'u1' });
+  await barrier;
+  try {
+    await assert.rejects(
+      reg.acquire({ sessionId: 's1', userId: 'u2' }),
+      /user mismatch/,
+    );
+  } finally {
+    release();
+    const graph = await first;
+    reg.release('s1', graph);
+    await reg.disposeAll();
+  }
 });

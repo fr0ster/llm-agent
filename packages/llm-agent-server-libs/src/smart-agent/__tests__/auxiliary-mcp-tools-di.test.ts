@@ -17,8 +17,8 @@ import {
   SessionRequestLogger,
 } from '@mcp-abap-adt/llm-agent-libs';
 import type { SmartServerConfig } from '../smart-server.js';
-import { SmartServer } from '../smart-server.js';
 import { constructionSeams } from './construction-seams.js';
+import { TestSmartServer as SmartServer } from './rag-identity-fixture.js';
 
 // ── Minimal server config (no LLM creds needed — no start() call) ─────────────
 const MINIMAL_CFG = {

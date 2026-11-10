@@ -1,3 +1,4 @@
+import { testCallOptions, testRequestAccess } from '../../../testing/index.js';
 /**
  * Task 4 (#171) — tool-loop surfaces external (client-provided) tool calls.
  *
@@ -114,6 +115,7 @@ function makeCtx(opts: {
   };
 
   const ctx = {
+    ragAccess: testRequestAccess,
     config: {
       maxIterations: 5,
       maxToolCalls: 5,
@@ -121,7 +123,10 @@ function makeCtx(opts: {
       mode: opts.mode ?? 'smart',
       refreshToolsPerIteration: false,
     } as PipelineContext['config'],
-    options: {} as CallOptions,
+    options: testCallOptions({
+      sessionId: 's-ext',
+      ...testCallOptions({} as CallOptions),
+    }),
     sessionId: 's-ext',
     mcpClients: [],
     mainLlm,
@@ -519,6 +524,7 @@ function makeRefreshCollisionCtx(
   } as unknown as LlmTool;
 
   return {
+    ragAccess: testRequestAccess,
     config: {
       maxIterations: 5,
       maxToolCalls: 5,
@@ -526,7 +532,10 @@ function makeRefreshCollisionCtx(
       mode: 'smart',
       // refreshToolsPerIteration defaults on (undefined !== false)
     } as PipelineContext['config'],
-    options: {} as CallOptions,
+    options: testCallOptions({
+      sessionId: 'loop-namespace-collision',
+      ...testCallOptions({} as CallOptions),
+    }),
     sessionId: 'loop-namespace-collision',
     mcpClients: clients,
     mainLlm: {
@@ -725,11 +734,14 @@ for (const loop of ['pipeline', 'flat'] as const) {
           maxToolCalls: 2,
           refreshToolsPerIteration: false,
         });
-        const result = await agent.process('work', {
-          sessionId: 'mixed-flat',
-          externalTools: [RAG_ADD],
-          externalResults,
-        });
+        const result = await agent.process(
+          'work',
+          testCallOptions({
+            sessionId: 'mixed-flat',
+            externalTools: [RAG_ADD],
+            externalResults,
+          }),
+        );
         assert.ok(result.ok);
         pending = await (
           agent as unknown as { pendingToolResults: PendingToolResultsRegistry }

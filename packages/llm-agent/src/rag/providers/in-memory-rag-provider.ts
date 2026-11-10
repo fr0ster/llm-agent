@@ -2,11 +2,16 @@ import type {
   IIdStrategy,
   IRag,
   IRagEditor,
+  RagCatalogDescription,
+  RagCollectionRecord,
   RagCollectionScope,
   RagProviderCreateCollectionOptions,
 } from '../../interfaces/rag.js';
 import type { Result } from '../../interfaces/types.js';
 import { RagError } from '../../interfaces/types.js';
+import { InMemoryRagRoleStore } from '../access/in-memory-role-store.js';
+import { InMemorySessionBindingStore } from '../access/in-memory-session-binding-store.js';
+import { validateRagOwner } from '../catalog/validation.js';
 import { InMemoryRag, type InMemoryRagConfig } from '../in-memory-rag.js';
 import { AbstractRagProvider } from './base-provider.js';
 
@@ -33,6 +38,67 @@ export class InMemoryRagProvider extends AbstractRagProvider {
   readonly editable: boolean;
   readonly supportedScopes: readonly RagCollectionScope[];
 
+  private readonly records = new Map<string, RagCollectionRecord>();
+  private readonly stores = new Map<
+    string,
+    { rag: IRag; editor: IRagEditor }
+  >();
+  readonly roles = new InMemoryRagRoleStore((roleId) =>
+    [...this.records.values()].some(
+      (record) => record.scope === 'role' && record.roleId === roleId,
+    ),
+  );
+  readonly bindings = new InMemorySessionBindingStore();
+
+  async describeCollections(): Promise<
+    Result<RagCatalogDescription, RagError>
+  > {
+    const records: RagCollectionRecord[] = [];
+    const rejected: RagCatalogDescription['rejected'][number][] = [];
+    for (const record of this.records.values()) {
+      if (record.scope === 'role' && !this.roles.hasRole(record.roleId)) {
+        rejected.push({
+          storeName: record.storeName,
+          reason: 'Role is missing or tombstoned',
+        });
+      } else records.push(structuredClone(record));
+    }
+    return { ok: true, value: { records, rejected } };
+  }
+
+  async deleteCollection(name: string): Promise<Result<void, RagError>> {
+    this.records.delete(name);
+    const store = this.stores.get(name);
+    this.stores.delete(name);
+    if (store) {
+      const writer = store.rag.writer?.();
+      if (writer?.clearAll) return writer.clearAll();
+    }
+    return { ok: true, value: undefined };
+  }
+
+  async openCollection(
+    record: RagCollectionRecord,
+  ): Promise<Result<{ rag: IRag; editor: IRagEditor }, RagError>> {
+    const stored = this.records.get(record.storeName);
+    const store = this.stores.get(record.storeName);
+    const owner = validateRagOwner(record);
+    if (
+      !stored ||
+      !store ||
+      !owner.ok ||
+      JSON.stringify(validateRagOwner(stored)) !== JSON.stringify(owner)
+    )
+      return {
+        ok: false,
+        error: new RagError(
+          'Collection does not exist for this owner',
+          'RAG_COLLECTION_NOT_FOUND',
+        ),
+      };
+    return { ok: true, value: store };
+  }
+
   private readonly inMemoryCfg?: InMemoryRagConfig;
 
   constructor(cfg: InMemoryRagProviderConfig) {
@@ -45,7 +111,7 @@ export class InMemoryRagProvider extends AbstractRagProvider {
   }
 
   async createCollection(
-    _name: string,
+    name: string,
     opts: RagProviderCreateCollectionOptions,
   ): Promise<Result<{ rag: IRag; editor: IRagEditor }, RagError>> {
     const checked = this.checkCreateOptions(opts);
@@ -59,8 +125,37 @@ export class InMemoryRagProvider extends AbstractRagProvider {
         ),
       };
     }
+    if (
+      checked.value.scope === 'role' &&
+      !this.roles.hasRole(checked.value.roleId)
+    )
+      return {
+        ok: false,
+        error: new RagError('Role does not exist', 'RAG_ROLE_NOT_FOUND'),
+      };
+    if (this.records.has(name))
+      return {
+        ok: false,
+        error: new RagError(
+          'Collection already exists',
+          'RAG_DUPLICATE_COLLECTION',
+        ),
+      };
     const rag = new InMemoryRag(this.inMemoryCfg);
     const editor = this.buildEditor(rag, this.pickIdStrategy(checked.value));
+    // The role guard and catalog write are synchronous, so deletion cannot interleave.
+    this.records.set(
+      name,
+      structuredClone({
+        storeName: name,
+        name: opts.collectionName ?? name,
+        ...checked.value,
+        ...(opts.attributes !== undefined
+          ? { attributes: opts.attributes }
+          : {}),
+      }),
+    );
+    this.stores.set(name, { rag, editor });
     return { ok: true, value: { rag, editor } };
   }
 }

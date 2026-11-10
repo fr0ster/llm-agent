@@ -9,6 +9,8 @@
 
 import type {
   IModelProvider,
+  ReservedCollectionNameError,
+  Result,
   SmartAgentHandle as SmartAgentHandleBase,
 } from '@mcp-abap-adt/llm-agent';
 import type { SmartAgent, SmartAgentConfig } from './agent.js';
@@ -78,6 +80,26 @@ export interface SmartAgentBuilderConfig {
  * `getActiveConfig`) for callers in llm-agent-libs and llm-agent-server.
  */
 export type SmartAgentHandle = SmartAgentHandleBase<SmartAgent>;
+
+export class BuilderConfigError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'BuilderConfigError';
+  }
+}
+
+export type SmartAgentBuildResult = Result<
+  SmartAgentHandle,
+  BuilderConfigError | ReservedCollectionNameError
+>;
+
+/** Adapt result-based configuration errors for callers that propagate failures. */
+export function unwrapBuilderResult(
+  result: SmartAgentBuildResult,
+): SmartAgentHandle {
+  if (!result.ok) throw result.error;
+  return result.value;
+}
 
 // ---------------------------------------------------------------------------
 // Private type guard (package-internal, not in index.ts)

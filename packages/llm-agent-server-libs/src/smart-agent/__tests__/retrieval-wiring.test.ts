@@ -23,17 +23,18 @@ import {
   hasRetrievalStrategy,
   NoopRequestLogger,
   PASSAGE_QUESTION,
+  SmartAgentBuilder,
   TOOL_QUESTION,
 } from '@mcp-abap-adt/llm-agent-libs';
 import { parse } from 'yaml';
+import { testCallOptions } from '../../../../llm-agent-libs/src/testing/index.js';
 import { resolveSmartServerConfig } from '../config.js';
-import {
-  type BuildAgentDeps,
-  buildAgent,
-  SmartServer,
-  type SmartServerConfig,
-} from '../smart-server.js';
+import type { BuildAgentDeps, SmartServerConfig } from '../smart-server.js';
 import { constructionSeams } from './construction-seams.js';
+import {
+  testBuildAgent as buildAgent,
+  TestSmartServer as SmartServer,
+} from './rag-identity-fixture.js';
 
 // `rag:` is required: SmartServer builds the tools/history stores through the
 // makeRag seam only when `cfg.rag` is set (smart-server.ts, `if (this.cfg.rag)`).
@@ -332,7 +333,7 @@ describe('retrieval strategy wiring (§13.4)', () => {
       },
     );
     try {
-      await agent.process(QUERY);
+      await agent.process(QUERY, testCallOptions());
       assert.ok(seen.length >= 1, 'the embedded agent must rerank tools');
       assert.equal(seen[0].req.state, QUERY);
       assert.deepEqual(
@@ -363,7 +364,10 @@ describe('retrieval strategy wiring (§13.4)', () => {
     const { agent, close } = await buildAgent(c.cfg, c.deps);
     const ctrl = new AbortController();
     try {
-      await agent.process('do a task', { signal: ctrl.signal });
+      await agent.process(
+        'do a task',
+        testCallOptions({ signal: ctrl.signal }),
+      );
     } finally {
       await close();
     }
@@ -373,7 +377,26 @@ describe('retrieval strategy wiring (§13.4)', () => {
     assert.ok(step.options?.requestLogger, 'requestLogger must reach it');
   });
 
-  it('precedence: an explicit embedding store is never reranked by the plugin; an unlisted store still is', async () => {
+  it('precedence: an explicit embedding store is never reranked by the plugin; an unlisted store still is', async (ctx) => {
+    const historyStores: IRag[] = [];
+    const build = SmartAgentBuilder.prototype.build;
+    ctx.mock.method(
+      SmartAgentBuilder.prototype,
+      'build',
+      async function (this: SmartAgentBuilder) {
+        const result = await build.call(this);
+        if (result.ok && result.value.ragStores.history) {
+          historyStores.push(result.value.ragStores.history.rag);
+          assert.equal(
+            result.value.ragRegistry
+              .list()
+              .some((meta) => meta.name === 'history'),
+            false,
+          );
+        }
+        return result;
+      },
+    );
     const calls: string[][] = [];
     const plugin = pluginModule({
       rerank: async (_query, r) => {
@@ -401,12 +424,9 @@ describe('retrieval strategy wiring (§13.4)', () => {
       await chatOnce(server, QUERY, notes.register);
       // The server-built history store carries its explicit strategy, so the
       // rerank stage skips it wherever it is read (hasRetrievalStrategy).
-      const history = (
-        server as unknown as { _globalRagRegistry: IRagRegistry }
-      )._globalRagRegistry.get('history', 'global');
-      assert.ok(history, 'the history store is registered');
+      assert.ok(historyStores.length > 0, 'the history store is projected');
       assert.ok(
-        hasRetrievalStrategy(history),
+        historyStores.every(hasRetrievalStrategy),
         'history: { strategy: embedding } must brand the server-built store',
       );
     } finally {
@@ -555,7 +575,7 @@ describe('retrieval strategy wiring (§13.4)', () => {
         { log: () => {} },
         {},
       );
-      await worker.process(WORKER_QUERY);
+      await worker.process(WORKER_QUERY, testCallOptions());
       const workerStores = Object.keys(queried).filter((k) =>
         k.startsWith('store'),
       );
@@ -633,7 +653,7 @@ ${DECISION}`;
           embedder: stubEmbedder,
         },
       );
-      await worker.process(WORKER_QUERY);
+      await worker.process(WORKER_QUERY, testCallOptions());
       assert.ok(notesQueried >= 1, 'the worker must query notes');
       const hit = seen.find(
         (s) =>

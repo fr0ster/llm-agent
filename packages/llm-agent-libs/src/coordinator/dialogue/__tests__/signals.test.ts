@@ -12,6 +12,7 @@ import {
   type IDialogueTaskContext,
 } from '@mcp-abap-adt/llm-agent';
 import { createSignalBus } from '../../../../../llm-signals/src/index.js';
+import { testCallOptions } from '../../../testing/index.js';
 import { DialogueSession } from '../dialogue-session.js';
 import { createMemorySignalBus } from '../memory-signal-bus.js';
 import { PlannerToolsClient } from '../planner-tools-client.js';
@@ -32,6 +33,9 @@ test('default session bus retains finish; late finish after close is not retaine
   let context: IDialogueTaskContext | undefined;
   const finished = deferred<void>();
   const session = await DialogueSession.open({
+    caller: testCallOptions({
+      caller: { sessionId: 's', userId: 'test-user', isAdmin: false },
+    }).caller,
     id: 's',
     board: {
       workers: new Map([
@@ -147,6 +151,9 @@ test('open restores every task before activity and plan, including interrupted t
       plan: { version: 1, status: 'active', steps: [] },
     };
     const session = await DialogueSession.open({
+      caller: testCallOptions({
+        caller: { sessionId: 's', userId: 'test-user', isAdmin: false },
+      }).caller,
       id: 's',
       signals: bus,
       board: { workers: new Map() },
@@ -199,6 +206,9 @@ test('settled occurs after final persistence, failed planners settle, pending sa
   });
   let fail = false;
   const session = await DialogueSession.open({
+    caller: testCallOptions({
+      caller: { sessionId: 's', userId: 'test-user', isAdmin: false },
+    }).caller,
     id: 's',
     signals: bus,
     board: { workers: new Map() },
@@ -244,6 +254,9 @@ test('close cuts a turn without settlement and retires after final signal', asyn
     retainedAtClose = bus.last('dialogue.activity', 's') !== undefined;
   });
   const session = await DialogueSession.open({
+    caller: testCallOptions({
+      caller: { sessionId: 's', userId: 'test-user', isAdmin: false },
+    }).caller,
     id: 's',
     signals: bus,
     board: { workers: new Map() },
@@ -272,6 +285,8 @@ test('real board emits queued tasks before pool execution, cancellation and all 
   const { bus } = harness();
   const released = deferred<() => void>();
   const board = new TaskBoard({
+    caller: testCallOptions({ sessionId: 'test-session' }).caller,
+    baseInput: () => testCallOptions({ sessionId: 'test-session' }),
     source: 's',
     signals: bus,
     onEvent() {},
@@ -328,6 +343,9 @@ test('event turns settle after onMessage and NO_MESSAGE still settles', async ()
     });
     let calls = 0;
     const session = await DialogueSession.open({
+      caller: testCallOptions({
+        caller: { sessionId: 's', userId: 'test-user', isAdmin: false },
+      }).caller,
       id: 's',
       signals: bus,
       onMessage() {
@@ -390,6 +408,9 @@ test('plan total changes emit and ready stays visible after corrections are exha
   };
   let calls = 0;
   const session = await DialogueSession.open({
+    caller: testCallOptions({
+      caller: { sessionId: 's', userId: 'test-user', isAdmin: false },
+    }).caller,
     id: 's',
     signals: emitter,
     maxCorrections: 1,
@@ -422,6 +443,8 @@ test('plan total changes emit and ready stays visible after corrections are exha
   );
   await session.close();
   const board = new TaskBoard({
+    caller: testCallOptions({ sessionId: 'test-session' }).caller,
+    baseInput: () => testCallOptions({ sessionId: 'test-session' }),
     source: 'b',
     signals: emitter,
     onEvent() {},
@@ -450,6 +473,9 @@ test('throwing session emitters preserve successful and failed sends and retirem
     const retired: string[] = [];
     let fail = false;
     const session = await DialogueSession.open({
+      caller: testCallOptions({
+        caller: { sessionId: 's', userId: 'test-user', isAdmin: false },
+      }).caller,
       id: 's',
       signals: throwing
         ? {
@@ -495,6 +521,8 @@ test('throwing initial task signal does not prevent start or worker execution', 
     let changes = 0;
     const warnings: string[] = [];
     const board = new TaskBoard({
+      caller: testCallOptions({ sessionId: 'test-session' }).caller,
+      baseInput: () => testCallOptions({ sessionId: 'test-session' }),
       signals: throwing
         ? {
             emit(name, payload) {

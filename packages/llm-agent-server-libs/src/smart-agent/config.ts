@@ -237,14 +237,17 @@ export function resolveSmartServerConfig(
   yaml: YamlConfig = {},
   env: NodeJS.ProcessEnv = process.env,
   options: ResolveSmartServerConfigOptions = {},
-): Omit<SmartServerConfig, 'log'> {
+): Omit<SmartServerConfig, 'log' | 'callerResolver' | 'ragAccess'> {
   // Clean-break migration guard FIRST — before any pipeline-shape parsing — so a
   // legacy `coordinator:`/`pipeline:` config gets the actionable migration error
   // rather than the generic "pipeline requires a name" diagnostic.
   assertNoLegacyPipelineConfig(yaml);
   assertNoLegacyRagShape(yaml);
 
-  const resolved: Omit<SmartServerConfig, 'log'> = {
+  const resolved: Omit<
+    SmartServerConfig,
+    'log' | 'callerResolver' | 'ragAccess'
+  > = {
     port: Number(
       (args.port as string) ?? get(yaml, 'port') ?? env.PORT ?? 4004,
     ),

@@ -25,6 +25,7 @@ export class SubAgentStateOracle implements IStateOracle {
 
   async query(input: StateOracleInput): Promise<StateOracleResult> {
     const res = await this.inner.run({
+      caller: input.caller,
       task: input.query,
       sessionId: input.sessionId,
       usage: input.usage?.with({ role: 'oracle' }),

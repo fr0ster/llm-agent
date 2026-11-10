@@ -6,14 +6,14 @@ import { describe, it } from 'node:test';
 import type { IEmbedder, ILlm } from '@mcp-abap-adt/llm-agent';
 import { loadYamlConfig, resolveSmartServerConfig } from '../config.js';
 import { normalizeLlmConfig } from '../llm-config-map.js';
-import {
-  type BuildAgentDeps,
-  SmartServer,
-  type SmartServerConfig,
-  type SmartServerLlmConfig,
+import type {
+  BuildAgentDeps,
+  SmartServerConfig,
+  SmartServerLlmConfig,
 } from '../smart-server.js';
 import { assertWorkerLlmConfig, parseWorkerLlm } from '../worker-llm.js';
 import { constructionSeams } from './construction-seams.js';
+import { TestSmartServer as SmartServer } from './rag-identity-fixture.js';
 
 describe('parseWorkerLlm (§4.6.7)', () => {
   it('reads a string as the main key, a map as role keys, absence as nothing named', () => {

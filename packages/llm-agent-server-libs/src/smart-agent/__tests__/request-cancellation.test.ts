@@ -11,9 +11,12 @@ import type { AddressInfo } from 'node:net';
 import { describe, it } from 'node:test';
 import { AnthropicApiAdapter } from '@mcp-abap-adt/llm-agent';
 import {
+  SessionGraph,
   SessionRequestLogger,
   type SmartAgent,
 } from '@mcp-abap-adt/llm-agent-libs';
+import { PendingToolResultsRegistry } from '../../../../llm-agent-libs/src/policy/pending-tool-results-registry.js';
+import { ToolAvailabilityRegistry } from '../../../../llm-agent-libs/src/policy/tool-availability-registry.js';
 import { handleAdapterRequest } from '../http/adapter-route-handler.js';
 import { handleChat } from '../http/chat-route-handler.js';
 
@@ -91,6 +94,20 @@ interface Harness {
 }
 
 async function startHarness(route: Route, agent: SmartAgent): Promise<Harness> {
+  const sessionId = 'cancellation-session';
+  const session = {
+    sessionId,
+    traceId: 'cancellation-request',
+    caller: { sessionId, userId: 'test-user', isAdmin: false },
+    graph: new SessionGraph({
+      sessionId,
+      userId: 'test-user',
+      toolAvailability: new ToolAvailabilityRegistry(),
+      pendingToolResults: new PendingToolResultsRegistry(),
+      logger: new SessionRequestLogger(),
+      dispose: async () => {},
+    }),
+  };
   const logs: Array<Record<string, unknown>> = [];
   const writesAfterClose: string[] = [];
   let markDone!: () => void;
@@ -128,7 +145,7 @@ async function startHarness(route: Route, agent: SmartAgent): Promise<Harness> {
             (() => {}) as never,
             (e) => logs.push(e),
             undefined,
-            undefined,
+            session,
             {} as never,
           )
         : handleAdapterRequest(
@@ -136,7 +153,7 @@ async function startHarness(route: Route, agent: SmartAgent): Promise<Harness> {
             res,
             agent,
             new AnthropicApiAdapter(),
-            undefined,
+            session,
             undefined,
             (e) => logs.push(e),
           );

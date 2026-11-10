@@ -38,6 +38,7 @@ import {
 import {
   conformanceEmbedder,
   ragFilterConformanceCases,
+  seedLegacyRagRecord,
 } from './rag-filter-conformance.js';
 
 /** One backend in the `shared` layout: stores and a provider over the same tables. */
@@ -182,7 +183,7 @@ export const sharedTableConformanceCases: readonly SharedTableConformanceCase[] 
               const res = await writer.upsertRaw(
                 'neighbour-owned',
                 'quarterly revenue forecast owned',
-                { sessionId: 's1', userId: 'u1', namespace: 'a' },
+                { sessionId: 's1', namespace: 'a' },
               );
               if (!res.ok) throw res.error;
               return s.openStore('docs');
@@ -202,17 +203,17 @@ export const sharedTableConformanceCases: readonly SharedTableConformanceCase[] 
         if (!writer) throw new Error('store under test exposes no writer()');
         // A JSON number, a JSON boolean and a string, under the same keys.
         const rows: Array<[string, Record<string, unknown>]> = [
-          ['num', { userId: 123, sessionId: 456, namespace: 789 }],
-          ['str', { userId: '123', sessionId: '456', namespace: '789' }],
-          ['bool', { userId: true, sessionId: true, namespace: true }],
+          ['num', { userId: 123, namespace: 789 }],
+          ['str', { userId: '123', namespace: '789' }],
+          ['bool', { userId: true, namespace: true }],
         ];
         for (const [id, meta] of rows) {
-          const res = await writer.upsertRaw(
+          await seedLegacyRagRecord(
+            rag,
             id,
             'quarterly revenue forecast',
             meta,
           );
-          if (!res.ok) throw res.error;
         }
         const embedder = conformanceEmbedder();
         const ids = async (
@@ -230,7 +231,7 @@ export const sharedTableConformanceCases: readonly SharedTableConformanceCase[] 
           return res.value.map((r) => String(r.metadata.id));
         };
         assert.deepEqual(await ids({ userId: '123' }), ['str']);
-        assert.deepEqual(await ids({ sessionId: '456' }), ['str']);
+        assert.deepEqual(await ids({ sessionId: '456' }), []);
         assert.deepEqual(await ids({ namespace: '789' }), ['str']);
         assert.deepEqual(await ids({ userId: 'true' }), []);
       },

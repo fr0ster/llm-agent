@@ -10,6 +10,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { IMcpRequestHeadersStrategy } from '@mcp-abap-adt/llm-agent';
+import { testRagAccess } from '@mcp-abap-adt/llm-agent/testing/rag-access-testing';
 
 // ---------------------------------------------------------------------------
 // Stub
@@ -111,7 +112,7 @@ describe('prepareMcpConfigs()', () => {
 describe('SmartAgentBuilder.withMcpRequestHeadersStrategy()', () => {
   it('is chainable and returns the builder instance', async () => {
     const { SmartAgentBuilder } = await import('../builder.js');
-    const builder = new SmartAgentBuilder({});
+    const builder = new SmartAgentBuilder({}).withRagAccess(testRagAccess());
     const strategy = stubStrategy();
     const result = builder.withMcpRequestHeadersStrategy(strategy);
     assert.strictEqual(

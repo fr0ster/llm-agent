@@ -4,6 +4,8 @@ import {
   TOOL_TRACE_RENDER_CHARS,
   type ToolTrace,
 } from '@mcp-abap-adt/llm-agent';
+import { unwrapBuilderResult } from '../../../builder-types.js';
+import { testCallOptions, testRequestAccess } from '../../../testing/index.js';
 import { renderToolTrace } from '../tool-trace-render.js';
 
 test('checker evidence trust tag is outside the escaped raw excerpt', () => {
@@ -200,21 +202,26 @@ for (const path of ['streaming', 'pipeline']) {
         const handle = await new SmartAgentBuilder({
           skipModelValidation: true,
         })
+          .withRagAccess(testRequestAccess)
           .withMainLlm(llm)
           .withMcpClients([client])
           .withToolTrust(toolTrust)
           .withToolLoopContextStrategyFactory(capturingFactory)
           .withMaxIterations(4)
           .setPipeline(new DefaultPipeline())
-          .build();
+          .build()
+          .then(unwrapBuilderResult);
         agent = handle.agent;
         close = () => handle.close();
       }
       try {
         const observations: string[] = [];
-        await agent.process('read the class', {
-          onToolTrace: (entry) => observations.push(entry.resultExcerpt),
-        });
+        await agent.process(
+          'read the class',
+          testCallOptions({
+            onToolTrace: (entry) => observations.push(entry.resultExcerpt),
+          }),
+        );
         assert.equal(seen.length, 3);
         for (const messages of seen.slice(1)) {
           for (const message of messages.filter((item) => item.role === 'tool'))
@@ -262,7 +269,12 @@ test('pending-result injection stores raw text and projects its model copy once'
 });
 
 test('get_task tags a response copy and preserves the board trace', async () => {
-  const board = new TaskBoard({ workers: new Map(), onEvent() {} });
+  const board = new TaskBoard({
+    caller: testCallOptions({ sessionId: 'test-session' }).caller,
+    baseInput: () => testCallOptions({ sessionId: 'test-session' }),
+    workers: new Map(),
+    onEvent() {},
+  });
   board.restore([
     {
       id: 't',
@@ -477,6 +489,13 @@ test('session resolver tags internal planner get_task and checker evidence', asy
     },
   });
   const session = await DialogueSession.open({
+    caller: testCallOptions({
+      caller: {
+        sessionId: 'internal-trust',
+        userId: 'test-user',
+        isAdmin: false,
+      },
+    }).caller,
     id: 'internal-trust',
     toolTrust,
     maxCorrections: 0,

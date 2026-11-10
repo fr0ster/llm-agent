@@ -45,6 +45,14 @@ export class AdaptiveCoordinatorHandler implements IStageHandler {
     _config: Record<string, unknown>,
     _span: ISpan,
   ): Promise<boolean> {
+    const caller = ctx.options?.caller;
+    if (!caller) {
+      ctx.error = new OrchestratorError(
+        'Trusted caller is required',
+        'RAG_ACCESS_DENIED',
+      );
+      return false;
+    }
     const request = ctx.inputText;
     const history = [...ctx.history];
     const tail = history.at(-1);
@@ -152,6 +160,7 @@ export class AdaptiveCoordinatorHandler implements IStageHandler {
           },
         },
         budget: { ...DEFAULT_BUDGET, ...this.deps.budget },
+        caller: caller,
         sessionId: ctx.sessionId,
         usage: ctx.options?.usage,
         signal: ctx.options?.signal,

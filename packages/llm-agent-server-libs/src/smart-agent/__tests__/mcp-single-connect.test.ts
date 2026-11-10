@@ -1,3 +1,5 @@
+import { TestSmartServer as SmartServer } from './rag-identity-fixture.js';
+
 /**
  * F1 + F2 regression tests for `buildSharedPipelineInfra`:
  *
@@ -22,7 +24,6 @@ import type {
   IToolsRagHandle,
   LlmTool,
 } from '@mcp-abap-adt/llm-agent';
-import { SmartServer } from '../smart-server.js';
 import { constructionSeams } from './construction-seams.js';
 
 function fakeMcpClient(tools: string[]): IMcpClient {

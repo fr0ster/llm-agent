@@ -100,6 +100,14 @@ export class DagCoordinatorHandler implements IStageHandler {
     _rawConfig: Record<string, unknown>,
     _span: ISpan,
   ): Promise<boolean> {
+    const caller = ctx.options?.caller;
+    if (!caller) {
+      ctx.error = new OrchestratorError(
+        'Trusted caller is required',
+        'RAG_ACCESS_DENIED',
+      );
+      return false;
+    }
     const maxRoundTrips = Math.max(1, this.deps.maxRoundTrips ?? 6);
     const ancestorContext = buildAncestorContext(ctx);
     const agents = [...this.deps.workers.values()].map((w) => ({
@@ -197,6 +205,7 @@ export class DagCoordinatorHandler implements IStageHandler {
             const ans = await this.deps.stateOracle.query({
               query: (err as NeedInfoSignal).query,
               sessionId: ctx.sessionId,
+              caller: caller,
               usage: ctx.options?.usage,
               signal: ctx.options?.signal,
               trace: ctx.options?.trace,
@@ -238,6 +247,7 @@ export class DagCoordinatorHandler implements IStageHandler {
           agents,
           ancestorContext,
           sessionId: ctx.sessionId,
+          caller: caller,
           usage: ctx.options?.usage,
           signal: ctx.options?.signal,
         }),
@@ -274,6 +284,7 @@ export class DagCoordinatorHandler implements IStageHandler {
                 agents,
                 ancestorContext,
                 sessionId: ctx.sessionId,
+                caller: caller,
                 usage: ctx.options?.usage,
                 signal: ctx.options?.signal,
               }),
@@ -302,6 +313,7 @@ export class DagCoordinatorHandler implements IStageHandler {
                 ancestorContext,
                 reviewerFeedback: verdict.feedback,
                 sessionId: ctx.sessionId,
+                caller: caller,
                 usage: ctx.options?.usage,
                 signal: ctx.options?.signal,
               }),
@@ -376,6 +388,7 @@ export class DagCoordinatorHandler implements IStageHandler {
             inputText: ctx.inputText,
             workers: this.deps.workers,
             sessionId: ctx.sessionId,
+            caller: caller,
             usage: ctx.options?.usage,
             signal: ctx.options?.signal,
             errorStrategy: this.deps.errorStrategy ?? new AbortErrorStrategy(),
@@ -467,6 +480,7 @@ export class DagCoordinatorHandler implements IStageHandler {
                   : {}),
                 executionTrace,
                 sessionId: ctx.sessionId,
+                caller: caller,
                 usage: ctx.options?.usage,
                 signal: ctx.options?.signal,
                 trace: ctx.options?.trace,
@@ -521,6 +535,7 @@ export class DagCoordinatorHandler implements IStageHandler {
               agents,
               ancestorContext,
               sessionId: ctx.sessionId,
+              caller: caller,
               usage: ctx.options?.usage,
               signal: ctx.options?.signal,
             }),

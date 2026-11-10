@@ -1,16 +1,31 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import type { IRagEditor, IRagRegistry } from '../../interfaces/rag.js';
-import { CatalogRecordDeleteError } from '../corrections/errors.js';
+import { z } from 'zod';
+import type {
+  IRagEditor,
+  IRagRegistry,
+  RagCollectionMeta,
+  RagCollectionOwner,
+  RagJsonValue,
+} from '../../interfaces/rag.js';
+import { RagError } from '../../interfaces/types.js';
+import { testRagAccess } from '../../testing/rag-access-testing.js';
+import {
+  AmbiguousCollectionError,
+  CatalogRecordDeleteError,
+} from '../corrections/errors.js';
 import { InMemoryRag } from '../in-memory-rag.js';
-import { buildRagCollectionToolEntries } from '../mcp-tools/rag-collection-tools.js';
+import {
+  buildRagCollectionToolEntries,
+  type RagCollectionToolOptions,
+} from '../mcp-tools/rag-collection-tools.js';
 import { InMemoryRagProvider } from '../providers/in-memory-rag-provider.js';
 import { SimpleRagProviderRegistry } from '../providers/simple-provider-registry.js';
 import { SimpleRagRegistry } from '../registry/simple-rag-registry.js';
 import { DirectEditStrategy } from '../strategies/edit/index.js';
 import { GlobalUniqueIdStrategy } from '../strategies/id/index.js';
 
-const ALICE = { sessionId: 'S', userId: 'alice' };
+const ALICE = { sessionId: 'S', userId: 'alice', isAdmin: false };
 
 function editable() {
   const rag = new InMemoryRag();
@@ -33,7 +48,10 @@ function world() {
     }),
   );
   reg.setProviderRegistry(providers);
-  const add = (name: string, meta: Record<string, unknown>) => {
+  const add = (
+    name: string,
+    meta: Omit<RagCollectionMeta, 'name' | 'editable' | 'displayName'>,
+  ) => {
     const { rag, editor } = editable();
     reg.register(name, rag, editor, { displayName: name, ...meta });
   };
@@ -47,10 +65,14 @@ function world() {
   return { reg, providers };
 }
 
-function tools(reg: IRagRegistry, extra: Record<string, unknown> = {}) {
+function tools(
+  reg: IRagRegistry,
+  extra: Partial<RagCollectionToolOptions> = {},
+) {
   const entries = buildRagCollectionToolEntries({
     registry: reg,
-    identity: ALICE,
+    caller: ALICE,
+    access: testRagAccess([ALICE]),
     ...extra,
   });
   return (name: string) => {
@@ -137,11 +159,12 @@ describe('the address space is the bound caller’s', () => {
     }
   });
 
-  it('hides user collections from an identity with no userId', async () => {
+  it('hides all collections from a caller with an empty userId', async () => {
     const { reg } = world();
     const entries = buildRagCollectionToolEntries({
       registry: reg,
-      identity: { sessionId: 'S' },
+      caller: { sessionId: 'S', userId: '', isAdmin: false },
+      access: testRagAccess([ALICE]),
     });
     const list = entries.find(
       (e) => e.toolDefinition.name === 'rag_list_collections',
@@ -151,7 +174,7 @@ describe('the address space is the bound caller’s', () => {
     const seen = (out.collections ?? [])
       .map((c) => `${c.scope}:${c.name}`)
       .sort();
-    assert.deepEqual(seen, ['global:docs', 'global:open', 'session:docs']);
+    assert.deepEqual(seen, []);
   });
 });
 
@@ -233,7 +256,7 @@ describe('a name several scopes hold needs a scope', () => {
   });
 });
 
-describe('framework tools mutate no global', () => {
+describe('non-admin collection tools refuse global writes', () => {
   for (const [name, args] of [
     ['rag_add', { collection: 'open', text: 't', canonicalKey: 'k' }],
     [
@@ -255,7 +278,7 @@ describe('framework tools mutate no global', () => {
       const { reg } = world();
       const out = (await tools(reg)(name).handler({}, args)) as Answer;
       assert.equal(out.ok, false);
-      assert.match(out.error ?? '', /global/i);
+      assert.match(out.error ?? '', /RagAccessDeniedError/);
       const store = reg.get('open', 'global');
       assert.ok(store);
       const hits = await store?.query(
@@ -277,7 +300,7 @@ describe('framework tools mutate no global', () => {
       { name: 'open' },
     )) as Answer;
     assert.equal(out.ok, false);
-    assert.match(out.error ?? '', /global/i);
+    assert.match(out.error ?? '', /RagAccessDeniedError/);
     assert.ok(reg.get('open', 'global'), 'still registered — not removed');
   });
 
@@ -294,7 +317,7 @@ describe('framework tools mutate no global', () => {
 describe('rag_create_collection', () => {
   function spied() {
     const { reg, providers } = world();
-    const calls: Array<Record<string, unknown>> = [];
+    const calls: Array<Record<string, RagJsonValue | undefined>> = [];
     const original = reg.createCollection.bind(reg);
     reg.createCollection = async (p) => {
       calls.push({ ...p });
@@ -333,7 +356,8 @@ describe('rag_create_collection', () => {
     const { reg, providers, calls } = spied();
     const entries = buildRagCollectionToolEntries({
       registry: reg,
-      identity: ALICE,
+      caller: ALICE,
+      access: testRagAccess([ALICE]),
       providerRegistry: providers,
     });
     const create = entries.find(
@@ -341,8 +365,10 @@ describe('rag_create_collection', () => {
     );
     assert.ok(create);
     assert.equal(
-      create.toolDefinition.inputSchema.scope.safeParse('global').success,
-      false,
+      z
+        .object(create.toolDefinition.inputSchema)
+        .safeParse({ provider: 'mem', name: 'g', scope: 'global' }).success,
+      true,
     );
     const out = (await create.handler(
       {},
@@ -356,7 +382,8 @@ describe('rag_create_collection', () => {
     const { reg, providers, calls } = spied();
     const entries = buildRagCollectionToolEntries({
       registry: reg,
-      identity: { sessionId: 'S' },
+      caller: { sessionId: 'S', userId: '', isAdmin: false },
+      access: testRagAccess([ALICE]),
       providerRegistry: providers,
     });
     const create = entries.find(
@@ -373,10 +400,10 @@ describe('rag_create_collection', () => {
 
   it('records what attributesFor returns, called with the name and the owner', async () => {
     const { reg, providers, calls } = spied();
-    const seen: unknown[] = [];
+    const seen: Array<{ name: string } & RagCollectionOwner> = [];
     const out = (await tools(reg, {
       providerRegistry: providers,
-      attributesFor: (created: unknown) => {
+      attributesFor: (created) => {
         seen.push(created);
         return { authorization: 'owner' };
       },
@@ -439,7 +466,7 @@ describe('rag_create_collection', () => {
 });
 
 describe('rag_delete_collection reports the two phases apart', () => {
-  function withDelete(error: Error) {
+  function withDelete(error: CatalogRecordDeleteError) {
     const reg = new SimpleRagRegistry();
     const providers = new SimpleRagProviderRegistry();
     providers.registerProvider({
@@ -451,7 +478,7 @@ describe('rag_delete_collection reports the two phases apart', () => {
         ok: true,
         value: { rag: new InMemoryRag(), editor: {} as IRagEditor },
       }),
-      deleteCollection: async () => ({ ok: false, error: error as never }),
+      deleteCollection: async () => ({ ok: false, error }),
     });
     reg.setProviderRegistry(providers);
     return reg;
@@ -468,7 +495,7 @@ describe('rag_delete_collection reports the two phases apart', () => {
           collectionName: 's',
           scope: 'session',
           sessionId: 'S',
-        } as never)
+        })
       ).ok,
     );
     const out = (await tools(reg)('rag_delete_collection').handler(
@@ -481,5 +508,356 @@ describe('rag_delete_collection reports the two phases apart', () => {
       reg.get('s', 'session'),
       'restored, so the same call can be retried',
     );
+  });
+});
+
+describe('role and global collection access', () => {
+  it('A user collection docs and a role collection docs with the caller assigned to the role return AmbiguousCollectionError', async () => {
+    const reg = new SimpleRagRegistry();
+    const user = editable();
+    const role = editable();
+    reg.register('docs', user.rag, user.editor, {
+      displayName: 'User',
+      scope: 'user',
+      userId: 'alice',
+    });
+    reg.register('docs', role.rag, role.editor, {
+      displayName: 'Role',
+      scope: 'role',
+      roleId: 'team',
+    });
+    const access = testRagAccess([ALICE]);
+    assert.ok(
+      (await access.roles.createRole({ roleId: 'team', name: 'Team' })).ok,
+    );
+    assert.ok((await access.roles.assign('alice', 'team')).ok);
+    const describe = tools(reg, { access })('rag_describe_collection');
+    const result = (await describe.handler({}, { name: 'docs' })) as Answer;
+    assert.equal(result.code, 'RAG_AMBIGUOUS_COLLECTION');
+    assert.match(result.error ?? '', /AmbiguousCollectionError/);
+    assert.equal(
+      (
+        (await describe.handler(
+          {},
+          { name: 'docs', scope: 'role', roleId: 'other' },
+        )) as Answer
+      ).ok,
+      true,
+    );
+    assert.ok((await access.roles.revoke('alice', 'team')).ok);
+    const after = (await describe.handler({}, { name: 'docs' })) as Answer;
+    assert.equal(after.ok, true);
+    assert.equal(after.meta?.scope, 'user');
+    assert.equal(
+      (
+        (await describe.handler(
+          {},
+          { name: 'docs', scope: 'role', roleId: 'team' },
+        )) as Answer
+      ).ok,
+      false,
+    );
+  });
+
+  it('A sessionId, userId or roleId passed in tool args never changes the owner used', async () => {
+    const { reg, providers } = world();
+    const out = (await tools(reg)('rag_add').handler(
+      {},
+      {
+        collection: 'docs',
+        scope: 'session',
+        text: 'own',
+        canonicalKey: 'key',
+        sessionId: 'other',
+        userId: 'bob',
+        roleId: 'other',
+      },
+    )) as Answer;
+    assert.equal(out.ok, true);
+    assert.ok(out.id);
+    const stored = await reg.get('docs', 'session')?.getById(out.id);
+    assert.ok(stored?.ok && stored.value);
+    const created = (await tools(reg, { providerRegistry: providers })(
+      'rag_create_collection',
+    ).handler(
+      {},
+      {
+        provider: 'mem',
+        name: 'own',
+        scope: 'session',
+        sessionId: 'other',
+        userId: 'bob',
+        roleId: 'other',
+      },
+    )) as Answer;
+    assert.equal(created.meta?.sessionId, 'S');
+    const role = (await tools(reg, { providerRegistry: providers })(
+      'rag_create_collection',
+    ).handler(
+      {},
+      { provider: 'mem', name: 'stolen', scope: 'role', roleId: 'other' },
+    )) as Answer;
+    assert.equal(role.ok, false);
+    assert.equal(reg.get('stolen', 'role'), undefined);
+  });
+
+  it('A global rag_add by a non-admin is refused; by an admin it succeeds', async () => {
+    const { reg } = world();
+    const args = { collection: 'open', text: 'global', canonicalKey: 'key' };
+    const denied = (await tools(reg)('rag_add').handler({}, args)) as Answer;
+    assert.equal(denied.code, 'RAG_ACCESS_DENIED');
+    const allowed = (await tools(reg, { caller: { ...ALICE, isAdmin: true } })(
+      'rag_add',
+    ).handler({}, args)) as Answer;
+    assert.equal(allowed.ok, true);
+    assert.ok(allowed.id);
+    const hit = await reg.get('open', 'global')?.getById(allowed.id);
+    assert.ok(hit?.ok && hit.value);
+    const access = testRagAccess([ALICE]);
+    access.decision.canWrite = async () => false;
+    const adminDenied = (await tools(reg, {
+      caller: { ...ALICE, isAdmin: true },
+      access,
+    })('rag_add').handler({}, args)) as Answer;
+    assert.equal(adminDenied.code, 'RAG_ACCESS_DENIED');
+  });
+
+  it('admin creation and deletion of globals still require the decision', async () => {
+    const { reg, providers } = world();
+    providers.registerProvider(
+      new InMemoryRagProvider({
+        name: 'global-mem',
+        supportedScopes: ['global'],
+      }),
+    );
+    const access = testRagAccess([ALICE]);
+    const entries = tools(reg, {
+      caller: { ...ALICE, isAdmin: true },
+      access,
+      providerRegistry: providers,
+    });
+    access.decision.canWrite = async () => false;
+    const args = { provider: 'global-mem', name: 'created', scope: 'global' };
+    assert.equal(
+      ((await entries('rag_create_collection').handler({}, args)) as Answer).ok,
+      false,
+    );
+    assert.equal(reg.get('created', 'global'), undefined);
+    access.decision.canWrite = async () => true;
+    assert.equal(
+      ((await entries('rag_create_collection').handler({}, args)) as Answer).ok,
+      true,
+    );
+    assert.equal(
+      (
+        (await entries('rag_delete_collection').handler(
+          {},
+          { name: 'created' },
+        )) as Answer
+      ).ok,
+      true,
+    );
+    assert.equal(reg.get('created', 'global'), undefined);
+  });
+});
+
+it('role creation requires an admin, assignment and server permission', async () => {
+  const { reg, providers } = world();
+  const provider = new InMemoryRagProvider({
+    name: 'role-mem',
+    supportedScopes: ['role'],
+  });
+  providers.registerProvider(provider);
+  const access = {
+    ...testRagAccess([ALICE]),
+    roles: provider.roles,
+    bindings: provider.bindings,
+  };
+  await access.bindings.bind(ALICE.sessionId, ALICE.userId);
+  assert.ok(
+    (await access.roles.createRole({ roleId: 'team', name: 'Team' })).ok,
+  );
+  assert.ok((await access.roles.assign('alice', 'team')).ok);
+  const args = {
+    provider: 'role-mem',
+    name: 'team-docs',
+    scope: 'role',
+    roleId: 'team',
+  };
+  const denied = (await tools(reg, { access, providerRegistry: providers })(
+    'rag_create_collection',
+  ).handler({}, args)) as Answer;
+  assert.equal(denied.code, 'RAG_ACCESS_DENIED');
+  assert.equal(reg.get('team-docs', 'role'), undefined);
+  const allowed = (await tools(reg, {
+    caller: { ...ALICE, isAdmin: true },
+    access,
+    providerRegistry: providers,
+  })('rag_create_collection').handler({}, args)) as Answer;
+  assert.equal(allowed.ok, true);
+});
+
+describe('owner-exact role mutations regression', () => {
+  async function setup() {
+    const reg = new SimpleRagRegistry();
+    const providers = new SimpleRagProviderRegistry();
+    reg.setProviderRegistry(providers);
+    const a = editable();
+    const b = editable();
+    for (const [roleId, store] of [
+      ['A', a],
+      ['B', b],
+    ] as const) {
+      providers.registerProvider({
+        name: roleId,
+        kind: 'vector',
+        editable: true,
+        supportedScopes: ['role'],
+        createCollection: async () => ({ ok: true, value: store }),
+        deleteCollection: async () => {
+          const writer = store.rag.writer();
+          assert.ok(writer.clearAll);
+          return writer.clearAll();
+        },
+      });
+      reg.register('docs', store.rag, store.editor, {
+        displayName: 'docs',
+        scope: 'role',
+        roleId,
+        providerName: roleId,
+      });
+      await store.editor.upsert('original', {
+        id: 'original',
+        canonicalKey: 'original',
+      });
+    }
+    const access = testRagAccess([ALICE]);
+    assert.ok((await access.roles.createRole({ roleId: 'A', name: 'A' })).ok);
+    assert.ok((await access.roles.assign('alice', 'A')).ok);
+    return { reg, a, b, tool: tools(reg, { access }) };
+  }
+
+  for (const operation of ['rag_add', 'rag_correct', 'rag_deprecate']) {
+    it(`${operation} writes only to the authorized role with a duplicate name`, async () => {
+      const { a, b, tool } = await setup();
+      const beforeA = await a.rag.list();
+      const beforeB = await b.rag.list();
+      const out = (await tool(operation).handler(
+        {},
+        {
+          collection: 'docs',
+          scope: 'role',
+          text: 'added',
+          canonicalKey: 'original',
+          predecessorId: 'original',
+          predecessorCanonicalKey: 'original',
+          newText: 'corrected',
+          id: 'original',
+          reason: 'test',
+        },
+      )) as Answer;
+      assert.equal(out.ok, true);
+      assert.notDeepEqual(await a.rag.list(), beforeA);
+      assert.deepEqual(await b.rag.list(), beforeB);
+    });
+  }
+
+  it('deletes only the authorized role collection without warning', async () => {
+    const { reg, a, b, tool } = await setup();
+    const beforeB = await b.rag.list();
+    const out = (await tool('rag_delete_collection').handler(
+      {},
+      { name: 'docs', scope: 'role' },
+    )) as Answer;
+    assert.deepEqual(out, { ok: true });
+    assert.deepEqual(
+      reg.list().map((meta) => meta.roleId),
+      ['B'],
+    );
+    const remainingA = await a.rag.list();
+    assert.ok(remainingA.ok);
+    assert.equal(remainingA.value.records.length, 0);
+    assert.deepEqual(await b.rag.list(), beforeB);
+  });
+
+  for (const error of [
+    new AmbiguousCollectionError('docs', ['role']),
+    new RagError('unexpected', 'UNEXPECTED'),
+  ]) {
+    it(`delete refuses ${error.name} instead of claiming removal`, async () => {
+      class RefusingRegistry extends SimpleRagRegistry {
+        override async deleteCollection() {
+          return { ok: false as const, error };
+        }
+      }
+      const reg = new RefusingRegistry();
+      const store = editable();
+      reg.register('docs', store.rag, store.editor, {
+        displayName: 'docs',
+        scope: 'session',
+        sessionId: 'S',
+      });
+      const out = (await tools(reg)('rag_delete_collection').handler(
+        {},
+        { name: 'docs' },
+      )) as Answer;
+      assert.equal(out.ok, false);
+      assert.equal(out.code, error.code);
+      assert.equal(out.error, error.message);
+      assert.equal(out.warning, undefined);
+      assert.equal(reg.list().length, 1);
+    });
+  }
+});
+
+describe('owner-exact registry addressing regression', () => {
+  it('narrows every name-addressed method and preserves ownerless ambiguity', async () => {
+    const reg = new SimpleRagRegistry();
+    const a = new InMemoryRag();
+    const b = new InMemoryRag();
+    const editorA = new DirectEditStrategy(
+      a.writer(),
+      new GlobalUniqueIdStrategy(),
+    );
+    const editorB = new DirectEditStrategy(
+      b.writer(),
+      new GlobalUniqueIdStrategy(),
+    );
+    const ownerA = { scope: 'role', roleId: 'A' } as const;
+    const ownerB = { scope: 'role', roleId: 'B' } as const;
+    reg.register('docs', a, editorA, { displayName: 'docs', ...ownerA });
+    reg.register('docs', b, editorB, { displayName: 'docs', ...ownerB });
+    assert.throws(() => reg.get('docs', 'role'), AmbiguousCollectionError);
+    assert.throws(
+      () => reg.getEditor('docs', 'role'),
+      AmbiguousCollectionError,
+    );
+    assert.throws(
+      () => reg.unregister('docs', 'role'),
+      AmbiguousCollectionError,
+    );
+    assert.throws(
+      () => reg.replaceRag('docs', 'role', a),
+      AmbiguousCollectionError,
+    );
+    const refused = await reg.deleteCollection('docs', 'role');
+    assert.ok(!refused.ok && refused.error instanceof AmbiguousCollectionError);
+    assert.equal(reg.get('docs', 'role', ownerA), a);
+    assert.ok(reg.getEditor('docs', 'role', ownerB));
+    assert.notEqual(reg.getEditor('docs', 'role', ownerB), editorB);
+    assert.equal(
+      reg.get('docs', 'role', { scope: 'role', roleId: 'absent' }),
+      undefined,
+    );
+    assert.equal(reg.get('docs', 'user', ownerA), undefined);
+    const replacement = new InMemoryRag();
+    assert.equal(reg.replaceRag('docs', 'role', replacement, ownerA), true);
+    assert.equal(reg.get('docs', 'role', ownerA), replacement);
+    assert.equal(reg.get('docs', 'role', ownerB), b);
+    assert.ok((await reg.deleteCollection('docs', 'role', ownerA)).ok);
+    assert.equal(reg.get('docs', 'role', ownerA), undefined);
+    assert.equal(reg.get('docs', 'role'), b);
+    assert.equal(reg.unregister('docs', 'role', ownerA), false);
+    assert.equal(reg.unregister('docs', 'role', ownerB), true);
   });
 });

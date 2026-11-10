@@ -1,9 +1,11 @@
+export { createPgVectorRagAccessStores } from './access-stores.js';
 export { createCatalogTableSql, DEFAULT_CATALOG_TABLE } from './catalog.js';
 export {
   INVALID_CONFIG,
   INVALID_VECTOR,
   SHARED_LAYOUT_NOT_DEPLOYED,
 } from './error-codes.js';
+export { migratePgVectorRagAccess } from './migrate-access.js';
 export type { PgVectorRagConfig } from './pg-vector-rag.js';
 export { createPgClient, PgVectorRag } from './pg-vector-rag.js';
 export type { PgVectorRagProviderConfig } from './pg-vector-rag-provider.js';

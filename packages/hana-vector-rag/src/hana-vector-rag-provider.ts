@@ -19,11 +19,14 @@ import {
   describeRagCatalogRows,
   OrphanStoreError,
   RagError,
+  type RagMetadata,
   ragCollectionNotFound,
+  tagRagMetadata,
   validateRagCatalogPatch,
   validateRagOwner,
   validateRagStoreName,
 } from '@mcp-abap-adt/llm-agent';
+import { createHanaVectorRagAccessStores } from './access-stores.js';
 import {
   createCatalogTableSql,
   DEFAULT_CATALOG_TABLE,
@@ -51,6 +54,7 @@ import {
   assertCollectionName,
   createTableSql,
   dropTableSql,
+  quoteIdent,
 } from './schema.js';
 import { SHARED_CATALOG_TABLE, SHARED_DOCUMENTS_TABLE } from './shared-ddl.js';
 import { SharedProviderOps } from './shared-provider-ops.js';
@@ -170,7 +174,12 @@ export class HanaVectorRagProvider
     this.documentsTable = cfg.documentsTable ?? SHARED_DOCUMENTS_TABLE;
     this.autoCreateSchema = cfg.autoCreateSchema ?? !shared;
     this.editable = cfg.editable ?? true;
-    this.supportedScopes = cfg.supportedScopes ?? ['session', 'user', 'global'];
+    this.supportedScopes = cfg.supportedScopes ?? [
+      'session',
+      'user',
+      'role',
+      'global',
+    ];
     this.clientFactory = cfg.clientFactory;
     this.catalogTable =
       cfg.catalogTable ??
@@ -256,12 +265,36 @@ export class HanaVectorRagProvider
   > {
     try {
       const client = await this.adminClient();
-      if (this.shared) return await this.shared.describe(client, decodeRow);
-      if (!(await this.tableExists(client, this.catalogTable))) {
-        return { ok: true, value: { records: [], rejected: [] } };
+      const description = this.shared
+        ? await this.shared.describe(client, decodeRow)
+        : {
+            ok: true as const,
+            value: (await this.tableExists(client, this.catalogTable))
+              ? describeRagCatalogRows(
+                  (await client.query(selectRecordsSql(this.catalogTable))).map(
+                    decodeRow,
+                  ),
+                )
+              : { records: [], rejected: [] },
+          };
+      if (!description.ok) return description;
+      const records: RagCollectionRecord[] = [];
+      const rejected = [...description.value.rejected];
+      if (!description.value.records.some((record) => record.scope === 'role'))
+        return description;
+      const roles =
+        await createHanaVectorRagAccessStores(this).roles.listRoles();
+      if (!roles.ok) return roles;
+      const activeRoles = new Set(roles.value.map((role) => role.roleId));
+      for (const record of description.value.records) {
+        if (record.scope === 'role' && !activeRoles.has(record.roleId)) {
+          rejected.push({
+            storeName: record.storeName,
+            reason: 'Role is missing or tombstoned',
+          });
+        } else records.push(record);
       }
-      const rows = await client.query(selectRecordsSql(this.catalogTable));
-      return { ok: true, value: describeRagCatalogRows(rows.map(decodeRow)) };
+      return { ok: true, value: { records, rejected } };
     } catch (err) {
       return { ok: false, error: new RagError(String(err), 'RAG_LIST_ERROR') };
     }
@@ -363,7 +396,15 @@ export class HanaVectorRagProvider
         ok: true,
         value: rows
           .map((r) => String(r.TABLE_NAME))
-          .filter((t) => t !== this.catalogTable),
+          .filter(
+            (t) =>
+              ![
+                this.catalogTable,
+                'rag_roles',
+                'rag_role_assignments',
+                'rag_session_bindings',
+              ].includes(t),
+          ),
       };
     } catch (err) {
       return { ok: false, error: new RagError(String(err), 'RAG_LIST_ERROR') };
@@ -454,7 +495,15 @@ export class HanaVectorRagProvider
   }
 
   private refuseCatalogName(name: string): Refusal | undefined {
-    if (name !== this.catalogTable) return undefined;
+    if (
+      ![
+        this.catalogTable,
+        'rag_roles',
+        'rag_role_assignments',
+        'rag_session_bindings',
+      ].includes(name)
+    )
+      return undefined;
     return {
       ok: false,
       error: new RagError(
@@ -466,6 +515,62 @@ export class HanaVectorRagProvider
 
   private dimension(): number {
     return this.connection.dimension ?? this.defaultDimension;
+  }
+
+  /** Persistence shares the catalog connection and its configured current schema. */
+  async migrateRecordOwners(): Promise<
+    { storeName: string; reason: string }[]
+  > {
+    const client = await this.adminClient();
+    const catalog = await client.query(selectRecordsSql(this.catalogTable));
+    const tables =
+      this.layout === 'shared'
+        ? [this.documentsTable]
+        : catalog.flatMap((row) =>
+            typeof row.storeName === 'string' ? [row.storeName] : [],
+          );
+    const reported: { storeName: string; reason: string }[] = [];
+    for (const name of tables) {
+      const exists = await client.query(
+        tableExistsSql(Boolean(this.connection.schema)),
+        this.connection.schema ? [this.connection.schema, name] : [name],
+      );
+      if (Number(exists[0]?.n ?? 0) === 0) continue;
+      const rows = await client.query(
+        `SELECT "ID" AS "id", "METADATA" AS "metadata"${this.layout === 'shared' ? ', "COLLECTION" AS "collection"' : ''} FROM ${quoteIdent(name)}`,
+      );
+      for (const row of rows) {
+        const metadata = JSON.parse(decodeLob(row.metadata)) as RagMetadata;
+        const tagged = tagRagMetadata(metadata);
+        const storeName =
+          this.layout === 'shared' ? String(row.collection) : name;
+        if (tagged.ownerScope === 'invalid')
+          reported.push({
+            storeName,
+            reason: `Conflicting owner keys on record ${row.id}`,
+          });
+        if (metadata.ownerScope === tagged.ownerScope) continue;
+        await client.exec(
+          `UPDATE ${quoteIdent(name)} SET "METADATA" = ? WHERE "ID" = ?${this.layout === 'shared' ? ' AND "COLLECTION" = ?' : ''}`,
+          this.layout === 'shared'
+            ? [JSON.stringify(tagged), row.id, row.collection]
+            : [JSON.stringify(tagged), row.id],
+        );
+      }
+    }
+    return reported;
+  }
+
+  async accessPersistence(): Promise<{
+    client: HanaClient;
+    catalogTable: string;
+    schema?: string;
+  }> {
+    return {
+      client: await this.adminClient(),
+      catalogTable: this.catalogTable,
+      schema: this.connection.schema,
+    };
   }
 
   private async adminClient(): Promise<HanaClient> {

@@ -6,6 +6,7 @@ import type {
   Message,
   PlannerRequestRecord,
 } from '@mcp-abap-adt/llm-agent';
+import { testCallOptions } from '../../../testing/index.js';
 import { DialogueSession } from '../dialogue-session.js';
 import { InMemoryDialogueStateStore } from '../in-memory-dialogue-state-store.js';
 import {
@@ -128,6 +129,9 @@ for (const status of ['absent', 'done', 'active', 'waiting_user'] as const) {
   test(`synchronous sends apply automatic boundary at consumption: ${status}`, async () => {
     const inputs: Message[][] = [];
     const session = await DialogueSession.open({
+      caller: testCallOptions({
+        caller: { sessionId: status, userId: 'test-user', isAdmin: false },
+      }).caller,
       id: status,
       maxCorrections: 0,
       board: { workers: new Map() },
@@ -181,6 +185,9 @@ for (const status of ['absent', 'done', 'active', 'waiting_user'] as const) {
 
 test('a planless answer followed by a new input opens a new request', async () => {
   const session = await DialogueSession.open({
+    caller: testCallOptions({
+      caller: { sessionId: 'planless', userId: 'test-user', isAdmin: false },
+    }).caller,
     id: 'planless',
     board: { workers: new Map() },
     planner: {
@@ -207,6 +214,9 @@ test('a planless answer followed by a new input opens a new request', async () =
 test('a failed latest turn keeps retries in the same request even after earlier success', async () => {
   let calls = 0;
   const session = await DialogueSession.open({
+    caller: testCallOptions({
+      caller: { sessionId: 'retry', userId: 'test-user', isAdmin: false },
+    }).caller,
     id: 'retry',
     board: { workers: new Map() },
     planner: {
@@ -237,6 +247,9 @@ test('a failed latest turn keeps retries in the same request even after earlier 
 test('corrective calls rebuild context containing intermediate replies, actions and checks', async () => {
   const inputs: Message[][] = [];
   const session = await DialogueSession.open({
+    caller: testCallOptions({
+      caller: { sessionId: 'correct', userId: 'test-user', isAdmin: false },
+    }).caller,
     id: 'correct',
     board: { workers: new Map() },
     planner: {
@@ -277,6 +290,7 @@ test('legacy restore opens one bounded legacy request; next done-plan input star
   const store = new InMemoryDialogueStateStore();
   await store.save('restore', state({ version: 1, steps: [], status: 'done' }));
   const options = {
+    caller: { sessionId: 'restore', userId: 'test-user', isAdmin: false },
     id: 'restore',
     store,
     board: { workers: new Map() },
@@ -302,6 +316,13 @@ test('legacy restore opens one bounded legacy request; next done-plan input star
 
 test('conversation mode uses raw merged history and bypasses custom builder', async () => {
   const session = await DialogueSession.open({
+    caller: testCallOptions({
+      caller: {
+        sessionId: 'conversation',
+        userId: 'test-user',
+        isAdmin: false,
+      },
+    }).caller,
     id: 'conversation',
     now: () => Date.parse('2026-10-29T15:39:59.999Z'),
     plannerContext: 'conversation',
@@ -339,6 +360,9 @@ test('events join open request and replies are pending before delivery and save'
   let calls = 0;
   let delivered = false;
   const session = await DialogueSession.open({
+    caller: testCallOptions({
+      caller: { sessionId: 'events', userId: 'test-user', isAdmin: false },
+    }).caller,
     id: 'events',
     store,
     onMessage(message) {
@@ -401,6 +425,9 @@ test('input enqueued in flight cannot change the owning request of the current r
   });
   let calls = 0;
   const session = await DialogueSession.open({
+    caller: testCallOptions({
+      caller: { sessionId: 'in-flight', userId: 'test-user', isAdmin: false },
+    }).caller,
     id: 'in-flight',
     board: { workers: new Map() },
     planner: {
@@ -447,6 +474,13 @@ test('task outcomes update request counters before a busy planner turn finishes;
   });
   let calls = 0;
   const session = await DialogueSession.open({
+    caller: testCallOptions({
+      caller: {
+        sessionId: 'queued-event',
+        userId: 'test-user',
+        isAdmin: false,
+      },
+    }).caller,
     id: 'queued-event',
     maxCorrections: 0,
     board: {
@@ -515,6 +549,13 @@ test('suppressed event replies stay out of pending delivery', async () => {
   });
   let calls = 0;
   const session = await DialogueSession.open({
+    caller: testCallOptions({
+      caller: {
+        sessionId: 'silent-event',
+        userId: 'test-user',
+        isAdmin: false,
+      },
+    }).caller,
     id: 'silent-event',
     board: {
       workers: new Map([
@@ -559,6 +600,9 @@ test('new_request discards the old call, rebuilds retrieval, and keeps only the 
   let searches = 0;
   const partials: string[] = [];
   const session = await DialogueSession.open({
+    caller: testCallOptions({
+      caller: { sessionId: 'boundary', userId: 'test-user', isAdmin: false },
+    }).caller,
     id: 'boundary',
     store,
     maxCorrections: 0,
@@ -640,6 +684,9 @@ for (const prior of [
       }),
     );
     const session = await DialogueSession.open({
+      caller: testCallOptions({
+        caller: { sessionId: prior, userId: 'test-user', isAdmin: false },
+      }).caller,
       id: prior,
       store,
       maxCorrections: 0,
@@ -674,6 +721,9 @@ for (const order of [
   test(`mixed round executes only new_request with dispatch order ${order.join(', ')}`, async () => {
     let calls = 0;
     const session = await DialogueSession.open({
+      caller: testCallOptions({
+        caller: { sessionId: 'mixed', userId: 'test-user', isAdmin: false },
+      }).caller,
       id: 'mixed',
       maxCorrections: 0,
       board: { workers: new Map() },
@@ -741,6 +791,9 @@ test('old tasks survive the boundary, wait normally, label events, and preserve 
   const contexts: string[] = [];
   let calls = 0;
   const session = await DialogueSession.open({
+    caller: testCallOptions({
+      caller: { sessionId: 'old-tasks', userId: 'test-user', isAdmin: false },
+    }).caller,
     id: 'old-tasks',
     maxCorrections: 0,
     waitTickMs: 0,
@@ -808,6 +861,13 @@ test('old tasks survive the boundary, wait normally, label events, and preserve 
     const store = new InMemoryDialogueStateStore();
     await store.save('restored-owner', after);
     const restored = await DialogueSession.open({
+      caller: testCallOptions({
+        caller: {
+          sessionId: 'restored-owner',
+          userId: 'test-user',
+          isAdmin: false,
+        },
+      }).caller,
       id: 'restored-owner',
       store,
       board: { workers: new Map() },
@@ -828,6 +888,13 @@ test('old tasks survive the boundary, wait normally, label events, and preserve 
 test('a corrective call cannot start a new request', async () => {
   let calls = 0;
   const session = await DialogueSession.open({
+    caller: testCallOptions({
+      caller: {
+        sessionId: 'correction-boundary',
+        userId: 'test-user',
+        isAdmin: false,
+      },
+    }).caller,
     id: 'correction-boundary',
     maxCorrections: 1,
     board: { workers: new Map() },
@@ -875,6 +942,13 @@ test('new_request closes a failed plan and permits replacement without consent',
   );
   let calls = 0;
   const session = await DialogueSession.open({
+    caller: testCallOptions({
+      caller: {
+        sessionId: 'failed-boundary',
+        userId: 'test-user',
+        isAdmin: false,
+      },
+    }).caller,
     id: 'failed-boundary',
     store,
     maxCorrections: 0,
@@ -908,6 +982,9 @@ test('new_request closes a failed plan and permits replacement without consent',
 for (const placement of ['second-call', 'second-round'] as const) {
   test(`round guard rejects new_request as ${placement} before handlers execute`, async () => {
     const session = await DialogueSession.open({
+      caller: testCallOptions({
+        caller: { sessionId: placement, userId: 'test-user', isAdmin: false },
+      }).caller,
       id: placement,
       maxCorrections: 0,
       board: { workers: new Map() },
@@ -1033,6 +1110,13 @@ test('restart restores delivered-answer references, complete history and bounded
   ];
   await store.save('lean-restart', saved);
   const session = await DialogueSession.open({
+    caller: testCallOptions({
+      caller: {
+        sessionId: 'lean-restart',
+        userId: 'test-user',
+        isAdmin: false,
+      },
+    }).caller,
     id: 'lean-restart',
     store,
     board: { workers: new Map() },
@@ -1139,6 +1223,13 @@ for (const restart of [false, true]) {
       checked = true;
     };
     const session = await DialogueSession.open({
+      caller: testCallOptions({
+        caller: {
+          sessionId: 'delivery-note',
+          userId: 'test-user',
+          isAdmin: false,
+        },
+      }).caller,
       id: 'delivery-note',
       store,
       maxCorrections: 0,
@@ -1192,6 +1283,13 @@ for (const restart of [false, true]) {
     assert.ok(persisted);
     await store.save('delivery-note', persisted);
     const restored = await DialogueSession.open({
+      caller: testCallOptions({
+        caller: {
+          sessionId: 'delivery-note',
+          userId: 'test-user',
+          isAdmin: false,
+        },
+      }).caller,
       id: 'delivery-note',
       store,
       maxCorrections: 0,
@@ -1250,6 +1348,11 @@ for (const label of ['actions', 'task events']) {
     saved.taskSteps = { broken: 'removed' };
     await store.save('removed-failure', saved);
     const options = {
+      caller: {
+        sessionId: 'removed-failure',
+        userId: 'test-user',
+        isAdmin: false,
+      },
       id: 'removed-failure',
       store,
       maxCorrections: 0,
@@ -1351,6 +1454,9 @@ for (const removed of [false, true]) {
     await store.save('resolved', saved);
     let resolveFailure = false;
     const session = await DialogueSession.open({
+      caller: testCallOptions({
+        caller: { sessionId: 'resolved', userId: 'test-user', isAdmin: false },
+      }).caller,
       id: 'resolved',
       store,
       maxCorrections: 0,

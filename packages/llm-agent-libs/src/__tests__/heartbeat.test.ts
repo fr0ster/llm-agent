@@ -14,7 +14,7 @@ import type {
   ToolHeartbeat,
 } from '@mcp-abap-adt/llm-agent';
 import { SmartAgent } from '../agent.js';
-import { makeDefaultDeps } from '../testing/index.js';
+import { makeDefaultDeps, testCallOptions } from '../testing/index.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -110,7 +110,7 @@ async function collectStream(agent: SmartAgent, message: string) {
   let timing: TimingEntry[] | undefined;
   const contentParts: string[] = [];
 
-  for await (const chunk of agent.streamProcess(message)) {
+  for await (const chunk of agent.streamProcess(message, testCallOptions())) {
     if (!chunk.ok) continue;
     if (chunk.value.heartbeat) {
       heartbeats.push(chunk.value.heartbeat);

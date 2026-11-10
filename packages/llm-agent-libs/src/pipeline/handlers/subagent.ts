@@ -63,9 +63,17 @@ export class SubAgentHandler implements IStageHandler {
     );
 
     const signal = ctx.options?.signal;
+    if (!ctx.options?.caller) {
+      ctx.error = new OrchestratorError(
+        'Caller is required',
+        'RAG_ACCESS_DENIED',
+      );
+      return false;
+    }
     let result: ISubAgentResult;
     try {
       result = await sub.run({
+        caller: ctx.options.caller,
         task,
         usage: ctx.options?.usage,
         sessionId: ctx.sessionId,

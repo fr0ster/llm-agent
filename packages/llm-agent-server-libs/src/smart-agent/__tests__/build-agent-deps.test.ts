@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { buildAgent, SmartServer } from '../smart-server.js';
+import { testCallOptions } from '../../../../llm-agent-libs/src/testing/index.js';
 import { constructionSeams } from './construction-seams.js';
+import {
+  testBuildAgent as buildAgent,
+  TestSmartServer as SmartServer,
+} from './rag-identity-fixture.js';
 
 test('SmartServer accepts BuildAgentDeps and uses the injected makeLlm', async () => {
   let llmCalls = 0;
@@ -62,7 +66,7 @@ test('buildAgent returns the controller pipeline agent (coordinator is exercised
     },
   );
   assert.equal(typeof agent.process, 'function');
-  await agent.process('do a task');
+  await agent.process('do a task', testCallOptions());
   assert.equal(
     plannerSawPlanPrompt,
     true,

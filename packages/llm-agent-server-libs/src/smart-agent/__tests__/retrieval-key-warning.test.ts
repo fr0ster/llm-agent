@@ -4,12 +4,9 @@ import { emptyLoadedPlugins } from '@mcp-abap-adt/llm-agent-libs';
 import { parse } from 'yaml';
 import { resolveSmartServerConfig } from '../config.js';
 import { unknownRetrievalKeyWarnings } from '../resolve-retrieval.js';
-import {
-  type BuildAgentDeps,
-  SmartServer,
-  type SmartServerConfig,
-} from '../smart-server.js';
+import type { BuildAgentDeps, SmartServerConfig } from '../smart-server.js';
 import { constructionSeams } from './construction-seams.js';
+import { TestSmartServer as SmartServer } from './rag-identity-fixture.js';
 
 const YAML = `
 llm:

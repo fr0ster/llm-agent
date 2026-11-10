@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { SmartAgent } from '../agent.js';
-import { makeDefaultDeps, makeLlm } from '../testing/index.js';
+import { makeDefaultDeps, makeLlm, testCallOptions } from '../testing/index.js';
 
 describe('SmartAgent.reconfigure', () => {
   it('replaces mainLlm for subsequent calls', async () => {
@@ -11,7 +11,7 @@ describe('SmartAgent.reconfigure', () => {
     const newLlm = makeLlm([{ content: 'new-main-response' }]);
     agent.reconfigure({ mainLlm: newLlm });
 
-    const result = await agent.process('hello');
+    const result = await agent.process('hello', testCallOptions());
     assert.ok(result.ok);
     assert.equal(result.value.content, 'new-main-response');
   });
@@ -43,7 +43,7 @@ describe('SmartAgent.reconfigure', () => {
     agent.reconfigure({ classifierLlm });
 
     // Process should use the new classifier — no error means it worked
-    const result = await agent.process('test input');
+    const result = await agent.process('test input', testCallOptions());
     assert.ok(result.ok);
   });
 

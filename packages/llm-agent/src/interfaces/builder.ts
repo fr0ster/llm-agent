@@ -10,7 +10,7 @@ import type { ILlm } from './llm.js';
 import type { IMcpClient } from './mcp-client.js';
 import type { McpClientDescriptor } from './mcp-connection-strategy.js';
 import type { IModelProvider } from './model-provider.js';
-import type { IRag, IRagRegistry } from './rag.js';
+import type { IRag, IRagRegistry, RagCollectionOwner } from './rag.js';
 import type { IRequestLogger } from './request-logger.js';
 import type { LlmStreamChunk, LlmTool, Result } from './types.js';
 
@@ -40,7 +40,18 @@ export interface ISmartAgent {
 // ---------------------------------------------------------------------------
 
 /** Type alias for the RAG store map passed to SmartAgent. */
-export type SmartAgentRagStores<K extends string = string> = Record<K, IRag>;
+export type SmartAgentRagStores<K extends string = string> = Record<
+  K,
+  {
+    readonly name: string;
+    readonly owner:
+      | RagCollectionOwner
+      | { readonly scope: 'internal' }
+      // Built-in history resolves its session exclusively from options.caller.
+      | { readonly scope: 'session'; readonly perRequest: true };
+    readonly rag: IRag;
+  }
+>;
 
 // ---------------------------------------------------------------------------
 // SmartAgentHandle

@@ -2,8 +2,9 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { IEmbedder, ILlm, IPipelinePlugin } from '@mcp-abap-adt/llm-agent';
 import { emptyLoadedPlugins } from '@mcp-abap-adt/llm-agent-libs';
-import { buildAgent, type SmartServerConfig } from '../smart-server.js';
+import type { SmartServerConfig } from '../smart-server.js';
 import { constructionSeams } from './construction-seams.js';
+import { testBuildAgent as buildAgent } from './rag-identity-fixture.js';
 
 const cannedLlm = {
   chat: async () => ({ ok: true, value: { content: 'ok', toolCalls: [] } }),

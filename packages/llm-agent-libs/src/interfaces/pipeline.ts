@@ -1,3 +1,5 @@
+import type { RagAccess } from '@mcp-abap-adt/llm-agent';
+import type { OwnedRagStore } from '../rag/owner-bound-query.js';
 /**
  * IPipeline interface and supporting types.
  *
@@ -122,7 +124,8 @@ export interface PipelineDeps {
   /** RAG store used for history retrieval. */
   historyRag?: IRag;
   /** Full record of RAG stores (tools, history, and any custom stores). */
-  ragStores?: Record<string, IRag>;
+  ragAccess?: RagAccess;
+  ragStores?: Record<string, OwnedRagStore>;
   /**
    * Explicit per-store retrieval strategies, keyed like `ragStores`
    * (`SmartAgentBuilder.withRetrievalStrategy`). The `tools`/`history` entries

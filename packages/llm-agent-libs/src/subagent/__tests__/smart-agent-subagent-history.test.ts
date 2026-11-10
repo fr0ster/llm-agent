@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { Message } from '@mcp-abap-adt/llm-agent';
 import type { SmartAgent } from '../../agent.js';
+import { testCallOptions } from '../../testing/index.js';
 import { SmartAgentSubAgent } from '../smart-agent-subagent.js';
 
 for (const history of [
@@ -21,6 +22,7 @@ for (const history of [
       },
     } as unknown as SmartAgent;
     await new SmartAgentSubAgent('worker', agent).run({
+      caller: testCallOptions({ sessionId: 'test-session' }).caller,
       task: 'request',
       context: 'context',
       history,

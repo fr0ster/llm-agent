@@ -143,3 +143,26 @@ Versions up to and including v20.9.5 were MIT and v21.0.0 was `LGPL-3.0-only`;
 a licence change is not retroactive, so those releases keep the terms they
 shipped under. Full detail:
 [docs/LICENSING.md](https://github.com/fr0ster/llm-agent/blob/main/docs/LICENSING.md).
+
+
+### Caller identity and local CLI mode
+
+SmartServer requires a trusted `callerResolver` and `ragAccess`. Missing either
+raises `ServerConfigError` before startup. Production integrations supply both
+programmatically through `@mcp-abap-adt/llm-agent-server-libs`; the resolver
+identifies the user and administrator status, while the library reads its own
+role assignments and persists the session-to-user binding in the configured
+access stores. Use access stores from the same persistence as the catalog.
+
+The standalone CLI has an explicit single-user local opt-in:
+
+```sh
+llm-agent --config smart-server.yaml --local-user-id alice
+```
+
+`--local-user-id` requires a non-empty explicit user ID. It installs
+`fixedCallerResolver({ userId, isAdmin: false })` and `testRagAccess()` from
+`@mcp-abap-adt/llm-agent/testing/rag-access-testing`. All requests use that user;
+read/write decisions allow access subject to library ownership checks, with
+in-memory roles and bindings. This mode is **not for production**. Omitting the
+flag refuses startup; request headers never select a fallback identity.

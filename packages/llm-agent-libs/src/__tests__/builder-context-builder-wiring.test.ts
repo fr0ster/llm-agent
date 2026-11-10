@@ -34,6 +34,8 @@ import type {
   Result,
 } from '@mcp-abap-adt/llm-agent';
 import { symmetricEmbedder } from '@mcp-abap-adt/llm-agent';
+import { testRagAccess } from '@mcp-abap-adt/llm-agent/testing/rag-access-testing';
+import { unwrapBuilderResult } from '../builder-types.js';
 import type { DefaultSubAgentContextBuilderConfig } from '../subagent/default-context-builder.js';
 
 function stubLlm(): ILlm {
@@ -96,6 +98,7 @@ describe('SmartAgentBuilder — auto-toolsRag → subagent context-builder wirin
       mcp: { type: 'http', url: 'http://127.0.0.1:1/mcp/stream/http' },
       skipModelValidation: true,
     })
+      .withRagAccess(testRagAccess())
       .withMainLlm(stubLlm())
       .withEmbedder(symmetricEmbedder(stubEmbedder()))
       .withSubAgents(new Map([['leaf', makeConstrainedSubAgent('leaf')]]))
@@ -103,7 +106,8 @@ describe('SmartAgentBuilder — auto-toolsRag → subagent context-builder wirin
       // Intentionally NOT calling setToolsRag()/withToolsRag() — this is
       // the exact scenario the bug failed: caller relies on the
       // auto-created InMemoryRag.
-      .build();
+      .build()
+      .then(unwrapBuilderResult);
 
     try {
       // Walk handle → agent → pipeline → coordinator config → dispatch.
@@ -179,7 +183,9 @@ it('built-in retrieval source forwards usage options through QueryEmbedding to t
       return { ok: true, value: [] };
     },
   } as unknown as IRag;
-  const builder = new SmartAgentBuilder({ skipModelValidation: true });
+  const builder = new SmartAgentBuilder({
+    skipModelValidation: true,
+  }).withRagAccess(testRagAccess());
   const source = (
     builder as unknown as {
       buildRetrievalSource(

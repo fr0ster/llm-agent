@@ -11,6 +11,9 @@ import {
   makeDefaultDeps,
   makeMcpClient,
   makeRag,
+  ownedTestStores,
+  testCallOptions,
+  testRequestAccess,
 } from '../../../testing/index.js';
 import { createMemorySignalBus } from '../memory-signal-bus.js';
 import {
@@ -103,6 +106,8 @@ for (const pipeline of [false, true]) {
       const response = await worker.run({
         task: 'Write a report',
         dialogueTask: task,
+        caller: testCallOptions({ sessionId: 's' }).caller,
+        sessionId: 's',
         externalTools: external ? [submitReportTool] : [],
       });
       assert.equal(task.readFinish(), undefined);
@@ -130,7 +135,10 @@ test('worker without submit_report returns the bounded fallback summary', async 
     'w',
     new SmartAgent(deps, { maxIterations: 2 }),
   );
-  const response = await worker.run({ task: 'Write a report' });
+  const response = await worker.run({
+    caller: { sessionId: 'test-session', userId: 'test-user', isAdmin: false },
+    task: 'Write a report',
+  });
   assert.equal(response.output, output);
   assert.equal(response.summary, output.slice(0, 580) + ' [summary truncated]');
   assert.equal(response.summary.length, 600);
@@ -162,6 +170,8 @@ test('board supplies report kind to the default worker without host tool setup',
     finish = resolve;
   });
   const board = new TaskBoard({
+    caller: testCallOptions({ sessionId: 'test-session' }).caller,
+    baseInput: () => testCallOptions({ sessionId: 'test-session' }),
     signals: createMemorySignalBus(),
     workers: new Map([['w', worker]]),
     onEvent(event) {
@@ -191,8 +201,9 @@ for (const pipeline of [false, true]) {
       return listTools(options);
     };
     const { deps, llm } = makeDefaultDeps({
+      ragAccess: testRequestAccess,
       mcpClients: [host],
-      ragStores: { tools: makeRag() },
+      ragStores: ownedTestStores({ tools: makeRag() }),
       llmResponses: [
         {
           content: '',
@@ -238,6 +249,8 @@ for (const pipeline of [false, true]) {
     const response = await worker.run({
       task: 'Write a report',
       dialogueTask: task,
+      caller: testCallOptions({ sessionId: 's' }).caller,
+      sessionId: 's',
     });
     assert.equal(response.output, 'Report after refresh');
     assert.equal(task.readFinish()?.tool, 'submit_report');
@@ -266,6 +279,8 @@ for (const scenario of [
     };
     const response = await client.callTool('submit_report', args, {
       dialogueTask: task,
+      caller: testCallOptions({ sessionId: 's' }).caller,
+      sessionId: 's',
       dialogueReportText: () =>
         scenario === 'collected' ? 'First\n\nSecond' : '',
     });
@@ -388,6 +403,8 @@ for (const pipeline of [false, true]) {
       const response = await worker.run({
         task: 'Write a report',
         dialogueTask: task,
+        caller: testCallOptions({ sessionId: 's' }).caller,
+        sessionId: 's',
       });
       assert.equal(
         response.output,

@@ -1,17 +1,31 @@
-// One command: use PG_TEST_URL if set, else start PGlite, run run.mjs, stop it.
-// Exit code is run.mjs's.
+// Use PG_TEST_URL if set, otherwise start PGlite; run shared-layout and access tests.
+// Return the first failing suite exit code and stop the managed server.
 import { spawn } from 'node:child_process';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const here = dirname(fileURLToPath(import.meta.url));
-const run = (env) =>
+const runShared = (env) =>
   new Promise((done) =>
     spawn(process.execPath, [resolve(here, 'run.mjs')], {
       stdio: 'inherit',
       env,
     }).on('exit', (c) => done(c ?? 1)),
   );
+
+async function run(env) {
+  const sharedCode = await runShared(env);
+  if (sharedCode !== 0) return sharedCode;
+  return new Promise((done) =>
+    spawn(process.execPath, [
+      '--import', 'tsx/esm', '--test', '--test-concurrency=1', '--test-reporter=spec',
+      'packages/pg-vector-rag/src/__tests__/rag-access-store-conformance.test.ts',
+      'packages/pg-vector-rag/src/__tests__/migrate-access.test.ts',
+      'packages/pg-vector-rag/src/__tests__/owner-query.test.ts',
+      'packages/pg-vector-rag/src/__tests__/rag-filter-conformance.test.ts',
+    ], { cwd: resolve(here, '../../../..'), stdio: 'inherit', env }).on('exit', c => done(c ?? 1)),
+  );
+}
 
 if (process.env.PG_TEST_URL) {
   process.exit(await run(process.env));

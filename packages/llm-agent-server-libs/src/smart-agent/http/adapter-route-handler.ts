@@ -1,4 +1,5 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import type { RagCaller } from '@mcp-abap-adt/llm-agent';
 import {
   AdapterValidationError,
   buildExternalResults,
@@ -20,11 +21,21 @@ export async function handleAdapterRequest(
   agent: SmartAgent,
   adapter: ILlmApiAdapter,
   session:
-    | { sessionId: string; traceId: string; graph: SessionGraph }
+    | {
+        sessionId: string;
+        traceId: string;
+        graph: SessionGraph;
+        caller: RagCaller;
+      }
     | undefined,
   heartbeatIntervalMs: number | undefined,
   log?: (e: Record<string, unknown>) => void,
 ): Promise<void> {
+  if (!session) {
+    res.writeHead(403, { 'Content-Type': 'application/json' });
+    res.end(jsonError('Caller identity required', 'access_denied'));
+    return;
+  }
   const t0 = Date.now();
   const raw = await readBody(req);
   let body: unknown;
@@ -68,6 +79,8 @@ export async function handleAdapterRequest(
         ...normalized.options,
         signal: abort.signal,
         sessionId: session.sessionId,
+        caller: session.caller,
+        userId: session.caller.userId,
         trace: { traceId: session.traceId },
         toolAvailability: session.graph.toolAvailability,
         pendingToolResults: session.graph.pendingToolResults,

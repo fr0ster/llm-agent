@@ -9,8 +9,12 @@ import type {
   RagError,
   Result,
 } from '@mcp-abap-adt/llm-agent';
-
 import { InMemoryRag } from '@mcp-abap-adt/llm-agent';
+import {
+  ownedTestStores,
+  testCallOptions,
+  testRequestAccess,
+} from '../../../testing/index.js';
 import { summarizeAndStore } from '../history-upsert.js';
 
 function makeFakeMemory(): IHistoryMemory & { entries: Map<string, string[]> } {
@@ -228,7 +232,7 @@ describe('history-upsert: the record carries its owner (security)', () => {
     timestamp: 1000,
   };
 
-  it('tags the history record with sessionId, and userId when the call has one', async () => {
+  it('tags the history record with its session owner even when the caller has userId', async () => {
     const rag = makeFakeRag();
     await summarizeAndStore({
       turn,
@@ -238,7 +242,10 @@ describe('history-upsert: the record carries its owner (security)', () => {
       sessionId: 's1',
       options: { userId: 'u1' },
     });
-    assert.deepEqual(rag.upserted[0].meta, { sessionId: 's1', userId: 'u1' });
+    assert.deepEqual(rag.upserted[0].meta, {
+      sessionId: 's1',
+      ownerScope: 'session',
+    });
   });
 
   it('a session-scoped history query finds its own turn and not another session’s', async () => {
@@ -254,7 +261,9 @@ describe('history-upsert: the record carries its owner (security)', () => {
       sessionId: 's1',
     });
     const q = { text: 'purchase orders', toVector: async () => [] };
-    const own = await rag.query(q, 5, { ragFilter: { sessionId: 's1' } });
+    const own = await rag.query(q, 5, {
+      ragFilter: { sessionId: 's1', ownerScope: 'session' },
+    });
     const other = await rag.query(q, 5, { ragFilter: { sessionId: 's2' } });
     assert.ok(own.ok && other.ok);
     assert.equal(own.ok && own.value.length, 1);
@@ -273,13 +282,15 @@ describe('history-upsert: HistoryUpsertHandler', () => {
       },
     };
     const ctx = {
+      options: testCallOptions({ sessionId: 's1', ...testCallOptions() }),
+      ragAccess: testRequestAccess,
       sessionId: 's1',
       inputText: 'the question',
       assistantText: 'the final answer',
       historySummarizer: summarizer,
       historyMemory: makeFakeMemory(),
       config: { semanticHistoryEnabled: true },
-      ragStores: { history: makeFakeRag() },
+      ragStores: ownedTestStores({ history: makeFakeRag() }),
     };
     const span = { setAttribute() {}, setStatus() {} };
     await new HistoryUpsertHandler().execute(ctx as never, {}, span as never);

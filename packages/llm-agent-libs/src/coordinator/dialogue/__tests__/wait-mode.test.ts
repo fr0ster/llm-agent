@@ -8,7 +8,11 @@ import type {
 } from '@mcp-abap-adt/llm-agent';
 import { ToolCache } from '@mcp-abap-adt/llm-agent';
 import { SmartAgent } from '../../../agent.js';
-import { makeAssembler, makeDefaultDeps } from '../../../testing/index.js';
+import {
+  makeAssembler,
+  makeDefaultDeps,
+  testCallOptions,
+} from '../../../testing/index.js';
 import {
   DialogueSession,
   type DialogueSessionOptions,
@@ -74,6 +78,13 @@ test('external timer events stay coalesced and persisted until the next send', a
   const store = new InMemoryDialogueStateStore();
   const inputs: Message[][] = [];
   const session = await DialogueSession.open({
+    caller: testCallOptions({
+      caller: {
+        sessionId: 'external-clock',
+        userId: 'test-user',
+        isAdmin: false,
+      },
+    }).caller,
     id: 'external-clock',
     store,
     now: clock.now,
@@ -212,6 +223,9 @@ for (const streamMode of ['full', 'final'] as const) {
         });
         const settled: DialogueSignals['dialogue.turn.settled'][] = [];
         const session = await DialogueSession.open({
+          caller: testCallOptions({
+            caller: { sessionId: 'real', userId: 'test-user', isAdmin: false },
+          }).caller,
           id: 'real',
           planner: {
             process(messages, opts) {
@@ -220,7 +234,7 @@ for (const streamMode of ['full', 'final'] as const) {
                 adapterEnabled
                   ? [{ role: 'system', content: 'test adapter' }, ...messages]
                   : messages,
-                opts,
+                testCallOptions(opts),
               );
             },
           },
@@ -268,6 +282,9 @@ test('outcomes between status reads reset the guard; finished reads never count'
   const second = work();
   let calls = 0;
   const session = await DialogueSession.open({
+    caller: testCallOptions({
+      caller: { sessionId: 'reset', userId: 'test-user', isAdmin: false },
+    }).caller,
     id: 'reset',
     board: {
       workers: new Map([
@@ -310,6 +327,9 @@ for (const mode of ['result', 'throw'] as const) {
   test(`wait abort ${mode} preserves partial text without a caller callback`, async () => {
     const task = work();
     const session = await DialogueSession.open({
+      caller: testCallOptions({
+        caller: { sessionId: mode, userId: 'test-user', isAdmin: false },
+      }).caller,
       id: mode,
       board: { workers: new Map([['executor', task.worker]]) },
       planner: {
@@ -339,6 +359,9 @@ test('caller cancellation remains an error even when the wait guard fires', asyn
   const task = work();
   const caller = new AbortController();
   const session = await DialogueSession.open({
+    caller: testCallOptions({
+      caller: { sessionId: 'caller', userId: 'test-user', isAdmin: false },
+    }).caller,
     id: 'caller',
     board: { workers: new Map([['executor', task.worker]]) },
     planner: {
@@ -372,6 +395,9 @@ async function clockSession(options: Partial<DialogueSessionOptions> = {}) {
   const waits: DialogueSignals['dialogue.wait'][] = [];
   const messages: import('@mcp-abap-adt/llm-agent').PlannerMessage[] = [];
   const session = await DialogueSession.open({
+    caller: testCallOptions({
+      caller: { sessionId: 'clock', userId: 'test-user', isAdmin: false },
+    }).caller,
     id: 'clock',
     stallNoticeMs: 0,
     longTaskMs: 300_000,
@@ -462,6 +488,9 @@ for (const option of ['waitTickMs', 'longTaskMs'] as const) {
     test(`${option} rejects ${value}`, async () => {
       await assert.rejects(
         DialogueSession.open({
+          caller: testCallOptions({
+            caller: { sessionId: 'bad', userId: 'test-user', isAdmin: false },
+          }).caller,
           id: 'bad',
           [option]: value,
           planner: {
@@ -531,6 +560,9 @@ test('queued tasks use createdAt for wait elapsed time', async () => {
   const waits: DialogueSignals['dialogue.wait'][] = [];
   let calls = 0;
   const session = await DialogueSession.open({
+    caller: testCallOptions({
+      caller: { sessionId: 'queue', userId: 'test-user', isAdmin: false },
+    }).caller,
     id: 'queue',
     now: clock.now,
     scheduleTimer: clock.schedule,
@@ -605,6 +637,9 @@ test('stale long-running events are dropped before the event turn; only outcomes
     release = resolve;
   });
   const session = await DialogueSession.open({
+    caller: testCallOptions({
+      caller: { sessionId: 'stale', userId: 'test-user', isAdmin: false },
+    }).caller,
     id: 'stale',
     now: clock.now,
     scheduleTimer: clock.schedule,
@@ -674,6 +709,13 @@ test('stale long-running events are dropped before the event turn; only outcomes
 test('restore interrupts active tasks and schedules no timer', async () => {
   const clock = new Clock();
   const session = await DialogueSession.open({
+    caller: testCallOptions({
+      caller: {
+        sessionId: 'restore-clock',
+        userId: 'test-user',
+        isAdmin: false,
+      },
+    }).caller,
     id: 'restore-clock',
     now: clock.now,
     scheduleTimer: clock.schedule,
@@ -809,6 +851,13 @@ test('planner receives user observers and event turns receive none', async () =>
   const selected = () => {};
   let turns = 0;
   const session = await DialogueSession.open({
+    caller: testCallOptions({
+      caller: {
+        sessionId: 'planner-observers',
+        userId: 'test-user',
+        isAdmin: false,
+      },
+    }).caller,
     id: 'planner-observers',
     board: { workers: new Map([['executor', task.worker]]) },
     planner: {
@@ -847,6 +896,13 @@ test('planner task tools expose activity and stall events resume after progress'
   const task = work();
   const inputs: Message[][] = [];
   const session = await DialogueSession.open({
+    caller: testCallOptions({
+      caller: {
+        sessionId: 'stall-supervision',
+        userId: 'test-user',
+        isAdmin: false,
+      },
+    }).caller,
     id: 'stall-supervision',
     now: clock.now,
     scheduleTimer: clock.schedule,

@@ -1,3 +1,4 @@
+import type { RagAccess } from '@mcp-abap-adt/llm-agent';
 /**
  * PipelineContext — mutable state bag threaded through all pipeline stages.
  *
@@ -92,6 +93,7 @@ export interface PipelineContext {
   readonly classifierLlm: ILlm;
   readonly classifier: ISubpromptClassifier;
   readonly assembler: IContextAssembler;
+  readonly ragAccess?: RagAccess;
   readonly ragStores: SmartAgentRagStores;
   readonly ragRegistry: IRagRegistry | undefined;
   readonly ragProviderRegistry: IRagProviderRegistry | undefined;

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { StreamHookContext } from '@mcp-abap-adt/llm-agent';
 import { SmartAgent } from '../agent.js';
-import { makeDefaultDeps } from '../testing/index.js';
+import { makeDefaultDeps, testCallOptions } from '../testing/index.js';
 
 const DEFAULT_CONFIG = { maxIterations: 5 };
 
@@ -23,7 +23,7 @@ describe('onBeforeStream hook', () => {
     });
 
     const chunks: string[] = [];
-    for await (const chunk of agent.streamProcess('test')) {
+    for await (const chunk of agent.streamProcess('test', testCallOptions())) {
       if (chunk.ok && chunk.value.content) {
         chunks.push(chunk.value.content);
       }
@@ -42,7 +42,7 @@ describe('onBeforeStream hook', () => {
     const agent = new SmartAgent(deps, DEFAULT_CONFIG);
 
     const chunks: string[] = [];
-    for await (const chunk of agent.streamProcess('test')) {
+    for await (const chunk of agent.streamProcess('test', testCallOptions())) {
       if (chunk.ok && chunk.value.content) {
         chunks.push(chunk.value.content);
       }
@@ -73,7 +73,7 @@ describe('onBeforeStream hook', () => {
       },
     });
 
-    for await (const _ of agent.streamProcess('test')) {
+    for await (const _ of agent.streamProcess('test', testCallOptions())) {
       // consume all chunks
     }
 
@@ -96,7 +96,7 @@ describe('onBeforeStream hook', () => {
     });
 
     const chunks: string[] = [];
-    for await (const chunk of agent.streamProcess('test')) {
+    for await (const chunk of agent.streamProcess('test', testCallOptions())) {
       if (chunk.ok && chunk.value.content) {
         chunks.push(chunk.value.content);
       }

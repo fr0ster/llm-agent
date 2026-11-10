@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { DialoguePlan, TaskEvent } from '@mcp-abap-adt/llm-agent';
+import { testCallOptions } from '../../../testing/index.js';
 import { DialogueSession } from '../dialogue-session.js';
 import { InMemoryDialogueStateStore } from '../in-memory-dialogue-state-store.js';
 import { runInPlannerScope } from '../planner-scope.js';
@@ -96,6 +97,8 @@ test('failed check leads to a fix and a new check with independent results', asy
   finish(plan, 'fix', 'fixed', 'corrected result');
   let context = '';
   const board = new TaskBoard({
+    caller: testCallOptions({ sessionId: 'test-session' }).caller,
+    baseInput: () => testCallOptions({ sessionId: 'test-session' }),
     ...profileHost(
       new Map([
         [
@@ -170,6 +173,8 @@ test('audit refuses a source result produced by the audit worker', async () => {
     successfulWorkTaskId: 'source',
   });
   const board = new TaskBoard({
+    caller: testCallOptions({ sessionId: 'test-session' }).caller,
+    baseInput: () => testCallOptions({ sessionId: 'test-session' }),
     ...profileHost(
       new Map([
         [
@@ -227,6 +232,9 @@ for (const legacyState of ['checking', 'done', 'failed'] as const) {
       savedAt: 0,
     });
     const session = await DialogueSession.open({
+      caller: testCallOptions({
+        caller: { sessionId: 'legacy', userId: 'test-user', isAdmin: false },
+      }).caller,
       id: 'legacy',
       store,
       board: { workers: new Map() },
@@ -319,6 +327,8 @@ for (const plan of [
 ]) {
   test(`legacy checker delegation remains supported: ${JSON.stringify(plan)}`, async () => {
     const board = new TaskBoard({
+      caller: testCallOptions({ sessionId: 'test-session' }).caller,
+      baseInput: () => testCallOptions({ sessionId: 'test-session' }),
       workers: new Map([
         [
           'checker',
@@ -403,6 +413,8 @@ test('explicit verdict without worker delegates only to a verdict profile', asyn
   );
   finish(plan, 'work', 'source', 'complete result');
   const board = new TaskBoard({
+    caller: testCallOptions({ sessionId: 'test-session' }).caller,
+    baseInput: () => testCallOptions({ sessionId: 'test-session' }),
     ...profileHost(
       new Map(
         ['writer', 'audit'].map((name) => [

@@ -11,8 +11,10 @@ import {
   SimpleRagProviderRegistry,
   SimpleRagRegistry,
 } from '@mcp-abap-adt/llm-agent';
+import { testRagAccess } from '@mcp-abap-adt/llm-agent/testing/rag-access-testing';
 import { SmartAgent } from '../agent.js';
 import { SmartAgentBuilder } from '../builder.js';
+import { unwrapBuilderResult } from '../builder-types.js';
 import { makeDefaultDeps, makeLlm, makeRag } from '../testing/index.js';
 
 function threeDocs() {
@@ -37,13 +39,15 @@ function threeDocs() {
 test('the projection keys a global by its name and an owned collection by scope/name', async () => {
   const { reg, g, u, s } = threeDocs();
   const handle = await new SmartAgentBuilder({})
+    .withRagAccess(testRagAccess())
     .withMainLlm(makeLlm([{ content: 'ok' }]))
     .setRagRegistry(reg)
-    .build();
+    .build()
+    .then(unwrapBuilderResult);
   try {
-    assert.equal(handle.ragStores.docs, g);
-    assert.equal(handle.ragStores['user/docs'], u);
-    assert.equal(handle.ragStores['session/docs'], s);
+    assert.equal(handle.ragStores.docs.rag, g);
+    assert.equal(handle.ragStores['user/docs'].rag, u);
+    assert.equal(handle.ragStores['session/docs'].rag, s);
 
     // live: a collection added after build appears under its key
     const later = new InMemoryRag();
@@ -52,7 +56,7 @@ test('the projection keys a global by its name and an owned collection by scope/
       scope: 'session',
       sessionId: 'S',
     });
-    assert.equal(handle.ragStores['session/notes'], later);
+    assert.equal(handle.ragStores['session/notes'].rag, later);
     reg.unregister('notes', 'session');
     assert.equal(handle.ragStores['session/notes'], undefined);
   } finally {
@@ -63,10 +67,12 @@ test('the projection keys a global by its name and an owned collection by scope/
 test('the circuit-breaker wrapping keeps each entry’s scope and owner', async () => {
   const { reg } = threeDocs();
   const handle = await new SmartAgentBuilder({})
+    .withRagAccess(testRagAccess())
     .withMainLlm(makeLlm([{ content: 'ok' }]))
     .setRagRegistry(reg)
     .withCircuitBreaker()
-    .build();
+    .build()
+    .then(unwrapBuilderResult);
   try {
     const user = reg
       .list()
@@ -77,8 +83,8 @@ test('the circuit-breaker wrapping keeps each entry’s scope and owner', async 
       .find((m) => m.name === 'docs' && m.scope === 'session');
     assert.equal(session?.sessionId, 'S');
     assert.equal(reg.list().length, 3, 'wrapped in place, nothing added');
-    assert.ok(handle.ragStores['user/docs'] instanceof FallbackRag);
-    assert.ok(handle.ragStores.docs instanceof FallbackRag);
+    assert.ok(handle.ragStores['user/docs'].rag instanceof FallbackRag);
+    assert.ok(handle.ragStores.docs.rag instanceof FallbackRag);
   } finally {
     await handle.close();
   }
@@ -116,21 +122,23 @@ test('a wrapped hydrated collection keeps its editor, and its delete still reach
     'pg',
   );
   const handle = await new SmartAgentBuilder({})
+    .withRagAccess(testRagAccess())
     .withMainLlm(makeLlm([{ content: 'ok' }]))
     .setRagRegistry(reg)
     .setRagProviderRegistry(providers)
     .withCircuitBreaker()
-    .build();
+    .build()
+    .then(unwrapBuilderResult);
   try {
-    assert.ok(handle.ragStores['user/mine'] instanceof FallbackRag);
+    assert.ok(handle.ragStores['user/mine'].rag instanceof FallbackRag);
     const meta = reg.list().find((m) => m.name === 'mine');
     assert.equal(meta?.providerName, 'pg', 'the provider survives the wrap');
     assert.equal(meta?.userId, 'alice');
-    assert.equal(
+    assert.ok(
       reg.getEditor('mine', 'user'),
-      editor,
       'still editable through the tools',
     );
+    assert.notEqual(reg.getEditor('mine', 'user'), editor);
     assert.ok((await reg.deleteCollection('mine', 'user')).ok);
     assert.deepEqual(
       deleted,
@@ -142,28 +150,30 @@ test('a wrapped hydrated collection keeps its editor, and its delete still reach
   }
 });
 
-test('a user collection named "tools" does not hide or break the built-in tools store', async () => {
+test('a user collection coexists with the internal built-in tools store', async () => {
   const reg = new SimpleRagRegistry();
   const mine = new InMemoryRag();
-  reg.register('tools', mine, undefined, {
-    displayName: 'tools',
+  reg.register('documents', mine, undefined, {
+    displayName: 'documents',
     scope: 'user',
     userId: 'alice',
   });
   const toolsRag = new InMemoryRag();
   const handle = await new SmartAgentBuilder({})
+    .withRagAccess(testRagAccess())
     .withMainLlm(makeLlm([{ content: 'ok' }]))
     .setRagRegistry(reg)
     .setToolsRag(toolsRag)
-    .build();
+    .build()
+    .then(unwrapBuilderResult);
   try {
     assert.equal(
       reg.get('tools', 'global'),
-      toolsRag,
-      'the built-in is registered as the global',
+      undefined,
+      'the built-in is absent from the collection registry',
     );
-    assert.equal(handle.ragStores.tools, toolsRag);
-    assert.equal(handle.ragStores['user/tools'], mine);
+    assert.equal(handle.ragStores.tools.rag, toolsRag);
+    assert.equal(handle.ragStores['user/documents'].rag, mine);
   } finally {
     await handle.close();
   }
@@ -204,11 +214,13 @@ test('withCircuitBreakers wraps a store once, never twice across builders, and l
   });
   const llm = makeLlm([{ content: 'ok' }]);
   const h1 = await new SmartAgentBuilder({})
+    .withRagAccess(testRagAccess())
     .withMainLlm(llm)
     .setRagRegistry(reg)
     .withCircuitBreakers({ embedder: breaker })
-    .build();
-  const wrapped = h1.ragStores.docs;
+    .build()
+    .then(unwrapBuilderResult);
+  const wrapped = h1.ragStores.docs.rag;
   assert.ok(wrapped instanceof FallbackRag);
   assert.equal(wrapped.breaker, breaker);
   assert.equal(wrapped.inner, raw);
@@ -216,14 +228,16 @@ test('withCircuitBreakers wraps a store once, never twice across builders, and l
   await h1.close();
 
   const h2 = await new SmartAgentBuilder({})
+    .withRagAccess(testRagAccess())
     .withMainLlm(llm)
     .setRagRegistry(reg)
     .withCircuitBreakers({ embedder: breaker })
-    .build();
+    .build()
+    .then(unwrapBuilderResult);
   try {
-    assert.equal(h2.ragStores.docs, wrapped, 'not wrapped again');
+    assert.equal(h2.ragStores.docs.rag, wrapped, 'not wrapped again');
     assert.ok(
-      !((h2.ragStores.docs as FallbackRag).inner instanceof FallbackRag),
+      !((h2.ragStores.docs.rag as FallbackRag).inner instanceof FallbackRag),
     );
     assert.ok(!(h2.agent.currentMainLlm instanceof CircuitBreakerLlm));
   } finally {
@@ -239,11 +253,13 @@ test('withCircuitBreakers wins over withCircuitBreaker(config): no LLM breaker',
     scope: 'global',
   });
   const h = await new SmartAgentBuilder({})
+    .withRagAccess(testRagAccess())
     .withMainLlm(makeLlm([{ content: 'ok' }]))
     .setRagRegistry(reg)
     .withCircuitBreaker()
     .withCircuitBreakers({ embedder: breaker })
-    .build();
+    .build()
+    .then(unwrapBuilderResult);
   try {
     assert.deepEqual(h.circuitBreakers, [breaker]);
     assert.ok(!(h.agent.currentMainLlm instanceof CircuitBreakerLlm));

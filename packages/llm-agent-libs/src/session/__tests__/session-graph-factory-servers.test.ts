@@ -58,7 +58,7 @@ test('mcpServerFactory receives the identity, and its clients reach buildAgent',
     },
   });
 
-  await factory.build({ sessionId: 's1' });
+  await factory.build({ sessionId: 's1', userId: 'test-user' });
   assert.deepEqual(seen, ['s1']);
   assert.deepEqual(log, ['start:a']);
 });
@@ -95,7 +95,7 @@ test('teardown runs closePipeline, then closeSession, then onDispose, then stop'
     buildAgent: async () => undefined,
   });
 
-  const graph = await factory.build({ sessionId: 's1' });
+  const graph = await factory.build({ sessionId: 's1', userId: 'test-user' });
   await graph.dispose();
 
   assert.deepEqual(order, [
@@ -138,7 +138,7 @@ test('a throwing closePipeline does not block closeSession, onDispose or stop', 
     buildAgent: async () => undefined,
   });
 
-  const graph = await factory.build({ sessionId: 's1' });
+  const graph = await factory.build({ sessionId: 's1', userId: 'test-user' });
   await graph.dispose();
 
   assert.deepEqual(order, ['closeSession', 'onDispose', 'stop']);
@@ -176,7 +176,7 @@ test('a REJECTING closeSession does not block onDispose or stop (#11)', async ()
     buildAgent: async () => undefined,
   });
 
-  const graph = await factory.build({ sessionId: 's1' });
+  const graph = await factory.build({ sessionId: 's1', userId: 'test-user' });
   await graph.dispose();
 
   assert.deepEqual(order, [
@@ -209,7 +209,7 @@ test('without mcpServerFactory nothing changes: mcpClientFactory is used and no 
     },
   });
 
-  const graph = await factory.build({ sessionId: 's1' });
+  const graph = await factory.build({ sessionId: 's1', userId: 'test-user' });
   await graph.dispose();
 
   assert.deepEqual(order, ['closeSession', 'onDispose']);
@@ -233,7 +233,7 @@ test('adopting mcpServerFactory alone compiles and runs: no deprecated stub need
     },
   });
 
-  const graph = await factory.build({ sessionId: 's1' });
+  const graph = await factory.build({ sessionId: 's1', userId: 'test-user' });
   await graph.dispose();
 });
 
@@ -245,7 +245,7 @@ test('no factory at all is a configuration error, named in the message', async (
   });
 
   await assert.rejects(
-    () => factory.build({ sessionId: 's1' }),
+    () => factory.build({ sessionId: 's1', userId: 'test-user' }),
     /mcpServerFactory/,
   );
 });
@@ -275,7 +275,10 @@ test('a partly-filled descriptor set throws before any server is started', async
     buildAgent: async () => undefined,
   });
 
-  await assert.rejects(() => factory.build({ sessionId: 's1' }), /descriptor/i);
+  await assert.rejects(
+    () => factory.build({ sessionId: 's1', userId: 'test-user' }),
+    /descriptor/i,
+  );
   assert.equal(started, 0);
 });
 
@@ -307,7 +310,7 @@ test('a start that fails half-way stops the servers already started', async () =
   });
 
   await assert.rejects(
-    () => factory.build({ sessionId: 's1' }),
+    () => factory.build({ sessionId: 's1', userId: 'test-user' }),
     /spawn failed/,
   );
   assert.deepEqual(log, ['start:a', 'stop:a']);
@@ -325,7 +328,7 @@ test('buildAgent throwing AFTER every server started stops them all, then rethro
   });
 
   await assert.rejects(
-    () => factory.build({ sessionId: 's1' }),
+    () => factory.build({ sessionId: 's1', userId: 'test-user' }),
     /model validation failed/,
   );
   // Both servers started (buildAgent runs only after the start loop), and
@@ -358,7 +361,7 @@ test('a failing stop is surfaced, not thrown', async () => {
     },
   });
 
-  const graph = await factory.build({ sessionId: 's1' });
+  const graph = await factory.build({ sessionId: 's1', userId: 'test-user' });
   await graph.dispose();
   assert.equal(
     warnings.some((m) => m.includes('boom')),

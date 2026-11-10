@@ -18,11 +18,14 @@ import {
   describeRagCatalogRows,
   OrphanStoreError,
   RagError,
+  type RagMetadata,
   ragCollectionNotFound,
+  tagRagMetadata,
   validateRagCatalogPatch,
   validateRagOwner,
   validateRagStoreName,
 } from '@mcp-abap-adt/llm-agent';
+import { createPgVectorRagAccessStores } from './access-stores.js';
 import {
   createCatalogTableSql,
   DEFAULT_CATALOG_TABLE,
@@ -46,6 +49,7 @@ import {
   createExtensionSql,
   createTableSql,
   dropTableSql,
+  qualifiedTable,
   quoteIdent,
 } from './schema.js';
 import { SHARED_CATALOG_TABLE, SHARED_DOCUMENTS_TABLE } from './shared-ddl.js';
@@ -138,7 +142,12 @@ export class PgVectorRagProvider
     this.documentsTable = cfg.documentsTable ?? SHARED_DOCUMENTS_TABLE;
     this.autoCreateSchema = cfg.autoCreateSchema ?? !shared;
     this.editable = cfg.editable ?? true;
-    this.supportedScopes = cfg.supportedScopes ?? ['session', 'user', 'global'];
+    this.supportedScopes = cfg.supportedScopes ?? [
+      'session',
+      'user',
+      'role',
+      'global',
+    ];
     this.clientFactory = cfg.clientFactory;
     this.catalogTable =
       cfg.catalogTable ??
@@ -231,12 +240,34 @@ export class PgVectorRagProvider
   > {
     try {
       const client = await this.adminClient();
-      if (this.shared) return await this.shared.describe(client);
-      if (!(await this.tableExists(client, this.catalogTable))) {
-        return { ok: true, value: { records: [], rejected: [] } };
+      const description = this.shared
+        ? await this.shared.describe(client)
+        : {
+            ok: true as const,
+            value: (await this.tableExists(client, this.catalogTable))
+              ? describeRagCatalogRows(
+                  (await client.query(selectRecordsSql(this.catalogTable)))
+                    .rows,
+                )
+              : { records: [], rejected: [] },
+          };
+      if (!description.ok) return description;
+      const records: RagCollectionRecord[] = [];
+      const rejected = [...description.value.rejected];
+      if (!description.value.records.some((record) => record.scope === 'role'))
+        return description;
+      const roles = await createPgVectorRagAccessStores(this).roles.listRoles();
+      if (!roles.ok) return roles;
+      const activeRoles = new Set(roles.value.map((role) => role.roleId));
+      for (const record of description.value.records) {
+        if (record.scope === 'role' && !activeRoles.has(record.roleId)) {
+          rejected.push({
+            storeName: record.storeName,
+            reason: 'Role is missing or tombstoned',
+          });
+        } else records.push(record);
       }
-      const { rows } = await client.query(selectRecordsSql(this.catalogTable));
-      return { ok: true, value: describeRagCatalogRows(rows) };
+      return { ok: true, value: { records, rejected } };
     } catch (err) {
       return { ok: false, error: new RagError(String(err), 'RAG_LIST_ERROR') };
     }
@@ -344,7 +375,15 @@ export class PgVectorRagProvider
         ok: true,
         value: rows
           .map((r) => String(r.table_name))
-          .filter((t) => t !== this.catalogTable),
+          .filter(
+            (t) =>
+              t !== this.catalogTable &&
+              ![
+                'rag_roles',
+                'rag_role_assignments',
+                'rag_session_bindings',
+              ].includes(t),
+          ),
       };
     } catch (err) {
       return { ok: false, error: new RagError(String(err), 'RAG_LIST_ERROR') };
@@ -439,7 +478,13 @@ export class PgVectorRagProvider
   }
 
   private refuseCatalogName(name: string): Refusal | undefined {
-    if (name !== this.catalogTable) return undefined;
+    if (
+      name !== this.catalogTable &&
+      !['rag_roles', 'rag_role_assignments', 'rag_session_bindings'].includes(
+        name,
+      )
+    )
+      return undefined;
     return {
       ok: false,
       error: new RagError(
@@ -451,6 +496,74 @@ export class PgVectorRagProvider
 
   private dimension(): number {
     return this.connection.dimension ?? this.defaultDimension;
+  }
+
+  /** Persistence connection and qualified catalog used by the access migration/stores. */
+  async migrateRecordOwners(): Promise<
+    { storeName: string; reason: string }[]
+  > {
+    const client = await this.adminClient();
+    const catalog = await client.query(
+      selectRecordsSql(
+        this.catalogTable,
+        this.layout === 'shared' ? this.connection.schema : undefined,
+      ),
+    );
+    const tables =
+      this.layout === 'shared'
+        ? [this.documentsTable]
+        : catalog.rows.flatMap((row) =>
+            typeof row.storeName === 'string' ? [row.storeName] : [],
+          );
+    const reported: { storeName: string; reason: string }[] = [];
+    for (const name of tables) {
+      const table = qualifiedTable(
+        name,
+        this.layout === 'shared' ? this.connection.schema : undefined,
+      );
+      if (
+        !(
+          await client.query('SELECT to_regclass($1) IS NOT NULL AS present', [
+            table,
+          ])
+        ).rows[0]?.present
+      )
+        continue;
+      const { rows } = await client.query(
+        `SELECT id, metadata${this.layout === 'shared' ? ', collection' : ''} FROM ${table}`,
+      );
+      for (const row of rows) {
+        const metadata = row.metadata as RagMetadata;
+        const tagged = tagRagMetadata(metadata);
+        const storeName =
+          this.layout === 'shared' ? String(row.collection) : name;
+        if (tagged.ownerScope === 'invalid')
+          reported.push({
+            storeName,
+            reason: `Conflicting owner keys on record ${row.id}`,
+          });
+        if (metadata.ownerScope === tagged.ownerScope) continue;
+        await client.query(
+          `UPDATE ${table} SET metadata = $1::jsonb WHERE id = $2${this.layout === 'shared' ? ' AND collection = $3' : ''}`,
+          this.layout === 'shared'
+            ? [JSON.stringify(tagged), row.id, row.collection]
+            : [JSON.stringify(tagged), row.id],
+        );
+      }
+    }
+    return reported;
+  }
+
+  async accessPersistence(): Promise<{
+    client: PgClient;
+    catalogTable: string;
+    schema: string | undefined;
+  }> {
+    return {
+      client: await this.adminClient(),
+      catalogTable: this.catalogTable,
+      schema: this.layout === 'shared' ? this.connection.schema : undefined,
+    };
   }
 
   private async adminClient(): Promise<PgClient> {

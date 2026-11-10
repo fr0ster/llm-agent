@@ -9,6 +9,7 @@ export interface PlannerCatalogEntry {
 }
 
 export interface PlannerInput {
+  caller: import('./rag-access.js').RagCaller;
   prompt: string;
   agents: PlannerCatalogEntry[];
   sessionId: string;

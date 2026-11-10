@@ -60,7 +60,13 @@ export class DefaultSubAgentContextBuilder implements ISubAgentContextBuilder {
           req.task,
           topKProject,
           req.signal,
-          { signal: req.signal, usage: req.usage, usageOp: req.usageOp },
+          {
+            caller: req.caller,
+            sessionId: req.sessionId,
+            signal: req.signal,
+            usage: req.usage,
+            usageOp: req.usageOp,
+          },
         );
         for (const r of results.slice(0, topKProject)) {
           parts.push(r.text);
@@ -80,7 +86,13 @@ export class DefaultSubAgentContextBuilder implements ISubAgentContextBuilder {
           req.task,
           topKTool,
           req.signal,
-          { signal: req.signal, usage: req.usage, usageOp: req.usageOp },
+          {
+            caller: req.caller,
+            sessionId: req.sessionId,
+            signal: req.signal,
+            usage: req.usage,
+            usageOp: req.usageOp,
+          },
         );
         for (const r of results.slice(0, topKTool)) {
           parts.push(r.text);

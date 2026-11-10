@@ -3,7 +3,7 @@ import type {
   IRagBackendWriter,
   PlannerMemoryEntry,
 } from '@mcp-abap-adt/llm-agent';
-import { scopedUsage } from '@mcp-abap-adt/llm-agent';
+import { scopedUsage, stampRagOwner } from '@mcp-abap-adt/llm-agent';
 import type { PlannerMemoryOptions } from './planner-retrieval.js';
 import { withDeadline } from './planner-retrieval.js';
 
@@ -112,13 +112,15 @@ export class PlannerMemoryWriter {
               id: `planner:${this.sessionId}:${entry.kind}:${entry.sourceId}:${entry.offset}`,
               text: entry.text,
               vector: embeds?.[index].vector ?? [],
-              metadata: {
-                sessionId: this.sessionId,
-                kind: entry.kind,
-                requestId: entry.requestId,
-                sourceId: entry.sourceId,
-                offset: entry.offset,
-              },
+              metadata: stampRagOwner(
+                {
+                  kind: entry.kind,
+                  requestId: entry.requestId,
+                  sourceId: entry.sourceId,
+                  offset: entry.offset,
+                },
+                { scope: 'session', sessionId: this.sessionId },
+              ),
             }));
             if (embeds && writer.upsertManyPrecomputedRaw) {
               const result = await writer.upsertManyPrecomputedRaw(

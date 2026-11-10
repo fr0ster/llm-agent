@@ -40,8 +40,8 @@ test('build(identity) yields a graph whose registries+logger differ per session 
     },
   });
 
-  const g1 = await factory.build({ sessionId: 's1' });
-  const g2 = await factory.build({ sessionId: 's2' });
+  const g1 = await factory.build({ sessionId: 's1', userId: 'test-user' });
+  const g2 = await factory.build({ sessionId: 's2', userId: 'test-user' });
   assert.notEqual(g1, g2);
   assert.notEqual(g1.toolAvailability, g2.toolAvailability);
   assert.notEqual(g1.pendingToolResults, g2.pendingToolResults);
@@ -73,7 +73,7 @@ test('dispose hook SURFACES closeSession failure via the configured ILogger (rev
     buildAgent: async () => undefined,
     logger,
   });
-  const g = await factory.build({ sessionId: 's-fail' });
+  const g = await factory.build({ sessionId: 's-fail', userId: 'test-user' });
   await g.dispose(); // must NOT throw
   const warn = events.find(
     (e) =>
@@ -103,7 +103,7 @@ test('dispose() of a graph closes session collections on the shared registry onl
     sessionId: 's1',
   });
   assert.ok(ragRegistry.get('g-s1'));
-  const g = await factory.build({ sessionId: 's1' });
+  const g = await factory.build({ sessionId: 's1', userId: 'test-user' });
   await g.dispose();
   assert.equal(
     ragRegistry.get('g-s1'),
@@ -138,7 +138,7 @@ test('build() prefers mcpClientFactoryWithDescriptors and threads mcpClientDescr
     },
   });
 
-  const g = await factory.build({ sessionId: 's-desc' });
+  const g = await factory.build({ sessionId: 's-desc', userId: 'test-user' });
   await g.dispose();
 
   assert.deepEqual(capturedParts?.mcpClientDescriptors, descriptors);
@@ -158,7 +158,7 @@ test('build() with only the legacy mcpClientFactory leaves mcpClientDescriptors/
     },
   });
 
-  const g = await factory.build({ sessionId: 's-legacy' });
+  const g = await factory.build({ sessionId: 's-legacy', userId: 'test-user' });
   await g.dispose();
 
   assert.equal(capturedParts?.mcpClientDescriptors, undefined);

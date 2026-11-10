@@ -7,6 +7,7 @@ import type {
   PlanStep,
   StepResult,
 } from '@mcp-abap-adt/llm-agent';
+import { testCallOptions } from '../../../testing/index.js';
 import type { ISpan } from '../../../tracer/types.js';
 import type { PipelineContext } from '../../context.js';
 import {
@@ -41,7 +42,10 @@ function makeCtx(partial: Partial<PipelineContext> = {}): {
     inputText: 'do the thing',
     sessionId: 'test-session',
     assembledMessages: [],
-    options: { signal: undefined as AbortSignal | undefined },
+    options: testCallOptions({
+      sessionId: 'test-session',
+      ...{ signal: undefined as AbortSignal | undefined },
+    }),
     yield(chunk: { ok: boolean; value?: EmittedChunk }) {
       if (chunk.ok && chunk.value) chunks.push(chunk.value);
     },

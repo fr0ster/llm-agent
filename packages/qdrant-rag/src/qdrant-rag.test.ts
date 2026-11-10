@@ -47,6 +47,15 @@ function createStubServer(state: StubState): http.Server {
     req.on('end', () => {
       const url = req.url ?? '';
 
+      if (
+        /^\/collections\/[^/]+\/index\?wait=true$/.test(url) &&
+        req.method === 'PUT'
+      ) {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ result: true }));
+        return;
+      }
+
       // GET /collections/:name
       const getCollMatch = url.match(/^\/collections\/([^/]+)$/);
       if (getCollMatch && req.method === 'GET') {

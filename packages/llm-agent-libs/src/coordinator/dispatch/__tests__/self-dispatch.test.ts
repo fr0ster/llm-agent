@@ -5,6 +5,7 @@ import type {
   ILlm,
   PlanStep,
 } from '@mcp-abap-adt/llm-agent';
+import { testCallOptions } from '../../../testing/index.js';
 import { SelfDispatch } from '../self.js';
 
 describe('SelfDispatch task composition', () => {
@@ -19,6 +20,7 @@ describe('SelfDispatch task composition', () => {
     } as unknown as ILlm;
 
     const ctx = {
+      options: testCallOptions({ sessionId: 't' }),
       inputText: 'RELEASE-TASKS-BLOB',
       registry: new Map(),
       stepResults: {},
@@ -96,6 +98,7 @@ describe('SelfDispatch #157 tool-loop', () => {
 
     let called = '';
     const ctx = {
+      options: testCallOptions({ sessionId: 't' }),
       inputText: 'read T000',
       registry: new Map(),
       stepResults: {},
@@ -127,6 +130,7 @@ describe('SelfDispatch #157 tool-loop', () => {
       },
     } as unknown as ILlm;
     const ctx = {
+      options: testCallOptions({ sessionId: 't' }),
       inputText: 'x',
       registry: new Map(),
       stepResults: {},

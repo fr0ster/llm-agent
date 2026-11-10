@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { LlmStreamChunk, Result } from '@mcp-abap-adt/llm-agent';
 import { type OrchestratorError, SmartAgent } from '../agent.js';
+import { testCallOptions } from '../testing/index.js';
 
 // ---------------------------------------------------------------------------
 // Step 5.1 — agent.process() must SKIP ephemeral content chunks when building
@@ -39,7 +40,7 @@ describe('ephemeral liveness markers', () => {
       { ok: true, value: { content: '', finishReason: 'stop' } },
     ]);
 
-    const res = await agent.process('ignored');
+    const res = await agent.process('ignored', testCallOptions());
     assert.equal(res.ok, true);
     if (!res.ok) return;
     assert.equal(res.value.content, 'Hello world');
@@ -55,7 +56,7 @@ describe('ephemeral liveness markers', () => {
       { ok: true, value: { content: 'A' } },
       { ok: true, value: { content: 'B' /* no ephemeral flag */ } },
     ]);
-    const res = await agent.process('ignored');
+    const res = await agent.process('ignored', testCallOptions());
     assert.equal(res.ok, true);
     if (!res.ok) return;
     assert.equal(res.value.content, 'AB');

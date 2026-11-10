@@ -1,3 +1,4 @@
+import { testRagAccess } from '@mcp-abap-adt/llm-agent/testing/rag-access-testing';
 /**
  * domain-neutral-tool-exposure.test.ts
  *
@@ -29,6 +30,7 @@ function makeCtx(toolScore: number) {
     ],
   };
   return {
+    ragAccess: testRagAccess(),
     config: { mode: 'smart' },
     mcpTools: [
       {

@@ -76,6 +76,7 @@ export class DirectLlmSubAgent implements ISubAgent {
       // Supervision is informational: an observer must never fail the work.
     }
     const res = await this.llm.chat(assembled.value, [], {
+      caller: input.caller,
       usage: input.usage,
       signal: input.signal,
       sessionId: input.sessionId,

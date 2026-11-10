@@ -1,3 +1,4 @@
+import { unwrapBuilderResult } from '@mcp-abap-adt/llm-agent-libs';
 /**
  * SmartServer — embeddable OpenAI-compatible HTTP server backed by SmartAgent.
  */
@@ -25,6 +26,7 @@ import type {
   IPipelineInstance,
   IPipelinePlugin,
   IQueryExpander,
+  IRagCallerResolver,
   IRagProviderRegistry,
   IRagRegistry,
   IRequestLogger,
@@ -45,6 +47,8 @@ import type {
   NamespaceClientInput,
   PipelinePluginFactory,
   PluginExports,
+  RagAccess,
+  RagCaller,
   SubAgentRegistry,
 } from '@mcp-abap-adt/llm-agent';
 import {
@@ -253,7 +257,16 @@ export interface SmartServerCircuitBreakerConfig {
   recoveryWindowMs?: number;
 }
 
+export class ServerConfigError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ServerConfigError';
+  }
+}
+
 export interface SmartServerConfig {
+  callerResolver: IRagCallerResolver;
+  ragAccess: RagAccess;
   port?: number;
   host?: string;
   llm?: SmartServerLlmConfig | Record<string, SmartServerLlmConfig>;
@@ -463,7 +476,7 @@ export interface SmartServerWorkerLlmKeys {
  *  is shorthand for `{ main: <key> }`. An inline LLM configuration is refused. */
 export type SmartServerWorkerConfig = Omit<
   SmartServerConfig,
-  'log' | 'llm' | 'subAgentConfigs'
+  'log' | 'llm' | 'subAgentConfigs' | 'callerResolver' | 'ragAccess'
 > & { llm?: string | SmartServerWorkerLlmKeys };
 
 /**
@@ -1070,6 +1083,16 @@ export class SmartServer {
 
   constructor(config: SmartServerConfig, deps: BuildAgentDeps) {
     assertConstructionSeams(deps);
+    if (
+      !config.callerResolver?.resolve ||
+      !config.ragAccess?.decision?.canRead ||
+      !config.ragAccess.decision.canWrite ||
+      !config.ragAccess.roles?.rolesOf ||
+      !config.ragAccess.roles.listRoles ||
+      !config.ragAccess.bindings?.bind
+    ) {
+      throw new ServerConfigError('callerResolver and ragAccess are required');
+    }
     this.cfg = config;
     assertRagConfigShape(config.rag, 'rag');
     for (const sub of config.subAgentConfigs ?? []) {
@@ -1725,7 +1748,7 @@ export class SmartServer {
     // was hoisted UNCONDITIONALLY above via buildSharedPipelineInfra so every
     // pipeline's buildServerCtx resolves its dep-sources.)
 
-    const agentHandle = await builder.build();
+    const agentHandle = await builder.build().then(unwrapBuilderResult);
     const {
       agent: smartAgent,
       chat,
@@ -1857,8 +1880,7 @@ export class SmartServer {
       // hydrated for its identity (§6.4). Never the shared one: collections are
       // addressed by name, so sharing it would put every session's collections
       // in every session's address space. Hydration finds nothing until a
-      // provider is registered, and no user collection while sessions carry no
-      // userId — see the limits stated above.
+      // provider is registered; records are checked against the trusted caller.
       ragRegistryFactory: (identity) => this._sessionRagRegistry(identity),
       buildAgent: (parts) => this.buildSessionAgent(parts),
       logger: fileLogger,
@@ -1997,7 +2019,7 @@ export class SmartServer {
     try {
       inst = await this.buildPipelineInstance({
         sessionId: 'embedded',
-        parts: this._embeddedSessionParts(
+        parts: await this._embeddedSessionParts(
           infra.globalMcpClients,
           infra.globalRagRegistry,
         ),
@@ -2033,11 +2055,13 @@ export class SmartServer {
    * seam won — so the embedded path carries the same descriptor pairing the
    * per-session lifecycle now does.
    */
-  private _embeddedSessionParts(
+  private async _embeddedSessionParts(
     mcpClients: IMcpClient[] | undefined,
     ragRegistry: IRagRegistry,
-  ): SessionAgentParts {
+  ): Promise<SessionAgentParts> {
+    const caller = await this.resolveCaller('embedded', {});
     return {
+      caller,
       sessionId: 'embedded',
       mcpClients: mcpClients ?? this._sharedMcpClients ?? [],
       mcpClientDescriptors: this._sharedMcpClientDescriptors,
@@ -2220,6 +2244,7 @@ export class SmartServer {
       prompts: subCfg.prompts,
       skipModelValidation: subCfg.skipModelValidation,
     })
+      .withRagAccess(this.cfg.ragAccess)
       .withMainLlm(mainLlm)
       .withClassifierLlm(classifierLlm)
       .withLogger(parentLogger)
@@ -2276,7 +2301,7 @@ export class SmartServer {
       subBuilder = subBuilder.withRetrievalStrategy(key, strategy);
     }
 
-    const handle = await subBuilder.build();
+    const handle = await subBuilder.build().then(unwrapBuilderResult);
 
     // Backfill the per-worker cache from the BUILT handle (review HIGH #7).
     // Only runs on the primary build path (no `injected`) so per-session
@@ -2914,6 +2939,7 @@ export class SmartServer {
       prompts: this.cfg.prompts,
       skipModelValidation: this.cfg.skipModelValidation,
     })
+      .withRagAccess(this.cfg.ragAccess)
       .withMainLlm(parts.mainLlm)
       .withClassifierLlm(parts.classifierLlm)
       .withLogger(parts.fileLogger)
@@ -3022,6 +3048,47 @@ export class SmartServer {
     return builder;
   }
 
+  async resolveCaller(
+    sessionId: string,
+    headers: Readonly<Record<string, string | readonly string[] | undefined>>,
+  ): Promise<RagCaller> {
+    const identity = await this.cfg.callerResolver.resolve(sessionId, headers);
+    if (
+      !identity.ok ||
+      !identity.value.userId?.trim() ||
+      typeof identity.value.isAdmin !== 'boolean'
+    )
+      throw new Error('Caller refused');
+    const caller: RagCaller = {
+      sessionId,
+      userId: identity.value.userId,
+      isAdmin: identity.value.isAdmin,
+    };
+    const bound = await this.cfg.ragAccess.bindings.bind(
+      sessionId,
+      caller.userId,
+    );
+    if (!bound.ok) throw bound.error;
+    return caller;
+  }
+
+  private async _refreshSessionRagRegistry(
+    caller: RagCaller,
+    registry: IRagRegistry,
+  ): Promise<void> {
+    if (!this._globalRagRegistry) return;
+    await buildSessionRagRegistry({
+      identity: caller,
+      caller,
+      ragAccess: this.cfg.ragAccess,
+      globals: this._globalRagRegistry,
+      providers: this._ragProviderRegistry,
+      logger: this._fileLogger,
+      reported: this._reportedCatalogFindings,
+      registry,
+    });
+  }
+
   /** The registry one session owns; see buildSessionRagRegistry. */
   private _sessionRagRegistry(
     identity: SessionGraphIdentity,
@@ -3033,6 +3100,8 @@ export class SmartServer {
     }
     return buildSessionRagRegistry({
       identity,
+      caller: { ...identity, isAdmin: identity.isAdmin === true },
+      ragAccess: this.cfg.ragAccess,
       globals: this._globalRagRegistry,
       providers: this._ragProviderRegistry,
       logger: this._fileLogger,
@@ -3099,52 +3168,58 @@ export class SmartServer {
       graph: SessionGraph,
       sessionId: string,
       traceId: string,
+      caller: RagCaller,
     ) => Promise<void>,
   ): Promise<void> {
+    let graph: SessionGraph | undefined;
+    let sessionId: string | undefined;
     const lifecycle = this._lifecycle;
-    if (!lifecycle) {
-      throw new Error('SmartServer lifecycle not initialized');
-    }
-    const traceId = randomUUID();
-    const isHttps =
-      (req.socket as { encrypted?: boolean }).encrypted === true ||
-      req.headers['x-forwarded-proto'] === 'https';
-    const resolved = lifecycle.resolve(req.headers['cookie'], isHttps);
-    const sessionId = resolved.identity.sessionId;
-    if (resolved.minted && resolved.setCookie) {
-      res.setHeader('Set-Cookie', resolved.setCookie);
-    }
-    const graph = await lifecycle.acquire(sessionId);
-    // Register/touch the session in the meta store so /v1/sessions, resume and
-    // delete reflect real chat/stream traffic (review Finding 3). Best-effort:
-    // a meta-store hiccup must never break the actual request.
     try {
+      if (!lifecycle) throw new Error('SmartServer lifecycle not initialized');
+      const traceId = randomUUID();
+      const isHttps =
+        (req.socket as { encrypted?: boolean }).encrypted === true ||
+        req.headers['x-forwarded-proto'] === 'https';
+      const resolved = lifecycle.resolve(req.headers['cookie'], isHttps);
+      sessionId = resolved.identity.sessionId;
+      if (resolved.minted && resolved.setCookie) {
+        res.setHeader('Set-Cookie', resolved.setCookie);
+      }
+      const caller = await this.resolveCaller(sessionId, req.headers);
+      graph = await lifecycle.acquire(caller);
+      if (graph.ragRegistry)
+        await this._refreshSessionRagRegistry(caller, graph.ragRegistry);
       await recordSessionStart(
         this._sessionMetaStore,
         sessionId,
         new Date().toISOString(),
+        caller.userId,
       );
-    } catch {
-      // swallow — session metadata is non-critical to serving the request
-    }
-    try {
-      await fn(graph, sessionId, traceId);
-    } finally {
       try {
-        await recordSessionEnd(
-          this._sessionMetaStore,
-          sessionId,
-          new Date().toISOString(),
-        );
-      } catch {
-        // swallow — see above
+        await fn(graph, sessionId, traceId, caller);
+      } finally {
+        try {
+          await recordSessionEnd(
+            this._sessionMetaStore,
+            sessionId,
+            new Date().toISOString(),
+          );
+        } finally {
+          graph.logger.dropRequest(traceId);
+          // Pass the graph instance — `invalidateAll()` may have detached this
+          // graph into the draining map while the request was in flight; we must
+          // release THIS specific instance, not whatever currently lives under
+          // `sessionId` in the registry.
+          lifecycle.release(sessionId, graph);
+          graph = undefined;
+        }
       }
-      graph.logger.dropRequest(traceId);
-      // Pass the graph instance — `invalidateAll()` may have detached this
-      // graph into the draining map while the request was in flight; we must
-      // release THIS specific instance, not whatever currently lives under
-      // `sessionId` in the registry.
-      lifecycle.release(sessionId, graph);
+    } catch {
+      if (graph && sessionId) lifecycle?.release(sessionId, graph);
+      if (!res.headersSent)
+        res.writeHead(403, { 'Content-Type': 'application/json' });
+      if (!res.writableEnded)
+        res.end(JSON.stringify({ error: 'Access denied' }));
     }
   }
 
@@ -3316,13 +3391,13 @@ export class SmartServer {
         await rc.server._withSession(
           rc.req,
           rc.res,
-          async (graph, sessionId, traceId) => {
+          async (graph, sessionId, traceId, caller) => {
             await handleAdapterRequest(
               rc.req,
               rc.res,
               graph.agent ?? rc.smartAgent,
               anthropicAdapter,
-              { sessionId, traceId, graph },
+              { sessionId, traceId, graph, caller },
               this.cfg.agent?.heartbeatIntervalMs,
               rc.log,
             );
@@ -3342,7 +3417,7 @@ export class SmartServer {
         await rc.server._withSession(
           rc.req,
           rc.res,
-          async (graph, sessionId, traceId) => {
+          async (graph, sessionId, traceId, caller) => {
             await handleChat(
               rc.req,
               rc.res,
@@ -3352,7 +3427,7 @@ export class SmartServer {
               rc.streamChat,
               rc.log,
               rc.modelProvider,
-              { sessionId, traceId, graph },
+              { sessionId, traceId, graph, caller },
               this.cfg,
             );
           },

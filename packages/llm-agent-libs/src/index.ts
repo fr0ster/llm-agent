@@ -1,3 +1,5 @@
+export type { OwnedRagStore } from './rag/owner-bound-query.js';
+export { ownerBoundQuery } from './rag/owner-bound-query.js';
 /**
  * @mcp-abap-adt/llm-agent-libs — core SmartAgent composition surface.
  *
@@ -32,11 +34,14 @@ export {
 // Builder + agent
 // ---------------------------------------------------------------------------
 export {
+  BuilderConfigError,
   type BuilderMcpConfig,
   type BuilderPromptsConfig,
   SmartAgentBuilder,
   type SmartAgentBuilderConfig,
+  type SmartAgentBuildResult,
   type SmartAgentHandle,
+  unwrapBuilderResult,
 } from './builder.js';
 // ---------------------------------------------------------------------------
 // Config

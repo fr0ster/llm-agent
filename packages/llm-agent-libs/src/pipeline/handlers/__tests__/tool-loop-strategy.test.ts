@@ -31,6 +31,7 @@ import type {
   ToolCallEntry,
 } from '@mcp-abap-adt/llm-agent';
 import { type McpError, NoopToolCache } from '@mcp-abap-adt/llm-agent';
+import { testRagAccess } from '@mcp-abap-adt/llm-agent/testing/rag-access-testing';
 import { WindowContextStrategy } from '../../../pipeline/context/tool-loop-context/index.js';
 import { PendingToolResultsRegistry } from '../../../policy/pending-tool-results-registry.js';
 import { ToolAvailabilityRegistry } from '../../../policy/tool-availability-registry.js';
@@ -148,6 +149,7 @@ function makeFlatnessCtx(
   };
   const options: CallOptions = {} as unknown as CallOptions;
   return {
+    ragAccess: testRagAccess(),
     config: {
       maxIterations: 10,
       maxToolCalls: 20,
@@ -278,6 +280,7 @@ function makeRepromptCtx(
   const options: CallOptions = {} as unknown as CallOptions;
   let validateCall = 0;
   return {
+    ragAccess: testRagAccess(),
     config: {
       maxIterations: 5,
       maxToolCalls: 10,

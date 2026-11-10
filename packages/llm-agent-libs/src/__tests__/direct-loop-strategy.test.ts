@@ -1,3 +1,4 @@
+import { testCallOptions } from '../testing/index.js';
 /**
  * Task 9 — SmartAgent._runStreamingToolLoop forms per-round context via
  * IToolLoopContextStrategy (mirrors Task 8 for the pipeline ToolLoopHandler).
@@ -113,7 +114,10 @@ test('direct loop: context length does not grow with K when WindowContextStrateg
     refreshToolsPerIteration: false,
   });
 
-  await agent.process('read table', { sessionId: 'direct-flatness' });
+  await agent.process(
+    'read table',
+    testCallOptions({ sessionId: 'direct-flatness' }),
+  );
 
   assert.equal(
     capturedMessages.length,
@@ -192,7 +196,10 @@ test('direct loop: reprompt correction survives into next LLM call after form()'
 
   const agent = new SmartAgent(deps, { maxIterations: 5 });
 
-  await agent.process('do something', { sessionId: 'direct-reprompt' });
+  await agent.process(
+    'do something',
+    testCallOptions({ sessionId: 'direct-reprompt' }),
+  );
 
   assert.equal(capturedMessages.length, 2, 'expected exactly 2 LLM calls');
 
@@ -300,7 +307,10 @@ test('direct loop: reprompt correction is pruned from controlTail after next rec
     refreshToolsPerIteration: false,
   });
 
-  await agent.process('do something', { sessionId: 'direct-prune' });
+  await agent.process(
+    'do something',
+    testCallOptions({ sessionId: 'direct-prune' }),
+  );
 
   // 3 LLM calls: bad output, tool call, final content
   assert.equal(capturedMessages.length, 3, 'expected exactly 3 LLM calls');

@@ -1,10 +1,12 @@
-import { OrchestratorError } from '@mcp-abap-adt/llm-agent';
+import { type IRagRegistry, OrchestratorError } from '@mcp-abap-adt/llm-agent';
 import type { SmartAgent } from '../agent.js';
 import type { SessionRequestLogger } from '../logger/session-request-logger.js';
 import type { PendingToolResultsRegistry } from '../policy/pending-tool-results-registry.js';
 import type { ToolAvailabilityRegistry } from '../policy/tool-availability-registry.js';
 
 export interface SessionGraphParts {
+  readonly userId?: string;
+  readonly ragRegistry?: IRagRegistry;
   readonly sessionId: string;
   /** sessionId-keyed registries hoisted out of per-request pipeline creation. */
   readonly toolAvailability: ToolAvailabilityRegistry;
@@ -25,6 +27,8 @@ export interface SessionGraphParts {
  * mark-for-disposal "drain" so a pinned graph is torn down once it goes idle.
  */
 export class SessionGraph {
+  readonly userId: string | undefined;
+  readonly ragRegistry: IRagRegistry | undefined;
   readonly sessionId: string;
   readonly toolAvailability: ToolAvailabilityRegistry;
   readonly pendingToolResults: PendingToolResultsRegistry;
@@ -37,6 +41,8 @@ export class SessionGraph {
   private _disposed = false;
 
   constructor(parts: SessionGraphParts) {
+    this.userId = parts.userId;
+    this.ragRegistry = parts.ragRegistry;
     this.sessionId = parts.sessionId;
     this.toolAvailability = parts.toolAvailability;
     this.pendingToolResults = parts.pendingToolResults;

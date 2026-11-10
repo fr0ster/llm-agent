@@ -12,7 +12,7 @@ import type {
 } from '@mcp-abap-adt/llm-agent';
 import { McpError } from '@mcp-abap-adt/llm-agent';
 import { SmartAgent } from '../agent.js';
-import { makeDefaultDeps } from '../testing/index.js';
+import { makeDefaultDeps, testCallOptions } from '../testing/index.js';
 
 const TOOL: McpTool = {
   name: 'GetTable',
@@ -66,7 +66,7 @@ test('availability error in the tool loop fails the run (not tool text)', async 
   const { deps } = makeDefaultDeps({ mcpClients: [client] });
   deps.mainLlm = toolThenText('should not be reached');
   const agent = new SmartAgent(deps, { maxIterations: 5, mode: 'hard' });
-  const res = await agent.process('read table T');
+  const res = await agent.process('read table T', testCallOptions());
   assert.equal(res.ok, false, 'run must fail loud on MCP unavailability');
 });
 
@@ -78,6 +78,6 @@ test('a tool-level error does NOT fail the run (stays LLM feedback)', async () =
   const { deps } = makeDefaultDeps({ mcpClients: [client] });
   deps.mainLlm = toolThenText('the table does not exist');
   const agent = new SmartAgent(deps, { maxIterations: 5, mode: 'hard' });
-  const res = await agent.process('read table T');
+  const res = await agent.process('read table T', testCallOptions());
   assert.equal(res.ok, true, 'a tool-level error must stay LLM feedback');
 });

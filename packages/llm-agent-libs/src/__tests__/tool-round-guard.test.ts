@@ -9,12 +9,17 @@ import type {
 import { McpError, NoopToolCache } from '@mcp-abap-adt/llm-agent';
 import { type AgentCallOptions, SmartAgent } from '../agent.js';
 import { SmartAgentBuilder } from '../builder.js';
+import { unwrapBuilderResult } from '../builder-types.js';
 import { NoopMetrics } from '../metrics/noop-metrics.js';
 import { DefaultPipeline } from '../pipeline/default-pipeline.js';
 import { fireInternalToolsAsync } from '../policy/mixed-tool-call-handler.js';
 import { PendingToolResultsRegistry } from '../policy/pending-tool-results-registry.js';
 import type { ToolAvailabilityRegistry } from '../policy/tool-availability-registry.js';
-import { makeDefaultDeps } from '../testing/index.js';
+import {
+  makeDefaultDeps,
+  testCallOptions,
+  testRequestAccess,
+} from '../testing/index.js';
 
 for (const path of ['streaming', 'pipeline', 'mixed'] as const) {
   for (const mode of ['reject-one', 'throw', 'absent'] as const) {
@@ -102,18 +107,23 @@ for (const path of ['streaming', 'pipeline', 'mixed'] as const) {
           deps.mainLlm = llm;
           const result = await new SmartAgent(deps, {
             maxIterations: 3,
-          }).process('go', options);
+          }).process('go', testCallOptions(options));
           assert.ok(result.ok);
         } else {
           const handle = await new SmartAgentBuilder({
             skipModelValidation: true,
           })
+            .withRagAccess(testRequestAccess)
             .withMainLlm(llm)
             .withMcpClients([client])
             .setPipeline(new DefaultPipeline())
-            .build();
+            .build()
+            .then(unwrapBuilderResult);
           try {
-            const result = await handle.agent.process('go', options);
+            const result = await handle.agent.process(
+              'go',
+              testCallOptions(options),
+            );
             assert.ok(result.ok);
           } finally {
             await handle.close();
@@ -253,10 +263,12 @@ for (const path of ['streaming', 'pipeline'] as const) {
       const handle =
         path === 'pipeline'
           ? await new SmartAgentBuilder({ skipModelValidation: true })
+              .withRagAccess(testRequestAccess)
               .withMainLlm(llm)
               .withMcpClients([client])
               .setPipeline(new DefaultPipeline())
               .build()
+              .then(unwrapBuilderResult)
           : undefined;
       const agent = handle?.agent ?? new SmartAgent(deps, { maxIterations: 5 });
       if (mode === 'blocked-round') {
@@ -270,7 +282,10 @@ for (const path of ['streaming', 'pipeline'] as const) {
       }
       const surfaced: string[] = [];
       try {
-        for await (const chunk of agent.streamProcess('go', options)) {
+        for await (const chunk of agent.streamProcess(
+          'go',
+          testCallOptions(options),
+        )) {
           assert.ok(chunk.ok);
           if (chunk.ok)
             for (const call of chunk.value.toolCalls ?? []) {

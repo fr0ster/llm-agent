@@ -64,6 +64,7 @@ import {
   type RagScanFilter,
   type RagScanRecord,
 } from '../interfaces/rag-scan.js';
+import { seedLegacyRagRecord } from './rag-filter-conformance.js';
 
 export {
   CONFORMANCE_EMBEDDING_DIM,
@@ -143,8 +144,7 @@ async function seed(store: IRag, rows: readonly Row[]): Promise<void> {
   const writer = store.writer?.();
   if (!writer) throw new Error('store under test exposes no writer()');
   for (const [id, metadata] of rows) {
-    const res = await writer.upsertRaw(id, textFor(id), metadata);
-    if (!res.ok) throw res.error;
+    await seedLegacyRagRecord(store, id, textFor(id), metadata);
   }
 }
 

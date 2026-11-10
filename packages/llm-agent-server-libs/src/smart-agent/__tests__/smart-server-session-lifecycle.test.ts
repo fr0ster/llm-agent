@@ -42,7 +42,7 @@ test('first request mints a cookie; dispose closes session collections on the sh
   assert.equal(created.ok, true);
   assert.ok(ragRegistry.get('c'));
 
-  const g = await lc.acquire(sid);
+  const g = await lc.acquire({ sessionId: sid, userId: 'test-user' });
   assert.equal(g.isPinned, true);
   lc.release(sid);
   await lc.evictIdle();
@@ -127,7 +127,7 @@ test('dropRequest frees the delta but session-cumulative survives (server-owned 
     ragRegistry: makeRagRegistry(),
     buildAgent: async () => undefined,
   });
-  const g = await lc.acquire('s1');
+  const g = await lc.acquire({ sessionId: 's1', userId: 'test-user' });
   g.logger.startRequest('t');
   g.logger.logLlmCall({
     component: 'tool-loop' as never,

@@ -13,6 +13,7 @@ export { assertClientDescriptors } from './interfaces/assert-client-descriptors.
 export { collectServerDescriptors } from './interfaces/collect-server-descriptors.js';
 export * from './interfaces/index.js';
 export { mcpServerFromFactory } from './interfaces/mcp-server-from-factory.js';
+export * from './interfaces/rag-access.js';
 export { BaseLLMProvider, type LLMProvider } from './llm/base-llm-provider.js';
 export {
   findThrottled,
@@ -86,12 +87,19 @@ export { FallbackLlmCallStrategy } from './policy/fallback-llm-call-strategy.js'
 export { NonStreamingLlmCallStrategy } from './policy/non-streaming-llm-call-strategy.js';
 export { StreamingLlmCallStrategy } from './policy/streaming-llm-call-strategy.js';
 export {
+  checkRagAccess,
+  visibleOwnerFilter,
+} from './rag/access/check-access.js';
+export { InMemoryRagRoleStore } from './rag/access/in-memory-role-store.js';
+export { InMemorySessionBindingStore } from './rag/access/in-memory-session-binding-store.js';
+export {
   decodeListCursor,
   encodeListCursor,
   listCursorScope,
   listMetadata,
   prepareList,
 } from './rag/list-support.js';
+export { stampRagOwner } from './rag/registry/owner-bound-editor.js';
 export {
   BatchChunkingEmbedder,
   DEFAULT_MAX_BATCH_SIZE,

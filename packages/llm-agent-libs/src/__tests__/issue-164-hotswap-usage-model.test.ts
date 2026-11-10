@@ -21,7 +21,12 @@ import type { LlmError, LlmStreamChunk, Result } from '@mcp-abap-adt/llm-agent';
 import { SmartAgent } from '../agent.js';
 import { SessionRequestLogger } from '../logger/session-request-logger.js';
 import { DefaultPipeline } from '../pipeline/default-pipeline.js';
-import { makeAssembler, makeClassifier } from '../testing/index.js';
+import {
+  makeAssembler,
+  makeClassifier,
+  testCallOptions,
+  testRequestAccess,
+} from '../testing/index.js';
 
 /** A clean-answer stub LLM with a stable `.model` and reported usage. */
 function makeAnswerLlm(model: string) {
@@ -54,6 +59,7 @@ function makeAgent(llm: ReturnType<typeof makeAnswerLlm>) {
   const requestLogger = new SessionRequestLogger();
   const pipeline = new DefaultPipeline();
   pipeline.initialize({
+    ragAccess: testRequestAccess,
     mainLlm: llm,
     mcpClients: [],
     classifier: makeClassifier([{ type: 'action', text: 'do the thing' }]),
@@ -63,6 +69,7 @@ function makeAgent(llm: ReturnType<typeof makeAnswerLlm>) {
 
   const agent = new SmartAgent(
     {
+      ragAccess: testRequestAccess,
       mainLlm: llm,
       mcpClients: [],
       ragStores: {},
@@ -83,7 +90,10 @@ describe('Issue #164 — usage.models follows the hot-swapped model', () => {
 
     // ---- Request 1: model-A ----
     const trace1 = { traceId: 'trace-1' };
-    const r1 = await agent.process('first request', { trace: trace1 });
+    const r1 = await agent.process(
+      'first request',
+      testCallOptions({ trace: trace1 }),
+    );
     assert.ok(
       r1.ok,
       `request 1 should succeed: ${!r1.ok ? r1.error.message : ''}`,
@@ -104,7 +114,10 @@ describe('Issue #164 — usage.models follows the hot-swapped model', () => {
 
     // ---- Request 2: model-B ----
     const trace2 = { traceId: 'trace-2' };
-    const r2 = await agent.process('second request', { trace: trace2 });
+    const r2 = await agent.process(
+      'second request',
+      testCallOptions({ trace: trace2 }),
+    );
     assert.ok(
       r2.ok,
       `request 2 should succeed: ${!r2.ok ? r2.error.message : ''}`,

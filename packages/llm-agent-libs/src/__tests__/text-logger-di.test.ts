@@ -12,6 +12,8 @@ import type {
   Result,
 } from '@mcp-abap-adt/llm-agent';
 import { symmetricEmbedder } from '@mcp-abap-adt/llm-agent';
+import { testRagAccess } from '@mcp-abap-adt/llm-agent/testing/rag-access-testing';
+import { unwrapBuilderResult } from '../builder-types.js';
 
 /** Always fails validation — the startup path is the one that logs. */
 function failingLlm(): ILlm {
@@ -73,10 +75,12 @@ describe('SmartAgentBuilder.withLogger() — text logger', () => {
           modelValidationAttempts: 2,
           modelValidationBackoffMs: 1,
         })
+          .withRagAccess(testRagAccess())
           .withMainLlm(failingLlm())
           .withEmbedder(symmetricEmbedder(stubEmbedder()))
           .withLogger(logger)
-          .build(),
+          .build()
+          .then(unwrapBuilderResult),
       /Startup aborted/,
     );
 
@@ -102,10 +106,12 @@ describe('SmartAgentBuilder.withLogger() — text logger', () => {
           modelValidationAttempts: 2,
           modelValidationBackoffMs: 1,
         })
+          .withRagAccess(testRagAccess())
           .withMainLlm(failingLlm())
           .withEmbedder(symmetricEmbedder(stubEmbedder()))
           .withLogger({ log: (e: LogEvent) => void events.push(e) })
-          .build(),
+          .build()
+          .then(unwrapBuilderResult),
       /Startup aborted/,
     );
 
@@ -137,7 +143,7 @@ describe('SessionGraphFactory with a text logger', () => {
       logger,
     });
 
-    const graph = await factory.build({ sessionId: 's1' });
+    const graph = await factory.build({ sessionId: 's1', userId: 'test-user' });
     await graph.dispose();
 
     assert.ok(

@@ -5,6 +5,7 @@ import type {
   ISubAgent,
   TaskRecord,
 } from '@mcp-abap-adt/llm-agent';
+import { testCallOptions } from '../../../testing/index.js';
 import { runInPlannerScope } from '../planner-scope.js';
 import { PlannerToolsClient } from '../planner-tools-client.js';
 import { ProfilePlanAuthor } from '../profile-plan-author.js';
@@ -75,6 +76,8 @@ for (const mode of [
       assert.equal(plan.steps[0].worker, undefined);
     }
     const board = new TaskBoard({
+      caller: testCallOptions({ sessionId: 'test-session' }).caller,
+      baseInput: () => testCallOptions({ sessionId: 'test-session' }),
       ...host,
       onEvent: (event) => applyTaskEvent(plan, event),
     });
@@ -244,6 +247,8 @@ for (const mode of [
     const contexts: string[] = [];
     const worker = mode === 'check' ? 'audit' : 'reader';
     const board = new TaskBoard({
+      caller: testCallOptions({ sessionId: 'test-session' }).caller,
+      baseInput: () => testCallOptions({ sessionId: 'test-session' }),
       taskOutputChars: 130_000,
       ...profileHost(
         new Map<string, ISubAgent>([

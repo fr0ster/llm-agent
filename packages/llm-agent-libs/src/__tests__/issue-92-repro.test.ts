@@ -14,7 +14,12 @@ import { describe, it } from 'node:test';
 import type { LlmError, LlmStreamChunk, Result } from '@mcp-abap-adt/llm-agent';
 import { SmartAgent } from '../agent.js';
 import { DefaultPipeline } from '../pipeline/default-pipeline.js';
-import { makeAssembler, makeClassifier } from '../testing/index.js';
+import {
+  makeAssembler,
+  makeClassifier,
+  testCallOptions,
+  testRequestAccess,
+} from '../testing/index.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -128,6 +133,7 @@ function makeStreamingDeltaLlm() {
 function makeAgent(llm: ReturnType<typeof makeSingleChunkLlm>) {
   const pipeline = new DefaultPipeline();
   pipeline.initialize({
+    ragAccess: testRequestAccess,
     mainLlm: llm,
     mcpClients: [],
     classifier: makeClassifier([{ type: 'action', text: 'generate a file' }]),
@@ -136,6 +142,7 @@ function makeAgent(llm: ReturnType<typeof makeSingleChunkLlm>) {
 
   return new SmartAgent(
     {
+      ragAccess: testRequestAccess,
       mainLlm: llm,
       mcpClients: [],
       ragStores: {},
@@ -154,9 +161,12 @@ function makeAgent(llm: ReturnType<typeof makeSingleChunkLlm>) {
 describe('Issue #92 — DefaultPipeline external tool_calls', () => {
   it('process() returns toolCalls with single-chunk LLM response', async () => {
     const agent = makeAgent(makeSingleChunkLlm());
-    const r = await agent.process('Generate a file test.md', {
-      externalTools: [EXTERNAL_TOOL],
-    });
+    const r = await agent.process(
+      'Generate a file test.md',
+      testCallOptions({
+        externalTools: [EXTERNAL_TOOL],
+      }),
+    );
 
     assert.ok(
       r.ok,
@@ -176,9 +186,12 @@ describe('Issue #92 — DefaultPipeline external tool_calls', () => {
 
   it('process() returns toolCalls with multi-delta streaming LLM', async () => {
     const agent = makeAgent(makeStreamingDeltaLlm());
-    const r = await agent.process('Generate a file test.md', {
-      externalTools: [EXTERNAL_TOOL],
-    });
+    const r = await agent.process(
+      'Generate a file test.md',
+      testCallOptions({
+        externalTools: [EXTERNAL_TOOL],
+      }),
+    );
 
     assert.ok(
       r.ok,
@@ -200,9 +213,12 @@ describe('Issue #92 — DefaultPipeline external tool_calls', () => {
   it('streamProcess() yields external tool deltas with multi-delta streaming', async () => {
     const agent = makeAgent(makeStreamingDeltaLlm());
     const chunks: LlmStreamChunk[] = [];
-    for await (const chunk of agent.streamProcess('Generate a file test.md', {
-      externalTools: [EXTERNAL_TOOL],
-    })) {
+    for await (const chunk of agent.streamProcess(
+      'Generate a file test.md',
+      testCallOptions({
+        externalTools: [EXTERNAL_TOOL],
+      }),
+    )) {
       if (chunk.ok) chunks.push(chunk.value);
     }
 

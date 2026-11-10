@@ -6,10 +6,11 @@
  * A store that ignores them lets one user's records surface in another
  * user's context. The contract:
  *
- * - `ragFilter.sessionId` set → only records whose `metadata.sessionId`
- *   equals it; a record without `sessionId` is excluded.
- * - `ragFilter.userId` set → the same for `metadata.userId`.
- * - both set → both must match; neither set → no identity filtering.
+ * - every owner query requires a positive metadata.ownerScope tag;
+ * - the typed owner union selects session/user/role/global and the required id;
+ * - legacy sessionId/userId/roleId options select that positive scope too;
+ * - missing tags, conflicting keys and scope/id mismatches stay closed;
+ * - compound scalar filters must all match, without changing record ownership;
  * - the filter applies BEFORE top-k: a filtered query still returns up to `k`
  *   matching records.
  *
@@ -38,6 +39,12 @@
 import assert from 'node:assert/strict';
 import type { IEmbedder, IRag } from '../interfaces/rag.js';
 import type { CallOptions, RagMetadata } from '../interfaces/types.js';
+import { tagRagMetadata } from '../rag/identity-filter.js';
+import { buildRagCollectionToolEntries } from '../rag/mcp-tools/rag-collection-tools.js';
+import { SimpleRagRegistry } from '../rag/registry/simple-rag-registry.js';
+import { DirectEditStrategy } from '../rag/strategies/edit/direct.js';
+import { GlobalUniqueIdStrategy } from '../rag/strategies/id/global-unique.js';
+import { testRagAccess } from './rag-access-testing.js';
 
 /** A record a conformance case seeds. `metadata.id` identifies it in results. */
 export interface ConformanceRecord {
@@ -96,9 +103,21 @@ export function conformanceEmbedder(): IEmbedder {
 async function seed(rag: IRag, records: ConformanceRecord[]): Promise<void> {
   const writer = rag.writer?.();
   if (!writer) throw new Error('store under test exposes no writer()');
+  if (
+    records.every((r) => tagRagMetadata(r.metadata).ownerScope === 'invalid')
+  ) {
+    const initialized = await writer.upsertRaw(
+      '__expired_fixture__',
+      'expired fixture',
+      { ttl: -1 },
+    );
+    if (!initialized.ok) throw initialized.error;
+  }
   for (const r of records) {
     const res = await writer.upsertRaw(r.id, r.text, r.metadata);
-    if (!res.ok) throw res.error;
+    if (tagRagMetadata(r.metadata).ownerScope === 'invalid')
+      assert.equal(res.ok, false);
+    else if (!res.ok) throw res.error;
   }
 }
 
@@ -124,6 +143,127 @@ async function queryIds(
 const Q = 'quarterly revenue forecast';
 
 export const ragFilterConformanceCases: readonly RagFilterConformanceCase[] = [
+  ...(['session', 'user', 'role', 'global'] as const).map(
+    (scope): RagFilterConformanceCase => ({
+      name: `registry collection tools add/correct/deprecate preserve ${scope} ownership`,
+      async run(makeStore) {
+        const rag = await makeStore();
+        const writer = rag.writer?.();
+        assert.ok(writer);
+        const owner =
+          scope === 'session'
+            ? { scope, sessionId: 'owner-session' }
+            : scope === 'user'
+              ? { scope, userId: 'owner-user' }
+              : scope === 'role'
+                ? { scope, roleId: 'owner-role' }
+                : { scope };
+        const registry = new SimpleRagRegistry();
+        registry.setProviderRegistry({
+          getProvider: () => ({
+            name: 'test',
+            kind: 'memory',
+            editable: true,
+            supportedScopes: [scope],
+            createCollection: async () => ({
+              ok: true,
+              value: {
+                rag,
+                editor: new DirectEditStrategy(
+                  writer,
+                  new GlobalUniqueIdStrategy(),
+                ),
+              },
+            }),
+          }),
+          registerProvider: () => {},
+          listProviders: () => [],
+        });
+        assert.ok(
+          (
+            await registry.createCollection({
+              providerName: 'test',
+              collectionName: 'docs',
+              ...owner,
+            })
+          ).ok,
+        );
+        const caller = {
+          sessionId: 'owner-session',
+          userId: 'owner-user',
+          isAdmin: true,
+        };
+        const access = testRagAccess([caller]);
+        if (scope === 'role') {
+          assert.ok(
+            (
+              await access.roles.createRole({
+                roleId: 'owner-role',
+                name: 'Owner',
+              })
+            ).ok,
+          );
+          assert.ok(
+            (await access.roles.assign(caller.userId, 'owner-role')).ok,
+          );
+        }
+        const tools = buildRagCollectionToolEntries({
+          registry,
+          caller,
+          access,
+        });
+        const invoke = async (name: string, args: Record<string, string>) => {
+          const tool = tools.find(
+            (entry) => entry.toolDefinition.name === name,
+          );
+          assert.ok(tool);
+          const result = await tool.handler(
+            {},
+            { collection: 'docs', scope, ...args },
+          );
+          assert.ok(
+            result &&
+              typeof result === 'object' &&
+              'ok' in result &&
+              result.ok === true,
+          );
+          return result;
+        };
+        const added = await invoke('rag_add', {
+          text: Q,
+          canonicalKey: 'record',
+        });
+        assert.ok('id' in added && typeof added.id === 'string');
+        assert.deepEqual(await queryIds(rag, Q, 10, { owner }), [added.id]);
+        const corrected = await invoke('rag_correct', {
+          predecessorId: added.id,
+          predecessorCanonicalKey: 'record',
+          newText: `${Q} corrected`,
+          reason: 'fix',
+        });
+        assert.ok('newId' in corrected && typeof corrected.newId === 'string');
+        assert.ok(
+          (await queryIds(rag, Q, 10, { owner })).includes(corrected.newId),
+        );
+        await invoke('rag_deprecate', {
+          id: corrected.newId,
+          canonicalKey: 'record',
+          reason: 'obsolete',
+        });
+        assert.ok(
+          (await queryIds(rag, Q, 10, { owner })).includes(corrected.newId),
+        );
+        for (const foreign of [
+          { scope: 'session', sessionId: 'foreign' },
+          { scope: 'user', userId: 'foreign' },
+          { scope: 'role', roleId: 'foreign' },
+          ...(scope === 'global' ? [] : [{ scope: 'global' as const }]),
+        ] as const) {
+          assert.deepEqual(await queryIds(rag, Q, 10, { owner: foreign }), []);
+        }
+      },
+    }),
+  ),
   {
     name: 'sessionId filter isolates two sessions',
     async run(makeStore) {
@@ -165,7 +305,7 @@ export const ragFilterConformanceCases: readonly RagFilterConformanceCase[] = [
     },
   },
   {
-    name: 'sessionId and userId together must both match',
+    name: 'conflicting owner keys match no owner filter',
     async run(makeStore) {
       const rag = await makeStore();
       await seed(rag, [
@@ -187,7 +327,7 @@ export const ragFilterConformanceCases: readonly RagFilterConformanceCase[] = [
       ]);
       assert.deepEqual(
         await queryIds(rag, Q, 10, { sessionId: 's1', userId: 'u1' }),
-        ['s1u1'],
+        [],
       );
     },
   },
@@ -199,12 +339,12 @@ export const ragFilterConformanceCases: readonly RagFilterConformanceCase[] = [
         {
           id: 's1-a',
           text: 'hotel savanna acacia',
-          metadata: { sessionId: 's1', userId: 'u1' },
+          metadata: { sessionId: 's1' },
         },
         {
           id: 's2-a',
           text: 'india reef coral',
-          metadata: { sessionId: 's2', userId: 'u2' },
+          metadata: { sessionId: 's2' },
         },
       ]);
       assert.deepEqual(await queryIds(rag, Q, 10), ['s1-a', 's2-a']);
@@ -218,14 +358,14 @@ export const ragFilterConformanceCases: readonly RagFilterConformanceCase[] = [
         {
           id: 'owned',
           text: 'juliet canyon mesa',
-          metadata: { sessionId: 's1', userId: 'u1' },
+          metadata: { sessionId: 's1' },
         },
         { id: 'unowned', text: 'kilo prairie bison', metadata: {} },
       ]);
       assert.deepEqual(await queryIds(rag, Q, 10, { sessionId: 's1' }), [
         'owned',
       ]);
-      assert.deepEqual(await queryIds(rag, Q, 10, { userId: 'u1' }), ['owned']);
+      assert.deepEqual(await queryIds(rag, Q, 10, { userId: 'u1' }), []);
     },
   },
   {
@@ -410,3 +550,238 @@ export const ragFilterConformanceCases: readonly RagFilterConformanceCase[] = [
     },
   },
 ];
+
+/** Owner isolation cases opt in separately so backends outside this rollout retain their existing suite. */
+export const ragOwnerFilterConformanceCases: readonly RagFilterConformanceCase[] =
+  [
+    {
+      name: 'a record without ownerScope or with mismatched scope/id matches no owner filter',
+      async run(makeStore) {
+        const rag = await makeStore();
+        await seed(rag, [
+          {
+            id: 'missing',
+            text: Q,
+            metadata: { ownerScope: 'user', sessionId: 's' },
+          },
+          {
+            id: 'mismatch',
+            text: Q,
+            metadata: { ownerScope: 'session', userId: 'u' },
+          },
+          {
+            id: 'conflict',
+            text: Q,
+            metadata: { sessionId: 's', userId: 'u' },
+          },
+        ]);
+        for (const owner of [
+          { scope: 'session', sessionId: 's' },
+          { scope: 'user', userId: 'u' },
+          { scope: 'role', roleId: 'r' },
+          { scope: 'global' },
+        ] as const)
+          assert.deepEqual(await queryIds(rag, Q, 10, { owner }), []);
+      },
+    },
+    {
+      name: 'roleId filter isolates two roles',
+      async run(makeStore) {
+        const rag = await makeStore();
+        await seed(rag, [
+          {
+            id: 'r1',
+            text: 'alpha harbour lighthouse',
+            metadata: { roleId: 'r1' },
+          },
+          {
+            id: 'r2',
+            text: 'bravo mountain glacier',
+            metadata: { roleId: 'r2' },
+          },
+          { id: 'untagged', text: 'charlie desert oasis', metadata: {} },
+        ]);
+        for (const roleId of ['r1', 'r2'])
+          assert.deepEqual(await queryIds(rag, Q, 10, { roleId }), [roleId]);
+      },
+    },
+    ...(['sessionId', 'userId', 'roleId'] as const).map(
+      (key): RagFilterConformanceCase => ({
+        name: `${key} owner filter applies before top-k`,
+        async run(makeStore) {
+          const rag = await makeStore();
+          await seed(rag, [
+            { id: 'foreign1', text: Q, metadata: { [key]: 'foreign' } },
+            {
+              id: 'foreign2',
+              text: `${Q} europe`,
+              metadata: { [key]: 'foreign' },
+            },
+            {
+              id: 'own1',
+              text: 'lima penguin iceberg',
+              metadata: { [key]: 'own' },
+            },
+            {
+              id: 'own2',
+              text: 'bravo mountain glacier',
+              metadata: { [key]: 'own' },
+            },
+          ]);
+          assert.deepEqual(await queryIds(rag, Q, 2, { [key]: 'own' }), [
+            'own1',
+            'own2',
+          ]);
+        },
+      }),
+    ),
+    {
+      name: 'global query returns only positive global-tagged records and k counts only those',
+      async run(makeStore) {
+        const rag = await makeStore();
+        await seed(rag, [
+          ...(['sessionId', 'userId', 'roleId'] as const).flatMap((key) => [
+            { id: key, text: `${Q} ${key}`, metadata: { [key]: 'foreign' } },
+            {
+              id: `${key}-null`,
+              text: `${Q} null ${key}`,
+              metadata: { [key]: null },
+            },
+          ]),
+          { id: 'global1', text: 'lima penguin iceberg', metadata: {} },
+          { id: 'global2', text: 'bravo mountain glacier', metadata: {} },
+        ]);
+        assert.deepEqual(
+          await queryIds(rag, Q, 2, { owner: { scope: 'global' } }),
+          ['global1', 'global2'],
+        );
+        assert.deepEqual(
+          await queryIds(rag, Q, 20, { owner: { scope: 'global' } }),
+          ['global1', 'global2'],
+        );
+      },
+    },
+  ];
+
+/** Malformed stored records must be inserted through a backend raw hook, bypassing its writer. */
+export const conflictingOwnerRecords: readonly ConformanceRecord[] = [
+  {
+    id: 'global-user',
+    text: Q,
+    metadata: { ownerScope: 'global', userId: 'u' },
+  },
+  {
+    id: 'global-session',
+    text: Q,
+    metadata: { ownerScope: 'global', sessionId: 's' },
+  },
+  {
+    id: 'global-role',
+    text: Q,
+    metadata: { ownerScope: 'global', roleId: 'r' },
+  },
+  {
+    id: 'global-null',
+    text: Q,
+    metadata: { ownerScope: 'global', userId: null },
+  },
+  {
+    id: 'session-user',
+    text: Q,
+    metadata: { ownerScope: 'session', sessionId: 's', userId: 'u' },
+  },
+  {
+    id: 'session-role',
+    text: Q,
+    metadata: { ownerScope: 'session', sessionId: 's', roleId: 'r' },
+  },
+  {
+    id: 'user-role',
+    text: Q,
+    metadata: { ownerScope: 'user', userId: 'u', roleId: 'r' },
+  },
+  {
+    id: 'role-session',
+    text: Q,
+    metadata: { ownerScope: 'role', roleId: 'r', sessionId: 's' },
+  },
+];
+
+export async function ragRawOwnerConformanceCase(h: {
+  rag: IRag;
+  insertRaw(record: ConformanceRecord): Promise<void>;
+}): Promise<void> {
+  for (const record of conflictingOwnerRecords) await h.insertRaw(record);
+  for (const owner of [
+    { scope: 'global' },
+    { scope: 'session', sessionId: 's' },
+    { scope: 'user', userId: 'u' },
+    { scope: 'role', roleId: 'r' },
+  ] as const)
+    assert.deepEqual(await queryIds(h.rag, Q, 100, { owner }), []);
+  const writer = h.rag.writer?.();
+  assert.ok(writer);
+  for (const record of conflictingOwnerRecords) {
+    assert.equal(
+      (await writer.upsertRaw(record.id, record.text, record.metadata)).ok,
+      false,
+      `${record.id} must be refused`,
+    );
+    const vector = (await conformanceEmbedder().embed(record.text)).vector;
+    if (writer.upsertPrecomputedRaw)
+      assert.equal(
+        (
+          await writer.upsertPrecomputedRaw(
+            record.id,
+            record.text,
+            vector,
+            record.metadata,
+          )
+        ).ok,
+        false,
+      );
+    if (writer.upsertManyPrecomputedRaw)
+      assert.equal(
+        (await writer.upsertManyPrecomputedRaw([{ ...record, vector }])).ok,
+        false,
+      );
+  }
+}
+
+const rawRecordHooks = new WeakMap<
+  IRag,
+  (record: ConformanceRecord) => Promise<void>
+>();
+
+/** Test-only raw insertion seam for legacy scan/list fixtures with malformed ownership. */
+export function registerRawRecordInsert<T extends IRag>(
+  rag: T,
+  insert: (record: ConformanceRecord) => Promise<void>,
+): T {
+  rawRecordHooks.set(rag, insert);
+  return rag;
+}
+
+export async function seedLegacyRagRecord(
+  rag: IRag,
+  id: string,
+  text: string,
+  metadata: RagMetadata,
+): Promise<void> {
+  const hook = rawRecordHooks.get(rag);
+  if (tagRagMetadata(metadata).ownerScope === 'invalid' && hook) {
+    await hook({ id, text, metadata });
+    return;
+  }
+  const writer = rag.writer?.();
+  assert.ok(writer);
+  const invalid = tagRagMetadata(metadata).ownerScope === 'invalid';
+  const result = await writer.upsertRaw(id, text, invalid ? {} : metadata);
+  if (!result.ok) throw result.error;
+  if (invalid) {
+    // The memory backends return their stored metadata through unfiltered getById.
+    const stored = await rag.getById(id);
+    assert.ok(stored.ok && stored.value);
+    Object.assign(stored.value.metadata, metadata, { ownerScope: 'invalid' });
+  }
+}

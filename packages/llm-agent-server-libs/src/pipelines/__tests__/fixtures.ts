@@ -3,6 +3,7 @@ import {
   InMemoryKnowledgeBackend,
   SmartAgentBuilder,
 } from '@mcp-abap-adt/llm-agent-libs';
+import { testRequestAccess } from '../../../../llm-agent-libs/src/testing/index.js';
 import { makeKnowledgeSemanticIndex } from '../../smart-agent/embedder-knowledge-index.js';
 import type {
   IControllerServerPipelineContext,
@@ -35,7 +36,10 @@ export function fakeServerCtx(): IServerPipelineContext {
     mintStepperId: () => 's1',
     mintTurnId: () => 't1',
     createAgentBuilder: async () =>
-      new SmartAgentBuilder({}).withMainLlm(stubLlm).withMode('smart'),
+      new SmartAgentBuilder({})
+        .withRagAccess(testRequestAccess)
+        .withMainLlm(stubLlm)
+        .withMode('smart'),
     mainLlm: stubLlm,
     mainTemp: 0,
     workerRegistry: new Map([['worker', stubWorker]]),

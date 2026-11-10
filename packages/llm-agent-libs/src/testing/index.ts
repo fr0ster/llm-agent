@@ -1,3 +1,6 @@
+import { randomUUID } from 'node:crypto';
+import { tagRagMetadata } from '@mcp-abap-adt/llm-agent';
+import { testRagAccess } from '@mcp-abap-adt/llm-agent/testing/rag-access-testing';
 /**
  * Shared test-double factories for SmartAgent integration testing.
  *
@@ -50,6 +53,58 @@ import {
   ToolCache,
 } from '@mcp-abap-adt/llm-agent';
 import type { SmartAgent } from '../agent.js';
+import type { OwnedRagStore } from '../rag/owner-bound-query.js';
+
+export function ownedTestStores(
+  stores: Record<string, IRag | OwnedRagStore>,
+): Record<string, OwnedRagStore> {
+  return Object.fromEntries(
+    Object.entries(stores).map(([name, store]) => [
+      name,
+      'rag' in store
+        ? store
+        : {
+            name,
+            owner:
+              name === 'tools' ? { scope: 'internal' } : { scope: 'global' },
+            rag: store,
+          },
+    ]),
+  );
+}
+
+/** Explicit test request provisioning, shared with makeDefaultDeps only. */
+export const testRequestAccess = testRagAccess();
+
+export function testCallOptions(options?: CallOptions): CallOptions & {
+  caller: import('@mcp-abap-adt/llm-agent').RagCaller;
+  sessionId: string;
+} {
+  const sessionId =
+    options?.sessionId ?? options?.caller?.sessionId ?? randomUUID();
+  const caller = options?.caller ?? {
+    sessionId,
+    userId: options?.userId ?? 'test-user',
+    isAdmin: false,
+  };
+  void testRequestAccess.bindings.bind(caller.sessionId, caller.userId);
+  return {
+    ...options,
+    sessionId,
+    caller,
+  };
+}
+
+export function provisionWorkerInput<
+  T extends Partial<import('@mcp-abap-adt/llm-agent').ISubAgentInput>,
+>(make: () => T) {
+  return () => {
+    const input = make();
+    const options = testCallOptions(input);
+    return { ...input, caller: options.caller, sessionId: options.sessionId };
+  };
+}
+
 import type { IMcpConnectionStrategy } from '../interfaces/mcp-connection-strategy.js';
 import { InMemoryMetrics } from '../metrics/in-memory-metrics.js';
 import type { IMetrics } from '../metrics/types.js';
@@ -143,13 +198,19 @@ export function makeLlm(
 
 export function makeRag(
   queryResults: RagResult[] = [],
-): IRag & { upsertCalls: string[] } {
+): IRag & { upsertCalls: string[]; queryCount: number } {
+  queryResults = queryResults.map((record) => ({
+    ...record,
+    metadata: tagRagMetadata(record.metadata),
+  }));
   const upsertCalls: string[] = [];
-  const stub: IRag & { upsertCalls: string[] } = {
+  const stub: IRag & { upsertCalls: string[]; queryCount: number } = {
+    queryCount: 0,
     upsertCalls,
     async query(
       _embedding: IQueryEmbedding,
     ): Promise<Result<RagResult[], RagError>> {
+      stub.queryCount++;
       return { ok: true, value: queryResults };
     },
     async healthCheck(): Promise<Result<void, RagError>> {
@@ -483,6 +544,7 @@ export function makeSessionManager(
 // ---------------------------------------------------------------------------
 
 export function makeDefaultDeps(overrides?: {
+  ragAccess?: import('@mcp-abap-adt/llm-agent').RagAccess;
   llmResponses?: Array<
     | {
         content: string;
@@ -494,7 +556,7 @@ export function makeDefaultDeps(overrides?: {
   classifier?: ISubpromptClassifier;
   assembler?: IContextAssembler;
   mcpClients?: IMcpClient[];
-  ragStores?: Record<string, IRag>;
+  ragStores?: Record<string, IRag | OwnedRagStore>;
   ragRegistry?: IRagRegistry;
   ragProviderRegistry?: IRagProviderRegistry;
   reranker?: IReranker;
@@ -520,7 +582,8 @@ export function makeDefaultDeps(overrides?: {
     deps: {
       mainLlm: llm,
       mcpClients: overrides?.mcpClients ?? [],
-      ragStores: overrides?.ragStores ?? {},
+      ragStores: ownedTestStores(overrides?.ragStores ?? {}),
+      ragAccess: overrides?.ragAccess ?? testRequestAccess,
       ragRegistry: overrides?.ragRegistry,
       ragProviderRegistry: overrides?.ragProviderRegistry,
       classifier:

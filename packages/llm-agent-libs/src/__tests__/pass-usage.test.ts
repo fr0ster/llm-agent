@@ -8,7 +8,7 @@ import type {
 } from '@mcp-abap-adt/llm-agent';
 import { SmartAgent } from '../agent.js';
 import { SessionRequestLogger } from '../logger/session-request-logger.js';
-import { makeDefaultDeps } from '../testing/index.js';
+import { makeDefaultDeps, testCallOptions } from '../testing/index.js';
 
 function streamingLlm(chunks: Array<Result<LlmStreamChunk, LlmError>>): ILlm {
   return {
@@ -24,7 +24,7 @@ function streamingLlm(chunks: Array<Result<LlmStreamChunk, LlmError>>): ILlm {
 
 async function collect(agent: SmartAgent): Promise<LlmStreamChunk[]> {
   const out: LlmStreamChunk[] = [];
-  for await (const c of agent.streamProcess('hi')) {
+  for await (const c of agent.streamProcess('hi', testCallOptions())) {
     if (c.ok) out.push(c.value);
   }
   return out;
@@ -71,7 +71,7 @@ test('pass error yields no trailing success usage chunk', async () => {
   const agent = new SmartAgent(deps, { mode: 'pass' });
   const okChunks: LlmStreamChunk[] = [];
   let sawError = false;
-  for await (const c of agent.streamProcess('hi')) {
+  for await (const c of agent.streamProcess('hi', testCallOptions())) {
     if (c.ok) okChunks.push(c.value);
     else sawError = true;
   }

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
+import { testRagAccess } from '@mcp-abap-adt/llm-agent/testing/rag-access-testing';
 import { SmartAgentBuilder } from '@mcp-abap-adt/llm-agent-libs';
 import { createServerPipelineContext } from '../server-context.js';
 
@@ -19,7 +20,9 @@ describe('createServerPipelineContext', () => {
       mintStepperId: () => 's',
       mintTurnId: () => 't',
       createAgentBuilder: async () =>
-        new SmartAgentBuilder({}).withMainLlm(stubLlm),
+        new SmartAgentBuilder({})
+          .withRagAccess(testRagAccess())
+          .withMainLlm(stubLlm),
       mainLlm: stubLlm,
       mainTemp: 0,
       workerRegistry: new Map(),

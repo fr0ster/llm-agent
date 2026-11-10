@@ -1,15 +1,19 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { SimpleRagRegistry } from '@mcp-abap-adt/llm-agent';
+import { testRagAccess } from '@mcp-abap-adt/llm-agent/testing/rag-access-testing';
 import { SmartAgentBuilder } from '../builder.js';
+import { unwrapBuilderResult } from '../builder-types.js';
 import { makeLlm } from '../testing/index.js';
 
 test('build() exposes the ragRegistry it composed and an mcpClients array', async () => {
   const reg = new SimpleRagRegistry();
   const handle = await new SmartAgentBuilder({})
+    .withRagAccess(testRagAccess())
     .withMainLlm(makeLlm([{ content: 'hello' }]))
     .setRagRegistry(reg)
-    .build();
+    .build()
+    .then(unwrapBuilderResult);
   assert.equal(handle.ragRegistry, reg);
   assert.ok(Array.isArray(handle.mcpClients));
   await handle.close();

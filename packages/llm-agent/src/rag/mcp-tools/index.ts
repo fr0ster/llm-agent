@@ -1,6 +1,6 @@
+export { buildRagAdminToolEntries } from './rag-admin-tools.js';
 export {
   buildRagCollectionToolEntries,
-  type RagCallerIdentity,
   type RagCollectionToolOptions,
   type RagToolContext,
   type RagToolEntry,

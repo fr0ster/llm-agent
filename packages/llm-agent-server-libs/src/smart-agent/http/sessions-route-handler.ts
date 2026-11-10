@@ -1,3 +1,4 @@
+import type { RagCaller } from '@mcp-abap-adt/llm-agent';
 import type { KnowledgeBackend } from '@mcp-abap-adt/llm-agent-libs';
 import {
   handleDeleteSession,
@@ -21,7 +22,18 @@ export async function handleSessionsList(
     return;
   }
   const resolved = resolveSessionCookie(rc, lifecycle);
-  const identity = resolved.identity.sessionId;
+  let caller: RagCaller;
+  try {
+    caller = await rc.server.resolveCaller(
+      resolved.identity.sessionId,
+      rc.req.headers,
+    );
+  } catch {
+    rc.res.writeHead(403);
+    rc.res.end();
+    return;
+  }
+  const identity = caller.userId;
   const body = await handleListSessions(metaStore, identity);
   rc.res.writeHead(200, { 'Content-Type': 'application/json' });
   rc.res.end(JSON.stringify(body));
@@ -41,7 +53,18 @@ export async function handleSessionResume(
     return;
   }
   const resolved = resolveSessionCookie(rc, lifecycle);
-  const identity = resolved.identity.sessionId;
+  let caller: RagCaller;
+  try {
+    caller = await rc.server.resolveCaller(
+      resolved.identity.sessionId,
+      rc.req.headers,
+    );
+  } catch {
+    rc.res.writeHead(403);
+    rc.res.end();
+    return;
+  }
+  const identity = caller.userId;
   const body = await handleResumeSession(metaStore, identity, sessionId);
   const status = body.ok ? 200 : 404;
   rc.res.writeHead(status, { 'Content-Type': 'application/json' });
@@ -63,7 +86,18 @@ export async function handleSessionDelete(
     return;
   }
   const resolved = resolveSessionCookie(rc, lifecycle);
-  const identity = resolved.identity.sessionId;
+  let caller: RagCaller;
+  try {
+    caller = await rc.server.resolveCaller(
+      resolved.identity.sessionId,
+      rc.req.headers,
+    );
+  } catch {
+    rc.res.writeHead(403);
+    rc.res.end();
+    return;
+  }
+  const identity = caller.userId;
   const evictFn = async (sid: string) => {
     await lifecycle.registry.evictOne(sid);
     await knowledgeBackend?.deleteSession(sid);
