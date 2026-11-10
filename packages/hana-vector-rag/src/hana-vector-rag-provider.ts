@@ -170,7 +170,12 @@ export class HanaVectorRagProvider
     this.documentsTable = cfg.documentsTable ?? SHARED_DOCUMENTS_TABLE;
     this.autoCreateSchema = cfg.autoCreateSchema ?? !shared;
     this.editable = cfg.editable ?? true;
-    this.supportedScopes = cfg.supportedScopes ?? ['session', 'user', 'global'];
+    this.supportedScopes = cfg.supportedScopes ?? [
+      'session',
+      'user',
+      'role',
+      'global',
+    ];
     this.clientFactory = cfg.clientFactory;
     this.catalogTable =
       cfg.catalogTable ??
@@ -363,7 +368,15 @@ export class HanaVectorRagProvider
         ok: true,
         value: rows
           .map((r) => String(r.TABLE_NAME))
-          .filter((t) => t !== this.catalogTable),
+          .filter(
+            (t) =>
+              ![
+                this.catalogTable,
+                'rag_roles',
+                'rag_role_assignments',
+                'rag_session_bindings',
+              ].includes(t),
+          ),
       };
     } catch (err) {
       return { ok: false, error: new RagError(String(err), 'RAG_LIST_ERROR') };
@@ -454,7 +467,15 @@ export class HanaVectorRagProvider
   }
 
   private refuseCatalogName(name: string): Refusal | undefined {
-    if (name !== this.catalogTable) return undefined;
+    if (
+      ![
+        this.catalogTable,
+        'rag_roles',
+        'rag_role_assignments',
+        'rag_session_bindings',
+      ].includes(name)
+    )
+      return undefined;
     return {
       ok: false,
       error: new RagError(
@@ -466,6 +487,19 @@ export class HanaVectorRagProvider
 
   private dimension(): number {
     return this.connection.dimension ?? this.defaultDimension;
+  }
+
+  /** Persistence shares the catalog connection and its configured current schema. */
+  async accessPersistence(): Promise<{
+    client: HanaClient;
+    catalogTable: string;
+    schema?: string;
+  }> {
+    return {
+      client: await this.adminClient(),
+      catalogTable: this.catalogTable,
+      schema: this.connection.schema,
+    };
   }
 
   private async adminClient(): Promise<HanaClient> {

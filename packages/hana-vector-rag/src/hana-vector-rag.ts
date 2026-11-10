@@ -37,6 +37,7 @@ import { resolveHanaModule } from './hana-module.js';
 import { resolveLayout } from './layout.js';
 import { decodeLob, withId } from './lob.js';
 import { RecordCache, type StoreCache } from './record-cache.js';
+import { transactionalHanaClient } from './role-transaction.js';
 import { deleteWhere, scanPage } from './scan-delete.js';
 import { assertCollectionName, quoteIdent } from './schema.js';
 import { checkSharedTables } from './shared-check.js';
@@ -51,6 +52,7 @@ import { hanaVectorLiteral } from './vector-literal.js';
 export type { HanaVectorRagConfig };
 
 export interface HanaClient {
+  transaction?<T>(work: (connection: HanaClient) => Promise<T>): Promise<T>;
   exec(sql: string, params?: readonly unknown[]): Promise<{ rowCount: number }>;
   query(
     sql: string,
@@ -73,7 +75,7 @@ export async function createHanaClient(
   await new Promise<void>((resolve, reject) =>
     conn.connect(args, (err) => (err ? reject(err) : resolve())),
   );
-  return {
+  const raw: HanaClient = {
     exec: (sql, params = []) =>
       new Promise((resolve, reject) =>
         conn.exec(sql, params as unknown[], (err, result) =>
@@ -102,6 +104,14 @@ export async function createHanaClient(
         conn.disconnect((err) => (err ? reject(err) : resolve())),
       ),
   };
+  return transactionalHanaClient(raw, (enabled) => {
+    if (!conn.setAutoCommit)
+      throw new RagError(
+        'Driver does not support transactions',
+        'RAG_ACCESS_STORE_ERROR',
+      );
+    conn.setAutoCommit(enabled);
+  });
 }
 
 export class HanaVectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
@@ -247,26 +257,15 @@ export class HanaVectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
       const vector = await safe.toVector();
       const client = await this.client();
       const literal = this.vectorLiteral(vector);
-      const base = this.sql.search(literal);
       const identity = ragIdentityFilter(options);
+      const base = this.sql.search(literal, undefined, identity);
       const rawNamespace = options?.ragFilter?.namespace;
       const targetNamespace =
         typeof rawNamespace === 'string' ? rawNamespace : undefined;
       const nowSecs = Date.now() / 1000;
-      // Every filter — the session/user scope, `ragFilter.namespace`, and
-      // expiry (a numeric `metadata.ttl` in epoch seconds that is in the past)
-      // — is applied HERE, in the client, with the same semantics as
-      // VectorRag / QdrantRag / PgVectorRag. None of it has been verified
-      // against a live HANA instance (none was available to test HANA's JSON
-      // functions against). To stay correct without that:
-      // - a scoped query (identity or namespace) selects every candidate by
-      //   score with NO LIMIT and filters on the parsed metadata before taking
-      //   the top k — never a LIMIT-then-filter, which would return fewer than
-      //   k of the caller's own records. Correct, but it reads the whole table
-      //   per scoped query; moving the filters into SQL needs a live instance;
-      // - an unscoped query keeps the LIMIT query, and drops expired rows from
-      //   it; only when that dropped a row from a FULL page (so an unexpired
-      //   record may sit just below the cut) is it re-run without LIMIT.
+      // Owner predicates execute in SQL. Scoped queries remain unbounded because
+      // JSON_VALUE can coerce scalars: strict metadata identity, namespace and
+      // TTL checks run below before application top-k, never after a SQL limit.
       const limit = Math.max(1, k);
       const keep = (metadata: RagMetadata): boolean =>
         !(typeof metadata.ttl === 'number' && metadata.ttl < nowSecs) &&
@@ -298,7 +297,7 @@ export class HanaVectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
       if (scoped) {
         results = pick(await client.query(base.sql, base.params)).picked;
       } else {
-        const paged = this.sql.search(literal, limit);
+        const paged = this.sql.search(literal, limit, identity);
         const page = await client.query(paged.sql, paged.params);
         const first = pick(page);
         results =

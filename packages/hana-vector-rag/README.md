@@ -236,3 +236,29 @@ The opt-in `rag-list-live.test.ts` tests run both layouts and two-provider TTL
 visibility against a real database. Set `RAG_SQL_LISTING_INTEGRATION=1` and `VCAP_SERVICES` with a `hana[0].credentials` binding
 when running the package tests. They require DDL rights for temporary, uniquely
 named test tables and remove those tables afterwards. Normal test runs skip them.
+
+### RAG access persistence
+
+Run `await migrateHanaVectorRagAccess(provider)` before using the access stores.
+Check its `Result`: migration failures refuse startup; `value.reported` lists
+catalog records with invalid owners for administrator repair. The idempotent
+migration preserves existing owners, adds `role_id`, and creates `rag_roles`,
+`rag_role_assignments`, and `rag_session_bindings` in the catalog connection's
+current schema. Role and session/user identifiers in these access tables are
+limited to 500 characters.
+
+`createHanaVectorRagAccessStores(provider)` supplies the library role assignments
+and persistent session bindings. A session cannot be rebound to another user.
+Role deletion is refused while the role owns collections; role-owned catalog
+writes and deletion lock the same role row in a transaction. Missing owner roles
+are refused. Custom `clientFactory` clients must implement the optional
+`HanaClient.transaction` capability with a pinned connection and commit/rollback;
+access operations that require it fail closed when it is absent. The default
+driver client supplies this capability and queues other work on the connection
+until the transaction finishes.
+
+Queries with an owner apply SQL predicates before ranking. Global predicates
+require all three owner keys to be absent, including keys with JSON null values.
+Scoped queries retain the existing unbounded candidate read after SQL owner
+filtering so strict scalar identity, namespace and TTL checks run before the
+application takes top-k. This avoids JSON scalar coercion changing identity.

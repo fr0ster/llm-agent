@@ -4,6 +4,7 @@ COLUMN TABLE "RAG_COLLECTIONS" (
     scope NVARCHAR(16) NOT NULL,
     user_id NVARCHAR(5000),
     session_id NVARCHAR(5000),
+    role_id NVARCHAR(5000),
     attributes_json NCLOB,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
   )

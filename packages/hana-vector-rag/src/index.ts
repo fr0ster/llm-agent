@@ -1,3 +1,4 @@
+export { createHanaVectorRagAccessStores } from './access-stores.js';
 export { createCatalogTableSql, DEFAULT_CATALOG_TABLE } from './catalog.js';
 export {
   INVALID_CONFIG,
@@ -8,6 +9,7 @@ export type { HanaVectorRagConfig } from './hana-vector-rag.js';
 export { createHanaClient, HanaVectorRag } from './hana-vector-rag.js';
 export type { HanaVectorRagProviderConfig } from './hana-vector-rag-provider.js';
 export { HanaVectorRagProvider } from './hana-vector-rag-provider.js';
+export { migrateHanaVectorRagAccess } from './migrate-access.js';
 export {
   SHARED_CATALOG_TABLE,
   SHARED_DOCUMENTS_TABLE,

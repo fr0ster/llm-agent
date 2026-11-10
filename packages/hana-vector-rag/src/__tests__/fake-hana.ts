@@ -7,6 +7,7 @@ export type FakeCatalogRow = {
   userId: unknown;
   sessionId: unknown;
   attributesJson: unknown;
+  roleId?: string | null;
 };
 
 export type FakeHana = {
@@ -87,6 +88,7 @@ function answer(
       userId: params[3],
       sessionId: params[4],
       attributesJson: params[5],
+      roleId: typeof params[6] === 'string' ? params[6] : null,
     });
     return [{}];
   }

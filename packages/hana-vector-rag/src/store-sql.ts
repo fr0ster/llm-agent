@@ -1,4 +1,4 @@
-import type { RagScanFilter } from '@mcp-abap-adt/llm-agent';
+import type { RagIdentityFilter, RagScanFilter } from '@mcp-abap-adt/llm-agent';
 import { createTableSql, quoteIdent } from './schema.js';
 
 export type SqlStatement = { sql: string; params: unknown[] };
@@ -14,7 +14,11 @@ export interface HanaStoreSql {
   readonly layout: 'per-collection' | 'shared';
   /** `undefined` in `shared`: no DDL ever reaches the client. */
   createTable(): string | undefined;
-  search(vectorLiteral: string, limit?: number): SqlStatement;
+  search(
+    vectorLiteral: string,
+    limit?: number,
+    identity?: RagIdentityFilter,
+  ): SqlStatement;
   byId(id: string): SqlStatement;
   upsert(
     vectorLiteral: string,
@@ -47,10 +51,14 @@ export function perCollectionStoreSql(
       listSql(table, [], after, limit, includeText),
     layout: 'per-collection',
     createTable: () => createTableSql(collection, dimension),
-    search: (lit, limit) => ({
-      sql: `SELECT id AS "id", text AS "text", metadata AS "metadata", COSINE_SIMILARITY(vector, ${lit}) AS "score" FROM ${table} ORDER BY "score" DESC${limitClause(limit)}`,
-      params: [],
-    }),
+    search: (lit, limit, identity) =>
+      searchSql(
+        {
+          sql: `SELECT id AS "id", text AS "text", metadata AS "metadata", COSINE_SIMILARITY(vector, ${lit}) AS "score" FROM ${table} ORDER BY "score" DESC${limitClause(limit)}`,
+          params: [],
+        },
+        identity,
+      ),
     byId: (id) => ({
       sql: `SELECT id AS "id", text AS "text", metadata AS "metadata" FROM ${table} WHERE id = ?`,
       params: [id],
@@ -90,10 +98,14 @@ export function sharedStoreSql(
       listSql(table, [collection], after, limit, includeText),
     layout: 'shared',
     createTable: () => undefined,
-    search: (lit, limit) => ({
-      sql: `SELECT "ID" AS "id", "TEXT" AS "text", "METADATA" AS "metadata", COSINE_SIMILARITY("VECTOR", ${lit}) AS "score" FROM ${table} WHERE "COLLECTION" = ? ORDER BY "score" DESC${limitClause(limit)}`,
-      params: [collection],
-    }),
+    search: (lit, limit, identity) =>
+      searchSql(
+        {
+          sql: `SELECT "ID" AS "id", "TEXT" AS "text", "METADATA" AS "metadata", COSINE_SIMILARITY("VECTOR", ${lit}) AS "score" FROM ${table} WHERE "COLLECTION" = ? ORDER BY "score" DESC${limitClause(limit)}`,
+          params: [collection],
+        },
+        identity,
+      ),
     byId: (id) => ({
       sql: `SELECT "ID" AS "id", "TEXT" AS "text", "METADATA" AS "metadata" FROM ${table} WHERE "COLLECTION" = ? AND "ID" = ?`,
       params: [collection, id],
@@ -140,5 +152,37 @@ function listSql(
   return {
     sql: `SELECT "ID" AS "id", "METADATA" AS "metadata"${includeText ? ', "TEXT" AS "text"' : ''} FROM ${table}${conditions.length ? ` WHERE ${conditions.join(' AND ')}` : ''} ORDER BY TO_BINARY("ID") LIMIT ${limit}`,
     params,
+  };
+}
+
+/** SQL narrows owners before ranking; strict scalar types are checked before application top-k. */
+function searchSql(
+  statement: SqlStatement,
+  identity?: RagIdentityFilter,
+): SqlStatement {
+  if (!identity) return statement;
+  const conditions: string[] = [];
+  if (identity.owner?.scope === 'global') {
+    for (const key of ['sessionId', 'userId', 'roleId'])
+      conditions.push(
+        `JSON_QUERY("METADATA", '$.${key}' WITH UNCONDITIONAL ARRAY WRAPPER NULL ON EMPTY ERROR ON ERROR) IS NULL`,
+      );
+  }
+  for (const key of ['sessionId', 'userId', 'roleId'] as const) {
+    if (identity[key] !== undefined) {
+      conditions.push(
+        `JSON_VALUE("METADATA", '$.${key}' RETURNING NVARCHAR(5000)) = ?`,
+      );
+      statement.params.push(identity[key]);
+    }
+  }
+  if (!conditions.length) return statement;
+  const conjunction = statement.sql.includes(' WHERE ') ? ' AND ' : ' WHERE ';
+  return {
+    sql: statement.sql.replace(
+      ' ORDER BY ',
+      `${conjunction}${conditions.join(' AND ')} ORDER BY `,
+    ),
+    params: statement.params,
   };
 }
