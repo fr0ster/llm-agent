@@ -1,5 +1,11 @@
 # @mcp-abap-adt/sap-aicore-llm
 
+## 30.14.1
+
+### Patch Changes
+
+- c09795e: SAP AI SDK packages are updated to 2.18.0, which keeps destination credentials out of deployment resolution error messages.
+
 ## 30.14.0
 
 ### Minor Changes
