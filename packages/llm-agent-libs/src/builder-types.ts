@@ -9,6 +9,7 @@
 
 import type {
   IModelProvider,
+  ReservedCollectionNameError,
   Result,
   SmartAgentHandle as SmartAgentHandleBase,
 } from '@mcp-abap-adt/llm-agent';
@@ -89,7 +90,7 @@ export class BuilderConfigError extends Error {
 
 export type SmartAgentBuildResult = Result<
   SmartAgentHandle,
-  BuilderConfigError
+  BuilderConfigError | ReservedCollectionNameError
 >;
 
 /** Adapt result-based configuration errors for callers that propagate failures. */

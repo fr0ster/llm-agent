@@ -4,6 +4,7 @@ import {
   type IRagProviderRegistry,
   type IRagRegistry,
   type RagCollectionRecord,
+  reservedGlobalNameError,
   SimpleRagRegistry,
 } from '@mcp-abap-adt/llm-agent';
 import type { SessionGraphIdentity } from '@mcp-abap-adt/llm-agent-libs';
@@ -112,6 +113,14 @@ export async function buildSessionRagRegistry(
       );
     }
     for (const record of described.value.records) {
+      const reserved = reservedGlobalNameError(record.scope, record.name);
+      if (reserved) {
+        warnOnce(
+          JSON.stringify(['reserved', providerName, record.storeName]),
+          `rag_catalog_row_rejected: provider '${providerName}' store '${record.storeName}': ${reserved.name}: ${reserved.message}`,
+        );
+        continue;
+      }
       if (!belongsTo(record, identity)) continue;
       if (record.scope === 'global' && registry.get(record.name, 'global')) {
         warnOnce(

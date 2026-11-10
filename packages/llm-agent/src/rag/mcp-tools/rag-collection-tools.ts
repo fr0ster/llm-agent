@@ -22,6 +22,7 @@ import {
   buildCorrectionMetadata,
   deprecateMetadata,
 } from '../corrections/metadata.js';
+import { reservedGlobalNameError } from '../registry/store-key.js';
 
 /**
  * Free-form per-call context. It carries no identity: the entries were built
@@ -100,6 +101,7 @@ export function buildRagCollectionToolEntries(
       if (!roles.ok) return [];
       const visible = visibleOwnerFilter(caller, roles.value);
       return registry.list().filter((m) => {
+        if (reservedGlobalNameError(scopeOf(m), m.name)) return false;
         const owner = ownerOf(m);
         return owner !== undefined && visible(owner);
       });
@@ -436,6 +438,13 @@ export function buildRagCollectionToolEntries(
           return { ok: false, error: 'A valid scope and owner are required' };
         }
         const name = String(args.name);
+        const reserved = reservedGlobalNameError(owner.scope, name);
+        if (reserved)
+          return {
+            ok: false,
+            code: reserved.code,
+            error: `${reserved.name}: ${reserved.message}`,
+          };
         const permission = await checkRagAccess(
           caller,
           { name, owner },

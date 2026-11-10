@@ -187,10 +187,12 @@ export class CatalogRecordDeleteError extends RagError {
 export class ReservedCollectionNameError extends RagError {
   constructor(
     collectionName: string,
-    readonly prefix: string,
+    readonly prefix?: string,
   ) {
     super(
-      `A global collection may not be named '${collectionName}': the prefix '${prefix}' is reserved for the ${prefix.slice(0, -1)} scope`,
+      prefix
+        ? `A global collection may not be named '${collectionName}': the prefix '${prefix}' is reserved for the ${prefix.slice(0, -1)} scope`
+        : `Collection name '${collectionName}' is reserved for library-internal storage`,
       'RAG_RESERVED_COLLECTION_NAME',
     );
     this.name = 'ReservedCollectionNameError';

@@ -150,11 +150,11 @@ test('a wrapped hydrated collection keeps its editor, and its delete still reach
   }
 });
 
-test('a user collection named "tools" does not hide or break the built-in tools store', async () => {
+test('a user collection coexists with the internal built-in tools store', async () => {
   const reg = new SimpleRagRegistry();
   const mine = new InMemoryRag();
-  reg.register('tools', mine, undefined, {
-    displayName: 'tools',
+  reg.register('documents', mine, undefined, {
+    displayName: 'documents',
     scope: 'user',
     userId: 'alice',
   });
@@ -169,11 +169,11 @@ test('a user collection named "tools" does not hide or break the built-in tools 
   try {
     assert.equal(
       reg.get('tools', 'global'),
-      toolsRag,
-      'the built-in is registered as the global',
+      undefined,
+      'the built-in is absent from the collection registry',
     );
     assert.equal(handle.ragStores.tools.rag, toolsRag);
-    assert.equal(handle.ragStores['user/tools'].rag, mine);
+    assert.equal(handle.ragStores['user/documents'].rag, mine);
   } finally {
     await handle.close();
   }

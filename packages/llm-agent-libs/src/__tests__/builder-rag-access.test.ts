@@ -53,6 +53,34 @@ const owners: RagCollectionOwner[] = [
 ];
 
 for (const owner of owners) {
+  for (const name of ['history', 'tools']) {
+    test(`reserved ${name} in ${owner.scope} fails before registry mutation`, async () => {
+      const registry = new SimpleRagRegistry();
+      const result = await new SmartAgentBuilder({ skipModelValidation: true })
+        .withRagAccess(testRagAccess())
+        .withMainLlm(makeLlm([{ content: 'ok' }]))
+        .setRagRegistry(registry)
+        .addRagCollection({
+          name: 'valid',
+          rag: new InMemoryRag(),
+          meta: { displayName: 'valid', scope: 'global' },
+        })
+        .addRagCollection({
+          name,
+          rag: new InMemoryRag(),
+          meta: { displayName: name, ...owner },
+        })
+        .build();
+      if (result.ok) await result.value.close();
+      assert.equal(result.ok, false);
+      if (result.ok) assert.fail('Expected reserved name refusal');
+      assert.equal(result.error.name, 'ReservedCollectionNameError');
+      assert.deepEqual(registry.list(), []);
+    });
+  }
+}
+
+for (const owner of owners) {
   test(`addRagCollection preserves an explicit ${owner.scope} owner`, async () => {
     const rag = new InMemoryRag();
     const result = await new SmartAgentBuilder({ skipModelValidation: true })

@@ -1,5 +1,8 @@
 import type { RagAccess } from '@mcp-abap-adt/llm-agent';
-import { validateRagOwner } from '@mcp-abap-adt/llm-agent';
+import {
+  reservedGlobalNameError,
+  validateRagOwner,
+} from '@mcp-abap-adt/llm-agent';
 /**
  * SmartAgentBuilder — fluent builder for SmartAgent.
  *
@@ -890,6 +893,8 @@ export class SmartAgentBuilder {
         };
       }
       const identity = owner.value;
+      const reserved = reservedGlobalNameError(identity.scope, collection.name);
+      if (reserved) return { ok: false, error: reserved };
       const ownerId =
         identity.scope === 'session'
           ? identity.sessionId
@@ -1032,14 +1037,6 @@ export class SmartAgentBuilder {
       ragRegistry.register(c.name, c.rag, c.editor, c.meta);
     }
 
-    // History is request-owned internal storage and is projected separately.
-    // Keep the existing tools registry projection for tool-selection callers.
-    if (toolsRag && !ragRegistry.get('tools', 'global')) {
-      ragRegistry.register('tools', toolsRag, undefined, {
-        displayName: 'tools',
-        scope: 'global',
-      });
-    }
     // Create any queued dynamic collections at startup.
     for (const c of this._pendingDynamicCollections) {
       const res = await ragRegistry.createCollection(c);
@@ -1056,10 +1053,12 @@ export class SmartAgentBuilder {
     // is keyed user/<name> or session/<name>, so one name in several scopes gives
     // several keys and nothing overwrites anything (§6.4).
     let projectedHistoryRag = historyRag;
+    let projectedToolsRag = toolsRag;
     const ragStores: SmartAgentRagStores = {};
     const rebuildProjection = () => {
       for (const k of Object.keys(ragStores)) delete ragStores[k];
       for (const m of ragRegistry.list()) {
+        if (reservedGlobalNameError(m.scope ?? 'global', m.name)) continue;
         const r = ragRegistry.get(m.name, m.scope ?? 'global');
         if (!r) continue;
         // An explicit per-store strategy wraps the projected store only — the
@@ -1074,8 +1073,18 @@ export class SmartAgentBuilder {
         if (!owner) continue;
         ragStores[key] = {
           name: m.name,
-          owner: key === 'tools' ? { scope: 'internal' } : owner,
+          owner,
           rag: strategy ? applyRetrievalStrategy(r, strategy) : r,
+        };
+      }
+      if (projectedToolsRag) {
+        const strategy = this._retrievalStrategies.get('tools');
+        ragStores.tools = {
+          name: 'tools',
+          owner: { scope: 'internal' },
+          rag: strategy
+            ? applyRetrievalStrategy(projectedToolsRag, strategy)
+            : projectedToolsRag,
         };
       }
       if (projectedHistoryRag) {
@@ -1136,6 +1145,17 @@ export class SmartAgentBuilder {
       ) {
         projectedHistoryRag = new FallbackRag(
           historyRag,
+          new InMemoryRag(),
+          embedderBreaker,
+        );
+        rebuildProjection();
+      }
+      if (
+        toolsRag &&
+        !(this._sharedBreakers && isGuardedBy(toolsRag, embedderBreaker))
+      ) {
+        projectedToolsRag = new FallbackRag(
+          toolsRag,
           new InMemoryRag(),
           embedderBreaker,
         );

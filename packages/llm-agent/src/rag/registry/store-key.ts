@@ -8,11 +8,13 @@ import { ReservedCollectionNameError } from '../corrections/errors.js';
  */
 const RESERVED_GLOBAL_PREFIXES = ['user/', 'session/', 'role/'] as const;
 
-/** The refusal for a global named into a reserved prefix, or undefined. */
+/** Refuse built-in names in every scope and owned projection prefixes in globals. */
 export function reservedGlobalNameError(
   scope: RagCollectionScope,
   name: string,
 ): ReservedCollectionNameError | undefined {
+  if (name === 'history' || name === 'tools')
+    return new ReservedCollectionNameError(name);
   if (scope !== 'global') return undefined;
   const prefix = RESERVED_GLOBAL_PREFIXES.find((p) => name.startsWith(p));
   return prefix ? new ReservedCollectionNameError(name, prefix) : undefined;

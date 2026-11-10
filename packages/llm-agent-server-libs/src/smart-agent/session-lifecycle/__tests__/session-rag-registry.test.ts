@@ -99,8 +99,8 @@ const records: RagCollectionRecord[] = [
 test('seeds the deployment’s globals by reference, and only its globals', async () => {
   const globals = new SimpleRagRegistry();
   const tools = new InMemoryRag();
-  globals.register('tools', tools, undefined, {
-    displayName: 'tools',
+  globals.register('documents', tools, undefined, {
+    displayName: 'documents',
     scope: 'global',
   });
   globals.register('private', new InMemoryRag(), undefined, {
@@ -113,7 +113,7 @@ test('seeds the deployment’s globals by reference, and only its globals', asyn
     globals,
   });
   assert.equal(
-    reg.get('tools', 'global'),
+    reg.get('documents', 'global'),
     tools,
     'the same instance, not a copy',
   );
@@ -123,7 +123,7 @@ test('seeds the deployment’s globals by reference, and only its globals', asyn
     'a user entry in the deployment registry belongs to one caller and is not seeded',
   );
   assert.equal(
-    reg.list().find((m) => m.name === 'tools')?.providerName,
+    reg.list().find((m) => m.name === 'documents')?.providerName,
     undefined,
     'a reference: deleting it here reaches no provider',
   );
@@ -409,4 +409,35 @@ test('with a shared `reported` set, a rejected row and a skipped global are logg
     reported: new Set<string>(),
   });
   assert.equal(other.messages().length, 3);
+});
+
+test('hydration skips reserved catalog records and reports their refusal', async () => {
+  const pg = catalogued(
+    'pg',
+    ['history', 'tools'].map((name) => ({
+      name,
+      storeName: `stored_${name}`,
+      scope: 'global',
+    })),
+  );
+  const providers = new SimpleRagProviderRegistry();
+  providers.registerProvider(pg.provider);
+  const log = logger();
+  const registry = await buildSessionRagRegistry({
+    identity: { sessionId: 'S', userId: 'alice' },
+    globals: new SimpleRagRegistry(),
+    providers,
+    logger: log.log,
+  });
+  assert.deepEqual(registry.list(), []);
+  assert.deepEqual(pg.opened, []);
+  for (const name of ['history', 'tools']) {
+    assert.ok(
+      log
+        .messages()
+        .some(
+          (message) => message.includes(name) && message.includes('reserved'),
+        ),
+    );
+  }
 });

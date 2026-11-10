@@ -490,11 +490,16 @@ describe("a worker's own store keeps priority under a retrieval strategy", () =>
   async function workerOverParentRegistry(withCoordinator: boolean) {
     const seen: string[] = [];
     const registry = new SimpleRagRegistry();
-    // The parent's tools are already in the shared registry …
-    registry.register('tools', labelledStore('parent', seen), undefined, {
-      displayName: 'tools',
-      scope: 'global',
-    });
+    // Build the parent over the shared registry; its tools remain internal.
+    const parent = unwrapBuilderResult(
+      await new SmartAgentBuilder({ skipModelValidation: true })
+        .withRagAccess(testRagAccess())
+        .withMainLlm(stubLlm())
+        .setRagRegistry(registry)
+        .setToolsRag(labelledStore('parent', seen))
+        .build(),
+    );
+    await parent.close();
     const { strategy, calls } = spyStrategy();
     // … and the worker brings its own tools plus an explicit strategy.
     let builder = new SmartAgentBuilder({ skipModelValidation: true })
