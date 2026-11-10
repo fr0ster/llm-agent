@@ -1,9 +1,5 @@
-import {
-  describeRagCatalogRows,
-  RagError,
-  type Result,
-} from '@mcp-abap-adt/llm-agent';
-import { catalogColumnsSql, selectRecordsSql } from './catalog.js';
+import { RagError, type Result } from '@mcp-abap-adt/llm-agent';
+import { catalogColumnsSql } from './catalog.js';
 import type { PgVectorRagProvider } from './pg-vector-rag-provider.js';
 import { qualifiedTable } from './schema.js';
 
@@ -33,15 +29,15 @@ export async function migratePgVectorRagAccess(
     await client.query(
       `CREATE TABLE IF NOT EXISTS ${qualifiedTable('rag_session_bindings', schema)} (session_id TEXT PRIMARY KEY, user_id TEXT NOT NULL)`,
     );
-    const { rows } = await client.query(selectRecordsSql(catalogTable, schema));
-    const description = describeRagCatalogRows(rows);
+    const description = await provider.describeCollections();
+    if (!description.ok) throw description.error;
     const recordReports = await provider.migrateRecordOwners();
     return {
       ok: true,
       value: {
         reported: [
           ...recordReports,
-          ...description.rejected.map((row) => {
+          ...description.value.rejected.map((row) => {
             if (row.storeName === undefined)
               throw new RagError(
                 'Catalog row has no store name',

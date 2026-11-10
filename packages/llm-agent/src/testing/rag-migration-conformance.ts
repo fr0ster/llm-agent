@@ -118,3 +118,36 @@ export const ragMigrationConformanceCases = [
     },
   },
 ] as const;
+
+/** Shared orphan-role acceptance case, including process-local catalogs. */
+export const missingRoleMigrationConformanceCase = {
+  name: 'migration reports and excludes a catalog row with a missing role',
+  async run(h: {
+    seedMissingRole(): Promise<void>;
+    migrate(): Promise<
+      Result<
+        { reported: readonly { storeName: string; reason: string }[] },
+        RagError
+      >
+    >;
+    describe(): Promise<Result<RagCatalogDescription, RagError>>;
+  }): Promise<void> {
+    await h.seedMissingRole();
+    const migration = await h.migrate();
+    assert.ok(migration.ok);
+    assert.deepEqual(
+      migration.value.reported.filter((row) => row.storeName === 'orphan'),
+      [{ storeName: 'orphan', reason: 'Role is missing or tombstoned' }],
+    );
+    const description = await h.describe();
+    assert.ok(description.ok);
+    assert.equal(
+      description.value.records.some((row) => row.storeName === 'orphan'),
+      false,
+    );
+    assert.deepEqual(
+      description.value.rejected.filter((row) => row.storeName === 'orphan'),
+      [{ storeName: 'orphan', reason: 'Role is missing or tombstoned' }],
+    );
+  },
+};

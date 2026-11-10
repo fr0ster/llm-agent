@@ -106,7 +106,23 @@ Session/user/role owners need their respective nonempty ID; globals carry no
 private identity keys. Missing static scope no longer defaults to global.
 
 Direct agent/pipeline calls must pass `CallOptions.caller` containing
-`{ sessionId, userId, isAdmin }` from trusted host state. Legacy `sessionId` or
+`{ sessionId, userId, isAdmin }` from trusted host state. Direct pipeline calls
+also require top-level `CallOptions.sessionId` equal to `caller.sessionId`;
+`DefaultPipeline.execute` refuses missing or mismatched session IDs.
+
+```ts
+const caller = { sessionId, userId, isAdmin: false };
+const bound = await ragAccess.bindings.bind(caller.sessionId, caller.userId);
+if (!bound.ok) throw bound.error;
+const result = await pipeline.execute(
+  input,
+  [], // Message history for this call.
+  { caller, sessionId: caller.sessionId },
+  (chunk) => { /* Handle each Result<LlmStreamChunk, OrchestratorError>. */ },
+);
+```
+
+Legacy `sessionId` or
 `userId` options alone do not authenticate a call. Bind the session through
 `ragAccess.bindings.bind` before direct use and handle refusal. `ragFilter` cannot
 replace ownership or select another caller. Custom pipeline `ragStores` now carry

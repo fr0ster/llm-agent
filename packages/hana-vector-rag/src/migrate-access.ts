@@ -1,15 +1,6 @@
-import {
-  describeRagCatalogRows,
-  RagError,
-  type Result,
-} from '@mcp-abap-adt/llm-agent';
-import {
-  createCatalogTableSql,
-  selectRecordsSql,
-  tableExistsSql,
-} from './catalog.js';
+import { RagError, type Result } from '@mcp-abap-adt/llm-agent';
+import { createCatalogTableSql, tableExistsSql } from './catalog.js';
 import type { HanaVectorRagProvider } from './hana-vector-rag-provider.js';
-import { decodeLob } from './lob.js';
 import { quoteIdent } from './schema.js';
 
 export async function migrateHanaVectorRagAccess(
@@ -68,21 +59,15 @@ export async function migrateHanaVectorRagAccess(
       'rag_session_bindings',
       'CREATE TABLE "rag_session_bindings" (session_id NVARCHAR(500) PRIMARY KEY, user_id NVARCHAR(500) NOT NULL)',
     );
-    const description = describeRagCatalogRows(
-      (await client.query(selectRecordsSql(catalogTable))).map((row) => ({
-        ...row,
-        attributesJson: Buffer.isBuffer(row.attributesJson)
-          ? decodeLob(row.attributesJson)
-          : row.attributesJson,
-      })),
-    );
+    const description = await provider.describeCollections();
+    if (!description.ok) throw description.error;
     const recordReports = await provider.migrateRecordOwners();
     return {
       ok: true,
       value: {
         reported: [
           ...recordReports,
-          ...description.rejected.map((row) => {
+          ...description.value.rejected.map((row) => {
             if (row.storeName === undefined)
               throw new RagError(
                 'Catalog row has no store name',

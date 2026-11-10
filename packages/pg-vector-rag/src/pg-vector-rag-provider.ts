@@ -25,6 +25,7 @@ import {
   validateRagOwner,
   validateRagStoreName,
 } from '@mcp-abap-adt/llm-agent';
+import { createPgVectorRagAccessStores } from './access-stores.js';
 import {
   createCatalogTableSql,
   DEFAULT_CATALOG_TABLE,
@@ -239,12 +240,34 @@ export class PgVectorRagProvider
   > {
     try {
       const client = await this.adminClient();
-      if (this.shared) return await this.shared.describe(client);
-      if (!(await this.tableExists(client, this.catalogTable))) {
-        return { ok: true, value: { records: [], rejected: [] } };
+      const description = this.shared
+        ? await this.shared.describe(client)
+        : {
+            ok: true as const,
+            value: (await this.tableExists(client, this.catalogTable))
+              ? describeRagCatalogRows(
+                  (await client.query(selectRecordsSql(this.catalogTable)))
+                    .rows,
+                )
+              : { records: [], rejected: [] },
+          };
+      if (!description.ok) return description;
+      const records: RagCollectionRecord[] = [];
+      const rejected = [...description.value.rejected];
+      if (!description.value.records.some((record) => record.scope === 'role'))
+        return description;
+      const roles = await createPgVectorRagAccessStores(this).roles.listRoles();
+      if (!roles.ok) return roles;
+      const activeRoles = new Set(roles.value.map((role) => role.roleId));
+      for (const record of description.value.records) {
+        if (record.scope === 'role' && !activeRoles.has(record.roleId)) {
+          rejected.push({
+            storeName: record.storeName,
+            reason: 'Role is missing or tombstoned',
+          });
+        } else records.push(record);
       }
-      const { rows } = await client.query(selectRecordsSql(this.catalogTable));
-      return { ok: true, value: describeRagCatalogRows(rows) };
+      return { ok: true, value: { records, rejected } };
     } catch (err) {
       return { ok: false, error: new RagError(String(err), 'RAG_LIST_ERROR') };
     }

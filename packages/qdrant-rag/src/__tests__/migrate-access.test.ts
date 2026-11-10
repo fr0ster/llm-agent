@@ -2,7 +2,10 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { symmetricEmbedder } from '@mcp-abap-adt/llm-agent';
 import { conformanceEmbedder } from '@mcp-abap-adt/llm-agent/testing/rag-filter-conformance';
-import { ragMigrationConformanceCases } from '@mcp-abap-adt/llm-agent/testing/rag-migration-conformance';
+import {
+  missingRoleMigrationConformanceCase,
+  ragMigrationConformanceCases,
+} from '@mcp-abap-adt/llm-agent/testing/rag-migration-conformance';
 import { createQdrantRagAccessStores } from '../access-stores.js';
 import { migrateQdrantRagAccess } from '../migrate-access.js';
 import { deterministicUUID } from '../qdrant-rag.js';
@@ -131,10 +134,27 @@ for (const entry of ragMigrationConformanceCases) {
         ],
         invalidStoreNames: ['bad'],
       });
+      await missingRoleMigrationConformanceCase.run({
+        async seedMissingRole() {
+          const id = await deterministicUUID('orphan');
+          legacy.points.set(id, {
+            id,
+            vector: [1],
+            payload: {
+              store_name: 'orphan',
+              collection_name: 'Orphan',
+              scope: 'role',
+              role_id: 'missing',
+            },
+          });
+        },
+        migrate: () => migrateQdrantRagAccess(provider),
+        describe: () => provider.describeCollections(),
+      });
       assert.deepEqual(legacy.payloadSchema, {
         role_id: { data_type: 'keyword' },
       });
-      assert.equal(legacy.points.size, 4);
+      assert.equal(legacy.points.size, 5);
       for (const name of [
         'rag_roles',
         'rag_role_assignments',

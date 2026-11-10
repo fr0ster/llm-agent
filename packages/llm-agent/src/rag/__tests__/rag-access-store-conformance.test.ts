@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { ragAccessStoreConformanceCases } from '../../testing/rag-access-store-conformance.js';
+import { missingRoleMigrationConformanceCase } from '../../testing/rag-migration-conformance.js';
 import { InMemoryRagProvider } from '../providers/in-memory-rag-provider.js';
 
 for (const entry of ragAccessStoreConformanceCases) {
@@ -72,3 +73,42 @@ for (const entry of ragAccessStoreConformanceCases) {
     }),
   );
 }
+
+test(`In-memory ${missingRoleMigrationConformanceCase.name}`, async (t) => {
+  const provider = new InMemoryRagProvider({
+    name: 'memory',
+    supportedScopes: ['role'],
+  });
+  await missingRoleMigrationConformanceCase.run({
+    async seedMissingRole() {
+      assert.ok(
+        (await provider.roles.createRole({ roleId: 'missing', name: 'Role' }))
+          .ok,
+      );
+      assert.ok(
+        (
+          await provider.createCollection('orphan', {
+            scope: 'role',
+            roleId: 'missing',
+          })
+        ).ok,
+      );
+      // Simulate a legacy orphan without bypassing the public deletion guard.
+      t.mock.method(provider.roles, 'hasRole', () => false);
+    },
+    async migrate() {
+      const description = await provider.describeCollections();
+      assert.ok(description.ok);
+      return {
+        ok: true,
+        value: {
+          reported: description.value.rejected.map((row) => {
+            assert.ok(row.storeName);
+            return { storeName: row.storeName, reason: row.reason };
+          }),
+        },
+      };
+    },
+    describe: () => provider.describeCollections(),
+  });
+});

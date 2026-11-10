@@ -53,13 +53,17 @@ export class InMemoryRagProvider extends AbstractRagProvider {
   async describeCollections(): Promise<
     Result<RagCatalogDescription, RagError>
   > {
-    return {
-      ok: true,
-      value: {
-        records: structuredClone([...this.records.values()]),
-        rejected: [],
-      },
-    };
+    const records: RagCollectionRecord[] = [];
+    const rejected: RagCatalogDescription['rejected'][number][] = [];
+    for (const record of this.records.values()) {
+      if (record.scope === 'role' && !this.roles.hasRole(record.roleId)) {
+        rejected.push({
+          storeName: record.storeName,
+          reason: 'Role is missing or tombstoned',
+        });
+      } else records.push(structuredClone(record));
+    }
+    return { ok: true, value: { records, rejected } };
   }
 
   async deleteCollection(name: string): Promise<Result<void, RagError>> {

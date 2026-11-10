@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { RagMetadata } from '@mcp-abap-adt/llm-agent';
-import { ragMigrationConformanceCases } from '@mcp-abap-adt/llm-agent/testing/rag-migration-conformance';
+import {
+  missingRoleMigrationConformanceCase,
+  ragMigrationConformanceCases,
+} from '@mcp-abap-adt/llm-agent/testing/rag-migration-conformance';
 import { createPgVectorRagAccessStores } from '../access-stores.js';
 import { migratePgVectorRagAccess } from '../migrate-access.js';
 import { PgVectorRagProvider } from '../pg-vector-rag-provider.js';
@@ -93,6 +96,15 @@ for (const layout of ['per-collection', 'shared'] as const)
           ],
           invalidStoreNames: ['bad'],
         });
+      await missingRoleMigrationConformanceCase.run({
+        async seedMissingRole() {
+          await f.client.query(
+            "INSERT INTO rag_collection_catalog (store_name, collection_name, scope, role_id) VALUES ('orphan', 'Orphan', 'role', 'missing')",
+          );
+        },
+        migrate: () => migratePgVectorRagAccess(provider),
+        describe: () => provider.describeCollections(),
+      });
       assert.ok(
         (
           await createPgVectorRagAccessStores(provider).roles.createRole({

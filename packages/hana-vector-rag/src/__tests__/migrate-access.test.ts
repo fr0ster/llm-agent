@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { RagMetadata } from '@mcp-abap-adt/llm-agent';
-import { ragMigrationConformanceCases } from '@mcp-abap-adt/llm-agent/testing/rag-migration-conformance';
+import {
+  missingRoleMigrationConformanceCase,
+  ragMigrationConformanceCases,
+} from '@mcp-abap-adt/llm-agent/testing/rag-migration-conformance';
 import { migrateHanaVectorRagAccess } from '../migrate-access.js';
 import { accessFixture } from './access-fixture.js';
 
@@ -90,12 +93,24 @@ for (const layout of ['per-collection', 'shared'] as const)
         ],
         invalidStoreNames: ['invalid'],
       });
+    await missingRoleMigrationConformanceCase.run({
+      async seedMissingRole() {
+        db.insertRow('rag_collection_catalog', {
+          STORE_NAME: 'orphan',
+          COLLECTION_NAME: 'Orphan',
+          SCOPE: 'role',
+          ROLE_ID: 'missing',
+        });
+      },
+      migrate: () => migrateHanaVectorRagAccess(provider),
+      describe: () => provider.describeCollections(),
+    });
     const description = await provider.describeCollections();
     assert.ok(description.ok);
     assert.equal(
       (await db.client.query('SELECT store_name FROM "rag_collection_catalog"'))
         .length,
-      4,
+      5,
     );
     for (const record of description.value.records)
       assert.ok((await provider.openCollection(record)).ok);
