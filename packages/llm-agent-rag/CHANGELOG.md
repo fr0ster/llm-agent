@@ -1,5 +1,15 @@
 # @mcp-abap-adt/llm-agent-rag
 
+## 30.10.1
+
+### Patch Changes
+
+- Updated dependencies [57f731c]
+  - @mcp-abap-adt/llm-agent@31.0.0
+  - @mcp-abap-adt/pg-vector-rag@31.0.0
+  - @mcp-abap-adt/hana-vector-rag@31.0.0
+  - @mcp-abap-adt/qdrant-rag@31.0.0
+
 ## 30.10.0
 
 ### Minor Changes

@@ -1,5 +1,12 @@
 # @mcp-abap-adt/openai-embedder
 
+## 30.10.1
+
+### Patch Changes
+
+- Updated dependencies [57f731c]
+  - @mcp-abap-adt/llm-agent@31.0.0
+
 ## 30.10.0
 
 ### Minor Changes

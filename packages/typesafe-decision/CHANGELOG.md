@@ -1,5 +1,12 @@
 # @mcp-abap-adt/typesafe-decision
 
+## 30.9.3
+
+### Patch Changes
+
+- Updated dependencies [57f731c]
+  - @mcp-abap-adt/llm-agent@31.0.0
+
 ## 30.9.2
 
 ### Patch Changes

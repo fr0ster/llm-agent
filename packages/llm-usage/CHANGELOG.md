@@ -1,5 +1,12 @@
 # @mcp-abap-adt/llm-usage
 
+## 1.3.1
+
+### Patch Changes
+
+- Updated dependencies [57f731c]
+  - @mcp-abap-adt/llm-agent@31.0.0
+
 ## 1.3.0
 
 ### Minor Changes
