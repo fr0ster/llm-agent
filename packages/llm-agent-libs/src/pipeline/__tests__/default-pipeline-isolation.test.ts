@@ -164,7 +164,7 @@ for (const decision of ['deny', 'throw'] as const) {
 }
 
 for (const decision of ['deny', 'throw'] as const) {
-  it(`built-in history refuses a ${decision} decision through RagQueryHandler`, async () => {
+  it(`built-in history skips a ${decision} decision through RagQueryHandler`, async () => {
     const access = testRagAccess([callerA]);
     let calls = 0;
     access.decision.canRead = async () => {
@@ -195,9 +195,9 @@ for (const decision of ['deny', 'throw'] as const) {
       { sessionId: 'A', caller: callerA },
       () => {},
     );
-    assert.ok(result.error instanceof RagAccessDeniedError);
-    assert.deepEqual(retrieved, []);
-    assert.equal(calls, 1);
+    assert.equal(result.error, undefined);
+    assert.deepEqual(sessionTags(retrieved), ['A']);
+    assert.equal(calls, 0);
   });
 }
 

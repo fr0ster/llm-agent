@@ -144,8 +144,8 @@ and both retrieval paths recheck access; revocation hides a role collection on
 the next request even in an existing session.
 
 Built-in `history` is an implicit per-session store: its owner is the request's
-session, never global. It requires the persisted session-to-user binding AND the
-server read decision, and filters records by that session. The internal `tools`
+session, never global. It requires a matching persisted session-to-user binding
+and filters records by that session, but skips the server read decision. The internal `tools`
 store bypasses the server decision while requiring a valid session binding
 and is not a caller-managed collection. Neither name can be registered as a
 custom collection. Copying history into a user collection may be a future feature;

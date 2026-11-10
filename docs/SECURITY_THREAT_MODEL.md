@@ -94,9 +94,9 @@ conflicting owners `invalid`, unmatched by scoped queries, with an administrativ
 report. Missing-role catalog entries are refused. `history` and `tools` are
 reserved in every scope. Built-in history is an implicit per-session store owned
 by the request's session, never global, and always session-filtered. History
-requires a matching persisted session-to-user binding and the server read
-decision. Only the internal tool catalog bypasses that decision; its requests
-still require a valid binding. Reads never create session bindings. Copying history to a user
+requires a matching persisted session-to-user binding but skips the server read
+decision. The internal tool catalog also skips that decision; both stores still
+require a valid binding. Reads never create session bindings. Copying history to a user
 collection is outside this release.
 
 **Server duties and limits:** The host authenticates the user, supplies the trusted
@@ -169,7 +169,8 @@ per-session requests, so an explicit `history: { strategy: embedding }` entry ke
 
 **Session isolation of history.** History is logically an implicit per-session store, even when
 physical storage is shared. Ownership comes from the request caller, with a mandatory positive
-`ownerScope` tag and `sessionId` filter; history bypasses the server read decision. A custom `IRag` used as the history store
+`ownerScope` tag and `sessionId` filter; history bypasses the server read decision but still requires
+a matching persisted session-to-user binding. A custom `IRag` used as the history store
 **must** honour that filter, otherwise one session reads another's history. Every built-in store does.
 
 ---

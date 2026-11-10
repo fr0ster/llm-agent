@@ -63,6 +63,11 @@ for (const perRequest of [false, true]) {
   for (const binding of ['unbound', 'foreign'] as const) {
     it(`refuses ${binding} binding for ${perRequest ? 'history' : 'ordinary session'} retrieval`, async () => {
       const access = testRagAccess();
+      let calls = 0;
+      access.decision.canRead = async () => {
+        calls++;
+        return true;
+      };
       if (binding === 'foreign') await access.bindings.bind('A', 'bob');
       const target: OwnedRagStore = {
         ...store,
@@ -90,6 +95,9 @@ for (const perRequest of [false, true]) {
         },
       );
       assert.equal(orchestrated.ok, false);
+      if (!orchestrated.ok)
+        assert.ok(orchestrated.error instanceof RagAccessDeniedError);
+      assert.equal(calls, 0);
     });
   }
 }
@@ -216,7 +224,7 @@ it('role identity comes from the assignments table and foreign records stay clos
 });
 
 for (const decision of ['deny', 'throw'] as const) {
-  it(`built-in history refuses a ${decision} decision through RagOrchestrator`, async () => {
+  it(`built-in history skips a ${decision} decision on both retrieval paths`, async () => {
     const access = testRagAccess([callerA]);
     let calls = 0;
     access.decision.canRead = async () => {
@@ -235,9 +243,20 @@ for (const decision of ['deny', 'throw'] as const) {
       externalTools: [],
       rootSpan: new NoopTracer().startSpan('test'),
     });
-    assert.equal(result.ok, false);
-    if (!result.ok) assert.ok(result.error instanceof RagAccessDeniedError);
-    assert.equal(calls, 1);
+    assert.ok(result.ok);
+    assert.deepEqual(sessionTags(result.value.retrieved.ragResults.history), [
+      'A',
+    ]);
+    const direct = await ownerBoundQuery(
+      history,
+      embedding,
+      5,
+      { caller: callerA },
+      access,
+    );
+    assert.ok(direct.ok);
+    assert.deepEqual(sessionTags(direct.value), ['A']);
+    assert.equal(calls, 0);
   });
 }
 

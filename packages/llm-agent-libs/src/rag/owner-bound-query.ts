@@ -65,11 +65,13 @@ export async function ownerBoundQuery(
       return deny();
     }
   }
-  const owner =
-    store.owner.scope === 'session' && 'perRequest' in store.owner
-      ? { scope: 'session' as const, sessionId: caller.sessionId }
-      : store.owner;
-  if (owner.scope !== 'internal') {
+  const isHistory =
+    store.owner.scope === 'session' && 'perRequest' in store.owner;
+  const owner = isHistory
+    ? { scope: 'session' as const, sessionId: caller.sessionId }
+    : store.owner;
+  // Built-in history keeps binding and session isolation, without a server decision.
+  if (!isHistory && owner.scope !== 'internal') {
     const allowed = await checkRagAccess(
       caller,
       { name: store.name, owner },

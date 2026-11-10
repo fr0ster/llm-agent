@@ -220,10 +220,6 @@ test('built history is per-request session owned, isolated and inaccessible thro
     const caller = { sessionId: 'A', userId: 'alice', isAdmin: false };
     await access.bindings.bind('A', 'alice');
     await access.bindings.bind('B', 'alice');
-    access.decision.canRead = async () => {
-      decisions++;
-      return true;
-    };
     const result = await ownerBoundQuery(
       handle.ragStores.history,
       embedding,
@@ -258,7 +254,7 @@ test('built history is per-request session owned, isolated and inaccessible thro
       other.value.map((r) => r.metadata.sessionId),
       ['B'],
     );
-    assert.equal(decisions, 2);
+    assert.equal(decisions, 0);
     for (const isAdmin of [false, true]) {
       const entries = buildRagCollectionToolEntries({
         registry: handle.ragRegistry,
