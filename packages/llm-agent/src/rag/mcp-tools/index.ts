@@ -1,3 +1,4 @@
+export { buildRagAdminToolEntries } from './rag-admin-tools.js';
 export {
   buildRagCollectionToolEntries,
   type RagCollectionToolOptions,
