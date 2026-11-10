@@ -58,9 +58,13 @@ test('parseRagCollectionRecord accepts role records only with an owner', () => {
 test('SimpleRagRegistry creates same-name collections for different roles and refuses ambiguous lookup', async () => {
   const registry = new SimpleRagRegistry();
   const providers = new SimpleRagProviderRegistry();
-  providers.registerProvider(
-    new InMemoryRagProvider({ name: 'in-memory', supportedScopes: ['role'] }),
-  );
+  const provider = new InMemoryRagProvider({
+    name: 'in-memory',
+    supportedScopes: ['role'],
+  });
+  for (const roleId of ['a', 'b'])
+    assert.ok((await provider.roles.createRole({ roleId, name: roleId })).ok);
+  providers.registerProvider(provider);
   registry.setProviderRegistry(providers);
   for (const roleId of ['a', 'b']) {
     const result = await registry.createCollection({

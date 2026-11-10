@@ -410,3 +410,85 @@ export const ragFilterConformanceCases: readonly RagFilterConformanceCase[] = [
     },
   },
 ];
+
+/** Owner isolation cases opt in separately so backends outside this rollout retain their existing suite. */
+export const ragOwnerFilterConformanceCases: readonly RagFilterConformanceCase[] =
+  [
+    {
+      name: 'roleId filter isolates two roles',
+      async run(makeStore) {
+        const rag = await makeStore();
+        await seed(rag, [
+          {
+            id: 'r1',
+            text: 'alpha harbour lighthouse',
+            metadata: { roleId: 'r1' },
+          },
+          {
+            id: 'r2',
+            text: 'bravo mountain glacier',
+            metadata: { roleId: 'r2' },
+          },
+          { id: 'untagged', text: 'charlie desert oasis', metadata: {} },
+        ]);
+        for (const roleId of ['r1', 'r2'])
+          assert.deepEqual(await queryIds(rag, Q, 10, { roleId }), [roleId]);
+      },
+    },
+    ...(['sessionId', 'userId', 'roleId'] as const).map(
+      (key): RagFilterConformanceCase => ({
+        name: `${key} owner filter applies before top-k`,
+        async run(makeStore) {
+          const rag = await makeStore();
+          await seed(rag, [
+            { id: 'foreign1', text: Q, metadata: { [key]: 'foreign' } },
+            {
+              id: 'foreign2',
+              text: `${Q} europe`,
+              metadata: { [key]: 'foreign' },
+            },
+            {
+              id: 'own1',
+              text: 'lima penguin iceberg',
+              metadata: { [key]: 'own' },
+            },
+            {
+              id: 'own2',
+              text: 'bravo mountain glacier',
+              metadata: { [key]: 'own' },
+            },
+          ]);
+          assert.deepEqual(await queryIds(rag, Q, 2, { [key]: 'own' }), [
+            'own1',
+            'own2',
+          ]);
+        },
+      }),
+    ),
+    {
+      name: 'global query returns only untagged records and k counts only those',
+      async run(makeStore) {
+        const rag = await makeStore();
+        await seed(rag, [
+          ...(['sessionId', 'userId', 'roleId'] as const).flatMap((key) => [
+            { id: key, text: `${Q} ${key}`, metadata: { [key]: 'foreign' } },
+            {
+              id: `${key}-null`,
+              text: `${Q} null ${key}`,
+              metadata: { [key]: null },
+            },
+          ]),
+          { id: 'global1', text: 'lima penguin iceberg', metadata: {} },
+          { id: 'global2', text: 'bravo mountain glacier', metadata: {} },
+        ]);
+        assert.deepEqual(
+          await queryIds(rag, Q, 2, { owner: { scope: 'global' } }),
+          ['global1', 'global2'],
+        );
+        assert.deepEqual(
+          await queryIds(rag, Q, 20, { owner: { scope: 'global' } }),
+          ['global1', 'global2'],
+        );
+      },
+    },
+  ];

@@ -22,6 +22,7 @@ async function run(env) {
       'packages/pg-vector-rag/src/__tests__/rag-access-store-conformance.test.ts',
       'packages/pg-vector-rag/src/__tests__/migrate-access.test.ts',
       'packages/pg-vector-rag/src/__tests__/owner-query.test.ts',
+      'packages/pg-vector-rag/src/__tests__/rag-filter-conformance.test.ts',
     ], { cwd: resolve(here, '../../../..'), stdio: 'inherit', env }).on('exit', c => done(c ?? 1)),
   );
 }

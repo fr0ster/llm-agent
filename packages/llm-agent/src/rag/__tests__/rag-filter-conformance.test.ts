@@ -2,19 +2,26 @@ import { describe, it } from 'node:test';
 import {
   conformanceEmbedder,
   ragFilterConformanceCases,
+  ragOwnerFilterConformanceCases,
 } from '../../testing/rag-filter-conformance.js';
 import { InMemoryRag } from '../in-memory-rag.js';
 import { symmetricEmbedder } from '../retrieval-embedder.js';
 import { VectorRag } from '../vector-rag.js';
 
 describe('RAG identity filter conformance — InMemoryRag', () => {
-  for (const c of ragFilterConformanceCases) {
+  for (const c of [
+    ...ragFilterConformanceCases,
+    ...ragOwnerFilterConformanceCases,
+  ]) {
     it(c.name, () => c.run(async () => new InMemoryRag()));
   }
 });
 
 describe('RAG identity filter conformance — VectorRag', () => {
-  for (const c of ragFilterConformanceCases) {
+  for (const c of [
+    ...ragFilterConformanceCases,
+    ...ragOwnerFilterConformanceCases,
+  ]) {
     it(c.name, () =>
       c.run(
         async () => new VectorRag(symmetricEmbedder(conformanceEmbedder())),

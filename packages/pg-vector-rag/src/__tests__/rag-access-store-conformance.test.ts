@@ -1,19 +1,14 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { RagError } from '@mcp-abap-adt/llm-agent';
+import type { RagAccessBarrierHook } from '@mcp-abap-adt/llm-agent/testing/rag-access-store-conformance';
 import { ragAccessStoreConformanceCases } from '@mcp-abap-adt/llm-agent/testing/rag-access-store-conformance';
 import { createPgVectorRagAccessStores } from '../access-stores.js';
+import { writeCatalogRecord } from '../catalog-record.js';
 import { migratePgVectorRagAccess } from '../migrate-access.js';
-import { createPgClient, type PgClient } from '../pg-vector-rag.js';
+import { createPgClient } from '../pg-vector-rag.js';
 import { PgVectorRagProvider } from '../pg-vector-rag-provider.js';
 import { accessFixture } from './access-fixture.js';
-
-function barrier() {
-  let resolve = () => {};
-  const promise = new Promise<void>((done) => {
-    resolve = done;
-  });
-  return { promise, resolve };
-}
 
 for (const item of ragAccessStoreConformanceCases)
   test(`PG ${item.name}`, { skip: !process.env.PG_TEST_URL }, async () => {
@@ -23,7 +18,54 @@ for (const item of ragAccessStoreConformanceCases)
       await f.client.query(
         `INSERT INTO rag_collection_catalog (store_name, collection_name, scope, role_id) VALUES ('used', 'Used', 'role', 'in-use')`,
       );
-      await item.run(async () => createPgVectorRagAccessStores(f.provider));
+      await item.run(async () => {
+        const stores = createPgVectorRagAccessStores(f.provider);
+        let hook: RagAccessBarrierHook = async () => {};
+        const transaction = f.client.transaction?.bind(f.client);
+        assert.ok(transaction);
+        const creationClient: typeof f.client = {
+          ...f.client,
+          query: f.client.query.bind(f.client),
+          end: async () => {},
+          transaction: async (work) => {
+            await hook('creation');
+            return transaction(work);
+          },
+        };
+        f.client.transaction = async (work) => {
+          await hook('deletion');
+          return transaction(work);
+        };
+        return {
+          ...stores,
+          setBarrierHook(next) {
+            hook = next;
+          },
+          async createRoleCollection(roleId) {
+            const result = await writeCatalogRecord(
+              creationClient,
+              'rag_collection_catalog',
+              {
+                storeName: `docs_${roleId}`,
+                name: 'Docs',
+                scope: 'role',
+                roleId,
+              },
+              { scope: 'role', roleId },
+              () => ({
+                ok: false,
+                error: new RagError('Refused', 'RAG_CREATE_ERROR'),
+              }),
+            );
+            return result.ok ? { ok: true, value: undefined } : result;
+          },
+          async collections() {
+            const result = await f.provider.describeCollections();
+            assert.ok(result.ok);
+            return result.value.records;
+          },
+        };
+      });
     } finally {
       await f.close();
     }
@@ -127,117 +169,3 @@ for (const layout of ['per-collection', 'shared'] as const) {
     }
   });
 }
-
-test('PG deletion wins a barrier-controlled role collection creation without leaving an orphan owner', {
-  skip: !process.env.PG_TEST_URL,
-}, async () => {
-  const f = await accessFixture();
-  const entered = barrier();
-  const resume = barrier();
-  const { writeCatalogRecord } = await import('../catalog-record.js');
-  const { RagError } = await import('@mcp-abap-adt/llm-agent');
-  try {
-    assert.ok((await migratePgVectorRagAccess(f.provider)).ok);
-    const stores = createPgVectorRagAccessStores(f.provider);
-    assert.ok(
-      (await stores.roles.createRole({ roleId: 'race', name: 'Race' })).ok,
-    );
-    // PGlite serializes transactions; drive the persistence boundary step-wise.
-    const wait = async () => {
-      entered.resolve();
-      await resume.promise;
-    };
-    const gated: PgClient = {
-      query: async (sql, params) => {
-        await wait();
-        return f.client.query(sql, params);
-      },
-      end: async () => {},
-      transaction: async (work) => {
-        await wait();
-        assert.ok(f.client.transaction);
-        return f.client.transaction(work);
-      },
-    };
-    const creation = writeCatalogRecord(
-      gated,
-      'rag_collection_catalog',
-      { storeName: 'race_docs', name: 'Race', scope: 'role', roleId: 'race' },
-      { scope: 'role', roleId: 'race' },
-      () => ({ ok: false, error: new RagError('Refused', 'RAG_CREATE_ERROR') }),
-    );
-    await entered.promise;
-    assert.ok((await stores.roles.deleteRole('race')).ok);
-    resume.resolve();
-    assert.equal((await creation).ok, false);
-    assert.equal(
-      (
-        await f.client.query(
-          "SELECT 1 FROM rag_collection_catalog WHERE role_id = 'race'",
-        )
-      ).rows.length,
-      0,
-    );
-  } finally {
-    resume.resolve();
-    await f.close();
-  }
-});
-
-test('PG collection creation wins and deletion preserves its role and assignments', {
-  skip: !process.env.PG_TEST_URL,
-}, async () => {
-  const f = await accessFixture();
-  const { writeCatalogRecord } = await import('../catalog-record.js');
-  const { RagError, RoleInUseError } = await import('@mcp-abap-adt/llm-agent');
-  const created = barrier();
-  try {
-    assert.ok((await migratePgVectorRagAccess(f.provider)).ok);
-    const roles = createPgVectorRagAccessStores(f.provider).roles;
-    assert.ok(
-      (await roles.createRole({ roleId: 'winner', name: 'Winner' })).ok,
-    );
-    assert.ok((await roles.assign('u1', 'winner')).ok);
-    const creation = (async () => {
-      const result = await writeCatalogRecord(
-        f.client,
-        'rag_collection_catalog',
-        {
-          storeName: 'winner_docs',
-          name: 'Winner',
-          scope: 'role',
-          roleId: 'winner',
-        },
-        { scope: 'role', roleId: 'winner' },
-        () => ({
-          ok: false,
-          error: new RagError('Refused', 'RAG_CREATE_ERROR'),
-        }),
-      );
-      created.resolve();
-      return result;
-    })();
-    const deletion = (async () => {
-      await created.promise;
-      return roles.deleteRole('winner');
-    })();
-    assert.ok((await creation).ok);
-    const result = await deletion;
-    assert.ok(!result.ok);
-    assert.ok(result.error instanceof RoleInUseError);
-    assert.equal(
-      (
-        await f.client.query(
-          "SELECT 1 FROM rag_collection_catalog c JOIN rag_roles r ON c.role_id = r.role_id WHERE c.store_name = 'winner_docs'",
-        )
-      ).rows.length,
-      1,
-    );
-    const assigned = await roles.rolesOf('u1');
-    assert.ok(assigned.ok);
-    assert.ok(assigned.value.has('winner'));
-  } finally {
-    created.resolve();
-    await f.close();
-  }
-});

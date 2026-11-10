@@ -18,14 +18,17 @@ const names = [
 function setup(isAdmin = true) {
   const registry = new SimpleRagRegistry();
   const providerRegistry = new SimpleRagProviderRegistry();
-  providerRegistry.registerProvider(
-    new InMemoryRagProvider({
-      name: 'mem',
-      supportedScopes: ['role', 'global'],
-    }),
-  );
+  const provider = new InMemoryRagProvider({
+    name: 'mem',
+    supportedScopes: ['role', 'global'],
+  });
+  providerRegistry.registerProvider(provider);
   registry.setProviderRegistry(providerRegistry);
-  const access = testRagAccess();
+  const access = {
+    ...testRagAccess(),
+    roles: provider.roles,
+    bindings: provider.bindings,
+  };
   const caller = { sessionId: 'S', userId: 'admin', isAdmin };
   const entries = buildRagAdminToolEntries({
     caller,

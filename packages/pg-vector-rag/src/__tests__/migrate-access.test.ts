@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { ragMigrationConformanceCases } from '@mcp-abap-adt/llm-agent/testing/rag-migration-conformance';
 import { createPgVectorRagAccessStores } from '../access-stores.js';
 import { migratePgVectorRagAccess } from '../migrate-access.js';
 import { PgVectorRagProvider } from '../pg-vector-rag-provider.js';
@@ -35,41 +36,32 @@ for (const layout of ['per-collection', 'shared'] as const)
       await f.client.query(
         `INSERT INTO rag_collection_catalog (store_name, collection_name, scope, user_id, session_id) VALUES ('u', 'User', 'user', 'u1', NULL), ('s', 'Session', 'session', NULL, 's1'), ('g', 'Global', 'global', NULL, NULL), ('bad', 'Invalid', 'user', NULL, NULL)`,
       );
-      const first = await migratePgVectorRagAccess(provider);
-      assert.ok(first.ok);
-      assert.deepEqual(
-        first.value.reported.map((r) => r.storeName),
-        ['bad'],
-      );
-      const description = await provider.describeCollections();
-      assert.ok(description.ok);
-      assert.deepEqual(
-        description.value.records.map((r) => r.storeName),
-        ['g', 's', 'u'],
-      );
-      assert.equal(
-        description.value.records.find((r) => r.scope === 'user')?.userId,
-        'u1',
-      );
-      const rows = await f.client.query(
-        'SELECT * FROM rag_collection_catalog ORDER BY store_name',
-      );
-      const schema = await f.client.query(
-        `SELECT table_name, column_name, data_type FROM information_schema.columns WHERE table_schema = current_schema() ORDER BY table_name, ordinal_position`,
-      );
-      assert.deepEqual(await migratePgVectorRagAccess(provider), first);
-      assert.deepEqual(
-        await f.client.query(
-          'SELECT * FROM rag_collection_catalog ORDER BY store_name',
-        ),
-        rows,
-      );
-      assert.deepEqual(
-        await f.client.query(
-          `SELECT table_name, column_name, data_type FROM information_schema.columns WHERE table_schema = current_schema() ORDER BY table_name, ordinal_position`,
-        ),
-        schema,
-      );
+      for (const entry of ragMigrationConformanceCases)
+        await entry.run({
+          migrate: () => migratePgVectorRagAccess(provider),
+          describe: () => provider.describeCollections(),
+          async snapshot() {
+            return JSON.stringify({
+              rows: await f.client.query(
+                'SELECT * FROM rag_collection_catalog ORDER BY store_name',
+              ),
+              schema: await f.client.query(
+                'SELECT table_name, column_name, data_type FROM information_schema.columns WHERE table_schema = current_schema() ORDER BY table_name, ordinal_position',
+              ),
+            });
+          },
+          expectedRecords: [
+            { storeName: 'u', name: 'User', scope: 'user', userId: 'u1' },
+            {
+              storeName: 's',
+              name: 'Session',
+              scope: 'session',
+              sessionId: 's1',
+            },
+            { storeName: 'g', name: 'Global', scope: 'global' },
+          ],
+          invalidStoreNames: ['bad'],
+        });
       assert.ok(
         (
           await createPgVectorRagAccessStores(provider).roles.createRole({

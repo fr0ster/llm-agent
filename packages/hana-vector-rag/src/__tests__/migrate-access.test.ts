@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { ragMigrationConformanceCases } from '@mcp-abap-adt/llm-agent/testing/rag-migration-conformance';
 import { migrateHanaVectorRagAccess } from '../migrate-access.js';
 import { accessFixture } from './access-fixture.js';
 
@@ -38,42 +39,34 @@ for (const layout of ['per-collection', 'shared'] as const)
       COLLECTION_NAME: 'Global',
       SCOPE: 'global',
     });
-    const first = await migrateHanaVectorRagAccess(provider);
-    assert.ok(first.ok);
-    assert.equal(first.value.reported[0]?.storeName, 'invalid');
-    const rows = await db.client.query(
-      'SELECT store_name, scope, user_id, session_id, role_id FROM "rag_collection_catalog" ORDER BY store_name',
-    );
-    const snapshot = await db.client.query(
-      'SELECT TABLE_NAME, COLUMN_NAME FROM SYS.TABLE_COLUMNS',
-    );
-    assert.deepEqual(await migrateHanaVectorRagAccess(provider), first);
-    assert.deepEqual(
-      await db.client.query(
-        'SELECT TABLE_NAME, COLUMN_NAME FROM SYS.TABLE_COLUMNS',
-      ),
-      snapshot,
-    );
-    assert.deepEqual(
-      await db.client.query(
-        'SELECT store_name, scope, user_id, session_id, role_id FROM "rag_collection_catalog" ORDER BY store_name',
-      ),
-      rows,
-    );
+    for (const entry of ragMigrationConformanceCases)
+      await entry.run({
+        migrate: () => migrateHanaVectorRagAccess(provider),
+        describe: () => provider.describeCollections(),
+        async snapshot() {
+          return JSON.stringify({
+            rows: await db.client.query(
+              'SELECT store_name, scope, user_id, session_id, role_id FROM "rag_collection_catalog" ORDER BY store_name',
+            ),
+            schema: await db.client.query(
+              'SELECT TABLE_NAME, COLUMN_NAME FROM SYS.TABLE_COLUMNS',
+            ),
+          });
+        },
+        expectedRecords: [
+          { storeName: 'valid', name: 'Valid', scope: 'user', userId: 'u' },
+          {
+            storeName: 'session',
+            name: 'Session',
+            scope: 'session',
+            sessionId: 's',
+          },
+          { storeName: 'global', name: 'Global', scope: 'global' },
+        ],
+        invalidStoreNames: ['invalid'],
+      });
     const description = await provider.describeCollections();
     assert.ok(description.ok);
-    assert.deepEqual(
-      description.value.records.map((r) => [
-        r.storeName,
-        r.scope,
-        r.scope === 'user' ? r.userId : '',
-      ]),
-      [
-        ['global', 'global', ''],
-        ['session', 'session', ''],
-        ['valid', 'user', 'u'],
-      ],
-    );
     assert.equal(
       (await db.client.query('SELECT store_name FROM "rag_collection_catalog"'))
         .length,

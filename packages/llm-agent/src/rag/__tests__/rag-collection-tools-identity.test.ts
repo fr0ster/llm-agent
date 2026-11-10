@@ -663,10 +663,16 @@ describe('role and global collection access', () => {
 
 it('role creation requires an admin, assignment and server permission', async () => {
   const { reg, providers } = world();
-  providers.registerProvider(
-    new InMemoryRagProvider({ name: 'role-mem', supportedScopes: ['role'] }),
-  );
-  const access = testRagAccess();
+  const provider = new InMemoryRagProvider({
+    name: 'role-mem',
+    supportedScopes: ['role'],
+  });
+  providers.registerProvider(provider);
+  const access = {
+    ...testRagAccess(),
+    roles: provider.roles,
+    bindings: provider.bindings,
+  };
   assert.ok(
     (await access.roles.createRole({ roleId: 'team', name: 'Team' })).ok,
   );

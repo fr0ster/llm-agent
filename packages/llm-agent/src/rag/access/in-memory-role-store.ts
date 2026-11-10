@@ -11,6 +11,11 @@ export class InMemoryRagRoleStore implements IRagRoleStore {
 
   constructor(private readonly isRoleInUse: (roleId: string) => boolean) {}
 
+  /** Synchronous guard for catalog writes in this process; no await may split check and write. */
+  hasRole(roleId: string): boolean {
+    return this.roles.has(roleId);
+  }
+
   async listRoles(): Promise<Result<readonly RagRole[], RagError>> {
     return {
       ok: true,

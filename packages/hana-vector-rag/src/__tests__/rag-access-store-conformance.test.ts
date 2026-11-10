@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { RagError } from '@mcp-abap-adt/llm-agent';
+import type { RagAccessBarrierHook } from '@mcp-abap-adt/llm-agent/testing/rag-access-store-conformance';
 import { ragAccessStoreConformanceCases } from '@mcp-abap-adt/llm-agent/testing/rag-access-store-conformance';
 import { createHanaVectorRagAccessStores } from '../access-stores.js';
+import { writeCatalogRecord } from '../catalog-record.js';
 import { migrateHanaVectorRagAccess } from '../migrate-access.js';
 import { accessFixture } from './access-fixture.js';
 
@@ -15,7 +18,54 @@ for (const item of ragAccessStoreConformanceCases)
       SCOPE: 'role',
       ROLE_ID: 'in-use',
     });
-    await item.run(async () => createHanaVectorRagAccessStores(provider));
+    await item.run(async () => {
+      const stores = createHanaVectorRagAccessStores(provider);
+      let hook: RagAccessBarrierHook = async () => {};
+      const transaction = db.client.transaction?.bind(db.client);
+      assert.ok(transaction);
+      const creationClient: typeof db.client = {
+        ...db.client,
+        query: db.client.query.bind(db.client),
+        exec: db.client.exec.bind(db.client),
+        transaction: async (work) => {
+          await hook('creation');
+          return transaction(work);
+        },
+      };
+      db.client.transaction = async (work) => {
+        await hook('deletion');
+        return transaction(work);
+      };
+      return {
+        ...stores,
+        setBarrierHook(next) {
+          hook = next;
+        },
+        async createRoleCollection(roleId) {
+          const result = await writeCatalogRecord(
+            creationClient,
+            'rag_collection_catalog',
+            {
+              storeName: `docs_${roleId}`,
+              name: 'Docs',
+              scope: 'role',
+              roleId,
+            },
+            { scope: 'role', roleId },
+            () => ({
+              ok: false,
+              error: new RagError('Refused', 'RAG_CREATE_ERROR'),
+            }),
+          );
+          return result.ok ? { ok: true, value: undefined } : result;
+        },
+        async collections() {
+          const result = await provider.describeCollections();
+          assert.ok(result.ok);
+          return result.value.records;
+        },
+      };
+    });
   });
 
 test('HANA two binding stores persist exactly one concurrent winner', async () => {

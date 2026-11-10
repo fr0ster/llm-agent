@@ -66,6 +66,8 @@ function evaluate(
   if (coll) return row.collection === params[Number(coll[1]) - 1];
   // The shared layout quotes the column; the semantics are the same.
   const cond = shared ? rawCond.replaceAll('"metadata"', 'metadata') : rawCond;
+  const absent = cond.match(/^NOT \(metadata \? '([A-Za-z_]+)'\)$/);
+  if (absent) return !Object.hasOwn(row.metadata, absent[1]);
   const eq = cond.match(EQ);
   if (eq) {
     const v = row.metadata[eq[1]];
