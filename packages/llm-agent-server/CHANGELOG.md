@@ -1,5 +1,14 @@
 # @mcp-abap-adt/llm-agent-server
 
+## 30.9.3
+
+### Patch Changes
+
+- c09795e: SAP AI SDK packages are updated to 2.18.0, which keeps destination credentials out of deployment resolution error messages.
+- Updated dependencies [c09795e]
+  - @mcp-abap-adt/sap-aicore-llm@30.14.1
+  - @mcp-abap-adt/sap-aicore-embedder@30.10.1
+
 ## 30.9.2
 
 ### Patch Changes
