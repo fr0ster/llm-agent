@@ -1,7 +1,11 @@
 export * from './catalog/index.js';
 export * from './corrections/index.js';
 export type { RagIdentityFilter } from './identity-filter.js';
-export { matchesRagIdentity, ragIdentityFilter } from './identity-filter.js';
+export {
+  matchesRagIdentity,
+  ragIdentityFilter,
+  tagRagMetadata,
+} from './identity-filter.js';
 export type { InMemoryRagConfig } from './in-memory-rag.js';
 export { InMemoryRag } from './in-memory-rag.js';
 export * from './mcp-tools/index.js';

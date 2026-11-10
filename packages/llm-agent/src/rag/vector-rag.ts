@@ -22,7 +22,11 @@ import {
   type RagResult,
   type Result,
 } from '../interfaces/types.js';
-import { matchesRagIdentity, ragIdentityFilter } from './identity-filter.js';
+import {
+  matchesRagIdentity,
+  ragIdentityFilter,
+  tagRagMetadata,
+} from './identity-filter.js';
 import { InvertedIndex } from './inverted-index.js';
 import { listKeyedPage } from './list-support.js';
 import type { IDocumentEnricher, IQueryPreprocessor } from './preprocessor.js';
@@ -134,6 +138,7 @@ export class VectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
     metadata: RagMetadata,
   ): Result<void, RagError> {
     // Generated IDs remain reserved while their anonymous record exists.
+    metadata = tagRagMetadata(metadata);
     if (
       this.records.some(
         (r) =>
@@ -156,7 +161,7 @@ export class VectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
         if (slot.metadata.id === metadata.id) {
           slot.text = text;
           slot.vector = vector;
-          slot.metadata = { ...slot.metadata, ...metadata };
+          slot.metadata = tagRagMetadata({ ...slot.metadata, ...metadata });
           return { ok: true, value: undefined };
         }
       }
@@ -172,7 +177,7 @@ export class VectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
       if (this.cosine(slot.vector, vector) >= this.dedupThreshold) {
         slot.text = text;
         slot.vector = vector;
-        slot.metadata = { ...slot.metadata, ...metadata };
+        slot.metadata = tagRagMetadata({ ...slot.metadata, ...metadata });
         return { ok: true, value: undefined };
       }
     }

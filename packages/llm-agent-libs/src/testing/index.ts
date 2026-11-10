@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { tagRagMetadata } from '@mcp-abap-adt/llm-agent';
 import { testRagAccess } from '@mcp-abap-adt/llm-agent/testing/rag-access-testing';
 /**
  * Shared test-double factories for SmartAgent integration testing.
@@ -179,6 +180,10 @@ export function makeLlm(
 export function makeRag(
   queryResults: RagResult[] = [],
 ): IRag & { upsertCalls: string[]; queryCount: number } {
+  queryResults = queryResults.map((record) => ({
+    ...record,
+    metadata: tagRagMetadata(record.metadata),
+  }));
   const upsertCalls: string[] = [];
   const stub: IRag & { upsertCalls: string[]; queryCount: number } = {
     queryCount: 0,

@@ -6,10 +6,11 @@
  * A store that ignores them lets one user's records surface in another
  * user's context. The contract:
  *
- * - `ragFilter.sessionId` set → only records whose `metadata.sessionId`
- *   equals it; a record without `sessionId` is excluded.
- * - `ragFilter.userId` set → the same for `metadata.userId`.
- * - both set → both must match; neither set → no identity filtering.
+ * - every owner query requires a positive metadata.ownerScope tag;
+ * - the typed owner union selects session/user/role/global and the required id;
+ * - legacy sessionId/userId/roleId options select that positive scope too;
+ * - missing tags, conflicting keys and scope/id mismatches stay closed;
+ * - compound scalar filters must all match, without changing record ownership;
  * - the filter applies BEFORE top-k: a filtered query still returns up to `k`
  *   matching records.
  *
@@ -165,7 +166,7 @@ export const ragFilterConformanceCases: readonly RagFilterConformanceCase[] = [
     },
   },
   {
-    name: 'sessionId and userId together must both match',
+    name: 'conflicting owner keys match no owner filter',
     async run(makeStore) {
       const rag = await makeStore();
       await seed(rag, [
@@ -187,7 +188,7 @@ export const ragFilterConformanceCases: readonly RagFilterConformanceCase[] = [
       ]);
       assert.deepEqual(
         await queryIds(rag, Q, 10, { sessionId: 's1', userId: 'u1' }),
-        ['s1u1'],
+        [],
       );
     },
   },
@@ -218,14 +219,14 @@ export const ragFilterConformanceCases: readonly RagFilterConformanceCase[] = [
         {
           id: 'owned',
           text: 'juliet canyon mesa',
-          metadata: { sessionId: 's1', userId: 'u1' },
+          metadata: { sessionId: 's1' },
         },
         { id: 'unowned', text: 'kilo prairie bison', metadata: {} },
       ]);
       assert.deepEqual(await queryIds(rag, Q, 10, { sessionId: 's1' }), [
         'owned',
       ]);
-      assert.deepEqual(await queryIds(rag, Q, 10, { userId: 'u1' }), ['owned']);
+      assert.deepEqual(await queryIds(rag, Q, 10, { userId: 'u1' }), []);
     },
   },
   {
@@ -415,6 +416,36 @@ export const ragFilterConformanceCases: readonly RagFilterConformanceCase[] = [
 export const ragOwnerFilterConformanceCases: readonly RagFilterConformanceCase[] =
   [
     {
+      name: 'a record without ownerScope or with mismatched scope/id matches no owner filter',
+      async run(makeStore) {
+        const rag = await makeStore();
+        await seed(rag, [
+          {
+            id: 'missing',
+            text: Q,
+            metadata: { ownerScope: 'user', sessionId: 's' },
+          },
+          {
+            id: 'mismatch',
+            text: Q,
+            metadata: { ownerScope: 'session', userId: 'u' },
+          },
+          {
+            id: 'conflict',
+            text: Q,
+            metadata: { sessionId: 's', userId: 'u' },
+          },
+        ]);
+        for (const owner of [
+          { scope: 'session', sessionId: 's' },
+          { scope: 'user', userId: 'u' },
+          { scope: 'role', roleId: 'r' },
+          { scope: 'global' },
+        ] as const)
+          assert.deepEqual(await queryIds(rag, Q, 10, { owner }), []);
+      },
+    },
+    {
       name: 'roleId filter isolates two roles',
       async run(makeStore) {
         const rag = await makeStore();
@@ -466,7 +497,7 @@ export const ragOwnerFilterConformanceCases: readonly RagFilterConformanceCase[]
       }),
     ),
     {
-      name: 'global query returns only untagged records and k counts only those',
+      name: 'global query returns only positive global-tagged records and k counts only those',
       async run(makeStore) {
         const rag = await makeStore();
         await seed(rag, [

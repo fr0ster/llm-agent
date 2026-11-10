@@ -273,7 +273,7 @@ it('global retrieval through RagOrchestrator drops session, user and role record
   );
 });
 
-it('forwards the global no-owner predicate before top-k and keeps its defensive post-filter', async () => {
+it('forwards the positive global owner predicate before top-k and keeps its defensive post-filter', async () => {
   const backend = makeRag([]);
   backend.query = async (_embedding, k, options) => {
     assert.equal(k, 2);
@@ -282,7 +282,7 @@ it('forwards the global no-owner predicate before top-k and keeps its defensive 
       ok: true,
       value: [
         { text: 'private', metadata: { roleId: 'r' }, score: 1 },
-        { text: 'global', metadata: {}, score: 0.5 },
+        { text: 'global', metadata: { ownerScope: 'global' }, score: 0.5 },
       ],
     };
   };

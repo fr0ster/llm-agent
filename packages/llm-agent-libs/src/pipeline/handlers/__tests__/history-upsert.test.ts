@@ -229,7 +229,7 @@ describe('history-upsert: the record carries its owner (security)', () => {
     timestamp: 1000,
   };
 
-  it('tags the history record with sessionId, and userId when the call has one', async () => {
+  it('tags the history record with its session owner even when the caller has userId', async () => {
     const rag = makeFakeRag();
     await summarizeAndStore({
       turn,
@@ -239,7 +239,10 @@ describe('history-upsert: the record carries its owner (security)', () => {
       sessionId: 's1',
       options: { userId: 'u1' },
     });
-    assert.deepEqual(rag.upserted[0].meta, { sessionId: 's1', userId: 'u1' });
+    assert.deepEqual(rag.upserted[0].meta, {
+      sessionId: 's1',
+      ownerScope: 'session',
+    });
   });
 
   it('a session-scoped history query finds its own turn and not another session’s', async () => {
@@ -255,7 +258,9 @@ describe('history-upsert: the record carries its owner (security)', () => {
       sessionId: 's1',
     });
     const q = { text: 'purchase orders', toVector: async () => [] };
-    const own = await rag.query(q, 5, { ragFilter: { sessionId: 's1' } });
+    const own = await rag.query(q, 5, {
+      ragFilter: { sessionId: 's1', ownerScope: 'session' },
+    });
     const other = await rag.query(q, 5, { ragFilter: { sessionId: 's2' } });
     assert.ok(own.ok && other.ok);
     assert.equal(own.ok && own.value.length, 1);

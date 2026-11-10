@@ -162,11 +162,11 @@ function searchSql(
 ): SqlStatement {
   if (!identity) return statement;
   const conditions: string[] = [];
-  if (identity.owner?.scope === 'global') {
-    for (const key of ['sessionId', 'userId', 'roleId'])
-      conditions.push(
-        `JSON_QUERY("METADATA", '$.${key}' WITH UNCONDITIONAL ARRAY WRAPPER NULL ON EMPTY ERROR ON ERROR) IS NULL`,
-      );
+  if (identity.ownerScope !== undefined) {
+    conditions.push(
+      `JSON_VALUE("METADATA", '$.ownerScope' RETURNING NVARCHAR(5000)) = ?`,
+    );
+    statement.params.push(identity.ownerScope);
   }
   for (const key of ['sessionId', 'userId', 'roleId'] as const) {
     if (identity[key] !== undefined) {

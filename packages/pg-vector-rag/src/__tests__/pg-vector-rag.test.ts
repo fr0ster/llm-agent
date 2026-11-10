@@ -194,9 +194,9 @@ describe('PgVectorRag — session/user filter (security)', () => {
     const { sql, params } = lastSelect();
     assert.match(
       sql,
-      /WHERE CASE WHEN jsonb_typeof\(metadata->'sessionId'\) = 'string' THEN metadata->>'sessionId' END = \$1 AND CASE WHEN jsonb_typeof\(metadata->'userId'\) = 'string' THEN metadata->>'userId' END = \$2 AND COALESCE\(.*\) >= \$3 ORDER BY vector <=> .* LIMIT 4$/,
+      /WHERE .*ownerScope.* AND CASE WHEN jsonb_typeof\(metadata->'sessionId'\) = 'string' THEN metadata->>'sessionId' END = \$2 AND CASE WHEN jsonb_typeof\(metadata->'userId'\) = 'string' THEN metadata->>'userId' END = \$3 AND COALESCE\(.*\) >= \$4 ORDER BY vector <=> .* LIMIT 4$/,
     );
-    assert.deepEqual(params.slice(0, 2), ['s1', 'u1']);
+    assert.deepEqual(params.slice(0, 3), ['session', 's1', 'u1']);
   });
 
   it('userId alone is filtered on its own parameter', async () => {
@@ -205,11 +205,11 @@ describe('PgVectorRag — session/user filter (security)', () => {
     const { sql, params } = lastSelect();
     assert.match(
       sql,
-      /WHERE CASE WHEN jsonb_typeof\(metadata->'userId'\) = 'string' THEN metadata->>'userId' END = \$1 AND COALESCE/,
+      /WHERE .*ownerScope.* AND CASE WHEN jsonb_typeof\(metadata->'userId'\) = 'string' THEN metadata->>'userId' END = \$2 AND COALESCE/,
     );
     assert.ok(!sql.includes("'sessionId'"));
-    assert.equal(params[0], 'u1');
-    assert.equal(params.length, 2);
+    assert.equal(params[1], 'u1');
+    assert.equal(params.length, 3);
   });
 
   it('no filter at all still drops expired rows, and nothing else', async () => {
@@ -243,7 +243,7 @@ describe('PgVectorRag — session/user filter (security)', () => {
     await rag.query(emb, 2, { ragFilter: { sessionId: hostile } });
     const { sql, params } = lastSelect();
     assert.ok(!sql.includes(hostile));
-    assert.equal(params[0], hostile);
+    assert.equal(params[1], hostile);
   });
 });
 

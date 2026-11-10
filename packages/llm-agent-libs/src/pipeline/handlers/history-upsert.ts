@@ -58,7 +58,7 @@ export async function summarizeAndStore(
       summary,
       {
         sessionId,
-        ...(options?.userId !== undefined ? { userId: options.userId } : {}),
+        ownerScope: 'session',
       },
       options,
     );

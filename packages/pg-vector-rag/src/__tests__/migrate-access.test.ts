@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import type { RagMetadata } from '@mcp-abap-adt/llm-agent';
 import { ragMigrationConformanceCases } from '@mcp-abap-adt/llm-agent/testing/rag-migration-conformance';
 import { createPgVectorRagAccessStores } from '../access-stores.js';
 import { migratePgVectorRagAccess } from '../migrate-access.js';
@@ -38,10 +39,40 @@ for (const layout of ['per-collection', 'shared'] as const)
       );
       for (const entry of ragMigrationConformanceCases)
         await entry.run({
+          async seedLegacyRecords(records) {
+            if (layout === 'per-collection')
+              await f.client.query(
+                'CREATE TABLE u (id TEXT PRIMARY KEY, metadata JSONB)',
+              );
+            for (const record of records)
+              await f.client.query(
+                layout === 'shared'
+                  ? "INSERT INTO migration_docs (collection, id, metadata) VALUES ('u', $1, $2::jsonb)"
+                  : 'INSERT INTO u (id, metadata) VALUES ($1, $2::jsonb)',
+                [record.id, JSON.stringify(record.metadata)],
+              );
+            return 'u';
+          },
+          async recordMetadata() {
+            const result = await f.client.query(
+              layout === 'shared'
+                ? "SELECT id, metadata FROM migration_docs WHERE collection = 'u' ORDER BY id"
+                : 'SELECT id, metadata FROM u ORDER BY id',
+            );
+            return result.rows.map((row) => ({
+              id: String(row.id),
+              metadata: row.metadata as RagMetadata,
+            }));
+          },
           migrate: () => migratePgVectorRagAccess(provider),
           describe: () => provider.describeCollections(),
           async snapshot() {
             return JSON.stringify({
+              documents: await f.client.query(
+                layout === 'shared'
+                  ? 'SELECT id, metadata FROM migration_docs ORDER BY id'
+                  : 'SELECT id, metadata FROM u ORDER BY id',
+              ),
               rows: await f.client.query(
                 'SELECT * FROM rag_collection_catalog ORDER BY store_name',
               ),

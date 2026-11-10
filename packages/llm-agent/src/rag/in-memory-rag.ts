@@ -21,7 +21,11 @@ import type {
   Result,
 } from '../interfaces/types.js';
 import { RagError } from '../interfaces/types.js';
-import { matchesRagIdentity, ragIdentityFilter } from './identity-filter.js';
+import {
+  matchesRagIdentity,
+  ragIdentityFilter,
+  tagRagMetadata,
+} from './identity-filter.js';
 import { listKeyedPage } from './list-support.js';
 import type { IDocumentEnricher, IQueryPreprocessor } from './preprocessor.js';
 import { scanKeyedPage } from './scan-support.js';
@@ -116,6 +120,7 @@ export class InMemoryRag implements IRag, IRagScanner, IRagFilteredDeleter {
       return { ok: false, error: new RagError('Aborted', 'ABORTED') };
     }
 
+    metadata = tagRagMetadata(metadata);
     let enrichedText = text;
     for (const enricher of this.documentEnrichers) {
       const eResult = await enricher.enrich(enrichedText, options);
@@ -149,10 +154,10 @@ export class InMemoryRag implements IRag, IRagScanner, IRagFilteredDeleter {
       if (idx !== -1) {
         this.records[idx].text = enrichedText;
         this.records[idx].embedding = embedding;
-        this.records[idx].metadata = {
+        this.records[idx].metadata = tagRagMetadata({
           ...this.records[idx].metadata,
           ...resolvedMetadata,
-        };
+        });
         return { ok: true, value: undefined };
       }
     }
@@ -183,7 +188,10 @@ export class InMemoryRag implements IRag, IRagScanner, IRagFilteredDeleter {
       // Update existing record
       dupRecord.text = enrichedText;
       dupRecord.embedding = embedding;
-      dupRecord.metadata = { ...dupRecord.metadata, ...resolvedMetadata };
+      dupRecord.metadata = tagRagMetadata({
+        ...dupRecord.metadata,
+        ...resolvedMetadata,
+      });
     } else {
       // Push new record
       this.records.push({

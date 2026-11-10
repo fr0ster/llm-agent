@@ -2,11 +2,13 @@ import {
   type CallOptions,
   checkRagAccess,
   type IQueryEmbedding,
+  matchesRagIdentity,
   type RagAccess,
   RagAccessDeniedError,
   type RagError,
   type RagResult,
   type Result,
+  ragIdentityFilter,
   type SmartAgentRagStores,
 } from '@mcp-abap-adt/llm-agent';
 
@@ -42,6 +44,7 @@ export async function ownerBoundQuery(
   const caller = options.caller;
   if (!caller?.sessionId?.trim() || !caller.userId?.trim()) return deny();
   const filter = options.ragFilter;
+  if (filter?.owner !== undefined) return deny();
   if (filter?.sessionId !== undefined && filter.sessionId !== caller.sessionId)
     return deny();
   if (filter?.userId !== undefined && filter.userId !== caller.userId)
@@ -71,43 +74,30 @@ export async function ownerBoundQuery(
     if (!allowed.ok) return allowed;
   }
   const ownerFilter =
-    owner.scope === 'session'
-      ? { sessionId: owner.sessionId }
-      : owner.scope === 'user'
-        ? { userId: owner.userId }
-        : owner.scope === 'role'
-          ? { roleId: owner.roleId }
-          : owner.scope === 'global'
-            ? { owner: { scope: 'global' as const } }
-            : {};
+    owner.scope === 'internal'
+      ? {}
+      : owner.scope === 'session'
+        ? { owner, sessionId: owner.sessionId }
+        : owner.scope === 'user'
+          ? { owner, userId: owner.userId }
+          : owner.scope === 'role'
+            ? { owner, roleId: owner.roleId }
+            : { owner };
   const result = await store.rag.query(embedding, k, {
     ...options,
     ragFilter: { ...filter, ...ownerFilter },
   });
   if (!result.ok) return result;
-  // Keep untagged or foreign records closed even before every backend implements
-  // the mandatory owner filter before top-k (Task 7).
+  // Keep untagged or foreign records closed if a custom backend returns them.
   return {
     ok: true,
-    value: result.value.filter((record) => {
-      switch (owner.scope) {
-        case 'session':
-          return record.metadata.sessionId === owner.sessionId;
-        case 'user':
-          return record.metadata.userId === owner.userId;
-        case 'role':
-          return record.metadata.roleId === owner.roleId;
-        case 'global':
-          return (
-            !('sessionId' in record.metadata) &&
-            !('userId' in record.metadata) &&
-            !('roleId' in record.metadata)
-          );
-        case 'internal':
-          return true;
-        default:
-          return false;
-      }
-    }),
+    value: result.value.filter(
+      (record) =>
+        owner.scope === 'internal' ||
+        matchesRagIdentity(
+          record.metadata,
+          ragIdentityFilter({ ragFilter: ownerFilter }),
+        ),
+    ),
   };
 }

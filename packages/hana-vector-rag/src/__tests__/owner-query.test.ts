@@ -5,6 +5,7 @@ import {
   QueryEmbedding,
   staticLogin,
   symmetricEmbedder,
+  tagRagMetadata,
 } from '@mcp-abap-adt/llm-agent';
 import { HanaVectorRag } from '../hana-vector-rag.js';
 import { storingHana } from './storing-hana.js';
@@ -28,6 +29,8 @@ for (const layout of ['shared', 'per-collection'] as const)
       db.client,
     );
     for (const [id, metadata] of [
+      ['legacy', { sessionId: 's' }],
+      ['mismatch', { ownerScope: 'user', sessionId: 's' }],
       ['session', { sessionId: 's' }],
       ['user', { userId: 'u' }],
       ['role', { roleId: 'r' }],
@@ -44,7 +47,11 @@ for (const layout of ['shared', 'per-collection'] as const)
         ID: id,
         TEXT: id,
         VECTOR: id === 'foreign' || id === 'null' ? [1, 0, 0] : [0, 1, 0],
-        METADATA: JSON.stringify(metadata),
+        METADATA: JSON.stringify(
+          id === 'legacy' || id === 'mismatch'
+            ? metadata
+            : tagRagMetadata(metadata),
+        ),
       });
     for (const [ragFilter, expected] of [
       [{ sessionId: 's' }, ['session']],

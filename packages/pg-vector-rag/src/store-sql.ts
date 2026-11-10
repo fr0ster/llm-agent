@@ -148,12 +148,9 @@ function filterConditions(
     stringsOnly
       ? `CASE WHEN jsonb_typeof(${metadata}->'${key}') = 'string' THEN ${metadata}->>'${key}' END`
       : `${metadata}->>'${key}'`;
-  if (filter.identity?.owner?.scope === 'global') {
-    conditions.push(
-      ...['sessionId', 'userId', 'roleId'].map(
-        (key) => `NOT (${metadata} ? '${key}')`,
-      ),
-    );
+  if (filter.identity?.ownerScope !== undefined) {
+    params.push(filter.identity.ownerScope);
+    conditions.push(`${text('ownerScope')} = $${params.length}`);
   }
   if (filter.identity?.roleId !== undefined) {
     params.push(filter.identity.roleId);

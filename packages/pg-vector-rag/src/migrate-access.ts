@@ -35,17 +35,21 @@ export async function migratePgVectorRagAccess(
     );
     const { rows } = await client.query(selectRecordsSql(catalogTable, schema));
     const description = describeRagCatalogRows(rows);
+    const recordReports = await provider.migrateRecordOwners();
     return {
       ok: true,
       value: {
-        reported: description.rejected.map((row) => {
-          if (row.storeName === undefined)
-            throw new RagError(
-              'Catalog row has no store name',
-              'RAG_MIGRATION_ERROR',
-            );
-          return { storeName: row.storeName, reason: row.reason };
-        }),
+        reported: [
+          ...recordReports,
+          ...description.rejected.map((row) => {
+            if (row.storeName === undefined)
+              throw new RagError(
+                'Catalog row has no store name',
+                'RAG_MIGRATION_ERROR',
+              );
+            return { storeName: row.storeName, reason: row.reason };
+          }),
+        ],
       },
     };
   } catch (error) {

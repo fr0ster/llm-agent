@@ -1,4 +1,5 @@
 import type { IDialogueTaskContext } from './dialogue-task-context.js';
+import type { RagCollectionOwner } from './rag.js';
 import type { RagCaller } from './rag-access.js';
 import type { ToolTraceEntry } from './tool-trace.js';
 import type { IUsageRecorder, UsageOperation } from './usage.js';
@@ -67,8 +68,8 @@ export interface CallOptions {
   /** Filter RAG results by namespace or other metadata. Every `IRag` store
    *  honours `sessionId` and `userId` as an identity scope (see `IRag.query`). */
   ragFilter?: {
-    /** Mandatory absence of every ownership tag, applied before top-k. */
-    owner?: { readonly scope: 'global' };
+    /** Positive owner scope and required identity, applied before top-k. */
+    owner?: RagCollectionOwner;
     namespace?: string;
     userId?: string;
     caller?: RagCaller;
@@ -360,6 +361,8 @@ export interface ToolCallRecord {
 // ---------------------------------------------------------------------------
 
 export interface RagMetadata {
+  /** Positive ownership discriminant; absent legacy tags never match owner queries. */
+  ownerScope?: RagCollectionOwner['scope'];
   id?: string;
   /** Unix timestamp (seconds) after which this record is considered expired. */
   ttl?: number;

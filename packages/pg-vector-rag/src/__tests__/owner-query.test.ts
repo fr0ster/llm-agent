@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { type CallOptions, QueryEmbedding } from '@mcp-abap-adt/llm-agent';
+import {
+  type CallOptions,
+  QueryEmbedding,
+  tagRagMetadata,
+} from '@mcp-abap-adt/llm-agent';
 import { PgVectorRag } from '../pg-vector-rag.js';
 import { sharedLayoutSql } from '../shared-ddl.js';
 import { accessFixture } from './access-fixture.js';
@@ -27,6 +31,8 @@ for (const layout of ['shared', 'per-collection'] as const)
       );
       if (layout === 'per-collection') await rag.ensureSchema();
       for (const [id, metadata] of [
+        ['legacy', { sessionId: 's' }],
+        ['mismatch', { ownerScope: 'user', sessionId: 's' }],
         ['session', { sessionId: 's' }],
         ['session2', { sessionId: 's' }],
         ['user', { userId: 'u' }],
@@ -45,7 +51,11 @@ for (const layout of ['shared', 'per-collection'] as const)
           [
             id,
             id === 'foreign' || id === 'null-owner' ? '[1,0,0]' : '[0,1,0]',
-            JSON.stringify(metadata),
+            JSON.stringify(
+              id === 'legacy' || id === 'mismatch'
+                ? metadata
+                : tagRagMetadata(metadata),
+            ),
           ],
         );
       }

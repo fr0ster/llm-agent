@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import type { RagMetadata } from '@mcp-abap-adt/llm-agent';
 import { ragMigrationConformanceCases } from '@mcp-abap-adt/llm-agent/testing/rag-migration-conformance';
 import { migrateHanaVectorRagAccess } from '../migrate-access.js';
 import { accessFixture } from './access-fixture.js';
@@ -41,10 +42,34 @@ for (const layout of ['per-collection', 'shared'] as const)
     });
     for (const entry of ragMigrationConformanceCases)
       await entry.run({
+        async seedLegacyRecords(records) {
+          if (layout === 'per-collection') db.createCollectionTable('valid');
+          for (const record of records)
+            db.insertRow(layout === 'shared' ? 'RAG_DOCUMENTS' : 'valid', {
+              ...(layout === 'shared' ? { COLLECTION: 'valid' } : {}),
+              ID: record.id,
+              TEXT: record.id,
+              VECTOR: [1, 0, 0],
+              METADATA: JSON.stringify(record.metadata),
+            });
+          return 'valid';
+        },
+        async recordMetadata() {
+          const rows = await db.client.query(
+            `SELECT "ID" AS "id", "METADATA" AS "metadata" FROM ${layout === 'shared' ? '"RAG_DOCUMENTS"' : '"valid"'} ORDER BY "ID"`,
+          );
+          return rows.map((row) => ({
+            id: String(row.id),
+            metadata: JSON.parse(String(row.metadata)) as RagMetadata,
+          }));
+        },
         migrate: () => migrateHanaVectorRagAccess(provider),
         describe: () => provider.describeCollections(),
         async snapshot() {
           return JSON.stringify({
+            documents: await db.client.query(
+              `SELECT "ID", "METADATA" FROM ${layout === 'shared' ? '"RAG_DOCUMENTS"' : '"valid"'} ORDER BY "ID"`,
+            ),
             rows: await db.client.query(
               'SELECT store_name, scope, user_id, session_id, role_id FROM "rag_collection_catalog" ORDER BY store_name',
             ),

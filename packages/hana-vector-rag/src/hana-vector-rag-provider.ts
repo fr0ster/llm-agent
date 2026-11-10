@@ -19,7 +19,9 @@ import {
   describeRagCatalogRows,
   OrphanStoreError,
   RagError,
+  type RagMetadata,
   ragCollectionNotFound,
+  tagRagMetadata,
   validateRagCatalogPatch,
   validateRagOwner,
   validateRagStoreName,
@@ -51,6 +53,7 @@ import {
   assertCollectionName,
   createTableSql,
   dropTableSql,
+  quoteIdent,
 } from './schema.js';
 import { SHARED_CATALOG_TABLE, SHARED_DOCUMENTS_TABLE } from './shared-ddl.js';
 import { SharedProviderOps } from './shared-provider-ops.js';
@@ -490,6 +493,49 @@ export class HanaVectorRagProvider
   }
 
   /** Persistence shares the catalog connection and its configured current schema. */
+  async migrateRecordOwners(): Promise<
+    { storeName: string; reason: string }[]
+  > {
+    const client = await this.adminClient();
+    const catalog = await client.query(selectRecordsSql(this.catalogTable));
+    const tables =
+      this.layout === 'shared'
+        ? [this.documentsTable]
+        : catalog.flatMap((row) =>
+            typeof row.storeName === 'string' ? [row.storeName] : [],
+          );
+    const reported: { storeName: string; reason: string }[] = [];
+    for (const name of tables) {
+      const exists = await client.query(
+        tableExistsSql(Boolean(this.connection.schema)),
+        this.connection.schema ? [this.connection.schema, name] : [name],
+      );
+      if (Number(exists[0]?.n ?? 0) === 0) continue;
+      const rows = await client.query(
+        `SELECT "ID" AS "id", "METADATA" AS "metadata"${this.layout === 'shared' ? ', "COLLECTION" AS "collection"' : ''} FROM ${quoteIdent(name)}`,
+      );
+      for (const row of rows) {
+        const metadata = JSON.parse(decodeLob(row.metadata)) as RagMetadata;
+        const tagged = tagRagMetadata(metadata);
+        const storeName =
+          this.layout === 'shared' ? String(row.collection) : name;
+        if (tagged.ownerScope === undefined)
+          reported.push({
+            storeName,
+            reason: `Conflicting owner keys on record ${row.id}`,
+          });
+        if (metadata.ownerScope === tagged.ownerScope) continue;
+        await client.exec(
+          `UPDATE ${quoteIdent(name)} SET "METADATA" = ? WHERE "ID" = ?${this.layout === 'shared' ? ' AND "COLLECTION" = ?' : ''}`,
+          this.layout === 'shared'
+            ? [JSON.stringify(tagged), row.id, row.collection]
+            : [JSON.stringify(tagged), row.id],
+        );
+      }
+    }
+    return reported;
+  }
+
   async accessPersistence(): Promise<{
     client: HanaClient;
     catalogTable: string;

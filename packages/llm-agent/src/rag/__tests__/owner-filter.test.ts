@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import { InMemoryRag } from '../in-memory-rag.js';
 import { TextOnlyEmbedding } from '../query-embedding.js';
 
-test('in-memory applies role and no-owner predicates before top-k, including null ownership tags', async () => {
+test('in-memory applies role and positive global predicates before top-k, including null ownership tags', async () => {
   const rag = new InMemoryRag({ dedupThreshold: 2 });
   for (const [text, metadata] of [
     ['query private session', { sessionId: 's' }],

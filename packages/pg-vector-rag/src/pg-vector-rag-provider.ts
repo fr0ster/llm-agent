@@ -18,7 +18,9 @@ import {
   describeRagCatalogRows,
   OrphanStoreError,
   RagError,
+  type RagMetadata,
   ragCollectionNotFound,
+  tagRagMetadata,
   validateRagCatalogPatch,
   validateRagOwner,
   validateRagStoreName,
@@ -46,6 +48,7 @@ import {
   createExtensionSql,
   createTableSql,
   dropTableSql,
+  qualifiedTable,
   quoteIdent,
 } from './schema.js';
 import { SHARED_CATALOG_TABLE, SHARED_DOCUMENTS_TABLE } from './shared-ddl.js';
@@ -473,6 +476,61 @@ export class PgVectorRagProvider
   }
 
   /** Persistence connection and qualified catalog used by the access migration/stores. */
+  async migrateRecordOwners(): Promise<
+    { storeName: string; reason: string }[]
+  > {
+    const client = await this.adminClient();
+    const catalog = await client.query(
+      selectRecordsSql(
+        this.catalogTable,
+        this.layout === 'shared' ? this.connection.schema : undefined,
+      ),
+    );
+    const tables =
+      this.layout === 'shared'
+        ? [this.documentsTable]
+        : catalog.rows.flatMap((row) =>
+            typeof row.storeName === 'string' ? [row.storeName] : [],
+          );
+    const reported: { storeName: string; reason: string }[] = [];
+    for (const name of tables) {
+      const table = qualifiedTable(
+        name,
+        this.layout === 'shared' ? this.connection.schema : undefined,
+      );
+      if (
+        !(
+          await client.query('SELECT to_regclass($1) IS NOT NULL AS present', [
+            table,
+          ])
+        ).rows[0]?.present
+      )
+        continue;
+      const { rows } = await client.query(
+        `SELECT id, metadata${this.layout === 'shared' ? ', collection' : ''} FROM ${table}`,
+      );
+      for (const row of rows) {
+        const metadata = row.metadata as RagMetadata;
+        const tagged = tagRagMetadata(metadata);
+        const storeName =
+          this.layout === 'shared' ? String(row.collection) : name;
+        if (tagged.ownerScope === undefined)
+          reported.push({
+            storeName,
+            reason: `Conflicting owner keys on record ${row.id}`,
+          });
+        if (metadata.ownerScope === tagged.ownerScope) continue;
+        await client.query(
+          `UPDATE ${table} SET metadata = $1::jsonb WHERE id = $2${this.layout === 'shared' ? ' AND collection = $3' : ''}`,
+          this.layout === 'shared'
+            ? [JSON.stringify(tagged), row.id, row.collection]
+            : [JSON.stringify(tagged), row.id],
+        );
+      }
+    }
+    return reported;
+  }
+
   async accessPersistence(): Promise<{
     client: PgClient;
     catalogTable: string;

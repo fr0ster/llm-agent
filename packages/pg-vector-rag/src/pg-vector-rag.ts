@@ -28,6 +28,7 @@ import {
   type RagScanFilter,
   type RagScanPage,
   ragIdentityFilter,
+  tagRagMetadata,
 } from '@mcp-abap-adt/llm-agent';
 import type { PgVectorRagConfig } from './connection.js';
 import { resolvePgConnectArgs } from './connection.js';
@@ -513,7 +514,7 @@ export class PgVectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
       await this.maybeEnsureSchema();
       const client = await this.clientPromise;
       const id = metadata?.id ?? crypto.randomUUID();
-      const { id: _omit, ...rest } = metadata ?? {};
+      const { id: _omit, ...rest } = tagRagMetadata(metadata);
       const stmt = this.sql.upsert(literal, id, text, JSON.stringify(rest));
       const settled = this.cache.beginWrite([id]);
       try {

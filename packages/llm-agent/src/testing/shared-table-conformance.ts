@@ -202,9 +202,9 @@ export const sharedTableConformanceCases: readonly SharedTableConformanceCase[] 
         if (!writer) throw new Error('store under test exposes no writer()');
         // A JSON number, a JSON boolean and a string, under the same keys.
         const rows: Array<[string, Record<string, unknown>]> = [
-          ['num', { userId: 123, sessionId: 456, namespace: 789 }],
-          ['str', { userId: '123', sessionId: '456', namespace: '789' }],
-          ['bool', { userId: true, sessionId: true, namespace: true }],
+          ['num', { userId: 123, namespace: 789 }],
+          ['str', { userId: '123', namespace: '789' }],
+          ['bool', { userId: true, namespace: true }],
         ];
         for (const [id, meta] of rows) {
           const res = await writer.upsertRaw(
@@ -230,7 +230,7 @@ export const sharedTableConformanceCases: readonly SharedTableConformanceCase[] 
           return res.value.map((r) => String(r.metadata.id));
         };
         assert.deepEqual(await ids({ userId: '123' }), ['str']);
-        assert.deepEqual(await ids({ sessionId: '456' }), ['str']);
+        assert.deepEqual(await ids({ sessionId: '456' }), []);
         assert.deepEqual(await ids({ namespace: '789' }), ['str']);
         assert.deepEqual(await ids({ userId: 'true' }), []);
       },

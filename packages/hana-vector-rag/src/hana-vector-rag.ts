@@ -29,6 +29,7 @@ import {
   type RagScanFilter,
   type RagScanPage,
   ragIdentityFilter,
+  tagRagMetadata,
 } from '@mcp-abap-adt/llm-agent';
 import type { HanaVectorRagConfig } from './connection.js';
 import { resolveHanaConnectArgs } from './connection.js';
@@ -519,7 +520,7 @@ export class HanaVectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
       await this.maybeEnsureSchema();
       const client = await this.client();
       const id = metadata?.id ?? crypto.randomUUID();
-      const { id: _omit, ...rest } = metadata ?? {};
+      const { id: _omit, ...rest } = tagRagMetadata(metadata);
       const metaJson = JSON.stringify(rest);
       const stmt = this.sql.upsert(literal, id, text, metaJson);
       const settled = this.cache.beginWrite([id]);

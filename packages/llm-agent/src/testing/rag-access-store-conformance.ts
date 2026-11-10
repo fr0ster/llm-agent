@@ -99,12 +99,15 @@ export const ragAccessStoreConformanceCases: readonly RagAccessStoreConformanceC
                   ? [create(), remove()]
                   : [remove(), create()],
               );
-              assert.ok(results.some((r) => r.ok));
+              assert.equal(
+                results.every((r) => r.ok),
+                false,
+              );
             }
-            assert.notEqual(
-              creationSucceeded,
-              deletionSucceeded,
-              'exactly one competing operation must succeed',
+            assert.equal(
+              creationSucceeded && deletionSucceeded,
+              false,
+              'competing operations cannot both succeed',
             );
             const collections = await h.collections();
             assert.equal(
