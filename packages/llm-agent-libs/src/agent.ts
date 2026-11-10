@@ -813,9 +813,10 @@ export class SmartAgent {
         ragStores: Object.fromEntries(
           Object.entries(this.deps.ragStores).map(([name, store]) => [
             name,
-            name === 'history' && opts?.caller
+            store.builtIn === 'history' && opts?.caller
               ? {
                   ...store,
+                  builtIn: 'history',
                   owner: { scope: 'session', sessionId: opts.caller.sessionId },
                 }
               : store,

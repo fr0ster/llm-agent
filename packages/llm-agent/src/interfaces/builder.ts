@@ -43,6 +43,7 @@ export interface ISmartAgent {
 export type SmartAgentRagStores<K extends string = string> = Record<
   K,
   {
+    readonly builtIn?: 'history';
     readonly name: string;
     readonly owner: RagCollectionOwner | { readonly scope: 'internal' };
     readonly rag: IRag;

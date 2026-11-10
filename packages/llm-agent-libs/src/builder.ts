@@ -1029,6 +1029,7 @@ export class SmartAgentBuilder {
         if (!owner) continue;
         ragStores[key] = {
           name: m.name,
+          builtIn: r === historyRag ? 'history' : undefined,
           owner: key === 'tools' ? { scope: 'internal' } : owner,
           rag: strategy ? applyRetrievalStrategy(r, strategy) : r,
         };

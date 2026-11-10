@@ -78,7 +78,13 @@ for (const decision of ['deny', 'throw'] as const) {
     pipeline.initialize({
       mainLlm: makeLlm([]),
       mcpClients: [],
-      historyRag: rag,
+      ragStores: {
+        ordinary: {
+          name: 'ordinary',
+          owner: { scope: 'session', sessionId: 'A' },
+          rag,
+        },
+      },
       ragAccess: access,
       classifier: makeClassifier([{ type: 'action', text: 'record' }]),
       agentConfig: { mode: 'hard', maxIterations: 1 },
@@ -91,5 +97,43 @@ for (const decision of ['deny', 'throw'] as const) {
     );
     assert.ok(result.error instanceof RagAccessDeniedError);
     assert.equal(rag.queryCount, 0);
+  });
+}
+
+for (const decision of ['deny', 'throw'] as const) {
+  it(`built-in history bypasses a ${decision} decision through RagQueryHandler`, async () => {
+    const access = testRagAccess();
+    let calls = 0;
+    access.decision.canRead = async () => {
+      calls++;
+      if (decision === 'throw') throw new Error('decision unavailable');
+      return false;
+    };
+    const store = await sharedStore();
+    let retrieved: RagResult[] = [];
+    const assembler = makeAssembler();
+    assembler.assemble = async (_action, input) => {
+      retrieved = input.ragResults.history;
+      return { ok: true, value: [{ role: 'user', content: 'record' }] };
+    };
+    const pipeline = new DefaultPipeline();
+    pipeline.initialize({
+      mainLlm: makeLlm([{ content: 'done', finishReason: 'stop' }]),
+      mcpClients: [],
+      historyRag: store.rag,
+      ragAccess: access,
+      assembler,
+      classifier: makeClassifier([{ type: 'action', text: 'record' }]),
+      agentConfig: { mode: 'hard', maxIterations: 1 },
+    });
+    const result = await pipeline.execute(
+      'record',
+      [],
+      { sessionId: 'A', caller: callerA },
+      () => {},
+    );
+    assert.equal(result.error, undefined);
+    assert.deepEqual(sessionTags(retrieved), ['A']);
+    assert.equal(calls, 0);
   });
 }

@@ -178,3 +178,76 @@ it('role identity comes from the assignments table and foreign records stay clos
     false,
   );
 });
+
+for (const decision of ['deny', 'throw'] as const) {
+  it(`built-in history bypasses a ${decision} decision through RagOrchestrator`, async () => {
+    const access = testRagAccess();
+    let calls = 0;
+    access.decision.canRead = async () => {
+      calls++;
+      if (decision === 'throw') throw new Error('decision unavailable');
+      return false;
+    };
+    const history = { ...(await sharedStore()), builtIn: 'history' as const };
+    const result = await orchestrator(history, access).orchestrate('record', {
+      opts: { caller: callerA },
+      sessionId: 'A',
+      mode: 'hard',
+      externalTools: [],
+      rootSpan: new NoopTracer().startSpan('test'),
+    });
+    assert.ok(result.ok);
+    assert.deepEqual(sessionTags(result.value.retrieved.ragResults.history), [
+      'A',
+    ]);
+    assert.equal(calls, 0);
+  });
+}
+
+it('ordinary session collections still require one server decision', async () => {
+  const access = testRagAccess();
+  let calls = 0;
+  access.decision.canRead = async () => {
+    calls++;
+    return false;
+  };
+  const result = await ownerBoundQuery(
+    await sharedStore(),
+    embedding,
+    5,
+    { caller: callerA },
+    access,
+  );
+  assert.equal(result.ok, false);
+  if (!result.ok) assert.ok(result.error instanceof RagAccessDeniedError);
+  assert.equal(calls, 1);
+});
+
+for (const options of [
+  {},
+  { caller: { ...callerA, sessionId: 'B' } },
+  { caller: callerA, ragFilter: { sessionId: 'B' } },
+  { caller: callerA, ragFilter: { userId: 'bob' } },
+  { caller: callerA, ragFilter: { roleId: 'unassigned' } },
+]) {
+  it(`built-in history rejects missing or foreign identity ${JSON.stringify(options)}`, async () => {
+    const access = testRagAccess();
+    let calls = 0;
+    access.decision.canRead = async () => {
+      calls++;
+      return true;
+    };
+    const rag = makeRag([]);
+    const result = await ownerBoundQuery(
+      { ...store, builtIn: 'history', rag },
+      embedding,
+      5,
+      options,
+      access,
+    );
+    assert.equal(result.ok, false);
+    if (!result.ok) assert.ok(result.error instanceof RagAccessDeniedError);
+    assert.equal(rag.queryCount, 0);
+    assert.equal(calls, 0);
+  });
+}

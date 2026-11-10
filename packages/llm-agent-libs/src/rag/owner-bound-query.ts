@@ -12,6 +12,7 @@ import {
 } from '@mcp-abap-adt/llm-agent';
 
 export interface OwnedRagStore {
+  readonly builtIn?: 'history';
   readonly name: string;
   readonly owner: RagCollectionOwner | { readonly scope: 'internal' };
   readonly rag: IRag;
@@ -61,7 +62,10 @@ export async function ownerBoundQuery(
     }
   }
   const owner = store.owner;
-  if (owner.scope !== 'internal') {
+  if (store.builtIn === 'history') {
+    if (owner.scope !== 'session' || owner.sessionId !== caller.sessionId)
+      return deny();
+  } else if (owner.scope !== 'internal') {
     const allowed = await checkRagAccess(
       caller,
       { name: store.name, owner },

@@ -493,6 +493,7 @@ export class DefaultPipeline implements IPipeline {
       if (!own) continue;
       ragStores[name] = {
         name,
+        builtIn: name === 'history' ? 'history' : undefined,
         owner:
           name === 'tools'
             ? { scope: 'internal' }
