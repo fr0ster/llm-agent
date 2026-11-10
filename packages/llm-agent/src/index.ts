@@ -13,6 +13,7 @@ export { assertClientDescriptors } from './interfaces/assert-client-descriptors.
 export { collectServerDescriptors } from './interfaces/collect-server-descriptors.js';
 export * from './interfaces/index.js';
 export { mcpServerFromFactory } from './interfaces/mcp-server-from-factory.js';
+export * from './interfaces/rag-access.js';
 export { BaseLLMProvider, type LLMProvider } from './llm/base-llm-provider.js';
 export {
   findThrottled,

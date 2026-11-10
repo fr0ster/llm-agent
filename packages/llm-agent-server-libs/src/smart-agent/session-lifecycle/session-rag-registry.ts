@@ -163,6 +163,9 @@ function belongsTo(
   identity: SessionGraphIdentity,
 ): boolean {
   switch (record.scope) {
+    case 'role':
+      // Role membership enforcement is wired by the access layer in a later task.
+      return false;
     case 'global':
       return true;
     case 'user':

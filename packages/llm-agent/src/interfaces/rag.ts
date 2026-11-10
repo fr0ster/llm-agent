@@ -220,7 +220,7 @@ export interface IRagBackendWriter {
   ): Promise<Result<void, RagError>>;
 }
 
-export type RagCollectionScope = 'session' | 'user' | 'global';
+export type RagCollectionScope = 'session' | 'user' | 'role' | 'global';
 
 /**
  * What a catalog can store and give back unchanged on every backend: JSON, with
@@ -244,6 +244,7 @@ export type RagJsonValue =
  */
 export type RagCollectionOwner =
   | { readonly scope: 'global' }
+  | { readonly scope: 'role'; readonly roleId: string }
   | { readonly scope: 'user'; readonly userId: string }
   | { readonly scope: 'session'; readonly sessionId: string };
 
@@ -300,6 +301,7 @@ export interface RagCollectionMeta {
   readonly scope?: RagCollectionScope;
   readonly sessionId?: string;
   readonly userId?: string;
+  readonly roleId?: string;
   readonly providerName?: string;
   readonly tags?: readonly string[];
 }

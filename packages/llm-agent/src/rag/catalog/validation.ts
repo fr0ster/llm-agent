@@ -86,6 +86,7 @@ export function validateRagOwner(
     scope?: unknown;
     userId?: unknown;
     sessionId?: unknown;
+    roleId?: string;
   };
   switch (o.scope) {
     case 'global':
@@ -97,6 +98,15 @@ export function validateRagOwner(
             ok: false,
             error: new InvalidOwnerError(
               'a user collection needs a non-empty userId',
+            ),
+          };
+    case 'role':
+      return typeof o.roleId === 'string' && o.roleId !== ''
+        ? { ok: true, value: { scope: 'role', roleId: o.roleId } }
+        : {
+            ok: false,
+            error: new InvalidOwnerError(
+              'a role collection needs a non-empty roleId',
             ),
           };
     case 'session':
@@ -122,8 +132,10 @@ export function validateRagOwner(
 export function ragOwnerKeys(owner: RagCollectionOwner): {
   sessionId?: string;
   userId?: string;
+  roleId?: string;
 } {
   if (owner.scope === 'session') return { sessionId: owner.sessionId };
+  if (owner.scope === 'role') return { roleId: owner.roleId };
   if (owner.scope === 'user') return { userId: owner.userId };
   return {};
 }
@@ -145,6 +157,7 @@ export type RagCatalogRow = {
   readonly scope?: unknown;
   readonly userId?: unknown;
   readonly sessionId?: unknown;
+  readonly roleId?: string;
   /** What encodeRagAttributes produced; null or absent → no attributes. */
   readonly attributesJson?: unknown;
 };
