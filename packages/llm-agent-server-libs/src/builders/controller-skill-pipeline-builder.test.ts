@@ -1,12 +1,13 @@
 import assert from 'node:assert/strict';
-import { before as beforeRagAccess, test } from 'node:test';
+import { test } from 'node:test';
+import {
+  fixedCallerResolver,
+  testRagAccess,
+} from '@mcp-abap-adt/llm-agent/testing/rag-access-testing';
 import { constructionSeams } from '../smart-agent/__tests__/construction-seams.js';
-import { installTestRagIdentity } from '../smart-agent/__tests__/rag-identity-fixture.js';
 import type { SkillPluginsConfig } from '../smart-agent/skill-plugins-config.js';
 import type { BuildAgentDeps } from '../smart-agent/smart-server.js';
 import { ControllerSkillPipelineBuilder } from './controller-skill-pipeline-builder.js';
-
-beforeRagAccess(installTestRagIdentity);
 
 function stubHost() {
   return {
@@ -18,6 +19,13 @@ function stubHost() {
 
 test('fluent calls translate to the expected SmartServerConfig', () => {
   const cfg = new ControllerSkillPipelineBuilder()
+    .withRagAccess({
+      callerResolver: fixedCallerResolver({
+        userId: 'test-user',
+        isAdmin: false,
+      }),
+      ragAccess: testRagAccess(),
+    })
     .withLlm({ provider: 'sap-ai-sdk', model: 'anthropic--claude-4.6-sonnet' })
     .withRoleLlm('planner', {
       provider: 'openai',
@@ -60,6 +68,13 @@ test('fluent calls translate to the expected SmartServerConfig', () => {
 
 test('embedder scenario/resourceGroup land on rag.embedder; skillPlugins.embedder is omitted (reuse the rag embedder)', () => {
   const cfg = new ControllerSkillPipelineBuilder()
+    .withRagAccess({
+      callerResolver: fixedCallerResolver({
+        userId: 'test-user',
+        isAdmin: false,
+      }),
+      ragAccess: testRagAccess(),
+    })
     .withLlm({ provider: 'sap-ai-sdk', model: 'm' })
     .withSkillSource({ github: 'a/b', enabled: ['x'], collection: 'sap' })
     .withEmbedder({
@@ -80,6 +95,13 @@ test('embedder scenario/resourceGroup land on rag.embedder; skillPlugins.embedde
 
 test('withPlanner(weak-executor) selects the controller-weak pipeline', () => {
   const cfg = new ControllerSkillPipelineBuilder()
+    .withRagAccess({
+      callerResolver: fixedCallerResolver({
+        userId: 'test-user',
+        isAdmin: false,
+      }),
+      ragAccess: testRagAccess(),
+    })
     .withLlm({ provider: 'sap-ai-sdk' })
     .withSkillSource({ github: 'a/b', enabled: ['x'] })
     .withEmbedder({ provider: 'sap-ai-core' })
@@ -92,6 +114,13 @@ test('build() throws when no LLM was set', () => {
   assert.throws(
     () =>
       new ControllerSkillPipelineBuilder()
+        .withRagAccess({
+          callerResolver: fixedCallerResolver({
+            userId: 'test-user',
+            isAdmin: false,
+          }),
+          ragAccess: testRagAccess(),
+        })
         .withSkillSource({ github: 'a/b', enabled: ['x'] })
         .withEmbedder({ provider: 'sap-ai-core' })
         .toConfig(),
@@ -103,6 +132,13 @@ test('build() throws when no skill source was set', () => {
   assert.throws(
     () =>
       new ControllerSkillPipelineBuilder()
+        .withRagAccess({
+          callerResolver: fixedCallerResolver({
+            userId: 'test-user',
+            isAdmin: false,
+          }),
+          ragAccess: testRagAccess(),
+        })
         .withLlm({ provider: 'sap-ai-sdk' })
         .withEmbedder({ provider: 'sap-ai-core' })
         .toConfig(),
@@ -114,6 +150,13 @@ test('build() throws when no embedder was set (skills need one)', () => {
   assert.throws(
     () =>
       new ControllerSkillPipelineBuilder()
+        .withRagAccess({
+          callerResolver: fixedCallerResolver({
+            userId: 'test-user',
+            isAdmin: false,
+          }),
+          ragAccess: testRagAccess(),
+        })
         .withLlm({ provider: 'sap-ai-sdk' })
         .withSkillSource({ github: 'a/b', enabled: ['x'] })
         .toConfig(),
@@ -144,6 +187,13 @@ test('build(deps): normalized skill config reaches buildSkillHost (P1a), injecte
     },
   };
   const { agent, close } = await new ControllerSkillPipelineBuilder()
+    .withRagAccess({
+      callerResolver: fixedCallerResolver({
+        userId: 'test-user',
+        isAdmin: false,
+      }),
+      ragAccess: testRagAccess(),
+    })
     .withLlm({ provider: 'sap-ai-sdk', model: 'anthropic--claude-4.6-sonnet' })
     .withSkillSource({
       github: 'secondsky/sap-skills',
@@ -173,6 +223,13 @@ test('build(deps) with a prebuilt skillHost still routes through load/validate (
     },
   } as unknown as import('@mcp-abap-adt/llm-agent').ISkillPluginHost;
   const { close } = await new ControllerSkillPipelineBuilder()
+    .withRagAccess({
+      callerResolver: fixedCallerResolver({
+        userId: 'test-user',
+        isAdmin: false,
+      }),
+      ragAccess: testRagAccess(),
+    })
     .withLlm({ provider: 'sap-ai-sdk', model: 'anthropic--claude-4.6-sonnet' })
     .withSkillSource({
       github: 'a/b',
@@ -205,6 +262,13 @@ test('build(): .withMcpClients forwards clients into deps (no connect runs)', as
     listTools: async () => ({ ok: true, value: [] }),
   } as unknown as import('@mcp-abap-adt/llm-agent').IMcpClient;
   const { close } = await new ControllerSkillPipelineBuilder()
+    .withRagAccess({
+      callerResolver: fixedCallerResolver({
+        userId: 'test-user',
+        isAdmin: false,
+      }),
+      ragAccess: testRagAccess(),
+    })
     .withLlm({ provider: 'sap-ai-sdk', model: 'anthropic--claude-4.6-sonnet' })
     .withMcpClients([stubClient])
     .withSkillSource({
@@ -246,6 +310,13 @@ test('build({makeLlm,embedder}) needs no AICORE_SERVICE_KEY and no models (provi
       model: 'stub',
     } as unknown as import('@mcp-abap-adt/llm-agent').ILlm;
     const { close } = await new ControllerSkillPipelineBuilder()
+      .withRagAccess({
+        callerResolver: fixedCallerResolver({
+          userId: 'test-user',
+          isAdmin: false,
+        }),
+        ragAccess: testRagAccess(),
+      })
       .withLlm({ provider: 'sap-ai-sdk' })
       .withSkillSource({
         github: 'a/b',
@@ -285,6 +356,13 @@ test('build(deps) with a keyed provider reads no key from the environment', asyn
       model: 'stub',
     } as unknown as import('@mcp-abap-adt/llm-agent').ILlm;
     const { close } = await new ControllerSkillPipelineBuilder()
+      .withRagAccess({
+        callerResolver: fixedCallerResolver({
+          userId: 'test-user',
+          isAdmin: false,
+        }),
+        ragAccess: testRagAccess(),
+      })
       .withLlm({ provider: 'openai' }) // keyed provider, NO apiKey, NO model
       .withSkillSource({
         github: 'a/b',

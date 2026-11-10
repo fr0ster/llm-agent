@@ -54,6 +54,16 @@ function toLlmConfig(input: BuilderLlmInput): SmartServerLlmConfig {
 }
 
 export class ControllerSkillPipelineBuilder {
+  private _ragIdentity?: Pick<
+    SmartServerConfig,
+    'callerResolver' | 'ragAccess'
+  >;
+  withRagAccess(
+    identity: Pick<SmartServerConfig, 'callerResolver' | 'ragAccess'>,
+  ): this {
+    this._ragIdentity = identity;
+    return this;
+  }
   private _llm?: BuilderLlmInput;
   private _roleLlm: Partial<Record<Role, BuilderLlmInput>> = {};
   private _mcp: SmartServerMcpConfig[] = [];
@@ -105,7 +115,7 @@ export class ControllerSkillPipelineBuilder {
     return this;
   }
 
-  toConfig(): SmartServerConfig {
+  toConfig(): Omit<SmartServerConfig, 'callerResolver' | 'ragAccess'> {
     if (!this._llm && Object.keys(this._roleLlm).length === 0) {
       throw new Error(
         'ControllerSkillPipelineBuilder: call .withLlm() (or .withRoleLlm() for all roles) before building',
@@ -217,9 +227,14 @@ export class ControllerSkillPipelineBuilder {
       process.env,
       { skipProviderRuntimeChecks },
     );
-    return buildAgent(normalized as SmartServerConfig, {
-      ...(this._mcpClients ? { mcpClients: this._mcpClients } : {}),
-      ...deps,
-    });
+    if (!this._ragIdentity)
+      throw new Error('callerResolver and ragAccess are required');
+    return buildAgent(
+      { ...normalized, ...this._ragIdentity },
+      {
+        ...(this._mcpClients ? { mcpClients: this._mcpClients } : {}),
+        ...deps,
+      },
+    );
   }
 }

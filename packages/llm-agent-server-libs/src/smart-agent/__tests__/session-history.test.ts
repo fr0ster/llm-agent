@@ -1,8 +1,3 @@
-import { beforeEach } from 'node:test';
-import { installTestRagIdentity } from './rag-identity-fixture.js';
-
-beforeEach(installTestRagIdentity);
-
 import assert from 'node:assert/strict';
 import { request } from 'node:http';
 import { describe, it } from 'node:test';
@@ -19,12 +14,9 @@ import type {
 import { emptyLoadedPlugins } from '@mcp-abap-adt/llm-agent-libs';
 import { parse } from 'yaml';
 import { resolveSmartServerConfig } from '../config.js';
-import {
-  type BuildAgentDeps,
-  SmartServer,
-  type SmartServerConfig,
-} from '../smart-server.js';
+import type { BuildAgentDeps, SmartServerConfig } from '../smart-server.js';
 import { constructionSeams } from './construction-seams.js';
+import { TestSmartServer as SmartServer } from './rag-identity-fixture.js';
 
 const ANSWER = 'the final answer about widgets';
 const BASE_YAML = `

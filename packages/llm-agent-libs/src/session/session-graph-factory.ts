@@ -6,6 +6,7 @@ import type {
   IRag,
   IRagRegistry,
   McpClientDescriptor,
+  RagCaller,
 } from '@mcp-abap-adt/llm-agent';
 import {
   collectServerDescriptors,
@@ -20,7 +21,8 @@ import { SessionGraph } from './session-graph.js';
 
 export interface SessionGraphIdentity {
   readonly sessionId: string;
-  readonly userId?: string;
+  readonly userId: string;
+  readonly isAdmin?: boolean;
 }
 
 /**
@@ -30,6 +32,7 @@ export interface SessionGraphIdentity {
  * path with this session's logger + the cached per-worker LLM/embedder).
  */
 export interface SessionAgentParts {
+  readonly caller: RagCaller;
   readonly sessionId: string;
   readonly mcpClients: IMcpClient[];
   /**
@@ -101,7 +104,7 @@ export interface SessionGraphFactoryOptions {
    * Builds the registry THIS session owns (§6.4): handed to `buildAgent`, and
    * the one `dispose()` closes — the shared `ragRegistry` is then neither used
    * nor closed. Receives the full identity, which a build callback cannot
-   * (`SessionAgentParts` has no userId), and is awaited, because hydration is
+   * (`SessionAgentParts.caller` carries it), and is awaited, because hydration is
    * asynchronous (describeCollections, openCollection). Called before any MCP
    * server starts, so a rejection leaves nothing to stop.
    */
@@ -251,6 +254,7 @@ export class SessionGraphFactory {
     let graph: SessionGraph;
     try {
       agent = await this.opts.buildAgent({
+        caller: { ...identity, isAdmin: identity.isAdmin === true },
         sessionId: identity.sessionId,
         mcpClients,
         mcpClientDescriptors,
@@ -261,6 +265,8 @@ export class SessionGraphFactory {
       });
 
       graph = new SessionGraph({
+        userId: identity.userId,
+        ragRegistry,
         sessionId: identity.sessionId,
         toolAvailability,
         pendingToolResults,

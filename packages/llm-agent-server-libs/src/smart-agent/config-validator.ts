@@ -594,7 +594,7 @@ export function assertNoLegacyRagShape(yaml: YamlConfig): void {
 }
 
 export function validateResolvedConfig(
-  _resolved: Omit<SmartServerConfig, 'log'>,
+  _resolved: Omit<SmartServerConfig, 'log' | 'callerResolver' | 'ragAccess'>,
   yaml: YamlConfig,
   _env: NodeJS.ProcessEnv,
   opts: {

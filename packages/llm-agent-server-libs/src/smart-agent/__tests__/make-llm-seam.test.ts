@@ -1,11 +1,9 @@
 import assert from 'node:assert/strict';
-import { before as beforeRagAccess, test } from 'node:test';
+import { test } from 'node:test';
 import type { IEmbedder, ILlm } from '@mcp-abap-adt/llm-agent';
-import { buildAgent, type SmartServerConfig } from '../smart-server.js';
+import type { SmartServerConfig } from '../smart-server.js';
 import { constructionSeams } from './construction-seams.js';
-import { installTestRagIdentity } from './rag-identity-fixture.js';
-
-beforeRagAccess(installTestRagIdentity);
+import { testBuildAgent as buildAgent } from './rag-identity-fixture.js';
 
 const cannedLlm = {
   chat: async () => ({ ok: true, value: { content: 'ok', toolCalls: [] } }),

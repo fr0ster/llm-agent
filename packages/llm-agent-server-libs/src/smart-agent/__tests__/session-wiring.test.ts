@@ -1,8 +1,3 @@
-import { beforeEach } from 'node:test';
-import { installTestRagIdentity } from './rag-identity-fixture.js';
-
-beforeEach(installTestRagIdentity);
-
 /**
  * Spec §14.1: the output validator, skill manager, LLM-call strategy, query
  * expander and client adapters reach the per-session agents that serve
@@ -28,12 +23,9 @@ import {
 } from '@mcp-abap-adt/llm-agent-libs';
 import { parse } from 'yaml';
 import { resolveSmartServerConfig } from '../config.js';
-import {
-  type BuildAgentDeps,
-  SmartServer,
-  type SmartServerConfig,
-} from '../smart-server.js';
+import type { BuildAgentDeps, SmartServerConfig } from '../smart-server.js';
 import { constructionSeams } from './construction-seams.js';
+import { TestSmartServer as SmartServer } from './rag-identity-fixture.js';
 
 const BASE_YAML = `
 llm:

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { before as beforeRagAccess, test } from 'node:test';
+import { test } from 'node:test';
 import {
   type IEmbedder,
   InMemoryRag,
@@ -13,11 +13,9 @@ import type {
   SessionGraphIdentity,
 } from '@mcp-abap-adt/llm-agent-libs';
 import { makeLlm as makeTestLlm } from '@mcp-abap-adt/llm-agent-libs/testing';
-import { SmartServer, type SmartServerConfig } from '../smart-server.js';
+import type { SmartServerConfig } from '../smart-server.js';
 import { constructionSeams } from './construction-seams.js';
-import { installTestRagIdentity } from './rag-identity-fixture.js';
-
-beforeRagAccess(installTestRagIdentity);
+import { TestSmartServer as SmartServer } from './rag-identity-fixture.js';
 
 const stubEmbedder = {
   embed: async () => ({ vector: [0] }),
@@ -34,7 +32,7 @@ interface Internals {
     identity: SessionGraphIdentity,
   ) => Promise<IRagRegistry>;
   _lifecycle?: {
-    acquire: (sessionId: string) => Promise<SessionGraph>;
+    acquire: (identity: SessionGraphIdentity) => Promise<SessionGraph>;
     release: (sessionId: string, graph?: SessionGraph) => void;
   };
 }
@@ -96,8 +94,14 @@ test('every session gets its own registry, seeded with the deployment’s global
       scope: 'global',
     });
 
-    const a = await internals._sessionRagRegistry({ sessionId: 'a' });
-    const b = await internals._sessionRagRegistry({ sessionId: 'b' });
+    const a = await internals._sessionRagRegistry({
+      sessionId: 'a',
+      userId: 'test-user',
+    });
+    const b = await internals._sessionRagRegistry({
+      sessionId: 'b',
+      userId: 'test-user',
+    });
     assert.notEqual(a, b);
     assert.notEqual(a, internals._globalRagRegistry);
     assert.equal(a.get('kb', 'global'), kb);
@@ -137,8 +141,14 @@ test('wiring: two real sessions get distinct RAG registries, neither the shared 
       scope: 'global',
     });
 
-    const graphA = await internals._lifecycle?.acquire('sess-wire-a');
-    const graphB = await internals._lifecycle?.acquire('sess-wire-b');
+    const graphA = await internals._lifecycle?.acquire({
+      sessionId: 'sess-wire-a',
+      userId: 'test-user',
+    });
+    const graphB = await internals._lifecycle?.acquire({
+      sessionId: 'sess-wire-b',
+      userId: 'test-user',
+    });
     assert.ok(graphA && graphB, 'both sessions built');
     try {
       const regA = sessionRagRegistryOf(graphA);
@@ -204,7 +214,10 @@ test('wiring: a real session build gets the server’s provider registry, not a 
     } as unknown as IRagProvider;
     internals._ragProviderRegistry.registerProvider(stub);
 
-    const graph = await internals._lifecycle?.acquire('sess-provider');
+    const graph = await internals._lifecycle?.acquire({
+      sessionId: 'sess-provider',
+      userId: 'test-user',
+    });
     assert.ok(graph, 'session built');
     try {
       const reg = sessionRagRegistryOf(graph);
@@ -262,12 +275,18 @@ test('a rejected catalog row is logged by the first session only, not by every s
       }),
     } as unknown as IRagProvider);
 
-    await internals._sessionRagRegistry({ sessionId: 'a' });
+    await internals._sessionRagRegistry({
+      sessionId: 'a',
+      userId: 'test-user',
+    });
     const afterFirst = messages.filter((m) =>
       m.includes('rag_catalog_row_rejected'),
     ).length;
     assert.equal(afterFirst, 1);
-    await internals._sessionRagRegistry({ sessionId: 'b' });
+    await internals._sessionRagRegistry({
+      sessionId: 'b',
+      userId: 'test-user',
+    });
     assert.equal(
       messages.filter((m) => m.includes('rag_catalog_row_rejected')).length,
       1,

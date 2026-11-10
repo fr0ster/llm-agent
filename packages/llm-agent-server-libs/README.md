@@ -59,3 +59,30 @@ library* stay free and that your users can substitute their own build.
 Versions up to and including v20.9.5 were MIT and stay MIT; the change is not
 retroactive. Full detail, including what to do if you redistribute:
 [docs/LICENSING.md](https://github.com/fr0ster/llm-agent/blob/main/docs/LICENSING.md).
+
+
+### Required RAG caller identity
+
+Pass `callerResolver: IRagCallerResolver` and `ragAccess: RagAccess` in
+`SmartServerConfig`. No default identity or access policy is installed.
+`ServerConfigError` refuses startup if either dependency is missing. For
+`ControllerSkillPipelineBuilder`, call
+`.withRagAccess({ callerResolver, ragAccess })` before `.build(deps)`.
+YAML configuration resolution returns only serializable settings; the host adds
+these trusted dependencies after resolution. Keep the same access stores across
+configuration reloads and use the catalog persistence's bindings and roles.
+
+For each request, the server resolves the cookie session, asks the trusted
+resolver for user/admin identity, persists its binding, then acquires a graph
+for `{ sessionId, userId }`. A reused session cannot change user, including
+while its graph is building. Errors produce HTTP 403 without fallback.
+Hydration checks ownership AND the server read decision for every collection,
+refreshes role membership on each request, and reports missing-role catalog rows
+once per server. Retrieval independently checks access when it executes.
+Session metadata records the real user ID, so session list/resume/delete operate
+on that user's sessions. Built-in history remains scoped to the request session.
+
+Tests may explicitly install `fixedCallerResolver` and `testRagAccess()` from
+`@mcp-abap-adt/llm-agent/testing/rag-access-testing`. Those helpers are not a
+production authentication or authorization implementation. The standalone CLI's
+`--local-user-id` opt-in is documented in the server package README.

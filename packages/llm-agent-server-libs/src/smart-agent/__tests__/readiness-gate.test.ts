@@ -1,12 +1,10 @@
 import assert from 'node:assert/strict';
 import { request } from 'node:http';
-import { before as beforeRagAccess, describe, it, test } from 'node:test';
+import { describe, it, test } from 'node:test';
 import { makeLlm as makeTestLlm } from '@mcp-abap-adt/llm-agent-libs/testing';
-import { SmartServer, writeNotReady } from '../smart-server.js';
+import { writeNotReady } from '../smart-server.js';
 import { constructionSeams } from './construction-seams.js';
-import { installTestRagIdentity } from './rag-identity-fixture.js';
-
-beforeRagAccess(installTestRagIdentity);
+import { TestSmartServer as SmartServer } from './rag-identity-fixture.js';
 
 function httpRequest(
   port: number,

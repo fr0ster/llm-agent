@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import type { RagCaller } from '@mcp-abap-adt/llm-agent';
 import {
   buildExternalResults,
   type IModelProvider,
@@ -42,7 +43,12 @@ export async function handleChat(
   log: (e: Record<string, unknown>) => void,
   modelProvider: IModelProvider | undefined,
   session:
-    | { sessionId: string; traceId: string; graph: SessionGraph }
+    | {
+        sessionId: string;
+        traceId: string;
+        graph: SessionGraph;
+        caller: RagCaller;
+      }
     | undefined,
   cfg: SmartServerConfig,
 ): Promise<void> {
@@ -112,12 +118,13 @@ export async function handleChat(
     return;
   }
 
-  // Prefer the session injected by `_withSession` (cookie identity); fall
-  // back to the legacy x-session-id header / 'default' bucket only when no
-  // session was wired (defensive — production routes always inject one).
-  const traceId = session?.traceId ?? randomUUID();
-  const sessionId =
-    session?.sessionId ?? (req.headers['x-session-id'] as string) ?? 'default';
+  if (!session) {
+    res.writeHead(403, { 'Content-Type': 'application/json' });
+    res.end(jsonError('Caller identity required', 'access_denied'));
+    return;
+  }
+  const traceId = session.traceId;
+  const sessionId = session.sessionId;
   const traceSink = resolveTraceSink(cfg.logDir);
   const sessionLogger = new SessionLogger(
     traceSink.dir,
@@ -170,6 +177,8 @@ export async function handleChat(
     stream: body.stream,
     externalTools,
     sessionId,
+    caller: session?.caller,
+    userId: session?.caller.userId,
     trace: { traceId },
     sessionLogger,
     model: body.model,

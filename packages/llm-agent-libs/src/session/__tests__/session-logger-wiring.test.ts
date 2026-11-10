@@ -23,7 +23,7 @@ test('the logger handed to buildAgent is the SAME instance the graph exposes', a
       return undefined;
     },
   });
-  const g = await factory.build({ sessionId: 's1' });
+  const g = await factory.build({ sessionId: 's1', userId: 'test-user' });
   assert.equal(
     seenLogger,
     g.logger,

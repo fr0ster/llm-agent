@@ -27,9 +27,9 @@ test('two sessions get distinct graphs (no shared default bucket)', async () => 
     maxSessions: 100,
     factory: factory([]),
   });
-  const a = await reg.acquire('s1');
+  const a = await reg.acquire({ sessionId: 's1', userId: 'test-user' });
   reg.release('s1');
-  const b = await reg.acquire('s2');
+  const b = await reg.acquire({ sessionId: 's2', userId: 'test-user' });
   reg.release('s2');
   assert.notEqual(a, b);
 });
@@ -41,7 +41,7 @@ test('evict triggers dispose exactly once per session', async () => {
     maxSessions: 100,
     factory: factory(disposed),
   });
-  await reg.acquire('s1');
+  await reg.acquire({ sessionId: 's1', userId: 'test-user' });
   reg.release('s1');
   await reg.evictIdle();
   await reg.evictIdle();

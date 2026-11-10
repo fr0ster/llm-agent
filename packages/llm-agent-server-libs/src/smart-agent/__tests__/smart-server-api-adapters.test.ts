@@ -1,7 +1,7 @@
 // src/smart-agent/__tests__/smart-server-api-adapters.test.ts
 import assert from 'node:assert/strict';
 import { request } from 'node:http';
-import { before as beforeRagAccess, describe, it } from 'node:test';
+import { describe, it } from 'node:test';
 import type {
   ApiRequestContext,
   ApiSseEvent,
@@ -13,11 +13,8 @@ import type {
   SmartAgentResponse,
 } from '@mcp-abap-adt/llm-agent';
 import { makeLlm as makeTestLlm } from '@mcp-abap-adt/llm-agent-libs/testing';
-import { SmartServer } from '../smart-server.js';
 import { constructionSeams } from './construction-seams.js';
-import { installTestRagIdentity } from './rag-identity-fixture.js';
-
-beforeRagAccess(installTestRagIdentity);
+import { TestSmartServer as SmartServer } from './rag-identity-fixture.js';
 
 /** Every test here builds a real SmartServer; the seams are required now. */
 const llmDeps = {

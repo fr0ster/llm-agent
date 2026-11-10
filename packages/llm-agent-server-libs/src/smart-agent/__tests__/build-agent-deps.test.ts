@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
-import { before as beforeRagAccess, test } from 'node:test';
-import { buildAgent, SmartServer } from '../smart-server.js';
+import { test } from 'node:test';
 import { constructionSeams } from './construction-seams.js';
-import { installTestRagIdentity } from './rag-identity-fixture.js';
-
-beforeRagAccess(installTestRagIdentity);
+import {
+  testBuildAgent as buildAgent,
+  TestSmartServer as SmartServer,
+} from './rag-identity-fixture.js';
 
 test('SmartServer accepts BuildAgentDeps and uses the injected makeLlm', async () => {
   let llmCalls = 0;

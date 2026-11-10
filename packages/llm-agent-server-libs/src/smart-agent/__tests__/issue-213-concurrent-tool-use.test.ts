@@ -79,7 +79,10 @@ test('#213 per-session (default): concurrent acquire returns DISTINCT client ins
   });
 
   // Acquire two sessions concurrently — the critical concurrent path
-  await Promise.all([lc.acquire('session-A'), lc.acquire('session-B')]);
+  await Promise.all([
+    lc.acquire({ sessionId: 'session-A', userId: 'test-user' }),
+    lc.acquire({ sessionId: 'session-B', userId: 'test-user' }),
+  ]);
 
   assert.equal(capturedClients.length, 2, 'both sessions acquired');
 
@@ -145,7 +148,10 @@ test('#213 shared opt-out: mcpSharedClient=true → buildPerSessionMcpClients ne
     },
   });
 
-  await Promise.all([lc.acquire('session-A'), lc.acquire('session-B')]);
+  await Promise.all([
+    lc.acquire({ sessionId: 'session-A', userId: 'test-user' }),
+    lc.acquire({ sessionId: 'session-B', userId: 'test-user' }),
+  ]);
 
   assert.equal(
     buildCalled,
@@ -201,7 +207,10 @@ test('#213 discrimination proof: shared wiring causes per-session "distinct" ass
     },
   });
 
-  await Promise.all([lc.acquire('session-A'), lc.acquire('session-B')]);
+  await Promise.all([
+    lc.acquire({ sessionId: 'session-A', userId: 'test-user' }),
+    lc.acquire({ sessionId: 'session-B', userId: 'test-user' }),
+  ]);
   assert.equal(capturedClients.length, 2);
 
   // --- "distinct instances" assertion FAILS on shared wiring ---

@@ -143,7 +143,7 @@ describe('SessionGraphFactory with a text logger', () => {
       logger,
     });
 
-    const graph = await factory.build({ sessionId: 's1' });
+    const graph = await factory.build({ sessionId: 's1', userId: 'test-user' });
     await graph.dispose();
 
     assert.ok(

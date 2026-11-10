@@ -150,7 +150,7 @@ export function buildSessionLifecycle(opts: SessionLifecycleOptions): {
     isHttps: boolean,
   ) => ReturnType<typeof resolveSessionIdentity>;
   acquire: (
-    sessionId: string,
+    identity: SessionGraphIdentity & { userId: string },
   ) => Promise<
     ReturnType<SessionRegistry['acquire']> extends Promise<infer G> ? G : never
   >;
@@ -227,7 +227,7 @@ export function buildSessionLifecycle(opts: SessionLifecycleOptions): {
         maxAgeSeconds: Math.max(1, Math.floor(opts.idleTtlMs / 1000)),
         isHttps,
       }),
-    acquire: (sessionId) => registry.acquire(sessionId),
+    acquire: (identity) => registry.acquire(identity),
     release: (sessionId, graph) => registry.release(sessionId, graph),
     evictIdle: () => registry.evictIdle(),
     disposeAll: () => registry.disposeAll(),
@@ -291,26 +291,28 @@ export async function seedSessionKnowledge(
  * Record that a request for `sessionId` STARTED — create the meta row on first
  * sight, else touch it and mark in-progress. Called from the live request path
  * (`_withSession`) so GET /v1/sessions, resume and delete actually see sessions
- * produced by normal chat/stream traffic (review Finding 3). `userIdentity` is
- * the sessionId itself in the default no-auth build — matching how the
- * /v1/sessions endpoints resolve identity (`resolved.identity.sessionId`).
+ * produced by normal chat/stream traffic. The trusted resolver's real userId
+ * owns the metadata row; an existing row for another user is refused.
  */
 export async function recordSessionStart(
   store: ISessionMetaStore,
   sessionId: string,
   nowIso: string,
+  userId: string,
 ): Promise<void> {
   const existing = await store.get(sessionId);
   if (!existing) {
     await store.create({
       sessionId,
-      userIdentity: sessionId,
+      userIdentity: userId,
       createdAt: nowIso,
       lastUsedAt: nowIso,
       status: 'in-progress',
     });
     return;
   }
+  if (existing.userIdentity !== userId)
+    throw new Error('Session user mismatch');
   await store.touch(sessionId, nowIso);
   await store.setStatus(sessionId, 'in-progress');
 }

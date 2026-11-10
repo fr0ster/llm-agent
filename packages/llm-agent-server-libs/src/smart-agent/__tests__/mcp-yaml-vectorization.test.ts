@@ -1,5 +1,4 @@
-import { before as beforeRagAccess } from 'node:test';
-import { installTestRagIdentity } from './rag-identity-fixture.js';
+import { TestSmartServer as SmartServer } from './rag-identity-fixture.js';
 
 /**
  * Regression test for the YAML `mcp:` tool-vectorization fix (PR #173).
@@ -30,10 +29,7 @@ import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { test } from 'node:test';
 import type { IMcpClient, IRag } from '@mcp-abap-adt/llm-agent';
-import { SmartServer } from '../smart-server.js';
 import { constructionSeams } from './construction-seams.js';
-
-beforeRagAccess(installTestRagIdentity);
 
 // ---------------------------------------------------------------------------
 // Minimal in-process MCP streamable-HTTP server (hermetic — no SDK, no spawn).

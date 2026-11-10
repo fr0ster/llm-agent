@@ -1,11 +1,8 @@
 import assert from 'node:assert/strict';
-import { after, before, before as beforeRagAccess, test } from 'node:test';
+import { after, before, test } from 'node:test';
 import { makeLlm as makeTestLlm } from '@mcp-abap-adt/llm-agent-libs/testing';
-import { SmartServer } from '../smart-server.js';
 import { constructionSeams } from './construction-seams.js';
-import { installTestRagIdentity } from './rag-identity-fixture.js';
-
-beforeRagAccess(installTestRagIdentity);
+import { TestSmartServer as SmartServer } from './rag-identity-fixture.js';
 
 // Reuses the same credential-free construction as readiness-gate.test.ts: a
 // single config object with an injected fake LLM and an unreachable MCP. The

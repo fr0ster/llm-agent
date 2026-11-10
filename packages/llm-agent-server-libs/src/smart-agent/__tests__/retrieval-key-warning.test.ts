@@ -1,18 +1,12 @@
 import assert from 'node:assert/strict';
-import { before as beforeRagAccess, describe, it } from 'node:test';
+import { describe, it } from 'node:test';
 import { emptyLoadedPlugins } from '@mcp-abap-adt/llm-agent-libs';
 import { parse } from 'yaml';
 import { resolveSmartServerConfig } from '../config.js';
 import { unknownRetrievalKeyWarnings } from '../resolve-retrieval.js';
-import {
-  type BuildAgentDeps,
-  SmartServer,
-  type SmartServerConfig,
-} from '../smart-server.js';
+import type { BuildAgentDeps, SmartServerConfig } from '../smart-server.js';
 import { constructionSeams } from './construction-seams.js';
-import { installTestRagIdentity } from './rag-identity-fixture.js';
-
-beforeRagAccess(installTestRagIdentity);
+import { TestSmartServer as SmartServer } from './rag-identity-fixture.js';
 
 const YAML = `
 llm:

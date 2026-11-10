@@ -4,6 +4,7 @@ import { Readable } from 'node:stream';
 import { describe, it } from 'node:test';
 import { AnthropicApiAdapter } from '@mcp-abap-adt/llm-agent';
 import { SessionRequestLogger } from '@mcp-abap-adt/llm-agent-libs';
+import { testHttpSession } from '../__tests__/rag-identity-fixture.js';
 import { handleAdapterRequest } from './adapter-route-handler.js';
 import { handleChat } from './chat-route-handler.js';
 
@@ -102,7 +103,7 @@ describe('#246 SSE keep-alive — /v1/chat/completions', () => {
       noop as never, // _streamChat
       noop, // log
       undefined, // modelProvider
-      undefined, // session
+      await testHttpSession(), // session
       { agent: { heartbeatIntervalMs: 20 } } as never, // cfg
     );
     const firstKeepAlive = writes.findIndex((w) =>
@@ -137,7 +138,7 @@ describe('#246 SSE keep-alive — /v1/chat/completions', () => {
       noop as never,
       noop,
       undefined,
-      undefined,
+      await testHttpSession(),
       { agent: { heartbeatIntervalMs: 50 } } as never,
     );
     assert.equal(
@@ -165,7 +166,7 @@ describe('#246 SSE keep-alive — /v1/chat/completions', () => {
       noop as never,
       noop,
       undefined,
-      undefined,
+      await testHttpSession(),
       {} as never, // no agent.heartbeatIntervalMs override → default 5000
     );
     assert.ok(
@@ -188,7 +189,7 @@ describe('#246 SSE keep-alive — /v1/messages (real adapter)', () => {
       res,
       idleAgent(80), // stub SmartAgent
       new AnthropicApiAdapter(),
-      undefined, // session
+      await testHttpSession(), // session
       20, // heartbeatIntervalMs
     );
     assert.ok(
@@ -215,7 +216,7 @@ describe('#246 SSE keep-alive — /v1/messages (real adapter)', () => {
       res,
       steadyAgent(25, 4),
       new AnthropicApiAdapter(),
-      undefined,
+      await testHttpSession(),
       50, // interval 50ms; gaps 4ms << 50ms
     );
     assert.equal(
@@ -255,7 +256,7 @@ it('budget-only metadata before content does not emit an empty content delta', a
     noop as never,
     noop,
     undefined,
-    undefined,
+    await testHttpSession(),
     { agent: { heartbeatIntervalMs: 0 } } as never,
   );
   const data = writes

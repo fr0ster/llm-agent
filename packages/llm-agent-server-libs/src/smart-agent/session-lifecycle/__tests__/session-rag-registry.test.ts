@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
-import { before as beforeRagAccess, test } from 'node:test';
+import { test } from 'node:test';
 import {
+  checkRagAccess,
   type ILogger,
   InMemoryRag,
   type IRagEditor,
@@ -11,13 +12,11 @@ import {
   SimpleRagProviderRegistry,
   SimpleRagRegistry,
 } from '@mcp-abap-adt/llm-agent';
+import { testRagAccess } from '@mcp-abap-adt/llm-agent/testing/rag-access-testing';
 import { SmartAgentBuilder } from '@mcp-abap-adt/llm-agent-libs';
 import { makeLlm } from '@mcp-abap-adt/llm-agent-libs/testing';
 import { unwrapBuilderResult } from '../../../../../llm-agent-libs/src/builder-types.js';
-import { installTestRagIdentity } from '../../__tests__/rag-identity-fixture.js';
 import { buildSessionRagRegistry } from '../session-rag-registry.js';
-
-beforeRagAccess(installTestRagIdentity);
 
 /** A catalogued provider over in-memory stores. */
 function catalogued(
@@ -109,6 +108,8 @@ test('seeds the deployment’s globals by reference, and only its globals', asyn
     userId: 'alice',
   });
   const reg = await buildSessionRagRegistry({
+    ragAccess: testRagAccess(),
+    caller: { sessionId: 'S', userId: 'alice', isAdmin: false },
     identity: { sessionId: 'S', userId: 'alice' },
     globals,
   });
@@ -135,6 +136,8 @@ test('hydrates what the catalog holds for this identity, and nothing of anyone e
   const providers = new SimpleRagProviderRegistry();
   providers.registerProvider(pg.provider);
   const reg = await buildSessionRagRegistry({
+    ragAccess: testRagAccess(),
+    caller: { sessionId: 'S', userId: 'alice', isAdmin: false },
     identity: { sessionId: 'S', userId: 'alice' },
     globals: new SimpleRagRegistry(),
     providers,
@@ -156,12 +159,14 @@ test('hydrates what the catalog holds for this identity, and nothing of anyone e
   assert.deepEqual(pg.deleted, ['scratch_00000004']);
 });
 
-test('a caller without a userId gets no user collection', async () => {
+test('a caller with another userId gets no user collection', async () => {
   const pg = catalogued('pg', records);
   const providers = new SimpleRagProviderRegistry();
   providers.registerProvider(pg.provider);
   const reg = await buildSessionRagRegistry({
-    identity: { sessionId: 'S' },
+    ragAccess: testRagAccess(),
+    caller: { sessionId: 'S', userId: 'test-user', isAdmin: false },
+    identity: { sessionId: 'S', userId: 'test-user' },
     globals: new SimpleRagRegistry(),
     providers,
   });
@@ -187,7 +192,9 @@ test('reports rejected catalog rows and a failed catalog read, and carries on', 
   providers.registerProvider(pg.provider);
   const { log, messages } = logger();
   const reg = await buildSessionRagRegistry({
-    identity: { sessionId: 'S' },
+    ragAccess: testRagAccess(),
+    caller: { sessionId: 'S', userId: 'test-user', isAdmin: false },
+    identity: { sessionId: 'S', userId: 'test-user' },
     globals: new SimpleRagRegistry(),
     providers,
     logger: log,
@@ -211,7 +218,9 @@ test('a catalogued global that the deployment already configures is skipped, wit
   providers.registerProvider(pg.provider);
   const { log, messages } = logger();
   const reg = await buildSessionRagRegistry({
-    identity: { sessionId: 'S' },
+    ragAccess: testRagAccess(),
+    caller: { sessionId: 'S', userId: 'test-user', isAdmin: false },
+    identity: { sessionId: 'S', userId: 'test-user' },
     globals,
     providers,
     logger: log,
@@ -260,6 +269,8 @@ test('a provider whose describeCollections throws, and a record whose openCollec
   providers.registerProvider(pg.provider);
   const { log, messages } = logger();
   const reg = await buildSessionRagRegistry({
+    ragAccess: testRagAccess(),
+    caller: { sessionId: 'S', userId: 'alice', isAdmin: false },
     identity: { sessionId: 'S', userId: 'alice' },
     globals: new SimpleRagRegistry(),
     providers,
@@ -295,7 +306,9 @@ test('a provider without a catalog is skipped silently', async () => {
   } as unknown as IRagProvider);
   const { log, messages } = logger();
   const reg = await buildSessionRagRegistry({
-    identity: { sessionId: 'S' },
+    ragAccess: testRagAccess(),
+    caller: { sessionId: 'S', userId: 'test-user', isAdmin: false },
+    identity: { sessionId: 'S', userId: 'test-user' },
     globals: new SimpleRagRegistry(),
     providers,
     logger: log,
@@ -322,15 +335,20 @@ test('the circuit-breaker fallback-wrap on one session’s registry never mutate
   });
 
   const regA = await buildSessionRagRegistry({
-    identity: { sessionId: 'A' },
+    ragAccess: testRagAccess(),
+    caller: { sessionId: 'A', userId: 'test-user', isAdmin: false },
+    identity: { sessionId: 'A', userId: 'test-user' },
     globals,
   });
   const regB = await buildSessionRagRegistry({
-    identity: { sessionId: 'B' },
+    ragAccess: testRagAccess(),
+    caller: { sessionId: 'B', userId: 'test-user', isAdmin: false },
+    identity: { sessionId: 'B', userId: 'test-user' },
     globals,
   });
 
   const handleA = await new SmartAgentBuilder({})
+    .withRagAccess(testRagAccess())
     .withMainLlm(makeLlm([{ content: 'ok' }]))
     .setRagRegistry(regA)
     .withCircuitBreaker()
@@ -378,7 +396,9 @@ test('with a shared `reported` set, a rejected row and a skipped global are logg
   const reported = new Set<string>();
   const first = logger();
   await buildSessionRagRegistry({
-    identity: { sessionId: 'S1' },
+    ragAccess: testRagAccess(),
+    caller: { sessionId: 'S1', userId: 'test-user', isAdmin: false },
+    identity: { sessionId: 'S1', userId: 'test-user' },
     globals,
     providers,
     logger: first.log,
@@ -391,7 +411,9 @@ test('with a shared `reported` set, a rejected row and a skipped global are logg
 
   const second = logger();
   await buildSessionRagRegistry({
-    identity: { sessionId: 'S2' },
+    ragAccess: testRagAccess(),
+    caller: { sessionId: 'S2', userId: 'test-user', isAdmin: false },
+    identity: { sessionId: 'S2', userId: 'test-user' },
     globals,
     providers,
     logger: second.log,
@@ -402,7 +424,9 @@ test('with a shared `reported` set, a rejected row and a skipped global are logg
   // A server of its own (its own set) reports them again: nothing is module-global.
   const other = logger();
   await buildSessionRagRegistry({
-    identity: { sessionId: 'S3' },
+    ragAccess: testRagAccess(),
+    caller: { sessionId: 'S3', userId: 'test-user', isAdmin: false },
+    identity: { sessionId: 'S3', userId: 'test-user' },
     globals,
     providers,
     logger: other.log,
@@ -424,6 +448,8 @@ test('hydration skips reserved catalog records and reports their refusal', async
   providers.registerProvider(pg.provider);
   const log = logger();
   const registry = await buildSessionRagRegistry({
+    ragAccess: testRagAccess(),
+    caller: { sessionId: 'S', userId: 'alice', isAdmin: false },
     identity: { sessionId: 'S', userId: 'alice' },
     globals: new SimpleRagRegistry(),
     providers,
@@ -440,4 +466,57 @@ test('hydration skips reserved catalog records and reports their refusal', async
         ),
     );
   }
+});
+
+test('role revoke hides a collection in the same session and a missing role is reported once', async () => {
+  const access = testRagAccess();
+  await access.roles.createRole({ roleId: 'r', name: 'Readers' });
+  await access.roles.assign('u1', 'r');
+  const pg = catalogued('pg', [
+    { name: 'role-docs', storeName: 'role-store', scope: 'role', roleId: 'r' },
+    { name: 'orphan', storeName: 'gone-store', scope: 'role', roleId: 'gone' },
+  ]);
+  const providers = new SimpleRagProviderRegistry();
+  providers.registerProvider(pg.provider);
+  const logs = logger();
+  const input = {
+    identity: { sessionId: 's1', userId: 'u1' },
+    caller: { sessionId: 's1', userId: 'u1', isAdmin: false },
+    ragAccess: access,
+    globals: new SimpleRagRegistry(),
+    providers,
+    logger: logs.log,
+    reported: new Set<string>(),
+  };
+  const registry = await buildSessionRagRegistry(input);
+  assert.equal(
+    registry.list().some((row) => row.name === 'role-docs'),
+    true,
+  );
+  assert.equal(
+    registry.list().some((row) => row.name === 'orphan'),
+    false,
+  );
+  await access.roles.revoke('u1', 'r');
+  await buildSessionRagRegistry({
+    ragAccess: testRagAccess(),
+    caller: { sessionId: 'S', userId: 'alice', isAdmin: false },
+    ...input,
+    registry,
+  });
+  assert.equal(
+    registry.list().some((row) => row.name === 'role-docs'),
+    false,
+  );
+  const allowed = await checkRagAccess(
+    input.caller,
+    { name: 'role-docs', owner: { scope: 'role', roleId: 'r' } },
+    'read',
+    access,
+  );
+  assert.equal(allowed.ok, false);
+  assert.equal(
+    logs.messages().filter((message) => message.includes('gone')).length,
+    1,
+  );
 });

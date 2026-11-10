@@ -1,14 +1,12 @@
 import assert from 'node:assert/strict';
 import { request } from 'node:http';
-import { before as beforeRagAccess, test } from 'node:test';
+import { test } from 'node:test';
 import type { IEmbedder, ILlm, IModelResolver } from '@mcp-abap-adt/llm-agent';
 import { SessionRequestLogger } from '@mcp-abap-adt/llm-agent-libs';
 import { makeLlm as makeTestLlm } from '@mcp-abap-adt/llm-agent-libs/testing';
-import { SmartServer, type SmartServerConfig } from '../smart-server.js';
+import type { SmartServerConfig } from '../smart-server.js';
 import { constructionSeams } from './construction-seams.js';
-import { installTestRagIdentity } from './rag-identity-fixture.js';
-
-beforeRagAccess(installTestRagIdentity);
+import { TestSmartServer as SmartServer } from './rag-identity-fixture.js';
 
 function put(port: number, path: string, body: unknown): Promise<number> {
   return new Promise((resolve, reject) => {

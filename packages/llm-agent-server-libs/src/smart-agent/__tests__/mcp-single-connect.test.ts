@@ -1,5 +1,4 @@
-import { before as beforeRagAccess } from 'node:test';
-import { installTestRagIdentity } from './rag-identity-fixture.js';
+import { TestSmartServer as SmartServer } from './rag-identity-fixture.js';
 
 /**
  * F1 + F2 regression tests for `buildSharedPipelineInfra`:
@@ -25,10 +24,7 @@ import type {
   IToolsRagHandle,
   LlmTool,
 } from '@mcp-abap-adt/llm-agent';
-import { SmartServer } from '../smart-server.js';
 import { constructionSeams } from './construction-seams.js';
-
-beforeRagAccess(installTestRagIdentity);
 
 function fakeMcpClient(tools: string[]): IMcpClient {
   return {

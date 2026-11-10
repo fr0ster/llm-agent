@@ -102,25 +102,40 @@ test('backend.deleteSession evicts entries so a same-id re-entry does NOT rehydr
 test('recordSessionStart creates a row the SAME-session caller can list + resume', async () => {
   const store = new InMemorySessionMetaStore();
   // Simulate a normal chat/stream request for a freshly-minted session.
-  await recordSessionStart(store, 'sess-1', '2026-05-30T10:00:00Z');
+  await recordSessionStart(
+    store,
+    'sess-1',
+    '2026-05-30T10:00:00Z',
+    'test-user',
+  );
 
   // GET /v1/sessions for this identity (identity === sessionId in no-auth build)
-  const list = await handleListSessions(store, 'sess-1');
+  const list = await handleListSessions(store, 'test-user');
   assert.equal(list.sessions.length, 1);
   assert.equal(list.sessions[0].sessionId, 'sess-1');
   assert.equal(list.sessions[0].status, 'in-progress');
 
   // resume must succeed (previously always 404 because no row was ever created)
-  const resume = await handleResumeSession(store, 'sess-1', 'sess-1');
+  const resume = await handleResumeSession(store, 'test-user', 'sess-1');
   assert.equal(resume.ok, true);
 });
 
 test('recordSessionStart touches an existing row instead of duplicating; recordSessionEnd marks idle', async () => {
   const store = new InMemorySessionMetaStore();
-  await recordSessionStart(store, 'sess-2', '2026-05-30T10:00:00Z');
-  await recordSessionStart(store, 'sess-2', '2026-05-30T10:05:00Z'); // second request, same session
+  await recordSessionStart(
+    store,
+    'sess-2',
+    '2026-05-30T10:00:00Z',
+    'test-user',
+  );
+  await recordSessionStart(
+    store,
+    'sess-2',
+    '2026-05-30T10:05:00Z',
+    'test-user',
+  ); // second request, same session
 
-  const list = await handleListSessions(store, 'sess-2');
+  const list = await handleListSessions(store, 'test-user');
   assert.equal(list.sessions.length, 1, 'must not duplicate the row');
   assert.equal(list.sessions[0].lastUsedAt, '2026-05-30T10:05:00Z', 'touched');
 

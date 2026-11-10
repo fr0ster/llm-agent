@@ -84,8 +84,8 @@ test('each session gets the registry its own call returned', async () => {
       return undefined;
     },
   });
-  await factory.build({ sessionId: 'a' });
-  await factory.build({ sessionId: 'b' });
+  await factory.build({ sessionId: 'a', userId: 'test-user' });
+  await factory.build({ sessionId: 'b', userId: 'test-user' });
   assert.equal(calls, 2);
   assert.notEqual(handed[0], handed[1]);
 });
@@ -107,7 +107,7 @@ test('the factory is awaited, so it can hydrate', async () => {
       return undefined;
     },
   });
-  await factory.build({ sessionId: 's-3' });
+  await factory.build({ sessionId: 's-3', userId: 'test-user' });
   assert.equal(hydrated, true);
   assert.equal(handed[0], owned.registry);
 });
@@ -126,7 +126,7 @@ test('a factory that rejects fails the build before any MCP client is resolved',
     buildAgent: async () => undefined,
   });
   await assert.rejects(
-    () => factory.build({ sessionId: 's-4' }),
+    () => factory.build({ sessionId: 's-4', userId: 'test-user' }),
     /catalog unreachable/,
   );
   assert.equal(mcpCalls, 0, 'nothing started that would need stopping');
@@ -139,7 +139,7 @@ test('neither a registry nor a factory is refused at build', async () => {
     buildAgent: async () => undefined,
   });
   await assert.rejects(
-    () => factory.build({ sessionId: 's-5' }),
+    () => factory.build({ sessionId: 's-5', userId: 'test-user' }),
     /needs one of ragRegistryFactory or ragRegistry/,
   );
 });

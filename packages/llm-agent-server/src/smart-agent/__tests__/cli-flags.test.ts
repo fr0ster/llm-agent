@@ -87,11 +87,33 @@ describe('cli composition root', () => {
     );
     const env = { ...process.env };
     delete env.LLM_API_KEY;
-    const r = spawnSync('node', ['--import', 'tsx/esm', CLI, '--config', cfg], {
-      encoding: 'utf8',
-      env,
-      timeout: 60_000,
-    });
+    const denied = spawnSync(
+      'node',
+      ['--import', 'tsx/esm', CLI, '--config', cfg],
+      {
+        encoding: 'utf8',
+        env,
+      },
+    );
+    assert.notEqual(denied.status, 0);
+    assert.match(denied.stderr, /ServerConfigError.*--local-user-id/);
+    const r = spawnSync(
+      'node',
+      [
+        '--import',
+        'tsx/esm',
+        CLI,
+        '--config',
+        cfg,
+        '--local-user-id',
+        'cli-test-user',
+      ],
+      {
+        encoding: 'utf8',
+        env,
+        timeout: 60_000,
+      },
+    );
     assert.notEqual(r.status, 0);
     assert.match(
       r.stderr,

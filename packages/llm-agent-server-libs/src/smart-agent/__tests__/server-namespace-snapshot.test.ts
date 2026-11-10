@@ -1,5 +1,4 @@
-import { before as beforeRagAccess } from 'node:test';
-import { installTestRagIdentity } from './rag-identity-fixture.js';
+import { TestSmartServer as SmartServer } from './rag-identity-fixture.js';
 /**
  * #244 Task 6 — the server obtains the ONE authoritative namespaced tool
  * snapshot (`{ namespacedTools, toolProvenance }`) from whichever source
@@ -32,10 +31,7 @@ import type {
   McpClientDescriptor,
 } from '@mcp-abap-adt/llm-agent';
 import { makeLlm as makeTestLlm } from '@mcp-abap-adt/llm-agent-libs/testing';
-import { SmartServer } from '../smart-server.js';
 import { constructionSeams } from './construction-seams.js';
-
-beforeRagAccess(installTestRagIdentity);
 
 /** Every real-boot test here needs the seams; the library defaults none of them. */
 const llmDeps = {

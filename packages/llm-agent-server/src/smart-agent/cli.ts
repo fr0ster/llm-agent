@@ -1,4 +1,8 @@
 #!/usr/bin/env node
+import {
+  fixedCallerResolver,
+  testRagAccess,
+} from '@mcp-abap-adt/llm-agent/testing/rag-access-testing';
 /**
  * llm-agent — Global CLI for SmartServer
  *
@@ -11,6 +15,7 @@
  *   npm run start:smart [-- options]
  *
  * Options:
+ *   --local-user-id <userId>     Required single-user local opt-in (not for production)
  *   --config, -c <path>          YAML config file (default: smart-server.yaml if exists)
  *                                If path does not exist, writes a config template and exits.
  *   --secrets-dir <folder>       Secrets root (default: ~/.config/mcp-abap-adt/)
@@ -88,6 +93,7 @@ function parseCliArgs() {
   try {
     return parseArgs({
       options: {
+        'local-user-id': { type: 'string' },
         config: { type: 'string', short: 'c' },
         'secrets-dir': { type: 'string' },
         env: { type: 'boolean' },
@@ -220,7 +226,7 @@ const yaml = loadYamlConfig(path.resolve(configPath));
 // Merge: CLI > YAML > env vars > defaults
 // ---------------------------------------------------------------------------
 
-let baseConfig: Omit<SmartServerConfig, 'log'>;
+let baseConfig: Omit<SmartServerConfig, 'log' | 'callerResolver' | 'ragAccess'>;
 try {
   baseConfig = resolveSmartServerConfig(
     args as ResolveConfigArgs,
@@ -264,7 +270,18 @@ if (logFile) {
   });
 }
 
+if (!args['local-user-id']?.trim()) {
+  process.stderr.write(
+    'ServerConfigError: configure a trusted callerResolver and ragAccess programmatically, or pass --local-user-id for single-user local mode (not for production).\n',
+  );
+  process.exit(1);
+}
 const config: SmartServerConfig = {
+  callerResolver: fixedCallerResolver({
+    userId: args['local-user-id'],
+    isAdmin: false,
+  }),
+  ragAccess: testRagAccess(),
   ...baseConfig,
   log: (event) => {
     const line = `${JSON.stringify({ ts: new Date().toISOString(), ...event })}\n`;

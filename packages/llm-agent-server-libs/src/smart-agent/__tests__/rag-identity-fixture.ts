@@ -1,29 +1,63 @@
-import type { TestContext } from 'node:test';
-import { testRagAccess } from '@mcp-abap-adt/llm-agent/testing/rag-access-testing';
-import { SmartAgent, SmartAgentBuilder } from '@mcp-abap-adt/llm-agent-libs';
-import { testCallOptions } from '../../../../llm-agent-libs/src/testing/index.js';
+import { SimpleRagRegistry } from '@mcp-abap-adt/llm-agent';
+import {
+  fixedCallerResolver,
+  testRagAccess,
+} from '@mcp-abap-adt/llm-agent/testing/rag-access-testing';
+import { SessionGraphFactory } from '@mcp-abap-adt/llm-agent-libs';
+import {
+  type BuildAgentDeps,
+  buildAgent,
+  SmartServer,
+  type SmartServerConfig,
+} from '../smart-server.js';
 
-/** TODO(#304 Task 8): Replace this test boundary with the trusted server resolver. */
-export function installTestRagIdentity(ctx: Pick<TestContext, 'mock'>): void {
-  const build = SmartAgentBuilder.prototype.build;
-  ctx.mock.method(
-    SmartAgentBuilder.prototype,
-    'build',
-    function (this: SmartAgentBuilder) {
-      this.withRagAccess(testRagAccess());
-      return build.call(this);
+/** Explicit identity for tests that do not exercise authentication. */
+export class TestSmartServer extends SmartServer {
+  constructor(config: Partial<SmartServerConfig>, deps: BuildAgentDeps) {
+    super(
+      {
+        callerResolver: fixedCallerResolver({
+          userId: 'test-user',
+          isAdmin: false,
+        }),
+        ragAccess: testRagAccess(),
+        ...config,
+      },
+      deps,
+    );
+  }
+}
+
+export function testBuildAgent(
+  config: Partial<SmartServerConfig>,
+  deps: BuildAgentDeps,
+) {
+  return buildAgent(
+    {
+      callerResolver: fixedCallerResolver({
+        userId: 'test-user',
+        isAdmin: false,
+      }),
+      ragAccess: testRagAccess(),
+      ...config,
     },
+    deps,
   );
-  const stream = SmartAgent.prototype.streamProcess;
-  ctx.mock.method(
-    SmartAgent.prototype,
-    'streamProcess',
-    function (
-      this: SmartAgent,
-      input: Parameters<SmartAgent['streamProcess']>[0],
-      options: Parameters<SmartAgent['streamProcess']>[1],
-    ) {
-      return stream.call(this, input, testCallOptions(options));
-    },
-  );
+}
+
+/** Explicit session for route handlers exercised without the HTTP middleware. */
+export async function testHttpSession(sessionId = 'test-session') {
+  const caller = { sessionId, userId: 'test-user', isAdmin: false };
+  const factory = new SessionGraphFactory({
+    mcpClientFactory: () => [],
+    toolsRag: undefined,
+    ragRegistry: new SimpleRagRegistry(),
+    buildAgent: async () => undefined,
+  });
+  return {
+    sessionId,
+    traceId: 'test-request',
+    caller,
+    graph: await factory.build(caller),
+  };
 }

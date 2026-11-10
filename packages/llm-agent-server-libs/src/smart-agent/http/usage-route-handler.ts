@@ -1,3 +1,4 @@
+import type { RagCaller } from '@mcp-abap-adt/llm-agent';
 import type { SessionLifecycle } from '../session-lifecycle/index.js';
 import { jsonError } from './response-helpers.js';
 import type { RouteContext } from './route-table.js';
@@ -22,7 +23,15 @@ export async function handleUsageRoute(
   }
   const resolved = resolveSessionCookie(rc, lifecycle);
   const sessionId = resolved.identity.sessionId;
-  const graph = await lifecycle.acquire(sessionId);
+  let caller: RagCaller;
+  try {
+    caller = await rc.server.resolveCaller(sessionId, rc.req.headers);
+  } catch {
+    rc.res.writeHead(403);
+    rc.res.end();
+    return;
+  }
+  const graph = await lifecycle.acquire(caller);
   try {
     rc.res.writeHead(200, { 'Content-Type': 'application/json' });
     rc.res.end(JSON.stringify(graph.logger.getSummary()));

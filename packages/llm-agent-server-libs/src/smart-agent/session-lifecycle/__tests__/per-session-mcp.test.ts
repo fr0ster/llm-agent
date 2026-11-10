@@ -54,8 +54,8 @@ test('default: buildPerSessionMcpClients called once per session; each session g
     },
   });
 
-  await lc.acquire('s1');
-  await lc.acquire('s2');
+  await lc.acquire({ sessionId: 's1', userId: 'test-user' });
+  await lc.acquire({ sessionId: 's2', userId: 'test-user' });
 
   assert.equal(
     callCount,
@@ -104,8 +104,8 @@ test('mcpSharedClient: true → buildPerSessionMcpClients never called; both ses
     },
   });
 
-  await lc.acquire('s1');
-  await lc.acquire('s2');
+  await lc.acquire({ sessionId: 's1', userId: 'test-user' });
+  await lc.acquire({ sessionId: 's2', userId: 'test-user' });
 
   assert.equal(
     callCount,
@@ -150,7 +150,7 @@ test('onDispose: per-session close() runs before opts.onDispose (in order, for t
     buildAgent: async () => undefined,
   });
 
-  const g = await lc.acquire('s1');
+  const g = await lc.acquire({ sessionId: 's1', userId: 'test-user' });
   lc.release('s1');
 
   // Force idle eviction (idleTtlMs=10_000 won't expire, so disposeAll)
@@ -187,8 +187,8 @@ test('onDispose: only the closed session close() is called; other sessions not a
     buildAgent: async () => undefined,
   });
 
-  await lc.acquire('s1');
-  const g2 = await lc.acquire('s2');
+  await lc.acquire({ sessionId: 's1', userId: 'test-user' });
+  const g2 = await lc.acquire({ sessionId: 's2', userId: 'test-user' });
   lc.release('s1');
 
   // evictIdle evicts s1 (released + idleTtlMs=0)
@@ -231,7 +231,7 @@ test('isolated session: buildPerSessionMcpClients descriptors reach parts.mcpCli
     },
   });
 
-  await lc.acquire('s1');
+  await lc.acquire({ sessionId: 's1', userId: 'test-user' });
 
   assert.deepEqual(capturedParts?.mcpClientDescriptors, [
     { slotIndex: 0, label: 'a' },
@@ -269,7 +269,7 @@ test('filtered-global (isolation OFF, P1 case): shared clients are a filtered su
     },
   });
 
-  await lc.acquire('s1');
+  await lc.acquire({ sessionId: 's1', userId: 'test-user' });
 
   assert.deepEqual(
     capturedParts?.mcpClientDescriptors?.map((d) => d.slotIndex),

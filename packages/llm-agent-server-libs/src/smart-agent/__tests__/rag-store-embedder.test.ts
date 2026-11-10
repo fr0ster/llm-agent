@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { before as beforeRagAccess, describe, it } from 'node:test';
+import { describe, it } from 'node:test';
 import {
   type IEmbedder,
   InMemoryRag,
@@ -13,11 +13,9 @@ import {
   type SmartServerEmbedderConfig,
   toMakeRagInput,
 } from '../rag-config.js';
-import { SmartServer, type SmartServerConfig } from '../smart-server.js';
+import type { SmartServerConfig } from '../smart-server.js';
 import { constructionSeams } from './construction-seams.js';
-import { installTestRagIdentity } from './rag-identity-fixture.js';
-
-beforeRagAccess(installTestRagIdentity);
+import { TestSmartServer as SmartServer } from './rag-identity-fixture.js';
 
 const llm = { provider: 'ollama', model: 'qwen2.5' };
 const stubEmbedder = {

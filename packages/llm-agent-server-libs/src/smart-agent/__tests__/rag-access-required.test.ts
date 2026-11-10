@@ -1,18 +1,20 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { BuilderConfigError } from '@mcp-abap-adt/llm-agent-libs';
-import { buildAgent } from '../smart-server.js';
+
+import { buildAgent, ServerConfigError } from '../smart-server.js';
 import { constructionSeams } from './construction-seams.js';
 
-test('SmartServer fails closed without configured RAG access pending Task 8', async () => {
+test('SmartServer fails closed without configured RAG access', async () => {
   await assert.rejects(
     () =>
       buildAgent(
-        { llm: { model: 'test' }, skipModelValidation: true },
+        // @ts-expect-error Deliberately omit the mandatory trusted identity configuration.
+        Object.assign(
+          {},
+          { llm: { model: 'test' }, skipModelValidation: true },
+        ),
         constructionSeams,
       ),
-    (error: Error) =>
-      error instanceof BuilderConfigError &&
-      error.message === 'ragAccess is required',
+    (error: Error) => error instanceof ServerConfigError,
   );
 });

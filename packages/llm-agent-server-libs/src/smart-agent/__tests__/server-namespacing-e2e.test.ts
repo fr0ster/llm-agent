@@ -1,5 +1,4 @@
-import { before as beforeRagAccess } from 'node:test';
-import { installTestRagIdentity } from './rag-identity-fixture.js';
+import { TestSmartServer as SmartServer } from './rag-identity-fixture.js';
 
 /**
  * #244 Task 9 — end-to-end acceptance: two REAL (in-process, real sockets)
@@ -76,12 +75,9 @@ import { buildNamespacedMcpBridge } from '../mcp/namespaced-bridge.js';
 import { parseControllerSettings } from '../pipeline-settings.js';
 import {
   connectMcpClientsWithDescriptorsFromConfig,
-  SmartServer,
   type SmartServerMcpConfig,
 } from '../smart-server.js';
 import { constructionSeams } from './construction-seams.js';
-
-beforeRagAccess(installTestRagIdentity);
 
 /** Every real-boot SmartServer in this file needs the seams; the library defaults none of them. */
 const llmDeps = {

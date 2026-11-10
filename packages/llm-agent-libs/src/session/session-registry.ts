@@ -16,6 +16,8 @@ export interface SessionRegistryOptions {
 }
 
 export class SessionRegistry {
+  private readonly users = new WeakMap<SessionGraph, string>();
+  private readonly pendingUsers = new Map<string, string>();
   private readonly graphs = new Map<string, SessionGraph>();
   /**
    * Graphs detached from `graphs` because they were pinned at the moment
@@ -59,7 +61,18 @@ export class SessionRegistry {
    * and receive the identical graph (never two graphs for one session). Each
    * in-flight request increments the refcount (spec A.4).
    */
-  async acquire(sessionId: string): Promise<SessionGraph> {
+  async acquire(
+    identity: SessionGraphIdentity & { userId: string },
+  ): Promise<SessionGraph> {
+    const { sessionId, userId } = identity;
+    if (!sessionId?.trim() || !userId?.trim())
+      throw new Error('Session and user identity are required');
+    const live = this.graphs.get(sessionId);
+    const previous = live
+      ? (this.users.get(live) ?? live.userId)
+      : this.pendingUsers.get(sessionId);
+    if (previous !== undefined && previous !== userId)
+      throw new Error('Session user mismatch');
     if (this._closed) {
       throw new OrchestratorError(
         'SessionRegistry is closed; cannot acquire',
@@ -85,10 +98,11 @@ export class SessionRegistry {
         const clearIfMine = () => {
           if (this.pendingBuilds.get(sessionId) === self) {
             this.pendingBuilds.delete(sessionId);
+            this.pendingUsers.delete(sessionId);
           }
         };
         build = this.opts.factory
-          .build({ sessionId })
+          .build(identity)
           .then((graph) => {
             if (this._generation !== buildGen) {
               // Orphaned by invalidateAll(); dispose async and do NOT
@@ -100,6 +114,7 @@ export class SessionRegistry {
                 'SESSION_INVALIDATED',
               );
             }
+            this.users.set(graph, userId);
             this.graphs.set(sessionId, graph);
             clearIfMine();
             this.enforceCap();
@@ -112,6 +127,7 @@ export class SessionRegistry {
             throw err;
           });
         self = build;
+        this.pendingUsers.set(sessionId, userId);
         this.pendingBuilds.set(sessionId, build);
       }
       g = await build;
@@ -136,6 +152,8 @@ export class SessionRegistry {
         'SESSION_INVALIDATED',
       );
     }
+    if (g.userId !== undefined && g.userId !== userId)
+      throw new Error('Session graph user mismatch');
     g.acquire();
     return g;
   }
@@ -244,6 +262,7 @@ export class SessionRegistry {
       this.pending.push(g.dispose());
     }
     this.pendingBuilds.clear();
+    this.pendingUsers.clear();
     await this.flushEvictions();
   }
 
@@ -284,6 +303,7 @@ export class SessionRegistry {
     // Defense-in-depth: pendingBuilds is rarely non-empty at config-change
     // time in practice.
     this.pendingBuilds.clear();
+    this.pendingUsers.clear();
     await this.flushEvictions();
   }
 

@@ -204,3 +204,24 @@ of `IRag` (the `rag-history` stage queries with `scope: 'session'`). A custom `I
 - Operational concerns (audit logging to SIEM, alert thresholds, incident response)
 
 These are the responsibility of the consumer. See deployment documentation for guidance.
+
+
+### SmartServer caller identity and hydration (#304, Task 8)
+
+SmartServer requires a trusted caller resolver and RAG access stores/decision
+interface before startup. It mints or resolves the cookie session, resolves the
+real user/admin identity, binds the session to that user in the configured
+persistence, and only then acquires its session graph. Resolver, binding and
+acquisition failures return HTTP 403. Graph reuse also refuses a changed user,
+including concurrent builds. There is no header-selected or shared fallback user.
+
+Catalog hydration admits only collections that pass ownership and the server's
+read decision. Each request refreshes visibility using library-owned role
+assignments; revocation hides a role collection in an already open session.
+Retrieval still rechecks access at execution, so retaining a store reference
+does not preserve revoked permissions. Missing-role catalog entries are skipped
+and reported once per server. Session metadata stores the authenticated user ID.
+The host must supply access stores from its catalog persistence to preserve
+bindings across restarts and instances. In-memory stores provide process-local
+persistence only. The CLI's explicit single-user local flag uses test access
+helpers and is not for production.

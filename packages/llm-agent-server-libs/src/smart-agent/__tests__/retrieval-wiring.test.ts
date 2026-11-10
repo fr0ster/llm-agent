@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { request } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { beforeEach, describe, it } from 'node:test';
+import { describe, it } from 'node:test';
 import type {
   CallOptions,
   DecisionRequest,
@@ -29,14 +29,12 @@ import {
 import { parse } from 'yaml';
 import { testCallOptions } from '../../../../llm-agent-libs/src/testing/index.js';
 import { resolveSmartServerConfig } from '../config.js';
-import {
-  type BuildAgentDeps,
-  buildAgent,
-  SmartServer,
-  type SmartServerConfig,
-} from '../smart-server.js';
+import type { BuildAgentDeps, SmartServerConfig } from '../smart-server.js';
 import { constructionSeams } from './construction-seams.js';
-import { installTestRagIdentity } from './rag-identity-fixture.js';
+import {
+  testBuildAgent as buildAgent,
+  TestSmartServer as SmartServer,
+} from './rag-identity-fixture.js';
 
 // `rag:` is required: SmartServer builds the tools/history stores through the
 // makeRag seam only when `cfg.rag` is set (smart-server.ts, `if (this.cfg.rag)`).
@@ -298,7 +296,6 @@ function controllerSetup() {
 }
 
 describe('retrieval strategy wiring (§13.4)', () => {
-  beforeEach(installTestRagIdentity);
   it('HTTP: rag.retrieval.tools (decision) reranks a session request with the tool question', async () => {
     const { model, seen } = recordingModel();
     const { makeRag } = labelledStores();

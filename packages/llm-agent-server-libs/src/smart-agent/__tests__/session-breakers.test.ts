@@ -1,8 +1,3 @@
-import { beforeEach } from 'node:test';
-import { installTestRagIdentity } from './rag-identity-fixture.js';
-
-beforeEach(installTestRagIdentity);
-
 /**
  * Spec §14.2 (circuit breaker) and §14.4 (a cancellation is not a failure):
  * one LLM breaker per `llm:` key behind every role, and one embedder breaker
@@ -27,8 +22,9 @@ import { SmartAgentBuilder } from '@mcp-abap-adt/llm-agent-libs';
 import { testCallOptions } from '../../../../llm-agent-libs/src/testing/index.js';
 import type { IRoleLlmResolver } from '../llm/role-llm-resolver.js';
 import { resolveRetrievalEmbedder } from '../resolve-agent-embedder.js';
-import { SmartServer, type SmartServerConfig } from '../smart-server.js';
+import type { SmartServerConfig } from '../smart-server.js';
 import { constructionSeams, stubLlm } from './construction-seams.js';
+import { TestSmartServer as SmartServer } from './rag-identity-fixture.js';
 
 // ---------------------------------------------------------------------------
 // helpers

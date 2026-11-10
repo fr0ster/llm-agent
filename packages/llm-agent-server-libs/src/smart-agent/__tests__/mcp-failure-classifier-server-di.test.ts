@@ -6,8 +6,8 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { IMcpFailureClassifier } from '@mcp-abap-adt/llm-agent';
 import type { SmartServerConfig } from '../smart-server.js';
-import { SmartServer } from '../smart-server.js';
 import { constructionSeams } from './construction-seams.js';
+import { TestSmartServer as SmartServer } from './rag-identity-fixture.js';
 
 const MINIMAL_CFG = {
   llm: { main: { provider: 'openai', model: 'gpt-4o' } },

@@ -1,15 +1,24 @@
 import {
+  checkRagAccess,
   type ILogger,
   type IRagProvider,
   type IRagProviderRegistry,
   type IRagRegistry,
-  type RagCollectionRecord,
+  type RagAccess,
+  RagAccessDeniedError,
+  type RagCaller,
+  type RagCollectionRef,
   reservedGlobalNameError,
   SimpleRagRegistry,
+  validateRagOwner,
+  visibleOwnerFilter,
 } from '@mcp-abap-adt/llm-agent';
 import type { SessionGraphIdentity } from '@mcp-abap-adt/llm-agent-libs';
 
 export interface SessionRagRegistryInput {
+  readonly caller: RagCaller;
+  readonly ragAccess: RagAccess;
+  readonly registry?: IRagRegistry;
   readonly identity: SessionGraphIdentity;
   /**
    * The deployment's registry. Only its `global` entries are seen, by
@@ -33,22 +42,22 @@ export interface SessionRagRegistryInput {
 }
 
 /**
- * The registry one session owns (§6.4): the deployment's globals, plus what the
- * providers' catalogs hold for this identity — its own `user` and `session`
- * collections and the catalogued globals. Nothing is created, no schema is
- * ensured and no catalog row is written: describeCollections, then
- * openCollection and adopt for each record kept (§6.3). This server holds no
- * policy of its own, so every catalogued global is kept; a consumer that
- * decides which globals a caller may reach reads the record's attributes here.
- *
- * The globals are copied in ONCE, when the session is created: a global added
- * to the deployment registry afterwards is not seen by a session already
- * built (it is seen by the next session `buildSessionRagRegistry` builds).
+ * Hydrate only collections allowed by ownership and the server decision.
+ * Supplying an existing registry refreshes visibility without replacing the
+ * registry reference held by an open session and its workers. Role membership
+ * is read again on every request; retrieval also checks access at execution.
  */
 export async function buildSessionRagRegistry(
   input: SessionRagRegistryInput,
 ): Promise<IRagRegistry> {
-  const { identity, globals, providers, logger, reported } = input;
+  const { identity, caller, ragAccess, globals, providers, logger, reported } =
+    input;
+  if (
+    identity.sessionId !== caller.sessionId ||
+    identity.userId !== caller.userId
+  ) {
+    throw new Error('Hydration caller identity mismatch');
+  }
   const warn = (message: string) =>
     logger?.log({
       type: 'warning',
@@ -64,13 +73,57 @@ export async function buildSessionRagRegistry(
     warn(message);
   };
 
-  const registry = new SimpleRagRegistry();
-  if (providers) registry.setProviderRegistry(providers);
+  const registry = input.registry ?? new SimpleRagRegistry();
+  if (providers && registry instanceof SimpleRagRegistry)
+    registry.setProviderRegistry(providers);
+  const memberships = await ragAccess.roles.rolesOf(caller.userId);
+  if (!memberships.ok) throw memberships.error;
+  const roles = await ragAccess.roles.listRoles();
+  if (!roles.ok) throw roles.error;
+  const visible = visibleOwnerFilter(caller, memberships.value);
+  const canRead = async (ref: RagCollectionRef): Promise<boolean> => {
+    let decisionFailed = false;
+    const result = await checkRagAccess(caller, ref, 'read', {
+      ...ragAccess,
+      decision: {
+        canRead: async (identity, collection) => {
+          try {
+            return await ragAccess.decision.canRead(identity, collection);
+          } catch {
+            decisionFailed = true;
+            return false;
+          }
+        },
+        canWrite: (identity, collection) =>
+          ragAccess.decision.canWrite(identity, collection),
+      },
+    });
+    if (decisionFailed)
+      throw new RagAccessDeniedError('RAG read decision failed');
+    return result.ok;
+  };
+  for (const meta of registry.list()) {
+    if (meta.name === 'history' || meta.name === 'tools') continue;
+    const owner = validateRagOwner(meta);
+    if (
+      !owner.ok ||
+      !(await canRead({ name: meta.name, owner: owner.value }))
+    ) {
+      registry.unregister(
+        meta.name,
+        meta.scope,
+        owner.ok ? owner.value : undefined,
+      );
+    }
+  }
 
   // The deployment's globals, by reference. No providerName: the session does
   // not own them, so deleting the entry here must not reach their store.
   for (const meta of globals.list()) {
     if ((meta.scope ?? 'global') !== 'global') continue;
+    if (!(await canRead({ name: meta.name, owner: { scope: 'global' } })))
+      continue;
+    if (registry.get(meta.name, 'global')) continue;
     const rag = globals.get(meta.name, 'global');
     if (!rag) continue;
     registry.register(meta.name, rag, globals.getEditor(meta.name, 'global'), {
@@ -121,7 +174,24 @@ export async function buildSessionRagRegistry(
         );
         continue;
       }
-      if (!belongsTo(record, identity)) continue;
+      if (
+        record.scope === 'role' &&
+        !roles.value.some((role) => role.roleId === record.roleId)
+      ) {
+        warnOnce(
+          JSON.stringify(['missing-role', providerName, record.storeName]),
+          `rag_catalog_row_rejected: provider '${providerName}' store '${record.storeName}': missing role '${record.roleId}'`,
+        );
+        continue;
+      }
+      const owner = validateRagOwner(record);
+      if (!owner.ok || !visible(owner.value)) continue;
+      if (!(await canRead({ name: record.name, owner: owner.value }))) continue;
+      if (
+        input.registry &&
+        registry.get(record.name, record.scope, owner.value)
+      )
+        continue;
       if (record.scope === 'global' && registry.get(record.name, 'global')) {
         warnOnce(
           JSON.stringify(['skipped', providerName, record.storeName]),
@@ -149,7 +219,7 @@ export async function buildSessionRagRegistry(
         continue;
       }
       try {
-        registry.adopt(
+        registry.adopt?.(
           record,
           opened.value.rag,
           opened.value.editor,
@@ -165,21 +235,4 @@ export async function buildSessionRagRegistry(
     }
   }
   return registry;
-}
-
-function belongsTo(
-  record: RagCollectionRecord,
-  identity: SessionGraphIdentity,
-): boolean {
-  switch (record.scope) {
-    case 'role':
-      // Role membership enforcement is wired by the access layer in a later task.
-      return false;
-    case 'global':
-      return true;
-    case 'user':
-      return identity.userId !== undefined && record.userId === identity.userId;
-    case 'session':
-      return record.sessionId === identity.sessionId;
-  }
 }
