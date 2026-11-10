@@ -11,6 +11,7 @@ import type {
 } from '@mcp-abap-adt/llm-agent';
 import { symmetricEmbedder } from '@mcp-abap-adt/llm-agent';
 import { testRagAccess } from '@mcp-abap-adt/llm-agent/testing/rag-access-testing';
+import { unwrapBuilderResult } from '../builder-types.js';
 
 // An LLM whose chat() fails the first `failures` times (with a status-code-LESS
 // message, like SAP AI Core's deployment-list blip), then succeeds.
@@ -69,7 +70,8 @@ describe('SmartAgentBuilder startup model validation — lenient retry', () => {
       .withRagAccess(testRagAccess())
       .withMainLlm(llm)
       .withEmbedder(symmetricEmbedder(stubEmbedder()))
-      .build();
+      .build()
+      .then(unwrapBuilderResult);
     assert.ok(
       handle,
       'build must succeed despite one transient validation failure',
@@ -89,7 +91,8 @@ describe('SmartAgentBuilder startup model validation — lenient retry', () => {
           .withRagAccess(testRagAccess())
           .withMainLlm(llm)
           .withEmbedder(symmetricEmbedder(stubEmbedder()))
-          .build(),
+          .build()
+          .then(unwrapBuilderResult),
       /Startup aborted.*after 2 attempts/s,
     );
     assert.equal(llm.calls, 2, 'tried exactly maxAttempts times');

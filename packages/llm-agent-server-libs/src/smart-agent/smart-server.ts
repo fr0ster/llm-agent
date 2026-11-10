@@ -1,3 +1,4 @@
+import { unwrapBuilderResult } from '@mcp-abap-adt/llm-agent-libs';
 // TODO(#304 Task 8): Resolve trusted caller identity before invoking agent retrieval.
 /**
  * SmartServer — embeddable OpenAI-compatible HTTP server backed by SmartAgent.
@@ -1726,7 +1727,7 @@ export class SmartServer {
     // was hoisted UNCONDITIONALLY above via buildSharedPipelineInfra so every
     // pipeline's buildServerCtx resolves its dep-sources.)
 
-    const agentHandle = await builder.build();
+    const agentHandle = await builder.build().then(unwrapBuilderResult);
     const {
       agent: smartAgent,
       chat,
@@ -2215,6 +2216,7 @@ export class SmartServer {
           : undefined,
     });
 
+    // TODO(#304 Task 8): Wire trusted server RagAccess; build fails closed without it.
     let subBuilder = new SmartAgentBuilder({
       mcp: subCfg.mcp,
       agent: subCfg.agent,
@@ -2277,7 +2279,7 @@ export class SmartServer {
       subBuilder = subBuilder.withRetrievalStrategy(key, strategy);
     }
 
-    const handle = await subBuilder.build();
+    const handle = await subBuilder.build().then(unwrapBuilderResult);
 
     // Backfill the per-worker cache from the BUILT handle (review HIGH #7).
     // Only runs on the primary build path (no `injected`) so per-session
@@ -2901,6 +2903,7 @@ export class SmartServer {
     /** Apply the startup-only config/plugin-derived extras (see method doc). */
     applyServerExtras: boolean;
   }): Promise<SmartAgentBuilder> {
+    // TODO(#304 Task 8): Wire trusted server RagAccess; build fails closed without it.
     let builder = new SmartAgentBuilder({
       // F1: the YAML `mcp:` block is connected ONCE up-front (in
       // buildSharedPipelineInfra) and injected here via `withMcpClients` below.

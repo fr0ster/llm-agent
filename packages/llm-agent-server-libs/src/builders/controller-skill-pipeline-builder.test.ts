@@ -1,9 +1,12 @@
 import assert from 'node:assert/strict';
-import { test } from 'node:test';
+import { before as beforeRagAccess, test } from 'node:test';
 import { constructionSeams } from '../smart-agent/__tests__/construction-seams.js';
+import { installTestRagIdentity } from '../smart-agent/__tests__/rag-identity-fixture.js';
 import type { SkillPluginsConfig } from '../smart-agent/skill-plugins-config.js';
 import type { BuildAgentDeps } from '../smart-agent/smart-server.js';
 import { ControllerSkillPipelineBuilder } from './controller-skill-pipeline-builder.js';
+
+beforeRagAccess(installTestRagIdentity);
 
 function stubHost() {
   return {

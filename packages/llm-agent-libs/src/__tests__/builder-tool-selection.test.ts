@@ -20,6 +20,7 @@ import type {
 } from '@mcp-abap-adt/llm-agent';
 import { symmetricEmbedder } from '@mcp-abap-adt/llm-agent';
 import { testRagAccess } from '@mcp-abap-adt/llm-agent/testing/rag-access-testing';
+import { unwrapBuilderResult } from '../builder-types.js';
 import { testCallOptions } from '../testing/index.js';
 
 // ---------------------------------------------------------------------------
@@ -129,7 +130,8 @@ describe('SmartAgentBuilder.withToolSelectionStrategy', () => {
         },
       })
       .withToolSelectionStrategy(recording)
-      .build();
+      .build()
+      .then(unwrapBuilderResult);
 
     try {
       await handle.agent.process(

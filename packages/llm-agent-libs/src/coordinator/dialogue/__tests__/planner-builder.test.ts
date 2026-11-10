@@ -8,6 +8,7 @@ import type {
 } from '@mcp-abap-adt/llm-agent';
 import { testRagAccess } from '@mcp-abap-adt/llm-agent/testing/rag-access-testing';
 import { SmartAgentBuilder } from '../../../builder.js';
+import { unwrapBuilderResult } from '../../../builder-types.js';
 import { DialogueSession } from '../dialogue-session.js';
 import { DIALOGUE_PLANNER_SYSTEM } from '../planner-prompt.js';
 import { PlannerToolsClient } from '../planner-tools-client.js';
@@ -104,7 +105,8 @@ test('documented builder exposes the control tools and dispatches delegation ins
     .withMode('hard')
     .withMainLlm(llm)
     .withMcpClients([new PlannerToolsClient()])
-    .build();
+    .build()
+    .then(unwrapBuilderResult);
   let resolveWork!: (result: { output: string }) => void;
   const work = new Promise<{ output: string }>((resolve) => {
     resolveWork = resolve;

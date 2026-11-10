@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { test } from 'node:test';
+import { before as beforeRagAccess, test } from 'node:test';
 import {
   type ILogger,
   InMemoryRag,
@@ -13,7 +13,11 @@ import {
 } from '@mcp-abap-adt/llm-agent';
 import { SmartAgentBuilder } from '@mcp-abap-adt/llm-agent-libs';
 import { makeLlm } from '@mcp-abap-adt/llm-agent-libs/testing';
+import { unwrapBuilderResult } from '../../../../../llm-agent-libs/src/builder-types.js';
+import { installTestRagIdentity } from '../../__tests__/rag-identity-fixture.js';
 import { buildSessionRagRegistry } from '../session-rag-registry.js';
+
+beforeRagAccess(installTestRagIdentity);
 
 /** A catalogued provider over in-memory stores. */
 function catalogued(
@@ -330,7 +334,8 @@ test('the circuit-breaker fallback-wrap on one session’s registry never mutate
     .withMainLlm(makeLlm([{ content: 'ok' }]))
     .setRagRegistry(regA)
     .withCircuitBreaker()
-    .build();
+    .build()
+    .then(unwrapBuilderResult);
   try {
     // Positive control: session A's own registry IS wrapped — otherwise this
     // test would pass even if isolation were silently broken by the wrap

@@ -4,6 +4,7 @@ import { test } from 'node:test';
 import { type ILlm, LlmError } from '@mcp-abap-adt/llm-agent';
 import { testRagAccess } from '@mcp-abap-adt/llm-agent/testing/rag-access-testing';
 import { SmartAgentBuilder } from '../builder.js';
+import { unwrapBuilderResult } from '../builder-types.js';
 import { testCallOptions } from '../testing/index.js';
 
 /** An LLM whose streamChat records the signal it receives (and optionally waits for it). */
@@ -41,7 +42,8 @@ test('timeoutMs aborts with a TimeoutError reason', async () => {
     .withRagAccess(testRagAccess())
     .withMainLlm(llm)
     .withTimeout(20)
-    .build();
+    .build()
+    .then(unwrapBuilderResult);
   await handle.agent.process('hi', testCallOptions());
   const seen = signals[0];
   assert.ok(seen?.aborted, 'signal fired');
@@ -58,7 +60,8 @@ test('a long-lived caller signal keeps no listeners across requests', async () =
     .withRagAccess(testRagAccess())
     .withMainLlm(llm)
     .withTimeout(60_000)
-    .build();
+    .build()
+    .then(unwrapBuilderResult);
   const caller = new AbortController();
   for (let i = 0; i < 5; i++) {
     await handle.agent.process(

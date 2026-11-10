@@ -5,6 +5,7 @@ import {
   type ToolTrace,
 } from '@mcp-abap-adt/llm-agent';
 import { testRagAccess } from '@mcp-abap-adt/llm-agent/testing/rag-access-testing';
+import { unwrapBuilderResult } from '../../../builder-types.js';
 import { testCallOptions } from '../../../testing/index.js';
 import { renderToolTrace } from '../tool-trace-render.js';
 
@@ -209,7 +210,8 @@ for (const path of ['streaming', 'pipeline']) {
           .withToolLoopContextStrategyFactory(capturingFactory)
           .withMaxIterations(4)
           .setPipeline(new DefaultPipeline())
-          .build();
+          .build()
+          .then(unwrapBuilderResult);
         agent = handle.agent;
         close = () => handle.close();
       }

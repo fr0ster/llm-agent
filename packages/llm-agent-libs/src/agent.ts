@@ -810,18 +810,7 @@ export class SmartAgent {
         toolAvailabilityRegistry: this.toolAvailabilityRegistry,
         mcpToolRegistry: this.mcpToolRegistry,
         requestLogger: this.requestLogger,
-        ragStores: Object.fromEntries(
-          Object.entries(this.deps.ragStores).map(([name, store]) => [
-            name,
-            store.builtIn === 'history' && opts?.caller
-              ? {
-                  ...store,
-                  builtIn: 'history',
-                  owner: { scope: 'session', sessionId: opts.caller.sessionId },
-                }
-              : store,
-          ]),
-        ),
+        ragStores: this.deps.ragStores,
         ragAccess: this.deps.ragAccess,
         embedder: this.deps.embedder,
         assembler: this.deps.assembler,

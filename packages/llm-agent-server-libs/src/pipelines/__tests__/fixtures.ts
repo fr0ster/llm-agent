@@ -1,4 +1,5 @@
 import type { IEmbedder, ILlm, ISubAgent } from '@mcp-abap-adt/llm-agent';
+import { testRagAccess } from '@mcp-abap-adt/llm-agent/testing/rag-access-testing';
 import {
   InMemoryKnowledgeBackend,
   SmartAgentBuilder,
@@ -35,7 +36,10 @@ export function fakeServerCtx(): IServerPipelineContext {
     mintStepperId: () => 's1',
     mintTurnId: () => 't1',
     createAgentBuilder: async () =>
-      new SmartAgentBuilder({}).withMainLlm(stubLlm).withMode('smart'),
+      new SmartAgentBuilder({})
+        .withRagAccess(testRagAccess())
+        .withMainLlm(stubLlm)
+        .withMode('smart'),
     mainLlm: stubLlm,
     mainTemp: 0,
     workerRegistry: new Map([['worker', stubWorker]]),

@@ -32,6 +32,7 @@ import { LlmAdapter } from '../adapters/llm-adapter.js';
 import { LlmProviderBridge } from '../adapters/llm-provider-bridge.js';
 import { toEnglishForRag } from '../agent/rag-helpers.js';
 import { SmartAgentBuilder } from '../builder.js';
+import { unwrapBuilderResult } from '../builder-types.js';
 import { LlmClassifier } from '../classifier/llm-classifier.js';
 import { LlmAdaptiveController } from '../coordinator/adaptive/llm-adaptive-controller.js';
 import { LlmDagPlanner } from '../coordinator/dag/llm-dag-planner.js';
@@ -424,7 +425,8 @@ test('library LLM call paths terminate at the real provider with no content', as
     .withRagAccess(testRagAccess())
     .withMainLlm(f.llm)
     .setPipeline(pipeline)
-    .build();
+    .build()
+    .then(unwrapBuilderResult);
   try {
     for (const mode of [
       'ok',

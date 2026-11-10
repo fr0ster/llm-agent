@@ -34,11 +34,14 @@ export {
 // Builder + agent
 // ---------------------------------------------------------------------------
 export {
+  BuilderConfigError,
   type BuilderMcpConfig,
   type BuilderPromptsConfig,
   SmartAgentBuilder,
   type SmartAgentBuilderConfig,
+  type SmartAgentBuildResult,
   type SmartAgentHandle,
+  unwrapBuilderResult,
 } from './builder.js';
 // ---------------------------------------------------------------------------
 // Config

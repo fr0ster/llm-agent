@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { describe, it } from 'node:test';
+import { before as beforeRagAccess, describe, it } from 'node:test';
 import { emptyLoadedPlugins } from '@mcp-abap-adt/llm-agent-libs';
 import { parse } from 'yaml';
 import { resolveSmartServerConfig } from '../config.js';
@@ -10,6 +10,9 @@ import {
   type SmartServerConfig,
 } from '../smart-server.js';
 import { constructionSeams } from './construction-seams.js';
+import { installTestRagIdentity } from './rag-identity-fixture.js';
+
+beforeRagAccess(installTestRagIdentity);
 
 const YAML = `
 llm:

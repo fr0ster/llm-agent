@@ -43,9 +43,12 @@ export interface ISmartAgent {
 export type SmartAgentRagStores<K extends string = string> = Record<
   K,
   {
-    readonly builtIn?: 'history';
     readonly name: string;
-    readonly owner: RagCollectionOwner | { readonly scope: 'internal' };
+    readonly owner:
+      | RagCollectionOwner
+      | { readonly scope: 'internal' }
+      // Built-in history resolves its session exclusively from options.caller.
+      | { readonly scope: 'session'; readonly perRequest: true };
     readonly rag: IRag;
   }
 >;

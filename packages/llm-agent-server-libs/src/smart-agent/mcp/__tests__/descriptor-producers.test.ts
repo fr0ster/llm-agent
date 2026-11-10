@@ -1,3 +1,5 @@
+import { before as beforeRagAccess } from 'node:test';
+import { installTestRagIdentity } from '../../__tests__/rag-identity-fixture.js';
 /**
  * #244 Task 4 — descriptor-producing connectors + seam detection/precedence.
  *
@@ -25,6 +27,8 @@ import {
   type SmartServerConfig,
 } from '../../smart-server.js';
 import { buildSessionMcpClients } from '../build-session-mcp-clients.js';
+
+beforeRagAccess(installTestRagIdentity);
 
 // ---------------------------------------------------------------------------
 // Group 1 — buildSessionMcpClients descriptors

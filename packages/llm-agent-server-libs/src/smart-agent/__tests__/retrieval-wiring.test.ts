@@ -23,6 +23,7 @@ import {
   hasRetrievalStrategy,
   NoopRequestLogger,
   PASSAGE_QUESTION,
+  SmartAgentBuilder,
   TOOL_QUESTION,
 } from '@mcp-abap-adt/llm-agent-libs';
 import { parse } from 'yaml';
@@ -379,7 +380,26 @@ describe('retrieval strategy wiring (§13.4)', () => {
     assert.ok(step.options?.requestLogger, 'requestLogger must reach it');
   });
 
-  it('precedence: an explicit embedding store is never reranked by the plugin; an unlisted store still is', async () => {
+  it('precedence: an explicit embedding store is never reranked by the plugin; an unlisted store still is', async (ctx) => {
+    const historyStores: IRag[] = [];
+    const build = SmartAgentBuilder.prototype.build;
+    ctx.mock.method(
+      SmartAgentBuilder.prototype,
+      'build',
+      async function (this: SmartAgentBuilder) {
+        const result = await build.call(this);
+        if (result.ok && result.value.ragStores.history) {
+          historyStores.push(result.value.ragStores.history.rag);
+          assert.equal(
+            result.value.ragRegistry
+              .list()
+              .some((meta) => meta.name === 'history'),
+            false,
+          );
+        }
+        return result;
+      },
+    );
     const calls: string[][] = [];
     const plugin = pluginModule({
       rerank: async (_query, r) => {
@@ -407,12 +427,9 @@ describe('retrieval strategy wiring (§13.4)', () => {
       await chatOnce(server, QUERY, notes.register);
       // The server-built history store carries its explicit strategy, so the
       // rerank stage skips it wherever it is read (hasRetrievalStrategy).
-      const history = (
-        server as unknown as { _globalRagRegistry: IRagRegistry }
-      )._globalRagRegistry.get('history', 'global');
-      assert.ok(history, 'the history store is registered');
+      assert.ok(historyStores.length > 0, 'the history store is projected');
       assert.ok(
-        hasRetrievalStrategy(history),
+        historyStores.every(hasRetrievalStrategy),
         'history: { strategy: embedding } must brand the server-built store',
       );
     } finally {

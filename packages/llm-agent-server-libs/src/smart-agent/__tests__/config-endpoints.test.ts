@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { request } from 'node:http';
-import { describe, it } from 'node:test';
+import { before as beforeRagAccess, describe, it } from 'node:test';
 import type { ILlm, IModelResolver } from '@mcp-abap-adt/llm-agent';
 import { SmartAgent } from '@mcp-abap-adt/llm-agent-libs';
 import {
@@ -10,6 +10,9 @@ import {
 import type { BuildAgentDeps } from '../smart-server.js';
 import { SmartServer } from '../smart-server.js';
 import { constructionSeams } from './construction-seams.js';
+import { installTestRagIdentity } from './rag-identity-fixture.js';
+
+beforeRagAccess(installTestRagIdentity);
 
 /** Every test here builds a real SmartServer; the seams are required now. */
 function makeLlmDeps(): Pick<BuildAgentDeps, 'makeLlm' | 'resolveEmbedder'> {

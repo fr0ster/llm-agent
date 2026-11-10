@@ -493,11 +493,10 @@ export class DefaultPipeline implements IPipeline {
       if (!own) continue;
       ragStores[name] = {
         name,
-        builtIn: name === 'history' ? 'history' : undefined,
         owner:
           name === 'tools'
             ? { scope: 'internal' }
-            : { scope: 'session', sessionId: options.sessionId },
+            : { scope: 'session', perRequest: true },
         rag: ownBuiltInStore(own.raw, own.queried, projected[name]?.rag),
       };
     }

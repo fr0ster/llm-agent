@@ -6,7 +6,10 @@ import type {
   KnowledgeEntryMetadata,
   ToolLoopContextStrategyFactory,
 } from '@mcp-abap-adt/llm-agent';
-import { RagRecallContextStrategy } from '@mcp-abap-adt/llm-agent-libs';
+import {
+  RagRecallContextStrategy,
+  unwrapBuilderResult,
+} from '@mcp-abap-adt/llm-agent-libs';
 import {
   DefaultAuxiliaryMcpTools,
   makeWaitTool,
@@ -301,7 +304,10 @@ export class ControllerPipelinePlugin implements IPipelinePlugin {
       this.plannerKind,
     );
     const builder = await ctx.createAgentBuilder();
-    const handle = await builder.withStepperCoordinator(handler).build();
+    const handle = await builder
+      .withStepperCoordinator(handler)
+      .build()
+      .then(unwrapBuilderResult);
     return { agent: handle.agent, close: () => handle.close() };
   }
 }

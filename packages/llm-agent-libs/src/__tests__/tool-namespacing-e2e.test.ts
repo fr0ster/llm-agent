@@ -52,6 +52,7 @@ import {
 } from '@mcp-abap-adt/llm-agent';
 import { testRagAccess } from '@mcp-abap-adt/llm-agent/testing/rag-access-testing';
 import { SmartAgentBuilder } from '../builder.js';
+import { unwrapBuilderResult } from '../builder-types.js';
 import type {
   IMcpConnectionStrategy,
   McpClientDescriptor,
@@ -190,7 +191,8 @@ test('#244 e2e — route 1 (tool-loop executor): a RAG hit for server 1s Search 
     .withToolSelectionStrategy(new ScoreThresholdToolSelection(0.0001))
     .withMode('smart')
     .withClassification(false)
-    .build();
+    .build()
+    .then(unwrapBuilderResult);
 
   const res = await handle.agent.process(
     'hurricane temperature forecast',

@@ -7,6 +7,7 @@ import {
 } from '@mcp-abap-adt/llm-agent';
 import { testRagAccess } from '@mcp-abap-adt/llm-agent/testing/rag-access-testing';
 import { SmartAgentBuilder } from '../builder.js';
+import { unwrapBuilderResult } from '../builder-types.js';
 import { makeLlm } from '../testing/index.js';
 
 const manager = {
@@ -39,7 +40,7 @@ async function build(
     .withRagAccess(testRagAccess())
     .withMainLlm(makeLlm([{ content: 'ok' }]))
     .setToolsRag(spyRag(ids));
-  const h = await configure(b).build();
+  const h = await configure(b).build().then(unwrapBuilderResult);
   await h.close();
   return ids;
 }

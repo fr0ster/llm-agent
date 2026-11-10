@@ -17,6 +17,39 @@ constructs no LLM provider. See "Optional peer dependencies" below and docs/MIGR
 - `@mcp-abap-adt/llm-agent-libs/testing` — test helpers.
 - `@mcp-abap-adt/llm-agent-libs/otel` — OpenTelemetry tracer adapter.
 
+## RAG access and collection owners (#304)
+
+Call `withRagAccess(access)` before `build()`, including for agents with no custom
+collections. The access object supplies the server decision, library role store,
+and session binding store. Production callers must supply their configured access;
+tests can explicitly use `testRagAccess()` from
+`@mcp-abap-adt/llm-agent/testing/rag-access-testing`.
+
+`build()` returns a `SmartAgentBuildResult`. Missing access returns
+`{ ok: false, error: BuilderConfigError('ragAccess is required') }` before model
+validation or resource acquisition. Invalid static collection owners also return
+a `BuilderConfigError`. Existing runtime failures continue to reject the promise.
+
+```ts
+const result = await new SmartAgentBuilder()
+  .withRagAccess(access)
+  .withMainLlm(llm)
+  .addRagCollection({
+    name: 'notes',
+    rag,
+    meta: { displayName: 'Notes', scope: 'session', sessionId },
+  })
+  .build();
+if (!result.ok) throw result.error;
+const handle = result.value;
+```
+
+Every `addRagCollection` needs an explicit `meta.scope`: `session` also needs
+`sessionId`, `user` needs `userId`, and `role` needs `roleId`. `global` needs no
+owner identifier. No missing scope defaults to global. `unwrapBuilderResult`
+adapts the result to a handle for callers that propagate configuration errors:
+`await builder.build().then(unwrapBuilderResult)`.
+
 ## Optional peer dependencies
 
 This package constructs no LLM provider: pass an `ILlm` to `withMainLlm`. Construct the provider you

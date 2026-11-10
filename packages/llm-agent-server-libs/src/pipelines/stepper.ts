@@ -2,6 +2,7 @@ import type {
   IPipelineInstance,
   IPipelinePlugin,
 } from '@mcp-abap-adt/llm-agent';
+import { unwrapBuilderResult } from '@mcp-abap-adt/llm-agent-libs';
 import {
   CyclicFactory,
   DeepStepperFactory,
@@ -67,7 +68,10 @@ export class StepperPipelinePlugin implements IPipelinePlugin {
           : new PlannedFactory();
     const { handler } = await factory.build(spec, deps);
     const builder = await ctx.createAgentBuilder();
-    const handle = await builder.withStepperCoordinator(handler).build();
+    const handle = await builder
+      .withStepperCoordinator(handler)
+      .build()
+      .then(unwrapBuilderResult);
     return { agent: handle.agent, close: () => handle.close() };
   }
 }

@@ -8,6 +8,7 @@ import type {
 } from '@mcp-abap-adt/llm-agent';
 import { testRagAccess } from '@mcp-abap-adt/llm-agent/testing/rag-access-testing';
 import { SmartAgentBuilder } from '../builder.js';
+import { unwrapBuilderResult } from '../builder-types.js';
 
 function makeMockLlm(): ILlmApiAdapter['normalizeRequest'] extends never
   ? never
@@ -46,7 +47,8 @@ describe('SmartAgentBuilder — apiAdapters', () => {
       )
       .withApiAdapter(makeMockAdapter('openai'))
       .withApiAdapter(makeMockAdapter('anthropic'))
-      .build();
+      .build()
+      .then(unwrapBuilderResult);
 
     assert.equal(handle.getApiAdapter('openai')?.name, 'openai');
     assert.equal(handle.getApiAdapter('anthropic')?.name, 'anthropic');
@@ -65,7 +67,8 @@ describe('SmartAgentBuilder — apiAdapters', () => {
       )
       .withApiAdapter(first)
       .withApiAdapter(second)
-      .build();
+      .build()
+      .then(unwrapBuilderResult);
 
     assert.equal(handle.getApiAdapter('openai'), second);
     await handle.close();

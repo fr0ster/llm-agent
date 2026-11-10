@@ -189,7 +189,10 @@ for (const decision of ['deny', 'throw'] as const) {
       if (decision === 'throw') throw new Error('decision unavailable');
       return false;
     };
-    const history = { ...(await sharedStore()), builtIn: 'history' as const };
+    const history = {
+      ...(await sharedStore()),
+      owner: { scope: 'session' as const, perRequest: true as const },
+    };
     const result = await orchestrator(history, access).orchestrate('record', {
       opts: { caller: callerA },
       sessionId: 'A',
@@ -226,7 +229,6 @@ it('ordinary session collections still require one server decision', async () =>
 
 for (const options of [
   {},
-  { caller: { ...callerA, sessionId: 'B' } },
   { caller: callerA, ragFilter: { sessionId: 'B' } },
   { caller: callerA, ragFilter: { userId: 'bob' } },
   { caller: callerA, ragFilter: { roleId: 'unassigned' } },
@@ -240,7 +242,7 @@ for (const options of [
     };
     const rag = makeRag([]);
     const result = await ownerBoundQuery(
-      { ...store, builtIn: 'history', rag },
+      { ...store, owner: { scope: 'session', perRequest: true }, rag },
       embedding,
       5,
       options,

@@ -10,6 +10,7 @@ import type {
 } from '@mcp-abap-adt/llm-agent';
 import { testRagAccess } from '@mcp-abap-adt/llm-agent/testing/rag-access-testing';
 import { SmartAgentBuilder } from '../../../builder.js';
+import { unwrapBuilderResult } from '../../../builder-types.js';
 import { InMemoryRunRecordStore } from '../../../coordinator/adaptive/in-memory-run-record-store.js';
 import { LlmAdaptiveController } from '../../../coordinator/adaptive/llm-adaptive-controller.js';
 import { testCallOptions } from '../../../testing/index.js';
@@ -145,7 +146,8 @@ for (const mode of [
       .withClassification(false)
       .setPipeline(pipeline)
       .withStepperCoordinator(handler)
-      .build();
+      .build()
+      .then(unwrapBuilderResult);
     const chunks: LlmStreamChunk[] = [];
     const prior: Message[] = [
       { role: 'user', content: 'old' },
@@ -278,7 +280,8 @@ for (const form of ['messages', 'string'] as const) {
           return handler.execute(ctx, config, span);
         },
       })
-      .build();
+      .build()
+      .then(unwrapBuilderResult);
     const prior: Message[] = [
       { role: 'user', content: 'old' },
       { role: 'assistant', content: 'reply' },

@@ -26,6 +26,7 @@ import {
 } from '@mcp-abap-adt/llm-agent';
 import { testRagAccess } from '@mcp-abap-adt/llm-agent/testing/rag-access-testing';
 import { SmartAgentBuilder } from '../builder.js';
+import { unwrapBuilderResult } from '../builder-types.js';
 import type {
   IMcpConnectionStrategy,
   McpClientDescriptor,
@@ -103,7 +104,8 @@ test('withToolNamespace() reaches all THREE consumers: registry, startup vectori
     .withToolNamespace(custom)
     .withMode('hard')
     .withClassification(false)
-    .build();
+    .build()
+    .then(unwrapBuilderResult);
 
   // ---- Route 1: internal registry resolve() exposed name -----------------
   // `mcpToolRegistry` is a private field of the concrete SmartAgent class —
@@ -186,7 +188,8 @@ test('without withToolNamespace(), all three routes fall back to defaultToolName
     .setToolsRag(toolsRag)
     .withMode('hard')
     .withClassification(false)
-    .build();
+    .build()
+    .then(unwrapBuilderResult);
 
   const registry = (
     handle.agent as unknown as { mcpToolRegistry: IMcpToolRegistry }

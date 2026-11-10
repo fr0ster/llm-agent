@@ -20,6 +20,7 @@ import {
 } from '@mcp-abap-adt/llm-agent';
 import { testRagAccess } from '@mcp-abap-adt/llm-agent/testing/rag-access-testing';
 import { SmartAgentBuilder } from '../../builder.js';
+import { unwrapBuilderResult } from '../../builder-types.js';
 import { makeLlm, testCallOptions } from '../../testing/index.js';
 import {
   applyRetrievalStrategy,
@@ -148,7 +149,8 @@ describe('SmartAgentBuilder.withRetrievalStrategy', () => {
       .withMainLlm(makeLlm([{ content: 'ok' }]))
       .setToolsRag(tools)
       .withRetrievalStrategy('tools', strategy)
-      .build();
+      .build()
+      .then(unwrapBuilderResult);
     try {
       const projected = handle.ragStores.tools.rag;
       assert.ok(projected);
@@ -181,7 +183,8 @@ describe('SmartAgentBuilder.withRetrievalStrategy', () => {
         'docs',
         new RerankedRetrieval(reranker, { storeName: 'docs' }),
       )
-      .build();
+      .build()
+      .then(unwrapBuilderResult);
     try {
       const projected = handle.ragStores.docs.rag;
       assert.ok(projected instanceof StrategyRag);
@@ -210,7 +213,8 @@ describe('SmartAgentBuilder.withRetrievalStrategy', () => {
       .setToolsRag(tools)
       .withCircuitBreaker()
       .withRetrievalStrategy('tools', strategy)
-      .build();
+      .build()
+      .then(unwrapBuilderResult);
     try {
       const projected = handle.ragStores.tools.rag;
       assert.ok(projected instanceof FallbackRag);
@@ -245,7 +249,8 @@ describe('SmartAgentBuilder.withRetrievalStrategy', () => {
         'docs',
         new RerankedRetrieval(docs.reranker, { storeName: 'docs' }),
       )
-      .build();
+      .build()
+      .then(unwrapBuilderResult);
     try {
       const pTools = handle.ragStores.tools.rag;
       const pDocs = handle.ragStores.docs.rag;
@@ -293,7 +298,8 @@ describe('SmartAgentBuilder.withRetrievalStrategy', () => {
       .withMainLlm(makeLlm([{ content: 'ok' }]))
       .setRagRegistry(reg)
       .withRetrievalStrategy('kb', new EmbeddingRetrieval())
-      .build();
+      .build()
+      .then(unwrapBuilderResult);
     try {
       const kb = new InMemoryRag();
       reg.register('kb', kb, undefined, { displayName: 'kb', scope: 'global' });
@@ -313,7 +319,8 @@ describe('SmartAgentBuilder.withRetrievalStrategy', () => {
       .withMainLlm(makeLlm([{ content: 'ok' }]))
       .setRagRegistry(reg)
       .withRetrievalStrategy('kb', new EmbeddingRetrieval())
-      .build();
+      .build()
+      .then(unwrapBuilderResult);
     try {
       reg.register('kb', new InMemoryRag(), undefined, {
         displayName: 'kb',
@@ -360,7 +367,8 @@ describe('withRetrievalStrategy on the real request path (DefaultPipeline)', () 
       .setHistoryRag(primaryStore([hit('history-hit', 0.9)]))
       .withRetrievalStrategy('history', new EmbeddingRetrieval())
       .withReranker(reranker)
-      .build();
+      .build()
+      .then(unwrapBuilderResult);
     try {
       await handle.agent.process('hello', testCallOptions({ sessionId: 's1' }));
       const seen = calls.flat();
@@ -388,7 +396,8 @@ describe('withRetrievalStrategy on the real request path (DefaultPipeline)', () 
       )
       .setToolsRag(primaryStore([hit('tool-hit', 0.9)]))
       .withRetrievalStrategy('tools', strategy)
-      .build();
+      .build()
+      .then(unwrapBuilderResult);
     try {
       await handle.agent.process('hello', testCallOptions({ sessionId: 's1' }));
       assert.ok(calls.length >= 1, 'the tools query went through the strategy');
@@ -415,7 +424,7 @@ describe('withRetrievalStrategy reaches the legacy coordinator tool source', () 
       .withCoordinator({});
     if (withStrategy)
       builder = builder.withRetrievalStrategy('tools', strategy);
-    const handle = await builder.build();
+    const handle = await builder.build().then(unwrapBuilderResult);
     const pipeline = (
       handle.agent as unknown as { deps: { pipeline: unknown } }
     ).deps.pipeline as { coordinator?: { dispatch?: unknown } };
@@ -502,7 +511,7 @@ describe("a worker's own store keeps priority under a retrieval strategy", () =>
       .setToolsRag(labelledStore('worker', seen))
       .withRetrievalStrategy('tools', strategy);
     if (withCoordinator) builder = builder.withCoordinator({});
-    const handle = await builder.build();
+    const handle = await builder.build().then(unwrapBuilderResult);
     return { handle, seen, calls };
   }
 
@@ -570,7 +579,8 @@ describe("a worker's own store keeps priority under a retrieval strategy", () =>
       .setToolsRag(labelledStore('own', seen))
       .withRetrievalStrategy('tools', strategy)
       .withCircuitBreaker({})
-      .build();
+      .build()
+      .then(unwrapBuilderResult);
     try {
       const projected = handle.ragStores.tools.rag;
       assert.ok(projected instanceof StrategyRag);

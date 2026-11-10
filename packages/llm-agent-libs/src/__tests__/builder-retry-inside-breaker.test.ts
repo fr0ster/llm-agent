@@ -18,6 +18,7 @@ import {
 } from '@mcp-abap-adt/llm-agent';
 import { testRagAccess } from '@mcp-abap-adt/llm-agent/testing/rag-access-testing';
 import { SmartAgentBuilder } from '../builder.js';
+import { unwrapBuilderResult } from '../builder-types.js';
 
 /** An adapter that answers every call with a retryable 429. */
 function throttledLlm(onCall?: () => void): ILlm & { calls: number } {
@@ -60,7 +61,8 @@ test('own breaker: one request with retries records ONE failure; two open it', a
   const h = await builder()
     .withMainLlm(raw)
     .withCircuitBreaker({ failureThreshold: 2, recoveryWindowMs: 60_000 })
-    .build();
+    .build()
+    .then(unwrapBuilderResult);
   try {
     const main = h.agent.currentMainLlm;
     assert.ok(main instanceof CircuitBreakerLlm, 'breaker is outermost');
@@ -84,7 +86,8 @@ test('own breaker, streaming: retries inside count once', async () => {
   const h = await builder()
     .withMainLlm(raw)
     .withCircuitBreaker({ failureThreshold: 2, recoveryWindowMs: 60_000 })
-    .build();
+    .build()
+    .then(unwrapBuilderResult);
   try {
     const main = h.agent.currentMainLlm;
     assert.ok(main instanceof CircuitBreakerLlm);
@@ -108,7 +111,8 @@ test('pre-wrapped shared breaker: the same breaker guards, retry goes under it',
   const h = await builder()
     .withMainLlm(given)
     .withCircuitBreakers({ embedder: new CircuitBreaker() })
-    .build();
+    .build()
+    .then(unwrapBuilderResult);
   try {
     const main = h.agent.currentMainLlm;
     assert.ok(main instanceof CircuitBreakerLlm, 'breaker is outermost');
@@ -135,7 +139,8 @@ test('a caller-cancelled call through retry records nothing and stops retrying',
   const h = await builder()
     .withMainLlm(new CircuitBreakerLlm(raw, shared))
     .withCircuitBreakers({ embedder: new CircuitBreaker() })
-    .build();
+    .build()
+    .then(unwrapBuilderResult);
   try {
     const main = h.agent.currentMainLlm;
     const opts: CallOptions = { signal: ac.signal };
@@ -158,7 +163,8 @@ test('a caller-cancelled stream through retry records nothing and stops retrying
   const h = await builder()
     .withMainLlm(raw)
     .withCircuitBreaker({ failureThreshold: 1, recoveryWindowMs: 60_000 })
-    .build();
+    .build()
+    .then(unwrapBuilderResult);
   try {
     const main = h.agent.currentMainLlm;
     assert.ok(main instanceof CircuitBreakerLlm);
@@ -178,7 +184,7 @@ test('a caller-cancelled stream through retry records nothing and stops retrying
 
 test('no breaker: retry alone, unchanged', async () => {
   const raw = throttledLlm();
-  const h = await builder().withMainLlm(raw).build();
+  const h = await builder().withMainLlm(raw).build().then(unwrapBuilderResult);
   try {
     const main = h.agent.currentMainLlm;
     assert.ok(!(main instanceof CircuitBreakerLlm));

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { describe, it } from 'node:test';
+import { before as beforeRagAccess, describe, it } from 'node:test';
 import { parse } from 'yaml';
 import { ControllerSkillPipelineBuilder } from '../../builders/controller-skill-pipeline-builder.js';
 import { resolveSmartServerConfig, YAML_TEMPLATE } from '../config.js';
@@ -9,6 +9,9 @@ import {
   type SmartServerLlmConfig,
 } from '../smart-server.js';
 import { constructionSeams, stubLlm } from './construction-seams.js';
+import { installTestRagIdentity } from './rag-identity-fixture.js';
+
+beforeRagAccess(installTestRagIdentity);
 
 describe('serializable LLM configuration carries a reference, never a secret', () => {
   it('passes credentialRef through the flat form and the map form', () => {

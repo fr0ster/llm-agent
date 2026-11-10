@@ -2,7 +2,10 @@ import type {
   IPipelineInstance,
   IPipelinePlugin,
 } from '@mcp-abap-adt/llm-agent';
-import { DagCoordinatorHandler } from '@mcp-abap-adt/llm-agent-libs';
+import {
+  DagCoordinatorHandler,
+  unwrapBuilderResult,
+} from '@mcp-abap-adt/llm-agent-libs';
 import { buildDagCoordinatorDeps } from '../smart-agent/build-dag-coordinator-deps.js';
 import type { DagPipelineSettings } from '../smart-agent/pipeline-settings.js';
 import { registerSkillSources } from './register-skill-sources.js';
@@ -35,7 +38,10 @@ export class DagPipelinePlugin implements IPipelinePlugin {
     });
     const handler = new DagCoordinatorHandler(deps);
     const builder = registerSkillSources(await ctx.createAgentBuilder(), ctx);
-    const handle = await builder.withStepperCoordinator(handler).build();
+    const handle = await builder
+      .withStepperCoordinator(handler)
+      .build()
+      .then(unwrapBuilderResult);
     return { agent: handle.agent, close: () => handle.close() };
   }
 }

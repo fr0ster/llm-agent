@@ -35,6 +35,7 @@ import type {
 } from '@mcp-abap-adt/llm-agent';
 import { symmetricEmbedder } from '@mcp-abap-adt/llm-agent';
 import { testRagAccess } from '@mcp-abap-adt/llm-agent/testing/rag-access-testing';
+import { unwrapBuilderResult } from '../builder-types.js';
 import type { DefaultSubAgentContextBuilderConfig } from '../subagent/default-context-builder.js';
 
 function stubLlm(): ILlm {
@@ -105,7 +106,8 @@ describe('SmartAgentBuilder — auto-toolsRag → subagent context-builder wirin
       // Intentionally NOT calling setToolsRag()/withToolsRag() — this is
       // the exact scenario the bug failed: caller relies on the
       // auto-created InMemoryRag.
-      .build();
+      .build()
+      .then(unwrapBuilderResult);
 
     try {
       // Walk handle → agent → pipeline → coordinator config → dispatch.

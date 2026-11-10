@@ -12,6 +12,7 @@ import {
 } from '@mcp-abap-adt/llm-agent';
 import { testRagAccess } from '@mcp-abap-adt/llm-agent/testing/rag-access-testing';
 import { SmartAgentBuilder } from '../../../builder.js';
+import { unwrapBuilderResult } from '../../../builder-types.js';
 import { SessionRequestLogger } from '../../../logger/session-request-logger.js';
 import { NoopMetrics } from '../../../metrics/noop-metrics.js';
 import { fireInternalToolsAsync } from '../../../policy/mixed-tool-call-handler.js';
@@ -108,7 +109,8 @@ for (const role of ['planner', undefined]) {
       .withRagAccess(testRagAccess())
       .withMainLlm(llm)
       .setPipeline(new DefaultPipeline())
-      .build();
+      .build()
+      .then(unwrapBuilderResult);
     try {
       const result = await handle.agent.process(
         'go',

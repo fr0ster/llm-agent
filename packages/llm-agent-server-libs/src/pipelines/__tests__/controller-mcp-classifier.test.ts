@@ -14,7 +14,7 @@
  * (`buildMcpBridge(mcpClients, ctx.mcpFailureClassifier)`) it PASSES.
  */
 import assert from 'node:assert/strict';
-import { describe, it } from 'node:test';
+import { before as beforeRagAccess, describe, it } from 'node:test';
 import {
   type IEmbedder,
   type ILlm,
@@ -28,8 +28,11 @@ import {
   symmetricEmbedder,
 } from '@mcp-abap-adt/llm-agent';
 import { InMemoryKnowledgeBackend } from '@mcp-abap-adt/llm-agent-libs';
+import { installTestRagIdentity } from '../../smart-agent/__tests__/rag-identity-fixture.js';
 import { makeKnowledgeSemanticIndex } from '../../smart-agent/embedder-knowledge-index.js';
 import { controllerPlugin, fakeControllerServerCtx } from './fixtures.js';
+
+beforeRagAccess(installTestRagIdentity);
 
 // Non-zero constant embedder so goal/prompt semantic distance is 0 (target-state
 // established, not the ambiguity gate): the fixture's dim-1 [0] embedder yields

@@ -2,21 +2,15 @@ import {
   type CallOptions,
   checkRagAccess,
   type IQueryEmbedding,
-  type IRag,
   type RagAccess,
   RagAccessDeniedError,
-  type RagCollectionOwner,
   type RagError,
   type RagResult,
   type Result,
+  type SmartAgentRagStores,
 } from '@mcp-abap-adt/llm-agent';
 
-export interface OwnedRagStore {
-  readonly builtIn?: 'history';
-  readonly name: string;
-  readonly owner: RagCollectionOwner | { readonly scope: 'internal' };
-  readonly rag: IRag;
-}
+export type OwnedRagStore = SmartAgentRagStores[string];
 
 /** Missing configuration must never grant collection access. */
 export const denyRagAccess: RagAccess = {
@@ -61,11 +55,13 @@ export async function ownerBoundQuery(
       return deny();
     }
   }
-  const owner = store.owner;
-  if (store.builtIn === 'history') {
-    if (owner.scope !== 'session' || owner.sessionId !== caller.sessionId)
-      return deny();
-  } else if (owner.scope !== 'internal') {
+  const perRequest =
+    store.owner.scope === 'session' && 'perRequest' in store.owner;
+  const owner =
+    store.owner.scope === 'session' && 'perRequest' in store.owner
+      ? { scope: 'session' as const, sessionId: caller.sessionId }
+      : store.owner;
+  if (!perRequest && owner.scope !== 'internal') {
     const allowed = await checkRagAccess(
       caller,
       { name: store.name, owner },

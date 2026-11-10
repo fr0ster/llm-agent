@@ -14,6 +14,7 @@ import {
 import { testRagAccess } from '@mcp-abap-adt/llm-agent/testing/rag-access-testing';
 import { SmartAgent } from '../agent.js';
 import { SmartAgentBuilder } from '../builder.js';
+import { unwrapBuilderResult } from '../builder-types.js';
 import { makeDefaultDeps, makeLlm, makeRag } from '../testing/index.js';
 
 function threeDocs() {
@@ -41,7 +42,8 @@ test('the projection keys a global by its name and an owned collection by scope/
     .withRagAccess(testRagAccess())
     .withMainLlm(makeLlm([{ content: 'ok' }]))
     .setRagRegistry(reg)
-    .build();
+    .build()
+    .then(unwrapBuilderResult);
   try {
     assert.equal(handle.ragStores.docs.rag, g);
     assert.equal(handle.ragStores['user/docs'].rag, u);
@@ -69,7 +71,8 @@ test('the circuit-breaker wrapping keeps each entry’s scope and owner', async 
     .withMainLlm(makeLlm([{ content: 'ok' }]))
     .setRagRegistry(reg)
     .withCircuitBreaker()
-    .build();
+    .build()
+    .then(unwrapBuilderResult);
   try {
     const user = reg
       .list()
@@ -124,7 +127,8 @@ test('a wrapped hydrated collection keeps its editor, and its delete still reach
     .setRagRegistry(reg)
     .setRagProviderRegistry(providers)
     .withCircuitBreaker()
-    .build();
+    .build()
+    .then(unwrapBuilderResult);
   try {
     assert.ok(handle.ragStores['user/mine'].rag instanceof FallbackRag);
     const meta = reg.list().find((m) => m.name === 'mine');
@@ -160,7 +164,8 @@ test('a user collection named "tools" does not hide or break the built-in tools 
     .withMainLlm(makeLlm([{ content: 'ok' }]))
     .setRagRegistry(reg)
     .setToolsRag(toolsRag)
-    .build();
+    .build()
+    .then(unwrapBuilderResult);
   try {
     assert.equal(
       reg.get('tools', 'global'),
@@ -213,7 +218,8 @@ test('withCircuitBreakers wraps a store once, never twice across builders, and l
     .withMainLlm(llm)
     .setRagRegistry(reg)
     .withCircuitBreakers({ embedder: breaker })
-    .build();
+    .build()
+    .then(unwrapBuilderResult);
   const wrapped = h1.ragStores.docs.rag;
   assert.ok(wrapped instanceof FallbackRag);
   assert.equal(wrapped.breaker, breaker);
@@ -226,7 +232,8 @@ test('withCircuitBreakers wraps a store once, never twice across builders, and l
     .withMainLlm(llm)
     .setRagRegistry(reg)
     .withCircuitBreakers({ embedder: breaker })
-    .build();
+    .build()
+    .then(unwrapBuilderResult);
   try {
     assert.equal(h2.ragStores.docs.rag, wrapped, 'not wrapped again');
     assert.ok(
@@ -251,7 +258,8 @@ test('withCircuitBreakers wins over withCircuitBreaker(config): no LLM breaker',
     .setRagRegistry(reg)
     .withCircuitBreaker()
     .withCircuitBreakers({ embedder: breaker })
-    .build();
+    .build()
+    .then(unwrapBuilderResult);
   try {
     assert.deepEqual(h.circuitBreakers, [breaker]);
     assert.ok(!(h.agent.currentMainLlm instanceof CircuitBreakerLlm));

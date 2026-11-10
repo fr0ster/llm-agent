@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { describe, it } from 'node:test';
+import { before as beforeRagAccess, describe, it } from 'node:test';
 import type { IEmbedder, ILlm } from '@mcp-abap-adt/llm-agent';
 import { loadYamlConfig, resolveSmartServerConfig } from '../config.js';
 import { normalizeLlmConfig } from '../llm-config-map.js';
@@ -14,6 +14,9 @@ import {
 } from '../smart-server.js';
 import { assertWorkerLlmConfig, parseWorkerLlm } from '../worker-llm.js';
 import { constructionSeams } from './construction-seams.js';
+import { installTestRagIdentity } from './rag-identity-fixture.js';
+
+beforeRagAccess(installTestRagIdentity);
 
 describe('parseWorkerLlm (§4.6.7)', () => {
   it('reads a string as the main key, a map as role keys, absence as nothing named', () => {

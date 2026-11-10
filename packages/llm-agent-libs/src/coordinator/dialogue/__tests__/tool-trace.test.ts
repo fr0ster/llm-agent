@@ -17,6 +17,7 @@ import {
 import { testRagAccess } from '@mcp-abap-adt/llm-agent/testing/rag-access-testing';
 import { SmartAgent } from '../../../agent.js';
 import { SmartAgentBuilder } from '../../../builder.js';
+import { unwrapBuilderResult } from '../../../builder-types.js';
 import { NoopMetrics } from '../../../metrics/noop-metrics.js';
 import { DefaultPipeline } from '../../../pipeline/default-pipeline.js';
 import { executeToolBatchWithHeartbeat } from '../../../pipeline/handlers/tool-loop-core.js';
@@ -471,7 +472,8 @@ for (const path of ['streaming', 'pipeline'] as const) {
           .withMaxIterations(3)
           .withMaxToolCalls(mode === 'budget' ? 0 : 10)
           .setPipeline(new DefaultPipeline())
-          .build();
+          .build()
+          .then(unwrapBuilderResult);
         agent = handle.agent;
         close = () => handle.close();
       }

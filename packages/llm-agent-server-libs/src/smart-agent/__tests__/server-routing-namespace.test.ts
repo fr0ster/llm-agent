@@ -21,7 +21,7 @@
  * error THROWS (never `isError`, never a swallowed "Tool not found").
  */
 import assert from 'node:assert/strict';
-import { test } from 'node:test';
+import { before as beforeRagAccess, test } from 'node:test';
 import {
   type ILlm,
   type IMcpClient,
@@ -44,6 +44,9 @@ import { makeKnowledgeSemanticIndex } from '../../smart-agent/embedder-knowledge
 import { parseControllerSettings } from '../pipeline-settings.js';
 import { SmartServer } from '../smart-server.js';
 import { constructionSeams } from './construction-seams.js';
+import { installTestRagIdentity } from './rag-identity-fixture.js';
+
+beforeRagAccess(installTestRagIdentity);
 
 // ---------------------------------------------------------------------------
 // Fakes

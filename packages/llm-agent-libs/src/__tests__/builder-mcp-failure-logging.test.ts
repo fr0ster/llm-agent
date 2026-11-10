@@ -14,6 +14,7 @@ import type {
   Result,
 } from '@mcp-abap-adt/llm-agent';
 import { testRagAccess } from '@mcp-abap-adt/llm-agent/testing/rag-access-testing';
+import { unwrapBuilderResult } from '../builder-types.js';
 
 function stubLlm(): ILlm {
   return {
@@ -65,7 +66,8 @@ describe('SmartAgentBuilder — MCP setup failure logging (#118)', () => {
       .withRagAccess(testRagAccess())
       .withMainLlm(stubLlm())
       .withLogger(logger)
-      .build();
+      .build()
+      .then(unwrapBuilderResult);
 
     try {
       const warnings = logger.events.filter(

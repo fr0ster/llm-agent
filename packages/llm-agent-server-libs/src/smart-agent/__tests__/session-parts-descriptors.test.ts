@@ -1,3 +1,5 @@
+import { before as beforeRagAccess } from 'node:test';
+import { installTestRagIdentity } from './rag-identity-fixture.js';
 /**
  * #244 Task 7 — `_embeddedSessionParts` threads the shared
  * `_sharedMcpClientDescriptors`/`_configuredSlotCount` (captured from whichever
@@ -11,6 +13,8 @@ import type { IEmbedder, ILlm, IRagRegistry } from '@mcp-abap-adt/llm-agent';
 import type { SessionAgentParts } from '@mcp-abap-adt/llm-agent-libs';
 import { SmartServer, type SmartServerConfig } from '../smart-server.js';
 import { constructionSeams } from './construction-seams.js';
+
+beforeRagAccess(installTestRagIdentity);
 
 const cannedLlm = {
   chat: async () => ({ ok: true, value: { content: 'ok', toolCalls: [] } }),

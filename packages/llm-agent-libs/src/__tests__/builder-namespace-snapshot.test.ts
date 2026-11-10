@@ -25,6 +25,7 @@ import {
 } from '@mcp-abap-adt/llm-agent';
 import { testRagAccess } from '@mcp-abap-adt/llm-agent/testing/rag-access-testing';
 import { SmartAgentBuilder } from '../builder.js';
+import { unwrapBuilderResult } from '../builder-types.js';
 import type {
   IMcpConnectionStrategy,
   McpClientDescriptor,
@@ -102,7 +103,8 @@ test('builder surfaces namespacedTools/toolProvenance even with NO writable tool
     .withMcpConnectionStrategy(connectionStrategy)
     .withMode('hard')
     .withClassification(false)
-    .build();
+    .build()
+    .then(unwrapBuilderResult);
 
   // ---- The snapshot exists regardless of RAG writability ------------------
   assert.ok(handle.namespacedTools, 'namespacedTools must be present');
@@ -159,7 +161,8 @@ test('health preserved WHEN vectorization runs: a writable tools RAG + a client 
     .setToolsRag(toolsRag)
     .withMode('hard')
     .withClassification(false)
-    .build();
+    .build()
+    .then(unwrapBuilderResult);
 
   assert.ok(isToolCatalogReporter(handle.agent));
   const status = handle.agent.getToolCatalogStatus();
@@ -208,7 +211,8 @@ test('original client index preserved on partial failure: 3 clients, the MIDDLE 
     .setToolsRag(toolsRag)
     .withMode('hard')
     .withClassification(false)
-    .build();
+    .build()
+    .then(unwrapBuilderResult);
 
   // Only slots 0 and 2 produced tools; both expose the same bare "Search"
   // name so — with slot 1 down — there is no collision (only ONE active

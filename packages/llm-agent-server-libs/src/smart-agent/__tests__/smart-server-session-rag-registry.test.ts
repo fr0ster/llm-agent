@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { test } from 'node:test';
+import { before as beforeRagAccess, test } from 'node:test';
 import {
   type IEmbedder,
   InMemoryRag,
@@ -15,6 +15,9 @@ import type {
 import { makeLlm as makeTestLlm } from '@mcp-abap-adt/llm-agent-libs/testing';
 import { SmartServer, type SmartServerConfig } from '../smart-server.js';
 import { constructionSeams } from './construction-seams.js';
+import { installTestRagIdentity } from './rag-identity-fixture.js';
+
+beforeRagAccess(installTestRagIdentity);
 
 const stubEmbedder = {
   embed: async () => ({ vector: [0] }),

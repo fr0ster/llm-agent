@@ -10,6 +10,7 @@ import { McpError, NoopToolCache } from '@mcp-abap-adt/llm-agent';
 import { testRagAccess } from '@mcp-abap-adt/llm-agent/testing/rag-access-testing';
 import { type AgentCallOptions, SmartAgent } from '../agent.js';
 import { SmartAgentBuilder } from '../builder.js';
+import { unwrapBuilderResult } from '../builder-types.js';
 import { NoopMetrics } from '../metrics/noop-metrics.js';
 import { DefaultPipeline } from '../pipeline/default-pipeline.js';
 import { fireInternalToolsAsync } from '../policy/mixed-tool-call-handler.js';
@@ -113,7 +114,8 @@ for (const path of ['streaming', 'pipeline', 'mixed'] as const) {
             .withMainLlm(llm)
             .withMcpClients([client])
             .setPipeline(new DefaultPipeline())
-            .build();
+            .build()
+            .then(unwrapBuilderResult);
           try {
             const result = await handle.agent.process(
               'go',
@@ -263,6 +265,7 @@ for (const path of ['streaming', 'pipeline'] as const) {
               .withMcpClients([client])
               .setPipeline(new DefaultPipeline())
               .build()
+              .then(unwrapBuilderResult)
           : undefined;
       const agent = handle?.agent ?? new SmartAgent(deps, { maxIterations: 5 });
       if (mode === 'blocked-round') {
