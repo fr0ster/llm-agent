@@ -18,6 +18,52 @@ const user: RagCollectionOwner = { scope: 'user', userId: 'u1' };
 const role: RagCollectionOwner = { scope: 'role', roleId: 'r1' };
 const global: RagCollectionOwner = { scope: 'global' };
 
+test('missing or invalid callers deny every scope before role lookup or decision', async () => {
+  const access = testRagAccess();
+  const owners: ReadonlyArray<RagCollectionOwner> = [global, session, user, role];
+  let calls = 0;
+  access.roles.rolesOf = async () => {
+    calls++;
+    return { ok: true, value: new Set(['r1']) };
+  };
+  access.decision.canRead = access.decision.canWrite = async () => {
+    calls++;
+    return true;
+  };
+  for (const identity of [
+    undefined,
+    null,
+    {},
+    'invalid',
+    { ...caller, sessionId: undefined },
+    { ...caller, userId: undefined },
+    { ...caller, sessionId: 1 },
+    { ...caller, userId: 1 },
+    { ...caller, sessionId: '' },
+    { ...caller, userId: '' },
+    { ...caller, sessionId: '  ' },
+    { ...caller, userId: '  ' },
+  ]) {
+    // @ts-expect-error Exercise malformed callers arriving from JavaScript.
+    const visible = visibleOwnerFilter(identity, new Set(['r1']));
+    for (const owner of owners) {
+      assert.equal(visible(owner), false);
+      for (const mode of ['read', 'write'] as const) {
+        const result = await checkRagAccess(
+          // @ts-expect-error Exercise malformed callers arriving from JavaScript.
+          identity,
+          { name: 'docs', owner },
+          mode,
+          access,
+        );
+        assert.equal(result.ok, false);
+        if (!result.ok) assert.ok(result.error instanceof RagAccessDeniedError);
+      }
+    }
+  }
+  assert.equal(calls, 0);
+});
+
 test('same user sessions share user collections but isolate session collections; allowAllDecision never widens ownership', async () => {
   const access = testRagAccess();
   const cases: ReadonlyArray<

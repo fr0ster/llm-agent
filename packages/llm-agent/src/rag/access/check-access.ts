@@ -8,11 +8,23 @@ import type {
 import { RagAccessDeniedError } from '../../interfaces/rag-access.js';
 import type { Result } from '../../interfaces/types.js';
 
+function hasCallerIdentity(caller: RagCaller): boolean {
+  return (
+    typeof caller === 'object' &&
+    caller !== null &&
+    typeof caller.sessionId === 'string' &&
+    caller.sessionId.trim().length > 0 &&
+    typeof caller.userId === 'string' &&
+    caller.userId.trim().length > 0
+  );
+}
+
 export function visibleOwnerFilter(
   caller: RagCaller,
   roles: ReadonlySet<string>,
 ): (owner: RagCollectionOwner) => boolean {
   return (owner) => {
+    if (!hasCallerIdentity(caller)) return false;
     switch (owner.scope) {
       case 'session':
         return owner.sessionId === caller.sessionId;
@@ -37,6 +49,7 @@ export async function checkRagAccess(
     error: new RagAccessDeniedError(),
   });
   try {
+    if (!hasCallerIdentity(caller)) return deny();
     let roles: ReadonlySet<string> = new Set();
     if (ref.owner.scope === 'role') {
       const result = await access.roles.rolesOf(caller.userId);
