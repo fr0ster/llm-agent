@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { IRagEditor } from '../../interfaces/rag.js';
 import { RagError } from '../../interfaces/types.js';
+import { testRagAccess } from '../../testing/rag-access-testing.js';
 import { InMemoryRag } from '../in-memory-rag.js';
 import { buildRagCollectionToolEntries } from '../mcp-tools/rag-collection-tools.js';
 import { InMemoryRagProvider } from '../providers/in-memory-rag-provider.js';
@@ -14,7 +15,7 @@ import {
 import { GlobalUniqueIdStrategy } from '../strategies/id/index.js';
 
 /** The caller every entry below is built for. */
-const ALICE = { sessionId: 'S', userId: 'alice' };
+const ALICE = { sessionId: 'S', userId: 'alice', isAdmin: false };
 
 function makeRegistry() {
   const reg = new SimpleRagRegistry();
@@ -36,7 +37,8 @@ function makeRegistry() {
 describe('buildRagCollectionToolEntries', () => {
   it('produces rag_add, rag_correct, rag_deprecate, rag_list_collections, rag_describe_collection, rag_delete_collection', () => {
     const entries = buildRagCollectionToolEntries({
-      identity: ALICE,
+      caller: ALICE,
+      access: testRagAccess(),
       registry: makeRegistry(),
     });
     const names = entries.map((e) => e.toolDefinition.name).sort();
@@ -52,7 +54,8 @@ describe('buildRagCollectionToolEntries', () => {
 
   it('rag_add rejects unknown collection', async () => {
     const entries = buildRagCollectionToolEntries({
-      identity: ALICE,
+      caller: ALICE,
+      access: testRagAccess(),
       registry: makeRegistry(),
     });
     const add = entries.find((e) => e.toolDefinition.name === 'rag_add');
@@ -71,7 +74,8 @@ describe('buildRagCollectionToolEntries', () => {
 
   it('rag_add rejects read-only collection', async () => {
     const entries = buildRagCollectionToolEntries({
-      identity: ALICE,
+      caller: ALICE,
+      access: testRagAccess(),
       registry: makeRegistry(),
     });
     const add = entries.find((e) => e.toolDefinition.name === 'rag_add');
@@ -89,7 +93,8 @@ describe('buildRagCollectionToolEntries', () => {
 
   it('rag_add writes into editable collection', async () => {
     const entries = buildRagCollectionToolEntries({
-      identity: ALICE,
+      caller: ALICE,
+      access: testRagAccess(),
       registry: makeRegistry(),
     });
     const add = entries.find((e) => e.toolDefinition.name === 'rag_add');
@@ -109,7 +114,8 @@ describe('buildRagCollectionToolEntries', () => {
   it('rag_deprecate marks record deprecated via upsert', async () => {
     const reg = makeRegistry();
     const entries = buildRagCollectionToolEntries({
-      identity: ALICE,
+      caller: ALICE,
+      access: testRagAccess(),
       registry: reg,
     });
     const dep = entries.find((e) => e.toolDefinition.name === 'rag_deprecate');
@@ -129,7 +135,8 @@ describe('buildRagCollectionToolEntries', () => {
   it('rag_correct supersedes and returns both ids', async () => {
     const reg = makeRegistry();
     const entries = buildRagCollectionToolEntries({
-      identity: ALICE,
+      caller: ALICE,
+      access: testRagAccess(),
       registry: reg,
     });
     const cor = entries.find((e) => e.toolDefinition.name === 'rag_correct');
@@ -162,7 +169,8 @@ describe('rag_create_collection', () => {
   it('creates session-scoped collection via provider', async () => {
     const { reg, provReg } = makeFullRegistry();
     const entries = buildRagCollectionToolEntries({
-      identity: ALICE,
+      caller: ALICE,
+      access: testRagAccess(),
       registry: reg,
       providerRegistry: provReg,
     });
@@ -186,7 +194,8 @@ describe('rag_create_collection', () => {
   it('is absent when providerRegistry is not supplied', () => {
     const reg = new SimpleRagRegistry();
     const entries = buildRagCollectionToolEntries({
-      identity: ALICE,
+      caller: ALICE,
+      access: testRagAccess(),
       registry: reg,
     });
     assert.equal(
@@ -198,7 +207,8 @@ describe('rag_create_collection', () => {
   it('returns error when provider is unknown', async () => {
     const { reg, provReg } = makeFullRegistry();
     const entries = buildRagCollectionToolEntries({
-      identity: ALICE,
+      caller: ALICE,
+      access: testRagAccess(),
       registry: reg,
       providerRegistry: provReg,
     });
@@ -228,7 +238,8 @@ describe('rag_list_collections', () => {
       sessionId: 'S',
     });
     const entries = buildRagCollectionToolEntries({
-      identity: ALICE,
+      caller: ALICE,
+      access: testRagAccess(),
       registry: reg,
     });
     const list = entries.find(
@@ -255,7 +266,8 @@ describe('rag_list_collections', () => {
       sessionId: 'S',
     });
     const entries = buildRagCollectionToolEntries({
-      identity: ALICE,
+      caller: ALICE,
+      access: testRagAccess(),
       registry: reg,
     });
     const list = entries.find(
@@ -281,7 +293,8 @@ describe('rag_describe_collection', () => {
       scope: 'global',
     });
     const entries = buildRagCollectionToolEntries({
-      identity: ALICE,
+      caller: ALICE,
+      access: testRagAccess(),
       registry: reg,
     });
     const desc = entries.find(
@@ -299,7 +312,8 @@ describe('rag_describe_collection', () => {
   it('returns error for unknown name', async () => {
     const { reg } = makeFullRegistry();
     const entries = buildRagCollectionToolEntries({
-      identity: ALICE,
+      caller: ALICE,
+      access: testRagAccess(),
       registry: reg,
     });
     const desc = entries.find(
@@ -322,7 +336,8 @@ describe('rag_delete_collection scope enforcement', () => {
       scope: 'global',
     });
     const entries = buildRagCollectionToolEntries({
-      identity: ALICE,
+      caller: ALICE,
+      access: testRagAccess(),
       registry: reg,
     });
     const del = entries.find(
@@ -342,7 +357,8 @@ describe('rag_delete_collection scope enforcement', () => {
       sessionId: 'S',
     });
     const entries = buildRagCollectionToolEntries({
-      identity: ALICE,
+      caller: ALICE,
+      access: testRagAccess(),
       registry: reg,
     });
     const del = entries.find(
@@ -364,7 +380,8 @@ describe('rag_delete_collection scope enforcement', () => {
       sessionId: 'S',
     });
     const del = buildRagCollectionToolEntries({
-      identity: { sessionId: 'X' },
+      caller: { sessionId: 'X', userId: 'alice', isAdmin: false },
+      access: testRagAccess(),
       registry: reg,
     }).find((e) => e.toolDefinition.name === 'rag_delete_collection');
     assert.ok(del);
@@ -385,7 +402,8 @@ describe('rag_delete_collection scope enforcement', () => {
       userId: 'alice',
     });
     const entries = buildRagCollectionToolEntries({
-      identity: ALICE,
+      caller: ALICE,
+      access: testRagAccess(),
       registry: reg,
     });
     const del = entries.find(
@@ -426,7 +444,8 @@ describe('rag_delete_collection when the data cannot be deleted', () => {
     });
     assert.ok(created.ok);
     const del = buildRagCollectionToolEntries({
-      identity: ALICE,
+      caller: ALICE,
+      access: testRagAccess(),
       registry: reg,
     }).find((e) => e.toolDefinition.name === 'rag_delete_collection');
     assert.ok(del);
@@ -470,7 +489,8 @@ describe('rag_delete_collection when nothing could delete the data', () => {
     // The provider disappears: nothing can reach the collection's record.
     reg.setProviderRegistry(new SimpleRagProviderRegistry());
     const del = buildRagCollectionToolEntries({
-      identity: ALICE,
+      caller: ALICE,
+      access: testRagAccess(),
       registry: reg,
     }).find((e) => e.toolDefinition.name === 'rag_delete_collection');
     assert.ok(del);
@@ -486,4 +506,100 @@ describe('rag_delete_collection when nothing could delete the data', () => {
     assert.equal(out.warning, undefined);
     assert.equal(deletes, 0);
   });
+});
+
+describe('collection access decisions', () => {
+  it('With a decision that denies write for collection c, rag_add on c returns RagAccessDeniedError and the store is unchanged', async () => {
+    const registry = makeRegistry();
+    const access = testRagAccess();
+    access.decision.canWrite = async () => false;
+    const tool = buildRagCollectionToolEntries({
+      registry,
+      caller: { ...ALICE, isAdmin: false },
+      access,
+    }).find((e) => e.toolDefinition.name === 'rag_add');
+    assert.ok(tool);
+    const result = (await tool.handler(
+      {},
+      { collection: 'notes', text: 'denied', canonicalKey: 'k' },
+    )) as { ok: boolean; error: string };
+    assert.equal(result.ok, false);
+    assert.match(result.error, /RagAccessDeniedError/);
+    assert.deepEqual(
+      await registry
+        .get('notes', 'user')
+        ?.query({ text: 'denied', toVector: async () => [] }, 10),
+      { ok: true, value: [] },
+    );
+  });
+  it('With a decision that denies read, rag_list_collections omits c', async () => {
+    const access = testRagAccess();
+    access.decision.canRead = async () => false;
+    const tool = buildRagCollectionToolEntries({
+      registry: makeRegistry(),
+      caller: { ...ALICE, isAdmin: false },
+      access,
+    }).find((e) => e.toolDefinition.name === 'rag_list_collections');
+    assert.ok(tool);
+    assert.deepEqual(await tool.handler({}, {}), { ok: true, collections: [] });
+  });
+});
+
+describe('every collection handler fails closed', () => {
+  for (const name of [
+    'rag_add',
+    'rag_correct',
+    'rag_deprecate',
+    'rag_delete_collection',
+    'rag_describe_collection',
+  ]) {
+    for (const failure of ['deny', 'throw']) {
+      it(`${name} refuses a server ${failure} without modifying the collection`, async () => {
+        const registry = makeRegistry();
+        const editor = registry.getEditor('notes', 'user');
+        assert.ok(editor);
+        const original = await editor.upsert('original', {
+          canonicalKey: 'key',
+        });
+        assert.ok(original.ok);
+        const access = testRagAccess();
+        const decision = async () => {
+          if (failure === 'throw') throw new Error('decision unavailable');
+          return false;
+        };
+        access.decision.canRead = decision;
+        access.decision.canWrite = decision;
+        const tool = buildRagCollectionToolEntries({
+          registry,
+          caller: ALICE,
+          access,
+        }).find((e) => e.toolDefinition.name === name);
+        assert.ok(tool);
+        const before = await registry
+          .get('notes', 'user')
+          ?.getById(original.value.id);
+        const out = (await tool.handler(
+          {},
+          {
+            name: 'notes',
+            collection: 'notes',
+            text: 'replacement',
+            newText: 'replacement',
+            canonicalKey: 'key',
+            predecessorCanonicalKey: 'key',
+            predecessorId: original.value.id,
+            id: original.value.id,
+            reason: 'test',
+          },
+        )) as { ok: boolean; code?: string };
+        assert.equal(out.ok, false);
+        assert.equal(out.code, 'RAG_ACCESS_DENIED');
+        assert.equal(registry.getEditor('notes', 'user'), editor);
+        assert.deepEqual(
+          await registry.get('notes', 'user')?.getById(original.value.id),
+          before,
+        );
+      });
+    }
+  }
 });
