@@ -1,7 +1,11 @@
 {
   "$schema": "https://biomejs.dev/schemas/2.3.10/schema.json",
   "files": {
-    "includes": ["**", "!!**/dist", "!!**/node_modules"]
+    "includes": [
+      "**",
+      "!!**/dist",
+      "!!**/node_modules"
+    ]
   },
   "formatter": {
     "enabled": true,
@@ -33,6 +37,11 @@
       "source": {
         "organizeImports": "on"
       }
+    }
+  },
+  "markdown": {
+    "formatter": {
+      "enabled": false
     }
   }
 }
