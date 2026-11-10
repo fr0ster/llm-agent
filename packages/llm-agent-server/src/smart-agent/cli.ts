@@ -128,11 +128,12 @@ if (args.version) {
 }
 
 if (args.help) {
-  // Print the JSDoc comment at the top of this file as help text
+  // Print the first JSDoc comment of this file as help text; imports may
+  // precede it, since the import sorter keeps them above the comment.
   process.stdout.write(
     fs
       .readFileSync(new URL(import.meta.url), 'utf8')
-      .match(/^(?:#![^\n]*\n)?\/\*\*([\s\S]*?)\*\//)?.[1]
+      .match(/\/\*\*([\s\S]*?)\*\//)?.[1]
       ?.replace(/^[ \t]*\* ?/gm, '') ?? 'See source for usage.\n',
   );
   process.exit(0);
