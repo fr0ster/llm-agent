@@ -21,13 +21,20 @@ import {
   encodeRagAttributes,
   OrphanStoreError,
   RagError,
+  type RagMetadata,
   type Result,
   ragCollectionNotFound,
   ragOwnerKeys,
+  tagRagMetadata,
   validateRagCatalogPatch,
   validateRagOwner,
   validateRagStoreName,
 } from '@mcp-abap-adt/llm-agent';
+import {
+  type AccessPayload,
+  isAccessCollectionName,
+  QdrantAccessPersistence,
+} from './access-persistence.js';
 import { deterministicUUID, QdrantRag } from './qdrant-rag.js';
 
 /** The collection a QdrantRagProvider keeps one point per collection in, by default. */
@@ -52,11 +59,7 @@ export interface QdrantRagProviderConfig {
   editable?: boolean;
   timeoutMs?: number;
   supportedScopes?: readonly RagCollectionScope[];
-  idStrategyFactory?: (opts: {
-    scope: RagCollectionScope;
-    sessionId?: string;
-    userId?: string;
-  }) => IIdStrategy;
+  idStrategyFactory?: (owner: RagCollectionOwner) => IIdStrategy;
   /** The collection holding one record point per collection. Default `rag_collection_catalog`. */
   catalogCollection?: string;
 }
@@ -76,6 +79,25 @@ export class QdrantRagProvider
   private readonly timeoutMs?: number;
   private readonly catalog: string;
   private catalogReady?: Promise<void>;
+  private accessReady?: Promise<QdrantAccessPersistence>;
+  private readonly ownerIdStrategyFactory?: (
+    owner: RagCollectionOwner,
+  ) => IIdStrategy;
+
+  accessPersistence(): Promise<QdrantAccessPersistence> {
+    this.accessReady ??= (async () => {
+      const persistence = new QdrantAccessPersistence(
+        this.request.bind(this),
+        this.catalog,
+      );
+      await persistence.initialize();
+      return persistence;
+    })().catch((error: Error) => {
+      this.accessReady = undefined;
+      throw error;
+    });
+    return this.accessReady;
+  }
 
   constructor(cfg: QdrantRagProviderConfig) {
     super();
@@ -85,9 +107,14 @@ export class QdrantRagProvider
     this.embedder = cfg.embedder;
     this.timeoutMs = cfg.timeoutMs;
     this.editable = cfg.editable ?? true;
-    this.supportedScopes = cfg.supportedScopes ?? ['session', 'user', 'global'];
+    this.supportedScopes = cfg.supportedScopes ?? [
+      'session',
+      'user',
+      'role',
+      'global',
+    ];
     this.catalog = cfg.catalogCollection ?? DEFAULT_CATALOG_COLLECTION;
-    if (cfg.idStrategyFactory) this.idStrategyFactory = cfg.idStrategyFactory;
+    this.ownerIdStrategyFactory = cfg.idStrategyFactory;
   }
 
   /**
@@ -115,6 +142,14 @@ export class QdrantRagProvider
     if (!checked.ok) return checked;
     const refused = this.refuseCatalogName(name);
     if (refused) return refused;
+    return this.createOwnedCollection(name, opts, checked.value);
+  }
+
+  private async createOwnedCollection(
+    name: string,
+    opts: RagProviderCreateCollectionOptions,
+    owner: RagCollectionOwner,
+  ): Promise<Result<Handles, RagError>> {
     try {
       await this.ensureCatalog();
       if (await this.readRecord(name)) return this.duplicate(name, opts);
@@ -132,9 +167,21 @@ export class QdrantRagProvider
         const created = await this.createStore(name, opts);
         if (!created.ok) return created;
       }
+      const indexed = await this.request(
+        `/collections/${name}/index?wait=true`,
+        {
+          method: 'PUT',
+          body: JSON.stringify({
+            field_name: 'ownerScope',
+            field_schema: 'keyword',
+          }),
+        },
+      );
+      if (!indexed.ok)
+        throw new RagError('Owner scope index failed', 'RAG_CREATE_ERROR');
       const recorded = await this.writeRecord(
         {
-          ...checked.value,
+          ...owner,
           storeName: name,
           name: opts.collectionName ?? name,
           attributes: opts.attributes,
@@ -142,7 +189,33 @@ export class QdrantRagProvider
         opts,
       );
       if (!recorded.ok) return recorded;
-      return { ok: true, value: this.handles(name, checked.value) };
+      if (owner.scope === 'role') {
+        try {
+          await (await this.accessPersistence()).requireRole(owner.roleId);
+        } catch (error) {
+          const response = await this.request(
+            `/collections/${this.catalog}/points/delete?wait=true&ordering=strong`,
+            {
+              method: 'POST',
+              body: JSON.stringify({
+                filter: {
+                  must: [
+                    { key: 'store_name', match: { value: name } },
+                    { key: 'write_id', match: { value: recorded.value } },
+                  ],
+                },
+              }),
+            },
+          );
+          if (!response.ok)
+            throw new RagError(
+              'Catalog compensation failed',
+              'RAG_CREATE_ERROR',
+            );
+          throw error;
+        }
+      }
+      return { ok: true, value: this.handles(name, owner) };
     } catch (err) {
       return {
         ok: false,
@@ -154,6 +227,81 @@ export class QdrantRagProvider
     }
   }
 
+  async migrateRecordOwners(): Promise<
+    { storeName: string; reason: string }[]
+  > {
+    const listed = await this.listCollections();
+    if (!listed.ok) throw listed.error;
+    const reported: { storeName: string; reason: string }[] = [];
+    for (const storeName of listed.value) {
+      const indexed = await this.request(
+        `/collections/${storeName}/index?wait=true`,
+        {
+          method: 'PUT',
+          body: JSON.stringify({
+            field_name: 'ownerScope',
+            field_schema: 'keyword',
+          }),
+        },
+      );
+      if (!indexed.ok)
+        throw new RagError('Owner scope index failed', 'RAG_MIGRATION_ERROR');
+      let offset: string | number | null = null;
+      do {
+        const response = await this.request(
+          `/collections/${storeName}/points/scroll?consistency=all`,
+          {
+            method: 'POST',
+            body: JSON.stringify({
+              limit: 256,
+              with_payload: true,
+              with_vector: false,
+              ...(offset === null ? {} : { offset }),
+            }),
+          },
+        );
+        if (!response.ok)
+          throw new RagError(
+            'Record migration scroll failed',
+            'RAG_MIGRATION_ERROR',
+          );
+        const body = (await response.json()) as {
+          result: {
+            points: { id: string | number; payload?: RagMetadata }[];
+            next_page_offset?: string | number | null;
+          };
+        };
+        for (const point of body.result.points) {
+          const metadata = point.payload ?? {};
+          const tagged = tagRagMetadata(metadata);
+          if (tagged.ownerScope === undefined)
+            reported.push({
+              storeName,
+              reason: `Conflicting owner keys on record ${point.id}`,
+            });
+          if (metadata.ownerScope === tagged.ownerScope) continue;
+          const written = await this.request(
+            `/collections/${storeName}/points/payload?wait=true&ordering=strong`,
+            {
+              method: 'POST',
+              body: JSON.stringify({
+                points: [point.id],
+                payload: { ownerScope: tagged.ownerScope ?? null },
+              }),
+            },
+          );
+          if (!written.ok)
+            throw new RagError(
+              'Record migration update failed',
+              'RAG_MIGRATION_ERROR',
+            );
+        }
+        offset = body.result.next_page_offset ?? null;
+      } while (offset !== null);
+    }
+    return reported;
+  }
+
   /** The catalog, paged and read back through the shared row check. Creates nothing. */
   async describeCollections(): Promise<
     Result<RagCatalogDescription, RagError>
@@ -163,10 +311,10 @@ export class QdrantRagProvider
         return { ok: true, value: { records: [], rejected: [] } };
       }
       const rows: RagCatalogRow[] = [];
-      let offset: unknown = null;
+      let offset: string | number | null = null;
       do {
         const res = await this.request(
-          `/collections/${this.catalog}/points/scroll`,
+          `/collections/${this.catalog}/points/scroll?consistency=all`,
           {
             method: 'POST',
             body: JSON.stringify({
@@ -185,11 +333,14 @@ export class QdrantRagProvider
         }
         const json = (await res.json()) as {
           result?: {
-            points?: Array<{ payload?: Record<string, unknown> }>;
-            next_page_offset?: unknown;
+            points?: Array<{ payload?: AccessPayload }>;
+            next_page_offset?: string | number | null;
           };
         };
-        for (const point of json.result?.points ?? []) {
+        if (!Array.isArray(json.result?.points)) {
+          throw new RagError('Invalid Qdrant catalog scroll', 'RAG_LIST_ERROR');
+        }
+        for (const point of json.result.points) {
           const p = point.payload ?? {};
           rows.push({
             storeName: p.store_name,
@@ -197,12 +348,30 @@ export class QdrantRagProvider
             scope: p.scope,
             userId: p.user_id,
             sessionId: p.session_id,
+            roleId: typeof p.role_id === 'string' ? p.role_id : undefined,
             attributesJson: p.attributes_json,
           });
         }
         offset = json.result?.next_page_offset ?? null;
       } while (offset !== null);
-      return { ok: true, value: describeRagCatalogRows(rows) };
+      const description = describeRagCatalogRows(rows);
+      const records: RagCollectionRecord[] = [];
+      const rejected = [...description.rejected];
+      for (const record of description.records) {
+        if (record.scope === 'role') {
+          try {
+            await (await this.accessPersistence()).requireRole(record.roleId);
+          } catch {
+            rejected.push({
+              storeName: record.storeName,
+              reason: 'Role is missing or tombstoned',
+            });
+            continue;
+          }
+        }
+        records.push(record);
+      }
+      return { ok: true, value: { records, rejected } };
     } catch (err) {
       return {
         ok: false,
@@ -238,7 +407,7 @@ export class QdrantRagProvider
     const notFound: Refusal = ragCollectionNotFound(storeName);
     try {
       if (!(await this.readRecord(storeName))) return notFound;
-      const payload: Record<string, unknown> = {
+      const payload: AccessPayload = {
         ...(collectionName === undefined
           ? {}
           : { collection_name: collectionName }),
@@ -282,7 +451,12 @@ export class QdrantRagProvider
   ): Promise<Result<Handles, RagError>> {
     const owner = validateRagOwner(record);
     if (!owner.ok) return owner;
+    const refused = this.refuseCatalogName(record.storeName);
+    if (refused) return refused;
     try {
+      if (owner.value.scope === 'role') {
+        await (await this.accessPersistence()).requireRole(owner.value.roleId);
+      }
       return { ok: true, value: this.handles(record.storeName, owner.value) };
     } catch (err) {
       return { ok: false, error: new RagError(String(err), 'RAG_OPEN_ERROR') };
@@ -358,7 +532,12 @@ export class QdrantRagProvider
         result?: { collections?: Array<{ name: string }> };
       };
       const names = json.result?.collections?.map((c) => c.name) ?? [];
-      return { ok: true, value: names.filter((n) => n !== this.catalog) };
+      return {
+        ok: true,
+        value: names.filter(
+          (n) => n !== this.catalog && !isAccessCollectionName(n),
+        ),
+      };
     } catch (err) {
       return {
         ok: false,
@@ -404,22 +583,23 @@ export class QdrantRagProvider
   private async writeRecord(
     record: RagCollectionRecord,
     opts: RagProviderCreateCollectionOptions,
-  ): Promise<Result<void, RagError>> {
-    const { userId, sessionId } = ragOwnerKeys(record);
+  ): Promise<Result<string, RagError>> {
+    const { userId, sessionId, roleId } = ragOwnerKeys(record);
     const writeId = crypto.randomUUID();
-    const payload: Record<string, unknown> = {
+    const payload: AccessPayload = {
       store_name: record.storeName,
       collection_name: record.name,
       scope: record.scope,
       ...(userId === undefined ? {} : { user_id: userId }),
       ...(sessionId === undefined ? {} : { session_id: sessionId }),
+      ...(roleId === undefined ? {} : { role_id: roleId }),
       attributes_json: encodeRagAttributes(record.attributes),
       write_id: writeId,
     };
     let failure: string | undefined;
     try {
       const res = await this.request(
-        `/collections/${this.catalog}/points?wait=true`,
+        `/collections/${this.catalog}/points?wait=true&ordering=strong`,
         {
           method: 'PUT',
           body: JSON.stringify({
@@ -444,7 +624,7 @@ export class QdrantRagProvider
     const stored = await this.readRecord(record.storeName).catch(
       () => undefined,
     );
-    if (stored?.write_id === writeId) return { ok: true, value: undefined };
+    if (stored?.write_id === writeId) return { ok: true, value: writeId };
     if (stored) return this.duplicate(record.storeName, opts);
     // Never removed: another registry may adopt the collection and record it
     // before a removal could run (§6.3).
@@ -466,7 +646,15 @@ export class QdrantRagProvider
       timeoutMs: this.timeoutMs,
       autoCreateCollection: false,
     });
-    return { rag, editor: this.buildEditor(rag, this.pickIdStrategy(owner)) };
+    return {
+      rag,
+      editor: this.buildEditor(
+        rag,
+        this.ownerIdStrategyFactory
+          ? this.ownerIdStrategyFactory(owner)
+          : this.pickIdStrategy(owner),
+      ),
+    };
   }
 
   private duplicate(
@@ -483,7 +671,8 @@ export class QdrantRagProvider
   }
 
   private refuseCatalogName(name: string): Refusal | undefined {
-    if (name !== this.catalog) return undefined;
+    if (name !== this.catalog && !isAccessCollectionName(name))
+      return undefined;
     return {
       ok: false,
       error: new RagError(
@@ -529,14 +718,17 @@ export class QdrantRagProvider
   /** The catalog point's payload, or undefined when there is none (or no catalog yet). */
   private async readRecord(
     storeName: string,
-  ): Promise<Record<string, unknown> | undefined> {
-    const res = await this.request(`/collections/${this.catalog}/points`, {
-      method: 'POST',
-      body: JSON.stringify({
-        ids: [await deterministicUUID(storeName)],
-        with_payload: true,
-      }),
-    });
+  ): Promise<AccessPayload | undefined> {
+    const res = await this.request(
+      `/collections/${this.catalog}/points?consistency=all`,
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          ids: [await deterministicUUID(storeName)],
+          with_payload: true,
+        }),
+      },
+    );
     if (res.status === 404) return undefined;
     if (!res.ok) {
       throw new RagError(
@@ -545,7 +737,7 @@ export class QdrantRagProvider
       );
     }
     const json = (await res.json()) as {
-      result?: Array<{ payload?: Record<string, unknown> }>;
+      result?: Array<{ payload?: AccessPayload }>;
     };
     return json.result?.[0]?.payload;
   }

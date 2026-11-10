@@ -68,6 +68,31 @@ that is the responsibility of the RAG store implementation used in production.
 
 ### AS-6: Cross-caller access through the RAG collection tools
 
+**Collection-isolation rollout, Task 7 / Qdrant:** the backend now persists session,
+user, role and global catalog owners, library-managed roles/assignments and immutable
+session bindings. Collection access requires both ownership and the server's
+decision; global creation/writes additionally require the trusted caller's admin
+flag. These checks belong to the core access layer, not the backend factory.
+The older v27 description below is historical; it does not describe the new role
+or global access contract.
+
+All backends apply a positive record `ownerScope` equality and the required identity
+before top-k; missing or mismatched tags fail closed. Migration backfills valid legacy
+records and reports conflicting keys without exposing them. Global filtering has no
+Qdrant exact-version restriction.
+
+Qdrant uses symmetric write-intent-then-verify: collection creation writes the catalog
+before checking the role; deletion tombstones the role before checking its collections.
+Tombstones grant no membership and accept no new collection. A refused creation
+compensates its own catalog record; an in-use deletion removes its tombstone. Strong
+ordered writes, all-replica reads and full replica acknowledgements are required.
+After a crash, re-running deletion completes or reverts the tombstone; missing-role
+catalog intents are refused on reopen/hydration and reported by migration. No persistent
+role lock or manual instance-wide recovery is required. Bindings retain deterministic
+insert-only points and compare-after-write (Qdrant >= 1.17.0). See
+[Qdrant access persistence](../packages/qdrant-rag/README.md#collection-access-persistence).
+This backend work does not complete the later server-wiring tasks.
+
 **Threat:** A caller's model names another caller's collection in a RAG collection tool and reads
 or writes it. Distinct from AS-4, which is about records returned by `query`: this is about the
 collection-management tools themselves.

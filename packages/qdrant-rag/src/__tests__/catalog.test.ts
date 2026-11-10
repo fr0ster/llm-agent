@@ -14,6 +14,7 @@ import { deterministicUUID, QdrantRag } from '../qdrant-rag.js';
 import { QdrantRagProvider } from '../qdrant-rag-provider.js';
 import {
   type QdrantStub,
+  type StubPoint,
   type StubRequest,
   startQdrantStub,
 } from './qdrant-stub.js';
@@ -62,7 +63,7 @@ const indexOf = (stub: QdrantStub, method: string, path: string): number =>
 async function seedRecord(
   stub: QdrantStub,
   storeName: string,
-  payload: Record<string, unknown>,
+  payload: StubPoint['payload'],
 ): Promise<void> {
   if (!stub.collections.has(CATALOG))
     stub.collections.set(CATALOG, { size: 1, points: new Map() });

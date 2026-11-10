@@ -29,6 +29,43 @@ the collection; `describeCollections` reads the catalog back.
 A collection created before this release has a collection and no record: take it over once with
 `createCollection(..., { adoptExisting: true })`.
 
+## Collection access persistence
+
+`createQdrantRagAccessStores(provider)` supplies roles, assignments and immutable
+session bindings. `migrateQdrantRagAccess(provider)` initializes access collections,
+indexes catalog `role_id` and record `ownerScope` as keywords, backfills record
+scope from existing identity keys, and reports invalid catalog owners and conflicting
+record keys. Conflicting records remain unmatched. Re-running migration is idempotent.
+
+The default catalog uses `rag_roles`, `rag_role_assignments` and
+`rag_session_bindings`. Custom catalogs prefix these names with `<catalog>_`.
+These collections are reserved and hidden from collection lists.
+
+Bindings use deterministic point ids, insert-only writes and compare-after-write;
+access persistence requires Qdrant >= 1.17.0 for insert-only support. Catalog/access
+writes use `wait=true&ordering=strong`, reads use `consistency=all`, and initialization
+requires equal replication and write-consistency factors.
+
+Role collection creation writes its catalog intent, then verifies that the role
+exists and is not tombstoned. A refusal compensates by removing its catalog record.
+Assignments carry the persisted role generation token, so a delayed write cannot
+grant membership after a role id is deleted and recreated.
+Deletion first tombstones the role, then checks catalog ownership. An in-use role
+has its tombstone removed and returns `RoleInUseError`; otherwise assignments and
+the role are deleted. Tombstones grant no membership or new collections. Re-running
+`deleteRole` after a crash completes or reverts the tombstone. An orphan catalog
+intent is refused on reopen/hydration and reported by migration. No persistent
+lock, lease, timer or instance-wide manual recovery is used.
+
+Every valid new record carries a positive `ownerScope` tag. Queries match this scope
+and its required identity before top-k. Global queries use `ownerScope = 'global'`
+and have no exact-version gate or missing-field predicate. Records without a scope,
+with mismatched scope/identity, or conflicting keys fail closed.
+
+These backend stores provide ownership persistence, not server authorization.
+The core access layer must also approve every request; global management requires
+both the trusted caller's admin flag and the server decision.
+
 ## Scan, filtered delete and catalog update
 
 The store implements `IRagScanner` and `IRagFilteredDeleter`, and the provider implements `IRagCatalogUpdater` (guards `isRagScanner`, `isRagFilteredDeleter`, `isRagCatalogUpdater` from `@mcp-abap-adt/llm-agent`). The library wrappers (`OverlayRag`, `SessionScopedRag`, ...) do not forward them; use the provider's handle.

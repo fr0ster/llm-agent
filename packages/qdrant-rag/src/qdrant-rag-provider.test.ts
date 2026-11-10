@@ -117,7 +117,7 @@ describe('QdrantRagProvider', () => {
     );
   });
 
-  it('declares all three scopes as supported by default', () => {
+  it('declares all four scopes as supported by default', () => {
     const p = new QdrantRagProvider({
       name: 'qdrant',
       url: baseUrl,
@@ -125,6 +125,7 @@ describe('QdrantRagProvider', () => {
     });
     assert.deepEqual([...p.supportedScopes].sort(), [
       'global',
+      'role',
       'session',
       'user',
     ]);

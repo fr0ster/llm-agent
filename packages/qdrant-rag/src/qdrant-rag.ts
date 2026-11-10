@@ -26,8 +26,10 @@ import {
   type RagScanPage,
   type Result,
   ragIdentityFilter,
+  tagRagMetadata,
 } from '@mcp-abap-adt/llm-agent';
 import { splitPayload } from './payload-record.js';
+import type { QdrantCondition, QdrantFilter } from './query-filter.js';
 import { deleteWhere, scanPage } from './scan-delete.js';
 
 /**
@@ -157,6 +159,7 @@ export class QdrantRag implements IRag, IRagScanner, IRagFilteredDeleter {
         if (err instanceof RagError) throw err;
         // JSON parsing or transient read failures — let the next upsert surface them naturally.
       }
+      await this.ensureOwnerScopeIndex(signal);
       this.collectionEnsured = true;
       return;
     }
@@ -178,7 +181,24 @@ export class QdrantRag implements IRag, IRagScanner, IRagFilteredDeleter {
         'UPSERT_ERROR',
       );
     }
+    await this.ensureOwnerScopeIndex(signal);
     this.collectionEnsured = true;
+  }
+
+  private async ensureOwnerScopeIndex(signal?: AbortSignal): Promise<void> {
+    const response = await this._fetch(
+      `/collections/${this.collectionName}/index?wait=true`,
+      {
+        method: 'PUT',
+        body: JSON.stringify({
+          field_name: 'ownerScope',
+          field_schema: 'keyword',
+        }),
+      },
+      signal,
+    );
+    if (!response.ok)
+      throw new RagError('Owner scope index failed', 'UPSERT_ERROR');
   }
 
   private async upsertKnownVector(
@@ -195,9 +215,9 @@ export class QdrantRag implements IRag, IRagScanner, IRagFilteredDeleter {
       const pointId = metadata?.id
         ? await deterministicUUID(metadata.id)
         : crypto.randomUUID();
-      const payload: Record<string, unknown> = {
+      const payload: RagMetadata = {
         text,
-        ...metadata,
+        ...tagRagMetadata(metadata),
       };
 
       const res = await this._fetch(
@@ -266,7 +286,7 @@ export class QdrantRag implements IRag, IRagScanner, IRagFilteredDeleter {
       const safe = new FallbackQueryEmbedding(embedding, this.embedder);
       const vector = await safe.toVector();
 
-      const must: unknown[] = [];
+      const must: QdrantCondition[] = [];
       const targetNamespace = options?.ragFilter?.namespace;
       if (targetNamespace !== undefined) {
         must.push({ key: 'namespace', match: { value: targetNamespace } });
@@ -274,7 +294,12 @@ export class QdrantRag implements IRag, IRagScanner, IRagFilteredDeleter {
       const nowSecs = Math.floor(Date.now() / 1000);
       must.push({ key: 'ttl', range: { gt: nowSecs } });
 
-      const body: Record<string, unknown> = {
+      const body: {
+        vector: number[];
+        limit: number;
+        with_payload: boolean;
+        filter?: QdrantFilter;
+      } = {
         vector,
         limit: k,
         with_payload: true,
@@ -285,7 +310,15 @@ export class QdrantRag implements IRag, IRagScanner, IRagFilteredDeleter {
       // point is never returned to a scoped query. Qdrant applies the filter
       // inside the search, so `limit: k` counts only matching points.
       const identity = ragIdentityFilter(options);
-      const identityMust: unknown[] = [];
+      const identityMust: QdrantCondition[] = [];
+      if (identity?.ownerScope !== undefined)
+        identityMust.push({
+          key: 'ownerScope',
+          match: { value: identity.ownerScope },
+        });
+      if (identity?.roleId !== undefined) {
+        identityMust.push({ key: 'roleId', match: { value: identity.roleId } });
+      }
       if (identity?.sessionId !== undefined) {
         identityMust.push({
           key: 'sessionId',
@@ -335,7 +368,7 @@ export class QdrantRag implements IRag, IRagScanner, IRagFilteredDeleter {
       const json = (await res.json()) as {
         result: Array<{
           score: number;
-          payload: Record<string, unknown>;
+          payload: RagMetadata;
         }>;
       };
 
@@ -375,7 +408,7 @@ export class QdrantRag implements IRag, IRagScanner, IRagFilteredDeleter {
         };
       }
       const json = (await res.json()) as {
-        result: Array<{ id: string; payload: Record<string, unknown> }>;
+        result: Array<{ id: string; payload: RagMetadata }>;
       };
       const hit = json.result?.[0];
       if (!hit) return { ok: true, value: null };
@@ -610,7 +643,7 @@ export class QdrantRag implements IRag, IRagScanner, IRagFilteredDeleter {
             items.map(async ({ id, text, vector, metadata }) => ({
               id: await deterministicUUID(id),
               vector,
-              payload: { text, ...metadata, id },
+              payload: { text, ...tagRagMetadata(metadata), id },
             })),
           );
           // One PUT for the whole batch — Qdrant accepts many points per

@@ -1,12 +1,27 @@
+type StubJson =
+  | string
+  | number
+  | boolean
+  | null
+  | undefined
+  | StubJson[]
+  | { [key: string]: StubJson };
+
 import http from 'node:http';
 
 export type StubPoint = {
   id: string;
   vector: number[];
-  payload: Record<string, unknown>;
+  payload: Record<string, StubJson>;
 };
-export type StubRequest = { method: string; path: string; body: unknown };
-export type StubCollection = { size: number; points: Map<string, StubPoint> };
+export type StubRequest = { method: string; path: string; body: StubJson };
+export type StubCollection = {
+  size: number;
+  points: Map<string, StubPoint>;
+  replicationFactor?: number;
+  writeConsistencyFactor?: number;
+  payloadSchema?: { [key: string]: { data_type: string } };
+};
 
 /** The Qdrant REST surface the provider uses, with the documented semantics:
  *  a repeated collection PUT is 409, and insert_only skips an existing id. */
@@ -15,6 +30,7 @@ export type QdrantStub = {
   readonly collections: Map<string, StubCollection>;
   readonly requests: StubRequest[];
   failOn?: (r: StubRequest) => boolean;
+  version?: string;
   /** Runs inside a points PUT to the catalog, before it is applied — a racing writer. */
   beforeCatalogWrite?: () => void;
   /** Runs inside a set-payload request before it is applied — a racing delete. */
@@ -33,9 +49,27 @@ export async function startQdrantStub(
 
   const route = (
     r: StubRequest,
-    reply: (status: number, body: unknown) => void,
+    reply: (status: number, body: StubJson) => void,
   ): void => {
-    const body = (r.body ?? {}) as Record<string, unknown>;
+    const body = (r.body ?? {}) as Record<string, StubJson>;
+    const index = r.path.match(/^\/collections\/([^/]+)\/index$/);
+    if (index && r.method === 'PUT') {
+      const collection = collections.get(index[1]);
+      if (!collection) {
+        reply(404, { status: { error: 'Collection missing' } });
+        return;
+      }
+      collection.payloadSchema ??= {};
+      collection.payloadSchema[String(body.field_name)] = {
+        data_type: String(body.field_schema),
+      };
+      reply(200, { result: true });
+      return;
+    }
+    if (r.path === '/' && r.method === 'GET') {
+      reply(200, { version: stub?.version ?? '1.17.0' });
+      return;
+    }
     const missing = (name: string): void =>
       reply(404, {
         status: { error: `Collection \`${name}\` doesn't exist!` },
@@ -52,7 +86,14 @@ export async function startQdrantStub(
         reply(200, {
           result: {
             status: 'green',
-            config: { params: { vectors: { size: c.size } } },
+            payload_schema: c.payloadSchema ?? {},
+            config: {
+              params: {
+                vectors: { size: c.size },
+                replication_factor: c.replicationFactor ?? 1,
+                write_consistency_factor: c.writeConsistencyFactor ?? 1,
+              },
+            },
           },
         });
         return;
@@ -147,7 +188,7 @@ export async function startQdrantStub(
         // id that is not there is a 404 and nothing is created (Qdrant's
         // behaviour: "No point with id ... found").
         stub?.beforePayloadWrite?.();
-        const set = (body.payload ?? {}) as Record<string, unknown>;
+        const set = (body.payload ?? {}) as Record<string, StubJson>;
         const ids = (body.points as string[] | undefined) ?? [];
         const absent = ids.find((id) => !c.points.has(id));
         if (absent !== undefined) {
@@ -164,7 +205,12 @@ export async function startQdrantStub(
       if (r.method === 'POST' && action === '/delete') {
         for (const id of (body.points as string[] | undefined) ?? [])
           c.points.delete(id);
-        if (body.filter !== undefined) c.points.clear();
+        if (body.filter !== undefined) {
+          for (const [id, point] of c.points) {
+            if (matchesFilter(point.payload, body.filter as QdrantFilter))
+              c.points.delete(id);
+          }
+        }
         reply(200, { result: { status: 'completed' } });
         return;
       }
@@ -205,7 +251,7 @@ export async function startQdrantStub(
         body: raw ? JSON.parse(raw) : undefined,
       };
       requests.push(request);
-      const reply = (status: number, body: unknown): void => {
+      const reply = (status: number, body: StubJson): void => {
         res.writeHead(status, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(body));
       };
@@ -241,8 +287,10 @@ export async function startQdrantStub(
 // ---------------------------------------------------------------------------
 
 type QdrantCondition =
-  | { key: string; match: { value: unknown } }
+  | { key: string; match: { value: string | number | boolean } }
   | { is_empty: { key: string } }
+  | { is_null: { key: string } }
+  | { key: string; values_count: { gte: number } }
   | {
       key: string;
       range: { gt?: number; gte?: number; lt?: number; lte?: number };
@@ -256,9 +304,15 @@ export type QdrantFilter = {
 };
 
 function holds(
-  payload: Record<string, unknown>,
+  payload: Record<string, StubJson>,
   cond: QdrantCondition,
 ): boolean {
+  if ('is_null' in cond) return payload[cond.is_null.key] === null;
+  if ('values_count' in cond) {
+    if (!(cond.key in payload)) return false;
+    const value = payload[cond.key];
+    return (Array.isArray(value) ? value.length : 1) >= cond.values_count.gte;
+  }
   if ('is_empty' in cond) {
     const v = payload[cond.is_empty.key];
     return (
@@ -287,7 +341,7 @@ function holds(
 }
 
 export function matchesFilter(
-  payload: Record<string, unknown>,
+  payload: Record<string, StubJson>,
   filter: QdrantFilter,
 ): boolean {
   if (filter.must && !filter.must.every((c) => holds(payload, c))) return false;
