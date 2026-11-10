@@ -138,7 +138,12 @@ export class PgVectorRagProvider
     this.documentsTable = cfg.documentsTable ?? SHARED_DOCUMENTS_TABLE;
     this.autoCreateSchema = cfg.autoCreateSchema ?? !shared;
     this.editable = cfg.editable ?? true;
-    this.supportedScopes = cfg.supportedScopes ?? ['session', 'user', 'global'];
+    this.supportedScopes = cfg.supportedScopes ?? [
+      'session',
+      'user',
+      'role',
+      'global',
+    ];
     this.clientFactory = cfg.clientFactory;
     this.catalogTable =
       cfg.catalogTable ??
@@ -344,7 +349,15 @@ export class PgVectorRagProvider
         ok: true,
         value: rows
           .map((r) => String(r.table_name))
-          .filter((t) => t !== this.catalogTable),
+          .filter(
+            (t) =>
+              t !== this.catalogTable &&
+              ![
+                'rag_roles',
+                'rag_role_assignments',
+                'rag_session_bindings',
+              ].includes(t),
+          ),
       };
     } catch (err) {
       return { ok: false, error: new RagError(String(err), 'RAG_LIST_ERROR') };
@@ -439,7 +452,13 @@ export class PgVectorRagProvider
   }
 
   private refuseCatalogName(name: string): Refusal | undefined {
-    if (name !== this.catalogTable) return undefined;
+    if (
+      name !== this.catalogTable &&
+      !['rag_roles', 'rag_role_assignments', 'rag_session_bindings'].includes(
+        name,
+      )
+    )
+      return undefined;
     return {
       ok: false,
       error: new RagError(
@@ -451,6 +470,19 @@ export class PgVectorRagProvider
 
   private dimension(): number {
     return this.connection.dimension ?? this.defaultDimension;
+  }
+
+  /** Persistence connection and qualified catalog used by the access migration/stores. */
+  async accessPersistence(): Promise<{
+    client: PgClient;
+    catalogTable: string;
+    schema: string | undefined;
+  }> {
+    return {
+      client: await this.adminClient(),
+      catalogTable: this.catalogTable,
+      schema: this.layout === 'shared' ? this.connection.schema : undefined,
+    };
   }
 
   private async adminClient(): Promise<PgClient> {

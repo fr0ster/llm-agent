@@ -66,6 +66,7 @@ export async function writeCatalogRecord(
       userId ?? null,
       sessionId ?? null,
       encodeRagAttributes(record.attributes),
+      record.scope === 'role' ? record.roleId : null,
     ]);
     return { ok: true, value: undefined };
   } catch (err) {

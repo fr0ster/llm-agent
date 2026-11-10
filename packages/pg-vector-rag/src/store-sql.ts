@@ -1,6 +1,7 @@
 import {
   INVALID_ARGUMENT,
   RagError,
+  type RagIdentityFilter,
   type RagScanFilter,
 } from '@mcp-abap-adt/llm-agent';
 import { createTableSql, qualifiedTable, quoteIdent } from './schema.js';
@@ -9,7 +10,7 @@ export type SqlStatement = { sql: string; params: unknown[] };
 
 /** What a search narrows by, besides the collection. */
 export interface PgSearchFilter {
-  identity?: { sessionId?: string; userId?: string };
+  identity?: RagIdentityFilter;
   namespace?: string;
   /** Epoch seconds; a numeric `metadata.ttl` before it has expired. */
   nowSecs: number;
@@ -140,13 +141,24 @@ function filterConditions(
   filter: PgSearchFilter,
   params: unknown[],
   metadata: string,
-  stringsOnly = false,
+  stringsOnly = true,
 ): string[] {
   const conditions: string[] = [];
   const text = (key: string): string =>
     stringsOnly
       ? `CASE WHEN jsonb_typeof(${metadata}->'${key}') = 'string' THEN ${metadata}->>'${key}' END`
       : `${metadata}->>'${key}'`;
+  if (filter.identity?.owner?.scope === 'global') {
+    conditions.push(
+      ...['sessionId', 'userId', 'roleId'].map(
+        (key) => `NOT (${metadata} ? '${key}')`,
+      ),
+    );
+  }
+  if (filter.identity?.roleId !== undefined) {
+    params.push(filter.identity.roleId);
+    conditions.push(`${text('roleId')} = $${params.length}`);
+  }
   if (filter.identity?.sessionId !== undefined) {
     params.push(filter.identity.sessionId);
     conditions.push(`${text('sessionId')} = $${params.length}`);

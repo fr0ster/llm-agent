@@ -194,7 +194,7 @@ describe('PgVectorRag — session/user filter (security)', () => {
     const { sql, params } = lastSelect();
     assert.match(
       sql,
-      /WHERE metadata->>'sessionId' = \$1 AND metadata->>'userId' = \$2 AND COALESCE\(.*\) >= \$3 ORDER BY vector <=> .* LIMIT 4$/,
+      /WHERE CASE WHEN jsonb_typeof\(metadata->'sessionId'\) = 'string' THEN metadata->>'sessionId' END = \$1 AND CASE WHEN jsonb_typeof\(metadata->'userId'\) = 'string' THEN metadata->>'userId' END = \$2 AND COALESCE\(.*\) >= \$3 ORDER BY vector <=> .* LIMIT 4$/,
     );
     assert.deepEqual(params.slice(0, 2), ['s1', 'u1']);
   });
@@ -203,7 +203,10 @@ describe('PgVectorRag — session/user filter (security)', () => {
     const { rag, lastSelect } = makeRag();
     await rag.query(emb, 2, { ragFilter: { userId: 'u1' } });
     const { sql, params } = lastSelect();
-    assert.match(sql, /WHERE metadata->>'userId' = \$1 AND COALESCE/);
+    assert.match(
+      sql,
+      /WHERE CASE WHEN jsonb_typeof\(metadata->'userId'\) = 'string' THEN metadata->>'userId' END = \$1 AND COALESCE/,
+    );
     assert.ok(!sql.includes("'sessionId'"));
     assert.equal(params[0], 'u1');
     assert.equal(params.length, 2);
@@ -228,7 +231,7 @@ describe('PgVectorRag — session/user filter (security)', () => {
     const { sql, params } = lastSelect();
     assert.match(
       sql,
-      /WHERE metadata->>'namespace' = \$1 AND COALESCE\(.*\) >= \$2 ORDER BY vector <=> .* LIMIT 3$/,
+      /WHERE CASE WHEN jsonb_typeof\(metadata->'namespace'\) = 'string' THEN metadata->>'namespace' END = \$1 AND COALESCE\(.*\) >= \$2 ORDER BY vector <=> .* LIMIT 3$/,
     );
     assert.ok(!sql.includes("n' OR"));
     assert.equal(params[0], "n' OR '1'='1");

@@ -67,6 +67,8 @@ export interface CallOptions {
   /** Filter RAG results by namespace or other metadata. Every `IRag` store
    *  honours `sessionId` and `userId` as an identity scope (see `IRag.query`). */
   ragFilter?: {
+    /** Mandatory absence of every ownership tag, applied before top-k. */
+    owner?: { readonly scope: 'global' };
     namespace?: string;
     userId?: string;
     caller?: RagCaller;

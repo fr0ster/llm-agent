@@ -77,7 +77,9 @@ export async function ownerBoundQuery(
         ? { userId: owner.userId }
         : owner.scope === 'role'
           ? { roleId: owner.roleId }
-          : {};
+          : owner.scope === 'global'
+            ? { owner: { scope: 'global' as const } }
+            : {};
   const result = await store.rag.query(embedding, k, {
     ...options,
     ragFilter: { ...filter, ...ownerFilter },

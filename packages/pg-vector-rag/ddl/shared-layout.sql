@@ -5,6 +5,7 @@ CREATE TABLE "rag_collections" (
     scope VARCHAR(16) NOT NULL,
     user_id TEXT,
     session_id TEXT,
+    role_id TEXT,
     attributes_json TEXT,
     created_at TIMESTAMPTZ DEFAULT NOW()
   );

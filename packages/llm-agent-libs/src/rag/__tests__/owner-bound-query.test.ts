@@ -272,3 +272,30 @@ it('global retrieval through RagOrchestrator drops session, user and role record
     ['record global'],
   );
 });
+
+it('forwards the global no-owner predicate before top-k and keeps its defensive post-filter', async () => {
+  const backend = makeRag([]);
+  backend.query = async (_embedding, k, options) => {
+    assert.equal(k, 2);
+    assert.deepEqual(options?.ragFilter?.owner, { scope: 'global' });
+    return {
+      ok: true,
+      value: [
+        { text: 'private', metadata: { roleId: 'r' }, score: 1 },
+        { text: 'global', metadata: {}, score: 0.5 },
+      ],
+    };
+  };
+  const result = await ownerBoundQuery(
+    { name: 'global', owner: { scope: 'global' }, rag: backend },
+    embedding,
+    2,
+    { caller },
+    testRagAccess(),
+  );
+  assert.ok(result.ok);
+  assert.deepEqual(
+    result.value.map((row) => row.text),
+    ['global'],
+  );
+});

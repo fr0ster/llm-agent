@@ -87,7 +87,7 @@ describe('per-collection store SQL', () => {
         nowSecs: 42,
       }),
       {
-        sql: `SELECT id, text, metadata, vector <=> LIT AS score FROM "docs" WHERE metadata->>'sessionId' = $1 AND metadata->>'userId' = $2 AND metadata->>'namespace' = $3 AND ${TTL} $4 ORDER BY vector <=> LIT LIMIT 1`,
+        sql: `SELECT id, text, metadata, vector <=> LIT AS score FROM "docs" WHERE CASE WHEN jsonb_typeof(metadata->'sessionId') = 'string' THEN metadata->>'sessionId' END = $1 AND CASE WHEN jsonb_typeof(metadata->'userId') = 'string' THEN metadata->>'userId' END = $2 AND CASE WHEN jsonb_typeof(metadata->'namespace') = 'string' THEN metadata->>'namespace' END = $3 AND ${TTL} $4 ORDER BY vector <=> LIT LIMIT 1`,
         params: ['s', 'u', 'ns', 42],
       },
     );
