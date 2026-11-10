@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { IRagEditor } from '../../interfaces/rag.js';
-import { RagError } from '../../interfaces/types.js';
 import { testRagAccess } from '../../testing/rag-access-testing.js';
+import { CollectionDataDeleteError } from '../corrections/errors.js';
 import { InMemoryRag } from '../in-memory-rag.js';
 import { buildRagCollectionToolEntries } from '../mcp-tools/rag-collection-tools.js';
 import { InMemoryRagProvider } from '../providers/in-memory-rag-provider.js';
@@ -432,7 +432,7 @@ describe('rag_delete_collection when the data cannot be deleted', () => {
       }),
       deleteCollection: async () => ({
         ok: false,
-        error: new RagError('backend down'),
+        error: new CollectionDataDeleteError('s', 'backend down'),
       }),
     });
     reg.setProviderRegistry(providers);

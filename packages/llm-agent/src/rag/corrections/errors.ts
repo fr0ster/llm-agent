@@ -196,3 +196,14 @@ export class ReservedCollectionNameError extends RagError {
     this.name = 'ReservedCollectionNameError';
   }
 }
+
+/** The catalog record is gone, but deleting the remaining physical data failed. */
+export class CollectionDataDeleteError extends RagError {
+  constructor(collectionName: string, reason: string) {
+    super(
+      `Collection '${collectionName}' record was deleted, but its data was not deleted: ${reason}`,
+      'RAG_COLLECTION_DATA_DELETE',
+    );
+    this.name = 'CollectionDataDeleteError';
+  }
+}

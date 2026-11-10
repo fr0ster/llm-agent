@@ -127,10 +127,21 @@ export class SimpleRagRegistry implements IRagRegistry {
    * entry of the one scope holding it — or AmbiguousCollectionError naming
    * every scope that does. Never a silent precedence between scopes.
    */
-  protected find(name: string, scope?: RagCollectionScope): Found {
+  protected find(
+    name: string,
+    scope?: RagCollectionScope,
+    owner?: RagCollectionOwner,
+  ): Found {
+    const ownerKeys = owner ? ragOwnerKeys(owner) : undefined;
     const matches = Array.from(this.entries.entries()).filter(
       ([, entry]) =>
-        entry.meta.name === name && (!scope || entry.meta.scope === scope),
+        entry.meta.name === name &&
+        (!scope || entry.meta.scope === scope) &&
+        (!owner ||
+          (entry.meta.scope === owner.scope &&
+            entry.meta.sessionId === ownerKeys?.sessionId &&
+            entry.meta.userId === ownerKeys?.userId &&
+            entry.meta.roleId === ownerKeys?.roleId)),
     );
     if (matches.length > 1) {
       return {
@@ -153,8 +164,9 @@ export class SimpleRagRegistry implements IRagRegistry {
   private findOrThrow(
     name: string,
     scope?: RagCollectionScope,
+    owner?: RagCollectionOwner,
   ): { key: string; entry: Entry } | undefined {
-    const f = this.find(name, scope);
+    const f = this.find(name, scope, owner);
     if (!f.ok) throw f.error;
     return f.found;
   }
@@ -253,20 +265,32 @@ export class SimpleRagRegistry implements IRagRegistry {
     });
   }
 
-  unregister(name: string, scope?: RagCollectionScope): boolean {
-    const found = this.findOrThrow(name, scope);
+  unregister(
+    name: string,
+    scope?: RagCollectionScope,
+    owner?: RagCollectionOwner,
+  ): boolean {
+    const found = this.findOrThrow(name, scope, owner);
     if (!found) return false;
     this.entries.delete(found.key);
     this.fireMutation();
     return true;
   }
 
-  get(name: string, scope?: RagCollectionScope): IRag | undefined {
-    return this.findOrThrow(name, scope)?.entry.rag;
+  get(
+    name: string,
+    scope?: RagCollectionScope,
+    owner?: RagCollectionOwner,
+  ): IRag | undefined {
+    return this.findOrThrow(name, scope, owner)?.entry.rag;
   }
 
-  getEditor(name: string, scope?: RagCollectionScope): IRagEditor | undefined {
-    return this.findOrThrow(name, scope)?.entry.editor;
+  getEditor(
+    name: string,
+    scope?: RagCollectionScope,
+    owner?: RagCollectionOwner,
+  ): IRagEditor | undefined {
+    return this.findOrThrow(name, scope, owner)?.entry.editor;
   }
 
   /**
@@ -276,12 +300,17 @@ export class SimpleRagRegistry implements IRagRegistry {
    * FallbackRag: re-registering would set the store name to the logical name
    * and drop the provider, so a hydrated collection's delete would miss its
    * store and its catalog record would come back (§6.3). The scope is
-   * required, so the lookup is never ambiguous. False when the entry is
-   * absent — including one currently reserved by an in-flight deletion (it is
+   * required; an owner selects between role collections of the same name.
+   * False when the entry is absent — including one currently reserved by an in-flight deletion (it is
    * gone from `entries` already); never re-inserts.
    */
-  replaceRag(name: string, scope: RagCollectionScope, rag: IRag): boolean {
-    const found = this.findOrThrow(name, scope);
+  replaceRag(
+    name: string,
+    scope: RagCollectionScope,
+    rag: IRag,
+    owner?: RagCollectionOwner,
+  ): boolean {
+    const found = this.findOrThrow(name, scope, owner);
     if (!found) return false;
     found.entry.rag = rag;
     this.fireMutation();
@@ -426,8 +455,9 @@ export class SimpleRagRegistry implements IRagRegistry {
   async deleteCollection(
     name: string,
     scope?: RagCollectionScope,
+    owner?: RagCollectionOwner,
   ): Promise<Result<void, RagError>> {
-    const f = this.find(name, scope);
+    const f = this.find(name, scope, owner);
     if (!f.ok) return { ok: false, error: f.error };
     if (!f.found) {
       return { ok: false, error: new CollectionNotFoundError(name) };

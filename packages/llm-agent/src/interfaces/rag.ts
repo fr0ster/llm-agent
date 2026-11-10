@@ -325,11 +325,24 @@ export interface IRagRegistry {
    * hold fails with AmbiguousCollectionError (RAG_AMBIGUOUS_COLLECTION, naming
    * them in `.scopes`) — thrown by `unregister`, `get` and `getEditor`, whose
    * return values cannot tell "ambiguous" from "absent", and returned by
-   * `deleteCollection`.
+   * `deleteCollection`. A verified owner narrows the lookup to that exact
+   * owner; omitting it preserves the existing ambiguity behavior.
    */
-  unregister(name: string, scope?: RagCollectionScope): boolean;
-  get(name: string, scope?: RagCollectionScope): IRag | undefined;
-  getEditor(name: string, scope?: RagCollectionScope): IRagEditor | undefined;
+  unregister(
+    name: string,
+    scope?: RagCollectionScope,
+    owner?: RagCollectionOwner,
+  ): boolean;
+  get(
+    name: string,
+    scope?: RagCollectionScope,
+    owner?: RagCollectionOwner,
+  ): IRag | undefined;
+  getEditor(
+    name: string,
+    scope?: RagCollectionScope,
+    owner?: RagCollectionOwner,
+  ): IRagEditor | undefined;
   list(): readonly RagCollectionMeta[];
 
   /** Create a collection via a provider and register it atomically. */
@@ -364,6 +377,7 @@ export interface IRagRegistry {
   deleteCollection(
     name: string,
     scope?: RagCollectionScope,
+    owner?: RagCollectionOwner,
   ): Promise<Result<void, RagError>>;
 
   /**

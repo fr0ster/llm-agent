@@ -8,8 +8,12 @@ import type {
   RagCollectionOwner,
   RagJsonValue,
 } from '../../interfaces/rag.js';
+import { RagError } from '../../interfaces/types.js';
 import { testRagAccess } from '../../testing/rag-access-testing.js';
-import { CatalogRecordDeleteError } from '../corrections/errors.js';
+import {
+  AmbiguousCollectionError,
+  CatalogRecordDeleteError,
+} from '../corrections/errors.js';
 import { InMemoryRag } from '../in-memory-rag.js';
 import {
   buildRagCollectionToolEntries,
@@ -684,4 +688,168 @@ it('role creation requires an admin, assignment and server permission', async ()
     providerRegistry: providers,
   })('rag_create_collection').handler({}, args)) as Answer;
   assert.equal(allowed.ok, true);
+});
+
+describe('owner-exact role mutations regression', () => {
+  async function setup() {
+    const reg = new SimpleRagRegistry();
+    const providers = new SimpleRagProviderRegistry();
+    reg.setProviderRegistry(providers);
+    const a = editable();
+    const b = editable();
+    for (const [roleId, store] of [
+      ['A', a],
+      ['B', b],
+    ] as const) {
+      providers.registerProvider({
+        name: roleId,
+        kind: 'vector',
+        editable: true,
+        supportedScopes: ['role'],
+        createCollection: async () => ({ ok: true, value: store }),
+        deleteCollection: async () => {
+          const writer = store.rag.writer();
+          assert.ok(writer.clearAll);
+          return writer.clearAll();
+        },
+      });
+      reg.register('docs', store.rag, store.editor, {
+        displayName: 'docs',
+        scope: 'role',
+        roleId,
+        providerName: roleId,
+      });
+      await store.editor.upsert('original', {
+        id: 'original',
+        canonicalKey: 'original',
+      });
+    }
+    const access = testRagAccess();
+    assert.ok((await access.roles.createRole({ roleId: 'A', name: 'A' })).ok);
+    assert.ok((await access.roles.assign('alice', 'A')).ok);
+    return { reg, a, b, tool: tools(reg, { access }) };
+  }
+
+  for (const operation of ['rag_add', 'rag_correct', 'rag_deprecate']) {
+    it(`${operation} writes only to the authorized role with a duplicate name`, async () => {
+      const { a, b, tool } = await setup();
+      const beforeA = await a.rag.list();
+      const beforeB = await b.rag.list();
+      const out = (await tool(operation).handler(
+        {},
+        {
+          collection: 'docs',
+          scope: 'role',
+          text: 'added',
+          canonicalKey: 'original',
+          predecessorId: 'original',
+          predecessorCanonicalKey: 'original',
+          newText: 'corrected',
+          id: 'original',
+          reason: 'test',
+        },
+      )) as Answer;
+      assert.equal(out.ok, true);
+      assert.notDeepEqual(await a.rag.list(), beforeA);
+      assert.deepEqual(await b.rag.list(), beforeB);
+    });
+  }
+
+  it('deletes only the authorized role collection without warning', async () => {
+    const { reg, a, b, tool } = await setup();
+    const beforeB = await b.rag.list();
+    const out = (await tool('rag_delete_collection').handler(
+      {},
+      { name: 'docs', scope: 'role' },
+    )) as Answer;
+    assert.deepEqual(out, { ok: true });
+    assert.deepEqual(
+      reg.list().map((meta) => meta.roleId),
+      ['B'],
+    );
+    const remainingA = await a.rag.list();
+    assert.ok(remainingA.ok);
+    assert.equal(remainingA.value.records.length, 0);
+    assert.deepEqual(await b.rag.list(), beforeB);
+  });
+
+  for (const error of [
+    new AmbiguousCollectionError('docs', ['role']),
+    new RagError('unexpected', 'UNEXPECTED'),
+  ]) {
+    it(`delete refuses ${error.name} instead of claiming removal`, async () => {
+      class RefusingRegistry extends SimpleRagRegistry {
+        override async deleteCollection() {
+          return { ok: false as const, error };
+        }
+      }
+      const reg = new RefusingRegistry();
+      const store = editable();
+      reg.register('docs', store.rag, store.editor, {
+        displayName: 'docs',
+        scope: 'session',
+        sessionId: 'S',
+      });
+      const out = (await tools(reg)('rag_delete_collection').handler(
+        {},
+        { name: 'docs' },
+      )) as Answer;
+      assert.equal(out.ok, false);
+      assert.equal(out.code, error.code);
+      assert.equal(out.error, error.message);
+      assert.equal(out.warning, undefined);
+      assert.equal(reg.list().length, 1);
+    });
+  }
+});
+
+describe('owner-exact registry addressing regression', () => {
+  it('narrows every name-addressed method and preserves ownerless ambiguity', async () => {
+    const reg = new SimpleRagRegistry();
+    const a = new InMemoryRag();
+    const b = new InMemoryRag();
+    const editorA = new DirectEditStrategy(
+      a.writer(),
+      new GlobalUniqueIdStrategy(),
+    );
+    const editorB = new DirectEditStrategy(
+      b.writer(),
+      new GlobalUniqueIdStrategy(),
+    );
+    const ownerA = { scope: 'role', roleId: 'A' } as const;
+    const ownerB = { scope: 'role', roleId: 'B' } as const;
+    reg.register('docs', a, editorA, { displayName: 'docs', ...ownerA });
+    reg.register('docs', b, editorB, { displayName: 'docs', ...ownerB });
+    assert.throws(() => reg.get('docs', 'role'), AmbiguousCollectionError);
+    assert.throws(
+      () => reg.getEditor('docs', 'role'),
+      AmbiguousCollectionError,
+    );
+    assert.throws(
+      () => reg.unregister('docs', 'role'),
+      AmbiguousCollectionError,
+    );
+    assert.throws(
+      () => reg.replaceRag('docs', 'role', a),
+      AmbiguousCollectionError,
+    );
+    const refused = await reg.deleteCollection('docs', 'role');
+    assert.ok(!refused.ok && refused.error instanceof AmbiguousCollectionError);
+    assert.equal(reg.get('docs', 'role', ownerA), a);
+    assert.equal(reg.getEditor('docs', 'role', ownerB), editorB);
+    assert.equal(
+      reg.get('docs', 'role', { scope: 'role', roleId: 'absent' }),
+      undefined,
+    );
+    assert.equal(reg.get('docs', 'user', ownerA), undefined);
+    const replacement = new InMemoryRag();
+    assert.equal(reg.replaceRag('docs', 'role', replacement, ownerA), true);
+    assert.equal(reg.get('docs', 'role', ownerA), replacement);
+    assert.equal(reg.get('docs', 'role', ownerB), b);
+    assert.ok((await reg.deleteCollection('docs', 'role', ownerA)).ok);
+    assert.equal(reg.get('docs', 'role', ownerA), undefined);
+    assert.equal(reg.get('docs', 'role'), b);
+    assert.equal(reg.unregister('docs', 'role', ownerA), false);
+    assert.equal(reg.unregister('docs', 'role', ownerB), true);
+  });
 });

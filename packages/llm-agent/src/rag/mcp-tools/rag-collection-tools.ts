@@ -16,9 +16,7 @@ import type {
 import { checkRagAccess, visibleOwnerFilter } from '../access/check-access.js';
 import {
   AmbiguousCollectionError,
-  CatalogRecordDeleteError,
-  CollectionNotFoundError,
-  DeleteUnsupportedError,
+  CollectionDataDeleteError,
 } from '../corrections/errors.js';
 import {
   buildCorrectionMetadata,
@@ -112,8 +110,8 @@ export function buildRagCollectionToolEntries(
   const authorize = async (
     meta: RagCollectionMeta,
     mode: RagAccessMode,
+    owner = ownerOf(meta),
   ): Promise<Refusal | undefined> => {
-    const owner = ownerOf(meta);
     if (!owner)
       return {
         ok: false,
@@ -143,7 +141,13 @@ export function buildRagCollectionToolEntries(
     name: RagJsonValue | undefined,
     scope: RagJsonValue | undefined,
   ): Promise<
-    { ok: true; meta: RagCollectionMeta; scope: RagCollectionScope } | Refusal
+    | {
+        ok: true;
+        meta: RagCollectionMeta;
+        scope: RagCollectionScope;
+        owner: RagCollectionOwner;
+      }
+    | Refusal
   > => {
     if (typeof name !== 'string' || name === '') {
       return { ok: false, error: 'collection is required' };
@@ -173,7 +177,14 @@ export function buildRagCollectionToolEntries(
         error: `${ambiguous.name}: ${ambiguous.message}`,
       };
     }
-    return { ok: true, meta: matches[0], scope: scopeOf(matches[0]) };
+    const owner = ownerOf(matches[0]);
+    if (!owner)
+      return {
+        ok: false,
+        error: 'Collection owner is invalid',
+        code: 'RAG_ACCESS_DENIED',
+      };
+    return { ok: true, meta: matches[0], scope: scopeOf(matches[0]), owner };
   };
 
   const resolveEditor = async (
@@ -182,9 +193,9 @@ export function buildRagCollectionToolEntries(
   ): Promise<{ ok: true; editor: IRagEditor } | Refusal> => {
     const r = await resolve(name, scope);
     if (!r.ok) return r;
-    const denied = await authorize(r.meta, 'write');
+    const denied = await authorize(r.meta, 'write', r.owner);
     if (denied) return denied;
-    const editor = registry.getEditor(r.meta.name, r.scope);
+    const editor = registry.getEditor(r.meta.name, r.scope, r.owner);
     if (!editor) {
       return { ok: false, error: `Collection '${r.meta.name}' is read-only` };
     }
@@ -348,33 +359,18 @@ export function buildRagCollectionToolEntries(
       // caller's is not in its address space.
       const r = await resolve(args.name, args.scope);
       if (!r.ok) return r;
-      const denied = await authorize(r.meta, 'write');
+      const denied = await authorize(r.meta, 'write', r.owner);
       if (denied) return denied;
       const name = r.meta.name;
-      const res = await registry.deleteCollection(name, r.scope);
+      const res = await registry.deleteCollection(name, r.scope, r.owner);
       if (res.ok) return { ok: true };
-      if (res.error instanceof CollectionNotFoundError) {
-        return { ok: false, error: res.error.message };
+      if (res.error instanceof CollectionDataDeleteError) {
+        return {
+          ok: true,
+          warning: `Collection '${name}' was removed, but its data could not be deleted: ${res.error.message}`,
+        };
       }
-      if (res.error instanceof CatalogRecordDeleteError) {
-        // Its record could not be removed, so nothing was: record and data are
-        // intact and the registry has it again. A failed deletion to retry —
-        // not a removal with a data problem.
-        return { ok: false, error: res.error.message };
-      }
-      if (res.error instanceof DeleteUnsupportedError) {
-        // Nothing could reach the collection's store: its provider is not
-        // registered, or has no way to delete. Its catalog record was never
-        // touched, so the collection is not gone — it comes back on the next
-        // hydration. Reporting ok:true would claim a removal that did not happen.
-        return { ok: false, code: res.error.code, error: res.error.message };
-      }
-      // The record is gone and the collection unregistered: it is gone for the
-      // caller, and the orphaned data is reported as what it is.
-      return {
-        ok: true,
-        warning: `Collection '${name}' was removed, but its data could not be deleted: ${res.error.message}`,
-      };
+      return { ok: false, code: res.error.code, error: res.error.message };
     },
   };
 
