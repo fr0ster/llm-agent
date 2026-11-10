@@ -108,7 +108,9 @@ test('seeds the deployment’s globals by reference, and only its globals', asyn
     userId: 'alice',
   });
   const reg = await buildSessionRagRegistry({
-    ragAccess: testRagAccess(),
+    ragAccess: testRagAccess([
+      { sessionId: 'S', userId: 'alice', isAdmin: false },
+    ]),
     caller: { sessionId: 'S', userId: 'alice', isAdmin: false },
     identity: { sessionId: 'S', userId: 'alice' },
     globals,
@@ -136,7 +138,9 @@ test('hydrates what the catalog holds for this identity, and nothing of anyone e
   const providers = new SimpleRagProviderRegistry();
   providers.registerProvider(pg.provider);
   const reg = await buildSessionRagRegistry({
-    ragAccess: testRagAccess(),
+    ragAccess: testRagAccess([
+      { sessionId: 'S', userId: 'alice', isAdmin: false },
+    ]),
     caller: { sessionId: 'S', userId: 'alice', isAdmin: false },
     identity: { sessionId: 'S', userId: 'alice' },
     globals: new SimpleRagRegistry(),
@@ -164,7 +168,9 @@ test('a caller with another userId gets no user collection', async () => {
   const providers = new SimpleRagProviderRegistry();
   providers.registerProvider(pg.provider);
   const reg = await buildSessionRagRegistry({
-    ragAccess: testRagAccess(),
+    ragAccess: testRagAccess([
+      { sessionId: 'S', userId: 'test-user', isAdmin: false },
+    ]),
     caller: { sessionId: 'S', userId: 'test-user', isAdmin: false },
     identity: { sessionId: 'S', userId: 'test-user' },
     globals: new SimpleRagRegistry(),
@@ -192,7 +198,9 @@ test('reports rejected catalog rows and a failed catalog read, and carries on', 
   providers.registerProvider(pg.provider);
   const { log, messages } = logger();
   const reg = await buildSessionRagRegistry({
-    ragAccess: testRagAccess(),
+    ragAccess: testRagAccess([
+      { sessionId: 'S', userId: 'test-user', isAdmin: false },
+    ]),
     caller: { sessionId: 'S', userId: 'test-user', isAdmin: false },
     identity: { sessionId: 'S', userId: 'test-user' },
     globals: new SimpleRagRegistry(),
@@ -218,7 +226,9 @@ test('a catalogued global that the deployment already configures is skipped, wit
   providers.registerProvider(pg.provider);
   const { log, messages } = logger();
   const reg = await buildSessionRagRegistry({
-    ragAccess: testRagAccess(),
+    ragAccess: testRagAccess([
+      { sessionId: 'S', userId: 'test-user', isAdmin: false },
+    ]),
     caller: { sessionId: 'S', userId: 'test-user', isAdmin: false },
     identity: { sessionId: 'S', userId: 'test-user' },
     globals,
@@ -269,7 +279,9 @@ test('a provider whose describeCollections throws, and a record whose openCollec
   providers.registerProvider(pg.provider);
   const { log, messages } = logger();
   const reg = await buildSessionRagRegistry({
-    ragAccess: testRagAccess(),
+    ragAccess: testRagAccess([
+      { sessionId: 'S', userId: 'alice', isAdmin: false },
+    ]),
     caller: { sessionId: 'S', userId: 'alice', isAdmin: false },
     identity: { sessionId: 'S', userId: 'alice' },
     globals: new SimpleRagRegistry(),
@@ -306,7 +318,9 @@ test('a provider without a catalog is skipped silently', async () => {
   } as unknown as IRagProvider);
   const { log, messages } = logger();
   const reg = await buildSessionRagRegistry({
-    ragAccess: testRagAccess(),
+    ragAccess: testRagAccess([
+      { sessionId: 'S', userId: 'test-user', isAdmin: false },
+    ]),
     caller: { sessionId: 'S', userId: 'test-user', isAdmin: false },
     identity: { sessionId: 'S', userId: 'test-user' },
     globals: new SimpleRagRegistry(),
@@ -335,13 +349,17 @@ test('the circuit-breaker fallback-wrap on one session’s registry never mutate
   });
 
   const regA = await buildSessionRagRegistry({
-    ragAccess: testRagAccess(),
+    ragAccess: testRagAccess([
+      { sessionId: 'A', userId: 'test-user', isAdmin: false },
+    ]),
     caller: { sessionId: 'A', userId: 'test-user', isAdmin: false },
     identity: { sessionId: 'A', userId: 'test-user' },
     globals,
   });
   const regB = await buildSessionRagRegistry({
-    ragAccess: testRagAccess(),
+    ragAccess: testRagAccess([
+      { sessionId: 'B', userId: 'test-user', isAdmin: false },
+    ]),
     caller: { sessionId: 'B', userId: 'test-user', isAdmin: false },
     identity: { sessionId: 'B', userId: 'test-user' },
     globals,
@@ -396,7 +414,9 @@ test('with a shared `reported` set, a rejected row and a skipped global are logg
   const reported = new Set<string>();
   const first = logger();
   await buildSessionRagRegistry({
-    ragAccess: testRagAccess(),
+    ragAccess: testRagAccess([
+      { sessionId: 'S1', userId: 'test-user', isAdmin: false },
+    ]),
     caller: { sessionId: 'S1', userId: 'test-user', isAdmin: false },
     identity: { sessionId: 'S1', userId: 'test-user' },
     globals,
@@ -411,7 +431,9 @@ test('with a shared `reported` set, a rejected row and a skipped global are logg
 
   const second = logger();
   await buildSessionRagRegistry({
-    ragAccess: testRagAccess(),
+    ragAccess: testRagAccess([
+      { sessionId: 'S2', userId: 'test-user', isAdmin: false },
+    ]),
     caller: { sessionId: 'S2', userId: 'test-user', isAdmin: false },
     identity: { sessionId: 'S2', userId: 'test-user' },
     globals,
@@ -424,7 +446,9 @@ test('with a shared `reported` set, a rejected row and a skipped global are logg
   // A server of its own (its own set) reports them again: nothing is module-global.
   const other = logger();
   await buildSessionRagRegistry({
-    ragAccess: testRagAccess(),
+    ragAccess: testRagAccess([
+      { sessionId: 'S3', userId: 'test-user', isAdmin: false },
+    ]),
     caller: { sessionId: 'S3', userId: 'test-user', isAdmin: false },
     identity: { sessionId: 'S3', userId: 'test-user' },
     globals,
@@ -448,7 +472,9 @@ test('hydration skips reserved catalog records and reports their refusal', async
   providers.registerProvider(pg.provider);
   const log = logger();
   const registry = await buildSessionRagRegistry({
-    ragAccess: testRagAccess(),
+    ragAccess: testRagAccess([
+      { sessionId: 'S', userId: 'alice', isAdmin: false },
+    ]),
     caller: { sessionId: 'S', userId: 'alice', isAdmin: false },
     identity: { sessionId: 'S', userId: 'alice' },
     globals: new SimpleRagRegistry(),
@@ -469,7 +495,9 @@ test('hydration skips reserved catalog records and reports their refusal', async
 });
 
 test('role revoke hides a collection in the same session and a missing role is reported once', async () => {
-  const access = testRagAccess();
+  const access = testRagAccess([
+    { sessionId: 's1', userId: 'u1', isAdmin: false },
+  ]);
   await access.roles.createRole({ roleId: 'r', name: 'Readers' });
   await access.roles.assign('u1', 'r');
   const pg = catalogued('pg', [
@@ -499,7 +527,9 @@ test('role revoke hides a collection in the same session and a missing role is r
   );
   await access.roles.revoke('u1', 'r');
   await buildSessionRagRegistry({
-    ragAccess: testRagAccess(),
+    ragAccess: testRagAccess([
+      { sessionId: 'S', userId: 'alice', isAdmin: false },
+    ]),
     caller: { sessionId: 'S', userId: 'alice', isAdmin: false },
     ...input,
     registry,

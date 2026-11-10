@@ -134,11 +134,11 @@ test('a wrapped hydrated collection keeps its editor, and its delete still reach
     const meta = reg.list().find((m) => m.name === 'mine');
     assert.equal(meta?.providerName, 'pg', 'the provider survives the wrap');
     assert.equal(meta?.userId, 'alice');
-    assert.equal(
+    assert.ok(
       reg.getEditor('mine', 'user'),
-      editor,
       'still editable through the tools',
     );
+    assert.notEqual(reg.getEditor('mine', 'user'), editor);
     assert.ok((await reg.deleteCollection('mine', 'user')).ok);
     assert.deepEqual(
       deleted,

@@ -54,6 +54,9 @@ export const roles: IRagRoleStore = {
   },
 };
 export const bindings: ISessionBindingStore = {
+  async getUserId() {
+    return { ok: true, value: undefined };
+  },
   async bind() {
     return { ok: true, value: undefined };
   },

@@ -74,6 +74,7 @@ export class LlmReviewStrategy implements IReviewStrategy {
     }\n\nProposed plan (JSON):\n${JSON.stringify(input.plan)}`;
 
     const res = await this.agent.run({
+      caller: input.caller,
       task,
       sessionId: input.sessionId,
       usage: input.usage?.with({ role: 'reviewer' }),
@@ -159,6 +160,7 @@ export class LlmReviewStrategy implements IReviewStrategy {
     }\n\nFailed step: ${input.failedNodeId}\nError: ${input.error}`;
 
     const res = await this.executionAgent.run({
+      caller: input.caller,
       task,
       sessionId: input.sessionId,
       usage: input.usage?.with({ role: 'reviewer' }),

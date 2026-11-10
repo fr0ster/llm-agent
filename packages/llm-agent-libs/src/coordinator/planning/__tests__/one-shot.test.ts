@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { ICoordinatorContext, ILlm } from '@mcp-abap-adt/llm-agent';
+import { testCallOptions } from '../../../testing/index.js';
 import { OneShotPlanning } from '../one-shot.js';
 
 function makeCtx(): ICoordinatorContext {
   return {
+    options: testCallOptions({ sessionId: 't' }),
     inputText: 'Summarize this: a, b, c',
     registry: new Map(),
     stepResults: {},

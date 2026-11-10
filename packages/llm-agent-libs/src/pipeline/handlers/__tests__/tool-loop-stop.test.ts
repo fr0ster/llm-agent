@@ -18,7 +18,6 @@ import type {
   ToolCallEntry,
 } from '@mcp-abap-adt/llm-agent';
 import { NoopToolCache } from '@mcp-abap-adt/llm-agent';
-import { testRagAccess } from '@mcp-abap-adt/llm-agent/testing/rag-access-testing';
 import { SmartAgent } from '../../../agent.js';
 import { PendingToolResultsRegistry } from '../../../policy/pending-tool-results-registry.js';
 import { ToolAvailabilityRegistry } from '../../../policy/tool-availability-registry.js';
@@ -26,6 +25,7 @@ import {
   makeAssembler,
   makeDefaultDeps,
   testCallOptions,
+  testRequestAccess,
 } from '../../../testing/index.js';
 import type { ISpan } from '../../../tracer/types.js';
 import type { PipelineContext } from '../../context.js';
@@ -81,7 +81,7 @@ function makeCtx(
   const yielded: Result<LlmStreamChunk, unknown>[] = [];
 
   return {
-    ragAccess: testRagAccess(),
+    ragAccess: testRequestAccess,
     config: {
       maxIterations: 3,
       maxToolCalls: 5,
@@ -89,7 +89,10 @@ function makeCtx(
       mode: 'smart',
       refreshToolsPerIteration: false,
     } as PipelineContext['config'],
-    options: testCallOptions({} as CallOptions),
+    options: testCallOptions({
+      sessionId: 's-stream',
+      ...testCallOptions({} as CallOptions),
+    }),
     sessionId: 's-stream',
     mcpClients: [],
     mainLlm,

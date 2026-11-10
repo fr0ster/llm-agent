@@ -72,7 +72,7 @@ function tools(
   const entries = buildRagCollectionToolEntries({
     registry: reg,
     caller: ALICE,
-    access: testRagAccess(),
+    access: testRagAccess([ALICE]),
     ...extra,
   });
   return (name: string) => {
@@ -164,7 +164,7 @@ describe('the address space is the bound caller’s', () => {
     const entries = buildRagCollectionToolEntries({
       registry: reg,
       caller: { sessionId: 'S', userId: '', isAdmin: false },
-      access: testRagAccess(),
+      access: testRagAccess([ALICE]),
     });
     const list = entries.find(
       (e) => e.toolDefinition.name === 'rag_list_collections',
@@ -357,7 +357,7 @@ describe('rag_create_collection', () => {
     const entries = buildRagCollectionToolEntries({
       registry: reg,
       caller: ALICE,
-      access: testRagAccess(),
+      access: testRagAccess([ALICE]),
       providerRegistry: providers,
     });
     const create = entries.find(
@@ -383,7 +383,7 @@ describe('rag_create_collection', () => {
     const entries = buildRagCollectionToolEntries({
       registry: reg,
       caller: { sessionId: 'S', userId: '', isAdmin: false },
-      access: testRagAccess(),
+      access: testRagAccess([ALICE]),
       providerRegistry: providers,
     });
     const create = entries.find(
@@ -526,7 +526,7 @@ describe('role and global collection access', () => {
       scope: 'role',
       roleId: 'team',
     });
-    const access = testRagAccess();
+    const access = testRagAccess([ALICE]);
     assert.ok(
       (await access.roles.createRole({ roleId: 'team', name: 'Team' })).ok,
     );
@@ -613,7 +613,7 @@ describe('role and global collection access', () => {
     assert.ok(allowed.id);
     const hit = await reg.get('open', 'global')?.getById(allowed.id);
     assert.ok(hit?.ok && hit.value);
-    const access = testRagAccess();
+    const access = testRagAccess([ALICE]);
     access.decision.canWrite = async () => false;
     const adminDenied = (await tools(reg, {
       caller: { ...ALICE, isAdmin: true },
@@ -630,7 +630,7 @@ describe('role and global collection access', () => {
         supportedScopes: ['global'],
       }),
     );
-    const access = testRagAccess();
+    const access = testRagAccess([ALICE]);
     const entries = tools(reg, {
       caller: { ...ALICE, isAdmin: true },
       access,
@@ -669,10 +669,11 @@ it('role creation requires an admin, assignment and server permission', async ()
   });
   providers.registerProvider(provider);
   const access = {
-    ...testRagAccess(),
+    ...testRagAccess([ALICE]),
     roles: provider.roles,
     bindings: provider.bindings,
   };
+  await access.bindings.bind(ALICE.sessionId, ALICE.userId);
   assert.ok(
     (await access.roles.createRole({ roleId: 'team', name: 'Team' })).ok,
   );
@@ -730,7 +731,7 @@ describe('owner-exact role mutations regression', () => {
         canonicalKey: 'original',
       });
     }
-    const access = testRagAccess();
+    const access = testRagAccess([ALICE]);
     assert.ok((await access.roles.createRole({ roleId: 'A', name: 'A' })).ok);
     assert.ok((await access.roles.assign('alice', 'A')).ok);
     return { reg, a, b, tool: tools(reg, { access }) };
@@ -842,7 +843,8 @@ describe('owner-exact registry addressing regression', () => {
     const refused = await reg.deleteCollection('docs', 'role');
     assert.ok(!refused.ok && refused.error instanceof AmbiguousCollectionError);
     assert.equal(reg.get('docs', 'role', ownerA), a);
-    assert.equal(reg.getEditor('docs', 'role', ownerB), editorB);
+    assert.ok(reg.getEditor('docs', 'role', ownerB));
+    assert.notEqual(reg.getEditor('docs', 'role', ownerB), editorB);
     assert.equal(
       reg.get('docs', 'role', { scope: 'role', roleId: 'absent' }),
       undefined,

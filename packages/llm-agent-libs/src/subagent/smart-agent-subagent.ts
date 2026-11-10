@@ -32,6 +32,11 @@ export class SmartAgentSubAgent implements ISubAgent {
   }
 
   async run(input: ISubAgentInput): Promise<ISubAgentResult> {
+    if (
+      input.sessionId !== undefined &&
+      input.sessionId !== input.caller.sessionId
+    )
+      throw new Error('Caller session does not match worker session');
     const collector = new ToolTraceCollector();
     const assistantTexts: string[] = [];
     let observing = true;
@@ -55,7 +60,7 @@ export class SmartAgentSubAgent implements ISubAgent {
           : prompt,
         {
           requestStartedAt: input.requestStartedAt,
-          sessionId: input.sessionId,
+          sessionId: input.caller.sessionId,
           caller: input.caller,
           usage: input.usage,
           signal: input.signal,

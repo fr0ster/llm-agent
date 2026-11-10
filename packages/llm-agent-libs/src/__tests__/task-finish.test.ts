@@ -163,6 +163,8 @@ for (const pipeline of [false, true]) {
           settled = resolve;
         });
         const board = new TaskBoard({
+          caller: testCallOptions({ sessionId: 'test-session' }).caller,
+          baseInput: () => testCallOptions({ sessionId: 'test-session' }),
           workers: new Map([['w', worker]]),
           signals: scenario === 'no-bus' ? undefined : signals,
           source: 's',
@@ -423,6 +425,8 @@ for (const pipeline of [false, true]) {
         settle = resolve;
       });
       const board = new TaskBoard({
+        caller: testCallOptions({ sessionId: 'test-session' }).caller,
+        baseInput: () => testCallOptions({ sessionId: 'test-session' }),
         workers: new Map([['w', worker]]),
         signals: bus,
         source: 's',

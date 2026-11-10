@@ -141,6 +141,8 @@ for (const pipeline of [false, true]) {
       finish = resolve;
     });
     const board = new TaskBoard({
+      caller: testCallOptions({ sessionId: 'test-session' }).caller,
+      baseInput: () => testCallOptions({ sessionId: 'test-session' }),
       workers: new Map([
         ['worker', new SmartAgentSubAgent('worker', agentFor(pipeline))],
       ]),
@@ -173,6 +175,13 @@ for (const pipeline of [false, true]) {
     });
     let calls = 0;
     const session = await DialogueSession.open({
+      caller: testCallOptions({
+        caller: {
+          sessionId: 'final-iteration',
+          userId: 'test-user',
+          isAdmin: false,
+        },
+      }).caller,
       id: 'final-iteration',
       store,
       maxCorrections: 0,
@@ -238,6 +247,13 @@ for (const pipeline of [false, true]) {
 
 test('dialogue discards tool-round partials before displaying the final iteration', async () => {
   const session = await DialogueSession.open({
+    caller: testCallOptions({
+      caller: {
+        sessionId: 'interrupted-final',
+        userId: 'test-user',
+        isAdmin: false,
+      },
+    }).caller,
     id: 'interrupted-final',
     maxCorrections: 0,
     board: { workers: new Map() },
@@ -336,7 +352,19 @@ for (const pipeline of [false, true]) {
         'worker',
         validationAgent(pipeline, mode),
       );
-      assert.equal((await worker.run({ task: 'go' })).output, 'Accepted B');
+      assert.equal(
+        (
+          await worker.run({
+            caller: {
+              sessionId: 'test-session',
+              userId: 'test-user',
+              isAdmin: false,
+            },
+            task: 'go',
+          })
+        ).output,
+        'Accepted B',
+      );
       const content: string[] = [];
       const boundaries: string[] = [];
       for await (const chunk of validationAgent(pipeline, mode).streamProcess(
@@ -361,13 +389,29 @@ for (const pipeline of [false, true]) {
         validationAgent(pipeline, mode, true),
       );
       assert.equal(
-        (await worker.run({ task: 'go' })).output,
+        (
+          await worker.run({
+            caller: {
+              sessionId: 'test-session',
+              userId: 'test-user',
+              isAdmin: false,
+            },
+            task: 'go',
+          })
+        ).output,
         'Checking first\n\nAccepted B',
       );
     });
 
     test(`dialogue discards validation retry partials (pipeline=${pipeline}, mode=${mode})`, async () => {
       const session = await DialogueSession.open({
+        caller: testCallOptions({
+          caller: {
+            sessionId: 'validation-retry',
+            userId: 'test-user',
+            isAdmin: false,
+          },
+        }).caller,
         id: 'validation-retry',
         maxCorrections: 0,
         board: { workers: new Map() },
@@ -396,6 +440,13 @@ for (const pipeline of [false, true]) {
 test('dialogue forwards worker events live without changing coordinator reply buffers', async () => {
   const events: StreamChunk[] = [];
   const session = await DialogueSession.open({
+    caller: testCallOptions({
+      caller: {
+        sessionId: 'worker-boundaries',
+        userId: 'test-user',
+        isAdmin: false,
+      },
+    }).caller,
     id: 'worker-boundaries',
     maxCorrections: 0,
     board: { workers: new Map() },
@@ -488,7 +539,19 @@ for (const pipeline of [false, true]) {
         'worker',
         resetAgent(pipeline, mode),
       );
-      assert.equal((await worker.run({ task: 'go' })).output, 'Replacement');
+      assert.equal(
+        (
+          await worker.run({
+            caller: {
+              sessionId: 'test-session',
+              userId: 'test-user',
+              isAdmin: false,
+            },
+            task: 'go',
+          })
+        ).output,
+        'Replacement',
+      );
       const boundaries: string[] = [];
       const partials: StreamChunk[] = [];
       for await (const chunk of resetAgent(pipeline, mode).streamProcess(
@@ -508,6 +571,13 @@ for (const pipeline of [false, true]) {
         boundaries,
       );
       const session = await DialogueSession.open({
+        caller: testCallOptions({
+          caller: {
+            sessionId: 'provider-reset',
+            userId: 'test-user',
+            isAdmin: false,
+          },
+        }).caller,
         id: 'provider-reset',
         maxCorrections: 0,
         board: { workers: new Map() },
@@ -625,6 +695,13 @@ for (const pipeline of [true]) {
       const agent = agentFor(pipeline, 'full', '', 3, roundText);
       const expected = roundText[1] || roundText[0];
       const session = await DialogueSession.open({
+        caller: testCallOptions({
+          caller: {
+            sessionId: 'waiting-fallback',
+            userId: 'test-user',
+            isAdmin: false,
+          },
+        }).caller,
         id: 'waiting-fallback',
         maxCorrections: 0,
         board: { workers: new Map() },

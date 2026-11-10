@@ -28,7 +28,10 @@ export async function sharedStore(): Promise<OwnedRagStore> {
   return { name: 'history', owner: { scope: 'session', sessionId: 'A' }, rag };
 }
 
-export function orchestrator(store: OwnedRagStore, access = testRagAccess()) {
+export function orchestrator(
+  store: OwnedRagStore,
+  access = testRagAccess([callerA]),
+) {
   return new RagOrchestrator({
     mainLlm: makeLlm([]),
     helperLlm: undefined,

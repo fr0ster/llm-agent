@@ -14,7 +14,6 @@ import {
   ToolTraceCollector,
   type ToolTraceEntry,
 } from '@mcp-abap-adt/llm-agent';
-import { testRagAccess } from '@mcp-abap-adt/llm-agent/testing/rag-access-testing';
 import { SmartAgent } from '../../../agent.js';
 import { SmartAgentBuilder } from '../../../builder.js';
 import { unwrapBuilderResult } from '../../../builder-types.js';
@@ -25,7 +24,11 @@ import { fireInternalToolsAsync } from '../../../policy/mixed-tool-call-handler.
 import { PendingToolResultsRegistry } from '../../../policy/pending-tool-results-registry.js';
 import { ToolAvailabilityRegistry } from '../../../policy/tool-availability-registry.js';
 import { SmartAgentSubAgent } from '../../../subagent/smart-agent-subagent.js';
-import { makeDefaultDeps } from '../../../testing/index.js';
+import {
+  makeDefaultDeps,
+  testCallOptions,
+  testRequestAccess,
+} from '../../../testing/index.js';
 import { NoopTracer } from '../../../tracer/noop-tracer.js';
 import { InMemoryDialogueStateStore } from '../in-memory-dialogue-state-store.js';
 import { runInPlannerScope } from '../planner-scope.js';
@@ -59,6 +62,8 @@ function boardFor(run: (input: ISubAgentInput) => Promise<ISubAgentResult>) {
     run,
   };
   return new TaskBoard({
+    caller: testCallOptions({ sessionId: 'test-session' }).caller,
+    baseInput: () => testCallOptions({ sessionId: 'test-session' }),
     workers: new Map([['writer', worker]]),
     onEvent: (event) => {
       if (event.task.toolTrace) event.task.toolTrace.entries.length = 0;
@@ -289,6 +294,7 @@ test('SmartAgentSubAgent returns an empty complete trace and isolates repeated r
   };
   const worker = new SmartAgentSubAgent('writer', agent);
   const first = await worker.run({
+    caller: { sessionId: 'test-session', userId: 'test-user', isAdmin: false },
     task: 'write',
     onToolTrace: () => {
       throw new Error('observer');
@@ -296,7 +302,16 @@ test('SmartAgentSubAgent returns an empty complete trace and isolates repeated r
   });
   first.toolTrace?.entries.splice(0);
   assert.equal(
-    (await worker.run({ task: 'again' })).toolTrace?.entries.length,
+    (
+      await worker.run({
+        caller: {
+          sessionId: 'test-session',
+          userId: 'test-user',
+          isAdmin: false,
+        },
+        task: 'again',
+      })
+    ).toolTrace?.entries.length,
     1,
   );
 });
@@ -315,6 +330,8 @@ for (const kind of ['report', 'verdict'] as const) {
       };
       const selected = kind === 'verdict' ? 'audit' : 'reader';
       const board = new TaskBoard({
+        caller: testCallOptions({ sessionId: 'test-session' }).caller,
+        baseInput: () => testCallOptions({ sessionId: 'test-session' }),
         ...profileHost(new Map([[selected, worker]])),
         taskOutputChars: 150000,
         onEvent() {},
@@ -434,6 +451,11 @@ for (const path of ['streaming', 'pipeline'] as const) {
       };
       const observations: ToolTraceEntry[] = [];
       const input: ISubAgentInput = {
+        caller: {
+          sessionId: 'test-session',
+          userId: 'test-user',
+          isAdmin: false,
+        },
         task: 'write',
         onToolTrace: (item) => {
           observations.push(item);
@@ -466,7 +488,7 @@ for (const path of ['streaming', 'pipeline'] as const) {
         const handle = await new SmartAgentBuilder({
           skipModelValidation: true,
         })
-          .withRagAccess(testRagAccess())
+          .withRagAccess(testRequestAccess)
           .withMainLlm(llm)
           .withMcpClients([client])
           .withMaxIterations(3)
@@ -669,8 +691,14 @@ test('mixed async callbacks stay with the originating run after finalization', a
     },
   };
   const worker = new SmartAgentSubAgent('writer', agent);
-  const first = await worker.run({ task: 'first' });
-  const second = await worker.run({ task: 'second' });
+  const first = await worker.run({
+    caller: { sessionId: 'test-session', userId: 'test-user', isAdmin: false },
+    task: 'first',
+  });
+  const second = await worker.run({
+    caller: { sessionId: 'test-session', userId: 'test-user', isAdmin: false },
+    task: 'second',
+  });
   assert.equal(first.toolTrace?.complete, false);
   assert.equal(first.toolTrace?.entries[0].outcome, 'unsettled');
   release();

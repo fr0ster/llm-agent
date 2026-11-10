@@ -2,6 +2,7 @@ import type { LlmUsage } from './types.js';
 import type { IUsageRecorder } from './usage.js';
 
 export interface StateOracleInput {
+  caller: import('./rag-access.js').RagCaller;
   query: string;
   sessionId?: string;
   usage?: IUsageRecorder;

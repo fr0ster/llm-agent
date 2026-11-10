@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { NeedInfoSignal, TokenLedger } from '@mcp-abap-adt/llm-agent';
+import { testCallOptions } from '../../../../llm-agent-libs/src/testing/index.js';
 import { StepperCoordinatorHandler } from '../stepper-coordinator-handler.js';
 
 const ZERO = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
@@ -102,7 +103,10 @@ function ctx() {
             finishReason: c.value.finishReason,
           });
       },
-      options: { trace: { traceId: 't1' } },
+      options: testCallOptions({
+        sessionId: 's1',
+        ...{ trace: { traceId: 't1' } },
+      }),
     },
   };
 }
@@ -349,7 +353,10 @@ test('FIX-B.2: handler passes logLlmCall to buildBuilt; calls land in requestLog
       yield(chunk: { value?: { content?: string; finishReason?: string } }) {
         if (chunk.value) c.yields.push(chunk.value);
       },
-      options: { trace: { traceId: 't1' } },
+      options: testCallOptions({
+        sessionId: 's1',
+        ...{ trace: { traceId: 't1' } },
+      }),
     },
   };
 

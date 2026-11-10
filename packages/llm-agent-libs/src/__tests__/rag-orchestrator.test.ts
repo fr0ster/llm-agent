@@ -10,7 +10,6 @@ import type {
   Result,
   SkillError,
 } from '@mcp-abap-adt/llm-agent';
-import { testRagAccess } from '@mcp-abap-adt/llm-agent/testing/rag-access-testing';
 import { RagOrchestrator } from '../agent/rag-orchestrator.js';
 import { NoopRequestLogger } from '../logger/noop-request-logger.js';
 import type {
@@ -29,6 +28,7 @@ import {
   makeSessionManager,
   ownedTestStores,
   testCallOptions,
+  testRequestAccess,
 } from '../testing/index.js';
 import { NoopTracer } from '../tracer/noop-tracer.js';
 
@@ -104,7 +104,7 @@ function makeOrchestrator(
   documents = ragDocs(),
 ) {
   return new RagOrchestrator({
-    ragAccess: testRagAccess(),
+    ragAccess: testRequestAccess,
     mainLlm: makeLlm([]),
     helperLlm: undefined,
     classifier: makeClassifier([

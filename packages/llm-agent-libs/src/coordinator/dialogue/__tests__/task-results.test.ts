@@ -8,6 +8,7 @@ import type {
   TaskEvent,
   TaskResultEntry,
 } from '@mcp-abap-adt/llm-agent';
+import { testCallOptions } from '../../../testing/index.js';
 import { DialogueSession } from '../dialogue-session.js';
 import { PlannerToolsClient } from '../planner-tools-client.js';
 import { SemaphorePool } from '../semaphore-pool.js';
@@ -54,6 +55,8 @@ function board(
   options: Partial<TaskBoardOptions> = {},
 ) {
   return new TaskBoard({
+    caller: testCallOptions({ sessionId: 'test-session' }).caller,
+    baseInput: () => testCallOptions({ sessionId: 'test-session' }),
     workers: new Map([
       ['w', { name: 'w', capabilities: { contextPolicy: 'optional' }, run }],
     ]),
@@ -411,6 +414,13 @@ test('stepId comes from the session map', async () => {
   const tools = new PlannerToolsClient();
   let delegated = false;
   const session = await DialogueSession.open({
+    caller: testCallOptions({
+      caller: {
+        sessionId: 'results-step',
+        userId: 'test-user',
+        isAdmin: false,
+      },
+    }).caller,
     id: 'results-step',
     maxCorrections: 0,
     resultStore: store(async (entry) => {
@@ -687,6 +697,13 @@ test('session close resolves with a hung result write', async () => {
   const tools = new PlannerToolsClient();
   let delegated = false;
   const session = await DialogueSession.open({
+    caller: testCallOptions({
+      caller: {
+        sessionId: 'hung-result-close',
+        userId: 'test-user',
+        isAdmin: false,
+      },
+    }).caller,
     id: 'hung-result-close',
     resultStore: store(() => new Promise(() => {})),
     board: {

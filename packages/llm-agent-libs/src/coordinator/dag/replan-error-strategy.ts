@@ -32,6 +32,7 @@ export class ReplanErrorStrategy implements IErrorStrategy {
       return { action: 'abort' };
     }
     const { plan: subPlan } = await this.planner.plan({
+      caller: ctx.caller,
       prompt: `${ctx.task}\n\nThis task needs decomposition: ${error.reason}`,
       agents: ctx.agents,
       sessionId: ctx.sessionId,

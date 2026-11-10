@@ -1,12 +1,14 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { ICoordinatorContext, PlanStep } from '@mcp-abap-adt/llm-agent';
+import { testCallOptions } from '../../../testing/index.js';
 import { composeTask } from '../compose-task.js';
 
 function ctx(
   overrides: Partial<ICoordinatorContext> = {},
 ): ICoordinatorContext {
   return {
+    options: testCallOptions({ sessionId: 't' }),
     inputText: 'RAW USER REQUEST',
     registry: new Map(),
     stepResults: {},

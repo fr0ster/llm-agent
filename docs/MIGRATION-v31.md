@@ -109,6 +109,8 @@ Direct agent/pipeline calls must pass `CallOptions.caller` containing
 `{ sessionId, userId, isAdmin }` from trusted host state. Direct pipeline calls
 also require top-level `CallOptions.sessionId` equal to `caller.sessionId`;
 `DefaultPipeline.execute` refuses missing or mismatched session IDs.
+`DefaultPipeline.initialize` refuses missing `RagAccess` before installing stages;
+every execute request requires a resolved caller, including requests without RAG.
 
 ```ts
 const caller = { sessionId, userId, isAdmin: false };
@@ -124,8 +126,13 @@ const result = await pipeline.execute(
 
 Legacy `sessionId` or
 `userId` options alone do not authenticate a call. Bind the session through
-`ragAccess.bindings.bind` before direct use and handle refusal. `ragFilter` cannot
-replace ownership or select another caller. Custom pipeline `ragStores` now carry
+`ragAccess.bindings.bind` before direct use and handle refusal. The core checks
+`bindings.getUserId(sessionId)`
+before access or retrieval, including history. An unbound session, another bound
+user, or a binding-store failure returns `RagAccessDeniedError`; reads never bind.
+Custom `ISessionBindingStore` implementations must implement the read-only
+`getUserId(sessionId): Promise<Result<string | undefined, RagError>>` method.
+`ragFilter` cannot replace ownership or select another caller. Custom pipeline `ragStores` now carry
 `{ name, rag, owner }` entries (`SmartAgentRagStores`) rather than bare stores;
 provide `ragAccess` in the dependencies passed to `DefaultPipeline.initialize`.
 
@@ -137,11 +144,30 @@ and both retrieval paths recheck access; revocation hides a role collection on
 the next request even in an existing session.
 
 Built-in `history` is an implicit per-session store: its owner is the request's
-session, never global. It bypasses the server read decision but always filters
-records by that session. The internal `tools` store also bypasses that decision
+session, never global. It requires the persisted session-to-user binding AND the
+server read decision, and filters records by that session. The internal `tools`
+store bypasses the server decision while requiring a valid session binding
 and is not a caller-managed collection. Neither name can be registered as a
 custom collection. Copying history into a user collection may be a future feature;
 it is not included in this release.
+
+Registry-provided editors stamp `ownerScope` and the collection's sole owner ID
+on every upsert, including add/correct/deprecate. Conflicting caller-supplied
+owner keys are refused. Retain the editor returned by `registry.getEditor`;
+it is an ownership wrapper and no longer preserves the original editor reference.
+Library history writers use the same `stampRagOwner` function for record tags.
+Low-level backend writers remain trusted storage primitives; direct integration
+writers must stamp the recorded owner with `stampRagOwner(metadata, owner)`.
+
+Coordinator, interpreter, context-builder, state-oracle and worker inputs now
+carry the trusted `caller`; forward the same object through nested dispatch.
+`ISubAgentInput.caller`, `ICoordinatorContext.caller`, `InterpretContext.caller`
+and `DialogueSessionOptions.caller` are required. `TaskBoardOptions.caller` owns
+every worker identity; base input cannot replace it. Controller diagnostic
+options preserve the caller while excluding user generation settings.
+Never rebuild a caller from a
+session string. Tests can provision explicit bindings with
+`testRagAccess([caller])`; an empty test access store is intentionally unbound.
 
 ## Backend behavior and operational limits
 

@@ -5,7 +5,11 @@ import { SmartAgent } from '../../../agent.js';
 import { ContextAssembler } from '../../../context/context-assembler.js';
 import { DefaultPipeline } from '../../../pipeline/default-pipeline.js';
 import { SmartAgentSubAgent } from '../../../subagent/smart-agent-subagent.js';
-import { makeDefaultDeps, testCallOptions } from '../../../testing/index.js';
+import {
+  makeDefaultDeps,
+  testCallOptions,
+  testRequestAccess,
+} from '../../../testing/index.js';
 import { DialogueSession } from '../dialogue-session.js';
 import { InMemoryDialogueStateStore } from '../in-memory-dialogue-state-store.js';
 import { formatRequestTime, REQUEST_TIME_GUIDANCE } from '../index.js';
@@ -69,6 +73,9 @@ test('default UTC and invalid zones', async () => {
   let loaded = false;
   await assert.rejects(
     DialogueSession.open({
+      caller: testCallOptions({
+        caller: { sessionId: 'invalid', userId: 'test-user', isAdmin: false },
+      }).caller,
       id: 'invalid',
       timeZone: 'invalid/zone',
       store: {
@@ -97,6 +104,11 @@ for (const timeZone of [undefined, 'Asia/Tbilisi']) {
     let now = openedAt;
     const inputs: Message[][] = [];
     const options = {
+      caller: {
+        sessionId: `time-${timeZone}`,
+        userId: 'test-user',
+        isAdmin: false,
+      },
       id: `time-${timeZone}`,
       timeZone,
       store,
@@ -145,6 +157,9 @@ for (const timeZone of [undefined, 'Asia/Tbilisi']) {
 
     const freshInputs: Message[][] = [];
     const fresh = await DialogueSession.open({
+      caller: testCallOptions({
+        caller: { sessionId: 'fresh', userId: 'test-user', isAdmin: false },
+      }).caller,
       id: 'fresh',
       timeZone,
       now: () => now,
@@ -174,6 +189,13 @@ for (const plannerContext of ['prepared', 'conversation'] as const) {
     const store = new InMemoryDialogueStateStore();
     const inputs: Message[][] = [];
     const session = await DialogueSession.open({
+      caller: testCallOptions({
+        caller: {
+          sessionId: `custom-${plannerContext}`,
+          userId: 'test-user',
+          isAdmin: false,
+        },
+      }).caller,
       id: `custom-${plannerContext}`,
       plannerContext,
       store,
@@ -236,6 +258,9 @@ for (const history of [
 
 test('custom prepared builders receive session-composed request time', async () => {
   const session = await DialogueSession.open({
+    caller: testCallOptions({
+      caller: { sessionId: 'custom', userId: 'test-user', isAdmin: false },
+    }).caller,
     id: 'custom',
     now: () => openedAt,
     board: { workers: new Map() },
@@ -282,6 +307,8 @@ test('queued executor and audit capture the delegation request time', async () =
     },
   };
   const board = new TaskBoard({
+    caller: testCallOptions({ sessionId: 'test-session' }).caller,
+    baseInput: () => testCallOptions({ sessionId: 'test-session' }),
     workers: new Map([
       ['executor', worker],
       ['audit', { ...worker, name: 'audit' }],
@@ -360,6 +387,9 @@ test('wait-mode completion wake keeps planner and both worker roles on request t
     wake = resolve;
   });
   const session = await DialogueSession.open({
+    caller: testCallOptions({
+      caller: { sessionId: 'wait-time', userId: 'test-user', isAdmin: false },
+    }).caller,
     id: 'wait-time',
     now: () => now,
     maxCorrections: 0,
@@ -488,6 +518,9 @@ for (const plannerContext of ['prepared', 'conversation'] as const) {
       yield* streamChat(messages, options);
     };
     const session = await DialogueSession.open({
+      caller: testCallOptions({
+        caller: { sessionId: 'rounds', userId: 'test-user', isAdmin: false },
+      }).caller,
       id: 'rounds',
       plannerContext,
       timeZone: 'Asia/Tbilisi',
@@ -520,6 +553,9 @@ test('explicit new_request refreshes the timestamp from the existing session clo
   let calls = 0;
   const inputs: Message[][] = [];
   const session = await DialogueSession.open({
+    caller: testCallOptions({
+      caller: { sessionId: 'explicit', userId: 'test-user', isAdmin: false },
+    }).caller,
     id: 'explicit',
     now: () => now,
     maxCorrections: 0,
@@ -591,6 +627,7 @@ for (const pipelineEnabled of [false, true]) {
     if (pipelineEnabled) {
       const pipeline = new DefaultPipeline();
       pipeline.initialize({
+        ragAccess: testRequestAccess,
         mainLlm: llm,
         mcpClients: deps.mcpClients,
         assembler: deps.assembler,
@@ -613,6 +650,8 @@ for (const pipelineEnabled of [false, true]) {
       assert.ok(!system?.content?.includes('[request time]'));
     }
     const board = new TaskBoard({
+      caller: testCallOptions({ sessionId: 'test-session' }).caller,
+      baseInput: () => testCallOptions({ sessionId: 'test-session' }),
       workers: new Map([
         ['executor', new SmartAgentSubAgent('executor', agent)],
       ]),
@@ -705,6 +744,8 @@ test('pass mode adds static guidance to all inputs and request time only when ow
   assert.deepEqual(messages, original);
 
   const board = new TaskBoard({
+    caller: testCallOptions({ sessionId: 'test-session' }).caller,
+    baseInput: () => testCallOptions({ sessionId: 'test-session' }),
     workers: new Map([['executor', new SmartAgentSubAgent('executor', agent)]]),
     onEvent() {},
   });

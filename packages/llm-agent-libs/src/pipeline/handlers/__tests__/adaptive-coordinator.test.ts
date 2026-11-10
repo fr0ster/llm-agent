@@ -8,12 +8,11 @@ import type {
   LlmStreamChunk,
   Message,
 } from '@mcp-abap-adt/llm-agent';
-import { testRagAccess } from '@mcp-abap-adt/llm-agent/testing/rag-access-testing';
 import { SmartAgentBuilder } from '../../../builder.js';
 import { unwrapBuilderResult } from '../../../builder-types.js';
 import { InMemoryRunRecordStore } from '../../../coordinator/adaptive/in-memory-run-record-store.js';
 import { LlmAdaptiveController } from '../../../coordinator/adaptive/llm-adaptive-controller.js';
-import { testCallOptions } from '../../../testing/index.js';
+import { testCallOptions, testRequestAccess } from '../../../testing/index.js';
 import { DefaultPipeline } from '../../default-pipeline.js';
 import { pipelineToStream } from '../../pipeline-to-stream.js';
 import { AdaptiveCoordinatorHandler } from '../adaptive-coordinator.js';
@@ -133,7 +132,7 @@ for (const mode of [
     });
     const pipeline = new DefaultPipeline({ stepperCoordinator: handler });
     const handle = await new SmartAgentBuilder({ skipModelValidation: true })
-      .withRagAccess(testRagAccess())
+      .withRagAccess(testRequestAccess)
       .withMainLlm({
         async chat() {
           throw new Error('unexpected LLM');
@@ -165,7 +164,7 @@ for (const mode of [
       pipeline,
       [...prior, { role: 'user', content: 'request' }],
       [],
-      options as never,
+      testCallOptions(options),
     )) {
       assert.equal(chunk.ok, true);
       if (chunk.ok) chunks.push(chunk.value);
@@ -264,7 +263,7 @@ for (const form of ['messages', 'string'] as const) {
       },
     });
     const handle = await new SmartAgentBuilder({ skipModelValidation: true })
-      .withRagAccess(testRagAccess())
+      .withRagAccess(testRequestAccess)
       .withMainLlm({
         async chat() {
           throw new Error('unused');
@@ -330,6 +329,8 @@ for (const abort of [false, true]) {
       },
     });
     const ctx = {
+      options: testCallOptions({ sessionId: 'regression' }),
+      sessionId: 'regression',
       inputText: 'request',
       history: [],
       yield() {
@@ -387,6 +388,8 @@ for (const live of [false, true]) {
       },
     });
     const ctx = {
+      options: testCallOptions({ sessionId: 'regression' }),
+      sessionId: 'regression',
       inputText: 'request',
       history: [],
       yield(chunk: { ok: true; value: LlmStreamChunk }) {
@@ -406,7 +409,8 @@ function regressionContext(signal?: AbortSignal) {
   const ctx = {
     inputText: 'request',
     history: [],
-    options: { signal },
+    options: testCallOptions({ sessionId: 'regression', signal }),
+    sessionId: 'regression',
     requestLogger: {
       logLlmCall(value: (typeof logged)[number]) {
         logged.push(value);

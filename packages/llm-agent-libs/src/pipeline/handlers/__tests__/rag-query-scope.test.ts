@@ -7,8 +7,7 @@ import type {
   RagResult,
   Result,
 } from '@mcp-abap-adt/llm-agent';
-import { testRagAccess } from '@mcp-abap-adt/llm-agent/testing/rag-access-testing';
-import { testCallOptions } from '../../../testing/index.js';
+import { testCallOptions, testRequestAccess } from '../../../testing/index.js';
 import type { ISpan } from '../../../tracer/types.js';
 import type { PipelineContext } from '../../context.js';
 import { RagQueryHandler } from '../rag-query.js';
@@ -37,7 +36,7 @@ function store(seen: { calls: CallOptions[] }): IRag {
 
 function ctx(rag: IRag, userId?: string): PipelineContext {
   return {
-    ragAccess: testRagAccess(),
+    ragAccess: testRequestAccess,
     ragText: 'q',
     ragStores: {
       mem: {

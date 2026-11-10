@@ -6,6 +6,10 @@ import type {
   ISubAgentResult,
   TaskEvent,
 } from '@mcp-abap-adt/llm-agent';
+import {
+  provisionWorkerInput,
+  testCallOptions,
+} from '../../../testing/index.js';
 import { SemaphorePool, TASK_OUTPUT_CHAR_LIMIT, TaskBoard } from '../index.js';
 
 const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
@@ -19,6 +23,8 @@ function fixture(
     run,
   };
   return new TaskBoard({
+    caller: testCallOptions({ sessionId: 'test-session' }).caller,
+    baseInput: () => testCallOptions({ sessionId: 'test-session' }),
     workers: new Map([['w', worker]]),
     onEvent() {},
     ...options,
@@ -140,7 +146,7 @@ test('base input is forwarded and task-specific values override it', async () =>
     context: 'context',
   });
   await tick();
-  assert.equal(received?.sessionId, 'session');
+  assert.equal(received?.sessionId, 'test-session');
   assert.equal(received?.task, 'correct');
   assert.equal(received?.context, 'context');
   assert.equal(received?.history, undefined);
@@ -324,9 +330,10 @@ test('running tasks expose live tool counts and preserve the base observer', asy
   };
   const observed: number[] = [];
   const board = new TaskBoard({
+    caller: testCallOptions({ sessionId: 'test-session' }).caller,
     workers: new Map([['w', worker]]),
     onEvent() {},
-    baseInput: () => ({
+    baseInput: provisionWorkerInput(() => ({
       onToolsSelected(selected, available) {
         assert.equal(board.list()[0].toolsSelected, selected);
         assert.equal(board.list()[0].toolsAvailable, available);
@@ -337,7 +344,7 @@ test('running tasks expose live tool counts and preserve the base observer', asy
         observed.push(count);
         throw new Error('observer failed');
       },
-    }),
+    })),
   });
   const id = start(board);
   await tick();

@@ -18,10 +18,13 @@ import {
   symmetricEmbedder,
   TextOnlyEmbedding,
 } from '@mcp-abap-adt/llm-agent';
-import { testRagAccess } from '@mcp-abap-adt/llm-agent/testing/rag-access-testing';
 import { SmartAgentBuilder } from '../../builder.js';
 import { unwrapBuilderResult } from '../../builder-types.js';
-import { makeLlm, testCallOptions } from '../../testing/index.js';
+import {
+  makeLlm,
+  testCallOptions,
+  testRequestAccess,
+} from '../../testing/index.js';
 import {
   applyRetrievalStrategy,
   EmbeddingRetrieval,
@@ -145,7 +148,7 @@ describe('SmartAgentBuilder.withRetrievalStrategy', () => {
     const tools = new InMemoryRag();
     const { strategy, calls } = spyStrategy();
     const handle = await new SmartAgentBuilder({})
-      .withRagAccess(testRagAccess())
+      .withRagAccess(testRequestAccess)
       .withMainLlm(makeLlm([{ content: 'ok' }]))
       .setToolsRag(tools)
       .withRetrievalStrategy('tools', strategy)
@@ -175,7 +178,7 @@ describe('SmartAgentBuilder.withRetrievalStrategy', () => {
     );
     const { reranker, calls } = countingReranker();
     const handle = await new SmartAgentBuilder({})
-      .withRagAccess(testRagAccess())
+      .withRagAccess(testRequestAccess)
       .withMainLlm(makeLlm([{ content: 'ok' }]))
       .setRagRegistry(reg)
       .withCircuitBreaker()
@@ -208,7 +211,7 @@ describe('SmartAgentBuilder.withRetrievalStrategy', () => {
       strategy,
     );
     const handle = await new SmartAgentBuilder({})
-      .withRagAccess(testRagAccess())
+      .withRagAccess(testRequestAccess)
       .withMainLlm(makeLlm([{ content: 'ok' }]))
       .setToolsRag(tools)
       .withCircuitBreaker()
@@ -240,7 +243,7 @@ describe('SmartAgentBuilder.withRetrievalStrategy', () => {
       scope: 'global',
     });
     const handle = await new SmartAgentBuilder({})
-      .withRagAccess(testRagAccess())
+      .withRagAccess(testRequestAccess)
       .withMainLlm(makeLlm([{ content: 'ok' }]))
       .setRagRegistry(reg)
       .setToolsRag(toolsStore)
@@ -294,7 +297,7 @@ describe('SmartAgentBuilder.withRetrievalStrategy', () => {
   it('custom registry with setMutationListener: a collection registered after build is projected and wrapped', async () => {
     const reg = new ListeningRegistry();
     const handle = await new SmartAgentBuilder({})
-      .withRagAccess(testRagAccess())
+      .withRagAccess(testRequestAccess)
       .withMainLlm(makeLlm([{ content: 'ok' }]))
       .setRagRegistry(reg)
       .withRetrievalStrategy('kb', new EmbeddingRetrieval())
@@ -315,7 +318,7 @@ describe('SmartAgentBuilder.withRetrievalStrategy', () => {
   it('custom registry without setMutationListener: a collection registered after build is not projected, nothing throws', async () => {
     const reg = new PlainRegistry();
     const handle = await new SmartAgentBuilder({})
-      .withRagAccess(testRagAccess())
+      .withRagAccess(testRequestAccess)
       .withMainLlm(makeLlm([{ content: 'ok' }]))
       .setRagRegistry(reg)
       .withRetrievalStrategy('kb', new EmbeddingRetrieval())
@@ -354,7 +357,7 @@ describe('withRetrievalStrategy on the real request path (DefaultPipeline)', () 
   it('an explicit history strategy keeps history out of the reranker; tools without one are still reranked', async () => {
     const { reranker, calls } = countingReranker();
     const handle = await new SmartAgentBuilder({ skipModelValidation: true })
-      .withRagAccess(testRagAccess())
+      .withRagAccess(testRequestAccess)
       .withMainLlm(stubLlm())
       .withEmbedder(
         symmetricEmbedder({
@@ -385,7 +388,7 @@ describe('withRetrievalStrategy on the real request path (DefaultPipeline)', () 
   it("an explicit tools strategy is what the pipeline's tools query goes through", async () => {
     const { strategy, calls } = spyStrategy();
     const handle = await new SmartAgentBuilder({ skipModelValidation: true })
-      .withRagAccess(testRagAccess())
+      .withRagAccess(testRequestAccess)
       .withMainLlm(stubLlm())
       .withEmbedder(
         symmetricEmbedder({
@@ -411,7 +414,7 @@ describe('withRetrievalStrategy reaches the legacy coordinator tool source', () 
   async function toolSourceOf(withStrategy: boolean) {
     const { strategy, calls } = spyStrategy();
     let builder = new SmartAgentBuilder({ skipModelValidation: true })
-      .withRagAccess(testRagAccess())
+      .withRagAccess(testRequestAccess)
       .withMainLlm(stubLlm())
       .withEmbedder(
         symmetricEmbedder({
@@ -493,7 +496,7 @@ describe("a worker's own store keeps priority under a retrieval strategy", () =>
     // Build the parent over the shared registry; its tools remain internal.
     const parent = unwrapBuilderResult(
       await new SmartAgentBuilder({ skipModelValidation: true })
-        .withRagAccess(testRagAccess())
+        .withRagAccess(testRequestAccess)
         .withMainLlm(stubLlm())
         .setRagRegistry(registry)
         .setToolsRag(labelledStore('parent', seen))
@@ -503,7 +506,7 @@ describe("a worker's own store keeps priority under a retrieval strategy", () =>
     const { strategy, calls } = spyStrategy();
     // … and the worker brings its own tools plus an explicit strategy.
     let builder = new SmartAgentBuilder({ skipModelValidation: true })
-      .withRagAccess(testRagAccess())
+      .withRagAccess(testRequestAccess)
       .withMainLlm(stubLlm())
       .withEmbedder(
         symmetricEmbedder({
@@ -572,7 +575,7 @@ describe("a worker's own store keeps priority under a retrieval strategy", () =>
     const seen: string[] = [];
     const { strategy, calls } = spyStrategy();
     const handle = await new SmartAgentBuilder({ skipModelValidation: true })
-      .withRagAccess(testRagAccess())
+      .withRagAccess(testRequestAccess)
       .withMainLlm(stubLlm())
       .withEmbedder(
         symmetricEmbedder({

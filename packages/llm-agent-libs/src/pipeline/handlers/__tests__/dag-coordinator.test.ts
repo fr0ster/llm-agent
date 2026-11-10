@@ -10,6 +10,7 @@ import type {
 } from '@mcp-abap-adt/llm-agent';
 import { ClarifySignal, NeedInfoSignal } from '@mcp-abap-adt/llm-agent';
 import { SubAgentStateOracle } from '../../../coordinator/dag/subagent-state-oracle.js';
+import { testCallOptions } from '../../../testing/index.js';
 import { CLARIFY_MARKER, DagCoordinatorHandler } from '../dag-coordinator.js';
 
 const planner = (nodes: DagPlan['nodes']): IPlanner => ({
@@ -29,6 +30,7 @@ function makeCtx(inputText: string) {
     value: { content: string; finishReason?: string };
   }> = [];
   const ctx = {
+    options: testCallOptions({ sessionId: 't' }),
     inputText,
     sessionId: 't',
     yield: (c: {

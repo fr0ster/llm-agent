@@ -53,6 +53,7 @@ export class SubAgentDispatch implements IDispatchStrategy {
     let context: string | undefined;
     if (this.contextBuilder) {
       const built = await this.contextBuilder.build({
+        caller: ctx.caller,
         task,
         step,
         agent: sub,
@@ -81,6 +82,7 @@ export class SubAgentDispatch implements IDispatchStrategy {
     const started = Date.now();
     try {
       const res = await sub.run({
+        caller: ctx.caller,
         task,
         context,
         sessionId: ctx.sessionId,

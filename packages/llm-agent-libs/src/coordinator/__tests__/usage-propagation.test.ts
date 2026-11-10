@@ -72,6 +72,7 @@ function fake(content: string, seen: CallOptions[]): ILlm {
 }
 function context(usage: IUsageRecorder): ICoordinatorContext {
   return {
+    caller: { sessionId: 'session', userId: 'test-user', isAdmin: false },
     inputText: 'task',
     registry: new Map(),
     stepResults: {},
@@ -118,7 +119,11 @@ test('both worker adapters forward input.usage without losing caller context', a
   await new DirectLlmSubAgent('worker', fake('answer', seen), {
     systemPrompt: 'system',
     contextPolicy: 'optional',
-  }).run({ task: 'task', usage });
+  }).run({
+    caller: { sessionId: 'test-session', userId: 'test-user', isAdmin: false },
+    task: 'task',
+    usage,
+  });
   let processOptions: CallOptions | undefined;
   const agent = {
     async process(_input: unknown, options: CallOptions) {
@@ -126,7 +131,11 @@ test('both worker adapters forward input.usage without losing caller context', a
       return { ok: true, value: { content: 'answer' } };
     },
   } as unknown as SmartAgent;
-  await new SmartAgentSubAgent('worker', agent).run({ task: 'task', usage });
+  await new SmartAgentSubAgent('worker', agent).run({
+    caller: { sessionId: 'test-session', userId: 'test-user', isAdmin: false },
+    task: 'task',
+    usage,
+  });
   assert.equal(seen[0].usage, usage);
   assert.equal(processOptions?.usage, usage);
 });
@@ -200,6 +209,7 @@ test('DAG roles and legacy replanning keep recorder context', async () => {
   const seen: CallOptions[] = [];
   const plan = { nodes: [{ id: 'one', goal: 'work' }], createdAt: 0 };
   await new LlmDagPlanner(fake(JSON.stringify(plan), seen)).plan({
+    caller: { sessionId: 's', userId: 'test-user', isAdmin: false },
     prompt: 'task',
     agents: [],
     sessionId: 's',
@@ -209,6 +219,7 @@ test('DAG roles and legacy replanning keep recorder context', async () => {
     fake('{"pass":true,"action":"abort"}', seen),
   );
   await reviewer.review({
+    caller: { sessionId: 's', userId: 'test-user', isAdmin: false },
     prompt: 'task',
     plan,
     agents: [],
@@ -216,6 +227,7 @@ test('DAG roles and legacy replanning keep recorder context', async () => {
     usage,
   });
   await reviewer.reviewExecutionFailure({
+    caller: { sessionId: 's', userId: 'test-user', isAdmin: false },
     plan,
     trace: [],
     failedNodeId: 'one',
@@ -232,7 +244,11 @@ test('DAG roles and legacy replanning keep recorder context', async () => {
       systemPrompt: 'system',
       contextPolicy: 'optional',
     }),
-  ).query({ query: 'fact', usage });
+  ).query({
+    caller: { sessionId: 'test-session', userId: 'test-user', isAdmin: false },
+    query: 'fact',
+    usage,
+  });
   assert.deepEqual(
     records.map((record) => record.context.role),
     ['planner', 'reviewer', 'reviewer', 'planner', 'oracle'],

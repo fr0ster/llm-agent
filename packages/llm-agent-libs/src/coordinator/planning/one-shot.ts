@@ -62,6 +62,7 @@ ${agentsBlock || '(none — use self-dispatch)'}${skillBlock}`;
         usage: ctx.usage?.with({ role: 'planner' }),
         signal: ctx.signal,
         sessionId: ctx.sessionId,
+        caller: ctx.caller,
       },
     );
     if (!response.ok) throw response.error;

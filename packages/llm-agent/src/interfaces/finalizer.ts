@@ -4,6 +4,7 @@ import type { LlmUsage } from './types.js';
 import type { IUsageRecorder } from './usage.js';
 
 export interface FinalizerInput {
+  caller?: import('./rag-access.js').RagCaller;
   prompt: string;
   objective: string;
   ancestorContext?: ContextPath;

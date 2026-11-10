@@ -7,7 +7,6 @@ import type {
   Message,
 } from '@mcp-abap-adt/llm-agent';
 import { McpError, NoopToolCache } from '@mcp-abap-adt/llm-agent';
-import { testRagAccess } from '@mcp-abap-adt/llm-agent/testing/rag-access-testing';
 import { type AgentCallOptions, SmartAgent } from '../agent.js';
 import { SmartAgentBuilder } from '../builder.js';
 import { unwrapBuilderResult } from '../builder-types.js';
@@ -16,7 +15,11 @@ import { DefaultPipeline } from '../pipeline/default-pipeline.js';
 import { fireInternalToolsAsync } from '../policy/mixed-tool-call-handler.js';
 import { PendingToolResultsRegistry } from '../policy/pending-tool-results-registry.js';
 import type { ToolAvailabilityRegistry } from '../policy/tool-availability-registry.js';
-import { makeDefaultDeps, testCallOptions } from '../testing/index.js';
+import {
+  makeDefaultDeps,
+  testCallOptions,
+  testRequestAccess,
+} from '../testing/index.js';
 
 for (const path of ['streaming', 'pipeline', 'mixed'] as const) {
   for (const mode of ['reject-one', 'throw', 'absent'] as const) {
@@ -110,7 +113,7 @@ for (const path of ['streaming', 'pipeline', 'mixed'] as const) {
           const handle = await new SmartAgentBuilder({
             skipModelValidation: true,
           })
-            .withRagAccess(testRagAccess())
+            .withRagAccess(testRequestAccess)
             .withMainLlm(llm)
             .withMcpClients([client])
             .setPipeline(new DefaultPipeline())
@@ -260,7 +263,7 @@ for (const path of ['streaming', 'pipeline'] as const) {
       const handle =
         path === 'pipeline'
           ? await new SmartAgentBuilder({ skipModelValidation: true })
-              .withRagAccess(testRagAccess())
+              .withRagAccess(testRequestAccess)
               .withMainLlm(llm)
               .withMcpClients([client])
               .setPipeline(new DefaultPipeline())

@@ -29,7 +29,8 @@ describe('SimpleRagRegistry', () => {
     );
     reg.register('notes', rag, ed, { displayName: 'Notes' });
     assert.equal(reg.get('notes'), rag);
-    assert.equal(reg.getEditor('notes'), ed);
+    assert.ok(reg.getEditor('notes'));
+    assert.notEqual(reg.getEditor('notes'), ed);
   });
 
   it('marks collection as editable only when editor is concrete (not Immutable)', () => {

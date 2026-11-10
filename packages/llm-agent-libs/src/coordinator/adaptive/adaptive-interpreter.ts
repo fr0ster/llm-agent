@@ -19,6 +19,7 @@ import { parseVerdict, validateSteps } from './parse-plan.js';
 
 /** Dependencies and request context for one sequential adaptive run. */
 export interface AdaptiveRunInput {
+  caller: ISubAgentInput['caller'];
   request: string;
   history: Message[];
   plan: AdaptivePlan;
@@ -246,6 +247,7 @@ export async function runAdaptivePlan(
           const worker = input.workers.get(step.worker);
           if (!worker) throw new Error(`unknown worker ${step.worker}`);
           const worked = await worker.run({
+            caller: input.caller,
             ...composeStepInput({
               request: input.request,
               spec: plan.spec,

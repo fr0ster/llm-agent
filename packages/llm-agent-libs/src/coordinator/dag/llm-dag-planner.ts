@@ -231,6 +231,7 @@ export class LlmDagPlanner implements IPlanner {
     const task = `${prefix}Available workers:\n${catalog || '(none)'}\n\n${input.prompt}`;
 
     const res = await this.agent.run({
+      caller: input.caller,
       task,
       sessionId: input.sessionId,
       usage: input.usage?.with({ role: 'planner' }),

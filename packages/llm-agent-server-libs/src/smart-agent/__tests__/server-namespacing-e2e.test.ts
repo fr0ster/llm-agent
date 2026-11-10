@@ -1,3 +1,4 @@
+import { testCallOptions } from '../../../../llm-agent-libs/src/testing/index.js';
 import { TestSmartServer as SmartServer } from './rag-identity-fixture.js';
 
 /**
@@ -758,7 +759,10 @@ test('controller pipeline: over a REAL boot, s1__Search routes to the SESSION cl
 
     const inst = await plugin.build(fullCtx);
     try {
-      for await (const chunk of inst.agent.streamProcess('search stuff')) {
+      for await (const chunk of inst.agent.streamProcess(
+        'search stuff',
+        testCallOptions(),
+      )) {
         void chunk;
       }
     } finally {

@@ -12,6 +12,7 @@ export interface IInterpreter<TInput, TOutput> {
 }
 
 export interface InterpretContext {
+  caller: import('./rag-access.js').RagCaller;
   inputText: string;
   workers: ReadonlyMap<string, ISubAgent>;
   sessionId: string;

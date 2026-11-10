@@ -1,5 +1,8 @@
-import { testRagAccess } from '@mcp-abap-adt/llm-agent/testing/rag-access-testing';
-import { ownedTestStores, testCallOptions } from '../testing/index.js';
+import {
+  ownedTestStores,
+  testCallOptions,
+  testRequestAccess,
+} from '../testing/index.js';
 /**
  * Task 0 — PR-2b guard: Loop A characterization tests.
  *
@@ -140,7 +143,7 @@ describe('Loop A characterization — reselect read-only keeps full set + skip l
       offered.push(tools),
     );
     const { deps } = makeDefaultDeps({
-      ragAccess: testRagAccess(),
+      ragAccess: testRequestAccess,
       assembler: makeAssembler([
         {
           role: 'system',

@@ -1,5 +1,8 @@
-import { testRagAccess } from '@mcp-abap-adt/llm-agent/testing/rag-access-testing';
-import { ownedTestStores, testCallOptions } from '../../../testing/index.js';
+import {
+  ownedTestStores,
+  testCallOptions,
+  testRequestAccess,
+} from '../../../testing/index.js';
 /**
  * Task C4: assert that each handler modified in C3 actually stamps
  * `requestId === ctx.options.trace.traceId` on its log entries.
@@ -182,7 +185,7 @@ test('rag-query stamps requestId = ctx.options.trace.traceId', async () => {
   const rec = new RecordingLogger();
   const traceId = 'trace-rq';
   const ctx = {
-    ragAccess: testRagAccess(),
+    ragAccess: testRequestAccess,
     ragText: 'how do I do X',
     toolQueryText: undefined,
     ragStores: ownedTestStores({ docs: makeStore() }),
@@ -280,14 +283,17 @@ test('tool-loop stamps requestId = ctx.options.trace.traceId', async () => {
 
   const yielded: Result<LlmStreamChunk, unknown>[] = [];
   const ctx = {
-    ragAccess: testRagAccess(),
+    ragAccess: testRequestAccess,
     config: {
       maxIterations: 3,
       maxToolCalls: 5,
       heartbeatIntervalMs: 5000,
       mode: 'smart',
     } as PipelineContext['config'],
-    options: testCallOptions({ trace: { traceId } } as CallOptions),
+    options: testCallOptions({
+      sessionId: 's-tl',
+      ...testCallOptions({ trace: { traceId } } as CallOptions),
+    }),
     sessionId: 's-tl',
     mainLlm,
     inputText: '',
@@ -470,7 +476,7 @@ test('tool-loop logToolCall stamps requestId — per-traceId toolCalls > 0', asy
 
   const yielded: Result<LlmStreamChunk, unknown>[] = [];
   const ctx = {
-    ragAccess: testRagAccess(),
+    ragAccess: testRequestAccess,
     config: {
       maxIterations: 3,
       maxToolCalls: 5,
@@ -478,7 +484,10 @@ test('tool-loop logToolCall stamps requestId — per-traceId toolCalls > 0', asy
       mode: 'smart',
       refreshToolsPerIteration: false,
     } as PipelineContext['config'],
-    options: testCallOptions({ trace: { traceId } } as CallOptions),
+    options: testCallOptions({
+      sessionId: 's-tool-exec',
+      ...testCallOptions({ trace: { traceId } } as CallOptions),
+    }),
     sessionId: 's-tool-exec',
     mcpClients: [],
     mainLlm,

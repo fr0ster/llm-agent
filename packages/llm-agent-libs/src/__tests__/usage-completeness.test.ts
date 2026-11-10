@@ -15,7 +15,6 @@ import {
   VectorRag,
   WaitAsTold,
 } from '@mcp-abap-adt/llm-agent';
-import { testRagAccess } from '@mcp-abap-adt/llm-agent/testing/rag-access-testing';
 import { LlmQueryExpander } from '../../../llm-agent/src/rag/query-expander.js';
 import { McpClientAdapter } from '../../../llm-agent-mcp/src/adapter.js';
 import { MCPClientWrapper } from '../../../llm-agent-mcp/src/client.js';
@@ -54,7 +53,7 @@ import { ToolAvailabilityRegistry } from '../policy/tool-availability-registry.j
 import { RetryLlm } from '../resilience/retry-llm.js';
 import { DirectLlmSubAgent } from '../subagent/direct-llm-subagent.js';
 import { SmartAgentSubAgent } from '../subagent/smart-agent-subagent.js';
-import { testCallOptions } from '../testing/index.js';
+import { testCallOptions, testRequestAccess } from '../testing/index.js';
 import { NoopTracer } from '../tracer/noop-tracer.js';
 
 const secrets = [
@@ -248,6 +247,7 @@ test('library LLM call paths terminate at the real provider with no content', as
   const f = fixture();
   const opts = { usage: f.usage };
   const ctx: ICoordinatorContext = {
+    caller: { sessionId: 's', userId: 'test-user', isAdmin: false },
     inputText: prompt,
     registry: new Map(),
     stepResults: {},
@@ -337,6 +337,7 @@ test('library LLM call paths terminate at the real provider with no content', as
       '{"pass":true}',
       () =>
         new LlmReviewStrategy(f.llm).review({
+          caller: { sessionId: 's', userId: 'test-user', isAdmin: false },
           prompt,
           plan: { nodes: [], createdAt: 0 },
           agents: [],
@@ -361,6 +362,7 @@ test('library LLM call paths terminate at the real provider with no content', as
       '{"action":"abort"}',
       () =>
         new LlmReviewStrategy(f.llm).reviewExecutionFailure({
+          caller: { sessionId: 's', userId: 'test-user', isAdmin: false },
           plan: { nodes: [], createdAt: 0 },
           trace: [],
           failedNodeId: 's',
@@ -378,7 +380,15 @@ test('library LLM call paths terminate at the real provider with no content', as
           new DirectLlmSubAgent(role, f.llm, {
             systemPrompt: document,
             contextPolicy: 'optional',
-          }).run({ task: prompt, usage: f.usage }),
+          }).run({
+            caller: {
+              sessionId: 'test-session',
+              userId: 'test-user',
+              isAdmin: false,
+            },
+            task: prompt,
+            usage: f.usage,
+          }),
       ],
     ),
   ];
@@ -422,7 +432,7 @@ test('library LLM call paths terminate at the real provider with no content', as
     return completion;
   };
   const handle = await new SmartAgentBuilder({ skipModelValidation: true })
-    .withRagAccess(testRagAccess())
+    .withRagAccess(testRequestAccess)
     .withMainLlm(f.llm)
     .setPipeline(pipeline)
     .build()
@@ -454,6 +464,11 @@ test('library LLM call paths terminate at the real provider with no content', as
             }
           } else {
             await new SmartAgentSubAgent('smart', handle.agent).run({
+              caller: {
+                sessionId: 'test-session',
+                userId: 'test-user',
+                isAdmin: false,
+              },
               task: prompt,
               usage: f.usage,
             });
@@ -583,6 +598,7 @@ test('DAG planner and stepper checker use real provider requests', async () => {
   f.content('{"nodes":[{"id":"one","goal":"work"}]}');
   const plan = () =>
     new LlmDagPlanner(f.llm).plan({
+      caller: { sessionId: 's', userId: 'test-user', isAdmin: false },
       prompt,
       agents: [],
       sessionId: 's',
@@ -928,6 +944,7 @@ for (const mode of ['ok', 'returned', 'throw', 'abort'] as const) {
     await new SelfDispatch(f.llm).dispatch(
       { id: 's', goal: prompt, status: 'pending' },
       {
+        caller: { sessionId: 's', userId: 'test-user', isAdmin: false },
         inputText: prompt,
         registry: new Map(),
         stepResults: {},
@@ -999,6 +1016,8 @@ test('concurrent TaskBoard workers retain their task context through real HTTP',
     contextPolicy: 'optional',
   });
   const board = new TaskBoard({
+    caller: testCallOptions({ sessionId: 'test-session' }).caller,
+    baseInput: () => testCallOptions({ sessionId: 'test-session' }),
     usage: f.usage,
     maxConcurrent: 2,
     onEvent() {},

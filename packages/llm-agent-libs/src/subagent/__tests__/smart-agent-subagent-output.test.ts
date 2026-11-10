@@ -99,6 +99,7 @@ for (const pipeline of [false, true]) {
           return;
         }
         const result = await new SmartAgentSubAgent('worker', agent).run({
+          caller: testCallOptions({ sessionId: 'test-session' }).caller,
           task: 'work',
           dialogueTask: task,
           ...(scenario === 'external'

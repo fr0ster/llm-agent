@@ -99,6 +99,7 @@ export {
   listMetadata,
   prepareList,
 } from './rag/list-support.js';
+export { stampRagOwner } from './rag/registry/owner-bound-editor.js';
 export {
   BatchChunkingEmbedder,
   DEFAULT_MAX_BATCH_SIZE,

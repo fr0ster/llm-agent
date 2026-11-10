@@ -10,8 +10,11 @@ import type {
   Result,
 } from '@mcp-abap-adt/llm-agent';
 import { InMemoryRag } from '@mcp-abap-adt/llm-agent';
-import { testRagAccess } from '@mcp-abap-adt/llm-agent/testing/rag-access-testing';
-import { ownedTestStores, testCallOptions } from '../../../testing/index.js';
+import {
+  ownedTestStores,
+  testCallOptions,
+  testRequestAccess,
+} from '../../../testing/index.js';
 import { summarizeAndStore } from '../history-upsert.js';
 
 function makeFakeMemory(): IHistoryMemory & { entries: Map<string, string[]> } {
@@ -279,8 +282,8 @@ describe('history-upsert: HistoryUpsertHandler', () => {
       },
     };
     const ctx = {
-      options: testCallOptions(),
-      ragAccess: testRagAccess(),
+      options: testCallOptions({ sessionId: 's1', ...testCallOptions() }),
+      ragAccess: testRequestAccess,
       sessionId: 's1',
       inputText: 'the question',
       assistantText: 'the final answer',

@@ -5,6 +5,7 @@ import type {
   IPlanningStrategy,
   Plan,
 } from '@mcp-abap-adt/llm-agent';
+import { testCallOptions } from '../../../testing/index.js';
 import { CoordinatorHandler } from '../coordinator.js';
 
 const clarifyPlanning: IPlanningStrategy = {
@@ -33,6 +34,7 @@ describe('CoordinatorHandler clarification gate', () => {
       value: { content: string; finishReason?: string };
     }> = [];
     const ctx = {
+      options: testCallOptions({ sessionId: 't' }),
       inputText: 'ambiguous',
       sessionId: 't',
       yield: (c: {

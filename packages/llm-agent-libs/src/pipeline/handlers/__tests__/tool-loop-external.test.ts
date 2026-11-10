@@ -1,5 +1,4 @@
-import { testRagAccess } from '@mcp-abap-adt/llm-agent/testing/rag-access-testing';
-import { testCallOptions } from '../../../testing/index.js';
+import { testCallOptions, testRequestAccess } from '../../../testing/index.js';
 /**
  * Task 4 (#171) — tool-loop surfaces external (client-provided) tool calls.
  *
@@ -116,7 +115,7 @@ function makeCtx(opts: {
   };
 
   const ctx = {
-    ragAccess: testRagAccess(),
+    ragAccess: testRequestAccess,
     config: {
       maxIterations: 5,
       maxToolCalls: 5,
@@ -124,7 +123,10 @@ function makeCtx(opts: {
       mode: opts.mode ?? 'smart',
       refreshToolsPerIteration: false,
     } as PipelineContext['config'],
-    options: testCallOptions({} as CallOptions),
+    options: testCallOptions({
+      sessionId: 's-ext',
+      ...testCallOptions({} as CallOptions),
+    }),
     sessionId: 's-ext',
     mcpClients: [],
     mainLlm,
@@ -522,7 +524,7 @@ function makeRefreshCollisionCtx(
   } as unknown as LlmTool;
 
   return {
-    ragAccess: testRagAccess(),
+    ragAccess: testRequestAccess,
     config: {
       maxIterations: 5,
       maxToolCalls: 5,
@@ -530,7 +532,10 @@ function makeRefreshCollisionCtx(
       mode: 'smart',
       // refreshToolsPerIteration defaults on (undefined !== false)
     } as PipelineContext['config'],
-    options: testCallOptions({} as CallOptions),
+    options: testCallOptions({
+      sessionId: 'loop-namespace-collision',
+      ...testCallOptions({} as CallOptions),
+    }),
     sessionId: 'loop-namespace-collision',
     mcpClients: clients,
     mainLlm: {

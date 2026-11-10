@@ -10,6 +10,7 @@ import type {
   PlanStep,
 } from '@mcp-abap-adt/llm-agent';
 import { SubAgentDispatch } from '../../../coordinator/dispatch/subagent.js';
+import { testCallOptions } from '../../../testing/index.js';
 import type { ISpan } from '../../../tracer/types.js';
 import type { PipelineContext } from '../../context.js';
 import {
@@ -71,7 +72,7 @@ function makeCtx(subAgents: Map<string, ISubAgent>): PipelineContext {
     inputText: 'top',
     sessionId: 's',
     assembledMessages: [],
-    options: { signal: undefined },
+    options: testCallOptions({ sessionId: 's', ...{ signal: undefined } }),
     subAgents,
     yield() {},
   } as unknown as PipelineContext;

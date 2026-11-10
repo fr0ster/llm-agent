@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { DialogueState, ISubAgentInput } from '@mcp-abap-adt/llm-agent';
-import { makeRag } from '../../../testing/index.js';
+import { makeRag, testCallOptions } from '../../../testing/index.js';
 import { DialogueSession } from '../dialogue-session.js';
 import { InMemoryDialogueStateStore } from '../in-memory-dialogue-state-store.js';
 import { RagPlannerKnowledge } from '../planner-retrieval.js';
@@ -30,6 +30,13 @@ test('search_knowledge renders projected metadata trust and keeps untrusted labe
   );
   let rendered = '';
   const session = await DialogueSession.open({
+    caller: testCallOptions({
+      caller: {
+        sessionId: 'trust-search',
+        userId: 'test-user',
+        isAdmin: false,
+      },
+    }).caller,
     id: 'trust-search',
     board: { workers: new Map() },
     plannerKnowledge: [source],
@@ -54,7 +61,12 @@ test('search_knowledge renders projected metadata trust and keeps untrusted labe
 });
 
 test('planner exposes exactly the semantic-only tools and rejects removed arguments and tools', async () => {
-  const board = new TaskBoard({ workers: new Map(), onEvent() {} });
+  const board = new TaskBoard({
+    caller: testCallOptions({ sessionId: 'test-session' }).caller,
+    baseInput: () => testCallOptions({ sessionId: 'test-session' }),
+    workers: new Map(),
+    onEvent() {},
+  });
   await runInPlannerScope(
     { board, getPlan: () => undefined, setPlan() {} },
     async () => {
@@ -108,6 +120,13 @@ for (const plannerContext of ['prepared', 'conversation'] as const) {
   test(`delegation sends the brief without history in ${plannerContext} mode`, async () => {
     const received: ISubAgentInput[] = [];
     const session = await DialogueSession.open({
+      caller: testCallOptions({
+        caller: {
+          sessionId: plannerContext,
+          userId: 'test-user',
+          isAdmin: false,
+        },
+      }).caller,
       id: plannerContext,
       now: () => 0,
       plannerContext,
@@ -198,6 +217,9 @@ test('old archive fields are dropped on restore and save; boundaries keep only c
   await store.save('legacy', legacy);
   let calls = 0;
   const session = await DialogueSession.open({
+    caller: testCallOptions({
+      caller: { sessionId: 'legacy', userId: 'test-user', isAdmin: false },
+    }).caller,
     id: 'legacy',
     store,
     board: { workers: new Map() },

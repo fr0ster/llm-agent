@@ -69,6 +69,7 @@ import { compactText, taskNotice } from './task-reference.js';
 
 export const DIALOGUE_HISTORY_LIMIT = 200;
 export interface PlannerTurnOptions {
+  caller?: CallOptions['caller'];
   toolRoundGuard?: CallOptions['toolRoundGuard'];
   usage?: IUsageRecorder;
   sessionId?: string;
@@ -90,6 +91,7 @@ export interface PlannerAgent {
   ): Promise<Result<{ content: string; usage?: TokenUsage }, Error>>;
 }
 export interface DialogueSessionOptions extends PlannerRetrievalOptions {
+  caller: import('@mcp-abap-adt/llm-agent').RagCaller;
   /** Resolve provenance for model-facing tool evidence and task projections. */
   toolTrust?: ToolTrust;
   /** IANA time zone for request time formatting. Default: UTC. */
@@ -123,7 +125,7 @@ export interface DialogueSessionOptions extends PlannerRetrievalOptions {
   stallNoticeMs?: number;
   board: Omit<
     TaskBoardOptions,
-    'onEvent' | 'signals' | 'source' | 'onStateChange' | 'stepOf'
+    'onEvent' | 'signals' | 'source' | 'onStateChange' | 'stepOf' | 'caller'
   >;
   store?: IDialogueStateStore;
   onMessage?: (message: PlannerMessage) => void;
@@ -495,6 +497,12 @@ export class DialogueSession {
     const session = this;
     this.board = new TaskBoard({
       ...opts.board,
+      caller: opts.caller,
+      baseInput: () => ({
+        ...opts.board.baseInput?.(),
+        caller: opts.caller,
+        sessionId: opts.id,
+      }),
       now: opts.now ?? opts.board.now,
       profileSource: opts.profileSource ?? opts.board.profileSource,
       profileRunner: opts.profileRunner ?? opts.board.profileRunner,
@@ -1191,6 +1199,7 @@ export class DialogueSession {
           () =>
             callPlanner.process(messages, {
               ...user?.opts,
+              caller: this.opts.caller,
               toolRoundGuard: (calls) => {
                 const firstRound = roundCount++ === 0;
                 if (

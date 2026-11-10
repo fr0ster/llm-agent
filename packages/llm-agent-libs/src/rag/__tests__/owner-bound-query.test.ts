@@ -59,13 +59,48 @@ const store: OwnedRagStore = {
   rag,
 };
 
+for (const perRequest of [false, true]) {
+  for (const binding of ['unbound', 'foreign'] as const) {
+    it(`refuses ${binding} binding for ${perRequest ? 'history' : 'ordinary session'} retrieval`, async () => {
+      const access = testRagAccess();
+      if (binding === 'foreign') await access.bindings.bind('A', 'bob');
+      const target: OwnedRagStore = {
+        ...store,
+        owner: perRequest
+          ? { scope: 'session', perRequest: true }
+          : store.owner,
+      };
+      const result = await ownerBoundQuery(
+        target,
+        embedding,
+        5,
+        { caller },
+        access,
+      );
+      assert.equal(result.ok, false);
+      if (!result.ok) assert.ok(result.error instanceof RagAccessDeniedError);
+      const orchestrated = await orchestrator(target, access).orchestrate(
+        'record',
+        {
+          opts: { caller },
+          sessionId: 'A',
+          mode: 'hard',
+          externalTools: [],
+          rootSpan: new NoopTracer().startSpan('test'),
+        },
+      );
+      assert.equal(orchestrated.ok, false);
+    });
+  }
+}
+
 it('requires options.caller without querying the store', async () => {
   const result = await ownerBoundQuery(
     store,
     embedding,
     5,
     {},
-    testRagAccess(),
+    testRagAccess([callerA]),
   );
   assert.equal(result.ok, false);
   if (!result.ok) assert.ok(result.error instanceof RagAccessDeniedError);
@@ -78,14 +113,14 @@ it('rejects a sessionId smuggled through ragFilter', async () => {
     embedding,
     5,
     { caller, ragFilter: { sessionId: 'B' } },
-    testRagAccess(),
+    testRagAccess([callerA]),
   );
   assert.equal(result.ok, false);
   if (!result.ok) assert.ok(result.error instanceof RagAccessDeniedError);
 });
 
 it('queries tools for any caller without a decision call', async () => {
-  const access = testRagAccess();
+  const access = testRagAccess([callerA]);
   let calls = 0;
   access.decision.canRead = async () => {
     calls++;
@@ -104,7 +139,7 @@ it('queries tools for any caller without a decision call', async () => {
 
 for (const decision of ['deny', 'throw'] as const) {
   it(`RagOrchestrator fails closed when the read decision is ${decision}`, async () => {
-    const access = testRagAccess();
+    const access = testRagAccess([callerA]);
     access.decision.canRead = async () => {
       if (decision === 'throw') throw new Error('decision unavailable');
       return false;
@@ -130,7 +165,7 @@ it('an allow decision cannot widen another session owner', async () => {
     embedding,
     5,
     { caller: { ...callerA, sessionId: 'B' } },
-    testRagAccess(),
+    testRagAccess([callerA]),
   );
   assert.equal(result.ok, false);
 });
@@ -142,7 +177,7 @@ for (const ragFilter of [{ userId: 'bob' }, { roleId: 'unassigned' }]) {
       embedding,
       5,
       { caller, ragFilter },
-      testRagAccess(),
+      testRagAccess([callerA]),
     );
     assert.equal(result.ok, false);
     if (!result.ok) assert.ok(result.error instanceof RagAccessDeniedError);
@@ -150,7 +185,7 @@ for (const ragFilter of [{ userId: 'bob' }, { roleId: 'unassigned' }]) {
 }
 
 it('role identity comes from the assignments table and foreign records stay closed', async () => {
-  const access = testRagAccess();
+  const access = testRagAccess([callerA]);
   access.roles.rolesOf = async () => ({ ok: true, value: new Set(['reader']) });
   const roleStore: OwnedRagStore = {
     name: 'docs',
@@ -181,8 +216,8 @@ it('role identity comes from the assignments table and foreign records stay clos
 });
 
 for (const decision of ['deny', 'throw'] as const) {
-  it(`built-in history bypasses a ${decision} decision through RagOrchestrator`, async () => {
-    const access = testRagAccess();
+  it(`built-in history refuses a ${decision} decision through RagOrchestrator`, async () => {
+    const access = testRagAccess([callerA]);
     let calls = 0;
     access.decision.canRead = async () => {
       calls++;
@@ -200,16 +235,14 @@ for (const decision of ['deny', 'throw'] as const) {
       externalTools: [],
       rootSpan: new NoopTracer().startSpan('test'),
     });
-    assert.ok(result.ok);
-    assert.deepEqual(sessionTags(result.value.retrieved.ragResults.history), [
-      'A',
-    ]);
-    assert.equal(calls, 0);
+    assert.equal(result.ok, false);
+    if (!result.ok) assert.ok(result.error instanceof RagAccessDeniedError);
+    assert.equal(calls, 1);
   });
 }
 
 it('ordinary session collections still require one server decision', async () => {
-  const access = testRagAccess();
+  const access = testRagAccess([callerA]);
   let calls = 0;
   access.decision.canRead = async () => {
     calls++;
@@ -234,7 +267,7 @@ for (const options of [
   { caller: callerA, ragFilter: { roleId: 'unassigned' } },
 ]) {
   it(`built-in history rejects missing or foreign identity ${JSON.stringify(options)}`, async () => {
-    const access = testRagAccess();
+    const access = testRagAccess([callerA]);
     let calls = 0;
     access.decision.canRead = async () => {
       calls++;
@@ -291,7 +324,7 @@ it('forwards the positive global owner predicate before top-k and keeps its defe
     embedding,
     2,
     { caller },
-    testRagAccess(),
+    testRagAccess([callerA]),
   );
   assert.ok(result.ok);
   assert.deepEqual(
@@ -316,7 +349,7 @@ it('ownerBoundQuery rejects a global-tagged foreign result carrying a private id
     embedding,
     10,
     { caller },
-    testRagAccess(),
+    testRagAccess([callerA]),
   );
   assert.ok(result.ok);
   assert.deepEqual(result.value, []);

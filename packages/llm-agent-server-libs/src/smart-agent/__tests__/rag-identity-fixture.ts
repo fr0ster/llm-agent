@@ -1,9 +1,7 @@
 import { SimpleRagRegistry } from '@mcp-abap-adt/llm-agent';
-import {
-  fixedCallerResolver,
-  testRagAccess,
-} from '@mcp-abap-adt/llm-agent/testing/rag-access-testing';
+import { fixedCallerResolver } from '@mcp-abap-adt/llm-agent/testing/rag-access-testing';
 import { SessionGraphFactory } from '@mcp-abap-adt/llm-agent-libs';
+import { testRequestAccess } from '../../../../llm-agent-libs/src/testing/index.js';
 import {
   type BuildAgentDeps,
   buildAgent,
@@ -20,7 +18,7 @@ export class TestSmartServer extends SmartServer {
           userId: 'test-user',
           isAdmin: false,
         }),
-        ragAccess: testRagAccess(),
+        ragAccess: testRequestAccess,
         ...config,
       },
       deps,
@@ -38,7 +36,7 @@ export function testBuildAgent(
         userId: 'test-user',
         isAdmin: false,
       }),
-      ragAccess: testRagAccess(),
+      ragAccess: testRequestAccess,
       ...config,
     },
     deps,

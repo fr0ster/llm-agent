@@ -18,10 +18,10 @@ export function fixedCallerResolver(
   return { resolve: async () => ({ ok: true, value: { ...identity } }) };
 }
 
-export function testRagAccess(): RagAccess {
+export function testRagAccess(callers: readonly RagCaller[] = []): RagAccess {
   return {
     decision: allowAllDecision(),
     roles: new InMemoryRagRoleStore(() => false),
-    bindings: new InMemorySessionBindingStore(),
+    bindings: new InMemorySessionBindingStore(callers),
   };
 }

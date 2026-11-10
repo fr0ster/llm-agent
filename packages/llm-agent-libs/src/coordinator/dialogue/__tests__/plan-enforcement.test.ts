@@ -3,7 +3,11 @@ import { test } from 'node:test';
 import type { DialoguePlan, TaskEvent } from '@mcp-abap-adt/llm-agent';
 import { SmartAgent } from '../../../agent.js';
 import { SmartAgentSubAgent } from '../../../subagent/smart-agent-subagent.js';
-import { makeAssembler, makeDefaultDeps } from '../../../testing/index.js';
+import {
+  makeAssembler,
+  makeDefaultDeps,
+  testCallOptions,
+} from '../../../testing/index.js';
 import { DialogueSession } from '../dialogue-session.js';
 import { runInPlannerScope } from '../planner-scope.js';
 import { PlannerToolsClient } from '../planner-tools-client.js';
@@ -37,6 +41,8 @@ for (const attempt of ['work', 'check'] as const) {
     let plan = mergePlan(undefined, [batch], 'active');
     let finish!: (value: { output: string }) => void;
     const board = new TaskBoard({
+      caller: testCallOptions({ sessionId: 'test-session' }).caller,
+      baseInput: () => testCallOptions({ sessionId: 'test-session' }),
       workers: new Map([
         [
           'w',
@@ -188,6 +194,9 @@ for (const change of ['skip', 'remove', 'reduce', 'replace'] as const) {
             },
           ];
     const session = await DialogueSession.open({
+      caller: testCallOptions({
+        caller: { sessionId: change, userId: 'test-user', isAdmin: false },
+      }).caller,
       id: change,
       maxCorrections: 0,
       board: { workers: new Map() },
@@ -276,6 +285,8 @@ test('budget exhaustion reaches TaskBoard and fails a batch without checking, wi
   const step = plan.steps[0];
   const events: TaskEvent[] = [];
   const board = new TaskBoard({
+    caller: testCallOptions({ sessionId: 'test-session' }).caller,
+    baseInput: () => testCallOptions({ sessionId: 'test-session' }),
     workers: new Map([
       [
         'w',
@@ -329,6 +340,8 @@ test('audit context includes expected batch ids/count and batch size limit rejec
   });
   let context = '';
   const board = new TaskBoard({
+    caller: testCallOptions({ sessionId: 'test-session' }).caller,
+    baseInput: () => testCallOptions({ sessionId: 'test-session' }),
     ...profileHost(
       new Map([
         [
@@ -415,7 +428,14 @@ for (const maxIterations of [1, 3]) {
       }),
     );
     assert.equal(worker.capabilities.maxToolCalls, 1);
-    const result = await worker.run({ task: 'work' });
+    const result = await worker.run({
+      caller: {
+        sessionId: 'test-session',
+        userId: 'test-user',
+        isAdmin: false,
+      },
+      task: 'work',
+    });
     assert.equal(result.budgetExhausted, true);
     assert.equal(result.toolCallCount, 1);
     assert.equal(result.maxToolCalls, 1);
@@ -506,6 +526,9 @@ for (const state of [
         workTaskId: 'w',
       });
       const session = await DialogueSession.open({
+        caller: testCallOptions({
+          caller: { sessionId: 'legacy', userId: 'test-user', isAdmin: false },
+        }).caller,
         id: 'legacy',
         store: {
           load: async () => ({

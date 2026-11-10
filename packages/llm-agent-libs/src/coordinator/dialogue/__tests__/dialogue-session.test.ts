@@ -1,8 +1,7 @@
 import assert from 'node:assert/strict';
-
 import { test } from 'node:test';
-
 import { InMemoryRag, type Message } from '@mcp-abap-adt/llm-agent';
+import { testCallOptions } from '../../../testing/index.js';
 
 import { DialogueSession } from '../dialogue-session.js';
 
@@ -49,6 +48,9 @@ test('several completions during a busy user turn are listed once in order; sile
   let pushes = 0;
 
   const s = await DialogueSession.open({
+    caller: testCallOptions({
+      caller: { sessionId: 'batch', userId: 'test-user', isAdmin: false },
+    }).caller,
     id: 'batch',
 
     onMessage() {
@@ -152,6 +154,9 @@ test('planner errors reject only their send and the next queued turn still runs'
   let calls = 0;
 
   const s = await DialogueSession.open({
+    caller: testCallOptions({
+      caller: { sessionId: 'error', userId: 'test-user', isAdmin: false },
+    }).caller,
     id: 'error',
 
     board: { workers: new Map() },
@@ -181,6 +186,9 @@ test('send answers in scope, records plan, forwards options and preserves user N
   const signal = new AbortController().signal;
 
   const s = await DialogueSession.open({
+    caller: testCallOptions({
+      caller: { sessionId: 's', userId: 'test-user', isAdmin: false },
+    }).caller,
     id: 's',
     now: () => 0,
 
@@ -235,6 +243,9 @@ test('delegation returns before completion; busy events coalesce; users precede 
     ] as const;
 
   const s = await DialogueSession.open({
+    caller: testCallOptions({
+      caller: { sessionId: 's', userId: 'test-user', isAdmin: false },
+    }).caller,
     id: 's',
 
     onMessage: (m) => delivered.push(m.text),
@@ -357,6 +368,9 @@ test('restore interrupts tasks, restart note appears once and NO_MESSAGE is reco
   const inputs: Message[][] = [];
 
   const s = await DialogueSession.open({
+    caller: testCallOptions({
+      caller: { sessionId: 's', userId: 'test-user', isAdmin: false },
+    }).caller,
     id: 's',
 
     store,
@@ -413,6 +427,9 @@ test('close stops tasks, waits for active turn, rejects queued sends and never s
   let calls = 0;
 
   const s = await DialogueSession.open({
+    caller: testCallOptions({
+      caller: { sessionId: 's', userId: 'test-user', isAdmin: false },
+    }).caller,
     id: 's',
 
     store,
@@ -487,6 +504,9 @@ test('history is bounded, snapshots and memory store are isolated, save errors a
   let saves = 0;
 
   const s = await DialogueSession.open({
+    caller: testCallOptions({
+      caller: { sessionId: 's', userId: 'test-user', isAdmin: false },
+    }).caller,
     id: 's',
 
     store: {
@@ -547,6 +567,7 @@ test('history is bounded, snapshots and memory store are isolated, save errors a
 test('history trimming preserves user action prefixes and restores isolated action markers', async () => {
   const store = new InMemoryDialogueStateStore();
   const options = {
+    caller: { sessionId: 'action-prefix', userId: 'test-user', isAdmin: false },
     id: 'action-prefix',
     store,
     board: { workers: new Map() },
@@ -582,6 +603,7 @@ test('plan tool state is injected before the last input, survives trimming and r
   const inputs: Message[][] = [];
 
   const options = {
+    caller: { sessionId: 'plan', userId: 'test-user', isAdmin: false },
     id: 'plan',
     now: () => 0,
 
@@ -664,6 +686,7 @@ test('draining pending persists an acknowledgement after an in-flight save witho
   });
 
   const options = {
+    caller: { sessionId: 'ack', userId: 'test-user', isAdmin: false },
     id: 'ack',
 
     board: { workers: new Map() },
@@ -740,6 +763,7 @@ test('draining pending saves even without another turn and swallows save failure
   });
 
   const options = {
+    caller: { sessionId: 'drain', userId: 'test-user', isAdmin: false },
     id: 'drain',
 
     store,
@@ -820,6 +844,13 @@ test('close stops and settles a task delegated by an already in-flight turn with
   let closed = false;
 
   const s = await DialogueSession.open({
+    caller: testCallOptions({
+      caller: {
+        sessionId: 'close-delegate',
+        userId: 'test-user',
+        isAdmin: false,
+      },
+    }).caller,
     id: 'close-delegate',
 
     board: {
@@ -920,6 +951,9 @@ test('open restores queued tasks as interrupted and explains them on the next tu
   let runs = 0;
 
   const s = await DialogueSession.open({
+    caller: testCallOptions({
+      caller: { sessionId: 'queued', userId: 'test-user', isAdmin: false },
+    }).caller,
     id: 'queued',
 
     store,
@@ -990,6 +1024,9 @@ test('legacy unlinked tasks do not introduce a separate tasks view', async () =>
   });
 
   const s = await DialogueSession.open({
+    caller: testCallOptions({
+      caller: { sessionId: 'board', userId: 'test-user', isAdmin: false },
+    }).caller,
     id: 'board',
     now: () => 0,
 
@@ -1020,6 +1057,9 @@ test('content waits for acceptance while progress stays live; failed drafts neve
   const emitted: import('@mcp-abap-adt/llm-agent').StreamChunk[] = [];
   let fail = true;
   const s = await DialogueSession.open({
+    caller: testCallOptions({
+      caller: { sessionId: 'stream', userId: 'test-user', isAdmin: false },
+    }).caller,
     id: 'stream',
     board: { workers: new Map() },
     planner: {
@@ -1078,6 +1118,9 @@ for (const status of [undefined, 'active', 'waiting_user', 'done'] as const) {
     const inputs: Message[][] = [];
     const warnings: string[] = [];
     const s = await DialogueSession.open({
+      caller: testCallOptions({
+        caller: { sessionId: 'status', userId: 'test-user', isAdmin: false },
+      }).caller,
       id: 'status',
       ...(status === 'done' ? { plannerContext: 'conversation' as const } : {}),
       store,
@@ -1152,6 +1195,13 @@ test('prepared context resets a restored completed batch plan for unrelated work
     savedAt: 0,
   });
   const s = await DialogueSession.open({
+    caller: testCallOptions({
+      caller: {
+        sessionId: 'legacy-batch',
+        userId: 'test-user',
+        isAdmin: false,
+      },
+    }).caller,
     id: 'legacy-batch',
     store,
     maxCorrections: 0,
@@ -1191,6 +1241,13 @@ test('task completion preserves a pending question and a queued answer grants co
   let calls = 0;
   const question = 'May I change the scope?';
   const s = await DialogueSession.open({
+    caller: testCallOptions({
+      caller: {
+        sessionId: 'waiting-answer',
+        userId: 'test-user',
+        isAdmin: false,
+      },
+    }).caller,
     id: 'waiting-answer',
     maxCorrections: 0,
     board: {
@@ -1278,6 +1335,9 @@ for (const maxCorrections of [0, 1, 2]) {
     const work = deferred<{ output: string }>();
     let calls = 0;
     const s = await DialogueSession.open({
+      caller: testCallOptions({
+        caller: { sessionId: 'bound', userId: 'test-user', isAdmin: false },
+      }).caller,
       id: 'bound',
       maxCorrections,
       board: {
@@ -1322,6 +1382,9 @@ test('correction consumes new events, preserves whole-turn actions and counts ea
   let calls = 0;
   const inputs: Message[][] = [];
   const s = await DialogueSession.open({
+    caller: testCallOptions({
+      caller: { sessionId: 'events', userId: 'test-user', isAdmin: false },
+    }).caller,
     id: 'events',
     board: {
       workers: new Map([
@@ -1485,6 +1548,9 @@ for (const mode of [
     let calls = 0;
     const partials: string[] = [];
     const session = await DialogueSession.open({
+      caller: testCallOptions({
+        caller: { sessionId: 'delivery', userId: 'test-user', isAdmin: false },
+      }).caller,
       id: 'delivery',
       plannerMemory: {
         rag,
@@ -1584,6 +1650,9 @@ test('task events inject bounded notices without get_task hints', async () => {
   const seen: string[] = [];
   let calls = 0;
   const session = await DialogueSession.open({
+    caller: testCallOptions({
+      caller: { sessionId: 'once', userId: 'test-user', isAdmin: false },
+    }).caller,
     id: 'once',
     maxCorrections: 0,
     board: {
@@ -1641,6 +1710,13 @@ test('delivery after new_request indexes the notice in memory', async () => {
   const rag = new InMemoryRag();
   let calls = 0;
   const session = await DialogueSession.open({
+    caller: testCallOptions({
+      caller: {
+        sessionId: 'restart-delivery',
+        userId: 'test-user',
+        isAdmin: false,
+      },
+    }).caller,
     id: 'restart-delivery',
     maxCorrections: 0,
     plannerMemory: {
@@ -1732,6 +1808,13 @@ test('deliver survives wait-mode cancellation with another task running', async 
     savedAt: 0,
   });
   const session = await DialogueSession.open({
+    caller: testCallOptions({
+      caller: {
+        sessionId: 'wait-delivery',
+        userId: 'test-user',
+        isAdmin: false,
+      },
+    }).caller,
     id: 'wait-delivery',
     store,
     maxCorrections: 0,
@@ -1815,6 +1898,13 @@ for (const mode of [
     let reads = 0;
     let retry = false;
     const session = await DialogueSession.open({
+      caller: testCallOptions({
+        caller: {
+          sessionId: 'record-delivery',
+          userId: 'test-user',
+          isAdmin: false,
+        },
+      }).caller,
       id: 'record-delivery',
       store: state,
       maxCorrections: 0,
@@ -1957,6 +2047,13 @@ for (const restore of [false, true]) {
     let fail = true;
     const open = () =>
       DialogueSession.open({
+        caller: testCallOptions({
+          caller: {
+            sessionId: 'failed-delivery',
+            userId: 'test-user',
+            isAdmin: false,
+          },
+        }).caller,
         id: 'failed-delivery',
         store,
         board: { workers: new Map() },
@@ -2077,6 +2174,9 @@ test('repeated delivery of the same task across correction calls is emitted once
   let resetStarted = false;
   const open = () =>
     DialogueSession.open({
+      caller: testCallOptions({
+        caller: { sessionId: 'dedupe', userId: 'test-user', isAdmin: false },
+      }).caller,
       id: 'dedupe',
       store,
       maxCorrections: 1,

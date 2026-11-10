@@ -15,14 +15,13 @@ import type {
   WorkerToolPolicy,
 } from '@mcp-abap-adt/llm-agent';
 import { InMemoryRag } from '@mcp-abap-adt/llm-agent';
-import { testRagAccess } from '@mcp-abap-adt/llm-agent/testing/rag-access-testing';
 import { z } from 'zod';
 import { ContextAssembler } from '../../../context/context-assembler.js';
 import { REQUEST_TIME_GUIDANCE } from '../../../context/request-time.js';
 import type { PipelineContext } from '../../../pipeline/context.js';
 import { AssembleHandler } from '../../../pipeline/handlers/assemble.js';
 import { SkillSelectHandler } from '../../../pipeline/handlers/skill-select.js';
-import { testCallOptions } from '../../../testing/index.js';
+import { testCallOptions, testRequestAccess } from '../../../testing/index.js';
 import { NoopTracer } from '../../../tracer/noop-tracer.js';
 import {
   DialogueSession,
@@ -185,7 +184,7 @@ function assemblyContext(
   overrides: Partial<PipelineContext> = {},
 ): PipelineContext {
   return {
-    ragAccess: testRagAccess(),
+    ragAccess: testRequestAccess,
     textOrMessages: 'goal',
     options: testCallOptions(undefined),
     config: { maxIterations: 1 },
@@ -349,7 +348,7 @@ test('hard mode does not load skills without a retrieval match', async () => {
     },
   };
   const ctx = assemblyContext({
-    ragAccess: testRagAccess(),
+    ragAccess: testRequestAccess,
     config: { mode: 'hard', maxIterations: 1 },
     ragResults: {},
     ragStores: {},
@@ -408,6 +407,8 @@ test('unstructured delegation prevents a new request during profile resolution',
     return get(name);
   };
   const board = new TaskBoard({
+    caller: testCallOptions({ sessionId: 'test-session' }).caller,
+    baseInput: () => testCallOptions({ sessionId: 'test-session' }),
     profileSource: source,
     profileRunner: runner(async () => ({ output: 'done' })),
     onEvent() {},
@@ -458,6 +459,8 @@ test('concurrent delegation reserves one attempt per step across asynchronous pr
   const source = new Source();
   const release = completion();
   const board = new TaskBoard({
+    caller: testCallOptions({ sessionId: 'test-session' }).caller,
+    baseInput: () => testCallOptions({ sessionId: 'test-session' }),
     profileSource: source,
     profileRunner: runner(async () => {
       await release.promise;
@@ -506,6 +509,8 @@ test('delegation reservations reject plan replacement and release after failed r
   };
   source.disabled.add('author');
   const board = new TaskBoard({
+    caller: testCallOptions({ sessionId: 'test-session' }).caller,
+    baseInput: () => testCallOptions({ sessionId: 'test-session' }),
     profileSource: source,
     profileRunner: runner(async () => ({ output: 'done' })),
     onEvent() {},
@@ -562,6 +567,8 @@ test('plan updates cannot remove an active attempt and do not resolve suggested 
   const source = new Source();
   const finishTask = completion();
   const board = new TaskBoard({
+    caller: testCallOptions({ sessionId: 'test-session' }).caller,
+    baseInput: () => testCallOptions({ sessionId: 'test-session' }),
     profileSource: source,
     profileRunner: runner(async () => {
       await finishTask.promise;
@@ -718,6 +725,13 @@ test('session-store restore schedules verdicts without exact source bindings for
     },
   });
   const session = await DialogueSession.open({
+    caller: testCallOptions({
+      caller: {
+        sessionId: 'restore-evidence',
+        userId: 'test-user',
+        isAdmin: false,
+      },
+    }).caller,
     id: 'restore-evidence',
     store,
     profileSource: new Source(),
@@ -821,6 +835,8 @@ test('queued tasks refresh prompts and policy; running snapshots are isolated', 
     return { output: 'result' };
   }, snapshots);
   const board = new TaskBoard({
+    caller: testCallOptions({ sessionId: 'test-session' }).caller,
+    baseInput: () => testCallOptions({ sessionId: 'test-session' }),
     profileSource: source,
     profileRunner: {
       ...hostRunner,
@@ -856,6 +872,8 @@ test('disabled delegation and runner failure invoke no worker', async () => {
   let runs = 0;
   const failed = completion();
   const board = new TaskBoard({
+    caller: testCallOptions({ sessionId: 'test-session' }).caller,
+    baseInput: () => testCallOptions({ sessionId: 'test-session' }),
     profileSource: source,
     profileRunner: {
       ...runner(async () => {
@@ -891,6 +909,8 @@ test('disabled delegation and runner failure invoke no worker', async () => {
 test('discovery advertises arbitrary report/verdict functions and binds library-resolved roles', async () => {
   const source = new Source();
   const board = new TaskBoard({
+    caller: testCallOptions({ sessionId: 'test-session' }).caller,
+    baseInput: () => testCallOptions({ sessionId: 'test-session' }),
     profileSource: source,
     profileRunner: runner(async () => ({ output: 'result' })),
     onEvent() {},
@@ -1088,6 +1108,11 @@ test('public contracts include every error variant and additive legacy construct
     steps: [{ id: 'old', goal: 'work', state: 'pending', taskIds: [] }],
   };
   const options: DialogueSessionOptions = {
+    caller: {
+      sessionId: 'legacy-contract',
+      userId: 'test-user',
+      isAdmin: false,
+    },
     id: 'legacy-contract',
     board: { workers: new Map() },
     planner: {
@@ -1141,6 +1166,8 @@ test('cancelled in-flight delegation cannot queue work after the source settles 
   let constructions = 0;
   const hostRunner = runner(async () => ({ output: 'must not run' }));
   const board = new TaskBoard({
+    caller: testCallOptions({ sessionId: 'test-session' }).caller,
+    baseInput: () => testCallOptions({ sessionId: 'test-session' }),
     profileSource: source,
     profileRunner: {
       ...hostRunner,
@@ -1170,6 +1197,13 @@ test('cancelled in-flight delegation cannot queue work after the source settles 
 test('planner runner failures preserve state for retry and never invoke a planner', async () => {
   for (const throws of [false, true]) {
     const session = await DialogueSession.open({
+      caller: testCallOptions({
+        caller: {
+          sessionId: `runner-${throws}`,
+          userId: 'test-user',
+          isAdmin: false,
+        },
+      }).caller,
       id: `runner-${throws}`,
       board: {},
       profileSource: new Source(),
@@ -1288,6 +1322,7 @@ for (const passing of [false, true]) {
     };
     await store.save('removed', state);
     const options: DialogueSessionOptions = {
+      caller: { sessionId: 'removed', userId: 'test-user', isAdmin: false },
       id: 'removed',
       store,
       board: {},
@@ -1412,6 +1447,8 @@ test('RAG-backed host integration: exact discovery, prompt/policy edits and disa
   const permissions: string[][] = [];
   let finish = completion();
   const board = new TaskBoard({
+    caller: testCallOptions({ sessionId: 'test-session' }).caller,
+    baseInput: () => testCallOptions({ sessionId: 'test-session' }),
     profileSource: source,
     profileRunner: {
       ...runner(async () => ({ output: '' })),
@@ -1504,6 +1541,8 @@ for (const edit of ['prompt', 'policy', 'result'] as const) {
     const finished = completion();
     const snapshots: WorkerProfile[] = [];
     const board = new TaskBoard({
+      caller: testCallOptions({ sessionId: 'test-session' }).caller,
+      baseInput: () => testCallOptions({ sessionId: 'test-session' }),
       profileSource: source,
       profileRunner: runner(async () => ({ output: 'report' }), snapshots),
       onEvent(event) {
@@ -1557,6 +1596,8 @@ for (const report of ['author', 'research']) {
         const source = new Source();
         const finished = completion();
         const board = new TaskBoard({
+          caller: testCallOptions({ sessionId: 'test-session' }).caller,
+          baseInput: () => testCallOptions({ sessionId: 'test-session' }),
           profileSource: source,
           profileRunner: runner(async () => ({ output })),
           onEvent(event) {
@@ -1676,6 +1717,13 @@ test('planner text refreshes every call, including empty text, in both context m
       },
     };
     const session = await DialogueSession.open({
+      caller: testCallOptions({
+        caller: {
+          sessionId: `profiles-${plannerContext}`,
+          userId: 'test-user',
+          isAdmin: false,
+        },
+      }).caller,
       id: `profiles-${plannerContext}`,
       plannerContext,
       profileSource: source,
@@ -1714,6 +1762,8 @@ test('host obligation contract fixture: unchanged policies reach the runner; hos
       source.records = [{ ...profile('function', result), tools }];
       const finished = completion();
       const board = new TaskBoard({
+        caller: testCallOptions({ sessionId: 'test-session' }).caller,
+        baseInput: () => testCallOptions({ sessionId: 'test-session' }),
         profileSource: source,
         profileRunner: {
           ...runner(async () => ({ output: '' })),
@@ -1773,6 +1823,8 @@ test('a result-kind edit while queued fails the task before constructing its wor
   const failed = completion();
   let constructions = 0;
   const board = new TaskBoard({
+    caller: testCallOptions({ sessionId: 'test-session' }).caller,
+    baseInput: () => testCallOptions({ sessionId: 'test-session' }),
     profileSource: source,
     profileRunner: {
       ...runner(async () => ({ output: '' })),
@@ -1851,6 +1903,9 @@ test('corrective planner calls rediscover fresh text and source errors prevent r
     },
   };
   const session = await DialogueSession.open({
+    caller: testCallOptions({
+      caller: { sessionId: 'corrections', userId: 'test-user', isAdmin: false },
+    }).caller,
     id: 'corrections',
     profileSource: source,
     profileRunner,
@@ -1881,6 +1936,13 @@ for (const timeoutMs of [undefined, 3_000])
     const release = completion();
     let called = false;
     const session = await DialogueSession.open({
+      caller: testCallOptions({
+        caller: {
+          sessionId: 'slow-planner',
+          userId: 'test-user',
+          isAdmin: false,
+        },
+      }).caller,
       id: 'slow-planner',
       board: {},
       maxCorrections: 0,

@@ -1,5 +1,8 @@
-import { testRagAccess } from '@mcp-abap-adt/llm-agent/testing/rag-access-testing';
-import { ownedTestStores, testCallOptions } from '../../../testing/index.js';
+import {
+  ownedTestStores,
+  testCallOptions,
+  testRequestAccess,
+} from '../../../testing/index.js';
 /**
  * Task 0 — PR-2b guard: Loop B characterization test.
  *
@@ -168,7 +171,7 @@ test('Loop B: read-only retry restores prevSelectedTools and emits no skip log',
   };
 
   const ctx = {
-    ragAccess: testRagAccess(),
+    ragAccess: testRequestAccess,
     config: {
       maxIterations: 5,
       maxToolCalls: 5,
@@ -178,11 +181,14 @@ test('Loop B: read-only retry restores prevSelectedTools and emits no skip log',
       toolReselectPerIteration: true,
     } as PipelineContext['config'],
     options: testCallOptions({
-      sessionLogger: {
-        logStep(step: string) {
-          logSteps.push(step);
+      sessionId: 'b-reselect',
+      ...testCallOptions({
+        sessionLogger: {
+          logStep(step: string) {
+            logSteps.push(step);
+          },
         },
-      },
+      }),
     }),
     sessionId: 'b-reselect',
     mcpClients: [mcpClient],

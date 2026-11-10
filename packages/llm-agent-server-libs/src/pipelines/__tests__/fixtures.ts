@@ -1,9 +1,9 @@
 import type { IEmbedder, ILlm, ISubAgent } from '@mcp-abap-adt/llm-agent';
-import { testRagAccess } from '@mcp-abap-adt/llm-agent/testing/rag-access-testing';
 import {
   InMemoryKnowledgeBackend,
   SmartAgentBuilder,
 } from '@mcp-abap-adt/llm-agent-libs';
+import { testRequestAccess } from '../../../../llm-agent-libs/src/testing/index.js';
 import { makeKnowledgeSemanticIndex } from '../../smart-agent/embedder-knowledge-index.js';
 import type {
   IControllerServerPipelineContext,
@@ -37,7 +37,7 @@ export function fakeServerCtx(): IServerPipelineContext {
     mintTurnId: () => 't1',
     createAgentBuilder: async () =>
       new SmartAgentBuilder({})
-        .withRagAccess(testRagAccess())
+        .withRagAccess(testRequestAccess)
         .withMainLlm(stubLlm)
         .withMode('smart'),
     mainLlm: stubLlm,

@@ -34,7 +34,16 @@ test('SmartAgentSubAgent retains per-model usage including requests', async () =
     },
   };
   assert.deepEqual(
-    (await new SmartAgentSubAgent('w', agent).run({ task: 'work' })).usage,
+    (
+      await new SmartAgentSubAgent('w', agent).run({
+        caller: {
+          sessionId: 'test-session',
+          userId: 'test-user',
+          isAdmin: false,
+        },
+        task: 'work',
+      })
+    ).usage,
     usage,
   );
 });
@@ -57,6 +66,7 @@ test('SmartAgentSubAgent forwards the tool-call count callback', async () => {
     },
   };
   await new SmartAgentSubAgent('w', agent).run({
+    caller: { sessionId: 'test-session', userId: 'test-user', isAdmin: false },
     task: 'work',
     onToolCallCount,
   });

@@ -4,9 +4,8 @@ import {
   TOOL_TRACE_RENDER_CHARS,
   type ToolTrace,
 } from '@mcp-abap-adt/llm-agent';
-import { testRagAccess } from '@mcp-abap-adt/llm-agent/testing/rag-access-testing';
 import { unwrapBuilderResult } from '../../../builder-types.js';
-import { testCallOptions } from '../../../testing/index.js';
+import { testCallOptions, testRequestAccess } from '../../../testing/index.js';
 import { renderToolTrace } from '../tool-trace-render.js';
 
 test('checker evidence trust tag is outside the escaped raw excerpt', () => {
@@ -203,7 +202,7 @@ for (const path of ['streaming', 'pipeline']) {
         const handle = await new SmartAgentBuilder({
           skipModelValidation: true,
         })
-          .withRagAccess(testRagAccess())
+          .withRagAccess(testRequestAccess)
           .withMainLlm(llm)
           .withMcpClients([client])
           .withToolTrust(toolTrust)
@@ -270,7 +269,12 @@ test('pending-result injection stores raw text and projects its model copy once'
 });
 
 test('get_task tags a response copy and preserves the board trace', async () => {
-  const board = new TaskBoard({ workers: new Map(), onEvent() {} });
+  const board = new TaskBoard({
+    caller: testCallOptions({ sessionId: 'test-session' }).caller,
+    baseInput: () => testCallOptions({ sessionId: 'test-session' }),
+    workers: new Map(),
+    onEvent() {},
+  });
   board.restore([
     {
       id: 't',
@@ -485,6 +489,13 @@ test('session resolver tags internal planner get_task and checker evidence', asy
     },
   });
   const session = await DialogueSession.open({
+    caller: testCallOptions({
+      caller: {
+        sessionId: 'internal-trust',
+        userId: 'test-user',
+        isAdmin: false,
+      },
+    }).caller,
     id: 'internal-trust',
     toolTrust,
     maxCorrections: 0,

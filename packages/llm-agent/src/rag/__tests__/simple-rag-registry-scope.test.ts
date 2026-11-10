@@ -11,6 +11,47 @@ import { SimpleRagProviderRegistry } from '../providers/simple-provider-registry
 import { SimpleRagRegistry } from '../registry/simple-rag-registry.js';
 import { ragStoreKey } from '../registry/store-key.js';
 
+it('registry editor stamps every owner and refuses conflicting metadata', async () => {
+  for (const owner of [
+    { scope: 'session', sessionId: 's' },
+    { scope: 'user', userId: 'u' },
+    { scope: 'role', roleId: 'r' },
+    { scope: 'global' },
+  ] as const) {
+    const reg = new SimpleRagRegistry();
+    const editor: IRagEditor = {
+      upsert: async (_text, metadata) => {
+        assert.equal(metadata.ownerScope, owner.scope);
+        assert.equal(
+          metadata.sessionId,
+          'sessionId' in owner ? owner.sessionId : undefined,
+        );
+        assert.equal(
+          metadata.userId,
+          'userId' in owner ? owner.userId : undefined,
+        );
+        assert.equal(
+          metadata.roleId,
+          'roleId' in owner ? owner.roleId : undefined,
+        );
+        return { ok: true, value: { id: '1' } };
+      },
+      deleteById: async () => ({ ok: true, value: true }),
+    };
+    reg.register('docs', new InMemoryRag(), editor, {
+      displayName: 'docs',
+      ...owner,
+    });
+    const bound = reg.getEditor('docs', owner.scope, owner);
+    assert.ok(bound);
+    assert.ok((await bound.upsert('record', {})).ok);
+    assert.equal(
+      (await bound.upsert('record', { sessionId: 'foreign' })).ok,
+      false,
+    );
+  }
+});
+
 /** One `docs` per scope, each its own store. */
 function threeDocs() {
   const reg = new SimpleRagRegistry();

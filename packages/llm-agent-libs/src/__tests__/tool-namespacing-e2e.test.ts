@@ -50,7 +50,6 @@ import {
   type Plan,
   type PlanStep,
 } from '@mcp-abap-adt/llm-agent';
-import { testRagAccess } from '@mcp-abap-adt/llm-agent/testing/rag-access-testing';
 import { SmartAgentBuilder } from '../builder.js';
 import { unwrapBuilderResult } from '../builder-types.js';
 import type {
@@ -65,7 +64,7 @@ import {
 import { ScoreThresholdToolSelection } from '../pipeline/tool-selection/index.js';
 import { fireInternalToolsAsync } from '../policy/mixed-tool-call-handler.js';
 import { PendingToolResultsRegistry } from '../policy/pending-tool-results-registry.js';
-import { testCallOptions } from '../testing/index.js';
+import { testCallOptions, testRequestAccess } from '../testing/index.js';
 import type { ISpan } from '../tracer/types.js';
 
 // ---------------------------------------------------------------------------
@@ -181,7 +180,7 @@ test('#244 e2e — route 1 (tool-loop executor): a RAG hit for server 1s Search 
   };
 
   const handle = await new SmartAgentBuilder()
-    .withRagAccess(testRagAccess())
+    .withRagAccess(testRequestAccess)
     .withMainLlm(mainLlm)
     .withMcpConnectionStrategy(connectionStrategy)
     .setToolsRag(toolsRag)
@@ -306,7 +305,7 @@ test('#244 e2e — route 3 (coordinator buildCallTool / SelfDispatch executor): 
     inputText: 'search for the forecast',
     sessionId: 'session-coordinator',
     assembledMessages: [],
-    options: undefined,
+    options: testCallOptions({ sessionId: 'session-coordinator' }),
     toolClientMap,
     activeTools: [{ name: 's1__Search' }] as unknown as LlmTool[],
     yield(chunk: {

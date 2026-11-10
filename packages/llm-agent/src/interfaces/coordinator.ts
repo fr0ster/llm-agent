@@ -73,6 +73,7 @@ export interface StepResult {
 }
 
 export interface ICoordinatorContext {
+  caller: import('./rag-access.js').RagCaller;
   inputText: string;
   systemPrompt?: string;
   skillContent?: string;

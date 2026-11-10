@@ -90,6 +90,8 @@ for (const entry of ragAccessStoreConformanceCases) {
             );
           },
           bindings: {
+            getUserId: (sessionId) =>
+              createQdrantRagAccessStores(other).bindings.getUserId(sessionId),
             bind: (sessionId, userId) =>
               createQdrantRagAccessStores(other).bindings.bind(
                 sessionId,

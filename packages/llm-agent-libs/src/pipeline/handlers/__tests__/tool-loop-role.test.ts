@@ -10,7 +10,6 @@ import {
   type UsageContext,
   type UsageInput,
 } from '@mcp-abap-adt/llm-agent';
-import { testRagAccess } from '@mcp-abap-adt/llm-agent/testing/rag-access-testing';
 import { SmartAgentBuilder } from '../../../builder.js';
 import { unwrapBuilderResult } from '../../../builder-types.js';
 import { SessionRequestLogger } from '../../../logger/session-request-logger.js';
@@ -18,7 +17,7 @@ import { NoopMetrics } from '../../../metrics/noop-metrics.js';
 import { fireInternalToolsAsync } from '../../../policy/mixed-tool-call-handler.js';
 import { PendingToolResultsRegistry } from '../../../policy/pending-tool-results-registry.js';
 import { ToolAvailabilityRegistry } from '../../../policy/tool-availability-registry.js';
-import { testCallOptions } from '../../../testing/index.js';
+import { testCallOptions, testRequestAccess } from '../../../testing/index.js';
 import { NoopTracer } from '../../../tracer/noop-tracer.js';
 import { DefaultPipeline } from '../../default-pipeline.js';
 import { runPassThrough } from '../pass-through.js';
@@ -106,7 +105,7 @@ for (const role of ['planner', undefined]) {
     while (!next.done) next = await run.next();
     assert.equal(records.length, 3);
     const handle = await new SmartAgentBuilder({ skipModelValidation: true })
-      .withRagAccess(testRagAccess())
+      .withRagAccess(testRequestAccess)
       .withMainLlm(llm)
       .setPipeline(new DefaultPipeline())
       .build()

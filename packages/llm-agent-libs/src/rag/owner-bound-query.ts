@@ -26,6 +26,7 @@ export const denyRagAccess: RagAccess = {
     rolesOf: async () => ({ ok: false, error: new RagAccessDeniedError() }),
   },
   bindings: {
+    getUserId: async () => ({ ok: false, error: new RagAccessDeniedError() }),
     bind: async () => ({ ok: false, error: new RagAccessDeniedError() }),
   },
 };
@@ -43,6 +44,12 @@ export async function ownerBoundQuery(
   });
   const caller = options.caller;
   if (!caller?.sessionId?.trim() || !caller.userId?.trim()) return deny();
+  try {
+    const binding = await access.bindings.getUserId(caller.sessionId);
+    if (!binding.ok || binding.value !== caller.userId) return deny();
+  } catch {
+    return deny();
+  }
   const filter = options.ragFilter;
   if (filter?.owner !== undefined) return deny();
   if (filter?.sessionId !== undefined && filter.sessionId !== caller.sessionId)
@@ -58,13 +65,11 @@ export async function ownerBoundQuery(
       return deny();
     }
   }
-  const perRequest =
-    store.owner.scope === 'session' && 'perRequest' in store.owner;
   const owner =
     store.owner.scope === 'session' && 'perRequest' in store.owner
       ? { scope: 'session' as const, sessionId: caller.sessionId }
       : store.owner;
-  if (!perRequest && owner.scope !== 'internal') {
+  if (owner.scope !== 'internal') {
     const allowed = await checkRagAccess(
       caller,
       { name: store.name, owner },

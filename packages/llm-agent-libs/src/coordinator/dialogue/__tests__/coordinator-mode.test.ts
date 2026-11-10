@@ -11,6 +11,7 @@ import type {
   TrustMap,
   UsageInput,
 } from '@mcp-abap-adt/llm-agent';
+import { testCallOptions } from '../../../testing/index.js';
 import { DIALOGUE_COORDINATOR_SYSTEM } from '../coordinator-prompt.js';
 import { DialogueSession } from '../dialogue-session.js';
 import { InMemoryDialogueStateStore } from '../in-memory-dialogue-state-store.js';
@@ -97,6 +98,9 @@ for (const [name, prompts, planAuthor, expected] of [
       };
     };
     const session = await DialogueSession.open({
+      caller: testCallOptions({
+        caller: { sessionId: name, userId: 'test-user', isAdmin: false },
+      }).caller,
       id: name,
       board: {},
       ...host,
@@ -118,6 +122,9 @@ test('callTool plan_create then delegate_task runs a task and get_task returns i
   const store = new InMemoryDialogueStateStore();
   const signals: string[] = [];
   const session = await DialogueSession.open({
+    caller: testCallOptions({
+      caller: { sessionId: 'external', userId: 'test-user', isAdmin: false },
+    }).caller,
     id: 'external',
     planAuthor: author,
     store,
@@ -184,6 +191,9 @@ test('callTool is refused during a turn', async () => {
     entered = resolve;
   });
   const session = await DialogueSession.open({
+    caller: testCallOptions({
+      caller: { sessionId: 'busy', userId: 'test-user', isAdmin: false },
+    }).caller,
     id: 'busy',
     board: {},
     planAuthor: author,
@@ -212,7 +222,13 @@ test('callTool is refused during a turn', async () => {
 });
 
 test('callTool rejects new_request and deliver', async () => {
-  const session = await DialogueSession.open({ id: 'rejected', board: {} });
+  const session = await DialogueSession.open({
+    caller: testCallOptions({
+      caller: { sessionId: 'rejected', userId: 'test-user', isAdmin: false },
+    }).caller,
+    id: 'rejected',
+    board: {},
+  });
   try {
     const before = session.snapshot();
     for (const name of ['new_request', 'deliver']) {
@@ -230,6 +246,9 @@ test('callTool persists to the store and emits a plan signal', async () => {
   const store = new InMemoryDialogueStateStore();
   const signals: string[] = [];
   const session = await DialogueSession.open({
+    caller: testCallOptions({
+      caller: { sessionId: 'persist', userId: 'test-user', isAdmin: false },
+    }).caller,
     id: 'persist',
     board: {},
     planAuthor: author,
@@ -258,6 +277,9 @@ for (const tool of ['plan_update', 'delegate_task']) {
     const store = new InMemoryDialogueStateStore();
     let runs = 0;
     const session = await DialogueSession.open({
+      caller: testCallOptions({
+        caller: { sessionId: tool, userId: 'test-user', isAdmin: false },
+      }).caller,
       id: tool,
       store,
       planAuthor: author,
@@ -303,6 +325,13 @@ test('abort during plan_create authoring stores nothing', async () => {
   const store = new InMemoryDialogueStateStore();
   const controller = new AbortController();
   const session = await DialogueSession.open({
+    caller: testCallOptions({
+      caller: {
+        sessionId: 'abort-author',
+        userId: 'test-user',
+        isAdmin: false,
+      },
+    }).caller,
     id: 'abort-author',
     store,
     board: {},
@@ -334,6 +363,9 @@ test('abort during plan_create authoring stores nothing', async () => {
 test('headless task outcome survives restore and is delivered exactly once', async () => {
   const store = new InMemoryDialogueStateStore();
   const session = await DialogueSession.open({
+    caller: testCallOptions({
+      caller: { sessionId: 'outcome', userId: 'test-user', isAdmin: false },
+    }).caller,
     id: 'outcome',
     store,
     board: {
@@ -367,6 +399,13 @@ test('headless task outcome survives restore and is delivered exactly once', asy
     await store.save('restored-outcome', snapshot);
     const inputs: string[] = [];
     restored = await DialogueSession.open({
+      caller: testCallOptions({
+        caller: {
+          sessionId: 'restored-outcome',
+          userId: 'test-user',
+          isAdmin: false,
+        },
+      }).caller,
       id: 'restored-outcome',
       store,
       board: {},
@@ -440,6 +479,13 @@ for (const mode of ['turn', 'callTool', 'callTool override'] as const) {
       },
     };
     const session = await DialogueSession.open({
+      caller: testCallOptions({
+        caller: {
+          sessionId: 'author-accounting',
+          userId: 'test-user',
+          isAdmin: false,
+        },
+      }).caller,
       id: 'author-accounting',
       board: {},
       // One planner call per turn: end-of-turn corrections would repeat the stub's tool calls.

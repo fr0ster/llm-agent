@@ -35,6 +35,8 @@ export interface IRagRoleStore {
 }
 
 export interface ISessionBindingStore {
+  /** Read only: never creates a binding during access checks. */
+  getUserId(sessionId: string): Promise<Result<string | undefined, RagError>>;
   /** Idempotent for the same pair; refuses rebinding to a different user. */
   bind(
     sessionId: string,

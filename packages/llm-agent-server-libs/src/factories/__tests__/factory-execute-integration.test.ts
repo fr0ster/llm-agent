@@ -1,3 +1,4 @@
+import { testCallOptions } from '../../../../llm-agent-libs/src/testing/index.js';
 /**
  * Integration test: build a coordinator via CyclicFactory and invoke
  * handler.execute() with stubbed dependencies.  This test proves a
@@ -184,7 +185,7 @@ function makeCtx(): PipelineContext & {
   return {
     // -- immutable input
     textOrMessages: 'What is the answer?',
-    options: undefined,
+    options: testCallOptions({ sessionId: 'session-test' }),
     config: {} as never,
     sessionId: 'session-test',
 

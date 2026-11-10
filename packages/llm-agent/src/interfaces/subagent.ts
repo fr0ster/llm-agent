@@ -22,7 +22,7 @@ export interface SubAgentCapabilities {
 }
 
 export interface ISubAgentInput {
-  caller?: import('./rag-access.js').RagCaller;
+  caller: import('./rag-access.js').RagCaller;
   dialogueTask?: IDialogueTaskContext;
   onToolTrace?: (entry: ToolTraceEntry) => void;
   /** Owning request start in epoch milliseconds; preserved across tool rounds and queued tasks. */

@@ -14,6 +14,7 @@ import {
   makeDefaultDeps,
   makeLlm,
   testCallOptions,
+  testRequestAccess,
 } from '../../testing/index.js';
 import { DefaultPipeline } from '../default-pipeline.js';
 import type { IStageHandler } from '../stage-handler.js';
@@ -26,6 +27,7 @@ function buildDeps(overrides?: Partial<PipelineDeps>): PipelineDeps {
   const { deps: base } = makeDefaultDeps();
   return {
     mainLlm: base.mainLlm,
+    ragAccess: base.ragAccess,
     mcpClients: base.mcpClients ?? [],
     ...overrides,
   };
@@ -214,6 +216,7 @@ describe('DefaultPipeline withStepperCoordinator integration', () => {
     const llm = makeLlm([{ content: 'fallback', finishReason: 'stop' }]);
     const pipeline = new DefaultPipeline({ stepperCoordinator: stub });
     pipeline.initialize({
+      ragAccess: testRequestAccess,
       mainLlm: llm,
       mcpClients: [],
       classifier: makeClassifier([{ type: 'action', text: 'do it' }]),
@@ -235,8 +238,11 @@ describe('DefaultPipeline withStepperCoordinator integration', () => {
     });
 
     const chunks: unknown[] = [];
-    await pipeline.execute('hello', [], testCallOptions(undefined), (chunk) =>
-      chunks.push(chunk),
+    await pipeline.execute(
+      'hello',
+      [],
+      testCallOptions(testCallOptions(undefined)),
+      (chunk) => chunks.push(chunk),
     );
 
     assert.equal(stubInvoked, true, 'stepper stub handler must be invoked');

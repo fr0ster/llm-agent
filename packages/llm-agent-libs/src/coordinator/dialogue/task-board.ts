@@ -43,6 +43,7 @@ export function cutTaskOutput(
     : `${output.slice(0, limit)}\n[cut: ${output.length - limit} characters omitted]`;
 }
 export interface TaskBoardOptions {
+  caller: ISubAgentInput['caller'];
   resultStore?: ITaskResultStore;
   stepOf?: (taskId: string) => string | undefined;
   usage?: IUsageRecorder;
@@ -388,6 +389,8 @@ export class TaskBoard {
         if (hard.signal.aborted) throw hard.signal.reason;
         return worker.run({
           ...baseInput,
+          caller: this.opts.caller,
+          sessionId: this.opts.caller.sessionId,
           ...(this.taskUsage.has(task.id)
             ? { usage: this.taskUsage.get(task.id) }
             : {}),

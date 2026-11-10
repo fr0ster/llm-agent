@@ -1,3 +1,4 @@
+import { stampRagOwner } from '@mcp-abap-adt/llm-agent';
 /**
  * HistoryUpsertHandler — post-tool-loop pipeline stage.
  *
@@ -56,10 +57,7 @@ export async function summarizeAndStore(
     const upsertResult = await ragWriter.upsertRaw(
       `turn:${sessionId}:${turn.turnIndex}`,
       summary,
-      {
-        sessionId,
-        ownerScope: 'session',
-      },
+      stampRagOwner({}, { scope: 'session', sessionId }),
       options,
     );
     if (!upsertResult.ok) {

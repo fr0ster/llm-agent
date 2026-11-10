@@ -14,7 +14,6 @@ import type {
   Subprompt,
   ToolCallRecord,
 } from '@mcp-abap-adt/llm-agent';
-import { testRagAccess } from '@mcp-abap-adt/llm-agent/testing/rag-access-testing';
 import { SmartAgent } from '../agent.js';
 import { DefaultPipeline } from '../pipeline/default-pipeline.js';
 import {
@@ -26,6 +25,7 @@ import {
   makeRag,
   ownedTestStores,
   testCallOptions,
+  testRequestAccess,
 } from '../testing/index.js';
 
 const DEFAULT_CONFIG = { maxIterations: 5 };
@@ -43,7 +43,7 @@ describe('Regression — ragQueryK config propagated to all stores', () => {
     const feedback = makeMetadataRag();
     const state = makeMetadataRag();
     const { deps } = makeDefaultDeps({
-      ragAccess: testRagAccess(),
+      ragAccess: testRequestAccess,
       classifier: makeClassifier([
         { type: 'action', text: 'Find SAP details', context: 'sap-abap' },
       ]),
@@ -349,7 +349,7 @@ describe('helperLlm — RAG translation', () => {
       { content: 'Show me transaction SE38 information', finishReason: 'stop' },
     ]);
     const { deps } = makeDefaultDeps({
-      ragAccess: testRagAccess(),
+      ragAccess: testRequestAccess,
       classifier: makeClassifier([
         {
           type: 'action',
@@ -374,7 +374,7 @@ describe('helperLlm — RAG translation', () => {
 
   it('mainLlm used as fallback when no helperLlm for translation', async () => {
     const { deps, llm } = makeDefaultDeps({
-      ragAccess: testRagAccess(),
+      ragAccess: testRequestAccess,
       classifier: makeClassifier([
         {
           type: 'action',
@@ -571,15 +571,21 @@ describe('Regression — ragQueryK propagated through DefaultPipeline', () => {
     const llm = makeLlm([{ content: 'done', finishReason: 'stop' }]);
     const pipeline = new DefaultPipeline();
     pipeline.initialize({
+      ragAccess: testRequestAccess,
       mainLlm: llm,
       mcpClients: [],
       toolsRag,
       agentConfig: { maxIterations: 10, ragQueryK: 42 },
     });
     const chunks: unknown[] = [];
-    await pipeline.execute('test', [], testCallOptions(undefined), (chunk) => {
-      chunks.push(chunk);
-    });
+    await pipeline.execute(
+      'test',
+      [],
+      testCallOptions(testCallOptions(undefined)),
+      (chunk) => {
+        chunks.push(chunk);
+      },
+    );
     assert.ok(
       toolsRag.queryCalls.length > 0,
       'toolsRag should have been queried',
@@ -592,14 +598,20 @@ describe('Regression — ragQueryK propagated through DefaultPipeline', () => {
     const llm = makeLlm([{ content: 'done', finishReason: 'stop' }]);
     const pipeline = new DefaultPipeline();
     pipeline.initialize({
+      ragAccess: testRequestAccess,
       mainLlm: llm,
       mcpClients: [],
       toolsRag,
     });
     const chunks: unknown[] = [];
-    await pipeline.execute('test', [], testCallOptions(undefined), (chunk) => {
-      chunks.push(chunk);
-    });
+    await pipeline.execute(
+      'test',
+      [],
+      testCallOptions(testCallOptions(undefined)),
+      (chunk) => {
+        chunks.push(chunk);
+      },
+    );
     assert.ok(
       toolsRag.queryCalls.length > 0,
       'toolsRag should have been queried',

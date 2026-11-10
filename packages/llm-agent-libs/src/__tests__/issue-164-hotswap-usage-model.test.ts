@@ -18,7 +18,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { LlmError, LlmStreamChunk, Result } from '@mcp-abap-adt/llm-agent';
-import { testRagAccess } from '@mcp-abap-adt/llm-agent/testing/rag-access-testing';
 import { SmartAgent } from '../agent.js';
 import { SessionRequestLogger } from '../logger/session-request-logger.js';
 import { DefaultPipeline } from '../pipeline/default-pipeline.js';
@@ -26,6 +25,7 @@ import {
   makeAssembler,
   makeClassifier,
   testCallOptions,
+  testRequestAccess,
 } from '../testing/index.js';
 
 /** A clean-answer stub LLM with a stable `.model` and reported usage. */
@@ -59,6 +59,7 @@ function makeAgent(llm: ReturnType<typeof makeAnswerLlm>) {
   const requestLogger = new SessionRequestLogger();
   const pipeline = new DefaultPipeline();
   pipeline.initialize({
+    ragAccess: testRequestAccess,
     mainLlm: llm,
     mcpClients: [],
     classifier: makeClassifier([{ type: 'action', text: 'do the thing' }]),
@@ -68,7 +69,7 @@ function makeAgent(llm: ReturnType<typeof makeAnswerLlm>) {
 
   const agent = new SmartAgent(
     {
-      ragAccess: testRagAccess(),
+      ragAccess: testRequestAccess,
       mainLlm: llm,
       mcpClients: [],
       ragStores: {},

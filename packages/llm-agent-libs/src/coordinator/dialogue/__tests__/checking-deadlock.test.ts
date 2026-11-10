@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { DialoguePlan, TaskEvent } from '@mcp-abap-adt/llm-agent';
+import { testCallOptions } from '../../../testing/index.js';
 import { DialogueSession } from '../dialogue-session.js';
 import { runInPlannerScope } from '../planner-scope.js';
 import { PlannerToolsClient } from '../planner-tools-client.js';
@@ -61,6 +62,9 @@ for (const state of ['pending', 'running'] as const) {
       plan.steps[1].state = state;
       let calls = 0;
       const session = await DialogueSession.open({
+        caller: testCallOptions({
+          caller: { sessionId: 'stalled', userId: 'test-user', isAdmin: false },
+        }).caller,
         id: 'stalled',
         maxCorrections,
         store: {
@@ -201,6 +205,8 @@ for (const output of ['{"verdict":"unknown"}', '```json\ninvalid\n```', '']) {
     assert.equal(step.workTaskId, 't15');
     assert.equal(step.verdict, 'fail');
     const board = new TaskBoard({
+      caller: testCallOptions({ sessionId: 'test-session' }).caller,
+      baseInput: () => testCallOptions({ sessionId: 'test-session' }),
       ...profileHost(
         new Map([
           [

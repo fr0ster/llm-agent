@@ -8,6 +8,7 @@ import {
   type IRagRegistry,
   RagError,
 } from '@mcp-abap-adt/llm-agent';
+import { testRagAccess } from '@mcp-abap-adt/llm-agent/testing/rag-access-testing';
 import type {
   SessionGraph,
   SessionGraphIdentity,
@@ -20,7 +21,13 @@ import { TestSmartServer as SmartServer } from './rag-identity-fixture.js';
 const stubEmbedder = {
   embed: async () => ({ vector: [0] }),
 } as unknown as IEmbedder;
+const access = testRagAccess(
+  ['a', 'b', 'sess-wire-a', 'sess-wire-b', 'sess-provider'].map(
+    (sessionId) => ({ sessionId, userId: 'test-user', isAdmin: false }),
+  ),
+);
 const cfg = {
+  ragAccess: access,
   skipModelValidation: true,
   llm: { main: { provider: 'openai', model: 'gpt-4o' } },
 } as unknown as SmartServerConfig;
@@ -58,6 +65,7 @@ async function startTestServer(
 }> {
   const server = new SmartServer(
     {
+      ragAccess: access,
       host: '127.0.0.1',
       port: 0,
       skipModelValidation: true,

@@ -4,7 +4,6 @@ import {
   createDialogueTaskContext,
   type IMcpClient,
 } from '@mcp-abap-adt/llm-agent';
-import { testRagAccess } from '@mcp-abap-adt/llm-agent/testing/rag-access-testing';
 import { SmartAgent } from '../../../agent.js';
 import { DefaultPipeline } from '../../../pipeline/default-pipeline.js';
 import { SmartAgentSubAgent } from '../../../subagent/smart-agent-subagent.js';
@@ -13,6 +12,8 @@ import {
   makeMcpClient,
   makeRag,
   ownedTestStores,
+  testCallOptions,
+  testRequestAccess,
 } from '../../../testing/index.js';
 import { createMemorySignalBus } from '../memory-signal-bus.js';
 import {
@@ -105,7 +106,7 @@ for (const pipeline of [false, true]) {
       const response = await worker.run({
         task: 'Write a report',
         dialogueTask: task,
-        caller: { sessionId: 's', userId: 'test-user', isAdmin: false },
+        caller: testCallOptions({ sessionId: 's' }).caller,
         sessionId: 's',
         externalTools: external ? [submitReportTool] : [],
       });
@@ -134,7 +135,10 @@ test('worker without submit_report returns the bounded fallback summary', async 
     'w',
     new SmartAgent(deps, { maxIterations: 2 }),
   );
-  const response = await worker.run({ task: 'Write a report' });
+  const response = await worker.run({
+    caller: { sessionId: 'test-session', userId: 'test-user', isAdmin: false },
+    task: 'Write a report',
+  });
   assert.equal(response.output, output);
   assert.equal(response.summary, output.slice(0, 580) + ' [summary truncated]');
   assert.equal(response.summary.length, 600);
@@ -166,6 +170,8 @@ test('board supplies report kind to the default worker without host tool setup',
     finish = resolve;
   });
   const board = new TaskBoard({
+    caller: testCallOptions({ sessionId: 'test-session' }).caller,
+    baseInput: () => testCallOptions({ sessionId: 'test-session' }),
     signals: createMemorySignalBus(),
     workers: new Map([['w', worker]]),
     onEvent(event) {
@@ -195,7 +201,7 @@ for (const pipeline of [false, true]) {
       return listTools(options);
     };
     const { deps, llm } = makeDefaultDeps({
-      ragAccess: testRagAccess(),
+      ragAccess: testRequestAccess,
       mcpClients: [host],
       ragStores: ownedTestStores({ tools: makeRag() }),
       llmResponses: [
@@ -243,7 +249,7 @@ for (const pipeline of [false, true]) {
     const response = await worker.run({
       task: 'Write a report',
       dialogueTask: task,
-      caller: { sessionId: 's', userId: 'test-user', isAdmin: false },
+      caller: testCallOptions({ sessionId: 's' }).caller,
       sessionId: 's',
     });
     assert.equal(response.output, 'Report after refresh');
@@ -273,7 +279,7 @@ for (const scenario of [
     };
     const response = await client.callTool('submit_report', args, {
       dialogueTask: task,
-      caller: { sessionId: 's', userId: 'test-user', isAdmin: false },
+      caller: testCallOptions({ sessionId: 's' }).caller,
       sessionId: 's',
       dialogueReportText: () =>
         scenario === 'collected' ? 'First\n\nSecond' : '',
@@ -397,7 +403,7 @@ for (const pipeline of [false, true]) {
       const response = await worker.run({
         task: 'Write a report',
         dialogueTask: task,
-        caller: { sessionId: 's', userId: 'test-user', isAdmin: false },
+        caller: testCallOptions({ sessionId: 's' }).caller,
         sessionId: 's',
       });
       assert.equal(

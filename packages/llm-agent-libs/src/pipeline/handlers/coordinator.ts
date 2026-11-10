@@ -50,7 +50,16 @@ export class CoordinatorHandler implements IStageHandler {
     // unknown agent is requested, so we don't need a global gate here.
     const registry: SubAgentRegistry = ctx.subAgents ?? new Map();
 
+    if (!ctx.options?.caller) {
+      ctx.error = new OrchestratorError(
+        'Caller is required',
+        'RAG_ACCESS_DENIED',
+      );
+      return false;
+    }
+
     const coordCtx: ICoordinatorContext = {
+      caller: ctx.options.caller,
       inputText: ctx.inputText,
       systemPrompt: collectSystemPrompt(ctx),
       skillContent: collectSkillContent(ctx),

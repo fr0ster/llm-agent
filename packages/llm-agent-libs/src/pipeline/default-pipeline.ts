@@ -189,6 +189,7 @@ export class DefaultPipeline implements IPipeline {
   // -------------------------------------------------------------------------
 
   initialize(deps: PipelineDeps): void {
+    if (!deps.ragAccess) throw new Error('RagAccess configuration is required');
     this.deps = deps;
 
     // The agent's own built-in stores, each with its explicit strategy applied
@@ -284,7 +285,10 @@ export class DefaultPipeline implements IPipeline {
       yieldChunk({ ok: false, error });
       return { timing: [], error };
     }
-    if (options.caller && options.caller.sessionId !== options.sessionId) {
+    if (
+      !options.caller?.userId?.trim() ||
+      options.caller.sessionId !== options.sessionId
+    ) {
       const error = new RagAccessDeniedError(
         'Caller session does not match request',
       );

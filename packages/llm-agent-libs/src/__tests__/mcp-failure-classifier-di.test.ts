@@ -21,7 +21,6 @@ import type {
   Result,
 } from '@mcp-abap-adt/llm-agent';
 import { McpError, NoopToolCache } from '@mcp-abap-adt/llm-agent';
-import { testRagAccess } from '@mcp-abap-adt/llm-agent/testing/rag-access-testing';
 import { SmartAgent } from '../agent.js';
 import { SmartAgentBuilder } from '../builder.js';
 import { NoopMetrics } from '../metrics/noop-metrics.js';
@@ -30,7 +29,12 @@ import {
   type IExecuteToolBatchArgs,
 } from '../pipeline/handlers/tool-loop-core.js';
 import { ToolAvailabilityRegistry } from '../policy/tool-availability-registry.js';
-import { makeDefaultDeps, makeLlm, testCallOptions } from '../testing/index.js';
+import {
+  makeDefaultDeps,
+  makeLlm,
+  testCallOptions,
+  testRequestAccess,
+} from '../testing/index.js';
 import { NoopTracer } from '../tracer/noop-tracer.js';
 import type { ISpan } from '../tracer/types.js';
 
@@ -42,7 +46,7 @@ test('(a) builder: withMcpFailureClassifier stores classifier on builder private
   const custom: IMcpFailureClassifier = {
     classify: async () => 'unavailable',
   };
-  const builder = new SmartAgentBuilder().withRagAccess(testRagAccess());
+  const builder = new SmartAgentBuilder().withRagAccess(testRequestAccess);
   builder.withMcpFailureClassifier(custom);
   // Access private field via cast — verifies the setter stored it.
   const stored = (
@@ -56,7 +60,7 @@ test('(a) builder: withMcpFailureClassifier stores classifier on builder private
 });
 
 test('(a) builder: without withMcpFailureClassifier, _mcpFailureClassifier is undefined', () => {
-  const builder = new SmartAgentBuilder().withRagAccess(testRagAccess());
+  const builder = new SmartAgentBuilder().withRagAccess(testRequestAccess);
   const stored = (
     builder as unknown as { _mcpFailureClassifier?: IMcpFailureClassifier }
   )._mcpFailureClassifier;

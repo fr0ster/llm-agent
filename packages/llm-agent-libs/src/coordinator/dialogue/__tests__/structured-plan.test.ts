@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { DialoguePlan, TaskEvent } from '@mcp-abap-adt/llm-agent';
+import { testCallOptions } from '../../../testing/index.js';
 import { DialogueSession } from '../dialogue-session.js';
 import { InMemoryDialogueStateStore } from '../in-memory-dialogue-state-store.js';
 import { runInPlannerScope } from '../planner-scope.js';
@@ -115,6 +116,8 @@ test('delegation assigns work and checking to separate steps and enforces worker
   const contexts: string[] = [];
   const actions: string[] = [];
   const board = new TaskBoard({
+    caller: testCallOptions({ sessionId: 'test-session' }).caller,
+    baseInput: () => testCallOptions({ sessionId: 'test-session' }),
     ...profileHost(
       new Map(
         ['w', 'audit'].map((name) => [
@@ -219,6 +222,9 @@ for (const maxCorrections of [0, 1, 2]) {
     const streamed: string[] = [];
     const warnings: string[] = [];
     const s = await DialogueSession.open({
+      caller: testCallOptions({
+        caller: { sessionId: 'user', userId: 'test-user', isAdmin: false },
+      }).caller,
       id: 'user',
       maxCorrections,
       logger: { warn: (w) => warnings.push(w) },
@@ -260,6 +266,9 @@ test('event correction, waiting_user suppression/reset, auto done, structured sn
   const store = new InMemoryDialogueStateStore();
   let calls = 0;
   const s = await DialogueSession.open({
+    caller: testCallOptions({
+      caller: { sessionId: 'events', userId: 'test-user', isAdmin: false },
+    }).caller,
     id: 'events',
     store,
     board: {
@@ -314,6 +323,9 @@ test('event correction, waiting_user suppression/reset, auto done, structured sn
   assert.equal(calls, 3);
   assert.equal(getPlan(s).status, 'waiting_user');
   const restored = await DialogueSession.open({
+    caller: testCallOptions({
+      caller: { sessionId: 'events', userId: 'test-user', isAdmin: false },
+    }).caller,
     id: 'events',
     store,
     board: { workers: new Map() },
@@ -333,6 +345,9 @@ test('event correction, waiting_user suppression/reset, auto done, structured sn
 test('waiting_user ends user turn without correction; new user resets status', async () => {
   let calls = 0;
   const s = await DialogueSession.open({
+    caller: testCallOptions({
+      caller: { sessionId: 'wait', userId: 'test-user', isAdmin: false },
+    }).caller,
     id: 'wait',
     board: { workers: new Map() },
     planner: {
@@ -388,6 +403,13 @@ test('structured restore preserves separate audit history and interrupts its unf
     savedAt: 0,
   });
   const session = await DialogueSession.open({
+    caller: testCallOptions({
+      caller: {
+        sessionId: 'restore-check',
+        userId: 'test-user',
+        isAdmin: false,
+      },
+    }).caller,
     id: 'restore-check',
     store,
     board: { workers: new Map() },
@@ -413,6 +435,9 @@ test('waiting_user suppresses corrections on an event turn with ready steps', as
   });
   let calls = 0;
   const session = await DialogueSession.open({
+    caller: testCallOptions({
+      caller: { sessionId: 'event-wait', userId: 'test-user', isAdmin: false },
+    }).caller,
     id: 'event-wait',
     board: {
       workers: new Map([
@@ -500,6 +525,9 @@ for (const currentInterrupted of [false, true]) {
       savedAt: 0,
     });
     const session = await DialogueSession.open({
+      caller: testCallOptions({
+        caller: { sessionId: 'attempts', userId: 'test-user', isAdmin: false },
+      }).caller,
       id: 'attempts',
       store,
       board: { workers: new Map() },
@@ -524,6 +552,8 @@ test('skipped dependencies block delegation until the planner revises dependsOn'
   let plan = mergePlan(undefined, steps, 'active');
   plan.steps[0].state = 'skipped';
   const board = new TaskBoard({
+    caller: testCallOptions({ sessionId: 'test-session' }).caller,
+    baseInput: () => testCallOptions({ sessionId: 'test-session' }),
     workers: new Map([
       [
         'w',
@@ -628,6 +658,13 @@ for (const by of ['w', 'checker'] as const) {
     });
     let injected = false;
     const session = await DialogueSession.open({
+      caller: testCallOptions({
+        caller: {
+          sessionId: 'skip-restore',
+          userId: 'test-user',
+          isAdmin: false,
+        },
+      }).caller,
       id: 'skip-restore',
       // Today's restore path; prepared mode resets a done plan at the first request boundary.
       plannerContext: 'conversation',
@@ -658,6 +695,8 @@ test('active work cannot be replaced, even after a stop request, and dependents 
   const plan = mergePlan(undefined, steps, 'active');
   let finish!: (value: { output: string; stopped?: true }) => void;
   const board = new TaskBoard({
+    caller: testCallOptions({ sessionId: 'test-session' }).caller,
+    baseInput: () => testCallOptions({ sessionId: 'test-session' }),
     workers: new Map([
       [
         'w',
@@ -775,6 +814,8 @@ for (const state of ['failed', 'stopped', 'interrupted'] as const) {
       taskIds: ['t1'],
     });
     const board = new TaskBoard({
+      caller: testCallOptions({ sessionId: 'test-session' }).caller,
+      baseInput: () => testCallOptions({ sessionId: 'test-session' }),
       workers: new Map([
         [
           'w',
@@ -814,6 +855,9 @@ for (const state of ['failed', 'stopped', 'interrupted'] as const) {
 test('corrective notes include normalized and bounded ready goals', async () => {
   let calls = 0;
   const session = await DialogueSession.open({
+    caller: testCallOptions({
+      caller: { sessionId: 'trim-goal', userId: 'test-user', isAdmin: false },
+    }).caller,
     id: 'trim-goal',
     maxCorrections: 1,
     board: { workers: new Map() },
@@ -887,6 +931,8 @@ for (const worker of ['w', 'audit']) {
     });
     let finish!: (value: { output: string; stopped?: true }) => void;
     const board = new TaskBoard({
+      caller: testCallOptions({ sessionId: 'test-session' }).caller,
+      baseInput: () => testCallOptions({ sessionId: 'test-session' }),
       ...profileHost(
         new Map([
           [
@@ -948,6 +994,8 @@ for (const attempt of ['work', 'check'] as const) {
     let plan = mergePlan(undefined, [steps[0]], 'active');
     let finish!: (value: { output: string }) => void;
     const board = new TaskBoard({
+      caller: testCallOptions({ sessionId: 'test-session' }).caller,
+      baseInput: () => testCallOptions({ sessionId: 'test-session' }),
       workers: new Map([
         [
           'w',
@@ -1037,6 +1085,13 @@ for (const remove of [false, true]) {
   test(`session routes outcome with ${remove ? 'removed' : 'retained'} step ownership`, async () => {
     let calls = 0;
     const session = await DialogueSession.open({
+      caller: testCallOptions({
+        caller: {
+          sessionId: `ownership-${remove}`,
+          userId: 'test-user',
+          isAdmin: false,
+        },
+      }).caller,
       id: `ownership-${remove}`,
       maxCorrections: 0,
       board: {
@@ -1072,6 +1127,13 @@ for (const remove of [false, true]) {
               JSON.parse(JSON.stringify(session.snapshot())),
             );
             const restored = await DialogueSession.open({
+              caller: testCallOptions({
+                caller: {
+                  sessionId: 'round-trip',
+                  userId: 'test-user',
+                  isAdmin: false,
+                },
+              }).caller,
               id: 'round-trip',
               store,
               board: { workers: new Map() },
@@ -1141,7 +1203,12 @@ for (const source of ['error', 'verdict', 'coordinator'] as const) {
       const rendered = planView(plan).split(' \u00b7 ')[1];
       assert.equal(rendered.length, expectedLength);
       if (note.length < 600) assert.equal(rendered, note);
-      const board = new TaskBoard({ workers: new Map(), onEvent() {} });
+      const board = new TaskBoard({
+        caller: testCallOptions({ sessionId: 'test-session' }).caller,
+        baseInput: () => testCallOptions({ sessionId: 'test-session' }),
+        workers: new Map(),
+        onEvent() {},
+      });
       await runInPlannerScope(
         { board, getPlan: () => plan, setPlan() {} },
         async () => {

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { AgentCallOptions } from '@mcp-abap-adt/llm-agent';
 import type { SmartAgent } from '../../agent.js';
+import { testCallOptions } from '../../testing/index.js';
 import { SmartAgentSubAgent } from '../smart-agent-subagent.js';
 
 test('SmartAgentSubAgent maps stop to complete with partial output and a stopped marker', async () => {
@@ -18,6 +19,7 @@ test('SmartAgentSubAgent maps stop to complete with partial output and a stopped
     },
   } as unknown as SmartAgent;
   const result = await new SmartAgentSubAgent('worker', agent).run({
+    caller: testCallOptions({ sessionId: 'test-session' }).caller,
     task: 'work',
     stopSignal: stop.signal,
     signal: hard.signal,
@@ -46,7 +48,12 @@ test('SmartAgentSubAgent forwards live tool observers', async () => {
       return { ok: true, value: { content: 'done' } };
     },
   });
-  await worker.run({ task: 'work', onToolCallCount, onToolsSelected });
+  await worker.run({
+    caller: testCallOptions({ sessionId: 'test-session' }).caller,
+    task: 'work',
+    onToolCallCount,
+    onToolsSelected,
+  });
   assert.deepEqual(counts, [2]);
   assert.deepEqual(selected, [[3, 10]]);
 });

@@ -104,6 +104,7 @@ export class DagPlanInterpreter
           });
           try {
             const res = await this.resolveWorker(n, ctx).run({
+              caller: ctx.caller,
               task,
               sessionId: ctx.sessionId,
               usage: ctx.usage,
@@ -212,6 +213,7 @@ export class DagPlanInterpreter
           o.error,
           {
             task: o.task,
+            caller: ctx.caller,
             remainingReplans,
             agents: [...ctx.workers.values()].map((w) => ({
               name: w.name,

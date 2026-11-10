@@ -18,8 +18,16 @@ const user: RagCollectionOwner = { scope: 'user', userId: 'u1' };
 const role: RagCollectionOwner = { scope: 'role', roleId: 'r1' };
 const global: RagCollectionOwner = { scope: 'global' };
 
-test('missing or invalid callers deny every scope before role lookup or decision', async () => {
+test('persisted binding is required without binding on read', async () => {
   const access = testRagAccess();
+  const ref = { name: 'docs', owner: session };
+  assert.equal((await checkRagAccess(caller, ref, 'read', access)).ok, false);
+  assert.ok((await access.bindings.bind('s1', 'other')).ok);
+  assert.equal((await checkRagAccess(caller, ref, 'read', access)).ok, false);
+});
+
+test('missing or invalid callers deny every scope before role lookup or decision', async () => {
+  const access = testRagAccess([caller]);
   const owners: ReadonlyArray<RagCollectionOwner> = [
     global,
     session,
@@ -70,7 +78,7 @@ test('missing or invalid callers deny every scope before role lookup or decision
 });
 
 test('same user sessions share user collections but isolate session collections; allowAllDecision never widens ownership', async () => {
-  const access = testRagAccess();
+  const access = testRagAccess([caller]);
   const cases: ReadonlyArray<
     readonly [RagCaller, RagCollectionOwner, boolean]
   > = [
@@ -88,7 +96,7 @@ test('same user sessions share user collections but isolate session collections;
         identity,
         { name: 'docs', owner },
         mode,
-        access,
+        { ...access, bindings: testRagAccess([identity]).bindings },
       );
       assert.equal(result.ok, allowed);
       if (!result.ok) assert.ok(result.error instanceof RagAccessDeniedError);
@@ -97,7 +105,7 @@ test('same user sessions share user collections but isolate session collections;
 });
 
 test('role access follows library assignment and revocation on every request', async () => {
-  const access = testRagAccess();
+  const access = testRagAccess([caller]);
   const check = () =>
     checkRagAccess(caller, { name: 'docs', owner: role }, 'read', access);
   assert.equal((await check()).ok, false);
@@ -112,7 +120,7 @@ test('role access follows library assignment and revocation on every request', a
 });
 
 test('global reads allow ownership; global writes require admin AND decision', async () => {
-  const access = testRagAccess();
+  const access = testRagAccess([caller]);
   const ref = { name: 'docs', owner: global };
   assert.equal((await checkRagAccess(caller, ref, 'read', access)).ok, true);
   assert.equal((await checkRagAccess(caller, ref, 'write', access)).ok, false);
@@ -135,7 +143,7 @@ test('global reads allow ownership; global writes require admin AND decision', a
 });
 
 test('decision throw and role-store failure deny access', async () => {
-  const access = testRagAccess();
+  const access = testRagAccess([caller]);
   for (const mode of ['read', 'write'] as const) {
     const result = await checkRagAccess(
       caller,
@@ -188,7 +196,7 @@ test('decision throw and role-store failure deny access', async () => {
 });
 
 test('ownership denial skips the server decision', async () => {
-  const access = testRagAccess();
+  const access = testRagAccess([caller]);
   let calls = 0;
   access.decision.canRead = async () => {
     calls++;

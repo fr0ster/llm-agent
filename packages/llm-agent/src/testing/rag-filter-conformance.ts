@@ -40,6 +40,11 @@ import assert from 'node:assert/strict';
 import type { IEmbedder, IRag } from '../interfaces/rag.js';
 import type { CallOptions, RagMetadata } from '../interfaces/types.js';
 import { tagRagMetadata } from '../rag/identity-filter.js';
+import { buildRagCollectionToolEntries } from '../rag/mcp-tools/rag-collection-tools.js';
+import { SimpleRagRegistry } from '../rag/registry/simple-rag-registry.js';
+import { DirectEditStrategy } from '../rag/strategies/edit/direct.js';
+import { GlobalUniqueIdStrategy } from '../rag/strategies/id/global-unique.js';
+import { testRagAccess } from './rag-access-testing.js';
 
 /** A record a conformance case seeds. `metadata.id` identifies it in results. */
 export interface ConformanceRecord {
@@ -138,6 +143,127 @@ async function queryIds(
 const Q = 'quarterly revenue forecast';
 
 export const ragFilterConformanceCases: readonly RagFilterConformanceCase[] = [
+  ...(['session', 'user', 'role', 'global'] as const).map(
+    (scope): RagFilterConformanceCase => ({
+      name: `registry collection tools add/correct/deprecate preserve ${scope} ownership`,
+      async run(makeStore) {
+        const rag = await makeStore();
+        const writer = rag.writer?.();
+        assert.ok(writer);
+        const owner =
+          scope === 'session'
+            ? { scope, sessionId: 'owner-session' }
+            : scope === 'user'
+              ? { scope, userId: 'owner-user' }
+              : scope === 'role'
+                ? { scope, roleId: 'owner-role' }
+                : { scope };
+        const registry = new SimpleRagRegistry();
+        registry.setProviderRegistry({
+          getProvider: () => ({
+            name: 'test',
+            kind: 'memory',
+            editable: true,
+            supportedScopes: [scope],
+            createCollection: async () => ({
+              ok: true,
+              value: {
+                rag,
+                editor: new DirectEditStrategy(
+                  writer,
+                  new GlobalUniqueIdStrategy(),
+                ),
+              },
+            }),
+          }),
+          registerProvider: () => {},
+          listProviders: () => [],
+        });
+        assert.ok(
+          (
+            await registry.createCollection({
+              providerName: 'test',
+              collectionName: 'docs',
+              ...owner,
+            })
+          ).ok,
+        );
+        const caller = {
+          sessionId: 'owner-session',
+          userId: 'owner-user',
+          isAdmin: true,
+        };
+        const access = testRagAccess([caller]);
+        if (scope === 'role') {
+          assert.ok(
+            (
+              await access.roles.createRole({
+                roleId: 'owner-role',
+                name: 'Owner',
+              })
+            ).ok,
+          );
+          assert.ok(
+            (await access.roles.assign(caller.userId, 'owner-role')).ok,
+          );
+        }
+        const tools = buildRagCollectionToolEntries({
+          registry,
+          caller,
+          access,
+        });
+        const invoke = async (name: string, args: Record<string, string>) => {
+          const tool = tools.find(
+            (entry) => entry.toolDefinition.name === name,
+          );
+          assert.ok(tool);
+          const result = await tool.handler(
+            {},
+            { collection: 'docs', scope, ...args },
+          );
+          assert.ok(
+            result &&
+              typeof result === 'object' &&
+              'ok' in result &&
+              result.ok === true,
+          );
+          return result;
+        };
+        const added = await invoke('rag_add', {
+          text: Q,
+          canonicalKey: 'record',
+        });
+        assert.ok('id' in added && typeof added.id === 'string');
+        assert.deepEqual(await queryIds(rag, Q, 10, { owner }), [added.id]);
+        const corrected = await invoke('rag_correct', {
+          predecessorId: added.id,
+          predecessorCanonicalKey: 'record',
+          newText: `${Q} corrected`,
+          reason: 'fix',
+        });
+        assert.ok('newId' in corrected && typeof corrected.newId === 'string');
+        assert.ok(
+          (await queryIds(rag, Q, 10, { owner })).includes(corrected.newId),
+        );
+        await invoke('rag_deprecate', {
+          id: corrected.newId,
+          canonicalKey: 'record',
+          reason: 'obsolete',
+        });
+        assert.ok(
+          (await queryIds(rag, Q, 10, { owner })).includes(corrected.newId),
+        );
+        for (const foreign of [
+          { scope: 'session', sessionId: 'foreign' },
+          { scope: 'user', userId: 'foreign' },
+          { scope: 'role', roleId: 'foreign' },
+          ...(scope === 'global' ? [] : [{ scope: 'global' as const }]),
+        ] as const) {
+          assert.deepEqual(await queryIds(rag, Q, 10, { owner: foreign }), []);
+        }
+      },
+    }),
+  ),
   {
     name: 'sessionId filter isolates two sessions',
     async run(makeStore) {

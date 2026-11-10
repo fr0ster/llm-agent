@@ -55,6 +55,7 @@ function setup(
     report: async () => ({ text: 'report', usage }),
   };
   const input: AdaptiveRunInput = {
+    caller: { sessionId: 'test-session', userId: 'test-user', isAdmin: false },
     request: 'request',
     history: [{ role: 'user', content: 'old' }],
     plan: { steps, createdAt: 0 },

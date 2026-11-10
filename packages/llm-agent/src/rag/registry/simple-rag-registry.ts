@@ -27,6 +27,7 @@ import {
   SessionCloseIncompleteError,
 } from '../corrections/errors.js';
 import { ImmutableEditStrategy } from '../strategies/edit/immutable.js';
+import { ownerBoundEditor } from './owner-bound-editor.js';
 import { reservedGlobalNameError } from './store-key.js';
 
 /**
@@ -179,6 +180,11 @@ export class SimpleRagRegistry implements IRagRegistry {
   }
 
   private insert(key: string, entry: Entry): void {
+    if (entry.editor) {
+      const owner = validateRagOwner(entry.meta);
+      if (!owner.ok) throw owner.error;
+      entry.editor = ownerBoundEditor(entry.editor, owner.value);
+    }
     this.entries.set(key, entry);
     this.fireMutation();
   }

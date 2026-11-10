@@ -7,8 +7,11 @@ import type {
   RagResult,
   Result,
 } from '@mcp-abap-adt/llm-agent';
-import { testRagAccess } from '@mcp-abap-adt/llm-agent/testing/rag-access-testing';
-import { ownedTestStores, testCallOptions } from '../../../testing/index.js';
+import {
+  ownedTestStores,
+  testCallOptions,
+  testRequestAccess,
+} from '../../../testing/index.js';
 import type { ISpan } from '../../../tracer/types.js';
 import type { PipelineContext } from '../../context.js';
 import { RagQueryHandler } from '../rag-query.js';
@@ -42,7 +45,7 @@ function makeStore(capture: { embedding?: IQueryEmbedding }): IRag {
 
 function makeCtx(partial: Partial<PipelineContext>): PipelineContext {
   return {
-    ragAccess: testRagAccess(),
+    ragAccess: testRequestAccess,
     ragText: 'default-rag-text',
     toolQueryText: undefined,
     ragStores: {},
@@ -68,7 +71,7 @@ describe('RagQueryHandler queryText override', () => {
     const capture: { embedding?: IQueryEmbedding } = {};
     const ctx = makeCtx({
       options: testCallOptions(),
-      ragAccess: testRagAccess(),
+      ragAccess: testRequestAccess,
       ragText: 'user-question',
       toolQueryText: 'enriched-context',
       ragStores: ownedTestStores({ tools: makeStore(capture) }),
@@ -89,7 +92,7 @@ describe('RagQueryHandler queryText override', () => {
     const capture: { embedding?: IQueryEmbedding } = {};
     const ctx = makeCtx({
       options: testCallOptions(),
-      ragAccess: testRagAccess(),
+      ragAccess: testRequestAccess,
       ragText: 'user-question',
       toolQueryText: 'enriched-context',
       ragStores: ownedTestStores({ tools: makeStore(capture) }),
@@ -106,7 +109,7 @@ describe('RagQueryHandler queryText override', () => {
     const capture: { embedding?: IQueryEmbedding } = {};
     const ctx = makeCtx({
       options: testCallOptions(),
-      ragAccess: testRagAccess(),
+      ragAccess: testRequestAccess,
       ragText: 'user-question',
       toolQueryText: undefined,
       ragStores: ownedTestStores({ tools: makeStore(capture) }),
@@ -126,7 +129,7 @@ describe('RagQueryHandler queryText override', () => {
     const capture: { embedding?: IQueryEmbedding } = {};
     const ctx = makeCtx({
       options: testCallOptions(),
-      ragAccess: testRagAccess(),
+      ragAccess: testRequestAccess,
       ragText: 'default',
       ragStores: ownedTestStores({ x: makeStore(capture) }),
     });
@@ -145,7 +148,7 @@ describe('RagQueryHandler queryText override', () => {
     const capture: { embedding?: IQueryEmbedding } = {};
     const ctx = makeCtx({
       options: testCallOptions(),
-      ragAccess: testRagAccess(),
+      ragAccess: testRequestAccess,
       ragText: 'user-question',
       ragStores: ownedTestStores({ tools: makeStore(capture) }),
     });

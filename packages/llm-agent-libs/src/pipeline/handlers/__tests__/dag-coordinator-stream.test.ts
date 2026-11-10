@@ -73,6 +73,7 @@ for (const mode of ['single', 'multi', 'disabled'] as const) {
     agent.streamProcess = async function* () {
       const handled = await handler.execute(
         {
+          options: testCallOptions({ sessionId: 's' }),
           inputText: 'do',
           sessionId: 's',
           history: [],
@@ -312,7 +313,7 @@ for (const scenario of [
       },
       'do',
       [],
-      undefined,
+      testCallOptions(undefined),
     );
     for await (const chunk of stream) {
       assert.equal(chunk.ok, true);
@@ -425,13 +426,16 @@ for (const mode of [
         yield(chunk: { value?: { content?: string; ephemeral?: boolean } }) {
           if (chunk.value?.content) yielded.push(chunk.value);
         },
-        options: {
-          sessionLogger: {
-            logStep(_event: string, chunk: StreamChunk) {
-              logged.push(chunk);
+        options: testCallOptions({
+          sessionId: 's',
+          ...{
+            sessionLogger: {
+              logStep(_event: string, chunk: StreamChunk) {
+                logged.push(chunk);
+              },
             },
           },
-        },
+        }),
       } as never,
       {},
       {} as never,
@@ -523,7 +527,10 @@ test('#166: the answer reaches the client once (finalizer only); interpreter nod
           finishReason: c.value.finishReason,
         });
     },
-    options: { trace: { traceId: 't1' } },
+    options: testCallOptions({
+      sessionId: 's',
+      ...{ trace: { traceId: 't1' } },
+    }),
   } as never;
   const h = new DagCoordinatorHandler({
     planner,
@@ -624,7 +631,10 @@ for (const replan of [false, true]) {
           sessionId: 's',
           history: [],
           requestLogger: logger,
-          options: { trace: { traceId: 'opt-in' } },
+          options: testCallOptions({
+            sessionId: 's',
+            ...{ trace: { traceId: 'opt-in' } },
+          }),
           yield(chunk) {
             assert.equal(chunk.ok, true);
             if (chunk.ok) chunks.push(chunk.value);

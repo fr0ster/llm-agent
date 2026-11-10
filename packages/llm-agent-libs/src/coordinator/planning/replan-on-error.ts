@@ -76,6 +76,7 @@ Respond with ONLY a JSON object:
         usage: ctx.usage?.with({ role: 'planner' }),
         signal: ctx.signal,
         sessionId: ctx.sessionId,
+        caller: ctx.caller,
       },
     );
     if (!response.ok) throw response.error;

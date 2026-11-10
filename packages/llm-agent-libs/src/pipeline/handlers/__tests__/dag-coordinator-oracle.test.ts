@@ -10,6 +10,7 @@ import type {
 } from '@mcp-abap-adt/llm-agent';
 import { NeedInfoSignal } from '@mcp-abap-adt/llm-agent';
 import { SessionRequestLogger } from '../../../logger/session-request-logger.js';
+import { testCallOptions } from '../../../testing/index.js';
 import { DagCoordinatorHandler } from '../dag-coordinator.js';
 
 const worker: ISubAgent = {
@@ -77,7 +78,10 @@ test('handler routes NeedInfoSignal through IStateOracle.query (not ISubAgent.ru
     history: [],
     requestLogger: logger,
     yield: (c: unknown) => yields.push(c),
-    options: { trace: { traceId: 't1' } },
+    options: testCallOptions({
+      sessionId: 's',
+      ...{ trace: { traceId: 't1' } },
+    }),
   } as never;
   await h.execute(ctx, {}, {} as never);
   assert.deepEqual(oracleCalls, ['is X true?']);

@@ -192,6 +192,21 @@ export function createQdrantRagAccessStores(provider: QdrantRagProvider): {
       }),
   };
   const bindings: ISessionBindingStore = {
+    getUserId: (sessionId) =>
+      run(async () => {
+        const db = await provider.accessPersistence();
+        const stored = await db.read('rag_session_bindings', sessionId);
+        if (!stored) return undefined;
+        if (
+          stored.session_id !== sessionId ||
+          typeof stored.user_id !== 'string'
+        )
+          throw new RagError(
+            'Invalid persisted binding',
+            'RAG_ACCESS_STORE_ERROR',
+          );
+        return stored.user_id;
+      }),
     bind: (sessionId, userId) =>
       run(async () => {
         const db = await provider.accessPersistence();

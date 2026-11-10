@@ -214,7 +214,15 @@ export const ragAccessStoreConformanceCases: readonly RagAccessStoreConformanceC
       name: "bind('s','u1') twice is ok",
       async run(make) {
         const { bindings } = await make();
+        assert.deepEqual(await bindings.getUserId('s'), {
+          ok: true,
+          value: undefined,
+        });
         assert.equal((await bindings.bind('s', 'u1')).ok, true);
+        assert.deepEqual(await bindings.getUserId('s'), {
+          ok: true,
+          value: 'u1',
+        });
         assert.equal((await bindings.bind('s', 'u1')).ok, true);
       },
     },
@@ -224,6 +232,10 @@ export const ragAccessStoreConformanceCases: readonly RagAccessStoreConformanceC
         const { bindings } = await make();
         assert.equal((await bindings.bind('s', 'u1')).ok, true);
         const result = await bindings.bind('s', 'u2');
+        assert.deepEqual(await bindings.getUserId('s'), {
+          ok: true,
+          value: 'u1',
+        });
         assert.equal(result.ok, false);
         if (!result.ok)
           assert.ok(result.error instanceof SessionBindingConflictError);

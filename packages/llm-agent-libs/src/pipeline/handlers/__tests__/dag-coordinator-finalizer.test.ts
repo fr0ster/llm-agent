@@ -9,6 +9,7 @@ import type {
   ISubAgent,
 } from '@mcp-abap-adt/llm-agent';
 import { SessionRequestLogger } from '../../../logger/session-request-logger.js';
+import { testCallOptions } from '../../../testing/index.js';
 import { DagCoordinatorHandler } from '../dag-coordinator.js';
 
 function plan(): DagPlan {
@@ -68,7 +69,10 @@ function makeCtx() {
       yield(chunk: unknown) {
         yields.push(chunk);
       },
-      options: { trace: { traceId: 't1' } },
+      options: testCallOptions({
+        sessionId: 's1',
+        ...{ trace: { traceId: 't1' } },
+      }),
     } as never,
   };
 }

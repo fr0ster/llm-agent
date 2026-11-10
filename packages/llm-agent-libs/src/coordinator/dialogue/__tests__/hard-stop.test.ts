@@ -8,7 +8,7 @@ import type {
 } from '@mcp-abap-adt/llm-agent';
 import { SmartAgent } from '../../../agent.js';
 import { SmartAgentSubAgent } from '../../../subagent/smart-agent-subagent.js';
-import { makeDefaultDeps } from '../../../testing/index.js';
+import { makeDefaultDeps, testCallOptions } from '../../../testing/index.js';
 import { TaskBoard, type TaskBoardOptions } from '../task-board.js';
 
 const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
@@ -26,6 +26,8 @@ function setup(
     run,
   };
   const board = new TaskBoard({
+    caller: testCallOptions({ sessionId: 'test-session' }).caller,
+    baseInput: () => testCallOptions({ sessionId: 'test-session' }),
     workers: new Map([['w', worker]]),
     onEvent: (event) => events.push(event),
     scheduleTimer(callback, ms) {

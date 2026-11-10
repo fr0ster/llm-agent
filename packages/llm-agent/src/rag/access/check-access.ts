@@ -50,6 +50,8 @@ export async function checkRagAccess(
   });
   try {
     if (!hasCallerIdentity(caller)) return deny();
+    const binding = await access.bindings.getUserId(caller.sessionId);
+    if (!binding.ok || binding.value !== caller.userId) return deny();
     let roles: ReadonlySet<string> = new Set();
     if (ref.owner.scope === 'role') {
       const result = await access.roles.rolesOf(caller.userId);

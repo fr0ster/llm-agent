@@ -73,16 +73,35 @@ export function ownedTestStores(
   );
 }
 
-export function testCallOptions(options?: CallOptions): CallOptions {
-  const sessionId = options?.sessionId ?? randomUUID();
+/** Explicit test request provisioning, shared with makeDefaultDeps only. */
+export const testRequestAccess = testRagAccess();
+
+export function testCallOptions(options?: CallOptions): CallOptions & {
+  caller: import('@mcp-abap-adt/llm-agent').RagCaller;
+  sessionId: string;
+} {
+  const sessionId =
+    options?.sessionId ?? options?.caller?.sessionId ?? randomUUID();
+  const caller = options?.caller ?? {
+    sessionId,
+    userId: options?.userId ?? 'test-user',
+    isAdmin: false,
+  };
+  void testRequestAccess.bindings.bind(caller.sessionId, caller.userId);
   return {
     ...options,
     sessionId,
-    caller: options?.caller ?? {
-      sessionId,
-      userId: options?.userId ?? 'test-user',
-      isAdmin: false,
-    },
+    caller,
+  };
+}
+
+export function provisionWorkerInput<
+  T extends Partial<import('@mcp-abap-adt/llm-agent').ISubAgentInput>,
+>(make: () => T) {
+  return () => {
+    const input = make();
+    const options = testCallOptions(input);
+    return { ...input, caller: options.caller, sessionId: options.sessionId };
   };
 }
 
@@ -564,7 +583,7 @@ export function makeDefaultDeps(overrides?: {
       mainLlm: llm,
       mcpClients: overrides?.mcpClients ?? [],
       ragStores: ownedTestStores(overrides?.ragStores ?? {}),
-      ragAccess: overrides?.ragAccess ?? testRagAccess(),
+      ragAccess: overrides?.ragAccess ?? testRequestAccess,
       ragRegistry: overrides?.ragRegistry,
       ragProviderRegistry: overrides?.ragProviderRegistry,
       classifier:

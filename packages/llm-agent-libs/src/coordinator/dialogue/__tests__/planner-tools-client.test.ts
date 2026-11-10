@@ -5,6 +5,7 @@ import type {
   IPlanAuthor,
   McpContentBlock,
 } from '@mcp-abap-adt/llm-agent';
+import { testCallOptions } from '../../../testing/index.js';
 import { PlannerToolsClient, runInPlannerScope, TaskBoard } from '../index.js';
 import { profileHost } from './profile-test-host.js';
 
@@ -21,6 +22,8 @@ async function call(name: string, args = {}) {
 function setup(maxTasks = 50) {
   let plan: string | DialoguePlan | undefined;
   const board = new TaskBoard({
+    caller: testCallOptions({ sessionId: 'test-session' }).caller,
+    baseInput: () => testCallOptions({ sessionId: 'test-session' }),
     workers: new Map([
       [
         'w',
@@ -309,6 +312,8 @@ test('plan_get pages full steps in plan order and validates filters and paginati
 test('dependency and audit results are appended after briefs with a total bound', async () => {
   const contexts: (string | undefined)[] = [];
   const board = new TaskBoard({
+    caller: testCallOptions({ sessionId: 'test-session' }).caller,
+    baseInput: () => testCallOptions({ sessionId: 'test-session' }),
     ...profileHost(
       new Map(
         ['w', 'audit'].map((name) => [
@@ -583,7 +588,12 @@ test('plan_create is refused while an attempt is reserved, like new_request', as
   const ready = new Promise<void>((resolve) => {
     entered = resolve;
   });
-  const board = new TaskBoard({ ...host, onEvent() {} });
+  const board = new TaskBoard({
+    caller: testCallOptions({ sessionId: 'test-session' }).caller,
+    baseInput: () => testCallOptions({ sessionId: 'test-session' }),
+    ...host,
+    onEvent() {},
+  });
   board.resolveWorker = async () => {
     entered();
     await gate;
@@ -660,6 +670,8 @@ test('plan_create refuses active tasks without calling the author', async () => 
     entered = resolve;
   });
   const board = new TaskBoard({
+    caller: testCallOptions({ sessionId: 'test-session' }).caller,
+    baseInput: () => testCallOptions({ sessionId: 'test-session' }),
     workers: new Map([
       [
         'w',
@@ -722,6 +734,8 @@ test('plan_create refuses a task started while the author is pending', async () 
     releaseWorker = resolve;
   });
   const board = new TaskBoard({
+    caller: testCallOptions({ sessionId: 'test-session' }).caller,
+    baseInput: () => testCallOptions({ sessionId: 'test-session' }),
     workers: new Map([
       [
         'w',

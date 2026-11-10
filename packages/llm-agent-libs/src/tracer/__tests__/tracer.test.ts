@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { testRagAccess } from '@mcp-abap-adt/llm-agent/testing/rag-access-testing';
 import { SmartAgent } from '../../agent.js';
 import {
   makeCapturingTracer,
@@ -10,6 +9,7 @@ import {
   makeRag,
   ownedTestStores,
   testCallOptions,
+  testRequestAccess,
 } from '../../testing/index.js';
 import { NoopTracer } from '../noop-tracer.js';
 
@@ -175,7 +175,7 @@ describe('Pipeline spans — RAG query', () => {
   it('creates rag_query span when SAP context present', async () => {
     const tracer = makeCapturingTracer();
     const { deps } = makeDefaultDeps({
-      ragAccess: testRagAccess(),
+      ragAccess: testRequestAccess,
       classifier: makeClassifier([
         { type: 'action', text: 'Show SAP data', context: 'sap-abap' },
       ]),

@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { ICoordinatorContext, ILlm } from '@mcp-abap-adt/llm-agent';
+import { testCallOptions } from '../../../testing/index.js';
 import { ReplanOnErrorPlanning } from '../replan-on-error.js';
 
 function makeCtx(): ICoordinatorContext {
   return {
+    options: testCallOptions({ sessionId: 't' }),
     inputText: 'do stuff',
     registry: new Map(),
     stepResults: {},

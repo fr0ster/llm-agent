@@ -12,13 +12,13 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { LlmError, LlmStreamChunk, Result } from '@mcp-abap-adt/llm-agent';
-import { testRagAccess } from '@mcp-abap-adt/llm-agent/testing/rag-access-testing';
 import { SmartAgent } from '../agent.js';
 import { DefaultPipeline } from '../pipeline/default-pipeline.js';
 import {
   makeAssembler,
   makeClassifier,
   testCallOptions,
+  testRequestAccess,
 } from '../testing/index.js';
 
 // ---------------------------------------------------------------------------
@@ -133,6 +133,7 @@ function makeStreamingDeltaLlm() {
 function makeAgent(llm: ReturnType<typeof makeSingleChunkLlm>) {
   const pipeline = new DefaultPipeline();
   pipeline.initialize({
+    ragAccess: testRequestAccess,
     mainLlm: llm,
     mcpClients: [],
     classifier: makeClassifier([{ type: 'action', text: 'generate a file' }]),
@@ -141,7 +142,7 @@ function makeAgent(llm: ReturnType<typeof makeSingleChunkLlm>) {
 
   return new SmartAgent(
     {
-      ragAccess: testRagAccess(),
+      ragAccess: testRequestAccess,
       mainLlm: llm,
       mcpClients: [],
       ragStores: {},

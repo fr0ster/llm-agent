@@ -20,6 +20,67 @@ import {
 } from '../../testing/index.js';
 import { DefaultPipeline } from '../default-pipeline.js';
 
+for (const history of [false, true]) {
+  for (const binding of ['unbound', 'foreign'] as const) {
+    it(`pipeline refuses ${binding} binding for ${history ? 'history' : 'ordinary session'} before querying`, async () => {
+      const access = testRagAccess();
+      if (binding === 'foreign') await access.bindings.bind('A', 'bob');
+      const rag = makeRag([]);
+      const pipeline = new DefaultPipeline();
+      pipeline.initialize({
+        mainLlm: makeLlm([]),
+        mcpClients: [],
+        ragAccess: access,
+        ...(history
+          ? { historyRag: rag }
+          : {
+              ragStores: {
+                ordinary: {
+                  name: 'ordinary',
+                  owner: { scope: 'session' as const, sessionId: 'A' },
+                  rag,
+                },
+              },
+            }),
+        classifier: makeClassifier([{ type: 'action', text: 'record' }]),
+        agentConfig: { mode: 'hard', maxIterations: 1 },
+      });
+      const result = await pipeline.execute(
+        'record',
+        [],
+        { sessionId: 'A', caller: callerA },
+        () => {},
+      );
+      assert.ok(result.error instanceof RagAccessDeniedError);
+      assert.equal(rag.queryCount, 0);
+    });
+  }
+}
+
+it('refuses initialization without RagAccess', () => {
+  assert.throws(
+    () =>
+      new DefaultPipeline().initialize({
+        mainLlm: makeLlm([]),
+        mcpClients: [],
+      }),
+    /RagAccess/,
+  );
+});
+
+it('requires caller before any stage even without RAG stores', async () => {
+  const llm = makeLlm([]);
+  const pipeline = new DefaultPipeline();
+  pipeline.initialize({
+    mainLlm: llm,
+    mcpClients: [],
+    ragAccess: testRagAccess([callerA]),
+  });
+  const result = await pipeline.execute('q', [], { sessionId: 'A' }, () => {});
+  assert.ok(result.error instanceof RagAccessDeniedError);
+  assert.deepEqual(result.timing, []);
+});
+
 for (const options of [
   { sessionId: 'A', caller: callerA },
   { sessionId: 'A' },
@@ -40,7 +101,7 @@ for (const options of [
       classifier: makeClassifier([{ type: 'action', text: 'record' }]),
       assembler,
       historyRag: store.rag,
-      ragAccess: testRagAccess(),
+      ragAccess: testRagAccess([callerA]),
       agentConfig: { mode: 'hard', maxIterations: 1 },
     });
     const result = await pipeline.execute('record', [], options, () => {});
@@ -61,6 +122,7 @@ it('DefaultPipeline without options.sessionId refuses; there is no default sessi
     mainLlm: makeLlm([]),
     mcpClients: [],
     historyRag: rag,
+    ragAccess: testRagAccess([callerA]),
   });
   const result = await pipeline.execute('q', [], undefined, () => {});
   assert.equal(result.error?.code, 'RAG_ACCESS_DENIED');
@@ -69,7 +131,7 @@ it('DefaultPipeline without options.sessionId refuses; there is no default sessi
 
 for (const decision of ['deny', 'throw'] as const) {
   it(`RagQueryHandler refuses when the read decision is ${decision} without querying`, async () => {
-    const access = testRagAccess();
+    const access = testRagAccess([callerA]);
     access.decision.canRead = async () => {
       if (decision === 'throw') throw new Error('decision unavailable');
       return false;
@@ -102,8 +164,8 @@ for (const decision of ['deny', 'throw'] as const) {
 }
 
 for (const decision of ['deny', 'throw'] as const) {
-  it(`built-in history bypasses a ${decision} decision through RagQueryHandler`, async () => {
-    const access = testRagAccess();
+  it(`built-in history refuses a ${decision} decision through RagQueryHandler`, async () => {
+    const access = testRagAccess([callerA]);
     let calls = 0;
     access.decision.canRead = async () => {
       calls++;
@@ -133,9 +195,9 @@ for (const decision of ['deny', 'throw'] as const) {
       { sessionId: 'A', caller: callerA },
       () => {},
     );
-    assert.equal(result.error, undefined);
-    assert.deepEqual(sessionTags(retrieved), ['A']);
-    assert.equal(calls, 0);
+    assert.ok(result.error instanceof RagAccessDeniedError);
+    assert.deepEqual(retrieved, []);
+    assert.equal(calls, 1);
   });
 }
 
@@ -152,7 +214,7 @@ it('global retrieval through RagQueryHandler drops session, user and role record
     mainLlm: makeLlm([{ content: 'done', finishReason: 'stop' }]),
     mcpClients: [],
     ragStores: { global: store },
-    ragAccess: testRagAccess(),
+    ragAccess: testRagAccess([callerA]),
     assembler,
     classifier: makeClassifier([{ type: 'action', text: 'record' }]),
     agentConfig: { mode: 'hard', maxIterations: 1 },

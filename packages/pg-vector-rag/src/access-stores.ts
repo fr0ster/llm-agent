@@ -119,6 +119,21 @@ export function createPgVectorRagAccessStores(provider: PgVectorRagProvider): {
       }),
   };
   const bindings: ISessionBindingStore = {
+    getUserId: (sessionId) =>
+      run(async () => {
+        const { client, schema } = await provider.accessPersistence();
+        const { rows } = await client.query(
+          `SELECT user_id FROM ${qualifiedTable('rag_session_bindings', schema)} WHERE session_id = $1`,
+          [sessionId],
+        );
+        const userId = rows[0]?.user_id;
+        if (userId !== undefined && typeof userId !== 'string')
+          throw new RagError(
+            'Invalid persisted binding',
+            'RAG_ACCESS_STORE_ERROR',
+          );
+        return userId;
+      }),
     bind: (sessionId, userId) =>
       run(async () => {
         const { client, schema } = await provider.accessPersistence();

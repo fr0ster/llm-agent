@@ -30,6 +30,7 @@ function setup(isAdmin = true) {
     bindings: provider.bindings,
   };
   const caller = { sessionId: 'S', userId: 'admin', isAdmin };
+  void access.bindings.bind(caller.sessionId, caller.userId);
   const entries = buildRagAdminToolEntries({
     caller,
     access,

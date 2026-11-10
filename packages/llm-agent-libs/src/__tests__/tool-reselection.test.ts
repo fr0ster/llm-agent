@@ -7,7 +7,6 @@ import type {
   Message,
   Result,
 } from '@mcp-abap-adt/llm-agent';
-import { testRagAccess } from '@mcp-abap-adt/llm-agent/testing/rag-access-testing';
 import { SmartAgent } from '../agent.js';
 import {
   makeAssembler,
@@ -15,6 +14,7 @@ import {
   makeRag,
   ownedTestStores,
   testCallOptions,
+  testRequestAccess,
 } from '../testing/index.js';
 
 // ---------------------------------------------------------------------------
@@ -32,7 +32,7 @@ describe('Per-iteration RAG tool re-selection', () => {
     );
     let resolves = 0;
     const { deps } = makeDefaultDeps({
-      ragAccess: testRagAccess(),
+      ragAccess: testRequestAccess,
       mcpClients: [
         {
           async listTools() {
@@ -153,7 +153,7 @@ describe('Per-iteration RAG tool re-selection', () => {
     ]);
 
     const { deps } = makeDefaultDeps({
-      ragAccess: testRagAccess(),
+      ragAccess: testRequestAccess,
       assembler: makeAssembler([
         {
           role: 'system',
@@ -223,7 +223,7 @@ describe('Per-iteration RAG tool re-selection', () => {
     ]);
 
     const { deps } = makeDefaultDeps({
-      ragAccess: testRagAccess(),
+      ragAccess: testRequestAccess,
       assembler: makeAssembler([
         {
           role: 'system',
@@ -293,7 +293,7 @@ describe('Per-iteration RAG tool re-selection', () => {
     ]);
 
     const { deps } = makeDefaultDeps({
-      ragAccess: testRagAccess(),
+      ragAccess: testRequestAccess,
       assembler: makeAssembler([
         {
           role: 'system',

@@ -64,7 +64,7 @@ test('creation tools refuse reserved names', async () => {
     registry,
     providerRegistry,
     caller: { sessionId: 'S', userId: 'alice', isAdmin: true },
-    access: testRagAccess(),
+    access: testRagAccess([{ sessionId: 'S', userId: 'alice', isAdmin: true }]),
   };
   const entries = [
     ...buildRagCollectionToolEntries(options),

@@ -8,6 +8,7 @@ import type { IUsageRecorder } from './usage.js';
  * before it calls `ISubAgent.run()`.
  */
 export interface SubAgentContextRequest {
+  caller: import('./rag-access.js').RagCaller;
   task: string;
   step: PlanStep;
   agent: ISubAgent;

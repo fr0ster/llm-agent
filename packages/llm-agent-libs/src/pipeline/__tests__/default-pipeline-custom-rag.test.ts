@@ -26,6 +26,7 @@ function buildDeps(overrides?: Partial<PipelineDeps>): PipelineDeps {
   const { deps: base } = makeDefaultDeps();
   return {
     mainLlm: base.mainLlm,
+    ragAccess: base.ragAccess,
     mcpClients: base.mcpClients ?? [],
     ...overrides,
   };

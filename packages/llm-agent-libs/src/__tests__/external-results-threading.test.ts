@@ -14,6 +14,7 @@ import { AbortErrorStrategy } from '../coordinator/dag/abort-error-strategy.js';
 import { DagPlanInterpreter } from '../coordinator/dag/dag-plan-interpreter.js';
 import { SessionRequestLogger } from '../logger/session-request-logger.js';
 import { DagCoordinatorHandler } from '../pipeline/handlers/dag-coordinator.js';
+import { testCallOptions } from '../testing/index.js';
 
 function worker(
   name: string,
@@ -90,7 +91,10 @@ describe('externalResults threading (#171, review#7)', () => {
       requestLogger: logger,
       externalResults: map,
       yield() {},
-      options: { trace: { traceId: 't1' } },
+      options: testCallOptions({
+        sessionId: 's1',
+        ...{ trace: { traceId: 't1' } },
+      }),
     } as never;
     await h.execute(ctx, {}, {} as never);
     assert.equal(

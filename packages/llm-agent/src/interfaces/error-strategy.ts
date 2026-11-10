@@ -3,6 +3,7 @@ import type { PlannerCatalogEntry } from './planner.js';
 import type { IUsageRecorder } from './usage.js';
 
 export interface ErrorContext {
+  caller: import('./rag-access.js').RagCaller;
   /** The composed task the failed node was given. */
   task: string;
   /** Replans/revises still allowed this run (the interpreter owns the counter). */

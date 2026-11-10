@@ -24,7 +24,6 @@ import {
   type IToolNamespace,
   type McpTool,
 } from '@mcp-abap-adt/llm-agent';
-import { testRagAccess } from '@mcp-abap-adt/llm-agent/testing/rag-access-testing';
 import { SmartAgentBuilder } from '../builder.js';
 import { unwrapBuilderResult } from '../builder-types.js';
 import type {
@@ -32,7 +31,7 @@ import type {
   McpClientDescriptor,
 } from '../interfaces/mcp-connection-strategy.js';
 import type { IMcpToolRegistry } from '../mcp/tool-registry.js';
-import { testCallOptions } from '../testing/index.js';
+import { testCallOptions, testRequestAccess } from '../testing/index.js';
 
 // A DISTINCTIVE custom strategy: UPPERCASES the prefix on a collision.
 // `defaultToolNamespace` would produce `primary__Search` / `secondary__Search`
@@ -97,7 +96,7 @@ test('withToolNamespace() reaches all THREE consumers: registry, startup vectori
   const toolsRag = new InMemoryRag();
 
   const handle = await new SmartAgentBuilder()
-    .withRagAccess(testRagAccess())
+    .withRagAccess(testRequestAccess)
     .withMainLlm(makeStubLlm())
     .withMcpConnectionStrategy(connectionStrategy)
     .setToolsRag(toolsRag)
@@ -182,7 +181,7 @@ test('without withToolNamespace(), all three routes fall back to defaultToolName
   const toolsRag = new InMemoryRag();
 
   const handle = await new SmartAgentBuilder()
-    .withRagAccess(testRagAccess())
+    .withRagAccess(testRequestAccess)
     .withMainLlm(makeStubLlm())
     .withMcpConnectionStrategy(connectionStrategy)
     .setToolsRag(toolsRag)

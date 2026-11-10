@@ -93,8 +93,10 @@ no private identity keys. Migration backfills valid legacy records and retags
 conflicting owners `invalid`, unmatched by scoped queries, with an administrative
 report. Missing-role catalog entries are refused. `history` and `tools` are
 reserved in every scope. Built-in history is an implicit per-session store owned
-by the request's session, never global, and always session-filtered. It and the
-internal tool catalog bypass the server read decision. Copying history to a user
+by the request's session, never global, and always session-filtered. History
+requires a matching persisted session-to-user binding and the server read
+decision. Only the internal tool catalog bypasses that decision; its requests
+still require a valid binding. Reads never create session bindings. Copying history to a user
 collection is outside this release.
 
 **Server duties and limits:** The host authenticates the user, supplies the trusted
