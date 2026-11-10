@@ -8,7 +8,11 @@ import type {
 } from '@mcp-abap-adt/llm-agent';
 import { ToolCache } from '@mcp-abap-adt/llm-agent';
 import { SmartAgent } from '../../../agent.js';
-import { makeAssembler, makeDefaultDeps } from '../../../testing/index.js';
+import {
+  makeAssembler,
+  makeDefaultDeps,
+  testCallOptions,
+} from '../../../testing/index.js';
 import {
   DialogueSession,
   type DialogueSessionOptions,
@@ -220,7 +224,7 @@ for (const streamMode of ['full', 'final'] as const) {
                 adapterEnabled
                   ? [{ role: 'system', content: 'test adapter' }, ...messages]
                   : messages,
-                opts,
+                testCallOptions(opts),
               );
             },
           },

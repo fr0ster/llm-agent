@@ -1,3 +1,4 @@
+import { denyRagAccess, ownerBoundQuery } from '../../rag/owner-bound-query.js';
 /**
  * SkillSelectHandler — selects skills based on RAG results and loads their content.
  *
@@ -44,9 +45,21 @@ export class SkillSelectHandler implements IStageHandler {
         ? new QueryEmbedding(queryText, ctx.embedder, ctx.options)
         : new TextOnlyEmbedding(queryText);
       const queryResults = await Promise.all(
-        storeEntries.map(([, store]) => store.query(embedding, k, ctx.options)),
+        storeEntries.map(([, store]) =>
+          ownerBoundQuery(
+            store,
+            embedding,
+            k,
+            ctx.options ?? {},
+            ctx.ragAccess ?? denyRagAccess,
+          ),
+        ),
       );
       for (const result of queryResults) {
+        if (!result.ok) {
+          ctx.error = result.error;
+          return false;
+        }
         if (result.ok) {
           for (const r of result.value) {
             const id = r.metadata.id as string;

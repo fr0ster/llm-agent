@@ -33,6 +33,7 @@ import type {
   ToolRound,
 } from '@mcp-abap-adt/llm-agent';
 import { McpError, NoopToolCache } from '@mcp-abap-adt/llm-agent';
+import { testRagAccess } from '@mcp-abap-adt/llm-agent/testing/rag-access-testing';
 import { PendingToolResultsRegistry } from '../../../policy/pending-tool-results-registry.js';
 import { ToolAvailabilityRegistry } from '../../../policy/tool-availability-registry.js';
 import type { ISpan } from '../../../tracer/types.js';
@@ -142,6 +143,7 @@ function makeCtx(
     sessionLogger: spySession,
   } as unknown as CallOptions;
   return {
+    ragAccess: testRagAccess(),
     config: {
       maxIterations: 3,
       maxToolCalls: 5,

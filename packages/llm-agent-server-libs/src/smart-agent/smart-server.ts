@@ -1,3 +1,4 @@
+// TODO(#304 Task 8): Resolve trusted caller identity before invoking agent retrieval.
 /**
  * SmartServer — embeddable OpenAI-compatible HTTP server backed by SmartAgent.
  */

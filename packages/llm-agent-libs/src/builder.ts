@@ -1,3 +1,5 @@
+import type { RagAccess } from '@mcp-abap-adt/llm-agent';
+import { validateRagOwner } from '@mcp-abap-adt/llm-agent';
 /**
  * SmartAgentBuilder — fluent builder for SmartAgent.
  *
@@ -175,6 +177,7 @@ function isGuardedBy(store: IRag, breaker: CircuitBreaker): boolean {
 // ---------------------------------------------------------------------------
 
 export class SmartAgentBuilder {
+  private _ragAccess?: RagAccess;
   private readonly cfg: SmartAgentBuilderConfig;
 
   // All components injected via fluent setters
@@ -251,6 +254,11 @@ export class SmartAgentBuilder {
   // -------------------------------------------------------------------------
 
   /** Set the main LLM used in the tool loop (required). */
+  withRagAccess(access: RagAccess): this {
+    this._ragAccess = access;
+    return this;
+  }
+
   withMainLlm(llm: ILlm): this {
     this._mainLlm = llm;
     return this;
@@ -1013,7 +1021,17 @@ export class SmartAgentBuilder {
         // registry entry stays as registered; idempotent through IRagDecorator.
         const key = ragStoreKey(m);
         const strategy = this._retrievalStrategies.get(key);
-        ragStores[key] = strategy ? applyRetrievalStrategy(r, strategy) : r;
+        const parsedOwner = validateRagOwner({
+          ...m,
+          scope: m.scope ?? 'global',
+        });
+        const owner = parsedOwner.ok ? parsedOwner.value : undefined;
+        if (!owner) continue;
+        ragStores[key] = {
+          name: m.name,
+          owner: key === 'tools' ? { scope: 'internal' } : owner,
+          rag: strategy ? applyRetrievalStrategy(r, strategy) : r,
+        };
       }
     };
     rebuildProjection();
@@ -1394,7 +1412,7 @@ export class SmartAgentBuilder {
             ownBuiltInStore(
               toolsRag as IRag,
               ownTools as IRag,
-              ragStores.tools,
+              ragStores.tools?.rag,
             ),
         );
         const defaultContextBuilder = new DefaultSubAgentContextBuilder({
@@ -1433,6 +1451,7 @@ export class SmartAgentBuilder {
         toolsRag,
         historyRag,
         ragStores,
+        ragAccess: this._ragAccess,
         retrievalStrategies: Object.fromEntries(this._retrievalStrategies),
         ragRegistry,
         ragProviderRegistry,
@@ -1471,6 +1490,7 @@ export class SmartAgentBuilder {
           helperLlm: this._helperLlm,
           mcpClients,
           ragStores,
+          ragAccess: this._ragAccess,
           ragRegistry,
           ragProviderRegistry,
           classifier,
@@ -1593,6 +1613,7 @@ export class SmartAgentBuilder {
         },
         circuitBreakers,
         ragStores,
+
         ragRegistry,
         mcpClients,
         modelProvider,

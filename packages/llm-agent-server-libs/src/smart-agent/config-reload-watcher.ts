@@ -144,7 +144,11 @@ export class ConfigReloadWatcher implements IConfigReloadWatcher {
       update.keywordWeight !== undefined
     ) {
       for (const store of Object.values(this.deps.ragStores)) {
-        findWeightedStore(store)?.updateWeights({
+        findWeightedStore(
+          typeof store === 'object' && store !== null && 'rag' in store
+            ? store.rag
+            : store,
+        )?.updateWeights({
           vectorWeight: update.vectorWeight,
           keywordWeight: update.keywordWeight,
         });

@@ -20,8 +20,10 @@ import type {
   Result,
 } from '@mcp-abap-adt/llm-agent';
 import { McpError, NoopToolCache } from '@mcp-abap-adt/llm-agent';
+import { testRagAccess } from '@mcp-abap-adt/llm-agent/testing/rag-access-testing';
 import { PendingToolResultsRegistry } from '../../../policy/pending-tool-results-registry.js';
 import { ToolAvailabilityRegistry } from '../../../policy/tool-availability-registry.js';
+import { testCallOptions } from '../../../testing/index.js';
 import type { ISpan } from '../../../tracer/types.js';
 import type { PipelineContext } from '../../context.js';
 import { ToolLoopHandler } from '../tool-loop.js';
@@ -77,6 +79,7 @@ function makeCtx(client: IMcpClient): {
   const yielded: Result<LlmStreamChunk, unknown>[] = [];
   const llm = toolThenText();
   const ctx = {
+    ragAccess: testRagAccess(),
     config: {
       maxIterations: 3,
       maxToolCalls: 5,
@@ -84,7 +87,7 @@ function makeCtx(client: IMcpClient): {
       mode: 'smart',
       refreshToolsPerIteration: false,
     },
-    options: {} as CallOptions,
+    options: testCallOptions({} as CallOptions),
     sessionId: 's-unavail',
     mcpClients: [client],
     mainLlm: llm,

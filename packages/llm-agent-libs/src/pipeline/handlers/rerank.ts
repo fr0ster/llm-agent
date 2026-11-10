@@ -29,7 +29,7 @@ export class RerankHandler implements IStageHandler {
     const reranked = await Promise.all(
       entries.map(async ([name, results]) => {
         const store = ctx.ragStores?.[name];
-        if (store && hasRetrievalStrategy(store)) return { name, results };
+        if (store && hasRetrievalStrategy(store.rag)) return { name, results };
         if (results.length > 0) {
           const rr = await ctx.reranker.rerank(
             ctx.ragText,

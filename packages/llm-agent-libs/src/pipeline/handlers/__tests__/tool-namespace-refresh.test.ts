@@ -1,3 +1,5 @@
+import { testRagAccess } from '@mcp-abap-adt/llm-agent/testing/rag-access-testing';
+import { testCallOptions } from '../../../testing/index.js';
 /**
  * Task 7 (#244) — both runtime tool-refresh paths namespace colliding MCP
  * tools using `ctx.mcpClientDescriptors`, paired with `ctx.mcpClients` from
@@ -99,6 +101,7 @@ function noopRequestLogger(): IRequestLogger {
 
 function makeSelectCtx(descriptors: McpClientDescriptor[]) {
   return {
+    ragAccess: testRagAccess(),
     config: { mode: 'smart' },
     mcpTools: [] as McpTool[],
     mcpClients: [makeSearchClient(), makeSearchClient()],
@@ -213,6 +216,7 @@ function makeLoopCtx(descriptors: McpClientDescriptor[]) {
   } as unknown as LlmTool;
 
   const ctx = {
+    ragAccess: testRagAccess(),
     config: {
       maxIterations: 5,
       maxToolCalls: 5,
@@ -220,7 +224,7 @@ function makeLoopCtx(descriptors: McpClientDescriptor[]) {
       mode: 'smart',
       // refreshToolsPerIteration defaults on (undefined !== false)
     } as PipelineContext['config'],
-    options: {} as CallOptions,
+    options: testCallOptions({} as CallOptions),
     sessionId: 'loop-namespace',
     mcpClients: [client0, client1],
     mcpClientDescriptors: descriptors,

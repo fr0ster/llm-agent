@@ -12,9 +12,11 @@ import {
   mergeOfferedTools,
   OrchestratorError,
   QueryEmbedding,
+  RagAccessDeniedError,
   TextOnlyEmbedding,
   toolNameFromRecord,
 } from '@mcp-abap-adt/llm-agent';
+import { denyRagAccess, ownerBoundQuery } from '../rag/owner-bound-query.js';
 import type { ISpan } from '../tracer/types.js';
 import { summarizeHistory, toEnglishForRag } from './rag-helpers.js';
 import type {
@@ -46,6 +48,8 @@ export class RagOrchestrator implements IRagOrchestrator {
     options: OrchestrateOptions,
   ): Promise<Result<OrchestratedContext, OrchestratorError>> {
     const { opts, rootSpan, sessionId, mode, externalTools } = options;
+    if (Object.keys(this.deps.ragStores).length > 0 && !opts?.caller)
+      return { ok: false, error: new RagAccessDeniedError() };
 
     // 1. Unified Preparation (default hardcoded flow)
     const initResult = await this._preparePipeline(input, opts, rootSpan);
@@ -142,13 +146,20 @@ export class RagOrchestrator implements IRagOrchestrator {
             translateStores?.has(name) && translatedText
               ? translatedEmbedding
               : originalEmbedding;
-          return store.query(emb, k, opts).then((r) => ({ name, result: r }));
+          return ownerBoundQuery(
+            store,
+            emb,
+            k,
+            opts ?? {},
+            this.deps.ragAccess ?? denyRagAccess,
+          ).then((r) => ({ name, result: r }));
         }),
       );
       ragSpan.end();
       const ragResultsMap: Record<string, RagResult[]> = {};
       for (const { name, result: r } of ragQueryResults) {
-        ragResultsMap[name] = r.ok ? r.value : [];
+        if (!r.ok) return r;
+        ragResultsMap[name] = r.value;
         this.deps.metrics.ragQueryCount.add(1, {
           store: name,
           hit: String(r.ok && r.value.length > 0),
@@ -273,10 +284,17 @@ export class RagOrchestrator implements IRagOrchestrator {
               const emb = this.deps.embedder
                 ? new QueryEmbedding(text, this.deps.embedder, opts)
                 : new TextOnlyEmbedding(text);
-              return store.query(emb, k, opts);
+              return ownerBoundQuery(
+                store,
+                emb,
+                k,
+                opts ?? {},
+                this.deps.ragAccess ?? denyRagAccess,
+              );
             }),
           );
           for (const result of fallbackResults) {
+            if (!result.ok) return result;
             if (result.ok) {
               for (const r of result.value) {
                 const id = r.metadata.id as string;

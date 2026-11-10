@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { IToolSelectionStrategy } from '@mcp-abap-adt/llm-agent';
+import { testRagAccess } from '@mcp-abap-adt/llm-agent/testing/rag-access-testing';
 import {
   ScoreThresholdToolSelection,
   TopKToolSelection,
@@ -15,6 +16,7 @@ function makeCtx(strategy: IToolSelectionStrategy | undefined) {
     ],
   };
   return {
+    ragAccess: testRagAccess(),
     config: { mode: 'smart' },
     mcpTools: [
       { name: 'keep', description: 'k', inputSchema: {} },

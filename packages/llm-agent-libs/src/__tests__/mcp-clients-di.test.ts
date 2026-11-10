@@ -18,6 +18,7 @@ import type {
   McpToolResult,
   Result,
 } from '@mcp-abap-adt/llm-agent';
+import { testRagAccess } from '@mcp-abap-adt/llm-agent/testing/rag-access-testing';
 import type { LoadedPlugins } from '../plugins/types.js';
 import { emptyLoadedPlugins, mergePluginExports } from '../plugins/types.js';
 
@@ -84,6 +85,7 @@ describe('SmartAgentBuilder.withMcpClients()', () => {
     const clientB = stubMcpClient('b');
 
     const handle = await new SmartAgentBuilder({})
+      .withRagAccess(testRagAccess())
       .withMainLlm(stubLlm())
       .withMcpClients([clientA, clientB])
       .build();
@@ -105,6 +107,7 @@ describe('SmartAgentBuilder.withMcpClients()', () => {
     const { SmartAgentBuilder } = await import('../builder.js');
 
     const handle = await new SmartAgentBuilder({})
+      .withRagAccess(testRagAccess())
       .withMainLlm(stubLlm())
       .build();
 

@@ -8,7 +8,7 @@ import { PlannerToolsClient } from '../coordinator/dialogue/planner-tools-client
 import { TaskBoard } from '../coordinator/dialogue/task-board.js';
 import { DefaultPipeline } from '../pipeline/default-pipeline.js';
 import { SmartAgentSubAgent } from '../subagent/smart-agent-subagent.js';
-import { makeDefaultDeps } from '../testing/index.js';
+import { makeDefaultDeps, testCallOptions } from '../testing/index.js';
 
 function agentFor(
   pipeline: boolean,
@@ -61,7 +61,10 @@ function agentFor(
 for (const pipeline of [false, true]) {
   for (const mode of ['full', 'final'] as const) {
     test(`process returns only the final iteration (pipeline=${pipeline}, mode=${mode})`, async () => {
-      const result = await agentFor(pipeline, mode).process('check twice');
+      const result = await agentFor(pipeline, mode).process(
+        'check twice',
+        testCallOptions(),
+      );
       assert.ok(result.ok);
       assert.equal(result.value.content, 'Final answer');
       assert.equal(result.value.toolCallCount, 2);
@@ -73,9 +76,9 @@ for (const pipeline of [false, true]) {
       const partials: StreamChunk[] = [];
       for await (const chunk of agentFor(pipeline, mode).streamProcess(
         'check',
-        {
+        testCallOptions({
           onPartial: (event) => partials.push(event),
-        },
+        }),
       )) {
         assert.ok(chunk.ok);
         if (chunk.value.content && !chunk.value.ephemeral)
@@ -98,25 +101,34 @@ for (const pipeline of [false, true]) {
     });
 
     test(`empty final iteration discards progress (pipeline=${pipeline}, mode=${mode})`, async () => {
-      const result = await agentFor(pipeline, mode, '').process('check');
+      const result = await agentFor(pipeline, mode, '').process(
+        'check',
+        testCallOptions(),
+      );
       assert.ok(result.ok);
       assert.equal(result.value.content, '');
     });
 
     test(`iteration limit preserves fallback text (pipeline=${pipeline}, mode=${mode})`, async () => {
-      const result = await agentFor(pipeline, mode, '', 2).process('check');
+      const result = await agentFor(pipeline, mode, '', 2).process(
+        'check',
+        testCallOptions(),
+      );
       assert.ok(result.ok);
       assert.equal(result.value.content, 'Let me check. Checking again. ');
     });
 
     test(`cooperative stop preserves progress fallback (pipeline=${pipeline}, mode=${mode})`, async () => {
       const stop = new AbortController();
-      const result = await agentFor(pipeline, mode).process('check', {
-        stopSignal: stop.signal,
-        onToolCallCount(count) {
-          if (count === 2) stop.abort();
-        },
-      });
+      const result = await agentFor(pipeline, mode).process(
+        'check',
+        testCallOptions({
+          stopSignal: stop.signal,
+          onToolCallCount(count) {
+            if (count === 2) stop.abort();
+          },
+        }),
+      );
       assert.ok(result.ok);
       assert.equal(result.value.content, 'Let me check. Checking again. ');
       assert.equal(result.value.stopped, true);
@@ -191,7 +203,7 @@ for (const pipeline of [false, true]) {
               goal: 'check',
             });
           }
-          return agentFor(pipeline).process(messages, options);
+          return agentFor(pipeline).process(messages, testCallOptions(options));
         },
       },
     });
@@ -314,7 +326,10 @@ function validationAgent(
 for (const pipeline of [false, true]) {
   for (const mode of ['full', 'final'] as const) {
     test(`validation retry discards rejected answer (pipeline=${pipeline}, mode=${mode})`, async () => {
-      const result = await validationAgent(pipeline, mode).process('go');
+      const result = await validationAgent(pipeline, mode).process(
+        'go',
+        testCallOptions(),
+      );
       assert.ok(result.ok);
       assert.equal(result.value.content, 'Accepted B');
       const worker = new SmartAgentSubAgent(
@@ -326,6 +341,7 @@ for (const pipeline of [false, true]) {
       const boundaries: string[] = [];
       for await (const chunk of validationAgent(pipeline, mode).streamProcess(
         'go',
+        testCallOptions(),
       )) {
         assert.ok(chunk.ok);
         if (chunk.value.content && !chunk.value.ephemeral)
@@ -462,7 +478,10 @@ function resetAgent(
 for (const pipeline of [false, true]) {
   for (const mode of ['full', 'final'] as const) {
     test(`provider reset discards abandoned reply (pipeline=${pipeline}, mode=${mode})`, async () => {
-      const result = await resetAgent(pipeline, mode).process('go');
+      const result = await resetAgent(pipeline, mode).process(
+        'go',
+        testCallOptions(),
+      );
       assert.ok(result.ok);
       assert.equal(result.value.content, 'Replacement');
       const worker = new SmartAgentSubAgent(
@@ -472,9 +491,12 @@ for (const pipeline of [false, true]) {
       assert.equal((await worker.run({ task: 'go' })).output, 'Replacement');
       const boundaries: string[] = [];
       const partials: StreamChunk[] = [];
-      for await (const chunk of resetAgent(pipeline, mode).streamProcess('go', {
-        onPartial: (event) => partials.push(event),
-      })) {
+      for await (const chunk of resetAgent(pipeline, mode).streamProcess(
+        'go',
+        testCallOptions({
+          onPartial: (event) => partials.push(event),
+        }),
+      )) {
         assert.ok(chunk.ok);
         if (chunk.value.iterationEnd) boundaries.push(chunk.value.iterationEnd);
       }
@@ -512,7 +534,7 @@ for (const pipeline of [false, true]) {
       const partialCommitted: string[] = [];
       for await (const chunk of validationAgent(pipeline, mode).streamProcess(
         'go',
-        {
+        testCallOptions({
           onPartial(event) {
             if (event.kind === 'content') partialPending += event.delta;
             if (event.kind === 'iteration-end') {
@@ -521,7 +543,7 @@ for (const pipeline of [false, true]) {
               partialPending = '';
             }
           },
-        },
+        }),
       )) {
         assert.ok(chunk.ok);
         if (!chunk.value.ephemeral) pending += chunk.value.content;
@@ -573,13 +595,13 @@ for (const mode of ['full', 'final'] as const) {
           { role: 'system', content: 'adapter' },
           { role: 'user', content: 'go' },
         ],
-        {
+        testCallOptions({
           onPartial(event) {
             if (event.kind === 'iteration-end' && event.outcome === 'final') {
               partialCommits.push(pending);
             }
           },
-        },
+        }),
       )) {
         assert.ok(chunk.ok);
         if (!chunk.value.ephemeral) pending += chunk.value.content;
@@ -609,13 +631,16 @@ for (const pipeline of [true]) {
         planner: {
           async process(messages, options) {
             const stop = new AbortController();
-            return agent.process(messages, {
-              ...options,
-              stopSignal: stop.signal,
-              onToolCallCount(count) {
-                if (count === 2) stop.abort();
-              },
-            });
+            return agent.process(
+              messages,
+              testCallOptions({
+                ...options,
+                stopSignal: stop.signal,
+                onToolCallCount(count) {
+                  if (count === 2) stop.abort();
+                },
+              }),
+            );
           },
         },
       });

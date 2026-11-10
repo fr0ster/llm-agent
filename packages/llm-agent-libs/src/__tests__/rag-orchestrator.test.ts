@@ -10,6 +10,7 @@ import type {
   Result,
   SkillError,
 } from '@mcp-abap-adt/llm-agent';
+import { testRagAccess } from '@mcp-abap-adt/llm-agent/testing/rag-access-testing';
 import { RagOrchestrator } from '../agent/rag-orchestrator.js';
 import { NoopRequestLogger } from '../logger/noop-request-logger.js';
 import type {
@@ -26,6 +27,8 @@ import {
   makeRag,
   makeReranker,
   makeSessionManager,
+  ownedTestStores,
+  testCallOptions,
 } from '../testing/index.js';
 import { NoopTracer } from '../tracer/noop-tracer.js';
 
@@ -101,6 +104,7 @@ function makeOrchestrator(
   documents = ragDocs(),
 ) {
   return new RagOrchestrator({
+    ragAccess: testRagAccess(),
     mainLlm: makeLlm([]),
     helperLlm: undefined,
     classifier: makeClassifier([
@@ -117,7 +121,7 @@ function makeOrchestrator(
       mcpToolRegistry ??
       makeToolRegistry([mcpTool('GetProgram'), mcpTool('GetInclude')]),
     requestLogger: new NoopRequestLogger(),
-    ragStores: { kb: makeRag(documents) },
+    ragStores: ownedTestStores({ kb: makeRag(documents) }),
     embedder: undefined,
     assembler: makeAssembler([
       { role: 'system', content: 'SYSTEM PROMPT' },
@@ -133,7 +137,7 @@ const opts: { opts: CallOptions | undefined } = { opts: undefined };
 describe('RagOrchestrator.orchestrate()', () => {
   it('hard mode loads no skills without a semantic match', async () => {
     const result = await makeOrchestrator(undefined, []).orchestrate('q', {
-      opts: undefined,
+      opts: testCallOptions(undefined),
       rootSpan: new NoopTracer().startSpan('root'),
       sessionId: 'no-match',
       mode: 'hard',
@@ -158,7 +162,7 @@ describe('RagOrchestrator.orchestrate()', () => {
     const result = await makeOrchestrator(registry).orchestrate(
       'read program',
       {
-        opts: undefined,
+        opts: testCallOptions(undefined),
         rootSpan: new NoopTracer().startSpan('root'),
         sessionId: 'changing-catalogue',
         mode: 'hard',
@@ -177,7 +181,7 @@ describe('RagOrchestrator.orchestrate()', () => {
     const rootSpan = new NoopTracer().startSpan('root', { traceId: 't' });
 
     const result = await orch.orchestrate('read program', {
-      opts: opts.opts,
+      opts: testCallOptions(opts.opts),
       rootSpan,
       sessionId: 'default',
       mode: 'hard',

@@ -1,4 +1,5 @@
 import type { IDialogueTaskContext } from './dialogue-task-context.js';
+import type { RagCaller } from './rag-access.js';
 import type { ToolTraceEntry } from './tool-trace.js';
 import type { IUsageRecorder, UsageOperation } from './usage.js';
 /**
@@ -38,6 +39,7 @@ export interface CallOptions {
   usage?: IUsageRecorder;
   usageOp?: UsageOperation;
   trace?: TraceContext;
+  caller?: RagCaller;
   sessionId?: string;
   userId?: string;
   signal?: AbortSignal;
@@ -67,7 +69,9 @@ export interface CallOptions {
   ragFilter?: {
     namespace?: string;
     userId?: string;
+    caller?: RagCaller;
     sessionId?: string;
+    roleId?: string;
     [key: string]: unknown;
   };
   /** Detailed session debugger logger. */

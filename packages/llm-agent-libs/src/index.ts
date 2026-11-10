@@ -1,3 +1,5 @@
+export type { OwnedRagStore } from './rag/owner-bound-query.js';
+export { ownerBoundQuery } from './rag/owner-bound-query.js';
 /**
  * @mcp-abap-adt/llm-agent-libs — core SmartAgent composition surface.
  *

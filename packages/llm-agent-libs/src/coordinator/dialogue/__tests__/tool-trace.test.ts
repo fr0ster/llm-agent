@@ -14,6 +14,7 @@ import {
   ToolTraceCollector,
   type ToolTraceEntry,
 } from '@mcp-abap-adt/llm-agent';
+import { testRagAccess } from '@mcp-abap-adt/llm-agent/testing/rag-access-testing';
 import { SmartAgent } from '../../../agent.js';
 import { SmartAgentBuilder } from '../../../builder.js';
 import { NoopMetrics } from '../../../metrics/noop-metrics.js';
@@ -464,6 +465,7 @@ for (const path of ['streaming', 'pipeline'] as const) {
         const handle = await new SmartAgentBuilder({
           skipModelValidation: true,
         })
+          .withRagAccess(testRagAccess())
           .withMainLlm(llm)
           .withMcpClients([client])
           .withMaxIterations(3)

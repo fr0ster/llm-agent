@@ -1,3 +1,4 @@
+import { RagAccessDeniedError } from '@mcp-abap-adt/llm-agent';
 /**
  * DefaultPipeline — IPipeline implementation backed by PipelineExecutor + stage handlers.
  *
@@ -276,12 +277,26 @@ export class DefaultPipeline implements IPipeline {
     yieldChunk: (chunk: Result<LlmStreamChunk, OrchestratorError>) => void,
     externalTools?: LlmTool[],
   ): Promise<PipelineResult> {
+    if (!options?.sessionId?.trim()) {
+      const error = new RagAccessDeniedError(
+        'An explicit sessionId is required',
+      );
+      yieldChunk({ ok: false, error });
+      return { timing: [], error };
+    }
+    if (options.caller && options.caller.sessionId !== options.sessionId) {
+      const error = new RagAccessDeniedError(
+        'Caller session does not match request',
+      );
+      yieldChunk({ ok: false, error });
+      return { timing: [], error };
+    }
     const rootSpan = this.resolvedTracer.startSpan('pipeline.execute');
 
     const ctx = this._buildContext(
       input,
       history,
-      options,
+      { ...options, sessionId: options.sessionId },
       yieldChunk,
       externalTools,
     );
@@ -455,7 +470,7 @@ export class DefaultPipeline implements IPipeline {
   private _buildContext(
     input: string | Message[],
     history: Message[],
-    options: CallOptions | undefined,
+    options: CallOptions & { sessionId: string },
     yieldChunk: (chunk: Result<LlmStreamChunk, OrchestratorError>) => void,
     externalTools?: LlmTool[],
   ): PipelineContext {
@@ -476,7 +491,14 @@ export class DefaultPipeline implements IPipeline {
     for (const name of ['tools', 'history'] as const) {
       const own = this.ownStores[name];
       if (!own) continue;
-      ragStores[name] = ownBuiltInStore(own.raw, own.queried, projected[name]);
+      ragStores[name] = {
+        name,
+        owner:
+          name === 'tools'
+            ? { scope: 'internal' }
+            : { scope: 'session', sessionId: options.sessionId },
+        rag: ownBuiltInStore(own.raw, own.queried, projected[name]?.rag),
+      };
     }
 
     return {
@@ -484,7 +506,7 @@ export class DefaultPipeline implements IPipeline {
       textOrMessages: input,
       options,
       config: { ...DEFAULT_CONFIG, ...this.deps.agentConfig },
-      sessionId: options?.sessionId ?? 'default',
+      sessionId: options.sessionId,
 
       // Dependencies (resolved once in initialize)
       mainLlm: this.deps.mainLlm,
@@ -493,6 +515,7 @@ export class DefaultPipeline implements IPipeline {
       classifier: this.resolvedClassifier,
       assembler: this.resolvedAssembler,
       ragStores,
+      ragAccess: this.deps.ragAccess,
       ragRegistry: this.deps.ragRegistry,
       ragProviderRegistry: this.deps.ragProviderRegistry,
       mcpClients: this.deps.mcpClients,

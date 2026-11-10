@@ -13,6 +13,7 @@ import {
   makeClassifier,
   makeDefaultDeps,
   makeLlm,
+  testCallOptions,
 } from '../../testing/index.js';
 import { DefaultPipeline } from '../default-pipeline.js';
 import type { IStageHandler } from '../stage-handler.js';
@@ -234,7 +235,7 @@ describe('DefaultPipeline withStepperCoordinator integration', () => {
     });
 
     const chunks: unknown[] = [];
-    await pipeline.execute('hello', [], undefined, (chunk) =>
+    await pipeline.execute('hello', [], testCallOptions(undefined), (chunk) =>
       chunks.push(chunk),
     );
 

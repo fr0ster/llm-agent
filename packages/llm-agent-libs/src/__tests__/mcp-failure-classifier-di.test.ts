@@ -21,6 +21,7 @@ import type {
   Result,
 } from '@mcp-abap-adt/llm-agent';
 import { McpError, NoopToolCache } from '@mcp-abap-adt/llm-agent';
+import { testRagAccess } from '@mcp-abap-adt/llm-agent/testing/rag-access-testing';
 import { SmartAgent } from '../agent.js';
 import { SmartAgentBuilder } from '../builder.js';
 import { NoopMetrics } from '../metrics/noop-metrics.js';
@@ -29,7 +30,7 @@ import {
   type IExecuteToolBatchArgs,
 } from '../pipeline/handlers/tool-loop-core.js';
 import { ToolAvailabilityRegistry } from '../policy/tool-availability-registry.js';
-import { makeDefaultDeps, makeLlm } from '../testing/index.js';
+import { makeDefaultDeps, makeLlm, testCallOptions } from '../testing/index.js';
 import { NoopTracer } from '../tracer/noop-tracer.js';
 import type { ISpan } from '../tracer/types.js';
 
@@ -41,7 +42,7 @@ test('(a) builder: withMcpFailureClassifier stores classifier on builder private
   const custom: IMcpFailureClassifier = {
     classify: async () => 'unavailable',
   };
-  const builder = new SmartAgentBuilder();
+  const builder = new SmartAgentBuilder().withRagAccess(testRagAccess());
   builder.withMcpFailureClassifier(custom);
   // Access private field via cast — verifies the setter stored it.
   const stored = (
@@ -55,7 +56,7 @@ test('(a) builder: withMcpFailureClassifier stores classifier on builder private
 });
 
 test('(a) builder: without withMcpFailureClassifier, _mcpFailureClassifier is undefined', () => {
-  const builder = new SmartAgentBuilder();
+  const builder = new SmartAgentBuilder().withRagAccess(testRagAccess());
   const stored = (
     builder as unknown as { _mcpFailureClassifier?: IMcpFailureClassifier }
   )._mcpFailureClassifier;
@@ -111,7 +112,7 @@ test('(b) direct SmartAgent: custom classifier escalating MCP_ERROR fails the ru
   deps.mcpFailureClassifier = allUnavailable;
   // Direct SmartAgent path — no pipeline.
   const agent = new SmartAgent(deps, { maxIterations: 5, mode: 'hard' });
-  const res = await agent.process('read table T');
+  const res = await agent.process('read table T', testCallOptions());
   assert.equal(
     res.ok,
     false,
@@ -135,7 +136,7 @@ test('(b) direct SmartAgent: without custom classifier MCP_ERROR stays tool feed
   ]);
   // No mcpFailureClassifier set → DefaultMcpFailureClassifier used → MCP_ERROR stays feedback.
   const agent = new SmartAgent(deps, { maxIterations: 5, mode: 'hard' });
-  const res = await agent.process('read table T');
+  const res = await agent.process('read table T', testCallOptions());
   assert.equal(
     res.ok,
     true,

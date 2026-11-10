@@ -5,7 +5,6 @@ import type {
   IMcpClient,
   IQueryEmbedder,
   IQueryExpander,
-  IRag,
   IRequestLogger,
   ISkillManager,
   ISubpromptClassifier,
@@ -13,6 +12,7 @@ import type {
   McpTool,
   Message,
   OrchestratorError,
+  RagAccess,
   RagResult,
   Result,
   Subprompt,
@@ -21,6 +21,7 @@ import type { SmartAgentConfig } from '../agent.js';
 import type { IMcpToolRegistry } from '../mcp/tool-registry.js';
 import type { IMetrics } from '../metrics/types.js';
 import type { ToolAvailabilityRegistry } from '../policy/tool-availability-registry.js';
+import type { OwnedRagStore } from '../rag/owner-bound-query.js';
 import type { IReranker } from '../reranker/types.js';
 import type { ISessionManager } from '../session/types.js';
 import type { ISpan, ITracer } from '../tracer/types.js';
@@ -39,7 +40,8 @@ export interface RagOrchestratorDeps {
   toolAvailabilityRegistry: ToolAvailabilityRegistry;
   mcpToolRegistry: IMcpToolRegistry;
   requestLogger: IRequestLogger;
-  ragStores: Record<string, IRag>;
+  ragAccess?: RagAccess;
+  ragStores: Record<string, OwnedRagStore>;
   embedder: IQueryEmbedder | undefined;
   assembler: IContextAssembler;
   skillManager: ISkillManager | undefined;

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
+import { testRagAccess } from '@mcp-abap-adt/llm-agent/testing/rag-access-testing';
 import { SmartAgent } from '../../agent.js';
 import {
   makeCapturingTracer,
@@ -7,6 +8,8 @@ import {
   makeDefaultDeps,
   makeMcpClient,
   makeRag,
+  ownedTestStores,
+  testCallOptions,
 } from '../../testing/index.js';
 import { NoopTracer } from '../noop-tracer.js';
 
@@ -55,7 +58,7 @@ describe('Pipeline spans — basic flow', () => {
       tracer,
     });
     const agent = new SmartAgent(deps, DEFAULT_CONFIG);
-    const r = await agent.process('test');
+    const r = await agent.process('test', testCallOptions());
 
     assert.ok(r.ok);
 
@@ -76,7 +79,7 @@ describe('Pipeline spans — basic flow', () => {
     const tracer = makeCapturingTracer();
     const { deps } = makeDefaultDeps({ tracer });
     const agent = new SmartAgent(deps, DEFAULT_CONFIG);
-    await agent.process('test');
+    await agent.process('test', testCallOptions());
 
     const classify = tracer.spans.find(
       (s) => s.name === 'smart_agent.classify',
@@ -89,7 +92,7 @@ describe('Pipeline spans — basic flow', () => {
     const tracer = makeCapturingTracer();
     const { deps } = makeDefaultDeps({ tracer });
     const agent = new SmartAgent(deps, DEFAULT_CONFIG);
-    await agent.process('test');
+    await agent.process('test', testCallOptions());
 
     const assemble = tracer.spans.find(
       (s) => s.name === 'smart_agent.assemble',
@@ -102,7 +105,7 @@ describe('Pipeline spans — basic flow', () => {
     const tracer = makeCapturingTracer();
     const { deps } = makeDefaultDeps({ tracer });
     const agent = new SmartAgent(deps, DEFAULT_CONFIG);
-    await agent.process('test');
+    await agent.process('test', testCallOptions());
 
     const toolLoop = tracer.spans.find(
       (s) => s.name === 'smart_agent.tool_loop',
@@ -140,7 +143,7 @@ describe('Pipeline spans — tool execution', () => {
       tracer,
     });
     const agent = new SmartAgent(deps, { ...DEFAULT_CONFIG, mode: 'hard' });
-    const r = await agent.process('test');
+    const r = await agent.process('test', testCallOptions());
 
     assert.ok(r.ok);
 
@@ -172,15 +175,16 @@ describe('Pipeline spans — RAG query', () => {
   it('creates rag_query span when SAP context present', async () => {
     const tracer = makeCapturingTracer();
     const { deps } = makeDefaultDeps({
+      ragAccess: testRagAccess(),
       classifier: makeClassifier([
         { type: 'action', text: 'Show SAP data', context: 'sap-abap' },
       ]),
-      ragStores: { facts: makeRag() },
+      ragStores: ownedTestStores({ facts: makeRag() }),
       llmResponses: [{ content: 'done', finishReason: 'stop' }],
       tracer,
     });
     const agent = new SmartAgent(deps, DEFAULT_CONFIG);
-    await agent.process('test');
+    await agent.process('test', testCallOptions());
 
     const ragQuery = tracer.spans.find(
       (s) => s.name === 'smart_agent.rag_query',
@@ -209,7 +213,7 @@ describe('Pipeline spans — error status', () => {
       tracer,
     });
     const agent = new SmartAgent(deps, DEFAULT_CONFIG);
-    const r = await agent.process('test');
+    const r = await agent.process('test', testCallOptions());
 
     assert.ok(!r.ok);
 
@@ -237,7 +241,7 @@ describe('No tracer — default NoopTracer', () => {
       llmResponses: [{ content: 'hello', finishReason: 'stop' }],
     });
     const agent = new SmartAgent(deps, DEFAULT_CONFIG);
-    const r = await agent.process('test');
+    const r = await agent.process('test', testCallOptions());
     assert.ok(r.ok);
     assert.equal(r.value.content, 'hello');
   });
@@ -252,7 +256,7 @@ describe('Pipeline spans — root span attributes', () => {
     const tracer = makeCapturingTracer();
     const { deps } = makeDefaultDeps({ tracer });
     const agent = new SmartAgent(deps, { ...DEFAULT_CONFIG, mode: 'hard' });
-    await agent.process('test');
+    await agent.process('test', testCallOptions());
 
     const root = tracer.spans.find((s) => s.name === 'smart_agent.process');
     assert.ok(root);

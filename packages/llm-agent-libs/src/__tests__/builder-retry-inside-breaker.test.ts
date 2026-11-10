@@ -16,6 +16,7 @@ import {
   type LlmStreamChunk,
   type Result,
 } from '@mcp-abap-adt/llm-agent';
+import { testRagAccess } from '@mcp-abap-adt/llm-agent/testing/rag-access-testing';
 import { SmartAgentBuilder } from '../builder.js';
 
 /** An adapter that answers every call with a retryable 429. */
@@ -51,7 +52,7 @@ function builder() {
   return new SmartAgentBuilder({
     skipModelValidation: true,
     agent: { retry },
-  });
+  }).withRagAccess(testRagAccess());
 }
 
 test('own breaker: one request with retries records ONE failure; two open it', async () => {

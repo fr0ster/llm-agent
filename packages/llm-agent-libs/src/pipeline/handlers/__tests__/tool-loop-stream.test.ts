@@ -1,3 +1,5 @@
+import { testRagAccess } from '@mcp-abap-adt/llm-agent/testing/rag-access-testing';
+import { testCallOptions } from '../../../testing/index.js';
 /**
  * Task 4 — Worker tool-loop emits deltas via `ctx.onPartial`.
  *
@@ -86,6 +88,7 @@ function makeCtx(
   const yielded: Result<LlmStreamChunk, unknown>[] = [];
 
   return {
+    ragAccess: testRagAccess(),
     config: {
       maxIterations: 3,
       maxToolCalls: 5,
@@ -93,7 +96,7 @@ function makeCtx(
       mode: 'smart',
       refreshToolsPerIteration: false,
     } as PipelineContext['config'],
-    options: {} as CallOptions,
+    options: testCallOptions({} as CallOptions),
     sessionId: 's-stream',
     mcpClients: [],
     mainLlm,
@@ -272,6 +275,7 @@ function makeSlowInternalToolCtx(opts: {
   const client = slowInternalClient(opts.toolDelayMs);
 
   return {
+    ragAccess: testRagAccess(),
     config: {
       maxIterations: 3,
       maxToolCalls: 5,
@@ -279,7 +283,7 @@ function makeSlowInternalToolCtx(opts: {
       mode: 'smart',
       refreshToolsPerIteration: false,
     } as PipelineContext['config'],
-    options: {} as CallOptions,
+    options: testCallOptions({} as CallOptions),
     sessionId: 's-slow-internal',
     mcpClients: [client],
     mainLlm: llm,

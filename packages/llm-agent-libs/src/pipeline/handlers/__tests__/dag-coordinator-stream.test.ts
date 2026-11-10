@@ -13,6 +13,7 @@ import type {
 import { SmartAgent } from '../../../agent.js';
 import { DagPlanInterpreter } from '../../../coordinator/dag/dag-plan-interpreter.js';
 import { SessionRequestLogger } from '../../../logger/session-request-logger.js';
+import { testCallOptions } from '../../../testing/index.js';
 import { pipelineToStream } from '../../pipeline-to-stream.js';
 import { DagCoordinatorHandler } from '../dag-coordinator.js';
 
@@ -87,7 +88,7 @@ for (const mode of ['single', 'multi', 'disabled'] as const) {
       assert.equal(handled, true);
       for (const value of chunks) yield { ok: true, value };
     };
-    const response = await agent.process('do');
+    const response = await agent.process('do', testCallOptions());
     assert.ok(response.ok);
     assert.equal(response.value.content, 'AnswerNOTICE');
     assert.deepEqual(
@@ -635,7 +636,7 @@ for (const replan of [false, true]) {
       assert.equal(handled, true);
       for (const value of chunks) yield { ok: true, value };
     };
-    const response = await agent.process('do');
+    const response = await agent.process('do', testCallOptions());
     assert.equal(response.ok, true);
     if (!response.ok) return;
     assert.equal(

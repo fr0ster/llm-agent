@@ -6,6 +6,7 @@ import {
   makeAssembler,
   makeDefaultDeps,
   makeMcpClient,
+  testCallOptions,
 } from '../testing/index.js';
 
 for (const throws of [false, true]) {
@@ -43,12 +44,15 @@ for (const throws of [false, true]) {
     const result = await new SmartAgent(deps, {
       mode: 'hard',
       maxToolCalls: 40,
-    }).process('read', {
-      onToolCallCount(count, max) {
-        counts.push([count, max]);
-        if (throws) throw new Error('observer failed');
-      },
-    });
+    }).process(
+      'read',
+      testCallOptions({
+        onToolCallCount(count, max) {
+          counts.push([count, max]);
+          if (throws) throw new Error('observer failed');
+        },
+      }),
+    );
     assert.equal(result.ok, false);
     assert.deepEqual(counts, [[2, 40]]);
   });
@@ -67,14 +71,14 @@ test('external-only request reports the number of surfaced tool calls', async ()
   const counts: number[] = [];
   const result = await new SmartAgent(deps, { mode: 'hard' }).process(
     'external',
-    {
+    testCallOptions({
       externalTools: [
         { name: 'External', description: 'external', inputSchema: {} },
       ],
       onToolCallCount(count) {
         counts.push(count);
       },
-    },
+    }),
   );
   assert.ok(result.ok);
   assert.equal(result.value.toolCallCount, 1);
@@ -106,12 +110,15 @@ for (const throws of [false, true]) {
     const result = await new SmartAgent(deps, {
       maxIterations: 5,
       maxToolCalls: 40,
-    }).process('read twice', {
-      onToolCallCount(count, max) {
-        counts.push([count, max]);
-        if (throws) throw new Error('observer failed');
-      },
-    });
+    }).process(
+      'read twice',
+      testCallOptions({
+        onToolCallCount(count, max) {
+          counts.push([count, max]);
+          if (throws) throw new Error('observer failed');
+        },
+      }),
+    );
     assert.ok(result.ok);
     assert.deepEqual(counts, [
       [1, 40],

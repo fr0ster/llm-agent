@@ -1,3 +1,5 @@
+import { testRagAccess } from '@mcp-abap-adt/llm-agent/testing/rag-access-testing';
+import { ownedTestStores, testCallOptions } from '../../../testing/index.js';
 /**
  * Task 0 — PR-2b guard: Loop B characterization test.
  *
@@ -166,6 +168,7 @@ test('Loop B: read-only retry restores prevSelectedTools and emits no skip log',
   };
 
   const ctx = {
+    ragAccess: testRagAccess(),
     config: {
       maxIterations: 5,
       maxToolCalls: 5,
@@ -174,13 +177,13 @@ test('Loop B: read-only retry restores prevSelectedTools and emits no skip log',
       // refreshToolsPerIteration: true is the default (undefined !== false)
       toolReselectPerIteration: true,
     } as PipelineContext['config'],
-    options: {
+    options: testCallOptions({
       sessionLogger: {
-        logStep(step: string, _data: unknown) {
+        logStep(step: string) {
           logSteps.push(step);
         },
       },
-    } as unknown as CallOptions,
+    }),
     sessionId: 'b-reselect',
     mcpClients: [mcpClient],
     mainLlm: stubLlm,
@@ -205,7 +208,7 @@ test('Loop B: read-only retry restores prevSelectedTools and emits no skip log',
     // ragStores.tools MUST be present — tool-loop.ts:221 gates the reselect block
     // (and therefore line 262 read-only restore) on `ctx.ragStores?.tools` being
     // truthy.  Without it, the guarded branch never runs and the guard is inert.
-    ragStores: {
+    ragStores: ownedTestStores({
       tools: {
         async query(): Promise<Result<RagResult[], RagError>> {
           return { ok: true, value: [] };
@@ -227,7 +230,7 @@ test('Loop B: read-only retry restores prevSelectedTools and emits no skip log',
           };
         },
       },
-    },
+    }),
     timing: [],
     pendingToolResults: new PendingToolResultsRegistry(),
     toolAvailabilityRegistry: new ToolAvailabilityRegistry(),

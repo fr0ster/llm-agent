@@ -5,6 +5,7 @@ import {
   type IRag,
   type ISkillManager,
 } from '@mcp-abap-adt/llm-agent';
+import { testRagAccess } from '@mcp-abap-adt/llm-agent/testing/rag-access-testing';
 import { SmartAgentBuilder } from '../builder.js';
 import { makeLlm } from '../testing/index.js';
 
@@ -35,6 +36,7 @@ async function build(
 ): Promise<string[]> {
   const ids: string[] = [];
   const b = new SmartAgentBuilder({})
+    .withRagAccess(testRagAccess())
     .withMainLlm(makeLlm([{ content: 'ok' }]))
     .setToolsRag(spyRag(ids));
   const h = await configure(b).build();

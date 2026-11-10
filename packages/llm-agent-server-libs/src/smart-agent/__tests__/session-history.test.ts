@@ -1,3 +1,8 @@
+import { beforeEach } from 'node:test';
+import { installTestRagIdentity } from './rag-identity-fixture.js';
+
+beforeEach(installTestRagIdentity);
+
 import assert from 'node:assert/strict';
 import { request } from 'node:http';
 import { describe, it } from 'node:test';

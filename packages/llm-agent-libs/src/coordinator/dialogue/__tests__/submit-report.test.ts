@@ -4,6 +4,7 @@ import {
   createDialogueTaskContext,
   type IMcpClient,
 } from '@mcp-abap-adt/llm-agent';
+import { testRagAccess } from '@mcp-abap-adt/llm-agent/testing/rag-access-testing';
 import { SmartAgent } from '../../../agent.js';
 import { DefaultPipeline } from '../../../pipeline/default-pipeline.js';
 import { SmartAgentSubAgent } from '../../../subagent/smart-agent-subagent.js';
@@ -11,6 +12,7 @@ import {
   makeDefaultDeps,
   makeMcpClient,
   makeRag,
+  ownedTestStores,
 } from '../../../testing/index.js';
 import { createMemorySignalBus } from '../memory-signal-bus.js';
 import {
@@ -103,6 +105,8 @@ for (const pipeline of [false, true]) {
       const response = await worker.run({
         task: 'Write a report',
         dialogueTask: task,
+        caller: { sessionId: 's', userId: 'test-user', isAdmin: false },
+        sessionId: 's',
         externalTools: external ? [submitReportTool] : [],
       });
       assert.equal(task.readFinish(), undefined);
@@ -191,8 +195,9 @@ for (const pipeline of [false, true]) {
       return listTools(options);
     };
     const { deps, llm } = makeDefaultDeps({
+      ragAccess: testRagAccess(),
       mcpClients: [host],
-      ragStores: { tools: makeRag() },
+      ragStores: ownedTestStores({ tools: makeRag() }),
       llmResponses: [
         {
           content: '',
@@ -238,6 +243,8 @@ for (const pipeline of [false, true]) {
     const response = await worker.run({
       task: 'Write a report',
       dialogueTask: task,
+      caller: { sessionId: 's', userId: 'test-user', isAdmin: false },
+      sessionId: 's',
     });
     assert.equal(response.output, 'Report after refresh');
     assert.equal(task.readFinish()?.tool, 'submit_report');
@@ -266,6 +273,8 @@ for (const scenario of [
     };
     const response = await client.callTool('submit_report', args, {
       dialogueTask: task,
+      caller: { sessionId: 's', userId: 'test-user', isAdmin: false },
+      sessionId: 's',
       dialogueReportText: () =>
         scenario === 'collected' ? 'First\n\nSecond' : '',
     });
@@ -388,6 +397,8 @@ for (const pipeline of [false, true]) {
       const response = await worker.run({
         task: 'Write a report',
         dialogueTask: task,
+        caller: { sessionId: 's', userId: 'test-user', isAdmin: false },
+        sessionId: 's',
       });
       assert.equal(
         response.output,

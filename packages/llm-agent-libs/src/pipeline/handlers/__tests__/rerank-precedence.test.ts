@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { IRag, RagResult } from '@mcp-abap-adt/llm-agent';
+import { testRagAccess } from '@mcp-abap-adt/llm-agent/testing/rag-access-testing';
 import {
   applyRetrievalStrategy,
   EmbeddingRetrieval,
 } from '../../../retrieval/index.js';
+import { ownedTestStores, testCallOptions } from '../../../testing/index.js';
 import type { ISpan } from '../../../tracer/types.js';
 import type { PipelineContext } from '../../context.js';
 import { RerankHandler } from '../rerank.js';
@@ -49,11 +51,15 @@ describe('RerankHandler precedence', () => {
       new EmbeddingRetrieval(),
     );
     const ctx = {
+      ragAccess: testRagAccess(),
       ragText: 'q',
       ragResults: { history: [hit('h', 0.5)], docs: [hit('d', 0.5)] },
-      ragStores: { history: historyStore, docs: fakeStore([]).store },
+      ragStores: ownedTestStores({
+        history: historyStore,
+        docs: fakeStore([]).store,
+      }),
       reranker,
-      options: undefined,
+      options: testCallOptions(undefined),
     } as unknown as PipelineContext;
     await new RerankHandler().execute(ctx, {}, span().s);
     assert.deepEqual(calls, ['d']);

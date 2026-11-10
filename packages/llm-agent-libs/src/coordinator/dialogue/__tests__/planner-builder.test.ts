@@ -6,6 +6,7 @@ import type {
   LlmStreamChunk,
   Result,
 } from '@mcp-abap-adt/llm-agent';
+import { testRagAccess } from '@mcp-abap-adt/llm-agent/testing/rag-access-testing';
 import { SmartAgentBuilder } from '../../../builder.js';
 import { DialogueSession } from '../dialogue-session.js';
 import { DIALOGUE_PLANNER_SYSTEM } from '../planner-prompt.js';
@@ -99,6 +100,7 @@ test('documented builder exposes the control tools and dispatches delegation ins
     skipModelValidation: true,
     prompts: { system: DIALOGUE_PLANNER_SYSTEM },
   })
+    .withRagAccess(testRagAccess())
     .withMode('hard')
     .withMainLlm(llm)
     .withMcpClients([new PlannerToolsClient()])

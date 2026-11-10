@@ -56,6 +56,7 @@ export class SmartAgentSubAgent implements ISubAgent {
         {
           requestStartedAt: input.requestStartedAt,
           sessionId: input.sessionId,
+          caller: input.caller,
           usage: input.usage,
           signal: input.signal,
           stopSignal: input.stopSignal,

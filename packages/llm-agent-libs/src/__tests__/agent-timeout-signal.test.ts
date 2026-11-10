@@ -2,7 +2,9 @@ import assert from 'node:assert/strict';
 import { getEventListeners } from 'node:events';
 import { test } from 'node:test';
 import { type ILlm, LlmError } from '@mcp-abap-adt/llm-agent';
+import { testRagAccess } from '@mcp-abap-adt/llm-agent/testing/rag-access-testing';
 import { SmartAgentBuilder } from '../builder.js';
+import { testCallOptions } from '../testing/index.js';
 
 /** An LLM whose streamChat records the signal it receives (and optionally waits for it). */
 function recordingLlm(waitForAbort: boolean): {
@@ -36,10 +38,11 @@ function recordingLlm(waitForAbort: boolean): {
 test('timeoutMs aborts with a TimeoutError reason', async () => {
   const { llm, signals } = recordingLlm(true);
   const handle = await new SmartAgentBuilder({})
+    .withRagAccess(testRagAccess())
     .withMainLlm(llm)
     .withTimeout(20)
     .build();
-  await handle.agent.process('hi');
+  await handle.agent.process('hi', testCallOptions());
   const seen = signals[0];
   assert.ok(seen?.aborted, 'signal fired');
   assert.equal(
@@ -52,12 +55,16 @@ test('timeoutMs aborts with a TimeoutError reason', async () => {
 test('a long-lived caller signal keeps no listeners across requests', async () => {
   const { llm, signals } = recordingLlm(false);
   const handle = await new SmartAgentBuilder({})
+    .withRagAccess(testRagAccess())
     .withMainLlm(llm)
     .withTimeout(60_000)
     .build();
   const caller = new AbortController();
   for (let i = 0; i < 5; i++) {
-    await handle.agent.process('hi', { signal: caller.signal });
+    await handle.agent.process(
+      'hi',
+      testCallOptions({ signal: caller.signal }),
+    );
   }
   assert.equal(signals.length, 5);
   assert.equal(getEventListeners(caller.signal, 'abort').length, 0);

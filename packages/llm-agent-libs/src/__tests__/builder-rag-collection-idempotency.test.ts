@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { type IRag, SimpleRagRegistry } from '@mcp-abap-adt/llm-agent';
+import { testRagAccess } from '@mcp-abap-adt/llm-agent/testing/rag-access-testing';
 import { SmartAgentBuilder } from '../builder.js';
 import { makeLlm } from '../testing/index.js';
 
@@ -15,6 +16,7 @@ const stubRag = () => ({}) as unknown as IRag;
 test('addRagCollection: idempotent collection re-issued against a shared registry is skipped (no throw)', async () => {
   const reg = new SimpleRagRegistry();
   const h1 = await new SmartAgentBuilder({})
+    .withRagAccess(testRagAccess())
     .withMainLlm(makeLlm([{ content: 'a' }]))
     .setRagRegistry(reg)
     .addRagCollection({
@@ -26,6 +28,7 @@ test('addRagCollection: idempotent collection re-issued against a shared registr
   // Second build over the SAME shared registry re-issues the same idempotent
   // collection (the per-session skills-wiring case) — must NOT throw.
   const h2 = await new SmartAgentBuilder({})
+    .withRagAccess(testRagAccess())
     .withMainLlm(makeLlm([{ content: 'b' }]))
     .setRagRegistry(reg)
     .addRagCollection({
@@ -42,6 +45,7 @@ test('addRagCollection: idempotent collection re-issued against a shared registr
 test('addRagCollection: ordinary duplicate name (no idempotent flag) still fails loud', async () => {
   const reg = new SimpleRagRegistry();
   const h1 = await new SmartAgentBuilder({})
+    .withRagAccess(testRagAccess())
     .withMainLlm(makeLlm([{ content: 'a' }]))
     .setRagRegistry(reg)
     .addRagCollection({ name: 'kb', rag: stubRag() })
@@ -49,6 +53,7 @@ test('addRagCollection: ordinary duplicate name (no idempotent flag) still fails
   await assert.rejects(
     () =>
       new SmartAgentBuilder({})
+        .withRagAccess(testRagAccess())
         .withMainLlm(makeLlm([{ content: 'b' }]))
         .setRagRegistry(reg)
         .addRagCollection({ name: 'kb', rag: stubRag() })

@@ -7,7 +7,11 @@ import type {
   McpConnectionResult,
 } from '@mcp-abap-adt/llm-agent';
 import { SmartAgent } from '../agent.js';
-import { makeDefaultDeps, makeMcpClient } from '../testing/index.js';
+import {
+  makeDefaultDeps,
+  makeMcpClient,
+  testCallOptions,
+} from '../testing/index.js';
 
 describe('SmartAgent MCP reconnection', () => {
   it('calls strategy.resolve() before listing tools', async () => {
@@ -29,7 +33,7 @@ describe('SmartAgent MCP reconnection', () => {
     });
     deps.connectionStrategy = strategy;
     const agent = new SmartAgent(deps, { maxIterations: 1 });
-    await agent.process('test');
+    await agent.process('test', testCallOptions());
     assert.ok(resolveCalled, 'Strategy resolve should have been called');
   });
 
@@ -54,7 +58,7 @@ describe('SmartAgent MCP reconnection', () => {
     });
     deps.connectionStrategy = strategy;
     const agent = new SmartAgent(deps, { maxIterations: 1 });
-    const result = await agent.process('test');
+    const result = await agent.process('test', testCallOptions());
     assert.ok(result.ok);
   });
 
@@ -63,7 +67,7 @@ describe('SmartAgent MCP reconnection', () => {
       llmResponses: [{ content: 'hello', finishReason: 'stop' }],
     });
     const agent = new SmartAgent(deps, { maxIterations: 1 });
-    const result = await agent.process('test');
+    const result = await agent.process('test', testCallOptions());
     assert.ok(result.ok);
   });
 });

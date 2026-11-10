@@ -1,12 +1,14 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { CircuitBreaker } from '@mcp-abap-adt/llm-agent';
+import { testRagAccess } from '@mcp-abap-adt/llm-agent/testing/rag-access-testing';
 import { SmartAgent } from '../../agent.js';
 import { InMemoryMetrics } from '../../metrics/in-memory-metrics.js';
 import {
   makeDefaultDeps,
   makeFailingRag,
   makeRag,
+  ownedTestStores,
 } from '../../testing/index.js';
 import { HealthChecker } from '../health-checker.js';
 
@@ -33,11 +35,12 @@ describe('HealthChecker', () => {
 
   it('returns degraded when RAG is down', async () => {
     const { deps } = makeDefaultDeps({
-      ragStores: {
+      ragAccess: testRagAccess(),
+      ragStores: ownedTestStores({
         facts: makeFailingRag(),
         feedback: makeRag(),
         state: makeRag(),
-      },
+      }),
     });
     const agent = new SmartAgent(deps, DEFAULT_CONFIG);
     const checker = new HealthChecker({

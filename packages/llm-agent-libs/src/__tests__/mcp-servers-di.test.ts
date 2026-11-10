@@ -17,6 +17,7 @@ import type {
   Result,
 } from '@mcp-abap-adt/llm-agent';
 import { symmetricEmbedder } from '@mcp-abap-adt/llm-agent';
+import { testRagAccess } from '@mcp-abap-adt/llm-agent/testing/rag-access-testing';
 import type { IPipeline, PipelineDeps } from '../interfaces/pipeline.js';
 
 function stubMcpClient(id: string): IMcpClient {
@@ -87,6 +88,7 @@ describe('SmartAgentBuilder.withMcpServers()', () => {
     const log: string[] = [];
 
     const handle = await new SmartAgentBuilder({})
+      .withRagAccess(testRagAccess())
       .withMainLlm(stubLlm())
       .withMcpServers([stubServer('a', log), stubServer('b', log)])
       .build();
@@ -120,6 +122,7 @@ describe('SmartAgentBuilder.withMcpServers()', () => {
     await assert.rejects(
       () =>
         new SmartAgentBuilder({})
+          .withRagAccess(testRagAccess())
           .withMainLlm(stubLlm())
           .withMcpServers([described, stubServer('e', log)])
           .build(),
@@ -137,6 +140,7 @@ describe('SmartAgentBuilder.withMcpServers()', () => {
     await assert.rejects(
       () =>
         new SmartAgentBuilder({})
+          .withRagAccess(testRagAccess())
           .withMainLlm(stubLlm())
           .withMcpClients([stubMcpClient('c')])
           .withMcpServers([stubServer('a', log)])
@@ -160,6 +164,7 @@ describe('SmartAgentBuilder.withMcpServers()', () => {
     await assert.rejects(
       () =>
         new SmartAgentBuilder({})
+          .withRagAccess(testRagAccess())
           .withMainLlm(stubLlm())
           .withMcpServers([stubServer('a', log), failing])
           .build(),
@@ -175,6 +180,7 @@ describe('SmartAgentBuilder.withMcpServers()', () => {
     const { SmartAgentBuilder } = await import('../builder.js');
 
     const handle = await new SmartAgentBuilder({})
+      .withRagAccess(testRagAccess())
       .withMainLlm(stubLlm())
       .withMcpClients([stubMcpClient('c')])
       .build();
@@ -204,6 +210,7 @@ describe('SmartAgentBuilder.withMcpServers()', () => {
     };
 
     const handle = await new SmartAgentBuilder({ skipModelValidation: true })
+      .withRagAccess(testRagAccess())
       .withMainLlm(stubLlm())
       .withLogger({
         log: (e) => {
@@ -242,6 +249,7 @@ describe('SmartAgentBuilder.withMcpServers()', () => {
     };
 
     const handle = await new SmartAgentBuilder({ skipModelValidation: true })
+      .withRagAccess(testRagAccess())
       .withMainLlm(stubLlm())
       .withLogger({
         log: (e) => {
@@ -280,6 +288,7 @@ describe('SmartAgentBuilder.withMcpServers()', () => {
     await assert.rejects(
       () =>
         new SmartAgentBuilder({ skipModelValidation: true })
+          .withRagAccess(testRagAccess())
           .withMainLlm(stubLlm())
           .setPipeline(throwingPipeline)
           .withMcpServers([stubServer('a', log), stubServer('b', log)])
@@ -299,6 +308,7 @@ describe('SmartAgentBuilder.withMcpServers()', () => {
     const log: string[] = [];
 
     const handle = await new SmartAgentBuilder({ skipModelValidation: true })
+      .withRagAccess(testRagAccess())
       .withMainLlm(stubLlm())
       .withEmbedder(symmetricEmbedder(stubEmbedder()))
       // Deliberately no .setToolsRag(...): the builder must auto-create one
@@ -341,6 +351,7 @@ describe('SmartAgentBuilder.withMcpServers()', () => {
     };
 
     const handle = await new SmartAgentBuilder({ skipModelValidation: true })
+      .withRagAccess(testRagAccess())
       .withMainLlm(stubLlm())
       .setPipeline(recordingPipeline)
       .withMcpServers([described])

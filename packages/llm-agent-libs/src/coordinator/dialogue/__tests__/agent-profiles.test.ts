@@ -15,12 +15,14 @@ import type {
   WorkerToolPolicy,
 } from '@mcp-abap-adt/llm-agent';
 import { InMemoryRag } from '@mcp-abap-adt/llm-agent';
+import { testRagAccess } from '@mcp-abap-adt/llm-agent/testing/rag-access-testing';
 import { z } from 'zod';
 import { ContextAssembler } from '../../../context/context-assembler.js';
 import { REQUEST_TIME_GUIDANCE } from '../../../context/request-time.js';
 import type { PipelineContext } from '../../../pipeline/context.js';
 import { AssembleHandler } from '../../../pipeline/handlers/assemble.js';
 import { SkillSelectHandler } from '../../../pipeline/handlers/skill-select.js';
+import { testCallOptions } from '../../../testing/index.js';
 import { NoopTracer } from '../../../tracer/noop-tracer.js';
 import {
   DialogueSession,
@@ -183,8 +185,9 @@ function assemblyContext(
   overrides: Partial<PipelineContext> = {},
 ): PipelineContext {
   return {
+    ragAccess: testRagAccess(),
     textOrMessages: 'goal',
-    options: undefined,
+    options: testCallOptions(undefined),
     config: { maxIterations: 1 },
     sessionId: 'skills',
     helperLlm: undefined,
@@ -346,6 +349,7 @@ test('hard mode does not load skills without a retrieval match', async () => {
     },
   };
   const ctx = assemblyContext({
+    ragAccess: testRagAccess(),
     config: { mode: 'hard', maxIterations: 1 },
     ragResults: {},
     ragStores: {},

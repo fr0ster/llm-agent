@@ -10,6 +10,7 @@ import type {
   Result,
 } from '@mcp-abap-adt/llm-agent';
 import { symmetricEmbedder } from '@mcp-abap-adt/llm-agent';
+import { testRagAccess } from '@mcp-abap-adt/llm-agent/testing/rag-access-testing';
 
 // An LLM whose chat() fails the first `failures` times (with a status-code-LESS
 // message, like SAP AI Core's deployment-list blip), then succeeds.
@@ -65,6 +66,7 @@ describe('SmartAgentBuilder startup model validation — lenient retry', () => {
       modelValidationAttempts: 3,
       modelValidationBackoffMs: 1, // fast test
     })
+      .withRagAccess(testRagAccess())
       .withMainLlm(llm)
       .withEmbedder(symmetricEmbedder(stubEmbedder()))
       .build();
@@ -84,6 +86,7 @@ describe('SmartAgentBuilder startup model validation — lenient retry', () => {
           modelValidationAttempts: 2,
           modelValidationBackoffMs: 1,
         })
+          .withRagAccess(testRagAccess())
           .withMainLlm(llm)
           .withEmbedder(symmetricEmbedder(stubEmbedder()))
           .build(),

@@ -1,3 +1,4 @@
+import { denyRagAccess, ownerBoundQuery } from '../../rag/owner-bound-query.js';
 /**
  * RagQueryHandler — queries a single RAG store.
  *
@@ -10,7 +11,8 @@
  * |---------|--------------------------------|----------|--------------------------------------|
  * | `store` | string                         | required | Store key (must exist in `ctx.ragStores`) |
  * | `k`     | number                         | from ctx | Number of results to retrieve        |
- * | `scope` | `global` \| `user` \| `session` | —        | Scope filter: `user` adds userId filter (no userId → no results, the store is not asked), `session` adds sessionId filter, `global` adds no filter |
+ * Ownership and identity filters come exclusively from the registered store.
+ * Legacy `scope` stage configuration cannot widen its ownership.
  * | `queryText` | `'toolQueryText'` \| string | —       | Overrides the query text for this call. `'toolQueryText'` reads the enriched text from `ctx.toolQueryText` (falls back to `ragText`). Any other string is used literally. When set, a one-off embedding is built for this call without touching the cached `ctx.queryEmbedding`. |
  *
  * ## Parallel safety
@@ -19,7 +21,7 @@
  * multiple rag-query stages can safely run in parallel.
  */
 
-import type { CallOptions, RagScope } from '@mcp-abap-adt/llm-agent';
+import type { CallOptions } from '@mcp-abap-adt/llm-agent';
 import { QueryEmbedding, TextOnlyEmbedding } from '@mcp-abap-adt/llm-agent';
 import type { ISpan } from '../../tracer/types.js';
 import type { PipelineContext } from '../context.js';
@@ -70,31 +72,16 @@ export class RagQueryHandler implements IStageHandler {
       embedding = ctx.queryEmbedding;
     }
 
-    // Build scope filter based on config
-    const scope = config.scope as RagScope | undefined;
-    const scopeFilter: Record<string, unknown> = {};
-    if (scope === 'user') {
-      if (!ctx.options?.userId) {
-        // A user-scoped read with no user has no records of its own. Querying
-        // unfiltered instead returned every user's records.
-        ctx.ragResults[storeName] = [];
-        span.setAttribute('results', 0);
-        span.setAttribute('skipped', 'user scope without userId');
-        return true;
-      }
-      scopeFilter.userId = ctx.options.userId;
-    }
-    if (scope === 'session') {
-      scopeFilter.sessionId = ctx.sessionId;
-    }
-
-    const queryOptions: CallOptions = {
-      ...ctx.options,
-      ragFilter: { ...ctx.options?.ragFilter, ...scopeFilter },
-    };
+    const queryOptions: CallOptions = { ...ctx.options };
 
     const ragStart = Date.now();
-    const result = await store.query(embedding, k, queryOptions);
+    const result = await ownerBoundQuery(
+      store,
+      embedding,
+      k,
+      queryOptions,
+      ctx.ragAccess ?? denyRagAccess,
+    );
     ctx.requestLogger.logRagQuery({
       store: storeName,
       query: queryText.slice(0, 200),
@@ -112,6 +99,10 @@ export class RagQueryHandler implements IStageHandler {
       hit: String(result.ok && result.value.length > 0),
     });
 
+    if (!result.ok) {
+      ctx.error = result.error;
+      return false;
+    }
     if (result.ok) {
       ctx.ragResults[storeName] = result.value;
       span.setAttribute('results', result.value.length);

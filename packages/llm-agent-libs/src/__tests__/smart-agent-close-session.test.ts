@@ -5,8 +5,10 @@ import {
   InMemoryRagProvider,
   SimpleRagProviderRegistry,
   SimpleRagRegistry,
+  validateRagOwner,
 } from '@mcp-abap-adt/llm-agent';
 import { SmartAgent } from '../agent.js';
+import type { OwnedRagStore } from '../rag/owner-bound-query.js';
 import { makeDefaultDeps } from '../testing/index.js';
 
 function makeAgentWithRegistry() {
@@ -19,12 +21,14 @@ function makeAgentWithRegistry() {
 
   const { deps } = makeDefaultDeps({ ragRegistry: registry });
   // Ensure ragStores is a live projection of the registry.
-  const ragStores: Record<string, import('../interfaces/rag.js').IRag> = {};
+  const ragStores: Record<string, OwnedRagStore> = {};
   const rebuild = () => {
     for (const k of Object.keys(ragStores)) delete ragStores[k];
     for (const m of registry.list()) {
       const r = registry.get(m.name);
-      if (r) ragStores[m.name] = r;
+      const owner = validateRagOwner({ ...m, scope: m.scope ?? 'global' });
+      if (r && owner.ok)
+        ragStores[m.name] = { name: m.name, owner: owner.value, rag: r };
     }
   };
   rebuild();

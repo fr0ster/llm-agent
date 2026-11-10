@@ -3,6 +3,7 @@ import {
   toModelToolMessages,
 } from '@mcp-abap-adt/llm-agent';
 import { withSubmitReport } from '../../coordinator/dialogue/submit-report-tool.js';
+import { denyRagAccess, ownerBoundQuery } from '../../rag/owner-bound-query.js';
 /**
  * ToolLoopHandler — streaming LLM call + MCP tool execution loop.
  *
@@ -431,11 +432,17 @@ export class ToolLoopHandler implements IStageHandler {
 
             const ragK = ctx.config.ragQueryK ?? 20;
             const ragStart = Date.now();
-            const ragResult = await ctx.ragStores.tools.query(
+            const ragResult = await ownerBoundQuery(
+              ctx.ragStores.tools,
               embedding,
               ragK,
-              ctx.options,
+              ctx.options ?? {},
+              ctx.ragAccess ?? denyRagAccess,
             );
+            if (!ragResult.ok) {
+              ctx.error = ragResult.error;
+              return false;
+            }
             ctx.requestLogger.logRagQuery({
               store: 'tools',
               query: reSelectQuery.slice(0, 200),

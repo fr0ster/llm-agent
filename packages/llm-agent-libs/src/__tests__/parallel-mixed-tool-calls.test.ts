@@ -7,7 +7,11 @@ import type {
   Result,
 } from '@mcp-abap-adt/llm-agent';
 import { SmartAgent } from '../agent.js';
-import { makeDefaultDeps, makeMcpClient } from '../testing/index.js';
+import {
+  makeDefaultDeps,
+  makeMcpClient,
+  testCallOptions,
+} from '../testing/index.js';
 
 const DEFAULT_CONFIG = { maxIterations: 5 };
 
@@ -85,10 +89,13 @@ describe('Mixed internal + external tool calls', () => {
 
     // Request 1: LLM returns mixed calls
     const chunks: LlmStreamChunk[] = [];
-    for await (const chunk of agent.streamProcess('Create file hello.md', {
-      externalTools,
-      sessionId: 'test-mixed',
-    })) {
+    for await (const chunk of agent.streamProcess(
+      'Create file hello.md',
+      testCallOptions({
+        externalTools,
+        sessionId: 'test-mixed',
+      }),
+    )) {
       if (chunk.ok) chunks.push(chunk.value);
     }
 
@@ -128,10 +135,13 @@ describe('Mixed internal + external tool calls', () => {
       },
     ];
 
-    const r2 = await agent.process(messages2, {
-      externalTools,
-      sessionId: 'test-mixed',
-    });
+    const r2 = await agent.process(
+      messages2,
+      testCallOptions({
+        externalTools,
+        sessionId: 'test-mixed',
+      }),
+    );
 
     assert.ok(r2.ok, 'second request should succeed');
     assert.equal(r2.value.content, 'Done!');
@@ -219,14 +229,20 @@ describe('Mixed internal + external tool calls', () => {
       },
     ];
 
-    const first = await agent.process('Create file hello.md', {
-      externalTools,
-    });
+    const first = await agent.process(
+      'Create file hello.md',
+      testCallOptions({
+        externalTools,
+      }),
+    );
     assert.ok(first.ok);
 
-    const r2 = await agent.process('Unrelated second request', {
-      externalTools,
-    });
+    const r2 = await agent.process(
+      'Unrelated second request',
+      testCallOptions({
+        externalTools,
+      }),
+    );
     assert.ok(r2.ok);
     assert.equal(streamLlm.callCount, 2);
     assert.ok(!capturedMessages.some((message) => message.role === 'tool'));
@@ -266,16 +282,19 @@ describe('Mixed internal + external tool calls', () => {
     deps.mainLlm = streamLlm;
     const agent = new SmartAgent(deps, DEFAULT_CONFIG);
 
-    const r = await agent.process('write a file', {
-      externalTools: [
-        {
-          name: 'write_file',
-          description: 'Write',
-          inputSchema: { type: 'object' },
-        },
-      ],
-      sessionId: 'test-ext-only',
-    });
+    const r = await agent.process(
+      'write a file',
+      testCallOptions({
+        externalTools: [
+          {
+            name: 'write_file',
+            description: 'Write',
+            inputSchema: { type: 'object' },
+          },
+        ],
+        sessionId: 'test-ext-only',
+      }),
+    );
 
     assert.ok(r.ok);
     assert.equal(r.value.stopReason, 'tool_calls');
@@ -301,7 +320,10 @@ describe('Mixed internal + external tool calls', () => {
     });
     const agent = new SmartAgent(deps, DEFAULT_CONFIG);
 
-    const r = await agent.process('read class', { sessionId: 'test-int-only' });
+    const r = await agent.process(
+      'read class',
+      testCallOptions({ sessionId: 'test-int-only' }),
+    );
     assert.ok(r.ok);
     assert.ok(
       r.value.content.includes('done'),

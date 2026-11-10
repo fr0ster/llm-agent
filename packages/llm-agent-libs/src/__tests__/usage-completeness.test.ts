@@ -15,6 +15,7 @@ import {
   VectorRag,
   WaitAsTold,
 } from '@mcp-abap-adt/llm-agent';
+import { testRagAccess } from '@mcp-abap-adt/llm-agent/testing/rag-access-testing';
 import { LlmQueryExpander } from '../../../llm-agent/src/rag/query-expander.js';
 import { McpClientAdapter } from '../../../llm-agent-mcp/src/adapter.js';
 import { MCPClientWrapper } from '../../../llm-agent-mcp/src/client.js';
@@ -52,6 +53,7 @@ import { ToolAvailabilityRegistry } from '../policy/tool-availability-registry.j
 import { RetryLlm } from '../resilience/retry-llm.js';
 import { DirectLlmSubAgent } from '../subagent/direct-llm-subagent.js';
 import { SmartAgentSubAgent } from '../subagent/smart-agent-subagent.js';
+import { testCallOptions } from '../testing/index.js';
 import { NoopTracer } from '../tracer/noop-tracer.js';
 
 const secrets = [
@@ -419,6 +421,7 @@ test('library LLM call paths terminate at the real provider with no content', as
     return completion;
   };
   const handle = await new SmartAgentBuilder({ skipModelValidation: true })
+    .withRagAccess(testRagAccess())
     .withMainLlm(f.llm)
     .setPipeline(pipeline)
     .build();
@@ -439,9 +442,12 @@ test('library LLM call paths terminate at the real provider with no content', as
       await Promise.allSettled([
         (async () => {
           if (mode === 'early') {
-            for await (const chunk of handle.agent.streamProcess(prompt, {
-              usage: f.usage,
-            })) {
+            for await (const chunk of handle.agent.streamProcess(
+              prompt,
+              testCallOptions({
+                usage: f.usage,
+              }),
+            )) {
               if (chunk) break;
             }
           } else {

@@ -6,6 +6,7 @@ import type {
   NormalizedRequest,
   SmartAgentResponse,
 } from '@mcp-abap-adt/llm-agent';
+import { testRagAccess } from '@mcp-abap-adt/llm-agent/testing/rag-access-testing';
 import { SmartAgentBuilder } from '../builder.js';
 
 function makeMockLlm(): ILlmApiAdapter['normalizeRequest'] extends never
@@ -39,6 +40,7 @@ function makeMockAdapter(name: string): ILlmApiAdapter {
 describe('SmartAgentBuilder — apiAdapters', () => {
   it('registers adapters and exposes them via handle', async () => {
     const handle = await new SmartAgentBuilder({})
+      .withRagAccess(testRagAccess())
       .withMainLlm(
         makeMockLlm() as Parameters<SmartAgentBuilder['withMainLlm']>[0],
       )
@@ -57,6 +59,7 @@ describe('SmartAgentBuilder — apiAdapters', () => {
     const first = makeMockAdapter('openai');
     const second = makeMockAdapter('openai');
     const handle = await new SmartAgentBuilder({})
+      .withRagAccess(testRagAccess())
       .withMainLlm(
         makeMockLlm() as Parameters<SmartAgentBuilder['withMainLlm']>[0],
       )

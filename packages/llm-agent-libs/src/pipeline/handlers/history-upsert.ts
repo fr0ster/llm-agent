@@ -106,7 +106,7 @@ export class HistoryUpsertHandler implements IStageHandler {
         turn,
         summarizer: ctx.historySummarizer,
         memory: ctx.historyMemory,
-        rag: historyRag,
+        rag: historyRag.rag,
         sessionId: ctx.sessionId,
         options: ctx.options,
         log: (msg, data) =>

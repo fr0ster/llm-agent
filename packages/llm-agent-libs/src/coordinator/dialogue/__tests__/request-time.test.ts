@@ -5,7 +5,7 @@ import { SmartAgent } from '../../../agent.js';
 import { ContextAssembler } from '../../../context/context-assembler.js';
 import { DefaultPipeline } from '../../../pipeline/default-pipeline.js';
 import { SmartAgentSubAgent } from '../../../subagent/smart-agent-subagent.js';
-import { makeDefaultDeps } from '../../../testing/index.js';
+import { makeDefaultDeps, testCallOptions } from '../../../testing/index.js';
 import { DialogueSession } from '../dialogue-session.js';
 import { InMemoryDialogueStateStore } from '../in-memory-dialogue-state-store.js';
 import { formatRequestTime, REQUEST_TIME_GUIDANCE } from '../index.js';
@@ -603,7 +603,7 @@ for (const pipelineEnabled of [false, true]) {
       heartbeatIntervalMs: 0,
     });
     const requestStart = now;
-    const ordinary = await agent.process('Start');
+    const ordinary = await agent.process('Start', testCallOptions());
     assert.ok(ordinary.ok);
     assert.equal(inputs.length, 2);
     for (const messages of inputs) {
@@ -677,7 +677,7 @@ test('pass mode adds static guidance to all inputs and request time only when ow
     maxIterations: 1,
     timeZone: 'Asia/Tbilisi',
   });
-  assert.ok((await agent.process('Task')).ok);
+  assert.ok((await agent.process('Task', testCallOptions())).ok);
   assert.deepEqual(inputs[0], [
     { role: 'system', content: REQUEST_TIME_GUIDANCE },
     {
@@ -692,11 +692,14 @@ test('pass mode adds static guidance to all inputs and request time only when ow
     { role: 'user', content: 'Current' },
   ];
   const original = structuredClone(messages);
-  assert.ok((await agent.process(messages)).ok);
+  assert.ok((await agent.process(messages, testCallOptions())).ok);
   const expected = structuredClone(original);
   expected[0].content = `Custom guidance\n\n${REQUEST_TIME_GUIDANCE}`;
   assert.deepEqual(inputs[1], expected);
-  assert.ok((await agent.process(messages, { requestStartedAt: 0 })).ok);
+  assert.ok(
+    (await agent.process(messages, testCallOptions({ requestStartedAt: 0 })))
+      .ok,
+  );
   expected[3].content = `${formatRequestTime(0, 'Asia/Tbilisi')}\n\nCurrent`;
   assert.deepEqual(inputs[2], expected);
   assert.deepEqual(messages, original);

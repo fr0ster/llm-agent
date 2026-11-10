@@ -1,8 +1,13 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { IRag } from '@mcp-abap-adt/llm-agent';
+import { testRagAccess } from '@mcp-abap-adt/llm-agent/testing/rag-access-testing';
 import type { PipelineDeps } from '../../interfaces/pipeline.js';
-import { makeDefaultDeps, makeRag } from '../../testing/index.js';
+import {
+  makeDefaultDeps,
+  makeRag,
+  ownedTestStores,
+} from '../../testing/index.js';
 import { DefaultPipeline } from '../default-pipeline.js';
 
 // ---------------------------------------------------------------------------
@@ -56,14 +61,24 @@ describe('DefaultPipeline — custom ragStores', () => {
     const kbStore: IRag = makeRag([]);
     const pipeline = new DefaultPipeline();
     assert.doesNotThrow(() =>
-      pipeline.initialize(buildDeps({ ragStores: { kb: kbStore } })),
+      pipeline.initialize(
+        buildDeps({
+          ragAccess: testRagAccess(),
+          ragStores: ownedTestStores({ kb: kbStore }),
+        }),
+      ),
     );
   });
 
   it('internal stages include rag-kb when ragStores has "kb"', () => {
     const kbStore: IRag = makeRag([]);
     const pipeline = new DefaultPipeline();
-    pipeline.initialize(buildDeps({ ragStores: { kb: kbStore } }));
+    pipeline.initialize(
+      buildDeps({
+        ragAccess: testRagAccess(),
+        ragStores: ownedTestStores({ kb: kbStore }),
+      }),
+    );
 
     const stages = getStages(pipeline);
 
@@ -85,10 +100,11 @@ describe('DefaultPipeline — custom ragStores', () => {
 
     pipeline.initialize(
       buildDeps({
+        ragAccess: testRagAccess(),
         toolsRag,
         historyRag,
         // Passing tools and history again via ragStores should not create duplicates
-        ragStores: { tools: toolsRag, history: historyRag },
+        ragStores: ownedTestStores({ tools: toolsRag, history: historyRag }),
       }),
     );
 
@@ -106,7 +122,9 @@ describe('DefaultPipeline — custom ragStores', () => {
 
   it('no rag-retrieval stage when no stores are provided', () => {
     const pipeline = new DefaultPipeline();
-    pipeline.initialize(buildDeps({ ragStores: {} }));
+    pipeline.initialize(
+      buildDeps({ ragAccess: testRagAccess(), ragStores: {} }),
+    );
 
     const stages = getStages(pipeline);
     const ragRetrieval = stages.find((s) => s.id === 'rag-retrieval');
@@ -119,7 +137,7 @@ describe('DefaultPipeline — custom ragStores', () => {
 
   it('rebuildStages() reflects updated ragStores', () => {
     const pipeline = new DefaultPipeline();
-    const deps = buildDeps({ ragStores: {} });
+    const deps = buildDeps({ ragAccess: testRagAccess(), ragStores: {} });
     pipeline.initialize(deps);
 
     // Initially no rag-retrieval
@@ -130,7 +148,12 @@ describe('DefaultPipeline — custom ragStores', () => {
     );
 
     // Add a store to the deps object in-place (simulating addRagStore)
-    (deps.ragStores as Record<string, IRag>).kb = makeRag([]);
+    assert.ok(deps.ragStores);
+    deps.ragStores.kb = {
+      name: 'kb',
+      owner: { scope: 'global' },
+      rag: makeRag([]),
+    };
     pipeline.rebuildStages?.();
 
     const stagesAfter = getStages(pipeline);

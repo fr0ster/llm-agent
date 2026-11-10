@@ -9,8 +9,9 @@ import type {
   RagError,
   Result,
 } from '@mcp-abap-adt/llm-agent';
-
 import { InMemoryRag } from '@mcp-abap-adt/llm-agent';
+import { testRagAccess } from '@mcp-abap-adt/llm-agent/testing/rag-access-testing';
+import { ownedTestStores, testCallOptions } from '../../../testing/index.js';
 import { summarizeAndStore } from '../history-upsert.js';
 
 function makeFakeMemory(): IHistoryMemory & { entries: Map<string, string[]> } {
@@ -273,13 +274,15 @@ describe('history-upsert: HistoryUpsertHandler', () => {
       },
     };
     const ctx = {
+      options: testCallOptions(),
+      ragAccess: testRagAccess(),
       sessionId: 's1',
       inputText: 'the question',
       assistantText: 'the final answer',
       historySummarizer: summarizer,
       historyMemory: makeFakeMemory(),
       config: { semanticHistoryEnabled: true },
-      ragStores: { history: makeFakeRag() },
+      ragStores: ownedTestStores({ history: makeFakeRag() }),
     };
     const span = { setAttribute() {}, setStatus() {} };
     await new HistoryUpsertHandler().execute(ctx as never, {}, span as never);

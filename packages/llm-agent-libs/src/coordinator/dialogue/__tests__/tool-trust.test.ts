@@ -4,6 +4,8 @@ import {
   TOOL_TRACE_RENDER_CHARS,
   type ToolTrace,
 } from '@mcp-abap-adt/llm-agent';
+import { testRagAccess } from '@mcp-abap-adt/llm-agent/testing/rag-access-testing';
+import { testCallOptions } from '../../../testing/index.js';
 import { renderToolTrace } from '../tool-trace-render.js';
 
 test('checker evidence trust tag is outside the escaped raw excerpt', () => {
@@ -200,6 +202,7 @@ for (const path of ['streaming', 'pipeline']) {
         const handle = await new SmartAgentBuilder({
           skipModelValidation: true,
         })
+          .withRagAccess(testRagAccess())
           .withMainLlm(llm)
           .withMcpClients([client])
           .withToolTrust(toolTrust)
@@ -212,9 +215,12 @@ for (const path of ['streaming', 'pipeline']) {
       }
       try {
         const observations: string[] = [];
-        await agent.process('read the class', {
-          onToolTrace: (entry) => observations.push(entry.resultExcerpt),
-        });
+        await agent.process(
+          'read the class',
+          testCallOptions({
+            onToolTrace: (entry) => observations.push(entry.resultExcerpt),
+          }),
+        );
         assert.equal(seen.length, 3);
         for (const messages of seen.slice(1)) {
           for (const message of messages.filter((item) => item.role === 'tool'))

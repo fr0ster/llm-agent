@@ -1,9 +1,5 @@
-import type {
-  CallOptions,
-  ILlm,
-  IMcpClient,
-  IRag,
-} from '@mcp-abap-adt/llm-agent';
+import type { CallOptions, ILlm, IMcpClient } from '@mcp-abap-adt/llm-agent';
+import type { OwnedRagStore } from '../rag/owner-bound-query.js';
 
 export interface AgentHealthSnapshot {
   llm: boolean;
@@ -13,7 +9,7 @@ export interface AgentHealthSnapshot {
 
 export type IAgentHealthProbe = (
   mainLlm: ILlm,
-  ragStores: Record<string, IRag>,
+  ragStores: Record<string, OwnedRagStore>,
   activeClients: IMcpClient[],
   options: CallOptions,
 ) => Promise<AgentHealthSnapshot>;
@@ -57,7 +53,7 @@ export const buildAgentHealthSnapshot: IAgentHealthProbe = async (
   try {
     const firstStore = Object.values(ragStores)[0];
     const ragRes = firstStore
-      ? await firstStore.healthCheck(options)
+      ? await firstStore.rag.healthCheck(options)
       : { ok: true as const, value: undefined };
     results.rag = ragRes.ok;
   } catch {

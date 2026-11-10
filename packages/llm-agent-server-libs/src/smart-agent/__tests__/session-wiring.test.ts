@@ -1,3 +1,8 @@
+import { beforeEach } from 'node:test';
+import { installTestRagIdentity } from './rag-identity-fixture.js';
+
+beforeEach(installTestRagIdentity);
+
 /**
  * Spec §14.1: the output validator, skill manager, LLM-call strategy, query
  * expander and client adapters reach the per-session agents that serve

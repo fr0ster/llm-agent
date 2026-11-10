@@ -8,7 +8,11 @@ import type {
 } from '@mcp-abap-adt/llm-agent';
 import { normalizeExternalTools } from '@mcp-abap-adt/llm-agent';
 import { SmartAgent } from '../agent.js';
-import { makeAssembler, makeDefaultDeps } from '../testing/index.js';
+import {
+  makeAssembler,
+  makeDefaultDeps,
+  testCallOptions,
+} from '../testing/index.js';
 
 // ---------------------------------------------------------------------------
 // [client-provided] prefix on external tool descriptions
@@ -152,16 +156,19 @@ describe('External tools — system prompt priority instruction', () => {
     deps.mainLlm = streamLlm;
     const agent = new SmartAgent(deps, { maxIterations: 5 });
 
-    await agent.process('test', {
-      externalTools: [
-        {
-          name: 'ext_tool',
-          description: 'External tool',
-          inputSchema: { type: 'object' },
-        },
-      ],
-      sessionId: 'test-priority',
-    });
+    await agent.process(
+      'test',
+      testCallOptions({
+        externalTools: [
+          {
+            name: 'ext_tool',
+            description: 'External tool',
+            inputSchema: { type: 'object' },
+          },
+        ],
+        sessionId: 'test-priority',
+      }),
+    );
 
     const sys = capturedMessages.find((m) => m.role === 'system');
     assert.ok(sys, 'system message should exist');
@@ -209,7 +216,7 @@ describe('External tools — system prompt priority instruction', () => {
     deps.mainLlm = streamLlm;
     const agent = new SmartAgent(deps, { maxIterations: 5 });
 
-    await agent.process('test', { sessionId: 'test-no-ext' });
+    await agent.process('test', testCallOptions({ sessionId: 'test-no-ext' }));
 
     const sys = capturedMessages.find((m) => m.role === 'system');
     assert.ok(sys, 'system message should exist');

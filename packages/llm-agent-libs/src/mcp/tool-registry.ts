@@ -4,7 +4,6 @@ import {
   type CallOptions,
   defaultToolNamespace,
   type IMcpClient,
-  type IRag,
   type IRequestLogger,
   type IToolNamespace,
   type IToolRecordKey,
@@ -17,6 +16,7 @@ import type {
 import { isDebugArea } from '../logger/debug-areas.js';
 import type { ILogger } from '../logger/index.js';
 import { NoopRequestLogger } from '../logger/noop-request-logger.js';
+import type { OwnedRagStore } from '../rag/owner-bound-query.js';
 import { vectorizeMcpTools } from './vectorize-mcp-tools.js';
 
 export interface ToolRegistryResult {
@@ -41,7 +41,7 @@ export class McpToolRegistry implements IMcpToolRegistry {
   constructor(
     initialClients: IMcpClient[],
     private readonly connectionStrategy: IMcpConnectionStrategy | undefined,
-    private readonly ragStores: Record<string, IRag>,
+    private readonly ragStores: Record<string, OwnedRagStore>,
     deps?: {
       requestLogger?: IRequestLogger;
       logger?: ILogger;
@@ -92,7 +92,7 @@ export class McpToolRegistry implements IMcpToolRegistry {
     clients: IMcpClient[],
     opts?: CallOptions,
   ): Promise<void> {
-    const toolsRag = this.ragStores.tools ?? Object.values(this.ragStores)[0];
+    const toolsRag = this.ragStores.tools?.rag;
     if (!toolsRag) return;
     // Reuse the single startup vectorization path so reconnect gets the same
     // IToolRecordKey, the name stored in metadata, and batch/bulk writing —

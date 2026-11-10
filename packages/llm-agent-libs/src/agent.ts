@@ -27,6 +27,7 @@ import type {
   McpTool,
   Message,
   ModelUsageEntry,
+  RagAccess,
   RagResult,
   Result,
   StreamHookContext,
@@ -63,6 +64,8 @@ import { validateTimeZone, withRequestTime } from './context/request-time.js';
 import { withSubmitReport } from './coordinator/dialogue/submit-report-tool.js';
 import { buildAgentHealthSnapshot } from './health/agent-health.js';
 import type { IMcpConnectionStrategy } from './interfaces/mcp-connection-strategy.js';
+import type { OwnedRagStore } from './rag/owner-bound-query.js';
+import { denyRagAccess, ownerBoundQuery } from './rag/owner-bound-query.js';
 
 export {
   type AgentCallOptions,
@@ -110,12 +113,16 @@ import type { ISpan, ITracer } from './tracer/types.js';
 import { NoopValidator } from './validator/noop-validator.js';
 import type { IOutputValidator } from './validator/types.js';
 
-export type SmartAgentRagStores<K extends string = string> = Record<K, IRag>;
+export type SmartAgentRagStores<K extends string = string> = Record<
+  K,
+  OwnedRagStore
+>;
 
 export interface SmartAgentDeps {
   mainLlm: ILlm;
   helperLlm?: ILlm;
   mcpClients: IMcpClient[];
+  ragAccess?: RagAccess;
   ragStores: SmartAgentRagStores;
   classifier: ISubpromptClassifier;
   classifierLlm?: ILlm;
@@ -401,7 +408,11 @@ export class SmartAgent {
       });
     } else {
       // Fallback for consumers that built SmartAgentDeps without a registry.
-      this.deps.ragStores[name] = store;
+      this.deps.ragStores[name] = {
+        name,
+        owner: { scope: 'global' },
+        rag: store,
+      };
     }
     if (options?.translateQuery) {
       if (!this.deps.translateQueryStores) {
@@ -799,7 +810,18 @@ export class SmartAgent {
         toolAvailabilityRegistry: this.toolAvailabilityRegistry,
         mcpToolRegistry: this.mcpToolRegistry,
         requestLogger: this.requestLogger,
-        ragStores: this.deps.ragStores,
+        ragStores: Object.fromEntries(
+          Object.entries(this.deps.ragStores).map(([name, store]) => [
+            name,
+            name === 'history' && opts?.caller
+              ? {
+                  ...store,
+                  owner: { scope: 'session', sessionId: opts.caller.sessionId },
+                }
+              : store,
+          ]),
+        ),
+        ragAccess: this.deps.ragAccess,
         embedder: this.deps.embedder,
         assembler: this.deps.assembler,
         skillManager: this.deps.skillManager,
@@ -1146,11 +1168,17 @@ export class SmartAgent {
               : new TextOnlyEmbedding(reSelectQuery);
 
             const ragK = this.config.ragQueryK ?? 20;
-            const ragResult = await this.deps.ragStores.tools.query(
+            const ragResult = await ownerBoundQuery(
+              this.deps.ragStores.tools,
               embedding,
               ragK,
-              opts,
+              opts ?? {},
+              this.deps.ragAccess ?? denyRagAccess,
             );
+            if (!ragResult.ok) {
+              yield ragResult;
+              return;
+            }
 
             if (ragResult.ok && ragResult.value.length > 0) {
               const newToolNames = new Set(

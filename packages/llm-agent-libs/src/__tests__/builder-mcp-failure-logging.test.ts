@@ -13,6 +13,7 @@ import type {
   LogEvent,
   Result,
 } from '@mcp-abap-adt/llm-agent';
+import { testRagAccess } from '@mcp-abap-adt/llm-agent/testing/rag-access-testing';
 
 function stubLlm(): ILlm {
   return {
@@ -61,6 +62,7 @@ describe('SmartAgentBuilder — MCP setup failure logging (#118)', () => {
     const handle = await new SmartAgentBuilder({
       mcp: { type: 'http', url: unreachableUrl },
     })
+      .withRagAccess(testRagAccess())
       .withMainLlm(stubLlm())
       .withLogger(logger)
       .build();

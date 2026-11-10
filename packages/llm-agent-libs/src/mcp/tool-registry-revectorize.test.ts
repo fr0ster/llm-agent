@@ -49,7 +49,9 @@ describe('McpToolRegistry reconnect revectorization', () => {
     } as unknown as IMcpConnectionStrategy;
 
     const { rag, writes } = capturingRag();
-    const registry = new McpToolRegistry(clients, strategy, { tools: rag });
+    const registry = new McpToolRegistry(clients, strategy, {
+      tools: { name: 'tools', owner: { scope: 'internal' }, rag },
+    });
 
     await registry.resolveActiveClients();
 
@@ -73,7 +75,9 @@ describe('McpToolRegistry reconnect revectorization', () => {
       resolve: async () => ({ clients, toolsChanged: true }),
     } as unknown as IMcpConnectionStrategy;
     const { rag, writes } = capturingRag();
-    const registry = new McpToolRegistry(clients, strategy, { tools: rag });
+    const registry = new McpToolRegistry(clients, strategy, {
+      tools: { name: 'tools', owner: { scope: 'internal' }, rag },
+    });
 
     const ac = new AbortController();
     ac.abort();

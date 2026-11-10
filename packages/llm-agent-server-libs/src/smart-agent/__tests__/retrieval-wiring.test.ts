@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { request } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, it } from 'node:test';
+import { beforeEach, describe, it } from 'node:test';
 import type {
   CallOptions,
   DecisionRequest,
@@ -26,6 +26,7 @@ import {
   TOOL_QUESTION,
 } from '@mcp-abap-adt/llm-agent-libs';
 import { parse } from 'yaml';
+import { testCallOptions } from '../../../../llm-agent-libs/src/testing/index.js';
 import { resolveSmartServerConfig } from '../config.js';
 import {
   type BuildAgentDeps,
@@ -34,6 +35,7 @@ import {
   type SmartServerConfig,
 } from '../smart-server.js';
 import { constructionSeams } from './construction-seams.js';
+import { installTestRagIdentity } from './rag-identity-fixture.js';
 
 // `rag:` is required: SmartServer builds the tools/history stores through the
 // makeRag seam only when `cfg.rag` is set (smart-server.ts, `if (this.cfg.rag)`).
@@ -295,6 +297,7 @@ function controllerSetup() {
 }
 
 describe('retrieval strategy wiring (§13.4)', () => {
+  beforeEach(installTestRagIdentity);
   it('HTTP: rag.retrieval.tools (decision) reranks a session request with the tool question', async () => {
     const { model, seen } = recordingModel();
     const { makeRag } = labelledStores();
@@ -332,7 +335,7 @@ describe('retrieval strategy wiring (§13.4)', () => {
       },
     );
     try {
-      await agent.process(QUERY);
+      await agent.process(QUERY, testCallOptions());
       assert.ok(seen.length >= 1, 'the embedded agent must rerank tools');
       assert.equal(seen[0].req.state, QUERY);
       assert.deepEqual(
@@ -363,7 +366,10 @@ describe('retrieval strategy wiring (§13.4)', () => {
     const { agent, close } = await buildAgent(c.cfg, c.deps);
     const ctrl = new AbortController();
     try {
-      await agent.process('do a task', { signal: ctrl.signal });
+      await agent.process(
+        'do a task',
+        testCallOptions({ signal: ctrl.signal }),
+      );
     } finally {
       await close();
     }
@@ -555,7 +561,7 @@ describe('retrieval strategy wiring (§13.4)', () => {
         { log: () => {} },
         {},
       );
-      await worker.process(WORKER_QUERY);
+      await worker.process(WORKER_QUERY, testCallOptions());
       const workerStores = Object.keys(queried).filter((k) =>
         k.startsWith('store'),
       );
@@ -633,7 +639,7 @@ ${DECISION}`;
           embedder: stubEmbedder,
         },
       );
-      await worker.process(WORKER_QUERY);
+      await worker.process(WORKER_QUERY, testCallOptions());
       assert.ok(notesQueried >= 1, 'the worker must query notes');
       const hit = seen.find(
         (s) =>

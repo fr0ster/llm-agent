@@ -23,6 +23,7 @@ import {
   isToolCatalogReporter,
   type McpTool,
 } from '@mcp-abap-adt/llm-agent';
+import { testRagAccess } from '@mcp-abap-adt/llm-agent/testing/rag-access-testing';
 import { SmartAgentBuilder } from '../builder.js';
 import type {
   IMcpConnectionStrategy,
@@ -96,6 +97,7 @@ test('builder surfaces namespacedTools/toolProvenance even with NO writable tool
   // auto-create-InMemoryRag path only fires when an embedder is present, so
   // `toolsRag` stays undefined here — the "no writable store" contract.
   const handle = await new SmartAgentBuilder()
+    .withRagAccess(testRagAccess())
     .withMainLlm(makeStubLlm())
     .withMcpConnectionStrategy(connectionStrategy)
     .withMode('hard')
@@ -151,6 +153,7 @@ test('health preserved WHEN vectorization runs: a writable tools RAG + a client 
   const toolsRag = new InMemoryRag();
 
   const handle = await new SmartAgentBuilder()
+    .withRagAccess(testRagAccess())
     .withMainLlm(makeStubLlm())
     .withMcpConnectionStrategy(connectionStrategy)
     .setToolsRag(toolsRag)
@@ -199,6 +202,7 @@ test('original client index preserved on partial failure: 3 clients, the MIDDLE 
   const toolsRag = new InMemoryRag();
 
   const handle = await new SmartAgentBuilder()
+    .withRagAccess(testRagAccess())
     .withMainLlm(makeStubLlm())
     .withMcpConnectionStrategy(connectionStrategy)
     .setToolsRag(toolsRag)

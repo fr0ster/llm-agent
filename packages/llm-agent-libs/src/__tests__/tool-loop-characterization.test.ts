@@ -1,3 +1,5 @@
+import { testRagAccess } from '@mcp-abap-adt/llm-agent/testing/rag-access-testing';
+import { ownedTestStores, testCallOptions } from '../testing/index.js';
 /**
  * Task 0 — PR-2b guard: Loop A characterization tests.
  *
@@ -106,7 +108,10 @@ describe('Loop A characterization — tool_loop span structure (#2)', () => {
     });
     deps.mainLlm = llm;
     const agent = new SmartAgent(deps, { maxIterations: 5 });
-    await agent.process('create a class', { sessionId: 'span-char' });
+    await agent.process(
+      'create a class',
+      testCallOptions({ sessionId: 'span-char' }),
+    );
 
     const loopSpans = tracer.spans.filter(
       (s) => s.name === 'smart_agent.tool_loop',
@@ -135,6 +140,7 @@ describe('Loop A characterization — reselect read-only keeps full set + skip l
       offered.push(tools),
     );
     const { deps } = makeDefaultDeps({
+      ragAccess: testRagAccess(),
       assembler: makeAssembler([
         {
           role: 'system',
@@ -142,7 +148,7 @@ describe('Loop A characterization — reselect read-only keeps full set + skip l
         },
         { role: 'user', content: 'search classes' },
       ]),
-      ragStores: {
+      ragStores: ownedTestStores({
         tools: makeRag([
           {
             text: 'Tool: UpdateClass',
@@ -150,7 +156,7 @@ describe('Loop A characterization — reselect read-only keeps full set + skip l
             metadata: { id: 'tool:UpdateClass' },
           },
         ]),
-      },
+      }),
       mcpClients: [
         {
           async listTools() {
@@ -181,14 +187,17 @@ describe('Loop A characterization — reselect read-only keeps full set + skip l
       maxIterations: 5,
       toolReselectPerIteration: true,
     });
-    await agent.process('search classes', {
-      sessionId: 'a-readonly',
-      sessionLogger: {
-        logStep(step: string, data: Record<string, unknown>) {
-          logSteps.push({ step, data });
+    await agent.process(
+      'search classes',
+      testCallOptions({
+        sessionId: 'a-readonly',
+        sessionLogger: {
+          logStep(step: string, data: Record<string, unknown>) {
+            logSteps.push({ step, data });
+          },
         },
-      },
-    });
+      }),
+    );
 
     const skip = logSteps.find((l) => l.step === 'tools_reselect_skipped');
     assert.ok(skip, 'A must log tools_reselect_skipped on read-only retry');
@@ -237,12 +246,15 @@ for (const maxToolCalls of [1, 5]) {
         maxIterations: 3,
         maxToolCalls,
       });
-      const result = await agent.process('work', {
-        onToolsSelected(selected, available) {
-          reports.push([selected, available]);
-          if (throws) throw new Error('observer failed');
-        },
-      });
+      const result = await agent.process(
+        'work',
+        testCallOptions({
+          onToolsSelected(selected, available) {
+            reports.push([selected, available]);
+            if (throws) throw new Error('observer failed');
+          },
+        }),
+      );
       assert.equal(result.ok, true);
       assert.equal(offered.length, 2);
       assert.deepEqual(

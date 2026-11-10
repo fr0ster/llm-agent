@@ -1,3 +1,8 @@
+import { beforeEach } from 'node:test';
+import { installTestRagIdentity } from './rag-identity-fixture.js';
+
+beforeEach(installTestRagIdentity);
+
 /**
  * Spec §14.2 (circuit breaker) and §14.4 (a cancellation is not a failure):
  * one LLM breaker per `llm:` key behind every role, and one embedder breaker
@@ -19,6 +24,7 @@ import {
   withCircuitBreaker,
 } from '@mcp-abap-adt/llm-agent';
 import { SmartAgentBuilder } from '@mcp-abap-adt/llm-agent-libs';
+import { testCallOptions } from '../../../../llm-agent-libs/src/testing/index.js';
 import type { IRoleLlmResolver } from '../llm/role-llm-resolver.js';
 import { resolveRetrievalEmbedder } from '../resolve-agent-embedder.js';
 import { SmartServer, type SmartServerConfig } from '../smart-server.js';
@@ -232,8 +238,8 @@ describe('SmartServer LLM breakers — one per llm: key behind every role', () =
     );
     const { agent, close } = await internals(server)._buildEmbeddedAgent();
     try {
-      await agent.process('do a task');
-      await agent.process('do a task');
+      await agent.process('do a task', testCallOptions());
+      await agent.process('do a task', testCallOptions());
       const role = internals(server).roleLlm();
       assert.equal(breakerOf(await role.resolve('planner')).state, 'open');
       assert.equal(breakerOf(await role.resolve('main')).state, 'closed');
@@ -271,8 +277,8 @@ describe('SmartServer LLM breakers — one per llm: key behind every role', () =
     );
     const { agent, close } = await internals(server)._buildEmbeddedAgent();
     try {
-      await agent.process('do a task');
-      await agent.process('do a task');
+      await agent.process('do a task', testCallOptions());
+      await agent.process('do a task', testCallOptions());
       const role = internals(server).roleLlm();
       assert.equal(breakerOf(await role.resolveNamed('cheap')).state, 'open');
       assert.equal(breakerOf(await role.resolve('main')).state, 'closed');
@@ -301,8 +307,8 @@ describe('SmartServer LLM breakers — one per llm: key behind every role', () =
     );
     const { agent, close } = await internals(server)._buildEmbeddedAgent();
     try {
-      await agent.process('do a task');
-      await agent.process('do a task');
+      await agent.process('do a task', testCallOptions());
+      await agent.process('do a task', testCallOptions());
       const role = internals(server).roleLlm();
       assert.equal(breakerOf(await role.resolve('planner')).state, 'open');
       assert.equal(breakerOf(await role.resolve('main')).state, 'closed');
@@ -483,7 +489,10 @@ describe('SmartServer LLM breakers — one per llm: key behind every role', () =
     try {
       for (let i = 0; i < 3; i++) {
         const ctrl = new AbortController();
-        const run = agent.process('hi', { signal: ctrl.signal });
+        const run = agent.process(
+          'hi',
+          testCallOptions({ signal: ctrl.signal }),
+        );
         setImmediate(() => ctrl.abort());
         await run;
       }

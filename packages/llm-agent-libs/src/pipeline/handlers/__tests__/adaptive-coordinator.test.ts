@@ -8,9 +8,11 @@ import type {
   LlmStreamChunk,
   Message,
 } from '@mcp-abap-adt/llm-agent';
+import { testRagAccess } from '@mcp-abap-adt/llm-agent/testing/rag-access-testing';
 import { SmartAgentBuilder } from '../../../builder.js';
 import { InMemoryRunRecordStore } from '../../../coordinator/adaptive/in-memory-run-record-store.js';
 import { LlmAdaptiveController } from '../../../coordinator/adaptive/llm-adaptive-controller.js';
+import { testCallOptions } from '../../../testing/index.js';
 import { DefaultPipeline } from '../../default-pipeline.js';
 import { pipelineToStream } from '../../pipeline-to-stream.js';
 import { AdaptiveCoordinatorHandler } from '../adaptive-coordinator.js';
@@ -130,6 +132,7 @@ for (const mode of [
     });
     const pipeline = new DefaultPipeline({ stepperCoordinator: handler });
     const handle = await new SmartAgentBuilder({ skipModelValidation: true })
+      .withRagAccess(testRagAccess())
       .withMainLlm({
         async chat() {
           throw new Error('unexpected LLM');
@@ -209,7 +212,10 @@ for (const mode of [
       );
       assert.ok(saved?.runId);
     }
-    const response = await handle.agent.process('next', options as never);
+    const response = await handle.agent.process(
+      'next',
+      testCallOptions(options),
+    );
     assert.equal(response.ok, true);
     assert.ok(!inputs[1]?.history.some((m) => m.content === 'next'));
     if (mode !== 'save-fail' && mode !== 'load-fail')
@@ -256,6 +262,7 @@ for (const form of ['messages', 'string'] as const) {
       },
     });
     const handle = await new SmartAgentBuilder({ skipModelValidation: true })
+      .withRagAccess(testRagAccess())
       .withMainLlm({
         async chat() {
           throw new Error('unused');
@@ -279,6 +286,7 @@ for (const form of ['messages', 'string'] as const) {
     const current: Message = { role: 'user', content: 'request' };
     const result = await handle.agent.process(
       form === 'messages' ? [...prior, current] : 'request',
+      testCallOptions(),
     );
     assert.equal(result.ok, true);
     if (result.ok) assert.equal(result.value.content, 'Hi');
