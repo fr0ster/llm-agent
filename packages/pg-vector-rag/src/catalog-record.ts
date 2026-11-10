@@ -7,7 +7,7 @@ import type {
 import {
   DuplicateCollectionError,
   encodeRagAttributes,
-  type RagError,
+  RagError,
   ragCollectionNotFound,
   ragOwnerKeys,
 } from '@mcp-abap-adt/llm-agent';
@@ -17,6 +17,8 @@ import {
   updateRecordSql,
 } from './catalog.js';
 import type { PgClient } from './pg-vector-rag.js';
+import { roleTransaction } from './role-transaction.js';
+import { qualifiedTable } from './schema.js';
 
 /** The refusal for a collection that already has a record. */
 export function duplicateRefusal(
@@ -59,17 +61,33 @@ export async function writeCatalogRecord(
 ): Promise<Result<void, RagError>> {
   const { userId, sessionId } = ragOwnerKeys(record);
   try {
-    await client.query(insertRecordSql(table, schema), [
-      record.storeName,
-      record.name,
-      record.scope,
-      userId ?? null,
-      sessionId ?? null,
-      encodeRagAttributes(record.attributes),
-      record.scope === 'role' ? record.roleId : null,
-    ]);
+    const insert = async (connection: PgClient) => {
+      if (record.scope === 'role') {
+        const { rows } = await connection.query(
+          `SELECT 1 FROM ${qualifiedTable('rag_roles', schema)} WHERE role_id = $1 FOR SHARE`,
+          [record.roleId],
+        );
+        if (!rows.length)
+          throw new RagError(
+            'Collection owner role does not exist',
+            'RAG_ROLE_NOT_FOUND',
+          );
+      }
+      await connection.query(insertRecordSql(table, schema), [
+        record.storeName,
+        record.name,
+        record.scope,
+        userId ?? null,
+        sessionId ?? null,
+        encodeRagAttributes(record.attributes),
+        record.scope === 'role' ? record.roleId : null,
+      ]);
+    };
+    if (record.scope === 'role') await roleTransaction(client, insert);
+    else await insert(client);
     return { ok: true, value: undefined };
   } catch (err) {
+    if (err instanceof RagError) return { ok: false, error: err };
     if (
       await catalogRecordExists(client, table, record.storeName, schema).catch(
         () => false,

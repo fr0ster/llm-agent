@@ -8,6 +8,7 @@ import {
   SessionBindingConflictError,
 } from '@mcp-abap-adt/llm-agent';
 import type { PgVectorRagProvider } from './pg-vector-rag-provider.js';
+import { roleTransaction } from './role-transaction.js';
 import { qualifiedTable } from './schema.js';
 
 export function createPgVectorRagAccessStores(provider: PgVectorRagProvider): {
@@ -66,17 +67,21 @@ export function createPgVectorRagAccessStores(provider: PgVectorRagProvider): {
       run(async () => {
         const { client, schema, catalogTable } =
           await provider.accessPersistence();
-        const { rowCount } = await client.query(
-          `DELETE FROM ${qualifiedTable('rag_roles', schema)} WHERE role_id = $1 AND NOT EXISTS (SELECT 1 FROM ${qualifiedTable(catalogTable, schema)} WHERE scope = 'role' AND role_id = $1) RETURNING role_id`,
-          [roleId],
-        );
-        if (!rowCount) {
-          const { rows } = await client.query(
+        await roleTransaction(client, async (connection) => {
+          await connection.query(
+            `SELECT 1 FROM ${qualifiedTable('rag_roles', schema)} WHERE role_id = $1 FOR UPDATE`,
+            [roleId],
+          );
+          const { rows } = await connection.query(
             `SELECT 1 FROM ${qualifiedTable(catalogTable, schema)} WHERE scope = 'role' AND role_id = $1`,
             [roleId],
           );
           if (rows.length) throw new RoleInUseError();
-        }
+          await connection.query(
+            `DELETE FROM ${qualifiedTable('rag_roles', schema)} WHERE role_id = $1`,
+            [roleId],
+          );
+        });
       }),
     assign: (userId, roleId) =>
       run(async () => {

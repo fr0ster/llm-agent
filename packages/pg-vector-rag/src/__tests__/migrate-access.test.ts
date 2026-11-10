@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { createPgVectorRagAccessStores } from '../access-stores.js';
 import { migratePgVectorRagAccess } from '../migrate-access.js';
 import { PgVectorRagProvider } from '../pg-vector-rag-provider.js';
 import { accessFixture } from './access-fixture.js';
@@ -68,6 +69,14 @@ for (const layout of ['per-collection', 'shared'] as const)
           `SELECT table_name, column_name, data_type FROM information_schema.columns WHERE table_schema = current_schema() ORDER BY table_name, ordinal_position`,
         ),
         schema,
+      );
+      assert.ok(
+        (
+          await createPgVectorRagAccessStores(provider).roles.createRole({
+            roleId: 'r1',
+            name: 'Role',
+          })
+        ).ok,
       );
       const created = await provider.createCollection('role_docs', {
         scope: 'role',
