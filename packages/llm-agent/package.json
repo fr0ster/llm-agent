@@ -30,6 +30,16 @@
       "types": "./dist/testing/rag-list-conformance.d.ts",
       "import": "./dist/testing/rag-list-conformance.js",
       "default": "./dist/testing/rag-list-conformance.js"
+    },
+    "./testing/rag-access-testing": {
+      "types": "./dist/testing/rag-access-testing.d.ts",
+      "import": "./dist/testing/rag-access-testing.js",
+      "default": "./dist/testing/rag-access-testing.js"
+    },
+    "./testing/rag-access-store-conformance": {
+      "types": "./dist/testing/rag-access-store-conformance.d.ts",
+      "import": "./dist/testing/rag-access-store-conformance.js",
+      "default": "./dist/testing/rag-access-store-conformance.js"
     }
   },
   "files": [

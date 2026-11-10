@@ -87,6 +87,12 @@ export { FallbackLlmCallStrategy } from './policy/fallback-llm-call-strategy.js'
 export { NonStreamingLlmCallStrategy } from './policy/non-streaming-llm-call-strategy.js';
 export { StreamingLlmCallStrategy } from './policy/streaming-llm-call-strategy.js';
 export {
+  checkRagAccess,
+  visibleOwnerFilter,
+} from './rag/access/check-access.js';
+export { InMemoryRagRoleStore } from './rag/access/in-memory-role-store.js';
+export { InMemorySessionBindingStore } from './rag/access/in-memory-session-binding-store.js';
+export {
   decodeListCursor,
   encodeListCursor,
   listCursorScope,
