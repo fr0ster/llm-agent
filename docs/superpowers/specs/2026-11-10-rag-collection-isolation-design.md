@@ -35,7 +35,10 @@ The split of responsibilities:
    tool. This is the pattern the hub already uses for `session_set_models`.
 4. One enforcement path. Every operation that touches a collection asks the
    same access check, which consults the server's decision. That covers:
-   - the collection tools: list, describe, query, write, delete and create;
+   - the collection tools: `rag_list_collections`, `rag_describe_collection`,
+     `rag_add`, `rag_correct`, `rag_deprecate`, `rag_delete_collection` and
+     `rag_create_collection` (there is no query tool; reads go through
+     retrieval);
    - both pipeline retrieval paths (`pipeline/handlers/rag-query.ts` and
      `agent/rag-orchestrator.ts`);
    - hydration of the session registry;
@@ -128,8 +131,12 @@ These make the work a failure even if it technically runs:
   Physical stores shared across owners (the built-in `history` and `tools`
   stores, and any shared custom store) carry an owner on every record, and the
   store contract applies a mandatory owner filter on every query. The built-in
-  `history` and `tools` stores are session-owned by the library. They do not go
-  through the server's read decision, so a deny cannot break tool selection.
+  `history` store is session-owned: every query is filtered by the caller's
+  `sessionId`. The built-in `tools` store indexes the deployment's MCP tool
+  catalog, which is the same for every caller, so it is library-internal: it is
+  not a collection, it is never exposed through the collection tools, and it
+  accepts no caller writes. Neither store goes through the server's read
+  decision, so a deny cannot break tool selection.
   The same owner union, including `role`, is used for record tags.
 - **Session-to-user binding.** The binding is persisted in the catalog
   persistence, so it survives restarts and holds across several instances.
