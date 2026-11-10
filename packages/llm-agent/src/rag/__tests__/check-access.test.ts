@@ -20,7 +20,12 @@ const global: RagCollectionOwner = { scope: 'global' };
 
 test('missing or invalid callers deny every scope before role lookup or decision', async () => {
   const access = testRagAccess();
-  const owners: ReadonlyArray<RagCollectionOwner> = [global, session, user, role];
+  const owners: ReadonlyArray<RagCollectionOwner> = [
+    global,
+    session,
+    user,
+    role,
+  ];
   let calls = 0;
   access.roles.rolesOf = async () => {
     calls++;
