@@ -12,6 +12,7 @@ import {
   callerA,
   orchestrator,
   sessionTags,
+  sharedGlobalStore,
   sharedStore,
 } from './isolation-fixtures.js';
 
@@ -251,3 +252,21 @@ for (const options of [
     assert.equal(calls, 0);
   });
 }
+
+it('global retrieval through RagOrchestrator drops session, user and role records from a shared in-memory store', async () => {
+  const result = await orchestrator(await sharedGlobalStore()).orchestrate(
+    'record',
+    {
+      opts: { caller: callerA },
+      sessionId: 'A',
+      mode: 'hard',
+      externalTools: [],
+      rootSpan: new NoopTracer().startSpan('test'),
+    },
+  );
+  assert.ok(result.ok);
+  assert.deepEqual(
+    result.value.retrieved.ragResults.history.map((record) => record.text),
+    ['record global'],
+  );
+});

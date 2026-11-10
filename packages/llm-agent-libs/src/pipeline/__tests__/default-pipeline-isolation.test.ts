@@ -9,6 +9,7 @@ import { testRagAccess } from '@mcp-abap-adt/llm-agent/testing/rag-access-testin
 import {
   callerA,
   sessionTags,
+  sharedGlobalStore,
   sharedStore,
 } from '../../rag/__tests__/isolation-fixtures.js';
 import {
@@ -137,3 +138,34 @@ for (const decision of ['deny', 'throw'] as const) {
     assert.equal(calls, 0);
   });
 }
+
+it('global retrieval through RagQueryHandler drops session, user and role records from a shared in-memory store', async () => {
+  const store = await sharedGlobalStore();
+  let retrieved: RagResult[] = [];
+  const assembler = makeAssembler();
+  assembler.assemble = async (_action, input) => {
+    retrieved = input.ragResults.global;
+    return { ok: true, value: [{ role: 'user', content: 'record' }] };
+  };
+  const pipeline = new DefaultPipeline();
+  pipeline.initialize({
+    mainLlm: makeLlm([{ content: 'done', finishReason: 'stop' }]),
+    mcpClients: [],
+    ragStores: { global: store },
+    ragAccess: testRagAccess(),
+    assembler,
+    classifier: makeClassifier([{ type: 'action', text: 'record' }]),
+    agentConfig: { mode: 'hard', maxIterations: 1 },
+  });
+  const result = await pipeline.execute(
+    'record',
+    [],
+    { sessionId: 'A', caller: callerA },
+    () => {},
+  );
+  assert.equal(result.error, undefined);
+  assert.deepEqual(
+    retrieved.map((record) => record.text),
+    ['record global'],
+  );
+});

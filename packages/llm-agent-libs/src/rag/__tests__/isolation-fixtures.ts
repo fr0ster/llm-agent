@@ -58,3 +58,20 @@ export function orchestrator(store: OwnedRagStore, access = testRagAccess()) {
 export function sessionTags(results: RagResult[]) {
   return results.map((r) => r.metadata.sessionId);
 }
+
+export async function sharedGlobalStore(): Promise<OwnedRagStore> {
+  const rag = new InMemoryRag();
+  for (const [id, metadata] of [
+    ['global', {}],
+    ['session', { sessionId: 'B' }],
+    ['user', { userId: 'bob' }],
+    ['role', { roleId: 'team' }],
+  ] satisfies [
+    string,
+    { sessionId?: string; userId?: string; roleId?: string },
+  ][]) {
+    const result = await rag.writer().upsertRaw(id, `record ${id}`, metadata);
+    if (!result.ok) throw result.error;
+  }
+  return { name: 'global', owner: { scope: 'global' }, rag };
+}

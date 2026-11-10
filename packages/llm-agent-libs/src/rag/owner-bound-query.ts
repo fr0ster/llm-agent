@@ -100,6 +100,11 @@ export async function ownerBoundQuery(
         case 'role':
           return record.metadata.roleId === owner.roleId;
         case 'global':
+          return (
+            !('sessionId' in record.metadata) &&
+            !('userId' in record.metadata) &&
+            !('roleId' in record.metadata)
+          );
         case 'internal':
           return true;
         default:
