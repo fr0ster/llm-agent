@@ -7,7 +7,7 @@ SAP HANA Cloud Vector Engine backend for [@mcp-abap-adt/llm-agent](https://www.n
 
 Provides:
 - `HanaVectorRag` — `IRag` implementation backed by `REAL_VECTOR(dim)` columns.
-- `HanaVectorRagProvider` — `IRagProvider` for session/user/global collections.
+- `HanaVectorRagProvider` — `IRagProvider` for session/user/role/global collections.
 
 ## Install
 

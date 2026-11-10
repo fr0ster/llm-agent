@@ -7,7 +7,7 @@ PostgreSQL + pgvector backend for @mcp-abap-adt/llm-agent.
 
 Provides:
 - `PgVectorRag` — `IRag` implementation backed by `vector(dim)` columns (pgvector extension).
-- `PgVectorRagProvider` — `IRagProvider` for session/user/global collections.
+- `PgVectorRagProvider` — `IRagProvider` for session/user/role/global collections.
 
 ## Prerequisites
 
