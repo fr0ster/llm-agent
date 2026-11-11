@@ -3,6 +3,7 @@ export * from './corrections/index.js';
 export type { RagIdentityFilter } from './identity-filter.js';
 export {
   matchesRagIdentity,
+  migrateRagMetadata,
   ragIdentityFilter,
   tagRagMetadata,
   validateRagMetadata,

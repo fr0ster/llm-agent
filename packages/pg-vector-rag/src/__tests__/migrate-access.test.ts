@@ -42,25 +42,26 @@ for (const layout of ['per-collection', 'shared'] as const)
       );
       for (const entry of ragMigrationConformanceCases)
         await entry.run({
-          async seedLegacyRecords(records) {
+          supportsOrphans: layout === 'shared',
+          async seedLegacyRecords(records, storeName) {
             if (layout === 'per-collection')
               await f.client.query(
-                'CREATE TABLE u (id TEXT PRIMARY KEY, metadata JSONB)',
+                `CREATE TABLE "${storeName}" (id TEXT PRIMARY KEY, metadata JSONB)`,
               );
             for (const record of records)
               await f.client.query(
                 layout === 'shared'
-                  ? "INSERT INTO migration_docs (collection, id, metadata) VALUES ('u', $1, $2::jsonb)"
-                  : 'INSERT INTO u (id, metadata) VALUES ($1, $2::jsonb)',
+                  ? `INSERT INTO migration_docs (collection, id, metadata) VALUES ('${storeName}', $1, $2::jsonb)`
+                  : `INSERT INTO "${storeName}" (id, metadata) VALUES ($1, $2::jsonb)`,
                 [record.id, JSON.stringify(record.metadata)],
               );
-            return 'u';
+            return storeName;
           },
           async recordMetadata() {
             const result = await f.client.query(
               layout === 'shared'
-                ? "SELECT id, metadata FROM migration_docs WHERE collection = 'u' ORDER BY id"
-                : 'SELECT id, metadata FROM u ORDER BY id',
+                ? 'SELECT id, metadata FROM migration_docs ORDER BY id'
+                : 'SELECT id, metadata FROM u UNION ALL SELECT id, metadata FROM s ORDER BY id',
             );
             return result.rows.map((row) => ({
               id: String(row.id),
@@ -74,7 +75,7 @@ for (const layout of ['per-collection', 'shared'] as const)
               documents: await f.client.query(
                 layout === 'shared'
                   ? 'SELECT id, metadata FROM migration_docs ORDER BY id'
-                  : 'SELECT id, metadata FROM u ORDER BY id',
+                  : 'SELECT id, metadata FROM u UNION ALL SELECT id, metadata FROM s ORDER BY id',
               ),
               rows: await f.client.query(
                 'SELECT * FROM rag_collection_catalog ORDER BY store_name',

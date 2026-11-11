@@ -17,11 +17,11 @@ import {
   AbstractRagProvider,
   CatalogRecordDeleteError,
   describeRagCatalogRows,
+  migrateRagMetadata,
   OrphanStoreError,
   RagError,
   type RagMetadata,
   ragCollectionNotFound,
-  tagRagMetadata,
   validateRagCatalogPatch,
   validateRagOwner,
   validateRagStoreName,
@@ -523,6 +523,9 @@ export class HanaVectorRagProvider
   > {
     const client = await this.adminClient();
     const catalog = await client.query(selectRecordsSql(this.catalogTable));
+    const owners = new Map(
+      catalog.map((row) => [String(row.storeName), validateRagOwner(row)]),
+    );
     const tables =
       this.layout === 'shared'
         ? [this.documentsTable]
@@ -536,26 +539,63 @@ export class HanaVectorRagProvider
         this.connection.schema ? [this.connection.schema, name] : [name],
       );
       if (Number(exists[0]?.n ?? 0) === 0) continue;
-      const rows = await client.query(
-        `SELECT "ID" AS "id", "METADATA" AS "metadata"${this.layout === 'shared' ? ', "COLLECTION" AS "collection"' : ''} FROM ${quoteIdent(name)}`,
-      );
-      for (const row of rows) {
-        const metadata = JSON.parse(decodeLob(row.metadata)) as RagMetadata;
-        const tagged = tagRagMetadata(metadata);
-        const storeName =
-          this.layout === 'shared' ? String(row.collection) : name;
-        if (tagged.ownerScope === 'invalid')
-          reported.push({
-            storeName,
-            reason: `Conflicting owner keys on record ${row.id}`,
-          });
-        if (metadata.ownerScope === tagged.ownerScope) continue;
-        await client.exec(
-          `UPDATE ${quoteIdent(name)} SET "METADATA" = ? WHERE "ID" = ?${this.layout === 'shared' ? ' AND "COLLECTION" = ?' : ''}`,
-          this.layout === 'shared'
-            ? [JSON.stringify(tagged), row.id, row.collection]
-            : [JSON.stringify(tagged), row.id],
-        );
+      const collections =
+        this.layout === 'shared'
+          ? (
+              await client.query(
+                `SELECT DISTINCT "COLLECTION" AS "collection" FROM ${quoteIdent(name)}`,
+              )
+            ).map((row) => String(row.collection))
+          : [name];
+      for (const collection of collections) {
+        let cursor: string | undefined;
+        for (;;) {
+          const rows = await client.query(
+            `SELECT "ID" AS "id", "METADATA" AS "metadata"${this.layout === 'shared' ? ', "COLLECTION" AS "collection"' : ''} FROM ${quoteIdent(name)}${this.layout === 'shared' ? ' WHERE "COLLECTION" = ?' : ''}${cursor !== undefined ? (this.layout === 'shared' ? ' AND "ID" > ?' : ' WHERE "ID" > ?') : ''} ORDER BY "ID" LIMIT ${OWNER_MIGRATION_BATCH_SIZE}`,
+            [
+              ...(this.layout === 'shared' ? [collection] : []),
+              ...(cursor === undefined ? [] : [cursor]),
+            ],
+          );
+          if (rows.length === 0) break;
+          for (const row of rows) {
+            const metadata = JSON.parse(decodeLob(row.metadata)) as RagMetadata;
+            const storeName =
+              this.layout === 'shared' ? String(row.collection) : name;
+            const owner = owners.get(storeName);
+            const tagged: RagMetadata =
+              owner && !owner.ok
+                ? { ...metadata, ownerScope: 'invalid' }
+                : migrateRagMetadata(
+                    metadata,
+                    owner?.ok ? owner.value : undefined,
+                  );
+            if (!owner)
+              reported.push({
+                storeName,
+                reason: `No catalog row for record ${row.id}`,
+              });
+            if (tagged.ownerScope === 'invalid')
+              reported.push({
+                storeName,
+                reason: `Conflicting owner keys on record ${row.id}`,
+              });
+            if (
+              (['ownerScope', 'sessionId', 'userId', 'roleId'] as const).every(
+                (key) => metadata[key] === tagged[key],
+              )
+            )
+              continue;
+            await client.exec(
+              `UPDATE ${quoteIdent(name)} SET "METADATA" = ? WHERE "ID" = ?${this.layout === 'shared' ? ' AND "COLLECTION" = ?' : ''}`,
+              this.layout === 'shared'
+                ? [JSON.stringify(tagged), row.id, row.collection]
+                : [JSON.stringify(tagged), row.id],
+            );
+          }
+          const last = rows[rows.length - 1];
+          cursor = String(last.id);
+        }
       }
     }
     return reported;
@@ -618,3 +658,5 @@ export class HanaVectorRagProvider
     return catalogRecordExists(client, this.catalogTable, storeName);
   }
 }
+
+const OWNER_MIGRATION_BATCH_SIZE = 256;

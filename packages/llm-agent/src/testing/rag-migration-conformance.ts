@@ -21,8 +21,10 @@ export interface RagMigrationConformanceHarness {
   describe(): Promise<Result<RagCatalogDescription, RagError>>;
   /** Stable serialization of persisted rows AND schema, including invalid rows. */
   snapshot(): Promise<string>;
+  supportsOrphans?: boolean;
   seedLegacyRecords(
     records: readonly { id: string; metadata: RagMetadata }[],
+    storeName: string,
   ): Promise<string>;
   recordMetadata(): Promise<readonly { id: string; metadata: RagMetadata }[]>;
   expectedRecords: readonly RagCollectionRecord[];
@@ -33,14 +35,38 @@ export const ragMigrationConformanceCases = [
   {
     name: 'migration is idempotent, preserves existing owners, reports and excludes invalid-owner rows',
     async run(h: RagMigrationConformanceHarness): Promise<void> {
-      const recordStore = await h.seedLegacyRecords([
-        { id: 'session-record', metadata: { sessionId: 's1' } },
-        { id: 'user-record', metadata: { userId: 'u1' } },
-        { id: 'role-record', metadata: { roleId: 'r1' } },
-        { id: 'global-record', metadata: {} },
-        { id: 'conflict-record', metadata: { sessionId: 's1', userId: 'u1' } },
-        ...conflictingOwnerRecords,
-      ]);
+      const user = h.expectedRecords.find((r) => r.scope === 'user');
+      const session = h.expectedRecords.find((r) => r.scope === 'session');
+      assert.ok(user?.scope === 'user');
+      assert.ok(session?.scope === 'session');
+      const recordStore = await h.seedLegacyRecords(
+        [
+          { id: 'empty-user', metadata: { title: 'preserved' } },
+          ...Array.from({ length: 513 }, (_, index) => ({
+            id: `batch-${String(index).padStart(4, '0')}`,
+            metadata: {},
+          })),
+          { id: 'matching-user', metadata: { userId: user.userId } },
+          { id: 'conflict-record', metadata: { userId: 'conflicting-user' } },
+          ...conflictingOwnerRecords,
+        ],
+        user.storeName,
+      );
+      await h.seedLegacyRecords(
+        [
+          { id: 'empty-session', metadata: {} },
+          {
+            id: 'matching-session',
+            metadata: { sessionId: session.sessionId },
+          },
+        ],
+        session.storeName,
+      );
+      if (h.supportsOrphans)
+        await h.seedLegacyRecords(
+          [{ id: 'orphan-record', metadata: { userId: 'orphan-user' } }],
+          'missing-catalog',
+        );
       const first = await h.migrate();
       assert.ok(first.ok);
       assert.deepEqual(
@@ -50,6 +76,7 @@ export const ragMigrationConformanceCases = [
           ...Array<string>(1 + conflictingOwnerRecords.length).fill(
             recordStore,
           ),
+          ...(h.supportsOrphans ? ['missing-catalog'] : []),
         ].sort(),
       );
       for (const row of first.value.reported) assert.ok(row.reason.length > 0);
@@ -74,18 +101,35 @@ export const ragMigrationConformanceCases = [
         owners(h.expectedRecords),
       );
       const records = await h.recordMetadata();
-      assert.equal(records.length, 5 + conflictingOwnerRecords.length);
-      for (const [id, scope] of [
-        ['session-record', 'session'],
-        ['user-record', 'user'],
-        ['role-record', 'role'],
-        ['global-record', 'global'],
-      ] as const) {
-        assert.equal(
-          records.find((r) => r.id === id)?.metadata.ownerScope,
-          scope,
-        );
+      for (const id of ['empty-user', 'matching-user']) {
+        const metadata = records.find((r) => r.id === id)?.metadata;
+        assert.equal(metadata?.ownerScope, 'user');
+        assert.equal(metadata?.userId, user.userId);
       }
+      for (const id of ['empty-session', 'matching-session']) {
+        const metadata = records.find((r) => r.id === id)?.metadata;
+        assert.equal(metadata?.ownerScope, 'session');
+        assert.equal(metadata?.sessionId, session.sessionId);
+      }
+      if (h.supportsOrphans) {
+        const metadata = records.find(
+          (r) => r.id === 'orphan-record',
+        )?.metadata;
+        assert.equal(metadata?.ownerScope, 'user');
+        assert.equal(metadata?.userId, 'orphan-user');
+      }
+      assert.equal(
+        records.find((r) => r.id === 'empty-user')?.metadata.title,
+        'preserved',
+      );
+      for (const record of records.filter((r) => r.id.startsWith('batch-'))) {
+        assert.equal(record.metadata.ownerScope, 'user');
+        assert.equal(record.metadata.userId, user.userId);
+      }
+      assert.equal(
+        records.filter((r) => r.id.startsWith('batch-')).length,
+        513,
+      );
       const conflict = records.find((r) => r.id === 'conflict-record');
       assert.ok(conflict);
       assert.equal(conflict.metadata.ownerScope, 'invalid');

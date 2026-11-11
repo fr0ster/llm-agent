@@ -24,10 +24,13 @@ packages together. See [the threat model](SECURITY_THREAT_MODEL.md#as-6-cross-ca
    Migrations are idempotent and can be rerun after remediation; they are explicit
    startup prerequisites, not a promise that constructing a server migrates data.
 4. Migrations create the access persistence and backfill a positive `ownerScope`
-   tag on legacy records using their recorded ownership. Conflicting records are
-   retagged `invalid` (unmatched by scoped queries) and reported; rejected catalog
-   owners and missing roles are reported too. Do not turn rejected data into
-   global data. Resolve ownership administratively and rerun the migration.
+   tag and sole identity key from the collection catalog owner. Matching record
+   identities are preserved; conflicts are tagged `invalid` (unmatched by scoped
+   queries) and reported. Records without a catalog row retain metadata-based
+   ownership and are reported. HANA and PostgreSQL read documents in bounded
+   keyset batches. Rejected catalog owners and missing roles are reported too.
+   Do not turn rejected data into global data. Resolve ownership administratively
+   and rerun the migration.
 5. Configure persistent role and binding stores from the same provider/catalog
    as the collections, plus the host's decision interface and trusted resolver.
    In-memory stores lose roles and bindings on restart.

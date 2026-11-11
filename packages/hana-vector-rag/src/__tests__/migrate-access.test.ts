@@ -45,22 +45,32 @@ for (const layout of ['per-collection', 'shared'] as const)
     });
     for (const entry of ragMigrationConformanceCases)
       await entry.run({
-        async seedLegacyRecords(records) {
-          if (layout === 'per-collection') db.createCollectionTable('valid');
+        supportsOrphans: layout === 'shared',
+        async seedLegacyRecords(records, storeName) {
+          if (layout === 'per-collection') db.createCollectionTable(storeName);
           for (const record of records)
-            db.insertRow(layout === 'shared' ? 'RAG_DOCUMENTS' : 'valid', {
-              ...(layout === 'shared' ? { COLLECTION: 'valid' } : {}),
+            db.insertRow(layout === 'shared' ? 'RAG_DOCUMENTS' : storeName, {
+              ...(layout === 'shared' ? { COLLECTION: storeName } : {}),
               ID: record.id,
               TEXT: record.id,
               VECTOR: [1, 0, 0],
               METADATA: JSON.stringify(record.metadata),
             });
-          return 'valid';
+          return storeName;
         },
         async recordMetadata() {
-          const rows = await db.client.query(
-            `SELECT "ID" AS "id", "METADATA" AS "metadata" FROM ${layout === 'shared' ? '"RAG_DOCUMENTS"' : '"valid"'} ORDER BY "ID"`,
-          );
+          const rows = (
+            await Promise.all(
+              (layout === 'shared'
+                ? ['RAG_DOCUMENTS']
+                : ['valid', 'session']
+              ).map((table) =>
+                db.client.query(
+                  `SELECT "ID" AS "id", "METADATA" AS "metadata" FROM "${table}" ORDER BY "ID"`,
+                ),
+              ),
+            )
+          ).flat();
           return rows.map((row) => ({
             id: String(row.id),
             metadata: JSON.parse(String(row.metadata)) as RagMetadata,
@@ -70,8 +80,15 @@ for (const layout of ['per-collection', 'shared'] as const)
         describe: () => provider.describeCollections(),
         async snapshot() {
           return JSON.stringify({
-            documents: await db.client.query(
-              `SELECT "ID", "METADATA" FROM ${layout === 'shared' ? '"RAG_DOCUMENTS"' : '"valid"'} ORDER BY "ID"`,
+            documents: await Promise.all(
+              (layout === 'shared'
+                ? ['RAG_DOCUMENTS']
+                : ['valid', 'session']
+              ).map((table) =>
+                db.client.query(
+                  `SELECT "ID", "METADATA" FROM "${table}" ORDER BY "ID"`,
+                ),
+              ),
             ),
             rows: await db.client.query(
               'SELECT store_name, scope, user_id, session_id, role_id FROM "rag_collection_catalog" ORDER BY store_name',

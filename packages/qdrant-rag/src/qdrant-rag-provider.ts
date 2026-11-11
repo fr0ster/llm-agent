@@ -19,13 +19,13 @@ import {
   DuplicateCollectionError,
   describeRagCatalogRows,
   encodeRagAttributes,
+  migrateRagMetadata,
   OrphanStoreError,
   RagError,
   type RagMetadata,
   type Result,
   ragCollectionNotFound,
   ragOwnerKeys,
-  tagRagMetadata,
   validateRagCatalogPatch,
   validateRagOwner,
   validateRagStoreName,
@@ -230,6 +230,14 @@ export class QdrantRagProvider
   async migrateRecordOwners(): Promise<
     { storeName: string; reason: string }[]
   > {
+    const catalog = await this.describeCollections();
+    if (!catalog.ok) throw catalog.error;
+    const owners = new Map(
+      catalog.value.records.map((record) => [record.storeName, record]),
+    );
+    const rejected = new Set(
+      catalog.value.rejected.map((row) => row.storeName),
+    );
     const listed = await this.listCollections();
     if (!listed.ok) throw listed.error;
     const reported: { storeName: string; reason: string }[] = [];
@@ -273,20 +281,33 @@ export class QdrantRagProvider
         };
         for (const point of body.result.points) {
           const metadata = point.payload ?? {};
-          const tagged = tagRagMetadata(metadata);
+          const owner = owners.get(storeName);
+          const tagged: RagMetadata = rejected.has(storeName)
+            ? { ...metadata, ownerScope: 'invalid' }
+            : migrateRagMetadata(metadata, owner);
+          if (!owner && !rejected.has(storeName))
+            reported.push({
+              storeName,
+              reason: `No catalog row for record ${point.id}`,
+            });
           if (tagged.ownerScope === 'invalid')
             reported.push({
               storeName,
               reason: `Conflicting owner keys on record ${point.id}`,
             });
-          if (metadata.ownerScope === tagged.ownerScope) continue;
+          if (
+            (['ownerScope', 'sessionId', 'userId', 'roleId'] as const).every(
+              (key) => metadata[key] === tagged[key],
+            )
+          )
+            continue;
           const written = await this.request(
             `/collections/${storeName}/points/payload?wait=true&ordering=strong`,
             {
               method: 'POST',
               body: JSON.stringify({
                 points: [point.id],
-                payload: { ownerScope: tagged.ownerScope ?? null },
+                payload: tagged,
               }),
             },
           );

@@ -16,11 +16,11 @@ import {
   AbstractRagProvider,
   CatalogRecordDeleteError,
   describeRagCatalogRows,
+  migrateRagMetadata,
   OrphanStoreError,
   RagError,
   type RagMetadata,
   ragCollectionNotFound,
-  tagRagMetadata,
   validateRagCatalogPatch,
   validateRagOwner,
   validateRagStoreName,
@@ -509,6 +509,9 @@ export class PgVectorRagProvider
         this.layout === 'shared' ? this.connection.schema : undefined,
       ),
     );
+    const owners = new Map(
+      catalog.rows.map((row) => [String(row.storeName), validateRagOwner(row)]),
+    );
     const tables =
       this.layout === 'shared'
         ? [this.documentsTable]
@@ -529,26 +532,54 @@ export class PgVectorRagProvider
         ).rows[0]?.present
       )
         continue;
-      const { rows } = await client.query(
-        `SELECT id, metadata${this.layout === 'shared' ? ', collection' : ''} FROM ${table}`,
-      );
-      for (const row of rows) {
-        const metadata = row.metadata as RagMetadata;
-        const tagged = tagRagMetadata(metadata);
-        const storeName =
-          this.layout === 'shared' ? String(row.collection) : name;
-        if (tagged.ownerScope === 'invalid')
-          reported.push({
-            storeName,
-            reason: `Conflicting owner keys on record ${row.id}`,
-          });
-        if (metadata.ownerScope === tagged.ownerScope) continue;
-        await client.query(
-          `UPDATE ${table} SET metadata = $1::jsonb WHERE id = $2${this.layout === 'shared' ? ' AND collection = $3' : ''}`,
-          this.layout === 'shared'
-            ? [JSON.stringify(tagged), row.id, row.collection]
-            : [JSON.stringify(tagged), row.id],
+      let cursor: { id: string; collection: string } | undefined;
+      for (;;) {
+        const { rows } = await client.query(
+          `SELECT id, metadata${this.layout === 'shared' ? ', collection' : ''} FROM ${table}${cursor ? (this.layout === 'shared' ? ' WHERE (collection, id) > ($1, $2)' : ' WHERE id > $1') : ''} ORDER BY ${this.layout === 'shared' ? 'collection, ' : ''}id LIMIT ${OWNER_MIGRATION_BATCH_SIZE}`,
+          cursor
+            ? this.layout === 'shared'
+              ? [cursor.collection, cursor.id]
+              : [cursor.id]
+            : [],
         );
+        if (rows.length === 0) break;
+        for (const row of rows) {
+          const metadata = row.metadata as RagMetadata;
+          const storeName =
+            this.layout === 'shared' ? String(row.collection) : name;
+          const owner = owners.get(storeName);
+          const tagged: RagMetadata =
+            owner && !owner.ok
+              ? { ...metadata, ownerScope: 'invalid' }
+              : migrateRagMetadata(
+                  metadata,
+                  owner?.ok ? owner.value : undefined,
+                );
+          if (!owner)
+            reported.push({
+              storeName,
+              reason: `No catalog row for record ${row.id}`,
+            });
+          if (tagged.ownerScope === 'invalid')
+            reported.push({
+              storeName,
+              reason: `Conflicting owner keys on record ${row.id}`,
+            });
+          if (
+            (['ownerScope', 'sessionId', 'userId', 'roleId'] as const).every(
+              (key) => metadata[key] === tagged[key],
+            )
+          )
+            continue;
+          await client.query(
+            `UPDATE ${table} SET metadata = $1::jsonb WHERE id = $2${this.layout === 'shared' ? ' AND collection = $3' : ''}`,
+            this.layout === 'shared'
+              ? [JSON.stringify(tagged), row.id, row.collection]
+              : [JSON.stringify(tagged), row.id],
+          );
+        }
+        const last = rows[rows.length - 1];
+        cursor = { id: String(last.id), collection: String(last.collection) };
       }
     }
     return reported;
@@ -600,3 +631,5 @@ export class PgVectorRagProvider
     return catalogRecordExists(client, this.catalogTable, storeName);
   }
 }
+
+const OWNER_MIGRATION_BATCH_SIZE = 256;
