@@ -85,8 +85,9 @@ for (const entry of ragMigrationConformanceCases) {
         embedder: symmetricEmbedder(conformanceEmbedder()),
       });
       await entry.run({
-        async seedLegacyRecords(records) {
-          stub.collections.set('u', {
+        supportsOrphans: true,
+        async seedLegacyRecords(records, storeName) {
+          stub.collections.set(storeName, {
             size: 1,
             points: new Map(
               records.map((r) => [
@@ -101,15 +102,14 @@ for (const entry of ragMigrationConformanceCases) {
               ]),
             ),
           });
-          return 'u';
+          return storeName;
         },
         async recordMetadata() {
-          const collection = stub.collections.get('u');
-          assert.ok(collection);
-          return [...collection.points.values()].map((p) => ({
-            id: String(p.id),
-            metadata: p.payload,
-          }));
+          return ['u', 's', 'missing-catalog'].flatMap((name) =>
+            [...(stub.collections.get(name)?.points.values() ?? [])].map(
+              (p) => ({ id: String(p.id), metadata: p.payload }),
+            ),
+          );
         },
         migrate: () => migrateQdrantRagAccess(provider),
         describe: () => provider.describeCollections(),

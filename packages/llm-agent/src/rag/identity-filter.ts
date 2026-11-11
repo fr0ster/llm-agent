@@ -4,6 +4,7 @@ import {
   RagError,
   type RagMetadata,
 } from '../interfaces/types.js';
+import { stampRagOwner } from './registry/owner-bound-editor.js';
 
 /** The identity part of `CallOptions.ragFilter` every `IRag` store honours. */
 export type RagIdentityFilter = {
@@ -147,4 +148,17 @@ export function validateRagMetadata(metadata: RagMetadata): RagMetadata {
       'INVALID_ARGUMENT',
     );
   return tagged;
+}
+
+/** Backfill from the catalog owner, quarantining conflicting record identities. */
+export function migrateRagMetadata(
+  metadata: RagMetadata,
+  owner?: RagCollectionOwner,
+): RagMetadata {
+  if (!owner) return tagRagMetadata(metadata);
+  try {
+    return stampRagOwner(metadata, owner);
+  } catch {
+    return { ...metadata, ownerScope: 'invalid' };
+  }
 }
