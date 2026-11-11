@@ -168,6 +168,9 @@ export async function backfillWorkerCacheFromHandle(
     close?: () => Promise<void>;
   },
 ): Promise<void> {
+  // Retain ownership even if reading the handle resources fails below.
+  const previousClose = entry.close;
+  if (handle.close) entry.close = handle.close;
   if (
     (!entry.mcpClients || entry.mcpClients.length === 0) &&
     handle.mcpClients &&
@@ -186,11 +189,11 @@ export async function backfillWorkerCacheFromHandle(
   // Capture the per-worker shutdown function (Fix #21). If the entry already
   // had a close from a previous build (e.g. the same worker name was rebuilt
   // WITHOUT going through `drainWorkerCache` first — defence in depth), await
-  // the prior close before overwriting so its MCP connections do not leak.
+  // the prior close so its MCP connections do not leak.
   if (handle.close) {
-    if (entry.close) {
+    if (previousClose) {
       try {
-        await entry.close();
+        await previousClose();
       } catch {
         // Best-effort; never block the new build on a stale close failure.
       }
@@ -231,6 +234,7 @@ type BuildSubAgentFn = (
     requestLogger: IRequestLogger;
     embedder?: IEmbedder;
   },
+  cache?: Map<string, WorkerLlmSet>,
 ) => Promise<SmartAgent>;
 
 export interface WorkerRegistryDeps {
@@ -242,6 +246,7 @@ export interface WorkerRegistryDeps {
 
 export interface IWorkerRegistry {
   build(parts: SessionAgentParts): Promise<SubAgentRegistry>;
+  construct(sub: SubAgentConfigEntry): Promise<SmartAgent>;
   drain(): Promise<void>;
   readonly cache: Map<string, WorkerLlmSet>;
 }
@@ -249,10 +254,62 @@ export interface IWorkerRegistry {
 export class WorkerRegistry implements IWorkerRegistry {
   readonly cache = new Map<string, WorkerLlmSet>();
 
+  private generation = 0;
+  private readonly constructions = new Map<string, Promise<SmartAgent>>();
+  private readonly pending = new Set<Promise<SmartAgent>>();
+
   constructor(private readonly deps: WorkerRegistryDeps) {}
 
   async drain(): Promise<void> {
-    await drainWorkerCache(this.cache);
+    this.generation++;
+    this.constructions.clear();
+    const pending = [...this.pending];
+    await Promise.allSettled([drainWorkerCache(this.cache), ...pending]);
+  }
+
+  construct(sub: SubAgentConfigEntry): Promise<SmartAgent> {
+    const hit = this.constructions.get(sub.name);
+    if (hit) return hit;
+    const generation = this.generation;
+    const staging = new Map<string, WorkerLlmSet>();
+    // Defer the factory until the flight is registered, including sync reentry.
+    const flight = Promise.resolve().then(async () => {
+      try {
+        const logger = this.deps.getFileLogger();
+        if (!logger) throw new Error('worker construction requires a logger');
+        const agent = await this.deps.buildSubAgent(
+          sub.name,
+          sub.config,
+          logger,
+          this.deps.getEmbedderFactories(),
+          undefined,
+          staging,
+        );
+        if (generation !== this.generation) {
+          throw new Error(`worker generation drained for '${sub.name}'`);
+        }
+        const entry = staging.get(sub.name);
+        if (!entry)
+          throw new Error(`worker LLM set not cached for '${sub.name}'`);
+        this.cache.set(sub.name, entry);
+        return agent;
+      } catch (error) {
+        await drainWorkerCache(staging);
+        throw error;
+      }
+    });
+    this.constructions.set(sub.name, flight);
+    this.pending.add(flight);
+    void flight.then(
+      () => this.pending.delete(flight),
+      () => {
+        this.pending.delete(flight);
+        if (this.constructions.get(sub.name) === flight) {
+          this.constructions.delete(sub.name);
+        }
+      },
+    );
+    return flight;
   }
 
   /**
@@ -275,24 +332,7 @@ export class WorkerRegistry implements IWorkerRegistry {
     }
     const embedderFactories = this.deps.getEmbedderFactories();
     for (const sub of subAgentConfigs) {
-      // Lazy build-on-miss (Fix #18). After PUT /v1/config or hot-reload
-      // clears the cache, the next session build used to throw
-      // "worker LLM set not cached" because the cache was assumed
-      // pre-populated by the primary build(). buildSubAgent itself routes
-      // through `resolveWorkerLlmSet` which is build-on-miss, so calling
-      // it without an `injected` arg rebuilds the cache entry. We then
-      // re-read the entry to honour the per-worker slot priority below.
-      if (!this.cache.has(sub.name)) {
-        await this.deps.buildSubAgent(
-          sub.name,
-          sub.config,
-          fileLogger,
-          embedderFactories,
-          // No `injected` → primary path: resolveWorkerLlmSet populates
-          // the cache and backfillWorkerCacheFromHandle fills the
-          // mcpClients/toolsRag slots from the built handle.
-        );
-      }
+      if (!this.cache.has(sub.name)) await this.construct(sub);
       const cached = this.cache.get(sub.name);
       if (!cached) {
         // Defence in depth — should be impossible after the lazy build
@@ -321,6 +361,7 @@ export class WorkerRegistry implements IWorkerRegistry {
           requestLogger: parts.logger,
           embedder: cached.embedder,
         },
+        new Map([[sub.name, cached]]),
       );
       registry.set(
         sub.name,

@@ -1,7 +1,7 @@
 /**
  * RerankHandler — re-scores RAG results using the injected reranker.
  *
- * Reads: `ctx.ragText`, `ctx.ragResults`
+ * Reads: `ctx.preExpansionRagText`, `ctx.ragText`, `ctx.ragResults`
  * Writes: `ctx.ragResults` (replaces with re-scored versions)
  *
  * Runs reranking on all stores in parallel. Falls back to original results if
@@ -32,7 +32,7 @@ export class RerankHandler implements IStageHandler {
         if (store && hasRetrievalStrategy(store.rag)) return { name, results };
         if (results.length > 0) {
           const rr = await ctx.reranker.rerank(
-            ctx.ragText,
+            ctx.preExpansionRagText ?? ctx.ragText,
             results,
             ctx.options,
           );

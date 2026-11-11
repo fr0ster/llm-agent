@@ -408,6 +408,13 @@ export class DefaultPipeline implements IPipeline {
       });
     }
 
+    if (
+      this.deps.queryExpander &&
+      this.deps.agentConfig?.queryExpansionEnabled === true
+    ) {
+      stages.push({ id: 'expand', type: 'expand' });
+    }
+
     // First-phase retrieval: non-tool stores (enriched mode) or all stores (default).
     if (ragChildren.length > 0) {
       stages.push({

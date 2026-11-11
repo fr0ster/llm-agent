@@ -23,6 +23,7 @@ import { denyRagAccess, ownerBoundQuery } from '../../rag/owner-bound-query.js';
 
 import type { CallOptions } from '@mcp-abap-adt/llm-agent';
 import { QueryEmbedding, TextOnlyEmbedding } from '@mcp-abap-adt/llm-agent';
+import { withRelevanceQuery } from '../../retrieval/relevance-query.js';
 import type { ISpan } from '../../tracer/types.js';
 import type { PipelineContext } from '../context.js';
 import type { IStageHandler } from '../stage-handler.js';
@@ -72,7 +73,10 @@ export class RagQueryHandler implements IStageHandler {
       embedding = ctx.queryEmbedding;
     }
 
-    const queryOptions: CallOptions = { ...ctx.options };
+    const queryOptions: CallOptions =
+      ctx.preExpansionRagText === undefined
+        ? { ...ctx.options }
+        : withRelevanceQuery({ ...ctx.options }, ctx.preExpansionRagText);
 
     const ragStart = Date.now();
     const result = await ownerBoundQuery(
