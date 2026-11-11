@@ -2,6 +2,7 @@ export {
   _resetPrefetchedForTests,
   type BuiltInEmbedderResolution,
   type EmbedderResolution,
+  normalizeEmbedderProvider,
   prefetchEmbedderFactories,
 } from './embedder-factories.js';
 
