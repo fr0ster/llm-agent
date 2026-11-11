@@ -19,6 +19,7 @@ import type { RagAccess } from '@mcp-abap-adt/llm-agent';
 
 import type {
   CallOptions,
+  IClientAdapter,
   IContextAssembler,
   IHistoryMemory,
   IHistorySummarizer,
@@ -73,6 +74,8 @@ import type { IOutputValidator } from '../validator/types.js';
 // ---------------------------------------------------------------------------
 
 export interface PipelineContext {
+  /** Adapter detected from this request's system prompt. */
+  clientAdapter?: IClientAdapter;
   /** Set when the tool loop honours a cooperative stop at an iteration boundary. */
   stopped?: true;
   // -- Immutable input (set once at creation, never modified) ----------------

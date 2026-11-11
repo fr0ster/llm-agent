@@ -787,6 +787,7 @@ export class SmartAgent {
             pendingToolResults: pipelinePendingResults,
             toolAvailability: pipelineToolAvailability,
           },
+          detectedAdapter,
         );
         for await (const chunk of stream) yield chunk;
         rootSpan.setStatus('ok');
