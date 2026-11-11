@@ -1969,7 +1969,20 @@ export class SmartServer {
 
     return {
       close: async () => {
-        for (const fn of closeFns) await fn();
+        const failures: PromiseRejectedResult[] = [];
+        for (const fn of closeFns) {
+          const [result] = await Promise.allSettled([
+            Promise.resolve().then(fn),
+          ]);
+          if (result.status === 'rejected') failures.push(result);
+        }
+        if (failures.length === 1) throw failures[0].reason;
+        if (failures.length > 1) {
+          throw new AggregateError(
+            failures.map((failure) => failure.reason),
+            'Failed to close server infrastructure',
+          );
+        }
       },
       chat,
       streamChat,
