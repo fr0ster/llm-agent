@@ -154,6 +154,8 @@ export interface PipelineContext {
   toolClientMap: Map<string, IMcpClient>;
   /** Text used for RAG queries (may be translated/expanded). */
   ragText: string;
+  /** RAG text immediately before expansion, preserved for relevance judgments. */
+  preExpansionRagText?: string;
   /**
    * Enriched query text for tool/skill retrieval, composed by the
    * `build-tool-query` stage from `ragText` + top-K RAG snippets +
