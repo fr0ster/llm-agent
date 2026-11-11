@@ -27,6 +27,7 @@ import { OrchestratorError } from '../../agent.js';
 import type { ISpan } from '../../tracer/types.js';
 import type { PipelineContext } from '../context.js';
 import type { IStageHandler } from '../stage-handler.js';
+import { wrapFinalResponse } from './wrap-final-response.js';
 
 export interface CoordinatorHandlerDeps {
   planning: IPlanningStrategy;
@@ -93,7 +94,10 @@ export class CoordinatorHandler implements IStageHandler {
       ctx.options?.sessionLogger?.logStep('coordinator_clarification', {
         length: plan.clarification.length,
       });
-      ctx.yield({ ok: true, value: { content: plan.clarification } });
+      ctx.yield({
+        ok: true,
+        value: { content: wrapFinalResponse(ctx, plan.clarification) },
+      });
       ctx.yield({
         ok: true,
         value: { content: '', finishReason: 'stop' },
@@ -134,7 +138,10 @@ export class CoordinatorHandler implements IStageHandler {
         stepId: directStep.id,
         outputLength: result.output.length,
       });
-      ctx.yield({ ok: true, value: { content: result.output } });
+      ctx.yield({
+        ok: true,
+        value: { content: wrapFinalResponse(ctx, result.output) },
+      });
       ctx.yield({ ok: true, value: { content: '', finishReason: 'stop' } });
       return true;
     }
@@ -257,7 +264,10 @@ export class CoordinatorHandler implements IStageHandler {
     // assistant response, but uses finishReason: 'length' when the plan was
     // truncated by maxSteps — matching OpenAI's convention for limit-cut
     // responses so clients can detect incompleteness.
-    ctx.yield({ ok: true, value: { content: finalOutput } });
+    ctx.yield({
+      ok: true,
+      value: { content: wrapFinalResponse(ctx, finalOutput) },
+    });
     ctx.yield({
       ok: true,
       value: {

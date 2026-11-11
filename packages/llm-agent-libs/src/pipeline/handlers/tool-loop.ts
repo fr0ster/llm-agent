@@ -66,6 +66,7 @@ import {
   readTaskFinish,
   runOutputValidationReprompt,
 } from './tool-loop-core.js';
+import { wrapFinalResponse } from './wrap-final-response.js';
 
 function summarizeIterationMessages(
   messages: Message[],
@@ -162,10 +163,18 @@ export class ToolLoopHandler implements IStageHandler {
 
     let toolCallCount = 0;
     let progressContent = '';
+    const emitFinalContent = (content: string): void => {
+      const output = wrapFinalResponse(ctx, content);
+      ctx.yield({ ok: true, value: { content: output } });
+      ctx.onPartial?.({ kind: 'content', delta: output });
+    };
     const emitProgressFallback = (): void => {
-      if (ctx.config.streamMode !== 'final' || !progressContent) return;
-      ctx.yield({ ok: true, value: { content: progressContent } });
-      ctx.onPartial?.({ kind: 'content', delta: progressContent });
+      if (
+        (!ctx.clientAdapter && ctx.config.streamMode !== 'final') ||
+        !progressContent
+      )
+        return;
+      emitFinalContent(progressContent);
     };
     let lastToolsSelected: number | undefined;
     let lastToolsAvailable: number | undefined;
@@ -252,9 +261,8 @@ export class ToolLoopHandler implements IStageHandler {
       const earlyTaskFinish = readTaskFinish(ctx.options, iteration);
       if (earlyTaskFinish) {
         // Task output is authoritative: skip validation reprompts. Pipeline output
-        // uses its normal events/finalization; this loop has no adapter or stream hook.
-        ctx.yield({ ok: true, value: { content: earlyTaskFinish.output } });
-        ctx.onPartial?.({ kind: 'content', delta: earlyTaskFinish.output });
+        // uses its normal events and finalization.
+        emitFinalContent(earlyTaskFinish.output);
         ctx.yield({ ok: true, value: { content: '', iterationEnd: 'final' } });
         ctx.onPartial?.({ kind: 'iteration-end', outcome: 'final' });
         return finalize(earlyTaskFinish.output, 'stop');
@@ -583,9 +591,8 @@ export class ToolLoopHandler implements IStageHandler {
       const taskFinish = readTaskFinish(ctx.options, iteration);
       if (taskFinish) {
         // Task output is authoritative: skip validation reprompts. Pipeline output
-        // uses its normal events/finalization; this loop has no adapter or stream hook.
-        ctx.yield({ ok: true, value: { content: taskFinish.output } });
-        ctx.onPartial?.({ kind: 'content', delta: taskFinish.output });
+        // uses its normal events and finalization.
+        emitFinalContent(taskFinish.output);
         ctx.yield({ ok: true, value: { content: '', iterationEnd: 'final' } });
         ctx.onPartial?.({ kind: 'iteration-end', outcome: 'final' });
         return finalize(taskFinish.output, 'stop');
@@ -661,10 +668,14 @@ export class ToolLoopHandler implements IStageHandler {
         }
         if (chunk.content) {
           content += chunk.content;
-          if (ctx.config.streamMode !== 'final') {
+          if (!ctx.clientAdapter && ctx.config.streamMode !== 'final') {
             ctx.yield({ ok: true, value: { content: chunk.content } });
           }
-          if (ctx.onPartial && ctx.config.streamMode !== 'final') {
+          if (
+            ctx.onPartial &&
+            !ctx.clientAdapter &&
+            ctx.config.streamMode !== 'final'
+          ) {
             ctx.onPartial({
               kind: 'content',
               delta: chunk.content,
@@ -782,9 +793,11 @@ export class ToolLoopHandler implements IStageHandler {
         ctx.options?.onAssistantResponse?.(content);
       }
       if (iterationEnd === 'tool_calls') progressContent += content;
-      else if (iterationEnd === 'final' && ctx.config.streamMode === 'final') {
-        ctx.yield({ ok: true, value: { content } });
-        ctx.onPartial?.({ kind: 'content', delta: content });
+      else if (
+        iterationEnd === 'final' &&
+        (ctx.clientAdapter || ctx.config.streamMode === 'final')
+      ) {
+        emitFinalContent(content);
       }
       ctx.yield({ ok: true, value: { content: '', iterationEnd } });
       ctx.onPartial?.({ kind: 'iteration-end', outcome: iterationEnd });

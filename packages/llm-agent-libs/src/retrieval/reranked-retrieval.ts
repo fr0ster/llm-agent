@@ -9,6 +9,7 @@ import type {
   Result,
 } from '@mcp-abap-adt/llm-agent';
 import { assertPositiveInteger } from '../util/assert-positive-integer.js';
+import { relevanceQuery } from './relevance-query.js';
 
 /** Cap on a thrown error's text in the step: enough for a reason, never a dump. */
 const MAX_THROWN_MESSAGE = 500;
@@ -25,7 +26,11 @@ async function rerankOrFallback(
   let code: string;
   let message: string;
   try {
-    const r = await reranker.rerank(query.text, candidates, options);
+    const r = await reranker.rerank(
+      relevanceQuery(options) ?? query.text,
+      candidates,
+      options,
+    );
     if (r.ok) return { ok: true, value: r.value.slice(0, k) };
     code = r.error.code;
     message = r.error.message;
