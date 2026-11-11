@@ -16,6 +16,8 @@
   // test added to either package that needs type-checking in CI must be
   // added to this list by hand.
   "include": [
+    "packages/llm-agent-libs/src/__tests__/builder-query-expansion.test.ts",
+    "packages/llm-agent-server-libs/src/smart-agent/__tests__/smart-server-close.test.ts",
     "packages/llm-agent-server-libs/src/smart-agent/__tests__/smart-server-rag-identity.test.ts",
     "packages/llm-agent/src/rag/__tests__/positive-owner-scope.test.ts",
     "packages/qdrant-rag/src/__tests__/rag-filter-conformance.test.ts",

@@ -2,7 +2,7 @@
  * ExpandHandler — expands RAG query with synonyms and related terms.
  *
  * Reads: `ctx.ragText`, `ctx.queryExpander`
- * Writes: `ctx.ragText`
+ * Writes: `ctx.ragText`, `ctx.preExpansionRagText`
  *
  * Uses the injected IQueryExpander to broaden RAG queries.
  * Skipped when `queryExpansionEnabled` is false.
@@ -23,6 +23,7 @@ export class ExpandHandler implements IStageHandler {
       return true;
     }
 
+    ctx.preExpansionRagText = ctx.ragText;
     const result = await ctx.queryExpander.expand(ctx.ragText, ctx.options);
     if (result.ok) {
       ctx.ragText = result.value;
