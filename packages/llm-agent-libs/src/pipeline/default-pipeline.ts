@@ -27,6 +27,7 @@ import { RagAccessDeniedError } from '@mcp-abap-adt/llm-agent';
 
 import type {
   CallOptions,
+  IClientAdapter,
   ICoordinatorConfig,
   ILlm,
   IRag,
@@ -277,6 +278,7 @@ export class DefaultPipeline implements IPipeline {
     options: CallOptions | undefined,
     yieldChunk: (chunk: Result<LlmStreamChunk, OrchestratorError>) => void,
     externalTools?: LlmTool[],
+    clientAdapter?: IClientAdapter,
   ): Promise<PipelineResult> {
     if (!options?.sessionId?.trim()) {
       const error = new RagAccessDeniedError(
@@ -303,6 +305,7 @@ export class DefaultPipeline implements IPipeline {
       { ...options, sessionId: options.sessionId },
       yieldChunk,
       externalTools,
+      clientAdapter,
     );
 
     try {
@@ -484,6 +487,7 @@ export class DefaultPipeline implements IPipeline {
     options: CallOptions & { sessionId: string },
     yieldChunk: (chunk: Result<LlmStreamChunk, OrchestratorError>) => void,
     externalTools?: LlmTool[],
+    clientAdapter?: IClientAdapter,
   ): PipelineContext {
     const text =
       typeof input === 'string'
@@ -515,6 +519,7 @@ export class DefaultPipeline implements IPipeline {
     return {
       // Immutable input
       textOrMessages: input,
+      clientAdapter,
       options,
       config: { ...DEFAULT_CONFIG, ...this.deps.agentConfig },
       sessionId: options.sessionId,

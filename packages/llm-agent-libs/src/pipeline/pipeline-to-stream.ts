@@ -1,5 +1,6 @@
 import type {
   CallOptions,
+  IClientAdapter,
   LlmStreamChunk,
   LlmTool,
   Message,
@@ -13,6 +14,7 @@ export async function* pipelineToStream(
   input: string | Message[],
   externalTools: LlmTool[],
   opts: CallOptions | undefined,
+  clientAdapter?: IClientAdapter,
 ): AsyncIterable<Result<LlmStreamChunk, OrchestratorError>> {
   if (!pipeline) return;
 
@@ -35,6 +37,7 @@ export async function* pipelineToStream(
         }
       },
       externalTools,
+      clientAdapter,
     )
     .then(() => {
       done = true;

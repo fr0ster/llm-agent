@@ -274,6 +274,55 @@ describe('session agents carry the server wiring (§14.1)', () => {
     }
   });
 
+  it('session responses apply DI and plugin adapters without leaking detection', async () => {
+    const adapter = (name: string): IClientAdapter => ({
+      name,
+      detect: (prompt) => prompt === name,
+      wrapResponse: (content) => `[${name}]${content}[/${name}]`,
+    });
+    const server = new SmartServer(
+      {
+        ...configFrom(`${BASE_YAML}agent:\n  llmCallStrategy: non-streaming\n`),
+        pluginLoader: pluginsWith({ clientAdapters: [adapter('plugin')] }),
+        clientAdapters: [adapter('di')],
+      },
+      { ...constructionSeams },
+    );
+    const handle = await server.start();
+    try {
+      for (const [prompt, expected] of [
+        ['di', '[di]ok[/di]'],
+        ['plugin', '[plugin]ok[/plugin]'],
+        [
+          'You are Cline',
+          '<attempt_completion>\n<result>\nok\n</result>\n</attempt_completion>',
+        ],
+        ['ordinary', 'ok'],
+      ]) {
+        const response = await fetch(
+          `http://127.0.0.1:${handle.port}/v1/chat/completions`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              model: 'gpt-4o',
+              session_id: `adapter-${prompt}`,
+              messages: [
+                { role: 'system', content: prompt },
+                { role: 'user', content: 'hi' },
+              ],
+            }),
+          },
+        );
+        assert.equal(response.status, 200);
+        const body = await response.text();
+        assert.ok(body.includes(`"content":${JSON.stringify(expected)}`), body);
+      }
+    } finally {
+      await handle.close();
+    }
+  });
+
   it('each session agent gets its own LLM-call strategy instance (fallback is stateful)', async () => {
     const strategies: unknown[] = [];
     const proto = SmartAgentBuilder.prototype;

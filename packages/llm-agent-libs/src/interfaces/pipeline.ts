@@ -14,6 +14,7 @@ import type { OwnedRagStore } from '../rag/owner-bound-query.js';
 
 import type {
   CallOptions,
+  IClientAdapter,
   IContextAssembler,
   IHistoryMemory,
   IHistorySummarizer,
@@ -186,6 +187,7 @@ export interface IPipeline {
    * @param options       - Per-request call options (session, signal, model, etc.).
    * @param yieldChunk    - Callback invoked for each streamed result chunk.
    * @param externalTools - Normalized external tools to include alongside MCP tools.
+   * @param clientAdapter - Adapter detected once for this request by the agent.
    * @returns Final PipelineResult with timing and optional error.
    */
   execute(
@@ -194,6 +196,7 @@ export interface IPipeline {
     options: CallOptions | undefined,
     yieldChunk: (chunk: Result<LlmStreamChunk, OrchestratorError>) => void,
     externalTools?: LlmTool[],
+    clientAdapter?: IClientAdapter,
   ): Promise<PipelineResult>;
 
   /**
