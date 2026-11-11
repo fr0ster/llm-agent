@@ -114,6 +114,13 @@ function titleCase(key: string): string {
   return key.replace(/[_-]/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
+/** The reserved tools store is delivered as tool definitions, not context text. */
+function textContextEntries(
+  ragResults: Record<string, RagResult[]>,
+): [string, RagResult[]][] {
+  return Object.entries(ragResults).filter(([key]) => key !== 'tools');
+}
+
 /** Combine retrieved sections into request content */
 function buildRequestContent(
   ragResults: Record<string, RagResult[]>,
@@ -149,7 +156,7 @@ function buildRequestContent(
 
 /**
  * Drop entries until total token count fits within budget.
- * Trims stores in reverse insertion order, then tools last.
+ * Trims text stores in reverse insertion order.
  */
 function applyTokenBudget(
   ragResults: Record<string, RagResult[]>,
@@ -238,9 +245,9 @@ export class ContextAssembler implements IContextAssembler {
         return { ok: false, error: new AssemblerError('Aborted', 'ABORTED') };
       }
 
-      // Sort all RAG results by score descending
+      // Only text context participates in rendering and token budgeting.
       const sortedResults: Record<string, RagResult[]> = {};
-      for (const [key, results] of Object.entries(retrieved.ragResults)) {
+      for (const [key, results] of textContextEntries(retrieved.ragResults)) {
         sortedResults[key] = [...results].sort((a, b) => b.score - a.score);
       }
       let finalResults = sortedResults;
