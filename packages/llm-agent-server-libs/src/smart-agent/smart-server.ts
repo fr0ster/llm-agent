@@ -78,6 +78,7 @@ import type {
 } from '@mcp-abap-adt/llm-agent-libs';
 import {
   applyRetrievalStrategy,
+  bindRagEmbedderBreaker,
   ClaudeSkillManager,
   CodexSkillManager,
   FileSystemPluginLoader,
@@ -103,6 +104,7 @@ import type { EmbedderResolutionOptions } from '@mcp-abap-adt/llm-agent-rag';
 import { prefetchEmbedderFactories } from '@mcp-abap-adt/llm-agent-rag';
 import { PACKAGE_VERSION } from '../generated/version.js';
 import { ConfigReloadWatcher } from './config-reload-watcher.js';
+import { EmbedderCircuitBreakers } from './embedder-circuit-breakers.js';
 import { handleAdapterRequest } from './http/adapter-route-handler.js';
 import { handleChat } from './http/chat-route-handler.js';
 import {
@@ -849,6 +851,7 @@ export class SmartServer {
   private _llmBreakers?: LlmCircuitBreakers;
   /** `circuitBreaker:` — the one embedder breaker, fed by the retrieval embedder. */
   private _embedderBreaker?: CircuitBreaker;
+  private _embedderBreakers?: EmbedderCircuitBreakers;
   /** The one reranker of this server, resolved once in `_buildInfra()` (§7.4). */
   private _reranker?: IReranker;
   /**
@@ -1232,6 +1235,14 @@ export class SmartServer {
     if (this.cfg.circuitBreaker) {
       this._llmBreakers = new LlmCircuitBreakers(this.cfg.circuitBreaker);
       this._embedderBreaker = new CircuitBreaker(this.cfg.circuitBreaker);
+      this._embedderBreakers = new EmbedderCircuitBreakers(
+        this.cfg.circuitBreaker,
+      );
+      this._embedderBreakers.resolve(
+        this.cfg.rag,
+        this._deps.embedder ?? this.cfg.embedder,
+        this._embedderBreaker,
+      );
     }
     this._mainLlm = this.guardLlm(mainLlm, 'main');
     this._classifierLlm = this.guardLlm(classifierLlm, 'classifier');
@@ -1468,8 +1479,8 @@ export class SmartServer {
       mergedEmbedderFactories,
       this._fileLogger,
       // The embedder breaker sees the real embedding calls (§14.2): each half
-      // is wrapped below the document/query role. Worker embedders keep none.
-      this.embedderBreakerWrap(),
+      // is wrapped below the document/query role.
+      this.embedderBreakerWrap(this._embedderBreaker),
     );
     // Hold the resolved embedder so buildServerCtx can thread it onto every
     // pipeline context (the controller pipeline needs it for target-state).
@@ -1577,10 +1588,15 @@ export class SmartServer {
       // through its own. Two calls, two stores — the history store never shared
       // the tools store's instance.
       const input = toMakeRagInput(this.cfg.rag.store, resolvedEmbedder, 'rag');
-      toolsRag = this.withStrategy('tools', await this._deps.makeRag(input));
+      toolsRag = this.withStrategy(
+        'tools',
+        await this._deps.makeRag(input),
+        this._embedderBreaker,
+      );
       historyRag = this.withStrategy(
         'history',
         await this._deps.makeRag(input),
+        this._embedderBreaker,
       );
     }
     // Capture the tools store for the flat/smart pipeline's ToolSelectHandler
@@ -1920,6 +1936,10 @@ export class SmartServer {
       version: this.cfg.version ?? PACKAGE_VERSION,
       // Re-read per check: a PUT /v1/config swap replaces a key's breaker.
       circuitBreakers: this.breakerList() ?? circuitBreakers,
+      circuitBreakerLabel: (breaker) =>
+        breaker === this._embedderBreaker
+          ? undefined
+          : this._embedderBreakers?.label(breaker),
     });
 
     // Startup health check removed — use `npm run models:check` for diagnostics.
@@ -2193,6 +2213,12 @@ export class SmartServer {
     // re-wires (`injected` set) read from it via the same call below — the
     // cache hit short-circuits all factories. This keeps the worker's
     // declared RAG/MCP intact across per-session re-wires (review HIGH #1).
+    const embedderBreaker = subCfg.rag
+      ? this._embedderBreakers?.resolve(
+          subCfg.rag as SmartServerRagConfig,
+          subCfg.embedder,
+        )
+      : this._embedderBreaker;
     const cached = await resolveWorkerLlmSet({
       name,
       cache: this._workers.cache,
@@ -2212,6 +2238,7 @@ export class SmartServer {
                   embedderFactories,
                 ),
               ),
+              embedderBreaker,
             )
         : undefined,
       makeHistoryRag: subCfg.rag
@@ -2226,6 +2253,7 @@ export class SmartServer {
                   embedderFactories,
                 ),
               ),
+              embedderBreaker,
             )
         : undefined,
       // Worker-OWN MCP clients. DI list (subCfg.mcpClients) wins; otherwise
@@ -2251,6 +2279,11 @@ export class SmartServer {
       .withMode(subCfg.mode ?? 'smart');
 
     subBuilder = subBuilder.withHelperLlm(helperLlm);
+    if (embedderBreaker) {
+      subBuilder = subBuilder.withCircuitBreakers({
+        embedder: embedderBreaker,
+      });
+    }
 
     // SHARE the parent RAG registry + session logger when injected (per-session
     // worker re-wire). The per-call scope filter isolates by ctx.sessionId.
@@ -2323,7 +2356,12 @@ export class SmartServer {
    * Idempotent (`applyRetrievalStrategy`), so the builder's projection of the
    * same store never wraps it twice — one rerank per query.
    */
-  private withStrategy(key: 'tools' | 'history', store: IRag): IRag {
+  private withStrategy(
+    key: 'tools' | 'history',
+    store: IRag,
+    breaker?: CircuitBreaker,
+  ): IRag {
+    if (breaker) bindRagEmbedderBreaker(store, breaker);
     const strategy = this._retrievalStrategies.get(key);
     return strategy ? applyRetrievalStrategy(store, strategy) : store;
   }
@@ -2341,6 +2379,9 @@ export class SmartServer {
       this._deps.resolveEmbedder,
       extraFactories,
       this._fileLogger,
+      this.embedderBreakerWrap(
+        this._embedderBreakers?.resolve(rag, diEmbedder),
+      ),
     );
     return toMakeRagInput(rag.store, embedder, `subagent '${name}' rag`);
   }
@@ -2371,11 +2412,10 @@ export class SmartServer {
     return this._llmBreakers ? this._llmBreakers.wrap(llm, key) : llm;
   }
 
-  /** The `wrap` argument of the main `resolveRetrievalEmbedder` call, if any. */
-  private embedderBreakerWrap():
-    | ((embedder: IEmbedder) => IEmbedder)
-    | undefined {
-    const breaker = this._embedderBreaker;
+  /** Wrap below the retrieval role with the resolved identity's breaker. */
+  private embedderBreakerWrap(
+    breaker?: CircuitBreaker,
+  ): ((embedder: IEmbedder) => IEmbedder) | undefined {
     return breaker ? (e) => withCircuitBreaker(e, breaker) : undefined;
   }
 
@@ -2384,7 +2424,11 @@ export class SmartServer {
     const llm = this._llmBreakers;
     const embedder = this._embedderBreaker;
     if (!llm || !embedder) return undefined;
-    return () => [...llm.list(), embedder];
+    return () => [
+      ...llm.list(),
+      embedder,
+      ...(this._embedderBreakers?.list().filter((b) => b !== embedder) ?? []),
+    ];
   }
 
   private roleLlm(): IRoleLlmResolver {
@@ -2956,9 +3000,21 @@ export class SmartServer {
       builder = builder.setHistoryRag(parts.historyRag);
     }
     for (const collection of parts.ragCollections ?? []) {
+      if (this._embedderBreaker) {
+        bindRagEmbedderBreaker(collection.rag, this._embedderBreaker);
+      }
       builder = builder.addRagCollection(collection);
     }
     if (parts.ragRegistry) {
+      if (this._embedderBreaker) {
+        for (const meta of parts.ragRegistry.list()) {
+          const store = parts.ragRegistry.get(
+            meta.name,
+            meta.scope ?? 'global',
+          );
+          if (store) bindRagEmbedderBreaker(store, this._embedderBreaker);
+        }
+      }
       builder = builder.setRagRegistry(parts.ragRegistry);
     }
     // The server's one provider registry: without it build() substitutes an

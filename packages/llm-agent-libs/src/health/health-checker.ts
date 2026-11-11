@@ -10,6 +10,7 @@ export interface HealthCheckerDeps {
   version: string;
   /** A fixed list, or a provider re-read on every check (breakers that come and go). */
   circuitBreakers?: CircuitBreaker[] | (() => readonly CircuitBreaker[]);
+  circuitBreakerLabel?: (breaker: CircuitBreaker) => string | undefined;
   metrics?: InMemoryMetrics;
 }
 
@@ -19,6 +20,7 @@ export class HealthChecker {
   private readonly version: string;
   private readonly circuitBreakers: () => readonly CircuitBreaker[];
   private readonly metrics?: InMemoryMetrics;
+  private readonly circuitBreakerLabel?: HealthCheckerDeps['circuitBreakerLabel'];
 
   constructor(deps: HealthCheckerDeps) {
     this.agent = deps.agent;
@@ -27,6 +29,7 @@ export class HealthChecker {
     const cbs = deps.circuitBreakers ?? [];
     this.circuitBreakers = typeof cbs === 'function' ? cbs : () => cbs;
     this.metrics = deps.metrics;
+    this.circuitBreakerLabel = deps.circuitBreakerLabel;
   }
 
   async check(): Promise<HealthStatus> {
@@ -42,6 +45,9 @@ export class HealthChecker {
         ? breakers.map((cb, i) => ({
             index: i,
             state: cb.state,
+            ...(this.circuitBreakerLabel?.(cb)
+              ? { label: this.circuitBreakerLabel(cb) }
+              : {}),
           }))
         : undefined;
 

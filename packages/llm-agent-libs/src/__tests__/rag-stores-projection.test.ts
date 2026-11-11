@@ -13,7 +13,7 @@ import {
 } from '@mcp-abap-adt/llm-agent';
 import { testRagAccess } from '@mcp-abap-adt/llm-agent/testing/rag-access-testing';
 import { SmartAgent } from '../agent.js';
-import { SmartAgentBuilder } from '../builder.js';
+import { bindRagEmbedderBreaker, SmartAgentBuilder } from '../builder.js';
 import { unwrapBuilderResult } from '../builder-types.js';
 import { makeDefaultDeps, makeLlm, makeRag } from '../testing/index.js';
 
@@ -242,6 +242,50 @@ test('withCircuitBreakers wraps a store once, never twice across builders, and l
     assert.ok(!(h2.agent.currentMainLlm instanceof CircuitBreakerLlm));
   } finally {
     await h2.close();
+  }
+});
+
+test('withCircuitBreakers wraps unbound and same-breaker stores but preserves another breaker binding', async () => {
+  const breaker = new CircuitBreaker();
+  const otherBreaker = new CircuitBreaker();
+  const reg = new SimpleRagRegistry();
+  const unbound = new InMemoryRag();
+  const same = new InMemoryRag();
+  const other = new InMemoryRag();
+  bindRagEmbedderBreaker(same, breaker);
+  bindRagEmbedderBreaker(other, otherBreaker);
+  for (const [name, store] of [
+    ['unbound', unbound],
+    ['same', same],
+    ['other', other],
+  ] as const) {
+    reg.register(name, store, undefined, {
+      displayName: name,
+      scope: 'global',
+    });
+  }
+  const handle = await new SmartAgentBuilder({})
+    .withRagAccess(testRagAccess())
+    .withMainLlm(makeLlm([{ content: 'ok' }]))
+    .setRagRegistry(reg)
+    .withCircuitBreakers({ embedder: breaker })
+    .build()
+    .then(unwrapBuilderResult);
+  try {
+    for (const [name, raw] of [
+      ['unbound', unbound],
+      ['same', same],
+    ] as const) {
+      const store = handle.ragStores[name].rag;
+      assert.ok(store instanceof FallbackRag);
+      assert.equal(store.breaker, breaker);
+      assert.equal(store.inner, raw);
+      assert.equal(reg.get(name, 'global'), store);
+    }
+    assert.equal(handle.ragStores.other.rag, other);
+    assert.equal(reg.get('other', 'global'), other);
+  } finally {
+    await handle.close();
   }
 });
 

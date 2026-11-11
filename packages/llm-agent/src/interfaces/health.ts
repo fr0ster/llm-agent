@@ -21,6 +21,7 @@ export interface HealthComponentStatus {
 export interface CircuitBreakerStatus {
   index: number;
   state: CircuitState;
+  label?: string;
 }
 
 export interface HealthStatus {

@@ -37,6 +37,7 @@ export {
   BuilderConfigError,
   type BuilderMcpConfig,
   type BuilderPromptsConfig,
+  bindRagEmbedderBreaker,
   SmartAgentBuilder,
   type SmartAgentBuilderConfig,
   type SmartAgentBuildResult,

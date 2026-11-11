@@ -82,6 +82,11 @@ export type BuiltInEmbedderResolution = Exclude<
   { factory: string }
 >;
 
+/** Canonical provider name used by construction and embedder identity keys. */
+export function normalizeEmbedderProvider(provider: string = 'ollama'): string {
+  return provider === 'sap-aicore' ? 'sap-ai-core' : provider;
+}
+
 const OPENAI = '@mcp-abap-adt/openai-embedder';
 const OLLAMA = '@mcp-abap-adt/ollama-embedder';
 const SAP_AI_CORE = '@mcp-abap-adt/sap-aicore-embedder';
@@ -107,7 +112,7 @@ export async function prefetchEmbedderFactories(
   names: readonly string[],
 ): Promise<void> {
   for (const name of names) {
-    switch (name) {
+    switch (normalizeEmbedderProvider(name)) {
       case 'openai':
         loaded.openai ??= await importPeer(
           () => import('@mcp-abap-adt/openai-embedder'),
@@ -123,7 +128,6 @@ export async function prefetchEmbedderFactories(
         );
         break;
       case 'sap-ai-core':
-      case 'sap-aicore':
         loaded.sapAiCore ??= await importPeer(
           () => import('@mcp-abap-adt/sap-aicore-embedder'),
           SAP_AI_CORE,

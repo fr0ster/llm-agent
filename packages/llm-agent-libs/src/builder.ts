@@ -171,6 +171,27 @@ export function prepareMcpConfigs(
   return configs.map((c) => ({ ...c, requestHeadersStrategy }));
 }
 
+const ragEmbedderBreakers = new WeakMap<IRag, CircuitBreaker>();
+
+/** Bind a store to the breaker of the embedder used to construct it. */
+export function bindRagEmbedderBreaker(
+  store: IRag,
+  breaker: CircuitBreaker,
+): void {
+  ragEmbedderBreakers.set(store, breaker);
+}
+
+function storeEmbedderBreaker(store: IRag): CircuitBreaker | undefined {
+  let current: IRag | undefined = store;
+  for (let depth = 0; current && depth < 16; depth++) {
+    const breaker = ragEmbedderBreakers.get(current);
+    if (breaker) return breaker;
+    if (current instanceof FallbackRag) return current.breaker;
+    current = isRagDecorator(current) ? current.inner : undefined;
+  }
+  return undefined;
+}
+
 /** True when `store`, or a store it decorates, is a FallbackRag on `breaker` (bounded walk). */
 function isGuardedBy(store: IRag, breaker: CircuitBreaker): boolean {
   let cur: IRag | undefined = store;
@@ -527,8 +548,8 @@ export class SmartAgentBuilder {
 
   /**
    * Use breakers created and owned by the caller (shared across builders).
-   * Only the embedder breaker is taken: registry stores are wrapped in a
-   * `FallbackRag` on it unless a store already carries that same breaker. The
+   * Only the embedder breaker is taken: unbound registry stores and stores bound
+   * to that breaker are wrapped in `FallbackRag` unless already guarded by it. The
    * main LLM gets no new breaker (the caller passes pre-wrapped LLMs); when it
    * is a `CircuitBreakerLlm`, the builder's retry goes UNDER it, on the same
    * breaker, so one call counts once. When both
@@ -1141,6 +1162,8 @@ export class SmartAgentBuilder {
       circuitBreakers.push(embedderBreaker);
       if (
         historyRag &&
+        (!storeEmbedderBreaker(historyRag) ||
+          storeEmbedderBreaker(historyRag) === embedderBreaker) &&
         !(this._sharedBreakers && isGuardedBy(historyRag, embedderBreaker))
       ) {
         projectedHistoryRag = new FallbackRag(
@@ -1152,6 +1175,8 @@ export class SmartAgentBuilder {
       }
       if (
         toolsRag &&
+        (!storeEmbedderBreaker(toolsRag) ||
+          storeEmbedderBreaker(toolsRag) === embedderBreaker) &&
         !(this._sharedBreakers && isGuardedBy(toolsRag, embedderBreaker))
       ) {
         projectedToolsRag = new FallbackRag(
@@ -1166,6 +1191,10 @@ export class SmartAgentBuilder {
         const scope = meta.scope ?? 'global';
         const store = ragRegistry.get(meta.name, scope);
         if (!store) continue;
+        // A shared registry can contain stores built with another embedder.
+        // Unbound stores inherit this builder's breaker.
+        const storeBreaker = storeEmbedderBreaker(store);
+        if (storeBreaker && storeBreaker !== embedderBreaker) continue;
         if (this._sharedBreakers && isGuardedBy(store, embedderBreaker)) {
           continue;
         }
