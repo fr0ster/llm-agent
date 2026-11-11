@@ -82,7 +82,9 @@ for (const configured of [false, true]) {
           assert.deepEqual(expansions, expands ? [translated] : []);
           assert.ok(queries.length >= 2);
           assert.ok(
-            queries.every((query) => query === (expands ? expanded : translated)),
+            queries.every(
+              (query) => query === (expands ? expanded : translated),
+            ),
           );
           assert.ok(judgments.length >= 2);
           assert.ok(judgments.every((query) => query === translated));
