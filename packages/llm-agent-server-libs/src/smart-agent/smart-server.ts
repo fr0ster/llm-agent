@@ -1446,13 +1446,14 @@ export class SmartServer {
       subAgentConfigs: this.cfg.subAgentConfigs,
       getFileLogger: () => this._fileLogger,
       getEmbedderFactories: () => this._mergedEmbedderFactories ?? {},
-      buildSubAgent: (name, subCfg, parentLogger, factories, injected) =>
+      buildSubAgent: (name, subCfg, parentLogger, factories, injected, cache) =>
         this.buildSubAgent(
           name,
           subCfg as SmartServerWorkerConfig,
           parentLogger,
           factories,
           injected,
+          cache,
         ),
     });
 
@@ -1695,12 +1696,7 @@ export class SmartServer {
     const registry: SubAgentRegistry = new Map();
     if (this.cfg.subAgentConfigs && this.cfg.subAgentConfigs.length > 0) {
       for (const sub of this.cfg.subAgentConfigs) {
-        const subAgent = await this.buildSubAgent(
-          sub.name,
-          sub.config,
-          fileLogger,
-          mergedEmbedderFactories,
-        );
+        const subAgent = await this._workers.construct(sub);
         registry.set(
           sub.name,
           new SmartAgentSubAgent(sub.name, subAgent, {
@@ -2179,6 +2175,7 @@ export class SmartServer {
       requestLogger: IRequestLogger;
       embedder?: IEmbedder;
     },
+    workerCache = this._workers.cache,
   ): Promise<SmartAgent> {
     // A worker's three LLM slots come from the SAME resolver as the pipeline's
     // (§4.6.7): a named key resolves strictly, an omitted role as that name
@@ -2208,7 +2205,7 @@ export class SmartServer {
     // declared RAG/MCP intact across per-session re-wires (review HIGH #1).
     const cached = await resolveWorkerLlmSet({
       name,
-      cache: this._workers.cache,
+      cache: workerCache,
       // Worker-OWN tools RAG (from subCfg.rag, if declared). Built once;
       // re-wired per-session by reference — never re-vectorized.
       // rag.retrieval is server-wide: the worker's stores take the MAIN
@@ -2321,7 +2318,7 @@ export class SmartServer {
     // re-wires never overwrite the cache. See backfillWorkerCacheFromHandle's
     // doc-comment for the rationale.
     if (!injected) {
-      const entry = this._workers.cache.get(name);
+      const entry = workerCache.get(name);
       if (entry) await backfillWorkerCacheFromHandle(entry, handle);
     }
     return handle.agent;
