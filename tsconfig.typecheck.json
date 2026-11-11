@@ -36,6 +36,7 @@
     "packages/hana-vector-rag/src/__tests__/access-fixture.ts",
     "packages/hana-vector-rag/src/__tests__/rag-access-store-conformance.test.ts",
     "packages/hana-vector-rag/src/__tests__/migrate-access.test.ts",
+    "packages/hana-vector-rag/src/__tests__/shared-ddl.test.ts",
     "packages/llm-agent/src/rag/__tests__/owner-filter.test.ts",
     "packages/pg-vector-rag/src/__tests__/access-fixture.ts",
     "packages/pg-vector-rag/src/__tests__/rag-access-store-conformance.test.ts",

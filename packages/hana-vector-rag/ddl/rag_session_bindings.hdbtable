@@ -1,0 +1,1 @@
+COLUMN TABLE "rag_session_bindings" (session_id NVARCHAR(500) PRIMARY KEY, user_id NVARCHAR(500) NOT NULL)

@@ -2,6 +2,7 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { accessTables } from '../src/access-ddl.js';
 import {
   SHARED_CATALOG_TABLE,
   SHARED_DOCUMENTS_TABLE,
@@ -23,6 +24,10 @@ const files: Record<string, string> = {
     sharedCatalogHdbtable(SHARED_CATALOG_TABLE),
   'shared-layout.sql': sharedLayoutSql({ dimension: SHIPPED_DIMENSION }),
 };
+for (const table of accessTables) {
+  files[`${table.name}.hdbtable`] =
+    `COLUMN TABLE "${table.name}" (${table.definition})`;
+}
 for (const [name, body] of Object.entries(files)) {
   writeFileSync(join(dir, name), `${body}\n`);
 }

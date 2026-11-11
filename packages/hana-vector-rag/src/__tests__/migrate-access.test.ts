@@ -115,3 +115,59 @@ for (const layout of ['per-collection', 'shared'] as const)
     for (const record of description.value.records)
       assert.ok((await provider.openCollection(record)).ok);
   });
+
+for (const layout of ['per-collection', 'shared'] as const) {
+  test(`HANA ${layout} skips all DDL for deployed access persistence and still backfills`, async () => {
+    const { db, provider } = accessFixture(layout);
+    assert.ok((await migrateHanaVectorRagAccess(provider)).ok);
+    db.insertRow('rag_collection_catalog', {
+      STORE_NAME: 'legacy',
+      COLLECTION_NAME: 'Legacy',
+      SCOPE: 'user',
+      USER_ID: 'u',
+    });
+    db.createCollectionTable('legacy');
+    db.insertRow(layout === 'shared' ? 'RAG_DOCUMENTS' : 'legacy', {
+      ...(layout === 'shared' ? { COLLECTION: 'legacy' } : {}),
+      ID: 'record',
+      TEXT: 'record',
+      VECTOR: [1, 0, 0],
+      METADATA: JSON.stringify({ userId: 'u' }),
+    });
+    db.statements.length = 0;
+    const result = await migrateHanaVectorRagAccess(provider);
+    assert.ok(result.ok);
+    assert.deepEqual(
+      db.statements.filter((sql) => /^(CREATE|ALTER|DROP)\b/i.test(sql)),
+      [],
+    );
+    const rows = await db.client.query(
+      `SELECT "METADATA" AS "metadata" FROM "${layout === 'shared' ? 'RAG_DOCUMENTS' : 'legacy'}"`,
+    );
+    assert.deepEqual(JSON.parse(String(rows[0]?.metadata)), {
+      ownerScope: 'user',
+      userId: 'u',
+    });
+  });
+}
+
+test('HANA creates missing access tables and adds the legacy catalog role column', async () => {
+  const { db, provider } = accessFixture();
+  assert.ok((await migrateHanaVectorRagAccess(provider)).ok);
+  for (const name of [
+    'rag_roles',
+    'rag_role_assignments',
+    'rag_session_bindings',
+  ]) {
+    assert.ok(
+      db.statements.some((sql) => sql.startsWith(`CREATE TABLE "${name}"`)),
+    );
+  }
+  assert.ok(
+    db.statements.some((sql) =>
+      sql.startsWith(
+        'ALTER TABLE "rag_collection_catalog" ADD (role_id NVARCHAR(5000))',
+      ),
+    ),
+  );
+});
