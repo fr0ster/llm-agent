@@ -1,5 +1,11 @@
 # @mcp-abap-adt/llm-agent-libs
 
+## 31.0.1
+
+### Patch Changes
+
+- 56fd0f8: Exclude the reserved tools RAG store from context text and its token budget, since tools are already offered as definitions. Preserve other retrieved sections and tool selection.
+
 ## 31.0.0
 
 ### Major Changes
