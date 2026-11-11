@@ -1,5 +1,13 @@
 # @mcp-abap-adt/llm-agent
 
+## 31.0.1
+
+### Patch Changes
+
+- d225912: Guard worker embedders with identity-shared circuit breakers and wire worker RAG fallback to the same breaker. Report additional embedder breakers with identifying health labels.
+  
+  Preserve shared collections' embedder breaker bindings and canonicalize provider identities independently of batching options.
+
 ## 31.0.0
 
 ### Major Changes

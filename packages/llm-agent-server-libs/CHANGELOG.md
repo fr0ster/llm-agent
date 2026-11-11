@@ -1,5 +1,17 @@
 # @mcp-abap-adt/llm-agent-server-libs
 
+## 31.0.1
+
+### Patch Changes
+
+- Requires `@mcp-abap-adt/llm-agent` 31.0.1, `@mcp-abap-adt/llm-agent-libs` 31.0.1 and `@mcp-abap-adt/llm-agent-rag` 30.10.2 or later (peer dependencies) for the embedder breaker helpers.
+- e4ca13d: Run every infrastructure closer and propagate a single failure unchanged or multiple failures as an AggregateError.
+- da346f3: Cover DI, plugin, and default client adapters on session responses with pipeline execution.
+- d225912: Guard worker embedders with identity-shared circuit breakers and wire worker RAG fallback to the same breaker. Report additional embedder breakers with identifying health labels.
+  
+  Preserve shared collections' embedder breaker bindings and canonicalize provider identities independently of batching options.
+- f498815: Serialize worker construction per configuration generation, publish only after handle backfill, and await stale construction cleanup when draining workers.
+
 ## 31.0.0
 
 ### Major Changes

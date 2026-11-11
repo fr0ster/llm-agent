@@ -1,5 +1,17 @@
 # @mcp-abap-adt/llm-agent-libs
 
+## 31.0.1
+
+### Patch Changes
+
+- Requires `@mcp-abap-adt/llm-agent` 31.0.1 or later (peer dependency) for labelled circuit breaker health entries.
+- da346f3: Apply request-local client adapters to final pipeline responses in streaming and non-streaming calls.
+- e5a0a7a: Apply configured query expansion when explicitly enabled, using expanded text for retrieval and the original user text for reranking.
+- 56fd0f8: Exclude the reserved tools RAG store from context text and its token budget, since tools are already offered as definitions. Preserve other retrieved sections and tool selection.
+- d225912: Guard worker embedders with identity-shared circuit breakers and wire worker RAG fallback to the same breaker. Report additional embedder breakers with identifying health labels.
+  
+  Preserve shared collections' embedder breaker bindings and canonicalize provider identities independently of batching options.
+
 ## 31.0.0
 
 ### Major Changes
