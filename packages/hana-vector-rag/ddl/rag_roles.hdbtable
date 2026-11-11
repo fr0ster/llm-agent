@@ -1,0 +1,1 @@
+COLUMN TABLE "rag_roles" (role_id NVARCHAR(500) PRIMARY KEY, name NVARCHAR(5000) NOT NULL, description NVARCHAR(5000))

@@ -208,3 +208,20 @@ Backend implementers should run the exported shared suites in
 `testing/rag-access-store-conformance`, `testing/rag-filter-conformance`, and
 `testing/rag-migration-conformance`. They cover role ownership, global filtering,
 creation/deletion races, idempotent migration and invalid-owner reporting.
+
+## HANA HDI deployments
+
+Before running the migration, include all five `hana-vector-rag/ddl/` artifacts
+in the HDI db module: `RAG_COLLECTIONS.hdbtable`, `RAG_DOCUMENTS.hdbtable`,
+`rag_roles.hdbtable`, `rag_role_assignments.hdbtable`, and
+`rag_session_bindings.hdbtable`. Merge the shipped `.hdiconfig` table plugin entry
+into the module configuration and deploy with the HDI deployer. Keep the quoted
+lowercase access table names; adapt the catalog artifact for custom catalog names.
+The catalog artifact already includes `role_id NVARCHAR(5000)`; document owner
+tags live in `METADATA`, not a separate document `role_id` column. No standalone
+index artifacts are needed by the runtime access schema.
+
+Use the shared layout with `autoCreateSchema: false` for the runtime user.
+`migrateHanaVectorRagAccess` checks the configured/current schema catalog and skips
+CREATE/ALTER for existing tables and columns while still backfilling record owners.
+Without predeployed objects it continues creating missing access persistence.

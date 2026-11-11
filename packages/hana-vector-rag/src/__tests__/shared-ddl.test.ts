@@ -3,6 +3,7 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { accessTables } from '../access-ddl.js';
 import { createCatalogTableSql } from '../catalog.js';
 import {
   SHARED_CATALOG_TABLE,
@@ -91,6 +92,10 @@ CREATE ${documents};`,
       'RAG_COLLECTIONS.hdbtable': sharedCatalogHdbtable(SHARED_CATALOG_TABLE),
       'shared-layout.sql': sharedLayoutSql({ dimension: SHIPPED_DIMENSION }),
     };
+    for (const table of accessTables) {
+      expected[`${table.name}.hdbtable`] =
+        `COLUMN TABLE "${table.name}" (${table.definition})`;
+    }
     const files = readdirSync(DDL_DIR).filter((f) => f !== '.hdiconfig');
     assert.deepEqual(files.sort(), Object.keys(expected).sort());
     for (const f of files) {

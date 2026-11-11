@@ -1,4 +1,5 @@
 import { RagError, type Result } from '@mcp-abap-adt/llm-agent';
+import { accessTables } from './access-ddl.js';
 import { createCatalogTableSql, tableExistsSql } from './catalog.js';
 import type { HanaVectorRagProvider } from './hana-vector-rag-provider.js';
 import { quoteIdent } from './schema.js';
@@ -47,18 +48,12 @@ export async function migrateHanaVectorRagAccess(
         if (!(await hasRole())) throw error;
       }
     }
-    await create(
-      'rag_roles',
-      'CREATE TABLE "rag_roles" (role_id NVARCHAR(500) PRIMARY KEY, name NVARCHAR(5000) NOT NULL, description NVARCHAR(5000))',
-    );
-    await create(
-      'rag_role_assignments',
-      'CREATE TABLE "rag_role_assignments" (user_id NVARCHAR(500) NOT NULL, role_id NVARCHAR(500) NOT NULL, PRIMARY KEY (user_id, role_id), FOREIGN KEY (role_id) REFERENCES "rag_roles" (role_id))',
-    );
-    await create(
-      'rag_session_bindings',
-      'CREATE TABLE "rag_session_bindings" (session_id NVARCHAR(500) PRIMARY KEY, user_id NVARCHAR(500) NOT NULL)',
-    );
+    for (const table of accessTables) {
+      await create(
+        table.name,
+        `CREATE TABLE ${quoteIdent(table.name)} (${table.definition})`,
+      );
+    }
     const description = await provider.describeCollections();
     if (!description.ok) throw description.error;
     const recordReports = await provider.migrateRecordOwners();

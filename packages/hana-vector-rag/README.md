@@ -93,15 +93,16 @@ The error codes are exported as constants — `SHARED_LAYOUT_NOT_DEPLOYED`, `INV
 
 The package ships `ddl/` (published with it):
 
-- `RAG_DOCUMENTS.hdbtable`, `RAG_COLLECTIONS.hdbtable`, `.hdiconfig` — for the HDI deployer;
+- `RAG_DOCUMENTS.hdbtable`, `RAG_COLLECTIONS.hdbtable`, `rag_roles.hdbtable`,
+  `rag_role_assignments.hdbtable`, `rag_session_bindings.hdbtable`, `.hdiconfig` — for the HDI deployer;
 - `shared-layout.sql` — the same tables as plain SQL (catalog first), for a classic schema or
   manual use.
 
-Copy the two `.hdbtable` files into the `src/` of your db module (next to your own artifacts) and **merge** the `hdbtable` plugin entry of the shipped `.hdiconfig` into the db module's existing `.hdiconfig` — do not copy it over your own file, which usually lists more plugins (create it from the shipped one only if the module has none). Then run
+Copy all five `.hdbtable` files into the `src/` of your db module (next to your own artifacts) and **merge** the `hdbtable` plugin entry of the shipped `.hdiconfig` into the db module's existing `.hdiconfig` — do not copy it over your own file, which usually lists more plugins (create it from the shipped one only if the module has none). Then run
 `@sap/hdi-deploy` with the container's **design-time user** (`hdi_user`); on Cloud Foundry that is
 the deployer app bound to the HDI service instance. The application itself is bound to the same
 instance and connects as the **runtime user** (`..._RT`), which only needs `SELECT`, `INSERT`,
-`UPDATE`, `DELETE` on the two tables. A working example is in
+`UPDATE`, `DELETE` on these tables. A working example is in
 `test/integration/sql-shared-table/` of the repository.
 
 ### The dimension rule
@@ -262,3 +263,14 @@ require all three owner keys to be absent, including keys with JSON null values.
 Scoped queries retain the existing unbounded candidate read after SQL owner
 filtering so strict scalar identity, namespace and TTL checks run before the
 application takes top-k. This avoids JSON scalar coercion changing identity.
+
+For v31 access persistence, deploy all five artifacts before running
+`migrateHanaVectorRagAccess(provider)`. `RAG_COLLECTIONS.hdbtable` includes
+`role_id NVARCHAR(5000)`; document ownership is stored in `METADATA`, so
+`RAG_DOCUMENTS` needs no `role_id` column. Preserve the quoted lowercase access
+table names. If you customize the catalog name, adapt its artifact accordingly.
+The migration checks `SYS.TABLES` and `SYS.TABLE_COLUMNS` in the configured or
+current schema, skips DDL for existing objects, and always runs the data backfill.
+No separate index artifacts are required: runtime DDL defines only primary keys
+and the role assignment foreign key. The `ddl` directory is included in the npm
+package; `shared-layout.sql` covers only the catalog and documents tables.

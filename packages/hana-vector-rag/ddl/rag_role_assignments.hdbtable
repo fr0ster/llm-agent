@@ -1,0 +1,1 @@
+COLUMN TABLE "rag_role_assignments" (user_id NVARCHAR(500) NOT NULL, role_id NVARCHAR(500) NOT NULL, PRIMARY KEY (user_id, role_id), FOREIGN KEY (role_id) REFERENCES "rag_roles" (role_id))
