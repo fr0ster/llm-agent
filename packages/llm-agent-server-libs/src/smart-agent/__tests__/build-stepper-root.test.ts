@@ -164,6 +164,7 @@ test('Finding 2: shared token ledger is charged by NON-executor roles too (plann
   } as never);
 
   await built.rootStepper.run({
+    caller: { sessionId: 's', userId: 'test-user', isAdmin: false },
     prompt: 'do x',
     knowledgeRag: baseInput.knowledgeRagFor() as never,
     toolsRag: baseInput.toolsRag as never,

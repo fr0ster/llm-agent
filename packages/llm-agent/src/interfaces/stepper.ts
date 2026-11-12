@@ -43,6 +43,8 @@ export interface Budget {
 }
 
 export interface IStepperInput {
+  /** Trusted caller forwarded unchanged to nested reviewers. */
+  caller?: import('./rag-access.js').RagCaller;
   prompt: string;
   knowledgeRag: IKnowledgeRagHandle;
   toolsRag: IToolsRagHandle;

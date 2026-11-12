@@ -154,6 +154,7 @@ export class StepperCoordinatorHandler implements IStageHandler {
     };
     const runOnce = async (prompt: string): Promise<IStepperResult> =>
       built.rootStepper.run({
+        caller: ctx.options?.caller,
         prompt,
         knowledgeRag,
         toolsRag: boundToolsRag,

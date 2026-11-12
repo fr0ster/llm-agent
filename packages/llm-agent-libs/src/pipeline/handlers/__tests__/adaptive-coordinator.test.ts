@@ -115,6 +115,8 @@ for (const mode of [
         name: 'finalizer',
         streamsInterpreterContent: true,
         async finalize(input) {
+          assert.strictEqual(input.caller, callOptions.caller);
+          assert.equal(input.sessionId, input.caller?.sessionId);
           finalized++;
           assert.equal(input.interpreterContentStreamed, mode === 'streamed');
           assert.equal(
@@ -160,11 +162,12 @@ for (const mode of [
         },
       },
     };
+    const callOptions = testCallOptions(options);
     for await (const chunk of pipelineToStream(
       pipeline,
       [...prior, { role: 'user', content: 'request' }],
       [],
-      testCallOptions(options),
+      callOptions,
     )) {
       assert.equal(chunk.ok, true);
       if (chunk.ok) chunks.push(chunk.value);

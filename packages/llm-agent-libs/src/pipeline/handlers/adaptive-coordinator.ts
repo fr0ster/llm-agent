@@ -230,6 +230,7 @@ export class AdaptiveCoordinatorHandler implements IStageHandler {
         });
       } else if (result.outcome === 'answered' && finalizer) {
         const finalized = await finalizer.finalize({
+          caller,
           prompt: request,
           objective: result.plan.spec?.objective ?? request,
           interpreterOutput: result.output,

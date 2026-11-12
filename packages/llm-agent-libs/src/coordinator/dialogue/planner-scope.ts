@@ -10,7 +10,7 @@ import type { TaskBoard } from './task-board.js';
 export interface PlannerScope {
   signal?: AbortSignal;
   toolTrust?: ToolTrust;
-  authorOptions?: Pick<CallOptions, 'usage' | 'sessionId' | 'trace'>;
+  authorOptions?: Pick<CallOptions, 'caller' | 'usage' | 'sessionId' | 'trace'>;
   planAuthor?: IPlanAuthor;
   beforeTool?(name: string): void;
   newRequest?(): void;

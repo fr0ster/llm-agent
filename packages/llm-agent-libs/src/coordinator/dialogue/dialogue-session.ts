@@ -467,6 +467,7 @@ export class DialogueSession {
   }
 
   private constructor(private readonly opts: DialogueSessionOptions) {
+    this.validateCaller({});
     validateTimeZone(opts.timeZone ?? 'UTC');
     for (const [name, value] of [
       ['waitTickMs', opts.waitTickMs ?? 30_000],
@@ -692,6 +693,11 @@ export class DialogueSession {
     text: string,
     opts: Omit<PlannerTurnOptions, 'sessionId'> = {},
   ): Promise<PlannerMessage> {
+    try {
+      this.validateCaller(opts);
+    } catch (error) {
+      return Promise.reject(error);
+    }
     if (this.closing)
       return Promise.reject(new Error('dialogue session closed'));
     return new Promise((resolve, reject) => {
@@ -701,16 +707,27 @@ export class DialogueSession {
       this.schedule();
     });
   }
+  private validateCaller(options: CallOptions): void {
+    if (
+      this.opts.caller.sessionId !== this.opts.id ||
+      (options.caller !== undefined && options.caller !== this.opts.caller) ||
+      (options.sessionId !== undefined &&
+        options.sessionId !== this.opts.caller.sessionId)
+    )
+      throw new Error('Caller does not match dialogue session');
+  }
   private createPlannerScope(
     request: PlannerRequestRecord | undefined,
     options: CallOptions = {},
   ): PlannerScope {
+    this.validateCaller(options);
     return {
       planAuthor: this.opts.planAuthor,
       toolTrust: this.opts.toolTrust,
       authorOptions: {
+        caller: this.opts.caller,
         usage: options.usage ?? this.opts.usage ?? this.opts.board.usage,
-        sessionId: this.opts.id,
+        sessionId: this.opts.caller.sessionId,
         trace: options.trace,
       },
       newRequest: () => {
@@ -780,7 +797,10 @@ export class DialogueSession {
   callTool(
     name: string,
     args: Record<string, unknown>,
-    opts: Pick<CallOptions, 'signal' | 'usage' | 'trace'> = {},
+    opts: Pick<
+      CallOptions,
+      'caller' | 'sessionId' | 'signal' | 'usage' | 'trace'
+    > = {},
   ): Promise<Result<McpToolResult, McpError>> {
     const refuse = (
       message: string,
@@ -789,6 +809,11 @@ export class DialogueSession {
         ok: true,
         value: { isError: true, content: [{ type: 'text', text: message }] },
       });
+    try {
+      this.validateCaller(opts);
+    } catch (error) {
+      return refuse(error instanceof Error ? error.message : String(error));
+    }
     if (opts.signal?.aborted) return refuse('aborted');
     if (this.turnActive || this.active || this.users.length)
       return refuse('session is busy with a coordinator turn');

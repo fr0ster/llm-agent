@@ -87,6 +87,7 @@ export class StepperInterpreter implements IStepperInterpreter {
         // (review R2-F1) so spend is accounted across all branches (soft cap,
         // bounded overshoot under parallelism — review R3-F2).
         result = await subagent.run({
+          caller: ctx.caller,
           prompt: composeTask(node, plan, depsBlock),
           knowledgeRag: ctx.knowledgeRag,
           toolsRag: ctx.toolsRag,
