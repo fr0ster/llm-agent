@@ -1,5 +1,12 @@
 # @mcp-abap-adt/pg-vector-rag
 
+## 31.0.1
+
+### Patch Changes
+
+- Requires `@mcp-abap-adt/llm-agent` 31.0.2 or later (peer dependency) for `migrateRagMetadata`, used by the catalog-owner record migration.
+- 7145092: Backfill migrated record ownership from collection catalog owners, quarantine conflicting identities, and report records without catalog entries. Scan HANA and PostgreSQL documents in bounded keyset batches and extend shared migration coverage.
+
 ## 31.0.0
 
 ### Major Changes
