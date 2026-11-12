@@ -1,6 +1,6 @@
 {
   "name": "@mcp-abap-adt/llm-usage-pg",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "PG usage analytics sink and reader.",
   "type": "module",
   "main": "dist/index.js",
@@ -33,7 +33,7 @@
     "access": "public"
   },
   "peerDependencies": {
-    "@mcp-abap-adt/llm-agent": "^31.0.0",
+    "@mcp-abap-adt/llm-agent": "^32.0.0",
     "@mcp-abap-adt/llm-usage": "^1.0.0"
   },
   "dependencies": {
