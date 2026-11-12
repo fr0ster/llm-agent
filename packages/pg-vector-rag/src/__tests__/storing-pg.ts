@@ -227,7 +227,16 @@ export function storingPg(
         if (sql.includes('pg_attribute'))
           return { rows: [{ dim: opts.sharedDimension }], rowCount: 1 };
         if (sql.startsWith('SELECT to_regclass'))
-          return { rows: [{ present: true }], rowCount: 1 };
+          return {
+            rows: [
+              {
+                present:
+                  String(params[0]).split('.').at(-1) !==
+                  '"rag_collection_roles"',
+              },
+            ],
+            rowCount: 1,
+          };
       }
       const shared = sql.match(SHARED_INSERT);
       if (shared) {

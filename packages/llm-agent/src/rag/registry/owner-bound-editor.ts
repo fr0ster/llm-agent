@@ -11,7 +11,6 @@ export function stampRagOwner(
     ownerScope: owner.scope,
     ...(owner.scope === 'session' ? { sessionId: owner.sessionId } : {}),
     ...(owner.scope === 'user' ? { userId: owner.userId } : {}),
-    ...(owner.scope === 'role' ? { roleId: owner.roleId } : {}),
   };
   for (const key of ['ownerScope', 'sessionId', 'userId', 'roleId'] as const) {
     if (key in metadata && (!(key in tags) || metadata[key] !== tags[key]))

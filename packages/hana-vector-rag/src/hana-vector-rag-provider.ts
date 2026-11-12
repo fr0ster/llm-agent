@@ -26,17 +26,16 @@ import {
   validateRagOwner,
   validateRagStoreName,
 } from '@mcp-abap-adt/llm-agent';
-import { createHanaVectorRagAccessStores } from './access-stores.js';
 import {
   createCatalogTableSql,
   DEFAULT_CATALOG_TABLE,
-  deleteRecordSql,
   probeTableSql,
   selectRecordsSql,
   tableExistsSql,
 } from './catalog.js';
 import {
   catalogRecordExists,
+  deleteCatalogRecord,
   duplicateRefusal,
   updateCatalogRecord,
   writeCatalogRecord,
@@ -174,12 +173,7 @@ export class HanaVectorRagProvider
     this.documentsTable = cfg.documentsTable ?? SHARED_DOCUMENTS_TABLE;
     this.autoCreateSchema = cfg.autoCreateSchema ?? !shared;
     this.editable = cfg.editable ?? true;
-    this.supportedScopes = cfg.supportedScopes ?? [
-      'session',
-      'user',
-      'role',
-      'global',
-    ];
+    this.supportedScopes = cfg.supportedScopes ?? ['session', 'user', 'global'];
     this.clientFactory = cfg.clientFactory;
     this.catalogTable =
       cfg.catalogTable ??
@@ -278,23 +272,7 @@ export class HanaVectorRagProvider
               : { records: [], rejected: [] },
           };
       if (!description.ok) return description;
-      const records: RagCollectionRecord[] = [];
-      const rejected = [...description.value.rejected];
-      if (!description.value.records.some((record) => record.scope === 'role'))
-        return description;
-      const roles =
-        await createHanaVectorRagAccessStores(this).roles.listRoles();
-      if (!roles.ok) return roles;
-      const activeRoles = new Set(roles.value.map((role) => role.roleId));
-      for (const record of description.value.records) {
-        if (record.scope === 'role' && !activeRoles.has(record.roleId)) {
-          rejected.push({
-            storeName: record.storeName,
-            reason: 'Role is missing or tombstoned',
-          });
-        } else records.push(record);
-      }
-      return { ok: true, value: { records, rejected } };
+      return description;
     } catch (err) {
       return { ok: false, error: new RagError(String(err), 'RAG_LIST_ERROR') };
     }
@@ -356,7 +334,7 @@ export class HanaVectorRagProvider
           this.recordCache.beginDeleteStore(this.cacheIdentity(name)),
         );
       if (await this.tableExists(client, this.catalogTable)) {
-        await client.exec(deleteRecordSql(this.catalogTable), [name]);
+        await deleteCatalogRecord(client, this.catalogTable, name);
       }
     } catch (err) {
       return {
@@ -402,6 +380,7 @@ export class HanaVectorRagProvider
                 this.catalogTable,
                 'rag_roles',
                 'rag_role_assignments',
+                'rag_collection_roles',
                 'rag_session_bindings',
               ].includes(t),
           ),
@@ -500,6 +479,7 @@ export class HanaVectorRagProvider
         this.catalogTable,
         'rag_roles',
         'rag_role_assignments',
+        'rag_collection_roles',
         'rag_session_bindings',
       ].includes(name)
     )
@@ -563,6 +543,16 @@ export class HanaVectorRagProvider
             const storeName =
               this.layout === 'shared' ? String(row.collection) : name;
             const owner = owners.get(storeName);
+            if (
+              String(metadata.ownerScope) === 'role' ||
+              (owner && !owner.ok)
+            ) {
+              reported.push({
+                storeName,
+                reason: `Legacy or rejected owner on record ${row.id}; administrative resolution required`,
+              });
+              continue;
+            }
             const tagged: RagMetadata =
               owner && !owner.ok
                 ? { ...metadata, ownerScope: 'invalid' }

@@ -5,7 +5,6 @@ import {
   missingRoleMigrationConformanceCase,
   ragMigrationConformanceCases,
 } from '@mcp-abap-adt/llm-agent/testing/rag-migration-conformance';
-import { createPgVectorRagAccessStores } from '../access-stores.js';
 import { migratePgVectorRagAccess } from '../migrate-access.js';
 import { PgVectorRagProvider } from '../pg-vector-rag-provider.js';
 import { accessFixture } from './access-fixture.js';
@@ -106,25 +105,20 @@ for (const layout of ['per-collection', 'shared'] as const)
         migrate: () => migratePgVectorRagAccess(provider),
         describe: () => provider.describeCollections(),
       });
-      assert.ok(
-        (
-          await createPgVectorRagAccessStores(provider).roles.createRole({
-            roleId: 'r1',
-            name: 'Role',
-          })
-        ).ok,
+      await f.client.query(
+        "INSERT INTO rag_collection_catalog (store_name, collection_name, scope, role_id) VALUES ('role_docs', 'Role Docs', 'role', 'r1')",
       );
-      const created = await provider.createCollection('role_docs', {
-        scope: 'role',
-        roleId: 'r1',
-      });
-      assert.ok(created.ok);
+      const migrated = await migratePgVectorRagAccess(provider);
+      assert.ok(migrated.ok);
+      assert.ok(
+        migrated.value.reported.some((row) => row.storeName === 'role_docs'),
+      );
       const catalog = await provider.describeCollections();
       assert.ok(catalog.ok);
-      const role = catalog.value.records.find((r) => r.scope === 'role');
-      assert.ok(role);
-      assert.equal(role.roleId, 'r1');
-      assert.ok((await provider.openCollection(role)).ok);
+      assert.equal(
+        catalog.value.records.some((row) => row.storeName === 'role_docs'),
+        false,
+      );
     } finally {
       provider.close();
       await f.close();

@@ -3,8 +3,11 @@ import type {
   IRagProviderRegistry,
   IRagRegistry,
 } from '../../interfaces/rag.js';
-import type { RagAccess, RagCaller } from '../../interfaces/rag-access.js';
-import { RoleInUseError } from '../../interfaces/rag-access.js';
+import type {
+  IRagRoleAdmin,
+  RagAccess,
+  RagCaller,
+} from '../../interfaces/rag-access.js';
 import { checkRagAccess } from '../access/check-access.js';
 import {
   buildRagCollectionToolEntries,
@@ -15,10 +18,11 @@ import {
 export function buildRagAdminToolEntries(opts: {
   caller: RagCaller;
   access: RagAccess;
+  roleAdmin: IRagRoleAdmin;
   registry: IRagRegistry;
   providerRegistry: IRagProviderRegistry;
 }): RagToolEntry[] {
-  const { caller, access, registry } = opts;
+  const { caller, access, roleAdmin } = opts;
   if (!caller.isAdmin) return [];
   const create = buildRagCollectionToolEntries(opts).find(
     (entry) => entry.toolDefinition.name === 'rag_create_collection',
@@ -61,7 +65,7 @@ export function buildRagAdminToolEntries(opts: {
   const roleId = z.string().trim().min(1);
   return [
     entry('rag_role_list', 'List library RAG roles.', {}, async () => {
-      const result = await access.roles.listRoles();
+      const result = await roleAdmin.listRoles();
       return result.ok
         ? { ok: true, roles: result.value }
         : refusal(result.error);
@@ -73,7 +77,7 @@ export function buildRagAdminToolEntries(opts: {
       async (_context, args) => {
         if (typeof args.roleId !== 'string' || typeof args.name !== 'string')
           return { ok: false, error: 'roleId and name are required' };
-        const result = await access.roles.createRole({
+        const result = await roleAdmin.createRole({
           roleId: args.roleId,
           name: args.name,
           ...(typeof args.description === 'string'
@@ -87,16 +91,12 @@ export function buildRagAdminToolEntries(opts: {
     ),
     entry(
       'rag_role_delete',
-      'Delete a role only when it owns no collections.',
+      'Delete an unassigned and unbound role.',
       { roleId },
       async (_context, args) => {
         if (typeof args.roleId !== 'string')
           return { ok: false, error: 'roleId is required' };
-        const isRoleInUse = registry
-          .list()
-          .some((meta) => meta.scope === 'role' && meta.roleId === args.roleId);
-        if (isRoleInUse) return refusal(new RoleInUseError());
-        const result = await access.roles.deleteRole(args.roleId);
+        const result = await roleAdmin.deleteRole(args.roleId);
         return result.ok ? { ok: true } : refusal(result.error);
       },
     ),
@@ -107,7 +107,7 @@ export function buildRagAdminToolEntries(opts: {
       async (_context, args) => {
         if (typeof args.roleId !== 'string' || typeof args.userId !== 'string')
           return { ok: false, error: 'roleId and userId are required' };
-        const result = await access.roles.assign(args.userId, args.roleId);
+        const result = await roleAdmin.assign(args.userId, args.roleId);
         return result.ok ? { ok: true } : refusal(result.error);
       },
     ),
@@ -118,37 +118,46 @@ export function buildRagAdminToolEntries(opts: {
       async (_context, args) => {
         if (typeof args.roleId !== 'string' || typeof args.userId !== 'string')
           return { ok: false, error: 'roleId and userId are required' };
-        const result = await access.roles.revoke(args.userId, args.roleId);
+        const result = await roleAdmin.revoke(args.userId, args.roleId);
         return result.ok ? { ok: true } : refusal(result.error);
       },
     ),
+    ...(['bind', 'unbind'] as const).map((operation) =>
+      entry(
+        `rag_role_${operation}_collection`,
+        `${operation} a role and a collection.`,
+        { roleId, collectionName: z.string().min(1) },
+        async (_context, args) => {
+          if (
+            typeof args.roleId !== 'string' ||
+            typeof args.collectionName !== 'string'
+          )
+            return {
+              ok: false,
+              error: 'roleId and collectionName are required',
+            };
+          const result = await roleAdmin[
+            operation === 'bind' ? 'bindCollection' : 'unbindCollection'
+          ](args.collectionName, args.roleId);
+          return result.ok ? { ok: true } : refusal(result.error);
+        },
+      ),
+    ),
     entry(
       'rag_create_shared_collection',
-      'Create an authorized role or global RAG collection.',
+      'Create an authorized global RAG collection.',
       {
         providerName: z.string().min(1),
         collectionName: z.string().min(1),
-        scope: z.enum(['role', 'global']),
-        roleId: roleId.optional(),
+        scope: z.enum(['global']),
       },
       async (context, args) => {
-        if (args.scope === 'role') {
-          const roles = await access.roles.listRoles();
-          if (!roles.ok) return refusal(roles.error);
-          if (!roles.value.some((role) => role.roleId === args.roleId))
-            return {
-              ok: false,
-              code: 'RAG_ROLE_NOT_FOUND',
-              error: 'Role does not exist',
-            };
-        }
         if (!create)
           return { ok: false, error: 'Collection creation is unavailable' };
         return create.handler(context, {
           provider: args.providerName,
           name: args.collectionName,
           scope: args.scope,
-          roleId: args.roleId,
         });
       },
     ),

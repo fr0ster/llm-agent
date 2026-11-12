@@ -31,42 +31,42 @@ A collection created before this release has a collection and no record: take it
 
 ## Collection access persistence
 
-`createQdrantRagAccessStores(provider)` supplies roles, assignments and immutable
-session bindings. `migrateQdrantRagAccess(provider)` initializes access collections,
-indexes catalog `role_id` and record `ownerScope` as keywords, backfills record
-scope from existing identity keys, and reports invalid catalog owners and conflicting
-record keys. Conflicting records remain unmatched. Re-running migration is idempotent.
+Run `migrateQdrantVectorRagAccess(provider)` before serving requests and check its
+`Result`. The idempotent migration creates `rag_collection_roles` alongside
+`rag_roles`, `rag_role_assignments`, and `rag_session_bindings`. Legacy role-owned
+catalog entries and records tagged `ownerScope: 'role'` remain unchanged and are
+reported for administrative resolution. They are never converted to global data.
 
-The default catalog uses `rag_roles`, `rag_role_assignments` and
-`rag_session_bindings`. Custom catalogs prefix these names with `<catalog>_`.
-These collections are reserved and hidden from collection lists.
+`createQdrantVectorRagAccessStores(provider)` returns `{ roles, roleAdmin, bindings }`
+from the same persistence. Pass `{ decision, roles, bindings }` as `RagAccess`;
+keep `roleAdmin` in trusted host administration code. A collection has one session,
+user, or global owner plus zero or more bound roles. Call
+`roleAdmin.bindCollection(collectionName, roleId)` to share an existing collection.
+A missing role or collection is refused. Delete a role only after revoking every
+assignment and unbinding every collection; otherwise deletion returns `RoleInUseError`.
 
-Bindings use deterministic point ids, insert-only writes and compare-after-write;
-access persistence requires Qdrant >= 1.17.0 for insert-only support. Catalog/access
-writes use `wait=true&ordering=strong`, reads use `consistency=all`, and initialization
-requires equal replication and write-consistency factors.
+Access requires the owner or at least one bound role and the host decision.
+Global reads remain available to everyone subject to that decision; global writes
+require an admin and a write decision. Admin status does not bypass other owners.
+Retrieval applies the collection owner's record filter before top-k; `roleId` is
+not a record identity key. Access-check errors deny access.
 
-Role collection creation writes its catalog intent, then verifies that the role
-exists and is not tombstoned. A refusal compensates by removing its catalog record.
-Assignments carry the persisted role generation token, so a delayed write cannot
-grant membership after a role id is deleted and recreated.
-Roles use an immutable revision chain with deterministic `(roleId, revision)` point
-ids. Each transition inserts the next revision with `insert_only` and verifies its
-unique fence: exactly one transition wins. The states are `active`, `deleting(token)`
-and `deleted`. Deletion checks the catalog and clears assignments only while holding
-a deleting revision; each side effect is followed by a transition from that revision.
-A failed transition stops the stale deleter. An in-use role returns to active only
-through a transition from the same deleting revision and returns `RoleInUseError`.
+Qdrant stores collection-role intents in the `rag_collection_roles` access
+collection. Binding verifies the catalog write identity and role generation after
+persisting its intent, and compensates refused writes. Role deletion uses the
+existing revision CAS chain, scanning both assignments and collection bindings
+while fenced in the deleting state. Access accepts only active role generations.
+Custom catalogs use the existing catalog-prefixed access collection names.
 
-Membership and collection creation require active state. Creation persists its own
-catalog intent before reading the current role revision and compensates its intent
-on refusal. A later `deleteRole` takes over a crashed deletion by transitioning to a
-new deleting token. A stale assignment deletion already in flight can reduce
-permissions after takeover/reversion, but its failed fence prevents role deletion
-and orphaned collections. Revision points remain persisted, including logical
-deletions and recreations; they are not removed or compacted by this protocol.
-No lease, timer or instance-wide recovery is used. Orphan catalog intents remain
-refused on reopen/hydration and are reported by migration.
+Collection deletion removes the catalog record, then data, then role bindings.
+A durable generation marker denies role access during deletion and lets a new
+provider resume after a crash. Bindings match `catalog_write_id`, so old grants
+never apply to a recreated collection. Deleting the same Qdrant collection from
+two processes concurrently is not supported: run deletions from one process;
+retries are safe. An owner with an existing handle may still read their own
+collection while it is being deleted, until the data is removed; global readers
+may likewise continue reading, subject to the host decision.
+
 
 Every valid new record carries a positive `ownerScope` tag. Queries match this scope
 and its required identity before top-k. Global queries use `ownerScope = 'global'`

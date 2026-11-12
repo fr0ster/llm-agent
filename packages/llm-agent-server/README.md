@@ -166,3 +166,11 @@ llm-agent --config smart-server.yaml --local-user-id alice
 read/write decisions allow access subject to library ownership checks, with
 in-memory roles and bindings. This mode is **not for production**. Omitting the
 flag refuses startup; request headers never select a fallback identity.
+
+## Collection roles in v32
+
+Collections have exactly one session, user, or global owner. Share them with any
+number of bound roles through the host's `IRagRoleAdmin`. Runtime `RagAccess` is
+`{ decision, roles: IRagRoleCheck, bindings }`; role administration is separate.
+The backend access-store factory returns both contracts over the same persistence.
+See [MIGRATION-v32](../../docs/MIGRATION-v32.md) for wiring, migration reports, and HDI deployment.

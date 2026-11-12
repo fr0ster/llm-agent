@@ -1,5 +1,6 @@
 import {
-  type IRagRoleStore,
+  type IRagRoleAdmin,
+  type IRagRoleCheck,
   type ISessionBindingStore,
   RagError,
   type Result,
@@ -12,7 +13,11 @@ import { quoteIdent } from './schema.js';
 
 export function createHanaVectorRagAccessStores(
   provider: HanaVectorRagProvider,
-): { roles: IRagRoleStore; bindings: ISessionBindingStore } {
+): {
+  roles: IRagRoleCheck;
+  roleAdmin: IRagRoleAdmin;
+  bindings: ISessionBindingStore;
+} {
   async function run<T>(work: () => Promise<T>): Promise<Result<T, RagError>> {
     try {
       return { ok: true, value: await work() };
@@ -26,7 +31,63 @@ export function createHanaVectorRagAccessStores(
       };
     }
   }
-  const roles: IRagRoleStore = {
+  const roles: IRagRoleCheck & IRagRoleAdmin = {
+    collectionRoles: (collectionName) =>
+      run(async () => {
+        const { client } = await provider.accessPersistence();
+        const rows = await client.query(
+          'SELECT role_id AS "roleId" FROM "rag_collection_roles" WHERE collection_name = ? ORDER BY role_id',
+          [collectionName],
+        );
+        return new Set(
+          rows.map((row) => {
+            if (typeof row.roleId !== 'string')
+              throw new RagError(
+                'Invalid collection role',
+                'RAG_ACCESS_STORE_ERROR',
+              );
+            return row.roleId;
+          }),
+        );
+      }),
+    bindCollection: (collectionName, roleId) =>
+      run(async () => {
+        const { client, catalogTable } = await provider.accessPersistence();
+        await roleTransaction(client, async (connection) => {
+          const role = await connection.query(
+            'SELECT role_id FROM "rag_roles" WHERE role_id = ? FOR UPDATE',
+            [roleId],
+          );
+          if (!role.length)
+            throw new RagError('Role does not exist', 'RAG_ROLE_NOT_FOUND');
+          const collection = await connection.query(
+            `SELECT store_name FROM ${quoteIdent(catalogTable)} WHERE collection_name = ? AND scope IN ('session', 'user', 'global') FOR UPDATE`,
+            [collectionName],
+          );
+          if (!collection.length)
+            throw new RagError(
+              'Collection does not exist',
+              'RAG_COLLECTION_NOT_FOUND',
+            );
+          const bound = await connection.query(
+            'SELECT role_id FROM "rag_collection_roles" WHERE collection_name = ? AND role_id = ?',
+            [collectionName, roleId],
+          );
+          if (!bound.length)
+            await connection.exec(
+              'INSERT INTO "rag_collection_roles" (collection_name, role_id) VALUES (?, ?)',
+              [collectionName, roleId],
+            );
+        });
+      }),
+    unbindCollection: (collectionName, roleId) =>
+      run(async () => {
+        const { client } = await provider.accessPersistence();
+        await client.exec(
+          'DELETE FROM "rag_collection_roles" WHERE collection_name = ? AND role_id = ?',
+          [collectionName, roleId],
+        );
+      }),
     listRoles: () =>
       run(async () => {
         const { client } = await provider.accessPersistence();
@@ -63,17 +124,21 @@ export function createHanaVectorRagAccessStores(
       }),
     deleteRole: (roleId) =>
       run(async () => {
-        const { client, catalogTable } = await provider.accessPersistence();
+        const { client } = await provider.accessPersistence();
         await roleTransaction(client, async (connection) => {
           await connection.query(
             'SELECT role_id FROM "rag_roles" WHERE role_id = ? FOR UPDATE',
             [roleId],
           );
           const rows = await connection.query(
-            `SELECT 1 FROM ${quoteIdent(catalogTable)} WHERE scope = 'role' AND role_id = ?`,
+            'SELECT role_id FROM "rag_role_assignments" WHERE role_id = ?',
             [roleId],
           );
-          if (rows.length) throw new RoleInUseError();
+          const bound = await connection.query(
+            'SELECT role_id FROM "rag_collection_roles" WHERE role_id = ?',
+            [roleId],
+          );
+          if (rows.length || bound.length) throw new RoleInUseError();
           await connection.exec(
             'DELETE FROM "rag_role_assignments" WHERE role_id = ?',
             [roleId],
@@ -169,5 +234,9 @@ export function createHanaVectorRagAccessStores(
         });
       }),
   };
-  return { roles, bindings };
+  return {
+    roles: { rolesOf: roles.rolesOf, collectionRoles: roles.collectionRoles },
+    roleAdmin: roles,
+    bindings,
+  };
 }

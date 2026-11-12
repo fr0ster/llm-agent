@@ -1,6 +1,7 @@
 import type {
   IRagAccessDecision,
   IRagCallerResolver,
+  IRagRoleAdmin,
   RagAccess,
   RagCaller,
 } from '../interfaces/rag-access.js';
@@ -18,10 +19,14 @@ export function fixedCallerResolver(
   return { resolve: async () => ({ ok: true, value: { ...identity } }) };
 }
 
-export function testRagAccess(callers: readonly RagCaller[] = []): RagAccess {
+export function testRagAccess(
+  callers: readonly RagCaller[] = [],
+): RagAccess & { roleAdmin: IRagRoleAdmin } {
+  const roles = new InMemoryRagRoleStore(() => true);
   return {
     decision: allowAllDecision(),
-    roles: new InMemoryRagRoleStore(() => false),
+    roles,
+    roleAdmin: roles,
     bindings: new InMemorySessionBindingStore(callers),
   };
 }

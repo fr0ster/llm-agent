@@ -6,8 +6,7 @@ import {
   missingRoleMigrationConformanceCase,
   ragMigrationConformanceCases,
 } from '@mcp-abap-adt/llm-agent/testing/rag-migration-conformance';
-import { createQdrantRagAccessStores } from '../access-stores.js';
-import { migrateQdrantRagAccess } from '../migrate-access.js';
+import { migrateQdrantVectorRagAccess } from '../migrate-access.js';
 import { deterministicUUID } from '../qdrant-rag.js';
 import { QdrantRagProvider } from '../qdrant-rag-provider.js';
 import { type StubPoint, startQdrantStub } from './qdrant-stub.js';
@@ -111,7 +110,7 @@ for (const entry of ragMigrationConformanceCases) {
             ),
           );
         },
-        migrate: () => migrateQdrantRagAccess(provider),
+        migrate: () => migrateQdrantVectorRagAccess(provider),
         describe: () => provider.describeCollections(),
         snapshot: async () =>
           JSON.stringify(
@@ -148,7 +147,7 @@ for (const entry of ragMigrationConformanceCases) {
             },
           });
         },
-        migrate: () => migrateQdrantRagAccess(provider),
+        migrate: () => migrateQdrantVectorRagAccess(provider),
         describe: () => provider.describeCollections(),
       });
       assert.deepEqual(legacy.payloadSchema, {
@@ -161,25 +160,12 @@ for (const entry of ragMigrationConformanceCases) {
         'rag_session_bindings',
       ])
         assert.ok(stub.collections.has(name));
-      const roles = createQdrantRagAccessStores(provider).roles;
-      assert.ok((await roles.createRole({ roleId: 'r', name: 'Role' })).ok);
-      assert.ok(
-        (
-          await provider.createCollection('role_docs', {
-            scope: 'role',
-            roleId: 'r',
-            dimension: 64,
-          })
-        ).ok,
-      );
       const catalog = await provider.describeCollections();
       assert.ok(catalog.ok);
-      const record = catalog.value.records.find(
-        (record) => record.scope === 'role',
+      assert.equal(
+        catalog.value.records.some((row) => row.storeName === 'orphan'),
+        false,
       );
-      assert.ok(record);
-      assert.equal(record.roleId, 'r');
-      assert.ok((await provider.openCollection(record)).ok);
     } finally {
       await stub.close();
     }

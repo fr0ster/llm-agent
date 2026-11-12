@@ -70,14 +70,13 @@ access and authentication remain the host's responsibility.
 **Threat:** A model or caller names another owner's collection, forges a role or
 identity, or reuses a session to read or mutate another caller's data.
 
-**Guarantee:** One discriminated owner model covers session, user, role and global
-collections. Access is ownership AND the server's `canRead`/`canWrite` decision,
-checked in collection tools, registry hydration and both retrieval paths. Session
-owners must match the caller's session; user owners must match its user; role
-owners require membership from the library's assignments table only. Global
-reads require the decision; global creation and writes additionally require
-`caller.isAdmin`. Admin status never bypasses another owner's boundary. A server
-decision can narrow access only; allowing cannot widen ownership.
+**Guarantee:** Collections have one session, user or global owner and any number
+of bound roles. Access requires an owner match or a role shared by the caller and
+collection, AND the host's `canRead`/`canWrite` decision. Collection tools,
+hydration and both retrieval paths enforce the same rule through `IRagRoleCheck`.
+Hosts own role management through the separate `IRagRoleAdmin` contract. Global
+reads require the decision; global creation and writes also require admin status.
+Admin status never bypasses another owner's boundary.
 
 **Fail closed:** Missing caller identity, denied or failing decisions, failed
 role lookups and conflicting session bindings refuse access. There is no implicit
@@ -91,7 +90,7 @@ requests. Revocation is checked again at retrieval. Builder configuration requir
 queries match that tag and the owner identity before top-k; global records carry
 no private identity keys. Migration backfills valid legacy records and retags
 conflicting owners `invalid`, unmatched by scoped queries, with an administrative
-report. Missing-role catalog entries are refused. `history` and `tools` are
+report. Legacy role-owned catalog entries are reported and refused without conversion. `history` and `tools` are
 reserved in every scope. Built-in history is an implicit per-session store owned
 by the request's session, never global, and always session-filtered. History
 requires a matching persisted session-to-user binding but skips the server read
@@ -109,7 +108,7 @@ roles do not survive restart. The CLI's `--local-user-id` test-helper mode is
 explicit single-user local use only, not production authentication.
 
 **Role lifecycle and backend limits:** Role deletion is refused while the role
-owns collections. PostgreSQL and HANA use row locks; Qdrant uses catalog intent
+has user assignments or collection bindings. PostgreSQL and HANA use row locks; Qdrant uses catalog intent
 and an immutable revision-chain CAS, with no persistent lock or timeout-based
 recovery. Its revision chain grows without compaction. Qdrant requires strong
 ordered writes, all-replica reads and full replica acknowledgements; insert-only
@@ -118,7 +117,7 @@ no exact-version restriction. HANA reads all owner candidates before app-side
 top-k, with a possible memory/latency cost. PostgreSQL was checked with PGlite;
 HANA and Qdrant validation used mocks/fakes, not live services.
 
-See [MIGRATION-v31.md](MIGRATION-v31.md) and
+See [MIGRATION-v32.md](MIGRATION-v32.md) and
 [Qdrant access persistence](../packages/qdrant-rag/README.md#collection-access-persistence).
 
 ---
@@ -206,12 +205,17 @@ persistence, and only then acquires its session graph. Resolver, binding and
 acquisition failures return HTTP 403. Graph reuse also refuses a changed user,
 including concurrent builds. There is no header-selected or shared fallback user.
 
-Catalog hydration admits only collections that pass ownership and the server's
-read decision. Each request refreshes visibility using library-owned role
-assignments; revocation hides a role collection in an already open session.
-Retrieval still rechecks access at execution, so retaining a store reference
-does not preserve revoked permissions. Missing-role catalog entries are skipped
-and reported once per server. Session metadata stores the authenticated user ID.
+Catalog hydration admits a collection only when its owner matches or the caller
+holds at least one role bound to the collection, and the host read decision allows
+it. Roles are access bindings, never collection owners. Each request refreshes
+membership and collection bindings through `IRagRoleCheck`; revocation or unbinding
+hides a collection in an already open session. Retrieval rechecks access at
+execution and filters records by the collection's owner before top-k.
+Check failures deny access. Admin status does not bypass another owner's boundary;
+global writes require both admin status and the host write decision. Legacy
+role-owned catalog entries and records are reported without conversion to global
+data. Role administration uses the separate host-only `IRagRoleAdmin` contract.
+Session metadata stores the authenticated user ID.
 The host must supply access stores from its catalog persistence to preserve
 bindings across restarts and instances. In-memory stores provide process-local
 persistence only. The CLI's explicit single-user local flag uses test access

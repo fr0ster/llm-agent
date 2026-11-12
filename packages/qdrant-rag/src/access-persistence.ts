@@ -3,6 +3,7 @@ import { deterministicUUID } from './qdrant-rag.js';
 
 export const ACCESS_COLLECTIONS = [
   'rag_roles',
+  'rag_collection_roles',
   'rag_role_assignments',
   'rag_session_bindings',
 ] as const;
@@ -164,7 +165,8 @@ export class QdrantAccessPersistence {
     collection: string,
     key: string,
   ): Promise<AccessPayload | undefined> {
-    collection = accessCollectionName(this.catalog, collection);
+    if (collection !== this.catalog)
+      collection = accessCollectionName(this.catalog, collection);
     const response = await this.checked(
       `/collections/${collection}/points?consistency=all`,
       {
@@ -193,7 +195,8 @@ export class QdrantAccessPersistence {
 
   async rows(collection: string): Promise<AccessPayload[]> {
     if (collection !== this.catalog)
-      collection = accessCollectionName(this.catalog, collection);
+      if (collection !== this.catalog)
+        collection = accessCollectionName(this.catalog, collection);
     const rows: AccessPayload[] = [];
     let offset: string | number | null = null;
     do {
@@ -238,7 +241,8 @@ export class QdrantAccessPersistence {
     key: string,
     payload: AccessPayload,
   ): Promise<void> {
-    collection = accessCollectionName(this.catalog, collection);
+    if (collection !== this.catalog)
+      collection = accessCollectionName(this.catalog, collection);
     await this.checked(
       `/collections/${collection}/points?wait=true&ordering=strong`,
       {
@@ -252,7 +256,8 @@ export class QdrantAccessPersistence {
   }
 
   async remove(collection: string, key: string): Promise<void> {
-    collection = accessCollectionName(this.catalog, collection);
+    if (collection !== this.catalog)
+      collection = accessCollectionName(this.catalog, collection);
     await this.checked(
       `/collections/${collection}/points/delete?wait=true&ordering=strong`,
       {
@@ -267,7 +272,8 @@ export class QdrantAccessPersistence {
     key: string,
     payload: AccessPayload,
   ): Promise<void> {
-    collection = accessCollectionName(this.catalog, collection);
+    if (collection !== this.catalog)
+      collection = accessCollectionName(this.catalog, collection);
     await this.checked(
       `/collections/${collection}/points/payload?wait=true&ordering=strong`,
       {
@@ -284,7 +290,8 @@ export class QdrantAccessPersistence {
     collection: string,
     fields: Readonly<Record<string, string>>,
   ): Promise<void> {
-    collection = accessCollectionName(this.catalog, collection);
+    if (collection !== this.catalog)
+      collection = accessCollectionName(this.catalog, collection);
     await this.checked(
       `/collections/${collection}/points/delete?wait=true&ordering=strong`,
       {
@@ -351,6 +358,17 @@ export class QdrantAccessPersistence {
     return stored?.fence === fence
       ? roleRevision(next, roleId, revision)
       : undefined;
+  }
+
+  /** A durable deletion marker blocks bindings to this catalog generation. */
+  async collectionDeleting(
+    storeName: string,
+    writeId: string,
+  ): Promise<boolean> {
+    return !!(await this.read(
+      'rag_collection_roles',
+      JSON.stringify(['deleting', storeName, writeId]),
+    ));
   }
 
   async requireRole(roleId: string): Promise<AccessPayload> {

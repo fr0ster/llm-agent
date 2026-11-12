@@ -28,7 +28,7 @@ test("addRagCollection({ name:'x', rag }) without meta.scope fails the build", a
   assert.equal(result.error.name, 'BuilderConfigError');
 });
 
-for (const scope of ['session', 'user', 'role'] as const) {
+for (const scope of ['session', 'user'] as const) {
   test(`addRagCollection requires the ${scope} owner identifier`, async () => {
     const result = await new SmartAgentBuilder({ skipModelValidation: true })
       .withRagAccess(testRagAccess())
@@ -49,7 +49,6 @@ const owners: RagCollectionOwner[] = [
   { scope: 'global' },
   { scope: 'session', sessionId: 'session-a' },
   { scope: 'user', userId: 'user-a' },
-  { scope: 'role', roleId: 'role-a' },
 ];
 
 for (const owner of owners) {
@@ -267,7 +266,7 @@ test('built history is per-request session owned, isolated and inaccessible thro
       assert.ok(list);
       const listed = await list.handler({}, {});
       assert.equal(JSON.stringify(listed).includes('history'), false);
-      for (const scope of ['session', 'user', 'role', 'global']) {
+      for (const scope of ['session', 'user', 'global']) {
         for (const name of [
           'rag_describe_collection',
           'rag_add',

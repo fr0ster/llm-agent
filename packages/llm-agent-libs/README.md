@@ -20,7 +20,7 @@ constructs no LLM provider. See "Optional peer dependencies" below and docs/MIGR
 ## RAG access and collection owners (#304)
 
 Call `withRagAccess(access)` before `build()`, including for agents with no custom
-collections. The access object supplies the server decision, library role store,
+collections. The access object supplies the server decision, host-supplied `IRagRoleCheck`,
 and session binding store. Production callers must supply their configured access;
 tests can explicitly use `testRagAccess()` from
 `@mcp-abap-adt/llm-agent/testing/rag-access-testing`.
@@ -45,7 +45,7 @@ const handle = result.value;
 ```
 
 Every `addRagCollection` needs an explicit `meta.scope`: `session` also needs
-`sessionId`, `user` needs `userId`, and `role` needs `roleId`. `global` needs no
+`sessionId` and `user` needs `userId`. `global` needs no
 owner identifier. No missing scope defaults to global. `unwrapBuilderResult`
 adapts the result to a handle for callers that propagate configuration errors:
 `await builder.build().then(unwrapBuilderResult)`.
@@ -341,3 +341,8 @@ In-flight tool batches settle normally; already started LLM calls are not
 interrupted. Without retention, ordinary LLM completion continues. See the
 [contracts package guide](../llm-agent/README.md#dialogue-task-completion-signals)
 for host tool emission and successful settlement behavior.
+
+In v32, share a collection by binding roles with the host's separate `IRagRoleAdmin`.
+The builder receives only `{ decision, roles, bindings }`; it never manages roles.
+Both retrieval paths check collection access live and filter by its owner before top-k.
+See [the v32 migration guide](../../docs/MIGRATION-v32.md).

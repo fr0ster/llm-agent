@@ -1091,7 +1091,7 @@ export class SmartServer {
       !config.ragAccess?.decision?.canRead ||
       !config.ragAccess.decision.canWrite ||
       !config.ragAccess.roles?.rolesOf ||
-      !config.ragAccess.roles.listRoles ||
+      !config.ragAccess.roles.collectionRoles ||
       !config.ragAccess.bindings?.bind
     ) {
       throw new ServerConfigError('callerResolver and ragAccess are required');

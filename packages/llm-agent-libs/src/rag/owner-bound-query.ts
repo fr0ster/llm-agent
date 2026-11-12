@@ -18,11 +18,10 @@ export type OwnedRagStore = SmartAgentRagStores[string];
 export const denyRagAccess: RagAccess = {
   decision: { canRead: async () => false, canWrite: async () => false },
   roles: {
-    listRoles: async () => ({ ok: false, error: new RagAccessDeniedError() }),
-    createRole: async () => ({ ok: false, error: new RagAccessDeniedError() }),
-    deleteRole: async () => ({ ok: false, error: new RagAccessDeniedError() }),
-    assign: async () => ({ ok: false, error: new RagAccessDeniedError() }),
-    revoke: async () => ({ ok: false, error: new RagAccessDeniedError() }),
+    collectionRoles: async () => ({
+      ok: false,
+      error: new RagAccessDeniedError(),
+    }),
     rolesOf: async () => ({ ok: false, error: new RagAccessDeniedError() }),
   },
   bindings: {
@@ -51,20 +50,12 @@ export async function ownerBoundQuery(
     return deny();
   }
   const filter = options.ragFilter;
+  if (filter && 'roleId' in filter) return deny();
   if (filter?.owner !== undefined) return deny();
   if (filter?.sessionId !== undefined && filter.sessionId !== caller.sessionId)
     return deny();
   if (filter?.userId !== undefined && filter.userId !== caller.userId)
     return deny();
-  if (filter?.roleId !== undefined) {
-    if (typeof filter.roleId !== 'string') return deny();
-    try {
-      const roles = await access.roles.rolesOf(caller.userId);
-      if (!roles.ok || !roles.value.has(filter.roleId)) return deny();
-    } catch {
-      return deny();
-    }
-  }
   const isHistory =
     store.owner.scope === 'session' && 'perRequest' in store.owner;
   const owner = isHistory
@@ -87,9 +78,7 @@ export async function ownerBoundQuery(
         ? { owner, sessionId: owner.sessionId }
         : owner.scope === 'user'
           ? { owner, userId: owner.userId }
-          : owner.scope === 'role'
-            ? { owner, roleId: owner.roleId }
-            : { owner };
+          : { owner };
   const result = await store.rag.query(embedding, k, {
     ...options,
     ragFilter: { ...filter, ...ownerFilter },

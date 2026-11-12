@@ -1,122 +1,47 @@
 import assert from 'node:assert/strict';
 import { mock, test } from 'node:test';
-import { symmetricEmbedder } from '@mcp-abap-adt/llm-agent';
-import {
-  type RagAccessBarrierHook,
-  ragAccessStoreConformanceCases,
-} from '@mcp-abap-adt/llm-agent/testing/rag-access-store-conformance';
+import { checkRagAccess, symmetricEmbedder } from '@mcp-abap-adt/llm-agent';
+import { ragAccessStoreConformanceCases } from '@mcp-abap-adt/llm-agent/testing/rag-access-store-conformance';
 import { conformanceEmbedder } from '@mcp-abap-adt/llm-agent/testing/rag-filter-conformance';
-import { createQdrantRagAccessStores } from '../access-stores.js';
-import { migrateQdrantRagAccess } from '../migrate-access.js';
+import { createQdrantVectorRagAccessStores } from '../access-stores.js';
+import { migrateQdrantVectorRagAccess } from '../migrate-access.js';
 import { QdrantRagProvider } from '../qdrant-rag-provider.js';
 import { startQdrantStub } from './qdrant-stub.js';
 
-for (const entry of ragAccessStoreConformanceCases) {
-  test(`Qdrant ${entry.name}`, async () => {
+for (const item of ragAccessStoreConformanceCases) {
+  test(`Qdrant ${item.name}`, async () => {
     const stub = await startQdrantStub();
     try {
-      await entry.run(async () => {
-        let hook: RagAccessBarrierHook = async () => {};
-        const config = {
-          name: 'access',
-          url: stub.baseUrl,
-          embedder: symmetricEmbedder(conformanceEmbedder()),
-        };
-        const provider = new QdrantRagProvider(config);
-        const other = new QdrantRagProvider(config);
-        assert.ok((await migrateQdrantRagAccess(provider)).ok);
-        const persistence = await provider.accessPersistence();
-        const otherPersistence = await other.accessPersistence();
-        const stores = createQdrantRagAccessStores(provider);
-        const roles = {
-          ...stores.roles,
-          async createRole(
-            role: Parameters<typeof stores.roles.createRole>[0],
-          ) {
-            const result = await stores.roles.createRole(role);
-            if (result.ok && role.roleId === 'in-use') {
-              assert.ok(
-                (
-                  await provider.createCollection('used', {
-                    scope: 'role',
-                    roleId: role.roleId,
-                    dimension: 64,
-                  })
-                ).ok,
-              );
-            }
-            return result;
-          },
-          async deleteRole(roleId: string) {
-            await hook('deletion');
-            return stores.roles.deleteRole(roleId);
-          },
-        };
-        return {
-          roles,
-          deletionSerializesCreation: false,
-          setDeletionRaceHooks(hooks) {
-            {
-              const db = persistence;
-              const rows = db.rows.bind(db);
-              let first = true;
-              db.rows = async (collection) => {
-                if (collection === 'rag_role_assignments' && first) {
-                  first = false;
-                  await hooks.deletionPaused();
-                }
-                return rows(collection);
-              };
-            }
-            {
-              const db = otherPersistence;
-              const requireRole = db.requireRole.bind(db);
-              db.requireRole = async (roleId) => {
-                await hooks.creationPaused();
-                return requireRole(roleId);
-              };
-            }
-          },
-          async rawCatalogRoleIds() {
-            const db = await provider.accessPersistence();
-            return (await db.rows(db.catalog))
-              .filter((row) => row.scope === 'role')
-              .map((row) => String(row.role_id));
-          },
-          async rawAssignmentRoleIds() {
-            const db = await provider.accessPersistence();
-            return (await db.rows('rag_role_assignments')).map((row) =>
-              String(row.role_id),
-            );
-          },
-          bindings: {
-            getUserId: (sessionId) =>
-              createQdrantRagAccessStores(other).bindings.getUserId(sessionId),
-            bind: (sessionId, userId) =>
-              createQdrantRagAccessStores(other).bindings.bind(
-                sessionId,
-                userId,
-              ),
-          },
-          setBarrierHook(next) {
-            hook = next;
-          },
-          async createRoleCollection(roleId) {
-            await hook('creation');
-            const result = await other.createCollection(`docs_${roleId}`, {
-              scope: 'role',
-              roleId,
-              dimension: 64,
-            });
-            return result.ok ? { ok: true, value: undefined } : result;
-          },
-          async collections() {
-            const result = await provider.describeCollections();
-            assert.ok(result.ok);
-            return result.value.records;
-          },
-        };
+      const provider = new QdrantRagProvider({
+        name: 'test',
+        url: stub.baseUrl,
+        embedder: symmetricEmbedder({
+          embed: async () => ({ vector: [1, 0, 0] }),
+        }),
       });
+      assert.ok((await migrateQdrantVectorRagAccess(provider)).ok);
+      await item.run(async () => ({
+        ...createQdrantVectorRagAccessStores(provider),
+        independentStores: async () =>
+          createQdrantVectorRagAccessStores(
+            new QdrantRagProvider({
+              name: 'other',
+              url: stub.baseUrl,
+              embedder: symmetricEmbedder({
+                embed: async () => ({ vector: [1, 0, 0] }),
+              }),
+            }),
+          ),
+        deleteCollection: (name: string) => provider.deleteCollection(name),
+        async createCollection(name: string) {
+          const result = await provider.createCollection(name, {
+            scope: 'user',
+            userId: 'owner',
+            dimension: 3,
+          });
+          return result.ok ? { ok: true as const, value: undefined } : result;
+        },
+      }));
     } finally {
       await stub.close();
     }
@@ -131,8 +56,8 @@ test('Qdrant two binding-store instances give exactly one ok and preserve the wi
       url: stub.baseUrl,
       embedder: symmetricEmbedder(conformanceEmbedder()),
     };
-    const a = createQdrantRagAccessStores(new QdrantRagProvider(config));
-    const b = createQdrantRagAccessStores(new QdrantRagProvider(config));
+    const a = createQdrantVectorRagAccessStores(new QdrantRagProvider(config));
+    const b = createQdrantVectorRagAccessStores(new QdrantRagProvider(config));
     const results = await Promise.all([
       a.bindings.bind('s', 'u1'),
       b.bindings.bind('s', 'u2'),
@@ -141,7 +66,7 @@ test('Qdrant two binding-store instances give exactly one ok and preserve the wi
     const winner = results[0].ok ? 'u1' : 'u2';
     assert.ok(
       (
-        await createQdrantRagAccessStores(
+        await createQdrantVectorRagAccessStores(
           new QdrantRagProvider(config),
         ).bindings.bind('s', winner)
       ).ok,
@@ -159,11 +84,11 @@ test('Qdrant tombstoned role grants no membership, refuses creation and deleteRo
       url: stub.baseUrl,
       embedder: symmetricEmbedder(conformanceEmbedder()),
     });
-    const stores = createQdrantRagAccessStores(provider);
+    const stores = createQdrantVectorRagAccessStores(provider);
     assert.ok(
-      (await stores.roles.createRole({ roleId: 'r', name: 'Role' })).ok,
+      (await stores.roleAdmin.createRole({ roleId: 'r', name: 'Role' })).ok,
     );
-    assert.ok((await stores.roles.assign('u', 'r')).ok);
+    assert.ok((await stores.roleAdmin.assign('u', 'r')).ok);
     const db = await provider.accessPersistence();
     const current = await db.roleState('r');
     assert.ok(current);
@@ -172,16 +97,12 @@ test('Qdrant tombstoned role grants no membership, refuses creation and deleteRo
     assert.ok(membership.ok);
     assert.equal(membership.value.has('r'), false);
     assert.equal(
-      (
-        await provider.createCollection('crashed', {
-          scope: 'role',
-          roleId: 'r',
-          dimension: 64,
-        })
-      ).ok,
+      (await stores.roleAdmin.createRole({ roleId: 'r', name: 'Replacement' }))
+        .ok,
       false,
     );
-    assert.ok((await stores.roles.deleteRole('r')).ok);
+    assert.ok((await stores.roleAdmin.revoke('u', 'r')).ok);
+    assert.ok((await stores.roleAdmin.deleteRole('r')).ok);
     assert.equal((await db.roleState('r'))?.state, 'deleted');
     assert.equal(stub.collections.has('rag_role_locks'), false);
   } finally {
@@ -199,7 +120,12 @@ test('Qdrant rejects servers without insert_only before writing access data', as
       embedder: symmetricEmbedder(conformanceEmbedder()),
     });
     assert.equal(
-      (await createQdrantRagAccessStores(provider).bindings.bind('s', 'u')).ok,
+      (
+        await createQdrantVectorRagAccessStores(provider).bindings.bind(
+          's',
+          'u',
+        )
+      ).ok,
       false,
     );
     assert.equal(stub.collections.size, 0);
@@ -223,7 +149,12 @@ test('Qdrant refuses insufficient replica write consistency and never writes a b
       embedder: symmetricEmbedder(conformanceEmbedder()),
     });
     assert.equal(
-      (await createQdrantRagAccessStores(provider).bindings.bind('s', 'u')).ok,
+      (
+        await createQdrantVectorRagAccessStores(provider).bindings.bind(
+          's',
+          'u',
+        )
+      ).ok,
       false,
     );
     assert.equal(
@@ -254,19 +185,20 @@ test('Qdrant custom catalogs isolate access stores and reserve their internal co
       ...config,
       catalogCollection: 'catalog_b',
     });
-    const first = createQdrantRagAccessStores(a);
-    const second = createQdrantRagAccessStores(b);
+    const first = createQdrantVectorRagAccessStores(a);
+    const second = createQdrantVectorRagAccessStores(b);
     assert.ok((await first.bindings.bind('s', 'u1')).ok);
     assert.ok((await second.bindings.bind('s', 'u2')).ok);
     assert.ok(
-      (await first.roles.createRole({ roleId: 'r', name: 'First' })).ok,
+      (await first.roleAdmin.createRole({ roleId: 'r', name: 'First' })).ok,
     );
-    assert.ok((await first.roles.assign('u1', 'r')).ok);
+    assert.ok((await first.roleAdmin.assign('u1', 'r')).ok);
     const other = await second.roles.rolesOf('u1');
     assert.ok(other.ok);
     assert.equal(other.value.size, 0);
     for (const name of [
       'rag_roles',
+      'rag_collection_roles',
       'rag_role_assignments',
       'rag_session_bindings',
     ]) {
@@ -323,58 +255,31 @@ test('Qdrant binding reads fail closed on backend failures', async () => {
       request.path === '/collections/rag_session_bindings/points' &&
       request.method === 'POST';
     assert.equal(
-      (await createQdrantRagAccessStores(provider).bindings.bind('s', 'u')).ok,
+      (
+        await createQdrantVectorRagAccessStores(provider).bindings.bind(
+          's',
+          'u',
+        )
+      ).ok,
       false,
     );
     stub.failOn = undefined;
     assert.equal(
-      (await createQdrantRagAccessStores(provider).bindings.bind('s', 'other'))
-        .ok,
-      false,
-    );
-    assert.ok(
-      (await createQdrantRagAccessStores(provider).bindings.bind('s', 'u')).ok,
-    );
-  } finally {
-    await stub.close();
-  }
-});
-
-test('Qdrant a catalog intent left after a crash with a missing role never resolves and migration reports it', async () => {
-  const stub = await startQdrantStub();
-  try {
-    const provider = new QdrantRagProvider({
-      name: 'intent',
-      url: stub.baseUrl,
-      embedder: symmetricEmbedder(conformanceEmbedder()),
-    });
-    const db = await provider.accessPersistence();
-    // Step-wise crash fixture: catalog intent persisted, role deleted before verification.
-    await db.insert('rag_collection_catalog', 'orphan', {
-      store_name: 'orphan',
-      collection_name: 'Orphan',
-      scope: 'role',
-      role_id: 'gone',
-    });
-    stub.collections.set('orphan', { size: 64, points: new Map() });
-    assert.equal(
       (
-        await provider.openCollection({
-          storeName: 'orphan',
-          name: 'Orphan',
-          scope: 'role',
-          roleId: 'gone',
-        })
+        await createQdrantVectorRagAccessStores(provider).bindings.bind(
+          's',
+          'other',
+        )
       ).ok,
       false,
     );
-    const description = await provider.describeCollections();
-    assert.ok(description.ok);
-    assert.equal(description.value.records.length, 0);
-    const migration = await migrateQdrantRagAccess(provider);
-    assert.ok(migration.ok);
     assert.ok(
-      migration.value.reported.some((row) => row.storeName === 'orphan'),
+      (
+        await createQdrantVectorRagAccessStores(provider).bindings.bind(
+          's',
+          'u',
+        )
+      ).ok,
     );
   } finally {
     await stub.close();
@@ -389,74 +294,6 @@ function controlledBarrier() {
   return { promise, release };
 }
 
-for (const first of ['creation', 'deletion'] as const) {
-  test(`Qdrant ${first} intent is durable before the competing instance verifies`, async () => {
-    const stub = await startQdrantStub();
-    const entered = controlledBarrier();
-    const resume = controlledBarrier();
-    let intercept: ReturnType<typeof mock.method> | undefined;
-    try {
-      const config = {
-        name: 'race',
-        url: stub.baseUrl,
-        embedder: symmetricEmbedder(conformanceEmbedder()),
-      };
-      const a = new QdrantRagProvider(config);
-      const b = new QdrantRagProvider(config);
-      const roles = createQdrantRagAccessStores(a).roles;
-      assert.ok((await roles.createRole({ roleId: 'r', name: 'Role' })).ok);
-      await b.accessPersistence();
-      const fetch = globalThis.fetch;
-      let paused = false;
-      intercept = mock.method(
-        globalThis,
-        'fetch',
-        async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
-          const path = new URL(String(input)).pathname;
-          const response = await fetch(input, init);
-          if (
-            !paused &&
-            ((first === 'creation' &&
-              path === '/collections/rag_collection_catalog/points' &&
-              init?.method === 'PUT') ||
-              (first === 'deletion' &&
-                path === '/collections/rag_roles/points' &&
-                init?.method === 'PUT'))
-          ) {
-            paused = true;
-            entered.release();
-            await resume.promise;
-          }
-          return response;
-        },
-      );
-      const create = () =>
-        b.createCollection('race_docs', {
-          scope: 'role',
-          roleId: 'r',
-          dimension: 64,
-        });
-      const remove = () => roles.deleteRole('r');
-      const started = first === 'creation' ? create() : remove();
-      await entered.promise;
-      assert.equal(
-        (await (first === 'creation' ? remove() : create())).ok,
-        false,
-      );
-      resume.release();
-      assert.ok((await started).ok);
-      const catalog = await a.describeCollections();
-      assert.ok(catalog.ok);
-      assert.equal(catalog.value.records.length, first === 'creation' ? 1 : 0);
-      assert.equal(stub.collections.has('rag_role_locks'), false);
-    } finally {
-      resume.release();
-      intercept?.mock.restore();
-      await stub.close();
-    }
-  });
-}
-
 test('Qdrant a delayed assignment cannot attach to a recreated role identity', async () => {
   const stub = await startQdrantStub();
   const entered = controlledBarrier();
@@ -468,7 +305,7 @@ test('Qdrant a delayed assignment cannot attach to a recreated role identity', a
       url: stub.baseUrl,
       embedder: symmetricEmbedder(conformanceEmbedder()),
     });
-    const roles = createQdrantRagAccessStores(provider).roles;
+    const roles = createQdrantVectorRagAccessStores(provider).roleAdmin;
     assert.ok((await roles.createRole({ roleId: 'r', name: 'Old' })).ok);
     const fetch = globalThis.fetch;
     let paused = false;
@@ -495,7 +332,8 @@ test('Qdrant a delayed assignment cannot attach to a recreated role identity', a
     assert.ok((await roles.createRole({ roleId: 'r', name: 'New' })).ok);
     resume.release();
     assert.equal((await assigning).ok, false);
-    const membership = await roles.rolesOf('u');
+    const membership =
+      await createQdrantVectorRagAccessStores(provider).roles.rolesOf('u');
     assert.ok(membership.ok);
     assert.equal(membership.value.has('r'), false);
   } finally {
@@ -505,158 +343,424 @@ test('Qdrant a delayed assignment cannot attach to a recreated role identity', a
   }
 });
 
-test('Qdrant refused creation compensates only its own catalog write intent', async () => {
+for (const pause of ['before-insert', 'after-insert'] as const) {
+  for (const recreate of [false, true]) {
+    test(`Qdrant collection deletion fences delayed binding: ${pause}, recreate=${recreate}`, async () => {
+      const stub = await startQdrantStub();
+      const entered = controlledBarrier();
+      const resume = controlledBarrier();
+      let intercept: ReturnType<typeof mock.method> | undefined;
+      try {
+        const config = {
+          name: 'race',
+          url: stub.baseUrl,
+          embedder: symmetricEmbedder(conformanceEmbedder()),
+        };
+        const provider = new QdrantRagProvider(config);
+        const other = new QdrantRagProvider(config);
+        const first = createQdrantVectorRagAccessStores(provider);
+        const second = createQdrantVectorRagAccessStores(other);
+        assert.ok(
+          (
+            await provider.createCollection('docs', {
+              scope: 'user',
+              userId: 'owner',
+              dimension: 64,
+            })
+          ).ok,
+        );
+        assert.ok(
+          (await first.roleAdmin.createRole({ roleId: 'r', name: 'Reader' }))
+            .ok,
+        );
+        const db = await other.accessPersistence();
+        const insert = db.insert.bind(db);
+        intercept = mock.method(
+          db,
+          'insert',
+          async (...args: Parameters<typeof insert>) => {
+            if (args[0] === 'rag_collection_roles' && args[2].role_id === 'r') {
+              if (pause === 'after-insert') await insert(...args);
+              entered.release();
+              await resume.promise;
+              if (pause === 'before-insert') await insert(...args);
+              return;
+            }
+            return insert(...args);
+          },
+        );
+        const binding = second.roleAdmin.bindCollection('docs', 'r');
+        await entered.promise;
+        assert.ok((await provider.deleteCollection('docs')).ok);
+        if (recreate)
+          assert.ok(
+            (
+              await provider.createCollection('docs', {
+                scope: 'user',
+                userId: 'owner',
+                dimension: 64,
+              })
+            ).ok,
+          );
+        resume.release();
+        assert.equal((await binding).ok, false);
+        assert.deepEqual(await first.roles.collectionRoles('docs'), {
+          ok: true,
+          value: new Set(),
+        });
+        assert.equal(
+          (await db.rows('rag_collection_roles')).some(
+            (row) => row.collection_name === 'docs',
+          ),
+          false,
+        );
+        assert.ok((await first.roleAdmin.deleteRole('r')).ok);
+      } finally {
+        resume.release();
+        intercept?.mock.restore();
+        await stub.close();
+      }
+    });
+  }
+}
+
+test('Qdrant collectionRoles ignores a stale catalog generation even with an active role', async () => {
   const stub = await startQdrantStub();
-  let intercept: ReturnType<typeof mock.method> | undefined;
   try {
     const provider = new QdrantRagProvider({
-      name: 'compensation',
+      name: 'generation',
       url: stub.baseUrl,
       embedder: symmetricEmbedder(conformanceEmbedder()),
     });
-    await provider.accessPersistence();
-    const fetch = globalThis.fetch;
-    let replaced = false;
-    intercept = mock.method(
-      globalThis,
-      'fetch',
-      async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
-        if (
-          !replaced &&
-          new URL(String(input)).pathname ===
-            '/collections/rag_collection_catalog/points/delete'
-        ) {
-          const collection = stub.collections.get('rag_collection_catalog');
-          assert.ok(collection);
-          const point = [...collection.points.values()].find(
-            (point) => point.payload.store_name === 'docs',
-          );
-          assert.ok(point);
-          point.payload = {
-            store_name: 'docs',
-            collection_name: 'Replacement',
-            scope: 'global',
-            write_id: 'replacement',
-          };
-          replaced = true;
-        }
-        return fetch(input, init);
-      },
-    );
-    assert.equal(
+    const stores = createQdrantVectorRagAccessStores(provider);
+    assert.ok(
       (
         await provider.createCollection('docs', {
-          scope: 'role',
-          roleId: 'missing',
+          scope: 'user',
+          userId: 'owner',
           dimension: 64,
         })
       ).ok,
+    );
+    assert.ok(
+      (await stores.roleAdmin.createRole({ roleId: 'r', name: 'Reader' })).ok,
+    );
+    const db = await provider.accessPersistence();
+    const role = await db.requireRole('r');
+    await db.insert('rag_collection_roles', JSON.stringify(['docs', 'r']), {
+      collection_name: 'docs',
+      role_id: 'r',
+      role_token: role.token,
+      catalog_write_id: 'old-generation',
+    });
+    assert.deepEqual(await stores.roles.collectionRoles('docs'), {
+      ok: true,
+      value: new Set(),
+    });
+    await db.remove(db.catalog, 'docs');
+    assert.deepEqual(await stores.roles.collectionRoles('docs'), {
+      ok: true,
+      value: new Set(),
+    });
+  } finally {
+    await stub.close();
+  }
+});
+
+test('Qdrant collectionRoles fails closed for corrupt bindings and malformed deletion markers', async () => {
+  const stub = await startQdrantStub();
+  try {
+    const provider = new QdrantRagProvider({
+      name: 'corrupt-bindings',
+      url: stub.baseUrl,
+      embedder: symmetricEmbedder(conformanceEmbedder()),
+    });
+    const stores = createQdrantVectorRagAccessStores(provider);
+    const db = await provider.accessPersistence();
+    const intent = JSON.stringify(['deleting', 'docs', 'generation']);
+    const malformed = [
+      { collection_name: 'docs' },
+      { collection_name: 'docs', deletion_intent: intent },
+      {
+        collection_name: 'docs',
+        store_name: 'docs',
+        write_id: 'generation',
+        deletion_intent: 'invalid',
+      },
+      {
+        collection_name: 'docs',
+        store_name: 'docs',
+        write_id: 'generation',
+        deletion_intent: intent,
+        role_token: 'incomplete-binding',
+      },
+    ];
+    for (const payload of malformed) {
+      await db.insert('rag_collection_roles', 'corrupt', payload);
+      const result = await stores.roles.collectionRoles('docs');
+      assert.equal(result.ok, false);
+      if (!result.ok) assert.equal(result.error.code, 'RAG_ACCESS_STORE_ERROR');
+      await db.remove('rag_collection_roles', 'corrupt');
+    }
+  } finally {
+    await stub.close();
+  }
+});
+
+test('Qdrant a durable collection deletion intent denies role access and concurrent binding before catalog removal', async () => {
+  const stub = await startQdrantStub();
+  const entered = controlledBarrier();
+  const resume = controlledBarrier();
+  let intercept: ReturnType<typeof mock.method> | undefined;
+  try {
+    const config = {
+      name: 'intent',
+      url: stub.baseUrl,
+      embedder: symmetricEmbedder(conformanceEmbedder()),
+    };
+    const provider = new QdrantRagProvider(config);
+    const first = createQdrantVectorRagAccessStores(provider);
+    const second = createQdrantVectorRagAccessStores(
+      new QdrantRagProvider(config),
+    );
+    assert.ok(
+      (
+        await provider.createCollection('docs', {
+          scope: 'user',
+          userId: 'owner',
+          dimension: 64,
+        })
+      ).ok,
+    );
+    assert.ok(
+      (await first.roleAdmin.createRole({ roleId: 'r', name: 'Reader' })).ok,
+    );
+    assert.ok((await first.roleAdmin.bindCollection('docs', 'r')).ok);
+    const db = await provider.accessPersistence();
+    const remove = db.removeWhere.bind(db);
+    intercept = mock.method(
+      db,
+      'removeWhere',
+      async (...args: Parameters<typeof remove>) => {
+        if (args[0] === db.catalog && args[1].write_id) {
+          entered.release();
+          await resume.promise;
+        }
+        return remove(...args);
+      },
+    );
+    const deleting = provider.deleteCollection('docs');
+    await entered.promise;
+    assert.deepEqual(await second.roles.collectionRoles('docs'), {
+      ok: true,
+      value: new Set(),
+    });
+    assert.equal(
+      (await second.roleAdmin.bindCollection('docs', 'r')).ok,
       false,
     );
-    assert.equal(replaced, true);
-    const description = await provider.describeCollections();
-    assert.ok(description.ok);
-    assert.equal(description.value.records[0]?.name, 'Replacement');
+    resume.release();
+    assert.ok((await deleting).ok);
+    assert.ok((await first.roleAdmin.deleteRole('r')).ok);
   } finally {
+    resume.release();
     intercept?.mock.restore();
     await stub.close();
   }
 });
 
-for (const pause of ['scan', 'assignment-delete'] as const)
-  test(`Qdrant D1/C/D2 cannot strand a catalog intent without an active role: ${pause}`, async () => {
+test('Qdrant a failed catalog deletion preserves data and bindings and can be retried', async () => {
+  const stub = await startQdrantStub();
+  try {
+    const provider = new QdrantRagProvider({
+      name: 'retry',
+      url: stub.baseUrl,
+      embedder: symmetricEmbedder(conformanceEmbedder()),
+    });
+    const stores = createQdrantVectorRagAccessStores(provider);
+    assert.ok(
+      (
+        await provider.createCollection('docs', {
+          scope: 'user',
+          userId: 'owner',
+          dimension: 64,
+        })
+      ).ok,
+    );
+    assert.ok(
+      (await stores.roleAdmin.createRole({ roleId: 'r', name: 'Reader' })).ok,
+    );
+    assert.ok((await stores.roleAdmin.bindCollection('docs', 'r')).ok);
+    assert.ok((await stores.roleAdmin.assign('reader', 'r')).ok);
+    const data = stub.collections.get('docs');
+    assert.ok(data);
+    const point = { id: 'document', vector: [1], payload: { text: 'Keep me' } };
+    data.points.set(point.id, point);
+    const db = await provider.accessPersistence();
+    const originalBindings = await db.rows('rag_collection_roles');
+    stub.failOn = (request) =>
+      request.path === '/collections/rag_collection_catalog/points/delete';
+    const result = await provider.deleteCollection('docs');
+    assert.equal(result.ok, false);
+    if (!result.ok)
+      assert.equal(result.error.code, 'RAG_CATALOG_RECORD_DELETE');
+    assert.equal(stub.collections.has('docs'), true);
+    assert.deepEqual([...data.points.values()], [point]);
+    assert.ok(await db.read(db.catalog, 'docs'));
+    const bindings = await db.rows('rag_collection_roles');
+    assert.deepEqual(bindings, originalBindings);
+    assert.equal(bindings.length, 1);
+    assert.equal(bindings[0]?.role_id, 'r');
+    assert.equal(
+      bindings.some((row) => row.deletion_intent),
+      false,
+    );
+    assert.deepEqual(await stores.roles.rolesOf('reader'), {
+      ok: true,
+      value: new Set(['r']),
+    });
+    assert.deepEqual(await stores.roles.collectionRoles('docs'), {
+      ok: true,
+      value: new Set(['r']),
+    });
+    stub.failOn = undefined;
+    assert.ok((await provider.deleteCollection('docs')).ok);
+    assert.ok((await stores.roleAdmin.revoke('reader', 'r')).ok);
+    assert.ok((await stores.roleAdmin.deleteRole('r')).ok);
+  } finally {
+    await stub.close();
+  }
+});
+
+for (const crashStage of ['catalog', 'data', 'bindings'] as const) {
+  test(`Qdrant deletion resumes after ${crashStage} removal via a new provider`, async () => {
     const stub = await startQdrantStub();
-    const d1Entered = controlledBarrier();
-    const d1Resume = controlledBarrier();
-    const cEntered = controlledBarrier();
-    const cResume = controlledBarrier();
+    const intercepts: ReturnType<typeof mock.method>[] = [];
     try {
       const config = {
-        name: 'fence',
+        name: 'crash-retry',
         url: stub.baseUrl,
         embedder: symmetricEmbedder(conformanceEmbedder()),
       };
-      const a = new QdrantRagProvider(config);
-      const b = new QdrantRagProvider(config);
-      const roles = createQdrantRagAccessStores(a).roles;
-      assert.ok((await roles.createRole({ roleId: 'r', name: 'Role' })).ok);
-      assert.ok((await roles.assign('u', 'r')).ok);
-      const db = await a.accessPersistence();
-      const other = await b.accessPersistence();
-      const rows = db.rows.bind(db);
-      let paused = false;
-      const intercept = mock.method(db, 'rows', async (collection: string) => {
-        if (
-          pause === 'scan' &&
-          collection === 'rag_role_assignments' &&
-          !paused
-        ) {
-          paused = true;
-          d1Entered.release();
-          await d1Resume.promise;
-        }
-        return rows(collection);
+      const original = new QdrantRagProvider(config);
+      const stores = createQdrantVectorRagAccessStores(original);
+      assert.ok(
+        (
+          await original.createCollection('docs', {
+            scope: 'user',
+            userId: 'owner',
+            dimension: 64,
+          })
+        ).ok,
+      );
+      assert.ok(
+        (await stores.roleAdmin.createRole({ roleId: 'r', name: 'Reader' })).ok,
+      );
+      assert.ok((await stores.roleAdmin.assign('reader', 'r')).ok);
+      assert.ok((await stores.roleAdmin.bindCollection('docs', 'r')).ok);
+      const db = await original.accessPersistence();
+      const catalog = await db.read(db.catalog, 'docs');
+      const role = await db.requireRole('r');
+      assert.equal(typeof catalog?.write_id, 'string');
+      const remove = db.removeWhere.bind(db);
+      intercepts.push(
+        mock.method(
+          db,
+          'removeWhere',
+          async (...args: Parameters<typeof remove>) => {
+            await remove(...args);
+            if (
+              (crashStage === 'catalog' && args[0] === db.catalog) ||
+              (crashStage === 'bindings' && args[0] === 'rag_collection_roles')
+            ) {
+              throw new Error('Simulated process crash');
+            }
+          },
+        ),
+      );
+      if (crashStage === 'data') {
+        const fetch = globalThis.fetch;
+        intercepts.push(
+          mock.method(
+            globalThis,
+            'fetch',
+            async (...args: Parameters<typeof fetch>) => {
+              const response = await fetch(...args);
+              if (
+                String(args[0]) === `${stub.baseUrl}/collections/docs` &&
+                args[1]?.method === 'DELETE'
+              ) {
+                throw new Error('Simulated process crash');
+              }
+              return response;
+            },
+          ),
+        );
+      }
+      assert.equal((await original.deleteCollection('docs')).ok, false);
+      if (crashStage === 'catalog') {
+        assert.equal(await db.read(db.catalog, 'docs'), undefined);
+        assert.ok(
+          (await db.rows('rag_collection_roles')).some(
+            (row) => row.deletion_intent,
+          ),
+        );
+        assert.deepEqual(await stores.roles.collectionRoles('docs'), {
+          ok: true,
+          value: new Set(),
+        });
+      }
+      for (const intercept of intercepts) intercept.mock.restore();
+      const retry = new QdrantRagProvider(config);
+      assert.ok((await retry.deleteCollection('docs')).ok);
+      assert.equal(stub.collections.has('docs'), false);
+      assert.equal(await db.read(db.catalog, 'docs'), undefined);
+      assert.deepEqual(await db.rows('rag_collection_roles'), []);
+      assert.deepEqual(await stores.roles.collectionRoles('docs'), {
+        ok: true,
+        value: new Set(),
       });
-      const remove = db.remove.bind(db);
-      const removalGate = mock.method(
-        db,
-        'remove',
-        async (collection: string, key: string) => {
-          if (
-            pause === 'assignment-delete' &&
-            collection === 'rag_role_assignments' &&
-            !paused
-          ) {
-            paused = true;
-            d1Entered.release();
-            await d1Resume.promise;
-          }
-          return remove(collection, key);
+      assert.ok((await retry.deleteCollection('docs')).ok);
+      assert.ok(
+        (
+          await retry.createCollection('docs', {
+            scope: 'user',
+            userId: 'owner',
+            dimension: 64,
+          })
+        ).ok,
+      );
+      const readers = createQdrantVectorRagAccessStores(retry);
+      // Even a delayed old-generation binding cannot grant access after recreation.
+      await db.insert('rag_collection_roles', JSON.stringify(['docs', 'r']), {
+        collection_name: 'docs',
+        role_id: 'r',
+        role_token: role.token,
+        catalog_write_id: catalog?.write_id,
+      });
+      assert.ok((await readers.bindings.bind('reader-session', 'reader')).ok);
+      const denied = await checkRagAccess(
+        { sessionId: 'reader-session', userId: 'reader', isAdmin: false },
+        { name: 'docs', owner: { scope: 'user', userId: 'owner' } },
+        'read',
+        {
+          ...readers,
+          decision: { canRead: async () => true, canWrite: async () => true },
         },
       );
-      const requireRole = other.requireRole.bind(other);
-      const creationGate = mock.method(
-        other,
-        'requireRole',
-        async (roleId: string) => {
-          cEntered.release();
-          await cResume.promise;
-          return requireRole(roleId);
-        },
-      );
-      const d1 = roles.deleteRole('r');
-      await d1Entered.promise;
-      const c = b.createCollection('docs', {
-        scope: 'role',
-        roleId: 'r',
-        dimension: 64,
+      assert.equal(!denied.ok && denied.error.code, 'RAG_ACCESS_DENIED');
+
+      assert.deepEqual(await readers.roles.rolesOf('reader'), {
+        ok: true,
+        value: new Set(['r']),
       });
-      await cEntered.promise;
-      assert.equal((await roles.deleteRole('r')).ok, false);
-      cResume.release();
-      const created = await c;
-      d1Resume.release();
-      await d1;
-      const catalog = await db.rows(db.catalog);
-      const active = await roles.listRoles();
-      assert.ok(active.ok);
-      for (const row of catalog)
-        if (row.scope === 'role')
-          assert.ok(
-            active.value.some((role) => role.roleId === row.role_id),
-            'raw catalog requires active role',
-          );
-      const assignments = await roles.rolesOf('u');
-      assert.ok(assignments.ok);
-      assert.ok(created.ok);
-      assert.equal((await db.roleState('r'))?.state, 'active');
-      assert.equal(assignments.value.has('r'), pause === 'scan');
-      removalGate.mock.restore();
-      intercept.mock.restore();
-      creationGate.mock.restore();
+      assert.deepEqual(await readers.roles.collectionRoles('docs'), {
+        ok: true,
+        value: new Set(),
+      });
     } finally {
-      d1Resume.release();
-      cResume.release();
+      for (const intercept of intercepts) intercept.mock.restore();
       await stub.close();
     }
   });
+}

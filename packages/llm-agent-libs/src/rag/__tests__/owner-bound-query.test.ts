@@ -195,12 +195,24 @@ for (const ragFilter of [{ userId: 'bob' }, { roleId: 'unassigned' }]) {
 it('role identity comes from the assignments table and foreign records stay closed', async () => {
   const access = testRagAccess([callerA]);
   access.roles.rolesOf = async () => ({ ok: true, value: new Set(['reader']) });
+  access.roles.collectionRoles = async () => ({
+    ok: true,
+    value: new Set(['reader']),
+  });
   const roleStore: OwnedRagStore = {
     name: 'docs',
-    owner: { scope: 'role', roleId: 'reader' },
+    owner: { scope: 'user', userId: 'owner' },
     rag: makeRag([
-      { text: 'own', metadata: { roleId: 'reader' }, score: 1 },
-      { text: 'foreign', metadata: { roleId: 'other' }, score: 1 },
+      {
+        text: 'own',
+        metadata: { ownerScope: 'user', userId: 'owner' },
+        score: 1,
+      },
+      {
+        text: 'foreign',
+        metadata: { ownerScope: 'user', userId: 'other' },
+        score: 1,
+      },
       { text: 'unowned', metadata: {}, score: 1 },
     ]),
   };

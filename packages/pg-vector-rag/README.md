@@ -7,7 +7,7 @@ PostgreSQL + pgvector backend for @mcp-abap-adt/llm-agent.
 
 Provides:
 - `PgVectorRag` — `IRag` implementation backed by `vector(dim)` columns (pgvector extension).
-- `PgVectorRagProvider` — `IRagProvider` for session/user/role/global collections.
+- `PgVectorRagProvider` — `IRagProvider` for session/user/global collections.
 
 ## Prerequisites
 
@@ -210,23 +210,24 @@ named test tables and remove those tables afterwards. Normal test runs skip them
 
 ## Role and session-binding persistence
 
-Before serving requests, run `migratePgVectorRagAccess(provider)` and check its
-`Result`. The idempotent migration adds `role_id` to an existing catalog and creates
-`rag_roles`, `rag_role_assignments`, and `rag_session_bindings` in the catalog's
-persistence. Inspect `value.reported` for invalid legacy owners; these rows remain
-stored but are excluded from `describeCollections().records`. Migration needs DDL
-rights, including for an externally deployed shared layout. Normal shared-layout
-collection operations continue to issue no DDL.
+Run `migratePgVectorRagAccess(provider)` before serving requests and check its
+`Result`. The idempotent migration creates `rag_collection_roles` alongside
+`rag_roles`, `rag_role_assignments`, and `rag_session_bindings`. Legacy role-owned
+catalog entries and records tagged `ownerScope: 'role'` remain unchanged and are
+reported for administrative resolution. They are never converted to global data.
 
-Use `createPgVectorRagAccessStores(provider)` to obtain `roles` and `bindings` for
-the library's access configuration. Role assignments come only from the persisted
-assignments table. Bindings use a primary key on `session_id` and one atomic
-insert-or-compare statement, so concurrent instances cannot rebind a session.
-Deleting a role with owned catalog entries is refused; deleting an unused role
-cascades its assignments. Persistence errors return a failed `Result`.
+`createPgVectorRagAccessStores(provider)` returns `{ roles, roleAdmin, bindings }`
+from the same persistence. Pass `{ decision, roles, bindings }` as `RagAccess`;
+keep `roleAdmin` in trusted host administration code. A collection has one session,
+user, or global owner plus zero or more bound roles. Call
+`roleAdmin.bindCollection(collectionName, roleId)` to share an existing collection.
+A missing role or collection is refused. Delete a role only after revoking every
+assignment and unbinding every collection; otherwise deletion returns `RoleInUseError`.
 
-Query identity filters include `sessionId`, `userId`, and `roleId` equality.
-`ragFilter: { owner: { scope: 'global' } }` requires absence of all three ownership
-tags (a JSON null tag still counts as a tag). Predicates run in SQL before ranking
-and top-k in both layouts. The core supplies these mandatory filters after its
-ownership and server-decision checks and retains its defensive result filter.
+Access requires the owner or at least one bound role and the host decision.
+Global reads remain available to everyone subject to that decision; global writes
+require an admin and a write decision. Admin status does not bypass other owners.
+Retrieval applies the collection owner's record filter before top-k; `roleId` is
+not a record identity key. Access-check errors deny access.
+
+Role deletion and collection binding lock the same role row in a transaction.

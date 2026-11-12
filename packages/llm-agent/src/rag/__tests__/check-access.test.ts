@@ -15,7 +15,7 @@ import { checkRagAccess, visibleOwnerFilter } from '../access/check-access.js';
 const caller: RagCaller = { sessionId: 's1', userId: 'u1', isAdmin: false };
 const session: RagCollectionOwner = { scope: 'session', sessionId: 's1' };
 const user: RagCollectionOwner = { scope: 'user', userId: 'u1' };
-const role: RagCollectionOwner = { scope: 'role', roleId: 'r1' };
+const role: RagCollectionOwner = { scope: 'user', userId: 'foreign' };
 const global: RagCollectionOwner = { scope: 'global' };
 
 test('persisted binding is required without binding on read', async () => {
@@ -58,7 +58,7 @@ test('missing or invalid callers deny every scope before role lookup or decision
     { ...caller, userId: '  ' },
   ]) {
     // @ts-expect-error Exercise malformed callers arriving from JavaScript.
-    const visible = visibleOwnerFilter(identity, new Set(['r1']));
+    const visible = visibleOwnerFilter(identity);
     for (const owner of owners) {
       assert.equal(visible(owner), false);
       for (const mode of ['read', 'write'] as const) {
@@ -110,12 +110,13 @@ test('role access follows library assignment and revocation on every request', a
     checkRagAccess(caller, { name: 'docs', owner: role }, 'read', access);
   assert.equal((await check()).ok, false);
   assert.equal(
-    (await access.roles.createRole({ roleId: 'r1', name: 'Team' })).ok,
+    (await access.roleAdmin.createRole({ roleId: 'r1', name: 'Team' })).ok,
     true,
   );
-  assert.equal((await access.roles.assign('u1', 'r1')).ok, true);
+  assert.ok((await access.roleAdmin.bindCollection('docs', 'r1')).ok);
+  assert.equal((await access.roleAdmin.assign('u1', 'r1')).ok, true);
   assert.equal((await check()).ok, true);
-  assert.equal((await access.roles.revoke('u1', 'r1')).ok, true);
+  assert.equal((await access.roleAdmin.revoke('u1', 'r1')).ok, true);
   assert.equal((await check()).ok, false);
 });
 
@@ -217,13 +218,12 @@ test('ownership denial skips the server decision', async () => {
 });
 
 test('visibleOwnerFilter uses explicit identities and library roles', () => {
-  const visible = visibleOwnerFilter(caller, new Set(['r1']));
-  for (const owner of [session, user, role, global])
+  const visible = visibleOwnerFilter(caller);
+  for (const owner of [session, user, global])
     assert.equal(visible(owner), true);
   for (const owner of [
     { scope: 'session', sessionId: 's2' },
     { scope: 'user', userId: 'u2' },
-    { scope: 'role', roleId: 'r2' },
   ] as const)
     assert.equal(visible(owner), false);
 });

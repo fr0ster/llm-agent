@@ -70,7 +70,7 @@ describe('QdrantRag — filter conformance (stub)', () => {
     for (const owner of [
       { scope: 'session', sessionId: 's' },
       { scope: 'user', userId: 'u' },
-      { scope: 'role', roleId: 'r' },
+
       { scope: 'global' },
     ] as const) {
       const result = await rag.query(new TextOnlyEmbedding('query'), 10, {

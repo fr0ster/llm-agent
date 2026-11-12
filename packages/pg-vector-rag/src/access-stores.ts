@@ -1,5 +1,6 @@
 import {
-  type IRagRoleStore,
+  type IRagRoleAdmin,
+  type IRagRoleCheck,
   type ISessionBindingStore,
   RagError,
   type RagRole,
@@ -12,7 +13,8 @@ import { roleTransaction } from './role-transaction.js';
 import { qualifiedTable } from './schema.js';
 
 export function createPgVectorRagAccessStores(provider: PgVectorRagProvider): {
-  roles: IRagRoleStore;
+  roles: IRagRoleCheck;
+  roleAdmin: IRagRoleAdmin;
   bindings: ISessionBindingStore;
 } {
   async function run<T>(work: () => Promise<T>): Promise<Result<T, RagError>> {
@@ -28,7 +30,59 @@ export function createPgVectorRagAccessStores(provider: PgVectorRagProvider): {
       };
     }
   }
-  const roles: IRagRoleStore = {
+  const roles: IRagRoleCheck & IRagRoleAdmin = {
+    collectionRoles: (collectionName) =>
+      run(async () => {
+        const { client, schema } = await provider.accessPersistence();
+        const { rows } = await client.query(
+          `SELECT role_id FROM ${qualifiedTable('rag_collection_roles', schema)} WHERE collection_name = $1 ORDER BY role_id`,
+          [collectionName],
+        );
+        return new Set(
+          rows.map((row) => {
+            if (typeof row.role_id !== 'string')
+              throw new RagError(
+                'Invalid collection role',
+                'RAG_ACCESS_STORE_ERROR',
+              );
+            return row.role_id;
+          }),
+        );
+      }),
+    bindCollection: (collectionName, roleId) =>
+      run(async () => {
+        const { client, schema, catalogTable } =
+          await provider.accessPersistence();
+        await roleTransaction(client, async (connection) => {
+          const role = await connection.query(
+            `SELECT 1 FROM ${qualifiedTable('rag_roles', schema)} WHERE role_id = $1 FOR UPDATE`,
+            [roleId],
+          );
+          if (!role.rows.length)
+            throw new RagError('Role does not exist', 'RAG_ROLE_NOT_FOUND');
+          const collection = await connection.query(
+            `SELECT 1 FROM ${qualifiedTable(catalogTable, schema)} WHERE collection_name = $1 AND scope IN ('session', 'user', 'global') FOR SHARE`,
+            [collectionName],
+          );
+          if (!collection.rows.length)
+            throw new RagError(
+              'Collection does not exist',
+              'RAG_COLLECTION_NOT_FOUND',
+            );
+          await connection.query(
+            `INSERT INTO ${qualifiedTable('rag_collection_roles', schema)} (collection_name, role_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
+            [collectionName, roleId],
+          );
+        });
+      }),
+    unbindCollection: (collectionName, roleId) =>
+      run(async () => {
+        const { client, schema } = await provider.accessPersistence();
+        await client.query(
+          `DELETE FROM ${qualifiedTable('rag_collection_roles', schema)} WHERE collection_name = $1 AND role_id = $2`,
+          [collectionName, roleId],
+        );
+      }),
     listRoles: () =>
       run(async () => {
         const { client, schema } = await provider.accessPersistence();
@@ -65,15 +119,14 @@ export function createPgVectorRagAccessStores(provider: PgVectorRagProvider): {
       }),
     deleteRole: (roleId) =>
       run(async () => {
-        const { client, schema, catalogTable } =
-          await provider.accessPersistence();
+        const { client, schema } = await provider.accessPersistence();
         await roleTransaction(client, async (connection) => {
           await connection.query(
             `SELECT 1 FROM ${qualifiedTable('rag_roles', schema)} WHERE role_id = $1 FOR UPDATE`,
             [roleId],
           );
           const { rows } = await connection.query(
-            `SELECT 1 FROM ${qualifiedTable(catalogTable, schema)} WHERE scope = 'role' AND role_id = $1`,
+            `SELECT 1 FROM ${qualifiedTable('rag_role_assignments', schema)} WHERE role_id = $1 UNION ALL SELECT 1 FROM ${qualifiedTable('rag_collection_roles', schema)} WHERE role_id = $1`,
             [roleId],
           );
           if (rows.length) throw new RoleInUseError();
@@ -145,5 +198,9 @@ export function createPgVectorRagAccessStores(provider: PgVectorRagProvider): {
         if (!rowCount) throw new SessionBindingConflictError();
       }),
   };
-  return { roles, bindings };
+  return {
+    roles: { rolesOf: roles.rolesOf, collectionRoles: roles.collectionRoles },
+    roleAdmin: roles,
+    bindings,
+  };
 }

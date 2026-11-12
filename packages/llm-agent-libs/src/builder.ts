@@ -921,9 +921,7 @@ export class SmartAgentBuilder {
           ? identity.sessionId
           : identity.scope === 'user'
             ? identity.userId
-            : identity.scope === 'role'
-              ? identity.roleId
-              : undefined;
+            : undefined;
       if (ownerId !== undefined && !ownerId.trim()) {
         return {
           ok: false,

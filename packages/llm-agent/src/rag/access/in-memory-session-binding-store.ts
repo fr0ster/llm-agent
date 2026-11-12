@@ -5,10 +5,9 @@ import {
 import type { Result } from '../../interfaces/types.js';
 
 export class InMemorySessionBindingStore implements ISessionBindingStore {
-  private readonly bindings = new Map<string, string>();
-
   constructor(
     initialBindings: readonly { sessionId: string; userId: string }[] = [],
+    private readonly bindings = new Map<string, string>(),
   ) {
     for (const { sessionId, userId } of initialBindings) {
       if (

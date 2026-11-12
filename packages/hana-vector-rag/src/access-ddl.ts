@@ -11,6 +11,12 @@ export const accessTables = [
       'user_id NVARCHAR(500) NOT NULL, role_id NVARCHAR(500) NOT NULL, PRIMARY KEY (user_id, role_id), FOREIGN KEY (role_id) REFERENCES "rag_roles" (role_id)',
   },
   {
+    name: 'rag_collection_roles',
+    definition:
+      'collection_name NVARCHAR(500) NOT NULL, role_id NVARCHAR(500) NOT NULL, PRIMARY KEY (collection_name, role_id), FOREIGN KEY (role_id) REFERENCES "rag_roles" (role_id)',
+  },
+
+  {
     name: 'rag_session_bindings',
     definition:
       'session_id NVARCHAR(500) PRIMARY KEY, user_id NVARCHAR(500) NOT NULL',

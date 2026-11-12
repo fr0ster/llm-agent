@@ -318,9 +318,6 @@ export class QdrantRag implements IRag, IRagScanner, IRagFilteredDeleter {
           key: 'ownerScope',
           match: { value: identity.ownerScope },
         });
-      if (identity?.roleId !== undefined) {
-        identityMust.push({ key: 'roleId', match: { value: identity.roleId } });
-      }
       if (identity?.sessionId !== undefined) {
         identityMust.push({
           key: 'sessionId',

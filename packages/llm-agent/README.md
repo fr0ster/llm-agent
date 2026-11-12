@@ -181,3 +181,11 @@ reference is not sent as provider message metadata.
 `LlmUsage` and `llm.call` usage records accept optional `cachedInputTokens` and
 `cacheCreationInputTokens`. SAP AI Core normalizes reported cache reads/writes
 for streaming and non-streaming calls. Missing counters are omitted.
+
+## Collection roles in v32
+
+Collections have exactly one session, user, or global owner. Share them with any
+number of bound roles through the host's `IRagRoleAdmin`. Runtime `RagAccess` is
+`{ decision, roles: IRagRoleCheck, bindings }`; role administration is separate.
+The backend access-store factory returns both contracts over the same persistence.
+See [MIGRATION-v32](../../docs/MIGRATION-v32.md) for wiring, migration reports, and HDI deployment.

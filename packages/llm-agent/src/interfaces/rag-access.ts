@@ -25,13 +25,27 @@ export interface RagRole {
   readonly description?: string;
 }
 
-export interface IRagRoleStore {
+export interface IRagRoleCheck {
+  rolesOf(userId: string): Promise<Result<ReadonlySet<string>, RagError>>;
+  collectionRoles(
+    collectionName: string,
+  ): Promise<Result<ReadonlySet<string>, RagError>>;
+}
+
+export interface IRagRoleAdmin {
   listRoles(): Promise<Result<readonly RagRole[], RagError>>;
   createRole(role: RagRole): Promise<Result<RagRole, RagError>>;
   deleteRole(roleId: string): Promise<Result<void, RagError>>;
   assign(userId: string, roleId: string): Promise<Result<void, RagError>>;
   revoke(userId: string, roleId: string): Promise<Result<void, RagError>>;
-  rolesOf(userId: string): Promise<Result<ReadonlySet<string>, RagError>>;
+  bindCollection(
+    collectionName: string,
+    roleId: string,
+  ): Promise<Result<void, RagError>>;
+  unbindCollection(
+    collectionName: string,
+    roleId: string,
+  ): Promise<Result<void, RagError>>;
 }
 
 export interface ISessionBindingStore {
@@ -53,7 +67,7 @@ export interface IRagCallerResolver {
 
 export interface RagAccess {
   readonly decision: IRagAccessDecision;
-  readonly roles: IRagRoleStore;
+  readonly roles: IRagRoleCheck;
   readonly bindings: ISessionBindingStore;
 }
 
@@ -72,7 +86,7 @@ export class SessionBindingConflictError extends RagError {
 }
 
 export class RoleInUseError extends RagError {
-  constructor(message = 'Role still owns RAG collections') {
+  constructor(message = 'Role is assigned to a user or bound to a collection') {
     super(message, 'RAG_ROLE_IN_USE');
     this.name = 'RoleInUseError';
   }

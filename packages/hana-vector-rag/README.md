@@ -7,7 +7,7 @@ SAP HANA Cloud Vector Engine backend for [@mcp-abap-adt/llm-agent](https://www.n
 
 Provides:
 - `HanaVectorRag` — `IRag` implementation backed by `REAL_VECTOR(dim)` columns.
-- `HanaVectorRagProvider` — `IRagProvider` for session/user/role/global collections.
+- `HanaVectorRagProvider` — `IRagProvider` for session/user/global collections.
 
 ## Install
 
@@ -94,11 +94,11 @@ The error codes are exported as constants — `SHARED_LAYOUT_NOT_DEPLOYED`, `INV
 The package ships `ddl/` (published with it):
 
 - `RAG_DOCUMENTS.hdbtable`, `RAG_COLLECTIONS.hdbtable`, `rag_roles.hdbtable`,
-  `rag_role_assignments.hdbtable`, `rag_session_bindings.hdbtable`, `.hdiconfig` — for the HDI deployer;
+  `rag_role_assignments.hdbtable`, `rag_collection_roles.hdbtable`, `rag_session_bindings.hdbtable`, `.hdiconfig` — for the HDI deployer;
 - `shared-layout.sql` — the same tables as plain SQL (catalog first), for a classic schema or
   manual use.
 
-Copy all five `.hdbtable` files into the `src/` of your db module (next to your own artifacts) and **merge** the `hdbtable` plugin entry of the shipped `.hdiconfig` into the db module's existing `.hdiconfig` — do not copy it over your own file, which usually lists more plugins (create it from the shipped one only if the module has none). Then run
+Copy all six `.hdbtable` files into the `src/` of your db module (next to your own artifacts) and **merge** the `hdbtable` plugin entry of the shipped `.hdiconfig` into the db module's existing `.hdiconfig` — do not copy it over your own file, which usually lists more plugins (create it from the shipped one only if the module has none). Then run
 `@sap/hdi-deploy` with the container's **design-time user** (`hdi_user`); on Cloud Foundry that is
 the deployer app bound to the HDI service instance. The application itself is bound to the same
 instance and connects as the **runtime user** (`..._RT`), which only needs `SELECT`, `INSERT`,
@@ -240,37 +240,29 @@ named test tables and remove those tables afterwards. Normal test runs skip them
 
 ### RAG access persistence
 
-Run `await migrateHanaVectorRagAccess(provider)` before using the access stores.
-Check its `Result`: migration failures refuse startup; `value.reported` lists
-catalog records with invalid owners for administrator repair. The idempotent
-migration preserves existing owners, adds `role_id`, and creates `rag_roles`,
-`rag_role_assignments`, and `rag_session_bindings` in the catalog connection's
-current schema. Role and session/user identifiers in these access tables are
-limited to 500 characters.
+Run `migrateHanaVectorRagAccess(provider)` before serving requests and check its
+`Result`. The idempotent migration creates `rag_collection_roles` alongside
+`rag_roles`, `rag_role_assignments`, and `rag_session_bindings`. Legacy role-owned
+catalog entries and records tagged `ownerScope: 'role'` remain unchanged and are
+reported for administrative resolution. They are never converted to global data.
 
-`createHanaVectorRagAccessStores(provider)` supplies the library role assignments
-and persistent session bindings. A session cannot be rebound to another user.
-Role deletion is refused while the role owns collections; role-owned catalog
-writes and deletion lock the same role row in a transaction. Missing owner roles
-are refused. Custom `clientFactory` clients must implement the optional
-`HanaClient.transaction` capability with a pinned connection and commit/rollback;
-access operations that require it fail closed when it is absent. The default
-driver client supplies this capability and queues other work on the connection
-until the transaction finishes.
+`createHanaVectorRagAccessStores(provider)` returns `{ roles, roleAdmin, bindings }`
+from the same persistence. Pass `{ decision, roles, bindings }` as `RagAccess`;
+keep `roleAdmin` in trusted host administration code. A collection has one session,
+user, or global owner plus zero or more bound roles. Call
+`roleAdmin.bindCollection(collectionName, roleId)` to share an existing collection.
+A missing role or collection is refused. Delete a role only after revoking every
+assignment and unbinding every collection; otherwise deletion returns `RoleInUseError`.
 
-Queries with an owner apply SQL predicates before ranking. Global predicates
-require all three owner keys to be absent, including keys with JSON null values.
-Scoped queries retain the existing unbounded candidate read after SQL owner
-filtering so strict scalar identity, namespace and TTL checks run before the
-application takes top-k. This avoids JSON scalar coercion changing identity.
+Access requires the owner or at least one bound role and the host decision.
+Global reads remain available to everyone subject to that decision; global writes
+require an admin and a write decision. Admin status does not bypass other owners.
+Retrieval applies the collection owner's record filter before top-k; `roleId` is
+not a record identity key. Access-check errors deny access.
 
-For v31 access persistence, deploy all five artifacts before running
-`migrateHanaVectorRagAccess(provider)`. `RAG_COLLECTIONS.hdbtable` includes
-`role_id NVARCHAR(5000)`; document ownership is stored in `METADATA`, so
-`RAG_DOCUMENTS` needs no `role_id` column. Preserve the quoted lowercase access
-table names. If you customize the catalog name, adapt its artifact accordingly.
-The migration checks `SYS.TABLES` and `SYS.TABLE_COLUMNS` in the configured or
-current schema, skips DDL for existing objects, and always runs the data backfill.
-No separate index artifacts are required: runtime DDL defines only primary keys
-and the role assignment foreign key. The `ddl` directory is included in the npm
-package; `shared-layout.sql` covers only the catalog and documents tables.
+Deploy all six HDI table artifacts: `RAG_DOCUMENTS.hdbtable`,
+`RAG_COLLECTIONS.hdbtable`, `rag_roles.hdbtable`, `rag_role_assignments.hdbtable`,
+`rag_collection_roles.hdbtable`, and `rag_session_bindings.hdbtable`. Merge the
+shipped `.hdiconfig` table plugin into your deployment configuration. Migration
+skips DDL for existing tables. Role deletion, assignment and binding lock the same
+role row in a pinned transaction. Custom clients must supply `HanaClient.transaction`.

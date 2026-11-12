@@ -1,315 +1,279 @@
 import assert from 'node:assert/strict';
-import type { RagCollectionRecord } from '../interfaces/rag.js';
-import {
-  type IRagRoleStore,
-  type ISessionBindingStore,
-  RoleInUseError,
-  SessionBindingConflictError,
+import type {
+  IRagRoleAdmin,
+  IRagRoleCheck,
+  ISessionBindingStore,
 } from '../interfaces/rag-access.js';
+import { RoleInUseError } from '../interfaces/rag-access.js';
 import type { RagError, Result } from '../interfaces/types.js';
-
-/** Optional step points must run before acquiring the backend transaction lock. */
-export type RagAccessBarrierHook = (
-  operation: 'creation' | 'deletion',
-) => Promise<void>;
+import { checkRagAccess } from '../rag/access/check-access.js';
 
 export interface RagAccessStoreHarness {
-  deletionSerializesCreation: boolean;
-  setDeletionRaceHooks(hooks: {
-    deletionPaused(): Promise<void>;
-    creationPaused(): Promise<void>;
-  }): void;
-  rawCatalogRoleIds(): Promise<readonly string[]>;
-  rawAssignmentRoleIds(): Promise<readonly string[]>;
-  roles: IRagRoleStore;
+  roles: IRagRoleCheck;
+  roleAdmin: IRagRoleAdmin;
   bindings: ISessionBindingStore;
-  createRoleCollection(roleId: string): Promise<Result<void, RagError>>;
-  collections(): Promise<readonly RagCollectionRecord[]>;
-  /** Install a backend-specific gate; omit to exercise concurrent Promise.all instead. */
-  setBarrierHook?: (hook: RagAccessBarrierHook) => void;
+  independentStores(): Promise<{
+    roles: IRagRoleCheck;
+    roleAdmin: IRagRoleAdmin;
+    bindings: ISessionBindingStore;
+  }>;
+  deleteCollection(name: string): Promise<Result<void, RagError>>;
+  createCollection(name: string): Promise<Result<void, RagError>>;
 }
-
 export interface RagAccessStoreConformanceCase {
   readonly name: string;
-  /** Each call creates isolated stores, with roleId `in-use` treated as owning a collection. */
   run(make: () => Promise<RagAccessStoreHarness>): Promise<void>;
 }
-
-function barrier() {
-  let release = () => {};
-  const promise = new Promise<void>((resolve) => {
-    release = resolve;
-  });
-  return { promise, release };
-}
-
 export const ragAccessStoreConformanceCases: readonly RagAccessStoreConformanceCase[] =
   [
     {
-      name: 'D1/C/D2 role deletion and collection creation never leave an inactive referenced role',
+      name: 'one owner and several bound roles with live revocation',
       async run(make) {
         const h = await make();
-        assert.ok(
-          (await h.roles.createRole({ roleId: 'race', name: 'Race' })).ok,
-        );
-        assert.ok((await h.roles.assign('u', 'race')).ok);
-        const d1Entered = barrier();
-        const d1Resume = barrier();
-        const cEntered = barrier();
-        const cResume = barrier();
-        let firstDeletion = true;
-        h.setDeletionRaceHooks({
-          async deletionPaused() {
-            if (!firstDeletion) return;
-            firstDeletion = false;
-            d1Entered.release();
-            await d1Resume.promise;
-          },
-          async creationPaused() {
-            cEntered.release();
-            await cResume.promise;
-          },
-        });
-        const d1 = h.roles.deleteRole('race');
-        await d1Entered.promise;
-        const c = h.createRoleCollection('race');
-        await cEntered.promise;
-        const d2 = h.roles.deleteRole('race');
-        try {
-          if (h.deletionSerializesCreation) {
-            // SQL creation cannot persist its intent past D1's row lock.
-            d1Resume.release();
-            cResume.release();
-            await Promise.all([d1, c, d2]);
-          } else {
-            assert.equal((await d2).ok, false);
-            cResume.release();
-            assert.ok((await c).ok);
-            d1Resume.release();
-            assert.equal(
-              (await d1).ok,
-              false,
-              'the stale deleter must be fenced',
-            );
-          }
-        } finally {
-          d1Resume.release();
-          cResume.release();
-        }
-        const roles = await h.roles.listRoles();
-        const assignments = await h.roles.rolesOf('u');
-        assert.ok(roles.ok && assignments.ok);
-        const active = roles.value.some((role) => role.roleId === 'race');
-        for (const record of await h.collections())
-          if (record.scope === 'role' && record.roleId === 'race')
-            assert.ok(active);
-        for (const roleId of await h.rawCatalogRoleIds())
-          if (roleId === 'race')
-            assert.ok(active, 'raw catalog must reference an active role');
-        if (!active) {
-          assert.equal(assignments.value.has('race'), false);
-          assert.equal(
-            (await h.rawAssignmentRoleIds()).includes('race'),
-            false,
+        const owner = {
+          sessionId: 'owner-session',
+          userId: 'owner',
+          isAdmin: false,
+        };
+        const reader = {
+          sessionId: 'reader-session',
+          userId: 'reader',
+          isAdmin: false,
+        };
+        const outsider = {
+          sessionId: 'other-session',
+          userId: 'other',
+          isAdmin: true,
+        };
+        for (const caller of [owner, reader, outsider])
+          assert.ok(
+            (await h.bindings.bind(caller.sessionId, caller.userId)).ok,
           );
+        assert.ok((await h.createCollection('docs')).ok);
+        for (const roleId of ['team', 'reviewers']) {
+          assert.ok(
+            (await h.roleAdmin.createRole({ roleId, name: roleId })).ok,
+          );
+          assert.ok((await h.roleAdmin.bindCollection('docs', roleId)).ok);
         }
-      },
-    },
-    {
-      name: 'creating a role-owned catalog record for a missing role is refused',
-      async run(make) {
-        const h = await make();
-        assert.equal((await h.createRoleCollection('missing')).ok, false);
+        assert.ok((await h.roleAdmin.assign(reader.userId, 'reviewers')).ok);
+        const ref = {
+          name: 'docs',
+          owner: { scope: 'user' as const, userId: owner.userId },
+        };
+        const access = {
+          ...h,
+          decision: { canRead: async () => true, canWrite: async () => true },
+        };
+        assert.ok((await checkRagAccess(owner, ref, 'read', access)).ok);
+        assert.ok((await checkRagAccess(reader, ref, 'read', access)).ok);
         assert.equal(
-          (await h.collections()).some(
-            (r) => r.scope === 'role' && r.roleId === 'missing',
-          ),
+          (await checkRagAccess(outsider, ref, 'read', access)).ok,
+          false,
+        );
+        assert.ok((await h.roleAdmin.revoke(reader.userId, 'reviewers')).ok);
+        assert.equal(
+          (await checkRagAccess(reader, ref, 'read', access)).ok,
+          false,
+        );
+        assert.ok((await h.roleAdmin.assign(reader.userId, 'reviewers')).ok);
+        assert.ok((await h.roleAdmin.unbindCollection('docs', 'reviewers')).ok);
+        assert.equal(
+          (await checkRagAccess(reader, ref, 'read', access)).ok,
+          false,
+        );
+        assert.equal(
+          (
+            await checkRagAccess(owner, ref, 'read', {
+              ...access,
+              decision: { ...access.decision, canRead: async () => false },
+            })
+          ).ok,
           false,
         );
       },
     },
-    ...(['creation', 'deletion'] as const).map(
-      (first): RagAccessStoreConformanceCase => ({
-        name: `role deletion and collection creation interleaved: ${first} first never leaves an orphan`,
-        async run(make) {
-          const h = await make();
+    {
+      name: 'refuse missing bindings and deletion of assigned or bound roles',
+      async run(make) {
+        const h = await make();
+        assert.ok((await h.createCollection('docs')).ok);
+        assert.equal(
+          (await h.roleAdmin.bindCollection('docs', 'missing')).ok,
+          false,
+        );
+        assert.ok(
+          (await h.roleAdmin.createRole({ roleId: 'r', name: 'R' })).ok,
+        );
+        assert.equal(
+          (await h.roleAdmin.bindCollection('missing', 'r')).ok,
+          false,
+        );
+        assert.ok((await h.roleAdmin.assign('reader', 'r')).ok);
+        let deletion = await h.roleAdmin.deleteRole('r');
+        assert.equal(deletion.ok, false);
+        if (!deletion.ok) assert.ok(deletion.error instanceof RoleInUseError);
+        assert.ok((await h.roleAdmin.revoke('reader', 'r')).ok);
+        assert.ok((await h.roleAdmin.bindCollection('docs', 'r')).ok);
+        deletion = await h.roleAdmin.deleteRole('r');
+        assert.equal(deletion.ok, false);
+        if (!deletion.ok) assert.ok(deletion.error instanceof RoleInUseError);
+        assert.ok((await h.roleAdmin.unbindCollection('docs', 'r')).ok);
+        assert.ok((await h.roleAdmin.deleteRole('r')).ok);
+      },
+    },
+    {
+      name: 'binding and role deletion cannot both succeed concurrently',
+      async run(make) {
+        const h = await make();
+        assert.ok((await h.createCollection('race_docs')).ok);
+        for (let index = 0; index < 8; index++) {
+          const roleId = `race-${index}`;
           assert.ok(
-            (await h.roles.createRole({ roleId: 'race', name: 'Race' })).ok,
+            (await h.roleAdmin.createRole({ roleId, name: roleId })).ok,
           );
-          assert.ok((await h.roles.assign('race-user', 'race')).ok);
-          const entered = barrier();
-          const resume = barrier();
-          const blocked = first === 'creation' ? 'deletion' : 'creation';
-          h.setBarrierHook?.(async (operation) => {
-            if (operation === blocked) {
-              entered.release();
-              await resume.promise;
-            }
-          });
-          let creationSucceeded = false;
-          let deletionSucceeded = false;
-          const create = async () => {
-            const result = await h.createRoleCollection('race');
-            creationSucceeded = result.ok;
-            return result;
-          };
-          const remove = async () => {
-            const result = await h.roles.deleteRole('race');
-            deletionSucceeded = result.ok;
-            return result;
-          };
-          try {
-            if (h.setBarrierHook) {
-              const waiting = blocked === 'creation' ? create() : remove();
-              await entered.promise;
-              try {
-                assert.ok(
-                  (await (first === 'creation' ? create() : remove())).ok,
-                );
-              } finally {
-                resume.release();
-              }
-              assert.equal((await waiting).ok, false);
-            } else {
-              const results = await Promise.all(
-                first === 'creation'
-                  ? [create(), remove()]
-                  : [remove(), create()],
-              );
-              assert.equal(
-                results.every((r) => r.ok),
-                false,
-              );
-            }
-            assert.equal(
-              creationSucceeded && deletionSucceeded,
-              false,
-              'competing operations cannot both succeed',
-            );
-            const collections = await h.collections();
-            assert.equal(
-              collections.some(
-                (record) => record.scope === 'role' && record.roleId === 'race',
-              ),
-              creationSucceeded,
-            );
-            const assignments = await h.roles.rolesOf('race-user');
-            assert.ok(assignments.ok);
-            assert.equal(assignments.value.has('race'), creationSucceeded);
-            const roles = await h.roles.listRoles();
-            assert.ok(roles.ok);
-            for (const record of collections)
-              if (record.scope === 'role' && record.roleId === 'race')
-                assert.ok(
-                  roles.value.some((role) => role.roleId === record.roleId),
-                  'collection must retain its role',
-                );
-          } finally {
-            resume.release();
+          const [binding, deletion] = await Promise.all([
+            h.roleAdmin.bindCollection('race_docs', roleId),
+            h.roleAdmin.deleteRole(roleId),
+          ]);
+          assert.equal(binding.ok && deletion.ok, false);
+          const roles = await h.roles.collectionRoles('race_docs');
+          assert.ok(roles.ok);
+          if (deletion.ok) assert.equal(roles.value.has(roleId), false);
+          if (binding.ok) {
+            assert.ok(roles.value.has(roleId));
+            const refused = await h.roleAdmin.deleteRole(roleId);
+            assert.equal(refused.ok, false);
+            if (!refused.ok) assert.ok(refused.error instanceof RoleInUseError);
           }
-        },
-      }),
-    ),
-    {
-      name: "bind('s','u1') twice is ok",
-      async run(make) {
-        const { bindings } = await make();
-        assert.deepEqual(await bindings.getUserId('s'), {
-          ok: true,
-          value: undefined,
-        });
-        assert.equal((await bindings.bind('s', 'u1')).ok, true);
-        assert.deepEqual(await bindings.getUserId('s'), {
-          ok: true,
-          value: 'u1',
-        });
-        assert.equal((await bindings.bind('s', 'u1')).ok, true);
+        }
       },
     },
     {
-      name: "bind('s','u2') returns SessionBindingConflictError",
+      name: 'session bindings are immutable and concurrent stores agree',
       async run(make) {
-        const { bindings } = await make();
-        assert.equal((await bindings.bind('s', 'u1')).ok, true);
-        const result = await bindings.bind('s', 'u2');
-        assert.deepEqual(await bindings.getUserId('s'), {
-          ok: true,
-          value: 'u1',
-        });
-        assert.equal(result.ok, false);
-        if (!result.ok)
-          assert.ok(result.error instanceof SessionBindingConflictError);
-        assert.equal((await bindings.bind('s', 'u1')).ok, true);
-      },
-    },
-    {
-      name: "Promise.all([bind('s','u1'), bind('s','u2')]) gives exactly one ok",
-      async run(make) {
-        const { bindings } = await make();
+        const h = await make();
+        const other = await h.independentStores();
+        assert.notEqual(other.bindings, h.bindings);
         const results = await Promise.all([
-          bindings.bind('s', 'u1'),
-          bindings.bind('s', 'u2'),
+          h.bindings.bind('concurrent-session', 'first-user'),
+          other.bindings.bind('concurrent-session', 'second-user'),
         ]);
         assert.equal(results.filter((result) => result.ok).length, 1);
-        for (const result of results)
-          if (!result.ok)
-            assert.ok(result.error instanceof SessionBindingConflictError);
-        const winner = results[0].ok ? 'u1' : 'u2';
-        assert.equal((await bindings.bind('s', winner)).ok, true);
-      },
-    },
-    {
-      name: 'deleteRole of a role in use returns RoleInUseError',
-      async run(make) {
-        const { roles } = await make();
+        const stored = await h.bindings.getUserId('concurrent-session');
+        assert.ok(stored.ok);
         assert.equal(
-          (await roles.createRole({ roleId: 'in-use', name: 'Used' })).ok,
-          true,
+          stored.value,
+          results[0].ok ? 'first-user' : 'second-user',
         );
-        assert.equal((await roles.assign('u1', 'in-use')).ok, true);
-        const result = await roles.deleteRole('in-use');
-        assert.equal(result.ok, false);
-        if (!result.ok) assert.ok(result.error instanceof RoleInUseError);
-        const assigned = await roles.rolesOf('u1');
-        assert.ok(assigned.ok);
-        assert.equal(assigned.value.has('in-use'), true);
+        assert.ok(
+          (await other.bindings.bind('concurrent-session', stored.value ?? ''))
+            .ok,
+        );
+        assert.deepEqual(
+          await other.bindings.getUserId('concurrent-session'),
+          stored,
+        );
       },
     },
     {
       name: 'role lifecycle isolates users, rejects missing assignments and removes deleted assignments',
       async run(make) {
-        const { roles } = await make();
-        assert.equal((await roles.assign('u1', 'r1')).ok, false);
+        const h = await make();
+        assert.equal((await h.roleAdmin.assign('alice', 'missing')).ok, false);
+        for (const roleId of ['a', 'b'])
+          assert.ok(
+            (await h.roleAdmin.createRole({ roleId, name: roleId })).ok,
+          );
         assert.equal(
-          (
-            await roles.createRole({
-              roleId: 'r1',
-              name: 'Team',
-              description: 'Example',
-            })
-          ).ok,
-          true,
-        );
-        assert.equal(
-          (await roles.createRole({ roleId: 'r1', name: 'Duplicate' })).ok,
+          (await h.roleAdmin.createRole({ roleId: 'a', name: 'Duplicate' })).ok,
           false,
         );
-        assert.equal((await roles.assign('u1', 'r1')).ok, true);
-        assert.equal((await roles.assign('u1', 'r1')).ok, true);
-        const assigned = await roles.rolesOf('u1');
-        assert.ok(assigned.ok);
-        assert.deepEqual([...assigned.value], ['r1']);
-        const other = await roles.rolesOf('u2');
-        assert.ok(other.ok);
-        assert.equal(other.value.size, 0);
-        assert.equal((await roles.revoke('u1', 'r1')).ok, true);
-        assert.equal((await roles.revoke('u1', 'r1')).ok, true);
-        assert.equal((await roles.assign('u1', 'r1')).ok, true);
-        assert.equal((await roles.deleteRole('r1')).ok, true);
-        const remaining = await roles.rolesOf('u1');
-        assert.ok(remaining.ok);
-        assert.equal(remaining.value.size, 0);
-        assert.deepEqual(await roles.listRoles(), { ok: true, value: [] });
+        assert.ok((await h.roleAdmin.assign('alice', 'a')).ok);
+        assert.ok((await h.roleAdmin.assign('alice', 'a')).ok);
+        for (const user of ['alice', 'bob'])
+          assert.ok((await h.roleAdmin.assign(user, 'a')).ok);
+        assert.ok((await h.roleAdmin.assign('alice', 'b')).ok);
+        assert.deepEqual(await h.roles.rolesOf('alice'), {
+          ok: true,
+          value: new Set(['a', 'b']),
+        });
+        assert.deepEqual(await h.roles.rolesOf('bob'), {
+          ok: true,
+          value: new Set(['a']),
+        });
+        assert.deepEqual(await h.roles.rolesOf('outsider'), {
+          ok: true,
+          value: new Set(),
+        });
+        assert.equal((await h.roleAdmin.deleteRole('a')).ok, false);
+        assert.ok((await h.roleAdmin.revoke('alice', 'a')).ok);
+        assert.ok((await h.roleAdmin.revoke('alice', 'a')).ok);
+        assert.ok((await h.roleAdmin.revoke('bob', 'a')).ok);
+        assert.ok((await h.roleAdmin.deleteRole('a')).ok);
+        assert.ok(
+          (await h.roleAdmin.createRole({ roleId: 'a', name: 'Recreated' })).ok,
+        );
+        assert.deepEqual(await h.roles.rolesOf('alice'), {
+          ok: true,
+          value: new Set(['b']),
+        });
+        assert.deepEqual(await h.roles.rolesOf('bob'), {
+          ok: true,
+          value: new Set(),
+        });
+        assert.ok((await h.roleAdmin.revoke('alice', 'b')).ok);
+        assert.ok((await h.roleAdmin.deleteRole('a')).ok);
+        assert.ok((await h.roleAdmin.deleteRole('b')).ok);
+        assert.deepEqual(await h.roleAdmin.listRoles(), {
+          ok: true,
+          value: [],
+        });
       },
     },
+    ...[false, true].map((race) => ({
+      name: race
+        ? 'collection deletion racing binding leaves no inherited grants'
+        : 'deleted and recreated collection denies the previous role holder',
+      async run(make: () => Promise<RagAccessStoreHarness>) {
+        const h = await make();
+        const other = await h.independentStores();
+        assert.ok((await h.createCollection('recreated')).ok);
+        assert.ok(
+          (await h.roleAdmin.createRole({ roleId: 'reader', name: 'Reader' }))
+            .ok,
+        );
+        assert.ok((await h.roleAdmin.assign('reader', 'reader')).ok);
+        assert.ok((await h.bindings.bind('reader-session', 'reader')).ok);
+        if (race) {
+          const [, deletion] = await Promise.all([
+            other.roleAdmin.bindCollection('recreated', 'reader'),
+            h.deleteCollection('recreated'),
+          ]);
+          assert.ok(deletion.ok);
+        } else {
+          assert.ok(
+            (await other.roleAdmin.bindCollection('recreated', 'reader')).ok,
+          );
+          assert.ok((await h.deleteCollection('recreated')).ok);
+        }
+        assert.deepEqual(await other.roles.collectionRoles('recreated'), {
+          ok: true,
+          value: new Set(),
+        });
+        assert.ok((await h.createCollection('recreated')).ok);
+        const result = await checkRagAccess(
+          { sessionId: 'reader-session', userId: 'reader', isAdmin: false },
+          { name: 'recreated', owner: { scope: 'user', userId: 'owner' } },
+          'read',
+          {
+            ...h,
+            decision: { canRead: async () => true, canWrite: async () => true },
+          },
+        );
+        assert.equal(result.ok, false);
+        assert.ok((await h.roleAdmin.revoke('reader', 'reader')).ok);
+        assert.ok((await h.roleAdmin.deleteRole('reader')).ok);
+      },
+    })),
   ];
