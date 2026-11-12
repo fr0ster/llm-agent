@@ -68,7 +68,6 @@ export async function sharedGlobalStore(): Promise<OwnedRagStore> {
     ['global', {}],
     ['session', { sessionId: 'B' }],
     ['user', { userId: 'bob' }],
-    ['role', { roleId: 'team' }],
   ] satisfies [
     string,
     { sessionId?: string; userId?: string; roleId?: string },

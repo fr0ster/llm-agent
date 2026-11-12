@@ -10,7 +10,7 @@ import { sharedLayoutSql } from '../shared-ddl.js';
 import { accessFixture } from './access-fixture.js';
 
 for (const layout of ['shared', 'per-collection'] as const)
-  test(`PG ${layout} applies session/user/role/global owner predicates before top-k`, {
+  test(`PG ${layout} applies session/user/global owner predicates before top-k`, {
     skip: !process.env.PG_TEST_URL,
   }, async () => {
     const f = await accessFixture();
@@ -62,7 +62,7 @@ for (const layout of ['shared', 'per-collection'] as const)
       for (const [ragFilter, expected] of [
         [{ sessionId: 's' }, ['session', 'session2']],
         [{ userId: 'u' }, ['user', 'user2']],
-        [{ roleId: 'r' }, ['role', 'role2']],
+
         [{ owner: { scope: 'global' } }, ['global1', 'global2']],
       ] satisfies [CallOptions['ragFilter'], string[]][]) {
         const result = await rag.query(

@@ -1,5 +1,6 @@
 import {
-  type IRagRoleStore,
+  type IRagRoleAdmin,
+  type IRagRoleCheck,
   type ISessionBindingStore,
   RagError,
   type Result,
@@ -9,8 +10,11 @@ import {
 import { QdrantAccessRefusal } from './access-persistence.js';
 import type { QdrantRagProvider } from './qdrant-rag-provider.js';
 
-export function createQdrantRagAccessStores(provider: QdrantRagProvider): {
-  roles: IRagRoleStore;
+export function createQdrantVectorRagAccessStores(
+  provider: QdrantRagProvider,
+): {
+  roles: IRagRoleCheck;
+  roleAdmin: IRagRoleAdmin;
   bindings: ISessionBindingStore;
 } {
   async function run<T>(work: () => Promise<T>): Promise<Result<T, RagError>> {
@@ -26,7 +30,114 @@ export function createQdrantRagAccessStores(provider: QdrantRagProvider): {
       };
     }
   }
-  const roles: IRagRoleStore = {
+  const roles: IRagRoleCheck & IRagRoleAdmin = {
+    collectionRoles: (collectionName) =>
+      run(async () => {
+        const db = await provider.accessPersistence();
+        const result = new Set<string>();
+        const catalogs = await db.rows(db.catalog);
+        for (const row of await db.rows('rag_collection_roles')) {
+          if (row.collection_name !== collectionName) continue;
+          // Only a complete deletion marker may bypass binding validation.
+          if (
+            typeof row.store_name === 'string' &&
+            typeof row.write_id === 'string' &&
+            row.deletion_intent ===
+              JSON.stringify(['deleting', row.store_name, row.write_id]) &&
+            row.role_id === undefined &&
+            row.role_token === undefined &&
+            row.catalog_write_id === undefined
+          )
+            continue;
+          if (typeof row.role_id !== 'string')
+            throw new QdrantAccessRefusal('Invalid collection role');
+          const role = await db.roleState(row.role_id);
+          const collection = catalogs.find(
+            (catalog) =>
+              catalog.collection_name === collectionName &&
+              catalog.write_id === row.catalog_write_id &&
+              ['session', 'user', 'global'].includes(catalog.scope ?? ''),
+          );
+          if (
+            role?.state === 'active' &&
+            role.token === row.role_token &&
+            collection &&
+            typeof collection.store_name === 'string' &&
+            typeof collection.write_id === 'string' &&
+            !(await db.collectionDeleting(
+              collection.store_name,
+              collection.write_id,
+            ))
+          )
+            result.add(row.role_id);
+        }
+        return result;
+      }),
+    bindCollection: (collectionName, roleId) =>
+      run(async () => {
+        const db = await provider.accessPersistence();
+        const role = await db.requireRole(roleId);
+        const collection = (await db.rows(db.catalog)).find(
+          (row) =>
+            row.collection_name === collectionName &&
+            ['session', 'user', 'global'].includes(row.scope ?? ''),
+        );
+        if (!collection)
+          throw new QdrantAccessRefusal('Collection does not exist');
+        if (
+          typeof role.token !== 'string' ||
+          typeof collection.write_id !== 'string'
+        )
+          throw new QdrantAccessRefusal('Invalid role or catalog identity');
+        if (
+          typeof collection.store_name !== 'string' ||
+          (await db.collectionDeleting(
+            collection.store_name,
+            collection.write_id,
+          ))
+        )
+          throw new QdrantAccessRefusal('Collection is being deleted');
+        const key = JSON.stringify([collectionName, roleId]);
+        const payload = {
+          collection_name: collectionName,
+          role_id: roleId,
+          role_token: role.token,
+          catalog_write_id: collection.write_id,
+        };
+        try {
+          await db.insert('rag_collection_roles', key, payload);
+          const current = await db.requireRole(roleId);
+          const stored = await db.read('rag_collection_roles', key);
+          const catalog = await db.read(
+            db.catalog,
+            collection.store_name ?? '',
+          );
+          if (
+            current.token !== role.token ||
+            stored?.role_token !== role.token ||
+            stored.catalog_write_id !== collection.write_id ||
+            catalog?.write_id !== collection.write_id ||
+            (await db.collectionDeleting(
+              collection.store_name,
+              collection.write_id,
+            ))
+          )
+            throw new QdrantAccessRefusal(
+              'Role or collection changed during binding',
+            );
+        } catch (error) {
+          await db.removeWhere('rag_collection_roles', payload);
+          throw error;
+        }
+      }),
+    unbindCollection: (collectionName, roleId) =>
+      run(async () => {
+        const db = await provider.accessPersistence();
+        await db.remove(
+          'rag_collection_roles',
+          JSON.stringify([collectionName, roleId]),
+        );
+      }),
     listRoles: () =>
       run(async () => {
         const db = await provider.accessPersistence();
@@ -100,9 +211,10 @@ export function createQdrantRagAccessStores(provider: QdrantRagProvider): {
           deletion_token: crypto.randomUUID(),
         });
         if (!held) throw new QdrantAccessRefusal('Role deletion fenced');
-        const inUse = (await db.rows(db.catalog)).some(
-          (row) => row.scope === 'role' && row.role_id === roleId,
-        );
+        const inUse = [
+          ...(await db.rows('rag_role_assignments')),
+          ...(await db.rows('rag_collection_roles')),
+        ].some((row) => row.role_id === roleId);
         const checked = await db.transitionRole(
           held,
           inUse ? 'active' : 'deleting',
@@ -110,23 +222,6 @@ export function createQdrantRagAccessStores(provider: QdrantRagProvider): {
         if (!checked) throw new QdrantAccessRefusal('Role deletion fenced');
         held = checked;
         if (inUse) throw new RoleInUseError();
-        const assignments = await db.rows('rag_role_assignments');
-        const scanned = await db.transitionRole(held, 'deleting');
-        if (!scanned) throw new QdrantAccessRefusal('Role deletion fenced');
-        held = scanned;
-        for (const row of assignments) {
-          if (row.role_id !== roleId) continue;
-          if (typeof row.user_id !== 'string')
-            throw new QdrantAccessRefusal('Invalid persisted assignment');
-          // A stale deletion can only reduce permissions; its next CAS prevents role removal.
-          await db.remove(
-            'rag_role_assignments',
-            JSON.stringify([row.user_id, roleId]),
-          );
-          const removed = await db.transitionRole(held, 'deleting');
-          if (!removed) throw new QdrantAccessRefusal('Role deletion fenced');
-          held = removed;
-        }
         if (!(await db.transitionRole(held, 'deleted')))
           throw new QdrantAccessRefusal('Role deletion fenced');
       }),
@@ -219,5 +314,9 @@ export function createQdrantRagAccessStores(provider: QdrantRagProvider): {
           throw new SessionBindingConflictError();
       }),
   };
-  return { roles, bindings };
+  return {
+    roles: { rolesOf: roles.rolesOf, collectionRoles: roles.collectionRoles },
+    roleAdmin: roles,
+    bindings,
+  };
 }

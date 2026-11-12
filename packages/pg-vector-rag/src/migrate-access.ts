@@ -29,6 +29,9 @@ export async function migratePgVectorRagAccess(
     await client.query(
       `CREATE TABLE IF NOT EXISTS ${qualifiedTable('rag_session_bindings', schema)} (session_id TEXT PRIMARY KEY, user_id TEXT NOT NULL)`,
     );
+    await client.query(
+      `CREATE TABLE IF NOT EXISTS ${qualifiedTable('rag_collection_roles', schema)} (collection_name TEXT NOT NULL, role_id TEXT NOT NULL REFERENCES ${qualifiedTable('rag_roles', schema)}(role_id), PRIMARY KEY (collection_name, role_id))`,
+    );
     const description = await provider.describeCollections();
     if (!description.ok) throw description.error;
     const recordReports = await provider.migrateRecordOwners();

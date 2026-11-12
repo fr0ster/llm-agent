@@ -76,8 +76,8 @@ For each request, the server resolves the cookie session, asks the trusted
 resolver for user/admin identity, persists its binding, then acquires a graph
 for `{ sessionId, userId }`. A reused session cannot change user, including
 while its graph is building. Errors produce HTTP 403 without fallback.
-Hydration checks ownership AND the server read decision for every collection,
-refreshes role membership on each request, and reports missing-role catalog rows
+Hydration checks ownership or a bound role AND the server read decision for every collection,
+refreshes role membership on each request, and reports legacy role-owned catalog rows
 once per server. Retrieval independently checks access when it executes.
 Session metadata records the real user ID, so session list/resume/delete operate
 on that user's sessions. Built-in history remains scoped to the request session.
@@ -86,3 +86,5 @@ Tests may explicitly install `fixedCallerResolver` and `testRagAccess()` from
 `@mcp-abap-adt/llm-agent/testing/rag-access-testing`. Those helpers are not a
 production authentication or authorization implementation. The standalone CLI's
 `--local-user-id` opt-in is documented in the server package README.
+
+In v32, `RagAccess.roles` is `IRagRoleCheck`; trusted host tooling retains the separate `IRagRoleAdmin`. See [MIGRATION-v32](../../docs/MIGRATION-v32.md).

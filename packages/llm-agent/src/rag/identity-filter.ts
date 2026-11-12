@@ -11,11 +11,9 @@ export type RagIdentityFilter = {
   owner?: RagCollectionOwner;
   sessionId?: string;
   userId?: string;
-  roleId?: string;
 } & (
   | { ownerScope: 'session'; sessionId: string }
   | { ownerScope: 'user'; userId: string }
-  | { ownerScope: 'role'; roleId: string }
   | { ownerScope: 'global' }
 );
 
@@ -28,6 +26,11 @@ export function ragIdentityFilter(
   options?: CallOptions,
 ): RagIdentityFilter | undefined {
   const f = options?.ragFilter;
+  if (f && 'roleId' in f)
+    throw new RagError(
+      'roleId is no longer a record identity filter',
+      'INVALID_ARGUMENT',
+    );
   const sessionId =
     f?.owner?.scope === 'session'
       ? f.owner.sessionId
@@ -40,12 +43,6 @@ export function ragIdentityFilter(
       : typeof f?.userId === 'string'
         ? f.userId
         : undefined;
-  const roleId =
-    f?.owner?.scope === 'role'
-      ? f.owner.roleId
-      : typeof f?.roleId === 'string'
-        ? f.roleId
-        : undefined;
   const owner = f?.owner;
   const ownerScope =
     owner?.scope ??
@@ -53,28 +50,18 @@ export function ragIdentityFilter(
       ? 'session'
       : userId !== undefined
         ? 'user'
-        : roleId !== undefined
-          ? 'role'
-          : undefined);
-  if (
-    sessionId === undefined &&
-    userId === undefined &&
-    roleId === undefined &&
-    owner === undefined
-  )
+        : undefined);
+  if (sessionId === undefined && userId === undefined && owner === undefined)
     return undefined;
   const ids = {
     sessionId,
     userId,
-    roleId,
     ...(owner === undefined ? {} : { owner }),
   };
   if (ownerScope === 'session' && sessionId !== undefined)
     return { ...ids, ownerScope, sessionId };
   if (ownerScope === 'user' && userId !== undefined)
     return { ...ids, ownerScope, userId };
-  if (ownerScope === 'role' && roleId !== undefined)
-    return { ...ids, ownerScope, roleId };
   if (ownerScope === 'global') return { ...ids, ownerScope };
   throw new RagError('Invalid owner filter', 'INVALID_ARGUMENT');
 }
@@ -101,11 +88,7 @@ export function matchesRagIdentity(
       return false;
     if (owner.scope === 'user' && metadata.userId !== owner.userId)
       return false;
-    if (owner.scope === 'role' && metadata.roleId !== owner.roleId)
-      return false;
   }
-  if (filter.roleId !== undefined && metadata.roleId !== filter.roleId)
-    return false;
   if (filter.sessionId !== undefined && metadata.sessionId !== filter.sessionId)
     return false;
   if (filter.userId !== undefined && metadata.userId !== filter.userId)
@@ -125,7 +108,7 @@ export function tagRagMetadata(metadata: RagMetadata): RagMetadata {
       : key === 'userId'
         ? 'user'
         : key === 'roleId'
-          ? 'role'
+          ? 'invalid'
           : 'global';
   const valid =
     keys.length <= 1 &&

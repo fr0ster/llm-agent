@@ -6,7 +6,7 @@ import { ReservedCollectionNameError } from '../corrections/errors.js';
  * global may not begin with one: it would take a key the projection gives
  * another scope, and one entry would silently overwrite the other.
  */
-const RESERVED_GLOBAL_PREFIXES = ['user/', 'session/', 'role/'] as const;
+const RESERVED_GLOBAL_PREFIXES = ['user/', 'session/'] as const;
 
 /** Refuse built-in names in every scope and owned projection prefixes in globals. */
 export function reservedGlobalNameError(
@@ -23,13 +23,12 @@ export function reservedGlobalNameError(
 /**
  * The key a collection has in the `ragStores` projection: a global keeps its
  * bare name, so every stage configuration naming one keeps working; an owned
- * collection is `user/<name>`, `session/<name>` or `role/<name>`. An absent scope is
+ * collection is `user/<name>` or `session/<name>`. An absent scope is
  * global, as `register` defaults it.
  */
 export function ragStoreKey(meta: {
   readonly name: string;
   readonly scope?: RagCollectionScope;
-  readonly roleId?: string;
 }): string {
   const scope = meta.scope ?? 'global';
   return scope === 'global' ? meta.name : `${scope}/${meta.name}`;

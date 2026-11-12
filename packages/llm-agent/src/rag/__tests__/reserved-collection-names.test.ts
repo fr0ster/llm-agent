@@ -15,7 +15,6 @@ const owners: RagCollectionOwner[] = [
   { scope: 'global' },
   { scope: 'session', sessionId: 'S' },
   { scope: 'user', userId: 'alice' },
-  { scope: 'role', roleId: 'R' },
 ];
 for (const owner of owners) {
   for (const name of ['history', 'tools']) {
@@ -68,7 +67,10 @@ test('creation tools refuse reserved names', async () => {
   };
   const entries = [
     ...buildRagCollectionToolEntries(options),
-    ...buildRagAdminToolEntries(options),
+    ...buildRagAdminToolEntries({
+      ...options,
+      roleAdmin: options.access.roleAdmin,
+    }),
   ];
   for (const name of ['history', 'tools']) {
     for (const toolName of [

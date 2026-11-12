@@ -143,7 +143,7 @@ async function queryIds(
 const Q = 'quarterly revenue forecast';
 
 export const ragFilterConformanceCases: readonly RagFilterConformanceCase[] = [
-  ...(['session', 'user', 'role', 'global'] as const).map(
+  ...(['session', 'user', 'global'] as const).map(
     (scope): RagFilterConformanceCase => ({
       name: `registry collection tools add/correct/deprecate preserve ${scope} ownership`,
       async run(makeStore) {
@@ -155,9 +155,7 @@ export const ragFilterConformanceCases: readonly RagFilterConformanceCase[] = [
             ? { scope, sessionId: 'owner-session' }
             : scope === 'user'
               ? { scope, userId: 'owner-user' }
-              : scope === 'role'
-                ? { scope, roleId: 'owner-role' }
-                : { scope };
+              : { scope };
         const registry = new SimpleRagRegistry();
         registry.setProviderRegistry({
           getProvider: () => ({
@@ -194,19 +192,6 @@ export const ragFilterConformanceCases: readonly RagFilterConformanceCase[] = [
           isAdmin: true,
         };
         const access = testRagAccess([caller]);
-        if (scope === 'role') {
-          assert.ok(
-            (
-              await access.roles.createRole({
-                roleId: 'owner-role',
-                name: 'Owner',
-              })
-            ).ok,
-          );
-          assert.ok(
-            (await access.roles.assign(caller.userId, 'owner-role')).ok,
-          );
-        }
         const tools = buildRagCollectionToolEntries({
           registry,
           caller,
@@ -256,7 +241,7 @@ export const ragFilterConformanceCases: readonly RagFilterConformanceCase[] = [
         for (const foreign of [
           { scope: 'session', sessionId: 'foreign' },
           { scope: 'user', userId: 'foreign' },
-          { scope: 'role', roleId: 'foreign' },
+
           ...(scope === 'global' ? [] : [{ scope: 'global' as const }]),
         ] as const) {
           assert.deepEqual(await queryIds(rag, Q, 10, { owner: foreign }), []);
@@ -578,34 +563,13 @@ export const ragOwnerFilterConformanceCases: readonly RagFilterConformanceCase[]
         for (const owner of [
           { scope: 'session', sessionId: 's' },
           { scope: 'user', userId: 'u' },
-          { scope: 'role', roleId: 'r' },
+
           { scope: 'global' },
         ] as const)
           assert.deepEqual(await queryIds(rag, Q, 10, { owner }), []);
       },
     },
-    {
-      name: 'roleId filter isolates two roles',
-      async run(makeStore) {
-        const rag = await makeStore();
-        await seed(rag, [
-          {
-            id: 'r1',
-            text: 'alpha harbour lighthouse',
-            metadata: { roleId: 'r1' },
-          },
-          {
-            id: 'r2',
-            text: 'bravo mountain glacier',
-            metadata: { roleId: 'r2' },
-          },
-          { id: 'untagged', text: 'charlie desert oasis', metadata: {} },
-        ]);
-        for (const roleId of ['r1', 'r2'])
-          assert.deepEqual(await queryIds(rag, Q, 10, { roleId }), [roleId]);
-      },
-    },
-    ...(['sessionId', 'userId', 'roleId'] as const).map(
+    ...(['sessionId', 'userId'] as const).map(
       (key): RagFilterConformanceCase => ({
         name: `${key} owner filter applies before top-k`,
         async run(makeStore) {
@@ -640,7 +604,7 @@ export const ragOwnerFilterConformanceCases: readonly RagFilterConformanceCase[]
       async run(makeStore) {
         const rag = await makeStore();
         await seed(rag, [
-          ...(['sessionId', 'userId', 'roleId'] as const).flatMap((key) => [
+          ...(['sessionId', 'userId'] as const).flatMap((key) => [
             { id: key, text: `${Q} ${key}`, metadata: { [key]: 'foreign' } },
             {
               id: `${key}-null`,
@@ -703,7 +667,7 @@ export const conflictingOwnerRecords: readonly ConformanceRecord[] = [
   {
     id: 'role-session',
     text: Q,
-    metadata: { ownerScope: 'role', roleId: 'r', sessionId: 's' },
+    metadata: { ownerScope: 'invalid', roleId: 'r', sessionId: 's' },
   },
 ];
 
@@ -716,7 +680,6 @@ export async function ragRawOwnerConformanceCase(h: {
     { scope: 'global' },
     { scope: 'session', sessionId: 's' },
     { scope: 'user', userId: 'u' },
-    { scope: 'role', roleId: 'r' },
   ] as const)
     assert.deepEqual(await queryIds(h.rag, Q, 100, { owner }), []);
   const writer = h.rag.writer?.();

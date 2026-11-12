@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { ragIdentityFilter } from '../identity-filter.js';
 import { InMemoryRag } from '../in-memory-rag.js';
 import { TextOnlyEmbedding } from '../query-embedding.js';
 
-test('in-memory applies role and positive global predicates before top-k, including null ownership tags', async () => {
+test('in-memory rejects role identities and applies positive global predicates before top-k, including null ownership tags', async () => {
   const rag = new InMemoryRag({ dedupThreshold: 2 });
   for (const [text, metadata] of [
     ['query private session', { sessionId: 's' }],
@@ -15,7 +16,7 @@ test('in-memory applies role and positive global predicates before top-k, includ
   ] as const) {
     assert.equal(
       (await rag.upsert(text, metadata)).ok,
-      !('roleId' in metadata && metadata.roleId === null),
+      !('roleId' in metadata),
     );
   }
   const global = await rag.query(new TextOnlyEmbedding('query'), 2, {
@@ -26,12 +27,8 @@ test('in-memory applies role and positive global predicates before top-k, includ
     'query global first',
     'query global second',
   ]);
-  const role = await rag.query(new TextOnlyEmbedding('query'), 2, {
-    ragFilter: { roleId: 'r' },
-  });
-  assert.ok(role.ok);
-  assert.deepEqual(
-    role.value.map((row) => row.text),
-    ['query private role'],
+  assert.throws(
+    () => ragIdentityFilter({ ragFilter: { roleId: 'r' } }),
+    /no longer/,
   );
 });

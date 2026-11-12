@@ -498,11 +498,17 @@ test('role revoke hides a collection in the same session and a missing role is r
   const access = testRagAccess([
     { sessionId: 's1', userId: 'u1', isAdmin: false },
   ]);
-  await access.roles.createRole({ roleId: 'r', name: 'Readers' });
-  await access.roles.assign('u1', 'r');
+  await access.roleAdmin.createRole({ roleId: 'r', name: 'Readers' });
+  await access.roleAdmin.assign('u1', 'r');
+  await access.roleAdmin.bindCollection('role-docs', 'r');
   const pg = catalogued('pg', [
-    { name: 'role-docs', storeName: 'role-store', scope: 'role', roleId: 'r' },
-    { name: 'orphan', storeName: 'gone-store', scope: 'role', roleId: 'gone' },
+    {
+      name: 'role-docs',
+      storeName: 'role-store',
+      scope: 'user',
+      userId: 'owner',
+    },
+    { name: 'orphan', storeName: 'gone-store', scope: 'user', userId: 'other' },
   ]);
   const providers = new SimpleRagProviderRegistry();
   providers.registerProvider(pg.provider);
@@ -525,7 +531,7 @@ test('role revoke hides a collection in the same session and a missing role is r
     registry.list().some((row) => row.name === 'orphan'),
     false,
   );
-  await access.roles.revoke('u1', 'r');
+  await access.roleAdmin.revoke('u1', 'r');
   await buildSessionRagRegistry({
     ragAccess: testRagAccess([
       { sessionId: 'S', userId: 'alice', isAdmin: false },
@@ -540,13 +546,13 @@ test('role revoke hides a collection in the same session and a missing role is r
   );
   const allowed = await checkRagAccess(
     input.caller,
-    { name: 'role-docs', owner: { scope: 'role', roleId: 'r' } },
+    { name: 'role-docs', owner: { scope: 'user', userId: 'owner' } },
     'read',
     access,
   );
   assert.equal(allowed.ok, false);
   assert.equal(
     logs.messages().filter((message) => message.includes('gone')).length,
-    1,
+    0,
   );
 });

@@ -39,9 +39,15 @@ export const ragMigrationConformanceCases = [
       const session = h.expectedRecords.find((r) => r.scope === 'session');
       assert.ok(user?.scope === 'user');
       assert.ok(session?.scope === 'session');
+      const legacyRoleMetadata: RagMetadata = { id: 'legacy-role-record' };
+      Object.assign(legacyRoleMetadata, {
+        ownerScope: 'role',
+        roleId: 'legacy-role',
+      });
       const recordStore = await h.seedLegacyRecords(
         [
           { id: 'empty-user', metadata: { title: 'preserved' } },
+          { id: 'legacy-role-record', metadata: legacyRoleMetadata },
           ...Array.from({ length: 513 }, (_, index) => ({
             id: `batch-${String(index).padStart(4, '0')}`,
             metadata: {},
@@ -73,7 +79,7 @@ export const ragMigrationConformanceCases = [
         first.value.reported.map((row) => row.storeName).sort(),
         [
           ...h.invalidStoreNames,
-          ...Array<string>(1 + conflictingOwnerRecords.length).fill(
+          ...Array<string>(2 + conflictingOwnerRecords.length).fill(
             recordStore,
           ),
           ...(h.supportsOrphans ? ['missing-catalog'] : []),
@@ -91,9 +97,7 @@ export const ragMigrationConformanceCases = [
               ? { sessionId: record.sessionId }
               : record.scope === 'user'
                 ? { userId: record.userId }
-                : record.scope === 'role'
-                  ? { roleId: record.roleId }
-                  : {}),
+                : {}),
           }))
           .sort((a, b) => a.storeName.localeCompare(b.storeName));
       assert.deepEqual(
@@ -130,6 +134,10 @@ export const ragMigrationConformanceCases = [
         records.filter((r) => r.id.startsWith('batch-')).length,
         513,
       );
+      assert.deepEqual(
+        records.find((row) => row.id === 'legacy-role-record')?.metadata,
+        legacyRoleMetadata,
+      );
       const conflict = records.find((r) => r.id === 'conflict-record');
       assert.ok(conflict);
       assert.equal(conflict.metadata.ownerScope, 'invalid');
@@ -141,7 +149,6 @@ export const ragMigrationConformanceCases = [
       for (const filter of [
         { sessionId: 's1' },
         { userId: 'u1' },
-        { roleId: 'r1' },
         { owner: { scope: 'global' as const } },
       ])
         assert.equal(
@@ -165,7 +172,7 @@ export const ragMigrationConformanceCases = [
 
 /** Shared orphan-role acceptance case, including process-local catalogs. */
 export const missingRoleMigrationConformanceCase = {
-  name: 'migration reports and excludes a catalog row with a missing role',
+  name: 'migration reports and preserves legacy role-owned collections',
   async run(h: {
     seedMissingRole(): Promise<void>;
     migrate(): Promise<
@@ -181,8 +188,14 @@ export const missingRoleMigrationConformanceCase = {
     assert.ok(migration.ok);
     assert.deepEqual(
       migration.value.reported.filter((row) => row.storeName === 'orphan'),
-      [{ storeName: 'orphan', reason: 'Role is missing or tombstoned' }],
+      [
+        {
+          storeName: 'orphan',
+          reason: 'Legacy role owner; administrative resolution required',
+        },
+      ],
     );
+    assert.deepEqual(await h.migrate(), migration);
     const description = await h.describe();
     assert.ok(description.ok);
     assert.equal(
@@ -191,7 +204,12 @@ export const missingRoleMigrationConformanceCase = {
     );
     assert.deepEqual(
       description.value.rejected.filter((row) => row.storeName === 'orphan'),
-      [{ storeName: 'orphan', reason: 'Role is missing or tombstoned' }],
+      [
+        {
+          storeName: 'orphan',
+          reason: 'Legacy role owner; administrative resolution required',
+        },
+      ],
     );
   },
 };

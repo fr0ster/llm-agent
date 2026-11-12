@@ -7,6 +7,10 @@ import type {
   RagCollectionScope,
   RagProviderCreateCollectionOptions,
 } from '../../interfaces/rag.js';
+import type {
+  IRagRoleAdmin,
+  IRagRoleCheck,
+} from '../../interfaces/rag-access.js';
 import type { Result } from '../../interfaces/types.js';
 import { RagError } from '../../interfaces/types.js';
 import { InMemoryRagRoleStore } from '../access/in-memory-role-store.js';
@@ -43,30 +47,30 @@ export class InMemoryRagProvider extends AbstractRagProvider {
     string,
     { rag: IRag; editor: IRagEditor }
   >();
-  readonly roles = new InMemoryRagRoleStore((roleId) =>
-    [...this.records.values()].some(
-      (record) => record.scope === 'role' && record.roleId === roleId,
-    ),
+  private readonly roleStore = new InMemoryRagRoleStore((name) =>
+    [...this.records.values()].some((record) => record.name === name),
   );
+  readonly roles: IRagRoleCheck = this.roleStore;
+  readonly roleAdmin: IRagRoleAdmin = this.roleStore;
   readonly bindings = new InMemorySessionBindingStore();
 
   async describeCollections(): Promise<
     Result<RagCatalogDescription, RagError>
   > {
-    const records: RagCollectionRecord[] = [];
-    const rejected: RagCatalogDescription['rejected'][number][] = [];
-    for (const record of this.records.values()) {
-      if (record.scope === 'role' && !this.roles.hasRole(record.roleId)) {
-        rejected.push({
-          storeName: record.storeName,
-          reason: 'Role is missing or tombstoned',
-        });
-      } else records.push(structuredClone(record));
-    }
-    return { ok: true, value: { records, rejected } };
+    return {
+      ok: true,
+      value: {
+        records: [...this.records.values()].map((record) =>
+          structuredClone(record),
+        ),
+        rejected: [],
+      },
+    };
   }
 
   async deleteCollection(name: string): Promise<Result<void, RagError>> {
+    const record = this.records.get(name);
+    if (record) this.roleStore.removeCollection(record.name);
     this.records.delete(name);
     const store = this.stores.get(name);
     this.stores.delete(name);
@@ -125,14 +129,6 @@ export class InMemoryRagProvider extends AbstractRagProvider {
         ),
       };
     }
-    if (
-      checked.value.scope === 'role' &&
-      !this.roles.hasRole(checked.value.roleId)
-    )
-      return {
-        ok: false,
-        error: new RagError('Role does not exist', 'RAG_ROLE_NOT_FOUND'),
-      };
     if (this.records.has(name))
       return {
         ok: false,

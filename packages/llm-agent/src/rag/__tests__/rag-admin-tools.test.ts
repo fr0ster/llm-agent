@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { testRagAccess } from '../../testing/rag-access-testing.js';
-import { InMemoryRag } from '../in-memory-rag.js';
 import { buildRagAdminToolEntries } from '../mcp-tools/index.js';
 import { InMemoryRagProvider } from '../providers/in-memory-rag-provider.js';
 import { SimpleRagProviderRegistry } from '../providers/simple-provider-registry.js';
@@ -13,6 +12,8 @@ const names = [
   'rag_role_delete',
   'rag_role_assign',
   'rag_role_revoke',
+  'rag_role_bind_collection',
+  'rag_role_unbind_collection',
   'rag_create_shared_collection',
 ];
 function setup(isAdmin = true) {
@@ -20,13 +21,14 @@ function setup(isAdmin = true) {
   const providerRegistry = new SimpleRagProviderRegistry();
   const provider = new InMemoryRagProvider({
     name: 'mem',
-    supportedScopes: ['role', 'global'],
+    supportedScopes: ['user', 'global'],
   });
   providerRegistry.registerProvider(provider);
   registry.setProviderRegistry(providerRegistry);
   const access = {
     ...testRagAccess(),
     roles: provider.roles,
+    roleAdmin: provider.roleAdmin,
     bindings: provider.bindings,
   };
   const caller = { sessionId: 'S', userId: 'admin', isAdmin };
@@ -34,6 +36,7 @@ function setup(isAdmin = true) {
   const entries = buildRagAdminToolEntries({
     caller,
     access,
+    roleAdmin: access.roleAdmin,
     registry,
     providerRegistry,
   });
@@ -55,39 +58,11 @@ describe('RAG admin tools', () => {
         undefined,
       );
   });
-  it('returns the six admin names in order', () => {
+  it('returns all admin names in order', () => {
     assert.deepEqual(
       setup().entries.map((entry) => entry.toolDefinition.name),
       names,
     );
-  });
-  it('refuses deleting a role owning a collection and preserves the role', async () => {
-    const { registry, access, tool } = setup();
-    await access.roles.createRole({ roleId: 'R', name: 'Readers' });
-    registry.register('docs', new InMemoryRag(), undefined, {
-      displayName: 'docs',
-      scope: 'role',
-      roleId: 'R',
-    });
-    const result = await tool('rag_role_delete').handler({}, { roleId: 'R' });
-    assert.match(JSON.stringify(result), /RoleInUseError/);
-    const roles = await access.roles.listRoles();
-    assert.ok(roles.ok);
-    assert.equal(roles.value.length, 1);
-  });
-  it('refuses an unknown role when creating a shared collection', async () => {
-    const { tool, registry } = setup();
-    const result = await tool('rag_create_shared_collection').handler(
-      {},
-      {
-        providerName: 'mem',
-        collectionName: 'docs',
-        scope: 'role',
-        roleId: 'missing',
-      },
-    );
-    assert.match(JSON.stringify(result), /RAG_ROLE_NOT_FOUND/);
-    assert.equal(registry.list().length, 0);
   });
   it('manages roles and assignments through the library store', async () => {
     const { tool, access } = setup();
@@ -137,31 +112,37 @@ describe('RAG admin tools', () => {
         );
         assert.match(JSON.stringify(result), /RAG_ACCESS_DENIED/, name);
       }
-      assert.deepEqual(await access.roles.listRoles(), { ok: true, value: [] });
+      assert.deepEqual(await access.roleAdmin.listRoles(), {
+        ok: true,
+        value: [],
+      });
       assert.equal(registry.list().length, 0);
     });
   }
-  it('creates globals and requires assignment plus decision for role creation', async () => {
+  it('creates globals and checks the actual collection decision', async () => {
     const { tool, access, registry } = setup();
-    const shared = tool('rag_create_shared_collection');
-    await access.roles.createRole({ roleId: 'R', name: 'Readers' });
+    access.decision.canWrite = async (_caller, ref) =>
+      ref.name === 'rag_create_shared_collection';
     const args = {
       providerName: 'mem',
       collectionName: 'docs',
-      scope: 'role',
-      roleId: 'R',
+      scope: 'global',
     };
     assert.match(
-      JSON.stringify(await shared.handler({}, args)),
+      JSON.stringify(
+        await tool('rag_create_shared_collection').handler({}, args),
+      ),
       /RAG_ACCESS_DENIED/,
     );
-    await access.roles.assign('admin', 'R');
-    assert.match(JSON.stringify(await shared.handler({}, args)), /"ok":true/);
+    assert.equal(registry.list().length, 0);
+    access.decision.canWrite = async () => true;
     assert.match(
-      JSON.stringify(await shared.handler({}, { ...args, scope: 'global' })),
+      JSON.stringify(
+        await tool('rag_create_shared_collection').handler({}, args),
+      ),
       /"ok":true/,
     );
-    assert.equal(registry.list().length, 2);
+    assert.equal(registry.list().length, 1);
   });
 });
 
@@ -173,6 +154,8 @@ describe('admin tool failure boundaries', () => {
       { userId: 'other' },
       { owner: { scope: 'global' } },
       { scope: 'session' },
+      { scope: 'user' },
+      { roleId: 'team' },
     ]) {
       const result = await tool('rag_create_shared_collection').handler(
         {},
@@ -189,41 +172,31 @@ describe('admin tool failure boundaries', () => {
   });
   it('fails closed when role storage throws', async () => {
     const { tool, access, registry } = setup();
-    access.roles.listRoles = async () => {
+    const fail = async () => {
       throw new Error('unavailable');
     };
-    for (const name of ['rag_role_list', 'rag_create_shared_collection']) {
-      const result = await tool(name).handler(
-        {},
-        name === 'rag_role_list'
-          ? {}
-          : {
-              providerName: 'mem',
-              collectionName: 'docs',
-              scope: 'role',
-              roleId: 'R',
-            },
+    access.roleAdmin.listRoles = fail;
+    access.roleAdmin.createRole = fail;
+    access.roleAdmin.deleteRole = fail;
+    access.roleAdmin.assign = fail;
+    access.roleAdmin.revoke = fail;
+    access.roleAdmin.bindCollection = fail;
+    access.roleAdmin.unbindCollection = fail;
+    const args = {
+      rag_role_list: {},
+      rag_role_create: { roleId: 'R', name: 'Readers' },
+      rag_role_delete: { roleId: 'R' },
+      rag_role_assign: { roleId: 'R', userId: 'alice' },
+      rag_role_revoke: { roleId: 'R', userId: 'alice' },
+      rag_role_bind_collection: { roleId: 'R', collectionName: 'docs' },
+      rag_role_unbind_collection: { roleId: 'R', collectionName: 'docs' },
+    };
+    for (const [name, input] of Object.entries(args)) {
+      assert.match(
+        JSON.stringify(await tool(name).handler({}, input)),
+        /RAG_ADMIN_ERROR/,
       );
-      assert.match(JSON.stringify(result), /RAG_ADMIN_ERROR/);
     }
-    assert.equal(registry.list().length, 0);
-  });
-  it('checks the actual role collection decision even when admin management is allowed', async () => {
-    const { tool, access, registry } = setup();
-    await access.roles.createRole({ roleId: 'R', name: 'Readers' });
-    await access.roles.assign('admin', 'R');
-    access.decision.canWrite = async (_caller, ref) =>
-      ref.owner.scope === 'global';
-    const result = await tool('rag_create_shared_collection').handler(
-      {},
-      {
-        providerName: 'mem',
-        collectionName: 'docs',
-        scope: 'role',
-        roleId: 'R',
-      },
-    );
-    assert.match(JSON.stringify(result), /RAG_ACCESS_DENIED/);
     assert.equal(registry.list().length, 0);
   });
   it('refuses a retained handler after the caller loses admin status', async () => {
@@ -234,6 +207,9 @@ describe('admin tool failure boundaries', () => {
       { roleId: 'R', name: 'Readers' },
     );
     assert.match(JSON.stringify(result), /RAG_ACCESS_DENIED/);
-    assert.deepEqual(await access.roles.listRoles(), { ok: true, value: [] });
+    assert.deepEqual(await access.roleAdmin.listRoles(), {
+      ok: true,
+      value: [],
+    });
   });
 });

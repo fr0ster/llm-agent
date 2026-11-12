@@ -12,9 +12,10 @@ import {
   OrphanStoreError,
   RagError,
 } from '@mcp-abap-adt/llm-agent';
-import { deleteRecordSql, selectRecordsSql } from './catalog.js';
+import { selectRecordsSql } from './catalog.js';
 import {
   catalogRecordExists,
+  deleteCatalogRecord,
   duplicateRefusal,
   updateCatalogRecord,
   writeCatalogRecord,
@@ -133,7 +134,7 @@ export class SharedProviderOps {
       };
     }
     try {
-      await client.exec(deleteRecordSql(this.cfg.catalogTable), [name]);
+      await deleteCatalogRecord(client, this.cfg.catalogTable, name);
       return { ok: true, value: undefined };
     } catch (err) {
       return {

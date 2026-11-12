@@ -11,7 +11,6 @@ import {
   reservedGlobalNameError,
   SimpleRagRegistry,
   validateRagOwner,
-  visibleOwnerFilter,
 } from '@mcp-abap-adt/llm-agent';
 import type { SessionGraphIdentity } from '@mcp-abap-adt/llm-agent-libs';
 
@@ -76,11 +75,6 @@ export async function buildSessionRagRegistry(
   const registry = input.registry ?? new SimpleRagRegistry();
   if (providers && registry instanceof SimpleRagRegistry)
     registry.setProviderRegistry(providers);
-  const memberships = await ragAccess.roles.rolesOf(caller.userId);
-  if (!memberships.ok) throw memberships.error;
-  const roles = await ragAccess.roles.listRoles();
-  if (!roles.ok) throw roles.error;
-  const visible = visibleOwnerFilter(caller, memberships.value);
   const canRead = async (ref: RagCollectionRef): Promise<boolean> => {
     let decisionFailed = false;
     const result = await checkRagAccess(caller, ref, 'read', {
@@ -174,18 +168,8 @@ export async function buildSessionRagRegistry(
         );
         continue;
       }
-      if (
-        record.scope === 'role' &&
-        !roles.value.some((role) => role.roleId === record.roleId)
-      ) {
-        warnOnce(
-          JSON.stringify(['missing-role', providerName, record.storeName]),
-          `rag_catalog_row_rejected: provider '${providerName}' store '${record.storeName}': missing role '${record.roleId}'`,
-        );
-        continue;
-      }
       const owner = validateRagOwner(record);
-      if (!owner.ok || !visible(owner.value)) continue;
+      if (!owner.ok) continue;
       if (!(await canRead({ name: record.name, owner: owner.value }))) continue;
       if (
         input.registry &&

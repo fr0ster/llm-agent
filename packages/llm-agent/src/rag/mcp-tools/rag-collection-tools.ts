@@ -13,7 +13,7 @@ import type {
   RagAccessMode,
   RagCaller,
 } from '../../interfaces/rag-access.js';
-import { checkRagAccess, visibleOwnerFilter } from '../access/check-access.js';
+import { checkRagAccess } from '../access/check-access.js';
 import {
   AmbiguousCollectionError,
   CollectionDataDeleteError,
@@ -67,7 +67,7 @@ export interface RagCollectionToolOptions {
 type Refusal = { ok: false; error: string; code?: string };
 
 const scopeArg = z
-  .enum(['session', 'user', 'role', 'global'])
+  .enum(['session', 'user', 'global'])
   .optional()
   .describe(
     'Which collection of that name, when several scopes hold one (rag_list_collections shows each scope).',
@@ -89,22 +89,31 @@ export function buildRagCollectionToolEntries(
           : undefined;
       case 'user':
         return m.userId ? { scope: 'user', userId: m.userId } : undefined;
-      case 'role':
-        return m.roleId ? { scope: 'role', roleId: m.roleId } : undefined;
       case 'global':
         return { scope: 'global' };
     }
   };
   const addressable = async (): Promise<RagCollectionMeta[]> => {
     try {
-      const roles = await access.roles.rolesOf(caller.userId);
-      if (!roles.ok) return [];
-      const visible = visibleOwnerFilter(caller, roles.value);
-      return registry.list().filter((m) => {
-        if (reservedGlobalNameError(scopeOf(m), m.name)) return false;
-        const owner = ownerOf(m);
-        return owner !== undefined && visible(owner);
-      });
+      const result: RagCollectionMeta[] = [];
+      for (const meta of registry.list()) {
+        if (reservedGlobalNameError(scopeOf(meta), meta.name)) continue;
+        const owner = ownerOf(meta);
+        if (
+          owner &&
+          (
+            await checkRagAccess(caller, { name: meta.name, owner }, 'read', {
+              ...access,
+              decision: {
+                canRead: async () => true,
+                canWrite: async () => true,
+              },
+            })
+          ).ok
+        )
+          result.push(meta);
+      }
+      return result;
     } catch {
       return [];
     }
@@ -211,7 +220,7 @@ export function buildRagCollectionToolEntries(
       inputSchema: {
         collection: z.string(),
         scope: scopeArg,
-        roleId: z.string().optional(),
+
         text: z.string(),
         canonicalKey: z.string(),
         tags: z.array(z.string()).optional(),
@@ -238,7 +247,7 @@ export function buildRagCollectionToolEntries(
       inputSchema: {
         collection: z.string(),
         scope: scopeArg,
-        roleId: z.string().optional(),
+
         predecessorId: z.string(),
         predecessorCanonicalKey: z.string(),
         newText: z.string(),
@@ -282,7 +291,7 @@ export function buildRagCollectionToolEntries(
       inputSchema: {
         collection: z.string(),
         scope: scopeArg,
-        roleId: z.string().optional(),
+
         id: z.string(),
         canonicalKey: z.string(),
         reason: z.string(),
@@ -311,7 +320,7 @@ export function buildRagCollectionToolEntries(
       description:
         'List the RAG collections you can address, each with its scope, with optional scope/provider filters.',
       inputSchema: {
-        scope: z.enum(['session', 'user', 'role', 'global']).optional(),
+        scope: z.enum(['session', 'user', 'global']).optional(),
         provider: z.string().optional(),
       },
     },
@@ -336,7 +345,6 @@ export function buildRagCollectionToolEntries(
       inputSchema: {
         name: z.string(),
         scope: scopeArg,
-        roleId: z.string().optional(),
       },
     },
     handler: async (_ctx, args) => {
@@ -353,7 +361,6 @@ export function buildRagCollectionToolEntries(
       inputSchema: {
         name: z.string(),
         scope: scopeArg,
-        roleId: z.string().optional(),
       },
     },
     handler: async (_ctx, args) => {
@@ -394,8 +401,8 @@ export function buildRagCollectionToolEntries(
         inputSchema: {
           provider: z.string(),
           name: z.string(),
-          scope: z.enum(['session', 'user', 'role', 'global']),
-          roleId: z.string().optional(),
+          scope: z.enum(['session', 'user', 'global']),
+
           displayName: z.string().optional(),
           description: z.string().optional(),
           tags: z.array(z.string()).optional(),
@@ -423,15 +430,6 @@ export function buildRagCollectionToolEntries(
             };
           }
           owner = { scope: 'user', userId: caller.userId };
-        } else if (args.scope === 'role' && typeof args.roleId === 'string') {
-          if (!caller.isAdmin)
-            return {
-              ok: false,
-              code: 'RAG_ACCESS_DENIED',
-              error:
-                'RagAccessDeniedError: Role collection creation requires an admin',
-            };
-          owner = { scope: 'role', roleId: args.roleId };
         } else if (args.scope === 'global') {
           owner = { scope: 'global' };
         } else {

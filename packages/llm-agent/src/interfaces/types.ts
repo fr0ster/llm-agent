@@ -74,7 +74,7 @@ export interface CallOptions {
     userId?: string;
     caller?: RagCaller;
     sessionId?: string;
-    roleId?: string;
+
     [key: string]: unknown;
   };
   /** Detailed session debugger logger. */

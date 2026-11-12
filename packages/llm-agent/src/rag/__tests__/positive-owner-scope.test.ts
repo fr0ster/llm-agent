@@ -6,7 +6,6 @@ test('positive ownerScope is mandatory and mismatched scope/id fails closed', ()
   for (const [scope, key] of [
     ['session', 'sessionId'],
     ['user', 'userId'],
-    ['role', 'roleId'],
   ] as const) {
     assert.equal(
       matchesRagIdentity(
@@ -58,7 +57,6 @@ test('full-owner consistency rejects conflicting stored tags and ids', () => {
       { scope: 'global' },
       { scope: 'session', sessionId: 's' },
       { scope: 'user', userId: 'u' },
-      { scope: 'role', roleId: 'r' },
     ] as const)
       assert.equal(
         matchesRagIdentity(

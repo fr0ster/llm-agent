@@ -15,7 +15,7 @@ it('registry editor stamps every owner and refuses conflicting metadata', async 
   for (const owner of [
     { scope: 'session', sessionId: 's' },
     { scope: 'user', userId: 'u' },
-    { scope: 'role', roleId: 'r' },
+
     { scope: 'global' },
   ] as const) {
     const reg = new SimpleRagRegistry();

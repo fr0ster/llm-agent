@@ -12,12 +12,15 @@ import {
   ragOwnerKeys,
 } from '@mcp-abap-adt/llm-agent';
 import {
+  deleteRecordSql,
   insertRecordSql,
   recordExistsSql,
+  tableExistsSql,
   updateRecordSql,
 } from './catalog.js';
 import type { HanaClient } from './hana-vector-rag.js';
 import { roleTransaction } from './role-transaction.js';
+import { quoteIdent } from './schema.js';
 
 /** The refusal for a collection that already has a record. */
 export function duplicateRefusal(
@@ -57,17 +60,6 @@ export async function writeCatalogRecord(
   const { userId, sessionId } = ragOwnerKeys(record);
   try {
     const insert = async (connection: HanaClient) => {
-      if (record.scope === 'role') {
-        const rows = await connection.query(
-          'SELECT role_id FROM "rag_roles" WHERE role_id = ? FOR UPDATE',
-          [record.roleId],
-        );
-        if (!rows.length)
-          throw new RagError(
-            'Collection owner role does not exist',
-            'RAG_ROLE_NOT_FOUND',
-          );
-      }
       await connection.exec(insertRecordSql(table), [
         record.storeName,
         record.name,
@@ -75,11 +67,10 @@ export async function writeCatalogRecord(
         userId ?? null,
         sessionId ?? null,
         encodeRagAttributes(record.attributes),
-        record.scope === 'role' ? record.roleId : null,
+        null,
       ]);
     };
-    if (record.scope === 'role') await roleTransaction(client, insert);
-    else await insert(client);
+    await insert(client);
     return { ok: true, value: undefined };
   } catch (err) {
     if (err instanceof RagError) return { ok: false, error: err };
@@ -108,4 +99,37 @@ export async function updateCatalogRecord(
   ]);
   if (rowCount === 0) return ragCollectionNotFound(storeName);
   return { ok: true, value: undefined };
+}
+
+/** Lock the catalog identity before removing grants, fencing concurrent bindCollection. */
+export async function deleteCatalogRecord(
+  client: HanaClient,
+  table: string,
+  name: string,
+): Promise<void> {
+  const present = await client.query(tableExistsSql(false), [
+    'rag_collection_roles',
+  ]);
+  if (!Number(present[0]?.n)) {
+    await client.exec(deleteRecordSql(table), [name]);
+    return;
+  }
+  await roleTransaction(client, async (connection) => {
+    const rows = await connection.query(
+      `SELECT collection_name AS "collectionName" FROM ${quoteIdent(table)} WHERE store_name = ? FOR UPDATE`,
+      [name],
+    );
+    for (const row of rows) {
+      if (typeof row.collectionName !== 'string')
+        throw new RagError(
+          'Invalid collection identity',
+          'RAG_ACCESS_STORE_ERROR',
+        );
+      await connection.exec(
+        'DELETE FROM "rag_collection_roles" WHERE collection_name = ?',
+        [row.collectionName],
+      );
+    }
+    await connection.exec(deleteRecordSql(table), [name]);
+  });
 }

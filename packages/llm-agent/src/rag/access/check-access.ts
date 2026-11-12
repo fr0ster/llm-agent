@@ -21,7 +21,6 @@ function hasCallerIdentity(caller: RagCaller): boolean {
 
 export function visibleOwnerFilter(
   caller: RagCaller,
-  roles: ReadonlySet<string>,
 ): (owner: RagCollectionOwner) => boolean {
   return (owner) => {
     if (!hasCallerIdentity(caller)) return false;
@@ -30,8 +29,6 @@ export function visibleOwnerFilter(
         return owner.sessionId === caller.sessionId;
       case 'user':
         return owner.userId === caller.userId;
-      case 'role':
-        return roles.has(owner.roleId);
       case 'global':
         return true;
     }
@@ -52,13 +49,11 @@ export async function checkRagAccess(
     if (!hasCallerIdentity(caller)) return deny();
     const binding = await access.bindings.getUserId(caller.sessionId);
     if (!binding.ok || binding.value !== caller.userId) return deny();
-    let roles: ReadonlySet<string> = new Set();
-    if (ref.owner.scope === 'role') {
-      const result = await access.roles.rolesOf(caller.userId);
-      if (!result.ok) return deny();
-      roles = result.value;
-    }
-    if (!visibleOwnerFilter(caller, roles)(ref.owner)) return deny();
+    const memberships = await access.roles.rolesOf(caller.userId);
+    const bound = await access.roles.collectionRoles(ref.name);
+    if (!memberships.ok || !bound.ok) return deny();
+    const shared = [...memberships.value].some((role) => bound.value.has(role));
+    if (!visibleOwnerFilter(caller)(ref.owner) && !shared) return deny();
     if (ref.owner.scope === 'global' && mode === 'write' && !caller.isAdmin)
       return deny();
     const allowed =

@@ -32,6 +32,7 @@ import {
 } from '@mcp-abap-adt/llm-agent';
 import {
   type AccessPayload,
+  accessCollectionName,
   isAccessCollectionName,
   QdrantAccessPersistence,
 } from './access-persistence.js';
@@ -107,12 +108,7 @@ export class QdrantRagProvider
     this.embedder = cfg.embedder;
     this.timeoutMs = cfg.timeoutMs;
     this.editable = cfg.editable ?? true;
-    this.supportedScopes = cfg.supportedScopes ?? [
-      'session',
-      'user',
-      'role',
-      'global',
-    ];
+    this.supportedScopes = cfg.supportedScopes ?? ['session', 'user', 'global'];
     this.catalog = cfg.catalogCollection ?? DEFAULT_CATALOG_COLLECTION;
     this.ownerIdStrategyFactory = cfg.idStrategyFactory;
   }
@@ -189,32 +185,6 @@ export class QdrantRagProvider
         opts,
       );
       if (!recorded.ok) return recorded;
-      if (owner.scope === 'role') {
-        try {
-          await (await this.accessPersistence()).requireRole(owner.roleId);
-        } catch (error) {
-          const response = await this.request(
-            `/collections/${this.catalog}/points/delete?wait=true&ordering=strong`,
-            {
-              method: 'POST',
-              body: JSON.stringify({
-                filter: {
-                  must: [
-                    { key: 'store_name', match: { value: name } },
-                    { key: 'write_id', match: { value: recorded.value } },
-                  ],
-                },
-              }),
-            },
-          );
-          if (!response.ok)
-            throw new RagError(
-              'Catalog compensation failed',
-              'RAG_CREATE_ERROR',
-            );
-          throw error;
-        }
-      }
       return { ok: true, value: this.handles(name, owner) };
     } catch (err) {
       return {
@@ -282,6 +252,16 @@ export class QdrantRagProvider
         for (const point of body.result.points) {
           const metadata = point.payload ?? {};
           const owner = owners.get(storeName);
+          if (
+            String(metadata.ownerScope) === 'role' ||
+            rejected.has(storeName)
+          ) {
+            reported.push({
+              storeName,
+              reason: `Legacy or rejected owner on record ${point.id}; administrative resolution required`,
+            });
+            continue;
+          }
           const tagged: RagMetadata = rejected.has(storeName)
             ? { ...metadata, ownerScope: 'invalid' }
             : migrateRagMetadata(metadata, owner);
@@ -369,7 +349,6 @@ export class QdrantRagProvider
             scope: p.scope,
             userId: p.user_id,
             sessionId: p.session_id,
-            roleId: typeof p.role_id === 'string' ? p.role_id : undefined,
             attributesJson: p.attributes_json,
           });
         }
@@ -379,17 +358,6 @@ export class QdrantRagProvider
       const records: RagCollectionRecord[] = [];
       const rejected = [...description.rejected];
       for (const record of description.records) {
-        if (record.scope === 'role') {
-          try {
-            await (await this.accessPersistence()).requireRole(record.roleId);
-          } catch {
-            rejected.push({
-              storeName: record.storeName,
-              reason: 'Role is missing or tombstoned',
-            });
-            continue;
-          }
-        }
         records.push(record);
       }
       return { ok: true, value: { records, rejected } };
@@ -475,63 +443,101 @@ export class QdrantRagProvider
     const refused = this.refuseCatalogName(record.storeName);
     if (refused) return refused;
     try {
-      if (owner.value.scope === 'role') {
-        await (await this.accessPersistence()).requireRole(owner.value.roleId);
-      }
       return { ok: true, value: this.handles(record.storeName, owner.value) };
     } catch (err) {
       return { ok: false, error: new RagError(String(err), 'RAG_OPEN_ERROR') };
     }
   }
 
-  /** The record first, then the collection (§6.3). */
+  /** Delete the catalog first; retain the intent until data and bindings are gone. */
   async deleteCollection(name: string): Promise<Result<void, RagError>> {
     const refused = this.refuseCatalogName(name);
     if (refused) return refused;
+    let catalogDeleted = false;
     try {
-      if (await this.collectionExists(this.catalog)) {
-        const res = await this.request(
-          `/collections/${this.catalog}/points/delete?wait=true`,
-          {
-            method: 'POST',
-            body: JSON.stringify({ points: [await deterministicUUID(name)] }),
-          },
+      let generation = (await this.collectionExists(this.catalog))
+        ? await this.readRecord(name)
+        : undefined;
+      if (
+        !generation &&
+        (await this.collectionExists(
+          accessCollectionName(this.catalog, 'rag_collection_roles'),
+        ))
+      ) {
+        const db = await this.accessPersistence();
+        generation = (await db.rows('rag_collection_roles')).find(
+          (row) =>
+            row.deletion_intent &&
+            row.store_name === name &&
+            typeof row.write_id === 'string' &&
+            typeof row.collection_name === 'string',
         );
-        if (!res.ok) {
-          return {
-            ok: false,
-            error: new CatalogRecordDeleteError(
-              name,
-              `HTTP ${res.status} ${await res.text()}`,
-            ),
-          };
+      }
+      let finish = async () => {};
+      if (generation) {
+        const db = await this.accessPersistence();
+        const writeId = generation.write_id;
+        const collectionName = generation.collection_name;
+        if (typeof writeId !== 'string' || typeof collectionName !== 'string')
+          throw new RagError(
+            'Invalid catalog generation',
+            'RAG_ACCESS_STORE_ERROR',
+          );
+        const key = JSON.stringify(['deleting', name, writeId]);
+        await db.insert('rag_collection_roles', key, {
+          deletion_intent: key,
+          store_name: name,
+          collection_name: collectionName,
+          write_id: writeId,
+        });
+        finish = async () => {
+          await db.removeWhere('rag_collection_roles', {
+            collection_name: collectionName,
+            catalog_write_id: writeId,
+          });
+          await db.remove('rag_collection_roles', key);
+        };
+        try {
+          await db.removeWhere(db.catalog, {
+            store_name: name,
+            write_id: writeId,
+          });
+        } catch (err) {
+          // Only a confirmed surviving catalog record permits marker rollback.
+          // An ambiguous outcome retains the marker so a retry can finish.
+          const current = await db
+            .read(db.catalog, name)
+            .catch(() => undefined);
+          if (current?.write_id === writeId) {
+            try {
+              await db.remove('rag_collection_roles', key);
+            } catch (cleanupError) {
+              // Fail closed only if marker rollback itself fails after refusal.
+              throw new Error(
+                `${String(err)}; deletion marker rollback failed: ${String(cleanupError)}`,
+              );
+            }
+          }
+          throw err;
         }
       }
-    } catch (err) {
-      return {
-        ok: false,
-        error: new CatalogRecordDeleteError(name, String(err)),
-      };
-    }
-    try {
+      catalogDeleted = true;
       const res = await this.request(`/collections/${name}`, {
         method: 'DELETE',
       });
-      if (!res.ok) {
-        const body = await res.text();
-        return {
-          ok: false,
-          error: new RagError(
-            `Qdrant delete collection failed: ${body}`,
-            'RAG_DELETE_ERROR',
-          ),
-        };
-      }
+      if (!res.ok && res.status !== 404)
+        throw new RagError(
+          `Qdrant delete collection failed: ${await res.text()}`,
+          'RAG_DELETE_ERROR',
+        );
+      await finish();
       return { ok: true, value: undefined };
     } catch (err) {
       return {
         ok: false,
-        error: new RagError(String(err), 'RAG_DELETE_ERROR'),
+        error: catalogDeleted
+          ? new RagError(String(err), 'RAG_DELETE_ERROR')
+          : new CatalogRecordDeleteError(name, String(err)),
       };
     }
   }
@@ -605,7 +611,7 @@ export class QdrantRagProvider
     record: RagCollectionRecord,
     opts: RagProviderCreateCollectionOptions,
   ): Promise<Result<string, RagError>> {
-    const { userId, sessionId, roleId } = ragOwnerKeys(record);
+    const { userId, sessionId } = ragOwnerKeys(record);
     const writeId = crypto.randomUUID();
     const payload: AccessPayload = {
       store_name: record.storeName,
@@ -613,7 +619,6 @@ export class QdrantRagProvider
       scope: record.scope,
       ...(userId === undefined ? {} : { user_id: userId }),
       ...(sessionId === undefined ? {} : { session_id: sessionId }),
-      ...(roleId === undefined ? {} : { role_id: roleId }),
       attributes_json: encodeRagAttributes(record.attributes),
       write_id: writeId,
     };

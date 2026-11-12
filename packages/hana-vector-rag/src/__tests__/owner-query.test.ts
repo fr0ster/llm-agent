@@ -56,7 +56,7 @@ for (const layout of ['shared', 'per-collection'] as const)
     for (const [ragFilter, expected] of [
       [{ sessionId: 's' }, ['session']],
       [{ userId: 'u' }, ['user']],
-      [{ roleId: 'r' }, ['role']],
+
       [{ owner: { scope: 'global' } }, ['global']],
       [{ userId: '123' }, []],
     ] satisfies [CallOptions['ragFilter'], string[]][]) {

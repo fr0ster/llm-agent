@@ -152,10 +152,6 @@ function filterConditions(
     params.push(filter.identity.ownerScope);
     conditions.push(`${text('ownerScope')} = $${params.length}`);
   }
-  if (filter.identity?.roleId !== undefined) {
-    params.push(filter.identity.roleId);
-    conditions.push(`${text('roleId')} = $${params.length}`);
-  }
   if (filter.identity?.sessionId !== undefined) {
     params.push(filter.identity.sessionId);
     conditions.push(`${text('sessionId')} = $${params.length}`);

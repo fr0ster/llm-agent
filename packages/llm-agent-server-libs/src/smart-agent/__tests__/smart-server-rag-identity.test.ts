@@ -254,15 +254,16 @@ test('role revoke applies on the next request in the same open session and denie
   const { server, lifecycle } = setup();
   const provider = new InMemoryRagProvider({
     name: 'mem',
-    supportedScopes: ['role'],
+    supportedScopes: ['user'],
   });
-  await provider.roles.createRole({ roleId: 'r', name: 'Readers' });
-  await provider.roles.assign('u1', 'r');
+  await provider.roleAdmin.createRole({ roleId: 'r', name: 'Readers' });
+  await provider.roleAdmin.assign('u1', 'r');
   const collection = await provider.createCollection('role-docs', {
-    scope: 'role',
-    roleId: 'r',
+    scope: 'user',
+    userId: 'owner',
   });
   assert.ok(collection.ok);
+  assert.ok((await provider.roleAdmin.bindCollection('role-docs', 'r')).ok);
   server['cfg'].ragAccess = {
     ...server['cfg'].ragAccess,
     roles: provider.roles,
@@ -276,7 +277,7 @@ test('role revoke applies on the next request in the same open session and denie
     );
   });
   assert.equal(first.res.statusCode, 200);
-  await provider.roles.revoke('u1', 'r');
+  await provider.roleAdmin.revoke('u1', 'r');
   const second = request();
   await server['_withSession'](
     second.req,
@@ -289,7 +290,7 @@ test('role revoke applies on the next request in the same open session and denie
       const result = await ownerBoundQuery(
         {
           name: 'role-docs',
-          owner: { scope: 'role', roleId: 'r' },
+          owner: { scope: 'user', userId: 'owner' },
           rag: collection.value.rag,
         },
         new TextOnlyEmbedding('document'),

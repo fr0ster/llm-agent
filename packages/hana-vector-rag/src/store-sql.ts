@@ -168,7 +168,7 @@ function searchSql(
     );
     statement.params.push(identity.ownerScope);
   }
-  for (const key of ['sessionId', 'userId', 'roleId'] as const) {
+  for (const key of ['sessionId', 'userId'] as const) {
     if (identity[key] !== undefined) {
       conditions.push(
         `JSON_VALUE("METADATA", '$.${key}' RETURNING NVARCHAR(5000)) = ?`,

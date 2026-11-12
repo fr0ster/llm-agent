@@ -1,7 +1,7 @@
 import { RagError, type Result } from '@mcp-abap-adt/llm-agent';
 import type { QdrantRagProvider } from './qdrant-rag-provider.js';
 
-export async function migrateQdrantRagAccess(
+export async function migrateQdrantVectorRagAccess(
   provider: QdrantRagProvider,
 ): Promise<
   Result<

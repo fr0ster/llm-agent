@@ -25,17 +25,16 @@ import {
   validateRagOwner,
   validateRagStoreName,
 } from '@mcp-abap-adt/llm-agent';
-import { createPgVectorRagAccessStores } from './access-stores.js';
 import {
   createCatalogTableSql,
   DEFAULT_CATALOG_TABLE,
-  deleteRecordSql,
   probeTableSql,
   selectRecordsSql,
   tableExistsSql,
 } from './catalog.js';
 import {
   catalogRecordExists,
+  deleteCatalogRecord,
   duplicateRefusal,
   updateCatalogRecord,
   writeCatalogRecord,
@@ -142,12 +141,7 @@ export class PgVectorRagProvider
     this.documentsTable = cfg.documentsTable ?? SHARED_DOCUMENTS_TABLE;
     this.autoCreateSchema = cfg.autoCreateSchema ?? !shared;
     this.editable = cfg.editable ?? true;
-    this.supportedScopes = cfg.supportedScopes ?? [
-      'session',
-      'user',
-      'role',
-      'global',
-    ];
+    this.supportedScopes = cfg.supportedScopes ?? ['session', 'user', 'global'];
     this.clientFactory = cfg.clientFactory;
     this.catalogTable =
       cfg.catalogTable ??
@@ -252,22 +246,7 @@ export class PgVectorRagProvider
               : { records: [], rejected: [] },
           };
       if (!description.ok) return description;
-      const records: RagCollectionRecord[] = [];
-      const rejected = [...description.value.rejected];
-      if (!description.value.records.some((record) => record.scope === 'role'))
-        return description;
-      const roles = await createPgVectorRagAccessStores(this).roles.listRoles();
-      if (!roles.ok) return roles;
-      const activeRoles = new Set(roles.value.map((role) => role.roleId));
-      for (const record of description.value.records) {
-        if (record.scope === 'role' && !activeRoles.has(record.roleId)) {
-          rejected.push({
-            storeName: record.storeName,
-            reason: 'Role is missing or tombstoned',
-          });
-        } else records.push(record);
-      }
-      return { ok: true, value: { records, rejected } };
+      return description;
     } catch (err) {
       return { ok: false, error: new RagError(String(err), 'RAG_LIST_ERROR') };
     }
@@ -335,7 +314,12 @@ export class PgVectorRagProvider
           this.recordCache.beginDeleteStore(this.cacheIdentity(name)),
         );
       if (await this.tableExists(client, this.catalogTable)) {
-        await client.query(deleteRecordSql(this.catalogTable), [name]);
+        await deleteCatalogRecord(
+          client,
+          this.catalogTable,
+          name,
+          this.connection.schema,
+        );
       }
     } catch (err) {
       // Stop: record and data both survive, so nothing was deleted — retry it.
@@ -381,6 +365,7 @@ export class PgVectorRagProvider
               ![
                 'rag_roles',
                 'rag_role_assignments',
+                'rag_collection_roles',
                 'rag_session_bindings',
               ].includes(t),
           ),
@@ -480,9 +465,12 @@ export class PgVectorRagProvider
   private refuseCatalogName(name: string): Refusal | undefined {
     if (
       name !== this.catalogTable &&
-      !['rag_roles', 'rag_role_assignments', 'rag_session_bindings'].includes(
-        name,
-      )
+      ![
+        'rag_roles',
+        'rag_role_assignments',
+        'rag_collection_roles',
+        'rag_session_bindings',
+      ].includes(name)
     )
       return undefined;
     return {
@@ -548,6 +536,13 @@ export class PgVectorRagProvider
           const storeName =
             this.layout === 'shared' ? String(row.collection) : name;
           const owner = owners.get(storeName);
+          if (String(metadata.ownerScope) === 'role' || (owner && !owner.ok)) {
+            reported.push({
+              storeName,
+              reason: `Legacy or rejected owner on record ${row.id}; administrative resolution required`,
+            });
+            continue;
+          }
           const tagged: RagMetadata =
             owner && !owner.ok
               ? { ...metadata, ownerScope: 'invalid' }
