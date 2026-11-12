@@ -33,6 +33,7 @@ function spyInterp(): { it: IStepperInterpreter; planSeen: number } {
 }
 
 const input = () => ({
+  caller: { sessionId: 's', userId: 'user', isAdmin: false },
   prompt: 'p',
   knowledgeRag: {
     async query() {

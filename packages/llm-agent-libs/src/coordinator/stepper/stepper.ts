@@ -66,6 +66,7 @@ export class Stepper implements IStepper {
     // planned paths). The top-level prompt drives composeTask; plan nodes carry
     // the decomposition.
     const interpretCtx = {
+      caller: input.caller,
       prompt: input.prompt,
       knowledgeRag: input.knowledgeRag,
       toolsRag: input.toolsRag,
@@ -157,14 +158,19 @@ export class Stepper implements IStepper {
       })),
     });
     if (reviewer && reviewerAtDepths.has(depth)) {
+      if (!input.caller)
+        throw new Error('Trusted caller is required for stepper review');
+      if (input.caller.sessionId !== input.identity.sessionId)
+        throw new Error('Caller session does not match stepper session');
       const result = await reviewer.review({
+        caller: input.caller,
         prompt: input.prompt,
         plan,
         agents: [],
-        sessionId: input.identity.sessionId,
+        sessionId: input.caller.sessionId,
         usage: input.usage,
         signal: input.signal,
-      } as never);
+      });
       // On rejection, a bounded replan could be added here (17.0 semantics).
       // v1: log and proceed if reviewer has no hard-fail contract.
       void result;

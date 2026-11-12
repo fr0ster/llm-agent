@@ -17,6 +17,7 @@ export interface IStepperInterpreter {
   interpret(
     plan: DagPlan,
     ctx: {
+      caller?: import('./rag-access.js').RagCaller;
       prompt: string;
       knowledgeRag: IKnowledgeRagHandle;
       toolsRag: IToolsRagHandle;

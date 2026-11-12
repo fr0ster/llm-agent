@@ -799,6 +799,7 @@ test('draining pending saves even without another turn and swallows save failure
     ...options,
 
     id: 'failed-drain',
+    caller: { sessionId: 'failed-drain', userId: 'test-user', isAdmin: false },
 
     logger: {
       warn() {

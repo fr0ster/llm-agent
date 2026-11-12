@@ -145,7 +145,7 @@ test('restore uses stable session identities, records only interrupted transitio
     const session = await DialogueSession.open({
       caller: testCallOptions({
         caller: {
-          sessionId: 'test-session',
+          sessionId: id,
           userId: 'test-user',
           isAdmin: false,
         },
