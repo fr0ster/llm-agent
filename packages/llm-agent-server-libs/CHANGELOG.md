@@ -1,5 +1,12 @@
 # @mcp-abap-adt/llm-agent-server-libs
 
+## 32.0.1
+
+### Patch Changes
+
+- Requires `@mcp-abap-adt/llm-agent` 32.0.1 and `@mcp-abap-adt/llm-agent-libs` 32.0.1 or later (peer dependencies): the stepper reviewer in llm-agent-libs 32.0.1 needs the trusted caller this package now forwards.
+- 5ea2d34: Preserve the trusted caller object and its session ID when dialogue sessions create or revise plans. Reject conflicting callers before dispatch. Forward callers to adaptive finalizers and through recursive steppers to plan reviewers, refusing review when its trusted caller is missing or belongs to another session.
+
 ## 32.0.0
 
 ### Major Changes
