@@ -1,5 +1,12 @@
 # @mcp-abap-adt/anthropic-llm
 
+## 30.11.2
+
+### Patch Changes
+
+- Updated dependencies [ee1ec0e]
+  - @mcp-abap-adt/llm-agent@32.0.0
+
 ## 30.11.1
 
 ### Patch Changes
