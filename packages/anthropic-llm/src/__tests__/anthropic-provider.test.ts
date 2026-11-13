@@ -215,7 +215,7 @@ describe('AnthropicProvider — chat() options forwarding', () => {
     assert.equal(capturedBody.max_tokens, 4096);
   });
 
-  it('forwards tools to the request body', async () => {
+  it('converts tools to Anthropic name, description and input_schema in the request body', async () => {
     const provider = new AnthropicProvider({
       credential: staticApiKey('test-key'),
       model: 'claude-3-5-sonnet-20241022',
@@ -236,7 +236,13 @@ describe('AnthropicProvider — chat() options forwarding', () => {
     };
     const tools = [{ name: 'get_weather', description: 'Get weather' }];
     await provider.chat([{ role: 'user', content: 'hi' }], tools);
-    assert.deepEqual(capturedBody.tools, tools);
+    assert.deepEqual(capturedBody.tools, [
+      {
+        name: 'get_weather',
+        description: 'Get weather',
+        input_schema: { type: 'object', properties: {} },
+      },
+    ]);
   });
 
   it('forwards topP and stop options', async () => {
@@ -284,7 +290,7 @@ describe('AnthropicProvider — chat() options forwarding', () => {
     });
     const result = await provider.chat([{ role: 'user', content: 'hi' }]);
     assert.equal(result.content, 'Sure, let me check that.');
-    assert.equal(result.finishReason, 'tool_use');
+    assert.equal(result.finishReason, 'tool_calls');
   });
 
   it('extracts system message from messages array', async () => {

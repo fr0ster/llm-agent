@@ -245,8 +245,15 @@ it('request shape matches captured payload on success, errors, retries and early
         },
       ];
       const payloads: Array<{
-        messages: ShapeMessage[];
-        tools?: typeof tools;
+        messages: Array<{
+          role: 'user' | 'assistant';
+          content: string | object[];
+        }>;
+        tools?: Array<{
+          name: string;
+          description?: string;
+          input_schema: object;
+        }>;
         system?: string;
       }> = [];
       let attempts = 0;
@@ -297,7 +304,12 @@ it('request shape matches captured payload on success, errors, retries and early
           replacer?: (string | number)[] | null,
           space?: string | number,
         ) => {
-          if (value === tools) shapeComputations++;
+          if (
+            Array.isArray(value) &&
+            value.length > 0 &&
+            'input_schema' in value[0]
+          )
+            shapeComputations++;
           return stringify(value, replacer, space);
         },
       );
@@ -320,6 +332,17 @@ it('request shape matches captured payload on success, errors, retries and early
       assert.equal(payloads.length, records.length);
       for (let i = 0; i < records.length; i++) {
         const payload = payloads[i];
+        assert.deepEqual(payload.messages[0], {
+          role: 'user',
+          content: 'question',
+        });
+        assert.deepEqual(payload.messages[2], {
+          role: 'user',
+          content: [
+            { type: 'tool_result', tool_use_id: 'call', content: 'result' },
+            { type: 'text', text: 'orphan' },
+          ],
+        });
         const sent: ShapeMessage[] = [
           ...(payload.system !== undefined
             ? [
@@ -329,7 +352,13 @@ it('request shape matches captured payload on success, errors, retries and early
                 } satisfies ShapeMessage,
               ]
             : []),
-          ...payload.messages,
+          ...payload.messages.map((message) => ({
+            role: message.role,
+            content:
+              typeof message.content === 'string'
+                ? message.content
+                : JSON.stringify(message.content),
+          })),
         ];
         const expected = requestShape(sent, payload.tools);
         const record = records[i];
@@ -349,7 +378,7 @@ it('request shape matches captured payload on success, errors, retries and early
           'toolDefsChars',
         ] satisfies ReadonlyArray<keyof typeof expected>)
           assert.equal(record[key], expected[key], key);
-        assert.equal(record.inputMessages, 5);
+        assert.equal(record.inputMessages, 4);
         assert.equal(record.systemMessages, 1);
       }
       if (stream && mode === 'early') {

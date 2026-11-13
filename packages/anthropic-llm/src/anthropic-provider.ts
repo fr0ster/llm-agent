@@ -42,6 +42,46 @@ function temperatureParam(temperature: number | undefined) {
   return temperature !== undefined ? { temperature } : {};
 }
 
+type Json = string | number | boolean | null | Json[] | { [key: string]: Json };
+function parseToolArguments(argumentsJson: string): Json {
+  if (argumentsJson === '') return {};
+  try {
+    return JSON.parse(argumentsJson) as Json;
+  } catch {
+    return { _unparsed_arguments: argumentsJson };
+  }
+}
+interface ToolDefinition {
+  name?: string;
+  description?: string;
+  inputSchema?: Json;
+  input_schema?: Json;
+  function?: { name: string; description?: string; parameters?: Json };
+}
+type ContentBlock =
+  | { type: 'text'; text: string }
+  | { type: 'tool_use'; id: string; name: string; input: Json }
+  | { type: 'tool_result'; tool_use_id: string; content: string };
+interface WireMessage {
+  role: 'user' | 'assistant';
+  content: string | ContentBlock[];
+}
+function formatTools(tools: readonly ToolDefinition[]) {
+  return tools.map((tool) => {
+    const definition = tool.function ?? tool;
+    if (!definition.name) throw new Error('Anthropic tool requires a name');
+    return {
+      name: definition.name,
+      ...(definition.description !== undefined
+        ? { description: definition.description }
+        : {}),
+      input_schema: tool.function?.parameters ??
+        tool.inputSchema ??
+        tool.input_schema ?? { type: 'object', properties: {} },
+    };
+  });
+}
+
 export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
   readonly client: AxiosInstance;
   readonly model: string;
@@ -95,8 +135,14 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
       const conversationMessages = messages.filter((m) => m.role !== 'system');
 
       const sent = this.formatMessages(conversationMessages);
+      const sentTools = tools?.length
+        ? formatTools(tools as ToolDefinition[])
+        : undefined;
       const model = options?.model ?? this.model;
-      const requestBody: Record<string, unknown> = {
+      const requestBody: Record<
+        string,
+        object | string | number | boolean | null | undefined
+      > = {
         model,
         messages: sent,
         // The Messages API requires max_tokens, so it keeps a default;
@@ -111,8 +157,8 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
         requestBody.system = systemMessage.content;
       }
 
-      if (tools && tools.length > 0) {
-        requestBody.tools = tools;
+      if (sentTools) {
+        requestBody.tools = sentTools;
       }
 
       let headers: Record<string, string>;
@@ -124,13 +170,18 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
             headers,
           });
           // Handle multi-block response (text + tool_use)
-          const content = response.data.content as Array<{
-            type?: string;
-            text?: string;
-          }>;
+          const content = response.data.content as ContentBlock[];
+          const toolCalls: NonNullable<LLMResponse['toolCalls']> = [];
           let textContent = '';
           for (const block of content) {
             if (block.type === 'text') textContent += block.text;
+            if (block.type === 'tool_use')
+              toolCalls.push({
+                index: toolCalls.length,
+                id: block.id,
+                name: block.name,
+                arguments: JSON.stringify(block.input),
+              });
           }
 
           const rawUsage = response.data.usage;
@@ -145,7 +196,11 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
 
           const result = {
             content: textContent,
-            finishReason: response.data.stop_reason,
+            finishReason:
+              response.data.stop_reason === 'tool_use'
+                ? 'tool_calls'
+                : response.data.stop_reason,
+            ...(toolCalls.length ? { toolCalls } : {}),
             raw: response.data,
             usage,
           };
@@ -185,9 +240,15 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
                       } satisfies ShapeMessage,
                     ]
                   : []),
-                ...sent,
+                ...sent.map((message) => ({
+                  role: message.role,
+                  content:
+                    typeof message.content === 'string'
+                      ? message.content
+                      : JSON.stringify(message.content),
+                })),
               ],
-              tools,
+              sentTools,
             );
             return {
               ...shape,
@@ -202,10 +263,9 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
       );
 
       return response;
-    } catch (error: unknown) {
+    } catch (error) {
       const message = axios.isAxiosError(error)
-        ? (error.response?.data as { error?: { message?: string } })?.error
-            ?.message || error.message
+        ? `HTTP ${error.response?.status ?? 'unavailable'} ${(error.response?.data as { error?: { type?: string } })?.error?.type ?? error.code ?? 'error'}: ${(error.response?.data as { error?: { message?: string } })?.error?.message ?? error.message}`
         : error instanceof Error
           ? error.message
           : String(error);
@@ -225,8 +285,14 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
     const conversationMessages = messages.filter((m) => m.role !== 'system');
 
     const sent = this.formatMessages(conversationMessages);
+    const sentTools = tools?.length
+      ? formatTools(tools as ToolDefinition[])
+      : undefined;
     const model = options?.model ?? this.model;
-    const requestBody: Record<string, unknown> = {
+    const requestBody: Record<
+      string,
+      object | string | number | boolean | null | undefined
+    > = {
       model,
       messages: sent,
       max_tokens: options?.maxTokens ?? this.config.maxTokens ?? 4096,
@@ -240,8 +306,8 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
       requestBody.system = systemMessage.content;
     }
 
-    if (tools && tools.length > 0) {
-      requestBody.tools = tools;
+    if (sentTools) {
+      requestBody.tools = sentTools;
     }
 
     const baseURL = this.config.baseURL || 'https://api.anthropic.com/v1';
@@ -297,9 +363,15 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
                     } satisfies ShapeMessage,
                   ]
                 : []),
-              ...sent,
+              ...sent.map((message) => ({
+                role: message.role,
+                content:
+                  typeof message.content === 'string'
+                    ? message.content
+                    : JSON.stringify(message.content),
+              })),
             ],
-            tools,
+            sentTools,
           );
           return {
             ...shape,
@@ -316,8 +388,9 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
+    let eventType = '';
     let completed = false;
-    let streamError: unknown;
+    let streamError: Error | string | undefined;
     let inputTokens: number | undefined;
     let outputTokens: number | undefined;
     let cachedInputTokens: number | undefined;
@@ -329,6 +402,7 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
     // normalized LlmToolCallDelta chunks.
     const toolBlockIndices = new Map<number, number>();
     let nextToolIndex = 0;
+    const toolInputs = new Map<number, { input: Json; hasDelta: boolean }>();
 
     try {
       while (true) {
@@ -342,7 +416,6 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
         const lines = buffer.split('\n');
         buffer = lines.pop() || '';
 
-        let eventType = '';
         for (const line of lines) {
           const trimmed = line.trim();
           if (!trimmed) {
@@ -383,6 +456,10 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
               const blockIndex = parsed.index as number;
               const toolIndex = nextToolIndex++;
               toolBlockIndices.set(blockIndex, toolIndex);
+              toolInputs.set(blockIndex, {
+                input: parsed.content_block.input ?? {},
+                hasDelta: false,
+              });
               yield {
                 content: '',
                 raw: parsed,
@@ -401,6 +478,8 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
             ) {
               const toolIndex = toolBlockIndices.get(parsed.index as number);
               if (toolIndex !== undefined) {
+                const state = toolInputs.get(parsed.index as number);
+                if (state) state.hasDelta = true;
                 yield {
                   content: '',
                   raw: parsed,
@@ -412,6 +491,24 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
                   ],
                 };
               }
+            } else if (eventType === 'content_block_stop') {
+              const blockIndex = parsed.index as number;
+              const toolIndex = toolBlockIndices.get(blockIndex);
+              const state = toolInputs.get(blockIndex);
+              if (toolIndex !== undefined && state && !state.hasDelta) {
+                yield {
+                  content: '',
+                  raw: parsed,
+                  toolCalls: [
+                    {
+                      index: toolIndex,
+                      arguments: JSON.stringify(state.input),
+                    },
+                  ],
+                };
+              }
+              toolInputs.delete(blockIndex);
+              toolBlockIndices.delete(blockIndex);
             } else if (eventType === 'message_start' && parsed.message?.usage) {
               const u = parsed.message.usage;
               yield {
@@ -447,7 +544,7 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
                 | undefined;
               throw Object.assign(
                 new Error(
-                  `Anthropic stream error: ${error?.message ?? 'unknown'}`,
+                  `Anthropic stream error: ${error?.type ?? 'error'}: ${error?.message ?? 'unspecified'}`,
                 ),
                 { code: error?.type },
               );
@@ -466,7 +563,7 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
         }
       }
     } catch (error) {
-      streamError = error;
+      streamError = error instanceof Error ? error : String(error);
       throw error;
     } finally {
       handle.end({
@@ -510,12 +607,89 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
   /**
    * Format messages for Anthropic API
    */
-  private formatMessages(
-    messages: Message[],
-  ): Array<{ role: 'user' | 'assistant'; content: string | null }> {
-    return messages.map((msg) => ({
-      role: msg.role === 'assistant' ? 'assistant' : 'user',
-      content: msg.content,
-    }));
+  private formatMessages(messages: Message[]): WireMessage[] {
+    const result: WireMessage[] = [];
+    let toolUseIds: string[] = [];
+    let pendingResults: ContentBlock[] = [];
+    let pendingText: ContentBlock[] = [];
+    const flush = () => {
+      if (pendingResults.length || pendingText.length) {
+        result.push({
+          role: 'user',
+          content: [
+            ...toolUseIds.flatMap((id) =>
+              pendingResults.filter(
+                (block) =>
+                  block.type === 'tool_result' && block.tool_use_id === id,
+              ),
+            ),
+            ...pendingText,
+          ],
+        });
+      }
+      toolUseIds = [];
+      pendingResults = [];
+      pendingText = [];
+    };
+    for (const message of messages) {
+      if (message.role === 'assistant') flush();
+      if (toolUseIds.length && message.role !== 'assistant') {
+        if (
+          message.role === 'tool' &&
+          message.tool_call_id &&
+          toolUseIds.includes(message.tool_call_id)
+        ) {
+          pendingResults.push({
+            type: 'tool_result',
+            tool_use_id: message.tool_call_id,
+            content: message.content ?? '',
+          });
+        } else {
+          pendingText.push({ type: 'text', text: message.content ?? '' });
+        }
+        continue;
+      }
+      const content: ContentBlock[] = [];
+      if (message.content)
+        content.push({ type: 'text', text: message.content });
+      if (message.role === 'assistant') {
+        const normalized = message as Message & {
+          toolCalls?: Array<{ id: string; name: string; arguments: Json }>;
+        };
+        for (const call of message.tool_calls ?? []) {
+          content.push({
+            type: 'tool_use',
+            id: call.id,
+            name: call.function.name,
+            input: parseToolArguments(call.function.arguments),
+          });
+        }
+        if (!message.tool_calls?.length) {
+          for (const call of normalized.toolCalls ?? []) {
+            content.push({
+              type: 'tool_use',
+              id: call.id,
+              name: call.name,
+              input:
+                typeof call.arguments === 'string'
+                  ? parseToolArguments(call.arguments)
+                  : call.arguments,
+            });
+          }
+        }
+      }
+      if (!content.length) content.push({ type: 'text', text: '' });
+      result.push({
+        role: message.role === 'assistant' ? 'assistant' : 'user',
+        content: content.some((block) => block.type !== 'text')
+          ? content
+          : (message.content ?? ''),
+      });
+      toolUseIds = content.flatMap((block) =>
+        block.type === 'tool_use' ? [block.id] : [],
+      );
+    }
+    flush();
+    return result;
   }
 }
