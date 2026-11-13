@@ -1,5 +1,11 @@
 # @mcp-abap-adt/hana-vector-rag
 
+## 32.0.1
+
+### Patch Changes
+
+- 06b6db5: Fix HDI deployment by moving access-table foreign keys into separate constraint artifacts and registering the constraint plugin. Keep runtime migration constraints equivalent and document all eight deployment artifacts.
+
 ## 32.0.0
 
 ### Major Changes
