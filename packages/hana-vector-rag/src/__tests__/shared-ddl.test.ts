@@ -3,8 +3,13 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { accessTables } from '../access-ddl.js';
+import {
+  accessForeignKeyHdbconstraint,
+  accessForeignKeys,
+  accessTables,
+} from '../access-ddl.js';
 import { createCatalogTableSql } from '../catalog.js';
+import { migrateHanaVectorRagAccess } from '../migrate-access.js';
 import {
   SHARED_CATALOG_TABLE,
   SHARED_DOCUMENTS_TABLE,
@@ -13,6 +18,7 @@ import {
   sharedDocumentsHdbtable,
   sharedLayoutSql,
 } from '../shared-ddl.js';
+import { accessFixture } from './access-fixture.js';
 
 const DDL_DIR = join(
   dirname(fileURLToPath(import.meta.url)),
@@ -96,6 +102,10 @@ CREATE ${documents};`,
       expected[`${table.name}.hdbtable`] =
         `COLUMN TABLE "${table.name}" (${table.definition})`;
     }
+    for (const key of accessForeignKeys) {
+      expected[`${key.name}.hdbconstraint`] =
+        accessForeignKeyHdbconstraint(key);
+    }
     const files = readdirSync(DDL_DIR).filter((f) => f !== '.hdiconfig');
     assert.deepEqual(files.sort(), Object.keys(expected).sort());
     for (const f of files) {
@@ -103,11 +113,67 @@ CREATE ${documents};`,
     }
   });
 
-  it('.hdiconfig maps hdbtable to the table plugin', () => {
+  it('.hdiconfig maps both HDI artifact suffixes', () => {
     const cfg = JSON.parse(readFileSync(join(DDL_DIR, '.hdiconfig'), 'utf8'));
+    assert.equal(
+      cfg.file_suffixes.hdbconstraint.plugin_name,
+      'com.sap.hana.di.constraint',
+    );
     assert.equal(
       cfg.file_suffixes.hdbtable.plugin_name,
       'com.sap.hana.di.table',
     );
+  });
+  it('HDI tables have no references and each foreign key has one artifact', () => {
+    const files = readdirSync(DDL_DIR);
+    const constraints = files.filter((file) => file.endsWith('.hdbconstraint'));
+    assert.equal(files.filter((file) => file.endsWith('.hdbtable')).length, 6);
+    assert.deepEqual(constraints.sort(), [
+      'rag_collection_roles_role_fk.hdbconstraint',
+      'rag_role_assignments_role_fk.hdbconstraint',
+    ]);
+    for (const file of files.filter((file) => file.endsWith('.hdbtable'))) {
+      assert.doesNotMatch(
+        readFileSync(join(DDL_DIR, file), 'utf8'),
+        /REFERENCES/i,
+      );
+    }
+    for (const table of ['rag_collection_roles', 'rag_role_assignments']) {
+      assert.equal(
+        readFileSync(join(DDL_DIR, `${table}_role_fk.hdbconstraint`), 'utf8'),
+        `CONSTRAINT "${table}_role_fk" ON "${table}" FOREIGN KEY ("ROLE_ID") REFERENCES "rag_roles" ("ROLE_ID")\n`,
+      );
+    }
+  });
+
+  it('runtime migration and HDI describe identical access columns, keys and foreign keys', async () => {
+    const { db, provider } = accessFixture();
+    assert.ok((await migrateHanaVectorRagAccess(provider)).ok);
+    for (const table of accessTables) {
+      let definition = readFileSync(
+        join(DDL_DIR, `${table.name}.hdbtable`),
+        'utf8',
+      )
+        .trim()
+        .slice(`COLUMN TABLE "${table.name}" (`.length, -1);
+      for (const key of accessForeignKeys.filter(
+        (key) => key.table === table.name,
+      )) {
+        const constraint = readFileSync(
+          join(DDL_DIR, `${key.name}.hdbconstraint`),
+          'utf8',
+        ).trim();
+        definition += `, ${constraint.replace(` ON "${table.name}"`, '')}`;
+      }
+      assert.equal(
+        db.statements.filter((sql) =>
+          sql.startsWith(`CREATE TABLE "${table.name}" (`),
+        ).length,
+        1,
+      );
+      assert.ok(
+        db.statements.includes(`CREATE TABLE "${table.name}" (${definition})`),
+      );
+    }
   });
 });

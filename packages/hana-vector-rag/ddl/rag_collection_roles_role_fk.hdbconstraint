@@ -1,0 +1,1 @@
+CONSTRAINT "rag_collection_roles_role_fk" ON "rag_collection_roles" FOREIGN KEY ("ROLE_ID") REFERENCES "rag_roles" ("ROLE_ID")

@@ -1,0 +1,1 @@
+CONSTRAINT "rag_role_assignments_role_fk" ON "rag_role_assignments" FOREIGN KEY ("ROLE_ID") REFERENCES "rag_roles" ("ROLE_ID")

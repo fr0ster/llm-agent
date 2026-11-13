@@ -105,7 +105,7 @@ before this application-specific repair. Migration never guesses the new owner.
 
 ## HANA HDI deployment
 
-Deploy all six table artifacts from `hana-vector-rag/ddl`:
+Deploy all eight artifacts (six tables and two foreign keys) from `hana-vector-rag/ddl`:
 
 - `RAG_DOCUMENTS.hdbtable`
 - `RAG_COLLECTIONS.hdbtable`
@@ -113,8 +113,26 @@ Deploy all six table artifacts from `hana-vector-rag/ddl`:
 - `rag_role_assignments.hdbtable`
 - `rag_collection_roles.hdbtable`
 - `rag_session_bindings.hdbtable`
+- `rag_role_assignments_role_fk.hdbconstraint`
+- `rag_collection_roles_role_fk.hdbconstraint`
 
-Merge the shipped `.hdiconfig` table plugin into the db module configuration.
+Merge the shipped `.hdiconfig` table and constraint plugins into the db module configuration.
+
+The required `.hdiconfig` entries are:
+
+```json
+{
+  "file_suffixes": {
+    "hdbtable": { "plugin_name": "com.sap.hana.di.table" },
+    "hdbconstraint": { "plugin_name": "com.sap.hana.di.constraint" }
+  }
+}
+```
+
+Foreign keys are separate artifacts because HDI tables cannot reference other
+objects. The quoted lowercase table names and uppercase `"ROLE_ID"` columns
+match the runtime schema, where unquoted `role_id` becomes `ROLE_ID`.
+
 Keep the quoted lowercase access table names. Adapt the catalog artifact when
 customizing its name. The migration skips DDL when a table already exists,
 including HDI-managed `rag_collection_roles`, then performs the data checks.
