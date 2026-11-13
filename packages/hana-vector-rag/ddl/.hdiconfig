@@ -2,6 +2,9 @@
   "file_suffixes": {
     "hdbtable": {
       "plugin_name": "com.sap.hana.di.table"
+    },
+    "hdbconstraint": {
+      "plugin_name": "com.sap.hana.di.constraint"
     }
   }
 }

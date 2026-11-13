@@ -1,5 +1,5 @@
 import { RagError, type Result } from '@mcp-abap-adt/llm-agent';
-import { accessTables } from './access-ddl.js';
+import { accessTableRuntimeDefinition, accessTables } from './access-ddl.js';
 import { createCatalogTableSql, tableExistsSql } from './catalog.js';
 import type { HanaVectorRagProvider } from './hana-vector-rag-provider.js';
 import { quoteIdent } from './schema.js';
@@ -51,7 +51,7 @@ export async function migrateHanaVectorRagAccess(
     for (const table of accessTables) {
       await create(
         table.name,
-        `CREATE TABLE ${quoteIdent(table.name)} (${table.definition})`,
+        `CREATE TABLE ${quoteIdent(table.name)} (${accessTableRuntimeDefinition(table)})`,
       );
     }
     const description = await provider.describeCollections();

@@ -94,16 +94,33 @@ The error codes are exported as constants — `SHARED_LAYOUT_NOT_DEPLOYED`, `INV
 The package ships `ddl/` (published with it):
 
 - `RAG_DOCUMENTS.hdbtable`, `RAG_COLLECTIONS.hdbtable`, `rag_roles.hdbtable`,
-  `rag_role_assignments.hdbtable`, `rag_collection_roles.hdbtable`, `rag_session_bindings.hdbtable`, `.hdiconfig` — for the HDI deployer;
+  `rag_role_assignments.hdbtable`, `rag_collection_roles.hdbtable`, `rag_session_bindings.hdbtable`,
+  `rag_role_assignments_role_fk.hdbconstraint`, `rag_collection_roles_role_fk.hdbconstraint`, `.hdiconfig` — for the HDI deployer;
 - `shared-layout.sql` — the same tables as plain SQL (catalog first), for a classic schema or
   manual use.
 
-Copy all six `.hdbtable` files into the `src/` of your db module (next to your own artifacts) and **merge** the `hdbtable` plugin entry of the shipped `.hdiconfig` into the db module's existing `.hdiconfig` — do not copy it over your own file, which usually lists more plugins (create it from the shipped one only if the module has none). Then run
+Copy all eight artifacts (six `.hdbtable` and two `.hdbconstraint` files) into the `src/` of your db module (next to your own artifacts) and **merge** the `hdbtable` and `hdbconstraint` plugin entries of the shipped `.hdiconfig` into the db module's existing `.hdiconfig` — do not copy it over your own file, which usually lists more plugins (create it from the shipped one only if the module has none). Then run
 `@sap/hdi-deploy` with the container's **design-time user** (`hdi_user`); on Cloud Foundry that is
 the deployer app bound to the HDI service instance. The application itself is bound to the same
 instance and connects as the **runtime user** (`..._RT`), which only needs `SELECT`, `INSERT`,
 `UPDATE`, `DELETE` on these tables. A working example is in
 `test/integration/sql-shared-table/` of the repository.
+
+
+The required `.hdiconfig` entries are:
+
+```json
+{
+  "file_suffixes": {
+    "hdbtable": { "plugin_name": "com.sap.hana.di.table" },
+    "hdbconstraint": { "plugin_name": "com.sap.hana.di.constraint" }
+  }
+}
+```
+
+Foreign keys are separate artifacts because HDI tables cannot reference other
+objects. The quoted lowercase table names and uppercase `"ROLE_ID"` columns
+match the runtime schema, where unquoted `role_id` becomes `ROLE_ID`.
 
 ### The dimension rule
 
@@ -260,9 +277,10 @@ require an admin and a write decision. Admin status does not bypass other owners
 Retrieval applies the collection owner's record filter before top-k; `roleId` is
 not a record identity key. Access-check errors deny access.
 
-Deploy all six HDI table artifacts: `RAG_DOCUMENTS.hdbtable`,
+Deploy all eight HDI artifacts (six tables and two foreign keys): `RAG_DOCUMENTS.hdbtable`,
 `RAG_COLLECTIONS.hdbtable`, `rag_roles.hdbtable`, `rag_role_assignments.hdbtable`,
-`rag_collection_roles.hdbtable`, and `rag_session_bindings.hdbtable`. Merge the
-shipped `.hdiconfig` table plugin into your deployment configuration. Migration
+`rag_collection_roles.hdbtable`, `rag_session_bindings.hdbtable`,
+`rag_role_assignments_role_fk.hdbconstraint`, and `rag_collection_roles_role_fk.hdbconstraint`. Merge the
+shipped `.hdiconfig` table and constraint plugins into your deployment configuration. Migration
 skips DDL for existing tables. Role deletion, assignment and binding lock the same
 role row in a pinned transaction. Custom clients must supply `HanaClient.transaction`.

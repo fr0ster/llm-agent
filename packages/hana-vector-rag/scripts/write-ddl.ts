@@ -2,7 +2,11 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { accessTables } from '../src/access-ddl.js';
+import {
+  accessForeignKeyHdbconstraint,
+  accessForeignKeys,
+  accessTables,
+} from '../src/access-ddl.js';
 import {
   SHARED_CATALOG_TABLE,
   SHARED_DOCUMENTS_TABLE,
@@ -28,10 +32,13 @@ for (const table of accessTables) {
   files[`${table.name}.hdbtable`] =
     `COLUMN TABLE "${table.name}" (${table.definition})`;
 }
+for (const key of accessForeignKeys) {
+  files[`${key.name}.hdbconstraint`] = accessForeignKeyHdbconstraint(key);
+}
 for (const [name, body] of Object.entries(files)) {
   writeFileSync(join(dir, name), `${body}\n`);
 }
 writeFileSync(
   join(dir, '.hdiconfig'),
-  `${JSON.stringify({ file_suffixes: { hdbtable: { plugin_name: 'com.sap.hana.di.table' } } }, null, 2)}\n`,
+  `${JSON.stringify({ file_suffixes: { hdbtable: { plugin_name: 'com.sap.hana.di.table' }, hdbconstraint: { plugin_name: 'com.sap.hana.di.constraint' } } }, null, 2)}\n`,
 );
