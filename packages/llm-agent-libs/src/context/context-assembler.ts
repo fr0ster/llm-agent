@@ -91,6 +91,63 @@ function estimateTokens(text: string): number {
   return Math.ceil(text.length / 4);
 }
 
+function historyTimestamp(result: RagResult): number | undefined {
+  const value = result.metadata.createdAt;
+  const timestamp =
+    typeof value === 'number'
+      ? value
+      : typeof value === 'string'
+        ? Date.parse(value)
+        : NaN;
+  return Number.isFinite(timestamp) ? timestamp : undefined;
+}
+
+function historyTurnKey(result: RagResult): string | undefined {
+  const turnId = result.metadata.turnId;
+  if (typeof turnId === 'string' || typeof turnId === 'number') {
+    return `turn:${typeof turnId}:${turnId}`;
+  }
+  return undefined;
+}
+
+/** Group explicit turns before sorting so interleaved chunks stay together. */
+function sortHistory(results: RagResult[]): RagResult[] {
+  type Turn = { timestamp: number | undefined; chunks: RagResult[] };
+  const turns: Turn[] = [];
+  const turnsById = new Map<string, Turn>();
+  for (const result of results) {
+    const timestamp = historyTimestamp(result);
+    const key = historyTurnKey(result);
+    const turn = key === undefined ? undefined : turnsById.get(key);
+    if (turn) {
+      if (timestamp !== undefined) {
+        turn.timestamp = Math.max(turn.timestamp ?? timestamp, timestamp);
+      }
+      turn.chunks.push(result);
+    } else {
+      const newTurn = { timestamp, chunks: [result] };
+      turns.push(newTurn);
+      if (key !== undefined) turnsById.set(key, newTurn);
+    }
+  }
+  return turns
+    .sort((a, b) => {
+      if (a.timestamp === undefined) return b.timestamp === undefined ? 0 : 1;
+      if (b.timestamp === undefined) return -1;
+      return b.timestamp - a.timestamp;
+    })
+    .flatMap((turn) =>
+      turn.chunks.sort((a, b) => {
+        const left = a.metadata.chunkIndex;
+        const right = b.metadata.chunkIndex;
+        return (
+          (typeof left === 'number' ? left : 0) -
+          (typeof right === 'number' ? right : 0)
+        );
+      }),
+    );
+}
+
 /** Single RagResult → "- <text> [score: 0.92]" (provenance) or "- <text>" */
 function formatRagEntry(r: RagResult, provenance: boolean): string {
   const tag =
@@ -188,7 +245,13 @@ function applyTokenBudget(
     for (let i = storeKeys.length - 1; i >= 0; i--) {
       const key = storeKeys[i];
       if (mutableResults[key].length > 0) {
-        mutableResults[key] = mutableResults[key].slice(0, -1);
+        const entries = mutableResults[key];
+        const last = entries[entries.length - 1];
+        const turnKey = key === 'history' ? historyTurnKey(last) : undefined;
+        mutableResults[key] =
+          turnKey === undefined
+            ? entries.slice(0, -1)
+            : entries.filter((entry) => historyTurnKey(entry) !== turnKey);
         trimmed = true;
         break;
       }
@@ -248,7 +311,10 @@ export class ContextAssembler implements IContextAssembler {
       // Only text context participates in rendering and token budgeting.
       const sortedResults: Record<string, RagResult[]> = {};
       for (const [key, results] of textContextEntries(retrieved.ragResults)) {
-        sortedResults[key] = [...results].sort((a, b) => b.score - a.score);
+        sortedResults[key] =
+          key === 'history'
+            ? sortHistory(results)
+            : [...results].sort((a, b) => b.score - a.score);
       }
       let finalResults = sortedResults;
 
