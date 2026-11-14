@@ -1,5 +1,11 @@
 # @mcp-abap-adt/llm-agent-libs
 
+## 32.0.2
+
+### Patch Changes
+
+- aaff026: Order retrieved conversation history from newest to oldest, keep turn chunks together in chunk order, and evict whole oldest turns when the context token budget is exceeded. Other retrieved sections retain score-based ordering and eviction.
+
 ## 32.0.1
 
 ### Patch Changes
