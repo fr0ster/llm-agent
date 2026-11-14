@@ -47,6 +47,7 @@ The embedder and store are built the way `SmartServer.start` builds them:
 | `tools.mcp-abap-adt-16.0.0-readonly-high.json` | 218 tools from `@mcp-abap-adt/core` 16.0.0, `--exposition=readonly,high` |
 | `queries.en.json` | 30 English cases `{query, expect[]}` for the 8.13.0 catalog |
 | `queries.en.16.json` | the same 30 cases with `Read*` names renamed `Get*` for the 16.0.0 catalog (rule in its `note`) |
+| `queries.uk.16.json` | 30 Ukrainian cases, same as queries.en.16.json |
 | `matrix.example.json` | named configs: `{name, store, embedder?}` |
 
 `store` and `embedder` use the server's YAML shape (`rag.store`,

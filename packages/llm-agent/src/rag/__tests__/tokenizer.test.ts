@@ -13,6 +13,45 @@ const has = (text: string, ...tokens: string[]) => {
 };
 
 describe('tokenizeSearchText', () => {
+  it('keeps Cyrillic words and identifier parts', () => {
+    has(
+      'Таблиця ZINMEM_FLIGHTS зберігає рейси авіакомпаній',
+      'таблиця',
+      'зберігає',
+      'рейси',
+      'авіакомпаній',
+      'zinmem_flights',
+      'zinmem',
+      'flights',
+    );
+  });
+
+  it('removes internal apostrophes and separates external apostrophes', () => {
+    for (const apostrophe of ["'", '’', 'ʼ']) {
+      assert.deepEqual(tokenizeSearchText(`об${apostrophe}єкт`), ['обєкт']);
+      assert.deepEqual(tokenizeSearchText(`${apostrophe}quoted${apostrophe}`), [
+        'quoted',
+      ]);
+      assert.deepEqual(tokenizeSearchText(`12${apostrophe}34`), ['12', '34']);
+    }
+  });
+
+  it('splits Unicode case boundaries and keeps the whole identifier', () => {
+    has('ÄnderungsBeleg', 'änderungsbeleg', 'änderungs', 'beleg');
+    has('XMLÄnderung', 'xmländerung', 'xml', 'änderung');
+  });
+
+  it('keeps digits from other scripts', () => {
+    assert.deepEqual(tokenizeSearchText('٣٤'), ['٣٤']);
+  });
+
+  it('normalises compatibility characters and composed accents with NFKC', () => {
+    assert.deepEqual(tokenizeSearchText('Ｆｌｉｇｈｔｓ cafe\u0301'), [
+      'flights',
+      'café',
+    ]);
+  });
+
   it('splits PascalCase / camelCase into parts and keeps the whole token', () => {
     has(
       'ReadFunctionInclude',
@@ -45,6 +84,58 @@ describe('tokenizeSearchText', () => {
       tokenizeSearchText('Read the SQL'),
       tokenizeSearchText('Read the SQL'),
     );
+  });
+});
+
+describe('the stores rank Ukrainian keyword matches', () => {
+  const docs = [
+    {
+      id: 'd1',
+      text: 'Клас ZCL_INMEM_ORDERS керує замовленнями клієнтів і рахує знижки.',
+    },
+    {
+      id: 'd2',
+      text: 'Таблиця ZINMEM_FLIGHTS зберігає рейси та розклад авіакомпаній.',
+    },
+    {
+      id: 'd3',
+      text: 'Програма ZINMEM_PAYROLL розраховує зарплату працівникам щомісяця.',
+    },
+  ];
+  const queries = [
+    { text: 'рейси авіакомпаній', expected: 'd2' },
+    { text: 'розраховує зарплату', expected: 'd3' },
+  ];
+
+  it('InMemoryRag ranks matching documents first with positive scores', async () => {
+    const rag = new InMemoryRag();
+    for (const d of docs) await rag.writer().upsertRaw(d.id, d.text, {});
+    for (const q of queries) {
+      const res = await rag.query(
+        { text: q.text, toVector: async () => [] },
+        3,
+      );
+      assert.ok(res.ok);
+      assert.equal(res.value[0].metadata.id, q.expected);
+      assert.ok(res.value[0].score > 0);
+    }
+  });
+
+  it('VectorRag BM25 ranks matching documents first with positive scores', async () => {
+    const e = conformanceEmbedder();
+    const rag = new VectorRag(symmetricEmbedder(e), {
+      strategy: new Bm25OnlyStrategy(),
+    });
+    for (const d of docs) await rag.writer().upsertRaw(d.id, d.text, {});
+    for (const q of queries) {
+      const res = await rag.query(
+        { text: q.text, toVector: async () => (await e.embed(q.text)).vector },
+        3,
+      );
+      assert.ok(res.ok);
+      assert.equal(res.value[0].metadata.id, q.expected);
+      assert.ok(res.value[0].score > 0);
+    }
   });
 });
 

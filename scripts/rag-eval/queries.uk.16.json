@@ -1,0 +1,199 @@
+{
+  "language": "uk",
+  "note": "Ukrainian user phrasing of queries.en.16.json, same cases and expected tools; object names stay as written in SAP.",
+  "cases": [
+    {
+      "query": "Покажи вихідний код класу ZCL_ORDER_API",
+      "expect": [
+        "GetClass"
+      ]
+    },
+    {
+      "query": "Які поля має таблиця бази даних MARA?",
+      "expect": [
+        "GetTable",
+        "GetTypeInfo",
+        "GetStructure"
+      ]
+    },
+    {
+      "query": "Покажи перші 20 рядків таблиці T001",
+      "expect": [
+        "GetTableContents",
+        "GetSqlQuery"
+      ]
+    },
+    {
+      "query": "Виконай SELECT по SFLIGHT для перевізника LH",
+      "expect": [
+        "GetSqlQuery",
+        "GetTableContents"
+      ]
+    },
+    {
+      "query": "Які об'єкти є в пакеті ZSALES?",
+      "expect": [
+        "GetPackageContents",
+        "GetPackageTree",
+        "GetObjectsList"
+      ]
+    },
+    {
+      "query": "Де використовується функціональний модуль BAPI_USER_GET_DETAIL?",
+      "expect": [
+        "GetWhereUsed"
+      ]
+    },
+    {
+      "query": "Знайди всі класи, назва яких починається з ZCL_INV",
+      "expect": [
+        "SearchObject",
+        "GetObjectsByType"
+      ]
+    },
+    {
+      "query": "Покажи останні короткі дампи в системі",
+      "expect": [
+        "RuntimeListFeeds"
+      ]
+    },
+    {
+      "query": "Відкрий короткий дамп із заданим ідентифікатором і поясни помилку",
+      "expect": [
+        "RuntimeGetDumpById"
+      ]
+    },
+    {
+      "query": "Покажи мої відкриті транспортні запити",
+      "expect": [
+        "ListTransports"
+      ]
+    },
+    {
+      "query": "Які об'єкти є в транспорті DEVK900123?",
+      "expect": [
+        "GetTransport"
+      ]
+    },
+    {
+      "query": "Покажи визначення інтерфейсу IF_HTTP_CLIENT",
+      "expect": [
+        "GetInterface"
+      ]
+    },
+    {
+      "query": "Прочитай CDS-представлення ZI_SALESORDER",
+      "expect": [
+        "GetDdl"
+      ]
+    },
+    {
+      "query": "Покажи фіксовані значення домену XFELD",
+      "expect": [
+        "GetDomain",
+        "GetTypeInfo"
+      ]
+    },
+    {
+      "query": "Покажи текст повідомлення 001 у класі повідомлень ZMSG",
+      "expect": [
+        "GetMessageClassMessage",
+        "GetMessageClass"
+      ]
+    },
+    {
+      "query": "Покажи вихідний код функціонального модуля RFC_READ_TABLE",
+      "expect": [
+        "GetFunctionModule"
+      ]
+    },
+    {
+      "query": "Які функціональні модулі належать до функціональної групи SUSR?",
+      "expect": [
+        "ListFunctionModules",
+        "GetFunctionGroup"
+      ]
+    },
+    {
+      "query": "Покажи історію версій класу ZCL_BILLING",
+      "expect": [
+        "GetObjectVersions"
+      ]
+    },
+    {
+      "query": "Порівняй дві версії програми ZREPORT",
+      "expect": [
+        "GetObjectVersionDiff"
+      ]
+    },
+    {
+      "query": "Які об'єкти змінені, але ще не активовані?",
+      "expect": [
+        "GetInactiveObjects"
+      ]
+    },
+    {
+      "query": "Покажи визначення поведінки RAP бізнес-об'єкта ZI_TRAVEL",
+      "expect": [
+        "GetBehaviorDefinition"
+      ]
+    },
+    {
+      "query": "Покажи прив'язку сервісу ZUI_TRAVEL_O4",
+      "expect": [
+        "GetServiceBinding"
+      ]
+    },
+    {
+      "query": "Яку програму та екран запускає транзакція VA01?",
+      "expect": [
+        "GetTransaction"
+      ]
+    },
+    {
+      "query": "Виконай консольний клас ZCL_DEMO_RUN і покажи його вивід",
+      "expect": [
+        "RuntimeRunClass"
+      ]
+    },
+    {
+      "query": "Покажи поточні системні повідомлення з SM02",
+      "expect": [
+        "RuntimeListSystemMessages"
+      ]
+    },
+    {
+      "query": "Покажи реалізації точки розширення ES_SALES",
+      "expect": [
+        "GetEnhancementSpot",
+        "GetEnhancementImpl",
+        "GetEnhancements"
+      ]
+    },
+    {
+      "query": "Розбери цей фрагмент ABAP у абстрактне синтаксичне дерево",
+      "expect": [
+        "GetAbapAST"
+      ]
+    },
+    {
+      "query": "Покажи визначення елемента даних MATNR",
+      "expect": [
+        "GetDataElement",
+        "GetTypeInfo"
+      ]
+    },
+    {
+      "query": "Опиши MARA, VBAK і ZCL_X одним викликом",
+      "expect": [
+        "DescribeByList"
+      ]
+    },
+    {
+      "query": "Покажи всі інклюди програми SAPMV45A",
+      "expect": [
+        "GetIncludesList"
+      ]
+    }
+  ]
+}
