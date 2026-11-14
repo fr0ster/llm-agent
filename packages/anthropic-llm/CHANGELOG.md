@@ -1,5 +1,11 @@
 # @mcp-abap-adt/anthropic-llm
 
+## 30.11.4
+
+### Patch Changes
+
+- d1c9daa: Fetch all pages of the Anthropic model catalog so getModels() returns every available model.
+
 ## 30.11.3
 
 ### Patch Changes
