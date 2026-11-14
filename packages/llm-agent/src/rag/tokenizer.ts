@@ -3,9 +3,10 @@
  * so the two sides always agree.
  *
  * - Normalises input with NFKC, then splits on anything that is not a Unicode
- *   letter, number or underscore and lower-cases; one-character tokens are dropped.
- * - Removes apostrophes (U+0027, U+2019, U+02BC) between letters; other
- *   apostrophes are separators.
+ *   letter, number or underscore and lower-cases; tokens with only one Unicode
+ *   code point are dropped.
+ * - Removes a single apostrophe (U+0027, U+2019, U+02BC) between letters that
+ *   are not themselves apostrophes; other apostrophes are separators.
  * - An identifier is split into its parts — camelCase / PascalCase (an acronym
  *   run ends before the next capitalised word: `GetXMLParser` → get, xml,
  *   parser) and snake_case — and the whole identifier is kept as well, so
@@ -20,7 +21,8 @@ export function tokenizeSearchText(text: string): string[] {
   const out: string[] = [];
   const normalized = text
     .normalize('NFKC')
-    .replace(/(?<=\p{L})['’ʼ](?=\p{L})/gu, '')
+    // U+02BC is itself a letter, so exclude apostrophes from both neighbours.
+    .replace(/(?<=\p{L})(?<!['’ʼ])['’ʼ](?!['’ʼ])(?=\p{L})/gu, '')
     .replace(/['’ʼ]/gu, ' ');
   for (const word of normalized.split(/[^\p{L}\p{N}_]+/u)) {
     if (word.length === 0) continue;
@@ -32,11 +34,11 @@ export function tokenizeSearchText(text: string): string[] {
       .filter((p) => p.length > 0);
     if (parts.length > 1) {
       const whole = word.toLowerCase();
-      if (whole.length > 1) out.push(whole);
+      if ([...whole].length > 1) out.push(whole);
     }
     for (const p of parts) {
       const t = p.toLowerCase();
-      if (t.length > 1) out.push(t);
+      if ([...t].length > 1) out.push(t);
     }
   }
   return out;

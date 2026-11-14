@@ -36,6 +36,28 @@ describe('tokenizeSearchText', () => {
     }
   });
 
+  it('separates words at consecutive apostrophes of every form', () => {
+    for (const first of ["'", '’', 'ʼ']) {
+      for (const second of ["'", '’', 'ʼ']) {
+        assert.deepEqual(tokenizeSearchText(`left${first}${second}right`), [
+          'left',
+          'right',
+        ]);
+      }
+    }
+  });
+
+  it('counts Unicode code points when dropping one-character tokens', () => {
+    assert.deepEqual(tokenizeSearchText('中'), []);
+    assert.deepEqual(tokenizeSearchText('\u{20000}'), []);
+    assert.deepEqual(tokenizeSearchText('\u{20000}\u{20001}'), [
+      '\u{20000}\u{20001}',
+    ]);
+    assert.deepEqual(tokenizeSearchText('\u{20000}_\u{20001}'), [
+      '\u{20000}_\u{20001}',
+    ]);
+  });
+
   it('splits Unicode case boundaries and keeps the whole identifier', () => {
     has('ÄnderungsBeleg', 'änderungsbeleg', 'änderungs', 'beleg');
     has('XMLÄnderung', 'xmländerung', 'xml', 'änderung');
