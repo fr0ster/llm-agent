@@ -17,7 +17,7 @@ import {
   type ShapeMessage,
   startOperation,
 } from '@mcp-abap-adt/llm-agent';
-import axios, { type AxiosInstance } from 'axios';
+import axios, { type AxiosInstance, type AxiosResponse } from 'axios';
 
 export interface AnthropicConfig extends LLMProviderConfig {
   /**
@@ -66,6 +66,13 @@ interface WireMessage {
   role: 'user' | 'assistant';
   content: string | ContentBlock[];
 }
+interface ModelsListResponse {
+  data: Array<{ id: string; owned_by?: string }>;
+  has_more: boolean;
+  first_id: string | null;
+  last_id: string | null;
+}
+
 function formatTools(tools: readonly ToolDefinition[]) {
   return tools.map((tool) => {
     const definition = tool.function ?? tool;
@@ -592,12 +599,24 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
   }
 
   async getModels(): Promise<IModelInfo[]> {
-    const response = await this.client.get('/models', {
-      headers: await this.authHeaders(),
-    });
-    return (response.data.data as Array<{ id: string; owned_by?: string }>).map(
-      (m) => ({ id: m.id, owned_by: m.owned_by }),
-    );
+    const models: IModelInfo[] = [];
+    let afterId: string | null = null;
+    while (true) {
+      const response: AxiosResponse<ModelsListResponse> = await this.client.get(
+        '/models',
+        {
+          headers: await this.authHeaders(),
+          params: { limit: 1000, ...(afterId ? { after_id: afterId } : {}) },
+        },
+      );
+      models.push(
+        ...response.data.data.map((m) => ({ id: m.id, owned_by: m.owned_by })),
+      );
+      if (!response.data.has_more) return models;
+      if (!response.data.last_id)
+        throw new Error('Anthropic models list: has_more without last_id');
+      afterId = response.data.last_id;
+    }
   }
 
   async getEmbeddingModels(): Promise<IModelInfo[]> {
