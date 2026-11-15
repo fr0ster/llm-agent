@@ -16,6 +16,7 @@ import type {
   IRag,
   IRagRegistry,
   IRequestLogger,
+  McpClientDescriptor,
   RagCollectionScope,
   SubAgentRegistry,
 } from '@mcp-abap-adt/llm-agent';
@@ -51,6 +52,7 @@ export interface WorkerLlmSet {
    * may fall back to the parent's injected clients.
    */
   mcpClients?: IMcpClient[];
+  mcpClientDescriptors?: readonly McpClientDescriptor[];
   /**
    * Shutdown function returned by the builder's `SmartAgentHandle.close()`
    * for this worker (Fix #21). Disconnects MCP clients (and any other
@@ -162,6 +164,7 @@ export async function backfillWorkerCacheFromHandle(
   entry: WorkerLlmSet,
   handle: {
     mcpClients?: IMcpClient[];
+    mcpClientDescriptors?: readonly McpClientDescriptor[];
     ragRegistry: {
       get(name: string, scope?: RagCollectionScope): IRag | undefined;
     };
@@ -177,6 +180,7 @@ export async function backfillWorkerCacheFromHandle(
     handle.mcpClients.length > 0
   ) {
     entry.mcpClients = handle.mcpClients;
+    entry.mcpClientDescriptors = handle.mcpClientDescriptors;
   }
   if (!entry.toolsRag) {
     const t = handle.ragRegistry.get('tools', 'global');
@@ -231,6 +235,7 @@ type BuildSubAgentFn = (
     ragRegistry: IRagRegistry;
     toolsRag: IRag | undefined;
     mcpClients: IMcpClient[];
+    mcpClientDescriptors?: readonly McpClientDescriptor[];
     requestLogger: IRequestLogger;
     embedder?: IEmbedder;
   },
@@ -358,6 +363,10 @@ export class WorkerRegistry implements IWorkerRegistry {
           ragRegistry: parts.ragRegistry,
           toolsRag: injectedToolsRag,
           mcpClients: injectedMcpClients,
+          mcpClientDescriptors:
+            injectedMcpClients === cached.mcpClients
+              ? cached.mcpClientDescriptors
+              : parts.mcpClientDescriptors,
           requestLogger: parts.logger,
           embedder: cached.embedder,
         },

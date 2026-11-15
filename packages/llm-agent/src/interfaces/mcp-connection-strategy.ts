@@ -5,7 +5,7 @@ import type { IMcpRequestHeadersStrategy } from './mcp-request-headers-strategy.
 export interface McpClientDescriptor {
   /** Original configured-array position — stable across reconnect / peer outage. */
   slotIndex: number;
-  /** The server's config `name`, if set. */
+  /** The server's config `name`; required when building with multiple clients. */
   label?: string;
 }
 

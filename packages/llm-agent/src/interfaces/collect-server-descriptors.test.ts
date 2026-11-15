@@ -18,7 +18,7 @@ function stubClient(): IMcpClient {
     async callTool(): Promise<Result<McpToolResult, McpError>> {
       return { ok: true, value: { content: [] } };
     },
-  } as unknown as IMcpClient;
+  };
 }
 
 function stubServer(descriptor?: {
@@ -34,8 +34,8 @@ function stubServer(descriptor?: {
   };
 }
 
-test('no server carries a descriptor → returns undefined', () => {
-  const servers = [stubServer(), stubServer()];
+test('one server without a descriptor returns undefined', () => {
+  const servers = [stubServer()];
   const result = collectServerDescriptors(servers, 'testSeam');
   assert.equal(result, undefined);
 });
@@ -66,8 +66,8 @@ test('only some carry one → throws, and the message contains the seam name', (
       if (!(err instanceof Error)) return false;
       return (
         err.message.includes('withMcpServers') &&
-        err.message.includes('2 of 3 servers') &&
-        err.message.includes('descriptors are all or none')
+        err.message.includes('descriptor label for every client') &&
+        err.message.includes('named mcp: entries')
       );
     },
   );

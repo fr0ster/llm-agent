@@ -31,6 +31,7 @@ function stubClient(): IMcpClient {
 
 function stubServer(id: string, log: string[]): IMcpServer {
   return {
+    descriptor: { slotIndex: id.charCodeAt(0) - 97, label: id },
     async start() {
       log.push(`start:${id}`);
       return stubClient();
@@ -287,6 +288,7 @@ test('a start that fails half-way stops the servers already started', async () =
   const factory = new SessionGraphFactory({
     mcpServerFactory: () => [
       {
+        descriptor: { slotIndex: 0, label: 'first' },
         async start() {
           log.push('start:a');
           return stubClient();
@@ -296,6 +298,7 @@ test('a start that fails half-way stops the servers already started', async () =
         },
       },
       {
+        descriptor: { slotIndex: 1, label: 'second' },
         async start(): Promise<IMcpClient> {
           throw new Error('spawn failed');
         },

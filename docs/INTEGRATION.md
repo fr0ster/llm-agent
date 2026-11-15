@@ -2117,11 +2117,37 @@ export const mcpClients = url ? [lazy(() => {
 ```ts
 const handle = await new SmartAgentBuilder({})
   .withMainLlm(myLlm)
-  .withMcpClients([clientA, clientB])  // skips auto-connect and tool vectorization
+  .withMcpClients([client])  // skips auto-connect and tool vectorization
   .build();
 ```
 
 **Note:** When using `withMcpClients()`, the builder skips auto-connect and tool vectorization — the caller is responsible for providing already-connected clients.
+
+`withMcpClients()` carries no descriptor labels, so it accepts at most one client.
+Building with multiple MCP clients requires a non-empty label on every descriptor,
+even if their tools have distinct names. Use labeled `withMcpServers()` descriptors
+or named YAML `mcp:` entries; otherwise `build()` throws an explicit Error.
+For already-connected clients, preserve ownership with wrappers:
+
+```ts
+const servers = [
+  { client: clientA, label: 'primary' },
+  { client: clientB, label: 'secondary' },
+].map(({ client, label }, slotIndex) => ({
+  descriptor: { slotIndex, label },
+  async start() { return client; },
+  async stop() {}, // The caller continues to own these connections.
+}));
+
+const handle = await new SmartAgentBuilder({})
+  .withMainLlm(myLlm)
+  .withMcpServers(servers)
+  .build();
+```
+
+The same rule applies to session factories and custom connection strategies.
+A single unlabeled client remains supported with prefix `s0`. An explicitly
+empty descriptor label is rejected even for one client.
 
 ## Owning an MCP server's lifetime
 
@@ -2179,10 +2205,9 @@ Teardown then runs in one order: `closePipeline`, the session's RAG
   a configuration error — `build()` throws rather than one silently winning
   over the other. Pick the seam that matches what you're holding: a client you
   already connected, or a server this builder should start.
-- Every server in the array must carry a `descriptor`, or none may — a
-  partly-filled set throws before anything starts, because dropping it would
-  silently re-namespace every tool from its `label` to `s${slotIndex}` with
-  nothing reporting it.
+- With more than one server, every server must carry a `descriptor` with a
+  non-empty `label`. Missing or mixed labels throw before any server starts.
+  One server may omit its descriptor; its fallback prefix is always `s0`.
 - A consumer that needs to FILTER a configured set at request time (e.g. drop
   an unhealthy slot while the rest keep their ORIGINAL `slotIndex`) must stay
   on `mcpClientFactoryWithDescriptors` at the `SessionGraphFactory` layer:
@@ -2318,7 +2343,7 @@ const defaultToolNamespace: IToolNamespace = {
 };
 ```
 
-`prefix` comes from the server's config `name` (`mcp[].name` in YAML / `McpConnectionConfig.name` programmatically) when set, else `s${slotIndex}` (the server's stable configured-array position). `mcp[].name` must be non-empty, match `^[a-zA-Z0-9_-]+$`, and be unique across all configured servers — an invalid or duplicate label fails config parsing before any connection is attempted. Two servers with `mcp: [{ ..., name: primary }, { ..., name: secondary }]` both exposing `Search` yield `primary__Search` / `secondary__Search`; without `name`, the same collision yields `s0__Search` / `s1__Search`. See also [Owning an MCP server's lifetime](#owning-an-mcp-servers-lifetime) — `withMcpServers()`/`IMcpServer.descriptor` threads the same `{ slotIndex, label }` shape through when the builder starts the server itself rather than connecting to an already-configured one.
+`prefix` comes from the descriptor's `label`, populated from the server's config `name` (`mcp[].name` in YAML / `McpConnectionConfig.name` programmatically). With multiple MCP clients every descriptor must have a non-empty label; building with any missing label fails. Only a single unlabeled client may use the fallback `s0`. YAML names must also match `^[a-zA-Z0-9_-]+$` and be unique across configured servers. Two named servers exposing `Search` yield `primary__Search` / `secondary__Search`; these names remain stable when the servers are reordered. See also [Owning an MCP server's lifetime](#owning-an-mcp-servers-lifetime) for `withMcpServers()`/`IMcpServer.descriptor`.
 
 **UX note:** the model only ever sees a namespaced name on a genuine collision. A uniquely-named tool from a single server, or from several servers with no overlapping names, is always exposed bare — this mechanism is invisible until a collision actually happens.
 

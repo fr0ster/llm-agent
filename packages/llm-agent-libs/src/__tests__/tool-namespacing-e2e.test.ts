@@ -120,8 +120,8 @@ test('#244 e2e — route 1 (tool-loop executor): a RAG hit for server 1s Search 
     'weather-result',
   );
   const descriptors: McpClientDescriptor[] = [
-    { slotIndex: 0 },
-    { slotIndex: 1 },
+    { slotIndex: 0, label: 's0' },
+    { slotIndex: 1, label: 's1' },
   ];
   const connectionStrategy: IMcpConnectionStrategy = {
     async resolve() {

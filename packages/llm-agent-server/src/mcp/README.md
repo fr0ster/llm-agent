@@ -140,11 +140,11 @@ try {
 ## Multiple MCP Servers & Tool Namespacing
 
 The server-level `mcp:` config accepts either a single server or a **list**. Each
-entry may carry an optional `name`:
+entry must carry a non-empty `name` when there is more than one server:
 
 ```yaml
 mcp:
-  - name: erp                                   # optional label
+  - name: erp                                   # required stable label
     type: http
     url: http://localhost:3001/mcp/stream/http
   - name: crm
@@ -152,7 +152,7 @@ mcp:
     url: http://localhost:3002/mcp/stream/http
 ```
 
-- **`name`** — optional per-server label. Validated at startup: `^[a-zA-Z0-9_-]+$`,
+- **`name`** — required with multiple MCP clients, optional for one. Validated at startup: `^[a-zA-Z0-9_-]+$`,
   non-empty, and **unique** across servers. Used as the tool-name prefix on a
   collision (see below); has no effect on transport/routing otherwise.
 
@@ -160,9 +160,9 @@ When more than one connected server exposes a tool with the **same name**, the
 runtime exposes **namespaced** names to the model so every colliding tool stays
 individually callable (before, only the first server's copy was reachable):
 
-- Colliding name → `${name}__${tool}` (e.g. `erp__Search` / `crm__Search`). With
-  no `name`, the fallback prefix is the server's slot index: `s0__Search`,
-  `s1__Search`.
+- Colliding name → `${name}__${tool}` (e.g. `erp__Search` / `crm__Search`). A single
+  unlabeled client uses fallback prefix `s0`. Multiple clients with missing or
+  mixed labels fail during build, before tools are listed.
 - A **unique** tool name stays **bare** — single-server tool names remain unchanged.
 - The exposed (namespaced) name is what the model selects; the call is dispatched to
   the owning server with the **original** tool name on the wire.
@@ -176,10 +176,10 @@ The **built-in default config path** — used when neither a `connectMcp` nor a
 `connectMcpWithDescriptors` seam is injected — applies `mcp[].name` labels
 automatically (internally via `connectMcpClientsWithDescriptorsFromConfig`). A
 **fully-custom bare** `BuildAgentDeps.connectMcp` (returns `Promise<IMcpClient[]>`)
-does **not** — its colliding tools get **slot-index** prefixes (`s0__` / `s1__`),
-not the configured labels. (Note: the exported `connectMcpClientsFromConfig` also
-returns a bare `IMcpClient[]`, so injecting *it* as `connectMcp` likewise yields
-slot-index prefixes.)
+cannot carry labels, so returning more than one client fails during build.
+(Note: the exported `connectMcpClientsFromConfig` also
+returns a bare `IMcpClient[]`, so injecting *it* as `connectMcp` likewise supports
+only a single unlabeled client.)
 
 This is deliberate, not an oversight: a bare `connectMcp` returns an **opaque** client
 list with no guaranteed correspondence to the `mcp[]` config entries — a custom

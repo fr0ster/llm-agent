@@ -82,10 +82,15 @@ export class ControllerSkillPipelineBuilder {
     this._roleLlm[role] = cfg;
     return this;
   }
-  withMcp(cfg: { url: string; headers?: Record<string, string> }): this {
+  withMcp(cfg: {
+    url: string;
+    name?: string;
+    headers?: Record<string, string>;
+  }): this {
     this._mcp.push({
       type: 'http',
       url: cfg.url,
+      ...(cfg.name !== undefined ? { name: cfg.name } : {}),
       ...(cfg.headers ? { headers: cfg.headers } : {}),
     } as SmartServerMcpConfig);
     return this;

@@ -80,8 +80,8 @@ test('builder surfaces namespacedTools/toolProvenance even with NO writable tool
   const client0 = makeSearchClient();
   const client1 = makeSearchClient();
   const descriptors: McpClientDescriptor[] = [
-    { slotIndex: 0 },
-    { slotIndex: 1 },
+    { slotIndex: 0, label: 's0' },
+    { slotIndex: 1, label: 's1' },
   ];
   const connectionStrategy: IMcpConnectionStrategy = {
     async resolve() {
@@ -139,8 +139,8 @@ test('health preserved WHEN vectorization runs: a writable tools RAG + a client 
   const good = makeSearchClient();
   const bad = makeFailingListClient();
   const descriptors: McpClientDescriptor[] = [
-    { slotIndex: 0 },
-    { slotIndex: 1 },
+    { slotIndex: 0, label: 's0' },
+    { slotIndex: 1, label: 's1' },
   ];
   const connectionStrategy: IMcpConnectionStrategy = {
     async resolve() {
@@ -188,9 +188,9 @@ test('original client index preserved on partial failure: 3 clients, the MIDDLE 
   const client1 = makeFailingListClient(); // middle client fails
   const client2 = makeSearchClient();
   const descriptors: McpClientDescriptor[] = [
-    { slotIndex: 0 },
-    { slotIndex: 1 },
-    { slotIndex: 2 },
+    { slotIndex: 0, label: 's0' },
+    { slotIndex: 1, label: 's1' },
+    { slotIndex: 2, label: 's2' },
   ];
   const connectionStrategy: IMcpConnectionStrategy = {
     async resolve() {
