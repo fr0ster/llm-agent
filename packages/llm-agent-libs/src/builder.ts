@@ -1755,9 +1755,21 @@ export class SmartAgentBuilder {
       };
     } catch (err) {
       // Everything from here down (model validation was already done above)
-      // can throw before a handle exists to own `close()`: stop every server
-      // already registered in `closeFns` — via `withMcpServers` — on the
+      // can throw before a handle exists to own `close()`: dispose the strategy
+      // and stop every server already registered in `closeFns` on the
       // ORIGINAL failure, then let that failure through unchanged.
+      try {
+        await connectionStrategy?.dispose?.();
+      } catch (disposeErr) {
+        const message =
+          disposeErr instanceof Error ? disposeErr.message : String(disposeErr);
+        const warning = `close_connection_strategy_dispose_failed: ${message}`;
+        if (log) {
+          log.log({ type: 'warning', traceId: 'builder', message: warning });
+        } else {
+          console.warn(`[builder] ${warning}`);
+        }
+      }
       await stopAll(closeFns);
       throw err;
     }

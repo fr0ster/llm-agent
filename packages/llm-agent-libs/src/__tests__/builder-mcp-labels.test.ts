@@ -137,6 +137,50 @@ test('unlabeled connection-strategy clients fail before listing tools', async ()
   assert.equal(lists, 0);
 });
 
+test('unlabeled connection-strategy clients dispose the strategy once on build failure', async () => {
+  let disposals = 0;
+  await assert.rejects(
+    () =>
+      builder()
+        .withMcpConnectionStrategy({
+          async resolve() {
+            return { clients: [client(), client()], toolsChanged: false };
+          },
+          async dispose() {
+            disposals++;
+          },
+        })
+        .build(),
+    migrationMessage,
+  );
+  assert.equal(disposals, 1);
+});
+
+test('strategy disposal failure preserves the original label error', async (t) => {
+  let disposals = 0;
+  const warn = t.mock.method(console, 'warn', () => {});
+  await assert.rejects(
+    () =>
+      builder()
+        .withMcpConnectionStrategy({
+          async resolve() {
+            return { clients: [client(), client()], toolsChanged: false };
+          },
+          async dispose() {
+            disposals++;
+            throw new Error('dispose failed');
+          },
+        })
+        .build(),
+    migrationMessage,
+  );
+  assert.equal(disposals, 1);
+  assert.equal(warn.mock.callCount(), 1);
+  assert.deepEqual(warn.mock.calls[0].arguments, [
+    '[builder] close_connection_strategy_dispose_failed: dispose failed',
+  ]);
+});
+
 test('unnamed multi-server configuration fails before connecting', async () => {
   const configured = new SmartAgentBuilder({
     skipModelValidation: true,
