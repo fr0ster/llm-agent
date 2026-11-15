@@ -60,6 +60,7 @@ import { RagOrchestrator } from './agent/rag-orchestrator.js';
 import { normalizeRequestOptions } from './agent-request-options.js';
 import type { LlmClassifierConfig } from './classifier/llm-classifier.js';
 import { LlmClassifier } from './classifier/llm-classifier.js';
+import { normalizeMaxIterations } from './config/normalize-max-iterations.js';
 import { validateTimeZone, withRequestTime } from './context/request-time.js';
 import { withSubmitReport } from './coordinator/dialogue/submit-report-tool.js';
 import { buildAgentHealthSnapshot } from './health/agent-health.js';
@@ -173,8 +174,8 @@ export interface SmartAgentConfig {
   toolTrust?: import('@mcp-abap-adt/llm-agent').ToolTrust;
   /** Deployment IANA time zone for request dates. Default: UTC. */
   timeZone?: string;
-  /** Maximum tool-loop iterations. Builders default to Infinity (unlimited). */
-  maxIterations: number;
+  /** Maximum tool-loop iterations. Omitted means unlimited. */
+  maxIterations?: number;
   /** Maximum tool calls per request. Omitted means unlimited. */
   maxToolCalls?: number;
   toolUnavailableTtlMs?: number;
@@ -292,6 +293,10 @@ export class SmartAgent {
     private readonly deps: SmartAgentDeps,
     private config: SmartAgentConfig,
   ) {
+    this.config = {
+      ...config,
+      maxIterations: normalizeMaxIterations(config.maxIterations),
+    };
     validateTimeZone(this.config.timeZone ?? 'UTC');
     this.toolAvailabilityRegistry = new ToolAvailabilityRegistry(
       this.config.toolUnavailableTtlMs,
@@ -332,8 +337,20 @@ export class SmartAgent {
   }
 
   /** Apply a partial config update at runtime (hot-reload). */
-  applyConfigUpdate(update: Partial<SmartAgentConfig>): void {
-    this.config = { ...this.config, ...update };
+  applyConfigUpdate(
+    update: Omit<Partial<SmartAgentConfig>, 'maxIterations'> & {
+      maxIterations?: number | null;
+    },
+  ): void {
+    this.config = {
+      ...this.config,
+      ...update,
+      maxIterations: normalizeMaxIterations(
+        'maxIterations' in update
+          ? update.maxIterations
+          : this.config.maxIterations,
+      ),
+    };
   }
 
   /**
@@ -478,7 +495,7 @@ export class SmartAgent {
 
   /** Returns whitelisted runtime-safe agent config fields (for HTTP DTO). */
   getAgentConfig(): {
-    maxIterations: number;
+    maxIterations?: number;
     maxToolCalls?: number;
     ragQueryK?: number;
     toolUnavailableTtlMs?: number;
@@ -1036,7 +1053,10 @@ export class SmartAgent {
         };
         return;
       }
-      if (iteration >= this.config.maxIterations) {
+      if (
+        this.config.maxIterations !== undefined &&
+        iteration >= this.config.maxIterations
+      ) {
         timingLog.push({ phase: 'total', duration: Date.now() - loopStart });
         toolLoopSpan.addEvent('iteration_limit_reached');
         toolLoopSpan.end();

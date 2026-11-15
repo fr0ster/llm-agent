@@ -11,6 +11,7 @@ import {
   mergeOfferedTools,
   renderTaskSpec,
 } from '@mcp-abap-adt/llm-agent';
+import { normalizeMaxIterations } from '../../config/normalize-max-iterations.js';
 
 export interface CyclicReActExecutorDeps {
   llm: import('@mcp-abap-adt/llm-agent').ILlm;
@@ -22,7 +23,7 @@ export interface CyclicReActExecutorDeps {
     options?: CallOptions,
   ) => Promise<string>;
   component: LlmComponent;
-  maxIterations: number;
+  maxIterations?: number;
   /**
    * Always-on unmet-need analyzer. Injected here (NOT only via execute input)
    * so the context-augmenting loop is STRUCTURALLY always-on: the executor is
@@ -100,7 +101,8 @@ export class CyclicReActExecutor implements IExecutor {
   async execute(
     input: Parameters<IExecutor['execute']>[0],
   ): ReturnType<IExecutor['execute']> {
-    const { llm, callMcp, component, maxIterations } = this.deps;
+    const { llm, callMcp, component } = this.deps;
+    const maxIterations = normalizeMaxIterations(this.deps.maxIterations);
     const {
       prompt,
       knowledgeRag,
@@ -260,7 +262,11 @@ export class CyclicReActExecutor implements IExecutor {
     let toolCallsMade = 0;
     let lastPromptTokens = 0;
 
-    for (let iter = 0; iter < maxIterations; iter++) {
+    for (
+      let iter = 0;
+      maxIterations === undefined || iter < maxIterations;
+      iter++
+    ) {
       // Gate BEFORE any further work (review R2-F1/R6-F1). The ledger is the
       // SHARED run-wide counter (not a local snapshot). If it is exhausted we
       // refuse to start another LLM round and bubble budget-exhausted — this

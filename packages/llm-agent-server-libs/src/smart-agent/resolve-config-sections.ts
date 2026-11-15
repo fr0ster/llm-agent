@@ -8,7 +8,11 @@ import {
   ReportThrottling,
   WaitAsTold,
 } from '@mcp-abap-adt/llm-agent';
-import { normalizeHeartbeatMs } from '@mcp-abap-adt/llm-agent-libs';
+import {
+  normalizeHeartbeatMs,
+  normalizeMaxIterations,
+} from '@mcp-abap-adt/llm-agent-libs';
+import { ConfigValidationError } from './config-validator.js';
 import {
   parseIntegerField,
   type SmartServerDecisionConfig,
@@ -451,13 +455,23 @@ export function resolveAgentSection(
   yaml: YamlConfig,
   args: Record<string, unknown>,
 ): SmartServerAgentConfig {
+  let maxIterations: number | undefined;
+  try {
+    maxIterations = normalizeMaxIterations(
+      parseIntegerField(get(yaml, 'agent', 'maxIterations')),
+    );
+  } catch {
+    throw new ConfigValidationError([
+      'agent.maxIterations: must be a positive integer or null (unlimited)',
+    ]);
+  }
   return {
     externalToolsValidationMode: (get(
       yaml,
       'agent',
       'externalToolsValidationMode',
     ) ?? 'permissive') as string as 'permissive' | 'strict',
-    maxIterations: Number(get(yaml, 'agent', 'maxIterations') ?? Infinity),
+    maxIterations,
     ...(get(yaml, 'agent', 'maxToolCalls') != null
       ? { maxToolCalls: Number(get(yaml, 'agent', 'maxToolCalls')) }
       : {}),

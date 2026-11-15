@@ -9,10 +9,12 @@ import type {
   Message,
   Result,
 } from '@mcp-abap-adt/llm-agent';
+import { SmartAgent } from '../agent.js';
 import { SmartAgentBuilder } from '../builder.js';
 import { unwrapBuilderResult } from '../builder-types.js';
 import { DefaultPipeline } from '../pipeline/default-pipeline.js';
 import {
+  makeDefaultDeps,
   makeRag,
   testCallOptions,
   testRequestAccess,
@@ -64,6 +66,24 @@ function scenario() {
   return { llm, client, rounds: () => rounds, toolCalls: () => toolCalls };
 }
 
+test('direct SmartAgent defaults to unlimited iterations', async () => {
+  const run = scenario();
+  const { deps } = makeDefaultDeps({
+    mcpClients: [run.client],
+    ragStores: {
+      tools: makeRag([
+        { text: 'Work', score: 1, metadata: { id: 'tool:Work' } },
+      ]),
+    },
+  });
+  const agent = new SmartAgent({ ...deps, mainLlm: run.llm }, {});
+  const result = await agent.process('complete the work', testCallOptions());
+  assert.equal(result.ok, true);
+  if (result.ok) assert.equal(result.value.content, 'done');
+  assert.equal(run.rounds(), 13);
+  assert.equal(run.toolCalls(), 36);
+});
+
 for (const pipeline of [false, true]) {
   for (const limit of ['default', 'iterations', 'tools'] as const) {
     test(`${pipeline ? 'standalone DefaultPipeline' : 'default build'}: ${limit} tool-loop limits`, async () => {
@@ -92,7 +112,7 @@ for (const pipeline of [false, true]) {
               ? {}
               : {
                   agentConfig: {
-                    maxIterations: limit === 'iterations' ? 10 : Infinity,
+                    maxIterations: limit === 'iterations' ? 10 : undefined,
                     ...(limit === 'tools' ? { maxToolCalls: 30 } : {}),
                   },
                 }),
@@ -110,7 +130,7 @@ for (const pipeline of [false, true]) {
         } else {
           assert.equal(
             handle.agent.getAgentConfig().maxIterations,
-            limit === 'iterations' ? 10 : Infinity,
+            limit === 'iterations' ? 10 : undefined,
           );
           assert.equal(
             handle.agent.maxToolCalls,

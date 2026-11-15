@@ -8,19 +8,20 @@ import type {
   PlanStep,
   StepResult,
 } from '@mcp-abap-adt/llm-agent';
+import { normalizeMaxIterations } from '../../config/normalize-max-iterations.js';
 import { composeTask } from './compose-task.js';
-
-/** Bound on the self-dispatch tool-loop — enough for a read→observe→answer
- *  cycle without runaway. */
-const MAX_TOOL_ITERATIONS = 6;
 
 export class SelfDispatch implements IDispatchStrategy {
   readonly name = 'self';
+  private readonly maxIterations?: number;
 
   constructor(
     private readonly llm: ILlm,
     private readonly systemPrompt?: string,
-  ) {}
+    maxIterations?: number,
+  ) {
+    this.maxIterations = normalizeMaxIterations(maxIterations);
+  }
 
   async dispatch(
     step: PlanStep,
@@ -39,7 +40,7 @@ export class SelfDispatch implements IDispatchStrategy {
     const started = Date.now();
     try {
       // #157: when the coordinator threaded the per-request RAG-selected tools
-      // and a tool executor, run a bounded tool-loop so a self-dispatched step
+      // and a tool executor, run a tool-loop so a self-dispatched step
       // can actually CALL MCP (read a table, list a package, …) instead of a
       // single toolless chat that hallucinates the result. No tools / no
       // executor → the legacy single-chat behaviour (below).
@@ -87,9 +88,9 @@ export class SelfDispatch implements IDispatchStrategy {
     }
   }
 
-  /** Bounded ReAct loop: chat with tools → execute any tool calls via
+  /** ReAct loop: chat with tools → execute any tool calls via
    *  `ctx.callTool` → feed results back → repeat until the model answers with no
-   *  tool call (or the cap is hit). Mirrors the wire shape providers expect
+   *  tool call (or an explicit cap is hit). Mirrors the wire shape providers expect
    *  (assistant `tool_calls` followed by matching `tool` messages). */
   private async runToolLoop(
     sys: string,
@@ -116,7 +117,11 @@ export class SelfDispatch implements IDispatchStrategy {
         : { ...u };
     };
 
-    for (let iter = 0; iter < MAX_TOOL_ITERATIONS; iter++) {
+    for (
+      let iter = 0;
+      this.maxIterations === undefined || iter < this.maxIterations;
+      iter++
+    ) {
       const res = await this.llm.chat(messages, tools, {
         usage: ctx.usage?.with({ role: 'executor' }),
         signal: ctx.signal,

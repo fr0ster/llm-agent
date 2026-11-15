@@ -20,6 +20,37 @@ function wait(ms: number): Promise<void> {
 }
 
 describe('ConfigWatcher', () => {
+  it('normalizes unset iteration limits and rejects invalid limits on reload', async () => {
+    for (const maxIterations of [undefined, null, 3, 0, -1, 1.5]) {
+      const { filePath, cleanup } = tmpFile('agent:\n  maxIterations: 2\n');
+      const watcher = new ConfigWatcher(filePath, { debounceMs: 0 });
+      try {
+        const reload = new Promise<HotReloadableConfig>((resolve, reject) => {
+          watcher.once('reload', resolve);
+          watcher.once('error', reject);
+        });
+        watcher.start();
+        fs.writeFileSync(
+          filePath,
+          maxIterations === undefined
+            ? 'agent: {}\n'
+            : `agent:\n  maxIterations: ${maxIterations}\n`,
+          'utf8',
+        );
+        if (maxIterations == null || maxIterations === 3) {
+          const config = await reload;
+          assert.equal(config.maxIterations, maxIterations ?? undefined);
+          assert.equal('maxIterations' in config, true);
+        } else {
+          await assert.rejects(reload, /maxIterations.*positive integer/);
+        }
+      } finally {
+        watcher.stop();
+        cleanup();
+      }
+    }
+  });
+
   it('emits reload event when file changes', async () => {
     const { filePath, cleanup } = tmpFile(
       'agent:\n  maxIterations: 5\n  ragQueryK: 8\n',

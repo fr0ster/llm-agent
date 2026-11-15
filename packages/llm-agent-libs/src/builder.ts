@@ -3,6 +3,7 @@ import {
   reservedGlobalNameError,
   validateRagOwner,
 } from '@mcp-abap-adt/llm-agent';
+import { normalizeMaxIterations } from './config/normalize-max-iterations.js';
 /**
  * SmartAgentBuilder — fluent builder for SmartAgent.
  *
@@ -1398,7 +1399,6 @@ export class SmartAgentBuilder {
 
       // ---- SmartAgent Config ------------------------------------------------
       const agentCfg: SmartAgentConfig = {
-        maxIterations: Infinity,
         ragQueryK: 10,
         ragTranslatePrompt: this.cfg.prompts?.ragTranslate,
         historySummaryPrompt: this.cfg.prompts?.historySummary,
@@ -1411,6 +1411,7 @@ export class SmartAgentBuilder {
         ...this._agentOverrides,
         onBeforeStream: this._onBeforeStream,
       };
+      agentCfg.maxIterations = normalizeMaxIterations(agentCfg.maxIterations);
 
       // ---- Retry wrapping (INSIDE the circuit breaker) -------------------------
       // Enable retry by default with sensible defaults; explicit config overrides.
@@ -1544,7 +1545,7 @@ export class SmartAgentBuilder {
             this._coordinator.dispatch ??
             new HybridDispatch(
               new SubAgentDispatch(defaultContextBuilder),
-              new SelfDispatch(plannerLlm),
+              new SelfDispatch(plannerLlm, undefined, agentCfg.maxIterations),
             ),
         };
       }

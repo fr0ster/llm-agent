@@ -305,7 +305,7 @@ export async function buildFromComposition(
       llm: executorLlm,
       callMcp,
       component: 'tool-loop',
-      maxIterations: s.executor === 'simple' ? 2 : Infinity,
+      maxIterations: s.executor === 'simple' ? 2 : undefined,
       needResolver,
       ...(s.executorSystemPrompt
         ? { systemPrompt: s.executorSystemPrompt }

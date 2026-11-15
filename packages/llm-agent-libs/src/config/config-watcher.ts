@@ -10,6 +10,7 @@
 import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import { parse as parseYaml } from 'yaml';
+import { normalizeMaxIterations } from './normalize-max-iterations.js';
 
 // ---------------------------------------------------------------------------
 // Hot-reloadable config shape
@@ -119,8 +120,7 @@ export class ConfigWatcher extends EventEmitter {
 
     const config: HotReloadableConfig = {};
 
-    if (agent.maxIterations !== undefined)
-      config.maxIterations = Number(agent.maxIterations);
+    config.maxIterations = normalizeMaxIterations(agent.maxIterations);
     if (agent.maxToolCalls !== undefined)
       config.maxToolCalls = Number(agent.maxToolCalls);
     if (agent.ragQueryK !== undefined)

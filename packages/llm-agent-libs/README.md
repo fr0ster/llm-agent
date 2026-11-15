@@ -7,16 +7,22 @@ Core SmartAgent composition runtime. Builder, agent runtime, pipeline, sessions,
 
 ## Tool-loop limits
 
-Tool-loop limits are off by default: `maxIterations` resolves to `Infinity`, and
-an omitted `maxToolCalls` means unlimited. Explicit limits retain their existing
+Tool-loop limits are off by default: omitted `maxIterations` and `maxToolCalls`
+mean unlimited. Explicit limits retain their existing
 termination and reporting behavior, including `budgetExhausted`.
+
+`maxIterations` must be a positive integer when set. Config GET responses omit
+unset limits; PUT, runtime config patches, and YAML accept `null` to remove an
+iteration limit. Invalid iteration limits are rejected before applying updates.
+`SelfDispatch` follows the same default and uses the builder's explicit agent limit.
 
 To retain the previous builder defaults, configure `agent: { maxIterations: 10,
 maxToolCalls: 30 }` or call `.withMaxIterations(10).withMaxToolCalls(30)`.
 For a standalone `DefaultPipeline`, pass `agentConfig: { maxIterations: 10 }`
 to restore its previous iteration default.
 
-Pipeline `repeat` stages still use their own `stage.maxIterations` limit.
+Pipeline `repeat` stages use their own optional `stage.maxIterations` limit;
+omitting it leaves the repeat loop unlimited. Set it to `10` to retain its previous default.
 Controller `maxSteps` and `maxRetries` are unchanged.
 
 ## Top-level exports

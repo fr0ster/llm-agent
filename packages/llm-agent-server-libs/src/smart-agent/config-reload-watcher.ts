@@ -77,7 +77,7 @@ export class ConfigReloadWatcher implements IConfigReloadWatcher {
     this.deps.log({ event: 'config_reload', update });
     // Apply agent config updates
     const agentUpdate: Record<string, unknown> = {};
-    if (update.maxIterations !== undefined)
+    if ('maxIterations' in update)
       agentUpdate.maxIterations = update.maxIterations;
     if (update.maxToolCalls !== undefined)
       agentUpdate.maxToolCalls = update.maxToolCalls;
