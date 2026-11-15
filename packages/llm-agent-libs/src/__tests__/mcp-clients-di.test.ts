@@ -11,6 +11,7 @@ import type {
   CallOptions,
   ILlm,
   IMcpClient,
+  IMcpServer,
   LlmStreamChunk,
   LlmTool,
   McpError,
@@ -77,18 +78,27 @@ function stubLlm(): ILlm {
 // Builder — withMcpClients()
 // ---------------------------------------------------------------------------
 
-describe('SmartAgentBuilder.withMcpClients()', () => {
-  it('passes DI clients to SmartAgent (skips auto-connect)', async () => {
+describe('SmartAgentBuilder MCP injection', () => {
+  it('passes labeled DI servers to SmartAgent (skips auto-connect)', async () => {
     // Dynamic import to avoid pulling in heavy deps at module level
     const { SmartAgentBuilder } = await import('../builder.js');
 
     const clientA = stubMcpClient('a');
     const clientB = stubMcpClient('b');
+    const servers: IMcpServer[] = [clientA, clientB].map(
+      (client, slotIndex) => ({
+        descriptor: { slotIndex, label: `client-${slotIndex}` },
+        async start() {
+          return client;
+        },
+        async stop() {},
+      }),
+    );
 
     const handle = await new SmartAgentBuilder({})
       .withRagAccess(testRagAccess())
       .withMainLlm(stubLlm())
-      .withMcpClients([clientA, clientB])
+      .withMcpServers(servers)
       .build()
       .then(unwrapBuilderResult);
 
@@ -96,7 +106,7 @@ describe('SmartAgentBuilder.withMcpClients()', () => {
       // Agent exposes mcpClients via healthCheck — use listTools to verify
       const health = await handle.agent.healthCheck();
       assert.ok(health.ok);
-      // Two MCP clients injected → two MCP health entries
+      // Two MCP clients injected -> two MCP health entries
       assert.equal(health.value.mcp.length, 2);
       assert.ok(health.value.mcp[0].ok);
       assert.ok(health.value.mcp[1].ok);

@@ -64,6 +64,7 @@ import {
   type IStepExecutionControl,
   type IWaitStrategy,
   isReadinessReporter,
+  resolveClientDescriptors,
   SimpleRagProviderRegistry,
   symmetricEmbedder,
   type ToolLoopContextStrategyFactory,
@@ -551,6 +552,7 @@ import {
 import type { SmartServerDecisionConfig } from './decision-config.js';
 import { makeKnowledgeBackend } from './knowledge/make-knowledge-backend.js';
 import { llmKeySet, optionalNumber } from './llm-config-map.js';
+import { borrowMcpServers } from './mcp/borrow-mcp-servers.js';
 import {
   buildSessionMcpClients,
   serverOwnsMcpConnection,
@@ -1634,7 +1636,7 @@ export class SmartServer {
     //
     //   • Ready clients present (`_deps.mcpClients` / `cfg.mcpClients` / plugin
     //     clients, captured as `diOrPluginMcpClients`) → inject them into the
-    //     startup builder via `withMcpClients` (builder short-circuits its own
+    //     startup builder via borrowed `withMcpServers` (skipping its own
     //     `cfg.mcp` auto-connect). `_sharedMcpClients` = that exact set, and the
     //     `_toolsRagHandle` catalog is built now over them.
     //
@@ -1741,6 +1743,7 @@ export class SmartServer {
       historyRag,
       ragCollections,
       mcpClients,
+      mcpClientDescriptors: this._sharedMcpClientDescriptors,
       plugins,
       workerRegistry: registry,
       applyServerExtras: true,
@@ -1793,7 +1796,7 @@ export class SmartServer {
     // descriptors backing them) ONLY when it owns the connection itself (the
     // `yamlBuilderConnect` path — no ready clients, no injected seam); on every
     // other path the handle's fields stay undefined (the builder skipped its
-    // own connect via `withMcpClients`) and `resolveAuthoritativeSnapshot()`
+    // own connect via borrowed servers) and `resolveAuthoritativeSnapshot()`
     // builds the fallback later instead. Guard on presence so an undefined
     // handle field never clobbers a fallback snapshot built earlier in
     // `buildSharedPipelineInfra` (the seam / consumer-builder path runs BEFORE
@@ -2192,6 +2195,7 @@ export class SmartServer {
       ragRegistry: IRagRegistry;
       toolsRag: IRag | undefined;
       mcpClients: IMcpClient[];
+      mcpClientDescriptors?: readonly McpClientDescriptor[];
       requestLogger: IRequestLogger;
       embedder?: IEmbedder;
     },
@@ -2332,9 +2336,13 @@ export class SmartServer {
     // If neither is set, fall through to the builder's own MCP-connect path
     // (which honours `subCfg.mcp`).
     if (cached.mcpClients && cached.mcpClients.length > 0) {
-      subBuilder = subBuilder.withMcpClients(cached.mcpClients);
+      subBuilder = subBuilder.withMcpServers(
+        borrowMcpServers(cached.mcpClients, cached.mcpClientDescriptors),
+      );
     } else if (injected?.mcpClients && injected.mcpClients.length > 0) {
-      subBuilder = subBuilder.withMcpClients(injected.mcpClients);
+      subBuilder = subBuilder.withMcpServers(
+        borrowMcpServers(injected.mcpClients, injected.mcpClientDescriptors),
+      );
     }
 
     // rag.retrieval is server-wide: a worker's projection (named collections
@@ -2647,7 +2655,7 @@ export class SmartServer {
    *     method is then a no-op (memoized on `_toolProvenance`).
    *   - seam / consumer-builder path (ready clients, or an injected MCP seam):
    *     the handle carries no snapshot (the builder skipped its own connect via
-   *     `withMcpClients`), so build ONE here via `buildNamespacedTools` over
+   *     borrowed servers), so build ONE here via `buildNamespacedTools` over
    *     `_sharedMcpClients` + `_sharedMcpClientDescriptors` + the server's
    *     `_toolNamespace` — the SAME strategy instance threaded onto the
    *     startup builder, so both snapshot sources agree on the naming rule.
@@ -2664,9 +2672,11 @@ export class SmartServer {
     if (this._toolProvenance) return;
     const clients = this._sharedMcpClients ?? [];
     if (clients.length === 0) return;
-    const descs: readonly McpClientDescriptor[] =
-      this._sharedMcpClientDescriptors ??
-      clients.map((_, i) => ({ slotIndex: i }));
+    const descs = resolveClientDescriptors(
+      clients.length,
+      this._sharedMcpClientDescriptors,
+      'SmartServer',
+    );
     const settled = await Promise.all(
       clients.map(async (client) => {
         try {
@@ -2804,6 +2814,7 @@ export class SmartServer {
       ragCollections: extras?.ragCollections,
       ragRegistry: parts.ragRegistry,
       mcpClients: parts.mcpClients,
+      mcpClientDescriptors: parts.mcpClientDescriptors,
       requestLogger: parts.logger,
       plugins: extras?.plugins,
       workerRegistry,
@@ -2973,6 +2984,7 @@ export class SmartServer {
     }>;
     ragRegistry?: IRagRegistry;
     mcpClients?: IMcpClient[];
+    mcpClientDescriptors?: readonly McpClientDescriptor[];
     requestLogger?: IRequestLogger;
     plugins?: LoadedPlugins;
     workerRegistry: SubAgentRegistry;
@@ -2981,11 +2993,11 @@ export class SmartServer {
   }): Promise<SmartAgentBuilder> {
     let builder = new SmartAgentBuilder({
       // F1: the YAML `mcp:` block is connected ONCE up-front (in
-      // buildSharedPipelineInfra) and injected here via `withMcpClients` below.
+      // buildSharedPipelineInfra) and injected here via borrowed servers below.
       // Only pass `mcp:` to the builder constructor as a LAST-RESORT auto-connect
       // path when NO pre-connected clients are supplied — otherwise omit it so
       // build() cannot open a second connection. (build() already short-circuits
-      // on `this._mcpClients`; dropping the key is belt-and-suspenders.)
+      // on provided clients/servers; dropping the key is belt-and-suspenders.)
       ...(parts.applyServerExtras && !parts.mcpClients
         ? { mcp: this.cfg.mcp }
         : {}),
@@ -3085,7 +3097,9 @@ export class SmartServer {
     }
 
     if (parts.mcpClients) {
-      builder = builder.withMcpClients(parts.mcpClients);
+      builder = builder.withMcpServers(
+        borrowMcpServers(parts.mcpClients, parts.mcpClientDescriptors),
+      );
     }
 
     if (parts.workerRegistry.size > 0) {

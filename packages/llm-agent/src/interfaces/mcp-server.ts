@@ -15,8 +15,9 @@ import type { McpClientDescriptor } from './mcp-connection-strategy.js';
  */
 export interface IMcpServer {
   /**
-   * Stable identity for tool namespacing, forwarded by wrappers. When absent,
-   * array position is the pairing — exactly as today.
+   * Stable identity for tool namespacing, forwarded by wrappers. A non-empty
+   * label is required when building with multiple servers. A single server
+   * without a descriptor uses prefix s0.
    */
   readonly descriptor?: McpClientDescriptor;
   start(): Promise<IMcpClient>;

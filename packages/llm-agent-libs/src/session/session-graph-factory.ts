@@ -11,6 +11,7 @@ import type {
 import {
   collectServerDescriptors,
   normaliseLogger,
+  resolveClientDescriptors,
 } from '@mcp-abap-adt/llm-agent';
 import type { SmartAgent } from '../agent.js';
 import { SessionRequestLogger } from '../logger/session-request-logger.js';
@@ -217,7 +218,7 @@ export class SessionGraphFactory {
     const startedServers: IMcpServer[] = [];
     if (this.opts.mcpServerFactory) {
       const servers = this.opts.mcpServerFactory(identity);
-      // All or none — see the builder's identical check and why it throws.
+      // Validate stable labels before starting any server.
       const descriptors = collectServerDescriptors(servers, 'mcpServerFactory');
 
       const clients: IMcpClient[] = [];
@@ -253,6 +254,11 @@ export class SessionGraphFactory {
     let agent: SmartAgent | undefined;
     let graph: SessionGraph;
     try {
+      resolveClientDescriptors(
+        mcpClients.length,
+        mcpClientDescriptors,
+        'SessionGraphFactory',
+      );
       agent = await this.opts.buildAgent({
         caller: { ...identity, isAdmin: identity.isAdmin === true },
         sessionId: identity.sessionId,

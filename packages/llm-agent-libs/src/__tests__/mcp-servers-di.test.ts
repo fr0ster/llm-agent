@@ -73,6 +73,7 @@ function stubEmbedder(): IEmbedder {
 
 function stubServer(id: string, log: string[]): IMcpServer {
   return {
+    descriptor: { slotIndex: id.charCodeAt(0) - 97, label: id },
     async start() {
       log.push(`start:${id}`);
       return stubMcpClient(id);
@@ -126,7 +127,10 @@ describe('SmartAgentBuilder.withMcpServers()', () => {
         new SmartAgentBuilder({})
           .withRagAccess(testRagAccess())
           .withMainLlm(stubLlm())
-          .withMcpServers([described, stubServer('e', log)])
+          .withMcpServers([
+            described,
+            { ...stubServer('e', log), descriptor: undefined },
+          ])
           .build()
           .then(unwrapBuilderResult),
       /descriptor/i,
@@ -157,6 +161,7 @@ describe('SmartAgentBuilder.withMcpServers()', () => {
     const { SmartAgentBuilder } = await import('../builder.js');
     const log: string[] = [];
     const failing: IMcpServer = {
+      descriptor: { slotIndex: 1, label: 'failing' },
       async start() {
         throw new Error('spawn failed');
       },
@@ -205,6 +210,7 @@ describe('SmartAgentBuilder.withMcpServers()', () => {
     const log: string[] = [];
     const warnings: string[] = [];
     const failingFirst: IMcpServer = {
+      descriptor: { slotIndex: 0, label: 'first' },
       async start() {
         log.push('start:a');
         return stubMcpClient('a');

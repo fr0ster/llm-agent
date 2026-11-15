@@ -77,6 +77,7 @@ import {
   type RagCollectionOwner,
   type RagRegistryCreateCollectionParams,
   ragStoreKey,
+  resolveClientDescriptors,
   SimpleRagProviderRegistry,
   SimpleRagRegistry,
 } from '@mcp-abap-adt/llm-agent';
@@ -381,6 +382,7 @@ export class SmartAgentBuilder {
   /**
    * Override MCP clients. When set, auto-connect and tool vectorization
    * are skipped — the caller is responsible for connecting clients.
+   * At most one client: multiple clients require labeled `withMcpServers`.
    */
   withMcpClients(clients: IMcpClient[]): this {
     this._mcpClients = clients;
@@ -394,12 +396,11 @@ export class SmartAgentBuilder {
    * than handing over an already-connected client.
    *
    * Beside `withMcpClients`, never replacing it: a consumer that already holds
-   * clients keeps passing clients. Setting BOTH is a configuration error and
+   * one client can keep passing it. Setting BOTH is a configuration error and
    * `build()` throws, rather than one silently winning over the other.
    *
-   * Every server must carry a `descriptor`, or none may — a partly-filled set
-   * throws, because dropping it would re-namespace tools from their `label`
-   * to `s${slotIndex}` with nothing reporting it.
+   * With multiple servers, every descriptor must carry a non-empty `label`.
+   * Missing or empty labels throw during `build()`, before any server starts.
    *
    * Those descriptors DO reach the pipeline (`PipelineDeps.mcpClientDescriptors`,
    * so namespacing works), but do NOT reach `SmartAgentHandle` — unlike the
@@ -1255,9 +1256,7 @@ export class SmartAgentBuilder {
             'withMcpServers and withMcpClients are mutually exclusive: pass clients you already hold, or servers this builder should start',
           );
 
-        // A partly-filled descriptor set is a caller bug: dropping it would
-        // re-namespace every tool from its label to `s${slotIndex}`. Check
-        // before starting anything.
+        // Validate stable labels before starting any server.
         const descriptors = collectServerDescriptors(
           this._mcpServers,
           'withMcpServers',
@@ -1282,6 +1281,11 @@ export class SmartAgentBuilder {
       } else if (this._mcpClients) {
         // Caller-provided clients: skip auto-connect and vectorization
         mcpClients = this._mcpClients;
+        resolveClientDescriptors(
+          mcpClients.length,
+          undefined,
+          'withMcpClients',
+        );
       } else {
         // YAML `mcp:` → route connection through an IMcpConnectionStrategy
         // (build-on-components). Default to a resilient `makeConnectionStrategy`
@@ -1293,6 +1297,14 @@ export class SmartAgentBuilder {
         const mcpConfigs = prepareMcpConfigs(
           this.cfg.mcp,
           this._mcpRequestHeadersStrategy,
+        );
+        resolveClientDescriptors(
+          mcpConfigs.length,
+          mcpConfigs.map((config, slotIndex) => ({
+            slotIndex,
+            label: config.name,
+          })),
+          'mcp:',
         );
         if (mcpConfigs.length > 0 && !connectionStrategy) {
           connectionStrategy = makeConnectionStrategy(
@@ -1314,9 +1326,11 @@ export class SmartAgentBuilder {
         // per-client input index-preservingly (flatMap over the settled array
         // aligned by position), NOT via filter().map() — a middle-client
         // failure must not shift later slots' slotIndex.
-        const descs: readonly McpClientDescriptor[] =
-          resolved.clientDescriptors ??
-          mcpClients.map((_, i) => ({ slotIndex: i }));
+        const descs = resolveClientDescriptors(
+          mcpClients.length,
+          resolved.clientDescriptors,
+          'MCP connection strategy',
+        );
         const settled = await Promise.all(
           mcpClients.map(async (client) => {
             try {
