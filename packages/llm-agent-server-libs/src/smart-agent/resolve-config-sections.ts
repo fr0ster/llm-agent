@@ -8,7 +8,11 @@ import {
   ReportThrottling,
   WaitAsTold,
 } from '@mcp-abap-adt/llm-agent';
-import { normalizeHeartbeatMs } from '@mcp-abap-adt/llm-agent-libs';
+import {
+  normalizeHeartbeatMs,
+  normalizeLoopLimit,
+} from '@mcp-abap-adt/llm-agent-libs';
+import { ConfigValidationError } from './config-validator.js';
 import {
   parseIntegerField,
   type SmartServerDecisionConfig,
@@ -451,14 +455,25 @@ export function resolveAgentSection(
   yaml: YamlConfig,
   args: Record<string, unknown>,
 ): SmartServerAgentConfig {
+  const limits: Pick<SmartServerAgentConfig, 'maxIterations' | 'maxToolCalls'> =
+    {};
+  for (const field of ['maxIterations', 'maxToolCalls'] as const) {
+    try {
+      limits[field] = normalizeLoopLimit(get(yaml, 'agent', field), field);
+    } catch (error) {
+      if (error instanceof TypeError) {
+        throw new ConfigValidationError([error.message]);
+      }
+      throw error;
+    }
+  }
   return {
     externalToolsValidationMode: (get(
       yaml,
       'agent',
       'externalToolsValidationMode',
     ) ?? 'permissive') as string as 'permissive' | 'strict',
-    maxIterations: Number(get(yaml, 'agent', 'maxIterations') ?? 10),
-    maxToolCalls: Number(get(yaml, 'agent', 'maxToolCalls') ?? 30),
+    ...limits,
     toolUnavailableTtlMs: Number(
       get(yaml, 'agent', 'toolUnavailableTtlMs') ?? 600000,
     ),

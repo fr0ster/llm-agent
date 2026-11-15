@@ -50,7 +50,7 @@ export interface BuilderPromptsConfig {
 export interface SmartAgentBuilderConfig {
   /** MCP connection(s). Pass an array to connect multiple servers simultaneously. */
   mcp?: BuilderMcpConfig | BuilderMcpConfig[];
-  /** SmartAgent orchestration limits. */
+  /** SmartAgent config. Limits accept number | null | undefined; null and Infinity mean unlimited. */
   agent?: Partial<SmartAgentConfig>;
   /** System / classifier prompt overrides. */
   prompts?: BuilderPromptsConfig;

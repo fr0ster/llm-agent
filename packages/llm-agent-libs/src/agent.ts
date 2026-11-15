@@ -60,6 +60,7 @@ import { RagOrchestrator } from './agent/rag-orchestrator.js';
 import { normalizeRequestOptions } from './agent-request-options.js';
 import type { LlmClassifierConfig } from './classifier/llm-classifier.js';
 import { LlmClassifier } from './classifier/llm-classifier.js';
+import { normalizeLoopLimit } from './config/normalize-max-iterations.js';
 import { validateTimeZone, withRequestTime } from './context/request-time.js';
 import { withSubmitReport } from './coordinator/dialogue/submit-report-tool.js';
 import { buildAgentHealthSnapshot } from './health/agent-health.js';
@@ -173,8 +174,10 @@ export interface SmartAgentConfig {
   toolTrust?: import('@mcp-abap-adt/llm-agent').ToolTrust;
   /** Deployment IANA time zone for request dates. Default: UTC. */
   timeZone?: string;
-  maxIterations: number;
-  maxToolCalls?: number;
+  /** Positive maximum tool-loop iterations. Omitted, null or Infinity means unlimited. */
+  maxIterations?: number | null;
+  /** Non-negative maximum tool calls per request; 0 forbids calls. Omitted, null or Infinity means unlimited. */
+  maxToolCalls?: number | null;
   toolUnavailableTtlMs?: number;
   timeoutMs?: number;
   tokenLimit?: number;
@@ -264,7 +267,17 @@ export interface SmartAgentReconfigureOptions {
   helperLlm?: ILlm;
 }
 
+/** Validated runtime config: unlimited limits are represented by undefined. */
+export type NormalizedSmartAgentConfig = Omit<
+  SmartAgentConfig,
+  'maxIterations' | 'maxToolCalls'
+> & {
+  maxIterations?: number;
+  maxToolCalls?: number;
+};
+
 export class SmartAgent {
+  private readonly config: NormalizedSmartAgentConfig;
   private readonly toolAvailabilityRegistry: ToolAvailabilityRegistry;
   private readonly tracer: ITracer;
   private readonly metrics: IMetrics;
@@ -288,8 +301,13 @@ export class SmartAgent {
 
   constructor(
     private readonly deps: SmartAgentDeps,
-    private config: SmartAgentConfig,
+    config: SmartAgentConfig,
   ) {
+    // Preserve the config reference shared with the builder's pipeline.
+    this.config = Object.assign(config, {
+      maxIterations: normalizeLoopLimit(config.maxIterations, 'maxIterations'),
+      maxToolCalls: normalizeLoopLimit(config.maxToolCalls, 'maxToolCalls'),
+    });
     validateTimeZone(this.config.timeZone ?? 'UTC');
     this.toolAvailabilityRegistry = new ToolAvailabilityRegistry(
       this.config.toolUnavailableTtlMs,
@@ -331,7 +349,24 @@ export class SmartAgent {
 
   /** Apply a partial config update at runtime (hot-reload). */
   applyConfigUpdate(update: Partial<SmartAgentConfig>): void {
-    this.config = { ...this.config, ...update };
+    const nextConfig = {
+      ...this.config,
+      ...update,
+      maxIterations: normalizeLoopLimit(
+        'maxIterations' in update
+          ? update.maxIterations
+          : this.config.maxIterations,
+        'maxIterations',
+      ),
+      maxToolCalls: normalizeLoopLimit(
+        'maxToolCalls' in update
+          ? update.maxToolCalls
+          : this.config.maxToolCalls,
+        'maxToolCalls',
+      ),
+    };
+    // Validate the entire patch before publishing it to all config consumers.
+    Object.assign(this.config, nextConfig);
   }
 
   /**
@@ -476,7 +511,7 @@ export class SmartAgent {
 
   /** Returns whitelisted runtime-safe agent config fields (for HTTP DTO). */
   getAgentConfig(): {
-    maxIterations: number;
+    maxIterations?: number;
     maxToolCalls?: number;
     ragQueryK?: number;
     toolUnavailableTtlMs?: number;
@@ -1034,7 +1069,10 @@ export class SmartAgent {
         };
         return;
       }
-      if (iteration >= this.config.maxIterations) {
+      if (
+        this.config.maxIterations !== undefined &&
+        iteration >= this.config.maxIterations
+      ) {
         timingLog.push({ phase: 'total', duration: Date.now() - loopStart });
         toolLoopSpan.addEvent('iteration_limit_reached');
         toolLoopSpan.end();

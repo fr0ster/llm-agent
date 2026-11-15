@@ -229,6 +229,7 @@ describe('controller context wiring — RagRecall factory', () => {
     }> = [];
     let recordedRoundId = '';
     const spyRag = {
+      list: async () => [],
       write: async () => {},
       query: async (
         text: string,

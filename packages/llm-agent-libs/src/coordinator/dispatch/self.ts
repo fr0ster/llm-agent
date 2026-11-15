@@ -8,19 +8,23 @@ import type {
   PlanStep,
   StepResult,
 } from '@mcp-abap-adt/llm-agent';
+import { normalizeLoopLimit } from '../../config/normalize-max-iterations.js';
 import { composeTask } from './compose-task.js';
-
-/** Bound on the self-dispatch tool-loop — enough for a read→observe→answer
- *  cycle without runaway. */
-const MAX_TOOL_ITERATIONS = 6;
 
 export class SelfDispatch implements IDispatchStrategy {
   readonly name = 'self';
+  private readonly maxIterations?: number;
+  private readonly maxToolCalls?: number;
 
   constructor(
     private readonly llm: ILlm,
     private readonly systemPrompt?: string,
-  ) {}
+    maxIterations?: number | null,
+    maxToolCalls?: number | null,
+  ) {
+    this.maxIterations = normalizeLoopLimit(maxIterations, 'maxIterations');
+    this.maxToolCalls = normalizeLoopLimit(maxToolCalls, 'maxToolCalls');
+  }
 
   async dispatch(
     step: PlanStep,
@@ -39,7 +43,7 @@ export class SelfDispatch implements IDispatchStrategy {
     const started = Date.now();
     try {
       // #157: when the coordinator threaded the per-request RAG-selected tools
-      // and a tool executor, run a bounded tool-loop so a self-dispatched step
+      // and a tool executor, run a tool-loop so a self-dispatched step
       // can actually CALL MCP (read a table, list a package, …) instead of a
       // single toolless chat that hallucinates the result. No tools / no
       // executor → the legacy single-chat behaviour (below).
@@ -50,11 +54,20 @@ export class SelfDispatch implements IDispatchStrategy {
           stepId: step.id,
           output: r.content,
           usage: r.usage,
+          budgetExhausted: r.budgetExhausted,
+          toolCallCount: r.toolCallCount,
+          maxToolCalls: r.maxToolCalls,
           durationMs: Date.now() - started,
           ok: true,
         };
       }
 
+      const limits = ctx.loopLimits ?? { maxToolCalls: this.maxToolCalls };
+      const maxToolCalls = normalizeLoopLimit(
+        limits.maxToolCalls,
+        'maxToolCalls',
+      );
+      const toolCallCount = ctx.toolCallCount ?? 0;
       const res = await this.llm.chat(
         [
           { role: 'system', content: sys },
@@ -73,6 +86,11 @@ export class SelfDispatch implements IDispatchStrategy {
         stepId: step.id,
         output: res.value.content,
         usage: res.value.usage,
+        budgetExhausted:
+          (maxToolCalls !== undefined && toolCallCount >= maxToolCalls) ||
+          undefined,
+        toolCallCount,
+        maxToolCalls,
         durationMs: Date.now() - started,
         ok: true,
       };
@@ -87,16 +105,36 @@ export class SelfDispatch implements IDispatchStrategy {
     }
   }
 
-  /** Bounded ReAct loop: chat with tools → execute any tool calls via
+  /** ReAct loop: chat with tools → execute any tool calls via
    *  `ctx.callTool` → feed results back → repeat until the model answers with no
-   *  tool call (or the cap is hit). Mirrors the wire shape providers expect
+   *  tool call (or an explicit cap is hit). Mirrors the wire shape providers expect
    *  (assistant `tool_calls` followed by matching `tool` messages). */
   private async runToolLoop(
     sys: string,
     userMsg: string,
     tools: LlmTool[],
     ctx: ICoordinatorContext,
-  ): Promise<{ content: string; usage?: LlmUsage }> {
+  ): Promise<
+    { content: string; usage?: LlmUsage } & Pick<
+      StepResult,
+      'budgetExhausted' | 'toolCallCount' | 'maxToolCalls'
+    >
+  > {
+    const limits = ctx.loopLimits ?? {
+      maxIterations: this.maxIterations,
+      maxToolCalls: this.maxToolCalls,
+    };
+    const maxIterations = normalizeLoopLimit(
+      limits.maxIterations,
+      'maxIterations',
+    );
+    const maxToolCalls = normalizeLoopLimit(
+      limits.maxToolCalls,
+      'maxToolCalls',
+    );
+    let toolCallCount = ctx.toolCallCount ?? 0;
+    const exhausted = () =>
+      maxToolCalls !== undefined && toolCallCount >= maxToolCalls;
     const callTool = ctx.callTool as NonNullable<
       ICoordinatorContext['callTool']
     >;
@@ -116,7 +154,11 @@ export class SelfDispatch implements IDispatchStrategy {
         : { ...u };
     };
 
-    for (let iter = 0; iter < MAX_TOOL_ITERATIONS; iter++) {
+    for (
+      let iter = 0;
+      (maxIterations === undefined || iter < maxIterations) && !exhausted();
+      iter++
+    ) {
       const res = await this.llm.chat(messages, tools, {
         usage: ctx.usage?.with({ role: 'executor' }),
         signal: ctx.signal,
@@ -126,7 +168,14 @@ export class SelfDispatch implements IDispatchStrategy {
       if (!res.ok) throw res.error;
       add(res.value.usage);
       const toolCalls = res.value.toolCalls ?? [];
-      if (toolCalls.length === 0) return { content: res.value.content, usage };
+      if (toolCalls.length === 0) {
+        return {
+          content: res.value.content,
+          usage,
+          toolCallCount,
+          maxToolCalls,
+        };
+      }
 
       messages.push({
         role: 'assistant',
@@ -141,6 +190,21 @@ export class SelfDispatch implements IDispatchStrategy {
         })),
       });
       for (const tc of toolCalls) {
+        if (exhausted()) {
+          messages.push({
+            role: 'tool',
+            tool_call_id: tc.id,
+            content: `Error: not executed: tool-call budget of ${maxToolCalls} for this request is exhausted; return what you have and report what is missing`,
+          });
+          continue;
+        }
+        toolCallCount++;
+        ctx.toolCallCount = toolCallCount;
+        try {
+          ctx.onToolCallCount?.(toolCallCount, maxToolCalls);
+        } catch {
+          // Observers cannot affect execution.
+        }
         const out = await callTool(tc.name, tc.arguments ?? {}, ctx.signal, {
           caller: ctx.caller,
           sessionId: ctx.sessionId,
@@ -150,7 +214,7 @@ export class SelfDispatch implements IDispatchStrategy {
       }
     }
 
-    // Iteration cap hit: one final tool-free turn so we answer from what was
+    // A limit was hit: one final tool-free turn so we answer from what was
     // gathered instead of returning empty.
     const final = await this.llm.chat(messages, [], {
       usage: ctx.usage?.with({ role: 'executor' }),
@@ -160,6 +224,12 @@ export class SelfDispatch implements IDispatchStrategy {
     });
     if (!final.ok) throw final.error;
     add(final.value.usage);
-    return { content: final.value.content, usage };
+    return {
+      content: final.value.content,
+      usage,
+      budgetExhausted: exhausted() || undefined,
+      toolCallCount,
+      maxToolCalls,
+    };
   }
 }

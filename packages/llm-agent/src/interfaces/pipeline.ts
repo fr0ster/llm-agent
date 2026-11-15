@@ -75,7 +75,7 @@ export interface StageDefinition {
    */
   after?: StageDefinition[];
 
-  /** Maximum iterations — used by `repeat` type. Default: 10. */
+  /** Maximum iterations — used by `repeat` type. Omitted means unlimited. */
   maxIterations?: number;
 
   /**

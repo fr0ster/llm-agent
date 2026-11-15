@@ -5,6 +5,7 @@ import type {
   IPlanningStrategy,
   Plan,
 } from '@mcp-abap-adt/llm-agent';
+import type { SmartAgentConfig } from '../../../agent.js';
 import { testCallOptions } from '../../../testing/index.js';
 import { CoordinatorHandler } from '../coordinator.js';
 
@@ -34,6 +35,7 @@ describe('CoordinatorHandler clarification gate', () => {
       value: { content: string; finishReason?: string };
     }> = [];
     const ctx = {
+      config: {} satisfies SmartAgentConfig,
       options: testCallOptions({ sessionId: 't' }),
       inputText: 'ambiguous',
       sessionId: 't',

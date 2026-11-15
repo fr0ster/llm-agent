@@ -26,6 +26,7 @@
  * The span is passed to the handler for sub-span creation.
  */
 
+import { normalizeMaxIterations } from '../config/normalize-max-iterations.js';
 import type { ISpan, ITracer } from '../tracer/types.js';
 import { evaluateCondition } from './condition-evaluator.js';
 import type { PipelineContext } from './context.js';
@@ -138,8 +139,10 @@ export class PipelineExecutor {
     ctx: PipelineContext,
     parentSpan: ISpan,
   ): Promise<boolean> {
-    const max = stage.maxIterations ?? 10;
-    for (let i = 0; i < max; i++) {
+    const max = normalizeMaxIterations(stage.maxIterations);
+    if (!stage.stages?.length) return true;
+    for (let i = 0; max === undefined || i < max; i++) {
+      if (ctx.error || ctx.options?.signal?.aborted) return false;
       // Check `until` stop condition
       if (stage.until && evaluateCondition(stage.until, ctx)) {
         break;

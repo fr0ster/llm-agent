@@ -1036,13 +1036,13 @@ export class ControllerCoordinatorHandler implements IStageHandler {
   ): Promise<'advanced' | 'failed' | 'partial' | 'suspended' | 'aborted'> {
     const deps = this.deps;
     const cfg = deps.config.budgets;
-    const maxToolCalls = cfg.maxToolCalls ?? 10;
+    const maxToolCalls = cfg.maxToolCalls;
     const inFlight = bundle.inFlightStep; // set by the caller (block A or B)
     // Per-step execution control: a wall-clock time budget (perStepTimeoutMs) +
     // the prospective maxToolCalls gate, consumer-swappable via deps. Its signal
     // is merged with the caller's cancel signal (below) and fed into both the
     // executor.send and callMcp so a non-converging / hung step is CUT rather than
-    // livelocking. Absent perStepTimeoutMs → time never fires → count-only bound.
+    // livelocking. Both limits are opt-in; absent limits never cut the step.
     const stepControl =
       deps.stepExecutionControl ?? new DefaultStepExecutionControl();
     const budget = stepControl.beginStep({
@@ -1261,8 +1261,10 @@ export class ControllerCoordinatorHandler implements IStageHandler {
       // replan loop — the token balloon in issue #213.
       const refs = step.requires ?? [];
       const evBound =
-        RECALL_K_STEP * (maxAttempts + 1) +
-        cfg.maxSteps * maxAttempts * (cfg.maxToolCalls ?? 10);
+        maxToolCalls === undefined
+          ? undefined
+          : RECALL_K_STEP * (maxAttempts + 1) +
+            cfg.maxSteps * maxAttempts * maxToolCalls;
       const evidence: Evidence[] = [];
       for (const ref of refs) {
         const hits = await runScopedRecall(

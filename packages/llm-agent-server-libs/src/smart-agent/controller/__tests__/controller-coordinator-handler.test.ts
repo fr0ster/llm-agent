@@ -173,6 +173,38 @@ const toolCall = (
 // ---------------------------------------------------------------------------
 
 describe('ControllerCoordinatorHandler', () => {
+  it('runs more than 30 internal tool calls with no configured limit', async () => {
+    const h = harness({
+      evaluator: [{ kind: 'content', content: 'Goal' }],
+      planner: [
+        {
+          kind: 'content',
+          content: JSON.stringify({
+            plan: [{ name: 's1', instructions: 'do' }],
+          }),
+        },
+        { kind: 'content', content: 'unlimited-done' },
+      ],
+      executor: [
+        ...Array.from({ length: 31 }, (_, index) =>
+          toolCall('Work', { index }),
+        ),
+        { kind: 'content', content: 'converged' },
+      ],
+      selectTools: [{ name: 'Work', description: '', inputSchema: {} }],
+    });
+    const { ctx, captured } = fakeCtx();
+    await new ControllerCoordinatorHandler(h.deps).execute(ctx, {}, undefined);
+    assert.equal(h.mcpCalls.length, 31);
+    const bundle = await hydrateBundle(h.backend, 'sess-1');
+    assert.equal(bundle.budgets.stepsUsed, 1);
+    assert.doesNotMatch(bundle.plannerPrivate, /tool-call budget/);
+    assert.ok(
+      captured.some(
+        (chunk) => chunk.ok && chunk.value.content === 'unlimited-done',
+      ),
+    );
+  });
   it('records executor and plan-completion finalizer usage in their own scopes', async () => {
     const records: UsageInput[] = [];
     const recorder = (context: UsageContext): IUsageRecorder => ({

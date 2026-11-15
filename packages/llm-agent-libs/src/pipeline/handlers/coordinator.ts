@@ -70,6 +70,11 @@ export class CoordinatorHandler implements IStageHandler {
       usage: ctx.options?.usage,
       signal: ctx.options?.signal,
       sessionId: ctx.sessionId,
+      loopLimits: {
+        maxIterations: ctx.config.maxIterations,
+        maxToolCalls: ctx.config.maxToolCalls,
+      },
+      onToolCallCount: ctx.options?.onToolCallCount,
       // #157: thread the per-request RAG-selected tools + an MCP executor so a
       // self-dispatched step runs a real tool-loop instead of a toolless chat.
       selectedTools: ctx.activeTools ?? ctx.selectedTools,
@@ -126,6 +131,7 @@ export class CoordinatorHandler implements IStageHandler {
         plan: { ...plan, objective: undefined },
       };
       const result = await this.deps.dispatch.dispatch(directStep, directCtx);
+      reportToolBudget(ctx, result);
       if (!result.ok) {
         ctx.error = new OrchestratorError(
           `coordinator: answer-directly dispatch failed: ${result.error ?? 'unknown'}`,
@@ -180,6 +186,7 @@ export class CoordinatorHandler implements IStageHandler {
         return false;
       }
       coordCtx.stepResults[step.id] = result;
+      reportToolBudget(ctx, result);
       step.status = result.ok ? 'done' : 'failed';
       ctx.options?.sessionLogger?.logStep('coordinator_step_done', {
         stepId: step.id,
@@ -278,6 +285,19 @@ export class CoordinatorHandler implements IStageHandler {
 
     return true;
   }
+}
+
+function reportToolBudget(ctx: PipelineContext, result: StepResult): void {
+  if (!result.budgetExhausted) return;
+  ctx.yield({
+    ok: true,
+    value: {
+      content: '',
+      budgetExhausted: true,
+      toolCallCount: result.toolCallCount,
+      maxToolCalls: result.maxToolCalls,
+    },
+  });
 }
 
 function collectSystemPrompt(ctx: PipelineContext): string | undefined {

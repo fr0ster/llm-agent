@@ -69,6 +69,7 @@ function makePlanning(steps: PlanStep[]): IPlanningStrategy {
 
 function makeCtx(subAgents: Map<string, ISubAgent>): PipelineContext {
   return {
+    config: {} satisfies PipelineContext['config'],
     inputText: 'top',
     sessionId: 's',
     assembledMessages: [],

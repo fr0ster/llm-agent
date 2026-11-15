@@ -1,5 +1,8 @@
 import fs from 'node:fs';
+import { resolveEnvVars } from '@mcp-abap-adt/llm-agent-libs';
 import { parse as parseYaml } from 'yaml';
+
+export { resolveEnvVars };
 
 export type YamlConfig = Record<string, unknown>;
 
@@ -47,8 +50,9 @@ mcp:
 
 agent:
   externalToolsValidationMode: permissive  # permissive | strict
-  maxIterations: 10
-  maxToolCalls: 30
+  # Tool-loop limits are off by default. Uncomment to restore the old limits.
+  # maxIterations: 10
+  # maxToolCalls: 30
   toolUnavailableTtlMs: 600000       # Temporary tool blacklist TTL (ms)
   ragQueryK: 10
   # contextBudgetTokens: 4000          # Max tokens for RAG context in system prompt (0 = no limit)
@@ -135,26 +139,6 @@ export const get = (obj: unknown, ...keys: string[]): unknown =>
     }
     return undefined;
   }, obj);
-
-export function resolveEnvVars(
-  value: unknown,
-  env: NodeJS.ProcessEnv = process.env,
-): unknown {
-  if (typeof value === 'string')
-    return value.replace(
-      /\$\{([^}:]+)(?::-(.*?))?\}/g,
-      (_, name, fallback) => env[name] || fallback || '',
-    );
-  if (Array.isArray(value)) return value.map((v) => resolveEnvVars(v, env));
-  if (value !== null && typeof value === 'object')
-    return Object.fromEntries(
-      Object.entries(value as Record<string, unknown>).map(([k, v]) => [
-        k,
-        resolveEnvVars(v, env),
-      ]),
-    );
-  return value;
-}
 
 export function loadYamlConfig(
   filePath: string,

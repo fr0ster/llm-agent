@@ -5,6 +5,39 @@
 
 Core SmartAgent composition runtime. Builder, agent runtime, pipeline, sessions, history, resilience, observability, plugins, skills.
 
+## Tool-loop limits
+
+Tool-loop limits are off by default: omitted `maxIterations` and `maxToolCalls`
+mean unlimited. Explicit limits retain their existing
+termination and reporting behavior, including `budgetExhausted`.
+
+`maxIterations` accepts positive integers; `maxToolCalls` accepts non-negative
+integers, where `0` forbids tool calls and exhausts the budget immediately.
+Typed programmatic APIs (`SmartAgentConfig`, builder config,
+`withMaxIterations`/`withMaxToolCalls`, and runtime config patches) accept
+`number | null | undefined`. Omitted values, `null`, and numeric `Infinity` mean
+unlimited. Integer strings are accepted only at text boundaries: YAML startup
+and reload, HTTP `PUT /v1/config` bodies, and environment substitutions.
+The string `'Infinity'`, `-Infinity`, and `NaN` are invalid.
+Config GET responses omit unlimited limits; PUT and runtime config patches
+accept `null` to remove either limit. All entry points use the shared normalizer
+for runtime validation. Invalid limits are rejected before applying updates, with PUT
+returning HTTP 400 and naming the invalid field. YAML startup and reload expand
+environment placeholders before validation.
+Runtime updates apply to the builder pipeline's next request. `SelfDispatch`
+honours both current limits and reports `budgetExhausted`, `toolCallCount`, and
+`maxToolCalls` when the request's tool budget is consumed, including a zero
+budget when no tools or executor are available.
+
+To retain the previous builder defaults, configure `agent: { maxIterations: 10,
+maxToolCalls: 30 }` or call `.withMaxIterations(10).withMaxToolCalls(30)`.
+For a standalone `DefaultPipeline`, pass `agentConfig: { maxIterations: 10 }`
+to restore its previous iteration default.
+
+Pipeline `repeat` stages use their own optional `stage.maxIterations` limit;
+omitting it leaves the repeat loop unlimited. Set it to `10` to retain its previous default.
+Controller `maxSteps` and `maxRetries` are unchanged.
+
 ## Top-level exports
 
 `SmartAgentBuilder`, `SmartAgentBuilderConfig`, `BuilderMcpConfig`, `BuilderPromptsConfig`, `SmartAgentReconfigureOptions`, `LlmAdapter`, `LlmAdapterProviderInfo`, `LlmProviderBridge`, `NonStreamingLlm`, `wrapEmbedder`, `SmartAgent`, `ConfigWatcher`, `ConfigWatcherOptions`, `HotReloadableConfig`, `HealthChecker`, `HealthCheckerDeps`, `HistoryMemory`, `HistorySummarizer`, `DefaultRequestLogger`, `NoopRequestLogger`, `InMemoryMetrics`, `NoopMetrics`, `DefaultPipeline`, `PipelineExecutor`, `buildDefaultHandlerRegistry`, `evaluateCondition`, `FileSystemPluginLoader`, `FileSystemPluginLoaderConfig`, `loadPlugins`, `mergePluginExports`, `getDefaultPluginDirs`, `emptyLoadedPlugins`, `LlmReranker`, `NoopReranker`, `DecisionReranker`, `TOOL_QUESTION`, `PASSAGE_QUESTION`, `wrapDecisionModel`, `EmbeddingRetrieval`, `RerankedRetrieval`, `RerankAllRetrieval`, `StrategyRag`, `applyRetrievalStrategy`, `hasRetrievalStrategy`, `RateLimiterLlm`, `RetryLlm`, `RetryOptions`, `TokenBucketConfig`, `TokenBucketRateLimiter`, `SessionManager`, `NoopSessionManager`, `SessionGraph`, `SessionGraphFactory`, `SessionRegistry`, `ClaudeSkillManager`, `CodexSkillManager`, `FileSystemSkillManager`, `NoopTracer`, `lazy`, `LazyInitError`, `LazyOptions`, `NoopValidator`. Plus type re-exports of the core contracts (`AgentCallOptions`, `BaseAgentLlmBridge`, `SmartAgentHandle`, `SmartAgentRagStores`) for ergonomics.

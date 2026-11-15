@@ -193,9 +193,12 @@ export class ControllerPipelinePlugin implements IPipelinePlugin {
     // controller budgets (steps × attempts × tool-calls) mirroring the prior
     // inline `maxSteps * maxAttempts * maxTool`. maxStepAttempts is not on the
     // pipeline budgets here, so `maxRetries + 1` stands in for per-step attempts.
+    // Without a tool-call limit, recall derives its bound from stored artifacts.
     const b = cfg.budgets;
     const mcpBound =
-      (b.maxSteps ?? 20) * ((b.maxRetries ?? 3) + 1) * (b.maxToolCalls ?? 10);
+      b.maxToolCalls === undefined
+        ? undefined
+        : (b.maxSteps ?? 20) * ((b.maxRetries ?? 3) + 1) * b.maxToolCalls;
     const ragRecallFactory: ToolLoopContextStrategyFactory = ({ run }) => {
       const { rag, runId, meta, stepName } = run as {
         rag: IKnowledgeRagHandle;

@@ -302,6 +302,7 @@ test('#244 e2e — route 3 (coordinator buildCallTool / SelfDispatch executor): 
   // fields CoordinatorHandler.execute() actually reads/writes.
   const chunks: Array<{ content?: string; finishReason?: string }> = [];
   const ctx = {
+    config: {} satisfies PipelineContext['config'],
     inputText: 'search for the forecast',
     sessionId: 'session-coordinator',
     assembledMessages: [],

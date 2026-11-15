@@ -47,6 +47,40 @@ function ragOf(list: KnowledgeEntry[]): {
 }
 
 describe('runScopedRecall', () => {
+  it('uses the stored artifact count when the tool-call bound is unset', async () => {
+    const entries = Array.from({ length: 50 }, (_, index) =>
+      E({ runId: 'R', artifactType: 'mcp-result', identityKey: `K${index}` }),
+    );
+    const filters: KnowledgeFilter[] = [];
+    const queries: number[] = [];
+    const rag: IKnowledgeRagHandle = {
+      async list(filter) {
+        filters.push(filter);
+        return entries;
+      },
+      async query(_text, options) {
+        assert.ok(options?.k !== undefined);
+        assert.ok(Number.isFinite(options.k));
+        queries.push(options.k);
+        assert.deepEqual(options.filter, filters.at(-1));
+        return entries.slice(0, options.k);
+      },
+      async write() {},
+      fingerprint: () => 'unlimited',
+    };
+    const result = await runScopedRecall(rag, 'q', 4, 'R', undefined, [
+      'mcp-result',
+    ]);
+    assert.equal(result.length, 4);
+    assert.deepEqual(queries, [50]);
+    assert.deepEqual(filters, [{ runId: 'R', artifactType: ['mcp-result'] }]);
+    entries.length = 0;
+    assert.deepEqual(
+      await runScopedRecall(rag, 'q', 4, 'R', undefined, ['mcp-result']),
+      [],
+    );
+    assert.deepEqual(queries, [50, 4]);
+  });
   it('dedups a step seq to the precedence winner (ok beats failed)', async () => {
     const { rag } = ragOf([
       E({ runId: 'R', seq: 0, attempt: 0, status: 'failed' }, 'fail'),

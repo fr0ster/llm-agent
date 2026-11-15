@@ -20,6 +20,61 @@ function wait(ms: number): Promise<void> {
 }
 
 describe('ConfigWatcher', () => {
+  it('normalizes both YAML limits and aborts invalid reloads', () => {
+    for (const field of ['maxIterations', 'maxToolCalls'] as const) {
+      for (const value of [undefined, null, 3, '12', 0, '0', -1, 1.5, 'abc']) {
+        const { filePath, cleanup } = tmpFile(
+          'agent:\n  maxIterations: 2\n  maxToolCalls: 2\n',
+        );
+        const watcher = new ConfigWatcher(filePath);
+        const reloads: HotReloadableConfig[] = [];
+        const errors: Error[] = [];
+        watcher.on('reload', (config: HotReloadableConfig) =>
+          reloads.push(config),
+        );
+        watcher.on('error', (error: Error) => errors.push(error));
+        try {
+          // Drive the file-reading path directly, without debounce timers.
+          // biome-ignore lint/complexity/useLiteralKeys: Access the private reload path without changing its visibility.
+          watcher['_reload']();
+          assert.equal(reloads[0][field], 2);
+          fs.writeFileSync(
+            filePath,
+            value === undefined
+              ? 'agent: {}\n'
+              : `agent:\n  ${field}: ${JSON.stringify(value)}\n`,
+            'utf8',
+          );
+          // biome-ignore lint/complexity/useLiteralKeys: Access the private reload path without changing its visibility.
+          watcher['_reload']();
+          if (
+            value == null ||
+            value === 3 ||
+            value === '12' ||
+            (field === 'maxToolCalls' && (value === 0 || value === '0'))
+          ) {
+            assert.equal(reloads.length, 2);
+            assert.equal(errors.length, 0);
+            const config = reloads[1];
+            assert.equal(
+              config[field],
+              value == null ? undefined : Number(value),
+            );
+            assert.equal('maxIterations' in config, true);
+            assert.equal('maxToolCalls' in config, true);
+          } else {
+            assert.equal(reloads.length, 1, 'invalid reload emits no update');
+            assert.equal(errors.length, 1);
+            assert.match(errors[0].message, new RegExp(`${field}.*integer`));
+          }
+        } finally {
+          watcher.stop();
+          cleanup();
+        }
+      }
+    }
+  });
+
   it('emits reload event when file changes', async () => {
     const { filePath, cleanup } = tmpFile(
       'agent:\n  maxIterations: 5\n  ragQueryK: 8\n',

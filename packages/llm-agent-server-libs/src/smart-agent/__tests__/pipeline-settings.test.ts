@@ -4,6 +4,7 @@ import type { NormalizedLlmMap } from '../llm-config-map.js';
 import {
   assertNamedLlmKeys,
   dagNamedLlmKeys,
+  parseControllerSettings,
   parseDagSettings,
   parseLinearSettings,
   parseStepperSettings,
@@ -118,5 +119,29 @@ describe('assertNamedLlmKeys', () => {
       () => assertNamedLlmKeys(['cheep'], map, "pipeline 'dag'"),
       /pipeline 'dag' names llm: key 'cheep'.*declared: main, cheap/,
     );
+  });
+});
+
+describe('controller tool-loop limits', () => {
+  it('leaves tool calls unlimited and preserves other controller defaults', () => {
+    const config = parseControllerSettings(
+      { subagents: { evaluator: {}, planner: {}, executor: {} } },
+      new Set(['main']),
+    );
+    assert.equal(config.budgets.maxToolCalls, undefined);
+    assert.equal(config.budgets.maxSteps, 20);
+    assert.equal(config.budgets.maxRetries, 3);
+    assert.equal(config.budgets.maxRewinds, 5);
+  });
+
+  it('preserves an explicit tool-call limit', () => {
+    const config = parseControllerSettings(
+      {
+        subagents: { evaluator: {}, planner: {}, executor: {} },
+        budgets: { maxToolCalls: 10 },
+      },
+      new Set(['main']),
+    );
+    assert.equal(config.budgets.maxToolCalls, 10);
   });
 });

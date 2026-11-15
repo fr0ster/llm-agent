@@ -1,4 +1,5 @@
 import { RagAccessDeniedError } from '@mcp-abap-adt/llm-agent';
+import { normalizeLoopLimit } from '../config/normalize-max-iterations.js';
 /**
  * DefaultPipeline — IPipeline implementation backed by PipelineExecutor + stage handlers.
  *
@@ -101,7 +102,6 @@ export function resolveSessionRegistries(src: {
 // ---------------------------------------------------------------------------
 
 const DEFAULT_CONFIG: SmartAgentConfig = {
-  maxIterations: 10,
   classificationEnabled: false,
   skillInjectionEnabled: true,
   mode: 'smart',
@@ -521,7 +521,18 @@ export class DefaultPipeline implements IPipeline {
       textOrMessages: input,
       clientAdapter,
       options,
-      config: { ...DEFAULT_CONFIG, ...this.deps.agentConfig },
+      config: {
+        ...DEFAULT_CONFIG,
+        ...this.deps.agentConfig,
+        maxIterations: normalizeLoopLimit(
+          this.deps.agentConfig?.maxIterations,
+          'maxIterations',
+        ),
+        maxToolCalls: normalizeLoopLimit(
+          this.deps.agentConfig?.maxToolCalls,
+          'maxToolCalls',
+        ),
+      },
       sessionId: options.sessionId,
 
       // Dependencies (resolved once in initialize)

@@ -390,7 +390,7 @@ export interface ContextFrame {
   tools: McpTool[];
   toolResults: ToolCallRecord[];
   constraints: {
-    maxIterations: number;
+    maxIterations?: number;
     tokenLimit?: number;
     timeoutMs?: number;
   };
@@ -409,7 +409,7 @@ export interface StreamHookContext {
 // ---------------------------------------------------------------------------
 
 export interface AgentConfig {
-  maxIterations: number;
+  maxIterations?: number;
   timeoutMs?: number;
   maxToolCalls?: number;
   tokenLimit?: number;

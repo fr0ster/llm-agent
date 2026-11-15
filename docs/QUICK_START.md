@@ -91,8 +91,9 @@ mcp:
   url: http://localhost:3000/mcp/stream/http
 
 agent:
-  maxIterations: 10
-  maxToolCalls: 30
+  # Tool-loop limits are off by default; uncomment to enable.
+  # maxIterations: 10
+  # maxToolCalls: 30
   ragQueryK: 10
 
 log: smart-server.log     # omit for stdout

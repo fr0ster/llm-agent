@@ -10,14 +10,16 @@
 import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import { parse as parseYaml } from 'yaml';
+import { normalizeLoopLimit } from './normalize-max-iterations.js';
+import { resolveEnvVars } from './resolve-env-vars.js';
 
 // ---------------------------------------------------------------------------
 // Hot-reloadable config shape
 // ---------------------------------------------------------------------------
 
 export interface HotReloadableConfig {
-  maxIterations?: number;
-  maxToolCalls?: number;
+  maxIterations?: number | null;
+  maxToolCalls?: number | null;
   ragQueryK?: number;
   toolUnavailableTtlMs?: number;
   showReasoning?: boolean;
@@ -97,7 +99,7 @@ export class ConfigWatcher extends EventEmitter {
   private _reload(): void {
     try {
       const raw = fs.readFileSync(this.filePath, 'utf8');
-      const parsed = parseYaml(raw) as Record<string, unknown>;
+      const parsed = resolveEnvVars(parseYaml(raw));
       const config = this._extractReloadable(parsed);
       this.emit('reload', config);
     } catch (err) {
@@ -119,10 +121,11 @@ export class ConfigWatcher extends EventEmitter {
 
     const config: HotReloadableConfig = {};
 
-    if (agent.maxIterations !== undefined)
-      config.maxIterations = Number(agent.maxIterations);
-    if (agent.maxToolCalls !== undefined)
-      config.maxToolCalls = Number(agent.maxToolCalls);
+    // Always include both keys so removed/null YAML limits clear old values.
+    // A validation error aborts the entire reload before emitting any update.
+    for (const field of ['maxIterations', 'maxToolCalls'] as const) {
+      config[field] = normalizeLoopLimit(agent[field], field);
+    }
     if (agent.ragQueryK !== undefined)
       config.ragQueryK = Number(agent.ragQueryK);
     if (agent.toolUnavailableTtlMs !== undefined)

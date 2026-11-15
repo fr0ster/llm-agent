@@ -263,7 +263,6 @@ export function parseControllerSettings(
       maxSteps: 20,
       maxRetries: 3,
       maxRewinds: 5,
-      maxToolCalls: 10,
       maxDigestChars: 500,
       maxIntentChars: 120,
       maxActiveSteps: 16,

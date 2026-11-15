@@ -299,13 +299,13 @@ export async function buildFromComposition(
 
   // Leaf executor per spec.executor profile (reuses the shared executor LLM +
   // need-resolver): 'simple' = single pass (maxIter 2); cyclic-react/recursive
-  // run the full ReAct loop (maxIter 10).
+  // run the full ReAct loop without an iteration limit.
   const makeExecutor = (s: StepperCompositionSpec) =>
     new CyclicReActExecutor({
       llm: executorLlm,
       callMcp,
       component: 'tool-loop',
-      maxIterations: s.executor === 'simple' ? 2 : 10,
+      maxIterations: s.executor === 'simple' ? 2 : undefined,
       needResolver,
       ...(s.executorSystemPrompt
         ? { systemPrompt: s.executorSystemPrompt }

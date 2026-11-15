@@ -4,6 +4,7 @@ import type {
   SmartAgent,
   SmartAgentReconfigureOptions,
 } from '@mcp-abap-adt/llm-agent-libs';
+import { normalizeLoopLimit } from '@mcp-abap-adt/llm-agent-libs';
 import { jsonError, readBody } from './response-helpers.js';
 
 /** Exactly the SmartServer state PUT /v1/config touches — the hot-swap seam. */
@@ -87,6 +88,26 @@ export async function handleConfigUpdate(
       res.end(
         jsonError(
           `Unsupported agent config fields: ${unsupported.join(', ')}`,
+          'invalid_request_error',
+        ),
+      );
+      return;
+    }
+  }
+
+  if (body.agent && typeof body.agent === 'object') {
+    const agentFields = body.agent as typeof body;
+    try {
+      for (const field of ['maxIterations', 'maxToolCalls'] as const) {
+        if (field in agentFields) {
+          agentFields[field] = normalizeLoopLimit(agentFields[field], field);
+        }
+      }
+    } catch (error) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(
+        jsonError(
+          error instanceof Error ? error.message : String(error),
           'invalid_request_error',
         ),
       );

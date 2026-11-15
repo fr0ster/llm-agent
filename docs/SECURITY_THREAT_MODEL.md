@@ -127,7 +127,7 @@ See [MIGRATION-v32.md](MIGRATION-v32.md) and
 **Threat:** A malicious or buggy LLM repeatedly calls tools in an infinite loop, exhausting
 server resources.
 
-**Mitigation:** `SmartAgentConfig.maxIterations` and `maxToolCalls` hard-cap the tool loop.
+**Mitigation:** Explicitly configured `SmartAgentConfig.maxIterations` and `maxToolCalls` hard-cap the tool loop. Both limits are off by default; set them explicitly when a deployment requires a cap.
 `timeoutMs` aborts the entire pipeline via a merged `AbortSignal` (`AbortSignal.any`) after a wall-clock deadline, with a `TimeoutError` reason. The HTTP routes also abort a request whose client disconnected before the response finished, so an abandoned request stops spending LLM, reranker and MCP calls; a caller's cancellation does not count against a circuit breaker (`isCallerCancellation`), so disconnecting clients cannot open it for every session.
 
 ---

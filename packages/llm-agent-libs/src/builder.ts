@@ -3,6 +3,7 @@ import {
   reservedGlobalNameError,
   validateRagOwner,
 } from '@mcp-abap-adt/llm-agent';
+import { normalizeLoopLimit } from './config/normalize-max-iterations.js';
 /**
  * SmartAgentBuilder — fluent builder for SmartAgent.
  *
@@ -681,14 +682,14 @@ export class SmartAgentBuilder {
   }
 
   /** Set the maximum number of tool-loop iterations. */
-  withMaxIterations(n: number): this {
-    this._agentOverrides.maxIterations = n;
+  withMaxIterations(n?: number | null): this {
+    this._agentOverrides.maxIterations = normalizeLoopLimit(n, 'maxIterations');
     return this;
   }
 
   /** Set the maximum number of tool calls per request. */
-  withMaxToolCalls(n: number): this {
-    this._agentOverrides.maxToolCalls = n;
+  withMaxToolCalls(n?: number | null): this {
+    this._agentOverrides.maxToolCalls = normalizeLoopLimit(n, 'maxToolCalls');
     return this;
   }
 
@@ -1397,9 +1398,7 @@ export class SmartAgentBuilder {
       }
 
       // ---- SmartAgent Config ------------------------------------------------
-      const agentCfg: SmartAgentConfig = {
-        maxIterations: 10,
-        maxToolCalls: 30,
+      const agentConfig: SmartAgentConfig = {
         ragQueryK: 10,
         ragTranslatePrompt: this.cfg.prompts?.ragTranslate,
         historySummaryPrompt: this.cfg.prompts?.historySummary,
@@ -1411,6 +1410,17 @@ export class SmartAgentBuilder {
         // Fluent overrides take precedence over cfg.agent
         ...this._agentOverrides,
         onBeforeStream: this._onBeforeStream,
+      };
+      const agentCfg = {
+        ...agentConfig,
+        maxIterations: normalizeLoopLimit(
+          agentConfig.maxIterations,
+          'maxIterations',
+        ),
+        maxToolCalls: normalizeLoopLimit(
+          agentConfig.maxToolCalls,
+          'maxToolCalls',
+        ),
       };
 
       // ---- Retry wrapping (INSIDE the circuit breaker) -------------------------
@@ -1545,7 +1555,12 @@ export class SmartAgentBuilder {
             this._coordinator.dispatch ??
             new HybridDispatch(
               new SubAgentDispatch(defaultContextBuilder),
-              new SelfDispatch(plannerLlm),
+              new SelfDispatch(
+                plannerLlm,
+                undefined,
+                agentCfg.maxIterations,
+                agentCfg.maxToolCalls,
+              ),
             ),
         };
       }

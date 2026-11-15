@@ -7,6 +7,7 @@ import type {
   PlanStep,
   StepResult,
 } from '@mcp-abap-adt/llm-agent';
+import type { SmartAgentConfig } from '../../../agent.js';
 import { testCallOptions } from '../../../testing/index.js';
 import { CoordinatorHandler } from '../coordinator.js';
 
@@ -51,6 +52,7 @@ function makeCtx(inputText: string) {
   }> = [];
   const logged: Array<{ step: string; payload: Record<string, unknown> }> = [];
   const ctx = {
+    config: {} satisfies SmartAgentConfig,
     inputText,
     sessionId: 't',
     options: testCallOptions({
