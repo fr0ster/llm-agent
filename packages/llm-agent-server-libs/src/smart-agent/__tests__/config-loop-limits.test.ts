@@ -13,7 +13,7 @@ import { TestSmartServer } from './rag-identity-fixture.js';
 
 interface ConfigResponse {
   models: { mainModel?: string };
-  agent: { maxIterations?: number };
+  agent: { maxIterations?: number; maxToolCalls?: number };
 }
 
 async function startServer(maxIterations?: number) {
@@ -74,7 +74,11 @@ async function startServer(maxIterations?: number) {
       llm: { model: 'test-model' },
       skipModelValidation: true,
       rag: { store: { type: 'in-memory' } },
-      agent: { maxIterations, classificationEnabled: false },
+      agent: {
+        maxIterations,
+        maxToolCalls: maxIterations,
+        classificationEnabled: false,
+      },
       modelResolver: {
         async resolve() {
           return llm;
@@ -101,20 +105,25 @@ for (const mode of ['round-trip', 'null'] as const) {
       const config = (await initial.json()) as ConfigResponse;
       if (mode === 'round-trip') {
         assert.equal('maxIterations' in config.agent, false);
+        assert.equal('maxToolCalls' in config.agent, false);
       }
       const updated = await fetch(`${run.base}/v1/config`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(
-          mode === 'round-trip' ? config : { agent: { maxIterations: null } },
+          mode === 'round-trip'
+            ? config
+            : { agent: { maxIterations: null, maxToolCalls: null } },
         ),
       });
       assert.equal(updated.status, 200);
       const result = (await updated.json()) as ConfigResponse;
       assert.equal('maxIterations' in result.agent, false);
+      assert.equal('maxToolCalls' in result.agent, false);
       const after = await fetch(`${run.base}/v1/config`);
       const stored = (await after.json()) as ConfigResponse;
       assert.equal('maxIterations' in stored.agent, false);
+      assert.equal('maxToolCalls' in stored.agent, false);
 
       const chat = await fetch(`${run.base}/v1/chat/completions`, {
         method: 'POST',
@@ -135,21 +144,58 @@ for (const mode of ['round-trip', 'null'] as const) {
   });
 }
 
-test('PUT rejects invalid iteration limits without mutating the active config', async () => {
+test('PUT validates both loop limits atomically and accepts numeric strings', async () => {
   const run = await startServer(3);
   try {
-    for (const maxIterations of [0, -1, 1.5, '2', false, {}]) {
+    for (const field of ['maxIterations', 'maxToolCalls'] as const) {
+      for (const value of [
+        ...(field === 'maxIterations' ? [0, '0'] : []),
+        -1,
+        1.5,
+        'abc',
+        '',
+        false,
+        {},
+        [],
+      ]) {
+        const response = await fetch(`${run.base}/v1/config`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ agent: { maxIterations: 1, [field]: value } }),
+        });
+        const error = await response.text();
+        assert.equal(response.status, 400, error);
+        assert.match(error, new RegExp(`${field}.*integer`));
+        const after = await fetch(`${run.base}/v1/config`);
+        const stored = (await after.json()) as ConfigResponse;
+        assert.equal(stored.agent.maxIterations, 3);
+        assert.equal(stored.agent.maxToolCalls, 3);
+      }
+    }
+    const updated = await fetch(`${run.base}/v1/config`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        agent: { maxIterations: '2', maxToolCalls: '2' },
+      }),
+    });
+    assert.equal(updated.status, 200);
+    const config = (await updated.json()) as ConfigResponse;
+    assert.equal(config.agent.maxIterations, 2);
+    assert.equal(config.agent.maxToolCalls, 2);
+    for (const value of [0, '0']) {
       const response = await fetch(`${run.base}/v1/config`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ agent: { maxIterations } }),
+        body: JSON.stringify({ agent: { maxToolCalls: value } }),
       });
-      const error = await response.text();
-      assert.equal(response.status, 400, error);
-      assert.match(error, /maxIterations.*positive integer/);
-      const after = await fetch(`${run.base}/v1/config`);
-      const stored = (await after.json()) as ConfigResponse;
-      assert.equal(stored.agent.maxIterations, 3);
+      assert.equal(response.status, 200);
+      const result = (await response.json()) as ConfigResponse;
+      assert.equal(result.agent.maxToolCalls, 0);
+      const stored = (await (
+        await fetch(`${run.base}/v1/config`)
+      ).json()) as ConfigResponse;
+      assert.equal(stored.agent.maxToolCalls, 0);
     }
   } finally {
     await run.handle.close();

@@ -11,10 +11,16 @@ Tool-loop limits are off by default: omitted `maxIterations` and `maxToolCalls`
 mean unlimited. Explicit limits retain their existing
 termination and reporting behavior, including `budgetExhausted`.
 
-`maxIterations` must be a positive integer when set. Config GET responses omit
-unset limits; PUT, runtime config patches, and YAML accept `null` to remove an
-iteration limit. Invalid iteration limits are rejected before applying updates.
-`SelfDispatch` follows the same default and uses the builder's explicit agent limit.
+`maxIterations` accepts positive integers; `maxToolCalls` accepts non-negative
+integers, where `0` forbids tool calls and exhausts the budget immediately.
+Both limits accept integer strings. Config GET responses
+omit unset limits; PUT, runtime config patches, and YAML accept `null` to remove
+either limit. Invalid limits are rejected before applying updates, with PUT
+returning HTTP 400 and naming the invalid field. YAML startup and reload expand
+environment placeholders before validation.
+Runtime updates apply to the builder pipeline's next request. `SelfDispatch`
+honours both current limits and reports `budgetExhausted`, `toolCallCount`, and
+`maxToolCalls` when the request's tool budget is consumed.
 
 To retain the previous builder defaults, configure `agent: { maxIterations: 10,
 maxToolCalls: 30 }` or call `.withMaxIterations(10).withMaxToolCalls(30)`.

@@ -1,5 +1,8 @@
 import fs from 'node:fs';
+import { resolveEnvVars } from '@mcp-abap-adt/llm-agent-libs';
 import { parse as parseYaml } from 'yaml';
+
+export { resolveEnvVars };
 
 export type YamlConfig = Record<string, unknown>;
 
@@ -136,26 +139,6 @@ export const get = (obj: unknown, ...keys: string[]): unknown =>
     }
     return undefined;
   }, obj);
-
-export function resolveEnvVars(
-  value: unknown,
-  env: NodeJS.ProcessEnv = process.env,
-): unknown {
-  if (typeof value === 'string')
-    return value.replace(
-      /\$\{([^}:]+)(?::-(.*?))?\}/g,
-      (_, name, fallback) => env[name] || fallback || '',
-    );
-  if (Array.isArray(value)) return value.map((v) => resolveEnvVars(v, env));
-  if (value !== null && typeof value === 'object')
-    return Object.fromEntries(
-      Object.entries(value as Record<string, unknown>).map(([k, v]) => [
-        k,
-        resolveEnvVars(v, env),
-      ]),
-    );
-  return value;
-}
 
 export function loadYamlConfig(
   filePath: string,

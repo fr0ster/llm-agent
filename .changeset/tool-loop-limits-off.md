@@ -7,10 +7,13 @@
 
 Disable default tool-loop iteration and tool-call limits. Unset `maxIterations`
 and `maxToolCalls` mean unlimited and are represented by `undefined`, omitted in
-config JSON. PUT, runtime config patches, and YAML normalize `null` iteration
-limits to unset and reject non-positive or non-integer iteration limits.
-Explicit positive limits keep their previous termination behavior and
-budget-exhaustion reporting.
+config JSON. Builder methods, the SmartAgent constructor, PUT, runtime config
+patches, and YAML startup and reload share validation: absent or `null` values
+are unlimited, `maxIterations` accepts positive integers, and `maxToolCalls`
+accepts non-negative integers. Both accept integer strings and reject invalid
+values with an error naming the field. Explicit limits keep their previous
+termination behavior and budget-exhaustion reporting, including `maxToolCalls: 0`
+forbidding tool calls and exhausting the budget immediately.
 
 SelfDispatch no longer has an implicit six-round limit; the builder passes its
 explicit agent iteration limit to the default coordinator fallback.

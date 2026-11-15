@@ -66,6 +66,48 @@ function scenario() {
   return { llm, client, rounds: () => rounds, toolCalls: () => toolCalls };
 }
 
+for (const field of ['maxIterations', 'maxToolCalls'] as const) {
+  test(`builder normalizes ${field} with the shared rules`, async () => {
+    const run = scenario();
+    const withLimit = (value?: number | string | null) => {
+      const builder = new SmartAgentBuilder({ skipModelValidation: true })
+        .withRagAccess(testRequestAccess)
+        .withMainLlm(run.llm);
+      return field === 'maxIterations'
+        ? builder.withMaxIterations(value)
+        : builder.withMaxToolCalls(value);
+    };
+    for (const value of [
+      undefined,
+      null,
+      2,
+      '2',
+      ...(field === 'maxToolCalls' ? [0, '0'] : []),
+    ]) {
+      const handle = await withLimit(value).build().then(unwrapBuilderResult);
+      try {
+        assert.equal(
+          handle.agent.getAgentConfig()[field],
+          value == null ? undefined : Number(value),
+        );
+      } finally {
+        await handle.close();
+      }
+    }
+    for (const value of [
+      ...(field === 'maxIterations' ? [0, '0'] : []),
+      -1,
+      1.5,
+      Infinity,
+      NaN,
+      'abc',
+      '',
+    ]) {
+      assert.throws(() => withLimit(value), new RegExp(`${field}.*integer`));
+    }
+  });
+}
+
 test('direct SmartAgent defaults to unlimited iterations', async () => {
   const run = scenario();
   const { deps } = makeDefaultDeps({
@@ -166,4 +208,52 @@ for (const pipeline of [false, true]) {
       }
     });
   }
+}
+
+for (const limit of ['both', 'iterations', 'tools', 'reset'] as const) {
+  test(`builder pipeline reads runtime ${limit} limits`, async () => {
+    const run = scenario();
+    const handle = await new SmartAgentBuilder({ skipModelValidation: true })
+      .withRagAccess(testRequestAccess)
+      .withMainLlm(run.llm)
+      .withMcpClients([run.client])
+      .setToolsRag(
+        makeRag([{ text: 'Work', score: 1, metadata: { id: 'tool:Work' } }]),
+      )
+      .build()
+      .then(unwrapBuilderResult);
+    try {
+      handle.agent.applyConfigUpdate({ maxIterations: 1, maxToolCalls: 1 });
+      if (limit === 'iterations') {
+        handle.agent.applyConfigUpdate({ maxToolCalls: null });
+      } else if (limit === 'tools') {
+        handle.agent.applyConfigUpdate({ maxIterations: null });
+      } else if (limit === 'reset') {
+        handle.agent.applyConfigUpdate({
+          maxIterations: null,
+          maxToolCalls: null,
+        });
+      }
+      const result = await handle.agent.process(
+        'complete the work',
+        testCallOptions(),
+      );
+      assert.equal(result.ok, true);
+      assert.equal(
+        run.rounds(),
+        limit === 'reset' ? 13 : limit === 'tools' ? 2 : 1,
+      );
+      assert.equal(
+        run.toolCalls(),
+        limit === 'reset' ? 36 : limit === 'iterations' ? 3 : 1,
+      );
+      if (result.ok && (limit === 'both' || limit === 'tools')) {
+        assert.equal(result.value.budgetExhausted, true);
+        assert.equal(result.value.toolCallCount, 1);
+        assert.equal(result.value.maxToolCalls, 1);
+      }
+    } finally {
+      await handle.close();
+    }
+  });
 }

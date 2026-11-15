@@ -64,6 +64,10 @@ export interface StepResult {
   durationMs: number;
   ok: boolean;
   error?: string;
+  /** Tool budget consumed by self-dispatched steps in this request. */
+  budgetExhausted?: boolean;
+  toolCallCount?: number;
+  maxToolCalls?: number;
   /**
    * Populated when a child subagent returned `errorClass: 'epicfail'`.
    * Carries a flat diagnostic trace (single frame) upward so consumers
@@ -90,6 +94,11 @@ export interface ICoordinatorContext {
   usage?: IUsageRecorder;
   signal?: AbortSignal;
   sessionId: string;
+  /** Current request limits override dispatch-time defaults, including unlimited. */
+  loopLimits?: { maxIterations?: number; maxToolCalls?: number };
+  /** Shared across self-dispatched steps so the budget applies to the request. */
+  toolCallCount?: number;
+  onToolCallCount?: (count: number, max?: number) => void;
   /**
    * Per-request RAG-selected tools (MCP + client external) available to a
    * self-dispatched step's tool-loop (#157). Empty/absent → the step runs a

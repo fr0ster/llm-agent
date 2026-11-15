@@ -459,9 +459,7 @@ export function resolveAgentSection(
     {};
   for (const field of ['maxIterations', 'maxToolCalls'] as const) {
     try {
-      limits[field] = normalizeLoopLimit(get(yaml, 'agent', field), field, {
-        allowNumericStrings: true,
-      });
+      limits[field] = normalizeLoopLimit(get(yaml, 'agent', field), field);
     } catch (error) {
       if (error instanceof TypeError) {
         throw new ConfigValidationError([error.message]);

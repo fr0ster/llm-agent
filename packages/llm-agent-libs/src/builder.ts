@@ -3,7 +3,7 @@ import {
   reservedGlobalNameError,
   validateRagOwner,
 } from '@mcp-abap-adt/llm-agent';
-import { normalizeMaxIterations } from './config/normalize-max-iterations.js';
+import { normalizeLoopLimit } from './config/normalize-max-iterations.js';
 /**
  * SmartAgentBuilder — fluent builder for SmartAgent.
  *
@@ -682,14 +682,14 @@ export class SmartAgentBuilder {
   }
 
   /** Set the maximum number of tool-loop iterations. */
-  withMaxIterations(n: number): this {
-    this._agentOverrides.maxIterations = n;
+  withMaxIterations(n?: number | string | null): this {
+    this._agentOverrides.maxIterations = normalizeLoopLimit(n, 'maxIterations');
     return this;
   }
 
   /** Set the maximum number of tool calls per request. */
-  withMaxToolCalls(n: number): this {
-    this._agentOverrides.maxToolCalls = n;
+  withMaxToolCalls(n?: number | string | null): this {
+    this._agentOverrides.maxToolCalls = normalizeLoopLimit(n, 'maxToolCalls');
     return this;
   }
 
@@ -1411,7 +1411,9 @@ export class SmartAgentBuilder {
         ...this._agentOverrides,
         onBeforeStream: this._onBeforeStream,
       };
-      agentCfg.maxIterations = normalizeMaxIterations(agentCfg.maxIterations);
+      for (const field of ['maxIterations', 'maxToolCalls'] as const) {
+        agentCfg[field] = normalizeLoopLimit(agentCfg[field], field);
+      }
 
       // ---- Retry wrapping (INSIDE the circuit breaker) -------------------------
       // Enable retry by default with sensible defaults; explicit config overrides.
@@ -1545,7 +1547,12 @@ export class SmartAgentBuilder {
             this._coordinator.dispatch ??
             new HybridDispatch(
               new SubAgentDispatch(defaultContextBuilder),
-              new SelfDispatch(plannerLlm, undefined, agentCfg.maxIterations),
+              new SelfDispatch(
+                plannerLlm,
+                undefined,
+                agentCfg.maxIterations,
+                agentCfg.maxToolCalls,
+              ),
             ),
         };
       }

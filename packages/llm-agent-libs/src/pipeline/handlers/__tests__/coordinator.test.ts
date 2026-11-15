@@ -39,6 +39,7 @@ function makeCtx(partial: Partial<PipelineContext> = {}): {
 } {
   const chunks: EmittedChunk[] = [];
   const ctx = {
+    config: {} satisfies PipelineContext['config'],
     inputText: 'do the thing',
     sessionId: 'test-session',
     assembledMessages: [],

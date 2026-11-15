@@ -56,6 +56,7 @@ export {
   normalizeLoopLimit,
   normalizeMaxIterations,
 } from './config/normalize-max-iterations.js';
+export { resolveEnvVars } from './config/resolve-env-vars.js';
 export { InMemoryRunRecordStore } from './coordinator/adaptive/in-memory-run-record-store.js';
 export {
   ADAPTIVE_CONTROLLER_SYSTEM,

@@ -60,7 +60,7 @@ import { RagOrchestrator } from './agent/rag-orchestrator.js';
 import { normalizeRequestOptions } from './agent-request-options.js';
 import type { LlmClassifierConfig } from './classifier/llm-classifier.js';
 import { LlmClassifier } from './classifier/llm-classifier.js';
-import { normalizeMaxIterations } from './config/normalize-max-iterations.js';
+import { normalizeLoopLimit } from './config/normalize-max-iterations.js';
 import { validateTimeZone, withRequestTime } from './context/request-time.js';
 import { withSubmitReport } from './coordinator/dialogue/submit-report-tool.js';
 import { buildAgentHealthSnapshot } from './health/agent-health.js';
@@ -174,9 +174,9 @@ export interface SmartAgentConfig {
   toolTrust?: import('@mcp-abap-adt/llm-agent').ToolTrust;
   /** Deployment IANA time zone for request dates. Default: UTC. */
   timeZone?: string;
-  /** Maximum tool-loop iterations. Omitted means unlimited. */
+  /** Positive maximum tool-loop iterations. Omitted means unlimited. */
   maxIterations?: number;
-  /** Maximum tool calls per request. Omitted means unlimited. */
+  /** Non-negative maximum tool calls per request; 0 forbids calls. Omitted means unlimited. */
   maxToolCalls?: number;
   toolUnavailableTtlMs?: number;
   timeoutMs?: number;
@@ -293,10 +293,11 @@ export class SmartAgent {
     private readonly deps: SmartAgentDeps,
     private config: SmartAgentConfig,
   ) {
-    this.config = {
-      ...config,
-      maxIterations: normalizeMaxIterations(config.maxIterations),
-    };
+    // Preserve the config reference shared with the builder's pipeline.
+    Object.assign(this.config, {
+      maxIterations: normalizeLoopLimit(config.maxIterations, 'maxIterations'),
+      maxToolCalls: normalizeLoopLimit(config.maxToolCalls, 'maxToolCalls'),
+    });
     validateTimeZone(this.config.timeZone ?? 'UTC');
     this.toolAvailabilityRegistry = new ToolAvailabilityRegistry(
       this.config.toolUnavailableTtlMs,
@@ -338,19 +339,32 @@ export class SmartAgent {
 
   /** Apply a partial config update at runtime (hot-reload). */
   applyConfigUpdate(
-    update: Omit<Partial<SmartAgentConfig>, 'maxIterations'> & {
-      maxIterations?: number | null;
+    update: Omit<
+      Partial<SmartAgentConfig>,
+      'maxIterations' | 'maxToolCalls'
+    > & {
+      maxIterations?: number | string | null;
+      maxToolCalls?: number | string | null;
     },
   ): void {
-    this.config = {
+    const nextConfig = {
       ...this.config,
       ...update,
-      maxIterations: normalizeMaxIterations(
+      maxIterations: normalizeLoopLimit(
         'maxIterations' in update
           ? update.maxIterations
           : this.config.maxIterations,
+        'maxIterations',
+      ),
+      maxToolCalls: normalizeLoopLimit(
+        'maxToolCalls' in update
+          ? update.maxToolCalls
+          : this.config.maxToolCalls,
+        'maxToolCalls',
       ),
     };
+    // Validate the entire patch before publishing it to all config consumers.
+    Object.assign(this.config, nextConfig);
   }
 
   /**

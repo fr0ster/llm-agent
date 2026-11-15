@@ -2,7 +2,7 @@ import {
   markExternalTraceUnavailable,
   toModelToolMessages,
 } from '@mcp-abap-adt/llm-agent';
-import { normalizeMaxIterations } from '../../config/normalize-max-iterations.js';
+import { normalizeLoopLimit } from '../../config/normalize-max-iterations.js';
 import { withSubmitReport } from '../../coordinator/dialogue/submit-report-tool.js';
 import { denyRagAccess, ownerBoundQuery } from '../../rag/owner-bound-query.js';
 /**
@@ -146,13 +146,16 @@ export class ToolLoopHandler implements IStageHandler {
     config: Record<string, unknown>,
     parentSpan: ISpan,
   ): Promise<boolean> {
-    const maxIterations = normalizeMaxIterations(
+    const maxIterations = normalizeLoopLimit(
       'maxIterations' in config
         ? config.maxIterations
         : ctx.config.maxIterations,
+      'maxIterations',
     );
-    const maxToolCalls =
-      (config.maxToolCalls as number) ?? ctx.config.maxToolCalls;
+    const maxToolCalls = normalizeLoopLimit(
+      'maxToolCalls' in config ? config.maxToolCalls : ctx.config.maxToolCalls,
+      'maxToolCalls',
+    );
     const heartbeatMs = normalizeHeartbeatMs(
       (config.heartbeatIntervalMs as number | undefined) ??
         ctx.config.heartbeatIntervalMs,

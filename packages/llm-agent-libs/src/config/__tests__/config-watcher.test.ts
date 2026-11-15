@@ -22,7 +22,7 @@ function wait(ms: number): Promise<void> {
 describe('ConfigWatcher', () => {
   it('normalizes both YAML limits and aborts invalid reloads', () => {
     for (const field of ['maxIterations', 'maxToolCalls'] as const) {
-      for (const value of [undefined, null, 3, '12', 0, -1, 1.5, 'abc']) {
+      for (const value of [undefined, null, 3, '12', 0, '0', -1, 1.5, 'abc']) {
         const { filePath, cleanup } = tmpFile(
           'agent:\n  maxIterations: 2\n  maxToolCalls: 2\n',
         );
@@ -47,7 +47,12 @@ describe('ConfigWatcher', () => {
           );
           // biome-ignore lint/complexity/useLiteralKeys: Access the private reload path without changing its visibility.
           watcher['_reload']();
-          if (value == null || value === 3 || value === '12') {
+          if (
+            value == null ||
+            value === 3 ||
+            value === '12' ||
+            (field === 'maxToolCalls' && (value === 0 || value === '0'))
+          ) {
             assert.equal(reloads.length, 2);
             assert.equal(errors.length, 0);
             const config = reloads[1];
@@ -60,10 +65,7 @@ describe('ConfigWatcher', () => {
           } else {
             assert.equal(reloads.length, 1, 'invalid reload emits no update');
             assert.equal(errors.length, 1);
-            assert.match(
-              errors[0].message,
-              new RegExp(`${field}.*positive integer`),
-            );
+            assert.match(errors[0].message, new RegExp(`${field}.*integer`));
           }
         } finally {
           watcher.stop();
