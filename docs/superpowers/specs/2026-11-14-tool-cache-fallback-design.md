@@ -1,6 +1,6 @@
 # Tool cache with a missing-tool fallback — design
 
-Status: draft for review (revision 7). Date: 2026-11-14.
+Status: draft for review (revision 9). Date: 2026-11-14.
 
 ## Intent
 
@@ -24,8 +24,19 @@ Decisions by the user, 2026-11-14:
   зтригерить фолбек аналізатор а інші з кешу візьмуть" — the cache is shared (system-level), not a user collection;
 - "не знайдено то llm каже кажете зробити те а тулів в вас нема" — "not found" is decided by the worker's answer, not by
   the lookup; the lookup has no miss rule;
-- "нема то додаємо під конкретний випадок" — a failed entry is not rewritten; a new entry is added for the concrete case;
 - which entry wins among several is up to the cache implementation.
+
+Decisions by the user, 2026-11-15 (supersede "нема то додаємо під конкретний випадок", which added a new entry next to
+the failed one):
+- "кеш привязаний до вектору чи набору ключів і в нам всяко тіки один набір тулів. Якшо набір тулів є а llm каже нема
+  нужного тула то оновлюємо існуючу запис" — an entry is one key (vector or key set) with one tool set. When the set
+  came from an entry and the worker reports a missing tool, that entry is **updated** with the complete set; otherwise a
+  new entry is added. Retention is therefore one entry per key;
+- "кроки успішні то тут або тули в кеші або ненужні" — successful steps are not written: their tools either came from
+  the cache already or no cache entry is needed;
+- the tool-loop limits are off by default in llm-agent (separate change); when a configuration turns one on
+  explicitly, it applies to this path as to any other ("Якшо конфіг явно включив то це нашось треба");
+- the multi-turn simulation in the hub runs before this design is implemented.
 
 ## Why (measured in the hub, 2026-11-14)
 
@@ -63,7 +74,8 @@ Both are covered by tests below; the design does not rely on them being true.
 
 - Replacing the selection strategies; normal tool search runs when the cache has nothing.
 - Domain (structured) decomposition in llm-agent — a consumer lookup/writer concern.
-- Learning from steps that never reported a missing tool (possible later through the same writer).
+- Learning from steps that never reported a missing tool. User decision: their tools came from the cache or no entry
+  is needed.
 
 ## Pipeline
 
@@ -81,8 +93,8 @@ ToolLoop round
    ├─ report_missing_tool among them →
    │     the other calls of this round are executed as usual (their results go back as usual);
    │     fallback.select({ step, capability, catalog, alreadyOffered }) → tools
-   │     ctx.activeTools = activeTools ∪ definitions(tools)       // the next model call is built from ctx.activeTools
-   │     writer.record({ step, tools: offered ∪ tools (complete set), failedEntryId? })
+   │     currentTools = ctx.activeTools = currentTools ∪ definitions(tools)   // the loop's local set the model gets
+   │     writer.record({ step, tools: offered ∪ tools (complete set), entryId? })   // entryId: update that entry
    │     tool_result for the signal call: "added: <names>"
    │     next model call (same request, same messages + tool results)
    └─ a second report_missing_tool in the same step after a fallback → step ends with TOOL_MISSING
@@ -98,13 +110,21 @@ ToolLoop round
 - Rounds with external (client-side) calls: today an unresolved external call surfaces the call and ends the worker
   turn (`tool-loop.ts` ~955/~1084). When such a round also carries the signal, the fallback runs and the cache is
   written first; the turn then ends as today, and the continuation request offers the pinned set.
-- Budgets: a signal call does not count toward `maxToolCalls`; `guardToolRound` treats it as a local tool. A signal in
-  the last allowed iteration grants exactly one extra round for the continuation. When the tool-call budget is
-  exhausted the loop already offers no tools (`currentTools = []`, ~506) — the signal included — so no signal can
-  arrive and the step ends as it does today. *Decision by Claude — confirm.*
+- Offered set update: the loop passes its local `currentTools` to the model (`tool-loop.ts` ~185 reads
+  `ctx.activeTools` once, ~607 sends `currentTools`), so the fallback updates `currentTools` itself, not only
+  `ctx.activeTools`; the next call offers the added tools without a refresh or reselection.
+- No budgets. User: "бюджети ... або не роблять або шкодять, той ліміт на виклик мсп так точно". The fallback adds
+  no limit of its own, and the signal call is not counted by `maxToolCalls`. The limits are off by default (separate
+  llm-agent change). A limit the configuration turns on explicitly applies as on any round: with `maxIterations`
+  reached after the signal round, the step ends with the loop's existing `finishReason: 'length'` (`tool-loop.ts` ~292)
+  and the cache entry is already written; with `maxToolCalls` exhausted the loop clears the offered tools (~506), the
+  signal included, and ends with its existing `budgetExhausted` result. Neither case becomes `TOOL_MISSING`.
 - "Continue" means one more model call inside the same request (the loop's next round), not a new client request.
 - One fallback per step. A second signal after a fallback ends the step with a typed `TOOL_MISSING` error that carries
-  the reported capability and goes out the way step errors do today (`ctx.error`, surfaced to the planner).
+  the reported capability. Setting `ctx.error` alone does not reach the caller: `DefaultPipeline` returns it
+  (`default-pipeline.ts` ~319) but `pipelineToStream` drops that result (`pipeline-to-stream.ts` ~42). The loop
+  therefore also yields it as an error chunk (`{ ok: false, error: OrchestratorError(…, 'TOOL_MISSING') }`), which the
+  worker's stream delivers to the planner.
 
 ## Contracts (llm-agent)
 
@@ -136,14 +156,15 @@ interface IToolCacheWriter {
     stepText: string;
     tools: string[];                  // the step's COMPLETE set: everything offered plus what the fallback added
     catalogFingerprint: string;
-    failedEntryId?: string;           // the entry whose set lacked the tool, when the set came from the cache
+    entryId?: string;                 // the entry whose set lacked the tool (set came from the cache): update it
     options?: CallOptions;
   }): Promise<Result<{ entryId: string }, RagError>>;
 }
 ```
 
 - `find` returns an entry whenever the cache has one for the fingerprint; `undefined` only for an empty or unavailable
-  cache. There is no miss rule: a wrong entry shows up as the worker's signal and is repaired by the fallback.
+  cache. There is no miss rule: a wrong entry shows up as the worker's signal and is repaired by the fallback, which
+  updates that same entry.
 - Which entry `find` returns among several is the implementation's choice.
 - A fallback error ends the step with `TOOL_MISSING` (with the error code); a lookup error counts as `undefined`; a
   writer error is logged and does not fail the step.
@@ -174,12 +195,13 @@ interface IToolCacheWriter {
   comes from an optional consumer `describeTool(tool) => string`; the default is name + description (no schemas).
 - `RagToolCache` (lookup and writer) over a consumer-supplied writable store (`IRag` with `writer()`; constructing it
   over a read-only store is a configuration error):
-  - record: a new document per write (`id` = random UUID), text = the step text, metadata
-    `{ tools, catalogFingerprint, failedEntryId?, createdAt }`;
+  - record without `entryId`: a new document (`id` = random UUID), text = the step text, metadata
+    `{ tools, catalogFingerprint, updatedAt }`;
+  - record with `entryId`: upserts that document under the same `id`, keeping its text (the key) and replacing
+    `tools` and `updatedAt`; no second entry appears;
   - find: queries the store with the step text and returns the first result whose `catalogFingerprint` matches;
-    among equal scores the newest `createdAt` wins, so a correction recorded for the same wording supersedes the
-    entry that failed. The query asks for enough results to reach a matching fingerprint; a store that supports
-    metadata filters gets the fingerprint as a filter.
+    among equal scores the newest `updatedAt` wins. The query asks for enough results to reach a matching
+    fingerprint; a store that supports metadata filters gets the fingerprint as a filter.
 
 ## Hub implementation (consumer, for mcp-abap-adt)
 
@@ -195,24 +217,31 @@ interface IToolCacheWriter {
 ## Tests (llm-agent)
 
 - Tool loop
-  - a `report_missing_tool` call adds the fallback's tools to `ctx.activeTools`; the next model call offers them;
+  - a `report_missing_tool` call adds the fallback's tools; the next model call offers them with refresh and
+    reselection both off (the loop's local set is updated);
   - the signal is handled locally, not sent to an MCP client; it does not count toward `maxToolCalls`;
   - a round with the signal plus other calls executes the others and returns all results;
-  - a second signal after a fallback ends the step with `TOOL_MISSING` carrying the capability via `ctx.error`;
+  - a second signal after a fallback ends the step with `TOOL_MISSING` carrying the capability; asserted through the
+    public worker stream (an error chunk with that code), not only `ctx.error`;
   - fallback errors (`FALLBACK_UNAVAILABLE`, `_INVALID`, `_EMPTY`) and an aborted signal end the step the same way;
   - no fallback when the signal is not called;
   - after a fallback, a refresh and a reselection of the offered tools keep the pinned set;
   - a round with the signal and an unresolved external call: the cache is written, the turn ends as today, the
     continuation request offers the pinned set and a second signal ends the step;
-  - a signal in the last iteration gets one continuation round; with the tool budget exhausted no tool (signal
-    included) is offered and the step ends as today.
+  - limits off (default): the continuation after a fallback is the loop's next round;
+  - `maxIterations: 1` set explicitly: the signal round runs the fallback and writes the cache, then the step ends with
+    `finishReason: 'length'`, not `TOOL_MISSING`;
+  - `maxToolCalls` set explicitly and exhausted: the offered tools are cleared, the signal included, and the step ends
+    with `budgetExhausted`, not `TOOL_MISSING`.
 - Cache in the pipeline
   - an entry replaces normal tool retrieval; names absent from the live catalog are dropped; an empty validated set
     and a lookup error fall back to normal retrieval;
-  - the writer receives the complete set (initial ∪ added) and `failedEntryId` only when the set came from the cache;
-  - bad entry → signal → record → the next `find` for the same wording returns the correction.
+  - the writer receives the complete set (initial ∪ added) and `entryId` only when the set came from the cache;
+  - bad entry → signal → record → the same entry now holds the complete set; the next `find` returns it;
+  - a writer error is logged; the step continues with the added tools.
 - `RagToolCache` on an in-memory keyword store and on a vector store with a deterministic embedder: record → find;
-  another fingerprint is not returned; newest wins among equal scores.
+  another fingerprint is not returned; newest wins among equal scores; record with `entryId` updates that document
+  (same id and text, new tools, the store's count unchanged); constructing it over a read-only store fails.
 - Fingerprint: stable across requests whose descriptions change; independent of client order; differs when a client
   is renamed or a tool schema changes.
 - Prerequisite change: building with two or more MCP clients, any of them without a `label`, fails with an explicit
@@ -224,6 +253,11 @@ interface IToolCacheWriter {
 
 ## Open
 
-- Later-turn behaviour of the worker on a wrong set (multi-turn simulation in the hub).
-- Writing successful steps too (learning without a failure).
-- Retention per fingerprint (everything vs latest N per main action).
+- Later-turn behaviour of the worker on a wrong set: the multi-turn simulation in the hub runs **before** the
+  implementation (user decision, 2026-11-15).
+
+## Separate changes (before the implementation)
+
+- llm-agent: tool-loop limits (`maxToolCalls`, `maxIterations`) off by default (user: "вимикай"); an explicit
+  configuration still turns them on.
+- llm-agent: two or more MCP clients require a `label` each (see Catalog fingerprint).
