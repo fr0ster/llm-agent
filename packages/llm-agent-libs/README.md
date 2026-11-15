@@ -5,6 +5,20 @@
 
 Core SmartAgent composition runtime. Builder, agent runtime, pipeline, sessions, history, resilience, observability, plugins, skills.
 
+## Tool-loop limits
+
+Tool-loop limits are off by default: `maxIterations` resolves to `Infinity`, and
+an omitted `maxToolCalls` means unlimited. Explicit limits retain their existing
+termination and reporting behavior, including `budgetExhausted`.
+
+To retain the previous builder defaults, configure `agent: { maxIterations: 10,
+maxToolCalls: 30 }` or call `.withMaxIterations(10).withMaxToolCalls(30)`.
+For a standalone `DefaultPipeline`, pass `agentConfig: { maxIterations: 10 }`
+to restore its previous iteration default.
+
+Pipeline `repeat` stages still use their own `stage.maxIterations` limit.
+Controller `maxSteps` and `maxRetries` are unchanged.
+
 ## Top-level exports
 
 `SmartAgentBuilder`, `SmartAgentBuilderConfig`, `BuilderMcpConfig`, `BuilderPromptsConfig`, `SmartAgentReconfigureOptions`, `LlmAdapter`, `LlmAdapterProviderInfo`, `LlmProviderBridge`, `NonStreamingLlm`, `wrapEmbedder`, `SmartAgent`, `ConfigWatcher`, `ConfigWatcherOptions`, `HotReloadableConfig`, `HealthChecker`, `HealthCheckerDeps`, `HistoryMemory`, `HistorySummarizer`, `DefaultRequestLogger`, `NoopRequestLogger`, `InMemoryMetrics`, `NoopMetrics`, `DefaultPipeline`, `PipelineExecutor`, `buildDefaultHandlerRegistry`, `evaluateCondition`, `FileSystemPluginLoader`, `FileSystemPluginLoaderConfig`, `loadPlugins`, `mergePluginExports`, `getDefaultPluginDirs`, `emptyLoadedPlugins`, `LlmReranker`, `NoopReranker`, `DecisionReranker`, `TOOL_QUESTION`, `PASSAGE_QUESTION`, `wrapDecisionModel`, `EmbeddingRetrieval`, `RerankedRetrieval`, `RerankAllRetrieval`, `StrategyRag`, `applyRetrievalStrategy`, `hasRetrievalStrategy`, `RateLimiterLlm`, `RetryLlm`, `RetryOptions`, `TokenBucketConfig`, `TokenBucketRateLimiter`, `SessionManager`, `NoopSessionManager`, `SessionGraph`, `SessionGraphFactory`, `SessionRegistry`, `ClaudeSkillManager`, `CodexSkillManager`, `FileSystemSkillManager`, `NoopTracer`, `lazy`, `LazyInitError`, `LazyOptions`, `NoopValidator`. Plus type re-exports of the core contracts (`AgentCallOptions`, `BaseAgentLlmBridge`, `SmartAgentHandle`, `SmartAgentRagStores`) for ergonomics.

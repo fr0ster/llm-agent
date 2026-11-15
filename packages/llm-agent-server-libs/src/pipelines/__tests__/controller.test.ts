@@ -10,7 +10,7 @@ describe('ControllerPipelinePlugin', () => {
   it('parseControllerSettings defaults budgets/targetState/sessionMemory and requires subagents', () => {
     const cfg = parseControllerSettings({ subagents: MIN_SUBAGENTS }, LLM_KEYS);
     assert.equal(cfg.budgets.maxSteps, 20);
-    assert.equal(cfg.budgets.maxToolCalls, 10);
+    assert.equal(cfg.budgets.maxToolCalls, undefined);
     assert.equal(cfg.targetState.strategy, 'auto');
     assert.equal(cfg.targetState.distanceThreshold, 0.25);
     assert.equal(cfg.sessionMemory.collection, 'session-memory');
@@ -20,12 +20,13 @@ describe('ControllerPipelinePlugin', () => {
     const cfg = parseControllerSettings(
       {
         subagents: MIN_SUBAGENTS,
-        budgets: { maxSteps: 5 },
+        budgets: { maxSteps: 5, maxToolCalls: 10 },
         targetState: { strategy: 'semantic-distance' },
       },
       LLM_KEYS,
     );
     assert.equal(cfg.budgets.maxSteps, 5);
+    assert.equal(cfg.budgets.maxToolCalls, 10);
     assert.equal(cfg.budgets.maxRetries, 3);
     assert.equal(cfg.targetState.strategy, 'semantic-distance');
   });

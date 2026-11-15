@@ -2529,7 +2529,7 @@ interface IStepBudget {
 }
 ```
 
-The default implementation is driven by `budgets.perStepTimeoutMs` (wall-clock timeout) and `budgets.maxToolCalls` (total tool calls per run). A step that exceeds `perStepTimeoutMs` receives an AbortSignal → `ControlFailure.reason = 'step-timeout'` → replan.
+The default implementation is driven by explicitly configured `budgets.perStepTimeoutMs` (wall-clock timeout) and `budgets.maxToolCalls` (tool calls per worker step, including resumed calls). Tool-call limits are off by default; set `budgets.maxToolCalls: 10` to retain the previous controller default. A step that exceeds `perStepTimeoutMs` receives an AbortSignal → `ControlFailure.reason = 'step-timeout'` → replan.
 
 `IRunExecutionControl` is the run-level counterpart — it gates rewinds, resumptions, and global retry counts.
 

@@ -457,8 +457,10 @@ export function resolveAgentSection(
       'agent',
       'externalToolsValidationMode',
     ) ?? 'permissive') as string as 'permissive' | 'strict',
-    maxIterations: Number(get(yaml, 'agent', 'maxIterations') ?? 10),
-    maxToolCalls: Number(get(yaml, 'agent', 'maxToolCalls') ?? 30),
+    maxIterations: Number(get(yaml, 'agent', 'maxIterations') ?? Infinity),
+    ...(get(yaml, 'agent', 'maxToolCalls') != null
+      ? { maxToolCalls: Number(get(yaml, 'agent', 'maxToolCalls')) }
+      : {}),
     toolUnavailableTtlMs: Number(
       get(yaml, 'agent', 'toolUnavailableTtlMs') ?? 600000,
     ),

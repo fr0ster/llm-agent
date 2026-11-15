@@ -101,7 +101,7 @@ export function resolveSessionRegistries(src: {
 // ---------------------------------------------------------------------------
 
 const DEFAULT_CONFIG: SmartAgentConfig = {
-  maxIterations: 10,
+  maxIterations: Infinity,
   classificationEnabled: false,
   skillInjectionEnabled: true,
   mode: 'smart',

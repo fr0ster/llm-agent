@@ -70,6 +70,12 @@ pipeline:
     budgets: { maxSteps: 20, maxRetries: 3, maxRewinds: 5, maxToolCalls: 10 }
 ```
 
+Controller worker tool calls are unlimited unless `budgets.maxToolCalls` is
+explicitly set. To retain the previous default, set `budgets.maxToolCalls: 10`.
+`maxSteps` and `maxRetries` are unchanged. With tool-call limits off, recall uses
+the number of stored run artifacts for its finite over-fetch query; it does not
+impose an execution limit.
+
 **Budget fields** — all optional except the three required ones:
 
 | Field | Required | Default | Description |
@@ -77,7 +83,7 @@ pipeline:
 | `maxSteps` | ✅ | — | Maximum number of plan steps |
 | `maxRetries` | ✅ | — | Maximum step-level retries |
 | `maxRewinds` | ✅ | — | Maximum number of plan rewinds |
-| `maxToolCalls` | — | unlimited | Total tool calls per run |
+| `maxToolCalls` | — | unlimited | Tool calls per controller worker step (including resumed calls) |
 | `perStepTimeoutMs` | — | none | Per-step wall-clock limit in ms; exceeded → `ControlFailure.reason = 'step-timeout'` and replan. **Absent means a single step can run indefinitely — set this to prevent livelock.** |
 | `maxStepAttempts` | — | unlimited | Fresh-attempt cap per step (durable) |
 | `maxStepResumes` | — | unlimited | Crash-replay cap per step |

@@ -173,7 +173,9 @@ export interface SmartAgentConfig {
   toolTrust?: import('@mcp-abap-adt/llm-agent').ToolTrust;
   /** Deployment IANA time zone for request dates. Default: UTC. */
   timeZone?: string;
+  /** Maximum tool-loop iterations. Builders default to Infinity (unlimited). */
   maxIterations: number;
+  /** Maximum tool calls per request. Omitted means unlimited. */
   maxToolCalls?: number;
   toolUnavailableTtlMs?: number;
   timeoutMs?: number;

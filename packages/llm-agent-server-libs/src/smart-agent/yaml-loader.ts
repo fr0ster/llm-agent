@@ -47,8 +47,9 @@ mcp:
 
 agent:
   externalToolsValidationMode: permissive  # permissive | strict
-  maxIterations: 10
-  maxToolCalls: 30
+  # Tool-loop limits are off by default. Uncomment to restore the old limits.
+  # maxIterations: 10
+  # maxToolCalls: 30
   toolUnavailableTtlMs: 600000       # Temporary tool blacklist TTL (ms)
   ragQueryK: 10
   # contextBudgetTokens: 4000          # Max tokens for RAG context in system prompt (0 = no limit)

@@ -83,19 +83,23 @@ export async function collectApproved(
  *  KIND), then dedup and cap to `k`. Dedup: step-results (have `seq`) →
  *  precedence-winner per seq; mcp-results → by `identityKey`. Embedding rank order
  *  is preserved through the dedup.
+ *  An absent `kPrime` uses the current stored artifact count, keeping the query
+ *  finite without deriving a cap from a disabled tool-call limit.
  *  `options` is forwarded into the embedder so recall-time embeds are metered. */
 export async function runScopedRecall(
   rag: IKnowledgeRagHandle,
   text: string,
   k: number,
   runId: string | undefined,
-  kPrime: number,
+  kPrime: number | undefined,
   artifactType: readonly string[],
   options?: CallOptions,
 ): Promise<readonly KnowledgeEntry[]> {
+  const filter = { runId, artifactType };
+  const queryK = kPrime ?? Math.max(k, (await rag.list(filter)).length);
   const hits = await rag.query(text, {
-    k: kPrime,
-    filter: { runId, artifactType },
+    k: queryK,
+    filter,
     options,
   });
   const bestStep = new Map<number, KnowledgeEntry>();

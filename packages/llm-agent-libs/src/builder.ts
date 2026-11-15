@@ -1384,8 +1384,7 @@ export class SmartAgentBuilder {
 
       // ---- SmartAgent Config ------------------------------------------------
       const agentCfg: SmartAgentConfig = {
-        maxIterations: 10,
-        maxToolCalls: 30,
+        maxIterations: Infinity,
         ragQueryK: 10,
         ragTranslatePrompt: this.cfg.prompts?.ragTranslate,
         historySummaryPrompt: this.cfg.prompts?.historySummary,
