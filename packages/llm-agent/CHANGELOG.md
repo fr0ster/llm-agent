@@ -1,5 +1,53 @@
 # @mcp-abap-adt/llm-agent
 
+## 33.0.0
+
+### Major Changes
+
+- 4bcdb59: Require a non-empty descriptor label for every MCP client when building with more than one client. Positional `s<slotIndex>` prefixes change when clients are reordered, making exposed tool names unsuitable as stable cache keys. Empty descriptor labels are rejected even for a single client.
+  
+  This is a breaking change: `withMcpClients([a, b])`, multiple undescribed servers, mixed labeled/unlabeled clients, and custom connection/session factories returning multiple unlabeled clients now throw an explicit Error during build, before listing tools. A single unlabeled client remains supported with prefix `s0`.
+  
+  Migrate to `withMcpServers()` with each server carrying `descriptor: { slotIndex, label: 'stable-name' }`, or give every YAML `mcp:` entry a stable `name`. Wrap already-connected clients in labeled servers whose `start()` returns the client and whose `stop()` follows the caller's ownership policy. Custom connectors must return labeled `clientDescriptors` (use `connectMcpWithDescriptors` for SmartServer). `ControllerSkillPipelineBuilder.withMcp()` now accepts `name` for configuring multiple servers. Labels are preserved when SmartServer reuses clients across session and worker builds.
+- 79507a7: Disable default tool-loop iteration and tool-call limits. Unset `maxIterations`
+  and `maxToolCalls` mean unlimited and are represented by `undefined`, omitted in
+  config JSON. Typed programmatic APIs (`SmartAgentConfig`, builder config,
+  `withMaxIterations`/`withMaxToolCalls`, and runtime config patches) accept
+  `number | null | undefined`: absent values, `null`, and numeric `Infinity` mean
+  unlimited. Integer strings are accepted only at text boundaries: YAML startup
+  and reload, HTTP `PUT /v1/config` bodies, and environment substitutions.
+  All entry points use the shared normalizer for runtime validation:
+  `maxIterations` requires positive integers, and `maxToolCalls` requires
+  non-negative integers. Invalid values fail with an error naming the field.
+  Explicit limits keep their previous
+  termination behavior and budget-exhaustion reporting, including `maxToolCalls: 0`
+  forbidding tool calls and exhausting the budget immediately, even when
+  SelfDispatch has no tools or executor.
+  
+  Numeric `Infinity` remains supported as unlimited for both limits and is omitted from config JSON; the string `'Infinity'`, `-Infinity`, and `NaN` are rejected.
+  
+  SelfDispatch no longer has an implicit six-round limit; the builder passes its
+  explicit agent iteration limit to the default coordinator fallback.
+  
+  Migration: set `agent.maxIterations: 10` and `agent.maxToolCalls: 30` (or use
+  `withMaxIterations(10).withMaxToolCalls(30)`) to retain the previous builder and
+  server defaults. For standalone `DefaultPipeline`, set
+  `agentConfig.maxIterations: 10`. Set controller `budgets.maxToolCalls: 10` to keep
+  its previous per-worker limit. Cyclic/recursive Stepper executors no longer have
+  an implicit 10-iteration cap; direct `CyclicReActExecutor` consumers can still
+  pass an explicit `maxIterations`. The explicit `simple` executor profile retains
+  its single-pass behavior.
+  
+  Derived controller recall bounds use stored artifact counts when tool-call limits
+  are unset, keeping queries finite without imposing an execution limit. Pipeline
+  repeat-stage `stage.maxIterations` is also optional and unlimited when omitted;
+  set it to `10` to retain the previous default. Controller `maxSteps`/`maxRetries`
+  are unchanged.
+
+### Minor Changes
+
+- 1215f53: Add `fallbackOnQueryEmbeddingError?: boolean` to vector RAG store configs, defaulting to `true` for compatibility. Set it to `false` to return a caller-supplied query embedding's first failure as a failed `Result` without calling the store embedder again. Explicit `TextOnlyEmbedding` queries still use the store embedder once. Transformed `VectorRag` queries still embed the transformed text once and propagate failures.
+
 ## 32.0.2
 
 ### Patch Changes
