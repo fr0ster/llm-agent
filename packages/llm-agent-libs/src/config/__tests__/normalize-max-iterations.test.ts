@@ -2,7 +2,43 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { SmartAgent } from '../../agent.js';
 import { makeDefaultDeps } from '../../testing/index.js';
-import { normalizeMaxIterations } from '../normalize-max-iterations.js';
+import {
+  normalizeLoopLimit,
+  normalizeMaxIterations,
+} from '../normalize-max-iterations.js';
+
+test('both YAML loop limits share integer parsing and validation', () => {
+  for (const field of ['maxIterations', 'maxToolCalls'] as const) {
+    const options = { allowNumericStrings: true };
+    for (const value of [undefined, null]) {
+      assert.equal(normalizeLoopLimit(value, field, options), undefined);
+    }
+    for (const value of [12, '12', ' 12 ', '0012']) {
+      assert.equal(normalizeLoopLimit(value, field, options), 12);
+    }
+    for (const value of [
+      0,
+      -1,
+      1.5,
+      Infinity,
+      NaN,
+      '0',
+      '-1',
+      '1.5',
+      'abc',
+      '',
+      ' ',
+      false,
+      {},
+      [],
+    ]) {
+      assert.throws(
+        () => normalizeLoopLimit(value, field, options),
+        new RegExp(`agent\\.${field}: must be a positive integer`),
+      );
+    }
+  }
+});
 
 test('iteration limit boundaries normalize unset values and reject invalid values', () => {
   assert.equal(normalizeMaxIterations(undefined), undefined);

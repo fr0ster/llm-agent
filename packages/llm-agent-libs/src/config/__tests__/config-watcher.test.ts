@@ -20,33 +20,55 @@ function wait(ms: number): Promise<void> {
 }
 
 describe('ConfigWatcher', () => {
-  it('normalizes unset iteration limits and rejects invalid limits on reload', async () => {
-    for (const maxIterations of [undefined, null, 3, 0, -1, 1.5]) {
-      const { filePath, cleanup } = tmpFile('agent:\n  maxIterations: 2\n');
-      const watcher = new ConfigWatcher(filePath, { debounceMs: 0 });
-      try {
-        const reload = new Promise<HotReloadableConfig>((resolve, reject) => {
-          watcher.once('reload', resolve);
-          watcher.once('error', reject);
-        });
-        watcher.start();
-        fs.writeFileSync(
-          filePath,
-          maxIterations === undefined
-            ? 'agent: {}\n'
-            : `agent:\n  maxIterations: ${maxIterations}\n`,
-          'utf8',
+  it('normalizes both YAML limits and aborts invalid reloads', () => {
+    for (const field of ['maxIterations', 'maxToolCalls'] as const) {
+      for (const value of [undefined, null, 3, '12', 0, -1, 1.5, 'abc']) {
+        const { filePath, cleanup } = tmpFile(
+          'agent:\n  maxIterations: 2\n  maxToolCalls: 2\n',
         );
-        if (maxIterations == null || maxIterations === 3) {
-          const config = await reload;
-          assert.equal(config.maxIterations, maxIterations ?? undefined);
-          assert.equal('maxIterations' in config, true);
-        } else {
-          await assert.rejects(reload, /maxIterations.*positive integer/);
+        const watcher = new ConfigWatcher(filePath);
+        const reloads: HotReloadableConfig[] = [];
+        const errors: Error[] = [];
+        watcher.on('reload', (config: HotReloadableConfig) =>
+          reloads.push(config),
+        );
+        watcher.on('error', (error: Error) => errors.push(error));
+        try {
+          // Drive the file-reading path directly, without debounce timers.
+          // biome-ignore lint/complexity/useLiteralKeys: Access the private reload path without changing its visibility.
+          watcher['_reload']();
+          assert.equal(reloads[0][field], 2);
+          fs.writeFileSync(
+            filePath,
+            value === undefined
+              ? 'agent: {}\n'
+              : `agent:\n  ${field}: ${JSON.stringify(value)}\n`,
+            'utf8',
+          );
+          // biome-ignore lint/complexity/useLiteralKeys: Access the private reload path without changing its visibility.
+          watcher['_reload']();
+          if (value == null || value === 3 || value === '12') {
+            assert.equal(reloads.length, 2);
+            assert.equal(errors.length, 0);
+            const config = reloads[1];
+            assert.equal(
+              config[field],
+              value == null ? undefined : Number(value),
+            );
+            assert.equal('maxIterations' in config, true);
+            assert.equal('maxToolCalls' in config, true);
+          } else {
+            assert.equal(reloads.length, 1, 'invalid reload emits no update');
+            assert.equal(errors.length, 1);
+            assert.match(
+              errors[0].message,
+              new RegExp(`${field}.*positive integer`),
+            );
+          }
+        } finally {
+          watcher.stop();
+          cleanup();
         }
-      } finally {
-        watcher.stop();
-        cleanup();
       }
     }
   });

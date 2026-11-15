@@ -10,7 +10,7 @@
 import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import { parse as parseYaml } from 'yaml';
-import { normalizeMaxIterations } from './normalize-max-iterations.js';
+import { normalizeLoopLimit } from './normalize-max-iterations.js';
 
 // ---------------------------------------------------------------------------
 // Hot-reloadable config shape
@@ -120,9 +120,13 @@ export class ConfigWatcher extends EventEmitter {
 
     const config: HotReloadableConfig = {};
 
-    config.maxIterations = normalizeMaxIterations(agent.maxIterations);
-    if (agent.maxToolCalls !== undefined)
-      config.maxToolCalls = Number(agent.maxToolCalls);
+    // Always include both keys so removed/null YAML limits clear old values.
+    // A validation error aborts the entire reload before emitting any update.
+    for (const field of ['maxIterations', 'maxToolCalls'] as const) {
+      config[field] = normalizeLoopLimit(agent[field], field, {
+        allowNumericStrings: true,
+      });
+    }
     if (agent.ragQueryK !== undefined)
       config.ragQueryK = Number(agent.ragQueryK);
     if (agent.toolUnavailableTtlMs !== undefined)

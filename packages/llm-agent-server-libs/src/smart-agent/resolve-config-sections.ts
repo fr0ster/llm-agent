@@ -10,7 +10,7 @@ import {
 } from '@mcp-abap-adt/llm-agent';
 import {
   normalizeHeartbeatMs,
-  normalizeMaxIterations,
+  normalizeLoopLimit,
 } from '@mcp-abap-adt/llm-agent-libs';
 import { ConfigValidationError } from './config-validator.js';
 import {
@@ -455,15 +455,19 @@ export function resolveAgentSection(
   yaml: YamlConfig,
   args: Record<string, unknown>,
 ): SmartServerAgentConfig {
-  let maxIterations: number | undefined;
-  try {
-    maxIterations = normalizeMaxIterations(
-      parseIntegerField(get(yaml, 'agent', 'maxIterations')),
-    );
-  } catch {
-    throw new ConfigValidationError([
-      'agent.maxIterations: must be a positive integer or null (unlimited)',
-    ]);
+  const limits: Pick<SmartServerAgentConfig, 'maxIterations' | 'maxToolCalls'> =
+    {};
+  for (const field of ['maxIterations', 'maxToolCalls'] as const) {
+    try {
+      limits[field] = normalizeLoopLimit(get(yaml, 'agent', field), field, {
+        allowNumericStrings: true,
+      });
+    } catch (error) {
+      if (error instanceof TypeError) {
+        throw new ConfigValidationError([error.message]);
+      }
+      throw error;
+    }
   }
   return {
     externalToolsValidationMode: (get(
@@ -471,10 +475,7 @@ export function resolveAgentSection(
       'agent',
       'externalToolsValidationMode',
     ) ?? 'permissive') as string as 'permissive' | 'strict',
-    maxIterations,
-    ...(get(yaml, 'agent', 'maxToolCalls') != null
-      ? { maxToolCalls: Number(get(yaml, 'agent', 'maxToolCalls')) }
-      : {}),
+    ...limits,
     toolUnavailableTtlMs: Number(
       get(yaml, 'agent', 'toolUnavailableTtlMs') ?? 600000,
     ),

@@ -79,7 +79,7 @@ export class ConfigReloadWatcher implements IConfigReloadWatcher {
     const agentUpdate: Record<string, unknown> = {};
     if ('maxIterations' in update)
       agentUpdate.maxIterations = update.maxIterations;
-    if (update.maxToolCalls !== undefined)
+    if ('maxToolCalls' in update)
       agentUpdate.maxToolCalls = update.maxToolCalls;
     if (update.ragQueryK !== undefined)
       agentUpdate.ragQueryK = update.ragQueryK;

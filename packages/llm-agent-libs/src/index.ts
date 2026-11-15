@@ -52,7 +52,10 @@ export {
   type ConfigWatcherOptions,
   type HotReloadableConfig,
 } from './config/config-watcher.js';
-export { normalizeMaxIterations } from './config/normalize-max-iterations.js';
+export {
+  normalizeLoopLimit,
+  normalizeMaxIterations,
+} from './config/normalize-max-iterations.js';
 export { InMemoryRunRecordStore } from './coordinator/adaptive/in-memory-run-record-store.js';
 export {
   ADAPTIVE_CONTROLLER_SYSTEM,
