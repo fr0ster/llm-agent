@@ -22,6 +22,13 @@ npm install @mcp-abap-adt/pg-vector-rag pg
 
 ## Minimal config
 
+`PgVectorRagConfig.fallbackOnQueryEmbeddingError?: boolean` defaults to `true`:
+if a caller-supplied query embedding rejects, the store tries its own embedder.
+Set `fallbackOnQueryEmbeddingError: false` in `new PgVectorRag({ ... })` to return
+the first failure as a failed `Result` without a second embedder call.
+An explicit `TextOnlyEmbedding` is always embedded once by the store, and its
+failure is returned without retrying. Successful caller embeddings are reused.
+
 ```yaml
 # the address only; the login is a credential
 rag:

@@ -23,12 +23,14 @@ import {
   matchesRagIdentity,
   matchesScanFilter,
   prepareList,
+  QueryEmbedding,
   RagError,
   type RagListPage,
   type RagListParams,
   type RagScanFilter,
   type RagScanPage,
   ragIdentityFilter,
+  TextOnlyEmbedding,
   validateRagMetadata,
 } from '@mcp-abap-adt/llm-agent';
 import type { PgVectorRagConfig } from './connection.js';
@@ -144,6 +146,7 @@ export class PgVectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
   private readonly listTable: string;
   private readonly dimension: number;
   private readonly embedder: IRetrievalEmbedder;
+  private readonly fallbackOnQueryEmbeddingError: boolean;
   private readonly autoCreateSchema: boolean;
   private readonly clientPromise: Promise<PgClient>;
   private schemaReady = false;
@@ -161,6 +164,8 @@ export class PgVectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
     assertCollectionName(config.collectionName);
     this.dimension = config.dimension ?? 1536;
     this.embedder = config.embedder;
+    this.fallbackOnQueryEmbeddingError =
+      config.fallbackOnQueryEmbeddingError ?? true;
     this.listStore = JSON.stringify([
       'pg-vector-rag',
       config.layout ?? 'per-collection',
@@ -262,7 +267,12 @@ export class PgVectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
       return { ok: false, error: new RagError('Aborted', 'ABORTED') };
     try {
       await this.maybeEnsureSchema();
-      const safe = new FallbackQueryEmbedding(embedding, this.embedder);
+      const safe =
+        embedding instanceof TextOnlyEmbedding
+          ? new QueryEmbedding(embedding.text, this.embedder, options)
+          : this.fallbackOnQueryEmbeddingError
+            ? new FallbackQueryEmbedding(embedding, this.embedder)
+            : embedding;
       const vector = await safe.toVector();
       const client = await this.clientPromise;
       const lit = this.vectorLiteral(vector);
@@ -289,6 +299,8 @@ export class PgVectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
         ),
       };
     } catch (err) {
+      if (!this.fallbackOnQueryEmbeddingError && err instanceof RagError)
+        return { ok: false, error: err };
       return { ok: false, error: this.failure(err, 'QUERY_ERROR') };
     }
   }

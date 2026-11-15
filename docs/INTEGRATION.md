@@ -518,6 +518,15 @@ orchestration scenario) resolves the two halves and joins them; a symmetric mode
 embedder behind both methods. `skillPlugins.embedder.asymmetric: true` does the same for a
 dedicated skill embedder.
 
+`VectorRagConfig`, `QdrantRagConfig`, `PgVectorRagConfig`, and `HanaVectorRagConfig`
+accept `fallbackOnQueryEmbeddingError?: boolean` (default `true`). When enabled,
+a rejected caller-supplied query embedding falls back to the store's `embedQuery`.
+Set it to `false` to return the first failure as a failed `Result` without a
+second embedder call. An explicit `TextOnlyEmbedding` still uses the store's
+query embedder once. In `VectorRag`, preprocessors that change the text cause
+one embedding of the transformed query, with failures propagated under either
+policy. Successful caller embeddings are reused when the text is unchanged.
+
 #### Batch support and provider caps
 
 Implement `IEmbedderBatch` when the provider accepts many inputs per call — startup MCP tool vectorization uses it, and falls back to one request per tool without it:

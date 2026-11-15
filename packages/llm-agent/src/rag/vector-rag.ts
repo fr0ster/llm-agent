@@ -30,7 +30,11 @@ import {
 import { InvertedIndex } from './inverted-index.js';
 import { listKeyedPage } from './list-support.js';
 import type { IDocumentEnricher, IQueryPreprocessor } from './preprocessor.js';
-import { FallbackQueryEmbedding, QueryEmbedding } from './query-embedding.js';
+import {
+  FallbackQueryEmbedding,
+  QueryEmbedding,
+  TextOnlyEmbedding,
+} from './query-embedding.js';
 import { scanKeyedPage } from './scan-support.js';
 import type {
   ISearchCandidate,
@@ -49,6 +53,9 @@ interface StoredRecord {
 }
 
 export interface VectorRagConfig {
+  /** Retry a failed caller query embedding with the store embedder. Default: true.
+   *  TextOnlyEmbedding is always embedded by the store, regardless of this option. */
+  fallbackOnQueryEmbeddingError?: boolean;
   /** Cosine similarity threshold for dedup of records written without an id
    *  (a record with an id is replaced only by the same id). Default: 0.92 */
   dedupThreshold?: number;
@@ -76,6 +83,7 @@ export class VectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
   private strategy: ISearchStrategy;
   private readonly queryPreprocessors: IQueryPreprocessor[];
   private readonly documentEnrichers: IDocumentEnricher[];
+  private readonly fallbackOnQueryEmbeddingError: boolean;
   /**
    * `embedder` writes the records (`embedDocument`) and embeds the search text
    * this store embeds itself (`embedQuery`) — a text-only query, a
@@ -97,6 +105,8 @@ export class VectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
       });
     this.queryPreprocessors = config.queryPreprocessors ?? [];
     this.documentEnrichers = config.documentEnrichers ?? [];
+    this.fallbackOnQueryEmbeddingError =
+      config.fallbackOnQueryEmbeddingError ?? true;
   }
 
   /** Update hybrid search weights at runtime (hot-reload). */
@@ -293,11 +303,13 @@ export class VectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
         if (ppResult.ok) searchText = ppResult.value;
       }
       const nowSecs = Date.now() / 1000;
-      // If preprocessors transformed the text, embed the transformed version
+      // Text-only and transformed queries need a fresh store embedding.
       const effectiveEmbedding =
-        searchText !== text
+        searchText !== text || embedding instanceof TextOnlyEmbedding
           ? new QueryEmbedding(searchText, this.embedder, options)
-          : new FallbackQueryEmbedding(embedding, this.embedder, options);
+          : this.fallbackOnQueryEmbeddingError
+            ? new FallbackQueryEmbedding(embedding, this.embedder, options)
+            : embedding;
       const queryVector = await effectiveEmbedding.toVector();
       const targetNamespace = options?.ragFilter?.namespace;
       const identity = ragIdentityFilter(options);
