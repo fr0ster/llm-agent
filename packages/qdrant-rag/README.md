@@ -7,6 +7,15 @@ QdrantRag vector store and QdrantRagProvider for @mcp-abap-adt/llm-agent.
 
 Provides vector search capabilities using Qdrant as the backend.
 
+## Query embedding fallback
+
+`QdrantRagConfig.fallbackOnQueryEmbeddingError?: boolean` defaults to `true`:
+if a caller-supplied query embedding rejects, `QdrantRag` tries its own embedder.
+Set `fallbackOnQueryEmbeddingError: false` in `new QdrantRag({ ... })` to return
+the first failure as a failed `Result` without a second embedder call.
+An explicit `TextOnlyEmbedding` is always embedded once by the store, and its
+failure is returned without retrying. Successful caller embeddings are reused.
+
 Requires Qdrant 1.17 or later: the collection catalog is written with an insert-only operation.
 
 ## Catalog, rights, and the Qdrant version

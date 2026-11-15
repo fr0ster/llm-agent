@@ -18,6 +18,7 @@ import {
   listMetadata,
   matchesRagIdentity,
   prepareList,
+  QueryEmbedding,
   RagError,
   type RagListPage,
   type RagListParams,
@@ -27,6 +28,7 @@ import {
   type RagScanPage,
   type Result,
   ragIdentityFilter,
+  TextOnlyEmbedding,
   validateRagMetadata,
 } from '@mcp-abap-adt/llm-agent';
 import { splitPayload } from './payload-record.js';
@@ -49,6 +51,9 @@ export interface QdrantRagConfig {
   url: string;
   collectionName: string;
   embedder: IRetrievalEmbedder;
+  /** Retry a failed caller query embedding with the store embedder. Default: true.
+   *  TextOnlyEmbedding is always embedded by the store, regardless of this option. */
+  fallbackOnQueryEmbeddingError?: boolean;
   /**
    * Asked for fresh on every request — never cached — so a rotating key
    * rotates and a resolved-once secret is never frozen for this object's
@@ -75,6 +80,7 @@ export class QdrantRag implements IRag, IRagScanner, IRagFilteredDeleter {
   private readonly url: string;
   private readonly collectionName: string;
   private readonly embedder: IRetrievalEmbedder;
+  private readonly fallbackOnQueryEmbeddingError: boolean;
   private readonly credential?: IApiKeyCredential;
   private readonly timeoutMs: number | undefined;
   private readonly autoCreateCollection: boolean;
@@ -84,6 +90,8 @@ export class QdrantRag implements IRag, IRagScanner, IRagFilteredDeleter {
     this.url = config.url.replace(/\/+$/, '');
     this.collectionName = config.collectionName;
     this.embedder = config.embedder;
+    this.fallbackOnQueryEmbeddingError =
+      config.fallbackOnQueryEmbeddingError ?? true;
     this.credential = config.credential;
     this.timeoutMs = config.timeoutMs;
     this.autoCreateCollection = config.autoCreateCollection ?? true;
@@ -285,7 +293,12 @@ export class QdrantRag implements IRag, IRagScanner, IRagFilteredDeleter {
       return { ok: false, error: new RagError('Aborted', 'ABORTED') };
     }
     try {
-      const safe = new FallbackQueryEmbedding(embedding, this.embedder);
+      const safe =
+        embedding instanceof TextOnlyEmbedding
+          ? new QueryEmbedding(embedding.text, this.embedder, options)
+          : this.fallbackOnQueryEmbeddingError
+            ? new FallbackQueryEmbedding(embedding, this.embedder)
+            : embedding;
       const vector = await safe.toVector();
 
       const must: QdrantCondition[] = [];

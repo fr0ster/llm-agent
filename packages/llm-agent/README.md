@@ -22,6 +22,22 @@ For the full default agent runtime (SmartAgent assembly, providers wiring), inst
 
 See the repo root for design specs, migration notes, and architectural docs.
 
+## Query embedding fallback
+
+`VectorRagConfig.fallbackOnQueryEmbeddingError?: boolean` defaults to `true`:
+if a caller-supplied query embedding rejects, `VectorRag` tries its own embedder.
+Set it to `false` to return the first failure as a failed `Result` without a
+second embedder call:
+
+```typescript
+const rag = new VectorRag(embedder, { fallbackOnQueryEmbeddingError: false });
+```
+
+An explicit `TextOnlyEmbedding` is always embedded once by the store. If query
+preprocessors change the text, the transformed query is embedded once; a failure
+is returned without fallback under either policy. Successful caller embeddings
+are reused when the text is unchanged.
+
 ## Migration from 12.0.0
 
 Symbols that briefly appeared only in `@mcp-abap-adt/llm-agent-server@12.0.0` are now in their dedicated packages:
