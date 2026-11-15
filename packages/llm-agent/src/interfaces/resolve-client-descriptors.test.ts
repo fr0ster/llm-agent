@@ -47,7 +47,7 @@ test('empty and whitespace-only descriptor labels fail even for one client', () 
   for (const label of ['', '   ']) {
     assert.throws(
       () => resolveClientDescriptors(1, [{ slotIndex: 0, label }], 'test'),
-      /descriptor label must not be empty/,
+      /descriptor label must not be empty.*withMcpServers\(\).*named mcp: entries/,
     );
   }
 });
