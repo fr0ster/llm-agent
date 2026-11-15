@@ -208,8 +208,8 @@ test('yaml path: startup-builder-owned MCP connect → server harvests the handl
         // injected seam) ⇒ the startup builder owns the connect + the
         // namespaced-snapshot build itself.
         mcp: [
-          { type: 'http', url: stub0.url },
-          { type: 'http', url: stub1.url },
+          { type: 'http', url: stub0.url, name: 's0' },
+          { type: 'http', url: stub1.url, name: 's1' },
         ],
       },
       llmDeps,
@@ -256,7 +256,10 @@ test('seam path: connectMcpWithDescriptors colliding Search clients, no builder 
       ...constructionSeams,
       connectMcpWithDescriptors: async () => ({
         clients: [c0, c1],
-        clientDescriptors: [{ slotIndex: 0 }, { slotIndex: 1 }],
+        clientDescriptors: [
+          { slotIndex: 0, label: 's0' },
+          { slotIndex: 1, label: 's1' },
+        ],
         configuredSlotCount: 2,
       }),
     },
@@ -328,6 +331,11 @@ test('fallback build: middle-client listTools() failure keeps the surviving thir
   const c1 = fakeMcpClient(['Broken'], { fail: true });
   const c2 = fakeMcpClient(['B']);
   const server = new SmartServer({}, constructionSeams) as unknown as Internals;
+  server._sharedMcpClientDescriptors = [
+    { slotIndex: 0, label: 's0' },
+    { slotIndex: 1, label: 's1' },
+    { slotIndex: 2, label: 's2' },
+  ];
 
   await server.buildSharedPipelineInfra({
     toolsRag: undefined,
@@ -362,6 +370,11 @@ test('fallback build: a middle-client listTools() failure emits ONE aggregated c
     },
     constructionSeams,
   ) as unknown as Internals;
+  server._sharedMcpClientDescriptors = [
+    { slotIndex: 0, label: 's0' },
+    { slotIndex: 1, label: 's1' },
+    { slotIndex: 2, label: 's2' },
+  ];
 
   await server.buildSharedPipelineInfra({
     toolsRag: undefined,

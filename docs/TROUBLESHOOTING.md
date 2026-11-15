@@ -447,7 +447,7 @@ across resource groups, or raise the model's limit.
 
 **Cause.** LLM tool-calling requires unique tool names, so a name-keyed catalog built from `listTools()` across several clients used to keep only the first-seen occurrence of a colliding name.
 
-**Fix.** Upgrade to the release containing #244. Namespacing a name collision is now automatic and requires no config: `buildNamespacedTools` renames only the *colliding* exposed name (`${prefix}__${toolName}`, prefix = `s${slotIndex}` by default), and every executor call is unwrapped back to the tool's original bare name on the wire — so both `Search` tools are reachable, each on its own server. For a readable prefix instead of `s0`/`s1`, set a stable label per server:
+**Fix.** Upgrade to the release containing #244. Namespacing a name collision is automatic once each server has a stable label: `buildNamespacedTools` renames only the *colliding* exposed name (`${prefix}__${toolName}`, prefix = the required server label for multiple clients), and every executor call is unwrapped back to the tool's original bare name on the wire — so both `Search` tools are reachable, each on its own server. Set a stable label per server; building multiple clients with missing or mixed labels throws an Error. Use named YAML entries or `withMcpServers()` descriptors carrying `label` (`withMcpClients()` carries no labels and supports at most one client):
 
 ```yaml
 mcp:
@@ -459,7 +459,7 @@ mcp:
     name: secondary
 ```
 
-...which exposes `primary__Search` / `secondary__Search` instead of `s0__Search` / `s1__Search`. `mcp[].name` must be non-empty, match `^[a-zA-Z0-9_-]+$`, and be unique across servers — an invalid or duplicate label fails config parsing before any connection is attempted. See [docs/INTEGRATION.md#itoolnamespace](INTEGRATION.md#itoolnamespace) for the full `IToolNamespace` strategy (swappable via `SmartAgentBuilder.withToolNamespace`).
+...which exposes `primary__Search` / `secondary__Search` with stable prefixes across reordering. A single unlabeled client may still use prefix `s0`; an empty descriptor label is rejected. `mcp[].name` must be non-empty, match `^[a-zA-Z0-9_-]+$`, and be unique across servers — an invalid or duplicate label fails config parsing before any connection is attempted. See [docs/INTEGRATION.md#itoolnamespace](INTEGRATION.md#itoolnamespace) for the full `IToolNamespace` strategy (swappable via `SmartAgentBuilder.withToolNamespace`).
 
 **Note:** the model only ever sees a namespaced name on a genuine collision — a uniquely-named tool stays exposed bare.
 
@@ -471,7 +471,7 @@ mcp:
 
 **Cause.** The `flat`/`dag` fix routes through `llm-agent-libs`'s own internal `McpToolRegistry`. The server's OTHER pipelines had their own separate seams — `SmartServer.buildMcpBridge`/`callMcp` (the `linear`/`stepper` `ctx.callMcp` bridge) and the controller's own bridge — that still compared tool names *bare* (`listTools()` ownership scan), and `makeToolsRagHandle`'s catalog was still keyed by bare name while the shared `toolsRag` held the *namespaced* records. This gap is closed by the #244 addendum (folds into the same release as #244 itself — check your release notes for the addendum coverage, not just the base #244 entry).
 
-**Fix.** Upgrade to a release containing the #244 addendum. No config change is required — the server now builds ONE authoritative namespaced snapshot and every pipeline (controller session map, the global `callMcp` map `linear`/`stepper` share) rebinds it onto its own MCP clients through the same shared bridge. As with the `flat`/`dag` case, set `mcp[].name` for a readable prefix instead of the default `s0`/`s1`:
+**Fix.** Upgrade to a release containing the #244 addendum. No config change is required — the server now builds ONE authoritative namespaced snapshot and every pipeline (controller session map, the global `callMcp` map `linear`/`stepper` share) rebinds it onto its own MCP clients through the same shared bridge. As with the `flat`/`dag` case, set the required stable `mcp[].name` for each server:
 
 ```yaml
 pipeline:

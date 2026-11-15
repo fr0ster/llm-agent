@@ -267,8 +267,8 @@ async function bootTwoServerSmartServer(t: {
   if (!stub0) return null;
   const stub1 = await startMcpStub(['Search'], 'weather-result');
   const mcpCfg: SmartServerMcpConfig[] = [
-    { type: 'http', url: stub0.url },
-    { type: 'http', url: stub1.url },
+    { type: 'http', url: stub0.url, name: 's0' },
+    { type: 'http', url: stub1.url, name: 's1' },
   ];
   const server = new SmartServer(
     {
@@ -602,11 +602,10 @@ test('mcp[].name labels — the default connector (connectMcpClientsWithDescript
 });
 
 // ---------------------------------------------------------------------------
-// 5. A bare custom `connectMcp` seam (no descriptors) falls back to
-//    `s0__Search` (array-index, no label) and stays callable.
+// 5. A bare custom `connectMcp` seam cannot label multiple clients.
 // ---------------------------------------------------------------------------
 
-test('bare custom connectMcp seam (no descriptors) falls back to s0__Search and stays callable', async () => {
+test('bare custom connectMcp seam rejects multiple unlabeled clients at build time', async () => {
   const calls: Array<{ client: string; name: string }> = [];
   const fakeClient = (id: string): IMcpClient =>
     ({
@@ -634,18 +633,11 @@ test('bare custom connectMcp seam (no descriptors) falls back to s0__Search and 
     },
   );
   const internals = server as unknown as Internals;
-  const built = await internals._buildEmbeddedAgent();
-  try {
-    assert.ok(
-      internals._toolsRagHandle?.lookup('s0__Search'),
-      'a bare connectMcp (no labels) must still fall back to s0__Search',
-    );
-    const result = await internals.callMcp('s0__Search', {});
-    assert.equal(result.isError, false);
-    assert.deepEqual(calls, [{ client: 'c0', name: 'Search' }]);
-  } finally {
-    await built.close();
-  }
+  await assert.rejects(
+    () => internals._buildEmbeddedAgent(),
+    /Multiple MCP clients require a descriptor label.*withMcpServers\(\).*named mcp: entries/,
+  );
+  assert.deepEqual(calls, []);
 });
 
 // ---------------------------------------------------------------------------

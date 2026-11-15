@@ -14,6 +14,7 @@ export { collectServerDescriptors } from './interfaces/collect-server-descriptor
 export * from './interfaces/index.js';
 export { mcpServerFromFactory } from './interfaces/mcp-server-from-factory.js';
 export * from './interfaces/rag-access.js';
+export { resolveClientDescriptors } from './interfaces/resolve-client-descriptors.js';
 export { BaseLLMProvider, type LLMProvider } from './llm/base-llm-provider.js';
 export {
   findThrottled,

@@ -96,7 +96,8 @@ export interface SmartAgentHandle<T extends ISmartAgent = ISmartAgent> {
   /** The RAG registry composed by the builder (shared global, injected per-session). */
   ragRegistry: IRagRegistry;
   /** The connected upstream MCP clients (shared global, injected per-session
-   *  via withMcpClients to skip re-connect + re-vectorize). Empty when no MCP. */
+   *  via labeled withMcpServers wrappers to skip re-connect + re-vectorize).
+   *  Empty when no MCP. */
   mcpClients: IMcpClient[];
   /** Model provider for discovery. Undefined when not available. */
   modelProvider?: IModelProvider;
