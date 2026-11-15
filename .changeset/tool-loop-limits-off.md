@@ -15,6 +15,8 @@ values with an error naming the field. Explicit limits keep their previous
 termination behavior and budget-exhaustion reporting, including `maxToolCalls: 0`
 forbidding tool calls and exhausting the budget immediately.
 
+Numeric `Infinity` remains supported as unlimited for both limits and is omitted from config JSON; the string `'Infinity'`, `-Infinity`, and `NaN` are rejected.
+
 SelfDispatch no longer has an implicit six-round limit; the builder passes its
 explicit agent iteration limit to the default coordinator fallback.
 

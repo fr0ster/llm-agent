@@ -20,6 +20,7 @@ test('omitted YAML tool-loop limits are unlimited', () => {
     {},
     { agent: {} },
     { agent: { maxIterations: null, maxToolCalls: null } },
+    { agent: { maxIterations: Infinity, maxToolCalls: Infinity } },
   ]) {
     const config = resolveAgentSection(yaml, {});
     assert.equal(config.maxIterations, undefined);
@@ -50,7 +51,8 @@ test('invalid YAML loop limits fail validation with the field name', () => {
       ...(field === 'maxIterations' ? [0, '0'] : []),
       -1,
       1.5,
-      Infinity,
+      -Infinity,
+      'Infinity',
       NaN,
       'abc',
       '',

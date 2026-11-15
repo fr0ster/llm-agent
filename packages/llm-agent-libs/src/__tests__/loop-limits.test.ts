@@ -80,6 +80,7 @@ for (const field of ['maxIterations', 'maxToolCalls'] as const) {
     for (const value of [
       undefined,
       null,
+      Infinity,
       2,
       '2',
       ...(field === 'maxToolCalls' ? [0, '0'] : []),
@@ -88,7 +89,7 @@ for (const field of ['maxIterations', 'maxToolCalls'] as const) {
       try {
         assert.equal(
           handle.agent.getAgentConfig()[field],
-          value == null ? undefined : Number(value),
+          value == null || value === Infinity ? undefined : Number(value),
         );
       } finally {
         await handle.close();
@@ -98,7 +99,8 @@ for (const field of ['maxIterations', 'maxToolCalls'] as const) {
       ...(field === 'maxIterations' ? [0, '0'] : []),
       -1,
       1.5,
-      Infinity,
+      -Infinity,
+      'Infinity',
       NaN,
       'abc',
       '',
@@ -108,23 +110,62 @@ for (const field of ['maxIterations', 'maxToolCalls'] as const) {
   });
 }
 
-test('direct SmartAgent defaults to unlimited iterations', async () => {
-  const run = scenario();
-  const { deps } = makeDefaultDeps({
-    mcpClients: [run.client],
-    ragStores: {
-      tools: makeRag([
-        { text: 'Work', score: 1, metadata: { id: 'tool:Work' } },
-      ]),
-    },
+for (const maxIterations of [undefined, Infinity]) {
+  test(`direct SmartAgent with maxIterations ${maxIterations} runs unlimited`, async () => {
+    const run = scenario();
+    const { deps } = makeDefaultDeps({
+      mcpClients: [run.client],
+      ragStores: {
+        tools: makeRag([
+          { text: 'Work', score: 1, metadata: { id: 'tool:Work' } },
+        ]),
+      },
+    });
+    const agent = new SmartAgent(
+      { ...deps, mainLlm: run.llm },
+      { maxIterations },
+    );
+    assert.equal(agent.getAgentConfig().maxIterations, undefined);
+    const result = await agent.process('complete the work', testCallOptions());
+    assert.equal(result.ok, true);
+    if (result.ok) assert.equal(result.value.content, 'done');
+    assert.equal(run.rounds(), 13);
+    assert.equal(run.toolCalls(), 36);
   });
-  const agent = new SmartAgent({ ...deps, mainLlm: run.llm }, {});
-  const result = await agent.process('complete the work', testCallOptions());
-  assert.equal(result.ok, true);
-  if (result.ok) assert.equal(result.value.content, 'done');
-  assert.equal(run.rounds(), 13);
-  assert.equal(run.toolCalls(), 36);
-});
+}
+
+for (const field of ['maxIterations', 'maxToolCalls'] as const) {
+  test(`builder with ${field} Infinity runs unlimited`, async () => {
+    const run = scenario();
+    const builder = new SmartAgentBuilder({ skipModelValidation: true })
+      .withRagAccess(testRequestAccess)
+      .withMainLlm(run.llm)
+      .withMcpClients([run.client])
+      .setToolsRag(
+        makeRag([{ text: 'Work', score: 1, metadata: { id: 'tool:Work' } }]),
+      );
+    if (field === 'maxIterations') builder.withMaxIterations(Infinity);
+    else builder.withMaxToolCalls(Infinity);
+    const handle = await builder.build().then(unwrapBuilderResult);
+    try {
+      assert.equal(handle.agent.getAgentConfig()[field], undefined);
+      assert.equal(handle.agent.maxToolCalls, undefined);
+      const result = await handle.agent.process(
+        'complete the work',
+        testCallOptions(),
+      );
+      assert.equal(result.ok, true);
+      if (result.ok) {
+        assert.equal(result.value.content, 'done');
+        assert.ok(!result.value.budgetExhausted);
+      }
+      assert.equal(run.rounds(), 13);
+      assert.equal(run.toolCalls(), 36);
+    } finally {
+      await handle.close();
+    }
+  });
+}
 
 for (const pipeline of [false, true]) {
   for (const limit of ['default', 'iterations', 'tools'] as const) {

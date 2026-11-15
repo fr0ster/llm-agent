@@ -9,7 +9,7 @@ import {
 
 test('loop limits share integer parsing with field-specific minimums', () => {
   for (const field of ['maxIterations', 'maxToolCalls'] as const) {
-    for (const value of [undefined, null]) {
+    for (const value of [undefined, null, Infinity]) {
       assert.equal(normalizeLoopLimit(value, field), undefined);
     }
     for (const value of [12, '12', ' 12 ', '0012']) {
@@ -19,7 +19,8 @@ test('loop limits share integer parsing with field-specific minimums', () => {
       ...(field === 'maxIterations' ? [0, '0'] : []),
       -1,
       1.5,
-      Infinity,
+      -Infinity,
+      'Infinity',
       NaN,
       '-1',
       '1.5',
@@ -47,9 +48,20 @@ test('zero tool-call limits are preserved, including numeric strings', () => {
 test('iteration limit boundaries normalize unset values and reject invalid values', () => {
   assert.equal(normalizeMaxIterations(undefined), undefined);
   assert.equal(normalizeMaxIterations(null), undefined);
+  assert.equal(normalizeMaxIterations(Infinity), undefined);
   assert.equal(normalizeMaxIterations(12), 12);
   assert.equal(normalizeMaxIterations('12'), 12);
-  for (const value of [0, -1, 1.5, Infinity, NaN, 'abc', false, {}]) {
+  for (const value of [
+    0,
+    -1,
+    1.5,
+    -Infinity,
+    NaN,
+    'Infinity',
+    'abc',
+    false,
+    {},
+  ]) {
     assert.throws(() => normalizeMaxIterations(value), /positive integer/);
   }
 });
@@ -63,11 +75,16 @@ for (const field of ['maxIterations', 'maxToolCalls'] as const) {
     agent.applyConfigUpdate({ [field]: null });
     assert.equal(agent.getAgentConfig()[field], undefined);
     assert.equal(JSON.stringify(agent.getAgentConfig()).includes(field), false);
+    agent.applyConfigUpdate({ [field]: 2 });
+    agent.applyConfigUpdate({ [field]: Infinity });
+    assert.equal(agent.getAgentConfig()[field], undefined);
+    assert.equal(JSON.stringify(agent.getAgentConfig()).includes(field), false);
     for (const value of [
       ...(field === 'maxIterations' ? [0, '0'] : []),
       -1,
       1.5,
-      Infinity,
+      -Infinity,
+      'Infinity',
       NaN,
       'abc',
       false,
@@ -100,6 +117,7 @@ for (const field of ['maxIterations', 'maxToolCalls'] as const) {
     for (const value of [
       undefined,
       null,
+      Infinity,
       12,
       '12',
       ...(field === 'maxToolCalls' ? [0, '0'] : []),
@@ -107,14 +125,15 @@ for (const field of ['maxIterations', 'maxToolCalls'] as const) {
       const agent = new SmartAgent(deps, { [field]: value });
       assert.equal(
         agent.getAgentConfig()[field],
-        value == null ? undefined : Number(value),
+        value == null || value === Infinity ? undefined : Number(value),
       );
     }
     for (const value of [
       ...(field === 'maxIterations' ? [0, '0'] : []),
       -1,
       1.5,
-      Infinity,
+      -Infinity,
+      'Infinity',
       NaN,
       'abc',
       false,

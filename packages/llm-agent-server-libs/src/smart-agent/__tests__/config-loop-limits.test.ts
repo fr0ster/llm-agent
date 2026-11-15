@@ -144,6 +144,33 @@ for (const mode of ['round-trip', 'null'] as const) {
   });
 }
 
+test('GET config omits numeric Infinity limits and chat runs unlimited', async () => {
+  const run = await startServer(Infinity);
+  try {
+    const response = await fetch(`${run.base}/v1/config`);
+    assert.equal(response.status, 200);
+    const config = (await response.json()) as ConfigResponse;
+    assert.equal('maxIterations' in config.agent, false);
+    assert.equal('maxToolCalls' in config.agent, false);
+
+    const chat = await fetch(`${run.base}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        messages: [{ role: 'user', content: 'complete the work' }],
+        stream: false,
+      }),
+    });
+    const output = await chat.text();
+    assert.equal(chat.status, 200, output);
+    assert.match(output, /done/);
+    assert.equal(run.rounds(), 13);
+    assert.equal(run.toolCalls(), 12);
+  } finally {
+    await run.handle.close();
+  }
+});
+
 test('PUT validates both loop limits atomically and accepts numeric strings', async () => {
   const run = await startServer(3);
   try {

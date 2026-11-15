@@ -3,7 +3,7 @@ export function normalizeLoopLimit<T>(
   value: T,
   field: 'maxIterations' | 'maxToolCalls',
 ): number | undefined {
-  if (value == null) return undefined;
+  if (value == null || value === Infinity) return undefined;
   const limit =
     typeof value === 'string' && /^\s*-?\d+\s*$/.test(value)
       ? Number(value)
@@ -15,7 +15,7 @@ export function normalizeLoopLimit<T>(
     limit < minimum
   ) {
     throw new TypeError(
-      `agent.${field}: must be a ${minimum === 0 ? 'non-negative' : 'positive'} integer or null (unlimited)`,
+      `agent.${field}: must be a ${minimum === 0 ? 'non-negative' : 'positive'} integer, Infinity or null (unlimited)`,
     );
   }
   return limit;
