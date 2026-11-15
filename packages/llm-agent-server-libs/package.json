@@ -1,6 +1,6 @@
 {
   "name": "@mcp-abap-adt/llm-agent-server-libs",
-  "version": "32.0.1",
+  "version": "33.0.0",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -63,8 +63,8 @@
   },
   "peerDependencies": {
     "@mcp-abap-adt/interfaces-auth": "^2.1.0",
-    "@mcp-abap-adt/llm-agent": "^32.0.1",
-    "@mcp-abap-adt/llm-agent-libs": "^32.0.1",
+    "@mcp-abap-adt/llm-agent": "^33.0.0",
+    "@mcp-abap-adt/llm-agent-libs": "^33.0.0",
     "@mcp-abap-adt/llm-agent-mcp": "^30.9.1",
     "@mcp-abap-adt/llm-agent-rag": "^30.10.2",
     "@mcp-abap-adt/sap-aicore-llm": "^30.9.1"
@@ -75,7 +75,7 @@
     }
   },
   "devDependencies": {
-    "@mcp-abap-adt/sap-aicore-llm": "^30.14.3",
+    "@mcp-abap-adt/sap-aicore-llm": "^30.14.4",
     "@types/pg": "^8.23.1"
   },
   "publishConfig": {

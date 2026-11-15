@@ -1,5 +1,14 @@
 # @mcp-abap-adt/sap-aicore-embedder
 
+## 30.10.4
+
+### Patch Changes
+
+- Updated dependencies [4bcdb59]
+- Updated dependencies [1215f53]
+- Updated dependencies [79507a7]
+  - @mcp-abap-adt/llm-agent@33.0.0
+
 ## 30.10.3
 
 ### Patch Changes

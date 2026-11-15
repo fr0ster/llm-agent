@@ -1,6 +1,6 @@
 {
   "name": "@mcp-abap-adt/llm-agent-rag",
-  "version": "30.10.3",
+  "version": "30.10.4",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -25,7 +25,7 @@
   "peerDependencies": {
     "@mcp-abap-adt/hana-vector-rag": "^32.0.0",
     "@mcp-abap-adt/interfaces-auth": "^2.1.0",
-    "@mcp-abap-adt/llm-agent": "^32.0.0",
+    "@mcp-abap-adt/llm-agent": "^33.0.0",
     "@mcp-abap-adt/ollama-embedder": "^30.9.1",
     "@mcp-abap-adt/openai-embedder": "^30.9.1",
     "@mcp-abap-adt/pg-vector-rag": "^32.0.0",
@@ -53,12 +53,12 @@
     }
   },
   "devDependencies": {
-    "@mcp-abap-adt/hana-vector-rag": "^32.0.0",
-    "@mcp-abap-adt/ollama-embedder": "^30.10.2",
-    "@mcp-abap-adt/openai-embedder": "^30.10.2",
-    "@mcp-abap-adt/pg-vector-rag": "^32.0.0",
-    "@mcp-abap-adt/qdrant-rag": "^32.0.0",
-    "@mcp-abap-adt/sap-aicore-embedder": "^30.10.3"
+    "@mcp-abap-adt/hana-vector-rag": "^32.1.0",
+    "@mcp-abap-adt/ollama-embedder": "^30.10.3",
+    "@mcp-abap-adt/openai-embedder": "^30.10.3",
+    "@mcp-abap-adt/pg-vector-rag": "^32.1.0",
+    "@mcp-abap-adt/qdrant-rag": "^32.1.0",
+    "@mcp-abap-adt/sap-aicore-embedder": "^30.10.4"
   },
   "publishConfig": {
     "access": "public"
