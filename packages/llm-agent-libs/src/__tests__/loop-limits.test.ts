@@ -9,9 +9,13 @@ import type {
   Message,
   Result,
 } from '@mcp-abap-adt/llm-agent';
-import { SmartAgent } from '../agent.js';
+import { SmartAgent, type SmartAgentConfig } from '../agent.js';
 import { SmartAgentBuilder } from '../builder.js';
-import { unwrapBuilderResult } from '../builder-types.js';
+import {
+  type SmartAgentBuilderConfig,
+  unwrapBuilderResult,
+} from '../builder-types.js';
+import type { HotReloadableConfig } from '../config/config-watcher.js';
 import { DefaultPipeline } from '../pipeline/default-pipeline.js';
 import {
   makeDefaultDeps,
@@ -19,6 +23,47 @@ import {
   testCallOptions,
   testRequestAccess,
 } from '../testing/index.js';
+
+type IsProgrammaticLimit<T> = [T] extends [number | null | undefined]
+  ? [number | null | undefined] extends [T]
+    ? true
+    : false
+  : false;
+type Expect<T extends true> = T;
+
+// Compile-time regressions: each public input accepts null and excludes strings.
+export type ProgrammaticLoopLimitContracts = [
+  Expect<IsProgrammaticLimit<SmartAgentConfig['maxIterations']>>,
+  Expect<IsProgrammaticLimit<SmartAgentConfig['maxToolCalls']>>,
+  Expect<
+    IsProgrammaticLimit<
+      NonNullable<SmartAgentBuilderConfig['agent']>['maxIterations']
+    >
+  >,
+  Expect<
+    IsProgrammaticLimit<
+      NonNullable<SmartAgentBuilderConfig['agent']>['maxToolCalls']
+    >
+  >,
+  Expect<
+    IsProgrammaticLimit<Parameters<SmartAgentBuilder['withMaxIterations']>[0]>
+  >,
+  Expect<
+    IsProgrammaticLimit<Parameters<SmartAgentBuilder['withMaxToolCalls']>[0]>
+  >,
+  Expect<
+    IsProgrammaticLimit<
+      Parameters<SmartAgent['applyConfigUpdate']>[0]['maxIterations']
+    >
+  >,
+  Expect<
+    IsProgrammaticLimit<
+      Parameters<SmartAgent['applyConfigUpdate']>[0]['maxToolCalls']
+    >
+  >,
+  Expect<IsProgrammaticLimit<HotReloadableConfig['maxIterations']>>,
+  Expect<IsProgrammaticLimit<HotReloadableConfig['maxToolCalls']>>,
+];
 
 function scenario() {
   let rounds = 0;
@@ -67,50 +112,66 @@ function scenario() {
 }
 
 for (const field of ['maxIterations', 'maxToolCalls'] as const) {
-  test(`builder normalizes ${field} with the shared rules`, async () => {
-    const run = scenario();
-    const withLimit = (value?: number | string | null) => {
-      const builder = new SmartAgentBuilder({ skipModelValidation: true })
-        .withRagAccess(testRequestAccess)
-        .withMainLlm(run.llm);
-      return field === 'maxIterations'
-        ? builder.withMaxIterations(value)
-        : builder.withMaxToolCalls(value);
-    };
-    for (const value of [
-      undefined,
-      null,
-      Infinity,
-      2,
-      '2',
-      ...(field === 'maxToolCalls' ? [0, '0'] : []),
-    ]) {
-      const handle = await withLimit(value).build().then(unwrapBuilderResult);
-      try {
-        assert.equal(
-          handle.agent.getAgentConfig()[field],
-          value == null || value === Infinity ? undefined : Number(value),
-        );
-      } finally {
-        await handle.close();
+  for (const api of ['methods', 'config'] as const) {
+    test(`builder ${api} normalizes ${field} with the shared rules`, async () => {
+      const run = scenario();
+      const withLimit = (value?: number | null) => {
+        const agent =
+          field === 'maxIterations'
+            ? { maxIterations: value }
+            : { maxToolCalls: value };
+        const builder = new SmartAgentBuilder({
+          skipModelValidation: true,
+          agent: api === 'config' ? agent : undefined,
+        })
+          .withRagAccess(testRequestAccess)
+          .withMainLlm(run.llm);
+        if (api === 'config') return builder;
+        return field === 'maxIterations'
+          ? builder.withMaxIterations(value)
+          : builder.withMaxToolCalls(value);
+      };
+      for (const value of [
+        undefined,
+        null,
+        Infinity,
+        2,
+        ...(field === 'maxToolCalls' ? [0] : []),
+      ]) {
+        const handle = await withLimit(value).build().then(unwrapBuilderResult);
+        try {
+          assert.equal(
+            handle.agent.getAgentConfig()[field],
+            value == null || value === Infinity ? undefined : Number(value),
+          );
+        } finally {
+          await handle.close();
+        }
       }
-    }
-    for (const value of [
-      ...(field === 'maxIterations' ? [0, '0'] : []),
-      -1,
-      1.5,
-      -Infinity,
-      'Infinity',
-      NaN,
-      'abc',
-      '',
-    ]) {
-      assert.throws(() => withLimit(value), new RegExp(`${field}.*integer`));
-    }
-  });
+      for (const value of [
+        ...(field === 'maxIterations' ? [0] : []),
+        -1,
+        1.5,
+        -Infinity,
+        NaN,
+      ]) {
+        if (api === 'methods') {
+          assert.throws(
+            () => withLimit(value),
+            new RegExp(`${field}.*integer`),
+          );
+        } else {
+          await assert.rejects(
+            withLimit(value).build(),
+            new RegExp(`${field}.*integer`),
+          );
+        }
+      }
+    });
+  }
 }
 
-for (const maxIterations of [undefined, Infinity]) {
+for (const maxIterations of [undefined, null, Infinity]) {
   test(`direct SmartAgent with maxIterations ${maxIterations} runs unlimited`, async () => {
     const run = scenario();
     const { deps } = makeDefaultDeps({

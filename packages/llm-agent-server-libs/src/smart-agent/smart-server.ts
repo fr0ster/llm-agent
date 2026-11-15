@@ -207,8 +207,8 @@ export interface SmartServerMcpConfig {
 
 export interface SmartServerAgentConfig {
   externalToolsValidationMode?: 'permissive' | 'strict';
-  maxIterations?: number;
-  maxToolCalls?: number;
+  maxIterations?: number | null;
+  maxToolCalls?: number | null;
   toolUnavailableTtlMs?: number;
   ragQueryK?: number;
   contextBudgetTokens?: number;

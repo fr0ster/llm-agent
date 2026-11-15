@@ -13,14 +13,21 @@ termination and reporting behavior, including `budgetExhausted`.
 
 `maxIterations` accepts positive integers; `maxToolCalls` accepts non-negative
 integers, where `0` forbids tool calls and exhausts the budget immediately.
-Both limits accept integer strings. Config GET responses
-omit unset limits; PUT, runtime config patches, and YAML accept `null` to remove
-either limit. Invalid limits are rejected before applying updates, with PUT
+Typed programmatic APIs (`SmartAgentConfig`, builder config,
+`withMaxIterations`/`withMaxToolCalls`, and runtime config patches) accept
+`number | null | undefined`. Omitted values, `null`, and numeric `Infinity` mean
+unlimited. Integer strings are accepted only at text boundaries: YAML startup
+and reload, HTTP `PUT /v1/config` bodies, and environment substitutions.
+The string `'Infinity'`, `-Infinity`, and `NaN` are invalid.
+Config GET responses omit unlimited limits; PUT and runtime config patches
+accept `null` to remove either limit. All entry points use the shared normalizer
+for runtime validation. Invalid limits are rejected before applying updates, with PUT
 returning HTTP 400 and naming the invalid field. YAML startup and reload expand
 environment placeholders before validation.
 Runtime updates apply to the builder pipeline's next request. `SelfDispatch`
 honours both current limits and reports `budgetExhausted`, `toolCallCount`, and
-`maxToolCalls` when the request's tool budget is consumed.
+`maxToolCalls` when the request's tool budget is consumed, including a zero
+budget when no tools or executor are available.
 
 To retain the previous builder defaults, configure `agent: { maxIterations: 10,
 maxToolCalls: 30 }` or call `.withMaxIterations(10).withMaxToolCalls(30)`.

@@ -682,13 +682,13 @@ export class SmartAgentBuilder {
   }
 
   /** Set the maximum number of tool-loop iterations. */
-  withMaxIterations(n?: number | string | null): this {
+  withMaxIterations(n?: number | null): this {
     this._agentOverrides.maxIterations = normalizeLoopLimit(n, 'maxIterations');
     return this;
   }
 
   /** Set the maximum number of tool calls per request. */
-  withMaxToolCalls(n?: number | string | null): this {
+  withMaxToolCalls(n?: number | null): this {
     this._agentOverrides.maxToolCalls = normalizeLoopLimit(n, 'maxToolCalls');
     return this;
   }
@@ -1398,7 +1398,7 @@ export class SmartAgentBuilder {
       }
 
       // ---- SmartAgent Config ------------------------------------------------
-      const agentCfg: SmartAgentConfig = {
+      const agentConfig: SmartAgentConfig = {
         ragQueryK: 10,
         ragTranslatePrompt: this.cfg.prompts?.ragTranslate,
         historySummaryPrompt: this.cfg.prompts?.historySummary,
@@ -1411,9 +1411,17 @@ export class SmartAgentBuilder {
         ...this._agentOverrides,
         onBeforeStream: this._onBeforeStream,
       };
-      for (const field of ['maxIterations', 'maxToolCalls'] as const) {
-        agentCfg[field] = normalizeLoopLimit(agentCfg[field], field);
-      }
+      const agentCfg = {
+        ...agentConfig,
+        maxIterations: normalizeLoopLimit(
+          agentConfig.maxIterations,
+          'maxIterations',
+        ),
+        maxToolCalls: normalizeLoopLimit(
+          agentConfig.maxToolCalls,
+          'maxToolCalls',
+        ),
+      };
 
       // ---- Retry wrapping (INSIDE the circuit breaker) -------------------------
       // Enable retry by default with sensible defaults; explicit config overrides.

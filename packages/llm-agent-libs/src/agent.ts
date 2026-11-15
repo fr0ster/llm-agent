@@ -174,10 +174,10 @@ export interface SmartAgentConfig {
   toolTrust?: import('@mcp-abap-adt/llm-agent').ToolTrust;
   /** Deployment IANA time zone for request dates. Default: UTC. */
   timeZone?: string;
-  /** Positive maximum tool-loop iterations. Omitted means unlimited. */
-  maxIterations?: number;
-  /** Non-negative maximum tool calls per request; 0 forbids calls. Omitted means unlimited. */
-  maxToolCalls?: number;
+  /** Positive maximum tool-loop iterations. Omitted, null or Infinity means unlimited. */
+  maxIterations?: number | null;
+  /** Non-negative maximum tool calls per request; 0 forbids calls. Omitted, null or Infinity means unlimited. */
+  maxToolCalls?: number | null;
   toolUnavailableTtlMs?: number;
   timeoutMs?: number;
   tokenLimit?: number;
@@ -267,7 +267,17 @@ export interface SmartAgentReconfigureOptions {
   helperLlm?: ILlm;
 }
 
+/** Validated runtime config: unlimited limits are represented by undefined. */
+export type NormalizedSmartAgentConfig = Omit<
+  SmartAgentConfig,
+  'maxIterations' | 'maxToolCalls'
+> & {
+  maxIterations?: number;
+  maxToolCalls?: number;
+};
+
 export class SmartAgent {
+  private readonly config: NormalizedSmartAgentConfig;
   private readonly toolAvailabilityRegistry: ToolAvailabilityRegistry;
   private readonly tracer: ITracer;
   private readonly metrics: IMetrics;
@@ -291,10 +301,10 @@ export class SmartAgent {
 
   constructor(
     private readonly deps: SmartAgentDeps,
-    private config: SmartAgentConfig,
+    config: SmartAgentConfig,
   ) {
     // Preserve the config reference shared with the builder's pipeline.
-    Object.assign(this.config, {
+    this.config = Object.assign(config, {
       maxIterations: normalizeLoopLimit(config.maxIterations, 'maxIterations'),
       maxToolCalls: normalizeLoopLimit(config.maxToolCalls, 'maxToolCalls'),
     });
@@ -338,15 +348,7 @@ export class SmartAgent {
   }
 
   /** Apply a partial config update at runtime (hot-reload). */
-  applyConfigUpdate(
-    update: Omit<
-      Partial<SmartAgentConfig>,
-      'maxIterations' | 'maxToolCalls'
-    > & {
-      maxIterations?: number | string | null;
-      maxToolCalls?: number | string | null;
-    },
-  ): void {
+  applyConfigUpdate(update: Partial<SmartAgentConfig>): void {
     const nextConfig = {
       ...this.config,
       ...update,

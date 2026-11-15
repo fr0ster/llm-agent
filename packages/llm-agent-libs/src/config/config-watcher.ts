@@ -18,8 +18,8 @@ import { resolveEnvVars } from './resolve-env-vars.js';
 // ---------------------------------------------------------------------------
 
 export interface HotReloadableConfig {
-  maxIterations?: number;
-  maxToolCalls?: number;
+  maxIterations?: number | null;
+  maxToolCalls?: number | null;
   ragQueryK?: number;
   toolUnavailableTtlMs?: number;
   showReasoning?: boolean;

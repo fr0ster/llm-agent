@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { SmartAgent } from '../../agent.js';
+import { SmartAgent, type SmartAgentConfig } from '../../agent.js';
 import { makeDefaultDeps } from '../../testing/index.js';
 import {
   normalizeLoopLimit,
@@ -80,16 +80,11 @@ for (const field of ['maxIterations', 'maxToolCalls'] as const) {
     assert.equal(agent.getAgentConfig()[field], undefined);
     assert.equal(JSON.stringify(agent.getAgentConfig()).includes(field), false);
     for (const value of [
-      ...(field === 'maxIterations' ? [0, '0'] : []),
+      ...(field === 'maxIterations' ? [0] : []),
       -1,
       1.5,
       -Infinity,
-      'Infinity',
       NaN,
-      'abc',
-      false,
-      {},
-      [],
     ]) {
       assert.throws(
         () => agent.applyConfigUpdate({ [field]: value, ragQueryK: 99 }),
@@ -98,16 +93,12 @@ for (const field of ['maxIterations', 'maxToolCalls'] as const) {
       assert.equal(agent.getAgentConfig().ragQueryK, 4);
       assert.equal(agent.getAgentConfig()[field], undefined);
     }
-    for (const value of [3, '3']) {
-      agent.applyConfigUpdate({ [field]: value });
-      assert.equal(agent.getAgentConfig()[field], 3);
-    }
+    agent.applyConfigUpdate({ [field]: 3 });
+    assert.equal(agent.getAgentConfig()[field], 3);
     if (field === 'maxToolCalls') {
-      for (const value of [0, '0']) {
-        agent.applyConfigUpdate({ [field]: value });
-        assert.equal(agent.getAgentConfig()[field], 0);
-        assert.equal(agent.maxToolCalls, 0);
-      }
+      agent.applyConfigUpdate({ maxToolCalls: 0 });
+      assert.equal(agent.getAgentConfig()[field], 0);
+      assert.equal(agent.maxToolCalls, 0);
     }
     agent.applyConfigUpdate({ [field]: undefined });
     assert.equal(agent.getAgentConfig()[field], undefined);
@@ -119,26 +110,24 @@ for (const field of ['maxIterations', 'maxToolCalls'] as const) {
       null,
       Infinity,
       12,
-      '12',
-      ...(field === 'maxToolCalls' ? [0, '0'] : []),
+      ...(field === 'maxToolCalls' ? [0] : []),
     ]) {
-      const agent = new SmartAgent(deps, { [field]: value });
+      const config: SmartAgentConfig =
+        field === 'maxIterations'
+          ? { maxIterations: value }
+          : { maxToolCalls: value };
+      const agent = new SmartAgent(deps, config);
       assert.equal(
         agent.getAgentConfig()[field],
         value == null || value === Infinity ? undefined : Number(value),
       );
     }
     for (const value of [
-      ...(field === 'maxIterations' ? [0, '0'] : []),
+      ...(field === 'maxIterations' ? [0] : []),
       -1,
       1.5,
       -Infinity,
-      'Infinity',
       NaN,
-      'abc',
-      false,
-      {},
-      [],
     ]) {
       assert.throws(
         () => new SmartAgent(deps, { [field]: value }),

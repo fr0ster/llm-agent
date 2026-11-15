@@ -48,6 +48,16 @@ and a light executor can sit on different providers and models in the same run.
 
 See [PIPELINES.md](docs/PIPELINES.md) for each dialect's full config.
 
+Tool-loop limits are off by default. Typed programmatic APIs (`SmartAgentConfig`,
+builder config, `withMaxIterations`/`withMaxToolCalls`, and runtime config patches)
+accept `number | null | undefined`; omitted values, `null`, and numeric `Infinity`
+mean unlimited. `maxIterations` requires positive integers; `maxToolCalls`
+requires non-negative integers, with `0` exhausting the tool budget immediately.
+Integer strings are accepted only at text boundaries: YAML startup and reload,
+HTTP `PUT /v1/config` bodies, and environment substitutions. All entry points use
+the shared normalizer for runtime validation. See the
+[library README](packages/llm-agent-libs/README.md#tool-loop-limits) for details.
+
 ### Context management is explicit and budgeted
 
 Nothing about the context window is left to chance:

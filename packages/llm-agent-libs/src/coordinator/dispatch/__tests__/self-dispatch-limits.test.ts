@@ -17,6 +17,55 @@ import {
 } from '../../../testing/index.js';
 import { SelfDispatch } from '../self.js';
 
+for (const maxToolCalls of [undefined, 0, 1]) {
+  test(`builder coordinator without MCP reports tool budget ${maxToolCalls ?? 'unlimited'}`, async () => {
+    let calls = 0;
+    const llm: ILlm = {
+      ...makeLlm([]),
+      async chat(_messages, tools) {
+        calls++;
+        assert.deepEqual(tools, []);
+        return { ok: true, value: { content: 'done', finishReason: 'stop' } };
+      },
+    };
+    const plan = (): Plan => ({
+      source: 'planner-llm',
+      createdAt: 0,
+      steps: [],
+    });
+    const handle = await new SmartAgentBuilder({ skipModelValidation: true })
+      .withRagAccess(testRequestAccess)
+      .withMainLlm(llm)
+      .withMaxToolCalls(maxToolCalls)
+      .withCoordinator({
+        planning: {
+          name: 'scripted',
+          buildInitialPlan: async () => plan(),
+          shouldReplan: () => false,
+          rebuildPlan: async () => plan(),
+        },
+      })
+      .build()
+      .then(unwrapBuilderResult);
+    try {
+      const result = await handle.agent.process('Work', testCallOptions());
+      assert.equal(result.ok, true);
+      assert.equal(calls, 1);
+      if (result.ok) {
+        assert.match(result.value.content, /done/);
+        assert.equal(result.value.toolCallCount, 0);
+        assert.equal(
+          result.value.budgetExhausted,
+          maxToolCalls === 0 ? true : undefined,
+        );
+        if (maxToolCalls === 0) assert.equal(result.value.maxToolCalls, 0);
+      }
+    } finally {
+      await handle.close();
+    }
+  });
+}
+
 for (const maxIterations of [undefined, 3]) {
   test(`builder coordinator fallback uses agent limit: ${maxIterations ?? 'unlimited'}`, async () => {
     let calls = 0;
@@ -81,6 +130,7 @@ for (const maxIterations of [undefined, 3]) {
 }
 
 for (const mode of [
+  'zero',
   'explicit',
   'partial-batch',
   'runtime',
@@ -89,7 +139,7 @@ for (const mode of [
 ] as const) {
   test(`builder SelfDispatch honours ${mode} tool budget and reports exhaustion`, async () => {
     let rounds = 0;
-    const limit = mode === 'partial-batch' ? 4 : 30;
+    const limit = mode === 'zero' ? 0 : mode === 'partial-batch' ? 4 : 30;
     const llm: ILlm = {
       ...makeLlm([]),
       async chat(messages, tools) {

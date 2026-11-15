@@ -7,13 +7,18 @@
 
 Disable default tool-loop iteration and tool-call limits. Unset `maxIterations`
 and `maxToolCalls` mean unlimited and are represented by `undefined`, omitted in
-config JSON. Builder methods, the SmartAgent constructor, PUT, runtime config
-patches, and YAML startup and reload share validation: absent or `null` values
-are unlimited, `maxIterations` accepts positive integers, and `maxToolCalls`
-accepts non-negative integers. Both accept integer strings and reject invalid
-values with an error naming the field. Explicit limits keep their previous
+config JSON. Typed programmatic APIs (`SmartAgentConfig`, builder config,
+`withMaxIterations`/`withMaxToolCalls`, and runtime config patches) accept
+`number | null | undefined`: absent values, `null`, and numeric `Infinity` mean
+unlimited. Integer strings are accepted only at text boundaries: YAML startup
+and reload, HTTP `PUT /v1/config` bodies, and environment substitutions.
+All entry points use the shared normalizer for runtime validation:
+`maxIterations` requires positive integers, and `maxToolCalls` requires
+non-negative integers. Invalid values fail with an error naming the field.
+Explicit limits keep their previous
 termination behavior and budget-exhaustion reporting, including `maxToolCalls: 0`
-forbidding tool calls and exhausting the budget immediately.
+forbidding tool calls and exhausting the budget immediately, even when
+SelfDispatch has no tools or executor.
 
 Numeric `Infinity` remains supported as unlimited for both limits and is omitted from config JSON; the string `'Infinity'`, `-Infinity`, and `NaN` are rejected.
 

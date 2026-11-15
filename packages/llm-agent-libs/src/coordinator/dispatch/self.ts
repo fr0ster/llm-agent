@@ -19,8 +19,8 @@ export class SelfDispatch implements IDispatchStrategy {
   constructor(
     private readonly llm: ILlm,
     private readonly systemPrompt?: string,
-    maxIterations?: number | string | null,
-    maxToolCalls?: number | string | null,
+    maxIterations?: number | null,
+    maxToolCalls?: number | null,
   ) {
     this.maxIterations = normalizeLoopLimit(maxIterations, 'maxIterations');
     this.maxToolCalls = normalizeLoopLimit(maxToolCalls, 'maxToolCalls');
@@ -62,6 +62,12 @@ export class SelfDispatch implements IDispatchStrategy {
         };
       }
 
+      const limits = ctx.loopLimits ?? { maxToolCalls: this.maxToolCalls };
+      const maxToolCalls = normalizeLoopLimit(
+        limits.maxToolCalls,
+        'maxToolCalls',
+      );
+      const toolCallCount = ctx.toolCallCount ?? 0;
       const res = await this.llm.chat(
         [
           { role: 'system', content: sys },
@@ -80,6 +86,11 @@ export class SelfDispatch implements IDispatchStrategy {
         stepId: step.id,
         output: res.value.content,
         usage: res.value.usage,
+        budgetExhausted:
+          (maxToolCalls !== undefined && toolCallCount >= maxToolCalls) ||
+          undefined,
+        toolCallCount,
+        maxToolCalls,
         durationMs: Date.now() - started,
         ok: true,
       };

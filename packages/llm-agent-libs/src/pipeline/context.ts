@@ -55,8 +55,8 @@ import type {
   ToolLoopContextStrategyFactory,
 } from '@mcp-abap-adt/llm-agent';
 import type {
+  NormalizedSmartAgentConfig,
   OrchestratorError,
-  SmartAgentConfig,
   SmartAgentRagStores,
 } from '../agent.js';
 import type { McpClientDescriptor } from '../interfaces/mcp-connection-strategy.js';
@@ -85,7 +85,7 @@ export interface PipelineContext {
   /** Call options including signal, sessionId, logger, trace. */
   readonly options: CallOptions | undefined;
   /** SmartAgent config snapshot for this request. */
-  readonly config: SmartAgentConfig;
+  readonly config: NormalizedSmartAgentConfig;
   /** Session ID (from options or 'default'). */
   readonly sessionId: string;
 
