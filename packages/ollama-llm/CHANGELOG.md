@@ -1,5 +1,11 @@
 # @mcp-abap-adt/ollama-llm
 
+## 30.11.0
+
+### Minor Changes
+
+- 24761ec: The shared `promptCaching?: boolean` switch has no request effect for Ollama. No cache parameters are sent. Native `keep_alive` controls model residency and is not sent to the OpenAI-compatible endpoint. Compatible cached-token reports remain visible when supplied.
+
 ## 30.10.4
 
 ### Patch Changes

@@ -1,5 +1,11 @@
 # @mcp-abap-adt/llm-agent-libs
 
+## 33.1.0
+
+### Minor Changes
+
+- 24761ec: Provider bridges, chat/stream adapters, tool loops, steppers, and request loggers preserve optional cache reads and creations, including per-model/component/category totals. The boolean `promptCaching` switch follows the same call-option path as temperature.
+
 ## 33.0.1
 
 ### Patch Changes

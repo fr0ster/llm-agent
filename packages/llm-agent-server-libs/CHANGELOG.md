@@ -1,5 +1,16 @@
 # @mcp-abap-adt/llm-agent-server-libs
 
+## 33.1.0
+
+### Minor Changes
+
+- 24761ec: Flat and named `llm` YAML entries and HTTP chat requests accept only the boolean `promptCaching` switch for caching. It defaults to enabled; call options override provider config. Non-boolean values are rejected at YAML/HTTP boundaries. Cache keys, retention controls, and their HTTP aliases are not supported. Providers decide how to apply the switch; automatic provider caching cannot be disabled by the client. Usage summaries preserve cache counters by model.
+
+### Patch Changes
+
+- Updated dependencies [24761ec]
+  - @mcp-abap-adt/sap-aicore-llm@31.0.0
+
 ## 33.0.0
 
 ### Major Changes
