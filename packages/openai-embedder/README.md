@@ -57,7 +57,7 @@ retroactive. Full detail, including what to do if you redistribute:
 Provider configuration accepts `usage?: IUsageRecorder` from
 `@mcp-abap-adt/llm-agent`. A call's `{ usage }` overrides the bound recorder;
 without either, collection is a no-op. Library adapters forward these options.
-Records describe physical requests inside retry/chunk loops, with a shared
+Records describe each physical request made by the provider, with a shared
 `operationId`, unique `physicalSeq`, attempt coordinates and embedding
 `chunkPath`. Token totals are the exact provider values for each request,
 or marked unknown when unavailable. No prompt, document, argument, result or

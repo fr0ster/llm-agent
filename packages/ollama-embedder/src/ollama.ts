@@ -67,8 +67,14 @@ export class OllamaEmbedder implements IEmbedderBatch {
       });
 
       if (!res.ok) {
+        const errorText = await res.text().catch((error) => {
+          options?.signal?.throwIfAborted();
+          if (error instanceof Error && error.name === 'AbortError')
+            throw error;
+          return '';
+        });
+        options?.signal?.throwIfAborted();
         request.end({ outcome: 'error', errorCode: String(res.status) });
-        const errorText = await res.text().catch(() => '');
         throw Object.assign(
           new RagError(
             `Ollama embed error: HTTP ${res.status} - ${errorText}`,
@@ -145,8 +151,14 @@ export class OllamaEmbedder implements IEmbedderBatch {
       });
 
       if (!res.ok) {
+        const errorText = await res.text().catch((error) => {
+          options?.signal?.throwIfAborted();
+          if (error instanceof Error && error.name === 'AbortError')
+            throw error;
+          return '';
+        });
+        options?.signal?.throwIfAborted();
         request.end({ outcome: 'error', errorCode: String(res.status) });
-        const errorText = await res.text().catch(() => '');
         throw Object.assign(
           new RagError(
             `Ollama batch embed error: HTTP ${res.status} - ${errorText}`,

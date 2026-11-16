@@ -21,6 +21,8 @@
     "packages/llm-agent/src/resilience/embedder-throttle.test.ts",
     "packages/llm-agent/src/llm/__tests__/embedding-throttle-metadata.test.ts",
     "packages/openai-embedder/src/retry-control.test.ts",
+    "packages/openai-embedder/src/error-body.test.ts",
+    "packages/ollama-embedder/src/error-body.test.ts",
     "packages/ollama-embedder/src/retry-control.test.ts",
     "packages/llm-agent-rag/src/__tests__/resolve-embedder-resilience.test.ts",
     "packages/llm-agent/src/rag/__tests__/query-embedding-policy.test.ts",

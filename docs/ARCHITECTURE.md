@@ -859,8 +859,9 @@ Embedding quota handling is opt-in on the same retry decorators:
 (or `composeEmbedder` from llm-agent-rag) retains the input cap and chunking while
 delegating HTTP 429 to `runWithThrottleRetry`. `WaitAsTold` accepts an optional
 `fallbackBackoffMs`; without `maxAttempts` the quota loop has no attempt/time
-limit and only the caller signal cancels it. OpenAI/Ollama providers expose
-`retry: false` and structured HTTP metadata so a non-429 reaches the caller on
+limit and only the caller signal cancels it. OpenAI/Ollama embedder providers
+make one HTTP request per non-empty call and expose structured HTTP metadata.
+Configure `retry: false` on the composition so a non-429 reaches the caller on
 the first attempt. Put the circuit breaker outside this composition. See
 [Embedding throttling](EMBEDDER_THROTTLING.md) for the complete API and migration.
 
