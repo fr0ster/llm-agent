@@ -70,7 +70,9 @@ export class RetryLlm implements ILlm {
     const op = startOperation(options);
     for (let attempt = 0; ; attempt++) {
       if (options?.signal?.aborted) {
-        return { ok: false, error: new LlmError('Aborted', 'ABORTED') };
+        const error = new LlmError('Aborted', 'ABORTED');
+        error.cause = options.signal.reason;
+        return { ok: false, error };
       }
 
       const result = await this.inner.chat(messages, tools, {
@@ -98,7 +100,9 @@ export class RetryLlm implements ILlm {
     const op = startOperation(options);
     for (let attempt = 0; ; attempt++) {
       if (options?.signal?.aborted) {
-        yield { ok: false, error: new LlmError('Aborted', 'ABORTED') };
+        const error = new LlmError('Aborted', 'ABORTED');
+        error.cause = options.signal.reason;
+        yield { ok: false, error };
         return;
       }
 
@@ -192,7 +196,7 @@ export class RetryLlm implements ILlm {
       exponentialBackoffMs(this.opts.backoffMs, attempt),
       signal,
     );
-    signal?.throwIfAborted();
+    // The next iteration returns cancellation as an ABORTED Result.
   }
 }
 

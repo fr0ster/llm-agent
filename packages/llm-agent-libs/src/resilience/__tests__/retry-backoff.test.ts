@@ -2,50 +2,101 @@ import assert from 'node:assert/strict';
 import { getEventListeners } from 'node:events';
 import { test } from 'node:test';
 import {
+  CircuitBreaker,
+  CircuitBreakerLlm,
   DefaultWaitStrategy,
   type ILlm,
   LlmError,
+  type LlmStreamChunk,
+  type Result,
   withRetry,
 } from '@mcp-abap-adt/llm-agent';
 import { RetryLlm } from '../retry-llm.js';
 
 for (const stream of [false, true]) {
-  test(`RetryLlm preserves the reason when aborted during backoff, stream=${stream}`, async () => {
-    const controller = new AbortController();
-    const reason = { message: 'caller stopped during LLM backoff' };
-    const error = new LlmError('service unavailable');
-    error.cause = { status: 503 };
-    let calls = 0;
-    const llm = new RetryLlm({
-      async chat() {
-        calls++;
-        return { ok: false, error };
-      },
-      async *streamChat() {
-        calls++;
-        yield { ok: false, error };
-      },
-    });
-    const result = stream
-      ? (async () => {
-          for await (const _chunk of llm.streamChat([], undefined, {
-            signal: controller.signal,
-          })) {
-            assert.fail('an aborted backoff must throw before another chunk');
-          }
-        })()
-      : llm.chat([], undefined, { signal: controller.signal });
-    const rejected = assert.rejects(result, (actual) => actual === reason);
-    try {
-      await new Promise<void>((resolve) => setImmediate(resolve));
-      assert.ok(getEventListeners(controller.signal, 'abort').length > 0);
-    } finally {
-      controller.abort(reason);
+  for (const throughBreaker of [false, true]) {
+    for (const reason of [
+      new Error('caller stopped during LLM backoff'),
+      { message: 'caller stopped during LLM backoff' },
+      'caller stopped during LLM backoff',
+    ]) {
+      test(`RetryLlm returns ABORTED with the original ${typeof reason} reason during backoff, stream=${stream}, breaker=${throughBreaker}, error=${reason instanceof Error}`, async (t) => {
+        const controller = new AbortController();
+        let backoffStarted = () => {};
+        const started = new Promise<void>((resolve) => {
+          backoffStarted = resolve;
+        });
+        const wait = t.mock.method(
+          DefaultWaitStrategy.prototype,
+          'wait',
+          (_ms: number, signal?: AbortSignal) => {
+            assert.equal(signal, controller.signal);
+            assert.ok(signal);
+            assert.equal(signal.aborted, false);
+            return new Promise<'aborted'>((resolve) => {
+              signal.addEventListener('abort', () => resolve('aborted'), {
+                once: true,
+              });
+              backoffStarted();
+            });
+          },
+        );
+        const error = new LlmError('service unavailable');
+        error.cause = { status: 503 };
+        let calls = 0;
+        const retry = new RetryLlm({
+          async chat() {
+            calls++;
+            return { ok: false, error };
+          },
+          async *streamChat() {
+            calls++;
+            yield { ok: false, error };
+          },
+        });
+        const breaker = new CircuitBreaker({ failureThreshold: 1 });
+        const failures = t.mock.method(breaker, 'recordFailure');
+        const successes = t.mock.method(breaker, 'recordSuccess');
+        const llm = throughBreaker
+          ? new CircuitBreakerLlm(retry, breaker)
+          : retry;
+        const options = { signal: controller.signal };
+        const pending = stream
+          ? (async () => {
+              const chunks: Result<LlmStreamChunk, LlmError>[] = [];
+              for await (const chunk of llm.streamChat(
+                [],
+                undefined,
+                options,
+              )) {
+                chunks.push(chunk);
+              }
+              assert.equal(chunks.length, 1);
+              return chunks[0];
+            })()
+          : llm.chat([], undefined, options);
+
+        await started;
+        assert.equal(calls, 1);
+        assert.equal(getEventListeners(controller.signal, 'abort').length, 1);
+        controller.abort(reason);
+
+        const result = await pending;
+        assert.equal(result.ok, false);
+        if (result.ok) assert.fail('cancellation must return an error Result');
+        assert.ok(result.error instanceof LlmError);
+        assert.equal(result.error.code, 'ABORTED');
+        assert.equal(result.error.message, 'Aborted');
+        assert.equal(result.error.cause, reason);
+        assert.equal(calls, 1);
+        assert.equal(wait.mock.callCount(), 1);
+        assert.equal(getEventListeners(controller.signal, 'abort').length, 0);
+        assert.equal(failures.mock.callCount(), 0);
+        assert.equal(successes.mock.callCount(), 0);
+        assert.equal(breaker.state, 'closed');
+      });
     }
-    await rejected;
-    assert.equal(calls, 1);
-    assert.equal(getEventListeners(controller.signal, 'abort').length, 0);
-  });
+  }
 }
 
 for (const backoffMs of [0, 17, 2000]) {
