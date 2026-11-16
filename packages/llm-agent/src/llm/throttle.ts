@@ -27,13 +27,15 @@
  * enters this path.
  */
 
-import { setTimeout as delay } from 'node:timers/promises';
 import {
   type IThrottleStrategy,
   ReportThrottling,
   type ThrottleDecision,
 } from '../interfaces/throttle-strategy.js';
-import { DefaultWaitStrategy } from '../interfaces/wait-strategy.js';
+import {
+  DefaultWaitStrategy,
+  type IWaitStrategy,
+} from '../interfaces/wait-strategy.js';
 
 /** Nothing waits unless the consumer says so. */
 const defaultStrategy = new ReportThrottling();
@@ -73,11 +75,20 @@ const waiter = new DefaultWaitStrategy();
  * warns about the leak — a defect this repository has already fixed once, in
  * the retry decorators. Fixed in one place, it stays fixed for every waiter.
  */
-const sleep = async (ms: number, signal?: AbortSignal): Promise<void> => {
-  const aborted = (): Error =>
-    (signal?.reason as Error | undefined) ?? new Error('Aborted');
-  if (signal?.aborted) throw aborted();
-  if ((await waiter.wait(ms, signal)) === 'aborted') throw aborted();
+const sleep = async (
+  ms: number,
+  signal?: AbortSignal,
+  strategy: IWaitStrategy = waiter,
+): Promise<void> => {
+  signal?.throwIfAborted();
+  try {
+    const result = await strategy.wait(ms, signal);
+    signal?.throwIfAborted();
+    if (result === 'aborted') throw new Error('Aborted');
+  } catch (error) {
+    signal?.throwIfAborted();
+    throw error;
+  }
 };
 
 /**
@@ -314,6 +325,8 @@ export interface ThrottleRetryOptions {
     maxRetries: number;
     isTransient: (error: unknown) => boolean;
     delayMs: (error: unknown) => number;
+    /** Mechanism for transient backoff; independent of quota-gate waits. */
+    waitStrategy?: IWaitStrategy;
   };
 }
 
@@ -462,9 +475,11 @@ async function attemptWithGate<T>(
         )
           throw error;
         transientAttempts += 1;
-        await delay(transient.delayMs(error), undefined, {
-          signal: opts.signal,
-        });
+        await sleep(
+          transient.delayMs(error),
+          opts.signal,
+          transient.waitStrategy,
+        );
         continue;
       }
 

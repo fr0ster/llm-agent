@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict';
+import { getEventListeners } from 'node:events';
 import { afterEach, test } from 'node:test';
-import { isBatchEmbedder } from '../interfaces/rag.js';
+import { type IEmbedderBatch, isBatchEmbedder } from '../interfaces/rag.js';
 import { WaitAsTold } from '../interfaces/throttle-strategy.js';
 import type { CallOptions } from '../interfaces/types.js';
+import type { IWaitStrategy } from '../interfaces/wait-strategy.js';
 import { resetQuotaGates, setThrottleObserver } from '../llm/throttle.js';
 import { CircuitBreaker } from './circuit-breaker.js';
 import { withCircuitBreaker } from './circuit-breaker-embedder.js';
@@ -23,6 +25,86 @@ afterEach(() => {
   resetQuotaGates();
   setThrottleObserver(undefined);
 });
+
+for (const batch of [false, true]) {
+  for (const throttled of [false, true]) {
+    test(`custom transient waiter is honoured, batch=${batch}, throttle=${throttled}`, async () => {
+      const controller = new AbortController();
+      const waits: number[] = [];
+      const waitStrategy: IWaitStrategy = {
+        name: 'recording',
+        async wait(ms, signal) {
+          assert.equal(signal, controller.signal);
+          waits.push(ms);
+          return 'elapsed';
+        },
+      };
+      let calls = 0;
+      const embed = async () => {
+        calls++;
+        if (throttled && calls === 1) throw quotaError();
+        if (calls <= (throttled ? 3 : 2))
+          throw Object.assign(new Error('service unavailable'), {
+            status: 503,
+          });
+        return { vector: [1] };
+      };
+      const provider: IEmbedderBatch = {
+        embed,
+        async embedBatch() {
+          return [await embed()];
+        },
+      };
+      const embedder = composeResilientEmbedder(provider, {
+        retry: { backoffMs: 17, waitStrategy },
+        ...(throttled ? { throttle: policy('custom-waiter').throttle } : {}),
+      });
+      if (batch) {
+        assert.ok(isBatchEmbedder(embedder));
+        assert.deepEqual(
+          await embedder.embedBatch(['q'], { signal: controller.signal }),
+          [{ vector: [1] }],
+        );
+      } else {
+        assert.deepEqual(
+          await embedder.embed('q', { signal: controller.signal }),
+          { vector: [1] },
+        );
+      }
+      assert.deepEqual(waits, [17, 34]);
+      assert.equal(calls, throttled ? 4 : 3);
+    });
+  }
+
+  test(`abort during transient backoff preserves the reason, batch=${batch}`, async () => {
+    const controller = new AbortController();
+    const reason = { message: 'caller stopped during backoff' };
+    let calls = 0;
+    const embed = async () => {
+      calls++;
+      throw Object.assign(new Error('service unavailable'), { status: 503 });
+    };
+    const provider: IEmbedderBatch = { embed, embedBatch: embed };
+    const embedder = composeResilientEmbedder(provider, {
+      throttle: policy('abort-backoff').throttle,
+    });
+    assert.ok(isBatchEmbedder(embedder));
+    const result = batch
+      ? embedder.embedBatch(['q'], { signal: controller.signal })
+      : embedder.embed('q', { signal: controller.signal });
+    const rejected = assert.rejects(result, (error) => error === reason);
+    try {
+      // The check phase runs after the rejected attempt enters its backoff.
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.ok(getEventListeners(controller.signal, 'abort').length > 0);
+    } finally {
+      controller.abort(reason);
+    }
+    await rejected;
+    assert.equal(calls, 1);
+    assert.equal(getEventListeners(controller.signal, 'abort').length, 0);
+  });
+}
 
 for (const error of [
   Object.assign(new Error('HTTP 500 with 429 in body'), { status: 500 }),

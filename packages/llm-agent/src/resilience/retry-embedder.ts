@@ -148,6 +148,7 @@ export class RetryEmbedder implements IEmbedder {
             isTransient: (error) => this.isRetryable(error),
             delayMs: () =>
               exponentialBackoffMs(this.opts.backoffMs, transientAttempt++),
+            waitStrategy: this.opts.waitStrategy,
           },
         },
       );

@@ -186,10 +186,13 @@ export class RetryLlm implements ILlm {
   }
 
   private async backoff(attempt: number, signal?: AbortSignal): Promise<void> {
+    // Cancellation during the call keeps the loop's existing Result contract.
+    if (signal?.aborted) return;
     await this.wait.wait(
       exponentialBackoffMs(this.opts.backoffMs, attempt),
       signal,
     );
+    signal?.throwIfAborted();
   }
 }
 

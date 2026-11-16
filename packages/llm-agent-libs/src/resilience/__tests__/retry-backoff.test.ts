@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { getEventListeners } from 'node:events';
 import { test } from 'node:test';
 import {
   DefaultWaitStrategy,
@@ -7,6 +8,45 @@ import {
   withRetry,
 } from '@mcp-abap-adt/llm-agent';
 import { RetryLlm } from '../retry-llm.js';
+
+for (const stream of [false, true]) {
+  test(`RetryLlm preserves the reason when aborted during backoff, stream=${stream}`, async () => {
+    const controller = new AbortController();
+    const reason = { message: 'caller stopped during LLM backoff' };
+    const error = new LlmError('service unavailable');
+    error.cause = { status: 503 };
+    let calls = 0;
+    const llm = new RetryLlm({
+      async chat() {
+        calls++;
+        return { ok: false, error };
+      },
+      async *streamChat() {
+        calls++;
+        yield { ok: false, error };
+      },
+    });
+    const result = stream
+      ? (async () => {
+          for await (const _chunk of llm.streamChat([], undefined, {
+            signal: controller.signal,
+          })) {
+            assert.fail('an aborted backoff must throw before another chunk');
+          }
+        })()
+      : llm.chat([], undefined, { signal: controller.signal });
+    const rejected = assert.rejects(result, (actual) => actual === reason);
+    try {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.ok(getEventListeners(controller.signal, 'abort').length > 0);
+    } finally {
+      controller.abort(reason);
+    }
+    await rejected;
+    assert.equal(calls, 1);
+    assert.equal(getEventListeners(controller.signal, 'abort').length, 0);
+  });
+}
 
 for (const backoffMs of [0, 17, 2000]) {
   test(`LLM chat, stream and embedder retries keep the same ${backoffMs}ms backoff sequence`, async (t) => {
