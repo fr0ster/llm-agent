@@ -1,6 +1,6 @@
 # Human-AI flywheel symbol
 
-The development symbol of the project: a person and the AI turning one flywheel around shared, layered knowledge.
+The development symbol of the project: two curved arrows, indigo and teal, circling three stacked layers. It stands for people and AI turning one flywheel around shared, layered knowledge.
 
 | File | Use |
 |---|---|
