@@ -36,10 +36,10 @@ rotating token keeps rotating.
 
 ## Anthropic prompt caching
 
-`promptCaching?: boolean` defaults to `true`. Enabled requests mark the last
-system content block and last tool definition with ephemeral cache breakpoints.
-Only effective model names identifying Anthropic Claude receive these markers.
+`promptCaching?: boolean` enables or disables prompt caching for Anthropic Claude
+models through SAP AI Core, including conversation history. It defaults to `true`.
 Call options override config, including `false`; omission enables caching.
+Other models are unaffected by this switch.
 Messages, metadata and tools are preserved without mutating caller input.
 
 ```ts
@@ -50,9 +50,7 @@ const llm = new SapCoreAIProvider({
 });
 ```
 
-Keep system instructions and tools stable between calls. The SDK receives
-`cache_control: { type: 'ephemeral' }` with the service's default cache lifetime.
-Enabling markers does not guarantee cache hits. Streaming and non-streaming
+Enabling caching does not guarantee cache hits. Streaming and non-streaming
 responses and usage records expose optional `cachedInputTokens` and
 `cacheCreationInputTokens` when SAP reports reads/writes. Prompt/completion totals
 remain unchanged.
@@ -120,6 +118,6 @@ SAP AI Core retries transient failures before the first response chunk once by d
 
 ## Prompt caching
 
-Prompt caching is enabled by default for Anthropic Claude models through SAP orchestration. `promptCaching?: boolean` uses `options.promptCaching ?? config.promptCaching ?? true`. Enabled requests mark the last system content block and last tool with explicit `cache_control: { type: 'ephemeral' }` breakpoints; `false` omits these markers. Placement and cache lifetime are provider concerns. Cache read/creation reports remain preserved through orchestration and shared agent aggregation.
+Prompt caching is enabled by default for Anthropic Claude models through SAP orchestration, including conversation history. `promptCaching?: boolean` uses `options.promptCaching ?? config.promptCaching ?? true`; `false` disables it. Cache read/creation reports remain preserved through orchestration and shared agent aggregation.
 
-Migration: replace the former disabled mode with `false` and either former enabled mode with `true`. Omitting the setting now enables both system and tool breakpoints; set `false` explicitly to retain the previous disabled default. Selecting system-only placement is no longer supported. See [prompt caching](../../docs/PROMPT_CACHING.md).
+Migration: replace the former disabled mode with `false` and either former enabled mode with `true`. Omitting the setting enables caching; set `false` explicitly to retain the previous disabled default. See [prompt caching](../../docs/PROMPT_CACHING.md).
