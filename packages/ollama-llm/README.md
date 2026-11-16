@@ -44,3 +44,7 @@ and early consumer close (`closedEarly: true`).
 Use the buffered recorder from `@mcp-abap-adt/llm-usage`, or supply your own
 `IUsageRecorder`. See the [usage overview](../../docs/USAGE_ANALYTICS.md) for
 injection, replaceable transports/sinks and delivery/loss semantics.
+
+## Prompt caching
+
+No prompt-cache request setting is added. Ollama's native `keep_alive` controls model residency and is not sent to the OpenAI-compatible endpoint. Compatible cached-token reports remain visible when supplied; OpenAI-only cache keys and retention are omitted. See [prompt caching](../../docs/PROMPT_CACHING.md).

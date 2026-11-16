@@ -41,3 +41,7 @@ and early consumer close (`closedEarly: true`).
 Use the buffered recorder from `@mcp-abap-adt/llm-usage`, or supply your own
 `IUsageRecorder`. See the [usage overview](../../docs/USAGE_ANALYTICS.md) for
 injection, replaceable transports/sinks and delivery/loss semantics.
+
+## Prompt caching
+
+Automatic prompt caching is enabled on raw HTTP chat and streams by default (5m). Set `promptCaching: '1h'` or `'off'` in `AnthropicConfig` or call options; calls override config. Responses and usage records preserve cache read/creation counters. Normalized prompt totals include both. See [prompt caching](../../docs/PROMPT_CACHING.md).

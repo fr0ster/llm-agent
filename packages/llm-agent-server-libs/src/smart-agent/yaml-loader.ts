@@ -23,6 +23,9 @@ llm:
   # Unset sampling knobs are not sent — the model applies its own default.
   # Set them only for a model that accepts them (gpt-5, o-series and
   # claude-opus-4-7+ accept temperature 1 only).
+  # promptCaching: 5m               # Anthropic: 5m (default) | 1h | off
+  # promptCacheKey: shared-prefix   # OpenAI: stable key for related requests
+  # promptCacheRetention: 24h       # OpenAI: in_memory | 24h (model dependent)
   # temperature: 0.7
   # classifierTemperature: 0.1
 

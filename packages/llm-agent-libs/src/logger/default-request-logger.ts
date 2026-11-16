@@ -8,6 +8,7 @@ import type {
   TokenCategory,
   ToolCallEntry,
 } from '@mcp-abap-adt/llm-agent';
+import { addCacheTokenUsage } from '@mcp-abap-adt/llm-agent';
 
 /**
  * Component → token category mapping (shared with SessionRequestLogger so
@@ -37,6 +38,7 @@ function emptyBucket(): TokenBucket {
 }
 
 function addToBucket(bucket: TokenBucket, entry: LlmCallEntry): void {
+  Object.assign(bucket, addCacheTokenUsage(bucket, entry));
   bucket.promptTokens += entry.promptTokens;
   bucket.completionTokens += entry.completionTokens;
   bucket.totalTokens += entry.totalTokens;
@@ -110,6 +112,7 @@ export class DefaultRequestLogger implements IRequestLogger {
     // Derive totals as the faithful sum of byComponent.
     const totals = emptyBucket();
     for (const comp of Object.values(byComponent)) {
+      Object.assign(totals, addCacheTokenUsage(totals, comp));
       totals.promptTokens += comp.promptTokens;
       totals.completionTokens += comp.completionTokens;
       totals.totalTokens += comp.totalTokens;

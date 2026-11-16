@@ -153,3 +153,21 @@ describe('makeLlm — resourceGroup', () => {
     );
   });
 });
+
+it('forwards provider-specific cache knobs through makeLlm', async () => {
+  const { seen, makeLlm } = harness({
+    [DEFAULT_LLM_REF]: { credential: staticApiKey('k') },
+  });
+  await makeLlm({ provider: 'anthropic', model: 'm', promptCaching: 'off' });
+  await makeLlm({
+    provider: 'openai',
+    model: 'm',
+    promptCacheKey: 'stable',
+    promptCacheRetention: '24h',
+  });
+  assert.equal(seen[0].cfg.promptCaching, 'off');
+  assert.equal(seen[1].cfg.promptCacheKey, 'stable');
+  assert.equal(seen[1].cfg.promptCacheRetention, '24h');
+  assert.ok(!('promptCacheKey' in seen[0].cfg));
+  assert.ok(!('promptCaching' in seen[1].cfg));
+});

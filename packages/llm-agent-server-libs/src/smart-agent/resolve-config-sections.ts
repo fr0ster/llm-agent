@@ -18,7 +18,7 @@ import {
   type SmartServerDecisionConfig,
   type SmartServerRetrievalConfig,
 } from './decision-config.js';
-import { optionalNumber } from './llm-config-map.js';
+import { optionalNumber, promptCacheOptions } from './llm-config-map.js';
 import type {
   BuiltInEmbedderProvider,
   SmartServerEmbedderConfig,
@@ -57,6 +57,11 @@ export function resolveLlmSection(yaml: YamlConfig): SmartServerConfig['llm'] {
           // Unset stays unset: the provider then sends no temperature and
           // the model applies its own default.
           temperature: optionalNumber(get(yaml, 'llm', 'temperature')),
+          ...promptCacheOptions({
+            promptCaching: get(yaml, 'llm', 'promptCaching'),
+            promptCacheKey: get(yaml, 'llm', 'promptCacheKey'),
+            promptCacheRetention: get(yaml, 'llm', 'promptCacheRetention'),
+          }),
           classifierTemperature: optionalNumber(
             get(yaml, 'llm', 'classifierTemperature'),
           ),
@@ -99,6 +104,7 @@ function validateLlmMap(
     // then walking through the window.
     out[role] = {
       ...(entry as SmartServerLlmConfig),
+      ...promptCacheOptions(entry),
       ...(raw.whenThrottled !== undefined
         ? whenThrottledOption(raw.whenThrottled, `llm.${role}.whenThrottled`)
         : {}),

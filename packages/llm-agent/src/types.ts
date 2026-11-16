@@ -105,7 +105,17 @@ export interface LLMProviderConfig {
   whenThrottled?: IThrottleStrategy;
 }
 
-export interface LLMCallOptions {
+/** Provider-specific prompt cache controls; omitted values use provider defaults. */
+export interface PromptCacheOptions {
+  /** Anthropic automatic caching. Default: 5m; off omits cache_control. */
+  promptCaching?: 'off' | '5m' | '1h';
+  /** OpenAI: stable routing/accounting key for requests sharing a prefix. */
+  promptCacheKey?: string;
+  /** OpenAI Chat Completions retention; support depends on the model. */
+  promptCacheRetention?: 'in_memory' | '24h';
+}
+
+export interface LLMCallOptions extends PromptCacheOptions {
   usage?: IUsageRecorder;
   usageOp?: UsageOperation;
   /** Per-request model override. */
@@ -135,5 +145,11 @@ export interface LLMCallOptions {
 export type AgentStreamChunk =
   | { type: 'text'; delta: string }
   | { type: 'tool_calls'; toolCalls: ToolCall[] }
-  | { type: 'usage'; promptTokens: number; completionTokens: number }
+  | {
+      type: 'usage';
+      promptTokens: number;
+      completionTokens: number;
+      cachedInputTokens?: number;
+      cacheCreationInputTokens?: number;
+    }
   | { type: 'done'; finishReason: 'stop' | 'tool_calls' | 'length' | 'error' };

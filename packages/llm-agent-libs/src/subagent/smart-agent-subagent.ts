@@ -1,4 +1,5 @@
 import {
+  addCacheTokenUsage,
   externalToolCallId,
   hasExternalTraceGap,
   type ISubAgent,
@@ -105,6 +106,7 @@ export class SmartAgentSubAgent implements ISubAgent {
 
       const mappedUsage = usage
         ? {
+            ...addCacheTokenUsage(undefined, usage),
             promptTokens: usage.promptTokens,
             completionTokens: usage.completionTokens,
             totalTokens: usage.totalTokens,

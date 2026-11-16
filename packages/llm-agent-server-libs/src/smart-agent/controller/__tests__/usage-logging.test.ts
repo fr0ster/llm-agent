@@ -13,6 +13,8 @@ test('logUsage routes per-role usage into the request logger with model + reques
     promptTokens: 10,
     completionTokens: 2,
     totalTokens: 12,
+    cachedInputTokens: 6,
+    cacheCreationInputTokens: 3,
   };
   logUsage('planner', u);
   logUsage('finalizer', u);
@@ -22,6 +24,10 @@ test('logUsage routes per-role usage into the request logger with model + reques
   assert.equal(s.byComponent.finalizer?.totalTokens, 12);
   // planner + finalizer share the planner model:
   assert.equal(s.byModel['m-plan'].requests, 2);
+  assert.equal(s.byModel['m-plan'].cachedInputTokens, 12);
+  assert.equal(s.byModel['m-plan'].cacheCreationInputTokens, 6);
+  assert.equal(s.totals.cachedInputTokens, 18);
+  assert.equal(s.totals.cacheCreationInputTokens, 9);
   assert.equal(s.byModel['m-eval'].totalTokens, 12);
 });
 

@@ -57,14 +57,18 @@ export class LlmProviderBridge implements BaseAgentLlmBridge {
     messages: Message[],
     tools: unknown[],
     options?: AgentCallOptions,
-  ): Promise<{ content: string; raw?: unknown }> {
+  ): ReturnType<BaseAgentLlmBridge['callWithTools']> {
     const functions = convertToolsToFunctions(tools);
     const response = await this.provider.chat(
       messages,
       functions.length > 0 ? functions : undefined,
       options,
     );
-    return { content: response.content, raw: response.raw };
+    return {
+      content: response.content,
+      raw: response.raw,
+      usage: response.usage,
+    };
   }
 
   async *streamWithTools(
@@ -98,6 +102,7 @@ export class LlmProviderBridge implements BaseAgentLlmBridge {
       if (chunk.usage) {
         yield {
           type: 'usage',
+          ...chunk.usage,
           promptTokens: chunk.usage.promptTokens ?? 0,
           completionTokens: chunk.usage.completionTokens ?? 0,
         } as AgentStreamChunk;

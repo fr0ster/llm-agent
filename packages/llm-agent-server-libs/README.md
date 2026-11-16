@@ -88,3 +88,7 @@ production authentication or authorization implementation. The standalone CLI's
 `--local-user-id` opt-in is documented in the server package README.
 
 In v32, `RagAccess.roles` is `IRagRoleCheck`; trusted host tooling retains the separate `IRagRoleAdmin`. See [MIGRATION-v32](../../docs/MIGRATION-v32.md).
+
+## Prompt caching
+
+Flat and named `llm` YAML entries accept `promptCaching` (Anthropic: `5m` default, `1h`, `off`), `promptCacheKey`, and `promptCacheRetention` (OpenAI: `in_memory`, `24h`). HTTP chat requests can override them; OpenAI wire aliases `prompt_cache_key` and `prompt_cache_retention` are accepted. Usage summaries preserve cache counters by model. See [prompt caching](../../docs/PROMPT_CACHING.md).

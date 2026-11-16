@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { createServer } from 'node:http';
 import type { CallOptions, Message } from '@mcp-abap-adt/llm-agent';
-import { toToolCallDelta } from '@mcp-abap-adt/llm-agent';
+import { promptCacheOptions, toToolCallDelta } from '@mcp-abap-adt/llm-agent';
 import type { SmartAgent, StopReason } from '@mcp-abap-adt/llm-agent-libs';
 
 // ---------------------------------------------------------------------------
@@ -137,6 +137,27 @@ export class SmartAgentServer {
       return;
     }
 
+    let caching: ReturnType<typeof promptCacheOptions>;
+    try {
+      caching = promptCacheOptions({
+        ...parsed,
+        ...('prompt_cache_key' in parsed
+          ? { promptCacheKey: parsed.prompt_cache_key }
+          : {}),
+        ...('prompt_cache_retention' in parsed
+          ? { promptCacheRetention: parsed.prompt_cache_retention }
+          : {}),
+      });
+    } catch (error) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(
+        jsonError(
+          error instanceof Error ? error.message : String(error),
+          'invalid_request_error',
+        ),
+      );
+      return;
+    }
     const body = parsed as {
       messages: Array<Message>;
       tools?: unknown[];
@@ -170,6 +191,7 @@ export class SmartAgentServer {
     }
 
     const opts: CallOptions & { externalTools?: unknown[] } = {
+      ...caching,
       temperature: body.temperature,
       maxTokens: body.max_tokens,
       topP: body.top_p,

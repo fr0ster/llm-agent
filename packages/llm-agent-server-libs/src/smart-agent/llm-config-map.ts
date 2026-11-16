@@ -1,3 +1,5 @@
+export { promptCacheOptions } from '@mcp-abap-adt/llm-agent';
+
 import type { SmartServerLlmConfig } from './smart-server.js';
 
 export type LlmConfigMap = Record<string, SmartServerLlmConfig>;
@@ -116,6 +118,9 @@ export const INLINE_LLM_CONFIG_FIELDS: readonly string[] = [
   'apiKey',
   'credentialRef',
   'temperature',
+  'promptCaching',
+  'promptCacheKey',
+  'promptCacheRetention',
   'classifierTemperature',
   'maxTokens',
   'whenThrottled',

@@ -5,6 +5,7 @@ import type {
   Message,
 } from '@mcp-abap-adt/llm-agent';
 import {
+  addCacheTokenUsage,
   type CallOptions,
   ClassifierError,
   type Result,
@@ -129,6 +130,10 @@ export class LlmClassifier implements ISubpromptClassifier {
         this.requestLogger.logLlmCall({
           component: 'classifier',
           model: this.llm.model ?? 'unknown',
+          ...addCacheTokenUsage(
+            undefined,
+            llmResult.ok ? llmResult.value.usage : undefined,
+          ),
           promptTokens: llmResult.ok
             ? (llmResult.value.usage?.promptTokens ?? 0)
             : 0,

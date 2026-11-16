@@ -117,3 +117,7 @@ injection, replaceable transports/sinks and delivery/loss semantics.
 
 
 SAP AI Core retries transient failures before the first response chunk once by default. This covers HTTP 500/502/503/504 and statusless JSON parsing errors, ECONNRESET, socket hang up and ETIMEDOUT. Configure `transientMaxRetries` (default `1`, `0` disables) and `transientRetryDelayMs` (default `1500`) on `SapCoreAIConfig`. Retry-After overrides the delay; waiting honours the abort signal. Aborts and failures after the first chunk are never retried. HTTP 429 continues through the existing throttle strategy. Every physical attempt has its own usage record, with increasing `providerAttempt` and `physicalSeq`.
+
+## Prompt caching
+
+Existing `SapCoreAIConfig.promptCaching` modes (`off`, `system`, `system+tools`) use documented explicit Anthropic breakpoints. SAP does not document forwarding the direct Anthropic automatic-cache/TTL contract in this integration, so it remains separate. Cache read/creation reports are preserved through orchestration and shared agent aggregation. See [prompt caching](../../docs/PROMPT_CACHING.md).

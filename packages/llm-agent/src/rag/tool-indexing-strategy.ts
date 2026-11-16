@@ -1,6 +1,7 @@
 import type { ILlm } from '../interfaces/llm.js';
 import type { IRequestLogger } from '../interfaces/request-logger.js';
 import type { CallOptions } from '../interfaces/types.js';
+import { addCacheTokenUsage } from '../token-usage.js';
 
 /**
  * A tool description to be indexed in RAG.
@@ -103,6 +104,10 @@ export class IntentToolIndexing implements IToolIndexingStrategy {
         this.requestLogger.logLlmCall({
           component: 'helper',
           model: this.llm.model ?? 'unknown',
+          ...addCacheTokenUsage(
+            undefined,
+            res.ok ? res.value.usage : undefined,
+          ),
           promptTokens: res.ok ? (res.value.usage?.promptTokens ?? 0) : 0,
           completionTokens: res.ok
             ? (res.value.usage?.completionTokens ?? 0)

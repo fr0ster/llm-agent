@@ -1,3 +1,4 @@
+import { addCacheTokenUsage } from '@mcp-abap-adt/llm-agent';
 /**
  * SummarizeHandler — condenses conversation history using helper LLM.
  *
@@ -63,6 +64,7 @@ export class SummarizeHandler implements IStageHandler {
       requestId: ctx.options?.trace?.traceId,
       component: 'helper',
       model: ctx.helperLlm.model ?? 'unknown',
+      ...addCacheTokenUsage(undefined, res.ok ? res.value.usage : undefined),
       promptTokens: res.ok ? (res.value.usage?.promptTokens ?? 0) : 0,
       completionTokens: res.ok ? (res.value.usage?.completionTokens ?? 0) : 0,
       totalTokens: res.ok ? (res.value.usage?.totalTokens ?? 0) : 0,

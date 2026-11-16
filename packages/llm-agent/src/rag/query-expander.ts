@@ -5,6 +5,7 @@ import {
   RagError,
   type Result,
 } from '../interfaces/types.js';
+import { addCacheTokenUsage } from '../token-usage.js';
 
 export interface IQueryExpander {
   expand(
@@ -49,6 +50,10 @@ export class LlmQueryExpander implements IQueryExpander {
         this.requestLogger.logLlmCall({
           component: 'query-expander',
           model: this.llm.model ?? 'unknown',
+          ...addCacheTokenUsage(
+            undefined,
+            res.ok ? res.value.usage : undefined,
+          ),
           promptTokens: res.ok ? (res.value.usage?.promptTokens ?? 0) : 0,
           completionTokens: res.ok
             ? (res.value.usage?.completionTokens ?? 0)

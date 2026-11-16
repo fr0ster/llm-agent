@@ -217,3 +217,7 @@ Provider internal retries must also be disabled. Put `withCircuitBreaker` outsid
 this composition so pending 429 waits do not count as failures.
 
 See [embedding throttling and hub migration](../../docs/EMBEDDER_THROTTLING.md).
+
+## Prompt caching
+
+`CallOptions` and `LLMCallOptions` carry Anthropic `promptCaching` (`5m`, `1h`, `off`) and optional OpenAI `promptCacheKey`/`promptCacheRetention`. `addTokenUsage` preserves optional `cachedInputTokens` and `cacheCreationInputTokens`, including per-model sums. These are breakdown counters and must not be added to normalized prompt totals again. See [prompt caching](../../docs/PROMPT_CACHING.md).

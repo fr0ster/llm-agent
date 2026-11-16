@@ -1,6 +1,6 @@
 // src/smart-agent/interfaces/agent-contracts.ts
-import type { AgentStreamChunk, Message } from '../types.js';
-import type { CallOptions, ModelUsageEntry } from './types.js';
+import type { AgentStreamChunk, LLMResponse, Message } from '../types.js';
+import type { CallOptions, TokenUsage } from './types.js';
 import { SmartAgentError } from './types.js';
 
 export class OrchestratorError extends SmartAgentError {
@@ -32,12 +32,7 @@ export interface SmartAgentResponse {
     type: 'function';
     function: { name: string; arguments: string };
   }>;
-  usage?: {
-    promptTokens: number;
-    completionTokens: number;
-    totalTokens: number;
-    models?: Record<string, ModelUsageEntry>;
-  };
+  usage?: TokenUsage;
 }
 
 export interface AgentCallOptions extends CallOptions {
@@ -65,6 +60,9 @@ export interface BaseAgentLlmBridge {
       usage?: CallOptions['usage'];
       usageOp?: CallOptions['usageOp'];
       temperature?: number;
+      promptCaching?: CallOptions['promptCaching'];
+      promptCacheKey?: string;
+      promptCacheRetention?: CallOptions['promptCacheRetention'];
       maxTokens?: number;
       topP?: number;
       stop?: string[];
@@ -75,7 +73,7 @@ export interface BaseAgentLlmBridge {
        */
       signal?: AbortSignal;
     },
-  ): Promise<{ content: string; raw?: unknown }>;
+  ): Promise<Pick<LLMResponse, 'content' | 'raw' | 'usage'>>;
   streamWithTools(
     messages: Message[],
     tools: unknown[],
@@ -83,6 +81,9 @@ export interface BaseAgentLlmBridge {
       usage?: CallOptions['usage'];
       usageOp?: CallOptions['usageOp'];
       temperature?: number;
+      promptCaching?: CallOptions['promptCaching'];
+      promptCacheKey?: string;
+      promptCacheRetention?: CallOptions['promptCacheRetention'];
       maxTokens?: number;
       topP?: number;
       stop?: string[];

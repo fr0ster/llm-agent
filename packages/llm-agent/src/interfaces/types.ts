@@ -7,7 +7,7 @@ import type { IUsageRecorder, UsageOperation } from './usage.js';
  * Shared types for Smart Orchestrated Agent contracts.
  */
 
-import type { Message } from '../types.js';
+import type { Message, PromptCacheOptions } from '../types.js';
 import type { StepStatus } from './adaptive-plan.js';
 import type { IRequestLogger } from './request-logger.js';
 import type { OnPartial } from './streaming.js';
@@ -28,7 +28,7 @@ export interface TraceContext {
   baggage?: Record<string, string>;
 }
 
-export interface CallOptions {
+export interface CallOptions extends PromptCacheOptions {
   /** Current report worker accepted text, read only when submit_report omits result. */
   dialogueReportText?: () => string;
   /** Accepted assistant content, including tool-call rounds; excludes discarded replies. */
@@ -286,10 +286,7 @@ export interface TokenUsage extends LlmUsage {
   models?: Record<string, ModelUsageEntry>;
 }
 
-export interface ModelUsageEntry {
-  promptTokens: number;
-  completionTokens: number;
-  totalTokens: number;
+export interface ModelUsageEntry extends LlmUsage {
   requests: number;
 }
 

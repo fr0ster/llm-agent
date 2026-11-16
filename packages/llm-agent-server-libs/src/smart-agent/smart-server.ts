@@ -158,6 +158,11 @@ export { writeNotReady } from './http/response-helpers.js';
 // ---------------------------------------------------------------------------
 
 export interface SmartServerLlmConfig {
+  /** Anthropic automatic caching: default 5m; off disables. */
+  promptCaching?: 'off' | '5m' | '1h';
+  /** OpenAI-only routing and retention options. */
+  promptCacheKey?: string;
+  promptCacheRetention?: 'in_memory' | '24h';
   /** Provider id for the flat schema. Required when no pipeline.llm.main is set. */
   provider?: 'deepseek' | 'openai' | 'anthropic' | 'sap-ai-sdk' | 'ollama';
   /**

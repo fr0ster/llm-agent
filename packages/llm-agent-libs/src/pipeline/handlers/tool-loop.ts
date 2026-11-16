@@ -1,4 +1,5 @@
 import {
+  addCacheTokenUsage,
   markExternalTraceUnavailable,
   toModelToolMessages,
 } from '@mcp-abap-adt/llm-agent';
@@ -523,6 +524,7 @@ export class ToolLoopHandler implements IStageHandler {
         });
       }
 
+      let iterCache: ReturnType<typeof addCacheTokenUsage> = {};
       let iterPromptTokens = 0;
       let iterCompletionTokens = 0;
       let iterTotalTokens = 0;
@@ -734,9 +736,11 @@ export class ToolLoopHandler implements IStageHandler {
         }
         if (chunk.finishReason) finishReason = chunk.finishReason;
         if (chunk.usage) {
+          Object.assign(usage, addCacheTokenUsage(usage, chunk.usage));
           usage.promptTokens += chunk.usage.promptTokens;
           usage.completionTokens += chunk.usage.completionTokens;
           usage.totalTokens += chunk.usage.totalTokens;
+          iterCache = addCacheTokenUsage(iterCache, chunk.usage);
           iterPromptTokens += chunk.usage.promptTokens;
           iterCompletionTokens += chunk.usage.completionTokens;
           iterTotalTokens += chunk.usage.totalTokens;
@@ -756,6 +760,7 @@ export class ToolLoopHandler implements IStageHandler {
       ctx.requestLogger.logLlmCall({
         component: 'tool-loop',
         model: ctx.mainLlm.model ?? 'unknown',
+        ...iterCache,
         promptTokens: iterPromptTokens,
         completionTokens: iterCompletionTokens,
         totalTokens: iterTotalTokens,

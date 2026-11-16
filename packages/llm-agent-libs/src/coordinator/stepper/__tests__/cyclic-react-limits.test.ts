@@ -9,9 +9,25 @@ for (const maxIterations of [undefined, 3]) {
     const llm = makeLlm([
       ...Array.from({ length: 12 }, (_, round) => ({
         content: '',
+        usage: {
+          promptTokens: 10,
+          completionTokens: 1,
+          totalTokens: 11,
+          cachedInputTokens: 5,
+          cacheCreationInputTokens: 3,
+        },
         toolCalls: [{ id: `c${round}`, name: 'Work', arguments: { round } }],
       })),
-      { content: 'done' },
+      {
+        content: 'done',
+        usage: {
+          promptTokens: 10,
+          completionTokens: 1,
+          totalTokens: 11,
+          cachedInputTokens: 5,
+          cacheCreationInputTokens: 3,
+        },
+      },
     ]);
     let toolCalls = 0;
     const executor = new CyclicReActExecutor({
@@ -47,5 +63,7 @@ for (const maxIterations of [undefined, 3]) {
     );
     assert.equal(llm.callCount, maxIterations ?? 13);
     assert.equal(toolCalls, maxIterations ?? 12);
+    assert.equal(result.usage.cachedInputTokens, llm.callCount * 5);
+    assert.equal(result.usage.cacheCreationInputTokens, llm.callCount * 3);
   });
 }

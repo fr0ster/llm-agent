@@ -1,6 +1,7 @@
 import type { ILlm } from '../interfaces/llm.js';
 import type { IRequestLogger } from '../interfaces/request-logger.js';
 import type { CallOptions, RagError, Result } from '../interfaces/types.js';
+import { addCacheTokenUsage } from '../token-usage.js';
 
 /**
  * Transforms query text before RAG search.
@@ -84,6 +85,10 @@ export class TranslatePreprocessor implements IQueryPreprocessor {
         this.requestLogger.logLlmCall({
           component: 'translate',
           model: this.llm.model ?? 'unknown',
+          ...addCacheTokenUsage(
+            undefined,
+            res.ok ? res.value.usage : undefined,
+          ),
           promptTokens: res.ok ? (res.value.usage?.promptTokens ?? 0) : 0,
           completionTokens: res.ok
             ? (res.value.usage?.completionTokens ?? 0)
@@ -141,6 +146,10 @@ export class ExpandPreprocessor implements IQueryPreprocessor {
         this.requestLogger.logLlmCall({
           component: 'query-expander',
           model: this.llm.model ?? 'unknown',
+          ...addCacheTokenUsage(
+            undefined,
+            res.ok ? res.value.usage : undefined,
+          ),
           promptTokens: res.ok ? (res.value.usage?.promptTokens ?? 0) : 0,
           completionTokens: res.ok
             ? (res.value.usage?.completionTokens ?? 0)
@@ -215,6 +224,10 @@ export class IntentEnricher implements IDocumentEnricher {
         this.requestLogger.logLlmCall({
           component: 'helper',
           model: this.llm.model ?? 'unknown',
+          ...addCacheTokenUsage(
+            undefined,
+            res.ok ? res.value.usage : undefined,
+          ),
           promptTokens: res.ok ? (res.value.usage?.promptTokens ?? 0) : 0,
           completionTokens: res.ok
             ? (res.value.usage?.completionTokens ?? 0)

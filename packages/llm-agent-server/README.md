@@ -174,3 +174,7 @@ number of bound roles through the host's `IRagRoleAdmin`. Runtime `RagAccess` is
 `{ decision, roles: IRagRoleCheck, bindings }`; role administration is separate.
 The backend access-store factory returns both contracts over the same persistence.
 See [MIGRATION-v32](../../docs/MIGRATION-v32.md) for wiring, migration reports, and HDI deployment.
+
+## Prompt caching
+
+The composition root forwards Anthropic `llm.promptCaching` and OpenAI `llm.promptCacheKey`/`llm.promptCacheRetention` to their providers. Chat call options override provider config. Cache read/creation counters remain visible in usage summaries. See [prompt caching](../../docs/PROMPT_CACHING.md).

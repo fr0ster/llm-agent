@@ -9,12 +9,16 @@ test('SmartAgentSubAgent retains per-model usage including requests', async () =
     promptTokens: 2,
     completionTokens: 3,
     totalTokens: 5,
+    cachedInputTokens: 1,
+    cacheCreationInputTokens: 2,
     models: {
       model: {
         promptTokens: 2,
         completionTokens: 3,
         totalTokens: 5,
         requests: 2,
+        cachedInputTokens: 1,
+        cacheCreationInputTokens: 2,
       },
     },
   };

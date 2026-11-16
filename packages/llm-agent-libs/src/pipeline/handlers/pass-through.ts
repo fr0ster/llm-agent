@@ -9,6 +9,7 @@ import type {
   Result,
 } from '@mcp-abap-adt/llm-agent';
 import {
+  addCacheTokenUsage,
   scopedUsage,
   type ToolTrust,
   toModelToolMessages,
@@ -40,6 +41,7 @@ export async function* runPassThrough(
   );
   let passContent = '';
   const passToolCalls: unknown[] = [];
+  let cache: ReturnType<typeof addCacheTokenUsage> = {};
   let accPrompt = 0;
   let accCompletion = 0;
   let accTotal = 0;
@@ -51,6 +53,7 @@ export async function* runPassThrough(
     requestLogger.logLlmCall({
       component: 'tool-loop',
       model: llm.model ?? 'unknown',
+      ...cache,
       promptTokens: accPrompt,
       completionTokens: accCompletion,
       totalTokens: accTotal,
@@ -92,6 +95,7 @@ export async function* runPassThrough(
     if (chunk.value.content) passContent += chunk.value.content;
     if (chunk.value.toolCalls) passToolCalls.push(...chunk.value.toolCalls);
     if (chunk.value.usage) {
+      cache = addCacheTokenUsage(cache, chunk.value.usage);
       accPrompt += chunk.value.usage.promptTokens;
       accCompletion += chunk.value.usage.completionTokens;
       accTotal += chunk.value.usage.totalTokens;

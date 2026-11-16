@@ -1,3 +1,4 @@
+import { addCacheTokenUsage } from '@mcp-abap-adt/llm-agent';
 /**
  * TranslateHandler — translates non-ASCII RAG query text to English.
  *
@@ -47,6 +48,7 @@ export class TranslateHandler implements IStageHandler {
     ctx.requestLogger.logLlmCall({
       component: 'translate',
       model: llm.model ?? 'unknown',
+      ...addCacheTokenUsage(undefined, res.ok ? res.value.usage : undefined),
       promptTokens: res.ok ? (res.value.usage?.promptTokens ?? 0) : 0,
       completionTokens: res.ok ? (res.value.usage?.completionTokens ?? 0) : 0,
       totalTokens: res.ok ? (res.value.usage?.totalTokens ?? 0) : 0,

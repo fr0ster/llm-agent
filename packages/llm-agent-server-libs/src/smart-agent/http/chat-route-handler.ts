@@ -17,6 +17,7 @@ import {
   type SmartAgentHandle,
   type StopReason,
 } from '@mcp-abap-adt/llm-agent-libs';
+import { promptCacheOptions } from '../llm-config-map.js';
 import type { SmartServerConfig } from '../smart-server.js';
 import { resolveTraceSink } from './debug-trace-sink.js';
 import { canWrite, createRequestAbort } from './request-abort.js';
@@ -69,6 +70,28 @@ export async function handleChat(
     res.writeHead(400, { 'Content-Type': 'application/json' });
     res.end(
       jsonError('messages must be a non-empty array', 'invalid_request_error'),
+    );
+    return;
+  }
+
+  let caching: ReturnType<typeof promptCacheOptions>;
+  try {
+    caching = promptCacheOptions({
+      ...parsed,
+      ...('prompt_cache_key' in parsed
+        ? { promptCacheKey: parsed.prompt_cache_key }
+        : {}),
+      ...('prompt_cache_retention' in parsed
+        ? { promptCacheRetention: parsed.prompt_cache_retention }
+        : {}),
+    });
+  } catch (error) {
+    res.writeHead(400, { 'Content-Type': 'application/json' });
+    res.end(
+      jsonError(
+        error instanceof Error ? error.message : String(error),
+        'invalid_request_error',
+      ),
     );
     return;
   }
@@ -173,6 +196,7 @@ export async function handleChat(
     log({ event: 'request_cancelled', durationMs: Date.now() - t0 });
 
   const opts = {
+    ...caching,
     signal: abort.signal,
     stream: body.stream,
     externalTools,

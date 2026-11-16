@@ -37,6 +37,8 @@ export interface OpenAIConfig extends LLMProviderConfig {
   credential: IApiKeyCredential;
   model?: string;
   temperature?: number;
+  promptCacheKey?: string;
+  promptCacheRetention?: LLMCallOptions['promptCacheRetention'];
   maxTokens?: number;
   organization?: string;
   project?: string;
@@ -148,6 +150,18 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
     return this.client.defaults.baseURL ?? 'default';
   }
 
+  /** OpenAI-only controls must not leak into DeepSeek or Ollama requests. */
+  protected promptCacheParams(options?: LLMCallOptions) {
+    if (this.providerName !== 'OpenAI') return {};
+    const key = options?.promptCacheKey ?? this.config.promptCacheKey;
+    const retention =
+      options?.promptCacheRetention ?? this.config.promptCacheRetention;
+    return {
+      ...(key !== undefined ? { prompt_cache_key: key } : {}),
+      ...(retention !== undefined ? { prompt_cache_retention: retention } : {}),
+    };
+  }
+
   async chat(
     messages: Message[],
     tools?: unknown[],
@@ -175,6 +189,7 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
               tools: tools && tools.length > 0 ? tools : undefined,
               tool_choice: tools && tools.length > 0 ? 'auto' : undefined,
               ...(temperature !== undefined ? { temperature } : {}),
+              ...this.promptCacheParams(options),
               ...(maxTokens !== undefined
                 ? this.getTokenLimitParam(model, maxTokens)
                 : {}),
@@ -187,6 +202,7 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
 
           const usage = response.data.usage
             ? {
+                ...cacheUsage(response.data.usage),
                 promptTokens: response.data.usage.prompt_tokens,
                 completionTokens: response.data.usage.completion_tokens,
                 totalTokens: response.data.usage.total_tokens,
@@ -276,6 +292,7 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
               tools: tools && tools.length > 0 ? tools : undefined,
               tool_choice: tools && tools.length > 0 ? 'auto' : undefined,
               ...(temperature !== undefined ? { temperature } : {}),
+              ...this.promptCacheParams(options),
               ...(maxTokens !== undefined
                 ? this.getTokenLimitParam(model, maxTokens)
                 : {}),
@@ -371,6 +388,7 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
                 content: '',
                 raw: parsed,
                 usage: {
+                  ...cacheUsage(parsed.usage),
                   promptTokens: parsed.usage.prompt_tokens,
                   completionTokens: parsed.usage.completion_tokens,
                   totalTokens: parsed.usage.total_tokens,
@@ -487,17 +505,37 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
   }
 }
 
+function cacheUsage(usage: {
+  prompt_tokens_details?: {
+    cached_tokens?: number;
+    cache_write_tokens?: number;
+  };
+  prompt_cache_hit_tokens?: number;
+}) {
+  const cached =
+    usage.prompt_tokens_details?.cached_tokens ?? usage.prompt_cache_hit_tokens;
+  const created = usage.prompt_tokens_details?.cache_write_tokens;
+  return {
+    ...(cached !== undefined ? { cachedInputTokens: cached } : {}),
+    ...(created !== undefined ? { cacheCreationInputTokens: created } : {}),
+  };
+}
+
 function tokenFacts(usage?: {
   prompt_tokens?: number;
   completion_tokens?: number;
-  prompt_tokens_details?: { cached_tokens?: number };
+  prompt_tokens_details?: {
+    cached_tokens?: number;
+    cache_write_tokens?: number;
+  };
   prompt_cache_hit_tokens?: number;
 }): Partial<LlmRequestFacts> {
   return usage &&
     (usage.prompt_tokens !== undefined ||
       usage.completion_tokens !== undefined ||
       usage.prompt_tokens_details?.cached_tokens !== undefined ||
-      usage.prompt_cache_hit_tokens !== undefined)
+      usage.prompt_cache_hit_tokens !== undefined ||
+      usage.prompt_tokens_details?.cache_write_tokens !== undefined)
     ? {
         ...(usage.prompt_tokens !== undefined
           ? { inputTokens: usage.prompt_tokens }
@@ -505,14 +543,7 @@ function tokenFacts(usage?: {
         ...(usage.completion_tokens !== undefined
           ? { outputTokens: usage.completion_tokens }
           : {}),
-        ...((usage.prompt_tokens_details?.cached_tokens ??
-          usage.prompt_cache_hit_tokens) !== undefined
-          ? {
-              cachedInputTokens:
-                usage.prompt_tokens_details?.cached_tokens ??
-                usage.prompt_cache_hit_tokens,
-            }
-          : {}),
+        ...cacheUsage(usage),
         tokensSource: 'provider',
       }
     : {};

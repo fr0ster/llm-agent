@@ -39,6 +39,7 @@ import type {
 } from '@mcp-abap-adt/llm-agent';
 import {
   type AgentCallOptions,
+  addCacheTokenUsage,
   getStreamToolCallName,
   type IQueryExpander,
   isReadinessReporter,
@@ -679,6 +680,10 @@ export class SmartAgent {
         stopReason = 'tool_calls';
       }
       if (chunk.value.usage) {
+        Object.assign(
+          totalUsage,
+          addCacheTokenUsage(totalUsage, chunk.value.usage),
+        );
         totalUsage.promptTokens += chunk.value.usage.promptTokens;
         totalUsage.completionTokens += chunk.value.usage.completionTokens;
         totalUsage.totalTokens += chunk.value.usage.totalTokens;
@@ -1411,6 +1416,7 @@ export class SmartAgent {
         }
         if (chunk.finishReason) finishReason = chunk.finishReason;
         if (chunk.usage) {
+          Object.assign(usage, addCacheTokenUsage(usage, chunk.usage));
           usage.promptTokens += chunk.usage.promptTokens;
           usage.completionTokens += chunk.usage.completionTokens;
           usage.totalTokens += chunk.usage.totalTokens;

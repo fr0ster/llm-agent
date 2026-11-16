@@ -78,12 +78,15 @@ export function createMakeLlm(
       switch (cfg.provider) {
         case 'openai':
           return new ctors.openai({
+            promptCacheKey: cfg.promptCacheKey,
+            promptCacheRetention: cfg.promptCacheRetention,
             ...knobs,
             baseURL: cfg.url,
             credential: entry.require('api-key'),
           });
         case 'anthropic':
           return new ctors.anthropic({
+            promptCaching: cfg.promptCaching,
             ...knobs,
             baseURL: cfg.url,
             credential: entry.require('api-key'),

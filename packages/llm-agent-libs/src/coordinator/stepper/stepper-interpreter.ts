@@ -6,6 +6,7 @@ import type {
   LlmUsage,
   RunIdentity,
 } from '@mcp-abap-adt/llm-agent';
+import { addCacheTokenUsage } from '@mcp-abap-adt/llm-agent';
 
 /** Total cap on injected dependsOn-dataflow content per node — a backstop against
  *  context explosion. dependsOn already scopes it to predecessors (selective);
@@ -15,6 +16,7 @@ const DEPS_CONTEXT_CAP = 60_000;
 
 const ZERO: LlmUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
 const addUsage = (a: LlmUsage, b: LlmUsage): LlmUsage => ({
+  ...addCacheTokenUsage(a, b),
   promptTokens: a.promptTokens + b.promptTokens,
   completionTokens: a.completionTokens + b.completionTokens,
   totalTokens: a.totalTokens + b.totalTokens,

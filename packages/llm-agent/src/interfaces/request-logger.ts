@@ -1,3 +1,5 @@
+import type { LlmUsage } from './types.js';
+
 export type LlmComponent =
   | 'tool-loop'
   | 'classifier'
@@ -17,20 +19,14 @@ export type LlmComponent =
 
 export type TokenCategory = 'initialization' | 'auxiliary' | 'request';
 
-export interface TokenBucket {
-  promptTokens: number;
-  completionTokens: number;
-  totalTokens: number;
+export interface TokenBucket extends LlmUsage {
   requests: number;
   items?: number;
 }
 
-export interface LlmCallEntry {
+export interface LlmCallEntry extends LlmUsage {
   component: LlmComponent;
   model: string;
-  promptTokens: number;
-  completionTokens: number;
-  totalTokens: number;
   durationMs: number;
   estimated?: boolean;
   scope?: 'initialization' | 'request';

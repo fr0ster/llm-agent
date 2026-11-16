@@ -41,3 +41,7 @@ and early consumer close (`closedEarly: true`).
 Use the buffered recorder from `@mcp-abap-adt/llm-usage`, or supply your own
 `IUsageRecorder`. See the [usage overview](../../docs/USAGE_ANALYTICS.md) for
 injection, replaceable transports/sinks and delivery/loss semantics.
+
+## Prompt caching
+
+Eligible prefixes are cached automatically. Optional `promptCacheKey` and `promptCacheRetention: 'in_memory' | '24h'` use call-over-config precedence and map to OpenAI's wire parameters on chat and streams. Retention support is model dependent; both are omitted by default. Cache read and reported write tokens are preserved in responses and usage records. See [prompt caching](../../docs/PROMPT_CACHING.md).
