@@ -32,8 +32,10 @@ import {
 import {
   type ChatCompletionTool,
   type ChatMessage,
+  type ChatMessageContent,
   OrchestrationClient,
   type OrchestrationModuleConfig,
+  type UserChatMessageContentItem,
 } from '@sap-ai-sdk/orchestration';
 
 // Structural Cloud SDK middleware contract; forward the request/response intact.
@@ -136,7 +138,7 @@ export function isOrchestrationChatModel(info: IModelInfo): boolean {
 }
 
 export interface SapCoreAIConfig extends LLMProviderConfig {
-  /** Anthropic breakpoints on system and tools. Default: true. */
+  /** Enable prompt caching for Anthropic Claude models. Default: true. */
   promptCaching?: boolean;
   /** Retries before the first response chunk. Default: 1; 0 disables. */
   transientMaxRetries?: number;
@@ -871,40 +873,32 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
     const anthropic = /(?:^|[/.:-])(?:anthropic|claude)(?:[/.:-]|$)/i.test(
       this.modelOverride ?? this.model,
     );
-    const lastSystem = messages.reduce(
-      (last, message, index) => (message.role === 'system' ? index : last),
-      -1,
-    );
-    const template = messages.map((message, index) => {
-      if (
-        !anthropic ||
-        !caching ||
-        message.role !== 'system' ||
-        index !== lastSystem
-      )
-        return message;
-      const content: Exclude<typeof message.content, string> =
-        typeof message.content === 'string'
-          ? [{ type: 'text' as const, text: message.content }]
-          : message.content.map((block) => ({ ...block }));
-      const last = content.at(-1);
-      if (last)
-        content[content.length - 1] = {
-          ...last,
-          cache_control: { type: 'ephemeral' },
-        };
-      return { ...message, content };
-    });
-    const cachedTools =
-      anthropic && caching
-        ? tools?.map((tool, index) =>
-            index === tools.length - 1 &&
-            tool !== null &&
-            typeof tool === 'object'
-              ? { ...tool, cache_control: { type: 'ephemeral' } }
-              : tool,
-          )
-        : tools;
+    let template = messages;
+    let cachedTools = tools as ChatCompletionTool[] | undefined;
+    if (anthropic && caching) {
+      template = messages.map(withoutCacheBreakpoints);
+      cachedTools = cachedTools?.map(withoutCacheControl);
+      let breakpointPlaced = false;
+      // Emulate automatic caching with one moving breakpoint. Cache order is
+      // tools -> system -> conversation, regardless of template positions.
+      for (const system of [false, true]) {
+        for (let index = template.length - 1; index >= 0; index--) {
+          const message = template[index];
+          const isSystem =
+            message.role === 'system' || message.role === 'developer';
+          if (isSystem !== system) continue;
+          const cached = withCacheBreakpoint(message);
+          if (!cached) continue;
+          template[index] = cached;
+          breakpointPlaced = true;
+          break;
+        }
+        if (breakpointPlaced) break;
+      }
+      if (!breakpointPlaced && cachedTools?.length) {
+        cachedTools = cacheLastBlock(cachedTools);
+      }
+    }
     const orchConfig: OrchestrationModuleConfig = {
       promptTemplating: {
         model: {
@@ -913,9 +907,7 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
         },
         prompt: {
           template,
-          ...(cachedTools?.length
-            ? { tools: cachedTools as ChatCompletionTool[] }
-            : {}),
+          ...(cachedTools?.length ? { tools: cachedTools } : {}),
         },
       },
     };
@@ -966,6 +958,60 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
       };
     });
   }
+}
+
+function withoutCacheControl<T extends object>(value: T): T {
+  const copy = { ...value };
+  if ('cache_control' in copy) delete copy.cache_control;
+  return copy;
+}
+
+function withoutCacheBreakpoints(message: ChatMessage): ChatMessage {
+  const copy = withoutCacheControl(message);
+  if (!Array.isArray(copy.content)) return copy;
+  if (copy.role === 'user') {
+    return { ...copy, content: copy.content.map(withoutCacheControl) };
+  }
+  return { ...copy, content: copy.content.map(withoutCacheControl) };
+}
+
+function cacheLastBlock<
+  T extends ChatCompletionTool | UserChatMessageContentItem,
+>(blocks: T[]): T[] | undefined {
+  for (let index = blocks.length - 1; index >= 0; index--) {
+    const block = blocks[index];
+    // Whitespace is non-empty for both string content and text blocks.
+    if (block.type === 'text' && !block.text?.length) continue;
+    return blocks.map((item, position) =>
+      position === index
+        ? { ...item, cache_control: { type: 'ephemeral' } }
+        : item,
+    );
+  }
+  return undefined;
+}
+
+function withCacheBreakpoint(message: ChatMessage): ChatMessage | undefined {
+  if (!message.content?.length) return undefined;
+  if (typeof message.content === 'string') {
+    const content: Exclude<ChatMessageContent, string> = [
+      {
+        type: 'text',
+        text: message.content,
+        cache_control: { type: 'ephemeral' },
+      },
+    ];
+    // Every SDK message role accepts text blocks, including tool responses and
+    // assistant messages with tool calls. Only users accept image/file blocks.
+    return { ...message, content };
+  }
+  // Separate branches keep each role's content type narrowed.
+  if (message.role === 'user') {
+    const content = cacheLastBlock(message.content);
+    return content ? { ...message, content } : undefined;
+  }
+  const content = cacheLastBlock(message.content);
+  return content ? { ...message, content } : undefined;
 }
 
 function tokenFacts(usage?: {

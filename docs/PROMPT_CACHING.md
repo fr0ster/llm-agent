@@ -48,7 +48,7 @@ llm:
 | Provider | Requests | Cache usage |
 | --- | --- | --- |
 | Anthropic | Enabled chat and streams include top-level `cache_control: { type: 'ephemeral' }` using the provider's documented default TTL. `false` omits the directive. No TTL option is exposed. The automatic breakpoint follows the last cacheable block as history grows. | `cache_read_input_tokens` and `cache_creation_input_tokens`. |
-| SAP AI Core orchestration | For Anthropic Claude models, enabled chat and streams add explicit ephemeral breakpoints to the last system content block and last tool definition. `false` omits these markers. Other models receive no added markers. Placement is internal; no top-level automatic directive or TTL is sent. | `prompt_tokens_details.cached_tokens` and `cache_creation_tokens`. |
+| SAP AI Core orchestration | For Anthropic Claude models, chat and streams honour `promptCaching` to enable or disable prompt caching, including conversation history. Caching is enabled by default. Other models are unaffected by this switch. | `prompt_tokens_details.cached_tokens` and `cache_creation_tokens`. |
 | OpenAI | Eligible prefixes are cached automatically. The switch has no request effect: the client cannot disable provider caching. No cache parameters are sent. | `prompt_tokens_details.cached_tokens`; `cache_write_tokens` is preserved as creation usage when supplied. |
 | DeepSeek | Prefix caching is automatic. The switch has no request effect: the client cannot disable provider caching. No cache parameters are sent. | `prompt_cache_hit_tokens` (the existing OpenAI-compatible details field also works). Cache misses are ordinary input, not a reported cache-creation count. |
 | Ollama | The switch has no request effect. No cache parameters are sent to the OpenAI-compatible endpoint. Native `keep_alive` controls model residency, which is separate from prompt caching. | Preserve compatible cached-token reports if returned; do not infer cache hits from model residency. |
@@ -62,8 +62,7 @@ Sources: [Anthropic prompt caching](https://platform.claude.com/docs/en/build-wi
 ## SAP migration (major release)
 
 `SapCoreAIConfig.promptCaching` now accepts a boolean. Replace the former disabled
-mode with `false`, and either former enabled mode with `true`. System-only placement
-is no longer selectable: the provider chooses system and tool breakpoints.
+mode with `false`, and either former enabled mode with `true`.
 Omission now enables caching; set `false` explicitly to retain the previous
 disabled default. Per-call overrides now use the same boolean and precedence as
 the other providers. Cache usage reporting is unchanged.
