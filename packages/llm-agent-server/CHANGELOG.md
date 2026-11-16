@@ -1,5 +1,30 @@
 # @mcp-abap-adt/llm-agent-server
 
+## 33.1.0
+
+### Minor Changes
+
+- 24761ec: The composition root forwards the shared `llm.promptCaching?: boolean` switch to every provider. Chat call options override provider config, with `true` as the default. Each provider decides its request behavior. Cache read/creation counters remain visible in usage summaries.
+
+### Patch Changes
+
+- Updated dependencies [24761ec]
+- Updated dependencies [24761ec]
+- Updated dependencies [24761ec]
+- Updated dependencies [24761ec]
+- Updated dependencies [24761ec]
+- Updated dependencies [24761ec]
+- Updated dependencies [24761ec]
+- Updated dependencies [24761ec]
+  - @mcp-abap-adt/anthropic-llm@30.12.0
+  - @mcp-abap-adt/deepseek-llm@30.11.0
+  - @mcp-abap-adt/llm-agent-libs@33.1.0
+  - @mcp-abap-adt/llm-agent-server-libs@33.1.0
+  - @mcp-abap-adt/llm-agent@33.2.0
+  - @mcp-abap-adt/ollama-llm@30.11.0
+  - @mcp-abap-adt/openai-llm@30.12.0
+  - @mcp-abap-adt/sap-aicore-llm@31.0.0
+
 ## 33.0.1
 
 ### Patch Changes

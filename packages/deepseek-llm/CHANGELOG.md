@@ -1,5 +1,11 @@
 # @mcp-abap-adt/deepseek-llm
 
+## 30.11.0
+
+### Minor Changes
+
+- 24761ec: DeepSeek caches matching prefixes automatically. The shared `promptCaching?: boolean` switch has no request effect: the client cannot turn off provider caching. No cache parameters are sent. `prompt_cache_hit_tokens` is preserved as `cachedInputTokens` in normalized chat/stream usage and physical usage records.
+
 ## 30.10.4
 
 ### Patch Changes

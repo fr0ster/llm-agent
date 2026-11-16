@@ -1,6 +1,6 @@
 {
   "name": "@mcp-abap-adt/ollama-llm",
-  "version": "30.10.4",
+  "version": "30.11.0",
   "description": "Ollama LLM provider (ILlm, extends OpenAIProvider — Ollama's OpenAI-compatible /v1 API) for @mcp-abap-adt/llm-agent.",
   "type": "module",
   "main": "dist/index.js",
