@@ -20,6 +20,7 @@
     "packages/ollama-embedder/src/ollama-rag.test.ts",
     "packages/llm-agent/src/resilience/embedder-throttle.test.ts",
     "packages/llm-agent/src/llm/__tests__/embedding-throttle-metadata.test.ts",
+    "packages/llm-agent/src/llm/__tests__/throttle-metadata-parity.test.ts",
     "packages/openai-embedder/src/retry-control.test.ts",
     "packages/openai-embedder/src/error-body.test.ts",
     "packages/ollama-embedder/src/error-body.test.ts",

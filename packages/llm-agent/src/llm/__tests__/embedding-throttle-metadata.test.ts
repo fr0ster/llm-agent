@@ -35,7 +35,8 @@ test('metadata readers support direct, SDK, parsed and cyclic errors', () => {
     retryAfterSecondsOf({ headers: new Headers({ 'Retry-After': '3' }) }),
     3,
   );
-  assert.equal(retryAfterSecondsOf({ retryAfterSeconds: 0, cause: inner }), 0);
+  assert.equal(retryAfterSecondsOf({ retryAfterSeconds: 0 }), 0);
+  assert.equal(retryAfterSecondsOf({ retryAfterSeconds: 0, cause: inner }), 2);
   assert.equal(retryAfterSecondsOf({ retryAfterSeconds: -1, cause: inner }), 2);
   const cycle: { cause?: object } = {};
   cycle.cause = cycle;

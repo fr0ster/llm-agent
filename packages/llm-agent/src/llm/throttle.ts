@@ -652,6 +652,18 @@ export function parseRetryAfter(
 export function retryAfterSecondsOf(
   error: object | undefined,
 ): number | undefined {
+  // Preserve BaseLLMProvider's response-header precedence across the entire
+  // cause chain, including a blank or malformed header stopping the search.
+  for (const current of errorCauseChain(error)) {
+    const response = 'response' in current ? current.response : undefined;
+    const raw =
+      response && typeof response === 'object' && 'headers' in response
+        ? headerOf(response.headers, 'retry-after')
+        : undefined;
+    if (raw !== undefined) return parseRetryAfter(raw);
+  }
+
+  // Embedders also expose parsed metadata and headers directly on RagError.
   for (const current of errorCauseChain(error)) {
     if (
       'retryAfterSeconds' in current &&
@@ -661,7 +673,12 @@ export function retryAfterSecondsOf(
     ) {
       return current.retryAfterSeconds;
     }
-    const parsed = parseRetryAfter(headerOf(current, 'retry-after'));
+    const parsed = parseRetryAfter(
+      headerOf(
+        'headers' in current ? current.headers : undefined,
+        'retry-after',
+      ),
+    );
     if (parsed !== undefined) return parsed;
   }
   return undefined;
@@ -687,15 +704,8 @@ export function httpStatusOf(error: object | undefined): number | undefined {
   return undefined;
 }
 
-/** One response header, case-insensitively, from an axios-shaped error. */
-function headerOf(current: object, name: string): string | undefined {
-  const response = 'response' in current ? current.response : undefined;
-  const headers =
-    'headers' in current
-      ? current.headers
-      : response && typeof response === 'object' && 'headers' in response
-        ? response.headers
-        : undefined;
+/** One header, case-insensitively, from a transport header collection. */
+function headerOf<T>(headers: T, name: string): string | undefined {
   if (!headers || typeof headers !== 'object') return undefined;
   const get = 'get' in headers ? headers.get : undefined;
   if (typeof get === 'function') {
