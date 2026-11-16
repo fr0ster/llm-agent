@@ -409,6 +409,8 @@ export async function runWithThrottleRetry<T>(
   fn: () => Promise<T>,
   opts: ThrottleRetryOptions,
 ): Promise<T> {
+  // Cancellation belongs to the caller, even when this quota is already shut.
+  opts.signal?.throwIfAborted();
   const { gate, release } = leaseQuotaGate(opts.key);
   try {
     return await attemptWithGate(fn, opts, gate);

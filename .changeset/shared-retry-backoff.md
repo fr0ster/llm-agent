@@ -13,3 +13,7 @@ configured `retry.waitStrategy`, and an abort during throttle retry backoff
 rethrows the caller's original `signal.reason`. RetryLlm preserves its Result
 contract: cancellation returns or yields ABORTED with the original
 `signal.reason` as the error cause.
+
+An already-aborted call now reports the caller's cancellation before the
+throttle quota gate is consulted (embed, embedBatch, LlmAdapter chat and
+stream return ABORTED with the reason as cause).

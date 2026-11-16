@@ -2,16 +2,117 @@ import assert from 'node:assert/strict';
 import { getEventListeners } from 'node:events';
 import { test } from 'node:test';
 import {
+  BaseLLMProvider,
   CircuitBreaker,
   CircuitBreakerLlm,
   DefaultWaitStrategy,
+  findThrottled,
+  gateFor,
   type ILlm,
+  type LLMCallOptions,
+  type LLMResponse,
   LlmError,
   type LlmStreamChunk,
   type Result,
   withRetry,
 } from '@mcp-abap-adt/llm-agent';
+import { LlmAdapter } from '../../adapters/llm-adapter.js';
 import { RetryLlm } from '../retry-llm.js';
+
+class ClosedQuotaProvider extends BaseLLMProvider {
+  calls = 0;
+
+  key() {
+    return this.quotaKey();
+  }
+
+  async chat(
+    _messages: Parameters<BaseLLMProvider['chat']>[0],
+    _tools?: Parameters<BaseLLMProvider['chat']>[1],
+    options?: LLMCallOptions,
+  ): Promise<LLMResponse> {
+    return this.withThrottleRetry(
+      async () => {
+        this.calls++;
+        throw Object.assign(new Error('quota'), {
+          response: { status: 429, headers: { 'Retry-After': '60' } },
+        });
+      },
+      { signal: options?.signal },
+    );
+  }
+
+  async *streamChat(
+    messages: Parameters<BaseLLMProvider['chat']>[0],
+    tools?: Parameters<BaseLLMProvider['chat']>[1],
+    options?: LLMCallOptions,
+  ): AsyncIterable<LLMResponse> {
+    yield await this.chat(messages, tools, options);
+  }
+}
+
+for (const stream of [false, true]) {
+  for (const layer of ['adapter', 'retry', 'breaker']) {
+    for (const reason of [
+      new Error('already stopped'),
+      { message: 'already stopped' },
+      'already stopped',
+    ]) {
+      test(`closed provider quota returns ABORTED, stream=${stream}, layer=${layer}, reason=${typeof reason}`, async () => {
+        const provider = new ClosedQuotaProvider({
+          quotaScope: `${stream}-${layer}-${typeof reason}`,
+        });
+        const adapter = new LlmAdapter({
+          callWithTools: (messages, tools, options) =>
+            provider.chat(messages, tools, options),
+          async *streamWithTools(messages, tools, options) {
+            yield* provider.streamChat(messages, tools, options);
+          },
+        });
+        const retry = new RetryLlm(adapter);
+        const breaker = new CircuitBreaker({ failureThreshold: 2 });
+        const llm =
+          layer === 'adapter'
+            ? adapter
+            : layer === 'retry'
+              ? retry
+              : new CircuitBreakerLlm(retry, breaker);
+        const call = async (signal?: AbortSignal) => {
+          if (!stream) return llm.chat([], undefined, { signal });
+          const chunks: Result<LlmStreamChunk, LlmError>[] = [];
+          for await (const chunk of llm.streamChat([], undefined, { signal }))
+            chunks.push(chunk);
+          assert.equal(chunks.length, 1);
+          return chunks[0];
+        };
+        try {
+          const first = await call();
+          assert.equal(first.ok, false);
+          if (first.ok) assert.fail('the server must close the quota');
+          assert.ok(findThrottled(first.error));
+          assert.ok(gateFor(provider.key()).remaining() > 0);
+          const controller = new AbortController();
+          controller.abort(reason);
+          // Exercise the shared provider loop before the Result adapters.
+          await assert.rejects(
+            provider.chat([], undefined, { signal: controller.signal }),
+            (error) => error === reason,
+          );
+          const result = await call(controller.signal);
+          assert.equal(result.ok, false);
+          if (result.ok)
+            assert.fail('cancellation must return an error Result');
+          assert.equal(result.error.code, 'ABORTED');
+          assert.equal(result.error.cause, reason);
+          assert.equal(provider.calls, 1);
+          assert.equal(breaker.state, 'closed');
+        } finally {
+          gateFor(provider.key()).clear();
+        }
+      });
+    }
+  }
+}
 
 for (const stream of [false, true]) {
   for (const throughBreaker of [false, true]) {

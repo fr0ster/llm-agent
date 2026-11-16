@@ -334,6 +334,11 @@ export class LlmAdapter implements ILlm, IModelProvider {
     tools?: LlmTool[],
     options?: CallOptions,
   ): Promise<Result<LlmResponse, LlmError>> {
+    if (options?.signal?.aborted) {
+      const error = new LlmError('Aborted', 'ABORTED');
+      error.cause = options.signal.reason;
+      return { ok: false, error };
+    }
     try {
       const onDiagnostic: ParseDiagnosticSink | undefined =
         options?.sessionLogger
@@ -391,6 +396,12 @@ export class LlmAdapter implements ILlm, IModelProvider {
     tools?: LlmTool[],
     options?: CallOptions,
   ): AsyncIterable<Result<LlmStreamChunk, LlmError>> {
+    if (options?.signal?.aborted) {
+      const error = new LlmError('Aborted', 'ABORTED');
+      error.cause = options.signal.reason;
+      yield { ok: false, error };
+      return;
+    }
     try {
       const onDiagnostic: ParseDiagnosticSink | undefined =
         options?.sessionLogger

@@ -124,12 +124,25 @@ export class RetryEmbedder implements IEmbedder {
       let physicalAttempt = 0;
       let transientAttempt = 0;
       return runWithThrottleRetry(
-        () => {
+        async () => {
           options?.signal?.throwIfAborted();
-          return call({
-            ...options,
-            usageOp: withOuterAttempt(op, physicalAttempt++),
-          });
+          try {
+            return await call({
+              ...options,
+              usageOp: withOuterAttempt(op, physicalAttempt++),
+            });
+          } catch (error) {
+            // The ordinary retry loop reaches its abort check after a retryable
+            // failure with attempts left. Keep that outcome and the caller reason.
+            if (
+              options?.signal?.aborted &&
+              transientAttempt < this.opts.maxAttempts &&
+              this.isRetryable(error)
+            ) {
+              options.signal.throwIfAborted();
+            }
+            throw error;
+          }
         },
         {
           ...this.opts.throttle,

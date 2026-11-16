@@ -4,8 +4,14 @@ import { afterEach, test } from 'node:test';
 import { type IEmbedderBatch, isBatchEmbedder } from '../interfaces/rag.js';
 import { WaitAsTold } from '../interfaces/throttle-strategy.js';
 import type { CallOptions } from '../interfaces/types.js';
+import { RagError } from '../interfaces/types.js';
 import type { IWaitStrategy } from '../interfaces/wait-strategy.js';
-import { resetQuotaGates, setThrottleObserver } from '../llm/throttle.js';
+import {
+  gateFor,
+  isThrottledError,
+  resetQuotaGates,
+  setThrottleObserver,
+} from '../llm/throttle.js';
 import { CircuitBreaker } from './circuit-breaker.js';
 import { withCircuitBreaker } from './circuit-breaker-embedder.js';
 import { composeResilientEmbedder } from './embedder-resilience.js';
@@ -25,6 +31,91 @@ afterEach(() => {
   resetQuotaGates();
   setThrottleObserver(undefined);
 });
+
+for (const batch of [false, true]) {
+  for (const throttled of [false, true]) {
+    for (const maxAttempts of [0, 1]) {
+      for (const status of [400, 429, 503]) {
+        test(`abort during a failed call keeps retry exit semantics, batch=${batch}, throttle=${throttled}, retries=${maxAttempts}, status=${status}`, async () => {
+          const controller = new AbortController();
+          const reason = { message: 'caller cancelled in flight' };
+          const failure = Object.assign(new Error('provider failure'), {
+            status,
+          });
+          let calls = 0;
+          const embed = async () => {
+            calls++;
+            controller.abort(reason);
+            throw failure;
+          };
+          const provider: IEmbedderBatch = {
+            embed,
+            async embedBatch() {
+              return [await embed()];
+            },
+          };
+          const embedder = composeResilientEmbedder(provider, {
+            retry: { maxAttempts },
+            ...(throttled ? { throttle: { key: 'abort-in-flight' } } : {}),
+          });
+          assert.ok(isBatchEmbedder(embedder));
+          const pending = batch
+            ? embedder.embedBatch(['q'], { signal: controller.signal })
+            : embedder.embed('q', { signal: controller.signal });
+          await assert.rejects(pending, (error) => {
+            if (maxAttempts === 0 || status === 400) return error === failure;
+            return throttled
+              ? error === reason
+              : error instanceof RagError && error.code === 'ABORTED';
+          });
+          assert.equal(calls, 1);
+        });
+      }
+    }
+  }
+  for (const reason of [
+    new Error('already stopped'),
+    { message: 'already stopped' },
+    'already stopped',
+  ]) {
+    test(`closed quota preserves an already-aborted caller reason, batch=${batch}, reason=${typeof reason}`, async () => {
+      let calls = 0;
+      const embed = async () => {
+        calls++;
+        throw Object.assign(new Error('quota'), {
+          response: { status: 429, headers: { 'Retry-After': '60' } },
+        });
+      };
+      const provider: IEmbedderBatch = {
+        embed,
+        async embedBatch() {
+          return [await embed()];
+        },
+      };
+      const key = 'closed-before-abort';
+      const embedder = composeResilientEmbedder(provider, {
+        throttle: { key },
+      });
+      assert.ok(isBatchEmbedder(embedder));
+      const call = (signal?: AbortSignal) =>
+        batch
+          ? embedder.embedBatch(['q'], { signal })
+          : embedder.embed('q', { signal });
+      await assert.rejects(call(), isThrottledError);
+      assert.ok(gateFor(key).remaining() > 0);
+      const controller = new AbortController();
+      controller.abort(reason);
+      const events: string[] = [];
+      setThrottleObserver((event) => events.push(event.source));
+      await assert.rejects(
+        call(controller.signal),
+        (error) => error === reason,
+      );
+      assert.equal(calls, 1);
+      assert.deepEqual(events, []);
+    });
+  }
+}
 
 for (const batch of [false, true]) {
   for (const throttled of [false, true]) {
