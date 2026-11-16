@@ -7,14 +7,11 @@ import {
   parseRetryAfter,
   RagError,
   startOperation,
-  withChunk,
   withProviderAttempt,
 } from '@mcp-abap-adt/llm-agent';
 
 export interface OpenAiEmbedderConfig {
   usage?: IUsageRecorder;
-  /** Disable provider retries to delegate retry policy to resilience. Default: true. */
-  retry?: boolean;
   /**
    * Asked for fresh on every request — never cached — so a rotating key
    * rotates and a resolved-once secret is never frozen for the object's
@@ -31,8 +28,9 @@ export class OpenAiEmbedder implements IEmbedderBatch {
   private readonly baseURL: string;
   private readonly credential: IApiKeyCredential;
   readonly model: string;
+  /** Chunking belongs to the resilience composition. */
+  readonly maxBatchSize = 100;
   private readonly usage?: IUsageRecorder;
-  private readonly retry: boolean;
 
   constructor(config: OpenAiEmbedderConfig) {
     if (!config.credential) {
@@ -48,7 +46,6 @@ export class OpenAiEmbedder implements IEmbedderBatch {
     );
     this.model = config.model;
     this.usage = config.usage;
-    this.retry = config.retry ?? true;
   }
 
   /** Asked per request, from the field — there is no config object to pass. */
@@ -59,104 +56,85 @@ export class OpenAiEmbedder implements IEmbedderBatch {
   async embed(text: string, options?: CallOptions): Promise<IEmbedResult> {
     options?.signal?.throwIfAborted();
     const url = `${this.baseURL}/embeddings`;
-    let lastError: Error | undefined;
-    const maxRetries = this.retry ? 3 : 1;
     const op = startOperation(options);
 
-    for (let attempt = 0; attempt < maxRetries; attempt++) {
-      let request: ReturnType<typeof beginEmbeddingRequest> | undefined;
-      try {
-        const authorization = await this.authorization();
-        request = beginEmbeddingRequest(
-          options,
-          withProviderAttempt(op, attempt),
+    let request: ReturnType<typeof beginEmbeddingRequest> | undefined;
+    try {
+      const authorization = await this.authorization();
+      request = beginEmbeddingRequest(
+        options,
+        withProviderAttempt(op, 0),
+        {
+          provider: 'openai',
+          model: this.model,
+          inputs: [text].length,
+          inputChars: [text].reduce((sum, value) => sum + value.length, 0),
+          granularity: 'request',
+          retriesVisible: true,
+        },
+        this.usage,
+      );
+      // The caller's signal and nothing else. A ceiling of our own would run
+      // on every request and fire instead of whatever decided above us — a
+      // caller waiting out a server's Retry-After, cut before the interval
+      // is up. A consumer that wants one passes AbortSignal.timeout().
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: authorization,
+        },
+        body: JSON.stringify({ model: this.model, input: text }),
+        signal: options?.signal,
+      });
+
+      if (!res.ok) {
+        request.end({ outcome: 'error', errorCode: String(res.status) });
+        const errorText = await res.text().catch(() => '');
+        throw Object.assign(
+          new RagError(
+            `OpenAI embed error: HTTP ${res.status} - ${errorText}`,
+            'EMBED_ERROR',
+          ),
           {
-            provider: 'openai',
-            model: this.model,
-            inputs: [text].length,
-            inputChars: [text].reduce((sum, value) => sum + value.length, 0),
-            granularity: 'request',
-            retriesVisible: true,
+            status: res.status,
+            headers: res.headers,
+            retryAfterSeconds: parseRetryAfter(res.headers.get('retry-after')),
           },
-          this.usage,
         );
-        // The caller's signal and nothing else. A ceiling of our own would run
-        // on every request and fire instead of whatever decided above us — a
-        // caller waiting out a server's Retry-After, cut before the interval
-        // is up. A consumer that wants one passes AbortSignal.timeout().
-        const res = await fetch(url, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: authorization,
-          },
-          body: JSON.stringify({ model: this.model, input: text }),
-          signal: options?.signal,
-        });
+      }
 
-        if (!res.ok) {
-          request.end({ outcome: 'error', errorCode: String(res.status) });
-          const errorText = await res.text().catch(() => '');
-          throw Object.assign(
-            new RagError(
-              `OpenAI embed error: HTTP ${res.status} - ${errorText}`,
-              'EMBED_ERROR',
-            ),
-            {
-              status: res.status,
-              headers: res.headers,
-              retryAfterSeconds: parseRetryAfter(
-                res.headers.get('retry-after'),
-              ),
-            },
-          );
-        }
-
-        const json = (await res.json()) as {
-          data: Array<{ embedding: number[] }>;
-          usage?: { prompt_tokens: number; total_tokens: number };
-        };
-        const vector = json.data[0].embedding;
-        if (!Array.isArray(vector) || vector.length === 0)
-          throw new RagError('Invalid embedding response');
-        const usage = json.usage
-          ? {
-              promptTokens: json.usage.prompt_tokens,
-              totalTokens: json.usage.total_tokens,
-            }
-          : undefined;
-        request.end({
-          outcome: 'ok',
-          inputTokens: json.usage?.prompt_tokens,
-          tokensSource:
-            json.usage?.prompt_tokens === undefined ? 'unknown' : 'provider',
-        });
-        return { vector, usage };
-      } catch (err: unknown) {
-        request?.end({
-          outcome:
-            options?.signal?.aborted ||
-            (err instanceof Error && err.name === 'AbortError')
-              ? 'aborted'
-              : 'error',
-          error: err,
-        });
-        lastError = err instanceof Error ? err : new Error(String(err));
-        if (
-          !this.retry ||
+      const json = (await res.json()) as {
+        data: Array<{ embedding: number[] }>;
+        usage?: { prompt_tokens: number; total_tokens: number };
+      };
+      const vector = json.data[0].embedding;
+      if (!Array.isArray(vector) || vector.length === 0)
+        throw new RagError('Invalid embedding response');
+      const usage = json.usage
+        ? {
+            promptTokens: json.usage.prompt_tokens,
+            totalTokens: json.usage.total_tokens,
+          }
+        : undefined;
+      request.end({
+        outcome: 'ok',
+        inputTokens: json.usage?.prompt_tokens,
+        tokensSource:
+          json.usage?.prompt_tokens === undefined ? 'unknown' : 'provider',
+      });
+      return { vector, usage };
+    } catch (err) {
+      request?.end({
+        outcome:
           options?.signal?.aborted ||
           (err instanceof Error && err.name === 'AbortError')
-        )
-          throw err;
-        const delay = 500 * 2 ** attempt;
-        await new Promise((resolve) => setTimeout(resolve, delay));
-      }
+            ? 'aborted'
+            : 'error',
+        error: err,
+      });
+      throw err;
     }
-
-    throw (
-      lastError ||
-      new RagError('OpenAI embed failed after retries', 'EMBED_ERROR')
-    );
   }
 
   async embedBatch(
@@ -167,127 +145,90 @@ export class OpenAiEmbedder implements IEmbedderBatch {
     if (texts.length === 0) return [];
 
     const op = startOperation(options);
-    const chunkSize = 100;
-    const results: IEmbedResult[] = new Array(texts.length);
+    const url = `${this.baseURL}/embeddings`;
 
-    for (let start = 0; start < texts.length; start += chunkSize) {
-      const chunk = texts.slice(start, start + chunkSize);
-      const url = `${this.baseURL}/embeddings`;
-      let lastError: Error | undefined;
-      const maxRetries = this.retry ? 3 : 1;
+    let request: ReturnType<typeof beginEmbeddingRequest> | undefined;
+    try {
+      const authorization = await this.authorization();
+      request = beginEmbeddingRequest(
+        options,
+        withProviderAttempt(op, 0),
+        {
+          provider: 'openai',
+          model: this.model,
+          inputs: texts.length,
+          inputChars: texts.reduce((sum, value) => sum + value.length, 0),
+          granularity: 'request',
+          retriesVisible: true,
+        },
+        this.usage,
+      );
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: authorization,
+        },
+        body: JSON.stringify({ model: this.model, input: texts }),
+        signal: options?.signal,
+      });
 
-      for (let attempt = 0; attempt < maxRetries; attempt++) {
-        let request: ReturnType<typeof beginEmbeddingRequest> | undefined;
-        try {
-          const authorization = await this.authorization();
-          request = beginEmbeddingRequest(
-            options,
-            withProviderAttempt(
-              withChunk(
-                op,
-                start / chunkSize,
-                Math.ceil(texts.length / chunkSize),
-              ),
-              attempt,
-            ),
-            {
-              provider: 'openai',
-              model: this.model,
-              inputs: chunk.length,
-              inputChars: chunk.reduce((sum, value) => sum + value.length, 0),
-              granularity: 'request',
-              retriesVisible: true,
-            },
-            this.usage,
-          );
-          const res = await fetch(url, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              Authorization: authorization,
-            },
-            body: JSON.stringify({ model: this.model, input: chunk }),
-            signal: options?.signal,
-          });
-
-          if (!res.ok) {
-            request.end({ outcome: 'error', errorCode: String(res.status) });
-            const errorText = await res.text().catch(() => '');
-            throw Object.assign(
-              new RagError(
-                `OpenAI batch embed error: HTTP ${res.status} - ${errorText}`,
-                'EMBED_ERROR',
-              ),
-              {
-                status: res.status,
-                headers: res.headers,
-                retryAfterSeconds: parseRetryAfter(
-                  res.headers.get('retry-after'),
-                ),
-              },
-            );
-          }
-
-          const json = (await res.json()) as {
-            data: Array<{ embedding: number[]; index: number }>;
-            usage?: { prompt_tokens: number; total_tokens: number };
-          };
-          const sorted = json.data.sort((a, b) => a.index - b.index);
-          if (
-            sorted.length === 0 ||
-            sorted.some(
-              (item) =>
-                !Array.isArray(item.embedding) || item.embedding.length === 0,
-            )
-          )
-            throw new RagError('Invalid embedding response');
-          const chunkLen = sorted.length;
-          const usagePerItem = json.usage
-            ? {
-                promptTokens: Math.round(json.usage.prompt_tokens / chunkLen),
-                totalTokens: Math.round(json.usage.total_tokens / chunkLen),
-              }
-            : undefined;
-          for (let i = 0; i < sorted.length; i++) {
-            results[start + i] = {
-              vector: sorted[i].embedding,
-              usage: usagePerItem,
-            };
-          }
-          request.end({
-            outcome: 'ok',
-            inputTokens: json.usage?.prompt_tokens,
-            tokensSource:
-              json.usage?.prompt_tokens === undefined ? 'unknown' : 'provider',
-          });
-          lastError = undefined;
-          break;
-        } catch (err: unknown) {
-          request?.end({
-            outcome:
-              options?.signal?.aborted ||
-              (err instanceof Error && err.name === 'AbortError')
-                ? 'aborted'
-                : 'error',
-            error: err,
-          });
-          lastError = err instanceof Error ? err : new Error(String(err));
-          if (
-            !this.retry ||
-            options?.signal?.aborted ||
-            (err instanceof Error && err.name === 'AbortError')
-          )
-            throw err;
-          const delay = 500 * 2 ** attempt;
-          await new Promise((resolve) => setTimeout(resolve, delay));
-        }
+      if (!res.ok) {
+        request.end({ outcome: 'error', errorCode: String(res.status) });
+        const errorText = await res.text().catch(() => '');
+        throw Object.assign(
+          new RagError(
+            `OpenAI batch embed error: HTTP ${res.status} - ${errorText}`,
+            'EMBED_ERROR',
+          ),
+          {
+            status: res.status,
+            headers: res.headers,
+            retryAfterSeconds: parseRetryAfter(res.headers.get('retry-after')),
+          },
+        );
       }
 
-      if (lastError) {
-        throw lastError;
-      }
+      const json = (await res.json()) as {
+        data: Array<{ embedding: number[]; index: number }>;
+        usage?: { prompt_tokens: number; total_tokens: number };
+      };
+      const sorted = json.data.sort((a, b) => a.index - b.index);
+      if (
+        sorted.length === 0 ||
+        sorted.some(
+          (item) =>
+            !Array.isArray(item.embedding) || item.embedding.length === 0,
+        )
+      )
+        throw new RagError('Invalid embedding response');
+      const chunkLen = sorted.length;
+      const usagePerItem = json.usage
+        ? {
+            promptTokens: Math.round(json.usage.prompt_tokens / chunkLen),
+            totalTokens: Math.round(json.usage.total_tokens / chunkLen),
+          }
+        : undefined;
+      request.end({
+        outcome: 'ok',
+        inputTokens: json.usage?.prompt_tokens,
+        tokensSource:
+          json.usage?.prompt_tokens === undefined ? 'unknown' : 'provider',
+      });
+      return sorted.map((item) => ({
+        vector: item.embedding,
+        usage: usagePerItem,
+      }));
+    } catch (err) {
+      request?.end({
+        outcome:
+          options?.signal?.aborted ||
+          (err instanceof Error && err.name === 'AbortError')
+            ? 'aborted'
+            : 'error',
+        error: err,
+      });
+      throw err;
     }
-
-    return results;
   }
 }

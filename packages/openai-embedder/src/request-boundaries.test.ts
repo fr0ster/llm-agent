@@ -3,6 +3,30 @@ import { test } from 'node:test';
 import type { IUsageRecorder, UsageInput } from '@mcp-abap-adt/llm-agent';
 import { OpenAiEmbedder } from './openai-embedder.js';
 
+test('raw batches submit all inputs in one HTTP request; empty batches send none', async (t) => {
+  let requests = 0;
+  const inputs = Array.from({ length: 201 }, (_, i) => String(i));
+  t.mock.method(
+    globalThis,
+    'fetch',
+    async (_url: string | URL | Request, init?: RequestInit) => {
+      requests++;
+      assert.deepEqual(JSON.parse(String(init?.body)).input, inputs);
+      return Response.json({
+        data: inputs.map((_, index) => ({ index, embedding: [index] })),
+      });
+    },
+  );
+  const provider = new OpenAiEmbedder({
+    model: 'test',
+    credential: { kind: 'api-key', secret: async () => 'secret' },
+  });
+  assert.deepEqual(await provider.embedBatch([]), []);
+  assert.equal(requests, 0);
+  assert.equal((await provider.embedBatch(inputs)).length, inputs.length);
+  assert.equal(requests, 1);
+});
+
 test('unusable HTTP 200 responses record an error for each physical request in single and batch paths', async (t) => {
   const records: UsageInput[] = [];
   const usage: IUsageRecorder = {
@@ -13,11 +37,6 @@ test('unusable HTTP 200 responses record an error for each physical request in s
   t.mock.method(globalThis, 'fetch', async () => {
     requests++;
     return Response.json({ data: [] });
-  });
-  // Skip only the backoff delay, preserving all physical retry attempts.
-  t.mock.method(globalThis, 'setTimeout', (callback: () => void) => {
-    callback();
-    return undefined as unknown as ReturnType<typeof setTimeout>;
   });
   const provider = new OpenAiEmbedder({
     model: 'test',
@@ -30,17 +49,13 @@ test('unusable HTTP 200 responses record an error for each physical request in s
     await assert.rejects(
       batch ? provider.embedBatch(['a']) : provider.embed('a'),
     );
-    assert.equal(requests, 3);
+    assert.equal(requests, 1);
     assert.equal(records.length, requests);
     assert.ok(records.every((r) => r.outcome === 'error'));
   }
 });
 
 test('credential rejection creates no requests or records in single and batch paths', async (t) => {
-  t.mock.method(globalThis, 'setTimeout', (callback: () => void) => {
-    callback();
-    return undefined as unknown as ReturnType<typeof setTimeout>;
-  });
   const records: UsageInput[] = [];
   const usage: IUsageRecorder = {
     record: (r) => records.push(r),

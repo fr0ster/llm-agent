@@ -24,12 +24,11 @@ const credential = staticApiKey('your-key');
 const rawToolSearch = new OpenAiEmbedder({
   model: 'text-embedding-3-small',
   credential,
-  retry: false,
   // usage: recorder,
 });
 // For Ollama, use this instead:
 // const rawToolSearch = new OllamaEmbedder({
-//   model: 'bge-m3', ollamaUrl: 'http://localhost:11434', retry: false,
+//   model: 'bge-m3', ollamaUrl: 'http://localhost:11434',
 // });
 
 const toolSearchEmbedder = withCircuitBreaker(
@@ -60,10 +59,13 @@ long waits use timer slices to avoid Node timer overflow, without shortening the
 quota hold. Explicit Retry-After: 0 retries without fallback backoff. The default
 `WaitAsTold()` still reports a missing/zero interval, as before.
 
-Both retry settings matter: provider `retry: false` removes the OpenAI/Ollama
-internal retries; composition `retry: false` removes ordinary resilience retries.
-HTTP 400/5xx, network errors and decoding failures then surface on the first
-attempt. All defaults retain their earlier behavior when these options are absent.
+OpenAI/Ollama providers make one HTTP request per `embed` or non-empty `embedBatch` call and have
+no constructor `retry` option. Composition `retry: false` removes ordinary
+resilience retries. HTTP 400/5xx, network errors and decoding failures then surface
+on the first attempt. To migrate ordinary usage, wrap the raw provider with
+`composeEmbedder(raw)` for default retries, or configure its `retry` options.
+OpenAI declares `maxBatchSize: 100`; composition now owns its batch splitting,
+so each failed chunk retries independently without repeating completed chunks.
 
 The composition keeps the existing single-input character cap (batch inputs are
 unchanged), chunking and batch capability. Each retried batch chunk is independent;
@@ -75,16 +77,16 @@ readers, including fetch headers and SDK response/cause shapes.
 ## cloud-llm-hub migration
 
 In `srv/lib/providers.ts`, keep the existing document/general embedder path and its
-breaker settings. Change the local provider factory to accept a retry flag and
-pass it to the OpenAI/Ollama constructor. Build the tool-search path with a **fresh
-raw instance** created with `retry: false`. Do not pass the already composed general
-embedder: composition is idempotent and will preserve its original retry policy.
+breaker settings. The local provider factory keeps the same constructor options
+without a retry flag. Build the tool-search path with a **fresh raw instance**.
+Do not pass the already composed general embedder: composition is idempotent and
+will preserve its original retry policy.
 
 Replace the existing `composeResilientEmbedder(withToolSearchRateLimit(...))` block
 with the following (the existing `breaker` is shared with the general path):
 
 ```ts
-const toolSearch = composeEmbedder(createEmbedder(false), {
+const toolSearch = composeEmbedder(createEmbedder(), {
   retry: false,
   throttle: {
     key: `tool-search-embedding:${JSON.stringify(embedderFingerprint(cfg))}`,
@@ -94,9 +96,10 @@ const toolSearch = composeEmbedder(createEmbedder(false), {
 const toolSearchEmbedder = withCircuitBreaker(toolSearch, breaker);
 ```
 
-Here `createEmbedder(retry = true)` must pass `retry` into both provider configs;
-keep the same model, endpoint, rotating credential and usage recorder settings.
-Existing general construction `createEmbedder()` retains provider retries. Keep
+Here `createEmbedder()` returns a raw provider with the same model, endpoint,
+rotating credential and usage recorder settings, without a constructor `retry`
+option. Keep the general path composed as `composeEmbedder(createEmbedder())` to
+retain its ordinary retries. Keep
 `toolSearchRetrieval: asymmetricEmbedder({ document: embedder, query: toolSearchEmbedder })`.
 
 Remove both imports and delete `srv/lib/tool-search-embedder.ts` and

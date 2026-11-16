@@ -1,6 +1,11 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import type { IUsageRecorder, UsageInput } from '@mcp-abap-adt/llm-agent';
+import {
+  composeResilientEmbedder,
+  type IUsageRecorder,
+  isBatchEmbedder,
+  type UsageInput,
+} from '@mcp-abap-adt/llm-agent';
 import { OllamaEmbedder } from './ollama.js';
 
 function recorder() {
@@ -32,17 +37,25 @@ test('physical embedding requests: totals, retries, overrides, aborts and safe e
       prompt_eval_count: 5,
     });
   });
-  const result = await provider.embedBatch(['private input', 'b', 'c']);
+  const composed = composeResilientEmbedder(provider, {
+    retry: { backoffMs: 0 },
+  });
+  assert.ok(isBatchEmbedder(composed));
+  const result = await composed.embedBatch(['private input', 'b', 'c']);
   assert.equal(result.length, 3);
   assert.equal(bound.records.length, 2);
   const records = bound.records.filter(
     (record) => record.kind === 'embedding.call',
   );
   assert.deepEqual(
-    records.map((record) => [record.providerAttempt, record.outcome]),
+    records.map((record) => [
+      record.outerAttempt,
+      record.providerAttempt,
+      record.outcome,
+    ]),
     [
-      [0, 'error'],
-      [1, 'ok'],
+      [0, 0, 'error'],
+      [1, 0, 'ok'],
     ],
   );
   assert.equal(records[0].operationId, records[1].operationId);
@@ -63,8 +76,8 @@ test('physical embedding requests: totals, retries, overrides, aborts and safe e
   });
   await assert.rejects(provider.embed('a'));
   assert.deepEqual(
-    bound.records.slice(-3).map((record) => record.outcome),
-    ['error', 'error', 'error'],
+    bound.records.slice(-1).map((record) => record.outcome),
+    ['error'],
   );
   assert.equal(bound.records.at(-1)?.errorCode, 'ECONNRESET');
 });

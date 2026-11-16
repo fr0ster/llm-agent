@@ -12,6 +12,7 @@ import {
   type CallOptions,
   CircuitBreakerLlm,
   DefaultWaitStrategy,
+  exponentialBackoffMs,
   findThrottled,
   isCallerCancellation,
   isRetryableStatus,
@@ -185,7 +186,10 @@ export class RetryLlm implements ILlm {
   }
 
   private async backoff(attempt: number, signal?: AbortSignal): Promise<void> {
-    await this.wait.wait(this.opts.backoffMs * 2 ** attempt, signal);
+    await this.wait.wait(
+      exponentialBackoffMs(this.opts.backoffMs, attempt),
+      signal,
+    );
   }
 }
 

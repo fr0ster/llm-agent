@@ -3034,14 +3034,14 @@ When set, only the last N non-system messages from client history are passed to 
 ```ts
 import { SmartAgentBuilder, SessionManager, InMemoryMetrics } from '@mcp-abap-adt/llm-agent-libs';
 import { OllamaEmbedder } from '@mcp-abap-adt/ollama-embedder';
-import { symmetricEmbedder, ToolCache } from '@mcp-abap-adt/llm-agent';
+import { composeResilientEmbedder, symmetricEmbedder, ToolCache } from '@mcp-abap-adt/llm-agent';
 import { QdrantRag } from '@mcp-abap-adt/qdrant-rag';
 
 const metrics = new InMemoryMetrics();
 
 // Create concrete implementations (composition root responsibility)
 const myLlm = new GeminiLlm(process.env.GEMINI_KEY!, 'gemini-pro');
-const embedder = new OllamaEmbedder({ model: 'bge-m3' }); // model is required; bge-m3 is multilingual (1024 dims)
+const embedder = composeResilientEmbedder(new OllamaEmbedder({ model: 'bge-m3' })); // model is required; bge-m3 is multilingual (1024 dims)
 const factsRag = new QdrantRag({
   url: 'http://qdrant:6333',
   collectionName: 'facts',

@@ -531,25 +531,19 @@ function report(
   });
 }
 
-const MAX_CAUSE_DEPTH = 5;
-
 /**
  * The rate-limit marker on an error or anywhere in its `cause` chain.
  *
  * Layers above the provider rewrap errors — the ILlm adapter turns anything
  * thrown into an `LlmError` — so the marker is rarely still on the outermost
  * object by the time a retry decorator inspects it. Bounded by depth and a
- * visited set, like `extractStatusCode`, so a cyclic chain cannot hang.
+ * visited set through the shared transport walker, so a cyclic chain cannot hang.
  */
 export function findThrottled(err: unknown): ThrottledError | undefined {
-  const visited = new Set<unknown>();
-  let cur: unknown = err;
-  for (let depth = 0; depth < MAX_CAUSE_DEPTH; depth++) {
-    if (typeof cur !== 'object' || cur === null || visited.has(cur))
-      return undefined;
-    visited.add(cur);
-    if (isThrottledError(cur)) return cur;
-    cur = (cur as { cause?: unknown }).cause;
+  for (const current of errorCauseChain(
+    typeof err === 'object' && err !== null ? err : undefined,
+  )) {
+    if (isThrottledError(current)) return current;
   }
   return undefined;
 }

@@ -14,7 +14,7 @@ import { OpenAiEmbedder } from './openai-embedder.js';
 for (const batch of [false, true]) {
   const mode = batch ? 'batch' : 'single';
   for (const status of [400, 429, 500, 503]) {
-    test(`retry:false preserves HTTP metadata on first ${mode} call (${status})`, async (t) => {
+    test(`single attempt preserves HTTP metadata on first ${mode} call (${status})`, async (t) => {
       let calls = 0;
       t.mock.method(globalThis, 'fetch', async () => {
         calls++;
@@ -33,7 +33,6 @@ for (const batch of [false, true]) {
       const provider = new OpenAiEmbedder({
         model: 'test',
         credential: { kind: 'api-key', secret: async () => 'test' },
-        retry: false,
         usage,
       });
       await assert.rejects(
@@ -54,7 +53,7 @@ for (const batch of [false, true]) {
       assert.equal(records[0].outcome, 'error');
     });
   }
-  test(`retry:false preserves network error identity for ${mode}`, async (t) => {
+  test(`single attempt preserves network error identity for ${mode}`, async (t) => {
     let calls = 0;
     const error = new TypeError('network failure');
     t.mock.method(globalThis, 'fetch', async () => {
@@ -64,7 +63,6 @@ for (const batch of [false, true]) {
     const provider = new OpenAiEmbedder({
       model: 'test',
       credential: { kind: 'api-key', secret: async () => 'test' },
-      retry: false,
     });
     await assert.rejects(
       batch ? provider.embedBatch(['q']) : provider.embed('q'),
@@ -72,7 +70,7 @@ for (const batch of [false, true]) {
     );
     assert.equal(calls, 1);
   });
-  test(`retry:false rejects invalid responses immediately for ${mode}`, async (t) => {
+  test(`single attempt rejects invalid responses immediately for ${mode}`, async (t) => {
     let calls = 0;
     t.mock.method(globalThis, 'fetch', async () => {
       calls++;
@@ -81,31 +79,11 @@ for (const batch of [false, true]) {
     const provider = new OpenAiEmbedder({
       model: 'test',
       credential: { kind: 'api-key', secret: async () => 'test' },
-      retry: false,
     });
     await assert.rejects(
       batch ? provider.embedBatch(['q']) : provider.embed('q'),
     );
     assert.equal(calls, 1);
-  });
-  test(`default retry still makes three ${mode} attempts`, async (t) => {
-    let calls = 0;
-    const timer = globalThis.setTimeout;
-    t.mock.method(globalThis, 'setTimeout', (callback: () => void) =>
-      timer(callback, 0),
-    );
-    t.mock.method(globalThis, 'fetch', async () => {
-      calls++;
-      return new Response('failure', { status: 500 });
-    });
-    const provider = new OpenAiEmbedder({
-      model: 'test',
-      credential: { kind: 'api-key', secret: async () => 'test' },
-    });
-    await assert.rejects(
-      batch ? provider.embedBatch(['q']) : provider.embed('q'),
-    );
-    assert.equal(calls, 3);
   });
   test(`composed ${mode} provider handles 429 beyond legacy retry limits`, async (t) => {
     t.after(resetQuotaGates);
@@ -129,7 +107,6 @@ for (const batch of [false, true]) {
       new OpenAiEmbedder({
         model: 'test',
         credential: { kind: 'api-key', secret: async () => 'test' },
-        retry: false,
         usage,
       }),
       {
@@ -159,7 +136,7 @@ for (const batch of [false, true]) {
   });
 }
 
-test('retry:false parses HTTP-date and missing Retry-After', async (t) => {
+test('provider parses HTTP-date and missing Retry-After', async (t) => {
   t.mock.method(Date, 'now', () => Date.parse('2026-01-01T00:00:00Z'));
   for (const raw of ['Thu, 01 Jan 2026 00:00:03 GMT', '', 'invalid']) {
     t.mock.method(
@@ -171,7 +148,6 @@ test('retry:false parses HTTP-date and missing Retry-After', async (t) => {
     const provider = new OpenAiEmbedder({
       model: 'test',
       credential: { kind: 'api-key', secret: async () => 'test' },
-      retry: false,
     });
     await assert.rejects(provider.embed('q'), (error) => {
       assert.ok(error instanceof RagError && 'retryAfterSeconds' in error);

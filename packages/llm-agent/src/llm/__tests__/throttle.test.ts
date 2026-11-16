@@ -11,6 +11,7 @@ import {
   GATE_IDLE_TTL_MS,
   GATE_LIMIT,
   gateFor,
+  httpStatusOf,
   isThrottledError,
   leaseQuotaGate,
   preserveThrottled,
@@ -18,9 +19,11 @@ import {
   QuotaGate,
   quotaGateCount,
   resetQuotaGates,
+  retryAfterSecondsOf,
   runWithThrottleRetry,
   setThrottleObserver,
   type ThrottleEvent,
+  type ThrottleRetryOptions,
 } from '../throttle.js';
 
 const tooManyRequests = (retryAfter?: string) => ({
@@ -30,35 +33,17 @@ const tooManyRequests = (retryAfter?: string) => ({
   },
 });
 
-const isThrottled = (e: unknown) =>
-  typeof e === 'object' &&
-  e !== null &&
-  'response' in e &&
-  typeof e.response === 'object' &&
-  e.response !== null &&
-  'status' in e.response &&
-  e.response.status === 429;
+const isThrottled: NonNullable<ThrottleRetryOptions['isThrottled']> = (error) =>
+  httpStatusOf(
+    typeof error === 'object' && error !== null ? error : undefined,
+  ) === 429;
 
-const retryAfterSeconds = (e: unknown) => {
-  if (
-    typeof e !== 'object' ||
-    e === null ||
-    !('response' in e) ||
-    typeof e.response !== 'object' ||
-    e.response === null ||
-    !('headers' in e.response)
-  )
-    return undefined;
-  const headers = e.response.headers;
-  if (
-    typeof headers !== 'object' ||
-    headers === null ||
-    !('retry-after' in headers)
-  )
-    return undefined;
-  const raw = headers['retry-after'];
-  return raw === undefined ? undefined : Number(raw);
-};
+const retryAfterSeconds: NonNullable<
+  ThrottleRetryOptions['retryAfterSeconds']
+> = (error) =>
+  retryAfterSecondsOf(
+    typeof error === 'object' && error !== null ? error : undefined,
+  );
 
 beforeEach(() => resetQuotaGates());
 

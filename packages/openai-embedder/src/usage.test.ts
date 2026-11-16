@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
-  BatchChunkingEmbedder,
+  composeResilientEmbedder,
   type IUsageRecorder,
-  RetryBatchEmbedder,
+  isBatchEmbedder,
   staticApiKey,
   type UsageInput,
 } from '@mcp-abap-adt/llm-agent';
@@ -42,17 +42,25 @@ test('physical embedding requests: totals, retries, overrides, aborts and safe e
       prompt_eval_count: 5,
     });
   });
-  const result = await provider.embedBatch(['private input', 'b', 'c']);
+  const composed = composeResilientEmbedder(provider, {
+    retry: { backoffMs: 0 },
+  });
+  assert.ok(isBatchEmbedder(composed));
+  const result = await composed.embedBatch(['private input', 'b', 'c']);
   assert.equal(result.length, 3);
   assert.equal(bound.records.length, 2);
   const records = bound.records.filter(
     (record) => record.kind === 'embedding.call',
   );
   assert.deepEqual(
-    records.map((record) => [record.providerAttempt, record.outcome]),
+    records.map((record) => [
+      record.outerAttempt,
+      record.providerAttempt,
+      record.outcome,
+    ]),
     [
-      [0, 'error'],
-      [1, 'ok'],
+      [0, 0, 'error'],
+      [1, 0, 'ok'],
     ],
   );
   assert.equal(records[0].operationId, records[1].operationId);
@@ -73,13 +81,13 @@ test('physical embedding requests: totals, retries, overrides, aborts and safe e
   });
   await assert.rejects(provider.embed('a'));
   assert.deepEqual(
-    bound.records.slice(-3).map((record) => record.outcome),
-    ['error', 'error', 'error'],
+    bound.records.slice(-1).map((record) => record.outcome),
+    ['error'],
   );
   assert.equal(bound.records.at(-1)?.errorCode, 'ECONNRESET');
 });
 
-test('nested outer chunks, outer retry and provider retries keep exact coordinates', async (t) => {
+test('composed chunks retry independently and keep exact coordinates', async (t) => {
   const bound = recorder();
   const provider = new OpenAiEmbedder({
     model: 'model',
@@ -92,9 +100,8 @@ test('nested outer chunks, outer retry and provider retries keep exact coordinat
     'fetch',
     async (_url: string | URL | Request, init?: RequestInit) => {
       const call = calls++;
-      if (call >= 4 && call <= 6)
+      if (call === 4)
         throw Object.assign(new Error('private failure'), { status: 500 });
-      if (call === 7) return new Response('private throttle', { status: 429 });
       const input = JSON.parse(String(init?.body)).input as string[];
       return Response.json({
         data: input.map((_text, index) => ({ embedding: [index], index })),
@@ -102,10 +109,10 @@ test('nested outer chunks, outer retry and provider retries keep exact coordinat
       });
     },
   );
-  const wrapped = new BatchChunkingEmbedder(
-    new RetryBatchEmbedder(provider, { maxAttempts: 1, backoffMs: 0 }),
-    200,
-  );
+  const wrapped = composeResilientEmbedder(provider, {
+    retry: { maxAttempts: 1, backoffMs: 0 },
+  });
+  assert.ok(isBatchEmbedder(wrapped));
   assert.equal(
     (await wrapped.embedBatch(Array.from({ length: 600 }, () => 'a'))).length,
     600,
@@ -121,16 +128,13 @@ test('nested outer chunks, outer retry and provider retries keep exact coordinat
       record.outcome,
     ]),
     [
-      ['1/3>1/2', 0, 0, 'ok'],
-      ['1/3>2/2', 0, 0, 'ok'],
-      ['2/3>1/2', 0, 0, 'ok'],
-      ['2/3>2/2', 0, 0, 'ok'],
-      ['3/3>1/2', 0, 0, 'error'],
-      ['3/3>1/2', 0, 1, 'error'],
-      ['3/3>1/2', 0, 2, 'error'],
-      ['3/3>1/2', 1, 0, 'error'],
-      ['3/3>1/2', 1, 1, 'ok'],
-      ['3/3>2/2', 1, 0, 'ok'],
+      ['1/6', 0, 0, 'ok'],
+      ['2/6', 0, 0, 'ok'],
+      ['3/6', 0, 0, 'ok'],
+      ['4/6', 0, 0, 'ok'],
+      ['5/6', 0, 0, 'error'],
+      ['5/6', 1, 0, 'ok'],
+      ['6/6', 0, 0, 'ok'],
     ],
   );
   assert.equal(new Set(records.map((record) => record.operationId)).size, 1);

@@ -92,7 +92,7 @@ Embedder resolution accepts `maxInputChars` on every factory configuration, incl
 `composeEmbedder` forwards `retry` and `throttle` to the core
 `composeResilientEmbedder`, alongside `maxInputChars` and `maxBatchSize`.
 For single-attempt non-429 failures and unlimited rate-limit waits, disable
-provider retries, pass `retry: false`, and configure
+ordinary composition retries with `retry: false`, and configure
 `throttle: { key, strategy: new WaitAsTold({ fallbackBackoffMs: 2000 }) }`.
 Defaults are unchanged. Compose a raw provider once; composing an already branded
 embedder preserves its original policy and does not replace it.

@@ -1,8 +1,43 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { IEmbedResult, LogEvent } from '@mcp-abap-adt/llm-agent';
-import { getResilienceMetadata } from '@mcp-abap-adt/llm-agent';
-import { composeEmbedder } from '../rag-factories.js';
+import {
+  DefaultWaitStrategy,
+  getResilienceMetadata,
+  staticApiKey,
+} from '@mcp-abap-adt/llm-agent';
+import { prefetchEmbedderFactories } from '../embedder-factories.js';
+import { composeEmbedder, resolveEmbedder } from '../rag-factories.js';
+
+for (const provider of ['openai', 'ollama'] as const) {
+  it(`resolved ${provider} retains retries through composition`, async (t) => {
+    await prefetchEmbedderFactories([provider]);
+    const waits: number[] = [];
+    t.mock.method(DefaultWaitStrategy.prototype, 'wait', async (ms: number) => {
+      waits.push(ms);
+      return 'elapsed';
+    });
+    let requests = 0;
+    t.mock.method(globalThis, 'fetch', async () => {
+      if (++requests === 1) return new Response('unavailable', { status: 503 });
+      return Response.json(
+        provider === 'openai'
+          ? { data: [{ embedding: [1] }] }
+          : { embedding: [1] },
+      );
+    });
+    const cfg = { model: 'test' };
+    const embedder = resolveEmbedder(
+      provider === 'openai'
+        ? { ...cfg, provider, credential: staticApiKey('test') }
+        : { ...cfg, provider },
+    );
+    assert.deepEqual((await embedder.embed('q')).vector, [1]);
+    assert.equal(requests, 2);
+    assert.deepEqual(waits, [2000]);
+    assert.equal(getResilienceMetadata(embedder)?.maxBatchSize, 100);
+  });
+}
 
 class GeminiLike {
   readonly maxBatchSize = 250;

@@ -18,14 +18,18 @@ npm install @mcp-abap-adt/openai-embedder
 
 ## Usage
 
+Install `@mcp-abap-adt/llm-agent-rag` as well for the `composeEmbedder` helper
+used below, or use core's `composeResilientEmbedder` with no additional package.
+
 ```ts
 import { OpenAiEmbedder } from '@mcp-abap-adt/openai-embedder';
 import { staticApiKey } from '@mcp-abap-adt/llm-agent';
+import { composeEmbedder } from '@mcp-abap-adt/llm-agent-rag';
 
-const embedder = new OpenAiEmbedder({
+const embedder = composeEmbedder(new OpenAiEmbedder({
   credential: staticApiKey('sk-...'),
   model: 'text-embedding-3-small',
-});
+}));
 
 const result = await embedder.embed('Hello world');
 console.log(result.vector);
@@ -65,18 +69,28 @@ injection, replaceable transports/sinks and delivery/loss semantics.
 
 ## Retry policy and HTTP errors
 
-`retry?: boolean` defaults to `true`, retaining three provider attempts with the
-existing backoff. Set `retry: false` for a single provider attempt in both
-`embed` and `embedBatch`, including network, HTTP and response decoding failures.
-No provider timeout is installed; the caller's `CallOptions.signal` governs cancellation.
+Each `embed` call and each non-empty `embedBatch` call makes exactly one HTTP
+request. Empty batches return without I/O.
+Provider-internal retry loops and the constructor `retry` option have been removed
+in this major release. Network and decoding errors are rethrown unchanged.
+The caller's `CallOptions.signal` governs cancellation.
 
-HTTP errors remain `RagError` instances and now carry `status: number`,
-`headers: Headers` and `retryAfterSeconds?: number`. Retry-After is parsed by the
-same helper as LLM throttling: delay-seconds (including zero) or an HTTP-date;
-missing/invalid values are undefined. Network errors are rethrown unchanged
-when retry is disabled.
+For retries, wrap the raw provider with `composeEmbedder` from
+`@mcp-abap-adt/llm-agent-rag` (or `composeResilientEmbedder` from core).
+The composition owns retry policy and batch chunking; defaults retry transient
+429/500/502/503 failures up to three times with exponential backoff.
+`resolveEmbedder` and the server's resolution paths already apply this composition.
 
-For unlimited 429 waits with every other retry disabled, construct this provider
-with `retry: false`, then use `composeResilientEmbedder` with `retry: false` and
+HTTP errors remain `RagError` instances and carry `status: number`,
+`headers: Headers` and `retryAfterSeconds?: number`. Retry-After uses the shared
+LLM parser: delay-seconds (including zero) or an HTTP-date; missing/invalid
+values are undefined.
+
+For unlimited 429 waits with every other retry disabled, compose the raw provider
+with `retry: false` and
 `throttle: { key, strategy: new WaitAsTold({ fallbackBackoffMs: 2000 }) }`.
 See [the composition and hub migration guide](../../docs/EMBEDDER_THROTTLING.md).
+
+OpenAI batch chunking now belongs to composition. The provider declares
+`maxBatchSize: 100`; composition uses it by default and retries only the failing
+chunk. Direct `embedBatch` submits the supplied inputs in one request.
