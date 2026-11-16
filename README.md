@@ -1,3 +1,5 @@
+<p align="center"><img src="docs/assets/brand/flywheel-256.png" width="128" alt="Human-AI flywheel symbol"></p>
+
 # SmartAgent — a composable framework for LLM pipelines
 
 [![Stand With Ukraine](https://raw.githubusercontent.com/vshymanskyy/StandWithUkraine/main/badges/StandWithUkraine.svg)](https://stand-with-ukraine.pp.ua)
