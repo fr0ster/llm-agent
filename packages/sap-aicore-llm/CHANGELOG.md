@@ -1,5 +1,11 @@
 # @mcp-abap-adt/sap-aicore-llm
 
+## 31.1.0
+
+### Minor Changes
+
+- 903abb0: Claude models served through SAP AI Core now cache like Anthropic automatic caching, including conversation history. The existing boolean `promptCaching` option continues to enable or disable caching.
+
 ## 31.0.0
 
 ### Major Changes
