@@ -44,4 +44,4 @@ injection, replaceable transports/sinks and delivery/loss semantics.
 
 ## Prompt caching
 
-Eligible prefixes are cached automatically. Optional `promptCacheKey` and `promptCacheRetention: 'in_memory' | '24h'` use call-over-config precedence and map to OpenAI's wire parameters on chat and streams. Retention support is model dependent; both are omitted by default. Cache read and reported write tokens are preserved in responses and usage records. See [prompt caching](../../docs/PROMPT_CACHING.md).
+Eligible prefixes are cached automatically by OpenAI. The shared `promptCaching?: boolean` switch has no request effect: the client cannot turn off provider caching. No cache parameters are sent. Cache read and reported write tokens are preserved in responses and usage records. See [prompt caching](../../docs/PROMPT_CACHING.md).

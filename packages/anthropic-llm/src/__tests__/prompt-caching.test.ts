@@ -29,8 +29,8 @@ const normalized = {
 
 type Setting = LLMCallOptions['promptCaching'];
 for (const stream of [false, true]) {
-  for (const configured of [undefined, '5m', '1h', 'off'] as const) {
-    for (const override of [undefined, '5m', '1h', 'off'] as const) {
+  for (const configured of [undefined, true, false] as const) {
+    for (const override of [undefined, true, false] as const) {
       it(`automatic caching stream=${stream} config=${configured} override=${override}`, async (t) => {
         const records: UsageInput[] = [];
         const provider = new AnthropicProvider({
@@ -83,12 +83,10 @@ for (const stream of [false, true]) {
             normalized,
           );
         }
-        const effective: Setting = override ?? configured ?? '5m';
+        const effective: Setting = override ?? configured ?? true;
         assert.deepEqual(
           body.cache_control,
-          effective === 'off'
-            ? undefined
-            : { type: 'ephemeral', ttl: effective },
+          effective ? { type: 'ephemeral' } : undefined,
         );
         assert.equal(body.system, 'Stable instructions');
         assert.equal(JSON.stringify({ messages, tools }), snapshot);

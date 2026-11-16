@@ -34,7 +34,7 @@ export interface AnthropicConfig extends LLMProviderConfig {
   credential: IApiKeyCredential;
   model?: string;
   temperature?: number;
-  /** Automatic prompt caching: default 5m; off disables the request directive. */
+  /** Automatic prompt caching: enabled by default; false omits the directive. */
   promptCaching?: LLMCallOptions['promptCaching'];
   maxTokens?: number;
 }
@@ -44,11 +44,11 @@ function temperatureParam(temperature: number | undefined) {
   return temperature !== undefined ? { temperature } : {};
 }
 
-function cacheControlParam(caching: AnthropicConfig['promptCaching'] = '5m') {
-  return caching === 'off'
+function cacheControlParam(caching: AnthropicConfig['promptCaching'] = true) {
+  return !caching
     ? {}
     : {
-        cache_control: { type: 'ephemeral', ttl: caching },
+        cache_control: { type: 'ephemeral' },
       };
 }
 

@@ -47,4 +47,4 @@ injection, replaceable transports/sinks and delivery/loss semantics.
 
 ## Prompt caching
 
-No prompt-cache request setting is added. Ollama's native `keep_alive` controls model residency and is not sent to the OpenAI-compatible endpoint. Compatible cached-token reports remain visible when supplied; OpenAI-only cache keys and retention are omitted. See [prompt caching](../../docs/PROMPT_CACHING.md).
+The shared `promptCaching?: boolean` switch has no request effect for Ollama. No cache parameters are sent. Native `keep_alive` controls model residency and is not sent to the OpenAI-compatible endpoint. Compatible cached-token reports remain visible when supplied. See [prompt caching](../../docs/PROMPT_CACHING.md).

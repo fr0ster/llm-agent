@@ -7,38 +7,51 @@ import {
 import { resolveLlmSection } from '../resolve-config-sections.js';
 
 for (const map of [false, true]) {
-  test(`cache config survives YAML resolution and normalization map=${map}`, () => {
-    const knobs = {
-      promptCaching: 'off',
-      promptCacheKey: 'stable',
-      promptCacheRetention: '24h',
-    };
-    const entry = { provider: 'anthropic', model: 'test-model', ...knobs };
-    const resolved = normalizeLlmConfig(
-      resolveLlmSection({ llm: map ? { main: entry } : entry }),
-    );
-    assert.equal(resolved?.main.promptCaching, 'off');
-    assert.equal(resolved?.main.promptCacheKey, 'stable');
-    assert.equal(resolved?.main.promptCacheRetention, '24h');
-    assert.equal(
-      normalizeLlmConfig(resolveLlmSection({ llm: { provider: 'anthropic' } }))
-        ?.main.promptCaching,
-      undefined,
-    );
-    for (const key of Object.keys(knobs))
-      assert.ok(INLINE_LLM_CONFIG_FIELDS.includes(key));
-  });
-  test(`invalid YAML cache values fail early map=${map}`, () => {
-    for (const bad of [
-      { promptCaching: 'bad' },
-      { promptCacheKey: 3 },
-      { promptCacheRetention: '1h' },
+  for (const promptCaching of [undefined, false, true]) {
+    test(`cache switch survives YAML resolution map=${map} value=${promptCaching}`, () => {
+      const entry = {
+        provider: 'anthropic',
+        model: 'test-model',
+        promptCaching,
+      };
+      const resolved = normalizeLlmConfig(
+        resolveLlmSection({
+          llm: map ? { main: entry, helper: entry } : entry,
+        }),
+      );
+      assert.equal(resolved?.main.promptCaching, promptCaching);
+      if (map) assert.equal(resolved?.helper.promptCaching, promptCaching);
+      assert.ok(INLINE_LLM_CONFIG_FIELDS.includes('promptCaching'));
+    });
+  }
+  test(`non-boolean YAML cache values fail early map=${map}`, () => {
+    for (const promptCaching of [
+      'off',
+      'system',
+      'system+tools',
+      '5m',
+      '1h',
+      'true',
+      'false',
+      0,
+      1,
+      null,
+      [],
+      {},
     ]) {
-      const entry = { provider: 'anthropic', ...bad };
+      const entry = { provider: 'anthropic', promptCaching };
       assert.throws(
         () => resolveLlmSection({ llm: map ? { main: entry } : entry }),
-        /promptCach/,
+        /promptCaching must be a boolean/,
       );
+      if (map)
+        assert.throws(
+          () =>
+            resolveLlmSection({
+              llm: { main: { provider: 'anthropic' }, helper: entry },
+            }),
+          /promptCaching must be a boolean/,
+        );
     }
   });
 }

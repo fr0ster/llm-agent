@@ -139,15 +139,7 @@ export class SmartAgentServer {
 
     let caching: ReturnType<typeof promptCacheOptions>;
     try {
-      caching = promptCacheOptions({
-        ...parsed,
-        ...('prompt_cache_key' in parsed
-          ? { promptCacheKey: parsed.prompt_cache_key }
-          : {}),
-        ...('prompt_cache_retention' in parsed
-          ? { promptCacheRetention: parsed.prompt_cache_retention }
-          : {}),
-      });
+      caching = promptCacheOptions(parsed);
     } catch (error) {
       res.writeHead(400, { 'Content-Type': 'application/json' });
       res.end(

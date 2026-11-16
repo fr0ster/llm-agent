@@ -382,4 +382,4 @@ See [the v32 migration guide](../../docs/MIGRATION-v32.md).
 
 ## Prompt caching
 
-Provider bridges, chat/stream adapters, tool loops, steppers, and request loggers preserve optional cache reads and creations, including per-model/component/category totals. Cache controls follow the same call-option path as temperature. See [prompt caching](../../docs/PROMPT_CACHING.md) for provider behavior and the prefix stability audit.
+Provider bridges, chat/stream adapters, tool loops, steppers, and request loggers preserve optional cache reads and creations, including per-model/component/category totals. The shared `promptCaching?: boolean` switch follows the same call-option path as temperature. Calls override config; omission enables caching. Each provider owns its cache mechanism. See [prompt caching](../../docs/PROMPT_CACHING.md) for provider behavior and the prefix stability audit.

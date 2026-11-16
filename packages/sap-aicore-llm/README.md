@@ -36,17 +36,17 @@ rotating token keeps rotating.
 
 ## Anthropic prompt caching
 
-Set `promptCaching: 'system'` on `SapCoreAIConfig` to mark the last system text
-block with an ephemeral cache breakpoint. `'system+tools'` also marks the last
-tool definition. The default is `'off'`. Only effective model names identifying
-Anthropic Claude receive automatic markers. Messages, metadata and tools are
-preserved without mutating caller input.
+`promptCaching?: boolean` defaults to `true`. Enabled requests mark the last
+system content block and last tool definition with ephemeral cache breakpoints.
+Only effective model names identifying Anthropic Claude receive these markers.
+Call options override config, including `false`; omission enables caching.
+Messages, metadata and tools are preserved without mutating caller input.
 
 ```ts
 const llm = new SapCoreAIProvider({
   ...serviceKeyCredential(process.env.AICORE_SERVICE_KEY!),
   model: 'anthropic--claude-4-opus',
-  promptCaching: 'system+tools',
+  promptCaching: true,
 });
 ```
 
@@ -120,4 +120,6 @@ SAP AI Core retries transient failures before the first response chunk once by d
 
 ## Prompt caching
 
-Existing `SapCoreAIConfig.promptCaching` modes (`off`, `system`, `system+tools`) use documented explicit Anthropic breakpoints. SAP does not document forwarding the direct Anthropic automatic-cache/TTL contract in this integration, so it remains separate. Cache read/creation reports are preserved through orchestration and shared agent aggregation. See [prompt caching](../../docs/PROMPT_CACHING.md).
+Prompt caching is enabled by default for Anthropic Claude models through SAP orchestration. `promptCaching?: boolean` uses `options.promptCaching ?? config.promptCaching ?? true`. Enabled requests mark the last system content block and last tool with explicit `cache_control: { type: 'ephemeral' }` breakpoints; `false` omits these markers. Placement and cache lifetime are provider concerns. Cache read/creation reports remain preserved through orchestration and shared agent aggregation.
+
+Migration: replace the former disabled mode with `false` and either former enabled mode with `true`. Omitting the setting now enables both system and tool breakpoints; set `false` explicitly to retain the previous disabled default. Selecting system-only placement is no longer supported. See [prompt caching](../../docs/PROMPT_CACHING.md).

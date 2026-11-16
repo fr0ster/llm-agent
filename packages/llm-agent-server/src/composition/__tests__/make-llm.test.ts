@@ -154,20 +154,31 @@ describe('makeLlm — resourceGroup', () => {
   });
 });
 
-it('forwards provider-specific cache knobs through makeLlm', async () => {
-  const { seen, makeLlm } = harness({
-    [DEFAULT_LLM_REF]: { credential: staticApiKey('k') },
+for (const promptCaching of [undefined, false, true]) {
+  it(`forwards the cache switch through makeLlm: ${promptCaching}`, async () => {
+    const { seen, makeLlm } = harness({
+      [DEFAULT_LLM_REF]: { credential: staticApiKey('k') },
+      SAP: { credential: bearer, apiBaseUrl: 'https://ai' },
+    });
+    for (const provider of [
+      'anthropic',
+      'openai',
+      'deepseek',
+      'ollama',
+      'sap-ai-sdk',
+    ] as const) {
+      await makeLlm({
+        provider,
+        model: 'm',
+        promptCaching,
+        ...(provider === 'sap-ai-sdk' ? { credentialRef: 'SAP' } : {}),
+      });
+    }
+    assert.equal(seen.length, 5);
+    for (const { cfg } of seen) {
+      assert.equal(cfg.promptCaching, promptCaching);
+      assert.ok(!('promptCacheKey' in cfg));
+      assert.ok(!('promptCacheRetention' in cfg));
+    }
   });
-  await makeLlm({ provider: 'anthropic', model: 'm', promptCaching: 'off' });
-  await makeLlm({
-    provider: 'openai',
-    model: 'm',
-    promptCacheKey: 'stable',
-    promptCacheRetention: '24h',
-  });
-  assert.equal(seen[0].cfg.promptCaching, 'off');
-  assert.equal(seen[1].cfg.promptCacheKey, 'stable');
-  assert.equal(seen[1].cfg.promptCacheRetention, '24h');
-  assert.ok(!('promptCacheKey' in seen[0].cfg));
-  assert.ok(!('promptCaching' in seen[1].cfg));
-});
+}

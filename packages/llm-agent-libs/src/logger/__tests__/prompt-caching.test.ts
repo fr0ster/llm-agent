@@ -71,9 +71,7 @@ for (const stream of [false, true]) {
       logged.push(value);
     });
     const options = {
-      promptCaching: 'off' as const,
-      promptCacheKey: 'stable',
-      promptCacheRetention: '24h' as const,
+      promptCaching: false,
     };
     if (stream) {
       for await (const chunk of llm.streamChat([], [], options)) {
@@ -85,9 +83,7 @@ for (const stream of [false, true]) {
       assert.ok(result.ok);
       assert.deepEqual(result.value.usage, usage);
     }
-    assert.equal(seen?.promptCaching, 'off');
-    assert.equal(seen?.promptCacheKey, 'stable');
-    assert.equal(seen?.promptCacheRetention, '24h');
+    assert.equal(seen?.promptCaching, false);
     assert.deepEqual(logged, [usage]);
   });
 }

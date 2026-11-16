@@ -177,4 +177,4 @@ See [MIGRATION-v32](../../docs/MIGRATION-v32.md) for wiring, migration reports, 
 
 ## Prompt caching
 
-The composition root forwards Anthropic `llm.promptCaching` and OpenAI `llm.promptCacheKey`/`llm.promptCacheRetention` to their providers. Chat call options override provider config. Cache read/creation counters remain visible in usage summaries. See [prompt caching](../../docs/PROMPT_CACHING.md).
+The composition root forwards the shared `llm.promptCaching?: boolean` switch to every provider. Chat call options override provider config, with `true` as the default. Each provider decides its request behavior. Cache read/creation counters remain visible in usage summaries. See [prompt caching](../../docs/PROMPT_CACHING.md).

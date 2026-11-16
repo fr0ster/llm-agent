@@ -158,18 +158,7 @@ export class AnthropicApiAdapter implements ILlmApiAdapter {
 
     const options: AgentCallOptions = {};
     try {
-      Object.assign(
-        options,
-        promptCacheOptions({
-          ...body,
-          ...('prompt_cache_key' in body
-            ? { promptCacheKey: body.prompt_cache_key }
-            : {}),
-          ...('prompt_cache_retention' in body
-            ? { promptCacheRetention: body.prompt_cache_retention }
-            : {}),
-        }),
-      );
+      Object.assign(options, promptCacheOptions(body));
     } catch (error) {
       throw new AdapterValidationError(
         error instanceof Error ? error.message : String(error),

@@ -119,8 +119,6 @@ export const INLINE_LLM_CONFIG_FIELDS: readonly string[] = [
   'credentialRef',
   'temperature',
   'promptCaching',
-  'promptCacheKey',
-  'promptCacheRetention',
   'classifierTemperature',
   'maxTokens',
   'whenThrottled',

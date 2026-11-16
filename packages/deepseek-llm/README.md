@@ -46,4 +46,4 @@ injection, replaceable transports/sinks and delivery/loss semantics.
 
 ## Prompt caching
 
-DeepSeek caches matching prefixes automatically. `prompt_cache_hit_tokens` is preserved as `cachedInputTokens` in normalized chat/stream usage and physical usage records. OpenAI-specific cache controls are not sent. See [prompt caching](../../docs/PROMPT_CACHING.md).
+DeepSeek caches matching prefixes automatically. The shared `promptCaching?: boolean` switch has no request effect: the client cannot turn off provider caching. No cache parameters are sent. `prompt_cache_hit_tokens` is preserved as `cachedInputTokens` in normalized chat/stream usage and physical usage records. See [prompt caching](../../docs/PROMPT_CACHING.md).

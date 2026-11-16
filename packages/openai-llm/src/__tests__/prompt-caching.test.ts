@@ -5,74 +5,75 @@ import { staticApiKey, type UsageInput } from '@mcp-abap-adt/llm-agent';
 import { OpenAIProvider } from '../openai-provider.js';
 
 for (const stream of [false, true]) {
-  for (const override of [false, true]) {
-    it(`OpenAI cache options and usage stream=${stream} override=${override}`, async (t) => {
-      const records: UsageInput[] = [];
-      const provider = new OpenAIProvider({
-        model: 'test-model',
-        credential: staticApiKey('test'),
-        promptCacheKey: 'shared',
-        promptCacheRetention: '24h',
-        usage: {
-          record: (r) => {
-            records.push(r);
+  for (const configured of [undefined, false, true]) {
+    for (const override of [undefined, false, true]) {
+      it(`OpenAI cache options and usage stream=${stream} config=${configured} override=${override}`, async (t) => {
+        const records: UsageInput[] = [];
+        const provider = new OpenAIProvider({
+          model: 'test-model',
+          credential: staticApiKey('test'),
+          promptCaching: configured,
+          usage: {
+            record: (r) => {
+              records.push(r);
+            },
+            with() {
+              return this;
+            },
           },
-          with() {
-            return this;
+        });
+        let body: object = {};
+        const usage = {
+          prompt_tokens: 100,
+          completion_tokens: 4,
+          total_tokens: 104,
+          prompt_tokens_details: { cached_tokens: 60, cache_write_tokens: 20 },
+        };
+        t.mock.method(
+          provider.client,
+          'post',
+          async (_url: string, value: typeof body) => {
+            body = value;
+            return {
+              data: stream
+                ? Readable.from([
+                    `data: ${JSON.stringify({ choices: [], usage })}\n\ndata: [DONE]\n\n`,
+                  ])
+                : {
+                    choices: [
+                      { message: { content: 'ok' }, finish_reason: 'stop' },
+                    ],
+                    usage,
+                  },
+            };
           },
-        },
-      });
-      let body: { prompt_cache_key?: string; prompt_cache_retention?: string } =
-        {};
-      const usage = {
-        prompt_tokens: 100,
-        completion_tokens: 4,
-        total_tokens: 104,
-        prompt_tokens_details: { cached_tokens: 60, cache_write_tokens: 20 },
-      };
-      t.mock.method(
-        provider.client,
-        'post',
-        async (_url: string, value: typeof body) => {
-          body = value;
-          return {
-            data: stream
-              ? Readable.from([
-                  `data: ${JSON.stringify({ choices: [], usage })}\n\ndata: [DONE]\n\n`,
-                ])
-              : {
-                  choices: [
-                    { message: { content: 'ok' }, finish_reason: 'stop' },
-                  ],
-                  usage,
-                },
-          };
-        },
-      );
-      const options = override
-        ? {
-            promptCacheKey: 'another',
-            promptCacheRetention: 'in_memory' as const,
+        );
+        const options = { promptCaching: override };
+        if (stream) {
+          for await (const chunk of provider.streamChat(
+            [],
+            undefined,
+            options,
+          )) {
+            assert.equal(chunk.usage?.cachedInputTokens, 60);
+            assert.equal(chunk.usage?.cacheCreationInputTokens, 20);
           }
-        : {};
-      if (stream) {
-        for await (const chunk of provider.streamChat([], undefined, options)) {
-          assert.equal(chunk.usage?.cachedInputTokens, 60);
-          assert.equal(chunk.usage?.cacheCreationInputTokens, 20);
+        } else {
+          const result = await provider.chat([], undefined, options);
+          assert.equal(result.usage?.cachedInputTokens, 60);
+          assert.equal(result.usage?.cacheCreationInputTokens, 20);
         }
-      } else {
-        const result = await provider.chat([], undefined, options);
-        assert.equal(result.usage?.cachedInputTokens, 60);
-        assert.equal(result.usage?.cacheCreationInputTokens, 20);
-      }
-      assert.equal(body.prompt_cache_key, override ? 'another' : 'shared');
-      assert.equal(body.prompt_cache_retention, override ? 'in_memory' : '24h');
-      const record = records[0];
-      if (record.kind !== 'llm.call') assert.fail('expected llm.call');
-      assert.equal(record.cachedInputTokens, 60);
-      assert.equal(record.cacheCreationInputTokens, 20);
-      assert.equal(record.inputTokens, 100);
-    });
+        assert.ok(!('prompt_cache_key' in body));
+        assert.ok(!('prompt_cache_retention' in body));
+        assert.ok(!('cache_control' in body));
+        assert.ok(!('promptCaching' in body));
+        const record = records[0];
+        if (record.kind !== 'llm.call') assert.fail('expected llm.call');
+        assert.equal(record.cachedInputTokens, 60);
+        assert.equal(record.cacheCreationInputTokens, 20);
+        assert.equal(record.inputTokens, 100);
+      });
+    }
   }
 }
 

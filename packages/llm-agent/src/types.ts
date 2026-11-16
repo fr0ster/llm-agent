@@ -76,7 +76,7 @@ export interface LLMResponse {
   usage?: LlmUsage;
 }
 
-export interface LLMProviderConfig {
+export interface LLMProviderConfig extends PromptCacheOptions {
   /** Recorder used when a call does not supply its own recorder. */
   usage?: IUsageRecorder;
   /**
@@ -105,14 +105,10 @@ export interface LLMProviderConfig {
   whenThrottled?: IThrottleStrategy;
 }
 
-/** Provider-specific prompt cache controls; omitted values use provider defaults. */
+/** Provider-agnostic switch; each provider owns its caching mechanism. */
 export interface PromptCacheOptions {
-  /** Anthropic automatic caching. Default: 5m; off omits cache_control. */
-  promptCaching?: 'off' | '5m' | '1h';
-  /** OpenAI: stable routing/accounting key for requests sharing a prefix. */
-  promptCacheKey?: string;
-  /** OpenAI Chat Completions retention; support depends on the model. */
-  promptCacheRetention?: 'in_memory' | '24h';
+  /** Default: true. False disables client-controlled prompt caching. */
+  promptCaching?: boolean;
 }
 
 export interface LLMCallOptions extends PromptCacheOptions {

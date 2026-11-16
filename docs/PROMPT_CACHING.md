@@ -1,70 +1,72 @@
 # Provider prompt caching
 
-The goal is to enable documented provider caching and preserve its usage evidence.
-This change does not benchmark latency, cost, or hit rates. Cache availability,
-minimum prefix length, routing, and retention remain provider/model dependent.
-
-## Provider behavior
-
-| Provider | Requests | Cache usage |
-| --- | --- | --- |
-| Anthropic | Raw axios chat and fetch SSE requests include top-level `cache_control: {type: 'ephemeral', ttl: '5m'}` by default. `1h` selects the longer TTL; `off` omits the directive. The automatic breakpoint follows the last cacheable block as history grows. | `cache_read_input_tokens` and `cache_creation_input_tokens`. |
-| OpenAI | Chat Completions caches eligible prefixes automatically. Optional `prompt_cache_key` and `prompt_cache_retention` are forwarded only for OpenAI. | `prompt_tokens_details.cached_tokens`; `cache_write_tokens` is preserved as creation usage when supplied. |
-| DeepSeek | Prefix caching is automatic; no cache activation parameter is needed. OpenAI-only controls are omitted. | `prompt_cache_hit_tokens` (the existing OpenAI-compatible details field also works). Cache misses are ordinary input, not a reported cache-creation count. |
-| SAP AI Core orchestration | Existing standalone `SapCoreAIConfig.promptCaching: 'off' | 'system' | 'system+tools'` adds explicit breakpoints to the last system content part and optionally last tool for Anthropic models. Default remains off. | Existing `prompt_tokens_details.cached_tokens` and `cache_creation_tokens` mapping is retained. |
-| Ollama | Uses the OpenAI-compatible endpoint. No new cache request parameter. Native `/api/chat` and `/api/generate` `keep_alive` controls how long a model stays loaded in memory; it is not a provider prompt-cache contract. | Preserve compatible cached-token reports if returned; do not infer cache hits from model residency. |
-
-SAP documents explicit content/tool breakpoints for Bedrock-hosted Anthropic and
-Nova. Its documentation does not establish forwarding Anthropic's top-level
-automatic `cache_control` or the direct-provider TTL contract through this
-integration. Those controls are therefore not added to orchestration. The existing
-SAP-only explicit modes remain available through `SapCoreAIConfig`, independently
-of the new Anthropic server setting.
-
-OpenAI recommends stable cache keys for related requests on earlier models;
-newer models route automatically and can use keys for separate accounting.
-Retention is optional and model dependent: select `in_memory` or `24h` only when
-supported by the chosen model and retention policy. No retention value or key is
-invented by the library. Current documentation also describes newer Responses API
-cache controls; this adapter continues using Chat Completions.
-
-Sources: [OpenAI prompt caching](https://developers.openai.com/api/docs/guides/prompt-caching),
-[Chat Completions parameters](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create),
-[DeepSeek context caching](https://api-docs.deepseek.com/guides/kv_cache/),
-[SAP orchestration prompt caching](https://sap.github.io/ai-sdk/docs/python/examples/orchestration-service2#prompt-caching),
-[Ollama model residency](https://docs.ollama.com/faq#how-do-i-keep-a-model-loaded-in-memory-or-make-it-unload-immediately).
-Anthropic behavior follows the supplied bundled `shared/prompt-caching.md` and
-TypeScript README's **Automatic Caching (Recommended)** section.
+The shared contract carries only `promptCaching?: boolean`. Caching is enabled by
+default; providers own the mechanism, placement, lifetime, and eligibility.
+This change does not benchmark latency, cost, or hit rates.
 
 ## Configuration contract
 
-The same precedence as temperature applies: `options.x ?? this.config.x`.
-`AnthropicConfig.promptCaching`, `LLMCallOptions.promptCaching`, and
-`CallOptions.promptCaching` accept `5m`, `1h`, or `off`. Omission enables the
-Anthropic provider's 5-minute default. A per-call `off` disables an enabled config;
-a per-call TTL enables an `off` config. OpenAI's corresponding fields are
-`promptCacheKey?: string` and `promptCacheRetention?: 'in_memory' | '24h'`.
+`CallOptions`, `LLMCallOptions`, provider config, server config, flat `llm` YAML,
+and named `llm.main` / role entries use the same boolean switch. Precedence is
+`options.promptCaching ?? config.promptCaching ?? true`. A per-call `false`
+disables an enabled config; a per-call `true` enables a disabled config.
 
-Flat `llm` YAML and named `llm.main` / role entries preserve these fields. The
-composition root (`createMakeLlm`, injected into SmartServer) forwards the relevant
-fields to each provider. Adapters preserve them on chat and streaming paths;
-internal roles retain their existing restriction on client generation overrides.
-The HTTP chat route accepts the camelCase fields above and the OpenAI wire aliases
-`prompt_cache_key` / `prompt_cache_retention`. Invalid values fail at the YAML/HTTP
-boundary. When both spellings are supplied, the wire alias takes precedence.
+SmartServer and its composition root (`createMakeLlm`) forward the switch to each
+provider. Adapters preserve it for chat and streams; internal roles retain their
+existing restriction on client generation overrides. HTTP chat requests accept
+`promptCaching: true` or `promptCaching: false`. YAML and HTTP reject non-boolean
+values, including string booleans and former string modes. Omission preserves the
+provider default. Cache keys, retention controls, TTL options, and HTTP aliases for
+provider cache parameters are not part of this contract.
 
 ```yaml
 llm:
   provider: anthropic
   model: ${ANTHROPIC_MODEL}
   credentialRef: ANTHROPIC
-  promptCaching: 5m  # default; 1h or off
+  promptCaching: true  # default; false disables client-controlled caching
 ```
 
-For OpenAI, use `provider: openai`, a configured model and credential, and optionally
-`promptCacheKey: shared-instructions-v1` / `promptCacheRetention: 24h`.
-Do not use a new request UUID as the cache key. Provider-specific fields are not
-forwarded to DeepSeek, Ollama, or SAP.
+Named entries use the same field:
+
+```yaml
+llm:
+  main:
+    provider: sap-ai-sdk
+    model: anthropic--claude-4-opus
+    credentialRef: SAP
+    promptCaching: true
+  helper:
+    provider: anthropic
+    model: ${ANTHROPIC_MODEL}
+    credentialRef: ANTHROPIC
+    promptCaching: false
+```
+
+## Provider behavior
+
+| Provider | Requests | Cache usage |
+| --- | --- | --- |
+| Anthropic | Enabled chat and streams include top-level `cache_control: { type: 'ephemeral' }` using the provider's documented default TTL. `false` omits the directive. No TTL option is exposed. The automatic breakpoint follows the last cacheable block as history grows. | `cache_read_input_tokens` and `cache_creation_input_tokens`. |
+| SAP AI Core orchestration | For Anthropic Claude models, enabled chat and streams add explicit ephemeral breakpoints to the last system content block and last tool definition. `false` omits these markers. Other models receive no added markers. Placement is internal; no top-level automatic directive or TTL is sent. | `prompt_tokens_details.cached_tokens` and `cache_creation_tokens`. |
+| OpenAI | Eligible prefixes are cached automatically. The switch has no request effect: the client cannot disable provider caching. No cache parameters are sent. | `prompt_tokens_details.cached_tokens`; `cache_write_tokens` is preserved as creation usage when supplied. |
+| DeepSeek | Prefix caching is automatic. The switch has no request effect: the client cannot disable provider caching. No cache parameters are sent. | `prompt_cache_hit_tokens` (the existing OpenAI-compatible details field also works). Cache misses are ordinary input, not a reported cache-creation count. |
+| Ollama | The switch has no request effect. No cache parameters are sent to the OpenAI-compatible endpoint. Native `keep_alive` controls model residency, which is separate from prompt caching. | Preserve compatible cached-token reports if returned; do not infer cache hits from model residency. |
+
+Sources: [Anthropic prompt caching](https://platform.claude.com/docs/en/build-with-claude/prompt-caching),
+[SAP orchestration prompt caching](https://sap.github.io/ai-sdk/docs/python/examples/orchestration-service2#prompt-caching),
+[OpenAI prompt caching](https://developers.openai.com/api/docs/guides/prompt-caching),
+[DeepSeek context caching](https://api-docs.deepseek.com/guides/kv_cache/),
+[Ollama model residency](https://docs.ollama.com/faq#how-do-i-keep-a-model-loaded-in-memory-or-make-it-unload-immediately).
+
+## SAP migration (major release)
+
+`SapCoreAIConfig.promptCaching` now accepts a boolean. Replace the former disabled
+mode with `false`, and either former enabled mode with `true`. System-only placement
+is no longer selectable: the provider chooses system and tool breakpoints.
+Omission now enables caching; set `false` explicitly to retain the previous
+disabled default. Per-call overrides now use the same boolean and precedence as
+the other providers. Cache usage reporting is unchanged.
 
 ## Usage and later verification
 

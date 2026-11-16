@@ -125,57 +125,64 @@ describe('SmartServer — POST /v1/chat/completions (handler body)', () => {
 });
 
 for (const stream of [false, true]) {
-  it(`HTTP cache options reach the working model stream=${stream}`, async () => {
-    let seen: CallOptions | undefined;
-    const base = makeLlm([{ content: 'hello' }]);
-    const recording: ILlm = {
-      ...base,
-      async chat(messages, tools, options) {
-        seen = options;
-        return base.chat(messages, tools, options);
-      },
-      async *streamChat(messages, tools, options) {
-        seen = options;
-        yield* base.streamChat(messages, tools, options);
-      },
-    };
-    const server = new SmartServer(
-      {
-        port: 0,
-        llm: { provider: 'anthropic', model: 'test-model' },
-        skipModelValidation: true,
-      },
-      { ...constructionSeams, makeLlm: async () => recording },
-    );
-    const handle = await server.start();
-    try {
-      const result = await httpRequest(
-        handle.port,
-        'POST',
-        '/v1/chat/completions',
-        {
-          messages: [{ role: 'user', content: 'hi' }],
-          stream,
-          promptCaching: 'off',
-          prompt_cache_key: 'stable',
-          prompt_cache_retention: '24h',
+  for (const promptCaching of [undefined, false, true]) {
+    it(`HTTP cache options reach the working model stream=${stream} caching=${promptCaching}`, async () => {
+      let seen: CallOptions | undefined;
+      const base = makeLlm([{ content: 'hello' }]);
+      const recording: ILlm = {
+        ...base,
+        async chat(messages, tools, options) {
+          seen = options;
+          return base.chat(messages, tools, options);
         },
+        async *streamChat(messages, tools, options) {
+          seen = options;
+          yield* base.streamChat(messages, tools, options);
+        },
+      };
+      const server = new SmartServer(
+        {
+          port: 0,
+          llm: { provider: 'anthropic', model: 'test-model' },
+          skipModelValidation: true,
+        },
+        { ...constructionSeams, makeLlm: async () => recording },
       );
-      assert.equal(result.status, 200);
-      assert.equal(seen?.promptCaching, 'off');
-      assert.equal(seen?.promptCacheKey, 'stable');
-      assert.equal(seen?.promptCacheRetention, '24h');
-      assert.equal(
-        (
-          await httpRequest(handle.port, 'POST', '/v1/chat/completions', {
+      const handle = await server.start();
+      try {
+        const result = await httpRequest(
+          handle.port,
+          'POST',
+          '/v1/chat/completions',
+          {
             messages: [{ role: 'user', content: 'hi' }],
-            promptCaching: true,
-          })
-        ).status,
-        400,
-      );
-    } finally {
-      await handle.close();
-    }
-  });
+            stream,
+            promptCaching,
+            prompt_cache_key: 'stable',
+            prompt_cache_retention: '24h',
+          },
+        );
+        assert.equal(result.status, 200);
+        assert.equal(seen?.promptCaching, promptCaching);
+        assert.ok(seen && !('promptCacheKey' in seen));
+        assert.ok(seen && !('promptCacheRetention' in seen));
+        for (const value of ['off', '5m', '1h', 'true', 'false', 0, null]) {
+          const invalid = await httpRequest(
+            handle.port,
+            'POST',
+            '/v1/chat/completions',
+            {
+              messages: [{ role: 'user', content: 'hi' }],
+              stream,
+              promptCaching: value,
+            },
+          );
+          assert.equal(invalid.status, 400);
+          assert.match(invalid.raw, /promptCaching must be a boolean/);
+        }
+      } finally {
+        await handle.close();
+      }
+    });
+  }
 }

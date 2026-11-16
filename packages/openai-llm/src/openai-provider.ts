@@ -37,8 +37,6 @@ export interface OpenAIConfig extends LLMProviderConfig {
   credential: IApiKeyCredential;
   model?: string;
   temperature?: number;
-  promptCacheKey?: string;
-  promptCacheRetention?: LLMCallOptions['promptCacheRetention'];
   maxTokens?: number;
   organization?: string;
   project?: string;
@@ -150,18 +148,7 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
     return this.client.defaults.baseURL ?? 'default';
   }
 
-  /** OpenAI-only controls must not leak into DeepSeek or Ollama requests. */
-  protected promptCacheParams(options?: LLMCallOptions) {
-    if (this.providerName !== 'OpenAI') return {};
-    const key = options?.promptCacheKey ?? this.config.promptCacheKey;
-    const retention =
-      options?.promptCacheRetention ?? this.config.promptCacheRetention;
-    return {
-      ...(key !== undefined ? { prompt_cache_key: key } : {}),
-      ...(retention !== undefined ? { prompt_cache_retention: retention } : {}),
-    };
-  }
-
+  // Provider caching is automatic; promptCaching has no request effect.
   async chat(
     messages: Message[],
     tools?: unknown[],
@@ -189,7 +176,6 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
               tools: tools && tools.length > 0 ? tools : undefined,
               tool_choice: tools && tools.length > 0 ? 'auto' : undefined,
               ...(temperature !== undefined ? { temperature } : {}),
-              ...this.promptCacheParams(options),
               ...(maxTokens !== undefined
                 ? this.getTokenLimitParam(model, maxTokens)
                 : {}),
@@ -292,7 +278,6 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
               tools: tools && tools.length > 0 ? tools : undefined,
               tool_choice: tools && tools.length > 0 ? 'auto' : undefined,
               ...(temperature !== undefined ? { temperature } : {}),
-              ...this.promptCacheParams(options),
               ...(maxTokens !== undefined
                 ? this.getTokenLimitParam(model, maxTokens)
                 : {}),

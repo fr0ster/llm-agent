@@ -700,7 +700,7 @@ it('legacy HTTP chat forwards cache controls and rejects invalid values', async 
   try {
     const body = {
       messages: [{ role: 'user', content: 'Hi' }],
-      promptCaching: 'off',
+      promptCaching: false,
       prompt_cache_key: 'stable',
       prompt_cache_retention: '24h',
     };
@@ -709,18 +709,20 @@ it('legacy HTTP chat forwards cache controls and rejects invalid values', async 
         .status,
       200,
     );
-    assert.equal(capture.options?.promptCaching, 'off');
-    assert.equal(capture.options?.promptCacheKey, 'stable');
-    assert.equal(capture.options?.promptCacheRetention, '24h');
-    assert.equal(
-      (
-        await httpRequest(handle.port, 'POST', '/v1/chat/completions', {
-          ...body,
-          promptCaching: 'bad',
-        })
-      ).status,
-      400,
-    );
+    assert.equal(capture.options?.promptCaching, false);
+    assert.ok(capture.options && !('promptCacheKey' in capture.options));
+    assert.ok(capture.options && !('promptCacheRetention' in capture.options));
+    for (const promptCaching of ['off', '5m', '1h', 'true', 'false', 0, null]) {
+      assert.equal(
+        (
+          await httpRequest(handle.port, 'POST', '/v1/chat/completions', {
+            ...body,
+            promptCaching,
+          })
+        ).status,
+        400,
+      );
+    }
   } finally {
     await handle.close();
   }

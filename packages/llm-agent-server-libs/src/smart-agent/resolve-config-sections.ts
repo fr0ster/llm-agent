@@ -59,8 +59,6 @@ export function resolveLlmSection(yaml: YamlConfig): SmartServerConfig['llm'] {
           temperature: optionalNumber(get(yaml, 'llm', 'temperature')),
           ...promptCacheOptions({
             promptCaching: get(yaml, 'llm', 'promptCaching'),
-            promptCacheKey: get(yaml, 'llm', 'promptCacheKey'),
-            promptCacheRetention: get(yaml, 'llm', 'promptCacheRetention'),
           }),
           classifierTemperature: optionalNumber(
             get(yaml, 'llm', 'classifierTemperature'),
