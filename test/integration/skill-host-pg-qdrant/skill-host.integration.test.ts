@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { CatalogCasError } from '@mcp-abap-adt/llm-agent';
+import { CatalogCasError, composeResilientEmbedder } from '@mcp-abap-adt/llm-agent';
 import {
   makePgCatalogReader,
   makePgCatalogStore,
@@ -85,10 +85,10 @@ test('skill-host PG+Qdrant durable persistence (ordered scenario)', async (t) =>
       url: QDRANT_URL,
       collection: COLLECTION,
     });
-    const embedder = new OllamaEmbedder({
+    const embedder = composeResilientEmbedder(new OllamaEmbedder({
       ollamaUrl: OLLAMA_URL,
       model: MODEL,
-    });
+    }));
     const storeProvider = makeQdrantStoreProvider({
       client,
       collection: COLLECTION,

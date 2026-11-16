@@ -86,3 +86,14 @@ retroactive. Full detail, including what to do if you redistribute:
 
 
 Embedder resolution accepts `maxInputChars` on every factory configuration, including injected instances. The default is `24000`; `0` disables the cap. Single-input `embed` calls truncate to the beginning of the input before provider invocation; batch document calls retain their inputs. Input-too-long failures do not retry.
+
+## Consumer-controlled embedding throttling
+
+`composeEmbedder` forwards `retry` and `throttle` to the core
+`composeResilientEmbedder`, alongside `maxInputChars` and `maxBatchSize`.
+For single-attempt non-429 failures and unlimited rate-limit waits, disable
+ordinary composition retries with `retry: false`, and configure
+`throttle: { key, strategy: new WaitAsTold({ fallbackBackoffMs: 2000 }) }`.
+Defaults are unchanged. Compose a raw provider once; composing an already branded
+embedder preserves its original policy and does not replace it.
+See [the complete example and migration guide](../../docs/EMBEDDER_THROTTLING.md).

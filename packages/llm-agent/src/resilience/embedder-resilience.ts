@@ -67,7 +67,9 @@ export interface ComposeResilienceOptions {
   explicitMaxBatchSize?: number;
   /** Provider-derived or default cap; never triggers the conflict check. */
   fallbackMaxBatchSize?: number;
-  retry?: Partial<EmbedderRetryOptions>;
+  /** False disables ordinary retries; throttle decisions remain independent. */
+  retry?: Partial<EmbedderRetryOptions> | false;
+  throttle?: EmbedderRetryOptions['throttle'];
   logger?: AnyLogger;
 }
 
@@ -100,7 +102,12 @@ export function composeResilientEmbedder(
     (isBatchSizeLimited(inner) ? inner.maxBatchSize : DEFAULT_MAX_BATCH_SIZE);
 
   const retried = withInputCap(
-    withRetry(inner, options?.retry),
+    withRetry(inner, {
+      ...(options?.retry === false
+        ? { maxAttempts: 0, retryOn: [] }
+        : options?.retry),
+      ...(options?.throttle ? { throttle: options.throttle } : {}),
+    }),
     options?.maxInputChars,
   );
   const batchCapable = isBatchEmbedder(retried);

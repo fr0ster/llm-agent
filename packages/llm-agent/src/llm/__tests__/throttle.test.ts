@@ -5,12 +5,14 @@ import {
   type IThrottleStrategy,
   WaitAsTold,
 } from '../../interfaces/throttle-strategy.js';
+import { DefaultWaitStrategy } from '../../interfaces/wait-strategy.js';
 import type { LLMCallOptions, LLMResponse, Message } from '../../types.js';
 import { BaseLLMProvider } from '../base-llm-provider.js';
 import {
   GATE_IDLE_TTL_MS,
   GATE_LIMIT,
   gateFor,
+  httpStatusOf,
   isThrottledError,
   leaseQuotaGate,
   preserveThrottled,
@@ -18,9 +20,11 @@ import {
   QuotaGate,
   quotaGateCount,
   resetQuotaGates,
+  retryAfterSecondsOf,
   runWithThrottleRetry,
   setThrottleObserver,
   type ThrottleEvent,
+  type ThrottleRetryOptions,
 } from '../throttle.js';
 
 const tooManyRequests = (retryAfter?: string) => ({
@@ -30,35 +34,17 @@ const tooManyRequests = (retryAfter?: string) => ({
   },
 });
 
-const isThrottled = (e: unknown) =>
-  typeof e === 'object' &&
-  e !== null &&
-  'response' in e &&
-  typeof e.response === 'object' &&
-  e.response !== null &&
-  'status' in e.response &&
-  e.response.status === 429;
+const isThrottled: NonNullable<ThrottleRetryOptions['isThrottled']> = (error) =>
+  httpStatusOf(
+    typeof error === 'object' && error !== null ? error : undefined,
+  ) === 429;
 
-const retryAfterSeconds = (e: unknown) => {
-  if (
-    typeof e !== 'object' ||
-    e === null ||
-    !('response' in e) ||
-    typeof e.response !== 'object' ||
-    e.response === null ||
-    !('headers' in e.response)
-  )
-    return undefined;
-  const headers = e.response.headers;
-  if (
-    typeof headers !== 'object' ||
-    headers === null ||
-    !('retry-after' in headers)
-  )
-    return undefined;
-  const raw = headers['retry-after'];
-  return raw === undefined ? undefined : Number(raw);
-};
+const retryAfterSeconds: NonNullable<
+  ThrottleRetryOptions['retryAfterSeconds']
+> = (error) =>
+  retryAfterSecondsOf(
+    typeof error === 'object' && error !== null ? error : undefined,
+  );
 
 beforeEach(() => resetQuotaGates());
 
@@ -747,6 +733,67 @@ class ProbeProvider extends BaseLLMProvider {
     return this.quotaKey(model);
   }
 }
+
+class TransientProvider extends ProbeProvider {
+  protected override transientRetry() {
+    return { maxRetries: 1, delayMs: 2000 };
+  }
+
+  request<T>(fn: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+    return this.withThrottleRetry(fn, { signal });
+  }
+}
+
+describe('BaseLLMProvider transient backoff', () => {
+  it('uses the shared wait strategy with the delay and signal', async (t) => {
+    const controller = new AbortController();
+    const waits: number[] = [];
+    t.mock.method(
+      DefaultWaitStrategy.prototype,
+      'wait',
+      async (ms: number, signal?: AbortSignal) => {
+        assert.equal(signal, controller.signal);
+        waits.push(ms);
+        return 'elapsed';
+      },
+    );
+    const provider = new TransientProvider({ whenThrottled: new WaitAsTold() });
+    let calls = 0;
+    assert.equal(
+      await provider.request(async () => {
+        if (++calls === 1)
+          throw Object.assign(new Error('service unavailable'), {
+            status: 503,
+          });
+        return 'ok';
+      }, controller.signal),
+      'ok',
+    );
+    assert.deepEqual(waits, [2000]);
+    assert.equal(calls, 2);
+  });
+
+  it('rethrows the same reason object when aborted during transient backoff', async () => {
+    const controller = new AbortController();
+    const reason = { message: 'caller stopped during provider backoff' };
+    const provider = new TransientProvider({ whenThrottled: new WaitAsTold() });
+    let calls = 0;
+    const result = provider.request(async () => {
+      calls++;
+      throw Object.assign(new Error('service unavailable'), { status: 503 });
+    }, controller.signal);
+    const rejected = assert.rejects(result, (error) => error === reason);
+    try {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.ok(getEventListeners(controller.signal, 'abort').length > 0);
+    } finally {
+      controller.abort(reason);
+    }
+    await rejected;
+    assert.equal(calls, 1);
+    assert.equal(getEventListeners(controller.signal, 'abort').length, 0);
+  });
+});
 
 describe('BaseLLMProvider rate-limit hooks', () => {
   const provider = new ProbeProvider({ model: 'some-model' });

@@ -25,7 +25,7 @@
   "peerDependencies": {
     "@mcp-abap-adt/hana-vector-rag": "^32.0.0",
     "@mcp-abap-adt/interfaces-auth": "^2.1.0",
-    "@mcp-abap-adt/llm-agent": "^33.0.0",
+    "@mcp-abap-adt/llm-agent": "^33.1.0",
     "@mcp-abap-adt/ollama-embedder": "^30.9.1",
     "@mcp-abap-adt/openai-embedder": "^30.9.1",
     "@mcp-abap-adt/pg-vector-rag": "^32.0.0",

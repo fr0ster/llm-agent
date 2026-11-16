@@ -19,14 +19,18 @@ npm install @mcp-abap-adt/ollama-embedder
 
 ## Usage
 
+Install `@mcp-abap-adt/llm-agent-rag` as well for the `composeEmbedder` helper
+used below, or use core's `composeResilientEmbedder` with no additional package.
+
 ```ts
 import { OllamaEmbedder, OllamaRag } from '@mcp-abap-adt/ollama-embedder';
+import { composeEmbedder } from '@mcp-abap-adt/llm-agent-rag';
 
-// Direct embedder usage
-const embedder = new OllamaEmbedder({
+// Composed embedder usage
+const embedder = composeEmbedder(new OllamaEmbedder({
   ollamaUrl: 'http://localhost:11434',
   model: 'bge-m3',
-});
+}));
 
 const result = await embedder.embed('Hello world');
 console.log(result.vector);
@@ -63,7 +67,7 @@ retroactive. Full detail, including what to do if you redistribute:
 Provider configuration accepts `usage?: IUsageRecorder` from
 `@mcp-abap-adt/llm-agent`. A call's `{ usage }` overrides the bound recorder;
 without either, collection is a no-op. Library adapters forward these options.
-Records describe physical requests inside retry/chunk loops, with a shared
+Records describe each physical request made by the provider, with a shared
 `operationId`, unique `physicalSeq`, attempt coordinates and embedding
 `chunkPath`. Token totals are the exact provider values for each request,
 or marked unknown when unavailable. No prompt, document, argument, result or
@@ -72,3 +76,30 @@ credential content is recorded.
 Use the buffered recorder from `@mcp-abap-adt/llm-usage`, or supply your own
 `IUsageRecorder`. See the [usage overview](../../docs/USAGE_ANALYTICS.md) for
 injection, replaceable transports/sinks and delivery/loss semantics.
+
+## Retry policy and HTTP errors
+
+Each `embed` call and each non-empty `embedBatch` call makes exactly one HTTP
+request. Empty batches return without I/O.
+Provider-internal retry loops and the constructor `retry` option have been removed
+in this major release. Network and decoding errors are rethrown unchanged.
+The caller's `CallOptions.signal` governs cancellation.
+
+For retries, wrap the raw provider with `composeEmbedder` from
+`@mcp-abap-adt/llm-agent-rag` (or `composeResilientEmbedder` from core).
+The composition owns retry policy and batch chunking; defaults retry transient
+429/500/502/503 failures up to three times with exponential backoff.
+`resolveEmbedder` and the server's resolution paths already apply this composition.
+
+HTTP errors remain `RagError` instances and carry `status: number`,
+`headers: Headers` and `retryAfterSeconds?: number`. Retry-After uses the shared
+LLM parser: delay-seconds (including zero) or an HTTP-date; missing/invalid
+values are undefined.
+
+For unlimited 429 waits with every other retry disabled, compose the raw provider
+with `retry: false` and
+`throttle: { key, strategy: new WaitAsTold({ fallbackBackoffMs: 2000 }) }`.
+See [the composition and hub migration guide](../../docs/EMBEDDER_THROTTLING.md).
+
+`OllamaRag` applies core resilience composition internally, so its convenience
+API retains retries without adding another provider retry loop.

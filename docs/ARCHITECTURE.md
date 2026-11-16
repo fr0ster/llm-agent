@@ -854,6 +854,17 @@ Two invariants hold across that chain:
 - **Batch capability is preserved, never fabricated.** `isBatchEmbedder` only tests for the presence of `embedBatch`, so each layer picks its class by inspecting its inner (the `wrapEmbedder` pattern, shared by `withRetry` and `withCircuitBreaker`). A decorator that exposed `embedBatch` unconditionally would make a non-batch embedder look batch-capable and send callers down the batch path.
 - **Composition is idempotent, and its metadata travels.** `composeResilientEmbedder` brands the chain with a symbol-keyed `{ maxBatchSize }`, and `wrapEmbedder` propagates that brand onto its own wrapper — its `inner` is `protected`, so a re-resolution could not otherwise see it and would stack the decorators. The cap is owned by the first composition; a later call carrying a *different explicit* `maxBatchSize` keeps the original and logs one warning.
 
+Embedding quota handling is opt-in on the same retry decorators:
+`composeResilientEmbedder(raw, { retry: false, throttle: { key, strategy } })`
+(or `composeEmbedder` from llm-agent-rag) retains the input cap and chunking while
+delegating HTTP 429 to `runWithThrottleRetry`. `WaitAsTold` accepts an optional
+`fallbackBackoffMs`; without `maxAttempts` the quota loop has no attempt/time
+limit and only the caller signal cancels it. OpenAI/Ollama embedder providers
+make one HTTP request per non-empty call and expose structured HTTP metadata.
+Configure `retry: false` on the composition so a non-429 reaches the caller on
+the first attempt. Put the circuit breaker outside this composition. See
+[Embedding throttling](EMBEDDER_THROTTLING.md) for the complete API and migration.
+
 ### Server-governed throttling (429)
 
 A 429 is handled inside the provider (`BaseLLMProvider.withThrottleRetry`) and

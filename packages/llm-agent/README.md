@@ -205,3 +205,15 @@ number of bound roles through the host's `IRagRoleAdmin`. Runtime `RagAccess` is
 `{ decision, roles: IRagRoleCheck, bindings }`; role administration is separate.
 The backend access-store factory returns both contracts over the same persistence.
 See [MIGRATION-v32](../../docs/MIGRATION-v32.md) for wiring, migration reports, and HDI deployment.
+
+## Embedding rate limits
+
+`composeResilientEmbedder(provider, { retry: false, throttle: { key, strategy } })`
+disables ordinary retries while routing HTTP 429 through the existing shared
+quota gate. Use `new WaitAsTold({ fallbackBackoffMs: 2000 })` to honor Retry-After
+and otherwise reuse exponential backoff without an attempt limit or timeout.
+The 24000-character input cap, batch chunking and usage attempt tracking remain.
+Provider internal retries must also be disabled. Put `withCircuitBreaker` outside
+this composition so pending 429 waits do not count as failures.
+
+See [embedding throttling and hub migration](../../docs/EMBEDDER_THROTTLING.md).

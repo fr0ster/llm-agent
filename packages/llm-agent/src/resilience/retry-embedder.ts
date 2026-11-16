@@ -18,7 +18,16 @@ import { isBatchEmbedder } from '../interfaces/rag.js';
 import type { CallOptions } from '../interfaces/types.js';
 import { RagError } from '../interfaces/types.js';
 import type { IWaitStrategy } from '../interfaces/wait-strategy.js';
-import { DefaultWaitStrategy } from '../interfaces/wait-strategy.js';
+import {
+  DefaultWaitStrategy,
+  exponentialBackoffMs,
+} from '../interfaces/wait-strategy.js';
+import {
+  httpStatusOf,
+  retryAfterSecondsOf,
+  runWithThrottleRetry,
+  type ThrottleRetryOptions,
+} from '../llm/throttle.js';
 import { startOperation, withOuterAttempt } from '../usage/hooks.js';
 
 export interface EmbedderRetryOptions {
@@ -39,6 +48,8 @@ export interface EmbedderRetryOptions {
    * name an internal mechanism, and the type stays expressible as plain data.
    */
   waitStrategy?: IWaitStrategy;
+  /** Reactive 429 policy; independent of the ordinary retry attempt limit. */
+  throttle?: Pick<ThrottleRetryOptions, 'key' | 'strategy'>;
 }
 
 /** Internal shape after defaults are applied — every field is present. */
@@ -54,35 +65,17 @@ const DEFAULT_OPTIONS: ResolvedRetryOptions = {
   waitStrategy: new DefaultWaitStrategy(),
 };
 
-const MAX_CAUSE_DEPTH = 5;
-
-/**
- * Resolve an HTTP status from an unknown thrown value: own status/statusCode,
- * then the same walking `cause`, bounded by depth and a visited set so a cyclic
- * chain cannot hang. Returns undefined when no numeric status is present.
- */
+/** Resolve structured HTTP status through the shared transport reader. */
 export function extractStatusCode(err: unknown): number | undefined {
-  const visited = new Set<unknown>();
-  let cur: unknown = err;
-  for (let depth = 0; depth < MAX_CAUSE_DEPTH; depth++) {
-    if (typeof cur !== 'object' || cur === null || visited.has(cur)) return;
-    visited.add(cur);
-    const rec = cur as {
-      status?: unknown;
-      statusCode?: unknown;
-      cause?: unknown;
-    };
-    if (typeof rec.status === 'number') return rec.status;
-    if (typeof rec.statusCode === 'number') return rec.statusCode;
-    cur = rec.cause;
-  }
-  return undefined;
+  return httpStatusOf(
+    typeof err === 'object' && err !== null ? err : undefined,
+  );
 }
 
 /**
  * Whether a thrown value should be retried against a set of HTTP status codes.
  *
- * A structured status (own `status`/`statusCode`, or the same on `cause`) is
+ * A structured status (`response.status`, `status`/`statusCode`, including `cause`) is
  * authoritative. Only when none is present does it fall back to the message,
  * and there it matches on **word boundaries** — a bare `includes('429')` also
  * fires on `4290`, an id, or a byte count, turning a hard error into a
@@ -127,6 +120,52 @@ export class RetryEmbedder implements IEmbedder {
     options?: CallOptions,
   ): Promise<T> {
     const op = startOperation(options);
+    if (this.opts.throttle) {
+      let physicalAttempt = 0;
+      let transientAttempt = 0;
+      return runWithThrottleRetry(
+        async () => {
+          options?.signal?.throwIfAborted();
+          try {
+            return await call({
+              ...options,
+              usageOp: withOuterAttempt(op, physicalAttempt++),
+            });
+          } catch (error) {
+            // The ordinary retry loop reaches its abort check after a retryable
+            // failure with attempts left. Keep that outcome and the caller reason.
+            if (
+              options?.signal?.aborted &&
+              transientAttempt < this.opts.maxAttempts &&
+              this.isRetryable(error)
+            ) {
+              options.signal.throwIfAborted();
+            }
+            throw error;
+          }
+        },
+        {
+          ...this.opts.throttle,
+          signal: options?.signal,
+          isThrottled: (error) =>
+            !options?.signal?.aborted &&
+            httpStatusOf(
+              typeof error === 'object' && error !== null ? error : undefined,
+            ) === 429,
+          retryAfterSeconds: (error) =>
+            retryAfterSecondsOf(
+              typeof error === 'object' && error !== null ? error : undefined,
+            ),
+          transient: {
+            maxRetries: this.opts.maxAttempts,
+            isTransient: (error) => this.isRetryable(error),
+            delayMs: () =>
+              exponentialBackoffMs(this.opts.backoffMs, transientAttempt++),
+            waitStrategy: this.opts.waitStrategy,
+          },
+        },
+      );
+    }
     for (let attempt = 0; ; attempt++) {
       if (options?.signal?.aborted) {
         throw new RagError('Aborted', 'ABORTED');
@@ -172,7 +211,7 @@ export class RetryEmbedder implements IEmbedder {
     attempt: number,
     signal?: AbortSignal,
   ): Promise<void> {
-    const delay = this.opts.backoffMs * 2 ** attempt;
+    const delay = exponentialBackoffMs(this.opts.backoffMs, attempt);
     await this.opts.waitStrategy.wait(delay, signal);
   }
 }

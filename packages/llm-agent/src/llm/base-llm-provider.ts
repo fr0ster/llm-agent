@@ -17,7 +17,10 @@ import {
   withProviderAttempt,
 } from '../usage/hooks.js';
 import {
+  errorCauseChain,
+  httpStatusOf,
   preserveThrottled,
+  retryAfterSecondsOf,
   runWithThrottleRetry,
   type ThrottleRetryOptions,
 } from './throttle.js';
@@ -217,7 +220,11 @@ export abstract class BaseLLMProvider<
 
   /** Is this "too many requests" rather than a real failure? */
   protected isThrottled(error: unknown): boolean {
-    return httpStatusOf(error) === 429;
+    return (
+      httpStatusOf(
+        typeof error === 'object' && error !== null ? error : undefined,
+      ) === 429
+    );
   }
 
   /**
@@ -235,20 +242,9 @@ export abstract class BaseLLMProvider<
    * spend cap is reached, and that one does not clear by waiting at all.
    */
   protected retryAfterSeconds(error: unknown): number | undefined {
-    const raw = headerOf(error, 'retry-after')?.trim();
-    if (raw === undefined || raw === '') return undefined;
-
-    // Numeric first, and once it is numeric it is never reconsidered as a date.
-    // Node's fallback date parser is lenient enough to read '-5' as the year
-    // 2001, which would turn a malformed header into "retry immediately".
-    const seconds = Number(raw);
-    if (!Number.isNaN(seconds)) {
-      return Number.isFinite(seconds) && seconds >= 0 ? seconds : undefined;
-    }
-
-    const when = Date.parse(raw);
-    if (!Number.isNaN(when)) return Math.max(0, (when - Date.now()) / 1000);
-    return undefined;
+    return retryAfterSecondsOf(
+      typeof error === 'object' && error !== null ? error : undefined,
+    );
   }
 
   /**
@@ -393,67 +389,6 @@ function requestAborted(error: unknown, signal?: AbortSignal): boolean {
 function fingerprint(secret: string | undefined): string {
   if (!secret) return 'anonymous';
   return createHash('sha256').update(secret).digest('hex').slice(0, 12);
-}
-
-/** Status of an axios-shaped error, or undefined when it is shaped otherwise. */
-function httpStatusOf(error: unknown): number | undefined {
-  for (const current of errorCauseChain(error)) {
-    const response = 'response' in current ? current.response : undefined;
-    const status =
-      response && typeof response === 'object' && 'status' in response
-        ? response.status
-        : undefined;
-    // axios keeps it under response; several SDKs hoist it onto the error itself.
-    for (const candidate of [
-      status,
-      'status' in current ? current.status : undefined,
-      'statusCode' in current ? current.statusCode : undefined,
-    ]) {
-      if (typeof candidate === 'number') return candidate;
-    }
-  }
-  return undefined;
-}
-
-/** One response header, case-insensitively, from an axios-shaped error. */
-function headerOf(error: unknown, name: string): string | undefined {
-  for (const current of errorCauseChain(error)) {
-    const response = 'response' in current ? current.response : undefined;
-    const headers =
-      response && typeof response === 'object' && 'headers' in response
-        ? response.headers
-        : undefined;
-    if (!isErrorProperties(headers)) continue;
-    // AxiosHeaders exposes a get(); a plain object does not.
-    const get = 'get' in headers ? headers.get : undefined;
-    if (typeof get === 'function') {
-      const v: unknown = get.call(headers, name);
-      if (v !== undefined && v !== null) return String(v);
-      continue;
-    }
-    for (const [k, v] of Object.entries(headers)) {
-      if (k.toLowerCase() === name && v !== undefined && v !== null)
-        return String(v);
-    }
-  }
-  return undefined;
-}
-
-/** Inspect at most five errors, starting with the outermost SDK wrapper. */
-function* errorCauseChain(error: unknown): Generator<object> {
-  const seen = new Set<object>();
-  let current = error;
-  for (let depth = 0; depth < 5; depth += 1) {
-    if (!current || typeof current !== 'object' || seen.has(current)) return;
-    seen.add(current);
-    yield current;
-    current = 'cause' in current ? current.cause : undefined;
-  }
-}
-
-/** Narrow arbitrary thrown-error properties before reading response headers. */
-function isErrorProperties(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === 'object';
 }
 
 function isTransientFailure(error: object | undefined): boolean {

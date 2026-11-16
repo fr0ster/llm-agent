@@ -563,11 +563,7 @@ test('real embedding HTTP covers RAG indexing, query and tool vectorization', as
       const count = records.length;
       await Promise.allSettled([run()]);
       const calls = records.slice(count);
-      assert.equal(
-        requests - before,
-        next === 'ok' || next === 'abort' ? 1 : 3,
-        `${name}: ${next}`,
-      );
+      assert.equal(requests - before, 1, `${name}: ${next}`);
       assert.equal(calls.length, requests - before, `${name}: ${next}`);
       assert.ok(
         calls.every(
@@ -666,7 +662,7 @@ test('embedding returned errors, throws and aborts count every HTTP attempt', as
       model: 'test',
     });
     await assert.rejects(provider.embed(document, { usage }));
-    assert.equal(requests, mode === 'abort' ? 1 : 3);
+    assert.equal(requests, 1);
     assert.equal(records.length, requests);
     assert.ok(
       records.every(
@@ -711,18 +707,17 @@ test('omitting a recorder preserves provider, adapter and embedding results', as
   contentFree(f.records);
 });
 
-test('three chunks failing last; nested outer chunks, outer retries and provider retries', async (t) => {
+test('three chunks failing last; explicit nested chunking and resilience retries', async (t) => {
   for (const nested of [false, true]) {
     const { usage, records } = collector();
     let requests = 0;
     t.mock.method(
       globalThis,
       'fetch',
-      async (_url: unknown, init?: RequestInit) => {
+      async (_url: string | URL | Request, init?: RequestInit) => {
         const n = requests++;
-        if (nested ? n >= 4 && n <= 6 : n >= 2)
+        if (nested ? n === 4 : n >= 2)
           return new Response(document, { status: 500 });
-        if (nested && n === 7) return new Response(document, { status: 429 });
         const inputs = JSON.parse(String(init?.body)).input as string[];
         return Response.json({
           data: inputs.map((_, index) => ({ embedding: [1], index })),
@@ -736,7 +731,10 @@ test('three chunks failing last; nested outer chunks, outer retries and provider
     });
     const wrapped = new BatchChunkingEmbedder(
       nested
-        ? new RetryBatchEmbedder(provider, { maxAttempts: 1, backoffMs: 0 })
+        ? new BatchChunkingEmbedder(
+            new RetryBatchEmbedder(provider, { maxAttempts: 1, backoffMs: 0 }),
+            100,
+          )
         : provider,
       nested ? 200 : 1,
     );
@@ -768,18 +766,13 @@ test('three chunks failing last; nested outer chunks, outer retries and provider
             ['2/3>1/2', 0, 0, 'ok'],
             ['2/3>2/2', 0, 0, 'ok'],
             ['3/3>1/2', 0, 0, 'error'],
-            ['3/3>1/2', 0, 1, 'error'],
-            ['3/3>1/2', 0, 2, 'error'],
-            ['3/3>1/2', 1, 0, 'error'],
-            ['3/3>1/2', 1, 1, 'ok'],
-            ['3/3>2/2', 1, 0, 'ok'],
+            ['3/3>1/2', 1, 0, 'ok'],
+            ['3/3>2/2', 0, 0, 'ok'],
           ]
         : [
-            ['1/3>1/1', 0, 0, 'ok'],
-            ['2/3>1/1', 0, 0, 'ok'],
-            ['3/3>1/1', 0, 0, 'error'],
-            ['3/3>1/1', 0, 1, 'error'],
-            ['3/3>1/1', 0, 2, 'error'],
+            ['1/3', 0, 0, 'ok'],
+            ['2/3', 0, 0, 'ok'],
+            ['3/3', 0, 0, 'error'],
           ],
     );
     contentFree(records);

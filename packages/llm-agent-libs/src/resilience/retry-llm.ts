@@ -12,6 +12,7 @@ import {
   type CallOptions,
   CircuitBreakerLlm,
   DefaultWaitStrategy,
+  exponentialBackoffMs,
   findThrottled,
   isCallerCancellation,
   isRetryableStatus,
@@ -69,7 +70,9 @@ export class RetryLlm implements ILlm {
     const op = startOperation(options);
     for (let attempt = 0; ; attempt++) {
       if (options?.signal?.aborted) {
-        return { ok: false, error: new LlmError('Aborted', 'ABORTED') };
+        const error = new LlmError('Aborted', 'ABORTED');
+        error.cause = options.signal.reason;
+        return { ok: false, error };
       }
 
       const result = await this.inner.chat(messages, tools, {
@@ -97,7 +100,9 @@ export class RetryLlm implements ILlm {
     const op = startOperation(options);
     for (let attempt = 0; ; attempt++) {
       if (options?.signal?.aborted) {
-        yield { ok: false, error: new LlmError('Aborted', 'ABORTED') };
+        const error = new LlmError('Aborted', 'ABORTED');
+        error.cause = options.signal.reason;
+        yield { ok: false, error };
         return;
       }
 
@@ -185,7 +190,13 @@ export class RetryLlm implements ILlm {
   }
 
   private async backoff(attempt: number, signal?: AbortSignal): Promise<void> {
-    await this.wait.wait(this.opts.backoffMs * 2 ** attempt, signal);
+    // Cancellation during the call keeps the loop's existing Result contract.
+    if (signal?.aborted) return;
+    await this.wait.wait(
+      exponentialBackoffMs(this.opts.backoffMs, attempt),
+      signal,
+    );
+    // The next iteration returns cancellation as an ABORTED Result.
   }
 }
 

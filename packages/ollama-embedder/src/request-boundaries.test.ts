@@ -14,11 +14,6 @@ test('unusable HTTP 200 responses record an error for each physical request in s
     requests++;
     return Response.json({ embedding: null, embeddings: [null] });
   });
-  // Skip only the backoff delay, preserving all physical retry attempts.
-  t.mock.method(globalThis, 'setTimeout', (callback: () => void) => {
-    callback();
-    return undefined as unknown as ReturnType<typeof setTimeout>;
-  });
   const provider = new OllamaEmbedder({ model: 'test', usage });
   for (const batch of [false, true]) {
     records.length = 0;
@@ -26,7 +21,7 @@ test('unusable HTTP 200 responses record an error for each physical request in s
     await assert.rejects(
       batch ? provider.embedBatch(['a']) : provider.embed('a'),
     );
-    assert.equal(requests, 3);
+    assert.equal(requests, 1);
     assert.equal(records.length, requests);
     assert.ok(records.every((r) => r.outcome === 'error'));
   }

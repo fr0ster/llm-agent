@@ -27,13 +27,15 @@
  * enters this path.
  */
 
-import { setTimeout as delay } from 'node:timers/promises';
 import {
   type IThrottleStrategy,
   ReportThrottling,
   type ThrottleDecision,
 } from '../interfaces/throttle-strategy.js';
-import { DefaultWaitStrategy } from '../interfaces/wait-strategy.js';
+import {
+  DefaultWaitStrategy,
+  type IWaitStrategy,
+} from '../interfaces/wait-strategy.js';
 
 /** Nothing waits unless the consumer says so. */
 const defaultStrategy = new ReportThrottling();
@@ -73,11 +75,20 @@ const waiter = new DefaultWaitStrategy();
  * warns about the leak — a defect this repository has already fixed once, in
  * the retry decorators. Fixed in one place, it stays fixed for every waiter.
  */
-const sleep = async (ms: number, signal?: AbortSignal): Promise<void> => {
-  const aborted = (): Error =>
-    (signal?.reason as Error | undefined) ?? new Error('Aborted');
-  if (signal?.aborted) throw aborted();
-  if ((await waiter.wait(ms, signal)) === 'aborted') throw aborted();
+const sleep = async (
+  ms: number,
+  signal?: AbortSignal,
+  strategy: IWaitStrategy = waiter,
+): Promise<void> => {
+  signal?.throwIfAborted();
+  try {
+    const result = await strategy.wait(ms, signal);
+    signal?.throwIfAborted();
+    if (result === 'aborted') throw new Error('Aborted');
+  } catch (error) {
+    signal?.throwIfAborted();
+    throw error;
+  }
 };
 
 /**
@@ -146,7 +157,8 @@ export class QuotaGate {
       // A timer that lands a hair early is simply waited out again on the next
       // turn, which is why the cap needs no padding to be safe.
       await sleep(
-        Math.min(left + Math.random() * WAKE_SPREAD_MS, budget),
+        // Node timers overflow beyond this slice; recheck the gate after it.
+        Math.min(left + Math.random() * WAKE_SPREAD_MS, budget, 2_147_483_647),
         signal,
       );
     }
@@ -313,6 +325,8 @@ export interface ThrottleRetryOptions {
     maxRetries: number;
     isTransient: (error: unknown) => boolean;
     delayMs: (error: unknown) => number;
+    /** Mechanism for transient backoff; independent of quota-gate waits. */
+    waitStrategy?: IWaitStrategy;
   };
 }
 
@@ -395,6 +409,8 @@ export async function runWithThrottleRetry<T>(
   fn: () => Promise<T>,
   opts: ThrottleRetryOptions,
 ): Promise<T> {
+  // Cancellation belongs to the caller, even when this quota is already shut.
+  opts.signal?.throwIfAborted();
   const { gate, release } = leaseQuotaGate(opts.key);
   try {
     return await attemptWithGate(fn, opts, gate);
@@ -461,9 +477,11 @@ async function attemptWithGate<T>(
         )
           throw error;
         transientAttempts += 1;
-        await delay(transient.delayMs(error), undefined, {
-          signal: opts.signal,
-        });
+        await sleep(
+          transient.delayMs(error),
+          opts.signal,
+          transient.waitStrategy,
+        );
         continue;
       }
 
@@ -530,25 +548,19 @@ function report(
   });
 }
 
-const MAX_CAUSE_DEPTH = 5;
-
 /**
  * The rate-limit marker on an error or anywhere in its `cause` chain.
  *
  * Layers above the provider rewrap errors — the ILlm adapter turns anything
  * thrown into an `LlmError` — so the marker is rarely still on the outermost
  * object by the time a retry decorator inspects it. Bounded by depth and a
- * visited set, like `extractStatusCode`, so a cyclic chain cannot hang.
+ * visited set through the shared transport walker, so a cyclic chain cannot hang.
  */
 export function findThrottled(err: unknown): ThrottledError | undefined {
-  const visited = new Set<unknown>();
-  let cur: unknown = err;
-  for (let depth = 0; depth < MAX_CAUSE_DEPTH; depth++) {
-    if (typeof cur !== 'object' || cur === null || visited.has(cur))
-      return undefined;
-    visited.add(cur);
-    if (isThrottledError(cur)) return cur;
-    cur = (cur as { cause?: unknown }).cause;
+  for (const current of errorCauseChain(
+    typeof err === 'object' && err !== null ? err : undefined,
+  )) {
+    if (isThrottledError(current)) return current;
   }
   return undefined;
 }
@@ -614,4 +626,112 @@ function annotate(
   if (retryAfterSeconds !== undefined) e.retryAfterSeconds = retryAfterSeconds;
   if (reason !== undefined) e.reason = reason;
   return e;
+}
+
+/** Parse the provider Retry-After header once, for LLMs and embedders. */
+export function parseRetryAfter(
+  value: string | null | undefined,
+): number | undefined {
+  const raw = value?.trim();
+  if (raw === undefined || raw === '') return undefined;
+
+  // Numeric first, and once it is numeric it is never reconsidered as a date.
+  // Node's fallback date parser is lenient enough to read '-5' as the year
+  // 2001, which would turn a malformed header into "retry immediately".
+  const seconds = Number(raw);
+  if (!Number.isNaN(seconds)) {
+    return Number.isFinite(seconds) && seconds >= 0 ? seconds : undefined;
+  }
+
+  const when = Date.parse(raw);
+  if (!Number.isNaN(when)) return Math.max(0, (when - Date.now()) / 1000);
+  return undefined;
+}
+
+/** Read parsed metadata or transport headers through SDK cause wrappers. */
+export function retryAfterSecondsOf(
+  error: object | undefined,
+): number | undefined {
+  // Preserve BaseLLMProvider's response-header precedence across the entire
+  // cause chain, including a blank or malformed header stopping the search.
+  for (const current of errorCauseChain(error)) {
+    const response = 'response' in current ? current.response : undefined;
+    const raw =
+      response && typeof response === 'object' && 'headers' in response
+        ? headerOf(response.headers, 'retry-after')
+        : undefined;
+    if (raw !== undefined) return parseRetryAfter(raw);
+  }
+
+  // Embedders also expose parsed metadata and headers directly on RagError.
+  for (const current of errorCauseChain(error)) {
+    if (
+      'retryAfterSeconds' in current &&
+      typeof current.retryAfterSeconds === 'number' &&
+      Number.isFinite(current.retryAfterSeconds) &&
+      current.retryAfterSeconds >= 0
+    ) {
+      return current.retryAfterSeconds;
+    }
+    const parsed = parseRetryAfter(
+      headerOf(
+        'headers' in current ? current.headers : undefined,
+        'retry-after',
+      ),
+    );
+    if (parsed !== undefined) return parsed;
+  }
+  return undefined;
+}
+
+/** Status of an axios-shaped error, or undefined when it is shaped otherwise. */
+export function httpStatusOf(error: object | undefined): number | undefined {
+  for (const current of errorCauseChain(error)) {
+    const response = 'response' in current ? current.response : undefined;
+    const status =
+      response && typeof response === 'object' && 'status' in response
+        ? response.status
+        : undefined;
+    // axios keeps it under response; several SDKs hoist it onto the error itself.
+    for (const candidate of [
+      status,
+      'status' in current ? current.status : undefined,
+      'statusCode' in current ? current.statusCode : undefined,
+    ]) {
+      if (typeof candidate === 'number') return candidate;
+    }
+  }
+  return undefined;
+}
+
+/** One header, case-insensitively, from a transport header collection. */
+function headerOf<T>(headers: T, name: string): string | undefined {
+  if (!headers || typeof headers !== 'object') return undefined;
+  const get = 'get' in headers ? headers.get : undefined;
+  if (typeof get === 'function') {
+    const value = get.call(headers, name);
+    return value !== undefined && value !== null ? String(value) : undefined;
+  }
+  for (const [key, value] of Object.entries(headers)) {
+    if (key.toLowerCase() === name && value !== undefined && value !== null)
+      return String(value);
+  }
+  return undefined;
+}
+
+/** Inspect at most five errors, starting with the outermost SDK wrapper. */
+export function* errorCauseChain(error: object | undefined): Generator<object> {
+  const seen = new Set<object>();
+  let current = error;
+  for (let depth = 0; depth < 5; depth += 1) {
+    if (!current || typeof current !== 'object' || seen.has(current)) return;
+    seen.add(current);
+    yield current;
+    current =
+      'cause' in current &&
+      typeof current.cause === 'object' &&
+      current.cause !== null
+        ? current.cause
+        : undefined;
+  }
 }
