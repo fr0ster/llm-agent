@@ -88,3 +88,7 @@ production authentication or authorization implementation. The standalone CLI's
 `--local-user-id` opt-in is documented in the server package README.
 
 In v32, `RagAccess.roles` is `IRagRoleCheck`; trusted host tooling retains the separate `IRagRoleAdmin`. See [MIGRATION-v32](../../docs/MIGRATION-v32.md).
+
+## Prompt caching
+
+Flat and named `llm` YAML entries and HTTP chat requests accept only the boolean `promptCaching` switch for caching. It defaults to enabled; call options override provider config. Non-boolean values are rejected at YAML/HTTP boundaries. Cache keys, retention controls, and their HTTP aliases are not supported. Providers decide how to apply the switch; automatic provider caching cannot be disabled by the client. Usage summaries preserve cache counters by model. See [prompt caching](../../docs/PROMPT_CACHING.md).

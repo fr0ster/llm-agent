@@ -8,6 +8,7 @@ import type {
   PlanStep,
   StepResult,
 } from '@mcp-abap-adt/llm-agent';
+import { addCacheTokenUsage } from '@mcp-abap-adt/llm-agent';
 import { normalizeLoopLimit } from '../../config/normalize-max-iterations.js';
 import { composeTask } from './compose-task.js';
 
@@ -147,6 +148,7 @@ export class SelfDispatch implements IDispatchStrategy {
       if (!u) return;
       usage = usage
         ? {
+            ...addCacheTokenUsage(usage, u),
             promptTokens: usage.promptTokens + u.promptTokens,
             completionTokens: usage.completionTokens + u.completionTokens,
             totalTokens: usage.totalTokens + u.totalTokens,

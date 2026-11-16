@@ -6,6 +6,7 @@ import type {
   OrchestratorError,
   Result,
 } from '@mcp-abap-adt/llm-agent';
+import { addCacheTokenUsage } from '@mcp-abap-adt/llm-agent';
 
 /**
  * Translate a RAG query to English for search purposes. Skips ASCII-only and
@@ -72,6 +73,7 @@ export async function summarizeHistory(
   deps.requestLogger.logLlmCall({
     component: 'helper',
     model: deps.helperLlm.model ?? 'unknown',
+    ...addCacheTokenUsage(undefined, res.ok ? res.value.usage : undefined),
     promptTokens: res.ok ? (res.value.usage?.promptTokens ?? 0) : 0,
     completionTokens: res.ok ? (res.value.usage?.completionTokens ?? 0) : 0,
     totalTokens: res.ok ? (res.value.usage?.totalTokens ?? 0) : 0,

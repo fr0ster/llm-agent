@@ -387,3 +387,13 @@ Ordering is stable within an unchanged backend store, without snapshot isolation
 across pages. Pass `CallOptions.signal` to cancel with an `ABORTED` result.
 
 Worker results (`ISubAgentResult`) and persisted `TaskRecord` records may include `toolTrace`: bounded, redacted execution evidence with dispatch sequences, outcomes, omissions and a completeness flag. `ISubAgentInput.onToolTrace` and `CallOptions.onToolTrace` observe dispatch and settlement entries by sequence. Verdict steps receive this evidence automatically; hosts executing external tools must supply their own normalized trace.
+
+## Prompt caching
+
+Use `promptCaching?: boolean` in call options or provider/server config, including
+flat and named `llm` YAML entries. Caching defaults to enabled; precedence is
+`options.promptCaching ?? config.promptCaching ?? true`. Providers own the cache
+mechanism. Anthropic and SAP Claude requests omit cache directives when disabled;
+OpenAI and DeepSeek cache automatically and cannot be disabled by the client.
+The switch has no request effect for Ollama. See [provider behavior, usage, and SAP
+migration notes](docs/PROMPT_CACHING.md).

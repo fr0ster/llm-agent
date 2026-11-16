@@ -1,5 +1,6 @@
 import type { ILlm, LlmResponse } from '@mcp-abap-adt/llm-agent';
 import {
+  addCacheTokenUsage,
   type CallOptions,
   formatTrustTag,
   RagError,
@@ -187,6 +188,7 @@ export class LlmReranker implements IReranker {
         usage?.completionTokens ?? Math.ceil(reply.content.length / 4);
       logger.logLlmCall({
         component: 'rerank',
+        ...addCacheTokenUsage(undefined, usage),
         model: this.llm.model ?? 'unknown',
         promptTokens,
         completionTokens,

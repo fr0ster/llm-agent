@@ -34,12 +34,48 @@ export interface AnthropicConfig extends LLMProviderConfig {
   credential: IApiKeyCredential;
   model?: string;
   temperature?: number;
+  /** Automatic prompt caching: enabled by default; false omits the directive. */
+  promptCaching?: LLMCallOptions['promptCaching'];
   maxTokens?: number;
 }
 
 /** `{ temperature }` when set, nothing otherwise — the model's default applies. */
 function temperatureParam(temperature: number | undefined) {
   return temperature !== undefined ? { temperature } : {};
+}
+
+function cacheControlParam(caching: AnthropicConfig['promptCaching'] = true) {
+  return !caching
+    ? {}
+    : {
+        cache_control: { type: 'ephemeral' },
+      };
+}
+
+interface AnthropicUsage {
+  input_tokens?: number;
+  output_tokens?: number;
+  cache_read_input_tokens?: number;
+  cache_creation_input_tokens?: number;
+}
+
+function normalizedUsage(usage: AnthropicUsage) {
+  const promptTokens =
+    (usage.input_tokens ?? 0) +
+    (usage.cache_read_input_tokens ?? 0) +
+    (usage.cache_creation_input_tokens ?? 0);
+  const completionTokens = usage.output_tokens ?? 0;
+  return {
+    promptTokens,
+    completionTokens,
+    totalTokens: promptTokens + completionTokens,
+    ...(usage.cache_read_input_tokens !== undefined
+      ? { cachedInputTokens: usage.cache_read_input_tokens }
+      : {}),
+    ...(usage.cache_creation_input_tokens !== undefined
+      ? { cacheCreationInputTokens: usage.cache_creation_input_tokens }
+      : {}),
+  };
 }
 
 type Json = string | number | boolean | null | Json[] | { [key: string]: Json };
@@ -156,6 +192,9 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
         // temperature is sent only when set (claude-opus-4-7+ accept only 1).
         max_tokens: options?.maxTokens ?? this.config.maxTokens ?? 4096,
         ...temperatureParam(options?.temperature ?? this.config.temperature),
+        ...cacheControlParam(
+          options?.promptCaching ?? this.config.promptCaching,
+        ),
         ...(options?.topP !== undefined ? { top_p: options.topP } : {}),
         ...(options?.stop ? { stop_sequences: options.stop } : {}),
       };
@@ -192,14 +231,7 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
           }
 
           const rawUsage = response.data.usage;
-          const usage = rawUsage
-            ? {
-                promptTokens: rawUsage.input_tokens ?? 0,
-                completionTokens: rawUsage.output_tokens ?? 0,
-                totalTokens:
-                  (rawUsage.input_tokens ?? 0) + (rawUsage.output_tokens ?? 0),
-              }
-            : undefined;
+          const usage = rawUsage ? normalizedUsage(rawUsage) : undefined;
 
           const result = {
             content: textContent,
@@ -217,12 +249,14 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
             tokensSource:
               rawUsage?.input_tokens !== undefined ||
               rawUsage?.output_tokens !== undefined ||
-              rawUsage?.cache_read_input_tokens !== undefined
+              rawUsage?.cache_read_input_tokens !== undefined ||
+              rawUsage?.cache_creation_input_tokens !== undefined
                 ? 'provider'
                 : 'unknown',
             inputTokens: rawUsage?.input_tokens,
             outputTokens: rawUsage?.output_tokens,
             cachedInputTokens: rawUsage?.cache_read_input_tokens,
+            cacheCreationInputTokens: rawUsage?.cache_creation_input_tokens,
           });
           return result;
         },
@@ -304,6 +338,7 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
       messages: sent,
       max_tokens: options?.maxTokens ?? this.config.maxTokens ?? 4096,
       ...temperatureParam(options?.temperature ?? this.config.temperature),
+      ...cacheControlParam(options?.promptCaching ?? this.config.promptCaching),
       stream: true,
       ...(options?.topP !== undefined ? { top_p: options.topP } : {}),
       ...(options?.stop ? { stop_sequences: options.stop } : {}),
@@ -401,6 +436,7 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
     let inputTokens: number | undefined;
     let outputTokens: number | undefined;
     let cachedInputTokens: number | undefined;
+    let cacheCreationInputTokens: number | undefined;
 
     // Anthropic streams tool_use as discrete content blocks: a
     // `content_block_start` with type=tool_use carries id+name, then a series
@@ -444,6 +480,9 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
               outputTokens = eventUsage.output_tokens ?? outputTokens;
               cachedInputTokens =
                 eventUsage.cache_read_input_tokens ?? cachedInputTokens;
+              cacheCreationInputTokens =
+                eventUsage.cache_creation_input_tokens ??
+                cacheCreationInputTokens;
             }
             if (
               parsed.delta?.text ||
@@ -521,11 +560,7 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
               yield {
                 content: '',
                 raw: parsed,
-                usage: {
-                  promptTokens: u.input_tokens ?? 0,
-                  completionTokens: u.output_tokens ?? 0,
-                  totalTokens: (u.input_tokens ?? 0) + (u.output_tokens ?? 0),
-                },
+                usage: normalizedUsage(u),
               };
             } else if (eventType === 'message_delta') {
               const u = parsed.usage;
@@ -587,10 +622,12 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
         inputTokens,
         outputTokens,
         cachedInputTokens,
+        cacheCreationInputTokens,
         tokensSource:
           inputTokens !== undefined ||
           outputTokens !== undefined ||
-          cachedInputTokens !== undefined
+          cachedInputTokens !== undefined ||
+          cacheCreationInputTokens !== undefined
             ? 'provider'
             : 'unknown',
       });

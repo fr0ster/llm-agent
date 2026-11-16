@@ -158,6 +158,8 @@ export { writeNotReady } from './http/response-helpers.js';
 // ---------------------------------------------------------------------------
 
 export interface SmartServerLlmConfig {
+  /** Default: true. Providers decide how to apply the switch. */
+  promptCaching?: boolean;
   /** Provider id for the flat schema. Required when no pipeline.llm.main is set. */
   provider?: 'deepseek' | 'openai' | 'anthropic' | 'sap-ai-sdk' | 'ollama';
   /**

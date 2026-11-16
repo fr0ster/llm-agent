@@ -76,7 +76,7 @@ export interface LLMResponse {
   usage?: LlmUsage;
 }
 
-export interface LLMProviderConfig {
+export interface LLMProviderConfig extends PromptCacheOptions {
   /** Recorder used when a call does not supply its own recorder. */
   usage?: IUsageRecorder;
   /**
@@ -105,7 +105,13 @@ export interface LLMProviderConfig {
   whenThrottled?: IThrottleStrategy;
 }
 
-export interface LLMCallOptions {
+/** Provider-agnostic switch; each provider owns its caching mechanism. */
+export interface PromptCacheOptions {
+  /** Default: true. False disables client-controlled prompt caching. */
+  promptCaching?: boolean;
+}
+
+export interface LLMCallOptions extends PromptCacheOptions {
   usage?: IUsageRecorder;
   usageOp?: UsageOperation;
   /** Per-request model override. */
@@ -135,5 +141,11 @@ export interface LLMCallOptions {
 export type AgentStreamChunk =
   | { type: 'text'; delta: string }
   | { type: 'tool_calls'; toolCalls: ToolCall[] }
-  | { type: 'usage'; promptTokens: number; completionTokens: number }
+  | {
+      type: 'usage';
+      promptTokens: number;
+      completionTokens: number;
+      cachedInputTokens?: number;
+      cacheCreationInputTokens?: number;
+    }
   | { type: 'done'; finishReason: 'stop' | 'tool_calls' | 'length' | 'error' };

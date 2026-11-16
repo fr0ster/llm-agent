@@ -1,4 +1,5 @@
 import {
+  addCacheTokenUsage,
   type CallOptions,
   type IEvaluator,
   type IKnowledgeRagHandle,
@@ -252,6 +253,7 @@ export async function buildFromComposition(
         logLlmCall({
           component,
           model: inner.model ?? cfgModel ?? 'unknown',
+          ...addCacheTokenUsage(undefined, usage),
           promptTokens: usage.promptTokens,
           completionTokens: usage.completionTokens,
           totalTokens: usage.totalTokens,

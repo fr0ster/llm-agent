@@ -18,7 +18,11 @@ import type {
   PlannerResult,
   ReviewResult,
 } from '@mcp-abap-adt/llm-agent';
-import { ClarifySignal, NeedInfoSignal } from '@mcp-abap-adt/llm-agent';
+import {
+  addCacheTokenUsage,
+  ClarifySignal,
+  NeedInfoSignal,
+} from '@mcp-abap-adt/llm-agent';
 import { OrchestratorError } from '../../agent.js';
 import { PassthroughFinalizer } from '../../coordinator/dag/passthrough-finalizer.js';
 import { AbortErrorStrategy } from '../../coordinator/index.js';
@@ -133,6 +137,7 @@ export class DagCoordinatorHandler implements IStageHandler {
       ctx.requestLogger.logLlmCall({
         component,
         model: model ?? 'unknown',
+        ...addCacheTokenUsage(undefined, usage),
         promptTokens: usage.promptTokens,
         completionTokens: usage.completionTokens,
         totalTokens: usage.totalTokens,

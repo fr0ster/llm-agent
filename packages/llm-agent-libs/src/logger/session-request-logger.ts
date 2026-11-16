@@ -6,6 +6,7 @@ import type {
   RequestSummary,
   ToolCallEntry,
 } from '@mcp-abap-adt/llm-agent';
+import { addCacheTokenUsage } from '@mcp-abap-adt/llm-agent';
 import { CATEGORY_MAP } from './default-request-logger.js';
 
 interface Bucket {
@@ -34,12 +35,14 @@ export function aggregate(b: Bucket): RequestSummary {
     totalDurationMs += c.durationMs;
     byModel[c.model] ??= zeroBucket();
     const m = byModel[c.model];
+    Object.assign(m, addCacheTokenUsage(m, c));
     m.promptTokens += c.promptTokens;
     m.completionTokens += c.completionTokens;
     m.totalTokens += c.totalTokens;
     m.requests++;
     byComponent[c.component] ??= zeroBucket();
     const comp = byComponent[c.component];
+    Object.assign(comp, addCacheTokenUsage(comp, c));
     comp.promptTokens += c.promptTokens;
     comp.completionTokens += c.completionTokens;
     comp.totalTokens += c.totalTokens;
@@ -55,6 +58,7 @@ export function aggregate(b: Bucket): RequestSummary {
         : (CATEGORY_MAP[c.component] ?? 'request');
     byCategory[catKey] ??= zeroBucket();
     const cat = byCategory[catKey];
+    Object.assign(cat, addCacheTokenUsage(cat, c));
     cat.promptTokens += c.promptTokens;
     cat.completionTokens += c.completionTokens;
     cat.totalTokens += c.totalTokens;
@@ -64,6 +68,7 @@ export function aggregate(b: Bucket): RequestSummary {
   // has a non-null rollup regardless of which path (DAG/Stepper/flat) was used.
   const totals = zeroBucket();
   for (const comp of Object.values(byComponent)) {
+    Object.assign(totals, addCacheTokenUsage(totals, comp));
     totals.promptTokens += comp.promptTokens;
     totals.completionTokens += comp.completionTokens;
     totals.totalTokens += comp.totalTokens;
@@ -82,15 +87,17 @@ export function aggregate(b: Bucket): RequestSummary {
 
 /** Sum a summary's components into a flat usage triple for response.usage. */
 export function summaryToUsage(s: RequestSummary): LlmUsage {
+  let cache: ReturnType<typeof addCacheTokenUsage> = {};
   let promptTokens = 0;
   let completionTokens = 0;
   let totalTokens = 0;
   for (const v of Object.values(s.byComponent)) {
+    cache = addCacheTokenUsage(cache, v);
     promptTokens += v.promptTokens;
     completionTokens += v.completionTokens;
     totalTokens += v.totalTokens;
   }
-  return { promptTokens, completionTokens, totalTokens };
+  return { ...cache, promptTokens, completionTokens, totalTokens };
 }
 
 /**

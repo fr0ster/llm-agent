@@ -3,6 +3,7 @@ import type {
   LlmComponent,
   LlmUsage,
 } from '@mcp-abap-adt/llm-agent';
+import { addCacheTokenUsage } from '@mcp-abap-adt/llm-agent';
 
 // ---------------------------------------------------------------------------
 // Debug logging — private copy (mirrors the one in controller-coordinator-handler.ts
@@ -44,6 +45,7 @@ export function makeLogUsage(
     requestLogger.logLlmCall({
       component: role as LlmComponent,
       model,
+      ...addCacheTokenUsage(undefined, u),
       promptTokens: u.promptTokens ?? 0,
       completionTokens: u.completionTokens ?? 0,
       totalTokens: u.totalTokens ?? 0,
@@ -51,7 +53,7 @@ export function makeLogUsage(
       requestId,
     });
     dlog(
-      `tokens ${role}: prompt=${u.promptTokens} completion=${u.completionTokens} total=${u.totalTokens}`,
+      `tokens ${role}: prompt=${u.promptTokens} completion=${u.completionTokens} total=${u.totalTokens} cache_read=${u.cachedInputTokens ?? 0} cache_creation=${u.cacheCreationInputTokens ?? 0}`,
     );
   };
 }

@@ -379,3 +379,7 @@ In v32, share a collection by binding roles with the host's separate `IRagRoleAd
 The builder receives only `{ decision, roles, bindings }`; it never manages roles.
 Both retrieval paths check collection access live and filter by its owner before top-k.
 See [the v32 migration guide](../../docs/MIGRATION-v32.md).
+
+## Prompt caching
+
+Provider bridges, chat/stream adapters, tool loops, steppers, and request loggers preserve optional cache reads and creations, including per-model/component/category totals. The shared `promptCaching?: boolean` switch follows the same call-option path as temperature. Calls override config; omission enables caching. Each provider owns its cache mechanism. See [prompt caching](../../docs/PROMPT_CACHING.md) for provider behavior and the prefix stability audit.

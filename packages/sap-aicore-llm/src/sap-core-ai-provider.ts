@@ -136,8 +136,8 @@ export function isOrchestrationChatModel(info: IModelInfo): boolean {
 }
 
 export interface SapCoreAIConfig extends LLMProviderConfig {
-  /** Anthropic cache breakpoints on stable prefixes. Default: off. */
-  promptCaching?: 'off' | 'system' | 'system+tools';
+  /** Anthropic breakpoints on system and tools. Default: true. */
+  promptCaching?: boolean;
   /** Retries before the first response chunk. Default: 1; 0 disables. */
   transientMaxRetries?: number;
   /** Delay in milliseconds unless Retry-After is present. Default: 1500. */
@@ -438,7 +438,7 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
               apiBaseUrl: this.config.apiBaseUrl,
               credential: this.config.credential,
             });
-            client = this.createClient(formatted, tools, destination);
+            client = this.createClient(formatted, tools, destination, options);
           },
           opts: options,
           op: startOperation(options),
@@ -583,7 +583,7 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
               apiBaseUrl: this.config.apiBaseUrl,
               credential: this.config.credential,
             });
-            client = this.createClient(formatted, tools, destination);
+            client = this.createClient(formatted, tools, destination, options);
           },
           opts: options,
           op: startOperation(options),
@@ -865,8 +865,9 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
     messages: ChatMessage[],
     tools: unknown[] | undefined,
     destination: SapCoreAIDestination,
+    options?: LLMCallOptions,
   ): OrchestrationClient {
-    const caching = this.config.promptCaching ?? 'off';
+    const caching = options?.promptCaching ?? this.config.promptCaching ?? true;
     const anthropic = /(?:^|[/.:-])(?:anthropic|claude)(?:[/.:-]|$)/i.test(
       this.modelOverride ?? this.model,
     );
@@ -877,7 +878,7 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
     const template = messages.map((message, index) => {
       if (
         !anthropic ||
-        caching === 'off' ||
+        !caching ||
         message.role !== 'system' ||
         index !== lastSystem
       )
@@ -895,7 +896,7 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
       return { ...message, content };
     });
     const cachedTools =
-      anthropic && caching === 'system+tools'
+      anthropic && caching
         ? tools?.map((tool, index) =>
             index === tools.length - 1 &&
             tool !== null &&

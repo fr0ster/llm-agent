@@ -114,6 +114,7 @@ export const USAGE_CSV_COLUMNS = [
   'values.task',
   'values',
   'loss_evidence',
+  'cacheCreationInputTokens',
 ] as const;
 
 /** CSV uses fixed columns; extension values are flattened as values.* in its JSON cell. */

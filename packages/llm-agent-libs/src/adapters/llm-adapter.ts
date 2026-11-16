@@ -43,6 +43,47 @@ type ParseDiagnosticSink = (event: ParseDiagnostic) => void;
 // parseProviderResponse
 // ---------------------------------------------------------------------------
 
+/** Normalize legacy bridge payloads; provider bridges supply normalized usage directly. */
+function normalizeWireUsage(usage: {
+  prompt_tokens?: number;
+  completion_tokens?: number;
+  total_tokens?: number;
+  input_tokens?: number;
+  output_tokens?: number;
+  cache_read_input_tokens?: number;
+  cache_creation_input_tokens?: number;
+  prompt_cache_hit_tokens?: number;
+  prompt_tokens_details?: {
+    cached_tokens?: number;
+    cache_creation_tokens?: number;
+    cache_write_tokens?: number;
+  };
+}): NonNullable<LlmResponse['usage']> {
+  const cachedInputTokens =
+    usage.cache_read_input_tokens ??
+    usage.prompt_tokens_details?.cached_tokens ??
+    usage.prompt_cache_hit_tokens;
+  const cacheCreationInputTokens =
+    usage.cache_creation_input_tokens ??
+    usage.prompt_tokens_details?.cache_creation_tokens ??
+    usage.prompt_tokens_details?.cache_write_tokens;
+  const promptTokens =
+    usage.prompt_tokens ??
+    (usage.input_tokens ?? 0) +
+      (usage.cache_read_input_tokens ?? 0) +
+      (usage.cache_creation_input_tokens ?? 0);
+  const completionTokens = usage.completion_tokens ?? usage.output_tokens ?? 0;
+  return {
+    ...(cachedInputTokens !== undefined ? { cachedInputTokens } : {}),
+    ...(cacheCreationInputTokens !== undefined
+      ? { cacheCreationInputTokens }
+      : {}),
+    promptTokens,
+    completionTokens,
+    totalTokens: usage.total_tokens || promptTokens + completionTokens,
+  };
+}
+
 /**
  * Extracts tool calls and usage from the raw provider response.
  *
@@ -52,6 +93,7 @@ type ParseDiagnosticSink = (event: ParseDiagnostic) => void;
 function parseProviderResponse(
   raw: {
     content: string;
+    usage?: LlmResponse['usage'];
     raw?: unknown;
   },
   onDiagnostic?: ParseDiagnosticSink,
@@ -60,26 +102,19 @@ function parseProviderResponse(
   const providerRaw = raw.raw as any;
 
   if (!providerRaw) {
-    return { content: raw.content, finishReason: 'stop' };
+    return {
+      content: raw.content,
+      finishReason: 'stop',
+      ...(raw.usage ? { usage: raw.usage } : {}),
+    };
   }
 
   const toolCalls: LlmToolCall[] = [];
-  let usage: LlmResponse['usage'];
+  let usage = raw.usage;
 
   // Extract usage
-  if (providerRaw.usage) {
-    usage = {
-      promptTokens:
-        providerRaw.usage.prompt_tokens ?? providerRaw.usage.input_tokens ?? 0,
-      completionTokens:
-        providerRaw.usage.completion_tokens ??
-        providerRaw.usage.output_tokens ??
-        0,
-      totalTokens: providerRaw.usage.total_tokens ?? 0,
-    };
-    if (usage.totalTokens === 0) {
-      usage.totalTokens = usage.promptTokens + usage.completionTokens;
-    }
+  if (!usage && providerRaw.usage) {
+    usage = normalizeWireUsage(providerRaw.usage);
   }
 
   // OpenAI / DeepSeek format
@@ -170,6 +205,12 @@ function parseStreamChunk(
       return {
         content: '',
         usage: {
+          ...(raw.cachedInputTokens !== undefined
+            ? { cachedInputTokens: raw.cachedInputTokens }
+            : {}),
+          ...(raw.cacheCreationInputTokens !== undefined
+            ? { cacheCreationInputTokens: raw.cacheCreationInputTokens }
+            : {}),
           promptTokens: raw.promptTokens,
           completionTokens: raw.completionTokens,
           totalTokens: raw.promptTokens + raw.completionTokens,
@@ -193,14 +234,7 @@ function parseStreamChunk(
   if (providerRaw.usage && !providerRaw.choices?.[0]?.delta) {
     return {
       content: '',
-      usage: {
-        promptTokens: providerRaw.usage.prompt_tokens ?? 0,
-        completionTokens: providerRaw.usage.completion_tokens ?? 0,
-        totalTokens:
-          providerRaw.usage.total_tokens ??
-          (providerRaw.usage.prompt_tokens ?? 0) +
-            (providerRaw.usage.completion_tokens ?? 0),
-      },
+      usage: normalizeWireUsage(providerRaw.usage),
     };
   }
 
@@ -230,6 +264,9 @@ function parseStreamChunk(
 
     return {
       content: delta.content || '',
+      ...(providerRaw.usage
+        ? { usage: normalizeWireUsage(providerRaw.usage) }
+        : {}),
       toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
       finishReason: providerRaw.choices[0].finish_reason || undefined,
     };
@@ -361,6 +398,7 @@ export class LlmAdapter implements ILlm, IModelProvider {
             usage: options.usage,
             usageOp: options.usageOp,
             temperature: options.temperature,
+            promptCaching: options.promptCaching,
             maxTokens: options.maxTokens,
             topP: options.topP,
             stop: options.stop,
@@ -424,6 +462,7 @@ export class LlmAdapter implements ILlm, IModelProvider {
             usage: options.usage,
             usageOp: options.usageOp,
             temperature: options.temperature,
+            promptCaching: options.promptCaching,
             maxTokens: options.maxTokens,
             topP: options.topP,
             stop: options.stop,

@@ -217,3 +217,7 @@ Provider internal retries must also be disabled. Put `withCircuitBreaker` outsid
 this composition so pending 429 waits do not count as failures.
 
 See [embedding throttling and hub migration](../../docs/EMBEDDER_THROTTLING.md).
+
+## Prompt caching
+
+`CallOptions`, `LLMCallOptions`, and `LLMProviderConfig` carry only `promptCaching?: boolean` for prompt caching. The effective setting is `options.promptCaching ?? config.promptCaching ?? true`; each provider owns its caching mechanism. `false` disables client-controlled caching; automatic provider caching may remain active. `addTokenUsage` preserves optional `cachedInputTokens` and `cacheCreationInputTokens`, including per-model sums. These are breakdown counters and must not be added to normalized prompt totals again. See [prompt caching](../../docs/PROMPT_CACHING.md).

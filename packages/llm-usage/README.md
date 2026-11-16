@@ -105,3 +105,7 @@ loss evidence, content exclusions and the completeness test.
 
 
 Usage schema 1 remains backward compatible with optional `errorStatus` (HTTP status anywhere in the cause chain) and `errorName` (root-cause class name) on `llm.call` and `embedding.call` errors. No error message is stored: SDK messages may quote the request or the response. JSON storage retains these optional fields; CSV exports include corresponding columns. Older records remain valid without them.
+
+## Prompt caching
+
+Physical `llm.call` records and JSONL/CSV exports preserve optional `cachedInputTokens` and `cacheCreationInputTokens`. The SQL sinks store these in their existing JSON record, so no SQL column or schema migration is required. Older records without cache fields remain valid. See [prompt caching](../../docs/PROMPT_CACHING.md).

@@ -40,7 +40,13 @@ test('pass success yields exactly one usage-bearing chunk; forwarded chunks carr
       value: {
         content: 'b',
         finishReason: 'stop',
-        usage: { promptTokens: 5, completionTokens: 3, totalTokens: 8 },
+        usage: {
+          promptTokens: 5,
+          completionTokens: 3,
+          totalTokens: 8,
+          cachedInputTokens: 2,
+          cacheCreationInputTokens: 1,
+        },
       },
     },
   ]);
@@ -49,6 +55,13 @@ test('pass success yields exactly one usage-bearing chunk; forwarded chunks carr
   const withUsage = chunks.filter((c) => c.usage);
   assert.equal(withUsage.length, 1, 'exactly one usage-bearing chunk');
   assert.equal(withUsage[0].totalTokens ?? withUsage[0].usage?.totalTokens, 8);
+  assert.equal(withUsage[0].usage?.cachedInputTokens, 2);
+  assert.equal(withUsage[0].usage?.cacheCreationInputTokens, 1);
+  assert.equal(withUsage[0].usage?.models?.['pass-model'].cachedInputTokens, 2);
+  assert.equal(
+    withUsage[0].usage?.models?.['pass-model'].cacheCreationInputTokens,
+    1,
+  );
   // The forwarded content chunk 'b' must NOT carry usage.
   const bChunk = chunks.find((c) => c.content === 'b');
   assert.ok(bChunk);

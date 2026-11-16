@@ -1,4 +1,5 @@
 import {
+  addCacheTokenUsage,
   ClarifySignal,
   type IKnowledgeRagHandle,
   InsufficientSignal,
@@ -21,15 +22,17 @@ import type { BuiltStepperRoot } from './build-stepper-root.js';
 
 /** Mirror of llm-agent-libs summaryToUsage — sums byComponent into a flat triple. */
 function summaryToUsage(s: RequestSummary): LlmUsage {
+  let cache: ReturnType<typeof addCacheTokenUsage> = {};
   let promptTokens = 0;
   let completionTokens = 0;
   let totalTokens = 0;
   for (const v of Object.values(s.byComponent ?? {})) {
+    cache = addCacheTokenUsage(cache, v);
     promptTokens += v.promptTokens;
     completionTokens += v.completionTokens;
     totalTokens += v.totalTokens;
   }
-  return { promptTokens, completionTokens, totalTokens };
+  return { ...cache, promptTokens, completionTokens, totalTokens };
 }
 
 /** Canonical terminal-usage object: flat triple + per-model breakdown. */

@@ -63,6 +63,7 @@ export function createMakeLlm(
     const knobs = {
       model: cfg.model,
       temperature: cfg.temperature,
+      promptCaching: cfg.promptCaching,
       maxTokens: cfg.maxTokens,
       whenThrottled: cfg.whenThrottled,
     };

@@ -9,7 +9,7 @@ import type {
   Message,
   Result,
 } from '@mcp-abap-adt/llm-agent';
-import { startOperation } from '@mcp-abap-adt/llm-agent';
+import { addCacheTokenUsage, startOperation } from '@mcp-abap-adt/llm-agent';
 
 /**
  * An ILlm decorator that reports token usage after every `chat` or `streamChat`
@@ -60,6 +60,7 @@ export class LoggingLlm implements ILlm {
     options?: CallOptions,
   ): AsyncIterable<Result<LlmStreamChunk, LlmError>> {
     const start = Date.now();
+    let cache: ReturnType<typeof addCacheTokenUsage> = {};
     let accPrompt = 0;
     let accCompletion = 0;
     let accTotal = 0;
@@ -70,6 +71,7 @@ export class LoggingLlm implements ILlm {
       usageOp: { ...startOperation(options) },
     })) {
       if (chunk.ok && chunk.value.usage) {
+        cache = addCacheTokenUsage(cache, chunk.value.usage);
         accPrompt += chunk.value.usage.promptTokens;
         accCompletion += chunk.value.usage.completionTokens;
         accTotal += chunk.value.usage.totalTokens;
@@ -81,6 +83,7 @@ export class LoggingLlm implements ILlm {
     if (hasUsage) {
       this.logUsage(
         {
+          ...cache,
           promptTokens: accPrompt,
           completionTokens: accCompletion,
           totalTokens: accTotal,

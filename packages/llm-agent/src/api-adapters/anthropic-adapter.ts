@@ -17,6 +17,7 @@ import {
   type ILlmApiAdapter,
   type NormalizedRequest,
 } from '../interfaces/api-adapter.js';
+import { promptCacheOptions } from '../prompt-caching.js';
 import { toToolCallDelta } from '../tool-call-deltas.js';
 
 // ---------------------------------------------------------------------------
@@ -156,6 +157,13 @@ export class AnthropicApiAdapter implements ILlmApiAdapter {
     }
 
     const options: AgentCallOptions = {};
+    try {
+      Object.assign(options, promptCacheOptions(body));
+    } catch (error) {
+      throw new AdapterValidationError(
+        error instanceof Error ? error.message : String(error),
+      );
+    }
     if (body.temperature !== undefined)
       options.temperature = body.temperature as number;
     if (body.max_tokens !== undefined)

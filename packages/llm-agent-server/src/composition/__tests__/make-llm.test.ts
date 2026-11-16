@@ -153,3 +153,32 @@ describe('makeLlm — resourceGroup', () => {
     );
   });
 });
+
+for (const promptCaching of [undefined, false, true]) {
+  it(`forwards the cache switch through makeLlm: ${promptCaching}`, async () => {
+    const { seen, makeLlm } = harness({
+      [DEFAULT_LLM_REF]: { credential: staticApiKey('k') },
+      SAP: { credential: bearer, apiBaseUrl: 'https://ai' },
+    });
+    for (const provider of [
+      'anthropic',
+      'openai',
+      'deepseek',
+      'ollama',
+      'sap-ai-sdk',
+    ] as const) {
+      await makeLlm({
+        provider,
+        model: 'm',
+        promptCaching,
+        ...(provider === 'sap-ai-sdk' ? { credentialRef: 'SAP' } : {}),
+      });
+    }
+    assert.equal(seen.length, 5);
+    for (const { cfg } of seen) {
+      assert.equal(cfg.promptCaching, promptCaching);
+      assert.ok(!('promptCacheKey' in cfg));
+      assert.ok(!('promptCacheRetention' in cfg));
+    }
+  });
+}

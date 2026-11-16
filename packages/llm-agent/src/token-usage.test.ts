@@ -46,3 +46,30 @@ test('addTokenUsage sums totals, shared models and requests, retaining distinct 
     undefined,
   );
 });
+
+test('cache reads and creations survive totals and per-model aggregation without double-counting input', () => {
+  const cached = {
+    ...a,
+    cachedInputTokens: 1,
+    cacheCreationInputTokens: 2,
+    models: {
+      a: {
+        ...a.models?.a,
+        promptTokens: 2,
+        completionTokens: 3,
+        totalTokens: 5,
+        requests: 1,
+        cachedInputTokens: 1,
+        cacheCreationInputTokens: 2,
+      },
+    },
+  };
+  const sum = addTokenUsage(cached, cached);
+  assert.equal(sum?.cachedInputTokens, 2);
+  assert.equal(sum?.cacheCreationInputTokens, 4);
+  assert.equal(sum?.models?.a.cachedInputTokens, 2);
+  assert.equal(sum?.models?.a.cacheCreationInputTokens, 4);
+  assert.equal(sum?.totalTokens, 10);
+  assert.equal(addTokenUsage(a)?.cachedInputTokens, undefined);
+  assert.equal(addTokenUsage(a)?.cacheCreationInputTokens, undefined);
+});

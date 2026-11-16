@@ -128,6 +128,7 @@ export function makeLlm(
         content: string;
         toolCalls?: LlmToolCall[];
         finishReason?: LlmFinishReason;
+        usage?: LlmResponse['usage'];
       }
     | Error
   >,
@@ -156,6 +157,7 @@ export function makeLlm(
           content: next.content,
           toolCalls: next.toolCalls,
           finishReason: next.finishReason ?? 'stop',
+          ...(next.usage ? { usage: next.usage } : {}),
         },
       };
     },
@@ -179,6 +181,7 @@ export function makeLlm(
           content: next.content,
           toolCalls: next.toolCalls,
           finishReason: next.finishReason ?? 'stop',
+          ...(next.usage ? { usage: next.usage } : {}),
         },
       };
     },
@@ -550,6 +553,7 @@ export function makeDefaultDeps(overrides?: {
         content: string;
         toolCalls?: LlmToolCall[];
         finishReason?: LlmFinishReason;
+        usage?: LlmResponse['usage'];
       }
     | Error
   >;

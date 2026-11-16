@@ -12,6 +12,49 @@ export async function usageReaderConformance(
   const deepEqual: typeof import('node:assert/strict').deepEqual = (
     await import('node:assert/strict')
   ).deepEqual;
+  test(`${name}: cache counters round trip with legacy records`, async () => {
+    const sink = await factory();
+    const legacy: UsageRecord = {
+      schema: 1,
+      id: 'legacy-cache',
+      at: 1,
+      kind: 'llm.call',
+      context: {},
+      outcome: 'ok',
+      operationId: 'op',
+      physicalSeq: 0,
+      outerAttempt: 0,
+      providerAttempt: 0,
+      granularity: 'request',
+      retriesVisible: true,
+      provider: 'test',
+      model: 'test-model',
+      stream: false,
+      inputTokens: 10,
+      outputTokens: 2,
+      tokensSource: 'provider',
+      durationMs: 0,
+    };
+    const cached: UsageRecord = {
+      ...legacy,
+      id: 'cached',
+      at: 2,
+      cachedInputTokens: 8,
+      cacheCreationInputTokens: 3,
+    };
+    try {
+      await sink.write([legacy, cached]);
+      const records: UsageRecord[] = [];
+      for await (const record of sink.read({ from: 0, to: 3 }))
+        records.push(record);
+      deepEqual(
+        records.sort((a, b) => a.at - b.at),
+        [legacy, cached],
+      );
+    } finally {
+      await sink.close?.();
+    }
+  });
   test(`${name}: reader selection and loss evidence`, async () => {
     const sink = await factory();
     const ordinary: UsageRecord = {

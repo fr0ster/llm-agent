@@ -57,12 +57,13 @@ function httpRequest(
 
 function makeAgent(
   result: SmartAgentResponse | OrchestratorError,
-  capture?: { text?: Message[] | string },
+  capture?: { text?: Message[] | string; options?: CallOptions },
 ): SmartAgent {
   return {
     async process(text: Message[] | string, _opts?: CallOptions) {
       if (capture) {
         capture.text = text;
+        capture.options = _opts;
       }
       if (result instanceof OrchestratorError) {
         return { ok: false as const, error: result };
@@ -687,4 +688,42 @@ describe('SmartAgentServer — port: 0 → handle.port is numeric > 0', () => {
       await handle.close();
     }
   });
+});
+
+it('legacy HTTP chat forwards cache controls and rejects invalid values', async () => {
+  const capture: { text?: Message[] | string; options?: CallOptions } = {};
+  const agent = makeAgent(
+    { content: 'ok', iterations: 1, toolCallCount: 0, stopReason: 'stop' },
+    capture,
+  );
+  const handle = await new SmartAgentServer(agent).start();
+  try {
+    const body = {
+      messages: [{ role: 'user', content: 'Hi' }],
+      promptCaching: false,
+      prompt_cache_key: 'stable',
+      prompt_cache_retention: '24h',
+    };
+    assert.equal(
+      (await httpRequest(handle.port, 'POST', '/v1/chat/completions', body))
+        .status,
+      200,
+    );
+    assert.equal(capture.options?.promptCaching, false);
+    assert.ok(capture.options && !('promptCacheKey' in capture.options));
+    assert.ok(capture.options && !('promptCacheRetention' in capture.options));
+    for (const promptCaching of ['off', '5m', '1h', 'true', 'false', 0, null]) {
+      assert.equal(
+        (
+          await httpRequest(handle.port, 'POST', '/v1/chat/completions', {
+            ...body,
+            promptCaching,
+          })
+        ).status,
+        400,
+      );
+    }
+  } finally {
+    await handle.close();
+  }
 });

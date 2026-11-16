@@ -16,6 +16,7 @@ host: 0.0.0.0
 mode: smart
 
 llm:
+  # promptCaching: true             # default; false disables client-controlled caching
   provider: deepseek                  # deepseek | openai | anthropic | sap-ai-sdk | ollama
   # No secret here: your composition root holds the credential. To use an account
   # other than its default, name it:  credentialRef: <NAME>

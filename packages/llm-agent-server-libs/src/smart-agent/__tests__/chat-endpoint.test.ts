@@ -2,6 +2,7 @@
 import assert from 'node:assert/strict';
 import { request } from 'node:http';
 import { describe, it } from 'node:test';
+import type { CallOptions, ILlm } from '@mcp-abap-adt/llm-agent';
 import { makeLlm } from '@mcp-abap-adt/llm-agent-libs/testing';
 import { constructionSeams } from './construction-seams.js';
 import { TestSmartServer as SmartServer } from './rag-identity-fixture.js';
@@ -122,3 +123,66 @@ describe('SmartServer — POST /v1/chat/completions (handler body)', () => {
     }
   });
 });
+
+for (const stream of [false, true]) {
+  for (const promptCaching of [undefined, false, true]) {
+    it(`HTTP cache options reach the working model stream=${stream} caching=${promptCaching}`, async () => {
+      let seen: CallOptions | undefined;
+      const base = makeLlm([{ content: 'hello' }]);
+      const recording: ILlm = {
+        ...base,
+        async chat(messages, tools, options) {
+          seen = options;
+          return base.chat(messages, tools, options);
+        },
+        async *streamChat(messages, tools, options) {
+          seen = options;
+          yield* base.streamChat(messages, tools, options);
+        },
+      };
+      const server = new SmartServer(
+        {
+          port: 0,
+          llm: { provider: 'anthropic', model: 'test-model' },
+          skipModelValidation: true,
+        },
+        { ...constructionSeams, makeLlm: async () => recording },
+      );
+      const handle = await server.start();
+      try {
+        const result = await httpRequest(
+          handle.port,
+          'POST',
+          '/v1/chat/completions',
+          {
+            messages: [{ role: 'user', content: 'hi' }],
+            stream,
+            promptCaching,
+            prompt_cache_key: 'stable',
+            prompt_cache_retention: '24h',
+          },
+        );
+        assert.equal(result.status, 200);
+        assert.equal(seen?.promptCaching, promptCaching);
+        assert.ok(seen && !('promptCacheKey' in seen));
+        assert.ok(seen && !('promptCacheRetention' in seen));
+        for (const value of ['off', '5m', '1h', 'true', 'false', 0, null]) {
+          const invalid = await httpRequest(
+            handle.port,
+            'POST',
+            '/v1/chat/completions',
+            {
+              messages: [{ role: 'user', content: 'hi' }],
+              stream,
+              promptCaching: value,
+            },
+          );
+          assert.equal(invalid.status, 400);
+          assert.match(invalid.raw, /promptCaching must be a boolean/);
+        }
+      } finally {
+        await handle.close();
+      }
+    });
+  }
+}

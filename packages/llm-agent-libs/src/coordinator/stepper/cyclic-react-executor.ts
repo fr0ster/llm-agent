@@ -1,4 +1,5 @@
 import {
+  addCacheTokenUsage,
   artifactIdentityKey,
   type CallOptions,
   ClarifySignal,
@@ -88,6 +89,7 @@ const ZERO: LlmUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
 const add = (a: LlmUsage, b?: LlmUsage): LlmUsage =>
   b
     ? {
+        ...addCacheTokenUsage(a, b),
         promptTokens: a.promptTokens + b.promptTokens,
         completionTokens: a.completionTokens + b.completionTokens,
         totalTokens: a.totalTokens + b.totalTokens,

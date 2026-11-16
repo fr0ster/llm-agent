@@ -90,6 +90,7 @@ export { FallbackLlmCallStrategy } from './policy/fallback-llm-call-strategy.js'
 // LLM call policies
 export { NonStreamingLlmCallStrategy } from './policy/non-streaming-llm-call-strategy.js';
 export { StreamingLlmCallStrategy } from './policy/streaming-llm-call-strategy.js';
+export { promptCacheOptions } from './prompt-caching.js';
 export {
   checkRagAccess,
   visibleOwnerFilter,
@@ -138,7 +139,7 @@ export {
   RetryEmbedder,
   withRetry,
 } from './resilience/retry-embedder.js';
-export { addTokenUsage } from './token-usage.js';
+export { addCacheTokenUsage, addTokenUsage } from './token-usage.js';
 export {
   getStreamToolCallName,
   toToolCallDelta,
