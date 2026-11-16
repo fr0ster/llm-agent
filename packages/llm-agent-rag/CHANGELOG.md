@@ -1,5 +1,18 @@
 # @mcp-abap-adt/llm-agent-rag
 
+## 30.11.0
+
+### Minor Changes
+
+- 8b69e2e: Forward retry and throttle options from composeEmbedder to the existing core resilience chain. Consumers can retain input caps and batch chunking while disabling ordinary retries and independently waiting on provider 429 responses.
+
+### Patch Changes
+
+- Updated dependencies [8b69e2e]
+- Updated dependencies [8b69e2e]
+  - @mcp-abap-adt/ollama-embedder@31.0.0
+  - @mcp-abap-adt/openai-embedder@31.0.0
+
 ## 30.10.4
 
 ### Patch Changes
