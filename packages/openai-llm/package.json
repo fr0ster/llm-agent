@@ -39,6 +39,6 @@
   },
   "peerDependencies": {
     "@mcp-abap-adt/interfaces-auth": "^2.1.0",
-    "@mcp-abap-adt/llm-agent": "^33.0.0"
+    "@mcp-abap-adt/llm-agent": "^33.2.0"
   }
 }
