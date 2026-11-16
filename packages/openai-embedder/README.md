@@ -62,3 +62,21 @@ credential content is recorded.
 Use the buffered recorder from `@mcp-abap-adt/llm-usage`, or supply your own
 `IUsageRecorder`. See the [usage overview](../../docs/USAGE_ANALYTICS.md) for
 injection, replaceable transports/sinks and delivery/loss semantics.
+
+## Retry policy and HTTP errors
+
+`retry?: boolean` defaults to `true`, retaining three provider attempts with the
+existing backoff. Set `retry: false` for a single provider attempt in both
+`embed` and `embedBatch`, including network, HTTP and response decoding failures.
+No provider timeout is installed; the caller's `CallOptions.signal` governs cancellation.
+
+HTTP errors remain `RagError` instances and now carry `status: number`,
+`headers: Headers` and `retryAfterSeconds?: number`. Retry-After is parsed by the
+same helper as LLM throttling: delay-seconds (including zero) or an HTTP-date;
+missing/invalid values are undefined. Network errors are rethrown unchanged
+when retry is disabled.
+
+For unlimited 429 waits with every other retry disabled, construct this provider
+with `retry: false`, then use `composeResilientEmbedder` with `retry: false` and
+`throttle: { key, strategy: new WaitAsTold({ fallbackBackoffMs: 2000 }) }`.
+See [the composition and hub migration guide](../../docs/EMBEDDER_THROTTLING.md).

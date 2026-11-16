@@ -3,7 +3,7 @@
  *
  * Throttling, and specifically the SERVER'S. Client-side throttling is spacing
  * calls out on our own initiative, and this library does none of it: it sets no
- * interval, computes none, and has no number of its own to set one with. The
+ * default interval. A consumer may explicitly opt into fallback backoff. The
  * server names a delay — `Retry-After` is either seconds or an HTTP-date, and
  * both reduce to a delay from now — and we either observe it or report it.
  * Where the server names nothing, there is no throttling to observe.
@@ -19,13 +19,15 @@
  * its own terms: a `maxAttempts` sitting outside would silently overrule a
  * strategy that had already decided to keep going.
  *
- * Two ship, and neither invents a duration:
+ * Two ship; fallback backoff is explicitly opt-in:
  *
  * - `ReportThrottling` — never waits. Returns the failure with what the server
  *   said, and the caller decides. This is what happens when nothing is set.
  * - `WaitAsTold` — waits exactly the interval the server named, and reports
- *   when it named none, rather than guessing at milliseconds.
+ *   when it named none, unless the consumer configures fallback backoff.
  */
+
+import { exponentialBackoffMs } from './wait-strategy.js';
 
 /** What the strategy is told. All of it observed, none of it assumed. */
 export interface ThrottleContext {
@@ -101,8 +103,8 @@ export class ReportThrottling implements IThrottleStrategy {
  * For a caller with nobody waiting on it — a batch job, a CLI — that would
  * rather have the answer late than not at all.
  *
- * When the server names no interval this reports instead of guessing. A missing
- * `Retry-After` is itself a signal: SAP AI Core documents the header, so its
+ * By default, when the server names no interval this reports instead of
+ * guessing. A missing `Retry-After` is itself a signal: SAP AI Core documents the header, so its
  * absence says something is not as expected, and a number invented here would
  * be an estimate of a system we cannot see.
  *
@@ -110,18 +112,36 @@ export class ReportThrottling implements IThrottleStrategy {
  * consumer's act and so is bounding it. Omit it and the strategy keeps
  * returning for as long as the server keeps naming an interval; bound that with
  * an `AbortSignal`, which is a deadline from the caller's own clock.
+ *
+ * Set `fallbackBackoffMs` to opt into exponential backoff when Retry-After is
+ * absent: the base delay doubles per refusal, independently of the normal retry
+ * limit. With this option, explicit Retry-After: 0 also retries immediately.
+ * Omit maxAttempts for unlimited 429 handling, cancelled only by the caller.
  */
 export class WaitAsTold implements IThrottleStrategy {
   readonly name = 'wait-as-told';
   private readonly maxAttempts: number;
+  private readonly fallbackBackoffMs?: number;
 
-  constructor(options: { maxAttempts?: number } = {}) {
+  constructor(
+    options: { maxAttempts?: number; fallbackBackoffMs?: number } = {},
+  ) {
     this.maxAttempts = options.maxAttempts ?? Number.POSITIVE_INFINITY;
+    this.fallbackBackoffMs = options.fallbackBackoffMs;
+    if (
+      this.fallbackBackoffMs !== undefined &&
+      (!Number.isFinite(this.fallbackBackoffMs) || this.fallbackBackoffMs < 0)
+    ) {
+      throw new RangeError('fallbackBackoffMs must be finite and nonnegative');
+    }
   }
 
   decide({ attempt, retryAfterSeconds }: ThrottleContext): ThrottleDecision {
-    const waitMs = servedWaitMs(retryAfterSeconds);
-    if (waitMs <= 0) {
+    const waitMs =
+      retryAfterSeconds === undefined && this.fallbackBackoffMs !== undefined
+        ? exponentialBackoffMs(this.fallbackBackoffMs, attempt - 1)
+        : servedWaitMs(retryAfterSeconds);
+    if (waitMs <= 0 && this.fallbackBackoffMs === undefined) {
       return { waitMs: 0, retry: false, reason: 'no-interval' };
     }
     if (attempt >= this.maxAttempts) {

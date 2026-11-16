@@ -13,6 +13,12 @@ export interface IWaitStrategy {
   wait(ms: number, signal?: AbortSignal): Promise<'elapsed' | 'aborted'>;
 }
 
+/** Exponential delay, saturating only arithmetic overflow (not retry attempts). */
+export function exponentialBackoffMs(baseMs: number, attempt: number): number {
+  if (baseMs === 0) return 0;
+  return Math.min(baseMs * 2 ** Math.max(0, attempt), Number.MAX_VALUE);
+}
+
 /** Plain timer. Honouring `signal` is part of the contract, not an extra. */
 export class DefaultWaitStrategy implements IWaitStrategy {
   readonly name = 'default-wait';

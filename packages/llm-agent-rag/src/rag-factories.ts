@@ -4,6 +4,7 @@ import type {
 } from '@mcp-abap-adt/interfaces-auth';
 import type {
   AnyLogger,
+  ComposeResilienceOptions,
   EmbedderFactory,
   IDocumentEnricher,
   IEmbedder,
@@ -98,11 +99,19 @@ export interface EmbedderResolutionOptions {
  */
 export function composeEmbedder(
   raw: IEmbedder,
-  opts?: { maxBatchSize?: number; maxInputChars?: number; logger?: AnyLogger },
+  opts?: {
+    maxBatchSize?: number;
+    maxInputChars?: number;
+    logger?: AnyLogger;
+    retry?: ComposeResilienceOptions['retry'];
+    throttle?: ComposeResilienceOptions['throttle'];
+  },
 ): IEmbedder {
   return composeResilientEmbedder(raw, {
     explicitMaxBatchSize: opts?.maxBatchSize,
     maxInputChars: opts?.maxInputChars,
+    retry: opts?.retry,
+    throttle: opts?.throttle,
     fallbackMaxBatchSize: isBatchSizeLimited(raw)
       ? raw.maxBatchSize
       : DEFAULT_MAX_BATCH_SIZE,

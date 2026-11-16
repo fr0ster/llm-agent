@@ -3,6 +3,7 @@ import {
   beginEmbeddingRequest,
   type CallOptions,
   type IUsageRecorder,
+  parseRetryAfter,
   RagError,
   startOperation,
   symmetricEmbedder,
@@ -13,6 +14,8 @@ import {
 
 export interface OllamaEmbedderConfig {
   usage?: IUsageRecorder;
+  /** Disable provider retries to delegate retry policy to resilience. Default: true. */
+  retry?: boolean;
   /** Default: 'http://localhost:11434' */
   ollamaUrl?: string;
   /** Required: embedding model name (e.g. 'bge-m3'). No default — must be set explicitly. */
@@ -23,6 +26,7 @@ export class OllamaEmbedder implements IEmbedderBatch {
   private readonly ollamaUrl: string;
   readonly model: string;
   private readonly usage?: IUsageRecorder;
+  private readonly retry: boolean;
 
   constructor(config: OllamaEmbedderConfig) {
     if (!config?.model) {
@@ -31,13 +35,15 @@ export class OllamaEmbedder implements IEmbedderBatch {
     this.ollamaUrl = config.ollamaUrl ?? 'http://localhost:11434';
     this.model = config.model;
     this.usage = config.usage;
+    this.retry = config.retry ?? true;
   }
 
   async embed(text: string, options?: CallOptions): Promise<IEmbedResult> {
+    options?.signal?.throwIfAborted();
     const url = `${this.ollamaUrl}/api/embeddings`;
 
     let lastError: Error | undefined;
-    const maxRetries = 3;
+    const maxRetries = this.retry ? 3 : 1;
     const op = startOperation(options);
 
     for (let attempt = 0; attempt < maxRetries; attempt++) {
@@ -68,10 +74,19 @@ export class OllamaEmbedder implements IEmbedderBatch {
 
         if (!res.ok) {
           request.end({ outcome: 'error', errorCode: String(res.status) });
-          const errorText = await res.text();
-          throw new RagError(
-            `Ollama embed error: HTTP ${res.status} - ${errorText}`,
-            'EMBED_ERROR',
+          const errorText = await res.text().catch(() => '');
+          throw Object.assign(
+            new RagError(
+              `Ollama embed error: HTTP ${res.status} - ${errorText}`,
+              'EMBED_ERROR',
+            ),
+            {
+              status: res.status,
+              headers: res.headers,
+              retryAfterSeconds: parseRetryAfter(
+                res.headers.get('retry-after'),
+              ),
+            },
           );
         }
 
@@ -99,7 +114,12 @@ export class OllamaEmbedder implements IEmbedderBatch {
           error: err,
         });
         lastError = err instanceof Error ? err : new Error(String(err));
-        if (err instanceof Error && err.name === 'AbortError') throw err;
+        if (
+          !this.retry ||
+          options?.signal?.aborted ||
+          (err instanceof Error && err.name === 'AbortError')
+        )
+          throw err;
 
         // Exponential backoff: 500ms, 1000ms, 2000ms
         const delay = 500 * 2 ** attempt;
@@ -117,11 +137,12 @@ export class OllamaEmbedder implements IEmbedderBatch {
     texts: string[],
     options?: CallOptions,
   ): Promise<IEmbedResult[]> {
+    options?.signal?.throwIfAborted();
     if (texts.length === 0) return [];
 
     const url = `${this.ollamaUrl}/api/embed`;
     let lastError: Error | undefined;
-    const maxRetries = 3;
+    const maxRetries = this.retry ? 3 : 1;
     const op = startOperation(options);
 
     for (let attempt = 0; attempt < maxRetries; attempt++) {
@@ -152,10 +173,19 @@ export class OllamaEmbedder implements IEmbedderBatch {
 
         if (!res.ok) {
           request.end({ outcome: 'error', errorCode: String(res.status) });
-          const errorText = await res.text();
-          throw new RagError(
-            `Ollama batch embed error: HTTP ${res.status} - ${errorText}`,
-            'EMBED_ERROR',
+          const errorText = await res.text().catch(() => '');
+          throw Object.assign(
+            new RagError(
+              `Ollama batch embed error: HTTP ${res.status} - ${errorText}`,
+              'EMBED_ERROR',
+            ),
+            {
+              status: res.status,
+              headers: res.headers,
+              retryAfterSeconds: parseRetryAfter(
+                res.headers.get('retry-after'),
+              ),
+            },
           );
         }
 
@@ -187,7 +217,12 @@ export class OllamaEmbedder implements IEmbedderBatch {
           error: err,
         });
         lastError = err instanceof Error ? err : new Error(String(err));
-        if (err instanceof Error && err.name === 'AbortError') throw err;
+        if (
+          !this.retry ||
+          options?.signal?.aborted ||
+          (err instanceof Error && err.name === 'AbortError')
+        )
+          throw err;
         const delay = 500 * 2 ** attempt;
         await new Promise((resolve) => setTimeout(resolve, delay));
       }

@@ -46,3 +46,31 @@ describe('composeEmbedder resilience composition', () => {
     assert.equal(events.length, 1);
   });
 });
+
+it('forwards disabled retries and throttle policy while keeping input cap', async () => {
+  const { WaitAsTold } = await import('@mcp-abap-adt/llm-agent');
+  let calls = 0;
+  const composed = composeEmbedder(
+    {
+      async embed(text: string) {
+        assert.equal(text, 'abc');
+        if (++calls <= 10)
+          throw Object.assign(new Error('quota'), {
+            status: 429,
+            retryAfterSeconds: 0,
+          });
+        return { vector: [1] };
+      },
+    },
+    {
+      retry: false,
+      throttle: {
+        key: 'compose-rag-throttle',
+        strategy: new WaitAsTold({ fallbackBackoffMs: 2000 }),
+      },
+      maxInputChars: 3,
+    },
+  );
+  assert.deepEqual(await composed.embed('abcdef'), { vector: [1] });
+  assert.equal(calls, 11);
+});

@@ -18,7 +18,16 @@ import { isBatchEmbedder } from '../interfaces/rag.js';
 import type { CallOptions } from '../interfaces/types.js';
 import { RagError } from '../interfaces/types.js';
 import type { IWaitStrategy } from '../interfaces/wait-strategy.js';
-import { DefaultWaitStrategy } from '../interfaces/wait-strategy.js';
+import {
+  DefaultWaitStrategy,
+  exponentialBackoffMs,
+} from '../interfaces/wait-strategy.js';
+import {
+  httpStatusOf,
+  retryAfterSecondsOf,
+  runWithThrottleRetry,
+  type ThrottleRetryOptions,
+} from '../llm/throttle.js';
 import { startOperation, withOuterAttempt } from '../usage/hooks.js';
 
 export interface EmbedderRetryOptions {
@@ -39,6 +48,8 @@ export interface EmbedderRetryOptions {
    * name an internal mechanism, and the type stays expressible as plain data.
    */
   waitStrategy?: IWaitStrategy;
+  /** Reactive 429 policy; independent of the ordinary retry attempt limit. */
+  throttle?: Pick<ThrottleRetryOptions, 'key' | 'strategy'>;
 }
 
 /** Internal shape after defaults are applied — every field is present. */
@@ -127,6 +138,38 @@ export class RetryEmbedder implements IEmbedder {
     options?: CallOptions,
   ): Promise<T> {
     const op = startOperation(options);
+    if (this.opts.throttle) {
+      let physicalAttempt = 0;
+      let transientAttempt = 0;
+      return runWithThrottleRetry(
+        () => {
+          options?.signal?.throwIfAborted();
+          return call({
+            ...options,
+            usageOp: withOuterAttempt(op, physicalAttempt++),
+          });
+        },
+        {
+          ...this.opts.throttle,
+          signal: options?.signal,
+          isThrottled: (error) =>
+            !options?.signal?.aborted &&
+            httpStatusOf(
+              typeof error === 'object' && error !== null ? error : undefined,
+            ) === 429,
+          retryAfterSeconds: (error) =>
+            retryAfterSecondsOf(
+              typeof error === 'object' && error !== null ? error : undefined,
+            ),
+          transient: {
+            maxRetries: this.opts.maxAttempts,
+            isTransient: (error) => this.isRetryable(error),
+            delayMs: () =>
+              exponentialBackoffMs(this.opts.backoffMs, transientAttempt++),
+          },
+        },
+      );
+    }
     for (let attempt = 0; ; attempt++) {
       if (options?.signal?.aborted) {
         throw new RagError('Aborted', 'ABORTED');
@@ -172,7 +215,7 @@ export class RetryEmbedder implements IEmbedder {
     attempt: number,
     signal?: AbortSignal,
   ): Promise<void> {
-    const delay = this.opts.backoffMs * 2 ** attempt;
+    const delay = exponentialBackoffMs(this.opts.backoffMs, attempt);
     await this.opts.waitStrategy.wait(delay, signal);
   }
 }

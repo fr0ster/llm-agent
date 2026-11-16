@@ -4,6 +4,7 @@ import {
   beginEmbeddingRequest,
   type CallOptions,
   type IUsageRecorder,
+  parseRetryAfter,
   RagError,
   startOperation,
   withChunk,
@@ -12,6 +13,8 @@ import {
 
 export interface OpenAiEmbedderConfig {
   usage?: IUsageRecorder;
+  /** Disable provider retries to delegate retry policy to resilience. Default: true. */
+  retry?: boolean;
   /**
    * Asked for fresh on every request — never cached — so a rotating key
    * rotates and a resolved-once secret is never frozen for the object's
@@ -29,6 +32,7 @@ export class OpenAiEmbedder implements IEmbedderBatch {
   private readonly credential: IApiKeyCredential;
   readonly model: string;
   private readonly usage?: IUsageRecorder;
+  private readonly retry: boolean;
 
   constructor(config: OpenAiEmbedderConfig) {
     if (!config.credential) {
@@ -44,6 +48,7 @@ export class OpenAiEmbedder implements IEmbedderBatch {
     );
     this.model = config.model;
     this.usage = config.usage;
+    this.retry = config.retry ?? true;
   }
 
   /** Asked per request, from the field — there is no config object to pass. */
@@ -52,9 +57,10 @@ export class OpenAiEmbedder implements IEmbedderBatch {
   }
 
   async embed(text: string, options?: CallOptions): Promise<IEmbedResult> {
+    options?.signal?.throwIfAborted();
     const url = `${this.baseURL}/embeddings`;
     let lastError: Error | undefined;
-    const maxRetries = 3;
+    const maxRetries = this.retry ? 3 : 1;
     const op = startOperation(options);
 
     for (let attempt = 0; attempt < maxRetries; attempt++) {
@@ -90,10 +96,19 @@ export class OpenAiEmbedder implements IEmbedderBatch {
 
         if (!res.ok) {
           request.end({ outcome: 'error', errorCode: String(res.status) });
-          const errorText = await res.text();
-          throw new RagError(
-            `OpenAI embed error: HTTP ${res.status} - ${errorText}`,
-            'EMBED_ERROR',
+          const errorText = await res.text().catch(() => '');
+          throw Object.assign(
+            new RagError(
+              `OpenAI embed error: HTTP ${res.status} - ${errorText}`,
+              'EMBED_ERROR',
+            ),
+            {
+              status: res.status,
+              headers: res.headers,
+              retryAfterSeconds: parseRetryAfter(
+                res.headers.get('retry-after'),
+              ),
+            },
           );
         }
 
@@ -127,7 +142,12 @@ export class OpenAiEmbedder implements IEmbedderBatch {
           error: err,
         });
         lastError = err instanceof Error ? err : new Error(String(err));
-        if (err instanceof Error && err.name === 'AbortError') throw err;
+        if (
+          !this.retry ||
+          options?.signal?.aborted ||
+          (err instanceof Error && err.name === 'AbortError')
+        )
+          throw err;
         const delay = 500 * 2 ** attempt;
         await new Promise((resolve) => setTimeout(resolve, delay));
       }
@@ -143,6 +163,7 @@ export class OpenAiEmbedder implements IEmbedderBatch {
     texts: string[],
     options?: CallOptions,
   ): Promise<IEmbedResult[]> {
+    options?.signal?.throwIfAborted();
     if (texts.length === 0) return [];
 
     const op = startOperation(options);
@@ -153,7 +174,7 @@ export class OpenAiEmbedder implements IEmbedderBatch {
       const chunk = texts.slice(start, start + chunkSize);
       const url = `${this.baseURL}/embeddings`;
       let lastError: Error | undefined;
-      const maxRetries = 3;
+      const maxRetries = this.retry ? 3 : 1;
 
       for (let attempt = 0; attempt < maxRetries; attempt++) {
         let request: ReturnType<typeof beginEmbeddingRequest> | undefined;
@@ -191,10 +212,19 @@ export class OpenAiEmbedder implements IEmbedderBatch {
 
           if (!res.ok) {
             request.end({ outcome: 'error', errorCode: String(res.status) });
-            const errorText = await res.text();
-            throw new RagError(
-              `OpenAI batch embed error: HTTP ${res.status} - ${errorText}`,
-              'EMBED_ERROR',
+            const errorText = await res.text().catch(() => '');
+            throw Object.assign(
+              new RagError(
+                `OpenAI batch embed error: HTTP ${res.status} - ${errorText}`,
+                'EMBED_ERROR',
+              ),
+              {
+                status: res.status,
+                headers: res.headers,
+                retryAfterSeconds: parseRetryAfter(
+                  res.headers.get('retry-after'),
+                ),
+              },
             );
           }
 
@@ -242,7 +272,12 @@ export class OpenAiEmbedder implements IEmbedderBatch {
             error: err,
           });
           lastError = err instanceof Error ? err : new Error(String(err));
-          if (err instanceof Error && err.name === 'AbortError') throw err;
+          if (
+            !this.retry ||
+            options?.signal?.aborted ||
+            (err instanceof Error && err.name === 'AbortError')
+          )
+            throw err;
           const delay = 500 * 2 ** attempt;
           await new Promise((resolve) => setTimeout(resolve, delay));
         }

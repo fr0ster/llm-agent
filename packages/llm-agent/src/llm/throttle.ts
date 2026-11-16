@@ -146,7 +146,8 @@ export class QuotaGate {
       // A timer that lands a hair early is simply waited out again on the next
       // turn, which is why the cap needs no padding to be safe.
       await sleep(
-        Math.min(left + Math.random() * WAKE_SPREAD_MS, budget),
+        // Node timers overflow beyond this slice; recheck the gate after it.
+        Math.min(left + Math.random() * WAKE_SPREAD_MS, budget, 2_147_483_647),
         signal,
       );
     }
@@ -614,4 +615,102 @@ function annotate(
   if (retryAfterSeconds !== undefined) e.retryAfterSeconds = retryAfterSeconds;
   if (reason !== undefined) e.reason = reason;
   return e;
+}
+
+/** Parse the provider Retry-After header once, for LLMs and embedders. */
+export function parseRetryAfter(
+  value: string | null | undefined,
+): number | undefined {
+  const raw = value?.trim();
+  if (raw === undefined || raw === '') return undefined;
+
+  // Numeric first, and once it is numeric it is never reconsidered as a date.
+  // Node's fallback date parser is lenient enough to read '-5' as the year
+  // 2001, which would turn a malformed header into "retry immediately".
+  const seconds = Number(raw);
+  if (!Number.isNaN(seconds)) {
+    return Number.isFinite(seconds) && seconds >= 0 ? seconds : undefined;
+  }
+
+  const when = Date.parse(raw);
+  if (!Number.isNaN(when)) return Math.max(0, (when - Date.now()) / 1000);
+  return undefined;
+}
+
+/** Read parsed metadata or transport headers through SDK cause wrappers. */
+export function retryAfterSecondsOf(
+  error: object | undefined,
+): number | undefined {
+  for (const current of errorCauseChain(error)) {
+    if (
+      'retryAfterSeconds' in current &&
+      typeof current.retryAfterSeconds === 'number' &&
+      Number.isFinite(current.retryAfterSeconds) &&
+      current.retryAfterSeconds >= 0
+    ) {
+      return current.retryAfterSeconds;
+    }
+    const parsed = parseRetryAfter(headerOf(current, 'retry-after'));
+    if (parsed !== undefined) return parsed;
+  }
+  return undefined;
+}
+
+/** Status of an axios-shaped error, or undefined when it is shaped otherwise. */
+export function httpStatusOf(error: object | undefined): number | undefined {
+  for (const current of errorCauseChain(error)) {
+    const response = 'response' in current ? current.response : undefined;
+    const status =
+      response && typeof response === 'object' && 'status' in response
+        ? response.status
+        : undefined;
+    // axios keeps it under response; several SDKs hoist it onto the error itself.
+    for (const candidate of [
+      status,
+      'status' in current ? current.status : undefined,
+      'statusCode' in current ? current.statusCode : undefined,
+    ]) {
+      if (typeof candidate === 'number') return candidate;
+    }
+  }
+  return undefined;
+}
+
+/** One response header, case-insensitively, from an axios-shaped error. */
+function headerOf(current: object, name: string): string | undefined {
+  const response = 'response' in current ? current.response : undefined;
+  const headers =
+    'headers' in current
+      ? current.headers
+      : response && typeof response === 'object' && 'headers' in response
+        ? response.headers
+        : undefined;
+  if (!headers || typeof headers !== 'object') return undefined;
+  const get = 'get' in headers ? headers.get : undefined;
+  if (typeof get === 'function') {
+    const value = get.call(headers, name);
+    return value !== undefined && value !== null ? String(value) : undefined;
+  }
+  for (const [key, value] of Object.entries(headers)) {
+    if (key.toLowerCase() === name && value !== undefined && value !== null)
+      return String(value);
+  }
+  return undefined;
+}
+
+/** Inspect at most five errors, starting with the outermost SDK wrapper. */
+export function* errorCauseChain(error: object | undefined): Generator<object> {
+  const seen = new Set<object>();
+  let current = error;
+  for (let depth = 0; depth < 5; depth += 1) {
+    if (!current || typeof current !== 'object' || seen.has(current)) return;
+    seen.add(current);
+    yield current;
+    current =
+      'cause' in current &&
+      typeof current.cause === 'object' &&
+      current.cause !== null
+        ? current.cause
+        : undefined;
+  }
 }
