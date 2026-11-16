@@ -1,5 +1,22 @@
 # @mcp-abap-adt/openai-embedder
 
+## 31.0.0
+
+### Major Changes
+
+- 8b69e2e: Remove provider-internal retries and the constructor `retry` option. Each non-empty
+  `embed`/`embedBatch` invocation makes one HTTP request; network, HTTP and decoding
+  failures surface immediately. HTTP RagError metadata (`status`, `headers`,
+  `retryAfterSeconds`) is preserved using the shared Retry-After parser.
+  
+  Migration: wrap `new OpenAiEmbedder(...)` with `composeEmbedder` from
+  `@mcp-abap-adt/llm-agent-rag`, or `composeResilientEmbedder` from core, to get
+  retries. Remove `retry` from constructor configs; configure retry/throttle policy
+  on the composition instead. Existing resolver/server paths already compose retries.
+  
+  Batch chunking also moves to composition, using the provider's declared
+  `maxBatchSize: 100`. Direct batch calls send all inputs in a single request.
+
 ## 30.10.3
 
 ### Patch Changes

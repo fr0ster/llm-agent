@@ -1,5 +1,25 @@
 # @mcp-abap-adt/llm-agent
 
+## 33.1.0
+
+### Minor Changes
+
+- 8b69e2e: Extend existing embedder retry composition with independent shared-quota throttling and retry: false. Add opt-in Retry-After fallback backoff to WaitAsTold, share transport metadata parsing with LLM providers, and preserve input caps, batch chunking, usage coordinates and caller cancellation. Unlimited quota waits have no library attempt or time budget.
+- 85509cc: Export the shared exponentialBackoffMs helper and reuse it in RetryLlm,
+  RetryEmbedder and throttle fallback policy, preserving ordinary retry delays.
+  Retry decorators now use the shared bounded HTTP status/cause reader, including
+  SDK response.status metadata, instead of maintaining another status walker.
+  
+  With a throttle configured, ordinary transient retries now wait through the
+  configured `retry.waitStrategy`, and an abort during throttle retry backoff
+  rethrows the caller's original `signal.reason`. RetryLlm preserves its Result
+  contract: cancellation returns or yields ABORTED with the original
+  `signal.reason` as the error cause.
+  
+  An already-aborted call now reports the caller's cancellation before the
+  throttle quota gate is consulted (embed, embedBatch, LlmAdapter chat and
+  stream return ABORTED with the reason as cause).
+
 ## 33.0.0
 
 ### Major Changes

@@ -1,6 +1,6 @@
 {
   "name": "@mcp-abap-adt/openai-embedder",
-  "version": "30.10.3",
+  "version": "31.0.0",
   "description": "OpenAI embedding provider (IEmbedderBatch) for @mcp-abap-adt/llm-agent.",
   "type": "module",
   "main": "dist/index.js",

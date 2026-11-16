@@ -1,5 +1,20 @@
 # @mcp-abap-adt/llm-agent-server
 
+## 33.0.1
+
+### Patch Changes
+
+- Updated dependencies [8b69e2e]
+- Updated dependencies [8b69e2e]
+- Updated dependencies [8b69e2e]
+- Updated dependencies [8b69e2e]
+- Updated dependencies [85509cc]
+  - @mcp-abap-adt/llm-agent@33.1.0
+  - @mcp-abap-adt/llm-agent-rag@30.11.0
+  - @mcp-abap-adt/ollama-embedder@31.0.0
+  - @mcp-abap-adt/openai-embedder@31.0.0
+  - @mcp-abap-adt/llm-agent-libs@33.0.1
+
 ## 33.0.0
 
 ### Major Changes
