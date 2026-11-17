@@ -405,8 +405,8 @@ export class CyclicReActExecutor implements IExecutor {
             }
             const complete = round.finish();
             messages.push(complete.assistant, ...complete.results);
-            // The MCP bridge throws terminal failures; origin/main propagated
-            // every thrown error, including its original type and code.
+            // The MCP bridge throws terminal failures; every thrown error
+            // propagates with its original type and code.
             throw error;
           }
           fetched.add(identityKey);

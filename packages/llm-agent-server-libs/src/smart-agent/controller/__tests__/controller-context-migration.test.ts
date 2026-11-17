@@ -189,8 +189,8 @@ describe('controller resume + migration (Task 12)', () => {
       const extId = externalToolCallId('ExtTool', { q: 'x' });
 
       // Seed a bundle that suspended on ExtTool AFTER recording one internal round,
-      // with a durable control-tail message. The legacy case uses the actual
-      // origin/main key, without caller identity in either content or metadata.
+      // with a durable control-tail message. The legacy case uses the previous
+      // release key, without caller identity in either content or metadata.
       await persistBundle(
         backend,
         legacy ? 'sess-a' : testStorageKey('sess-a'),

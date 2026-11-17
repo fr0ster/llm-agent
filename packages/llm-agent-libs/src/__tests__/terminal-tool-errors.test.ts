@@ -1,9 +1,6 @@
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
-import { createRequire } from 'node:module';
 import { test } from 'node:test';
 import { setImmediate } from 'node:timers/promises';
-import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
   type ICoordinatorContext,
   type ILlm,
@@ -12,7 +9,6 @@ import {
   TokenLedger,
   type ToolRound,
 } from '@mcp-abap-adt/llm-agent';
-import ts from 'typescript';
 import { SmartAgent } from '../agent.js';
 import { ContextAssembler } from '../context/context-assembler.js';
 import { SelfDispatch } from '../coordinator/dispatch/self.js';
@@ -23,89 +19,55 @@ import { makeDefaultDeps, testCallOptions } from '../testing/index.js';
 
 const tool = { name: 'Work', description: 'Work', inputSchema: {} };
 
-// Compile the actual baseline in memory; no checkout or temporary files.
-async function mainSelfDispatch(): Promise<typeof SelfDispatch> {
-  const sourceUrl = new URL('../coordinator/dispatch/self.ts', import.meta.url);
-  const require = createRequire(sourceUrl);
-  const source = execFileSync(
-    'git',
-    [
-      'show',
-      'origin/main:packages/llm-agent-libs/src/coordinator/dispatch/self.ts',
-    ],
-    { cwd: fileURLToPath(new URL('.', import.meta.url)), encoding: 'utf8' },
+test('self: a terminal exception stops the step after one LLM call', async () => {
+  const failure = new McpError('TERMINAL_SENTINEL', 'MCP_NOT_CONNECTED');
+  const executed: string[] = [];
+  let calls = 0;
+  const llm: ILlm = {
+    streamChat() {
+      assert.fail('Expected chat');
+    },
+    async chat() {
+      calls++;
+      return {
+        ok: true,
+        value:
+          calls === 1
+            ? {
+                content: '',
+                finishReason: 'tool_calls',
+                toolCalls: ['Fail', 'Later'].map((name) => ({
+                  id: name,
+                  name,
+                  arguments: {},
+                })),
+              }
+            : { content: 'INCORRECT_SUCCESS', finishReason: 'stop' },
+      };
+    },
+  };
+  const ctx: ICoordinatorContext = {
+    ...testCallOptions(),
+    inputText: 'work',
+    registry: new Map(),
+    stepResults: {},
+    selectedTools: [tool],
+    async callTool(name) {
+      executed.push(name);
+      if (name === 'Fail') throw failure;
+      return 'SIDE_EFFECT';
+    },
+  };
+  const result = await new SelfDispatch(llm).dispatch(
+    { id: 's1', goal: 'work', status: 'pending' },
+    ctx,
   );
-  const compiled = ts
-    .transpileModule(source, {
-      compilerOptions: {
-        module: ts.ModuleKind.ESNext,
-        target: ts.ScriptTarget.ES2022,
-      },
-    })
-    .outputText.replace(/from '([^']+)'/g, (_match, specifier: string) => {
-      const resolved = specifier.startsWith('.')
-        ? new URL(specifier.replace(/\.js$/, '.ts'), sourceUrl).href
-        : pathToFileURL(require.resolve(specifier)).href;
-      return `from '${resolved}'`;
-    });
-  const baseline = (await import(
-    `data:text/javascript;base64,${Buffer.from(compiled).toString('base64')}`
-  )) as { SelfDispatch: typeof SelfDispatch };
-  return baseline.SelfDispatch;
-}
-
-test('self: terminal exceptions match the real origin/main SelfDispatch', async () => {
-  const baseline = await mainSelfDispatch();
-  for (const Dispatch of [baseline, SelfDispatch]) {
-    const failure = new McpError('TERMINAL_SENTINEL', 'MCP_NOT_CONNECTED');
-    const executed: string[] = [];
-    let calls = 0;
-    const llm: ILlm = {
-      streamChat() {
-        assert.fail('Expected chat');
-      },
-      async chat() {
-        calls++;
-        return {
-          ok: true,
-          value:
-            calls === 1
-              ? {
-                  content: '',
-                  finishReason: 'tool_calls',
-                  toolCalls: ['Fail', 'Later'].map((name) => ({
-                    id: name,
-                    name,
-                    arguments: {},
-                  })),
-                }
-              : { content: 'INCORRECT_SUCCESS', finishReason: 'stop' },
-        };
-      },
-    };
-    const ctx: ICoordinatorContext = {
-      ...testCallOptions(),
-      inputText: 'work',
-      registry: new Map(),
-      stepResults: {},
-      selectedTools: [tool],
-      async callTool(name) {
-        executed.push(name);
-        if (name === 'Fail') throw failure;
-        return 'SIDE_EFFECT';
-      },
-    };
-    const result = await new Dispatch(llm).dispatch(
-      { id: 's1', goal: 'work', status: 'pending' },
-      ctx,
-    );
-    assert.equal(result.ok, false);
-    assert.equal(result.error, failure.message);
-    assert.equal(result.output, '');
-    assert.equal(calls, 1);
-    assert.deepEqual(executed, ['Fail']);
-    assert.equal(ctx.toolCallCount, 1);
-  }
+  assert.equal(result.ok, false);
+  assert.equal(result.error, failure.message);
+  assert.equal(result.output, '');
+  assert.equal(calls, 1);
+  assert.deepEqual(executed, ['Fail']);
+  assert.equal(ctx.toolCallCount, 1);
 });
 
 for (const pipeline of [false, true]) {
@@ -173,18 +135,14 @@ for (const pipeline of [false, true]) {
       await observed;
       assert.deepEqual(executed, ['Fail', 'Hang']);
       assert.equal(llm.callCount, 1);
-      assert.equal(
-        signal.aborted,
-        false,
-        'origin/main did not abort sibling calls',
-      );
+      assert.equal(signal.aborted, false, 'sibling calls are not aborted');
     });
   }
 }
 
 for (const pipeline of [false, true]) {
   for (const thrown of [false, true]) {
-    test(`${pipeline ? 'pipeline' : 'direct'}: origin/main terminal MCP contract (thrown=${thrown})`, async () => {
+    test(`${pipeline ? 'pipeline' : 'direct'}: terminal MCP contract (thrown=${thrown})`, async () => {
       const failure = new McpError('UNAVAILABLE_SENTINEL', 'MCP_NOT_CONNECTED');
       const rounds: ToolRound[] = [];
       const strategy = new LegacyAccumulateContextStrategy();
@@ -224,8 +182,7 @@ for (const pipeline of [false, true]) {
       }
       const run = () =>
         new SmartAgent(deps, config).process('work', testCallOptions());
-      // origin/main core awaited rejected call promises without converting them:
-      // throws retain their identity; returned availability errors are escalated.
+      // Rejected call promises are not converted: throws retain their identity; returned availability errors are escalated.
       if (thrown && !pipeline) {
         await assert.rejects(run, (error) => error === failure);
       } else {
@@ -256,7 +213,7 @@ for (const failure of [
   new McpError('UNAVAILABLE_SENTINEL', 'MCP_NOT_CONNECTED'),
   new Error('UNEXPECTED_SENTINEL'),
 ]) {
-  test(`cyclic: origin/main propagates ${failure.name} unchanged after one LLM call`, async () => {
+  test(`cyclic: propagates ${failure.name} unchanged after one LLM call`, async () => {
     const inputs: Message[][] = [];
     const llm: ILlm = {
       async chat(messages) {
@@ -288,8 +245,7 @@ for (const failure of [
         throw failure;
       },
     });
-    // origin/main called callMcp without a catch: every thrown bridge failure
-    // left execute(), including its type/code. Normal tool failures are text.
+    // Every thrown bridge failure leaves execute() with its type/code. Normal tool failures are text.
     await assert.rejects(
       () =>
         executor.execute({

@@ -148,7 +148,7 @@ for (const pipeline of [false, true]) {
         assert.equal(factoryCalls, 1);
         assert.equal(inputs.length, reprompt ? 3 : 1);
         assert.equal(executions, reprompt ? 1 : 0);
-        // origin/main forms prefix + the full restored assistant/tool pair.
+        // The input is prefix + the full restored assistant/tool pair.
         const restoredInput = [
           ...prefix,
           persistedRound.assistant,
