@@ -8,7 +8,7 @@ Automatic conversation-history summarization is removed: full history is kept.
 They make no helper LLM call, add no summary, and create no history RAG store.
 Explicit opt-in semantic turn indexing (`HistorySummarizer` / `history-upsert`)
 remains separate from conversation history. ContextAssembler continues to exclude
-client-supplied `system` messages, as on origin/main, and falls back to the action
+client-supplied `system` messages and falls back to the action
 as a user message only when there are no windowed messages.
 
 

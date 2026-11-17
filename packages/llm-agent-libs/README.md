@@ -1,5 +1,12 @@
 # @mcp-abap-adt/llm-agent-libs
 
+[![Stand With Ukraine](https://raw.githubusercontent.com/vshymanskyy/StandWithUkraine/main/badges/StandWithUkraine.svg)](https://stand-with-ukraine.pp.ua)
+[![License: LGPL v3](https://img.shields.io/badge/License-LGPL_v3-blue.svg)](https://www.gnu.org/licenses/lgpl-3.0)
+
+Core SmartAgent composition runtime. Builder, agent runtime, pipeline, sessions, history, resilience, observability, plugins, skills.
+
+## Conversation history
+
 Automatic conversation-history summarization is removed: full history is kept.
 `SummarizeHandler`, the `summarize` stage, `summarizeHistory(...)`,
 `withHistorySummarization(...)`, `withSessionTokenBudget(...)`,
@@ -7,15 +14,8 @@ Automatic conversation-history summarization is removed: full history is kept.
 `prompts.historySummary` are deprecated no-ops retained for source compatibility.
 They make no helper LLM call, add no summary, and create no history RAG store.
 Explicit opt-in semantic turn indexing (`HistorySummarizer` / `history-upsert`)
-remains separate from conversation history. ContextAssembler continues to exclude
-client-supplied `system` messages, as on origin/main, and falls back to the action
-as a user message only when there are no windowed messages.
-
-
-[![Stand With Ukraine](https://raw.githubusercontent.com/vshymanskyy/StandWithUkraine/main/badges/StandWithUkraine.svg)](https://stand-with-ukraine.pp.ua)
-[![License: LGPL v3](https://img.shields.io/badge/License-LGPL_v3-blue.svg)](https://www.gnu.org/licenses/lgpl-3.0)
-
-Core SmartAgent composition runtime. Builder, agent runtime, pipeline, sessions, history, resilience, observability, plugins, skills.
+remains separate from conversation history. ContextAssembler excludes client-supplied
+`system` messages.
 
 Every pipeline, builder and server/YAML configuration uses
 `LegacyAccumulateContextStrategy` by default: all assistant messages, tool-call
