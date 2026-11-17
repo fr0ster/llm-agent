@@ -185,8 +185,8 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
    * `client.defaults.headers`, which would freeze whatever secret the
    * credential returned at construction time.
    */
-  private async authHeaders(): Promise<Record<string, string>> {
-    return { 'x-api-key': await this.config.credential.secret() };
+  private async authHeaders(apiKey?: string): Promise<Record<string, string>> {
+    return { 'x-api-key': apiKey ?? (await this.config.credential.secret()) };
   }
 
   async chat(
@@ -284,9 +284,10 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
         { model, signal: options?.signal },
         {
           prepare: async () => {
-            headers = await this.authHeaders();
+            headers = await this.authHeaders(options?.apiKey);
           },
           opts: options,
+          apiKeyOverride: options?.apiKey,
           op: startOperation(options),
           bound: this.config.usage,
           get base(): Parameters<typeof beginLlmRequest>[2] & {
@@ -326,6 +327,9 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
 
       return response;
     } catch (error) {
+      if (options?.apiKey !== undefined) {
+        throw this.credentialSafeError(error, 'Anthropic API error');
+      }
       const message = axios.isAxiosError(error)
         ? `HTTP ${error.response?.status ?? 'unavailable'} ${(error.response?.data as { error?: { type?: string } })?.error?.type ?? error.code ?? 'error'}: ${(error.response?.data as { error?: { message?: string } })?.error?.message ?? error.message}`
         : error instanceof Error
@@ -391,7 +395,10 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
         });
 
         if (!res.ok || !res.body) {
-          const text = await res.text().catch(() => '');
+          const text =
+            options?.apiKey === undefined
+              ? await res.text().catch(() => '')
+              : '';
           const error = new Error(
             `Anthropic streaming error: HTTP ${res.status} — ${text}`,
           ) as Error & {
@@ -410,9 +417,10 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
       { model, signal: options?.signal },
       {
         prepare: async () => {
-          headers = await this.authHeaders();
+          headers = await this.authHeaders(options?.apiKey);
         },
         opts: options,
+        apiKeyOverride: options?.apiKey,
         op: startOperation(options),
         bound: this.config.usage,
         get base(): Parameters<typeof beginLlmRequest>[2] & { stream: true } {
@@ -446,7 +454,12 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
           };
         },
       },
-    );
+    ).catch((error: Error) => {
+      if (options?.apiKey !== undefined) {
+        throw this.credentialSafeError(error, 'Anthropic streaming error');
+      }
+      throw error;
+    });
 
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
@@ -627,6 +640,9 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
       }
     } catch (error) {
       streamError = error instanceof Error ? error : String(error);
+      if (options?.apiKey !== undefined) {
+        throw this.credentialSafeError(error, 'Anthropic streaming error');
+      }
       throw error;
     } finally {
       handle.end({
@@ -638,7 +654,7 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
           : completed
             ? 'ok'
             : 'aborted',
-        error: streamError,
+        error: options?.apiKey === undefined ? streamError : undefined,
         closedEarly: !completed && !streamError,
         inputTokens,
         outputTokens,
@@ -656,17 +672,25 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
     }
   }
 
-  async getModels(): Promise<IModelInfo[]> {
+  async getModels(options?: LLMCallOptions): Promise<IModelInfo[]> {
     const models: IModelInfo[] = [];
     let afterId: string | null = null;
     while (true) {
-      const response: AxiosResponse<ModelsListResponse> = await this.client.get(
-        '/models',
-        {
-          headers: await this.authHeaders(),
+      const response: AxiosResponse<ModelsListResponse> = await this.client
+        .get('/models', {
+          headers: await this.authHeaders(options?.apiKey),
+          signal: options?.signal,
           params: { limit: 1000, ...(afterId ? { after_id: afterId } : {}) },
-        },
-      );
+        })
+        .catch((error: Error) => {
+          if (options?.apiKey !== undefined) {
+            throw this.credentialSafeError(
+              error,
+              'Anthropic model discovery failed',
+            );
+          }
+          throw error;
+        });
       models.push(
         ...response.data.data.map((m) => ({ id: m.id, owned_by: m.owned_by })),
       );

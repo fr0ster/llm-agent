@@ -47,17 +47,21 @@ export interface LLMProvider {
   /**
    * Get available models
    */
-  getModels?(): Promise<string[] | IModelInfo[]>;
+  getModels?(options?: LLMCallOptions): Promise<string[] | IModelInfo[]>;
 
   /**
    * Get embedding models. Best-effort; may return empty array.
    */
-  getEmbeddingModels?(): Promise<string[] | IModelInfo[]>;
+  getEmbeddingModels?(
+    options?: LLMCallOptions,
+  ): Promise<string[] | IModelInfo[]>;
 }
 
 export interface ProviderRequestUsage {
   /** Resolve credentials and SDK setup before counting a network attempt. */
   prepare?: () => Promise<void>;
+  /** Per-call key accepted by this provider for the physical request. */
+  apiKeyOverride?: string;
   opts?: LLMCallOptions;
   op: UsageOperation;
   base: Parameters<typeof beginLlmRequest>[2];
@@ -282,6 +286,18 @@ export abstract class BaseLLMProvider<
     return preserveThrottled(original, wrapped);
   }
 
+  protected credentialSafeError<T>(error: T, message: string): Error {
+    const details =
+      typeof error === 'object' && error !== null ? error : undefined;
+    return preserveThrottled(
+      error,
+      Object.assign(new Error(message), {
+        status: httpStatusOf(details),
+        retryAfterSeconds: retryAfterSecondsOf(details),
+      }),
+    );
+  }
+
   /** Wrap one provider call in the shared policy. */
   protected withThrottleRetry<T>(
     fn: (handle: LlmRequestHandle) => Promise<T>,
@@ -357,14 +373,17 @@ export abstract class BaseLLMProvider<
                 ? 'aborted'
                 : 'error'
               : 'ok',
-            error: failure,
+            error: usage?.apiKeyOverride === undefined ? failure : undefined,
           });
         }
       }
     };
     const transient = this.transientRetry();
     return runWithThrottleRetry(physicalRequest, {
-      key: this.quotaKey(extra?.model),
+      key:
+        usage?.apiKeyOverride === undefined
+          ? this.quotaKey(extra?.model)
+          : `${this.quotaKey(extra?.model)}:override:${fingerprint(usage.apiKeyOverride)}`,
       strategy: this.config.whenThrottled,
       isThrottled: (e: unknown) => this.isThrottled(e),
       retryAfterSeconds: (e: unknown) => this.retryAfterSeconds(e),

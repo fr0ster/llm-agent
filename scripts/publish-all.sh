@@ -36,6 +36,7 @@ PACKAGES=(
   ollama-llm
   anthropic-llm
   deepseek-llm
+  copilot-llm
   sap-aicore-auth
   sap-aicore-llm
   openai-embedder

@@ -57,6 +57,7 @@ export interface BaseAgentLlmBridge {
     messages: Message[],
     tools: unknown[],
     options?: {
+      apiKey?: CallOptions['apiKey'];
       usage?: CallOptions['usage'];
       usageOp?: CallOptions['usageOp'];
       temperature?: number;
@@ -76,6 +77,7 @@ export interface BaseAgentLlmBridge {
     messages: Message[],
     tools: unknown[],
     options?: {
+      apiKey?: CallOptions['apiKey'];
       usage?: CallOptions['usage'];
       usageOp?: CallOptions['usageOp'];
       temperature?: number;

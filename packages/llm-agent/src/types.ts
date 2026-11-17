@@ -4,7 +4,7 @@ import type { IUsageRecorder, UsageOperation } from './interfaces/usage.js';
  */
 
 import type { IThrottleStrategy } from './interfaces/throttle-strategy.js';
-import type { LlmUsage } from './interfaces/types.js';
+import type { CallOptions, LlmUsage } from './interfaces/types.js';
 
 export type MessageMetadataValue =
   | string
@@ -126,6 +126,7 @@ export interface PromptCacheOptions {
 }
 
 export interface LLMCallOptions extends PromptCacheOptions {
+  apiKey?: CallOptions['apiKey'];
   usage?: IUsageRecorder;
   usageOp?: UsageOperation;
   /** Per-request model override. */

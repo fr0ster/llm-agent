@@ -29,6 +29,11 @@ export interface TraceContext {
 }
 
 export interface CallOptions extends PromptCacheOptions {
+  /**
+   * Credential for this call that overrides the provider's configured key.
+   * Keep it out of persistent state, diagnostics, and errors.
+   */
+  apiKey?: string;
   /** Current report worker accepted text, read only when submit_report omits result. */
   dialogueReportText?: () => string;
   /** Accepted assistant content, including tool-call rounds; excludes discarded replies. */
