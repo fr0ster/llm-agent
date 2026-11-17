@@ -51,7 +51,7 @@ rag:
     scenario: ${RAG_SCENARIO:-foundation-models}
     resourceGroup: ${RAG_RESOURCE_GROUP:-default}
     model: ${EMBEDDING_MODEL:-text-embedding-3-small}
-    credentialRef: LLM   # shares llm.main's SAP AI Core account
+    credentialRef: LLM # shares llm.main's SAP AI Core account
 
 # MCP: YAML-based config enables auto-vectorization of tools into RAG.
 mcp:
@@ -86,7 +86,7 @@ agent:
   ragQueryK: 5
   historyRecencyWindow: 4
   showReasoning: false
-  historyAutoSummarizeLimit: 10
+  # historyAutoSummarizeLimit: 10  # Deprecated no-op; full history is kept.
   queryExpansionEnabled: false
   ragTranslateEnabled: true
   refreshToolsPerIteration: false

@@ -190,8 +190,13 @@ test('bridge dispatched through buildStepperRoot: tool result reaches knowledgeR
           ok: true as const,
           value: {
             content: 'fetching source',
+            finishReason: 'tool_calls' as const,
             toolCalls: [
-              { name: 'ReadProgram', arguments: { program: 'ZTEST' } },
+              {
+                id: 'bridge-read',
+                name: 'ReadProgram',
+                arguments: { program: 'ZTEST' },
+              },
             ],
             usage: ZERO,
           },

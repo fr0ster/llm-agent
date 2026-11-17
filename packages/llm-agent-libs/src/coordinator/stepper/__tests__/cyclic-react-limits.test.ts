@@ -9,6 +9,7 @@ for (const maxIterations of [undefined, 3]) {
     const llm = makeLlm([
       ...Array.from({ length: 12 }, (_, round) => ({
         content: '',
+        finishReason: 'tool_calls' as const,
         usage: {
           promptTokens: 10,
           completionTokens: 1,

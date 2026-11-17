@@ -89,22 +89,23 @@ const semanticCapableDeps = (): ControllerFactoryDeps => ({
   embedder: symmetricEmbedder(embedder),
 });
 
-test('ControllerFactory.build rejects a board budget that cannot fit', async () => {
-  const badBudgetConfig: ControllerConfig = {
+test('ControllerFactory.build accepts legacy budgets without imposing content caps', async () => {
+  const legacyBudgetConfig: ControllerConfig = {
     ...config,
     budgets: {
       ...config.budgets,
-      maxBoardChars: 50, // far too small for the default actionable worst-case
+      maxBoardChars: 50, // Legacy value no longer caps rendered conversation content.
       maxActiveSteps: 16,
       maxIntentChars: 120,
       maxDigestChars: 500,
       keepRecentDigests: 8,
     },
   };
-  await assert.rejects(
-    () => new ControllerFactory().build(badBudgetConfig, semanticCapableDeps()),
-    /maxBoardChars/,
+  const { handler } = await new ControllerFactory().build(
+    legacyBudgetConfig,
+    semanticCapableDeps(),
   );
+  assert.ok(handler instanceof ControllerCoordinatorHandler);
 });
 
 test('absent reviewer/finalizer blocks take the planner instance, resolved by the planner key', async () => {

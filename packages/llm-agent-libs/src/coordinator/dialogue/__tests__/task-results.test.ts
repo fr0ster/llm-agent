@@ -114,11 +114,52 @@ test('put receives raw uncut output', async () => {
   await tick();
   assert.equal(entries.length, 1);
   assert.equal(entries[0].output.length, 70000);
-  assert.equal(entries[0].summary.length, 600);
-  assert.match(entries[0].summary, / \[summary truncated\]$/);
+  assert.equal(entries[0].summary.length, 70000);
   assert.equal(b.get(id)?.summary, entries[0].summary);
-  assert.match(b.get(id)?.output ?? '', /cut: 10000/);
+  assert.equal(b.get(id)?.output, 'a'.repeat(70000));
 });
+
+for (const workerSummary of [undefined, 'fallback', 'explicit'] as const) {
+  test(`taskOutputChars also limits stored and planner-visible summaries (${workerSummary})`, async () => {
+    const output = `${'x'.repeat(5000)}OUTPUT_TAIL_SENTINEL`;
+    assert.equal(output.length, 5020);
+    const entries: TaskResultEntry[] = [];
+    const b = board(
+      async () => ({
+        output,
+        ...(workerSummary === undefined
+          ? {}
+          : {
+              summary: workerSummary === 'fallback' ? output : 'Chosen summary',
+            }),
+      }),
+      {
+        taskOutputChars: 1000,
+        resultStore: store(async (entry) => {
+          entries.push(entry);
+          return success(entry);
+        }),
+      },
+    );
+    const id = start(b);
+    await tick();
+    const task = b.get(id);
+    assert.ok(task);
+    assert.equal(task.state, 'done');
+    assert.equal(entries.length, 1);
+    assert.equal(entries[0].output, output);
+    assert.equal(task.resultRef?.chars, 5020);
+    const expected =
+      workerSummary === 'explicit'
+        ? 'Chosen summary'
+        : `${'x'.repeat(1000)}\n[cut: 4020 characters omitted]`;
+    assert.equal(entries[0].summary, expected);
+    assert.equal(task.summary, expected);
+    assert.ok(taskNotice(task).includes(expected));
+    assert.ok(!taskNotice(task).includes('OUTPUT_TAIL_SENTINEL'));
+    await b.stopAll();
+  });
+}
 
 test('put failure turns done into failed', async () => {
   const b = board(async () => ({ output: 'ok' }), {
@@ -505,7 +546,7 @@ test('thrown put failure turns done into failed', async () => {
   assert.equal(b.get(id)?.resultRef, undefined);
 });
 
-test('epicfail stores uncut error text while keeping the legacy bounded error', async () => {
+test('epicfail stores uncut error text while keeping the complete error', async () => {
   const entries: TaskResultEntry[] = [];
   const output = 'e'.repeat(70000);
   const b = board(async () => ({ output, errorClass: 'epicfail' }), {
@@ -519,7 +560,7 @@ test('epicfail stores uncut error text while keeping the legacy bounded error', 
   assert.equal(entries.length, 1);
   assert.equal(entries[0].output, output);
   assert.equal(entries[0].outcome, 'failed');
-  assert.match(b.get(id)?.error ?? '', /cut: 10000/);
+  assert.equal(b.get(id)?.error, output);
 });
 
 for (const withStore of [false, true]) {
@@ -532,7 +573,7 @@ for (const withStore of [false, true]) {
     await tick();
     const task = b.get(id)!;
     assert.deepEqual(task.checkerVerdict, { verdict: 'pass' });
-    assert.ok(!task.output?.includes('PASS'));
+    assert.ok(task.output?.includes('PASS'));
     assert.match(taskNotice(task), /verdict: pass/);
     const step: PlanStep = {
       id: 'check',
@@ -552,7 +593,7 @@ for (const withStore of [false, true]) {
 }
 
 for (const withStore of [false, true]) {
-  test(`rejected raw verdict stays unusable after output truncation (store: ${withStore})`, async () => {
+  test(`rejected raw verdict stays unusable with the complete output (store: ${withStore})`, async () => {
     const b = board(
       async () => ({
         output:
@@ -567,7 +608,7 @@ for (const withStore of [false, true]) {
     const task = b.get(id)!;
     assert.deepEqual(task.checkerVerdict, { unusable: true });
     assert.ok(task.output?.includes('{"verdict":"pass"}'));
-    assert.ok(!task.output?.includes('{"verdict":"fail"}'));
+    assert.ok(task.output?.includes('{"verdict":"fail"}'));
     assert.match(taskNotice(task), /verdict: unusable/);
     assert.doesNotMatch(taskNotice(task), /verdict: pass/);
     const step: PlanStep = {

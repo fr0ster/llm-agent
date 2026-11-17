@@ -31,6 +31,7 @@ import {
   InMemoryKnowledgeBackend,
   SessionRequestLogger,
 } from '@mcp-abap-adt/llm-agent-libs';
+import { controllerStorageKey } from '../caller-scoped-backend.js';
 import {
   ControllerCoordinatorHandler,
   type ControllerHandlerDeps,
@@ -55,7 +56,7 @@ function fakeCtx(overrides: Partial<PipelineContext> = {}): {
   const ctx = {
     sessionId: 'sess-step',
     textOrMessages: 'do the thing',
-    options: undefined,
+    options: { userId: 'test-user' },
     externalResults: undefined,
     requestLogger,
     yield: (c: Captured) => {
@@ -63,7 +64,10 @@ function fakeCtx(overrides: Partial<PipelineContext> = {}): {
     },
     ...overrides,
   } as unknown as PipelineContext;
-  return { ctx, captured };
+  return {
+    ctx: { ...ctx, options: { userId: 'test-user', ...ctx.options } },
+    captured,
+  };
 }
 
 function scriptedClient(queue: SubagentResult[]): ISubagentClient {
@@ -193,7 +197,7 @@ describe('controller per-step execution control (Task 7)', () => {
     const ret = await handler.execute(ctx, {}, undefined);
 
     assert.equal(ret, true);
-    const bundle = await hydrateBundle(backend, 'sess-step');
+    const bundle = await hydrateBundle(backend, testStorageKey('sess-step'));
     assert.equal(bundle.budgets.stepsUsed, 1, 'the cut step counted once');
     assert.ok(
       /step-timeout/.test(bundle.plannerPrivate),
@@ -238,7 +242,7 @@ describe('controller per-step execution control (Task 7)', () => {
     const ret = await handler.execute(ctx, {}, undefined);
 
     assert.equal(ret, true);
-    const bundle = await hydrateBundle(backend, 'sess-step');
+    const bundle = await hydrateBundle(backend, testStorageKey('sess-step'));
     assert.ok(
       /step time budget exhausted \(step-timeout\)/.test(bundle.plannerPrivate),
       `expected a step-timeout note, got: ${bundle.plannerPrivate}`,
@@ -299,7 +303,7 @@ describe('controller per-step execution control (Task 7)', () => {
     const ret = await handler.execute(ctx, {}, undefined);
 
     assert.equal(ret, true);
-    const bundle = await hydrateBundle(backend, 'sess-step');
+    const bundle = await hydrateBundle(backend, testStorageKey('sess-step'));
     assert.ok(
       /step time budget exhausted \(step-timeout\)/.test(bundle.plannerPrivate),
       `expected a step-timeout note, got: ${bundle.plannerPrivate}`,
@@ -365,7 +369,7 @@ describe('controller per-step execution control (Task 7)', () => {
       mcpCalls.length <= 2,
       `callMcp bounded by maxToolCalls (got ${mcpCalls.length})`,
     );
-    const bundle = await hydrateBundle(backend, 'sess-step');
+    const bundle = await hydrateBundle(backend, testStorageKey('sess-step'));
     assert.ok(
       /tool-call budget exhausted \(maxToolCalls\)/.test(bundle.plannerPrivate),
       `expected a maxToolCalls note, got: ${bundle.plannerPrivate}`,
@@ -419,7 +423,7 @@ describe('controller per-step execution control (Task 7)', () => {
 
     assert.equal(ret, true);
     assert.equal(mcpCalls.length, 2, 'exactly maxToolCalls tool calls ran');
-    const bundle = await hydrateBundle(backend, 'sess-step');
+    const bundle = await hydrateBundle(backend, testStorageKey('sess-step'));
     assert.ok(
       !/budget exhausted/.test(bundle.plannerPrivate),
       `a step reaching exactly maxToolCalls must NOT be cut, got: ${bundle.plannerPrivate}`,
@@ -529,7 +533,10 @@ describe('controller per-step execution control (Task 7)', () => {
     );
 
     // plannerPrivate must contain the raw 'custom-budget' text (information not lost via noteFor).
-    const finalBundle = await hydrateBundle(realBackend, 'sess-step');
+    const finalBundle = await hydrateBundle(
+      realBackend,
+      testStorageKey('sess-step'),
+    );
     assert.ok(
       finalBundle.plannerPrivate.includes('custom-budget'),
       `plannerPrivate must preserve raw reason text, got: ${finalBundle.plannerPrivate}`,
@@ -608,3 +615,9 @@ describe('controller per-step execution control (Task 7)', () => {
     );
   });
 });
+
+function testStorageKey(sessionId: string): string {
+  const key = controllerStorageKey({ userId: 'test-user' }, sessionId);
+  assert.ok(key);
+  return key;
+}

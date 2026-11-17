@@ -1,15 +1,12 @@
 # Flat pipeline (v19+) — parallel-optimized tuning via agent: knobs.
 #
-# NOTE: The structured-stages DSL (`pipeline: { version, stages }`) was removed
-# in v19. The custom parallel stage arrangement (running summarize + RAG queries
-# simultaneously) is no longer expressible as explicit stage YAML. The flat
-# pipeline's DefaultPipeline already parallelizes the RAG queries internally.
-# Per-request tuning (ragQueryK, historyAutoSummarizeLimit, etc.) is done via
-# the top-level `agent:` block as shown below.
+# DefaultPipeline parallelizes the RAG queries internally. Automatic history
+# summarization is removed; the legacy summarize stage is a deprecated no-op.
+# Per-request retrieval tuning uses the top-level agent block.
 #
-# What the flat pipeline does internally (equivalent to the old stage sequence):
-#   classify → summarize → [rag-tools, rag-history](parallel) → rerank
-#   → skill-select → tool-select → assemble → tool-loop → history-upsert
+# Internal flow:
+#   classify -> [rag-tools, rag-history](parallel) -> rerank
+#   -> skill-select -> tool-select -> assemble -> tool-loop -> history-upsert
 #
 # Usage:
 #   LLM_API_KEY=sk-xxx npm run dev -- --config docs/examples/09-parallel-optimized.yaml
@@ -39,7 +36,7 @@ mcp:
   type: http
   url: http://localhost:3001/mcp/stream/http
 
-logDir: sessions                      # session debug logs (RAG scores, tool selection)
+logDir: sessions # session debug logs (RAG scores, tool selection)
 
 agent:
   maxIterations: 10
@@ -47,4 +44,4 @@ agent:
   ragQueryK: 20
   classificationEnabled: true
   queryExpansionEnabled: true
-  historyAutoSummarizeLimit: 10
+  # historyAutoSummarizeLimit: 10  # Deprecated no-op; full history is kept.

@@ -10,13 +10,16 @@ export interface WindowContextStrategyOptions {
   keepLastRounds?: number;
 }
 
-/** RAG-less bounded window: last K rounds raw + one marker for the rest. */
+/** Preserve every round unless the consumer explicitly opts into a tool window. */
 export class WindowContextStrategy implements IToolLoopContextStrategy {
   private rounds: ToolRound[] = [];
-  private readonly keep: number;
+  private readonly keep: number | undefined;
 
   constructor(opts: WindowContextStrategyOptions = {}) {
-    this.keep = Math.max(1, opts.keepLastRounds ?? 3);
+    this.keep =
+      opts.keepLastRounds === undefined
+        ? undefined
+        : Math.max(1, opts.keepLastRounds);
   }
 
   async record(round: ToolRound): Promise<void> {
@@ -25,7 +28,8 @@ export class WindowContextStrategy implements IToolLoopContextStrategy {
 
   async form(base: ToolLoopContextBase): Promise<Message[]> {
     const out: Message[] = [...base.prefix];
-    const tailStart = Math.max(0, this.rounds.length - this.keep);
+    const tailStart =
+      this.keep === undefined ? 0 : Math.max(0, this.rounds.length - this.keep);
     const elided = this.rounds.slice(0, tailStart);
     if (elided.length > 0) {
       const chars = elided.reduce(

@@ -339,6 +339,8 @@ for (const namespaced of [false, true]) {
           ok: true as const,
           value: {
             content: 'done',
+            finishReason:
+              calls === 0 ? ('tool_calls' as const) : ('stop' as const),
             toolCalls:
               calls++ === 0
                 ? [{ id: 't1', name: 'lookup', arguments: {} }]

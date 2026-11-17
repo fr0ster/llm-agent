@@ -13,9 +13,13 @@ import { unwrapBuilderResult } from '../../../builder-types.js';
 import { InMemoryRunRecordStore } from '../../../coordinator/adaptive/in-memory-run-record-store.js';
 import { LlmAdaptiveController } from '../../../coordinator/adaptive/llm-adaptive-controller.js';
 import { testCallOptions, testRequestAccess } from '../../../testing/index.js';
+import { NoopTracer } from '../../../tracer/noop-tracer.js';
+import type { ISpan } from '../../../tracer/types.js';
 import { DefaultPipeline } from '../../default-pipeline.js';
 import { pipelineToStream } from '../../pipeline-to-stream.js';
 import { AdaptiveCoordinatorHandler } from '../adaptive-coordinator.js';
+
+const span: ISpan = new NoopTracer().startSpan('test');
 
 for (const mode of [
   'answer',
@@ -208,7 +212,7 @@ for (const mode of [
       assert.ok(logs.includes('adaptive_record_load_failed'));
     assert.ok(logs.includes('adaptive_plan'));
     assert.ok(logs.includes('adaptive_run'));
-    const saved = await store.load('session');
+    const saved = await store.load(JSON.stringify(['test-user', 'session']));
     if (mode !== 'save-fail') {
       assert.equal(
         saved?.plan.spec?.raw,
@@ -341,7 +345,7 @@ for (const abort of [false, true]) {
       },
       error: undefined,
     } as unknown as Parameters<AdaptiveCoordinatorHandler['execute']>[0];
-    assert.equal(await handler.execute(ctx, {}, {} as never), false);
+    assert.equal(await handler.execute(ctx, {}, span), false);
     assert.equal(ctx.error?.message, failure.message);
     assert.equal(
       ctx.error?.code,
@@ -399,7 +403,7 @@ for (const live of [false, true]) {
         chunks.push(chunk.value);
       },
     } as unknown as Parameters<AdaptiveCoordinatorHandler['execute']>[0];
-    assert.equal(await handler.execute(ctx, {}, {} as never), true);
+    assert.equal(await handler.execute(ctx, {}, span), true);
     assert.equal(chunks.map((c) => c.content).join(''), 'Hello');
     assert.equal(chunks.at(-1)?.finishReason, 'stop');
   });
@@ -465,7 +469,7 @@ test('abort during pending report sets ABORTED without successful terminal chunk
   const running = new AdaptiveCoordinatorHandler({
     controller,
     workers: new Map(),
-  }).execute(ctx, {}, {} as never);
+  }).execute(ctx, {}, span);
   await reporting;
   abort.abort();
   release();
@@ -518,7 +522,7 @@ for (const method of ['plan', 'check', 'revise'] as const) {
         ],
       ]),
     });
-    assert.equal(await handler.execute(ctx, {}, {} as never), true);
+    assert.equal(await handler.execute(ctx, {}, span), true);
     assert.equal(logged.length, 1);
     assert.equal(
       logged[0]?.component,
@@ -564,7 +568,7 @@ for (const selfLogs of [false, true]) {
         ],
       ]),
     });
-    assert.equal(await handler.execute(ctx, {}, {} as never), true);
+    assert.equal(await handler.execute(ctx, {}, span), true);
     assert.equal(logged.length, selfLogs ? 1 : 0);
   });
 }
@@ -614,7 +618,7 @@ for (const mode of [
           }
         : {}),
     });
-    assert.equal(await handler.execute(ctx, {}, {} as never), true);
+    assert.equal(await handler.execute(ctx, {}, span), true);
     assert.equal(
       ctx.assistantText,
       mode === 'external'
@@ -683,7 +687,7 @@ for (const mode of ['listed', 'mixed', 'thrown'] as const) {
         ],
       ]),
     });
-    assert.equal(await handler.execute(ctx, {}, {} as never), true);
+    assert.equal(await handler.execute(ctx, {}, span), true);
     assert.equal(logged.length, mode === 'mixed' ? 2 : 1);
     assert.equal(logged[0]?.totalTokens, 15);
     assert.equal(logged[0]?.component, 'executor');
@@ -698,6 +702,7 @@ for (const kind of ['work', 'check'] as const) {
   test(`epicfail ${kind} stops before branching and saves failure`, async () => {
     const { ctx, chunks, logged } = regressionContext();
     ctx.sessionId = 'fatal';
+    ctx.options = testCallOptions({ sessionId: 'fatal' });
     const store = new InMemoryRunRecordStore();
     const trace = {
       stepId: 'nested',
@@ -745,7 +750,7 @@ for (const kind of ['work', 'check'] as const) {
         ],
       ]),
     });
-    assert.equal(await handler.execute(ctx, {}, {} as never), false);
+    assert.equal(await handler.execute(ctx, {}, span), false);
     assert.equal(calls, 1);
     assert.equal(ctx.error?.code, 'COORDINATOR_STEP_FAILED');
     assert.deepEqual(
@@ -754,10 +759,60 @@ for (const kind of ['work', 'check'] as const) {
     );
     assert.ok(!chunks.some((chunk) => chunk.finishReason));
     assert.ok(!chunks.some((chunk) => chunk.content === 'must not answer'));
-    const saved = await store.load('fatal');
+    const saved = await store.load(JSON.stringify(['test-user', 'fatal']));
     assert.equal(saved?.outcome, 'stopped');
     assert.equal(saved?.stopReason, 'step fatal epicfail');
     assert.equal(saved?.steps[0]?.status, 'failed');
     assert.equal(logged.length, 1);
   });
 }
+
+test('adaptive external-resume run records are private to the caller pair', async () => {
+  const store = new InMemoryRunRecordStore();
+  const seen: ControllerPlanInput[] = [];
+  const handler = new AdaptiveCoordinatorHandler({
+    workers: new Map(),
+    runRecords: store,
+    controller: {
+      name: 'literal',
+      async plan(input) {
+        seen.push(input);
+        return {
+          plan: {
+            createdAt: 0,
+            steps: [{ id: 'answer', kind: 'answer', text: 'done' }],
+          },
+        };
+      },
+    },
+  });
+  const base = regressionContext().ctx;
+  const owner = {
+    ...base,
+    sessionId: 'shared',
+    options: testCallOptions({ sessionId: 'shared', userId: 'owner' }),
+    inputText: 'PRIVATE_REQUEST',
+  };
+  await handler.execute(owner, {}, span);
+  await handler.execute(
+    {
+      ...base,
+      sessionId: 'shared',
+      options: testCallOptions({ sessionId: 'shared', userId: 'other' }),
+    },
+    {},
+    span,
+  );
+  assert.equal(seen[1].previousRun, undefined);
+  await handler.execute(owner, {}, span);
+  assert.equal(seen[2].previousRun?.request, 'PRIVATE_REQUEST');
+  assert.equal(
+    await handler.execute(
+      { ...base, sessionId: 'shared', options: undefined },
+      {},
+      span,
+    ),
+    false,
+  );
+  assert.equal(seen.length, 3);
+});

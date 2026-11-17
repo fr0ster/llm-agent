@@ -11,9 +11,8 @@ import { testCallOptions } from '../testing/index.js';
  * correction to controlTail, the correction must still appear in the messages
  * seen by the NEXT LLM call (i.e. it survives form()).
  *
- * Test 3 (reprompt pruned after next tool round): After a reprompt populates
- * controlTail, a subsequent recorded tool round must prune controlTail so the
- * correction is ABSENT from the following form().
+ * Test 3 (reprompt retained after tool rounds): A rejected assistant reply and
+ * its validation correction remain visible after subsequent recorded rounds.
  */
 
 import assert from 'node:assert/strict';
@@ -30,6 +29,7 @@ import type {
 import { NoopToolCache } from '@mcp-abap-adt/llm-agent';
 import { SmartAgent } from '../agent.js';
 import { WindowContextStrategy } from '../pipeline/context/tool-loop-context/index.js';
+import { DefaultPipeline } from '../pipeline/default-pipeline.js';
 import { makeAssembler, makeDefaultDeps } from '../testing/index.js';
 
 // ---------------------------------------------------------------------------
@@ -188,9 +188,7 @@ test('direct loop: reprompt correction survives into next LLM call after form()'
   const { deps } = makeDefaultDeps({
     assembler: makeAssembler([{ role: 'user', content: 'do something' }]),
     mcpClients: [],
-    outputValidator: outputValidator as unknown as Parameters<
-      typeof makeDefaultDeps
-    >[0]['outputValidator'],
+    outputValidator,
   });
   deps.mainLlm = llm;
 
@@ -222,14 +220,14 @@ test('direct loop: reprompt correction survives into next LLM call after form()'
 });
 
 // ---------------------------------------------------------------------------
-// Test 3: Reprompt pruned after next tool round (controlTail.length = 0)
+// Test 3: Rejected reply and correction survive subsequent tool rounds
 // ---------------------------------------------------------------------------
 
 /**
  * Sequence:
  *   call 1 → 'bad output' (no tool calls) → validator rejects → correction in controlTail
- *   call 2 → tool_call GetTable           → tool executed → round recorded → controlTail cleared
- *   call 3 → 'done'                       → validator accepts → check: no correction here
+ *   call 2 → tool_call GetTable           → tool executed → round recorded
+ *   call 3 → 'done'                       → validator accepts → reply and correction retained
  */
 function makeRepromptThenToolThenStopLlm(capturedMessages: Message[][]): ILlm {
   let call = 0;
@@ -245,7 +243,7 @@ function makeRepromptThenToolThenStopLlm(capturedMessages: Message[][]): ILlm {
         value: { content: 'bad output', finishReason: 'stop' },
       } as Result<LlmStreamChunk, LlmError>;
     } else if (call === 2) {
-      // Second call: tool call — round will be recorded, controlTail pruned
+      // Second call: tool call — record the round and retain validation history.
       yield {
         ok: true,
         value: {
@@ -257,7 +255,7 @@ function makeRepromptThenToolThenStopLlm(capturedMessages: Message[][]): ILlm {
         },
       } as Result<LlmStreamChunk, LlmError>;
     } else {
-      // Third call: final content — should NOT see correction
+      // Third call: final content — still sees the rejected reply and correction.
       yield {
         ok: true,
         value: { content: 'done', finishReason: 'stop' },
@@ -272,78 +270,90 @@ function makeRepromptThenToolThenStopLlm(capturedMessages: Message[][]): ILlm {
   } as unknown as ILlm;
 }
 
-test('direct loop: reprompt correction is pruned from controlTail after next recorded tool round', async () => {
-  const capturedMessages: Message[][] = [];
-  const llm = makeRepromptThenToolThenStopLlm(capturedMessages);
-  const mcpClient = makeMcpClient();
+for (const pipeline of [false, true]) {
+  test(`rejected reply and correction survive a recorded tool round: pipeline=${pipeline}`, async () => {
+    const capturedMessages: Message[][] = [];
+    const llm = makeRepromptThenToolThenStopLlm(capturedMessages);
+    const mcpClient = makeMcpClient();
 
-  let validateCall = 0;
-  const outputValidator = {
-    async validate(content: string) {
-      validateCall++;
-      // Only reject the very first validation (bad output)
-      if (validateCall === 1 && content === 'bad output') {
-        return {
-          ok: true as const,
-          value: { valid: false, reason: 'output was bad' },
-        };
-      }
-      return { ok: true as const, value: { valid: true } };
-    },
-  };
+    let validateCall = 0;
+    const outputValidator = {
+      async validate(content: string) {
+        validateCall++;
+        // Only reject the very first validation (bad output)
+        if (validateCall === 1 && content === 'bad output') {
+          return {
+            ok: true as const,
+            value: { valid: false, reason: 'output was bad' },
+          };
+        }
+        return { ok: true as const, value: { valid: true } };
+      },
+    };
 
-  const { deps } = makeDefaultDeps({
-    assembler: makeAssembler([{ role: 'user', content: 'do something' }]),
-    mcpClients: [mcpClient],
-    outputValidator: outputValidator as unknown as Parameters<
-      typeof makeDefaultDeps
-    >[0]['outputValidator'],
+    const { deps } = makeDefaultDeps({
+      assembler: makeAssembler([{ role: 'user', content: 'do something' }]),
+      mcpClients: [mcpClient],
+      outputValidator,
+    });
+    deps.mainLlm = llm;
+    deps.toolCache = new NoopToolCache();
+
+    const config = {
+      maxIterations: 10,
+      refreshToolsPerIteration: false,
+    };
+    if (pipeline) {
+      const flow = new DefaultPipeline();
+      flow.initialize({ ...deps, agentConfig: config });
+      deps.pipeline = flow;
+    }
+    const agent = new SmartAgent(deps, config);
+
+    await agent.process(
+      'do something',
+      testCallOptions({ sessionId: 'retained-correction' }),
+    );
+
+    // 3 LLM calls: bad output, tool call, final content
+    assert.equal(capturedMessages.length, 3, 'expected exactly 3 LLM calls');
+
+    // Second call (index 1) should see the correction (controlTail populated)
+    const secondCallMessages = capturedMessages[1];
+    const correctionInSecond = secondCallMessages.find(
+      (m) =>
+        m.role === 'user' &&
+        typeof m.content === 'string' &&
+        m.content.includes('rejected by validation'),
+    );
+    assert.ok(
+      correctionInSecond !== undefined,
+      'second LLM call must see the reprompt correction (controlTail visible)',
+    );
+
+    // Third call retains the rejected reply, correction and the completed tool round.
+    const thirdCallMessages = capturedMessages[2];
+    const correctionInThird = thirdCallMessages.find(
+      (m) =>
+        m.role === 'user' &&
+        typeof m.content === 'string' &&
+        m.content.includes('rejected by validation'),
+    );
+    assert.ok(
+      correctionInThird !== undefined,
+      `reprompt correction must be present in third LLM call; got: ${JSON.stringify(
+        thirdCallMessages.map((m) => ({
+          role: m.role,
+          content: String(m.content).slice(0, 80),
+        })),
+      )}`,
+    );
+    assert.ok(
+      thirdCallMessages.some(
+        (message) =>
+          message.role === 'assistant' && message.content === 'bad output',
+      ),
+    );
+    assert.ok(thirdCallMessages.some((message) => message.role === 'tool'));
   });
-  deps.mainLlm = llm;
-  deps.toolCache = new NoopToolCache();
-
-  const agent = new SmartAgent(deps, {
-    maxIterations: 10,
-    refreshToolsPerIteration: false,
-  });
-
-  await agent.process(
-    'do something',
-    testCallOptions({ sessionId: 'direct-prune' }),
-  );
-
-  // 3 LLM calls: bad output, tool call, final content
-  assert.equal(capturedMessages.length, 3, 'expected exactly 3 LLM calls');
-
-  // Second call (index 1) should see the correction (controlTail populated)
-  const secondCallMessages = capturedMessages[1];
-  const correctionInSecond = secondCallMessages.find(
-    (m) =>
-      m.role === 'user' &&
-      typeof m.content === 'string' &&
-      m.content.includes('rejected by validation'),
-  );
-  assert.ok(
-    correctionInSecond !== undefined,
-    'second LLM call must see the reprompt correction (controlTail visible)',
-  );
-
-  // Third call (index 2) must NOT see the correction (controlTail was pruned after round)
-  const thirdCallMessages = capturedMessages[2];
-  const correctionInThird = thirdCallMessages.find(
-    (m) =>
-      m.role === 'user' &&
-      typeof m.content === 'string' &&
-      m.content.includes('rejected by validation'),
-  );
-  assert.equal(
-    correctionInThird,
-    undefined,
-    `reprompt correction must be absent from third LLM call (controlTail pruned); got: ${JSON.stringify(
-      thirdCallMessages.map((m) => ({
-        role: m.role,
-        content: String(m.content).slice(0, 80),
-      })),
-    )}`,
-  );
-});
+}

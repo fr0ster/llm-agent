@@ -34,7 +34,6 @@ import { DIALOGUE_COORDINATOR_SYSTEM } from './coordinator-prompt.js';
 import { createMemorySignalBus } from './memory-signal-bus.js';
 import {
   appendRequestMessage,
-  boundRequestTranscript,
   DefaultPlannerContextBuilder,
   renderPlannerRetrieval,
 } from './planner-context-builder.js';
@@ -65,9 +64,8 @@ import {
   resultKind,
 } from './structured-plan.js';
 import { TaskBoard, type TaskBoardOptions } from './task-board.js';
-import { compactText, taskNotice } from './task-reference.js';
+import { taskNotice } from './task-reference.js';
 
-export const DIALOGUE_HISTORY_LIMIT = 200;
 export interface PlannerTurnOptions {
   caller?: CallOptions['caller'];
   toolRoundGuard?: CallOptions['toolRoundGuard'];
@@ -270,7 +268,6 @@ export class DialogueSession {
     if (open && automatic) {
       this.updateRequestPlan();
       open.closedAt = this.now();
-      delete open.transcript;
       // Preserve the notes sent with raw conversation history.
       if (this.opts.plannerContext !== 'conversation') this.plan = undefined;
       open = undefined;
@@ -279,26 +276,12 @@ export class DialogueSession {
       open = {
         id: `r${++this.requestSeq}`,
         openedAt: this.now(),
-        text: text.slice(0, 20_000),
+        text,
         transcript: [],
       };
       this.requests.push(open);
     }
-    this.retainRequests();
     return open;
-  }
-  private retainRequests(): void {
-    for (const record of this.requests) {
-      record.text = record.text.slice(0, 20_000);
-      if (record.closedAt !== undefined) delete record.transcript;
-    }
-    while (this.requests.length > 200) {
-      const index = this.requests.findIndex(
-        (record) => record.closedAt !== undefined,
-      );
-      if (index < 0) break;
-      this.requests.splice(index, 1);
-    }
   }
   private indexReply(
     message: PlannerMessage,
@@ -561,12 +544,9 @@ export class DialogueSession {
     const session = new DialogueSession(opts);
     const state = await opts.store?.load(opts.id);
     if (state) {
-      session.conversation = structuredClone(
-        state.conversation.slice(-DIALOGUE_HISTORY_LIMIT),
-      );
-      const offset = state.conversation.length - session.conversation.length;
+      session.conversation = structuredClone(state.conversation);
       session.conversation.forEach((message, index) => {
-        if (state.conversationLeadingActions?.includes(index + offset))
+        if (state.conversationLeadingActions?.includes(index))
           session.leadingActions.add(message);
       });
       session.conversation = session.conversation.reduce<Message[]>(
@@ -579,7 +559,6 @@ export class DialogueSession {
         },
         [],
       );
-      session.trim();
       session.plan =
         typeof state.plan === 'string'
           ? {
@@ -600,9 +579,8 @@ export class DialogueSession {
             id: 'r1',
             openedAt: state.savedAt,
             text:
-              state.conversation
-                .find((message) => message.role === 'user')
-                ?.content?.slice(0, 20_000) ?? '',
+              state.conversation.find((message) => message.role === 'user')
+                ?.content ?? '',
             transcript: [],
             legacy: true,
             lastTurnOk: true,
@@ -611,10 +589,9 @@ export class DialogueSession {
       ).map((record) => ({
         id: record.id,
         openedAt: record.openedAt,
-        ...(record.closedAt === undefined
-          ? { transcript: structuredClone(record.transcript ?? []) }
-          : { closedAt: record.closedAt }),
-        text: record.text.slice(0, 20_000),
+        transcript: structuredClone(record.transcript ?? []),
+        ...(record.closedAt === undefined ? {} : { closedAt: record.closedAt }),
+        text: record.text,
         ...(Object.hasOwn(record, 'plan')
           ? { plan: structuredClone(record.plan) }
           : {}),
@@ -634,15 +611,13 @@ export class DialogueSession {
         for (const message of state.conversation)
           appendRequestMessage(legacy, message);
       }
+      session.requestSeq = state.requestSeq ?? 0;
       for (const record of session.requests) {
-        record.text = record.text.slice(0, 20_000);
-        boundRequestTranscript(record);
+        session.requestSeq = Math.max(
+          session.requestSeq,
+          Number(record.id.slice(1)) || 0,
+        );
       }
-      session.requestSeq = Math.max(
-        state.requestSeq ?? 0,
-        ...session.requests.map((record) => Number(record.id.slice(1)) || 0),
-      );
-      session.retainRequests();
       session.savedAt = state.savedAt;
       for (const [id, owner] of Object.entries(state.taskRequests ?? {}))
         session.taskRequests.set(id, owner);
@@ -936,7 +911,6 @@ export class DialogueSession {
       const notes = this.eventNotes(consumed);
       if (notes) this.appendInput(notes, 'events');
     } else this.appendInput(text, 'events');
-    this.trim();
     try {
       const projected = new DefaultPlannerContextBuilder().build({
         open: request,
@@ -944,6 +918,7 @@ export class DialogueSession {
         knowledge: [],
         notes: [],
       });
+      // Legacy persisted conversations can still contain the old markers.
       const elided = projected.some((message) =>
         /\[(?:elided|cut:|stored cut:|dropped) /.test(message.content ?? ''),
       );
@@ -996,7 +971,6 @@ export class DialogueSession {
           this.updateRequestPlan();
           this.resolveFailures(request);
           request.closedAt = this.now();
-          delete request.transcript;
           request.lastTurnOk = entryTurnOk;
           this.memoryWriter?.enqueue(
             'planner-plan',
@@ -1029,7 +1003,6 @@ export class DialogueSession {
           didRestart = true;
           restarting = true;
           callStop.abort();
-          this.retainRequests();
           this.changed();
         };
         let planner = this.opts.planner;
@@ -1378,7 +1351,6 @@ export class DialogueSession {
         };
         this.leadingActions.add(actionMessage);
         this.conversation.push(actionMessage);
-        this.trim();
         recomputePlanStatus(this.plan);
         this.changed();
         const ready = readySteps(this.plan);
@@ -1423,7 +1395,7 @@ export class DialogueSession {
         const checks: string[] = [];
         if (idle && ready.length)
           checks.push(
-            `Steps ${ready.map((s) => `${s.id}: ${s.goal.replace(/\s+/g, ' ').trim().slice(0, 200)}`).join(', ')} are ready (all dependencies done) and nothing runs. Delegate them or set status waiting_user with your question; skipping or narrowing requires user consent.`,
+            `Steps ${ready.map((s) => `${s.id}: ${s.goal}`).join(', ')} are ready (all dependencies done) and nothing runs. Delegate them or set status waiting_user with your question; skipping or narrowing requires user consent.`,
           );
         if (idle)
           for (const step of stalled)
@@ -1525,7 +1497,7 @@ export class DialogueSession {
         const removed =
           owner !== undefined &&
           !this.plan?.steps.some((step) => step.id === owner);
-        return `${label !== '[task events]' ? label : removed && task.state !== 'failed' && task.state !== 'interrupted' && task.error === undefined ? '[actions]' : '[task events]'} task ${task.id}${owner ? ` for ${owner}` : ''} (${task.worker}) ${kind}: ${compactText(task.goal, 200)} — ${taskNotice(task)}`;
+        return `${label !== '[task events]' ? label : removed && task.state !== 'failed' && task.state !== 'interrupted' && task.error === undefined ? '[actions]' : '[task events]'} task ${task.id}${owner ? ` for ${owner}` : ''} (${task.worker}) ${kind}: ${task.goal} — ${taskNotice(task)}`;
       })
       .join('\n');
   }
@@ -1555,25 +1527,7 @@ export class DialogueSession {
     // Hub notes occupy the next user slot; merge input to preserve role alternation.
     if (last?.role === 'user') last.content = `${last.content}\n${text}`;
     else this.conversation.push({ role: 'user', content: text });
-    this.trim();
   }
-  private trim(): void {
-    // Remove complete reply/note pairs, never leave an orphaned actions note.
-    while (this.conversation.length > DIALOGUE_HISTORY_LIMIT)
-      this.conversation.splice(0, 2);
-    if (this.conversation[0]?.role === 'assistant') this.conversation.shift();
-    const first = this.conversation[0];
-    if (first && this.leadingActions.has(first)) {
-      const content = first.content ?? '';
-      const newline = content.indexOf('\n');
-      if (newline < 0) this.conversation.shift();
-      else {
-        first.content = content.slice(newline + 1);
-        this.leadingActions.delete(first);
-      }
-    }
-  }
-
   private now(): number {
     return (this.opts.now ?? Date.now)();
   }

@@ -16,7 +16,7 @@
 #        - action:   "read table T100"           → drives the tool loop
 #        - chat:     "thanks!"                    → no RAG, just reply
 #
-#   2. SUMMARIZE — condense conversation history if it exceeds the limit.
+#   2. HISTORY — keep the full conversation; automatic summarization is removed.
 #
 #   3. RAG RETRIEVAL (parallel):
 #        - query tools  → returns MCP tool descriptions + skill descriptions
@@ -78,4 +78,4 @@ agent:
   classificationEnabled: true
   queryExpansionEnabled: true
   showReasoning: false
-  historyAutoSummarizeLimit: 10
+  # historyAutoSummarizeLimit: 10  # Deprecated no-op; full history is kept.

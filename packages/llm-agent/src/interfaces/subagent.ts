@@ -105,7 +105,7 @@ export interface ISubAgentResult {
   status?: 'complete' | 'awaiting-external';
   /** Cooperative termination with partial output; status remains complete. */
   stopped?: true;
-  /** The external tool calls the worker surfaced (deterministic `ext:` ids).
+  /** The external tool calls the worker surfaced (unique returned `ext:` IDs).
    *  Present iff status === 'awaiting-external'. */
   pendingExternalToolCalls?: LlmToolCall[];
 }

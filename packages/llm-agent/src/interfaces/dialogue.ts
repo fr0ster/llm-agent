@@ -155,9 +155,9 @@ export interface PlannerRequestRecord {
   resolvedFailures?: string[];
   /** Task outputs already delivered in this request. */
   deliveredTaskIds?: string[];
-  /** Present only while the request is open. */
+  /** Complete transcript retained for both open and closed requests. */
   transcript?: (Message & {
-    /** Compact planner projection of a verbatim delivered answer; content stays complete. */
+    /** Legacy delivery reference; default planner projection uses complete content. */
     plannerReference?: string;
     /** Session-generated metadata; absent on verbatim user and assistant messages. */
     internalKind?: 'actions' | 'events' | 'note';

@@ -12,6 +12,8 @@
  *  - (c) a step that recorded an INTERNAL tool round BEFORE it suspended on an
  *    external tool → the pre-suspend internal round comes back after resume
  *    (closes the Task-11 fresh-only gap where it was lost).
+ * Context migration requires caller-scoped storage. Ownerless bundles written
+ * under a bare sessionId before the upgrade remain untouched and cannot resume.
  */
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
@@ -23,12 +25,17 @@ import {
   type LlmTool,
   type Message,
   type Result,
+  type ToolRound,
 } from '@mcp-abap-adt/llm-agent';
 import type { PipelineContext } from '@mcp-abap-adt/llm-agent-libs';
 import {
   InMemoryKnowledgeBackend,
   SessionRequestLogger,
 } from '@mcp-abap-adt/llm-agent-libs';
+import {
+  callerScopedBackend,
+  controllerStorageKey,
+} from '../caller-scoped-backend.js';
 import {
   ControllerCoordinatorHandler,
   type ControllerHandlerDeps,
@@ -53,14 +60,17 @@ function fakeCtx(overrides: {
   const ctx = {
     sessionId: overrides.sessionId,
     textOrMessages: 'do the thing',
-    options: undefined,
+    options: { userId: 'test-user' },
     externalResults: overrides.externalResults,
     requestLogger,
     yield: (c: Captured) => {
       captured.push(c);
     },
   } as unknown as PipelineContext;
-  return { ctx, captured };
+  return {
+    ctx: { ...ctx, options: { userId: 'test-user', ...ctx.options } },
+    captured,
+  };
 }
 
 function scriptedClient(queue: SubagentResult[]): ISubagentClient {
@@ -152,7 +162,7 @@ function internalRoundState(id: string, content: string) {
         results: [{ role: 'tool', tool_call_id: id, content }],
       },
     ],
-  };
+  } satisfies { version: number; rounds: ToolRound[] };
 }
 
 function countContent(rounds: Message[][], needle: string): number {
@@ -170,106 +180,192 @@ function countContent(rounds: Message[][], needle: string): number {
 // ---------------------------------------------------------------------------
 
 describe('controller resume + migration (Task 12)', () => {
-  it('(a) contextStrategyState present → restore + controlTail; external pair survives a further round', async () => {
-    const backend = new InMemoryKnowledgeBackend();
-    const rag = stubRag();
-    const extId = externalToolCallId('ExtTool', { q: 'x' });
+  for (const { rawTranscript, legacy } of [false, true].flatMap((legacy) =>
+    [false, true].map((rawTranscript) => ({ rawTranscript, legacy })),
+  )) {
+    it(`(a) ${legacy ? 'rejects ownerless bare-session bundles' : 'restores caller-scoped control order'} (rawTranscript=${rawTranscript})`, async () => {
+      const backend = new InMemoryKnowledgeBackend();
+      const rag = stubRag();
+      const extId = externalToolCallId('ExtTool', { q: 'x' });
 
-    // Seed a bundle that suspended on ExtTool AFTER recording one internal round,
-    // with a durable control-tail message.
-    await persistBundle(backend, 'sess-a', {
-      goal: 'g',
-      plannerPrivate: '',
-      budgets: { stepsUsed: 0, rewindsUsed: 0 },
-      runId: 'R1',
-      runState: 'suspended',
-      runPhase: 'executing',
-      originalRequest: 'do the thing',
-      nextSeq: 0,
-      plan: [{ name: 's1', instructions: 'i' }],
-      planCursor: 0,
-      inFlightStep: {
-        seq: 0,
-        step: { name: 's1', instructions: 'i' },
-        attempt: 0,
-        resumeCount: 0,
-        phase: 'executing',
-        transcript: [],
-        toolCallCount: 1,
-        contextStrategyState: internalRoundState('i1', 'PRE-SUSPEND INTERNAL'),
-        controlTail: [{ role: 'user', content: 'CTRL-TAIL-MARK' }],
-      },
-      pending: {
-        kind: 'external-tool',
-        extId,
-        toolName: 'ExtTool',
-        args: { q: 'x' },
-        position: 's1',
-      },
-    } as never);
+      // Seed a bundle that suspended on ExtTool AFTER recording one internal round,
+      // with a durable control-tail message. The legacy case uses the actual
+      // origin/main key, without caller identity in either content or metadata.
+      await persistBundle(
+        backend,
+        legacy ? 'sess-a' : testStorageKey('sess-a'),
+        {
+          goal: 'g',
+          plannerPrivate: '',
+          budgets: { stepsUsed: 0, rewindsUsed: 0 },
+          runId: 'R1',
+          runState: 'suspended',
+          runPhase: 'executing',
+          originalRequest: 'do the thing',
+          nextSeq: 0,
+          plan: [{ name: 's1', instructions: 'i' }],
+          planCursor: 0,
+          inFlightStep: {
+            seq: 0,
+            step: { name: 's1', instructions: 'i' },
+            attempt: 0,
+            resumeCount: 0,
+            phase: 'executing',
+            transcript: rawTranscript
+              ? internalRoundState('i1', 'PRE-SUSPEND INTERNAL').rounds.flatMap(
+                  (round) => [round.assistant, ...round.results],
+                )
+              : [],
+            toolCallCount: 1,
+            contextStrategyState: rawTranscript
+              ? undefined
+              : internalRoundState('i1', 'PRE-SUSPEND INTERNAL'),
+            controlTail: [{ role: 'user', content: 'CTRL-TAIL-MARK' }],
+          },
+          pending: {
+            kind: 'external-tool',
+            extId,
+            toolName: 'ExtTool',
+            args: { q: 'x' },
+            position: 's1',
+          },
+        },
+      );
 
-    // Resume: executor makes ONE more internal call, then finishes.
-    const exec = recordingExecutor([
-      toolCall('GetMore', {}),
-      { kind: 'content', content: 'continued' },
-    ]);
-    const deps: ControllerHandlerDeps = {
-      evaluator: scriptedClient([]),
-      planner: scriptedClient([{ kind: 'content', content: 'FINAL-A' }]),
-      executor: exec.client,
-      backend,
-      knowledgeRagFor: () => rag,
-      embedder: stubEmbedder,
-      callMcp: async () => ({ text: 'MORE DATA', isError: false }),
-      selectTools: async (): Promise<LlmTool[]> => [
-        { name: 'GetMore', description: '', inputSchema: {} },
-      ],
-      isExternalTool: (n) => n === 'ExtTool',
-      config: baseConfig(),
-      models: { evaluator: 'm', planner: 'm', executor: 'm' },
-    };
+      // Resume: executor makes ONE more internal call, then finishes.
+      const exec = recordingExecutor([
+        toolCall('GetMore', {}),
+        { kind: 'content', content: 'continued' },
+      ]);
+      const deps: ControllerHandlerDeps = {
+        evaluator: scriptedClient([]),
+        planner: scriptedClient([{ kind: 'content', content: 'FINAL-A' }]),
+        executor: exec.client,
+        backend,
+        knowledgeRagFor: () => rag,
+        embedder: stubEmbedder,
+        callMcp: async () => ({ text: 'MORE DATA', isError: false }),
+        selectTools: async (): Promise<LlmTool[]> => [
+          { name: 'GetMore', description: '', inputSchema: {} },
+        ],
+        isExternalTool: (n) => n === 'ExtTool',
+        config: baseConfig(),
+        models: { evaluator: 'm', planner: 'm', executor: 'm' },
+      };
 
-    const { ctx } = fakeCtx({
-      sessionId: 'sess-a',
-      externalResults: new Map([[extId, 'EXT RESULT']]),
+      if (legacy) {
+        const originalEntries = structuredClone(await backend.scan('sess-a'));
+        const originalBundle = await hydrateBundle(backend, 'sess-a');
+        assert.equal(originalBundle.runId, 'R1');
+        assert.equal(originalBundle.pending?.kind, 'external-tool');
+        assert.equal(originalEntries.length, 1);
+        for (const userId of ['test-user', 'different-user']) {
+          const scoped = callerScopedBackend(backend, { userId }, 'sess-a');
+          assert.deepEqual(await hydrateBundle(scoped.backend, 'sess-a'), {
+            goal: '',
+            plannerPrivate: '',
+            budgets: { stepsUsed: 0, rewindsUsed: 0 },
+          });
+          assert.deepEqual(
+            await scoped.backend.semanticQuery(
+              'sess-a',
+              'PRE-SUSPEND INTERNAL',
+            ),
+            [],
+          );
+          const { ctx: baseCtx, captured } = fakeCtx({
+            sessionId: 'sess-a',
+            externalResults: new Map([[extId, 'EXT RESULT']]),
+          });
+          const options = { userId, runId: 'R1' };
+          const ctx: PipelineContext = {
+            ...baseCtx,
+            options,
+          };
+          assert.equal(
+            await new ControllerCoordinatorHandler(deps).execute(
+              ctx,
+              {},
+              undefined,
+            ),
+            true,
+          );
+          assert.equal(exec.rounds.length, 0, 'legacy executor never resumes');
+          assert.equal(rag.written.length, 0, 'legacy results are not indexed');
+          const output = JSON.stringify(captured);
+          assert.ok(output.includes('this run is no longer resumable'));
+          for (const secret of [
+            'PRE-SUSPEND INTERNAL',
+            'CTRL-TAIL-MARK',
+            'EXT RESULT',
+          ])
+            assert.ok(!output.includes(secret));
+          await scoped.backend.deleteSession('sess-a');
+          assert.deepEqual(await backend.scan('sess-a'), originalEntries);
+        }
+        return;
+      }
+
+      const { ctx } = fakeCtx({
+        sessionId: 'sess-a',
+        externalResults: new Map([[extId, 'EXT RESULT']]),
+      });
+      const ret = await new ControllerCoordinatorHandler(deps).execute(
+        ctx,
+        {},
+        undefined,
+      );
+      assert.equal(ret, true);
+
+      // First executor send: restored internal round + injected external pair +
+      // the durable control tail message are ALL present.
+      const first = exec.rounds[0] ?? [];
+      assert.ok(
+        first.some((m) => m.content === 'PRE-SUSPEND INTERNAL'),
+        '(a) restored internal round present',
+      );
+      assert.ok(
+        first.some((m) => m.content === 'EXT RESULT'),
+        '(a) external result present after restore',
+      );
+      assert.ok(
+        first.some((m) => m.content === 'CTRL-TAIL-MARK'),
+        '(a) durable controlTail re-emitted',
+      );
+
+      // The external pair survives into the send AFTER a further recorded round.
+      const second = exec.rounds[1] ?? [];
+      for (const messages of [first, second]) {
+        const internalIndex = messages.findIndex(
+          (message) => message.content === 'PRE-SUSPEND INTERNAL',
+        );
+        const correctionIndex = messages.findIndex(
+          (message) => message.content === 'CTRL-TAIL-MARK',
+        );
+        const externalIndex = messages.findIndex(
+          (message) =>
+            message.role === 'assistant' &&
+            message.tool_calls?.some((call) => call.id === extId),
+        );
+        assert.ok(internalIndex >= 0);
+        assert.ok(
+          internalIndex < correctionIndex && correctionIndex < externalIndex,
+        );
+        assert.equal(messages[externalIndex + 1].content, 'EXT RESULT');
+      }
+      assert.ok(
+        second.some((m) => m.content === 'EXT RESULT'),
+        '(a) external pair survives a further round',
+      );
+      assert.ok(
+        second.some((m) => m.content === 'MORE DATA'),
+        '(a) the further internal round is recorded',
+      );
+
+      const b = await hydrateBundle(backend, testStorageKey('sess-a'));
+      assert.equal(b.pending, undefined, '(a) pending cleared');
     });
-    const ret = await new ControllerCoordinatorHandler(deps).execute(
-      ctx,
-      {},
-      undefined,
-    );
-    assert.equal(ret, true);
-
-    // First executor send: restored internal round + injected external pair +
-    // the durable control tail message are ALL present.
-    const first = exec.rounds[0] ?? [];
-    assert.ok(
-      first.some((m) => m.content === 'PRE-SUSPEND INTERNAL'),
-      '(a) restored internal round present',
-    );
-    assert.ok(
-      first.some((m) => m.content === 'EXT RESULT'),
-      '(a) external result present after restore',
-    );
-    assert.ok(
-      first.some((m) => m.content === 'CTRL-TAIL-MARK'),
-      '(a) durable controlTail re-emitted',
-    );
-
-    // The external pair survives into the send AFTER a further recorded round.
-    const second = exec.rounds[1] ?? [];
-    assert.ok(
-      second.some((m) => m.content === 'EXT RESULT'),
-      '(a) external pair survives a further round',
-    );
-    assert.ok(
-      second.some((m) => m.content === 'MORE DATA'),
-      '(a) the further internal round is recorded',
-    );
-
-    const b = await hydrateBundle(backend, 'sess-a');
-    assert.equal(b.pending, undefined, '(a) pending cleared');
-  });
+  }
 
   it('(b) pre-release step with ONLY transcript → LegacyTranscript migration completes with no context loss, no double', async () => {
     const backend = new InMemoryKnowledgeBackend();
@@ -277,7 +373,7 @@ describe('controller resume + migration (Task 12)', () => {
 
     // Pre-release in-flight step: a raw transcript, NO contextStrategyState, NO
     // pending (a plain crash-replay resume).
-    await persistBundle(backend, 'sess-b', {
+    await persistBundle(backend, testStorageKey('sess-b'), {
       goal: 'g',
       plannerPrivate: '',
       budgets: { stepsUsed: 0, rewindsUsed: 0 },
@@ -353,7 +449,7 @@ describe('controller resume + migration (Task 12)', () => {
       '(b) no double-record of the migrated transcript',
     );
 
-    const b = await hydrateBundle(backend, 'sess-b');
+    const b = await hydrateBundle(backend, testStorageKey('sess-b'));
     assert.equal(b.pending, undefined);
   });
 
@@ -362,7 +458,7 @@ describe('controller resume + migration (Task 12)', () => {
     const rag = stubRag();
     const extId = externalToolCallId('ExtTool', { q: 'y' });
 
-    await persistBundle(backend, 'sess-c', {
+    await persistBundle(backend, testStorageKey('sess-c'), {
       goal: 'g',
       plannerPrivate: '',
       budgets: { stepsUsed: 0, rewindsUsed: 0 },
@@ -445,10 +541,9 @@ describe('controller resume + migration (Task 12)', () => {
     // across a second resume.
     const backend = new InMemoryKnowledgeBackend();
     const rag = stubRag();
-    const extId = externalToolCallId('ExtTool', { q: 'z' });
 
     // --- FIRST resume: pre-release in-flight step, transcript ONLY, no snapshot.
-    await persistBundle(backend, 'sess-d', {
+    await persistBundle(backend, testStorageKey('sess-d'), {
       goal: 'g',
       plannerPrivate: '',
       budgets: { stepsUsed: 0, rewindsUsed: 0 },
@@ -518,8 +613,10 @@ describe('controller resume + migration (Task 12)', () => {
     assert.equal(ret1, true, '(d) first resume suspends on external tool');
 
     // The suspended bundle now carries a LegacyTranscript-shaped snapshot.
-    const suspended = await hydrateBundle(backend, 'sess-d');
+    const suspended = await hydrateBundle(backend, testStorageKey('sess-d'));
     assert.equal(suspended.runState, 'suspended', '(d) first resume suspended');
+    assert.ok(suspended.pending?.kind === 'external-tool');
+    const extId = suspended.pending.extId;
     assert.ok(
       (
         suspended.inFlightStep?.contextStrategyState as {
@@ -573,3 +670,9 @@ describe('controller resume + migration (Task 12)', () => {
     );
   });
 });
+
+function testStorageKey(sessionId: string): string {
+  const key = controllerStorageKey({ userId: 'test-user' }, sessionId);
+  assert.ok(key);
+  return key;
+}

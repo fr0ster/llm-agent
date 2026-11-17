@@ -26,6 +26,7 @@
  * The span is passed to the handler for sub-span creation.
  */
 
+import { McpError } from '@mcp-abap-adt/llm-agent';
 import { normalizeMaxIterations } from '../config/normalize-max-iterations.js';
 import type { ISpan, ITracer } from '../tracer/types.js';
 import { evaluateCondition } from './condition-evaluator.js';
@@ -90,6 +91,11 @@ export class PipelineExecutor {
       } catch (err) {
         span.setStatus('error', String(err));
         span.end();
+        // Preserve a terminal transport failure at the public pipeline boundary.
+        if (err instanceof McpError) {
+          ctx.error = err;
+          ctx.yield({ ok: false, error: err });
+        }
         ctx.options?.sessionLogger?.logStep(`stage_error_${stage.id}`, {
           error: String(err),
         });

@@ -346,34 +346,20 @@ test('tool-loop stamps requestId = ctx.options.trace.traceId', async () => {
 });
 
 // ---------------------------------------------------------------------------
-// summarize handler (Fix #15: helper-LLM history-summarization call must
-// stamp requestId so the per-traceId delta accounts for the helper tokens).
+// Deprecated summarize handler must not create helper usage.
 // ---------------------------------------------------------------------------
 
-test('summarize stamps requestId = ctx.options.trace.traceId', async () => {
+test('deprecated summarize produces no helper call or usage entry', async () => {
   const rec = new RecordingLogger();
   const traceId = 'trace-sum';
-  // Helper returns a short summary with usage; chat() (non-streaming) is used.
   const helperLlm: ILlm = {
     model: 'helper-model',
     async chat(): Promise<Result<LlmResponse, LlmError>> {
-      return {
-        ok: true,
-        value: {
-          content: 'short summary',
-          finishReason: 'stop',
-          usage: {
-            promptTokens: 7,
-            completionTokens: 3,
-            totalTokens: 10,
-          },
-        } as LlmResponse,
-      };
+      assert.fail('summarize must not call the helper');
     },
     async *streamChat(): AsyncIterable<Result<LlmStreamChunk, LlmError>> {},
   };
-  // History must exceed `limit` (default 10) AND have >=6 messages so
-  // `toSummarize = history.slice(0, -5)` is non-empty.
+  // Exceed the legacy threshold to catch accidental summarization.
   const history: Message[] = Array.from({ length: 12 }, (_, i) => ({
     role: i % 2 === 0 ? ('user' as const) : ('assistant' as const),
     content: `msg-${i}`,
@@ -389,12 +375,8 @@ test('summarize stamps requestId = ctx.options.trace.traceId', async () => {
 
   const ok = await new SummarizeHandler().execute(ctx, {}, makeSpan());
   assert.equal(ok, true);
-  assert.equal(rec.llm.length, 1, 'summarize logged exactly one helper call');
-  assert.equal(
-    rec.llm[0].requestId,
-    traceId,
-    'summarize entry carries the traceId',
-  );
+  assert.equal(rec.llm.length, 0);
+  assert.equal(ctx.history, history);
 });
 
 // ---------------------------------------------------------------------------

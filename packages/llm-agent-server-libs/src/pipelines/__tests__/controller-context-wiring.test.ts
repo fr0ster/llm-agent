@@ -4,19 +4,24 @@ import type {
   IKnowledgeRagHandle,
   KnowledgeEntry,
   KnowledgeEntryMetadata,
+  KnowledgeFilter,
   ToolLoopContextStrategyFactory,
   ToolRound,
 } from '@mcp-abap-adt/llm-agent';
 import { toModelToolMessage } from '@mcp-abap-adt/llm-agent';
-import { RagRecallContextStrategy } from '@mcp-abap-adt/llm-agent-libs';
+import {
+  LegacyAccumulateContextStrategy,
+  RagRecallContextStrategy,
+} from '@mcp-abap-adt/llm-agent-libs';
 import { ControllerFactory } from '../../factories/controller-factory.js';
 import {
   buildRecallBlock,
   RECALL_MAX_CHARS_MCP,
 } from '../../smart-agent/controller/recall.js';
+import { createControllerRagRecallContextStrategyFactory } from '../controller.js';
 import { controllerPlugin, fakeControllerServerCtx } from './fixtures.js';
 
-// The RagRecall factory is constructed inside ControllerPipelinePlugin.build and
+// The selected factory is constructed inside ControllerPipelinePlugin.build and
 // handed to the ControllerFactory (→ handler) as `deps.toolLoopContextStrategyFactory`.
 // Spy on ControllerFactory.prototype.build to capture it (the shared ESM class ref
 // is the same instance the plugin news up).
@@ -28,13 +33,9 @@ async function buildAndCaptureFactory(
   const orig = ControllerFactory.prototype.build;
   let captured: ToolLoopContextStrategyFactory | undefined;
   ControllerFactory.prototype.build = async function (cfg, deps, kind) {
-    captured = (
-      deps as {
-        toolLoopContextStrategyFactory?: ToolLoopContextStrategyFactory;
-      }
-    ).toolLoopContextStrategyFactory;
+    captured = deps.toolLoopContextStrategyFactory;
     return orig.call(this, cfg, deps, kind);
-  } as typeof orig;
+  };
   try {
     const inst = await controllerPlugin().build({
       ...fakeControllerServerCtx(),
@@ -67,13 +68,13 @@ function aRound(resultBody: string): ToolRound {
       role: 'assistant',
       content: null,
       tool_calls: [],
-    } as unknown as ToolRound['assistant'],
+    },
     results: [
       {
         role: 'tool',
         tool_call_id: 'c1',
         content: resultBody,
-      } as unknown as ToolRound['results'][number],
+      },
     ],
     meta: [{ identityKey: 'tool:args', isError: false }],
   };
@@ -81,18 +82,27 @@ function aRound(resultBody: string): ToolRound {
 
 describe('controller context wiring — RagRecall factory', () => {
   it('injects a RagRecallContextStrategy whose record writes an mcp-result artifact with a roundId', async () => {
-    const factory = await buildAndCaptureFactory();
+    const factory = await buildAndCaptureFactory({
+      toolLoopContextStrategyFactory:
+        createControllerRagRecallContextStrategyFactory({
+          maxSteps: 20,
+          maxRetries: 3,
+          maxRewinds: 3,
+        }),
+    });
     const writes: Array<{ content: string; metadata: KnowledgeEntryMetadata }> =
       [];
-    const spyRag = {
+    const spyRag: IKnowledgeRagHandle = {
       write: async (entry: {
         content: string;
         metadata: KnowledgeEntryMetadata;
       }) => {
         writes.push(entry);
       },
-      query: async () => [] as KnowledgeEntry[],
-    } as unknown as IKnowledgeRagHandle;
+      query: async () => [],
+      list: async () => [],
+      fingerprint: () => 'test',
+    };
 
     const strategy = factory({
       run: { rag: spyRag, runId: 'run-x', meta: META, stepName: 'step-1' },
@@ -114,7 +124,14 @@ describe('controller context wiring — RagRecall factory', () => {
   });
 
   it('recall matches buildRecallBlock byte for byte without toolTrust', async () => {
-    const factory = await buildAndCaptureFactory();
+    const factory = await buildAndCaptureFactory({
+      toolLoopContextStrategyFactory:
+        createControllerRagRecallContextStrategyFactory({
+          maxSteps: 20,
+          maxRetries: 3,
+          maxRewinds: 3,
+        }),
+    });
     const cases = [
       [['a'.repeat(1000), 'b'.repeat(1000)]],
       [['a'.repeat(1000)], ['b'.repeat(1000)], ['c']],
@@ -190,18 +207,27 @@ describe('controller context wiring — RagRecall factory', () => {
   });
 
   it('record stamps the mcp-result artifact with writeOrdinal from round.ordinal (latest-fetch dedup)', async () => {
-    const factory = await buildAndCaptureFactory();
+    const factory = await buildAndCaptureFactory({
+      toolLoopContextStrategyFactory:
+        createControllerRagRecallContextStrategyFactory({
+          maxSteps: 20,
+          maxRetries: 3,
+          maxRewinds: 3,
+        }),
+    });
     const writes: Array<{ content: string; metadata: KnowledgeEntryMetadata }> =
       [];
-    const spyRag = {
+    const spyRag: IKnowledgeRagHandle = {
       write: async (entry: {
         content: string;
         metadata: KnowledgeEntryMetadata;
       }) => {
         writes.push(entry);
       },
-      query: async () => [] as KnowledgeEntry[],
-    } as unknown as IKnowledgeRagHandle;
+      query: async () => [],
+      list: async () => [],
+      fingerprint: () => 'test',
+    };
 
     const strategy = factory({
       run: { rag: spyRag, runId: 'run-o', meta: META, stepName: 'step-o' },
@@ -210,7 +236,7 @@ describe('controller context wiring — RagRecall factory', () => {
     // The handler stamps a monotonic per-write ordinal onto the round; the record
     // closure MUST carry it to metadata.writeOrdinal so isBetterMcp can tie-break a
     // same-identityKey / same-createdAt re-fetch to the LATEST write (not a stale one).
-    const round = { ...aRound('BODY'), ordinal: 7 } as ToolRound;
+    const round = { ...aRound('BODY'), ordinal: 7 };
     await strategy.record(round);
 
     assert.equal(writes.length, 1);
@@ -222,23 +248,23 @@ describe('controller context wiring — RagRecall factory', () => {
   });
 
   it('recall (via form) runs runScopedRecall over [mcp-result] excluding the last roundId', async () => {
-    const factory = await buildAndCaptureFactory();
+    const factory = await buildAndCaptureFactory({
+      toolLoopContextStrategyFactory:
+        createControllerRagRecallContextStrategyFactory({
+          maxSteps: 20,
+          maxRetries: 3,
+          maxRewinds: 3,
+        }),
+    });
     const queries: Array<{
       text: string;
-      opts: { k?: number; filter?: { runId?: string; artifactType?: unknown } };
+      opts: { k?: number; filter?: KnowledgeFilter };
     }> = [];
     let recordedRoundId = '';
-    const spyRag = {
-      list: async () => [],
+    const spyRag: IKnowledgeRagHandle = {
       write: async () => {},
-      query: async (
-        text: string,
-        opts: {
-          k?: number;
-          filter?: { runId?: string; artifactType?: unknown };
-        },
-      ) => {
-        queries.push({ text, opts });
+      query: async (text, opts) => {
+        queries.push({ text, opts: opts ?? {} });
         return [
           {
             content: 'EXCLUDED',
@@ -258,16 +284,19 @@ describe('controller context wiring — RagRecall factory', () => {
               identityKey: 'k2',
             },
           },
-        ] as unknown as KnowledgeEntry[];
+        ];
       },
-    } as unknown as IKnowledgeRagHandle;
+      list: async () => [],
+      fingerprint: () => 'test',
+    };
 
     const strategy = factory({
       run: { rag: spyRag, runId: 'run-y', meta: META, stepName: 's' },
     });
     const round = aRound('TAIL-BODY');
     await strategy.record(round);
-    recordedRoundId = round.roundId as string;
+    assert.ok(round.roundId);
+    recordedRoundId = round.roundId;
 
     const msgs = await strategy.form({ prefix: [], queryText: 'find X' });
 
@@ -284,30 +313,67 @@ describe('controller context wiring — RagRecall factory', () => {
 });
 
 describe('controller context wiring — consumer override (DI seam)', () => {
-  it('with NO ctx.toolLoopContextStrategyFactory the controller uses its RagRecall default', async () => {
+  it('with NO ctx.toolLoopContextStrategyFactory the controller preserves all six full rounds by default', async () => {
     const factory = await buildAndCaptureFactory();
-    const spyRag = {
+    const spyRag: IKnowledgeRagHandle = {
       write: async () => {},
-      query: async () => [] as KnowledgeEntry[],
-    } as unknown as IKnowledgeRagHandle;
+      query: async () => [],
+      list: async () => [],
+      fingerprint: () => 'test',
+    };
     const strategy = factory({
       run: { rag: spyRag, runId: 'r', meta: META, stepName: 's' },
     });
     assert.ok(
-      strategy instanceof RagRecallContextStrategy,
-      'default controller strategy must be RagRecall',
+      strategy instanceof LegacyAccumulateContextStrategy,
+      'default controller strategy must preserve full history',
+    );
+    const rounds: ToolRound[] = Array.from({ length: 6 }, (_, index) => ({
+      assistant: {
+        role: 'assistant',
+        content: `ASSISTANT-${index + 1}`,
+        tool_calls: [
+          {
+            id: `call-${index + 1}`,
+            type: 'function',
+            function: {
+              name: 'Work',
+              arguments: JSON.stringify({ round: index + 1 }),
+            },
+          },
+        ],
+      },
+      results: [
+        {
+          role: 'tool',
+          tool_call_id: `call-${index + 1}`,
+          content: `RESULT-${index + 1}`,
+        },
+      ],
+    }));
+    for (const round of rounds) await strategy.record(round);
+    assert.deepEqual(
+      await strategy.form({ prefix: [{ role: 'user', content: 'go' }] }),
+      [
+        { role: 'user', content: 'go' },
+        ...rounds.flatMap((round) => [round.assistant, ...round.results]),
+      ],
     );
   });
 
-  it('honors a consumer-injected ctx.toolLoopContextStrategyFactory (overrides RagRecall)', async () => {
-    // Sentinel strategy produced by the consumer's factory. It is NOT a
-    // RagRecallContextStrategy, so if the controller wins with its own default
-    // the identity assertion below fails.
-    const sentinel = { form: async () => [], record: async () => {} };
+  it('honors a consumer-injected ctx.toolLoopContextStrategyFactory (overrides full history)', async () => {
+    // The identity assertion proves that the consumer factory takes precedence
+    // over the full-history default.
+    const sentinel = {
+      form: async () => [],
+      record: async () => {},
+      snapshot: () => ({ version: 1 }),
+      restore: () => {},
+    };
     let injectedCalled = false;
     const consumerFactory: ToolLoopContextStrategyFactory = () => {
       injectedCalled = true;
-      return sentinel as never;
+      return sentinel;
     };
 
     const factory = await buildAndCaptureFactory({
@@ -319,12 +385,14 @@ describe('controller context wiring — consumer override (DI seam)', () => {
     assert.strictEqual(
       factory,
       consumerFactory,
-      'controller must thread the consumer-injected factory, not its own RagRecall',
+      'controller must thread the consumer-injected factory',
     );
-    const spyRag = {
+    const spyRag: IKnowledgeRagHandle = {
       write: async () => {},
-      query: async () => [] as KnowledgeEntry[],
-    } as unknown as IKnowledgeRagHandle;
+      query: async () => [],
+      list: async () => [],
+      fingerprint: () => 'test',
+    };
     const strategy = factory({
       run: { rag: spyRag, runId: 'r', meta: META, stepName: 's' },
     });

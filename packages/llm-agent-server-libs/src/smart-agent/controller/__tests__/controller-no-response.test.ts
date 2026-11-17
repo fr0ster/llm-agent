@@ -13,6 +13,7 @@ import {
   InMemoryKnowledgeBackend,
   SessionRequestLogger,
 } from '@mcp-abap-adt/llm-agent-libs';
+import { controllerStorageKey } from '../caller-scoped-backend.js';
 import {
   ControllerCoordinatorHandler,
   type ControllerHandlerDeps,
@@ -43,7 +44,7 @@ function fakeCtx(overrides: Partial<PipelineContext> = {}): {
   const ctx = {
     sessionId: 'sess-1',
     textOrMessages: 'do the thing',
-    options: undefined,
+    options: { userId: 'test-user' },
     externalResults: undefined,
     requestLogger,
     yield: (c: Captured) => {
@@ -51,7 +52,10 @@ function fakeCtx(overrides: Partial<PipelineContext> = {}): {
     },
     ...overrides,
   } as unknown as PipelineContext;
-  return { ctx, captured };
+  return {
+    ctx: { ...ctx, options: { userId: 'test-user', ...ctx.options } },
+    captured,
+  };
 }
 
 /** Subagent stub backed by a scripted queue; each send() shifts one result. */
@@ -201,10 +205,10 @@ describe('#243 empty-success guard (Layer 2)', () => {
     assert.notEqual(body.trim(), '', 'never an empty body');
     assert.match(body, new RegExp(GENERIC_NO_ANSWER));
 
-    const bundle = await hydrateBundle(h.backend, 'sess-1');
+    const bundle = await hydrateBundle(h.backend, testStorageKey('sess-1'));
     const term = await readTerminal(
       h.backend,
-      'sess-1',
+      testStorageKey('sess-1'),
       // biome-ignore lint/style/noNonNullAssertion: runId set after execute
       bundle.runId!,
       new Date().toISOString(),
@@ -256,10 +260,10 @@ describe('#243 empty-success guard (Layer 2)', () => {
     assert.notEqual(body.trim(), '', 'never (no response)');
     assert.match(body, /Class ZZ_QX9B7 not found/);
 
-    const bundle = await hydrateBundle(h.backend, 'sess-1');
+    const bundle = await hydrateBundle(h.backend, testStorageKey('sess-1'));
     const term = await readTerminal(
       h.backend,
-      'sess-1',
+      testStorageKey('sess-1'),
       // biome-ignore lint/style/noNonNullAssertion: runId set after execute
       bundle.runId!,
       new Date().toISOString(),
@@ -301,10 +305,10 @@ describe('#243 empty-success guard (Layer 2)', () => {
     assert.ok(body);
     assert.equal(body, 'Error: tool-call budget exhausted (maxToolCalls)');
 
-    const bundle = await hydrateBundle(h.backend, 'sess-1');
+    const bundle = await hydrateBundle(h.backend, testStorageKey('sess-1'));
     const term = await readTerminal(
       h.backend,
-      'sess-1',
+      testStorageKey('sess-1'),
       // biome-ignore lint/style/noNonNullAssertion: runId set after execute
       bundle.runId!,
       new Date().toISOString(),
@@ -322,3 +326,9 @@ describe('#243 empty-success guard (Layer 2)', () => {
     assert.equal(surfacedContent(replay.captured), body);
   });
 });
+
+function testStorageKey(sessionId: string): string {
+  const key = controllerStorageKey({ userId: 'test-user' }, sessionId);
+  assert.ok(key);
+  return key;
+}

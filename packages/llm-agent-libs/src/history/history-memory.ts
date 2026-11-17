@@ -1,11 +1,12 @@
 import type { IHistoryMemory } from '@mcp-abap-adt/llm-agent';
+import { clearCallerSessionEntries } from '../policy/caller-identity.js';
 
 export class HistoryMemory implements IHistoryMemory {
   private readonly maxSize: number;
   private readonly sessions = new Map<string, string[]>();
 
   constructor(opts?: { maxSize?: number }) {
-    this.maxSize = opts?.maxSize ?? 50;
+    this.maxSize = opts?.maxSize ?? Number.POSITIVE_INFINITY;
   }
 
   pushRecent(sessionId: string, summary: string): void {
@@ -27,5 +28,9 @@ export class HistoryMemory implements IHistoryMemory {
 
   clear(sessionId: string): void {
     this.sessions.delete(sessionId);
+  }
+
+  clearSession(sessionId: string): void {
+    clearCallerSessionEntries(this.sessions, sessionId);
   }
 }

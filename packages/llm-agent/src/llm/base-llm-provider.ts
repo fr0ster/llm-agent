@@ -74,6 +74,28 @@ export abstract class BaseLLMProvider<
     this.config = config;
   }
 
+  /**
+   * Map history IDs for providers requiring alphanumeric, underscore or hyphen
+   * IDs. Reserve every existing ID first so generated IDs cannot alias a later
+   * call. The map belongs to one request; logical history/cache keys stay intact.
+   */
+  protected toolCallIdMapper(ids: readonly string[]): (id: string) => string {
+    const reserved = new Set(ids);
+    const mapped = new Map<string, string>();
+    let index = 0;
+    for (const id of ids) {
+      if ((id.length > 0 && !/[^a-zA-Z0-9_-]/.test(id)) || mapped.has(id))
+        continue;
+      let wireId: string;
+      do {
+        wireId = `toolu_history_${index++}`;
+      } while (reserved.has(wireId));
+      reserved.add(wireId);
+      mapped.set(id, wireId);
+    }
+    return (id) => mapped.get(id) ?? id;
+  }
+
   abstract chat(
     messages: Message[],
     tools?: unknown[],

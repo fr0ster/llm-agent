@@ -852,7 +852,7 @@ for (const state of ['failed', 'stopped', 'interrupted'] as const) {
   });
 }
 
-test('corrective notes include normalized and bounded ready goals', async () => {
+test('corrective notes include complete ready goals', async () => {
   let calls = 0;
   const session = await DialogueSession.open({
     caller: testCallOptions({
@@ -873,11 +873,11 @@ test('corrective notes include normalized and bounded ready goals', async () => 
           const note = String(messages.at(-1)?.content);
           assert.ok(
             note.includes(
-              `[check] Steps ready: ${`useful goal ${'x'.repeat(300)}`.slice(0, 200)} are ready`,
+              `[check] Steps ready:   useful\n   goal ${'x'.repeat(300)}   are ready`,
             ),
           );
           assert.ok(
-            !note.slice(note.indexOf('[check]')).includes('x'.repeat(201)),
+            note.slice(note.indexOf('[check]')).includes('x'.repeat(300)),
           );
         }
         return { ok: true, value: { content: 'ok' } };
@@ -1178,7 +1178,7 @@ for (const remove of [false, true]) {
 
 for (const source of ['error', 'verdict', 'coordinator'] as const) {
   for (const note of ['short note', 'x'.repeat(2000)]) {
-    test(`${source} step notes are bounded in task events, plan view and plan_get (${note.length} chars)`, async () => {
+    test(`${source} step notes are complete in task events, plan view and plan_get (${note.length} chars)`, async () => {
       const plan = mergePlan(undefined, [{ id: 's1', goal: 'work' }], 'active');
       const step = plan.steps[0];
       step.taskIds = ['t1'];
@@ -1195,7 +1195,7 @@ for (const source of ['error', 'verdict', 'coordinator'] as const) {
         applyTaskEvent(plan, event);
       }
       const retained = structuredClone(plan);
-      const expectedLength = Math.min(note.length, 600);
+      const expectedLength = note.length;
       assert.equal(
         step.note?.length,
         source === 'coordinator' ? note.length : expectedLength,

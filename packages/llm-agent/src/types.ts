@@ -6,6 +6,14 @@ import type { IUsageRecorder, UsageOperation } from './interfaces/usage.js';
 import type { IThrottleStrategy } from './interfaces/throttle-strategy.js';
 import type { LlmUsage } from './interfaces/types.js';
 
+export type MessageMetadataValue =
+  | string
+  | number
+  | boolean
+  | null
+  | MessageMetadataValue[]
+  | { [key: string]: MessageMetadataValue | undefined };
+
 export interface Message {
   /**
    * Message role
@@ -16,6 +24,10 @@ export interface Message {
    */
   role: 'user' | 'assistant' | 'system' | 'tool';
   content: string | null;
+  /** Optional application metadata. */
+  metadata?: {
+    [key: string]: MessageMetadataValue | undefined;
+  };
   /** For role='tool': ID of the tool call this result corresponds to (OpenAI/DeepSeek protocol) */
   tool_call_id?: string;
   /** For role='assistant': tool calls requested by the LLM (OpenAI/DeepSeek protocol) */
@@ -30,6 +42,8 @@ export interface ToolCall {
   id: string;
   name: string;
   arguments: Record<string, unknown>;
+  /** Original JSON when argument decoding failed; execution must reject it. */
+  rawArguments?: string;
 }
 
 export interface ToolResult {

@@ -2,7 +2,7 @@
 # Good starting point for understanding the built-in stage sequence.
 #
 # The flat pipeline (default when no `pipeline:` is specified) runs the full
-# DefaultPipeline flow: classify → summarize → rag-retrieval(parallel) → rerank
+# DefaultPipeline flow: classify → rag-retrieval(parallel) → rerank
 # → skill-select → tool-select → assemble → tool-loop → history-upsert.
 #
 # The structured-stages DSL (`pipeline: { version, stages }`) was removed in v19.

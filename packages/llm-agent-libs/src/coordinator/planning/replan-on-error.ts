@@ -36,10 +36,7 @@ export class ReplanOnErrorPlanning implements IPlanningStrategy {
       .map(([name, a]) => `- ${name}: ${a.description ?? '(no description)'}`)
       .join('\n');
     const resultsBlock = Object.values(ctx.stepResults)
-      .map(
-        (r) =>
-          `- ${r.stepId}: ${r.ok ? 'OK' : 'FAILED'} — ${r.output.slice(0, 200)}`,
-      )
+      .map((r) => `- ${r.stepId}: ${r.ok ? 'OK' : 'FAILED'} — ${r.output}`)
       .join('\n');
     const remainingBlock = remaining
       .map((s) => `- ${s.id}: ${s.goal}`)

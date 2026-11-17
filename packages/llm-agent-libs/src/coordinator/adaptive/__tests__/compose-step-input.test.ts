@@ -7,11 +7,7 @@ import type {
   WorkStep,
 } from '@mcp-abap-adt/llm-agent';
 import { renderTaskSpec } from '@mcp-abap-adt/llm-agent';
-import {
-  composeStepInput,
-  HISTORY_MESSAGE_LIMIT,
-  RESULT_CHAR_LIMIT,
-} from '../compose-step-input.js';
+import { composeStepInput } from '../compose-step-input.js';
 
 const step: WorkStep = {
   id: 'w',
@@ -64,18 +60,17 @@ test('results in plan order with status', () => {
     'Request:\nrequest\n\nStep:\ngoal\n\nResult of a (done):\n---\na\n---\n\nResult of b (failed):\n---\nbroken\n---',
   );
 });
-test('long result is cut with a note', () => {
-  assert.equal(RESULT_CHAR_LIMIT, 8000);
+test('long results reach the worker intact', () => {
+  const output = 'x'.repeat(200_000);
   const result = composeStepInput({
     ...args,
-    latest: new Map([['a', record('a', 'x'.repeat(8100))]]),
+    latest: new Map([['a', record('a', output)]]),
     step: { ...step, context: { results: ['a'] } },
   });
-  assert.ok(
-    result.task.includes(`${'x'.repeat(8000)}\n[cut: 100 characters omitted]`),
-  );
-  assert.ok(!result.task.includes('x'.repeat(8001)));
+  assert.ok(result.task.includes(output));
+  assert.ok(!result.task.includes('[cut:'));
 });
+
 test('check step includes targets and the JSON instruction', () => {
   const check: CheckStep = {
     id: 'c',
@@ -148,15 +143,13 @@ test('history none / last-turn / all', () => {
     [],
   );
 });
-test('history cut adds a note', () => {
-  assert.equal(HISTORY_MESSAGE_LIMIT, 20);
+test('all 25 messages reach the worker without an omission marker', () => {
   const history: Message[] = Array.from({ length: 25 }, (_, i) => ({
     role: 'user',
-    content: String(i),
+    content: `${i}:${'h'.repeat(200_000)}`,
   }));
   const result = composeStepInput({ ...args, history });
-  assert.deepEqual(result.history, history.slice(5));
-  assert.ok(
-    result.task.includes('[conversation cut: 5 earlier messages omitted]'),
-  );
+  assert.deepEqual(result.history, history);
+  assert.notEqual(result.history, history);
+  assert.ok(!result.task.includes('[conversation cut:'));
 });

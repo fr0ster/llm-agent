@@ -98,7 +98,7 @@ type ContentBlock =
   | { type: 'text'; text: string }
   | { type: 'tool_use'; id: string; name: string; input: Json }
   | { type: 'tool_result'; tool_use_id: string; content: string };
-interface WireMessage {
+export interface WireMessage {
   role: 'user' | 'assistant';
   content: string | ContentBlock[];
 }
@@ -109,8 +109,11 @@ interface ModelsListResponse {
   last_id: string | null;
 }
 
-function formatTools(tools: readonly ToolDefinition[]) {
-  return tools.map((tool) => {
+function formatTools(
+  tools: readonly ToolDefinition[],
+  messages: readonly WireMessage[],
+) {
+  const definitions = tools.map((tool) => {
     const definition = tool.function ?? tool;
     if (!definition.name) throw new Error('Anthropic tool requires a name');
     return {
@@ -123,6 +126,24 @@ function formatTools(tools: readonly ToolDefinition[]) {
         tool.input_schema ?? { type: 'object', properties: {} },
     };
   });
+  const names = new Set(definitions.map((tool) => tool.name));
+  // Anthropic requires definitions even for completed historical tool uses.
+  // A client may omit tools on resume, or the agent may have reselected them.
+  for (const message of messages) {
+    if (message.role !== 'assistant' || !Array.isArray(message.content))
+      continue;
+    for (const block of message.content) {
+      if (block.type !== 'tool_use' || names.has(block.name)) continue;
+      definitions.push({
+        name: block.name,
+        description:
+          'Historical tool; its result is already in the conversation.',
+        input_schema: { type: 'object', properties: {} },
+      });
+      names.add(block.name);
+    }
+  }
+  return definitions;
 }
 
 export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
@@ -174,13 +195,12 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
     options?: LLMCallOptions,
   ): Promise<LLMResponse> {
     try {
-      const systemMessage = messages.find((m) => m.role === 'system');
+      const systemMessages = messages.filter((m) => m.role === 'system');
+      const systemContent = systemMessages.map((m) => m.content).join('\n\n');
       const conversationMessages = messages.filter((m) => m.role !== 'system');
 
       const sent = this.formatMessages(conversationMessages);
-      const sentTools = tools?.length
-        ? formatTools(tools as ToolDefinition[])
-        : undefined;
+      const sentTools = formatTools((tools ?? []) as ToolDefinition[], sent);
       const model = options?.model ?? this.model;
       const requestBody: Record<
         string,
@@ -199,12 +219,13 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
         ...(options?.stop ? { stop_sequences: options.stop } : {}),
       };
 
-      if (systemMessage) {
-        requestBody.system = systemMessage.content;
+      if (systemMessages.length > 0) {
+        requestBody.system = systemContent;
       }
 
-      if (sentTools) {
+      if (sentTools.length) {
         requestBody.tools = sentTools;
+        if (!tools?.length) requestBody.tool_choice = { type: 'none' };
       }
 
       let headers: Record<string, string>;
@@ -273,11 +294,11 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
           } {
             shape ??= requestShape(
               [
-                ...(systemMessage
+                ...(systemMessages.length > 0
                   ? [
                       {
                         role: 'system',
-                        content: systemMessage.content,
+                        content: systemContent,
                       } satisfies ShapeMessage,
                     ]
                   : []),
@@ -322,13 +343,12 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
     tools?: unknown[],
     options?: LLMCallOptions,
   ): AsyncIterable<LLMResponse> {
-    const systemMessage = messages.find((m) => m.role === 'system');
+    const systemMessages = messages.filter((m) => m.role === 'system');
+    const systemContent = systemMessages.map((m) => m.content).join('\n\n');
     const conversationMessages = messages.filter((m) => m.role !== 'system');
 
     const sent = this.formatMessages(conversationMessages);
-    const sentTools = tools?.length
-      ? formatTools(tools as ToolDefinition[])
-      : undefined;
+    const sentTools = formatTools((tools ?? []) as ToolDefinition[], sent);
     const model = options?.model ?? this.model;
     const requestBody: Record<
       string,
@@ -344,12 +364,13 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
       ...(options?.stop ? { stop_sequences: options.stop } : {}),
     };
 
-    if (systemMessage) {
-      requestBody.system = systemMessage.content;
+    if (systemMessages.length > 0) {
+      requestBody.system = systemContent;
     }
 
-    if (sentTools) {
+    if (sentTools.length) {
       requestBody.tools = sentTools;
+      if (!tools?.length) requestBody.tool_choice = { type: 'none' };
     }
 
     const baseURL = this.config.baseURL || 'https://api.anthropic.com/v1';
@@ -397,11 +418,11 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
         get base(): Parameters<typeof beginLlmRequest>[2] & { stream: true } {
           shape ??= requestShape(
             [
-              ...(systemMessage
+              ...(systemMessages.length > 0
                 ? [
                     {
                       role: 'system',
-                      content: systemMessage.content,
+                      content: systemContent,
                     } satisfies ShapeMessage,
                   ]
                 : []),
@@ -746,6 +767,31 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
       );
     }
     flush();
-    return result;
+    const wireId = this.toolCallIdMapper(
+      result.flatMap((message) =>
+        typeof message.content === 'string'
+          ? []
+          : message.content.flatMap((block) =>
+              block.type === 'tool_use'
+                ? [block.id]
+                : block.type === 'tool_result'
+                  ? [block.tool_use_id]
+                  : [],
+            ),
+      ),
+    );
+    return result.map((message) => ({
+      ...message,
+      content:
+        typeof message.content === 'string'
+          ? message.content
+          : message.content.map((block) =>
+              block.type === 'tool_use'
+                ? { ...block, id: wireId(block.id) }
+                : block.type === 'tool_result'
+                  ? { ...block, tool_use_id: wireId(block.tool_use_id) }
+                  : block,
+            ),
+    }));
   }
 }

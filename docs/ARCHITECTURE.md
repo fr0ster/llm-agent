@@ -244,8 +244,8 @@ auto-connect fallback — one connection, made at startup. The plugin `queryExpa
 out of the gate the same way but have no runtime effect yet (#323, #324).
 
 **History.** All sessions share one history store; the `rag-history` stage queries it with `scope: 'session'`, which
-sets `ragFilter.sessionId`, and writes carry `sessionId` / `userId`. `historyAutoSummarizeLimit` no longer creates a
-per-session `InMemoryRag` when a store exists, so history survives session eviction and works with qdrant / hana / pg.
+sets `ragFilter.sessionId`, and writes carry `sessionId` / `userId`. `historyAutoSummarizeLimit` is a deprecated no-op and creates no store.
+Explicitly configured history stores survive session eviction and work with qdrant / hana / pg.
 `HistoryUpsertHandler` writes the final assistant text (`PipelineContext.assistantText`, set by the tool loop), so a
 summary describes the answer as well as the question. `rag.retrieval.history` applies to session requests.
 
@@ -460,15 +460,12 @@ sequenceDiagram
     rect rgb(240, 248, 255)
         Note over SA,CL: 1. Prepare Pipeline
         SA->>SA: Extract user text, history
-        opt History > summarizeLimit
-            SA->>H: Summarize older messages
-            H-->>SA: Condensed history
-        end
+        Note over SA: Full conversation history is kept
         SA->>CL: classify(userText)
         CL-->>SA: Subprompt[] (action/chat)
     end
 
-    Note over SA: Token budget check → auto-summarize if over
+    Note over SA: Token usage accounting; full history is kept
 
     rect rgb(255, 248, 240)
         Note over SA,RR: 2. RAG Retrieval (tools + history stores, if configured)
@@ -555,7 +552,7 @@ SmartAgent delegates request orchestration to the injected `IPipeline`:
 1. Pre-flight and timeout/abort merging.
 2. `pipeline.initialize(deps)` is called once at build time.
 3. Per request: `pipeline.execute(input, history, options, yieldChunk)`.
-4. `DefaultPipeline` (built-in): [classify (off by default)] → summarize → RAG query (tools + history) → rerank → skill-select → tool-select → assemble → tool-loop → history-upsert. Classification is disabled by default — all input is treated as a single action. Enable via `classificationEnabled: true` for custom pipelines with multi-store routing.
+4. `DefaultPipeline` (built-in): [classify (off by default)] → RAG query (tools + history) → rerank → skill-select → tool-select → assemble → tool-loop → history-upsert. Classification is disabled by default — all input is treated as a single action. Enable via `classificationEnabled: true` for custom pipelines with multi-store routing.
 5. Consumer pipelines can replace any or all stages.
 
 See [Pipeline Architecture](#pipeline-architecture) for details.
@@ -756,7 +753,7 @@ vendored into the repo.
 | `IReadinessReporter` | Whether the server is ready to serve requests (readiness gate) | Connection strategies implement it; detected via `isReadinessReporter(x)` type guard |
 | `IMcpFailureClassifier` | Classifies mid-run MCP errors as `'unavailable'` (fail-loud) or `'tool-error'` (transient) | Default: error-based heuristic; inject custom via `BuildAgentDeps.mcpFailureClassifier` |
 | `IToolNamespace` | Renames a colliding MCP tool's exposed (LLM/RAG-visible) name; bare when unique | `defaultToolNamespace` (`${prefix}__${toolName}` on collision, prefix = descriptor label / `mcp[].name`; `s0` allowed for a single unlabeled client); inject custom via `SmartAgentBuilder.withToolNamespace` (library) or `BuildAgentDeps.toolNamespace` (server — reaches both the yaml-builder snapshot and the server's own fallback build) |
-| `IToolLoopContextStrategy` | Controls how the tool-loop context window grows across iterations (token management) | `RagRecall` (controller), `Window` (server default), `Legacy` (bare agent); injectable via `BuildAgentDeps` |
+| `IToolLoopContextStrategy` | Controls how the tool-loop context window grows across iterations (token management) | `LegacyAccumulateContextStrategy` (full history for every pipeline, builder and server/YAML default); lossy `RagRecall` and bounded `Window` require explicit consumer selection via `BuildAgentDeps.toolLoopContextStrategyFactory` |
 | `IStepExecutionControl` | Per-step budget gate for the controller (`beginStep` → `IStepBudget` with `signal`, `shouldContinueRound`, `canExecuteTool`) | Default implementation driven by `budgets.perStepTimeoutMs` and `budgets.maxToolCalls` |
 | `IRunExecutionControl` | Run-level budget gate (rewinds, resumptions, retries) | Default driven by controller `budgets` fields |
 | `IAuxiliaryMcpTools` | In-process auxiliary tools offered to the executor (e.g. built-in `wait`) | `DefaultAuxiliaryMcpTools`; inject `new DefaultAuxiliaryMcpTools([])` to suppress all auxiliary tools |
@@ -1142,7 +1139,7 @@ interface IPipeline {
 
 `DefaultPipeline` is the built-in `IPipeline` implementation. It is minimal and non-extensible by design:
 
-- Fixed stage sequence: `classify → summarize → parallel(rag-tools, rag-history) → rerank → skill-select → tool-select → assemble → tool-loop → history-upsert`
+- Fixed stage sequence: `classify → parallel(rag-tools, rag-history) → rerank → skill-select → tool-select → assemble → tool-loop → history-upsert`
 - Built-in RAG stores: `tools` and `history` (both optional)
 - No `rag-upsert` stage — the agent does not write to RAG automatically
 - **Custom RAG stores** — beyond `tools` and `history`, consumers can register additional stores at runtime via `SmartAgent.addRagStore(name, store)` and remove them via `SmartAgent.removeRagStore(name)`. Custom stores are queried in parallel with the built-in stores during the RAG retrieval stage.
@@ -1172,7 +1169,7 @@ Key components:
 | Stage type | Handler | Role |
 |---|---|---|
 | `classify` | `ClassifyHandler` | Decompose input into typed subprompts (action / chat) |
-| `summarize` | `SummarizeHandler` | Condense history using helper LLM |
+| `summarize` | `SummarizeHandler` | Deprecated no-op; full history is kept |
 | `translate` | `TranslateHandler` | Translate non-ASCII query to English |
 | `expand` | `ExpandHandler` | Expand query with synonyms |
 | `rag-query` | `RagQueryHandler` | Query a single RAG store (`config.store`) |
@@ -1193,7 +1190,7 @@ Key components:
 ### DefaultPipeline stage sequence
 
 ```text
-classify → summarize
+classify
   → rag-retrieval (parallel, when stores present):
       stages: [rag-tools, rag-history]
       after: [rerank]
@@ -1269,7 +1266,7 @@ packages/llm-agent-libs/src/
     handlers/
       index.ts            # buildDefaultHandlerRegistry() + re-exports
       classify.ts         # ClassifyHandler
-      summarize.ts        # SummarizeHandler
+      summarize.ts        # Deprecated compatibility no-op
       translate.ts        # TranslateHandler
       expand.ts           # ExpandHandler
       rag-query.ts        # RagQueryHandler

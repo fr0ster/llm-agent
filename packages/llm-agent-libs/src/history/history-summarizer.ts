@@ -28,7 +28,7 @@ export class HistorySummarizer implements IHistorySummarizer {
     const toolSection =
       turn.toolCalls.length > 0
         ? `\nTools called: ${turn.toolCalls.map((tc) => `${tc.name}(${JSON.stringify(tc.arguments)})`).join(', ')}` +
-          `\nTool results: ${turn.toolResults.map((tr) => `${tr.tool}: ${tr.content.slice(0, 200)}`).join('; ')}`
+          `\nTool results: ${turn.toolResults.map((tr) => `${tr.tool}: ${tr.content}`).join('; ')}`
         : '';
 
     const messages: Message[] = [

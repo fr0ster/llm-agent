@@ -1,5 +1,6 @@
 import type { RagCaller } from '@mcp-abap-adt/llm-agent';
 import type { KnowledgeBackend } from '@mcp-abap-adt/llm-agent-libs';
+import { controllerStorageKey } from '../controller/caller-scoped-backend.js';
 import {
   handleDeleteSession,
   handleListSessions,
@@ -101,6 +102,8 @@ export async function handleSessionDelete(
   const evictFn = async (sid: string) => {
     await lifecycle.registry.evictOne(sid);
     await knowledgeBackend?.deleteSession(sid);
+    const controllerKey = controllerStorageKey({ userId: caller.userId }, sid);
+    if (controllerKey) await knowledgeBackend?.deleteSession(controllerKey);
   };
   const body = await handleDeleteSession(
     metaStore,

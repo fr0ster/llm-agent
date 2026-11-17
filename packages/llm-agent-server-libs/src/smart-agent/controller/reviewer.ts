@@ -119,7 +119,7 @@ export class LlmReviewer implements IReviewer {
  *  `judge-failure` (re-ask within budget, then degrade to a failed step). */
 export function parseReview(
   content: string,
-  maxDigestChars = 500,
+  _maxDigestChars = 500,
 ): ReviewResult {
   const json = extractJsonObject(content);
   if (json === null)
@@ -141,11 +141,11 @@ export function parseReview(
     }
     // Digest is REQUIRED on every settle (it is the planner's board content). A
     // missing/empty digest is a judge-failure (re-ask), distinct from a real
-    // verdict. Bound it defensively (the full result is in RAG regardless).
+    // verdict. Preserve the complete reviewer text.
     if (rawDigest.trim().length === 0) {
       return { kind: 'judge-failure', reason: 'missing digest' };
     }
-    const digest = rawDigest.slice(0, maxDigestChars);
+    const digest = rawDigest;
     if (
       (status === 'ok' || status === 'exists' || status === 'partial') &&
       approved.length === 0
@@ -160,7 +160,7 @@ export function parseReview(
           approved: '',
           remainder: remainder || approved,
           note: coercedNote,
-          digest: (note || coercedNote).slice(0, maxDigestChars),
+          digest: note || coercedNote,
         },
       };
     }

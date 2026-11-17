@@ -111,6 +111,9 @@ describe('Mixed internal + external tool calls', () => {
     await new Promise((r) => setTimeout(r, 50));
     assert.equal(mcpClient.callCount, 1, 'internal tool should be called');
 
+    const returnedId = toolChunks[0].toolCalls?.[0].id;
+    assert.ok(returnedId);
+
     // Request 2: Client sends external tool result
     const messages2: Message[] = [
       { role: 'user', content: 'Create file hello.md' },
@@ -119,7 +122,7 @@ describe('Mixed internal + external tool calls', () => {
         content: null,
         tool_calls: [
           {
-            id: 'call_2',
+            id: returnedId,
             type: 'function' as const,
             function: {
               name: 'write_file',
@@ -131,7 +134,7 @@ describe('Mixed internal + external tool calls', () => {
       {
         role: 'tool',
         content: 'File written successfully',
-        tool_call_id: 'call_2',
+        tool_call_id: returnedId,
       },
     ];
 
@@ -148,8 +151,13 @@ describe('Mixed internal + external tool calls', () => {
     assert.equal(streamLlm.callCount, 2, 'LLM should be called twice total');
 
     // Verify internal tool result was injected into context
+    const internalId = capturedMessages
+      .flatMap((message) => message.tool_calls ?? [])
+      .find((call) => call.function.name === 'ReadClass')?.id;
+    assert.ok(internalId);
+    assert.match(internalId, /^tc:[0-9a-f-]{36}:0$/);
     const toolMsg = capturedMessages.find(
-      (m) => m.role === 'tool' && m.tool_call_id === 'call_1',
+      (m) => m.role === 'tool' && m.tool_call_id === internalId,
     );
     assert.ok(toolMsg, 'internal tool result should be in context');
     assert.ok(

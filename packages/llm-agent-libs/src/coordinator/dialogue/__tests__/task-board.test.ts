@@ -10,7 +10,7 @@ import {
   provisionWorkerInput,
   testCallOptions,
 } from '../../../testing/index.js';
-import { SemaphorePool, TASK_OUTPUT_CHAR_LIMIT, TaskBoard } from '../index.js';
+import { SemaphorePool, TaskBoard } from '../index.js';
 
 const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
 function fixture(
@@ -232,13 +232,13 @@ for (const [outcome, state] of [
   ['awaiting-external', 'failed'],
   ['throw', 'failed'],
 ] as const) {
-  test(`maps ${outcome}, wraps run, bounds output and isolates events`, async () => {
+  test(`maps ${outcome}, wraps run, preserves output and isolates events`, async () => {
     let wrapped = 0;
     const board = fixture(
       async () => {
         if (outcome === 'throw') throw new Error('broken');
         return {
-          output: 'x'.repeat(TASK_OUTPUT_CHAR_LIMIT + 10),
+          output: 'x'.repeat(200_010),
           ...(outcome === 'epicfail'
             ? { errorClass: 'epicfail' as const }
             : outcome === 'stopped'
@@ -264,10 +264,7 @@ for (const [outcome, state] of [
     assert.equal(board.get(id)?.state, state);
     assert.equal(wrapped, 1);
     if (outcome !== 'throw')
-      assert.equal(
-        board.get(id)?.output,
-        `${'x'.repeat(TASK_OUTPUT_CHAR_LIMIT)}\n[cut: 10 characters omitted]`,
-      );
+      assert.equal(board.get(id)?.output, 'x'.repeat(200_010));
     const next = start(board);
     await tick();
     assert.equal(board.get(next)?.state, state);
@@ -365,7 +362,7 @@ test('running tasks expose live tool counts and preserve the base observer', asy
   assert.equal(board.get(id)?.maxToolCalls, 50);
 });
 
-test('task output bound defaults to 60000 and validates configured values', async () => {
+test('task output is unlimited by default and validates explicit limits', async () => {
   for (const taskOutputChars of [
     0,
     -1,
@@ -380,10 +377,7 @@ test('task output bound defaults to 60000 and validates configured values', asyn
   const board = fixture(async () => ({ output: 'x'.repeat(60_005) }));
   const id = start(board);
   await tick();
-  assert.equal(
-    board.get(id)?.output,
-    `${'x'.repeat(60_000)}\n[cut: 5 characters omitted]`,
-  );
+  assert.equal(board.get(id)?.output, 'x'.repeat(60_005));
   const small = fixture(async () => ({ output: 'abcdef' }), {
     taskOutputChars: 3,
   });

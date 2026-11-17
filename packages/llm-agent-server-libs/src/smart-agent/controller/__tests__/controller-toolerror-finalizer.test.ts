@@ -13,6 +13,7 @@ import {
   InMemoryKnowledgeBackend,
   SessionRequestLogger,
 } from '@mcp-abap-adt/llm-agent-libs';
+import { controllerStorageKey } from '../caller-scoped-backend.js';
 import {
   ControllerCoordinatorHandler,
   type ControllerHandlerDeps,
@@ -59,7 +60,7 @@ function fakeCtx(overrides: Partial<PipelineContext> = {}): {
   const ctx = {
     sessionId: 'sess-1',
     textOrMessages: 'read a class and report any error',
-    options: undefined,
+    options: { userId: 'test-user' },
     externalResults: undefined,
     requestLogger,
     yield: (c: Captured) => {
@@ -67,7 +68,10 @@ function fakeCtx(overrides: Partial<PipelineContext> = {}): {
     },
     ...overrides,
   } as unknown as PipelineContext;
-  return { ctx, captured };
+  return {
+    ctx: { ...ctx, options: { userId: 'test-user', ...ctx.options } },
+    captured,
+  };
 }
 
 /** Subagent stub backed by a scripted queue; each send() shifts one result. */
@@ -230,10 +234,10 @@ describe('#264 — tool-error failure drops the captured error when the finalize
 
     // The run ends on a durable ERROR terminal carrying the captured text (so a
     // resume/replay returns the same real error, never a success hallucination).
-    const bundle = await hydrateBundle(backend, 'sess-1');
+    const bundle = await hydrateBundle(backend, testStorageKey('sess-1'));
     const term = await readTerminal(
       backend,
-      'sess-1',
+      testStorageKey('sess-1'),
       // biome-ignore lint/style/noNonNullAssertion: runId set after execute
       bundle.runId!,
       new Date().toISOString(),
@@ -296,10 +300,10 @@ describe('#264 — tool-error failure drops the captured error when the finalize
       'empty finalizer answer ⇒ the #243 guard surfaces the captured error',
     );
 
-    const bundle = await hydrateBundle(backend, 'sess-1');
+    const bundle = await hydrateBundle(backend, testStorageKey('sess-1'));
     const term = await readTerminal(
       backend,
-      'sess-1',
+      testStorageKey('sess-1'),
       // biome-ignore lint/style/noNonNullAssertion: runId set after execute
       bundle.runId!,
       new Date().toISOString(),
@@ -307,3 +311,9 @@ describe('#264 — tool-error failure drops the captured error when the finalize
     assert.equal(term?.kind, 'error');
   });
 });
+
+function testStorageKey(sessionId: string): string {
+  const key = controllerStorageKey({ userId: 'test-user' }, sessionId);
+  assert.ok(key);
+  return key;
+}

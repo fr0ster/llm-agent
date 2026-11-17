@@ -6,10 +6,16 @@ import type {
   StreamToolCall,
 } from '@mcp-abap-adt/llm-agent';
 import type { PlanDecision } from './artifacts.js';
+import type { ControlMessageAnchor } from './control-history.js';
 
 export type SubagentResult =
   | { kind: 'content'; content: string; usage?: LlmUsage }
-  | { kind: 'tool_call'; toolCalls: StreamToolCall[]; usage?: LlmUsage }
+  | {
+      kind: 'tool_call';
+      content?: string;
+      toolCalls: StreamToolCall[];
+      usage?: LlmUsage;
+    }
   | { kind: 'error'; error: string; usage?: LlmUsage };
 
 export interface Step {
@@ -80,6 +86,9 @@ export type PendingMarker =
       toolName: string;
       args: unknown;
       position: string;
+      /** Complete recorded executor turn, using the same unique IDs as results. */
+      assistantMessage?: Message;
+      siblingResults?: Message[];
     }
   | {
       kind: 'clarify';
@@ -130,8 +139,10 @@ export interface InFlightStep {
   controlFailure?: ControlFailure;
   /** Serialized context-strategy snapshot at last suspend; restored on resume. */
   contextStrategyState?: SerializableStrategyState;
-  /** Bounded message tail (control messages only) persisted across suspend/resume. */
+  /** Retry corrections persisted across suspend/resume. */
   controlTail?: Message[];
+  /** Chronological predecessors of controlTail entries, including repeated turns. */
+  controlTailAnchors?: Array<ControlMessageAnchor | null>;
   /** Epoch ms when this wait's sleep began. Persisted BEFORE sleeping, with
    *  `appliedWaitMs`, so a crash mid-sleep resumes against a fixed deadline.
    *  Exactly one of the two present is a torn write → control-failure. */

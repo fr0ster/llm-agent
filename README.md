@@ -64,11 +64,14 @@ the shared normalizer for runtime validation. See the
 
 Nothing about the context window is left to chance:
 
-- **History** — `historyRecencyWindow` bounds what is replayed;
-  `historyAutoSummarizeLimit` compresses older turns into a summary.
+- **History** — full conversation history is kept by default;
+  `historyRecencyWindow` provides explicit selection. Automatic summarization is
+  removed; `historyAutoSummarizeLimit` is a deprecated no-op.
 - **Tool-loop context** — a swappable `toolLoopContextStrategyFactory` decides
-  what survives between tool rounds, so a long tool loop does not simply
-  accumulate until the model chokes.
+  how tool rounds reach the model. Every pipeline, builder and server/YAML
+  configuration defaults to full history, including assistant text, tool-call
+  arguments and results. Lossy RAG recall and bounded windows require explicit
+  consumer selection; validation exchanges stay in chronological order.
 - **Per-step budgets, not one global cap.** A controller run carries
   `maxSteps`, `maxRetries`, `maxRewinds`, `maxToolCalls`, `perStepTimeoutMs`,
   `maxStepAttempts`, and render caps (`maxBoardChars`, `maxDigestChars`,

@@ -15,6 +15,7 @@
  */
 export type BuiltInStageType =
   | 'classify'
+  /** @deprecated history is no longer summarized; full history is kept */
   | 'summarize'
   | 'translate'
   | 'expand'

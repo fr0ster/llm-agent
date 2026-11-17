@@ -65,12 +65,10 @@ export {
   composeStepInput,
   DEFAULT_BUDGET,
   fallbackPlan,
-  HISTORY_MESSAGE_LIMIT,
   LlmAdaptiveController,
   MAX_RUNS_CAP,
   parsePlan,
   parseVerdict,
-  RESULT_CHAR_LIMIT,
   runAdaptivePlan,
   validateSteps,
 } from './coordinator/adaptive/index.js';
@@ -162,6 +160,7 @@ export {
   AdaptiveCoordinatorHandler,
 } from './pipeline/handlers/adaptive-coordinator.js';
 export { normalizeHeartbeatMs } from './pipeline/handlers/normalize-heartbeat-ms.js';
+export { ToolResponseRound } from './pipeline/handlers/tool-response-round.js';
 // ---------------------------------------------------------------------------
 // Pipeline
 // ---------------------------------------------------------------------------
@@ -204,6 +203,12 @@ export {
   loadPlugins,
   mergePluginExports,
 } from './plugins/index.js';
+export {
+  type CallerIdentity,
+  callerIdentityKey,
+  resolveCaller,
+} from './policy/caller-identity.js';
+export { createExternalSuspension } from './policy/pending-tool-results-registry.js';
 export {
   InMemoryKnowledgeBackend,
   type KnowledgeBackend,

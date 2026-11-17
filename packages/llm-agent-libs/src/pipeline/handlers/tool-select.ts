@@ -1,3 +1,7 @@
+import {
+  callerResolutionKey,
+  resolveCallerIdentity,
+} from '../../policy/caller-identity.js';
 import { denyRagAccess, ownerBoundQuery } from '../../rag/owner-bound-query.js';
 /**
  * ToolSelectHandler — selects MCP tools based on RAG results.
@@ -143,10 +147,15 @@ export class ToolSelectHandler implements IStageHandler {
         : mergeOfferedTools(selectedMcpTools as LlmTool[], ctx.externalTools);
 
     // Apply availability filtering
-    const filtered = ctx.toolAvailabilityRegistry.filterTools(
-      ctx.sessionId,
-      ctx.selectedTools,
-    );
+    const identity =
+      ctx.callerResolution ?? resolveCallerIdentity(ctx.options, ctx.sessionId);
+    const filtered =
+      identity.kind === 'caller'
+        ? ctx.toolAvailabilityRegistry.filterTools(
+            callerResolutionKey(identity),
+            ctx.selectedTools,
+          )
+        : { allowed: ctx.selectedTools, blocked: [] };
     ctx.activeTools = filtered.allowed;
 
     if (filtered.blocked.length > 0) {

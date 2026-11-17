@@ -6,7 +6,6 @@ import type {
   ILlm,
   LlmUsage,
 } from '@mcp-abap-adt/llm-agent';
-import { HISTORY_MESSAGE_LIMIT } from './compose-step-input.js';
 import { lastObject, parsePlan, parseVerdict } from './parse-plan.js';
 
 /** Planning instructions shared by the default adaptive controller. */
@@ -32,7 +31,7 @@ Each check reviews targets and returns pass/fail/partial with a reason. A fix re
 maxRuns is an integer 1..5 for work/check/revise; defaults: work/revise 1, check 3; ask/answer run once.
 Give every revisited work step a sufficient maxRuns. Bounded check branches enable fix/recheck loops.
 The controller selects each work/check input with context: {"spec"?:true,"history"?:"none|last-turn|all","results"?:["step id"],"note"?:"extra instruction"}.
-context.spec includes the spec by default; false omits it. history selects conversation (default all, bounded).
+context.spec includes the spec by default; false omits it. history selects conversation (default all, complete).
 results selects needed step outputs; checks also receive targets. note adds a step-specific instruction.
 The request and goal always reach the worker. Select only context needed for that step.
 revise replaces only the remaining steps using the plan and results; executed ids cannot be reused.
@@ -77,12 +76,7 @@ export class LlmAdaptiveController implements IAdaptiveController {
   }
 
   async plan(input: ControllerPlanInput) {
-    const history = input.history
-      .slice(-HISTORY_MESSAGE_LIMIT)
-      .map((message) => ({
-        role: message.role,
-        content: message.content?.slice(0, 1000) ?? null,
-      }));
+    const history = input.history;
     const previousRun = input.previousRun && {
       request: input.previousRun.request,
       plan: input.previousRun.plan,
@@ -93,7 +87,7 @@ export class LlmAdaptiveController implements IAdaptiveController {
         kind: record.kind,
         status: record.status,
         verdict: record.verdict,
-        output: record.output.slice(0, 500),
+        output: record.output,
       })),
     };
     const response = await this.chat(

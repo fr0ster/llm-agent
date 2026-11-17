@@ -114,7 +114,7 @@ export interface PipelineDeps {
   toolSelectionStrategy?: IToolSelectionStrategy;
   /** Optional persistent history memory across sessions. */
   historyMemory?: IHistoryMemory;
-  /** Optional history summarizer to compress long conversations. */
+  /** Optional per-turn summarizer for opt-in semantic RAG indexing; does not modify conversation history. */
   historySummarizer?: IHistorySummarizer;
   /** Strategy controlling whether to use streaming or non-streaming LLM calls. */
   llmCallStrategy?: ILlmCallStrategy;

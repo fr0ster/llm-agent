@@ -4,11 +4,14 @@ import type {
   AdaptiveStep,
   CheckStep,
   IAdaptiveController,
+  ILlm,
   ISubAgentInput,
   ISubAgentResult,
+  Message,
   StepStatus,
   WorkStep,
 } from '@mcp-abap-adt/llm-agent';
+import { DirectLlmSubAgent } from '../../../subagent/direct-llm-subagent.js';
 import {
   type AdaptiveRunInput,
   DEFAULT_BUDGET,
@@ -84,6 +87,84 @@ function setup(
 }
 const verdict = (value = 'pass', reason = 'ok') =>
   JSON.stringify({ verdict: value, reason });
+
+for (const mode of ['none', 'last-turn', 'all'] as const) {
+  for (const withTools of [false, true]) {
+    test(`direct LLM worker receives selected history and current task (${mode}, tools: ${withTools})`, async () => {
+      const history: Message[] = Array.from({ length: 25 }, (_, index) => ({
+        role: index % 2 === 0 ? 'assistant' : 'user',
+        content: `history-${index}`,
+      }));
+      if (withTools) {
+        history.splice(
+          19,
+          6,
+          { role: 'user', content: 'last question' },
+          { role: 'assistant', content: 'checking records' },
+          {
+            role: 'assistant',
+            content: null,
+            tool_calls: ['first', 'second'].map((id) => ({
+              id,
+              type: 'function',
+              function: { name: 'lookup', arguments: JSON.stringify({ id }) },
+            })),
+          },
+          { role: 'tool', content: 'first result', tool_call_id: 'first' },
+          { role: 'tool', content: '', tool_call_id: 'second' },
+          { role: 'assistant', content: 'last reply' },
+        );
+      }
+      const before = structuredClone(history);
+      const selected =
+        mode === 'none'
+          ? []
+          : mode === 'all'
+            ? history
+            : history.slice(withTools ? 19 : 23);
+      const calls: Message[][] = [];
+      const llm: ILlm = {
+        async chat(messages) {
+          calls.push(structuredClone(messages));
+          return { ok: true, value: { content: 'done', finishReason: 'stop' } };
+        },
+        streamChat() {
+          assert.fail('streaming is not used');
+        },
+      };
+      const { input } = setup([
+        { ...work, context: { history: mode } },
+        answer,
+      ]);
+      input.history = history;
+      input.workers = new Map([
+        [
+          'executor',
+          new DirectLlmSubAgent('executor', llm, {
+            systemPrompt: 'Complete the step.',
+            contextPolicy: 'optional',
+          }),
+        ],
+      ]);
+
+      const result = await runAdaptivePlan(input);
+
+      assert.equal(result.outcome, 'answered');
+      assert.equal(result.output, 'done');
+      assert.equal(calls.length, 1);
+      const messages = calls[0];
+      assert.ok(messages);
+      assert.equal(messages.length, selected.length + 2);
+      assert.equal(messages[0]?.role, 'system');
+      assert.deepEqual(messages.slice(1, -1), selected);
+      assert.deepEqual(messages.at(-1), {
+        role: 'user',
+        content: 'Request:\nrequest\n\nStep:\ndo work',
+      });
+      assert.deepEqual(history, before);
+    });
+  }
+}
 
 test('runs work then answer and forwards worker context', async () => {
   const { input, calls } = setup();

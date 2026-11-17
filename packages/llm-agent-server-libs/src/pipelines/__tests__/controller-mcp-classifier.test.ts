@@ -105,6 +105,7 @@ describe('pipeline: controller — MCP failure classifier wiring', () => {
       ]),
       'm-exec': scriptedLlm('m-exec', [
         {
+          finishReason: 'tool_calls',
           toolCalls: [
             { id: 'c1', name: 'GetTable', arguments: { table: 'T' } },
           ],

@@ -1,6 +1,5 @@
 export { DIALOGUE_COORDINATOR_SYSTEM } from './coordinator-prompt.js';
 export {
-  DIALOGUE_HISTORY_LIMIT,
   DialogueSession,
   type DialogueSessionOptions,
   type PlannerAgent,
@@ -32,7 +31,6 @@ export {
   submitReportTool,
 } from './submit-report-tool.js';
 export {
-  TASK_OUTPUT_CHAR_LIMIT,
   TaskBoard,
   type TaskBoardOptions,
 } from './task-board.js';

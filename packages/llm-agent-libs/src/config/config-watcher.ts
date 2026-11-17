@@ -23,9 +23,11 @@ export interface HotReloadableConfig {
   ragQueryK?: number;
   toolUnavailableTtlMs?: number;
   showReasoning?: boolean;
+  /** @deprecated history is no longer summarized; full history is kept */
   historyAutoSummarizeLimit?: number;
   queryExpansionEnabled?: boolean;
   toolResultCacheTtlMs?: number;
+  /** @deprecated history is no longer summarized; full history is kept */
   sessionTokenBudget?: number;
   classificationEnabled?: boolean;
   vectorWeight?: number;
@@ -35,6 +37,7 @@ export interface HotReloadableConfig {
     classifier?: string;
     reasoning?: string;
     ragTranslate?: string;
+    /** @deprecated history is no longer summarized; full history is kept */
     historySummary?: string;
   };
   circuitBreaker?: {
@@ -132,6 +135,7 @@ export class ConfigWatcher extends EventEmitter {
       config.toolUnavailableTtlMs = Number(agent.toolUnavailableTtlMs);
     if (agent.showReasoning !== undefined)
       config.showReasoning = Boolean(agent.showReasoning);
+    // Deprecated values remain readable for compatibility; they have no effect.
     if (agent.historyAutoSummarizeLimit !== undefined)
       config.historyAutoSummarizeLimit = Number(
         agent.historyAutoSummarizeLimit,

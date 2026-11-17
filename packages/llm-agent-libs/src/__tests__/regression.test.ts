@@ -272,8 +272,8 @@ describe('Regression — context assembled once before tool loop', () => {
 // sessionPolicy metadata tests removed in 6.0.0
 // (RagUpsertHandler removed — sessionPolicy TTL/namespace are consumer responsibilities)
 
-describe('Regression — helperLlm called for history summarization', () => {
-  it('helperLlm called when history exceeds summarizeLimit', async () => {
+describe('Regression — history summarization is disabled', () => {
+  it('helperLlm is not called when history exceeds the deprecated limit', async () => {
     const helperLlm = makeLlm([
       { content: 'conversation summary', finishReason: 'stop' },
     ]);
@@ -289,10 +289,7 @@ describe('Regression — helperLlm called for history summarization', () => {
     });
     const r = await agent.process(messages, testCallOptions());
     assert.ok(r.ok);
-    assert.ok(
-      helperLlm.callCount >= 1,
-      'helperLlm should be called for summarization',
-    );
+    assert.equal(helperLlm.callCount, 0);
   });
 });
 

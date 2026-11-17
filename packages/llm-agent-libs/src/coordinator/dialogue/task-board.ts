@@ -33,12 +33,8 @@ import {
   resolveWorkerSummary,
 } from './submit-report-tool.js';
 
-export const TASK_OUTPUT_CHAR_LIMIT = 60_000;
-export function cutTaskOutput(
-  output: string,
-  limit = TASK_OUTPUT_CHAR_LIMIT,
-): string {
-  return output.length <= limit
+export function cutTaskOutput(output: string, limit?: number): string {
+  return limit === undefined || output.length <= limit
     ? output
     : `${output.slice(0, limit)}\n[cut: ${output.length - limit} characters omitted]`;
 }
@@ -122,8 +118,8 @@ export class TaskBoard {
         ? (opts.hardStopAfterMs ?? 60_000)
         : 60_000;
     if (
-      !Number.isInteger(opts.taskOutputChars ?? TASK_OUTPUT_CHAR_LIMIT) ||
-      (opts.taskOutputChars ?? TASK_OUTPUT_CHAR_LIMIT) < 1
+      opts.taskOutputChars !== undefined &&
+      (!Number.isInteger(opts.taskOutputChars) || opts.taskOutputChars < 1)
     )
       throw new Error('taskOutputChars must be a positive integer');
     this.boardId = opts.boardId ?? randomUUID();
@@ -526,7 +522,10 @@ export class TaskBoard {
             : undefined;
         const summary = verdict
           ? resolveVerdictSummary(verdict)
-          : resolveWorkerSummary(output, finishSummary).summary;
+          : cutTaskOutput(
+              resolveWorkerSummary(output, finishSummary).summary,
+              this.opts.taskOutputChars,
+            );
         // A previous cooperative worker stop still permits its final write.
         // Subsequent explicit stops cancel the active write, independently of hard stop.
         entry.put = new AbortController();
@@ -605,7 +604,7 @@ export class TaskBoard {
     if (entry?.task.state !== 'running') return false;
     entry.cancelStall?.();
     entry.task.lastActivityAt = this.now();
-    entry.task.currentAction = action.slice(0, 120);
+    entry.task.currentAction = action;
     const delay =
       'stallNoticeMs' in this.opts ? this.opts.stallNoticeMs : 300_000;
     if (delay !== undefined && delay > 0) {

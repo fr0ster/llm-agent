@@ -17,6 +17,10 @@ import {
   runAdaptivePlan,
 } from '../../coordinator/adaptive/adaptive-interpreter.js';
 import { fallbackPlan } from '../../coordinator/adaptive/parse-plan.js';
+import {
+  callerIdentityKey,
+  resolveCallerIdentity,
+} from '../../policy/caller-identity.js';
 import type { ISpan } from '../../tracer/types.js';
 import type { PipelineContext } from '../context.js';
 import type { IStageHandler } from '../stage-handler.js';
@@ -45,14 +49,17 @@ export class AdaptiveCoordinatorHandler implements IStageHandler {
     _config: Record<string, unknown>,
     _span: ISpan,
   ): Promise<boolean> {
-    const caller = ctx.options?.caller;
-    if (!caller) {
+    const identity =
+      ctx.callerResolution ?? resolveCallerIdentity(ctx.options, ctx.sessionId);
+    if (identity.kind !== 'caller') {
       ctx.error = new OrchestratorError(
         'Trusted caller is required',
         'RAG_ACCESS_DENIED',
       );
       return false;
     }
+    const { caller } = identity;
+    const recordKey = callerIdentityKey(caller);
     const request = ctx.inputText;
     const history = [...ctx.history];
     const tail = history.at(-1);
@@ -77,9 +84,9 @@ export class AdaptiveCoordinatorHandler implements IStageHandler {
     };
     try {
       let previousRun: RunRecord | undefined;
-      if (runRecords && ctx.sessionId) {
+      if (runRecords && recordKey !== undefined) {
         try {
-          previousRun = await runRecords.load(ctx.sessionId);
+          previousRun = await runRecords.load(recordKey);
         } catch (error) {
           log('adaptive_record_load_failed', { message: message(error) });
         }
@@ -195,9 +202,9 @@ export class AdaptiveCoordinatorHandler implements IStageHandler {
         stopReason: result.stopReason,
         records: result.records.length,
       });
-      if (runRecords && ctx.sessionId) {
+      if (runRecords && recordKey !== undefined) {
         try {
-          await runRecords.save(ctx.sessionId, {
+          await runRecords.save(recordKey, {
             runId: traceId ?? randomUUID(),
             request,
             plan: result.plan,

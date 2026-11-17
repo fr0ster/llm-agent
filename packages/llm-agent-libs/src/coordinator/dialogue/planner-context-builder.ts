@@ -67,105 +67,23 @@ export function renderPlannerRetrieval(input: PlannerContextInput): string[] {
   return [knowledge, memory].filter(Boolean);
 }
 
-const textSize = (messages: readonly Message[]): number =>
-  messages.reduce(
-    (total, message) => total + (message.content?.length ?? 0),
-    0,
-  );
-
-/** Append independent parts, preserving the first input and the newest part. */
+/** Append a complete independent message without mutating the caller's value. */
 export function appendRequestMessage(
   record: PlannerRequestRecord,
   message: NonNullable<PlannerRequestRecord['transcript']>[number],
 ): void {
-  const stored = structuredClone(message);
-  const content = stored.content ?? '';
-  if (content.length > 150_000)
-    stored.content = `${content.slice(0, 150_000)}[stored cut: 150000 of ${content.length} characters]`;
   record.transcript ??= [];
-  record.transcript.push(stored);
-  boundRequestTranscript(record);
+  record.transcript.push(structuredClone(message));
 }
 
-export function boundRequestTranscript(record: PlannerRequestRecord): void {
-  const messages = record.transcript ?? [];
-  let dropped = 0;
-  const previous = messages[1];
-  const match =
-    previous?.internalKind === 'note'
-      ? /^\[dropped (\d+) earlier messages\]$/.exec(previous.content ?? '')
-      : null;
-  if (match) {
-    dropped = Number(match[1]);
-    messages.splice(1, 1);
-  }
-  while (
-    messages.length > 2 &&
-    (messages.length + (dropped ? 1 : 0) > 400 ||
-      textSize(messages) +
-        (dropped ? `[dropped ${dropped} earlier messages]`.length : 0) >
-        400_000)
-  ) {
-    messages.splice(1, 1);
-    dropped++;
-  }
-  if (dropped)
-    messages.splice(1, 0, {
-      role: 'user',
-      content: `[dropped ${dropped} earlier messages]`,
-      internalKind: 'note',
-    });
-}
-
-/** Project task references and recent deltas while preserving user constraints. */
+/** Project complete transcript content without applying message or character caps. */
 export class DefaultPlannerContextBuilder implements IPlannerContextBuilder {
   build(input: PlannerContextInput): Message[] {
     const record = input.open;
     if (!record) return [];
     const transcript = record.transcript ?? [];
-    const latestEvent = new Map<string, number>();
-    transcript.forEach((message, index) => {
-      if (!message.internalKind) return;
-      for (const line of (message.content ?? '').split('\n')) {
-        const id = /^\[task events\].*?\btask (\S+)/.exec(line)?.[1];
-        if (id) latestEvent.set(id, index);
-      }
-    });
-    const parts = transcript.map((message, index) => {
-      const original = message.plannerReference ?? message.content ?? '';
-      // Assistant prose can contain pending consent or unresolved issues. Only
-      // compact explicit delivery references and consumed user-role events.
-      const content =
-        message.role === 'assistant' || !message.internalKind
-          ? original
-          : original
-              .split('\n')
-              .filter((line) => {
-                if (
-                  /^\[actions\]/.test(line) &&
-                  index < transcript.length - 2 &&
-                  !/^\[actions\] task \S+.*\b(failed|error|interrupted)\b/.test(
-                    line,
-                  )
-                )
-                  return false;
-                const id = /^\[task events\].*?\btask (\S+)/.exec(line)?.[1];
-                return (
-                  !id ||
-                  latestEvent.get(id) === index ||
-                  /\b(failed|error|interrupted)\b/.test(line)
-                );
-              })
-              .map((line) => {
-                if (
-                  index >= transcript.length - 2 ||
-                  !/^\[task events\]/.test(line)
-                )
-                  return line;
-                const state = line.replace('[task events]', '[task state]');
-                return state;
-              })
-              .join('\n');
+    const parts = transcript.map((message) => {
+      const content = message.content ?? '';
       const {
         plannerReference: _reference,
         internalKind: _internal,
@@ -176,18 +94,29 @@ export class DefaultPlannerContextBuilder implements IPlannerContextBuilder {
         content,
       };
     });
-    const selected = parts.filter((part) => part.content.length > 0);
+    const selected = parts.filter(
+      (part) =>
+        part.content.length > 0 ||
+        (part.tool_calls?.length ?? 0) > 0 ||
+        part.role === 'tool',
+    );
     if (!selected.length) return [];
     const messages: Message[] = [];
     for (const part of selected) {
       const last = messages.at(-1);
-      if (last?.role === part.role)
+      if (
+        last?.role === part.role &&
+        part.role !== 'tool' &&
+        !last.tool_calls?.length &&
+        !part.tool_calls?.length
+      )
         last.content = `${last.content}\n${part.content}`;
       else messages.push(part);
     }
     const last = messages.at(-1);
     if (last && input.notes.length)
       last.content = `${input.notes.join('\n')}\n${last.content}`;
+    // Older persisted transcripts can still contain storage truncation markers.
     const storageElided = transcript.some((message) =>
       /\[(?:stored cut:|dropped) /.test(message.content ?? ''),
     );

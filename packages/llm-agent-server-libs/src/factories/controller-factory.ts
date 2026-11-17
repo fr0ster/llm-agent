@@ -61,8 +61,8 @@ export interface ControllerFactoryDeps extends PipelineFactoryDepsBase {
   /**
    * Per-step tool-loop context strategy factory (record/form). Called ONCE per
    * step by the handler with the per-step run context (`{ rag, runId, meta,
-   * stepName }`). The controller pipeline injects a `RagRecall` factory here (its
-   * `record` persists an `mcp-result`, its `recall` runs `runScopedRecall`).
+   * stepName }`). Lossy strategies such as `RagRecall` require an explicit
+   * consumer factory; every pipeline defaults to full history.
    * Absent → the handler falls back to `LegacyAccumulateContextStrategy`
    * (byte-identical to the historical growing transcript).
    */

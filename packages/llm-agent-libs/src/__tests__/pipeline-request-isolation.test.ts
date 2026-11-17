@@ -28,17 +28,24 @@ for (const fail of [false, true]) {
         });
         assert.equal(registries.pendingToolResults, pendingToolResults);
         assert.equal(registries.toolAvailability, toolAvailability);
-        assert.equal(registries.pendingToolResults.has(sessionId), false);
+        assert.equal(registries.pendingToolResults.has(options.caller), false);
         assert.equal(
-          registries.toolAvailability.isBlocked(sessionId, 'read'),
+          registries.toolAvailability.isBlocked(
+            JSON.stringify(['test-user', sessionId]),
+            'read',
+          ),
           false,
         );
-        registries.pendingToolResults.set(sessionId, {
+        registries.pendingToolResults.set(options.caller, {
           assistantMessage: { role: 'assistant', content: 'private result' },
           promise: Promise.resolve([]),
           createdAt: Date.now(),
         });
-        registries.toolAvailability.block(sessionId, 'read', 'private block');
+        registries.toolAvailability.block(
+          JSON.stringify(['test-user', sessionId]),
+          'read',
+          'private block',
+        );
         if (fail) throw new Error('pipeline failed');
         yieldChunk({
           ok: true,
@@ -51,10 +58,17 @@ for (const fail of [false, true]) {
     deps.pipeline = pipeline;
     const agent = new SmartAgent(deps, { maxIterations: 2 });
     for (let i = 0; i < 2; i++) {
-      await agent.process('request', { pendingToolResults, toolAvailability });
+      await agent.process('request', {
+        pendingToolResults,
+        toolAvailability,
+        userId: 'test-user',
+      });
       assert.equal(pendingToolResults.size, 0);
       for (const id of sessions)
-        assert.equal(toolAvailability.isBlocked(id, 'read'), false);
+        assert.equal(
+          toolAvailability.isBlocked(JSON.stringify(['test-user', id]), 'read'),
+          false,
+        );
     }
     assert.equal(sessions.length, 2);
     assert.notEqual(sessions[0], sessions[1]);

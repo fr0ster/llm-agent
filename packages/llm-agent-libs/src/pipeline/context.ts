@@ -61,6 +61,7 @@ import type {
 } from '../agent.js';
 import type { McpClientDescriptor } from '../interfaces/mcp-connection-strategy.js';
 import type { IMetrics } from '../metrics/types.js';
+import type { CallerResolution } from '../policy/caller-identity.js';
 import type { PendingToolResultsRegistry } from '../policy/pending-tool-results-registry.js';
 import type { ToolAvailabilityRegistry } from '../policy/tool-availability-registry.js';
 import type { IPromptInjectionDetector, IToolPolicy } from '../policy/types.js';
@@ -74,6 +75,8 @@ import type { IOutputValidator } from '../validator/types.js';
 // ---------------------------------------------------------------------------
 
 export interface PipelineContext {
+  /** Final request-entry identity decision; standalone handlers resolve at their entry. */
+  readonly callerResolution?: CallerResolution;
   /** Adapter detected from this request's system prompt. */
   clientAdapter?: IClientAdapter;
   /** Set when the tool loop honours a cooperative stop at an iteration boundary. */
@@ -149,7 +152,7 @@ export interface PipelineContext {
    * the answer, not only the question.
    */
   assistantText?: string;
-  /** Conversation history (may be summarized). */
+  /** Complete conversation history. */
   history: Message[];
   /** Classified subprompts (set by classify stage). */
   subprompts: Subprompt[];
@@ -178,7 +181,7 @@ export interface PipelineContext {
   externalTools: LlmTool[];
   /**
    * Results for previously-surfaced external (client-executed) tool calls,
-   * keyed by deterministic `externalToolCallId(name, args)` (spec D1). Built by
+   * keyed by each pending suspension's returned call ID. Built by
    * the coordinator from the incoming history on a stateless resume. When the
    * worker LLM re-emits an external call whose `extId` is present here, the
    * tool-loop injects the result as a matched assistant→tool pair and CONTINUES

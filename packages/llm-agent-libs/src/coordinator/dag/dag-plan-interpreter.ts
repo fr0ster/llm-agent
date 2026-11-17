@@ -32,7 +32,7 @@ export class DagPlanInterpreter
     const executionOrder: string[] = [];
     // #171: collect-all-at-settle. Accumulate external tool calls surfaced by
     // awaiting-external nodes, preserving plan/topological wave order, deduped
-    // by deterministic `ext:` id. An awaiting-external node is recorded in
+    // by the returned suspension call ID. An awaiting-external node is recorded in
     // `results` (so its wave excludes it) but NOT added to `done`, so its
     // dependents never become ready and fall through to the skipped-assignment
     // loop below — they re-run on resume once the client returns the result.

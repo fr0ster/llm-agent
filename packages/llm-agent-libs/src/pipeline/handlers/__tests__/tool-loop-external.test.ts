@@ -6,9 +6,9 @@ import { testCallOptions, testRequestAccess } from '../../../testing/index.js';
  *  1. `mode: 'hard'` still OFFERS external tools to the LLM (no drop).
  *  2. Miss (no externalResults entry): the worker turn ENDS with
  *     finishReason 'tool_calls', yielding the external call with its id
- *     rewritten to externalToolCallId(name, args); the tool is NOT executed.
+ *     assigned a unique per-suspension ID; the tool is NOT executed.
  *  3. Hit (externalResults has extId): the worker conversation gets a matched
- *     assistant(tool_calls=[extId]) -> tool(tool_call_id=extId) pair and the
+ *     assistant/tool pair retaining the original model call ID and the
  *     loop CONTINUES; NO client-facing toolCalls chunk is yielded for the call.
  */
 
@@ -125,12 +125,12 @@ function makeCtx(opts: {
     } as PipelineContext['config'],
     options: testCallOptions({
       sessionId: 's-ext',
-      ...testCallOptions({} as CallOptions),
     }),
     sessionId: 's-ext',
     mcpClients: [],
     mainLlm,
     inputText: '',
+    textOrMessages: 'hi',
     history: [] as Message[],
     assembledMessages: [
       { role: 'system', content: 'sys' } as Message,
@@ -196,12 +196,13 @@ function externalCallStream(
   name: string,
   args: Record<string, unknown>,
   rawId = 'call_raw',
+  content = '',
 ): () => AsyncIterable<Result<LlmStreamChunk, LlmError>> {
   return async function* () {
     yield {
       ok: true,
       value: {
-        content: '',
+        content,
         toolCalls: [
           { index: 0, id: rawId, name, arguments: JSON.stringify(args) },
         ],
@@ -256,9 +257,8 @@ test('hard mode still offers external tools to the LLM', async () => {
   );
 });
 
-test('miss: external call ends the turn with rewritten extId, not executed', async () => {
+test('miss: external call ends the turn with a unique returned ID, not executed', async () => {
   const args = { content: 'hello' };
-  const extId = externalToolCallId('rag_add', args);
   let toolExecuted = false;
 
   const { ctx, yielded } = makeCtx({
@@ -289,10 +289,9 @@ test('miss: external call ends the turn with rewritten extId, not executed', asy
   const ids = calls.map((c) =>
     'id' in c ? (c as { id?: string }).id : undefined,
   );
-  assert.ok(
-    ids.includes(extId),
-    `surfaced call carries extId ${extId}, got ${JSON.stringify(ids)}`,
-  );
+  assert.match(ids[0] ?? '', /^ext:[0-9a-f-]{36}:0$/);
+  const pending = await ctx.pendingToolResults.consume(ctx.options?.caller);
+  assert.equal(pending?.externalCalls[0].returnedId, ids[0]);
 
   const terminal = yielded.find(
     (c) => c.ok && (c.value as LlmStreamChunk).finishReason === 'tool_calls',
@@ -303,8 +302,6 @@ test('miss: external call ends the turn with rewritten extId, not executed', asy
 test('regression #171: two external-miss calls get distinct indices [0,1], not [0,0]', async () => {
   const args0 = { a: 1 };
   const args1 = { b: 2 };
-  const extId0 = externalToolCallId('rag_add', args0);
-  const extId1 = externalToolCallId('rag_add', args1);
 
   // Stream emits both calls in a single delta chunk then finishes with tool_calls.
   const twoExternalStream: () => AsyncIterable<
@@ -368,13 +365,13 @@ test('regression #171: two external-miss calls get distinct indices [0,1], not [
   );
 
   const ids = calls.map((c) => (c as { id?: string }).id);
-  assert.ok(
-    ids.includes(extId0),
-    `first call must carry extId for args0 (${extId0})`,
-  );
-  assert.ok(
-    ids.includes(extId1),
-    `second call must carry extId for args1 (${extId1})`,
+  assert.match(ids[0] ?? '', /^ext:[0-9a-f-]{36}:0$/);
+  assert.match(ids[1] ?? '', /^ext:[0-9a-f-]{36}:1$/);
+  assert.notEqual(ids[0], ids[1]);
+  const pending = await ctx.pendingToolResults.consume(ctx.options?.caller);
+  assert.deepEqual(
+    pending?.externalCalls.map((call) => call.returnedId),
+    ids,
   );
 
   const terminal = yielded.find(
@@ -383,57 +380,23 @@ test('regression #171: two external-miss calls get distinct indices [0,1], not [
   assert.ok(terminal, 'terminal finishReason tool_calls chunk yielded');
 });
 
-test('hit: matched pair injected, loop continues, no external chunk leaked', async () => {
+test('an old argument-hash result cannot satisfy a newly emitted call', async () => {
   const args = { content: 'hello' };
   const extId = externalToolCallId('rag_add', args);
-
   const { ctx, captured, yielded } = makeCtx({
     mode: 'smart',
     externalTools: [RAG_ADD],
-    externalResults: new Map([[extId, 'RESULT']]),
-    streams: [externalCallStream('rag_add', args), stopStream('final')],
+    externalResults: new Map([[extId, 'OLD_RESULT']]),
+    streams: [externalCallStream('rag_add', args, 'call_raw')],
   });
-
-  const ok = await new ToolLoopHandler().execute(ctx, {}, makeSpan());
-  assert.equal(ok, true);
-
-  // (a) The SECOND LLM call's messages contain the adjacent matched pair.
-  assert.ok(captured.length >= 2, 'loop continued to a second LLM call');
-  const msgs = captured[1].messages;
-  let foundPair = false;
-  for (let i = 0; i < msgs.length - 1; i++) {
-    const a = msgs[i] as Message & {
-      tool_calls?: Array<{ id: string }>;
-    };
-    const t = msgs[i + 1] as Message & { tool_call_id?: string };
-    if (
-      a.role === 'assistant' &&
-      Array.isArray(a.tool_calls) &&
-      a.tool_calls.some((tc) => tc.id === extId) &&
-      t.role === 'tool' &&
-      t.tool_call_id === extId
-    ) {
-      foundPair = true;
-      assert.equal(t.content, 'RESULT', 'tool message carries the result');
-    }
-  }
-  assert.ok(
-    foundPair,
-    'adjacent assistant(tool_calls=[extId]) -> tool(tool_call_id=extId) pair present',
+  assert.equal(await new ToolLoopHandler().execute(ctx, {}, makeSpan()), true);
+  assert.equal(captured.length, 1);
+  const calls = yielded.flatMap((chunk) =>
+    chunk.ok ? (chunk.value.toolCalls ?? []) : [],
   );
-
-  // (b) NO client-facing external toolCalls chunk was yielded for the resumed call.
-  const leaked = yielded.filter((c) => {
-    if (!c.ok) return false;
-    const v = c.value as LlmStreamChunk;
-    return (
-      Array.isArray(v.toolCalls) &&
-      v.toolCalls.some(
-        (tc) => 'id' in tc && (tc as { id?: string }).id === extId,
-      )
-    );
-  });
-  assert.equal(leaked.length, 0, 'resumed external call must NOT be surfaced');
+  assert.equal(calls.length, 1);
+  assert.match(calls[0].id ?? '', /^ext:[0-9a-f-]{36}:0$/);
+  assert.notEqual(calls[0].id, extId);
 });
 
 // ---------------------------------------------------------------------------
@@ -534,7 +497,6 @@ function makeRefreshCollisionCtx(
     } as PipelineContext['config'],
     options: testCallOptions({
       sessionId: 'loop-namespace-collision',
-      ...testCallOptions({} as CallOptions),
     }),
     sessionId: 'loop-namespace-collision',
     mcpClients: clients,
@@ -655,7 +617,7 @@ function mixedStream(names: string[]) {
 
 for (const loop of ['pipeline', 'flat'] as const) {
   for (const scenario of ['unknown', 'budget'] as const) {
-    test(`${loop}: external ${scenario === 'unknown' ? 'cache hit + unknown' : 'miss + internal budget'}`, async () => {
+    test(`${loop}: external ${scenario === 'unknown' ? 'pending + unknown' : 'miss + internal budget'}`, async () => {
       const { SmartAgent } = await import('../../../agent.js');
       const { makeDefaultDeps } = await import('../../../testing/index.js');
       const { LegacyAccumulateContextStrategy } = await import(
@@ -710,15 +672,8 @@ for (const loop of ['pipeline', 'flat'] as const) {
         ctx.toolClientMap.set('Work', client);
         Object.assign(ctx, { toolLoopContextStrategyFactory: () => strategy });
         await new ToolLoopHandler().execute(ctx, {}, makeSpan());
-        pending = await ctx.pendingToolResults.consume(ctx.sessionId);
-        if (scenario === 'unknown') {
-          assert.equal(captured.length, 2);
-          assert.equal(
-            captured[1].messages.filter((m) => m.tool_call_id === 'mixed_1')
-              .length,
-            1,
-          );
-        }
+        pending = await ctx.pendingToolResults.consume(ctx.options?.caller);
+        if (scenario === 'unknown') assert.equal(captured.length, 1);
       } else {
         const { deps } = makeDefaultDeps({ mcpClients: [client] });
         let index = 0;
@@ -745,22 +700,30 @@ for (const loop of ['pipeline', 'flat'] as const) {
         assert.ok(result.ok);
         pending = await (
           agent as unknown as { pendingToolResults: PendingToolResultsRegistry }
-        ).pendingToolResults.consume('mixed-flat');
+        ).pendingToolResults.consume({
+          userId: 'test-user',
+          sessionId: 'mixed-flat',
+        });
       }
       if (scenario === 'unknown') {
-        const results = rounds
-          .flatMap((round) => round.results)
-          .filter((m) => m.tool_call_id === 'mixed_1');
+        assert.ok(pending);
+        const ghostId = pending.assistantMessage.tool_calls?.find(
+          (call) => call.function.name === 'Ghost',
+        )?.id;
+        assert.ok(ghostId);
+        const results = pending.results.filter(
+          (result) => result.toolCallId === ghostId,
+        );
         assert.equal(results.length, 1);
-        assert.match(String(results[0].content), /Tool "Ghost" not found/);
+        assert.match(String(results[0].text), /Tool "Ghost" not found/);
       } else {
         assert.equal(executed, 2, 'only one slot remains for the mixed batch');
         assert.ok(pending);
         assert.deepEqual(
           pending.results.map((r) => r.toolCallId),
-          ['mixed_1', 'mixed_2', 'mixed_3'],
+          pending.assistantMessage.tool_calls?.slice(1).map((call) => call.id),
         );
-        assert.equal(pending.assistantMessage.tool_calls?.length, 3);
+        assert.equal(pending.assistantMessage.tool_calls?.length, 4);
         assert.match(pending.results[0].text, /worked/);
         for (const skipped of pending.results.slice(1))
           assert.match(skipped.text, /budget of 2.*exhausted/);

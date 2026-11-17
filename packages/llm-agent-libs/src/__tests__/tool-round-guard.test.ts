@@ -71,13 +71,25 @@ for (const path of ['streaming', 'pipeline', 'mixed'] as const) {
       let results: string[];
       if (path === 'mixed') {
         const registry = new PendingToolResultsRegistry();
-        fireInternalToolsAsync('', calls, registry, 'guard', {
-          toolClientMap: new Map(calls.map(({ name }) => [name, client])),
-          toolCache: new NoopToolCache(),
-          metrics: new NoopMetrics(),
-          options,
+        fireInternalToolsAsync(
+          '',
+          calls,
+          registry,
+          {
+            kind: 'caller',
+            caller: { userId: 'test-user', sessionId: 'guard', isAdmin: false },
+          },
+          {
+            toolClientMap: new Map(calls.map(({ name }) => [name, client])),
+            toolCache: new NoopToolCache(),
+            metrics: new NoopMetrics(),
+            options: { ...options, userId: 'test-user', sessionId: 'guard' },
+          },
+        );
+        const pending = await registry.consume({
+          userId: 'test-user',
+          sessionId: 'guard',
         });
-        const pending = await registry.consume('guard');
         assert.ok(pending);
         results = pending.results.map(({ text }) => text);
       } else {
@@ -277,7 +289,11 @@ for (const path of ['streaming', 'pipeline'] as const) {
             toolAvailabilityRegistry: ToolAvailabilityRegistry;
           }
         ).toolAvailabilityRegistry;
-        registry.block('round-guard-regression', 'blocked', 'tool forbidden');
+        registry.block(
+          JSON.stringify(['test-user', 'round-guard-regression']),
+          'blocked',
+          'tool forbidden',
+        );
         options.toolAvailability = registry;
       }
       const surfaced: string[] = [];

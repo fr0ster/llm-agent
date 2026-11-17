@@ -7,7 +7,7 @@ import {
 import { z } from 'zod';
 
 export const submitReportSchema = z.object({
-  summary: z.string().min(1).max(600),
+  summary: z.string().min(1),
   result: z.string().min(1).optional(),
 });
 
@@ -15,31 +15,17 @@ export function resolveWorkerSummary(
   output: string,
   finishSummary?: string,
 ): { summary: string; truncated: boolean } {
-  const marker = ' [summary truncated]';
-  return finishSummary === undefined
-    ? {
-        summary:
-          output.length > 600
-            ? output.slice(0, 600 - marker.length) + marker
-            : output,
-        truncated: output.length > 600,
-      }
-    : {
-        summary: finishSummary.slice(0, 600),
-        truncated: finishSummary.length > 600,
-      };
+  return { summary: finishSummary ?? output, truncated: false };
 }
 
-/** Keep verdict and count intact, cutting only the explanatory note. */
+/** Keep the complete verdict, count and explanatory note. */
 export function resolveVerdictSummary(verdict: {
   verdict: 'pass' | 'fail';
   count?: number;
   note?: string;
 }): string {
   const line = `${verdict.verdict}${verdict.count === undefined ? '' : `; count: ${verdict.count}`}`;
-  return verdict.note
-    ? `${line}; note: ${verdict.note.slice(0, 600 - line.length - 8)}`
-    : line;
+  return verdict.note ? `${line}; note: ${verdict.note}` : line;
 }
 
 export const submitReportTool: LlmTool = {

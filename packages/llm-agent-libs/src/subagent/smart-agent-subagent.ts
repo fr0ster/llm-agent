@@ -1,6 +1,5 @@
 import {
   addCacheTokenUsage,
-  externalToolCallId,
   hasExternalTraceGap,
   type ISubAgent,
   type ISubAgentInput,
@@ -63,6 +62,7 @@ export class SmartAgentSubAgent implements ISubAgent {
           requestStartedAt: input.requestStartedAt,
           sessionId: input.caller.sessionId,
           caller: input.caller,
+          userId: input.caller.userId,
           usage: input.usage,
           signal: input.signal,
           stopSignal: input.stopSignal,
@@ -86,8 +86,7 @@ export class SmartAgentSubAgent implements ISubAgent {
           ...(input.externalTools && input.externalTools.length > 0
             ? { externalTools: [...input.externalTools] }
             : {}),
-          // #171 (review#7): thread the validated extId→result map into the
-          // worker pipeline so a re-surfaced external call resolves from history.
+          // Match results only to the worker's specific pending call IDs.
           ...(input.externalResults
             ? { externalResults: input.externalResults }
             : {}),
@@ -117,7 +116,7 @@ export class SmartAgentSubAgent implements ISubAgent {
       // Issue #171: when the worker tool-loop stops on a client-provided
       // (consumer-executed) external tool call, it surfaces the call instead of
       // executing it. Translate that stop into a typed awaiting-external result
-      // with deterministic `ext:` ids the client can correlate. Internal MCP
+      // preserving the suspension IDs the client must return. Internal MCP
       // calls are executed inside the worker loop and never reach here.
       if (stopReason === 'tool_calls' && toolCalls && toolCalls.length > 0) {
         const extNames = new Set(
@@ -131,7 +130,7 @@ export class SmartAgentSubAgent implements ISubAgent {
               unknown
             >;
             return {
-              id: externalToolCallId(tc.function.name, args),
+              id: tc.id,
               name: tc.function.name,
               arguments: args,
             };

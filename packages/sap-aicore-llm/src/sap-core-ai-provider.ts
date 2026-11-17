@@ -875,8 +875,50 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
     );
     let template = messages;
     let cachedTools = tools as ChatCompletionTool[] | undefined;
+    if (anthropic) {
+      const wireId = this.toolCallIdMapper(
+        messages.flatMap((message) =>
+          message.role === 'assistant'
+            ? (message.tool_calls?.map((call) => call.id) ?? [])
+            : message.role === 'tool'
+              ? [message.tool_call_id]
+              : [],
+        ),
+      );
+      template = messages.map((message) =>
+        message.role === 'assistant' && message.tool_calls
+          ? {
+              ...message,
+              tool_calls: message.tool_calls.map((call) => ({
+                ...call,
+                id: wireId(call.id),
+              })),
+            }
+          : message.role === 'tool'
+            ? { ...message, tool_call_id: wireId(message.tool_call_id) }
+            : message,
+      );
+      cachedTools = [...(cachedTools ?? [])];
+      const names = new Set(cachedTools.map((tool) => tool.function.name));
+      for (const message of messages) {
+        if (message.role !== 'assistant') continue;
+        for (const call of message.tool_calls ?? []) {
+          if (names.has(call.function.name)) continue;
+          cachedTools.push({
+            type: 'function',
+            function: {
+              name: call.function.name,
+              description:
+                'Historical tool; its result is already in the conversation.',
+              parameters: { type: 'object', properties: {} },
+            },
+          });
+          names.add(call.function.name);
+        }
+      }
+    }
     if (anthropic && caching) {
-      template = messages.map(withoutCacheBreakpoints);
+      template = template.map(withoutCacheBreakpoints);
       cachedTools = cachedTools?.map(withoutCacheControl);
       let breakpointPlaced = false;
       // Emulate automatic caching with one moving breakpoint. Cache order is
@@ -903,7 +945,12 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
       promptTemplating: {
         model: {
           name: this.modelOverride ?? this.model,
-          params: orchestrationModelParams(this.config, !!tools?.length),
+          params: {
+            ...orchestrationModelParams(this.config, !!tools?.length),
+            ...(cachedTools?.length && !tools?.length
+              ? { tool_choice: 'none' }
+              : {}),
+          },
         },
         prompt: {
           template,

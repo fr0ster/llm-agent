@@ -1,20 +1,12 @@
-/**
- * DI seam: the tool-loop context strategy factory. Proves the truth table for
- * the SmartServer (non-controller) channel:
- *   - NO injection  → non-controller pipelines receive a Window factory.
- *   - YES injection → non-controller pipelines receive the CONSUMER's factory.
- *   - the ctx seam (read by the controller) carries ONLY the consumer factory
- *     (undefined when not injected) — so the Window default never leaks into
- *     the controller's own default resolution.
- * Focused unit assertions on the private buildBaseBuilder channel; no HTTP I/O.
- */
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type {
   ILlm,
   ToolLoopContextStrategyFactory,
+  ToolRound,
 } from '@mcp-abap-adt/llm-agent';
 import {
+  LegacyAccumulateContextStrategy,
   SmartAgentBuilder,
   WindowContextStrategy,
 } from '@mcp-abap-adt/llm-agent-libs';
@@ -22,25 +14,22 @@ import type { SmartServerConfig } from '../smart-server.js';
 import { constructionSeams } from './construction-seams.js';
 import { TestSmartServer as SmartServer } from './rag-identity-fixture.js';
 
-const MINIMAL_CFG = {
-  llm: { main: { provider: 'openai', model: 'gpt-4o' } },
-} as unknown as SmartServerConfig;
-
+const MINIMAL_CFG: Partial<SmartServerConfig> = {
+  llm: { main: { provider: 'openai', model: 'test-model' } },
+};
 const stubLlm: ILlm = {
-  chat: async () =>
-    ({ ok: true, value: { content: 'ok', toolCalls: [] } }) as never,
+  chat: async () => ({
+    ok: true,
+    value: { content: 'ok', finishReason: 'stop' },
+  }),
   streamChat: async function* () {},
   model: 'stub',
-} as unknown as ILlm;
+};
 
-/**
- * Drive the private buildBaseBuilder and capture the factory it threads onto the
- * builder via withToolLoopContextStrategyFactory — this is exactly what the
- * non-controller (default/flat/linear/dag) pipelines receive via createAgentBuilder.
- */
+// Every non-controller server/YAML pipeline obtains its builder through this seam.
 async function captureBuilderFactory(
   server: SmartServer,
-): Promise<ToolLoopContextStrategyFactory | undefined> {
+): Promise<ToolLoopContextStrategyFactory> {
   const orig = SmartAgentBuilder.prototype.withToolLoopContextStrategyFactory;
   let captured: ToolLoopContextStrategyFactory | undefined;
   SmartAgentBuilder.prototype.withToolLoopContextStrategyFactory = function (
@@ -48,85 +37,72 @@ async function captureBuilderFactory(
   ) {
     captured = factory;
     return orig.call(this, factory);
-  } as typeof orig;
+  };
   try {
-    await (
-      server as unknown as {
-        buildBaseBuilder: (parts: unknown) => Promise<SmartAgentBuilder>;
-      }
-    ).buildBaseBuilder({
+    await server['buildBaseBuilder']({
       mainLlm: stubLlm,
       classifierLlm: stubLlm,
-      fileLogger: { info() {}, warn() {}, error() {}, debug() {} },
+      fileLogger: { log() {} },
       workerRegistry: new Map(),
       applyServerExtras: false,
     });
   } finally {
     SmartAgentBuilder.prototype.withToolLoopContextStrategyFactory = orig;
   }
+  assert.ok(captured, 'server must explicitly supply its full-history default');
   return captured;
 }
 
-test('NO injection: non-controller path receives a Window factory (server default)', async () => {
+test('server/YAML default retains six complete tool rounds in order', async () => {
   const server = new SmartServer(MINIMAL_CFG, constructionSeams);
   const factory = await captureBuilderFactory(server);
-  assert.ok(
-    factory,
-    'non-controller path must receive a factory (Window default)',
-  );
-  const strategy = factory?.({
-    run: {} as never,
-  });
-  assert.ok(
-    strategy instanceof WindowContextStrategy,
-    'server default for non-controller pipelines must be Window',
+  const strategy = factory({});
+  assert.ok(strategy instanceof LegacyAccumulateContextStrategy);
+  const rounds: ToolRound[] = Array.from({ length: 6 }, (_, index) => ({
+    assistant: {
+      role: 'assistant',
+      content: `ASSISTANT-${index}`,
+      tool_calls: [
+        {
+          id: `call-${index}`,
+          type: 'function',
+          function: { name: 'Work', arguments: JSON.stringify({ index }) },
+        },
+      ],
+    },
+    results: [
+      {
+        role: 'tool',
+        tool_call_id: `call-${index}`,
+        content: `RESULT-${index}`,
+      },
+    ],
+  }));
+  for (const round of rounds) await strategy.record(round);
+  assert.deepEqual(
+    await strategy.form({ prefix: [] }),
+    rounds.flatMap((round) => [round.assistant, ...round.results]),
   );
 });
 
-test('YES injection: non-controller path receives the CONSUMER factory (overrides Window)', async () => {
-  const sentinel = { form: async () => [], record: async () => {} };
+test('server threads a consumer-selected lossy window to the builder verbatim', async () => {
   const consumerFactory: ToolLoopContextStrategyFactory = () =>
-    sentinel as never;
+    new WindowContextStrategy({ keepLastRounds: 1 });
   const server = new SmartServer(MINIMAL_CFG, {
     ...constructionSeams,
     toolLoopContextStrategyFactory: consumerFactory,
   });
-  const factory = await captureBuilderFactory(server);
-  assert.strictEqual(
-    factory,
-    consumerFactory,
-    'injected factory must reach the non-controller builder verbatim',
-  );
-  assert.ok(
-    !(factory?.({ run: {} as never }) instanceof WindowContextStrategy),
-    'consumer strategy must NOT be Window',
-  );
+  assert.equal(await captureBuilderFactory(server), consumerFactory);
 });
 
-test('ctx seam carries ONLY the consumer factory (undefined when not injected) — no Window leak to controller', () => {
+test('controller context seam carries only the explicit consumer selection', () => {
   const noInject = new SmartServer(MINIMAL_CFG, constructionSeams);
-  assert.equal(
-    (
-      noInject as unknown as {
-        _toolLoopContextStrategyFactory?: ToolLoopContextStrategyFactory;
-      }
-    )._toolLoopContextStrategyFactory,
-    undefined,
-    'no injection → seam is undefined (controller resolves its own RagRecall default)',
-  );
-
-  const consumerFactory: ToolLoopContextStrategyFactory = () => ({}) as never;
+  assert.equal(noInject['_toolLoopContextStrategyFactory'], undefined);
+  const consumerFactory: ToolLoopContextStrategyFactory = () =>
+    new WindowContextStrategy({ keepLastRounds: 1 });
   const injected = new SmartServer(MINIMAL_CFG, {
     ...constructionSeams,
     toolLoopContextStrategyFactory: consumerFactory,
   });
-  assert.strictEqual(
-    (
-      injected as unknown as {
-        _toolLoopContextStrategyFactory?: ToolLoopContextStrategyFactory;
-      }
-    )._toolLoopContextStrategyFactory,
-    consumerFactory,
-    'injection → seam is the consumer factory (threaded onto ctx for the controller)',
-  );
+  assert.equal(injected['_toolLoopContextStrategyFactory'], consumerFactory);
 });

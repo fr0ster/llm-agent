@@ -1011,9 +1011,9 @@ standard `tool_call` with `finish_reason: tool_calls` (Anthropic: a `tool_use`
 block, `stop_reason: tool_use`) and stops. Your client executes the tool and
 sends the result back via the normal round-trip — append the assistant
 `tool_calls` turn and a `role:'tool'` / `tool_result` message, then re-issue the
-request. External call ids are deterministic and prefixed `ext:`, so a stateless
-re-run correlates each returned result by id (the server extracts those turns
-into an `extId → result` map and strips them before re-planning). When several
+request. External call IDs are generated per suspension and prefixed `ext:`.
+The server indexes returned results by these exact IDs while preserving the full
+conversation. When several
 parallel DAG workers each emit an external call, they are collected into a single
 assistant turn carrying all the `ext:` `tool_calls`, so the client can run them
 together and answer in one follow-up.
@@ -1030,6 +1030,31 @@ together and answer in one follow-up.
   "tools": [ /* the same external tool declaration */ ]
 }
 ```
+
+For stateful `SmartAgent` continuation (direct, `DefaultPipeline`, or `mode: pass`),
+every external call returned to the client has a generated, globally unique ID of the form
+`ext:<pendingExchangeUuid>:<index>`. Model-provided external call IDs stay internal;
+the pending record maps the exact returned IDs to the original model calls and
+stores the preceding model history, complete assistant turn, and resolved siblings.
+
+Resume classification uses **only the returned IDs**. Input is **cumulative** if
+one assistant message's `tool_calls` includes all returned IDs of the pending
+exchange. Its client-visible assistant is replaced with the stored full assistant
+turn, including internal and external calls in their original order. One result
+per call follows in call order: internal results come from the pending record;
+external results come from input messages or `externalResults`, keyed by returned
+ID. Input results take precedence. Calls and results use the stored model IDs in
+the resumed model context, without duplicate results.
+
+All other input is a **delta**: the stored logical history and complete pending
+exchange precede all delta messages. Repeating `CONTINUE` or an entire prefix does
+not deduplicate input by content. Both forms pass through the normal retrieval
+and assembler path, so the host system preamble, explicit history window, and
+current RAG context apply. The complete pending exchange is retained even if the
+window excludes it, followed by the retained client messages after that exchange.
+Pass mode keeps its usual context handling. To send cumulative history, reuse the
+actual returned assistant and its call IDs; no content comparisons or exchange
+identity in message metadata are used.
 
 ## IMcpClient
 
@@ -2488,9 +2513,17 @@ Built-in strategies (injected via `BuildAgentDeps.toolLoopContextStrategyFactory
 
 | Strategy | Use case | Behavior |
 |---|---|---|
-| `Legacy` | Bare `SmartAgent` default | Append-only; passes full message history every iteration |
-| `Window` | `SmartServer` flat-pipeline default | Sliding window — keeps the last N rounds |
-| `RagRecall` | Controller executor default | Recalls relevant prior context from the session knowledge RAG; bounds token growth without losing important history |
+| `LegacyAccumulateContextStrategy` | Default for every pipeline, bare builder, server and YAML configuration | Append-only; passes all assistant messages, tool-call arguments and results every iteration |
+| `WindowContextStrategy` | Explicit consumer selection; unlimited when `keepLastRounds` is omitted | With explicit `keepLastRounds`, sliding window — keeps the last N rounds |
+| `RagRecallContextStrategy` | Explicit consumer selection only | Keeps the latest raw round plus recalled result snippets; may omit prior results, assistant messages and arguments |
+
+The previous controller RAG wiring is available as
+`createControllerRagRecallContextStrategyFactory(controllerConfig.budgets)` from
+`@mcp-abap-adt/llm-agent-server-libs/controller`. Pass its result explicitly as
+`toolLoopContextStrategyFactory` to `SmartServer` or `ControllerFactory`.
+For a bare builder, inject `() => new RagRecallContextStrategy(deps, { runId })`
+with your own record and recall hooks. YAML does not expose a strategy selector;
+all YAML pipelines retain full history unless the host explicitly injects a factory.
 
 ### Custom strategy example
 

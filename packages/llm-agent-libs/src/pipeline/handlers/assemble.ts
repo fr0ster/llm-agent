@@ -1,3 +1,7 @@
+import {
+  callerResolutionKey,
+  resolveCallerIdentity,
+} from '../../policy/caller-identity.js';
 /**
  * AssembleHandler — builds the final LLM context from action + retrieved + history.
  *
@@ -20,6 +24,8 @@ export class AssembleHandler implements IStageHandler {
     _config: Record<string, unknown>,
     span: ISpan,
   ): Promise<boolean> {
+    const identity =
+      ctx.callerResolution ?? resolveCallerIdentity(ctx.options, ctx.sessionId);
     const actions = ctx.subprompts.filter((sp) => sp.type === 'action');
 
     // Merge multiple actions into one
@@ -51,10 +57,13 @@ export class AssembleHandler implements IStageHandler {
       ctx.activeTools.some((at) => at.name === t.name),
     );
 
+    const memoryKey = callerResolutionKey(identity);
     const recentActions =
-      ctx.historyMemory && ctx.config.semanticHistoryEnabled
+      ctx.historyMemory &&
+      ctx.config.semanticHistoryEnabled &&
+      memoryKey !== undefined
         ? ctx.historyMemory.getRecent(
-            ctx.sessionId,
+            memoryKey,
             ctx.config.historyRecencyWindow ?? 3,
           )
         : undefined;

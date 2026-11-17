@@ -23,8 +23,6 @@ PER REQUEST (DefaultPipeline)
     action:   "read table T100"             → drives the tool loop
     chat:     "thanks!"                      → just reply
     ↓
-  Summarize → condense conversation history if too long
-    ↓
   RAG Retrieval (parallel, if stores configured):
     ├─ query tools   → MCP tool descriptions + skill descriptions
     └─ query history → semantic conversation history (if historyRag set)
@@ -67,7 +65,7 @@ PER REQUEST (DefaultPipeline)
 | [`06-structured-multi-model.yaml`](examples/06-structured-multi-model.yaml) | Multi-model + Qdrant tools store + higher tool limits |
 | [`07-structured-sap-ai-core.yaml`](examples/07-structured-sap-ai-core.yaml) | SAP AI Core provider |
 | [`08-real-world-scenario.yaml`](examples/08-real-world-scenario.yaml) | **Full real-world scenario** with detailed comments explaining tool vectorization, classification, and tool selection |
-| [`09-parallel-optimized.yaml`](examples/09-parallel-optimized.yaml) | **Parallel-optimized** — summarize ‖ RAG queries run in parallel |
+| [`09-parallel-optimized.yaml`](examples/09-parallel-optimized.yaml) | **Parallel retrieval** — RAG queries run in parallel; full history is kept |
 | [`10-plugins.yaml`](examples/10-plugins.yaml) | **Plugin-extended** — loads custom stage handlers from a plugin directory |
 | [`11-skills.yaml`](examples/11-skills.yaml) | **Agent Skills** — discovers SKILL.md files and injects skill context into LLM prompt via RAG selection |
 

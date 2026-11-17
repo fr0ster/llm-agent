@@ -89,12 +89,12 @@ import {
   InMemoryKnowledgeBackend,
   type KnowledgeBackend,
   KnowledgeRag,
+  LegacyAccumulateContextStrategy,
   mergePluginExports,
   SessionRequestLogger,
   SmartAgentBuilder,
   type SmartAgentHandle,
   SmartAgentSubAgent,
-  WindowContextStrategy,
 } from '@mcp-abap-adt/llm-agent-libs';
 import {
   DefaultMcpFailureClassifier,
@@ -218,9 +218,11 @@ export interface SmartServerAgentConfig {
   historyRecencyWindow?: number;
   historyTurnSummaryPrompt?: string;
   showReasoning?: boolean;
+  /** @deprecated history is no longer summarized; full history is kept */
   historyAutoSummarizeLimit?: number;
   queryExpansionEnabled?: boolean;
   toolResultCacheTtlMs?: number;
+  /** @deprecated history is no longer summarized; full history is kept */
   sessionTokenBudget?: number;
   /** Whether classification stage runs. Default: true. */
   classificationEnabled?: boolean;
@@ -241,6 +243,7 @@ export interface SmartServerPromptsConfig {
   classifier?: string;
   reasoning?: string;
   ragTranslate?: string;
+  /** @deprecated history is no longer summarized; full history is kept */
   historySummary?: string;
 }
 
@@ -1112,14 +1115,8 @@ export class SmartServer {
     this._connectMcpInjected = deps.connectMcp !== undefined;
     this._mcpFailureClassifier =
       deps.mcpFailureClassifier ?? new DefaultMcpFailureClassifier();
-    // The DI seam carries the CONSUMER-injected factory ONLY (undefined when not
-    // injected). It is threaded verbatim onto the pipeline ctx so a consumer
-    // override wins on EVERY pipeline — including the controller, which resolves
-    // `ctx.toolLoopContextStrategyFactory ?? <its own RagRecall>`. The server's
-    // Window default for the NON-controller pipelines is applied ONLY on the
-    // builder channel (buildBaseBuilder), so it never leaks into the controller's
-    // ctx read. A bare library consumer of DefaultPipeline/SmartAgent (no
-    // SmartServer) still falls back to Legacy at point-of-use.
+    // Thread an explicitly selected strategy to every pipeline. Both the builder
+    // and controller preserve full history when no consumer factory is supplied.
     this._toolLoopContextStrategyFactory = deps.toolLoopContextStrategyFactory;
     this._stepExecutionControl = deps.stepExecutionControl;
     this._runExecutionControl = deps.runExecutionControl;
@@ -3116,15 +3113,11 @@ export class SmartServer {
     // `resolveAuthoritativeSnapshot()`'s server-side fallback build below.
     builder = builder.withToolNamespace(this._toolNamespace);
 
-    // Tool-loop context strategy for the NON-controller pipelines (default / flat /
-    // linear / dag / direct SmartAgent). Honor a consumer-injected factory; else
-    // default to a bounded RAG-less Window (a strict improvement over Legacy's
-    // unbounded growing transcript). This Window default is applied ONLY on this
-    // builder channel — NOT on the ctx seam — so it never reaches the controller's
-    // own `ctx.toolLoopContextStrategyFactory ?? RagRecall` resolution.
+    // All server/YAML pipelines retain full tool-loop history by default.
+    // Consumer factories explicitly opt into alternative context strategies.
     builder = builder.withToolLoopContextStrategyFactory(
       this._toolLoopContextStrategyFactory ??
-        (() => new WindowContextStrategy()),
+        (() => new LegacyAccumulateContextStrategy()),
     );
 
     return builder;

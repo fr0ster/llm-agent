@@ -1,6 +1,11 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import type { OnPartial, StreamChunk } from '@mcp-abap-adt/llm-agent';
+import type {
+  LlmToolCall,
+  LlmUsage,
+  OnPartial,
+  StreamChunk,
+} from '@mcp-abap-adt/llm-agent';
 import { TokenLedger } from '@mcp-abap-adt/llm-agent';
 import { CyclicReActExecutor } from '../cyclic-react-executor.js';
 import { RegexNeedResolver } from '../need-resolver.js';
@@ -9,8 +14,8 @@ import { RegexNeedResolver } from '../need-resolver.js';
 function scriptedLlm(
   responses: Array<{
     content: string;
-    toolCalls?: { name: string; arguments: unknown }[];
-    usage?: unknown;
+    toolCalls?: { name: string; arguments: LlmToolCall['arguments'] }[];
+    usage?: LlmUsage;
   }>,
 ) {
   let i = 0;
@@ -22,7 +27,13 @@ function scriptedLlm(
         ok: true as const,
         value: {
           content: r.content,
-          toolCalls: r.toolCalls,
+          finishReason: r.toolCalls?.length
+            ? ('tool_calls' as const)
+            : ('stop' as const),
+          toolCalls: r.toolCalls?.map((call, index) => ({
+            ...call,
+            id: `scripted-${i}-${index}`,
+          })),
           usage: r.usage ?? {
             promptTokens: 1,
             completionTokens: 1,
@@ -904,6 +915,7 @@ test('tool-relay builds protocol-correct messages: assistant carries tool_calls,
           ok: true as const,
           value: {
             content: 'reading',
+            finishReason: 'tool_calls',
             toolCalls: [
               { id: 'tc1', name: 'ReadProgram', arguments: { p: 'Z' } },
             ],
@@ -943,13 +955,13 @@ test('tool-relay builds protocol-correct messages: assistant carries tool_calls,
   const second = seen[1];
   const asst = second.find((x) => x.role === 'assistant' && x.tool_calls);
   assert.ok(asst?.tool_calls, 'assistant message must carry tool_calls');
-  assert.equal(asst.tool_calls[0].id, 'tc1');
+  assert.match(asst.tool_calls[0].id, /^tc:[0-9a-f-]{36}:0$/);
   assert.equal(asst.tool_calls[0].type, 'function');
   assert.equal(asst.tool_calls[0].function.name, 'ReadProgram');
   const toolMsg = second.find((x) => x.role === 'tool');
   assert.equal(
     toolMsg?.tool_call_id,
-    'tc1',
+    asst.tool_calls[0].id,
     'tool message must carry tool_call_id matching the assistant tool_call',
   );
 });
@@ -1051,7 +1063,10 @@ test('FIX-A.1: capable model that never says "I can\'t" still calls MCP when too
           ok: true as const,
           value: {
             content: '',
-            toolCalls: [{ name: 'ReadProgram', arguments: { p: 'Z' } }],
+            finishReason: 'tool_calls',
+            toolCalls: [
+              { id: 'seeded-read', name: 'ReadProgram', arguments: { p: 'Z' } },
+            ],
             usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 },
           },
         };
@@ -1156,7 +1171,10 @@ test('FIX-A.3: reactive injection deduplicates tools already seeded proactively'
           ok: true as const,
           value: {
             content: '',
-            toolCalls: [{ name: 'ReadProgram', arguments: {} }],
+            finishReason: 'tool_calls',
+            toolCalls: [
+              { id: 'reactive-read', name: 'ReadProgram', arguments: {} },
+            ],
             usage: { promptTokens: 5, completionTokens: 5, totalTokens: 10 },
           },
         };

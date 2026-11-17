@@ -4,11 +4,7 @@ export {
   DEFAULT_BUDGET,
   runAdaptivePlan,
 } from './adaptive-interpreter.js';
-export {
-  composeStepInput,
-  HISTORY_MESSAGE_LIMIT,
-  RESULT_CHAR_LIMIT,
-} from './compose-step-input.js';
+export { composeStepInput } from './compose-step-input.js';
 export { InMemoryRunRecordStore } from './in-memory-run-record-store.js';
 export {
   ADAPTIVE_CONTROLLER_SYSTEM,
