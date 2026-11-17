@@ -77,13 +77,22 @@ for (const role of ['planner', undefined]) {
     const call = { id: 'c', name: 'tool', arguments: {} };
     const toolCache = new ToolCache();
     const registry = new PendingToolResultsRegistry();
-    fireInternalToolsAsync('', [call], registry, 's', {
-      toolClientMap: new Map([['tool', client]]),
-      toolCache,
-      metrics: new NoopMetrics(),
-      options: { usage },
-    });
-    await registry.consume('s');
+    fireInternalToolsAsync(
+      '',
+      [call],
+      registry,
+      {
+        kind: 'caller',
+        caller: { userId: 'test-user', sessionId: 's', isAdmin: false },
+      },
+      {
+        toolClientMap: new Map([['tool', client]]),
+        toolCache,
+        metrics: new NoopMetrics(),
+        options: { userId: 'test-user', sessionId: 's', usage },
+      },
+    );
+    await registry.consume({ userId: 'test-user', sessionId: 's' });
     const tracer = new NoopTracer();
     const run = executeToolBatchWithHeartbeat({
       batch: [call],
@@ -164,13 +173,22 @@ test('a recorder whose with() throws cannot stop tool-loop LLM or tool calls', a
   };
   const call = { id: 'c', name: 'tool', arguments: {} };
   const registry = new PendingToolResultsRegistry();
-  fireInternalToolsAsync('', [call], registry, 's', {
-    toolClientMap: new Map([['tool', client]]),
-    toolCache: new ToolCache(),
-    metrics: new NoopMetrics(),
-    options: { usage },
-  });
-  await registry.consume('s');
+  fireInternalToolsAsync(
+    '',
+    [call],
+    registry,
+    {
+      kind: 'caller',
+      caller: { userId: 'test-user', sessionId: 's', isAdmin: false },
+    },
+    {
+      toolClientMap: new Map([['tool', client]]),
+      toolCache: new ToolCache(),
+      metrics: new NoopMetrics(),
+      options: { userId: 'test-user', sessionId: 's', usage },
+    },
+  );
+  await registry.consume({ userId: 'test-user', sessionId: 's' });
   const tracer = new NoopTracer();
   const run = executeToolBatchWithHeartbeat({
     batch: [call],

@@ -176,9 +176,9 @@ test('rendering distinguishes absent and empty evidence and bounds hostile long 
     complete: false,
     omittedCount: 12,
   });
-  assert.ok(block.length <= 8000);
+  assert.ok(block.length > 8000);
   assert.match(block, /12 executed calls omitted from storage/);
-  assert.match(block, /additional calls omitted from rendering/);
+  assert.doesNotMatch(block, /additional calls omitted from rendering/);
   assert.match(block, /incomplete/);
   assert.match(block, /1\./);
   assert.match(block, /50\./);
@@ -244,12 +244,13 @@ for (const mode of [
       heartbeatMs: null,
       options,
     });
-    if (mode === 'throw') await assert.rejects(batch.next());
-    else {
+    const drain = async () => {
       for await (const _chunk of batch) {
-        /* Drain results. */
+        /* Drain returned tool failures; thrown failures remain terminal. */
       }
-    }
+    };
+    if (mode === 'throw') await assert.rejects(drain, /password=PRIVATE/);
+    else await drain();
     assert.equal(
       observations.length,
       ['cache', 'guard', 'missing'].includes(mode) ? 0 : 2,
@@ -262,13 +263,22 @@ for (const mode of [
     if (mode === 'cache') return;
     observations.length = 0;
     const registry = new PendingToolResultsRegistry();
-    fireInternalToolsAsync('', [call], registry, 'mixed', {
-      toolClientMap,
-      toolCache,
-      metrics: new NoopMetrics(),
-      options,
-    });
-    await registry.consume('mixed');
+    fireInternalToolsAsync(
+      '',
+      [call],
+      registry,
+      {
+        kind: 'caller',
+        caller: { userId: 'test-user', sessionId: 'mixed', isAdmin: false },
+      },
+      {
+        toolClientMap,
+        toolCache,
+        metrics: new NoopMetrics(),
+        options: { ...options, userId: 'test-user', sessionId: 'mixed' },
+      },
+    );
+    await registry.consume({ userId: 'test-user', sessionId: 'mixed' });
     assert.equal(
       observations.length,
       ['guard', 'missing'].includes(mode) ? 0 : 2,
@@ -318,7 +328,7 @@ test('SmartAgentSubAgent returns an empty complete trace and isolates repeated r
 
 for (const kind of ['report', 'verdict'] as const) {
   for (const overflow of [false, true]) {
-    test(`${kind} context preserves formatting and enforces aggregate boundary, overflow=${overflow}`, async () => {
+    test(`${kind} context preserves complete formatting beyond the former aggregate boundary, overflow=${overflow}`, async () => {
       let received = '';
       const worker: ISubAgent = {
         name: 'audit',
@@ -333,7 +343,6 @@ for (const kind of ['report', 'verdict'] as const) {
         caller: testCallOptions({ sessionId: 'test-session' }).caller,
         baseInput: () => testCallOptions({ sessionId: 'test-session' }),
         ...profileHost(new Map([[selected, worker]])),
-        taskOutputChars: 150000,
         onEvent() {},
       });
       const label = `[${kind === 'verdict' ? 'result to check: step' : 'result of step'} work (task source)]\n`;
@@ -342,11 +351,9 @@ for (const kind of ['report', 'verdict'] as const) {
       const guidance =
         kind === 'verdict' ? `${VERDICT_EVIDENCE_GUIDANCE}\n\n` : '';
       const output = 'x'.repeat(
-        120000 -
-          label.length -
-          evidence.length -
-          guidance.length +
-          (overflow ? 1 : 0),
+        overflow
+          ? 200000
+          : 120000 - label.length - evidence.length - guidance.length,
       );
       board.restore([
         {
@@ -394,14 +401,11 @@ for (const kind of ['report', 'verdict'] as const) {
           }),
       );
       assert.ok(result.ok);
-      assert.equal(!!result.value.isError, overflow);
-      if (overflow)
-        assert.match(JSON.stringify(result.value.content), /exceeds 120000/);
-      else {
-        await tick();
-        assert.equal(received, guidance + label + output + evidence);
-        assert.equal(received.length, 120000);
-      }
+      assert.equal(result.value.isError, undefined);
+      await tick();
+      assert.equal(received, guidance + label + output + evidence);
+      if (overflow) assert.ok(received.length > 200000);
+      else assert.equal(received.length, 120000);
     });
   }
 }
@@ -500,14 +504,21 @@ for (const path of ['streaming', 'pipeline'] as const) {
         close = () => handle.close();
       }
       try {
-        const result = await new SmartAgentSubAgent('writer', agent).run(input);
+        const subagent = new SmartAgentSubAgent('writer', agent);
+        let result = await subagent.run(input);
+        if (mode === 'replayed') {
+          assert.equal(result.status, 'awaiting-external');
+          const call = result.pendingExternalToolCalls?.[0];
+          assert.ok(call);
+          result = await subagent.run({
+            ...input,
+            externalResults: new Map([[call.id, 'host result']]),
+          });
+        }
         assert.equal(executed, mode === 'internal' ? 1 : 0);
         assert.equal(observations.length, mode === 'internal' ? 2 : 0);
         assert.equal(result.toolTrace?.entries.length, executed);
-        assert.equal(
-          result.toolTrace?.complete,
-          !(path === 'pipeline' && mode === 'replayed'),
-        );
+        assert.equal(result.toolTrace?.complete, mode !== 'replayed');
       } finally {
         await close();
       }
@@ -563,25 +574,23 @@ for (const mode of ['concurrent', 'escalation', 'rejection'] as const) {
       toolCallCount: 0,
       timingLog: [],
       heartbeatMs: null,
-      options: { onToolTrace: (item) => collector.observe(item) },
+      options: {
+        userId: 'test-user',
+        sessionId: 'mixed',
+        onToolTrace: (item) => collector.observe(item),
+      },
     });
     const pending = batch.next();
-    if (mode === 'rejection') {
-      await assert.rejects(pending);
-      const snapshot = collector.finalize(false);
-      assert.deepEqual(
-        snapshot.entries.map((item) => item.outcome),
-        ['error', 'unsettled'],
-      );
-      release();
-      await tick();
-      assert.deepEqual(collector.snapshot(false), snapshot);
-    } else {
+    const completion =
+      mode === 'rejection'
+        ? assert.rejects(pending, /invocation failed/)
+        : pending;
+    {
       await tick();
       release();
-      await pending;
+      await completion;
       for await (const _chunk of batch) {
-        /* Drain escalation and final results. */
+        /* Drain returned escalation; rejected calls have already terminated the batch. */
       }
       const snapshot = collector.finalize();
       assert.deepEqual(
@@ -590,14 +599,14 @@ for (const mode of ['concurrent', 'escalation', 'rejection'] as const) {
       );
       assert.deepEqual(
         snapshot.entries.map((item) => item.outcome),
-        [mode === 'escalation' ? 'error' : 'ok', 'ok'],
+        [mode !== 'concurrent' ? 'error' : 'ok', 'ok'],
       );
       assert.equal(snapshot.complete, true);
     }
   });
 }
 
-test('restoring oversized traces bounds and sanitizes evidence without aliasing records', () => {
+test('restoring oversized traces preserves and sanitizes evidence without aliasing records', () => {
   const board = boardFor(async () => ({ output: '' }));
   const supplied: ToolTrace = {
     entries: Array.from({ length: 80 }, (_, i) => ({
@@ -619,13 +628,13 @@ test('restoring oversized traces bounds and sanitizes evidence without aliasing 
   ]);
   const result = board.get('old')?.toolTrace;
   assert.ok(result);
-  assert.equal(result.entries.length, 50);
-  assert.equal(result.omittedCount, 37);
+  assert.equal(result.entries.length, 80);
+  assert.equal(result.omittedCount, 7);
   assert.doesNotMatch(JSON.stringify(result), /PRIVATE/);
   supplied.entries.length = 0;
   const listed = board.list();
   listed[0].toolTrace?.entries.splice(0);
-  assert.equal(board.get('old')?.toolTrace?.entries.length, 50);
+  assert.equal(board.get('old')?.toolTrace?.entries.length, 80);
 });
 
 test('escaped control characters still retain first and last rendered entries', () => {
@@ -642,10 +651,10 @@ test('escaped control characters still retain first and last rendered entries', 
     complete: true,
     omittedCount: 0,
   });
-  assert.ok(block.length <= 8000);
+  assert.ok(block.length > 8000);
   assert.match(block, /1\./);
   assert.match(block, /50\./);
-  assert.match(block, /truncated/);
+  assert.doesNotMatch(block, /truncated/);
 });
 
 test('mixed async callbacks stay with the originating run after finalization', async () => {
@@ -671,12 +680,27 @@ test('mixed async callbacks stay with the originating run after finalization', a
           '',
           [{ id: 'c', name: 'write', arguments: {} }],
           registry,
-          'origin',
+          {
+            kind: 'caller',
+            caller: {
+              userId: 'test-user',
+              sessionId: 'origin',
+              isAdmin: false,
+            },
+          },
           {
             toolClientMap: new Map([['write', client]]),
             toolCache: new ToolCache(),
             metrics: new NoopMetrics(),
-            options,
+            options: {
+              ...options,
+              caller: {
+                sessionId: 'origin',
+                userId: 'test-user',
+                isAdmin: false,
+              },
+              sessionId: 'origin',
+            },
           },
         );
       return {
@@ -702,7 +726,7 @@ test('mixed async callbacks stay with the originating run after finalization', a
   assert.equal(first.toolTrace?.complete, false);
   assert.equal(first.toolTrace?.entries[0].outcome, 'unsettled');
   release();
-  await registry.consume('origin');
+  await registry.consume({ userId: 'test-user', sessionId: 'origin' });
   assert.equal(first.toolTrace?.entries[0].outcome, 'unsettled');
   assert.deepEqual(second.toolTrace, {
     entries: [],

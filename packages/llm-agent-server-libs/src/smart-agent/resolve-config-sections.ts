@@ -515,6 +515,7 @@ export function resolveAgentSection(
         get(yaml, 'agent', 'showReasoning') ??
         false,
     ),
+    // Deprecated compatibility fields: accepted without summarizing history.
     historyAutoSummarizeLimit: Number(
       get(yaml, 'agent', 'historyAutoSummarizeLimit') ?? 10,
     ),

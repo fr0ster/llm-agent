@@ -16,13 +16,13 @@ llm:
 
 rag:
   store:
-    type: in-memory                   # in-memory | qdrant | hana-vector | pg-vector
+    type: in-memory # in-memory | qdrant | hana-vector | pg-vector
     # collectionName: llm-agent       # Qdrant collection name (qdrant type only)
     dedupThreshold: 0.92
-    vectorWeight: 0.7                 # Semantic similarity weight (0..1) — in-memory only
-    keywordWeight: 0.3                # Lexical matching weight (0..1) — in-memory only
+    vectorWeight: 0.7 # Semantic similarity weight (0..1) — in-memory only
+    keywordWeight: 0.3 # Lexical matching weight (0..1) — in-memory only
   embedder:
-    provider: ollama                  # ollama | openai | sap-ai-core (omit `embedder` for BM25 keyword-only)
+    provider: ollama # ollama | openai | sap-ai-core (omit `embedder` for BM25 keyword-only)
     url: http://localhost:11434
     model: bge-m3
 
@@ -33,18 +33,17 @@ mcp:
   url: http://localhost:3001/mcp/stream/http
 
 agent:
-  externalToolsValidationMode: permissive  # permissive | strict
+  externalToolsValidationMode: permissive # permissive | strict
   maxIterations: 10
   maxToolCalls: 30
-  toolUnavailableTtlMs: 600000       # Temporary tool blacklist TTL (ms)
+  toolUnavailableTtlMs: 600000 # Temporary tool blacklist TTL (ms)
   ragQueryK: 10
-  showReasoning: false                # Explain strategy at start of response
-  historyAutoSummarizeLimit: 10       # History length to trigger compression
-  queryExpansionEnabled: false        # Expand RAG queries with LLM-generated synonyms
-  toolResultCacheTtlMs: 300000       # Tool result cache TTL (ms); 0 to disable
-  sessionTokenBudget: 0              # Multi-turn token budget; 0 to disable
+  showReasoning: false # Explain strategy at start of response
+  # historyAutoSummarizeLimit: 10  # Deprecated no-op; full history is kept.
+  queryExpansionEnabled: false # Expand RAG queries with LLM-generated synonyms
+  toolResultCacheTtlMs: 300000 # Tool result cache TTL (ms); 0 to disable
+  # sessionTokenBudget: 0  # Deprecated no-op; full history is kept.
   # classificationEnabled: true      # Enable/disable intent classification stage
-
 # --- Advanced Multi-Model Pipeline (optional) -------------------------------
 # Use a named llm: map to assign different models for different internal tasks.
 # llm:
@@ -83,8 +82,6 @@ agent:
 #   stages:
 #     - id: classify
 #       type: classify
-#     - id: summarize
-#       type: summarize
 #     - id: rag-retrieval
 #       type: parallel
 #       stages:
@@ -110,9 +107,8 @@ agent:
 #     IMPORTANT: Always start your response with a brief <reasoning> block...
 #   ragTranslate: |
 #     Translate the user request to English for search purposes...
-#   historySummary: |
-#     Summarize the conversation so far...
+#   historySummary: ignored  # Deprecated no-op; full history is kept.
 
-log: smart-server.log                 # path to log file; omit for stdout
+log: smart-server.log # path to log file; omit for stdout
 # logDir: sessions                    # Directory for detailed session debug logs
 # pluginDir: ./my-plugins             # Additional plugin directory (loaded after defaults)

@@ -30,7 +30,7 @@ rag:
   embedder:
     provider: sap-ai-core
     model: text-embedding-3-small
-    credentialRef: LLM   # the same SAP AI Core account as llm.main
+    credentialRef: LLM # the same SAP AI Core account as llm.main
 
 agent:
   externalToolsValidationMode: permissive
@@ -38,14 +38,14 @@ agent:
   maxToolCalls: 30
   ragQueryK: 10
   showReasoning: false
-  historyAutoSummarizeLimit: 10
+  # historyAutoSummarizeLimit: 10  # Deprecated no-op; full history is kept.
   streamMode: final
   refreshToolsPerIteration: false
   toolReselectPerIteration: true
   retry:
     maxAttempts: 3
     retryOnMidStream:
-      - 'SSE stream'
+      - "SSE stream"
 
 log: smart-server.log
 logDir: sessions

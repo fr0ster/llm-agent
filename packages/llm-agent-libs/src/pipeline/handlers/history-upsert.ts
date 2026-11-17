@@ -1,4 +1,9 @@
 import { stampRagOwner } from '@mcp-abap-adt/llm-agent';
+import {
+  type CallerResolution,
+  callerResolutionKey,
+  resolveCallerIdentity,
+} from '../../policy/caller-identity.js';
 /**
  * HistoryUpsertHandler — post-tool-loop pipeline stage.
  *
@@ -23,6 +28,7 @@ import type { PipelineContext } from '../context.js';
 import type { IStageHandler } from '../stage-handler.js';
 
 export interface SummarizeAndStoreArgs {
+  identity?: CallerResolution;
   turn: HistoryTurn;
   summarizer: IHistorySummarizer;
   memory: IHistoryMemory;
@@ -36,6 +42,7 @@ export async function summarizeAndStore(
   args: SummarizeAndStoreArgs,
 ): Promise<void> {
   const { turn, summarizer, memory, rag, sessionId, options, log } = args;
+  const identity = args.identity ?? resolveCallerIdentity(options, sessionId);
 
   const result = await summarizer.summarize(turn, options);
   const summary = result.ok
@@ -65,7 +72,8 @@ export async function summarizeAndStore(
     }
   }
 
-  memory.pushRecent(sessionId, summary);
+  const memoryKey = callerResolutionKey(identity);
+  if (memoryKey !== undefined) memory.pushRecent(memoryKey, summary);
 }
 
 export class HistoryUpsertHandler implements IStageHandler {
@@ -101,6 +109,7 @@ export class HistoryUpsertHandler implements IStageHandler {
       };
 
       await summarizeAndStore({
+        identity: ctx.callerResolution,
         turn,
         summarizer: ctx.historySummarizer,
         memory: ctx.historyMemory,

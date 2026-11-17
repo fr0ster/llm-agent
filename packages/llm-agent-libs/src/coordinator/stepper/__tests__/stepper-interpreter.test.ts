@@ -100,6 +100,7 @@ test('#167: interpreter threads ctx.externalTools into the executor leaf', async
 test('#Phase3: a dependsOn predecessor output is hydrated into the dependent node prompt (by stepperId)', async () => {
   counter = 0; // gather → s0, analyze → s1
   let analyzePrompt = '';
+  const gatheredSource = 'GATHERED INCLUDE SOURCE'.repeat(10_000);
   const exec: IExecutor = {
     name: 'e',
     async execute(input) {
@@ -115,7 +116,7 @@ test('#Phase3: a dependsOn predecessor output is hydrated into the dependent nod
     },
     async list(filter: { stepperId?: string }) {
       return filter.stepperId === 's0'
-        ? [{ content: 'GATHERED INCLUDE SOURCE', metadata: {} }]
+        ? [{ content: gatheredSource, metadata: {} }]
         : [];
     },
     async write() {},
@@ -136,6 +137,7 @@ test('#Phase3: a dependsOn predecessor output is hydrated into the dependent nod
     baseCtx({ executor: exec, knowledgeRag: knowledgeRag as never }),
   );
   assert.match(analyzePrompt, /Gathered inputs from prerequisite steps/);
+  assert.ok(analyzePrompt.includes(gatheredSource));
   assert.match(
     analyzePrompt,
     /GATHERED INCLUDE SOURCE/,

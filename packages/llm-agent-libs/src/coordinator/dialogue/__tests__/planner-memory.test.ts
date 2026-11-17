@@ -586,7 +586,7 @@ test('corrective calls reuse retrieval while seeing newly projected transcript',
   await session.close();
 });
 
-test('planner-task memory stores notice not output; event retrieval uses first input plus event note', async () => {
+test('planner-task memory stores complete notices in lossless chunks; event retrieval uses first input plus event note', async () => {
   const rag = new InMemoryRag();
   let finish: ((value: { output: string }) => void) | undefined;
   const work = new Promise<{ output: string }>((resolve) => {
@@ -653,12 +653,28 @@ test('planner-task memory stores notice not output; event retrieval uses first i
   const chunk = await rag.getById('planner:events-memory:planner-task:task1:0');
   assert.ok(chunk.ok && chunk.value);
   assert.equal(chunk.value.metadata.requestId, 'r1');
-  assert.equal(chunk.value.text, taskNotice(session.snapshot().tasks[0]));
-  assert.ok(!chunk.value.text.includes('x'.repeat(1000)));
+  assert.equal(
+    chunk.value.text,
+    taskNotice(session.snapshot().tasks[0]).slice(0, 2000),
+  );
+  assert.ok(chunk.value.text.includes('x'.repeat(1000)));
+  let storedNotice = '';
+  for (
+    let offset = 0;
+    offset < taskNotice(session.snapshot().tasks[0]).length;
+    offset += 2000
+  ) {
+    const part = await rag.getById(
+      `planner:events-memory:planner-task:task1:${offset}`,
+    );
+    assert.ok(part.ok && part.value);
+    storedNotice += part.value.text;
+  }
+  assert.equal(storedNotice, taskNotice(session.snapshot().tasks[0]));
   const overflow = await rag.getById(
     'planner:events-memory:planner-task:task1:4000',
   );
-  assert.ok(overflow.ok && !overflow.value);
+  assert.ok(overflow.ok && overflow.value);
   assert.match(queries[1], /^first input\n\[task events\]/);
   await session.close();
 });

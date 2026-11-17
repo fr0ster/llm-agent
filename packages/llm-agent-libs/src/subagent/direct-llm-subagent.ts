@@ -65,7 +65,7 @@ export class DirectLlmSubAgent implements ISubAgent {
     const assembled = await this.assembler.assemble(
       { type: 'action', text: userContent },
       { ragResults: {}, tools: [] },
-      [],
+      [...(input.history ?? []), { role: 'user', content: userContent }],
       { requestStartedAt: input.requestStartedAt, signal: input.signal },
     );
     if (!assembled.ok) throw assembled.error;

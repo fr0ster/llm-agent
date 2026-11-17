@@ -446,7 +446,7 @@ for (const pipeline of [false, true]) {
   }
 }
 
-test('summarize keeps an eight-result round intact across the recent boundary', async () => {
+test('deprecated summarize makes no helper call and leaves an eight-result round unchanged', async () => {
   const { SummarizeHandler } = await import('../summarize.js');
   const ctx = makeCtx(async function* () {});
   const calls = Array.from({ length: 8 }, (_, i) => ({
@@ -469,13 +469,21 @@ test('summarize keeps an eight-result round intact across the recent boundary', 
     { role: 'assistant', content: 'done' },
   ];
   ctx.helperLlm = {
-    async chat(messages: Message[]) {
-      assert.deepEqual(messages.slice(0, -1), ctx.history.slice(0, 2));
-      return { ok: true, value: { content: 'summary', finishReason: 'stop' } };
+    async chat() {
+      assert.fail('summarize must not call the helper');
     },
   } as ILlm;
-  await new SummarizeHandler().execute(ctx, { limit: 5 }, makeSpan());
-  assert.deepEqual(ctx.history.slice(1), [
+  const history = ctx.history;
+  const snapshot = structuredClone(history);
+  assert.equal(
+    await new SummarizeHandler().execute(ctx, { limit: 5 }, makeSpan()),
+    true,
+  );
+  assert.equal(ctx.history, history);
+  assert.deepEqual(ctx.history, snapshot);
+  assert.deepEqual(ctx.history, [
+    { role: 'user', content: 'old' },
+    { role: 'assistant', content: 'old reply' },
     ...round,
     { role: 'assistant', content: 'done' },
   ]);

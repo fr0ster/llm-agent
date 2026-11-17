@@ -1,11 +1,11 @@
 import {
   addCacheTokenUsage,
-  markExternalTraceUnavailable,
   toModelToolMessages,
 } from '@mcp-abap-adt/llm-agent';
 import { normalizeLoopLimit } from '../../config/normalize-max-iterations.js';
 import { withSubmitReport } from '../../coordinator/dialogue/submit-report-tool.js';
 import { denyRagAccess, ownerBoundQuery } from '../../rag/owner-bound-query.js';
+import { ToolResponseRound } from './tool-response-round.js';
 /**
  * ToolLoopHandler — streaming LLM call + MCP tool execution loop.
  *
@@ -38,33 +38,32 @@ import type {
   LlmTool,
   Message,
   TimingEntry,
-  ToolRound,
 } from '@mcp-abap-adt/llm-agent';
 import {
   buildNamespacedTools,
   defaultToolNamespace,
-  externalToolCallId,
-  getStreamToolCallName,
   mergeOfferedTools,
   scopedUsage,
   toolNameFromRecord,
   toToolCallDelta,
 } from '@mcp-abap-adt/llm-agent';
 import { OrchestratorError } from '../../agent.js';
+import { resolveCallerIdentity } from '../../policy/caller-identity.js';
 import { fireInternalToolsAsync } from '../../policy/mixed-tool-call-handler.js';
 import type { ISpan } from '../../tracer/types.js';
 import { LegacyAccumulateContextStrategy } from '../context/tool-loop-context/index.js';
+import { ToolLoopControlHistory } from '../context/tool-loop-control-history.js';
 import type { PipelineContext } from '../context.js';
 import type { IStageHandler } from '../stage-handler.js';
 import { normalizeHeartbeatMs } from './normalize-heartbeat-ms.js';
 import {
-  buildBlockedToolMessages,
   classifyToolCalls,
   executeToolBatchWithHeartbeat,
   filterAvailableTools,
   guardToolRound,
   injectPendingResults,
   injectToolPriority,
+  pendingSourceMessages,
   readTaskFinish,
   runOutputValidationReprompt,
 } from './tool-loop-core.js';
@@ -147,6 +146,8 @@ export class ToolLoopHandler implements IStageHandler {
     config: Record<string, unknown>,
     parentSpan: ISpan,
   ): Promise<boolean> {
+    const identity =
+      ctx.callerResolution ?? resolveCallerIdentity(ctx.options, ctx.sessionId);
     const maxIterations = normalizeLoopLimit(
       'maxIterations' in config
         ? config.maxIterations
@@ -191,40 +192,32 @@ export class ToolLoopHandler implements IStageHandler {
     const timingLog: TimingEntry[] = [];
     const loopStart = Date.now();
     let currentTools: LlmTool[] = ctx.activeTools;
+    const localBlocks = new Set<string>();
 
     messages = injectToolPriority(messages, externalTools);
     // staticPrefix is immutable across all iterations — re-emitted every round.
-    const staticPrefix = messages;
+    const staticPrefix = await injectPendingResults(
+      messages,
+      ctx.pendingToolResults,
+      identity,
+      ctx.options,
+      ctx.externalResults,
+      ctx.textOrMessages,
+    );
     const strategy: IToolLoopContextStrategy = (
       ctx.toolLoopContextStrategyFactory ??
       (() => new LegacyAccumulateContextStrategy())
     )({ run: undefined });
-    // controlTail carries validation-reprompt pairs (assistant+user) that are
-    // NOT tool rounds. It is pruned after the next recorded tool round.
-    const controlTail: Message[] = [];
+    // Preserve validation exchanges between their original tool rounds.
+    const controlHistory = new ToolLoopControlHistory(staticPrefix.length);
 
-    const withPending = await injectPendingResults(
-      messages,
-      ctx.pendingToolResults,
-      ctx.sessionId,
-      ctx.options,
-    );
-    if (withPending.length > staticPrefix.length) {
-      // Injected pending results form an assistant+tool group → record as round.
-      const injected = withPending.slice(staticPrefix.length);
-      const pendingRound: ToolRound = {
-        assistant: injected[0],
-        results: injected.slice(1),
-      };
-      await strategy.record(pendingRound);
-    }
-    messages = (
+    messages = controlHistory.restore(
       await strategy.form({
         prefix: staticPrefix,
         toolTrust: ctx.config.toolTrust,
         queryText: ctx.inputText,
-      })
-    ).concat(controlTail);
+      }),
+    );
 
     const finalize = (
       content: string,
@@ -506,10 +499,11 @@ export class ToolLoopHandler implements IStageHandler {
       // Filter tools per iteration
       currentTools = filterAvailableTools(
         ctx.toolAvailabilityRegistry,
-        ctx.sessionId,
+        identity,
         currentTools,
         iteration,
         ctx.options,
+        localBlocks,
       );
       if (maxToolCalls !== undefined && toolCallCount >= maxToolCalls) {
         currentTools = [];
@@ -582,7 +576,6 @@ export class ToolLoopHandler implements IStageHandler {
       >();
       // Track which streaming indices belong to external tools so that
       // argument-only continuation deltas (no name field) are forwarded too.
-      const externalToolIndices = new Set<number>();
 
       const available = ctx.mcpTools.length + externalTools.length;
       if (
@@ -668,7 +661,6 @@ export class ToolLoopHandler implements IStageHandler {
           ctx.onPartial?.({ kind: 'iteration-end', outcome: 'retry' });
           content = '';
           toolCallsMap.clear();
-          externalToolIndices.clear();
           finishReason = undefined;
           iterPromptTokens = 0;
           iterCompletionTokens = 0;
@@ -693,18 +685,7 @@ export class ToolLoopHandler implements IStageHandler {
           }
         }
         if (chunk.toolCalls) {
-          // Track which streaming indices belong to external tools. External
-          // tool-call deltas are BUFFERED (accumulated into toolCallsMap) and
-          // NOT yielded live: an external call is surfaced only AFTER the stream
-          // settles — and only if it has no resume result (miss). This avoids
-          // leaking a call we may instead resolve from `ctx.externalResults`.
-          for (const tc of chunk.toolCalls) {
-            const name = getStreamToolCallName(tc);
-            if (name && externalToolNames.has(name)) {
-              const delta = toToolCallDelta(tc, 0);
-              externalToolIndices.add(delta.index);
-            }
-          }
+          // Buffer calls until the complete response can be classified atomically.
           for (const [
             fallbackIndex,
             rawToolCall,
@@ -768,15 +749,14 @@ export class ToolLoopHandler implements IStageHandler {
         requestId: ctx.options?.trace?.traceId,
       });
 
-      const toolCalls = Array.from(toolCallsMap.values()).map((tc) => {
-        let args: Record<string, unknown> = {};
-        try {
-          args = JSON.parse(tc.arguments);
-        } catch {
-          args = {};
-        }
-        return { id: tc.id, name: tc.name, arguments: args };
-      });
+      const hasToolCalls =
+        finishReason === 'tool_calls' && toolCallsMap.size > 0;
+      const responseRound = new ToolResponseRound(
+        content,
+        toolCallsMap.values(),
+        (name) => externalToolNames.has(name) && !ctx.toolClientMap.has(name),
+      );
+      const toolCalls = hasToolCalls ? responseRound.executableCalls() : [];
 
       ctx.options?.sessionLogger?.logStep(
         `llm_response_iter_${iteration + 1}`,
@@ -784,23 +764,21 @@ export class ToolLoopHandler implements IStageHandler {
         'llm',
       );
 
-      const val =
-        finishReason === 'tool_calls' && toolCalls.length > 0
-          ? { reprompt: false, messages }
-          : await runOutputValidationReprompt(
-              ctx.outputValidator,
-              content,
-              messages,
-              currentTools,
-              ctx.options,
-              ctx.config.toolTrust,
-            );
-      const iterationEnd =
-        finishReason === 'tool_calls' && toolCalls.length > 0
-          ? 'tool_calls'
-          : val.reprompt
-            ? 'retry'
-            : 'final';
+      const val = hasToolCalls
+        ? { reprompt: false, messages }
+        : await runOutputValidationReprompt(
+            ctx.outputValidator,
+            content,
+            messages,
+            currentTools,
+            ctx.options,
+            ctx.config.toolTrust,
+          );
+      const iterationEnd = hasToolCalls
+        ? 'tool_calls'
+        : val.reprompt
+          ? 'retry'
+          : 'final';
       if (iterationEnd !== 'retry') {
         ctx.options?.onAssistantResponse?.(content);
       }
@@ -815,20 +793,18 @@ export class ToolLoopHandler implements IStageHandler {
       ctx.onPartial?.({ kind: 'iteration-end', outcome: iterationEnd });
 
       // -- No tool calls: validate and finish --------------------------------
-      if (finishReason !== 'tool_calls' || toolCalls.length === 0) {
+      if (!hasToolCalls) {
         if (val.reprompt) {
-          // Reprompt pairs (assistant+user correction) go into controlTail, NOT
-          // into the strategy — they are ephemeral and survive only until the
-          // next recorded tool round, at which point controlTail is pruned.
+          // Anchor the rejected reply and correction before any newer tool rounds.
           const appended = val.messages.slice(messages.length);
-          controlTail.push(...appended);
-          messages = (
+          controlHistory.append(appended);
+          messages = controlHistory.restore(
             await strategy.form({
               prefix: staticPrefix,
               toolTrust: ctx.config.toolTrust,
               queryText: ctx.inputText,
-            })
-          ).concat(controlTail);
+            }),
+          );
           continue;
         }
         return finalize(content, finishReason);
@@ -847,75 +823,26 @@ export class ToolLoopHandler implements IStageHandler {
         ctx.toolClientMap,
         externalToolNames,
         ctx.toolAvailabilityRegistry,
-        ctx.sessionId,
+        identity,
+        localBlocks,
       );
 
-      // -- Handle blocked tools ----------------------------------------------
-      // Rejected external calls are resolved locally before any call is surfaced.
-      const rejectedExternal = validExternalCalls.filter((tc) =>
-        roundRejections.has(toolCalls.indexOf(tc)),
-      );
-      if (rejectedExternal.length > 0) {
-        await strategy.record({
-          assistant: {
-            role: 'assistant',
-            content: content || null,
-            tool_calls: rejectedExternal.map((tc) => ({
-              id: tc.id,
-              type: 'function' as const,
-              function: {
-                name: tc.name,
-                arguments: JSON.stringify(tc.arguments),
-              },
-            })),
-          },
-          results: rejectedExternal.map((tc) => ({
-            role: 'tool' as const,
-            tool_call_id: tc.id,
-            content: `Error: ${roundRejections.get(toolCalls.indexOf(tc))}`,
-          })),
-          meta: rejectedExternal.map(() => ({ isError: true })),
-        });
-        for (const tc of rejectedExternal) {
-          validExternalCalls.splice(validExternalCalls.indexOf(tc), 1);
-        }
-        controlTail.length = 0;
-        messages = (
-          await strategy.form({
-            prefix: staticPrefix,
-            toolTrust: ctx.config.toolTrust,
-            queryText: ctx.inputText,
-          })
-        ).concat(controlTail);
-        if (
-          validExternalCalls.length === 0 &&
-          internalCalls.length === 0 &&
-          blockedCalls.length === 0 &&
-          hallucinations.length === 0
-        )
-          continue;
-      }
-      if (blockedCalls.length > 0) {
-        const group = buildBlockedToolMessages(
-          content,
-          blockedCalls,
-          ctx.options,
+      for (const tc of blockedCalls) {
+        responseRound.resolve(
+          tc,
+          `Error: Tool "${tc.name}" is temporarily unavailable in this session.`,
+          true,
         );
-        await strategy.record({
-          assistant: group.assistant,
-          results: group.results,
-        });
-        controlTail.length = 0;
-        messages = (
-          await strategy.form({
-            prefix: staticPrefix,
-            toolTrust: ctx.config.toolTrust,
-            queryText: ctx.inputText,
-          })
-        ).concat(controlTail);
-        continue;
       }
-
+      for (const tc of hallucinations) {
+        responseRound.resolve(tc, `Error: Tool "${tc.name}" not found.`, true);
+      }
+      const externalCalls = validExternalCalls.filter((tc) => {
+        const rejection = roundRejections.get(toolCalls.indexOf(tc));
+        if (rejection === undefined) return true;
+        responseRound.resolve(tc, `Error: ${rejection}`, true);
+        return false;
+      });
       // Check tool call budget
       const remaining =
         maxToolCalls !== undefined
@@ -924,207 +851,93 @@ export class ToolLoopHandler implements IStageHandler {
       const batch = internalCalls.slice(0, Math.max(0, remaining));
       const skipped = internalCalls.slice(batch.length);
 
-      // Resolve unknown calls before an external hit can continue or a miss exits.
-      if (validExternalCalls.length > 0 && hallucinations.length > 0) {
-        const unknownCalls = hallucinations.splice(0);
-        await strategy.record({
-          assistant: {
-            role: 'assistant',
-            content: content || null,
-            tool_calls: unknownCalls.map((tc) => ({
-              id: tc.id,
-              type: 'function' as const,
-              function: {
-                name: tc.name,
-                arguments: JSON.stringify(tc.arguments),
-              },
+      if (externalCalls.length > 0) {
+        const pending = fireInternalToolsAsync(
+          content,
+          batch,
+          ctx.pendingToolResults,
+          identity,
+          {
+            toolClientMap: ctx.toolClientMap,
+            toolCache: ctx.toolCache,
+            metrics: ctx.metrics,
+            options: ctx.options,
+            roundCalls: toolCalls,
+            roundRejections,
+            skippedCalls: skipped,
+            maxToolCalls: maxToolCalls,
+            assistantMessage: responseRound.assistant,
+            resolvedResults: responseRound.resolved(),
+            precedingMessages: messages,
+            sourceMessages: pendingSourceMessages(
+              ctx.textOrMessages,
+              staticPrefix,
+              messages,
+            ),
+            externalCalls,
+          },
+        );
+        toolCallCount += batch.length;
+        if (batch.length > 0) {
+          try {
+            ctx.options?.onToolCallCount?.(toolCallCount, maxToolCalls);
+          } catch {
+            /* Observers cannot affect execution. */
+          }
+        }
+        if (maxToolCalls !== undefined && toolCallCount >= maxToolCalls) {
+          ctx.yield({
+            ok: true,
+            value: {
+              content: '',
+              budgetExhausted: true,
+              toolCallCount,
+              maxToolCalls: maxToolCalls,
+            },
+          });
+        }
+        ctx.options?.sessionLogger?.logStep('mixed_tool_calls', {
+          internal: internalCalls.map((tc) => tc.name),
+          external: externalCalls.map((tc) => tc.name),
+        });
+
+        // Return this suspension's unique IDs; keep model IDs internal.
+        emitProgressFallback();
+        ctx.yield({
+          ok: true,
+          value: {
+            content: '',
+            toolCalls: externalCalls.map((tc, index) => ({
+              index,
+              id: pending.externalCalls[index].returnedId,
+              name: tc.name,
+              arguments: JSON.stringify(tc.arguments),
             })),
           },
-          results: unknownCalls.map((tc) => ({
-            role: 'tool' as const,
-            tool_call_id: tc.id,
-            content: `Error: Tool "${tc.name}" not found.`,
-          })),
-          meta: unknownCalls.map(() => ({ isError: true })),
         });
-        controlTail.length = 0;
-        messages = (
-          await strategy.form({
-            prefix: staticPrefix,
-            toolTrust: ctx.config.toolTrust,
-            queryText: ctx.inputText,
-          })
-        ).concat(controlTail);
-      }
 
-      // -- Handle external (client-provided) tool calls (spec D1) ------------
-      // Each external call is rewritten to a deterministic content-addressed id
-      // (`externalToolCallId`). Two paths:
-      //   HIT  — `ctx.externalResults` already has the result (stateless resume
-      //          from the client's prior round-trip): inject a MATCHED
-      //          assistant(tool_calls=[extId]) -> tool(tool_call_id=extId) pair
-      //          and CONTINUE the loop (no re-surface).
-      //   MISS — no result yet: surface the call (with extId) to the consumer
-      //          and END the worker turn (`finish_reason: tool_calls`); never
-      //          execute it server-side.
-      if (validExternalCalls.length > 0) {
-        const externalWithId = validExternalCalls.map((tc) => ({
-          ...tc,
-          extId: externalToolCallId(tc.name, tc.arguments),
-        }));
-        const hits = externalWithId.filter((tc) =>
-          ctx.externalResults?.has(tc.extId),
-        );
-        const misses = externalWithId.filter(
-          (tc) => !ctx.externalResults?.has(tc.extId),
-        );
-
-        // HIT path: inject matched pairs (assistant tool_call + tool result),
-        // each correlated by the SAME extId, and resolve them in-conversation.
-        if (hits.length > 0) {
-          markExternalTraceUnavailable(ctx.options?.onToolTrace);
-          const hitAssistant: Message = {
-            role: 'assistant' as const,
-            content: null,
-            tool_calls: hits.map((tc) => ({
-              id: tc.extId,
-              type: 'function' as const,
-              function: {
-                name: tc.name,
-                arguments: JSON.stringify(tc.arguments),
-              },
-            })),
-          };
-          const hitResults: Message[] = hits.map((tc) => ({
-            role: 'tool' as const,
-            content: ctx.externalResults?.get(tc.extId) ?? '',
-            tool_call_id: tc.extId,
-          }));
-          await strategy.record({
-            assistant: hitAssistant,
-            results: hitResults,
-          });
-          controlTail.length = 0;
-          messages = (
-            await strategy.form({
-              prefix: staticPrefix,
-              toolTrust: ctx.config.toolTrust,
-              queryText: ctx.inputText,
-            })
-          ).concat(controlTail);
-          ctx.options?.sessionLogger?.logStep('external_results_resumed', {
-            extIds: hits.map((tc) => tc.extId),
-            toolNames: hits.map((tc) => tc.name),
-          });
-        }
-
-        // MISS path: surface the unresolved external call(s) and end the turn.
-        if (misses.length > 0) {
-          if (internalCalls.length > 0) {
-            fireInternalToolsAsync(
-              content,
-              batch,
-              ctx.pendingToolResults,
-              ctx.sessionId,
-              {
-                toolClientMap: ctx.toolClientMap,
-                toolCache: ctx.toolCache,
-                metrics: ctx.metrics,
-                options: ctx.options,
-                roundCalls: toolCalls,
-                roundRejections,
-                skippedCalls: skipped,
-                maxToolCalls: maxToolCalls,
-              },
-            );
-            toolCallCount += batch.length;
-            if (batch.length > 0) {
-              try {
-                ctx.options?.onToolCallCount?.(toolCallCount, maxToolCalls);
-              } catch {
-                /* Observers cannot affect execution. */
-              }
-            }
-            if (maxToolCalls !== undefined && toolCallCount >= maxToolCalls) {
-              ctx.yield({
-                ok: true,
-                value: {
-                  content: '',
-                  budgetExhausted: true,
-                  toolCallCount,
-                  maxToolCalls: maxToolCalls,
-                },
-              });
-            }
-            ctx.options?.sessionLogger?.logStep('mixed_tool_calls', {
-              internal: internalCalls.map((tc) => tc.name),
-              external: misses.map((tc) => tc.name),
-            });
-          }
-
-          // Surface the external calls with their deterministic extId so the
-          // consumer executes them and re-sends results (correlated on resume).
-          emitProgressFallback();
-          ctx.yield({
-            ok: true,
-            value: {
-              content: '',
-              toolCalls: misses.map((tc, index) => ({
-                index,
-                id: tc.extId,
-                name: tc.name,
-                arguments: JSON.stringify(tc.arguments),
-              })),
+        timingLog.push({ phase: 'total', duration: Date.now() - loopStart });
+        ctx.timing.push(...timingLog);
+        ctx.yield({
+          ok: true,
+          value: {
+            content: '',
+            finishReason: 'tool_calls',
+            usage: {
+              ...usage,
+              models: ctx.requestLogger.getSummary().byModel,
+              components: ctx.requestLogger.getSummary().byComponent,
             },
-          });
-
-          timingLog.push({ phase: 'total', duration: Date.now() - loopStart });
-          ctx.timing.push(...timingLog);
-          ctx.yield({
-            ok: true,
-            value: {
-              content: '',
-              finishReason: 'tool_calls',
-              usage: {
-                ...usage,
-                models: ctx.requestLogger.getSummary().byModel,
-                components: ctx.requestLogger.getSummary().byComponent,
-              },
-              timing: timingLog,
-            },
-          });
-          return true;
-        }
-
-        // Only hits (no misses): if there are no internal calls to execute,
-        // continue the loop directly so the worker consumes the injected
-        // results. With internal calls present, fall through to execute them.
-        if (internalCalls.length === 0) {
-          continue;
-        }
+            timing: timingLog,
+          },
+        });
+        return true;
       }
 
       // -- Execute internal MCP tool calls -----------------------------------
       // Capture the assistant message now; record the full round (assistant +
       // tool results) atomically after the batch completes so the strategy
       // always sees a complete ToolRound.
-      const batchAssistantMsg: Message = {
-        role: 'assistant' as const,
-        content: content || null,
-        tool_calls: toolCalls
-          .filter(
-            (tc) => internalCalls.includes(tc) || hallucinations.includes(tc),
-          )
-          .map((tc) => ({
-            id: tc.id,
-            type: 'function' as const,
-            function: {
-              name: tc.name,
-              arguments: JSON.stringify(tc.arguments),
-            },
-          })),
-      };
-
       // Yield progress messages
       for (const tc of batch) {
         ctx.yield({
@@ -1138,6 +951,8 @@ export class ToolLoopHandler implements IStageHandler {
 
       // Execute tool calls concurrently with heartbeat (shared core).
       const batchGen = executeToolBatchWithHeartbeat({
+        callerResolution: identity,
+        localBlocks,
         batch,
         roundCalls: toolCalls,
         roundRejections,
@@ -1154,6 +969,20 @@ export class ToolLoopHandler implements IStageHandler {
         timingLog,
         heartbeatMs,
         options: ctx.options,
+        onBatchComplete: async (outcome) => {
+          outcome.toolMessages.forEach((message, index) => {
+            responseRound.add(message, outcome.resultMeta[index]);
+          });
+          for (const tc of skipped) {
+            responseRound.resolve(
+              tc,
+              `Error: not executed: tool-call budget of ${maxToolCalls} for this request is exhausted; return what you have and report what is missing`,
+              true,
+            );
+          }
+          const batchRound = responseRound.finish();
+          await strategy.record(controlHistory.record(batchRound));
+        },
         mcpFailureClassifier: ctx.mcpFailureClassifier,
         maxToolCalls,
         onToolExecuted: (r) => {
@@ -1200,6 +1029,7 @@ export class ToolLoopHandler implements IStageHandler {
         step = await batchGen.next();
       }
       const outcome = step.value;
+
       if (outcome.escalated) return false;
       if (outcome.toolCallCount !== toolCallCount) {
         toolCallCount = outcome.toolCallCount;
@@ -1221,35 +1051,13 @@ export class ToolLoopHandler implements IStageHandler {
           },
         });
       }
-      const batchRound: ToolRound = {
-        assistant: batchAssistantMsg,
-        results: [
-          ...outcome.toolMessages,
-          ...hallucinations.map((tc) => ({
-            role: 'tool' as const,
-            tool_call_id: tc.id,
-            content: `Error: Tool "${tc.name}" not found.`,
-          })),
-          ...skipped.map((tc) => ({
-            role: 'tool' as const,
-            tool_call_id: tc.id,
-            content: `Error: not executed: tool-call budget of ${maxToolCalls} for this request is exhausted; return what you have and report what is missing`,
-          })),
-        ],
-        meta: [
-          ...outcome.resultMeta,
-          ...[...hallucinations, ...skipped].map(() => ({ isError: true })),
-        ],
-      };
-      await strategy.record(batchRound);
-      controlTail.length = 0;
-      messages = (
+      messages = controlHistory.restore(
         await strategy.form({
           prefix: staticPrefix,
           toolTrust: ctx.config.toolTrust,
           queryText: ctx.inputText,
-        })
-      ).concat(controlTail);
+        }),
+      );
     }
   }
 }

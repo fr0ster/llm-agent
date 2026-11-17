@@ -28,7 +28,7 @@ agent:
   maxIterations: 10
   maxToolCalls: 30
   ragQueryK: 5
-  historyAutoSummarizeLimit: 15
+  # historyAutoSummarizeLimit: 15  # Deprecated no-op; full history is kept.
   retry:
     maxAttempts: 3
     backoffMs: 2000

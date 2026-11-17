@@ -258,7 +258,7 @@ describe('debug-trace controller decision / MCP / RAG capture (Task 5, #213)', (
     const ctx = {
       sessionId: 'sess-no-logger',
       textOrMessages: 'do the thing',
-      options: undefined,
+      options: { userId: 'test-user' },
       externalResults: undefined,
       requestLogger,
       yield: (c: Captured) => {

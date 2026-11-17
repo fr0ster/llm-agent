@@ -18,6 +18,7 @@ import type {
   TimingEntry,
 } from '@mcp-abap-adt/llm-agent';
 import {
+  markExternalTraceUnavailable,
   OrchestratorError,
   recordToolInvocation,
   scopedUsage,
@@ -25,7 +26,15 @@ import {
   toModelToolMessages,
 } from '@mcp-abap-adt/llm-agent';
 import type { IMetrics } from '../../metrics/types.js';
-import type { PendingToolResultsRegistry } from '../../policy/pending-tool-results-registry.js';
+import {
+  type CallerResolution,
+  callerResolutionKey,
+} from '../../policy/caller-identity.js';
+import {
+  findPendingAssistant,
+  type PendingSourceMessages,
+  type PendingToolResultsRegistry,
+} from '../../policy/pending-tool-results-registry.js';
 import {
   isToolContextUnavailableError,
   type ToolAvailabilityRegistry,
@@ -74,14 +83,25 @@ export function classifyToolCalls(
   toolClientMap: Map<string, IMcpClient>,
   externalToolNames: Set<string>,
   toolAvailabilityRegistry: ToolAvailabilityRegistry,
-  sessionId: string,
+  identity: CallerResolution,
+  localBlocks: ReadonlySet<string> = new Set(),
 ): IClassifiedToolCalls {
-  const internalCalls = toolCalls.filter((tc) => toolClientMap.has(tc.name));
-  const validExternalCalls = toolCalls.filter((tc) =>
-    externalToolNames.has(tc.name),
-  );
   const blockedToolNames =
-    toolAvailabilityRegistry.getBlockedToolNames(sessionId);
+    identity.kind === 'caller'
+      ? toolAvailabilityRegistry.getBlockedToolNames(
+          callerResolutionKey(identity),
+        )
+      : new Set<string>();
+  for (const name of localBlocks) blockedToolNames.add(name);
+  const internalCalls = toolCalls.filter(
+    (tc) => !blockedToolNames.has(tc.name) && toolClientMap.has(tc.name),
+  );
+  const validExternalCalls = toolCalls.filter(
+    (tc) =>
+      !blockedToolNames.has(tc.name) &&
+      !toolClientMap.has(tc.name) &&
+      externalToolNames.has(tc.name),
+  );
   const blockedCalls = toolCalls.filter((tc) => blockedToolNames.has(tc.name));
   const hallucinations = toolCalls.filter(
     (tc) =>
@@ -117,47 +137,129 @@ export function injectToolPriority(
  *  Returns the allowed subset. */
 export function filterAvailableTools(
   registry: ToolAvailabilityRegistry,
-  sessionId: string,
+  identity: CallerResolution,
   currentTools: LlmTool[],
   iteration: number,
   options: CallOptions | undefined,
+  localBlocks: ReadonlySet<string> = new Set(),
 ): LlmTool[] {
-  const filtered = registry.filterTools(sessionId, currentTools);
+  const filtered =
+    identity.kind === 'caller'
+      ? registry.filterTools(callerResolutionKey(identity), currentTools)
+      : { allowed: currentTools, blocked: [] };
   if (filtered.blocked.length > 0) {
     options?.sessionLogger?.logStep('active_tools_filtered_in_iteration', {
       iteration: iteration + 1,
       blocked: filtered.blocked,
     });
   }
-  return filtered.allowed;
+  return filtered.allowed.filter((tool) => !localBlocks.has(tool.name));
 }
 
-/** Inject pending internal tool results from a prior mixed-call request. */
+/**
+ * Restore the complete suspended round in assembled context. Keep the round
+ * intact even when an explicit history window excluded part or all of it.
+ */
 export async function injectPendingResults(
   messages: Message[],
   pendingToolResults: PendingToolResultsRegistry,
-  sessionId: string,
+  identity: CallerResolution,
   options: CallOptions | undefined,
+  externalResults?: ReadonlyMap<string, string>,
+  sourceInput?: string | Message[],
 ): Promise<Message[]> {
-  if (pendingToolResults.has(sessionId)) {
-    const pending = await pendingToolResults.consume(sessionId);
-    if (pending) {
-      const next = [
-        ...messages,
-        pending.assistantMessage,
-        ...pending.results.map((r) => ({
-          role: 'tool' as const,
-          content: r.text,
-          tool_call_id: r.toolCallId,
-        })),
-      ];
-      options?.sessionLogger?.logStep('pending_tool_results_injected', {
-        toolNames: pending.results.map((r) => r.toolName),
-      });
-      return next;
-    }
+  if (identity.kind !== 'caller') return messages;
+  const { caller } = identity;
+  const pending = await pendingToolResults.consume(caller);
+  if (!pending) return messages;
+  if (pending.externalCalls.length > 0)
+    markExternalTraceUnavailable(options?.onToolTrace);
+
+  const input: Message[] =
+    typeof sourceInput === 'string'
+      ? [{ role: 'user', content: sourceInput }]
+      : (sourceInput ?? messages);
+  const preceding = pending.precedingMessages ?? [];
+  const assistantIndex = findPendingAssistant(input, pending.externalCalls);
+  const results = (pending.assistantMessage.tool_calls ?? []).map(
+    (call): Message => {
+      const external = pending.externalCalls.find(
+        (candidate) => candidate.toolCallId === call.id,
+      );
+      const local = pending.results.find(
+        (result) => result.toolCallId === call.id,
+      );
+      return {
+        role: 'tool',
+        tool_call_id: call.id,
+        content: external
+          ? (input.find(
+              (message, index) =>
+                index > assistantIndex &&
+                message.role === 'tool' &&
+                message.tool_call_id === external.returnedId,
+            )?.content ??
+            externalResults?.get(external.returnedId) ??
+            'Error: external tool result was not provided.')
+          : (local?.text ?? 'Error: tool result was not provided.'),
+      };
+    },
+  );
+  pendingToolResults.complete(caller, pending, results);
+  options?.sessionLogger?.logStep('pending_tool_results_injected', {
+    exchangeId: pending.exchangeId,
+    toolNames: pending.results.map((result) => result.toolName),
+  });
+  if (assistantIndex >= 0) {
+    const ids = new Set([
+      ...pending.externalCalls.map((call) => call.returnedId),
+      ...(pending.assistantMessage.tool_calls ?? []).map((call) => call.id),
+    ]);
+    const assembledIndex = findPendingAssistant(
+      messages,
+      pending.externalCalls,
+    );
+    const isRoundResult = (message: Message): boolean =>
+      message.role === 'tool' && ids.has(message.tool_call_id ?? '');
+    const firstResult = messages.findIndex(isRoundResult);
+    let inputEnd = assistantIndex + 1;
+    while (input[inputEnd]?.role === 'tool') inputEnd++;
+    const tailLength = input
+      .slice(inputEnd)
+      .filter((message) => message.role !== 'system').length;
+    const firstHistory = messages.findIndex(
+      (message) => message.role !== 'system',
+    );
+    const insertAt =
+      assembledIndex >= 0
+        ? assembledIndex
+        : firstResult >= 0
+          ? firstResult
+          : Math.max(
+              firstHistory < 0 ? messages.length : firstHistory,
+              messages.length - tailLength,
+            );
+    let end = insertAt + (assembledIndex >= 0 ? 1 : 0);
+    while (messages[end]?.role === 'tool' && isRoundResult(messages[end]))
+      end++;
+    const before = messages.slice(0, insertAt);
+    const after = messages.slice(end);
+    return [...before, pending.assistantMessage, ...results, ...after];
   }
-  return messages;
+  return [...preceding, pending.assistantMessage, ...results, ...input];
+}
+
+/** Retain logical history for a later delta, without recycling assembled RAG. */
+export function pendingSourceMessages(
+  source: string | Message[],
+  prefix: readonly Message[],
+  messages: readonly Message[],
+): PendingSourceMessages {
+  return {
+    input:
+      typeof source === 'string' ? [{ role: 'user', content: source }] : source,
+    continuation: messages.slice(prefix.length),
+  };
 }
 
 export type SyntheticToolGroup = { assistant: Message; results: Message[] };
@@ -225,15 +327,13 @@ export type ToolExecResult = {
 
 export type ToolResultMeta = { identityKey?: string; isError: boolean };
 
-export type BatchOutcome =
-  | { escalated: true; toolCallCount: number }
-  | {
-      escalated: false;
-      currentTools: LlmTool[];
-      toolCallCount: number;
-      toolMessages: Message[];
-      resultMeta: ToolResultMeta[];
-    };
+export type BatchOutcome = {
+  escalated: boolean;
+  currentTools: LlmTool[];
+  toolCallCount: number;
+  toolMessages: Message[];
+  resultMeta: ToolResultMeta[];
+};
 
 export interface IExecuteToolBatchArgs {
   batch: ParsedToolCall[];
@@ -246,6 +346,8 @@ export interface IExecuteToolBatchArgs {
   parentSpan: ISpan; // toolLoopSpan (A) / parentSpan (B)
   toolAvailabilityRegistry: ToolAvailabilityRegistry;
   sessionId: string;
+  callerResolution?: CallerResolution;
+  localBlocks?: Set<string>;
   externalToolNames: Set<string>;
   currentTools: LlmTool[];
   toolCallCount: number;
@@ -253,6 +355,7 @@ export interface IExecuteToolBatchArgs {
   maxToolCalls?: number;
   heartbeatMs: number | null;
   options: CallOptions | undefined;
+  onBatchComplete?: (outcome: BatchOutcome) => Promise<void>;
   onToolExecuted?: (r: ToolExecResult) => void; // B: logToolCall; A: omitted
   mcpFailureClassifier?: IMcpFailureClassifier;
 }
@@ -272,7 +375,6 @@ export async function* executeToolBatchWithHeartbeat(
     metrics,
     parentSpan,
     toolAvailabilityRegistry,
-    sessionId,
     externalToolNames,
     timingLog,
     heartbeatMs,
@@ -315,7 +417,17 @@ export async function* executeToolBatchWithHeartbeat(
       'mcp',
     );
     const client = toolClientMap.get(tc.name);
-    if (!client) return { tc, text: '', res: null, duration: 0, cached: false };
+    if (!client)
+      return {
+        tc,
+        text: `Error: Tool "${tc.name}" is unavailable.`,
+        res: {
+          ok: false,
+          error: { message: `Tool "${tc.name}" is unavailable.` },
+        },
+        duration: 0,
+        cached: false,
+      };
     const toolSpan = tracer.startSpan('smart_agent.tool_call', {
       parent: parentSpan,
       attributes: { 'tool.name': tc.name },
@@ -442,6 +554,7 @@ export async function* executeToolBatchWithHeartbeat(
 
   const toolMessages: Message[] = [];
   const resultMeta: ToolResultMeta[] = [];
+  let escalation: string | undefined;
   for (const r of results) {
     const { tc, text, res } = r;
     if (!res) continue;
@@ -457,43 +570,26 @@ export async function* executeToolBatchWithHeartbeat(
       args.mcpFailureClassifier,
       probe,
     );
-    if (decision.escalate) {
-      // Emit timing BEFORE escalating so the timed-out/unavailable tool call
-      // appears in the timing log. onToolExecuted fires exactly once here;
-      // the end-of-loop call is skipped because we return early.
-      onToolExecuted?.(r);
-      // Every result in the concurrent batch has settled, including later calls.
-      toolCallCount =
-        args.toolCallCount + results.filter((r) => r.res !== null).length;
-      if (toolCallCount !== args.toolCallCount) {
-        try {
-          options?.onToolCallCount?.(toolCallCount, args.maxToolCalls);
-        } catch {
-          /* Observers cannot affect execution. */
-        }
-      }
-      yield {
-        ok: false,
-        error: new OrchestratorError(
-          decision.escalate.message,
-          'MCP_UNAVAILABLE',
-        ),
-      };
-      return {
-        escalated: true,
-        toolCallCount,
-      };
-    }
+    if (decision.escalate) escalation ??= decision.escalate.message;
     if (
       !res.ok &&
       isToolContextUnavailableError(text) &&
       !externalToolNames.has(tc.name)
     ) {
-      const entry = toolAvailabilityRegistry.block(sessionId, tc.name, text);
+      args.localBlocks?.add(tc.name);
+      const identity = args.callerResolution ?? { kind: 'anonymous' };
+      const entry =
+        identity.kind === 'caller'
+          ? toolAvailabilityRegistry.block(
+              callerResolutionKey(identity),
+              tc.name,
+              text,
+            )
+          : undefined;
       currentTools = currentTools.filter((t) => t.name !== tc.name);
       options?.sessionLogger?.logStep(`tool_blacklisted_${tc.name}`, {
         reason: text,
-        blockedUntil: entry.blockedUntil,
+        blockedUntil: entry?.blockedUntil,
       });
     }
     options?.sessionLogger?.logStep(
@@ -513,13 +609,28 @@ export async function* executeToolBatchWithHeartbeat(
     });
     onToolExecuted?.(r);
   }
-  return {
-    escalated: false,
+  const outcome: BatchOutcome = {
+    escalated: escalation !== undefined,
     currentTools,
     toolCallCount,
     toolMessages,
     resultMeta,
   };
+  // Commit the complete exchange before exposing a terminal error: a consumer
+  // may close the generator as soon as it receives that error.
+  await args.onBatchComplete?.(outcome);
+  if (escalation !== undefined) {
+    try {
+      options?.onToolCallCount?.(toolCallCount, args.maxToolCalls);
+    } catch {
+      /* Observer only. */
+    }
+    yield {
+      ok: false,
+      error: new OrchestratorError(escalation, 'MCP_UNAVAILABLE'),
+    };
+  }
+  return outcome;
 }
 
 export interface IReprompt {

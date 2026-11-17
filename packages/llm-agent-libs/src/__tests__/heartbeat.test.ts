@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { describe, it } from 'node:test';
+import { describe, it, type TestContext } from 'node:test';
 import type {
   ILlm,
   IMcpClient,
@@ -125,6 +125,30 @@ async function collectStream(agent: SmartAgent, message: string) {
   return { heartbeats, timing, content: contentParts.join('') };
 }
 
+/** Flush the real async pipeline between small, deterministic clock steps. */
+async function collectTimedStream(context: TestContext, agent: SmartAgent) {
+  context.mock.timers.enable({
+    apis: ['setTimeout', 'Date'],
+    now: 1_700_000_000_000,
+  });
+  let settled = false;
+  const result = collectStream(agent, 'test');
+  void result.then(
+    () => {
+      settled = true;
+    },
+    () => {
+      settled = true;
+    },
+  );
+  for (let step = 0; !settled && step < 100; step++) {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    if (!settled) context.mock.timers.tick(25);
+  }
+  assert.ok(settled, 'stream must complete within the virtual clock budget');
+  return result;
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -132,7 +156,7 @@ async function collectStream(agent: SmartAgent, message: string) {
 const DEFAULT_CONFIG = { maxIterations: 5, mode: 'hard' as const };
 
 describe('Heartbeat — emitted during slow MCP tool execution', () => {
-  it('yields heartbeat chunks while tool is executing', async () => {
+  it('yields heartbeat chunks while tool is executing', async (context) => {
     const client = makeDelayedMcpClient(
       [{ name: 'slow_tool', description: 'Slow', inputSchema: {} }],
       new Map([['slow_tool', { content: 'done', delayMs: 350 }]]),
@@ -145,7 +169,7 @@ describe('Heartbeat — emitted during slow MCP tool execution', () => {
       ...DEFAULT_CONFIG,
       heartbeatIntervalMs: 100,
     });
-    const { heartbeats } = await collectStream(agent, 'test');
+    const { heartbeats } = await collectTimedStream(context, agent);
 
     assert.ok(
       heartbeats.length >= 2,
@@ -157,7 +181,7 @@ describe('Heartbeat — emitted during slow MCP tool execution', () => {
     }
   });
 
-  it('heartbeat elapsed increases over time', async () => {
+  it('heartbeat elapsed increases over time', async (context) => {
     const client = makeDelayedMcpClient(
       [{ name: 'slow_tool', description: 'Slow', inputSchema: {} }],
       new Map([['slow_tool', { content: 'done', delayMs: 450 }]]),
@@ -170,7 +194,7 @@ describe('Heartbeat — emitted during slow MCP tool execution', () => {
       ...DEFAULT_CONFIG,
       heartbeatIntervalMs: 100,
     });
-    const { heartbeats } = await collectStream(agent, 'test');
+    const { heartbeats } = await collectTimedStream(context, agent);
 
     assert.ok(heartbeats.length >= 2);
     for (let i = 1; i < heartbeats.length; i++) {
@@ -304,7 +328,7 @@ describe('Timing — breakdown included in final chunk', () => {
 });
 
 describe('Heartbeat — disabled interval (#246)', () => {
-  it('heartbeatIntervalMs: 0 → tool completes, no heartbeat chunk, no busy loop', async () => {
+  it('heartbeatIntervalMs: 0 → tool completes, no heartbeat chunk, no busy loop', async (context) => {
     // A tool that takes ~120ms. With a 5000ms interval no heartbeat fires anyway,
     // so use a value that WOULD have busy-looped before the fix: 0.
     const client = makeDelayedMcpClient(
@@ -319,11 +343,9 @@ describe('Heartbeat — disabled interval (#246)', () => {
       ...DEFAULT_CONFIG,
       heartbeatIntervalMs: 0,
     });
-    const started = Date.now();
-    const { heartbeats, content } = await collectStream(agent, 'test');
+    const { heartbeats, content } = await collectTimedStream(context, agent);
 
     // Completed (did not hang) and produced the final content.
-    assert.ok(Date.now() - started < 4000, 'must not hang / busy-loop');
     assert.equal(heartbeats.length, 0, 'disabled → no heartbeat chunks');
     assert.ok(content.length > 0);
   });

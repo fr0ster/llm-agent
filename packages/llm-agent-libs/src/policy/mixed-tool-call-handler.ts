@@ -10,10 +10,14 @@ import {
   guardToolRound,
   type ParsedToolCall,
 } from '../pipeline/handlers/tool-loop-core.js';
+import type { CallerResolution } from './caller-identity.js';
 import type {
+  PendingSourceMessages,
+  PendingToolCallsEntry,
   PendingToolResult,
   PendingToolResultsRegistry,
 } from './pending-tool-results-registry.js';
+import { createPendingToolCallsEntry } from './pending-tool-results-registry.js';
 
 export interface MixedToolCallContext {
   toolClientMap: Map<string, IMcpClient>;
@@ -28,6 +32,11 @@ export interface MixedToolCallContext {
     arguments: Record<string, unknown>;
   }>;
   maxToolCalls?: number;
+  assistantMessage?: Message;
+  resolvedResults?: Message[];
+  precedingMessages?: Message[];
+  sourceMessages?: PendingSourceMessages;
+  externalCalls?: ParsedToolCall[];
 }
 
 export function fireInternalToolsAsync(
@@ -38,10 +47,10 @@ export function fireInternalToolsAsync(
     arguments: Record<string, unknown>;
   }>,
   registry: PendingToolResultsRegistry,
-  sessionId: string,
+  identity: CallerResolution,
   ctx: MixedToolCallContext,
-): void {
-  const assistantMessage: Message = {
+): PendingToolCallsEntry {
+  const assistantMessage: Message = ctx.assistantMessage ?? {
     role: 'assistant' as const,
     content: content || null,
     tool_calls: [...internalCalls, ...(ctx.skippedCalls ?? [])].map((tc) => ({
@@ -68,7 +77,11 @@ export function fireInternalToolsAsync(
           };
         const client = ctx.toolClientMap.get(tc.name);
         if (!client) {
-          return { toolCallId: tc.id, toolName: tc.name, text: '' };
+          return {
+            toolCallId: tc.id,
+            toolName: tc.name,
+            text: `Error: Tool "${tc.name}" is unavailable.`,
+          };
         }
         const res = await recordToolInvocation(
           ctx.options?.onToolTrace,
@@ -116,16 +129,40 @@ export function fireInternalToolsAsync(
     }),
   );
 
-  registry.set(sessionId, {
-    assistantMessage,
-    promise: internalPromise.then((results) => [
-      ...results,
-      ...(ctx.skippedCalls ?? []).map((tc) => ({
-        toolCallId: tc.id,
-        toolName: tc.name,
-        text: `Error: not executed: tool-call budget of ${ctx.maxToolCalls} for this request is exhausted; return what you have and report what is missing`,
-      })),
-    ]),
+  const entry: Parameters<PendingToolResultsRegistry['set']>[1] = {
+    assistantMessage: structuredClone(assistantMessage),
+    precedingMessages: structuredClone(ctx.precedingMessages),
+    sourceMessages: structuredClone(ctx.sourceMessages),
+    externalCalls: (ctx.externalCalls ?? []).map((call) => ({
+      toolCallId: call.id,
+    })),
+    promise: internalPromise.then((results) =>
+      [
+        ...results,
+        ...(ctx.resolvedResults ?? []).map((message) => ({
+          toolCallId: message.tool_call_id ?? '',
+          toolName:
+            assistantMessage.tool_calls?.find(
+              (call) => call.id === message.tool_call_id,
+            )?.function.name ?? '',
+          text: String(message.content ?? ''),
+        })),
+        ...(ctx.skippedCalls ?? []).map((tc) => ({
+          toolCallId: tc.id,
+          toolName: tc.name,
+          text: `Error: not executed: tool-call budget of ${ctx.maxToolCalls} for this request is exhausted; return what you have and report what is missing`,
+        })),
+      ].sort((a, b) => {
+        const calls = assistantMessage.tool_calls ?? [];
+        return (
+          calls.findIndex((call) => call.id === a.toolCallId) -
+          calls.findIndex((call) => call.id === b.toolCallId)
+        );
+      }),
+    ),
     createdAt: Date.now(),
-  });
+  };
+  return identity.kind === 'caller'
+    ? registry.set(identity.caller, entry)
+    : createPendingToolCallsEntry(entry);
 }

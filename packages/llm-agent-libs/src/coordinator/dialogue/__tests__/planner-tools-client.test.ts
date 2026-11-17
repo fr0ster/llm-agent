@@ -160,7 +160,7 @@ test('queued stop succeeds and get_task leaves retained output unchanged', async
   await runInPlannerScope(f.scope, async () => {
     assert.match(
       (await call('get_task', { task_id: 'saved' })).json.notice,
-      /truncated/,
+      /cut: 10 characters omitted/,
     );
     assert.equal(
       f.board.get('saved')?.output,
@@ -309,7 +309,7 @@ test('plan_get pages full steps in plan order and validates filters and paginati
   });
 });
 
-test('dependency and audit results are appended after briefs with a total bound', async () => {
+test('complete dependency and audit results are appended after briefs without a size cap', async () => {
   const contexts: (string | undefined)[] = [];
   const board = new TaskBoard({
     caller: testCallOptions({ sessionId: 'test-session' }).caller,
@@ -329,7 +329,6 @@ test('dependency and audit results are appended after briefs with a total bound'
         ]),
       ),
     ),
-    taskOutputChars: 130_000,
     onEvent() {},
   });
   board.restore([
@@ -354,7 +353,7 @@ test('dependency and audit results are appended after briefs with a total bound'
       worker: 'w',
       goal: 'big',
       state: 'done',
-      output: 'x'.repeat(120_000),
+      output: 'x'.repeat(200_000),
       createdAt: 0,
     },
   ]);
@@ -460,8 +459,12 @@ test('dependency and audit results are appended after briefs with a total bound'
         goal: 'overflow',
         step_id: 'overflow',
       });
-      assert.equal(overflow.error, true);
-      assert.match(overflow.json.error, /step big.*120000/);
+      assert.equal(overflow.error, undefined);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.equal(
+        contexts[3],
+        `[result of step big (task big)]\n${'x'.repeat(200_000)}`,
+      );
     },
   );
 });
@@ -825,17 +828,17 @@ test('get_task returns a bounded notice, rejects removed views and preserves exp
     assert.match(result.notice, /chars: 70000; result: task-results\/large/);
     assert.equal(
       result.notice.split('summary: ')[1].split('; chars:')[0].length,
-      600,
+      900,
     );
     assert.equal(
       result.notice.split('goal: ')[1].split('; error:')[0].length,
-      200,
+      400,
     );
-    assert.equal(result.notice.split('; error: ')[1].length, 600);
+    assert.equal(result.notice.split('; error: ')[1].length, 2000);
     assert.ok(!result.notice.includes('get_task'));
     const listed = (await call('list_tasks')).json;
-    assert.equal(listed[0].goal.length, 200);
-    assert.match(listed[0].goal, /truncated, 400 chars/);
+    assert.equal(listed[0].goal.length, 400);
+    assert.equal(listed[0].goal, 'g'.repeat(400));
     assert.deepEqual(
       (await call('get_task', { task_id: 'large', include_trace: true })).json
         .toolTrace,
@@ -886,12 +889,12 @@ for (const state of ['queued', 'running'] as const) {
       assert.deepEqual(metadata, {
         id: 'active',
         worker: 'w',
-        goal: `${'g'.repeat(177)} [truncated, 500 chars]`,
+        goal: 'g'.repeat(500),
         state,
         result: 'report',
         lastActivityAt: 0,
         idleMs: 99,
-        currentAction: `${'tool action '.repeat(30).slice(0, 97)} [truncated, 360 chars]`,
+        currentAction: 'tool action '.repeat(30),
         budgetExhausted: false,
         toolCalls: 2,
         maxToolCalls: 5,
@@ -902,7 +905,7 @@ for (const state of ['queued', 'running'] as const) {
   });
 }
 
-test('task without store keeps compact outcome in notice and budget note', async () => {
+test('task without store keeps complete outcome in notice and budget note', async () => {
   const f = setup();
   f.board.restore([
     {
@@ -920,7 +923,10 @@ test('task without store keeps compact outcome in notice and budget note', async
   await runInPlannerScope(f.scope, async () => {
     const { notice } = (await call('get_task', { task_id: 'legacy' })).json;
     assert.match(notice, /summary: compact outcome/);
-    assert.equal(notice.split('summary: ')[1].split('; chars:')[0].length, 600);
+    assert.equal(
+      notice.split('summary: ')[1].split('; chars:')[0].length,
+      1600,
+    );
     assert.match(notice, /chars: 1600; result: not stored/);
     assert.match(notice, /worker hit the tool-call budget 5\/5/);
   });

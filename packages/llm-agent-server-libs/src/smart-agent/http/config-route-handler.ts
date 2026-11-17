@@ -31,6 +31,7 @@ const AGENT_CONFIG_FIELDS = new Set([
   'ragQueryK',
   'toolUnavailableTtlMs',
   'showReasoning',
+  // Deprecated no-op retained for HTTP config round trips.
   'historyAutoSummarizeLimit',
   'classificationEnabled',
 ]);

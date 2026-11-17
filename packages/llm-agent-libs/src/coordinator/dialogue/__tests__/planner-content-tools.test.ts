@@ -170,7 +170,7 @@ for (const plannerContext of ['prepared', 'conversation'] as const) {
   });
 }
 
-test('old archive fields are dropped on restore and save; boundaries keep only closed metadata', async () => {
+test('old archive fields are dropped on restore and save; boundaries retain complete closed transcripts', async () => {
   const store = new InMemoryDialogueStateStore();
   const legacy = {
     plan: { version: 1, steps: [], status: 'active', note: 'current plan' },
@@ -237,7 +237,10 @@ test('old archive fields are dropped on restore and save; boundaries keep only c
   try {
     const restored = session.snapshot();
     assert.ok(!Object.hasOwn(restored, 'messages'));
-    assert.equal(restored.requests?.[0].transcript, undefined);
+    assert.equal(
+      restored.requests?.[0].transcript?.[0].content,
+      'closed transcript',
+    );
     assert.equal(restored.requests?.[1].transcript?.[0].content, 'current');
     await session.send('next');
     const saved = await store.load('legacy');
@@ -247,7 +250,7 @@ test('old archive fields are dropped on restore and save; boundaries keep only c
       for (const field of ['replies', 'closedPlan', 'transcriptExpired'])
         assert.ok(!Object.hasOwn(request, field));
       if (request.closedAt !== undefined)
-        assert.ok(!Object.hasOwn(request, 'transcript'));
+        assert.ok(Object.hasOwn(request, 'transcript'));
     }
     assert.equal(saved.requests?.length, 3);
     assert.equal(saved.requests?.[1].closedAt !== undefined, true);

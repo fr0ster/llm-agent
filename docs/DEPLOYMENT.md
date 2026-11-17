@@ -398,7 +398,7 @@ rag:
     keywordWeight: 0.3
 agent:
   ragQueryK: 10
-  historyAutoSummarizeLimit: 10
+  # historyAutoSummarizeLimit: 10  # Deprecated no-op; full history is kept.
 ```
 
 ## Per-store reranking (`rag.retrieval`)

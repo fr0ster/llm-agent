@@ -18,6 +18,7 @@ import {
 } from '@mcp-abap-adt/llm-agent-libs';
 import { makeKnowledgeSemanticIndex } from '../../embedder-knowledge-index.js';
 import { JsonlKnowledgeBackend } from '../../jsonl-knowledge-backend.js';
+import { controllerStorageKey } from '../caller-scoped-backend.js';
 import {
   ControllerCoordinatorHandler,
   type ControllerHandlerDeps,
@@ -55,7 +56,7 @@ function fakeCtx(overrides: Partial<PipelineContext> = {}): {
   const ctx = {
     sessionId: 'sess-1',
     textOrMessages: 'do the thing',
-    options: undefined,
+    options: { userId: 'test-user' },
     externalResults: undefined,
     requestLogger,
     yield: (c: Captured) => {
@@ -63,7 +64,10 @@ function fakeCtx(overrides: Partial<PipelineContext> = {}): {
     },
     ...overrides,
   } as unknown as PipelineContext;
-  return { ctx, captured };
+  return {
+    ctx: { ...ctx, options: { userId: 'test-user', ...ctx.options } },
+    captured,
+  };
 }
 
 /** Subagent stub backed by a scripted queue; each send() shifts one result. */
@@ -219,7 +223,13 @@ describe('#243 REOPENED — control-failure write hits a real embedder-backed RA
       `expected the captured tool error to surface; got: ${JSON.stringify(body)}`,
     );
 
-    const bundle = await hydrateBundle(backend, 'sess-1');
+    const bundle = await hydrateBundle(backend, testStorageKey('sess-1'));
     assert.ok(bundle.runId, 'a runId must have been minted');
   });
 });
+
+function testStorageKey(sessionId: string): string {
+  const key = controllerStorageKey({ userId: 'test-user' }, sessionId);
+  assert.ok(key);
+  return key;
+}

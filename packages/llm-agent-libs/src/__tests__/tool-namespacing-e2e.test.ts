@@ -250,16 +250,26 @@ test('#244 e2e — route 2 (fireInternalToolsAsync): the mixed internal/external
     'calling search',
     [{ id: 'tc_1', name: 's1__Search', arguments: { q: 'hurricane' } }],
     registry,
-    'session-mixed',
+    {
+      kind: 'caller',
+      caller: {
+        userId: 'test-user',
+        sessionId: 'session-mixed',
+        isAdmin: false,
+      },
+    },
     {
       toolClientMap,
       toolCache: new NoopToolCache(),
       metrics,
-      options: undefined,
+      options: { userId: 'test-user', sessionId: 'session-mixed' },
     },
   );
 
-  const consumed = await registry.consume('session-mixed');
+  const consumed = await registry.consume({
+    userId: 'test-user',
+    sessionId: 'session-mixed',
+  });
   assert.ok(consumed, 'the pending entry must resolve');
   assert.equal(consumed?.results[0]?.toolName, 's1__Search');
   assert.equal(consumed?.results[0]?.text, 'weather-result');

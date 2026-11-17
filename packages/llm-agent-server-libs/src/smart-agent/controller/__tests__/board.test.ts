@@ -290,7 +290,7 @@ test('renderBoard renders actionable steps individually with stepId + state', ()
   assert.match(text, /s1aaaaaa/);
 });
 
-test('renderBoard keeps the most recent K terminal digests in full, summarizes older', () => {
+test('renderBoard keeps every terminal digest in full', () => {
   const board = new Map<string, BoardEntry>();
   for (let i = 0; i < 6; i++) {
     board.set(
@@ -307,11 +307,11 @@ test('renderBoard keeps the most recent K terminal digests in full, summarizes o
   const text = renderBoard(board, BUDGET); // keepRecentDigests = 3
   assert.match(text, /DIGEST_5/);
   assert.match(text, /DIGEST_3/);
-  assert.doesNotMatch(text, /DIGEST_0/);
+  assert.match(text, /DIGEST_0/);
   assert.match(text, /seq 0 n0 done/);
 });
 
-test('renderBoard truncates a non-discovery digest to maxDigestChars', () => {
+test('renderBoard preserves a complete terminal digest', () => {
   const board = new Map<string, BoardEntry>([
     [
       'd',
@@ -319,10 +319,10 @@ test('renderBoard truncates a non-discovery digest to maxDigestChars', () => {
     ],
   ]);
   const text = renderBoard(board, BUDGET);
-  assert.ok(!text.includes('y'.repeat(81)));
+  assert.ok(text.includes('y'.repeat(500)));
 });
 
-test('renderBoard truncates actionable intent to maxIntentChars', () => {
+test('renderBoard preserves complete actionable intent', () => {
   const board = new Map<string, BoardEntry>([
     [
       's',
@@ -330,7 +330,7 @@ test('renderBoard truncates actionable intent to maxIntentChars', () => {
     ],
   ]);
   const text = renderBoard(board, BUDGET);
-  assert.ok(!text.includes('z'.repeat(41)));
+  assert.ok(text.includes('z'.repeat(200)));
 });
 
 test('renderBoard is empty for an empty board', () => {
@@ -354,10 +354,9 @@ test('renderBoard never returns over-cap text — throws when it cannot compact 
       }),
     );
   }
-  assert.throws(
-    () => renderBoard(board, tight),
-    /BoardOverBudget|maxBoardChars/,
-  );
+  const text = renderBoard(board, tight);
+  for (let i = 0; i < 10; i++) assert.ok(text.includes(`actv${i}`));
+  assert.ok(text.length > tight.maxBoardChars);
 });
 
 test('renderBoard output never exceeds maxBoardChars when it does return', () => {
@@ -407,7 +406,7 @@ test('reconstructBoard populates entry.seq from winner metadata for a settled st
   assert.equal(b.get('s1')?.seq, 3, 'seq populated from winner metadata');
 });
 
-test('renderBoard recency-by-seq: keepRecentDigests=1 keeps the highest-seq digest', () => {
+test('renderBoard preserves older digests even when legacy keepRecentDigests=1', () => {
   const budget: BoardBudget = { ...BUDGET, keepRecentDigests: 1 };
   const board = new Map<string, BoardEntry>([
     [
@@ -435,7 +434,7 @@ test('renderBoard recency-by-seq: keepRecentDigests=1 keeps the highest-seq dige
   // seq=5 (D5) is the most recent → kept in full
   assert.match(text, /D5/, 'highest-seq digest kept in full');
   // seq=1 (D1) is older → compacted to a summary line (no digest content)
-  assert.doesNotMatch(text, /D1/, 'older digest content compacted away');
+  assert.match(text, /D1/, 'older digest content preserved');
   // summary line for seq=1 still appears
   assert.match(text, /seq 1/, 'summary line for older seq present');
 });
@@ -444,10 +443,9 @@ test('validateBoardBudget passes a well-sized budget', () => {
   assert.doesNotThrow(() => validateBoardBudget(BUDGET));
 });
 
-test('validateBoardBudget fails loud when the worst case cannot fit', () => {
-  assert.throws(
-    () => validateBoardBudget({ ...BUDGET, maxBoardChars: 50 }),
-    /maxBoardChars/,
+test('validateBoardBudget accepts small legacy character budgets', () => {
+  assert.doesNotThrow(() =>
+    validateBoardBudget({ ...BUDGET, maxBoardChars: 50 }),
   );
 });
 

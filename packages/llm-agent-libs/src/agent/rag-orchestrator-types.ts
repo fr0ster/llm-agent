@@ -20,6 +20,7 @@ import type {
 import type { SmartAgentConfig } from '../agent.js';
 import type { IMcpToolRegistry } from '../mcp/tool-registry.js';
 import type { IMetrics } from '../metrics/types.js';
+import type { CallerResolution } from '../policy/caller-identity.js';
 import type { ToolAvailabilityRegistry } from '../policy/tool-availability-registry.js';
 import type { OwnedRagStore } from '../rag/owner-bound-query.js';
 import type { IReranker } from '../reranker/types.js';
@@ -48,10 +49,12 @@ export interface RagOrchestratorDeps {
   translateQueryStores: Set<string> | undefined;
   /** Optional strategy overrides (default to the module-scope impls). */
   toEnglishForRag?: typeof toEnglishForRag;
+  /** @deprecated history is no longer summarized; full history is kept */
   summarizeHistory?: typeof summarizeHistory;
 }
 
 export interface OrchestrateOptions {
+  identity?: CallerResolution;
   opts: CallOptions | undefined;
   rootSpan: ISpan;
   sessionId: string;

@@ -46,6 +46,87 @@ function state(plan?: DialoguePlan): DialogueState {
   };
 }
 
+for (const resultContent of ['stored result', '']) {
+  test(`restored planner keeps tool declarations, arguments and results (result: ${JSON.stringify(resultContent)})`, async () => {
+    const store = new InMemoryDialogueStateStore();
+    const saved = state({ version: 1, steps: [], status: 'active' });
+    const declaration: Message = {
+      role: 'assistant',
+      content: null,
+      tool_calls: ['stored-call', 'second-call'].map((id) => ({
+        id,
+        type: 'function',
+        function: {
+          name: 'lookup',
+          arguments: JSON.stringify({ query: id, limit: 25 }),
+        },
+      })),
+    };
+    const results: Message[] = [
+      { role: 'tool', content: resultContent, tool_call_id: 'stored-call' },
+      { role: 'tool', content: 'second result', tool_call_id: 'second-call' },
+    ];
+    const open = record();
+    assert.ok(open.transcript);
+    open.transcript.push(
+      { role: 'assistant', content: 'Checking stored records.' },
+      declaration,
+      ...results,
+      { role: 'assistant', content: 'Stored answer.' },
+    );
+    const transcript = structuredClone(open.transcript);
+    saved.requests = [open];
+    saved.requestSeq = 1;
+    await store.save('stored-tools', saved);
+    const inputs: Message[][] = [];
+    const session = await DialogueSession.open({
+      caller: {
+        sessionId: 'stored-tools',
+        userId: 'test-user',
+        isAdmin: false,
+      },
+      id: 'stored-tools',
+      store,
+      maxCorrections: 0,
+      board: { workers: new Map() },
+      planner: {
+        async process(messages) {
+          inputs.push(structuredClone(messages));
+          return { ok: true, value: { content: 'continued' } };
+        },
+      },
+    });
+    try {
+      assert.deepEqual(session.snapshot().requests?.[0].transcript, transcript);
+      await session.send('continue');
+      assert.equal(inputs.length, 1);
+      const messages = inputs[0];
+      assert.ok(messages);
+      const index = messages.findIndex((message) =>
+        message.tool_calls?.some((call) => call.id === 'stored-call'),
+      );
+      assert.ok(index > 0, 'stored declaration must reach the planner');
+      assert.deepEqual(messages[index - 1], {
+        role: 'assistant',
+        content: 'Checking stored records.',
+      });
+      assert.deepEqual(messages.slice(index, index + 4), [
+        { ...declaration, content: '' },
+        ...results,
+        { role: 'assistant', content: 'Stored answer.' },
+      ]);
+      assert.deepEqual(
+        session
+          .snapshot()
+          .requests?.[0].transcript?.slice(0, transcript.length),
+        transcript,
+      );
+    } finally {
+      await session.close();
+    }
+  });
+}
+
 test('builder preserves fresh messages, omits empty blocks, adds notes and does not mutate input', () => {
   const open = record();
   const before = structuredClone(open);
@@ -87,30 +168,29 @@ test('projection preserves assistant replies and user inputs verbatim', () => {
   assert.deepEqual(open, before);
 });
 
-test('storage bounds retain first and newest, count dropped parts and visibly cut oversized messages', () => {
+test('storage and planner preserve all 452 messages including 200k-character content', () => {
   const open = record();
   open.transcript = [];
-  appendRequestMessage(open, { role: 'user', content: 'a'.repeat(200_000) });
-  for (let i = 0; i < 450; i++)
-    appendRequestMessage(open, { role: 'user', content: `part ${i}` });
-  appendRequestMessage(open, {
-    role: 'assistant',
-    content: 'z'.repeat(200_000),
-  });
-  assert.ok(open.transcript.length <= 400);
-  assert.ok(size(open.transcript) <= 400_000);
-  assert.match(
-    open.transcript[0].content ?? '',
-    /^a+[[]stored cut: 150000 of 200000 characters\]$/,
-  );
-  assert.match(
-    open.transcript[1].content ?? '',
-    /^\[dropped \d+ earlier messages\]$/,
-  );
-  assert.match(open.transcript.at(-1)?.content ?? '', /^z+[[]stored cut:/);
+  const messages: Message[] = [
+    { role: 'user', content: 'a'.repeat(200_000) },
+    ...Array.from({ length: 450 }, (_, i) => ({
+      role: 'user' as const,
+      content: `part ${i}`,
+    })),
+    { role: 'assistant', content: 'z'.repeat(200_000) },
+  ];
+  for (const message of messages) appendRequestMessage(open, message);
+  assert.deepEqual(open.transcript, messages);
+  const text = project(open)
+    .map((message) => message.content)
+    .join('\n');
+  for (const message of messages)
+    assert.ok(text.includes(message.content ?? ''));
+  assert.doesNotMatch(text, /\[(?:stored cut:|dropped|elided) /);
+  assert.notEqual(open.transcript[0], messages[0]);
 });
 
-test('size bound drops middle parts without merging independent user inputs', () => {
+test('storage preserves every middle part beyond a million characters', () => {
   const open = record();
   for (let i = 0; i < 10; i++)
     appendRequestMessage(open, {
@@ -119,9 +199,13 @@ test('size bound drops middle parts without merging independent user inputs', ()
     });
   appendRequestMessage(open, { role: 'user', content: 'short follow-up' });
   assert.ok(open.transcript);
-  assert.ok(size(open.transcript) <= 400_000);
-  assert.equal(open.transcript[0].content, 'first');
-  assert.equal(open.transcript.at(-1)?.content, 'short follow-up');
+  assert.equal(open.transcript.length, 12);
+  assert.equal(
+    size(open.transcript),
+    1_000_000 + 'firstshort follow-up'.length,
+  );
+  for (let i = 0; i < 10; i++)
+    assert.ok(project(open)[0].content?.includes(String(i).repeat(100_000)));
   assert.match(project(open).at(-1)?.content ?? '', /short follow-up$/);
 });
 
@@ -286,7 +370,7 @@ test('corrective calls rebuild context containing intermediate replies, actions 
   await session.close();
 });
 
-test('legacy restore opens one bounded legacy request; next done-plan input starts r2; new state round trips', async () => {
+test('legacy restore opens one complete legacy request; next done-plan input starts r2; new state round trips', async () => {
   const store = new InMemoryDialogueStateStore();
   await store.save('restore', state({ version: 1, steps: [], status: 'done' }));
   const options = {
@@ -590,7 +674,7 @@ test('suppressed event replies stay out of pending delivery', async () => {
   await session.close();
 });
 
-test('new_request discards the old call, rebuilds retrieval, and keeps only the new request transcript', async () => {
+test('new_request discards the old call, rebuilds retrieval, and retains the closed transcript and projects the new request', async () => {
   const store = new InMemoryDialogueStateStore();
   await store.save(
     'boundary',
@@ -652,7 +736,10 @@ test('new_request discards the old call, rebuilds retrieval, and keeps only the 
     assert.equal(searches, 2);
     const snapshot = session.snapshot();
     assert.equal(snapshot.requests?.length, 2);
-    assert.equal(snapshot.requests?.[0].transcript, undefined);
+    assert.deepEqual(
+      snapshot.requests?.[0].transcript?.map((message) => message.content),
+      ['legacy input', 'new work'],
+    );
     const request = snapshot.requests?.[1];
     assert.ok(request?.transcript);
     assert.equal(request.transcript[0].content, 'new work');
@@ -1056,16 +1143,16 @@ test('projection preserves corrections, consent, ownership, errors and current p
     /Correction: use only approved records. I consent to dropping step B./,
   );
   assert.match(text, /from r0: task old.*done/);
-  assert.doesNotMatch(text, /task old.*running/);
+  assert.match(text, /task old.*running/);
   assert.match(text, /permission denied; needs user action/);
   assert.match(text, /keep A; B skipped with consent/);
-  assert.match(text, /\[delivered\] task old done/);
-  assert.ok(!text.includes(output));
+  assert.ok(text.includes(output));
+  assert.ok(text.includes(output));
   assert.deepEqual(open, before);
   assert.deepEqual(project(structuredClone(open)), project(open));
 });
 
-test('restart restores delivered-answer references, complete history and bounded task notice', async () => {
+test('restart restores delivered-answer references, complete history and complete task notice', async () => {
   const store = new InMemoryDialogueStateStore();
   const output = 'retained report '.repeat(2000);
   const saved = state({
@@ -1123,8 +1210,8 @@ test('restart restores delivered-answer references, complete history and bounded
     planner: {
       async process(messages) {
         const text = messages.map((message) => message.content).join('\n');
-        assert.ok(!text.includes(output));
-        assert.match(text, /\[delivered\] task saved/);
+        assert.ok(text.includes(output));
+        assert.ok(text.includes(output));
         assert.match(text, /Correction: only approved data. Yes, I consent./);
         assert.match(text, /unresolved permission error/);
         assert.match(text, /current plan/);
@@ -1148,7 +1235,7 @@ test('restart restores delivered-answer references, complete history and bounded
   }
 });
 
-test('intentional answer compaction does not retrieve the full answer back into context', () => {
+test('complete answer is preserved even when a delivery reference exists', () => {
   const open = record();
   const output = 'large answer '.repeat(3000);
   appendRequestMessage(open, {
@@ -1170,7 +1257,7 @@ test('intentional answer compaction does not retrieve the full answer back into 
       },
     ],
   });
-  assert.ok(!JSON.stringify(projected).includes(output));
+  assert.ok(JSON.stringify(projected).includes(output));
   assert.ok(!JSON.stringify(projected).includes('session memory'));
 });
 
@@ -1218,8 +1305,8 @@ for (const restart of [false, true]) {
     const checkContext = (messages: Message[]): void => {
       const text = messages.map((message) => message.content).join('\n');
       assert.ok(text.includes(note));
-      assert.ok(text.includes('[delivered]'));
-      assert.ok(!text.includes(output));
+      assert.ok(text.includes(output));
+      assert.ok(text.includes(output));
       checked = true;
     };
     const session = await DialogueSession.open({
@@ -1259,8 +1346,8 @@ for (const restart of [false, true]) {
         .map((message) => message.content)
         .join('\n');
       assert.ok(projected.includes(note));
-      assert.ok(projected.includes('[delivered]'));
-      assert.ok(!projected.includes(output));
+      assert.ok(projected.includes(output));
+      assert.ok(projected.includes(output));
       if (restart) {
         persisted = await store.load('delivery-note');
         assert.ok(persisted);
@@ -1364,7 +1451,7 @@ for (const label of ['actions', 'task events']) {
             text,
             /task broken for removed .*failed: permission denied/,
           );
-          assert.doesNotMatch(text, /\[actions\] plan updated/);
+          assert.match(text, /\[actions\] plan updated/);
           return { ok: true as const, value: { content: 'Still waiting.' } };
         },
       },
@@ -1500,3 +1587,76 @@ for (const removed of [false, true]) {
     }
   });
 }
+
+test('restore and subsequent turns preserve over 200 messages, requests and long request text', async () => {
+  const store = new InMemoryDialogueStateStore();
+  const longText = 'q'.repeat(200_000);
+  const saved = state({ version: 1, steps: [], status: 'active' });
+  saved.conversation = Array.from({ length: 501 }, (_, i) => ({
+    role: i % 2 === 0 ? 'user' : 'assistant',
+    content: i === 0 ? longText : `message-${i}`,
+  }));
+  saved.requests = Array.from({ length: 250 }, (_, i) => ({
+    id: `r${i + 1}`,
+    openedAt: i,
+    ...(i === 249 ? {} : { closedAt: i + 1 }),
+    text: i === 0 || i === 249 ? longText : String(i),
+    transcript: [
+      {
+        role: 'user' as const,
+        content: i === 0 || i === 249 ? longText : String(i),
+      },
+    ],
+    ...(i === 249
+      ? {
+          plan: {
+            steps: 0,
+            done: 0,
+            failed: 0,
+            skipped: 0,
+            status: 'active' as const,
+          },
+        }
+      : {}),
+    lastTurnOk: true,
+  }));
+  saved.requestSeq = 250;
+  await store.save('full-restore', saved);
+  const options = {
+    caller: { sessionId: 'full-restore', userId: 'test-user', isAdmin: false },
+    id: 'full-restore',
+    store,
+    plannerContext: 'conversation' as const,
+    maxCorrections: 0,
+    board: { workers: new Map() },
+    planner: {
+      async process(messages: Message[]) {
+        const text = messages.map((message) => message.content).join('\n');
+        for (const message of saved.conversation)
+          assert.ok(text.includes(message.content ?? ''));
+        return { ok: true as const, value: { content: 'reply' } };
+      },
+    },
+  };
+  const session = await DialogueSession.open(options);
+  try {
+    assert.deepEqual(session.snapshot().conversation, saved.conversation);
+    assert.deepEqual(session.snapshot().requests, saved.requests);
+    await session.send(longText);
+    const snapshot = session.snapshot();
+    assert.ok(snapshot.conversation.length > 500);
+    assert.equal(snapshot.requests?.length, 251);
+    assert.equal(snapshot.requests?.at(-1)?.text, longText);
+    assert.equal(snapshot.requests?.[0].text, longText);
+    assert.equal(snapshot.requests?.[0].transcript?.[0].content, longText);
+    const restored = await DialogueSession.open(options);
+    try {
+      assert.deepEqual(restored.snapshot().requests, snapshot.requests);
+      assert.deepEqual(restored.snapshot().conversation, snapshot.conversation);
+    } finally {
+      await restored.close();
+    }
+  } finally {
+    await session.close();
+  }
+});

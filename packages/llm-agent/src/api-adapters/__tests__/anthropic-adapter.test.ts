@@ -602,8 +602,8 @@ describe('AnthropicApiAdapter.transformStream', () => {
 // An Anthropic tool round-trip (assistant tool_use -> user tool_result) must,
 // after adapter normalization, look identical to the OpenAI-normalized shape
 // that buildExternalResults consumes: assistant.tool_calls[{id}] followed by a
-// role:'tool' message carrying tool_call_id. The deterministic `ext:` id then
-// lets a stateless re-run correlate the client-executed result by id.
+// role:'tool' message carrying tool_call_id. The returned `ext:` ID then
+// correlates the client-executed result by its exact call ID.
 // ---------------------------------------------------------------------------
 
 describe('AnthropicApiAdapter external-tool normalization', () => {
@@ -654,21 +654,11 @@ describe('AnthropicApiAdapter external-tool normalization', () => {
     assert.equal(toolMsg.tool_call_id, extId);
     assert.equal(toolMsg.content, 'sunny, 21C');
 
-    // buildExternalResults consumes those turns and keys the result by ext id.
+    // buildExternalResults preserves those turns and keys the result by ext id.
     const { results, sanitizedMessages } = buildExternalResults(
       normalized.messages,
     );
     assert.equal(results.get(extId), 'sunny, 21C');
-    // The consumed external assistant/tool turns are stripped from history.
-    assert.equal(
-      sanitizedMessages.some((m) => m.role === 'tool'),
-      false,
-    );
-    assert.equal(
-      sanitizedMessages.some(
-        (m) => m.role === 'assistant' && (m.tool_calls?.length ?? 0) > 0,
-      ),
-      false,
-    );
+    assert.deepEqual(sanitizedMessages, normalized.messages);
   });
 });

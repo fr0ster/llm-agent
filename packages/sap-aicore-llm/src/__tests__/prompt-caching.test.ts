@@ -379,7 +379,7 @@ const cases: {
   { name: 'empty request', messages: [], noTools: true },
   {
     name: 'no cacheable blocks or tools',
-    messages: [emptyAssistant],
+    messages: [{ role: 'assistant', content: '' }],
     noTools: true,
   },
 ];

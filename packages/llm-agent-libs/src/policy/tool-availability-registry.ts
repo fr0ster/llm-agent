@@ -1,4 +1,5 @@
 import type { LlmTool } from '@mcp-abap-adt/llm-agent';
+import { clearCallerSessionEntries } from './caller-identity.js';
 
 export interface ToolBlockEntry {
   toolName: string;
@@ -9,20 +10,33 @@ export interface ToolBlockEntry {
 export class ToolAvailabilityRegistry {
   private readonly sessions = new Map<string, Map<string, ToolBlockEntry>>();
 
-  clear(sessionId: string): void {
-    this.sessions.delete(sessionId);
+  clear(sessionId: string | undefined): void {
+    if (sessionId !== undefined) this.sessions.delete(sessionId);
+  }
+
+  clearSession(sessionId: string): void {
+    clearCallerSessionEntries(this.sessions, sessionId);
   }
 
   constructor(private readonly defaultTtlMs = 10 * 60 * 1000) {}
 
-  getBlockedToolNames(sessionId: string, now = Date.now()): Set<string> {
+  getBlockedToolNames(
+    sessionId: string | undefined,
+    now = Date.now(),
+  ): Set<string> {
+    if (sessionId === undefined) return new Set();
     const blocked = this.sessions.get(sessionId);
     if (!blocked || blocked.size === 0) return new Set();
     this.prune(sessionId, now);
     return new Set(this.sessions.get(sessionId)?.keys() ?? []);
   }
 
-  isBlocked(sessionId: string, toolName: string, now = Date.now()): boolean {
+  isBlocked(
+    sessionId: string | undefined,
+    toolName: string,
+    now = Date.now(),
+  ): boolean {
+    if (sessionId === undefined) return false;
     const blocked = this.sessions.get(sessionId);
     if (!blocked) return false;
     const entry = blocked.get(toolName);
@@ -36,25 +50,26 @@ export class ToolAvailabilityRegistry {
   }
 
   block(
-    sessionId: string,
+    sessionId: string | undefined,
     toolName: string,
     reason: string,
     ttlMs = this.defaultTtlMs,
     now = Date.now(),
   ): ToolBlockEntry {
     const blockedUntil = now + ttlMs;
+    const entry: ToolBlockEntry = { toolName, blockedUntil, reason };
+    if (sessionId === undefined) return entry;
     let blocked = this.sessions.get(sessionId);
     if (!blocked) {
       blocked = new Map();
       this.sessions.set(sessionId, blocked);
     }
-    const entry: ToolBlockEntry = { toolName, blockedUntil, reason };
     blocked.set(toolName, entry);
     return entry;
   }
 
   filterTools(
-    sessionId: string,
+    sessionId: string | undefined,
     tools: LlmTool[],
     now = Date.now(),
   ): {

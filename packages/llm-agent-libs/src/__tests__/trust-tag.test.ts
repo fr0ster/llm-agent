@@ -98,7 +98,7 @@ test('ContextAssembler projects tool history trust without altering stored conte
   assert.ok(result.ok);
   assert.equal(
     result.value.at(-1)?.content,
-    '[source: system:GetClass; trust 4.5]\nGetClass: raw',
+    '[source: system:GetClass; trust 4.5]\nraw',
   );
   assert.equal(history[0].result.content, 'raw');
 });

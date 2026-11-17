@@ -1,5 +1,9 @@
 import { RagAccessDeniedError } from '@mcp-abap-adt/llm-agent';
 import { normalizeLoopLimit } from '../config/normalize-max-iterations.js';
+import {
+  readCallerResolution,
+  withResolvedCaller,
+} from '../policy/caller-identity.js';
 /**
  * DefaultPipeline — IPipeline implementation backed by PipelineExecutor + stage handlers.
  *
@@ -9,14 +13,14 @@ import { normalizeLoopLimit } from '../config/normalize-max-iterations.js';
  *
  * **Single-phase (default):**
  * ```text
- * classify → summarize → parallel(rag-query tools, rag-query history, rag-query <custom>…) →
+ * classify → parallel(rag-query tools, rag-query history, rag-query <custom>…) →
  * rerank → skill-select → tool-select → assemble → tool-loop → history-upsert
  * ```
  *
  * **Enriched (`enrichedToolSearch: true`):** the tools RAG store is queried in
  * a second phase driven by context from prior retrieval + selected skills:
  * ```text
- * classify → summarize → parallel(rag-query history, rag-query <custom>…) →
+ * classify → parallel(rag-query history, rag-query <custom>…) →
  * rerank → skill-select → build-tool-query → rag-query tools (enriched) →
  * tool-select → assemble → tool-loop → history-upsert
  * ```
@@ -280,17 +284,16 @@ export class DefaultPipeline implements IPipeline {
     externalTools?: LlmTool[],
     clientAdapter?: IClientAdapter,
   ): Promise<PipelineResult> {
-    if (!options?.sessionId?.trim()) {
+    options = withResolvedCaller(options);
+    const identity = readCallerResolution(options);
+    if (!options.sessionId?.trim()) {
       const error = new RagAccessDeniedError(
         'An explicit sessionId is required',
       );
       yieldChunk({ ok: false, error });
       return { timing: [], error };
     }
-    if (
-      !options.caller?.userId?.trim() ||
-      options.caller.sessionId !== options.sessionId
-    ) {
+    if (identity.kind !== 'caller') {
       const error = new RagAccessDeniedError(
         'Caller session does not match request',
       );
@@ -393,10 +396,7 @@ export class DefaultPipeline implements IPipeline {
       }
     }
 
-    const stages: StageDefinition[] = [
-      { id: 'classify', type: 'classify' },
-      { id: 'summarize', type: 'summarize' },
-    ];
+    const stages: StageDefinition[] = [{ id: 'classify', type: 'classify' }];
 
     const needsTranslate = ragChildren.length > 0 || (enriched && hasToolsRag);
     if (needsTranslate) {
@@ -534,6 +534,7 @@ export class DefaultPipeline implements IPipeline {
         ),
       },
       sessionId: options.sessionId,
+      callerResolution: readCallerResolution(options),
 
       // Dependencies (resolved once in initialize)
       mainLlm: this.deps.mainLlm,

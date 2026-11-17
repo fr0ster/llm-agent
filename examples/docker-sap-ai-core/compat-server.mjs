@@ -1112,7 +1112,7 @@ const server = createServer(async (req, res) => {
             });
             const secondMessages = [
               ...messagesWithHistory,
-              { role: 'assistant', tool_calls: toolCalls },
+              msg,
               ...toolResultMessages,
             ];
 

@@ -19,7 +19,7 @@ import {
   resultStepSchema,
 } from './structured-plan.js';
 import type { TaskBoard } from './task-board.js';
-import { compactText, taskNotice } from './task-reference.js';
+import { taskNotice } from './task-reference.js';
 import {
   renderToolTrace,
   VERDICT_EVIDENCE_GUIDANCE,
@@ -338,8 +338,6 @@ export class PlannerToolsClient implements IMcpClient {
               );
               const blocks: string[] = [];
               if (isCheck) blocks.push(VERDICT_EVIDENCE_GUIDANCE);
-              let size = blocks.join('\n\n').length;
-              let legacyBlocks = 0;
               let hasReferences = false;
               for (const source of sources) {
                 if (!source) throw new Error('dependency step is missing');
@@ -372,18 +370,7 @@ export class PlannerToolsClient implements IMcpClient {
                 ]
                   .filter(Boolean)
                   .join('\n');
-                if (ref) {
-                  hasReferences = true;
-                } else {
-                  const nextSize =
-                    size + block.length + (legacyBlocks || isCheck ? 2 : 0);
-                  if (nextSize > 120_000)
-                    throw new Error(
-                      `result of step ${source.id} (task ${task.id}) requires ${block.length} characters; total ${nextSize} exceeds 120000 (already ${size}); split or narrow the step`,
-                    );
-                  size = nextSize;
-                  legacyBlocks++;
-                }
+                if (ref) hasReferences = true;
                 blocks.push(block);
               }
               if (hasReferences)
@@ -491,7 +478,7 @@ export class PlannerToolsClient implements IMcpClient {
               ? {
                   id: task.id,
                   worker: task.worker,
-                  goal: compactText(task.goal, 200),
+                  goal: task.goal,
                   state: task.state,
                   result: task.result,
                   lastActivityAt: task.lastActivityAt,
@@ -499,7 +486,7 @@ export class PlannerToolsClient implements IMcpClient {
                   currentAction:
                     task.currentAction === undefined
                       ? undefined
-                      : compactText(task.currentAction, 120),
+                      : task.currentAction,
                   budgetExhausted: task.budgetExhausted,
                   toolCalls: task.toolCalls,
                   maxToolCalls: task.maxToolCalls,
@@ -554,12 +541,12 @@ export class PlannerToolsClient implements IMcpClient {
                         currentAction:
                           currentAction === undefined
                             ? undefined
-                            : compactText(currentAction, 120),
+                            : currentAction,
                       }
                     : {}),
                   id,
                   worker,
-                  goal: compactText(goal, 200),
+                  goal: goal,
                   state,
                 }),
               ),
@@ -724,9 +711,7 @@ export class PlannerToolsClient implements IMcpClient {
             ...plan,
             steps: steps.slice(offset, offset + limit).map((step) => ({
               ...step,
-              ...(step.note === undefined
-                ? {}
-                : { note: compactText(step.note, 600) }),
+              ...(step.note === undefined ? {} : { note: step.note }),
             })),
             total: steps.length,
             offset,

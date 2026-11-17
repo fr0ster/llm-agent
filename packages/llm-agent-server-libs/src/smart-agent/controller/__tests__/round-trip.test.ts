@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
-  externalToolCallId,
   type IKnowledgeRagHandle,
   type KnowledgeEntry,
   type LlmStreamChunk,
@@ -13,6 +12,7 @@ import {
   InMemoryKnowledgeBackend,
   SessionRequestLogger,
 } from '@mcp-abap-adt/llm-agent-libs';
+import { controllerStorageKey } from '../caller-scoped-backend.js';
 import {
   ControllerCoordinatorHandler,
   type ControllerHandlerDeps,
@@ -38,14 +38,17 @@ function fakeCtx(overrides: {
   const ctx = {
     sessionId: overrides.sessionId,
     textOrMessages: overrides.textOrMessages,
-    options: undefined,
+    options: { userId: 'test-user' },
     externalResults: overrides.externalResults,
     requestLogger,
     yield: (c: Captured) => {
       captured.push(c);
     },
   } as unknown as PipelineContext;
-  return { ctx, captured };
+  return {
+    ctx: { ...ctx, options: { userId: 'test-user', ...ctx.options } },
+    captured,
+  };
 }
 
 /** Subagent stub backed by a scripted queue; each send() shifts one result. */
@@ -169,24 +172,24 @@ describe('ControllerCoordinatorHandler – suspend/resume round-trip', () => {
     );
     assert.ok(surfaced, 'leg 1: tool_calls chunk surfaced to caller');
 
-    const bundle1 = await hydrateBundle(sharedBackend, SESSION_ID);
+    const bundle1 = await hydrateBundle(
+      sharedBackend,
+      testStorageKey(SESSION_ID),
+    );
     assert.equal(
       bundle1.pending?.kind,
       'external-tool',
       'leg 1: pending.kind === external-tool',
     );
 
-    const expectedExtId = externalToolCallId(TOOL_NAME, TOOL_ARGS);
-    const actualExtId =
-      bundle1.pending?.kind === 'external-tool' ? bundle1.pending.extId : '';
+    assert.ok(surfaced.ok);
+    const extId = surfaced.value.toolCalls?.[0].id;
+    assert.ok(extId);
+    assert.match(extId, /^ext:[0-9a-f-]{36}:0$/);
     assert.equal(
-      actualExtId,
-      expectedExtId,
-      'leg 1: pending.extId matches externalToolCallId()',
+      bundle1.pending?.kind === 'external-tool' ? bundle1.pending.extId : '',
+      extId,
     );
-
-    // Capture extId for leg 2 (must be consistent with the computed value).
-    const extId = expectedExtId;
 
     // ------------------------------------------------------------------
     // Leg 2: resume — provide the external tool result; planner completes
@@ -248,7 +251,10 @@ describe('ControllerCoordinatorHandler – suspend/resume round-trip', () => {
       'leg 2: final stop chunk with content "all done" was yielded',
     );
 
-    const bundle2 = await hydrateBundle(sharedBackend, SESSION_ID);
+    const bundle2 = await hydrateBundle(
+      sharedBackend,
+      testStorageKey(SESSION_ID),
+    );
     assert.equal(
       bundle2.pending,
       undefined,
@@ -262,3 +268,9 @@ describe('ControllerCoordinatorHandler – suspend/resume round-trip', () => {
     );
   });
 });
+
+function testStorageKey(sessionId: string): string {
+  const key = controllerStorageKey({ userId: 'test-user' }, sessionId);
+  assert.ok(key);
+  return key;
+}

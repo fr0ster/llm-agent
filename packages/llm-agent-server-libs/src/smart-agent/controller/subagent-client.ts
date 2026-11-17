@@ -29,6 +29,7 @@ export function diagnosticCallOptions(
   if (!opts) return undefined;
   const out: CallOptions = {};
   if (opts.caller !== undefined) out.caller = opts.caller;
+  if (opts.userId !== undefined) out.userId = opts.userId;
   if (opts.sessionLogger !== undefined) out.sessionLogger = opts.sessionLogger;
   if (opts.trace !== undefined) out.trace = opts.trace;
   if (opts.sessionId !== undefined) out.sessionId = opts.sessionId;
@@ -73,8 +74,17 @@ export function makeSubagentClient(llm: ILlm): ISubagentClient {
         'llm',
       );
       const usage = v.usage ? { usage: v.usage } : {};
-      if (v.toolCalls && v.toolCalls.length > 0)
-        return { kind: 'tool_call', toolCalls: v.toolCalls, ...usage };
+      if (
+        v.finishReason === 'tool_calls' &&
+        v.toolCalls &&
+        v.toolCalls.length > 0
+      )
+        return {
+          kind: 'tool_call',
+          ...(v.content ? { content: v.content } : {}),
+          toolCalls: v.toolCalls,
+          ...usage,
+        };
       return { kind: 'content', content: v.content ?? '', ...usage };
     },
   };

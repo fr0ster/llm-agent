@@ -43,7 +43,7 @@ export interface BuilderPromptsConfig {
   reasoning?: string;
   /** Prompt for query translation for RAG. */
   ragTranslate?: string;
-  /** Prompt for history summarization. */
+  /** @deprecated history is no longer summarized; full history is kept */
   historySummary?: string;
 }
 

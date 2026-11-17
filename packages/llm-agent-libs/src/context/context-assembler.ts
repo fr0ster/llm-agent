@@ -17,6 +17,7 @@ import {
   toModelToolMessages,
 } from '@mcp-abap-adt/llm-agent';
 
+import { ToolResponseRound } from '../pipeline/handlers/tool-response-round.js';
 import { validateTimeZone, withRequestTime } from './request-time.js';
 
 // ---------------------------------------------------------------------------
@@ -349,43 +350,51 @@ export class ContextAssembler implements IContextAssembler {
       ].filter(Boolean);
       messages.push({ role: 'system', content: parts.join('\n\n') });
 
-      // Separate regular messages from tool call records
-      const regularMessages: Message[] = [];
-      const toolMessages: Message[] = [];
+      // Resolve trust before windowing, then retain each record at its original
+      // position among regular messages. The explicit window counts regular messages.
+      const regularMessages = history.filter(
+        (item): item is Message =>
+          !isToolCallRecord(item) && item.role !== 'system',
+      );
+      const modelHistory = toModelToolMessages(regularMessages, this.toolTrust);
+      const start =
+        this.historyRecencyWindow !== undefined
+          ? Math.max(0, modelHistory.length - this.historyRecencyWindow)
+          : 0;
+      if (start === modelHistory.length)
+        messages.push({ role: 'user', content: action.text });
 
+      let regularIndex = 0;
       for (const item of history) {
         if (isToolCallRecord(item)) {
           const raw = item.result.content;
           const text = typeof raw === 'string' ? raw : JSON.stringify(raw);
-          toolMessages.push(
-            toModelToolMessage(
+          const round = new ToolResponseRound(
+            null,
+            [
               {
-                role: 'tool',
-                content: `${item.call.name}: ${text}`,
+                name: item.call.name,
+                arguments:
+                  item.call.rawArguments ?? JSON.stringify(item.call.arguments),
               },
+            ],
+            undefined,
+            [item.call.id],
+          );
+          round.resolve(round.calls[0], text, item.result.isError);
+          const exchange = round.finish();
+          messages.push(
+            exchange.assistant,
+            toModelToolMessage(
+              exchange.results[0],
               this.toolTrust,
               item.call.name,
             ),
           );
         } else if (item.role !== 'system') {
-          regularMessages.push(item);
+          if (regularIndex >= start) messages.push(modelHistory[regularIndex]);
+          regularIndex++;
         }
-      }
-
-      // Apply recency window — keep only the last N messages from client history.
-      // Older messages are excluded; they are available via RAG stores if needed.
-      // Resolve tool names before their assistant declarations can be windowed out.
-      const modelHistory = toModelToolMessages(regularMessages, this.toolTrust);
-      const windowedMessages =
-        this.historyRecencyWindow !== undefined &&
-        modelHistory.length > this.historyRecencyWindow
-          ? modelHistory.slice(-this.historyRecencyWindow)
-          : modelHistory;
-
-      if (windowedMessages.length > 0) {
-        messages.push(...windowedMessages);
-      } else {
-        messages.push({ role: 'user', content: action.text });
       }
       if (requestContent) {
         let index = messages.length - 1;
@@ -397,7 +406,6 @@ export class ContextAssembler implements IContextAssembler {
           };
         else messages.push({ role: 'user', content: requestContent });
       }
-      messages.push(...toolMessages);
 
       return {
         ok: true,

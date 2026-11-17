@@ -20,7 +20,7 @@ import {
   mergeOfferedTools,
   type StepRoundState,
   type ToolLoopContextStrategyFactory,
-  type ToolRound,
+  toToolCallDelta,
 } from '@mcp-abap-adt/llm-agent';
 import {
   type KnowledgeBackend,
@@ -28,6 +28,7 @@ import {
   LegacyTranscriptContextStrategy,
   type PipelineContext,
   summaryToUsage,
+  ToolResponseRound,
 } from '@mcp-abap-adt/llm-agent-libs';
 import { writePlanDecision } from './artifacts.js';
 import {
@@ -35,6 +36,8 @@ import {
   BoardOverBudgetError,
   renderLiveBoard,
 } from './board.js';
+import { callerScopedBackend } from './caller-scoped-backend.js';
+import { ControllerControlHistory } from './control-history.js';
 import { DefaultStepExecutionControl } from './default-step-execution-control.js';
 import type { IFinalizer } from './finalizer.js';
 import { writeArtifact } from './memorizer.js';
@@ -281,6 +284,20 @@ export class ControllerCoordinatorHandler implements IStageHandler {
     _config: Record<string, unknown>,
     _span: unknown,
   ): Promise<boolean> {
+    const scoped = callerScopedBackend(
+      this.deps.backend,
+      ctx.options,
+      ctx.sessionId,
+    );
+    const handler = new ControllerCoordinatorHandler({
+      ...this.deps,
+      backend: scoped.backend,
+      knowledgeRagFor: () => this.deps.knowledgeRagFor(scoped.storageKey),
+    });
+    return handler.executeScoped(ctx);
+  }
+
+  private async executeScoped(ctx: PipelineContext): Promise<boolean> {
     const deps = this.deps;
     // Seams resolved once per execute(); consumed by Task 11+ (reviewer/finalizer/run-scope).
     const now = deps.now ?? (() => new Date().toISOString());
@@ -515,8 +532,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
             runId: bundle.runId,
             seq: bundle.inFlightStep?.seq,
             attempt: bundle.inFlightStep?.attempt,
-            // Stable fetch identity (tool+args) so run-scoped recall dedups
-            // duplicate fetches of the same object across attempts.
+            // The result belongs to this pending suspension only.
             identityKey: extId,
             writeOrdinal: bundle.writeOrdinal,
             content: result,
@@ -524,13 +540,25 @@ export class ControllerCoordinatorHandler implements IStageHandler {
           ctx.options,
         );
         if (bundle.inFlightStep) {
+          // Separate pre-release history from this new continuation so legacy
+          // corrections can be anchored before the external exchange is recorded.
+          if (
+            bundle.inFlightStep.contextStrategyState === undefined &&
+            bundle.inFlightStep.transcript.length > 0
+          ) {
+            bundle.inFlightStep.contextStrategyState =
+              new LegacyTranscriptContextStrategy({
+                rawMessages: bundle.inFlightStep.transcript,
+              }).snapshot();
+            bundle.inFlightStep.transcript.length = 0;
+          }
           // External CONTINUATION: inject the tool result into the durable
           // transcript so the loop RE-RUNS the in-flight step (the executor
           // continues from its own tool call). Bounded by toolCallCount, NOT a
           // crash-replay — externalContinuation tells block (A) not to charge
           // resumeCount when it re-runs the step this invocation.
           bundle.inFlightStep.transcript.push(
-            {
+            bundle.pending.assistantMessage ?? {
               role: 'assistant',
               content: null,
               tool_calls: [
@@ -544,7 +572,12 @@ export class ControllerCoordinatorHandler implements IStageHandler {
                 },
               ],
             },
-            { role: 'tool', tool_call_id: extId, content: result },
+            {
+              role: 'tool',
+              tool_call_id: extId,
+              content: result,
+            },
+            ...(bundle.pending.siblingResults ?? []),
           );
           bundle.pending = undefined;
           bundle.runState = 'active';
@@ -1198,15 +1231,24 @@ export class ControllerCoordinatorHandler implements IStageHandler {
         strategy = makeStrategy(); // fresh step
       }
 
-      // Durable, bounded control-message tail (retries only). Aliased IN PLACE so
-      // push/prune mutate the persisted field; a legacy call with no inFlightStep gets
-      // an ephemeral local (no durable tail to persist).
-      let controlTail: Message[];
       if (inFlight) {
-        inFlight.controlTail = inFlight.controlTail ?? [];
-        controlTail = inFlight.controlTail;
-      } else {
-        controlTail = [];
+        inFlight.controlTail ??= [];
+        inFlight.controlTailAnchors ??= [];
+      }
+      const controlTail = inFlight?.controlTail ?? [];
+      const controlAnchors = inFlight?.controlTailAnchors ?? [];
+      const controlHistory = new ControllerControlHistory(
+        controlTail,
+        controlAnchors,
+        staticPrefix.length,
+      );
+      if (controlAnchors.length < controlTail.length) {
+        controlHistory.migrate(
+          await strategy.form(
+            { prefix: staticPrefix, queryText: step.instructions },
+            ctx.options,
+          ),
+        );
       }
 
       // External CONTINUATION bridge: the resume preamble APPENDS the freshly
@@ -1228,8 +1270,24 @@ export class ControllerCoordinatorHandler implements IStageHandler {
             results.push(t[i]);
             i++;
           }
-          if (assistant)
-            await strategy.record({ assistant, results }, ctx.options);
+          if (assistant) {
+            // This exchange was recorded before suspension. Preserve its IDs;
+            // only a new model response creates a new ToolResponseRound.
+            const calls = assistant.tool_calls ?? [];
+            if (
+              calls.length !== results.length ||
+              calls.some(
+                (call, index) => call.id !== results[index].tool_call_id,
+              )
+            ) {
+              throw new Error(
+                'A recorded tool call must have exactly one result',
+              );
+            }
+            const round = { assistant, results };
+            await strategy.record(round, ctx.options);
+            controlHistory.record([round.assistant, ...round.results]);
+          }
         }
         inFlight.transcript.length = 0;
       }
@@ -1330,7 +1388,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
             note: reason,
             remainder: '',
             stepId: step.stepId,
-            digest: reason.slice(0, cfg.maxDigestChars ?? 500),
+            digest: reason,
             writeOrdinal: bundle.writeOrdinal,
             // NEVER empty: an empty `content` is handed to the RAG's embedder,
             // and a real embedder (e.g. SAP AI Core) rejects empty text with an
@@ -1380,14 +1438,13 @@ export class ControllerCoordinatorHandler implements IStageHandler {
         // TIME/abort gate BEFORE each executor round (count is gated per tool call).
         const rc = budget.shouldContinueRound(state());
         if (!rc.continue) return cutControlFailure(rc.reason);
-        // Form the per-round executor context: the immutable prefix + the strategy's
-        // rounds, then the bounded control tail (retries). NEVER a growing raw array.
-        const messages = (
+        // Restore corrections at their chronological positions between rounds.
+        const messages = controlHistory.restore(
           await strategy.form(
             { prefix: staticPrefix, queryText: step.instructions },
             ctx.options,
-          )
-        ).concat(controlTail);
+          ),
+        );
         // Merged signal into the executor call. A reject WHILE the step budget is
         // aborted is a step-timeout cut (NOT the executor-error retry); a normal
         // return after the budget fired is ALSO a step-timeout cut.
@@ -1422,7 +1479,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
                   approved: res.content,
                   remainder: '',
                   note: '',
-                  digest: res.content.slice(0, cfg.maxDigestChars ?? 500),
+                  digest: res.content,
                 },
               };
 
@@ -1503,7 +1560,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
         if (res.kind === 'error') {
           retries++;
           if (retries <= cfg.maxRetries) {
-            controlTail.push({
+            controlHistory.append(messages, {
               role: 'user',
               content: `The previous attempt failed: ${res.error}. Retry the step.`,
             });
@@ -1520,12 +1577,15 @@ export class ControllerCoordinatorHandler implements IStageHandler {
         }
 
         // res.kind === 'tool_call' → route the FIRST tool call.
-        const firstCall = res.toolCalls[0];
-        if (firstCall === undefined) {
+        if (res.toolCalls.length === 0) {
+          const round = new ToolResponseRound(res.content ?? null, []).finish();
+          const assistant = round.assistant;
+          await strategy.record(round, ctx.options);
+          controlHistory.record([assistant]);
           // Empty tool-call array → treat as an executor error (retry/replan).
           retries++;
           if (retries <= cfg.maxRetries) {
-            controlTail.push({
+            controlHistory.append([...messages, assistant], {
               role: 'user',
               content:
                 'The previous attempt produced an empty tool call. Retry the step.',
@@ -1541,33 +1601,72 @@ export class ControllerCoordinatorHandler implements IStageHandler {
             `step "${step.name}" produced an empty tool call`,
           );
         }
-        // Normalize the StreamToolCall (full or delta) into an LlmToolCall inline.
-        const call: LlmToolCall =
-          'arguments' in firstCall &&
-          typeof firstCall.arguments === 'object' &&
-          firstCall.arguments !== null
-            ? {
-                id: ('id' in firstCall && firstCall.id) || 'call',
-                name: ('name' in firstCall && firstCall.name) || '',
-                arguments: firstCall.arguments as Record<string, unknown>,
-              }
-            : (() => {
-                let iArgs: Record<string, unknown> = {};
-                const raw =
-                  'arguments' in firstCall ? firstCall.arguments : undefined;
-                if (typeof raw === 'string' && raw.length > 0) {
-                  try {
-                    iArgs = JSON.parse(raw) as Record<string, unknown>;
-                  } catch {
-                    iArgs = {};
-                  }
-                }
-                return {
-                  id: ('id' in firstCall && firstCall.id) || 'call',
-                  name: ('name' in firstCall && firstCall.name) || '',
-                  arguments: iArgs,
-                };
-              })();
+        const responseRound = new ToolResponseRound(
+          res.content ?? null,
+          res.toolCalls.map((raw, index) => {
+            const call = toToolCallDelta(raw, index);
+            return {
+              name: call.name ?? '',
+              arguments:
+                typeof raw.arguments === 'string'
+                  ? raw.arguments
+                  : (call.arguments ?? ''),
+            };
+          }),
+          isExternalTool,
+        );
+        const calls = responseRound.executableCalls();
+        if (calls.length === 0 || calls[0].id !== responseRound.calls[0].id) {
+          for (const sibling of calls) {
+            responseRound.resolve(
+              sibling,
+              'Error: not executed: the controller accepts one tool call per response.',
+              true,
+            );
+          }
+          const round = responseRound.finish();
+          await strategy.record(round, ctx.options);
+          controlHistory.record([round.assistant, ...round.results]);
+          await persistExchange();
+          continue;
+        }
+        const call = calls[0];
+        const assistant = responseRound.assistant;
+        const siblingResults: Message[] = calls.slice(1).map((item) => ({
+          role: 'tool',
+          tool_call_id: item.id,
+          content: `Error: not executed: the controller accepts one tool call per response. Request "${item.name}" again after the preceding result.`,
+        }));
+        // Content identities below belong to context metadata, never resume matching.
+        siblingResults.forEach((message, index) => {
+          responseRound.add(message, {
+            identityKey: externalToolCallId(
+              calls[index + 1].name,
+              calls[index + 1].arguments,
+            ),
+            isError: true,
+          });
+        });
+        const recordResponse = async (
+          text: string,
+          isError = false,
+        ): Promise<void> => {
+          bundle.writeOrdinal = (bundle.writeOrdinal ?? 0) + 1;
+          responseRound.add(
+            { role: 'tool', tool_call_id: call.id, content: text },
+            {
+              identityKey: externalToolCallId(call.name, call.arguments),
+              isError,
+            },
+          );
+          const round = {
+            ...responseRound.finish(),
+            ordinal: bundle.writeOrdinal,
+          };
+          await strategy.record(round, ctx.options);
+          controlHistory.record([round.assistant, ...round.results]);
+          await persistExchange();
+        };
         const name = call.name;
         const args = call.arguments;
 
@@ -1576,11 +1675,14 @@ export class ControllerCoordinatorHandler implements IStageHandler {
           // prospective count gate is consulted BEFORE the increment so an external
           // tool cannot exceed the cap. Cut → control-failed replan at the same seq.
           const g = budget.canExecuteTool(state());
-          if (!g.continue) return cutControlFailure(g.reason);
+          if (!g.continue) {
+            await recordResponse(`Error: not executed: ${g.reason}`, true);
+            return cutControlFailure(g.reason);
+          }
           // Snapshot the strategy state SO FAR before we suspend (the resume injection
           // appends the external assistant/tool pair, recorded on the next invocation).
           if (inFlight) inFlight.contextStrategyState = strategy.snapshot();
-          const extId = externalToolCallId(name, args);
+          const extId = call.id;
           if (inFlight) inFlight.toolCallCount += 1;
           // The new marker REPLACES any prior pending (a fresh extId).
           bundle.pending = {
@@ -1589,6 +1691,8 @@ export class ControllerCoordinatorHandler implements IStageHandler {
             toolName: name,
             args,
             position: step.name,
+            assistantMessage: assistant,
+            siblingResults: responseRound.resolved(),
           };
           bundle.runState = 'suspended';
           await persistBundle(deps.backend, sessionId, bundle);
@@ -1605,9 +1709,17 @@ export class ControllerCoordinatorHandler implements IStageHandler {
         // stale / out-of-scope) is rejected — NOT executed — and fed back as a
         // tool-not-available error so the executor retries with an offered tool.
         if (!offeredInternalNames.has(name)) {
+          await recordResponse(
+            `Error: Tool "${name}" is not available for this step.`,
+            true,
+          );
           retries++;
           if (retries <= cfg.maxRetries) {
-            controlTail.push({
+            const preceding = await strategy.form(
+              { prefix: staticPrefix, queryText: step.instructions },
+              ctx.options,
+            );
+            controlHistory.append(controlHistory.restore(preceding), {
               role: 'user',
               content: `Tool "${name}" is not available for this step. Use only the tools provided to you.`,
             });
@@ -1624,7 +1736,10 @@ export class ControllerCoordinatorHandler implements IStageHandler {
         // Prospective count gate BEFORE the increment (the before-increment model:
         // the increment happens only after canExecuteTool allows the call).
         const g = budget.canExecuteTool(state());
-        if (!g.continue) return cutControlFailure(g.reason);
+        if (!g.continue) {
+          await recordResponse(`Error: not executed: ${g.reason}`, true);
+          return cutControlFailure(g.reason);
+        }
         // Durable round-trip count: ++ and persist BEFORE surfacing so it survives a
         // resume (never a per-resume local).
         if (inFlight) {
@@ -1665,6 +1780,10 @@ export class ControllerCoordinatorHandler implements IStageHandler {
           // Map that to a step-timeout control-failure BEFORE the McpError escalate so
           // it is NOT mis-classified as MCP-unavailable (20.4.0 escalate order is
           // otherwise unchanged).
+          await recordResponse(
+            `Error: ${mcpErr instanceof Error ? mcpErr.message : String(mcpErr)}`,
+            true,
+          );
           if (budget.signal.aborted) return cutControlFailure('step-timeout');
           if (mcpErr instanceof McpError) {
             const now = deps.now ?? (() => new Date().toISOString());
@@ -1696,67 +1815,8 @@ export class ControllerCoordinatorHandler implements IStageHandler {
           },
           'mcp',
         );
-        // #213 immediate cut: a delivered tool-level error ends the step NOW.
-        // The executor tool-loop does NOT continue (no further tool call, no
-        // reviewer for this step); reuse cutControlFailure so the step settles
-        // 'failed' with the tool's error text and the planner replans / surfaces
-        // it. Read result.isError directly here — BEFORE the round reaches the
-        // context strategy — so no Message/meta replay is needed. The durable
-        // failed step-result + plannerPrivate note (written by cutControlFailure)
-        // ARE the resume carrier; the mcp-result artifact is intentionally not
-        // relied on (the cut may never call strategy.record).
-        if (result.isError) {
-          return cutControlFailure(result.text);
-        }
-        // Record this exchange as a coherent assistant→tool ROUND (OpenAI protocol)
-        // via the context strategy so the executor LLM continues from its own tool
-        // call. The strategy owns the per-round context (Window keeps a bounded
-        // buffer; RagRecall (Task 13) persists the mcp-result + recalls it) — the
-        // handler no longer writes the mcp-result artifact or grows a raw transcript.
-        // Durable monotonic write ordinal for this mcp-result write. RagRecall's
-        // run-scoped dedup (isBetterMcp) tie-breaks on writeOrdinal FIRST (then
-        // createdAt); since all mcp-result writes in a step share createdAt, a later
-        // same-identityKey fetch only wins with a strictly-higher ordinal. Increment
-        // BEFORE building the round so the value rides on it into strategy.record.
-        bundle.writeOrdinal = (bundle.writeOrdinal ?? 0) + 1;
-        const round: ToolRound = {
-          assistant: {
-            role: 'assistant',
-            content: null,
-            tool_calls: [
-              {
-                id: call.id,
-                type: 'function',
-                function: { name, arguments: JSON.stringify(args) },
-              },
-            ],
-          },
-          results: [
-            {
-              role: 'tool',
-              tool_call_id: call.id,
-              content: result.text,
-            },
-          ],
-          // Stable fetch identity (tool+args) for run-scoped recall dedup, plus
-          // the tool-level isError threaded from the bridge (#213). An unavailable
-          // MCP server still aborts BEFORE record; a returned result carries its
-          // real isError so the executor sees a failed call as failed, not as a
-          // delivered success it retries forever.
-          meta: [
-            {
-              identityKey: externalToolCallId(name, args),
-              isError: result.isError,
-            },
-          ],
-          ordinal: bundle.writeOrdinal,
-          roundId: undefined,
-        };
-        await strategy.record(round, ctx.options);
-        // A recorded round supersedes any pending control retry → prune the tail.
-        controlTail.length = 0;
-        // The executor saw this round → make the strategy state durable before next.
-        await persistExchange();
+        await recordResponse(result.text, result.isError);
+        if (result.isError) return cutControlFailure(result.text);
       }
     } finally {
       // Dispose the step budget (clears its wall-clock timer) on EVERY exit.
@@ -1893,7 +1953,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
         note,
         remainder: '',
         stepId: step.stepId,
-        digest: text.slice(0, this.deps.config.budgets.maxDigestChars ?? 500),
+        digest: text,
         writeOrdinal: bundle.writeOrdinal,
         content: text,
       },

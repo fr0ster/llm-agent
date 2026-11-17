@@ -31,7 +31,7 @@ export function fakeServerCtx(): IServerPipelineContext {
     knowledgeRagFor: () =>
       ({ add: async () => {}, query: async () => [] }) as never,
     toolsRag: { query: async () => [], lookup: () => undefined },
-    callMcp: async () => '',
+    callMcp: async () => ({ text: '', isError: false }),
     subagents: [{ name: 'worker', description: 'stub' }],
     mintStepperId: () => 's1',
     mintTurnId: () => 't1',

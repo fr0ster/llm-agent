@@ -1,10 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import {
-  externalToolCallId,
-  type ISubAgentInput,
-  type LlmTool,
-} from '@mcp-abap-adt/llm-agent';
+import type { ISubAgentInput, LlmTool } from '@mcp-abap-adt/llm-agent';
 import type { SmartAgent } from '../../agent.js';
 import { testCallOptions } from '../../testing/index.js';
 import { SmartAgentSubAgent } from '../smart-agent-subagent.js';
@@ -53,7 +49,7 @@ it('preserves exhausted internal budget while awaiting an external result', asyn
 });
 
 describe('SmartAgentSubAgent external-tool mapping', () => {
-  it('maps a tool_calls stop on an external tool to awaiting-external with rewritten ext id', async () => {
+  it('maps a tool_calls stop on an external tool to awaiting-external with the original suspension id', async () => {
     const agent = makeAgent({
       content: '',
       iterations: 1,
@@ -79,7 +75,7 @@ describe('SmartAgentSubAgent external-tool mapping', () => {
     assert.equal(res.status, 'awaiting-external');
     assert.deepEqual(res.pendingExternalToolCalls, [
       {
-        id: externalToolCallId('rag_add', { collection: 'context' }),
+        id: 'call_x',
         name: 'rag_add',
         arguments: { collection: 'context' },
       },

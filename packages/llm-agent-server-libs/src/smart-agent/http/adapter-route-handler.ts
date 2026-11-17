@@ -63,8 +63,8 @@ export async function handleAdapterRequest(
   // tool_use/tool_result blocks into the OpenAI-shaped Message[]
   // (assistant.tool_calls + role:'tool' with tool_call_id). Run the same
   // external-results extraction the OpenAI path uses so Anthropic clients get
-  // identical stateless-resume behaviour: consumed external turns are stripped
-  // and their results threaded to the agent keyed by deterministic `ext:` id.
+  // identical stateless-resume behaviour: the full history is preserved and
+  // results are also threaded to the agent keyed by the returned `ext:` call ID.
   const { results: externalResults, sanitizedMessages } = buildExternalResults(
     normalized.messages,
   );

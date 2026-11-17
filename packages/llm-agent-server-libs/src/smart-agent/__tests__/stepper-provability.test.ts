@@ -13,7 +13,7 @@ import { rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import type { StreamChunk } from '@mcp-abap-adt/llm-agent';
+import type { LlmToolCall, StreamChunk } from '@mcp-abap-adt/llm-agent';
 import { TokenLedger } from '@mcp-abap-adt/llm-agent';
 import {
   CyclicReActExecutor,
@@ -45,7 +45,7 @@ function makeIdMinter() {
 function scriptedLlm(
   responses: Array<{
     content: string;
-    toolCalls?: { name: string; arguments: unknown }[];
+    toolCalls?: { name: string; arguments: LlmToolCall['arguments'] }[];
     usage?: {
       promptTokens: number;
       completionTokens: number;
@@ -63,7 +63,13 @@ function scriptedLlm(
         ok: true as const,
         value: {
           content: r.content,
-          toolCalls: r.toolCalls,
+          finishReason: r.toolCalls?.length
+            ? ('tool_calls' as const)
+            : ('stop' as const),
+          toolCalls: r.toolCalls?.map((call, index) => ({
+            ...call,
+            id: `scripted-${i}-${index}`,
+          })),
           usage: r.usage ?? SMALL_USAGE,
         },
       };

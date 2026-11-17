@@ -30,6 +30,50 @@ const tick = () => new Promise<void>((r) => setImmediate(r));
 
 const tools = new PlannerToolsClient();
 
+test('restores 150000 request records without overflowing and preserves the highest sequence', async () => {
+  const store = new InMemoryDialogueStateStore();
+  const requests = Array.from({ length: 150_000 }, (_, index) => ({
+    id: `r${150_000 - index}`,
+    openedAt: 0,
+    closedAt: 1,
+    text: 'request',
+  }));
+  for (const requestSeq of [0, 200_000]) {
+    const id = `large-restore-${requestSeq}`;
+    await store.save(id, {
+      requests,
+      requestSeq,
+      conversation: [],
+      tasks: [],
+      pending: [],
+      savedAt: 0,
+    });
+    const session = await DialogueSession.open({
+      id,
+      caller: testCallOptions({ sessionId: id }).caller,
+      store,
+      board: { workers: new Map() },
+      planner: {
+        async process() {
+          return { ok: true, value: { content: 'Ready' } };
+        },
+      },
+    });
+    try {
+      const restored = session.snapshot();
+      assert.equal(restored.requests?.length, 150_000);
+      assert.equal(restored.requestSeq, Math.max(150_000, requestSeq));
+      await session.send('Next request');
+      assert.equal(
+        session.snapshot().requests?.at(-1)?.id,
+        `r${Math.max(150_000, requestSeq) + 1}`,
+      );
+    } finally {
+      await session.close();
+    }
+  }
+});
+
 test('several completions during a busy user turn are listed once in order; silent event reply stays in history', async () => {
   const release = deferred();
 
@@ -498,7 +542,7 @@ test('close stops tasks, waits for active turn, rejects queued sends and never s
   await assert.rejects(s.send('late'), /dialogue session closed/);
 });
 
-test('history is bounded, snapshots and memory store are isolated, save errors are swallowed', async () => {
+test('history is complete, snapshots and memory store are isolated, save errors are swallowed', async () => {
   const store = new InMemoryDialogueStateStore();
 
   let saves = 0;
@@ -532,7 +576,7 @@ test('history is bounded, snapshots and memory store are isolated, save errors a
 
   for (let i = 0; i < 110; i++) await s.send(String(i));
 
-  assert.equal(s.snapshot().conversation.length, 199);
+  assert.equal(s.snapshot().conversation.length, 221);
 
   assert.equal(saves, 110);
 
@@ -549,7 +593,7 @@ test('history is bounded, snapshots and memory store are isolated, save errors a
 
   snapshot.conversation.length = 0;
 
-  assert.equal(s.snapshot().conversation.length, 199);
+  assert.equal(s.snapshot().conversation.length, 221);
 
   await store.save('copy', s.snapshot());
 
@@ -564,7 +608,7 @@ test('history is bounded, snapshots and memory store are isolated, save errors a
   await s.close();
 });
 
-test('history trimming preserves user action prefixes and restores isolated action markers', async () => {
+test('complete history preserves user action prefixes and restores isolated action markers', async () => {
   const store = new InMemoryDialogueStateStore();
   const options = {
     caller: { sessionId: 'action-prefix', userId: 'test-user', isAdmin: false },
@@ -580,18 +624,18 @@ test('history trimming preserves user action prefixes and restores isolated acti
   const session = await DialogueSession.open(options);
   for (let i = 0; i < 110; i++) await session.send(`[actions] user ${i}`);
   const snapshot = session.snapshot();
-  assert.equal(snapshot.conversation.length, 199);
-  assert.equal(snapshot.conversation[0].content, '[actions] user 11');
-  assert.ok(snapshot.conversationLeadingActions?.includes(198));
+  assert.equal(snapshot.conversation.length, 221);
+  assert.equal(snapshot.conversation[0].content, '[actions] user 0');
+  assert.ok(snapshot.conversationLeadingActions?.includes(220));
   assert.ok(snapshot.conversationLeadingActions);
   snapshot.conversationLeadingActions.length = 0;
-  assert.ok(session.snapshot().conversationLeadingActions?.includes(198));
+  assert.ok(session.snapshot().conversationLeadingActions?.includes(220));
 
   const restored = await DialogueSession.open(options);
   await restored.send('[actions] user 110');
   const history = restored.snapshot().conversation;
-  assert.equal(history.length, 199);
-  assert.equal(history[0].content, '[actions] user 12');
+  assert.equal(history.length, 223);
+  assert.equal(history[0].content, '[actions] user 0');
   assert.equal(history.at(-3)?.content, '[actions] none\n[actions] user 110');
   await restored.close();
   await session.close();
@@ -1645,7 +1689,7 @@ for (const mode of [
     }
   });
 
-test('task events inject bounded notices without get_task hints', async () => {
+test('task events inject complete notices without get_task hints', async () => {
   const output = `${'large result '.repeat(3000)}END`;
   const reported = deferred();
   const seen: string[] = [];
@@ -1680,10 +1724,10 @@ test('task events inject bounded notices without get_task hints', async () => {
             goal: 'document',
           });
         } else if (calls === 2) {
-          assert.ok(!seen[1].includes(output));
+          assert.ok(seen[1].includes(output));
           assert.equal(seen[1].split('summary:').length - 1, 1);
           assert.match(seen[1], /chars: 39003/);
-          assert.match(seen[1], /truncated, 39003 chars/);
+          assert.doesNotMatch(seen[1], /truncated, 39003 chars/);
           reported.resolve();
         } else {
           assert.ok(!seen.at(-1)?.includes(output));
@@ -1691,7 +1735,7 @@ test('task events inject bounded notices without get_task hints', async () => {
             task_id: 't1',
           });
           assert.ok(result.ok);
-          assert.ok(!JSON.stringify(result.value).includes('END'));
+          assert.ok(JSON.stringify(result.value).includes('END'));
           assert.ok(!seen[1].includes('use get_task to read output'));
         }
         return { ok: true, value: { content: 'NO_MESSAGE' } };

@@ -45,7 +45,11 @@ export interface ConfigReloadDeps {
   applyAgentUpdate(update: Record<string, unknown>): void;
   mirrorCfg(
     agentPatch: Record<string, unknown>,
-    prompts: { ragTranslate?: string; historySummary?: string },
+    prompts: {
+      ragTranslate?: string;
+      /** @deprecated history is no longer summarized; full history is kept */
+      historySummary?: string;
+    },
   ): void;
   drainWorkers(): Promise<void>;
   invalidateSessions(): Promise<void>;
@@ -87,6 +91,7 @@ export class ConfigReloadWatcher implements IConfigReloadWatcher {
       agentUpdate.toolUnavailableTtlMs = update.toolUnavailableTtlMs;
     if (update.showReasoning !== undefined)
       agentUpdate.showReasoning = update.showReasoning;
+    // Retain deprecated values for config round trips; the agent ignores them.
     if (update.historyAutoSummarizeLimit !== undefined)
       agentUpdate.historyAutoSummarizeLimit = update.historyAutoSummarizeLimit;
     if (update.prompts?.ragTranslate !== undefined)

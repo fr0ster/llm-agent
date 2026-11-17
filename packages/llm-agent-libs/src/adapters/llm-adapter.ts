@@ -22,6 +22,7 @@ import {
   type LlmToolCallDelta,
   type Result,
 } from '@mcp-abap-adt/llm-agent';
+import { parseToolArguments } from '../pipeline/handlers/tool-response-round.js';
 import { withAbort } from '../utils/with-abort.js';
 
 export type { AgentCallOptions, BaseAgentLlmBridge };
@@ -120,10 +121,10 @@ function parseProviderResponse(
   // OpenAI / DeepSeek format
   if (providerRaw.choices?.[0]?.message?.tool_calls) {
     for (const tc of providerRaw.choices[0].message.tool_calls) {
-      let args: Record<string, unknown> = {};
-      try {
-        args = JSON.parse(tc.function.arguments);
-      } catch {
+      const rawArguments =
+        typeof tc.function.arguments === 'string' ? tc.function.arguments : '';
+      const args = parseToolArguments(rawArguments);
+      if (args === undefined) {
         onDiagnostic?.({
           stage: 'response',
           code: 'TOOL_ARGUMENTS_JSON_PARSE_FAILED',
@@ -133,15 +134,21 @@ function parseProviderResponse(
             toolName: tc.function?.name,
           },
         });
-        args = {};
       }
-      toolCalls.push({ id: tc.id, name: tc.function.name, arguments: args });
+      toolCalls.push({
+        id: tc.id,
+        name: tc.function.name,
+        arguments: args ?? {},
+        ...(args === undefined ? { rawArguments } : {}),
+      });
     }
 
     return {
       content: raw.content,
       toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
-      finishReason: toolCalls.length > 0 ? 'tool_calls' : 'stop',
+      finishReason:
+        providerRaw.choices[0].finish_reason ??
+        (toolCalls.length > 0 ? 'tool_calls' : 'stop'),
       usage,
       raw: providerRaw,
     };
@@ -151,10 +158,13 @@ function parseProviderResponse(
   if (Array.isArray(providerRaw.content)) {
     for (const block of providerRaw.content) {
       if (block.type === 'tool_use') {
+        const rawArguments = JSON.stringify(block.input) ?? '';
+        const args = parseToolArguments(rawArguments);
         toolCalls.push({
           id: block.id,
           name: block.name,
-          arguments: block.input ?? {},
+          arguments: args ?? {},
+          ...(args === undefined ? { rawArguments } : {}),
         });
       }
     }
@@ -163,7 +173,11 @@ function parseProviderResponse(
       content: raw.content,
       toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
       finishReason:
-        providerRaw.stop_reason === 'tool_use' ? 'tool_calls' : 'stop',
+        providerRaw.stop_reason === 'tool_use'
+          ? 'tool_calls'
+          : providerRaw.stop_reason === 'max_tokens'
+            ? 'length'
+            : 'stop',
       usage,
       raw: providerRaw,
     };

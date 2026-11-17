@@ -10,6 +10,7 @@ import type {
 } from '@mcp-abap-adt/llm-agent';
 import { addCacheTokenUsage } from '@mcp-abap-adt/llm-agent';
 import { normalizeLoopLimit } from '../../config/normalize-max-iterations.js';
+import { ToolResponseRound } from '../../pipeline/handlers/tool-response-round.js';
 import { composeTask } from './compose-task.js';
 
 export class SelfDispatch implements IDispatchStrategy {
@@ -37,7 +38,7 @@ export class SelfDispatch implements IDispatchStrategy {
       'You are an autonomous agent. Complete the user-assigned step concisely.';
     const priorBlock =
       Object.values(ctx.stepResults)
-        .map((r) => `- ${r.stepId}: ${r.output.slice(0, 300)}`)
+        .map((r) => `- ${r.stepId}: ${r.output}`)
         .join('\n') || '(none)';
     const userMsg = `${composeTask(step, ctx)}\n\nResults so far:\n${priorBlock}`;
 
@@ -169,8 +170,11 @@ export class SelfDispatch implements IDispatchStrategy {
       });
       if (!res.ok) throw res.error;
       add(res.value.usage);
-      const toolCalls = res.value.toolCalls ?? [];
-      if (toolCalls.length === 0) {
+      const modelCalls =
+        res.value.finishReason === 'tool_calls'
+          ? (res.value.toolCalls ?? [])
+          : [];
+      if (modelCalls.length === 0) {
         return {
           content: res.value.content,
           usage,
@@ -179,25 +183,21 @@ export class SelfDispatch implements IDispatchStrategy {
         };
       }
 
-      messages.push({
-        role: 'assistant',
-        content: res.value.content || null,
-        tool_calls: toolCalls.map((tc) => ({
-          id: tc.id,
-          type: 'function' as const,
-          function: {
-            name: tc.name,
-            arguments: JSON.stringify(tc.arguments ?? {}),
-          },
+      const round = new ToolResponseRound(
+        res.value.content,
+        modelCalls.map((call) => ({
+          ...call,
+          arguments: call.rawArguments ?? JSON.stringify(call.arguments),
         })),
-      });
+      );
+      const toolCalls = round.executableCalls();
       for (const tc of toolCalls) {
         if (exhausted()) {
-          messages.push({
-            role: 'tool',
-            tool_call_id: tc.id,
-            content: `Error: not executed: tool-call budget of ${maxToolCalls} for this request is exhausted; return what you have and report what is missing`,
-          });
+          round.resolve(
+            tc,
+            `Error: not executed: tool-call budget of ${maxToolCalls} for this request is exhausted; return what you have and report what is missing`,
+            true,
+          );
           continue;
         }
         toolCallCount++;
@@ -212,8 +212,10 @@ export class SelfDispatch implements IDispatchStrategy {
           sessionId: ctx.sessionId,
           usage: ctx.usage?.with({ role: 'executor' }),
         });
-        messages.push({ role: 'tool', content: out, tool_call_id: tc.id });
+        round.resolve(tc, out);
       }
+      const complete = round.finish();
+      messages.push(complete.assistant, ...complete.results);
     }
 
     // A limit was hit: one final tool-free turn so we answer from what was

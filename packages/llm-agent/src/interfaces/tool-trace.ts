@@ -2,7 +2,7 @@ export type ToolTraceEntry = {
   /** One-based dispatch order; gaps identify omitted calls. */
   sequence: number;
   toolName: string;
-  /** Sanitized compact JSON, possibly truncated and no longer parseable. */
+  /** Sanitized JSON or text preserved without character truncation. */
   arguments: string;
   resultExcerpt: string;
 } & (
@@ -17,9 +17,3 @@ export interface ToolTrace {
   /** False when evidence is known to be partial or calls remain unsettled. */
   complete: boolean;
 }
-
-export const TOOL_TRACE_MAX_ENTRIES = 50;
-export const TOOL_TRACE_ARGUMENT_CHARS = 400;
-export const TOOL_TRACE_RESULT_CHARS = 300;
-export const TOOL_TRACE_ERROR_CHARS = 300;
-export const TOOL_TRACE_RENDER_CHARS = 8_000;

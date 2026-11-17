@@ -5,7 +5,7 @@
  * timer keeps the process alive after every tool batch).
  */
 import assert from 'node:assert/strict';
-import { afterEach, beforeEach, test } from 'node:test';
+import { type TestContext, test } from 'node:test';
 import type {
   IMcpClient,
   McpError as McpErrorType,
@@ -22,35 +22,25 @@ import {
   type IExecuteToolBatchArgs,
 } from '../tool-loop-core.js';
 
-const realSetTimeout = globalThis.setTimeout;
-const realClearTimeout = globalThis.clearTimeout;
-let live: Set<unknown>;
-
-beforeEach(() => {
-  live = new Set();
-  globalThis.setTimeout = ((fn: () => void, ms?: number, ...a: unknown[]) => {
-    const h = realSetTimeout(
-      () => {
-        live.delete(h);
-        fn();
-      },
-      ms,
-      ...a,
-    );
-    live.add(h);
-    return h;
-  }) as typeof setTimeout;
-  globalThis.clearTimeout = ((h: Parameters<typeof clearTimeout>[0]) => {
-    live.delete(h);
-    realClearTimeout(h);
-  }) as typeof clearTimeout;
-});
-
-afterEach(() => {
-  for (const h of live) realClearTimeout(h as never);
-  globalThis.setTimeout = realSetTimeout;
-  globalThis.clearTimeout = realClearTimeout;
-});
+function clock(t: TestContext) {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const scheduled = t.mock.method(globalThis, 'setTimeout');
+  const cleared = t.mock.method(globalThis, 'clearTimeout');
+  return {
+    assertCleared() {
+      for (const call of scheduled.mock.calls) {
+        assert.ok(
+          cleared.mock.calls.some(
+            (clear) => clear.arguments[0] === call.result,
+          ),
+        );
+      }
+    },
+    assertScheduled() {
+      assert.equal(scheduled.mock.callCount(), 1);
+    },
+  };
+}
 
 const span = {
   name: 's',
@@ -99,51 +89,61 @@ async function drain(a: IExecuteToolBatchArgs) {
   return chunks;
 }
 
-test('no timer remains after a fast batch', async () => {
+test('no timer remains after a fast batch', async (t) => {
+  const timers = clock(t);
   await drain(
     args(async () => ({ ok: true, value: { content: 'ok' } as McpToolResult })),
   );
-  assert.equal(live.size, 0);
+  timers.assertCleared();
 });
 
-test('no timer remains after a batch whose tool returns an error result', async () => {
+test('no timer remains after a batch whose tool returns an error result', async (t) => {
+  const timers = clock(t);
   await drain(
     args(async () => ({ ok: false, error: new McpError('boom', 'MCP_ERROR') })),
   );
-  assert.equal(live.size, 0);
+  timers.assertCleared();
 });
 
-test('no timer remains when the batch promise rejects', async () => {
+test('no timer remains after a thrown tool error rejects the batch', async (t) => {
+  const timers = clock(t);
+  const failure = new McpError('rejected', 'MCP_NOT_CONNECTED');
+  let recorded = false;
   await assert.rejects(
-    drain(
-      args(async () => {
-        throw new Error('rejected');
+    () =>
+      drain({
+        ...args(async () => {
+          throw failure;
+        }),
+        onBatchComplete: async () => {
+          recorded = true;
+        },
       }),
-    ),
-    /rejected/,
+    (error) => error === failure,
   );
-  assert.equal(live.size, 0);
+  assert.equal(recorded, false);
+  timers.assertCleared();
 });
 
-test('heartbeat still fires for a slow batch, and no timer remains afterwards', async () => {
-  const chunks = await drain(
-    args(
-      () =>
-        new Promise((resolve) =>
-          realSetTimeout(
-            () =>
-              resolve({ ok: true, value: { content: 'ok' } as McpToolResult }),
-            60,
-          ),
-        ),
-      10,
-    ),
+test('heartbeat fires while the tool is pending, and its timer is cleared', async (t) => {
+  const timers = clock(t);
+  let finishTool = (_result: Result<McpToolResult, McpErrorType>) => {};
+  const pending = new Promise<Result<McpToolResult, McpErrorType>>(
+    (resolve) => {
+      finishTool = resolve;
+    },
   );
-  assert.ok(
-    chunks.some(
-      (c) => (c as { value?: { heartbeat?: unknown } }).value?.heartbeat,
-    ),
-    'heartbeat semantics unchanged',
-  );
-  assert.equal(live.size, 0);
+  const gen = executeToolBatchWithHeartbeat(args(() => pending, 10));
+  const first = gen.next();
+  timers.assertScheduled();
+  t.mock.timers.tick(10);
+  const heartbeat = await first;
+  assert.ok(!heartbeat.done && heartbeat.value.ok);
+  if (!heartbeat.done && heartbeat.value.ok) {
+    assert.equal(heartbeat.value.value.heartbeat?.tool, 'T');
+  }
+  timers.assertCleared();
+  finishTool({ ok: true, value: { content: 'ok' } });
+  assert.equal((await gen.next()).done, true);
+  timers.assertCleared();
 });

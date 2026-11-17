@@ -1,9 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import {
-  TOOL_TRACE_RENDER_CHARS,
-  type ToolTrace,
-} from '@mcp-abap-adt/llm-agent';
+import type { ToolTrace } from '@mcp-abap-adt/llm-agent';
 import { unwrapBuilderResult } from '../../../builder-types.js';
 import { testCallOptions, testRequestAccess } from '../../../testing/index.js';
 import { renderToolTrace } from '../tool-trace-render.js';
@@ -49,7 +46,7 @@ test('checker evidence preserves a complete long trust tag within its budget', (
     source: `system:${name}`,
     trust: 4.5,
   }));
-  assert.ok(rendered.length <= TOOL_TRACE_RENDER_CHARS);
+  assert.ok(rendered.length > 8000);
   assert.ok(
     rendered.includes(`[source: system:${'x'.repeat(5000)}; trust 4.5]`),
   );
@@ -256,12 +253,26 @@ for (const path of ['streaming', 'pipeline']) {
 test('pending-result injection stores raw text and projects its model copy once', async () => {
   const registry = new PendingToolResultsRegistry();
   const results = [{ toolCallId: 'c', toolName: 'GetClass', text: rawText }];
-  registry.set('s', {
-    assistantMessage: assistant,
-    promise: Promise.resolve(results),
-    createdAt: Date.now(),
-  });
-  const raw = await injectPendingResults([], registry, 's', undefined);
+  registry.set(
+    { userId: 'test-user', sessionId: 's' },
+    {
+      assistantMessage: assistant,
+      promise: Promise.resolve(results),
+      createdAt: Date.now(),
+    },
+  );
+  const raw = await injectPendingResults(
+    [],
+    registry,
+    {
+      kind: 'caller',
+      caller: { userId: 'test-user', sessionId: 's', isAdmin: false },
+    },
+    {
+      userId: 'test-user',
+      sessionId: 's',
+    },
+  );
   assert.equal(raw[1].content, rawText);
   assert.equal(toModelToolMessages(raw, toolTrust)[1].content, taggedText);
   assert.equal(toModelToolMessages(raw)[1].content, rawText);

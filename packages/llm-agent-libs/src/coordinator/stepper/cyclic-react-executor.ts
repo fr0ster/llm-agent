@@ -13,6 +13,7 @@ import {
   renderTaskSpec,
 } from '@mcp-abap-adt/llm-agent';
 import { normalizeMaxIterations } from '../../config/normalize-max-iterations.js';
+import { ToolResponseRound } from '../../pipeline/handlers/tool-response-round.js';
 
 export interface CyclicReActExecutorDeps {
   llm: import('@mcp-abap-adt/llm-agent').ILlm;
@@ -315,26 +316,23 @@ export class CyclicReActExecutor implements IExecutor {
         });
       }
 
-      const toolCalls = v.toolCalls ?? [];
-      if (toolCalls.length > 0) {
-        toolCallsMade += toolCalls.length;
+      const modelCalls =
+        v.finishReason === 'tool_calls' ? (v.toolCalls ?? []) : [];
+      if (modelCalls.length > 0) {
+        toolCallsMade += modelCalls.length;
         // Relay the assistant turn WITH its tool_calls, then one tool message
         // per call carrying the matching tool_call_id. Anthropic/SAP AI SDK (and
         // the DeepSeek/OpenAI protocol) reject a `tool` message that does not
         // follow an assistant `tool_calls` with the same id — an orphaned
         // tool_result is a hard 400. (Mirrors the 17.0 tool-loop wire shape.)
-        messages.push({
-          role: 'assistant',
-          content: v.content || null,
-          tool_calls: toolCalls.map((tc) => ({
-            id: tc.id,
-            type: 'function' as const,
-            function: {
-              name: tc.name,
-              arguments: JSON.stringify(tc.arguments ?? {}),
-            },
+        const round = new ToolResponseRound(
+          v.content,
+          modelCalls.map((call) => ({
+            ...call,
+            arguments: call.rawArguments ?? JSON.stringify(call.arguments),
           })),
-        });
+        );
+        const toolCalls = round.executableCalls();
         for (const tc of toolCalls) {
           const toolName = tc.name;
           const identityKey = artifactIdentityKey(toolName, tc.arguments ?? {});
@@ -348,11 +346,11 @@ export class CyclicReActExecutor implements IExecutor {
               tool: toolName,
               identityKey,
             });
-            messages.push({
-              role: 'tool',
-              content: `(Already retrieved ${toolName} with these exact arguments earlier in this run — reuse the prior result above; do not fetch it again.)`,
-              tool_call_id: tc.id,
-            });
+            round.resolve(
+              tc,
+              `Error: not executed: (Already retrieved ${toolName} with these exact arguments earlier in this run; reuse the prior result above; do not fetch it again.)`,
+              true,
+            );
             continue;
           }
           // CROSS-step dedup: another step already fetched this exact artefact
@@ -375,11 +373,7 @@ export class CyclicReActExecutor implements IExecutor {
                 tool: toolName,
                 identityKey,
               });
-              messages.push({
-                role: 'tool',
-                content: priorContent,
-                tool_call_id: tc.id,
-              });
+              round.resolve(tc, priorContent);
               continue;
             }
           }
@@ -389,9 +383,32 @@ export class CyclicReActExecutor implements IExecutor {
             tool: toolName,
             args: tc.arguments,
           });
-          const result = await callMcp(toolName, tc.arguments, signal, {
-            usage: input.usage?.with({ role: component }),
-          });
+          let result: string;
+          try {
+            result = await callMcp(toolName, tc.arguments, signal, {
+              usage: input.usage?.with({ role: component }),
+            });
+          } catch (error) {
+            round.resolve(
+              tc,
+              `Error: ${error instanceof Error ? error.message : String(error)}`,
+              true,
+            );
+            for (const skipped of toolCalls.slice(toolCalls.indexOf(tc) + 1)) {
+              round.resolve(
+                skipped,
+                error instanceof ClarifySignal
+                  ? 'Error: not executed: waiting for clarification.'
+                  : 'Error: not executed: preceding tool failed.',
+                true,
+              );
+            }
+            const complete = round.finish();
+            messages.push(complete.assistant, ...complete.results);
+            // The MCP bridge throws terminal failures; every thrown error
+            // propagates with its original type and code.
+            throw error;
+          }
           fetched.add(identityKey);
           onProgress?.({
             kind: 'mcp-result',
@@ -417,12 +434,10 @@ export class CyclicReActExecutor implements IExecutor {
             },
             { signal, usage: input.usage },
           );
-          messages.push({
-            role: 'tool',
-            content: result,
-            tool_call_id: tc.id,
-          });
+          round.resolve(tc, result);
         }
+        const complete = round.finish();
+        messages.push(complete.assistant, ...complete.results);
         noProgressNeeds = 0; // a tool call is progress — reset the no-new-tool gate
         continue;
       }

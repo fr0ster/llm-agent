@@ -126,7 +126,7 @@ for (const pipeline of [false, true]) {
   }
 }
 
-test('worker without submit_report returns the bounded fallback summary', async () => {
+test('worker without submit_report returns the complete fallback summary', async () => {
   const output = 'Report text. '.repeat(100);
   const { deps } = makeDefaultDeps({
     llmResponses: [{ content: output, finishReason: 'stop' }],
@@ -140,9 +140,9 @@ test('worker without submit_report returns the bounded fallback summary', async 
     task: 'Write a report',
   });
   assert.equal(response.output, output);
-  assert.equal(response.summary, output.slice(0, 580) + ' [summary truncated]');
-  assert.equal(response.summary.length, 600);
-  assert.equal(resolveWorkerSummary(response.output).truncated, true);
+  assert.equal(response.summary, output);
+  assert.equal(response.summary.length, output.length);
+  assert.equal(resolveWorkerSummary(response.output).truncated, false);
 });
 
 test('board supplies report kind to the default worker without host tool setup', async () => {
@@ -275,7 +275,9 @@ for (const scenario of [
     const client = createSubmitReportClient();
     const args = {
       summary: scenario === 'long-summary' ? 'S'.repeat(601) : 'Summary',
-      ...(scenario === 'explicit' ? { result: 'Full result' } : {}),
+      ...(scenario === 'explicit' || scenario === 'long-summary'
+        ? { result: 'Full result' }
+        : {}),
     };
     const response = await client.callTool('submit_report', args, {
       dialogueTask: task,
@@ -285,29 +287,28 @@ for (const scenario of [
         scenario === 'collected' ? 'First\n\nSecond' : '',
     });
     assert.ok(response.ok);
-    if (scenario === 'empty' || scenario === 'long-summary') {
+    if (scenario === 'empty') {
       assert.equal(response.value.isError, true);
-      assert.match(
-        String(response.value.content),
-        scenario === 'empty' ? /result/ : /summary/,
-      );
+      assert.match(String(response.value.content), /result/);
       assert.equal(task.readFinish(), undefined);
     } else {
       assert.equal(response.value.isError, undefined);
       assert.equal(
         task.readFinish()?.output,
-        scenario === 'explicit' ? 'Full result' : 'First\n\nSecond',
+        scenario === 'explicit' || scenario === 'long-summary'
+          ? 'Full result'
+          : 'First\n\nSecond',
       );
-      assert.equal(task.readFinish()?.summary, 'Summary');
+      assert.equal(task.readFinish()?.summary, args.summary);
       assert.equal(task.readFinish()?.tool, 'submit_report');
     }
   });
 }
 
-test('fallback summary fits 600 characters with a visible truncation marker', () => {
+test('fallback summary preserves all content', () => {
   assert.deepEqual(resolveWorkerSummary('x'.repeat(700)), {
-    summary: 'x'.repeat(580) + ' [summary truncated]',
-    truncated: true,
+    summary: 'x'.repeat(700),
+    truncated: false,
   });
   assert.deepEqual(resolveWorkerSummary('short'), {
     summary: 'short',
@@ -319,7 +320,7 @@ test('fallback summary fits 600 characters with a visible truncation marker', ()
   });
 });
 
-test('verdict summary keeps verdict and count, cutting the note to 600', () => {
+test('verdict summary keeps the complete verdict, count and note', () => {
   const prefix = 'fail; count: 12; note: ';
   assert.equal(
     resolveVerdictSummary({
@@ -327,7 +328,7 @@ test('verdict summary keeps verdict and count, cutting the note to 600', () => {
       count: 12,
       note: 'n'.repeat(900),
     }),
-    prefix + 'n'.repeat(600 - prefix.length),
+    prefix + 'n'.repeat(900),
   );
   assert.equal(resolveVerdictSummary({ verdict: 'pass' }), 'pass');
 });

@@ -700,6 +700,7 @@ test('controller pipeline: over a REAL boot, s1__Search routes to the SESSION cl
       ]),
       'm-exec': scriptedRoleLlm('m-exec', [
         {
+          finishReason: 'tool_calls',
           toolCalls: [{ id: 'c1', name: 's1__Search', arguments: { q: 'x' } }],
         },
         { content: 'result' },
@@ -808,7 +809,14 @@ test('stepper pipeline: over a REAL boot, s1__Search routes to server 1 with the
             ok: true as const,
             value: {
               content: 'searching',
-              toolCalls: [{ name: 's1__Search', arguments: { q: 'weather' } }],
+              finishReason: 'tool_calls' as const,
+              toolCalls: [
+                {
+                  id: 'namespaced-search',
+                  name: 's1__Search',
+                  arguments: { q: 'weather' },
+                },
+              ],
               usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
             },
           };

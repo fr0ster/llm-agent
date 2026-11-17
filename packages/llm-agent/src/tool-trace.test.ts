@@ -120,7 +120,7 @@ test('sanitization removes nested credentials, headers, known values and free te
   assert.equal(sanitizeTraceValue(text, 2000), text);
 });
 
-test('field bounds, serialization fallback and repeated normalization', () => {
+test('complete fields, serialization fallback and repeated normalization', () => {
   const cycle: { self?: object } = {};
   cycle.self = cycle;
   assert.equal(sanitizeTraceValue(cycle, 400), '[redacted]');
@@ -140,10 +140,13 @@ test('field bounds, serialization fallback and repeated normalization', () => {
     complete: true,
   });
   const first = trace.entries[0];
-  assert.equal(first.toolName.length, 200);
-  assert.equal(first.arguments.length, 400);
-  assert.equal(first.resultExcerpt.length, 300);
-  assert.equal(first.error?.length, 300);
+  assert.equal(first.toolName.length, 500);
+  assert.equal(
+    first.arguments,
+    JSON.stringify({ token: '[redacted]', text: 'a'.repeat(600) }),
+  );
+  assert.equal(first.resultExcerpt.length, 600);
+  assert.equal(first.error?.length, 600);
   assert.doesNotMatch(JSON.stringify(trace), /SECRET/);
   assert.deepEqual(normalizeToolTrace(trace), trace);
 });
@@ -202,7 +205,7 @@ test('embedded argument JSON credentials are shared with results and errors', as
   assert.deepEqual(normalizeToolTrace(normalized), normalized);
 });
 
-test('bounded collector retains first and last calls, replaces settlement and ignores late changes', () => {
+test('collector retains every call, replaces settlement and ignores late changes', () => {
   const collector = new ToolTraceCollector();
   for (let sequence = 1; sequence <= 100; sequence++)
     collector.observe({ ...entry(sequence), outcome: 'unsettled' });
@@ -211,12 +214,9 @@ test('bounded collector retains first and last calls, replaces settlement and ig
   const trace = collector.finalize();
   assert.deepEqual(
     trace.entries.map((item) => item.sequence),
-    [
-      ...Array.from({ length: 25 }, (_, i) => i + 1),
-      ...Array.from({ length: 25 }, (_, i) => i + 76),
-    ],
+    Array.from({ length: 100 }, (_, i) => i + 1),
   );
-  assert.equal(trace.omittedCount, 50);
+  assert.equal(trace.omittedCount, 0);
   assert.equal(trace.complete, true);
   collector.observe(entry(101));
   assert.deepEqual(collector.snapshot(), trace);
@@ -224,7 +224,7 @@ test('bounded collector retains first and last calls, replaces settlement and ig
   assert.equal(collector.snapshot().entries[0].toolName, 'write');
 });
 
-test('an omitted pending call still makes the trace incomplete', () => {
+test('a pending call still makes the trace incomplete', () => {
   const collector = new ToolTraceCollector();
   for (let sequence = 1; sequence <= 60; sequence++)
     collector.observe({ ...entry(sequence), outcome: 'unsettled' });

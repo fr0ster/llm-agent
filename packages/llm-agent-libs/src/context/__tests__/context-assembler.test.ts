@@ -38,6 +38,20 @@ const EMPTY = { ragResults: {}, tools: [] as McpTool[] };
 // ---------------------------------------------------------------------------
 
 describe('ContextAssembler — empty retrieved', () => {
+  it('excludes client system-only history and falls back to the action', async () => {
+    const r = await new ContextAssembler().assemble(ACTION, EMPTY, [
+      { role: 'system', content: 'Original instructions' },
+    ]);
+    assert.ok(r.ok);
+    assert.ok(
+      !r.value.some((message) => message.content === 'Original instructions'),
+    );
+    assert.ok(
+      r.value.some(
+        (message) => message.role === 'user' && message.content === ACTION.text,
+      ),
+    );
+  });
   it('produces static guidance and a user message when all sections empty', async () => {
     const assembler = new ContextAssembler();
     const r = await assembler.assemble(ACTION, EMPTY, []);
@@ -175,7 +189,65 @@ describe('ContextAssembler — all sections', () => {
 // ---------------------------------------------------------------------------
 
 describe('ContextAssembler — tool results', () => {
-  it('one ToolCallRecord → one role:tool message', async () => {
+  for (const historyRecencyWindow of [undefined, 1]) {
+    it(`keeps interleaved tool records before newer messages (window=${historyRecencyWindow})`, async () => {
+      const history = [
+        { role: 'user' as const, content: 'FIRST_USER_SENTINEL' },
+        makeToolRecord('search', 'FIRST_TOOL_SENTINEL'),
+        { role: 'assistant' as const, content: 'ASSISTANT_SENTINEL' },
+        makeToolRecord('calculate', { text: 'SECOND_TOOL_SENTINEL' }),
+        { role: 'user' as const, content: 'LAST_USER_SENTINEL' },
+      ];
+      const original = structuredClone(history);
+      const result = await new ContextAssembler({
+        historyRecencyWindow,
+      }).assemble(ACTION, EMPTY, history);
+      assert.ok(result.ok);
+      assert.deepEqual(
+        result.value.filter((message) => message.role !== 'system'),
+        [
+          ...(historyRecencyWindow === undefined ? [history[0]] : []),
+          {
+            role: 'assistant',
+            content: null,
+            tool_calls: [
+              {
+                id: 'search-1',
+                type: 'function',
+                function: { name: 'search', arguments: '{}' },
+              },
+            ],
+          },
+          {
+            role: 'tool',
+            tool_call_id: 'search-1',
+            content: 'FIRST_TOOL_SENTINEL',
+          },
+          ...(historyRecencyWindow === undefined ? [history[2]] : []),
+          {
+            role: 'assistant',
+            content: null,
+            tool_calls: [
+              {
+                id: 'calculate-1',
+                type: 'function',
+                function: { name: 'calculate', arguments: '{}' },
+              },
+            ],
+          },
+          {
+            role: 'tool',
+            tool_call_id: 'calculate-1',
+            content: '{"text":"SECOND_TOOL_SENTINEL"}',
+          },
+          history[4],
+        ],
+      );
+      assert.deepEqual(history, original);
+    });
+  }
+
+  it('one ToolCallRecord → one assistant/tool pair', async () => {
     const assembler = new ContextAssembler();
     const r = await assembler.assemble(ACTION, EMPTY, [
       makeToolRecord('search', 'found 10 results'),
@@ -183,7 +255,15 @@ describe('ContextAssembler — tool results', () => {
     assert.ok(r.ok);
     const toolMsgs = r.value.filter((m) => m.role === 'tool');
     assert.equal(toolMsgs.length, 1);
-    assert.equal(toolMsgs[0].content, 'search: found 10 results');
+    assert.equal(toolMsgs[0].content, 'found 10 results');
+    assert.equal(toolMsgs[0].tool_call_id, 'search-1');
+    assert.deepEqual(r.value.at(-2)?.tool_calls, [
+      {
+        id: 'search-1',
+        type: 'function',
+        function: { name: 'search', arguments: '{}' },
+      },
+    ]);
   });
 
   it('two ToolCallRecords → two tool messages in order', async () => {
@@ -195,8 +275,8 @@ describe('ContextAssembler — tool results', () => {
     assert.ok(r.ok);
     const toolMsgs = r.value.filter((m) => m.role === 'tool');
     assert.equal(toolMsgs.length, 2);
-    assert.equal(toolMsgs[0].content, 'search: result A');
-    assert.equal(toolMsgs[1].content, 'calculate: result B');
+    assert.equal(toolMsgs[0].content, 'result A');
+    assert.equal(toolMsgs[1].content, 'result B');
   });
 });
 
@@ -289,7 +369,7 @@ describe('ContextAssembler — snapshot', () => {
       [makeToolRecord('calc', '4')],
     );
     assert.ok(r.ok);
-    assert.equal(r.value.length, 3);
+    assert.equal(r.value.length, 4);
 
     assert.equal(r.value[0].role, 'system');
     assert.ok(r.value[0].content.includes('You are a helpful assistant.'));
@@ -301,8 +381,9 @@ describe('ContextAssembler — snapshot', () => {
     assert.equal(r.value[1].role, 'user');
     assert.ok(r.value[1].content.endsWith('Calculate 2+2.'));
 
-    assert.equal(r.value[2].role, 'tool');
-    assert.equal(r.value[2].content, 'calc: 4');
+    assert.equal(r.value[2].role, 'assistant');
+    assert.equal(r.value[3].role, 'tool');
+    assert.equal(r.value[3].content, '4');
   });
 });
 
@@ -586,6 +667,6 @@ describe('ContextAssembler — McpToolResult object content', () => {
     assert.ok(r.ok);
     const toolMsg = r.value.find((m) => m.role === 'tool');
     assert.ok(toolMsg);
-    assert.equal(toolMsg.content, `get-data: ${JSON.stringify(objectResult)}`);
+    assert.equal(toolMsg.content, JSON.stringify(objectResult));
   });
 });

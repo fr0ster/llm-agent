@@ -40,7 +40,7 @@ agent:
   maxToolCalls: 30
   ragQueryK: 10
   showReasoning: false
-  historyAutoSummarizeLimit: 10
+  # historyAutoSummarizeLimit: 10  # Deprecated no-op; full history is kept.
   streamMode: final
   refreshToolsPerIteration: false
   toolReselectPerIteration: true

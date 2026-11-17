@@ -21,6 +21,7 @@ import {
   InMemoryKnowledgeBackend,
   SessionRequestLogger,
 } from '@mcp-abap-adt/llm-agent-libs';
+import { controllerStorageKey } from '../caller-scoped-backend.js';
 import {
   ControllerCoordinatorHandler,
   type ControllerHandlerDeps,
@@ -52,7 +53,7 @@ function fakeCtx(overrides: Partial<PipelineContext> = {}): {
   const ctx = {
     sessionId: 'sess-1',
     textOrMessages: 'do the thing',
-    options: undefined,
+    options: { userId: 'test-user' },
     externalResults: undefined,
     requestLogger,
     yield: (c: Captured) => {
@@ -60,7 +61,10 @@ function fakeCtx(overrides: Partial<PipelineContext> = {}): {
     },
     ...overrides,
   } as unknown as PipelineContext;
-  return { ctx, captured };
+  return {
+    ctx: { ...ctx, options: { userId: 'test-user', ...ctx.options } },
+    captured,
+  };
 }
 
 /** Subagent stub backed by a scripted queue; each send() shifts one result. */
@@ -163,7 +167,7 @@ function harness(opts: {
 const toolCall = (
   name: string,
   args: Record<string, unknown>,
-): SubagentResult => ({
+): Extract<SubagentResult, { kind: 'tool_call' }> => ({
   kind: 'tool_call',
   toolCalls: [{ id: 'c1', name, arguments: args }],
 });
@@ -173,6 +177,62 @@ const toolCall = (
 // ---------------------------------------------------------------------------
 
 describe('ControllerCoordinatorHandler', () => {
+  it('retains an executor retry correction before a newer successful tool round', async () => {
+    const h = harness({
+      evaluator: [{ kind: 'content', content: 'Goal' }],
+      planner: [
+        {
+          kind: 'content',
+          content: JSON.stringify({
+            plan: [{ name: 's1', instructions: 'do' }],
+          }),
+        },
+        { kind: 'content', content: 'done' },
+      ],
+      executor: [],
+      selectTools: [{ name: 'Work', description: '', inputSchema: {} }],
+    });
+    const sent: Message[][] = [];
+    const results: SubagentResult[] = [
+      { kind: 'error', error: 'Retry sentinel' },
+      toolCall('Work', {}),
+      { kind: 'content', content: 'converged' },
+    ];
+    h.deps.executor = {
+      async send(messages) {
+        sent.push(structuredClone(messages));
+        const result = results.shift();
+        assert.ok(result);
+        return result;
+      },
+    };
+    await new ControllerCoordinatorHandler(h.deps).execute(
+      fakeCtx().ctx,
+      {},
+      undefined,
+    );
+    assert.equal(sent.length, 3);
+    assert.equal(h.mcpCalls.length, 1);
+    for (const messages of sent.slice(1)) {
+      assert.ok(
+        messages.some(
+          (message) =>
+            message.role === 'user' &&
+            message.content?.includes('Retry sentinel'),
+        ),
+      );
+    }
+    const correctionIndex = sent[2].findIndex(
+      (message) =>
+        message.role === 'user' && message.content?.includes('Retry sentinel'),
+    );
+    const toolCallIndex = sent[2].findIndex(
+      (message) => message.role === 'assistant' && message.tool_calls?.length,
+    );
+    assert.ok(toolCallIndex >= 0);
+    assert.ok(correctionIndex < toolCallIndex);
+    assert.equal(sent[2][toolCallIndex + 1].content, 'mcp-out');
+  });
   it('runs more than 30 internal tool calls with no configured limit', async () => {
     const h = harness({
       evaluator: [{ kind: 'content', content: 'Goal' }],
@@ -196,7 +256,7 @@ describe('ControllerCoordinatorHandler', () => {
     const { ctx, captured } = fakeCtx();
     await new ControllerCoordinatorHandler(h.deps).execute(ctx, {}, undefined);
     assert.equal(h.mcpCalls.length, 31);
-    const bundle = await hydrateBundle(h.backend, 'sess-1');
+    const bundle = await hydrateBundle(h.backend, testStorageKey('sess-1'));
     assert.equal(bundle.budgets.stepsUsed, 1);
     assert.doesNotMatch(bundle.plannerPrivate, /tool-call budget/);
     assert.ok(
@@ -321,7 +381,7 @@ describe('ControllerCoordinatorHandler', () => {
         c.value.content === 'finished',
     );
     assert.ok(final, 'final stop chunk with content "finished"');
-    const bundle = await hydrateBundle(h.backend, 'sess-1');
+    const bundle = await hydrateBundle(h.backend, testStorageKey('sess-1'));
     assert.equal(bundle.budgets.stepsUsed, 1);
     assert.equal(bundle.pending, undefined);
   });
@@ -396,8 +456,10 @@ describe('ControllerCoordinatorHandler', () => {
         (c.value.toolCalls?.length ?? 0) > 0,
     );
     assert.ok(surfaced, 'tool_calls chunk surfaced');
-    const expectedExt = externalToolCallId('ExtTool', { q: 'abc' });
-    const bundle = await hydrateBundle(h.backend, 'sess-1');
+    assert.ok(surfaced.ok);
+    const expectedExt = surfaced.value.toolCalls?.[0].id;
+    assert.match(expectedExt ?? '', /^ext:[0-9a-f-]{36}:0$/);
+    const bundle = await hydrateBundle(h.backend, testStorageKey('sess-1'));
     assert.equal(bundle.pending?.kind, 'external-tool');
     assert.equal(
       bundle.pending?.kind === 'external-tool' ? bundle.pending.extId : '',
@@ -422,7 +484,10 @@ describe('ControllerCoordinatorHandler', () => {
     });
     const handler = new ControllerCoordinatorHandler(h.deps);
     await handler.execute(fakeCtx().ctx, {}, undefined);
-    const extId = externalToolCallId('ExtTool', { q: 'abc' });
+    const pending = (await hydrateBundle(h.backend, testStorageKey('sess-1')))
+      .pending;
+    assert.ok(pending?.kind === 'external-tool');
+    const extId = pending.extId;
 
     // Second leg: planner finalizes; provide the external result.
     // Under plan-first the finalize call returns PLAIN TEXT (not JSON done).
@@ -443,7 +508,7 @@ describe('ControllerCoordinatorHandler', () => {
           c.value.content === 'resumed-done',
       ),
     );
-    const bundle = await hydrateBundle(h.backend, 'sess-1');
+    const bundle = await hydrateBundle(h.backend, testStorageKey('sess-1'));
     assert.equal(bundle.pending, undefined);
   });
 
@@ -479,7 +544,7 @@ describe('ControllerCoordinatorHandler', () => {
           c.ok && c.value.finishReason === 'stop' && c.value.content === 'ok',
       ),
     );
-    const bundle = await hydrateBundle(h.backend, 'sess-1');
+    const bundle = await hydrateBundle(h.backend, testStorageKey('sess-1'));
     assert.equal(bundle.budgets.rewindsUsed, 1);
   });
 
@@ -514,7 +579,7 @@ describe('ControllerCoordinatorHandler', () => {
       captured.find((c) => c.ok && /rewind/i.test(c.value.content)),
       'a clarify mentioning rewinds was surfaced',
     );
-    const bundle = await hydrateBundle(h.backend, 'sess-1');
+    const bundle = await hydrateBundle(h.backend, testStorageKey('sess-1'));
     assert.equal(bundle.pending?.kind, 'clarify');
   });
 
@@ -549,7 +614,7 @@ describe('ControllerCoordinatorHandler', () => {
       captured.find((c) => c.ok && /budget/i.test(c.value.content)),
       'a clarify mentioning budget was surfaced',
     );
-    const bundle = await hydrateBundle(h.backend, 'sess-1');
+    const bundle = await hydrateBundle(h.backend, testStorageKey('sess-1'));
     assert.equal(bundle.pending?.kind, 'clarify');
   });
 
@@ -586,7 +651,7 @@ describe('ControllerCoordinatorHandler', () => {
     const ret = await handler.execute(ctx, {}, undefined);
 
     assert.equal(ret, true);
-    const bundle = await hydrateBundle(h.backend, 'sess-1');
+    const bundle = await hydrateBundle(h.backend, testStorageKey('sess-1'));
     assert.equal(bundle.budgets.stepsUsed, 1, 'failed step counted once');
     assert.ok(
       /failed|aborted/.test(bundle.plannerPrivate),
@@ -640,7 +705,7 @@ describe('ControllerCoordinatorHandler', () => {
       h.mcpCalls.length <= 2,
       `callMcp invoked at most maxToolCalls times (got ${h.mcpCalls.length})`,
     );
-    const bundle = await hydrateBundle(h.backend, 'sess-1');
+    const bundle = await hydrateBundle(h.backend, testStorageKey('sess-1'));
     assert.equal(bundle.budgets.stepsUsed, 1, 'aborted step advanced');
     assert.ok(
       /tool-call budget/.test(bundle.plannerPrivate),
@@ -691,7 +756,7 @@ describe('ControllerCoordinatorHandler', () => {
         (c.value.toolCalls?.length ?? 0) > 0,
     );
     assert.ok(surfaced, 'tool_calls chunk surfaced via per-request routing');
-    const bundle = await hydrateBundle(h.backend, 'sess-1');
+    const bundle = await hydrateBundle(h.backend, testStorageKey('sess-1'));
     assert.equal(bundle.pending?.kind, 'external-tool');
     assert.equal(
       bundle.pending?.kind === 'external-tool' ? bundle.pending.toolName : '',
@@ -901,7 +966,7 @@ describe('ControllerCoordinatorHandler', () => {
     const ret = await handler.execute(ctx, {}, undefined);
 
     assert.equal(ret, true);
-    const bundle = await hydrateBundle(h.backend, 'sess-1');
+    const bundle = await hydrateBundle(h.backend, testStorageKey('sess-1'));
     assert.equal(bundle.pending?.kind, 'clarify');
     assert.ok(
       captured.find((c) => c.ok && c.value.finishReason === 'stop'),
@@ -931,7 +996,7 @@ describe('ControllerCoordinatorHandler', () => {
       undefined,
     );
     assert.equal(r1, true);
-    let bundle = await hydrateBundle(backend, 'sess-1');
+    let bundle = await hydrateBundle(backend, testStorageKey('sess-1'));
     assert.equal(bundle.pending?.kind, 'clarify');
     assert.equal(
       bundle.pending?.kind === 'clarify' && bundle.pending.position,
@@ -975,7 +1040,7 @@ describe('ControllerCoordinatorHandler', () => {
     const r2 = await handler2.execute(ctx, {}, undefined);
 
     assert.equal(r2, true);
-    bundle = await hydrateBundle(backend, 'sess-1');
+    bundle = await hydrateBundle(backend, testStorageKey('sess-1'));
     assert.equal(bundle.goal, 'read structure of table T100');
     assert.equal(bundle.pending, undefined);
     assert.equal(
@@ -1018,7 +1083,7 @@ describe('ControllerCoordinatorHandler', () => {
     // Leg 2: the human confirms with a bare "yes" → goal = the PROPOSED target.
     // The bare "yes" does not fingerprint-match the original request, so the
     // consumer echoes the runId token to resume the suspended run.
-    const b1 = await hydrateBundle(backend, 'sess-1');
+    const b1 = await hydrateBundle(backend, testStorageKey('sess-1'));
     const h2 = harness({
       evaluator: [],
       planner: [
@@ -1043,7 +1108,7 @@ describe('ControllerCoordinatorHandler', () => {
       undefined,
     );
 
-    const bundle = await hydrateBundle(backend, 'sess-1');
+    const bundle = await hydrateBundle(backend, testStorageKey('sess-1'));
     assert.equal(
       bundle.goal,
       'Goal: read T100 structure',
@@ -1144,7 +1209,7 @@ describe('ControllerCoordinatorHandler', () => {
     );
 
     assert.equal(ret, true);
-    const bundle = await hydrateBundle(h.backend, 'sess-1');
+    const bundle = await hydrateBundle(h.backend, testStorageKey('sess-1'));
     assert.equal(
       bundle.budgets.rewindsUsed,
       0,
@@ -1186,7 +1251,7 @@ describe('ControllerCoordinatorHandler', () => {
     );
 
     assert.equal(ret, true);
-    const bundle = await hydrateBundle(h.backend, 'sess-1');
+    const bundle = await hydrateBundle(h.backend, testStorageKey('sess-1'));
     assert.equal(
       bundle.budgets.rewindsUsed,
       0,
@@ -1265,7 +1330,7 @@ describe('ControllerCoordinatorHandler', () => {
       ),
       'finalized result surfaced',
     );
-    const bundle = await hydrateBundle(h.backend, 'sess-1');
+    const bundle = await hydrateBundle(h.backend, testStorageKey('sess-1'));
     assert.equal(bundle.plan?.length, 1);
     assert.equal(bundle.budgets.stepsUsed, 1);
   });
@@ -1273,7 +1338,7 @@ describe('ControllerCoordinatorHandler', () => {
   it('adaptive: a persisted cursor resumes from the NEXT step (no repeat)', async () => {
     const backend = new InMemoryKnowledgeBackend();
     const cfg: ControllerConfig = { ...baseConfig() };
-    await persistBundle(backend, 'sess-1', {
+    await persistBundle(backend, testStorageKey('sess-1'), {
       goal: 'Goal',
       plannerPrivate: '\n[step s1] did A',
       budgets: { stepsUsed: 1, rewindsUsed: 0 },
@@ -1317,7 +1382,6 @@ describe('ControllerCoordinatorHandler', () => {
   it('adaptive + external tool: resume injects the result into the step transcript; the executor continues', async () => {
     const backend = new InMemoryKnowledgeBackend();
     const cfg: ControllerConfig = { ...baseConfig() };
-    const extId = externalToolCallId('ExtTool', { q: 'x' });
 
     // Leg 1 — 1-step plan; executor emits an external tool call → suspend.
     const h1 = harness({
@@ -1330,7 +1394,17 @@ describe('ControllerCoordinatorHandler', () => {
           }),
         },
       ],
-      executor: [toolCall('ExtTool', { q: 'x' })],
+      executor: [
+        toolCall('Work', { stage: 'before-retry' }),
+        { kind: 'error', error: 'PERSISTED_RETRY_A' },
+        toolCall('Work', { stage: 'after-retry' }),
+        { kind: 'error', error: 'PERSISTED_RETRY_B' },
+        {
+          ...toolCall('ExtTool', { q: 'x' }),
+          content: 'EXTERNAL_ASSISTANT_SENTINEL',
+        },
+      ],
+      selectTools: [{ name: 'Work', description: '', inputSchema: {} }],
       config: cfg,
     });
     h1.deps.backend = backend;
@@ -1338,9 +1412,28 @@ describe('ControllerCoordinatorHandler', () => {
       externalTools: [{ name: 'ExtTool', description: '', inputSchema: {} }],
     });
     await new ControllerCoordinatorHandler(h1.deps).execute(c1, {}, undefined);
-    let b = await hydrateBundle(backend, 'sess-1');
-    assert.equal(b.pending?.kind, 'external-tool');
+    let b = await hydrateBundle(backend, testStorageKey('sess-1'));
+    assert.ok(b.pending?.kind === 'external-tool');
+    const extId = b.pending.extId;
+    assert.deepEqual(
+      b.pending?.kind === 'external-tool'
+        ? b.pending.assistantMessage
+        : undefined,
+      {
+        role: 'assistant',
+        content: 'EXTERNAL_ASSISTANT_SENTINEL',
+        tool_calls: [
+          {
+            id: extId,
+            type: 'function',
+            function: { name: 'ExtTool', arguments: '{"q":"x"}' },
+          },
+        ],
+      },
+    );
     assert.equal(b.planCursor, 0, 'cursor unmoved on suspend');
+    assert.equal(b.inFlightStep?.controlTail?.length, 2);
+    assert.equal(b.inFlightStep?.controlTailAnchors?.length, 2);
     assert.ok(cap1.find((c) => c.ok && c.value.finishReason === 'tool_calls'));
 
     // Leg 2 — resume with the result. The unified design injects the tool result
@@ -1353,11 +1446,56 @@ describe('ControllerCoordinatorHandler', () => {
       evaluator: [],
       planner: [{ kind: 'content', content: 'FINAL' }], // finalize after the step
       executor: [],
+      selectTools: [{ name: 'Work', description: '', inputSchema: {} }],
       config: cfg,
     });
     h2.deps.backend = backend;
     h2.deps.executor = {
       async send(messages: Message[]) {
+        const assistantIndex = messages.findIndex(
+          (message) =>
+            message.role === 'assistant' &&
+            message.content === 'EXTERNAL_ASSISTANT_SENTINEL',
+        );
+        assert.ok(assistantIndex >= 0);
+        assert.deepEqual(
+          messages[assistantIndex],
+          b.pending?.kind === 'external-tool'
+            ? b.pending.assistantMessage
+            : undefined,
+        );
+        assert.deepEqual(messages[assistantIndex + 1], {
+          role: 'tool',
+          tool_call_id: extId,
+          content: 'TOOL RESULT',
+        });
+        const beforeIndex = messages.findIndex(
+          (message) =>
+            message.role === 'assistant' &&
+            message.tool_calls?.[0].function.arguments ===
+              '{"stage":"before-retry"}',
+        );
+        const correctionA = messages.findIndex(
+          (message) =>
+            message.role === 'user' &&
+            message.content?.includes('PERSISTED_RETRY_A'),
+        );
+        const afterIndex = messages.findIndex(
+          (message) =>
+            message.role === 'assistant' &&
+            message.tool_calls?.[0].function.arguments ===
+              '{"stage":"after-retry"}',
+        );
+        const correctionB = messages.findIndex(
+          (message) =>
+            message.role === 'user' &&
+            message.content?.includes('PERSISTED_RETRY_B'),
+        );
+        assert.ok(beforeIndex >= 0);
+        assert.ok(beforeIndex < correctionA && correctionA < afterIndex);
+        assert.equal(messages[beforeIndex + 1].content, 'mcp-out');
+        assert.ok(afterIndex < correctionB && correctionB < assistantIndex);
+        assert.equal(messages[afterIndex + 1].content, 'mcp-out');
         execSawResult.push(
           messages.some(
             (m) =>
@@ -1365,7 +1503,9 @@ describe('ControllerCoordinatorHandler', () => {
               m.content.includes('TOOL RESULT'),
           ),
         );
-        return { kind: 'content', content: 'continued with the result' };
+        return execSawResult.length === 1
+          ? toolCall('Work', { stage: 'resumed' })
+          : { kind: 'content', content: 'continued with the result' };
       },
     };
     const { ctx: c2, captured: cap2 } = fakeCtx({
@@ -1378,7 +1518,8 @@ describe('ControllerCoordinatorHandler', () => {
     );
 
     assert.equal(ret, true);
-    b = await hydrateBundle(backend, 'sess-1');
+    assert.equal(execSawResult.length, 2);
+    b = await hydrateBundle(backend, testStorageKey('sess-1'));
     assert.equal(b.pending, undefined);
     assert.ok(
       execSawResult.some(Boolean),
@@ -1400,7 +1541,7 @@ describe('ControllerCoordinatorHandler', () => {
     // Bundle suspended on ExtTool at seq 0 attempt 0, AND a committed ok artifact
     // already exists for that identity (a crash after the step finished, before the
     // bundle flip). Resume must ADOPT it, not re-run the step or re-call the tool.
-    await persistBundle(backend, 'sess-1', {
+    await persistBundle(backend, testStorageKey('sess-1'), {
       goal: 'g',
       plannerPrivate: '',
       budgets: { stepsUsed: 0, rewindsUsed: 0 },
@@ -1486,7 +1627,7 @@ describe('ControllerCoordinatorHandler', () => {
       externalResults: new Map([[extId, 'LATE RESULT']]),
     });
     await new ControllerCoordinatorHandler(h.deps).execute(ctx, {}, undefined);
-    const b = await hydrateBundle(backend, 'sess-1');
+    const b = await hydrateBundle(backend, testStorageKey('sess-1'));
     assert.equal(b.pending, undefined, 'pending cleared (adopted, not re-run)');
     assert.equal(b.nextSeq, 1, 'advanced past the adopted seq');
     assert.equal(
@@ -1503,7 +1644,7 @@ describe('ControllerCoordinatorHandler', () => {
     // Seed a SUSPENDED adaptive bundle WITHOUT an inFlightStep — the retained
     // legacy external-resume branch: the result is fed via plannerPrivate and the
     // planner replans (the unified continue-the-step path requires an inFlightStep).
-    await persistBundle(backend, 'sess-1', {
+    await persistBundle(backend, testStorageKey('sess-1'), {
       goal: 'Goal',
       plannerPrivate: '',
       budgets: { stepsUsed: 0, rewindsUsed: 0 },
@@ -1685,12 +1826,12 @@ describe('ControllerCoordinatorHandler', () => {
       ),
       'no terminal error surfaced',
     );
-    const bundle = await hydrateBundle(h.backend, 'sess-1');
+    const bundle = await hydrateBundle(h.backend, testStorageKey('sess-1'));
     assert.equal(bundle.runState, 'terminal');
     const { readTerminal } = await import('../run-scope.js');
     const term = await readTerminal(
       h.backend,
-      'sess-1',
+      testStorageKey('sess-1'),
       bundle.runId!,
       new Date().toISOString(),
     );
@@ -1728,14 +1869,14 @@ describe('ControllerCoordinatorHandler', () => {
     const { ctx } = fakeCtx();
     await handler.execute(ctx, {}, undefined);
     assert.ok(h.mcpCalls.length <= 2, 'callMcp bounded by maxToolCalls');
-    const bundle = await hydrateBundle(h.backend, 'sess-1');
+    const bundle = await hydrateBundle(h.backend, testStorageKey('sess-1'));
     assert.equal(bundle.budgets.stepsUsed, 1);
   });
 
   it('maxStepResumes: a crash-replay with no committed artifact charges resumeCount and aborts at the cap', async () => {
     const backend = new InMemoryKnowledgeBackend();
     // Seed an executing inFlightStep at resumeCount === cap, no committed artifact.
-    await persistBundle(backend, 'sess-1', {
+    await persistBundle(backend, testStorageKey('sess-1'), {
       goal: 'g',
       plannerPrivate: '',
       budgets: { stepsUsed: 0, rewindsUsed: 0 },
@@ -1780,7 +1921,7 @@ describe('ControllerCoordinatorHandler', () => {
     };
     const { ctx, captured } = fakeCtx({ textOrMessages: 'x' });
     await new ControllerCoordinatorHandler(h.deps).execute(ctx, {}, undefined);
-    const bundle = await hydrateBundle(backend, 'sess-1');
+    const bundle = await hydrateBundle(backend, testStorageKey('sess-1'));
     assert.equal(bundle.runState, 'terminal', 'aborted at maxStepResumes');
     assert.equal(
       plannerCalls,
@@ -1821,7 +1962,7 @@ describe('ControllerCoordinatorHandler', () => {
       },
     };
     // Durable bundle: a step s1 FAILED, plan=[s1], cursor=0, lastOutcome='failed'.
-    await persistBundle(h.backend, 'sess-1', {
+    await persistBundle(h.backend, testStorageKey('sess-1'), {
       goal: 'do the thing',
       plannerPrivate: '\n[step s1 failed] boom',
       budgets: { stepsUsed: 1, rewindsUsed: 0 },
@@ -1855,7 +1996,7 @@ describe('ControllerCoordinatorHandler', () => {
   it('three-stage recovery: terminal store wins over phase (no re-finalize)', async () => {
     const backend = new InMemoryKnowledgeBackend();
     // Seed an ACTIVE bundle stuck in finalizing AND a terminal outcome for its runId.
-    await persistBundle(backend, 'sess-1', {
+    await persistBundle(backend, testStorageKey('sess-1'), {
       goal: 'g',
       plannerPrivate: '',
       budgets: { stepsUsed: 1, rewindsUsed: 0 },
@@ -1868,7 +2009,7 @@ describe('ControllerCoordinatorHandler', () => {
     const { writeTerminal } = await import('../run-scope.js');
     await writeTerminal(
       backend,
-      'sess-1',
+      testStorageKey('sess-1'),
       'R1',
       { kind: 'success', answer: 'ALREADY' },
       60000,
@@ -1894,7 +2035,7 @@ describe('ControllerCoordinatorHandler', () => {
     // Seed awaiting-replan with plannerCallInFlight already true (a crash during a
     // prior replan) → recovery charges plannerResumeCount; with cap 0 it aborts.
     const backend = new InMemoryKnowledgeBackend();
-    await persistBundle(backend, 'sess-1', {
+    await persistBundle(backend, testStorageKey('sess-1'), {
       goal: 'g',
       plannerPrivate: '',
       budgets: { stepsUsed: 1, rewindsUsed: 0 },
@@ -1933,7 +2074,7 @@ describe('ControllerCoordinatorHandler', () => {
       ),
       'replan crash-loop aborted via maxPlannerResumes',
     );
-    const bundle = await hydrateBundle(backend, 'sess-1');
+    const bundle = await hydrateBundle(backend, testStorageKey('sess-1'));
     assert.equal(bundle.runState, 'terminal');
   });
 
@@ -1994,12 +2135,12 @@ describe('ControllerCoordinatorHandler', () => {
       ),
       'finalizer composed the answer from the collected approved results',
     );
-    const bundle = await hydrateBundle(h.backend, 'sess-1');
+    const bundle = await hydrateBundle(h.backend, testStorageKey('sess-1'));
     assert.equal(bundle.runState, 'terminal');
     const { readTerminal } = await import('../run-scope.js');
     const term = await readTerminal(
       h.backend,
-      'sess-1',
+      testStorageKey('sess-1'),
       bundle.runId!,
       new Date().toISOString(),
     );
@@ -2152,12 +2293,12 @@ describe('ControllerCoordinatorHandler', () => {
       captured.find((c) => c.ok && /Error:/.test(c.value.content)),
       'terminal error surfaced',
     );
-    const bundle = await hydrateBundle(h.backend, 'sess-1');
+    const bundle = await hydrateBundle(h.backend, testStorageKey('sess-1'));
     assert.equal(bundle.runState, 'terminal');
     const { readTerminal } = await import('../run-scope.js');
     const term = await readTerminal(
       h.backend,
-      'sess-1',
+      testStorageKey('sess-1'),
       bundle.runId!,
       new Date().toISOString(),
     );
@@ -2166,7 +2307,7 @@ describe('ControllerCoordinatorHandler', () => {
 
   it('empty clarify answer is rejected: stays suspended, re-asks', async () => {
     const backend = new InMemoryKnowledgeBackend();
-    await persistBundle(backend, 'sess-1', {
+    await persistBundle(backend, testStorageKey('sess-1'), {
       goal: '',
       plannerPrivate: '',
       budgets: { stepsUsed: 0, rewindsUsed: 0 },
@@ -2189,7 +2330,7 @@ describe('ControllerCoordinatorHandler', () => {
       options: { runId: 'R1' } as never,
     });
     await new ControllerCoordinatorHandler(h.deps).execute(ctx, {}, undefined);
-    const b = await hydrateBundle(backend, 'sess-1');
+    const b = await hydrateBundle(backend, testStorageKey('sess-1'));
     assert.equal(b.goal, '', 'empty answer did NOT become the goal');
     assert.equal(b.pending?.kind, 'clarify', 'still suspended on clarify');
     assert.ok(
@@ -2457,7 +2598,7 @@ describe('ControllerCoordinatorHandler', () => {
       'the failed step-result carries the tool error text',
     );
     // 5. stepsUsed bumped + the tool error text is in the durable plannerPrivate.
-    const bundle = await hydrateBundle(h.backend, 'sess-1');
+    const bundle = await hydrateBundle(h.backend, testStorageKey('sess-1'));
     assert.equal(bundle.budgets.stepsUsed, 1);
     assert.match(bundle.plannerPrivate, /ZOBJ is locked by user ALICE/);
     assert.match(bundle.plannerPrivate, /control-failed/);
@@ -2494,7 +2635,7 @@ describe('ControllerCoordinatorHandler', () => {
       ),
       'the real tool error must reach the consumer',
     );
-    const bundle = await hydrateBundle(h.backend, 'sess-1');
+    const bundle = await hydrateBundle(h.backend, testStorageKey('sess-1'));
     assert.equal(bundle.runState, 'terminal');
   });
 });
@@ -2519,11 +2660,11 @@ describe('Phase 2 — Live Digest Board integration', () => {
     const { ctx } = fakeCtx();
     await new ControllerCoordinatorHandler(h.deps).execute(ctx, {}, undefined);
 
-    const bundle = await hydrateBundle(h.backend, 'sess-1');
+    const bundle = await hydrateBundle(h.backend, testStorageKey('sess-1'));
     const runId = bundle.runId;
     assert.ok(runId, 'run has a runId');
 
-    const all = await h.backend.scan('sess-1');
+    const all = await h.backend.scan(testStorageKey('sess-1'));
     const decisions = all.filter(
       (e) =>
         e.metadata.artifactType === 'plan-decision' &&
@@ -2574,7 +2715,7 @@ describe('Phase 2 — Live Digest Board integration', () => {
       written: writtenEntries,
       query: async () => [],
       async list(filter) {
-        const all = await backend.scan('sess-1');
+        const all = await backend.scan(testStorageKey('sess-1'));
         return all.filter((e) => {
           if (filter.runId !== undefined && e.metadata.runId !== filter.runId)
             return false;
@@ -2593,7 +2734,7 @@ describe('Phase 2 — Live Digest Board integration', () => {
         writtenEntries.push(entry);
         // Also persist step-result entries to the backend so the board can read them.
         if (entry.metadata.artifactType === 'step-result') {
-          await backend.put('sess-1', entry);
+          await backend.put(testStorageKey('sess-1'), entry);
         }
       },
       fingerprint() {
@@ -2892,7 +3033,7 @@ async function seedWaitResume(
   inFlightOver: Record<string, unknown> = {},
   bundleOver: Partial<SessionBundle> = {},
 ): Promise<void> {
-  await persistBundle(backend, 'sess-1', {
+  await persistBundle(backend, testStorageKey('sess-1'), {
     goal: 'g',
     plannerPrivate: '',
     budgets: { stepsUsed: 0, rewindsUsed: 0 },
@@ -3002,7 +3143,7 @@ describe('ControllerCoordinatorHandler — wait steps', () => {
       {},
       undefined,
     );
-    const eb = await hydrateBundle(exec.backend, 'sess-1');
+    const eb = await hydrateBundle(exec.backend, testStorageKey('sess-1'));
 
     // Wait-step run under the same conditions.
     const w = waitHarness();
@@ -3011,7 +3152,7 @@ describe('ControllerCoordinatorHandler — wait steps', () => {
       {},
       undefined,
     );
-    const wb = await hydrateBundle(w.backend, 'sess-1');
+    const wb = await hydrateBundle(w.backend, testStorageKey('sess-1'));
 
     // Parity of every durable settle effect.
     assert.equal(wb.lastOutcome, eb.lastOutcome);
@@ -3037,7 +3178,7 @@ describe('ControllerCoordinatorHandler — wait steps', () => {
       {},
       undefined,
     );
-    const bundle = await hydrateBundle(h.backend, 'sess-1');
+    const bundle = await hydrateBundle(h.backend, testStorageKey('sess-1'));
     assert.equal(bundle.budgets.stepsUsed, 1);
   });
 
@@ -3056,7 +3197,10 @@ describe('ControllerCoordinatorHandler — wait steps', () => {
     assert.ok(withDeadline, 'deadline persisted before the sleep resolves');
     assert.equal(withDeadline?.inFlightStep?.appliedWaitMs, 30_000);
     assert.equal(withDeadline?.budgets.waitMsUsed, 30_000);
-    const bundle = await hydrateBundle(h.deps.backend, 'sess-1');
+    const bundle = await hydrateBundle(
+      h.deps.backend,
+      testStorageKey('sess-1'),
+    );
     assert.equal(bundle.budgets.waitMsUsed, 30_000);
   });
 
@@ -3139,7 +3283,7 @@ describe('ControllerCoordinatorHandler — wait steps', () => {
       ),
       'a resumed wait must not be aborted as a crash replay',
     );
-    const bundle = await hydrateBundle(h.backend, 'sess-1');
+    const bundle = await hydrateBundle(h.backend, testStorageKey('sess-1'));
     assert.equal(bundle.budgets.stepsUsed, 1, 'the resumed wait advanced');
   });
 
@@ -3159,7 +3303,7 @@ describe('ControllerCoordinatorHandler — wait steps', () => {
     );
     assert.deepEqual(slept, [], 'a torn deadline never sleeps');
 
-    const bundle = await hydrateBundle(h.backend, 'sess-1');
+    const bundle = await hydrateBundle(h.backend, testStorageKey('sess-1'));
     assert.match(
       bundle.plannerPrivate,
       /control-failed.*half-written/s,
@@ -3194,7 +3338,7 @@ describe('ControllerCoordinatorHandler — wait steps', () => {
       {},
       undefined,
     );
-    const bundle = await hydrateBundle(h.backend, 'sess-1');
+    const bundle = await hydrateBundle(h.backend, testStorageKey('sess-1'));
     assert.equal(bundle.budgets.stepsUsed, 0, 'must not advance');
     assert.ok(bundle.inFlightStep?.appliedWaitMs, 'deadline stays persisted');
     assert.equal(
@@ -3220,7 +3364,7 @@ describe('ControllerCoordinatorHandler — wait steps', () => {
       {},
       undefined,
     );
-    const bundle = await hydrateBundle(h.backend, 'sess-1');
+    const bundle = await hydrateBundle(h.backend, testStorageKey('sess-1'));
     assert.equal(bundle.budgets.waitMsUsed, 60_000);
   });
 
@@ -3255,5 +3399,275 @@ describe('ControllerCoordinatorHandler — wait steps', () => {
       undefined,
     );
     assert.equal(executorCalls, 1, 'a normal step reaches the executor once');
+  });
+});
+
+describe('complete controller response invariant', () => {
+  for (const first of [
+    'Work',
+    'Missing',
+    'CachedExternal',
+    'PendingExternal',
+  ]) {
+    it(`retains all declarations and ordered results when first is ${first}`, async () => {
+      const calls = [first, 'Work', 'Missing', 'PendingExternal'].map(
+        (name, index) => ({
+          id: `invariant-${index}`,
+          name,
+          arguments: `{ "sentinel": "ARGUMENT-${index}" }`,
+        }),
+      );
+      const h = harness({
+        evaluator: [{ kind: 'content', content: 'Goal' }],
+        planner: [
+          {
+            kind: 'content',
+            content: JSON.stringify({
+              plan: [{ name: 's1', instructions: 'do' }],
+            }),
+          },
+          { kind: 'content', content: 'done' },
+        ],
+        executor: [],
+        selectTools: [{ name: 'Work', description: '', inputSchema: {} }],
+        isExternalTool: (name) => name.endsWith('External'),
+      });
+      const responses: SubagentResult[] = [
+        {
+          kind: 'tool_call',
+          content: 'CONTROLLER_ASSISTANT_SENTINEL',
+          toolCalls: calls,
+        },
+        {
+          kind: 'tool_call',
+          content: 'LATER_ASSISTANT',
+          toolCalls: [{ id: 'later', name: 'Work', arguments: {} }],
+        },
+        { kind: 'content', content: 'finished' },
+      ];
+      const inputs: Message[][] = [];
+      h.deps.executor = {
+        async send(messages) {
+          inputs.push(structuredClone(messages));
+          const response = responses.shift();
+          assert.ok(response);
+          return response;
+        },
+      };
+      const handler = new ControllerCoordinatorHandler(h.deps);
+      const extId = externalToolCallId(first, { sentinel: 'ARGUMENT-0' });
+      await handler.execute(
+        fakeCtx({
+          externalResults:
+            first === 'CachedExternal'
+              ? new Map([[extId, 'CACHED_EXTERNAL_RESULT']])
+              : undefined,
+        }).ctx,
+        {},
+        undefined,
+      );
+      if (first.endsWith('External')) {
+        const suspended = await hydrateBundle(
+          h.backend,
+          testStorageKey('sess-1'),
+        );
+        assert.ok(suspended.pending?.kind === 'external-tool');
+        const resultId = suspended.pending.extId;
+        await handler.execute(
+          fakeCtx({
+            externalResults: new Map([
+              [
+                resultId,
+                first === 'CachedExternal'
+                  ? 'CACHED_EXTERNAL_RESULT'
+                  : 'RESUMED_EXTERNAL_RESULT',
+              ],
+            ]),
+          }).ctx,
+          {},
+          undefined,
+        );
+      }
+      assert.equal(inputs.length, 3);
+      for (const messages of inputs.slice(1)) {
+        const index = messages.findIndex(
+          (message) => message.content === 'CONTROLLER_ASSISTANT_SENTINEL',
+        );
+        assert.ok(index >= 0);
+        assert.equal(
+          messages.filter(
+            (message) => message.content === 'CONTROLLER_ASSISTANT_SENTINEL',
+          ).length,
+          1,
+        );
+        const recordedCalls = messages[index].tool_calls ?? [];
+        assert.equal(
+          new Set(recordedCalls.map((call) => call.id)).size,
+          calls.length,
+        );
+        for (const call of recordedCalls)
+          assert.match(call.id, /^(?:tc|ext):[0-9a-f-]{36}:\d+$/);
+        assert.deepEqual(
+          messages[index].tool_calls,
+          calls.map((call, ordinal) => ({
+            id: recordedCalls[ordinal].id,
+            type: 'function',
+            function: { name: call.name, arguments: call.arguments },
+          })),
+        );
+        const results = messages.slice(index + 1, index + 1 + calls.length);
+        assert.deepEqual(
+          results.map((result) => result.tool_call_id),
+          recordedCalls.map((call) => call.id),
+        );
+        assert.ok(results.every((result) => result.role === 'tool'));
+        for (const rejected of results.slice(1))
+          assert.match(String(rejected.content), /Error:.*not executed/);
+        assert.equal(
+          results[0].content,
+          first === 'Work'
+            ? 'mcp-out'
+            : first === 'Missing'
+              ? 'Error: Tool "Missing" is not available for this step.'
+              : first === 'CachedExternal'
+                ? 'CACHED_EXTERNAL_RESULT'
+                : 'RESUMED_EXTERNAL_RESULT',
+        );
+        if (first === 'Missing') {
+          assert.match(
+            String(messages[index + 1 + calls.length].content),
+            /Tool "Missing" is not available/,
+          );
+          assert.equal(messages[index + 1 + calls.length].role, 'user');
+        }
+      }
+      assert.equal(h.mcpCalls.length, first === 'Work' ? 2 : 1);
+    });
+  }
+});
+
+function testStorageKey(sessionId: string): string {
+  const key = controllerStorageKey({ userId: 'test-user' }, sessionId);
+  assert.ok(key);
+  return key;
+}
+
+describe('controller caller isolation', () => {
+  it('prevents cross-user and anonymous resume, injection, and replay while preserving the owner', async () => {
+    const h = harness({
+      evaluator: [{ kind: 'content', content: 'PRIVATE_GOAL' }],
+      planner: [
+        {
+          kind: 'content',
+          content: JSON.stringify({
+            plan: [{ name: 's1', instructions: 'PRIVATE_STEP' }],
+          }),
+        },
+        { kind: 'content', content: 'PRIVATE_FINAL' },
+      ],
+      executor: [
+        {
+          kind: 'tool_call',
+          content: 'PRIVATE_ASSISTANT',
+          toolCalls: [
+            {
+              id: 'model-id',
+              name: 'Lookup',
+              arguments: { secret: 'PRIVATE_ARGUMENT' },
+            },
+          ],
+        },
+        { kind: 'content', content: 'OWNER_FINISHED' },
+      ],
+      isExternalTool: (name) => name === 'Lookup',
+    });
+    const inputs: Message[][] = [];
+    const original = h.deps.executor;
+    h.deps.executor = {
+      async send(messages, tools, options) {
+        inputs.push(structuredClone(messages));
+        return original.send(messages, tools, options);
+      },
+    };
+    const handler = new ControllerCoordinatorHandler(h.deps);
+    await handler.execute(fakeCtx().ctx, {}, undefined);
+    const pending = await hydrateBundle(h.backend, testStorageKey('sess-1'));
+    assert.equal(pending.pending?.kind, 'external-tool');
+    assert.ok(pending.pending?.kind === 'external-tool');
+    const id = pending.pending.extId;
+    // Legacy session-only snapshots must never act as a fallback.
+    await persistBundle(h.backend, 'sess-1', pending);
+    // Shared backend, independent model scripts: a foreign request starts its own run.
+    for (const options of [
+      { userId: 'other-user' },
+      { caller: { userId: 'other-user', sessionId: 'sess-1', isAdmin: true } },
+      undefined,
+      { userId: ' ' },
+      {
+        userId: 'test-user',
+        caller: { userId: 'other-user', sessionId: 'sess-1', isAdmin: false },
+      },
+    ]) {
+      const attacker = harness({
+        evaluator: [{ kind: 'content', content: 'PUBLIC_GOAL' }],
+        planner: [
+          {
+            kind: 'content',
+            content: JSON.stringify({
+              plan: [{ name: 'public', instructions: 'PUBLIC_STEP' }],
+            }),
+          },
+          { kind: 'content', content: 'PUBLIC_FINAL' },
+        ],
+        executor: [{ kind: 'content', content: 'PUBLIC_RESULT' }],
+      });
+      attacker.deps.backend = h.backend;
+      const seen: Message[][] = [];
+      const executor = attacker.deps.executor;
+      attacker.deps.executor = {
+        async send(messages, tools, opts) {
+          seen.push(structuredClone(messages));
+          return executor.send(messages, tools, opts);
+        },
+      };
+      const { ctx, captured } = fakeCtx({
+        externalResults: new Map([[id, 'FORGED']]),
+      });
+      // Bypass the fixture's default user for anonymous cases.
+      await new ControllerCoordinatorHandler(attacker.deps).execute(
+        { ...ctx, options },
+        {},
+        undefined,
+      );
+      assert.doesNotMatch(
+        JSON.stringify([captured, seen]),
+        /PRIVATE_|FORGED|OWNER_FINISHED/,
+      );
+      assert.equal(
+        (await hydrateBundle(h.backend, testStorageKey('sess-1'))).pending
+          ?.kind,
+        'external-tool',
+      );
+    }
+    await handler.execute(
+      fakeCtx({ externalResults: new Map([[id, 'OWNER_RESULT']]) }).ctx,
+      {},
+      undefined,
+    );
+    assert.match(JSON.stringify(inputs.at(-1)), /PRIVATE_ASSISTANT/);
+    assert.match(JSON.stringify(inputs.at(-1)), /OWNER_RESULT/);
+    assert.doesNotMatch(JSON.stringify(inputs.at(-1)), /FORGED/);
+    const ownerBundle = await hydrateBundle(
+      h.backend,
+      testStorageKey('sess-1'),
+    );
+    assert.ok(ownerBundle.runId);
+    const replayOptions = { userId: 'other-user', runId: ownerBundle.runId };
+    const replay = fakeCtx({ options: replayOptions });
+    await handler.execute(replay.ctx, {}, undefined);
+    assert.doesNotMatch(
+      JSON.stringify(replay.captured),
+      /PRIVATE_|OWNER_RESULT|OWNER_FINISHED/,
+    );
   });
 });

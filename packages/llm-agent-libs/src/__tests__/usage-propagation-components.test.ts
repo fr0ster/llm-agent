@@ -10,6 +10,7 @@ import {
 import { wrapEmbedder } from '../adapters/usage-logging-embedder.js';
 import { summarizeHistory, toEnglishForRag } from '../agent/rag-helpers.js';
 import { LlmClassifier } from '../classifier/llm-classifier.js';
+import { ContextAssembler } from '../context/context-assembler.js';
 import { HistorySummarizer } from '../history/history-summarizer.js';
 import { SessionRequestLogger } from '../logger/session-request-logger.js';
 import { LlmReranker } from '../reranker/llm-reranker.js';
@@ -75,7 +76,7 @@ test('component LLM calls preserve caller coordinates and narrow recorder roles 
   );
   assert.deepEqual(
     seen.map((opts) => (opts.usage as ReturnType<typeof recorder>).context),
-    ['classifier', 'helper', 'rerank', 'translate', 'helper'].map((role) => ({
+    ['classifier', 'helper', 'rerank', 'translate'].map((role) => ({
       sessionId: 'session',
       taskId: 'task',
       role,
@@ -112,7 +113,7 @@ import { fireInternalToolsAsync } from '../policy/mixed-tool-call-handler.js';
 import { PendingToolResultsRegistry } from '../policy/pending-tool-results-registry.js';
 import { NoopTracer } from '../tracer/noop-tracer.js';
 
-test('pipeline translator, summarizer and pass-through forward recorder and operation', async () => {
+test('pipeline translator and pass-through forward usage; summarize is inert', async () => {
   const usage = recorder({ taskId: 'task' });
   const usageOp = startOperation();
   const seen: CallOptions[] = [];
@@ -150,13 +151,29 @@ test('pipeline translator, summarizer and pass-through forward recorder and oper
   const span = new NoopTracer().startSpan('test');
   await new TranslateHandler().execute(ctx, {}, span);
   await new SummarizeHandler().execute(ctx, {}, span);
+  const assembled = await new ContextAssembler().assemble(
+    { type: 'action', text: 'Continue' },
+    { ragResults: {}, tools: [] },
+    ctx.history,
+  );
+  assert.ok(assembled.ok);
+  assert.equal(
+    assembled.value.filter((message) => message.content === 'message').length,
+    12,
+  );
+  assert.equal(seen.length, 1, 'summarize makes no helper call');
+  assert.ok(
+    !assembled.value.some((message) =>
+      message.content?.startsWith('Summary of previous conversation:'),
+    ),
+  );
   for await (const _ of runPassThrough(llm, logger, [], [], options)) {
   }
   assert.deepEqual(
     seen.map(
       (opts) => (opts.usage as ReturnType<typeof recorder>).context.role,
     ),
-    ['translate', 'helper', undefined],
+    ['translate', undefined],
   );
   for (const opts of seen) assert.equal(opts.usageOp, usageOp);
 });
@@ -176,15 +193,18 @@ test('mixed tool-call handler forwards task recorder and operation to MCP', asyn
     '',
     [{ id: 'id', name: 'tool', arguments: {} }],
     registry,
-    'session',
+    {
+      kind: 'caller',
+      caller: { userId: 'test-user', sessionId: 'session', isAdmin: false },
+    },
     {
       toolClientMap: new Map([['tool', client]]),
       toolCache: { set() {} } as unknown as IToolCache,
       metrics: { toolCallCount: { add() {} } } as unknown as IMetrics,
-      options: { usage, usageOp },
+      options: { userId: 'test-user', sessionId: 'session', usage, usageOp },
     },
   );
-  await registry.consume('session');
+  await registry.consume({ userId: 'test-user', sessionId: 'session' });
   assert.equal(captured?.usageOp, usageOp);
   assert.ok(captured);
   assert.deepEqual((captured.usage as ReturnType<typeof recorder>).context, {
@@ -257,4 +277,78 @@ test('tool and skill vectorization forward recorder and operation on sequential 
       role: 'embedding',
     });
   }
+});
+
+test('deprecated summarizeHistory returns the same complete history without a helper call', async () => {
+  const history = Array.from({ length: 25 }, (_, i) => ({
+    role: 'user' as const,
+    content: `${i}:${'x'.repeat(200_000)}`,
+  }));
+  const llm: ILlm = {
+    async chat() {
+      assert.fail('history summarization must not call the helper');
+    },
+    async *streamChat() {},
+  };
+  const result = await summarizeHistory(
+    { helperLlm: llm, requestLogger: new SessionRequestLogger() },
+    history,
+  );
+  assert.ok(result.ok);
+  assert.equal(result.value, history);
+  assert.equal(result.value.length, history.length);
+});
+
+test('summarizeHistory is inert and ContextAssembler excludes client system messages', async () => {
+  const history = [
+    { role: 'system' as const, content: 'Original system sentinel' },
+    { role: 'user' as const, content: 'Original request sentinel' },
+    { role: 'assistant' as const, content: 'Original reply sentinel' },
+    { role: 'user' as const, content: 'Continue the task' },
+  ];
+  let helperCalls = 0;
+  const helperLlm: ILlm = {
+    async chat(messages) {
+      helperCalls++;
+      assert.deepEqual(messages.slice(0, -1), history);
+      return {
+        ok: true,
+        value: { content: 'Summary sentinel', finishReason: 'stop' },
+      };
+    },
+    async *streamChat() {},
+  };
+  const summarized = await summarizeHistory(
+    { helperLlm, requestLogger: new SessionRequestLogger() },
+    history,
+  );
+  assert.ok(summarized.ok);
+  const assembled = await new ContextAssembler().assemble(
+    { type: 'action', text: 'Continue the task' },
+    { ragResults: {}, tools: [] },
+    summarized.value,
+  );
+  assert.ok(assembled.ok);
+  assert.equal(helperCalls, 0);
+  for (const original of history.filter(
+    (message) => message.role !== 'system',
+  )) {
+    assert.ok(
+      assembled.value.some(
+        (message) =>
+          message.role === original.role &&
+          message.content?.includes(original.content),
+      ),
+    );
+  }
+  assert.ok(
+    !assembled.value.some((message) =>
+      message.content?.includes('Original system sentinel'),
+    ),
+  );
+  assert.ok(
+    !assembled.value.some((message) =>
+      message.content?.includes('Summary sentinel'),
+    ),
+  );
 });

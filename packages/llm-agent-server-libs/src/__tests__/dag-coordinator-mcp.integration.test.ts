@@ -300,7 +300,7 @@ describe('DAG-coordinator ↔ MCP integration (#159)', () => {
   // call it, and assert the response SURFACES the call (finish_reason
   // tool_calls + an `ext:`-prefixed tool_call id) instead of the worker
   // executing it. This proves external tools are consumer-executed and that
-  // the deterministic `ext:` id is exposed for stateless resume.
+  // the suspension call ID is exposed for the client to return on resume.
   //
   // Scope limit: we assert only the FIRST half of the round-trip (the call is
   // surfaced). Sending the result back and asserting the follow-up answer is

@@ -74,6 +74,7 @@ describe('SelfDispatch #157 tool-loop', () => {
             ok: true as const,
             value: {
               content: '',
+              finishReason: 'tool_calls',
               toolCalls: [
                 {
                   id: 'c1',

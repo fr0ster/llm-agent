@@ -30,7 +30,7 @@ test('parseReview judge-fails when digest is missing on a settle', () => {
   assert.equal(r.kind, 'judge-failure');
 });
 
-test('parseReview truncates an over-long digest to maxDigestChars', () => {
+test('parseReview preserves an over-long digest intact', () => {
   const long = 'x'.repeat(500);
   const r = parseReview(
     JSON.stringify({
@@ -44,7 +44,7 @@ test('parseReview truncates an over-long digest to maxDigestChars', () => {
   );
   assert.equal(r.kind, 'outcome');
   if (r.kind !== 'outcome') return;
-  assert.equal(r.outcome.digest.length, MAX);
+  assert.equal(r.outcome.digest, long);
 });
 
 test('parseReview coerces empty-approved success to failed WITH a digest', () => {

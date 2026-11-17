@@ -5,7 +5,6 @@ import type {
   TaskRecord,
 } from '@mcp-abap-adt/llm-agent';
 import { z } from 'zod';
-import { compactText } from './task-reference.js';
 
 export function resultKind(record: {
   result?: 'report' | 'verdict';
@@ -401,16 +400,13 @@ export function applyTaskEvent(
   if (step.items && task.budgetExhausted) {
     if ((task.result ?? resultKind(step)) === 'verdict') step.verdict = 'fail';
     step.state = 'failed';
-    step.note = compactText(
-      `Worker hit the tool-call budget ${task.toolCalls ?? '?'}/${task.maxToolCalls ?? '?'}; split the step (${step.items.length} items) before retrying`,
-      600,
-    );
+    step.note = `Worker hit the tool-call budget ${task.toolCalls ?? '?'}/${task.maxToolCalls ?? '?'}; split the step (${step.items.length} items) before retrying`;
     return;
   }
   if (kind !== 'done') {
     if (resultKind(step) === 'verdict') step.verdict = 'fail';
     step.state = 'failed';
-    step.note = compactText(task.error ?? kind, 600);
+    step.note = task.error ?? kind;
     return;
   }
   if ((task.result ?? resultKind(step)) === 'verdict') {
@@ -435,20 +431,14 @@ export function applyTaskEvent(
         expected.length > 0 && (parsed.data.count ?? -1) < expected.length;
       step.verdict = short ? 'fail' : parsed.data.verdict;
       step.state = step.verdict === 'pass' ? 'done' : 'failed';
-      step.note = compactText(
-        short
-          ? `Count ${parsed.data.count ?? 'missing'}/${expected.length}: missing item results`
-          : (parsed.data.note ?? parsed.data.verdict),
-        600,
-      );
+      step.note = short
+        ? `Count ${parsed.data.count ?? 'missing'}/${expected.length}: missing item results`
+        : (parsed.data.note ?? parsed.data.verdict);
     }
   } else {
     step.state = 'done';
     if (task.budgetExhausted)
-      step.note = compactText(
-        `Worker hit the tool-call budget ${task.toolCalls ?? '?'}/${task.maxToolCalls ?? '?'}; verify the result is complete or split the step`,
-        600,
-      );
+      step.note = `Worker hit the tool-call budget ${task.toolCalls ?? '?'}/${task.maxToolCalls ?? '?'}; verify the result is complete or split the step`;
   }
 }
 /** Require a passing check and no failing latest check attempts. */
@@ -499,7 +489,7 @@ export function planView(plan?: Plan): string {
         work ? `work ${work}` : '',
         older ? `${older} older attempts` : '',
       ].filter(Boolean);
-      return `${s.id} ${s.state === 'pending' && dependenciesDone(plan, s) ? 'ready' : s.state} ${s.goal.replace(/\s+/g, ' ')}${s.dependsOn?.length ? ` (depends on ${s.dependsOn.join(', ')})` : ''}${attempts.length ? ` (${attempts.join(', ')})` : ''}${s.items ? `; items: ${s.items.length}` : ''}${s.note ? ` \u00b7 ${compactText(s.note, 600)}` : ''}`;
+      return `${s.id} ${s.state === 'pending' && dependenciesDone(plan, s) ? 'ready' : s.state} ${s.goal.replace(/\s+/g, ' ')}${s.dependsOn?.length ? ` (depends on ${s.dependsOn.join(', ')})` : ''}${attempts.length ? ` (${attempts.join(', ')})` : ''}${s.items ? `; items: ${s.items.length}` : ''}${s.note ? ` \u00b7 ${s.note}` : ''}`;
     }),
   ]
     .filter(Boolean)

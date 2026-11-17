@@ -5,8 +5,8 @@
  * factory injected, the per-round executor context stays bounded as the number of
  * tool calls grows; the most-recent assistant+tool pair is always the tail; a
  * tool-level result round is recorded; and control retries live in
- * `inFlightStep.controlTail` (persisted, present in the next form, pruned after the
- * next recorded round).
+ * `inFlightStep.controlTail` (persisted and retained after subsequent recorded
+ * rounds).
  */
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
@@ -25,6 +25,7 @@ import {
   SessionRequestLogger,
   WindowContextStrategy,
 } from '@mcp-abap-adt/llm-agent-libs';
+import { controllerStorageKey } from '../caller-scoped-backend.js';
 import {
   ControllerCoordinatorHandler,
   type ControllerHandlerDeps,
@@ -49,7 +50,7 @@ function fakeCtx(overrides: Partial<PipelineContext> = {}): {
   const ctx = {
     sessionId: 'sess-ctx',
     textOrMessages: 'do the thing',
-    options: undefined,
+    options: { userId: 'test-user' },
     externalResults: undefined,
     requestLogger,
     yield: (c: Captured) => {
@@ -57,7 +58,10 @@ function fakeCtx(overrides: Partial<PipelineContext> = {}): {
     },
     ...overrides,
   } as unknown as PipelineContext;
-  return { ctx, captured };
+  return {
+    ctx: { ...ctx, options: { userId: 'test-user', ...ctx.options } },
+    captured,
+  };
 }
 
 function scriptedClient(queue: SubagentResult[]): ISubagentClient {
@@ -319,12 +323,12 @@ describe('controller runStep — per-round context strategy (Task 11)', () => {
     );
   });
 
-  it('(d) controlTail: a retry message is stored on inFlightStep, re-emitted, persisted, then pruned', async () => {
+  it('(d) controlTail: a retry message is stored on inFlightStep, re-emitted and persisted after tool rounds', async () => {
     const backend = new InMemoryKnowledgeBackend();
     const rag = stubRag();
 
     // Round 0: hallucinated (unavailable) tool → retry into controlTail.
-    // Round 1: valid tool call → a recorded round prunes the controlTail.
+    // Round 1: valid tool call → a recorded round retains the controlTail.
     // Round 2: content → finish.
     const execQueue: SubagentResult[] = [
       toolCall('NopeTool', { x: 1 }), // not offered → retry
@@ -337,7 +341,7 @@ describe('controller runStep — per-round context strategy (Task 11)', () => {
       async send(messages: Message[]) {
         rounds.push(messages);
         // Inspect the PERSISTED bundle to prove controlTail durability.
-        const b = await hydrateBundle(backend, 'sess-ctx');
+        const b = await hydrateBundle(backend, testStorageKey('sess-ctx'));
         persistedTail.push(b.inFlightStep?.controlTail?.length ?? 0);
         const next = execQueue.shift();
         if (!next) return { kind: 'content', content: '' };
@@ -398,17 +402,23 @@ describe('controller runStep — per-round context strategy (Task 11)', () => {
       'controlTail must be persisted (length 1) when the retry is live',
     );
 
-    // (d2) pruned after the next recorded round → gone from the following send.
+    // (d2) retained after the next recorded round and in durable state.
     assert.ok(
-      !rounds[2]?.some(
+      rounds[2]?.some(
         (m) => typeof m.content === 'string' && m.content.includes(RETRY_MARK),
       ),
-      'the retry message must be pruned once the next round is recorded',
+      'the retry message must survive after the next round is recorded',
     );
     assert.equal(
       persistedTail[2],
-      0,
-      'controlTail must be pruned (length 0) after the recorded round',
+      1,
+      'controlTail must remain persisted (length 1) after the recorded round',
     );
   });
 });
+
+function testStorageKey(sessionId: string): string {
+  const key = controllerStorageKey({ userId: 'test-user' }, sessionId);
+  assert.ok(key);
+  return key;
+}

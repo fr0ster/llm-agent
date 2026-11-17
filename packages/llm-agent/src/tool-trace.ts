@@ -1,10 +1,4 @@
 import type { ToolTrace, ToolTraceEntry } from './interfaces/tool-trace.js';
-import {
-  TOOL_TRACE_ARGUMENT_CHARS,
-  TOOL_TRACE_ERROR_CHARS,
-  TOOL_TRACE_MAX_ENTRIES,
-  TOOL_TRACE_RESULT_CHARS,
-} from './interfaces/tool-trace.js';
 
 export type TraceJson =
   | null
@@ -169,10 +163,14 @@ export function normalizeToolTraceEntry(entry: ToolTraceEntry): ToolTraceEntry {
   }
   const base = {
     sequence: entry.sequence,
-    toolName: sanitizeTraceValue(entry.toolName, 200, secrets),
+    toolName: sanitizeTraceValue(
+      entry.toolName,
+      Number.POSITIVE_INFINITY,
+      secrets,
+    ),
     arguments: sanitizeTraceValue(
       entry.arguments,
-      TOOL_TRACE_ARGUMENT_CHARS,
+      Number.POSITIVE_INFINITY,
       secrets,
     ),
     resultExcerpt:
@@ -180,7 +178,7 @@ export function normalizeToolTraceEntry(entry: ToolTraceEntry): ToolTraceEntry {
         ? ''
         : sanitizeTraceValue(
             entry.resultExcerpt,
-            TOOL_TRACE_RESULT_CHARS,
+            Number.POSITIVE_INFINITY,
             secrets,
           ),
   };
@@ -188,14 +186,17 @@ export function normalizeToolTraceEntry(entry: ToolTraceEntry): ToolTraceEntry {
     ? {
         ...base,
         outcome: 'error',
-        error: sanitizeTraceValue(entry.error, TOOL_TRACE_ERROR_CHARS, secrets),
+        error: sanitizeTraceValue(
+          entry.error,
+          Number.POSITIVE_INFINITY,
+          secrets,
+        ),
       }
     : { ...base, outcome: entry.outcome };
 }
 
 export class ToolTraceCollector {
   private readonly entries = new Map<number, ToolTraceEntry>();
-  private omittedCount = 0;
   private closed = false;
   private finalComplete?: boolean;
   private pending = 0;
@@ -217,20 +218,7 @@ export class ToolTraceCollector {
     ) {
       this.pending = Math.max(0, this.pending - 1);
     }
-    const retained = [...this.entries.keys()].sort((a, b) => a - b);
-    if (
-      retained.length === TOOL_TRACE_MAX_ENTRIES &&
-      !this.entries.has(entry.sequence) &&
-      entry.sequence > retained[24] &&
-      entry.sequence < retained[25]
-    )
-      return;
     this.entries.set(entry.sequence, normalizeToolTraceEntry(entry));
-    if (this.entries.size > TOOL_TRACE_MAX_ENTRIES) {
-      const keys = [...this.entries.keys()].sort((a, b) => a - b);
-      this.entries.delete(keys[25]);
-      this.omittedCount++;
-    }
   }
   snapshot(complete = true): ToolTrace {
     const entries = [...this.entries.values()]
@@ -238,7 +226,7 @@ export class ToolTraceCollector {
       .map((entry) => ({ ...entry }));
     return {
       entries,
-      omittedCount: this.omittedCount,
+      omittedCount: 0,
       complete:
         complete &&
         (this.finalComplete ?? true) &&
@@ -286,7 +274,7 @@ export async function recordToolInvocation<T extends { ok: boolean }>(
   const base = {
     sequence,
     toolName,
-    arguments: sanitizeTraceValue(args, TOOL_TRACE_ARGUMENT_CHARS, secrets),
+    arguments: sanitizeTraceValue(args, Number.POSITIVE_INFINITY, secrets),
     resultExcerpt: '',
   };
   const notify = (entry: ToolTraceEntry): void => {
@@ -294,10 +282,14 @@ export async function recordToolInvocation<T extends { ok: boolean }>(
       observer(
         normalizeToolTraceEntry({
           ...entry,
-          toolName: sanitizeTraceValue(entry.toolName, 200, secrets),
+          toolName: sanitizeTraceValue(
+            entry.toolName,
+            Number.POSITIVE_INFINITY,
+            secrets,
+          ),
           arguments: sanitizeTraceValue(
             args,
-            TOOL_TRACE_ARGUMENT_CHARS,
+            Number.POSITIVE_INFINITY,
             secrets,
           ),
         }),
@@ -319,7 +311,7 @@ export async function recordToolInvocation<T extends { ok: boolean }>(
     collectSecrets(description.error, secrets, false);
     const resultExcerpt = sanitizeTraceValue(
       description.value,
-      TOOL_TRACE_RESULT_CHARS,
+      Number.POSITIVE_INFINITY,
       secrets,
     );
     notify(
@@ -330,7 +322,7 @@ export async function recordToolInvocation<T extends { ok: boolean }>(
             resultExcerpt,
             error: sanitizeTraceValue(
               description.error,
-              TOOL_TRACE_ERROR_CHARS,
+              Number.POSITIVE_INFINITY,
               secrets,
             ),
           }
@@ -343,7 +335,7 @@ export async function recordToolInvocation<T extends { ok: boolean }>(
     notify({
       ...base,
       outcome: 'error',
-      error: sanitizeTraceValue(message, TOOL_TRACE_ERROR_CHARS, secrets),
+      error: sanitizeTraceValue(message, Number.POSITIVE_INFINITY, secrets),
     });
     throw error;
   }

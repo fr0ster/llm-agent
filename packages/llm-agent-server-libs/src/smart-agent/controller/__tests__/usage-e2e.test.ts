@@ -79,7 +79,11 @@ test('controller terminal usage == getSummary(traceId), includes subagents + emb
   const ctx = {
     sessionId: 'sess-e2e',
     textOrMessages: 'Read table T100',
-    options: { trace: { traceId: 'sess-e2e' }, requestLogger },
+    options: {
+      userId: 'test-user',
+      trace: { traceId: 'sess-e2e' },
+      requestLogger,
+    },
     externalResults: undefined,
     requestLogger,
     yield: (c: Result<LlmStreamChunk, unknown>) => captured.push(c),

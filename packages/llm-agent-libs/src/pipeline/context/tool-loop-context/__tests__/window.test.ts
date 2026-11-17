@@ -38,3 +38,15 @@ test('keepLastRounds < 1 is clamped to 1 (protocol tail guaranteed)', async () =
   await s.record(mkRound('c1', 'r1'));
   assert.equal((await s.form({ prefix })).at(-1)?.content, 'r1');
 });
+
+test('default strategy passes all 50 rounds and long tool messages intact', async () => {
+  const strategy = new WindowContextStrategy();
+  const rounds = Array.from({ length: 50 }, (_, i) =>
+    mkRound(`c${i}`, `${i}:${'x'.repeat(200_000)}`),
+  );
+  for (const round of rounds) await strategy.record(round);
+  assert.deepEqual(await strategy.form({ prefix }), [
+    ...prefix,
+    ...rounds.flatMap((round) => [round.assistant, ...round.results]),
+  ]);
+});

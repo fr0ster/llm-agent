@@ -249,7 +249,6 @@ for (const mode of [
     const board = new TaskBoard({
       caller: testCallOptions({ sessionId: 'test-session' }).caller,
       baseInput: () => testCallOptions({ sessionId: 'test-session' }),
-      taskOutputChars: 130_000,
       ...profileHost(
         new Map<string, ISubAgent>([
           [
@@ -297,7 +296,7 @@ for (const mode of [
       goal: 'Legacy',
       state: 'done',
       createdAt: 0,
-      output: 'x'.repeat(mode === 'overflow' ? 120000 : 119900),
+      output: 'x'.repeat(mode === 'overflow' ? 200000 : 119900),
     };
     const sources =
       mode === 'mixed-cap' || mode === 'overflow' ? [source, legacy] : [source];
@@ -344,22 +343,13 @@ for (const mode of [
             assert.ok(response.ok);
             assert.equal(
               response.value.isError,
-              mode === 'overflow' ? true : undefined,
+              undefined,
               JSON.stringify(response.value),
             );
-            if (mode === 'overflow')
-              assert.match(
-                JSON.stringify(response.value.content),
-                /exceeds 120000/,
-              );
           }
           await new Promise<void>((resolve) => setImmediate(resolve));
         },
       );
-      if (mode === 'overflow') {
-        assert.equal(contexts.length, 0);
-        return;
-      }
       assert.equal(contexts.length, 2);
       for (const context of contexts) {
         assert.ok(context.startsWith('Worker brief'));
@@ -376,7 +366,7 @@ for (const mode of [
             ),
           );
           assert.ok(!context.includes(source.output ?? ''));
-        } else if (mode === 'legacy') {
+        } else if (mode === 'legacy' || mode === 'overflow') {
           assert.ok(
             context.includes(
               '[result of step source-task (task source-task)]\nPRIVATE OUTPUT MUST NOT TRAVEL',
@@ -385,7 +375,7 @@ for (const mode of [
         } else {
           assert.ok(!context.includes('source-task'));
         }
-        if (mode === 'mixed-cap') {
+        if (mode === 'mixed-cap' || mode === 'overflow') {
           assert.ok(context.length > 120000);
           assert.ok(context.includes(legacy.output ?? ''));
         }

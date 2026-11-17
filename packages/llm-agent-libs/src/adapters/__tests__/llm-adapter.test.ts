@@ -78,7 +78,7 @@ describe('LlmAdapter — success paths', () => {
     assert.deepEqual(r.value.toolCalls?.[0].arguments, { key: 'value' });
   });
 
-  it('OpenAI format — malformed JSON arguments → empty object', async () => {
+  it('OpenAI format — malformed JSON arguments retain the raw declaration for rejection', async () => {
     const raw = {
       choices: [
         {
@@ -97,7 +97,7 @@ describe('LlmAdapter — success paths', () => {
     const adapter = new LlmAdapter(new StubBridge({ content: '', raw }));
     const r = await adapter.chat([USER]);
     assert.ok(r.ok);
-    assert.deepEqual(r.value.toolCalls?.[0].arguments, {});
+    assert.equal(r.value.toolCalls?.[0].rawArguments, 'not-json');
   });
 
   it('malformed tool args emits parse diagnostic', async () => {

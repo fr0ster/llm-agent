@@ -1,5 +1,17 @@
 # Pipelines
 
+Automatic conversation-history summarization is removed: full history is kept.
+`SummarizeHandler`, the `summarize` stage, `summarizeHistory(...)`,
+`withHistorySummarization(...)`, `withSessionTokenBudget(...)`,
+`historyAutoSummarizeLimit`, `historySummaryPrompt`, `sessionTokenBudget`, and YAML
+`prompts.historySummary` are deprecated no-ops retained for source compatibility.
+They make no helper LLM call, add no summary, and create no history RAG store.
+Explicit opt-in semantic turn indexing (`HistorySummarizer` / `history-upsert`)
+remains separate from conversation history. ContextAssembler continues to exclude
+client-supplied `system` messages and falls back to the action
+as a user message only when there are no windowed messages.
+
+
 A **pipeline** decides which agent the server builds. It is selected by name in
 YAML and resolved from a plugin registry. The server ships six built-in
 pipelines; deployments can add their own as plugins.
@@ -91,11 +103,11 @@ impose an execution limit.
 | `maxEvalResumes` | — | unlimited | Cap on evaluator resume cycles |
 | `maxFinalizeRetries` | — | unlimited | Finalizer retry cap |
 | `maxReviewRetries` | — | unlimited | In-process re-ask budget for the reviewer |
-| `maxDigestChars` | — | unlimited | Board digest render budget (chars) |
-| `maxIntentChars` | — | unlimited | Goal/intent field length cap (chars) |
-| `maxBoardChars` | — | unlimited | Live board render size cap (chars) |
+| `maxDigestChars` | — | unlimited | Legacy setting; complete digests are preserved |
+| `maxIntentChars` | — | unlimited | Legacy setting; complete instructions are preserved |
+| `maxBoardChars` | — | unlimited | Legacy setting; the complete board is rendered |
 | `maxActiveSteps` | — | unlimited | Concurrent in-flight steps cap |
-| `keepRecentDigests` | — | unlimited | How many recent digests to keep on the board |
+| `keepRecentDigests` | — | unlimited | Legacy setting; every terminal digest is rendered |
 
 **Capability is preset-encoded — there is no `planner:` config key.** Select the
 pairing by pipeline name:
@@ -146,10 +158,22 @@ when composing in code — `ControllerFactory` is the public controller export).
   `new DefaultAuxiliaryMcpTools([])` via `BuildAgentDeps.auxiliaryMcpTools`. Collision between
   an auxiliary tool name and a domain MCP tool name fails loud at build time.
 - **Tool-loop context strategy (`IToolLoopContextStrategy`).** Controls how the executor's
-  context window grows across tool-loop iterations. The controller uses `RagRecall` (recall
-  relevant past turns from the session knowledge store), which bounds token growth per step.
-  The flat/server default is `Window` (sliding window); the bare builder default is `Legacy`
-  (append-only). Override via `BuildAgentDeps.toolLoopContextStrategy`.
+  context window grows across tool-loop iterations. Every built-in pipeline,
+  including `controller` and `controller-weak`, defaults to
+  `LegacyAccumulateContextStrategy`: every assistant message, tool-call argument
+  and result reaches subsequent model calls in chronological order. Server/YAML
+  configuration and the bare builder use the same full-history default.
+  Lossy strategies require an explicit `BuildAgentDeps.toolLoopContextStrategyFactory`.
+  For the previous controller recall behavior, import
+  `createControllerRagRecallContextStrategyFactory` from
+  `@mcp-abap-adt/llm-agent-server-libs/controller` and inject
+  `createControllerRagRecallContextStrategyFactory(controllerConfig.budgets)`.
+  It retains only the latest raw round plus selected result snippets; earlier
+  assistant text and arguments can be omitted. A bounded `WindowContextStrategy`
+  likewise requires explicit `keepLastRounds` selection. YAML has no strategy
+  selector: it always uses full history unless the embedding application injects
+  a factory. Validation replies and corrections keep their original positions
+  between retained tool rounds.
 - `DEBUG_CONTROLLER=1` logs (stderr) the step instructions the planner delegates
   and per-role/total token spend. The HTTP response always carries total `usage`.
 - Ready-to-run examples: [`pipelines/controller.yaml`](../pipelines/controller.yaml)
@@ -235,12 +259,12 @@ Work/check steps can select a `context` object:
 | Field | Meaning |
 |---|---|
 | `spec?: boolean` | Include the rendered spec by default; `false` omits it. |
-| `history?: 'none' \| 'last-turn' \| 'all'` | `none` passes no messages; `last-turn` passes the last user message and a following assistant message if both exist; `all` (default) passes the last 20 messages. |
-| `results?: string[]` | Include selected latest results, in plan order. Checks also include their targets, deduplicated. Each output is limited to 8000 characters with an omission note. |
+| `history?: 'none' \| 'last-turn' \| 'all'` | `none` passes no messages; `last-turn` passes the last user message and a following assistant message if both exist; `all` (default) passes every supplied message. |
+| `results?: string[]` | Include selected latest results, in plan order. Checks also include their targets, deduplicated. Each selected output is included in full. |
 | `note?: string` | Append a step-specific instruction. |
 
-The request and step goal always reach a worker. Truncated `all` history adds
-an omission note to the task. `worker: 'self'` checks receive the request, spec,
+The request and step goal always reach a worker. Default/`all` history is included
+in full without an omission marker. `worker: 'self'` checks receive the request, spec,
 check step and latest target records through `controller.check`, plus the same
 composed `task` and selected `history` as a check worker (including the JSON
 instruction). Selected results outside targets are included; `context.spec: false`
@@ -282,8 +306,8 @@ and pending external calls. Store errors are logged as
 `adaptive_record_load_failed` / `adaptive_record_save_failed` and do not fail the
 request. This is context for a fresh plan, not automatic cursor resumption.
 `LlmAdaptiveController` includes the previous request, plan, outcome, stop reason
-and records (outputs capped at 500 characters); planning history is capped at
-20 messages and 1000 characters per message.
+and complete records. Planning receives every supplied history message, including
+its complete content and metadata.
 
 ### Streaming, finalization and external tools
 
@@ -483,9 +507,9 @@ propagates.
   with `stopped: true` becomes `stopped`; other successful results become
   `done`. Stopping a queued task marks it stopped immediately; stopping a running
   task requests cooperation, and its eventual result determines the outcome.
-  The in-memory task output keeps the first `TASK_OUTPUT_CHAR_LIMIT` (4000)
-  characters plus a `[cut: <n> characters omitted]` note. Events and `get_task` expose bounded
-  notices instead. Error strings from thrown exceptions are not cut by this limit.
+  In-memory task output is complete by default. Consumers may explicitly set
+  `taskOutputChars` to bound tool-result storage. Events and `get_task` expose
+  complete notices; errors from thrown exceptions are preserved.
   The board emits `started`, `done`, `failed`, `stopped` events synchronously;
   observer exceptions do not affect execution.
 - **`PlannerToolsClient` + planner scope:** an in-process `IMcpClient` exposes
@@ -505,8 +529,8 @@ propagates.
   schema. Tool calls outside it return an `isError` result (`no planner session`);
   tool validation and board errors also become `isError` results.
   Delegation history defaults to `none`; `last-turn` selects the last user
-  message and a following assistant message if present; `all` selects the last
-  20 messages. These are selected from the planner conversation, including event
+  message and a following assistant message if present; `all` selects every
+  supplied message. These are selected from the planner conversation, including event
   notes, rather than a separate user-only history.
 - **`DialogueSession` + `IDialogueStateStore` / `InMemoryDialogueStateStore`:**
   open one actor per user session. It serializes planner turns; `send()` resolves
@@ -514,20 +538,19 @@ propagates.
   before the next event turn. Outcomes (`done`, `failed`, `stopped`) and non-terminal `long_running` events
   wake the planner; `started` does not. Buffered outcomes coalesce in arrival order into
   one user-role `[task events]` note listing task identity, state, a short outcome
-  (summary at most 600 characters), result kind, verdict, character count and
-  stored result reference. Goals are bounded to 200 characters and diagnostics
-  to 600. `get_task` returns the same bounded notice; `include_trace` adds tool
+  (complete summary), result kind, verdict, character count and
+  stored result reference. Goals and diagnostics retain their complete text.
+  `get_task` returns the same complete notice; `include_trace` adds tool
   evidence for checks. Read stored records with normal read tools for concrete gaps.
-  Request projection replaces consumed
-  outcomes and delivered answers with references while preserving corrections,
-  consent, unresolved errors, ownership and the current plan. Persisted history
-  keeps complete replies within its existing storage bounds. Events arriving during a turn wait for a later event turn.
+  Request projection preserves consumed outcomes, complete delivered answers,
+  corrections, consent, unresolved errors, ownership and the current plan.
+  Persisted history keeps complete replies without retention caps. Events arriving during a turn wait for a later event turn.
   An event reply whose trimmed text equals `NO_MESSAGE` stays in conversation
   history but is not delivered. Other event replies enter `pending` and invoke
   `onMessage`; `takePending()` returns and clears that queue. User replies are
   never suppressed by `NO_MESSAGE`.
-  Conversation history is capped at `DIALOGUE_HISTORY_LIMIT` (200 messages) on
-  restore and after each appended message. `snapshot()` contains conversation,
+  Conversation history is preserved in full on restore and after each appended
+  message. Closed request transcripts and complete request text are retained. `snapshot()` contains conversation,
   plan, task records, pending messages and `savedAt`. When a store is supplied,
   each turn attempts a save, including failed turns, unless closing; save errors
   are swallowed and reported through the optional logger. The in-memory store
@@ -642,24 +665,23 @@ into `failed`; stopped/failed outcomes remain unsuccessful without a reference.
 Aborting the write interrupts the task. Store calls have no added timeout and
 use the call's abort signal for cancellation.
 
-Dependencies with `resultRef` receive a reference and bounded summary, without
+Dependencies with `resultRef` receive a reference and complete summary, without
 inline output; checks also receive tool evidence and expected items. Legacy tasks
-without references receive text on every delegation, subject to the existing
-120,000-character legacy context cap. `deliver` reads the full record; a read
+without references receive complete text on every delegation without an aggregate
+character cap. `deliver` reads the full record; a read
 failure returns a tool error and delivers nothing. Without a store, text hand-off
 and delivery from `task.output` remain available.
 
 Report workers get a default `submit_report({ summary, result? })`; host tools of
-that name take precedence. Summary must be nonempty and at most 600 characters.
+that name take precedence. Summary must be nonempty; its content is preserved in full.
 Omitting `result` uses all collected report text; no collected text is an error.
-Without an explicit summary, the first 600 output characters are used. Verdict
-summaries retain verdict/count and trim the note. The session defaults to the
+Without an explicit summary, the complete output is used. Verdict
+summaries retain the complete verdict, count and note. The session defaults to the
 built-in `createMemorySignalBus`, retaining finish payloads (including summaries)
 per signal name/source/run until retired.
 
-Planner memory stores bounded task notices and delivery note/notice projections,
-rather than full result bodies. Persisted history retains replies within its
-existing bounds.
+Planner memory indexes task notices and delivery projections. Persisted history
+retains complete replies without message-count or character limits.
 
 ## Adding a custom pipeline (plugin)
 

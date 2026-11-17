@@ -302,7 +302,7 @@ export class SmartAgentBuilder {
     return this;
   }
 
-  /** Set the helper LLM used for summarization and translation. */
+  /** Set the helper LLM used for translation and opt-in semantic history indexing. */
   withHelperLlm(llm: ILlm): this {
     this._helperLlm = llm;
     return this;
@@ -326,7 +326,7 @@ export class SmartAgentBuilder {
     return this;
   }
 
-  /** Inject a custom RAG store for conversation history. Overrides auto-created in-memory store. */
+  /** Inject a RAG store for opt-in semantic history retrieval. */
   setHistoryRag(rag: IRag): this {
     this._historyRag = rag;
     return this;
@@ -647,7 +647,7 @@ export class SmartAgentBuilder {
     return this;
   }
 
-  /** Override the history summarizer used for semantic history compression. */
+  /** Override the per-turn summarizer used for opt-in semantic RAG indexing. */
   withHistorySummarizer(summarizer: IHistorySummarizer): this {
     this._historySummarizer = summarizer;
     return this;
@@ -817,15 +817,13 @@ export class SmartAgentBuilder {
     return this;
   }
 
-  /** Set the history message count threshold for auto-summarization. */
-  withHistorySummarization(limit: number): this {
-    this._agentOverrides.historyAutoSummarizeLimit = limit;
+  /** @deprecated history is no longer summarized; full history is kept */
+  withHistorySummarization(_limit: number): this {
     return this;
   }
 
-  /** Set the session token budget for multi-turn conversations. */
-  withSessionTokenBudget(budget: number): this {
-    this._agentOverrides.sessionTokenBudget = budget;
+  /** @deprecated history is no longer summarized; full history is kept */
+  withSessionTokenBudget(_budget: number): this {
     return this;
   }
 
@@ -1017,13 +1015,7 @@ export class SmartAgentBuilder {
         ? new InMemoryRag()
         : undefined);
 
-    // Auto-create history RAG if history summarization is enabled
-    const historyRag: IRag | undefined =
-      this._historyRag ??
-      (this._agentOverrides.historyAutoSummarizeLimit ||
-      this.cfg.agent?.historyAutoSummarizeLimit
-        ? new InMemoryRag()
-        : undefined);
+    const historyRag: IRag | undefined = this._historyRag;
 
     // Build provider registry and collection registry (v9.1 wiring).
     const ragProviderRegistry: IRagProviderRegistry =
@@ -1401,8 +1393,6 @@ export class SmartAgentBuilder {
       const agentConfig: SmartAgentConfig = {
         ragQueryK: 10,
         ragTranslatePrompt: this.cfg.prompts?.ragTranslate,
-        historySummaryPrompt: this.cfg.prompts?.historySummary,
-        historyAutoSummarizeLimit: this.cfg.agent?.historyAutoSummarizeLimit,
         ...this.cfg.agent,
         ...(this.cfg.sessionPolicy
           ? { sessionPolicy: this.cfg.sessionPolicy }

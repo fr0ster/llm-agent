@@ -109,3 +109,19 @@ describe('HistorySummarizer', () => {
     assert.ok(result.error.message.includes('model overloaded'));
   });
 });
+
+it('passes complete long tool results to the summary model', async () => {
+  const content = 'tool result '.repeat(20_000);
+  const llm: ILlm = {
+    async chat(messages) {
+      assert.ok(messages.some((message) => message.content?.includes(content)));
+      return { ok: true, value: { content: 'summary', finishReason: 'stop' } };
+    },
+    async *streamChat() {},
+  };
+  const result = await new HistorySummarizer(llm).summarize({
+    ...TURN,
+    toolResults: [{ tool: 'createClass', content }],
+  });
+  assert.ok(result.ok);
+});

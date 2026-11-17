@@ -66,7 +66,7 @@ export interface InterpretResult {
   executedPlan?: DagPlan;
   /** Topological execution order of node ids in actual run order. */
   executionOrder: readonly string[];
-  /** The external tool calls surfaced during the run (deterministic `ext:` ids).
+  /** The external tool calls surfaced during the run (unique returned `ext:` IDs).
    *  Present iff at least one node reached status 'awaiting-external' (#171). */
   pendingExternalToolCalls?: LlmToolCall[];
 }

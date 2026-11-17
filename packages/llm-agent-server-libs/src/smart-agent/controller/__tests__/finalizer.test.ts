@@ -8,68 +8,31 @@ import {
 } from '../finalizer.js';
 import type { ISubagentClient } from '../subagent-client.js';
 
-describe('orderAndTruncate', () => {
-  it('orders by seq and caps each result to C chars with a marker', () => {
-    const out = orderAndTruncate(
-      [
-        { seq: 1, content: 'BBBBB' },
-        { seq: 0, content: 'AAAAA' },
-      ],
-      3,
-    );
-    assert.equal(out[0].seq, 0);
-    assert.equal(out[0].content, 'AAA…[truncated]');
-    assert.equal(out[1].seq, 1);
+describe('complete finalizer results', () => {
+  it('orders complete results and leaves the caller array unchanged', () => {
+    const results = [
+      { seq: 1, content: 'B'.repeat(200_000) },
+      { seq: 0, content: 'A'.repeat(200_000) },
+    ];
+    assert.deepEqual(orderAndTruncate(results, 3), [results[1], results[0]]);
+    assert.equal(results[0].seq, 1);
   });
-});
-
-describe('reduceToBudget', () => {
-  it('within budget AND explicitly counts what it cannot inline (no silent drop)', () => {
-    const many = Array.from({ length: 200 }, (_, i) => ({
-      seq: i,
-      content: 'x'.repeat(100),
+  it('renders every complete result regardless of legacy budgets', () => {
+    const results = Array.from({ length: 200 }, (_, seq) => ({
+      seq,
+      content: `${seq}:${'x'.repeat(2000)}`,
     }));
-    const budget = 500;
-    const body = reduceToBudget(many, 1000, budget);
-    assert.ok(body.length <= budget, `body ${body.length} <= budget ${budget}`);
-    assert.ok(
-      /more of 200/.test(body),
-      'manifest explicitly counts omitted ids',
-    );
-  });
-  it('keeps a compact extract of EVERY result for a feasible budget (none dropped)', () => {
     const logs: string[] = [];
-    const body = reduceToBudget(
-      [
-        { seq: 0, content: 'A'.repeat(5000) },
-        { seq: 1, content: 'B'.repeat(5000) },
-        { seq: 2, content: 'C'.repeat(5000) },
-      ],
-      1000,
-      900,
-      (m) => logs.push(m),
+    const body = reduceToBudget(results, 3, MIN_BODY_BUDGET, (line) =>
+      logs.push(line),
     );
-    assert.ok(body.length <= 900);
-    assert.ok(
-      body.includes('[#0]') && body.includes('[#1]') && body.includes('[#2]'),
-      'all three results kept a compact extract',
+    assert.equal(
+      body,
+      results
+        .map((result) => `[#${result.seq}] ${result.content}`)
+        .join('\n\n'),
     );
-    assert.ok(
-      logs.length > 0 && /overflow/.test(logs.join(' ')),
-      'reductions logged',
-    );
-  });
-  it('never exceeds the configured budget (no clamp-up) and still counts omissions', () => {
-    const many = Array.from({ length: 50 }, (_, i) => ({
-      seq: i,
-      content: 'X'.repeat(1000),
-    }));
-    const body = reduceToBudget(many, 1000, MIN_BODY_BUDGET);
-    assert.ok(
-      body.length <= MIN_BODY_BUDGET,
-      `body ${body.length} <= configured ${MIN_BODY_BUDGET}`,
-    );
-    assert.ok(/more of 50/.test(body), 'explicit omitted count present');
+    assert.deepEqual(logs, []);
   });
 });
 
@@ -92,15 +55,20 @@ describe('LlmFinalizer', () => {
     );
     assert.equal(answer, 'FINAL ANSWER');
   });
-  it('throws when constructed with a budget below MIN_BODY_BUDGET', () => {
+  it('passes 200k-character results to the model even with tiny legacy budgets', async () => {
+    const content = 'x'.repeat(200_000);
     const client: ISubagentClient = {
-      async send() {
-        return { kind: 'content', content: 'x' };
+      async send(messages) {
+        assert.ok(
+          messages.some((message) => message.content?.includes(content)),
+        );
+        return { kind: 'content', content: 'answer' };
       },
     };
-    assert.throws(
-      () => new LlmFinalizer(client, { budget: 5, perResultCap: 100 }),
-      /MIN_BODY_BUDGET/,
+    const finalizer = new LlmFinalizer(client, { budget: 5, perResultCap: 3 });
+    assert.equal(
+      await finalizer.finalize('goal', 'request', [{ seq: 0, content }], {}),
+      'answer',
     );
   });
 });

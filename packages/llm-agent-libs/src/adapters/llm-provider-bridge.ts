@@ -15,6 +15,8 @@ import type {
   Message,
 } from '@mcp-abap-adt/llm-agent';
 
+import { parseToolArguments } from '../pipeline/handlers/tool-response-round.js';
+
 /**
  * Convert MCP-style tools to OpenAI function-call format.
  * This is the same conversion that OpenAIAgent/DeepSeekAgent used to do.
@@ -148,17 +150,15 @@ export class LlmProviderBridge implements BaseAgentLlmBridge {
     if (toolCallMap.size > 0) {
       const toolCalls = [...toolCallMap.entries()]
         .sort(([a], [b]) => a - b)
-        .map(([, tc]) => ({
-          id: tc.id,
-          name: tc.name,
-          arguments: (() => {
-            try {
-              return JSON.parse(tc.arguments) as Record<string, unknown>;
-            } catch {
-              return {};
-            }
-          })(),
-        }));
+        .map(([, tc]) => {
+          const args = parseToolArguments(tc.arguments);
+          return {
+            id: tc.id,
+            name: tc.name,
+            arguments: args ?? {},
+            ...(args === undefined ? { rawArguments: tc.arguments } : {}),
+          };
+        });
       yield { type: 'tool_calls', toolCalls } as AgentStreamChunk;
     }
 

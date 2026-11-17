@@ -7,12 +7,7 @@ import type {
 } from '@mcp-abap-adt/llm-agent';
 import { renderTaskSpec } from '@mcp-abap-adt/llm-agent';
 
-/** Maximum characters included from each worker result. */
-export const RESULT_CHAR_LIMIT = 8000;
-/** Maximum conversation messages passed to a worker. */
-export const HISTORY_MESSAGE_LIMIT = 20;
-
-/** Compose bounded worker context; latest map insertion order is plan order. */
+/** Compose worker context without truncation; map insertion order is plan order. */
 export function composeStepInput(args: {
   request: string;
   spec?: ITaskSpec;
@@ -33,11 +28,9 @@ export function composeStepInput(args: {
   ]);
   for (const [id, record] of latest) {
     if (!selected.has(id)) continue;
-    let output = record.output;
-    if (output.length > RESULT_CHAR_LIMIT) {
-      output = `${output.slice(0, RESULT_CHAR_LIMIT)}\n[cut: ${output.length - RESULT_CHAR_LIMIT} characters omitted]`;
-    }
-    sections.push(`Result of ${id} (${record.status}):\n---\n${output}\n---`);
+    sections.push(
+      `Result of ${id} (${record.status}):\n---\n${record.output}\n---`,
+    );
   }
   if (checkReason)
     sections.push(
@@ -55,14 +48,11 @@ export function composeStepInput(args: {
       const assistant = args.history
         .slice(userIndex + 1)
         .find((message) => message.role === 'assistant');
-      const user = args.history[userIndex];
-      if (user && assistant) history = [user, assistant];
+      // Keep complete tool rounds between the user request and the final reply.
+      if (assistant) history = args.history.slice(userIndex);
     }
   } else if (mode === 'all') {
-    history = args.history.slice(-HISTORY_MESSAGE_LIMIT);
-    const omitted = args.history.length - history.length;
-    if (omitted > 0)
-      sections.push(`[conversation cut: ${omitted} earlier messages omitted]`);
+    history = [...args.history];
   }
   if (step.kind === 'check' && step.worker !== 'self') {
     sections.push(

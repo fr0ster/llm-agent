@@ -893,13 +893,22 @@ for (const mode of ['ok', 'returned', 'throw', 'abort'] as const) {
     options.signal = controller.signal;
     const beforeMixed = records.length;
     const registry = new PendingToolResultsRegistry();
-    fireInternalToolsAsync('', [tc], registry, 's', {
-      toolClientMap: new Map([['read', client]]),
-      toolCache: new ToolCache(),
-      metrics,
-      options,
-    });
-    await registry.consume('s');
+    fireInternalToolsAsync(
+      '',
+      [tc],
+      registry,
+      {
+        kind: 'caller',
+        caller: { userId: 'test-user', sessionId: 's', isAdmin: false },
+      },
+      {
+        toolClientMap: new Map([['read', client]]),
+        toolCache: new ToolCache(),
+        metrics,
+        options: { ...options, userId: 'test-user', sessionId: 's' },
+      },
+    );
+    await registry.consume({ userId: 'test-user', sessionId: 's' });
     assert.equal(requests, 2);
     assert.equal(records.length - beforeMixed, 1);
     controller = new AbortController();
@@ -1059,7 +1068,11 @@ test('concurrent TaskBoard workers retain their task context through real HTTP',
   contentFree(f.records);
 });
 
-test('shutdown deadlines and public delivery classification', async () => {
+test('shutdown deadlines and public delivery classification', async (context) => {
+  context.mock.timers.enable({
+    apis: ['Date', 'setTimeout', 'setInterval'],
+    now: 1_700_000_000_000,
+  });
   const hang = () => new Promise<void>(() => {});
   for (const mode of [
     'send-hangs',
@@ -1127,9 +1140,21 @@ test('shutdown deadlines and public delivery classification', async () => {
       outcome: 'ok',
       values: {},
     });
-    const start = Date.now();
-    const totals = await recorder.close(40);
-    assert.ok(Date.now() - start < 500, mode);
+    const closing = recorder.close(40);
+    // Let delivery and failure classification settle at a fixed clock time.
+    let settled = false;
+    void closing.then(() => {
+      settled = true;
+    });
+    for (let step = 0; !settled && step < 10; step++) {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      context.mock.timers.tick(10);
+    }
+    assert.ok(
+      settled,
+      `${mode}: shutdown must finish within the virtual clock budget`,
+    );
+    const totals = await closing;
     // Failed evidence delivery is included once, without recursively creating evidence.
     assert.deepEqual(
       totals,

@@ -97,14 +97,16 @@ describe('history-upsert: summarizeAndStore', () => {
       memory,
       rag,
       sessionId: 's1',
+      options: { userId: 'test-user' },
     });
 
     assert.equal(rag.upserted.length, 1);
     assert.equal(rag.upserted[0].text, 'Created class ZCL_TEST in ZDEV');
     assert.equal(rag.upserted[0].id, 'turn:s1:0');
-    assert.deepEqual(memory.getRecent('s1', 10), [
-      'Created class ZCL_TEST in ZDEV',
-    ]);
+    assert.deepEqual(
+      memory.getRecent(JSON.stringify(['test-user', 's1']), 10),
+      ['Created class ZCL_TEST in ZDEV'],
+    );
   });
 
   it('still pushes to memory when RAG writer is absent (best-effort)', async () => {
@@ -139,8 +141,12 @@ describe('history-upsert: summarizeAndStore', () => {
       memory,
       rag,
       sessionId: 's1',
+      options: { userId: 'test-user' },
     });
-    assert.deepEqual(memory.getRecent('s1', 10), ['summary text']);
+    assert.deepEqual(
+      memory.getRecent(JSON.stringify(['test-user', 's1']), 10),
+      ['summary text'],
+    );
   });
 
   it('still pushes to memory when RAG upsertRaw fails (best-effort)', async () => {
@@ -183,8 +189,12 @@ describe('history-upsert: summarizeAndStore', () => {
       memory,
       rag,
       sessionId: 's1',
+      options: { userId: 'test-user' },
     });
-    assert.deepEqual(memory.getRecent('s1', 10), ['summary text']);
+    assert.deepEqual(
+      memory.getRecent(JSON.stringify(['test-user', 's1']), 10),
+      ['summary text'],
+    );
   });
 
   it('falls back to raw text when summarizer fails (best-effort)', async () => {
@@ -214,8 +224,12 @@ describe('history-upsert: summarizeAndStore', () => {
       memory,
       rag,
       sessionId: 's1',
+      options: { userId: 'test-user' },
     });
-    assert.deepEqual(memory.getRecent('s1', 10), ['do something → done it']);
+    assert.deepEqual(
+      memory.getRecent(JSON.stringify(['test-user', 's1']), 10),
+      ['do something → done it'],
+    );
     assert.equal(rag.upserted.length, 1);
     assert.equal(rag.upserted[0].text, 'do something → done it');
   });
@@ -259,6 +273,7 @@ describe('history-upsert: the record carries its owner (security)', () => {
       memory: makeFakeMemory(),
       rag,
       sessionId: 's1',
+      options: { userId: 'test-user' },
     });
     const q = { text: 'purchase orders', toVector: async () => [] };
     const own = await rag.query(q, 5, {

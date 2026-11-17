@@ -35,12 +35,10 @@ import type {
   TimingEntry,
   ToolCatalogStatus,
   ToolLoopContextStrategyFactory,
-  ToolRound,
 } from '@mcp-abap-adt/llm-agent';
 import {
   type AgentCallOptions,
   addCacheTokenUsage,
-  getStreamToolCallName,
   type IQueryExpander,
   isReadinessReporter,
   mergeOfferedTools,
@@ -66,6 +64,14 @@ import { validateTimeZone, withRequestTime } from './context/request-time.js';
 import { withSubmitReport } from './coordinator/dialogue/submit-report-tool.js';
 import { buildAgentHealthSnapshot } from './health/agent-health.js';
 import type { IMcpConnectionStrategy } from './interfaces/mcp-connection-strategy.js';
+import { ToolResponseRound } from './pipeline/handlers/tool-response-round.js';
+import {
+  type CallerResolution,
+  callerIdentityKey,
+  readCallerResolution,
+  resolveCallerIdentity,
+  withResolvedCaller,
+} from './policy/caller-identity.js';
 import type { OwnedRagStore } from './rag/owner-bound-query.js';
 import { denyRagAccess, ownerBoundQuery } from './rag/owner-bound-query.js';
 
@@ -84,16 +90,17 @@ import { type IMcpToolRegistry, McpToolRegistry } from './mcp/tool-registry.js';
 import { NoopMetrics } from './metrics/noop-metrics.js';
 import type { IMetrics } from './metrics/types.js';
 import { LegacyAccumulateContextStrategy } from './pipeline/context/tool-loop-context/index.js';
+import { ToolLoopControlHistory } from './pipeline/context/tool-loop-control-history.js';
 import { normalizeHeartbeatMs } from './pipeline/handlers/normalize-heartbeat-ms.js';
 import { runPassThrough } from './pipeline/handlers/pass-through.js';
 import {
-  buildBlockedToolMessages,
   classifyToolCalls,
   executeToolBatchWithHeartbeat,
   filterAvailableTools,
   guardToolRound,
   injectPendingResults,
   injectToolPriority,
+  pendingSourceMessages,
   readTaskFinish,
   runOutputValidationReprompt,
 } from './pipeline/handlers/tool-loop-core.js';
@@ -139,6 +146,8 @@ export interface SmartAgentDeps {
   tracer?: ITracer;
   metrics?: IMetrics;
   toolCache?: IToolCache;
+  /** Shared tool availability state; injectable for embedded agents and tests. */
+  toolAvailabilityRegistry?: ToolAvailabilityRegistry;
   outputValidator?: IOutputValidator;
   sessionManager?: ISessionManager;
   skillManager?: ISkillManager;
@@ -191,11 +200,14 @@ export interface SmartAgentConfig {
   sessionPolicy?: SessionPolicy;
   showReasoning?: boolean;
   ragTranslatePrompt?: string;
+  /** @deprecated history is no longer summarized; full history is kept */
   historySummaryPrompt?: string;
+  /** @deprecated history is no longer summarized; full history is kept */
   historyAutoSummarizeLimit?: number;
   mode?: 'hard' | 'pass' | 'smart';
   queryExpansionEnabled?: boolean;
   toolResultCacheTtlMs?: number;
+  /** @deprecated history is no longer summarized; full history is kept */
   sessionTokenBudget?: number;
   /** Interval (ms) for SSE heartbeat comments during MCP tool execution. Default: 5000. */
   heartbeatIntervalMs?: number;
@@ -288,6 +300,16 @@ export class SmartAgent {
   private readonly outputValidator: IOutputValidator;
   private readonly sessionManager: ISessionManager;
   private readonly pendingToolResults: PendingToolResultsRegistry;
+  // Include injected request registries and custom history implementations that
+  // only expose clear(key), so the public session lifecycle can release them.
+  private readonly sessionState = new Map<
+    string,
+    {
+      callerKeys: Set<string>;
+      pending: Set<PendingToolResultsRegistry>;
+      availability: Set<ToolAvailabilityRegistry>;
+    }
+  >();
   private readonly requestLogger: IRequestLogger;
   private readonly defaultLlmCallStrategy: ILlmCallStrategy;
   private readonly mcpToolRegistry: IMcpToolRegistry;
@@ -310,9 +332,9 @@ export class SmartAgent {
       maxToolCalls: normalizeLoopLimit(config.maxToolCalls, 'maxToolCalls'),
     });
     validateTimeZone(this.config.timeZone ?? 'UTC');
-    this.toolAvailabilityRegistry = new ToolAvailabilityRegistry(
-      this.config.toolUnavailableTtlMs,
-    );
+    this.toolAvailabilityRegistry =
+      deps.toolAvailabilityRegistry ??
+      new ToolAvailabilityRegistry(this.config.toolUnavailableTtlMs);
     this.tracer = deps.tracer ?? new NoopTracer();
     this.metrics = deps.metrics ?? new NoopMetrics();
     this.reranker = deps.reranker ?? new NoopReranker();
@@ -480,10 +502,11 @@ export class SmartAgent {
 
   /**
    * Close a session: remove session-scoped RAG collections for the given
-   * sessionId and flush session-scoped history memory.
+   * sessionId and flush all caller-scoped in-memory state for that session.
+   * Supplying a caller limits in-memory clearing to that identity.
    * Errors from registry cleanup are logged but not thrown — best-effort.
    */
-  async closeSession(sessionId: string): Promise<void> {
+  async closeSession(sessionId: string, options?: CallOptions): Promise<void> {
     if (this.deps.ragRegistry) {
       const res = await this.deps.ragRegistry.closeSession(sessionId);
       if (!res.ok) {
@@ -494,7 +517,33 @@ export class SmartAgent {
         });
       }
     }
-    this.deps.historyMemory?.clear(sessionId);
+    const identity = resolveCallerIdentity(options, sessionId);
+    const key =
+      identity.kind === 'caller'
+        ? callerIdentityKey(identity.caller)
+        : undefined;
+    if (identity.kind === 'caller' && key !== undefined) {
+      this.deps.historyMemory?.clear(key);
+      this.pendingToolResults.clear(identity.caller);
+      this.toolAvailabilityRegistry.clear(key);
+      const state = this.sessionState.get(sessionId);
+      for (const registry of state?.pending ?? [])
+        registry.clear(identity.caller);
+      for (const registry of state?.availability ?? []) registry.clear(key);
+      state?.callerKeys.delete(key);
+    } else if (options === undefined) {
+      const state = this.sessionState.get(sessionId);
+      this.deps.historyMemory?.clearSession?.(sessionId);
+      for (const callerKey of state?.callerKeys ?? [])
+        this.deps.historyMemory?.clear(callerKey);
+      this.pendingToolResults.clearSession(sessionId);
+      this.toolAvailabilityRegistry.clearSession(sessionId);
+      for (const registry of state?.pending ?? [])
+        registry.clearSession(sessionId);
+      for (const registry of state?.availability ?? [])
+        registry.clearSession(sessionId);
+      this.sessionState.delete(sessionId);
+    }
   }
 
   /** Returns the model identifiers of the currently active LLM instances. */
@@ -517,6 +566,7 @@ export class SmartAgent {
     ragQueryK?: number;
     toolUnavailableTtlMs?: number;
     showReasoning?: boolean;
+    /** @deprecated history is no longer summarized; full history is kept */
     historyAutoSummarizeLimit?: number;
     classificationEnabled?: boolean;
   } {
@@ -770,8 +820,11 @@ export class SmartAgent {
         );
       }
     }
-    const ephemeralSession = options?.sessionId === undefined;
-    const sessionId = options?.sessionId ?? randomUUID();
+    const ephemeralSession =
+      options?.sessionId === undefined &&
+      options?.caller?.sessionId === undefined;
+    const sessionId =
+      options?.sessionId ?? options?.caller?.sessionId ?? randomUUID();
     const pipelinePendingResults =
       opts.pendingToolResults instanceof PendingToolResultsRegistry
         ? opts.pendingToolResults
@@ -780,7 +833,23 @@ export class SmartAgent {
       opts.toolAvailability instanceof ToolAvailabilityRegistry
         ? opts.toolAvailability
         : this.toolAvailabilityRegistry;
-    opts = { ...opts, sessionId };
+    opts = withResolvedCaller(opts, sessionId);
+    const identity = readCallerResolution(opts);
+    if (!ephemeralSession && identity.kind === 'caller') {
+      let state = this.sessionState.get(sessionId);
+      if (!state) {
+        state = {
+          callerKeys: new Set(),
+          pending: new Set(),
+          availability: new Set(),
+        };
+        this.sessionState.set(sessionId, state);
+      }
+      const key = callerIdentityKey(identity.caller);
+      if (key !== undefined) state.callerKeys.add(key);
+      state.pending.add(pipelinePendingResults);
+      state.availability.add(pipelineToolAvailability);
+    }
     const externalTools = normalizeExternalTools(options?.externalTools);
     opts?.sessionLogger?.logStep('external_tools_normalized', {
       rawCount: options?.externalTools?.length ?? 0,
@@ -791,23 +860,45 @@ export class SmartAgent {
     this.requestLogger.startRequest(traceId);
 
     try {
+      if (identity.kind === 'caller')
+        textOrMessages = await (this.deps.pipeline
+          ? pipelinePendingResults
+          : this.pendingToolResults
+        ).prepareInput(
+          identity.caller,
+          textOrMessages,
+          options?.externalResults,
+        );
       if (mode === 'pass') {
-        const passMessages: Message[] =
+        const passPendingResults = this.deps.pipeline
+          ? pipelinePendingResults
+          : this.pendingToolResults;
+        const inputMessages: Message[] =
           typeof textOrMessages === 'string'
             ? [{ role: 'user' as const, content: textOrMessages }]
             : textOrMessages;
+        const passMessages = await injectPendingResults(
+          withRequestTime(
+            inputMessages,
+            opts.requestStartedAt,
+            this.config.timeZone,
+          ),
+          passPendingResults,
+          identity,
+          opts,
+          options?.externalResults,
+          textOrMessages,
+        );
         opts?.sessionLogger?.logStep('client_request', { textOrMessages });
         for await (const chunk of runPassThrough(
           this._mainLlm,
           this.requestLogger,
-          withRequestTime(
-            passMessages,
-            opts.requestStartedAt,
-            this.config.timeZone,
-          ),
+          passMessages,
           externalTools,
           opts,
           this.config.toolTrust,
+          passPendingResults,
+          identity,
         )) {
           yield chunk;
         }
@@ -860,6 +951,7 @@ export class SmartAgent {
       });
       const orchResult = await orchestrator.orchestrate(textOrMessages, {
         opts,
+        identity,
         rootSpan,
         sessionId,
         mode,
@@ -890,25 +982,27 @@ export class SmartAgent {
         assembledMessages,
         toolClientMap,
         opts,
+        identity,
         rootSpan,
         sessionId,
         externalTools,
         finalTools,
         toolsAvailable,
+        textOrMessages,
         detectedAdapter,
       );
       for await (const chunk of stream) yield chunk;
       rootSpan.setStatus('ok');
     } finally {
-      if (ephemeralSession) {
+      if (ephemeralSession && identity.kind === 'caller') {
         const pendingResults = this.deps.pipeline
           ? pipelinePendingResults
           : this.pendingToolResults;
         const toolAvailability = this.deps.pipeline
           ? pipelineToolAvailability
           : this.toolAvailabilityRegistry;
-        pendingResults.clear(sessionId);
-        toolAvailability.clear(sessionId);
+        pendingResults.clear(identity.caller);
+        toolAvailability.clear(callerIdentityKey(identity.caller));
       }
       this.requestLogger.endRequest(traceId);
       rootSpan.end();
@@ -925,12 +1019,14 @@ export class SmartAgent {
     },
     initialMessages: Message[],
     toolClientMap: Map<string, IMcpClient>,
-    opts: CallOptions | undefined,
+    opts: AgentCallOptions | undefined,
+    identity: CallerResolution,
     parentSpan: ISpan,
     sessionId: string,
     externalTools: LlmTool[],
     activeTools: LlmTool[],
     toolsAvailable: number,
+    sourceInput: string | Message[],
     clientAdapter?: IClientAdapter,
   ): AsyncIterable<Result<LlmStreamChunk, OrchestratorError>> {
     const toolLoopSpan = this.tracer.startSpan('smart_agent.tool_loop', {
@@ -954,40 +1050,32 @@ export class SmartAgent {
     const timingLog: TimingEntry[] = [];
     const loopStart = Date.now();
     let currentTools = activeTools;
+    const localBlocks = new Set<string>();
 
     messages = injectToolPriority(messages, externalTools);
     // staticPrefix is immutable across all iterations — re-emitted every round.
-    const staticPrefix = messages;
+    const staticPrefix = await injectPendingResults(
+      messages,
+      this.pendingToolResults,
+      identity,
+      opts,
+      opts?.externalResults,
+      sourceInput,
+    );
     const strategy: IToolLoopContextStrategy = (
       this.deps.toolLoopContextStrategyFactory ??
       (() => new LegacyAccumulateContextStrategy())
     )({ run: undefined });
-    // controlTail carries validation-reprompt pairs (assistant+user) that are
-    // NOT tool rounds. It is pruned after the next recorded tool round.
-    const controlTail: Message[] = [];
+    // Preserve validation exchanges between their original tool rounds.
+    const controlHistory = new ToolLoopControlHistory(staticPrefix.length);
 
-    const withPending = await injectPendingResults(
-      messages,
-      this.pendingToolResults,
-      sessionId,
-      opts,
-    );
-    if (withPending.length > staticPrefix.length) {
-      // Injected pending results form an assistant+tool group → record as round.
-      const injected = withPending.slice(staticPrefix.length);
-      const pendingRound: ToolRound = {
-        assistant: injected[0],
-        results: injected.slice(1),
-      };
-      await strategy.record(pendingRound);
-    }
-    messages = (
+    messages = controlHistory.restore(
       await strategy.form({
         prefix: staticPrefix,
         toolTrust: this.config.toolTrust,
         queryText: _action.text,
-      })
-    ).concat(controlTail);
+      }),
+    );
 
     const finalize = async function* (
       this: SmartAgent,
@@ -1260,10 +1348,11 @@ export class SmartAgent {
       );
       currentTools = filterAvailableTools(
         this.toolAvailabilityRegistry,
-        sessionId,
+        identity,
         currentTools,
         iteration,
         opts,
+        localBlocks,
       );
       if (
         this.config.maxToolCalls !== undefined &&
@@ -1335,7 +1424,6 @@ export class SmartAgent {
       >();
       // Track which streaming indices belong to external tools so that
       // argument-only continuation deltas (no name field) are forwarded too.
-      const externalToolIndices = new Set<number>();
       for await (const chunkResult of stream) {
         if (!chunkResult.ok) {
           llmSpan.setStatus('error', chunkResult.error.message);
@@ -1359,7 +1447,6 @@ export class SmartAgent {
           content = '';
           iterationBuffer = '';
           toolCallsMap.clear();
-          externalToolIndices.clear();
           finishReason = undefined;
           continue;
         }
@@ -1375,24 +1462,7 @@ export class SmartAgent {
           }
         }
         if (chunk.toolCalls) {
-          // Register newly seen external tool indices
-          for (const tc of chunk.toolCalls) {
-            const name = getStreamToolCallName(tc);
-            if (name && externalToolNames.has(name)) {
-              const delta = toToolCallDelta(tc, 0);
-              externalToolIndices.add(delta.index);
-            }
-          }
-          const externalDeltas = chunk.toolCalls.filter((tc) => {
-            const delta = toToolCallDelta(tc, 0);
-            return externalToolIndices.has(delta.index);
-          });
-          if (!opts?.toolRoundGuard && externalDeltas.length > 0) {
-            yield {
-              ok: true,
-              value: { content: '', toolCalls: externalDeltas },
-            };
-          }
+          // Buffer calls until the complete response can be classified atomically.
           for (const [
             fallbackIndex,
             rawToolCall,
@@ -1431,23 +1501,23 @@ export class SmartAgent {
         phase: `llm_call_${iteration + 1}`,
         duration: llmCallDuration,
       });
-      const val =
-        finishReason === 'tool_calls' && toolCallsMap.size > 0
-          ? { reprompt: false, messages }
-          : await runOutputValidationReprompt(
-              this.outputValidator,
-              content,
-              messages,
-              currentTools,
-              opts,
-              this.config.toolTrust,
-            );
-      const iterationEnd =
-        finishReason === 'tool_calls' && toolCallsMap.size > 0
-          ? 'tool_calls'
-          : val.reprompt
-            ? 'retry'
-            : 'final';
+      const hasToolCalls =
+        finishReason === 'tool_calls' && toolCallsMap.size > 0;
+      const val = hasToolCalls
+        ? { reprompt: false, messages }
+        : await runOutputValidationReprompt(
+            this.outputValidator,
+            content,
+            messages,
+            currentTools,
+            opts,
+            this.config.toolTrust,
+          );
+      const iterationEnd = hasToolCalls
+        ? 'tool_calls'
+        : val.reprompt
+          ? 'retry'
+          : 'final';
       if (iterationEnd !== 'retry') {
         opts?.onAssistantResponse?.(content);
       }
@@ -1468,15 +1538,12 @@ export class SmartAgent {
         (clientAdapter || this.config.streamMode === 'final')
       )
         stoppedContent += content;
-      const toolCalls = Array.from(toolCallsMap.values()).map((tc) => {
-        let args = {};
-        try {
-          args = JSON.parse(tc.arguments);
-        } catch {
-          args = {};
-        }
-        return { id: tc.id, name: tc.name, arguments: args };
-      });
+      const responseRound = new ToolResponseRound(
+        content,
+        toolCallsMap.values(),
+        (name) => externalToolNames.has(name) && !toolClientMap.has(name),
+      );
+      const toolCalls = hasToolCalls ? responseRound.executableCalls() : [];
       opts?.sessionLogger?.logStep(
         `llm_response_iter_${iteration + 1}`,
         {
@@ -1486,21 +1553,19 @@ export class SmartAgent {
         },
         'llm',
       );
-      if (finishReason !== 'tool_calls' || toolCalls.length === 0) {
+      if (!hasToolCalls) {
         // Output validation
         if (val.reprompt) {
-          // Reprompt pairs (assistant+user correction) go into controlTail, NOT
-          // into the strategy — they are ephemeral and survive only until the
-          // next recorded tool round, at which point controlTail is pruned.
+          // Anchor the rejected reply and correction before any newer tool rounds.
           const appended = val.messages.slice(messages.length);
-          controlTail.push(...appended);
-          messages = (
+          controlHistory.append(appended);
+          messages = controlHistory.restore(
             await strategy.form({
               prefix: staticPrefix,
               toolTrust: this.config.toolTrust,
               queryText: _action.text,
-            })
-          ).concat(controlTail);
+            }),
+          );
           continue;
         }
         yield* finalize(content, finishReason);
@@ -1518,68 +1583,25 @@ export class SmartAgent {
         toolClientMap,
         externalToolNames,
         this.toolAvailabilityRegistry,
-        sessionId,
+        identity,
+        localBlocks,
       );
-      // Rejected external calls are resolved locally before any call is surfaced.
-      const rejectedExternal = validExternalCalls.filter((tc) =>
-        roundRejections.has(toolCalls.indexOf(tc)),
-      );
-      if (rejectedExternal.length > 0) {
-        await strategy.record({
-          assistant: {
-            role: 'assistant',
-            content: content || null,
-            tool_calls: rejectedExternal.map((tc) => ({
-              id: tc.id,
-              type: 'function' as const,
-              function: {
-                name: tc.name,
-                arguments: JSON.stringify(tc.arguments),
-              },
-            })),
-          },
-          results: rejectedExternal.map((tc) => ({
-            role: 'tool' as const,
-            tool_call_id: tc.id,
-            content: `Error: ${roundRejections.get(toolCalls.indexOf(tc))}`,
-          })),
-          meta: rejectedExternal.map(() => ({ isError: true })),
-        });
-        for (const tc of rejectedExternal) {
-          validExternalCalls.splice(validExternalCalls.indexOf(tc), 1);
-        }
-        controlTail.length = 0;
-        messages = (
-          await strategy.form({
-            prefix: staticPrefix,
-            toolTrust: this.config.toolTrust,
-            queryText: _action.text,
-          })
-        ).concat(controlTail);
-        if (
-          validExternalCalls.length === 0 &&
-          internalCalls.length === 0 &&
-          blockedCalls.length === 0 &&
-          hallucinations.length === 0
-        )
-          continue;
+      for (const tc of blockedCalls) {
+        responseRound.resolve(
+          tc,
+          `Error: Tool "${tc.name}" is temporarily unavailable in this session.`,
+          true,
+        );
       }
-      if (blockedCalls.length > 0) {
-        const group = buildBlockedToolMessages(content, blockedCalls, opts);
-        await strategy.record({
-          assistant: group.assistant,
-          results: group.results,
-        });
-        controlTail.length = 0;
-        messages = (
-          await strategy.form({
-            prefix: staticPrefix,
-            toolTrust: this.config.toolTrust,
-            queryText: _action.text,
-          })
-        ).concat(controlTail);
-        continue;
+      for (const tc of hallucinations) {
+        responseRound.resolve(tc, `Error: Tool "${tc.name}" not found.`, true);
       }
+      const externalCalls = validExternalCalls.filter((tc) => {
+        const rejection = roundRejections.get(toolCalls.indexOf(tc));
+        if (rejection === undefined) return true;
+        responseRound.resolve(tc, `Error: ${rejection}`, true);
+        return false;
+      });
 
       // Truncate batch to remaining budget
       const remaining =
@@ -1589,99 +1611,72 @@ export class SmartAgent {
       const batch = internalCalls.slice(0, Math.max(0, remaining));
       const skipped = internalCalls.slice(batch.length);
 
-      // Resolve unknown calls before an external hit can continue or a miss exits.
-      if (validExternalCalls.length > 0 && hallucinations.length > 0) {
-        const unknownCalls = hallucinations.splice(0);
-        await strategy.record({
-          assistant: {
-            role: 'assistant',
-            content: content || null,
-            tool_calls: unknownCalls.map((tc) => ({
-              id: tc.id,
-              type: 'function' as const,
-              function: {
-                name: tc.name,
-                arguments: JSON.stringify(tc.arguments),
-              },
-            })),
+      if (externalCalls.length > 0) {
+        // Mixed calls: fire internal tools async, store pending results
+        const pending = fireInternalToolsAsync(
+          content,
+          batch,
+          this.pendingToolResults,
+          identity,
+          {
+            toolClientMap,
+            toolCache: this.toolCache,
+            metrics: this.metrics,
+            options: opts,
+            roundCalls: toolCalls,
+            roundRejections,
+            skippedCalls: skipped,
+            maxToolCalls: this.config.maxToolCalls,
+            assistantMessage: responseRound.assistant,
+            resolvedResults: responseRound.resolved(),
+            precedingMessages: messages,
+            sourceMessages: pendingSourceMessages(
+              sourceInput,
+              staticPrefix,
+              messages,
+            ),
+            externalCalls,
           },
-          results: unknownCalls.map((tc) => ({
-            role: 'tool' as const,
-            tool_call_id: tc.id,
-            content: `Error: Tool "${tc.name}" not found.`,
-          })),
-          meta: unknownCalls.map(() => ({ isError: true })),
-        });
-        controlTail.length = 0;
-        messages = (
-          await strategy.form({
-            prefix: staticPrefix,
-            toolTrust: this.config.toolTrust,
-            queryText: _action.text,
-          })
-        ).concat(controlTail);
-      }
-
-      if (validExternalCalls.length > 0) {
-        if (opts?.toolRoundGuard) {
+        );
+        toolCallCount += batch.length;
+        if (batch.length > 0) {
+          try {
+            opts?.onToolCallCount?.(toolCallCount, this.config.maxToolCalls);
+          } catch {
+            /* Observers cannot affect execution. */
+          }
+        }
+        if (
+          this.config.maxToolCalls !== undefined &&
+          toolCallCount >= this.config.maxToolCalls
+        ) {
           yield {
             ok: true,
             value: {
               content: '',
-              toolCalls: validExternalCalls.map((tc, index) => ({
-                index,
-                id: tc.id,
-                name: tc.name,
-                arguments: JSON.stringify(tc.arguments),
-              })),
+              budgetExhausted: true,
+              toolCallCount,
+              maxToolCalls: this.config.maxToolCalls,
             },
           };
         }
-        // Mixed calls: fire internal tools async, store pending results
-        if (internalCalls.length > 0) {
-          fireInternalToolsAsync(
-            content,
-            batch,
-            this.pendingToolResults,
-            sessionId,
-            {
-              toolClientMap,
-              toolCache: this.toolCache,
-              metrics: this.metrics,
-              options: opts,
-              roundCalls: toolCalls,
-              roundRejections,
-              skippedCalls: skipped,
-              maxToolCalls: this.config.maxToolCalls,
-            },
-          );
-          toolCallCount += batch.length;
-          if (batch.length > 0) {
-            try {
-              opts?.onToolCallCount?.(toolCallCount, this.config.maxToolCalls);
-            } catch {
-              /* Observers cannot affect execution. */
-            }
-          }
-          if (
-            this.config.maxToolCalls !== undefined &&
-            toolCallCount >= this.config.maxToolCalls
-          ) {
-            yield {
-              ok: true,
-              value: {
-                content: '',
-                budgetExhausted: true,
-                toolCallCount,
-                maxToolCalls: this.config.maxToolCalls,
-              },
-            };
-          }
-          opts?.sessionLogger?.logStep('mixed_tool_calls', {
-            internal: internalCalls.map((tc) => tc.name),
-            external: validExternalCalls.map((tc) => tc.name),
-          });
-        }
+        opts?.sessionLogger?.logStep('mixed_tool_calls', {
+          internal: internalCalls.map((tc) => tc.name),
+          external: externalCalls.map((tc) => tc.name),
+        });
+
+        yield {
+          ok: true,
+          value: {
+            content: '',
+            toolCalls: externalCalls.map((tc, index) => ({
+              index,
+              id: pending.externalCalls[index].returnedId,
+              name: tc.name,
+              arguments: JSON.stringify(tc.arguments),
+            })),
+          },
+        };
 
         timingLog.push({ phase: 'total', duration: Date.now() - loopStart });
         toolLoopSpan.setStatus('ok');
@@ -1706,22 +1701,6 @@ export class SmartAgent {
       // Capture the assistant message now; record the full round (assistant +
       // tool results) atomically after the batch completes so the strategy
       // always sees a complete ToolRound.
-      const batchAssistantMsg: Message = {
-        role: 'assistant' as const,
-        content: content || null,
-        tool_calls: toolCalls
-          .filter(
-            (tc) => internalCalls.includes(tc) || hallucinations.includes(tc),
-          )
-          .map((tc) => ({
-            id: tc.id,
-            type: 'function' as const,
-            function: {
-              name: tc.name,
-              arguments: JSON.stringify(tc.arguments),
-            },
-          })),
-      };
       const heartbeatMs = normalizeHeartbeatMs(this.config.heartbeatIntervalMs);
 
       // Yield all progress messages before execution
@@ -1737,6 +1716,8 @@ export class SmartAgent {
 
       // Execute all tool calls concurrently with heartbeat (shared core).
       const outcome = yield* executeToolBatchWithHeartbeat({
+        callerResolution: identity,
+        localBlocks,
         batch,
         roundCalls: toolCalls,
         roundRejections,
@@ -1753,6 +1734,20 @@ export class SmartAgent {
         timingLog,
         heartbeatMs,
         options: opts,
+        onBatchComplete: async (outcome) => {
+          outcome.toolMessages.forEach((message, index) => {
+            responseRound.add(message, outcome.resultMeta[index]);
+          });
+          for (const tc of skipped) {
+            responseRound.resolve(
+              tc,
+              `Error: not executed: tool-call budget of ${this.config.maxToolCalls} for this request is exhausted; return what you have and report what is missing`,
+              true,
+            );
+          }
+          const batchRound = responseRound.finish();
+          await strategy.record(controlHistory.record(batchRound));
+        },
         mcpFailureClassifier: this.deps.mcpFailureClassifier,
         maxToolCalls: this.config.maxToolCalls,
         onToolExecuted: (r) => {
@@ -1776,6 +1771,7 @@ export class SmartAgent {
           );
         },
       });
+
       if (outcome.escalated) return;
       if (outcome.toolCallCount !== toolCallCount) {
         toolCallCount = outcome.toolCallCount;
@@ -1800,35 +1796,13 @@ export class SmartAgent {
           },
         };
       }
-      const batchRound: ToolRound = {
-        assistant: batchAssistantMsg,
-        results: [
-          ...outcome.toolMessages,
-          ...hallucinations.map((tc) => ({
-            role: 'tool' as const,
-            tool_call_id: tc.id,
-            content: `Error: Tool "${tc.name}" not found.`,
-          })),
-          ...skipped.map((tc) => ({
-            role: 'tool' as const,
-            tool_call_id: tc.id,
-            content: `Error: not executed: tool-call budget of ${this.config.maxToolCalls} for this request is exhausted; return what you have and report what is missing`,
-          })),
-        ],
-        meta: [
-          ...outcome.resultMeta,
-          ...[...hallucinations, ...skipped].map(() => ({ isError: true })),
-        ],
-      };
-      await strategy.record(batchRound);
-      controlTail.length = 0;
-      messages = (
+      messages = controlHistory.restore(
         await strategy.form({
           prefix: staticPrefix,
           toolTrust: this.config.toolTrust,
           queryText: _action.text,
-        })
-      ).concat(controlTail);
+        }),
+      );
     }
   }
 }

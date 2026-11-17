@@ -49,3 +49,10 @@ describe('HistoryMemory', () => {
     assert.deepEqual(mem.getRecent('s1', 10), []);
   });
 });
+
+it('retains every summary when no maxSize is configured', () => {
+  const memory = new HistoryMemory();
+  const summaries = Array.from({ length: 250 }, (_, i) => `turn-${i}`);
+  for (const summary of summaries) memory.pushRecent('session', summary);
+  assert.deepEqual(memory.getRecent('session', summaries.length), summaries);
+});

@@ -178,6 +178,7 @@ async function runController(
     ]),
     'm-exec': scriptedLlm('m-exec', [
       {
+        finishReason: 'tool_calls',
         toolCalls: [{ id: 'c1', name: calledToolName, arguments: { q: 'x' } }],
       },
       { content: 'result' },

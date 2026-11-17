@@ -261,6 +261,8 @@ export interface LlmToolCall {
   id: string;
   name: string;
   arguments: Record<string, unknown>;
+  /** Original JSON when argument decoding failed; execution must reject it. */
+  rawArguments?: string;
 }
 
 export interface LlmToolCallDelta {

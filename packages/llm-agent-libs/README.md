@@ -5,6 +5,25 @@
 
 Core SmartAgent composition runtime. Builder, agent runtime, pipeline, sessions, history, resilience, observability, plugins, skills.
 
+## Conversation history
+
+Automatic conversation-history summarization is removed: full history is kept.
+`SummarizeHandler`, the `summarize` stage, `summarizeHistory(...)`,
+`withHistorySummarization(...)`, `withSessionTokenBudget(...)`,
+`historyAutoSummarizeLimit`, `historySummaryPrompt`, `sessionTokenBudget`, and YAML
+`prompts.historySummary` are deprecated no-ops retained for source compatibility.
+They make no helper LLM call, add no summary, and create no history RAG store.
+Explicit opt-in semantic turn indexing (`HistorySummarizer` / `history-upsert`)
+remains separate from conversation history. ContextAssembler excludes client-supplied
+`system` messages.
+
+Every pipeline, builder and server/YAML configuration uses
+`LegacyAccumulateContextStrategy` by default: all assistant messages, tool-call
+arguments and results reach later model calls. Validation exchanges retain their
+original chronological positions. Inject `toolLoopContextStrategyFactory` (or
+use `withToolLoopContextStrategyFactory`) to explicitly select lossy RAG recall
+or a window with `keepLastRounds`. An omitted `keepLastRounds` is unlimited.
+
 ## Tool-loop limits
 
 Tool-loop limits are off by default: omitted `maxIterations` and `maxToolCalls`
@@ -175,10 +194,12 @@ plan. `plan_get` reads filtered, paged steps; `plan_update` edits without an LLM
 call. `get_plan` / `update_plan` have been removed without aliases.
 
 `get_task({ task_id })` returns a `notice` containing task identity, worker, state,
-result kind, verdict when present, summary (at most 600 characters), character
-count and stored result reference. Goals are bounded to 200 characters and errors
-to 600. Tasks without a summary retain a compact outcome in the notice.
-Set `include_trace: true` for tool evidence with trust annotations. Full-output
+result kind, verdict when present, complete summary, character
+count and stored result reference. Goals and errors retain their complete text.
+Tasks without an explicit summary use the complete output in the notice.
+Set `include_trace: true` for complete sanitized tool evidence with trust annotations.
+Every observed call and its complete sanitized fields are retained; credential
+redaction remains enabled. Full-output
 views and pagination are unavailable; use normal record read tools for concrete
 gaps that the summary cannot decide.
 
@@ -194,36 +215,48 @@ into `failed`; stopped/failed outcomes remain unsuccessful without a reference.
 Aborting the write interrupts the task. Store calls have no added timeout and
 use the call's abort signal for cancellation.
 
-Dependencies with `resultRef` receive a reference and bounded summary, without
+Dependencies with `resultRef` receive a reference and complete summary, without
 inline output; checks also receive tool evidence and expected items. Legacy tasks
-without references receive text on every delegation, subject to the existing
-120,000-character legacy context cap. `deliver` reads the full record; a read
+without references receive complete text on every delegation without an aggregate
+character cap. `deliver` reads the full record; a read
 failure returns a tool error and delivers nothing. Without a store, text hand-off
 and delivery from `task.output` remain available.
 
 Report workers get a default `submit_report({ summary, result? })`; host tools of
-that name take precedence. Summary must be nonempty and at most 600 characters.
+that name take precedence. Summary must be nonempty; its content is preserved in full.
 Omitting `result` uses all collected report text; no collected text is an error.
-Without an explicit summary, the first 600 output characters are used. Verdict
-summaries retain verdict/count and trim the note. The session defaults to the
+Without an explicit summary, the complete output is used. Verdict
+summaries retain the complete verdict, count and note. The session defaults to the
 built-in `createMemorySignalBus`, retaining finish payloads (including summaries)
 per signal name/source/run until retired.
 
-Planner memory stores bounded task notices and delivery note/notice projections,
-rather than full result bodies. Persisted history retains replies within its
-existing bounds.
+Planner memory indexes task notices and delivery projections. Persisted history
+retains complete replies without message-count or character limits.
 
-Completion events carry the same bounded notice.
-Request context projects consumed events as references/current state, keeps recent
-deltas, and uses compact references for delivered answers. User corrections,
-consent, unresolved errors, request ownership and the current plan stay visible.
-Verbatim replies remain in persisted history under existing storage bounds;
-projection never rewrites that history. References survive restart.
+Completion events carry the same complete notice.
+Request context preserves every transcript entry, including consumed events and
+complete delivered answers. User corrections, consent, unresolved errors, request
+ownership and the current plan stay visible. Closed request transcripts and
+conversation history survive restart without retention caps.
 `plannerContext: 'conversation'` explicitly selects the legacy projection.
 
-`SmartAgent.process()` and `streamProcess()` without `sessionId` use a fresh
-request identity and clear pending tool results and availability entries when the
-request ends. Supply an explicit `sessionId` to continue tool rounds across calls.
+`SmartAgent.process()` and `streamProcess()` without an explicit `sessionId`
+or `caller.sessionId` use a fresh request identity and clear pending tool results and availability entries when the
+request ends. To continue external tool rounds, provide the same authenticated
+`caller: RagCaller` (or `userId` plus `sessionId`) on every request. Pending and
+completed exchanges are private to the exact user/session pair. Missing or blank
+identity, or conflicting `caller` and request IDs, cannot resume or read stored
+exchanges; there is no session-only fallback. Admin status does not bypass this
+scope. Hosts must derive user identity from trusted authentication rather than
+accepting a client-supplied user ID as proof of identity.
+
+Controller bundles, terminal replay and knowledge artifacts use a filesystem-safe
+namespace derived from the same pair. Existing session-only controller snapshots
+are not resumed. `closeSession(sessionId)` clears in-memory state for every
+caller identity in that session, including summaries, pending and completed
+exchanges, and tool blocks. `closeSession(sessionId, { caller })` limits
+in-memory clearing to the given identity. Hosts must authorize session closure
+before calling this lifecycle API.
 
 External coordinators can use `session.callTool(name, args, { signal? }?)` without
 a planner turn or planner agent. It returns `Result<McpToolResult, McpError>`,
@@ -379,6 +412,14 @@ In v32, share a collection by binding roles with the host's separate `IRagRoleAd
 The builder receives only `{ decision, roles, bindings }`; it never manages roles.
 Both retrieval paths check collection access live and filter by its owner before top-k.
 See [the v32 migration guide](../../docs/MIGRATION-v32.md).
+
+## Conversation content
+
+Conversation history, request transcripts and default tool-loop context have no
+implicit message or character caps. History summaries supplement the original
+messages. `HistoryMemory` retains all summaries unless `maxSize` is explicitly
+set. Explicit `historyRecencyWindow`, step history selection and opt-in tool-result
+limits remain available.
 
 ## Prompt caching
 

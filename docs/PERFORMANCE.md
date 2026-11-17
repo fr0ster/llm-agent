@@ -438,13 +438,13 @@ An optional `onBeforeStream` hook can be configured via `.withOnBeforeStream(hoo
 |------|-------------|-------------------|
 | **Main LLM** | Tool-calling capability, high quality, coherent multi-turn | Premium model (GPT-4o, Claude) for quality-critical use |
 | **Classifier LLM** | Fast + cheap, low temperature (0.1), structured JSON output | Lightweight model (DeepSeek, GPT-4o-mini) — intent classification is a simple task |
-| **Helper LLM** | Summarization, RAG query translation, moderate quality | Mid-tier model — quality matters less than for main |
+| **Helper LLM** | RAG query translation, opt-in semantic turn indexing | Mid-tier model — quality matters less than for main |
 
 ### Temperature guidelines
 
 - **Classifier:** 0.1 — deterministic intent classification.
 - **Main LLM:** 0.7 — balanced creativity for tool use and response generation.
-- **Helper LLM:** 0.1–0.3 — factual summarization and translation.
+- **Helper LLM:** 0.1–0.3 — translation and opt-in semantic turn indexing.
 
 ### onBeforeStream latency impact
 
@@ -452,35 +452,14 @@ When a pipeline turn involves presenting large tool results (e.g., full source l
 
 ## Token Budget
 
-### sessionTokenBudget
+Automatic history summarization is removed. Full history is kept, and token usage
+continues to be metered without resetting accounting to trigger compression.
 
-Track cumulative token usage across turns. When the budget is exceeded, the pipeline auto-summarizes conversation history:
-
-```yaml
-agent:
-  sessionTokenBudget: 0       # 0 = disabled (default)
-  # sessionTokenBudget: 100000  # 100k tokens before summarization
-```
-
-**Trade-offs:**
-
-| Budget | Behavior |
-|--------|----------|
-| 0 (disabled) | Unlimited history growth — coherent but expensive for long sessions |
-| 50,000 | Aggressive summarization — fast and cheap, may lose detail |
-| 100,000 | Balanced — good coherence for medium-length sessions |
-| 200,000+ | Permissive — only summarizes very long conversations |
-
-### historyAutoSummarizeLimit
-
-Triggers history compression when message count exceeds this limit:
-
-```yaml
-agent:
-  historyAutoSummarizeLimit: 10   # Default: 10 messages
-```
-
-When triggered, the helper LLM summarizes older messages into a single summary message, reducing context window size.
+`sessionTokenBudget`, `historyAutoSummarizeLimit`, `historySummaryPrompt`, YAML
+`prompts.historySummary`, `withSessionTokenBudget(...)`, and
+`withHistorySummarization(...)` remain accepted as deprecated no-ops. They do not
+call a helper LLM, create a history RAG store, or modify conversation history.
+Use explicit `historyRecencyWindow` selection when needed.
 
 ## Tool Caching
 

@@ -16,9 +16,10 @@ import {
   TextOnlyEmbedding,
   toolNameFromRecord,
 } from '@mcp-abap-adt/llm-agent';
+import { callerResolutionKey } from '../policy/caller-identity.js';
 import { denyRagAccess, ownerBoundQuery } from '../rag/owner-bound-query.js';
 import type { ISpan } from '../tracer/types.js';
-import { summarizeHistory, toEnglishForRag } from './rag-helpers.js';
+import { toEnglishForRag } from './rag-helpers.js';
 import type {
   IRagOrchestrator,
   OrchestratedContext,
@@ -36,18 +37,17 @@ export type {
 
 export class RagOrchestrator implements IRagOrchestrator {
   private readonly toEnglish: typeof toEnglishForRag;
-  private readonly summarize: typeof summarizeHistory;
 
   constructor(private readonly deps: RagOrchestratorDeps) {
     this.toEnglish = deps.toEnglishForRag ?? toEnglishForRag;
-    this.summarize = deps.summarizeHistory ?? summarizeHistory;
   }
 
   async orchestrate(
     input: string | Message[],
     options: OrchestrateOptions,
   ): Promise<Result<OrchestratedContext, OrchestratorError>> {
-    const { opts, rootSpan, sessionId, mode, externalTools } = options;
+    const { opts, rootSpan, mode, externalTools } = options;
+    const identity = options.identity ?? { kind: 'anonymous' };
     if (Object.keys(this.deps.ragStores).length > 0 && !opts?.caller)
       return { ok: false, error: new RagAccessDeniedError() };
 
@@ -56,23 +56,7 @@ export class RagOrchestrator implements IRagOrchestrator {
     if (!initResult.ok) {
       return initResult;
     }
-    let { processedHistory } = initResult.value;
-    const { subprompts, toolClientMap } = initResult.value;
-
-    // Token budget check — summarize if over budget
-    if (this.deps.sessionManager.isOverBudget()) {
-      const sumResult = await this.summarize(
-        {
-          helperLlm: this.deps.helperLlm,
-          requestLogger: this.deps.requestLogger,
-          historySummaryPrompt: this.deps.config.historySummaryPrompt,
-        },
-        processedHistory,
-        opts,
-      );
-      if (sumResult.ok) processedHistory = sumResult.value;
-      this.deps.sessionManager.reset();
-    }
+    const { processedHistory, subprompts, toolClientMap } = initResult.value;
 
     // 2. Decide context and tools for the WHOLE request
     await this.deps.mcpToolRegistry.resolveActiveClients(opts);
@@ -339,10 +323,13 @@ export class RagOrchestrator implements IRagOrchestrator {
       // If we're here, mode is definitely 'smart' (not 'hard' or 'pass')
       finalTools = externalTools;
     }
-    const filteredTools = this.deps.toolAvailabilityRegistry.filterTools(
-      sessionId,
-      finalTools,
-    );
+    const filteredTools =
+      identity.kind === 'caller'
+        ? this.deps.toolAvailabilityRegistry.filterTools(
+            callerResolutionKey(identity),
+            finalTools,
+          )
+        : { allowed: finalTools, blocked: [] };
     finalTools = filteredTools.allowed;
     if (filteredTools.blocked.length > 0) {
       opts?.sessionLogger?.logStep('active_tools_filtered_by_registry', {
@@ -448,20 +435,7 @@ export class RagOrchestrator implements IRagOrchestrator {
         : (textOrMessages.filter((m) => m.role === 'user').slice(-1)[0]
             ?.content ?? '');
     const history = typeof textOrMessages === 'string' ? [] : textOrMessages;
-    let processedHistory = history;
-    const summarizeLimit = this.deps.config.historyAutoSummarizeLimit ?? 10;
-    if (this.deps.helperLlm && history.length > summarizeLimit) {
-      const res = await this.summarize(
-        {
-          helperLlm: this.deps.helperLlm,
-          requestLogger: this.deps.requestLogger,
-          historySummaryPrompt: this.deps.config.historySummaryPrompt,
-        },
-        history,
-        opts,
-      );
-      if (res.ok) processedHistory = res.value;
-    }
+    const processedHistory = history;
 
     let subprompts: Subprompt[];
 

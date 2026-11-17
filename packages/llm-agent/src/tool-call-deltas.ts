@@ -24,7 +24,7 @@ export function toToolCallDelta(
       index: fallbackIndex,
       id: call.id,
       name: call.name,
-      arguments: JSON.stringify(call.arguments),
+      arguments: call.rawArguments ?? JSON.stringify(call.arguments),
     };
   }
 

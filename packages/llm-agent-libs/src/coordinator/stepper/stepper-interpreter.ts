@@ -8,12 +8,6 @@ import type {
 } from '@mcp-abap-adt/llm-agent';
 import { addCacheTokenUsage } from '@mcp-abap-adt/llm-agent';
 
-/** Total cap on injected dependsOn-dataflow content per node — a backstop against
- *  context explosion. dependsOn already scopes it to predecessors (selective);
- *  this bounds a pathological accumulation. Generous: a few large include bodies
- *  fit. On overflow the block is truncated with an explicit note. */
-const DEPS_CONTEXT_CAP = 60_000;
-
 const ZERO: LlmUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
 const addUsage = (a: LlmUsage, b: LlmUsage): LlmUsage => ({
   ...addCacheTokenUsage(a, b),
@@ -182,7 +176,7 @@ function composeTask(
  * (their blackboard artefacts, fetched by stepperId — exact identity, NOT lossy
  * semantic top-k) into a "Gathered inputs" block. The dependent node thus has
  * the source/data its prerequisites produced already in context, and does not
- * re-fetch it. Scoped to predecessors (selective) + capped (explosion backstop).
+ * re-fetch it. Scoped to predecessors without truncating their content.
  */
 async function gatherDepsContext(
   node: DagPlan['nodes'][number],
@@ -204,18 +198,9 @@ async function gatherDepsContext(
     for (const e of entries) parts.push(e.content);
   }
   if (parts.length === 0) return '';
-  let block = parts.join('\n\n');
-  let truncated = false;
-  if (block.length > DEPS_CONTEXT_CAP) {
-    block = block.slice(0, DEPS_CONTEXT_CAP);
-    truncated = true;
-  }
   return (
-    'Gathered inputs from prerequisite steps (use these — do NOT re-fetch them):\n' +
-    block +
-    (truncated
-      ? '\n\n[…gathered inputs truncated; query the knowledge store for the rest if needed]'
-      : '')
+    'Gathered inputs from prerequisite steps (use these \u2014 do NOT re-fetch them):\n' +
+    parts.join('\n\n')
   );
 }
 

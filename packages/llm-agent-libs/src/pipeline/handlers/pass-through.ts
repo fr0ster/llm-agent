@@ -13,8 +13,15 @@ import {
   scopedUsage,
   type ToolTrust,
   toModelToolMessages,
+  toToolCallDelta,
 } from '@mcp-abap-adt/llm-agent';
 import { summaryToUsage } from '../../logger/session-request-logger.js';
+import type { CallerResolution } from '../../policy/caller-identity.js';
+import {
+  createPendingToolCallsEntry,
+  PendingToolResultsRegistry,
+} from '../../policy/pending-tool-results-registry.js';
+import { ToolResponseRound } from './tool-response-round.js';
 
 export async function* runPassThrough(
   llm: ILlm,
@@ -23,6 +30,8 @@ export async function* runPassThrough(
   externalTools: LlmTool[],
   opts: CallOptions | undefined,
   toolTrust?: ToolTrust,
+  pendingToolResults: PendingToolResultsRegistry = new PendingToolResultsRegistry(),
+  identity: CallerResolution = { kind: 'anonymous' },
 ): AsyncIterable<Result<LlmStreamChunk, OrchestratorError>> {
   const passStart = Date.now();
   const traceId2 = opts?.trace?.traceId;
@@ -41,6 +50,11 @@ export async function* runPassThrough(
   );
   let passContent = '';
   const passToolCalls: unknown[] = [];
+  const calls = new Map<
+    number,
+    { id: string; name: string; arguments: string }
+  >();
+  let finishReason: LlmStreamChunk['finishReason'];
   let cache: ReturnType<typeof addCacheTokenUsage> = {};
   let accPrompt = 0;
   let accCompletion = 0;
@@ -90,10 +104,24 @@ export async function* runPassThrough(
     if (chunk.value.reset) {
       passContent = '';
       passToolCalls.length = 0;
+      calls.clear();
+      finishReason = undefined;
       continue;
     }
     if (chunk.value.content) passContent += chunk.value.content;
-    if (chunk.value.toolCalls) passToolCalls.push(...chunk.value.toolCalls);
+    if (chunk.value.finishReason) finishReason = chunk.value.finishReason;
+    if (chunk.value.toolCalls) {
+      passToolCalls.push(...chunk.value.toolCalls);
+      for (const [index, raw] of chunk.value.toolCalls.entries()) {
+        const call = toToolCallDelta(raw, index);
+        const previous = calls.get(call.index);
+        calls.set(call.index, {
+          id: call.id || previous?.id || '',
+          name: call.name || previous?.name || '',
+          arguments: (previous?.arguments ?? '') + (call.arguments ?? ''),
+        });
+      }
+    }
     if (chunk.value.usage) {
       cache = addCacheTokenUsage(cache, chunk.value.usage);
       accPrompt += chunk.value.usage.promptTokens;
@@ -103,7 +131,13 @@ export async function* runPassThrough(
     }
     // Strip usage from the forwarded chunk: the single usage-bearing chunk
     // is the terminal getSummary chunk below (one usage chunk per request).
-    const { usage: _omitUsage, ...rest } = chunk.value;
+    // Buffer tool-call fragments until the suspension has its own returned IDs.
+    const {
+      usage: _omitUsage,
+      toolCalls: _omitCalls,
+      finishReason: _omitFinish,
+      ...rest
+    } = chunk.value;
     yield { ok: true, value: rest };
   }
   opts?.sessionLogger?.logStep(
@@ -115,12 +149,76 @@ export async function* runPassThrough(
     'llm',
   );
   logPassUsage();
+  const hasToolCalls = finishReason === 'tool_calls' && calls.size > 0;
+  if (hasToolCalls) {
+    const round = new ToolResponseRound(
+      passContent,
+      calls.values(),
+      () => true,
+    );
+    const executable = round.executableCalls();
+    if (executable.length === 0) {
+      const complete = round.finish();
+      yield* runPassThrough(
+        llm,
+        requestLogger,
+        [...messages, complete.assistant, ...complete.results],
+        externalTools,
+        opts,
+        toolTrust,
+        pendingToolResults,
+        identity,
+      );
+      return;
+    }
+    const entry: Parameters<PendingToolResultsRegistry['set']>[1] = {
+      assistantMessage: round.assistant,
+      precedingMessages: structuredClone(messages),
+      sourceMessages: { input: structuredClone(messages), continuation: [] },
+      externalCalls: executable.map((call) => ({
+        toolCallId: call.id,
+      })),
+      promise: Promise.resolve(
+        round.calls.flatMap((call) => {
+          const message = round
+            .resolved()
+            .find((item) => item.tool_call_id === call.id);
+          return message
+            ? [
+                {
+                  toolCallId: call.id,
+                  toolName: call.name,
+                  text: String(message.content ?? ''),
+                },
+              ]
+            : [];
+        }),
+      ),
+      createdAt: Date.now(),
+    };
+    const pending =
+      identity.kind === 'caller'
+        ? pendingToolResults.set(identity.caller, entry)
+        : createPendingToolCallsEntry(entry);
+    yield {
+      ok: true,
+      value: {
+        content: '',
+        toolCalls: executable.map((call, index) => ({
+          ...call,
+          arguments: JSON.stringify(call.arguments),
+          index,
+          id: pending.externalCalls[index].returnedId,
+        })),
+      },
+    };
+  }
   const passSummary = traceId2 ? requestLogger.getSummary(traceId2) : undefined;
   yield {
     ok: true,
     value: {
       content: '',
-      finishReason: 'stop',
+      finishReason: hasToolCalls ? 'tool_calls' : (finishReason ?? 'stop'),
       ...(passSummary
         ? {
             usage: {

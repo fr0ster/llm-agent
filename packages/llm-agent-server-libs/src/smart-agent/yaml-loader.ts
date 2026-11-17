@@ -51,6 +51,8 @@ mcp:
 
 agent:
   externalToolsValidationMode: permissive  # permissive | strict
+  # Every pipeline retains full tool-loop history, including assistant text and arguments.
+  # Lossy context strategies require explicit host-side toolLoopContextStrategyFactory injection.
   # Tool-loop limits are off by default. Uncomment to restore the old limits.
   # maxIterations: 10
   # maxToolCalls: 30
@@ -61,10 +63,10 @@ agent:
   # historyRecencyWindow: 4            # Last N messages from client history in LLM context
   # historyTurnSummaryPrompt: "..."    # LLM prompt for turn summarization
   showReasoning: false                # Explain strategy at start of response
-  historyAutoSummarizeLimit: 10       # History length to trigger compression
+  # historyAutoSummarizeLimit: 10  # Deprecated no-op; full history is kept.
   queryExpansionEnabled: false        # Expand RAG queries with LLM-generated synonyms
   toolResultCacheTtlMs: 300000       # Tool result cache TTL (ms); 0 to disable
-  sessionTokenBudget: 0              # Multi-turn token budget; 0 to disable
+  # sessionTokenBudget: 0  # Deprecated no-op; full history is kept.
   # ragTranslateEnabled: true        # Translate non-ASCII RAG queries to English (default: true)
   # classificationEnabled: false     # Enable for custom pipelines with multi-store routing
   # toolReselectPerIteration: false  # Re-select tools via RAG on each tool-loop iteration
@@ -104,8 +106,7 @@ agent:
 #     IMPORTANT: Always start your response with a brief <reasoning> block...
 #   ragTranslate: |
 #     Translate the user request to English for search purposes...
-#   historySummary: |
-#     Summarize the conversation so far...
+#   historySummary: ignored  # Deprecated no-op; full history is kept.
 
 log: smart-server.log                 # path to log file; omit for stdout
 # logDir: sessions                    # Directory for detailed session debug logs

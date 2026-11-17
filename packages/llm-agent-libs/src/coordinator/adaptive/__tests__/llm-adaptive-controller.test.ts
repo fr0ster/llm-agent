@@ -75,7 +75,7 @@ test('plan throws on LlmError result', async () => {
     /provider unavailable/,
   );
 });
-test('plan prompt includes workers, request and previous run with bounded output', async () => {
+test('plan prompt includes workers, request and previous run with complete output', async () => {
   const { controller, calls } = fake(JSON.stringify({ steps }));
   await controller.plan({ ...input, previousRun });
   const prompt = String(calls[0][0][1].content);
@@ -89,28 +89,23 @@ test('plan prompt includes workers, request and previous run with bounded output
     'unfinished',
     'work',
     'done',
-    'x'.repeat(500),
+    record.output,
   ])
     assert.ok(prompt.includes(value), value);
-  assert.ok(!prompt.includes('x'.repeat(501)));
   assert.ok(prompt.includes('createdAt')); // Earlier plan is available, not only its records.
 });
-test('plan limits history to last 20 messages and cuts each to 1000 chars', async () => {
+test('plan passes every message and its complete content and metadata', async () => {
   const { controller, calls } = fake(JSON.stringify({ steps }));
-  const history = Array.from({ length: 21 }, (_, i) => ({
+  const history = Array.from({ length: 25 }, (_, i) => ({
     role: 'user' as const,
-    content: i === 0 ? 'OMITTED' : `${i}:${'h'.repeat(1100)}`,
+    content: `${i}:${'h'.repeat(200_000)}`,
+    name: `user-${i}`,
   }));
   await controller.plan({ ...input, history });
-  const prompt = JSON.parse(
-    String(calls[0][0][1].content)
-      .split('Conversation:\n')[1]
-      .split('\n\nPrevious run:')[0],
-  );
-  assert.equal(prompt.length, 20);
-  assert.equal(prompt[0].content, history[1].content.slice(0, 1000));
-  assert.equal(prompt[19].content.length, 1000);
-  assert.ok(!JSON.stringify(prompt).includes('OMITTED'));
+  const prompt = String(calls[0][0][1].content)
+    .split('Conversation:\n')[1]
+    .split('\n\nPrevious run:')[0];
+  assert.equal(prompt, JSON.stringify(history));
 });
 const checkInput = {
   request: 'request',
