@@ -8,6 +8,7 @@ import type {
   RagResult,
   SubAgentContextRequest,
 } from '@mcp-abap-adt/llm-agent';
+import { LlmError } from '@mcp-abap-adt/llm-agent';
 import {
   DefaultSubAgentContextBuilder,
   type SubAgentRetrievalSource,
@@ -45,6 +46,21 @@ function makeReq(
 }
 
 describe('DefaultSubAgentContextBuilder', () => {
+  for (const source of ['projectSource', 'toolSource'] as const) {
+    it(`propagates a terminal error from ${source}`, async () => {
+      const error = new LlmError('Rejected', 'CREDENTIALS_REJECTED');
+      const builder = new DefaultSubAgentContextBuilder({
+        [source]: async () => {
+          throw error;
+        },
+      });
+      await assert.rejects(
+        builder.build(makeReq()),
+        (caught) => caught === error,
+      );
+    });
+  }
+
   it('returns empty context and empty sources when no sources are configured', async () => {
     const builder = new DefaultSubAgentContextBuilder({});
     const res = await builder.build(makeReq());

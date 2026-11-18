@@ -8,7 +8,11 @@ import type {
   PlannerKnowledgeEntry,
   PlannerMemoryEntry,
 } from '@mcp-abap-adt/llm-agent';
-import { QueryEmbedding, scopedUsage } from '@mcp-abap-adt/llm-agent';
+import {
+  QueryEmbedding,
+  scopedUsage,
+  terminalRunError,
+} from '@mcp-abap-adt/llm-agent';
 import { optionalDeadlineMs } from '../optional-deadline.js';
 
 export interface PlannerMemoryOptions {
@@ -205,7 +209,9 @@ export async function retrievePlannerContext(
                     ];
                   })
                   .slice(0, config.memoryK ?? 8);
-              } catch {
+              } catch (error) {
+                const terminal = !signal.aborted && terminalRunError(error);
+                if (terminal) throw terminal;
                 warn('Planner memory retrieval failed or timed out');
               }
             })(),
@@ -234,7 +240,9 @@ export async function retrievePlannerContext(
                   .slice(0, config.knowledgeK ?? 4)
                   .map((entry) => ({ ...entry, collection: source.name }));
                 output.knowledge = knowledgeResults.flat();
-              } catch {
+              } catch (error) {
+                const terminal = !signal.aborted && terminalRunError(error);
+                if (terminal) throw terminal;
                 warn(
                   `Planner knowledge retrieval failed or timed out: ${source.name}`,
                 );
@@ -246,7 +254,10 @@ export async function retrievePlannerContext(
       config.retrievalTimeoutMs,
       options.signal,
     );
-  } catch {
+  } catch (error) {
+    const terminal =
+      terminalRunError(options.signal?.reason) ?? terminalRunError(error);
+    if (terminal) throw terminal;
     warn('Planner retrieval deadline reached');
   }
   // Copy arrays: late source completions must never change the turn snapshot.

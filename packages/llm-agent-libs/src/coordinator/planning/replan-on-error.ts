@@ -6,6 +6,7 @@ import type {
   PlanStep,
   StepResult,
 } from '@mcp-abap-adt/llm-agent';
+import { llmOutputTruncation } from '../llm-output-truncation.js';
 import { OneShotPlanning } from './one-shot.js';
 
 /**
@@ -77,6 +78,8 @@ Respond with ONLY a JSON object:
       },
     );
     if (!response.ok) throw response.error;
+    const truncation = llmOutputTruncation(response.value.finishReason);
+    if (truncation) throw truncation;
 
     const jsonText = extractJson(response.value.content);
     const parsed = JSON.parse(jsonText) as {

@@ -5,7 +5,9 @@ import {
   InsufficientSignal,
   type LlmUsage,
   type StreamChunk,
+  terminalRunError,
 } from '@mcp-abap-adt/llm-agent';
+import { llmOutputTruncation } from '../llm-output-truncation.js';
 
 const FINALIZER_SYSTEM = `You compose the final answer for the consumer from the provided knowledge entries.
 If the entries contain enough information, write the answer directly in clean Markdown.
@@ -36,12 +38,17 @@ export class RootFinalizer {
       [
         { role: 'system', content: FINALIZER_SYSTEM },
         { role: 'user', content: user },
-      ] as never,
-      [] as never,
+      ],
+      [],
       { usage: input.usage?.with({ role: 'finalizer' }), signal: input.signal },
     )) {
-      if (chunk.ok === false)
-        throw new Error(chunk.error?.message ?? 'finalizer stream error');
+      if (!chunk.ok)
+        throw (
+          terminalRunError(chunk.error) ??
+          new Error(chunk.error?.message ?? 'finalizer stream error')
+        );
+      const truncation = llmOutputTruncation(chunk.value.finishReason);
+      if (truncation) throw truncation;
       const delta = chunk.value.content ?? '';
       if (delta) {
         buf += delta;

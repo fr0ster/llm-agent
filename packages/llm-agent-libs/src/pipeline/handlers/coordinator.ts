@@ -23,6 +23,7 @@ import type {
   StepResult,
   SubAgentRegistry,
 } from '@mcp-abap-adt/llm-agent';
+import { terminalRunError } from '@mcp-abap-adt/llm-agent';
 import { OrchestratorError } from '../../agent.js';
 import type { ISpan } from '../../tracer/types.js';
 import type { PipelineContext } from '../context.js';
@@ -130,8 +131,12 @@ export class CoordinatorHandler implements IStageHandler {
         ...coordCtx,
         plan: { ...plan, objective: undefined },
       };
-      const result = await this.deps.dispatch.dispatch(directStep, directCtx);
+      const result = await this.dispatchStep(directStep, directCtx);
       reportToolBudget(ctx, result);
+      if (result.terminalError) {
+        ctx.error = result.terminalError;
+        return false;
+      }
       if (!result.ok) {
         ctx.error = new OrchestratorError(
           `coordinator: answer-directly dispatch failed: ${result.error ?? 'unknown'}`,
@@ -173,10 +178,8 @@ export class CoordinatorHandler implements IStageHandler {
 
       let result: StepResult | undefined;
       for (let attempt = 0; attempt <= this.deps.maxRetriesPerStep; attempt++) {
-        result = await this.deps.dispatch.dispatch(step, coordCtx);
-        if (result.ok) break;
-        // Epicfail is terminal — never retry it.
-        if (result.epicFailTrace) break;
+        result = await this.dispatchStep(step, coordCtx);
+        if (result.ok || result.terminalError || result.epicFailTrace) break;
       }
       if (!result) {
         ctx.error = new OrchestratorError(
@@ -195,6 +198,11 @@ export class CoordinatorHandler implements IStageHandler {
         outputLength: result.output.length,
         error: result.error,
       });
+
+      if (result.terminalError) {
+        ctx.error = result.terminalError;
+        return false;
+      }
 
       // Epicfail short-circuits the entire plan, regardless of failPolicy.
       if (result.epicFailTrace) {
@@ -285,6 +293,27 @@ export class CoordinatorHandler implements IStageHandler {
 
     return true;
   }
+
+  private async dispatchStep(
+    step: PlanStep,
+    ctx: ICoordinatorContext,
+  ): Promise<StepResult> {
+    const started = Date.now();
+    try {
+      return await this.deps.dispatch.dispatch(step, ctx);
+    } catch (error) {
+      const terminalError = terminalRunError(error);
+      if (!terminalError) throw error;
+      return {
+        stepId: step.id,
+        output: '',
+        durationMs: Date.now() - started,
+        ok: false,
+        error: terminalError.message,
+        terminalError,
+      };
+    }
+  }
 }
 
 function reportToolBudget(ctx: PipelineContext, result: StepResult): void {
@@ -324,7 +353,9 @@ function collectActiveSkillMeta(
   return withSteps?.meta;
 }
 
-function wrapError(err: unknown, code: string): OrchestratorError {
+function wrapError<T>(err: T, code: string): OrchestratorError {
+  const terminal = terminalRunError(err);
+  if (terminal) return terminal;
   if (err instanceof OrchestratorError) return err;
   return new OrchestratorError(
     err instanceof Error ? err.message : String(err),
@@ -358,7 +389,11 @@ function buildCallTool(
         }),
       },
     );
-    if (!r.ok) return r.error.message;
+    if (!r.ok) {
+      const terminal = terminalRunError(r.error);
+      if (terminal) throw terminal;
+      return r.error.message;
+    }
     return typeof r.value.content === 'string'
       ? r.value.content
       : JSON.stringify(r.value.content);

@@ -14,7 +14,9 @@ export interface PlannerScope {
   authorOptions?: Pick<CallOptions, 'caller' | 'usage' | 'sessionId' | 'trace'>;
   planAuthor?: IPlanAuthor;
   onPlanAuthorError?(error: SmartAgentError): void;
+  onTerminalError?(error: SmartAgentError): void;
   beforeTool?(name: string): void;
+  beforeDelegate?(): void;
   newRequest?(): void;
   ownTask?(id: string): void;
   deliver?(

@@ -6,6 +6,7 @@ import type {
   PlanStep,
   StepResult,
 } from '@mcp-abap-adt/llm-agent';
+import { terminalRunError } from '@mcp-abap-adt/llm-agent';
 import { composeTask } from './compose-task.js';
 
 /**
@@ -118,12 +119,14 @@ export class SubAgentDispatch implements IDispatchStrategy {
         ok: true,
       };
     } catch (err) {
+      const terminalError = terminalRunError(err);
       return {
         stepId: step.id,
         output: '',
         durationMs: Date.now() - started,
         ok: false,
         error: err instanceof Error ? err.message : String(err),
+        ...(terminalError ? { terminalError } : {}),
       };
     }
   }

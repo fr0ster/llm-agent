@@ -22,7 +22,7 @@ import {
   resultKind,
   resultStepSchema,
 } from './structured-plan.js';
-import type { TaskBoard } from './task-board.js';
+import { type TaskBoard, TerminalTaskError } from './task-board.js';
 import { taskNotice } from './task-reference.js';
 import {
   renderToolTrace,
@@ -53,7 +53,10 @@ function assertNoActiveAttempt(step: DialoguePlanStep, board: TaskBoard): void {
     throw new Error(
       `Task attempt for ${step.id} is being reserved; wait for it to settle`,
     );
-  for (const id of new Set([...step.taskIds, step.workTaskId])) {
+  const attempts = new Set([...step.taskIds, step.workTaskId]);
+  const terminal = board.findTerminalError((id) => attempts.has(id));
+  if (terminal) throw terminal;
+  for (const id of attempts) {
     const task = id ? board.get(id) : undefined;
     if (task?.state === 'queued' || task?.state === 'running')
       throw new Error(
@@ -281,7 +284,9 @@ export class PlannerToolsClient implements IMcpClient {
               : requiredString(args, 'model');
           if (model !== undefined) {
             const validation = scope.board.validateModel(model);
-            if (!validation.ok)
+            if (!validation.ok) {
+              const terminal = terminalRunError(validation.error);
+              if (terminal) throw terminal;
               return textResult(
                 {
                   error: validation.error.code,
@@ -289,6 +294,7 @@ export class PlannerToolsClient implements IMcpClient {
                 },
                 true,
               );
+            }
           }
           let context =
             args.context === undefined
@@ -393,10 +399,18 @@ export class PlannerToolsClient implements IMcpClient {
               requestStartedAt: scope.requestStartedAt,
             };
             scope.signal?.throwIfAborted();
+            scope.beforeDelegate?.();
             const result = scope.board.profiles
-              ? await scope.board.startTask(request, { signal: scope.signal })
+              ? await scope.board.startTask(
+                  request,
+                  { signal: scope.signal },
+                  scope.beforeDelegate,
+                )
               : scope.board.start(request);
-            if (!result.ok) throw new Error(result.error);
+            if (!result.ok) {
+              if (result.terminalError) throw result.terminalError;
+              throw new Error(result.error);
+            }
             scope.ownTask?.(result.value.id);
             if (typeof plan === 'object') delete plan.scopeConsent;
             if (step) {
@@ -478,6 +492,7 @@ export class PlannerToolsClient implements IMcpClient {
             scope.statusRead?.();
           return textResult({
             notice: taskNotice(task),
+            terminalErrorCode: task.terminalErrorCode,
             ...(task.state === 'queued' || task.state === 'running'
               ? {
                   id: task.id,
@@ -773,6 +788,7 @@ export class PlannerToolsClient implements IMcpClient {
               try {
                 assertNoActiveAttempt(step, scope.board);
               } catch (error) {
+                if (error instanceof TerminalTaskError) throw error;
                 throw new Error(
                   `Cannot ${next ? 'reopen or change items for' : 'remove'} step ${step.id}: ${error instanceof Error ? error.message : String(error)}; stop the task first and wait for it to settle, or keep the step`,
                 );
@@ -828,12 +844,13 @@ export class PlannerToolsClient implements IMcpClient {
       }
     } catch (error) {
       const scope = currentPlannerScope();
-      if (name === 'plan_create' || name === 'plan_revise') {
-        const terminal = terminalRunError(error);
-        if (terminal) {
+      const terminal =
+        error instanceof TerminalTaskError ? error : terminalRunError(error);
+      if (terminal) {
+        if (name === 'plan_create' || name === 'plan_revise')
           scope?.onPlanAuthorError?.(terminal);
-          if (!scope?.signal?.aborted) return { ok: false, error: terminal };
-        }
+        scope?.onTerminalError?.(terminal);
+        if (!scope?.signal?.aborted) return { ok: false, error: terminal };
       }
       return textResult(
         {

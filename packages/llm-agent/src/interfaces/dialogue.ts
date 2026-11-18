@@ -44,6 +44,8 @@ export interface TaskRecord {
   resultRef?: TaskResultRef;
   summary?: string;
   error?: string;
+  /** Code of a terminal failure, retained in task snapshots. */
+  terminalErrorCode?: string;
   /** Epoch milliseconds of the latest observed progress; optional for older snapshots. */
   lastActivityAt?: number;
   currentAction?: string;

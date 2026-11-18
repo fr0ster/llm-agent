@@ -8,8 +8,9 @@ import type {
   IUsageRecorder,
   RunIdentity,
 } from '@mcp-abap-adt/llm-agent';
-import { renderTaskSpec } from '@mcp-abap-adt/llm-agent';
+import { renderTaskSpec, terminalRunError } from '@mcp-abap-adt/llm-agent';
 import { parseDagPlan } from '../dag/llm-dag-planner.js';
+import { llmOutputTruncation } from '../llm-output-truncation.js';
 
 // NOTE (18.1): the 18.0 SOFT completeness clause was REMOVED here — the dedicated
 // Evaluator now owns prompt/plan completeness (it judges WITH the RAG context and
@@ -92,7 +93,9 @@ export class LlmStepperPlanner implements IStepperPlanner {
             .join('\n') +
           '\n\n';
       }
-    } catch {
+    } catch (error) {
+      const terminal = terminalRunError(error);
+      if (terminal) throw terminal;
       // toolsRag unavailable — omit the section gracefully
     }
 
@@ -109,7 +112,9 @@ export class LlmStepperPlanner implements IStepperPlanner {
           arts.map((a) => `- ${a.identityKey}`).join('\n') +
           '\n\n';
       }
-    } catch {
+    } catch (error) {
+      const terminal = terminalRunError(error);
+      if (terminal) throw terminal;
       // listArtifacts unavailable / failed — omit the manifest gracefully
     }
 
@@ -138,17 +143,18 @@ export class LlmStepperPlanner implements IStepperPlanner {
           content: `${this.systemPrompt}${GRANULARITY_DIRECTIVE[this.granularity]}`,
         },
         { role: 'user', content: user },
-      ] as never,
-      [] as never,
+      ],
+      [],
       { usage: input.usage?.with({ role: 'planner' }), signal: input.signal },
     );
-    if (res.ok === false)
-      throw new Error(
-        `stepper planner: ${(res as { error?: { message?: string } }).error?.message ?? 'llm error'}`,
+    if (!res.ok)
+      throw (
+        terminalRunError(res.error) ??
+        new Error(`stepper planner: ${res.error?.message ?? 'llm error'}`)
       );
-    return parseDagPlan(
-      (res as { ok: true; value: { content: string } }).value.content,
-    );
+    const truncation = llmOutputTruncation(res.value.finishReason);
+    if (truncation) throw truncation;
+    return parseDagPlan(res.value.content);
   }
 }
 

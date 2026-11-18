@@ -1,4 +1,6 @@
 import type { CallOptions, ILlm, INeedResolver } from '@mcp-abap-adt/llm-agent';
+import { terminalRunError } from '@mcp-abap-adt/llm-agent';
+import { llmOutputTruncation } from '../llm-output-truncation.js';
 
 const NEED_RE =
   /\bI (?:can'?t|cannot|am unable to|need to|lack (?:a|the) (?:tool|way) to)\s+(.+?)[.!]?$/i;
@@ -41,7 +43,13 @@ export class LlmNeedResolver implements INeedResolver {
       [],
       { ...options, usage: options?.usage?.with({ role: 'classifier' }) },
     );
-    if (res.ok === false) return undefined;
+    if (!res.ok) {
+      const terminal = terminalRunError(res.error);
+      if (terminal) throw terminal;
+      return undefined;
+    }
+    const truncation = llmOutputTruncation(res.value.finishReason);
+    if (truncation) throw truncation;
     try {
       const parsed = JSON.parse(res.value.content) as {
         need?: boolean;

@@ -9,7 +9,8 @@ import type {
   IUsageRecorder,
   RunIdentity,
 } from '@mcp-abap-adt/llm-agent';
-import { renderTaskSpec } from '@mcp-abap-adt/llm-agent';
+import { renderTaskSpec, terminalRunError } from '@mcp-abap-adt/llm-agent';
+import { llmOutputTruncation } from '../llm-output-truncation.js';
 
 /**
  * Task-agnostic Evaluator prompt. It judges the INPUT (the sub-prompt) against
@@ -79,7 +80,9 @@ export class LlmEvaluator implements IEvaluator {
             .join('\n') +
           '\n\n';
       }
-    } catch {
+    } catch (error) {
+      const terminal = terminalRunError(error);
+      if (terminal) throw terminal;
       // toolsRag unavailable — omit gracefully (fewer obtainable options known)
     }
 
@@ -93,17 +96,18 @@ export class LlmEvaluator implements IEvaluator {
       [
         { role: 'system', content: this.systemPrompt },
         { role: 'user', content: user },
-      ] as never,
-      [] as never,
+      ],
+      [],
       { usage: input.usage?.with({ role: 'evaluator' }), signal: input.signal },
     );
-    if (res.ok === false)
-      throw new Error(
-        `evaluator: ${(res as { error?: { message?: string } }).error?.message ?? 'llm error'}`,
+    if (!res.ok)
+      throw (
+        terminalRunError(res.error) ??
+        new Error(`evaluator: ${res.error?.message ?? 'llm error'}`)
       );
-    return parseVerdict(
-      (res as { ok: true; value: { content: string } }).value.content,
-    );
+    const truncation = llmOutputTruncation(res.value.finishReason);
+    if (truncation) throw truncation;
+    return parseVerdict(res.value.content);
   }
 }
 

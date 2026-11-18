@@ -7,7 +7,11 @@ import type {
   PlanStep,
   StepResult,
 } from '@mcp-abap-adt/llm-agent';
-import { testCallOptions } from '../../../testing/index.js';
+import { LlmError, SmartAgentError } from '@mcp-abap-adt/llm-agent';
+import { HybridDispatch } from '../../../coordinator/dispatch/hybrid.js';
+import { SubAgentDispatch } from '../../../coordinator/dispatch/subagent.js';
+import { ReplanOnErrorPlanning } from '../../../coordinator/planning/replan-on-error.js';
+import { makeLlm, testCallOptions } from '../../../testing/index.js';
 import type { ISpan } from '../../../tracer/types.js';
 import type { PipelineContext } from '../../context.js';
 import {
@@ -122,6 +126,101 @@ function makeDeps(
 // ---------------------------------------------------------------------------
 
 describe('CoordinatorHandler', () => {
+  for (const mode of ['terminal', 'recoverable', 'thrown'] as const) {
+    it(`handles a ${mode} dispatch failure under the step retry policy`, async () => {
+      const error = new LlmError(
+        'Worker failed',
+        mode === 'recoverable' ? 'LLM_OFFLINE' : 'EMPTY_WORKER_OUTPUT',
+      );
+      let calls = 0;
+      const steps: PlanStep[] = [
+        { id: 's1', goal: 'Work', agent: 'worker', status: 'pending' },
+      ];
+      const planning = makePlanning(steps, {
+        onShouldReplan: () => assert.fail('unexpected replan'),
+      });
+      const subAgents = new Map([
+        [
+          'worker',
+          {
+            name: 'worker',
+            capabilities: { contextPolicy: 'optional' as const },
+            async run() {
+              if (++calls === 1) throw error;
+              return { output: 'done' };
+            },
+          },
+        ],
+      ]);
+      const dispatch = new HybridDispatch(
+        mode === 'thrown'
+          ? {
+              name: 'custom',
+              async dispatch() {
+                calls++;
+                throw new Error('Worker wrapper', { cause: error });
+              },
+            }
+          : new SubAgentDispatch(),
+        makeDispatch(() => assert.fail('unexpected fallback')),
+      );
+      const { ctx } = makeCtx({ subAgents });
+      const handler = new CoordinatorHandler(
+        makeDeps(planning, dispatch, {
+          maxRetriesPerStep: 1,
+          failPolicy: 'continue',
+        }),
+      );
+      assert.equal(
+        await handler.execute(ctx, {}, makeSpan()),
+        mode === 'recoverable',
+      );
+      assert.equal(calls, mode === 'recoverable' ? 2 : 1);
+      if (mode !== 'recoverable') {
+        assert.equal(ctx.error, error);
+        assert.equal(ctx.stepResults?.s1.terminalError, error);
+        assert.equal(ctx.plan?.steps[0].status, 'failed');
+      }
+    });
+  }
+
+  for (const phase of ['plan', 'replan'] as const) {
+    for (const failure of ['truncation', 'typed error'] as const) {
+      it(`preserves ${failure} from the ${phase} LLM`, async () => {
+        let calls = 0;
+        let dispatched = 0;
+        const llm = makeLlm([]);
+        const error = new LlmError('Rejected', 'CREDENTIALS_REJECTED');
+        llm.chat = async () => {
+          calls++;
+          const content = '{"steps":[{"id":"s1","goal":"Work"}]}';
+          if (phase === 'replan' && calls === 1)
+            return { ok: true, value: { content, finishReason: 'stop' } };
+          if (failure === 'typed error') return { ok: false, error };
+          return { ok: true, value: { content, finishReason: 'length' } };
+        };
+        const handler = new CoordinatorHandler(
+          makeDeps(
+            new ReplanOnErrorPlanning(llm),
+            makeDispatch(() => {
+              dispatched++;
+              return { ok: false, error: 'recoverable failure' };
+            }),
+          ),
+        );
+        const { ctx } = makeCtx();
+        assert.equal(await handler.execute(ctx, {}, makeSpan()), false);
+        assert.ok(ctx.error instanceof SmartAgentError);
+        assert.equal(
+          ctx.error.code,
+          failure === 'truncation' ? 'LLM_OUTPUT_TRUNCATED' : error.code,
+        );
+        assert.equal(calls, phase === 'plan' ? 1 : 2);
+        assert.equal(dispatched, phase === 'plan' ? 0 : 1);
+      });
+    }
+  }
+
   it('runs all steps and emits finishReason=stop on success', async () => {
     const planning = makePlanning([
       { id: 's1', goal: 'first', status: 'pending' },

@@ -264,6 +264,7 @@ for (const loop of ['self', 'cyclic'] as const) {
         );
         if (finishReason === 'length') {
           assert.equal(result.ok, false);
+          assert.equal(result.terminalError?.code, 'LLM_OUTPUT_TRUNCATED');
           assert.match(result.error ?? '', /truncated/);
         } else {
           assert.equal(result.ok, true);
@@ -274,7 +275,7 @@ for (const loop of ['self', 'cyclic'] as const) {
           assert.equal(result.toolCallCount, 0);
         }
       } else {
-        const result = await new CyclicReActExecutor({
+        const result = new CyclicReActExecutor({
           llm,
           callMcp: callTool,
           component: 'tool-loop',
@@ -297,11 +298,9 @@ for (const loop of ['self', 'cyclic'] as const) {
           },
         });
         if (finishReason === 'length') {
-          assert.equal(result.status, 'incomplete');
-          assert.ok(result.missing);
-          assert.match(result.missing.join(' '), /truncated/);
+          await assert.rejects(result, { code: 'LLM_OUTPUT_TRUNCATED' });
         } else {
-          assert.equal(result.status, 'ok');
+          assert.equal((await result).status, 'ok');
         }
       }
       assert.equal(inputs.length, finishReason === 'tool_calls' ? 2 : 1);

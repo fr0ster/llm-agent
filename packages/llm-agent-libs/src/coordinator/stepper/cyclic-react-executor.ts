@@ -11,9 +11,11 @@ import {
   type Message,
   mergeOfferedTools,
   renderTaskSpec,
+  terminalRunError,
 } from '@mcp-abap-adt/llm-agent';
 import { normalizeMaxIterations } from '../../config/normalize-max-iterations.js';
 import { ToolResponseRound } from '../../pipeline/handlers/tool-response-round.js';
+import { llmOutputTruncation } from '../llm-output-truncation.js';
 
 export interface CyclicReActExecutorDeps {
   llm: import('@mcp-abap-adt/llm-agent').ILlm;
@@ -146,7 +148,9 @@ export class CyclicReActExecutor implements IExecutor {
           .map((f) => `- ${truncateFact(f.content, 300)}`)
           .join('\n')}\n\n`;
       }
-    } catch {
+    } catch (error) {
+      const terminal = terminalRunError(error);
+      if (terminal) throw terminal;
       // knowledge store unavailable — proceed without the prefix
     }
 
@@ -297,12 +301,15 @@ export class CyclicReActExecutor implements IExecutor {
         component,
         durationMs: 0,
       });
-      if (res.ok === false)
+      if (!res.ok) {
+        const terminal = terminalRunError(res.error);
+        if (terminal) throw terminal;
         return {
           status: 'incomplete',
           missing: [res.error?.message ?? 'llm error'],
           usage,
         };
+      }
       const v = res.value;
       usage = add(usage, v.usage);
       if (v.usage) lastPromptTokens = v.usage.promptTokens;
@@ -316,12 +323,8 @@ export class CyclicReActExecutor implements IExecutor {
         });
       }
 
-      if (v.finishReason === 'length')
-        return {
-          status: 'incomplete',
-          missing: ['LLM response was truncated at a token limit.'],
-          usage,
-        };
+      const truncation = llmOutputTruncation(v.finishReason);
+      if (truncation) throw Object.assign(truncation, { usage });
       const modelCalls =
         v.finishReason === 'tool_calls' ? (v.toolCalls ?? []) : [];
       if (modelCalls.length > 0) {
@@ -368,7 +371,9 @@ export class CyclicReActExecutor implements IExecutor {
             try {
               if (await knowledgeRag.hasArtifact(identityKey))
                 priorContent = await knowledgeRag.getArtifact(identityKey);
-            } catch {
+            } catch (error) {
+              const terminal = terminalRunError(error);
+              if (terminal) throw terminal;
               // store unavailable → fall through to a live fetch
             }
             if (priorContent !== undefined) {
