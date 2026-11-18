@@ -2,7 +2,9 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
   type ILlm,
+  type ISubAgent,
   LlmError,
+  McpError,
   NeedsDecompositionError,
 } from '@mcp-abap-adt/llm-agent';
 import { SmartAgentBuilder } from '../../../builder.js';
@@ -35,9 +37,13 @@ for (const role of [
   'recovery reviewer',
   'finalizer',
 ] as const) {
-  for (const failure of ['truncated', 'provider error'] as const) {
+  for (const failure of [
+    'truncated',
+    'CREDENTIALS_REJECTED',
+    'ABORTED',
+  ] as const) {
     test(`DAG ${role} surfaces ${failure} through the agent`, async () => {
-      const providerError = new LlmError('Service unavailable', 'LLM_OFFLINE');
+      const providerError = new LlmError('Provider rejected the run', failure);
       const fail: ILlm['chat'] = async () =>
         failure === 'truncated'
           ? {
@@ -113,8 +119,7 @@ for (const role of [
       try {
         const result = await handle.agent.process('request', testCallOptions());
         assert.equal(result.ok, false);
-        if (failure === 'provider error')
-          assert.equal(result.error, providerError);
+        if (failure !== 'truncated') assert.equal(result.error, providerError);
         else assert.equal(result.error.code, 'LLM_OUTPUT_TRUNCATED');
         assert.equal(plans, role === 'replanner' || role === 'subplan' ? 2 : 1);
         assert.equal(
@@ -134,3 +139,72 @@ for (const role of [
     });
   }
 }
+
+test('DAG recovers from an MCP tool error using an alternative worker', async () => {
+  const calls: string[] = [];
+  let reviews = 0;
+  const error = new McpError('Tool failed', 'MCP_ERROR');
+  const makeWorker = (name: string, run: ISubAgent['run']): ISubAgent => ({
+    name,
+    capabilities: { contextPolicy: 'optional' },
+    async run(input) {
+      calls.push(name);
+      return run(input);
+    },
+  });
+  const primary = makeWorker('executor', async () => {
+    throw error;
+  });
+  const alternative = makeWorker('alternative', async () => ({
+    output: 'recovered',
+  }));
+  const handle = await new SmartAgentBuilder({ skipModelValidation: true })
+    .withRagAccess(testRequestAccess)
+    .withMainLlm(chat(() => assert.fail('unexpected main LLM')))
+    .withClassification(false)
+    .withDagCoordinator({
+      planner: new LlmDagPlanner(
+        chat(async () => ({
+          ok: true,
+          value: { content: plan, finishReason: 'stop' },
+        })),
+      ),
+      reviewer: new LlmReviewStrategy(
+        chat(async () => ({
+          ok: true,
+          value: {
+            content:
+              ++reviews === 2
+                ? `{"action":"revise","plan":${plan.replace('executor', 'alternative')}}`
+                : '{"pass":true}',
+            finishReason: 'stop',
+          },
+        })),
+      ),
+      interpreter: new DagPlanInterpreter(),
+      errorStrategy: {
+        name: 'record failure',
+        async onNodeFailure(_node, failure) {
+          assert.equal(failure, error);
+          calls.push('recovery');
+          return { action: 'abort' };
+        },
+      },
+      workers: new Map([
+        [primary.name, primary],
+        [alternative.name, alternative],
+      ]),
+      activation: { name: 'test', shouldActivate: () => true },
+    })
+    .build()
+    .then(unwrapBuilderResult);
+  try {
+    const result = await handle.agent.process('request', testCallOptions());
+    assert.ok(result.ok);
+    assert.equal(result.value.content, 'recovered');
+    assert.deepEqual(calls, ['executor', 'recovery', 'alternative']);
+    assert.equal(reviews, 3);
+  } finally {
+    await handle.close();
+  }
+});

@@ -7,7 +7,7 @@ import type {
   WorkerProfile,
   WorkerProfileSummary,
 } from '@mcp-abap-adt/llm-agent';
-import { SmartAgentError } from '@mcp-abap-adt/llm-agent';
+import { terminalRunError } from '@mcp-abap-adt/llm-agent';
 import { z } from 'zod';
 import { optionalDeadlineMs } from '../optional-deadline.js';
 
@@ -104,11 +104,9 @@ export class ProfileResolver {
       if (!result.ok) throw new ProfileSourceError(result.error);
       return result.value;
     } catch (error) {
-      if (
-        error instanceof ProfileSourceError ||
-        error instanceof SmartAgentError
-      )
-        throw error;
+      const terminal = terminalRunError(error);
+      if (terminal) throw terminal;
+      if (error instanceof ProfileSourceError) throw error;
       throw new ProfileSourceError({
         code: 'unavailable',
         message: error instanceof Error ? error.message : String(error),

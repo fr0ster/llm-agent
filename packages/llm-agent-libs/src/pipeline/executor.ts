@@ -26,7 +26,7 @@
  * The span is passed to the handler for sub-span creation.
  */
 
-import { SmartAgentError } from '@mcp-abap-adt/llm-agent';
+import { McpError, terminalRunError } from '@mcp-abap-adt/llm-agent';
 import { normalizeMaxIterations } from '../config/normalize-max-iterations.js';
 import type { ISpan, ITracer } from '../tracer/types.js';
 import { evaluateCondition } from './condition-evaluator.js';
@@ -91,10 +91,11 @@ export class PipelineExecutor {
       } catch (err) {
         span.setStatus('error', String(err));
         span.end();
-        // Preserve a typed stage failure at the public pipeline boundary.
-        if (err instanceof SmartAgentError) {
-          ctx.error = err;
-          ctx.yield({ ok: false, error: err });
+        const failure =
+          terminalRunError(err) ?? (err instanceof McpError ? err : undefined);
+        if (failure) {
+          ctx.error = failure;
+          ctx.yield({ ok: false, error: failure });
         }
         ctx.options?.sessionLogger?.logStep(`stage_error_${stage.id}`, {
           error: String(err),

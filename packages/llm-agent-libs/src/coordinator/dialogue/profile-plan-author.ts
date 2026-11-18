@@ -9,7 +9,7 @@ import type {
   PlanRevisionInput,
   Result,
 } from '@mcp-abap-adt/llm-agent';
-import { SmartAgentError } from '@mcp-abap-adt/llm-agent';
+import { terminalRunError } from '@mcp-abap-adt/llm-agent';
 import { z } from 'zod';
 import {
   PLAN_CREATE_SYSTEM,
@@ -144,7 +144,7 @@ export class ProfilePlanAuthor implements IPlanAuthor {
         options,
       );
       options?.signal?.throwIfAborted();
-      if (!response.ok) return response;
+      if (!response.ok) throw response.error;
       code = 'invalid';
       const next = outputSchema.parse(
         parseAuthorOutput(response.value.content),
@@ -182,18 +182,20 @@ export class ProfilePlanAuthor implements IPlanAuthor {
         }),
       };
     } catch (error) {
-      if (error instanceof SmartAgentError) return { ok: false, error };
+      const cause = terminalRunError(error);
       return {
         ok: false,
         error: {
           // A profile source outage is infrastructure, not a bad plan.
-          code: options?.signal?.aborted
-            ? 'aborted'
-            : error instanceof ProfileSourceError &&
-                error.code === 'unavailable'
-              ? 'unavailable'
-              : code,
+          code:
+            options?.signal?.aborted || cause?.code === 'ABORTED'
+              ? 'aborted'
+              : error instanceof ProfileSourceError &&
+                  error.code === 'unavailable'
+                ? 'unavailable'
+                : code,
           message: error instanceof Error ? error.message : String(error),
+          ...(cause ? { cause } : {}),
         },
       };
     }

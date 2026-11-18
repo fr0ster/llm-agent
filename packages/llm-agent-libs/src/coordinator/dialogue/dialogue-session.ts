@@ -27,9 +27,10 @@ import type {
 import {
   addTokenUsage,
   type PlannerMessageUsage,
-  SmartAgentError,
+  type SmartAgentError,
   scopedUsage,
   type TokenUsage,
+  terminalRunError,
 } from '@mcp-abap-adt/llm-agent';
 import { DIALOGUE_COORDINATOR_SYSTEM } from './coordinator-prompt.js';
 import { createMemorySignalBus } from './memory-signal-bus.js';
@@ -1281,8 +1282,9 @@ export class DialogueSession {
             }),
         ).catch((error: Error) => {
           if (planAuthorError) throw planAuthorError;
+          const terminal = terminalRunError(error);
+          if (terminal) throw terminal;
           if (
-            error instanceof SmartAgentError ||
             (!waitStop.signal.aborted && !restarting) ||
             user?.opts.signal?.aborted
           )
@@ -1300,8 +1302,10 @@ export class DialogueSession {
           };
         });
         if (planAuthorError) throw planAuthorError;
-        if (!result.ok && result.error instanceof SmartAgentError)
-          throw result.error;
+        if (!result.ok) {
+          const terminal = terminalRunError(result.error);
+          if (terminal) throw terminal;
+        }
         callIndex++;
         if (result.ok)
           plannerUsage = addTokenUsage(plannerUsage, result.value.usage);

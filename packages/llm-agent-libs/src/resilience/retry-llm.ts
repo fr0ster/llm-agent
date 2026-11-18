@@ -16,15 +16,14 @@ import {
   exponentialBackoffMs,
   findThrottled,
   httpStatusOf,
-  isAuthenticationFailure,
   LlmError,
   type LlmResponse,
   type LlmStreamChunk,
   type LlmTool,
   type Result,
   retryAfterSecondsOf,
-  SmartAgentError,
   startOperation,
+  terminalRunError,
   withOuterAttempt,
 } from '@mcp-abap-adt/llm-agent';
 
@@ -46,9 +45,10 @@ const DEFAULT_OPTIONS: RetryOptions = {
 };
 
 function toLlmError<T>(cause: T): LlmError {
-  return cause instanceof SmartAgentError
+  return cause instanceof LlmError
     ? cause
-    : Object.assign(new LlmError(String(cause), 'LLM_ERROR'), { cause });
+    : (terminalRunError(cause) ??
+        Object.assign(new LlmError(String(cause), 'LLM_ERROR'), { cause }));
 }
 
 function abortError(signal: AbortSignal): LlmError {
@@ -57,15 +57,13 @@ function abortError(signal: AbortSignal): LlmError {
   });
 }
 
-function isPermanent(error: LlmError, status: number | undefined): boolean {
+function isPermanentHttpStatus(status: number | undefined): boolean {
   return (
-    error.code === 'LLM_OUTPUT_TRUNCATED' ||
-    isAuthenticationFailure(error) ||
-    (status !== undefined &&
-      status >= 400 &&
-      status < 500 &&
-      status !== 408 &&
-      status !== 429)
+    status !== undefined &&
+    status >= 400 &&
+    status < 500 &&
+    status !== 408 &&
+    status !== 429
   );
 }
 
@@ -113,9 +111,11 @@ export class RetryLlm implements ILlm {
       }
 
       if (signal?.aborted) return { ok: false, error: abortError(signal) };
-      if (result.ok || result.error.code === 'ABORTED') return result;
+      if (result.ok) return result;
+      const terminal = terminalRunError(result.error);
+      if (terminal) return { ok: false, error: terminal };
       const status = httpStatusOf(result.error);
-      if (isPermanent(result.error, status)) return result;
+      if (isPermanentHttpStatus(status)) return result;
       if (this.isThrottled(result.error, status)) {
         await this.waitForRetry(
           this.retryDelay(quotaRetries++, result.error),
@@ -164,11 +164,13 @@ export class RetryLlm implements ILlm {
           chunksYielded++;
           yield chunk;
         } else {
+          const terminal = terminalRunError(chunk.error);
+          if (terminal) {
+            yield { ok: false, error: terminal };
+            return;
+          }
           const status = httpStatusOf(chunk.error);
-          if (
-            chunk.error.code === 'ABORTED' ||
-            isPermanent(chunk.error, status)
-          ) {
+          if (signal?.aborted || isPermanentHttpStatus(status)) {
             yield chunk;
             return;
           }

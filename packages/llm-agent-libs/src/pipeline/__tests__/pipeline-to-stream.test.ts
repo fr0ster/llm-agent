@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { OrchestratorError } from '@mcp-abap-adt/llm-agent';
+import { McpError, OrchestratorError } from '@mcp-abap-adt/llm-agent';
 import type { IPipeline } from '../../interfaces/pipeline.js';
 import { pipelineToStream } from '../pipeline-to-stream.js';
 
@@ -29,3 +29,21 @@ for (const mode of ['return', 'yield and return', 'throw'] as const) {
     assert.equal(failure.error, error);
   });
 }
+
+test('pipeline stream uses the existing wrapper for a thrown MCP tool error', async () => {
+  const error = new McpError('Tool failed', 'MCP_ERROR');
+  const pipeline: IPipeline = {
+    initialize() {},
+    async execute() {
+      throw error;
+    },
+  };
+  const chunks = [];
+  for await (const chunk of pipelineToStream(pipeline, 'Work', [], undefined))
+    chunks.push(chunk);
+  assert.equal(chunks.length, 1);
+  const [chunk] = chunks;
+  assert.ok(chunk && !chunk.ok);
+  assert.equal(chunk.error.code, 'PIPELINE_ERROR');
+  assert.equal(chunk.error.message, String(error));
+});

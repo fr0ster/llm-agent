@@ -25,7 +25,12 @@ function llm(mode: Mode, ac?: AbortController) {
       yield { ok: true, value: { content: 'par' } };
       ac?.abort();
       if (mode === 'throw') throw new Error('socket closed');
-      yield { ok: false, error: new LlmError('Aborted', 'ABORTED') };
+      yield {
+        ok: false,
+        error: ac?.signal.aborted
+          ? new LlmError('Aborted', 'ABORTED')
+          : new LlmError('Socket closed'),
+      };
     },
   };
   return { impl, counts };
@@ -48,26 +53,33 @@ async function drain(
 }
 
 for (const mode of ['error-chunk', 'throw'] as const) {
-  test(`${mode}: truncation remains a failure and leaves streaming enabled`, async () => {
-    const strategy = new FallbackLlmCallStrategy();
-    const { impl, counts } = llm(mode);
-    const error = new LlmError('Output truncated', 'LLM_OUTPUT_TRUNCATED');
-    impl.streamChat = async function* () {
-      counts.stream++;
-      yield { ok: true, value: { content: 'partial' } };
-      if (mode === 'throw') throw error;
-      yield { ok: false, error };
-    };
+  for (const error of [
+    new LlmError('Output truncated', 'LLM_OUTPUT_TRUNCATED'),
+    new LlmError('Rejected credentials', 'CREDENTIALS_REJECTED'),
+    Object.assign(new LlmError('Forbidden'), { status: 403 }),
+    new LlmError('Aborted', 'ABORTED'),
+    new LlmError('Invalid configuration', 'CONFIG_ERROR'),
+  ]) {
+    test(`${mode}: ${error.message} leaves streaming enabled without falling back`, async () => {
+      const strategy = new FallbackLlmCallStrategy();
+      const { impl, counts } = llm(mode);
+      impl.streamChat = async function* () {
+        counts.stream++;
+        yield { ok: true, value: { content: 'partial' } };
+        if (mode === 'throw') throw error;
+        yield { ok: false, error };
+      };
 
-    for (let call = 0; call < 2; call++) {
-      const chunks = await drain(strategy, impl);
-      assert.deepEqual(chunks, [
-        { ok: true, value: { content: 'partial' } },
-        { ok: false, error },
-      ]);
-    }
-    assert.deepEqual(counts, { stream: 2, chat: 0 });
-  });
+      for (let call = 0; call < 2; call++) {
+        const chunks = await drain(strategy, impl);
+        assert.deepEqual(chunks, [
+          { ok: true, value: { content: 'partial' } },
+          { ok: false, error },
+        ]);
+      }
+      assert.deepEqual(counts, { stream: 2, chat: 0 });
+    });
+  }
 
   test(`${mode}: a caller's cancellation does not disable streaming`, async () => {
     const s = new FallbackLlmCallStrategy();

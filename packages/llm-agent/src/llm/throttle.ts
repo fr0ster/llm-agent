@@ -702,21 +702,22 @@ export function retryAfterSecondsOf(
 /** Status of an axios-shaped error, or undefined when it is shaped otherwise. */
 export function httpStatusOf(error: object | undefined): number | undefined {
   for (const current of errorCauseChain(error)) {
-    const response = 'response' in current ? current.response : undefined;
-    const status =
-      response && typeof response === 'object' && 'status' in response
-        ? response.status
-        : undefined;
-    // axios keeps it under response; several SDKs hoist it onto the error itself.
-    for (const candidate of [
-      status,
-      'status' in current ? current.status : undefined,
-      'statusCode' in current ? current.statusCode : undefined,
-    ]) {
-      if (typeof candidate === 'number') return candidate;
-    }
+    const status = ownHttpStatus(current);
+    if (status !== undefined) return status;
   }
   return undefined;
+}
+
+function ownHttpStatus(error: object): number | undefined {
+  const response = 'response' in error ? error.response : undefined;
+  // Axios keeps it under response; several SDKs hoist it onto the error itself.
+  return [
+    response && typeof response === 'object' && 'status' in response
+      ? response.status
+      : undefined,
+    'status' in error ? error.status : undefined,
+    'statusCode' in error ? error.statusCode : undefined,
+  ].find((value) => typeof value === 'number');
 }
 
 const authenticationCodes = new Set([
@@ -726,6 +727,7 @@ const authenticationCodes = new Set([
   'authorization',
   'bad_credentials',
   'credentials_rejected',
+  'decision_auth',
   'forbidden',
   'invalid_api_key',
   'invalid_token',
@@ -734,11 +736,14 @@ const authenticationCodes = new Set([
   'unauthorized',
 ]);
 
-/** Identify authentication failures from structured codes and error names. */
+/** Identify authentication failures from structured statuses, codes, and error names. */
 export function isAuthenticationFailure(error: object | undefined): boolean {
   for (const current of errorCauseChain(error)) {
     const code = 'code' in current ? current.code : undefined;
+    const status = ownHttpStatus(current);
     if (
+      status === 401 ||
+      status === 403 ||
       (typeof code === 'string' &&
         authenticationCodes.has(code.toLowerCase())) ||
       (current instanceof Error &&

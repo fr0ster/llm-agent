@@ -7,8 +7,8 @@ import {
   type LlmTool,
   type Message,
   type Result,
-  SmartAgentError,
   startOperation,
+  terminalRunError,
   withOuterAttempt,
 } from '@mcp-abap-adt/llm-agent';
 import type { AnyLogger } from '../logger/normalise-logger.js';
@@ -21,9 +21,8 @@ import { StreamingLlmCallStrategy } from './streaming-llm-call-strategy.js';
 /**
  * Starts with streaming. On error, logs the cause and retries the same call
  * via non-streaming. All subsequent calls use non-streaming for this instance.
- * A failure caused by the caller's cancellation (`isCallerCancellation`) is
- * passed through as-is: it says nothing about streaming, so streaming stays
- * enabled and nothing is retried.
+ * Terminal failures and caller cancellation leave streaming enabled and end
+ * the current call.
  */
 export class FallbackLlmCallStrategy implements ILlmCallStrategy {
   private streamingDisabled = false;
@@ -60,10 +59,12 @@ export class FallbackLlmCallStrategy implements ILlmCallStrategy {
         initialOptions,
       )) {
         if (!chunk.ok) {
-          if (
-            chunk.error.code === 'LLM_OUTPUT_TRUNCATED' ||
-            isCallerCancellation(options?.signal)
-          ) {
+          const terminal = terminalRunError(chunk.error);
+          if (terminal) {
+            yield { ok: false, error: terminal };
+            return;
+          }
+          if (isCallerCancellation(options?.signal)) {
             yield chunk;
             return;
           }
@@ -85,11 +86,9 @@ export class FallbackLlmCallStrategy implements ILlmCallStrategy {
         yield* this.nonStreaming.call(llm, messages, tools, fallbackOptions);
       }
     } catch (err) {
-      if (
-        err instanceof SmartAgentError &&
-        err.code === 'LLM_OUTPUT_TRUNCATED'
-      ) {
-        yield { ok: false, error: err };
+      const terminal = terminalRunError(err);
+      if (terminal) {
+        yield { ok: false, error: terminal };
         return;
       }
       // Streaming threw an exception (e.g. SSE disconnect, network error)

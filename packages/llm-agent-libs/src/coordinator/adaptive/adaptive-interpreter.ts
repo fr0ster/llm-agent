@@ -10,10 +10,11 @@ import type {
   Message,
   OnPartial,
   RunOutcome,
+  SmartAgentError,
   StepRecord,
   StepStatus,
 } from '@mcp-abap-adt/llm-agent';
-import { SmartAgentError } from '@mcp-abap-adt/llm-agent';
+import { terminalRunError } from '@mcp-abap-adt/llm-agent';
 import { OrchestratorError } from '../../agent.js';
 import { composeStepInput } from './compose-step-input.js';
 import { parseVerdict, validateSteps } from './parse-plan.js';
@@ -135,7 +136,8 @@ export async function runAdaptivePlan(
       output = report.text;
     } catch (error) {
       input.signal?.throwIfAborted();
-      if (error instanceof SmartAgentError) return failedRun(error);
+      const terminal = terminalRunError(error);
+      if (terminal) return failedRun(terminal);
       output = [
         `Stopped: ${stopReason}`,
         ...records.map(
@@ -225,9 +227,16 @@ export async function runAdaptivePlan(
         } catch (error) {
           input.signal?.throwIfAborted();
           collect((error as { usage?: LlmUsage } | null)?.usage);
-          record.status = 'failed';
-          record.error = message(error);
-          if (error instanceof SmartAgentError) terminalError = error;
+          terminalError = terminalRunError(error);
+          if (terminalError) {
+            record.status = 'failed';
+            record.error = message(error);
+          } else {
+            record.verdict = {
+              verdict: 'fail',
+              reason: `controller check failed: ${message(error)}`,
+            };
+          }
         }
       } else {
         const source = plan.steps.find(
@@ -300,7 +309,11 @@ export async function runAdaptivePlan(
           }
           if (step.kind === 'check') {
             record.verdict = parseVerdict(worked.output);
-            if (!record.verdict) throw new Error('unparsable verdict');
+            if (!record.verdict)
+              throw new OrchestratorError(
+                `Check ${step.id} failed to retrieve a verdict: unparsable verdict`,
+                'VERDICT_RETRIEVAL_FAILED',
+              );
           } else if (!worked.output.trim()) {
             throw new OrchestratorError(
               'Worker returned an empty terminal response.',
@@ -322,7 +335,12 @@ export async function runAdaptivePlan(
           record.status = 'failed';
           record.output = '';
           record.error = message(error);
-          if (error instanceof SmartAgentError) terminalError = error;
+          terminalError = terminalRunError(error);
+          if (step.kind === 'check' && !terminalError)
+            record.verdict = {
+              verdict: 'fail',
+              reason: `worker check failed: ${record.error}`,
+            };
         }
       }
       finish();
@@ -402,7 +420,8 @@ export async function runAdaptivePlan(
         collect((error as { usage?: LlmUsage } | null)?.usage);
         record.error = message(error);
         finish();
-        if (error instanceof SmartAgentError) return failedRun(error);
+        const terminal = terminalRunError(error);
+        if (terminal) return failedRun(terminal);
         return stop(`revise failed: ${record.error}`);
       }
       finish();

@@ -29,9 +29,13 @@ const adaptiveSteps = {
 } satisfies Record<string, AdaptiveStep>;
 
 for (const role of ['plan', 'check', 'revise', 'report', 'worker'] as const) {
-  for (const failure of ['truncated', 'provider error'] as const) {
+  for (const failure of [
+    'truncated',
+    'CREDENTIALS_REJECTED',
+    'ABORTED',
+  ] as const) {
     test(`adaptive ${role} surfaces ${failure} through the agent`, async () => {
-      const providerError = new LlmError('Service unavailable', 'LLM_OFFLINE');
+      const providerError = new LlmError('Provider rejected the run', failure);
       const plan = JSON.stringify({ steps: [adaptiveSteps[role]] });
       let calls = 0;
       let workerRuns = 0;
@@ -93,8 +97,7 @@ for (const role of ['plan', 'check', 'revise', 'report', 'worker'] as const) {
         );
         assert.equal(calls, role === 'plan' || role === 'worker' ? 1 : 2);
         assert.equal(result.ok, false);
-        if (failure === 'provider error')
-          assert.equal(result.error, providerError);
+        if (failure !== 'truncated') assert.equal(result.error, providerError);
         else assert.equal(result.error.code, 'LLM_OUTPUT_TRUNCATED');
       } finally {
         await handle.close();

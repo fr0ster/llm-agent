@@ -11,11 +11,11 @@ export interface PlanRevisionInput {
   change: string;
   brief?: PlanBrief;
 }
-export type PlanAuthorError = PlanAuthorFailure | SmartAgentError;
-
-interface PlanAuthorFailure {
+export interface PlanAuthorError {
   code: 'invalid' | 'unavailable' | 'aborted';
   message: string;
+  /** Original typed run failure, when the author can supply one. */
+  cause?: SmartAgentError;
 }
 export interface IPlanAuthor {
   create(

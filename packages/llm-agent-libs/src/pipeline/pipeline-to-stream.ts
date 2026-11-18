@@ -6,7 +6,7 @@ import type {
   Message,
   Result,
 } from '@mcp-abap-adt/llm-agent';
-import { OrchestratorError, SmartAgentError } from '@mcp-abap-adt/llm-agent';
+import { OrchestratorError, terminalRunError } from '@mcp-abap-adt/llm-agent';
 import type { IPipeline } from '../interfaces/pipeline.js';
 
 export async function* pipelineToStream(
@@ -42,7 +42,8 @@ export async function* pipelineToStream(
       clientAdapter,
     )
     .then(({ error }) => {
-      if (error && !yieldedError) chunkQueue.push({ ok: false, error });
+      if (error && !yieldedError)
+        chunkQueue.push({ ok: false, error: terminalRunError(error) ?? error });
       done = true;
       if (resolveWait) {
         resolveWait();
@@ -54,9 +55,8 @@ export async function* pipelineToStream(
         chunkQueue.push({
           ok: false,
           error:
-            err instanceof SmartAgentError
-              ? err
-              : new OrchestratorError(String(err), 'PIPELINE_ERROR'),
+            terminalRunError(err) ??
+            new OrchestratorError(String(err), 'PIPELINE_ERROR'),
         });
       done = true;
       if (resolveWait) {

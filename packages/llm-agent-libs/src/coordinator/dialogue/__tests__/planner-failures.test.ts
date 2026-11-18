@@ -37,7 +37,7 @@ for (const mode of [
     const error =
       mode === 'circuit' || mode === 'retry'
         ? new OrchestratorError('Output truncated', 'LLM_OUTPUT_TRUNCATED')
-        : new LlmError('Service unavailable', 'LLM_OFFLINE');
+        : new LlmError('Credentials rejected', 'CREDENTIALS_REJECTED');
     let streams = 0;
     let fallbackCalls = 0;
     const transport: ILlm = {
@@ -102,72 +102,79 @@ for (const mode of [
 
 for (const fallback of ['wait', 'restart'] as const) {
   for (const mode of ['result', 'throw'] as const) {
-    test(`dialogue ${fallback} preserves a typed planner ${mode} failure`, async () => {
-      const { caller } = testCallOptions();
-      const worker: ISubAgent = {
-        name: 'executor',
-        capabilities: { contextPolicy: 'optional' },
-        run({ stopSignal }) {
-          return new Promise((resolve) => {
-            stopSignal?.addEventListener(
-              'abort',
-              () => resolve({ output: 'stopped' }),
-              { once: true },
-            );
-          });
-        },
-      };
-      const error =
-        fallback === 'wait'
-          ? new OrchestratorError(
-              'Truncated planner response',
-              'LLM_OUTPUT_TRUNCATED',
-            )
-          : new LlmError('Service unavailable', 'LLM_OFFLINE');
-      let calls = 0;
-      const session = await DialogueSession.open({
-        id: caller.sessionId,
-        caller,
-        maxCorrections: 0,
-        board: { workers: new Map([[worker.name, worker]]) },
-        planner: {
-          async process(_messages, opts) {
-            calls++;
-            if (fallback === 'restart') {
-              if (calls === 1) {
-                await tools.callTool('plan_update', {
-                  plan: 'Keep request active',
-                });
-                return { ok: true, value: { content: 'First reply' } };
-              }
-              const started = await tools.callTool('new_request', {});
-              assert.ok(started.ok && !started.value.isError);
-            } else {
-              await tools.callTool('delegate_task', {
-                worker: 'executor',
-                goal: 'Work',
-              });
-              await tools.callTool('list_tasks', {});
-              await tools.callTool('list_tasks', {});
-            }
-            assert.equal(opts.stopSignal?.aborted, true);
-            opts.onPartial?.({ kind: 'content', delta: 'Partial reply' });
-            if (mode === 'throw') throw error;
-            return { ok: false, error };
+    for (const terminal of [true, false]) {
+      test(`dialogue ${fallback} handles a ${terminal ? 'terminal' : 'recoverable'} planner ${mode} failure`, async () => {
+        const { caller } = testCallOptions();
+        const worker: ISubAgent = {
+          name: 'executor',
+          capabilities: { contextPolicy: 'optional' },
+          run({ stopSignal }) {
+            return new Promise((resolve) => {
+              stopSignal?.addEventListener(
+                'abort',
+                () => resolve({ output: 'stopped' }),
+                { once: true },
+              );
+            });
           },
-        },
+        };
+        const error = terminal
+          ? new LlmError('The planner was aborted', 'ABORTED')
+          : new LlmError('Service unavailable', 'LLM_OFFLINE');
+        let calls = 0;
+        const session = await DialogueSession.open({
+          id: caller.sessionId,
+          caller,
+          maxCorrections: 0,
+          board: { workers: new Map([[worker.name, worker]]) },
+          planner: {
+            async process(_messages, opts) {
+              calls++;
+              if (fallback === 'restart') {
+                if (calls === 1) {
+                  await tools.callTool('plan_update', {
+                    plan: 'Keep request active',
+                  });
+                  return { ok: true, value: { content: 'First reply' } };
+                }
+                if (calls === 3)
+                  return { ok: true, value: { content: 'Restart reply' } };
+                const started = await tools.callTool('new_request', {});
+                assert.ok(started.ok && !started.value.isError);
+              } else {
+                await tools.callTool('delegate_task', {
+                  worker: 'executor',
+                  goal: 'Work',
+                });
+                await tools.callTool('list_tasks', {});
+                await tools.callTool('list_tasks', {});
+              }
+              assert.equal(opts.stopSignal?.aborted, true);
+              opts.onPartial?.({ kind: 'content', delta: 'Partial reply' });
+              if (mode === 'throw') throw error;
+              return { ok: false, error };
+            },
+          },
+        });
+        try {
+          if (fallback === 'restart') await session.send('First request');
+          if (terminal) {
+            await assert.rejects(
+              session.send('Request'),
+              (caught) => caught === error,
+            );
+          } else {
+            assert.equal(
+              (await session.send('Request')).text,
+              fallback === 'restart' ? 'Restart reply' : 'Partial reply',
+            );
+          }
+          assert.equal(calls, fallback === 'restart' ? (terminal ? 2 : 3) : 1);
+        } finally {
+          await session.close();
+        }
       });
-      try {
-        if (fallback === 'restart') await session.send('First request');
-        await assert.rejects(
-          session.send('Request'),
-          (caught) => caught === error,
-        );
-        assert.equal(calls, fallback === 'restart' ? 2 : 1);
-      } finally {
-        await session.close();
-      }
-    });
+    }
   }
 }
 
@@ -185,7 +192,10 @@ for (const mode of ['create', 'revise', 'prepare'] as const) {
       ],
     });
     const author = new SmartAgent(deps, {});
-    const prepareError = new LlmError('Service unavailable', 'LLM_OFFLINE');
+    const prepareError = new LlmError(
+      'Credentials rejected',
+      'CREDENTIALS_REJECTED',
+    );
     host.profileRunner.preparePlanAuthor = async () => {
       if (mode === 'prepare') throw prepareError;
       return { ok: true, value: author };

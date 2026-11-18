@@ -11,6 +11,7 @@ import type {
   StepStatus,
   WorkStep,
 } from '@mcp-abap-adt/llm-agent';
+import { McpError } from '@mcp-abap-adt/llm-agent';
 import { DirectLlmSubAgent } from '../../../subagent/direct-llm-subagent.js';
 import {
   type AdaptiveRunInput,
@@ -87,6 +88,47 @@ function setup(
 }
 const verdict = (value = 'pass', reason = 'ok') =>
   JSON.stringify({ verdict: value, reason });
+
+test('an MCP tool failure goes through check and fix with an alternative worker', async () => {
+  const error = new McpError('Tool failed', 'MCP_ERROR');
+  const { input } = setup(
+    [
+      work,
+      { ...check, onFail: 'fix' },
+      { ...work, id: 'fix', worker: 'alternative' },
+      { ...answer, from: 'fix' },
+    ],
+    [error, verdict('fail', 'Worker failed')],
+  );
+  input.workers = new Map([
+    ...input.workers,
+    [
+      'alternative',
+      {
+        name: 'alternative',
+        capabilities: { contextPolicy: 'optional' },
+        async run(input) {
+          assert.match(input.task, /Worker failed/);
+          return { output: 'recovered' };
+        },
+      },
+    ],
+  ]);
+
+  const result = await runAdaptivePlan(input);
+  assert.equal(result.outcome, 'answered');
+  assert.equal(result.output, 'recovered');
+  assert.deepEqual(
+    result.records.map(({ stepId, kind, status }) => [stepId, kind, status]),
+    [
+      ['a', 'work', 'failed'],
+      ['c', 'check', 'done'],
+      ['fix', 'work', 'done'],
+      ['z', 'answer', 'done'],
+    ],
+  );
+  assert.equal(result.records[0]?.error, error.message);
+});
 
 for (const mode of ['none', 'last-turn', 'all'] as const) {
   for (const withTools of [false, true]) {
@@ -320,20 +362,25 @@ test('self check uses controller.check and collects usage', async () => {
   };
   assert.deepEqual((await runAdaptivePlan(input)).usage, [usage, usage]);
 });
-test('self check throw fails verdict retrieval', async () => {
-  const { input, controller } = setup([
-    work,
-    { ...check, worker: 'self', onFail: 'z' },
-    answer,
-  ]);
-  controller.check = async () => {
-    throw new Error('oops');
-  };
-  const result = await runAdaptivePlan(input);
-  assert.equal(result.error?.code, 'VERDICT_RETRIEVAL_FAILED');
-  assert.match(result.error.message, /oops/);
-  assert.equal(result.records[1]?.verdict, undefined);
-});
+for (const worker of ['self', 'executor']) {
+  test(`${worker} check takes the failure branch on a recoverable error`, async () => {
+    const error = new McpError('Tool failed', 'MCP_ERROR');
+    const { input, controller } = setup(
+      [work, { ...check, worker, onFail: 'z', onPass: 'end' }, answer],
+      ['draft', error],
+    );
+    controller.check = async () => {
+      throw error;
+    };
+    const result = await runAdaptivePlan(input);
+    assert.equal(result.outcome, 'answered');
+    assert.equal(result.output, 'draft');
+    assert.deepEqual(result.records[1]?.verdict, {
+      verdict: 'fail',
+      reason: `${worker === 'self' ? 'controller' : 'worker'} check failed: Tool failed`,
+    });
+  });
+}
 test('failed work without later check stops', async () => {
   const { input } = setup(undefined, [
     (i) => {

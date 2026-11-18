@@ -123,7 +123,13 @@ export class LlmAdaptiveController implements IAdaptiveController {
     );
     const verdict = parseVerdict(response.content);
     if (!verdict)
-      throw withUsage(new Error('Unparsable verdict'), response.usage);
+      throw withUsage(
+        new OrchestratorError(
+          `Check ${input.step.id} failed to retrieve a verdict: Unparsable verdict`,
+          'VERDICT_RETRIEVAL_FAILED',
+        ),
+        response.usage,
+      );
     return { verdict, usage: response.usage };
   }
 

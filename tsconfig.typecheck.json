@@ -16,6 +16,7 @@
   // test added to either package that needs type-checking in CI must be
   // added to this list by hand.
   "include": [
+    "test/repo/fixtures/llm-agent-consumer.ts",
     "packages/llm-agent-libs/src/__tests__/restored-context-strategy.test.ts",
     "packages/llm-agent-libs/src/context/__tests__/tool-record-wire.test.ts",
     "packages/llm-agent-libs/src/__tests__/invalid-tool-rounds.test.ts",

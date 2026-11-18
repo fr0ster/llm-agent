@@ -10,7 +10,7 @@ import type {
   LlmUsage,
   RunRecord,
 } from '@mcp-abap-adt/llm-agent';
-import { SmartAgentError } from '@mcp-abap-adt/llm-agent';
+import { terminalRunError } from '@mcp-abap-adt/llm-agent';
 import { OrchestratorError } from '../../agent.js';
 import {
   AdaptiveEpicFailError,
@@ -127,11 +127,8 @@ export class AdaptiveCoordinatorHandler implements IStageHandler {
         plan = planned.plan;
       } catch (error) {
         ctx.options?.signal?.throwIfAborted();
-        if (
-          error instanceof SmartAgentError ||
-          (error instanceof Error && error.name === 'AbortError')
-        )
-          throw error;
+        const terminal = terminalRunError(error);
+        if (terminal) throw terminal;
         log('adaptive_plan_fallback', { message: message(error) });
         plan = fallbackPlan(request, this.deps.fallbackWorker ?? 'executor');
       }
@@ -280,15 +277,15 @@ export class AdaptiveCoordinatorHandler implements IStageHandler {
       return true;
     } catch (error) {
       ctx.error =
-        error instanceof SmartAgentError
+        terminalRunError(error) ??
+        (error instanceof OrchestratorError
           ? error
           : new OrchestratorError(
               message(error),
-              ctx.options?.signal?.aborted ||
-                (error instanceof Error && error.name === 'AbortError')
+              ctx.options?.signal?.aborted
                 ? 'ABORTED'
                 : 'COORDINATOR_STEP_FAILED',
-            );
+            ));
       return false;
     }
   }

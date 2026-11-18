@@ -29,27 +29,27 @@ export class DefaultWaitStrategy implements IWaitStrategy {
     for (let remaining = ms; remaining > 0; ) {
       if (signal?.aborted) return 'aborted';
       const interval = Math.min(remaining, maxTimerDelayMs);
-      if ((await this.waitInterval(interval, signal)) === 'aborted')
+      if ((await waitInterval(interval, signal)) === 'aborted')
         return 'aborted';
       remaining -= interval;
     }
     return signal?.aborted ? 'aborted' : 'elapsed';
   }
+}
 
-  private waitInterval(
-    ms: number,
-    signal?: AbortSignal,
-  ): Promise<'elapsed' | 'aborted'> {
-    return new Promise((resolve) => {
-      const onAbort = (): void => {
-        clearTimeout(handle);
-        resolve('aborted');
-      };
-      const handle = setTimeout(() => {
-        signal?.removeEventListener('abort', onAbort);
-        resolve('elapsed');
-      }, ms);
-      signal?.addEventListener('abort', onAbort, { once: true });
-    });
-  }
+function waitInterval(
+  ms: number,
+  signal?: AbortSignal,
+): Promise<'elapsed' | 'aborted'> {
+  return new Promise((resolve) => {
+    const onAbort = (): void => {
+      clearTimeout(handle);
+      resolve('aborted');
+    };
+    const handle = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve('elapsed');
+    }, ms);
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
 }
