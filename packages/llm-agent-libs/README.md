@@ -59,8 +59,8 @@ Controller `maxSteps` and `maxRetries` are unchanged.
 
 Adaptive coordination has no default step, revision, duration, or per-step run
 limits. A missing check verdict stops the run with a verdict retrieval error.
-A token-limited tool-loop response returns `LLM_OUTPUT_TRUNCATED` if output
-validation does not request a new response.
+A token-limited tool-loop response returns `LLM_OUTPUT_TRUNCATED` before output
+validation runs.
 
 `RetryLlm` retries transient transport errors without an attempt limit by
 default. Set `retry.maxAttempts` to cap non-429 retries. HTTP 429 waits follow
