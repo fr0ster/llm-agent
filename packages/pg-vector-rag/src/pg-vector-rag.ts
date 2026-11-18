@@ -13,6 +13,7 @@ import {
   assertScanOptions,
   decodeIdScanCursor,
   decodeListCursor,
+  embedRecord,
   encodeListCursor,
   FallbackQueryEmbedding,
   INVALID_ARGUMENT,
@@ -40,6 +41,7 @@ import { resolveLayout } from './layout.js';
 import { RecordCache, type StoreCache } from './record-cache.js';
 import { deleteWhere, scanPage } from './scan-delete.js';
 import {
+  addFragmentVectorsSql,
   assertCollectionName,
   createExtensionSql,
   qualifiedTable,
@@ -145,6 +147,8 @@ export class PgVectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
   private listIdentity?: Promise<string>;
   private readonly listTable: string;
   private readonly dimension: number;
+  private readonly collectionName: string;
+  private readonly fragmentSizeChars?: number;
   private readonly embedder: IRetrievalEmbedder;
   private readonly fallbackOnQueryEmbeddingError: boolean;
   private readonly autoCreateSchema: boolean;
@@ -155,14 +159,18 @@ export class PgVectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
   private readonly documentsTable: string;
   private readonly schema?: string;
   private sharedCheck?: Promise<void>;
+  private fragmentSchema?: Promise<void>;
 
   constructor(
     config: PgVectorRagConfig & { embedder: IRetrievalEmbedder },
     injectedClient?: PgClient,
     cache?: StoreCache,
+    private readonly migrateExistingSchema = false,
   ) {
     assertCollectionName(config.collectionName);
+    this.collectionName = config.collectionName;
     this.dimension = config.dimension ?? 1536;
+    this.fragmentSizeChars = config.fragmentSizeChars;
     this.embedder = config.embedder;
     this.fallbackOnQueryEmbeddingError =
       config.fallbackOnQueryEmbeddingError ?? true;
@@ -210,6 +218,33 @@ export class PgVectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
       this.schemaReady = true;
     })();
     await this.schemaPromise;
+  }
+
+  private async ensureFragmentStorage(): Promise<void> {
+    if (!this.autoCreateSchema && !this.migrateExistingSchema) return;
+    this.fragmentSchema ??= this.migrateFragmentStorage().catch((error) => {
+      this.fragmentSchema = undefined;
+      throw error;
+    });
+    await this.fragmentSchema;
+  }
+
+  private async migrateFragmentStorage(): Promise<void> {
+    if (this.sql.layout === 'shared') return;
+    const client = await this.clientPromise;
+    try {
+      await client.query(
+        `SELECT "fragment_vectors" FROM ${this.listTable} WHERE FALSE`,
+      );
+    } catch (error) {
+      if (
+        !(error instanceof Error) ||
+        !('code' in error) ||
+        error.code !== '42703'
+      )
+        throw error;
+      await client.query(addFragmentVectorsSql(this.collectionName));
+    }
   }
 
   private async maybeEnsureSchema(): Promise<void> {
@@ -267,6 +302,7 @@ export class PgVectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
       return { ok: false, error: new RagError('Aborted', 'ABORTED') };
     try {
       await this.maybeEnsureSchema();
+      await this.ensureFragmentStorage();
       const safe =
         embedding instanceof TextOnlyEmbedding
           ? new QueryEmbedding(embedding.text, this.embedder, options)
@@ -507,9 +543,17 @@ export class PgVectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
     if (options?.signal?.aborted)
       return { ok: false, error: new RagError('Aborted', 'ABORTED') };
     try {
-      const { vector } = await this.embedder.embedDocument(text, options);
-      return this.upsertKnown(text, vector, metadata);
+      const vectors = await embedRecord(
+        this.embedder,
+        text,
+        this.fragmentSizeChars,
+        options,
+      );
+      options?.signal?.throwIfAborted();
+      return this.upsertKnown(text, vectors, metadata);
     } catch (err) {
+      if (options?.signal?.aborted)
+        return { ok: false, error: new RagError('Aborted', 'ABORTED') };
       return { ok: false, error: this.failure(err, 'UPSERT_ERROR') };
     }
   }
@@ -519,12 +563,12 @@ export class PgVectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
     vector: number[],
     metadata: RagMetadata,
   ): Promise<Result<void, RagError>> {
-    return this.upsertKnown(text, vector, metadata);
+    return this.upsertKnown(text, [vector], metadata);
   }
 
   private async upsertKnown(
     text: string,
-    vector: number[],
+    [vector, ...extras]: number[][],
     metadata: RagMetadata,
   ): Promise<Result<void, RagError>> {
     try {
@@ -534,7 +578,18 @@ export class PgVectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
       const client = await this.clientPromise;
       const id = metadata?.id ?? crypto.randomUUID();
       const { id: _omit, ...rest } = validateRagMetadata(metadata);
-      const stmt = this.sql.upsert(literal, id, text, JSON.stringify(rest));
+      await this.ensureFragmentStorage();
+      const fragments =
+        extras.length > 0
+          ? extras.map((fragment) => `[${fragment.join(',')}]`)
+          : null;
+      const stmt = this.sql.upsert(
+        literal,
+        id,
+        text,
+        JSON.stringify(rest),
+        fragments,
+      );
       const settled = this.cache.beginWrite([id]);
       try {
         await client.query(stmt.sql, stmt.params);

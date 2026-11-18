@@ -14,9 +14,10 @@ test('OllamaRag retains retries through core composition with one request per at
     return 'elapsed';
   });
   let calls = 0;
-  t.mock.method(globalThis, 'fetch', async () => {
+  t.mock.method(globalThis, 'fetch', async (url: URL | Request | string) => {
+    if (String(url).endsWith('/api/show')) return Response.json({});
     if (++calls === 1) return new Response('unavailable', { status: 503 });
-    return Response.json({ embedding: [1] });
+    return Response.json({ embeddings: [[1]] });
   });
   const records: UsageInput[] = [];
   const usage: IUsageRecorder = {

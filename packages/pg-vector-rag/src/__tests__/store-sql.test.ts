@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { perCollectionStoreSql, sharedStoreSql } from '../store-sql.js';
 
+const DISTANCE =
+  'LEAST("vector" <=> LIT, (SELECT MIN(fragment <=> LIT) FROM unnest("fragment_vectors") AS vectors(fragment)))';
 const TTL = `COALESCE(CASE WHEN jsonb_typeof(metadata->'ttl') = 'number' THEN (metadata->>'ttl')::float8 END, 'infinity'::float8) >=`;
 const TTL_SHARED = `COALESCE(CASE WHEN jsonb_typeof("metadata"->'ttl') = 'number' THEN ("metadata"->>'ttl')::float8 END, 'infinity'::float8) >=`;
 
@@ -12,7 +14,7 @@ describe('shared store SQL', () => {
     const plain = sql.search('LIT', 7, { nowSecs: 99 });
     assert.equal(
       plain.sql,
-      `SELECT "id", "text", "metadata", "vector" <=> LIT AS score FROM "rag_documents" WHERE "collection" = $1 AND ${TTL_SHARED} $2 ORDER BY "vector" <=> LIT LIMIT 7`,
+      `SELECT "id", "text", "metadata", ${DISTANCE} AS score FROM "rag_documents" WHERE "collection" = $1 AND ${TTL_SHARED} $2 ORDER BY score LIMIT 7`,
     );
     assert.deepEqual(plain.params, ['docs', 99]);
     const scoped = sql.search('LIT', 3, {
@@ -22,18 +24,18 @@ describe('shared store SQL', () => {
     });
     assert.equal(
       scoped.sql,
-      `SELECT "id", "text", "metadata", "vector" <=> LIT AS score FROM "rag_documents" WHERE "collection" = $1 AND CASE WHEN jsonb_typeof("metadata"->'ownerScope') = 'string' THEN "metadata"->>'ownerScope' END = $2 AND CASE WHEN jsonb_typeof("metadata"->'sessionId') = 'string' THEN "metadata"->>'sessionId' END = $3 AND CASE WHEN jsonb_typeof("metadata"->'userId') = 'string' THEN "metadata"->>'userId' END = $4 AND CASE WHEN jsonb_typeof("metadata"->'namespace') = 'string' THEN "metadata"->>'namespace' END = $5 AND ${TTL_SHARED} $6 ORDER BY "vector" <=> LIT LIMIT 3`,
+      `SELECT "id", "text", "metadata", ${DISTANCE} AS score FROM "rag_documents" WHERE "collection" = $1 AND CASE WHEN jsonb_typeof("metadata"->'ownerScope') = 'string' THEN "metadata"->>'ownerScope' END = $2 AND CASE WHEN jsonb_typeof("metadata"->'sessionId') = 'string' THEN "metadata"->>'sessionId' END = $3 AND CASE WHEN jsonb_typeof("metadata"->'userId') = 'string' THEN "metadata"->>'userId' END = $4 AND CASE WHEN jsonb_typeof("metadata"->'namespace') = 'string' THEN "metadata"->>'namespace' END = $5 AND ${TTL_SHARED} $6 ORDER BY score LIMIT 3`,
     );
     assert.deepEqual(scoped.params, ['docs', 'session', 's', 'u', 'ns', 5]);
   });
 
   it('upsert writes the collection column', () => {
-    const s = sql.upsert('LIT', 'a', 't', '{}');
+    const s = sql.upsert('LIT', 'a', 't', '{}', null);
     assert.equal(
       s.sql,
-      'INSERT INTO "rag_documents" ("collection", "id", "text", "vector", "metadata") VALUES ($1, $2, $3, LIT, $4::jsonb) ON CONFLICT ("collection", "id") DO UPDATE SET "text" = EXCLUDED."text", "vector" = EXCLUDED."vector", "metadata" = EXCLUDED."metadata"',
+      'INSERT INTO "rag_documents" ("collection", "id", "text", "vector", "metadata", "fragment_vectors") VALUES ($1, $2, $3, LIT, $4::jsonb, $5::vector[]) ON CONFLICT ("collection", "id") DO UPDATE SET "text" = EXCLUDED."text", "vector" = EXCLUDED."vector", "metadata" = EXCLUDED."metadata", "fragment_vectors" = EXCLUDED."fragment_vectors"',
     );
-    assert.deepEqual(s.params, ['docs', 'a', 't', '{}']);
+    assert.deepEqual(s.params, ['docs', 'a', 't', '{}', null]);
   });
 
   it('clear is a DELETE, never a TRUNCATE; createTable is undefined', () => {
@@ -63,7 +65,7 @@ describe('shared store SQL', () => {
 });
 
 describe('per-collection store SQL', () => {
-  it('per-collection SQL is unchanged (pinned literals from 30.1.0)', () => {
+  it('per-collection SQL stores fragments with each record', () => {
     const sql = perCollectionStoreSql('docs', 3);
     assert.equal(sql.layout, 'per-collection');
     assert.equal(
@@ -72,12 +74,13 @@ describe('per-collection store SQL', () => {
     id VARCHAR(255) PRIMARY KEY,
     text TEXT,
     vector vector(3),
+    fragment_vectors vector(3)[],
     metadata JSONB,
     created_at TIMESTAMPTZ DEFAULT NOW()
   )`,
     );
     assert.deepEqual(sql.search('LIT', 5, { nowSecs: 42 }), {
-      sql: `SELECT id, text, metadata, vector <=> LIT AS score FROM "docs" WHERE ${TTL} $1 ORDER BY vector <=> LIT LIMIT 5`,
+      sql: `SELECT id, text, metadata, ${DISTANCE} AS score FROM "docs" WHERE ${TTL} $1 ORDER BY score LIMIT 5`,
       params: [42],
     });
     assert.deepEqual(
@@ -87,7 +90,7 @@ describe('per-collection store SQL', () => {
         nowSecs: 42,
       }),
       {
-        sql: `SELECT id, text, metadata, vector <=> LIT AS score FROM "docs" WHERE CASE WHEN jsonb_typeof(metadata->'ownerScope') = 'string' THEN metadata->>'ownerScope' END = $1 AND CASE WHEN jsonb_typeof(metadata->'sessionId') = 'string' THEN metadata->>'sessionId' END = $2 AND CASE WHEN jsonb_typeof(metadata->'userId') = 'string' THEN metadata->>'userId' END = $3 AND CASE WHEN jsonb_typeof(metadata->'namespace') = 'string' THEN metadata->>'namespace' END = $4 AND ${TTL} $5 ORDER BY vector <=> LIT LIMIT 1`,
+        sql: `SELECT id, text, metadata, ${DISTANCE} AS score FROM "docs" WHERE CASE WHEN jsonb_typeof(metadata->'ownerScope') = 'string' THEN metadata->>'ownerScope' END = $1 AND CASE WHEN jsonb_typeof(metadata->'sessionId') = 'string' THEN metadata->>'sessionId' END = $2 AND CASE WHEN jsonb_typeof(metadata->'userId') = 'string' THEN metadata->>'userId' END = $3 AND CASE WHEN jsonb_typeof(metadata->'namespace') = 'string' THEN metadata->>'namespace' END = $4 AND ${TTL} $5 ORDER BY score LIMIT 1`,
         params: ['session', 's', 'u', 'ns', 42],
       },
     );
@@ -95,9 +98,9 @@ describe('per-collection store SQL', () => {
       sql: 'SELECT id, text, metadata FROM "docs" WHERE id = $1',
       params: ['a'],
     });
-    assert.deepEqual(sql.upsert('LIT', 'a', 't', '{}'), {
-      sql: 'INSERT INTO "docs" (id, text, vector, metadata) VALUES ($1, $2, LIT, $3::jsonb) ON CONFLICT (id) DO UPDATE SET text = EXCLUDED.text, vector = EXCLUDED.vector, metadata = EXCLUDED.metadata',
-      params: ['a', 't', '{}'],
+    assert.deepEqual(sql.upsert('LIT', 'a', 't', '{}', null), {
+      sql: 'INSERT INTO "docs" (id, text, vector, metadata, fragment_vectors) VALUES ($1, $2, LIT, $3::jsonb, $4::vector[]) ON CONFLICT (id) DO UPDATE SET text = EXCLUDED.text, vector = EXCLUDED.vector, metadata = EXCLUDED.metadata, fragment_vectors = EXCLUDED.fragment_vectors',
+      params: ['a', 't', '{}', null],
     });
     assert.deepEqual(sql.deleteById('a'), {
       sql: 'DELETE FROM "docs" WHERE id = $1',

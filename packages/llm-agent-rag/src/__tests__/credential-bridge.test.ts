@@ -94,11 +94,12 @@ describe('the embedder bridge and credentials', () => {
       model: 'bge-m3',
       url: 'http://ollama.example:11434',
     });
-    await withFetch({ embedding: [1] }, async (seen) => {
+    await withFetch({ embeddings: [[1]] }, async (seen) => {
       await ollama.embed('x');
+      assert.equal(seen[0].url, 'http://ollama.example:11434/api/show');
       assert.equal(
-        seen[0].url,
-        'http://ollama.example:11434/api/embeddings',
+        seen[1].url,
+        'http://ollama.example:11434/api/embed',
         'OllamaEmbedder reads ollamaUrl; the old bag passed url, so this fell back to localhost',
       );
     });

@@ -527,6 +527,16 @@ query embedder once. In `VectorRag`, preprocessors that change the text cause
 one embedding of the transformed query, with failures propagated under either
 policy. Successful caller embeddings are reused when the text is unchanged.
 
+#### Record input capacity
+
+Implement `getMaxInputChars(options?)` when the provider reports how much
+text fits in one input. Return the maximum number of Unicode code points or `undefined` if the
+capacity is undeclared. Both retrieval adapters forward the document embedder's
+capability. The built-in vector stores apply it to ordered fragments of a
+single record. For an undeclared capacity, set `fragmentSizeChars` on the
+store configuration to override the 2048-character default. Reads and search
+results still return the full record.
+
 #### Batch support and provider caps
 
 Implement `IEmbedderBatch` when the provider accepts many inputs per call — startup MCP tool vectorization uses it, and falls back to one request per tool without it:

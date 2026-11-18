@@ -31,6 +31,7 @@ export function createTableSql(
     id VARCHAR(255) PRIMARY KEY,
     text TEXT,
     vector vector(${dimension}),
+    fragment_vectors vector(${dimension})[],
     metadata JSONB,
     created_at TIMESTAMPTZ DEFAULT NOW()
   )`;
@@ -48,4 +49,9 @@ export function qualifiedTable(table: string, schema?: string): string {
   return schema === undefined
     ? quoteIdent(table)
     : `${quoteIdent(schema)}.${quoteIdent(table)}`;
+}
+
+/** Adds fragment storage to an existing table while preserving its primary vectors. */
+export function addFragmentVectorsSql(table: string, schema?: string): string {
+  return `ALTER TABLE ${qualifiedTable(table, schema)} ADD COLUMN IF NOT EXISTS "fragment_vectors" vector[]`;
 }

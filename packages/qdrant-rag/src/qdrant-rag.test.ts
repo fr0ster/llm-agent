@@ -165,12 +165,18 @@ function createStubServer(state: StubState): http.Server {
             for (let i = 0; i < data.vector.length; i++) {
               score += (data.vector[i] ?? 0) * (p.vector[i] ?? 0);
             }
-            return { score, payload: p.payload };
+            return { id: p.id, score, payload: p.payload };
           })
           .sort((a, b) => b.score - a.score)
           .slice(0, data.limit ?? 10);
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ result: results }));
+        return;
+      }
+
+      if (url.endsWith('/points/scroll') && req.method === 'POST') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ result: { points: [] } }));
         return;
       }
 
@@ -381,7 +387,10 @@ describe('QdrantRag — session/user filter (security)', () => {
       if (String(input).endsWith('/points/search')) {
         captured = JSON.parse(String(init?.body));
       }
-      return new Response(JSON.stringify({ result: [] }), { status: 200 });
+      const result = String(input).endsWith('/points/scroll')
+        ? { points: [] }
+        : [];
+      return Response.json({ result });
     }) as typeof fetch;
     try {
       const rag = new QdrantRag({

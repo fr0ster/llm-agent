@@ -175,9 +175,11 @@ export async function startQdrantStub(
         const limit = Number(body.limit ?? 10);
         reply(200, {
           result: {
-            points: ids
-              .slice(start, start + limit)
-              .map((id) => ({ id, payload: c.points.get(id)?.payload })),
+            points: ids.slice(start, start + limit).map((id) => ({
+              id,
+              payload: c.points.get(id)?.payload,
+              ...(body.with_vector ? { vector: c.points.get(id)?.vector } : {}),
+            })),
             next_page_offset: ids[start + limit] ?? null,
           },
         });
@@ -314,7 +316,10 @@ function holds(
     return (Array.isArray(value) ? value.length : 1) >= cond.values_count.gte;
   }
   if ('is_empty' in cond) {
-    const v = payload[cond.is_empty.key];
+    let v: StubJson = payload;
+    for (const key of cond.is_empty.key.split('.')) {
+      v = v && typeof v === 'object' && !Array.isArray(v) ? v[key] : undefined;
+    }
     return (
       v === undefined || v === null || (Array.isArray(v) && v.length === 0)
     );

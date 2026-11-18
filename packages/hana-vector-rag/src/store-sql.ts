@@ -25,6 +25,7 @@ export interface HanaStoreSql {
     id: string,
     text: string,
     metadataJson: string,
+    fragments: string | null,
   ): SqlStatement;
   deleteById(id: string): SqlStatement;
   clear(): SqlStatement;
@@ -36,9 +37,6 @@ export interface HanaStoreSql {
 }
 
 const placeholders = (n: number): string => Array(n).fill('?').join(', ');
-
-const limitClause = (limit?: number): string =>
-  limit === undefined ? '' : ` LIMIT ${limit}`;
 
 /** One table per collection: the 30.1.0 statements. */
 export function perCollectionStoreSql(
@@ -54,7 +52,12 @@ export function perCollectionStoreSql(
     search: (lit, limit, identity) =>
       searchSql(
         {
-          sql: `SELECT id AS "id", text AS "text", metadata AS "metadata", COSINE_SIMILARITY(vector, ${lit}) AS "score" FROM ${table} ORDER BY "score" DESC${limitClause(limit)}`,
+          sql: searchPageSql(
+            `SELECT id AS "id", text AS "text", metadata AS "metadata", `,
+            `COSINE_SIMILARITY(vector, ${lit})`,
+            `FROM ${table}`,
+            limit,
+          ),
           params: [],
         },
         identity,
@@ -63,9 +66,9 @@ export function perCollectionStoreSql(
       sql: `SELECT id AS "id", text AS "text", metadata AS "metadata" FROM ${table} WHERE id = ?`,
       params: [id],
     }),
-    upsert: (lit, id, text, metadataJson) => ({
-      sql: `UPSERT ${table} (id, text, vector, metadata) VALUES (?, ?, ${lit}, ?) WITH PRIMARY KEY`,
-      params: [id, text, metadataJson],
+    upsert: (lit, id, text, metadataJson, fragments) => ({
+      sql: `UPSERT ${table} (id, text, vector, metadata, fragment_vectors) VALUES (?, ?, ${lit}, ?, ?) WITH PRIMARY KEY`,
+      params: [id, text, metadataJson, fragments],
     }),
     deleteById: (id) => ({
       sql: `DELETE FROM ${table} WHERE id = ?`,
@@ -101,7 +104,12 @@ export function sharedStoreSql(
     search: (lit, limit, identity) =>
       searchSql(
         {
-          sql: `SELECT "ID" AS "id", "TEXT" AS "text", "METADATA" AS "metadata", COSINE_SIMILARITY("VECTOR", ${lit}) AS "score" FROM ${table} WHERE "COLLECTION" = ? ORDER BY "score" DESC${limitClause(limit)}`,
+          sql: searchPageSql(
+            `SELECT "ID" AS "id", "TEXT" AS "text", "METADATA" AS "metadata", `,
+            `COSINE_SIMILARITY("VECTOR", ${lit})`,
+            `FROM ${table} WHERE "COLLECTION" = ?`,
+            limit,
+          ),
           params: [collection],
         },
         identity,
@@ -110,9 +118,9 @@ export function sharedStoreSql(
       sql: `SELECT "ID" AS "id", "TEXT" AS "text", "METADATA" AS "metadata" FROM ${table} WHERE "COLLECTION" = ? AND "ID" = ?`,
       params: [collection, id],
     }),
-    upsert: (lit, id, text, metadataJson) => ({
-      sql: `UPSERT ${table} ("COLLECTION", "ID", "TEXT", "VECTOR", "METADATA") VALUES (?, ?, ?, ${lit}, ?) WITH PRIMARY KEY`,
-      params: [collection, id, text, metadataJson],
+    upsert: (lit, id, text, metadataJson, fragments) => ({
+      sql: `UPSERT ${table} ("COLLECTION", "ID", "TEXT", "VECTOR", "METADATA", "FRAGMENT_VECTORS") VALUES (?, ?, ?, ${lit}, ?, ?) WITH PRIMARY KEY`,
+      params: [collection, id, text, metadataJson, fragments],
     }),
     deleteById: (id) => ({
       sql: `DELETE FROM ${table} WHERE "COLLECTION" = ? AND "ID" = ?`,
@@ -153,6 +161,18 @@ function listSql(
     sql: `SELECT "ID" AS "id", "METADATA" AS "metadata"${includeText ? ', "TEXT" AS "text"' : ''} FROM ${table}${conditions.length ? ` WHERE ${conditions.join(' AND ')}` : ''} ORDER BY TO_BINARY("ID") LIMIT ${limit}`,
     params,
   };
+}
+
+/** Include all rows with extra vectors alongside the primary-vector shortlist. */
+function searchPageSql(
+  projection: string,
+  score: string,
+  from: string,
+  limit?: number,
+): string {
+  const select = `${projection}${score} AS "score", "FRAGMENT_VECTORS" AS "fragmentVectors"`;
+  if (limit === undefined) return `${select} ${from} ORDER BY "score" DESC`;
+  return `SELECT "id", "text", "metadata", "score", "fragmentVectors" FROM (${select}, ROW_NUMBER() OVER (ORDER BY ${score} DESC) AS "primaryRank" ${from}) AS ranked WHERE "primaryRank" <= ${limit} OR "fragmentVectors" IS NOT NULL ORDER BY "score" DESC`;
 }
 
 /** SQL narrows owners before ranking; strict scalar types are checked before application top-k. */

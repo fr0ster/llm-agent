@@ -35,6 +35,7 @@ import {
   QueryEmbedding,
   TextOnlyEmbedding,
 } from './query-embedding.js';
+import { embedRecord, type RecordEmbeddingConfig } from './record-embedding.js';
 import { scanKeyedPage } from './scan-support.js';
 import type {
   ISearchCandidate,
@@ -44,15 +45,17 @@ import type {
 } from './search-strategy.js';
 import { WeightedFusionStrategy } from './search-strategy.js';
 import { tokenizeSearchText } from './tokenizer.js';
+import { cosineSimilarity } from './vector-similarity.js';
 
 interface StoredRecord {
   id: string;
   text: string;
   vector: number[];
+  extraVectors?: number[][];
   metadata: RagMetadata;
 }
 
-export interface VectorRagConfig {
+export interface VectorRagConfig extends RecordEmbeddingConfig {
   /** Retry a failed caller query embedding with the store embedder. Default: true.
    *  TextOnlyEmbedding is always embedded by the store, regardless of this option. */
   fallbackOnQueryEmbeddingError?: boolean;
@@ -78,6 +81,7 @@ export class VectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
   private records: (StoredRecord | null)[] = [];
   private readonly dedupThreshold: number;
   private readonly namespace?: string;
+  private readonly fragmentSizeChars?: number;
   private vectorWeight: number;
   private keywordWeight: number;
   private strategy: ISearchStrategy;
@@ -95,6 +99,7 @@ export class VectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
   ) {
     this.dedupThreshold = config.dedupThreshold ?? 0.92;
     this.namespace = config.namespace;
+    this.fragmentSizeChars = config.fragmentSizeChars;
     this.vectorWeight = config.vectorWeight ?? 0.7;
     this.keywordWeight = config.keywordWeight ?? 0.3;
     this.strategy =
@@ -130,23 +135,12 @@ export class VectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
     return tokenizeSearchText(s);
   }
 
-  private cosine(a: number[], b: number[]): number {
-    let dot = 0;
-    let na = 0;
-    let nb = 0;
-    for (let i = 0; i < a.length; i++) {
-      dot += a[i] * b[i];
-      na += a[i] ** 2;
-      nb += b[i] ** 2;
-    }
-    return dot / (Math.sqrt(na) * Math.sqrt(nb) || 1);
-  }
-
-  private upsertKnownVector(
+  private upsertKnownVectors(
     text: string,
-    vector: number[],
+    [vector, ...extra]: number[][],
     metadata: RagMetadata,
   ): Result<void, RagError> {
+    const extraVectors = extra.length > 0 ? extra : undefined;
     // Generated IDs remain reserved while their anonymous record exists.
     metadata = tagRagMetadata(metadata);
     if (metadata.ownerScope === 'invalid')
@@ -188,6 +182,7 @@ export class VectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
             };
           slot.text = text;
           slot.vector = vector;
+          slot.extraVectors = extraVectors;
           slot.metadata = merged;
           return { ok: true, value: undefined };
         }
@@ -204,10 +199,11 @@ export class VectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
       if (
         tagRagMetadata({ ...slot.metadata, ...metadata }).ownerScope !==
           'invalid' &&
-        this.cosine(slot.vector, vector) >= this.dedupThreshold
+        cosineSimilarity(slot.vector, vector) >= this.dedupThreshold
       ) {
         slot.text = text;
         slot.vector = vector;
+        slot.extraVectors = extraVectors;
         slot.metadata = tagRagMetadata({ ...slot.metadata, ...metadata });
         return { ok: true, value: undefined };
       }
@@ -220,10 +216,17 @@ export class VectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
         id: this.newRecordId(),
         text,
         vector,
+        extraVectors,
         metadata,
       };
     } else {
-      this.records.push({ id: this.newRecordId(), text, vector, metadata });
+      this.records.push({
+        id: this.newRecordId(),
+        text,
+        vector,
+        extraVectors,
+        metadata,
+      });
     }
     return { ok: true, value: undefined };
   }
@@ -251,12 +254,17 @@ export class VectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
         const eResult = await enricher.enrich(enrichedText, options);
         if (eResult.ok) enrichedText = eResult.value;
       }
-      const { vector } = await this.embedder.embedDocument(enrichedText, {
-        ...options,
-        usage: options?.usage?.with({ role: 'embedding' }),
-      });
-      return this.upsertKnownVector(enrichedText, vector, metadata);
+      const vectors = await embedRecord(
+        this.embedder,
+        enrichedText,
+        this.fragmentSizeChars,
+        options,
+      );
+      options?.signal?.throwIfAborted();
+      return this.upsertKnownVectors(enrichedText, vectors, metadata);
     } catch (err) {
+      if (options?.signal?.aborted)
+        return { ok: false, error: new RagError('Aborted', 'ABORTED') };
       if (err instanceof RagError) return { ok: false, error: err };
       return { ok: false, error: new RagError(String(err), 'UPSERT_ERROR') };
     }
@@ -269,7 +277,7 @@ export class VectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
     _options?: CallOptions,
   ): Promise<Result<void, RagError>> {
     try {
-      return this.upsertKnownVector(text, vector, metadata);
+      return this.upsertKnownVectors(text, [vector], metadata);
     } catch (err) {
       if (err instanceof RagError) return { ok: false, error: err };
       return { ok: false, error: new RagError(String(err), 'UPSERT_ERROR') };
@@ -334,7 +342,15 @@ export class VectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
 
       const candidates: ISearchCandidate[] = filtered.map((r) => ({
         text: r.text,
-        vector: r.vector,
+        vector:
+          r.extraVectors?.reduce(
+            (best, fragment) =>
+              cosineSimilarity(queryVector, fragment) >
+              cosineSimilarity(queryVector, best)
+                ? fragment
+                : best,
+            r.vector,
+          ) ?? r.vector,
         metadata: r.metadata,
       }));
 

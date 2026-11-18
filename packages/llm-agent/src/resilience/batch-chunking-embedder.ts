@@ -22,7 +22,7 @@ export const DEFAULT_MAX_BATCH_SIZE = 100;
 export class BatchChunkingEmbedder implements IEmbedderBatch {
   constructor(
     private readonly inner: IEmbedderBatch,
-    private readonly maxBatchSize: number,
+    readonly maxBatchSize: number,
   ) {
     if (!Number.isSafeInteger(maxBatchSize) || maxBatchSize < 1) {
       throw new RagError(
@@ -30,6 +30,10 @@ export class BatchChunkingEmbedder implements IEmbedderBatch {
         'CONFIG_ERROR',
       );
     }
+  }
+
+  get getMaxInputChars() {
+    return this.inner.getMaxInputChars?.bind(this.inner);
   }
 
   embed(text: string, options?: CallOptions): Promise<IEmbedResult> {

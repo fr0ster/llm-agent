@@ -10,7 +10,8 @@ test('unusable HTTP 200 responses record an error for each physical request in s
     with: () => usage,
   };
   let requests = 0;
-  t.mock.method(globalThis, 'fetch', async () => {
+  t.mock.method(globalThis, 'fetch', async (url: URL | Request | string) => {
+    if (String(url).endsWith('/api/show')) return Response.json({});
     requests++;
     return Response.json({ embedding: null, embeddings: [null] });
   });

@@ -2,15 +2,19 @@ import {
   type IEmbedder,
   type IRetrievalEmbedder,
   isBatchEmbedder,
+  isBatchSizeLimited,
 } from '../interfaces/rag.js';
 import type { CallOptions } from '../interfaces/types.js';
 
 /** `embedDocuments` when — and only when — `embedder` batches. */
 function documentBatch(
   embedder: IEmbedder,
-): Pick<IRetrievalEmbedder, 'embedDocuments'> {
+): Pick<IRetrievalEmbedder, 'embedDocuments'> & { maxBatchSize?: number } {
   return isBatchEmbedder(embedder)
     ? {
+        maxBatchSize: isBatchSizeLimited(embedder)
+          ? embedder.maxBatchSize
+          : undefined,
         embedDocuments: (texts: string[], options?: CallOptions) =>
           embedder.embedBatch(texts, {
             ...options,
@@ -33,6 +37,7 @@ export function symmetricEmbedder(embedder: IEmbedder): IRetrievalEmbedder {
         usage: options?.usage?.with({ role: 'embedding' }),
       }),
     ...documentBatch(embedder),
+    getMaxInputChars: embedder.getMaxInputChars?.bind(embedder),
     embedQuery: (text, options) =>
       embedder.embed(text, {
         ...options,
@@ -58,6 +63,7 @@ export function asymmetricEmbedder(halves: {
         usage: options?.usage?.with({ role: 'embedding' }),
       }),
     ...documentBatch(halves.document),
+    getMaxInputChars: halves.document.getMaxInputChars?.bind(halves.document),
     embedQuery: (text, options) =>
       halves.query.embed(text, {
         ...options,

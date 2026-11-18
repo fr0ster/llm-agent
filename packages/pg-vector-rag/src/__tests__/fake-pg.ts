@@ -118,7 +118,7 @@ function answer(
     return NONE;
   }
   const write = sql.match(
-    /^INSERT INTO "([^"]+)" \(id, text, vector, metadata\)/,
+    /^INSERT INTO "([^"]+)" \(id, text, vector, metadata, fragment_vectors\)/,
   );
   if (write) {
     requireTable(fake, write[1]);

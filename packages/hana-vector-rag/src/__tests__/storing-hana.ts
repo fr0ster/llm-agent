@@ -22,8 +22,9 @@ export interface StoringHana {
   readonly statements: string[];
   /** Orphan setup: a row written past the store; `table` as HANA names it. */
   insertRow(table: string, row: Record<string, Value>): void;
+  storedRows(table: string): Row[];
   /** Setup: the table a `per-collection` store reads and writes, as its owner created it. */
-  createCollectionTable(name: string): void;
+  createCollectionTable(name: string, legacy?: boolean): void;
 }
 
 export type Value = string | number | null | number[];
@@ -470,6 +471,7 @@ export function storingHana(opts: {
           'ID',
           'TEXT',
           'VECTOR',
+          'FRAGMENT_VECTORS',
           'METADATA',
           'CREATED_AT',
         ],
@@ -765,6 +767,14 @@ export function storingHana(opts: {
       });
       return { rows: [], rowCount: 0 };
     }
+    const fragments =
+      /^ALTER TABLE "([^"]+)" ADD \("FRAGMENT_VECTORS" NCLOB\)$/.exec(sql);
+    if (fragments) {
+      const table = resolve({ name: fragments[1] });
+      table.columns.push('FRAGMENT_VECTORS');
+      for (const row of table.rows) row.FRAGMENT_VECTORS = null;
+      return { rows: [], rowCount: 0 };
+    }
     const alter =
       /^ALTER TABLE "([^"]+)" ADD \(role_id NVARCHAR\(5000\)\)$/.exec(sql);
     if (alter) {
@@ -774,6 +784,18 @@ export function storingHana(opts: {
       table.columns.push('ROLE_ID');
       for (const row of table.rows) row.ROLE_ID = null;
       return { rows: [], rowCount: 0 };
+    }
+    const shortlist =
+      /^SELECT "id", "text", "metadata", "score", "fragmentVectors" FROM \((SELECT .*), ROW_NUMBER\(\) OVER \(ORDER BY COSINE_SIMILARITY\(.*?\) DESC\) AS "primaryRank" (FROM .*)\) AS ranked WHERE "primaryRank" <= (\d+) OR "fragmentVectors" IS NOT NULL ORDER BY "score" DESC$/.exec(
+        sql,
+      );
+    if (shortlist) {
+      const base = `${shortlist[1]} ${shortlist[2]} ORDER BY "score" DESC`;
+      const rows = run(base, params).rows.filter(
+        (row, idx) =>
+          idx < Number(shortlist[3]) || row.fragmentVectors !== null,
+      );
+      return { rows, rowCount: rows.length };
     }
     const stmt = new Parser(
       tokenize(sql.replace(/ FOR UPDATE$/, '')),
@@ -855,9 +877,17 @@ export function storingHana(opts: {
         if (!enabled) snapshot = structuredClone(tables);
       },
     ),
-    createCollectionTable(name) {
+    storedRows: (name) => resolve({ name }).rows,
+    createCollectionTable(name, legacy) {
       tables.set(`${schema}.${name}`, {
-        columns: ['ID', 'TEXT', 'VECTOR', 'METADATA', 'CREATED_AT'],
+        columns: [
+          'ID',
+          'TEXT',
+          'VECTOR',
+          'METADATA',
+          'CREATED_AT',
+          ...(legacy ? [] : ['FRAGMENT_VECTORS']),
+        ],
         key: ['ID'],
         lengths: { ID: 255, VECTOR: opts.dimension },
         rows: [],

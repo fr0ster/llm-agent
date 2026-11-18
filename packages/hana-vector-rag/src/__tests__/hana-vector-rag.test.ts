@@ -62,7 +62,9 @@ describe('HanaVectorRag', () => {
       5,
     );
     assert.equal(result.ok, true);
-    const select = client.calls.find((c) => c.sql.startsWith('SELECT'));
+    const select = client.calls.find((c) =>
+      c.sql.includes('COSINE_SIMILARITY'),
+    );
     assert.ok(select);
     for (const alias of ['id', 'text', 'metadata', 'score']) {
       assert.ok(select.sql.includes(`AS "${alias}"`));
@@ -319,13 +321,7 @@ function makeStoringHana(): HanaClient & { searches: string[] } {
       return { rowCount: 1 };
     },
     async query(sql) {
-      if (
-        !sql.startsWith(
-          'SELECT id AS "id", text AS "text", metadata AS "metadata", COSINE_SIMILARITY',
-        )
-      ) {
-        return [];
-      }
+      if (!sql.includes('COSINE_SIMILARITY')) return [];
       searches.push(sql);
       const q = parseVector(sql);
       const scored = [...rows.values()]
@@ -336,7 +332,7 @@ function makeStoringHana(): HanaClient & { searches: string[] } {
           score: cosineOf(q, r.vector),
         }))
         .sort((a, b) => b.score - a.score);
-      const limit = sql.match(/LIMIT (\d+)$/);
+      const limit = sql.match(/"primaryRank" <= (\d+)/);
       return limit ? scored.slice(0, Number(limit[1])) : scored;
     },
     async close() {},
@@ -375,7 +371,7 @@ describe('HanaVectorRag — session/user filter (security)', () => {
     await rag.query(emb, 5);
     await rag.query(emb, 5, { ragFilter: { sessionId: 's1' } });
     await rag.query(emb, 5, { ragFilter: { userId: 'u1' } });
-    assert.match(client.searches[0], /ORDER BY "score" DESC LIMIT 5$/);
+    assert.match(client.searches[0], /"primaryRank" <= 5/);
     assert.match(client.searches[1], /ORDER BY "score" DESC$/);
     assert.match(client.searches[2], /ORDER BY "score" DESC$/);
     // The filter value never reaches the SQL text.
@@ -423,13 +419,13 @@ describe('HanaVectorRag — session/user filter (security)', () => {
     // Top-1 by similarity is the expired record: the full page is emptied,
     // so the store falls back to the unlimited query and finds 'new'.
     assert.deepEqual(await q('alpha beta gamma'), ['new']);
-    assert.match(client.searches[0], /LIMIT 1$/);
+    assert.match(client.searches[0], /"primaryRank" <= 1/);
     assert.match(client.searches[1], /ORDER BY "score" DESC$/);
     // Top-1 is live: one LIMIT query, no fallback.
     const before = client.searches.length;
     assert.deepEqual(await q('delta epsilon'), ['new']);
     assert.equal(client.searches.length, before + 1);
-    assert.match(client.searches[before], /LIMIT 1$/);
+    assert.match(client.searches[before], /"primaryRank" <= 1/);
   });
 });
 

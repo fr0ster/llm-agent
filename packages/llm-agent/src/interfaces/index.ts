@@ -208,6 +208,7 @@ export type {
   IDocumentEmbedder,
   IEmbedder,
   IEmbedderBatch,
+  IEmbeddingInputCapacity,
   IEmbedResult,
   IIdStrategy,
   IQueryEmbedder,

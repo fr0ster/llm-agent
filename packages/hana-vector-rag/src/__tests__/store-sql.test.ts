@@ -9,19 +9,22 @@ describe('shared store SQL', () => {
     const s = sql.search('LIT');
     assert.equal(
       s.sql,
-      'SELECT "ID" AS "id", "TEXT" AS "text", "METADATA" AS "metadata", COSINE_SIMILARITY("VECTOR", LIT) AS "score" FROM "RAG_DOCUMENTS" WHERE "COLLECTION" = ? ORDER BY "score" DESC',
+      'SELECT "ID" AS "id", "TEXT" AS "text", "METADATA" AS "metadata", COSINE_SIMILARITY("VECTOR", LIT) AS "score", "FRAGMENT_VECTORS" AS "fragmentVectors" FROM "RAG_DOCUMENTS" WHERE "COLLECTION" = ? ORDER BY "score" DESC',
     );
     assert.equal(s.params[0], 'docs');
-    assert.ok(sql.search('LIT', 7).sql.endsWith(' LIMIT 7'));
+    assert.match(
+      sql.search('LIT', 7).sql,
+      /WHERE "primaryRank" <= 7 OR "fragmentVectors" IS NOT NULL/,
+    );
   });
 
   it('upsert writes the collection column', () => {
-    const s = sql.upsert('LIT', 'a', 't', '{}');
+    const s = sql.upsert('LIT', 'a', 't', '{}', null);
     assert.equal(
       s.sql,
-      'UPSERT "RAG_DOCUMENTS" ("COLLECTION", "ID", "TEXT", "VECTOR", "METADATA") VALUES (?, ?, ?, LIT, ?) WITH PRIMARY KEY',
+      'UPSERT "RAG_DOCUMENTS" ("COLLECTION", "ID", "TEXT", "VECTOR", "METADATA", "FRAGMENT_VECTORS") VALUES (?, ?, ?, LIT, ?, ?) WITH PRIMARY KEY',
     );
-    assert.deepEqual(s.params, ['docs', 'a', 't', '{}']);
+    assert.deepEqual(s.params, ['docs', 'a', 't', '{}', null]);
   });
 
   it('clear is a DELETE, never a TRUNCATE; createTable is undefined', () => {
@@ -40,7 +43,7 @@ describe('shared store SQL', () => {
 });
 
 describe('per-collection store SQL', () => {
-  it('per-collection SQL is unchanged except the aliases', () => {
+  it('per-collection SQL stores fragments with each record', () => {
     const sql = perCollectionStoreSql('docs', 3);
     assert.equal(sql.layout, 'per-collection');
     assert.equal(
@@ -49,25 +52,26 @@ describe('per-collection store SQL', () => {
     id NVARCHAR(255) PRIMARY KEY,
     text NCLOB,
     vector REAL_VECTOR(3),
+    fragment_vectors NCLOB,
     metadata NCLOB,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
   )`,
     );
     assert.deepEqual(sql.search('LIT'), {
-      sql: 'SELECT id AS "id", text AS "text", metadata AS "metadata", COSINE_SIMILARITY(vector, LIT) AS "score" FROM "docs" ORDER BY "score" DESC',
+      sql: 'SELECT id AS "id", text AS "text", metadata AS "metadata", COSINE_SIMILARITY(vector, LIT) AS "score", "FRAGMENT_VECTORS" AS "fragmentVectors" FROM "docs" ORDER BY "score" DESC',
       params: [],
     });
-    assert.equal(
+    assert.match(
       sql.search('LIT', 5).sql,
-      'SELECT id AS "id", text AS "text", metadata AS "metadata", COSINE_SIMILARITY(vector, LIT) AS "score" FROM "docs" ORDER BY "score" DESC LIMIT 5',
+      /WHERE "primaryRank" <= 5 OR "fragmentVectors" IS NOT NULL/,
     );
     assert.deepEqual(sql.byId('a'), {
       sql: 'SELECT id AS "id", text AS "text", metadata AS "metadata" FROM "docs" WHERE id = ?',
       params: ['a'],
     });
-    assert.deepEqual(sql.upsert('LIT', 'a', 't', '{}'), {
-      sql: 'UPSERT "docs" (id, text, vector, metadata) VALUES (?, ?, LIT, ?) WITH PRIMARY KEY',
-      params: ['a', 't', '{}'],
+    assert.deepEqual(sql.upsert('LIT', 'a', 't', '{}', null), {
+      sql: 'UPSERT "docs" (id, text, vector, metadata, fragment_vectors) VALUES (?, ?, LIT, ?, ?) WITH PRIMARY KEY',
+      params: ['a', 't', '{}', null],
     });
     assert.deepEqual(sql.deleteById('a'), {
       sql: 'DELETE FROM "docs" WHERE id = ?',

@@ -20,6 +20,22 @@ Provides:
 npm install @mcp-abap-adt/pg-vector-rag pg
 ```
 
+## Record embeddings
+
+Each row keeps the full text and the first vector in the existing `vector`
+column. The nullable `fragment_vectors` array holds the remaining vectors in
+order. Replacing or deleting the row replaces or deletes its entire vector
+set in the same statement. Search uses the minimum cosine distance across
+the row's vectors before selecting the top records.
+
+Runtime-managed per-collection tables receive the nullable column on first
+search or write. Existing shared tables and manually managed per-collection
+tables need the DDL returned by `addFragmentVectorsSql(table, schema?)` once.
+The shipped shared-layout SQL includes the column for new deployments.
+Existing vectors remain searchable without backfill. Configure
+`fragmentSizeChars` to change fragmentation for embedders without a
+declared capacity (default 2048 Unicode code points).
+
 ## Minimal config
 
 `PgVectorRagConfig.fallbackOnQueryEmbeddingError?: boolean` defaults to `true`:

@@ -8,6 +8,7 @@ import {
   brandResilient,
   getResilienceMetadata,
   isBatchEmbedder,
+  isBatchSizeLimited,
   startOperation,
 } from '@mcp-abap-adt/llm-agent';
 
@@ -43,6 +44,14 @@ function logEmbed(
 class UsageLoggingEmbedder implements IEmbedder {
   readonly [BRAND] = true;
   constructor(protected readonly inner: IEmbedder) {}
+  get getMaxInputChars() {
+    return this.inner.getMaxInputChars?.bind(this.inner);
+  }
+
+  get maxBatchSize() {
+    return isBatchSizeLimited(this.inner) ? this.inner.maxBatchSize : undefined;
+  }
+
   async embed(text: string, options?: CallOptions): Promise<IEmbedResult> {
     const r = await this.inner.embed(text, {
       ...options,

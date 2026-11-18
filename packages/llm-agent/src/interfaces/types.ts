@@ -49,6 +49,8 @@ export interface CallOptions extends PromptCacheOptions {
   sessionId?: string;
   userId?: string;
   signal?: AbortSignal;
+  /** Stored document embeddings must receive the complete input fragment. */
+  preserveEmbeddingInput?: boolean;
   /** Stop between tool-loop iterations without aborting in-flight calls. */
   stopSignal?: AbortSignal;
   /** Called once before any tool in a round executes. Each returned call index

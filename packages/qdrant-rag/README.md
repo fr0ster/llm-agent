@@ -7,6 +7,21 @@ QdrantRag vector store and QdrantRagProvider for @mcp-abap-adt/llm-agent.
 
 Provides vector search capabilities using Qdrant as the backend.
 
+## Record embeddings
+
+Each point represents one record. Its unnamed vector holds the first
+fragment's embedding. For long records the text payload stores the full text
+together with the remaining vectors. A point upsert or delete changes all
+of these together. Existing collections and points with a plain text
+payload work without migration, and short writes keep that same format.
+
+Search combines Qdrant's indexed primary-vector results with a filtered
+scroll of points carrying extra vectors and ranks each point once by its
+best cosine score. Searches that match many long records evaluate their
+additional vectors in the client. Configure `fragmentSizeChars` on the
+store or provider to change fragmentation for embedders without a declared
+capacity (default 2048 Unicode code points).
+
 ## Query embedding fallback
 
 `QdrantRagConfig.fallbackOnQueryEmbeddingError?: boolean` defaults to `true`:

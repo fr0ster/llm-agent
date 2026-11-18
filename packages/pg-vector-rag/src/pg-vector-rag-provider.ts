@@ -451,6 +451,7 @@ export class PgVectorRagProvider
       },
       this.clientFactory?.(),
       this.recordCache.store(this.cacheIdentity(storeName)),
+      this.autoCreateSchema && this.layout === 'per-collection',
     );
     return { rag, editor: this.buildEditor(rag, this.pickIdStrategy(owner)) };
   }

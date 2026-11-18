@@ -14,6 +14,7 @@ CREATE TABLE "rag_documents" (
   "id" VARCHAR(255) NOT NULL,
   "text" TEXT,
   "vector" vector(1536),
+  "fragment_vectors" vector(1536)[],
   "metadata" JSONB,
   "created_at" TIMESTAMPTZ DEFAULT NOW(),
   PRIMARY KEY ("collection", "id")

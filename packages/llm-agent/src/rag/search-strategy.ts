@@ -1,5 +1,6 @@
 import type { RagMetadata } from '../interfaces/types.js';
 import type { InvertedIndex } from './inverted-index.js';
+import { cosineSimilarity } from './vector-similarity.js';
 
 export interface ISearchCandidate {
   text: string;
@@ -44,18 +45,6 @@ export interface ISearchStrategy {
 // ---------------------------------------------------------------------------
 // Module-private helpers (reused by all strategies in this file)
 // ---------------------------------------------------------------------------
-
-function cosine(a: number[], b: number[]): number {
-  let dot = 0;
-  let na = 0;
-  let nb = 0;
-  for (let i = 0; i < a.length; i++) {
-    dot += a[i] * b[i];
-    na += a[i] ** 2;
-    nb += b[i] ** 2;
-  }
-  return dot / (Math.sqrt(na) * Math.sqrt(nb) || 1);
-}
 
 /**
  * BM25 term statistics over a candidate set: document frequency, document
@@ -157,7 +146,7 @@ export class WeightedFusionStrategy implements ISearchStrategy {
         text: c.text,
         metadata: c.metadata,
         score:
-          cosine(query.vector, c.vector) * this.vectorWeight +
+          cosineSimilarity(query.vector, c.vector) * this.vectorWeight +
           (max > 0 ? raw[i] / max : 0) * this.keywordWeight,
       }))
       .sort((a, b) => b.score - a.score);
@@ -192,7 +181,7 @@ export class RrfStrategy implements ISearchStrategy {
     // Score by each method independently
     const vectorScores = candidates.map((c, i) => ({
       idx: i,
-      score: cosine(query.vector, c.vector),
+      score: cosineSimilarity(query.vector, c.vector),
     }));
     const bm25Ranked = bm25Scores(query, candidates, context).map(
       (score, idx) => ({ idx, score }),
@@ -243,7 +232,7 @@ export class VectorOnlyStrategy implements ISearchStrategy {
       .map((c) => ({
         text: c.text,
         metadata: c.metadata,
-        score: cosine(query.vector, c.vector),
+        score: cosineSimilarity(query.vector, c.vector),
       }))
       .sort((a, b) => b.score - a.score);
   }

@@ -13,10 +13,11 @@ import type { PgClient } from '../pg-vector-rag.js';
  * being silently mis-evaluated.
  */
 export type StoringPg = PgClient & {
+  storedRows(): Row[];
   searches: Array<{ sql: string; params: readonly unknown[] }>;
   /** Every statement received, in order. */
   statements: string[];
-  /** Orphan setup: a row of the shared documents table, written past the store. */
+  /** Seed a row as written by an older store, or outside the catalog. */
   insertSharedRow(row: Omit<Row, 'table'> & { table?: string }): void;
 };
 
@@ -27,6 +28,7 @@ type Row = {
   id: string;
   text: string;
   vector: number[];
+  fragments?: number[][];
   metadata: Record<string, unknown>;
 };
 
@@ -34,6 +36,14 @@ function parseVector(sql: string): number[] {
   const m = sql.match(/'\[([^\]]*)\]'::vector/);
   if (!m) throw new Error(`no vector literal in: ${sql}`);
   return m[1].split(',').map(Number);
+}
+
+function decodeFragments(
+  input: NonNullable<Parameters<PgClient['query']>[1]>[number],
+): number[][] {
+  return Array.isArray(input)
+    ? input.map((value: string) => JSON.parse(value))
+    : [];
 }
 
 function cosineDistance(a: number[], b: number[]): number {
@@ -93,8 +103,9 @@ function evaluate(
 }
 
 const SHARED_INSERT =
-  /^INSERT INTO ((?:"[^"]+"[.])?"[^"]+") \("collection", "id", "text", "vector", "metadata"\) VALUES \(\$1, \$2, \$3, .*, \$4::jsonb\) ON CONFLICT \("collection", "id"\) DO UPDATE SET /;
-const OWN_INSERT = /^INSERT INTO ("[^"]+") \(id, text, vector, metadata\)/;
+  /^INSERT INTO ((?:"[^"]+"[.])?"[^"]+") \("collection", "id", "text", "vector", "metadata", "fragment_vectors"\) VALUES \(\$1, \$2, \$3, .*, \$4::jsonb, \$5::vector\[\]\) ON CONFLICT \("collection", "id"\) DO UPDATE SET /;
+const OWN_INSERT =
+  /^INSERT INTO ("[^"]+") \(id, text, vector, metadata, fragment_vectors\)/;
 const OWN_BY_ID = /^SELECT id, text, metadata FROM ("[^"]+") WHERE id = \$1$/;
 const OWN_DELETE = /^DELETE FROM ("[^"]+") WHERE id = \$1$/;
 const SHARED_BY_ID =
@@ -129,13 +140,19 @@ const byteCompare = (a: string, b: string): number =>
   Buffer.compare(Buffer.from(a), Buffer.from(b));
 
 const SEARCH =
-  /^SELECT (?:id, text, metadata|"id", "text", "metadata"), (?:vector|"vector") <=> .*? AS score FROM ((?:"[^"]+"[.])?"[^"]+")(?: WHERE (.*))? ORDER BY (?:vector|"vector") <=> .* LIMIT (\d+)$/;
+  /^SELECT (?:id, text, metadata|"id", "text", "metadata"), LEAST\(.*? AS score FROM ((?:"[^"]+"[.])?"[^"]+")(?: WHERE (.*))? ORDER BY score LIMIT (\d+)$/;
 
 /** `sharedDimension`: what the startup check of a shared table finds (default: none, the check is not answered). */
 export function storingPg(
-  opts: { sharedDimension?: number; schema?: string; database?: string } = {},
+  opts: {
+    sharedDimension?: number;
+    schema?: string;
+    database?: string;
+    legacyFragmentTable?: string;
+  } = {},
 ): StoringPg {
   const rows = new Map<string, Row>();
+  let legacyFragmentTable = opts.legacyFragmentTable;
   /** Catalog rows per table, keyed by store_name, in column order. */
   const records = new Map<string, Map<string, unknown[]>>();
   const recordsOf = (table: string): Map<string, unknown[]> => {
@@ -156,6 +173,7 @@ export function storingPg(
     );
   return {
     searches,
+    storedRows: () => [...rows.values()],
     statements,
     insertSharedRow(row) {
       const full: Row = { ...row, table: row.table ?? '"rag_documents"' };
@@ -222,6 +240,20 @@ export function storingPg(
           if (row.table === clearTable[1]) rows.delete(key);
         return { rows: [], rowCount: 0 };
       }
+      if (sql.startsWith('SELECT "fragment_vectors"')) {
+        if (legacyFragmentTable && sql.includes(`"${legacyFragmentTable}"`))
+          throw Object.assign(new Error('column does not exist'), {
+            code: '42703',
+          });
+        return { rows: [], rowCount: 0 };
+      }
+      if (
+        sql.startsWith('ALTER TABLE ') &&
+        sql.endsWith('ADD COLUMN IF NOT EXISTS "fragment_vectors" vector[]')
+      ) {
+        legacyFragmentTable = undefined;
+        return { rows: [], rowCount: 0 };
+      }
       if (sql.startsWith('CREATE ')) return { rows: [], rowCount: 0 };
       if (opts.sharedDimension !== undefined) {
         if (sql.includes('pg_attribute'))
@@ -248,6 +280,7 @@ export function storingPg(
           text,
           vector: parseVector(sql),
           metadata: JSON.parse(meta),
+          fragments: decodeFragments(params[4]),
         };
         rows.set(keyOf(row), row);
         return { rows: [], rowCount: 1 };
@@ -261,6 +294,7 @@ export function storingPg(
           text,
           vector: parseVector(sql),
           metadata: JSON.parse(meta),
+          fragments: decodeFragments(params[3]),
         };
         rows.set(keyOf(row), row);
         return { rows: [], rowCount: 1 };
@@ -405,7 +439,10 @@ export function storingPg(
             id: r.id,
             text: r.text,
             metadata: r.metadata,
-            score: cosineDistance(q, r.vector),
+            score: [r.vector, ...(r.fragments ?? [])].reduce(
+              (score, vec) => Math.min(score, cosineDistance(q, vec)),
+              Number.POSITIVE_INFINITY,
+            ),
           }))
           .sort((a, b) => a.score - b.score)
           .slice(0, Number(m[3]));

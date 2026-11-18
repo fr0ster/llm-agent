@@ -15,6 +15,22 @@ Provides:
 npm install @mcp-abap-adt/hana-vector-rag @sap/hana-client
 ```
 
+## Record embeddings
+
+Each row keeps the full text and the first vector in `VECTOR`. The nullable
+`FRAGMENT_VECTORS` NCLOB holds the remaining vectors as an ordered JSON array.
+Each write or delete updates the row and all of its vectors together. Search
+reads the usual primary-vector candidates together with all matching rows
+that have additional vectors, then ranks each whole record by its best score.
+
+Runtime-managed per-collection tables receive the nullable column on first
+search or write. For existing HDI tables, redeploy the updated
+`RAG_DOCUMENTS.hdbtable`. For manually managed tables, run the statement from
+`addFragmentVectorsSql(table)` once in the table's schema. Existing
+vectors remain searchable without backfill. Configure `fragmentSizeChars`
+to change fragmentation for embedders without a declared capacity (default
+2048 Unicode code points).
+
 ## Minimal config
 
 `HanaVectorRagConfig.fallbackOnQueryEmbeddingError?: boolean` defaults to `true`:

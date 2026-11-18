@@ -59,6 +59,8 @@ export interface QdrantRagProviderConfig {
   embedder: IRetrievalEmbedder;
   editable?: boolean;
   timeoutMs?: number;
+  /** Unicode code points per fragment when the embedder has no declared capacity. */
+  fragmentSizeChars?: number;
   supportedScopes?: readonly RagCollectionScope[];
   idStrategyFactory?: (owner: RagCollectionOwner) => IIdStrategy;
   /** The collection holding one record point per collection. Default `rag_collection_catalog`. */
@@ -77,6 +79,7 @@ export class QdrantRagProvider
   private readonly url: string;
   private readonly credential?: IApiKeyCredential;
   private readonly embedder: IRetrievalEmbedder;
+  private readonly fragmentSizeChars?: number;
   private readonly timeoutMs?: number;
   private readonly catalog: string;
   private catalogReady?: Promise<void>;
@@ -106,6 +109,7 @@ export class QdrantRagProvider
     this.url = cfg.url.replace(/\/+$/, '');
     this.credential = cfg.credential;
     this.embedder = cfg.embedder;
+    this.fragmentSizeChars = cfg.fragmentSizeChars;
     this.timeoutMs = cfg.timeoutMs;
     this.editable = cfg.editable ?? true;
     this.supportedScopes = cfg.supportedScopes ?? ['session', 'user', 'global'];
@@ -668,6 +672,7 @@ export class QdrantRagProvider
       url: this.url,
       credential: this.credential,
       embedder: this.embedder,
+      fragmentSizeChars: this.fragmentSizeChars,
       collectionName: storeName,
       timeoutMs: this.timeoutMs,
       autoCreateCollection: false,

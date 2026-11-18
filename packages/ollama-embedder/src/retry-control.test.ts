@@ -16,13 +16,18 @@ for (const batch of [false, true]) {
   for (const status of [400, 429, 500, 503]) {
     test(`single attempt preserves HTTP metadata on first ${mode} call (${status})`, async (t) => {
       let calls = 0;
-      t.mock.method(globalThis, 'fetch', async () => {
-        calls++;
-        return new Response('failure', {
-          status,
-          headers: { 'Retry-After': '1.25' },
-        });
-      });
+      t.mock.method(
+        globalThis,
+        'fetch',
+        async (url: URL | Request | string) => {
+          if (String(url).endsWith('/api/show')) return Response.json({});
+          calls++;
+          return new Response('failure', {
+            status,
+            headers: { 'Retry-After': '1.25' },
+          });
+        },
+      );
       const records: Extract<UsageInput, { kind: 'embedding.call' }>[] = [];
       const usage: IUsageRecorder = {
         record: (r) => {
@@ -55,7 +60,8 @@ for (const batch of [false, true]) {
   test(`single attempt preserves network error identity for ${mode}`, async (t) => {
     let calls = 0;
     const error = new TypeError('network failure');
-    t.mock.method(globalThis, 'fetch', async () => {
+    t.mock.method(globalThis, 'fetch', async (url: URL | Request | string) => {
+      if (String(url).endsWith('/api/show')) return Response.json({});
       calls++;
       throw error;
     });
@@ -68,7 +74,8 @@ for (const batch of [false, true]) {
   });
   test(`single attempt rejects invalid responses immediately for ${mode}`, async (t) => {
     let calls = 0;
-    t.mock.method(globalThis, 'fetch', async () => {
+    t.mock.method(globalThis, 'fetch', async (url: URL | Request | string) => {
+      if (String(url).endsWith('/api/show')) return Response.json({});
       calls++;
       return Response.json({});
     });
@@ -88,13 +95,14 @@ for (const batch of [false, true]) {
       },
       with: () => usage,
     };
-    t.mock.method(globalThis, 'fetch', async () => {
+    t.mock.method(globalThis, 'fetch', async (url: URL | Request | string) => {
+      if (String(url).endsWith('/api/show')) return Response.json({});
       if (++calls <= 12)
         return new Response('quota', {
           status: 429,
           headers: { 'Retry-After': '0' },
         });
-      return Response.json(batch ? { embeddings: [[1]] } : { embedding: [1] });
+      return Response.json({ embeddings: [[1]] });
     });
     const embedder = composeResilientEmbedder(
       new OllamaEmbedder({ model: 'test', usage }),

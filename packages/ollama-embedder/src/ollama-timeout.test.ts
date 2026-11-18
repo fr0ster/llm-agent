@@ -17,7 +17,7 @@ function captureSignal() {
     'fetch',
     async (_url: unknown, init?: unknown) => {
       seen.push((init as { signal?: AbortSignal | null })?.signal);
-      return new Response(JSON.stringify({ embedding: [0.1, 0.2] }), {
+      return new Response(JSON.stringify({ embeddings: [[0.1, 0.2]] }), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
       });

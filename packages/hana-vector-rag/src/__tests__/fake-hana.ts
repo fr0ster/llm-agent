@@ -105,7 +105,9 @@ function answer(
     fake.tables.delete(drop[1]);
     return [];
   }
-  const write = sql.match(/^UPSERT "([^"]+)" \(id, text, vector, metadata\)/);
+  const write = sql.match(
+    /^UPSERT "([^"]+)" \(id, text, vector, metadata, fragment_vectors\)/,
+  );
   if (write) {
     requireTable(fake, write[1]);
     return [{}];

@@ -27,6 +27,7 @@ export function createTableSql(
     id NVARCHAR(255) PRIMARY KEY,
     text NCLOB,
     vector REAL_VECTOR(${dimension}),
+    fragment_vectors NCLOB,
     metadata NCLOB,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
   )`;
@@ -34,4 +35,9 @@ export function createTableSql(
 
 export function dropTableSql(collection: string): string {
   return `DROP TABLE IF EXISTS ${quoteIdent(collection)}`;
+}
+
+/** Adds fragment storage to an existing table while preserving its primary vectors. */
+export function addFragmentVectorsSql(table: string): string {
+  return `ALTER TABLE ${quoteIdent(table)} ADD ("FRAGMENT_VECTORS" NCLOB)`;
 }

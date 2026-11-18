@@ -7,7 +7,7 @@ Ollama embedding provider for @mcp-abap-adt/llm-agent. Implements `IEmbedderBatc
 
 ## Exports
 
-- `OllamaEmbedder` — implements IEmbedderBatch, calls Ollama /api/embeddings and /api/embed (batch).
+- `OllamaEmbedder` — implements IEmbedderBatch, uses Ollama `/api/embed` for single and batch inputs.
 - `OllamaRag` — convenience wrapper combining OllamaEmbedder with VectorRag.
 - `OllamaEmbedderConfig` — configuration type.
 
@@ -79,8 +79,15 @@ injection, replaceable transports/sinks and delivery/loss semantics.
 
 ## Retry policy and HTTP errors
 
-Each `embed` call and each non-empty `embedBatch` call makes exactly one HTTP
-request. Empty batches return without I/O.
+The first capacity lookup or embedding request reads the model context from
+`POST /api/show` and caches it on the embedder. Both `embed` and `embedBatch`
+send that context as `options.num_ctx` with `truncate: false`. Ollama returns
+an error when an input exceeds the context. `getMaxInputChars()` exposes
+a conservative character allowance by reserving two positions for special
+tokens and allowing four UTF-8 bytes per Unicode code point. If the model does not report its context, capacity
+stays undeclared and Ollama uses its configured context.
+
+Each non-empty call makes one embedding request. Empty batches return without I/O.
 Provider-internal retry loops and the constructor `retry` option have been removed
 in this major release. Network and decoding errors are rethrown unchanged.
 The caller's `CallOptions.signal` governs cancellation.

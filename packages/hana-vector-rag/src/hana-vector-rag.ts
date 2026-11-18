@@ -11,8 +11,10 @@ import type {
 import {
   assertNonEmptyFilter,
   assertScanOptions,
+  bestFragmentScore,
   decodeIdScanCursor,
   decodeListCursor,
+  embedRecord,
   encodeListCursor,
   FallbackQueryEmbedding,
   INVALID_ARGUMENT,
@@ -42,7 +44,11 @@ import { decodeLob, withId } from './lob.js';
 import { RecordCache, type StoreCache } from './record-cache.js';
 import { transactionalHanaClient } from './role-transaction.js';
 import { deleteWhere, scanPage } from './scan-delete.js';
-import { assertCollectionName, quoteIdent } from './schema.js';
+import {
+  addFragmentVectorsSql,
+  assertCollectionName,
+  quoteIdent,
+} from './schema.js';
 import { checkSharedTables } from './shared-check.js';
 import { SHARED_DOCUMENTS_TABLE } from './shared-ddl.js';
 import {
@@ -123,6 +129,7 @@ export class HanaVectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
   private listIdentity?: Promise<string>;
   private readonly listTable: string;
   private readonly dimension: number;
+  private readonly fragmentSizeChars?: number;
   private readonly embedder: IRetrievalEmbedder;
   private readonly fallbackOnQueryEmbeddingError: boolean;
   private readonly autoCreateSchema: boolean;
@@ -134,14 +141,17 @@ export class HanaVectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
   private readonly sql: HanaStoreSql;
   private readonly documentsTable: string;
   private sharedCheck?: Promise<void>;
+  private fragmentSchema?: Promise<void>;
 
   constructor(
     config: HanaVectorRagConfig & { embedder: IRetrievalEmbedder },
     injectedClient?: HanaClient,
     cache?: StoreCache,
+    private readonly migrateExistingSchema = false,
   ) {
     assertCollectionName(config.collectionName);
     this.dimension = config.dimension ?? 1536;
+    this.fragmentSizeChars = config.fragmentSizeChars;
     this.embedder = config.embedder;
     this.fallbackOnQueryEmbeddingError =
       config.fallbackOnQueryEmbeddingError ?? true;
@@ -204,6 +214,36 @@ export class HanaVectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
     await this.schemaPromise;
   }
 
+  private async ensureFragmentStorage(): Promise<void> {
+    if (!this.autoCreateSchema && !this.migrateExistingSchema) return;
+    this.fragmentSchema ??= this.migrateFragmentStorage().catch((error) => {
+      this.fragmentSchema = undefined;
+      throw error;
+    });
+    await this.fragmentSchema;
+  }
+
+  private async migrateFragmentStorage(): Promise<void> {
+    if (this.sql.layout === 'shared') return;
+    const client = await this.client();
+    const exists = async (): Promise<boolean> => {
+      const rows = await client.query(
+        `SELECT COUNT(*) AS "n" FROM SYS.TABLE_COLUMNS WHERE SCHEMA_NAME = CURRENT_SCHEMA AND TABLE_NAME = ? AND COLUMN_NAME = 'FRAGMENT_VECTORS'`,
+        [this.connectConfig.collectionName],
+      );
+      return Number(rows[0]?.n ?? 0) > 0;
+    };
+    if (await exists()) return;
+    try {
+      await client.exec(
+        addFragmentVectorsSql(this.connectConfig.collectionName),
+      );
+    } catch (error) {
+      // Another handle may have added the column after our check.
+      if (!(await exists())) throw error;
+    }
+  }
+
   private async maybeEnsureSchema(): Promise<void> {
     if (this.autoCreateSchema) await this.ensureSchema();
     await this.ensureSharedDeployed();
@@ -259,6 +299,7 @@ export class HanaVectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
       return { ok: false, error: new RagError('Aborted', 'ABORTED') };
     try {
       await this.maybeEnsureSchema();
+      await this.ensureFragmentStorage();
       const safe =
         embedding instanceof TextOnlyEmbedding
           ? new QueryEmbedding(embedding.text, this.embedder, options)
@@ -289,7 +330,6 @@ export class HanaVectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
         const picked: RagResult[] = [];
         let dropped = false;
         for (const row of rows) {
-          if (picked.length >= limit) break;
           const metadata = withId(row);
           if (!keep(metadata)) {
             dropped = true;
@@ -298,10 +338,20 @@ export class HanaVectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
           picked.push({
             text: decodeLob(row.text),
             metadata,
-            score: Number(row.score ?? 0),
+            score:
+              row.fragmentVectors == null
+                ? Number(row.score ?? 0)
+                : bestFragmentScore(
+                    vector,
+                    JSON.parse(decodeLob(row.fragmentVectors)),
+                    Number(row.score ?? 0),
+                  ),
           });
         }
-        return { picked, dropped };
+        return {
+          picked: picked.sort((a, b) => b.score - a.score).slice(0, limit),
+          dropped,
+        };
       };
       const scoped = identity !== undefined || targetNamespace !== undefined;
       let results: RagResult[];
@@ -507,9 +557,17 @@ export class HanaVectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
     if (options?.signal?.aborted)
       return { ok: false, error: new RagError('Aborted', 'ABORTED') };
     try {
-      const { vector } = await this.embedder.embedDocument(text, options);
-      return this.upsertKnown(text, vector, metadata);
+      const vectors = await embedRecord(
+        this.embedder,
+        text,
+        this.fragmentSizeChars,
+        options,
+      );
+      options?.signal?.throwIfAborted();
+      return this.upsertKnown(text, vectors, metadata);
     } catch (err) {
+      if (options?.signal?.aborted)
+        return { ok: false, error: new RagError('Aborted', 'ABORTED') };
       return { ok: false, error: this.failure(err, 'UPSERT_ERROR') };
     }
   }
@@ -519,12 +577,12 @@ export class HanaVectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
     vector: number[],
     metadata: RagMetadata,
   ): Promise<Result<void, RagError>> {
-    return this.upsertKnown(text, vector, metadata);
+    return this.upsertKnown(text, [vector], metadata);
   }
 
   private async upsertKnown(
     text: string,
-    vector: number[],
+    [vector, ...extras]: number[][],
     metadata: RagMetadata,
   ): Promise<Result<void, RagError>> {
     try {
@@ -535,7 +593,9 @@ export class HanaVectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
       const id = metadata?.id ?? crypto.randomUUID();
       const { id: _omit, ...rest } = validateRagMetadata(metadata);
       const metaJson = JSON.stringify(rest);
-      const stmt = this.sql.upsert(literal, id, text, metaJson);
+      await this.ensureFragmentStorage();
+      const fragments = extras.length > 0 ? JSON.stringify(extras) : null;
+      const stmt = this.sql.upsert(literal, id, text, metaJson, fragments);
       const settled = this.cache.beginWrite([id]);
       try {
         await client.exec(stmt.sql, stmt.params);

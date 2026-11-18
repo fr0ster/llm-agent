@@ -38,6 +38,7 @@ export interface PgStoreSql {
     id: string,
     text: string,
     metadataJson: string,
+    fragments: string[] | null,
   ): SqlStatement;
   deleteById(id: string): SqlStatement;
   clear(): SqlStatement;
@@ -171,6 +172,11 @@ function filterConditions(
   return conditions;
 }
 
+/** A smaller cosine distance is a better match. MIN over no fragments is NULL. */
+function bestDistance(lit: string): string {
+  return `LEAST("vector" <=> ${lit}, (SELECT MIN(fragment <=> ${lit}) FROM unnest("fragment_vectors") AS vectors(fragment)))`;
+}
+
 /** One table per collection: the 30.1.0 statements. */
 export function perCollectionStoreSql(
   collection: string,
@@ -186,7 +192,7 @@ export function perCollectionStoreSql(
       const params: unknown[] = [];
       const where = filterConditions(filter, params, 'metadata').join(' AND ');
       return {
-        sql: `SELECT id, text, metadata, vector <=> ${lit} AS score FROM ${table} WHERE ${where} ORDER BY vector <=> ${lit} LIMIT ${limit}`,
+        sql: `SELECT id, text, metadata, ${bestDistance(lit)} AS score FROM ${table} WHERE ${where} ORDER BY score LIMIT ${limit}`,
         params,
       };
     },
@@ -194,9 +200,9 @@ export function perCollectionStoreSql(
       sql: `SELECT id, text, metadata FROM ${table} WHERE id = $1`,
       params: [id],
     }),
-    upsert: (lit, id, text, metadataJson) => ({
-      sql: `INSERT INTO ${table} (id, text, vector, metadata) VALUES ($1, $2, ${lit}, $3::jsonb) ON CONFLICT (id) DO UPDATE SET text = EXCLUDED.text, vector = EXCLUDED.vector, metadata = EXCLUDED.metadata`,
-      params: [id, text, metadataJson],
+    upsert: (lit, id, text, metadataJson, fragments) => ({
+      sql: `INSERT INTO ${table} (id, text, vector, metadata, fragment_vectors) VALUES ($1, $2, ${lit}, $3::jsonb, $4::vector[]) ON CONFLICT (id) DO UPDATE SET text = EXCLUDED.text, vector = EXCLUDED.vector, metadata = EXCLUDED.metadata, fragment_vectors = EXCLUDED.fragment_vectors`,
+      params: [id, text, metadataJson, fragments],
     }),
     deleteById: (id) => ({
       sql: `DELETE FROM ${table} WHERE id = $1`,
@@ -232,7 +238,7 @@ export function sharedStoreSql(
         ...filterConditions(filter, params, '"metadata"', true),
       ].join(' AND ');
       return {
-        sql: `SELECT "id", "text", "metadata", "vector" <=> ${lit} AS score FROM ${table} WHERE ${where} ORDER BY "vector" <=> ${lit} LIMIT ${limit}`,
+        sql: `SELECT "id", "text", "metadata", ${bestDistance(lit)} AS score FROM ${table} WHERE ${where} ORDER BY score LIMIT ${limit}`,
         params,
       };
     },
@@ -240,9 +246,9 @@ export function sharedStoreSql(
       sql: `SELECT "id", "text", "metadata" FROM ${table} WHERE "collection" = $1 AND "id" = $2`,
       params: [collection, id],
     }),
-    upsert: (lit, id, text, metadataJson) => ({
-      sql: `INSERT INTO ${table} ("collection", "id", "text", "vector", "metadata") VALUES ($1, $2, $3, ${lit}, $4::jsonb) ON CONFLICT ("collection", "id") DO UPDATE SET "text" = EXCLUDED."text", "vector" = EXCLUDED."vector", "metadata" = EXCLUDED."metadata"`,
-      params: [collection, id, text, metadataJson],
+    upsert: (lit, id, text, metadataJson, fragments) => ({
+      sql: `INSERT INTO ${table} ("collection", "id", "text", "vector", "metadata", "fragment_vectors") VALUES ($1, $2, $3, ${lit}, $4::jsonb, $5::vector[]) ON CONFLICT ("collection", "id") DO UPDATE SET "text" = EXCLUDED."text", "vector" = EXCLUDED."vector", "metadata" = EXCLUDED."metadata", "fragment_vectors" = EXCLUDED."fragment_vectors"`,
+      params: [collection, id, text, metadataJson, fragments],
     }),
     deleteById: (id) => ({
       sql: `DELETE FROM ${table} WHERE "collection" = $1 AND "id" = $2`,

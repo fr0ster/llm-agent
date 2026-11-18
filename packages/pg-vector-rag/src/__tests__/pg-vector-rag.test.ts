@@ -177,7 +177,7 @@ describe('PgVectorRag — session/user filter (security)', () => {
     const lastSelect = () => {
       const c = [...client.calls]
         .reverse()
-        .find((x) => x.sql.startsWith('SELECT id, text, metadata, vector'));
+        .find((x) => x.sql.startsWith('SELECT id, text, metadata, LEAST'));
       if (!c) throw new Error('no search SELECT issued');
       return c;
     };
@@ -194,7 +194,7 @@ describe('PgVectorRag — session/user filter (security)', () => {
     const { sql, params } = lastSelect();
     assert.match(
       sql,
-      /WHERE .*ownerScope.* AND CASE WHEN jsonb_typeof\(metadata->'sessionId'\) = 'string' THEN metadata->>'sessionId' END = \$2 AND CASE WHEN jsonb_typeof\(metadata->'userId'\) = 'string' THEN metadata->>'userId' END = \$3 AND COALESCE\(.*\) >= \$4 ORDER BY vector <=> .* LIMIT 4$/,
+      /WHERE .*ownerScope.* AND CASE WHEN jsonb_typeof\(metadata->'sessionId'\) = 'string' THEN metadata->>'sessionId' END = \$2 AND CASE WHEN jsonb_typeof\(metadata->'userId'\) = 'string' THEN metadata->>'userId' END = \$3 AND COALESCE\(.*\) >= \$4 ORDER BY score LIMIT 4$/,
     );
     assert.deepEqual(params.slice(0, 3), ['session', 's1', 'u1']);
   });
@@ -231,7 +231,7 @@ describe('PgVectorRag — session/user filter (security)', () => {
     const { sql, params } = lastSelect();
     assert.match(
       sql,
-      /WHERE CASE WHEN jsonb_typeof\(metadata->'namespace'\) = 'string' THEN metadata->>'namespace' END = \$1 AND COALESCE\(.*\) >= \$2 ORDER BY vector <=> .* LIMIT 3$/,
+      /WHERE CASE WHEN jsonb_typeof\(metadata->'namespace'\) = 'string' THEN metadata->>'namespace' END = \$1 AND COALESCE\(.*\) >= \$2 ORDER BY score LIMIT 3$/,
     );
     assert.ok(!sql.includes("n' OR"));
     assert.equal(params[0], "n' OR '1'='1");

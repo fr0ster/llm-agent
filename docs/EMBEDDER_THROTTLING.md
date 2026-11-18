@@ -38,7 +38,7 @@ const toolSearchEmbedder = withCircuitBreaker(
       key: 'tool-search-embedding:account-endpoint-model-fingerprint',
       strategy: new WaitAsTold({ fallbackBackoffMs: 2000 }),
     },
-    // maxInputChars: 24000, // default; 0 disables the single-input cap
+    // maxInputChars: 24000, // default; 0 disables the single-input cap outside stored record writes
   }),
   breaker,
 );
@@ -59,16 +59,17 @@ long waits use timer slices to avoid Node timer overflow, without shortening the
 quota hold. Explicit Retry-After: 0 retries without fallback backoff. The default
 `WaitAsTold()` still reports a missing/zero interval, as before.
 
-OpenAI/Ollama providers make one HTTP request per `embed` or non-empty `embedBatch` call and have
-no constructor `retry` option. Composition `retry: false` removes ordinary
+OpenAI and Ollama make one embedding request per non-empty call and have no
+constructor `retry` option. Ollama also reads model context on first use. Composition `retry: false` removes ordinary
 resilience retries. HTTP 400/5xx, network errors and decoding failures then surface
 on the first attempt. To migrate ordinary usage, wrap the raw provider with
 `composeEmbedder(raw)` for default retries, or configure its `retry` options.
 OpenAI declares `maxBatchSize: 100`; composition now owns its batch splitting,
 so each failed chunk retries independently without repeating completed chunks.
 
-The composition keeps the existing single-input character cap (batch inputs are
-unchanged), chunking and batch capability. Each retried batch chunk is independent;
+The composition caps single-input calls outside stored record writes. Vector
+stores use ordered fragments for record writes and wait for Retry-After when
+a 429 reaches the store. Batch capability is preserved throughout. Each retried batch chunk is independent;
 completed chunks are not repeated. Usage records retain one operation ID, increasing
 outerAttempt and separate providerAttempt coordinates for actual HTTP requests.
 `retryAfterSecondsOf`, `parseRetryAfter` and `httpStatusOf` expose the shared transport

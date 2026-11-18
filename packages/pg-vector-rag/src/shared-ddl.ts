@@ -14,6 +14,7 @@ function sharedDocumentsSql(table: string, dimension: number): string {
   "id" VARCHAR(255) NOT NULL,
   "text" TEXT,
   "vector" vector(${dimension}),
+  "fragment_vectors" vector(${dimension})[],
   "metadata" JSONB,
   "created_at" TIMESTAMPTZ DEFAULT NOW(),
   PRIMARY KEY ("collection", "id")

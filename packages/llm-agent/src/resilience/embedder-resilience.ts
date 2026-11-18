@@ -61,7 +61,7 @@ export function brandResilient(
 }
 
 export interface ComposeResilienceOptions {
-  /** Maximum characters for single-input embed calls. Default: 24000; 0 disables. */
+  /** Maximum characters for single-input embed calls outside record writes. Default: 24000; 0 disables. */
   maxInputChars?: number;
   /** A cap a human configured. ONLY this may trigger the conflict check. */
   explicitMaxBatchSize?: number;
