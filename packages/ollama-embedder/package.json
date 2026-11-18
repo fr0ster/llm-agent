@@ -1,6 +1,6 @@
 {
   "name": "@mcp-abap-adt/ollama-embedder",
-  "version": "31.0.0",
+  "version": "31.0.1",
   "description": "Ollama embedding provider and OllamaRag convenience class for @mcp-abap-adt/llm-agent.",
   "type": "module",
   "main": "dist/index.js",
@@ -32,6 +32,6 @@
     "access": "public"
   },
   "peerDependencies": {
-    "@mcp-abap-adt/llm-agent": "^33.1.0"
+    "@mcp-abap-adt/llm-agent": "^34.0.0"
   }
 }
