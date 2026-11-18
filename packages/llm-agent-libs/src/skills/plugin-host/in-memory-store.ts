@@ -6,32 +6,28 @@ import type {
   ISkillsRagBackend,
   ISkillsStore,
   ISkillsStoreProvider,
+  RagDocumentVectors,
   SkillHit,
   SkillRecord,
 } from '@mcp-abap-adt/llm-agent';
-import { CatalogCasError } from '@mcp-abap-adt/llm-agent'; // value (class), not a type
+import {
+  bestFragmentScore,
+  CatalogCasError,
+  recordVectors,
+} from '@mcp-abap-adt/llm-agent'; // value (class), not a type
 
 interface Row {
   record: SkillRecord;
-  vector: number[];
+  vector: RagDocumentVectors;
 }
-type Embed = (text: string, options?: CallOptions) => Promise<number[]>;
+type Embed = (
+  text: string,
+  options?: CallOptions,
+) => Promise<RagDocumentVectors>;
 
 export interface IInMemoryStoreProvider extends ISkillsStoreProvider {
   /** TEST SEAM: write pre-vectorised rows into a generation without an embedder. */
   _seed(generation: string, rows: Row[]): Promise<void>;
-}
-
-function cosine(a: number[], b: number[]): number {
-  let dot = 0;
-  let na = 0;
-  let nb = 0;
-  for (let i = 0; i < a.length; i++) {
-    dot += a[i] * b[i];
-    na += a[i] * a[i];
-    nb += b[i] * b[i];
-  }
-  return na && nb ? dot / (Math.sqrt(na) * Math.sqrt(nb)) : 0;
 }
 
 export function makeInMemoryStoreProvider(
@@ -91,7 +87,14 @@ export function makeInMemoryStoreProvider(
         const rows = gens.get(revision); // captured synchronously; lease guaranteed it survives
         if (!rows) throw new Error(`unknown generation: ${revision}`);
         return rows
-          .map((r) => ({ record: r.record, score: cosine(vector, r.vector) }))
+          .map((r) => ({
+            record: r.record,
+            score: bestFragmentScore(
+              vector,
+              recordVectors(r.vector),
+              -Infinity,
+            ),
+          }))
           .sort((a, b) => b.score - a.score)
           .slice(0, k);
       },

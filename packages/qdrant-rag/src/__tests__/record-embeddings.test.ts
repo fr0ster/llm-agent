@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { symmetricEmbedder } from '@mcp-abap-adt/llm-agent';
+import { fragmentIndexKey, recordPointIdKey } from '../payload-record.js';
 import { deterministicUUID, QdrantRag } from '../qdrant-rag.js';
-import { startQdrantStub } from './qdrant-stub.js';
+import { type StubCollection, startQdrantStub } from './qdrant-stub.js';
 
-test('keeps fragments in a single Qdrant point and ranks whole records', async (t) => {
+test('indexes fragments, retrieves only winning records, and removes all obsolete points', async (t) => {
   const stub = await startQdrantStub();
   t.after(() => stub.close());
   const embedder = symmetricEmbedder({
@@ -14,7 +15,7 @@ test('keeps fragments in a single Qdrant point and ranks whole records', async (
   });
   const id = await deterministicUUID('long');
   const legacy = await deterministicUUID('legacy');
-  const collection = {
+  const collection: StubCollection = {
     size: 2,
     points: new Map([
       [
@@ -42,25 +43,43 @@ test('keeps fragments in a single Qdrant point and ranks whole records', async (
   assert.equal(initial.value[0]?.text, 'legacy');
 
   assert.ok((await rag.upsert(full, { id: 'long' })).ok);
-  assert.deepEqual(stub.collections.get('docs')?.points.get(id), {
-    id,
-    vector: [1, 0],
-    payload: {
-      id: 'long',
-      ownerScope: 'global',
-      text: {
-        value: full,
-        fragmentVectors: [
-          [1, 0],
-          [0, 1],
-        ],
-      },
-    },
-  });
-  assert.equal(collection.points.size, 2);
+  assert.equal(collection.points.get(id)?.payload.text, full);
+  const fragments = [...collection.points.values()].filter(
+    (point) => point.payload[fragmentIndexKey] !== undefined,
+  );
+  assert.deepEqual(
+    fragments.map((p) => p.vector),
+    [
+      [1, 0],
+      [0, 1],
+    ],
+  );
+  assert.ok(
+    fragments.every(
+      (p) => p.payload[recordPointIdKey] === id && p.payload.text === undefined,
+    ),
+  );
+  assert.equal(collection.points.size, 4);
 
   const reader = new QdrantRag(config);
+  const firstSearch = stub.requests.length;
   const best = await reader.query(lookup, 1);
+  const searchRequests = stub.requests.slice(firstSearch);
+  assert.deepEqual(
+    searchRequests.map(({ path }) => path),
+    [
+      '/collections/docs/points/query/groups',
+      '/collections/docs/points/query',
+      '/collections/docs/points',
+    ],
+  );
+  const grouped = searchRequests[0]?.body as {
+    group_size: number;
+    with_payload: boolean;
+  };
+  assert.equal(grouped.group_size, 1);
+  assert.equal(grouped.with_payload, false);
+  assert.deepEqual(searchRequests[2]?.body, { ids: [id], with_payload: true });
   const both = await reader.query(lookup, 2);
   const retrieved = await reader.getById('long');
   const scanned = await reader.scan();
@@ -82,6 +101,7 @@ test('keeps fragments in a single Qdrant point and ranks whole records', async (
   }
 
   assert.ok((await rag.upsert('short', { id: 'long' })).ok);
+  assert.equal(collection.points.size, 2);
   assert.equal(
     stub.collections.get('docs')?.points.get(id)?.payload.text,
     'short',
@@ -90,20 +110,32 @@ test('keeps fragments in a single Qdrant point and ranks whole records', async (
   assert.ok(replaced.ok);
   assert.equal(replaced.value[0]?.text, 'legacy');
 
-  assert.ok((await rag.upsert(full, { id: 'long' })).ok);
   assert.ok(
     (
-      await rag
-        .writer()
-        .upsertManyPrecomputedRaw?.([
-          { id: 'long', text: full, vector: [1, 0], metadata: {} },
-        ])
+      await rag.writer().upsertManyPrecomputedRaw?.([
+        {
+          id: 'long',
+          text: full,
+          vector: [
+            [1, 0],
+            [0, 1],
+          ],
+          metadata: { namespace: 'replaceable' },
+        },
+      ])
     )?.ok,
   );
   assert.equal(
     stub.collections.get('docs')?.points.get(id)?.payload.text,
     full,
   );
+  const bulkSearch = await reader.query(lookup, 1);
+  assert.ok(bulkSearch.ok);
+  assert.equal(bulkSearch.value[0]?.text, full);
+  const removed = await rag.deleteWhere({ namespace: 'replaceable' });
+  assert.ok(removed.ok);
+  assert.equal(removed.value.deleted, 1);
+  assert.equal(collection.points.size, 1);
   assert.ok((await rag.upsert(full, { id: 'long' })).ok);
   assert.ok((await rag.writer().deleteByIdRaw('long')).ok);
   assert.equal(collection.points.size, 1);

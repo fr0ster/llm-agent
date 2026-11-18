@@ -84,8 +84,21 @@ The first capacity lookup or embedding request reads the model context from
 send that context as `options.num_ctx` with `truncate: false`. Ollama returns
 an error when an input exceeds the context. `getMaxInputChars()` exposes
 a conservative character allowance by reserving two positions for special
-tokens and allowing four UTF-8 bytes per Unicode code point. If the model does not report its context, capacity
-stays undeclared and Ollama uses its configured context.
+tokens for BOS/EOS. A Unicode code point takes at most four UTF-8 bytes.
+This bound covers a tokenizer that falls back to one token per input byte
+including three-byte CJK and four-byte emoji. Ollama validates the actual
+token count, including model-specific preprocessing, with truncation
+disabled. If the model omits its context, the store uses its configured
+fragment granularity and Ollama uses its configured context.
+
+### Upgrade from versions that truncated inputs
+
+Allow the initial `POST /api/show` through any proxy or allowlist and
+ensure the named model is installed. A failed model lookup now fails the
+embedding operation. For direct embedding calls, send inputs within the
+model context. For stored documents, use the RAG writer to fragment the
+full text before embedding. Re-embed any previously truncated records
+from their original text.
 
 Each non-empty call makes one embedding request. Empty batches return without I/O.
 Provider-internal retry loops and the constructor `retry` option have been removed

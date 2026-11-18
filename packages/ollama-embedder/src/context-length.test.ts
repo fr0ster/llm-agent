@@ -76,3 +76,47 @@ test('uses the cached model context for each request and disables truncation', a
   assert.equal(stored.value?.text, artifact);
   assert.equal(shows, 2);
 });
+
+test('the character capacity leaves room for byte fallback and special tokens on Unicode fragments', async (t) => {
+  const context = 34;
+  const inputs: string[] = [];
+  t.mock.method(
+    globalThis,
+    'fetch',
+    async (url: URL | Request | string, init?: RequestInit) => {
+      if (String(url).endsWith('/api/show')) {
+        return Response.json({
+          model_info: { 'bert.context_length': context },
+        });
+      }
+      const body = JSON.parse(String(init?.body)) as {
+        input: string[];
+        truncate: boolean;
+      };
+      assert.equal(body.truncate, false);
+      for (const fragment of body.input) {
+        assert.ok(Buffer.byteLength(fragment, 'utf8') + 2 <= context);
+        inputs.push(fragment);
+      }
+      return Response.json({ embeddings: body.input.map(() => [1, 0]) });
+    },
+  );
+  const embedder = new OllamaEmbedder({ model: 'bge-m3' });
+  assert.equal(await embedder.getMaxInputChars(), 8);
+  const emoji = '\u{1f600}';
+  const text = emoji.repeat(9) + '\u6f22\u5b57'.repeat(9);
+  const rag = new OllamaRag({ model: 'bge-m3' });
+  assert.ok((await rag.upsert(text, { id: 'unicode' })).ok);
+  assert.equal(inputs[0], emoji.repeat(8));
+  assert.equal(inputs.join(''), text);
+});
+
+test('a context below the byte-fallback minimum cannot declare a safe character capacity', async (t) => {
+  t.mock.method(globalThis, 'fetch', async () =>
+    Response.json({ model_info: { 'bert.context_length': 5 } }),
+  );
+  await assert.rejects(
+    new OllamaEmbedder({ model: 'bge-m3' }).getMaxInputChars(),
+    /cannot fit one Unicode code point/,
+  );
+});

@@ -225,6 +225,7 @@ export type {
   RagCollectionOwner,
   RagCollectionRecord,
   RagCollectionScope,
+  RagDocumentVectors,
   RagJsonValue,
   RagListMetadata,
   RagListPage,

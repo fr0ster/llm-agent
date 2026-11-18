@@ -1,30 +1,28 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
+import { fragmentStorageSql } from '../schema.js';
 import { perCollectionStoreSql, sharedStoreSql } from '../store-sql.js';
-
-const DISTANCE =
-  'LEAST("vector" <=> LIT, (SELECT MIN(fragment <=> LIT) FROM unnest("fragment_vectors") AS vectors(fragment)))';
-const TTL = `COALESCE(CASE WHEN jsonb_typeof(metadata->'ttl') = 'number' THEN (metadata->>'ttl')::float8 END, 'infinity'::float8) >=`;
-const TTL_SHARED = `COALESCE(CASE WHEN jsonb_typeof("metadata"->'ttl') = 'number' THEN ("metadata"->>'ttl')::float8 END, 'infinity'::float8) >=`;
 
 describe('shared store SQL', () => {
   const sql = sharedStoreSql('docs', 'rag_documents');
 
   it('search filters by collection, $1, and renumbers the other conditions', () => {
     const plain = sql.search('LIT', 7, { nowSecs: 99 });
-    assert.equal(
-      plain.sql,
-      `SELECT "id", "text", "metadata", ${DISTANCE} AS score FROM "rag_documents" WHERE "collection" = $1 AND ${TTL_SHARED} $2 ORDER BY score LIMIT 7`,
-    );
+    assert.match(plain.sql, /FROM "rag_documents_fragments" AS f/);
+    assert.match(plain.sql, /ORDER BY f\."vector" <=> LIT LIMIT 1/);
+    assert.match(plain.sql, /GROUP BY id ORDER BY distance, id LIMIT 7/);
+    assert.match(plain.sql, /FROM winners AS w JOIN "rag_documents"/);
+    assert.doesNotMatch(plain.sql, /unnest|fragment_vectors/);
     assert.deepEqual(plain.params, ['docs', 99]);
     const scoped = sql.search('LIT', 3, {
       identity: { ownerScope: 'session', sessionId: 's', userId: 'u' },
       namespace: 'ns',
       nowSecs: 5,
     });
-    assert.equal(
+    assert.match(scoped.sql, /f\."collection" = \$1/);
+    assert.match(
       scoped.sql,
-      `SELECT "id", "text", "metadata", ${DISTANCE} AS score FROM "rag_documents" WHERE "collection" = $1 AND CASE WHEN jsonb_typeof("metadata"->'ownerScope') = 'string' THEN "metadata"->>'ownerScope' END = $2 AND CASE WHEN jsonb_typeof("metadata"->'sessionId') = 'string' THEN "metadata"->>'sessionId' END = $3 AND CASE WHEN jsonb_typeof("metadata"->'userId') = 'string' THEN "metadata"->>'userId' END = $4 AND CASE WHEN jsonb_typeof("metadata"->'namespace') = 'string' THEN "metadata"->>'namespace' END = $5 AND ${TTL_SHARED} $6 ORDER BY score LIMIT 3`,
+      /jsonb_typeof\("metadata"->'namespace'\) = 'string'.*= \$5/,
     );
     assert.deepEqual(scoped.params, ['docs', 'session', 's', 'u', 'ns', 5]);
   });
@@ -79,21 +77,10 @@ describe('per-collection store SQL', () => {
     created_at TIMESTAMPTZ DEFAULT NOW()
   )`,
     );
-    assert.deepEqual(sql.search('LIT', 5, { nowSecs: 42 }), {
-      sql: `SELECT id, text, metadata, ${DISTANCE} AS score FROM "docs" WHERE ${TTL} $1 ORDER BY score LIMIT 5`,
-      params: [42],
-    });
-    assert.deepEqual(
-      sql.search('LIT', 1, {
-        identity: { ownerScope: 'session', sessionId: 's', userId: 'u' },
-        namespace: 'ns',
-        nowSecs: 42,
-      }),
-      {
-        sql: `SELECT id, text, metadata, ${DISTANCE} AS score FROM "docs" WHERE CASE WHEN jsonb_typeof(metadata->'ownerScope') = 'string' THEN metadata->>'ownerScope' END = $1 AND CASE WHEN jsonb_typeof(metadata->'sessionId') = 'string' THEN metadata->>'sessionId' END = $2 AND CASE WHEN jsonb_typeof(metadata->'userId') = 'string' THEN metadata->>'userId' END = $3 AND CASE WHEN jsonb_typeof(metadata->'namespace') = 'string' THEN metadata->>'namespace' END = $4 AND ${TTL} $5 ORDER BY score LIMIT 1`,
-        params: ['session', 's', 'u', 'ns', 42],
-      },
-    );
+    const query = sql.search('LIT', 5, { nowSecs: 42 });
+    assert.match(query.sql, /FROM "docs_fragments" AS f/);
+    assert.match(query.sql, /winners AS \(/);
+    assert.deepEqual(query.params, [42]);
     assert.deepEqual(sql.byId('a'), {
       sql: 'SELECT id, text, metadata FROM "docs" WHERE id = $1',
       params: ['a'],
@@ -106,6 +93,25 @@ describe('per-collection store SQL', () => {
       sql: 'DELETE FROM "docs" WHERE id = $1',
       params: ['a'],
     });
-    assert.deepEqual(sql.clear(), { sql: 'TRUNCATE "docs"', params: [] });
+    assert.deepEqual(sql.clear(), {
+      sql: 'TRUNCATE "docs", "docs_fragments"',
+      params: [],
+    });
   });
+});
+
+it('migration builds a cosine index and atomically maintains the fragment projection', () => {
+  const ddl = fragmentStorageSql(
+    'rag_documents',
+    1536,
+    'shared',
+    'tenant',
+  ).join('\n');
+  assert.match(
+    ddl,
+    /"tenant"\."rag_documents_fragments" USING hnsw \("vector" vector_cosine_ops\)/,
+  );
+  assert.match(ddl, /FOREIGN KEY \("collection", "id"\).*ON DELETE CASCADE/);
+  assert.match(ddl, /AFTER INSERT OR UPDATE OF "fragment_vectors"/);
+  assert.match(ddl, /unnest\(NEW\."fragment_vectors"\) WITH ORDINALITY/);
 });

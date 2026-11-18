@@ -33,6 +33,7 @@ import type {
   SkillIngestResult,
   SkillRecord,
 } from '@mcp-abap-adt/llm-agent';
+import { embedRecord } from '@mcp-abap-adt/llm-agent';
 import {
   type GitHubTransportOptions,
   type HttpTransportOptions,
@@ -111,7 +112,7 @@ export interface BuildSkillHostDeps {
 }
 
 /** `embed(text, options) → vector` adapter the store providers consume. */
-type Embed = (text: string, options?: CallOptions) => Promise<number[]>;
+type Embed = (text: string, options?: CallOptions) => Promise<number[][]>;
 
 /**
  * Build a `records` source's {@link ISkillSource}: wrap the pre-supplied records
@@ -272,7 +273,7 @@ export async function buildSkillHostFromConfig(
   // The store provider WRITES skills (documents); the host recalls with the
   // query method of the same retrieval embedder.
   const embed: Embed = (text, options) =>
-    embedder.embedDocument(text, options).then((r) => r.vector);
+    embedRecord(embedder, text, undefined, options);
 
   // ---- RECALL-ONLY (loadOnStartup:false) --------------------------------
   // Serve an already-materialised catalog through a READ-ONLY backend (least

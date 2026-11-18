@@ -326,14 +326,18 @@ for (const layout of ['shared', 'per-collection'] as const) {
       assert.equal(r.value.deleted, 700);
       assert.equal((await scanAll(store)).length, 1400);
       assert.equal(
-        hana.statements.filter((s) => s.startsWith('DELETE')).length,
+        hana.statements.filter(
+          (s) => s.startsWith('DELETE') && s.includes(' IN ('),
+        ).length,
         1,
       );
       const more = await store.deleteWhere({ userId: 'u2' });
       assert.ok(more.ok);
       assert.equal(more.value.deleted, 1400);
       assert.equal(
-        hana.statements.filter((s) => s.startsWith('DELETE')).length,
+        hana.statements.filter(
+          (s) => s.startsWith('DELETE') && s.includes(' IN ('),
+        ).length,
         3,
       );
     });

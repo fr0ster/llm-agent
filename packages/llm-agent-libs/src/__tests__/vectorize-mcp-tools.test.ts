@@ -17,10 +17,12 @@ import type {
   IRequestLogger,
   LlmTool,
   LogEvent,
+  RagDocumentVectors,
 } from '@mcp-abap-adt/llm-agent';
 import {
   CircuitBreaker,
   CircuitBreakerEmbedder,
+  composeResilientEmbedder,
   McpError,
   symmetricEmbedder,
   toolNameFromRecord,
@@ -457,7 +459,7 @@ describe('vectorizeMcpTools bulk upsert', () => {
 // ---------------------------------------------------------------------------
 
 describe('vectorizeMcpTools tool record key', () => {
-  it('single client keeps the historical tool:${name} key', async () => {
+  it('single client keeps the historical tool key prefix', async () => {
     const writer = makeWriter();
     const rag = makeRagWithEmbedder(undefined, writer);
     await vectorizeMcpTools(
@@ -794,4 +796,52 @@ describe('vectorizeMcpTools prebuiltView (#244 addendum)', () => {
     assert.equal(summary?.vectorized, 1);
     assert.deepEqual(summary?.failed, []);
   });
+});
+
+it('bulk MCP writes store every description fragment through the configured input cap', async () => {
+  const fragments: string[] = [];
+  const stored: { text: string; vector: RagDocumentVectors }[] = [];
+  const embedder = composeResilientEmbedder(
+    {
+      async getMaxInputChars() {
+        return 8;
+      },
+      async embed(text) {
+        fragments.push(text);
+        return { vector: [fragments.length] };
+      },
+      async embedBatch(texts) {
+        return texts.map((text) => {
+          fragments.push(text);
+          return { vector: [fragments.length] };
+        });
+      },
+    },
+    { maxInputChars: 2 },
+  );
+  const writer = makeWriter({ hasBatchRaw: true });
+  writer.upsertManyPrecomputedRaw = async (items) => {
+    stored.push(...items);
+    return { ok: true, value: undefined };
+  };
+  const description = 'prefix\r\nwith a continuation and tail';
+  const result = await vectorizeMcpTools(
+    [makeClient([{ name: 'long-tool', description, parameters: {} }])],
+    makeRagWithEmbedder(embedder, writer),
+    new CapturingRequestLogger(),
+    undefined,
+  );
+  assert.equal(result?.vectorized, 1);
+  assert.equal(stored.length, 1);
+  assert.ok(stored[0].text.endsWith(description));
+  assert.equal(fragments.join(''), stored[0].text);
+  assert.ok(
+    fragments.every(
+      (fragment) => fragment.length <= 8 && !fragment.endsWith('\r'),
+    ),
+  );
+  assert.deepEqual(
+    stored[0].vector,
+    fragments.map((_, index) => [index + 1]),
+  );
 });

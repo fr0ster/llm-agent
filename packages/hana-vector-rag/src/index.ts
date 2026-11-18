@@ -10,12 +10,18 @@ export { createHanaClient, HanaVectorRag } from './hana-vector-rag.js';
 export type { HanaVectorRagProviderConfig } from './hana-vector-rag-provider.js';
 export { HanaVectorRagProvider } from './hana-vector-rag-provider.js';
 export { migrateHanaVectorRagAccess } from './migrate-access.js';
-export { addFragmentVectorsSql } from './schema.js';
+export {
+  addFragmentVectorsSql,
+  fragmentTableDdl,
+  fragmentTableName,
+} from './schema.js';
 export {
   SHARED_CATALOG_TABLE,
   SHARED_DOCUMENTS_TABLE,
   SHIPPED_DIMENSION,
   sharedCatalogHdbtable,
   sharedDocumentsHdbtable,
+  sharedFragmentsHdbconstraint,
+  sharedFragmentsHdbtable,
   sharedLayoutSql,
 } from './shared-ddl.js';

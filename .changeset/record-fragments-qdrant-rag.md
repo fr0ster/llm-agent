@@ -1,5 +1,5 @@
 ---
-"@mcp-abap-adt/qdrant-rag": minor
+"@mcp-abap-adt/qdrant-rag": major
 ---
 
-Store fragment vectors inside the record point and rank each point by its best fragment, with legacy point support.
+Use Qdrant Query API groups to rank indexed fragment points and fetch winning records. Ordered record writes prune fragments and older single-vector points stay searchable. This requires Qdrant 1.10 or later.

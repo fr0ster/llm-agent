@@ -18,7 +18,9 @@ function makeRag(
     'fetch',
     async (url: URL | Request | string) =>
       Response.json({
-        result: String(url).endsWith('/points/scroll') ? { points: [] } : [],
+        result: String(url).endsWith('/points/query/groups')
+          ? { groups: [] }
+          : { points: [] },
       }),
   );
   return new QdrantRag({

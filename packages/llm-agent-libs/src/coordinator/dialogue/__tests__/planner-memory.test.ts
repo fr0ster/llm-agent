@@ -8,7 +8,11 @@ import type {
   IUsageRecorder,
   UsageContext,
 } from '@mcp-abap-adt/llm-agent';
-import { InMemoryRag } from '@mcp-abap-adt/llm-agent';
+import {
+  InMemoryRag,
+  VectorOnlyStrategy,
+  VectorRag,
+} from '@mcp-abap-adt/llm-agent';
 import { ragFilterConformanceCases } from '@mcp-abap-adt/llm-agent/testing/rag-filter-conformance';
 import { testCallOptions } from '../../../testing/index.js';
 import { DialogueSession } from '../dialogue-session.js';
@@ -449,7 +453,7 @@ test('session indexes live inputs and replies, restores without indexing, retrie
   await session.close();
 });
 
-test('write timeout aborts and skips late embedding; oldest queued chunks are dropped', async (context) => {
+test('pending planner memory writes preserve queued records beyond former queue and time limits', async (context) => {
   context.mock.timers.enable({ apis: ['setTimeout'] });
   const rag = new InMemoryRag();
   const backend = rag.writer();
@@ -492,55 +496,25 @@ test('write timeout aborts and skips late embedding; oldest queued chunks are dr
     },
     (message) => notes.push(message),
   );
-  memory.enqueue('planner-input', 'r1', 'hang', 'h'.repeat(4000), {});
+  const controller = new AbortController();
+  memory.enqueue('planner-input', 'r1', 'hang', 'h'.repeat(4000), {
+    signal: controller.signal,
+  });
   await tick();
   memory.enqueue('planner-reply', 'r1', 'large', 'x'.repeat(402_000), {});
   context.mock.timers.tick(30_000);
   await tick();
-  assert.equal(firstSignal?.aborted, true);
+  assert.equal(firstSignal?.aborted, false);
   release?.({ vector: [2] });
   await memory.close();
-  assert.equal(calls, 201);
+  assert.equal(calls, 203);
   const late = await rag.getById('planner:s:planner-input:hang:0');
-  assert.ok(late.ok && late.value === null);
+  assert.ok(late.ok && late.value);
   const dropped = await rag.getById('planner:s:planner-reply:large:0');
-  assert.ok(dropped.ok && dropped.value === null);
+  assert.ok(dropped.ok && dropped.value);
   const kept = await rag.getById('planner:s:planner-reply:large:400000');
   assert.ok(kept.ok && kept.value);
-  assert.ok(notes.some((message) => message.includes('oldest')));
-  assert.ok(notes.some((message) => message.includes('timed out')));
-});
-
-test('close aborts a hanging write within five seconds', async (context) => {
-  context.mock.timers.enable({ apis: ['setTimeout'] });
-  const rag = new InMemoryRag();
-  const backend = rag.writer();
-  assert.ok(backend);
-  let signal: AbortSignal | undefined;
-  const writer: IRagBackendWriter = {
-    deleteByIdRaw: backend.deleteByIdRaw.bind(backend),
-    upsertRaw(_id, _text, _metadata, options) {
-      signal = options?.signal;
-      return new Promise(() => {});
-    },
-  };
-  const proxy: IRag = {
-    query: rag.query.bind(rag),
-    getById: rag.getById.bind(rag),
-    healthCheck: rag.healthCheck.bind(rag),
-    writer: () => writer,
-  };
-  const memory = new PlannerMemoryWriter(
-    's',
-    { rag: proxy, queryEmbedder, documentEmbedder, closeTimeoutMs: 5_000 },
-    warn,
-  );
-  memory.enqueue('planner-input', 'r1', 'i1', 'input', {});
-  await tick();
-  const closing = memory.close();
-  context.mock.timers.tick(5_000);
-  await closing;
-  assert.equal(signal?.aborted, true);
+  assert.deepEqual(notes, []);
 });
 
 test('corrective calls reuse retrieval while seeing newly projected transcript', async () => {
@@ -960,7 +934,10 @@ for (const timeout of [undefined, NaN, -1, 0, 1.5, Infinity, 2_147_483_648])
       },
       warn,
     );
-    memory.enqueue('planner-input', 'r', 'i', 'input', {});
+    const controller = new AbortController();
+    memory.enqueue('planner-input', 'r', 'i', 'input', {
+      signal: controller.signal,
+    });
     await tick();
     let closed = false;
     const closing = memory.close().then(() => {
@@ -977,9 +954,11 @@ for (const timeout of [undefined, NaN, -1, 0, 1.5, Infinity, 2_147_483_648])
   });
 
 for (const option of ['writeTimeoutMs', 'closeTimeoutMs'] as const) {
-  test(`valid ${option} still expires`, async (context) => {
+  test(`configured ${option} does not cancel a pending write`, async (context) => {
     context.mock.timers.enable({ apis: ['setTimeout'] });
     let signal: AbortSignal | undefined;
+    let release = () => {};
+    const controller = new AbortController();
     const messages: string[] = [];
     // A precomputed-vector writer makes the memory writer call the embedder.
     const rag = new InMemoryRag();
@@ -1005,19 +984,62 @@ for (const option of ['writeTimeoutMs', 'closeTimeoutMs'] as const) {
         documentEmbedder: {
           async embedDocument(_text, options) {
             signal = options?.signal;
-            return new Promise<never>(() => {});
+            await new Promise<void>((resolve) => {
+              release = resolve;
+            });
+            return { vector: [1] };
           },
         },
         [option]: 5,
       },
       (message) => messages.push(message),
     );
-    memory.enqueue('planner-input', 'r', 'i', 'input', {});
+    memory.enqueue('planner-input', 'r', 'i', 'input', {
+      signal: controller.signal,
+    });
     await tick();
     const closing = memory.close();
     context.mock.timers.tick(5);
+    assert.equal(signal?.aborted, false);
+    release();
     await closing;
-    assert.equal(signal?.aborted, true);
-    assert.ok(messages.some((message) => /timed out|deadline/.test(message)));
+    assert.deepEqual(messages, []);
   });
 }
+
+test('planner memory precomputes all fragments and retrieves a record by its tail', async () => {
+  const seen: string[] = [];
+  const embedder = {
+    async getMaxInputChars() {
+      return 6;
+    },
+    async embedDocument(text: string) {
+      seen.push(text);
+      return { vector: text === 'needle' ? [0, 1] : [1, 0] };
+    },
+    async embedQuery() {
+      return { vector: [0, 1] };
+    },
+  };
+  const rag = new VectorRag(embedder, { strategy: new VectorOnlyStrategy() });
+  const memory = new PlannerMemoryWriter(
+    's',
+    {
+      rag,
+      queryEmbedder: embedder,
+      documentEmbedder: embedder,
+    },
+    warn,
+  );
+  const text = 'prefixprefixneedle';
+  memory.enqueue('planner-input', 'r', 'long', text, {});
+  await memory.close();
+  assert.deepEqual(seen, ['prefix', 'prefix', 'needle']);
+  const result = await rag.query(
+    { text: 'needle', toVector: async () => [0, 1] },
+    1,
+  );
+  assert.ok(result.ok);
+  assert.equal(result.value[0]?.text, text);
+  assert.equal(result.value[0]?.score, 1);
+});

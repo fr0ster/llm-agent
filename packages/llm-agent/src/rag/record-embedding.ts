@@ -1,6 +1,9 @@
+import { setImmediate } from 'node:timers/promises';
 import {
   type IDocumentEmbedder,
+  type IEmbedResult,
   isBatchSizeLimited,
+  type RagDocumentVectors,
 } from '../interfaces/rag.js';
 import { type CallOptions, RagError } from '../interfaces/types.js';
 import {
@@ -41,6 +44,9 @@ function splitDocument(text: string, size: number): string[] {
     if (end < text.length) {
       if (paragraphEnd > start) end = paragraphEnd;
       else if (lineEnd > start) end = lineEnd;
+      else if (text[end - 1] === '\r' && text[end] === '\n') {
+        end = end - 1 > start ? end - 1 : end + 1;
+      }
     }
     fragments.push(text.slice(start, end));
     start = end;
@@ -62,6 +68,10 @@ async function waitForEmbedding<T>(
         error !== null && typeof error === 'object' ? error : undefined;
       if (httpStatusOf(response) !== 429) throw error;
       const retryAfter = retryAfterSecondsOf(response);
+      if (retryAfter === 0) {
+        await setImmediate();
+        continue;
+      }
       await waitStrategy.wait(
         retryAfter === undefined
           ? exponentialBackoffMs(2000, attempt)
@@ -78,6 +88,23 @@ export async function embedRecord(
   fragmentSizeChars = DEFAULT_FRAGMENT_SIZE_CHARS,
   options?: CallOptions,
 ): Promise<number[][]> {
+  const [results] = await embedDocumentRecords(
+    embedder,
+    [text],
+    fragmentSizeChars,
+    options,
+  );
+  return results.map(({ vector }) => vector);
+}
+
+/** Embed complete records in provider-sized requests, preserving record and fragment order. */
+export async function embedDocumentRecords(
+  embedder: IDocumentEmbedder,
+  texts: readonly string[],
+  fragmentSizeChars = DEFAULT_FRAGMENT_SIZE_CHARS,
+  options?: CallOptions,
+): Promise<IEmbedResult[][]> {
+  if (texts.length === 0) return [];
   const callOptions = {
     ...options,
     preserveEmbeddingInput: true,
@@ -93,42 +120,64 @@ export async function embedRecord(
     throw new RangeError(
       'Embedding fragment size must be a positive safe integer',
     );
-  const fragments = splitDocument(text, size);
-  const embedDocument = (fragment: string) =>
-    run(() => embedder.embedDocument(fragment, callOptions));
-  if (fragments.length === 1) return [(await embedDocument(text)).vector];
-
-  const vectors: number[][] = [];
+  const documents = texts.map((text) => splitDocument(text, size));
+  const fragments = documents.flat();
+  const results: IEmbedResult[] = [];
   const embedDocuments = embedder.embedDocuments?.bind(embedder);
-  if (embedDocuments) {
+  if (embedDocuments && fragments.length > 1) {
     const batchSize = isBatchSizeLimited(embedder)
       ? embedder.maxBatchSize
       : fragments.length;
     for (let start = 0; start < fragments.length; start += batchSize) {
       const batch = fragments.slice(start, start + batchSize);
-      const results = await run(() => embedDocuments(batch, callOptions));
-      if (results.length !== batch.length)
+      const embedded = await run(() => embedDocuments(batch, callOptions));
+      if (embedded.length !== batch.length)
         throw new RagError(
           'Embedding batch returned the wrong number of vectors',
           'UPSERT_ERROR',
         );
-      for (const { vector } of results) vectors.push(vector);
+      for (const result of embedded) results.push(result);
     }
   } else {
     for (const fragment of fragments) {
-      vectors.push((await embedDocument(fragment)).vector);
+      results.push(
+        await run(() => embedder.embedDocument(fragment, callOptions)),
+      );
     }
   }
-  const dimension = vectors[0].length;
-  if (
-    vectors.some(
-      (v) =>
-        v.length !== dimension || v.some((value) => !Number.isFinite(value)),
-    )
-  )
+  validateDocumentVectors(results.map(({ vector }) => vector));
+  let offset = 0;
+  return documents.map(({ length }) => {
+    const record = results.slice(offset, offset + length);
+    offset += length;
+    return record;
+  });
+}
+
+function isFragmentSet(vectors: RagDocumentVectors): vectors is number[][] {
+  return Array.isArray(vectors[0]);
+}
+
+/** Normalize legacy single vectors and validate the entire precomputed record. */
+export function recordVectors(input: RagDocumentVectors): number[][] {
+  const vectors = isFragmentSet(input) ? input : [input];
+  validateDocumentVectors(vectors);
+  return vectors;
+}
+
+function validateDocumentVectors(vectors: number[][]): void {
+  const dimension = vectors[0]?.length;
+  if (!dimension || vectors.some((vector) => vector.length !== dimension))
     throw new RagError(
       'Document fragments returned incompatible vectors',
       'UPSERT_ERROR',
     );
-  return vectors;
+  for (const [fragment, vector] of vectors.entries()) {
+    const invalid = vector.findIndex((value) => !Number.isFinite(value));
+    if (invalid !== -1)
+      throw new RagError(
+        `Non-finite vector component at index ${invalid} in fragment ${fragment}`,
+        'UPSERT_ERROR',
+      );
+  }
 }

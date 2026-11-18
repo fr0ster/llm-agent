@@ -22,19 +22,35 @@ npm install @mcp-abap-adt/pg-vector-rag pg
 
 ## Record embeddings
 
-Each row keeps the full text and the first vector in the existing `vector`
-column. The nullable `fragment_vectors` array holds the remaining vectors in
-order. Replacing or deleting the row replaces or deletes its entire vector
-set in the same statement. Search uses the minimum cosine distance across
-the row's vectors before selecting the top records.
+The documents table retains the full text and first vector. A trigger
+projects the remaining vectors into the companion fragment table as
+`vector(dim)` rows. The trigger runs in the same transaction as the write.
+A foreign key cascades deletes to the fragment rows. PostgreSQL combines
+primary-vector and indexed fragment matches, ranks distinct records, and
+reads text only for the winners. When an approximate fragment scan returns
+too few distinct records, SQL completes the shortlist with an exact
+fragment search.
 
-Runtime-managed per-collection tables receive the nullable column on first
-search or write. Existing shared tables and manually managed per-collection
-tables need the DDL returned by `addFragmentVectorsSql(table, schema?)` once.
-The shipped shared-layout SQL includes the column for new deployments.
-Existing vectors remain searchable without backfill. Configure
-`fragmentSizeChars` to change fragmentation for embedders without a
-declared capacity (default 2048 Unicode code points).
+### Upgrade an existing database
+
+1. Upgrade pgvector to 0.5+ for HNSW support.
+2. Runtime-managed per-collection tables install the fragment schema on
+   first search or write. For a shared or manually managed table, execute
+   the statements from `fragmentStorageSql(table, dimension, layout, schema?)`
+   as the schema owner, in order, in one transaction before using the new
+   runtime. Use `'shared'` for tables keyed by collection and ID, or
+   `'per-collection'` for tables keyed by ID. With no schema argument, run
+   the migration with the target schema on the search path.
+3. Grant search roles SELECT on the fragment table. Writers also need
+   INSERT and DELETE on that table for the synchronization trigger.
+   Existing single-vector rows work immediately, and the migration projects
+   any arrays previously written by the prerelease implementation.
+   New deployments can use the complete shared-layout SQL script.
+
+Dimensions up to 2,000 get a pgvector HNSW cosine index. At higher dimensions
+the same SQL runs against exact distances. Configure `fragmentSizeChars`
+to change fragmentation when the embedder does not declare its capacity
+(default 2,048 Unicode code points).
 
 ## Minimal config
 
@@ -115,9 +131,10 @@ The error codes are exported as constants — `SHARED_LAYOUT_NOT_DEPLOYED`, `INV
 ### Deploying the tables
 
 The package ships `ddl/shared-layout.sql` (published with it): `CREATE EXTENSION IF NOT EXISTS
-vector`, the catalog table, then the documents table, with the default names. Run it once as a
-privileged account (`psql -f node_modules/@mcp-abap-adt/pg-vector-rag/ddl/shared-layout.sql`); the
-application account then needs only `SELECT`, `INSERT`, `UPDATE`, `DELETE` on the two tables.
+vector`, the catalog and documents tables, then the fragment table, index and trigger. Run it once
+as a privileged account (`psql -f node_modules/@mcp-abap-adt/pg-vector-rag/ddl/shared-layout.sql`).
+The script includes a dollar-quoted trigger body. Execute it as a complete script.
+Grant the application account `SELECT`, `INSERT`, `UPDATE`, `DELETE` on these tables.
 
 ### The dimension rule
 

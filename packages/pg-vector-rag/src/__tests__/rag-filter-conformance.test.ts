@@ -66,12 +66,11 @@ for (const layout of ['shared', 'per-collection'] as const)
       const f = await accessFixture();
       try {
         await f.client.query('CREATE EXTENSION IF NOT EXISTS vector');
-        for (const statement of sharedLayoutSql({
-          dimension: CONFORMANCE_EMBEDDING_DIM,
-        })
-          .split(';')
-          .filter((sql) => sql.trim()))
-          await f.client.query(statement);
+        await f.client.query(
+          sharedLayoutSql({
+            dimension: CONFORMANCE_EMBEDDING_DIM,
+          }),
+        );
         await entry.run(async () => {
           const rag = new PgVectorRag(
             {
@@ -97,10 +96,7 @@ for (const layout of ['shared', 'per-collection'] as const)
     const f = await accessFixture();
     try {
       await f.client.query('CREATE EXTENSION IF NOT EXISTS vector');
-      for (const sql of sharedLayoutSql({ dimension: 64 })
-        .split(';')
-        .filter((s) => s.trim()))
-        await f.client.query(sql);
+      await f.client.query(sharedLayoutSql({ dimension: 64 }));
       const rag = new PgVectorRag(
         {
           collectionName: 'raw',

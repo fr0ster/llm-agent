@@ -1,5 +1,5 @@
 ---
-"@mcp-abap-adt/hana-vector-rag": minor
+"@mcp-abap-adt/hana-vector-rag": major
 ---
 
-Store and rank fragment vectors within each HANA record, with additive schema upgrades for existing tables.
+Deploy the companion REAL_VECTOR fragment table before shared or manually managed stores can search or write. Rank distinct records in HANA and update their fragments transactionally.

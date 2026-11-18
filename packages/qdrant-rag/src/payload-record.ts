@@ -8,7 +8,12 @@ export function splitPayload(payload: Record<string, unknown>): {
   text: string;
   metadata: RagMetadata;
 } {
-  const { text, ...rest } = payload;
+  const {
+    text,
+    [recordPointIdKey]: _recordPointId,
+    [fragmentIndexKey]: _fragmentIndex,
+    ...rest
+  } = payload;
   return {
     text: isFragmentedText(text) ? text.value : String(text ?? ''),
     metadata: rest as RagMetadata,
@@ -20,7 +25,8 @@ interface FragmentedText {
   fragmentVectors: number[][];
 }
 
-export const fragmentVectorsKey = 'text.fragmentVectors';
+export const recordPointIdKey = '_ragRecordPointId';
+export const fragmentIndexKey = '_ragFragmentIndex';
 
 function isFragmentedText(value: RagMetadata[string]): value is FragmentedText {
   return (
@@ -31,8 +37,4 @@ function isFragmentedText(value: RagMetadata[string]): value is FragmentedText {
     'fragmentVectors' in value &&
     Array.isArray(value.fragmentVectors)
   );
-}
-
-export function payloadFragmentVectors(payload: RagMetadata): number[][] {
-  return isFragmentedText(payload.text) ? payload.text.fragmentVectors : [];
 }

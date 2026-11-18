@@ -88,10 +88,15 @@ export class OllamaEmbedder implements IEmbedderBatch {
 
   async getMaxInputChars(options?: CallOptions): Promise<number | undefined> {
     const length = await this.modelContextLength(options);
-    // Allow up to four UTF-8 bytes per code point and reserve BOS/EOS.
-    return length === undefined
-      ? undefined
-      : Math.max(1, Math.floor((length - 2) / 4));
+    if (length === undefined) return undefined;
+    // Four UTF-8 bytes per code point plus two tokens for BOS/EOS.
+    const capacity = Math.floor((length - 2) / 4);
+    if (capacity < 1)
+      throw new RagError(
+        'Ollama context cannot fit one Unicode code point and special tokens',
+        'EMBED_ERROR',
+      );
+    return capacity;
   }
 
   private async httpError(

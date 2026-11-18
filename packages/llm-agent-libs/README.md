@@ -147,6 +147,13 @@ Use one deployment `timeZone` (default `UTC`) consistently in `SmartAgentConfig`
 
 Dialogue workers inherit the owning request's `openedAt` through task options, even when queued. The session inserts the planner's line in both prepared and conversation modes using the session zone, without changing stored history or passing `requestStartedAt` to the planner. Hosts no longer append guidance to worker prompts. Direct calls to `ContextAssembler.assemble` or `DirectLlmSubAgent.run` should pass the existing request start as `requestStartedAt` in options or input respectively; these paths never read a clock. The assembler always inserts the line when this option is given, regardless of timestamp-like text already in client content or history.
 
+## Precomputed record writes
+
+Custom RAG writers receive either one vector or an ordered vector array. The
+MCP catalog and planner memory fragment their stored input before embedding.
+The Qdrant skills backend requires the grouped Query API in Qdrant 1.10+.
+Existing skill points remain searchable, and new revisions index extra fragments.
+
 ## License
 
 **GNU Lesser General Public License v3.0 only** (`LGPL-3.0-only`) — see
@@ -329,8 +336,9 @@ An explicit positive value enables the previous deadline behavior; explicitly
 non-positive or non-finite values throw; fractional values and values above
 2,147,483,647 mean no deadline. `retrievalTimeoutMs` also defaults to no deadline. Adaptive
 plans have no default duration limit; set `budget.maxDurationMs` to opt in.
-Planner-memory writes and close drain without deadlines by default; optional
-`plannerMemory.writeTimeoutMs` and `plannerMemory.closeTimeoutMs` restore bounds.
+Planner-memory writes and close use the caller signal for cancellation. The
+previous write and close deadline settings are deprecated, and close drains
+pending writes.
 
 The source implements the public `IAgentProfileSource` contract: `list()` returns
 enabled names, descriptions and result kinds; `get(name)` performs an exact,

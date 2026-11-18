@@ -12,6 +12,7 @@ import {
   makeQdrantClient,
   makeQdrantStoreProvider,
   pointId,
+  type QdrantPoint,
 } from './qdrant-store.js';
 
 const MANIFEST = {
@@ -696,4 +697,75 @@ test('makeQdrantClient sends no api-key header without a credential', async () =
   } finally {
     globalThis.fetch = realFetch;
   }
+});
+
+test('Qdrant skill fragments participate in grouped recall without duplicating skill content', async (context) => {
+  let points: QdrantPoint[] = [];
+  const requests: string[] = [];
+  context.mock.method(
+    globalThis,
+    'fetch',
+    async (input: URL | Request | string, init?: RequestInit) => {
+      const url = new URL(String(input));
+      requests.push(url.pathname);
+      if (init?.method === 'PUT') {
+        const body = JSON.parse(String(init.body)) as { points: QdrantPoint[] };
+        points = body.points;
+        return Response.json({});
+      }
+      if (url.pathname.endsWith('/query/groups')) {
+        const body = JSON.parse(String(init?.body)) as {
+          group_by: string;
+          group_size: number;
+        };
+        assert.equal(body.group_by, 'recordId');
+        assert.equal(body.group_size, 1);
+        const best = points.find((point) => point.vector[1] === 1);
+        assert.ok(best);
+        return Response.json({
+          result: {
+            groups: [
+              { hits: [{ id: best.id, score: 1, payload: best.payload }] },
+            ],
+          },
+        });
+      }
+      const body = JSON.parse(String(init?.body)) as { ids: string[] };
+      return Response.json({
+        result: points.filter((point) => body.ids.includes(point.id)),
+      });
+    },
+  );
+  const provider = makeQdrantStoreProvider({
+    client: makeQdrantClient({
+      url: 'http://qdrant.test',
+      collection: 'skills',
+    }),
+    collection: 'skills',
+    catalogStore: makeInProcessCatalogStore(),
+    embed: async () => [
+      [1, 0],
+      [0, 1],
+    ],
+    retiredGraceMs: 0,
+    orphanGraceMs: 0,
+  });
+  const store = provider.forGroup('g1');
+  const { generation } = await store.beginGeneration();
+  const record = rec('skill');
+  await store.upsert(generation, [record]);
+  assert.equal(points.length, 2);
+  assert.equal(points[0]?.payload.content, record.content);
+  assert.equal(points[1]?.payload.content, undefined);
+  assert.equal(points[1]?.payload.parentPointId, points[0]?.id);
+  const hits = await store.queryRevision(generation, [0, 1], 1);
+  assert.deepEqual(
+    hits.map(({ record, score }) => [record.content, score]),
+    [[record.content, 1]],
+  );
+  assert.deepEqual(requests, [
+    '/collections/skills/points',
+    '/collections/skills/points/query/groups',
+    '/collections/skills/points',
+  ]);
 });

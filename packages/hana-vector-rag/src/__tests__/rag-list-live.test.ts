@@ -10,6 +10,7 @@ import {
 import { ragListConformanceCases } from '@mcp-abap-adt/llm-agent/testing/rag-list-conformance';
 import { createHanaClient, HanaVectorRag } from '../hana-vector-rag.js';
 import { HanaVectorRagProvider } from '../hana-vector-rag-provider.js';
+import { fragmentTableName } from '../schema.js';
 import { sharedLayoutSql } from '../shared-ddl.js';
 
 function isJsonArray(value: RagJsonValue): value is readonly RagJsonValue[] {
@@ -78,7 +79,11 @@ for (const layout of ['per-collection', 'shared'] as const)
     const providers: HanaVectorRagProvider[] = [];
     try {
       if (layout === 'shared') {
-        tables.push(documentsTable, catalogTable);
+        tables.push(
+          documentsTable,
+          catalogTable,
+          fragmentTableName(documentsTable),
+        );
         for (const sql of sharedLayoutSql({
           dimension: 3,
           documentsTable,
@@ -98,14 +103,14 @@ for (const layout of ['per-collection', 'shared'] as const)
             layout,
             documentsTable,
             embedder,
-            autoCreateSchema: false,
+            autoCreateSchema: layout === 'per-collection',
             recordCache: false,
           },
           client,
         );
         if (layout === 'per-collection') {
           await store.ensureSchema();
-          tables.push(collectionName);
+          tables.push(collectionName, fragmentTableName(collectionName));
         }
         stores.push(collectionName);
         return store;

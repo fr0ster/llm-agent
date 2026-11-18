@@ -27,6 +27,9 @@ export function fakeHana(catalog = 'rag_collection_catalog'): FakeHana {
     records: new Map<string, FakeCatalogRow>(),
     statements: [],
     client: {
+      transaction(work) {
+        return work(this);
+      },
       exec: async (sql, params = []) => ({
         rowCount: answer(fake, catalog, sql, params).length,
       }),
@@ -54,7 +57,9 @@ function answer(
   if (sql.startsWith('SELECT COUNT(*) AS "n" FROM SYS.TABLES')) {
     return [{ n: fake.tables.has(String(params[params.length - 1])) ? 1 : 0 }];
   }
-  const create = sql.match(/^CREATE TABLE (IF NOT EXISTS )?"([^"]+)"/);
+  const create = sql.match(
+    /^CREATE (?:COLUMN )?TABLE (IF NOT EXISTS )?"([^"]+)"/,
+  );
   if (create) {
     const [, ifNotExists, table] = create;
     if (fake.tables.has(table)) {
@@ -105,13 +110,12 @@ function answer(
     fake.tables.delete(drop[1]);
     return [];
   }
-  const write = sql.match(
-    /^UPSERT "([^"]+)" \(id, text, vector, metadata, fragment_vectors\)/,
-  );
+  const write = sql.match(/^UPSERT "([^"]+)" \(id, text, vector, metadata\)/);
   if (write) {
     requireTable(fake, write[1]);
     return [{}];
   }
+  if (/^DELETE FROM "[^"]+_FRAGMENTS"/.test(sql)) return [];
   if (sql.startsWith('SELECT TABLE_NAME FROM SYS.TABLES')) {
     return [...fake.tables].map((t) => ({ TABLE_NAME: t }));
   }

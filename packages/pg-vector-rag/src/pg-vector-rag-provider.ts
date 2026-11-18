@@ -48,6 +48,7 @@ import {
   createExtensionSql,
   createTableSql,
   dropTableSql,
+  fragmentTableName,
   qualifiedTable,
   quoteIdent,
 } from './schema.js';
@@ -355,10 +356,12 @@ export class PgVectorRagProvider
         'SELECT table_name FROM information_schema.tables WHERE table_schema = $1',
         [schema],
       );
+      const names = rows.map((r) => String(r.table_name));
+      const fragments = new Set(names.map(fragmentTableName));
       return {
         ok: true,
-        value: rows
-          .map((r) => String(r.table_name))
+        value: names
+          .filter((name) => !fragments.has(name))
           .filter(
             (t) =>
               t !== this.catalogTable &&

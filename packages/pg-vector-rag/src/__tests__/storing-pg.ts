@@ -139,8 +139,7 @@ const AFTER_KEY = /^"id" > \$(\d+)$/;
 const byteCompare = (a: string, b: string): number =>
   Buffer.compare(Buffer.from(a), Buffer.from(b));
 
-const SEARCH =
-  /^SELECT (?:id, text, metadata|"id", "text", "metadata"), LEAST\(.*? AS score FROM ((?:"[^"]+"[.])?"[^"]+")(?: WHERE (.*))? ORDER BY score LIMIT (\d+)$/;
+const SEARCH = /WHERE (.+) ORDER BY "vector" <=> .* LIMIT (\d+)\)/;
 
 /** `sharedDimension`: what the startup check of a shared table finds (default: none, the check is not answered). */
 export function storingPg(
@@ -152,7 +151,6 @@ export function storingPg(
   } = {},
 ): StoringPg {
   const rows = new Map<string, Row>();
-  let legacyFragmentTable = opts.legacyFragmentTable;
   /** Catalog rows per table, keyed by store_name, in column order. */
   const records = new Map<string, Map<string, unknown[]>>();
   const recordsOf = (table: string): Map<string, unknown[]> => {
@@ -233,28 +231,20 @@ export function storingPg(
           );
       };
       const clearTable = sql.match(
-        /^(?:TRUNCATE |DROP TABLE IF EXISTS )("[^"]+")$/,
+        /^(?:TRUNCATE |DROP TABLE IF EXISTS )("[^"]+")(?:, "[^"]+")?$/,
       );
       if (clearTable) {
         for (const [key, row] of rows)
           if (row.table === clearTable[1]) rows.delete(key);
         return { rows: [], rowCount: 0 };
       }
-      if (sql.startsWith('SELECT "fragment_vectors"')) {
-        if (legacyFragmentTable && sql.includes(`"${legacyFragmentTable}"`))
-          throw Object.assign(new Error('column does not exist'), {
-            code: '42703',
-          });
-        return { rows: [], rowCount: 0 };
-      }
       if (
-        sql.startsWith('ALTER TABLE ') &&
-        sql.endsWith('ADD COLUMN IF NOT EXISTS "fragment_vectors" vector[]')
-      ) {
-        legacyFragmentTable = undefined;
+        sql.startsWith('CREATE ') ||
+        sql.startsWith('ALTER TABLE') ||
+        sql.startsWith('DROP TRIGGER') ||
+        sql.includes('CROSS JOIN LATERAL unnest("fragment_vectors")')
+      )
         return { rows: [], rowCount: 0 };
-      }
-      if (sql.startsWith('CREATE ')) return { rows: [], rowCount: 0 };
       if (opts.sharedDimension !== undefined) {
         if (sql.includes('pg_attribute'))
           return { rows: [{ dim: opts.sharedDimension }], rowCount: 1 };
@@ -427,13 +417,19 @@ export function storingPg(
         const gone = recordsOf(delRecord[1]).delete(String(params[0]));
         return { rows: [], rowCount: gone ? 1 : 0 };
       }
-      const m = sql.match(SEARCH);
-      if (m) {
+      const m =
+        sql.startsWith('WITH RECURSIVE fragment_hits') && sql.match(SEARCH);
+      const table = /FROM winners AS w JOIN ((?:"[^"]+"[.])?"[^"]+")/.exec(
+        sql,
+      )?.[1];
+      if (m && table) {
         searches.push({ sql, params });
-        const conditions = m[2] ? m[2].split(' AND ') : [];
+        const conditions = m[1]
+          .replaceAll('"metadata"', 'metadata')
+          .split(' AND ');
         const q = parseVector(sql);
         const hits = [...rows.values()]
-          .filter((r) => r.table === m[1])
+          .filter((r) => r.table === table)
           .filter((r) => conditions.every((c) => evaluate(c, r, params)))
           .map((r) => ({
             id: r.id,
@@ -445,7 +441,7 @@ export function storingPg(
             ),
           }))
           .sort((a, b) => a.score - b.score)
-          .slice(0, Number(m[3]));
+          .slice(0, Number(m[2]));
         return { rows: hits, rowCount: hits.length };
       }
       throw new Error(`storing-pg: unsupported statement: ${sql.slice(0, 80)}`);

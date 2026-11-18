@@ -1,6 +1,7 @@
 // Live check of the shared table layout on a real Postgres with pgvector.
 // Reads PG_TEST_URL; run `npm run build` at the repo root first (the built
 // workspace packages are imported from the root node_modules).
+import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -11,18 +12,19 @@ const rootRequire = createRequire(resolve(root, 'package.json'));
 const load = (spec) => import(pathToFileURL(rootRequire.resolve(spec)).href);
 
 const { symmetricEmbedder } = await load('@mcp-abap-adt/llm-agent');
-const { CONFORMANCE_EMBEDDING_DIM, conformanceEmbedder, registerRawRecordInsert } = await load(
-  '@mcp-abap-adt/llm-agent/testing/rag-filter-conformance',
-);
+const {
+  CONFORMANCE_EMBEDDING_DIM,
+  conformanceEmbedder,
+  registerRawRecordInsert,
+} = await load('@mcp-abap-adt/llm-agent/testing/rag-filter-conformance');
 const { sharedTableConformanceCases } = await load(
   '@mcp-abap-adt/llm-agent/testing/shared-table-conformance',
 );
 const { scanDeleteConformanceCases, isScanDeleteCaseSkipped } = await load(
   '@mcp-abap-adt/llm-agent/testing/scan-delete-conformance',
 );
-const { PgVectorRag, PgVectorRagProvider, sharedLayoutSql } = await load(
-  '@mcp-abap-adt/pg-vector-rag',
-);
+const { fragmentTableName, PgVectorRag, PgVectorRagProvider, sharedLayoutSql } =
+  await load('@mcp-abap-adt/pg-vector-rag');
 const { default: pg } = await import('pg');
 
 const url = process.env.PG_TEST_URL;
@@ -46,22 +48,34 @@ const kits = [];
 
 const resetTables = () =>
   pool.query(
-    `TRUNCATE "${schema}"."rag_documents", "${schema}"."rag_collections"`,
+    `TRUNCATE "${schema}"."rag_documents", "${schema}"."rag_documents_fragments", "${schema}"."rag_collections"`,
   );
 
 function storeOf(collection, dimension = dim) {
-  return registerRawRecordInsert(new PgVectorRag(
-    {
-      collectionName: collection,
-      dimension,
-      layout: 'shared',
-      schema,
-      embedder,
+  return registerRawRecordInsert(
+    new PgVectorRag(
+      {
+        collectionName: collection,
+        dimension,
+        layout: 'shared',
+        schema,
+        embedder,
+      },
+      client,
+    ),
+    async (r) => {
+      await client.query(
+        `INSERT INTO "${schema}".rag_documents (collection, id, text, vector, metadata) VALUES ($1, $2, $3, $4::vector, $5::jsonb)`,
+        [
+          collection,
+          r.id,
+          r.text,
+          JSON.stringify((await conformanceEmbedder().embed(r.text)).vector),
+          JSON.stringify(r.metadata),
+        ],
+      );
     },
-    client,
-  ), async r => {
-    await client.query(`INSERT INTO "${schema}".rag_documents (collection, id, text, vector, metadata) VALUES ($1, $2, $3, $4::vector, $5::jsonb)`, [collection, r.id, r.text, JSON.stringify((await conformanceEmbedder().embed(r.text)).vector), JSON.stringify(r.metadata)]);
-  });
+  );
 }
 
 function subject() {
@@ -113,10 +127,7 @@ try {
   const conn = await pool.connect();
   try {
     await conn.query(`SET search_path TO ${searchPath}`);
-    for (const stmt of sharedLayoutSql({ dimension: dim }).split(';\n')) {
-      const sql = stmt.trim().replace(/;$/, '');
-      if (sql) await conn.query(sql);
-    }
+    await conn.query(sharedLayoutSql({ dimension: dim }));
   } finally {
     // The connection goes back to the pool: leave no search_path behind.
     await conn.query('RESET search_path');
@@ -152,6 +163,68 @@ try {
     console.log('FAIL startup check, wrong dimension');
   }
 
+  total++;
+  const regression =
+    'indexed fragments rank distinct records and cascade replacement and deletion';
+  try {
+    await resetTables();
+    const rag = storeOf('fragments');
+    const perpendicular = Array.from({ length: dim }, (_, index) =>
+      Number(index === 0),
+    );
+    const query = Array.from({ length: dim }, (_, index) =>
+      Number(index === 1),
+    );
+    const legacy = perpendicular.map((value, index) => value + query[index]);
+    assert.ok(
+      (await rag.upsertPrecomputed('legacy', legacy, { id: 'legacy' })).ok,
+    );
+    assert.ok(
+      (
+        await rag.upsertPrecomputed(
+          'best tail',
+          [perpendicular, query, query, query],
+          { id: 'long' },
+        )
+      ).ok,
+    );
+    const lookup = { text: 'tail', toVector: async () => query };
+    const search = await rag.query(lookup, 2);
+    assert.ok(search.ok, search.ok ? undefined : search.error.message);
+    assert.deepEqual(
+      search.value.map(({ text }) => text),
+      ['best tail', 'legacy'],
+    );
+    const fragments = async () =>
+      (
+        await pool.query(
+          `SELECT "ordinal" FROM "${schema}"."rag_documents_fragments" WHERE "collection" = 'fragments' ORDER BY "ordinal"`,
+        )
+      ).rows.length;
+    assert.equal(await fragments(), 3);
+    assert.ok(
+      (
+        await rag.upsertPrecomputed('replacement', perpendicular, {
+          id: 'long',
+        })
+      ).ok,
+    );
+    assert.equal(await fragments(), 0);
+    assert.ok(
+      (
+        await rag.upsertPrecomputed('best tail', [perpendicular, query], {
+          id: 'long',
+        })
+      ).ok,
+    );
+    assert.ok((await rag.writer().deleteByIdRaw('long')).ok);
+    assert.equal(await fragments(), 0);
+    console.log(`PASS ${regression}`);
+  } catch (error) {
+    failures.push([regression, error]);
+    console.log(`FAIL ${regression}`);
+  }
+
   const sharedKitStart = { total };
   for (const c of sharedTableConformanceCases) {
     total++;
@@ -168,7 +241,7 @@ try {
   }
   kits.push({
     label: 'shared-table kit (incl. startup checks)',
-    ran: total - sharedKitStart.total + 2,
+    ran: total - sharedKitStart.total + 3,
     failed: failures.length,
     skipped: 0,
   });
@@ -195,7 +268,9 @@ try {
   };
   const dropPerCollectionTables = async () => {
     for (const table of pcTables)
-      await pool.query(`DROP TABLE IF EXISTS "${schema}"."${table}"`);
+      await pool.query(
+        `DROP TABLE IF EXISTS "${schema}"."${table}", "${schema}"."${fragmentTableName(table)}"`,
+      );
     pcTables.clear();
   };
   const sharedScanSubject = async () => {
@@ -222,20 +297,34 @@ try {
     };
   };
   const perCollectionStore = (collection) =>
-    registerRawRecordInsert(new PgVectorRag(
-      {
-        collectionName: collection,
-        dimension: dim,
-        layout: 'per-collection',
-        embedder,
+    registerRawRecordInsert(
+      new PgVectorRag(
+        {
+          collectionName: collection,
+          dimension: dim,
+          layout: 'per-collection',
+          embedder,
+        },
+        pcClient,
+      ),
+      async (r) => {
+        // Initialize the test table through a valid write before raw fixture insertion.
+        const store = new PgVectorRag(
+          { collectionName: collection, dimension: dim, embedder },
+          pcClient,
+        );
+        await store.ensureSchema();
+        await pcClient.query(
+          `INSERT INTO "${collection}" (id, text, vector, metadata) VALUES ($1, $2, $3::vector, $4::jsonb)`,
+          [
+            r.id,
+            r.text,
+            JSON.stringify((await conformanceEmbedder().embed(r.text)).vector),
+            JSON.stringify(r.metadata),
+          ],
+        );
       },
-      pcClient,
-    ), async r => {
-      // Initialize the test table through a valid write before raw fixture insertion.
-      const store = new PgVectorRag({ collectionName: collection, dimension: dim, embedder }, pcClient);
-      await store.ensureSchema();
-      await pcClient.query(`INSERT INTO "${collection}" (id, text, vector, metadata) VALUES ($1, $2, $3::vector, $4::jsonb)`, [r.id, r.text, JSON.stringify((await conformanceEmbedder().embed(r.text)).vector), JSON.stringify(r.metadata)]);
-    });
+    );
   const perCollectionScanSubject = async () => {
     await dropPerCollectionTables();
     return {

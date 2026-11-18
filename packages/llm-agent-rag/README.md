@@ -52,6 +52,12 @@ await prefetchRagFactories(['qdrant']);
 const rag = await makeRag({ type: 'qdrant', embedder, collectionName, url });
 ```
 
+## Upgrade record storage
+
+The in-memory vector backend deduplicates anonymous records by full text.
+The `dedupThreshold` option is deprecated. Follow the backend package\'s
+migration instructions before upgrading manually deployed vector stores.
+
 ## Optional peer dependencies
 
 Install only the backends you use:

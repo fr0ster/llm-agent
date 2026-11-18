@@ -5,6 +5,8 @@ import type {
   IEmbedderBatch,
 } from '../../interfaces/rag.js';
 import { DefaultWaitStrategy } from '../../interfaces/wait-strategy.js';
+import { CircuitBreaker } from '../../resilience/circuit-breaker.js';
+import { withCircuitBreaker } from '../../resilience/circuit-breaker-embedder.js';
 import { composeResilientEmbedder } from '../../resilience/embedder-resilience.js';
 import { embedRecord } from '../record-embedding.js';
 import { symmetricEmbedder } from '../retrieval-embedder.js';
@@ -132,20 +134,25 @@ test('fragment writes honor Retry-After past the ordinary retry count and cancel
     },
   );
   let calls = 0;
+  const breaker = new CircuitBreaker();
   const embedder = symmetricEmbedder(
-    composeResilientEmbedder({
-      async embed() {
-        if (++calls <= 6 || controller.signal.aborted)
-          throw Object.assign(new Error('busy'), {
-            status: 429,
-            headers: { 'Retry-After': '7' },
-          });
-        return { vector: [1] };
-      },
-    }),
+    withCircuitBreaker(
+      composeResilientEmbedder({
+        async embed() {
+          if (++calls <= 6 || controller.signal.aborted)
+            throw Object.assign(new Error('busy'), {
+              status: 429,
+              headers: { 'Retry-After': '7' },
+            });
+          return { vector: [1] };
+        },
+      }),
+      breaker,
+    ),
   );
   assert.deepEqual(await embedRecord(embedder, 'aaaa', 2), [[1], [1]]);
   assert.equal(calls, 8);
+  assert.equal(breaker.state, 'closed');
   assert.deepEqual(
     waits,
     Array.from({ length: 6 }, () => 7000),
@@ -171,4 +178,105 @@ test('fragment writes honor Retry-After past the ordinary retry count and cancel
   );
   assert.equal(abortedCalls, 1);
   assert.equal(waits.at(-1), 7000);
+});
+
+test('anonymous records with identical leading fragments keep both full texts', async () => {
+  const rag = new VectorRag(
+    symmetricEmbedder({
+      async embed() {
+        return { vector: [1, 0] };
+      },
+    }),
+    { fragmentSizeChars: 6 },
+  );
+  for (const text of ['prefix Alpha', 'prefix Beta', 'prefix Alpha'])
+    assert.ok((await rag.upsert(text, {})).ok);
+  const list = await rag.list({ includeText: true });
+  assert.ok(list.ok);
+  assert.deepEqual(list.value.records.map(({ text }) => text).sort(), [
+    'prefix Alpha',
+    'prefix Beta',
+  ]);
+});
+
+test('CRLF remains intact across hard fragment boundaries', async () => {
+  for (const size of [1, 3]) {
+    const seen: string[] = [];
+    const text = 'ab\r\nxy\r\ncd';
+    await embedRecord(
+      {
+        async embedDocument(fragment) {
+          seen.push(fragment);
+          return { vector: [1] };
+        },
+      },
+      text,
+      size,
+    );
+    assert.equal(seen.join(''), text);
+    assert.ok(seen.every((fragment) => !fragment.endsWith('\r')));
+  }
+});
+
+test('batch breaker lets all throttled fragment attempts reach the provider', async (t) => {
+  const waits: number[] = [];
+  t.mock.method(DefaultWaitStrategy.prototype, 'wait', async (ms: number) => {
+    waits.push(ms);
+    return 'elapsed';
+  });
+  const breaker = new CircuitBreaker();
+  let calls = 0;
+  const embedder = symmetricEmbedder(
+    withCircuitBreaker(
+      {
+        async embed() {
+          return { vector: [1] };
+        },
+        async embedBatch(texts: string[]) {
+          if (++calls <= 8)
+            throw Object.assign(new Error('quota'), {
+              response: {
+                status: 429,
+                headers: new Headers({ 'retry-after': '3' }),
+              },
+            });
+          return texts.map(() => ({ vector: [1] }));
+        },
+      },
+      breaker,
+    ),
+  );
+  assert.deepEqual(await embedRecord(embedder, '123456', 2), [[1], [1], [1]]);
+  assert.equal(calls, 9);
+  assert.deepEqual(
+    waits,
+    Array.from({ length: 8 }, () => 3000),
+  );
+  assert.equal(breaker.state, 'closed');
+});
+
+test('immediate Retry-After lets the caller abort between refusals', async () => {
+  const controller = new AbortController();
+  setImmediate(() => controller.abort(new Error('quota wait cancelled')));
+  let calls = 0;
+  await assert.rejects(
+    embedRecord(
+      {
+        async embedDocument() {
+          if (++calls < 20) {
+            throw Object.assign(new Error('quota'), {
+              status: 429,
+              retryAfterSeconds: 0,
+            });
+          }
+          return { vector: [1] };
+        },
+      },
+      'record',
+      undefined,
+      { signal: controller.signal },
+    ),
+    /quota wait cancelled/,
+  );
+  assert.equal(calls, 1);
 });

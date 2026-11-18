@@ -4,6 +4,7 @@ import type {
   IRag,
   IRagBackendWriter,
   IRetrievalEmbedder,
+  RagDocumentVectors,
   RagMetadata,
   RagResult,
   Result,
@@ -31,6 +32,7 @@ import {
   type RagScanFilter,
   type RagScanPage,
   ragIdentityFilter,
+  recordVectors,
   TextOnlyEmbedding,
   validateRagMetadata,
 } from '@mcp-abap-adt/llm-agent';
@@ -41,9 +43,9 @@ import { resolveLayout } from './layout.js';
 import { RecordCache, type StoreCache } from './record-cache.js';
 import { deleteWhere, scanPage } from './scan-delete.js';
 import {
-  addFragmentVectorsSql,
   assertCollectionName,
   createExtensionSql,
+  fragmentStorageSql,
   qualifiedTable,
 } from './schema.js';
 import { checkSharedTables } from './shared-check.js';
@@ -232,18 +234,14 @@ export class PgVectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
   private async migrateFragmentStorage(): Promise<void> {
     if (this.sql.layout === 'shared') return;
     const client = await this.clientPromise;
-    try {
-      await client.query(
-        `SELECT "fragment_vectors" FROM ${this.listTable} WHERE FALSE`,
-      );
-    } catch (error) {
-      if (
-        !(error instanceof Error) ||
-        !('code' in error) ||
-        error.code !== '42703'
-      )
-        throw error;
-      await client.query(addFragmentVectorsSql(this.collectionName));
+    const statements = fragmentStorageSql(this.collectionName, this.dimension);
+    // A single DDL transaction keeps the projection, trigger and backfill in sync.
+    if (client.transaction) {
+      await client.transaction(async (connection) => {
+        for (const sql of statements) await connection.query(sql);
+      });
+    } else {
+      await client.query(statements.join(';\n'));
     }
   }
 
@@ -313,10 +311,7 @@ export class PgVectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
       const client = await this.clientPromise;
       const lit = this.vectorLiteral(vector);
       const rawNamespace = options?.ragFilter?.namespace;
-      // Session/user scope, `ragFilter.namespace` and expiry are conditions of
-      // the SQL itself (see store-sql.ts), evaluated before ORDER BY … LIMIT:
-      // the table has no ANN index, so the scan is exact and LIMIT counts only
-      // matching rows.
+      // Apply owner scope, namespace and expiry before ranking distinct records.
       const { sql, params } = this.sql.search(lit, Math.max(1, k), {
         identity: ragIdentityFilter(options),
         namespace: typeof rawNamespace === 'string' ? rawNamespace : undefined,
@@ -550,7 +545,7 @@ export class PgVectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
         options,
       );
       options?.signal?.throwIfAborted();
-      return this.upsertKnown(text, vectors, metadata);
+      return this.upsertKnown(text, vectors, metadata, options);
     } catch (err) {
       if (options?.signal?.aborted)
         return { ok: false, error: new RagError('Aborted', 'ABORTED') };
@@ -560,16 +555,28 @@ export class PgVectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
 
   async upsertPrecomputed(
     text: string,
-    vector: number[],
+    vector: RagDocumentVectors,
     metadata: RagMetadata,
+    options?: CallOptions,
   ): Promise<Result<void, RagError>> {
-    return this.upsertKnown(text, [vector], metadata);
+    try {
+      options?.signal?.throwIfAborted();
+      return this.upsertKnown(text, recordVectors(vector), metadata, options);
+    } catch (error) {
+      return {
+        ok: false,
+        error: options?.signal?.aborted
+          ? new RagError('Aborted', 'ABORTED')
+          : this.failure(error, 'UPSERT_ERROR'),
+      };
+    }
   }
 
   private async upsertKnown(
     text: string,
     [vector, ...extras]: number[][],
     metadata: RagMetadata,
+    options?: CallOptions,
   ): Promise<Result<void, RagError>> {
     try {
       metadata = validateRagMetadata(metadata);
@@ -590,6 +597,7 @@ export class PgVectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
         JSON.stringify(rest),
         fragments,
       );
+      options?.signal?.throwIfAborted();
       const settled = this.cache.beginWrite([id]);
       try {
         await client.query(stmt.sql, stmt.params);
@@ -598,7 +606,12 @@ export class PgVectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
       }
       return { ok: true, value: undefined };
     } catch (err) {
-      return { ok: false, error: this.failure(err, 'UPSERT_ERROR') };
+      return {
+        ok: false,
+        error: options?.signal?.aborted
+          ? new RagError('Aborted', 'ABORTED')
+          : this.failure(err, 'UPSERT_ERROR'),
+      };
     }
   }
 
@@ -632,6 +645,7 @@ export class PgVectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
         try {
           await this.maybeEnsureSchema();
           const client = await this.clientPromise;
+          await this.ensureFragmentStorage();
           const stmt = this.sql.clear();
           const settled = this.cache.beginClear();
           try {
@@ -644,8 +658,8 @@ export class PgVectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
           return { ok: false, error: this.failure(err, 'CLEAR_ERROR') };
         }
       },
-      upsertPrecomputedRaw: async (id, text, vector, metadata) =>
-        this.upsertPrecomputed(text, vector, { ...metadata, id }),
+      upsertPrecomputedRaw: (id, text, vector, metadata, options) =>
+        this.upsertPrecomputed(text, vector, { ...metadata, id }, options),
     };
   }
 }

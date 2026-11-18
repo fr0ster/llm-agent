@@ -3,10 +3,6 @@
  * per docs/ARCHITECTURE.md tech-debt (the builder's MCP block: connect stays
  * in the builder; the vectorization is pulled into this small module).
  *
- * Chunking and retry are properties of the EMBEDDER (composeResilientEmbedder
- * in @mcp-abap-adt/llm-agent-rag's resolveEmbedder), NOT of this file: the
- * batch call below is deliberately naive and carries no batch-size constant.
- *
  * Pure coordinators of catalog components — no builder state, no private fields.
  */
 
@@ -24,6 +20,7 @@ import type {
   LlmTool,
   McpClientDescriptor,
   NamespaceClientInput,
+  RagDocumentVectors,
   RagMetadata,
   ToolCatalogStatus,
 } from '@mcp-abap-adt/llm-agent';
@@ -33,6 +30,7 @@ import {
   DefaultWaitStrategy,
   defaultToolNamespace,
   defaultToolRecordKey,
+  embedDocumentRecords,
 } from '@mcp-abap-adt/llm-agent';
 
 /**
@@ -80,7 +78,7 @@ async function writeOne(
   writer: IRagBackendWriter,
   id: string,
   text: string,
-  vector: number[] | undefined,
+  vector: RagDocumentVectors | undefined,
   requestLogger: IRequestLogger,
   detail: 'tools' | 'skills',
   metadata: RagMetadata = {},
@@ -166,10 +164,10 @@ export async function vectorizeMcpTools(
   // summary line: swallowing it entirely would hide exactly the provider
   // message that made #236 diagnosable in the first place.
   let batchFailure: string | undefined;
-  // biome-ignore lint/suspicious/noExplicitAny: reading the store's private embedder for batch optimisation
-  const storeEmbedder = (toolsRag as any).embedder as
-    | IRetrievalEmbedder
-    | undefined;
+  const { embedder: storeEmbedder, fragmentSizeChars } = toolsRag as IRag & {
+    embedder?: IRetrievalEmbedder;
+    fragmentSizeChars?: number;
+  };
 
   let tools: readonly LlmTool[];
   let provenance: ReadonlyMap<
@@ -263,20 +261,26 @@ export async function vectorizeMcpTools(
     return keyFor(p.originalName, p.slotIndex);
   });
 
-  let vectors: number[][] | undefined;
+  let vectors: RagDocumentVectors[] | undefined;
   if (
     storeEmbedder?.embedDocuments !== undefined &&
-    writer.upsertPrecomputedRaw !== undefined
+    (writer.upsertPrecomputedRaw || writer.upsertManyPrecomputedRaw)
   ) {
     const start = Date.now();
     try {
       // Tool descriptions are what the store holds: documents.
-      const results = await storeEmbedder.embedDocuments(texts, {
-        ...options,
-        usage: options?.usage?.with({ role: 'embedding' }),
-      });
-      vectors = results.map((r) => r.vector);
-      const real = results.reduce<{ p: number; t: number } | null>(
+      const records = await embedDocumentRecords(
+        storeEmbedder,
+        texts,
+        fragmentSizeChars,
+        options,
+      );
+      vectors = records.map((record) =>
+        record.length === 1
+          ? record[0].vector
+          : record.map(({ vector }) => vector),
+      );
+      const real = records.flat().reduce<{ p: number; t: number } | null>(
         (a, r) =>
           r.usage
             ? {
@@ -317,12 +321,13 @@ export async function vectorizeMcpTools(
   // Which tools' writes returned ok — turned into the record count below.
   const written: boolean[] = new Array(tools.length).fill(false);
   if (vectors && writer.upsertManyPrecomputedRaw) {
+    const precomputed = vectors;
     const bulk = await writer
       .upsertManyPrecomputedRaw(
         tools.map((t, i) => ({
           id: ids[i],
           text: texts[i],
-          vector: (vectors as number[][])[i],
+          vector: precomputed[i],
           // Store the EXPOSED name so retrieval recovers it via
           // toolNameFromRecord, independent of the key scheme.
           metadata: { name: t.name },

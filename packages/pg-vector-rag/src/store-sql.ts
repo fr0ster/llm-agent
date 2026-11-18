@@ -4,7 +4,12 @@ import {
   type RagIdentityFilter,
   type RagScanFilter,
 } from '@mcp-abap-adt/llm-agent';
-import { createTableSql, qualifiedTable, quoteIdent } from './schema.js';
+import {
+  createTableSql,
+  fragmentTableName,
+  qualifiedTable,
+  quoteIdent,
+} from './schema.js';
 
 export type SqlStatement = { sql: string; params: unknown[] };
 
@@ -172,9 +177,51 @@ function filterConditions(
   return conditions;
 }
 
-/** A smaller cosine distance is a better match. MIN over no fragments is NULL. */
-function bestDistance(lit: string): string {
-  return `LEAST("vector" <=> ${lit}, (SELECT MIN(fragment <=> ${lit}) FROM unnest("fragment_vectors") AS vectors(fragment)))`;
+/**
+ * Each lateral step asks the vector index for the nearest fragment of a record
+ * not yet seen. The union of the two record shortlists contains the winners.
+ * Join the documents table for text only after combining and ranking the ids.
+ */
+function rankedSearch(
+  table: string,
+  fragments: string,
+  lit: string,
+  limit: number,
+  where: string,
+  shared: boolean,
+): string {
+  const scope = shared ? ' AND f."collection" = $1' : '';
+  const recordScope = shared ? ' AND d."collection" = $1' : '';
+  return `WITH RECURSIVE fragment_hits (ordinal, seen, id, distance) AS (
+    SELECT 0, ARRAY[]::varchar[], NULL::varchar, NULL::double precision
+    UNION ALL
+    SELECT hits.ordinal + 1, array_append(hits.seen, nearest.id), nearest.id, nearest.distance
+    FROM fragment_hits AS hits
+    CROSS JOIN LATERAL (
+      SELECT f."id", f."vector" <=> ${lit} AS distance
+      FROM ${fragments} AS f
+      WHERE hits.ordinal < ${limit} AND f."id" <> ALL(hits.seen)${scope}
+        AND EXISTS (SELECT 1 FROM ${table} WHERE "id" = f."id" AND ${where})
+      ORDER BY f."vector" <=> ${lit} LIMIT 1
+    ) AS nearest
+  ), exact_fragments AS (
+    SELECT f."id", MIN(f."vector" <=> ${lit}) AS distance
+    FROM ${fragments} AS f
+    WHERE (SELECT COUNT(*) FROM fragment_hits) <= ${limit}${scope}
+      AND EXISTS (SELECT 1 FROM ${table} WHERE "id" = f."id" AND ${where})
+    GROUP BY f."id" ORDER BY distance LIMIT ${limit}
+  ), candidates AS (
+    (SELECT "id", "vector" <=> ${lit} AS distance FROM ${table}
+     WHERE ${where} ORDER BY "vector" <=> ${lit} LIMIT ${limit})
+    UNION ALL SELECT id, distance FROM fragment_hits WHERE ordinal > 0
+    UNION ALL SELECT id, distance FROM exact_fragments
+  ), winners AS (
+    SELECT id, MIN(distance) AS distance FROM candidates
+    GROUP BY id ORDER BY distance, id LIMIT ${limit}
+  )
+  SELECT d."id", d."text", d."metadata", w.distance AS score
+  FROM winners AS w JOIN ${table} AS d ON d."id" = w.id${recordScope}
+  ORDER BY w.distance, w.id`;
 }
 
 /** One table per collection: the 30.1.0 statements. */
@@ -183,6 +230,7 @@ export function perCollectionStoreSql(
   dimension: number,
 ): PgStoreSql {
   const table = quoteIdent(collection);
+  const fragments = quoteIdent(fragmentTableName(collection));
   return {
     listPage: (after, limit, includeText, filter) =>
       listSql(table, [], after, limit, includeText, filter),
@@ -192,7 +240,7 @@ export function perCollectionStoreSql(
       const params: unknown[] = [];
       const where = filterConditions(filter, params, 'metadata').join(' AND ');
       return {
-        sql: `SELECT id, text, metadata, ${bestDistance(lit)} AS score FROM ${table} WHERE ${where} ORDER BY score LIMIT ${limit}`,
+        sql: rankedSearch(table, fragments, lit, limit, where, false),
         params,
       };
     },
@@ -208,7 +256,7 @@ export function perCollectionStoreSql(
       sql: `DELETE FROM ${table} WHERE id = $1`,
       params: [id],
     }),
-    clear: () => ({ sql: `TRUNCATE ${table}`, params: [] }),
+    clear: () => ({ sql: `TRUNCATE ${table}, ${fragments}`, params: [] }),
     countRows: () => ({
       sql: `SELECT COUNT(*) AS n FROM ${table}`,
       params: [],
@@ -226,6 +274,7 @@ export function sharedStoreSql(
   schema?: string,
 ): PgStoreSql {
   const table = qualifiedTable(documentsTable, schema);
+  const fragments = qualifiedTable(fragmentTableName(documentsTable), schema);
   return {
     listPage: (after, limit, includeText, filter) =>
       listSql(table, [collection], after, limit, includeText, filter),
@@ -238,7 +287,7 @@ export function sharedStoreSql(
         ...filterConditions(filter, params, '"metadata"', true),
       ].join(' AND ');
       return {
-        sql: `SELECT "id", "text", "metadata", ${bestDistance(lit)} AS score FROM ${table} WHERE ${where} ORDER BY score LIMIT ${limit}`,
+        sql: rankedSearch(table, fragments, lit, limit, where, true),
         params,
       };
     },

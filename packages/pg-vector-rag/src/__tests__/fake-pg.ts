@@ -60,7 +60,8 @@ function answer(
       present: fake.tables.has(String(params[0]).replace(/^"|"$/g, '')),
     });
   }
-  if (sql.startsWith('CREATE EXTENSION')) return NONE;
+  if (sql.startsWith('CREATE EXTENSION') || sql.startsWith('ALTER TABLE'))
+    return NONE;
   const create = sql.match(/^CREATE TABLE (IF NOT EXISTS )?"([^"]+)"/);
   if (create) {
     const [, ifNotExists, table] = create;
@@ -112,9 +113,10 @@ function answer(
       rowCount: fake.records.delete(String(params[0])) ? 1 : 0,
     };
   }
-  const drop = sql.match(/^DROP TABLE IF EXISTS "([^"]+)"$/);
+  const drop = sql.match(/^DROP TABLE IF EXISTS (.+)$/);
   if (drop) {
-    fake.tables.delete(drop[1]);
+    for (const name of drop[1].split(', '))
+      fake.tables.delete(name.replace(/^"|"$/g, ''));
     return NONE;
   }
   const write = sql.match(

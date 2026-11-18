@@ -125,7 +125,7 @@ export async function startQdrantStub(
       return;
     }
     const pts = r.path.match(
-      /^\/collections\/([^/]+)\/points(\/scroll|\/delete|\/search|\/payload)?$/,
+      /^\/collections\/([^/]+)\/points(\/scroll|\/delete|\/search|\/payload|\/batch|\/query(?:\/groups)?)?$/,
     );
     if (pts) {
       const name = pts[1];
@@ -143,6 +143,24 @@ export async function startQdrantStub(
           c.points.set(p.id, p);
         }
         reply(200, { result: { status: 'completed' } });
+        return;
+      }
+      if (r.method === 'POST' && action === '/batch') {
+        const operations = body.operations as (
+          | { upsert: { points: StubPoint[] } }
+          | { delete: { filter: QdrantFilter } }
+        )[];
+        for (const operation of operations) {
+          if ('upsert' in operation) {
+            for (const point of operation.upsert.points)
+              c.points.set(point.id, point);
+          } else {
+            for (const [id, point] of c.points)
+              if (matchesFilter(point.payload, operation.delete.filter, id))
+                c.points.delete(id);
+          }
+        }
+        reply(200, { result: operations.map(() => ({ status: 'completed' })) });
         return;
       }
       if (r.method === 'POST' && action === undefined) {
@@ -165,7 +183,7 @@ export async function startQdrantStub(
           .filter(
             (id) =>
               filter === undefined ||
-              matchesFilter(c.points.get(id)?.payload ?? {}, filter),
+              matchesFilter(c.points.get(id)?.payload ?? {}, filter, id),
           );
         const first =
           body.offset === undefined
@@ -191,7 +209,14 @@ export async function startQdrantStub(
         // behaviour: "No point with id ... found").
         stub?.beforePayloadWrite?.();
         const set = (body.payload ?? {}) as Record<string, StubJson>;
-        const ids = (body.points as string[] | undefined) ?? [];
+        const filter = body.filter as QdrantFilter | undefined;
+        const ids =
+          (body.points as string[] | undefined) ??
+          (filter
+            ? [...c.points.values()]
+                .filter((p) => matchesFilter(p.payload, filter, p.id))
+                .map((p) => p.id)
+            : []);
         const absent = ids.find((id) => !c.points.has(id));
         if (absent !== undefined) {
           reply(404, {
@@ -209,32 +234,57 @@ export async function startQdrantStub(
           c.points.delete(id);
         if (body.filter !== undefined) {
           for (const [id, point] of c.points) {
-            if (matchesFilter(point.payload, body.filter as QdrantFilter))
+            if (matchesFilter(point.payload, body.filter as QdrantFilter, id))
               c.points.delete(id);
           }
         }
         reply(200, { result: { status: 'completed' } });
         return;
       }
-      if (r.method === 'POST' && action === '/search') {
+      if (
+        r.method === 'POST' &&
+        (action === '/search' ||
+          action === '/query/groups' ||
+          action === '/query')
+      ) {
         // Qdrant's documented search: the filter is applied inside the
         // search, then points are ordered by cosine similarity and cut at
         // `limit` — so the conformance cases see what a real server returns.
-        const query = body.vector as number[];
+        const query = (body.vector ?? body.query) as number[];
         const filter = body.filter as QdrantFilter | undefined;
         const limit = Number(body.limit ?? 10);
         const hits = [...c.points.values()]
           .filter(
-            (p) => filter === undefined || matchesFilter(p.payload, filter),
+            (p) =>
+              filter === undefined || matchesFilter(p.payload, filter, p.id),
           )
           .map((p) => ({
             id: p.id,
             score: cosine(query, p.vector),
             payload: p.payload,
           }))
-          .sort((a, b) => b.score - a.score)
-          .slice(0, limit);
-        reply(200, { result: hits });
+          .sort((a, b) => b.score - a.score);
+        if (action === '/query/groups') {
+          const groups = new Map<
+            string,
+            { id: string; hits: { id: string; score: number }[] }
+          >();
+          for (const { id, score, payload } of hits) {
+            const group = payload[String(body.group_by)];
+            if (typeof group === 'string' && !groups.has(group))
+              groups.set(group, { id: group, hits: [{ id, score }] });
+          }
+          reply(200, {
+            result: { groups: [...groups.values()].slice(0, limit) },
+          });
+        } else {
+          const points = hits.slice(0, limit).map(({ id, score, payload }) => ({
+            id,
+            score,
+            ...(body.with_payload ? { payload } : {}),
+          }));
+          reply(200, { result: action === '/query' ? { points } : points });
+        }
         return;
       }
     }
@@ -289,6 +339,7 @@ export async function startQdrantStub(
 // ---------------------------------------------------------------------------
 
 type QdrantCondition =
+  | { has_id: string[] }
   | { key: string; match: { value: string | number | boolean } }
   | { is_empty: { key: string } }
   | { is_null: { key: string } }
@@ -308,7 +359,9 @@ export type QdrantFilter = {
 function holds(
   payload: Record<string, StubJson>,
   cond: QdrantCondition,
+  id?: string,
 ): boolean {
+  if ('has_id' in cond) return id !== undefined && cond.has_id.includes(id);
   if ('is_null' in cond) return payload[cond.is_null.key] === null;
   if ('values_count' in cond) {
     if (!(cond.key in payload)) return false;
@@ -342,21 +395,23 @@ function holds(
       (lte === undefined || v <= lte)
     );
   }
-  return matchesFilter(payload, cond);
+  return matchesFilter(payload, cond, id);
 }
 
 export function matchesFilter(
   payload: Record<string, StubJson>,
   filter: QdrantFilter,
+  id?: string,
 ): boolean {
-  if (filter.must && !filter.must.every((c) => holds(payload, c))) return false;
+  if (filter.must && !filter.must.every((c) => holds(payload, c, id)))
+    return false;
   if (
     filter.should &&
     filter.should.length > 0 &&
-    !filter.should.some((c) => holds(payload, c))
+    !filter.should.some((c) => holds(payload, c, id))
   )
     return false;
-  if (filter.must_not?.some((c) => holds(payload, c))) return false;
+  if (filter.must_not?.some((c) => holds(payload, c, id))) return false;
   return true;
 }
 

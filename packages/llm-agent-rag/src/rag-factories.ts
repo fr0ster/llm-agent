@@ -234,6 +234,7 @@ export type RagResolution = RecordEmbeddingConfig &
         type: 'in-memory';
         embedder: IRetrievalEmbedder;
         collectionName?: string;
+        /** @deprecated VectorRag deduplicates anonymous records by exact text. */
         dedupThreshold?: number;
         vectorWeight?: number;
         keywordWeight?: number;

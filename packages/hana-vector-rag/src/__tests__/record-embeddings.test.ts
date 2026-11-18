@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { staticLogin, symmetricEmbedder } from '@mcp-abap-adt/llm-agent';
-import { HanaVectorRag } from '../hana-vector-rag.js';
+import { type HanaClient, HanaVectorRag } from '../hana-vector-rag.js';
+import { fragmentTableName } from '../schema.js';
 import { storingHana } from './storing-hana.js';
 
 for (const layout of ['shared', 'per-collection'] as const) {
@@ -41,19 +42,20 @@ for (const layout of ['shared', 'per-collection'] as const) {
     );
     const lookup = { text: 'finish', toVector: async () => [0, 1] };
     const rows = () => store.storedRows(table);
-    const fragments = () => {
-      const row = rows().find((row) => row.ID === 'long');
-      return typeof row?.FRAGMENT_VECTORS === 'string'
-        ? JSON.parse(row.FRAGMENT_VECTORS)
-        : row?.FRAGMENT_VECTORS;
-    };
+    const fragments = () =>
+      store
+        .storedRows(fragmentTableName(table))
+        .filter((row) => row.ID === 'long')
+        .map((row) => row.VECTOR);
 
     const legacy = await rag.query(lookup, 1);
     assert.ok(legacy.ok);
     assert.equal(legacy.value[0]?.text, 'legacy');
     if (!shared)
       assert.ok(
-        store.statements.some((sql) => sql.startsWith('ALTER TABLE "docs"')),
+        store.statements.some((sql) =>
+          sql.startsWith('CREATE COLUMN TABLE "docs_FRAGMENTS"'),
+        ),
       );
     assert.ok((await rag.upsert(full, { id: 'long' })).ok);
     assert.deepEqual(embedded, ['early\n\n', 'middle\n\n', 'finish']);
@@ -91,17 +93,100 @@ for (const layout of ['shared', 'per-collection'] as const) {
 
     assert.ok((await rag.upsert('short', { id: 'long' })).ok);
     assert.equal(embedded.at(-1), 'short');
-    assert.deepEqual(fragments(), null);
+    assert.deepEqual(fragments(), []);
     const replaced = await rag.query(lookup, 1);
     assert.ok(replaced.ok);
     assert.equal(replaced.value[0]?.text, 'legacy');
 
     assert.ok((await rag.upsert(full, { id: 'long' })).ok);
+    assert.ok(
+      (
+        await rag.upsertPrecomputed(
+          full,
+          [
+            [1, 0],
+            [0, 1],
+          ],
+          { id: 'long' },
+        )
+      ).ok,
+    );
+    assert.deepEqual(fragments(), [[0, 1]]);
     assert.ok((await rag.upsertPrecomputed(full, [1, 0], { id: 'long' })).ok);
-    assert.deepEqual(fragments(), null);
+    assert.deepEqual(fragments(), []);
     assert.ok((await rag.upsert(full, { id: 'long' })).ok);
     assert.ok((await rag.writer().deleteByIdRaw('long')).ok);
     assert.equal(rows().length, 1);
-    assert.equal(fragments(), undefined);
+    assert.deepEqual(fragments(), []);
   });
 }
+
+test('fragment insert failure rolls back the document and its previous vectors', async () => {
+  const db = storingHana({ dimension: 2 });
+  const transaction = db.client.transaction?.bind(db.client);
+  assert.ok(transaction);
+  let fail = false;
+  const client: HanaClient = {
+    ...db.client,
+    transaction(work) {
+      return transaction((connection) =>
+        work({
+          ...connection,
+          async exec(sql, params) {
+            if (fail && sql.startsWith('INSERT INTO "RAG_DOCUMENTS_FRAGMENTS"'))
+              throw new Error('fragment insert failed');
+            return connection.exec(sql, params);
+          },
+        }),
+      );
+    },
+  };
+  const rag = new HanaVectorRag(
+    {
+      collectionName: 'docs',
+      dimension: 2,
+      layout: 'shared',
+      credential: staticLogin('u', 'p'),
+      embedder: symmetricEmbedder({
+        async embed() {
+          return { vector: [0, 1] };
+        },
+      }),
+    },
+    client,
+  );
+  assert.ok(
+    (
+      await rag.upsertPrecomputed(
+        'previous',
+        [
+          [1, 0],
+          [0, 1],
+        ],
+        { id: 'r' },
+      )
+    ).ok,
+  );
+  fail = true;
+  assert.equal(
+    (
+      await rag.upsertPrecomputed(
+        'replacement',
+        [
+          [1, 0],
+          [1, 1],
+        ],
+        { id: 'r' },
+      )
+    ).ok,
+    false,
+  );
+  const result = await rag.query(
+    { text: 'q', toVector: async () => [0, 1] },
+    1,
+  );
+  assert.ok(result.ok);
+  assert.equal(result.value[0]?.text, 'previous');
+  assert.equal(result.value[0]?.score, 1);
+  assert.equal(db.storedRows('RAG_DOCUMENTS_FRAGMENTS').length, 1);
+});

@@ -722,3 +722,58 @@ test('skillPlugins.embedder.asymmetric is accepted for sap-ai-core only', () => 
     /supported for provider sap-ai-core only, not "openai"/,
   );
 });
+
+test('skill host embeds the full retrieval text and ranks by its last fragment', async () => {
+  const content = 'Complete skill content';
+  const retrievalText = 'prefixprefixneedle';
+  const seen: string[] = [];
+  const cfg = parseSkillPluginsConfig({
+    mode: 'implicit',
+    store: { type: 'in-memory' },
+    catalog: { type: 'in-process' },
+    sources: [
+      {
+        id: 'source',
+        records: [
+          {
+            id: 'other',
+            group: 'docs',
+            name: 'other',
+            content: 'Other skill',
+            retrievalText: 'other',
+            provenance: 'source',
+          },
+          {
+            id: 'long',
+            group: 'docs',
+            name: 'long',
+            content,
+            retrievalText,
+            provenance: 'source',
+          },
+        ],
+      },
+    ],
+  });
+  const host = await buildSkillHostFromConfig(cfg, {
+    resolveEmbedder: () => ({
+      async getMaxInputChars() {
+        return 6;
+      },
+      async embedDocument(text) {
+        seen.push(text);
+        return { vector: text === 'needle' ? [0, 1] : [1, 0] };
+      },
+      async embedQuery() {
+        return { vector: [0, 1] };
+      },
+    }),
+  });
+  assert.ok((await host.load()).ok);
+  assert.deepEqual(
+    seen.filter((text) => text !== 'other'),
+    ['prefix', 'prefix', 'needle'],
+  );
+  const records = await host.rag('docs').query('needle', { k: 1 });
+  assert.equal(records[0]?.record.content, content);
+});

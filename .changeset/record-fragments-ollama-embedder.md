@@ -1,5 +1,5 @@
 ---
-"@mcp-abap-adt/ollama-embedder": minor
+"@mcp-abap-adt/ollama-embedder": major
 ---
 
-Discover and cache Ollama model context, expose document input capacity and disable truncation in embedding requests.
+Require a successful Ollama model lookup and surface context overflow with truncation disabled. RAG writers use the reported capacity to fragment full records.

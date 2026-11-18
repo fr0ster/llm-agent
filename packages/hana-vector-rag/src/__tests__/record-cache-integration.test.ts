@@ -293,16 +293,13 @@ for (const layout of ['per-collection', 'shared'] as const)
       await text(store, 'a');
       await text(store, 'b');
       await put(env.direct(), 'b', 'external-b');
-      const original = env.client.exec;
+      const original = env.client.transaction;
       const entered = deferred<void>();
       const release = deferred<void>();
-      env.client.exec = async (sql, params) => {
-        if (/^(UPSERT|DELETE)/.test(sql)) {
-          entered.resolve();
-          await release.promise;
-          throw new Error('uncertain commit');
-        }
-        return original(sql, params);
+      env.client.transaction = async () => {
+        entered.resolve();
+        await release.promise;
+        throw new Error('uncertain commit');
       };
       const writing = store.upsertPrecomputed('attempt', [1, 0, 0], {
         id: 'a',
@@ -311,7 +308,7 @@ for (const layout of ['per-collection', 'shared'] as const)
       assert.equal(await text(store, 'a'), 'a');
       release.resolve();
       assert.equal((await writing).ok, false);
-      env.client.exec = original;
+      env.client.transaction = original;
       await put(env.direct(), 'a', 'visible-after-failure');
       assert.equal(await text(store, 'a'), 'visible-after-failure');
       assert.equal(await text(store, 'b'), 'b');
@@ -438,7 +435,7 @@ for (const layout of ['per-collection', 'shared'] as const)
       const store = await env.open();
       await put(store, 'a');
       const originalRead = env.client.query;
-      const originalWrite = env.client.exec;
+      const originalWrite = env.client.transaction;
       const entered = deferred<void>();
       const release = deferred<void>();
       let delay = true;
@@ -458,9 +455,8 @@ for (const layout of ['per-collection', 'shared'] as const)
       const reading = store.getById('a');
       await entered.promise;
 
-      env.client.exec = async (sql, params) => {
-        if (/^UPSERT/.test(sql)) throw new Error('lost connection');
-        return originalWrite(sql, params);
+      env.client.transaction = async () => {
+        throw new Error('uncertain write');
       };
       assert.equal(
         (await store.upsertPrecomputed('attempt', [1, 0, 0], { id: 'a' })).ok,
@@ -468,7 +464,7 @@ for (const layout of ['per-collection', 'shared'] as const)
       );
       release.resolve();
       await reading;
-      env.client.exec = originalWrite;
+      env.client.transaction = originalWrite;
       env.client.query = originalRead;
       await put(env.direct(), 'a', 'new-visible');
       assert.equal(await text(store, 'a'), 'new-visible');

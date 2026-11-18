@@ -17,7 +17,9 @@ import { optionalDeadlineMs } from '../optional-deadline.js';
 
 export interface PlannerMemoryOptions {
   /** Optional deadlines for indexing and draining pending writes on close. */
+  /** @deprecated Writes use the caller signal for cancellation. */
   writeTimeoutMs?: number;
+  /** @deprecated Closing waits for pending writes. */
   closeTimeoutMs?: number;
   rag: IRag;
   queryEmbedder: IQueryEmbedder;

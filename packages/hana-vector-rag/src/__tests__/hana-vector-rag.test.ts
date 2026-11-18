@@ -8,6 +8,7 @@ import {
   ragFilterConformanceCases,
 } from '@mcp-abap-adt/llm-agent/testing/rag-filter-conformance';
 import { type HanaClient, HanaVectorRag } from '../hana-vector-rag.js';
+import { storingHana } from './storing-hana.js';
 
 function makeEmbedder(dim = 3): IEmbedder {
   return {
@@ -32,6 +33,9 @@ function makeFakeClient(
   const calls: ExecCall[] = [];
   return {
     calls,
+    transaction(work) {
+      return work(this);
+    },
     async exec(sql, params = []) {
       calls.push({ sql, params });
       return { rowCount: 1 };
@@ -229,7 +233,7 @@ describe('HanaVectorRag', () => {
     assert.equal(r.value, false);
   });
 
-  it('clearAll issues TRUNCATE', async () => {
+  it('clearAll deletes parent rows so the foreign key cascades', async () => {
     const client = makeFakeClient();
     const rag = new HanaVectorRag(
       {
@@ -244,7 +248,7 @@ describe('HanaVectorRag', () => {
     assert.ok(writer.clearAll);
     const r = await writer.clearAll();
     assert.equal(r.ok, true);
-    assert.ok(client.calls.some((c) => c.sql.startsWith('TRUNCATE')));
+    assert.ok(client.calls.some((c) => c.sql === 'DELETE FROM "docs"'));
   });
 
   it('healthCheck runs SELECT 1 FROM DUMMY', async () => {
@@ -287,55 +291,13 @@ describe('HanaVectorRag', () => {
 // LIMIT), so the conformance cases exercise the real in-code filter.
 // ---------------------------------------------------------------------------
 
-function cosineOf(a: number[], b: number[]): number {
-  let dot = 0;
-  let na = 0;
-  let nb = 0;
-  for (let i = 0; i < a.length; i++) {
-    dot += a[i] * b[i];
-    na += a[i] ** 2;
-    nb += b[i] ** 2;
-  }
-  return dot / (Math.sqrt(na) * Math.sqrt(nb) || 1);
-}
-
-function parseVector(sql: string): number[] {
-  const m = sql.match(/TO_REAL_VECTOR\('\[([^\]]*)\]'\)/);
-  if (!m) throw new Error(`no vector literal in: ${sql}`);
-  return m[1].split(',').map(Number);
-}
-
 function makeStoringHana(): HanaClient & { searches: string[] } {
-  const rows = new Map<
-    string,
-    { id: string; text: string; vector: number[]; metadata: string }
-  >();
-  const searches: string[] = [];
+  const store = storingHana({ dimension: CONFORMANCE_EMBEDDING_DIM });
   return {
-    searches,
-    async exec(sql, params = []) {
-      if (sql.startsWith('UPSERT')) {
-        const [id, text, metadata] = params as string[];
-        rows.set(id, { id, text, metadata, vector: parseVector(sql) });
-      }
-      return { rowCount: 1 };
+    ...store.client,
+    get searches() {
+      return store.statements.filter((sql) => sql.startsWith('WITH eligible'));
     },
-    async query(sql) {
-      if (!sql.includes('COSINE_SIMILARITY')) return [];
-      searches.push(sql);
-      const q = parseVector(sql);
-      const scored = [...rows.values()]
-        .map((r) => ({
-          id: r.id,
-          text: r.text,
-          metadata: r.metadata,
-          score: cosineOf(q, r.vector),
-        }))
-        .sort((a, b) => b.score - a.score);
-      const limit = sql.match(/"primaryRank" <= (\d+)/);
-      return limit ? scored.slice(0, Number(limit[1])) : scored;
-    },
-    async close() {},
   };
 }
 
@@ -356,7 +318,7 @@ describe('HanaVectorRag — session/user filter (security)', () => {
       ));
   }
 
-  it('keeps the LIMIT query when no identity filter is given, drops it when one is', async () => {
+  it('applies SQL top-k to unscoped and identity-scoped searches', async () => {
     const client = makeStoringHana();
     const rag = new HanaVectorRag(
       {
@@ -371,14 +333,14 @@ describe('HanaVectorRag — session/user filter (security)', () => {
     await rag.query(emb, 5);
     await rag.query(emb, 5, { ragFilter: { sessionId: 's1' } });
     await rag.query(emb, 5, { ragFilter: { userId: 'u1' } });
-    assert.match(client.searches[0], /"primaryRank" <= 5/);
-    assert.match(client.searches[1], /ORDER BY "score" DESC$/);
-    assert.match(client.searches[2], /ORDER BY "score" DESC$/);
+    assert.match(client.searches[0], /LIMIT 5/);
+    assert.match(client.searches[1], /LIMIT 5/);
+    assert.match(client.searches[2], /LIMIT 5/);
     // The filter value never reaches the SQL text.
     assert.ok(!client.searches[1].includes('s1'));
   });
 
-  it('drops the LIMIT for a namespace filter too, never putting it in the SQL', async () => {
+  it('applies SQL top-k to namespace-scoped searches with a bound namespace', async () => {
     const client = makeStoringHana();
     const rag = new HanaVectorRag(
       {
@@ -391,11 +353,11 @@ describe('HanaVectorRag — session/user filter (security)', () => {
     );
     const emb = { text: 'q', toVector: async () => [0.1, 0.2, 0.3] };
     await rag.query(emb, 5, { ragFilter: { namespace: 'ns-secret' } });
-    assert.match(client.searches[0], /ORDER BY "score" DESC$/);
+    assert.match(client.searches[0], /LIMIT 5/);
     assert.ok(!client.searches[0].includes('ns-secret'));
   });
 
-  it('an unscoped query re-runs without LIMIT only when expiry emptied part of a full page', async () => {
+  it('filters expired rows before SQL top-k in one query', async () => {
     const client = makeStoringHana();
     const rag = new HanaVectorRag(
       {
@@ -416,16 +378,11 @@ describe('HanaVectorRag — session/user filter (security)', () => {
       if (!r.ok) throw r.error;
       return r.value.map((x) => x.metadata.id);
     };
-    // Top-1 by similarity is the expired record: the full page is emptied,
-    // so the store falls back to the unlimited query and finds 'new'.
     assert.deepEqual(await q('alpha beta gamma'), ['new']);
-    assert.match(client.searches[0], /"primaryRank" <= 1/);
-    assert.match(client.searches[1], /ORDER BY "score" DESC$/);
-    // Top-1 is live: one LIMIT query, no fallback.
-    const before = client.searches.length;
+    assert.equal(client.searches.length, 1);
+    assert.match(client.searches[0], /LIMIT 1/);
     assert.deepEqual(await q('delta epsilon'), ['new']);
-    assert.equal(client.searches.length, before + 1);
-    assert.match(client.searches[before], /"primaryRank" <= 1/);
+    assert.equal(client.searches.length, 2);
   });
 });
 
@@ -438,6 +395,9 @@ describe('HanaVectorRag shared layout and vector validation', () => {
     let failed = false;
     const client: HanaClient & { calls: ExecCall[]; rounds: () => number } = {
       calls,
+      transaction(work) {
+        return work(this);
+      },
       rounds: () => checkRounds,
       async exec(sql, params = []) {
         calls.push({ sql, params });

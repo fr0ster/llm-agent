@@ -4,6 +4,7 @@ import type {
   IRag,
   IRagBackendWriter,
   IRetrievalEmbedder,
+  RagDocumentVectors,
   RagListPage,
   RagListParams,
 } from '../interfaces/rag.js';
@@ -35,7 +36,11 @@ import {
   QueryEmbedding,
   TextOnlyEmbedding,
 } from './query-embedding.js';
-import { embedRecord, type RecordEmbeddingConfig } from './record-embedding.js';
+import {
+  embedRecord,
+  type RecordEmbeddingConfig,
+  recordVectors,
+} from './record-embedding.js';
 import { scanKeyedPage } from './scan-support.js';
 import type {
   ISearchCandidate,
@@ -59,8 +64,7 @@ export interface VectorRagConfig extends RecordEmbeddingConfig {
   /** Retry a failed caller query embedding with the store embedder. Default: true.
    *  TextOnlyEmbedding is always embedded by the store, regardless of this option. */
   fallbackOnQueryEmbeddingError?: boolean;
-  /** Cosine similarity threshold for dedup of records written without an id
-   *  (a record with an id is replaced only by the same id). Default: 0.92 */
+  /** @deprecated Anonymous records are deduplicated by exact document text. */
   dedupThreshold?: number;
   /** Namespace for this store. */
   namespace?: string;
@@ -79,7 +83,6 @@ export interface VectorRagConfig extends RecordEmbeddingConfig {
 export class VectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
   private readonly listStore = listStoreId();
   private records: (StoredRecord | null)[] = [];
-  private readonly dedupThreshold: number;
   private readonly namespace?: string;
   private readonly fragmentSizeChars?: number;
   private vectorWeight: number;
@@ -97,7 +100,6 @@ export class VectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
     private readonly embedder: IRetrievalEmbedder,
     config: VectorRagConfig = {},
   ) {
-    this.dedupThreshold = config.dedupThreshold ?? 0.92;
     this.namespace = config.namespace;
     this.fragmentSizeChars = config.fragmentSizeChars;
     this.vectorWeight = config.vectorWeight ?? 0.7;
@@ -189,17 +191,14 @@ export class VectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
       }
     }
 
-    // Similarity dedup only between records written WITHOUT an id: a record
-    // with an id is replaced only by the same id (above). Merging on
-    // similarity alone let a near-identical tool record overwrite another
-    // tool's record (ReadFunctionInclude vanished under ReadFunctionGroup).
+    // Exact document dedup applies only to records written without an id.
     for (let i = 0; !metadata.id && i < this.records.length; i++) {
       const slot = this.records[i];
       if (slot === null || slot.metadata.id) continue;
       if (
         tagRagMetadata({ ...slot.metadata, ...metadata }).ownerScope !==
           'invalid' &&
-        cosineSimilarity(slot.vector, vector) >= this.dedupThreshold
+        slot.text === text
       ) {
         slot.text = text;
         slot.vector = vector;
@@ -272,12 +271,14 @@ export class VectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
 
   async upsertPrecomputed(
     text: string,
-    vector: number[],
+    vector: RagDocumentVectors,
     metadata: RagMetadata,
-    _options?: CallOptions,
+    options?: CallOptions,
   ): Promise<Result<void, RagError>> {
     try {
-      return this.upsertKnownVectors(text, [vector], metadata);
+      if (options?.signal?.aborted)
+        return { ok: false, error: new RagError('Aborted', 'ABORTED') };
+      return this.upsertKnownVectors(text, recordVectors(vector), metadata);
     } catch (err) {
       if (err instanceof RagError) return { ok: false, error: err };
       return { ok: false, error: new RagError(String(err), 'UPSERT_ERROR') };

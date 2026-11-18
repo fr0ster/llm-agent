@@ -33,7 +33,10 @@ An embedder can implement the optional `getMaxInputChars(options?)` capability.
 It returns the Unicode code points allowed in one input, or `undefined` when the
 provider does not report a capacity. Token-based providers can report a
 conservative character allowance. Stores use `fragmentSizeChars` (default 2048)
-when capacity is undeclared. All fragments together retain the original text.
+when capacity is undeclared. All fragments together retain the original text, including intact CRLF pairs.
+VectorRag deduplicates anonymous writes by exact full text. Precomputed writers
+accept either a single `number[]` or an ordered set of fragment vectors
+`number[][]`. Update custom writers to accept both shapes.
 The retrieval adapters forward document capacity and batch support, including
 declared batch sizes. Stored document inputs pass through embedder
 composition in full, regardless of `maxInputChars`. For a 429, the store

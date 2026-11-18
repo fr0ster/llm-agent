@@ -21,6 +21,7 @@ import {
   isBatchSizeLimited,
   RagError,
 } from '@mcp-abap-adt/llm-agent';
+import { httpStatusOf } from '../llm/throttle.js';
 import { startOperation } from '../usage/hooks.js';
 import { isCallerCancellation } from './caller-cancellation.js';
 import type { CircuitBreaker } from './circuit-breaker.js';
@@ -54,7 +55,12 @@ export class CircuitBreakerEmbedderBase implements IEmbedder {
       }
       return result;
     } catch (err) {
-      if (!isCallerCancellation(options?.signal)) {
+      if (
+        !isCallerCancellation(options?.signal) &&
+        httpStatusOf(
+          err !== null && typeof err === 'object' ? err : undefined,
+        ) !== 429
+      ) {
         this.breaker.recordFailure();
       }
       throw err;
@@ -95,7 +101,12 @@ export class CircuitBreakerEmbedder
       }
       return result;
     } catch (err) {
-      if (!isCallerCancellation(options?.signal)) {
+      if (
+        !isCallerCancellation(options?.signal) &&
+        httpStatusOf(
+          err !== null && typeof err === 'object' ? err : undefined,
+        ) !== 429
+      ) {
         this.breaker.recordFailure();
       }
       throw err;

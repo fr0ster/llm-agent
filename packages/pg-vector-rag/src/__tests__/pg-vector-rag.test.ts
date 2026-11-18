@@ -177,7 +177,7 @@ describe('PgVectorRag — session/user filter (security)', () => {
     const lastSelect = () => {
       const c = [...client.calls]
         .reverse()
-        .find((x) => x.sql.startsWith('SELECT id, text, metadata, LEAST'));
+        .find((x) => x.sql.startsWith('WITH RECURSIVE fragment_hits'));
       if (!c) throw new Error('no search SELECT issued');
       return c;
     };
@@ -194,7 +194,7 @@ describe('PgVectorRag — session/user filter (security)', () => {
     const { sql, params } = lastSelect();
     assert.match(
       sql,
-      /WHERE .*ownerScope.* AND CASE WHEN jsonb_typeof\(metadata->'sessionId'\) = 'string' THEN metadata->>'sessionId' END = \$2 AND CASE WHEN jsonb_typeof\(metadata->'userId'\) = 'string' THEN metadata->>'userId' END = \$3 AND COALESCE\(.*\) >= \$4 ORDER BY score LIMIT 4$/,
+      /WHERE .*ownerScope.* AND CASE WHEN jsonb_typeof\(metadata->'sessionId'\) = 'string' THEN metadata->>'sessionId' END = \$2 AND CASE WHEN jsonb_typeof\(metadata->'userId'\) = 'string' THEN metadata->>'userId' END = \$3 AND COALESCE\(.*\) >= \$4 ORDER BY "vector" <=> .* LIMIT 4/,
     );
     assert.deepEqual(params.slice(0, 3), ['session', 's1', 'u1']);
   });
@@ -231,7 +231,7 @@ describe('PgVectorRag — session/user filter (security)', () => {
     const { sql, params } = lastSelect();
     assert.match(
       sql,
-      /WHERE CASE WHEN jsonb_typeof\(metadata->'namespace'\) = 'string' THEN metadata->>'namespace' END = \$1 AND COALESCE\(.*\) >= \$2 ORDER BY score LIMIT 3$/,
+      /WHERE CASE WHEN jsonb_typeof\(metadata->'namespace'\) = 'string' THEN metadata->>'namespace' END = \$1 AND COALESCE\(.*\) >= \$2 ORDER BY "vector" <=> .* LIMIT 3/,
     );
     assert.ok(!sql.includes("n' OR"));
     assert.equal(params[0], "n' OR '1'='1");
@@ -367,7 +367,11 @@ describe('PgVectorRag shared layout and vector validation', () => {
       const check = client.calls.filter((c) => c.sql.includes('to_regclass'));
       assert.ok(check.length > 0);
       for (const c of check) assert.equal(c.params[0], name);
-      for (const re of [/^INSERT INTO /, /^SELECT "id"/, /^DELETE FROM /]) {
+      for (const re of [
+        /^INSERT INTO /,
+        /^WITH RECURSIVE fragment_hits/,
+        /^DELETE FROM /,
+      ]) {
         const stmt = client.calls.find((c) => re.test(c.sql));
         assert.ok(stmt, String(re));
         assert.ok(stmt.sql.includes(` ${name} `), stmt.sql);

@@ -36,7 +36,9 @@ import {
   isAccessCollectionName,
   QdrantAccessPersistence,
 } from './access-persistence.js';
+import { fragmentIndexKey, recordPointIdKey } from './payload-record.js';
 import { deterministicUUID, QdrantRag } from './qdrant-rag.js';
+import { recordOnlyCondition, recordPointFilter } from './scan-delete.js';
 
 /** The collection a QdrantRagProvider keeps one point per collection in, by default. */
 export const DEFAULT_CATALOG_COLLECTION = 'rag_collection_catalog';
@@ -145,6 +147,24 @@ export class QdrantRagProvider
     return this.createOwnedCollection(name, opts, checked.value);
   }
 
+  private async ensureRecordIndexes(name: string, code: string): Promise<void> {
+    for (const [field_name, field_schema] of [
+      ['ownerScope', 'keyword'],
+      [recordPointIdKey, 'keyword'],
+      [fragmentIndexKey, 'integer'],
+    ]) {
+      const response = await this.request(
+        `/collections/${name}/index?wait=true`,
+        {
+          method: 'PUT',
+          body: JSON.stringify({ field_name, field_schema }),
+        },
+      );
+      if (!response.ok)
+        throw new RagError(`Payload index failed: ${field_name}`, code);
+    }
+  }
+
   private async createOwnedCollection(
     name: string,
     opts: RagProviderCreateCollectionOptions,
@@ -167,18 +187,7 @@ export class QdrantRagProvider
         const created = await this.createStore(name, opts);
         if (!created.ok) return created;
       }
-      const indexed = await this.request(
-        `/collections/${name}/index?wait=true`,
-        {
-          method: 'PUT',
-          body: JSON.stringify({
-            field_name: 'ownerScope',
-            field_schema: 'keyword',
-          }),
-        },
-      );
-      if (!indexed.ok)
-        throw new RagError('Owner scope index failed', 'RAG_CREATE_ERROR');
+      await this.ensureRecordIndexes(name, 'RAG_CREATE_ERROR');
       const recorded = await this.writeRecord(
         {
           ...owner,
@@ -216,18 +225,7 @@ export class QdrantRagProvider
     if (!listed.ok) throw listed.error;
     const reported: { storeName: string; reason: string }[] = [];
     for (const storeName of listed.value) {
-      const indexed = await this.request(
-        `/collections/${storeName}/index?wait=true`,
-        {
-          method: 'PUT',
-          body: JSON.stringify({
-            field_name: 'ownerScope',
-            field_schema: 'keyword',
-          }),
-        },
-      );
-      if (!indexed.ok)
-        throw new RagError('Owner scope index failed', 'RAG_MIGRATION_ERROR');
+      await this.ensureRecordIndexes(storeName, 'RAG_MIGRATION_ERROR');
       let offset: string | number | null = null;
       do {
         const response = await this.request(
@@ -238,6 +236,7 @@ export class QdrantRagProvider
               limit: 256,
               with_payload: true,
               with_vector: false,
+              filter: { must: [recordOnlyCondition] },
               ...(offset === null ? {} : { offset }),
             }),
           },
@@ -290,8 +289,13 @@ export class QdrantRagProvider
             {
               method: 'POST',
               body: JSON.stringify({
-                points: [point.id],
-                payload: tagged,
+                filter: recordPointFilter([point.id]),
+                payload: {
+                  ownerScope: tagged.ownerScope,
+                  sessionId: tagged.sessionId,
+                  userId: tagged.userId,
+                  roleId: tagged.roleId,
+                },
               }),
             },
           );

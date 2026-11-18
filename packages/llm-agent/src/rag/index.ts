@@ -30,8 +30,10 @@ export {
 export { LlmQueryExpander, NoopQueryExpander } from './query-expander.js';
 export {
   DEFAULT_FRAGMENT_SIZE_CHARS,
+  embedDocumentRecords,
   embedRecord,
   type RecordEmbeddingConfig,
+  recordVectors,
 } from './record-embedding.js';
 export * from './registry/index.js';
 export { asymmetricEmbedder, symmetricEmbedder } from './retrieval-embedder.js';

@@ -1,5 +1,5 @@
 ---
-"@mcp-abap-adt/llm-agent": minor
+"@mcp-abap-adt/llm-agent": major
 ---
 
-Embed long RAG records in fragments while retaining full text and ranking each record by its best fragment. Add an optional document embedder input capacity.
+Precomputed writer implementations must accept single vectors and fragment vector sets. VectorRag deduplicates anonymous records by exact full text. Record embeddings preserve CRLF boundaries and wait through rate limits.

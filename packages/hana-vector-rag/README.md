@@ -17,19 +17,32 @@ npm install @mcp-abap-adt/hana-vector-rag @sap/hana-client
 
 ## Record embeddings
 
-Each row keeps the full text and the first vector in `VECTOR`. The nullable
-`FRAGMENT_VECTORS` NCLOB holds the remaining vectors as an ordered JSON array.
-Each write or delete updates the row and all of its vectors together. Search
-reads the usual primary-vector candidates together with all matching rows
-that have additional vectors, then ranks each whole record by its best score.
+The documents table retains the full text and first vector. A companion
+fragment table stores each additional vector as a `REAL_VECTOR` row.
+HANA filters eligible records, takes the highest cosine similarity per
+record, and reads the full text only for the SQL top-k. Replacing a record
+updates the parent and all its fragments in one transaction. The foreign
+key cascades deletes to the fragment table.
 
-Runtime-managed per-collection tables receive the nullable column on first
-search or write. For existing HDI tables, redeploy the updated
-`RAG_DOCUMENTS.hdbtable`. For manually managed tables, run the statement from
-`addFragmentVectorsSql(table)` once in the table's schema. Existing
-vectors remain searchable without backfill. Configure `fragmentSizeChars`
-to change fragmentation for embedders without a declared capacity (default
-2048 Unicode code points).
+### Upgrade an existing database
+
+1. Runtime-managed per-collection tables create their fragment table on
+   first search or write. For HDI shared tables, deploy
+   `RAG_DOCUMENTS_FRAGMENTS.hdbtable` and
+   `RAG_FRAGMENTS_DOCUMENT_FK.hdbconstraint` from `ddl/` alongside the
+   documents and catalog artifacts. For a manually managed table, execute
+   `CREATE ` followed by the result of
+   `fragmentTableDdl(table, dimension, layout)` in the table's schema.
+   Use `'shared'` for a collection-and-ID key and `'per-collection'` for an ID key.
+2. Grant search roles SELECT and writers INSERT and DELETE on the fragment
+   table. Injected client implementations need a transaction callback for
+   document writes. The default HANA client supplies it.
+3. Existing single-vector rows remain searchable. If you ran a prerelease
+   that stored extra vectors in the `FRAGMENT_VECTORS` NCLOB, re-upsert those
+   records from their full text to populate the new fragment table.
+
+Configure `fragmentSizeChars` for embedders that do not declare their
+capacity (default 2,048 Unicode code points).
 
 ## Minimal config
 
@@ -116,13 +129,14 @@ The error codes are exported as constants — `SHARED_LAYOUT_NOT_DEPLOYED`, `INV
 
 The package ships `ddl/` (published with it):
 
-- `RAG_DOCUMENTS.hdbtable`, `RAG_COLLECTIONS.hdbtable`, `rag_roles.hdbtable`,
+- `RAG_DOCUMENTS.hdbtable`, `RAG_DOCUMENTS_FRAGMENTS.hdbtable`,
+  `RAG_FRAGMENTS_DOCUMENT_FK.hdbconstraint`, `RAG_COLLECTIONS.hdbtable`, `rag_roles.hdbtable`,
   `rag_role_assignments.hdbtable`, `rag_collection_roles.hdbtable`, `rag_session_bindings.hdbtable`,
   `rag_role_assignments_role_fk.hdbconstraint`, `rag_collection_roles_role_fk.hdbconstraint`, `.hdiconfig` — for the HDI deployer;
 - `shared-layout.sql` — the same tables as plain SQL (catalog first), for a classic schema or
   manual use.
 
-Copy all eight artifacts (six `.hdbtable` and two `.hdbconstraint` files) into the `src/` of your db module (next to your own artifacts) and **merge** the `hdbtable` and `hdbconstraint` plugin entries of the shipped `.hdiconfig` into the db module's existing `.hdiconfig` — do not copy it over your own file, which usually lists more plugins (create it from the shipped one only if the module has none). Then run
+Copy all ten artifacts (seven `.hdbtable` and three `.hdbconstraint` files) into the `src/` of your db module (next to your own artifacts) and **merge** the `hdbtable` and `hdbconstraint` plugin entries of the shipped `.hdiconfig` into the db module's existing `.hdiconfig` — do not copy it over your own file, which usually lists more plugins (create it from the shipped one only if the module has none). Then run
 `@sap/hdi-deploy` with the container's **design-time user** (`hdi_user`); on Cloud Foundry that is
 the deployer app bound to the HDI service instance. The application itself is bound to the same
 instance and connects as the **runtime user** (`..._RT`), which only needs `SELECT`, `INSERT`,
@@ -154,10 +168,14 @@ dimension, generate the files instead of using the shipped ones:
 import {
   sharedCatalogHdbtable,
   sharedDocumentsHdbtable,
+  sharedFragmentsHdbconstraint,
+  sharedFragmentsHdbtable,
   sharedLayoutSql,
 } from '@mcp-abap-adt/hana-vector-rag';
 
-sharedDocumentsHdbtable('RAG_DOCUMENTS', 1024); // body of RAG_DOCUMENTS.hdbtable
+sharedDocumentsHdbtable('RAG_DOCUMENTS', 1024); // documents table
+sharedFragmentsHdbtable('RAG_DOCUMENTS', 1024); // fragment table
+sharedFragmentsHdbconstraint('RAG_DOCUMENTS');  // fragment foreign key
 sharedCatalogHdbtable('RAG_COLLECTIONS');       // body of RAG_COLLECTIONS.hdbtable
 sharedLayoutSql({ dimension: 1024 });           // plain SQL (documentsTable, catalogTable optional)
 ```
@@ -300,10 +318,7 @@ require an admin and a write decision. Admin status does not bypass other owners
 Retrieval applies the collection owner's record filter before top-k; `roleId` is
 not a record identity key. Access-check errors deny access.
 
-Deploy all eight HDI artifacts (six tables and two foreign keys): `RAG_DOCUMENTS.hdbtable`,
-`RAG_COLLECTIONS.hdbtable`, `rag_roles.hdbtable`, `rag_role_assignments.hdbtable`,
-`rag_collection_roles.hdbtable`, `rag_session_bindings.hdbtable`,
-`rag_role_assignments_role_fk.hdbconstraint`, and `rag_collection_roles_role_fk.hdbconstraint`. Merge the
+Deploy the seven tables and three foreign keys listed under [Deploying the tables](#deploying-the-tables). Merge the
 shipped `.hdiconfig` table and constraint plugins into your deployment configuration. Migration
 skips DDL for existing tables. Role deletion, assignment and binding lock the same
 role row in a pinned transaction. Custom clients must supply `HanaClient.transaction`.

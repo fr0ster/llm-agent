@@ -53,6 +53,7 @@ import {
   assertCollectionName,
   createTableSql,
   dropTableSql,
+  fragmentTableName,
   quoteIdent,
 } from './schema.js';
 import { SHARED_CATALOG_TABLE, SHARED_DOCUMENTS_TABLE } from './shared-ddl.js';
@@ -347,6 +348,9 @@ export class HanaVectorRagProvider
         this.cacheIdentity(name),
       );
       try {
+        const fragments = fragmentTableName(name);
+        if (await this.tableExists(client, fragments))
+          await client.exec(dropTableSql(fragments));
         await client.exec(dropTableSql(name));
       } finally {
         settled();
@@ -370,10 +374,12 @@ export class HanaVectorRagProvider
           : 'SELECT TABLE_NAME FROM SYS.TABLES WHERE SCHEMA_NAME = CURRENT_SCHEMA',
         this.connection.schema ? [this.connection.schema] : [],
       );
+      const names = rows.map((r) => String(r.TABLE_NAME));
+      const fragments = new Set(names.map(fragmentTableName));
       return {
         ok: true,
-        value: rows
-          .map((r) => String(r.TABLE_NAME))
+        value: names
+          .filter((name) => !fragments.has(name))
           .filter(
             (t) =>
               ![

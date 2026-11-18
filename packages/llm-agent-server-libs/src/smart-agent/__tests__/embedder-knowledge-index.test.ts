@@ -185,61 +185,29 @@ describe('makeKnowledgeSemanticIndex', () => {
   });
 });
 
-describe('makeKnowledgeSemanticIndex — bounded embed input (large-result guard)', () => {
-  it('truncates over-budget content to maxEmbedChars before embedding; stores full content', async () => {
-    let lastEmbedLen = -1;
-    const recording = symmetricEmbedder({
-      embed: async (t: string) => {
-        lastEmbedLen = t.length;
-        return { vector: [1, 0, 0] };
+it('knowledge recall uses the final fragment and returns the full artifact', async () => {
+  const embedded: string[] = [];
+  const index = makeKnowledgeSemanticIndex(
+    {
+      async embedDocument(text) {
+        embedded.push(text);
+        return { vector: text.includes('needle') ? [0, 1] : [1, 0] };
       },
-    }) as never;
-    const idx = makeKnowledgeSemanticIndex(recording, undefined, 10);
-    const huge = 'x'.repeat(5000); // ≫ maxEmbedChars (10)
-    await idx.upsert('s', {
-      content: huge,
-      metadata: meta({ artifactType: 'mcp-result', runId: 'R' }),
-    });
-    // The embedder saw a bounded prefix, NOT the 5000-char blob.
-    assert.equal(lastEmbedLen, 10, 'embed input truncated to maxEmbedChars');
-    // The stored + recalled entry keeps the FULL content (only the vector is from a prefix).
-    const hits = await idx.query('s', 'q', 5, { runId: 'R' });
-    assert.equal(hits.length, 1);
-    assert.equal(
-      hits[0].content.length,
-      5000,
-      'full content preserved on recall',
-    );
-  });
-
-  it('does not truncate content within budget', async () => {
-    let lastEmbedLen = -1;
-    const recording = symmetricEmbedder({
-      embed: async (t: string) => {
-        lastEmbedLen = t.length;
-        return { vector: [1, 0, 0] };
+      async embedQuery() {
+        return { vector: [0, 1] };
       },
-    }) as never;
-    const idx = makeKnowledgeSemanticIndex(recording, undefined, 100);
-    await idx.upsert('s', {
-      content: 'short',
-      metadata: meta({ artifactType: 'mcp-result', runId: 'R' }),
-    });
-    assert.equal(lastEmbedLen, 5, 'within-budget content embedded verbatim');
-  });
-
-  it('also bounds the query text', async () => {
-    let lastEmbedLen = -1;
-    const recording = symmetricEmbedder({
-      embed: async (t: string) => {
-        lastEmbedLen = t.length;
-        return { vector: [1, 0, 0] };
-      },
-    }) as never;
-    const idx = makeKnowledgeSemanticIndex(recording, undefined, 10);
-    await idx.query('s', 'y'.repeat(9999), 5);
-    assert.equal(lastEmbedLen, 10, 'query text truncated to maxEmbedChars');
-  });
+    },
+    undefined,
+    10,
+  );
+  const metadata = meta({ artifactType: 'mcp-result', runId: 'R' });
+  const huge = `${'x'.repeat(5000)}needle`;
+  await index.upsert('s', { content: 'other', metadata });
+  await index.upsert('s', { content: huge, metadata });
+  assert.equal(embedded.slice(1).join(''), huge);
+  assert.ok(embedded.every((fragment) => fragment.length <= 10));
+  const hits = await index.query('s', 'needle', 1, { runId: 'R' });
+  assert.equal(hits[0]?.content, huge);
 });
 
 describe('makeKnowledgeSemanticIndex — empty/whitespace content skip (#243)', () => {

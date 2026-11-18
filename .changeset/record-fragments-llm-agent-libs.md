@@ -1,5 +1,5 @@
 ---
-"@mcp-abap-adt/llm-agent-libs": patch
+"@mcp-abap-adt/llm-agent-libs": major
 ---
 
-Preserve document input capacity and batch-size capabilities through the usage logging adapter.
+Fragment precomputed MCP, skill, and planner-memory writes. Planner memory drains pending writes using caller cancellation instead of queue and deadline caps. The Qdrant skill reader uses the grouped Query API.

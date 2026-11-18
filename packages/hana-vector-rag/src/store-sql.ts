@@ -1,5 +1,5 @@
 import type { RagIdentityFilter, RagScanFilter } from '@mcp-abap-adt/llm-agent';
-import { createTableSql, quoteIdent } from './schema.js';
+import { createTableSql, fragmentTableName, quoteIdent } from './schema.js';
 
 export type SqlStatement = { sql: string; params: unknown[] };
 
@@ -16,8 +16,12 @@ export interface HanaStoreSql {
   createTable(): string | undefined;
   search(
     vectorLiteral: string,
-    limit?: number,
-    identity?: RagIdentityFilter,
+    limit: number,
+    filter: {
+      identity?: RagIdentityFilter;
+      namespace?: string;
+      nowSecs: number;
+    },
   ): SqlStatement;
   byId(id: string): SqlStatement;
   upsert(
@@ -25,8 +29,9 @@ export interface HanaStoreSql {
     id: string,
     text: string,
     metadataJson: string,
-    fragments: string | null,
   ): SqlStatement;
+  removeFragments(id: string): SqlStatement;
+  insertFragment(id: string, ordinal: number, literal: string): SqlStatement;
   deleteById(id: string): SqlStatement;
   clear(): SqlStatement;
   countRows(): SqlStatement;
@@ -44,37 +49,35 @@ export function perCollectionStoreSql(
   dimension: number,
 ): HanaStoreSql {
   const table = quoteIdent(collection);
+  const fragments = quoteIdent(fragmentTableName(collection));
   return {
     listPage: (after, limit, includeText) =>
       listSql(table, [], after, limit, includeText),
     layout: 'per-collection',
     createTable: () => createTableSql(collection, dimension),
-    search: (lit, limit, identity) =>
-      searchSql(
-        {
-          sql: searchPageSql(
-            `SELECT id AS "id", text AS "text", metadata AS "metadata", `,
-            `COSINE_SIMILARITY(vector, ${lit})`,
-            `FROM ${table}`,
-            limit,
-          ),
-          params: [],
-        },
-        identity,
-      ),
+    search: (lit, limit, filter) =>
+      rankedSearch(table, fragments, lit, limit, filter),
+    removeFragments: (id) => ({
+      sql: `DELETE FROM ${fragments} WHERE "ID" = ?`,
+      params: [id],
+    }),
+    insertFragment: (id, ordinal, literal) => ({
+      sql: `INSERT INTO ${fragments} ("ID", "ORDINAL", "VECTOR") VALUES (?, ?, ${literal})`,
+      params: [id, ordinal],
+    }),
     byId: (id) => ({
       sql: `SELECT id AS "id", text AS "text", metadata AS "metadata" FROM ${table} WHERE id = ?`,
       params: [id],
     }),
-    upsert: (lit, id, text, metadataJson, fragments) => ({
-      sql: `UPSERT ${table} (id, text, vector, metadata, fragment_vectors) VALUES (?, ?, ${lit}, ?, ?) WITH PRIMARY KEY`,
-      params: [id, text, metadataJson, fragments],
+    upsert: (lit, id, text, metadataJson) => ({
+      sql: `UPSERT ${table} (id, text, vector, metadata) VALUES (?, ?, ${lit}, ?) WITH PRIMARY KEY`,
+      params: [id, text, metadataJson],
     }),
     deleteById: (id) => ({
       sql: `DELETE FROM ${table} WHERE id = ?`,
       params: [id],
     }),
-    clear: () => ({ sql: `TRUNCATE TABLE ${table}`, params: [] }),
+    clear: () => ({ sql: `DELETE FROM ${table}`, params: [] }),
     countRows: () => ({
       sql: `SELECT COUNT(*) AS "n" FROM ${table}`,
       params: [],
@@ -96,31 +99,29 @@ export function sharedStoreSql(
   documentsTable: string,
 ): HanaStoreSql {
   const table = quoteIdent(documentsTable);
+  const fragments = quoteIdent(fragmentTableName(documentsTable));
   return {
     listPage: (after, limit, includeText) =>
       listSql(table, [collection], after, limit, includeText),
     layout: 'shared',
     createTable: () => undefined,
-    search: (lit, limit, identity) =>
-      searchSql(
-        {
-          sql: searchPageSql(
-            `SELECT "ID" AS "id", "TEXT" AS "text", "METADATA" AS "metadata", `,
-            `COSINE_SIMILARITY("VECTOR", ${lit})`,
-            `FROM ${table} WHERE "COLLECTION" = ?`,
-            limit,
-          ),
-          params: [collection],
-        },
-        identity,
-      ),
+    search: (lit, limit, filter) =>
+      rankedSearch(table, fragments, lit, limit, filter, collection),
+    removeFragments: (id) => ({
+      sql: `DELETE FROM ${fragments} WHERE "COLLECTION" = ? AND "ID" = ?`,
+      params: [collection, id],
+    }),
+    insertFragment: (id, ordinal, literal) => ({
+      sql: `INSERT INTO ${fragments} ("COLLECTION", "ID", "ORDINAL", "VECTOR") VALUES (?, ?, ?, ${literal})`,
+      params: [collection, id, ordinal],
+    }),
     byId: (id) => ({
       sql: `SELECT "ID" AS "id", "TEXT" AS "text", "METADATA" AS "metadata" FROM ${table} WHERE "COLLECTION" = ? AND "ID" = ?`,
       params: [collection, id],
     }),
-    upsert: (lit, id, text, metadataJson, fragments) => ({
-      sql: `UPSERT ${table} ("COLLECTION", "ID", "TEXT", "VECTOR", "METADATA", "FRAGMENT_VECTORS") VALUES (?, ?, ?, ${lit}, ?, ?) WITH PRIMARY KEY`,
-      params: [collection, id, text, metadataJson, fragments],
+    upsert: (lit, id, text, metadataJson) => ({
+      sql: `UPSERT ${table} ("COLLECTION", "ID", "TEXT", "VECTOR", "METADATA") VALUES (?, ?, ?, ${lit}, ?) WITH PRIMARY KEY`,
+      params: [collection, id, text, metadataJson],
     }),
     deleteById: (id) => ({
       sql: `DELETE FROM ${table} WHERE "COLLECTION" = ? AND "ID" = ?`,
@@ -163,46 +164,70 @@ function listSql(
   };
 }
 
-/** Include all rows with extra vectors alongside the primary-vector shortlist. */
-function searchPageSql(
-  projection: string,
-  score: string,
-  from: string,
-  limit?: number,
-): string {
-  const select = `${projection}${score} AS "score", "FRAGMENT_VECTORS" AS "fragmentVectors"`;
-  if (limit === undefined) return `${select} ${from} ORDER BY "score" DESC`;
-  return `SELECT "id", "text", "metadata", "score", "fragmentVectors" FROM (${select}, ROW_NUMBER() OVER (ORDER BY ${score} DESC) AS "primaryRank" ${from}) AS ranked WHERE "primaryRank" <= ${limit} OR "fragmentVectors" IS NOT NULL ORDER BY "score" DESC`;
-}
-
-/** SQL narrows owners before ranking; strict scalar types are checked before application top-k. */
-function searchSql(
-  statement: SqlStatement,
-  identity?: RagIdentityFilter,
+/** Aggregate eligible fragment scores, then access document LOBs for the winners. */
+function rankedSearch(
+  table: string,
+  fragments: string,
+  vector: string,
+  limit: number,
+  filter: Parameters<HanaStoreSql['search']>[2],
+  collection?: string,
 ): SqlStatement {
-  if (!identity) return statement;
   const conditions: string[] = [];
-  if (identity.ownerScope !== undefined) {
-    conditions.push(
-      `JSON_VALUE("METADATA", '$.ownerScope' RETURNING NVARCHAR(5000)) = ?`,
-    );
-    statement.params.push(identity.ownerScope);
+  const params: (string | number)[] = [];
+  if (collection !== undefined) {
+    conditions.push('"COLLECTION" = ?');
+    params.push(collection);
   }
-  for (const key of ['sessionId', 'userId'] as const) {
-    if (identity[key] !== undefined) {
+  for (const [key, value] of Object.entries({
+    ownerScope: filter.identity?.ownerScope,
+    sessionId: filter.identity?.sessionId,
+    userId: filter.identity?.userId,
+    namespace: filter.namespace,
+  })) {
+    if (value === undefined) continue;
+    conditions.push(
+      `JSON_QUERY("METADATA", '$.${key}' WITH ARRAY WRAPPER) LIKE_REGEXPR '^\\[\\s*"' AND JSON_VALUE("METADATA", '$.${key}' RETURNING NVARCHAR(5000)) = ?`,
+    );
+    params.push(value);
+  }
+  if (filter.identity) {
+    for (const key of ['sessionId', 'userId', 'roleId'] as const) {
+      const required =
+        (key === 'sessionId' && filter.identity.ownerScope === 'session') ||
+        (key === 'userId' && filter.identity.ownerScope === 'user');
       conditions.push(
-        `JSON_VALUE("METADATA", '$.${key}' RETURNING NVARCHAR(5000)) = ?`,
+        required
+          ? `JSON_VALUE("METADATA", '$.${key}' RETURNING NVARCHAR(5000)) LIKE_REGEXPR '\\S'`
+          : `JSON_QUERY("METADATA", '$.${key}' WITH ARRAY WRAPPER) IS NULL`,
       );
-      statement.params.push(identity[key]);
     }
   }
-  if (!conditions.length) return statement;
-  const conjunction = statement.sql.includes(' WHERE ') ? ' AND ' : ' WHERE ';
+  conditions.push(
+    `COALESCE(CASE WHEN JSON_QUERY("METADATA", '$.ttl' WITH ARRAY WRAPPER) LIKE_REGEXPR '^\\[\\s*-?[0-9]' THEN JSON_VALUE("METADATA", '$.ttl' RETURNING DOUBLE) END, ?) >= ?`,
+  );
+  params.push(filter.nowSecs, filter.nowSecs);
+  const fragmentScope =
+    collection === undefined ? '' : ' WHERE f."COLLECTION" = ?';
+  const documentScope =
+    collection === undefined ? '' : ' AND d."COLLECTION" = ?';
+  if (collection !== undefined) params.push(collection, collection);
   return {
-    sql: statement.sql.replace(
-      ' ORDER BY ',
-      `${conjunction}${conditions.join(' AND ')} ORDER BY `,
-    ),
-    params: statement.params,
+    sql: `WITH eligible AS (
+      SELECT "ID", COSINE_SIMILARITY("VECTOR", ${vector}) AS "score"
+      FROM ${table} WHERE ${conditions.join(' AND ')}
+    ), scores AS (
+      SELECT "ID", "score" FROM eligible
+      UNION ALL
+      SELECT f."ID", COSINE_SIMILARITY(f."VECTOR", ${vector}) AS "score"
+      FROM ${fragments} AS f INNER JOIN eligible AS e ON e."ID" = f."ID"${fragmentScope}
+    ), winners AS (
+      SELECT "ID", MAX("score") AS "score" FROM scores
+      GROUP BY "ID" ORDER BY "score" DESC, "ID" LIMIT ${limit}
+    )
+    SELECT d."ID" AS "id", d."TEXT" AS "text", d."METADATA" AS "metadata", w."score"
+    FROM winners AS w INNER JOIN ${table} AS d ON d."ID" = w."ID"${documentScope}
+    ORDER BY w."score" DESC, w."ID"`,
+    params,
   };
 }

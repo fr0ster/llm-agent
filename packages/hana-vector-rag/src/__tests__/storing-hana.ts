@@ -1,5 +1,6 @@
 import type { HanaClient } from '../hana-vector-rag.js';
 import { transactionalHanaClient } from '../role-transaction.js';
+import { fragmentTableName } from '../schema.js';
 
 /**
  * A HANA client that stores the rows of the `shared` layout's two tables and
@@ -471,7 +472,6 @@ export function storingHana(opts: {
           'ID',
           'TEXT',
           'VECTOR',
-          'FRAGMENT_VECTORS',
           'METADATA',
           'CREATED_AT',
         ],
@@ -499,6 +499,21 @@ export function storingHana(opts: {
       },
     ],
   ]);
+
+  const installFragments = (name: string, shared: boolean) => {
+    const columns = shared
+      ? ['COLLECTION', 'ID', 'ORDINAL', 'VECTOR']
+      : ['ID', 'ORDINAL', 'VECTOR'];
+    tables.set(`${schema}.${fragmentTableName(name)}`, {
+      columns,
+      key: columns.slice(0, -1),
+      lengths: { VECTOR: opts.dimension },
+      rows: [],
+    });
+  };
+  const sharedDocuments = opts.documentsTable ?? 'RAG_DOCUMENTS';
+  if (tables.has(`${schema}.${sharedDocuments}`))
+    installFragments(sharedDocuments, true);
 
   /** The system views the startup check reads, derived from the tables. */
   const systemView = (name: string): Table | undefined => {
@@ -744,7 +759,7 @@ export function storingHana(opts: {
       snapshot = undefined;
       return { rows: [], rowCount: 0 };
     }
-    const create = /^CREATE TABLE "([^"]+)"/.exec(sql);
+    const create = /^CREATE TABLE (?:IF NOT EXISTS )?"([^"]+)"/.exec(sql);
     if (create) {
       const key = `${schema}.${create[1]}`;
       if (tables.has(key)) throw new Error('Duplicate table');
@@ -768,11 +783,9 @@ export function storingHana(opts: {
       return { rows: [], rowCount: 0 };
     }
     const fragments =
-      /^ALTER TABLE "([^"]+)" ADD \("FRAGMENT_VECTORS" NCLOB\)$/.exec(sql);
+      /^CREATE COLUMN TABLE "[^"]+" \([\s\S]+ REFERENCES "([^"]+)" /.exec(sql);
     if (fragments) {
-      const table = resolve({ name: fragments[1] });
-      table.columns.push('FRAGMENT_VECTORS');
-      for (const row of table.rows) row.FRAGMENT_VECTORS = null;
+      installFragments(fragments[1], sql.includes('"COLLECTION"'));
       return { rows: [], rowCount: 0 };
     }
     const alter =
@@ -785,16 +798,75 @@ export function storingHana(opts: {
       for (const row of table.rows) row.ROLE_ID = null;
       return { rows: [], rowCount: 0 };
     }
-    const shortlist =
-      /^SELECT "id", "text", "metadata", "score", "fragmentVectors" FROM \((SELECT .*), ROW_NUMBER\(\) OVER \(ORDER BY COSINE_SIMILARITY\(.*?\) DESC\) AS "primaryRank" (FROM .*)\) AS ranked WHERE "primaryRank" <= (\d+) OR "fragmentVectors" IS NOT NULL ORDER BY "score" DESC$/.exec(
+    const ranked =
+      /^WITH eligible AS \(\s+SELECT "ID", COSINE_SIMILARITY\("VECTOR", TO_REAL_VECTOR\('(\[[^']+\])'\)\) AS "score"\s+FROM "([^"]+)" WHERE ([^\n]+)[\s\S]+LIMIT (\d+)\s+\)/.exec(
         sql,
       );
-    if (shortlist) {
-      const base = `${shortlist[1]} ${shortlist[2]} ORDER BY "score" DESC`;
-      const rows = run(base, params).rows.filter(
-        (row, idx) =>
-          idx < Number(shortlist[3]) || row.fragmentVectors !== null,
-      );
+    if (ranked) {
+      const [, encodedVector, name, conditions, limit] = ranked;
+      const vector: number[] = JSON.parse(encodedVector);
+      const documents = resolve({ name });
+      const fragments = resolve({ name: fragmentTableName(name) });
+      const shared = conditions.startsWith('"COLLECTION"');
+      let offset = shared ? 1 : 0;
+      const filters = [
+        ...conditions.matchAll(
+          /JSON_VALUE\("METADATA", '\$\.(\w+)' RETURNING NVARCHAR\(5000\)\) = \?/g,
+        ),
+      ].map(([, key]) => ({ key, value: params[offset++] }));
+      const now = Number(params[offset]);
+      const forbidden = [
+        ...conditions.matchAll(
+          /JSON_QUERY\("METADATA", '\$\.(\w+)' WITH ARRAY WRAPPER\) IS NULL/g,
+        ),
+      ].map(([, key]) => key);
+      const required = [
+        ...conditions.matchAll(
+          /JSON_VALUE\("METADATA", '\$\.(\w+)' RETURNING NVARCHAR\(5000\)\) LIKE_REGEXPR/g,
+        ),
+      ].map(([, key]) => key);
+      const rows = documents.rows
+        .flatMap((row) => {
+          if (shared && row.COLLECTION !== params[0]) return [];
+          const metadata = JSON.parse(String(row.METADATA ?? '{}')) as Record<
+            string,
+            Value
+          >;
+          if (filters.some(({ key, value }) => metadata[key] !== value))
+            return [];
+          if (forbidden.some((key) => Object.hasOwn(metadata, key))) return [];
+          if (
+            required.some(
+              (key) =>
+                typeof metadata[key] !== 'string' ||
+                !String(metadata[key]).trim(),
+            )
+          )
+            return [];
+          if (typeof metadata.ttl === 'number' && metadata.ttl < now) return [];
+          const vectors = [
+            row.VECTOR,
+            ...fragments.rows
+              .filter(
+                (fragment) =>
+                  fragment.ID === row.ID &&
+                  fragment.COLLECTION === row.COLLECTION,
+              )
+              .map((fragment) => fragment.VECTOR),
+          ].filter(Array.isArray);
+          return [
+            {
+              id: row.ID,
+              text: row.TEXT,
+              metadata: row.METADATA,
+              score: Math.max(
+                ...vectors.map((item) => cosineSimilarity(vector, item)),
+              ),
+            },
+          ];
+        })
+        .sort((a, b) => b.score - a.score)
+        .slice(0, Number(limit));
       return { rows, rowCount: rows.length };
     }
     const stmt = new Parser(
@@ -840,11 +912,23 @@ export function storingHana(opts: {
       }
       case 'delete': {
         const table = resolve(stmt.table);
-        const before = table.rows.length;
-        table.rows = table.rows.filter(
-          (r) => !matches(table, r, stmt.where, params),
+        const deleted = table.rows.filter((r) =>
+          matches(table, r, stmt.where, params),
         );
-        return { rows: [], rowCount: before - table.rows.length };
+        table.rows = table.rows.filter((r) => !deleted.includes(r));
+        const fragments = tables.get(
+          `${schema}.${fragmentTableName(stmt.table.name)}`,
+        );
+        if (fragments)
+          fragments.rows = fragments.rows.filter(
+            (fragment) =>
+              !deleted.some(
+                (row) =>
+                  row.ID === fragment.ID &&
+                  row.COLLECTION === fragment.COLLECTION,
+              ),
+          );
+        return { rows: [], rowCount: deleted.length };
       }
     }
   };
@@ -880,18 +964,12 @@ export function storingHana(opts: {
     storedRows: (name) => resolve({ name }).rows,
     createCollectionTable(name, legacy) {
       tables.set(`${schema}.${name}`, {
-        columns: [
-          'ID',
-          'TEXT',
-          'VECTOR',
-          'METADATA',
-          'CREATED_AT',
-          ...(legacy ? [] : ['FRAGMENT_VECTORS']),
-        ],
+        columns: ['ID', 'TEXT', 'VECTOR', 'METADATA', 'CREATED_AT'],
         key: ['ID'],
         lengths: { ID: 255, VECTOR: opts.dimension },
         rows: [],
       });
+      if (!legacy) installFragments(name, false);
     },
     insertRow(table, row) {
       const t = resolve({ name: table });

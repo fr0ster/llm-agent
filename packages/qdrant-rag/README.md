@@ -9,18 +9,30 @@ Provides vector search capabilities using Qdrant as the backend.
 
 ## Record embeddings
 
-Each point represents one record. Its unnamed vector holds the first
-fragment's embedding. For long records the text payload stores the full text
-together with the remaining vectors. A point upsert or delete changes all
-of these together. Existing collections and points with a plain text
-payload work without migration, and short writes keep that same format.
+The primary point stores the full text and the first vector. Additional
+fragments are indexed as separate points with the primary point ID, fragment
+ordinal and filter metadata. Qdrant groups indexed matches by record ID with
+a group size of one. The store merges them with separately indexed matches
+for legacy points and fetches payloads for the winners. Scans and listings
+return primary points. Replacement prunes obsolete fragment points in the
+same ordered batch request, and delete filters remove the primary and all
+its fragment points together.
 
-Search combines Qdrant's indexed primary-vector results with a filtered
-scroll of points carrying extra vectors and ranks each point once by its
-best cosine score. Searches that match many long records evaluate their
-additional vectors in the client. Configure `fragmentSizeChars` on the
-store or provider to change fragmentation for embedders without a declared
-capacity (default 2048 Unicode code points).
+### Upgrade an existing collection
+
+Use Qdrant 1.10+ for the Query API. Catalogued stores still require Qdrant
+1.17+. Existing single-vector points work without rewriting. For existing
+strict-mode collections, provision the `_ragRecordPointId` keyword index
+and `_ragFragmentIndex` integer index before enabling writes and search.
+The provider adds these indexes for created or adopted collections and the
+catalog migration also creates them. Re-upsert any records written with
+fragment vectors embedded in a prerelease text payload to index those
+vectors.
+
+Qdrant orders individual operations within a batch. Application instances
+that can write the same record concurrently should serialize those writes
+across instances. Configure `fragmentSizeChars` for embedders that do
+not declare their capacity (default 2,048 Unicode code points).
 
 ## Query embedding fallback
 

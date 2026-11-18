@@ -190,6 +190,9 @@ export interface IIdStrategy {
   resolve(metadata: RagMetadata, text: string): string;
 }
 
+/** A precomputed document vector or its ordered set of fragment vectors. */
+export type RagDocumentVectors = number[] | number[][];
+
 export interface IRagBackendWriter {
   upsertRaw(
     id: string,
@@ -205,7 +208,7 @@ export interface IRagBackendWriter {
   upsertPrecomputedRaw?(
     id: string,
     text: string,
-    vector: number[],
+    vector: RagDocumentVectors,
     metadata: RagMetadata,
     options?: CallOptions,
   ): Promise<Result<void, RagError>>;
@@ -222,7 +225,7 @@ export interface IRagBackendWriter {
     items: ReadonlyArray<{
       id: string;
       text: string;
-      vector: number[];
+      vector: RagDocumentVectors;
       metadata: RagMetadata;
     }>,
     options?: CallOptions,

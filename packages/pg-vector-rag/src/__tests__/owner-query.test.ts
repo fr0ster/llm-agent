@@ -16,10 +16,7 @@ for (const layout of ['shared', 'per-collection'] as const)
     const f = await accessFixture();
     try {
       await f.client.query('CREATE EXTENSION IF NOT EXISTS vector');
-      for (const statement of sharedLayoutSql({ dimension: 3 })
-        .split(';')
-        .filter((s) => s.trim()))
-        await f.client.query(statement);
+      await f.client.query(sharedLayoutSql({ dimension: 3 }));
       const rag = new PgVectorRag(
         {
           collectionName: 'shared',

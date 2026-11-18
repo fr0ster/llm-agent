@@ -1,5 +1,9 @@
 import { createCatalogTableSql } from './catalog.js';
-import { createExtensionSql, quoteIdent } from './schema.js';
+import {
+  createExtensionSql,
+  fragmentStorageSql,
+  quoteIdent,
+} from './schema.js';
 
 /** Default table of the `shared` layout: one documents table for all collections. */
 export const SHARED_DOCUMENTS_TABLE = 'rag_documents';
@@ -33,6 +37,11 @@ export function sharedLayoutSql(opts: {
     sharedDocumentsSql(
       opts.documentsTable ?? SHARED_DOCUMENTS_TABLE,
       opts.dimension,
+    ),
+    ...fragmentStorageSql(
+      opts.documentsTable ?? SHARED_DOCUMENTS_TABLE,
+      opts.dimension,
+      'shared',
     ),
   ]
     .map((statement) => `${statement};`)

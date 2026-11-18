@@ -1,5 +1,5 @@
 ---
-"@mcp-abap-adt/pg-vector-rag": minor
+"@mcp-abap-adt/pg-vector-rag": major
 ---
 
-Store and rank fragment vectors within each PostgreSQL record, with additive schema upgrades for existing tables.
+Deploy the fragment table and synchronization trigger before shared or manually managed stores can search or write. PostgreSQL ranks distinct records using indexable fragment vectors.

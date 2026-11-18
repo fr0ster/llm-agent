@@ -35,11 +35,12 @@ import type {
   ISkillsRagBackendProvider,
   ISkillsStore,
   ISkillsStoreProvider,
+  RagDocumentVectors,
   RetiredGeneration,
   SkillHit,
   SkillRecord,
 } from '@mcp-abap-adt/llm-agent';
-import { CatalogCasError } from '@mcp-abap-adt/llm-agent'; // value (class), not a type
+import { CatalogCasError, recordVectors } from '@mcp-abap-adt/llm-agent'; // value (class), not a type
 
 // ----------------------------------------------------------------------------
 // Client / reader interfaces (minimal, mockable) — WRITE is a superset of READ.
@@ -73,7 +74,10 @@ export interface IQdrantClient extends IQdrantReader {
    * before its points are visible to recall (read-after-write at the activation
    * boundary).
    */
-  upsertPoints(points: QdrantPoint[], opts?: { wait?: boolean }): Promise<void>;
+  upsertPoints(
+    points: QdrantPoint[],
+    opts?: { wait?: boolean; signal?: AbortSignal },
+  ): Promise<void>;
   deleteByFilter(filter: object): Promise<void>;
 }
 
@@ -97,7 +101,10 @@ export interface ICatalogStore extends ICatalogReader {
   ): Promise<CatalogSnapshot>;
 }
 
-type Embed = (text: string, options?: CallOptions) => Promise<number[]>;
+type Embed = (
+  text: string,
+  options?: CallOptions,
+) => Promise<RagDocumentVectors>;
 type PointId = (generation: string, recordId: string) => string;
 
 // ----------------------------------------------------------------------------
@@ -422,22 +429,58 @@ function makeQdrantReaderImpl(opts: QdrantRestOptions): IQdrantReader {
   const base = `${opts.url.replace(/\/$/, '')}/collections/${opts.collection}`;
   return {
     async search(filter, vector, k, options) {
-      const res = await fetch(`${base}/points/search`, {
-        method: 'POST',
-        headers: await qdrantHeaders(opts.credential),
-        body: JSON.stringify({
-          vector,
-          limit: k,
-          with_payload: true,
-          filter: toQdrantFilter(filter as Record<string, unknown>),
-        }),
-        signal: options?.signal,
-      });
-      if (!res.ok) throw new Error(`qdrant search failed: ${res.status}`);
-      const json = (await res.json()) as {
-        result: Array<{ payload: Record<string, unknown>; score: number }>;
+      if (k <= 0) return [];
+      const post = async (path: string, body: object): Promise<Response> => {
+        const response = await fetch(`${base}/points${path}`, {
+          method: 'POST',
+          headers: await qdrantHeaders(opts.credential),
+          body: JSON.stringify(body),
+          signal: options?.signal,
+        });
+        if (!response.ok)
+          throw new Error(`qdrant search failed: ${response.status}`);
+        return response;
       };
-      return json.result.map((r) => ({ payload: r.payload, score: r.score }));
+      const res = await post('/query/groups', {
+        query: vector,
+        limit: k,
+        group_by: 'recordId',
+        group_size: 1,
+        with_payload: ['parentPointId'],
+        filter: toQdrantFilter(filter as QdrantPoint['payload']),
+      });
+      const json = (await res.json()) as {
+        result: {
+          groups: {
+            hits: {
+              id: string;
+              score: number;
+              payload?: { parentPointId?: string };
+            }[];
+          }[];
+        };
+      };
+      const winners = (json.result?.groups ?? []).flatMap(({ hits }) =>
+        hits.slice(0, 1).map((hit) => ({
+          id: hit.payload?.parentPointId ?? hit.id,
+          score: hit.score,
+        })),
+      );
+      if (winners.length === 0) return [];
+      const response = await post('', {
+        ids: winners.map(({ id }) => id),
+        with_payload: true,
+      });
+      const records = (await response.json()) as {
+        result: Pick<QdrantPoint, 'id' | 'payload'>[];
+      };
+      const payloads = new Map(
+        records.result.map(({ id, payload }) => [id, payload]),
+      );
+      return winners.flatMap(({ id, score }) => {
+        const payload = payloads.get(id);
+        return payload ? [{ payload, score }] : [];
+      });
     },
     async scroll(filter, cursor) {
       const res = await fetch(`${base}/points/scroll`, {
@@ -489,6 +532,7 @@ export function makeQdrantClient(opts: QdrantRestOptions): IQdrantClient {
       const q = upsertOpts?.wait ? '?wait=true' : '';
       const res = await fetch(`${base}/points${q}`, {
         method: 'PUT',
+        signal: upsertOpts?.signal,
         headers: await qdrantHeaders(opts.credential),
         body: JSON.stringify({
           points: points.map((p) => ({
@@ -632,29 +676,45 @@ export function makeQdrantStoreProvider(
         const createdAt = now();
         const points: QdrantPoint[] = [];
         for (const record of records) {
-          const vector = await embed(record.retrievalText, {
-            ...options,
-            usage: options?.usage?.with({ role: 'embedding' }),
-          });
+          const [vector, ...fragments] = recordVectors(
+            await embed(record.retrievalText, {
+              ...options,
+              usage: options?.usage?.with({ role: 'embedding' }),
+            }),
+          );
+          const parentPointId = pid(generation, record.id);
+          const scope = {
+            generation,
+            group: record.group,
+            recordId: record.id,
+            sourceId: record.sourceId,
+            createdAt,
+          };
           points.push({
-            id: pid(generation, record.id),
+            id: parentPointId,
             vector,
             payload: {
-              generation,
-              group: record.group,
-              recordId: record.id,
+              ...scope,
               content: record.content,
               name: record.name,
               provenance: record.provenance,
-              sourceId: record.sourceId,
-              createdAt,
             },
           });
+          for (const [fragmentIndex, vector] of fragments.entries()) {
+            points.push({
+              id: pointId(parentPointId, String(fragmentIndex)),
+              vector,
+              payload: { ...scope, parentPointId, fragmentIndex },
+            });
+          }
         }
         // wait=true: this generation is about to be published active by the
         // host; its points MUST be searchable before activation (read-after-write).
         if (points.length > 0)
-          await client.upsertPoints(points, { wait: true });
+          await client.upsertPoints(points, {
+            wait: true,
+            signal: options?.signal,
+          });
       },
 
       async carryForward(generation, sourceIds) {
@@ -668,10 +728,20 @@ export function makeQdrantStoreProvider(
         });
         const points: QdrantPoint[] = carried.map((p) => {
           const recordId = String(p.payload.recordId ?? '');
+          const parentPointId = pid(generation, recordId);
+          const fragmentIndex = p.payload.fragmentIndex;
           return {
-            id: pid(generation, recordId),
+            id:
+              typeof fragmentIndex === 'number'
+                ? pointId(parentPointId, String(fragmentIndex))
+                : parentPointId,
             vector: p.vector,
-            payload: { ...p.payload, generation, createdAt },
+            payload: {
+              ...p.payload,
+              generation,
+              createdAt,
+              ...(typeof fragmentIndex === 'number' ? { parentPointId } : {}),
+            },
           };
         });
         // wait=true: carried-forward points join the same about-to-be-activated

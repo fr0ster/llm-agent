@@ -12,6 +12,8 @@ mkdirSync(dest, { recursive: true });
 for (const f of [
   '.hdiconfig',
   'RAG_DOCUMENTS.hdbtable',
+  'RAG_DOCUMENTS_FRAGMENTS.hdbtable',
+  'RAG_FRAGMENTS_DOCUMENT_FK.hdbconstraint',
   'RAG_COLLECTIONS.hdbtable',
 ])
   cpSync(join(ddl, f), join(dest, f));
