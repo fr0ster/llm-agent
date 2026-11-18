@@ -2,11 +2,13 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
   type CallOptions,
+  httpStatusOf,
   type ILlm,
   LlmError,
   type LlmResponse,
   type LlmStreamChunk,
   type Result,
+  SmartAgentError,
 } from '@mcp-abap-adt/llm-agent';
 import { FallbackLlmCallStrategy } from './fallback-llm-call-strategy.js';
 
@@ -78,6 +80,32 @@ for (const mode of ['error-chunk', 'throw'] as const) {
         ]);
       }
       assert.deepEqual(counts, { stream: 2, chat: 0 });
+    });
+  }
+
+  for (const status of [400, 404, 422]) {
+    test(`${mode}: HTTP ${status} bypasses streaming fallback`, async () => {
+      const strategy = new FallbackLlmCallStrategy();
+      const { impl, counts } = llm(mode);
+      const providerError = Object.assign(new Error('Request rejected'), {
+        response: { status },
+      });
+      impl.streamChat = async function* () {
+        counts.stream++;
+        yield { ok: true, value: { content: 'partial' } };
+        if (mode === 'throw') throw providerError;
+        const error = new LlmError('Provider wrapper');
+        error.cause = providerError;
+        yield { ok: false, error };
+      };
+
+      const chunks = await drain(strategy, impl);
+      assert.equal(chunks.length, 2);
+      assert.deepEqual(chunks[0], { ok: true, value: { content: 'partial' } });
+      const failure = chunks[1];
+      assert.ok(!failure.ok && failure.error instanceof SmartAgentError);
+      assert.equal(httpStatusOf(failure.error), status);
+      assert.deepEqual(counts, { stream: 1, chat: 0 });
     });
   }
 

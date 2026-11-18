@@ -57,16 +57,6 @@ function abortError(signal: AbortSignal): LlmError {
   });
 }
 
-function isPermanentHttpStatus(status: number | undefined): boolean {
-  return (
-    status !== undefined &&
-    status >= 400 &&
-    status < 500 &&
-    status !== 408 &&
-    status !== 429
-  );
-}
-
 export class RetryLlm implements ILlm {
   private readonly wait = new DefaultWaitStrategy();
   private readonly opts: RetryOptions;
@@ -115,7 +105,6 @@ export class RetryLlm implements ILlm {
       const terminal = terminalRunError(result.error);
       if (terminal) return { ok: false, error: terminal };
       const status = httpStatusOf(result.error);
-      if (isPermanentHttpStatus(status)) return result;
       if (this.isThrottled(result.error, status)) {
         await this.waitForRetry(
           this.retryDelay(quotaRetries++, result.error),
@@ -170,10 +159,6 @@ export class RetryLlm implements ILlm {
             return;
           }
           const status = httpStatusOf(chunk.error);
-          if (signal?.aborted || isPermanentHttpStatus(status)) {
-            yield chunk;
-            return;
-          }
           if (this.isThrottled(chunk.error, status)) {
             retryDelay = this.retryDelay(quotaRetries++, chunk.error);
           } else if (

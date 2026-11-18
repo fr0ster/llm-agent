@@ -22,7 +22,7 @@ import {
   resultKind,
   resultStepSchema,
 } from './structured-plan.js';
-import { type TaskBoard, TerminalTaskError } from './task-board.js';
+import { type TaskBoard, TerminalDialogueError } from './task-board.js';
 import { taskNotice } from './task-reference.js';
 import {
   renderToolTrace,
@@ -788,7 +788,7 @@ export class PlannerToolsClient implements IMcpClient {
               try {
                 assertNoActiveAttempt(step, scope.board);
               } catch (error) {
-                if (error instanceof TerminalTaskError) throw error;
+                if (error instanceof TerminalDialogueError) throw error;
                 throw new Error(
                   `Cannot ${next ? 'reopen or change items for' : 'remove'} step ${step.id}: ${error instanceof Error ? error.message : String(error)}; stop the task first and wait for it to settle, or keep the step`,
                 );
@@ -845,7 +845,9 @@ export class PlannerToolsClient implements IMcpClient {
     } catch (error) {
       const scope = currentPlannerScope();
       const terminal =
-        error instanceof TerminalTaskError ? error : terminalRunError(error);
+        error instanceof TerminalDialogueError
+          ? error
+          : terminalRunError(error);
       if (terminal) {
         if (name === 'plan_create' || name === 'plan_revise')
           scope?.onPlanAuthorError?.(terminal);

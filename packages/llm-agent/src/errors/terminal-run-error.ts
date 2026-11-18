@@ -1,10 +1,15 @@
 import { SmartAgentError } from '../interfaces/types.js';
-import { errorCauseChain, isAuthenticationFailure } from '../llm/throttle.js';
+import {
+  errorCauseChain,
+  httpStatusOf,
+  isAuthenticationFailure,
+} from '../llm/throttle.js';
 
 const terminalCodes = new Set([
   'ABORTED',
   'DECISION_ABORTED',
   'LLM_OUTPUT_TRUNCATED',
+  'LLM_HTTP_ERROR',
   // The worker and check protocols require an answer or a verdict.
   'EMPTY_WORKER_OUTPUT',
   'VERDICT_RETRIEVAL_FAILED',
@@ -29,6 +34,19 @@ export function terminalRunError<T>(error: T): SmartAgentError | undefined {
   }
   if (details && isAuthenticationFailure(details))
     return typedFailure(details, 'CREDENTIALS_REJECTED');
+  const status = httpStatusOf(details);
+  if (
+    details &&
+    status !== undefined &&
+    status >= 400 &&
+    status < 500 &&
+    status !== 408 &&
+    status !== 425 &&
+    status !== 429
+  ) {
+    if (details instanceof SmartAgentError) return details;
+    return Object.assign(typedFailure(details, 'LLM_HTTP_ERROR'), { status });
+  }
   return undefined;
 }
 

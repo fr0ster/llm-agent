@@ -65,7 +65,11 @@ import {
   restoreSuccessfulWork,
   resultKind,
 } from './structured-plan.js';
-import { TaskBoard, type TaskBoardOptions } from './task-board.js';
+import {
+  TaskBoard,
+  type TaskBoardOptions,
+  TerminalDialogueError,
+} from './task-board.js';
 import { taskNotice } from './task-reference.js';
 
 export interface PlannerTurnOptions {
@@ -254,14 +258,16 @@ export class DialogueSession {
       ]),
     ];
   }
-  private taskFailure(
+  private requestFailure(
     request: PlannerRequestRecord | undefined,
   ): SmartAgentError | undefined {
-    return (
-      request &&
-      this.board.findTerminalError(
-        (id) => this.taskRequests.get(id) === request.id,
-      )
+    if (!request) return undefined;
+    if (request.terminalError) {
+      const { message, code } = request.terminalError;
+      return new TerminalDialogueError(message, code);
+    }
+    return this.board.findTerminalError(
+      (id) => this.taskRequests.get(id) === request.id,
     );
   }
   private beginRequest(text: string, user: boolean): PlannerRequestRecord {
@@ -278,7 +284,7 @@ export class DialogueSession {
       !this.board
         .list()
         .some((task) => task.state === 'queued' || task.state === 'running');
-    const restartAfterFailure = user && this.taskFailure(open) !== undefined;
+    const restartAfterFailure = user && this.requestFailure(open) !== undefined;
     if (open && (automatic || restartAfterFailure)) {
       this.updateRequestPlan();
       open.closedAt = this.now();
@@ -620,6 +626,9 @@ export class DialogueSession {
         ...(Object.hasOwn(record, 'lastTurnOk')
           ? { lastTurnOk: record.lastTurnOk }
           : {}),
+        ...(record.terminalError
+          ? { terminalError: { ...record.terminalError } }
+          : {}),
         ...(Object.hasOwn(record, 'resolvedFailures')
           ? { resolvedFailures: structuredClone(record.resolvedFailures) }
           : {}),
@@ -719,7 +728,7 @@ export class DialogueSession {
   ): PlannerScope {
     this.validateCaller(options);
     const assertRequestCanContinue = () => {
-      const terminal = this.taskFailure(request ?? this.openRequest);
+      const terminal = this.requestFailure(request ?? this.openRequest);
       if (terminal) throw terminal;
     };
     return {
@@ -866,6 +875,10 @@ export class DialogueSession {
         user ? this.deferredEvents.splice(0) : this.events.splice(0),
       );
       if (!user && !events.length) continue;
+      if (!user && this.openRequest?.terminalError) {
+        await this.persist();
+        continue;
+      }
       const notes = this.eventNotes(events);
       const text = user ? [user.text, notes].filter(Boolean).join('\n') : notes;
       const trigger = user ? 'user' : 'event';
@@ -909,7 +922,7 @@ export class DialogueSession {
       user?.text ?? text,
       user !== undefined &&
         (consumed.length === 0 ||
-          this.taskFailure(previousRequest) !== undefined),
+          this.requestFailure(previousRequest) !== undefined),
     );
     const entryTurnOk = request.lastTurnOk;
     request.lastTurnOk = false;
@@ -949,11 +962,11 @@ export class DialogueSession {
       if (notes) this.appendInput(notes, 'events');
     } else this.appendInput(text, 'events');
     try {
-      const taskFailure = () => {
-        const terminal = this.taskFailure(request);
+      const assertRequestCanContinue = () => {
+        const terminal = this.requestFailure(request);
         if (terminal) throw terminal;
       };
-      taskFailure();
+      assertRequestCanContinue();
       const projected = new DefaultPlannerContextBuilder().build({
         open: request,
         memory: [],
@@ -1115,7 +1128,7 @@ export class DialogueSession {
         let lastIterationText = '';
         let lastIterationPartials: StreamChunk[] = [];
         let finalIteration = false;
-        taskFailure();
+        assertRequestCanContinue();
         this.plannerCall = { requestId: request.id, stop: callStop };
         const result = await runInPlannerScope(
           {
@@ -1129,7 +1142,7 @@ export class DialogueSession {
             },
             beforeTool: (name) => {
               if (toolFailure) throw toolFailure;
-              taskFailure();
+              assertRequestCanContinue();
               if (
                 (reserved || restarting) &&
                 (name !== 'new_request' || !reserved || restartDelivered)
@@ -1327,7 +1340,7 @@ export class DialogueSession {
             }),
         ).catch((error: Error) => {
           if (toolFailure) throw toolFailure;
-          taskFailure();
+          assertRequestCanContinue();
           const terminal = terminalRunError(error);
           if (terminal) throw terminal;
           if (
@@ -1349,7 +1362,7 @@ export class DialogueSession {
         });
         this.plannerCall = undefined;
         if (toolFailure) throw toolFailure;
-        taskFailure();
+        assertRequestCanContinue();
         if (!result.ok) {
           const terminal = terminalRunError(result.error);
           if (terminal) throw terminal;
@@ -1524,6 +1537,16 @@ export class DialogueSession {
         request.deliveredTaskIds.push(...pendingDeliveryIds);
       }
       return message;
+    } catch (error) {
+      const terminal = terminalRunError(error);
+      if (terminal) {
+        request.terminalError ??= {
+          code: terminal.code,
+          message: terminal.message,
+        };
+        throw terminal;
+      }
+      throw error;
     } finally {
       this.plannerCall = undefined;
       if (user)

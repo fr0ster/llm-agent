@@ -41,8 +41,8 @@ export function cutTaskOutput(output: string, limit?: number): string {
     : `${output.slice(0, limit)}\n[cut: ${output.length - limit} characters omitted]`;
 }
 
-/** A terminal classification carried forward from a settled task. */
-export class TerminalTaskError extends SmartAgentError {}
+/** A terminal classification carried forward from a task or request. */
+export class TerminalDialogueError extends SmartAgentError {}
 
 type TaskStartResult = Result<TaskRecord, string> & {
   terminalError?: SmartAgentError;
@@ -207,7 +207,9 @@ export class TaskBoard {
       return this.enqueue({ ...req, result: profile.result });
     } catch (error) {
       const terminal =
-        error instanceof TerminalTaskError ? error : terminalRunError(error);
+        error instanceof TerminalDialogueError
+          ? error
+          : terminalRunError(error);
       return {
         ok: false,
         error:
@@ -721,7 +723,7 @@ export class TaskBoard {
   ): SmartAgentError | undefined {
     for (const task of this.records.values()) {
       if (task.terminalErrorCode !== undefined && ownsTask(task.id))
-        return new TerminalTaskError(
+        return new TerminalDialogueError(
           task.error ?? task.terminalErrorCode,
           task.terminalErrorCode,
         );

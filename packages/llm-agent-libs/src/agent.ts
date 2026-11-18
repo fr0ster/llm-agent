@@ -1497,16 +1497,6 @@ export class SmartAgent {
       });
       const hasToolCalls =
         finishReason === 'tool_calls' && toolCallsMap.size > 0;
-      const val = hasToolCalls
-        ? { reprompt: false, messages }
-        : await runOutputValidationReprompt(
-            this.outputValidator,
-            content,
-            messages,
-            currentTools,
-            opts,
-            this.config.toolTrust,
-          );
       const responseRound = new ToolResponseRound(
         content,
         toolCallsMap.values(),
@@ -1518,7 +1508,7 @@ export class SmartAgent {
         { content, ...responseRound.diagnostics(toolCalls), finishReason },
         'llm',
       );
-      if (!val.reprompt && finishReason === 'length') {
+      if (finishReason === 'length') {
         const error = new OrchestratorError(
           'LLM response was truncated at a token limit.',
           'LLM_OUTPUT_TRUNCATED',
@@ -1528,6 +1518,16 @@ export class SmartAgent {
         yield { ok: false, error };
         return;
       }
+      const val = hasToolCalls
+        ? { reprompt: false, messages }
+        : await runOutputValidationReprompt(
+            this.outputValidator,
+            content,
+            messages,
+            currentTools,
+            opts,
+            this.config.toolTrust,
+          );
       const iterationEnd = hasToolCalls
         ? 'tool_calls'
         : val.reprompt

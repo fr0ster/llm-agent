@@ -20,6 +20,7 @@
     "packages/llm-agent-libs/src/__tests__/restored-context-strategy.test.ts",
     "packages/llm-agent-libs/src/context/__tests__/tool-record-wire.test.ts",
     "packages/llm-agent-libs/src/__tests__/invalid-tool-rounds.test.ts",
+    "packages/llm-agent-libs/src/coordinator/__tests__/run-failure-matrix.test.ts",
     "packages/llm-agent-server-libs/src/pipelines/__tests__/controller-invalid-tool-rounds.test.ts",
     "packages/llm-agent-libs/src/__tests__/session-cleanup-regression.test.ts",
     "packages/llm-agent-libs/src/__tests__/request-tool-blocking.test.ts",

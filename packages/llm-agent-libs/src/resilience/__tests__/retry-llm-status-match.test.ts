@@ -79,14 +79,25 @@ describe('RetryLlm — status classification', () => {
     assert.equal(llm.calls(), 2);
   });
 
-  it('does not retry a permanent status listed in retryOn', async () => {
-    const error = Object.assign(new LlmError('Forbidden'), { status: 403 });
+  for (const status of [403, 409]) {
+    it(`does not retry HTTP ${status} even when listed in retryOn`, async () => {
+      const error = Object.assign(new LlmError('Request rejected'), { status });
+      const llm = makeFailingLlm(error, 1);
+      assert.deepEqual(
+        await new RetryLlm(llm, { backoffMs: 0, retryOn: [status] }).chat([]),
+        { ok: false, error },
+      );
+      assert.equal(llm.calls(), 1);
+    });
+  }
+
+  it('retries HTTP 425 when listed in retryOn', async () => {
+    const error = Object.assign(new LlmError('Too Early'), { status: 425 });
     const llm = makeFailingLlm(error, 1);
-    assert.deepEqual(
-      await new RetryLlm(llm, { backoffMs: 0, retryOn: [403] }).chat([]),
-      { ok: false, error },
+    assert.ok(
+      (await new RetryLlm(llm, { backoffMs: 0, retryOn: [425] }).chat([])).ok,
     );
-    assert.equal(llm.calls(), 1);
+    assert.equal(llm.calls(), 2);
   });
 });
 

@@ -227,6 +227,100 @@ test('terminal worker failures bypass the event planner and prevent external ret
   }
 });
 
+for (const mode of ['result', 'throw', 'HTTP 400'] as const) {
+  test(`a terminal planner ${mode} prevents further delegation in the same request after worker completion and restore`, async () => {
+    const { caller } = testCallOptions();
+    const { promise, resolve: finishWrite } = Promise.withResolvers<{
+      output: string;
+    }>();
+    const error =
+      mode === 'HTTP 400'
+        ? Object.assign(new LlmError('Request rejected'), { status: 400 })
+        : new OrchestratorError('Output truncated', 'LLM_OUTPUT_TRUNCATED');
+    let writes = 0;
+    let plannerCalls = 0;
+    const worker: ISubAgent = {
+      name: 'executor',
+      capabilities: { contextPolicy: 'optional' },
+      run() {
+        writes++;
+        return promise;
+      },
+    };
+    const task = { worker: worker.name, goal: 'Write' };
+    const store = new InMemoryDialogueStateStore();
+    // Restore the last persisted snapshot as after a process restart.
+    const restoredStore = new InMemoryDialogueStateStore();
+    const options = {
+      id: caller.sessionId,
+      caller,
+      store,
+      board: { workers: new Map([[worker.name, worker]]) },
+      planner: {
+        async process() {
+          if (++plannerCalls <= 2) {
+            const delegated = await tools.callTool('delegate_task', task);
+            assert.ok(delegated.ok && !delegated.value.isError);
+          }
+          if (plannerCalls === 1) {
+            if (mode === 'throw') throw error;
+            return { ok: false as const, error };
+          }
+          return { ok: true as const, value: { content: 'Waiting' } };
+        },
+      },
+    };
+    const session = await DialogueSession.open(options);
+    try {
+      await assert.rejects(session.send('Write'), (caught) => caught === error);
+      finishWrite({ output: 'Written' });
+      await tick();
+      assert.equal(plannerCalls, 1);
+      assert.equal(writes, 1);
+      assert.equal(session.snapshot().tasks[0].state, 'done');
+      const saved = await store.load(caller.sessionId);
+      assert.equal(saved?.tasks[0].state, 'done');
+      assert.deepEqual(saved?.requests?.[0].terminalError, {
+        code: error.code,
+        message: error.message,
+      });
+      assert.ok(saved);
+      await restoredStore.save(caller.sessionId, saved);
+    } finally {
+      finishWrite({ output: 'Written' });
+      await session.close();
+    }
+
+    const restored = await DialogueSession.open({
+      ...options,
+      store: restoredStore,
+    });
+    try {
+      const retry = await restored.callTool('delegate_task', task);
+      assert.ok(!retry.ok && retry.error instanceof SmartAgentError);
+      assert.equal(retry.error.code, error.code);
+      assert.equal(retry.error.message, error.message);
+      assert.equal(restored.snapshot().tasks.length, 1);
+      assert.equal((await restored.send('Independent write')).text, 'Waiting');
+      assert.equal(plannerCalls, 2);
+      const snapshot = restored.snapshot();
+      assert.deepEqual(
+        snapshot.requests?.map(({ id, closedAt }) => [
+          id,
+          closedAt !== undefined,
+        ]),
+        [
+          ['r1', true],
+          ['r2', false],
+        ],
+      );
+      assert.equal(snapshot.taskRequests?.[snapshot.tasks[1].id], 'r2');
+    } finally {
+      await restored.close();
+    }
+  });
+}
+
 for (const phase of ['selection', 'worker preparation'] as const) {
   test(`dialogue preserves a terminal profile failure during ${phase}`, async () => {
     const { caller } = testCallOptions();

@@ -759,6 +759,14 @@ export class ToolLoopHandler implements IStageHandler {
         'llm',
       );
 
+      if (finishReason === 'length') {
+        ctx.error = new OrchestratorError(
+          'LLM response was truncated at a token limit.',
+          'LLM_OUTPUT_TRUNCATED',
+        );
+        ctx.yield({ ok: false, error: ctx.error });
+        return false;
+      }
       const val = hasToolCalls
         ? { reprompt: false, messages }
         : await runOutputValidationReprompt(
@@ -769,14 +777,6 @@ export class ToolLoopHandler implements IStageHandler {
             ctx.options,
             ctx.config.toolTrust,
           );
-      if (!val.reprompt && finishReason === 'length') {
-        ctx.error = new OrchestratorError(
-          'LLM response was truncated at a token limit.',
-          'LLM_OUTPUT_TRUNCATED',
-        );
-        ctx.yield({ ok: false, error: ctx.error });
-        return false;
-      }
       const iterationEnd = hasToolCalls
         ? 'tool_calls'
         : val.reprompt
