@@ -114,7 +114,8 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
    * because the SDK's constraint that produced the dummy is gone — but it
    * is not "the same as before", so it is not described that way here.
    */
-  private async authHeader(): Promise<Record<string, string>> {
+  private async authHeader(apiKey?: string): Promise<Record<string, string>> {
+    if (apiKey !== undefined) return { Authorization: `Bearer ${apiKey}` };
     const credential = this.config.credential;
     if (!credential) return {};
     return { Authorization: `Bearer ${await credential.secret()}` };
@@ -210,9 +211,10 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
         { model, signal: options?.signal },
         {
           prepare: async () => {
-            headers = await this.authHeader();
+            headers = await this.authHeader(options?.apiKey);
           },
           opts: options,
+          apiKeyOverride: options?.apiKey,
           op: startOperation(options),
           bound: this.config.usage,
           get base(): Parameters<typeof beginLlmRequest>[2] & {
@@ -233,6 +235,9 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
 
       return response;
     } catch (error: unknown) {
+      if (options?.apiKey !== undefined) {
+        throw this.credentialSafeError(error, `${this.providerName} API error`);
+      }
       const message = axios.isAxiosError(error)
         ? (error.response?.data as { error?: { message?: string } })?.error
             ?.message || error.message
@@ -295,9 +300,10 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
         { model, signal: options?.signal },
         {
           prepare: async () => {
-            headers = await this.authHeader();
+            headers = await this.authHeader(options?.apiKey);
           },
           opts: options,
+          apiKeyOverride: options?.apiKey,
           op: startOperation(options),
           bound: this.config.usage,
           get base(): Parameters<typeof beginLlmRequest>[2] & { stream: true } {
@@ -388,6 +394,12 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
       completed = true;
     } catch (error: unknown) {
       failure = error;
+      if (options?.apiKey !== undefined) {
+        throw this.credentialSafeError(
+          error,
+          `${this.providerName} streaming error`,
+        );
+      }
       const message = axios.isAxiosError(error)
         ? (error.response?.data as { error?: { message?: string } })?.error
             ?.message || error.message
@@ -410,25 +422,38 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
               ? 'error'
               : 'ok'
             : 'aborted',
-        error: failure,
+        error: options?.apiKey === undefined ? failure : undefined,
         ...(!completed && !failure ? { closedEarly: true } : {}),
       });
     }
   }
 
-  async getModels(): Promise<IModelInfo[]> {
-    const response = await this.client.get('/models', {
-      headers: await this.authHeader(),
-    });
+  private async fetchModels(options?: LLMCallOptions) {
+    try {
+      return await this.client.get('/models', {
+        headers: await this.authHeader(options?.apiKey),
+        signal: options?.signal,
+      });
+    } catch (error) {
+      if (options?.apiKey !== undefined) {
+        throw this.credentialSafeError(
+          error,
+          `${this.providerName} model discovery failed`,
+        );
+      }
+      throw error;
+    }
+  }
+
+  async getModels(options?: LLMCallOptions): Promise<IModelInfo[]> {
+    const response = await this.fetchModels(options);
     return (response.data.data as Array<{ id: string; owned_by?: string }>).map(
       (m) => ({ id: m.id, owned_by: m.owned_by }),
     );
   }
 
-  async getEmbeddingModels(): Promise<IModelInfo[]> {
-    const response = await this.client.get('/models', {
-      headers: await this.authHeader(),
-    });
+  async getEmbeddingModels(options?: LLMCallOptions): Promise<IModelInfo[]> {
+    const response = await this.fetchModels(options);
     return (response.data.data as Array<{ id: string; owned_by?: string }>)
       .filter((m) => /embed/i.test(m.id))
       .map((m) => ({ id: m.id, owned_by: m.owned_by }));

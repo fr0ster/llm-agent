@@ -295,8 +295,12 @@ function parseStreamChunk(
 
 export interface LlmAdapterProviderInfo {
   model: string;
-  getModels?(): Promise<string[] | IModelInfo[]>;
-  getEmbeddingModels?(): Promise<string[] | IModelInfo[]>;
+  getModels?(
+    options?: Pick<CallOptions, 'apiKey' | 'signal'>,
+  ): Promise<string[] | IModelInfo[]>;
+  getEmbeddingModels?(
+    options?: Pick<CallOptions, 'apiKey' | 'signal'>,
+  ): Promise<string[] | IModelInfo[]>;
 }
 
 function normalizeModelEntry(entry: string | IModelInfo): IModelInfo {
@@ -327,7 +331,10 @@ export class LlmAdapter implements ILlm, IModelProvider {
       };
     }
     try {
-      const modelsPromise = this.provider.getModels();
+      const modelsPromise = this.provider.getModels({
+        apiKey: options?.apiKey,
+        signal: options?.signal,
+      });
       const raw = options?.signal
         ? await withAbort(
             modelsPromise,
@@ -338,7 +345,10 @@ export class LlmAdapter implements ILlm, IModelProvider {
       let models = raw.map(normalizeModelEntry);
 
       if (options?.excludeEmbedding && this.provider.getEmbeddingModels) {
-        const embeddingModels = await this.provider.getEmbeddingModels();
+        const embeddingModels = await this.provider.getEmbeddingModels({
+          apiKey: options?.apiKey,
+          signal: options?.signal,
+        });
         const embeddingIds = new Set(
           embeddingModels.map((m) => (typeof m === 'string' ? m : m.id)),
         );
@@ -362,7 +372,10 @@ export class LlmAdapter implements ILlm, IModelProvider {
       return { ok: true, value: [] };
     }
     try {
-      const modelsPromise = this.provider.getEmbeddingModels();
+      const modelsPromise = this.provider.getEmbeddingModels({
+        apiKey: options?.apiKey,
+        signal: options?.signal,
+      });
       const raw = options?.signal
         ? await withAbort(
             modelsPromise,
@@ -409,6 +422,7 @@ export class LlmAdapter implements ILlm, IModelProvider {
 
       const agentOptions = options
         ? {
+            apiKey: options.apiKey,
             usage: options.usage,
             usageOp: options.usageOp,
             temperature: options.temperature,
@@ -473,6 +487,7 @@ export class LlmAdapter implements ILlm, IModelProvider {
 
       const agentOptions = options
         ? {
+            apiKey: options.apiKey,
             usage: options.usage,
             usageOp: options.usageOp,
             temperature: options.temperature,
@@ -520,7 +535,10 @@ export class LlmAdapter implements ILlm, IModelProvider {
       return { ok: true, value: true };
     }
     try {
-      const modelsPromise = this.provider.getModels();
+      const modelsPromise = this.provider.getModels({
+        apiKey: options?.apiKey,
+        signal: options?.signal,
+      });
       const models = options?.signal
         ? await withAbort(
             modelsPromise,
