@@ -1,6 +1,6 @@
 {
   "name": "@mcp-abap-adt/copilot-llm",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "GitHub Copilot LLM provider (ILlm) for @mcp-abap-adt/llm-agent.",
   "type": "module",
   "main": "dist/index.js",
@@ -32,7 +32,7 @@
     "access": "public"
   },
   "peerDependencies": {
-    "@mcp-abap-adt/llm-agent": "^34.0.0"
+    "@mcp-abap-adt/llm-agent": "^34.1.0"
   },
   "dependencies": {
     "@github/copilot-sdk": "1.0.34"

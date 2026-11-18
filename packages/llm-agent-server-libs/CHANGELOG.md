@@ -1,5 +1,12 @@
 # @mcp-abap-adt/llm-agent-server-libs
 
+## 34.0.1
+
+### Patch Changes
+
+- Updated dependencies [c8fcef3]
+  - @mcp-abap-adt/llm-agent-libs@35.0.0
+
 ## 34.0.0
 
 ### Major Changes

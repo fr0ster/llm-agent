@@ -1,5 +1,11 @@
 # @mcp-abap-adt/ollama-llm
 
+## 30.12.1
+
+### Patch Changes
+
+- a3c3b57: Preserve structured HTTP statuses and Retry-After metadata across provider error wrappers so retry policies can distinguish permanent and transient failures. Keep OAuth error bodies out of token request errors and omit raw transport diagnostics from SAP AI Core error logs.
+
 ## 30.12.0
 
 ### Minor Changes

@@ -1,5 +1,13 @@
 # @mcp-abap-adt/anthropic-llm
 
+## 31.0.0
+
+### Major Changes
+
+- c8fcef3: Resolve the required `max_tokens` from the cached Models API metadata when no explicit override is set. Compatible endpoints that omit this metadata now require an explicit maxTokens setting. Report model output limits and normalize token-limit finishes in both response modes.
+  
+  Scope model metadata and concurrent discovery to the effective credential. Apply the configured throttle policy to model discovery, including paginated model listings.
+
 ## 30.13.0
 
 ### Minor Changes

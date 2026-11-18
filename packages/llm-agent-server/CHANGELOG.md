@@ -1,5 +1,23 @@
 # @mcp-abap-adt/llm-agent-server
 
+## 33.1.2
+
+### Patch Changes
+
+- Updated dependencies [c8fcef3]
+- Updated dependencies [c8fcef3]
+- Updated dependencies [c8fcef3]
+- Updated dependencies [a3c3b57]
+  - @mcp-abap-adt/llm-agent-libs@35.0.0
+  - @mcp-abap-adt/anthropic-llm@31.0.0
+  - @mcp-abap-adt/llm-agent@34.1.0
+  - @mcp-abap-adt/openai-llm@30.13.1
+  - @mcp-abap-adt/deepseek-llm@30.12.1
+  - @mcp-abap-adt/ollama-llm@30.12.1
+  - @mcp-abap-adt/sap-aicore-llm@31.1.2
+  - @mcp-abap-adt/sap-aicore-auth@30.9.2
+  - @mcp-abap-adt/llm-agent-server-libs@34.0.1
+
 ## 33.1.1
 
 ### Patch Changes

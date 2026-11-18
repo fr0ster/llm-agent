@@ -1,5 +1,11 @@
 # @mcp-abap-adt/sap-aicore-auth
 
+## 30.9.2
+
+### Patch Changes
+
+- a3c3b57: Preserve structured HTTP statuses and Retry-After metadata across provider error wrappers so retry policies can distinguish permanent and transient failures. Keep OAuth error bodies out of token request errors and omit raw transport diagnostics from SAP AI Core error logs.
+
 ## 30.9.1
 
 Lockstep release with the 30.9.1 line: dialogue plans no longer stall in `checking` — idle checks cover running/checking steps without active attempts, checker verdicts are read from prose or JSON fences (outermost, consistent candidates only), unusable verdicts allow a fresh checker — changes in `llm-agent-libs`; other packages are unchanged. See the root CHANGELOG.
