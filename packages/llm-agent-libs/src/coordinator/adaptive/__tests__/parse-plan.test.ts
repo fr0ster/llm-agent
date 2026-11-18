@@ -61,7 +61,6 @@ for (const [name, steps, id] of [
   ],
   ['both answer sources', [work, { ...answer, text: 'hi' }], 'z'],
   ['no answer source', [{ id: 'z', kind: 'answer' }], 'z'],
-  ['maxRuns cap', [{ ...work, maxRuns: 6 }], 'a'],
   ['empty steps', [], 'steps'],
 ] as const) {
   test(`parsePlan rejects ${name}`, () => {
@@ -190,7 +189,7 @@ test('validateSteps permits forward references and known ids', () => {
   assert.equal(result.ok, true);
 });
 
-test('validateSteps applies work/check/revise defaults and keeps explicit caps', () => {
+test('validateSteps keeps omitted run limits unset and accepts explicit limits above five', () => {
   const result = validateSteps(
     [
       work,
@@ -204,7 +203,7 @@ test('validateSteps applies work/check/revise defaults and keeps explicit caps',
         onFail: 'end',
       },
       { id: 'r', kind: 'revise', reason: 'reason' },
-      { ...work, id: 'b', maxRuns: 5 },
+      { ...work, id: 'b', maxRuns: 12 },
     ],
     opts,
   );
@@ -214,7 +213,7 @@ test('validateSteps applies work/check/revise defaults and keeps explicit caps',
       result.value.map((step) =>
         'maxRuns' in step ? step.maxRuns : undefined,
       ),
-      [1, 3, 1, 5],
+      [undefined, undefined, undefined, 12],
     );
 });
 

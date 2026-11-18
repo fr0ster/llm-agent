@@ -21,11 +21,18 @@ export function parseToolArguments(
 }
 
 type ToolResultMeta = { identityKey?: string; isError?: boolean };
+const invalidArguments = 'Invalid tool arguments: expected a JSON object.';
 
 /** One model response owns one ordered, complete conversation exchange. */
 export class ToolResponseRound {
   readonly assistant: Message;
   readonly calls: Array<{ id: string; name: string; arguments: string }>;
+  private readonly rejectedCalls: Array<{
+    id: string;
+    name: string;
+    argumentLength: number;
+    reason: string;
+  }> = [];
   private readonly resolutions = new Map<
     string,
     {
@@ -81,13 +88,31 @@ export class ToolResponseRound {
     return this.calls.flatMap((call) => {
       const args = parseToolArguments(call.arguments);
       if (args !== undefined) return [{ ...call, arguments: args }];
+      this.rejectedCalls.push({
+        id: call.id,
+        name: call.name,
+        argumentLength: call.arguments.length,
+        reason: invalidArguments,
+      });
       this.resolve(
         call,
-        'Error: Invalid tool arguments: expected a JSON object.',
+        `Error: ${invalidArguments} Retry this tool with a complete, valid JSON object.`,
         true,
       );
       return [];
     });
+  }
+
+  diagnostics(executable: readonly LlmToolCall[]) {
+    return {
+      receivedToolCalls: this.calls.map(({ id, name, arguments: args }) => ({
+        id,
+        name,
+        argumentLength: args.length,
+      })),
+      rejectedToolCalls: this.rejectedCalls,
+      executableToolCalls: executable.map(({ id, name }) => ({ id, name })),
+    };
   }
 
   add(message: Message, meta: ToolResultMeta): void {

@@ -11,6 +11,12 @@ Exports:
 
 Optional peer dependency of @mcp-abap-adt/llm-agent-libs. Install when your smart-server.yaml names `anthropic` as the LLM provider, or when constructing AnthropicProvider programmatically.
 
+The Messages API requires `max_tokens`. The provider uses the call's
+`maxTokens`, then the provider config's `maxTokens`, then the selected model's
+maximum output from the Models API. Each provider instance caches that value
+per model and exposes it as `maxOutputTokens` in `getModels()` when reported.
+If a compatible endpoint omits the metadata, configure `maxTokens` explicitly.
+
 ## License
 
 **GNU Lesser General Public License v3.0 only** (`LGPL-3.0-only`) — see

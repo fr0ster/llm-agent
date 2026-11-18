@@ -5,6 +5,7 @@ import type {
   SubAgentContextRequest,
   SubAgentContextResult,
 } from '@mcp-abap-adt/llm-agent';
+import { terminalRunError } from '@mcp-abap-adt/llm-agent';
 
 /**
  * Thin retrieval callback used by the builder. The caller is responsible
@@ -75,7 +76,9 @@ export class DefaultSubAgentContextBuilder implements ISubAgentContextBuilder {
             ref: this.refOf(r, 'path') ?? 'unknown',
           });
         }
-      } catch {
+      } catch (error) {
+        const terminal = terminalRunError(error);
+        if (terminal) throw terminal;
         // Retrieval errors are non-fatal — caller observes empty source.
       }
     }
@@ -101,7 +104,9 @@ export class DefaultSubAgentContextBuilder implements ISubAgentContextBuilder {
             ref: this.refOf(r, 'tool') ?? 'unknown',
           });
         }
-      } catch {
+      } catch (error) {
+        const terminal = terminalRunError(error);
+        if (terminal) throw terminal;
         // Same policy as projectSource.
       }
     }

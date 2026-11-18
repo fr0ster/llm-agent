@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { IBearerCredential } from '@mcp-abap-adt/interfaces-auth';
 import {
+  httpStatusOf,
   isThrottledError,
   type Message,
   resetQuotaGates,
@@ -407,6 +408,38 @@ describe('SapCoreAIProvider — rate limiting', () => {
     );
     assert.equal(calls, 1);
   });
+
+  for (const stream of [false, true]) {
+    it(`preserves a permanent SDK status through wrapping, stream=${stream}`, async () => {
+      const provider = new SapCoreAIProvider({
+        model: 'test-model',
+        apiBaseUrl,
+        credential: testCredential(),
+        whenThrottled: waits,
+      });
+      let calls = 0;
+      const fail = async () => {
+        calls++;
+        throw new Error('max_tokens must be at most 500', {
+          cause: { response: { status: 400 } },
+        });
+      };
+      Object.defineProperty(provider, 'createClient', {
+        value: () => ({ chatCompletion: fail, stream: fail }),
+      });
+      await assert.rejects(
+        async () => {
+          if (stream) {
+            for await (const chunk of provider.streamChat([])) {
+              assert.fail(`unexpected chunk: ${chunk.content}`);
+            }
+          } else await provider.chat([]);
+        },
+        (error) => error instanceof Error && httpStatusOf(error) === 400,
+      );
+      assert.equal(calls, 1);
+    });
+  }
 
   it('keys the quota by resource group as well as model', () => {
     const credential = testCredential();

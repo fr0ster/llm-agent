@@ -6,8 +6,6 @@ import type {
 } from '@mcp-abap-adt/llm-agent';
 import { z } from 'zod';
 
-/** Maximum executions accepted for a step. */
-export const MAX_RUNS_CAP = 5;
 const context = z.object({
   spec: z.boolean().optional(),
   history: z.enum(['none', 'last-turn', 'all']).optional(),
@@ -15,7 +13,7 @@ const context = z.object({
   note: z.string().optional(),
 });
 const id = z.string().min(1);
-const maxRuns = z.number().int().min(1).max(MAX_RUNS_CAP);
+const maxRuns = z.number().int().positive().optional();
 const stepSchema = z.discriminatedUnion('kind', [
   z.object({
     id,
@@ -23,7 +21,7 @@ const stepSchema = z.discriminatedUnion('kind', [
     goal: z.string(),
     worker: id,
     context: context.optional(),
-    maxRuns: maxRuns.default(1),
+    maxRuns,
   }),
   z.object({
     id,
@@ -35,14 +33,14 @@ const stepSchema = z.discriminatedUnion('kind', [
     onPass: id,
     onFail: id,
     onPartial: id.optional(),
-    maxRuns: maxRuns.default(3),
+    maxRuns,
   }),
   z.object({ id, kind: z.literal('ask'), question: z.string() }),
   z.object({
     id,
     kind: z.literal('revise'),
     reason: z.string(),
-    maxRuns: maxRuns.default(1),
+    maxRuns,
   }),
   z.object({
     id,

@@ -13,6 +13,8 @@ export interface IModelInfo {
   /** Provider catalog scenario identifiers through which this model is available. */
   scenarios?: string[];
   contextLength?: number;
+  /** Maximum output tokens supported by the model, when reported by the provider. */
+  maxOutputTokens?: number;
   streamingSupported?: boolean;
   deprecated?: boolean;
 }

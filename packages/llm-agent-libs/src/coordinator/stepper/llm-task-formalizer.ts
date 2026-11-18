@@ -1,4 +1,6 @@
 import type { ILlm, ITaskFormalizer, ITaskSpec } from '@mcp-abap-adt/llm-agent';
+import { terminalRunError } from '@mcp-abap-adt/llm-agent';
+import { llmOutputTruncation } from '../llm-output-truncation.js';
 
 export const TASK_FORMALIZER_SYSTEM = `You formalize a user's request into a COMPACT task specification for a multi-step agent that works on a system through tools.
 Extract ONLY what is needed to keep every later step aligned to the overall task. Be terse — a few lines, not an essay. Do NOT invent requirements the user did not state; do NOT plan steps or name tools.
@@ -8,9 +10,8 @@ The "constraints" array must capture everything that must be known throughout th
 
 /**
  * Formalizes the raw prompt into a compact {@link ITaskSpec} with one LLM call
- * (use the strong/planner-tier model). NEVER throws: on any LLM or parse error
- * it falls back to `{ objective: prompt, raw: prompt }`, so the run proceeds
- * exactly as if no formalizer were configured.
+ * (use the strong/planner-tier model). Recoverable LLM or parse errors fall
+ * back to `{ objective: prompt, raw: prompt }`.
  */
 export class LlmTaskFormalizer implements ITaskFormalizer {
   readonly name = 'llm-task-formalizer';
@@ -31,14 +32,17 @@ export class LlmTaskFormalizer implements ITaskFormalizer {
         [
           { role: 'system', content: TASK_FORMALIZER_SYSTEM },
           { role: 'user', content: input.prompt },
-        ] as never,
-        [] as never,
+        ],
+        [],
         { usage: input.usage?.with({ role: 'planner' }), signal: input.signal },
       );
-      if ((res as { ok: boolean }).ok === false) return fallback;
-      const content = (res as { value: { content: string } }).value.content;
-      return parseTaskSpec(content, input.prompt) ?? fallback;
-    } catch {
+      if (!res.ok) throw res.error;
+      const truncation = llmOutputTruncation(res.value.finishReason);
+      if (truncation) throw truncation;
+      return parseTaskSpec(res.value.content, input.prompt) ?? fallback;
+    } catch (error) {
+      const terminal = terminalRunError(error);
+      if (terminal) throw terminal;
       return fallback;
     }
   }

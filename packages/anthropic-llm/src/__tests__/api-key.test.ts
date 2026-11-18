@@ -5,6 +5,7 @@ import { AnthropicProvider } from '../anthropic-provider.js';
 
 test('uses the per-call key across chat, streaming and model discovery', async (t) => {
   const provider = new AnthropicProvider({
+    maxTokens: 100,
     model: 'test-model',
     credential: staticApiKey('configured-key'),
   });
@@ -58,6 +59,7 @@ test('uses the per-call key across chat, streaming and model discovery', async (
 
 test('withholds an error response echoing a per-call key', async (t) => {
   const provider = new AnthropicProvider({
+    maxTokens: 100,
     model: 'test-model',
     credential: staticApiKey('configured-key'),
   });

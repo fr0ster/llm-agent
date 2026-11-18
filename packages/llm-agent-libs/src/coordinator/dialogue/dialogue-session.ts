@@ -27,8 +27,10 @@ import type {
 import {
   addTokenUsage,
   type PlannerMessageUsage,
+  type SmartAgentError,
   scopedUsage,
   type TokenUsage,
+  terminalRunError,
 } from '@mcp-abap-adt/llm-agent';
 import { DIALOGUE_COORDINATOR_SYSTEM } from './coordinator-prompt.js';
 import { createMemorySignalBus } from './memory-signal-bus.js';
@@ -63,7 +65,11 @@ import {
   restoreSuccessfulWork,
   resultKind,
 } from './structured-plan.js';
-import { TaskBoard, type TaskBoardOptions } from './task-board.js';
+import {
+  TaskBoard,
+  type TaskBoardOptions,
+  TerminalDialogueError,
+} from './task-board.js';
 import { taskNotice } from './task-reference.js';
 
 export interface PlannerTurnOptions {
@@ -140,6 +146,7 @@ interface UserTurn {
 export class DialogueSession {
   private readonly board: TaskBoard;
   private readonly signals: ISignalEmitter<DialogueSignals>;
+  private plannerCall?: { requestId: string; stop: AbortController };
   private turnActive = false;
   private externalCoordinator = false;
   // Outcomes deferred while no coordinator turn runs accompany the next user.
@@ -251,6 +258,18 @@ export class DialogueSession {
       ]),
     ];
   }
+  private requestFailure(
+    request: PlannerRequestRecord | undefined,
+  ): SmartAgentError | undefined {
+    if (!request) return undefined;
+    if (request.terminalError) {
+      const { message, code } = request.terminalError;
+      return new TerminalDialogueError(message, code);
+    }
+    return this.board.findTerminalError(
+      (id) => this.taskRequests.get(id) === request.id,
+    );
+  }
   private beginRequest(text: string, user: boolean): PlannerRequestRecord {
     let open = this.openRequest;
     const automatic =
@@ -265,11 +284,13 @@ export class DialogueSession {
       !this.board
         .list()
         .some((task) => task.state === 'queued' || task.state === 'running');
-    if (open && automatic) {
+    const restartAfterFailure = user && this.requestFailure(open) !== undefined;
+    if (open && (automatic || restartAfterFailure)) {
       this.updateRequestPlan();
       open.closedAt = this.now();
       // Preserve the notes sent with raw conversation history.
-      if (this.opts.plannerContext !== 'conversation') this.plan = undefined;
+      if (restartAfterFailure || this.opts.plannerContext !== 'conversation')
+        this.plan = undefined;
       open = undefined;
     }
     if (!open) {
@@ -531,6 +552,13 @@ export class DialogueSession {
         if (owner === this.openRequest?.id) {
           applyTaskEvent(this.plan, event, this.taskSteps);
         }
+        const plannerCall = this.plannerCall;
+        if (
+          plannerCall &&
+          plannerCall.requestId === owner &&
+          event.task.terminalErrorCode !== undefined
+        )
+          plannerCall.stop.abort();
         recomputePlanStatus(this.plan);
         this.changed();
         // Only outcomes wake the planner; a start is visible via list_tasks.
@@ -597,6 +625,9 @@ export class DialogueSession {
           : {}),
         ...(Object.hasOwn(record, 'lastTurnOk')
           ? { lastTurnOk: record.lastTurnOk }
+          : {}),
+        ...(record.terminalError
+          ? { terminalError: { ...record.terminalError } }
           : {}),
         ...(Object.hasOwn(record, 'resolvedFailures')
           ? { resolvedFailures: structuredClone(record.resolvedFailures) }
@@ -696,6 +727,10 @@ export class DialogueSession {
     options: CallOptions = {},
   ): PlannerScope {
     this.validateCaller(options);
+    const assertRequestCanContinue = () => {
+      const terminal = this.requestFailure(request ?? this.openRequest);
+      if (terminal) throw terminal;
+    };
     return {
       planAuthor: this.opts.planAuthor,
       toolTrust: this.opts.toolTrust,
@@ -719,6 +754,15 @@ export class DialogueSession {
         this.taskRequests.set(id, owner.id);
       },
       recordAction: () => this.changed(),
+      beforeTool: (name) => {
+        if (
+          name === 'plan_create' ||
+          name === 'plan_revise' ||
+          name === 'plan_update'
+        )
+          assertRequestCanContinue();
+      },
+      beforeDelegate: assertRequestCanContinue,
       board: this.board,
       signal: options.signal,
       requestStartedAt: request?.openedAt,
@@ -831,6 +875,10 @@ export class DialogueSession {
         user ? this.deferredEvents.splice(0) : this.events.splice(0),
       );
       if (!user && !events.length) continue;
+      if (!user && this.openRequest?.terminalError) {
+        await this.persist();
+        continue;
+      }
       const notes = this.eventNotes(events);
       const text = user ? [user.text, notes].filter(Boolean).join('\n') : notes;
       const trigger = user ? 'user' : 'event';
@@ -872,7 +920,9 @@ export class DialogueSession {
     const waitingAtEntry = this.plan?.status === 'waiting_user';
     let request = this.beginRequest(
       user?.text ?? text,
-      user !== undefined && consumed.length === 0,
+      user !== undefined &&
+        (consumed.length === 0 ||
+          this.requestFailure(previousRequest) !== undefined),
     );
     const entryTurnOk = request.lastTurnOk;
     request.lastTurnOk = false;
@@ -912,6 +962,11 @@ export class DialogueSession {
       if (notes) this.appendInput(notes, 'events');
     } else this.appendInput(text, 'events');
     try {
+      const assertRequestCanContinue = () => {
+        const terminal = this.requestFailure(request);
+        if (terminal) throw terminal;
+      };
+      assertRequestCanContinue();
       const projected = new DefaultPlannerContextBuilder().build({
         open: request,
         memory: [],
@@ -951,6 +1006,7 @@ export class DialogueSession {
       let didRestart = false;
       for (let correction = 0; ; correction++) {
         const callStop = new AbortController();
+        let toolFailure: SmartAgentError | undefined;
         let restarting = false;
         let delivered = false;
         let toolCount = 0;
@@ -1072,13 +1128,21 @@ export class DialogueSession {
         let lastIterationText = '';
         let lastIterationPartials: StreamChunk[] = [];
         let finalIteration = false;
+        assertRequestCanContinue();
+        this.plannerCall = { requestId: request.id, stop: callStop };
         const result = await runInPlannerScope(
           {
             ...this.createPlannerScope(request, {
               ...user?.opts,
               usage: this.turnUsage,
             }),
+            onTerminalError: (error) => {
+              toolFailure ??= error;
+              callStop.abort();
+            },
             beforeTool: (name) => {
+              if (toolFailure) throw toolFailure;
+              assertRequestCanContinue();
               if (
                 (reserved || restarting) &&
                 (name !== 'new_request' || !reserved || restartDelivered)
@@ -1156,6 +1220,8 @@ export class DialogueSession {
                     );
                   output = result.value;
                 } catch (error) {
+                  const terminal = terminalRunError(error);
+                  if (terminal) throw terminal;
                   throw new Error(
                     `task ${id} storage read failed: ${String(error)}`,
                   );
@@ -1273,6 +1339,10 @@ export class DialogueSession {
               },
             }),
         ).catch((error: Error) => {
+          if (toolFailure) throw toolFailure;
+          assertRequestCanContinue();
+          const terminal = terminalRunError(error);
+          if (terminal) throw terminal;
           if (
             (!waitStop.signal.aborted && !restarting) ||
             user?.opts.signal?.aborted
@@ -1290,6 +1360,13 @@ export class DialogueSession {
             },
           };
         });
+        this.plannerCall = undefined;
+        if (toolFailure) throw toolFailure;
+        assertRequestCanContinue();
+        if (!result.ok) {
+          const terminal = terminalRunError(result.error);
+          if (terminal) throw terminal;
+        }
         callIndex++;
         if (result.ok)
           plannerUsage = addTokenUsage(plannerUsage, result.value.usage);
@@ -1460,7 +1537,18 @@ export class DialogueSession {
         request.deliveredTaskIds.push(...pendingDeliveryIds);
       }
       return message;
+    } catch (error) {
+      const terminal = terminalRunError(error);
+      if (terminal) {
+        request.terminalError ??= {
+          code: terminal.code,
+          message: terminal.message,
+        };
+        throw terminal;
+      }
+      throw error;
     } finally {
+      this.plannerCall = undefined;
       if (user)
         this.memoryWriter?.enqueue(
           'planner-input',

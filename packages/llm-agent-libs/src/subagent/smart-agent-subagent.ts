@@ -6,6 +6,7 @@ import {
   type ISubAgentResult,
   type LlmToolCall,
   normalizeToolTraceEntry,
+  OrchestratorError,
   type SubAgentCapabilities,
   ToolTraceCollector,
   type ToolTraceEntry,
@@ -148,6 +149,16 @@ export class SmartAgentSubAgent implements ISubAgent {
             pendingExternalToolCalls: pending,
           };
         }
+      }
+
+      if (!stopped && !(finish?.output ?? content).trim()) {
+        throw Object.assign(
+          new OrchestratorError(
+            'Worker returned an empty terminal response.',
+            'EMPTY_WORKER_OUTPUT',
+          ),
+          { usage: mappedUsage },
+        );
       }
 
       const mappedToolCalls: LlmToolCall[] | undefined = toolCalls?.map(

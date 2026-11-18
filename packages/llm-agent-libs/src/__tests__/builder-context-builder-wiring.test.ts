@@ -33,10 +33,15 @@ import type {
   LlmTool,
   Result,
 } from '@mcp-abap-adt/llm-agent';
-import { symmetricEmbedder } from '@mcp-abap-adt/llm-agent';
+import { RagError, symmetricEmbedder } from '@mcp-abap-adt/llm-agent';
 import { testRagAccess } from '@mcp-abap-adt/llm-agent/testing/rag-access-testing';
 import { unwrapBuilderResult } from '../builder-types.js';
 import type { DefaultSubAgentContextBuilderConfig } from '../subagent/default-context-builder.js';
+import {
+  makeRag,
+  testCallOptions,
+  testRequestAccess,
+} from '../testing/index.js';
 
 function stubLlm(): ILlm {
   return {
@@ -86,6 +91,49 @@ function makeConstrainedSubAgent(name: string): ISubAgent {
     },
   };
 }
+
+it('stops before dispatch if retrieving subagent context returns a terminal error', async () => {
+  const { SmartAgentBuilder } = await import('../builder.js');
+  const error = new RagError('Rejected', 'CREDENTIALS_REJECTED');
+  const rag = makeRag();
+  rag.query = async () => ({ ok: false, error });
+  const worker: ISubAgent = {
+    ...makeConstrainedSubAgent('leaf'),
+    run: () =>
+      assert.fail('terminal retrieval error must prevent worker execution'),
+  };
+  const handle = await new SmartAgentBuilder({ skipModelValidation: true })
+    .withRagAccess(testRequestAccess)
+    .withMainLlm(stubLlm())
+    .withEmbedder(symmetricEmbedder(stubEmbedder()))
+    .setToolsRag(rag)
+    .withSubAgents(new Map([[worker.name, worker]]))
+    .withCoordinator({
+      planning: {
+        name: 'scripted',
+        async buildInitialPlan() {
+          return {
+            source: 'manual',
+            createdAt: 0,
+            steps: [
+              { id: 's1', goal: 'Work', agent: worker.name, status: 'pending' },
+            ],
+          };
+        },
+        shouldReplan: () => assert.fail('unexpected replan'),
+        rebuildPlan: () => assert.fail('unexpected replan'),
+      },
+    })
+    .build()
+    .then(unwrapBuilderResult);
+  try {
+    const result = await handle.agent.process('Work', testCallOptions());
+    assert.ok(!result.ok);
+    assert.equal(result.error, error);
+  } finally {
+    await handle.close();
+  }
+});
 
 describe('SmartAgentBuilder — auto-toolsRag → subagent context-builder wiring', () => {
   it('wires auto-created toolsRag into SubAgentDispatch.contextBuilder.toolSource even when setToolsRag() was NOT called', async () => {

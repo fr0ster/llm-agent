@@ -6,7 +6,7 @@ import type {
   LlmUsage,
   RunIdentity,
 } from '@mcp-abap-adt/llm-agent';
-import { addCacheTokenUsage } from '@mcp-abap-adt/llm-agent';
+import { addCacheTokenUsage, terminalRunError } from '@mcp-abap-adt/llm-agent';
 
 const ZERO: LlmUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
 const addUsage = (a: LlmUsage, b: LlmUsage): LlmUsage => ({
@@ -192,7 +192,9 @@ async function gatherDepsContext(
     let entries: ReadonlyArray<{ content: string }> = [];
     try {
       entries = await knowledgeRag.list({ stepperId: sid });
-    } catch {
+    } catch (error) {
+      const terminal = terminalRunError(error);
+      if (terminal) throw terminal;
       continue; // store unavailable for this dep → skip it
     }
     for (const e of entries) parts.push(e.content);

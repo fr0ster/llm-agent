@@ -22,8 +22,10 @@ import type {
 import {
   createDialogueTaskContext,
   normalizeToolTrace,
+  SmartAgentError,
   ToolTraceCollector,
   type ToolTraceEntry,
+  terminalRunError,
 } from '@mcp-abap-adt/llm-agent';
 import { ProfileResolver } from './profile-resolver.js';
 import { SemaphorePool } from './semaphore-pool.js';
@@ -38,6 +40,14 @@ export function cutTaskOutput(output: string, limit?: number): string {
     ? output
     : `${output.slice(0, limit)}\n[cut: ${output.length - limit} characters omitted]`;
 }
+
+/** A terminal classification carried forward from a task or request. */
+export class TerminalDialogueError extends SmartAgentError {}
+
+type TaskStartResult = Result<TaskRecord, string> & {
+  terminalError?: SmartAgentError;
+};
+
 export interface TaskBoardOptions {
   caller: ISubAgentInput['caller'];
   resultStore?: ITaskResultStore;
@@ -173,6 +183,8 @@ export class TaskBoard {
     try {
       return await this.profiles.selection(name, options);
     } catch (error) {
+      const terminal = terminalRunError(error);
+      if (terminal) throw terminal;
       throw new Error(
         `profile ${name}: ${error instanceof Error ? error.message : String(error)}`,
       );
@@ -182,7 +194,8 @@ export class TaskBoard {
   async startTask(
     req: TaskRequest,
     options?: CallOptions,
-  ): Promise<Result<TaskRecord, string>> {
+    beforeEnqueue?: () => void,
+  ): Promise<TaskStartResult> {
     try {
       const profile = await this.resolveWorker(req.worker, options);
       if (req.result !== undefined && req.result !== profile.result)
@@ -190,16 +203,24 @@ export class TaskBoard {
           `profile ${req.worker} result kind changed; reopen the step`,
         );
       options?.signal?.throwIfAborted();
+      beforeEnqueue?.();
       return this.enqueue({ ...req, result: profile.result });
     } catch (error) {
+      const terminal =
+        error instanceof TerminalDialogueError
+          ? error
+          : terminalRunError(error);
       return {
         ok: false,
-        error: error instanceof Error ? error.message : String(error),
+        error:
+          terminal?.message ??
+          (error instanceof Error ? error.message : String(error)),
+        ...(terminal ? { terminalError: terminal } : {}),
       };
     }
   }
   /** Synchronous compatibility entry point for legacy workers maps. */
-  start(req: TaskRequest): Result<TaskRecord, string> {
+  start(req: TaskRequest): TaskStartResult {
     if (this.profiles)
       return {
         ok: false,
@@ -370,6 +391,8 @@ export class TaskBoard {
           );
           worker = created;
         } catch (error) {
+          const terminal = terminalRunError(error);
+          if (terminal) throw terminal;
           throw new Error(
             `profile ${task.worker}: ${error instanceof Error ? error.message : String(error)}`,
           );
@@ -490,7 +513,11 @@ export class TaskBoard {
       } else if (task.state === 'stopped') kind = 'stopped';
       else {
         kind = 'failed';
-        task.error = error instanceof Error ? error.message : String(error);
+        const terminal = terminalRunError(error);
+        if (terminal) task.terminalErrorCode = terminal.code;
+        task.error =
+          terminal?.message ??
+          (error instanceof Error ? error.message : String(error));
       }
     } finally {
       entry.cancelHardStop?.();
@@ -580,7 +607,11 @@ export class TaskBoard {
           if (abortedDuringPut) interrupted = kind !== 'stopped';
           else if (kind === 'done') {
             kind = 'failed';
-            task.error = `result storage failed: ${error instanceof Error ? error.message : String(error)}`;
+            const terminal = terminalRunError(error);
+            if (terminal) task.terminalErrorCode = terminal.code;
+            task.error =
+              terminal?.message ??
+              `result storage failed: ${error instanceof Error ? error.message : String(error)}`;
           }
         } finally {
           putSignal.removeEventListener('abort', onPutAbort);
@@ -686,6 +717,17 @@ export class TaskBoard {
           : {}),
       })
     );
+  }
+  findTerminalError(
+    ownsTask: (id: string) => boolean,
+  ): SmartAgentError | undefined {
+    for (const task of this.records.values()) {
+      if (task.terminalErrorCode !== undefined && ownsTask(task.id))
+        return new TerminalDialogueError(
+          task.error ?? task.terminalErrorCode,
+          task.terminalErrorCode,
+        );
+    }
   }
   list(): TaskRecord[] {
     return [...this.records.keys()].flatMap((id) => {

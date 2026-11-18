@@ -7,6 +7,7 @@
  * used, sits outermost.
  */
 
+import { setImmediate } from 'node:timers/promises';
 import type { ILlm, Message } from '@mcp-abap-adt/llm-agent';
 import {
   type CallOptions,
@@ -14,34 +15,47 @@ import {
   DefaultWaitStrategy,
   exponentialBackoffMs,
   findThrottled,
-  isCallerCancellation,
-  isRetryableStatus,
+  httpStatusOf,
   LlmError,
   type LlmResponse,
   type LlmStreamChunk,
   type LlmTool,
   type Result,
+  retryAfterSecondsOf,
   startOperation,
+  terminalRunError,
   withOuterAttempt,
 } from '@mcp-abap-adt/llm-agent';
 
 export interface RetryOptions {
-  /** Maximum number of retry attempts (total calls = maxAttempts + 1). Default: 3. */
-  maxAttempts: number;
+  /** Maximum number of non-429 retries. Unlimited when omitted. */
+  maxAttempts?: number;
   /** Initial backoff delay in ms. Doubles each attempt. Default: 2000. */
   backoffMs: number;
-  /** HTTP status codes that trigger retry. Default: [429, 500, 502, 503]. */
+  /** Transient HTTP statuses to retry. Default: [408, 500, 502, 503]. 429 always retries. */
   retryOn: number[];
   /** Substrings in error message that trigger mid-stream retry (replays entire stream). Default: []. */
   retryOnMidStream: string[];
 }
 
 const DEFAULT_OPTIONS: RetryOptions = {
-  maxAttempts: 3,
   backoffMs: 2000,
-  retryOn: [429, 500, 502, 503],
+  retryOn: [408, 500, 502, 503],
   retryOnMidStream: [],
 };
+
+function toLlmError<T>(cause: T): LlmError {
+  return cause instanceof LlmError
+    ? cause
+    : (terminalRunError(cause) ??
+        Object.assign(new LlmError(String(cause), 'LLM_ERROR'), { cause }));
+}
+
+function abortError(signal: AbortSignal): LlmError {
+  return Object.assign(new LlmError('Aborted', 'ABORTED'), {
+    cause: signal.reason,
+  });
+}
 
 export class RetryLlm implements ILlm {
   private readonly wait = new DefaultWaitStrategy();
@@ -68,27 +82,44 @@ export class RetryLlm implements ILlm {
     options?: CallOptions,
   ): Promise<Result<LlmResponse, LlmError>> {
     const op = startOperation(options);
+    const signal = options?.signal;
+    let transientRetries = 0;
+    let quotaRetries = 0;
     for (let attempt = 0; ; attempt++) {
-      if (options?.signal?.aborted) {
-        const error = new LlmError('Aborted', 'ABORTED');
-        error.cause = options.signal.reason;
-        return { ok: false, error };
+      if (signal?.aborted) {
+        return { ok: false, error: abortError(signal) };
       }
 
-      const result = await this.inner.chat(messages, tools, {
-        ...options,
-        usageOp: withOuterAttempt(op, attempt),
-      });
+      let result: Result<LlmResponse, LlmError>;
+      try {
+        result = await this.inner.chat(messages, tools, {
+          ...options,
+          usageOp: withOuterAttempt(op, attempt),
+        });
+      } catch (error) {
+        result = { ok: false, error: toLlmError(error) };
+      }
 
+      if (signal?.aborted) return { ok: false, error: abortError(signal) };
+      if (result.ok) return result;
+      const terminal = terminalRunError(result.error);
+      if (terminal) return { ok: false, error: terminal };
+      const status = httpStatusOf(result.error);
+      if (this.isThrottled(result.error, status)) {
+        await this.waitForRetry(
+          this.retryDelay(quotaRetries++, result.error),
+          signal,
+        );
+        continue;
+      }
       if (
-        result.ok ||
-        attempt >= this.opts.maxAttempts ||
-        !this.isRetryable(result.error)
-      ) {
+        !this.canRetry(transientRetries) ||
+        status === undefined ||
+        !this.opts.retryOn.includes(status)
+      )
         return result;
-      }
 
-      await this.backoff(attempt, options?.signal);
+      await this.waitForRetry(this.retryDelay(transientRetries++), signal);
     }
   }
 
@@ -98,59 +129,57 @@ export class RetryLlm implements ILlm {
     options?: CallOptions,
   ): AsyncIterable<Result<LlmStreamChunk, LlmError>> {
     const op = startOperation(options);
+    const signal = options?.signal;
+    let transientRetries = 0;
+    let quotaRetries = 0;
     for (let attempt = 0; ; attempt++) {
-      if (options?.signal?.aborted) {
-        const error = new LlmError('Aborted', 'ABORTED');
-        error.cause = options.signal.reason;
-        yield { ok: false, error };
+      if (signal?.aborted) {
+        yield { ok: false, error: abortError(signal) };
         return;
       }
 
       let chunksYielded = 0;
-      let shouldRetry = false;
+      let retryDelay: number | undefined;
 
       for await (const chunk of this.attemptStream(messages, tools, {
         ...options,
         usageOp: withOuterAttempt(op, attempt),
       })) {
+        if (signal?.aborted) {
+          yield { ok: false, error: abortError(signal) };
+          return;
+        }
         if (chunk.ok) {
           chunksYielded++;
           yield chunk;
         } else {
-          // A caller's cancellation is never retried.
-          const canRetry =
-            attempt < this.opts.maxAttempts &&
-            !isCallerCancellation(options?.signal);
-
-          // Pre-stream failure: retry on HTTP status codes (existing behavior)
-          if (
-            chunksYielded === 0 &&
-            canRetry &&
-            this.isRetryable(chunk.error)
-          ) {
-            shouldRetry = true;
-            break;
+          const terminal = terminalRunError(chunk.error);
+          if (terminal) {
+            yield { ok: false, error: terminal };
+            return;
           }
-
-          // Mid-stream failure: retry on configured substrings
-          if (
-            chunksYielded > 0 &&
-            canRetry &&
-            this.isMidStreamRetryable(chunk.error)
+          const status = httpStatusOf(chunk.error);
+          if (this.isThrottled(chunk.error, status)) {
+            retryDelay = this.retryDelay(quotaRetries++, chunk.error);
+          } else if (
+            this.canRetry(transientRetries) &&
+            (chunksYielded === 0
+              ? status !== undefined && this.opts.retryOn.includes(status)
+              : this.isMidStreamRetryable(chunk.error))
           ) {
-            yield { ok: true, value: { content: '', reset: true } };
-            shouldRetry = true;
-            break;
+            retryDelay = this.retryDelay(transientRetries++);
+          } else {
+            yield chunk;
+            return;
           }
-
-          yield chunk;
-          return;
+          break;
         }
       }
 
-      if (!shouldRetry) return;
-
-      await this.backoff(attempt, options?.signal);
+      if (retryDelay === undefined) return;
+      if (chunksYielded > 0)
+        yield { ok: true, value: { content: '', reset: true } };
+      await this.waitForRetry(retryDelay, signal);
     }
   }
 
@@ -167,20 +196,18 @@ export class RetryLlm implements ILlm {
     try {
       yield* this.inner.streamChat(messages, tools, options);
     } catch (err) {
-      yield { ok: false, error: new LlmError(String(err), 'LLM_ERROR') };
+      yield { ok: false, error: toLlmError(err) };
     }
   }
 
-  private isRetryable(error: LlmError): boolean {
-    // A provider that runs its own rate-limit policy marks the error when that
-    // policy is spent — it has already backed off, honoured Retry-After and
-    // given up. Retrying it here would multiply the attempts against a quota
-    // that is demonstrably closed, so the marker ends the matter.
-    if (findThrottled(error)) return false;
-    // Shared with RetryEmbedder: structured status wins, message match is a
-    // word-boundary last resort. Replaces a bare includes() that fired on any
-    // message merely containing the digits (e.g. "4290").
-    return isRetryableStatus(error, this.opts.retryOn);
+  private isThrottled(error: LlmError, status: number | undefined): boolean {
+    return status === 429 || (status === undefined && !!findThrottled(error));
+  }
+
+  private canRetry(retries: number): boolean {
+    return (
+      this.opts.maxAttempts === undefined || retries < this.opts.maxAttempts
+    );
   }
 
   private isMidStreamRetryable(error: LlmError): boolean {
@@ -189,14 +216,20 @@ export class RetryLlm implements ILlm {
     return this.opts.retryOnMidStream.some((sub) => msg.includes(sub));
   }
 
-  private async backoff(attempt: number, signal?: AbortSignal): Promise<void> {
-    // Cancellation during the call keeps the loop's existing Result contract.
-    if (signal?.aborted) return;
-    await this.wait.wait(
-      exponentialBackoffMs(this.opts.backoffMs, attempt),
-      signal,
-    );
-    // The next iteration returns cancellation as an ABORTED Result.
+  private retryDelay(attempt: number, error?: LlmError): number {
+    const seconds = retryAfterSecondsOf(error);
+    return seconds === undefined
+      ? exponentialBackoffMs(this.opts.backoffMs, attempt)
+      : seconds * 1000;
+  }
+
+  private async waitForRetry(
+    delay: number,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    await this.wait.wait(delay, signal);
+    // Immediate failures and a zero delay must still let a caller's abort run.
+    if (delay === 0 && !signal?.aborted) await setImmediate();
   }
 }
 

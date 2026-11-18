@@ -183,6 +183,7 @@ export class SessionTurn {
     let content: string | undefined;
     let deltas = '';
     let usage: LlmUsage | undefined;
+    let truncated = false;
     const expected = new Set<string>();
     let throttle: CopilotThrottleError | undefined;
     const finishTools = () => {
@@ -212,6 +213,8 @@ export class SessionTurn {
           break;
         case 'assistant.usage':
           usage = addUsage(usage, event.data);
+          if (event.data.finishReason)
+            truncated = event.data.finishReason === 'length';
           break;
         case 'external_tool.requested':
           queueMicrotask(finishTools);
@@ -238,10 +241,10 @@ export class SessionTurn {
         case 'session.idle':
           if (throttle) reply.reject(throttle);
           else if (event.data.aborted) reply.reject(aborted());
-          else if (content !== undefined || deltas) {
+          else if (content !== undefined || deltas || truncated) {
             reply.resolve({
               content: content ?? deltas,
-              finishReason: 'stop',
+              finishReason: truncated ? 'length' : 'stop',
               usage,
             });
           } else {

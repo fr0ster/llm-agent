@@ -706,6 +706,42 @@ describe('preserveThrottled', () => {
     assert.equal(wrapped.retryAfterSeconds, 12);
     assert.equal(wrapped.message, 'Provider error');
   });
+
+  it('copies a permanent HTTP status without retaining the request config', () => {
+    const original = new Error('Transport failure', {
+      cause: { response: { status: 401 }, config: { secret: 'test-key' } },
+    });
+    const wrapped = preserveThrottled(original, new Error('Provider error'));
+    assert.equal(httpStatusOf(wrapped), 401);
+    assert.equal(wrapped.cause, undefined);
+    assert.equal(isThrottledError(wrapped), false);
+  });
+});
+
+it('allows cancellation between immediate Retry-After: 0 retries', async () => {
+  const controller = new AbortController();
+  const reason = new Error('caller canceled');
+  let calls = 0;
+  await assert.rejects(
+    runWithThrottleRetry(
+      async () => {
+        calls++;
+        if (calls === 1) setImmediate(() => controller.abort(reason));
+        // Keep the test finite even if immediate retries starve cancellation.
+        assert.ok(calls < 10);
+        throw tooManyRequests('0');
+      },
+      {
+        key: 'immediate-retries',
+        strategy: new WaitAsTold(),
+        isThrottled,
+        retryAfterSeconds,
+        signal: controller.signal,
+      },
+    ),
+    (error) => error === reason,
+  );
+  assert.equal(calls, 1);
 });
 
 // ---------------------------------------------------------------------------

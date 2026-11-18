@@ -72,7 +72,7 @@ export interface BaseAgentLlmBridge {
        */
       signal?: AbortSignal;
     },
-  ): Promise<Pick<LLMResponse, 'content' | 'raw' | 'usage'>>;
+  ): Promise<Pick<LLMResponse, 'content' | 'raw' | 'usage' | 'finishReason'>>;
   streamWithTools(
     messages: Message[],
     tools: unknown[],

@@ -11,6 +11,7 @@ import type {
   StepStatus,
   WorkStep,
 } from '@mcp-abap-adt/llm-agent';
+import { McpError } from '@mcp-abap-adt/llm-agent';
 import { DirectLlmSubAgent } from '../../../subagent/direct-llm-subagent.js';
 import {
   type AdaptiveRunInput,
@@ -87,6 +88,47 @@ function setup(
 }
 const verdict = (value = 'pass', reason = 'ok') =>
   JSON.stringify({ verdict: value, reason });
+
+test('an MCP tool failure goes through check and fix with an alternative worker', async () => {
+  const error = new McpError('Tool failed', 'MCP_ERROR');
+  const { input } = setup(
+    [
+      work,
+      { ...check, onFail: 'fix' },
+      { ...work, id: 'fix', worker: 'alternative' },
+      { ...answer, from: 'fix' },
+    ],
+    [error, verdict('fail', 'Worker failed')],
+  );
+  input.workers = new Map([
+    ...input.workers,
+    [
+      'alternative',
+      {
+        name: 'alternative',
+        capabilities: { contextPolicy: 'optional' },
+        async run(input) {
+          assert.match(input.task, /Worker failed/);
+          return { output: 'recovered' };
+        },
+      },
+    ],
+  ]);
+
+  const result = await runAdaptivePlan(input);
+  assert.equal(result.outcome, 'answered');
+  assert.equal(result.output, 'recovered');
+  assert.deepEqual(
+    result.records.map(({ stepId, kind, status }) => [stepId, kind, status]),
+    [
+      ['a', 'work', 'failed'],
+      ['c', 'check', 'done'],
+      ['fix', 'work', 'done'],
+      ['z', 'answer', 'done'],
+    ],
+  );
+  assert.equal(result.records[0]?.error, error.message);
+});
 
 for (const mode of ['none', 'last-turn', 'all'] as const) {
   for (const withTools of [false, true]) {
@@ -187,8 +229,8 @@ test('runs work then answer and forwards worker context', async () => {
   ] as const)
     assert.equal(calls[0]?.[key], input[key]);
   assert.deepEqual(DEFAULT_BUDGET, {
-    maxSteps: 20,
-    maxRevisions: 3,
+    maxSteps: Infinity,
+    maxRevisions: Infinity,
   });
 });
 test('check pass follows onPass', async () => {
@@ -220,7 +262,7 @@ test('fix-check loop stops at check maxRuns', async () => {
   const { input } = setup(
     [
       work,
-      { ...check, onFail: 'fix' },
+      { ...check, onFail: 'fix', maxRuns: 3 },
       { ...work, id: 'fix', maxRuns: 5 },
       back,
       answer,
@@ -247,15 +289,41 @@ test('fix-check loop stops at check maxRuns', async () => {
     [1, 2, 3],
   );
 });
-test('unparsable verdict counts as fail', async () => {
-  const { input } = setup(
-    [work, { ...check, onFail: 'z' }, answer],
+test('unparsable verdict stops without running the fix branch', async () => {
+  const { input, calls } = setup(
+    [
+      work,
+      { ...check, onFail: 'fix' },
+      { ...work, id: 'fix', maxRuns: 1 },
+      answer,
+    ],
     ['Hello', 'no json'],
   );
-  assert.deepEqual((await runAdaptivePlan(input)).records[1]?.verdict, {
-    verdict: 'fail',
-    reason: 'unparsable verdict',
-  });
+  const result = await runAdaptivePlan(input);
+  assert.equal(result.outcome, 'stopped');
+  assert.equal(result.error?.code, 'VERDICT_RETRIEVAL_FAILED');
+  assert.equal(result.records[1]?.status, 'failed');
+  assert.equal(result.records[1]?.verdict, undefined);
+  assert.equal(calls.length, 2);
+});
+test('an unlimited work/check loop can pass after more than twenty steps', async () => {
+  const { input } = setup(
+    [work, { ...check, onFail: 'a' }, answer],
+    [
+      ...Array.from({ length: 12 }, () => ['draft', verdict('fail')]).flat(),
+      'final',
+      verdict(),
+    ],
+  );
+  const result = await runAdaptivePlan(input);
+  assert.equal(result.output, 'final');
+  assert.equal(result.records.length, 27);
+});
+test('a blank terminal worker result fails explicitly', async () => {
+  const { input } = setup([work, check, answer], ['  ']);
+  const result = await runAdaptivePlan(input);
+  assert.equal(result.error?.code, 'EMPTY_WORKER_OUTPUT');
+  assert.equal(result.records.length, 1);
 });
 test('partial uses onPartial or falls back to onFail', async () => {
   for (const onPartial of ['z', undefined]) {
@@ -294,20 +362,25 @@ test('self check uses controller.check and collects usage', async () => {
   };
   assert.deepEqual((await runAdaptivePlan(input)).usage, [usage, usage]);
 });
-test('self check throw becomes fail', async () => {
-  const { input, controller } = setup([
-    work,
-    { ...check, worker: 'self', onFail: 'z' },
-    answer,
-  ]);
-  controller.check = async () => {
-    throw new Error('oops');
-  };
-  assert.deepEqual((await runAdaptivePlan(input)).records[1]?.verdict, {
-    verdict: 'fail',
-    reason: 'controller check failed: oops',
+for (const worker of ['self', 'executor']) {
+  test(`${worker} check takes the failure branch on a recoverable error`, async () => {
+    const error = new McpError('Tool failed', 'MCP_ERROR');
+    const { input, controller } = setup(
+      [work, { ...check, worker, onFail: 'z', onPass: 'end' }, answer],
+      ['draft', error],
+    );
+    controller.check = async () => {
+      throw error;
+    };
+    const result = await runAdaptivePlan(input);
+    assert.equal(result.outcome, 'answered');
+    assert.equal(result.output, 'draft');
+    assert.deepEqual(result.records[1]?.verdict, {
+      verdict: 'fail',
+      reason: `${worker === 'self' ? 'controller' : 'worker'} check failed: Tool failed`,
+    });
   });
-});
+}
 test('failed work without later check stops', async () => {
   const { input } = setup(undefined, [
     (i) => {
@@ -343,6 +416,19 @@ test('ask ends the run with the question', async () => {
   assert.equal(calls.length, 0);
 });
 const revise: AdaptiveStep = { id: 'r', kind: 'revise', reason: 'change' };
+test('executes more than three revisions when no budget is configured', async () => {
+  const { input, controller } = setup([revise]);
+  let revisions = 0;
+  controller.revise = async () => ({
+    steps: [
+      ++revisions <= 4
+        ? { ...revise, id: `r${revisions}` }
+        : { id: 'done', kind: 'answer', text: 'revised' },
+    ],
+  });
+  assert.equal((await runAdaptivePlan(input)).output, 'revised');
+  assert.equal(revisions, 5);
+});
 test('revise replaces the remainder without mutating original plan', async () => {
   const { input } = setup([revise, work, answer]);
   const result = await runAdaptivePlan(input);
@@ -535,9 +621,9 @@ test('abort before step throws reason without reporting', async () => {
   };
   await assert.rejects(runAdaptivePlan(input), (error) => error === reason);
 });
-test('work default run cap is one', async () => {
+test('work honors an explicit run cap of one', async () => {
   const { input } = setup(
-    [work, { ...check, onFail: 'a' }, answer],
+    [{ ...work, maxRuns: 1 }, { ...check, onFail: 'a' }, answer],
     ['Hello', verdict('fail')],
   );
   assert.equal(

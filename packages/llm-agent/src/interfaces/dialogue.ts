@@ -44,6 +44,8 @@ export interface TaskRecord {
   resultRef?: TaskResultRef;
   summary?: string;
   error?: string;
+  /** Code of a terminal failure, retained in task snapshots. */
+  terminalErrorCode?: string;
   /** Epoch milliseconds of the latest observed progress; optional for older snapshots. */
   lastActivityAt?: number;
   currentAction?: string;
@@ -151,6 +153,8 @@ export interface PlannerRequestRecord {
     skipped: number;
   };
   lastTurnOk?: boolean;
+  /** Terminal planner failure. An explicit user turn starts a new request. */
+  terminalError?: { code: string; message: string };
   /** Failed tasks explicitly acknowledged by the coordinator, including removed steps. */
   resolvedFailures?: string[];
   /** Task outputs already delivered in this request. */

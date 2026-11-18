@@ -98,7 +98,7 @@ for (const pipeline of [false, true]) {
           assert.equal(result.value.content, finalText);
           return;
         }
-        const result = await new SmartAgentSubAgent('worker', agent).run({
+        const pending = new SmartAgentSubAgent('worker', agent).run({
           caller: testCallOptions({ sessionId: 'test-session' }).caller,
           task: 'work',
           dialogueTask: task,
@@ -114,17 +114,20 @@ for (const pipeline of [false, true]) {
               }
             : {}),
         });
+        if (scenario === 'empty-finish') {
+          await assert.rejects(pending, { code: 'EMPTY_WORKER_OUTPUT' });
+          return;
+        }
+        const result = await pending;
         assert.equal(
           result.output,
           scenario === 'finish'
             ? 'Explicit verdict'
-            : scenario === 'empty-finish'
-              ? ''
-              : scenario === 'single'
-                ? finalText
-                : scenario === 'external'
-                  ? report
-                  : `${report}\n\n${finalText}`,
+            : scenario === 'single'
+              ? finalText
+              : scenario === 'external'
+                ? report
+                : `${report}\n\n${finalText}`,
         );
         assert.equal(
           result.status,

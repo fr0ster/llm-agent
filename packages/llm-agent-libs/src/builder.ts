@@ -81,6 +81,7 @@ import {
   resolveClientDescriptors,
   SimpleRagProviderRegistry,
   SimpleRagRegistry,
+  terminalRunError,
 } from '@mcp-abap-adt/llm-agent';
 import { makeConnectionStrategy } from '@mcp-abap-adt/llm-agent-mcp';
 import { SmartAgent, type SmartAgentConfig } from './agent.js';
@@ -884,7 +885,10 @@ export class SmartAgentBuilder {
       const callOptions = { ...options, signal: signal ?? options?.signal };
       const embedding = new QueryEmbedding(text, embedder, callOptions);
       const queryRes = await resolve().query(embedding, k, callOptions);
-      return queryRes.ok ? queryRes.value : [];
+      if (queryRes.ok) return queryRes.value;
+      const terminal = terminalRunError(queryRes.error);
+      if (terminal) throw terminal;
+      return [];
     };
   }
 
@@ -1420,13 +1424,7 @@ export class SmartAgentBuilder {
       // holds for the builder's own breaker and for a main LLM that already is
       // a (shared) CircuitBreakerLlm: the retry goes under that wrapper, which
       // is rebuilt on the same breaker.
-      const retryOpts = agentCfg.retry ?? {
-        maxAttempts: 3,
-        backoffMs: 2000,
-        retryOn: [429, 500, 502, 503],
-        retryOnMidStream: [],
-      };
-      wrappedMainLlm = retryInsideBreakers(wrappedMainLlm, retryOpts);
+      wrappedMainLlm = retryInsideBreakers(wrappedMainLlm, agentCfg.retry);
 
       // ---- Rate limiter wrapping (outermost — one permit per outer call) --------
       if (this._rateLimiter) {

@@ -3,6 +3,7 @@ import { test } from 'node:test';
 import { setImmediate } from 'node:timers/promises';
 import type { SessionConfig, SessionEvent } from '@github/copilot-sdk';
 import {
+  httpStatusOf,
   type LlmTool,
   type Message,
   type Result,
@@ -157,7 +158,18 @@ class FakeClient implements CopilotSdkClient {
 
   async listModels(apiKey: string): ReturnType<CopilotSdkClient['listModels']> {
     this.modelKeys.push(apiKey);
-    return [{ id: 'test-model', name: 'Test model', capabilities: {} }];
+    return [
+      {
+        id: 'test-model',
+        name: 'Test model',
+        capabilities: {
+          limits: {
+            max_context_window_tokens: 1000000,
+            max_output_tokens: 128000,
+          },
+        },
+      },
+    ];
   }
 }
 
@@ -508,6 +520,30 @@ test('withholds token echoes in SDK failures and emits no log', async (t) => {
   assert.ok(logs.every((log) => log.mock.callCount() === 0));
 });
 
+test('preserves structured HTTP statuses without classifying numbers in SDK messages', async (t) => {
+  const client = new FakeClient();
+  const provider = new CopilotProvider({}, client.factory);
+  t.after(() => provider.dispose());
+  for (const status of [400, 401, 503]) {
+    client.createError = new Error(`SDK error: 401, ${credentials.apiKey}`, {
+      cause: { response: { status } },
+    });
+    const failure = error(await provider.chat(hello, [], credentials));
+    assert.equal(httpStatusOf(failure), status);
+    assert.equal(
+      failure.code,
+      status === 401 ? 'CREDENTIALS_REJECTED' : 'COPILOT_ERROR',
+    );
+    assert.ok(!failure.message.includes(credentials.apiKey));
+    assert.equal(failure.cause, undefined);
+  }
+  client.createError = new Error('model id 403 rejected');
+  assert.equal(
+    error(await provider.chat(hello, [], credentials)).code,
+    'COPILOT_ERROR',
+  );
+});
+
 test('aborts a running turn and a suspended tool round', async (t) => {
   const client = new FakeClient();
   const provider = new CopilotProvider({}, client.factory);
@@ -594,13 +630,43 @@ test('routes model discovery through the shared runtime with each call token', a
       id: 'test-model',
       displayName: 'Test model',
       provider: 'copilot',
-      contextLength: undefined,
+      contextLength: 1000000,
+      maxOutputTokens: 128000,
     },
   ]);
   value(await provider.getModels({ apiKey: 'next-token' }));
   assert.deepEqual(client.modelKeys, [credentials.apiKey, 'next-token']);
   assert.equal(client.starts, 1);
   assert.equal(client.sessions.length, 0);
+});
+
+test('preserves a textless token-limit finish in chat and streaming', async (t) => {
+  const client = new FakeClient();
+  const provider = new CopilotProvider({}, client.factory);
+  t.after(() => provider.dispose());
+  client.onSend = (session) => {
+    session.emit({
+      type: 'assistant.usage',
+      data: { model: 'test-model', finishReason: 'length' },
+    });
+    session.emit({ type: 'session.idle', data: {} });
+  };
+  assert.equal(
+    value(await provider.chat(hello, undefined, credentials)).finishReason,
+    'length',
+  );
+  const chunks = [];
+  for await (const chunk of provider.streamChat(
+    hello,
+    undefined,
+    credentials,
+  )) {
+    chunks.push(value(chunk));
+  }
+  assert.equal(
+    chunks.find((chunk) => chunk.finishReason)?.finishReason,
+    'length',
+  );
 });
 
 test('retries rate limits using the SDK retry hint and resets rejected stream text', async (t) => {

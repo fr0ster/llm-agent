@@ -7,6 +7,7 @@ for (const stream of [false, true]) {
   for (const promptCaching of [undefined, false, true]) {
     test(`all system messages reach the request in order: stream=${stream}, caching=${JSON.stringify(promptCaching)}`, async (t) => {
       const provider = new AnthropicProvider({
+        maxTokens: 100,
         model: 'test-model',
         credential: staticApiKey('test'),
       });

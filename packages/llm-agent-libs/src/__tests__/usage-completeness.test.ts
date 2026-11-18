@@ -106,7 +106,10 @@ function fixture() {
     if (mode === 'throw' || mode === 'abort')
       throw mode === 'abort'
         ? new DOMException(prompt, 'AbortError')
-        : Object.assign(new Error(`503 ${prompt}`), { code: 'E_FAILED' });
+        : Object.assign(new Error(`Unavailable: ${prompt}`), {
+            code: 'E_FAILED',
+            status: 503,
+          });
     const data =
       config.responseType === 'stream'
         ? (async function* () {
@@ -431,7 +434,10 @@ test('library LLM call paths terminate at the real provider with no content', as
     completion = execute(...args);
     return completion;
   };
-  const handle = await new SmartAgentBuilder({ skipModelValidation: true })
+  const handle = await new SmartAgentBuilder({
+    skipModelValidation: true,
+    agent: { retry: { maxAttempts: 3, backoffMs: 0 } },
+  })
     .withRagAccess(testRequestAccess)
     .withMainLlm(f.llm)
     .setPipeline(pipeline)

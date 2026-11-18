@@ -66,7 +66,6 @@ export {
   DEFAULT_BUDGET,
   fallbackPlan,
   LlmAdaptiveController,
-  MAX_RUNS_CAP,
   parsePlan,
   parseVerdict,
   runAdaptivePlan,

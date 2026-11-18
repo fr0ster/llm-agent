@@ -34,6 +34,7 @@ describe('AnthropicProvider credential', () => {
       secret: async () => `sk-ant-${++n}`,
     };
     const p = new AnthropicProvider({
+      maxTokens: 100,
       credential: rotating,
       model: 'claude-3-5-sonnet-20241022',
     });
@@ -62,6 +63,7 @@ describe('AnthropicProvider credential', () => {
 
   it('accepts a static key through the conversion, so a call site is one line', async () => {
     const p = new AnthropicProvider({
+      maxTokens: 100,
       credential: staticApiKey('sk-ant-static'),
       model: 'claude-3-5-sonnet-20241022',
     });
@@ -84,6 +86,7 @@ describe('AnthropicProvider credential', () => {
       secret: async () => `sk-ant-${++n}`,
     };
     const p = new AnthropicProvider({
+      maxTokens: 100,
       credential: rotating,
       model: 'claude-3-5-sonnet-20241022',
     });
@@ -118,6 +121,7 @@ describe('AnthropicProvider credential', () => {
       secret: async () => `sk-ant-${++n}`,
     };
     const p = new AnthropicProvider({
+      maxTokens: 100,
       credential: rotating,
       model: 'claude-3-5-sonnet-20241022',
     });

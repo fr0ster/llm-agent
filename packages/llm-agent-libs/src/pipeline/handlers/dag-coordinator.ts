@@ -22,6 +22,7 @@ import {
   addCacheTokenUsage,
   ClarifySignal,
   NeedInfoSignal,
+  terminalRunError,
 } from '@mcp-abap-adt/llm-agent';
 import { OrchestratorError } from '../../agent.js';
 import { PassthroughFinalizer } from '../../coordinator/dag/passthrough-finalizer.js';
@@ -259,9 +260,10 @@ export class DagCoordinatorHandler implements IStageHandler {
       );
     } catch (err) {
       ctx.error =
-        err instanceof OrchestratorError
+        terminalRunError(err) ??
+        (err instanceof OrchestratorError
           ? err
-          : new OrchestratorError(errMsg(err), 'COORDINATOR_PLAN_FAILED');
+          : new OrchestratorError(errMsg(err), 'COORDINATOR_PLAN_FAILED'));
       return false;
     }
     if ('ended' in planRes) return true;
@@ -300,12 +302,13 @@ export class DagCoordinatorHandler implements IStageHandler {
             // OrchestratorError from runRole (needInfo-no-oracle / budget) is
             // preserved as-is.
             ctx.error =
-              err instanceof OrchestratorError
+              terminalRunError(err) ??
+              (err instanceof OrchestratorError
                 ? err
                 : new OrchestratorError(
                     errMsg(err),
                     'COORDINATOR_REVIEW_FAILED',
-                  );
+                  ));
             return false;
           }
           if ('ended' in gate) return true;
@@ -409,12 +412,13 @@ export class DagCoordinatorHandler implements IStageHandler {
           });
         } catch (err) {
           ctx.error =
-            err instanceof OrchestratorError
+            terminalRunError(err) ??
+            (err instanceof OrchestratorError
               ? err
               : new OrchestratorError(
                   errMsg(err),
                   codeOf(err) ?? 'COORDINATOR_PLAN_INVALID',
-                );
+                ));
           return false;
         }
 
@@ -566,9 +570,10 @@ export class DagCoordinatorHandler implements IStageHandler {
       }
     } catch (err) {
       ctx.error =
-        err instanceof OrchestratorError
+        terminalRunError(err) ??
+        (err instanceof OrchestratorError
           ? err
-          : new OrchestratorError(errMsg(err), 'COORDINATOR_STEP_FAILED');
+          : new OrchestratorError(errMsg(err), 'COORDINATOR_STEP_FAILED'));
       return false;
     }
   }

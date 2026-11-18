@@ -6,6 +6,7 @@ import type {
   PlanStep,
   StepResult,
 } from '@mcp-abap-adt/llm-agent';
+import { llmOutputTruncation } from '../llm-output-truncation.js';
 
 /**
  * Plan once at the start by asking a planner LLM. Never replans.
@@ -66,6 +67,8 @@ ${agentsBlock || '(none — use self-dispatch)'}${skillBlock}`;
       },
     );
     if (!response.ok) throw response.error;
+    const truncation = llmOutputTruncation(response.value.finishReason);
+    if (truncation) throw truncation;
 
     const jsonText = extractJson(response.value.content);
     const parsed = JSON.parse(jsonText) as {

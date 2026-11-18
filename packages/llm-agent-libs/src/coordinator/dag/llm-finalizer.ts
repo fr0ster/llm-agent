@@ -6,6 +6,7 @@ import type {
   LlmUsage,
   Message,
 } from '@mcp-abap-adt/llm-agent';
+import { OrchestratorError } from '@mcp-abap-adt/llm-agent';
 
 export const FINALIZER_SYSTEM =
   'You synthesize the final user-facing answer for a DAG-coordinated task. ' +
@@ -87,8 +88,12 @@ export class LlmFinalizer implements IFinalizer {
       usage: input.usage?.with({ role: 'finalizer' }),
     });
     for await (const chunk of stream) {
-      if (chunk.ok === false)
-        throw new Error(chunk.error?.message ?? 'streamChat failed');
+      if (!chunk.ok) throw chunk.error;
+      if (chunk.value.finishReason === 'length')
+        throw new OrchestratorError(
+          'LLM response was truncated at a token limit.',
+          'LLM_OUTPUT_TRUNCATED',
+        );
       const content = chunk.value?.content ?? '';
       if (content) {
         buf += content;

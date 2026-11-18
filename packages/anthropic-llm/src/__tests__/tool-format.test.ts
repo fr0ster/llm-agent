@@ -8,7 +8,11 @@ import {
 import { AnthropicProvider } from '../anthropic-provider.js';
 
 const provider = () =>
-  new AnthropicProvider({ model: 'test', credential: staticApiKey('test') });
+  new AnthropicProvider({
+    model: 'test',
+    credential: staticApiKey('test'),
+    maxTokens: 100,
+  });
 const schema = { type: 'object', properties: { query: { type: 'string' } } };
 const tools = [
   {

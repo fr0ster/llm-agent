@@ -65,16 +65,13 @@ for (const model of ['m2', undefined, 'blocked']) {
             goal: 'go',
             ...(model === undefined ? {} : { model }),
           });
-          assert.ok(result.ok);
           if (model === 'blocked') {
-            assert.equal(result.value.isError, true);
-            assert.match(
-              JSON.stringify(result.value.content),
-              /MODEL_NOT_ALLOWED/,
-            );
+            assert.ok(!result.ok);
+            assert.equal(result.error.code, 'MODEL_NOT_ALLOWED');
             assert.deepEqual(board.list(), []);
             assert.deepEqual(inputs, []);
           } else {
+            assert.ok(result.ok);
             await new Promise<void>((resolve) => setImmediate(resolve));
             assert.equal(board.list()[0]?.model, model);
             assert.equal(inputs.length, 1);

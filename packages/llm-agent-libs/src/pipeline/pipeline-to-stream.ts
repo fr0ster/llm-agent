@@ -6,7 +6,7 @@ import type {
   Message,
   Result,
 } from '@mcp-abap-adt/llm-agent';
-import { OrchestratorError } from '@mcp-abap-adt/llm-agent';
+import { OrchestratorError, terminalRunError } from '@mcp-abap-adt/llm-agent';
 import type { IPipeline } from '../interfaces/pipeline.js';
 
 export async function* pipelineToStream(
@@ -23,6 +23,7 @@ export async function* pipelineToStream(
   const chunkQueue: Result<LlmStreamChunk, OrchestratorError>[] = [];
   let resolveWait: (() => void) | null = null;
   let done = false;
+  let yieldedError = false;
 
   const executorPromise = pipeline
     .execute(
@@ -30,6 +31,7 @@ export async function* pipelineToStream(
       history,
       opts,
       (chunk) => {
+        if (!chunk.ok) yieldedError = true;
         chunkQueue.push(chunk);
         if (resolveWait) {
           resolveWait();
@@ -39,7 +41,9 @@ export async function* pipelineToStream(
       externalTools,
       clientAdapter,
     )
-    .then(() => {
+    .then(({ error }) => {
+      if (error && !yieldedError)
+        chunkQueue.push({ ok: false, error: terminalRunError(error) ?? error });
       done = true;
       if (resolveWait) {
         resolveWait();
@@ -47,10 +51,13 @@ export async function* pipelineToStream(
       }
     })
     .catch((err) => {
-      chunkQueue.push({
-        ok: false,
-        error: new OrchestratorError(String(err), 'PIPELINE_ERROR'),
-      });
+      if (!yieldedError)
+        chunkQueue.push({
+          ok: false,
+          error:
+            terminalRunError(err) ??
+            new OrchestratorError(String(err), 'PIPELINE_ERROR'),
+        });
       done = true;
       if (resolveWait) {
         resolveWait();

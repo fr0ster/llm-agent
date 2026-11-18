@@ -8,9 +8,10 @@ import type {
   PlanStep,
   StepResult,
 } from '@mcp-abap-adt/llm-agent';
-import { addCacheTokenUsage } from '@mcp-abap-adt/llm-agent';
+import { addCacheTokenUsage, terminalRunError } from '@mcp-abap-adt/llm-agent';
 import { normalizeLoopLimit } from '../../config/normalize-max-iterations.js';
 import { ToolResponseRound } from '../../pipeline/handlers/tool-response-round.js';
+import { llmOutputTruncation } from '../llm-output-truncation.js';
 import { composeTask } from './compose-task.js';
 
 export class SelfDispatch implements IDispatchStrategy {
@@ -60,7 +61,10 @@ export class SelfDispatch implements IDispatchStrategy {
           toolCallCount: r.toolCallCount,
           maxToolCalls: r.maxToolCalls,
           durationMs: Date.now() - started,
-          ok: true,
+          ok: r.terminalError === undefined,
+          ...(r.terminalError
+            ? { error: r.terminalError.message, terminalError: r.terminalError }
+            : {}),
         };
       }
 
@@ -84,9 +88,10 @@ export class SelfDispatch implements IDispatchStrategy {
         },
       );
       if (!res.ok) throw res.error;
+      const terminalError = llmOutputTruncation(res.value.finishReason);
       return {
         stepId: step.id,
-        output: res.value.content,
+        output: terminalError ? '' : res.value.content,
         usage: res.value.usage,
         budgetExhausted:
           (maxToolCalls !== undefined && toolCallCount >= maxToolCalls) ||
@@ -94,15 +99,20 @@ export class SelfDispatch implements IDispatchStrategy {
         toolCallCount,
         maxToolCalls,
         durationMs: Date.now() - started,
-        ok: true,
+        ok: terminalError === undefined,
+        ...(terminalError
+          ? { error: terminalError.message, terminalError }
+          : {}),
       };
     } catch (err) {
+      const terminalError = terminalRunError(err);
       return {
         stepId: step.id,
         output: '',
         durationMs: Date.now() - started,
         ok: false,
         error: err instanceof Error ? err.message : String(err),
+        ...(terminalError ? { terminalError } : {}),
       };
     }
   }
@@ -119,7 +129,7 @@ export class SelfDispatch implements IDispatchStrategy {
   ): Promise<
     { content: string; usage?: LlmUsage } & Pick<
       StepResult,
-      'budgetExhausted' | 'toolCallCount' | 'maxToolCalls'
+      'budgetExhausted' | 'toolCallCount' | 'maxToolCalls' | 'terminalError'
     >
   > {
     const limits = ctx.loopLimits ?? {
@@ -170,6 +180,15 @@ export class SelfDispatch implements IDispatchStrategy {
       });
       if (!res.ok) throw res.error;
       add(res.value.usage);
+      const terminalError = llmOutputTruncation(res.value.finishReason);
+      if (terminalError)
+        return {
+          content: '',
+          terminalError,
+          usage,
+          toolCallCount,
+          maxToolCalls,
+        };
       const modelCalls =
         res.value.finishReason === 'tool_calls'
           ? (res.value.toolCalls ?? [])
@@ -228,12 +247,14 @@ export class SelfDispatch implements IDispatchStrategy {
     });
     if (!final.ok) throw final.error;
     add(final.value.usage);
+    const terminalError = llmOutputTruncation(final.value.finishReason);
     return {
-      content: final.value.content,
+      content: terminalError ? '' : final.value.content,
       usage,
       budgetExhausted: exhausted() || undefined,
       toolCallCount,
       maxToolCalls,
+      ...(terminalError ? { terminalError } : {}),
     };
   }
 }

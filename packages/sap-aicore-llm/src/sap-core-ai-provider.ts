@@ -23,9 +23,11 @@ import type {
 import {
   BaseLLMProvider,
   type beginLlmRequest,
+  httpStatusOf,
   type LlmRequestFacts,
   type LlmRequestHandle,
   requestShape,
+  retryAfterSecondsOf,
   type ShapeMessage,
   startOperation,
 } from '@mcp-abap-adt/llm-agent';
@@ -48,35 +50,16 @@ async function withHttpErrorCapture<T>(
   run: (middleware: HttpMiddleware) => Promise<T>,
 ): Promise<T> {
   // Only the status and Retry-After: never the body, headers or request config.
-  let response:
-    | { status: number; headers: { 'retry-after'?: string } }
-    | undefined;
+  let transport: { status: number; retryAfterSeconds?: number } | undefined;
   const middleware: HttpMiddleware = (options) => async (config) => {
     try {
       return await options.fn(config);
     } catch (error) {
-      const candidate =
-        error && typeof error === 'object' && 'response' in error
-          ? error.response
-          : undefined;
-      const status =
-        candidate && typeof candidate === 'object' && 'status' in candidate
-          ? candidate.status
-          : undefined;
-      if (typeof status === 'number') {
-        const headers =
-          candidate && typeof candidate === 'object' && 'headers' in candidate
-            ? candidate.headers
-            : undefined;
-        const retryAfter =
-          headers && typeof headers === 'object'
-            ? readRetryAfter(headers)
-            : undefined;
-        response = {
-          status,
-          headers:
-            retryAfter === undefined ? {} : { 'retry-after': retryAfter },
-        };
+      const details =
+        typeof error === 'object' && error !== null ? error : undefined;
+      const status = httpStatusOf(details);
+      if (status !== undefined) {
+        transport = { status, retryAfterSeconds: retryAfterSecondsOf(details) };
       }
       throw error;
     }
@@ -84,26 +67,14 @@ async function withHttpErrorCapture<T>(
   try {
     return await run(middleware);
   } catch (error) {
-    if (response) {
+    if (transport) {
       throw Object.assign(
         error instanceof Error ? error : new Error(String(error)),
-        { response },
+        transport,
       );
     }
     throw error;
   }
-}
-
-function readRetryAfter(headers: object): string | undefined {
-  const value =
-    'get' in headers && typeof headers.get === 'function'
-      ? headers.get('retry-after')
-      : Object.entries(headers).find(
-          ([name]) => name.toLowerCase() === 'retry-after',
-        )?.[1];
-  return typeof value === 'string' || typeof value === 'number'
-    ? String(value)
-    : undefined;
 }
 
 /** The constructed-destination shape the SAP AI SDK documents. */
@@ -283,28 +254,6 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
     };
   }
 
-  private static summarizeStreamingError(
-    error: unknown,
-  ): Record<string, unknown> {
-    // biome-ignore lint/suspicious/noExplicitAny: diagnostic error shape from SDK/axios
-    const err = error as any;
-    const cause = err?.cause;
-    return {
-      error: SapCoreAIProvider.extractErrorDetail(error),
-      name: err?.name,
-      message: err?.message,
-      cause: cause?.message || cause,
-      causeCode: cause?.code,
-      status: err?.response?.status,
-      responseData:
-        typeof err?.response?.data === 'string'
-          ? err.response.data
-          : err?.response?.data
-            ? JSON.stringify(err.response.data)
-            : undefined,
-    };
-  }
-
   /** Set a per-request model override. Cleared after each chat/streamChat call. */
   setModelOverride(model?: string): void {
     this.modelOverride = model;
@@ -462,24 +411,16 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
       );
 
       return response;
-    } catch (error: unknown) {
+    } catch (error) {
       const detail = SapCoreAIProvider.extractErrorDetail(error);
-      this.log?.error('SAP AI SDK API error', { error: detail });
-      // biome-ignore lint/suspicious/noExplicitAny: diagnostic error details
-      const axiosErr = error as any;
-      if (axiosErr?.response?.data) {
-        this.log?.error('SAP AI SDK response body', {
-          status: axiosErr.response.status,
-          data:
-            typeof axiosErr.response.data === 'string'
-              ? axiosErr.response.data
-              : JSON.stringify(axiosErr.response.data),
-        });
-      }
-      throw this.preserveThrottled(
+      const wrapped = this.preserveThrottled(
         error,
         new Error(`SAP AI SDK API error: ${detail}`),
       );
+      this.log?.error('SAP AI SDK API error', {
+        status: httpStatusOf(wrapped),
+      });
+      throw wrapped;
     } finally {
       this.modelOverride = undefined;
     }
@@ -694,8 +635,13 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
         emittedContentChunks,
         emittedContentChars,
       });
-    } catch (error: unknown) {
+    } catch (error) {
       failure = error;
+      const detail = SapCoreAIProvider.extractErrorDetail(error);
+      const wrapped = this.preserveThrottled(
+        error,
+        new Error(`SAP AI SDK streaming error: ${detail}`),
+      );
       this.log?.error('SAP AI SDK streaming error', {
         model,
         resourceGroup: this.resourceGroup ?? 'default',
@@ -705,13 +651,9 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
         emittedContentChars,
         toolCount,
         messageSummary,
-        ...SapCoreAIProvider.summarizeStreamingError(error),
+        status: httpStatusOf(wrapped),
       });
-      const detail = SapCoreAIProvider.extractErrorDetail(error);
-      throw this.preserveThrottled(
-        error,
-        new Error(`SAP AI SDK streaming error: ${detail}`),
-      );
+      throw wrapped;
     } finally {
       request?.end({
         ...facts,

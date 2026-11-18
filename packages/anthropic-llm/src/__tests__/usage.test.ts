@@ -25,6 +25,7 @@ function recorder(records: Record[]): IUsageRecorder {
 }
 function create(usage?: IUsageRecorder) {
   return new AnthropicProvider({
+    maxTokens: 100,
     credential: staticApiKey('secret'),
     model: 'claude',
     usage,

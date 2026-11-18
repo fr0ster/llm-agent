@@ -19,6 +19,7 @@ import { clearCallerSessionEntries } from '../policy/caller-identity.js';
 import {
   makeAssembler,
   makeDefaultDeps,
+  makeMcpClient,
   testCallOptions,
 } from '../testing/index.js';
 import { assertUniqueToolHistory } from './tool-history-assertions.js';
@@ -30,6 +31,7 @@ for (const mode of ['direct', 'pipeline', 'pass'] as const) {
   for (const finishReason of ['length', 'stop', 'tool_calls'] as const) {
     test(`${mode}: ${finishReason} with incomplete JSON never executes or surfaces the call`, async () => {
       const inputs: Message[][] = [];
+      const logs: string[] = [];
       let executions = 0;
       const { deps } = makeDefaultDeps({
         assembler: makeAssembler([{ role: 'user', content: 'go' }]),
@@ -82,9 +84,21 @@ for (const mode of ['direct', 'pipeline', 'pass'] as const) {
       const result = await new SmartAgent(deps, config).process('go', {
         ...testCallOptions(),
         externalTools: mode === 'pass' ? [tool] : undefined,
+        sessionLogger: {
+          logStep(name, data) {
+            if (name.startsWith('llm_response_'))
+              logs.push(JSON.stringify(data));
+          },
+        },
       });
-      assert.ok(result.ok);
       assert.equal(executions, 0);
+      if (finishReason === 'length') {
+        assert.equal(inputs.length, 1);
+        assert.equal(result.ok, false);
+        assert.equal(result.error.code, 'LLM_OUTPUT_TRUNCATED');
+        return;
+      }
+      assert.ok(result.ok);
       assert.equal(result.value.toolCalls?.length ?? 0, 0);
       if (finishReason !== 'tool_calls') {
         assert.equal(inputs.length, 1);
@@ -92,6 +106,16 @@ for (const mode of ['direct', 'pipeline', 'pass'] as const) {
         assert.equal(result.value.stopReason, 'stop');
       } else {
         assert.equal(inputs.length, 2);
+        const diagnostic = logs[0] ?? '';
+        assert.match(diagnostic, /"receivedToolCalls":\[\{/);
+        assert.match(diagnostic, /"rejectedToolCalls":\[\{.*"name":"Work"/);
+        assert.match(
+          diagnostic,
+          new RegExp(`"argumentLength":${incomplete.length}`),
+        );
+        assert.match(diagnostic, /Invalid tool arguments/);
+        assert.match(diagnostic, /"executableToolCalls":\[\]/);
+        assert.doesNotMatch(diagnostic, /incomplete/);
         const assistant = inputs[1].find(
           (message) => message.tool_calls?.length,
         );
@@ -104,23 +128,30 @@ for (const mode of ['direct', 'pipeline', 'pass'] as const) {
   }
 }
 
+test('a token-limit finish without text or tool calls fails explicitly', async () => {
+  const { deps } = makeDefaultDeps({
+    llmResponses: [{ content: '', finishReason: 'length' }],
+  });
+  const result = await new SmartAgent(deps, {}).process(
+    'go',
+    testCallOptions(),
+  );
+  assert.equal(result.ok, false);
+  assert.equal(result.error.code, 'LLM_OUTPUT_TRUNCATED');
+});
+
 for (const mode of ['direct', 'pipeline'] as const) {
-  test(`${mode}: a rejected truncated reply retains its text without partial calls in retry history`, async () => {
-    const inputs: Message[][] = [];
-    const { deps } = makeDefaultDeps({
-      assembler: makeAssembler([{ role: 'user', content: 'go' }]),
-      mcpClients: [
-        {
-          async listTools() {
-            return { ok: true, value: [tool] };
-          },
-          async callTool() {
-            assert.fail('incomplete calls must not run');
-          },
-        },
+  test(`${mode}: truncation stops before an output validator can request a retry`, async () => {
+    let validations = 0;
+    const { deps, llm } = makeDefaultDeps({
+      mcpClients: [makeMcpClient([tool])],
+      llmResponses: [
+        { content: 'PARTIAL', finishReason: 'length' },
+        { content: 'DONE', finishReason: 'stop' },
       ],
       outputValidator: {
         async validate(content) {
+          validations++;
           return {
             ok: true,
             value: { valid: content !== 'PARTIAL', reason: 'retry' },
@@ -128,49 +159,20 @@ for (const mode of ['direct', 'pipeline'] as const) {
         },
       },
     });
-    deps.mainLlm = {
-      async chat() {
-        assert.fail('stream expected');
-      },
-      async *streamChat(messages) {
-        inputs.push(structuredClone(messages));
-        assert.ok(inputs.length <= 2);
-        yield {
-          ok: true,
-          value:
-            inputs.length === 1
-              ? {
-                  content: 'PARTIAL',
-                  finishReason: 'length',
-                  toolCalls: [
-                    { index: 0, name: tool.name, arguments: incomplete },
-                  ],
-                }
-              : { content: 'DONE', finishReason: 'stop' },
-        };
-      },
-    };
     const config = { refreshToolsPerIteration: false };
     if (mode === 'pipeline') {
       const pipeline = new DefaultPipeline();
       pipeline.initialize({ ...deps, agentConfig: config });
       deps.pipeline = pipeline;
     }
-    assert.ok(
-      (await new SmartAgent(deps, config).process('go', testCallOptions())).ok,
+    const result = await new SmartAgent(deps, config).process(
+      'go',
+      testCallOptions(),
     );
-    assert.equal(inputs.length, 2);
-    assert.ok(
-      inputs[1].some(
-        (message) =>
-          message.role === 'assistant' && message.content === 'PARTIAL',
-      ),
-    );
-    assert.ok(
-      inputs[1].every(
-        (message) => !message.tool_calls?.length && message.role !== 'tool',
-      ),
-    );
+    assert.equal(result.ok, false);
+    assert.equal(result.error.code, 'LLM_OUTPUT_TRUNCATED');
+    assert.equal(llm.callCount, 1);
+    assert.equal(validations, 0);
   });
 }
 
@@ -227,14 +229,20 @@ for (const loop of ['self', 'cyclic'] as const) {
           { id: 's1', goal: 'work', status: 'pending' },
           ctx,
         );
-        assert.equal(result.ok, true);
-        assert.equal(
-          result.output,
-          finishReason === 'tool_calls' ? 'DONE' : 'PARTIAL',
-        );
-        assert.equal(result.toolCallCount, 0);
+        if (finishReason === 'length') {
+          assert.equal(result.ok, false);
+          assert.equal(result.terminalError?.code, 'LLM_OUTPUT_TRUNCATED');
+          assert.match(result.error ?? '', /truncated/);
+        } else {
+          assert.equal(result.ok, true);
+          assert.equal(
+            result.output,
+            finishReason === 'tool_calls' ? 'DONE' : 'PARTIAL',
+          );
+          assert.equal(result.toolCallCount, 0);
+        }
       } else {
-        const result = await new CyclicReActExecutor({
+        const result = new CyclicReActExecutor({
           llm,
           callMcp: callTool,
           component: 'tool-loop',
@@ -256,7 +264,11 @@ for (const loop of ['self', 'cyclic'] as const) {
             stepperId: 'n1',
           },
         });
-        assert.equal(result.status, 'ok');
+        if (finishReason === 'length') {
+          await assert.rejects(result, { code: 'LLM_OUTPUT_TRUNCATED' });
+        } else {
+          assert.equal((await result).status, 'ok');
+        }
       }
       assert.equal(inputs.length, finishReason === 'tool_calls' ? 2 : 1);
       if (finishReason === 'tool_calls') {

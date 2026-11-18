@@ -1,11 +1,68 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { OrchestratorError } from '@mcp-abap-adt/llm-agent';
 import { makeDefaultDeps, testCallOptions } from '../../testing/index.js';
 import { NoopTracer } from '../../tracer/noop-tracer.js';
 import { DefaultPipeline } from '../default-pipeline.js';
 import { PipelineExecutor } from '../executor.js';
 import type { StageHandlerRegistry } from '../handlers/index.js';
+import { SubAgentHandler } from '../handlers/subagent.js';
 import type { StageDefinition } from '../types.js';
+
+test('a terminal subagent stage error stops a repeat and preserves its code', async () => {
+  const error = new OrchestratorError(
+    'Worker response was truncated',
+    'LLM_OUTPUT_TRUNCATED',
+  );
+  let calls = 0;
+  const worker = new SubAgentHandler(
+    new Map([
+      [
+        'worker',
+        {
+          name: 'worker',
+          capabilities: { contextPolicy: 'optional' },
+          async run() {
+            calls++;
+            throw error;
+          },
+        },
+      ],
+    ]),
+  );
+  const pipeline = new DefaultPipeline({
+    stepperCoordinator: {
+      execute(ctx) {
+        return new PipelineExecutor(
+          new Map([['subagent', worker]]),
+          ctx.tracer,
+        ).executeStages(
+          [
+            {
+              id: 'repeat',
+              type: 'repeat',
+              maxIterations: 3,
+              stages: [
+                { id: 'work', type: 'subagent', config: { agent: 'worker' } },
+              ],
+            },
+          ],
+          ctx,
+          new NoopTracer().startSpan('repeat-test'),
+        );
+      },
+    },
+  });
+  pipeline.initialize(makeDefaultDeps().deps);
+  const result = await pipeline.execute(
+    'work',
+    [],
+    testCallOptions(),
+    () => {},
+  );
+  assert.equal(calls, 1);
+  assert.equal(result.error, error);
+});
 
 for (const stages of [undefined, []] satisfies Array<
   StageDefinition[] | undefined

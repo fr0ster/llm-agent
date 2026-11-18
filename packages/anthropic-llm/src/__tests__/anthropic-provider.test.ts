@@ -51,6 +51,7 @@ describe('AnthropicProvider — constructor', () => {
     // object's lifetime. It is asked for fresh on each request instead; see
     // credential.test.ts for the "asked twice, differs twice" case.
     const p = new AnthropicProvider({
+      maxTokens: 100,
       credential: staticApiKey('sk-ant-test'),
       model: 'claude-3-5-sonnet-20241022',
     });
@@ -143,6 +144,7 @@ describe('AnthropicProvider — formatMessages', () => {
 describe('AnthropicProvider — chat error handling', () => {
   it('wraps API errors with "Anthropic API error:" prefix', async () => {
     const provider = new AnthropicProvider({
+      maxTokens: 100,
       credential: staticApiKey('sk-test'),
       model: 'claude-3-5-sonnet-20241022',
       baseURL: 'http://localhost:1',
@@ -164,6 +166,7 @@ describe('AnthropicProvider — chat error handling', () => {
 describe('AnthropicProvider — chat() options forwarding', () => {
   it('uses per-request overrides', async () => {
     const provider = new AnthropicProvider({
+      maxTokens: 100,
       credential: staticApiKey('test-key'),
       model: 'claude-3-5-sonnet-20241022',
     });
@@ -191,11 +194,21 @@ describe('AnthropicProvider — chat() options forwarding', () => {
     assert.equal(capturedBody.max_tokens, 10);
   });
 
-  it('sends no temperature that is not configured, and the required max_tokens default', async () => {
+  it('omits an unset temperature and uses model metadata for max_tokens', async () => {
     const provider = new AnthropicProvider({
       credential: staticApiKey('test-key'),
-      model: 'claude-opus-4-8',
+      model: 'claude-opus-5-5',
     });
+    provider.client.defaults.adapter = async (config) => {
+      assert.equal(config.url, '/models/claude-opus-5-5');
+      return {
+        data: { id: 'claude-opus-5-5', max_tokens: 128000 },
+        status: 200,
+        statusText: 'OK',
+        headers: {},
+        config,
+      };
+    };
     let capturedBody: Record<string, unknown> = {};
     // @ts-expect-error — stub axios for test
     provider.client.post = async (
@@ -212,11 +225,12 @@ describe('AnthropicProvider — chat() options forwarding', () => {
     };
     await provider.chat([{ role: 'user', content: 'hi' }]);
     assert.equal('temperature' in capturedBody, false);
-    assert.equal(capturedBody.max_tokens, 4096);
+    assert.equal(capturedBody.max_tokens, 128000);
   });
 
   it('converts tools to Anthropic name, description and input_schema in the request body', async () => {
     const provider = new AnthropicProvider({
+      maxTokens: 100,
       credential: staticApiKey('test-key'),
       model: 'claude-3-5-sonnet-20241022',
     });
@@ -247,6 +261,7 @@ describe('AnthropicProvider — chat() options forwarding', () => {
 
   it('forwards topP and stop options', async () => {
     const provider = new AnthropicProvider({
+      maxTokens: 100,
       credential: staticApiKey('test-key'),
       model: 'claude-3-5-sonnet-20241022',
     });
@@ -274,6 +289,7 @@ describe('AnthropicProvider — chat() options forwarding', () => {
 
   it('handles multi-block response (text + tool_use)', async () => {
     const provider = new AnthropicProvider({
+      maxTokens: 100,
       credential: staticApiKey('test-key'),
       model: 'claude-3-5-sonnet-20241022',
     });
@@ -295,6 +311,7 @@ describe('AnthropicProvider — chat() options forwarding', () => {
 
   it('extracts system message from messages array', async () => {
     const provider = new AnthropicProvider({
+      maxTokens: 100,
       credential: staticApiKey('test-key'),
       model: 'claude-3-5-sonnet-20241022',
     });
@@ -344,6 +361,7 @@ describe('AnthropicProvider — streamChat', () => {
 describe('AnthropicProvider — chat() usage', () => {
   it('returns usage from response', async () => {
     const provider = new AnthropicProvider({
+      maxTokens: 100,
       credential: staticApiKey('sk-test'),
       model: 'claude-3-5-sonnet-20241022',
     });
@@ -377,6 +395,7 @@ describe('AnthropicProvider — rate limiting', () => {
   it('retries a 429 on chat() and returns the eventual answer', async () => {
     resetQuotaGates();
     const provider = new AnthropicProvider({
+      maxTokens: 100,
       credential: staticApiKey('sk-test'),
       model: 'claude-3-5-sonnet-20241022',
       whenThrottled: waits,
@@ -411,6 +430,7 @@ describe('AnthropicProvider — rate limiting', () => {
   it('retries a 429 on the streaming path, which runs on fetch', async () => {
     resetQuotaGates();
     const provider = new AnthropicProvider({
+      maxTokens: 100,
       credential: staticApiKey('sk-test'),
       model: 'claude-3-5-sonnet-20241022',
       whenThrottled: waits,
@@ -496,6 +516,7 @@ describe("AnthropicProvider — the caller's deadline", () => {
     // here, and "every provider honours it" was true of two out of three.
     resetQuotaGates();
     const provider = new AnthropicProvider({
+      maxTokens: 100,
       credential: staticApiKey('sk-test'),
       model: 'claude-3-5-sonnet-20241022',
     });
@@ -535,6 +556,7 @@ describe("AnthropicProvider — the caller's deadline", () => {
   it('ends the streaming wait when the caller aborts', async () => {
     resetQuotaGates();
     const provider = new AnthropicProvider({
+      maxTokens: 100,
       credential: staticApiKey('sk-test'),
       model: 'claude-3-5-sonnet-20241022',
       // Bounded so a regression fails on the clock rather than hanging.

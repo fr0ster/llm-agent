@@ -64,9 +64,13 @@ export class TokenProvider {
       body: 'grant_type=client_credentials',
     });
     if (!res.ok) {
-      const text = await res.text().catch(() => '');
-      throw new Error(
-        `SAP AI Core token request failed: ${res.status} ${res.statusText} ${text}`,
+      await res.body?.cancel().catch(() => {});
+      throw Object.assign(
+        new Error(`SAP AI Core token request failed: HTTP ${res.status}`),
+        {
+          status: res.status,
+          headers: { 'retry-after': res.headers.get('retry-after') },
+        },
       );
     }
     const body = (await res.json()) as {

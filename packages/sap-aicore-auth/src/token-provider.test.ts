@@ -86,12 +86,21 @@ test('TokenProvider refreshes when forced', async () => {
 });
 
 test('TokenProvider throws on non-2xx', async () => {
-  mockFetch(() => ({ body: { error: 'invalid_client' }, status: 401 }));
+  mockFetch(() => ({ body: { error: 'invalid_client: csec' }, status: 401 }));
   const provider = new TokenProvider({
     clientId: 'cid',
     clientSecret: 'csec',
     tokenUrl: 'https://auth.example.com/oauth/token',
   });
 
-  await assert.rejects(() => provider.getToken(), /401/);
+  await assert.rejects(
+    () => provider.getToken(),
+    (error) => {
+      assert.ok(error instanceof Error && 'status' in error);
+      assert.equal(error.status, 401);
+      assert.doesNotMatch(error.message, /csec/);
+      assert.equal(error.cause, undefined);
+      return true;
+    },
+  );
 });

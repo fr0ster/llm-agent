@@ -13,6 +13,7 @@ import {
   type LlmStreamChunk,
   type LlmTool,
   type Result,
+  terminalRunError,
 } from '@mcp-abap-adt/llm-agent';
 import { startOperation } from '../usage/hooks.js';
 import { isCallerCancellation } from './caller-cancellation.js';
@@ -100,7 +101,7 @@ export class CircuitBreakerLlm implements ILlm {
       }
       yield {
         ok: false,
-        error: new LlmError(String(err), 'LLM_ERROR'),
+        error: terminalRunError(err) ?? new LlmError(String(err), 'LLM_ERROR'),
       };
       return;
     }

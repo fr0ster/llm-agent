@@ -2,6 +2,8 @@
  * Anthropic (Claude) LLM Provider
  */
 
+import { createHmac, randomBytes } from 'node:crypto';
+import { addAbortListener } from 'node:events';
 import type { IApiKeyCredential } from '@mcp-abap-adt/interfaces-auth';
 import type {
   IModelInfo,
@@ -17,7 +19,7 @@ import {
   type ShapeMessage,
   startOperation,
 } from '@mcp-abap-adt/llm-agent';
-import axios, { type AxiosInstance, type AxiosResponse } from 'axios';
+import axios, { type AxiosInstance } from 'axios';
 
 export interface AnthropicConfig extends LLMProviderConfig {
   /**
@@ -102,11 +104,45 @@ export interface WireMessage {
   role: 'user' | 'assistant';
   content: string | ContentBlock[];
 }
+interface ModelResponse {
+  id: string;
+  owned_by?: string;
+  max_tokens?: number;
+}
+
 interface ModelsListResponse {
-  data: Array<{ id: string; owned_by?: string }>;
+  data: ModelResponse[];
   has_more: boolean;
   first_id: string | null;
   last_id: string | null;
+}
+
+interface ModelAuth {
+  headers: Record<string, string>;
+  fingerprint: string;
+}
+
+const fingerprintKey = randomBytes(32);
+
+function isModelOutputLimit(value: number | undefined): value is number {
+  return value !== undefined && Number.isSafeInteger(value) && value > 0;
+}
+
+function normalizeStopReason(
+  reason: string | null | undefined,
+): string | undefined {
+  switch (reason) {
+    case 'tool_use':
+      return 'tool_calls';
+    case 'max_tokens':
+    case 'model_context_window_exceeded':
+      return 'length';
+    case 'end_turn':
+    case 'stop_sequence':
+      return 'stop';
+    default:
+      return reason ?? undefined;
+  }
 }
 
 function formatTools(
@@ -149,6 +185,11 @@ function formatTools(
 export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
   readonly client: AxiosInstance;
   readonly model: string;
+  private readonly modelMaxTokens = new Map<string, number>();
+  private readonly modelLookups = new Map<
+    string,
+    { limit: Promise<number>; controller: AbortController; callers: number }
+  >();
 
   constructor(config: AnthropicConfig) {
     super(config);
@@ -185,8 +226,104 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
    * `client.defaults.headers`, which would freeze whatever secret the
    * credential returned at construction time.
    */
-  private async authHeaders(apiKey?: string): Promise<Record<string, string>> {
-    return { 'x-api-key': apiKey ?? (await this.config.credential.secret()) };
+  private async modelAuth(apiKey?: string): Promise<ModelAuth> {
+    const secret = apiKey ?? (await this.config.credential.secret());
+    const fingerprint = createHmac('sha256', fingerprintKey)
+      .update(secret)
+      .digest('hex');
+    return { headers: { 'x-api-key': secret }, fingerprint };
+  }
+
+  private async getModelMetadata<T>(
+    path: string,
+    auth: ModelAuth,
+    options: {
+      model?: string;
+      signal?: AbortSignal;
+      params?: { limit: number; after_id?: string };
+    },
+  ): Promise<T> {
+    const { model, signal, params } = options;
+    try {
+      const { data } = await this.withThrottleRetry(
+        () =>
+          this.client.get<T>(path, { headers: auth.headers, signal, params }),
+        { model, signal, credentialFingerprint: auth.fingerprint },
+      );
+      signal?.throwIfAborted();
+      return data;
+    } catch (error) {
+      signal?.throwIfAborted();
+      throw this.credentialSafeError(error, 'Anthropic model discovery failed');
+    }
+  }
+
+  private async fetchModelMaxTokens(
+    model: string,
+    signal: AbortSignal,
+    auth: ModelAuth,
+  ): Promise<number> {
+    const data = await this.getModelMetadata<ModelResponse>(
+      `/models/${encodeURIComponent(model)}`,
+      auth,
+      { model, signal },
+    );
+    signal.throwIfAborted();
+    if (!isModelOutputLimit(data.max_tokens)) {
+      throw new Error(
+        `Anthropic model "${model}" did not report max_tokens; set maxTokens explicitly`,
+      );
+    }
+    this.modelMaxTokens.set(`${auth.fingerprint}:${model}`, data.max_tokens);
+    this.modelMaxTokens.set(`${auth.fingerprint}:${data.id}`, data.max_tokens);
+    return data.max_tokens;
+  }
+
+  private async resolveModelRequest(
+    model: string,
+    options?: LLMCallOptions,
+  ): Promise<{ maxTokens: number; auth: ModelAuth }> {
+    const { signal, apiKey } = options ?? {};
+    signal?.throwIfAborted();
+    const auth = await this.modelAuth(apiKey);
+    signal?.throwIfAborted();
+    const configured = options?.maxTokens ?? this.config.maxTokens;
+    if (configured !== undefined) return { maxTokens: configured, auth };
+    const key = `${auth.fingerprint}:${model}`;
+    const cached = this.modelMaxTokens.get(key);
+    if (cached !== undefined) return { maxTokens: cached, auth };
+
+    let lookup = this.modelLookups.get(key);
+    if (!lookup) {
+      const controller = new AbortController();
+      lookup = {
+        controller,
+        limit: this.fetchModelMaxTokens(model, controller.signal, auth),
+        callers: 0,
+      };
+      this.modelLookups.set(key, lookup);
+    }
+    lookup.callers++;
+    let abortListener: ReturnType<typeof addAbortListener> | undefined;
+    try {
+      const limit = signal
+        ? Promise.race([
+            lookup.limit,
+            new Promise<never>((_, reject) => {
+              abortListener = addAbortListener(signal, () =>
+                reject(signal.reason),
+              );
+            }),
+          ])
+        : lookup.limit;
+      return { maxTokens: await limit, auth };
+    } finally {
+      abortListener?.[Symbol.dispose]();
+      if (--lookup.callers === 0) {
+        this.modelLookups.delete(key);
+        lookup.controller.abort();
+      }
+    }
   }
 
   async chat(
@@ -202,15 +339,17 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
       const sent = this.formatMessages(conversationMessages);
       const sentTools = formatTools((tools ?? []) as ToolDefinition[], sent);
       const model = options?.model ?? this.model;
+      const { maxTokens, auth } = await this.resolveModelRequest(
+        model,
+        options,
+      );
       const requestBody: Record<
         string,
         object | string | number | boolean | null | undefined
       > = {
         model,
         messages: sent,
-        // The Messages API requires max_tokens, so it keeps a default;
-        // temperature is sent only when set (claude-opus-4-7+ accept only 1).
-        max_tokens: options?.maxTokens ?? this.config.maxTokens ?? 4096,
+        max_tokens: maxTokens,
         ...temperatureParam(options?.temperature ?? this.config.temperature),
         ...cacheControlParam(
           options?.promptCaching ?? this.config.promptCaching,
@@ -228,13 +367,12 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
         if (!tools?.length) requestBody.tool_choice = { type: 'none' };
       }
 
-      let headers: Record<string, string>;
       let shape: ReturnType<typeof requestShape> | undefined;
       const response = await this.withThrottleRetry(
         async (handle) => {
           const response = await this.client.post('/messages', requestBody, {
             signal: options?.signal,
-            headers,
+            headers: auth.headers,
           });
           // Handle multi-block response (text + tool_use)
           const content = response.data.content as ContentBlock[];
@@ -256,10 +394,7 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
 
           const result = {
             content: textContent,
-            finishReason:
-              response.data.stop_reason === 'tool_use'
-                ? 'tool_calls'
-                : response.data.stop_reason,
+            finishReason: normalizeStopReason(response.data.stop_reason),
             ...(toolCalls.length ? { toolCalls } : {}),
             raw: response.data,
             usage,
@@ -281,11 +416,12 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
           });
           return result;
         },
-        { model, signal: options?.signal },
         {
-          prepare: async () => {
-            headers = await this.authHeaders(options?.apiKey);
-          },
+          model,
+          signal: options?.signal,
+          credentialFingerprint: auth.fingerprint,
+        },
+        {
           opts: options,
           apiKeyOverride: options?.apiKey,
           op: startOperation(options),
@@ -327,6 +463,7 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
 
       return response;
     } catch (error) {
+      options?.signal?.throwIfAborted();
       if (options?.apiKey !== undefined) {
         throw this.credentialSafeError(error, 'Anthropic API error');
       }
@@ -354,13 +491,14 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
     const sent = this.formatMessages(conversationMessages);
     const sentTools = formatTools((tools ?? []) as ToolDefinition[], sent);
     const model = options?.model ?? this.model;
+    const { maxTokens, auth } = await this.resolveModelRequest(model, options);
     const requestBody: Record<
       string,
       object | string | number | boolean | null | undefined
     > = {
       model,
       messages: sent,
-      max_tokens: options?.maxTokens ?? this.config.maxTokens ?? 4096,
+      max_tokens: maxTokens,
       ...temperatureParam(options?.temperature ?? this.config.temperature),
       ...cacheControlParam(options?.promptCaching ?? this.config.promptCaching),
       stream: true,
@@ -379,7 +517,6 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
 
     const baseURL = this.config.baseURL || 'https://api.anthropic.com/v1';
     type OpenStream = Response & { body: ReadableStream<Uint8Array> };
-    let headers: Record<string, string>;
     let shape: ReturnType<typeof requestShape> | undefined;
     const { response, handle } = await this.withThrottleRetry<OpenStream>(
       async () => {
@@ -387,7 +524,7 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            ...headers,
+            ...auth.headers,
             'anthropic-version': '2023-06-01',
           },
           body: JSON.stringify(requestBody),
@@ -414,11 +551,12 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
         }
         return res as OpenStream;
       },
-      { model, signal: options?.signal },
       {
-        prepare: async () => {
-          headers = await this.authHeaders(options?.apiKey);
-        },
+        model,
+        signal: options?.signal,
+        credentialFingerprint: auth.fingerprint,
+      },
+      {
         opts: options,
         apiKeyOverride: options?.apiKey,
         op: startOperation(options),
@@ -601,10 +739,7 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
               const stopReason = parsed.delta?.stop_reason;
               yield {
                 content: '',
-                // Normalize Anthropic's 'tool_use' to 'tool_calls' so the
-                // downstream bridge / agent sees the canonical finish reason.
-                finishReason:
-                  stopReason === 'tool_use' ? 'tool_calls' : stopReason,
+                finishReason: normalizeStopReason(stopReason),
                 raw: parsed,
                 usage: u
                   ? {
@@ -676,28 +811,25 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
     const models: IModelInfo[] = [];
     let afterId: string | null = null;
     while (true) {
-      const response: AxiosResponse<ModelsListResponse> = await this.client
-        .get('/models', {
-          headers: await this.authHeaders(options?.apiKey),
+      options?.signal?.throwIfAborted();
+      const auth = await this.modelAuth(options?.apiKey);
+      const page: ModelsListResponse =
+        await this.getModelMetadata<ModelsListResponse>('/models', auth, {
           signal: options?.signal,
           params: { limit: 1000, ...(afterId ? { after_id: afterId } : {}) },
-        })
-        .catch((error: Error) => {
-          if (options?.apiKey !== undefined) {
-            throw this.credentialSafeError(
-              error,
-              'Anthropic model discovery failed',
-            );
-          }
-          throw error;
         });
-      models.push(
-        ...response.data.data.map((m) => ({ id: m.id, owned_by: m.owned_by })),
-      );
-      if (!response.data.has_more) return models;
-      if (!response.data.last_id)
+      for (const { id, owned_by, max_tokens: maxOutputTokens } of page.data) {
+        if (isModelOutputLimit(maxOutputTokens)) {
+          this.modelMaxTokens.set(`${auth.fingerprint}:${id}`, maxOutputTokens);
+          models.push({ id, owned_by, maxOutputTokens });
+        } else {
+          models.push({ id, owned_by });
+        }
+      }
+      if (!page.has_more) return models;
+      if (!page.last_id)
         throw new Error('Anthropic models list: has_more without last_id');
-      afterId = response.data.last_id;
+      afterId = page.last_id;
     }
   }
 

@@ -86,6 +86,9 @@ test('adapter and bridge deliver recorder and operation to the real OpenAI provi
 for (const streaming of [false, true]) {
   test(`RetryLlm shares operation and re-enters each ${streaming ? 'stream' : 'chat'} attempt`, async () => {
     const seen: UsageOperation[] = [];
+    const error = Object.assign(new LlmError('Service unavailable'), {
+      status: 503,
+    });
     const accept = (opts?: CallOptions) => {
       assert.equal(opts?.usage, usage);
       assert.ok(opts?.usageOp);
@@ -95,12 +98,11 @@ for (const streaming of [false, true]) {
     const inner: ILlm = {
       async chat(_messages, _tools, opts) {
         return accept(opts)
-          ? { ok: false, error: new LlmError('503', 'LLM_ERROR') }
+          ? { ok: false, error }
           : { ok: true, value: { content: 'ok', finishReason: 'stop' } };
       },
       async *streamChat(_messages, _tools, opts) {
-        if (accept(opts))
-          yield { ok: false, error: new LlmError('503', 'LLM_ERROR') };
+        if (accept(opts)) yield { ok: false, error };
         else yield { ok: true, value: { content: 'ok', finishReason: 'stop' } };
       },
     };

@@ -5,7 +5,12 @@ import type {
   ISubAgentResult,
   SubAgentRegistry,
 } from './subagent.js';
-import type { CallOptions, LlmTool, LlmUsage } from './types.js';
+import type {
+  CallOptions,
+  LlmTool,
+  LlmUsage,
+  SmartAgentError,
+} from './types.js';
 import type { IUsageRecorder } from './usage.js';
 
 export interface PlanStep {
@@ -64,6 +69,8 @@ export interface StepResult {
   durationMs: number;
   ok: boolean;
   error?: string;
+  /** A failed step with this error ends the run without retrying or replanning. */
+  terminalError?: SmartAgentError;
   /** Tool budget consumed by self-dispatched steps in this request. */
   budgetExhausted?: boolean;
   toolCallCount?: number;

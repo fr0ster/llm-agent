@@ -77,16 +77,18 @@ for (const stream of [false, true]) {
             : layer === 'retry'
               ? retry
               : new CircuitBreakerLlm(retry, breaker);
-        const call = async (signal?: AbortSignal) => {
-          if (!stream) return llm.chat([], undefined, { signal });
+        const call = async (signal?: AbortSignal, target = llm) => {
+          if (!stream) return target.chat([], undefined, { signal });
           const chunks: Result<LlmStreamChunk, LlmError>[] = [];
-          for await (const chunk of llm.streamChat([], undefined, { signal }))
+          for await (const chunk of target.streamChat([], undefined, {
+            signal,
+          }))
             chunks.push(chunk);
           assert.equal(chunks.length, 1);
           return chunks[0];
         };
         try {
-          const first = await call();
+          const first = await call(undefined, adapter);
           assert.equal(first.ok, false);
           if (first.ok) assert.fail('the server must close the quota');
           assert.ok(findThrottled(first.error));
@@ -215,7 +217,7 @@ for (const backoffMs of [0, 17, 2000]) {
         yield { ok: false, error };
       },
     };
-    const llm = new RetryLlm(inner, { backoffMs });
+    const llm = new RetryLlm(inner, { backoffMs, maxAttempts: 3 });
     assert.equal((await llm.chat([])).ok, false);
     const expected = [backoffMs, backoffMs * 2, backoffMs * 4];
     assert.deepEqual(waits, expected);

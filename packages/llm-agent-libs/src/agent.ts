@@ -242,7 +242,7 @@ export interface SmartAgentConfig {
    * steer MCP tool discovery. Default: false (single-phase tool retrieval).
    */
   enrichedToolSearch?: boolean;
-  /** Retry options for transient LLM failures (429, 5xx). When set, wraps LLM with RetryLlm. */
+  /** Override the builder's retry policy. 429 retries remain abortable and unlimited. */
   retry?: {
     maxAttempts?: number;
     backoffMs?: number;
@@ -1430,13 +1430,7 @@ export class SmartAgent {
           llmSpan.end();
           toolLoopSpan.setStatus('error', chunkResult.error.message);
           toolLoopSpan.end();
-          yield {
-            ok: false,
-            error: new OrchestratorError(
-              chunkResult.error.message,
-              'LLM_ERROR',
-            ),
-          };
+          yield chunkResult;
           return;
         }
         const chunk = chunkResult.value;
@@ -1503,6 +1497,27 @@ export class SmartAgent {
       });
       const hasToolCalls =
         finishReason === 'tool_calls' && toolCallsMap.size > 0;
+      const responseRound = new ToolResponseRound(
+        content,
+        toolCallsMap.values(),
+        (name) => externalToolNames.has(name) && !toolClientMap.has(name),
+      );
+      const toolCalls = hasToolCalls ? responseRound.executableCalls() : [];
+      opts?.sessionLogger?.logStep(
+        `llm_response_iter_${iteration + 1}`,
+        { content, ...responseRound.diagnostics(toolCalls), finishReason },
+        'llm',
+      );
+      if (finishReason === 'length') {
+        const error = new OrchestratorError(
+          'LLM response was truncated at a token limit.',
+          'LLM_OUTPUT_TRUNCATED',
+        );
+        toolLoopSpan.setStatus('error', error.message);
+        toolLoopSpan.end();
+        yield { ok: false, error };
+        return;
+      }
       const val = hasToolCalls
         ? { reprompt: false, messages }
         : await runOutputValidationReprompt(
@@ -1538,21 +1553,6 @@ export class SmartAgent {
         (clientAdapter || this.config.streamMode === 'final')
       )
         stoppedContent += content;
-      const responseRound = new ToolResponseRound(
-        content,
-        toolCallsMap.values(),
-        (name) => externalToolNames.has(name) && !toolClientMap.has(name),
-      );
-      const toolCalls = hasToolCalls ? responseRound.executableCalls() : [];
-      opts?.sessionLogger?.logStep(
-        `llm_response_iter_${iteration + 1}`,
-        {
-          content,
-          toolCalls,
-          finishReason,
-        },
-        'llm',
-      );
       if (!hasToolCalls) {
         // Output validation
         if (val.reprompt) {

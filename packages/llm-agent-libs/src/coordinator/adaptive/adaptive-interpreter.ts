@@ -10,9 +10,11 @@ import type {
   Message,
   OnPartial,
   RunOutcome,
+  SmartAgentError,
   StepRecord,
   StepStatus,
 } from '@mcp-abap-adt/llm-agent';
+import { terminalRunError } from '@mcp-abap-adt/llm-agent';
 import { OrchestratorError } from '../../agent.js';
 import { composeStepInput } from './compose-step-input.js';
 import { parseVerdict, validateSteps } from './parse-plan.js';
@@ -45,6 +47,7 @@ export interface AdaptiveRunResult {
   plan: AdaptivePlan;
   records: StepRecord[];
   stopReason?: string;
+  error?: OrchestratorError;
   answerStreamed: boolean;
   usage: LlmUsage[];
   workerUsage: { worker: string; usage: LlmUsage; model?: string }[];
@@ -61,10 +64,10 @@ export class AdaptiveEpicFailError extends OrchestratorError {
   }
 }
 
-/** Default limits for one request. */
+/** No run-wide limits unless configured. */
 export const DEFAULT_BUDGET: AdaptiveBudget = {
-  maxSteps: 20,
-  maxRevisions: 3,
+  maxSteps: Infinity,
+  maxRevisions: Infinity,
 };
 
 const message = (error: unknown): string =>
@@ -112,6 +115,11 @@ export async function runAdaptivePlan(
     usage,
     workerUsage,
   });
+  const failedRun = (error: SmartAgentError): AdaptiveRunResult => ({
+    ...result('stopped', error.message),
+    stopReason: error.message,
+    error,
+  });
   const stop = async (stopReason: string): Promise<AdaptiveRunResult> => {
     let output: string;
     try {
@@ -126,8 +134,10 @@ export async function runAdaptivePlan(
       input.signal?.throwIfAborted();
       collect(report.usage);
       output = report.text;
-    } catch {
+    } catch (error) {
       input.signal?.throwIfAborted();
+      const terminal = terminalRunError(error);
+      if (terminal) return failedRun(terminal);
       output = [
         `Stopped: ${stopReason}`,
         ...records.map(
@@ -148,13 +158,8 @@ export async function runAdaptivePlan(
     if (!step) break;
     const run = (runs.get(step.id) ?? 0) + 1;
     runs.set(step.id, run);
-    const maxRuns =
-      'maxRuns' in step
-        ? (step.maxRuns ?? (step.kind === 'check' ? 3 : 1))
-        : step.kind === 'check'
-          ? 3
-          : 1;
-    if (run > maxRuns) return stop(`step ${step.id} exceeded ${maxRuns} runs`);
+    if ('maxRuns' in step && step.maxRuns !== undefined && run > step.maxRuns)
+      return stop(`step ${step.id} exceeded ${step.maxRuns} runs`);
     const reason = checkReason;
     checkReason = undefined;
     const stepStartedAt = now();
@@ -187,6 +192,7 @@ export async function runAdaptivePlan(
     };
 
     if (step.kind === 'work' || step.kind === 'check') {
+      let terminalError: SmartAgentError | undefined;
       // The composer uses map insertion order: retain current plan order even after jumps.
       const orderedLatest = new Map(
         plan.steps.flatMap((candidate) => {
@@ -221,10 +227,16 @@ export async function runAdaptivePlan(
         } catch (error) {
           input.signal?.throwIfAborted();
           collect((error as { usage?: LlmUsage } | null)?.usage);
-          record.verdict = {
-            verdict: 'fail',
-            reason: `controller check failed: ${message(error)}`,
-          };
+          terminalError = terminalRunError(error);
+          if (terminalError) {
+            record.status = 'failed';
+            record.error = message(error);
+          } else {
+            record.verdict = {
+              verdict: 'fail',
+              reason: `controller check failed: ${message(error)}`,
+            };
+          }
         }
       } else {
         const source = plan.steps.find(
@@ -295,11 +307,19 @@ export async function runAdaptivePlan(
               pendingExternalToolCalls: worked.pendingExternalToolCalls,
             };
           }
-          if (step.kind === 'check')
-            record.verdict = parseVerdict(worked.output) ?? {
-              verdict: 'fail',
-              reason: 'unparsable verdict',
-            };
+          if (step.kind === 'check') {
+            record.verdict = parseVerdict(worked.output);
+            if (!record.verdict)
+              throw new OrchestratorError(
+                `Check ${step.id} failed to retrieve a verdict: unparsable verdict`,
+                'VERDICT_RETRIEVAL_FAILED',
+              );
+          } else if (!worked.output.trim()) {
+            throw new OrchestratorError(
+              'Worker returned an empty terminal response.',
+              'EMPTY_WORKER_OUTPUT',
+            );
+          }
         } catch (error) {
           if (error instanceof AdaptiveEpicFailError) throw error;
           const failed = error as { usage?: LlmUsage; model?: string } | null;
@@ -315,14 +335,24 @@ export async function runAdaptivePlan(
           record.status = 'failed';
           record.output = '';
           record.error = message(error);
-          if (step.kind === 'check')
+          terminalError = terminalRunError(error);
+          if (step.kind === 'check' && !terminalError)
             record.verdict = {
               verdict: 'fail',
-              reason: `worker check failed: ${message(error)}`,
+              reason: `worker check failed: ${record.error}`,
             };
         }
       }
       finish();
+      if (terminalError) return failedRun(terminalError);
+      if (step.kind === 'check' && !record.verdict) {
+        return failedRun(
+          new OrchestratorError(
+            `Check ${step.id} failed to retrieve a verdict: ${record.error}`,
+            'VERDICT_RETRIEVAL_FAILED',
+          ),
+        );
+      }
       if (
         step.kind === 'work' &&
         record.status === 'failed' &&
@@ -390,6 +420,8 @@ export async function runAdaptivePlan(
         collect((error as { usage?: LlmUsage } | null)?.usage);
         record.error = message(error);
         finish();
+        const terminal = terminalRunError(error);
+        if (terminal) return failedRun(terminal);
         return stop(`revise failed: ${record.error}`);
       }
       finish();

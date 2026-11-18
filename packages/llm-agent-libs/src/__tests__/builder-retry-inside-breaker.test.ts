@@ -20,23 +20,26 @@ import { testRagAccess } from '@mcp-abap-adt/llm-agent/testing/rag-access-testin
 import { SmartAgentBuilder } from '../builder.js';
 import { unwrapBuilderResult } from '../builder-types.js';
 
-/** An adapter that answers every call with a retryable 429. */
-function throttledLlm(onCall?: () => void): ILlm & { calls: number } {
+/** An adapter that answers every call with a retryable 503. */
+function failingLlm(onCall?: () => void): ILlm & { calls: number } {
+  const error = Object.assign(new LlmError('Service Unavailable'), {
+    status: 503,
+  });
   const llm = {
     calls: 0,
-    model: 'throttled',
+    model: 'unavailable',
     async chat(): Promise<Result<LlmResponse, LlmError>> {
       llm.calls++;
       onCall?.();
       return {
         ok: false,
-        error: new LlmError('HTTP 429 Too Many Requests'),
+        error,
       };
     },
     async *streamChat(): AsyncIterable<Result<LlmStreamChunk, LlmError>> {
       llm.calls++;
       onCall?.();
-      yield { ok: false, error: new LlmError('HTTP 429 Too Many Requests') };
+      yield { ok: false, error };
     },
   };
   return llm;
@@ -45,7 +48,7 @@ function throttledLlm(onCall?: () => void): ILlm & { calls: number } {
 const retry = {
   maxAttempts: 3,
   backoffMs: 1,
-  retryOn: [429],
+  retryOn: [503],
   retryOnMidStream: [],
 };
 
@@ -57,7 +60,7 @@ function builder() {
 }
 
 test('own breaker: one request with retries records ONE failure; two open it', async () => {
-  const raw = throttledLlm();
+  const raw = failingLlm();
   const h = await builder()
     .withMainLlm(raw)
     .withCircuitBreaker({ failureThreshold: 2, recoveryWindowMs: 60_000 })
@@ -82,7 +85,7 @@ test('own breaker: one request with retries records ONE failure; two open it', a
 });
 
 test('own breaker, streaming: retries inside count once', async () => {
-  const raw = throttledLlm();
+  const raw = failingLlm();
   const h = await builder()
     .withMainLlm(raw)
     .withCircuitBreaker({ failureThreshold: 2, recoveryWindowMs: 60_000 })
@@ -102,7 +105,7 @@ test('own breaker, streaming: retries inside count once', async () => {
 });
 
 test('pre-wrapped shared breaker: the same breaker guards, retry goes under it', async () => {
-  const raw = throttledLlm();
+  const raw = failingLlm();
   const shared = new CircuitBreaker({
     failureThreshold: 2,
     recoveryWindowMs: 60_000,
@@ -131,7 +134,7 @@ test('pre-wrapped shared breaker: the same breaker guards, retry goes under it',
 
 test('a caller-cancelled call through retry records nothing and stops retrying', async () => {
   const ac = new AbortController();
-  const raw = throttledLlm(() => ac.abort()); // the caller leaves mid-call
+  const raw = failingLlm(() => ac.abort()); // the caller leaves mid-call
   const shared = new CircuitBreaker({
     failureThreshold: 1,
     recoveryWindowMs: 60_000,
@@ -159,7 +162,7 @@ test('a caller-cancelled call through retry records nothing and stops retrying',
 
 test('a caller-cancelled stream through retry records nothing and stops retrying', async () => {
   const ac = new AbortController();
-  const raw = throttledLlm(() => ac.abort());
+  const raw = failingLlm(() => ac.abort());
   const h = await builder()
     .withMainLlm(raw)
     .withCircuitBreaker({ failureThreshold: 1, recoveryWindowMs: 60_000 })
@@ -183,7 +186,7 @@ test('a caller-cancelled stream through retry records nothing and stops retrying
 });
 
 test('no breaker: retry alone, unchanged', async () => {
-  const raw = throttledLlm();
+  const raw = failingLlm();
   const h = await builder().withMainLlm(raw).build().then(unwrapBuilderResult);
   try {
     const main = h.agent.currentMainLlm;

@@ -8,6 +8,7 @@ import {
   type Message,
   type Result,
   startOperation,
+  terminalRunError,
   withOuterAttempt,
 } from '@mcp-abap-adt/llm-agent';
 import type { AnyLogger } from '../logger/normalise-logger.js';
@@ -20,9 +21,8 @@ import { StreamingLlmCallStrategy } from './streaming-llm-call-strategy.js';
 /**
  * Starts with streaming. On error, logs the cause and retries the same call
  * via non-streaming. All subsequent calls use non-streaming for this instance.
- * A failure caused by the caller's cancellation (`isCallerCancellation`) is
- * passed through as-is: it says nothing about streaming, so streaming stays
- * enabled and nothing is retried.
+ * Terminal failures and caller cancellation leave streaming enabled and end
+ * the current call.
  */
 export class FallbackLlmCallStrategy implements ILlmCallStrategy {
   private streamingDisabled = false;
@@ -59,8 +59,13 @@ export class FallbackLlmCallStrategy implements ILlmCallStrategy {
         initialOptions,
       )) {
         if (!chunk.ok) {
+          const terminal = terminalRunError(chunk.error);
+          if (terminal) {
+            yield { ok: false, error: terminal };
+            return;
+          }
           if (isCallerCancellation(options?.signal)) {
-            yield chunk; // the caller left — not a streaming failure
+            yield chunk;
             return;
           }
           // Streaming returned a Result error — treat as streaming failure
@@ -80,7 +85,12 @@ export class FallbackLlmCallStrategy implements ILlmCallStrategy {
         yield { ok: true, value: { content: '', reset: true } };
         yield* this.nonStreaming.call(llm, messages, tools, fallbackOptions);
       }
-    } catch (err: unknown) {
+    } catch (err) {
+      const terminal = terminalRunError(err);
+      if (terminal) {
+        yield { ok: false, error: terminal };
+        return;
+      }
       // Streaming threw an exception (e.g. SSE disconnect, network error)
       const errMsg = err instanceof Error ? err.message : String(err);
       if (isCallerCancellation(options?.signal)) {

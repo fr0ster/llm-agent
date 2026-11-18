@@ -641,13 +641,8 @@ export class ToolLoopHandler implements IStageHandler {
             },
             'llm',
           );
-          ctx.yield({
-            ok: false,
-            error: new OrchestratorError(
-              chunkResult.error.message,
-              'LLM_ERROR',
-            ),
-          });
+          ctx.error = chunkResult.error;
+          ctx.yield(chunkResult);
           return false;
         }
         chunksSeen += 1;
@@ -760,10 +755,18 @@ export class ToolLoopHandler implements IStageHandler {
 
       ctx.options?.sessionLogger?.logStep(
         `llm_response_iter_${iteration + 1}`,
-        { content, toolCalls, finishReason },
+        { content, ...responseRound.diagnostics(toolCalls), finishReason },
         'llm',
       );
 
+      if (finishReason === 'length') {
+        ctx.error = new OrchestratorError(
+          'LLM response was truncated at a token limit.',
+          'LLM_OUTPUT_TRUNCATED',
+        );
+        ctx.yield({ ok: false, error: ctx.error });
+        return false;
+      }
       const val = hasToolCalls
         ? { reprompt: false, messages }
         : await runOutputValidationReprompt(

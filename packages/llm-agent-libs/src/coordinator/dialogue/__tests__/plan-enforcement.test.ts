@@ -395,7 +395,7 @@ for (const maxIterations of [1, 3]) {
       assembler: makeAssembler([{ role: 'user', content: 'work' }]),
       llmResponses: [
         {
-          content: '',
+          content: 'Work in progress',
           toolCalls: [
             { id: 'one', name: 'Work', arguments: {} },
             { id: 'two', name: 'Work', arguments: {} },
