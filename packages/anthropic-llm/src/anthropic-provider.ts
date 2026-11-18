@@ -226,16 +226,12 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
    * `client.defaults.headers`, which would freeze whatever secret the
    * credential returned at construction time.
    */
-  private async authHeaders(apiKey?: string): Promise<Record<string, string>> {
-    return { 'x-api-key': apiKey ?? (await this.config.credential.secret()) };
-  }
-
   private async modelAuth(apiKey?: string): Promise<ModelAuth> {
-    const headers = await this.authHeaders(apiKey);
+    const secret = apiKey ?? (await this.config.credential.secret());
     const fingerprint = createHmac('sha256', fingerprintKey)
-      .update(headers['x-api-key'])
+      .update(secret)
       .digest('hex');
-    return { headers, fingerprint };
+    return { headers: { 'x-api-key': secret }, fingerprint };
   }
 
   private async getModelMetadata<T>(
@@ -286,13 +282,13 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
   private async resolveModelRequest(
     model: string,
     options?: LLMCallOptions,
-  ): Promise<{ maxTokens: number; auth?: ModelAuth }> {
+  ): Promise<{ maxTokens: number; auth: ModelAuth }> {
     const { signal, apiKey } = options ?? {};
     signal?.throwIfAborted();
-    const configured = options?.maxTokens ?? this.config.maxTokens;
-    if (configured !== undefined) return { maxTokens: configured };
     const auth = await this.modelAuth(apiKey);
     signal?.throwIfAborted();
+    const configured = options?.maxTokens ?? this.config.maxTokens;
+    if (configured !== undefined) return { maxTokens: configured, auth };
     const key = `${auth.fingerprint}:${model}`;
     const cached = this.modelMaxTokens.get(key);
     if (cached !== undefined) return { maxTokens: cached, auth };
@@ -371,13 +367,12 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
         if (!tools?.length) requestBody.tool_choice = { type: 'none' };
       }
 
-      let headers: Record<string, string>;
       let shape: ReturnType<typeof requestShape> | undefined;
       const response = await this.withThrottleRetry(
         async (handle) => {
           const response = await this.client.post('/messages', requestBody, {
             signal: options?.signal,
-            headers,
+            headers: auth.headers,
           });
           // Handle multi-block response (text + tool_use)
           const content = response.data.content as ContentBlock[];
@@ -424,13 +419,9 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
         {
           model,
           signal: options?.signal,
-          credentialFingerprint: auth?.fingerprint,
+          credentialFingerprint: auth.fingerprint,
         },
         {
-          prepare: async () => {
-            headers =
-              auth?.headers ?? (await this.authHeaders(options?.apiKey));
-          },
           opts: options,
           apiKeyOverride: options?.apiKey,
           op: startOperation(options),
@@ -526,7 +517,6 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
 
     const baseURL = this.config.baseURL || 'https://api.anthropic.com/v1';
     type OpenStream = Response & { body: ReadableStream<Uint8Array> };
-    let headers: Record<string, string>;
     let shape: ReturnType<typeof requestShape> | undefined;
     const { response, handle } = await this.withThrottleRetry<OpenStream>(
       async () => {
@@ -534,7 +524,7 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            ...headers,
+            ...auth.headers,
             'anthropic-version': '2023-06-01',
           },
           body: JSON.stringify(requestBody),
@@ -564,12 +554,9 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
       {
         model,
         signal: options?.signal,
-        credentialFingerprint: auth?.fingerprint,
+        credentialFingerprint: auth.fingerprint,
       },
       {
-        prepare: async () => {
-          headers = auth?.headers ?? (await this.authHeaders(options?.apiKey));
-        },
         opts: options,
         apiKeyOverride: options?.apiKey,
         op: startOperation(options),

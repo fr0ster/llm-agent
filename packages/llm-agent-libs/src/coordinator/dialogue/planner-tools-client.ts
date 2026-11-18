@@ -7,7 +7,7 @@ import type {
   McpToolResult,
   Result,
 } from '@mcp-abap-adt/llm-agent';
-import { formatTrustTag } from '@mcp-abap-adt/llm-agent';
+import { formatTrustTag, SmartAgentError } from '@mcp-abap-adt/llm-agent';
 import { z } from 'zod';
 import { currentPlannerScope, type PlannerScope } from './planner-scope.js';
 import {
@@ -604,8 +604,10 @@ export class PlannerToolsClient implements IMcpClient {
               { ...scope.authorOptions, signal: scope.signal },
             );
           })();
-          if (!result.ok)
+          if (!result.ok) {
+            if (result.error instanceof SmartAgentError) throw result.error;
             throw new Error(`${result.error.code}: ${result.error.message}`);
+          }
           scope.signal?.throwIfAborted();
           if (
             scope.getPlan() !== previous ||
@@ -818,6 +820,13 @@ export class PlannerToolsClient implements IMcpClient {
           throw new Error(`unknown tool ${name}`);
       }
     } catch (error) {
+      if (
+        (name === 'plan_create' || name === 'plan_revise') &&
+        error instanceof SmartAgentError
+      ) {
+        currentPlannerScope()?.onPlanAuthorError?.(error);
+        return { ok: false, error };
+      }
       return textResult(
         {
           error: currentPlannerScope()?.signal?.aborted

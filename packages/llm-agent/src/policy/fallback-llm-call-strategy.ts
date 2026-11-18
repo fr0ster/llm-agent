@@ -7,6 +7,7 @@ import {
   type LlmTool,
   type Message,
   type Result,
+  SmartAgentError,
   startOperation,
   withOuterAttempt,
 } from '@mcp-abap-adt/llm-agent';
@@ -59,8 +60,11 @@ export class FallbackLlmCallStrategy implements ILlmCallStrategy {
         initialOptions,
       )) {
         if (!chunk.ok) {
-          if (isCallerCancellation(options?.signal)) {
-            yield chunk; // the caller left — not a streaming failure
+          if (
+            chunk.error.code === 'LLM_OUTPUT_TRUNCATED' ||
+            isCallerCancellation(options?.signal)
+          ) {
+            yield chunk;
             return;
           }
           // Streaming returned a Result error — treat as streaming failure
@@ -80,7 +84,14 @@ export class FallbackLlmCallStrategy implements ILlmCallStrategy {
         yield { ok: true, value: { content: '', reset: true } };
         yield* this.nonStreaming.call(llm, messages, tools, fallbackOptions);
       }
-    } catch (err: unknown) {
+    } catch (err) {
+      if (
+        err instanceof SmartAgentError &&
+        err.code === 'LLM_OUTPUT_TRUNCATED'
+      ) {
+        yield { ok: false, error: err };
+        return;
+      }
       // Streaming threw an exception (e.g. SSE disconnect, network error)
       const errMsg = err instanceof Error ? err.message : String(err);
       if (isCallerCancellation(options?.signal)) {

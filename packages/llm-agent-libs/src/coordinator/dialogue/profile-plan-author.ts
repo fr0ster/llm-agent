@@ -9,6 +9,7 @@ import type {
   PlanRevisionInput,
   Result,
 } from '@mcp-abap-adt/llm-agent';
+import { SmartAgentError } from '@mcp-abap-adt/llm-agent';
 import { z } from 'zod';
 import {
   PLAN_CREATE_SYSTEM,
@@ -99,7 +100,7 @@ export class ProfilePlanAuthor implements IPlanAuthor {
     current: DialoguePlan | undefined,
     options?: CallOptions,
   ): Promise<Result<DialoguePlan, PlanAuthorError>> {
-    let code: PlanAuthorError['code'] = 'unavailable';
+    let code: 'unavailable' | 'invalid' = 'unavailable';
     try {
       options?.signal?.throwIfAborted();
       const runner = this.opts.runner;
@@ -143,11 +144,7 @@ export class ProfilePlanAuthor implements IPlanAuthor {
         options,
       );
       options?.signal?.throwIfAborted();
-      if (!response.ok)
-        return {
-          ok: false,
-          error: { code: 'unavailable', message: response.error.message },
-        };
+      if (!response.ok) return response;
       code = 'invalid';
       const next = outputSchema.parse(
         parseAuthorOutput(response.value.content),
@@ -185,6 +182,7 @@ export class ProfilePlanAuthor implements IPlanAuthor {
         }),
       };
     } catch (error) {
+      if (error instanceof SmartAgentError) return { ok: false, error };
       return {
         ok: false,
         error: {

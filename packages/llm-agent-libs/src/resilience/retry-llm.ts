@@ -23,6 +23,7 @@ import {
   type LlmTool,
   type Result,
   retryAfterSecondsOf,
+  SmartAgentError,
   startOperation,
   withOuterAttempt,
 } from '@mcp-abap-adt/llm-agent';
@@ -45,7 +46,7 @@ const DEFAULT_OPTIONS: RetryOptions = {
 };
 
 function toLlmError<T>(cause: T): LlmError {
-  return cause instanceof LlmError
+  return cause instanceof SmartAgentError
     ? cause
     : Object.assign(new LlmError(String(cause), 'LLM_ERROR'), { cause });
 }
@@ -58,6 +59,7 @@ function abortError(signal: AbortSignal): LlmError {
 
 function isPermanent(error: LlmError, status: number | undefined): boolean {
   return (
+    error.code === 'LLM_OUTPUT_TRUNCATED' ||
     isAuthenticationFailure(error) ||
     (status !== undefined &&
       status >= 400 &&

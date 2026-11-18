@@ -6,6 +6,7 @@ import type {
   ILlm,
   LlmUsage,
 } from '@mcp-abap-adt/llm-agent';
+import { OrchestratorError } from '@mcp-abap-adt/llm-agent';
 import { lastObject, parsePlan, parseVerdict } from './parse-plan.js';
 
 /** Planning instructions shared by the default adaptive controller. */
@@ -43,8 +44,7 @@ Create/check/fix/recheck example (executor must be registered):
 {"spec":{"objective":"Create a correct draft"},"steps":[{"id":"create","kind":"work","goal":"Create draft","worker":"executor"},{"id":"check","kind":"check","goal":"Review draft","worker":"self","targets":["create"],"onPass":"answer","onFail":"fix"},{"id":"fix","kind":"work","goal":"Fix draft using review","worker":"executor","context":{"results":["create","check"]}},{"id":"recheck","kind":"check","goal":"Review fixed draft","worker":"self","targets":["fix"],"onPass":"fixedAnswer","onFail":"fix"},{"id":"fixedAnswer","kind":"answer","from":"fix"},{"id":"answer","kind":"answer","from":"create"}]}`;
 
 function withUsage(error: Error, usage?: LlmUsage): Error {
-  if (usage) (error as Error & { usage?: LlmUsage }).usage = usage;
-  return error;
+  return usage ? Object.assign(error, { usage }) : error;
 }
 
 /** An ILlm-backed planner and reviewer; execution and fallback stay with callers. */
@@ -70,10 +70,13 @@ export class LlmAdaptiveController implements IAdaptiveController {
       undefined,
       options,
     );
-    if (!result.ok) throw new Error(result.error.message);
+    if (!result.ok) throw result.error;
     if (result.value.finishReason === 'length')
       throw withUsage(
-        new Error('LLM response was truncated at a token limit.'),
+        new OrchestratorError(
+          'LLM response was truncated at a token limit.',
+          'LLM_OUTPUT_TRUNCATED',
+        ),
         result.value.usage,
       );
     return result.value;

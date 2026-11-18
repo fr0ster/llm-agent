@@ -10,6 +10,7 @@ import type {
   LlmUsage,
   RunRecord,
 } from '@mcp-abap-adt/llm-agent';
+import { SmartAgentError } from '@mcp-abap-adt/llm-agent';
 import { OrchestratorError } from '../../agent.js';
 import {
   AdaptiveEpicFailError,
@@ -82,6 +83,23 @@ export class AdaptiveCoordinatorHandler implements IStageHandler {
           requestId: traceId,
         });
     };
+    const runRole = async <T extends { usage?: LlmUsage }>(
+      component: LlmComponent,
+      run: () => Promise<T>,
+    ): Promise<T> => {
+      try {
+        const value = await run();
+        logUsage(value.usage, component, controller.model);
+        return value;
+      } catch (error) {
+        logUsage(
+          (error as { usage?: LlmUsage } | null)?.usage,
+          component,
+          controller.model,
+        );
+        throw error;
+      }
+    };
     try {
       let previousRun: RunRecord | undefined;
       if (runRecords && recordKey !== undefined) {
@@ -93,26 +111,27 @@ export class AdaptiveCoordinatorHandler implements IStageHandler {
       }
       let plan: AdaptivePlan;
       try {
-        const planned = await controller.plan({
-          request,
-          history,
-          workers: [...workers.values()].map(({ name, description }) => ({
-            name,
-            description,
-          })),
-          previousRun,
-          usage: ctx.options?.usage,
-          signal: ctx.options?.signal,
-        });
-        plan = planned.plan;
-        logUsage(planned.usage, 'planner', controller.model);
-      } catch (error) {
-        if (error instanceof Error && error.name === 'AbortError') throw error;
-        logUsage(
-          (error as { usage?: LlmUsage } | null)?.usage,
-          'planner',
-          controller.model,
+        const planned = await runRole('planner', () =>
+          controller.plan({
+            request,
+            history,
+            workers: [...workers.values()].map(({ name, description }) => ({
+              name,
+              description,
+            })),
+            previousRun,
+            usage: ctx.options?.usage,
+            signal: ctx.options?.signal,
+          }),
         );
+        plan = planned.plan;
+      } catch (error) {
+        ctx.options?.signal?.throwIfAborted();
+        if (
+          error instanceof SmartAgentError ||
+          (error instanceof Error && error.name === 'AbortError')
+        )
+          throw error;
         log('adaptive_plan_fallback', { message: message(error) });
         plan = fallbackPlan(request, this.deps.fallbackWorker ?? 'executor');
       }
@@ -132,39 +151,10 @@ export class AdaptiveCoordinatorHandler implements IStageHandler {
           name: controller.name,
           model: controller.model,
           plan: (input) => controller.plan(input),
-          check: async (input) => {
-            try {
-              const value = await controller.check(input);
-              logUsage(value.usage, 'reviewer', controller.model);
-              return value;
-            } catch (error) {
-              logUsage(
-                (error as { usage?: LlmUsage } | null)?.usage,
-                'reviewer',
-                controller.model,
-              );
-              throw error;
-            }
-          },
-          revise: async (input) => {
-            try {
-              const value = await controller.revise(input);
-              logUsage(value.usage, 'planner', controller.model);
-              return value;
-            } catch (error) {
-              logUsage(
-                (error as { usage?: LlmUsage } | null)?.usage,
-                'planner',
-                controller.model,
-              );
-              throw error;
-            }
-          },
-          report: async (input) => {
-            const value = await controller.report(input);
-            logUsage(value.usage, 'finalizer', controller.model);
-            return value;
-          },
+          check: (input) => runRole('reviewer', () => controller.check(input)),
+          revise: (input) => runRole('planner', () => controller.revise(input)),
+          report: (input) =>
+            runRole('finalizer', () => controller.report(input)),
         },
         budget: { ...DEFAULT_BUDGET, ...this.deps.budget },
         caller: caller,
@@ -290,7 +280,7 @@ export class AdaptiveCoordinatorHandler implements IStageHandler {
       return true;
     } catch (error) {
       ctx.error =
-        error instanceof OrchestratorError
+        error instanceof SmartAgentError
           ? error
           : new OrchestratorError(
               message(error),
@@ -299,8 +289,6 @@ export class AdaptiveCoordinatorHandler implements IStageHandler {
                 ? 'ABORTED'
                 : 'COORDINATOR_STEP_FAILED',
             );
-      if (ctx.error.code === 'LLM_OUTPUT_TRUNCATED')
-        ctx.yield({ ok: false, error: ctx.error });
       return false;
     }
   }

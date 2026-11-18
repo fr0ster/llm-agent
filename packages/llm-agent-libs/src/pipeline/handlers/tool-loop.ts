@@ -641,13 +641,8 @@ export class ToolLoopHandler implements IStageHandler {
             },
             'llm',
           );
-          ctx.yield({
-            ok: false,
-            error: new OrchestratorError(
-              chunkResult.error.message,
-              'LLM_ERROR',
-            ),
-          });
+          ctx.error = chunkResult.error;
+          ctx.yield(chunkResult);
           return false;
         }
         chunksSeen += 1;

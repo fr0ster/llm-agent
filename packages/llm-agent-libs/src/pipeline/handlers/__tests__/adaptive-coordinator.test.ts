@@ -281,11 +281,8 @@ for (const mode of [
       );
       assert.ok(saved?.runId);
     }
-    const response = await handle.agent.process(
-      'next',
-      testCallOptions(options),
-    );
-    assert.equal(response.ok, true);
+    const response = await handle.agent.process('next', callOptions);
+    assert.ok(response.ok, response.ok ? undefined : response.error.message);
     assert.ok(!inputs[1]?.history.some((m) => m.content === 'next'));
     if (mode !== 'save-fail' && mode !== 'load-fail')
       assert.equal(

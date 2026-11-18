@@ -22,6 +22,7 @@ import {
   addCacheTokenUsage,
   ClarifySignal,
   NeedInfoSignal,
+  SmartAgentError,
 } from '@mcp-abap-adt/llm-agent';
 import { OrchestratorError } from '../../agent.js';
 import { PassthroughFinalizer } from '../../coordinator/dag/passthrough-finalizer.js';
@@ -259,7 +260,7 @@ export class DagCoordinatorHandler implements IStageHandler {
       );
     } catch (err) {
       ctx.error =
-        err instanceof OrchestratorError
+        err instanceof SmartAgentError
           ? err
           : new OrchestratorError(errMsg(err), 'COORDINATOR_PLAN_FAILED');
       return false;
@@ -300,7 +301,7 @@ export class DagCoordinatorHandler implements IStageHandler {
             // OrchestratorError from runRole (needInfo-no-oracle / budget) is
             // preserved as-is.
             ctx.error =
-              err instanceof OrchestratorError
+              err instanceof SmartAgentError
                 ? err
                 : new OrchestratorError(
                     errMsg(err),
@@ -409,7 +410,7 @@ export class DagCoordinatorHandler implements IStageHandler {
           });
         } catch (err) {
           ctx.error =
-            err instanceof OrchestratorError
+            err instanceof SmartAgentError
               ? err
               : new OrchestratorError(
                   errMsg(err),
@@ -566,11 +567,9 @@ export class DagCoordinatorHandler implements IStageHandler {
       }
     } catch (err) {
       ctx.error =
-        err instanceof OrchestratorError
+        err instanceof SmartAgentError
           ? err
           : new OrchestratorError(errMsg(err), 'COORDINATOR_STEP_FAILED');
-      if (ctx.error.code === 'LLM_OUTPUT_TRUNCATED')
-        ctx.yield({ ok: false, error: ctx.error });
       return false;
     }
   }

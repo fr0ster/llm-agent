@@ -3,6 +3,7 @@ import type {
   CallOptions,
   IPlanAuthor,
   DialoguePlan as Plan,
+  SmartAgentError,
   ToolTrust,
 } from '@mcp-abap-adt/llm-agent';
 import type { TaskBoard } from './task-board.js';
@@ -12,6 +13,7 @@ export interface PlannerScope {
   toolTrust?: ToolTrust;
   authorOptions?: Pick<CallOptions, 'caller' | 'usage' | 'sessionId' | 'trace'>;
   planAuthor?: IPlanAuthor;
+  onPlanAuthorError?(error: SmartAgentError): void;
   beforeTool?(name: string): void;
   newRequest?(): void;
   ownTask?(id: string): void;

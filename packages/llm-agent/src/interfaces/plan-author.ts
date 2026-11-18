@@ -1,5 +1,5 @@
 import type { Plan as DialoguePlan } from './dialogue.js';
-import type { CallOptions, Result } from './types.js';
+import type { CallOptions, Result, SmartAgentError } from './types.js';
 
 export interface PlanBrief {
   goal: string;
@@ -11,7 +11,9 @@ export interface PlanRevisionInput {
   change: string;
   brief?: PlanBrief;
 }
-export interface PlanAuthorError {
+export type PlanAuthorError = PlanAuthorFailure | SmartAgentError;
+
+interface PlanAuthorFailure {
   code: 'invalid' | 'unavailable' | 'aborted';
   message: string;
 }

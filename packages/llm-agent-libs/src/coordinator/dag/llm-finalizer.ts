@@ -88,8 +88,7 @@ export class LlmFinalizer implements IFinalizer {
       usage: input.usage?.with({ role: 'finalizer' }),
     });
     for await (const chunk of stream) {
-      if (chunk.ok === false)
-        throw new Error(chunk.error?.message ?? 'streamChat failed');
+      if (!chunk.ok) throw chunk.error;
       if (chunk.value.finishReason === 'length')
         throw new OrchestratorError(
           'LLM response was truncated at a token limit.',

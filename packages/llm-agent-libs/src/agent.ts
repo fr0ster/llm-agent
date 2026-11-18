@@ -1430,13 +1430,7 @@ export class SmartAgent {
           llmSpan.end();
           toolLoopSpan.setStatus('error', chunkResult.error.message);
           toolLoopSpan.end();
-          yield {
-            ok: false,
-            error: new OrchestratorError(
-              chunkResult.error.message,
-              'LLM_ERROR',
-            ),
-          };
+          yield chunkResult;
           return;
         }
         const chunk = chunkResult.value;

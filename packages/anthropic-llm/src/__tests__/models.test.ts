@@ -7,7 +7,10 @@ import {
   WaitAsTold,
 } from '@mcp-abap-adt/llm-agent';
 import { AxiosError, type InternalAxiosRequestConfig } from 'axios';
-import { AnthropicProvider } from '../anthropic-provider.js';
+import {
+  type AnthropicConfig,
+  AnthropicProvider,
+} from '../anthropic-provider.js';
 
 function reply<T>(config: InternalAxiosRequestConfig, data: T) {
   return { config, data, status: 200, statusText: 'OK', headers: {} };
@@ -326,6 +329,96 @@ describe('AnthropicProvider model discovery credentials', () => {
 });
 
 describe('AnthropicProvider model discovery throttling', () => {
+  for (const limit of ['per-call', 'configured'] as const) {
+    for (const mode of ['chat', 'stream'] as const) {
+      it(`shares an active quota gate with a ${limit} limit in ${mode}`, async (t) => {
+        const credential = staticApiKey('sk-test');
+        const model = 'claude-test';
+        const throttled = notification();
+        const enteredGate = notification();
+        const policy = new WaitAsTold();
+        const config: AnthropicConfig = {
+          credential,
+          model,
+          whenThrottled: {
+            name: policy.name,
+            decide(context) {
+              if (context.source === 'response') {
+                assert.equal(context.retryAfterSeconds, 60);
+                throttled.notify();
+              } else {
+                enteredGate.notify();
+              }
+              return policy.decide(context);
+            },
+          },
+        };
+        const automatic = new AnthropicProvider(config);
+        const explicit =
+          limit === 'configured'
+            ? new AnthropicProvider({ ...config, maxTokens: 100 })
+            : automatic;
+        let posts = 0;
+        automatic.client.defaults.adapter = async (request) => {
+          if (request.method === 'get')
+            return reply(request, { id: model, max_tokens: 8000 });
+          if (++posts === 1)
+            throw Object.assign(new Error('Too many requests'), {
+              response: { status: 429, headers: { 'Retry-After': '60' } },
+            });
+          assert.fail('request bypassed the quota gate');
+        };
+        explicit.client.defaults.adapter = automatic.client.defaults.adapter;
+        if (mode === 'stream')
+          t.mock.method(globalThis, 'fetch', () => {
+            posts++;
+            assert.fail('stream bypassed the quota gate');
+          });
+
+        const first = new AbortController();
+        const second = new AbortController();
+        const reason = new Error('caller canceled');
+        const firstRejected = assert.rejects(
+          automatic.chat([], undefined, { signal: first.signal }),
+          (error) => error === reason,
+        );
+        try {
+          await Promise.race([throttled.promise, firstRejected]);
+          const options = {
+            signal: second.signal,
+            ...(limit === 'per-call' ? { maxTokens: 100 } : {}),
+          };
+          const request = (async () => {
+            if (mode === 'chat') await explicit.chat([], undefined, options);
+            else
+              for await (const _chunk of explicit.streamChat(
+                [],
+                undefined,
+                options,
+              )) {
+                // Drain the stream so the request reaches the quota gate.
+              }
+          })();
+          try {
+            await Promise.race([
+              enteredGate.promise,
+              request.then(() =>
+                assert.fail('request bypassed the quota gate'),
+              ),
+            ]);
+          } finally {
+            second.abort(reason);
+            await assert.rejects(request, (error) => error === reason);
+          }
+          assert.equal(posts, 1);
+        } finally {
+          first.abort(reason);
+          await firstRejected;
+        }
+      });
+    }
+  }
+
   it('honors Retry-After: 0 until discovery succeeds and only then posts', async (t) => {
     const policy = new WaitAsTold({ fallbackBackoffMs: 0 });
     const decide = t.mock.method(policy, 'decide');

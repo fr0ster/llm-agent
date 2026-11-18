@@ -27,6 +27,7 @@ import type {
 import {
   addTokenUsage,
   type PlannerMessageUsage,
+  SmartAgentError,
   scopedUsage,
   type TokenUsage,
 } from '@mcp-abap-adt/llm-agent';
@@ -951,6 +952,7 @@ export class DialogueSession {
       let didRestart = false;
       for (let correction = 0; ; correction++) {
         const callStop = new AbortController();
+        let planAuthorError: SmartAgentError | undefined;
         let restarting = false;
         let delivered = false;
         let toolCount = 0;
@@ -1078,7 +1080,12 @@ export class DialogueSession {
               ...user?.opts,
               usage: this.turnUsage,
             }),
+            onPlanAuthorError: (error) => {
+              planAuthorError ??= error;
+              callStop.abort();
+            },
             beforeTool: (name) => {
+              if (planAuthorError) throw planAuthorError;
               if (
                 (reserved || restarting) &&
                 (name !== 'new_request' || !reserved || restartDelivered)
@@ -1273,7 +1280,9 @@ export class DialogueSession {
               },
             }),
         ).catch((error: Error) => {
+          if (planAuthorError) throw planAuthorError;
           if (
+            error instanceof SmartAgentError ||
             (!waitStop.signal.aborted && !restarting) ||
             user?.opts.signal?.aborted
           )
@@ -1290,6 +1299,9 @@ export class DialogueSession {
             },
           };
         });
+        if (planAuthorError) throw planAuthorError;
+        if (!result.ok && result.error instanceof SmartAgentError)
+          throw result.error;
         callIndex++;
         if (result.ok)
           plannerUsage = addTokenUsage(plannerUsage, result.value.usage);

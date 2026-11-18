@@ -13,6 +13,7 @@ import type {
   StepRecord,
   StepStatus,
 } from '@mcp-abap-adt/llm-agent';
+import { SmartAgentError } from '@mcp-abap-adt/llm-agent';
 import { OrchestratorError } from '../../agent.js';
 import { composeStepInput } from './compose-step-input.js';
 import { parseVerdict, validateSteps } from './parse-plan.js';
@@ -113,6 +114,11 @@ export async function runAdaptivePlan(
     usage,
     workerUsage,
   });
+  const failedRun = (error: SmartAgentError): AdaptiveRunResult => ({
+    ...result('stopped', error.message),
+    stopReason: error.message,
+    error,
+  });
   const stop = async (stopReason: string): Promise<AdaptiveRunResult> => {
     let output: string;
     try {
@@ -127,8 +133,9 @@ export async function runAdaptivePlan(
       input.signal?.throwIfAborted();
       collect(report.usage);
       output = report.text;
-    } catch {
+    } catch (error) {
       input.signal?.throwIfAborted();
+      if (error instanceof SmartAgentError) return failedRun(error);
       output = [
         `Stopped: ${stopReason}`,
         ...records.map(
@@ -183,7 +190,7 @@ export async function runAdaptivePlan(
     };
 
     if (step.kind === 'work' || step.kind === 'check') {
-      let terminalError: OrchestratorError | undefined;
+      let terminalError: SmartAgentError | undefined;
       // The composer uses map insertion order: retain current plan order even after jumps.
       const orderedLatest = new Map(
         plan.steps.flatMap((candidate) => {
@@ -220,6 +227,7 @@ export async function runAdaptivePlan(
           collect((error as { usage?: LlmUsage } | null)?.usage);
           record.status = 'failed';
           record.error = message(error);
+          if (error instanceof SmartAgentError) terminalError = error;
         }
       } else {
         const source = plan.steps.find(
@@ -314,28 +322,18 @@ export async function runAdaptivePlan(
           record.status = 'failed';
           record.output = '';
           record.error = message(error);
-          if (
-            error instanceof OrchestratorError &&
-            (error.code === 'LLM_OUTPUT_TRUNCATED' ||
-              error.code === 'EMPTY_WORKER_OUTPUT')
-          ) {
-            terminalError = error;
-          }
+          if (error instanceof SmartAgentError) terminalError = error;
         }
       }
       finish();
+      if (terminalError) return failedRun(terminalError);
       if (step.kind === 'check' && !record.verdict) {
-        terminalError = new OrchestratorError(
-          `Check ${step.id} failed to retrieve a verdict: ${record.error}`,
-          terminalError?.code ?? 'VERDICT_RETRIEVAL_FAILED',
+        return failedRun(
+          new OrchestratorError(
+            `Check ${step.id} failed to retrieve a verdict: ${record.error}`,
+            'VERDICT_RETRIEVAL_FAILED',
+          ),
         );
-      }
-      if (terminalError) {
-        return {
-          ...result('stopped', terminalError.message),
-          stopReason: terminalError.message,
-          error: terminalError,
-        };
       }
       if (
         step.kind === 'work' &&
@@ -404,6 +402,7 @@ export async function runAdaptivePlan(
         collect((error as { usage?: LlmUsage } | null)?.usage);
         record.error = message(error);
         finish();
+        if (error instanceof SmartAgentError) return failedRun(error);
         return stop(`revise failed: ${record.error}`);
       }
       finish();

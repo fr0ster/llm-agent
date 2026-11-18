@@ -48,6 +48,27 @@ async function drain(
 }
 
 for (const mode of ['error-chunk', 'throw'] as const) {
+  test(`${mode}: truncation remains a failure and leaves streaming enabled`, async () => {
+    const strategy = new FallbackLlmCallStrategy();
+    const { impl, counts } = llm(mode);
+    const error = new LlmError('Output truncated', 'LLM_OUTPUT_TRUNCATED');
+    impl.streamChat = async function* () {
+      counts.stream++;
+      yield { ok: true, value: { content: 'partial' } };
+      if (mode === 'throw') throw error;
+      yield { ok: false, error };
+    };
+
+    for (let call = 0; call < 2; call++) {
+      const chunks = await drain(strategy, impl);
+      assert.deepEqual(chunks, [
+        { ok: true, value: { content: 'partial' } },
+        { ok: false, error },
+      ]);
+    }
+    assert.deepEqual(counts, { stream: 2, chat: 0 });
+  });
+
   test(`${mode}: a caller's cancellation does not disable streaming`, async () => {
     const s = new FallbackLlmCallStrategy();
     const ac = new AbortController();
