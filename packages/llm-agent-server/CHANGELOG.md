@@ -1,5 +1,31 @@
 # @mcp-abap-adt/llm-agent-server
 
+## 33.1.1
+
+### Patch Changes
+
+- Updated dependencies [b589bbf]
+- Updated dependencies [df0d78f]
+- Updated dependencies [b589bbf]
+- Updated dependencies [b589bbf]
+  - @mcp-abap-adt/anthropic-llm@30.13.0
+  - @mcp-abap-adt/llm-agent@34.0.0
+  - @mcp-abap-adt/llm-agent-libs@34.0.0
+  - @mcp-abap-adt/openai-llm@30.13.0
+  - @mcp-abap-adt/deepseek-llm@30.12.0
+  - @mcp-abap-adt/ollama-llm@30.12.0
+  - @mcp-abap-adt/llm-agent-server-libs@34.0.0
+  - @mcp-abap-adt/sap-aicore-llm@31.1.1
+  - @mcp-abap-adt/hana-vector-rag@32.1.1
+  - @mcp-abap-adt/llm-agent-mcp@30.10.5
+  - @mcp-abap-adt/llm-agent-rag@30.11.1
+  - @mcp-abap-adt/ollama-embedder@31.0.1
+  - @mcp-abap-adt/openai-embedder@31.0.1
+  - @mcp-abap-adt/pg-vector-rag@32.1.1
+  - @mcp-abap-adt/qdrant-rag@32.1.1
+  - @mcp-abap-adt/sap-aicore-embedder@30.10.5
+  - @mcp-abap-adt/typesafe-decision@30.9.6
+
 ## 33.1.0
 
 ### Minor Changes

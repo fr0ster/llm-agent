@@ -1,5 +1,18 @@
 # @mcp-abap-adt/deepseek-llm
 
+## 30.12.0
+
+### Minor Changes
+
+- df0d78f: Add per-call API key overrides for OpenAI, Anthropic, DeepSeek, and Ollama. Introduce the GitHub Copilot provider with caller-supplied credentials, streaming, usage reporting, and caller-executed tools.
+
+### Patch Changes
+
+- Updated dependencies [df0d78f]
+- Updated dependencies [b589bbf]
+- Updated dependencies [b589bbf]
+  - @mcp-abap-adt/llm-agent@34.0.0
+
 ## 30.11.0
 
 ### Minor Changes

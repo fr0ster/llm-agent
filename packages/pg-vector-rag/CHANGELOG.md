@@ -1,5 +1,14 @@
 # @mcp-abap-adt/pg-vector-rag
 
+## 32.1.1
+
+### Patch Changes
+
+- Updated dependencies [df0d78f]
+- Updated dependencies [b589bbf]
+- Updated dependencies [b589bbf]
+  - @mcp-abap-adt/llm-agent@34.0.0
+
 ## 32.1.0
 
 ### Minor Changes

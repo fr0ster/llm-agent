@@ -1,5 +1,14 @@
 # @mcp-abap-adt/ollama-embedder
 
+## 31.0.1
+
+### Patch Changes
+
+- Updated dependencies [df0d78f]
+- Updated dependencies [b589bbf]
+- Updated dependencies [b589bbf]
+  - @mcp-abap-adt/llm-agent@34.0.0
+
 ## 31.0.0
 
 ### Major Changes

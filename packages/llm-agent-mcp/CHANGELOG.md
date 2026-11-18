@@ -1,5 +1,14 @@
 # @mcp-abap-adt/llm-agent-mcp
 
+## 30.10.5
+
+### Patch Changes
+
+- Updated dependencies [df0d78f]
+- Updated dependencies [b589bbf]
+- Updated dependencies [b589bbf]
+  - @mcp-abap-adt/llm-agent@34.0.0
+
 ## 30.10.4
 
 ### Patch Changes
