@@ -30,6 +30,8 @@ function fake(attempt: Attempt): { llm: ILlm; calls: () => number } {
 }
 
 const ok = (content: string): Chunk => ({ ok: true, value: { content } });
+const unavailable = () =>
+  Object.assign(new Error('Service Unavailable'), { status: 503 });
 
 async function collect(llm: ILlm, signal?: AbortSignal): Promise<Chunk[]> {
   const out: Chunk[] = [];
@@ -43,7 +45,7 @@ const FAST = { backoffMs: 1, retryOn: [429, 500, 502, 503] };
 describe('RetryLlm — a stream that throws', () => {
   it('retries a thrown retryable error; breaker outside stays closed', async () => {
     const f = fake(async function* (n) {
-      if (n === 1) throw new Error('HTTP 503 Service Unavailable');
+      if (n === 1) throw unavailable();
       yield ok('hello');
     });
     const breaker = new CircuitBreaker({ failureThreshold: 1 });
@@ -103,7 +105,7 @@ describe('RetryLlm — a stream that throws', () => {
     const f = fake(async function* () {
       yield* [];
       ac.abort();
-      throw new Error('HTTP 503 Service Unavailable');
+      throw unavailable();
     });
     const breaker = new CircuitBreaker({ failureThreshold: 1 });
     const llm = retryInsideBreakers(
@@ -120,7 +122,7 @@ describe('RetryLlm — a stream that throws', () => {
   it('backoff leaves no abort listener on a long-lived signal', async () => {
     const ac = new AbortController();
     const f = fake(async function* (n) {
-      if (n <= 12) throw new Error('HTTP 503 Service Unavailable');
+      if (n <= 12) throw unavailable();
       yield ok('done');
     });
     const llm = new RetryLlm(f.llm, {

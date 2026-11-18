@@ -27,13 +27,19 @@ function makeFailingLlm(error: LlmError, failTimes: number) {
 
 describe('RetryLlm — status classification', () => {
   it('retries transient failures past the old default cap', async () => {
-    const llm = makeFailingLlm(new LlmError('HTTP 503'), 6);
+    const llm = makeFailingLlm(
+      Object.assign(new LlmError('Unavailable'), { status: 503 }),
+      6,
+    );
     assert.ok((await new RetryLlm(llm, { backoffMs: 0 }).chat([])).ok);
     assert.equal(llm.calls(), 7);
   });
 
   it('honors an explicit cap on non-429 retries', async () => {
-    const llm = makeFailingLlm(new LlmError('HTTP 503'), 6);
+    const llm = makeFailingLlm(
+      Object.assign(new LlmError('Unavailable'), { status: 503 }),
+      6,
+    );
     assert.equal(
       (await new RetryLlm(llm, { backoffMs: 0, maxAttempts: 1 }).chat([])).ok,
       false,
@@ -41,9 +47,9 @@ describe('RetryLlm — status classification', () => {
     assert.equal(llm.calls(), 2);
   });
 
-  it('retries a genuine 429 as a standalone token', async () => {
+  it('retries structured HTTP 408 by default', async () => {
     const llm = makeFailingLlm(
-      new LlmError('HTTP 429 Too Many Requests', 'LLM_ERROR'),
+      Object.assign(new LlmError('Request timed out'), { status: 408 }),
       1,
     );
     const r = await new RetryLlm(llm, { backoffMs: 1 }).chat([]);
@@ -51,27 +57,36 @@ describe('RetryLlm — status classification', () => {
     assert.equal(llm.calls(), 2);
   });
 
-  it('does NOT retry when a retryable code appears only as a substring', async () => {
-    // "4290" contains "429"; the old includes() match retried this non-retryable
-    // error up to maxAttempts times with backoff. A word-boundary match must not.
+  it('does not retry when retryable numbers appear only in message text', async () => {
     const llm = makeFailingLlm(
-      new LlmError('model context of 4290 tokens exceeded', 'LLM_ERROR'),
+      new LlmError(
+        'max_tokens must be at most 500 (currently 429)',
+        'LLM_ERROR',
+      ),
       1,
     );
-    const r = await new RetryLlm(llm, { backoffMs: 1, maxAttempts: 3 }).chat(
-      [],
-    );
+    const r = await new RetryLlm(llm, { backoffMs: 0 }).chat([]);
     assert.equal(r.ok, false);
     assert.equal(llm.calls(), 1); // no retry
   });
 
   it('prefers a structured status on cause over the message text', async () => {
     const err = new LlmError('opaque provider failure', 'LLM_ERROR');
-    (err as { cause?: unknown }).cause = { status: 503 };
+    err.cause = { status: 503 };
     const llm = makeFailingLlm(err, 1);
     const r = await new RetryLlm(llm, { backoffMs: 1 }).chat([]);
     assert.equal(r.ok, true);
     assert.equal(llm.calls(), 2);
+  });
+
+  it('does not retry a permanent status listed in retryOn', async () => {
+    const error = Object.assign(new LlmError('Forbidden'), { status: 403 });
+    const llm = makeFailingLlm(error, 1);
+    assert.deepEqual(
+      await new RetryLlm(llm, { backoffMs: 0, retryOn: [403] }).chat([]),
+      { ok: false, error },
+    );
+    assert.equal(llm.calls(), 1);
   });
 });
 

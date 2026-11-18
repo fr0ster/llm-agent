@@ -115,7 +115,7 @@ export class ReportThrottling implements IThrottleStrategy {
  *
  * Set `fallbackBackoffMs` to opt into exponential backoff when Retry-After is
  * absent: the base delay doubles per refusal, independently of the normal retry
- * limit. With this option, explicit Retry-After: 0 also retries immediately.
+ * limit. An explicit Retry-After: 0 retries immediately.
  * Omit maxAttempts for unlimited 429 handling, cancelled only by the caller.
  */
 export class WaitAsTold implements IThrottleStrategy {
@@ -141,7 +141,10 @@ export class WaitAsTold implements IThrottleStrategy {
       retryAfterSeconds === undefined && this.fallbackBackoffMs !== undefined
         ? exponentialBackoffMs(this.fallbackBackoffMs, attempt - 1)
         : servedWaitMs(retryAfterSeconds);
-    if (waitMs <= 0 && this.fallbackBackoffMs === undefined) {
+    if (
+      retryAfterSeconds === undefined &&
+      this.fallbackBackoffMs === undefined
+    ) {
       return { waitMs: 0, retry: false, reason: 'no-interval' };
     }
     if (attempt >= this.maxAttempts) {

@@ -1,5 +1,6 @@
 import {
   httpStatusOf,
+  isAuthenticationFailure,
   LlmError,
   retryAfterSecondsOf,
 } from '@mcp-abap-adt/llm-agent';
@@ -20,17 +21,6 @@ export class CopilotThrottleError extends LlmError {
   }
 }
 
-const authCodes = new Set([
-  'authentication',
-  'authorization',
-  'authentication_error',
-  'authentication_failed',
-  'invalid_token',
-  'token_expired',
-  'unauthorized',
-  'forbidden',
-  'bad_credentials',
-]);
 const sdkCodes = new Set([
   'ENOENT',
   'EACCES',
@@ -82,29 +72,34 @@ export function sdkError<T>(error: T): LlmError {
     'message' in details && typeof details.message === 'string'
       ? details.message
       : '';
-  if (status === 429 || type === 'quota' || type === 'rate_limit') {
-    return new CopilotThrottleError(
-      retryAfterSecondsOf(details) ?? retryAfterSecondsOf(data),
-    );
-  }
   if (
     status === 401 ||
     status === 403 ||
-    className === 'AuthenticationError' ||
-    [type, code].some(
-      (value) =>
-        typeof value === 'string' && authCodes.has(value.toLowerCase()),
-    ) ||
-    /authenticat|unauthori[sz]ed|bad credentials|invalid credentials|(?:invalid|expired|failed to get).*token|token.*(?:invalid|expired)|\b40[13]\b/i.test(
-      message,
-    )
+    isAuthenticationFailure(details) ||
+    isAuthenticationFailure({ code }) ||
+    isAuthenticationFailure({ code: type }) ||
+    (status === undefined &&
+      /authenticat|unauthori[sz]ed|bad credentials|invalid credentials|(?:invalid|expired|failed to get).*token|token.*(?:invalid|expired)/i.test(
+        message,
+      ))
   ) {
-    return credentialsRejected();
+    return Object.assign(credentialsRejected(), { status });
+  }
+  if (
+    status === 429 ||
+    (status === undefined && (type === 'quota' || type === 'rate_limit'))
+  ) {
+    return new CopilotThrottleError(
+      retryAfterSecondsOf(details) ?? retryAfterSecondsOf(data),
+    );
   }
   const safeClass = sdkClasses.has(className) ? className : 'Error';
   const safeCode =
     typeof code === 'number' || (typeof code === 'string' && sdkCodes.has(code))
       ? ` (${code})`
       : '';
-  return new LlmError(`Copilot SDK ${safeClass}${safeCode}`, 'COPILOT_ERROR');
+  return Object.assign(
+    new LlmError(`Copilot SDK ${safeClass}${safeCode}`, 'COPILOT_ERROR'),
+    { status },
+  );
 }

@@ -106,7 +106,10 @@ function fixture() {
     if (mode === 'throw' || mode === 'abort')
       throw mode === 'abort'
         ? new DOMException(prompt, 'AbortError')
-        : Object.assign(new Error(`503 ${prompt}`), { code: 'E_FAILED' });
+        : Object.assign(new Error(`Unavailable: ${prompt}`), {
+            code: 'E_FAILED',
+            status: 503,
+          });
     const data =
       config.responseType === 'stream'
         ? (async function* () {

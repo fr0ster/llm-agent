@@ -27,6 +27,7 @@
  * enters this path.
  */
 
+import { setImmediate } from 'node:timers/promises';
 import {
   type IThrottleStrategy,
   ReportThrottling,
@@ -434,6 +435,7 @@ async function attemptWithGate<T>(
   let servingOwnWait = false;
 
   for (;;) {
+    opts.signal?.throwIfAborted();
     // A quota known to be shut is not a reason to hold this caller — it is a
     // reason not to spend a request finding out. The strategy decides which:
     // sit out the interval the server named, or leave now with it.
@@ -460,6 +462,7 @@ async function attemptWithGate<T>(
       }
       const before = Date.now();
       await gate.waitUntilOpen(opts.signal);
+      opts.signal?.throwIfAborted();
       waited += Date.now() - before;
     }
     servingOwnWait = false;
@@ -519,6 +522,8 @@ async function attemptWithGate<T>(
         retryAfterSeconds: retryAfter,
       });
       servingOwnWait = true;
+      // A sequence of immediate refusals must let the caller's abort run.
+      if (decision.waitMs === 0) await setImmediate();
     }
   }
 }
@@ -566,27 +571,36 @@ export function findThrottled(err: unknown): ThrottledError | undefined {
 }
 
 /**
- * Carry the rate-limit facts onto a provider's own error.
+ * Carry HTTP and rate-limit facts onto a provider's own error.
  *
  * Every provider catches its transport error and rethrows something friendlier.
- * That is fine for a message and fatal for a fact: the 429 would be lost at the
- * exact boundary where the consumer needs it. This moves the facts across.
+ * Copy the metadata without retaining the transport error, which may carry
+ * credentials in its request config or headers.
  */
 export function preserveThrottled<E extends Error>(
   original: unknown,
   wrapped: E,
 ): E {
-  if (!isThrottledError(original)) return wrapped;
+  const details =
+    typeof original === 'object' && original !== null ? original : undefined;
+  const status = httpStatusOf(details);
+  const retryAfterSeconds = retryAfterSecondsOf(details);
+  if (status !== undefined) Object.assign(wrapped, { status });
+  if (retryAfterSeconds !== undefined) {
+    Object.assign(wrapped, { retryAfterSeconds });
+  }
+  if (isAuthenticationFailure(details)) {
+    Object.assign(wrapped, { code: 'CREDENTIALS_REJECTED' });
+  }
+  const throttled = findThrottled(details);
+  if (!throttled) return wrapped;
   const w = wrapped as E & Partial<ThrottledError>;
   w.throttled = true;
-  w.attempts = original.attempts;
-  if (original.retryAfterSeconds !== undefined) {
-    w.retryAfterSeconds = original.retryAfterSeconds;
-  }
+  w.attempts = throttled.attempts;
   // Every fact, not a chosen few. Every provider wraps its transport error, so
   // a fact left behind here is a fact no consumer ever sees — which is how the
   // reason for giving up was lost the moment it was added.
-  if (original.reason !== undefined) w.reason = original.reason;
+  if (throttled.reason !== undefined) w.reason = throttled.reason;
   return w;
 }
 
@@ -605,7 +619,7 @@ function knownShut(
   const e = new Error(
     'throttled: the quota is closed and this call is not waiting it out',
   ) as ThrottledError;
-  e.throttled = true;
+  Object.assign(e, { throttled: true, status: 429 });
   e.attempts = attempts;
   e.retryAfterSeconds = remainingMs / 1000;
   if (reason !== undefined) e.reason = reason;
@@ -621,6 +635,7 @@ function annotate(
   const e = (
     error instanceof Error ? error : new Error(String(error))
   ) as ThrottledError;
+  if (!(error instanceof Error)) Object.assign(e, { status: 429 });
   e.throttled = true;
   e.attempts = attempts;
   if (retryAfterSeconds !== undefined) e.retryAfterSeconds = retryAfterSeconds;
@@ -702,6 +717,38 @@ export function httpStatusOf(error: object | undefined): number | undefined {
     }
   }
   return undefined;
+}
+
+const authenticationCodes = new Set([
+  'authentication',
+  'authentication_error',
+  'authentication_failed',
+  'authorization',
+  'bad_credentials',
+  'credentials_rejected',
+  'forbidden',
+  'invalid_api_key',
+  'invalid_token',
+  'permission_error',
+  'token_expired',
+  'unauthorized',
+]);
+
+/** Identify authentication failures from structured codes and error names. */
+export function isAuthenticationFailure(error: object | undefined): boolean {
+  for (const current of errorCauseChain(error)) {
+    const code = 'code' in current ? current.code : undefined;
+    if (
+      (typeof code === 'string' &&
+        authenticationCodes.has(code.toLowerCase())) ||
+      (current instanceof Error &&
+        (current.name === 'AuthenticationError' ||
+          current.constructor.name === 'AuthenticationError'))
+    ) {
+      return true;
+    }
+  }
+  return false;
 }
 
 /** One header, case-insensitively, from a transport header collection. */

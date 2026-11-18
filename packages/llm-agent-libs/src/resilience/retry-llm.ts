@@ -15,7 +15,8 @@ import {
   DefaultWaitStrategy,
   exponentialBackoffMs,
   findThrottled,
-  isRetryableStatus,
+  httpStatusOf,
+  isAuthenticationFailure,
   LlmError,
   type LlmResponse,
   type LlmStreamChunk,
@@ -31,7 +32,7 @@ export interface RetryOptions {
   maxAttempts?: number;
   /** Initial backoff delay in ms. Doubles each attempt. Default: 2000. */
   backoffMs: number;
-  /** HTTP status codes that trigger retry. Default: [500, 502, 503]. 429 always retries. */
+  /** Transient HTTP statuses to retry. Default: [408, 500, 502, 503]. 429 always retries. */
   retryOn: number[];
   /** Substrings in error message that trigger mid-stream retry (replays entire stream). Default: []. */
   retryOnMidStream: string[];
@@ -39,7 +40,7 @@ export interface RetryOptions {
 
 const DEFAULT_OPTIONS: RetryOptions = {
   backoffMs: 2000,
-  retryOn: [500, 502, 503],
+  retryOn: [408, 500, 502, 503],
   retryOnMidStream: [],
 };
 
@@ -53,6 +54,17 @@ function abortError(signal: AbortSignal): LlmError {
   return Object.assign(new LlmError('Aborted', 'ABORTED'), {
     cause: signal.reason,
   });
+}
+
+function isPermanent(error: LlmError, status: number | undefined): boolean {
+  return (
+    isAuthenticationFailure(error) ||
+    (status !== undefined &&
+      status >= 400 &&
+      status < 500 &&
+      status !== 408 &&
+      status !== 429)
+  );
 }
 
 export class RetryLlm implements ILlm {
@@ -100,7 +112,9 @@ export class RetryLlm implements ILlm {
 
       if (signal?.aborted) return { ok: false, error: abortError(signal) };
       if (result.ok || result.error.code === 'ABORTED') return result;
-      if (this.isThrottled(result.error)) {
+      const status = httpStatusOf(result.error);
+      if (isPermanent(result.error, status)) return result;
+      if (this.isThrottled(result.error, status)) {
         await this.waitForRetry(
           this.retryDelay(quotaRetries++, result.error),
           signal,
@@ -109,7 +123,8 @@ export class RetryLlm implements ILlm {
       }
       if (
         !this.canRetry(transientRetries) ||
-        !isRetryableStatus(result.error, this.opts.retryOn)
+        status === undefined ||
+        !this.opts.retryOn.includes(status)
       )
         return result;
 
@@ -147,16 +162,20 @@ export class RetryLlm implements ILlm {
           chunksYielded++;
           yield chunk;
         } else {
-          if (chunk.error.code === 'ABORTED') {
+          const status = httpStatusOf(chunk.error);
+          if (
+            chunk.error.code === 'ABORTED' ||
+            isPermanent(chunk.error, status)
+          ) {
             yield chunk;
             return;
           }
-          if (this.isThrottled(chunk.error)) {
+          if (this.isThrottled(chunk.error, status)) {
             retryDelay = this.retryDelay(quotaRetries++, chunk.error);
           } else if (
             this.canRetry(transientRetries) &&
             (chunksYielded === 0
-              ? isRetryableStatus(chunk.error, this.opts.retryOn)
+              ? status !== undefined && this.opts.retryOn.includes(status)
               : this.isMidStreamRetryable(chunk.error))
           ) {
             retryDelay = this.retryDelay(transientRetries++);
@@ -192,8 +211,8 @@ export class RetryLlm implements ILlm {
     }
   }
 
-  private isThrottled(error: LlmError): boolean {
-    return !!findThrottled(error) || isRetryableStatus(error, [429]);
+  private isThrottled(error: LlmError, status: number | undefined): boolean {
+    return status === 429 || (status === undefined && !!findThrottled(error));
   }
 
   private canRetry(retries: number): boolean {

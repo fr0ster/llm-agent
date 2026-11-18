@@ -81,8 +81,7 @@ export function extractStatusCode(err: unknown): number | undefined {
  * fires on `4290`, an id, or a byte count, turning a hard error into a
  * multi-second backoff stall.
  *
- * Shared by both retry decorators (embedder and LLM) so the classification
- * cannot drift between them.
+ * The message fallback supports legacy embedding errors.
  */
 export function isRetryableStatus(err: unknown, retryOn: number[]): boolean {
   const status = extractStatusCode(err);

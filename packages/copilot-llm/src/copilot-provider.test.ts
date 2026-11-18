@@ -3,6 +3,7 @@ import { test } from 'node:test';
 import { setImmediate } from 'node:timers/promises';
 import type { SessionConfig, SessionEvent } from '@github/copilot-sdk';
 import {
+  httpStatusOf,
   type LlmTool,
   type Message,
   type Result,
@@ -517,6 +518,30 @@ test('withholds token echoes in SDK failures and emits no log', async (t) => {
   assert.equal(result.message, 'Copilot SDK ResponseError (-32603)');
   assert.equal(result.cause, undefined);
   assert.ok(logs.every((log) => log.mock.callCount() === 0));
+});
+
+test('preserves structured HTTP statuses without classifying numbers in SDK messages', async (t) => {
+  const client = new FakeClient();
+  const provider = new CopilotProvider({}, client.factory);
+  t.after(() => provider.dispose());
+  for (const status of [400, 401, 503]) {
+    client.createError = new Error(`SDK error: 401, ${credentials.apiKey}`, {
+      cause: { response: { status } },
+    });
+    const failure = error(await provider.chat(hello, [], credentials));
+    assert.equal(httpStatusOf(failure), status);
+    assert.equal(
+      failure.code,
+      status === 401 ? 'CREDENTIALS_REJECTED' : 'COPILOT_ERROR',
+    );
+    assert.ok(!failure.message.includes(credentials.apiKey));
+    assert.equal(failure.cause, undefined);
+  }
+  client.createError = new Error('model id 403 rejected');
+  assert.equal(
+    error(await provider.chat(hello, [], credentials)).code,
+    'COPILOT_ERROR',
+  );
 });
 
 test('aborts a running turn and a suspended tool round', async (t) => {

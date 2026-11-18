@@ -22,6 +22,9 @@ import { unwrapBuilderResult } from '../builder-types.js';
 
 /** An adapter that answers every call with a retryable 503. */
 function failingLlm(onCall?: () => void): ILlm & { calls: number } {
+  const error = Object.assign(new LlmError('Service Unavailable'), {
+    status: 503,
+  });
   const llm = {
     calls: 0,
     model: 'unavailable',
@@ -30,13 +33,13 @@ function failingLlm(onCall?: () => void): ILlm & { calls: number } {
       onCall?.();
       return {
         ok: false,
-        error: new LlmError('HTTP 503 Service Unavailable'),
+        error,
       };
     },
     async *streamChat(): AsyncIterable<Result<LlmStreamChunk, LlmError>> {
       llm.calls++;
       onCall?.();
-      yield { ok: false, error: new LlmError('HTTP 503 Service Unavailable') };
+      yield { ok: false, error };
     },
   };
   return llm;

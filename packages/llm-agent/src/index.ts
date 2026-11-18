@@ -20,6 +20,7 @@ export {
   findThrottled,
   gateFor,
   httpStatusOf,
+  isAuthenticationFailure,
   isThrottledError,
   parseRetryAfter,
   preserveThrottled,

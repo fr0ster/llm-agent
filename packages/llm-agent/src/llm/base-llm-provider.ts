@@ -19,6 +19,7 @@ import {
 import {
   errorCauseChain,
   httpStatusOf,
+  isAuthenticationFailure,
   preserveThrottled,
   retryAfterSecondsOf,
   runWithThrottleRetry,
@@ -66,6 +67,14 @@ export interface ProviderRequestUsage {
   op: UsageOperation;
   base: Parameters<typeof beginLlmRequest>[2];
   bound?: IUsageRecorder;
+}
+
+interface ProviderThrottleOptions {
+  /** The model this call actually uses, when it overrides the configured one. */
+  model?: string;
+  signal?: AbortSignal;
+  onRetry?: ThrottleRetryOptions['onRetry'];
+  credentialFingerprint?: string;
 }
 
 export abstract class BaseLLMProvider<
@@ -246,11 +255,9 @@ export abstract class BaseLLMProvider<
 
   /** Is this "too many requests" rather than a real failure? */
   protected isThrottled(error: unknown): boolean {
-    return (
-      httpStatusOf(
-        typeof error === 'object' && error !== null ? error : undefined,
-      ) === 429
-    );
+    const details =
+      typeof error === 'object' && error !== null ? error : undefined;
+    return httpStatusOf(details) === 429 && !isAuthenticationFailure(details);
   }
 
   /**
@@ -274,7 +281,7 @@ export abstract class BaseLLMProvider<
   }
 
   /**
-   * Keep the 429 visible through the provider's own error wrapping.
+   * Keep HTTP and throttling metadata through the provider's error wrapping.
    *
    * Providers rethrow their transport error as a readable one. Call this on the
    * way out so the consumer still reads a fact, not a substring.
@@ -287,56 +294,27 @@ export abstract class BaseLLMProvider<
   }
 
   protected credentialSafeError<T>(error: T, message: string): Error {
-    const details =
-      typeof error === 'object' && error !== null ? error : undefined;
-    return preserveThrottled(
-      error,
-      Object.assign(new Error(message), {
-        status: httpStatusOf(details),
-        retryAfterSeconds: retryAfterSecondsOf(details),
-      }),
-    );
+    return preserveThrottled(error, new Error(message));
   }
 
   /** Wrap one provider call in the shared policy. */
   protected withThrottleRetry<T>(
     fn: (handle: LlmRequestHandle) => Promise<T>,
-    extra:
-      | {
-          model?: string;
-          signal?: AbortSignal;
-          onRetry?: ThrottleRetryOptions['onRetry'];
-        }
-      | undefined,
+    extra: ProviderThrottleOptions | undefined,
     usage: ProviderRequestUsage & { base: { stream: true } },
   ): Promise<{ response: T; handle: LlmRequestHandle }>;
   protected withThrottleRetry<T>(
     fn: (handle: LlmRequestHandle) => Promise<T>,
-    extra:
-      | {
-          model?: string;
-          signal?: AbortSignal;
-          onRetry?: ThrottleRetryOptions['onRetry'];
-        }
-      | undefined,
+    extra: ProviderThrottleOptions | undefined,
     usage: ProviderRequestUsage,
   ): Promise<T>;
   protected withThrottleRetry<T>(
     fn: () => Promise<T>,
-    extra?: {
-      model?: string;
-      signal?: AbortSignal;
-      onRetry?: ThrottleRetryOptions['onRetry'];
-    },
+    extra?: ProviderThrottleOptions,
   ): Promise<T>;
   protected withThrottleRetry<T>(
     fn: (handle: LlmRequestHandle) => Promise<T>,
-    extra?: {
-      /** The model this call actually uses, when it overrides the configured one. */
-      model?: string;
-      signal?: AbortSignal;
-      onRetry?: ThrottleRetryOptions['onRetry'];
-    },
+    extra?: ProviderThrottleOptions,
     usage?: ProviderRequestUsage,
   ): Promise<T | { response: T; handle: LlmRequestHandle }> {
     let attempt = 0;
@@ -379,11 +357,16 @@ export abstract class BaseLLMProvider<
       }
     };
     const transient = this.transientRetry();
+    const quotaKey = this.quotaKey(extra?.model);
+    const account = extra?.credentialFingerprint;
+    const override = usage?.apiKeyOverride;
     return runWithThrottleRetry(physicalRequest, {
       key:
-        usage?.apiKeyOverride === undefined
-          ? this.quotaKey(extra?.model)
-          : `${this.quotaKey(extra?.model)}:override:${fingerprint(usage.apiKeyOverride)}`,
+        account !== undefined
+          ? `${quotaKey}:credential:${account}`
+          : override !== undefined
+            ? `${quotaKey}:override:${fingerprint(override)}`
+            : quotaKey,
       strategy: this.config.whenThrottled,
       isThrottled: (e: unknown) => this.isThrottled(e),
       retryAfterSeconds: (e: unknown) => this.retryAfterSeconds(e),
@@ -433,6 +416,7 @@ function fingerprint(secret: string | undefined): string {
 }
 
 function isTransientFailure(error: object | undefined): boolean {
+  if (isAuthenticationFailure(error)) return false;
   for (const current of errorCauseChain(error)) {
     if (
       ('name' in current &&
