@@ -34,6 +34,7 @@ for (const stream of [false, true]) {
       it(`automatic caching stream=${stream} config=${configured} override=${override}`, async (t) => {
         const records: UsageInput[] = [];
         const provider = new AnthropicProvider({
+          maxTokens: 100,
           model: 'test-model',
           credential: staticApiKey('test'),
           promptCaching: configured,
@@ -106,6 +107,7 @@ for (const stream of [false, true]) {
 it('keeps creation usage on an early stream close without inventing output tokens', async (t) => {
   const records: UsageInput[] = [];
   const provider = new AnthropicProvider({
+    maxTokens: 100,
     model: 'test-model',
     credential: staticApiKey('test'),
     usage: {

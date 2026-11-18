@@ -40,7 +40,7 @@ export interface AdaptiveCoordinatorDeps {
 const message = (error: unknown) =>
   error instanceof Error ? error.message : String(error);
 
-/** Plan and execute one bounded adaptive run through the stepper coordinator slot. */
+/** Plan and execute one adaptive run through the stepper coordinator slot. */
 export class AdaptiveCoordinatorHandler implements IStageHandler {
   constructor(private readonly deps: AdaptiveCoordinatorDeps) {}
 
@@ -218,6 +218,11 @@ export class AdaptiveCoordinatorHandler implements IStageHandler {
         }
       }
       if (fatal) throw fatal;
+      if (result.error) {
+        ctx.error = result.error;
+        ctx.yield({ ok: false, error: result.error });
+        return false;
+      }
       if (result.outcome !== 'awaiting-external')
         ctx.assistantText = result.output;
       if (result.outcome === 'awaiting-external') {
@@ -294,6 +299,8 @@ export class AdaptiveCoordinatorHandler implements IStageHandler {
                 ? 'ABORTED'
                 : 'COORDINATOR_STEP_FAILED',
             );
+      if (ctx.error.code === 'LLM_OUTPUT_TRUNCATED')
+        ctx.yield({ ok: false, error: ctx.error });
       return false;
     }
   }

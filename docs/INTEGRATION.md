@@ -2820,7 +2820,12 @@ The rate limiter wraps outermost in the decorator chain: `RateLimiterLlm → Cir
 
 **It takes one permit per outer call, not per HTTP attempt.** `RateLimiterLlm.chat` awaits `acquire()` once and then hands off to the chain, so anything that retries below it — `RetryLlm`, or a provider's own throttling loop — sends requests the window never counted. A consumer metering a shared quota needs the accounting above the retrying, which means its own wrapper taking a permit around each attempt; this seam admits a call and cannot see inside it.
 
-`RetryLlm` is enabled by default (3 attempts, 2s backoff, retry on 429/500/502/503) and configured via `SmartAgentConfig.retry`. Note that the count is retries *after* the first call: three of them is four requests, which matters to anyone metering a provider.
+`RetryLlm` is enabled by default with unlimited retries for HTTP 429, 500,
+502 and 503. The initial exponential backoff is 2 seconds. Configure
+`SmartAgentConfig.retry.maxAttempts` to cap retries after the initial call for
+non-429 errors. HTTP 429 retries continue until the call succeeds, encounters
+a terminal error, or the caller aborts. The wait follows `Retry-After` when
+provided and uses exponential backoff otherwise.
 
 **The deadline is yours, and it reaches the transport.** No provider sets a
 timeout of its own — the SAP AI Core provider used to impose sixty seconds on a
@@ -2831,7 +2836,7 @@ provider's SDK call, so an abort ends the request rather than only the waiting
 around it. Without one, a call runs until the server answers or the connection
 breaks.
 
-**429 is answered below this chain, and nothing waits by default.** Every
+**Providers track 429 below the decorator chain.** Every
 provider built on `BaseLLMProvider` reads the status and the `Retry-After`
 interval where the HTTP response is still intact, records that the quota is shut
 so no other call spends a request discovering it, and hands the failure up.
@@ -2876,8 +2881,9 @@ llm:
 There is no duration to put there. Anything beyond these two is code, passed to
 the provider directly.
 
-When a call gives up, the error carries the facts, and `RetryLlm` leaves a marked
-error alone rather than retrying a quota it can see is shut:
+When a provider reports throttling, the error preserves the server's delay and
+the provider policy's outcome. `RetryLlm` uses that delay for its next attempt.
+Consumers can also read the metadata:
 
 ```ts
 import { findThrottled } from '@mcp-abap-adt/llm-agent';

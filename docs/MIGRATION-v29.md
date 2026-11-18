@@ -28,6 +28,9 @@ still sent as is; a model that rejects it answers with that error.
 | Anthropic `maxTokens` unset | 4096 | 4096 (the Messages API requires it) |
 | `SapCoreAIProvider` with `temperature: 0` | sent 0.7 (`\|\|` swallowed 0) | sends 0 |
 
+Current Anthropic releases use the model's reported maximum output when
+`maxTokens` is unset. The table records the v29 migration behavior.
+
 **What you do.** To keep the old behaviour, write the old values into your config:
 
 ```yaml

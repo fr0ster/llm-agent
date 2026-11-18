@@ -431,7 +431,10 @@ test('library LLM call paths terminate at the real provider with no content', as
     completion = execute(...args);
     return completion;
   };
-  const handle = await new SmartAgentBuilder({ skipModelValidation: true })
+  const handle = await new SmartAgentBuilder({
+    skipModelValidation: true,
+    agent: { retry: { maxAttempts: 3, backoffMs: 0 } },
+  })
     .withRagAccess(testRequestAccess)
     .withMainLlm(f.llm)
     .setPipeline(pipeline)

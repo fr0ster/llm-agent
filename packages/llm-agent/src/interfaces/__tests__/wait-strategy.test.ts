@@ -2,6 +2,25 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { DefaultWaitStrategy } from '../wait-strategy.js';
 
+test('waits for the entire delay above the Node timer range', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const maxTimerDelayMs = 2 ** 31 - 1;
+  let elapsed = false;
+  const pending = new DefaultWaitStrategy()
+    .wait(maxTimerDelayMs + 10)
+    .then((result) => {
+      elapsed = true;
+      return result;
+    });
+  t.mock.timers.tick(maxTimerDelayMs);
+  await Promise.resolve();
+  t.mock.timers.tick(9);
+  await Promise.resolve();
+  assert.equal(elapsed, false);
+  t.mock.timers.tick(1);
+  assert.equal(await pending, 'elapsed');
+});
+
 test('DefaultWaitStrategy resolves elapsed after the delay', async () => {
   const t0 = Date.now();
   assert.equal(await new DefaultWaitStrategy().wait(20), 'elapsed');

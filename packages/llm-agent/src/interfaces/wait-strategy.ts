@@ -23,9 +23,23 @@ export function exponentialBackoffMs(baseMs: number, attempt: number): number {
 export class DefaultWaitStrategy implements IWaitStrategy {
   readonly name = 'default-wait';
 
-  wait(ms: number, signal?: AbortSignal): Promise<'elapsed' | 'aborted'> {
-    if (signal?.aborted) return Promise.resolve('aborted');
-    if (ms <= 0) return Promise.resolve('elapsed');
+  async wait(ms: number, signal?: AbortSignal): Promise<'elapsed' | 'aborted'> {
+    // Node treats larger timer delays as 1 ms. Split the wait without shortening it.
+    const maxTimerDelayMs = 2 ** 31 - 1;
+    for (let remaining = ms; remaining > 0; ) {
+      if (signal?.aborted) return 'aborted';
+      const interval = Math.min(remaining, maxTimerDelayMs);
+      if ((await this.waitInterval(interval, signal)) === 'aborted')
+        return 'aborted';
+      remaining -= interval;
+    }
+    return signal?.aborted ? 'aborted' : 'elapsed';
+  }
+
+  private waitInterval(
+    ms: number,
+    signal?: AbortSignal,
+  ): Promise<'elapsed' | 'aborted'> {
     return new Promise((resolve) => {
       const onAbort = (): void => {
         clearTimeout(handle);

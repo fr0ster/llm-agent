@@ -13,6 +13,7 @@ test('response processing errors count once; rejected credentials never count fo
 
   let requests = 0;
   const provider = new AnthropicProvider({
+    maxTokens: 100,
     model: 'test',
     usage,
     credential: {

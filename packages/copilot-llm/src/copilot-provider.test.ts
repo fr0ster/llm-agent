@@ -157,7 +157,18 @@ class FakeClient implements CopilotSdkClient {
 
   async listModels(apiKey: string): ReturnType<CopilotSdkClient['listModels']> {
     this.modelKeys.push(apiKey);
-    return [{ id: 'test-model', name: 'Test model', capabilities: {} }];
+    return [
+      {
+        id: 'test-model',
+        name: 'Test model',
+        capabilities: {
+          limits: {
+            max_context_window_tokens: 1000000,
+            max_output_tokens: 128000,
+          },
+        },
+      },
+    ];
   }
 }
 
@@ -594,13 +605,43 @@ test('routes model discovery through the shared runtime with each call token', a
       id: 'test-model',
       displayName: 'Test model',
       provider: 'copilot',
-      contextLength: undefined,
+      contextLength: 1000000,
+      maxOutputTokens: 128000,
     },
   ]);
   value(await provider.getModels({ apiKey: 'next-token' }));
   assert.deepEqual(client.modelKeys, [credentials.apiKey, 'next-token']);
   assert.equal(client.starts, 1);
   assert.equal(client.sessions.length, 0);
+});
+
+test('preserves a textless token-limit finish in chat and streaming', async (t) => {
+  const client = new FakeClient();
+  const provider = new CopilotProvider({}, client.factory);
+  t.after(() => provider.dispose());
+  client.onSend = (session) => {
+    session.emit({
+      type: 'assistant.usage',
+      data: { model: 'test-model', finishReason: 'length' },
+    });
+    session.emit({ type: 'session.idle', data: {} });
+  };
+  assert.equal(
+    value(await provider.chat(hello, undefined, credentials)).finishReason,
+    'length',
+  );
+  const chunks = [];
+  for await (const chunk of provider.streamChat(
+    hello,
+    undefined,
+    credentials,
+  )) {
+    chunks.push(value(chunk));
+  }
+  assert.equal(
+    chunks.find((chunk) => chunk.finishReason)?.finishReason,
+    'length',
+  );
 });
 
 test('retries rate limits using the SDK retry hint and resets rejected stream text', async (t) => {

@@ -316,6 +316,12 @@ export class CyclicReActExecutor implements IExecutor {
         });
       }
 
+      if (v.finishReason === 'length')
+        return {
+          status: 'incomplete',
+          missing: ['LLM response was truncated at a token limit.'],
+          usage,
+        };
       const modelCalls =
         v.finishReason === 'tool_calls' ? (v.toolCalls ?? []) : [];
       if (modelCalls.length > 0) {

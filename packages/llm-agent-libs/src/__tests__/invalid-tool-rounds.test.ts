@@ -30,6 +30,7 @@ for (const mode of ['direct', 'pipeline', 'pass'] as const) {
   for (const finishReason of ['length', 'stop', 'tool_calls'] as const) {
     test(`${mode}: ${finishReason} with incomplete JSON never executes or surfaces the call`, async () => {
       const inputs: Message[][] = [];
+      const logs: string[] = [];
       let executions = 0;
       const { deps } = makeDefaultDeps({
         assembler: makeAssembler([{ role: 'user', content: 'go' }]),
@@ -82,9 +83,21 @@ for (const mode of ['direct', 'pipeline', 'pass'] as const) {
       const result = await new SmartAgent(deps, config).process('go', {
         ...testCallOptions(),
         externalTools: mode === 'pass' ? [tool] : undefined,
+        sessionLogger: {
+          logStep(name, data) {
+            if (name.startsWith('llm_response_'))
+              logs.push(JSON.stringify(data));
+          },
+        },
       });
-      assert.ok(result.ok);
       assert.equal(executions, 0);
+      if (finishReason === 'length') {
+        assert.equal(inputs.length, 1);
+        assert.equal(result.ok, false);
+        assert.equal(result.error.code, 'LLM_OUTPUT_TRUNCATED');
+        return;
+      }
+      assert.ok(result.ok);
       assert.equal(result.value.toolCalls?.length ?? 0, 0);
       if (finishReason !== 'tool_calls') {
         assert.equal(inputs.length, 1);
@@ -92,6 +105,16 @@ for (const mode of ['direct', 'pipeline', 'pass'] as const) {
         assert.equal(result.value.stopReason, 'stop');
       } else {
         assert.equal(inputs.length, 2);
+        const diagnostic = logs[0] ?? '';
+        assert.match(diagnostic, /"receivedToolCalls":\[\{/);
+        assert.match(diagnostic, /"rejectedToolCalls":\[\{.*"name":"Work"/);
+        assert.match(
+          diagnostic,
+          new RegExp(`"argumentLength":${incomplete.length}`),
+        );
+        assert.match(diagnostic, /Invalid tool arguments/);
+        assert.match(diagnostic, /"executableToolCalls":\[\]/);
+        assert.doesNotMatch(diagnostic, /incomplete/);
         const assistant = inputs[1].find(
           (message) => message.tool_calls?.length,
         );
@@ -103,6 +126,18 @@ for (const mode of ['direct', 'pipeline', 'pass'] as const) {
     });
   }
 }
+
+test('a token-limit finish without text or tool calls fails explicitly', async () => {
+  const { deps } = makeDefaultDeps({
+    llmResponses: [{ content: '', finishReason: 'length' }],
+  });
+  const result = await new SmartAgent(deps, {}).process(
+    'go',
+    testCallOptions(),
+  );
+  assert.equal(result.ok, false);
+  assert.equal(result.error.code, 'LLM_OUTPUT_TRUNCATED');
+});
 
 for (const mode of ['direct', 'pipeline'] as const) {
   test(`${mode}: a rejected truncated reply retains its text without partial calls in retry history`, async () => {
@@ -227,12 +262,17 @@ for (const loop of ['self', 'cyclic'] as const) {
           { id: 's1', goal: 'work', status: 'pending' },
           ctx,
         );
-        assert.equal(result.ok, true);
-        assert.equal(
-          result.output,
-          finishReason === 'tool_calls' ? 'DONE' : 'PARTIAL',
-        );
-        assert.equal(result.toolCallCount, 0);
+        if (finishReason === 'length') {
+          assert.equal(result.ok, false);
+          assert.match(result.error ?? '', /truncated/);
+        } else {
+          assert.equal(result.ok, true);
+          assert.equal(
+            result.output,
+            finishReason === 'tool_calls' ? 'DONE' : 'PARTIAL',
+          );
+          assert.equal(result.toolCallCount, 0);
+        }
       } else {
         const result = await new CyclicReActExecutor({
           llm,
@@ -256,7 +296,13 @@ for (const loop of ['self', 'cyclic'] as const) {
             stepperId: 'n1',
           },
         });
-        assert.equal(result.status, 'ok');
+        if (finishReason === 'length') {
+          assert.equal(result.status, 'incomplete');
+          assert.ok(result.missing);
+          assert.match(result.missing.join(' '), /truncated/);
+        } else {
+          assert.equal(result.status, 'ok');
+        }
       }
       assert.equal(inputs.length, finishReason === 'tool_calls' ? 2 : 1);
       if (finishReason === 'tool_calls') {

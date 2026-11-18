@@ -1420,13 +1420,7 @@ export class SmartAgentBuilder {
       // holds for the builder's own breaker and for a main LLM that already is
       // a (shared) CircuitBreakerLlm: the retry goes under that wrapper, which
       // is rebuilt on the same breaker.
-      const retryOpts = agentCfg.retry ?? {
-        maxAttempts: 3,
-        backoffMs: 2000,
-        retryOn: [429, 500, 502, 503],
-        retryOnMidStream: [],
-      };
-      wrappedMainLlm = retryInsideBreakers(wrappedMainLlm, retryOpts);
+      wrappedMainLlm = retryInsideBreakers(wrappedMainLlm, agentCfg.retry);
 
       // ---- Rate limiter wrapping (outermost — one permit per outer call) --------
       if (this._rateLimiter) {

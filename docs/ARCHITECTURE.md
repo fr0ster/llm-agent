@@ -831,7 +831,7 @@ pipeline-agnostic; the flat pipeline additionally emits richer per-tool
 
 The `ILlm` chain supports two optional decorators, composed by the builder:
 
-- **`RetryLlm`** — retries transient failures (5xx, and a 429 from a provider that runs no throttle strategy of its own) with exponential backoff. Configured via `SmartAgentConfig.retry`. For streaming, retries pre-stream failures (zero chunks yielded) on HTTP status codes, and mid-stream failures on configurable error substrings (`retryOnMidStream`). Mid-stream retry replays the entire stream and emits a `reset` chunk so consumers discard accumulated state.
+- **`RetryLlm`** — retries HTTP 500, 502 and 503 with exponential backoff and no default attempt cap. Configure `SmartAgentConfig.retry` to override transient retry criteria or cap non-429 attempts. HTTP 429 uses the server's delay or exponential backoff and remains retryable until aborted. For streaming, pre-stream failures use HTTP status and mid-stream transient failures use `retryOnMidStream`. A mid-stream retry emits a `reset` chunk and replays the stream.
 - **`CircuitBreakerLlm`** — fail-fast on sustained failures. Configured via `.withCircuitBreaker()`. A call whose `signal` the caller aborted (`isCallerCancellation`) records neither a failure nor a success. SmartServer keeps one breaker per `llm:` key instead (see *Session agents carry the server's wiring*).
 
 Throttling is answered one layer lower, inside the provider. See **Server-governed throttling** below for why, and for why that layer decides nothing.
@@ -928,10 +928,9 @@ caller that never asked to wait. An earlier version did, and that was the budget
 mistake again, wearing the word "guarantee": a delay imposed on someone who had
 not consented to one.
 
-**Relationship to `RetryLlm`.** When a strategy stops, the error is marked, and
-`RetryLlm` does not retry a marked error — the quota is demonstrably shut and
-more attempts only lengthen the outage. A provider running no strategy of its
-own is unaffected; `RetryLlm` still retries its 429s as before.
+**Relationship to `RetryLlm`.** When a provider strategy stops, the marked
+error carries the server's wait interval. `RetryLlm` can continue the wait
+and retry, including with fallback backoff when the server omits the interval.
 
 **Observability.** `setThrottleObserver` is one process-wide subscription
 covering every provider, fired on every refusal and every call turned away at a

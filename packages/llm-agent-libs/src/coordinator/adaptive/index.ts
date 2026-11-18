@@ -12,7 +12,6 @@ export {
 } from './llm-adaptive-controller.js';
 export {
   fallbackPlan,
-  MAX_RUNS_CAP,
   parsePlan,
   parseVerdict,
   validateSteps,

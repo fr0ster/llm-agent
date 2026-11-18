@@ -176,17 +176,23 @@ for (const pipeline of [false, true]) {
         assert.ok(started.ok);
         await done;
         const task = board.get('t1');
-        assert.equal(task?.state, 'done');
+        assert.ok(task);
+        assert.equal(toolCalls, 1);
+        assert.equal(llm.callCount, finishes ? 1 : 2);
+        assert.equal(task.toolTrace?.entries.length, 1);
+        await board.stopAll();
+        if (scenario === 'empty-output') {
+          assert.equal(task.state, 'failed');
+          assert.match(task.error ?? '', /empty terminal response/);
+          return;
+        }
+        assert.equal(task.state, 'done');
         assert.equal(
           task.output,
           finishes ? output : 'progress\n\nnormal response',
         );
         assert.equal(task.toolCalls, 1);
-        assert.equal(toolCalls, 1);
-        assert.equal(llm.callCount, finishes ? 1 : 2);
-        assert.equal(task.toolTrace?.entries.length, 1);
         assert.ok(task.usage);
-        await board.stopAll();
       });
     }
   }

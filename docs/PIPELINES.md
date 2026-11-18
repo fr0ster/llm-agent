@@ -247,12 +247,13 @@ backward jump. `next` and `end` are reserved and cannot be step ids. A partial
 verdict uses `onPartial ?? onFail`. The verdict reason is passed to the worker
 at the branch destination. Ending without an answer produces a stop report.
 
-The parser accepts integer `maxRuns` values from 1 through `MAX_RUNS_CAP` (5)
-for work, check and revise. Defaults are 1 for work/revise and 3 for check;
-ask/answer run once and have no `maxRuns` field. A repeated work step needs an
-explicit allowance. Exceeding a step's run limit stops execution with a report.
-An unparsable worker verdict counts as failure. A failed work step continues
-only if a later check lists it in `targets`; otherwise it stops with a report.
+Work, check and revise accept an optional positive integer `maxRuns`.
+Exceeding an explicitly configured run limit stops execution with a report.
+Ask and answer end the run when reached.
+A missing or unparsable verdict stops the run with a verdict retrieval error.
+A worker that returns empty terminal output or reaches its model's token limit
+fails explicitly. Other work failures can continue to a later check that lists
+the failed step in `targets`.
 
 Work/check steps can select a `context` object:
 
@@ -271,10 +272,11 @@ instruction). Selected results outside targets are included; `context.spec: fals
 omits the spec from both the task and the direct spec field. The default controller
 includes the task and history in its check prompt.
 
-The default request budget is `{ maxSteps: 20, maxRevisions: 3 }`, with no
-duration deadline; opt in with `budget.maxDurationMs` in the handler dependencies. Step/time limits are checked before each step, so the duration
-limit does not interrupt an in-flight call. A stop calls `controller.report`;
-if reporting fails, deterministic text lists the stop reason and step records.
+The handler runs without step, revision or duration limits by default. To opt
+in, set `budget.maxSteps`, `budget.maxRevisions`, or `budget.maxDurationMs`.
+The interpreter checks the duration before starting each step. Budget and plan
+stops call `controller.report`. If reporting fails, deterministic text lists
+the stop reason and step records.
 Cancellation during reporting propagates, including when the report resolves after
 the signal aborts; it never produces a successful terminal chunk.
 

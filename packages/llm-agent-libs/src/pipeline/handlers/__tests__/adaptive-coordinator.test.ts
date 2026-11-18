@@ -15,11 +15,72 @@ import { LlmAdaptiveController } from '../../../coordinator/adaptive/llm-adaptiv
 import { testCallOptions, testRequestAccess } from '../../../testing/index.js';
 import { NoopTracer } from '../../../tracer/noop-tracer.js';
 import type { ISpan } from '../../../tracer/types.js';
+import type { PipelineContext } from '../../context.js';
 import { DefaultPipeline } from '../../default-pipeline.js';
 import { pipelineToStream } from '../../pipeline-to-stream.js';
 import { AdaptiveCoordinatorHandler } from '../adaptive-coordinator.js';
 
 const span: ISpan = new NoopTracer().startSpan('test');
+
+test('surfaces a missing verdict to the agent caller without running the fix', async () => {
+  const handler = new AdaptiveCoordinatorHandler({
+    workers: new Map([
+      ['checker', { name: 'checker', run: async () => ({ output: '' }) }],
+      [
+        'executor',
+        { name: 'executor', run: async () => assert.fail('unexpected fix') },
+      ],
+    ]),
+    controller: {
+      name: 'controller',
+      async plan() {
+        return {
+          plan: {
+            createdAt: 0,
+            steps: [
+              {
+                id: 'check',
+                kind: 'check',
+                worker: 'checker',
+                goal: 'Check',
+                targets: [],
+                onPass: 'end',
+                onFail: 'fix',
+              },
+              {
+                id: 'fix',
+                kind: 'work',
+                worker: 'executor',
+                goal: 'Fix',
+                maxRuns: 1,
+              },
+            ],
+          },
+        };
+      },
+      check: async () => assert.fail('unexpected self check'),
+      revise: async () => assert.fail('unexpected revision'),
+      report: async () => assert.fail('unexpected report'),
+    },
+  });
+  const handle = await new SmartAgentBuilder({ skipModelValidation: true })
+    .withRagAccess(testRequestAccess)
+    .withMainLlm({
+      chat: async () => assert.fail('unexpected chat'),
+      streamChat: () => assert.fail('unexpected stream'),
+    })
+    .withClassification(false)
+    .withStepperCoordinator(handler)
+    .build()
+    .then(unwrapBuilderResult);
+  try {
+    const result = await handle.agent.process('request', testCallOptions());
+    assert.equal(result.ok, false);
+    assert.equal(result.error.code, 'VERDICT_RETRIEVAL_FAILED');
+  } finally {
+    await handle.close();
+  }
+});
 
 for (const mode of [
   'answer',
@@ -423,8 +484,8 @@ function regressionContext(signal?: AbortSignal) {
         logged.push(value);
       },
     },
-    yield(chunk: { ok: true; value: LlmStreamChunk }) {
-      chunks.push(chunk.value);
+    yield(chunk: Parameters<PipelineContext['yield']>[0]) {
+      if (chunk.ok) chunks.push(chunk.value);
     },
   } as unknown as Parameters<AdaptiveCoordinatorHandler['execute']>[0];
   return { ctx, chunks, logged };
@@ -479,7 +540,7 @@ test('abort during pending report sets ABORTED without successful terminal chunk
 });
 
 for (const method of ['plan', 'check', 'revise'] as const) {
-  test(`${method} parse error usage logged once on fallback`, async () => {
+  test(`${method} parse error usage is logged once`, async () => {
     const { ctx, chunks, logged } = regressionContext();
     const steps: AdaptivePlan['steps'] =
       method === 'check'
@@ -522,7 +583,7 @@ for (const method of ['plan', 'check', 'revise'] as const) {
         ],
       ]),
     });
-    assert.equal(await handler.execute(ctx, {}, span), true);
+    assert.equal(await handler.execute(ctx, {}, span), method !== 'check');
     assert.equal(logged.length, 1);
     assert.equal(
       logged[0]?.component,
@@ -534,9 +595,11 @@ for (const method of ['plan', 'check', 'revise'] as const) {
       method === 'plan'
         ? 'fallback answer'
         : method === 'check'
-          ? 'answer'
+          ? ''
           : 'stop report',
     );
+    if (method === 'check')
+      assert.equal(ctx.error?.code, 'VERDICT_RETRIEVAL_FAILED');
   });
 }
 

@@ -45,6 +45,7 @@ export interface AdaptiveRunResult {
   plan: AdaptivePlan;
   records: StepRecord[];
   stopReason?: string;
+  error?: OrchestratorError;
   answerStreamed: boolean;
   usage: LlmUsage[];
   workerUsage: { worker: string; usage: LlmUsage; model?: string }[];
@@ -61,10 +62,10 @@ export class AdaptiveEpicFailError extends OrchestratorError {
   }
 }
 
-/** Default limits for one request. */
+/** No run-wide limits unless configured. */
 export const DEFAULT_BUDGET: AdaptiveBudget = {
-  maxSteps: 20,
-  maxRevisions: 3,
+  maxSteps: Infinity,
+  maxRevisions: Infinity,
 };
 
 const message = (error: unknown): string =>
@@ -148,13 +149,8 @@ export async function runAdaptivePlan(
     if (!step) break;
     const run = (runs.get(step.id) ?? 0) + 1;
     runs.set(step.id, run);
-    const maxRuns =
-      'maxRuns' in step
-        ? (step.maxRuns ?? (step.kind === 'check' ? 3 : 1))
-        : step.kind === 'check'
-          ? 3
-          : 1;
-    if (run > maxRuns) return stop(`step ${step.id} exceeded ${maxRuns} runs`);
+    if ('maxRuns' in step && step.maxRuns !== undefined && run > step.maxRuns)
+      return stop(`step ${step.id} exceeded ${step.maxRuns} runs`);
     const reason = checkReason;
     checkReason = undefined;
     const stepStartedAt = now();
@@ -187,6 +183,7 @@ export async function runAdaptivePlan(
     };
 
     if (step.kind === 'work' || step.kind === 'check') {
+      let terminalError: OrchestratorError | undefined;
       // The composer uses map insertion order: retain current plan order even after jumps.
       const orderedLatest = new Map(
         plan.steps.flatMap((candidate) => {
@@ -221,10 +218,8 @@ export async function runAdaptivePlan(
         } catch (error) {
           input.signal?.throwIfAborted();
           collect((error as { usage?: LlmUsage } | null)?.usage);
-          record.verdict = {
-            verdict: 'fail',
-            reason: `controller check failed: ${message(error)}`,
-          };
+          record.status = 'failed';
+          record.error = message(error);
         }
       } else {
         const source = plan.steps.find(
@@ -295,11 +290,15 @@ export async function runAdaptivePlan(
               pendingExternalToolCalls: worked.pendingExternalToolCalls,
             };
           }
-          if (step.kind === 'check')
-            record.verdict = parseVerdict(worked.output) ?? {
-              verdict: 'fail',
-              reason: 'unparsable verdict',
-            };
+          if (step.kind === 'check') {
+            record.verdict = parseVerdict(worked.output);
+            if (!record.verdict) throw new Error('unparsable verdict');
+          } else if (!worked.output.trim()) {
+            throw new OrchestratorError(
+              'Worker returned an empty terminal response.',
+              'EMPTY_WORKER_OUTPUT',
+            );
+          }
         } catch (error) {
           if (error instanceof AdaptiveEpicFailError) throw error;
           const failed = error as { usage?: LlmUsage; model?: string } | null;
@@ -315,14 +314,29 @@ export async function runAdaptivePlan(
           record.status = 'failed';
           record.output = '';
           record.error = message(error);
-          if (step.kind === 'check')
-            record.verdict = {
-              verdict: 'fail',
-              reason: `worker check failed: ${message(error)}`,
-            };
+          if (
+            error instanceof OrchestratorError &&
+            (error.code === 'LLM_OUTPUT_TRUNCATED' ||
+              error.code === 'EMPTY_WORKER_OUTPUT')
+          ) {
+            terminalError = error;
+          }
         }
       }
       finish();
+      if (step.kind === 'check' && !record.verdict) {
+        terminalError = new OrchestratorError(
+          `Check ${step.id} failed to retrieve a verdict: ${record.error}`,
+          terminalError?.code ?? 'VERDICT_RETRIEVAL_FAILED',
+        );
+      }
+      if (terminalError) {
+        return {
+          ...result('stopped', terminalError.message),
+          stopReason: terminalError.message,
+          error: terminalError,
+        };
+      }
       if (
         step.kind === 'work' &&
         record.status === 'failed' &&

@@ -106,6 +106,7 @@ const providers = [
     create: (url: string) =>
       new AnthropicProvider({
         model: 'test',
+        maxTokens: 100,
         baseURL: url,
         credential: staticApiKey('test'),
       }),

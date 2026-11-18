@@ -16,6 +16,7 @@ import type {
 } from '@mcp-abap-adt/llm-agent';
 
 import { parseToolArguments } from '../pipeline/handlers/tool-response-round.js';
+import { normalizeFinishReason } from './normalize-finish-reason.js';
 
 /**
  * Convert MCP-style tools to OpenAI function-call format.
@@ -70,6 +71,7 @@ export class LlmProviderBridge implements BaseAgentLlmBridge {
       content: response.content,
       raw: response.raw,
       usage: response.usage,
+      finishReason: response.finishReason,
     };
   }
 
@@ -135,14 +137,7 @@ export class LlmProviderBridge implements BaseAgentLlmBridge {
 
       // Track finish reason
       if (chunk.finishReason) {
-        finishReason =
-          chunk.finishReason === 'tool_calls'
-            ? 'tool_calls'
-            : chunk.finishReason === 'length'
-              ? 'length'
-              : chunk.finishReason === 'error'
-                ? 'error'
-                : 'stop';
+        finishReason = normalizeFinishReason(chunk.finishReason);
       }
     }
 

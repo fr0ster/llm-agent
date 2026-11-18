@@ -52,6 +52,7 @@ for (const stream of [false, true]) {
   for (const tools of [undefined, [], [definition]]) {
     test(`completed external history has definitions stream=${stream} tools=${tools?.length}`, async () => {
       const provider = new AnthropicProvider({
+        maxTokens: 100,
         model: 'test',
         credential: staticApiKey('test'),
       });
@@ -182,6 +183,7 @@ for (const stream of [false, true]) {
       ];
       const snapshot = structuredClone(messages);
       const provider = new AnthropicProvider({
+        maxTokens: 100,
         model: 'test',
         credential: staticApiKey('test'),
       });

@@ -569,6 +569,8 @@ export class DagCoordinatorHandler implements IStageHandler {
         err instanceof OrchestratorError
           ? err
           : new OrchestratorError(errMsg(err), 'COORDINATOR_STEP_FAILED');
+      if (ctx.error.code === 'LLM_OUTPUT_TRUNCATED')
+        ctx.yield({ ok: false, error: ctx.error });
       return false;
     }
   }

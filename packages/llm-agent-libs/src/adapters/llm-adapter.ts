@@ -10,6 +10,7 @@ import type {
   IModelFilter,
   IModelInfo,
   IModelProvider,
+  JsonValue,
   Message,
 } from '@mcp-abap-adt/llm-agent';
 import {
@@ -24,6 +25,7 @@ import {
 } from '@mcp-abap-adt/llm-agent';
 import { parseToolArguments } from '../pipeline/handlers/tool-response-round.js';
 import { withAbort } from '../utils/with-abort.js';
+import { normalizeFinishReason } from './normalize-finish-reason.js';
 
 export type { AgentCallOptions, BaseAgentLlmBridge };
 
@@ -44,8 +46,7 @@ type ParseDiagnosticSink = (event: ParseDiagnostic) => void;
 // parseProviderResponse
 // ---------------------------------------------------------------------------
 
-/** Normalize legacy bridge payloads; provider bridges supply normalized usage directly. */
-function normalizeWireUsage(usage: {
+interface WireUsage {
   prompt_tokens?: number;
   completion_tokens?: number;
   total_tokens?: number;
@@ -59,7 +60,40 @@ function normalizeWireUsage(usage: {
     cache_creation_tokens?: number;
     cache_write_tokens?: number;
   };
-}): NonNullable<LlmResponse['usage']> {
+}
+
+type WireToolCall = {
+  id: string;
+  function: { name: string; arguments?: JsonValue };
+};
+
+interface WireResponse {
+  usage?: WireUsage;
+  stop_reason?: string | null;
+  content?: Array<{
+    type: string;
+    id: string;
+    name: string;
+    input?: JsonValue;
+  }>;
+  choices?: Array<{
+    finish_reason?: string | null;
+    message?: { tool_calls?: WireToolCall[] };
+    delta?: {
+      content?: string | null;
+      tool_calls?: Array<{
+        index?: number;
+        id?: string;
+        function?: { name?: string; arguments?: string };
+      }>;
+    };
+  }>;
+}
+
+/** Normalize legacy bridge payloads; provider bridges supply normalized usage directly. */
+function normalizeWireUsage(
+  usage: WireUsage,
+): NonNullable<LlmResponse['usage']> {
   const cachedInputTokens =
     usage.cache_read_input_tokens ??
     usage.prompt_tokens_details?.cached_tokens ??
@@ -92,20 +126,15 @@ function normalizeWireUsage(usage: {
  * Anthropic:         raw.content[].type === 'tool_use', raw.usage
  */
 function parseProviderResponse(
-  raw: {
-    content: string;
-    usage?: LlmResponse['usage'];
-    raw?: unknown;
-  },
+  raw: Awaited<ReturnType<BaseAgentLlmBridge['callWithTools']>>,
   onDiagnostic?: ParseDiagnosticSink,
 ): LlmResponse {
-  // biome-ignore lint/suspicious/noExplicitAny: raw provider payload has no stable type
-  const providerRaw = raw.raw as any;
+  const providerRaw = raw.raw as WireResponse | undefined;
 
   if (!providerRaw) {
     return {
       content: raw.content,
-      finishReason: 'stop',
+      finishReason: normalizeFinishReason(raw.finishReason ?? 'stop'),
       ...(raw.usage ? { usage: raw.usage } : {}),
     };
   }
@@ -119,8 +148,9 @@ function parseProviderResponse(
   }
 
   // OpenAI / DeepSeek format
-  if (providerRaw.choices?.[0]?.message?.tool_calls) {
-    for (const tc of providerRaw.choices[0].message.tool_calls) {
+  const choice = providerRaw.choices?.[0];
+  if (choice) {
+    for (const tc of choice.message?.tool_calls ?? []) {
       const rawArguments =
         typeof tc.function.arguments === 'string' ? tc.function.arguments : '';
       const args = parseToolArguments(rawArguments);
@@ -146,9 +176,11 @@ function parseProviderResponse(
     return {
       content: raw.content,
       toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
-      finishReason:
-        providerRaw.choices[0].finish_reason ??
-        (toolCalls.length > 0 ? 'tool_calls' : 'stop'),
+      finishReason: normalizeFinishReason(
+        raw.finishReason ??
+          choice.finish_reason ??
+          (toolCalls.length > 0 ? 'tool_calls' : 'stop'),
+      ),
       usage,
       raw: providerRaw,
     };
@@ -172,12 +204,9 @@ function parseProviderResponse(
     return {
       content: raw.content,
       toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
-      finishReason:
-        providerRaw.stop_reason === 'tool_use'
-          ? 'tool_calls'
-          : providerRaw.stop_reason === 'max_tokens'
-            ? 'length'
-            : 'stop',
+      finishReason: normalizeFinishReason(
+        raw.finishReason ?? providerRaw.stop_reason ?? 'stop',
+      ),
       usage,
       raw: providerRaw,
     };
@@ -185,7 +214,7 @@ function parseProviderResponse(
 
   return {
     content: raw.content,
-    finishReason: 'stop',
+    finishReason: normalizeFinishReason(raw.finishReason ?? 'stop'),
     usage,
     raw: providerRaw,
   };
@@ -237,15 +266,15 @@ function parseStreamChunk(
     };
   }
 
-  // biome-ignore lint/suspicious/noExplicitAny: raw provider payload has no stable type
-  const providerRaw = raw.raw as any;
+  const providerRaw = raw.raw as WireResponse | undefined;
 
   if (!providerRaw) {
     return { content: raw.content };
   }
 
   // OpenAI / DeepSeek usage-only chunk (stream_options: include_usage)
-  if (providerRaw.usage && !providerRaw.choices?.[0]?.delta) {
+  const choice = providerRaw.choices?.[0];
+  if (providerRaw.usage && !choice?.delta) {
     return {
       content: '',
       usage: normalizeWireUsage(providerRaw.usage),
@@ -253,8 +282,8 @@ function parseStreamChunk(
   }
 
   // OpenAI / DeepSeek format for chunks
-  if (providerRaw.choices?.[0]?.delta) {
-    const delta = providerRaw.choices[0].delta;
+  if (choice?.delta) {
+    const delta = choice.delta;
     const toolCalls: LlmToolCallDelta[] = [];
 
     if (delta.tool_calls) {
@@ -282,7 +311,9 @@ function parseStreamChunk(
         ? { usage: normalizeWireUsage(providerRaw.usage) }
         : {}),
       toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
-      finishReason: providerRaw.choices[0].finish_reason || undefined,
+      finishReason: choice.finish_reason
+        ? normalizeFinishReason(choice.finish_reason)
+        : undefined,
     };
   }
 
@@ -442,10 +473,7 @@ export class LlmAdapter implements ILlm, IModelProvider {
         : undefined;
 
       const raw = await withAbort(
-        this.agent.callWithTools(messages, mcpTools, agentOptions) as Promise<{
-          content: string;
-          raw?: unknown;
-        }>,
+        this.agent.callWithTools(messages, mcpTools, agentOptions),
         options?.signal,
         () => new LlmError('Aborted', 'ABORTED'),
       );
@@ -583,10 +611,8 @@ export class LlmAdapter implements ILlm, IModelProvider {
  * Wrap a thrown provider error as an `LlmError` without losing what it knew.
  *
  * `String(err)` keeps the message and throws away everything structured — the
- * HTTP status, and the rate-limit marker a provider attached. Both matter
- * upstream: the retry decorator classifies on status, and re-retrying an
- * already-exhausted rate limit only lengthens the outage. Keeping the original
- * on `cause` leaves the message identical and the facts reachable.
+ * HTTP status and rate-limit metadata. The retry decorator uses them to
+ * classify the failure and honor the server's retry delay.
  */
 function asLlmError(err: unknown): LlmError {
   const wrapped = new LlmError(String(err));

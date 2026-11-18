@@ -170,6 +170,9 @@ export class CopilotProvider implements ILlm {
             displayName: name,
             provider: 'copilot',
             contextLength: capabilities.limits?.max_context_window_tokens,
+            ...(capabilities.limits?.max_output_tokens !== undefined
+              ? { maxOutputTokens: capabilities.limits.max_output_tokens }
+              : {}),
           }));
         } catch (error) {
           if (!signal.aborted) runtime.invalidate(client);

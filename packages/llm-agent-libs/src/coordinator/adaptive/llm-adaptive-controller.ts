@@ -16,10 +16,10 @@ For complex tasks, place checks with verdict branches, fix steps, revise and ask
 Write every text meant for the user (answer text, ask question) in the language of the request.
 Respond with JSON only: {"spec"?:{"objective":"...","scope"?:"...","constraints"?:["..."],"deliverable"?:"...","raw"?:"original request"},"steps":[...]}.
 Here ? marks an optional field; omit it in real JSON. Step shapes (use exactly these field names):
-work: {"id":"...","kind":"work","goal":"...","worker":"registered name","context"?:{...},"maxRuns"?:1}
-check: {"id":"...","kind":"check","goal":"...","worker":"registered name or self","targets":["step id"],"context"?:{...},"onPass":"target","onFail":"target","onPartial"?:"target","maxRuns"?:3}
+work: {"id":"...","kind":"work","goal":"...","worker":"registered name","context"?:{...},"maxRuns"?:<positive integer>}
+check: {"id":"...","kind":"check","goal":"...","worker":"registered name or self","targets":["step id"],"context"?:{...},"onPass":"target","onFail":"target","onPartial"?:"target","maxRuns"?:<positive integer>}
 ask: {"id":"...","kind":"ask","question":"..."}
-revise: {"id":"...","kind":"revise","reason":"...","maxRuns"?:1}
+revise: {"id":"...","kind":"revise","reason":"...","maxRuns"?:<positive integer>}
 answer: {"id":"...","kind":"answer","from"?:"step id","text"?:"literal answer"}
 Answer requires exactly one of from or text. Set from to the step whose output IS the final answer.
 All ids must be unique. next and end are reserved: never use them as ids.
@@ -28,8 +28,7 @@ Without onPartial, partial follows onFail. Without an answer, ending produces a 
 Only check branches jump; all other steps proceed sequentially. ask ends the turn with its question.
 Use worker:"self" only for controller-run checks judged by reading; use a registered worker for tool-based checks.
 Each check reviews targets and returns pass/fail/partial with a reason. A fix receives the branching check's reason.
-maxRuns is an integer 1..5 for work/check/revise; defaults: work/revise 1, check 3; ask/answer run once.
-Give every revisited work step a sufficient maxRuns. Bounded check branches enable fix/recheck loops.
+Omit maxRuns unless the request explicitly limits the executions of a step.
 The controller selects each work/check input with context: {"spec"?:true,"history"?:"none|last-turn|all","results"?:["step id"],"note"?:"extra instruction"}.
 context.spec includes the spec by default; false omits it. history selects conversation (default all, complete).
 results selects needed step outputs; checks also receive targets. note adds a step-specific instruction.
@@ -41,7 +40,7 @@ With the user's new request, decide whether to continue, adjust or start over; d
 Simple one-work-step example (executor must be registered):
 {"steps":[{"id":"exec","kind":"work","goal":"Explain this object","worker":"executor"},{"id":"answer","kind":"answer","from":"exec"}]}
 Create/check/fix/recheck example (executor must be registered):
-{"spec":{"objective":"Create a correct draft"},"steps":[{"id":"create","kind":"work","goal":"Create draft","worker":"executor"},{"id":"check","kind":"check","goal":"Review draft","worker":"self","targets":["create"],"onPass":"answer","onFail":"fix"},{"id":"fix","kind":"work","goal":"Fix draft using review","worker":"executor","context":{"results":["create","check"]},"maxRuns":3},{"id":"recheck","kind":"check","goal":"Review fixed draft","worker":"self","targets":["fix"],"onPass":"fixedAnswer","onFail":"fix","maxRuns":3},{"id":"fixedAnswer","kind":"answer","from":"fix"},{"id":"answer","kind":"answer","from":"create"}]}`;
+{"spec":{"objective":"Create a correct draft"},"steps":[{"id":"create","kind":"work","goal":"Create draft","worker":"executor"},{"id":"check","kind":"check","goal":"Review draft","worker":"self","targets":["create"],"onPass":"answer","onFail":"fix"},{"id":"fix","kind":"work","goal":"Fix draft using review","worker":"executor","context":{"results":["create","check"]}},{"id":"recheck","kind":"check","goal":"Review fixed draft","worker":"self","targets":["fix"],"onPass":"fixedAnswer","onFail":"fix"},{"id":"fixedAnswer","kind":"answer","from":"fix"},{"id":"answer","kind":"answer","from":"create"}]}`;
 
 function withUsage(error: Error, usage?: LlmUsage): Error {
   if (usage) (error as Error & { usage?: LlmUsage }).usage = usage;
@@ -72,6 +71,11 @@ export class LlmAdaptiveController implements IAdaptiveController {
       options,
     );
     if (!result.ok) throw new Error(result.error.message);
+    if (result.value.finishReason === 'length')
+      throw withUsage(
+        new Error('LLM response was truncated at a token limit.'),
+        result.value.usage,
+      );
     return result.value;
   }
 

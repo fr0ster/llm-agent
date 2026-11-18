@@ -17,7 +17,11 @@ describe('AnthropicProvider getModels()', () => {
       return {
         data: {
           data: [
-            { id: 'claude-sonnet-4-6', owned_by: 'anthropic' },
+            {
+              id: 'claude-sonnet-4-6',
+              owned_by: 'anthropic',
+              max_tokens: 64000,
+            },
             { id: 'claude-opus-4-6', display_name: 'Claude Opus 4.6' },
           ],
           has_more: false,
@@ -32,10 +36,74 @@ describe('AnthropicProvider getModels()', () => {
     };
 
     assert.deepEqual(await provider.getModels(), [
-      { id: 'claude-sonnet-4-6', owned_by: 'anthropic' },
+      {
+        id: 'claude-sonnet-4-6',
+        owned_by: 'anthropic',
+        maxOutputTokens: 64000,
+      },
       { id: 'claude-opus-4-6', owned_by: undefined },
     ]);
     assert.equal(calls, 1);
+  });
+
+  it('shares one lookup across concurrent chat and stream calls per model', async (t) => {
+    const provider = new AnthropicProvider({
+      credential: staticApiKey('sk-test'),
+      model: 'claude-opus-5-5',
+    });
+    const lookups: string[] = [];
+    const requests: string[] = [];
+    provider.client.defaults.adapter = async (config) => {
+      const url = config.url ?? '';
+      const model = url.slice('/models/'.length);
+      if (config.method === 'get') lookups.push(model);
+      else requests.push(String(config.data));
+      return {
+        data:
+          config.method === 'get'
+            ? {
+                id: model,
+                max_tokens: model === 'claude-opus-5-5' ? 128000 : 64000,
+              }
+            : { content: [], stop_reason: 'max_tokens' },
+        status: 200,
+        statusText: 'OK',
+        headers: {},
+        config,
+      };
+    };
+    t.mock.method(
+      globalThis,
+      'fetch',
+      async (_url: string, init: RequestInit) => {
+        requests.push(String(init.body));
+        return new Response(
+          'event: message_delta\ndata: {"delta":{"stop_reason":"max_tokens"}}\n\nevent: message_stop\ndata: {}\n\n',
+        );
+      },
+    );
+    const collectStream = async () => {
+      const chunks = [];
+      for await (const chunk of provider.streamChat([])) chunks.push(chunk);
+      return chunks;
+    };
+    const [chat, stream] = await Promise.all([
+      provider.chat([]),
+      collectStream(),
+    ]);
+    assert.equal(chat.finishReason, 'length');
+    assert.equal(
+      stream.find((chunk) => chunk.finishReason)?.finishReason,
+      'length',
+    );
+    await provider.chat([], undefined, { model: 'other' });
+    await provider.chat([], undefined, { model: 'other' });
+    await provider.chat([], undefined, { model: 'override', maxTokens: 17 });
+    assert.deepEqual(lookups, ['claude-opus-5-5', 'other']);
+    assert.deepEqual(
+      requests.map((body) => /"max_tokens":(\d+)/.exec(body)?.[1]),
+      ['128000', '128000', '64000', '64000', '17'],
+    );
   });
 
   it('collects all pages and passes each last_id as the next after_id', async () => {

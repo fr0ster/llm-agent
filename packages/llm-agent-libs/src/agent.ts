@@ -242,7 +242,7 @@ export interface SmartAgentConfig {
    * steer MCP tool discovery. Default: false (single-phase tool retrieval).
    */
   enrichedToolSearch?: boolean;
-  /** Retry options for transient LLM failures (429, 5xx). When set, wraps LLM with RetryLlm. */
+  /** Override the builder's retry policy. 429 retries remain abortable and unlimited. */
   retry?: {
     maxAttempts?: number;
     backoffMs?: number;
@@ -1513,6 +1513,27 @@ export class SmartAgent {
             opts,
             this.config.toolTrust,
           );
+      const responseRound = new ToolResponseRound(
+        content,
+        toolCallsMap.values(),
+        (name) => externalToolNames.has(name) && !toolClientMap.has(name),
+      );
+      const toolCalls = hasToolCalls ? responseRound.executableCalls() : [];
+      opts?.sessionLogger?.logStep(
+        `llm_response_iter_${iteration + 1}`,
+        { content, ...responseRound.diagnostics(toolCalls), finishReason },
+        'llm',
+      );
+      if (!val.reprompt && finishReason === 'length') {
+        const error = new OrchestratorError(
+          'LLM response was truncated at a token limit.',
+          'LLM_OUTPUT_TRUNCATED',
+        );
+        toolLoopSpan.setStatus('error', error.message);
+        toolLoopSpan.end();
+        yield { ok: false, error };
+        return;
+      }
       const iterationEnd = hasToolCalls
         ? 'tool_calls'
         : val.reprompt
@@ -1538,21 +1559,6 @@ export class SmartAgent {
         (clientAdapter || this.config.streamMode === 'final')
       )
         stoppedContent += content;
-      const responseRound = new ToolResponseRound(
-        content,
-        toolCallsMap.values(),
-        (name) => externalToolNames.has(name) && !toolClientMap.has(name),
-      );
-      const toolCalls = hasToolCalls ? responseRound.executableCalls() : [];
-      opts?.sessionLogger?.logStep(
-        `llm_response_iter_${iteration + 1}`,
-        {
-          content,
-          toolCalls,
-          finishReason,
-        },
-        'llm',
-      );
       if (!hasToolCalls) {
         // Output validation
         if (val.reprompt) {

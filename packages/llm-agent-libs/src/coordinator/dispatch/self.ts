@@ -13,6 +13,8 @@ import { normalizeLoopLimit } from '../../config/normalize-max-iterations.js';
 import { ToolResponseRound } from '../../pipeline/handlers/tool-response-round.js';
 import { composeTask } from './compose-task.js';
 
+const truncatedOutput = 'LLM response was truncated at a token limit.';
+
 export class SelfDispatch implements IDispatchStrategy {
   readonly name = 'self';
   private readonly maxIterations?: number;
@@ -60,7 +62,8 @@ export class SelfDispatch implements IDispatchStrategy {
           toolCallCount: r.toolCallCount,
           maxToolCalls: r.maxToolCalls,
           durationMs: Date.now() - started,
-          ok: true,
+          ok: r.error === undefined,
+          ...(r.error ? { error: r.error } : {}),
         };
       }
 
@@ -84,9 +87,10 @@ export class SelfDispatch implements IDispatchStrategy {
         },
       );
       if (!res.ok) throw res.error;
+      const truncated = res.value.finishReason === 'length';
       return {
         stepId: step.id,
-        output: res.value.content,
+        output: truncated ? '' : res.value.content,
         usage: res.value.usage,
         budgetExhausted:
           (maxToolCalls !== undefined && toolCallCount >= maxToolCalls) ||
@@ -94,7 +98,8 @@ export class SelfDispatch implements IDispatchStrategy {
         toolCallCount,
         maxToolCalls,
         durationMs: Date.now() - started,
-        ok: true,
+        ok: !truncated,
+        ...(truncated ? { error: truncatedOutput } : {}),
       };
     } catch (err) {
       return {
@@ -119,7 +124,7 @@ export class SelfDispatch implements IDispatchStrategy {
   ): Promise<
     { content: string; usage?: LlmUsage } & Pick<
       StepResult,
-      'budgetExhausted' | 'toolCallCount' | 'maxToolCalls'
+      'budgetExhausted' | 'toolCallCount' | 'maxToolCalls' | 'error'
     >
   > {
     const limits = ctx.loopLimits ?? {
@@ -170,6 +175,14 @@ export class SelfDispatch implements IDispatchStrategy {
       });
       if (!res.ok) throw res.error;
       add(res.value.usage);
+      if (res.value.finishReason === 'length')
+        return {
+          content: '',
+          error: truncatedOutput,
+          usage,
+          toolCallCount,
+          maxToolCalls,
+        };
       const modelCalls =
         res.value.finishReason === 'tool_calls'
           ? (res.value.toolCalls ?? [])

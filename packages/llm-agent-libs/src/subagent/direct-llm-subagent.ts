@@ -1,9 +1,10 @@
-import type {
-  ILlm,
-  ISubAgent,
-  ISubAgentInput,
-  ISubAgentResult,
-  SubAgentCapabilities,
+import {
+  type ILlm,
+  type ISubAgent,
+  type ISubAgentInput,
+  type ISubAgentResult,
+  OrchestratorError,
+  type SubAgentCapabilities,
 } from '@mcp-abap-adt/llm-agent';
 
 import { ContextAssembler } from '../context/context-assembler.js';
@@ -84,10 +85,24 @@ export class DirectLlmSubAgent implements ISubAgent {
     if (!res.ok) {
       throw res.error;
     }
+    const { content, finishReason, usage } = res.value;
+    const error =
+      finishReason === 'length'
+        ? new OrchestratorError(
+            'LLM response was truncated at a token limit.',
+            'LLM_OUTPUT_TRUNCATED',
+          )
+        : !content.trim()
+          ? new OrchestratorError(
+              'Worker returned an empty terminal response.',
+              'EMPTY_WORKER_OUTPUT',
+            )
+          : undefined;
+    if (error) throw Object.assign(error, { usage });
 
     return {
-      output: res.value.content,
-      usage: res.value.usage,
+      output: content,
+      usage,
     };
   }
 }
