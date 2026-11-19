@@ -224,34 +224,71 @@ function parseMutationResponse(body: string): MutationResponse | null {
   }
 }
 
-function isDefiniteRejection(
+function isAuthorizationDenial(body: string, error?: string): boolean {
+  // Actix returns JWT validation errors as plain text.
+  if (
+    [
+      'ExpiredSignature',
+      'InvalidSignature',
+      'Invalid JWT, stateful validation failed',
+    ].includes(body)
+  )
+    return true;
+
+  // RBAC errors are checked before dispatch. Storage locks can also return
+  // 403, including after a payload index schema has been committed.
+  return (
+    typeof error === 'string' &&
+    [
+      'Forbidden: Global access is required',
+      'Forbidden: Global manage access is required',
+      'Forbidden: Manage access for this operation is required',
+      'Forbidden: Access to collection ',
+      'Forbidden: Write access to collection ',
+      'Forbidden: Only points access is allowed for collection ',
+      'Forbidden: This operation is not allowed when "payload" restriction is present for collection ',
+    ].some((prefix) => error.startsWith(prefix))
+  );
+}
+
+function rejectionNextStep(
   status: number,
   method: string,
   path: string,
   reply: MutationResponse | null,
-): boolean {
+  responseBody: string,
+): string | undefined {
   const error =
     typeof reply?.status === 'object' ? reply.status?.error : undefined;
-  if (typeof error !== 'string') return false;
+
+  if (
+    status === 401 ||
+    (status === 403 && isAuthorizationDenial(responseBody, error))
+  )
+    return 'Fix the API key or its permissions, then rerun the migration.';
+
+  if (typeof error !== 'string') return;
+  const nextStep =
+    'Correct the request or resolve the conflict, then rerun the migration.';
 
   // Duplicate collection creation is rejected before replacing the collection.
   if (
     status === 409 &&
     method === 'PUT' &&
-    /^\/collections\/[^/?]+(?:\?|$)/.test(path)
+    /^\/collections\/[^/?]+(?:\?|$)/.test(path) &&
+    error.startsWith('Wrong input: Collection ') &&
+    error.endsWith(' already exists!')
   )
-    return (
-      error.startsWith('Wrong input: Collection ') &&
-      error.endsWith(' already exists!')
-    );
+    return nextStep;
 
   // Actix extractor errors occur before the mutation handler runs. Qdrant can
   // also return 400 or 404 after a partial shard or alias update.
-  if (reply?.time !== 0) return false;
-  return (
+  if (reply?.time !== 0) return;
+  if (
     (status === 400 && /^(Deserialize|Format) error in /.test(error)) ||
     (status === 422 && error.startsWith('Validation error in '))
-  );
+  )
+    return nextStep;
 }
 
 interface MigrationRun {
@@ -287,10 +324,14 @@ function client(
     };
   }
 
-  function rejected(operation: string, outcome: string): RagError {
+  function rejected(
+    operation: string,
+    outcome: string,
+    nextStep: string,
+  ): RagError {
     return migrationError(
       RAG_MIGRATION_REJECTED,
-      `${operation} failed (${outcome}) for ${label}. Correct the request or resolve the conflict, then rerun the migration.`,
+      `${operation} failed (${outcome}) for ${label}. ${nextStep}`,
     );
   }
 
@@ -328,15 +369,14 @@ function client(
       const reply = await response.text();
       if (!response.ok || response.status === 202) {
         const outcome = `HTTP ${response.status}: ${reply}`;
-        if (
-          isDefiniteRejection(
-            response.status,
-            method,
-            path,
-            parseMutationResponse(reply),
-          )
-        )
-          throw rejected(operation, outcome);
+        const nextStep = rejectionNextStep(
+          response.status,
+          method,
+          path,
+          parseMutationResponse(reply),
+          reply,
+        );
+        if (nextStep) throw rejected(operation, outcome, nextStep);
         throw new Error(outcome);
       }
       const result = parseResult<T>(reply);
@@ -402,8 +442,14 @@ function client(
       )
         return response;
       const outcome = `HTTP ${response.status}: ${responseBody}`;
-      if (isDefiniteRejection(response.status, method, path, reply))
-        throw rejected(operation, outcome);
+      const nextStep = rejectionNextStep(
+        response.status,
+        method,
+        path,
+        reply,
+        responseBody,
+      );
+      if (nextStep) throw rejected(operation, outcome, nextStep);
       throw new Error(outcome);
     };
 

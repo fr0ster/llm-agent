@@ -412,9 +412,12 @@ export async function startQdrantStub(
       const failure = stub?.failOn?.(request);
       if (failure) {
         if (failure === 'disconnect') req.socket.destroy();
-        else if (typeof failure === 'object')
-          reply(failure.status, failure.body);
-        else
+        else if (typeof failure === 'object') {
+          if (typeof failure.body === 'string') {
+            res.writeHead(failure.status, { 'Content-Type': 'text/plain' });
+            res.end(failure.body);
+          } else reply(failure.status, failure.body);
+        } else
           reply(failure === true ? 500 : failure, {
             status: { error: 'refused by the test' },
           });

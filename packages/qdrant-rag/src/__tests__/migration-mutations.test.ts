@@ -132,6 +132,47 @@ for (const [status, error] of [
   });
 }
 
+for (const [status, source, body] of [
+  [
+    401,
+    'middleware',
+    'Must provide an API key or an Authorization bearer token',
+  ],
+  [403, 'middleware', 'Invalid JWT, stateful validation failed'],
+  [
+    403,
+    'RBAC',
+    { status: { error: 'Forbidden: Global manage access is required' } },
+  ],
+] as const) {
+  test(`HTTP ${status} from ${source} rejects backup creation without creating a collection`, async (t) => {
+    const stub = await startQdrantStub();
+    t.after(() => stub.close());
+    seedDocs(stub);
+    stub.failOn = ({ method, path }) =>
+      method === 'PUT' && path === backupPath && { status, body };
+
+    await assert.rejects(
+      migrateQdrantMultivectors({ url: stub.baseUrl, collection }),
+      {
+        code: RAG_MIGRATION_REJECTED,
+        message: new RegExp(
+          `^PUT ${backupPath} failed \\(HTTP ${status}.*Fix the API key or its permissions, then rerun`,
+        ),
+      },
+    );
+    assert.deepEqual([...stub.collections.keys()], [collection]);
+    assert.deepEqual(stub.collections.get(collection)?.points.get(id), point);
+    assert.equal(stub.aliases.get('read_docs'), collection);
+    assert.deepEqual(
+      stub.requests
+        .filter(({ method }) => method !== 'GET')
+        .map(({ method, path }) => [method, path]),
+      [['PUT', backupPath]],
+    );
+  });
+}
+
 test('a backup upsert retries identical HTTP 429 requests and leaves the verified backup for cleanup', async (t) => {
   const stub = await startQdrantStub();
   t.after(() => stub.close());
@@ -175,37 +216,46 @@ test('a backup upsert retries identical HTTP 429 requests and leaves the verifie
   assertRestored(stub);
 });
 
-test('a rejected backup upsert retry still reports the earlier HTTP 429 as unconfirmed', async (t) => {
-  const stub = await startQdrantStub();
-  t.after(() => stub.close());
-  seedDocs(stub);
-  stub.throttle = ({ method, path }) => {
-    if (method !== 'PUT' || path !== `${backupPath}/points`) return false;
-    stub.throttle = undefined;
-    return true;
-  };
-  stub.failOn = ({ method, path }) =>
-    method === 'PUT' &&
-    path === `${backupPath}/points` && {
-      status: 422,
-      body: {
-        result: null,
-        status: { error: 'Validation error in body' },
-        time: 0,
-      },
+for (const [status, body] of [
+  [
+    422,
+    { result: null, status: { error: 'Validation error in body' }, time: 0 },
+  ],
+  [403, 'Invalid JWT, stateful validation failed'],
+] as const) {
+  test(`HTTP ${status} on a backup upsert retry leaves the earlier HTTP 429 unconfirmed`, async (t) => {
+    const stub = await startQdrantStub();
+    t.after(() => stub.close());
+    seedDocs(stub);
+    const upsertPath = `${backupPath}/points`;
+    stub.throttle = ({ method, path }) => {
+      if (method !== 'PUT' || path !== upsertPath) return false;
+      stub.throttle = undefined;
+      return true;
     };
-  const options = { url: stub.baseUrl, collection };
-  await assert.rejects(
-    migrateQdrantMultivectors(options),
-    /Could not confirm PUT .*\/points\?.*HTTP 429.*HTTP 422/,
-  );
-  assert.equal(stub.requests.at(-1)?.path, `${backupPath}/points`);
-  assert.ok(stub.collections.has(temporaryCollection));
-  assert.deepEqual(stub.collections.get(collection)?.points.get(id), point);
-  stub.failOn = undefined;
-  await migrateQdrantMultivectors(options);
-  assertRestored(stub);
-});
+    stub.failOn = ({ method, path }) =>
+      method === 'PUT' && path === upsertPath && { status, body };
+    const options = { url: stub.baseUrl, collection };
+    await assert.rejects(migrateQdrantMultivectors(options), {
+      code: RAG_MIGRATION_UNCONFIRMED,
+      message: new RegExp(
+        `^Could not confirm PUT ${upsertPath}\\?.*HTTP 429.*HTTP ${status}`,
+      ),
+    });
+    const [first, retry, ...otherUpserts] = stub.requests.filter(
+      ({ method, path }) => method === 'PUT' && path === upsertPath,
+    );
+    assert.ok(first);
+    assert.deepEqual(retry, first);
+    assert.deepEqual(otherUpserts, []);
+    assert.equal(stub.requests.at(-1), retry);
+    assert.ok(stub.collections.has(temporaryCollection));
+    assert.deepEqual(stub.collections.get(collection)?.points.get(id), point);
+    stub.failOn = undefined;
+    await migrateQdrantMultivectors(options);
+    assertRestored(stub);
+  });
+}
 
 for (const [method, path] of [
   ['PUT', backupPath],
@@ -355,6 +405,46 @@ test('an acknowledged payload index with a queued operation stops before further
   );
   assert.ok(stub.collections.has(temporaryCollection));
   assert.equal(stub.requests.at(-1)?.path, `${backupPath}/index`);
+});
+
+test('HTTP 403 from a write lock after saving an index schema leaves the operation unconfirmed', async (t) => {
+  const stub = await startQdrantStub();
+  t.after(() => stub.close());
+  seedDocs(stub);
+  const schema = { text: { data_type: 'keyword' } };
+  const source = stub.collections.get(collection);
+  assert.ok(source);
+  source.payloadSchema = schema;
+  const indexPath = `${backupPath}/index`;
+  stub.failOn = ({ method, path }) => {
+    if (method !== 'PUT' || path !== indexPath) return false;
+    const backup = stub.collections.get(temporaryCollection);
+    assert.ok(backup);
+    backup.payloadSchema = schema;
+    return {
+      status: 403,
+      body: {
+        result: null,
+        status: { error: 'Storage locked: Write operations are forbidden' },
+        time: 0.01,
+      },
+    };
+  };
+
+  await assert.rejects(
+    migrateQdrantMultivectors({ url: stub.baseUrl, collection }),
+    {
+      code: RAG_MIGRATION_UNCONFIRMED,
+      message:
+        /Could not confirm PUT .*payload index "text".*HTTP 403.*Storage locked/,
+    },
+  );
+  assert.deepEqual(
+    stub.collections.get(temporaryCollection)?.payloadSchema,
+    schema,
+  );
+  assert.deepEqual(source.points.get(id), point);
+  assert.equal(stub.requests.at(-1)?.path, indexPath);
 });
 
 test('aborting an in-flight original DELETE reports the uncertain operation', async (t) => {
