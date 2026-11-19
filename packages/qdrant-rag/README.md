@@ -22,9 +22,9 @@ Qdrant 1.17 or newer for catalog creation. Legacy single-vector collections
 remain available for reads, search, deletes and single-fragment writes. A
 write with several fragments returns an error with the migration command.
 
-Pause writes to the target collections and run one migration process per
-collection. Use `QDRANT_URL` and, when needed, `QDRANT_API_KEY` in the
-environment.
+Pause writes to the collections being migrated or recovered and run one
+migration process per Qdrant deployment. Use `QDRANT_URL` and, when needed,
+`QDRANT_API_KEY` in the environment.
 
 ```sh
 qdrant-migrate-multivector --collection my_collection --dry-run
@@ -36,10 +36,15 @@ Use `--all --catalog NAME` when the provider has a custom catalog, or
 `--collection NAME` for an independently managed store. Applications can
 call `migrateQdrantMultivectors({ url, collection, credential, signal })`.
 The migration copies IDs, payloads, dense vectors, sparse vectors and collection
-and payload-index settings, and restores collection aliases. It verifies the temporary copy before replacing the
-original under its existing name, then verifies the restored copy. Rerun the
-same command after interruption. Custom shard keys keep their own points. The server's native multivector size constraints apply. Pass an `AbortSignal`
-to set a caller-defined deadline or cancel requests.
+and payload-index settings, and restores collection aliases. It verifies the
+temporary copy before replacing the original under its existing name, then
+verifies the restored copy. Each invocation recovers interrupted migrations
+before processing the requested collection or catalog, including collections
+without a catalog entry. A dry run reports these recoveries as `resume`.
+An unreadable recovery marker stops the command and leaves its temporary
+collection intact. Custom shard keys keep their own points. The server's native
+multivector size constraints apply. Pass an `AbortSignal` to set a
+caller-defined deadline or cancel requests.
 
 Configure `fragmentSizeChars` for embedders that do not declare their capacity
 (default 2,048 Unicode code points).

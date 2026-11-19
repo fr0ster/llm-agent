@@ -5,6 +5,7 @@ import { RagError } from '@mcp-abap-adt/llm-agent';
 import {
   assertUserCollection,
   type DenseVectors,
+  isMigrationCollection,
   isUnnamed,
   MIGRATION_PREFIX,
   maxSim,
@@ -151,6 +152,24 @@ function collectionPath(name: string): string {
   return `/collections/${encodeURIComponent(name)}`;
 }
 
+function migrationCollectionName(collection: string): string {
+  return (
+    MIGRATION_PREFIX + createHash('sha256').update(collection).digest('hex')
+  );
+}
+
+function recoveryVectors(collection: string): Record<string, object> {
+  // Sparse vector names are persisted by the collection create request on
+  // Qdrant versions before collection metadata. Qdrant uses the names in file
+  // paths, so split the entire encoded name into filesystem-safe components.
+  const chunks = Buffer.from(collection)
+    .toString('base64url')
+    .match(/.{1,128}/g);
+  return Object.fromEntries(
+    (chunks ?? []).map((chunk, index) => [`${marker}${index}.${chunk}`, {}]),
+  );
+}
+
 function client(options: QdrantMultivectorMigrationOptions) {
   return async (
     path: string,
@@ -190,6 +209,33 @@ async function inspect(
   return response.ok ? result<CollectionInfo>(response) : undefined;
 }
 
+async function readRecovery(request: Client, temporaryCollection: string) {
+  const backup = await inspect(request, collectionPath(temporaryCollection));
+  const names = Object.keys(
+    backup?.config?.params?.sparse_vectors ?? {},
+  ).filter((name) => name.startsWith(marker));
+  const encoded = names
+    .map((name) => name.slice(marker.length).split('.'))
+    .sort(([left], [right]) => Number(left) - Number(right))
+    .map(([, chunk]) => chunk)
+    .join('');
+  const collection = Buffer.from(encoded, 'base64url').toString();
+  if (
+    !backup ||
+    !collection ||
+    isMigrationCollection(collection) ||
+    migrationCollectionName(collection) !== temporaryCollection ||
+    !isDeepStrictEqual(
+      new Set(names),
+      new Set(Object.keys(recoveryVectors(collection))),
+    )
+  )
+    throw migrationError(
+      `Cannot read the original collection name from "${temporaryCollection}"`,
+    );
+  return { collection, backup };
+}
+
 async function* pages(
   request: Client,
   path: string,
@@ -219,20 +265,21 @@ async function create(
   request: Client,
   path: string,
   info: CollectionInfo,
-  temporary: boolean,
+  temporaryFor?: string,
 ) {
   const { params, optimizer_config, ...config } = info.config;
-  const { [marker]: _marker, ...sparse } = params.sparse_vectors ?? {};
+  const sparse = Object.fromEntries(
+    Object.entries(params.sparse_vectors ?? {}).filter(
+      ([name]) => !name.startsWith(marker),
+    ),
+  );
+  if (temporaryFor) Object.assign(sparse, recoveryVectors(temporaryFor));
   await request(path, 'PUT', {
     ...config,
     ...params,
     vectors: multivectors(params.vectors),
     optimizers_config: optimizer_config,
-    sparse_vectors: temporary
-      ? { ...sparse, [marker]: {} }
-      : Object.keys(sparse).length
-        ? sparse
-        : undefined,
+    sparse_vectors: Object.keys(sparse).length ? sparse : undefined,
   });
 }
 
@@ -434,16 +481,13 @@ async function migrateOne(
   request: Client,
   collection: string,
   dryRun: boolean | undefined,
+  backup?: CollectionInfo,
 ): Promise<QdrantMultivectorMigrationResult> {
   assertUserCollection(collection);
-  const temporaryCollection =
-    MIGRATION_PREFIX + createHash('sha256').update(collection).digest('hex');
+  const temporaryCollection = migrationCollectionName(collection);
   const original = collectionPath(collection);
   const temporary = collectionPath(temporaryCollection);
-  const [source, backup] = await Promise.all([
-    inspect(request, original),
-    inspect(request, temporary),
-  ]);
+  const source = await inspect(request, original);
   if (
     source &&
     (await aliases(request, original)).some(
@@ -454,10 +498,10 @@ async function migrateOne(
       `Use the physical collection name instead of the alias "${collection}"`,
     );
   if (
-    source?.config.params.sparse_vectors?.[marker] ||
-    (backup &&
-      (!backup.config.params.sparse_vectors?.[marker] ||
-        !isMultivector(backup.config.params.vectors)))
+    Object.keys(source?.config.params.sparse_vectors ?? {}).some((name) =>
+      name.startsWith(marker),
+    ) ||
+    (backup && !isMultivector(backup.config.params.vectors))
   )
     throw migrationError(
       `Qdrant migration collection name collision for "${collection}"`,
@@ -478,7 +522,10 @@ async function migrateOne(
   if (dryRun) return report;
 
   if (source && !isMultivector(source.config.params.vectors)) {
-    if (!backup) await create(request, temporary, source, true);
+    if (!backup) {
+      await create(request, temporary, source, collection);
+      await readRecovery(request, temporaryCollection);
+    }
     await createPayloadIndexes(request, temporary, source);
     await copyCollection(request, original, temporary, source);
     await moveAliases(request, collection, temporaryCollection);
@@ -491,7 +538,7 @@ async function migrateOne(
       `Verified migration copy "${temporaryCollection}" is missing`,
     );
   if (!source || !isMultivector(source.config.params.vectors))
-    await create(request, original, saved, false);
+    await create(request, original, saved);
   await createPayloadIndexes(request, original, saved);
   await copyCollection(request, temporary, original, saved);
   await moveAliases(request, temporaryCollection, collection);
@@ -499,31 +546,47 @@ async function migrateOne(
   return report;
 }
 
-/** Migrate an offline collection or each collection registered in the RAG catalog. */
+/** Resume interrupted migrations, then migrate the selected offline collections. */
 export async function migrateQdrantMultivectors(
   options: QdrantMultivectorMigrationOptions,
 ): Promise<QdrantMultivectorMigrationResult[]> {
   const request = client(options);
-  if (options.collection !== undefined)
-    return [await migrateOne(request, options.collection, options.dryRun)];
-  const reports: QdrantMultivectorMigrationResult[] = [];
-  const registered = new Set<string>();
-  for await (const page of pages(
-    request,
-    collectionPath(options.catalogCollection ?? 'rag_collection_catalog'),
-    false,
-  )) {
-    for (const { payload } of page) {
-      if (
-        typeof payload?.store_name !== 'string' ||
-        registered.has(payload.store_name)
-      )
-        continue;
-      registered.add(payload.store_name);
-      reports.push(
-        await migrateOne(request, payload.store_name, options.dryRun),
+  const { collections } = await result<{ collections: { name: string }[] }>(
+    await request('/collections'),
+  );
+  const reports = new Map<string, QdrantMultivectorMigrationResult>();
+  for (const { name } of collections) {
+    if (!isMigrationCollection(name)) continue;
+    const { collection, backup } = await readRecovery(request, name);
+    reports.set(
+      collection,
+      await migrateOne(request, collection, options.dryRun, backup),
+    );
+  }
+  const migrateSelected = async (collection: string) => {
+    if (!reports.has(collection))
+      reports.set(
+        collection,
+        await migrateOne(request, collection, options.dryRun),
       );
+  };
+  if (options.collection !== undefined) {
+    await migrateSelected(options.collection);
+    return [...reports.values()];
+  }
+  const catalog = collectionPath(
+    options.catalogCollection ?? 'rag_collection_catalog',
+  );
+  if (
+    options.catalogCollection === undefined &&
+    !(await inspect(request, catalog))
+  )
+    return [...reports.values()];
+  for await (const page of pages(request, catalog, false)) {
+    for (const { payload } of page) {
+      if (typeof payload?.store_name === 'string')
+        await migrateSelected(payload.store_name);
     }
   }
-  return reports;
+  return [...reports.values()];
 }
