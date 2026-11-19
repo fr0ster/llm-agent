@@ -208,7 +208,7 @@ export class DefaultPipeline implements IPipeline {
       const strategy = deps.retrievalStrategies?.[name];
       this.ownStores[name] = {
         raw,
-        queried: strategy ? applyRetrievalStrategy(raw, strategy) : raw,
+        queried: applyRetrievalStrategy(raw, strategy),
       };
     }
 

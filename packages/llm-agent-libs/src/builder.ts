@@ -71,12 +71,12 @@ import {
   type IRagProvider,
   type IRagProviderRegistry,
   type IRagRegistry,
-  isRagDecorator,
   normaliseLogger,
   QueryEmbedding,
   type RagCollectionMeta,
   type RagCollectionOwner,
   type RagRegistryCreateCollectionParams,
+  ragDecoratorChain,
   ragStoreKey,
   resolveClientDescriptors,
   SimpleRagProviderRegistry,
@@ -185,24 +185,19 @@ export function bindRagEmbedderBreaker(
 }
 
 function storeEmbedderBreaker(store: IRag): CircuitBreaker | undefined {
-  let current: IRag | undefined = store;
-  for (let depth = 0; current && depth < 16; depth++) {
+  for (const current of ragDecoratorChain(store)) {
     const breaker = ragEmbedderBreakers.get(current);
     if (breaker) return breaker;
     if (current instanceof FallbackRag) return current.breaker;
-    current = isRagDecorator(current) ? current.inner : undefined;
   }
   return undefined;
 }
 
-/** True when `store`, or a store it decorates, is a FallbackRag on `breaker` (bounded walk). */
+/** True when `store`, or a store it decorates, is a FallbackRag on `breaker`. */
 function isGuardedBy(store: IRag, breaker: CircuitBreaker): boolean {
-  let cur: IRag | undefined = store;
-  for (let depth = 0; cur && depth < 16; depth++) {
-    if (cur instanceof FallbackRag && cur.breaker === breaker) return true;
-    cur = isRagDecorator(cur) ? cur.inner : undefined;
-  }
-  return false;
+  return ragDecoratorChain(store).some(
+    (rag) => rag instanceof FallbackRag && rag.breaker === breaker,
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -1091,7 +1086,7 @@ export class SmartAgentBuilder {
         ragStores[key] = {
           name: m.name,
           owner,
-          rag: strategy ? applyRetrievalStrategy(r, strategy) : r,
+          rag: applyRetrievalStrategy(r, strategy),
         };
       }
       if (projectedToolsRag) {
@@ -1099,9 +1094,7 @@ export class SmartAgentBuilder {
         ragStores.tools = {
           name: 'tools',
           owner: { scope: 'internal' },
-          rag: strategy
-            ? applyRetrievalStrategy(projectedToolsRag, strategy)
-            : projectedToolsRag,
+          rag: applyRetrievalStrategy(projectedToolsRag, strategy),
         };
       }
       if (projectedHistoryRag) {
@@ -1109,9 +1102,7 @@ export class SmartAgentBuilder {
         ragStores.history = {
           name: 'history',
           owner: { scope: 'session', perRequest: true },
-          rag: strategy
-            ? applyRetrievalStrategy(projectedHistoryRag, strategy)
-            : projectedHistoryRag,
+          rag: applyRetrievalStrategy(projectedHistoryRag, strategy),
         };
       }
     };
@@ -1194,10 +1185,8 @@ export class SmartAgentBuilder {
         if (this._sharedBreakers && isGuardedBy(store, embedderBreaker)) {
           continue;
         }
-        const wrapped = new FallbackRag(
-          store,
-          new InMemoryRag(),
-          embedderBreaker,
+        const wrapped = applyRetrievalStrategy(
+          new FallbackRag(store, new InMemoryRag(), embedderBreaker),
         );
         // Later lookups (and the mutation-listener rebuild) see the wrapped
         // store. The entry keeps its scope, owner, editor, provider and store
@@ -1519,9 +1508,7 @@ export class SmartAgentBuilder {
         // only when it decorates that own store (never another agent's).
         const toolsStrategy = this._retrievalStrategies.get('tools');
         const ownTools =
-          toolsRag && toolsStrategy
-            ? applyRetrievalStrategy(toolsRag, toolsStrategy)
-            : toolsRag;
+          toolsRag && applyRetrievalStrategy(toolsRag, toolsStrategy);
         const toolSource = this.buildRetrievalSource(
           toolsRag,
           this._embedder,

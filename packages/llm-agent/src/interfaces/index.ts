@@ -278,7 +278,7 @@ export type {
   IRagDecorator,
   IRetrievalStrategy,
 } from './retrieval-strategy.js';
-export { isRagDecorator } from './retrieval-strategy.js';
+export { isRagDecorator, ragDecoratorChain } from './retrieval-strategy.js';
 export type {
   ExecutionFailureInput,
   ExecutionReviewDecision,

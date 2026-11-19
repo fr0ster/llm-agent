@@ -258,11 +258,7 @@ export class InMemoryRag implements IRag, IRagScanner, IRagFilteredDeleter {
     // Filter BEFORE top-k: store namespace + the query's `ragFilter.namespace`
     // + TTL not expired + the sessionId/userId the query is scoped to.
     const candidates = this.records.filter((r) => {
-      if (
-        this.namespace !== undefined &&
-        r.metadata.namespace !== this.namespace
-      )
-        return false;
+      if (!this.inStore(r.metadata)) return false;
       if (
         targetNamespace !== undefined &&
         r.metadata.namespace !== targetNamespace
@@ -289,14 +285,35 @@ export class InMemoryRag implements IRag, IRagScanner, IRagFilteredDeleter {
 
   async getById(
     id: string,
-    _options?: CallOptions,
+    options?: CallOptions,
   ): Promise<Result<RagResult | null, RagError>> {
-    const record = this.records.find((r) => (r.metadata.id ?? r.id) === id);
-    if (!record) return { ok: true, value: null };
-    return {
-      ok: true,
-      value: { text: record.text, metadata: record.metadata, score: 1 },
-    };
+    if (options?.signal?.aborted) {
+      return { ok: false, error: new RagError('Aborted', 'ABORTED') };
+    }
+    try {
+      const identity = ragIdentityFilter(options);
+      const namespace = options?.ragFilter?.namespace;
+      const record = this.records.find(
+        (r) =>
+          (r.metadata.id ?? r.id) === id &&
+          this.inStore(r.metadata) &&
+          (namespace === undefined || r.metadata.namespace === namespace) &&
+          matchesRagIdentity(r.metadata, identity),
+      );
+      if (!record) return { ok: true, value: null };
+      return {
+        ok: true,
+        value: { text: record.text, metadata: record.metadata, score: 1 },
+      };
+    } catch (err) {
+      return {
+        ok: false,
+        error:
+          err instanceof RagError
+            ? err
+            : new RagError(String(err), 'QUERY_ERROR'),
+      };
+    }
   }
 
   /** The store-configured namespace boundary, as `query` applies it. */

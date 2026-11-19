@@ -4,6 +4,7 @@ import { symmetricEmbedder, TextOnlyEmbedding } from '@mcp-abap-adt/llm-agent';
 import {
   conformanceEmbedder,
   ragFilterConformanceCases,
+  ragGetByIdScopeCase,
   ragOwnerFilterConformanceCases,
   ragRawOwnerConformanceCase,
 } from '@mcp-abap-adt/llm-agent/testing/rag-filter-conformance';
@@ -25,6 +26,7 @@ describe('QdrantRag — filter conformance (stub)', () => {
 
   for (const c of [
     ...ragFilterConformanceCases,
+    ragGetByIdScopeCase,
     ...ragOwnerFilterConformanceCases,
   ]) {
     it(c.name, () =>

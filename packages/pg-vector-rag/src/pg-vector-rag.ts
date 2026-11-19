@@ -386,11 +386,15 @@ export class PgVectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
   ): Promise<Result<RagResult | null, RagError>> {
     if (options?.signal?.aborted)
       return { ok: false, error: new RagError('Aborted', 'ABORTED') };
-    const cached = options?.ragFilter ? undefined : this.cache.get(id);
+    // A scoped read must see current ownership even if an unscoped entry is cached.
+    const scoped = options?.ragFilter !== undefined;
+    const cached = scoped ? undefined : this.cache.get(id);
     if (cached) return { ok: true, value: cached };
     const lease = this.cache.beginRead(id);
     let admitted: RagResult | undefined;
     try {
+      const identity = ragIdentityFilter(options);
+      const namespace = options?.ragFilter?.namespace;
       await this.maybeEnsureSchema(options?.signal);
       const client = await this.clientPromise;
       if (options?.signal?.aborted) throw new RagError('Aborted', 'ABORTED');
@@ -404,16 +408,23 @@ export class PgVectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
       if (options?.signal?.aborted) throw new RagError('Aborted', 'ABORTED');
       const row = rows[0];
       if (!row) return { ok: true, value: null };
+      const metadata = withId(row);
+      if (
+        !matchesRagIdentity(metadata, identity) ||
+        (typeof namespace === 'string' && metadata.namespace !== namespace)
+      ) {
+        return { ok: true, value: null };
+      }
       admitted = {
         text: String(row.text ?? ''),
-        metadata: withId(row),
+        metadata,
         score: 1,
       };
       return { ok: true, value: admitted };
     } catch (err) {
       return { ok: false, error: this.scanFailure(err, 'QUERY_ERROR') };
     } finally {
-      this.cache.endRead(id, lease, options?.ragFilter ? undefined : admitted);
+      this.cache.endRead(id, lease, scoped ? undefined : admitted);
     }
   }
 

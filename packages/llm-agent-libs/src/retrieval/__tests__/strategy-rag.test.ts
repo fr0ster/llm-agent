@@ -1,12 +1,17 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
+  type CallOptions,
   CircuitBreaker,
   FallbackRag,
   InMemoryRag,
   type IQueryEmbedding,
   type IRag,
+  type IRagBackendWriter,
+  type IRagDecorator,
   type IRetrievalStrategy,
+  isRagFilteredDeleter,
+  isRagScanner,
   type RagResult,
 } from '@mcp-abap-adt/llm-agent';
 import {
@@ -24,9 +29,12 @@ const hit = (id: string, score: number): RagResult => ({
 });
 
 function fakeStore(results: RagResult[]) {
-  const calls: Array<{ k: number; options: unknown }> = [];
-  const writer = {
+  const calls: Array<{ k: number; options?: CallOptions }> = [];
+  const writer: IRagBackendWriter = {
     upsertRaw: async () => ({ ok: true as const, value: undefined }),
+    deleteByIdRaw: async () => ({ ok: true, value: false }),
+    upsertPrecomputedRaw: async () => ({ ok: true, value: undefined }),
+    upsertManyPrecomputedRaw: async () => ({ ok: true, value: undefined }),
   };
   const store: IRag = {
     query: async (_q, k, options) => {
@@ -38,7 +46,6 @@ function fakeStore(results: RagResult[]) {
       ok: true,
       value: results.find((r) => r.metadata.id === id) ?? null,
     }),
-    writer: () => writer as never,
   };
   return { store, calls, writer };
 }
@@ -61,7 +68,7 @@ describe('EmbeddingRetrieval', () => {
 describe('StrategyRag', () => {
   it('routes query through the strategy and delegates the rest', async () => {
     const { store, writer } = fakeStore([hit('a', 0.9)]);
-    const seen: unknown[] = [];
+    const seen: (CallOptions | undefined)[] = [];
     const strategy: IRetrievalStrategy = {
       name: 'spy',
       retrieve: async (s, qq, k, o) => {
@@ -69,7 +76,7 @@ describe('StrategyRag', () => {
         return s.query(qq, k, o);
       },
     };
-    const rag = new StrategyRag(store, strategy);
+    const rag = new StrategyRag({ ...store, writer: () => writer }, strategy);
     const opts = { sessionId: 's' };
     await rag.query(q, 3, opts);
     assert.deepEqual(seen, [opts]);
@@ -77,7 +84,62 @@ describe('StrategyRag', () => {
     const byId = await rag.getById('a');
     assert.ok(byId.ok && byId.value?.text === 'a');
     assert.equal(rag.writer?.(), writer);
-    assert.equal(rag.inner, store);
+  });
+
+  it('forwards only supported capabilities and preserves their receivers and writer', async () => {
+    const { store, writer } = fakeStore([]);
+    const strategy = new EmbeddingRetrieval();
+    const readOnly = new StrategyRag(store, strategy);
+    for (const capability of [
+      'list',
+      'scan',
+      'deleteWhere',
+      'writer',
+    ] as const) {
+      assert.equal(capability in readOnly, false);
+    }
+
+    const native = new InMemoryRag();
+    const wrapped = new StrategyRag(native, strategy);
+    const nativeWriter = wrapped.writer?.();
+    assert.ok(nativeWriter);
+    assert.ok(
+      (await nativeWriter.upsertRaw('id', 'example', { sessionId: 's' })).ok,
+    );
+    assert.ok(wrapped.list);
+    const list = await wrapped.list();
+    assert.ok(list.ok);
+    assert.deepEqual(
+      list.value.records.map((r) => r.id),
+      ['id'],
+    );
+    assert.ok(isRagScanner(wrapped));
+    const page = await wrapped.scan();
+    assert.ok(page.ok);
+    assert.deepEqual(
+      page.value.records.map((r) => r.id),
+      ['id'],
+    );
+    assert.ok(isRagFilteredDeleter(wrapped));
+    assert.deepEqual(await wrapped.deleteWhere({ sessionId: 's' }), {
+      ok: true,
+      value: { deleted: 1 },
+    });
+
+    const receiver = {
+      ...store,
+      backendWriter: writer,
+      writer() {
+        return this.backendWriter;
+      },
+    };
+    const forwarded = new StrategyRag(receiver, strategy).writer?.();
+    assert.equal(forwarded, writer);
+    assert.equal(forwarded?.upsertPrecomputedRaw, writer.upsertPrecomputedRaw);
+    assert.equal(
+      forwarded?.upsertManyPrecomputedRaw,
+      writer.upsertManyPrecomputedRaw,
+    );
   });
 });
 
@@ -105,9 +167,47 @@ describe('applyRetrievalStrategy / hasRetrievalStrategy', () => {
       new CircuitBreaker({}),
     );
     assert.equal(hasRetrievalStrategy(outer), true);
-    assert.equal(
-      applyRetrievalStrategy(outer, new EmbeddingRetrieval()),
-      outer,
+    const composed = applyRetrievalStrategy(outer, new EmbeddingRetrieval());
+    assert.ok(composed instanceof StrategyRag);
+    assert.equal(composed.inner, outer);
+    assert.equal(applyRetrievalStrategy(composed), composed);
+  });
+
+  it('finds a strategy and the underlying store through a deep decorator chain', () => {
+    const { store } = fakeStore([]);
+    const strategy = new EmbeddingRetrieval();
+    const wrapped = new StrategyRag(store, strategy);
+    const projected = Array.from({ length: 32 }).reduce<IRag>(
+      (inner) => ({ ...store, inner }) satisfies IRag & IRagDecorator,
+      wrapped,
+    );
+    assert.equal(hasRetrievalStrategy(projected), true);
+    assert.equal(applyRetrievalStrategy(projected, strategy), projected);
+    assert.equal(ownBuiltInStore(store, wrapped, projected), projected);
+  });
+
+  it('rejects self and multi-store cycles even with a strategy in the chain', () => {
+    const { store } = fakeStore([]);
+    const strategy = new EmbeddingRetrieval();
+    const cyclic = { ...store, inner: store };
+    cyclic.inner = cyclic;
+    assert.throws(
+      () => hasRetrievalStrategy(cyclic),
+      /Cycle in RAG decorator chain/,
+    );
+    const branded = new StrategyRag(cyclic, strategy);
+    cyclic.inner = branded;
+    assert.throws(
+      () => hasRetrievalStrategy(branded),
+      /Cycle in RAG decorator chain/,
+    );
+    assert.throws(
+      () => applyRetrievalStrategy(branded, strategy),
+      /Cycle in RAG decorator chain/,
+    );
+    assert.throws(
+      () => ownBuiltInStore(store, store, branded),
+      /Cycle in RAG decorator chain/,
     );
   });
 });

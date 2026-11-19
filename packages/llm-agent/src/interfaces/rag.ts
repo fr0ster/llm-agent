@@ -126,7 +126,7 @@ export interface IRag {
 
   healthCheck(options?: CallOptions): Promise<Result<void, RagError>>;
 
-  /** Fetch a single document by its metadata id. Returns null if not found. */
+  /** Fetch a document by metadata id. Returns null when absent or outside the store or request scope. */
   getById(
     id: string,
     options?: CallOptions,

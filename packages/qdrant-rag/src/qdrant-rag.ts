@@ -433,6 +433,8 @@ export class QdrantRag implements IRag, IRagScanner, IRagFilteredDeleter {
       return { ok: false, error: new RagError('Aborted', 'ABORTED') };
     }
     try {
+      const identity = ragIdentityFilter(options);
+      const namespace = options?.ragFilter?.namespace;
       const pointId = await deterministicUUID(id);
       const res = await this._fetch(
         `/collections/${this.collectionName}/points`,
@@ -454,9 +456,16 @@ export class QdrantRag implements IRag, IRagScanner, IRagFilteredDeleter {
       };
       const hit = json.result?.[0];
       if (!hit) return { ok: true, value: null };
+      const record = splitPayload(hit.payload);
+      if (
+        !matchesRagIdentity(record.metadata, identity) ||
+        (namespace !== undefined && record.metadata.namespace !== namespace)
+      ) {
+        return { ok: true, value: null };
+      }
       return {
         ok: true,
-        value: { ...splitPayload(hit.payload), score: 1 },
+        value: { ...record, score: 1 },
       };
     } catch (err) {
       if (err instanceof RagError) return { ok: false, error: err };
