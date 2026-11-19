@@ -22,8 +22,8 @@ Qdrant 1.17 or newer for catalog creation. Legacy single-vector collections
 remain available for reads, search, deletes and single-fragment writes. A
 write with several fragments returns an error with the migration command.
 
-Pause writes to the collections being migrated or recovered and run one
-migration process per Qdrant deployment. Use `QDRANT_URL` and, when needed,
+Pause writes to the collections being migrated or recovered. Use
+`QDRANT_URL` and, when needed,
 `QDRANT_API_KEY` in the environment.
 
 ```sh
@@ -41,10 +41,35 @@ temporary copy before replacing the original under its existing name, then
 verifies the restored copy. Each invocation recovers interrupted migrations
 before processing the requested collection or catalog, including collections
 without a catalog entry. A dry run reports these recoveries as `resume`.
+A dry run also reports the deployment lock state and any readable holder
+token without acquiring the lock. API callers can receive this through
+`onLockStatus`.
+
+Migration and recovery share a deployment-wide lock in
+`__rag_multivector_migration__lock`. A second run exits with the holder token.
+The migration checks its token before collection and alias changes and
+releases its lock on completion or a confirmed failure. A crash or an
+unconfirmed write can leave the lock in place. The lock has no expiration.
+
+To resume after a crash, first confirm that no migration or lock-release
+process is running against the deployment and that any in-flight Qdrant
+writes from the prior run have settled. Use the holder token from the error
+or a dry run and release the lock once against the same deployment.
+
+```sh
+qdrant-migrate-multivector --release-lock HOLDER_TOKEN
+```
+
+Applications can call
+`releaseQdrantMultivectorMigrationLock({ url, credential }, holderToken)`.
+Release requires a matching token. After release completes, rerun the
+migration to recover any temporary collections.
+
 An unreadable recovery marker stops the command and leaves its temporary
 collection intact. Custom shard keys keep their own points. The server's native
 multivector size constraints apply. Pass an `AbortSignal` to set a
-caller-defined deadline or cancel requests.
+caller-defined deadline or cancel requests. An in-flight write is allowed to
+finish before the lock is released.
 
 Configure `fragmentSizeChars` for embedders that do not declare their capacity
 (default 2,048 Unicode code points).

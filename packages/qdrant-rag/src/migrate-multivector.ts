@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import type { IApiKeyCredential } from '@mcp-abap-adt/interfaces-auth';
 import { RagError } from '@mcp-abap-adt/llm-agent';
@@ -7,6 +7,7 @@ import {
   type DenseVectors,
   isMigrationCollection,
   isUnnamed,
+  MIGRATION_LOCK_COLLECTION,
   MIGRATION_PREFIX,
   maxSim,
   qdrantFetch,
@@ -52,14 +53,23 @@ interface CollectionInfo {
   >;
 }
 
-export interface QdrantMultivectorMigrationOptions {
+interface MigrationConnection {
   url: string;
   credential?: IApiKeyCredential;
+  signal?: AbortSignal;
+}
+
+export type QdrantMultivectorMigrationLockStatus = {
+  collection: string;
+} & ({ locked: false } | { locked: true; ownerToken: string | null });
+
+export interface QdrantMultivectorMigrationOptions extends MigrationConnection {
   /** If omitted, use the catalog to select managed collections. */
   collection?: string;
   catalogCollection?: string;
   dryRun?: boolean;
-  signal?: AbortSignal;
+  /** Receive the deployment lock state before a dry run inspects collections. */
+  onLockStatus?: (status: QdrantMultivectorMigrationLockStatus) => void;
 }
 
 export interface QdrantMultivectorMigrationResult {
@@ -69,6 +79,8 @@ export interface QdrantMultivectorMigrationResult {
 }
 
 const marker = '__rag_multivector_migration_marker__';
+const lockPath = collectionPath(MIGRATION_LOCK_COLLECTION);
+const lockOwner = /^owner-([a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12})$/;
 const pageSize = 256;
 const json = JSON as JSON & {
   rawJSON(text: string): object;
@@ -84,6 +96,18 @@ const json = JSON as JSON & {
 
 function migrationError(message: string): RagError {
   return new RagError(message, 'RAG_MIGRATION_ERROR');
+}
+
+class MigrationLockOwnershipError extends RagError {
+  constructor(message: string) {
+    super(message, 'RAG_MIGRATION_ERROR');
+  }
+}
+
+class UnconfirmedMigrationWriteError extends RagError {
+  constructor(message: string) {
+    super(message, 'RAG_MIGRATION_ERROR');
+  }
 }
 
 function serialize(body: object): string {
@@ -170,28 +194,56 @@ function recoveryVectors(collection: string): Record<string, object> {
   );
 }
 
-function client(options: QdrantMultivectorMigrationOptions) {
+function client(options: MigrationConnection, fence?: () => Promise<void>) {
   return async (
     path: string,
     method = 'GET',
     body?: object,
-    allowMissing = false,
+    allowedStatus?: 404 | 409,
   ) => {
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
     };
     if (options.credential)
       headers['api-key'] = await options.credential.secret();
-    const response = await qdrantFetch(
-      `${options.url.replace(/\/+$/, '')}${path}`,
-      {
-        method,
-        headers,
-        signal: options.signal,
-        body: body === undefined ? undefined : serialize(body),
-      },
-    );
-    if (!response.ok && !(allowMissing && response.status === 404))
+    const url = `${options.url.replace(/\/+$/, '')}${path}`;
+    const init = {
+      method,
+      headers,
+      body: body === undefined ? undefined : serialize(body),
+    };
+    const write =
+      method === 'PUT' ||
+      method === 'DELETE' ||
+      path === '/collections/aliases';
+    let unconfirmed: UnconfirmedMigrationWriteError | undefined;
+    const sendWrite = async () => {
+      // Recheck ownership on every attempt, including after Retry-After.
+      await fence?.();
+      options.signal?.throwIfAborted();
+      try {
+        // Let an in-flight mutation finish before cancellation releases the lock.
+        const sent = await fetch(url, init);
+        if (![202, 408, 502, 503, 504].includes(sent.status)) return sent;
+        throw new Error(`HTTP ${sent.status}: ${await sent.text()}`);
+      } catch (error) {
+        unconfirmed = new UnconfirmedMigrationWriteError(
+          `Could not confirm ${method} ${path}: ${String(error)}`,
+        );
+        throw unconfirmed;
+      }
+    };
+    let response: Response;
+    try {
+      response = await qdrantFetch(
+        url,
+        { ...init, signal: options.signal },
+        write ? sendWrite : undefined,
+      );
+    } catch (error) {
+      throw unconfirmed ?? error;
+    }
+    if (!response.ok && response.status !== allowedStatus)
       throw migrationError(
         `${method} ${path} failed (HTTP ${response.status}): ${await response.text()}`,
       );
@@ -205,8 +257,74 @@ async function inspect(
   request: Client,
   path: string,
 ): Promise<CollectionInfo | undefined> {
-  const response = await request(path, 'GET', undefined, true);
+  const response = await request(path, 'GET', undefined, 404);
   return response.ok ? result<CollectionInfo>(response) : undefined;
+}
+
+async function readLock(
+  request: Client,
+): Promise<QdrantMultivectorMigrationLockStatus> {
+  const info = await inspect(request, lockPath);
+  const collection = MIGRATION_LOCK_COLLECTION;
+  if (!info) return { collection, locked: false };
+  const names = Object.keys(info.config?.params?.vectors ?? {});
+  const ownerToken =
+    names.length === 1 ? lockOwner.exec(names[0])?.[1] : undefined;
+  return { collection, locked: true, ownerToken: ownerToken ?? null };
+}
+
+function describeLock(status: QdrantMultivectorMigrationLockStatus): string {
+  if (!status.locked) return `Migration lock "${status.collection}" is absent.`;
+  if (!status.ownerToken)
+    return `Migration lock "${status.collection}" has an unreadable holder token. Inspect the lock before attempting recovery.`;
+  return `Migration lock "${status.collection}" is held by token "${status.ownerToken}". After confirming no migration or release process is running, run qdrant-migrate-multivector --release-lock ${status.ownerToken} against the same deployment.`;
+}
+
+async function requireLock(request: Client, token: string): Promise<void> {
+  const lock = await readLock(request);
+  if (!lock.locked || lock.ownerToken !== token)
+    throw new MigrationLockOwnershipError(
+      `Migration lock ownership could not be verified for token "${token}". ${describeLock(lock)}`,
+    );
+}
+
+async function acquireLock(request: Client, token: string): Promise<void> {
+  // Qdrant 1.10–1.17 reject a duplicate collection create with HTTP 409.
+  // A named vector stores the owner in the same atomic create on all versions.
+  const response = await request(
+    `${lockPath}?wait=true`,
+    'PUT',
+    {
+      vectors: { [`owner-${token}`]: { size: 1, distance: 'Dot' } },
+      shard_number: 1,
+      replication_factor: 1,
+    },
+    409,
+  );
+  if (response.status === 409) {
+    await response.body?.cancel();
+    throw migrationError(
+      `Could not acquire migration lock (HTTP 409). ${describeLock(await readLock(request))}`,
+    );
+  }
+  if ((await result<boolean>(response)) !== true)
+    throw migrationError(
+      `Qdrant did not confirm creation of migration lock "${MIGRATION_LOCK_COLLECTION}" for token "${token}".`,
+    );
+}
+
+/** Release a lock after confirming that no migration or release process is running. */
+export async function releaseQdrantMultivectorMigrationLock(
+  options: MigrationConnection,
+  token: string,
+): Promise<void> {
+  const read = client(options);
+  const request = client(options, () => requireLock(read, token));
+  const response = await request(`${lockPath}?wait=true`, 'DELETE');
+  if ((await result<boolean>(response)) !== true)
+    throw migrationError(
+      `Qdrant did not confirm release of migration lock "${MIGRATION_LOCK_COLLECTION}" for token "${token}".`,
+    );
 }
 
 async function readRecovery(request: Client, temporaryCollection: string) {
@@ -551,12 +669,57 @@ export async function migrateQdrantMultivectors(
   options: QdrantMultivectorMigrationOptions,
 ): Promise<QdrantMultivectorMigrationResult[]> {
   const request = client(options);
+  if (options.dryRun) {
+    const lock = await readLock(request);
+    options.onLockStatus?.(lock);
+    return migrateCollections(request, options);
+  }
+
+  const token = randomUUID();
+  await acquireLock(request, token);
+  let failure: Error | undefined;
+  try {
+    await requireLock(request, token);
+    const reports = await migrateCollections(
+      client(options, () => requireLock(request, token)),
+      options,
+    );
+    options.signal?.throwIfAborted();
+    return reports;
+  } catch (error) {
+    failure = error instanceof Error ? error : new Error(String(error));
+    if (!(error instanceof UnconfirmedMigrationWriteError)) throw error;
+    throw migrationError(
+      `${error.message}. Migration lock "${MIGRATION_LOCK_COLLECTION}" was retained for token "${token}". Confirm that the operation has settled before releasing the lock.`,
+    );
+  } finally {
+    if (!(failure instanceof UnconfirmedMigrationWriteError)) {
+      await releaseQdrantMultivectorMigrationLock(
+        { ...options, signal: undefined },
+        token,
+      ).catch((error: Error) => {
+        if (error instanceof MigrationLockOwnershipError) return;
+        if (failure)
+          throw migrationError(
+            `${failure.message}. Lock release failed: ${String(error)}`,
+          );
+        throw error;
+      });
+    }
+  }
+}
+
+async function migrateCollections(
+  request: Client,
+  options: QdrantMultivectorMigrationOptions,
+): Promise<QdrantMultivectorMigrationResult[]> {
   const { collections } = await result<{ collections: { name: string }[] }>(
     await request('/collections'),
   );
   const reports = new Map<string, QdrantMultivectorMigrationResult>();
   for (const { name } of collections) {
-    if (!isMigrationCollection(name)) continue;
+    if (name === MIGRATION_LOCK_COLLECTION || !isMigrationCollection(name))
+      continue;
     const { collection, backup } = await readRecovery(request, name);
     reports.set(
       collection,

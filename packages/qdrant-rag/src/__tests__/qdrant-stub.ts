@@ -37,7 +37,8 @@ export type QdrantStub = {
   readonly collections: Map<string, StubCollection>;
   readonly requests: StubRequest[];
   readonly aliases: Map<string, string>;
-  failOn?: (r: StubRequest) => boolean;
+  beforeRequest?: (r: StubRequest) => void | Promise<void>;
+  failOn?: (r: StubRequest) => boolean | number;
   throttle?: (r: StubRequest) => boolean;
   version?: string;
   /** Runs inside a points PUT to the catalog, before it is applied — a racing writer. */
@@ -374,7 +375,7 @@ export async function startQdrantStub(
     req.on('data', (chunk: Buffer) => {
       raw += chunk.toString('utf8');
     });
-    req.on('end', () => {
+    req.on('end', async () => {
       const request: StubRequest = {
         method: req.method ?? 'GET',
         path: new URL(req.url ?? '/', 'http://stub').pathname,
@@ -385,13 +386,17 @@ export async function startQdrantStub(
         res.writeHead(status, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(body));
       };
+      await stub?.beforeRequest?.(request);
       if (stub?.throttle?.(request)) {
         res.setHeader('Retry-After', '0');
         reply(429, { status: { error: 'throttled' } });
         return;
       }
-      if (stub?.failOn?.(request)) {
-        reply(500, { status: { error: 'refused by the test' } });
+      const failure = stub?.failOn?.(request);
+      if (failure) {
+        reply(failure === true ? 500 : failure, {
+          status: { error: 'refused by the test' },
+        });
         return;
       }
       route(request, reply);

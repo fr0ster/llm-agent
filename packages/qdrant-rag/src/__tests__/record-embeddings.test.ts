@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { test } from 'node:test';
 import { symmetricEmbedder } from '@mcp-abap-adt/llm-agent';
 import { migrateQdrantMultivectors } from '../migrate-multivector.js';
-import { MIGRATION_PREFIX } from '../multivector.js';
+import { MIGRATION_LOCK_COLLECTION, MIGRATION_PREFIX } from '../multivector.js';
 import { deterministicUUID, QdrantRag } from '../qdrant-rag.js';
 import { startQdrantStub } from './qdrant-stub.js';
 
@@ -136,7 +136,7 @@ for (const [label, method, path] of [
   [
     'creating the backup',
     'PUT',
-    /^\/collections\/__rag_multivector_migration__\w+$/,
+    /^\/collections\/__rag_multivector_migration__[a-f0-9]{64}$/,
   ],
   [
     'copying to the backup',
@@ -155,7 +155,7 @@ for (const [label, method, path] of [
   [
     'removing the backup',
     'DELETE',
-    /^\/collections\/__rag_multivector_migration__\w+$/,
+    /^\/collections\/__rag_multivector_migration__[a-f0-9]{64}$/,
   ],
 ] as const) {
   test(`migration resumes after interruption while ${label}`, async (t) => {
@@ -342,7 +342,14 @@ test('an unreadable recovery marker blocks migration and leaves the temporary co
   }
   assert.equal(stub.collections.get(temporary), backup);
   assert.ok(!stub.collections.get(collection)?.multivector);
-  assert.ok(stub.requests.every(({ method }) => method === 'GET'));
+  assert.ok(
+    stub.requests.every(
+      ({ method, path }) =>
+        method === 'GET' ||
+        path === `/collections/${MIGRATION_LOCK_COLLECTION}`,
+    ),
+  );
+  assert.ok(!stub.collections.has(MIGRATION_LOCK_COLLECTION));
 });
 
 test('catalog migration preserves named dense and sparse fields and retries 429 without an attempt cap', async (t) => {

@@ -1,6 +1,7 @@
 import { RagError, retryRagThrottle } from '@mcp-abap-adt/llm-agent';
 
 export const MIGRATION_PREFIX = '__rag_multivector_migration__';
+export const MIGRATION_LOCK_COLLECTION = `${MIGRATION_PREFIX}lock`;
 
 export function isMigrationCollection(name: string): boolean {
   return name.startsWith(MIGRATION_PREFIX);
@@ -59,9 +60,13 @@ export function singleVectorWriteError(name: string): RagError {
   );
 }
 
-export function qdrantFetch(url: string, init: RequestInit): Promise<Response> {
+export function qdrantFetch(
+  url: string,
+  init: RequestInit,
+  send = fetch,
+): Promise<Response> {
   return retryRagThrottle(async () => {
-    const response = await fetch(url, init);
+    const response = await send(url, init);
     if (response.status === 429) {
       await response.body?.cancel();
       throw response;
