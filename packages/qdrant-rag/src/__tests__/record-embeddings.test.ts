@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { test } from 'node:test';
 import { symmetricEmbedder } from '@mcp-abap-adt/llm-agent';
 import { migrateQdrantMultivectors } from '../migrate-multivector.js';
+import { MIGRATION_PREFIX } from '../multivector.js';
 import { deterministicUUID, QdrantRag } from '../qdrant-rag.js';
 import { startQdrantStub } from './qdrant-stub.js';
 
@@ -12,6 +14,12 @@ const embedder = symmetricEmbedder({
 });
 const lookup = { text: 'finish', toVector: async () => [0, 1] };
 const full = 'early\n\nmiddle\n\nfinish';
+
+function temporaryCollectionName(collection: string): string {
+  return (
+    MIGRATION_PREFIX + createHash('sha256').update(collection).digest('hex')
+  );
+}
 
 test('one multivector point ranks by its last fragment and is replaced or removed whole', async (t) => {
   const stub = await startQdrantStub();
@@ -94,18 +102,13 @@ test('legacy collections remain searchable and refuse a long record until migrat
     migrateQdrantMultivectors({ ...opts, collection: 'read_docs' }),
     /physical collection name/,
   );
-  const writes = stub.requests.filter(
-    ({ method }) => method === 'PUT' || method === 'DELETE',
-  ).length;
+  const beforeDryRun = stub.requests.length;
   assert.equal(
     (await migrateQdrantMultivectors({ ...opts, dryRun: true }))[0].action,
     'migrate',
   );
-  assert.equal(
-    stub.requests.filter(
-      ({ method }) => method === 'PUT' || method === 'DELETE',
-    ).length,
-    writes,
+  assert.ok(
+    stub.requests.slice(beforeDryRun).every(({ method }) => method === 'GET'),
   );
   assert.equal((await migrateQdrantMultivectors(opts))[0].action, 'migrate');
   assert.equal(
@@ -128,7 +131,17 @@ for (const [label, method, path] of [
   [
     'creating the backup',
     'PUT',
-    /^\/collections\/__rag_multivector_migration__\w+$/,
+    /^\/collections\/__rag_multivector_migration__[a-f0-9]{64}$/,
+  ],
+  [
+    'creating backup shard keys',
+    'PUT',
+    /^\/collections\/__rag_multivector_migration__\w+\/shards$/,
+  ],
+  [
+    'creating backup payload indexes',
+    'PUT',
+    /^\/collections\/__rag_multivector_migration__\w+\/index$/,
   ],
   [
     'copying to the backup',
@@ -140,14 +153,18 @@ for (const [label, method, path] of [
     'POST',
     /^\/collections\/__rag_multivector_migration__\w+\/points\/count$/,
   ],
+  ['moving aliases to the backup', 'POST', /^\/collections\/aliases$/],
   ['deleting the original', 'DELETE', /^\/collections\/docs$/],
   ['recreating the original', 'PUT', /^\/collections\/docs$/],
+  ['restoring shard keys', 'PUT', /^\/collections\/docs\/shards$/],
+  ['restoring payload indexes', 'PUT', /^\/collections\/docs\/index$/],
   ['copying back', 'PUT', /^\/collections\/docs\/points$/],
   ['verifying the original', 'POST', /^\/collections\/docs\/points\/count$/],
+  ['moving aliases to the original', 'POST', /^\/collections\/aliases$/],
   [
     'removing the backup',
     'DELETE',
-    /^\/collections\/__rag_multivector_migration__\w+$/,
+    /^\/collections\/__rag_multivector_migration__[a-f0-9]{64}$/,
   ],
 ] as const) {
   test(`migration resumes after interruption while ${label}`, async (t) => {
@@ -156,25 +173,204 @@ for (const [label, method, path] of [
     const id = await deterministicUUID('legacy');
     const payload = { id: 'legacy', text: 'saved text', scope: ['reader'] };
     const point = { id, payload, vector: [1, 0] };
-    stub.collections.set('docs', { size: 2, points: new Map([[id, point]]) });
+    const payloadSchema = { text: { data_type: 'keyword' } };
+    stub.collections.set('docs', {
+      size: 2,
+      points: new Map(),
+      shards: new Map([['west', new Map([[id, point]])]]),
+      payloadSchema,
+    });
     const opts = { url: stub.baseUrl, collection: 'docs' };
+    const temporary = temporaryCollectionName('docs');
     stub.aliases.set('read_docs', 'docs');
     stub.failOn = (request) =>
       request.method === method &&
       path.test(request.path) &&
       (label !== 'verifying the original' ||
-        stub.collections.get('docs')?.multivector === true);
+        stub.collections.get('docs')?.multivector === true) &&
+      (label !== 'moving aliases to the original' ||
+        stub.aliases.get('read_docs') === temporary);
     await assert.rejects(migrateQdrantMultivectors(opts), /HTTP 500/);
     stub.failOn = undefined;
-    await migrateQdrantMultivectors(opts);
+    assert.equal(
+      stub.collections.has(temporary),
+      label !== 'creating the backup',
+    );
+    const [report] = await migrateQdrantMultivectors(opts);
+    assert.equal(
+      report.action,
+      label === 'creating the backup' ? 'migrate' : 'resume',
+    );
     assert.deepEqual([...stub.collections.keys()], ['docs']);
     assert.equal(stub.aliases.get('read_docs'), 'docs');
-    assert.deepEqual(stub.collections.get('docs')?.points.get(id), {
+    const restored = stub.collections.get('docs');
+    assert.deepEqual(restored?.payloadSchema, payloadSchema);
+    assert.deepEqual(restored?.shards?.get('west')?.get(id), {
       ...point,
       vector: [[1, 0]],
     });
   });
 }
+
+test('migration can discover a backup before the first point is copied', async (t) => {
+  const stub = await startQdrantStub();
+  t.after(() => stub.close());
+  const collection = 'docs';
+  const temporaryCollection = temporaryCollectionName(collection);
+  const id = await deterministicUUID('legacy');
+  const point = { id, vector: [1, 0], payload: { text: 'saved text' } };
+  stub.collections.set(collection, { size: 2, points: new Map([[id, point]]) });
+  stub.failOn = ({ path }) => path === '/collections/docs/points/scroll';
+  const opts = { url: stub.baseUrl };
+  await assert.rejects(
+    migrateQdrantMultivectors({ ...opts, collection }),
+    /HTTP 500/,
+  );
+  stub.failOn = undefined;
+  assert.equal(stub.collections.get(temporaryCollection)?.points.size, 0);
+  assert.equal(stub.collections.get(collection)?.points.get(id), point);
+  assert.deepEqual(await migrateQdrantMultivectors(opts), [
+    { collection, temporaryCollection, action: 'resume' },
+  ]);
+  assert.deepEqual(stub.collections.get(collection)?.points.get(id), {
+    ...point,
+    vector: [[1, 0]],
+  });
+});
+
+for (const [label, useCatalog, collection] of [
+  ['--all without a catalog entry', true, undefined],
+  ['--all without a catalog', false, undefined],
+  ['a different --collection', false, 'next'],
+] as const) {
+  test(`migration restores an unregistered collection after DELETE with ${label}`, async (t) => {
+    const stub = await startQdrantStub();
+    t.after(() => stub.close());
+    const original = `docs_${'long_name_'.repeat(24)}`;
+    const id = await deterministicUUID('legacy');
+    const point = { id, vector: [1, 0], payload: { text: 'saved text' } };
+    const payloadSchema = { text: { data_type: 'keyword' } };
+    stub.collections.set(original, {
+      size: 2,
+      points: new Map([[id, point]]),
+      payloadSchema,
+    });
+    stub.aliases.set('read_docs', original);
+    stub.collections.set('next', { size: 2, points: new Map() });
+    if (useCatalog) {
+      stub.collections.set('rag_collection_catalog', {
+        size: 1,
+        points: new Map([
+          [id, { id, vector: [0], payload: { store_name: 'next' } }],
+        ]),
+      });
+    }
+    const opts = { url: stub.baseUrl };
+    stub.failOn = ({ method, path }) =>
+      method === 'PUT' && path === `/collections/${original}`;
+    await assert.rejects(
+      migrateQdrantMultivectors({ ...opts, collection: original }),
+      /HTTP 500/,
+    );
+    stub.failOn = undefined;
+    assert.ok(!stub.collections.has(original));
+    const temporary = temporaryCollectionName(original);
+    assert.equal(stub.aliases.get('read_docs'), temporary);
+    assert.deepEqual(
+      [...(stub.collections.get(temporary)?.points.values() ?? [])],
+      [{ ...point, vector: [[1, 0]] }],
+    );
+    const expected = [
+      {
+        collection: original,
+        temporaryCollection: temporary,
+        action: 'resume',
+      },
+      ...(useCatalog || collection
+        ? [
+            {
+              collection: 'next',
+              temporaryCollection: temporaryCollectionName('next'),
+              action: 'migrate',
+            },
+          ]
+        : []),
+    ];
+    const beforeDryRun = stub.requests.length;
+    assert.deepEqual(
+      await migrateQdrantMultivectors({ ...opts, collection, dryRun: true }),
+      expected,
+    );
+    assert.ok(
+      stub.requests
+        .slice(beforeDryRun)
+        .every(
+          ({ method, path }) =>
+            method === 'GET' ||
+            (method === 'POST' && path.endsWith('/points/scroll')),
+        ),
+    );
+    assert.ok(!stub.collections.has(original));
+    assert.equal(stub.aliases.get('read_docs'), temporary);
+
+    const start = stub.requests.length;
+    assert.deepEqual(
+      await migrateQdrantMultivectors({ ...opts, collection }),
+      expected,
+    );
+    const requests = stub.requests.slice(start);
+    if (useCatalog || collection) {
+      const finished = requests.findIndex(
+        ({ method, path }) =>
+          method === 'POST' && path === `/collections/${original}/points/count`,
+      );
+      const next = requests.findIndex(
+        ({ method, path }) => method === 'GET' && path === '/collections/next',
+      );
+      assert.ok(finished >= 0 && next > finished);
+    }
+    assert.ok(!stub.collections.has(temporary));
+    assert.deepEqual(
+      stub.collections.get(original)?.points,
+      new Map([[id, { ...point, vector: [[1, 0]] }]]),
+    );
+    assert.deepEqual(
+      stub.collections.get(original)?.payloadSchema,
+      payloadSchema,
+    );
+    assert.equal(stub.aliases.get('read_docs'), original);
+  });
+}
+
+test('an unreadable recovery marker blocks migration and leaves the temporary collection intact', async (t) => {
+  const stub = await startQdrantStub();
+  t.after(() => stub.close());
+  const collection = 'next';
+  const temporary = temporaryCollectionName('docs');
+  const id = await deterministicUUID('legacy');
+  const backup = {
+    size: 2,
+    multivector: true,
+    sparseVectors: { __rag_multivector_migration_marker__: {} },
+    points: new Map([
+      [id, { id, vector: [[1, 0]], payload: { text: 'saved text' } }],
+    ]),
+  };
+  stub.collections.set(temporary, backup);
+  stub.collections.set(collection, { size: 2, points: new Map() });
+  for (const dryRun of [false, true]) {
+    await assert.rejects(
+      migrateQdrantMultivectors({ url: stub.baseUrl, collection, dryRun }),
+      {
+        code: 'RAG_MIGRATION_ERROR',
+        message: `Cannot read the original collection name from "${temporary}"`,
+      },
+    );
+  }
+  assert.equal(stub.collections.get(temporary), backup);
+  assert.ok(!stub.collections.get(collection)?.multivector);
+  assert.ok(stub.requests.every(({ method }) => method === 'GET'));
+});
 
 test('catalog migration preserves named dense and sparse fields and retries 429 without an attempt cap', async (t) => {
   const stub = await startQdrantStub();
@@ -223,21 +419,41 @@ test('catalog migration preserves named dense and sparse fields and retries 429 
   assert.ok(!stub.collections.get('unmanaged')?.multivector);
 });
 
-test('custom shard keys retain their points even when IDs are shared between keys', async (t) => {
+test('custom shard keys are created before payload indexes and retain points with shared IDs', async (t) => {
   const stub = await startQdrantStub();
   t.after(() => stub.close());
   const id = await deterministicUUID('same');
   const point = { id, vector: [1, 0], payload: { text: 'west' } };
+  const payloadSchema = { text: { data_type: 'keyword' } };
   stub.collections.set('geo', {
     size: 2,
     points: new Map(),
+    payloadSchema,
     shards: new Map([
       ['west', new Map([[id, point]])],
       ['east', new Map([[id, { ...point, payload: { text: 'east' } }]])],
     ]),
   });
-  await migrateQdrantMultivectors({ url: stub.baseUrl, collection: 'geo' });
-  const shards = stub.collections.get('geo')?.shards;
+  const [{ temporaryCollection }] = await migrateQdrantMultivectors({
+    url: stub.baseUrl,
+    collection: 'geo',
+  });
+  for (const name of [temporaryCollection, 'geo']) {
+    const path = `/collections/${name}`;
+    assert.deepEqual(
+      stub.requests
+        .filter(
+          ({ method, path: requested }) =>
+            method === 'PUT' &&
+            (requested === `${path}/shards` || requested === `${path}/index`),
+        )
+        .map(({ path: requested }) => requested),
+      [`${path}/shards`, `${path}/shards`, `${path}/index`],
+    );
+  }
+  const collection = stub.collections.get('geo');
+  assert.deepEqual(collection?.payloadSchema, payloadSchema);
+  const shards = collection?.shards;
   assert.deepEqual(shards?.get('west')?.get(id), {
     ...point,
     vector: [[1, 0]],
@@ -247,4 +463,21 @@ test('custom shard keys retain their points even when IDs are shared between key
     payload: { text: 'east' },
     vector: [[1, 0]],
   });
+});
+
+test('a shardless custom collection retains its acknowledged payload index schema', async (t) => {
+  const stub = await startQdrantStub();
+  t.after(() => stub.close());
+  const payloadSchema = { text: { data_type: 'keyword' } };
+  stub.collections.set('geo', {
+    size: 2,
+    points: new Map(),
+    shards: new Map(),
+    payloadSchema,
+  });
+  await migrateQdrantMultivectors({ url: stub.baseUrl, collection: 'geo' });
+  assert.deepEqual([...stub.collections.keys()], ['geo']);
+  assert.equal(stub.collections.get('geo')?.multivector, true);
+  assert.deepEqual(stub.collections.get('geo')?.payloadSchema, payloadSchema);
+  assert.equal(stub.collections.get('geo')?.shards?.size, 0);
 });

@@ -59,9 +59,13 @@ export function singleVectorWriteError(name: string): RagError {
   );
 }
 
-export function qdrantFetch(url: string, init: RequestInit): Promise<Response> {
+export function qdrantFetch(
+  url: string,
+  init: RequestInit,
+  send = fetch,
+): Promise<Response> {
   return retryRagThrottle(async () => {
-    const response = await fetch(url, init);
+    const response = await send(url, init);
     if (response.status === 429) {
       await response.body?.cancel();
       throw response;

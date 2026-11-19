@@ -5,6 +5,7 @@ import { RagError } from '@mcp-abap-adt/llm-agent';
 import {
   assertUserCollection,
   type DenseVectors,
+  isMigrationCollection,
   isUnnamed,
   MIGRATION_PREFIX,
   maxSim,
@@ -51,20 +52,25 @@ interface CollectionInfo {
   >;
 }
 
-export interface QdrantMultivectorMigrationOptions {
+interface MigrationConnection {
   url: string;
   credential?: IApiKeyCredential;
+  signal?: AbortSignal;
+}
+
+export interface QdrantMultivectorMigrationOptions extends MigrationConnection {
   /** If omitted, use the catalog to select managed collections. */
   collection?: string;
   catalogCollection?: string;
   dryRun?: boolean;
-  signal?: AbortSignal;
 }
 
 export interface QdrantMultivectorMigrationResult {
   collection: string;
   temporaryCollection: string;
   action: 'migrate' | 'resume' | 'already-migrated';
+  /** The original was verified and the temporary collection remains for recovery. */
+  temporaryCollectionRetained?: true;
 }
 
 const marker = '__rag_multivector_migration_marker__';
@@ -151,32 +157,172 @@ function collectionPath(name: string): string {
   return `/collections/${encodeURIComponent(name)}`;
 }
 
-function client(options: QdrantMultivectorMigrationOptions) {
+function migrationCollectionName(collection: string): string {
+  return (
+    MIGRATION_PREFIX + createHash('sha256').update(collection).digest('hex')
+  );
+}
+
+function recoveryVectors(collection: string): Record<string, object> {
+  // Sparse vector names are persisted by the collection create request on
+  // Qdrant versions before collection metadata. Qdrant uses the names in file
+  // paths, so split the entire encoded name into filesystem-safe components.
+  const chunks = Buffer.from(collection)
+    .toString('base64url')
+    .match(/.{1,128}/g);
+  return Object.fromEntries(
+    (chunks ?? []).map((chunk, index) => [`${marker}${index}.${chunk}`, {}]),
+  );
+}
+
+interface MutationResponse {
+  result?: boolean | { status?: string; operation_id?: number | null } | null;
+  status?: 'ok' | { error?: string };
+  time?: number;
+}
+
+function parseMutationResponse(body: string): MutationResponse | null {
+  try {
+    return JSON.parse(body) as MutationResponse | null;
+  } catch {
+    return null;
+  }
+}
+
+function isDefiniteRejection(
+  status: number,
+  method: string,
+  path: string,
+  reply: MutationResponse | null,
+): boolean {
+  const error =
+    typeof reply?.status === 'object' ? reply.status?.error : undefined;
+  if (typeof error !== 'string') return false;
+
+  // Duplicate collection creation is rejected before replacing the collection.
+  if (
+    status === 409 &&
+    method === 'PUT' &&
+    /^\/collections\/[^/?]+(?:\?|$)/.test(path)
+  )
+    return (
+      error.startsWith('Wrong input: Collection ') &&
+      error.endsWith(' already exists!')
+    );
+
+  // Actix extractor errors occur before the mutation handler runs. Qdrant can
+  // also return 400 or 404 after a partial shard or alias update.
+  if (reply?.time !== 0) return false;
+  return (
+    (status === 400 && /^(Deserialize|Format) error in /.test(error)) ||
+    (status === 422 && error.startsWith('Validation error in '))
+  );
+}
+
+interface MigrationRun {
+  backupUpsertThrottled: boolean;
+}
+
+function client(options: MigrationConnection, run: MigrationRun) {
   return async (
     path: string,
-    method = 'GET',
+    method: 'GET' | 'POST' | 'PUT' | 'DELETE' = 'GET',
     body?: object,
-    allowMissing = false,
+    {
+      allowMissing = false,
+      shardlessIndex = false,
+      retryThrottle = false,
+      detail,
+    }: {
+      allowMissing?: boolean;
+      shardlessIndex?: boolean;
+      retryThrottle?: boolean;
+      detail?: string;
+    } = {},
   ) => {
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
     };
     if (options.credential)
       headers['api-key'] = await options.credential.secret();
-    const response = await qdrantFetch(
-      `${options.url.replace(/\/+$/, '')}${path}`,
-      {
-        method,
-        headers,
-        signal: options.signal,
-        body: body === undefined ? undefined : serialize(body),
-      },
-    );
-    if (!response.ok && !(allowMissing && response.status === 404))
+    const url = `${options.url.replace(/\/+$/, '')}${path}`;
+    const init = {
+      method,
+      headers,
+      body: body === undefined ? undefined : serialize(body),
+      signal: options.signal,
+    };
+    const write =
+      method === 'PUT' ||
+      method === 'DELETE' ||
+      path === '/collections/aliases';
+    if (!write) {
+      const response = await qdrantFetch(url, init);
+      if (!response.ok && !(allowMissing && response.status === 404))
+        throw migrationError(
+          `${method} ${path} failed (HTTP ${response.status}): ${await response.text()}`,
+        );
+      return response;
+    }
+
+    const operation = `${method} ${path}${detail ? ` (${detail})` : ''}`;
+    const pointUpsert = /^\/collections\/[^/]+\/points\?/.test(path);
+    const payloadIndex = /^\/collections\/[^/]+\/index\?/.test(path);
+    let throttled = false;
+    let unconfirmedOutcome: string | undefined;
+    const send = async () => {
+      options.signal?.throwIfAborted();
+      let response: Response;
+      let responseBody: string;
+      try {
+        response = await fetch(url, { ...init, redirect: 'manual' });
+        if (response.status === 429 && retryThrottle) {
+          // Qdrant can throttle after a subset of replicas accepted the write.
+          throttled = true;
+          run.backupUpsertThrottled = true;
+          return response;
+        }
+        responseBody = await response.text();
+      } catch (error) {
+        unconfirmedOutcome = String(error);
+        throw migrationError(unconfirmedOutcome);
+      }
+      const reply = parseMutationResponse(responseBody);
+      const applied = reply?.result;
+      // Qdrant commits the payload schema before updating shards. With no
+      // custom shards, that second step acknowledges without an operation ID.
+      const completed =
+        pointUpsert || payloadIndex
+          ? typeof applied === 'object' &&
+            (applied?.status === 'completed' ||
+              (payloadIndex &&
+                shardlessIndex &&
+                applied?.status === 'acknowledged' &&
+                applied.operation_id == null))
+          : applied === true;
+      if (
+        response.ok &&
+        response.status !== 202 &&
+        reply?.status === 'ok' &&
+        completed
+      )
+        return response;
+      const outcome = `HTTP ${response.status}: ${responseBody}`;
+      if (!isDefiniteRejection(response.status, method, path, reply))
+        unconfirmedOutcome = outcome;
+      throw migrationError(`${operation} failed (${outcome})`);
+    };
+
+    try {
+      // Only explicitly opted-in mutations may reach the HTTP 429 retry loop.
+      return retryThrottle ? await qdrantFetch(url, init, send) : await send();
+    } catch (error) {
+      if (!throttled && unconfirmedOutcome === undefined) throw error;
+      const outcome = unconfirmedOutcome ?? String(error);
       throw migrationError(
-        `${method} ${path} failed (HTTP ${response.status}): ${await response.text()}`,
+        `Could not confirm ${operation}: ${throttled ? 'HTTP 429 before retry stopped: ' : ''}${outcome}. After all pending Qdrant operations have settled, rerun the same command to resume from the temporary collection if it exists.`,
       );
-    return response;
+    }
   };
 }
 
@@ -186,8 +332,37 @@ async function inspect(
   request: Client,
   path: string,
 ): Promise<CollectionInfo | undefined> {
-  const response = await request(path, 'GET', undefined, true);
+  const response = await request(path, 'GET', undefined, {
+    allowMissing: true,
+  });
   return response.ok ? result<CollectionInfo>(response) : undefined;
+}
+
+async function readRecovery(request: Client, temporaryCollection: string) {
+  const backup = await inspect(request, collectionPath(temporaryCollection));
+  const names = Object.keys(
+    backup?.config?.params?.sparse_vectors ?? {},
+  ).filter((name) => name.startsWith(marker));
+  const encoded = names
+    .map((name) => name.slice(marker.length).split('.'))
+    .sort(([left], [right]) => Number(left) - Number(right))
+    .map(([, chunk]) => chunk)
+    .join('');
+  const collection = Buffer.from(encoded, 'base64url').toString();
+  if (
+    !backup ||
+    !collection ||
+    isMigrationCollection(collection) ||
+    migrationCollectionName(collection) !== temporaryCollection ||
+    !isDeepStrictEqual(
+      new Set(names),
+      new Set(Object.keys(recoveryVectors(collection))),
+    )
+  )
+    throw migrationError(
+      `Cannot read the original collection name from "${temporaryCollection}"`,
+    );
+  return { collection, backup };
 }
 
 async function* pages(
@@ -219,20 +394,21 @@ async function create(
   request: Client,
   path: string,
   info: CollectionInfo,
-  temporary: boolean,
+  temporaryFor?: string,
 ) {
   const { params, optimizer_config, ...config } = info.config;
-  const { [marker]: _marker, ...sparse } = params.sparse_vectors ?? {};
+  const sparse = Object.fromEntries(
+    Object.entries(params.sparse_vectors ?? {}).filter(
+      ([name]) => !name.startsWith(marker),
+    ),
+  );
+  if (temporaryFor) Object.assign(sparse, recoveryVectors(temporaryFor));
   await request(path, 'PUT', {
     ...config,
     ...params,
     vectors: multivectors(params.vectors),
     optimizers_config: optimizer_config,
-    sparse_vectors: temporary
-      ? { ...sparse, [marker]: {} }
-      : Object.keys(sparse).length
-        ? sparse
-        : undefined,
+    sparse_vectors: Object.keys(sparse).length ? sparse : undefined,
   });
 }
 
@@ -240,14 +416,17 @@ async function createPayloadIndexes(
   request: Client,
   path: string,
   info: CollectionInfo,
+  shardlessIndex: boolean,
 ) {
   for (const [field_name, { data_type, params }] of Object.entries(
     info.payload_schema ?? {},
   )) {
-    await request(`${path}/index?wait=true`, 'PUT', {
-      field_name,
-      field_schema: params ?? data_type,
-    });
+    await request(
+      `${path}/index?wait=true`,
+      'PUT',
+      { field_name, field_schema: params ?? data_type },
+      { shardlessIndex, detail: `payload index ${JSON.stringify(field_name)}` },
+    );
   }
 }
 
@@ -268,12 +447,20 @@ async function moveAliases(
 ): Promise<void> {
   const current = await aliases(request, collectionPath(from));
   if (current.length === 0) return;
-  await request('/collections/aliases', 'POST', {
-    actions: current.flatMap(({ alias_name }) => [
-      { delete_alias: { alias_name } },
-      { create_alias: { alias_name, collection_name: to } },
-    ]),
-  });
+  // Qdrant's create_alias replaces the target of an existing alias. Each
+  // alias stays discoverable on one of the collections if the batch stops.
+  await request(
+    '/collections/aliases',
+    'POST',
+    {
+      actions: current.map(({ alias_name }) => ({
+        create_alias: { alias_name, collection_name: to },
+      })),
+    },
+    {
+      detail: `move aliases ${current.map(({ alias_name }) => JSON.stringify(alias_name)).join(', ')} from ${JSON.stringify(from)} to ${JSON.stringify(to)}`,
+    },
+  );
 }
 
 function equivalent(
@@ -321,10 +508,18 @@ async function copyAndVerify(
   for await (const page of pages(request, from, true, shardKey)) {
     if (page.length === 0) continue;
     const points = page.map(convert);
-    await request(`${to}/points?wait=true&ordering=strong`, 'PUT', {
-      points,
-      shard_key: shardKey,
-    });
+    await request(
+      `${to}/points?wait=true&ordering=strong`,
+      'PUT',
+      { points, shard_key: shardKey },
+      {
+        // The private backup has no external writers. An identical request
+        // replaces the same IDs with the same data in the same shard. A late
+        // attempt cannot change the verified copy, which we retain for recovery.
+        retryThrottle: to.startsWith(`/collections/${MIGRATION_PREFIX}`),
+        detail: shardKey === undefined ? undefined : `shard key ${shardKey}`,
+      },
+    );
     const sample =
       points.length === 1 ? points : [points[0], points[points.length - 1]];
     const read = await result<Point[]>(
@@ -389,16 +584,7 @@ async function shardGroups(request: Client, path: string) {
   return groups;
 }
 
-async function copyCollection(
-  request: Client,
-  from: string,
-  to: string,
-  info: CollectionInfo,
-) {
-  if (info.config.params.sharding_method?.toLowerCase() !== 'custom') {
-    await copyAndVerify(request, from, to);
-    return;
-  }
+async function copyShardKeys(request: Client, from: string, to: string) {
   const source = await shardGroups(request, from);
   const target = await shardGroups(request, to);
   for (const key of target.keys())
@@ -420,30 +606,47 @@ async function copyCollection(
         `Inconsistent replication for shard key ${shard_key}`,
       );
     if (!existing)
-      await request(`${to}/shards`, 'PUT', {
-        shard_key,
-        shards_number: shards.size,
-        replication_factor,
-        placement: [...new Set(replicas.flatMap((peers) => [...peers]))],
-      });
-    await copyAndVerify(request, from, to, shard_key);
+      await request(
+        `${to}/shards`,
+        'PUT',
+        {
+          shard_key,
+          shards_number: shards.size,
+          replication_factor,
+          placement: [...new Set(replicas.flatMap((peers) => [...peers]))],
+        },
+        { detail: `shard key ${shard_key}` },
+      );
   }
+  return [...source.keys()];
+}
+
+async function copyCollection(
+  request: Client,
+  from: string,
+  to: string,
+  info: CollectionInfo,
+) {
+  const shardKeys =
+    info.config.params.sharding_method?.toLowerCase() === 'custom'
+      ? await copyShardKeys(request, from, to)
+      : [undefined];
+  await createPayloadIndexes(request, to, info, shardKeys.length === 0);
+  for (const shardKey of shardKeys)
+    await copyAndVerify(request, from, to, shardKey);
 }
 
 async function migrateOne(
   request: Client,
   collection: string,
   dryRun: boolean | undefined,
+  backup?: CollectionInfo,
 ): Promise<QdrantMultivectorMigrationResult> {
   assertUserCollection(collection);
-  const temporaryCollection =
-    MIGRATION_PREFIX + createHash('sha256').update(collection).digest('hex');
+  const temporaryCollection = migrationCollectionName(collection);
   const original = collectionPath(collection);
   const temporary = collectionPath(temporaryCollection);
-  const [source, backup] = await Promise.all([
-    inspect(request, original),
-    inspect(request, temporary),
-  ]);
+  const source = await inspect(request, original);
   if (
     source &&
     (await aliases(request, original)).some(
@@ -454,10 +657,10 @@ async function migrateOne(
       `Use the physical collection name instead of the alias "${collection}"`,
     );
   if (
-    source?.config.params.sparse_vectors?.[marker] ||
-    (backup &&
-      (!backup.config.params.sparse_vectors?.[marker] ||
-        !isMultivector(backup.config.params.vectors)))
+    Object.keys(source?.config.params.sparse_vectors ?? {}).some((name) =>
+      name.startsWith(marker),
+    ) ||
+    (backup && !isMultivector(backup.config.params.vectors))
   )
     throw migrationError(
       `Qdrant migration collection name collision for "${collection}"`,
@@ -478,8 +681,10 @@ async function migrateOne(
   if (dryRun) return report;
 
   if (source && !isMultivector(source.config.params.vectors)) {
-    if (!backup) await create(request, temporary, source, true);
-    await createPayloadIndexes(request, temporary, source);
+    if (!backup) {
+      await create(request, temporary, source, collection);
+      await readRecovery(request, temporaryCollection);
+    }
     await copyCollection(request, original, temporary, source);
     await moveAliases(request, collection, temporaryCollection);
     await request(original, 'DELETE');
@@ -491,39 +696,70 @@ async function migrateOne(
       `Verified migration copy "${temporaryCollection}" is missing`,
     );
   if (!source || !isMultivector(source.config.params.vectors))
-    await create(request, original, saved, false);
-  await createPayloadIndexes(request, original, saved);
+    await create(request, original, saved);
   await copyCollection(request, temporary, original, saved);
   await moveAliases(request, temporaryCollection, collection);
-  await request(temporary, 'DELETE');
   return report;
 }
 
-/** Migrate an offline collection or each collection registered in the RAG catalog. */
+/** Resume interrupted migrations, then migrate the selected offline collections. */
 export async function migrateQdrantMultivectors(
   options: QdrantMultivectorMigrationOptions,
 ): Promise<QdrantMultivectorMigrationResult[]> {
-  const request = client(options);
-  if (options.collection !== undefined)
-    return [await migrateOne(request, options.collection, options.dryRun)];
-  const reports: QdrantMultivectorMigrationResult[] = [];
-  const registered = new Set<string>();
-  for await (const page of pages(
-    request,
-    collectionPath(options.catalogCollection ?? 'rag_collection_catalog'),
-    false,
-  )) {
-    for (const { payload } of page) {
-      if (
-        typeof payload?.store_name !== 'string' ||
-        registered.has(payload.store_name)
-      )
-        continue;
-      registered.add(payload.store_name);
-      reports.push(
-        await migrateOne(request, payload.store_name, options.dryRun),
-      );
+  const run: MigrationRun = { backupUpsertThrottled: false };
+  const request = client(options, run);
+  const reports = await migrateCollections(request, options);
+  if (!options.dryRun) {
+    // Defer cleanup until all originals in this run have been verified.
+    for (const report of reports) {
+      if (report.action === 'already-migrated') continue;
+      if (run.backupUpsertThrottled) report.temporaryCollectionRetained = true;
+      else await request(collectionPath(report.temporaryCollection), 'DELETE');
     }
   }
   return reports;
+}
+
+async function migrateCollections(
+  request: Client,
+  options: QdrantMultivectorMigrationOptions,
+): Promise<QdrantMultivectorMigrationResult[]> {
+  const { collections } = await result<{ collections: { name: string }[] }>(
+    await request('/collections'),
+  );
+  const reports = new Map<string, QdrantMultivectorMigrationResult>();
+  for (const { name } of collections) {
+    if (!isMigrationCollection(name)) continue;
+    const { collection, backup } = await readRecovery(request, name);
+    reports.set(
+      collection,
+      await migrateOne(request, collection, options.dryRun, backup),
+    );
+  }
+  const migrateSelected = async (collection: string) => {
+    if (!reports.has(collection))
+      reports.set(
+        collection,
+        await migrateOne(request, collection, options.dryRun),
+      );
+  };
+  if (options.collection !== undefined) {
+    await migrateSelected(options.collection);
+    return [...reports.values()];
+  }
+  const catalog = collectionPath(
+    options.catalogCollection ?? 'rag_collection_catalog',
+  );
+  if (
+    options.catalogCollection === undefined &&
+    !(await inspect(request, catalog))
+  )
+    return [...reports.values()];
+  for await (const page of pages(request, catalog, false)) {
+    for (const { payload } of page) {
+      if (typeof payload?.store_name === 'string')
+        await migrateSelected(payload.store_name);
+    }
+  }
+  return [...reports.values()];
 }

@@ -15,7 +15,7 @@ try {
   const url = values.url ?? process.env.QDRANT_URL;
   if (!url || Boolean(values.collection) === Boolean(values.all))
     throw new Error(
-      'Usage: qdrant-migrate-multivector --url URL (--collection NAME | --all [--catalog NAME]) [--dry-run]',
+      'Usage: qdrant-migrate-multivector [--url URL] [--dry-run] (--collection NAME | --all [--catalog NAME])',
     );
   const controller = new AbortController();
   process.once('SIGINT', () => controller.abort());
@@ -23,11 +23,11 @@ try {
   const key = process.env.QDRANT_API_KEY;
   const reports = await migrateQdrantMultivectors({
     url,
+    credential: key ? { kind: 'api-key', secret: async () => key } : undefined,
+    signal: controller.signal,
     collection: values.collection,
     catalogCollection: values.catalog,
-    credential: key ? { kind: 'api-key', secret: async () => key } : undefined,
     dryRun: values['dry-run'],
-    signal: controller.signal,
   });
   for (const report of reports) console.log(JSON.stringify(report));
 } catch (error) {
