@@ -264,6 +264,72 @@ test('a delayed DELETE cannot destroy recovered data after another run is refuse
   assert.ok(!stub.collections.has(docsBackup));
 });
 
+for (const abort of [true, false]) {
+  test(`a delayed HTTP 429 DELETE fences out another migration after ${abort ? 'abort' : 'a successful retry'}`, async (t) => {
+    const stub = await startQdrantStub();
+    t.after(() => stub.close());
+    seedDocs(stub);
+    stub.collections.set('next', { size: 2, points: new Map() });
+    const controller = new AbortController();
+    const fetch = globalThis.fetch;
+    const url = stub.baseUrl;
+    let finishDelete: (() => Promise<Response>) | undefined;
+    t.mock.method(
+      globalThis,
+      'fetch',
+      async (...args: Parameters<typeof fetch>) => {
+        if (
+          !finishDelete &&
+          args[0] === `${url}${originalPath}` &&
+          args[1]?.method === 'DELETE'
+        ) {
+          finishDelete = () => fetch(...args);
+          return new Response(
+            new ReadableStream({
+              cancel: () => {
+                if (abort) controller.abort();
+              },
+            }),
+            { status: 429, headers: { 'Retry-After': '0' } },
+          );
+        }
+        return fetch(...args);
+      },
+    );
+
+    await assert.rejects(
+      migrateQdrantMultivectors({
+        url,
+        collection: 'docs',
+        signal: controller.signal,
+      }),
+      abort
+        ? /HTTP 429.*AbortError.*was retained/
+        : /HTTP 429.*retry succeeded.*was retained/,
+    );
+    assert.equal(stub.collections.has('docs'), abort);
+    assert.ok(finishDelete);
+    const from = stub.requests.length;
+    await assert.rejects(
+      migrateQdrantMultivectors({ url, collection: 'next' }),
+      /HTTP 409.*is held by token/,
+    );
+    assert.deepEqual(
+      stub.requests.slice(from).map(({ method, path }) => [method, path]),
+      [
+        ['PUT', lockPath],
+        ['GET', lockPath],
+      ],
+    );
+    assert.ok((await finishDelete()).ok);
+    assert.ok(!stub.collections.has('docs'));
+    assert.deepEqual(stub.collections.get(docsBackup)?.points.get(point.id), {
+      ...point,
+      vector: [[1, 0]],
+    });
+  });
+}
+
 test('a stale lock blocks recovery until the matching token is explicitly released', async (t) => {
   const stub = await startQdrantStub();
   t.after(() => stub.close());
@@ -363,13 +429,13 @@ test('a throttled delete checks the lock again before retrying', async (t) => {
   assert.ok(stub.collections.has(MIGRATION_LOCK_COLLECTION));
 });
 
-test('an original DELETE retries HTTP 429 without an attempt limit', async (t) => {
+test('a confirmed backup upsert after uncapped HTTP 429 retries releases the lock', async (t) => {
   const stub = await startQdrantStub();
   t.after(() => stub.close());
   seedDocs(stub);
   let attempts = 0;
   stub.throttle = ({ method, path }) =>
-    method === 'DELETE' && path === originalPath && ++attempts <= 12;
+    method === 'PUT' && path === `${backupPath}/points` && ++attempts <= 12;
   await migrateQdrantMultivectors({ url: stub.baseUrl, collection: 'docs' });
   assert.equal(attempts, 13);
   assert.deepEqual([...stub.collections.keys()], ['docs']);
@@ -377,6 +443,59 @@ test('an original DELETE retries HTTP 429 without an attempt limit', async (t) =
     ...point,
     vector: [[1, 0]],
   });
+});
+
+test('a definite rejection of a retry leaves the earlier HTTP 429 write unconfirmed', async (t) => {
+  const stub = await startQdrantStub();
+  t.after(() => stub.close());
+  seedDocs(stub);
+  stub.throttle = ({ method, path }) => {
+    if (method !== 'PUT' || path !== `${backupPath}/points`) return false;
+    stub.throttle = undefined;
+    return true;
+  };
+  stub.failOn = ({ method, path }) =>
+    method === 'PUT' &&
+    path === `${backupPath}/points` && {
+      status: 422,
+      body: {
+        result: null,
+        status: { error: 'Validation error in body' },
+        time: 0,
+      },
+    };
+  await assert.rejects(
+    migrateQdrantMultivectors({ url: stub.baseUrl, collection: 'docs' }),
+    /HTTP 429.*HTTP 422.*was retained/,
+  );
+  assert.ok(stub.collections.has(MIGRATION_LOCK_COLLECTION));
+  assert.equal(stub.requests.at(-1)?.path, `${backupPath}/points`);
+});
+
+test('an acknowledged payload index with a queued operation keeps the lock', async (t) => {
+  const stub = await startQdrantStub();
+  t.after(() => stub.close());
+  stub.collections.set('docs', {
+    size: 2,
+    points: new Map(),
+    shards: new Map(),
+    payloadSchema: { text: { data_type: 'keyword' } },
+  });
+  stub.failOn = ({ method, path }) =>
+    method === 'PUT' &&
+    path === `${backupPath}/index` && {
+      status: 200,
+      body: {
+        status: 'ok',
+        result: { status: 'acknowledged', operation_id: 1 },
+      },
+    };
+  await assert.rejects(
+    migrateQdrantMultivectors({ url: stub.baseUrl, collection: 'docs' }),
+    /HTTP 200.*acknowledged.*was retained/,
+  );
+  assert.ok(stub.collections.has(MIGRATION_LOCK_COLLECTION));
+  assert.equal(stub.requests.at(-1)?.path, `${backupPath}/index`);
 });
 
 test('an unconfirmed write retains the lock even if the caller aborts', async (t) => {

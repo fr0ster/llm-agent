@@ -195,7 +195,7 @@ function recoveryVectors(collection: string): Record<string, object> {
 }
 
 interface MutationResponse {
-  result?: boolean | { status?: string } | null;
+  result?: boolean | { status?: string; operation_id?: number | null } | null;
   status?: 'ok' | { error?: string };
   time?: number;
 }
@@ -243,7 +243,10 @@ function client(options: MigrationConnection, fence?: () => Promise<void>) {
     path: string,
     method = 'GET',
     body?: object,
-    allowedStatus?: 404 | 409,
+    {
+      allowedStatus,
+      shardlessIndex = false,
+    }: { allowedStatus?: 404 | 409; shardlessIndex?: boolean } = {},
   ) => {
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
@@ -260,9 +263,8 @@ function client(options: MigrationConnection, fence?: () => Promise<void>) {
       method === 'PUT' ||
       method === 'DELETE' ||
       path === '/collections/aliases';
-    const pointOrIndexUpdate = /^\/collections\/[^/]+\/(points|index)\?/.test(
-      path,
-    );
+    const pointUpsert = /^\/collections\/[^/]+\/points\?/.test(path);
+    const payloadIndex = /^\/collections\/[^/]+\/index\?/.test(path);
     let unconfirmed: UnconfirmedMigrationWriteError | undefined;
     const sendWrite = async () => {
       // Recheck ownership on every attempt, including after Retry-After.
@@ -272,20 +274,43 @@ function client(options: MigrationConnection, fence?: () => Promise<void>) {
       try {
         // Let an in-flight mutation finish before cancellation releases the lock.
         const sent = await fetch(url, { ...init, redirect: 'manual' });
-        if (sent.status === 429) return sent;
+        if (sent.status === 429) {
+          // Qdrant can return 429 after a subset of replicas accepted the write.
+          unconfirmed ??= new UnconfirmedMigrationWriteError(
+            `Could not confirm ${method} ${path}: HTTP 429`,
+          );
+          return sent;
+        }
         const body = await sent.text();
         const reply = parseMutationResponse(body);
         const applied = reply?.result;
-        const completed = pointOrIndexUpdate
-          ? typeof applied === 'object' && applied?.status === 'completed'
-          : applied === true;
+        // Qdrant commits the payload schema before updating shards. With no
+        // custom shards, that second step acknowledges without an operation ID.
+        const completed =
+          pointUpsert || payloadIndex
+            ? typeof applied === 'object' &&
+              (applied?.status === 'completed' ||
+                (payloadIndex &&
+                  shardlessIndex &&
+                  applied?.status === 'acknowledged' &&
+                  applied.operation_id == null))
+            : applied === true;
         if (
           sent.ok &&
           sent.status !== 202 &&
           reply?.status === 'ok' &&
           completed
-        )
+        ) {
+          // An identical upsert to the offline backup writes the same values
+          // to the same point IDs, even if an earlier attempt arrives later.
+          // Recovery copies the same offline data, and success deletes the backup.
+          if (
+            pointUpsert &&
+            path.startsWith(`/collections/${MIGRATION_PREFIX}`)
+          )
+            unconfirmed = undefined;
           return sent;
+        }
         const outcome = `HTTP ${sent.status}: ${body}`;
         if (!isDefiniteRejection(sent.status, method, path, reply))
           throw new Error(outcome);
@@ -293,7 +318,7 @@ function client(options: MigrationConnection, fence?: () => Promise<void>) {
         rejection = outcome;
       } catch (error) {
         unconfirmed = new UnconfirmedMigrationWriteError(
-          `Could not confirm ${method} ${path}: ${String(error)}`,
+          `${unconfirmed?.message ?? `Could not confirm ${method} ${path}`}: ${String(error)}`,
         );
         throw unconfirmed;
       }
@@ -307,7 +332,20 @@ function client(options: MigrationConnection, fence?: () => Promise<void>) {
         write ? sendWrite : undefined,
       );
     } catch (error) {
-      throw unconfirmed ?? error;
+      if (!unconfirmed || error === unconfirmed) throw error;
+      throw new UnconfirmedMigrationWriteError(
+        `${unconfirmed.message}. Request stopped: ${String(error)}`,
+      );
+    }
+    // A successful retry may leave an earlier mutation pending. For example,
+    // a late DELETE by name could remove a collection recreated after the retry.
+    if (unconfirmed) {
+      const outcome = response.ok
+        ? 'The retry succeeded'
+        : `The retry was rejected with HTTP ${response.status}`;
+      throw new UnconfirmedMigrationWriteError(
+        `${unconfirmed.message}. ${outcome}. An earlier attempt may still apply`,
+      );
     }
     if (!write && !response.ok && response.status !== allowedStatus)
       throw migrationError(
@@ -323,7 +361,9 @@ async function inspect(
   request: Client,
   path: string,
 ): Promise<CollectionInfo | undefined> {
-  const response = await request(path, 'GET', undefined, 404);
+  const response = await request(path, 'GET', undefined, {
+    allowedStatus: 404,
+  });
   return response.ok ? result<CollectionInfo>(response) : undefined;
 }
 
@@ -369,7 +409,7 @@ async function acquireLock(request: Client, token: string): Promise<void> {
       shard_number: 1,
       replication_factor: 1,
     },
-    409,
+    { allowedStatus: 409 },
   );
   if (response.status === 409) {
     throw migrationError(
@@ -473,14 +513,17 @@ async function createPayloadIndexes(
   request: Client,
   path: string,
   info: CollectionInfo,
+  shardlessIndex: boolean,
 ) {
   for (const [field_name, { data_type, params }] of Object.entries(
     info.payload_schema ?? {},
   )) {
-    await request(`${path}/index?wait=true`, 'PUT', {
-      field_name,
-      field_schema: params ?? data_type,
-    });
+    await request(
+      `${path}/index?wait=true`,
+      'PUT',
+      { field_name, field_schema: params ?? data_type },
+      { shardlessIndex },
+    );
   }
 }
 
@@ -622,16 +665,7 @@ async function shardGroups(request: Client, path: string) {
   return groups;
 }
 
-async function copyCollection(
-  request: Client,
-  from: string,
-  to: string,
-  info: CollectionInfo,
-) {
-  if (info.config.params.sharding_method?.toLowerCase() !== 'custom') {
-    await copyAndVerify(request, from, to);
-    return;
-  }
+async function copyShardKeys(request: Client, from: string, to: string) {
   const source = await shardGroups(request, from);
   const target = await shardGroups(request, to);
   for (const key of target.keys())
@@ -659,8 +693,23 @@ async function copyCollection(
         replication_factor,
         placement: [...new Set(replicas.flatMap((peers) => [...peers]))],
       });
-    await copyAndVerify(request, from, to, shard_key);
   }
+  return [...source.keys()];
+}
+
+async function copyCollection(
+  request: Client,
+  from: string,
+  to: string,
+  info: CollectionInfo,
+) {
+  const shardKeys =
+    info.config.params.sharding_method?.toLowerCase() === 'custom'
+      ? await copyShardKeys(request, from, to)
+      : [undefined];
+  await createPayloadIndexes(request, to, info, shardKeys.length === 0);
+  for (const shardKey of shardKeys)
+    await copyAndVerify(request, from, to, shardKey);
 }
 
 async function migrateOne(
@@ -712,7 +761,6 @@ async function migrateOne(
       await create(request, temporary, source, collection);
       await readRecovery(request, temporaryCollection);
     }
-    await createPayloadIndexes(request, temporary, source);
     await copyCollection(request, original, temporary, source);
     await moveAliases(request, collection, temporaryCollection);
     await request(original, 'DELETE');
@@ -725,7 +773,6 @@ async function migrateOne(
     );
   if (!source || !isMultivector(source.config.params.vectors))
     await create(request, original, saved);
-  await createPayloadIndexes(request, original, saved);
   await copyCollection(request, temporary, original, saved);
   await moveAliases(request, temporaryCollection, collection);
   await request(temporary, 'DELETE');

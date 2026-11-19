@@ -76,7 +76,11 @@ export async function startQdrantStub(
       collection.payloadSchema[String(body.field_name)] = {
         data_type: String(body.field_schema),
       };
-      reply(200, { status: 'ok', result: { status: 'completed' } });
+      const result =
+        collection.shards?.size === 0
+          ? { status: 'acknowledged', operation_id: null }
+          : { status: 'completed' };
+      reply(200, { status: 'ok', result });
       return;
     }
     if (r.path === '/' && r.method === 'GET') {

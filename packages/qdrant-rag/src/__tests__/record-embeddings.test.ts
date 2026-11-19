@@ -420,21 +420,41 @@ test('catalog migration preserves named dense and sparse fields and retries 429 
   assert.ok(!stub.collections.get('unmanaged')?.multivector);
 });
 
-test('custom shard keys retain their points even when IDs are shared between keys', async (t) => {
+test('custom shard keys are created before payload indexes and retain points with shared IDs', async (t) => {
   const stub = await startQdrantStub();
   t.after(() => stub.close());
   const id = await deterministicUUID('same');
   const point = { id, vector: [1, 0], payload: { text: 'west' } };
+  const payloadSchema = { text: { data_type: 'keyword' } };
   stub.collections.set('geo', {
     size: 2,
     points: new Map(),
+    payloadSchema,
     shards: new Map([
       ['west', new Map([[id, point]])],
       ['east', new Map([[id, { ...point, payload: { text: 'east' } }]])],
     ]),
   });
-  await migrateQdrantMultivectors({ url: stub.baseUrl, collection: 'geo' });
-  const shards = stub.collections.get('geo')?.shards;
+  const [{ temporaryCollection }] = await migrateQdrantMultivectors({
+    url: stub.baseUrl,
+    collection: 'geo',
+  });
+  for (const name of [temporaryCollection, 'geo']) {
+    const path = `/collections/${name}`;
+    assert.deepEqual(
+      stub.requests
+        .filter(
+          ({ method, path: requested }) =>
+            method === 'PUT' &&
+            (requested === `${path}/shards` || requested === `${path}/index`),
+        )
+        .map(({ path: requested }) => requested),
+      [`${path}/shards`, `${path}/shards`, `${path}/index`],
+    );
+  }
+  const collection = stub.collections.get('geo');
+  assert.deepEqual(collection?.payloadSchema, payloadSchema);
+  const shards = collection?.shards;
   assert.deepEqual(shards?.get('west')?.get(id), {
     ...point,
     vector: [[1, 0]],
@@ -444,4 +464,21 @@ test('custom shard keys retain their points even when IDs are shared between key
     payload: { text: 'east' },
     vector: [[1, 0]],
   });
+});
+
+test('a shardless custom collection retains its acknowledged payload index schema', async (t) => {
+  const stub = await startQdrantStub();
+  t.after(() => stub.close());
+  const payloadSchema = { text: { data_type: 'keyword' } };
+  stub.collections.set('geo', {
+    size: 2,
+    points: new Map(),
+    shards: new Map(),
+    payloadSchema,
+  });
+  await migrateQdrantMultivectors({ url: stub.baseUrl, collection: 'geo' });
+  assert.deepEqual([...stub.collections.keys()], ['geo']);
+  assert.equal(stub.collections.get('geo')?.multivector, true);
+  assert.deepEqual(stub.collections.get('geo')?.payloadSchema, payloadSchema);
+  assert.equal(stub.collections.get('geo')?.shards?.size, 0);
 });
