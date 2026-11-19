@@ -29,3 +29,19 @@ export function isRagDecorator(rag: IRag): rag is IRag & IRagDecorator {
     typeof inner.query === 'function'
   );
 }
+
+/** Collect the primary decorator chain, rejecting cycles even after a match. */
+export function ragDecoratorChain(rag: IRag | undefined): IRag[] {
+  const chain: IRag[] = [];
+  const visited = new Set<IRag>();
+  for (
+    let store = rag;
+    store;
+    store = isRagDecorator(store) ? store.inner : undefined
+  ) {
+    if (visited.has(store)) throw new Error('Cycle in RAG decorator chain');
+    visited.add(store);
+    chain.push(store);
+  }
+  return chain;
+}

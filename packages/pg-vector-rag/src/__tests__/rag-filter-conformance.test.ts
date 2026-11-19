@@ -4,6 +4,7 @@ import {
   CONFORMANCE_EMBEDDING_DIM,
   conformanceEmbedder,
   ragFilterConformanceCases,
+  ragGetByIdScopeCase,
   ragOwnerFilterConformanceCases,
   ragRawOwnerConformanceCase,
 } from '@mcp-abap-adt/llm-agent/testing/rag-filter-conformance';
@@ -18,6 +19,7 @@ import { storingPg } from './storing-pg.js';
 describe('PgVectorRag — filter conformance (storing fake)', () => {
   for (const c of [
     ...ragFilterConformanceCases,
+    ragGetByIdScopeCase,
     ...ragOwnerFilterConformanceCases,
   ]) {
     it(c.name, () =>
@@ -39,6 +41,7 @@ describe('PgVectorRag — filter conformance (storing fake)', () => {
 describe('PgVectorRag — filter conformance, shared layout (storing fake)', () => {
   for (const c of [
     ...ragFilterConformanceCases,
+    ragGetByIdScopeCase,
     ...ragOwnerFilterConformanceCases,
   ]) {
     it(c.name, () =>

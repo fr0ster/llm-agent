@@ -2,10 +2,12 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
   type CallOptions,
+  CircuitBreaker,
   FallbackRag,
   type ILlm,
   InMemoryRag,
   type IRag,
+  type IRagDecorator,
   type IRagEditor,
   type IRagRegistry,
   type IReranker,
@@ -18,7 +20,7 @@ import {
   symmetricEmbedder,
   TextOnlyEmbedding,
 } from '@mcp-abap-adt/llm-agent';
-import { SmartAgentBuilder } from '../../builder.js';
+import { bindRagEmbedderBreaker, SmartAgentBuilder } from '../../builder.js';
 import { unwrapBuilderResult } from '../../builder-types.js';
 import {
   makeLlm,
@@ -203,51 +205,69 @@ describe('SmartAgentBuilder.withRetrievalStrategy', () => {
     }
   });
 
-  it('a store wrapped before build + circuit breaker → FallbackRag(StrategyRag), no double wrap', async () => {
+  it('a prewrapped store keeps its intervening decorator and reranks the primary once', async () => {
     const { reranker, calls } = countingReranker();
     const strategy = new RerankedRetrieval(reranker, { storeName: 'tools' });
     const tools = applyRetrievalStrategy(
       primaryStore([hit('a', 0.9), hit('b', 0.8)]),
       strategy,
     );
+    const queries: string[] = [];
+    const decorator: IRag & IRagDecorator = {
+      ...primaryStore([]),
+      inner: tools,
+      query(embedding, k, options) {
+        queries.push(embedding.text);
+        return this.inner.query(embedding, k, options);
+      },
+    };
     const handle = await new SmartAgentBuilder({})
       .withRagAccess(testRequestAccess)
       .withMainLlm(makeLlm([{ content: 'ok' }]))
-      .setToolsRag(tools)
+      .setToolsRag(decorator)
       .withCircuitBreaker()
       .withRetrievalStrategy('tools', strategy)
       .build()
       .then(unwrapBuilderResult);
     try {
       const projected = handle.ragStores.tools.rag;
-      assert.ok(projected instanceof FallbackRag);
-      assert.equal(projected.inner, tools);
+      assert.ok(projected instanceof StrategyRag);
+      assert.ok(projected.inner instanceof FallbackRag);
+      assert.equal(projected.inner.inner, decorator);
+      assert.equal(projected.strategy, strategy);
       assert.equal(hasRetrievalStrategy(projected), true);
       await projected.query(q, 1);
+      assert.deepEqual(queries, ['q']);
       assert.equal(calls.length, 1);
     } finally {
       await handle.close();
     }
   });
 
-  it('circuit open with a non-empty fallback: FallbackRag(StrategyRag) bypasses the reranker, StrategyRag(FallbackRag) reranks the fallback', async () => {
+  it('runs either composition once on the selected route and skips global reranking', async () => {
     const tools = countingReranker();
     const docs = countingReranker();
+    const global = countingReranker();
     const toolsStore = applyRetrievalStrategy(
       primaryStore([hit('primary-tool', 0.9)]),
       new RerankedRetrieval(tools.reranker, { storeName: 'tools' }),
     );
     const reg = new SimpleRagRegistry();
-    reg.register('docs', primaryStore([hit('primary-doc', 0.9)]), undefined, {
-      displayName: 'docs',
-      scope: 'global',
-    });
+    for (const name of ['docs', 'plain']) {
+      const primary = hit(`primary-${name}`, 0.9);
+      primary.metadata.ownerScope = 'global';
+      reg.register(name, primaryStore([primary]), undefined, {
+        displayName: name,
+        scope: 'global',
+      });
+    }
     const handle = await new SmartAgentBuilder({})
       .withRagAccess(testRequestAccess)
       .withMainLlm(makeLlm([{ content: 'ok' }]))
       .setRagRegistry(reg)
       .setToolsRag(toolsStore)
       .withCircuitBreaker({ failureThreshold: 1 })
+      .withReranker(global.reranker)
       .withRetrievalStrategy(
         'docs',
         new RerankedRetrieval(docs.reranker, { storeName: 'docs' }),
@@ -257,41 +277,82 @@ describe('SmartAgentBuilder.withRetrievalStrategy', () => {
     try {
       const pTools = handle.ragStores.tools.rag;
       const pDocs = handle.ragStores.docs.rag;
-      assert.ok(pTools instanceof FallbackRag);
+      assert.ok(pTools instanceof StrategyRag);
       assert.ok(pDocs instanceof StrategyRag);
       // Writes fan out to the fallback too, so it is not empty once open.
       await pTools.writer?.()?.upsertRaw('t1', 'fallback tool', { id: 't1' });
-      await pDocs.writer?.()?.upsertRaw('d1', 'fallback doc', { id: 'd1' });
+      await pDocs.writer?.()?.upsertRaw('d1', 'fallback docs', { id: 'd1' });
+      await handle.ragStores.plain.rag
+        .writer?.()
+        ?.upsertRaw('p1', 'fallback plain', { id: 'p1' });
       await tick();
-      // builder.ts pushes exactly two breakers, in order: the main-LLM breaker,
-      // then the embedder breaker that guards every FallbackRag.
-      assert.equal(handle.circuitBreakers.length, 2);
       const embedderBreaker = handle.circuitBreakers[1];
+      assert.equal(embedderBreaker.state, 'closed');
+      await handle.agent.process(
+        'primary',
+        testCallOptions({ sessionId: 's1' }),
+      );
       embedderBreaker.recordFailure();
       assert.equal(embedderBreaker.state, 'open');
+      await handle.agent.process(
+        'fallback',
+        testCallOptions({ sessionId: 's1' }),
+      );
 
-      const rt = await pTools.query(new TextOnlyEmbedding('fallback tool'), 1);
-      assert.ok(rt.ok);
-      assert.deepEqual(
-        rt.value.map((r) => r.text),
-        ['fallback tool'],
-      );
-      assert.equal(tools.calls.length, 0, 'reranker bypassed');
-
-      const rd = await pDocs.query(new TextOnlyEmbedding('fallback doc'), 1);
-      assert.ok(rd.ok);
-      assert.deepEqual(
-        rd.value.map((r) => r.text),
-        ['fallback doc'],
-      );
-      assert.deepEqual(
-        docs.calls,
-        [['fallback doc']],
-        'fallback reranked once',
-      );
+      assert.deepEqual(tools.calls, [['primary-tool'], ['fallback tool']]);
+      assert.deepEqual(docs.calls, [['primary-docs'], ['fallback docs']]);
+      assert.deepEqual(global.calls, [['primary-plain'], ['fallback plain']]);
     } finally {
       await handle.close();
     }
+  });
+
+  it('finds deeply bound breakers and does not add a second guard', async () => {
+    const breaker = new CircuitBreaker();
+    const otherStore = primaryStore([]);
+    bindRagEmbedderBreaker(otherStore, new CircuitBreaker());
+    const guarded = new FallbackRag(
+      primaryStore([]),
+      new InMemoryRag(),
+      breaker,
+    );
+    const deep = (store: IRag) =>
+      Array.from({ length: 32 }).reduce<IRag>(
+        (inner) =>
+          ({ ...primaryStore([]), inner }) satisfies IRag & IRagDecorator,
+        store,
+      );
+    const tools = deep(guarded);
+    const history = deep(otherStore);
+    const handle = await new SmartAgentBuilder({})
+      .withRagAccess(testRequestAccess)
+      .withMainLlm(stubLlm())
+      .withCircuitBreakers({ embedder: breaker })
+      .setToolsRag(tools)
+      .setHistoryRag(history)
+      .build()
+      .then(unwrapBuilderResult);
+    try {
+      assert.equal(handle.ragStores.tools.rag, tools);
+      assert.equal(handle.ragStores.history.rag, history);
+    } finally {
+      await handle.close();
+    }
+  });
+
+  it('rejects a cyclic built-in store during breaker discovery', async () => {
+    const store = primaryStore([]);
+    const cyclic = { ...store, inner: store };
+    cyclic.inner = cyclic;
+    await assert.rejects(
+      new SmartAgentBuilder({})
+        .withRagAccess(testRequestAccess)
+        .withMainLlm(stubLlm())
+        .withCircuitBreaker()
+        .setToolsRag(cyclic)
+        .build(),
+      /Cycle in RAG decorator chain/,
+    );
   });
 
   it('custom registry with setMutationListener: a collection registered after build is projected and wrapped', async () => {

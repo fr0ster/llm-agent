@@ -142,6 +142,62 @@ async function queryIds(
 
 const Q = 'quarterly revenue forecast';
 
+export const ragGetByIdScopeCase: RagFilterConformanceCase = {
+  name: 'getById enforces owner, identity and namespace on cold and warm reads',
+  async run(makeStore) {
+    const rag = await makeStore();
+    await seed(rag, [
+      {
+        id: 'session-record',
+        text: 'lima penguin iceberg',
+        metadata: { sessionId: 'session-a', namespace: 'tenant-a' },
+      },
+      {
+        id: 'user-record',
+        text: 'tandem forklift harbor',
+        metadata: { userId: 'user-a', namespace: 'tenant-a' },
+      },
+      { id: 'global-record', text: Q, metadata: { namespace: 'tenant-a' } },
+    ]);
+    const denied: [string, NonNullable<CallOptions['ragFilter']>][] = [
+      ['session-record', { sessionId: 'session-b' }],
+      [
+        'session-record',
+        { owner: { scope: 'session', sessionId: 'session-b' } },
+      ],
+      ['session-record', { owner: { scope: 'global' } }],
+      ['session-record', { sessionId: 'session-a', userId: 'user-a' }],
+      ['session-record', { sessionId: 'session-a', namespace: 'tenant-b' }],
+      ['user-record', { userId: 'user-b' }],
+      ['user-record', { owner: { scope: 'user', userId: 'user-b' } }],
+      ['user-record', { sessionId: 'user-a' }],
+      ['global-record', { userId: 'user-a' }],
+      ['global-record', { namespace: 'tenant-b' }],
+    ];
+    const assertDenied = async () => {
+      for (const [id, ragFilter] of denied) {
+        assert.deepEqual(
+          await rag.getById(id, { ragFilter }),
+          { ok: true, value: null },
+          `${id}: ${JSON.stringify(ragFilter)}`,
+        );
+      }
+    };
+    await assertDenied();
+    for (const [id, ragFilter] of [
+      ['session-record', { sessionId: 'session-a', namespace: 'tenant-a' }],
+      ['user-record', { owner: { scope: 'user', userId: 'user-a' } }],
+      ['global-record', { owner: { scope: 'global' }, namespace: 'tenant-a' }],
+    ] as const) {
+      const scoped = await rag.getById(id, { ragFilter });
+      assert.ok(scoped.ok && scoped.value?.metadata.id === id);
+      const unscoped = await rag.getById(id);
+      assert.ok(unscoped.ok && unscoped.value?.metadata.id === id);
+    }
+    await assertDenied();
+  },
+};
+
 export const ragFilterConformanceCases: readonly RagFilterConformanceCase[] = [
   ...(['session', 'user', 'global'] as const).map(
     (scope): RagFilterConformanceCase => ({

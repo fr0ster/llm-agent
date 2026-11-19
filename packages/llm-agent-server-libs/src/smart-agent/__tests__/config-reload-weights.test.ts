@@ -5,14 +5,18 @@ import {
   FallbackRag,
   InMemoryRag,
   type IRag,
+  type IRagDecorator,
 } from '@mcp-abap-adt/llm-agent';
 import { EmbeddingRetrieval, StrategyRag } from '@mcp-abap-adt/llm-agent-libs';
 import {
+  type ConfigReloadDeps,
   ConfigReloadWatcher,
   findWeightedStore,
 } from '../config-reload-watcher.js';
 
-type Weights = { vectorWeight?: number; keywordWeight?: number };
+type Weights = Parameters<
+  NonNullable<ReturnType<typeof findWeightedStore>>['updateWeights']
+>[0];
 
 /** A store that takes weight updates, like VectorRag. */
 function weightedStore() {
@@ -22,10 +26,10 @@ function weightedStore() {
       updates.push(w);
     },
   });
-  return { store: store as IRag, updates };
+  return { store, updates };
 }
 
-function watcherOver(ragStores: Record<string, unknown>) {
+function watcherOver(ragStores: ConfigReloadDeps['ragStores']) {
   const watcher = new ConfigReloadWatcher({
     configFile: '/nonexistent/smart-server.yaml',
     log: () => {},
@@ -35,9 +39,8 @@ function watcherOver(ragStores: Record<string, unknown>) {
     invalidateSessions: async () => {},
     ragStores,
   });
-  // White-box: drive one reload without a file watcher.
-  return (u: Weights) =>
-    (watcher as unknown as { _onReload: (u: Weights) => void })._onReload(u);
+  // biome-ignore lint/complexity/useLiteralKeys: Drive the reload without a file watcher.
+  return (u: Weights) => watcher['_onReload'](u);
 }
 
 describe('config reload — RAG weight updates through decorators', () => {
@@ -72,5 +75,36 @@ describe('config reload — RAG weight updates through decorators', () => {
     const reload = watcherOver({ tools: store, other: new InMemoryRag() });
     reload({ keywordWeight: 0.2 });
     assert.equal(updates.length, 1);
+  });
+
+  it('updates a weighted store through a deep projected chain', () => {
+    const { store, updates } = weightedStore();
+    const strategy = new EmbeddingRetrieval();
+    const deep = Array.from({ length: 32 }).reduce<IRag>(
+      (inner) => new StrategyRag(inner, strategy),
+      store,
+    );
+    assert.equal(findWeightedStore(deep), store);
+    watcherOver({ docs: { rag: deep } })({ keywordWeight: 0.4 });
+    assert.deepEqual(updates, [
+      { vectorWeight: undefined, keywordWeight: 0.4 },
+    ]);
+  });
+
+  it('rejects a cycle even when one store can update weights', () => {
+    const { store, updates } = weightedStore();
+    const cyclic: IRag & { inner: IRag } = Object.assign(store, {
+      inner: store,
+    });
+    const outer: IRag & IRagDecorator = new StrategyRag(
+      cyclic,
+      new EmbeddingRetrieval(),
+    );
+    cyclic.inner = outer;
+    assert.throws(
+      () => watcherOver({ tools: outer })({ vectorWeight: 0.4 }),
+      /Cycle in RAG decorator chain/,
+    );
+    assert.deepEqual(updates, []);
   });
 });

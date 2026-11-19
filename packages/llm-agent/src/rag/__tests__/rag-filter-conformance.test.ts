@@ -3,6 +3,7 @@ import { describe, it } from 'node:test';
 import {
   conformanceEmbedder,
   ragFilterConformanceCases,
+  ragGetByIdScopeCase,
   ragOwnerFilterConformanceCases,
   ragRawOwnerConformanceCase,
   seedLegacyRagRecord,
@@ -14,6 +15,7 @@ import { VectorRag } from '../vector-rag.js';
 describe('RAG identity filter conformance — InMemoryRag', () => {
   for (const c of [
     ...ragFilterConformanceCases,
+    ragGetByIdScopeCase,
     ...ragOwnerFilterConformanceCases,
   ]) {
     it(c.name, () => c.run(async () => new InMemoryRag()));
@@ -23,6 +25,7 @@ describe('RAG identity filter conformance — InMemoryRag', () => {
 describe('RAG identity filter conformance — VectorRag', () => {
   for (const c of [
     ...ragFilterConformanceCases,
+    ragGetByIdScopeCase,
     ...ragOwnerFilterConformanceCases,
   ]) {
     it(c.name, () =>
@@ -58,3 +61,26 @@ it('VectorRag shared raw conflicting-owner records are excluded and writes refus
     },
   });
 });
+
+for (const rag of [
+  new InMemoryRag({ namespace: 'native' }),
+  new VectorRag(symmetricEmbedder(conformanceEmbedder()), {
+    namespace: 'native',
+  }),
+]) {
+  it(`${rag.constructor.name} getById cannot cross the store namespace`, async () => {
+    const writer = rag.writer();
+    assert.ok(
+      (await writer.upsertRaw('id', 'example', { namespace: 'native' })).ok,
+    );
+    const own = await rag.getById('id');
+    assert.ok(own.ok && own.value);
+    // The in-memory stores expose stored metadata, including on legacy rows.
+    own.value.metadata.namespace = 'foreign';
+    assert.deepEqual(await rag.getById('id'), { ok: true, value: null });
+    assert.deepEqual(
+      await rag.getById('id', { ragFilter: { namespace: 'foreign' } }),
+      { ok: true, value: null },
+    );
+  });
+}

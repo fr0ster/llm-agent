@@ -4,6 +4,7 @@ import {
   CONFORMANCE_EMBEDDING_DIM,
   conformanceEmbedder,
   ragFilterConformanceCases,
+  ragGetByIdScopeCase,
   ragOwnerFilterConformanceCases,
   ragRawOwnerConformanceCase,
 } from '@mcp-abap-adt/llm-agent/testing/rag-filter-conformance';
@@ -13,6 +14,7 @@ import { storingHana } from './storing-hana.js';
 for (const layout of ['per-collection', 'shared'] as const)
   for (const entry of [
     ...ragFilterConformanceCases,
+    ragGetByIdScopeCase,
     ...ragOwnerFilterConformanceCases,
   ])
     test(`HANA ${layout} ${entry.name}`, () =>

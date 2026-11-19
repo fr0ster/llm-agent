@@ -408,8 +408,13 @@ for (const layout of ['per-collection', 'shared'] as const)
         const store = await env.open();
         await put(store, 'a');
         await text(store, 'a');
-        await put(env.direct(), 'a', 'external');
+        const external = env.direct().writer();
+        value(await external.upsertRaw('a', 'external', { userId: 'scope' }));
         assert.equal(await text(store, 'a'), disabled ? 'external' : 'a');
+        assert.equal(
+          value(await store.getById('a', { ragFilter: { userId: 'target' } })),
+          null,
+        );
         assert.equal(
           value(await store.getById('a', { ragFilter: { userId: 'scope' } }))
             ?.text,

@@ -4,34 +4,33 @@
  * and RAG store weights).
  */
 
-import {
-  type IRag,
-  isRagDecorator,
-  type VectorRag,
-} from '@mcp-abap-adt/llm-agent';
+import { type IRag, ragDecoratorChain } from '@mcp-abap-adt/llm-agent';
 import {
   ConfigWatcher,
   type HotReloadableConfig,
 } from '@mcp-abap-adt/llm-agent-libs';
 
-/** Decorator chains are short; the cap only guards a cyclic `inner`. */
-const MAX_DECORATOR_DEPTH = 16;
+interface WeightUpdatable {
+  updateWeights(
+    config: Pick<HotReloadableConfig, 'vectorWeight' | 'keywordWeight'>,
+  ): void;
+}
+
+function canUpdateWeights(store: IRag): store is IRag & WeightUpdatable {
+  return (
+    typeof (store as Partial<WeightUpdatable>).updateWeights === 'function'
+  );
+}
 
 /**
  * The store that takes weight updates: `store` itself, or the first one down
  * its `IRagDecorator.inner` chain (a `StrategyRag` / `FallbackRag` wrapper
  * hides the `VectorRag` underneath).
  */
-export function findWeightedStore(store: unknown): VectorRag | undefined {
-  let cur: unknown = store;
-  for (let depth = 0; cur && depth < MAX_DECORATOR_DEPTH; depth++) {
-    if (typeof (cur as VectorRag).updateWeights === 'function') {
-      return cur as VectorRag;
-    }
-    const rag = cur as IRag;
-    cur = isRagDecorator(rag) ? rag.inner : undefined;
-  }
-  return undefined;
+export function findWeightedStore(
+  store: IRag | undefined,
+): WeightUpdatable | undefined {
+  return ragDecoratorChain(store).find(canUpdateWeights);
 }
 
 export interface IConfigReloadWatcher {
@@ -53,7 +52,7 @@ export interface ConfigReloadDeps {
   ): void;
   drainWorkers(): Promise<void>;
   invalidateSessions(): Promise<void>;
-  ragStores: Record<string, unknown>;
+  ragStores: Record<string, IRag | { rag: IRag }>;
 }
 
 export class ConfigReloadWatcher implements IConfigReloadWatcher {
@@ -149,11 +148,7 @@ export class ConfigReloadWatcher implements IConfigReloadWatcher {
       update.keywordWeight !== undefined
     ) {
       for (const store of Object.values(this.deps.ragStores)) {
-        findWeightedStore(
-          typeof store === 'object' && store !== null && 'rag' in store
-            ? store.rag
-            : store,
-        )?.updateWeights({
+        findWeightedStore('rag' in store ? store.rag : store)?.updateWeights({
           vectorWeight: update.vectorWeight,
           keywordWeight: update.keywordWeight,
         });

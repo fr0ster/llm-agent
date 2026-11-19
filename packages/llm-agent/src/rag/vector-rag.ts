@@ -333,11 +333,7 @@ export class VectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
             targetNamespace !== undefined &&
             r.metadata.namespace !== targetNamespace
           ) &&
-          !(
-            this.namespace !== undefined &&
-            r.metadata.namespace !== undefined &&
-            r.metadata.namespace !== this.namespace
-          ) &&
+          this.inStore(r.metadata) &&
           matchesRagIdentity(r.metadata, identity),
       );
 
@@ -480,17 +476,38 @@ export class VectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
 
   async getById(
     id: string,
-    _options?: CallOptions,
+    options?: CallOptions,
   ): Promise<Result<RagResult | null, RagError>> {
-    for (const r of this.records) {
-      if (r !== null && (r.metadata.id ?? r.id) === id) {
-        return {
-          ok: true,
-          value: { text: r.text, metadata: r.metadata, score: 1 },
-        };
-      }
+    if (options?.signal?.aborted) {
+      return { ok: false, error: new RagError('Aborted', 'ABORTED') };
     }
-    return { ok: true, value: null };
+    try {
+      const identity = ragIdentityFilter(options);
+      const namespace = options?.ragFilter?.namespace;
+      for (const r of this.records) {
+        if (
+          r !== null &&
+          (r.metadata.id ?? r.id) === id &&
+          this.inStore(r.metadata) &&
+          (namespace === undefined || r.metadata.namespace === namespace) &&
+          matchesRagIdentity(r.metadata, identity)
+        ) {
+          return {
+            ok: true,
+            value: { text: r.text, metadata: r.metadata, score: 1 },
+          };
+        }
+      }
+      return { ok: true, value: null };
+    } catch (err) {
+      return {
+        ok: false,
+        error:
+          err instanceof RagError
+            ? err
+            : new RagError(String(err), 'QUERY_ERROR'),
+      };
+    }
   }
 
   writer(): IRagBackendWriter {
