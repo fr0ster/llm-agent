@@ -23,13 +23,13 @@
     "test": "node --import tsx/esm --test --test-reporter=spec 'src/**/*.test.ts'"
   },
   "peerDependencies": {
-    "@mcp-abap-adt/hana-vector-rag": "^33.0.0",
+    "@mcp-abap-adt/hana-vector-rag": "^33.0.1",
     "@mcp-abap-adt/interfaces-auth": "^2.1.0",
-    "@mcp-abap-adt/llm-agent": "^35.0.0",
+    "@mcp-abap-adt/llm-agent": "^35.1.0",
     "@mcp-abap-adt/ollama-embedder": "^32.0.0",
     "@mcp-abap-adt/openai-embedder": "^31.0.0",
-    "@mcp-abap-adt/pg-vector-rag": "^33.0.0",
-    "@mcp-abap-adt/qdrant-rag": "^33.0.0",
+    "@mcp-abap-adt/pg-vector-rag": "^33.0.1",
+    "@mcp-abap-adt/qdrant-rag": "^33.0.1",
     "@mcp-abap-adt/sap-aicore-embedder": "^30.9.1",
     "@mcp-abap-adt/voyage-embedder": "^0.1.0"
   },
