@@ -17,7 +17,12 @@ export type StubPoint = {
   vector: StubDense | Record<string, StubDense | StubSparse>;
   payload: Record<string, StubJson>;
 };
-export type StubRequest = { method: string; path: string; body: StubJson };
+export type StubRequest = {
+  method: string;
+  path: string;
+  search: string;
+  body: StubJson;
+};
 export type StubCollection = {
   size: number;
   multivector?: boolean;
@@ -257,6 +262,7 @@ export async function startQdrantStub(
                     id,
                     payload: p.payload,
                     ...(body.with_vector ? { vector: p.vector } : {}),
+                    shard_key: body.shard_key,
                   },
                 ]
               : [];
@@ -293,6 +299,7 @@ export async function startQdrantStub(
               ...(body.with_vector
                 ? { vector: scopedPoints.get(id)?.vector }
                 : {}),
+              shard_key: body.shard_key,
             })),
             next_page_offset: ids[start + limit] ?? null,
           },
@@ -384,9 +391,11 @@ export async function startQdrantStub(
       raw += chunk.toString('utf8');
     });
     req.on('end', async () => {
+      const url = new URL(req.url ?? '/', 'http://stub');
       const request: StubRequest = {
         method: req.method ?? 'GET',
-        path: new URL(req.url ?? '/', 'http://stub').pathname,
+        path: url.pathname,
+        search: url.search,
         body: raw ? JSON.parse(raw) : undefined,
       };
       requests.push(request);

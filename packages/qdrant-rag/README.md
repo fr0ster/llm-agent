@@ -31,19 +31,55 @@ requests. Set `QDRANT_URL` and, when needed, `QDRANT_API_KEY` in the environment
 ```sh
 qdrant-migrate-multivector --collection my_collection --dry-run
 qdrant-migrate-multivector --collection my_collection
+qdrant-migrate-multivector --collections provider_docs,standalone_docs --dry-run
+qdrant-migrate-multivector --collections provider_docs --collections standalone_docs
+qdrant-migrate-multivector --collections=
 qdrant-migrate-multivector --all
 ```
 
-Use `--all --catalog NAME` when the provider has a custom catalog, or
-`--collection NAME` for an independently managed store. Applications can
-call `migrateQdrantMultivectors({ url, collection, credential, signal })`.
+Use `--all --catalog NAME` when the provider has a custom catalog. Use
+`--collections` to pass physical collection names in order, separated by commas
+or with repeated flags. `--collections=` runs recovery only.
+
+```ts
+import { migrateQdrantMultivectors } from '@mcp-abap-adt/qdrant-rag';
+
+const reports = await migrateQdrantMultivectors({
+  url,
+  credential,
+  signal,
+  collections: ['provider_docs', 'standalone_docs', 'optional_docs'],
+});
+```
+
+The API accepts one selector (`collection`, `collections`, or `catalogCollection`).
+Omit all selectors to use the default catalog. Every invocation handles each
+interrupted migration once before processing its selection, including recovery
+for collections outside the selection or catalog. With `collections`, unique
+names that still need processing are handled in the order provided. An empty
+array runs recovery only. A listed collection with no original or temporary copy
+is reported as `absent`, and processing continues. The `temporaryCollection`
+field is the deterministic name that would be used during migration. A failure
+stops the run at the first error. `dryRun: true` and `--dry-run` report the plan,
+including `resume` and `absent` entries, without writing to Qdrant.
+
 The migration copies IDs, payloads, dense vectors, sparse vectors and collection
-and payload-index settings, and restores collection aliases. It verifies the
-temporary copy before replacing the original under its existing name, then
-verifies the restored copy. Each invocation recovers interrupted migrations
-before processing the requested collection or catalog, including collections
-without a catalog entry. A dry run reports these recoveries as `resume` and
-leaves Qdrant unchanged.
+and payload-index settings, and restores collection aliases. It verifies every
+point's payload, vectors, and shard key page by page and checks exact point
+counts. This happens first for the temporary copy, before replacing the original,
+and again for the restored original before removing the temporary copy. Point
+reads request `consistency=all`.
+
+The API throws `RagError` with one of the exported
+`QdrantMultivectorMigrationErrorCode` values. The CLI prints the code with the
+error message.
+
+| Exported code | Meaning and operator action |
+| --- | --- |
+| `RAG_MIGRATION_REJECTED` | Qdrant rejected the request before applying it, such as pre-handler HTTP 400 or 422 validation or an HTTP 409 duplicate collection create. Correct the request or resolve the conflict, then rerun. |
+| `RAG_MIGRATION_UNCONFIRMED` | The request outcome is uncertain, such as a terminal HTTP 429, a 5xx response, a network failure, cancellation, or an unrecognized response. Keep writers stopped, wait for pending operations to settle, then rerun. |
+| `RAG_MIGRATION_VERIFICATION` | Point content or an exact count differs. Keep the copies in place, investigate the discrepancy, then rerun. |
+| `RAG_MIGRATION_PRECONDITION` | Migration is blocked by a condition such as an alias, name collision, unreadable recovery marker, missing verified copy, unexpected shard key, or inconsistent shard replication. Resolve the condition described in the error before rerunning. |
 
 After an interruption or an unconfirmed operation, keep writers stopped and
 wait for all pending Qdrant operations from that run to settle. Then rerun the
