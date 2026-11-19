@@ -47,14 +47,18 @@ token without acquiring the lock. API callers can receive this through
 
 Migration and recovery share a deployment-wide lock in
 `__rag_multivector_migration__lock`. A second run exits with the holder token.
-The migration checks its token before collection and alias changes and
-releases its lock on completion or a confirmed failure. A crash or an
-unconfirmed write can leave the lock in place. The lock has no expiration.
+The migration checks its token before every mutation. It releases the lock
+automatically only after Qdrant has confirmed completion or a definite
+rejection for every write. On an unconfirmed write, such as HTTP 500,
+a proxy timeout or a connection failure, the migration stops and reports
+the holder token. The lock has no expiration.
 
-To resume after a crash, first confirm that no migration or lock-release
-process is running against the deployment and that any in-flight Qdrant
-writes from the prior run have settled. Use the holder token from the error
-or a dry run and release the lock once against the same deployment.
+Use `--release-lock` only after confirming that no migration or other
+lock-release process is running against the deployment and that all pending
+server operations from earlier runs have settled. The command checks the token
+and deletes the lock in separate requests. Keep other migration and lock-release
+processes stopped until the command finishes. Use the holder token from the
+error or a dry run and release the lock once against the same deployment.
 
 ```sh
 qdrant-migrate-multivector --release-lock HOLDER_TOKEN
@@ -62,7 +66,7 @@ qdrant-migrate-multivector --release-lock HOLDER_TOKEN
 
 Applications can call
 `releaseQdrantMultivectorMigrationLock({ url, credential }, holderToken)`.
-Release requires a matching token. After release completes, rerun the
+The same preconditions apply to the API. After release completes, rerun the
 migration to recover any temporary collections.
 
 An unreadable recovery marker stops the command and leaves its temporary

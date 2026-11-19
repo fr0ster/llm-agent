@@ -2,10 +2,29 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { test } from 'node:test';
 import { symmetricEmbedder } from '@mcp-abap-adt/llm-agent';
-import { migrateQdrantMultivectors } from '../migrate-multivector.js';
+import {
+  migrateQdrantMultivectors,
+  releaseQdrantMultivectorMigrationLock,
+} from '../migrate-multivector.js';
 import { MIGRATION_LOCK_COLLECTION, MIGRATION_PREFIX } from '../multivector.js';
 import { deterministicUUID, QdrantRag } from '../qdrant-rag.js';
 import { startQdrantStub } from './qdrant-stub.js';
+
+async function releaseAfterSettledWrite(options: {
+  url: string;
+  collection: string;
+}) {
+  let token: string | null = null;
+  await migrateQdrantMultivectors({
+    ...options,
+    dryRun: true,
+    onLockStatus: (status) => {
+      if (status.locked) token = status.ownerToken;
+    },
+  });
+  assert.ok(token);
+  await releaseQdrantMultivectorMigrationLock(options, token);
+}
 
 const embedder = symmetricEmbedder({
   async embed(text) {
@@ -174,6 +193,7 @@ for (const [label, method, path] of [
         stub.collections.get('docs')?.multivector === true);
     await assert.rejects(migrateQdrantMultivectors(opts), /HTTP 500/);
     stub.failOn = undefined;
+    if (method !== 'POST') await releaseAfterSettledWrite(opts);
     await migrateQdrantMultivectors(opts);
     assert.deepEqual([...stub.collections.keys()], ['docs']);
     assert.equal(stub.aliases.get('read_docs'), 'docs');
@@ -252,6 +272,7 @@ for (const [label, useCatalog, collection] of [
       [...(stub.collections.get(temporary)?.points.values() ?? [])],
       [{ ...point, vector: [[1, 0]] }],
     );
+    await releaseAfterSettledWrite({ ...opts, collection: original });
 
     const expected = [
       {

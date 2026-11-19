@@ -38,7 +38,9 @@ export type QdrantStub = {
   readonly requests: StubRequest[];
   readonly aliases: Map<string, string>;
   beforeRequest?: (r: StubRequest) => void | Promise<void>;
-  failOn?: (r: StubRequest) => boolean | number;
+  failOn?: (
+    r: StubRequest,
+  ) => boolean | number | 'disconnect' | { status: number; body: StubJson };
   throttle?: (r: StubRequest) => boolean;
   version?: string;
   /** Runs inside a points PUT to the catalog, before it is applied — a racing writer. */
@@ -74,7 +76,7 @@ export async function startQdrantStub(
       collection.payloadSchema[String(body.field_name)] = {
         data_type: String(body.field_schema),
       };
-      reply(200, { result: true });
+      reply(200, { status: 'ok', result: { status: 'completed' } });
       return;
     }
     if (r.path === '/' && r.method === 'GET') {
@@ -114,7 +116,7 @@ export async function startQdrantStub(
             action.create_alias.collection_name,
           );
       }
-      reply(200, { result: true });
+      reply(200, { status: 'ok', result: true });
       return;
     }
     const coll = r.path.match(/^\/collections\/([^/]+)$/);
@@ -152,7 +154,9 @@ export async function startQdrantStub(
       if (r.method === 'PUT') {
         if (c) {
           reply(409, {
-            status: { error: `Collection \`${name}\` already exists!` },
+            status: {
+              error: `Wrong input: Collection \`${name}\` already exists!`,
+            },
           });
           return;
         }
@@ -168,14 +172,14 @@ export async function startQdrantStub(
           sparseVectors: body.sparse_vectors as StubCollection['sparseVectors'],
           points: new Map(),
         });
-        reply(200, { result: true });
+        reply(200, { status: 'ok', result: true });
         return;
       }
       if (r.method === 'DELETE') {
         collections.delete(name);
         for (const [alias, target] of aliases)
           if (target === name) aliases.delete(alias);
-        reply(200, { result: true });
+        reply(200, { status: 'ok', result: true });
         return;
       }
     }
@@ -201,7 +205,7 @@ export async function startQdrantStub(
         return;
       }
       collection.shards.set(String(body.shard_key), new Map());
-      reply(200, { result: true });
+      reply(200, { status: 'ok', result: true });
       return;
     }
     if (r.path === '/collections' && r.method === 'GET') {
@@ -234,7 +238,7 @@ export async function startQdrantStub(
           if (insertOnly && scopedPoints.has(p.id)) continue;
           scopedPoints.set(p.id, p);
         }
-        reply(200, { result: { status: 'completed' } });
+        reply(200, { status: 'ok', result: { status: 'completed' } });
         return;
       }
       if (r.method === 'POST' && action === undefined) {
@@ -394,9 +398,13 @@ export async function startQdrantStub(
       }
       const failure = stub?.failOn?.(request);
       if (failure) {
-        reply(failure === true ? 500 : failure, {
-          status: { error: 'refused by the test' },
-        });
+        if (failure === 'disconnect') req.socket.destroy();
+        else if (typeof failure === 'object')
+          reply(failure.status, failure.body);
+        else
+          reply(failure === true ? 500 : failure, {
+            status: { error: 'refused by the test' },
+          });
         return;
       }
       route(request, reply);

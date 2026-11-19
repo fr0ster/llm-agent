@@ -194,6 +194,50 @@ function recoveryVectors(collection: string): Record<string, object> {
   );
 }
 
+interface MutationResponse {
+  result?: boolean | { status?: string } | null;
+  status?: 'ok' | { error?: string };
+  time?: number;
+}
+
+function parseMutationResponse(body: string): MutationResponse | null {
+  try {
+    return JSON.parse(body) as MutationResponse | null;
+  } catch {
+    return null;
+  }
+}
+
+function isDefiniteRejection(
+  status: number,
+  method: string,
+  path: string,
+  reply: MutationResponse | null,
+): boolean {
+  const error =
+    typeof reply?.status === 'object' ? reply.status?.error : undefined;
+  if (typeof error !== 'string') return false;
+
+  // Duplicate collection creation is rejected before replacing the collection.
+  if (
+    status === 409 &&
+    method === 'PUT' &&
+    /^\/collections\/[^/?]+(?:\?|$)/.test(path)
+  )
+    return (
+      error.startsWith('Wrong input: Collection ') &&
+      error.endsWith(' already exists!')
+    );
+
+  // Actix extractor errors occur before the mutation handler runs. Qdrant can
+  // also return 400 or 404 after a partial shard or alias update.
+  if (reply?.time !== 0) return false;
+  return (
+    (status === 400 && /^(Deserialize|Format) error in /.test(error)) ||
+    (status === 422 && error.startsWith('Validation error in '))
+  );
+}
+
 function client(options: MigrationConnection, fence?: () => Promise<void>) {
   return async (
     path: string,
@@ -216,22 +260,44 @@ function client(options: MigrationConnection, fence?: () => Promise<void>) {
       method === 'PUT' ||
       method === 'DELETE' ||
       path === '/collections/aliases';
+    const pointOrIndexUpdate = /^\/collections\/[^/]+\/(points|index)\?/.test(
+      path,
+    );
     let unconfirmed: UnconfirmedMigrationWriteError | undefined;
     const sendWrite = async () => {
       // Recheck ownership on every attempt, including after Retry-After.
       await fence?.();
       options.signal?.throwIfAborted();
+      let rejection: string;
       try {
         // Let an in-flight mutation finish before cancellation releases the lock.
-        const sent = await fetch(url, init);
-        if (![202, 408, 502, 503, 504].includes(sent.status)) return sent;
-        throw new Error(`HTTP ${sent.status}: ${await sent.text()}`);
+        const sent = await fetch(url, { ...init, redirect: 'manual' });
+        if (sent.status === 429) return sent;
+        const body = await sent.text();
+        const reply = parseMutationResponse(body);
+        const applied = reply?.result;
+        const completed = pointOrIndexUpdate
+          ? typeof applied === 'object' && applied?.status === 'completed'
+          : applied === true;
+        if (
+          sent.ok &&
+          sent.status !== 202 &&
+          reply?.status === 'ok' &&
+          completed
+        )
+          return sent;
+        const outcome = `HTTP ${sent.status}: ${body}`;
+        if (!isDefiniteRejection(sent.status, method, path, reply))
+          throw new Error(outcome);
+        if (sent.status === allowedStatus) return sent;
+        rejection = outcome;
       } catch (error) {
         unconfirmed = new UnconfirmedMigrationWriteError(
           `Could not confirm ${method} ${path}: ${String(error)}`,
         );
         throw unconfirmed;
       }
+      throw migrationError(`${method} ${path} failed (${rejection})`);
     };
     let response: Response;
     try {
@@ -243,7 +309,7 @@ function client(options: MigrationConnection, fence?: () => Promise<void>) {
     } catch (error) {
       throw unconfirmed ?? error;
     }
-    if (!response.ok && response.status !== allowedStatus)
+    if (!write && !response.ok && response.status !== allowedStatus)
       throw migrationError(
         `${method} ${path} failed (HTTP ${response.status}): ${await response.text()}`,
       );
@@ -277,7 +343,11 @@ function describeLock(status: QdrantMultivectorMigrationLockStatus): string {
   if (!status.locked) return `Migration lock "${status.collection}" is absent.`;
   if (!status.ownerToken)
     return `Migration lock "${status.collection}" has an unreadable holder token. Inspect the lock before attempting recovery.`;
-  return `Migration lock "${status.collection}" is held by token "${status.ownerToken}". After confirming no migration or release process is running, run qdrant-migrate-multivector --release-lock ${status.ownerToken} against the same deployment.`;
+  return `Migration lock "${status.collection}" is held by token "${status.ownerToken}". ${releaseInstructions(status.ownerToken)}`;
+}
+
+function releaseInstructions(token: string): string {
+  return `After confirming no migration or release process is running and all pending Qdrant operations have settled, run qdrant-migrate-multivector --release-lock ${token} against the same deployment if the lock is still held by that token.`;
 }
 
 async function requireLock(request: Client, token: string): Promise<void> {
@@ -302,29 +372,27 @@ async function acquireLock(request: Client, token: string): Promise<void> {
     409,
   );
   if (response.status === 409) {
-    await response.body?.cancel();
     throw migrationError(
       `Could not acquire migration lock (HTTP 409). ${describeLock(await readLock(request))}`,
     );
   }
-  if ((await result<boolean>(response)) !== true)
-    throw migrationError(
-      `Qdrant did not confirm creation of migration lock "${MIGRATION_LOCK_COLLECTION}" for token "${token}".`,
-    );
 }
 
-/** Release a lock after confirming that no migration or release process is running. */
+/** Release a lock once other migration and release processes have stopped and pending Qdrant writes have settled. */
 export async function releaseQdrantMultivectorMigrationLock(
   options: MigrationConnection,
   token: string,
 ): Promise<void> {
   const read = client(options);
   const request = client(options, () => requireLock(read, token));
-  const response = await request(`${lockPath}?wait=true`, 'DELETE');
-  if ((await result<boolean>(response)) !== true)
+  try {
+    await request(`${lockPath}?wait=true`, 'DELETE');
+  } catch (error) {
+    if (!(error instanceof UnconfirmedMigrationWriteError)) throw error;
     throw migrationError(
-      `Qdrant did not confirm release of migration lock "${MIGRATION_LOCK_COLLECTION}" for token "${token}".`,
+      `${error.message}. Release of migration lock "${MIGRATION_LOCK_COLLECTION}" for token "${token}" is unconfirmed. ${releaseInstructions(token)}`,
     );
+  }
 }
 
 async function readRecovery(request: Client, temporaryCollection: string) {
@@ -676,9 +744,11 @@ export async function migrateQdrantMultivectors(
   }
 
   const token = randomUUID();
-  await acquireLock(request, token);
+  let acquired = false;
   let failure: Error | undefined;
   try {
+    await acquireLock(request, token);
+    acquired = true;
     await requireLock(request, token);
     const reports = await migrateCollections(
       client(options, () => requireLock(request, token)),
@@ -689,11 +759,12 @@ export async function migrateQdrantMultivectors(
   } catch (error) {
     failure = error instanceof Error ? error : new Error(String(error));
     if (!(error instanceof UnconfirmedMigrationWriteError)) throw error;
+    const outcome = acquired ? 'was retained' : 'may still be acquired';
     throw migrationError(
-      `${error.message}. Migration lock "${MIGRATION_LOCK_COLLECTION}" was retained for token "${token}". Confirm that the operation has settled before releasing the lock.`,
+      `${error.message}. Migration lock "${MIGRATION_LOCK_COLLECTION}" ${outcome} for token "${token}". ${releaseInstructions(token)}`,
     );
   } finally {
-    if (!(failure instanceof UnconfirmedMigrationWriteError)) {
+    if (acquired && !(failure instanceof UnconfirmedMigrationWriteError)) {
       await releaseQdrantMultivectorMigrationLock(
         { ...options, signal: undefined },
         token,
