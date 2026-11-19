@@ -473,7 +473,9 @@ for (const layout of ['per-collection', 'shared'] as const)
       env.client.query = async (sql, params) => {
         if (
           sql.startsWith('DROP TABLE') ||
-          (sql.startsWith('DELETE') && sql.includes('"rag_documents"'))
+          (sql.startsWith('DELETE') &&
+            sql.includes('"rag_documents"') &&
+            !sql.includes('fragment_ordinal'))
         ) {
           entered.resolve();
           await release.promise;

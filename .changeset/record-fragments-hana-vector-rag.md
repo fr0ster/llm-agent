@@ -2,4 +2,4 @@
 "@mcp-abap-adt/hana-vector-rag": major
 ---
 
-Deploy the companion REAL_VECTOR fragment table before shared or manually managed stores can search or write. Rank distinct records in HANA and update their fragments transactionally.
+Store fragment vectors in the documents table and rank distinct records in HANA. Redeploy the existing HDI documents artifact or run the in-place SQL migration to add the fragment ordinal to the primary key.

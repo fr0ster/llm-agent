@@ -48,7 +48,7 @@ import {
   createExtensionSql,
   createTableSql,
   dropTableSql,
-  fragmentTableName,
+  fragmentOrdinalMigrationSql,
   qualifiedTable,
   quoteIdent,
 } from './schema.js';
@@ -357,21 +357,18 @@ export class PgVectorRagProvider
         [schema],
       );
       const names = rows.map((r) => String(r.table_name));
-      const fragments = new Set(names.map(fragmentTableName));
       return {
         ok: true,
-        value: names
-          .filter((name) => !fragments.has(name))
-          .filter(
-            (t) =>
-              t !== this.catalogTable &&
-              ![
-                'rag_roles',
-                'rag_role_assignments',
-                'rag_collection_roles',
-                'rag_session_bindings',
-              ].includes(t),
-          ),
+        value: names.filter(
+          (t) =>
+            t !== this.catalogTable &&
+            ![
+              'rag_roles',
+              'rag_role_assignments',
+              'rag_collection_roles',
+              'rag_session_bindings',
+            ].includes(t),
+        ),
       };
     } catch (err) {
       return { ok: false, error: new RagError(String(err), 'RAG_LIST_ERROR') };
@@ -524,10 +521,12 @@ export class PgVectorRagProvider
         ).rows[0]?.present
       )
         continue;
+      if (this.layout === 'per-collection' && this.autoCreateSchema)
+        await client.query(fragmentOrdinalMigrationSql(name));
       let cursor: { id: string; collection: string } | undefined;
       for (;;) {
         const { rows } = await client.query(
-          `SELECT id, metadata${this.layout === 'shared' ? ', collection' : ''} FROM ${table}${cursor ? (this.layout === 'shared' ? ' WHERE (collection, id) > ($1, $2)' : ' WHERE id > $1') : ''} ORDER BY ${this.layout === 'shared' ? 'collection, ' : ''}id LIMIT ${OWNER_MIGRATION_BATCH_SIZE}`,
+          `SELECT id, metadata${this.layout === 'shared' ? ', collection' : ''} FROM ${table} WHERE fragment_ordinal = 0${cursor ? (this.layout === 'shared' ? ' AND (collection, id) > ($1, $2)' : ' AND id > $1') : ''} ORDER BY ${this.layout === 'shared' ? 'collection, ' : ''}id LIMIT ${OWNER_MIGRATION_BATCH_SIZE}`,
           cursor
             ? this.layout === 'shared'
               ? [cursor.collection, cursor.id]
@@ -570,11 +569,26 @@ export class PgVectorRagProvider
             )
           )
             continue;
+          const { ownerScope, sessionId, userId, roleId, namespace, ttl } =
+            tagged;
+          const fragmentMetadata = JSON.stringify({
+            ownerScope,
+            sessionId,
+            userId,
+            roleId,
+            namespace,
+            ttl,
+          });
           await client.query(
-            `UPDATE ${table} SET metadata = $1::jsonb WHERE id = $2${this.layout === 'shared' ? ' AND collection = $3' : ''}`,
+            `UPDATE ${table} SET metadata = CASE WHEN fragment_ordinal = 0 THEN $1::jsonb ELSE $3::jsonb END WHERE id = $2${this.layout === 'shared' ? ' AND collection = $4' : ''}`,
             this.layout === 'shared'
-              ? [JSON.stringify(tagged), row.id, row.collection]
-              : [JSON.stringify(tagged), row.id],
+              ? [
+                  JSON.stringify(tagged),
+                  row.id,
+                  fragmentMetadata,
+                  row.collection,
+                ]
+              : [JSON.stringify(tagged), row.id, fragmentMetadata],
           );
         }
         const last = rows[rows.length - 1];

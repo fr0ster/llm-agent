@@ -1,5 +1,5 @@
 import { catalogColumnsSql } from './catalog.js';
-import { fragmentTableDdl, fragmentTableName, quoteIdent } from './schema.js';
+import { quoteIdent } from './schema.js';
 
 /** Default table of the `shared` layout: one documents table for all collections. */
 export const SHARED_DOCUMENTS_TABLE = 'RAG_DOCUMENTS';
@@ -20,21 +20,9 @@ export function sharedDocumentsHdbtable(
   "VECTOR" REAL_VECTOR(${dimension}),
   "METADATA" NCLOB,
   "CREATED_AT" TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-  PRIMARY KEY ("COLLECTION", "ID")
+  "FRAGMENT_ORDINAL" INTEGER DEFAULT 0 NOT NULL,
+  PRIMARY KEY ("COLLECTION", "ID", "FRAGMENT_ORDINAL")
 )`;
-}
-
-/** HDI deploys the fragment table and its foreign key as separate artifacts. */
-export function sharedFragmentsHdbtable(
-  table: string,
-  dimension: number,
-): string {
-  return fragmentTableDdl(table, dimension, 'shared', false);
-}
-
-export function sharedFragmentsHdbconstraint(table: string): string {
-  const fragments = fragmentTableName(table);
-  return `CONSTRAINT "RAG_FRAGMENTS_DOCUMENT_FK" ON ${quoteIdent(fragments)} FOREIGN KEY ("COLLECTION", "ID") REFERENCES ${quoteIdent(table)} ("COLLECTION", "ID") ON DELETE CASCADE`;
 }
 
 /** Body of an HDI `.hdbtable` file for the catalog table. */
@@ -57,10 +45,5 @@ export function sharedLayoutSql(opts: {
   const catalog = sharedCatalogHdbtable(
     opts.catalogTable ?? SHARED_CATALOG_TABLE,
   );
-  const fragments = fragmentTableDdl(
-    opts.documentsTable ?? SHARED_DOCUMENTS_TABLE,
-    opts.dimension,
-    'shared',
-  );
-  return `CREATE ${catalog};\nCREATE ${documents};\nCREATE ${fragments};`;
+  return `CREATE ${catalog};\nCREATE ${documents};`;
 }

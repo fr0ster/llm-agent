@@ -44,8 +44,8 @@ function splitDocument(text: string, size: number): string[] {
     if (end < text.length) {
       if (paragraphEnd > start) end = paragraphEnd;
       else if (lineEnd > start) end = lineEnd;
-      else if (text[end - 1] === '\r' && text[end] === '\n') {
-        end = end - 1 > start ? end - 1 : end + 1;
+      else if (size >= 2 && text[end - 1] === '\r' && text[end] === '\n') {
+        end--;
       }
     }
     fragments.push(text.slice(start, end));
@@ -54,7 +54,8 @@ function splitDocument(text: string, size: number): string[] {
   return fragments.length === 0 ? [text] : fragments;
 }
 
-async function waitForEmbedding<T>(
+/** Retry a throttled RAG operation for as long as the caller allows it to run. */
+export async function retryRagThrottle<T>(
   call: () => Promise<T>,
   signal?: AbortSignal,
 ): Promise<T> {
@@ -111,7 +112,7 @@ export async function embedDocumentRecords(
     usage: options?.usage?.with({ role: 'embedding' }),
   };
   const run = <T>(request: () => Promise<T>) =>
-    waitForEmbedding(request, options?.signal);
+    retryRagThrottle(request, options?.signal);
   const getCapacity = embedder.getMaxInputChars?.bind(embedder);
   const size =
     (getCapacity && (await run(() => getCapacity(callOptions)))) ??

@@ -6,6 +6,7 @@ const root = new URL('../../', import.meta.url);
 const packages = [
   'pg-vector-rag',
   'hana-vector-rag',
+  'qdrant-rag',
   'ollama-embedder',
 ] as const;
 

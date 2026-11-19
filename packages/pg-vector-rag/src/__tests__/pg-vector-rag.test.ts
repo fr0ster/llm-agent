@@ -177,7 +177,7 @@ describe('PgVectorRag — session/user filter (security)', () => {
     const lastSelect = () => {
       const c = [...client.calls]
         .reverse()
-        .find((x) => x.sql.startsWith('WITH RECURSIVE fragment_hits'));
+        .find((x) => x.sql.startsWith('WITH candidate_rows'));
       if (!c) throw new Error('no search SELECT issued');
       return c;
     };
@@ -194,7 +194,7 @@ describe('PgVectorRag — session/user filter (security)', () => {
     const { sql, params } = lastSelect();
     assert.match(
       sql,
-      /WHERE .*ownerScope.* AND CASE WHEN jsonb_typeof\(metadata->'sessionId'\) = 'string' THEN metadata->>'sessionId' END = \$2 AND CASE WHEN jsonb_typeof\(metadata->'userId'\) = 'string' THEN metadata->>'userId' END = \$3 AND COALESCE\(.*\) >= \$4 ORDER BY "vector" <=> .* LIMIT 4/,
+      /WHERE .*ownerScope.* AND CASE WHEN jsonb_typeof\(metadata->'sessionId'\) = 'string' THEN metadata->>'sessionId' END = \$2 AND CASE WHEN jsonb_typeof\(metadata->'userId'\) = 'string' THEN metadata->>'userId' END = \$3 AND .*COALESCE\(.*\) >= \$4 AND "vector" IS NOT NULL ORDER BY "vector" <=> .* LIMIT 4/,
     );
     assert.deepEqual(params.slice(0, 3), ['session', 's1', 'u1']);
   });
@@ -205,9 +205,11 @@ describe('PgVectorRag — session/user filter (security)', () => {
     const { sql, params } = lastSelect();
     assert.match(
       sql,
-      /WHERE .*ownerScope.* AND CASE WHEN jsonb_typeof\(metadata->'userId'\) = 'string' THEN metadata->>'userId' END = \$2 AND COALESCE/,
+      /WHERE .*ownerScope.* AND CASE WHEN jsonb_typeof\(metadata->'userId'\) = 'string' THEN metadata->>'userId' END = \$2 AND .*COALESCE/,
     );
-    assert.ok(!sql.includes("'sessionId'"));
+    assert.ok(
+      sql.includes("NOT COALESCE(jsonb_exists(metadata, 'sessionId'), false)"),
+    );
     assert.equal(params[1], 'u1');
     assert.equal(params.length, 3);
   });
@@ -219,7 +221,7 @@ describe('PgVectorRag — session/user filter (security)', () => {
     const { sql, params } = lastSelect();
     assert.match(
       sql,
-      /WHERE COALESCE\(CASE WHEN jsonb_typeof\(metadata->'ttl'\) = 'number' THEN \(metadata->>'ttl'\)::float8 END, 'infinity'::float8\) >= \$1 ORDER BY/,
+      /WHERE COALESCE\(CASE WHEN jsonb_typeof\(metadata->'ttl'\) = 'number' THEN \(metadata->>'ttl'\)::float8 END, 'infinity'::float8\) >= \$1 AND "vector" IS NOT NULL ORDER BY/,
     );
     assert.equal(params.length, 1);
     assert.ok(Number(params[0]) >= before - 1);
@@ -231,7 +233,7 @@ describe('PgVectorRag — session/user filter (security)', () => {
     const { sql, params } = lastSelect();
     assert.match(
       sql,
-      /WHERE CASE WHEN jsonb_typeof\(metadata->'namespace'\) = 'string' THEN metadata->>'namespace' END = \$1 AND COALESCE\(.*\) >= \$2 ORDER BY "vector" <=> .* LIMIT 3/,
+      /WHERE CASE WHEN jsonb_typeof\(metadata->'namespace'\) = 'string' THEN metadata->>'namespace' END = \$1 AND COALESCE\(.*\) >= \$2 AND "vector" IS NOT NULL ORDER BY "vector" <=> .* LIMIT 3/,
     );
     assert.ok(!sql.includes("n' OR"));
     assert.equal(params[0], "n' OR '1'='1");
@@ -369,7 +371,7 @@ describe('PgVectorRag shared layout and vector validation', () => {
       for (const c of check) assert.equal(c.params[0], name);
       for (const re of [
         /^INSERT INTO /,
-        /^WITH RECURSIVE fragment_hits/,
+        /^WITH candidate_rows/,
         /^DELETE FROM /,
       ]) {
         const stmt = client.calls.find((c) => re.test(c.sql));

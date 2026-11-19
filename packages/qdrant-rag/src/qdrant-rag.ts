@@ -36,12 +36,15 @@ import {
   validateRagMetadata,
 } from '@mcp-abap-adt/llm-agent';
 import {
-  fragmentIndexKey,
-  recordPointIdKey,
-  splitPayload,
-} from './payload-record.js';
+  assertUserCollection,
+  collectionVectors,
+  denseVectorConfig,
+  qdrantFetch,
+  singleVectorWriteError,
+} from './multivector.js';
+import { splitPayload } from './payload-record.js';
 import type { QdrantCondition, QdrantFilter } from './query-filter.js';
-import { deleteWhere, recordPointFilter, scanPage } from './scan-delete.js';
+import { deleteWhere, scanPage } from './scan-delete.js';
 
 /**
  * Derive a deterministic UUID from a stable string key using SHA-256.
@@ -72,11 +75,6 @@ export interface QdrantRagConfig extends RecordEmbeddingConfig {
    */
   credential?: IApiKeyCredential;
   /**
-   * Per-request timeout in ms. **No default** — unset, a request is bounded
-   * only by the caller's own signal.
-   */
-  timeoutMs?: number;
-  /**
    * Create the collection on the first write when it is missing, sized from
    * that write's vector. Default `true` — a store configured directly relies on
    * it. `QdrantRagProvider` passes `false`: its collections are created by
@@ -93,9 +91,8 @@ export class QdrantRag implements IRag, IRagScanner, IRagFilteredDeleter {
   private readonly fragmentSizeChars?: number;
   private readonly fallbackOnQueryEmbeddingError: boolean;
   private readonly credential?: IApiKeyCredential;
-  private readonly timeoutMs: number | undefined;
   private readonly autoCreateCollection: boolean;
-  private collectionEnsured = false;
+
   private static readonly writes = new Map<string, Promise<void>>();
 
   /** A batch has ordered operations. Serialize mutations across local handles. */
@@ -117,13 +114,13 @@ export class QdrantRag implements IRag, IRagScanner, IRagFilteredDeleter {
 
   constructor(config: QdrantRagConfig) {
     this.url = config.url.replace(/\/+$/, '');
+    assertUserCollection(config.collectionName);
     this.collectionName = config.collectionName;
     this.embedder = config.embedder;
     this.fragmentSizeChars = config.fragmentSizeChars;
     this.fallbackOnQueryEmbeddingError =
       config.fallbackOnQueryEmbeddingError ?? true;
     this.credential = config.credential;
-    this.timeoutMs = config.timeoutMs;
     this.autoCreateCollection = config.autoCreateCollection ?? true;
   }
 
@@ -138,108 +135,67 @@ export class QdrantRag implements IRag, IRagScanner, IRagFilteredDeleter {
     init: RequestInit,
     signal?: AbortSignal,
   ): Promise<Response> {
-    // Thirty seconds used to be imposed here whether or not anyone asked. A
-    // ceiling on every request fires instead of whatever decided above it, so
-    // there is none unless the consumer set one; the caller's signal is the
-    // bound otherwise.
-    const ctrl = new AbortController();
-    const timer =
-      this.timeoutMs === undefined
-        ? undefined
-        : setTimeout(() => ctrl.abort(), this.timeoutMs);
-    const abort = () => ctrl.abort(signal?.reason);
-    if (signal?.aborted) abort();
-    signal?.addEventListener?.('abort', abort, { once: true });
-    try {
-      return await fetch(`${this.url}${path}`, {
-        ...init,
-        signal: ctrl.signal,
-        headers: { ...(await this._headers()), ...(init.headers ?? {}) },
-      });
-    } finally {
-      if (timer) clearTimeout(timer);
-      signal?.removeEventListener?.('abort', abort);
-    }
+    return qdrantFetch(`${this.url}${path}`, {
+      ...init,
+      signal: signal instanceof AbortSignal ? signal : undefined,
+      headers: { ...(await this._headers()), ...(init.headers ?? {}) },
+    });
   }
 
-  private async _ensureCollection(
-    vectorSize: number,
-    signal?: AbortSignal,
-  ): Promise<void> {
-    if (this.collectionEnsured) return;
-    const res = await this._fetch(
-      `/collections/${this.collectionName}`,
-      { method: 'GET' },
-      signal,
-    );
-    if (res.ok) {
-      // Collection exists — verify the embedder dimension matches.
-      // Qdrant collections have a fixed vectors.size set at creation time;
-      // upserts with a different vector length are silently dropped.
-      // Fail fast so the operator can either delete the stale collection
-      // or point this RAG store at a collection matching the current embedder.
-      try {
-        const body = (await res.json()) as {
-          result?: {
-            config?: { params?: { vectors?: { size?: number } } };
-          };
-        };
-        const existingSize = body.result?.config?.params?.vectors?.size;
-        if (typeof existingSize === 'number' && existingSize !== vectorSize) {
-          throw new RagError(
-            `Qdrant collection "${this.collectionName}" has vectors.size=${existingSize} but the current embedder produces ${vectorSize}-dim vectors. ` +
-              'The collection was created for a different embedding model. ' +
-              'Either drop and recreate the collection, or point this RAG store at a collection matching the current embedder.',
-            'UPSERT_ERROR',
-          );
-        }
-      } catch (err) {
-        if (err instanceof RagError) throw err;
-        // JSON parsing or transient read failures — let the next upsert surface them naturally.
-      }
-      await this.ensureRecordIndexes(signal);
-      this.collectionEnsured = true;
-      return;
-    }
-    // Collection doesn't exist — create it
-    const createRes = await this._fetch(
-      `/collections/${this.collectionName}`,
-      {
-        method: 'PUT',
-        body: JSON.stringify({
-          vectors: { size: vectorSize, distance: 'Cosine' },
-        }),
-      },
-      signal,
-    );
-    if (!createRes.ok) {
-      const text = await createRes.text();
-      throw new RagError(
-        `Failed to create collection: ${text}`,
-        'UPSERT_ERROR',
-      );
-    }
-    await this.ensureRecordIndexes(signal);
-    this.collectionEnsured = true;
-  }
-
-  private async ensureRecordIndexes(signal?: AbortSignal): Promise<void> {
-    for (const [field_name, field_schema] of [
-      ['ownerScope', 'keyword'],
-      [recordPointIdKey, 'keyword'],
-      [fragmentIndexKey, 'integer'],
-    ]) {
-      const response = await this._fetch(
-        `/collections/${this.collectionName}/index?wait=true`,
-        { method: 'PUT', body: JSON.stringify({ field_name, field_schema }) },
+  private async collectionLayout(signal?: AbortSignal, vectorSize?: number) {
+    const path = `/collections/${this.collectionName}`;
+    let response = await this._fetch(path, { method: 'GET' }, signal);
+    if (
+      response.status === 404 &&
+      vectorSize !== undefined &&
+      this.autoCreateCollection
+    ) {
+      const created = await this._fetch(
+        path,
+        {
+          method: 'PUT',
+          body: JSON.stringify({ vectors: denseVectorConfig(vectorSize) }),
+        },
         signal,
       );
+      if (created.ok) {
+        const indexed = await this._fetch(
+          `${path}/index?wait=true`,
+          {
+            method: 'PUT',
+            body: JSON.stringify({
+              field_name: 'ownerScope',
+              field_schema: 'keyword',
+            }),
+          },
+          signal,
+        );
+        if (!indexed.ok)
+          throw new RagError(
+            'Payload index failed: ownerScope',
+            'UPSERT_ERROR',
+          );
+        return { name: undefined, size: vectorSize, multivector: true };
+      }
+      response = await this._fetch(path, { method: 'GET' }, signal);
       if (!response.ok)
         throw new RagError(
-          `Payload index failed: ${field_name}`,
+          `Failed to create collection: ${await created.text()}`,
           'UPSERT_ERROR',
         );
     }
+    if (!response.ok)
+      throw new RagError(
+        `Qdrant collection lookup failed: ${await response.text()}`,
+        vectorSize === undefined ? 'QUERY_ERROR' : 'UPSERT_ERROR',
+      );
+    const layout = await collectionVectors(response);
+    if (vectorSize !== undefined && layout.size !== vectorSize)
+      throw new RagError(
+        `Qdrant collection "${this.collectionName}" has vectors.size=${layout.size} but the current embedder produces ${vectorSize}-dim vectors.`,
+        'UPSERT_ERROR',
+      );
+    return layout;
   }
 
   private async writeRecords(
@@ -254,86 +210,50 @@ export class QdrantRag implements IRag, IRagScanner, IRagFilteredDeleter {
     if (records.length === 0) return { ok: true, value: undefined };
     try {
       options?.signal?.throwIfAborted();
-      const points: { id: string; vector: number[]; payload: RagMetadata }[] =
-        [];
-      const fragmentCounts = new Map<string, number>();
-      // When a bulk call repeats an explicit id, the last write wins.
+      // An explicit id repeated in one batch takes its last value.
       const recordsById = new Map(
         records.map((record) => [record.id ?? crypto.randomUUID(), record]),
       );
-      for (const {
-        id,
-        text,
-        vector: input,
-        metadata,
-      } of recordsById.values()) {
-        const [vector, ...fragments] = recordVectors(input);
-        const scope = validateRagMetadata(metadata);
-        const pointId = id ? await deterministicUUID(id) : crypto.randomUUID();
-        points.push({
-          id: pointId,
-          vector,
-          payload: {
-            ...scope,
-            [fragmentIndexKey]: undefined,
-            [recordPointIdKey]: pointId,
-            text,
-          },
-        });
-        for (const [index, fragment] of fragments.entries()) {
-          const fragmentId = await deterministicUUID(
-            `\0rag-fragment:${pointId}:${index}`,
-          );
-          points.push({
-            id: fragmentId,
-            vector: fragment,
-            payload: {
-              [recordPointIdKey]: pointId,
-              [fragmentIndexKey]: index,
-              namespace: scope.namespace,
-              ttl: scope.ttl,
-              ownerScope: scope.ownerScope,
-              sessionId: scope.sessionId,
-              userId: scope.userId,
-            },
-          });
-        }
-        if (id) fragmentCounts.set(pointId, fragments.length);
-      }
+      const points = await Promise.all(
+        [...recordsById.values()].map(
+          async ({ id, text, vector, metadata }) => ({
+            id: id ? await deterministicUUID(id) : crypto.randomUUID(),
+            vectors: recordVectors(vector),
+            payload: { ...validateRagMetadata(metadata), text },
+          }),
+        ),
+      );
+      const dimension = points[0].vectors[0].length;
       if (
-        points.some(({ vector }) => vector.length !== points[0].vector.length)
+        points.some(({ vectors }) =>
+          vectors.some((vector) => vector.length !== dimension),
+        )
       )
         throw new RagError(
           'Incompatible dimensions in record batch',
           'UPSERT_ERROR',
         );
-      const prune = [...fragmentCounts].map(([id, count]) => ({
-        must: [
-          { key: recordPointIdKey, match: { value: id } },
-          { key: fragmentIndexKey, range: { gte: count } },
-        ],
-      }));
       const res = await this.write(async () => {
-        options?.signal?.throwIfAborted();
-        if (this.autoCreateCollection)
-          await this._ensureCollection(
-            points[0].vector.length,
-            options?.signal,
-          );
+        const layout = await this.collectionLayout(options?.signal, dimension);
+        if (
+          !layout.multivector &&
+          points.some(({ vectors }) => vectors.length > 1)
+        )
+          throw singleVectorWriteError(this.collectionName);
         return this._fetch(
-          `/collections/${this.collectionName}/points${prune.length ? '/batch' : ''}?wait=true&ordering=strong`,
+          `/collections/${this.collectionName}/points?wait=true&ordering=strong`,
           {
-            method: prune.length ? 'POST' : 'PUT',
-            body: JSON.stringify(
-              prune.length
-                ? {
-                    operations: [
-                      { upsert: { points } },
-                      { delete: { filter: { should: prune } } },
-                    ],
-                  }
-                : { points },
-            ),
+            method: 'PUT',
+            body: JSON.stringify({
+              points: points.map(({ id, vectors, payload }) => {
+                const dense = layout.multivector ? vectors : vectors[0];
+                return {
+                  id,
+                  payload,
+                  vector: layout.name ? { [layout.name]: dense } : dense,
+                };
+              }),
+            }),
           },
           options?.signal,
         );
@@ -449,60 +369,25 @@ export class QdrantRag implements IRag, IRagScanner, IRagFilteredDeleter {
           { must: [{ is_empty: { key: 'ttl' } }, ...must.slice(0, -1)] },
         ],
       };
-      const grouped = await this.queryPoints<{
-        groups: { id: PointId; hits: { score: number }[] }[];
+      const layout = await this.collectionLayout(options?.signal);
+      const { points } = await this.queryPoints<{
+        points: { id: PointId; score: number; payload: RagMetadata }[];
       }>(
-        'query/groups',
+        'query',
         {
-          query: vector,
-          group_by: recordPointIdKey,
-          group_size: 1,
+          query: layout.multivector ? [vector] : vector,
+          using: layout.name,
           limit: k,
-          with_payload: false,
+          with_payload: true,
           filter,
         },
         options?.signal,
       );
-      const legacy = await this.queryPoints<{
-        points: { id: PointId; score: number }[];
-      }>(
-        'query',
-        {
-          query: vector,
-          limit: k,
-          with_payload: false,
-          filter: {
-            ...filter,
-            must: [...identityMust, { is_empty: { key: recordPointIdKey } }],
-          },
-        },
-        options?.signal,
-      );
-      const winners = [
-        ...(grouped?.groups ?? []).flatMap(({ id, hits }) =>
-          hits.slice(0, 1).map(({ score }) => ({ id, score })),
-        ),
-        ...(legacy?.points ?? []),
-      ]
-        .sort((a, b) => b.score - a.score)
-        .slice(0, k);
-      if (winners.length === 0) return { ok: true, value: [] };
-      const payloads = await this.queryPoints<
-        { id: PointId; payload: RagMetadata }[]
-      >(
-        '',
-        { ids: winners.map(({ id }) => id), with_payload: true },
-        options?.signal,
-      );
-      const records = new Map(
-        payloads.map(({ id, payload }) => [id, splitPayload(payload)]),
-      );
       return {
         ok: true,
-        value: winners.flatMap(({ id, score }) => {
-          const record = records.get(id);
-          return record &&
-            matchesRagIdentity(record.metadata, identity) &&
+        value: points.flatMap(({ payload, score }) => {
+          const record = splitPayload(payload);
+          return matchesRagIdentity(record.metadata, identity) &&
             (targetNamespace === undefined ||
               record.metadata.namespace === targetNamespace) &&
             !(
@@ -568,8 +453,7 @@ export class QdrantRag implements IRag, IRagScanner, IRagFilteredDeleter {
         result: Array<{ id: string; payload: RagMetadata }>;
       };
       const hit = json.result?.[0];
-      if (!hit || hit.payload[fragmentIndexKey] !== undefined)
-        return { ok: true, value: null };
+      if (!hit) return { ok: true, value: null };
       return {
         ok: true,
         value: { ...splitPayload(hit.payload), score: 1 },
@@ -735,7 +619,7 @@ export class QdrantRag implements IRag, IRagScanner, IRagFilteredDeleter {
               `/collections/${this.collectionName}/points/delete?wait=true&ordering=strong`,
               {
                 method: 'POST',
-                body: JSON.stringify({ filter: recordPointFilter([pointId]) }),
+                body: JSON.stringify({ points: [pointId] }),
               },
               options?.signal,
             ),

@@ -151,7 +151,13 @@ Dialogue workers inherit the owning request's `openedAt` through task options, e
 
 Custom RAG writers receive either one vector or an ordered vector array. The
 MCP catalog and planner memory fragment their stored input before embedding.
-The Qdrant skills backend requires the grouped Query API in Qdrant 1.10+.
+The Qdrant skills backend uses one multivector point per skill record on Qdrant
+1.10+. Legacy single-vector collections continue to serve recall and accept
+single-fragment writes. To enable long-record writes in an existing skills
+collection, pause indexing and run
+`qdrant-migrate-multivector --collection SKILLS_COLLECTION` with `QDRANT_URL`
+and the write key in `QDRANT_API_KEY`. See the
+[qdrant-rag migration instructions](../qdrant-rag/README.md#upgrade-an-existing-collection).
 Existing skill points remain searchable, and new revisions index extra fragments.
 
 ## License

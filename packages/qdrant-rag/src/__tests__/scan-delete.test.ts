@@ -18,7 +18,7 @@ import {
 } from '@mcp-abap-adt/llm-agent/testing/scan-delete-conformance';
 import { deterministicUUID, QdrantRag } from '../qdrant-rag.js';
 import { QdrantRagProvider } from '../qdrant-rag-provider.js';
-import { recordOnlyCondition, scrollFilter } from '../scan-delete.js';
+import { scrollFilter } from '../scan-delete.js';
 import { type QdrantStub, startQdrantStub } from './qdrant-stub.js';
 
 const embedder = symmetricEmbedder(conformanceEmbedder());
@@ -110,11 +110,10 @@ describe('QdrantRag — scan/delete conformance (stub)', () => {
 
 describe('QdrantRag — scan/delete requests', () => {
   it('scrollFilter matches the written payload keys by string value, no ttl', () => {
-    assert.deepEqual(scrollFilter(undefined), { must: [recordOnlyCondition] });
-    assert.deepEqual(scrollFilter({}), { must: [recordOnlyCondition] });
+    assert.deepEqual(scrollFilter(undefined), { must: [] });
+    assert.deepEqual(scrollFilter({}), { must: [] });
     assert.deepEqual(scrollFilter({ userId: 'u', namespace: 'n' }), {
       must: [
-        recordOnlyCondition,
         { key: 'userId', match: { value: 'u' } },
         { key: 'namespace', match: { value: 'n' } },
       ],
@@ -139,7 +138,7 @@ describe('QdrantRag — scan/delete requests', () => {
       limit: 5,
       with_payload: true,
       filter: {
-        must: [recordOnlyCondition, { key: 'userId', match: { value: 'u1' } }],
+        must: [{ key: 'userId', match: { value: 'u1' } }],
       },
       with_vector: false,
     });
@@ -246,11 +245,7 @@ describe('QdrantRag — scan/delete requests', () => {
     assert.equal(points.size, 0);
     const del = stub.requests.filter((x) => x.path.endsWith('/points/delete'));
     const last = del[del.length - 1];
-    assert.equal(
-      (last.body as { filter: { should: [{ has_id: string[] }] } }).filter
-        .should[0].has_id.length,
-      9,
-    );
+    assert.equal((last.body as { points: string[] }).points.length, 9);
   });
 
   it('deleteWhere never deletes a point whose identity value is an array', async () => {
@@ -321,11 +316,7 @@ describe('QdrantRag — scan/delete requests', () => {
       x.path.endsWith('/points/delete'),
     );
     assert.deepEqual(
-      deletes.map(
-        (x) =>
-          (x.body as { filter: { should: [{ has_id: string[] }] } }).filter
-            .should[0].has_id.length,
-      ),
+      deletes.map((x) => (x.body as { points: string[] }).points.length),
       [1000, 1000, 200],
     );
   });

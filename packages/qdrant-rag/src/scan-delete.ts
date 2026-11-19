@@ -7,11 +7,7 @@ import {
   type RagScanPage,
   type RagScanRecord,
 } from '@mcp-abap-adt/llm-agent';
-import {
-  fragmentIndexKey,
-  recordPointIdKey,
-  splitPayload,
-} from './payload-record.js';
+import { splitPayload } from './payload-record.js';
 import type { QdrantCondition, QdrantFilter } from './query-filter.js';
 
 /** Issues one request against the store's Qdrant (base URL, auth, timeout). */
@@ -35,26 +31,13 @@ interface ScrollBody {
   result?: { points?: ScrollPoint[]; next_page_offset?: Offset | null };
 }
 
-export const recordOnlyCondition = { is_empty: { key: fragmentIndexKey } };
-
-export function recordPointFilter(ids: Array<string | number>): QdrantFilter {
-  return {
-    should: [
-      { has_id: ids },
-      ...ids
-        .filter((id): id is string => typeof id === 'string')
-        .map((id) => ({ key: recordPointIdKey, match: { value: id } })),
-    ],
-  };
-}
-
 /**
  * Strict string equality on the payload keys the store writes. `match.value`
  * with a string matches only a string payload value, so a number never
  * matches. No ttl condition: expired records are scanned too.
  */
 export function scrollFilter(filter: RagScanFilter | undefined): QdrantFilter {
-  const must: QdrantCondition[] = [recordOnlyCondition];
+  const must: QdrantCondition[] = [];
   for (const key of FILTER_FIELDS) {
     const value = filter?.[key];
     if (value !== undefined) must.push({ key, match: { value } });
@@ -139,10 +122,7 @@ function strictMatch(
   point: ScrollPoint,
   filter: RagScanFilter | undefined,
 ): boolean {
-  return (
-    point.payload?.[fragmentIndexKey] === undefined &&
-    matchesScanFilter(splitPayload(point.payload ?? {}).metadata, filter)
-  );
+  return matchesScanFilter(splitPayload(point.payload ?? {}).metadata, filter);
 }
 
 function toRecord(point: ScrollPoint): RagScanRecord {
@@ -271,7 +251,7 @@ export async function deleteWhere(
         `/collections/${collection}/points/delete?wait=true&ordering=strong`,
         {
           method: 'POST',
-          body: JSON.stringify({ filter: recordPointFilter(batch) }),
+          body: JSON.stringify({ points: batch }),
         },
         signal,
       );

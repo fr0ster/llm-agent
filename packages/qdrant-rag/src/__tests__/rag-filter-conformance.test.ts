@@ -114,7 +114,7 @@ describe('QdrantRag — filter conformance (stub)', () => {
     );
     const request = [...stub.requests]
       .reverse()
-      .find((request) => request.path.endsWith('/points/query/groups'));
+      .find((request) => request.path.endsWith('/points/query'));
     assert.ok(request);
     assert.match(JSON.stringify(request.body), /ownerScope/);
     assert.match(JSON.stringify(request.body), /global/);
@@ -130,7 +130,7 @@ describe('QdrantRag — filter conformance (stub)', () => {
     stub.version = '1.19.0';
     try {
       const searches = stub.requests.filter((request) =>
-        request.path.endsWith('/points/query/groups'),
+        request.path.endsWith('/points/query'),
       ).length;
       assert.equal(
         (
@@ -142,7 +142,7 @@ describe('QdrantRag — filter conformance (stub)', () => {
       );
       assert.equal(
         stub.requests.filter((request) =>
-          request.path.endsWith('/points/query/groups'),
+          request.path.endsWith('/points/query'),
         ).length,
         searches + 1,
       );

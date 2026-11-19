@@ -26,7 +26,7 @@ describe('shared-ddl (Postgres)', () => {
       '"vector" vector(1536)',
       '"metadata" JSONB',
       '"created_at" TIMESTAMPTZ DEFAULT NOW()',
-      'PRIMARY KEY ("collection", "id")',
+      'PRIMARY KEY ("collection", "id", "fragment_ordinal")',
     ];
     let at = 0;
     for (const p of parts) {
@@ -56,7 +56,7 @@ describe('shared-ddl (Postgres)', () => {
 
   it('shipped ddl files match the generators', () => {
     const files = readdirSync(DDL_DIR);
-    assert.deepEqual(files, ['shared-layout.sql']);
+    assert.deepEqual(files, ['migrations', 'shared-layout.sql']);
     assert.equal(
       readFileSync(join(DDL_DIR, 'shared-layout.sql'), 'utf8'),
       `${sharedLayoutSql({ dimension: SHIPPED_DIMENSION })}\n`,

@@ -34,6 +34,7 @@ export {
   embedRecord,
   type RecordEmbeddingConfig,
   recordVectors,
+  retryRagThrottle,
 } from './record-embedding.js';
 export * from './registry/index.js';
 export { asymmetricEmbedder, symmetricEmbedder } from './retrieval-embedder.js';

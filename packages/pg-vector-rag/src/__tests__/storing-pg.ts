@@ -26,9 +26,9 @@ type Row = {
   /** `shared` only: the collection of the documents table the row belongs to. */
   collection?: string;
   id: string;
-  text: string;
+  text: string | null;
   vector: number[];
-  fragments?: number[][];
+  ordinal?: number;
   metadata: Record<string, unknown>;
 };
 
@@ -76,7 +76,22 @@ function evaluate(
   if (coll) return row.collection === params[Number(coll[1]) - 1];
   // The shared layout quotes the column; the semantics are the same.
   const cond = shared ? rawCond.replaceAll('"metadata"', 'metadata') : rawCond;
-  const absent = cond.match(/^NOT \(metadata \? '([A-Za-z_]+)'\)$/);
+  if (cond === '"vector" IS NOT NULL') return true;
+  if (cond === '"fragment_ordinal" = 0' || cond === 'fragment_ordinal = 0')
+    return (row.ordinal ?? 0) === 0;
+  const id = cond.match(/^(?:"id"|id) = \$(\d+)$/);
+  if (id) return row.id === params[Number(id[1]) - 1];
+  const required = cond.match(
+    /^CASE WHEN jsonb_typeof\(metadata->'(\w+)'\).* ~ /,
+  );
+  if (required)
+    return (
+      typeof row.metadata[required[1]] === 'string' &&
+      Boolean(String(row.metadata[required[1]]).trim())
+    );
+  const absent = cond.match(
+    /^NOT COALESCE\(jsonb_exists\(metadata, '([A-Za-z_]+)'\), false\)$/,
+  );
   if (absent) return !Object.hasOwn(row.metadata, absent[1]);
   const eq = cond.match(EQ);
   if (eq) {
@@ -103,19 +118,19 @@ function evaluate(
 }
 
 const SHARED_INSERT =
-  /^INSERT INTO ((?:"[^"]+"[.])?"[^"]+") \("collection", "id", "text", "vector", "metadata", "fragment_vectors"\) VALUES \(\$1, \$2, \$3, .*, \$4::jsonb, \$5::vector\[\]\) ON CONFLICT \("collection", "id"\) DO UPDATE SET /;
-const OWN_INSERT =
-  /^INSERT INTO ("[^"]+") \(id, text, vector, metadata, fragment_vectors\)/;
-const OWN_BY_ID = /^SELECT id, text, metadata FROM ("[^"]+") WHERE id = \$1$/;
+  /^INSERT INTO ((?:"[^"]+"[.])?"[^"]+") \("collection", "id", "text", "vector", "metadata"\)/;
+const OWN_INSERT = /^INSERT INTO ("[^"]+") \(id, text, vector, metadata\)/;
+const OWN_BY_ID =
+  /^SELECT id, text, metadata FROM ("[^"]+") WHERE id = \$1 AND fragment_ordinal = 0$/;
 const OWN_DELETE = /^DELETE FROM ("[^"]+") WHERE id = \$1$/;
 const SHARED_BY_ID =
-  /^SELECT "id", "text", "metadata" FROM ((?:"[^"]+"[.])?"[^"]+") WHERE "collection" = \$1 AND "id" = \$2$/;
+  /^SELECT "id", "text", "metadata" FROM ((?:"[^"]+"[.])?"[^"]+") WHERE "collection" = \$1 AND "id" = \$2 AND "fragment_ordinal" = 0$/;
 const SHARED_DELETE =
   /^DELETE FROM ((?:"[^"]+"[.])?"[^"]+") WHERE "collection" = \$1(?: AND "id" = \$2)?$/;
 const COUNT_SHARED =
-  /^SELECT COUNT\(\*\) AS n FROM ((?:"[^"]+"[.])?"[^"]+") WHERE "collection" = \$1$/;
+  /^SELECT COUNT\(\*\) AS n FROM ((?:"[^"]+"[.])?"[^"]+") WHERE "collection" = \$1(?: AND "fragment_ordinal" = 0)?$/;
 const DISTINCT_COLLECTIONS =
-  /^SELECT DISTINCT "collection" AS "c" FROM ((?:"[^"]+"[.])?"[^"]+")$/;
+  /^SELECT DISTINCT "collection" AS "c" FROM ((?:"[^"]+"[.])?"[^"]+")(?: WHERE "fragment_ordinal" = 0)?$/;
 const RECORD_EXISTS =
   /^SELECT 1 AS present FROM ((?:"[^"]+"[.])?"[^"]+") WHERE store_name = \$1$/;
 const RECORD_INSERT =
@@ -131,15 +146,11 @@ const RECORD_DELETE =
 // scan/deleteWhere: strict string conditions, binary key-set cursor on the id.
 const SCAN =
   /^SELECT "id", "text", "metadata" FROM ((?:"[^"]+"[.])?"[^"]+")(?: WHERE (.*))? ORDER BY "id" LIMIT (\d+)$/;
-const DELETE_WHERE =
-  /^DELETE FROM ((?:"[^"]+"[.])?"[^"]+") WHERE (.*) RETURNING "id"$/;
 const AFTER_KEY = /^"id" > \$(\d+)$/;
 
 /** One total order on the key, shared by ORDER BY and the cursor comparison. */
 const byteCompare = (a: string, b: string): number =>
   Buffer.compare(Buffer.from(a), Buffer.from(b));
-
-const SEARCH = /WHERE (.+) ORDER BY "vector" <=> .* LIMIT (\d+)\)/;
 
 /** `sharedDimension`: what the startup check of a shared table finds (default: none, the check is not answered). */
 export function storingPg(
@@ -147,7 +158,7 @@ export function storingPg(
     sharedDimension?: number;
     schema?: string;
     database?: string;
-    legacyFragmentTable?: string;
+    legacyTable?: string;
   } = {},
 ): StoringPg {
   const rows = new Map<string, Row>();
@@ -163,8 +174,10 @@ export function storingPg(
   };
   const searches: StoringPg['searches'] = [];
   const statements: string[] = [];
-  const keyOf = (r: Pick<Row, 'table' | 'collection' | 'id'>): string =>
-    JSON.stringify([r.table, r.collection ?? null, r.id]);
+  const keyOf = (
+    r: Pick<Row, 'table' | 'collection' | 'id' | 'ordinal'>,
+  ): string =>
+    JSON.stringify([r.table, r.collection ?? null, r.id, r.ordinal ?? 0]);
   const sharedRows = (table: string): Row[] =>
     [...rows.values()].filter(
       (r) => r.table === table && r.collection !== undefined,
@@ -174,7 +187,11 @@ export function storingPg(
     storedRows: () => [...rows.values()],
     statements,
     insertSharedRow(row) {
-      const full: Row = { ...row, table: row.table ?? '"rag_documents"' };
+      const full: Row = {
+        ...row,
+        table: row.table ?? '"rag_documents"',
+        ordinal: row.table === `"${opts.legacyTable}"` ? undefined : 0,
+      };
       rows.set(keyOf(full), full);
     },
     async query(sql, params = []) {
@@ -208,7 +225,9 @@ export function storingPg(
           .filter((r) => r.table === table)
           .filter((r) =>
             conditions.every((c) => {
-              const array = c.match(/^"id" = ANY\(\$(\d+)::varchar\[\]\)$/);
+              const array = c.match(
+                /^(?:"id"|id) = ANY\(\$(\d+)::varchar\[\]\)$/,
+              );
               if (array) {
                 const ids = params[Number(array[1]) - 1];
                 return Array.isArray(ids) && ids.includes(r.id);
@@ -238,11 +257,15 @@ export function storingPg(
           if (row.table === clearTable[1]) rows.delete(key);
         return { rows: [], rowCount: 0 };
       }
+      if (sql.startsWith('DO ')) {
+        for (const row of rows.values())
+          if (sql.includes(`LOCK TABLE ${row.table} IN`)) row.ordinal ??= 0;
+        return { rows: [], rowCount: 0 };
+      }
       if (
         sql.startsWith('CREATE ') ||
         sql.startsWith('ALTER TABLE') ||
-        sql.startsWith('DROP TRIGGER') ||
-        sql.includes('CROSS JOIN LATERAL unnest("fragment_vectors")')
+        sql.startsWith('LOCK TABLE')
       )
         return { rows: [], rowCount: 0 };
       if (opts.sharedDimension !== undefined) {
@@ -260,6 +283,46 @@ export function storingPg(
             rowCount: 1,
           };
       }
+      const fragmentInsert = sql.match(
+        /^INSERT INTO ((?:"[^"]+"\.)?"[^"]+") \([^)]*fragment_ordinal/,
+      );
+      if (fragmentInsert) {
+        const shared = sql.includes('"collection"');
+        const collection = shared ? String(params[0]) : undefined;
+        const id = String(params[shared ? 1 : 0]);
+        const vectors = decodeFragments(params[shared ? 2 : 1]);
+        const metadata: Row['metadata'] = JSON.parse(
+          String(params[shared ? 3 : 2]),
+        );
+        for (const [index, vector] of vectors.entries()) {
+          const row = {
+            table: fragmentInsert[1],
+            collection,
+            id,
+            ordinal: index + 1,
+            vector,
+            text: null,
+            metadata,
+          };
+          rows.set(keyOf(row), row);
+        }
+        return { rows: [], rowCount: vectors.length };
+      }
+      const prune = sql.match(
+        /^DELETE FROM ((?:"[^"]+"\.)?"[^"]+") .*fragment_ordinal"? > 0$/,
+      );
+      if (prune) {
+        const shared = params.length === 2;
+        for (const [key, row] of rows)
+          if (
+            row.table === prune[1] &&
+            row.id === params[shared ? 1 : 0] &&
+            (!shared || row.collection === params[0]) &&
+            (row.ordinal ?? 0) > 0
+          )
+            rows.delete(key);
+        return { rows: [], rowCount: 0 };
+      }
       const shared = sql.match(SHARED_INSERT);
       if (shared) {
         const [collection, id, text, meta] = params as string[];
@@ -270,7 +333,7 @@ export function storingPg(
           text,
           vector: parseVector(sql),
           metadata: JSON.parse(meta),
-          fragments: decodeFragments(params[4]),
+          ordinal: 0,
         };
         rows.set(keyOf(row), row);
         return { rows: [], rowCount: 1 };
@@ -284,7 +347,7 @@ export function storingPg(
           text,
           vector: parseVector(sql),
           metadata: JSON.parse(meta),
-          fragments: decodeFragments(params[3]),
+          ordinal: 0,
         };
         rows.set(keyOf(row), row);
         return { rows: [], rowCount: 1 };
@@ -295,13 +358,6 @@ export function storingPg(
           keyOf({ table: ownById[1], id: String(params[0]) }),
         );
         return { rows: hit ? [hit] : [], rowCount: hit ? 1 : 0 };
-      }
-      const ownDelete = sql.match(OWN_DELETE);
-      if (ownDelete) {
-        const gone = rows.delete(
-          keyOf({ table: ownDelete[1], id: String(params[0]) }),
-        );
-        return { rows: [], rowCount: gone ? 1 : 0 };
       }
       const byId = sql.match(SHARED_BY_ID);
       if (byId) {
@@ -315,7 +371,7 @@ export function storingPg(
         return { rows: hit ? [hit] : [], rowCount: hit ? 1 : 0 };
       }
       const selection = sql.match(
-        /^SELECT "id" FROM ((?:"[^"]+"[.])?"[^"]+") WHERE (.*) FOR UPDATE$/,
+        /^SELECT "id" FROM ((?:"[^"]+"[.])?"[^"]+") WHERE (.*?)(?: ORDER BY "id")? FOR UPDATE$/,
       );
       if (selection) {
         const out = matching(selection[1], selection[2]).map((row) => ({
@@ -331,20 +387,24 @@ export function storingPg(
           .map((r) => ({ id: r.id, text: r.text, metadata: r.metadata }));
         return { rows: out, rowCount: out.length };
       }
-      const delWhere = sql.match(DELETE_WHERE);
+      const delWhere = sql.match(
+        /^DELETE FROM ((?:"[^"]+"[.])?"[^"]+") WHERE (.*ANY.*)$/,
+      );
       if (delWhere) {
         const hit = matching(delWhere[1], delWhere[2]);
         for (const r of hit) rows.delete(keyOf(r));
         return { rows: hit.map((r) => ({ id: r.id })), rowCount: hit.length };
       }
-      const del = sql.match(SHARED_DELETE);
+      const del = sql.match(SHARED_DELETE) ?? sql.match(OWN_DELETE);
       if (del) {
         let n = 0;
         for (const [k, r] of rows) {
           if (
             r.table === del[1] &&
-            r.collection === params[0] &&
-            (params.length < 2 || r.id === params[1])
+            (r.collection === undefined
+              ? r.id === params[0]
+              : r.collection === params[0] &&
+                (params.length < 2 || r.id === params[1]))
           ) {
             rows.delete(k);
             n++;
@@ -355,7 +415,7 @@ export function storingPg(
       const count = sql.match(COUNT_SHARED);
       if (count) {
         const n = sharedRows(count[1]).filter(
-          (r) => r.collection === params[0],
+          (r) => r.collection === params[0] && (r.ordinal ?? 0) === 0,
         ).length;
         // pg hands a COUNT back as a bigint string.
         return { rows: [{ n: String(n) }], rowCount: 1 };
@@ -417,32 +477,40 @@ export function storingPg(
         const gone = recordsOf(delRecord[1]).delete(String(params[0]));
         return { rows: [], rowCount: gone ? 1 : 0 };
       }
-      const m =
-        sql.startsWith('WITH RECURSIVE fragment_hits') && sql.match(SEARCH);
-      const table = /FROM winners AS w JOIN ((?:"[^"]+"[.])?"[^"]+")/.exec(
-        sql,
-      )?.[1];
-      if (m && table) {
+      const scanCandidates = sql.match(
+        /^WITH candidate_rows AS MATERIALIZED \(\s+SELECT "id", .* FROM ((?:"[^"]+"[.])?"[^"]+")\s+WHERE ([^\n]+)\n/,
+      );
+      if (scanCandidates) {
         searches.push({ sql, params });
-        const conditions = m[1]
-          .replaceAll('"metadata"', 'metadata')
-          .split(' AND ');
+        const [, table, clause] = scanCandidates;
+        const [where, order] = clause.split(' ORDER BY ');
+        const limit = Number(
+          sql.match(/FROM ranked ORDER BY distance, id LIMIT (\d+)/)?.[1],
+        );
+        const candidateLimit = order
+          ? Number(order.match(/LIMIT (\d+)/)?.[1])
+          : undefined;
         const q = parseVector(sql);
-        const hits = [...rows.values()]
-          .filter((r) => r.table === table)
-          .filter((r) => conditions.every((c) => evaluate(c, r, params)))
-          .map((r) => ({
-            id: r.id,
-            text: r.text,
-            metadata: r.metadata,
-            score: [r.vector, ...(r.fragments ?? [])].reduce(
-              (score, vec) => Math.min(score, cosineDistance(q, vec)),
-              Number.POSITIVE_INFINITY,
-            ),
-          }))
+        const candidates = matching(table, where)
+          .map((row) => ({ row, score: cosineDistance(q, row.vector) }))
           .sort((a, b) => a.score - b.score)
-          .slice(0, Number(m[2]));
-        return { rows: hits, rowCount: hits.length };
+          .slice(0, candidateLimit);
+        const winners = new Map<string, { row: Row; score: number }>();
+        for (const candidate of candidates)
+          if (!winners.has(candidate.row.id))
+            winners.set(candidate.row.id, candidate);
+        const hits =
+          candidateLimit !== undefined && winners.size < limit
+            ? []
+            : [...winners.values()].slice(0, limit).map(({ row, score }) => ({
+                ...rows.get(keyOf({ ...row, ordinal: 0 })),
+                score,
+                candidateCount: candidates.length,
+              }));
+        const result = hits.length
+          ? hits
+          : [{ id: null, candidateCount: candidates.length }];
+        return { rows: result, rowCount: result.length };
       }
       throw new Error(`storing-pg: unsupported statement: ${sql.slice(0, 80)}`);
     },

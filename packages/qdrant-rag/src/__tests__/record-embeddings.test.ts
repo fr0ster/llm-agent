@@ -1,148 +1,250 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { symmetricEmbedder } from '@mcp-abap-adt/llm-agent';
-import { fragmentIndexKey, recordPointIdKey } from '../payload-record.js';
+import { migrateQdrantMultivectors } from '../migrate-multivector.js';
 import { deterministicUUID, QdrantRag } from '../qdrant-rag.js';
-import { type StubCollection, startQdrantStub } from './qdrant-stub.js';
+import { startQdrantStub } from './qdrant-stub.js';
 
-test('indexes fragments, retrieves only winning records, and removes all obsolete points', async (t) => {
+const embedder = symmetricEmbedder({
+  async embed(text) {
+    return { vector: text.includes('finish') ? [0, 1] : [1, 0] };
+  },
+});
+const lookup = { text: 'finish', toVector: async () => [0, 1] };
+const full = 'early\n\nmiddle\n\nfinish';
+
+test('one multivector point ranks by its last fragment and is replaced or removed whole', async (t) => {
   const stub = await startQdrantStub();
   t.after(() => stub.close());
-  const embedder = symmetricEmbedder({
-    async embed(text) {
-      return { vector: text.includes('finish') ? [0, 1] : [1, 0] };
-    },
-  });
-  const id = await deterministicUUID('long');
-  const legacy = await deterministicUUID('legacy');
-  const collection: StubCollection = {
-    size: 2,
-    points: new Map([
-      [
-        legacy,
-        {
-          id: legacy,
-          payload: { id: 'legacy', text: 'legacy' },
-          vector: [1, 1],
-        },
-      ],
-    ]),
-  };
-  stub.collections.set('docs', collection);
-  const config = {
+  const rag = new QdrantRag({
     url: stub.baseUrl,
     collectionName: 'docs',
     embedder,
     fragmentSizeChars: 8,
-  };
-  const rag = new QdrantRag(config);
-  const lookup = { text: 'finish', toVector: async () => [0, 1] };
-  const full = 'early\n\nmiddle\n\nfinish';
-  const initial = await rag.query(lookup, 1);
-  assert.ok(initial.ok);
-  assert.equal(initial.value[0]?.text, 'legacy');
-
-  assert.ok((await rag.upsert(full, { id: 'long' })).ok);
-  assert.equal(collection.points.get(id)?.payload.text, full);
-  const fragments = [...collection.points.values()].filter(
-    (point) => point.payload[fragmentIndexKey] !== undefined,
-  );
-  assert.deepEqual(
-    fragments.map((p) => p.vector),
-    [
-      [1, 0],
-      [0, 1],
-    ],
-  );
-  assert.ok(
-    fragments.every(
-      (p) => p.payload[recordPointIdKey] === id && p.payload.text === undefined,
-    ),
-  );
-  assert.equal(collection.points.size, 4);
-
-  const reader = new QdrantRag(config);
-  const firstSearch = stub.requests.length;
-  const best = await reader.query(lookup, 1);
-  const searchRequests = stub.requests.slice(firstSearch);
-  assert.deepEqual(
-    searchRequests.map(({ path }) => path),
-    [
-      '/collections/docs/points/query/groups',
-      '/collections/docs/points/query',
-      '/collections/docs/points',
-    ],
-  );
-  const grouped = searchRequests[0]?.body as {
-    group_size: number;
-    with_payload: boolean;
-  };
-  assert.equal(grouped.group_size, 1);
-  assert.equal(grouped.with_payload, false);
-  assert.deepEqual(searchRequests[2]?.body, { ids: [id], with_payload: true });
-  const both = await reader.query(lookup, 2);
-  const retrieved = await reader.getById('long');
-  const scanned = await reader.scan();
-  const listed = await reader.list({ includeText: true });
-  assert.ok(best.ok && both.ok && retrieved.ok && scanned.ok && listed.ok);
-  assert.deepEqual(
-    best.value.map((r) => r.text),
-    [full],
-  );
-  assert.equal(best.value[0]?.score, 1);
-  assert.deepEqual(
-    both.value.map((r) => r.text),
-    [full, 'legacy'],
-  );
-  assert.equal(retrieved.value?.text, full);
-  for (const page of [scanned.value, listed.value]) {
-    assert.equal(page.records.length, 2);
-    assert.equal(page.records.find((r) => r.id === 'long')?.text, full);
-  }
-
-  assert.ok((await rag.upsert('short', { id: 'long' })).ok);
+  });
+  const id = await deterministicUUID('long');
+  assert.ok((await rag.upsert('short', { id: 'short' })).ok);
+  assert.ok((await rag.upsert(full, { id: 'long', namespace: 'keep' })).ok);
+  const collection = stub.collections.get('docs');
+  assert.ok(collection?.multivector);
   assert.equal(collection.points.size, 2);
-  assert.equal(
-    stub.collections.get('docs')?.points.get(id)?.payload.text,
-    'short',
+  assert.deepEqual(collection.points.get(id)?.vector, [
+    [1, 0],
+    [1, 0],
+    [0, 1],
+  ]);
+
+  const hits = await rag.query(lookup, 2);
+  const list = await rag.list({ includeText: true });
+  const scan = await rag.scan();
+  const record = await rag.getById('long');
+  assert.ok(hits.ok && list.ok && scan.ok && record.ok);
+  assert.deepEqual(
+    hits.value.map(({ text }) => text),
+    [full, 'short'],
   );
-  const replaced = await reader.query(lookup, 1);
-  assert.ok(replaced.ok);
-  assert.equal(replaced.value[0]?.text, 'legacy');
+  assert.equal(hits.value[0].score, 1);
+  assert.equal(record.value?.text, full);
+  for (const page of [list.value, scan.value])
+    assert.deepEqual(
+      page.records.filter(({ id }) => id === 'long').map(({ text }) => text),
+      [full],
+    );
 
   assert.ok(
-    (
-      await rag.writer().upsertManyPrecomputedRaw?.([
-        {
-          id: 'long',
-          text: full,
-          vector: [
-            [1, 0],
-            [0, 1],
-          ],
-          metadata: { namespace: 'replaceable' },
-        },
-      ])
-    )?.ok,
+    (await rag.upsert('replace', { id: 'long', namespace: 'keep' })).ok,
   );
-  assert.equal(
-    stub.collections.get('docs')?.points.get(id)?.payload.text,
-    full,
-  );
-  const bulkSearch = await reader.query(lookup, 1);
-  assert.ok(bulkSearch.ok);
-  assert.equal(bulkSearch.value[0]?.text, full);
-  const removed = await rag.deleteWhere({ namespace: 'replaceable' });
+  assert.deepEqual(collection.points.get(id)?.vector, [[1, 0]]);
+  const removed = await rag.deleteWhere({ namespace: 'keep' });
   assert.ok(removed.ok);
   assert.equal(removed.value.deleted, 1);
   assert.equal(collection.points.size, 1);
   assert.ok((await rag.upsert(full, { id: 'long' })).ok);
   assert.ok((await rag.writer().deleteByIdRaw('long')).ok);
   assert.equal(collection.points.size, 1);
-  const deleted = await reader.query(lookup, 2);
-  assert.ok(deleted.ok);
-  assert.deepEqual(
-    deleted.value.map((r) => r.text),
-    ['legacy'],
+});
+
+test('legacy collections remain searchable and refuse a long record until migrated', async (t) => {
+  const stub = await startQdrantStub();
+  t.after(() => stub.close());
+  stub.collections.set('docs', {
+    size: 2,
+    points: new Map(),
+    payloadSchema: { namespace: { data_type: 'keyword' } },
+  });
+  const rag = new QdrantRag({
+    url: stub.baseUrl,
+    collectionName: 'docs',
+    embedder,
+    fragmentSizeChars: 8,
+  });
+  assert.ok((await rag.upsert('short', { id: 'legacy', namespace: 'old' })).ok);
+  const before = await rag.query(lookup, 1);
+  assert.ok(before.ok);
+  assert.equal(before.value[0].text, 'short');
+  const long = await rag.upsert(full, { id: 'legacy' });
+  assert.ok(!long.ok);
+  assert.match(
+    long.error.message,
+    /qdrant-migrate-multivector --collection "docs"/,
   );
+  const opts = { url: stub.baseUrl, collection: 'docs' };
+  stub.aliases.set('read_docs', 'docs');
+  await assert.rejects(
+    migrateQdrantMultivectors({ ...opts, collection: 'read_docs' }),
+    /physical collection name/,
+  );
+  const writes = stub.requests.filter(
+    ({ method }) => method === 'PUT' || method === 'DELETE',
+  ).length;
+  assert.equal(
+    (await migrateQdrantMultivectors({ ...opts, dryRun: true }))[0].action,
+    'migrate',
+  );
+  assert.equal(
+    stub.requests.filter(
+      ({ method }) => method === 'PUT' || method === 'DELETE',
+    ).length,
+    writes,
+  );
+  assert.equal((await migrateQdrantMultivectors(opts))[0].action, 'migrate');
+  assert.equal(
+    (await migrateQdrantMultivectors(opts))[0].action,
+    'already-migrated',
+  );
+  const id = await deterministicUUID('legacy');
+  assert.deepEqual(stub.collections.get('docs')?.points.get(id)?.vector, [
+    [1, 0],
+  ]);
+  assert.deepEqual(stub.collections.get('docs')?.payloadSchema, {
+    namespace: { data_type: 'keyword' },
+  });
+  assert.equal(stub.aliases.get('read_docs'), 'docs');
+  assert.deepEqual(await rag.query(lookup, 1), before);
+  assert.ok((await rag.upsert(full, { id: 'legacy' })).ok);
+});
+
+for (const [label, method, path] of [
+  [
+    'creating the backup',
+    'PUT',
+    /^\/collections\/__rag_multivector_migration__\w+$/,
+  ],
+  [
+    'copying to the backup',
+    'PUT',
+    /^\/collections\/__rag_multivector_migration__\w+\/points$/,
+  ],
+  [
+    'verifying the backup',
+    'POST',
+    /^\/collections\/__rag_multivector_migration__\w+\/points\/count$/,
+  ],
+  ['deleting the original', 'DELETE', /^\/collections\/docs$/],
+  ['recreating the original', 'PUT', /^\/collections\/docs$/],
+  ['copying back', 'PUT', /^\/collections\/docs\/points$/],
+  ['verifying the original', 'POST', /^\/collections\/docs\/points\/count$/],
+  [
+    'removing the backup',
+    'DELETE',
+    /^\/collections\/__rag_multivector_migration__\w+$/,
+  ],
+] as const) {
+  test(`migration resumes after interruption while ${label}`, async (t) => {
+    const stub = await startQdrantStub();
+    t.after(() => stub.close());
+    const id = await deterministicUUID('legacy');
+    const payload = { id: 'legacy', text: 'saved text', scope: ['reader'] };
+    const point = { id, payload, vector: [1, 0] };
+    stub.collections.set('docs', { size: 2, points: new Map([[id, point]]) });
+    const opts = { url: stub.baseUrl, collection: 'docs' };
+    stub.aliases.set('read_docs', 'docs');
+    stub.failOn = (request) =>
+      request.method === method &&
+      path.test(request.path) &&
+      (label !== 'verifying the original' ||
+        stub.collections.get('docs')?.multivector === true);
+    await assert.rejects(migrateQdrantMultivectors(opts), /HTTP 500/);
+    stub.failOn = undefined;
+    await migrateQdrantMultivectors(opts);
+    assert.deepEqual([...stub.collections.keys()], ['docs']);
+    assert.equal(stub.aliases.get('read_docs'), 'docs');
+    assert.deepEqual(stub.collections.get('docs')?.points.get(id), {
+      ...point,
+      vector: [[1, 0]],
+    });
+  });
+}
+
+test('catalog migration preserves named dense and sparse fields and retries 429 without an attempt cap', async (t) => {
+  const stub = await startQdrantStub();
+  t.after(() => stub.close());
+  const catalogId = await deterministicUUID('registered');
+  const id = await deterministicUUID('doc');
+  stub.collections.set('rag_collection_catalog', {
+    size: 1,
+    points: new Map([
+      [
+        catalogId,
+        { id: catalogId, vector: [0], payload: { store_name: 'registered' } },
+      ],
+    ]),
+  });
+  const original = {
+    id,
+    vector: { dense: [0, 1], bm25: { indices: [8, 15], values: [0.2, 0.7] } },
+    payload: { text: 'legacy', tags: ['keep'] },
+  };
+  const sparseVectors = { bm25: { modifier: 'idf', index: { on_disk: true } } };
+  stub.collections.set('registered', {
+    size: 2,
+    vectorConfig: { dense: { size: 2, distance: 'Cosine' } },
+    sparseVectors,
+    points: new Map([[id, original]]),
+  });
+  stub.collections.set('unmanaged', { size: 2, points: new Map() });
+  let attempts = 0;
+  stub.throttle = (request) =>
+    request.method === 'POST' &&
+    request.path.endsWith('/registered/points/scroll') &&
+    ++attempts <= 12;
+  const report = await migrateQdrantMultivectors({ url: stub.baseUrl });
+  assert.deepEqual(
+    report.map(({ collection, action }) => [collection, action]),
+    [['registered', 'migrate']],
+  );
+  assert.equal(attempts, 13);
+  const collection = stub.collections.get('registered');
+  assert.deepEqual(collection?.sparseVectors, sparseVectors);
+  assert.deepEqual(collection?.points.get(id), {
+    ...original,
+    vector: { ...original.vector, dense: [[0, 1]] },
+  });
+  assert.ok(!stub.collections.get('unmanaged')?.multivector);
+});
+
+test('custom shard keys retain their points even when IDs are shared between keys', async (t) => {
+  const stub = await startQdrantStub();
+  t.after(() => stub.close());
+  const id = await deterministicUUID('same');
+  const point = { id, vector: [1, 0], payload: { text: 'west' } };
+  stub.collections.set('geo', {
+    size: 2,
+    points: new Map(),
+    shards: new Map([
+      ['west', new Map([[id, point]])],
+      ['east', new Map([[id, { ...point, payload: { text: 'east' } }]])],
+    ]),
+  });
+  await migrateQdrantMultivectors({ url: stub.baseUrl, collection: 'geo' });
+  const shards = stub.collections.get('geo')?.shards;
+  assert.deepEqual(shards?.get('west')?.get(id), {
+    ...point,
+    vector: [[1, 0]],
+  });
+  assert.deepEqual(shards?.get('east')?.get(id), {
+    ...point,
+    payload: { text: 'east' },
+    vector: [[1, 0]],
+  });
 });

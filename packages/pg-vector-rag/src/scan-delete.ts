@@ -44,7 +44,24 @@ export async function scanPage(
     : { records };
 }
 
-/** Lock the selected ids, invalidate precisely those ids, and delete only that selection. */
+/** A driver transaction or a dedicated injected connection. */
+export async function recordTransaction<T>(
+  client: PgClient,
+  work: (connection: PgClient) => Promise<T>,
+): Promise<T> {
+  if (client.transaction) return client.transaction(work);
+  await client.query('BEGIN');
+  try {
+    const result = await work(client);
+    await client.query('COMMIT');
+    return result;
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw error;
+  }
+}
+
+/** Lock only the matching record rows, then delete all their ordinals. */
 export async function deleteWhere(
   client: PgClient,
   sql: PgStoreSql,
@@ -53,41 +70,37 @@ export async function deleteWhere(
   signal?: AbortSignal,
 ): Promise<number> {
   const settled: Array<() => void> = [];
-  const work = async (connection: PgClient): Promise<number> => {
-    const stmt = sql.deleteWhere(filter);
-    const selection = stmt.sql
-      .replace(/^DELETE FROM /, 'SELECT "id" FROM ')
-      .replace(/ RETURNING "id"$/, ' FOR UPDATE');
-    const { rows } = await connection.query(selection, stmt.params);
-    if (signal?.aborted) throw new RagError('Aborted', 'ABORTED');
-    const ids = rows.map((row) => String(row.id));
-    if (!ids.length) return 0;
-    settled.push(cache.beginWrite(ids));
-    const params = [...stmt.params, ids];
-    // One array parameter avoids PostgreSQL's bind-parameter ceiling for large selections.
-    const deletion = stmt.sql.replace(
-      ' RETURNING "id"',
-      ` AND "id" = ANY($${stmt.params.length + 1}::varchar[]) RETURNING "id"`,
-    );
-    return (await connection.query(deletion, params)).rows.length;
-  };
   try {
-    if (client.transaction) return await client.transaction(work);
-    // Injected clients are dedicated connections when they do not supply a transaction runner.
-    await client.query('BEGIN');
-    try {
-      const count = await work(client);
-      await client.query('COMMIT');
-      return count;
-    } catch (error) {
-      try {
-        await client.query('ROLLBACK');
-      } catch {
-        /* Keep the original error. */
-      }
-      throw error;
-    }
+    return await recordTransaction(client, async (connection) => {
+      const selection = sql.deleteWhere(filter);
+      const { rows } = await connection.query(selection.sql, selection.params);
+      signal?.throwIfAborted();
+      const ids = rows.map((row) => String(row.id));
+      if (!ids.length) return 0;
+      settled.push(cache.beginWrite(ids));
+      const deletion = sql.deleteByIds(ids);
+      await connection.query(deletion.sql, deletion.params);
+      signal?.throwIfAborted();
+      return ids.length;
+    });
   } finally {
     for (const done of settled) done();
   }
+}
+
+/** Clear the shared collection after all prior writes have committed. */
+export async function clearRecords(
+  client: PgClient,
+  sql: PgStoreSql,
+): Promise<void> {
+  const statement = sql.clear();
+  const lock = sql.lockForClear?.();
+  if (lock === undefined) {
+    await client.query(statement.sql, statement.params);
+    return;
+  }
+  await recordTransaction(client, async (connection) => {
+    await connection.query(lock);
+    await connection.query(statement.sql, statement.params);
+  });
 }

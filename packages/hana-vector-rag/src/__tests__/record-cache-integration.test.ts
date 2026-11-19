@@ -386,16 +386,16 @@ for (const layout of ['per-collection', 'shared'] as const)
       await text(store, 'x0000');
       await text(store, 'x1000');
       await text(store, 'unrelated');
-      const original = env.client.exec;
+      const original = env.client.transaction?.bind(env.client);
+      assert.ok(original);
       let batches = 0;
-      env.client.exec = async (sql, params) => {
-        const result = await original(sql, params);
-        if (sql.startsWith('DELETE') && ++batches === 2)
-          throw new Error('lost acknowledgement');
+      env.client.transaction = async (work) => {
+        const result = await original(work);
+        if (++batches === 2) throw new Error('lost acknowledgement');
         return result;
       };
       assert.equal((await store.deleteWhere({ userId: 'bulk' })).ok, false);
-      env.client.exec = original;
+      env.client.transaction = original;
       assert.equal(await text(store, 'x0000'), undefined);
       assert.equal(await text(store, 'x1000'), undefined);
       await put(env.direct(), 'unrelated', 'external');
@@ -495,16 +495,16 @@ for (const layout of ['per-collection', 'shared'] as const)
       await put(other, 'a', 'other');
       await text(store, 'a');
       await text(other, 'a');
-      const original = env.client.exec;
-      env.client.exec = async (sql, params) => {
-        const result = await original(sql, params);
-        if (/^(TRUNCATE|DELETE)/.test(sql)) throw new Error('uncertain clear');
-        return result;
+      const original = env.client.transaction?.bind(env.client);
+      assert.ok(original);
+      env.client.transaction = async (work) => {
+        await original(work);
+        throw new Error('uncertain clear');
       };
       const writer = store.writer();
       assert.ok(writer.clearAll);
       assert.equal((await writer.clearAll()).ok, false);
-      env.client.exec = original;
+      env.client.transaction = original;
       assert.equal(await text(store, 'a'), undefined);
       await put(env.direct('other'), 'a', 'external');
       assert.equal(await text(other, 'a'), 'other');
@@ -516,18 +516,26 @@ for (const layout of ['per-collection', 'shared'] as const)
       await put(old, 'a');
       await text(old, 'a');
       const original = env.client.exec;
+      const transaction = env.client.transaction?.bind(env.client);
       const entered = deferred<void>();
       const release = deferred<void>();
-      env.client.exec = async (sql, params) => {
-        if (
-          sql.startsWith('DROP TABLE') ||
-          (sql.startsWith('DELETE') && sql.includes('"RAG_DOCUMENTS"'))
-        ) {
-          entered.resolve();
-          await release.promise;
-        }
-        return original(sql, params);
+      const pauseDeletion = async () => {
+        entered.resolve();
+        await release.promise;
       };
+      if (layout === 'shared') {
+        assert.ok(transaction);
+        env.client.transaction = async (work) => {
+          env.client.transaction = transaction;
+          await pauseDeletion();
+          return transaction(work);
+        };
+      } else {
+        env.client.exec = async (sql, params) => {
+          if (sql.startsWith('DROP TABLE')) await pauseDeletion();
+          return original(sql, params);
+        };
+      }
       const deleting = env.provider.deleteCollection('docs');
       await entered.promise;
       const during = await env.open();

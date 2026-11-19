@@ -9,30 +9,40 @@ Provides vector search capabilities using Qdrant as the backend.
 
 ## Record embeddings
 
-The primary point stores the full text and the first vector. Additional
-fragments are indexed as separate points with the primary point ID, fragment
-ordinal and filter metadata. Qdrant groups indexed matches by record ID with
-a group size of one. The store merges them with separately indexed matches
-for legacy points and fetches payloads for the winners. Scans and listings
-return primary points. Replacement prunes obsolete fragment points in the
-same ordered batch request, and delete filters remove the primary and all
-its fragment points together.
+Each record is one Qdrant point with its existing payload and a dense
+multivector configured with the `max_sim` comparator. A search sends one
+query vector, so the point score is the best fragment score. Replacing a
+record overwrites its point and all its vectors. Short records have one
+vector in the multivector.
 
 ### Upgrade an existing collection
 
-Use Qdrant 1.10+ for the Query API. Catalogued stores still require Qdrant
-1.17+. Existing single-vector points work without rewriting. For existing
-strict-mode collections, provision the `_ragRecordPointId` keyword index
-and `_ragFragmentIndex` integer index before enabling writes and search.
-The provider adds these indexes for created or adopted collections and the
-catalog migration also creates them. Re-upsert any records written with
-fragment vectors embedded in a prerelease text payload to index those
-vectors.
+Multivectors require Qdrant 1.10 or newer. The catalogued provider requires
+Qdrant 1.17 or newer for catalog creation. Legacy single-vector collections
+remain available for reads, search, deletes and single-fragment writes. A
+write with several fragments returns an error with the migration command.
 
-Qdrant orders individual operations within a batch. Application instances
-that can write the same record concurrently should serialize those writes
-across instances. Configure `fragmentSizeChars` for embedders that do
-not declare their capacity (default 2,048 Unicode code points).
+Pause writes to the target collections and run one migration process per
+collection. Use `QDRANT_URL` and, when needed, `QDRANT_API_KEY` in the
+environment.
+
+```sh
+qdrant-migrate-multivector --collection my_collection --dry-run
+qdrant-migrate-multivector --collection my_collection
+qdrant-migrate-multivector --all
+```
+
+Use `--all --catalog NAME` when the provider has a custom catalog, or
+`--collection NAME` for an independently managed store. Applications can
+call `migrateQdrantMultivectors({ url, collection, credential, signal })`.
+The migration copies IDs, payloads, dense vectors, sparse vectors and collection
+and payload-index settings, and restores collection aliases. It verifies the temporary copy before replacing the
+original under its existing name, then verifies the restored copy. Rerun the
+same command after interruption. Custom shard keys keep their own points. The server's native multivector size constraints apply. Pass an `AbortSignal`
+to set a caller-defined deadline or cancel requests.
+
+Configure `fragmentSizeChars` for embedders that do not declare their capacity
+(default 2,048 Unicode code points).
 
 ## Query embedding fallback
 

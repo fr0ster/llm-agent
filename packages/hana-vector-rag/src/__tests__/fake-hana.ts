@@ -110,12 +110,16 @@ function answer(
     fake.tables.delete(drop[1]);
     return [];
   }
-  const write = sql.match(/^UPSERT "([^"]+)" \(id, text, vector, metadata\)/);
+  const write = sql.match(
+    /^UPSERT "([^"]+)" \(id, text, vector, metadata, fragment_ordinal\)/,
+  );
   if (write) {
     requireTable(fake, write[1]);
     return [{}];
   }
-  if (/^DELETE FROM "[^"]+_FRAGMENTS"/.test(sql)) return [];
+  if (sql.startsWith('DO BEGIN') || sql.startsWith('LOCK TABLE')) return [];
+  if (sql.startsWith('DELETE FROM') && sql.includes('"FRAGMENT_ORDINAL" > 0'))
+    return [];
   if (sql.startsWith('SELECT TABLE_NAME FROM SYS.TABLES')) {
     return [...fake.tables].map((t) => ({ TABLE_NAME: t }));
   }

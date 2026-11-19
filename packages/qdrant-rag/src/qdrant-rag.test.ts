@@ -103,7 +103,6 @@ describe('QdrantRag', () => {
       url: 'http://127.0.0.1:1',
       collectionName: 'unreachable',
       embedder: symmetricEmbedder(makeEmbedder()),
-      timeoutMs: 1000,
     });
     const result = await rag.healthCheck();
     assert.ok(!result.ok);
@@ -183,7 +182,9 @@ describe('QdrantRag', () => {
     assert.equal(
       state.requests
         .slice(firstRequest)
-        .filter(({ path }) => path.endsWith('/points/batch')).length,
+        .filter(
+          ({ path, method }) => method === 'PUT' && path.endsWith('/points'),
+        ).length,
       1,
     );
   });
@@ -212,12 +213,12 @@ describe('QdrantRag — session/user filter (security)', () => {
     let captured: Record<string, unknown> | undefined;
     const origFetch = globalThis.fetch;
     globalThis.fetch = (async (input: unknown, init?: RequestInit) => {
-      if (String(input).endsWith('/points/query/groups')) {
+      if (String(input).endsWith('/points/query')) {
         captured = JSON.parse(String(init?.body));
       }
-      const result = String(input).endsWith('/points/query/groups')
-        ? { groups: [] }
-        : { points: [] };
+      const result = String(input).endsWith('/points/query')
+        ? { points: [] }
+        : { config: { params: { vectors: { size: 3 } } } };
       return Response.json({ result });
     }) as typeof fetch;
     try {

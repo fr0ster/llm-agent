@@ -205,7 +205,7 @@ function constructFromExtraFactory(
  *
  * Field sources, read from each store's own config (not invented):
  *   - qdrant: `QdrantRagConfig` (`packages/qdrant-rag/src/qdrant-rag.ts`) —
- *     `url`, `collectionName`, `credential?: IApiKeyCredential`, `timeoutMs?`.
+ *     `url`, `collectionName`, `credential?: IApiKeyCredential`.
  *   - pg-vector: `PgVectorRagConfig` (`packages/pg-vector-rag/src/connection.ts`) —
  *     `connectionString?`, `host?`, `port?`, `database?`,
  *     `credential?: ISecretLoginCredential`, `schema?`, `collectionName`,
@@ -248,7 +248,6 @@ export type RagResolution = RecordEmbeddingConfig &
         collectionName: string;
         url: string;
         credential?: IApiKeyCredential;
-        timeoutMs?: number;
       }
     | {
         type: 'pg-vector';

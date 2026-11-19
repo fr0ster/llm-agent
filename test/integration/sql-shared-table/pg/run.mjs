@@ -2,6 +2,7 @@
 // Reads PG_TEST_URL; run `npm run build` at the repo root first (the built
 // workspace packages are imported from the root node_modules).
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -23,8 +24,9 @@ const { sharedTableConformanceCases } = await load(
 const { scanDeleteConformanceCases, isScanDeleteCaseSkipped } = await load(
   '@mcp-abap-adt/llm-agent/testing/scan-delete-conformance',
 );
-const { fragmentTableName, PgVectorRag, PgVectorRagProvider, sharedLayoutSql } =
-  await load('@mcp-abap-adt/pg-vector-rag');
+const { PgVectorRag, PgVectorRagProvider, sharedLayoutSql } = await load(
+  '@mcp-abap-adt/pg-vector-rag',
+);
 const { default: pg } = await import('pg');
 
 const url = process.env.PG_TEST_URL;
@@ -34,10 +36,39 @@ if (!url) {
 }
 
 const pool = new pg.Pool({ connectionString: url, max: 5 });
-const client = {
-  query: (sql, params = []) => pool.query(sql, params),
-  end: async () => {},
-};
+function poolClient(pool, searchPath) {
+  async function withConnection(work) {
+    const connection = await pool.connect();
+    try {
+      if (searchPath)
+        await connection.query(`SET search_path TO ${searchPath}`);
+      return await work(connection);
+    } finally {
+      if (searchPath) await connection.query('RESET search_path');
+      connection.release();
+    }
+  }
+  return {
+    query: (sql, params = []) =>
+      searchPath
+        ? withConnection((connection) => connection.query(sql, params))
+        : pool.query(sql, params),
+    end: async () => {},
+    transaction: (work) =>
+      withConnection(async (connection) => {
+        await connection.query('BEGIN');
+        try {
+          const result = await work(connection);
+          await connection.query('COMMIT');
+          return result;
+        } catch (error) {
+          await connection.query('ROLLBACK');
+          throw error;
+        }
+      }),
+  };
+}
+const client = poolClient(pool);
 const schema = `sst_${Date.now()}`;
 const dim = CONFORMANCE_EMBEDDING_DIM;
 const embedder = symmetricEmbedder(conformanceEmbedder());
@@ -48,7 +79,7 @@ const kits = [];
 
 const resetTables = () =>
   pool.query(
-    `TRUNCATE "${schema}"."rag_documents", "${schema}"."rag_documents_fragments", "${schema}"."rag_collections"`,
+    `TRUNCATE "${schema}"."rag_documents", "${schema}"."rag_collections"`,
   );
 
 function storeOf(collection, dimension = dim) {
@@ -127,7 +158,69 @@ try {
   const conn = await pool.connect();
   try {
     await conn.query(`SET search_path TO ${searchPath}`);
-    await conn.query(sharedLayoutSql({ dimension: dim }));
+    const released = sharedLayoutSql({ dimension: dim })
+      .replace('  "fragment_ordinal" INTEGER NOT NULL DEFAULT 0,\n', '')
+      .replace(
+        'PRIMARY KEY ("collection", "id", "fragment_ordinal")',
+        'PRIMARY KEY ("collection", "id")',
+      );
+    await conn.query(released);
+    const { vector } = await conformanceEmbedder().embed('legacy records');
+    for (const id of ['first', 'second'])
+      await conn.query(
+        'INSERT INTO rag_documents (collection, id, text, vector, metadata) VALUES ($1, $2, $3, $4::vector, $5::jsonb)',
+        ['legacy', id, id, JSON.stringify(vector), '{}'],
+      );
+    await conn.query(
+      'CREATE INDEX rag_vector_index ON rag_documents USING hnsw (vector vector_cosine_ops)',
+    );
+    const previousVectors = await conn.query(
+      'SELECT vector::text FROM rag_documents ORDER BY id',
+    );
+    const migration = await readFile(
+      resolve(
+        root,
+        'packages/pg-vector-rag/ddl/migrations/001-fragment-ordinal.sql',
+      ),
+      'utf8',
+    );
+    await conn.query(migration);
+    await conn.query(migration);
+    const preserved = await conn.query(
+      'SELECT id, text, fragment_ordinal, vector::text FROM rag_documents ORDER BY id',
+    );
+    assert.deepEqual(
+      preserved.rows.map(({ id, text, fragment_ordinal }) => [
+        id,
+        text,
+        fragment_ordinal,
+      ]),
+      [
+        ['first', 'first', 0],
+        ['second', 'second', 0],
+      ],
+    );
+    assert.deepEqual(
+      preserved.rows.map(({ vector }) => vector),
+      previousVectors.rows.map(({ vector }) => vector),
+    );
+    assert.ok(
+      (await conn.query("SELECT to_regclass('rag_vector_index') AS index"))
+        .rows[0].index,
+    );
+    const legacy = await storeOf('legacy').query(
+      { text: 'legacy', toVector: async () => vector },
+      2,
+    );
+    assert.ok(legacy.ok);
+    assert.deepEqual(
+      legacy.value.map(({ text }) => text),
+      ['first', 'second'],
+    );
+    await resetTables();
+    console.log(
+      'PASS released shared table migration, including rerun and indexed search',
+    );
   } finally {
     // The connection goes back to the pool: leave no search_path behind.
     await conn.query('RESET search_path');
@@ -198,7 +291,7 @@ try {
     const fragments = async () =>
       (
         await pool.query(
-          `SELECT "ordinal" FROM "${schema}"."rag_documents_fragments" WHERE "collection" = 'fragments' ORDER BY "ordinal"`,
+          `SELECT "fragment_ordinal" FROM "${schema}"."rag_documents" WHERE "collection" = 'fragments' AND "fragment_ordinal" > 0 ORDER BY "fragment_ordinal"`,
         )
       ).rows.length;
     assert.equal(await fragments(), 3);
@@ -253,24 +346,10 @@ try {
   // it before the connection goes back: everything it creates lands there. The exact table names are
   // tracked and only those are dropped (the schema itself goes at the end).
   const pcTables = new Set();
-  const pcClient = {
-    async query(sql, params = []) {
-      const conn = await pool.connect();
-      try {
-        await conn.query(`SET search_path TO ${searchPath}`);
-        return await conn.query(sql, params);
-      } finally {
-        await conn.query('RESET search_path');
-        conn.release();
-      }
-    },
-    end: async () => {},
-  };
+  const pcClient = poolClient(pool, searchPath);
   const dropPerCollectionTables = async () => {
     for (const table of pcTables)
-      await pool.query(
-        `DROP TABLE IF EXISTS "${schema}"."${table}", "${schema}"."${fragmentTableName(table)}"`,
-      );
+      await pool.query(`DROP TABLE IF EXISTS "${schema}"."${table}"`);
     pcTables.clear();
   };
   const sharedScanSubject = async () => {

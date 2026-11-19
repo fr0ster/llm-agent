@@ -2,4 +2,4 @@
 "@mcp-abap-adt/qdrant-rag": major
 ---
 
-Use Qdrant Query API groups to rank indexed fragment points and fetch winning records. Ordered record writes prune fragments and older single-vector points stay searchable. This requires Qdrant 1.10 or later.
+Store records as Qdrant MaxSim multivectors. Existing collections retain single-vector read and write support. The resumable qdrant-migrate-multivector command enables multi-fragment writes without re-embedding.

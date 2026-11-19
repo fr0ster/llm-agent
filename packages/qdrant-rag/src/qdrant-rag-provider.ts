@@ -36,9 +36,12 @@ import {
   isAccessCollectionName,
   QdrantAccessPersistence,
 } from './access-persistence.js';
-import { fragmentIndexKey, recordPointIdKey } from './payload-record.js';
+import {
+  denseVectorConfig,
+  isMigrationCollection,
+  qdrantFetch,
+} from './multivector.js';
 import { deterministicUUID, QdrantRag } from './qdrant-rag.js';
-import { recordOnlyCondition, recordPointFilter } from './scan-delete.js';
 
 /** The collection a QdrantRagProvider keeps one point per collection in, by default. */
 export const DEFAULT_CATALOG_COLLECTION = 'rag_collection_catalog';
@@ -60,7 +63,6 @@ export interface QdrantRagProviderConfig {
   credential?: IApiKeyCredential;
   embedder: IRetrievalEmbedder;
   editable?: boolean;
-  timeoutMs?: number;
   /** Unicode code points per fragment when the embedder has no declared capacity. */
   fragmentSizeChars?: number;
   supportedScopes?: readonly RagCollectionScope[];
@@ -82,7 +84,6 @@ export class QdrantRagProvider
   private readonly credential?: IApiKeyCredential;
   private readonly embedder: IRetrievalEmbedder;
   private readonly fragmentSizeChars?: number;
-  private readonly timeoutMs?: number;
   private readonly catalog: string;
   private catalogReady?: Promise<void>;
   private accessReady?: Promise<QdrantAccessPersistence>;
@@ -112,7 +113,6 @@ export class QdrantRagProvider
     this.credential = cfg.credential;
     this.embedder = cfg.embedder;
     this.fragmentSizeChars = cfg.fragmentSizeChars;
-    this.timeoutMs = cfg.timeoutMs;
     this.editable = cfg.editable ?? true;
     this.supportedScopes = cfg.supportedScopes ?? ['session', 'user', 'global'];
     this.catalog = cfg.catalogCollection ?? DEFAULT_CATALOG_COLLECTION;
@@ -148,21 +148,18 @@ export class QdrantRagProvider
   }
 
   private async ensureRecordIndexes(name: string, code: string): Promise<void> {
-    for (const [field_name, field_schema] of [
-      ['ownerScope', 'keyword'],
-      [recordPointIdKey, 'keyword'],
-      [fragmentIndexKey, 'integer'],
-    ]) {
-      const response = await this.request(
-        `/collections/${name}/index?wait=true`,
-        {
-          method: 'PUT',
-          body: JSON.stringify({ field_name, field_schema }),
-        },
-      );
-      if (!response.ok)
-        throw new RagError(`Payload index failed: ${field_name}`, code);
-    }
+    const response = await this.request(
+      `/collections/${name}/index?wait=true`,
+      {
+        method: 'PUT',
+        body: JSON.stringify({
+          field_name: 'ownerScope',
+          field_schema: 'keyword',
+        }),
+      },
+    );
+    if (!response.ok)
+      throw new RagError('Payload index failed: ownerScope', code);
   }
 
   private async createOwnedCollection(
@@ -236,7 +233,6 @@ export class QdrantRagProvider
               limit: 256,
               with_payload: true,
               with_vector: false,
-              filter: { must: [recordOnlyCondition] },
               ...(offset === null ? {} : { offset }),
             }),
           },
@@ -289,7 +285,7 @@ export class QdrantRagProvider
             {
               method: 'POST',
               body: JSON.stringify({
-                filter: recordPointFilter([point.id]),
+                points: [point.id],
                 payload: {
                   ownerScope: tagged.ownerScope,
                   sessionId: tagged.sessionId,
@@ -570,7 +566,10 @@ export class QdrantRagProvider
       return {
         ok: true,
         value: names.filter(
-          (n) => n !== this.catalog && !isAccessCollectionName(n),
+          (n) =>
+            n !== this.catalog &&
+            !isAccessCollectionName(n) &&
+            !isMigrationCollection(n),
         ),
       };
     } catch (err) {
@@ -591,7 +590,7 @@ export class QdrantRagProvider
     const res = await this.request(`/collections/${name}`, {
       method: 'PUT',
       body: JSON.stringify({
-        vectors: { size: dimension, distance: 'Cosine' },
+        vectors: denseVectorConfig(dimension),
       }),
     });
     if (res.ok) return { ok: true, value: undefined };
@@ -678,7 +677,6 @@ export class QdrantRagProvider
       embedder: this.embedder,
       fragmentSizeChars: this.fragmentSizeChars,
       collectionName: storeName,
-      timeoutMs: this.timeoutMs,
       autoCreateCollection: false,
     });
     return {
@@ -706,7 +704,11 @@ export class QdrantRagProvider
   }
 
   private refuseCatalogName(name: string): Refusal | undefined {
-    if (name !== this.catalog && !isAccessCollectionName(name))
+    if (
+      name !== this.catalog &&
+      !isAccessCollectionName(name) &&
+      !isMigrationCollection(name)
+    )
       return undefined;
     return {
       ok: false,
@@ -785,6 +787,6 @@ export class QdrantRagProvider
       'Content-Type': 'application/json',
     };
     if (this.credential) headers['api-key'] = await this.credential.secret();
-    return fetch(`${this.url}${path}`, { ...init, headers });
+    return qdrantFetch(`${this.url}${path}`, { ...init, headers });
   }
 }

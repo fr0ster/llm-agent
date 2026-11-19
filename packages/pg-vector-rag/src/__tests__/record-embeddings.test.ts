@@ -18,7 +18,7 @@ for (const layout of ['shared', 'per-collection'] as const) {
     const table = shared ? 'rag_documents' : 'docs';
     const store = storingPg({
       sharedDimension: 2,
-      legacyFragmentTable: shared ? undefined : table,
+      legacyTable: shared ? undefined : table,
     });
     store.insertSharedRow({
       table: `"${table}"`,
@@ -43,26 +43,32 @@ for (const layout of ['shared', 'per-collection'] as const) {
     );
     const lookup = { text: 'finish', toVector: async () => [0, 1] };
     const rows = () => store.storedRows();
-    const fragments = () => {
-      const row = rows().find((row) => row.id === 'long');
-      return row?.fragments;
-    };
+    const fragments = () =>
+      rows()
+        .filter((row) => row.id === 'long' && (row.ordinal ?? 0) > 0)
+        .map((row) => row.vector);
 
     const legacy = await rag.query(lookup, 1);
     assert.ok(legacy.ok);
     assert.equal(legacy.value[0]?.text, 'legacy');
+    assert.equal(rows()[0].ordinal, 0);
     if (!shared)
       assert.ok(
-        store.statements.some((sql) => sql.startsWith('ALTER TABLE "docs"')),
+        store.statements.some((sql) => sql.includes('LOCK TABLE "docs"')),
       );
 
     assert.ok((await rag.upsert(full, { id: 'long' })).ok);
+    assert.ok(
+      rows()
+        .filter((row) => (row.ordinal ?? 0) > 0)
+        .every((row) => row.text === null),
+    );
     assert.deepEqual(embedded, ['early\n\n', 'middle\n\n', 'finish']);
     assert.deepEqual(fragments(), [
       [1, 0],
       [0, 1],
     ]);
-    assert.equal(rows().length, 2);
+    assert.equal(rows().length, 4);
 
     const best = await rag.query(lookup, 1);
     assert.ok(best.ok);
@@ -75,6 +81,39 @@ for (const layout of ['shared', 'per-collection'] as const) {
       [full, 'legacy'],
     );
     assert.equal(search.value[0]?.score, 1);
+
+    for (const [id, identity] of [
+      ['session', { sessionId: 'private-session' }],
+      ['user', { userId: 'private-user' }],
+    ] as const) {
+      assert.ok((await rag.upsert(full, { id, ...identity })).ok);
+      const scoped = await rag.query(lookup, 5, { ragFilter: identity });
+      assert.ok(scoped.ok);
+      assert.deepEqual(
+        scoped.value.map((hit) => hit.metadata.id),
+        [id],
+      );
+      assert.equal(scoped.value[0].score, 1);
+      const global = await rag.query(lookup, 5, {
+        ragFilter: { owner: { scope: 'global' } },
+      });
+      assert.ok(global.ok);
+      assert.ok(global.value.every((hit) => hit.metadata.id !== id));
+      const deleted = await rag.deleteWhere(identity);
+      assert.ok(deleted.ok);
+      assert.equal(deleted.value.deleted, 1);
+    }
+
+    // The two closest fragments belong to the same record for this query.
+    const withDuplicateCandidates = await rag.query(
+      { text: 'early', toVector: async () => [1, 0] },
+      2,
+    );
+    assert.ok(withDuplicateCandidates.ok);
+    assert.deepEqual(
+      withDuplicateCandidates.value.map((hit) => hit.text),
+      [full, 'legacy'],
+    );
 
     const byId = await rag.getById('long');
     const list = await rag.list({ includeText: true });
@@ -103,6 +142,6 @@ for (const layout of ['shared', 'per-collection'] as const) {
     assert.ok((await rag.upsert(full, { id: 'long' })).ok);
     assert.ok((await rag.writer().deleteByIdRaw('long')).ok);
     assert.equal(rows().length, 1);
-    assert.equal(fragments(), undefined);
+    assert.deepEqual(fragments(), []);
   });
 }

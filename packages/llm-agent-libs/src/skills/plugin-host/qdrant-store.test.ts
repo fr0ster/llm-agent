@@ -596,7 +596,7 @@ test('makeQdrantClient.upsertPoints adds ?wait=true only when opts.wait set', as
   const realFetch = globalThis.fetch;
   globalThis.fetch = (async (input: unknown) => {
     urls.push(String(input));
-    return { ok: true, status: 200 } as Response;
+    return Response.json({ result: { config: { params: { vectors: {} } } } });
   }) as typeof fetch;
   try {
     const client = makeQdrantClient({
@@ -606,9 +606,13 @@ test('makeQdrantClient.upsertPoints adds ?wait=true only when opts.wait set', as
     const pts = [{ id: 'p1', vector: [1, 0, 0], payload: { generation: 'g' } }];
     await client.upsertPoints(pts); // default: throughput, no wait
     await client.upsertPoints(pts, { wait: true }); // activation ingest
-    assert.equal(urls.length, 2);
-    assert.equal(urls[0], 'http://q/collections/skills/points');
-    assert.equal(urls[1], 'http://q/collections/skills/points?wait=true');
+    assert.deepEqual(
+      urls.filter((url) => url.includes('/points')),
+      [
+        'http://q/collections/skills/points',
+        'http://q/collections/skills/points?wait=true',
+      ],
+    );
   } finally {
     globalThis.fetch = realFetch;
   }
@@ -657,7 +661,7 @@ test('makeQdrantClient asks its credential on every request, so a rotating key r
     seen.push(
       (init?.headers as Record<string, string> | undefined)?.['api-key'],
     );
-    return { ok: true, status: 200 } as Response;
+    return Response.json({ result: { config: { params: { vectors: {} } } } });
   }) as typeof fetch;
   let n = 0;
   const credential = {
@@ -673,7 +677,7 @@ test('makeQdrantClient asks its credential on every request, so a rotating key r
     const pts = [{ id: 'p1', vector: [1, 0, 0], payload: { generation: 'g' } }];
     await client.upsertPoints(pts);
     await client.upsertPoints(pts);
-    assert.deepEqual(seen, ['key-1', 'key-2']);
+    assert.deepEqual(seen, ['key-1', 'key-2', 'key-3', 'key-4']);
   } finally {
     globalThis.fetch = realFetch;
   }
@@ -686,20 +690,20 @@ test('makeQdrantClient sends no api-key header without a credential', async () =
     seen.push(
       (init?.headers as Record<string, string> | undefined)?.['api-key'],
     );
-    return { ok: true, status: 200 } as Response;
+    return Response.json({ result: { config: { params: { vectors: {} } } } });
   }) as typeof fetch;
   try {
     const client = makeQdrantClient({ url: 'http://q', collection: 'skills' });
     await client.upsertPoints([
       { id: 'p1', vector: [1], payload: { generation: 'g' } },
     ]);
-    assert.deepEqual(seen, [undefined]);
+    assert.deepEqual(seen, [undefined, undefined]);
   } finally {
     globalThis.fetch = realFetch;
   }
 });
 
-test('Qdrant skill fragments participate in grouped recall without duplicating skill content', async (context) => {
+test('Qdrant skill fragments use native multivector recall without duplicating skill content', async (context) => {
   let points: QdrantPoint[] = [];
   const requests: string[] = [];
   context.mock.method(
@@ -713,26 +717,25 @@ test('Qdrant skill fragments participate in grouped recall without duplicating s
         points = body.points;
         return Response.json({});
       }
-      if (url.pathname.endsWith('/query/groups')) {
-        const body = JSON.parse(String(init?.body)) as {
-          group_by: string;
-          group_size: number;
-        };
-        assert.equal(body.group_by, 'recordId');
-        assert.equal(body.group_size, 1);
-        const best = points.find((point) => point.vector[1] === 1);
-        assert.ok(best);
+      if (!init?.method)
         return Response.json({
           result: {
-            groups: [
-              { hits: [{ id: best.id, score: 1, payload: best.payload }] },
-            ],
+            config: {
+              params: {
+                vectors: { multivector_config: { comparator: 'max_sim' } },
+              },
+            },
           },
         });
-      }
-      const body = JSON.parse(String(init?.body)) as { ids: string[] };
+      assert.ok(url.pathname.endsWith('/points/query'));
+      const body = JSON.parse(String(init.body)) as { query: number[][] };
+      assert.deepEqual(body.query, [[0, 1]]);
+      const best = points.find(
+        (point) => Array.isArray(point.vector[1]) && point.vector[1][1] === 1,
+      );
+      assert.ok(best);
       return Response.json({
-        result: points.filter((point) => body.ids.includes(point.id)),
+        result: { points: [{ payload: best.payload, score: 1 }] },
       });
     },
   );
@@ -754,18 +757,21 @@ test('Qdrant skill fragments participate in grouped recall without duplicating s
   const { generation } = await store.beginGeneration();
   const record = rec('skill');
   await store.upsert(generation, [record]);
-  assert.equal(points.length, 2);
+  assert.equal(points.length, 1);
   assert.equal(points[0]?.payload.content, record.content);
-  assert.equal(points[1]?.payload.content, undefined);
-  assert.equal(points[1]?.payload.parentPointId, points[0]?.id);
+  assert.deepEqual(points[0]?.vector, [
+    [1, 0],
+    [0, 1],
+  ]);
   const hits = await store.queryRevision(generation, [0, 1], 1);
   assert.deepEqual(
     hits.map(({ record, score }) => [record.content, score]),
     [[record.content, 1]],
   );
   assert.deepEqual(requests, [
+    '/collections/skills',
     '/collections/skills/points',
-    '/collections/skills/points/query/groups',
-    '/collections/skills/points',
+    '/collections/skills',
+    '/collections/skills/points/query',
   ]);
 });

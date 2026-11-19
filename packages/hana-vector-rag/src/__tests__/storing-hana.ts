@@ -1,6 +1,5 @@
 import type { HanaClient } from '../hana-vector-rag.js';
 import { transactionalHanaClient } from '../role-transaction.js';
-import { fragmentTableName } from '../schema.js';
 
 /**
  * A HANA client that stores the rows of the `shared` layout's two tables and
@@ -474,8 +473,9 @@ export function storingHana(opts: {
           'VECTOR',
           'METADATA',
           'CREATED_AT',
+          'FRAGMENT_ORDINAL',
         ],
-        key: ['COLLECTION', 'ID'],
+        key: ['COLLECTION', 'ID', 'FRAGMENT_ORDINAL'],
         lengths: { COLLECTION: 63, ID: 255, VECTOR: opts.dimension },
         rows: [],
       },
@@ -499,21 +499,6 @@ export function storingHana(opts: {
       },
     ],
   ]);
-
-  const installFragments = (name: string, shared: boolean) => {
-    const columns = shared
-      ? ['COLLECTION', 'ID', 'ORDINAL', 'VECTOR']
-      : ['ID', 'ORDINAL', 'VECTOR'];
-    tables.set(`${schema}.${fragmentTableName(name)}`, {
-      columns,
-      key: columns.slice(0, -1),
-      lengths: { VECTOR: opts.dimension },
-      rows: [],
-    });
-  };
-  const sharedDocuments = opts.documentsTable ?? 'RAG_DOCUMENTS';
-  if (tables.has(`${schema}.${sharedDocuments}`))
-    installFragments(sharedDocuments, true);
 
   /** The system views the startup check reads, derived from the tables. */
   const systemView = (name: string): Table | undefined => {
@@ -650,6 +635,7 @@ export function storingHana(opts: {
     for (const [c, v] of Object.entries(given)) row[column(table, c)] = v;
     if (row.CREATED_AT === null && table.columns.includes('CREATED_AT'))
       row.CREATED_AT = new Date().toISOString();
+    if (row.FRAGMENT_ORDINAL === null) row.FRAGMENT_ORDINAL = 0;
     const dim = table.lengths.VECTOR;
     if (dim !== undefined && row.VECTOR !== null) {
       if (!Array.isArray(row.VECTOR) || row.VECTOR.length !== dim)
@@ -751,6 +737,7 @@ export function storingHana(opts: {
         tables.delete(`${schema}.${clearTable[2]}`);
       return { rows: [], rowCount: 0 };
     }
+    if (sql.startsWith('LOCK TABLE')) return { rows: [], rowCount: 0 };
     if (sql === 'ROLLBACK' && snapshot) {
       tables.clear();
       for (const [key, table] of snapshot) tables.set(key, table);
@@ -765,7 +752,7 @@ export function storingHana(opts: {
       if (tables.has(key)) throw new Error('Duplicate table');
       const columns = [
         ...sql.matchAll(
-          /(?:\(|,)\s*([a-z_]+)\s+(?:NVARCHAR|NCLOB|TIMESTAMP|REAL_VECTOR)/g,
+          /(?:\(|,)\s*([a-z_]+)\s+(?:NVARCHAR|NCLOB|TIMESTAMP|REAL_VECTOR|INTEGER)/g,
         ),
       ].map((m) => m[1].toUpperCase());
       const primary = /PRIMARY KEY \(([^)]+)\)/.exec(sql);
@@ -782,10 +769,17 @@ export function storingHana(opts: {
       });
       return { rows: [], rowCount: 0 };
     }
-    const fragments =
-      /^CREATE COLUMN TABLE "[^"]+" \([\s\S]+ REFERENCES "([^"]+)" /.exec(sql);
-    if (fragments) {
-      installFragments(fragments[1], sql.includes('"COLLECTION"'));
+    if (sql.startsWith('DO BEGIN')) {
+      const name = sql.match(
+        /ALTER TABLE "([^"]+)" ADD \("FRAGMENT_ORDINAL"/,
+      )?.[1];
+      if (!name) throw new Error('Unexpected fragment migration');
+      const table = resolve({ name });
+      if (!table.columns.includes('FRAGMENT_ORDINAL')) {
+        table.columns.push('FRAGMENT_ORDINAL');
+        table.key.push('FRAGMENT_ORDINAL');
+        for (const row of table.rows) row.FRAGMENT_ORDINAL = 0;
+      }
       return { rows: [], rowCount: 0 };
     }
     const alter =
@@ -799,14 +793,13 @@ export function storingHana(opts: {
       return { rows: [], rowCount: 0 };
     }
     const ranked =
-      /^WITH eligible AS \(\s+SELECT "ID", COSINE_SIMILARITY\("VECTOR", TO_REAL_VECTOR\('(\[[^']+\])'\)\) AS "score"\s+FROM "([^"]+)" WHERE ([^\n]+)[\s\S]+LIMIT (\d+)\s+\)/.exec(
+      /^WITH candidate_rows AS \(\s+SELECT "ID", COSINE_SIMILARITY\("VECTOR", TO_REAL_VECTOR\('(\[[^']+\])'\)\) AS "score"\s+FROM "([^"]+)" WHERE ([^\n]+)[\s\S]+LIMIT (\d+)\s+\)/.exec(
         sql,
       );
     if (ranked) {
       const [, encodedVector, name, conditions, limit] = ranked;
       const vector: number[] = JSON.parse(encodedVector);
       const documents = resolve({ name });
-      const fragments = resolve({ name: fragmentTableName(name) });
       const shared = conditions.startsWith('"COLLECTION"');
       let offset = shared ? 1 : 0;
       const filters = [
@@ -825,7 +818,7 @@ export function storingHana(opts: {
           /JSON_VALUE\("METADATA", '\$\.(\w+)' RETURNING NVARCHAR\(5000\)\) LIKE_REGEXPR/g,
         ),
       ].map(([, key]) => key);
-      const rows = documents.rows
+      const candidates = documents.rows
         .flatMap((row) => {
           if (shared && row.COLLECTION !== params[0]) return [];
           const metadata = JSON.parse(String(row.METADATA ?? '{}')) as Record<
@@ -844,29 +837,40 @@ export function storingHana(opts: {
           )
             return [];
           if (typeof metadata.ttl === 'number' && metadata.ttl < now) return [];
-          const vectors = [
-            row.VECTOR,
-            ...fragments.rows
-              .filter(
-                (fragment) =>
-                  fragment.ID === row.ID &&
-                  fragment.COLLECTION === row.COLLECTION,
-              )
-              .map((fragment) => fragment.VECTOR),
-          ].filter(Array.isArray);
-          return [
-            {
-              id: row.ID,
-              text: row.TEXT,
-              metadata: row.METADATA,
-              score: Math.max(
-                ...vectors.map((item) => cosineSimilarity(vector, item)),
-              ),
-            },
-          ];
+          if (!Array.isArray(row.VECTOR)) return [];
+          return [{ row, score: cosineSimilarity(vector, row.VECTOR) }];
         })
-        .sort((a, b) => b.score - a.score)
-        .slice(0, Number(limit));
+        .sort((a, b) => b.score - a.score);
+      const cap = conditions.match(/LIMIT (\d+)$/)?.[1];
+      const closest =
+        cap === undefined ? candidates : candidates.slice(0, Number(cap));
+      const winners = new Map<Value, { row: Row; score: number }>();
+      for (const candidate of closest)
+        if (!winners.has(candidate.row.ID))
+          winners.set(candidate.row.ID, candidate);
+      const hits =
+        cap !== undefined && winners.size < Number(limit)
+          ? []
+          : [...winners.values()]
+              .slice(0, Number(limit))
+              .map(({ row, score }) => {
+                const record = documents.rows.find(
+                  (r) =>
+                    r.ID === row.ID &&
+                    r.COLLECTION === row.COLLECTION &&
+                    r.FRAGMENT_ORDINAL === 0,
+                );
+                return {
+                  id: row.ID,
+                  text: record?.TEXT ?? null,
+                  metadata: record?.METADATA ?? null,
+                  score,
+                  candidateCount: closest.length,
+                };
+              });
+      const rows = hits.length
+        ? hits
+        : [{ id: null, candidateCount: closest.length }];
       return { rows, rowCount: rows.length };
     }
     const stmt = new Parser(
@@ -916,18 +920,6 @@ export function storingHana(opts: {
           matches(table, r, stmt.where, params),
         );
         table.rows = table.rows.filter((r) => !deleted.includes(r));
-        const fragments = tables.get(
-          `${schema}.${fragmentTableName(stmt.table.name)}`,
-        );
-        if (fragments)
-          fragments.rows = fragments.rows.filter(
-            (fragment) =>
-              !deleted.some(
-                (row) =>
-                  row.ID === fragment.ID &&
-                  row.COLLECTION === fragment.COLLECTION,
-              ),
-          );
         return { rows: [], rowCount: deleted.length };
       }
     }
@@ -964,12 +956,18 @@ export function storingHana(opts: {
     storedRows: (name) => resolve({ name }).rows,
     createCollectionTable(name, legacy) {
       tables.set(`${schema}.${name}`, {
-        columns: ['ID', 'TEXT', 'VECTOR', 'METADATA', 'CREATED_AT'],
-        key: ['ID'],
+        columns: [
+          'ID',
+          'TEXT',
+          'VECTOR',
+          'METADATA',
+          'CREATED_AT',
+          ...(legacy ? [] : ['FRAGMENT_ORDINAL']),
+        ],
+        key: legacy ? ['ID'] : ['ID', 'FRAGMENT_ORDINAL'],
         lengths: { ID: 255, VECTOR: opts.dimension },
         rows: [],
       });
-      if (!legacy) installFragments(name, false);
     },
     insertRow(table, row) {
       const t = resolve({ name: table });

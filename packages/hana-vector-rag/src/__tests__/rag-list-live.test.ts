@@ -10,7 +10,7 @@ import {
 import { ragListConformanceCases } from '@mcp-abap-adt/llm-agent/testing/rag-list-conformance';
 import { createHanaClient, HanaVectorRag } from '../hana-vector-rag.js';
 import { HanaVectorRagProvider } from '../hana-vector-rag-provider.js';
-import { fragmentTableName } from '../schema.js';
+import { fragmentOrdinalMigrationSql } from '../schema.js';
 import { sharedLayoutSql } from '../shared-ddl.js';
 
 function isJsonArray(value: RagJsonValue): value is readonly RagJsonValue[] {
@@ -79,21 +79,79 @@ for (const layout of ['per-collection', 'shared'] as const)
     const providers: HanaVectorRagProvider[] = [];
     try {
       if (layout === 'shared') {
-        tables.push(
-          documentsTable,
-          catalogTable,
-          fragmentTableName(documentsTable),
-        );
+        tables.push(documentsTable, catalogTable);
         for (const sql of sharedLayoutSql({
           dimension: 3,
           documentsTable,
           catalogTable,
         })
+          .replace('  "FRAGMENT_ORDINAL" INTEGER DEFAULT 0 NOT NULL,\n', '')
+          .replace(
+            'PRIMARY KEY ("COLLECTION", "ID", "FRAGMENT_ORDINAL")',
+            'PRIMARY KEY ("COLLECTION", "ID")',
+          )
           .split(';')
           .map((part) => part.trim())
           .filter(Boolean))
           await client.exec(sql);
       }
+      await t.test(
+        'released table migration keeps the original rows and vectors',
+        async () => {
+          const table =
+            layout === 'shared' ? documentsTable : `${suffix}_legacy`;
+          if (layout === 'per-collection') {
+            tables.push(table);
+            await client.exec(
+              `CREATE COLUMN TABLE "${table}" ("ID" NVARCHAR(255) PRIMARY KEY, "TEXT" NCLOB NOT NULL, "VECTOR" REAL_VECTOR(3), "METADATA" NCLOB)`,
+            );
+          }
+          for (const id of ['first', 'second']) {
+            const columns = layout === 'shared' ? '"COLLECTION", ' : '';
+            const slot = layout === 'shared' ? '?, ' : '';
+            await client.exec(
+              `INSERT INTO "${table}" (${columns}"ID", "TEXT", "VECTOR", "METADATA") VALUES (${slot}?, ?, TO_REAL_VECTOR('[1,0,0]'), '{}')`,
+              layout === 'shared' ? ['legacy', id, id] : [id, id],
+            );
+          }
+          const migration = fragmentOrdinalMigrationSql(table, layout);
+          await client.exec(migration);
+          await client.exec(migration);
+          assert.deepEqual(
+            (
+              await client.query(
+                `SELECT "FRAGMENT_ORDINAL" AS "ordinal" FROM "${table}"`,
+              )
+            ).map((row) => row.ordinal),
+            [0, 0],
+          );
+          const rag = new HanaVectorRag(
+            {
+              ...connection,
+              collectionName: layout === 'shared' ? 'legacy' : table,
+              layout,
+              documentsTable,
+              autoCreateSchema: false,
+              embedder,
+            },
+            client,
+          );
+          const hits = value(
+            await rag.query(
+              { text: 'legacy', toVector: async () => [1, 0, 0] },
+              2,
+            ),
+          );
+          assert.deepEqual(
+            hits.map(({ text, score }) => [text, score]),
+            [
+              ['first', 1],
+              ['second', 1],
+            ],
+          );
+          await client.exec(`DELETE FROM "${table}"`);
+        },
+      );
       const makeStore = async () => {
         const collectionName = `${suffix}_${sequence++}`;
         const store = new HanaVectorRag(
@@ -110,7 +168,7 @@ for (const layout of ['per-collection', 'shared'] as const)
         );
         if (layout === 'per-collection') {
           await store.ensureSchema();
-          tables.push(collectionName, fragmentTableName(collectionName));
+          tables.push(collectionName);
         }
         stores.push(collectionName);
         return store;

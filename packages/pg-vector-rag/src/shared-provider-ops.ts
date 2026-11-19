@@ -20,6 +20,7 @@ import {
   writeCatalogRecord,
 } from './catalog-record.js';
 import type { PgClient } from './pg-vector-rag.js';
+import { clearRecords } from './scan-delete.js';
 import { qualifiedTable } from './schema.js';
 import { checkSharedTables } from './shared-check.js';
 import { sharedStoreSql } from './store-sql.js';
@@ -121,10 +122,10 @@ export class SharedProviderOps {
     const ready = await this.check(client);
     if (!ready.ok) return ready;
     try {
-      const clear = this.store(name).clear();
+      const store = this.store(name);
       const settled = beginDeletion?.();
       try {
-        await client.query(clear.sql, clear.params);
+        await clearRecords(client, store);
       } finally {
         settled?.();
       }
@@ -188,7 +189,7 @@ export class SharedProviderOps {
         `SELECT store_name AS "s" FROM ${catalog}`,
       );
       const stored = await client.query(
-        `SELECT DISTINCT "collection" AS "c" FROM ${documents}`,
+        `SELECT DISTINCT "collection" AS "c" FROM ${documents} WHERE "fragment_ordinal" = 0`,
       );
       const names = new Set<string>([
         ...recorded.rows.map((r) => String(r.s)),

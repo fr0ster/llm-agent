@@ -39,9 +39,6 @@ describe('pg schema', () => {
     assert.match(sql, /metadata JSONB/);
   });
   it('emits DROP TABLE DDL', () => {
-    assert.equal(
-      dropTableSql('docs'),
-      'DROP TABLE IF EXISTS "docs", "docs_fragments"',
-    );
+    assert.equal(dropTableSql('docs'), 'DROP TABLE IF EXISTS "docs"');
   });
 });

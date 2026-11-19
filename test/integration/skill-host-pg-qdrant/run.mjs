@@ -12,7 +12,8 @@ const POST_KILL_GRACE_MS = 5_000;
 // Authoritative manifest digest of the baked model (the bare hex `/api/tags`
 // reports under models[].digest). run.mjs re-reads the SAME field and fails loud
 // on drift.
-const EXPECTED_MODEL_DIGEST = '0a109f422b47e3a30ba2b10eca18548e944e8a23073ee3f3e947efcf3c45e59f';
+const EXPECTED_MODEL_DIGEST =
+  '0a109f422b47e3a30ba2b10eca18548e944e8a23073ee3f3e947efcf3c45e59f';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, '..', '..', '..');
@@ -26,7 +27,9 @@ function fail(msg) {
 // kill, unsupported on Windows. Declare the scope and bail clearly rather than
 // half-work. (A Windows port would use `taskkill /T` — out of scope.)
 if (process.platform === 'win32') {
-  fail('this integration test is POSIX-only (uses process-group kill); run on Linux/macOS or in WSL.');
+  fail(
+    'this integration test is POSIX-only (uses process-group kill); run on Linux/macOS or in WSL.',
+  );
 }
 
 // Port contract: fixed defaults, each overridable by ONE env var, wired
@@ -63,7 +66,9 @@ function compose(args, opts = {}) {
 // Preflight: docker compose must exist.
 const probe = spawnSync('docker', ['compose', 'version'], { stdio: 'ignore' });
 if (probe.status !== 0) {
-  fail('docker compose is not available — this is an explicit, opt-in integration run.');
+  fail(
+    'docker compose is not available — this is an explicit, opt-in integration run.',
+  );
 }
 
 // Run the test async, detached into its OWN process group, under a hard timeout.
@@ -78,7 +83,11 @@ function runTestWithTimeout() {
   return new Promise((resolve) => {
     const child = spawn(
       'npx',
-      ['tsx', '--test', 'test/integration/skill-host-pg-qdrant/skill-host.integration.test.ts'],
+      [
+        'tsx',
+        '--test',
+        'test/integration/skill-host-pg-qdrant/skill-host.integration.test.ts',
+      ],
       { cwd: repoRoot, stdio: 'inherit', env, detached: true },
     );
     let settled = false;
@@ -90,7 +99,9 @@ function runTestWithTimeout() {
     let timedOut = false;
     const timer = setTimeout(() => {
       timedOut = true;
-      console.error(`[run.mjs] test exceeded ${TEST_TIMEOUT_MS}ms — killing process group`);
+      console.error(
+        `[run.mjs] test exceeded ${TEST_TIMEOUT_MS}ms — killing process group`,
+      );
       // (a) whole-group kill; (b) fallback to the parent. Neither may throw out.
       try {
         process.kill(-child.pid, 'SIGKILL');
@@ -137,24 +148,45 @@ try {
 
   console.log('[run.mjs] verifying baked Ollama model digest via /api/tags…');
   const tags = await (await fetch(`${env.OLLAMA_TEST_URL}/api/tags`)).json();
-  const model = (tags?.models ?? []).find((m) => m.name === `${env.OLLAMA_TEST_MODEL}:latest`);
-  if (!model) throw new Error(`model ${env.OLLAMA_TEST_MODEL}:latest not present in /api/tags`);
+  const model = (tags?.models ?? []).find(
+    (m) => m.name === `${env.OLLAMA_TEST_MODEL}:latest`,
+  );
+  if (!model)
+    throw new Error(
+      `model ${env.OLLAMA_TEST_MODEL}:latest not present in /api/tags`,
+    );
   if (model.digest !== EXPECTED_MODEL_DIGEST) {
-    throw new Error(`model digest drift: got ${model.digest}, expected ${EXPECTED_MODEL_DIGEST}`);
+    throw new Error(
+      `model digest drift: got ${model.digest}, expected ${EXPECTED_MODEL_DIGEST}`,
+    );
   }
 
   console.log('[run.mjs] bootstrapping Qdrant collection…');
-  const put = await fetch(`${env.QDRANT_TEST_URL}/collections/${env.QDRANT_TEST_COLLECTION}`, {
-    method: 'PUT',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ vectors: { size: Number(env.EMBED_DIM), distance: 'Cosine' } }),
-  });
-  if (!put.ok) throw new Error(`Qdrant collection create failed: ${put.status}`);
-  const got = await fetch(`${env.QDRANT_TEST_URL}/collections/${env.QDRANT_TEST_COLLECTION}`);
+  const put = await fetch(
+    `${env.QDRANT_TEST_URL}/collections/${env.QDRANT_TEST_COLLECTION}`,
+    {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        vectors: {
+          size: Number(env.EMBED_DIM),
+          distance: 'Cosine',
+          multivector_config: { comparator: 'max_sim' },
+        },
+      }),
+    },
+  );
+  if (!put.ok)
+    throw new Error(`Qdrant collection create failed: ${put.status}`);
+  const got = await fetch(
+    `${env.QDRANT_TEST_URL}/collections/${env.QDRANT_TEST_COLLECTION}`,
+  );
   const cfg = await got.json();
   const size = cfg?.result?.config?.params?.vectors?.size;
   if (size !== Number(env.EMBED_DIM)) {
-    throw new Error(`Qdrant collection has size ${size}, expected ${env.EMBED_DIM}`);
+    throw new Error(
+      `Qdrant collection has size ${size}, expected ${env.EMBED_DIM}`,
+    );
   }
 
   console.log('[run.mjs] running the integration test (hard timeout)…');
@@ -169,7 +201,9 @@ try {
   // non-zero exit, but never DOWNGRADE an existing test failure code.
   const teardown = compose(['down', '-v']);
   if (teardown.status !== 0) {
-    console.error(`[run.mjs] WARNING: docker compose down -v failed (exit ${teardown.status}) — containers/volume may remain.`);
+    console.error(
+      `[run.mjs] WARNING: docker compose down -v failed (exit ${teardown.status}) — containers/volume may remain.`,
+    );
     if (testStatus === 0) testStatus = 1;
   }
 }

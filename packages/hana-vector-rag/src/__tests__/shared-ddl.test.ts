@@ -10,15 +10,12 @@ import {
 } from '../access-ddl.js';
 import { createCatalogTableSql } from '../catalog.js';
 import { migrateHanaVectorRagAccess } from '../migrate-access.js';
-import { fragmentTableDdl } from '../schema.js';
 import {
   SHARED_CATALOG_TABLE,
   SHARED_DOCUMENTS_TABLE,
   SHIPPED_DIMENSION,
   sharedCatalogHdbtable,
   sharedDocumentsHdbtable,
-  sharedFragmentsHdbconstraint,
-  sharedFragmentsHdbtable,
   sharedLayoutSql,
 } from '../shared-ddl.js';
 import { accessFixture } from './access-fixture.js';
@@ -41,7 +38,8 @@ describe('shared-ddl (HANA)', () => {
   "VECTOR" REAL_VECTOR(1536),
   "METADATA" NCLOB,
   "CREATED_AT" TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-  PRIMARY KEY ("COLLECTION", "ID")
+  "FRAGMENT_ORDINAL" INTEGER DEFAULT 0 NOT NULL,
+  PRIMARY KEY ("COLLECTION", "ID", "FRAGMENT_ORDINAL")
 )`,
     );
   });
@@ -58,7 +56,7 @@ describe('shared-ddl (HANA)', () => {
   it('sharedLayoutSql is catalog then documents, each prefixed CREATE', () => {
     assert.equal(
       sharedLayoutSql({ dimension: 1536 }),
-      `CREATE ${sharedCatalogHdbtable('RAG_COLLECTIONS')};\nCREATE ${sharedDocumentsHdbtable('RAG_DOCUMENTS', 1536)};\nCREATE ${fragmentTableDdl('RAG_DOCUMENTS', 1536, 'shared')};`,
+      `CREATE ${sharedCatalogHdbtable('RAG_COLLECTIONS')};\nCREATE ${sharedDocumentsHdbtable('RAG_DOCUMENTS', 1536)};`,
     );
   });
 
@@ -77,7 +75,7 @@ describe('shared-ddl (HANA)', () => {
     assert.equal(
       sql,
       `CREATE ${sharedCatalogHdbtable('MY_CAT')};
-CREATE ${documents};\nCREATE ${fragmentTableDdl('MY_DOCS', 3, 'shared')};`,
+CREATE ${documents};`,
     );
   });
 
@@ -98,13 +96,6 @@ CREATE ${documents};\nCREATE ${fragmentTableDdl('MY_DOCS', 3, 'shared')};`,
         SHARED_DOCUMENTS_TABLE,
         SHIPPED_DIMENSION,
       ),
-      'RAG_DOCUMENTS_FRAGMENTS.hdbtable': sharedFragmentsHdbtable(
-        SHARED_DOCUMENTS_TABLE,
-        SHIPPED_DIMENSION,
-      ),
-      'RAG_FRAGMENTS_DOCUMENT_FK.hdbconstraint': sharedFragmentsHdbconstraint(
-        SHARED_DOCUMENTS_TABLE,
-      ),
       'RAG_COLLECTIONS.hdbtable': sharedCatalogHdbtable(SHARED_CATALOG_TABLE),
       'shared-layout.sql': sharedLayoutSql({ dimension: SHIPPED_DIMENSION }),
     };
@@ -116,7 +107,12 @@ CREATE ${documents};\nCREATE ${fragmentTableDdl('MY_DOCS', 3, 'shared')};`,
       expected[`${key.name}.hdbconstraint`] =
         accessForeignKeyHdbconstraint(key);
     }
-    const files = readdirSync(DDL_DIR).filter((f) => f !== '.hdiconfig');
+    const files = readdirSync(DDL_DIR).filter(
+      (f) =>
+        f.endsWith('.hdbtable') ||
+        f.endsWith('.hdbconstraint') ||
+        f === 'shared-layout.sql',
+    );
     assert.deepEqual(files.sort(), Object.keys(expected).sort());
     for (const f of files) {
       assert.equal(readFileSync(join(DDL_DIR, f), 'utf8'), `${expected[f]}\n`);
@@ -137,9 +133,19 @@ CREATE ${documents};\nCREATE ${fragmentTableDdl('MY_DOCS', 3, 'shared')};`,
   it('HDI tables have no references and each foreign key has one artifact', () => {
     const files = readdirSync(DDL_DIR);
     const constraints = files.filter((file) => file.endsWith('.hdbconstraint'));
-    assert.equal(files.filter((file) => file.endsWith('.hdbtable')).length, 7);
+    const releasedTables = [
+      'RAG_COLLECTIONS.hdbtable',
+      'RAG_DOCUMENTS.hdbtable',
+      'rag_collection_roles.hdbtable',
+      'rag_role_assignments.hdbtable',
+      'rag_roles.hdbtable',
+      'rag_session_bindings.hdbtable',
+    ];
+    assert.deepEqual(
+      files.filter((file) => file.endsWith('.hdbtable')).sort(),
+      releasedTables,
+    );
     assert.deepEqual(constraints.sort(), [
-      'RAG_FRAGMENTS_DOCUMENT_FK.hdbconstraint',
       'rag_collection_roles_role_fk.hdbconstraint',
       'rag_role_assignments_role_fk.hdbconstraint',
     ]);

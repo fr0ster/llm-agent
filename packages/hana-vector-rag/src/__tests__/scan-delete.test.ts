@@ -23,7 +23,7 @@ import {
   type ScanDeleteSubject,
   scanDeleteConformanceCases,
 } from '@mcp-abap-adt/llm-agent/testing/scan-delete-conformance';
-import { HanaVectorRag } from '../hana-vector-rag.js';
+import { type HanaClient, HanaVectorRag } from '../hana-vector-rag.js';
 import { HanaVectorRagProvider } from '../hana-vector-rag-provider.js';
 import { perCollectionStoreSql, sharedStoreSql } from '../store-sql.js';
 import { type StoringHana, storingHana } from './storing-hana.js';
@@ -92,11 +92,11 @@ describe('scan/delete SQL', () => {
   it('shared scanPage', () => {
     const sql = sharedStoreSql('docs', 'RAG_DOCUMENTS');
     assert.deepEqual(sql.scanPage(undefined, 5), {
-      sql: 'SELECT "ID" AS "id", "TEXT" AS "text", "METADATA" AS "metadata" FROM "RAG_DOCUMENTS" WHERE "COLLECTION" = ? ORDER BY "ID" LIMIT 5',
+      sql: 'SELECT "ID" AS "id", "TEXT" AS "text", "METADATA" AS "metadata" FROM "RAG_DOCUMENTS" WHERE "COLLECTION" = ? AND "FRAGMENT_ORDINAL" = 0 ORDER BY "ID" LIMIT 5',
       params: ['docs'],
     });
     assert.deepEqual(sql.scanPage('k', 5), {
-      sql: 'SELECT "ID" AS "id", "TEXT" AS "text", "METADATA" AS "metadata" FROM "RAG_DOCUMENTS" WHERE "COLLECTION" = ? AND "ID" > ? ORDER BY "ID" LIMIT 5',
+      sql: 'SELECT "ID" AS "id", "TEXT" AS "text", "METADATA" AS "metadata" FROM "RAG_DOCUMENTS" WHERE "COLLECTION" = ? AND "FRAGMENT_ORDINAL" = 0 AND "ID" > ? ORDER BY "ID" LIMIT 5',
       params: ['docs', 'k'],
     });
   });
@@ -104,11 +104,11 @@ describe('scan/delete SQL', () => {
   it('per-collection scanPage has no collection predicate', () => {
     const sql = perCollectionStoreSql('docs', 3);
     assert.deepEqual(sql.scanPage(undefined, 5), {
-      sql: 'SELECT "ID" AS "id", "TEXT" AS "text", "METADATA" AS "metadata" FROM "docs" ORDER BY "ID" LIMIT 5',
+      sql: 'SELECT "ID" AS "id", "TEXT" AS "text", "METADATA" AS "metadata" FROM "docs" WHERE "FRAGMENT_ORDINAL" = 0 ORDER BY "ID" LIMIT 5',
       params: [],
     });
     assert.deepEqual(sql.scanPage('k', 5), {
-      sql: 'SELECT "ID" AS "id", "TEXT" AS "text", "METADATA" AS "metadata" FROM "docs" WHERE "ID" > ? ORDER BY "ID" LIMIT 5',
+      sql: 'SELECT "ID" AS "id", "TEXT" AS "text", "METADATA" AS "metadata" FROM "docs" WHERE "FRAGMENT_ORDINAL" = 0 AND "ID" > ? ORDER BY "ID" LIMIT 5',
       params: ['k'],
     });
   });
@@ -197,10 +197,22 @@ for (const layout of ['shared', 'per-collection'] as const) {
       const ctl = new AbortController();
       const client = {
         ...hana.client,
-        exec: async (sql: string, params?: readonly unknown[]) => {
-          const r = await hana.client.exec(sql, params);
-          if (sql.startsWith('DELETE')) ctl.abort();
-          return r;
+        transaction<T>(
+          work: (connection: HanaClient) => Promise<T>,
+        ): Promise<T> {
+          const transaction = hana.client.transaction?.bind(hana.client);
+          assert.ok(transaction);
+          return transaction((connection) =>
+            work({
+              ...connection,
+              async exec(sql, params) {
+                const result = await connection.exec(sql, params);
+                if (sql.startsWith('DELETE') && sql.includes(' IN ('))
+                  ctl.abort();
+                return result;
+              },
+            }),
+          );
         },
       };
       if (layout === 'per-collection') hana.createCollectionTable('kb');

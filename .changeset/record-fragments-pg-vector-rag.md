@@ -2,4 +2,4 @@
 "@mcp-abap-adt/pg-vector-rag": major
 ---
 
-Deploy the fragment table and synchronization trigger before shared or manually managed stores can search or write. PostgreSQL ranks distinct records using indexable fragment vectors.
+Store each fragment vector as a row in the documents table and rank distinct records in PostgreSQL. Upgrade existing tables in place by adding the fragment ordinal to the primary key.

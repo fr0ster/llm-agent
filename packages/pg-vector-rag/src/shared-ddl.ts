@@ -1,9 +1,5 @@
 import { createCatalogTableSql } from './catalog.js';
-import {
-  createExtensionSql,
-  fragmentStorageSql,
-  quoteIdent,
-} from './schema.js';
+import { createExtensionSql, quoteIdent } from './schema.js';
 
 /** Default table of the `shared` layout: one documents table for all collections. */
 export const SHARED_DOCUMENTS_TABLE = 'rag_documents';
@@ -18,10 +14,10 @@ function sharedDocumentsSql(table: string, dimension: number): string {
   "id" VARCHAR(255) NOT NULL,
   "text" TEXT,
   "vector" vector(${dimension}),
-  "fragment_vectors" vector(${dimension})[],
   "metadata" JSONB,
   "created_at" TIMESTAMPTZ DEFAULT NOW(),
-  PRIMARY KEY ("collection", "id")
+  "fragment_ordinal" INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY ("collection", "id", "fragment_ordinal")
 )`;
 }
 
@@ -37,11 +33,6 @@ export function sharedLayoutSql(opts: {
     sharedDocumentsSql(
       opts.documentsTable ?? SHARED_DOCUMENTS_TABLE,
       opts.dimension,
-    ),
-    ...fragmentStorageSql(
-      opts.documentsTable ?? SHARED_DOCUMENTS_TABLE,
-      opts.dimension,
-      'shared',
     ),
   ]
     .map((statement) => `${statement};`)

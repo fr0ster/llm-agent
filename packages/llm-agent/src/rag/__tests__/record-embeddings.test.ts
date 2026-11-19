@@ -99,18 +99,39 @@ test('falls back to the configured character size and preserves Unicode and all 
   assert.ok(seen.every((fragment) => [...fragment].length <= 8));
 });
 
-test('a failed fragment batch leaves the previous record intact', async () => {
-  const rag = new VectorRag(
-    symmetricEmbedder({
-      async embed() {
+test('preserves CRLF only when both code points fit the declared capacity', async () => {
+  const text = 'a\r\n\r\n🌿\r\nb\n\r\n';
+  for (let capacity = 1; capacity <= [...text].length; capacity++) {
+    const fragments: string[] = [];
+    const embedder = symmetricEmbedder({
+      async getMaxInputChars() {
+        return capacity;
+      },
+      async embed(fragment) {
+        fragments.push(fragment);
         return { vector: [1] };
       },
-      async embedBatch() {
-        return [];
-      },
-    }),
-    { fragmentSizeChars: 4 },
-  );
+    });
+    await embedRecord(embedder, text);
+    assert.equal(fragments.join(''), text);
+    assert.ok(fragments.every((fragment) => [...fragment].length <= capacity));
+    if (capacity === 1) assert.deepEqual(fragments, [...text]);
+    else assert.ok(fragments.every((fragment) => !fragment.endsWith('\r')));
+  }
+});
+
+test('a failed fragment batch leaves the previous record intact', async () => {
+  const embedder: IEmbedderBatch = {
+    async embed() {
+      return { vector: [1] };
+    },
+    async embedBatch() {
+      return [];
+    },
+  };
+  const rag = new VectorRag(symmetricEmbedder(embedder), {
+    fragmentSizeChars: 4,
+  });
   assert.ok((await rag.upsert('old', { id: 'r' })).ok);
   const result = await rag.upsert('long replacement input', { id: 'r' });
   assert.ok(!result.ok);
@@ -199,25 +220,6 @@ test('anonymous records with identical leading fragments keep both full texts', 
   ]);
 });
 
-test('CRLF remains intact across hard fragment boundaries', async () => {
-  for (const size of [1, 3]) {
-    const seen: string[] = [];
-    const text = 'ab\r\nxy\r\ncd';
-    await embedRecord(
-      {
-        async embedDocument(fragment) {
-          seen.push(fragment);
-          return { vector: [1] };
-        },
-      },
-      text,
-      size,
-    );
-    assert.equal(seen.join(''), text);
-    assert.ok(seen.every((fragment) => !fragment.endsWith('\r')));
-  }
-});
-
 test('batch breaker lets all throttled fragment attempts reach the provider', async (t) => {
   const waits: number[] = [];
   t.mock.method(DefaultWaitStrategy.prototype, 'wait', async (ms: number) => {
@@ -226,26 +228,22 @@ test('batch breaker lets all throttled fragment attempts reach the provider', as
   });
   const breaker = new CircuitBreaker();
   let calls = 0;
-  const embedder = symmetricEmbedder(
-    withCircuitBreaker(
-      {
-        async embed() {
-          return { vector: [1] };
-        },
-        async embedBatch(texts: string[]) {
-          if (++calls <= 8)
-            throw Object.assign(new Error('quota'), {
-              response: {
-                status: 429,
-                headers: new Headers({ 'retry-after': '3' }),
-              },
-            });
-          return texts.map(() => ({ vector: [1] }));
-        },
-      },
-      breaker,
-    ),
-  );
+  const source: IEmbedderBatch = {
+    async embed() {
+      return { vector: [1] };
+    },
+    async embedBatch(texts) {
+      if (++calls <= 8)
+        throw Object.assign(new Error('quota'), {
+          response: {
+            status: 429,
+            headers: new Headers({ 'retry-after': '3' }),
+          },
+        });
+      return texts.map(() => ({ vector: [1] }));
+    },
+  };
+  const embedder = symmetricEmbedder(withCircuitBreaker(source, breaker));
   assert.deepEqual(await embedRecord(embedder, '123456', 2), [[1], [1], [1]]);
   assert.equal(calls, 9);
   assert.deepEqual(

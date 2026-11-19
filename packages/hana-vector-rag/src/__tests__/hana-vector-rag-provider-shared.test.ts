@@ -36,6 +36,7 @@ function fake(): Fake {
   const run = (sql: string, params: readonly unknown[]) => {
     f.calls.push({ sql, params });
     if (f.failOn?.test(sql)) throw new Error('refused by the test');
+    if (sql.startsWith('LOCK TABLE')) return [];
     if (sql.includes('FROM SYS.TABLES'))
       return [{ n: f.tables.has(String(params[params.length - 1])) ? 1 : 0 }];
     if (sql.includes('SYS.TABLE_COLUMNS')) return [{ dim: f.dim }];
@@ -72,6 +73,9 @@ function fake(): Fake {
     throw new Error(`unhandled: ${sql}`);
   };
   f.client = {
+    transaction(work) {
+      return work(this);
+    },
     exec: async (sql, params = []) => ({ rowCount: run(sql, params).length }),
     query: async (sql, params = []) => run(sql, params),
     close: async () => {},

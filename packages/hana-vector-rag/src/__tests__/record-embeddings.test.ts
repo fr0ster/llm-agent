@@ -2,7 +2,6 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { staticLogin, symmetricEmbedder } from '@mcp-abap-adt/llm-agent';
 import { type HanaClient, HanaVectorRag } from '../hana-vector-rag.js';
-import { fragmentTableName } from '../schema.js';
 import { storingHana } from './storing-hana.js';
 
 for (const layout of ['shared', 'per-collection'] as const) {
@@ -43,27 +42,30 @@ for (const layout of ['shared', 'per-collection'] as const) {
     const lookup = { text: 'finish', toVector: async () => [0, 1] };
     const rows = () => store.storedRows(table);
     const fragments = () =>
-      store
-        .storedRows(fragmentTableName(table))
-        .filter((row) => row.ID === 'long')
+      rows()
+        .filter((row) => row.ID === 'long' && Number(row.FRAGMENT_ORDINAL) > 0)
         .map((row) => row.VECTOR);
 
     const legacy = await rag.query(lookup, 1);
     assert.ok(legacy.ok);
     assert.equal(legacy.value[0]?.text, 'legacy');
+    assert.equal(rows()[0].FRAGMENT_ORDINAL, 0);
     if (!shared)
       assert.ok(
-        store.statements.some((sql) =>
-          sql.startsWith('CREATE COLUMN TABLE "docs_FRAGMENTS"'),
-        ),
+        store.statements.some((sql) => sql.includes('ALTER TABLE "docs" ADD')),
       );
     assert.ok((await rag.upsert(full, { id: 'long' })).ok);
+    assert.ok(
+      rows()
+        .filter((row) => Number(row.FRAGMENT_ORDINAL) > 0)
+        .every((row) => row.TEXT === null),
+    );
     assert.deepEqual(embedded, ['early\n\n', 'middle\n\n', 'finish']);
     assert.deepEqual(fragments(), [
       [1, 0],
       [0, 1],
     ]);
-    assert.equal(rows().length, 2);
+    assert.equal(rows().length, 4);
 
     const best = await rag.query(lookup, 1);
     assert.ok(best.ok);
@@ -76,6 +78,39 @@ for (const layout of ['shared', 'per-collection'] as const) {
       [full, 'legacy'],
     );
     assert.equal(search.value[0]?.score, 1);
+
+    for (const [id, identity] of [
+      ['session', { sessionId: 'private-session' }],
+      ['user', { userId: 'private-user' }],
+    ] as const) {
+      assert.ok((await rag.upsert(full, { id, ...identity })).ok);
+      const scoped = await rag.query(lookup, 5, { ragFilter: identity });
+      assert.ok(scoped.ok);
+      assert.deepEqual(
+        scoped.value.map((hit) => hit.metadata.id),
+        [id],
+      );
+      assert.equal(scoped.value[0].score, 1);
+      const global = await rag.query(lookup, 5, {
+        ragFilter: { owner: { scope: 'global' } },
+      });
+      assert.ok(global.ok);
+      assert.ok(global.value.every((hit) => hit.metadata.id !== id));
+      const deleted = await rag.deleteWhere(identity);
+      assert.ok(deleted.ok);
+      assert.equal(deleted.value.deleted, 1);
+    }
+
+    // The two closest fragments belong to the same record for this query.
+    const withDuplicateCandidates = await rag.query(
+      { text: 'early', toVector: async () => [1, 0] },
+      2,
+    );
+    assert.ok(withDuplicateCandidates.ok);
+    assert.deepEqual(
+      withDuplicateCandidates.value.map((hit) => hit.text),
+      [full, 'legacy'],
+    );
 
     const byId = await rag.getById('long');
     const list = await rag.list({ includeText: true });
@@ -133,7 +168,7 @@ test('fragment insert failure rolls back the document and its previous vectors',
         work({
           ...connection,
           async exec(sql, params) {
-            if (fail && sql.startsWith('INSERT INTO "RAG_DOCUMENTS_FRAGMENTS"'))
+            if (fail && sql.startsWith('INSERT INTO "RAG_DOCUMENTS"'))
               throw new Error('fragment insert failed');
             return connection.exec(sql, params);
           },
@@ -188,5 +223,5 @@ test('fragment insert failure rolls back the document and its previous vectors',
   assert.ok(result.ok);
   assert.equal(result.value[0]?.text, 'previous');
   assert.equal(result.value[0]?.score, 1);
-  assert.equal(db.storedRows('RAG_DOCUMENTS_FRAGMENTS').length, 1);
+  assert.equal(db.storedRows('RAG_DOCUMENTS').length, 2);
 });

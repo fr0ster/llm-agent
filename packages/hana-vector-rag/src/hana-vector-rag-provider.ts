@@ -49,11 +49,12 @@ import {
 import { resolveLayout } from './layout.js';
 import { decodeLob } from './lob.js';
 import { RecordCache, type RecordCacheOptions } from './record-cache.js';
+import { roleTransaction } from './role-transaction.js';
 import {
   assertCollectionName,
   createTableSql,
   dropTableSql,
-  fragmentTableName,
+  fragmentOrdinalMigrationSql,
   quoteIdent,
 } from './schema.js';
 import { SHARED_CATALOG_TABLE, SHARED_DOCUMENTS_TABLE } from './shared-ddl.js';
@@ -348,9 +349,6 @@ export class HanaVectorRagProvider
         this.cacheIdentity(name),
       );
       try {
-        const fragments = fragmentTableName(name);
-        if (await this.tableExists(client, fragments))
-          await client.exec(dropTableSql(fragments));
         await client.exec(dropTableSql(name));
       } finally {
         settled();
@@ -375,21 +373,18 @@ export class HanaVectorRagProvider
         this.connection.schema ? [this.connection.schema] : [],
       );
       const names = rows.map((r) => String(r.TABLE_NAME));
-      const fragments = new Set(names.map(fragmentTableName));
       return {
         ok: true,
-        value: names
-          .filter((name) => !fragments.has(name))
-          .filter(
-            (t) =>
-              ![
-                this.catalogTable,
-                'rag_roles',
-                'rag_role_assignments',
-                'rag_collection_roles',
-                'rag_session_bindings',
-              ].includes(t),
-          ),
+        value: names.filter(
+          (t) =>
+            ![
+              this.catalogTable,
+              'rag_roles',
+              'rag_role_assignments',
+              'rag_collection_roles',
+              'rag_session_bindings',
+            ].includes(t),
+        ),
       };
     } catch (err) {
       return { ok: false, error: new RagError(String(err), 'RAG_LIST_ERROR') };
@@ -526,11 +521,13 @@ export class HanaVectorRagProvider
         this.connection.schema ? [this.connection.schema, name] : [name],
       );
       if (Number(exists[0]?.n ?? 0) === 0) continue;
+      if (this.layout === 'per-collection' && this.autoCreateSchema)
+        await client.exec(fragmentOrdinalMigrationSql(name));
       const collections =
         this.layout === 'shared'
           ? (
               await client.query(
-                `SELECT DISTINCT "COLLECTION" AS "collection" FROM ${quoteIdent(name)}`,
+                `SELECT DISTINCT "COLLECTION" AS "collection" FROM ${quoteIdent(name)} WHERE "FRAGMENT_ORDINAL" = 0`,
               )
             ).map((row) => String(row.collection))
           : [name];
@@ -538,7 +535,7 @@ export class HanaVectorRagProvider
         let cursor: string | undefined;
         for (;;) {
           const rows = await client.query(
-            `SELECT "ID" AS "id", "METADATA" AS "metadata"${this.layout === 'shared' ? ', "COLLECTION" AS "collection"' : ''} FROM ${quoteIdent(name)}${this.layout === 'shared' ? ' WHERE "COLLECTION" = ?' : ''}${cursor !== undefined ? (this.layout === 'shared' ? ' AND "ID" > ?' : ' WHERE "ID" > ?') : ''} ORDER BY "ID" LIMIT ${OWNER_MIGRATION_BATCH_SIZE}`,
+            `SELECT "ID" AS "id", "METADATA" AS "metadata"${this.layout === 'shared' ? ', "COLLECTION" AS "collection"' : ''} FROM ${quoteIdent(name)} WHERE "FRAGMENT_ORDINAL" = 0${this.layout === 'shared' ? ' AND "COLLECTION" = ?' : ''}${cursor !== undefined ? ' AND "ID" > ?' : ''} ORDER BY "ID" LIMIT ${OWNER_MIGRATION_BATCH_SIZE}`,
             [
               ...(this.layout === 'shared' ? [collection] : []),
               ...(cursor === undefined ? [] : [cursor]),
@@ -583,12 +580,32 @@ export class HanaVectorRagProvider
               )
             )
               continue;
-            await client.exec(
-              `UPDATE ${quoteIdent(name)} SET "METADATA" = ? WHERE "ID" = ?${this.layout === 'shared' ? ' AND "COLLECTION" = ?' : ''}`,
-              this.layout === 'shared'
-                ? [JSON.stringify(tagged), row.id, row.collection]
-                : [JSON.stringify(tagged), row.id],
-            );
+            const { ownerScope, sessionId, userId, roleId, namespace, ttl } =
+              tagged;
+            const scope = {
+              ownerScope,
+              sessionId,
+              userId,
+              roleId,
+              namespace,
+              ttl,
+            };
+            await roleTransaction(client, async (connection) => {
+              const values =
+                this.layout === 'shared' ? [row.id, row.collection] : [row.id];
+              const where =
+                this.layout === 'shared'
+                  ? '"ID" = ? AND "COLLECTION" = ?'
+                  : '"ID" = ?';
+              await connection.exec(
+                `UPDATE ${quoteIdent(name)} SET "METADATA" = ? WHERE ${where} AND "FRAGMENT_ORDINAL" = 0`,
+                [JSON.stringify(tagged), ...values],
+              );
+              await connection.exec(
+                `UPDATE ${quoteIdent(name)} SET "METADATA" = ? WHERE ${where} AND "FRAGMENT_ORDINAL" > 0`,
+                [JSON.stringify(scope), ...values],
+              );
+            });
           }
           const last = rows[rows.length - 1];
           cursor = String(last.id);

@@ -43,11 +43,10 @@ import { resolveLayout } from './layout.js';
 import { decodeLob, withId } from './lob.js';
 import { RecordCache, type StoreCache } from './record-cache.js';
 import { transactionalHanaClient } from './role-transaction.js';
-import { deleteWhere, scanPage } from './scan-delete.js';
+import { clearRecords, deleteWhere, scanPage } from './scan-delete.js';
 import {
   assertCollectionName,
-  fragmentTableDdl,
-  fragmentTableName,
+  fragmentOrdinalMigrationSql,
   quoteIdent,
 } from './schema.js';
 import { checkSharedTables } from './shared-check.js';
@@ -142,7 +141,7 @@ export class HanaVectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
   private readonly sql: HanaStoreSql;
   private readonly documentsTable: string;
   private sharedCheck?: Promise<void>;
-  private fragmentSchema?: Promise<void>;
+  private ordinalSchema?: Promise<void>;
 
   constructor(
     config: HanaVectorRagConfig & { embedder: IRetrievalEmbedder },
@@ -215,43 +214,27 @@ export class HanaVectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
     await this.schemaPromise;
   }
 
-  private async ensureFragmentStorage(): Promise<void> {
-    if (!this.autoCreateSchema && !this.migrateExistingSchema) return;
-    this.fragmentSchema ??= this.migrateFragmentStorage().catch((error) => {
-      this.fragmentSchema = undefined;
+  private async ensureFragmentOrdinal(): Promise<void> {
+    if (
+      this.sql.layout === 'shared' ||
+      (!this.autoCreateSchema && !this.migrateExistingSchema)
+    )
+      return;
+    this.ordinalSchema ??= (async () => {
+      const client = await this.client();
+      await client.exec(
+        fragmentOrdinalMigrationSql(this.connectConfig.collectionName),
+      );
+    })().catch((error) => {
+      this.ordinalSchema = undefined;
       throw error;
     });
-    await this.fragmentSchema;
-  }
-
-  private async migrateFragmentStorage(): Promise<void> {
-    if (this.sql.layout === 'shared') return;
-    const client = await this.client();
-    const table = this.connectConfig.collectionName;
-    const name = fragmentTableName(table);
-    const exists = async (tableName: string): Promise<boolean> => {
-      const rows = await client.query(
-        `SELECT COUNT(*) AS "n" FROM SYS.TABLES WHERE SCHEMA_NAME = CURRENT_SCHEMA AND TABLE_NAME = ?`,
-        [tableName],
-      );
-      return Number(rows[0]?.n ?? 0) > 0;
-    };
-    if (await exists(name)) return;
-    if (!this.autoCreateSchema && !(await exists(table)))
-      throw new RagError(
-        `Collection table "${table}" does not exist`,
-        'SHARED_LAYOUT_NOT_DEPLOYED',
-      );
-    try {
-      await client.exec(`CREATE ${fragmentTableDdl(table, this.dimension)}`);
-    } catch (error) {
-      // Another handle may have created the fragment table after our check.
-      if (!(await exists(name))) throw error;
-    }
+    await this.ordinalSchema;
   }
 
   private async maybeEnsureSchema(): Promise<void> {
     if (this.autoCreateSchema) await this.ensureSchema();
+    await this.ensureFragmentOrdinal();
     await this.ensureSharedDeployed();
   }
 
@@ -305,7 +288,6 @@ export class HanaVectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
       return { ok: false, error: new RagError('Aborted', 'ABORTED') };
     try {
       await this.maybeEnsureSchema();
-      await this.ensureFragmentStorage();
       const safe =
         embedding instanceof TextOnlyEmbedding
           ? new QueryEmbedding(embedding.text, this.embedder, options)
@@ -317,12 +299,28 @@ export class HanaVectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
       const literal = this.vectorLiteral(vector);
       if (k <= 0) return { ok: true, value: [] };
       const namespace = options?.ragFilter?.namespace;
-      const stmt = this.sql.search(literal, k, {
+      const filter = {
         identity: ragIdentityFilter(options),
         namespace: typeof namespace === 'string' ? namespace : undefined,
         nowSecs: Date.now() / 1000,
-      });
-      const rows = await client.query(stmt.sql, stmt.params);
+      };
+      let candidates: number | undefined = k;
+      const search = async () => {
+        options?.signal?.throwIfAborted();
+        const stmt = this.sql.search(literal, k, filter, candidates);
+        return client.query(stmt.sql, stmt.params);
+      };
+      let rows = await search();
+      while (candidates !== undefined && rows[0]?.id === null) {
+        // An ANN index can run out before it returns the requested candidate count.
+        // Finish with exact SQL aggregation when that happens.
+        candidates =
+          Number(rows[0].candidateCount) < candidates
+            ? undefined
+            : candidates * 2;
+        rows = await search();
+      }
+      rows = rows.filter((row) => row.id !== null);
       return {
         ok: true,
         value: rows.map((row) => ({
@@ -332,6 +330,8 @@ export class HanaVectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
         })),
       };
     } catch (err) {
+      if (options?.signal?.aborted)
+        return { ok: false, error: new RagError('Aborted', 'ABORTED') };
       if (!this.fallbackOnQueryEmbeddingError && err instanceof RagError)
         return { ok: false, error: err };
       return { ok: false, error: this.failure(err, 'QUERY_ERROR') };
@@ -569,11 +569,23 @@ export class HanaVectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
       const id = metadata?.id ?? crypto.randomUUID();
       const { id: _omit, ...rest } = validateRagMetadata(metadata);
       const metaJson = JSON.stringify(rest);
-      await this.ensureFragmentStorage();
       const primary = this.sql.upsert(literal, id, text, metaJson);
       const removal = this.sql.removeFragments(id);
+      const { ownerScope, sessionId, userId, namespace, ttl } = rest;
+      const scopeJson = JSON.stringify({
+        ownerScope,
+        sessionId,
+        userId,
+        namespace,
+        ttl,
+      });
       const inserts = extras.map((fragment, index) =>
-        this.sql.insertFragment(id, index, this.vectorLiteral(fragment)),
+        this.sql.insertFragment(
+          id,
+          index + 1,
+          this.vectorLiteral(fragment),
+          scopeJson,
+        ),
       );
       options?.signal?.throwIfAborted();
       if (!client.transaction)
@@ -618,7 +630,18 @@ export class HanaVectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
           const settled = this.cache.beginWrite([id]);
           let r: { rowCount: number };
           try {
-            r = await client.exec(stmt.sql, stmt.params);
+            if (!client.transaction)
+              throw new RagError(
+                'Record deletion requires a transaction-capable HANA client',
+                'DELETE_ERROR',
+              );
+            r = await client.transaction(async (connection) => {
+              const lock = this.sql.lockByIds([id]);
+              const rows = await connection.query(lock.sql, lock.params);
+              return rows.length
+                ? connection.exec(stmt.sql, stmt.params)
+                : { rowCount: 0 };
+            });
           } finally {
             settled();
           }
@@ -634,10 +657,9 @@ export class HanaVectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
         try {
           await this.maybeEnsureSchema();
           const client = await this.client();
-          const stmt = this.sql.clear();
           const settled = this.cache.beginClear();
           try {
-            await client.exec(stmt.sql, stmt.params);
+            await clearRecords(client, this.sql);
           } finally {
             settled();
           }

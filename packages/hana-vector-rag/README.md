@@ -17,32 +17,40 @@ npm install @mcp-abap-adt/hana-vector-rag @sap/hana-client
 
 ## Record embeddings
 
-The documents table retains the full text and first vector. A companion
-fragment table stores each additional vector as a `REAL_VECTOR` row.
-HANA filters eligible records, takes the highest cosine similarity per
-record, and reads the full text only for the SQL top-k. Replacing a record
-updates the parent and all its fragments in one transaction. The foreign
-key cascades deletes to the fragment table.
+The existing documents table stores one `REAL_VECTOR` row per fragment.
+Row zero retains the full text and metadata. Higher ordinals carry the vector
+and fields needed for isolation and expiry. HANA ranks distinct records by
+their best cosine similarity, using the existing vector index for the
+ordered candidate scan when available. It reads full rows only for the
+winners. Replacement and deletion update the record's rows in one transaction.
 
 ### Upgrade an existing database
 
-1. Runtime-managed per-collection tables create their fragment table on
-   first search or write. For HDI shared tables, deploy
-   `RAG_DOCUMENTS_FRAGMENTS.hdbtable` and
-   `RAG_FRAGMENTS_DOCUMENT_FK.hdbconstraint` from `ddl/` alongside the
-   documents and catalog artifacts. For a manually managed table, execute
-   `CREATE ` followed by the result of
-   `fragmentTableDdl(table, dimension, layout)` in the table's schema.
-   Use `'shared'` for a collection-and-ID key and `'per-collection'` for an ID key.
-2. Grant search roles SELECT and writers INSERT and DELETE on the fragment
-   table. Injected client implementations need a transaction callback for
-   document writes. The default HANA client supplies it.
-3. Existing single-vector rows remain searchable. If you ran a prerelease
-   that stored extra vectors in the `FRAGMENT_VECTORS` NCLOB, re-upsert those
-   records from their full text to populate the new fragment table.
+- **Runtime-managed per-collection tables.** The store migrates them on first
+  use with its schema-management credentials.
+- **Shared HDI layout.** Redeploy the updated `ddl/RAG_DOCUMENTS.hdbtable`
+  under the same name. HDI preserves the table's data across the schema
+  update, and the new key column defaults to zero. The HDI artifact list is
+  unchanged.
+- **Manually managed shared tables.** Execute
+  `ddl/migrations/001-fragment-ordinal.sql` in the target schema before
+  starting the upgraded runtime. Run the file as one anonymous SQLScript
+  block, for example:
 
-Configure `fragmentSizeChars` for embedders that do not declare their
-capacity (default 2,048 Unicode code points).
+  ```sh
+  hdbsql -U MY_HANA_KEY "$(cat ddl/migrations/001-fragment-ordinal.sql)"
+  ```
+
+  Select the target schema for the session before executing the block. For a manually managed per-collection
+  table or a custom shared name, execute
+  `fragmentOrdinalMigrationSql(table, 'per-collection')` or
+  `fragmentOrdinalMigrationSql(table, 'shared')` as the schema owner.
+
+The manual migration is idempotent. Existing records keep their vectors and
+receive ordinal zero. For new plain SQL deployments use `ddl/shared-layout.sql`.
+Injected HANA clients need a transaction callback for document writes and
+filtered deletes. Configure `fragmentSizeChars` for embedders that do not
+declare their capacity (default 2,048 Unicode code points).
 
 ## Minimal config
 
@@ -129,8 +137,7 @@ The error codes are exported as constants — `SHARED_LAYOUT_NOT_DEPLOYED`, `INV
 
 The package ships `ddl/` (published with it):
 
-- `RAG_DOCUMENTS.hdbtable`, `RAG_DOCUMENTS_FRAGMENTS.hdbtable`,
-  `RAG_FRAGMENTS_DOCUMENT_FK.hdbconstraint`, `RAG_COLLECTIONS.hdbtable`, `rag_roles.hdbtable`,
+- `RAG_DOCUMENTS.hdbtable`, `RAG_COLLECTIONS.hdbtable`, `rag_roles.hdbtable`,
   `rag_role_assignments.hdbtable`, `rag_collection_roles.hdbtable`, `rag_session_bindings.hdbtable`,
   `rag_role_assignments_role_fk.hdbconstraint`, `rag_collection_roles_role_fk.hdbconstraint`, `.hdiconfig` — for the HDI deployer;
 - `shared-layout.sql` — the same tables as plain SQL (catalog first), for a classic schema or
@@ -168,14 +175,10 @@ dimension, generate the files instead of using the shipped ones:
 import {
   sharedCatalogHdbtable,
   sharedDocumentsHdbtable,
-  sharedFragmentsHdbconstraint,
-  sharedFragmentsHdbtable,
   sharedLayoutSql,
 } from '@mcp-abap-adt/hana-vector-rag';
 
 sharedDocumentsHdbtable('RAG_DOCUMENTS', 1024); // documents table
-sharedFragmentsHdbtable('RAG_DOCUMENTS', 1024); // fragment table
-sharedFragmentsHdbconstraint('RAG_DOCUMENTS');  // fragment foreign key
 sharedCatalogHdbtable('RAG_COLLECTIONS');       // body of RAG_COLLECTIONS.hdbtable
 sharedLayoutSql({ dimension: 1024 });           // plain SQL (documentsTable, catalogTable optional)
 ```

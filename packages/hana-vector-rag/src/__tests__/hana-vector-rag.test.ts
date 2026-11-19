@@ -190,7 +190,7 @@ describe('HanaVectorRag', () => {
     assert.ok(upsert, 'UPSERT should have been issued');
   });
 
-  it('deleteByIdRaw issues DELETE', async () => {
+  it('deleteByIdRaw locks the record before deleting its rows', async () => {
     const client = makeFakeClient();
     const rag = new HanaVectorRag(
       {
@@ -203,12 +203,15 @@ describe('HanaVectorRag', () => {
     );
     const r = await rag.writer().deleteByIdRaw('id1');
     assert.equal(r.ok, true);
-    assert.ok(client.calls.some((c) => c.sql.includes('DELETE FROM')));
+    assert.ok(client.calls.some((c) => c.sql.includes('FOR UPDATE')));
   });
 
   it('deleteByIdRaw reports false when no row matched', async () => {
     const calls: ExecCall[] = [];
     const client: HanaClient = {
+      transaction(work) {
+        return work(this);
+      },
       async exec(sql, params = []) {
         calls.push({ sql, params });
         return { rowCount: 0 };
@@ -233,7 +236,7 @@ describe('HanaVectorRag', () => {
     assert.equal(r.value, false);
   });
 
-  it('clearAll deletes parent rows so the foreign key cascades', async () => {
+  it('clearAll deletes every record row in the collection', async () => {
     const client = makeFakeClient();
     const rag = new HanaVectorRag(
       {
@@ -296,7 +299,9 @@ function makeStoringHana(): HanaClient & { searches: string[] } {
   return {
     ...store.client,
     get searches() {
-      return store.statements.filter((sql) => sql.startsWith('WITH eligible'));
+      return store.statements.filter((sql) =>
+        sql.startsWith('WITH candidate_rows'),
+      );
     },
   };
 }
