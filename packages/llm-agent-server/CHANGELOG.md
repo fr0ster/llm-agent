@@ -1,5 +1,30 @@
 # @mcp-abap-adt/llm-agent-server
 
+## 33.2.0
+
+### Minor Changes
+
+- c84c2a0: Add Voyage AI text embeddings and reranking, with asymmetric retrieval, request batching, and usage recording. Select the built-in embedder with `rag.embedder.provider: voyage`.
+
+### Patch Changes
+
+- Updated dependencies [22c2c96]
+- Updated dependencies [7363cb8]
+- Updated dependencies [7363cb8]
+- Updated dependencies [7363cb8]
+- Updated dependencies [7363cb8]
+- Updated dependencies [7363cb8]
+- Updated dependencies [7363cb8]
+- Updated dependencies [c84c2a0]
+  - @mcp-abap-adt/qdrant-rag@33.0.1
+  - @mcp-abap-adt/hana-vector-rag@33.0.1
+  - @mcp-abap-adt/llm-agent-libs@37.0.0
+  - @mcp-abap-adt/llm-agent-server-libs@34.2.0
+  - @mcp-abap-adt/llm-agent@35.1.0
+  - @mcp-abap-adt/pg-vector-rag@33.0.1
+  - @mcp-abap-adt/voyage-embedder@0.1.0
+  - @mcp-abap-adt/llm-agent-rag@31.1.0
+
 ## 33.1.3
 
 ### Patch Changes

@@ -1,5 +1,11 @@
 # @mcp-abap-adt/llm-agent-libs
 
+## 37.0.0
+
+### Major Changes
+
+- 7363cb8: Preserve optional store capabilities through `StrategyRag`, reject decorator cycles, and apply the retrieval strategy once on either circuit-breaker route. `StrategyRag.writer` is now absent when the wrapped store has no writer method. Use `writer?.()` when the wrapped store's write capability is optional.
+
 ## 36.0.0
 
 ### Major Changes
