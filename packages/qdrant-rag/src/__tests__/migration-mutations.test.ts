@@ -21,6 +21,8 @@ const backupPath = `/collections/${temporaryCollection}`;
 const id = '67a1d998-b09f-4bfc-9849-7207045cb5f0';
 const point = { id, vector: [1, 0], payload: { text: 'saved' } };
 const converted = { ...point, vector: [[1, 0]] };
+const forbiddenGuidance =
+  /Qdrant refused the request with HTTP 403.*API key may lack permissions.*write lock.*outcome is uncertain.*If the API key lacks permissions, fix them.*Otherwise, wait for all pending Qdrant operations to settle.*Then rerun the same command.*keeps the temporary copy if it exists/;
 
 function seedDocs(stub: QdrantStub): void {
   stub.collections.set(collection, {
@@ -105,7 +107,7 @@ for (const [status, error] of [
   [422, 'Validation error in query parameters: invalid input'],
   [409, 'Wrong input: Collection `backup` already exists!'],
 ] as const) {
-  test(`HTTP ${status} ${error.split(':')[0]} is a definite rejection`, async (t) => {
+  test(`HTTP ${status} ${error.split(':')[0]} leaves the operation unconfirmed`, async (t) => {
     const stub = await startQdrantStub();
     t.after(() => stub.close());
     seedDocs(stub);
@@ -119,8 +121,10 @@ for (const [status, error] of [
       };
     const options = { url: stub.baseUrl, collection };
     await assert.rejects(migrateQdrantMultivectors(options), {
-      code: RAG_MIGRATION_REJECTED,
-      message: new RegExp(`^${operation} ${target} failed \\(HTTP ${status}`),
+      code: RAG_MIGRATION_UNCONFIRMED,
+      message: new RegExp(
+        `^Could not confirm ${operation} ${target}: HTTP ${status}`,
+      ),
     });
     assert.deepEqual(stub.collections.get(collection)?.points.get(id), point);
     stub.failOn = undefined;
@@ -145,7 +149,7 @@ for (const [status, source, body] of [
     { status: { error: 'Forbidden: Global manage access is required' } },
   ],
 ] as const) {
-  test(`HTTP ${status} from ${source} rejects backup creation without creating a collection`, async (t) => {
+  test(`HTTP ${status} from ${source} stops backup creation`, async (t) => {
     const stub = await startQdrantStub();
     t.after(() => stub.close());
     seedDocs(stub);
@@ -155,10 +159,14 @@ for (const [status, source, body] of [
     await assert.rejects(
       migrateQdrantMultivectors({ url: stub.baseUrl, collection }),
       {
-        code: RAG_MIGRATION_REJECTED,
-        message: new RegExp(
-          `^PUT ${backupPath} failed \\(HTTP ${status}.*Fix the API key or its permissions, then rerun`,
-        ),
+        code:
+          status === 401 ? RAG_MIGRATION_REJECTED : RAG_MIGRATION_UNCONFIRMED,
+        message:
+          status === 401
+            ? new RegExp(
+                `^PUT ${backupPath} failed \\(HTTP 401\\).*Fix the API key or its permissions, then rerun`,
+              )
+            : forbiddenGuidance,
       },
     );
     assert.deepEqual([...stub.collections.keys()], [collection]);
@@ -172,6 +180,23 @@ for (const [status, source, body] of [
     );
   });
 }
+
+test('HTTP 403 with an empty body during collection discovery is unconfirmed', async (t) => {
+  const stub = await startQdrantStub();
+  t.after(() => stub.close());
+  seedDocs(stub);
+  stub.failOn = ({ method, path }) =>
+    method === 'GET' && path === '/collections' && { status: 403, body: '' };
+
+  await assert.rejects(
+    migrateQdrantMultivectors({ url: stub.baseUrl, collection }),
+    { code: RAG_MIGRATION_UNCONFIRMED, message: forbiddenGuidance },
+  );
+  assert.deepEqual(
+    stub.requests.map(({ method, path }) => [method, path]),
+    [['GET', '/collections']],
+  );
+});
 
 test('a backup upsert retries identical HTTP 429 requests and leaves the verified backup for cleanup', async (t) => {
   const stub = await startQdrantStub();
@@ -217,6 +242,7 @@ test('a backup upsert retries identical HTTP 429 requests and leaves the verifie
 });
 
 for (const [status, body] of [
+  [401, 'Must provide an API key or an Authorization bearer token'],
   [
     422,
     { result: null, status: { error: 'Validation error in body' }, time: 0 },
@@ -435,8 +461,7 @@ test('HTTP 403 from a write lock after saving an index schema leaves the operati
     migrateQdrantMultivectors({ url: stub.baseUrl, collection }),
     {
       code: RAG_MIGRATION_UNCONFIRMED,
-      message:
-        /Could not confirm PUT .*payload index "text".*HTTP 403.*Storage locked/,
+      message: forbiddenGuidance,
     },
   );
   assert.deepEqual(

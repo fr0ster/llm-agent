@@ -76,8 +76,8 @@ error message.
 
 | Exported code | Meaning and operator action |
 | --- | --- |
-| `RAG_MIGRATION_REJECTED` | Qdrant rejected the request before applying it, such as pre-handler HTTP 400 or 422 validation or an HTTP 409 duplicate collection create. Correct the request or resolve the conflict, then rerun. |
-| `RAG_MIGRATION_UNCONFIRMED` | The request outcome is uncertain, such as a terminal HTTP 429, a 5xx response, a network failure, cancellation, or an unrecognized response. Keep writers stopped, wait for pending operations to settle, then rerun. |
+| `RAG_MIGRATION_REJECTED` | Qdrant's authentication middleware returned HTTP 401 before handling the request. Fix the API key or its permissions, then rerun. |
+| `RAG_MIGRATION_UNCONFIRMED` | The request outcome is uncertain. HTTP 403 can mean the API key lacks permissions or Qdrant has a write lock. Both causes return the same status. If the key lacks permissions, fix them. Otherwise, wait for pending operations to settle. Then rerun. The migration keeps any existing temporary copy on HTTP 403. Other unconfirmed outcomes include a terminal HTTP 429, an HTTP 401 after retrying an HTTP 429, a 5xx response, a network failure, cancellation, or an unrecognized response. Keep writers stopped and let pending operations settle before rerunning. |
 | `RAG_MIGRATION_VERIFICATION` | Point content or an exact count differs. Keep the copies in place, investigate the discrepancy, then rerun. |
 | `RAG_MIGRATION_PRECONDITION` | Migration is blocked by a condition such as an alias, name collision, unreadable recovery marker, missing verified copy, unexpected shard key, or inconsistent shard replication. Resolve the condition described in the error before rerunning. |
 

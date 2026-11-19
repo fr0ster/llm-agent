@@ -213,7 +213,6 @@ function recoveryVectors(collection: string): Record<string, object> {
 interface MutationResponse {
   result?: boolean | { status?: string; operation_id?: number | null } | null;
   status?: 'ok' | { error?: string };
-  time?: number;
 }
 
 function parseMutationResponse(body: string): MutationResponse | null {
@@ -222,73 +221,6 @@ function parseMutationResponse(body: string): MutationResponse | null {
   } catch {
     return null;
   }
-}
-
-function isAuthorizationDenial(body: string, error?: string): boolean {
-  // Actix returns JWT validation errors as plain text.
-  if (
-    [
-      'ExpiredSignature',
-      'InvalidSignature',
-      'Invalid JWT, stateful validation failed',
-    ].includes(body)
-  )
-    return true;
-
-  // RBAC errors are checked before dispatch. Storage locks can also return
-  // 403, including after a payload index schema has been committed.
-  return (
-    typeof error === 'string' &&
-    [
-      'Forbidden: Global access is required',
-      'Forbidden: Global manage access is required',
-      'Forbidden: Manage access for this operation is required',
-      'Forbidden: Access to collection ',
-      'Forbidden: Write access to collection ',
-      'Forbidden: Only points access is allowed for collection ',
-      'Forbidden: This operation is not allowed when "payload" restriction is present for collection ',
-    ].some((prefix) => error.startsWith(prefix))
-  );
-}
-
-function rejectionNextStep(
-  status: number,
-  method: string,
-  path: string,
-  reply: MutationResponse | null,
-  responseBody: string,
-): string | undefined {
-  const error =
-    typeof reply?.status === 'object' ? reply.status?.error : undefined;
-
-  if (
-    status === 401 ||
-    (status === 403 && isAuthorizationDenial(responseBody, error))
-  )
-    return 'Fix the API key or its permissions, then rerun the migration.';
-
-  if (typeof error !== 'string') return;
-  const nextStep =
-    'Correct the request or resolve the conflict, then rerun the migration.';
-
-  // Duplicate collection creation is rejected before replacing the collection.
-  if (
-    status === 409 &&
-    method === 'PUT' &&
-    /^\/collections\/[^/?]+(?:\?|$)/.test(path) &&
-    error.startsWith('Wrong input: Collection ') &&
-    error.endsWith(' already exists!')
-  )
-    return nextStep;
-
-  // Actix extractor errors occur before the mutation handler runs. Qdrant can
-  // also return 400 or 404 after a partial shard or alias update.
-  if (reply?.time !== 0) return;
-  if (
-    (status === 400 && /^(Deserialize|Format) error in /.test(error)) ||
-    (status === 422 && error.startsWith('Validation error in '))
-  )
-    return nextStep;
 }
 
 interface MigrationRun {
@@ -324,25 +256,43 @@ function client(
     };
   }
 
-  function rejected(
+  function unconfirmed(
     operation: string,
-    outcome: string,
-    nextStep: string,
+    error: Error | string,
+    nextStep = 'After all pending Qdrant operations have settled, rerun the same command to resume from the temporary collection if it exists. The data is preserved in the original or its temporary copy.',
   ): RagError {
-    return migrationError(
-      RAG_MIGRATION_REJECTED,
-      `${operation} failed (${outcome}) for ${label}. ${nextStep}`,
-    );
-  }
-
-  function unconfirmed(operation: string, error: Error | string): RagError {
     const outcome =
       error instanceof Error && error.name === 'Error'
         ? error.message
         : String(error);
     return migrationError(
       RAG_MIGRATION_UNCONFIRMED,
-      `Could not confirm ${operation}: ${outcome}. Affected ${label}. After all pending Qdrant operations have settled, rerun the same command to resume from the temporary collection if it exists. The data is preserved in the original or its temporary copy.`,
+      `Could not confirm ${operation}: ${outcome}. Affected ${label}. ${nextStep}`,
+    );
+  }
+
+  async function checkAccess(
+    response: Response,
+    operation: string,
+    throttled = false,
+  ): Promise<void> {
+    if (response.status !== 401 && response.status !== 403) return;
+    await response.body?.cancel().catch(() => undefined);
+
+    // Qdrant's authentication middleware returns 401 before the handler runs.
+    if (response.status === 401)
+      throw migrationError(
+        RAG_MIGRATION_REJECTED,
+        `${operation} failed (HTTP 401) for ${label}. Fix the API key or its permissions, then rerun the migration.`,
+      );
+
+    // A write lock can return 403 after part of the operation has applied.
+    const outcome =
+      'Qdrant refused the request with HTTP 403. The API key may lack permissions, or Qdrant may have a write lock. Both causes return the same status, so the request outcome is uncertain';
+    throw unconfirmed(
+      operation,
+      throttled ? `HTTP 429 before retry stopped: ${outcome}` : outcome,
+      'If the API key lacks permissions, fix them. Otherwise, wait for all pending Qdrant operations to settle. Then rerun the same command. The migration keeps the temporary copy if it exists.',
     );
   }
 
@@ -362,29 +312,24 @@ function client(
         urlFor(path),
         await initFor(method, body),
       );
+      await checkAccess(response, operation);
       if (allowMissing && response.status === 404) {
         await response.body?.cancel();
         return undefined;
       }
       const reply = await response.text();
-      if (!response.ok || response.status === 202) {
-        const outcome = `HTTP ${response.status}: ${reply}`;
-        const nextStep = rejectionNextStep(
-          response.status,
-          method,
-          path,
-          parseMutationResponse(reply),
-          reply,
-        );
-        if (nextStep) throw rejected(operation, outcome, nextStep);
-        throw new Error(outcome);
-      }
+      if (!response.ok || response.status === 202)
+        throw new Error(`HTTP ${response.status}: ${reply}`);
       const result = parseResult<T>(reply);
       if (!validate(result))
         throw new Error(`Unexpected Qdrant response: ${reply}`);
       return result;
     } catch (error) {
-      if (error instanceof RagError && error.code === RAG_MIGRATION_REJECTED)
+      if (
+        error instanceof RagError &&
+        (error.code === RAG_MIGRATION_REJECTED ||
+          error.code === RAG_MIGRATION_UNCONFIRMED)
+      )
         throw error;
       throw unconfirmed(
         operation,
@@ -420,6 +365,7 @@ function client(
         run.backupUpsertThrottled = true;
         return response;
       }
+      await checkAccess(response, operation, throttled);
       const responseBody = await response.text();
       const reply = parseMutationResponse(responseBody);
       const applied = reply?.result;
@@ -441,16 +387,7 @@ function client(
         completed
       )
         return response;
-      const outcome = `HTTP ${response.status}: ${responseBody}`;
-      const nextStep = rejectionNextStep(
-        response.status,
-        method,
-        path,
-        reply,
-        responseBody,
-      );
-      if (nextStep) throw rejected(operation, outcome, nextStep);
-      throw new Error(outcome);
+      throw new Error(`HTTP ${response.status}: ${responseBody}`);
     };
 
     try {
@@ -461,9 +398,9 @@ function client(
       else await send(url, init);
     } catch (error) {
       if (
-        !throttled &&
         error instanceof RagError &&
-        error.code === RAG_MIGRATION_REJECTED
+        (error.code === RAG_MIGRATION_UNCONFIRMED ||
+          (!throttled && error.code === RAG_MIGRATION_REJECTED))
       )
         throw error;
       throw unconfirmed(
