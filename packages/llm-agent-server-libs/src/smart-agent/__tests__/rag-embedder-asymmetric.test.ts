@@ -35,7 +35,7 @@ describe('rag.embedder.asymmetric', () => {
           model: 'text-embedding-3-small',
           asymmetric: true,
         }),
-      /asymmetric: supported for provider sap-ai-core only, not "openai"/,
+      /asymmetric: supported for providers sap-ai-core and voyage, not "openai"/,
     );
   });
 
@@ -68,6 +68,22 @@ describe('rag.embedder.asymmetric', () => {
     assert.throws(
       () => withEmbedder({ factory: 'mine', asymmetric: true }),
       /rag\.embedder\.asymmetric: not read for a factory/,
+    );
+  });
+
+  it('accepts Voyage as a built-in provider with an explicit model', () => {
+    assert.deepEqual(
+      withEmbedder({ provider: 'voyage', model: 'voyage-4', asymmetric: true })
+        .rag?.embedder,
+      {
+        provider: 'voyage',
+        model: 'voyage-4',
+        asymmetric: true,
+      },
+    );
+    assert.throws(
+      () => withEmbedder({ provider: 'voyage' }),
+      /rag\.embedder\.model: required/,
     );
   });
 });

@@ -415,11 +415,11 @@ function checkRag(
     }
   } else if (provider === 'deepseek' || provider === 'anthropic') {
     issues.push(
-      `rag.embedder.provider: "${provider}" provider has no embedder; embedding-capable providers are ollama, openai, sap-ai-core`,
+      `rag.embedder.provider: "${provider}" provider has no embedder; embedding-capable providers are ollama, openai, sap-ai-core, voyage`,
     );
   } else if (provider !== undefined && !isBuiltInEmbedderProvider(provider)) {
     issues.push(
-      `rag.embedder.provider: "${provider}" is not a built-in embedder (openai, sap-ai-core, sap-aicore, ollama) — ` +
+      `rag.embedder.provider: "${provider}" is not a built-in embedder (openai, sap-ai-core, sap-aicore, ollama, voyage) — ` +
         'an embedder you registered in extraFactories is named with rag.embedder.factory',
     );
   }
@@ -439,14 +439,17 @@ function checkRag(
       asymmetric &&
       factory === undefined &&
       provider !== 'sap-ai-core' &&
-      provider !== 'sap-aicore'
+      provider !== 'sap-aicore' &&
+      provider !== 'voyage'
     ) {
-      // Only SAP AI Core's embedder has a document/query pair; on any other
-      // provider the key would be dropped without a word.
       issues.push(
-        `rag.embedder.asymmetric: supported for provider sap-ai-core only, not "${provider ?? 'ollama'}"`,
+        `rag.embedder.asymmetric: supported for providers sap-ai-core and voyage, not "${provider ?? 'ollama'}"`,
       );
-    } else if (asymmetric && e.scenario === 'foundation-models') {
+    } else if (
+      asymmetric &&
+      (provider === 'sap-ai-core' || provider === 'sap-aicore') &&
+      e.scenario === 'foundation-models'
+    ) {
       issues.push(
         "rag.embedder.asymmetric: needs scenario 'orchestration' — the foundation-models scenario takes no input type",
       );

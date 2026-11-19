@@ -197,6 +197,7 @@
     "packages/ollama-llm/src/__tests__/usage.test.ts",
     "packages/sap-aicore-llm/src/__tests__/usage.test.ts",
     "packages/openai-embedder/src/usage.test.ts",
+    "packages/voyage-embedder/src/*.test.ts",
     "packages/ollama-embedder/src/usage.test.ts",
     "packages/sap-aicore-embedder/src/usage.test.ts",
     "packages/llm-usage/src/**/*.ts",

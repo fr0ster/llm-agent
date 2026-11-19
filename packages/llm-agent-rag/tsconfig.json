@@ -17,6 +17,7 @@
     { "path": "../openai-embedder" },
     { "path": "../ollama-embedder" },
     { "path": "../sap-aicore-embedder" },
+    { "path": "../voyage-embedder" },
     { "path": "../qdrant-rag" },
     { "path": "../hana-vector-rag" },
     { "path": "../pg-vector-rag" }

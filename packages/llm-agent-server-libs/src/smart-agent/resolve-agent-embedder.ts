@@ -76,7 +76,7 @@ export async function resolveAgentEmbedder(
  * method by mistake.
  *
  * A symmetric model (the default) is ONE embedder behind both methods. For
- * `rag.embedder.asymmetric` the model is resolved twice — `inputType:
+ * Voyage AI or `rag.embedder.asymmetric` the model is resolved twice — `inputType:
  * 'document'` and `'query'` — each half composed and usage-logged on its own,
  * and joined by `asymmetricEmbedder`. A DI-injected embedder is symmetric.
  *
@@ -99,7 +99,7 @@ export async function resolveRetrievalEmbedder(
     rag !== undefined &&
     section !== undefined &&
     section.factory === undefined &&
-    section.asymmetric === true
+    (section.provider === 'voyage' || section.asymmetric === true)
   ) {
     const half = async (inputType: 'document' | 'query') =>
       resolveAgentEmbedder(

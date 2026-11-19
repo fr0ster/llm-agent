@@ -34,7 +34,7 @@ simpler one: **"did you hand someone a modified server."**
 |---|---|---|
 | `llm-agent`, `llm-agent-mcp`, `llm-agent-rag`, `llm-agent-libs`, `llm-agent-server-libs` | `LGPL-3.0-only` | libraries you embed |
 | `anthropic-llm`, `deepseek-llm`, `openai-llm`, `ollama-llm`, `sap-aicore-llm` | `LGPL-3.0-only` | libraries you embed |
-| `openai-embedder`, `ollama-embedder`, `sap-aicore-embedder` | `LGPL-3.0-only` | libraries you embed |
+| `openai-embedder`, `ollama-embedder`, `sap-aicore-embedder`, `voyage-embedder` | `LGPL-3.0-only` | libraries you embed |
 | `qdrant-rag`, `hana-vector-rag`, `pg-vector-rag` | `LGPL-3.0-only` | libraries you embed |
 | **`llm-agent-server`** | **`GPL-3.0-only`** | the ready-to-run product — CLI and HTTP server, no library exports |
 

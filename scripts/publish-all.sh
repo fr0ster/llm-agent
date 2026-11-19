@@ -31,6 +31,7 @@ PACKAGES=(
   llm-usage-hana
   llm-usage-sqlite
   llm-agent-mcp
+  voyage-embedder
   llm-agent-rag
   openai-llm
   ollama-llm

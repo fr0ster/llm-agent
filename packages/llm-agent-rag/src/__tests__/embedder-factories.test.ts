@@ -40,4 +40,41 @@ describe('embedder peers — MissingProviderError', () => {
     });
     assert.equal(typeof e.embed, 'function');
   });
+
+  it('selects Voyage by provider name and forwards its model, endpoint and input role', async (t) => {
+    await prefetchEmbedderFactories(['voyage']);
+    const embedder = resolveEmbedder({
+      provider: 'voyage',
+      model: 'voyage-4',
+      credential: staticApiKey('fixture'),
+      url: 'https://voyage.example.test/v1',
+      inputType: 'query',
+    });
+    const query = 'q'.repeat(25_000);
+    t.mock.method(
+      globalThis,
+      'fetch',
+      async (url: string, init?: RequestInit) => {
+        assert.equal(url, 'https://voyage.example.test/v1/embeddings');
+        const body = JSON.parse(String(init?.body)) as {
+          input: string[];
+          model: string;
+          input_type: string;
+          truncation: boolean;
+        };
+        assert.deepEqual(body, {
+          input: [query],
+          model: 'voyage-4',
+          input_type: 'query',
+          truncation: false,
+        });
+        return Response.json({
+          model: 'voyage-4',
+          data: [{ index: 0, embedding: [1] }],
+        });
+      },
+    );
+    assert.deepEqual(await embedder.embed(query), { vector: [1] });
+    assert.equal(embedder.getMaxInputChars, undefined);
+  });
 });

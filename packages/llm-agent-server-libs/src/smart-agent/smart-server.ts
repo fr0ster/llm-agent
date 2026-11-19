@@ -1533,7 +1533,8 @@ export class SmartServer {
                   this._deps.resolveEmbedder(sec, {
                     extraFactories: mergedEmbedderFactories,
                   });
-                return ec.asymmetric && section.factory === undefined
+                return section.factory === undefined &&
+                  (section.provider === 'voyage' || ec.asymmetric)
                   ? asymmetricEmbedder({
                       document: build({
                         ...section,

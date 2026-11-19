@@ -138,7 +138,7 @@ function refuseLegacyEmbedderFields(cfg: EmbedderResolution): void {
   if ('embedder' in raw) {
     throw new Error(
       'embedder config carries "embedder", which was renamed: name a built-in with ' +
-        'provider (openai, ollama, sap-ai-core) or a registered factory with factory.',
+        'provider (openai, ollama, sap-ai-core, voyage) or a registered factory with factory.',
     );
   }
 }
@@ -159,7 +159,8 @@ export function resolveEmbedder(
       : constructBuiltInEmbedder(cfg);
   return composeEmbedder(raw, {
     maxBatchSize: cfg.maxBatchSize,
-    maxInputChars: cfg.maxInputChars,
+    // Voyage must receive the complete input so it can report context errors.
+    maxInputChars: cfg.provider === 'voyage' ? 0 : cfg.maxInputChars,
     logger: options?.logger,
   });
 }
@@ -174,7 +175,7 @@ function constructFromExtraFactory(
     throw new Error(
       `Unknown embedder factory "${cfg.factory}". Registered: ` +
         `${known.length > 0 ? known.join(', ') : '(none)'}. Built-ins are named with ` +
-        'provider: openai, ollama, sap-ai-core.',
+        'provider: openai, ollama, sap-ai-core, voyage.',
     );
   }
   // Exactly EmbedderFactoryConfig, built from named fields — nothing spread,
