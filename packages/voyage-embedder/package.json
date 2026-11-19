@@ -1,6 +1,6 @@
 {
   "name": "@mcp-abap-adt/voyage-embedder",
-  "version": "1.0.0",
+  "version": "0.1.0",
   "description": "Voyage AI embedding and reranking providers for @mcp-abap-adt/llm-agent.",
   "type": "module",
   "main": "dist/index.js",
