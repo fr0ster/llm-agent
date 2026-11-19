@@ -1,5 +1,12 @@
 # @mcp-abap-adt/ollama-llm
 
+## 30.12.2
+
+### Patch Changes
+
+- Updated dependencies [37f93cc]
+  - @mcp-abap-adt/llm-agent@35.0.0
+
 ## 30.12.1
 
 ### Patch Changes

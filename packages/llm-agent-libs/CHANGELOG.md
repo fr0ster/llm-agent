@@ -1,5 +1,18 @@
 # @mcp-abap-adt/llm-agent-libs
 
+## 36.0.0
+
+### Major Changes
+
+- 37f93cc: Fragment precomputed MCP, skill and planner-memory writes. Qdrant skill points use MaxSim multivectors and the skill adapter accepts vector sets. Planner memory drains pending writes using caller cancellation.
+
+### Patch Changes
+
+- Updated dependencies [37f93cc]
+- Updated dependencies [37f93cc]
+  - @mcp-abap-adt/llm-agent-rag@31.0.0
+  - @mcp-abap-adt/llm-agent@35.0.0
+
 ## 35.0.0
 
 ### Major Changes

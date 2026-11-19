@@ -1,5 +1,16 @@
 # @mcp-abap-adt/hana-vector-rag
 
+## 33.0.0
+
+### Major Changes
+
+- 37f93cc: Store fragment vectors in the documents table and rank distinct records in HANA. Redeploy the existing HDI documents artifact or run the in-place SQL migration to add the fragment ordinal to the primary key.
+
+### Patch Changes
+
+- Updated dependencies [37f93cc]
+  - @mcp-abap-adt/llm-agent@35.0.0
+
 ## 32.1.1
 
 ### Patch Changes

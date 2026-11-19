@@ -1,5 +1,16 @@
 # @mcp-abap-adt/qdrant-rag
 
+## 33.0.0
+
+### Major Changes
+
+- 37f93cc: Store records as Qdrant MaxSim multivectors. Existing collections retain single-vector read and write support. The resumable qdrant-migrate-multivector command enables multi-fragment writes without re-embedding.
+
+### Patch Changes
+
+- Updated dependencies [37f93cc]
+  - @mcp-abap-adt/llm-agent@35.0.0
+
 ## 32.1.1
 
 ### Patch Changes

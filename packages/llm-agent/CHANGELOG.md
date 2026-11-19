@@ -1,5 +1,11 @@
 # @mcp-abap-adt/llm-agent
 
+## 35.0.0
+
+### Major Changes
+
+- 37f93cc: Precomputed writer implementations must accept single vectors and fragment vector sets. VectorRag deduplicates anonymous records by exact full text. Record embeddings preserve CRLF boundaries and wait through rate limits.
+
 ## 34.1.0
 
 ### Minor Changes

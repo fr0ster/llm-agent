@@ -1,5 +1,12 @@
 # @mcp-abap-adt/openai-llm
 
+## 30.13.2
+
+### Patch Changes
+
+- Updated dependencies [37f93cc]
+  - @mcp-abap-adt/llm-agent@35.0.0
+
 ## 30.13.1
 
 ### Patch Changes
