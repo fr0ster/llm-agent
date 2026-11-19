@@ -45,7 +45,15 @@ function setup(
 ) {
   const db = storingPg({ sharedDimension: 3 });
 
-  const client: PgClient = { ...db };
+  const client: PgClient = {
+    ...db,
+    // These races model a pool where another connection can write while a read is pending.
+    transaction: (work) =>
+      work({
+        query: (sql, params) => client.query(sql, params),
+        end: db.end,
+      }),
+  };
   const config = {
     collectionName: 'unused',
     dimension: 3,

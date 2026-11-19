@@ -54,6 +54,7 @@ import {
 } from './schema.js';
 import { SHARED_CATALOG_TABLE, SHARED_DOCUMENTS_TABLE } from './shared-ddl.js';
 import { SharedProviderOps } from './shared-provider-ops.js';
+import { serializePgClient } from './single-connection.js';
 
 type Handles = { rag: IRag; editor: IRagEditor };
 type Refusal = { ok: false; error: RagError };
@@ -611,7 +612,7 @@ export class PgVectorRagProvider
   }
 
   private async adminClient(): Promise<PgClient> {
-    if (this.clientFactory) return this.clientFactory();
+    if (this.clientFactory) return serializePgClient(this.clientFactory());
     this.ownClient ??= createPgClient(this.connection).catch((err: unknown) => {
       this.ownClient = undefined;
       throw err;

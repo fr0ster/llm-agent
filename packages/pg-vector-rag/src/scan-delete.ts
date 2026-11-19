@@ -10,6 +10,11 @@ import {
 } from '@mcp-abap-adt/llm-agent';
 import type { PgClient } from './pg-vector-rag.js';
 import type { StoreCache } from './record-cache.js';
+import {
+  queryPg,
+  serializePgClient,
+  withPgConnection,
+} from './single-connection.js';
 import type { PgStoreSql } from './store-sql.js';
 import { withId } from './with-id.js';
 
@@ -29,6 +34,7 @@ export async function scanPage(
   client: PgClient,
   sql: PgStoreSql,
   opts?: { filter?: RagScanFilter; pageSize?: number; cursor?: string },
+  signal?: AbortSignal,
 ): Promise<RagScanPage> {
   const limit = opts?.pageSize ?? DEFAULT_SCAN_PAGE_SIZE;
   const after =
@@ -36,7 +42,7 @@ export async function scanPage(
   if (opts?.cursor !== undefined && after === undefined)
     throw new RagError('Invalid scan cursor', INVALID_ARGUMENT);
   const stmt = sql.scanPage(after, limit, opts?.filter);
-  const { rows } = await client.query(stmt.sql, stmt.params);
+  const { rows } = await queryPg(client, stmt.sql, stmt.params, signal);
   const records = rows.map(toRecord);
   const last = rows[rows.length - 1];
   return rows.length >= limit && last
@@ -48,17 +54,28 @@ export async function scanPage(
 export async function recordTransaction<T>(
   client: PgClient,
   work: (connection: PgClient) => Promise<T>,
+  signal?: AbortSignal,
 ): Promise<T> {
   if (client.transaction) return client.transaction(work);
-  await client.query('BEGIN');
-  try {
-    const result = await work(client);
-    await client.query('COMMIT');
-    return result;
-  } catch (error) {
-    await client.query('ROLLBACK').catch(() => {});
-    throw error;
-  }
+  return withPgConnection(
+    serializePgClient(client),
+    async (connection) => {
+      await connection.query('BEGIN');
+      try {
+        const result = await work(connection);
+        await connection.query('COMMIT');
+        return result;
+      } catch (error) {
+        try {
+          await connection.query('ROLLBACK');
+        } catch {
+          /* Preserve the original failure. */
+        }
+        throw error;
+      }
+    },
+    signal,
+  );
 }
 
 /** Lock only the matching record rows, then delete all their ordinals. */
@@ -71,18 +88,25 @@ export async function deleteWhere(
 ): Promise<number> {
   const settled: Array<() => void> = [];
   try {
-    return await recordTransaction(client, async (connection) => {
-      const selection = sql.deleteWhere(filter);
-      const { rows } = await connection.query(selection.sql, selection.params);
-      signal?.throwIfAborted();
-      const ids = rows.map((row) => String(row.id));
-      if (!ids.length) return 0;
-      settled.push(cache.beginWrite(ids));
-      const deletion = sql.deleteByIds(ids);
-      await connection.query(deletion.sql, deletion.params);
-      signal?.throwIfAborted();
-      return ids.length;
-    });
+    return await recordTransaction(
+      client,
+      async (connection) => {
+        const selection = sql.deleteWhere(filter);
+        const { rows } = await connection.query(
+          selection.sql,
+          selection.params,
+        );
+        signal?.throwIfAborted();
+        const ids = rows.map((row) => String(row.id));
+        if (!ids.length) return 0;
+        settled.push(cache.beginWrite(ids));
+        const deletion = sql.deleteByIds(ids);
+        await connection.query(deletion.sql, deletion.params);
+        signal?.throwIfAborted();
+        return ids.length;
+      },
+      signal,
+    );
   } finally {
     for (const done of settled) done();
   }
