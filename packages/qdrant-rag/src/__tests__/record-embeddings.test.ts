@@ -2,7 +2,10 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { test } from 'node:test';
 import { symmetricEmbedder } from '@mcp-abap-adt/llm-agent';
-import { migrateQdrantMultivectors } from '../migrate-multivector.js';
+import {
+  migrateQdrantMultivectors,
+  RAG_MIGRATION_PRECONDITION,
+} from '../migrate-multivector.js';
 import { MIGRATION_PREFIX } from '../multivector.js';
 import { deterministicUUID, QdrantRag } from '../qdrant-rag.js';
 import { startQdrantStub } from './qdrant-stub.js';
@@ -362,8 +365,8 @@ test('an unreadable recovery marker blocks migration and leaves the temporary co
     await assert.rejects(
       migrateQdrantMultivectors({ url: stub.baseUrl, collection, dryRun }),
       {
-        code: 'RAG_MIGRATION_ERROR',
-        message: `Cannot read the original collection name from "${temporary}"`,
+        code: RAG_MIGRATION_PRECONDITION,
+        message: /Cannot read the original collection name.*recovery marker/,
       },
     );
   }
