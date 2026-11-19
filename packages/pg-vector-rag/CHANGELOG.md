@@ -1,5 +1,16 @@
 # @mcp-abap-adt/pg-vector-rag
 
+## 33.0.0
+
+### Major Changes
+
+- 37f93cc: Store each fragment vector as a row in the documents table and rank distinct records in PostgreSQL. Upgrade existing tables in place by adding the fragment ordinal to the primary key.
+
+### Patch Changes
+
+- Updated dependencies [37f93cc]
+  - @mcp-abap-adt/llm-agent@35.0.0
+
 ## 32.1.1
 
 ### Patch Changes

@@ -1,5 +1,12 @@
 # @mcp-abap-adt/copilot-llm
 
+## 0.1.2
+
+### Patch Changes
+
+- Updated dependencies [37f93cc]
+  - @mcp-abap-adt/llm-agent@35.0.0
+
 ## 0.1.1
 
 ### Patch Changes

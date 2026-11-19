@@ -1,5 +1,12 @@
 # @mcp-abap-adt/llm-usage-sqlite
 
+## 1.1.5
+
+### Patch Changes
+
+- Updated dependencies [37f93cc]
+  - @mcp-abap-adt/llm-agent@35.0.0
+
 ## 1.1.4
 
 ### Patch Changes

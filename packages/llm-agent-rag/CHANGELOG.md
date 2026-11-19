@@ -1,5 +1,24 @@
 # @mcp-abap-adt/llm-agent-rag
 
+## 31.0.0
+
+### Major Changes
+
+- 37f93cc: Expose fallback record fragment size in the declarative RAG factory. In-memory vector stores deduplicate anonymous records by exact text and deprecate the similarity threshold. Qdrant work uses caller cancellation through an AbortSignal.
+
+### Patch Changes
+
+- Updated dependencies [37f93cc]
+- Updated dependencies [37f93cc]
+- Updated dependencies [37f93cc]
+- Updated dependencies [37f93cc]
+- Updated dependencies [37f93cc]
+  - @mcp-abap-adt/hana-vector-rag@33.0.0
+  - @mcp-abap-adt/llm-agent@35.0.0
+  - @mcp-abap-adt/ollama-embedder@32.0.0
+  - @mcp-abap-adt/pg-vector-rag@33.0.0
+  - @mcp-abap-adt/qdrant-rag@33.0.0
+
 ## 30.11.1
 
 ### Patch Changes

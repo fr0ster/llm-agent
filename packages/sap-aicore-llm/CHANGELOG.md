@@ -1,5 +1,12 @@
 # @mcp-abap-adt/sap-aicore-llm
 
+## 31.1.3
+
+### Patch Changes
+
+- Updated dependencies [37f93cc]
+  - @mcp-abap-adt/llm-agent@35.0.0
+
 ## 31.1.2
 
 ### Patch Changes

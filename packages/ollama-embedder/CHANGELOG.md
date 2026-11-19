@@ -1,5 +1,16 @@
 # @mcp-abap-adt/ollama-embedder
 
+## 32.0.0
+
+### Major Changes
+
+- 37f93cc: Require a successful Ollama model lookup and surface context overflow with truncation disabled. RAG writers use the reported capacity to fragment full records.
+
+### Patch Changes
+
+- Updated dependencies [37f93cc]
+  - @mcp-abap-adt/llm-agent@35.0.0
+
 ## 31.0.1
 
 ### Patch Changes

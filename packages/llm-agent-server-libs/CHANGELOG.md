@@ -1,5 +1,20 @@
 # @mcp-abap-adt/llm-agent-server-libs
 
+## 34.1.0
+
+### Minor Changes
+
+- ebdd767: Use fragment-aware semantic ranking for stored skills and knowledge entries.
+
+### Patch Changes
+
+- Updated dependencies [37f93cc]
+- Updated dependencies [37f93cc]
+- Updated dependencies [37f93cc]
+  - @mcp-abap-adt/llm-agent-libs@36.0.0
+  - @mcp-abap-adt/llm-agent-rag@31.0.0
+  - @mcp-abap-adt/llm-agent@35.0.0
+
 ## 34.0.1
 
 ### Patch Changes

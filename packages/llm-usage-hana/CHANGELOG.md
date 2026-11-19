@@ -1,5 +1,12 @@
 # @mcp-abap-adt/llm-usage-hana
 
+## 1.0.5
+
+### Patch Changes
+
+- Updated dependencies [37f93cc]
+  - @mcp-abap-adt/llm-agent@35.0.0
+
 ## 1.0.4
 
 ### Patch Changes
