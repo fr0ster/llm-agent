@@ -43,9 +43,9 @@ const ranked = await reranker.rerank('Example search', [
 Each constructor takes an explicit `model` and an `IApiKeyCredential`. The
 credential supplies a fresh key for each request attempt. Both clients accept
 `baseURL`, which defaults to `https://api.voyageai.com/v1`. The embedder's
-`inputType` defaults to `document`. The reranker preserves Voyage's response
-order, maps `relevance_score` onto each candidate's `score`, and accepts
-`{ topK }` when the caller wants fewer results. SmartServer also accepts a
+`inputType` defaults to `document`. The reranker maps `relevance_score` onto
+each candidate's `score`, sorts all scored candidates in descending order,
+and applies `{ topK }` to the merged ranking. SmartServer also accepts a
 `VoyageReranker` through its existing reranker plugin hook.
 
 Pass `{ maxInputChars: 0 }` when applying `composeEmbedder` to a directly
@@ -80,8 +80,15 @@ documented model token limits. Voyage's tokenizer determines whether a request
 fits, and the adapter subdivides a batch if Voyage reports an aggregate token
 violation. A single text that exceeds model context surfaces the API error.
 Voyage documents context in tokens, so stores use their `fragmentSizeChars`.
-Reranking sends one request for the supplied candidates, subject to the API's
-document-count and token constraints.
+
+Reranking batches candidates into requests of up to 1,000 documents and uses
+the same UTF-8 estimate for the model's aggregate token budget, counting the
+query once per document. The adapter subdivides requests that Voyage rejects
+for size. If a single candidate exceeds the budget with the query or Voyage
+rejects that pair for size, the error identifies its input index and any
+metadata ID. Voyage's rerankers score each query-document pair with a
+cross-encoder. Scores from the same query and model are comparable across
+requests and can be merged directly. See the [Voyage reranker guide](https://docs.voyageai.com/docs/reranker).
 
 HTTP 429 waits according to `Retry-After`, which can be delay-seconds or an HTTP
 date. If the header is missing or invalid, the adapter waits two seconds. The

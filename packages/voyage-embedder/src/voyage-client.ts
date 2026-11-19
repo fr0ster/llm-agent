@@ -30,7 +30,6 @@ interface EmbeddingRequest {
 interface RerankRequest {
   query: string;
   documents: string[];
-  top_k?: number;
   truncation: false;
 }
 

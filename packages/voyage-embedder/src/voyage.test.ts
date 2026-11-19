@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { Buffer } from 'node:buffer';
 import { EventEmitter, once } from 'node:events';
 import { test } from 'node:test';
 import {
@@ -359,8 +360,39 @@ const second: RagResult = {
   metadata: { id: 'second' },
 };
 
-test('reranking sends every candidate, preserves returned order and bills provider token usage', async (t) => {
-  const bodies: object[] = [];
+interface RerankBody {
+  query: string;
+  documents: string[];
+  model: string;
+  truncation: boolean;
+  top_k?: number;
+}
+
+function rerankBody(init?: RequestInit): RerankBody {
+  assert.equal(typeof init?.body, 'string');
+  return JSON.parse(String(init?.body)) as RerankBody;
+}
+
+function numberedCandidates(count: number): RagResult[] {
+  return Array.from({ length: count }, (_, index) => ({
+    text: String(index),
+    score: 0,
+    metadata: { id: `candidate-${index}` },
+  }));
+}
+
+function numberedRerankReply(body: RerankBody, totalTokens?: number): Response {
+  return Response.json({
+    data: body.documents
+      .map((text, index) => ({ index, relevance_score: Number(text) / 1_000 }))
+      .reverse(),
+    model: body.model,
+    usage: { total_tokens: totalTokens ?? body.documents.length },
+  });
+}
+
+test('reranking sends every candidate and bills provider token usage', async (t) => {
+  const bodies: RerankBody[] = [];
   const bound: UsageInput[] = [];
   const records: UsageInput[] = [];
   t.mock.method(
@@ -368,13 +400,13 @@ test('reranking sends every candidate, preserves returned order and bills provid
     'fetch',
     async (url: string, init?: RequestInit) => {
       assert.equal(url, 'https://api.voyageai.com/v1/rerank');
-      const body = JSON.parse(String(init?.body)) as { top_k?: number };
+      const body = rerankBody(init);
       bodies.push(body);
       return Response.json({
         data: [
           { index: 1, relevance_score: 0.9 },
           { index: 0, relevance_score: 0.2 },
-        ].slice(0, body.top_k),
+        ],
         model: rerankingConfig.model,
         usage: { total_tokens: 42 },
       });
@@ -404,7 +436,7 @@ test('reranking sends every candidate, preserves returned order and bills provid
     ok: true,
     value: [{ ...second, score: 0.9 }],
   });
-  assert.deepEqual(bodies, [request, { ...request, top_k: 1 }]);
+  assert.deepEqual(bodies, [request, request]);
   assert.equal(first.score, 0.5);
   for (const [record] of [records, bound]) {
     assert.equal(record.kind, 'llm.call');
@@ -413,4 +445,296 @@ test('reranking sends every candidate, preserves returned order and bills provid
     assert.equal(record.inputTokens, 42);
     assert.equal(record.tokensSource, 'provider');
   }
+});
+
+test('reranking scores all 1,001 candidates and applies topK after merging batches', async (t) => {
+  const candidates = numberedCandidates(1_001);
+  const bodies: RerankBody[] = [];
+  t.mock.method(
+    globalThis,
+    'fetch',
+    async (_url: string, init?: RequestInit) => {
+      const body = rerankBody(init);
+      bodies.push(body);
+      if (body.documents.length > 1_000) {
+        return Response.json({ detail: 'Too many documents' }, { status: 400 });
+      }
+      return numberedRerankReply(body);
+    },
+  );
+
+  const reranker = new VoyageReranker(rerankingConfig);
+  const query = 'same query for every batch';
+  assert.deepEqual(await reranker.rerank(query, candidates, { topK: 1 }), {
+    ok: true,
+    value: [{ ...candidates[1_000], score: 1 }],
+  });
+  const expected = [candidates.slice(0, 1_000), candidates.slice(1_000)].map(
+    (batch) => ({
+      query,
+      documents: batch.map(({ text }) => text),
+      model: rerankingConfig.model,
+      truncation: false,
+    }),
+  );
+  assert.deepEqual(bodies, expected);
+  assert.deepEqual(await reranker.rerank(query, candidates), {
+    ok: true,
+    value: candidates
+      .map((candidate, index) => ({ ...candidate, score: index / 1_000 }))
+      .reverse(),
+  });
+  assert.deepEqual(bodies, [...expected, ...expected]);
+});
+
+test('reranking budgets UTF-8 bytes including the query per document and sums usage per model', async (t) => {
+  const sizes: number[] = [];
+  const records: UsageInput[] = [];
+  t.mock.method(
+    globalThis,
+    'fetch',
+    async (_url: string, init?: RequestInit) => {
+      const body = rerankBody(init);
+      sizes.push(body.documents.length);
+      return Response.json({
+        data: body.documents.map((_, index) => ({
+          index,
+          relevance_score: 0.5,
+        })),
+        model: body.model,
+        usage: { total_tokens: body.documents.length * 19 + 1 },
+      });
+    },
+  );
+
+  const query = '\u00e9'.repeat(500);
+  const text = '\u00e9'.repeat(3_500);
+  const candidates = numberedCandidates(76).map((candidate) => ({
+    ...candidate,
+    text,
+  }));
+  const totals = new Map<string, number>();
+  const usage = recording(records);
+  for (const model of ['rerank-1', 'rerank-3']) {
+    assert.deepEqual(
+      await new VoyageReranker({ credential, model, usage }).rerank(
+        query,
+        candidates,
+      ),
+      {
+        ok: true,
+        value: candidates.map((candidate) => ({ ...candidate, score: 0.5 })),
+      },
+    );
+  }
+  assert.deepEqual(sizes, [37, 37, 2, 75, 1]);
+  for (const record of records) {
+    assert.equal(record.kind, 'llm.call');
+    assert.equal(record.context.role, 'rerank');
+    assert.equal(record.outcome, 'ok');
+    assert.equal(record.tokensSource, 'provider');
+    totals.set(
+      record.model,
+      (totals.get(record.model) ?? 0) + (record.inputTokens ?? 0),
+    );
+  }
+  assert.deepEqual(
+    [...totals],
+    [
+      ['rerank-1', 1_447],
+      ['rerank-3', 1_446],
+    ],
+  );
+});
+
+test('reranking bisects a server-rejected batch and maps each local index back to its candidate', async (t) => {
+  const batches: string[][] = [];
+  t.mock.method(
+    globalThis,
+    'fetch',
+    async (_url: string, init?: RequestInit) => {
+      const body = rerankBody(init);
+      const { documents } = body;
+      batches.push(documents);
+      if (documents.length > 2) {
+        return Response.json(
+          {
+            detail:
+              documents.length === 5
+                ? 'The max allowed tokens per submitted batch is 100000.'
+                : 'Token budget exceeded',
+          },
+          { status: 400 },
+        );
+      }
+      return numberedRerankReply(body);
+    },
+  );
+
+  const candidates = numberedCandidates(5);
+  assert.deepEqual(
+    await new VoyageReranker(rerankingConfig).rerank('q', candidates),
+    {
+      ok: true,
+      value: candidates
+        .map((candidate, index) => ({ ...candidate, score: index / 1_000 }))
+        .reverse(),
+    },
+  );
+  assert.deepEqual(batches, [
+    ['0', '1', '2', '3', '4'],
+    ['0', '1', '2'],
+    ['0', '1'],
+    ['2'],
+    ['3', '4'],
+  ]);
+});
+
+test('reranking names a candidate that alone exceeds the estimated request budget', async (t) => {
+  const fetch = t.mock.method(globalThis, 'fetch', async () => new Response());
+  const text = '\u00e9'.repeat(150_000);
+  assert.equal(Buffer.byteLength(text), 300_000);
+  const result = await new VoyageReranker({
+    credential,
+    model: 'rerank-1',
+  }).rerank('q', [first, { ...second, text }], { topK: 1 });
+  if (result.ok) assert.fail('Expected an oversized candidate error');
+  assert.equal(result.error.code, 'RERANK_ERROR');
+  assert.match(result.error.message, /candidate.*index 1.*second.*300000/i);
+  assert.equal(fetch.mock.callCount(), 0);
+});
+
+test('reranking names a candidate whose query-document pair Voyage rejects for context length', async (t) => {
+  const batches: string[][] = [];
+  t.mock.method(
+    globalThis,
+    'fetch',
+    async (_url: string, init?: RequestInit) => {
+      const body = rerankBody(init);
+      batches.push(body.documents);
+      assert.equal(body.truncation, false);
+      if (body.documents.includes('long')) {
+        return Response.json(
+          {
+            detail:
+              'Number of tokens in the query and document exceeds the context length',
+          },
+          { status: 400 },
+        );
+      }
+      return numberedRerankReply(body);
+    },
+  );
+  const result = await new VoyageReranker(rerankingConfig).rerank('q', [
+    ...numberedCandidates(2),
+    { ...second, text: 'long' },
+  ]);
+  if (result.ok) assert.fail('Expected an oversized candidate error');
+  assert.equal(result.error.code, 'RERANK_ERROR');
+  assert.match(
+    result.error.message,
+    /candidate.*index 2.*second.*context length/i,
+  );
+  assert.ok('status' in result.error);
+  assert.equal(result.error.status, 400);
+  assert.deepEqual(batches, [['0', '1', 'long'], ['0', '1'], ['long']]);
+});
+
+test('reranking honors Retry-After without a retry cap in a later batch', async (t) => {
+  const attempts: number[] = [];
+  let firstBatchCalls = 0;
+  const records: UsageInput[] = [];
+  t.mock.method(
+    globalThis,
+    'fetch',
+    async (_url: string, init?: RequestInit) => {
+      const body = rerankBody(init);
+      if (body.documents[0] === '0') {
+        firstBatchCalls++;
+        return numberedRerankReply(body);
+      }
+      assert.deepEqual(body.documents, ['1000']);
+      attempts.push(performance.now());
+      if (attempts.length <= 12) {
+        return new Response('rate limited', {
+          status: 429,
+          headers: { 'Retry-After': attempts.length === 1 ? '0.025' : '0' },
+        });
+      }
+      return numberedRerankReply(body);
+    },
+  );
+
+  const candidates = numberedCandidates(1_001);
+  const reranker = new VoyageReranker({
+    ...rerankingConfig,
+    usage: recording(records),
+  });
+  assert.deepEqual(await reranker.rerank('q', candidates, { topK: 1 }), {
+    ok: true,
+    value: [{ ...candidates[1_000], score: 1 }],
+  });
+  assert.equal(firstBatchCalls, 1);
+  assert.equal(attempts.length, 13);
+  assert.ok(attempts[1] - attempts[0] >= 20);
+  const requests = records.filter((record) => record.kind === 'llm.call');
+  assert.equal(requests.length, records.length);
+  assert.equal(new Set(requests.map((record) => record.operationId)).size, 1);
+  assert.equal(new Set(requests.map((record) => record.physicalSeq)).size, 14);
+  assert.deepEqual(
+    requests.map((record) => record.providerAttempt),
+    [0, ...Array.from({ length: 13 }, (_, index) => index)],
+  );
+  assert.deepEqual(
+    requests
+      .filter((record) => record.outcome === 'ok')
+      .map((record) => record.inputTokens),
+    [1_000, 1],
+  );
+});
+
+test('aborting a rerank during Retry-After skips the retry and remaining batches', {
+  timeout: 2_000,
+}, async (t) => {
+  const controller = new AbortController();
+  const events = new EventEmitter();
+  const waiting = once(events, 'waiting', { signal: t.signal });
+  t.after(() => controller.abort());
+  const batches: string[] = [];
+  t.mock.method(
+    globalThis,
+    'fetch',
+    async (_url: string, init?: RequestInit) => {
+      assert.equal(init?.signal, controller.signal);
+      const body = rerankBody(init);
+      batches.push(body.documents[0]);
+      return body.documents[0] === '1000'
+        ? new Response('rate limited', {
+            status: 429,
+            headers: { 'Retry-After': '7200' },
+          })
+        : numberedRerankReply(body);
+    },
+  );
+  const originalSetTimeout = globalThis.setTimeout;
+  t.mock.method(
+    globalThis,
+    'setTimeout',
+    (callback: () => void, delay: number) => {
+      if (delay === 7_200_000) events.emit('waiting');
+      return originalSetTimeout(callback, delay);
+    },
+  );
+
+  const reranking = new VoyageReranker(rerankingConfig).rerank(
+    'q',
+    numberedCandidates(2_001),
+    { signal: controller.signal },
+  );
+  await waiting;
+  controller.abort();
+  const result = await reranking;
+  if (result.ok) assert.fail('Expected the rerank to be aborted');
+  assert.equal(result.error.code, 'ABORTED');
+  assert.deepEqual(batches, ['0', '1000']);
 });
