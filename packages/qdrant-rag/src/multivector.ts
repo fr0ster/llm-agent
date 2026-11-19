@@ -1,7 +1,6 @@
 import { RagError, retryRagThrottle } from '@mcp-abap-adt/llm-agent';
 
 export const MIGRATION_PREFIX = '__rag_multivector_migration__';
-export const MIGRATION_LOCK_COLLECTION = `${MIGRATION_PREFIX}lock`;
 
 export function isMigrationCollection(name: string): boolean {
   return name.startsWith(MIGRATION_PREFIX);

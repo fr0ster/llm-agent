@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import type { IApiKeyCredential } from '@mcp-abap-adt/interfaces-auth';
 import { RagError } from '@mcp-abap-adt/llm-agent';
@@ -7,7 +7,6 @@ import {
   type DenseVectors,
   isMigrationCollection,
   isUnnamed,
-  MIGRATION_LOCK_COLLECTION,
   MIGRATION_PREFIX,
   maxSim,
   qdrantFetch,
@@ -59,28 +58,22 @@ interface MigrationConnection {
   signal?: AbortSignal;
 }
 
-export type QdrantMultivectorMigrationLockStatus = {
-  collection: string;
-} & ({ locked: false } | { locked: true; ownerToken: string | null });
-
 export interface QdrantMultivectorMigrationOptions extends MigrationConnection {
   /** If omitted, use the catalog to select managed collections. */
   collection?: string;
   catalogCollection?: string;
   dryRun?: boolean;
-  /** Receive the deployment lock state before a dry run inspects collections. */
-  onLockStatus?: (status: QdrantMultivectorMigrationLockStatus) => void;
 }
 
 export interface QdrantMultivectorMigrationResult {
   collection: string;
   temporaryCollection: string;
   action: 'migrate' | 'resume' | 'already-migrated';
+  /** The original was verified and the temporary collection remains for recovery. */
+  temporaryCollectionRetained?: true;
 }
 
 const marker = '__rag_multivector_migration_marker__';
-const lockPath = collectionPath(MIGRATION_LOCK_COLLECTION);
-const lockOwner = /^owner-([a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12})$/;
 const pageSize = 256;
 const json = JSON as JSON & {
   rawJSON(text: string): object;
@@ -96,18 +89,6 @@ const json = JSON as JSON & {
 
 function migrationError(message: string): RagError {
   return new RagError(message, 'RAG_MIGRATION_ERROR');
-}
-
-class MigrationLockOwnershipError extends RagError {
-  constructor(message: string) {
-    super(message, 'RAG_MIGRATION_ERROR');
-  }
-}
-
-class UnconfirmedMigrationWriteError extends RagError {
-  constructor(message: string) {
-    super(message, 'RAG_MIGRATION_ERROR');
-  }
 }
 
 function serialize(body: object): string {
@@ -238,15 +219,26 @@ function isDefiniteRejection(
   );
 }
 
-function client(options: MigrationConnection, fence?: () => Promise<void>) {
+interface MigrationRun {
+  backupUpsertThrottled: boolean;
+}
+
+function client(options: MigrationConnection, run: MigrationRun) {
   return async (
     path: string,
-    method = 'GET',
+    method: 'GET' | 'POST' | 'PUT' | 'DELETE' = 'GET',
     body?: object,
     {
-      allowedStatus,
+      allowMissing = false,
       shardlessIndex = false,
-    }: { allowedStatus?: 404 | 409; shardlessIndex?: boolean } = {},
+      retryThrottle = false,
+      detail,
+    }: {
+      allowMissing?: boolean;
+      shardlessIndex?: boolean;
+      retryThrottle?: boolean;
+      detail?: string;
+    } = {},
   ) => {
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
@@ -258,100 +250,79 @@ function client(options: MigrationConnection, fence?: () => Promise<void>) {
       method,
       headers,
       body: body === undefined ? undefined : serialize(body),
+      signal: options.signal,
     };
     const write =
       method === 'PUT' ||
       method === 'DELETE' ||
       path === '/collections/aliases';
+    if (!write) {
+      const response = await qdrantFetch(url, init);
+      if (!response.ok && !(allowMissing && response.status === 404))
+        throw migrationError(
+          `${method} ${path} failed (HTTP ${response.status}): ${await response.text()}`,
+        );
+      return response;
+    }
+
+    const operation = `${method} ${path}${detail ? ` (${detail})` : ''}`;
     const pointUpsert = /^\/collections\/[^/]+\/points\?/.test(path);
     const payloadIndex = /^\/collections\/[^/]+\/index\?/.test(path);
-    let unconfirmed: UnconfirmedMigrationWriteError | undefined;
-    const sendWrite = async () => {
-      // Recheck ownership on every attempt, including after Retry-After.
-      await fence?.();
+    let throttled = false;
+    let unconfirmedOutcome: string | undefined;
+    const send = async () => {
       options.signal?.throwIfAborted();
-      let rejection: string;
+      let response: Response;
+      let responseBody: string;
       try {
-        // Let an in-flight mutation finish before cancellation releases the lock.
-        const sent = await fetch(url, { ...init, redirect: 'manual' });
-        if (sent.status === 429) {
-          // Qdrant can return 429 after a subset of replicas accepted the write.
-          unconfirmed ??= new UnconfirmedMigrationWriteError(
-            `Could not confirm ${method} ${path}: HTTP 429`,
-          );
-          return sent;
+        response = await fetch(url, { ...init, redirect: 'manual' });
+        if (response.status === 429 && retryThrottle) {
+          // Qdrant can throttle after a subset of replicas accepted the write.
+          throttled = true;
+          run.backupUpsertThrottled = true;
+          return response;
         }
-        const body = await sent.text();
-        const reply = parseMutationResponse(body);
-        const applied = reply?.result;
-        // Qdrant commits the payload schema before updating shards. With no
-        // custom shards, that second step acknowledges without an operation ID.
-        const completed =
-          pointUpsert || payloadIndex
-            ? typeof applied === 'object' &&
-              (applied?.status === 'completed' ||
-                (payloadIndex &&
-                  shardlessIndex &&
-                  applied?.status === 'acknowledged' &&
-                  applied.operation_id == null))
-            : applied === true;
-        if (
-          sent.ok &&
-          sent.status !== 202 &&
-          reply?.status === 'ok' &&
-          completed
-        ) {
-          // An identical upsert to the offline backup writes the same values
-          // to the same point IDs, even if an earlier attempt arrives later.
-          // Recovery copies the same offline data, and success deletes the backup.
-          if (
-            pointUpsert &&
-            path.startsWith(`/collections/${MIGRATION_PREFIX}`)
-          )
-            unconfirmed = undefined;
-          return sent;
-        }
-        const outcome = `HTTP ${sent.status}: ${body}`;
-        if (!isDefiniteRejection(sent.status, method, path, reply))
-          throw new Error(outcome);
-        if (sent.status === allowedStatus) return sent;
-        rejection = outcome;
+        responseBody = await response.text();
       } catch (error) {
-        unconfirmed = new UnconfirmedMigrationWriteError(
-          `${unconfirmed?.message ?? `Could not confirm ${method} ${path}`}: ${String(error)}`,
-        );
-        throw unconfirmed;
+        unconfirmedOutcome = String(error);
+        throw migrationError(unconfirmedOutcome);
       }
-      throw migrationError(`${method} ${path} failed (${rejection})`);
+      const reply = parseMutationResponse(responseBody);
+      const applied = reply?.result;
+      // Qdrant commits the payload schema before updating shards. With no
+      // custom shards, that second step acknowledges without an operation ID.
+      const completed =
+        pointUpsert || payloadIndex
+          ? typeof applied === 'object' &&
+            (applied?.status === 'completed' ||
+              (payloadIndex &&
+                shardlessIndex &&
+                applied?.status === 'acknowledged' &&
+                applied.operation_id == null))
+          : applied === true;
+      if (
+        response.ok &&
+        response.status !== 202 &&
+        reply?.status === 'ok' &&
+        completed
+      )
+        return response;
+      const outcome = `HTTP ${response.status}: ${responseBody}`;
+      if (!isDefiniteRejection(response.status, method, path, reply))
+        unconfirmedOutcome = outcome;
+      throw migrationError(`${operation} failed (${outcome})`);
     };
-    let response: Response;
+
     try {
-      response = await qdrantFetch(
-        url,
-        { ...init, signal: options.signal },
-        write ? sendWrite : undefined,
-      );
+      // Only explicitly opted-in mutations may reach the HTTP 429 retry loop.
+      return retryThrottle ? await qdrantFetch(url, init, send) : await send();
     } catch (error) {
-      if (!unconfirmed || error === unconfirmed) throw error;
-      throw new UnconfirmedMigrationWriteError(
-        `${unconfirmed.message}. Request stopped: ${String(error)}`,
-      );
-    }
-    // A successful retry may leave an earlier mutation pending. For example,
-    // a late DELETE by name could remove a collection recreated after the retry.
-    if (unconfirmed) {
-      const outcome = response.ok
-        ? 'The retry succeeded'
-        : `The retry was rejected with HTTP ${response.status}`;
-      throw new UnconfirmedMigrationWriteError(
-        `${unconfirmed.message}. ${outcome}. An earlier attempt may still apply`,
-      );
-    }
-    if (!write && !response.ok && response.status !== allowedStatus)
+      if (!throttled && unconfirmedOutcome === undefined) throw error;
+      const outcome = unconfirmedOutcome ?? String(error);
       throw migrationError(
-        `${method} ${path} failed (HTTP ${response.status}): ${await response.text()}`,
+        `Could not confirm ${operation}: ${throttled ? 'HTTP 429 before retry stopped: ' : ''}${outcome}. After all pending Qdrant operations have settled, rerun the same command to resume from the temporary collection if it exists.`,
       );
-    return response;
+    }
   };
 }
 
@@ -362,77 +333,9 @@ async function inspect(
   path: string,
 ): Promise<CollectionInfo | undefined> {
   const response = await request(path, 'GET', undefined, {
-    allowedStatus: 404,
+    allowMissing: true,
   });
   return response.ok ? result<CollectionInfo>(response) : undefined;
-}
-
-async function readLock(
-  request: Client,
-): Promise<QdrantMultivectorMigrationLockStatus> {
-  const info = await inspect(request, lockPath);
-  const collection = MIGRATION_LOCK_COLLECTION;
-  if (!info) return { collection, locked: false };
-  const names = Object.keys(info.config?.params?.vectors ?? {});
-  const ownerToken =
-    names.length === 1 ? lockOwner.exec(names[0])?.[1] : undefined;
-  return { collection, locked: true, ownerToken: ownerToken ?? null };
-}
-
-function describeLock(status: QdrantMultivectorMigrationLockStatus): string {
-  if (!status.locked) return `Migration lock "${status.collection}" is absent.`;
-  if (!status.ownerToken)
-    return `Migration lock "${status.collection}" has an unreadable holder token. Inspect the lock before attempting recovery.`;
-  return `Migration lock "${status.collection}" is held by token "${status.ownerToken}". ${releaseInstructions(status.ownerToken)}`;
-}
-
-function releaseInstructions(token: string): string {
-  return `After confirming no migration or release process is running and all pending Qdrant operations have settled, run qdrant-migrate-multivector --release-lock ${token} against the same deployment if the lock is still held by that token.`;
-}
-
-async function requireLock(request: Client, token: string): Promise<void> {
-  const lock = await readLock(request);
-  if (!lock.locked || lock.ownerToken !== token)
-    throw new MigrationLockOwnershipError(
-      `Migration lock ownership could not be verified for token "${token}". ${describeLock(lock)}`,
-    );
-}
-
-async function acquireLock(request: Client, token: string): Promise<void> {
-  // Qdrant 1.10–1.17 reject a duplicate collection create with HTTP 409.
-  // A named vector stores the owner in the same atomic create on all versions.
-  const response = await request(
-    `${lockPath}?wait=true`,
-    'PUT',
-    {
-      vectors: { [`owner-${token}`]: { size: 1, distance: 'Dot' } },
-      shard_number: 1,
-      replication_factor: 1,
-    },
-    { allowedStatus: 409 },
-  );
-  if (response.status === 409) {
-    throw migrationError(
-      `Could not acquire migration lock (HTTP 409). ${describeLock(await readLock(request))}`,
-    );
-  }
-}
-
-/** Release a lock once other migration and release processes have stopped and pending Qdrant writes have settled. */
-export async function releaseQdrantMultivectorMigrationLock(
-  options: MigrationConnection,
-  token: string,
-): Promise<void> {
-  const read = client(options);
-  const request = client(options, () => requireLock(read, token));
-  try {
-    await request(`${lockPath}?wait=true`, 'DELETE');
-  } catch (error) {
-    if (!(error instanceof UnconfirmedMigrationWriteError)) throw error;
-    throw migrationError(
-      `${error.message}. Release of migration lock "${MIGRATION_LOCK_COLLECTION}" for token "${token}" is unconfirmed. ${releaseInstructions(token)}`,
-    );
-  }
 }
 
 async function readRecovery(request: Client, temporaryCollection: string) {
@@ -522,7 +425,7 @@ async function createPayloadIndexes(
       `${path}/index?wait=true`,
       'PUT',
       { field_name, field_schema: params ?? data_type },
-      { shardlessIndex },
+      { shardlessIndex, detail: `payload index ${JSON.stringify(field_name)}` },
     );
   }
 }
@@ -544,12 +447,20 @@ async function moveAliases(
 ): Promise<void> {
   const current = await aliases(request, collectionPath(from));
   if (current.length === 0) return;
-  await request('/collections/aliases', 'POST', {
-    actions: current.flatMap(({ alias_name }) => [
-      { delete_alias: { alias_name } },
-      { create_alias: { alias_name, collection_name: to } },
-    ]),
-  });
+  // Qdrant's create_alias replaces the target of an existing alias. Each
+  // alias stays discoverable on one of the collections if the batch stops.
+  await request(
+    '/collections/aliases',
+    'POST',
+    {
+      actions: current.map(({ alias_name }) => ({
+        create_alias: { alias_name, collection_name: to },
+      })),
+    },
+    {
+      detail: `move aliases ${current.map(({ alias_name }) => JSON.stringify(alias_name)).join(', ')} from ${JSON.stringify(from)} to ${JSON.stringify(to)}`,
+    },
+  );
 }
 
 function equivalent(
@@ -597,10 +508,18 @@ async function copyAndVerify(
   for await (const page of pages(request, from, true, shardKey)) {
     if (page.length === 0) continue;
     const points = page.map(convert);
-    await request(`${to}/points?wait=true&ordering=strong`, 'PUT', {
-      points,
-      shard_key: shardKey,
-    });
+    await request(
+      `${to}/points?wait=true&ordering=strong`,
+      'PUT',
+      { points, shard_key: shardKey },
+      {
+        // The private backup has no external writers. An identical request
+        // replaces the same IDs with the same data in the same shard. A late
+        // attempt cannot change the verified copy, which we retain for recovery.
+        retryThrottle: to.startsWith(`/collections/${MIGRATION_PREFIX}`),
+        detail: shardKey === undefined ? undefined : `shard key ${shardKey}`,
+      },
+    );
     const sample =
       points.length === 1 ? points : [points[0], points[points.length - 1]];
     const read = await result<Point[]>(
@@ -687,12 +606,17 @@ async function copyShardKeys(request: Client, from: string, to: string) {
         `Inconsistent replication for shard key ${shard_key}`,
       );
     if (!existing)
-      await request(`${to}/shards`, 'PUT', {
-        shard_key,
-        shards_number: shards.size,
-        replication_factor,
-        placement: [...new Set(replicas.flatMap((peers) => [...peers]))],
-      });
+      await request(
+        `${to}/shards`,
+        'PUT',
+        {
+          shard_key,
+          shards_number: shards.size,
+          replication_factor,
+          placement: [...new Set(replicas.flatMap((peers) => [...peers]))],
+        },
+        { detail: `shard key ${shard_key}` },
+      );
   }
   return [...source.keys()];
 }
@@ -775,7 +699,6 @@ async function migrateOne(
     await create(request, original, saved);
   await copyCollection(request, temporary, original, saved);
   await moveAliases(request, temporaryCollection, collection);
-  await request(temporary, 'DELETE');
   return report;
 }
 
@@ -783,48 +706,18 @@ async function migrateOne(
 export async function migrateQdrantMultivectors(
   options: QdrantMultivectorMigrationOptions,
 ): Promise<QdrantMultivectorMigrationResult[]> {
-  const request = client(options);
-  if (options.dryRun) {
-    const lock = await readLock(request);
-    options.onLockStatus?.(lock);
-    return migrateCollections(request, options);
-  }
-
-  const token = randomUUID();
-  let acquired = false;
-  let failure: Error | undefined;
-  try {
-    await acquireLock(request, token);
-    acquired = true;
-    await requireLock(request, token);
-    const reports = await migrateCollections(
-      client(options, () => requireLock(request, token)),
-      options,
-    );
-    options.signal?.throwIfAborted();
-    return reports;
-  } catch (error) {
-    failure = error instanceof Error ? error : new Error(String(error));
-    if (!(error instanceof UnconfirmedMigrationWriteError)) throw error;
-    const outcome = acquired ? 'was retained' : 'may still be acquired';
-    throw migrationError(
-      `${error.message}. Migration lock "${MIGRATION_LOCK_COLLECTION}" ${outcome} for token "${token}". ${releaseInstructions(token)}`,
-    );
-  } finally {
-    if (acquired && !(failure instanceof UnconfirmedMigrationWriteError)) {
-      await releaseQdrantMultivectorMigrationLock(
-        { ...options, signal: undefined },
-        token,
-      ).catch((error: Error) => {
-        if (error instanceof MigrationLockOwnershipError) return;
-        if (failure)
-          throw migrationError(
-            `${failure.message}. Lock release failed: ${String(error)}`,
-          );
-        throw error;
-      });
+  const run: MigrationRun = { backupUpsertThrottled: false };
+  const request = client(options, run);
+  const reports = await migrateCollections(request, options);
+  if (!options.dryRun) {
+    // Defer cleanup until all originals in this run have been verified.
+    for (const report of reports) {
+      if (report.action === 'already-migrated') continue;
+      if (run.backupUpsertThrottled) report.temporaryCollectionRetained = true;
+      else await request(collectionPath(report.temporaryCollection), 'DELETE');
     }
   }
+  return reports;
 }
 
 async function migrateCollections(
@@ -836,8 +729,7 @@ async function migrateCollections(
   );
   const reports = new Map<string, QdrantMultivectorMigrationResult>();
   for (const { name } of collections) {
-    if (name === MIGRATION_LOCK_COLLECTION || !isMigrationCollection(name))
-      continue;
+    if (!isMigrationCollection(name)) continue;
     const { collection, backup } = await readRecovery(request, name);
     reports.set(
       collection,

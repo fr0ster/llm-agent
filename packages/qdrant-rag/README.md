@@ -22,9 +22,11 @@ Qdrant 1.17 or newer for catalog creation. Legacy single-vector collections
 remain available for reads, search, deletes and single-fragment writes. A
 write with several fragments returns an error with the migration command.
 
-Pause writes to the collections being migrated or recovered. Use
-`QDRANT_URL` and, when needed,
-`QDRANT_API_KEY` in the environment.
+Run this migration offline only. Stop every process that writes to the Qdrant
+collections being migrated or recovered, including application servers and
+background workers. Never run two migrations at once. An operator can run the
+CLI, or one application process can call the migration before it starts serving
+requests. Set `QDRANT_URL` and, when needed, `QDRANT_API_KEY` in the environment.
 
 ```sh
 qdrant-migrate-multivector --collection my_collection --dry-run
@@ -40,40 +42,25 @@ and payload-index settings, and restores collection aliases. It verifies the
 temporary copy before replacing the original under its existing name, then
 verifies the restored copy. Each invocation recovers interrupted migrations
 before processing the requested collection or catalog, including collections
-without a catalog entry. A dry run reports these recoveries as `resume`.
-A dry run also reports the deployment lock state and any readable holder
-token without acquiring the lock. API callers can receive this through
-`onLockStatus`.
+without a catalog entry. A dry run reports these recoveries as `resume` and
+leaves Qdrant unchanged.
 
-Migration and recovery share a deployment-wide lock in
-`__rag_multivector_migration__lock`. A second run exits with the holder token.
-The migration checks its token before every mutation. It releases the lock
-automatically only after Qdrant has confirmed completion or a definite
-rejection for every write. On an unconfirmed write, such as HTTP 500,
-a proxy timeout or a connection failure, the migration stops and reports
-the holder token. The lock has no expiration.
-
-Use `--release-lock` only after confirming that no migration or other
-lock-release process is running against the deployment and that all pending
-server operations from earlier runs have settled. The command checks the token
-and deletes the lock in separate requests. Keep other migration and lock-release
-processes stopped until the command finishes. Use the holder token from the
-error or a dry run and release the lock once against the same deployment.
-
-```sh
-qdrant-migrate-multivector --release-lock HOLDER_TOKEN
-```
-
-Applications can call
-`releaseQdrantMultivectorMigrationLock({ url, credential }, holderToken)`.
-The same preconditions apply to the API. After release completes, rerun the
-migration to recover any temporary collections.
+After an interruption or an unconfirmed operation, keep writers stopped and
+wait for all pending Qdrant operations from that run to settle. Then rerun the
+same command or API call. The migration resumes from any surviving temporary
+collection. If an unconfirmed delete already removed the temporary collection,
+the verified original remains in place. The migration reports the operation and
+stops immediately on an unconfirmed mutation, with one exception. An HTTP 429
+on an upsert to the private temporary collection retries the identical request
+according to `Retry-After` without an attempt limit. If the retry succeeds, the
+migration restores and verifies the original and reports
+`temporaryCollectionRetained: true`. After pending server operations settle,
+rerun the same command to finish cleanup before restarting writers.
 
 An unreadable recovery marker stops the command and leaves its temporary
 collection intact. Custom shard keys keep their own points. The server's native
-multivector size constraints apply. Pass an `AbortSignal` to set a
-caller-defined deadline or cancel requests. An in-flight write is allowed to
-finish before the lock is released.
+multivector size constraints apply. Pass an `AbortSignal` to cancel requests.
+Qdrant may still apply a write that was in flight when the request was canceled.
 
 Configure `fragmentSizeChars` for embedders that do not declare their capacity
 (default 2,048 Unicode code points).
