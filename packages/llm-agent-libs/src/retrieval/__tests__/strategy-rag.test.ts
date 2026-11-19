@@ -173,6 +173,79 @@ describe('applyRetrievalStrategy / hasRetrievalStrategy', () => {
     assert.equal(applyRetrievalStrategy(composed), composed);
   });
 
+  for (const depth of [2, 3]) {
+    describe(`${depth} repeated fallback compositions`, () => {
+      const states = ['closed', 'open'] as const;
+      const combinations = Array.from({ length: depth }).reduce<
+        (typeof states)[number][][]
+      >(
+        (combinations) =>
+          combinations.flatMap((combination) =>
+            states.map((state) => [...combination, state]),
+          ),
+        [[]],
+      );
+
+      for (const combination of combinations) {
+        it(`runs the strategy once with breakers ${combination.join(', ')} (inner to outer)`, async (t) => {
+          const retrieve = t.mock.fn<IRetrievalStrategy['retrieve']>(
+            (store, embedding, k, options) =>
+              store.query(embedding, k, options),
+          );
+          const primary = hit('primary', 0.9);
+          const strategy = { name: 'spy', retrieve };
+          let rag: IRag = new StrategyRag(fakeStore([primary]).store, strategy);
+          let expected = primary;
+
+          for (const [index, state] of combination.entries()) {
+            const breaker = new CircuitBreaker();
+            t.mock.getter(breaker, 'state', () => state);
+            const fallback = hit(`fallback-${index + 1}`, 0.9);
+            rag = applyRetrievalStrategy(
+              new FallbackRag(rag, fakeStore([fallback]).store, breaker),
+            );
+            if (state === 'open') expected = fallback;
+          }
+
+          assert.deepEqual(await rag.query(q, 1), {
+            ok: true,
+            value: [expected],
+          });
+          assert.equal(retrieve.mock.callCount(), 1);
+        });
+      }
+    });
+  }
+
+  it('suppresses a relocated strategy reached directly on a fallback route', async (t) => {
+    const retrieve = t.mock.fn<IRetrievalStrategy['retrieve']>(
+      (store, embedding, k, options) => store.query(embedding, k, options),
+    );
+    const fallback = hit('fallback', 0.9);
+    const original = new StrategyRag(fakeStore([fallback]).store, {
+      name: 'spy',
+      retrieve,
+    });
+    const innerBreaker = new CircuitBreaker();
+    const innerState = t.mock.getter(innerBreaker, 'state', () => 'open');
+    const inner = applyRetrievalStrategy(
+      new FallbackRag(
+        original,
+        fakeStore([hit('inner', 0.9)]).store,
+        innerBreaker,
+      ),
+    );
+    const outerBreaker = new CircuitBreaker();
+    t.mock.getter(outerBreaker, 'state', () => 'open');
+    const rag = applyRetrievalStrategy(
+      new FallbackRag(inner, original, outerBreaker),
+    );
+
+    assert.deepEqual(await rag.query(q, 1), { ok: true, value: [fallback] });
+    assert.equal(innerState.mock.callCount(), 0);
+    assert.equal(retrieve.mock.callCount(), 1);
+  });
+
   it('finds a strategy and the underlying store through a deep decorator chain', () => {
     const { store } = fakeStore([]);
     const strategy = new EmbeddingRetrieval();

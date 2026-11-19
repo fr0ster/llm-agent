@@ -69,9 +69,16 @@ export class StrategyRag<Store extends IRag = IRag>
       return this.inner.query(embedding, k, options);
     }
     if (this.relocated) {
-      return relocatedStrategies.run(
-        new Set([...(active ?? []), this.relocated]),
-        () => this.strategy.retrieve(this.inner, embedding, k, options),
+      const suppressed = new Set(active);
+      for (
+        let relocated: StrategyRag | undefined = this.relocated;
+        relocated;
+        relocated = relocated.relocated
+      ) {
+        suppressed.add(relocated);
+      }
+      return relocatedStrategies.run(suppressed, () =>
+        this.strategy.retrieve(this.inner, embedding, k, options),
       );
     }
     return this.strategy.retrieve(this.inner, embedding, k, options);
@@ -110,8 +117,8 @@ export function applyRetrievalStrategy(
   if (fallbackIndex === -1 || fallbackIndex > chain.indexOf(existing))
     return rag;
 
-  // Leave the routing chain and its decorators intact. Suppress the relocated
-  // wrapper only while the outer strategy is retrieving through that chain.
+  // Leave the routing chain intact and link to the previous wrapper so the
+  // query can suppress every wrapper from earlier lifts.
   return new StrategyRag(rag, existing.strategy, existing);
 }
 
