@@ -325,7 +325,7 @@ function resolveRagEmbedder(
     ...(typeof raw.credentialRef === 'string'
       ? { credentialRef: raw.credentialRef }
       : {}),
-    // checkRag already refused a non-boolean / non-SAP / foundation-models one.
+    // checkRag already validated the flag and the provider's supported scenario.
     ...(raw.asymmetric === true || raw.asymmetric === 'true'
       ? { asymmetric: true }
       : {}),

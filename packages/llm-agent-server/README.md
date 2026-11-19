@@ -108,6 +108,14 @@ ref and the section uses its role's default.
 A default is read only when the target needs a credential. Where a target can work without one (a Qdrant
 without auth, a pg-vector connection that needs no login), an unset default means anonymous.
 
+### Voyage AI embeddings
+
+Set `rag.embedder.provider: voyage` and specify `rag.embedder.model`, such as
+`voyage-4`. Use `RAG_EMBEDDER_API_KEY` or set `rag.embedder.credentialRef: VOYAGE`
+to use `VOYAGE_API_KEY`. The server selects the Voyage document and query modes
+when writing and searching the store. See the [Voyage provider README](../voyage-embedder/README.md)
+for the YAML and direct construction examples.
+
 ### Ollama and other targets that send nothing
 
 - An **Ollama LLM** gets a credential only from a `credentialRef` that names one — never the `LLM`

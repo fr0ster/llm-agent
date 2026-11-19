@@ -16,6 +16,8 @@ import { importPeer } from './import-peer.js';
  * Field sources, read from each embedder's own config (not invented):
  *   - openai: `OpenAiEmbedderConfig` — `credential: IApiKeyCredential`,
  *     `model: string`, `baseURL?` (this arm's `url`).
+ *   - voyage: `VoyageEmbedderConfig` — `credential: IApiKeyCredential`,
+ *     `model`, `baseURL?` (this arm's `url`), and `inputType?`.
  *   - sap-ai-core / sap-aicore: `SapAiCoreEmbedderConfig` — `model`,
  *     `credential: IBearerCredential`, `apiBaseUrl: string`,
  *     `resourceGroup?`, `scenario?`.
@@ -37,6 +39,16 @@ export type EmbedderResolution =
       url?: string;
       maxBatchSize?: number;
       maxInputChars?: number;
+      factory?: never;
+    }
+  | {
+      provider: 'voyage';
+      model: string;
+      credential: IApiKeyCredential;
+      url?: string;
+      inputType?: 'document' | 'query';
+      maxBatchSize?: number;
+      maxInputChars?: never;
       factory?: never;
     }
   | {
@@ -90,6 +102,7 @@ export function normalizeEmbedderProvider(provider: string = 'ollama'): string {
 const OPENAI = '@mcp-abap-adt/openai-embedder';
 const OLLAMA = '@mcp-abap-adt/ollama-embedder';
 const SAP_AI_CORE = '@mcp-abap-adt/sap-aicore-embedder';
+const VOYAGE = '@mcp-abap-adt/voyage-embedder';
 
 /**
  * Modules loaded by `prefetchEmbedderFactories`, one typed slot per peer.
@@ -101,6 +114,7 @@ const loaded: {
   openai?: typeof import('@mcp-abap-adt/openai-embedder');
   ollama?: typeof import('@mcp-abap-adt/ollama-embedder');
   sapAiCore?: typeof import('@mcp-abap-adt/sap-aicore-embedder');
+  voyage?: typeof import('@mcp-abap-adt/voyage-embedder');
 } = {};
 
 /**
@@ -124,6 +138,13 @@ export async function prefetchEmbedderFactories(
         loaded.ollama ??= await importPeer(
           () => import('@mcp-abap-adt/ollama-embedder'),
           OLLAMA,
+          name,
+        );
+        break;
+      case 'voyage':
+        loaded.voyage ??= await importPeer(
+          () => import('@mcp-abap-adt/voyage-embedder'),
+          VOYAGE,
           name,
         );
         break;
@@ -171,6 +192,19 @@ export function constructBuiltInEmbedder(
         ...(cfg.url !== undefined ? { baseURL: cfg.url } : {}),
       });
     }
+    case 'voyage': {
+      const { VoyageEmbedder } = prefetchedOrThrow(
+        loaded.voyage,
+        VOYAGE,
+        'voyage',
+      );
+      return new VoyageEmbedder({
+        credential: cfg.credential,
+        model: cfg.model,
+        ...(cfg.url !== undefined ? { baseURL: cfg.url } : {}),
+        ...(cfg.inputType !== undefined ? { inputType: cfg.inputType } : {}),
+      });
+    }
     case 'sap-ai-core':
     case 'sap-aicore': {
       const { SapAiCoreEmbedder } = prefetchedOrThrow(
@@ -205,8 +239,8 @@ export function constructBuiltInEmbedder(
       // Reachable only from an untyped source: the union is exhausted.
       const unreachable: never = cfg;
       throw new Error(
-        `Unknown embedder provider "${String((unreachable as { provider?: unknown }).provider)}". ` +
-          'Use one of: openai, ollama, sap-ai-core, sap-aicore — or register a factory ' +
+        `Unknown embedder provider "${String((unreachable as { provider?: string }).provider)}". ` +
+          'Use one of: openai, ollama, sap-ai-core, sap-aicore, voyage — or register a factory ' +
           'and name it with `factory`.',
       );
     }
@@ -218,4 +252,5 @@ export function _resetPrefetchedForTests(): void {
   loaded.openai = undefined;
   loaded.ollama = undefined;
   loaded.sapAiCore = undefined;
+  loaded.voyage = undefined;
 }

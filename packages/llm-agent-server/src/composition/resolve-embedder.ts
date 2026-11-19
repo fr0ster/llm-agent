@@ -68,10 +68,11 @@ export function createResolveEmbedder(
     if (
       cfg.inputType !== undefined &&
       cfg.provider !== 'sap-ai-core' &&
-      cfg.provider !== 'sap-aicore'
+      cfg.provider !== 'sap-aicore' &&
+      cfg.provider !== 'voyage'
     ) {
       throw new Error(
-        `embedder inputType applies to provider 'sap-ai-core' only, not '${cfg.provider}'`,
+        `embedder inputType applies to providers 'sap-ai-core' and 'voyage', not '${cfg.provider}'`,
       );
     }
     const entry = lookup(cfg.credentialRef, DEFAULT_EMBEDDER_REF, cfg.provider);
@@ -85,6 +86,20 @@ export function createResolveEmbedder(
             provider: 'openai',
             model,
             ...(cfg.url !== undefined ? { url: cfg.url } : {}),
+            ...batch,
+            credential: entry.require('api-key'),
+          },
+          options,
+        );
+      case 'voyage':
+        return impl(
+          {
+            provider: 'voyage',
+            model,
+            ...(cfg.url !== undefined ? { url: cfg.url } : {}),
+            ...(cfg.inputType !== undefined
+              ? { inputType: cfg.inputType }
+              : {}),
             ...batch,
             credential: entry.require('api-key'),
           },

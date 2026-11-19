@@ -67,6 +67,7 @@ Install only the backends you use:
 | OpenAI embeddings | `@mcp-abap-adt/openai-embedder` |
 | Ollama embeddings | `@mcp-abap-adt/ollama-embedder` |
 | SAP AI Core embeddings | `@mcp-abap-adt/sap-aicore-embedder` |
+| Voyage AI embeddings | `@mcp-abap-adt/voyage-embedder` |
 | Qdrant vector store | `@mcp-abap-adt/qdrant-rag` |
 | HANA vector store | `@mcp-abap-adt/hana-vector-rag` |
 | Postgres+pgvector | `@mcp-abap-adt/pg-vector-rag` |

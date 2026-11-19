@@ -719,7 +719,7 @@ test('skillPlugins.embedder.asymmetric is accepted for sap-ai-core only', () => 
         ...base,
         embedder: { provider: 'openai', model: 'm', asymmetric: true },
       }),
-    /supported for provider sap-ai-core only, not "openai"/,
+    /supported for providers sap-ai-core and voyage, not "openai"/,
   );
 });
 

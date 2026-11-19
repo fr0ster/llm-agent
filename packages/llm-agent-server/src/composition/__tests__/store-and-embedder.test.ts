@@ -15,6 +15,10 @@ import type {
   SkillPluginsConfig,
   SmartServerEmbedderConfig,
 } from '@mcp-abap-adt/llm-agent-server-libs';
+import {
+  resolveRetrievalEmbedder,
+  resolveSmartServerConfig,
+} from '@mcp-abap-adt/llm-agent-server-libs';
 import { createBuildSkillHost } from '../build-skill-host.js';
 import {
   type CredentialEntry,
@@ -122,8 +126,79 @@ describe('resolveEmbedder seam: SmartServerEmbedderConfig → EmbedderResolution
     assert.throws(
       () =>
         resolve({ provider: 'ollama', model: 'bge-m3', inputType: 'query' }),
-      /inputType applies to provider 'sap-ai-core' only, not 'ollama'/,
+      /inputType applies to providers 'sap-ai-core' and 'voyage', not 'ollama'/,
     );
+  });
+
+  it('builds both Voyage retrieval roles from server configuration and a credential ref', async (t) => {
+    const config = resolveSmartServerConfig(
+      {},
+      {
+        llm: { provider: 'ollama', model: 'test-model' },
+        rag: {
+          store: { type: 'in-memory' },
+          embedder: {
+            provider: 'voyage',
+            model: 'voyage-4',
+            credentialRef: 'VOYAGE',
+          },
+        },
+      },
+    );
+    const resolve = createResolveEmbedder(
+      lookupOver({ VOYAGE: { credential: staticApiKey('fixture') } }),
+    );
+    const calls: Array<{
+      model: string;
+      input_type: string;
+      input: string[];
+      truncation: boolean;
+    }> = [];
+    t.mock.method(
+      globalThis,
+      'fetch',
+      async (url: string, init?: RequestInit) => {
+        assert.equal(url, 'https://api.voyageai.com/v1/embeddings');
+        assert.equal(
+          new Headers(init?.headers).get('Authorization'),
+          'Bearer fixture',
+        );
+        const body = JSON.parse(String(init?.body)) as (typeof calls)[number];
+        calls.push(body);
+        return Response.json({
+          model: body.model,
+          data: body.input.map((text, index) => ({
+            index,
+            embedding: [text.length],
+          })),
+        });
+      },
+    );
+    const retrieval = await resolveRetrievalEmbedder(
+      config.rag,
+      undefined,
+      resolve,
+      {},
+    );
+    assert.ok(retrieval?.embedDocuments);
+    assert.deepEqual(await retrieval.embedDocuments(['entry']), [
+      { vector: [5] },
+    ]);
+    assert.deepEqual(await retrieval.embedQuery('q'), { vector: [1] });
+    assert.deepEqual(calls, [
+      {
+        model: 'voyage-4',
+        input_type: 'document',
+        input: ['entry'],
+        truncation: false,
+      },
+      {
+        model: 'voyage-4',
+        input_type: 'query',
+        input: ['q'],
+        truncation: false,
+      },
+    ]);
   });
 
   it('ollama sends nothing: a named ref is refused, an omitted one reads no entry', () => {

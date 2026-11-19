@@ -86,6 +86,7 @@ const BUILT_IN_EMBEDDER_PROVIDERS = [
   'sap-ai-core',
   'sap-aicore',
   'ollama',
+  'voyage',
 ] as const;
 export type BuiltInEmbedderProvider =
   (typeof BUILT_IN_EMBEDDER_PROVIDERS)[number];
@@ -110,7 +111,7 @@ export type SmartServerEmbedderConfig =
       /** Default when a YAML section names neither: 'ollama'. */
       provider: BuiltInEmbedderProvider;
       model?: string;
-      /** The embedder's own address (Ollama, an OpenAI-compatible endpoint). */
+      /** The embedder's own address (Ollama, OpenAI, or Voyage AI). */
       url?: string;
       /** SAP AI Core resource group. */
       resourceGroup?: string;
@@ -120,7 +121,8 @@ export type SmartServerEmbedderConfig =
        * The model embeds stored text and search text differently (e.g.
        * `nvidia--llama-3.2-nv-embedqa-1b`): the server builds it twice on the
        * same model — `inputType: 'document'` and `'query'` — and joins the two
-       * with `asymmetricEmbedder`. SAP AI Core, orchestration only.
+       * with `asymmetricEmbedder`. Used by SAP AI Core orchestration.
+       * Voyage AI always uses a document/query pair.
        */
       asymmetric?: boolean;
       /**

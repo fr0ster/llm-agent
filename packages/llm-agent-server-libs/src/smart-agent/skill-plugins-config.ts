@@ -291,7 +291,7 @@ function parseSource(raw: unknown): SkillPluginsSource {
  * {@link SkillPluginsConfig}. Throws a fail-loud `Error` on any invalid config.
  */
 /**
- * `skillPlugins.embedder.asymmetric` — SAP AI Core only; `${VAR}` substitution
+ * `skillPlugins.embedder.asymmetric` — SAP AI Core and Voyage AI; `${VAR}` substitution
  * leaves a string, so 'true'/'false' count too. Said and not supported fails.
  */
 function parseSkillEmbedderAsymmetric(raw: Record<string, unknown>): {
@@ -303,9 +303,13 @@ function parseSkillEmbedderAsymmetric(raw: Record<string, unknown>): {
     throw new Error('skillPlugins.embedder.asymmetric: must be true or false');
   }
   const provider = String(raw.provider);
-  if (provider !== 'sap-ai-core' && provider !== 'sap-aicore') {
+  if (
+    provider !== 'sap-ai-core' &&
+    provider !== 'sap-aicore' &&
+    provider !== 'voyage'
+  ) {
     throw new Error(
-      `skillPlugins.embedder.asymmetric: supported for provider sap-ai-core only, not "${provider}"`,
+      `skillPlugins.embedder.asymmetric: supported for providers sap-ai-core and voyage, not "${provider}"`,
     );
   }
   return { asymmetric: true };
