@@ -188,6 +188,32 @@ test('splits by the model-specific request token limit and records exact per-mod
   );
 });
 
+test('embedding sends an input above the UTF-8 estimate budget by itself', async (t) => {
+  const batches: string[][] = [];
+  t.mock.method(
+    globalThis,
+    'fetch',
+    async (_url: string, init?: RequestInit) => {
+      const { input, truncation } = embedBody(init);
+      assert.equal(truncation, false);
+      batches.push(input);
+      return embeddingReply(input);
+    },
+  );
+
+  const text = '\u00e9'.repeat(60_001);
+  const result = await new VoyageEmbedder(embeddingConfig).embedBatch([
+    'a',
+    text,
+    'bb',
+  ]);
+  assert.deepEqual(batches, [['a'], [text], ['bb']]);
+  assert.deepEqual(
+    result.map(({ vector }) => vector),
+    [[1], [text.length], [2]],
+  );
+});
+
 test('subdivides server-reported aggregate token violations and preserves a context-length error', async (t) => {
   const batches: string[][] = [];
   t.mock.method(
@@ -590,18 +616,73 @@ test('reranking bisects a server-rejected batch and maps each local index back t
   ]);
 });
 
-test('reranking names a candidate that alone exceeds the estimated request budget', async (t) => {
-  const fetch = t.mock.method(globalThis, 'fetch', async () => new Response());
-  const text = '\u00e9'.repeat(150_000);
-  assert.equal(Buffer.byteLength(text), 300_000);
-  const result = await new VoyageReranker({
-    credential,
-    model: 'rerank-1',
-  }).rerank('q', [first, { ...second, text }], { topK: 1 });
-  if (result.ok) assert.fail('Expected an oversized candidate error');
+test('reranking sends a candidate above the UTF-8 estimate budget alone and uses its score', async (t) => {
+  const batches: string[][] = [];
+  const candidate = { ...first, text: '\u00e9'.repeat(300_000) };
+  const query = 'q';
+  assert.equal(
+    Buffer.byteLength(query) + Buffer.byteLength(candidate.text),
+    600_001,
+  );
+  t.mock.method(
+    globalThis,
+    'fetch',
+    async (_url: string, init?: RequestInit) => {
+      const body = rerankBody(init);
+      assert.equal(body.query, query);
+      assert.equal(body.truncation, false);
+      batches.push(body.documents);
+      return Response.json({
+        data: body.documents.map((text, index) => ({
+          index,
+          relevance_score: text === candidate.text ? 0.9 : 0.2,
+        })),
+        model: body.model,
+      });
+    },
+  );
+
+  const result = await new VoyageReranker(rerankingConfig).rerank(query, [
+    candidate,
+    second,
+  ]);
+  if (!result.ok) assert.fail(result.error.message);
+  assert.deepEqual(result.value, [
+    { ...candidate, score: 0.9 },
+    { ...second, score: 0.2 },
+  ]);
+  assert.deepEqual(batches, [[candidate.text], [second.text]]);
+});
+
+test('reranking preserves the API error for a rejected candidate above the estimate budget', async (t) => {
+  const batches: string[][] = [];
+  const candidate = { ...second, text: '\u00e9'.repeat(300_000) };
+  const detail = 'Document could not be processed';
+  t.mock.method(
+    globalThis,
+    'fetch',
+    async (_url: string, init?: RequestInit) => {
+      const body = rerankBody(init);
+      assert.equal(body.truncation, false);
+      batches.push(body.documents);
+      if (body.documents.includes(candidate.text)) {
+        return Response.json({ detail }, { status: 400 });
+      }
+      return numberedRerankReply(body);
+    },
+  );
+
+  const result = await new VoyageReranker(rerankingConfig).rerank('q', [
+    ...numberedCandidates(1),
+    candidate,
+  ]);
+  if (result.ok) assert.fail('Expected an HTTP error');
   assert.equal(result.error.code, 'RERANK_ERROR');
-  assert.match(result.error.message, /candidate.*index 1.*second.*300000/i);
-  assert.equal(fetch.mock.callCount(), 0);
+  assert.ok('status' in result.error);
+  assert.equal(result.error.status, 400);
+  assert.match(result.error.message, /candidate at index 1 \(id second\)/);
+  assert.ok(result.error.message.endsWith(JSON.stringify({ detail })));
+  assert.deepEqual(batches, [['0'], [candidate.text]]);
 });
 
 test('reranking names a candidate whose query-document pair Voyage rejects for context length', async (t) => {

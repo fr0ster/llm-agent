@@ -83,10 +83,10 @@ Voyage documents context in tokens, so stores use their `fragmentSizeChars`.
 
 Reranking batches candidates into requests of up to 1,000 documents and uses
 the same UTF-8 estimate for the model's aggregate token budget, counting the
-query once per document. The adapter subdivides requests that Voyage rejects
-for size. If a single candidate exceeds the budget with the query or Voyage
-rejects that pair for size, the error identifies its input index and any
-metadata ID. Voyage's rerankers score each query-document pair with a
+query once per document. A candidate above the estimated budget is sent alone.
+The adapter subdivides multi-candidate requests that Voyage rejects for size.
+If Voyage rejects a single-candidate request, the API error includes the input
+index and any metadata ID. Voyage's rerankers score each query-document pair with a
 cross-encoder. Scores from the same query and model are comparable across
 requests and can be merged directly. See the [Voyage reranker guide](https://docs.voyageai.com/docs/reranker).
 

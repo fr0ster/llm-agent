@@ -104,17 +104,13 @@ export class VoyageReranker implements IReranker {
     let start = 0;
     let estimatedTokens = 0;
     for (const [index, result] of results.entries()) {
-      // Use the embedder's UTF-8 estimate and count the query for each document.
+      // Count the query for each document and use UTF-8 only to group requests.
       const size = queryBytes + Buffer.byteLength(result.text);
-      if (maxTokens !== undefined && size > maxTokens) {
-        throw new RagError(
-          `Voyage AI rerank ${candidateLabel(result, index)} exceeds the estimated request budget of ${maxTokens} tokens with the query`,
-          'RERANK_ERROR',
-        );
-      }
       if (
         index - start === MAX_DOCUMENTS ||
-        (maxTokens !== undefined && estimatedTokens + size > maxTokens)
+        (index > start &&
+          maxTokens !== undefined &&
+          estimatedTokens + size > maxTokens)
       ) {
         ends.push(index);
         start = index;
@@ -164,15 +160,15 @@ export class VoyageReranker implements IReranker {
         return { ...results[start + item.index], score: item.relevance_score };
       });
     } catch (error) {
-      if (
-        !(error instanceof VoyageHttpError) ||
-        (error.status !== 413 &&
-          !(error.status === 400 && requestSizeDetail.test(error.message)))
-      ) {
+      if (!(error instanceof VoyageHttpError)) throw error;
+      if (length === 1) {
+        error.message = `Voyage AI rerank request for ${candidateLabel(results[start], start)} failed. ${error.message}`;
         throw error;
       }
-      if (length === 1) {
-        error.message = `Voyage AI rerank request for ${candidateLabel(results[start], start)} exceeds a size limit. ${error.message}`;
+      if (
+        error.status !== 413 &&
+        !(error.status === 400 && requestSizeDetail.test(error.message))
+      ) {
         throw error;
       }
       const midpoint = start + Math.ceil(length / 2);
