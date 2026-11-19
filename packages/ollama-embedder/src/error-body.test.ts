@@ -30,10 +30,15 @@ for (const batch of [false, true]) {
             return body;
           });
           let calls = 0;
-          t.mock.method(globalThis, 'fetch', async () => {
-            calls++;
-            return response;
-          });
+          t.mock.method(
+            globalThis,
+            'fetch',
+            async (url: URL | Request | string) => {
+              if (String(url).endsWith('/api/show')) return Response.json({});
+              calls++;
+              return response;
+            },
+          );
           const records: Extract<UsageInput, { kind: 'embedding.call' }>[] = [];
           const usage: IUsageRecorder = {
             record: (record) => {
@@ -73,7 +78,9 @@ for (const batch of [false, true]) {
     t.mock.method(response, 'text', async () => {
       throw reason;
     });
-    t.mock.method(globalThis, 'fetch', async () => response);
+    t.mock.method(globalThis, 'fetch', async (url: URL | Request | string) =>
+      String(url).endsWith('/api/show') ? Response.json({}) : response,
+    );
     const records: Extract<UsageInput, { kind: 'embedding.call' }>[] = [];
     const usage: IUsageRecorder = {
       record: (record) => {
@@ -98,7 +105,9 @@ for (const batch of [false, true]) {
     t.mock.method(response, 'text', async () => {
       throw new TypeError('body unavailable');
     });
-    t.mock.method(globalThis, 'fetch', async () => response);
+    t.mock.method(globalThis, 'fetch', async (url: URL | Request | string) =>
+      String(url).endsWith('/api/show') ? Response.json({}) : response,
+    );
     const records: Extract<UsageInput, { kind: 'embedding.call' }>[] = [];
     const usage: IUsageRecorder = {
       record: (record) => {

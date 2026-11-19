@@ -13,8 +13,15 @@ function makeRag(
   fallbackOnQueryEmbeddingError: boolean | undefined,
   context: TestContext,
 ): QdrantRag {
-  context.mock.method(globalThis, 'fetch', async () =>
-    Response.json({ result: [] }),
+  context.mock.method(
+    globalThis,
+    'fetch',
+    async (url: URL | Request | string) =>
+      Response.json({
+        result: String(url).endsWith('/points/query')
+          ? { points: [] }
+          : { config: { params: { vectors: { size: 3 } } } },
+      }),
   );
   return new QdrantRag({
     url: 'http://qdrant.test',

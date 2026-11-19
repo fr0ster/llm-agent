@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict';
-import http from 'node:http';
 import { after, before, describe, it } from 'node:test';
 import type { IEmbedder } from '@mcp-abap-adt/llm-agent';
 import {
@@ -7,6 +6,7 @@ import {
   staticApiKey,
   symmetricEmbedder,
 } from '@mcp-abap-adt/llm-agent';
+import { type QdrantStub, startQdrantStub } from './__tests__/qdrant-stub.js';
 import { QdrantRag } from './qdrant-rag.js';
 
 // ---------------------------------------------------------------------------
@@ -31,177 +31,16 @@ function makeEmbedder(dim = 3): IEmbedder {
 // ---------------------------------------------------------------------------
 // Stub Qdrant HTTP server
 // ---------------------------------------------------------------------------
-interface StubState {
-  collections: Map<
-    string,
-    Array<{ id: string; vector: number[]; payload: Record<string, unknown> }>
-  >;
-}
-
-function createStubServer(state: StubState): http.Server {
-  return http.createServer((req, res) => {
-    let body = '';
-    req.on('data', (chunk) => {
-      body += chunk;
-    });
-    req.on('end', () => {
-      const url = req.url ?? '';
-
-      if (
-        /^\/collections\/[^/]+\/index\?wait=true$/.test(url) &&
-        req.method === 'PUT'
-      ) {
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ result: true }));
-        return;
-      }
-
-      // GET /collections/:name
-      const getCollMatch = url.match(/^\/collections\/([^/]+)$/);
-      if (getCollMatch && req.method === 'GET') {
-        const name = getCollMatch[1];
-        if (state.collections.has(name)) {
-          res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ result: { status: 'green' } }));
-        } else {
-          res.writeHead(404, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ status: { error: 'Not found' } }));
-        }
-        return;
-      }
-
-      // PUT /collections/:name (create collection)
-      if (getCollMatch && req.method === 'PUT' && !url.includes('/points')) {
-        const name = getCollMatch[1];
-        state.collections.set(name, []);
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ result: true }));
-        return;
-      }
-
-      // PUT /collections/:name/points (upsert)
-      const upsertMatch = url.match(/^\/collections\/([^/]+)\/points$/);
-      if (upsertMatch && req.method === 'PUT') {
-        const name = upsertMatch[1];
-        const data = JSON.parse(body);
-        const coll = state.collections.get(name);
-        if (!coll) {
-          res.writeHead(404, { 'Content-Type': 'application/json' });
-          res.end(
-            JSON.stringify({ status: { error: 'Collection not found' } }),
-          );
-          return;
-        }
-        for (const p of data.points) {
-          coll.push({ id: p.id, vector: p.vector, payload: p.payload });
-        }
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ result: { status: 'completed' } }));
-        return;
-      }
-
-      // POST /collections/:name/points (retrieve by ids)
-      const retrieveMatch = url.match(/^\/collections\/([^/]+)\/points$/);
-      if (retrieveMatch && req.method === 'POST') {
-        const name = retrieveMatch[1];
-        const data = JSON.parse(body);
-        const coll = state.collections.get(name);
-        if (!coll) {
-          res.writeHead(404);
-          res.end();
-          return;
-        }
-        const ids: string[] = data.ids ?? [];
-        const result = coll
-          .filter((p) => ids.includes(p.id))
-          .map((p) => ({ id: p.id, payload: p.payload }));
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ result }));
-        return;
-      }
-
-      // POST /collections/:name/points/delete
-      const deleteMatch = url.match(/^\/collections\/([^/]+)\/points\/delete$/);
-      if (deleteMatch && req.method === 'POST') {
-        const name = deleteMatch[1];
-        const data = JSON.parse(body);
-        const coll = state.collections.get(name);
-        if (!coll) {
-          res.writeHead(404);
-          res.end();
-          return;
-        }
-        if (data.filter && Object.keys(data.filter).length === 0) {
-          coll.length = 0;
-        } else if (Array.isArray(data.points)) {
-          const ids = new Set<string>(data.points);
-          state.collections.set(
-            name,
-            coll.filter((p) => !ids.has(p.id)),
-          );
-        }
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ result: { status: 'completed' } }));
-        return;
-      }
-
-      // POST /collections/:name/points/search
-      const searchMatch = url.match(/^\/collections\/([^/]+)\/points\/search$/);
-      if (searchMatch && req.method === 'POST') {
-        const name = searchMatch[1];
-        const data = JSON.parse(body);
-        const coll = state.collections.get(name);
-        if (!coll) {
-          res.writeHead(404, { 'Content-Type': 'application/json' });
-          res.end(
-            JSON.stringify({ status: { error: 'Collection not found' } }),
-          );
-          return;
-        }
-        // Simple dot-product scoring
-        const results = coll
-          .map((p) => {
-            let score = 0;
-            for (let i = 0; i < data.vector.length; i++) {
-              score += (data.vector[i] ?? 0) * (p.vector[i] ?? 0);
-            }
-            return { score, payload: p.payload };
-          })
-          .sort((a, b) => b.score - a.score)
-          .slice(0, data.limit ?? 10);
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ result: results }));
-        return;
-      }
-
-      res.writeHead(404);
-      res.end('Not found');
-    });
-  });
-}
-
 describe('QdrantRag', () => {
-  let server: http.Server;
   let baseUrl: string;
-  let state: StubState;
+  let state: QdrantStub;
 
   before(async () => {
-    state = { collections: new Map() };
-    server = createStubServer(state);
-    await new Promise<void>((resolve) => {
-      server.listen(0, '127.0.0.1', resolve);
-    });
-    const addr = server.address();
-    if (typeof addr === 'object' && addr) {
-      baseUrl = `http://127.0.0.1:${addr.port}`;
-    }
+    state = await startQdrantStub();
+    baseUrl = state.baseUrl;
   });
 
-  after(async () => {
-    await new Promise<void>((resolve, reject) => {
-      server.close((err) => (err ? reject(err) : resolve()));
-    });
-  });
+  after(() => state.close());
 
   it('auto-creates collection on first upsert', async () => {
     const rag = new QdrantRag({
@@ -216,7 +55,7 @@ describe('QdrantRag', () => {
   });
 
   it('upserts and queries documents', async () => {
-    state.collections.set('test-query', []);
+    state.collections.set('test-query', { size: 3, points: new Map() });
     const rag = new QdrantRag({
       url: baseUrl,
       collectionName: 'test-query',
@@ -238,7 +77,7 @@ describe('QdrantRag', () => {
   });
 
   it('healthCheck succeeds when collection exists', async () => {
-    state.collections.set('test-health', []);
+    state.collections.set('test-health', { size: 3, points: new Map() });
     const rag = new QdrantRag({
       url: baseUrl,
       collectionName: 'test-health',
@@ -264,7 +103,6 @@ describe('QdrantRag', () => {
       url: 'http://127.0.0.1:1',
       collectionName: 'unreachable',
       embedder: symmetricEmbedder(makeEmbedder()),
-      timeoutMs: 1000,
     });
     const result = await rag.healthCheck();
     assert.ok(!result.ok);
@@ -272,7 +110,7 @@ describe('QdrantRag', () => {
   });
 
   it('passes api-key header when configured', async () => {
-    state.collections.set('test-auth', []);
+    state.collections.set('test-auth', { size: 3, points: new Map() });
     // This just tests that the constructor accepts a credential without error
     const rag = new QdrantRag({
       url: baseUrl,
@@ -285,7 +123,7 @@ describe('QdrantRag', () => {
   });
 
   it('getById returns the stored record via deterministic UUID', async () => {
-    state.collections.set('test-get', []);
+    state.collections.set('test-get', { size: 3, points: new Map() });
     const rag = new QdrantRag({
       url: baseUrl,
       collectionName: 'test-get',
@@ -299,7 +137,7 @@ describe('QdrantRag', () => {
   });
 
   it('getById returns null for unknown id', async () => {
-    state.collections.set('test-get-miss', []);
+    state.collections.set('test-get-miss', { size: 3, points: new Map() });
     const rag = new QdrantRag({
       url: baseUrl,
       collectionName: 'test-get-miss',
@@ -311,7 +149,7 @@ describe('QdrantRag', () => {
   });
 
   it('writer().deleteByIdRaw removes the point', async () => {
-    state.collections.set('test-del', []);
+    state.collections.set('test-del', { size: 3, points: new Map() });
     const rag = new QdrantRag({
       url: baseUrl,
       collectionName: 'test-del',
@@ -319,43 +157,40 @@ describe('QdrantRag', () => {
     });
     const w = rag.writer();
     await w.upsertRaw('r1', 'hi', {});
-    assert.equal(state.collections.get('test-del')?.length, 1);
+    assert.equal(state.collections.get('test-del')?.points.size, 1);
     const del = await w.deleteByIdRaw('r1');
     assert.ok(del.ok);
-    assert.equal(state.collections.get('test-del')?.length, 0);
+    assert.equal(state.collections.get('test-del')?.points.size, 0);
   });
 
-  it('writer().upsertManyPrecomputedRaw writes every point in one PUT', async () => {
-    state.collections.set('test-bulk', []);
-    let putPointsCalls = 0;
-    const origFetch = globalThis.fetch;
-    globalThis.fetch = (async (input: unknown, init?: RequestInit) => {
-      const u = String(input);
-      if (u.endsWith('/points') && init?.method === 'PUT') putPointsCalls++;
-      return origFetch(input as string, init);
-    }) as typeof fetch;
-    try {
-      const rag = new QdrantRag({
-        url: baseUrl,
-        collectionName: 'test-bulk',
-        embedder: symmetricEmbedder(makeEmbedder()),
-      });
-      const w = rag.writer();
-      const res = await w.upsertManyPrecomputedRaw?.([
-        { id: 'a', text: 'ta', vector: [0.1, 0.2], metadata: {} },
-        { id: 'b', text: 'tb', vector: [0.3, 0.4], metadata: {} },
-        { id: 'c', text: 'tc', vector: [0.5, 0.6], metadata: {} },
-      ]);
-      assert.ok(res?.ok, 'bulk upsert should succeed');
-      assert.equal(state.collections.get('test-bulk')?.length, 3);
-      assert.equal(putPointsCalls, 1, 'one PUT for the whole batch');
-    } finally {
-      globalThis.fetch = origFetch;
-    }
+  it('writer().upsertManyPrecomputedRaw writes every point in one batch', async () => {
+    state.collections.set('test-bulk', { size: 2, points: new Map() });
+    const firstRequest = state.requests.length;
+    const rag = new QdrantRag({
+      url: baseUrl,
+      collectionName: 'test-bulk',
+      embedder: symmetricEmbedder(makeEmbedder()),
+    });
+    const w = rag.writer();
+    const res = await w.upsertManyPrecomputedRaw?.([
+      { id: 'a', text: 'ta', vector: [0.1, 0.2], metadata: {} },
+      { id: 'b', text: 'tb', vector: [0.3, 0.4], metadata: {} },
+      { id: 'c', text: 'tc', vector: [0.5, 0.6], metadata: {} },
+    ]);
+    assert.ok(res?.ok, 'bulk upsert should succeed');
+    assert.equal(state.collections.get('test-bulk')?.points.size, 3);
+    assert.equal(
+      state.requests
+        .slice(firstRequest)
+        .filter(
+          ({ path, method }) => method === 'PUT' && path.endsWith('/points'),
+        ).length,
+      1,
+    );
   });
 
   it('writer().clearAll empties the collection', async () => {
-    state.collections.set('test-clear', []);
+    state.collections.set('test-clear', { size: 3, points: new Map() });
     const rag = new QdrantRag({
       url: baseUrl,
       collectionName: 'test-clear',
@@ -366,7 +201,7 @@ describe('QdrantRag', () => {
     await w.upsertRaw('b', 't', {});
     const cleared = await w.clearAll?.();
     assert.ok(cleared?.ok);
-    assert.equal(state.collections.get('test-clear')?.length, 0);
+    assert.equal(state.collections.get('test-clear')?.points.size, 0);
   });
 });
 
@@ -378,10 +213,13 @@ describe('QdrantRag — session/user filter (security)', () => {
     let captured: Record<string, unknown> | undefined;
     const origFetch = globalThis.fetch;
     globalThis.fetch = (async (input: unknown, init?: RequestInit) => {
-      if (String(input).endsWith('/points/search')) {
+      if (String(input).endsWith('/points/query')) {
         captured = JSON.parse(String(init?.body));
       }
-      return new Response(JSON.stringify({ result: [] }), { status: 200 });
+      const result = String(input).endsWith('/points/query')
+        ? { points: [] }
+        : { config: { params: { vectors: { size: 3 } } } };
+      return Response.json({ result });
     }) as typeof fetch;
     try {
       const rag = new QdrantRag({

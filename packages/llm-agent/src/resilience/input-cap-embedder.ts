@@ -3,7 +3,7 @@ import type {
   IEmbedderBatch,
   IEmbedResult,
 } from '../interfaces/rag.js';
-import { isBatchEmbedder } from '../interfaces/rag.js';
+import { isBatchEmbedder, isBatchSizeLimited } from '../interfaces/rag.js';
 import type { CallOptions } from '../interfaces/types.js';
 
 class InputCapEmbedder implements IEmbedder {
@@ -16,9 +16,19 @@ class InputCapEmbedder implements IEmbedder {
     }
   }
 
+  get getMaxInputChars() {
+    return this.inner.getMaxInputChars?.bind(this.inner);
+  }
+
+  get maxBatchSize() {
+    return isBatchSizeLimited(this.inner) ? this.inner.maxBatchSize : undefined;
+  }
+
   embed(text: string, options?: CallOptions): Promise<IEmbedResult> {
     return this.inner.embed(
-      this.maxInputChars === 0 ? text : text.slice(0, this.maxInputChars),
+      options?.preserveEmbeddingInput || this.maxInputChars === 0
+        ? text
+        : text.slice(0, this.maxInputChars),
       options,
     );
   }

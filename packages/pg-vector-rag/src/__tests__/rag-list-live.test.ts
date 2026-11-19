@@ -9,6 +9,7 @@ import {
 import { ragListConformanceCases } from '@mcp-abap-adt/llm-agent/testing/rag-list-conformance';
 import { createPgClient, PgVectorRag } from '../pg-vector-rag.js';
 import { PgVectorRagProvider } from '../pg-vector-rag-provider.js';
+import { dropTableSql } from '../schema.js';
 import { sharedLayoutSql } from '../shared-ddl.js';
 
 function value<T>(result: Result<T, RagError>): T {
@@ -47,15 +48,9 @@ for (const layout of ['per-collection', 'shared'] as const)
     try {
       if (layout === 'shared') {
         tables.push(documentsTable, catalogTable);
-        for (const sql of sharedLayoutSql({
-          dimension: 3,
-          documentsTable,
-          catalogTable,
-        })
-          .split(';')
-          .map((part) => part.trim())
-          .filter(Boolean))
-          await client.query(sql);
+        await client.query(
+          sharedLayoutSql({ dimension: 3, documentsTable, catalogTable }),
+        );
       }
       const makeStore = async () => {
         const collectionName = `${suffix}_${sequence++}`;
@@ -66,7 +61,7 @@ for (const layout of ['per-collection', 'shared'] as const)
             layout,
             documentsTable,
             embedder,
-            autoCreateSchema: false,
+            autoCreateSchema: layout === 'per-collection',
             recordCache: false,
           },
           client,
@@ -124,7 +119,7 @@ for (const layout of ['per-collection', 'shared'] as const)
       for (const provider of providers) provider.close();
       try {
         for (const table of tables.reverse())
-          await client.query(`DROP TABLE IF EXISTS "${table}"`);
+          await client.query(dropTableSql(table));
       } finally {
         await client.end();
       }

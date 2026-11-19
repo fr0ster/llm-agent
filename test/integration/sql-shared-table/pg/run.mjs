@@ -1,6 +1,8 @@
 // Live check of the shared table layout on a real Postgres with pgvector.
 // Reads PG_TEST_URL; run `npm run build` at the repo root first (the built
 // workspace packages are imported from the root node_modules).
+import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -11,9 +13,11 @@ const rootRequire = createRequire(resolve(root, 'package.json'));
 const load = (spec) => import(pathToFileURL(rootRequire.resolve(spec)).href);
 
 const { symmetricEmbedder } = await load('@mcp-abap-adt/llm-agent');
-const { CONFORMANCE_EMBEDDING_DIM, conformanceEmbedder, registerRawRecordInsert } = await load(
-  '@mcp-abap-adt/llm-agent/testing/rag-filter-conformance',
-);
+const {
+  CONFORMANCE_EMBEDDING_DIM,
+  conformanceEmbedder,
+  registerRawRecordInsert,
+} = await load('@mcp-abap-adt/llm-agent/testing/rag-filter-conformance');
 const { sharedTableConformanceCases } = await load(
   '@mcp-abap-adt/llm-agent/testing/shared-table-conformance',
 );
@@ -32,10 +36,39 @@ if (!url) {
 }
 
 const pool = new pg.Pool({ connectionString: url, max: 5 });
-const client = {
-  query: (sql, params = []) => pool.query(sql, params),
-  end: async () => {},
-};
+function poolClient(pool, searchPath) {
+  async function withConnection(work) {
+    const connection = await pool.connect();
+    try {
+      if (searchPath)
+        await connection.query(`SET search_path TO ${searchPath}`);
+      return await work(connection);
+    } finally {
+      if (searchPath) await connection.query('RESET search_path');
+      connection.release();
+    }
+  }
+  return {
+    query: (sql, params = []) =>
+      searchPath
+        ? withConnection((connection) => connection.query(sql, params))
+        : pool.query(sql, params),
+    end: async () => {},
+    transaction: (work) =>
+      withConnection(async (connection) => {
+        await connection.query('BEGIN');
+        try {
+          const result = await work(connection);
+          await connection.query('COMMIT');
+          return result;
+        } catch (error) {
+          await connection.query('ROLLBACK');
+          throw error;
+        }
+      }),
+  };
+}
+const client = poolClient(pool);
 const schema = `sst_${Date.now()}`;
 const dim = CONFORMANCE_EMBEDDING_DIM;
 const embedder = symmetricEmbedder(conformanceEmbedder());
@@ -50,18 +83,30 @@ const resetTables = () =>
   );
 
 function storeOf(collection, dimension = dim) {
-  return registerRawRecordInsert(new PgVectorRag(
-    {
-      collectionName: collection,
-      dimension,
-      layout: 'shared',
-      schema,
-      embedder,
+  return registerRawRecordInsert(
+    new PgVectorRag(
+      {
+        collectionName: collection,
+        dimension,
+        layout: 'shared',
+        schema,
+        embedder,
+      },
+      client,
+    ),
+    async (r) => {
+      await client.query(
+        `INSERT INTO "${schema}".rag_documents (collection, id, text, vector, metadata) VALUES ($1, $2, $3, $4::vector, $5::jsonb)`,
+        [
+          collection,
+          r.id,
+          r.text,
+          JSON.stringify((await conformanceEmbedder().embed(r.text)).vector),
+          JSON.stringify(r.metadata),
+        ],
+      );
     },
-    client,
-  ), async r => {
-    await client.query(`INSERT INTO "${schema}".rag_documents (collection, id, text, vector, metadata) VALUES ($1, $2, $3, $4::vector, $5::jsonb)`, [collection, r.id, r.text, JSON.stringify((await conformanceEmbedder().embed(r.text)).vector), JSON.stringify(r.metadata)]);
-  });
+  );
 }
 
 function subject() {
@@ -113,10 +158,69 @@ try {
   const conn = await pool.connect();
   try {
     await conn.query(`SET search_path TO ${searchPath}`);
-    for (const stmt of sharedLayoutSql({ dimension: dim }).split(';\n')) {
-      const sql = stmt.trim().replace(/;$/, '');
-      if (sql) await conn.query(sql);
-    }
+    const released = sharedLayoutSql({ dimension: dim })
+      .replace('  "fragment_ordinal" INTEGER NOT NULL DEFAULT 0,\n', '')
+      .replace(
+        'PRIMARY KEY ("collection", "id", "fragment_ordinal")',
+        'PRIMARY KEY ("collection", "id")',
+      );
+    await conn.query(released);
+    const { vector } = await conformanceEmbedder().embed('legacy records');
+    for (const id of ['first', 'second'])
+      await conn.query(
+        'INSERT INTO rag_documents (collection, id, text, vector, metadata) VALUES ($1, $2, $3, $4::vector, $5::jsonb)',
+        ['legacy', id, id, JSON.stringify(vector), '{}'],
+      );
+    await conn.query(
+      'CREATE INDEX rag_vector_index ON rag_documents USING hnsw (vector vector_cosine_ops)',
+    );
+    const previousVectors = await conn.query(
+      'SELECT vector::text FROM rag_documents ORDER BY id',
+    );
+    const migration = await readFile(
+      resolve(
+        root,
+        'packages/pg-vector-rag/ddl/migrations/001-fragment-ordinal.sql',
+      ),
+      'utf8',
+    );
+    await conn.query(migration);
+    await conn.query(migration);
+    const preserved = await conn.query(
+      'SELECT id, text, fragment_ordinal, vector::text FROM rag_documents ORDER BY id',
+    );
+    assert.deepEqual(
+      preserved.rows.map(({ id, text, fragment_ordinal }) => [
+        id,
+        text,
+        fragment_ordinal,
+      ]),
+      [
+        ['first', 'first', 0],
+        ['second', 'second', 0],
+      ],
+    );
+    assert.deepEqual(
+      preserved.rows.map(({ vector }) => vector),
+      previousVectors.rows.map(({ vector }) => vector),
+    );
+    assert.ok(
+      (await conn.query("SELECT to_regclass('rag_vector_index') AS index"))
+        .rows[0].index,
+    );
+    const legacy = await storeOf('legacy').query(
+      { text: 'legacy', toVector: async () => vector },
+      2,
+    );
+    assert.ok(legacy.ok);
+    assert.deepEqual(
+      legacy.value.map(({ text }) => text),
+      ['first', 'second'],
+    );
+    await resetTables();
+    console.log(
+      'PASS released shared table migration, including rerun and indexed search',
+    );
   } finally {
     // The connection goes back to the pool: leave no search_path behind.
     await conn.query('RESET search_path');
@@ -152,6 +256,68 @@ try {
     console.log('FAIL startup check, wrong dimension');
   }
 
+  total++;
+  const regression =
+    'indexed fragments rank distinct records and cascade replacement and deletion';
+  try {
+    await resetTables();
+    const rag = storeOf('fragments');
+    const perpendicular = Array.from({ length: dim }, (_, index) =>
+      Number(index === 0),
+    );
+    const query = Array.from({ length: dim }, (_, index) =>
+      Number(index === 1),
+    );
+    const legacy = perpendicular.map((value, index) => value + query[index]);
+    assert.ok(
+      (await rag.upsertPrecomputed('legacy', legacy, { id: 'legacy' })).ok,
+    );
+    assert.ok(
+      (
+        await rag.upsertPrecomputed(
+          'best tail',
+          [perpendicular, query, query, query],
+          { id: 'long' },
+        )
+      ).ok,
+    );
+    const lookup = { text: 'tail', toVector: async () => query };
+    const search = await rag.query(lookup, 2);
+    assert.ok(search.ok, search.ok ? undefined : search.error.message);
+    assert.deepEqual(
+      search.value.map(({ text }) => text),
+      ['best tail', 'legacy'],
+    );
+    const fragments = async () =>
+      (
+        await pool.query(
+          `SELECT "fragment_ordinal" FROM "${schema}"."rag_documents" WHERE "collection" = 'fragments' AND "fragment_ordinal" > 0 ORDER BY "fragment_ordinal"`,
+        )
+      ).rows.length;
+    assert.equal(await fragments(), 3);
+    assert.ok(
+      (
+        await rag.upsertPrecomputed('replacement', perpendicular, {
+          id: 'long',
+        })
+      ).ok,
+    );
+    assert.equal(await fragments(), 0);
+    assert.ok(
+      (
+        await rag.upsertPrecomputed('best tail', [perpendicular, query], {
+          id: 'long',
+        })
+      ).ok,
+    );
+    assert.ok((await rag.writer().deleteByIdRaw('long')).ok);
+    assert.equal(await fragments(), 0);
+    console.log(`PASS ${regression}`);
+  } catch (error) {
+    failures.push([regression, error]);
+    console.log(`FAIL ${regression}`);
+  }
+
   const sharedKitStart = { total };
   for (const c of sharedTableConformanceCases) {
     total++;
@@ -168,7 +334,7 @@ try {
   }
   kits.push({
     label: 'shared-table kit (incl. startup checks)',
-    ran: total - sharedKitStart.total + 2,
+    ran: total - sharedKitStart.total + 3,
     failed: failures.length,
     skipped: 0,
   });
@@ -180,19 +346,7 @@ try {
   // it before the connection goes back: everything it creates lands there. The exact table names are
   // tracked and only those are dropped (the schema itself goes at the end).
   const pcTables = new Set();
-  const pcClient = {
-    async query(sql, params = []) {
-      const conn = await pool.connect();
-      try {
-        await conn.query(`SET search_path TO ${searchPath}`);
-        return await conn.query(sql, params);
-      } finally {
-        await conn.query('RESET search_path');
-        conn.release();
-      }
-    },
-    end: async () => {},
-  };
+  const pcClient = poolClient(pool, searchPath);
   const dropPerCollectionTables = async () => {
     for (const table of pcTables)
       await pool.query(`DROP TABLE IF EXISTS "${schema}"."${table}"`);
@@ -222,20 +376,34 @@ try {
     };
   };
   const perCollectionStore = (collection) =>
-    registerRawRecordInsert(new PgVectorRag(
-      {
-        collectionName: collection,
-        dimension: dim,
-        layout: 'per-collection',
-        embedder,
+    registerRawRecordInsert(
+      new PgVectorRag(
+        {
+          collectionName: collection,
+          dimension: dim,
+          layout: 'per-collection',
+          embedder,
+        },
+        pcClient,
+      ),
+      async (r) => {
+        // Initialize the test table through a valid write before raw fixture insertion.
+        const store = new PgVectorRag(
+          { collectionName: collection, dimension: dim, embedder },
+          pcClient,
+        );
+        await store.ensureSchema();
+        await pcClient.query(
+          `INSERT INTO "${collection}" (id, text, vector, metadata) VALUES ($1, $2, $3::vector, $4::jsonb)`,
+          [
+            r.id,
+            r.text,
+            JSON.stringify((await conformanceEmbedder().embed(r.text)).vector),
+            JSON.stringify(r.metadata),
+          ],
+        );
       },
-      pcClient,
-    ), async r => {
-      // Initialize the test table through a valid write before raw fixture insertion.
-      const store = new PgVectorRag({ collectionName: collection, dimension: dim, embedder }, pcClient);
-      await store.ensureSchema();
-      await pcClient.query(`INSERT INTO "${collection}" (id, text, vector, metadata) VALUES ($1, $2, $3::vector, $4::jsonb)`, [r.id, r.text, JSON.stringify((await conformanceEmbedder().embed(r.text)).vector), JSON.stringify(r.metadata)]);
-    });
+    );
   const perCollectionScanSubject = async () => {
     await dropPerCollectionTables();
     return {

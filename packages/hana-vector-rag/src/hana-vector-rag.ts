@@ -4,6 +4,7 @@ import type {
   IRag,
   IRagBackendWriter,
   IRetrievalEmbedder,
+  RagDocumentVectors,
   RagMetadata,
   RagResult,
   Result,
@@ -13,6 +14,7 @@ import {
   assertScanOptions,
   decodeIdScanCursor,
   decodeListCursor,
+  embedRecord,
   encodeListCursor,
   FallbackQueryEmbedding,
   INVALID_ARGUMENT,
@@ -20,7 +22,6 @@ import {
   type IRagScanner,
   listCursorScope,
   listMetadata,
-  matchesRagIdentity,
   matchesScanFilter,
   prepareList,
   QueryEmbedding,
@@ -30,6 +31,7 @@ import {
   type RagScanFilter,
   type RagScanPage,
   ragIdentityFilter,
+  recordVectors,
   TextOnlyEmbedding,
   validateRagMetadata,
 } from '@mcp-abap-adt/llm-agent';
@@ -41,8 +43,12 @@ import { resolveLayout } from './layout.js';
 import { decodeLob, withId } from './lob.js';
 import { RecordCache, type StoreCache } from './record-cache.js';
 import { transactionalHanaClient } from './role-transaction.js';
-import { deleteWhere, scanPage } from './scan-delete.js';
-import { assertCollectionName, quoteIdent } from './schema.js';
+import { clearRecords, deleteWhere, scanPage } from './scan-delete.js';
+import {
+  assertCollectionName,
+  fragmentOrdinalMigrationSql,
+  quoteIdent,
+} from './schema.js';
 import { checkSharedTables } from './shared-check.js';
 import { SHARED_DOCUMENTS_TABLE } from './shared-ddl.js';
 import {
@@ -123,6 +129,7 @@ export class HanaVectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
   private listIdentity?: Promise<string>;
   private readonly listTable: string;
   private readonly dimension: number;
+  private readonly fragmentSizeChars?: number;
   private readonly embedder: IRetrievalEmbedder;
   private readonly fallbackOnQueryEmbeddingError: boolean;
   private readonly autoCreateSchema: boolean;
@@ -134,14 +141,17 @@ export class HanaVectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
   private readonly sql: HanaStoreSql;
   private readonly documentsTable: string;
   private sharedCheck?: Promise<void>;
+  private ordinalSchema?: Promise<void>;
 
   constructor(
     config: HanaVectorRagConfig & { embedder: IRetrievalEmbedder },
     injectedClient?: HanaClient,
     cache?: StoreCache,
+    private readonly migrateExistingSchema = false,
   ) {
     assertCollectionName(config.collectionName);
     this.dimension = config.dimension ?? 1536;
+    this.fragmentSizeChars = config.fragmentSizeChars;
     this.embedder = config.embedder;
     this.fallbackOnQueryEmbeddingError =
       config.fallbackOnQueryEmbeddingError ?? true;
@@ -204,8 +214,27 @@ export class HanaVectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
     await this.schemaPromise;
   }
 
+  private async ensureFragmentOrdinal(): Promise<void> {
+    if (
+      this.sql.layout === 'shared' ||
+      (!this.autoCreateSchema && !this.migrateExistingSchema)
+    )
+      return;
+    this.ordinalSchema ??= (async () => {
+      const client = await this.client();
+      await client.exec(
+        fragmentOrdinalMigrationSql(this.connectConfig.collectionName),
+      );
+    })().catch((error) => {
+      this.ordinalSchema = undefined;
+      throw error;
+    });
+    await this.ordinalSchema;
+  }
+
   private async maybeEnsureSchema(): Promise<void> {
     if (this.autoCreateSchema) await this.ensureSchema();
+    await this.ensureFragmentOrdinal();
     await this.ensureSharedDeployed();
   }
 
@@ -268,56 +297,41 @@ export class HanaVectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
       const vector = await safe.toVector();
       const client = await this.client();
       const literal = this.vectorLiteral(vector);
-      const identity = ragIdentityFilter(options);
-      const base = this.sql.search(literal, undefined, identity);
-      const rawNamespace = options?.ragFilter?.namespace;
-      const targetNamespace =
-        typeof rawNamespace === 'string' ? rawNamespace : undefined;
-      const nowSecs = Date.now() / 1000;
-      // Owner predicates execute in SQL. Scoped queries remain unbounded because
-      // JSON_VALUE can coerce scalars: strict metadata identity, namespace and
-      // TTL checks run below before application top-k, never after a SQL limit.
-      const limit = Math.max(1, k);
-      const keep = (metadata: RagMetadata): boolean =>
-        !(typeof metadata.ttl === 'number' && metadata.ttl < nowSecs) &&
-        !(
-          targetNamespace !== undefined &&
-          metadata.namespace !== targetNamespace
-        ) &&
-        matchesRagIdentity(metadata, identity);
-      const pick = (rows: Array<Record<string, unknown>>) => {
-        const picked: RagResult[] = [];
-        let dropped = false;
-        for (const row of rows) {
-          if (picked.length >= limit) break;
-          const metadata = withId(row);
-          if (!keep(metadata)) {
-            dropped = true;
-            continue;
-          }
-          picked.push({
-            text: decodeLob(row.text),
-            metadata,
-            score: Number(row.score ?? 0),
-          });
-        }
-        return { picked, dropped };
+      if (k <= 0) return { ok: true, value: [] };
+      const namespace = options?.ragFilter?.namespace;
+      const filter = {
+        identity: ragIdentityFilter(options),
+        namespace: typeof namespace === 'string' ? namespace : undefined,
+        nowSecs: Date.now() / 1000,
       };
-      const scoped = identity !== undefined || targetNamespace !== undefined;
-      let results: RagResult[];
-      if (scoped) {
-        results = pick(await client.query(base.sql, base.params)).picked;
-      } else {
-        const paged = this.sql.search(literal, limit, identity);
-        const page = await client.query(paged.sql, paged.params);
-        const first = pick(page);
-        results =
-          first.dropped && page.length >= limit
-            ? pick(await client.query(base.sql, base.params)).picked
-            : first.picked;
+      let candidates: number | undefined = k;
+      const search = async () => {
+        options?.signal?.throwIfAborted();
+        const stmt = this.sql.search(literal, k, filter, candidates);
+        return client.query(stmt.sql, stmt.params);
+      };
+      let rows = await search();
+      while (candidates !== undefined && rows[0]?.id === null) {
+        // An ANN index can run out before it returns the requested candidate count.
+        // Finish with exact SQL aggregation when that happens.
+        candidates =
+          Number(rows[0].candidateCount) < candidates
+            ? undefined
+            : candidates * 2;
+        rows = await search();
       }
-      return { ok: true, value: results };
+      rows = rows.filter((row) => row.id !== null);
+      return {
+        ok: true,
+        value: rows.map((row) => ({
+          text: decodeLob(row.text),
+          metadata: withId(row),
+          score: Number(row.score ?? 0),
+        })),
+      };
     } catch (err) {
+      if (options?.signal?.aborted)
+        return { ok: false, error: new RagError('Aborted', 'ABORTED') };
       if (!this.fallbackOnQueryEmbeddingError && err instanceof RagError)
         return { ok: false, error: err };
       return { ok: false, error: this.failure(err, 'QUERY_ERROR') };
@@ -507,25 +521,45 @@ export class HanaVectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
     if (options?.signal?.aborted)
       return { ok: false, error: new RagError('Aborted', 'ABORTED') };
     try {
-      const { vector } = await this.embedder.embedDocument(text, options);
-      return this.upsertKnown(text, vector, metadata);
+      const vectors = await embedRecord(
+        this.embedder,
+        text,
+        this.fragmentSizeChars,
+        options,
+      );
+      options?.signal?.throwIfAborted();
+      return this.upsertKnown(text, vectors, metadata, options);
     } catch (err) {
+      if (options?.signal?.aborted)
+        return { ok: false, error: new RagError('Aborted', 'ABORTED') };
       return { ok: false, error: this.failure(err, 'UPSERT_ERROR') };
     }
   }
 
   async upsertPrecomputed(
     text: string,
-    vector: number[],
+    vector: RagDocumentVectors,
     metadata: RagMetadata,
+    options?: CallOptions,
   ): Promise<Result<void, RagError>> {
-    return this.upsertKnown(text, vector, metadata);
+    try {
+      options?.signal?.throwIfAborted();
+      return this.upsertKnown(text, recordVectors(vector), metadata, options);
+    } catch (error) {
+      return {
+        ok: false,
+        error: options?.signal?.aborted
+          ? new RagError('Aborted', 'ABORTED')
+          : this.failure(error, 'UPSERT_ERROR'),
+      };
+    }
   }
 
   private async upsertKnown(
     text: string,
-    vector: number[],
+    [vector, ...extras]: number[][],
     metadata: RagMetadata,
+    options?: CallOptions,
   ): Promise<Result<void, RagError>> {
     try {
       metadata = validateRagMetadata(metadata);
@@ -535,16 +569,50 @@ export class HanaVectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
       const id = metadata?.id ?? crypto.randomUUID();
       const { id: _omit, ...rest } = validateRagMetadata(metadata);
       const metaJson = JSON.stringify(rest);
-      const stmt = this.sql.upsert(literal, id, text, metaJson);
+      const primary = this.sql.upsert(literal, id, text, metaJson);
+      const removal = this.sql.removeFragments(id);
+      const { ownerScope, sessionId, userId, namespace, ttl } = rest;
+      const scopeJson = JSON.stringify({
+        ownerScope,
+        sessionId,
+        userId,
+        namespace,
+        ttl,
+      });
+      const inserts = extras.map((fragment, index) =>
+        this.sql.insertFragment(
+          id,
+          index + 1,
+          this.vectorLiteral(fragment),
+          scopeJson,
+        ),
+      );
+      options?.signal?.throwIfAborted();
+      if (!client.transaction)
+        throw new RagError(
+          'Fragment writes require a transaction-capable HANA client',
+          'UPSERT_ERROR',
+        );
       const settled = this.cache.beginWrite([id]);
       try {
-        await client.exec(stmt.sql, stmt.params);
+        await client.transaction(async (connection) => {
+          for (const stmt of [primary, removal, ...inserts]) {
+            options?.signal?.throwIfAborted();
+            await connection.exec(stmt.sql, stmt.params);
+          }
+          options?.signal?.throwIfAborted();
+        });
       } finally {
         settled();
       }
       return { ok: true, value: undefined };
     } catch (err) {
-      return { ok: false, error: this.failure(err, 'UPSERT_ERROR') };
+      return {
+        ok: false,
+        error: options?.signal?.aborted
+          ? new RagError('Aborted', 'ABORTED')
+          : this.failure(err, 'UPSERT_ERROR'),
+      };
     }
   }
 
@@ -562,7 +630,18 @@ export class HanaVectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
           const settled = this.cache.beginWrite([id]);
           let r: { rowCount: number };
           try {
-            r = await client.exec(stmt.sql, stmt.params);
+            if (!client.transaction)
+              throw new RagError(
+                'Record deletion requires a transaction-capable HANA client',
+                'DELETE_ERROR',
+              );
+            r = await client.transaction(async (connection) => {
+              const lock = this.sql.lockByIds([id]);
+              const rows = await connection.query(lock.sql, lock.params);
+              return rows.length
+                ? connection.exec(stmt.sql, stmt.params)
+                : { rowCount: 0 };
+            });
           } finally {
             settled();
           }
@@ -578,10 +657,9 @@ export class HanaVectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
         try {
           await this.maybeEnsureSchema();
           const client = await this.client();
-          const stmt = this.sql.clear();
           const settled = this.cache.beginClear();
           try {
-            await client.exec(stmt.sql, stmt.params);
+            await clearRecords(client, this.sql);
           } finally {
             settled();
           }
@@ -590,8 +668,8 @@ export class HanaVectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
           return { ok: false, error: this.failure(err, 'CLEAR_ERROR') };
         }
       },
-      upsertPrecomputedRaw: async (id, text, vector, metadata) =>
-        this.upsertPrecomputed(text, vector, { ...metadata, id }),
+      upsertPrecomputedRaw: (id, text, vector, metadata, options) =>
+        this.upsertPrecomputed(text, vector, { ...metadata, id }, options),
     };
   }
 }

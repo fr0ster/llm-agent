@@ -8,6 +8,7 @@ import {
   type RagScanRecord,
 } from '@mcp-abap-adt/llm-agent';
 import { splitPayload } from './payload-record.js';
+import type { QdrantCondition, QdrantFilter } from './query-filter.js';
 
 /** Issues one request against the store's Qdrant (base URL, auth, timeout). */
 export type QdrantCall = (
@@ -35,15 +36,13 @@ interface ScrollBody {
  * with a string matches only a string payload value, so a number never
  * matches. No ttl condition: expired records are scanned too.
  */
-export function scrollFilter(
-  filter: RagScanFilter | undefined,
-): { must: unknown[] } | undefined {
-  const must: unknown[] = [];
+export function scrollFilter(filter: RagScanFilter | undefined): QdrantFilter {
+  const must: QdrantCondition[] = [];
   for (const key of FILTER_FIELDS) {
     const value = filter?.[key];
     if (value !== undefined) must.push({ key, match: { value } });
   }
-  return must.length > 0 ? { must } : undefined;
+  return { must };
 }
 
 const encodeCursor = (offset: Offset): string => JSON.stringify(offset);
@@ -154,7 +153,7 @@ export async function scanPage(
     {
       limit: opts.pageSize ?? DEFAULT_SCAN_PAGE_SIZE,
       with_payload: true,
-      ...(filter ? { filter } : {}),
+      filter,
       ...(offset !== undefined ? { offset } : {}),
     },
     signal,
@@ -249,8 +248,11 @@ export async function deleteWhere(
       );
       if (batch.length === 0) continue;
       res = await call(
-        `/collections/${collection}/points/delete?wait=true`,
-        { method: 'POST', body: JSON.stringify({ points: batch }) },
+        `/collections/${collection}/points/delete?wait=true&ordering=strong`,
+        {
+          method: 'POST',
+          body: JSON.stringify({ points: batch }),
+        },
         signal,
       );
     } catch (err) {

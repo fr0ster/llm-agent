@@ -20,6 +20,40 @@ Provides:
 npm install @mcp-abap-adt/pg-vector-rag pg
 ```
 
+## Record embeddings
+
+The existing documents table stores one row per vector. Row zero retains the
+record's full text and metadata. Higher ordinals carry the vector and metadata
+needed for isolation and expiry. PostgreSQL uses the table's existing cosine
+index for the ordered candidate scan when available. The query ranks distinct
+records by their best fragment and reads full rows for the winners. A short
+index scan falls back to exact SQL aggregation. Replacement and deletion
+update the record's rows in a single transaction.
+
+### Upgrade an existing database
+
+- **Runtime-managed per-collection tables.** The store migrates them on first
+  use with its schema-management credentials.
+- **Manually managed shared tables.** Apply the in-place migration as the schema
+  owner before starting the upgraded runtime. With the default table name and
+  a database search path containing the table, run:
+
+  ```sh
+  psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f ddl/migrations/001-fragment-ordinal.sql
+  ```
+
+- **Manually managed per-collection tables or custom shared names.** Generate
+  the equivalent statement with
+  `fragmentOrdinalMigrationSql(table, 'per-collection', schema)` or
+  `fragmentOrdinalMigrationSql(table, 'shared', schema)` and execute it as
+  the schema owner.
+
+The migration is idempotent. Existing records keep their vectors and receive
+ordinal zero. New shared deployments use `ddl/shared-layout.sql`. Injected
+clients should provide a transaction runner pinned to one connection, or use
+a dedicated connection. Configure `fragmentSizeChars` for embedders that do
+not declare their capacity (default 2,048 Unicode code points).
+
 ## Minimal config
 
 `PgVectorRagConfig.fallbackOnQueryEmbeddingError?: boolean` defaults to `true`:
@@ -99,9 +133,10 @@ The error codes are exported as constants — `SHARED_LAYOUT_NOT_DEPLOYED`, `INV
 ### Deploying the tables
 
 The package ships `ddl/shared-layout.sql` (published with it): `CREATE EXTENSION IF NOT EXISTS
-vector`, the catalog table, then the documents table, with the default names. Run it once as a
-privileged account (`psql -f node_modules/@mcp-abap-adt/pg-vector-rag/ddl/shared-layout.sql`); the
-application account then needs only `SELECT`, `INSERT`, `UPDATE`, `DELETE` on the two tables.
+vector`, the catalog and documents tables. Run it once
+as a privileged account (`psql -f node_modules/@mcp-abap-adt/pg-vector-rag/ddl/shared-layout.sql`).
+The script includes a dollar-quoted trigger body. Execute it as a complete script.
+Grant the application account `SELECT`, `INSERT`, `UPDATE`, `DELETE` on these tables.
 
 ### The dimension rule
 

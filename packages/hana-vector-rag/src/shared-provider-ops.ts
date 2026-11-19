@@ -21,6 +21,7 @@ import {
   writeCatalogRecord,
 } from './catalog-record.js';
 import type { HanaClient } from './hana-vector-rag.js';
+import { clearRecords } from './scan-delete.js';
 import { quoteIdent } from './schema.js';
 import { checkSharedTables } from './shared-check.js';
 import { sharedStoreSql } from './store-sql.js';
@@ -120,10 +121,10 @@ export class SharedProviderOps {
     const ready = await this.check(client);
     if (!ready.ok) return ready;
     try {
-      const clear = sharedStoreSql(name, this.cfg.documentsTable).clear();
+      const store = sharedStoreSql(name, this.cfg.documentsTable);
       const settled = beginDeletion?.();
       try {
-        await client.exec(clear.sql, clear.params);
+        await clearRecords(client, store);
       } finally {
         settled?.();
       }
@@ -176,7 +177,7 @@ export class SharedProviderOps {
         `SELECT store_name AS "s" FROM ${quoteIdent(this.cfg.catalogTable)}`,
       );
       const stored = await client.query(
-        `SELECT DISTINCT "COLLECTION" AS "c" FROM ${quoteIdent(this.cfg.documentsTable)}`,
+        `SELECT DISTINCT "COLLECTION" AS "c" FROM ${quoteIdent(this.cfg.documentsTable)} WHERE "FRAGMENT_ORDINAL" = 0`,
       );
       const names = new Set<string>([
         ...recorded.map((r) => String(r.s)),

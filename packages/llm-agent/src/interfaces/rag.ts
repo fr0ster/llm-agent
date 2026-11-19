@@ -13,7 +13,16 @@ export interface IEmbedResult {
   usage?: { promptTokens: number; totalTokens: number };
 }
 
-export interface IEmbedder {
+export interface IEmbeddingInputCapacity {
+  /**
+   * Maximum Unicode code points in one input, or undefined when the provider does
+   * not disclose a capacity. A tokenizer-based provider can expose a
+   * conservative character allowance that accounts for special tokens.
+   */
+  getMaxInputChars?(options?: CallOptions): Promise<number | undefined>;
+}
+
+export interface IEmbedder extends IEmbeddingInputCapacity {
   embed(text: string, options?: CallOptions): Promise<IEmbedResult>;
 }
 
@@ -26,7 +35,7 @@ export interface IEmbedder {
  * The two jobs are two methods with different NAMES, so the compiler tells
  * them apart: nothing that needs a query embedder accepts a document one.
  */
-export interface IDocumentEmbedder {
+export interface IDocumentEmbedder extends IEmbeddingInputCapacity {
   embedDocument(text: string, options?: CallOptions): Promise<IEmbedResult>;
   /**
    * Many documents in one call — the same result order as `texts`. Present
@@ -154,10 +163,10 @@ export interface IBatchSizeLimited {
  * unknown. Under ES2022 class fields that still creates an own property, so
  * `'maxBatchSize' in e` would wrongly accept it.
  */
-export function isBatchSizeLimited(
-  e: IEmbedder,
-): e is IEmbedder & IBatchSizeLimited {
-  const v = (e as { maxBatchSize?: unknown }).maxBatchSize;
+export function isBatchSizeLimited<T extends IEmbedder | IDocumentEmbedder>(
+  e: T,
+): e is T & IBatchSizeLimited {
+  const v = (e as Partial<IBatchSizeLimited>).maxBatchSize;
   return typeof v === 'number' && Number.isSafeInteger(v) && v > 0;
 }
 
@@ -181,6 +190,9 @@ export interface IIdStrategy {
   resolve(metadata: RagMetadata, text: string): string;
 }
 
+/** A precomputed document vector or its ordered set of fragment vectors. */
+export type RagDocumentVectors = number[] | number[][];
+
 export interface IRagBackendWriter {
   upsertRaw(
     id: string,
@@ -196,7 +208,7 @@ export interface IRagBackendWriter {
   upsertPrecomputedRaw?(
     id: string,
     text: string,
-    vector: number[],
+    vector: RagDocumentVectors,
     metadata: RagMetadata,
     options?: CallOptions,
   ): Promise<Result<void, RagError>>;
@@ -213,7 +225,7 @@ export interface IRagBackendWriter {
     items: ReadonlyArray<{
       id: string;
       text: string;
-      vector: number[];
+      vector: RagDocumentVectors;
       metadata: RagMetadata;
     }>,
     options?: CallOptions,

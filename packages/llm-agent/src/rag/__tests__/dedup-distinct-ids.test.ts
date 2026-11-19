@@ -79,7 +79,7 @@ for (const [name, make] of stores) {
       assert.equal(g?.ok && g.value?.text, A);
     });
 
-    it('records written without an id still dedup by similarity', async () => {
+    it('anonymous records dedup according to the store policy', async () => {
       const rag = make();
       await rag.upsert(A, {});
       await rag.upsert(B, {});
@@ -89,8 +89,10 @@ for (const [name, make] of stores) {
         100,
       );
       assert.ok(res.ok);
-      assert.equal(res.value.length, 1);
-      assert.equal(res.value[0].text, B);
+      assert.deepEqual(
+        res.value.map(({ text }) => text).sort(),
+        name === 'InMemoryRag' ? [B] : [A, B].sort(),
+      );
     });
   });
 }

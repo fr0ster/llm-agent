@@ -28,11 +28,13 @@ export function createTableSql(
   const table = quoteIdent(collection);
   const clause = opts.ifNotExists === false ? '' : 'IF NOT EXISTS ';
   return `CREATE TABLE ${clause}${table} (
-    id VARCHAR(255) PRIMARY KEY,
+    id VARCHAR(255) NOT NULL,
+    fragment_ordinal INTEGER NOT NULL DEFAULT 0,
     text TEXT,
     vector vector(${dimension}),
     metadata JSONB,
-    created_at TIMESTAMPTZ DEFAULT NOW()
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    PRIMARY KEY (id, fragment_ordinal)
   )`;
 }
 
@@ -48,4 +50,35 @@ export function qualifiedTable(table: string, schema?: string): string {
   return schema === undefined
     ? quoteIdent(table)
     : `${quoteIdent(schema)}.${quoteIdent(table)}`;
+}
+
+/** Upgrade released tables in place, retaining the PK name and vector index. */
+export function fragmentOrdinalMigrationSql(
+  name: string,
+  layout: 'per-collection' | 'shared' = 'per-collection',
+  schema?: string,
+): string {
+  const table = qualifiedTable(name, schema);
+  const keys = layout === 'shared' ? '"collection", "id"' : '"id"';
+  return `DO $migration$
+DECLARE
+  pk_name text;
+BEGIN
+  IF NOT EXISTS (
+    SELECT FROM pg_attribute WHERE attrelid = '${table}'::regclass
+      AND attname = 'fragment_ordinal' AND NOT attisdropped
+  ) THEN
+    LOCK TABLE ${table} IN ACCESS EXCLUSIVE MODE;
+    IF NOT EXISTS (
+      SELECT FROM pg_attribute WHERE attrelid = '${table}'::regclass
+        AND attname = 'fragment_ordinal' AND NOT attisdropped
+    ) THEN
+      SELECT conname INTO STRICT pk_name FROM pg_constraint
+      WHERE conrelid = '${table}'::regclass AND contype = 'p';
+      EXECUTE format('ALTER TABLE ${table} DROP CONSTRAINT %I, ADD COLUMN fragment_ordinal integer NOT NULL DEFAULT 0, ALTER COLUMN "text" DROP NOT NULL', pk_name);
+      EXECUTE format('ALTER TABLE ${table} ADD CONSTRAINT %I PRIMARY KEY (${keys}, fragment_ordinal)', pk_name);
+    END IF;
+  END IF;
+END
+$migration$`;
 }

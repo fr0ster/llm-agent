@@ -13,7 +13,7 @@ import type {
   IEmbedderBatch,
   IEmbedResult,
 } from '../interfaces/rag.js';
-import { isBatchEmbedder } from '../interfaces/rag.js';
+import { isBatchEmbedder, isBatchSizeLimited } from '../interfaces/rag.js';
 // CallOptions lives in types.ts and is NOT re-exported by rag.ts.
 import type { CallOptions } from '../interfaces/types.js';
 import { RagError } from '../interfaces/types.js';
@@ -107,6 +107,17 @@ export class RetryEmbedder implements IEmbedder {
     };
   }
 
+  get getMaxInputChars() {
+    const getCapacity = this.inner.getMaxInputChars?.bind(this.inner);
+    return (
+      getCapacity && ((options?: CallOptions) => this.run(getCapacity, options))
+    );
+  }
+
+  get maxBatchSize() {
+    return isBatchSizeLimited(this.inner) ? this.inner.maxBatchSize : undefined;
+  }
+
   async embed(text: string, options?: CallOptions): Promise<IEmbedResult> {
     return this.run(
       (attemptOptions) => this.inner.embed(text, attemptOptions),
@@ -175,7 +186,13 @@ export class RetryEmbedder implements IEmbedder {
           usageOp: withOuterAttempt(op, attempt),
         });
       } catch (err) {
-        if (attempt >= this.opts.maxAttempts || !this.isRetryable(err))
+        // The store waits out 429s for record fragments when no explicit
+        // throttle strategy handled the request.
+        if (
+          (options?.preserveEmbeddingInput && extractStatusCode(err) === 429) ||
+          attempt >= this.opts.maxAttempts ||
+          !this.isRetryable(err)
+        )
           throw err;
         await this.backoff(attempt, options?.signal);
       }

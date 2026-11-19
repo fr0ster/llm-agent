@@ -1,5 +1,10 @@
 export { createQdrantVectorRagAccessStores } from './access-stores.js';
 export { migrateQdrantVectorRagAccess } from './migrate-access.js';
+export {
+  migrateQdrantMultivectors,
+  type QdrantMultivectorMigrationOptions,
+  type QdrantMultivectorMigrationResult,
+} from './migrate-multivector.js';
 export type { QdrantRagConfig } from './qdrant-rag.js';
 export { QdrantRag } from './qdrant-rag.js';
 export type { QdrantRagProviderConfig } from './qdrant-rag-provider.js';

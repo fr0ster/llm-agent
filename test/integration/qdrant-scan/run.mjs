@@ -2,6 +2,7 @@
 // Runs only when QDRANT_TEST_URL is set (and QDRANT_TEST_API_KEY, if the
 // instance needs one); otherwise it prints a SKIP line and exits 0.
 // Run `npm run build` at the repo root first.
+import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -20,13 +21,20 @@ const rootRequire = createRequire(resolve(root, 'package.json'));
 const load = (spec) => import(pathToFileURL(rootRequire.resolve(spec)).href);
 
 const { symmetricEmbedder } = await load('@mcp-abap-adt/llm-agent');
-const { CONFORMANCE_EMBEDDING_DIM, conformanceEmbedder, registerRawRecordInsert } = await load(
-  '@mcp-abap-adt/llm-agent/testing/rag-filter-conformance',
-);
+const {
+  CONFORMANCE_EMBEDDING_DIM,
+  conformanceEmbedder,
+  registerRawRecordInsert,
+} = await load('@mcp-abap-adt/llm-agent/testing/rag-filter-conformance');
 const { scanDeleteConformanceCases, isScanDeleteCaseSkipped } = await load(
   '@mcp-abap-adt/llm-agent/testing/scan-delete-conformance',
 );
-const { QdrantRag, QdrantRagProvider, deterministicUUID } = await load('@mcp-abap-adt/qdrant-rag');
+const {
+  QdrantRag,
+  QdrantRagProvider,
+  deterministicUUID,
+  migrateQdrantMultivectors,
+} = await load('@mcp-abap-adt/qdrant-rag');
 
 const apiKey = process.env.QDRANT_TEST_API_KEY;
 const credential = apiKey ? { secret: async () => apiKey } : undefined;
@@ -64,18 +72,34 @@ const createCollection = async (name) => {
 const storeOf = async (name) => {
   created.add(name);
   await createCollection(name);
-  return registerRawRecordInsert(new QdrantRag({
-    url,
-    collectionName: name,
-    embedder,
-    ...(credential ? { credential } : {}),
-  }), async r => {
-    const response = await fetch(`${url}/collections/${name}/points?wait=true`, {
-      method: 'PUT', headers,
-      body: JSON.stringify({ points: [{ id: await deterministicUUID(r.id), vector: (await conformanceEmbedder().embed(r.text)).vector, payload: { ...r.metadata, id: r.id, text: r.text } }] }),
-    });
-    if (!response.ok) throw new Error(`raw fixture insertion failed: ${response.status}`);
-  });
+  return registerRawRecordInsert(
+    new QdrantRag({
+      url,
+      collectionName: name,
+      embedder,
+      ...(credential ? { credential } : {}),
+    }),
+    async (r) => {
+      const response = await fetch(
+        `${url}/collections/${name}/points?wait=true`,
+        {
+          method: 'PUT',
+          headers,
+          body: JSON.stringify({
+            points: [
+              {
+                id: await deterministicUUID(r.id),
+                vector: (await conformanceEmbedder().embed(r.text)).vector,
+                payload: { ...r.metadata, id: r.id, text: r.text },
+              },
+            ],
+          }),
+        },
+      );
+      if (!response.ok)
+        throw new Error(`raw fixture insertion failed: ${response.status}`);
+    },
+  );
 };
 
 // A fresh subject per call: new collection names, so storage starts empty.
@@ -117,6 +141,63 @@ const makeSubject = async () => {
 const kit = { ran: 0, failed: 0, skipped: 0 };
 const failures = [];
 try {
+  const label = 'legacy collection migration and late-fragment recall';
+  try {
+    kit.ran++;
+    const collection = `migration_${runId}`;
+    created.add(collection);
+    await createCollection(collection);
+    const first = Array.from({ length: CONFORMANCE_EMBEDDING_DIM }, (_, i) =>
+      Number(i === 0),
+    );
+    const last = Array.from({ length: CONFORMANCE_EMBEDDING_DIM }, (_, i) =>
+      Number(i === 1),
+    );
+    const rag = new QdrantRag({
+      url,
+      collectionName: collection,
+      embedder,
+      credential,
+    });
+    assert.ok((await rag.upsertPrecomputed('legacy', first, { id: 'one' })).ok);
+    const refused = await rag.upsertPrecomputed('long', [first, last], {
+      id: 'two',
+    });
+    assert.ok(!refused.ok);
+    assert.match(refused.error.message, /qdrant-migrate-multivector/);
+    await migrateQdrantMultivectors({ url, credential, collection });
+    assert.equal((await rag.getById('one')).value?.text, 'legacy');
+    assert.ok(
+      (
+        await rag.upsertPrecomputed('complete record', [first, last], {
+          id: 'two',
+        })
+      ).ok,
+    );
+    const hits = await rag.query(
+      { text: 'last', toVector: async () => last },
+      2,
+    );
+    assert.ok(hits.ok);
+    assert.deepEqual(
+      hits.value.map(({ text }) => text),
+      ['complete record', 'legacy'],
+    );
+    assert.ok(
+      (await rag.upsertPrecomputed('replacement', first, { id: 'two' })).ok,
+    );
+    assert.ok((await rag.writer().deleteByIdRaw('two')).ok);
+    const scan = await rag.scan();
+    assert.ok(scan.ok);
+    assert.deepEqual(
+      scan.value.records.map(({ id }) => id),
+      ['one'],
+    );
+    console.log(`PASS ${label}`);
+  } catch (error) {
+    kit.failed++;
+    failures.push([label, error]);
+  }
   for (const c of scanDeleteConformanceCases) {
     try {
       await c.run(makeSubject);

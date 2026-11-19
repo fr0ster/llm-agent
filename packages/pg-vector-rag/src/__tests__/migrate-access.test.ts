@@ -7,6 +7,7 @@ import {
 } from '@mcp-abap-adt/llm-agent/testing/rag-migration-conformance';
 import { migratePgVectorRagAccess } from '../migrate-access.js';
 import { PgVectorRagProvider } from '../pg-vector-rag-provider.js';
+import { fragmentOrdinalMigrationSql } from '../schema.js';
 import { accessFixture } from './access-fixture.js';
 
 for (const layout of ['per-collection', 'shared'] as const)
@@ -27,10 +28,13 @@ for (const layout of ['per-collection', 'shared'] as const)
             clientFactory: () => f.client,
           });
     try {
+      await f.client.query('CREATE EXTENSION IF NOT EXISTS vector');
       if (layout === 'shared') {
-        await f.client.query('CREATE EXTENSION IF NOT EXISTS vector');
         await f.client.query(
           'CREATE TABLE migration_docs (collection VARCHAR(63), id VARCHAR(255), text TEXT, vector vector(3), metadata JSONB, PRIMARY KEY (collection, id))',
+        );
+        await f.client.query(
+          fragmentOrdinalMigrationSql('migration_docs', 'shared'),
         );
       }
       await f.client.query(
@@ -45,7 +49,7 @@ for (const layout of ['per-collection', 'shared'] as const)
           async seedLegacyRecords(records, storeName) {
             if (layout === 'per-collection')
               await f.client.query(
-                `CREATE TABLE "${storeName}" (id TEXT PRIMARY KEY, metadata JSONB)`,
+                `CREATE TABLE "${storeName}" (id VARCHAR(255) PRIMARY KEY, text TEXT, vector vector(3), metadata JSONB)`,
               );
             for (const record of records)
               await f.client.query(

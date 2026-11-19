@@ -12,6 +12,7 @@ import type {
   IRag,
   IRetrievalEmbedder,
   ISearchStrategy,
+  RecordEmbeddingConfig,
 } from '@mcp-abap-adt/llm-agent';
 import {
   composeResilientEmbedder,
@@ -204,7 +205,7 @@ function constructFromExtraFactory(
  *
  * Field sources, read from each store's own config (not invented):
  *   - qdrant: `QdrantRagConfig` (`packages/qdrant-rag/src/qdrant-rag.ts`) —
- *     `url`, `collectionName`, `credential?: IApiKeyCredential`, `timeoutMs?`.
+ *     `url`, `collectionName`, `credential?: IApiKeyCredential`.
  *   - pg-vector: `PgVectorRagConfig` (`packages/pg-vector-rag/src/connection.ts`) —
  *     `connectionString?`, `host?`, `port?`, `database?`,
  *     `credential?: ISecretLoginCredential`, `schema?`, `collectionName`,
@@ -223,63 +224,65 @@ function constructFromExtraFactory(
  *     longer reachable through `makeRag` — a caller who wants that constructs
  *     `new InMemoryRag(...)` directly, which is still exported unchanged.
  *
- * Chunking and retry belong to the embedders underneath (`resolveEmbedder`
- * and `composeEmbedder` apply them), not to the store: `makeRag` takes the
- * retrieval embedder as it is.
+ * The store fragments record text using the document embedder's declared
+ * capacity or `fragmentSizeChars`. Embedder composition handles request retry
+ * and provider batch sizes.
  */
-export type RagResolution =
-  | {
-      type: 'in-memory';
-      embedder: IRetrievalEmbedder;
-      collectionName?: string;
-      dedupThreshold?: number;
-      vectorWeight?: number;
-      keywordWeight?: number;
-      strategy?: ISearchStrategy;
-      queryPreprocessors?: IQueryPreprocessor[];
-      documentEnrichers?: IDocumentEnricher[];
-    }
-  | {
-      type: 'qdrant';
-      embedder: IRetrievalEmbedder;
-      collectionName: string;
-      url: string;
-      credential?: IApiKeyCredential;
-      timeoutMs?: number;
-    }
-  | {
-      type: 'pg-vector';
-      embedder: IRetrievalEmbedder;
-      collectionName: string;
-      credential?: ISecretLoginCredential;
-      connectionString?: string;
-      host?: string;
-      port?: number;
-      database?: string;
-      schema?: string;
-      poolMax?: number;
-      connectTimeout?: number;
-      dimension?: number;
-      autoCreateSchema?: boolean;
-      layout?: 'per-collection' | 'shared';
-      documentsTable?: string;
-    }
-  | {
-      type: 'hana-vector';
-      embedder: IRetrievalEmbedder;
-      collectionName: string;
-      credential: ISecretLoginCredential;
-      connectionString?: string;
-      host?: string;
-      port?: number;
-      schema?: string;
-      poolMax?: number;
-      connectTimeout?: number;
-      dimension?: number;
-      autoCreateSchema?: boolean;
-      layout?: 'per-collection' | 'shared';
-      documentsTable?: string;
-    };
+export type RagResolution = RecordEmbeddingConfig &
+  (
+    | {
+        type: 'in-memory';
+        embedder: IRetrievalEmbedder;
+        collectionName?: string;
+        /** @deprecated VectorRag deduplicates anonymous records by exact text. */
+        dedupThreshold?: number;
+        vectorWeight?: number;
+        keywordWeight?: number;
+        strategy?: ISearchStrategy;
+        queryPreprocessors?: IQueryPreprocessor[];
+        documentEnrichers?: IDocumentEnricher[];
+      }
+    | {
+        type: 'qdrant';
+        embedder: IRetrievalEmbedder;
+        collectionName: string;
+        url: string;
+        credential?: IApiKeyCredential;
+      }
+    | {
+        type: 'pg-vector';
+        embedder: IRetrievalEmbedder;
+        collectionName: string;
+        credential?: ISecretLoginCredential;
+        connectionString?: string;
+        host?: string;
+        port?: number;
+        database?: string;
+        schema?: string;
+        poolMax?: number;
+        connectTimeout?: number;
+        dimension?: number;
+        autoCreateSchema?: boolean;
+        layout?: 'per-collection' | 'shared';
+        documentsTable?: string;
+      }
+    | {
+        type: 'hana-vector';
+        embedder: IRetrievalEmbedder;
+        collectionName: string;
+        credential: ISecretLoginCredential;
+        connectionString?: string;
+        host?: string;
+        port?: number;
+        schema?: string;
+        poolMax?: number;
+        connectTimeout?: number;
+        dimension?: number;
+        autoCreateSchema?: boolean;
+        layout?: 'per-collection' | 'shared';
+        documentsTable?: string;
+      }
+  );
 
 export interface RagResolutionOptions {
   /** Receives configuration warnings (e.g. a conflicting maxBatchSize). */
@@ -339,6 +342,7 @@ export async function makeRag(
         strategy: cfg.strategy,
         queryPreprocessors: cfg.queryPreprocessors,
         documentEnrichers: cfg.documentEnrichers,
+        fragmentSizeChars: cfg.fragmentSizeChars,
       });
     }
 

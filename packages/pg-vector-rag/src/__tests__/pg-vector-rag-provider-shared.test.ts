@@ -44,6 +44,11 @@ function fake(schema?: string, docsName = 'rag_documents'): Fake {
   const run = (sql: string, params: readonly unknown[]): Rows => {
     f.calls.push({ sql, params });
     if (f.failOn?.test(sql)) throw new Error('refused by the test');
+    if (
+      ['BEGIN', 'COMMIT', 'ROLLBACK'].includes(sql) ||
+      sql.startsWith('LOCK TABLE')
+    )
+      return [];
     if (sql.startsWith('SELECT to_regclass'))
       return [{ present: f.tables.has(String(params[0])) }];
     if (sql.includes('FROM pg_attribute'))
@@ -70,7 +75,10 @@ function fake(schema?: string, docsName = 'rag_documents'): Fake {
     }
     if (sql === `SELECT store_name AS "s" FROM ${f.catalog}`)
       return [...f.records.keys()].map((s) => ({ s }));
-    if (sql === `SELECT DISTINCT "collection" AS "c" FROM ${f.docs}`)
+    if (
+      sql ===
+      `SELECT DISTINCT "collection" AS "c" FROM ${f.docs} WHERE "fragment_ordinal" = 0`
+    )
       return [...f.docCount.keys()].map((c) => ({ c }));
     if (sql.startsWith('SELECT store_name AS "storeName"')) {
       assert.ok(sql.includes(`FROM ${f.catalog} `));

@@ -22,6 +22,28 @@ For the full default agent runtime (SmartAgent assembly, providers wiring), inst
 
 See the repo root for design specs, migration notes, and architectural docs.
 
+## Record embeddings
+
+A vector store keeps one full text per record. It embeds long text in ordered
+fragments, preferring paragraph and line breaks, and ranks a record by its
+highest fragment cosine score. Hybrid strategies calculate keyword scores
+from the full text. A short record and a precomputed write each store one vector.
+
+An embedder can implement the optional `getMaxInputChars(options?)` capability.
+It returns the Unicode code points allowed in one input, or `undefined` when the
+provider does not report a capacity. Token-based providers can report a
+conservative character allowance. Stores use `fragmentSizeChars` (default 2048)
+when capacity is undeclared. All fragments together retain the original text, including intact CRLF pairs.
+VectorRag deduplicates anonymous writes by exact full text. Precomputed writers
+accept either a single `number[]` or an ordered set of fragment vectors
+`number[][]`. Update custom writers to accept both shapes.
+The retrieval adapters forward document capacity and batch support, including
+declared batch sizes. Stored document inputs pass through embedder
+composition in full, regardless of `maxInputChars`. For a 429, the store
+waits for Retry-After and retries until it succeeds, the caller aborts, or a
+different error occurs. VectorRag applies configured document enrichers before
+storing and embedding the record.
+
 ## Query embedding fallback
 
 `VectorRagConfig.fallbackOnQueryEmbeddingError?: boolean` defaults to `true`:
@@ -185,7 +207,7 @@ Ordering is stable within an unchanged backend store, without snapshot isolation
 across pages. Pass `CallOptions.signal` to cancel with an `ABORTED` result.
 
 
-`composeResilientEmbedder` accepts `maxInputChars` (default `24000`, `0` disables). Single-input `embed` calls keep only the beginning of oversized input before calling the provider, including query embeddings built by the library. Batch document inputs are unchanged. Input-too-long errors are not retried. Usage schema 1 now includes optional `errorStatus` and `errorName` on failed LLM and embedding calls: the HTTP status from the cause chain and the root-cause class name. No error message is stored, since SDK messages may quote the request or the response.
+`composeResilientEmbedder` accepts `maxInputChars` (default `24000`, `0` disables). Single-input `embed` calls keep only the beginning of oversized input before calling the provider, including query embeddings built by the library. Stored record inputs and batch inputs are unchanged. Input-too-long errors are not retried. Usage schema 1 now includes optional `errorStatus` and `errorName` on failed LLM and embedding calls: the HTTP status from the cause chain and the root-cause class name. No error message is stored, since SDK messages may quote the request or the response.
 
 ## Planner references and cache usage
 

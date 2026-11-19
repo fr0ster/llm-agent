@@ -52,6 +52,12 @@ await prefetchRagFactories(['qdrant']);
 const rag = await makeRag({ type: 'qdrant', embedder, collectionName, url });
 ```
 
+## Upgrade record storage
+
+The in-memory vector backend deduplicates anonymous records by full text.
+The `dedupThreshold` option is deprecated. Follow the backend package\'s
+migration instructions before upgrading manually deployed vector stores.
+
 ## Optional peer dependencies
 
 Install only the backends you use:
@@ -85,7 +91,13 @@ retroactive. Full detail, including what to do if you redistribute:
 [docs/LICENSING.md](https://github.com/fr0ster/llm-agent/blob/main/docs/LICENSING.md).
 
 
-Embedder resolution accepts `maxInputChars` on every factory configuration, including injected instances. The default is `24000`; `0` disables the cap. Single-input `embed` calls truncate to the beginning of the input before provider invocation; batch document calls retain their inputs. Input-too-long failures do not retry.
+Embedder resolution accepts `maxInputChars` on every factory configuration, including injected instances. The default is `24000`; `0` disables the cap. Single-input `embed` calls truncate to the beginning of the input before provider invocation; stored record inputs and batch calls retain their inputs. Input-too-long failures do not retry.
+
+All vector `makeRag` configurations accept `fragmentSizeChars` (default
+2048 Unicode code points). It sets the fragment size when the document embedder
+does not declare input capacity. The store keeps the full text as one record
+and ranks it by its best fragment. Ollama reports its model context.
+The OpenAI and SAP AI Core adapters leave input capacity undeclared.
 
 ## Consumer-controlled embedding throttling
 

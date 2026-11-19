@@ -22,8 +22,9 @@ export interface StoringHana {
   readonly statements: string[];
   /** Orphan setup: a row written past the store; `table` as HANA names it. */
   insertRow(table: string, row: Record<string, Value>): void;
+  storedRows(table: string): Row[];
   /** Setup: the table a `per-collection` store reads and writes, as its owner created it. */
-  createCollectionTable(name: string): void;
+  createCollectionTable(name: string, legacy?: boolean): void;
 }
 
 export type Value = string | number | null | number[];
@@ -472,8 +473,9 @@ export function storingHana(opts: {
           'VECTOR',
           'METADATA',
           'CREATED_AT',
+          'FRAGMENT_ORDINAL',
         ],
-        key: ['COLLECTION', 'ID'],
+        key: ['COLLECTION', 'ID', 'FRAGMENT_ORDINAL'],
         lengths: { COLLECTION: 63, ID: 255, VECTOR: opts.dimension },
         rows: [],
       },
@@ -633,6 +635,7 @@ export function storingHana(opts: {
     for (const [c, v] of Object.entries(given)) row[column(table, c)] = v;
     if (row.CREATED_AT === null && table.columns.includes('CREATED_AT'))
       row.CREATED_AT = new Date().toISOString();
+    if (row.FRAGMENT_ORDINAL === null) row.FRAGMENT_ORDINAL = 0;
     const dim = table.lengths.VECTOR;
     if (dim !== undefined && row.VECTOR !== null) {
       if (!Array.isArray(row.VECTOR) || row.VECTOR.length !== dim)
@@ -734,6 +737,7 @@ export function storingHana(opts: {
         tables.delete(`${schema}.${clearTable[2]}`);
       return { rows: [], rowCount: 0 };
     }
+    if (sql.startsWith('LOCK TABLE')) return { rows: [], rowCount: 0 };
     if (sql === 'ROLLBACK' && snapshot) {
       tables.clear();
       for (const [key, table] of snapshot) tables.set(key, table);
@@ -742,13 +746,13 @@ export function storingHana(opts: {
       snapshot = undefined;
       return { rows: [], rowCount: 0 };
     }
-    const create = /^CREATE TABLE "([^"]+)"/.exec(sql);
+    const create = /^CREATE TABLE (?:IF NOT EXISTS )?"([^"]+)"/.exec(sql);
     if (create) {
       const key = `${schema}.${create[1]}`;
       if (tables.has(key)) throw new Error('Duplicate table');
       const columns = [
         ...sql.matchAll(
-          /(?:\(|,)\s*([a-z_]+)\s+(?:NVARCHAR|NCLOB|TIMESTAMP|REAL_VECTOR)/g,
+          /(?:\(|,)\s*([a-z_]+)\s+(?:NVARCHAR|NCLOB|TIMESTAMP|REAL_VECTOR|INTEGER)/g,
         ),
       ].map((m) => m[1].toUpperCase());
       const primary = /PRIMARY KEY \(([^)]+)\)/.exec(sql);
@@ -765,6 +769,19 @@ export function storingHana(opts: {
       });
       return { rows: [], rowCount: 0 };
     }
+    if (sql.startsWith('DO BEGIN')) {
+      const name = sql.match(
+        /ALTER TABLE "([^"]+)" ADD \("FRAGMENT_ORDINAL"/,
+      )?.[1];
+      if (!name) throw new Error('Unexpected fragment migration');
+      const table = resolve({ name });
+      if (!table.columns.includes('FRAGMENT_ORDINAL')) {
+        table.columns.push('FRAGMENT_ORDINAL');
+        table.key.push('FRAGMENT_ORDINAL');
+        for (const row of table.rows) row.FRAGMENT_ORDINAL = 0;
+      }
+      return { rows: [], rowCount: 0 };
+    }
     const alter =
       /^ALTER TABLE "([^"]+)" ADD \(role_id NVARCHAR\(5000\)\)$/.exec(sql);
     if (alter) {
@@ -774,6 +791,87 @@ export function storingHana(opts: {
       table.columns.push('ROLE_ID');
       for (const row of table.rows) row.ROLE_ID = null;
       return { rows: [], rowCount: 0 };
+    }
+    const ranked =
+      /^WITH candidate_rows AS \(\s+SELECT "ID", COSINE_SIMILARITY\("VECTOR", TO_REAL_VECTOR\('(\[[^']+\])'\)\) AS "score"\s+FROM "([^"]+)" WHERE ([^\n]+)[\s\S]+LIMIT (\d+)\s+\)/.exec(
+        sql,
+      );
+    if (ranked) {
+      const [, encodedVector, name, conditions, limit] = ranked;
+      const vector: number[] = JSON.parse(encodedVector);
+      const documents = resolve({ name });
+      const shared = conditions.startsWith('"COLLECTION"');
+      let offset = shared ? 1 : 0;
+      const filters = [
+        ...conditions.matchAll(
+          /JSON_VALUE\("METADATA", '\$\.(\w+)' RETURNING NVARCHAR\(5000\)\) = \?/g,
+        ),
+      ].map(([, key]) => ({ key, value: params[offset++] }));
+      const now = Number(params[offset]);
+      const forbidden = [
+        ...conditions.matchAll(
+          /JSON_QUERY\("METADATA", '\$\.(\w+)' WITH ARRAY WRAPPER\) IS NULL/g,
+        ),
+      ].map(([, key]) => key);
+      const required = [
+        ...conditions.matchAll(
+          /JSON_VALUE\("METADATA", '\$\.(\w+)' RETURNING NVARCHAR\(5000\)\) LIKE_REGEXPR/g,
+        ),
+      ].map(([, key]) => key);
+      const candidates = documents.rows
+        .flatMap((row) => {
+          if (shared && row.COLLECTION !== params[0]) return [];
+          const metadata = JSON.parse(String(row.METADATA ?? '{}')) as Record<
+            string,
+            Value
+          >;
+          if (filters.some(({ key, value }) => metadata[key] !== value))
+            return [];
+          if (forbidden.some((key) => Object.hasOwn(metadata, key))) return [];
+          if (
+            required.some(
+              (key) =>
+                typeof metadata[key] !== 'string' ||
+                !String(metadata[key]).trim(),
+            )
+          )
+            return [];
+          if (typeof metadata.ttl === 'number' && metadata.ttl < now) return [];
+          if (!Array.isArray(row.VECTOR)) return [];
+          return [{ row, score: cosineSimilarity(vector, row.VECTOR) }];
+        })
+        .sort((a, b) => b.score - a.score);
+      const cap = conditions.match(/LIMIT (\d+)$/)?.[1];
+      const closest =
+        cap === undefined ? candidates : candidates.slice(0, Number(cap));
+      const winners = new Map<Value, { row: Row; score: number }>();
+      for (const candidate of closest)
+        if (!winners.has(candidate.row.ID))
+          winners.set(candidate.row.ID, candidate);
+      const hits =
+        cap !== undefined && winners.size < Number(limit)
+          ? []
+          : [...winners.values()]
+              .slice(0, Number(limit))
+              .map(({ row, score }) => {
+                const record = documents.rows.find(
+                  (r) =>
+                    r.ID === row.ID &&
+                    r.COLLECTION === row.COLLECTION &&
+                    r.FRAGMENT_ORDINAL === 0,
+                );
+                return {
+                  id: row.ID,
+                  text: record?.TEXT ?? null,
+                  metadata: record?.METADATA ?? null,
+                  score,
+                  candidateCount: closest.length,
+                };
+              });
+      const rows = hits.length
+        ? hits
+        : [{ id: null, candidateCount: closest.length }];
+      return { rows, rowCount: rows.length };
     }
     const stmt = new Parser(
       tokenize(sql.replace(/ FOR UPDATE$/, '')),
@@ -818,11 +916,11 @@ export function storingHana(opts: {
       }
       case 'delete': {
         const table = resolve(stmt.table);
-        const before = table.rows.length;
-        table.rows = table.rows.filter(
-          (r) => !matches(table, r, stmt.where, params),
+        const deleted = table.rows.filter((r) =>
+          matches(table, r, stmt.where, params),
         );
-        return { rows: [], rowCount: before - table.rows.length };
+        table.rows = table.rows.filter((r) => !deleted.includes(r));
+        return { rows: [], rowCount: deleted.length };
       }
     }
   };
@@ -855,10 +953,18 @@ export function storingHana(opts: {
         if (!enabled) snapshot = structuredClone(tables);
       },
     ),
-    createCollectionTable(name) {
+    storedRows: (name) => resolve({ name }).rows,
+    createCollectionTable(name, legacy) {
       tables.set(`${schema}.${name}`, {
-        columns: ['ID', 'TEXT', 'VECTOR', 'METADATA', 'CREATED_AT'],
-        key: ['ID'],
+        columns: [
+          'ID',
+          'TEXT',
+          'VECTOR',
+          'METADATA',
+          'CREATED_AT',
+          ...(legacy ? [] : ['FRAGMENT_ORDINAL']),
+        ],
+        key: legacy ? ['ID'] : ['ID', 'FRAGMENT_ORDINAL'],
         lengths: { ID: 255, VECTOR: opts.dimension },
         rows: [],
       });

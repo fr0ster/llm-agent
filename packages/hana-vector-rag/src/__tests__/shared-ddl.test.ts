@@ -38,7 +38,8 @@ describe('shared-ddl (HANA)', () => {
   "VECTOR" REAL_VECTOR(1536),
   "METADATA" NCLOB,
   "CREATED_AT" TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-  PRIMARY KEY ("COLLECTION", "ID")
+  "FRAGMENT_ORDINAL" INTEGER DEFAULT 0 NOT NULL,
+  PRIMARY KEY ("COLLECTION", "ID", "FRAGMENT_ORDINAL")
 )`,
     );
   });
@@ -106,7 +107,12 @@ CREATE ${documents};`,
       expected[`${key.name}.hdbconstraint`] =
         accessForeignKeyHdbconstraint(key);
     }
-    const files = readdirSync(DDL_DIR).filter((f) => f !== '.hdiconfig');
+    const files = readdirSync(DDL_DIR).filter(
+      (f) =>
+        f.endsWith('.hdbtable') ||
+        f.endsWith('.hdbconstraint') ||
+        f === 'shared-layout.sql',
+    );
     assert.deepEqual(files.sort(), Object.keys(expected).sort());
     for (const f of files) {
       assert.equal(readFileSync(join(DDL_DIR, f), 'utf8'), `${expected[f]}\n`);
@@ -127,7 +133,18 @@ CREATE ${documents};`,
   it('HDI tables have no references and each foreign key has one artifact', () => {
     const files = readdirSync(DDL_DIR);
     const constraints = files.filter((file) => file.endsWith('.hdbconstraint'));
-    assert.equal(files.filter((file) => file.endsWith('.hdbtable')).length, 6);
+    const releasedTables = [
+      'RAG_COLLECTIONS.hdbtable',
+      'RAG_DOCUMENTS.hdbtable',
+      'rag_collection_roles.hdbtable',
+      'rag_role_assignments.hdbtable',
+      'rag_roles.hdbtable',
+      'rag_session_bindings.hdbtable',
+    ];
+    assert.deepEqual(
+      files.filter((file) => file.endsWith('.hdbtable')).sort(),
+      releasedTables,
+    );
     assert.deepEqual(constraints.sort(), [
       'rag_collection_roles_role_fk.hdbconstraint',
       'rag_role_assignments_role_fk.hdbconstraint',

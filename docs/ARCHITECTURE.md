@@ -141,6 +141,12 @@ That is a capability of the model. A role is never optional: a store without `em
 not compile. Keep the two apart — a missing role is a type error, a missing capability is a code
 path.
 
+Vector stores also use the optional `getMaxInputChars` capability to choose
+the size of each record's embedding input. Without a declared capacity they
+use a configurable fragment size of 2048 Unicode code points by default. The store keeps
+the full text and ranks the record by its best fragment cosine score. The
+resilience input cap does not truncate stored record inputs.
+
 ### 5. Unset is not sent; unsupported is an error
 
 A knob the configuration does not set is not sent, and the service applies its own default: the
@@ -851,13 +857,15 @@ Two invariants hold across that chain:
 - **Batch capability is preserved, never fabricated.** `isBatchEmbedder` only tests for the presence of `embedBatch`, so each layer picks its class by inspecting its inner (the `wrapEmbedder` pattern, shared by `withRetry` and `withCircuitBreaker`). A decorator that exposed `embedBatch` unconditionally would make a non-batch embedder look batch-capable and send callers down the batch path.
 - **Composition is idempotent, and its metadata travels.** `composeResilientEmbedder` brands the chain with a symbol-keyed `{ maxBatchSize }`, and `wrapEmbedder` propagates that brand onto its own wrapper — its `inner` is `protected`, so a re-resolution could not otherwise see it and would stack the decorators. The cap is owned by the first composition; a later call carrying a *different explicit* `maxBatchSize` keeps the original and logs one warning.
 
-Embedding quota handling is opt-in on the same retry decorators:
+The retry decorators accept an explicit embedding quota policy.
 `composeResilientEmbedder(raw, { retry: false, throttle: { key, strategy } })`
 (or `composeEmbedder` from llm-agent-rag) retains the input cap and chunking while
 delegating HTTP 429 to `runWithThrottleRetry`. `WaitAsTold` accepts an optional
 `fallbackBackoffMs`; without `maxAttempts` the quota loop has no attempt/time
-limit and only the caller signal cancels it. OpenAI/Ollama embedder providers
-make one HTTP request per non-empty call and expose structured HTTP metadata.
+limit and only the caller signal cancels it. The vector stores also wait out
+429s that reach them during record embedding. OpenAI and Ollama make one
+embedding request per non-empty call and expose structured HTTP metadata.
+Ollama also reads model context on first use.
 Configure `retry: false` on the composition so a non-429 reaches the caller on
 the first attempt. Put the circuit breaker outside this composition. See
 [Embedding throttling](EMBEDDER_THROTTLING.md) for the complete API and migration.
@@ -1696,4 +1704,4 @@ SAP AI Core retries transient failures before the first SDK chunk once by defaul
 
 Usage schema 1 adds optional errorStatus and errorName to failed LLM and embedding calls: the HTTP status from the cause chain and the root-cause class name. No error message is stored, since SDK messages may quote the request or the response. CSV exports include the fields; old records remain valid.
 
-Default embedder composition truncates single-input calls to the beginning of the input before the provider and retry layers. maxInputChars defaults to 24000 (0 disables), and embedder factory resolution forwards this option. Batch document calls retain their inputs. Input-too-long errors bypass retries.
+Default embedder composition truncates single-input calls to the beginning of the input before the provider and retry layers. maxInputChars defaults to 24000 (0 disables), and embedder factory resolution forwards this option. Stored record inputs and batch calls retain their inputs. Input-too-long errors bypass retries.

@@ -7,6 +7,43 @@ QdrantRag vector store and QdrantRagProvider for @mcp-abap-adt/llm-agent.
 
 Provides vector search capabilities using Qdrant as the backend.
 
+## Record embeddings
+
+Each record is one Qdrant point with its existing payload and a dense
+multivector configured with the `max_sim` comparator. A search sends one
+query vector, so the point score is the best fragment score. Replacing a
+record overwrites its point and all its vectors. Short records have one
+vector in the multivector.
+
+### Upgrade an existing collection
+
+Multivectors require Qdrant 1.10 or newer. The catalogued provider requires
+Qdrant 1.17 or newer for catalog creation. Legacy single-vector collections
+remain available for reads, search, deletes and single-fragment writes. A
+write with several fragments returns an error with the migration command.
+
+Pause writes to the target collections and run one migration process per
+collection. Use `QDRANT_URL` and, when needed, `QDRANT_API_KEY` in the
+environment.
+
+```sh
+qdrant-migrate-multivector --collection my_collection --dry-run
+qdrant-migrate-multivector --collection my_collection
+qdrant-migrate-multivector --all
+```
+
+Use `--all --catalog NAME` when the provider has a custom catalog, or
+`--collection NAME` for an independently managed store. Applications can
+call `migrateQdrantMultivectors({ url, collection, credential, signal })`.
+The migration copies IDs, payloads, dense vectors, sparse vectors and collection
+and payload-index settings, and restores collection aliases. It verifies the temporary copy before replacing the
+original under its existing name, then verifies the restored copy. Rerun the
+same command after interruption. Custom shard keys keep their own points. The server's native multivector size constraints apply. Pass an `AbortSignal`
+to set a caller-defined deadline or cancel requests.
+
+Configure `fragmentSizeChars` for embedders that do not declare their capacity
+(default 2,048 Unicode code points).
+
 ## Query embedding fallback
 
 `QdrantRagConfig.fallbackOnQueryEmbeddingError?: boolean` defaults to `true`:

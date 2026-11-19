@@ -6,7 +6,7 @@ import { INVALID_VECTOR } from './error-codes.js';
  * is not finite or, when a `dimension` is given (the `shared` layout), its
  * length differs from it.
  */
-export function pgVectorLiteral(
+export function pgVectorText(
   vec: readonly number[],
   dimension?: number,
 ): string {
@@ -23,5 +23,12 @@ export function pgVectorLiteral(
       INVALID_VECTOR,
     );
   }
-  return `'[${vec.join(',')}]'::vector`;
+  return `[${vec.join(',')}]`;
+}
+
+export function pgVectorLiteral(
+  vec: readonly number[],
+  dimension?: number,
+): string {
+  return `'${pgVectorText(vec, dimension)}'::vector`;
 }

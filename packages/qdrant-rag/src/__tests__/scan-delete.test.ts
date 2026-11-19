@@ -110,8 +110,8 @@ describe('QdrantRag — scan/delete conformance (stub)', () => {
 
 describe('QdrantRag — scan/delete requests', () => {
   it('scrollFilter matches the written payload keys by string value, no ttl', () => {
-    assert.equal(scrollFilter(undefined), undefined);
-    assert.equal(scrollFilter({}), undefined);
+    assert.deepEqual(scrollFilter(undefined), { must: [] });
+    assert.deepEqual(scrollFilter({}), { must: [] });
     assert.deepEqual(scrollFilter({ userId: 'u', namespace: 'n' }), {
       must: [
         { key: 'userId', match: { value: 'u' } },
@@ -137,7 +137,9 @@ describe('QdrantRag — scan/delete requests', () => {
     assert.deepEqual(req?.body, {
       limit: 5,
       with_payload: true,
-      filter: { must: [{ key: 'userId', match: { value: 'u1' } }] },
+      filter: {
+        must: [{ key: 'userId', match: { value: 'u1' } }],
+      },
       with_vector: false,
     });
   });

@@ -45,7 +45,15 @@ function setup(
 ) {
   const db = storingPg({ sharedDimension: 3 });
 
-  const client: PgClient = { ...db };
+  const client: PgClient = {
+    ...db,
+    // These races model a pool where another connection can write while a read is pending.
+    transaction: (work) =>
+      work({
+        query: (sql, params) => client.query(sql, params),
+        end: db.end,
+      }),
+  };
   const config = {
     collectionName: 'unused',
     dimension: 3,
@@ -473,7 +481,9 @@ for (const layout of ['per-collection', 'shared'] as const)
       env.client.query = async (sql, params) => {
         if (
           sql.startsWith('DROP TABLE') ||
-          (sql.startsWith('DELETE') && sql.includes('"rag_documents"'))
+          (sql.startsWith('DELETE') &&
+            sql.includes('"rag_documents"') &&
+            !sql.includes('fragment_ordinal'))
         ) {
           entered.resolve();
           await release.promise;

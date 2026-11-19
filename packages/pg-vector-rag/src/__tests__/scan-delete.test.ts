@@ -96,11 +96,11 @@ describe('scan/delete SQL', () => {
   it('shared scanPage: collection, binary cursor, strict filter, schema-qualified', () => {
     const sql = sharedStoreSql('docs', 'rag_documents', 'rag');
     assert.deepEqual(sql.scanPage(undefined, 5), {
-      sql: 'SELECT "id", "text", "metadata" FROM "rag"."rag_documents" WHERE "collection" = $1 ORDER BY "id" LIMIT 5',
+      sql: 'SELECT "id", "text", "metadata" FROM "rag"."rag_documents" WHERE "fragment_ordinal" = 0 AND "collection" = $1 ORDER BY "id" LIMIT 5',
       params: ['docs'],
     });
     assert.deepEqual(sql.scanPage('k', 5, { userId: 'u1', namespace: 'ns' }), {
-      sql: `SELECT "id", "text", "metadata" FROM "rag"."rag_documents" WHERE "collection" = $1 AND "id" > $2 AND ${STRICT('userId', 3)} AND ${STRICT('namespace', 4)} ORDER BY "id" LIMIT 5`,
+      sql: `SELECT "id", "text", "metadata" FROM "rag"."rag_documents" WHERE "fragment_ordinal" = 0 AND "collection" = $1 AND "id" > $2 AND ${STRICT('userId', 3)} AND ${STRICT('namespace', 4)} ORDER BY "id" LIMIT 5`,
       params: ['docs', 'k', 'u1', 'ns'],
     });
   });
@@ -108,11 +108,11 @@ describe('scan/delete SQL', () => {
   it('per-collection scanPage has no collection predicate, same strict filter', () => {
     const sql = perCollectionStoreSql('docs', 3);
     assert.deepEqual(sql.scanPage(undefined, 5), {
-      sql: 'SELECT "id", "text", "metadata" FROM "docs" ORDER BY "id" LIMIT 5',
+      sql: 'SELECT "id", "text", "metadata" FROM "docs" WHERE "fragment_ordinal" = 0 ORDER BY "id" LIMIT 5',
       params: [],
     });
     assert.deepEqual(sql.scanPage('k', 5, { sessionId: 's1' }), {
-      sql: `SELECT "id", "text", "metadata" FROM "docs" WHERE "id" > $1 AND ${STRICT('sessionId', 2)} ORDER BY "id" LIMIT 5`,
+      sql: `SELECT "id", "text", "metadata" FROM "docs" WHERE "fragment_ordinal" = 0 AND "id" > $1 AND ${STRICT('sessionId', 2)} ORDER BY "id" LIMIT 5`,
       params: ['k', 's1'],
     });
   });
@@ -128,18 +128,18 @@ describe('scan/delete SQL', () => {
       );
   });
 
-  it('deleteWhere is one DELETE ... RETURNING "id", scoped to the collection in shared', () => {
+  it('deleteWhere locks matching record rows within its collection', () => {
     assert.deepEqual(
       sharedStoreSql('docs', 'rag_documents').deleteWhere({ userId: 'u1' }),
       {
-        sql: `DELETE FROM "rag_documents" WHERE "collection" = $1 AND ${STRICT('userId', 2)} RETURNING "id"`,
+        sql: `SELECT "id" FROM "rag_documents" WHERE "fragment_ordinal" = 0 AND "collection" = $1 AND ${STRICT('userId', 2)} ORDER BY "id" FOR UPDATE`,
         params: ['docs', 'u1'],
       },
     );
     assert.deepEqual(
       perCollectionStoreSql('docs', 3).deleteWhere({ userId: 'u1' }),
       {
-        sql: `DELETE FROM "docs" WHERE ${STRICT('userId', 1)} RETURNING "id"`,
+        sql: `SELECT "id" FROM "docs" WHERE "fragment_ordinal" = 0 AND ${STRICT('userId', 1)} ORDER BY "id" FOR UPDATE`,
         params: ['u1'],
       },
     );
@@ -304,7 +304,7 @@ for (const layout of ['shared', 'per-collection'] as const) {
       );
     });
 
-    it('deleteWhere is one statement and counts the returned rows', async () => {
+    it('deleteWhere counts the locked records', async () => {
       const pg = fake();
       const store = open(pg, 'kb', layout);
       for (let i = 0; i < 2100; i++) {
@@ -317,7 +317,8 @@ for (const layout of ['shared', 'per-collection'] as const) {
       assert.equal(r.value.deleted, 700);
       assert.equal((await scanAll(store)).length, 1400);
       assert.equal(
-        pg.statements.filter((s) => s.startsWith('DELETE')).length,
+        pg.statements.filter((s) => s.startsWith('DELETE') && s.includes('ANY'))
+          .length,
         1,
       );
     });

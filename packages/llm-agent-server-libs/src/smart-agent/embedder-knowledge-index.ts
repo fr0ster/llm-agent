@@ -4,11 +4,12 @@ import type {
   KnowledgeEntry,
   KnowledgeFilter,
 } from '@mcp-abap-adt/llm-agent';
+import { bestFragmentScore, embedRecord } from '@mcp-abap-adt/llm-agent';
 import { matchesKnowledgeFilter } from '@mcp-abap-adt/llm-agent-libs';
 
 interface Indexed {
   entry: KnowledgeEntry;
-  vector: number[];
+  vectors: number[][];
 }
 
 /** Cosine similarity of two vectors (0 when either is zero-length). Exported:
@@ -34,15 +35,7 @@ export function cosine(a: number[], b: number[]): number {
  *  embedded: they waste tokens and, once the bundle grows beyond the embedder's
  *  input limit, the JSONL rebuild fails permanently.
  *
- *  Recallable content (a tool/step result) is embedded from a BOUNDED PREFIX
- *  (`maxEmbedChars`): a large MCP result (e.g. a full dictionary dump) can exceed
- *  the embedder's input limit (SAP AI Core text-embedding-3-small: 8192 tokens),
- *  which would 400 on upsert and break the JSONL rebuild permanently — and, since
- *  recall runs mid-run, stall the whole controller turn. Only the embedding VECTOR
- *  uses the prefix; the STORED entry keeps the full content, so recall still
- *  returns the complete result. The default (16000 chars ≈ ≤ 8000 tokens even at a
- *  pessimistic 2 chars/token) stays safely under the limit with ample ranking
- *  signal; override per deployment if needed. */
+ *  Recallable content is ranked by its highest-scoring document fragment. */
 export function makeKnowledgeSemanticIndex(
   /** Embeds the stored entries (`embedDocument`) and the search text (`embedQuery`). */
   embedder: IRetrievalEmbedder,
@@ -50,13 +43,9 @@ export function makeKnowledgeSemanticIndex(
     'controller-bundle',
     'controller-terminal',
   ],
-  maxEmbedChars = 16000,
+  fragmentSizeChars?: number,
 ) {
   const bySession = new Map<string, Indexed[]>();
-  // Bound the text handed to the embedder so an over-limit document never 400s
-  // (the full content is stored separately and returned by recall unchanged).
-  const embedInput = (text: string): string =>
-    text.length > maxEmbedChars ? text.slice(0, maxEmbedChars) : text;
   return {
     async upsert(
       sid: string,
@@ -72,13 +61,15 @@ export function makeKnowledgeSemanticIndex(
       // persisted by the backend's own append/scan; it simply never ranks in
       // semantic recall, which is correct — there is no text to rank on. #243.
       if (e.content.trim().length === 0) return;
-      const { vector } = await embedder.embedDocument(
-        embedInput(e.content),
+      const vectors = await embedRecord(
+        embedder,
+        e.content,
+        fragmentSizeChars,
         options,
       );
       const arr = bySession.get(sid);
-      if (arr) arr.push({ entry: e, vector });
-      else bySession.set(sid, [{ entry: e, vector }]);
+      if (arr) arr.push({ entry: e, vectors });
+      else bySession.set(sid, [{ entry: e, vectors }]);
     },
     async query(
       sid: string,
@@ -91,12 +82,12 @@ export function makeKnowledgeSemanticIndex(
       const scoped = filter
         ? all.filter((x) => matchesKnowledgeFilter(x.entry.metadata, filter))
         : all; // PRE-cap
-      const { vector: q } = await embedder.embedQuery(
-        embedInput(text),
-        options,
-      );
+      const { vector: q } = await embedder.embedQuery(text, options);
       const ranked = scoped
-        .map((x) => ({ e: x.entry, s: cosine(q, x.vector) }))
+        .map((x) => ({
+          e: x.entry,
+          s: bestFragmentScore(q, x.vectors, -Infinity),
+        }))
         .sort((a, b) => b.s - a.s)
         .map((x) => x.e);
       return k ? ranked.slice(0, k) : ranked;

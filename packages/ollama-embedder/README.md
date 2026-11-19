@@ -7,7 +7,7 @@ Ollama embedding provider for @mcp-abap-adt/llm-agent. Implements `IEmbedderBatc
 
 ## Exports
 
-- `OllamaEmbedder` — implements IEmbedderBatch, calls Ollama /api/embeddings and /api/embed (batch).
+- `OllamaEmbedder` — implements IEmbedderBatch, uses Ollama `/api/embed` for single and batch inputs.
 - `OllamaRag` — convenience wrapper combining OllamaEmbedder with VectorRag.
 - `OllamaEmbedderConfig` — configuration type.
 
@@ -79,8 +79,28 @@ injection, replaceable transports/sinks and delivery/loss semantics.
 
 ## Retry policy and HTTP errors
 
-Each `embed` call and each non-empty `embedBatch` call makes exactly one HTTP
-request. Empty batches return without I/O.
+The first capacity lookup or embedding request reads the model context from
+`POST /api/show` and caches it on the embedder. Both `embed` and `embedBatch`
+send that context as `options.num_ctx` with `truncate: false`. Ollama returns
+an error when an input exceeds the context. `getMaxInputChars()` exposes
+a conservative character allowance by reserving two positions for special
+tokens for BOS/EOS. A Unicode code point takes at most four UTF-8 bytes.
+This bound covers a tokenizer that falls back to one token per input byte
+including three-byte CJK and four-byte emoji. Ollama validates the actual
+token count, including model-specific preprocessing, with truncation
+disabled. If the model omits its context, the store uses its configured
+fragment granularity and Ollama uses its configured context.
+
+### Upgrade from versions that truncated inputs
+
+Allow the initial `POST /api/show` through any proxy or allowlist and
+ensure the named model is installed. A failed model lookup now fails the
+embedding operation. For direct embedding calls, send inputs within the
+model context. For stored documents, use the RAG writer to fragment the
+full text before embedding. Re-embed any previously truncated records
+from their original text.
+
+Each non-empty call makes one embedding request. Empty batches return without I/O.
 Provider-internal retry loops and the constructor `retry` option have been removed
 in this major release. Network and decoding errors are rethrown unchanged.
 The caller's `CallOptions.signal` governs cancellation.

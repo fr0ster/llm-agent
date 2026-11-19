@@ -36,6 +36,11 @@ import {
   isAccessCollectionName,
   QdrantAccessPersistence,
 } from './access-persistence.js';
+import {
+  denseVectorConfig,
+  isMigrationCollection,
+  qdrantFetch,
+} from './multivector.js';
 import { deterministicUUID, QdrantRag } from './qdrant-rag.js';
 
 /** The collection a QdrantRagProvider keeps one point per collection in, by default. */
@@ -58,7 +63,8 @@ export interface QdrantRagProviderConfig {
   credential?: IApiKeyCredential;
   embedder: IRetrievalEmbedder;
   editable?: boolean;
-  timeoutMs?: number;
+  /** Unicode code points per fragment when the embedder has no declared capacity. */
+  fragmentSizeChars?: number;
   supportedScopes?: readonly RagCollectionScope[];
   idStrategyFactory?: (owner: RagCollectionOwner) => IIdStrategy;
   /** The collection holding one record point per collection. Default `rag_collection_catalog`. */
@@ -77,7 +83,7 @@ export class QdrantRagProvider
   private readonly url: string;
   private readonly credential?: IApiKeyCredential;
   private readonly embedder: IRetrievalEmbedder;
-  private readonly timeoutMs?: number;
+  private readonly fragmentSizeChars?: number;
   private readonly catalog: string;
   private catalogReady?: Promise<void>;
   private accessReady?: Promise<QdrantAccessPersistence>;
@@ -106,7 +112,7 @@ export class QdrantRagProvider
     this.url = cfg.url.replace(/\/+$/, '');
     this.credential = cfg.credential;
     this.embedder = cfg.embedder;
-    this.timeoutMs = cfg.timeoutMs;
+    this.fragmentSizeChars = cfg.fragmentSizeChars;
     this.editable = cfg.editable ?? true;
     this.supportedScopes = cfg.supportedScopes ?? ['session', 'user', 'global'];
     this.catalog = cfg.catalogCollection ?? DEFAULT_CATALOG_COLLECTION;
@@ -141,6 +147,21 @@ export class QdrantRagProvider
     return this.createOwnedCollection(name, opts, checked.value);
   }
 
+  private async ensureRecordIndexes(name: string, code: string): Promise<void> {
+    const response = await this.request(
+      `/collections/${name}/index?wait=true`,
+      {
+        method: 'PUT',
+        body: JSON.stringify({
+          field_name: 'ownerScope',
+          field_schema: 'keyword',
+        }),
+      },
+    );
+    if (!response.ok)
+      throw new RagError('Payload index failed: ownerScope', code);
+  }
+
   private async createOwnedCollection(
     name: string,
     opts: RagProviderCreateCollectionOptions,
@@ -163,18 +184,7 @@ export class QdrantRagProvider
         const created = await this.createStore(name, opts);
         if (!created.ok) return created;
       }
-      const indexed = await this.request(
-        `/collections/${name}/index?wait=true`,
-        {
-          method: 'PUT',
-          body: JSON.stringify({
-            field_name: 'ownerScope',
-            field_schema: 'keyword',
-          }),
-        },
-      );
-      if (!indexed.ok)
-        throw new RagError('Owner scope index failed', 'RAG_CREATE_ERROR');
+      await this.ensureRecordIndexes(name, 'RAG_CREATE_ERROR');
       const recorded = await this.writeRecord(
         {
           ...owner,
@@ -212,18 +222,7 @@ export class QdrantRagProvider
     if (!listed.ok) throw listed.error;
     const reported: { storeName: string; reason: string }[] = [];
     for (const storeName of listed.value) {
-      const indexed = await this.request(
-        `/collections/${storeName}/index?wait=true`,
-        {
-          method: 'PUT',
-          body: JSON.stringify({
-            field_name: 'ownerScope',
-            field_schema: 'keyword',
-          }),
-        },
-      );
-      if (!indexed.ok)
-        throw new RagError('Owner scope index failed', 'RAG_MIGRATION_ERROR');
+      await this.ensureRecordIndexes(storeName, 'RAG_MIGRATION_ERROR');
       let offset: string | number | null = null;
       do {
         const response = await this.request(
@@ -287,7 +286,12 @@ export class QdrantRagProvider
               method: 'POST',
               body: JSON.stringify({
                 points: [point.id],
-                payload: tagged,
+                payload: {
+                  ownerScope: tagged.ownerScope,
+                  sessionId: tagged.sessionId,
+                  userId: tagged.userId,
+                  roleId: tagged.roleId,
+                },
               }),
             },
           );
@@ -562,7 +566,10 @@ export class QdrantRagProvider
       return {
         ok: true,
         value: names.filter(
-          (n) => n !== this.catalog && !isAccessCollectionName(n),
+          (n) =>
+            n !== this.catalog &&
+            !isAccessCollectionName(n) &&
+            !isMigrationCollection(n),
         ),
       };
     } catch (err) {
@@ -583,7 +590,7 @@ export class QdrantRagProvider
     const res = await this.request(`/collections/${name}`, {
       method: 'PUT',
       body: JSON.stringify({
-        vectors: { size: dimension, distance: 'Cosine' },
+        vectors: denseVectorConfig(dimension),
       }),
     });
     if (res.ok) return { ok: true, value: undefined };
@@ -668,8 +675,8 @@ export class QdrantRagProvider
       url: this.url,
       credential: this.credential,
       embedder: this.embedder,
+      fragmentSizeChars: this.fragmentSizeChars,
       collectionName: storeName,
-      timeoutMs: this.timeoutMs,
       autoCreateCollection: false,
     });
     return {
@@ -697,7 +704,11 @@ export class QdrantRagProvider
   }
 
   private refuseCatalogName(name: string): Refusal | undefined {
-    if (name !== this.catalog && !isAccessCollectionName(name))
+    if (
+      name !== this.catalog &&
+      !isAccessCollectionName(name) &&
+      !isMigrationCollection(name)
+    )
       return undefined;
     return {
       ok: false,
@@ -776,6 +787,6 @@ export class QdrantRagProvider
       'Content-Type': 'application/json',
     };
     if (this.credential) headers['api-key'] = await this.credential.secret();
-    return fetch(`${this.url}${path}`, { ...init, headers });
+    return qdrantFetch(`${this.url}${path}`, { ...init, headers });
   }
 }

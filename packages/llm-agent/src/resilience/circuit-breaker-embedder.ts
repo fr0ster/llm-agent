@@ -16,7 +16,12 @@ import type {
   IEmbedderBatch,
   IEmbedResult,
 } from '@mcp-abap-adt/llm-agent';
-import { isBatchEmbedder, RagError } from '@mcp-abap-adt/llm-agent';
+import {
+  isBatchEmbedder,
+  isBatchSizeLimited,
+  RagError,
+} from '@mcp-abap-adt/llm-agent';
+import { httpStatusOf } from '../llm/throttle.js';
 import { startOperation } from '../usage/hooks.js';
 import { isCallerCancellation } from './caller-cancellation.js';
 import type { CircuitBreaker } from './circuit-breaker.js';
@@ -27,6 +32,14 @@ export class CircuitBreakerEmbedderBase implements IEmbedder {
     protected readonly inner: IEmbedder,
     readonly breaker: CircuitBreaker,
   ) {}
+
+  get getMaxInputChars() {
+    return this.inner.getMaxInputChars?.bind(this.inner);
+  }
+
+  get maxBatchSize() {
+    return isBatchSizeLimited(this.inner) ? this.inner.maxBatchSize : undefined;
+  }
 
   async embed(text: string, options?: CallOptions): Promise<IEmbedResult> {
     if (!this.breaker.isCallPermitted) {
@@ -42,7 +55,12 @@ export class CircuitBreakerEmbedderBase implements IEmbedder {
       }
       return result;
     } catch (err) {
-      if (!isCallerCancellation(options?.signal)) {
+      if (
+        !isCallerCancellation(options?.signal) &&
+        httpStatusOf(
+          err !== null && typeof err === 'object' ? err : undefined,
+        ) !== 429
+      ) {
         this.breaker.recordFailure();
       }
       throw err;
@@ -83,7 +101,12 @@ export class CircuitBreakerEmbedder
       }
       return result;
     } catch (err) {
-      if (!isCallerCancellation(options?.signal)) {
+      if (
+        !isCallerCancellation(options?.signal) &&
+        httpStatusOf(
+          err !== null && typeof err === 'object' ? err : undefined,
+        ) !== 429
+      ) {
         this.breaker.recordFailure();
       }
       throw err;

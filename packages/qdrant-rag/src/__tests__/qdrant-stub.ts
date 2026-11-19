@@ -9,14 +9,21 @@ type StubJson =
 
 import http from 'node:http';
 
+type StubDense = number[] | number[][];
+type StubSparse = { indices: number[]; values: number[] };
+
 export type StubPoint = {
   id: string;
-  vector: number[];
+  vector: StubDense | Record<string, StubDense | StubSparse>;
   payload: Record<string, StubJson>;
 };
 export type StubRequest = { method: string; path: string; body: StubJson };
 export type StubCollection = {
   size: number;
+  multivector?: boolean;
+  vectorConfig?: StubJson;
+  shards?: Map<string, Map<string, StubPoint>>;
+  sparseVectors?: Record<string, StubJson>;
   points: Map<string, StubPoint>;
   replicationFactor?: number;
   writeConsistencyFactor?: number;
@@ -29,7 +36,9 @@ export type QdrantStub = {
   readonly baseUrl: string;
   readonly collections: Map<string, StubCollection>;
   readonly requests: StubRequest[];
+  readonly aliases: Map<string, string>;
   failOn?: (r: StubRequest) => boolean;
+  throttle?: (r: StubRequest) => boolean;
   version?: string;
   /** Runs inside a points PUT to the catalog, before it is applied — a racing writer. */
   beforeCatalogWrite?: () => void;
@@ -45,6 +54,7 @@ export async function startQdrantStub(
 ): Promise<QdrantStub> {
   const collections = new Map<string, StubCollection>();
   const requests: StubRequest[] = [];
+  const aliases = new Map<string, string>();
   let stub: QdrantStub | undefined;
 
   const route = (
@@ -74,10 +84,42 @@ export async function startQdrantStub(
       reply(404, {
         status: { error: `Collection \`${name}\` doesn't exist!` },
       });
+    const aliasPath = r.path.match(/^\/collections\/([^/]+)\/aliases$/);
+    if (aliasPath && r.method === 'GET') {
+      const collection = aliases.get(aliasPath[1]) ?? aliasPath[1];
+      reply(200, {
+        result: {
+          aliases: [...aliases]
+            .filter(([, name]) => name === collection)
+            .map(([alias_name, collection_name]) => ({
+              alias_name,
+              collection_name,
+            })),
+        },
+      });
+      return;
+    }
+    if (r.path === '/collections/aliases' && r.method === 'POST') {
+      const actions = body.actions as (
+        | { delete_alias: { alias_name: string } }
+        | { create_alias: { alias_name: string; collection_name: string } }
+      )[];
+      for (const action of actions) {
+        if ('delete_alias' in action)
+          aliases.delete(action.delete_alias.alias_name);
+        else
+          aliases.set(
+            action.create_alias.alias_name,
+            action.create_alias.collection_name,
+          );
+      }
+      reply(200, { result: true });
+      return;
+    }
     const coll = r.path.match(/^\/collections\/([^/]+)$/);
     if (coll) {
       const name = coll[1];
-      const c = collections.get(name);
+      const c = collections.get(aliases.get(name) ?? name);
       if (r.method === 'GET') {
         if (!c) {
           missing(name);
@@ -89,7 +131,15 @@ export async function startQdrantStub(
             payload_schema: c.payloadSchema ?? {},
             config: {
               params: {
-                vectors: { size: c.size },
+                vectors: c.vectorConfig ?? {
+                  size: c.size,
+                  distance: 'Cosine',
+                  ...(c.multivector
+                    ? { multivector_config: { comparator: 'max_sim' } }
+                    : {}),
+                },
+                sparse_vectors: c.sparseVectors,
+                ...(c.shards ? { sharding_method: 'custom' } : {}),
                 replication_factor: c.replicationFactor ?? 1,
                 write_consistency_factor: c.writeConsistencyFactor ?? 1,
               },
@@ -105,16 +155,53 @@ export async function startQdrantStub(
           });
           return;
         }
-        const vectors = body.vectors as { size: number };
-        collections.set(name, { size: vectors.size, points: new Map() });
+        const vectors = body.vectors as {
+          size: number;
+          multivector_config?: object;
+        };
+        collections.set(name, {
+          size: vectors.size,
+          vectorConfig: body.vectors,
+          ...(body.sharding_method === 'custom' ? { shards: new Map() } : {}),
+          multivector: Boolean(vectors.multivector_config),
+          sparseVectors: body.sparse_vectors as StubCollection['sparseVectors'],
+          points: new Map(),
+        });
         reply(200, { result: true });
         return;
       }
       if (r.method === 'DELETE') {
         collections.delete(name);
+        for (const [alias, target] of aliases)
+          if (target === name) aliases.delete(alias);
         reply(200, { result: true });
         return;
       }
+    }
+    const clusterPath = r.path.match(
+      /^\/collections\/([^/]+)\/(cluster|shards)$/,
+    );
+    if (clusterPath) {
+      const collection = collections.get(clusterPath[1]);
+      if (!collection?.shards) {
+        missing(clusterPath[1]);
+        return;
+      }
+      if (r.method === 'GET') {
+        reply(200, {
+          result: {
+            peer_id: 7,
+            local_shards: [...collection.shards.keys()].map(
+              (shard_key, shard_id) => ({ shard_key, shard_id }),
+            ),
+            remote_shards: [],
+          },
+        });
+        return;
+      }
+      collection.shards.set(String(body.shard_key), new Map());
+      reply(200, { result: true });
+      return;
     }
     if (r.path === '/collections' && r.method === 'GET') {
       reply(200, {
@@ -125,7 +212,7 @@ export async function startQdrantStub(
       return;
     }
     const pts = r.path.match(
-      /^\/collections\/([^/]+)\/points(\/scroll|\/delete|\/search|\/payload)?$/,
+      /^\/collections\/([^/]+)\/points(\/scroll|\/delete|\/search|\/payload|\/count|\/query)?$/,
     );
     if (pts) {
       const name = pts[1];
@@ -135,12 +222,16 @@ export async function startQdrantStub(
         missing(name);
         return;
       }
+      const scopedPoints =
+        typeof body.shard_key === 'string'
+          ? (c.shards?.get(body.shard_key) ?? c.points)
+          : c.points;
       if (r.method === 'PUT' && action === undefined) {
         if (name === catalog) stub?.beforeCatalogWrite?.();
         const insertOnly = body.update_mode === 'insert_only';
         for (const p of body.points as StubPoint[]) {
-          if (insertOnly && c.points.has(p.id)) continue;
-          c.points.set(p.id, p);
+          if (insertOnly && scopedPoints.has(p.id)) continue;
+          scopedPoints.set(p.id, p);
         }
         reply(200, { result: { status: 'completed' } });
         return;
@@ -150,22 +241,34 @@ export async function startQdrantStub(
         const ids = body.ids as string[];
         reply(200, {
           result: ids.flatMap((id) => {
-            const p = c.points.get(id);
-            return p ? [{ id, payload: p.payload }] : [];
+            const p = scopedPoints.get(id);
+            return p
+              ? [
+                  {
+                    id,
+                    payload: p.payload,
+                    ...(body.with_vector ? { vector: p.vector } : {}),
+                  },
+                ]
+              : [];
           }),
         });
+        return;
+      }
+      if (r.method === 'POST' && action === '/count') {
+        reply(200, { result: { count: scopedPoints.size } });
         return;
       }
       if (r.method === 'POST' && action === '/scroll') {
         // Qdrant scrolls in point-id order; the offset is the first id to
         // return (inclusive), the filter is applied inside the scroll.
         const filter = body.filter as QdrantFilter | undefined;
-        const ids = [...c.points.keys()]
+        const ids = [...scopedPoints.keys()]
           .sort()
           .filter(
             (id) =>
               filter === undefined ||
-              matchesFilter(c.points.get(id)?.payload ?? {}, filter),
+              matchesFilter(scopedPoints.get(id)?.payload ?? {}, filter, id),
           );
         const first =
           body.offset === undefined
@@ -175,9 +278,13 @@ export async function startQdrantStub(
         const limit = Number(body.limit ?? 10);
         reply(200, {
           result: {
-            points: ids
-              .slice(start, start + limit)
-              .map((id) => ({ id, payload: c.points.get(id)?.payload })),
+            points: ids.slice(start, start + limit).map((id) => ({
+              id,
+              payload: scopedPoints.get(id)?.payload,
+              ...(body.with_vector
+                ? { vector: scopedPoints.get(id)?.vector }
+                : {}),
+            })),
             next_page_offset: ids[start + limit] ?? null,
           },
         });
@@ -189,8 +296,15 @@ export async function startQdrantStub(
         // behaviour: "No point with id ... found").
         stub?.beforePayloadWrite?.();
         const set = (body.payload ?? {}) as Record<string, StubJson>;
-        const ids = (body.points as string[] | undefined) ?? [];
-        const absent = ids.find((id) => !c.points.has(id));
+        const filter = body.filter as QdrantFilter | undefined;
+        const ids =
+          (body.points as string[] | undefined) ??
+          (filter
+            ? [...scopedPoints.values()]
+                .filter((p) => matchesFilter(p.payload, filter, p.id))
+                .map((p) => p.id)
+            : []);
+        const absent = ids.find((id) => !scopedPoints.has(id));
         if (absent !== undefined) {
           reply(404, {
             status: { error: `Not found: No point with id ${absent} found` },
@@ -198,41 +312,57 @@ export async function startQdrantStub(
           return;
         }
         for (const id of ids)
-          Object.assign(c.points.get(id)?.payload ?? {}, set);
+          Object.assign(scopedPoints.get(id)?.payload ?? {}, set);
         reply(200, { result: { status: 'completed' } });
         return;
       }
       if (r.method === 'POST' && action === '/delete') {
         for (const id of (body.points as string[] | undefined) ?? [])
-          c.points.delete(id);
+          scopedPoints.delete(id);
         if (body.filter !== undefined) {
-          for (const [id, point] of c.points) {
-            if (matchesFilter(point.payload, body.filter as QdrantFilter))
-              c.points.delete(id);
+          for (const [id, point] of scopedPoints) {
+            if (matchesFilter(point.payload, body.filter as QdrantFilter, id))
+              scopedPoints.delete(id);
           }
         }
         reply(200, { result: { status: 'completed' } });
         return;
       }
-      if (r.method === 'POST' && action === '/search') {
+      if (
+        r.method === 'POST' &&
+        (action === '/search' || action === '/query')
+      ) {
         // Qdrant's documented search: the filter is applied inside the
         // search, then points are ordered by cosine similarity and cut at
         // `limit` — so the conformance cases see what a real server returns.
-        const query = body.vector as number[];
+        const query = denseVectors(
+          (body.vector ?? body.query) as StubPoint['vector'],
+        )[0];
         const filter = body.filter as QdrantFilter | undefined;
         const limit = Number(body.limit ?? 10);
-        const hits = [...c.points.values()]
+        const hits = [...scopedPoints.values()]
           .filter(
-            (p) => filter === undefined || matchesFilter(p.payload, filter),
+            (p) =>
+              filter === undefined || matchesFilter(p.payload, filter, p.id),
           )
           .map((p) => ({
             id: p.id,
-            score: cosine(query, p.vector),
+            score: denseVectors(
+              p.vector,
+              typeof body.using === 'string' ? body.using : undefined,
+            ).reduce(
+              (best, vector) => Math.max(best, cosine(query, vector)),
+              -Infinity,
+            ),
             payload: p.payload,
           }))
-          .sort((a, b) => b.score - a.score)
-          .slice(0, limit);
-        reply(200, { result: hits });
+          .sort((a, b) => b.score - a.score);
+        const points = hits.slice(0, limit).map(({ id, score, payload }) => ({
+          id,
+          score,
+          ...(body.with_payload ? { payload } : {}),
+        }));
+        reply(200, { result: action === '/query' ? { points } : points });
         return;
       }
     }
@@ -255,6 +385,11 @@ export async function startQdrantStub(
         res.writeHead(status, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(body));
       };
+      if (stub?.throttle?.(request)) {
+        res.setHeader('Retry-After', '0');
+        reply(429, { status: { error: 'throttled' } });
+        return;
+      }
       if (stub?.failOn?.(request)) {
         reply(500, { status: { error: 'refused by the test' } });
         return;
@@ -270,6 +405,7 @@ export async function startQdrantStub(
     baseUrl: `http://127.0.0.1:${addr.port}`,
     collections,
     requests,
+    aliases,
     close: () =>
       new Promise<void>((resolve, reject) =>
         server.close((err) => (err ? reject(err) : resolve())),
@@ -287,6 +423,7 @@ export async function startQdrantStub(
 // ---------------------------------------------------------------------------
 
 type QdrantCondition =
+  | { has_id: string[] }
   | { key: string; match: { value: string | number | boolean } }
   | { is_empty: { key: string } }
   | { is_null: { key: string } }
@@ -306,7 +443,9 @@ export type QdrantFilter = {
 function holds(
   payload: Record<string, StubJson>,
   cond: QdrantCondition,
+  id?: string,
 ): boolean {
+  if ('has_id' in cond) return id !== undefined && cond.has_id.includes(id);
   if ('is_null' in cond) return payload[cond.is_null.key] === null;
   if ('values_count' in cond) {
     if (!(cond.key in payload)) return false;
@@ -314,7 +453,10 @@ function holds(
     return (Array.isArray(value) ? value.length : 1) >= cond.values_count.gte;
   }
   if ('is_empty' in cond) {
-    const v = payload[cond.is_empty.key];
+    let v: StubJson = payload;
+    for (const key of cond.is_empty.key.split('.')) {
+      v = v && typeof v === 'object' && !Array.isArray(v) ? v[key] : undefined;
+    }
     return (
       v === undefined || v === null || (Array.isArray(v) && v.length === 0)
     );
@@ -337,21 +479,23 @@ function holds(
       (lte === undefined || v <= lte)
     );
   }
-  return matchesFilter(payload, cond);
+  return matchesFilter(payload, cond, id);
 }
 
 export function matchesFilter(
   payload: Record<string, StubJson>,
   filter: QdrantFilter,
+  id?: string,
 ): boolean {
-  if (filter.must && !filter.must.every((c) => holds(payload, c))) return false;
+  if (filter.must && !filter.must.every((c) => holds(payload, c, id)))
+    return false;
   if (
     filter.should &&
     filter.should.length > 0 &&
-    !filter.should.some((c) => holds(payload, c))
+    !filter.should.some((c) => holds(payload, c, id))
   )
     return false;
-  if (filter.must_not?.some((c) => holds(payload, c))) return false;
+  if (filter.must_not?.some((c) => holds(payload, c, id))) return false;
   return true;
 }
 
@@ -365,4 +509,10 @@ function cosine(a: number[], b: number[]): number {
     nb += b[i] ** 2;
   }
   return dot / (Math.sqrt(na) * Math.sqrt(nb) || 1);
+}
+
+function denseVectors(vector: StubPoint['vector'], name = ''): number[][] {
+  const dense = Array.isArray(vector) ? vector : vector[name];
+  if (!Array.isArray(dense)) return [];
+  return Array.isArray(dense[0]) ? (dense as number[][]) : [dense as number[]];
 }

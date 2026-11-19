@@ -81,13 +81,46 @@ export async function deleteWhere(
   for (let i = 0; i < ids.length; i += DELETE_BATCH_SIZE) {
     checkAbort();
     const batch = ids.slice(i, i + DELETE_BATCH_SIZE);
-    const stmt = sql.deleteByIds(batch);
     const settled = cache?.beginWrite(batch);
     try {
-      deleted += (await client.exec(stmt.sql, stmt.params)).rowCount;
+      if (!client.transaction)
+        throw new RagError(
+          'Record deletion requires a transaction-capable HANA client',
+          'DELETE_ERROR',
+        );
+      deleted += await client.transaction(async (connection) => {
+        const lock = sql.lockByIds(batch);
+        const rows = await connection.query(lock.sql, lock.params);
+        const matching = rows
+          .filter((row) => matchesScanFilter(withId(row), filter))
+          .map((row) => String(row.id));
+        checkAbort();
+        if (matching.length) {
+          const stmt = sql.deleteByIds(matching);
+          await connection.exec(stmt.sql, stmt.params);
+        }
+        return matching.length;
+      });
     } finally {
       settled?.();
     }
   }
   return deleted;
+}
+
+/** Clear the collection after all prior writes have committed. */
+export async function clearRecords(
+  client: HanaClient,
+  sql: HanaStoreSql,
+): Promise<void> {
+  if (!client.transaction)
+    throw new RagError(
+      'Clearing records requires a transaction-capable HANA client',
+      'DELETE_ERROR',
+    );
+  const statement = sql.clear();
+  await client.transaction(async (connection) => {
+    await connection.exec(sql.lockForClear());
+    await connection.exec(statement.sql, statement.params);
+  });
 }

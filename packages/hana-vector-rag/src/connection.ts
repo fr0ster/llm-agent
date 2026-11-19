@@ -1,7 +1,8 @@
 import type { ISecretLoginCredential } from '@mcp-abap-adt/interfaces-auth';
+import type { RecordEmbeddingConfig } from '@mcp-abap-adt/llm-agent';
 import type { RecordCacheOptions } from './record-cache.js';
 
-export interface HanaVectorRagConfig {
+export interface HanaVectorRagConfig extends RecordEmbeddingConfig {
   /** Retry a failed caller query embedding with the store embedder. Default: true.
    *  TextOnlyEmbedding is always embedded by the store, regardless of this option. */
   fallbackOnQueryEmbeddingError?: boolean;

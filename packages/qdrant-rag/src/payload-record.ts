@@ -8,6 +8,6 @@ export function splitPayload(payload: Record<string, unknown>): {
   text: string;
   metadata: RagMetadata;
 } {
-  const { text, ...rest } = payload;
-  return { text: String(text ?? ''), metadata: rest as RagMetadata };
+  const { text, ...metadata } = payload;
+  return { text: String(text ?? ''), metadata: metadata as RagMetadata };
 }

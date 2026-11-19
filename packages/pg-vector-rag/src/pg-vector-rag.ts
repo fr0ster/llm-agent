@@ -4,6 +4,7 @@ import type {
   IRag,
   IRagBackendWriter,
   IRetrievalEmbedder,
+  RagDocumentVectors,
   RagMetadata,
   RagResult,
   Result,
@@ -13,6 +14,7 @@ import {
   assertScanOptions,
   decodeIdScanCursor,
   decodeListCursor,
+  embedRecord,
   encodeListCursor,
   FallbackQueryEmbedding,
   INVALID_ARGUMENT,
@@ -30,6 +32,7 @@ import {
   type RagScanFilter,
   type RagScanPage,
   ragIdentityFilter,
+  recordVectors,
   TextOnlyEmbedding,
   validateRagMetadata,
 } from '@mcp-abap-adt/llm-agent';
@@ -38,20 +41,31 @@ import { resolvePgConnectArgs } from './connection.js';
 import { SHARED_LAYOUT_NOT_DEPLOYED } from './error-codes.js';
 import { resolveLayout } from './layout.js';
 import { RecordCache, type StoreCache } from './record-cache.js';
-import { deleteWhere, scanPage } from './scan-delete.js';
+import {
+  clearRecords,
+  deleteWhere,
+  recordTransaction,
+  scanPage,
+} from './scan-delete.js';
 import {
   assertCollectionName,
   createExtensionSql,
+  fragmentOrdinalMigrationSql,
   qualifiedTable,
 } from './schema.js';
 import { checkSharedTables } from './shared-check.js';
 import { SHARED_DOCUMENTS_TABLE } from './shared-ddl.js';
 import {
+  queryPg,
+  serializePgClient,
+  withPgConnection,
+} from './single-connection.js';
+import {
   type PgStoreSql,
   perCollectionStoreSql,
   sharedStoreSql,
 } from './store-sql.js';
-import { pgVectorLiteral } from './vector-literal.js';
+import { pgVectorLiteral, pgVectorText } from './vector-literal.js';
 import { withId } from './with-id.js';
 
 export type { PgVectorRagConfig };
@@ -142,27 +156,34 @@ export async function createPgClient(
 export class PgVectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
   private readonly cache: StoreCache;
   private readonly listStore: string;
-  private listIdentity?: Promise<string>;
+  private listIdentity?: string | Promise<string>;
   private readonly listTable: string;
   private readonly dimension: number;
+  private readonly collectionName: string;
+  private readonly fragmentSizeChars?: number;
   private readonly embedder: IRetrievalEmbedder;
   private readonly fallbackOnQueryEmbeddingError: boolean;
   private readonly autoCreateSchema: boolean;
   private readonly clientPromise: Promise<PgClient>;
   private schemaReady = false;
   private schemaPromise?: Promise<void>;
+  private schemaChecked = false;
   private readonly sql: PgStoreSql;
   private readonly documentsTable: string;
   private readonly schema?: string;
   private sharedCheck?: Promise<void>;
+  private ordinalSchema?: Promise<void>;
 
   constructor(
     config: PgVectorRagConfig & { embedder: IRetrievalEmbedder },
     injectedClient?: PgClient,
     cache?: StoreCache,
+    private readonly migrateExistingSchema = false,
   ) {
     assertCollectionName(config.collectionName);
+    this.collectionName = config.collectionName;
     this.dimension = config.dimension ?? 1536;
+    this.fragmentSizeChars = config.fragmentSizeChars;
     this.embedder = config.embedder;
     this.fallbackOnQueryEmbeddingError =
       config.fallbackOnQueryEmbeddingError ?? true;
@@ -192,7 +213,7 @@ export class PgVectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
     // Attach a no-op catch so the eager import never becomes an unhandledRejection.
     // The rejection is re-thrown when clientPromise is actually awaited.
     const driverPromise = injectedClient
-      ? Promise.resolve(injectedClient)
+      ? Promise.resolve(serializePgClient(injectedClient))
       : createPgClient(config);
     driverPromise.catch(() => {});
     this.clientPromise = driverPromise;
@@ -200,8 +221,14 @@ export class PgVectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
 
   async ensureSchema(): Promise<void> {
     if (this.schemaReady) return;
+    await withPgConnection(await this.clientPromise, (connection) =>
+      this.ensureSchemaOn(connection),
+    );
+  }
+
+  private async ensureSchemaOn(client: PgClient): Promise<void> {
+    if (this.schemaReady) return;
     this.schemaPromise ??= (async () => {
-      const client = await this.clientPromise;
       const ddl = this.sql.createTable();
       if (ddl !== undefined) {
         await client.query(createExtensionSql());
@@ -212,16 +239,47 @@ export class PgVectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
     await this.schemaPromise;
   }
 
-  private async maybeEnsureSchema(): Promise<void> {
-    if (this.autoCreateSchema) await this.ensureSchema();
-    await this.ensureSharedDeployed();
+  private async ensureFragmentOrdinal(client: PgClient): Promise<void> {
+    if (
+      this.sql.layout === 'shared' ||
+      (!this.autoCreateSchema && !this.migrateExistingSchema)
+    )
+      return;
+    this.ordinalSchema ??= (async () => {
+      await client.query(fragmentOrdinalMigrationSql(this.collectionName));
+    })().catch((error) => {
+      this.ordinalSchema = undefined;
+      throw error;
+    });
+    await this.ordinalSchema;
+  }
+
+  private async maybeEnsureSchema(signal?: AbortSignal): Promise<void> {
+    if (
+      this.schemaChecked ||
+      (this.sql.layout === 'per-collection' &&
+        !this.autoCreateSchema &&
+        !this.migrateExistingSchema)
+    )
+      return;
+    await withPgConnection(
+      await this.clientPromise,
+      async (connection) => {
+        if (this.schemaChecked) return;
+        if (this.autoCreateSchema) await this.ensureSchemaOn(connection);
+        await this.ensureFragmentOrdinal(connection);
+        await this.ensureSharedDeployed(connection);
+        this.schemaChecked = true;
+      },
+      signal,
+    );
   }
 
   /** `shared` only: the tables are deployed with the right dimension. A success is kept, a failure is not. */
-  private async ensureSharedDeployed(): Promise<void> {
+  private async ensureSharedDeployed(client: PgClient): Promise<void> {
     if (this.sql.layout !== 'shared') return;
     this.sharedCheck ??= (async () => {
-      const checked = await checkSharedTables(await this.clientPromise, {
+      const checked = await checkSharedTables(client, {
         schema: this.schema,
         tables: [this.documentsTable],
         documentsTable: this.documentsTable,
@@ -266,7 +324,7 @@ export class PgVectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
     if (options?.signal?.aborted)
       return { ok: false, error: new RagError('Aborted', 'ABORTED') };
     try {
-      await this.maybeEnsureSchema();
+      await this.maybeEnsureSchema(options?.signal);
       const safe =
         embedding instanceof TextOnlyEmbedding
           ? new QueryEmbedding(embedding.text, this.embedder, options)
@@ -276,17 +334,32 @@ export class PgVectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
       const vector = await safe.toVector();
       const client = await this.clientPromise;
       const lit = this.vectorLiteral(vector);
+      if (k <= 0) return { ok: true, value: [] };
       const rawNamespace = options?.ragFilter?.namespace;
-      // Session/user scope, `ragFilter.namespace` and expiry are conditions of
-      // the SQL itself (see store-sql.ts), evaluated before ORDER BY … LIMIT:
-      // the table has no ANN index, so the scan is exact and LIMIT counts only
-      // matching rows.
-      const { sql, params } = this.sql.search(lit, Math.max(1, k), {
+      // Apply owner scope, namespace and expiry before ranking distinct records.
+      const filter = {
         identity: ragIdentityFilter(options),
         namespace: typeof rawNamespace === 'string' ? rawNamespace : undefined,
         nowSecs: Date.now() / 1000,
-      });
-      const { rows } = await client.query(sql, params);
+      };
+      let candidates: number | undefined = k;
+      const search = async () => {
+        options?.signal?.throwIfAborted();
+        const stmt = this.sql.search(lit, k, filter, candidates);
+        return (await queryPg(client, stmt.sql, stmt.params, options?.signal))
+          .rows;
+      };
+      let rows = await search();
+      while (candidates !== undefined && rows[0]?.id === null) {
+        // An ANN index can run out before it returns the requested candidate count.
+        // Finish with exact SQL aggregation when that happens.
+        candidates =
+          Number(rows[0].candidateCount) < candidates
+            ? undefined
+            : candidates * 2;
+        rows = await search();
+      }
+      rows = rows.filter((row) => row.id !== null);
       const results: RagResult[] = rows.map((row) => ({
         text: String(row.text ?? ''),
         metadata: withId(row),
@@ -299,6 +372,8 @@ export class PgVectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
         ),
       };
     } catch (err) {
+      if (options?.signal?.aborted)
+        return { ok: false, error: new RagError('Aborted', 'ABORTED') };
       if (!this.fallbackOnQueryEmbeddingError && err instanceof RagError)
         return { ok: false, error: err };
       return { ok: false, error: this.failure(err, 'QUERY_ERROR') };
@@ -316,11 +391,16 @@ export class PgVectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
     const lease = this.cache.beginRead(id);
     let admitted: RagResult | undefined;
     try {
-      await this.maybeEnsureSchema();
+      await this.maybeEnsureSchema(options?.signal);
       const client = await this.clientPromise;
       if (options?.signal?.aborted) throw new RagError('Aborted', 'ABORTED');
       const stmt = this.sql.byId(id);
-      const { rows } = await client.query(stmt.sql, stmt.params);
+      const { rows } = await queryPg(
+        client,
+        stmt.sql,
+        stmt.params,
+        options?.signal,
+      );
       if (options?.signal?.aborted) throw new RagError('Aborted', 'ABORTED');
       const row = rows[0];
       if (!row) return { ok: true, value: null };
@@ -338,39 +418,53 @@ export class PgVectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
   }
 
   /** Resolve search_path and connection defaults once per handle. */
-  private resolvedListStore(): Promise<string> {
-    this.listIdentity ??= (async () => {
-      await this.maybeEnsureSchema();
-      const client = await this.clientPromise;
-      const { rows } = await client.query(
-        `SELECT current_database() AS "listDatabase", n.nspname AS "listSchema",
+  private async resolvedListStore(signal?: AbortSignal): Promise<string> {
+    if (typeof this.listIdentity === 'string') return this.listIdentity;
+    await this.maybeEnsureSchema(signal);
+    return withPgConnection(
+      await this.clientPromise,
+      async (connection) => {
+        this.listIdentity ??= this.readListStore(connection).then(
+          (identity) => {
+            this.listIdentity = identity;
+            return identity;
+          },
+          (error) => {
+            this.listIdentity = undefined;
+            throw error instanceof Error ? error : new Error(String(error));
+          },
+        );
+        return this.listIdentity;
+      },
+      signal,
+    );
+  }
+
+  private async readListStore(client: PgClient): Promise<string> {
+    const { rows } = await client.query(
+      `SELECT current_database() AS "listDatabase", n.nspname AS "listSchema",
           inet_server_addr()::text AS "listHost", inet_server_port() AS "listPort"
          FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
          WHERE c.oid = to_regclass($1)`,
-        [this.listTable],
-      );
-      const row = rows[0];
-      if (
-        !row ||
-        typeof row.listDatabase !== 'string' ||
-        typeof row.listSchema !== 'string' ||
-        (row.listHost !== null && typeof row.listHost !== 'string') ||
-        (row.listPort !== null && typeof row.listPort !== 'number')
-      )
-        throw new Error('Cannot resolve listing store identity');
-      return JSON.stringify([
-        this.listStore,
-        row.listDatabase,
-        row.listSchema,
-        row.listHost,
-        row.listPort,
-        this.listTable,
-      ]);
-    })().catch((error: unknown) => {
-      this.listIdentity = undefined;
-      throw error instanceof Error ? error : new Error(String(error));
-    });
-    return this.listIdentity;
+      [this.listTable],
+    );
+    const row = rows[0];
+    if (
+      !row ||
+      typeof row.listDatabase !== 'string' ||
+      typeof row.listSchema !== 'string' ||
+      (row.listHost !== null && typeof row.listHost !== 'string') ||
+      (row.listPort !== null && typeof row.listPort !== 'number')
+    )
+      throw new Error('Cannot resolve listing store identity');
+    return JSON.stringify([
+      this.listStore,
+      row.listDatabase,
+      row.listSchema,
+      row.listHost,
+      row.listPort,
+      this.listTable,
+    ]);
   }
 
   async list(
@@ -380,7 +474,7 @@ export class PgVectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
     try {
       const { filter, conflict, limit } = prepareList(params, options);
       if (options?.signal?.aborted) throw new RagError('Aborted', 'ABORTED');
-      const store = await this.resolvedListStore();
+      const store = await this.resolvedListStore(options?.signal);
       if (options?.signal?.aborted) throw new RagError('Aborted', 'ABORTED');
       const scope = listCursorScope(store, filter, conflict);
       const after =
@@ -388,7 +482,6 @@ export class PgVectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
           ? undefined
           : decodeListCursor(scope, params.cursor);
       if (conflict) return { ok: true, value: { records: [] } };
-      await this.maybeEnsureSchema();
       const client = await this.clientPromise;
       if (options?.signal?.aborted) throw new RagError('Aborted', 'ABORTED');
       const stmt = this.sql.listPage(
@@ -397,7 +490,12 @@ export class PgVectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
         params.includeText ?? false,
         filter,
       );
-      const { rows } = await client.query(stmt.sql, stmt.params);
+      const { rows } = await queryPg(
+        client,
+        stmt.sql,
+        stmt.params,
+        options?.signal,
+      );
       if (options?.signal?.aborted) throw new RagError('Aborted', 'ABORTED');
       const records: RagListPage['records'] = [];
       for (const row of rows) {
@@ -447,9 +545,12 @@ export class PgVectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
         error: new RagError('Invalid scan cursor', INVALID_ARGUMENT),
       };
     try {
-      await this.maybeEnsureSchema();
+      await this.maybeEnsureSchema(options?.signal);
       const client = await this.clientPromise;
-      return { ok: true, value: await scanPage(client, this.sql, opts) };
+      return {
+        ok: true,
+        value: await scanPage(client, this.sql, opts, options?.signal),
+      };
     } catch (err) {
       return { ok: false, error: this.scanFailure(err, 'QUERY_ERROR') };
     }
@@ -464,9 +565,8 @@ export class PgVectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
     const valid = assertNonEmptyFilter(filter);
     if (!valid.ok) return valid;
     try {
-      await this.maybeEnsureSchema();
+      await this.maybeEnsureSchema(options?.signal);
       const client = await this.clientPromise;
-      // One statement: an abort cannot land inside it, so it is checked here.
       if (options?.signal?.aborted)
         return {
           ok: false,
@@ -487,7 +587,7 @@ export class PgVectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
 
   async healthCheck(): Promise<Result<void, RagError>> {
     try {
-      await this.ensureSharedDeployed();
+      if (this.sql.layout === 'shared') await this.maybeEnsureSchema();
       const client = await this.clientPromise;
       await client.query('SELECT 1');
       return { ok: true, value: undefined };
@@ -507,43 +607,86 @@ export class PgVectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
     if (options?.signal?.aborted)
       return { ok: false, error: new RagError('Aborted', 'ABORTED') };
     try {
-      const { vector } = await this.embedder.embedDocument(text, options);
-      return this.upsertKnown(text, vector, metadata);
+      const vectors = await embedRecord(
+        this.embedder,
+        text,
+        this.fragmentSizeChars,
+        options,
+      );
+      options?.signal?.throwIfAborted();
+      return this.upsertKnown(text, vectors, metadata, options);
     } catch (err) {
+      if (options?.signal?.aborted)
+        return { ok: false, error: new RagError('Aborted', 'ABORTED') };
       return { ok: false, error: this.failure(err, 'UPSERT_ERROR') };
     }
   }
 
   async upsertPrecomputed(
     text: string,
-    vector: number[],
+    vector: RagDocumentVectors,
     metadata: RagMetadata,
+    options?: CallOptions,
   ): Promise<Result<void, RagError>> {
-    return this.upsertKnown(text, vector, metadata);
+    try {
+      options?.signal?.throwIfAborted();
+      return this.upsertKnown(text, recordVectors(vector), metadata, options);
+    } catch (error) {
+      return {
+        ok: false,
+        error: options?.signal?.aborted
+          ? new RagError('Aborted', 'ABORTED')
+          : this.failure(error, 'UPSERT_ERROR'),
+      };
+    }
   }
 
   private async upsertKnown(
     text: string,
-    vector: number[],
+    [vector, ...extras]: number[][],
     metadata: RagMetadata,
+    options?: CallOptions,
   ): Promise<Result<void, RagError>> {
     try {
       metadata = validateRagMetadata(metadata);
       const literal = this.vectorLiteral(vector);
-      await this.maybeEnsureSchema();
+      await this.maybeEnsureSchema(options?.signal);
       const client = await this.clientPromise;
       const id = metadata?.id ?? crypto.randomUUID();
       const { id: _omit, ...rest } = validateRagMetadata(metadata);
-      const stmt = this.sql.upsert(literal, id, text, JSON.stringify(rest));
+      const primary = this.sql.upsert(literal, id, text, JSON.stringify(rest));
+      const prune = this.sql.removeFragments(id);
+      const { ownerScope, sessionId, userId, namespace, ttl } = rest;
+      const insert = this.sql.insertFragments(
+        id,
+        extras.map((fragment) => pgVectorText(fragment, vector.length)),
+        JSON.stringify({ ownerScope, sessionId, userId, namespace, ttl }),
+      );
+      options?.signal?.throwIfAborted();
       const settled = this.cache.beginWrite([id]);
       try {
-        await client.query(stmt.sql, stmt.params);
+        await recordTransaction(
+          client,
+          async (connection) => {
+            await connection.query(primary.sql, primary.params);
+            await connection.query(prune.sql, prune.params);
+            if (extras.length)
+              await connection.query(insert.sql, insert.params);
+            options?.signal?.throwIfAborted();
+          },
+          options?.signal,
+        );
       } finally {
         settled();
       }
       return { ok: true, value: undefined };
     } catch (err) {
-      return { ok: false, error: this.failure(err, 'UPSERT_ERROR') };
+      return {
+        ok: false,
+        error: options?.signal?.aborted
+          ? new RagError('Aborted', 'ABORTED')
+          : this.failure(err, 'UPSERT_ERROR'),
+      };
     }
   }
 
@@ -553,15 +696,25 @@ export class PgVectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
         const r = await this.upsert(text, { ...metadata, id }, options);
         return r.ok ? { ok: true, value: undefined } : r;
       },
-      deleteByIdRaw: async (id) => {
+      deleteByIdRaw: async (id, options) => {
         try {
-          await this.maybeEnsureSchema();
+          await this.maybeEnsureSchema(options?.signal);
           const client = await this.clientPromise;
           const stmt = this.sql.deleteById(id);
           const settled = this.cache.beginWrite([id]);
           let res: { rowCount: number };
           try {
-            res = await client.query(stmt.sql, stmt.params);
+            res = await recordTransaction(
+              client,
+              async (connection) => {
+                const lock = this.sql.lockById(id);
+                const { rows } = await connection.query(lock.sql, lock.params);
+                return rows.length
+                  ? connection.query(stmt.sql, stmt.params)
+                  : { rowCount: 0 };
+              },
+              options?.signal,
+            );
           } finally {
             settled();
           }
@@ -569,7 +722,7 @@ export class PgVectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
         } catch (err) {
           return {
             ok: false,
-            error: this.failure(err, 'DELETE_ERROR'),
+            error: this.scanFailure(err, 'DELETE_ERROR'),
           };
         }
       },
@@ -577,10 +730,9 @@ export class PgVectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
         try {
           await this.maybeEnsureSchema();
           const client = await this.clientPromise;
-          const stmt = this.sql.clear();
           const settled = this.cache.beginClear();
           try {
-            await client.query(stmt.sql, stmt.params);
+            await clearRecords(client, this.sql);
           } finally {
             settled();
           }
@@ -589,8 +741,8 @@ export class PgVectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
           return { ok: false, error: this.failure(err, 'CLEAR_ERROR') };
         }
       },
-      upsertPrecomputedRaw: async (id, text, vector, metadata) =>
-        this.upsertPrecomputed(text, vector, { ...metadata, id }),
+      upsertPrecomputedRaw: (id, text, vector, metadata, options) =>
+        this.upsertPrecomputed(text, vector, { ...metadata, id }, options),
     };
   }
 }

@@ -18,6 +18,7 @@
 // list assertions hold, and the case's rows and catalog records are deleted
 // afterwards, even on failure.
 
+import assert from 'node:assert/strict';
 import {
   HanaVectorRag,
   HanaVectorRagProvider,
@@ -27,11 +28,11 @@ import {
   CONFORMANCE_EMBEDDING_DIM,
   conformanceEmbedder,
 } from '@mcp-abap-adt/llm-agent/testing/rag-filter-conformance';
-import { sharedTableConformanceCases } from '@mcp-abap-adt/llm-agent/testing/shared-table-conformance';
 import {
   isScanDeleteCaseSkipped,
   scanDeleteConformanceCases,
 } from '@mcp-abap-adt/llm-agent/testing/scan-delete-conformance';
+import { sharedTableConformanceCases } from '@mcp-abap-adt/llm-agent/testing/shared-table-conformance';
 import hana from '@sap/hana-client';
 
 const out = (line) => console.log(`SST ${line}`);
@@ -188,6 +189,68 @@ try {
       wrong.ok ? new Error('accepted') : wrong.error,
     ]);
     out('FAIL startup check, wrong dimension');
+  }
+
+  const fragmentCollection = `sst${Date.now()}_fragment_probe`;
+  total++;
+  try {
+    const rag = new HanaVectorRag({
+      ...connection,
+      collectionName: fragmentCollection,
+      layout: 'shared',
+      embedder,
+    });
+    const first = pad([1, 0]);
+    const last = pad([0, 1]);
+    const lookup = { text: 'late fragment', toVector: async () => last };
+    assert.ok(
+      (
+        await rag.upsertPrecomputed('full text', [first, last], {
+          id: 'a',
+          userId: 'owner',
+        })
+      ).ok,
+    );
+    assert.ok((await rag.upsertPrecomputed('short', first, { id: 'b' })).ok);
+    const rows = await client.query(
+      `SELECT "FRAGMENT_ORDINAL" AS "ordinal", "TEXT" AS "text" FROM "RAG_DOCUMENTS"
+       WHERE "COLLECTION" = ? AND "ID" = 'a' ORDER BY "FRAGMENT_ORDINAL"`,
+      [fragmentCollection],
+    );
+    assert.deepEqual(
+      rows.map(({ ordinal }) => ordinal),
+      [0, 1],
+    );
+    assert.equal(rows[1].text, null);
+    const own = await rag.query(lookup, 1, { ragFilter: { userId: 'owner' } });
+    assert.ok(own.ok);
+    assert.equal(own.value[0].text, 'full text');
+    assert.equal(own.value[0].score, 1);
+    const global = await rag.query(lookup, 1, {
+      ragFilter: { owner: { scope: 'global' } },
+    });
+    assert.ok(global.ok);
+    assert.equal(global.value[0].text, 'short');
+    assert.ok(
+      (await rag.upsertPrecomputed('replacement', first, { id: 'a' })).ok,
+    );
+    assert.ok((await rag.writer().deleteByIdRaw('a')).ok);
+    const leftovers = await client.query(
+      `SELECT "ID" AS "id" FROM "RAG_DOCUMENTS" WHERE "COLLECTION" = ?`,
+      [fragmentCollection],
+    );
+    assert.deepEqual(
+      leftovers.map(({ id }) => id),
+      ['b'],
+    );
+    out('PASS fragment ordinals, isolation, replacement and deletion');
+  } catch (error) {
+    failures.push(['fragment ordinals', error]);
+    out(`FAIL fragment ordinals: ${error}`);
+  } finally {
+    await client.exec('DELETE FROM "RAG_DOCUMENTS" WHERE "COLLECTION" = ?', [
+      fragmentCollection,
+    ]);
   }
 
   let run = 0;

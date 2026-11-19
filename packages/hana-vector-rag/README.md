@@ -15,6 +15,43 @@ Provides:
 npm install @mcp-abap-adt/hana-vector-rag @sap/hana-client
 ```
 
+## Record embeddings
+
+The existing documents table stores one `REAL_VECTOR` row per fragment.
+Row zero retains the full text and metadata. Higher ordinals carry the vector
+and fields needed for isolation and expiry. HANA ranks distinct records by
+their best cosine similarity, using the existing vector index for the
+ordered candidate scan when available. It reads full rows only for the
+winners. Replacement and deletion update the record's rows in one transaction.
+
+### Upgrade an existing database
+
+- **Runtime-managed per-collection tables.** The store migrates them on first
+  use with its schema-management credentials.
+- **Shared HDI layout.** Redeploy the updated `ddl/RAG_DOCUMENTS.hdbtable`
+  under the same name. HDI preserves the table's data across the schema
+  update, and the new key column defaults to zero. The HDI artifact list is
+  unchanged.
+- **Manually managed shared tables.** Execute
+  `ddl/migrations/001-fragment-ordinal.sql` in the target schema before
+  starting the upgraded runtime. Run the file as one anonymous SQLScript
+  block, for example:
+
+  ```sh
+  hdbsql -U MY_HANA_KEY "$(cat ddl/migrations/001-fragment-ordinal.sql)"
+  ```
+
+  Select the target schema for the session before executing the block. For a manually managed per-collection
+  table or a custom shared name, execute
+  `fragmentOrdinalMigrationSql(table, 'per-collection')` or
+  `fragmentOrdinalMigrationSql(table, 'shared')` as the schema owner.
+
+The manual migration is idempotent. Existing records keep their vectors and
+receive ordinal zero. For new plain SQL deployments use `ddl/shared-layout.sql`.
+Injected HANA clients need a transaction callback for document writes and
+filtered deletes. Configure `fragmentSizeChars` for embedders that do not
+declare their capacity (default 2,048 Unicode code points).
+
 ## Minimal config
 
 `HanaVectorRagConfig.fallbackOnQueryEmbeddingError?: boolean` defaults to `true`:
@@ -106,7 +143,7 @@ The package ships `ddl/` (published with it):
 - `shared-layout.sql` — the same tables as plain SQL (catalog first), for a classic schema or
   manual use.
 
-Copy all eight artifacts (six `.hdbtable` and two `.hdbconstraint` files) into the `src/` of your db module (next to your own artifacts) and **merge** the `hdbtable` and `hdbconstraint` plugin entries of the shipped `.hdiconfig` into the db module's existing `.hdiconfig` — do not copy it over your own file, which usually lists more plugins (create it from the shipped one only if the module has none). Then run
+Copy all ten artifacts (seven `.hdbtable` and three `.hdbconstraint` files) into the `src/` of your db module (next to your own artifacts) and **merge** the `hdbtable` and `hdbconstraint` plugin entries of the shipped `.hdiconfig` into the db module's existing `.hdiconfig` — do not copy it over your own file, which usually lists more plugins (create it from the shipped one only if the module has none). Then run
 `@sap/hdi-deploy` with the container's **design-time user** (`hdi_user`); on Cloud Foundry that is
 the deployer app bound to the HDI service instance. The application itself is bound to the same
 instance and connects as the **runtime user** (`..._RT`), which only needs `SELECT`, `INSERT`,
@@ -141,7 +178,7 @@ import {
   sharedLayoutSql,
 } from '@mcp-abap-adt/hana-vector-rag';
 
-sharedDocumentsHdbtable('RAG_DOCUMENTS', 1024); // body of RAG_DOCUMENTS.hdbtable
+sharedDocumentsHdbtable('RAG_DOCUMENTS', 1024); // documents table
 sharedCatalogHdbtable('RAG_COLLECTIONS');       // body of RAG_COLLECTIONS.hdbtable
 sharedLayoutSql({ dimension: 1024 });           // plain SQL (documentsTable, catalogTable optional)
 ```
@@ -284,10 +321,7 @@ require an admin and a write decision. Admin status does not bypass other owners
 Retrieval applies the collection owner's record filter before top-k; `roleId` is
 not a record identity key. Access-check errors deny access.
 
-Deploy all eight HDI artifacts (six tables and two foreign keys): `RAG_DOCUMENTS.hdbtable`,
-`RAG_COLLECTIONS.hdbtable`, `rag_roles.hdbtable`, `rag_role_assignments.hdbtable`,
-`rag_collection_roles.hdbtable`, `rag_session_bindings.hdbtable`,
-`rag_role_assignments_role_fk.hdbconstraint`, and `rag_collection_roles_role_fk.hdbconstraint`. Merge the
+Deploy the seven tables and three foreign keys listed under [Deploying the tables](#deploying-the-tables). Merge the
 shipped `.hdiconfig` table and constraint plugins into your deployment configuration. Migration
 skips DDL for existing tables. Role deletion, assignment and binding lock the same
 role row in a pinned transaction. Custom clients must supply `HanaClient.transaction`.

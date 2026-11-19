@@ -28,6 +28,14 @@ export {
   TextOnlyEmbedding,
 } from './query-embedding.js';
 export { LlmQueryExpander, NoopQueryExpander } from './query-expander.js';
+export {
+  DEFAULT_FRAGMENT_SIZE_CHARS,
+  embedDocumentRecords,
+  embedRecord,
+  type RecordEmbeddingConfig,
+  recordVectors,
+  retryRagThrottle,
+} from './record-embedding.js';
 export * from './registry/index.js';
 export { asymmetricEmbedder, symmetricEmbedder } from './retrieval-embedder.js';
 export type {
@@ -49,3 +57,4 @@ export * from './strategies/edit/index.js';
 export * from './strategies/id/index.js';
 export type { VectorRagConfig } from './vector-rag.js';
 export { VectorRag } from './vector-rag.js';
+export { bestFragmentScore, cosineSimilarity } from './vector-similarity.js';

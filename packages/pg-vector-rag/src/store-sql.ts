@@ -31,6 +31,7 @@ export interface PgStoreSql {
     vectorLiteral: string,
     limit: number,
     filter: PgSearchFilter,
+    candidates?: number,
   ): SqlStatement;
   byId(id: string): SqlStatement;
   upsert(
@@ -40,7 +41,16 @@ export interface PgStoreSql {
     metadataJson: string,
   ): SqlStatement;
   deleteById(id: string): SqlStatement;
+  lockById(id: string): SqlStatement;
+  deleteByIds(ids: string[]): SqlStatement;
+  removeFragments(id: string): SqlStatement;
+  insertFragments(
+    id: string,
+    literals: string[],
+    metadataJson: string,
+  ): SqlStatement;
   clear(): SqlStatement;
+  lockForClear?(): string;
   countRows(): SqlStatement;
   /** One page ordered by binary `"id"`, after `afterKey` when given, narrowed by `filter`. */
   scanPage(
@@ -48,7 +58,7 @@ export interface PgStoreSql {
     limit: number,
     filter?: RagScanFilter,
   ): SqlStatement;
-  /** Deletes every row of this collection matching `filter`, returning the deleted ids. */
+  /** Locks the primary rows of records matching the filter. */
   deleteWhere(filter: RagScanFilter): SqlStatement;
 }
 
@@ -88,7 +98,7 @@ function scanSql(
   limit: number,
   filter: RagScanFilter | undefined,
 ): SqlStatement {
-  const conditions: string[] = [];
+  const conditions = ['"fragment_ordinal" = 0'];
   if (params.length > 0) conditions.push('"collection" = $1');
   if (afterKey !== undefined) {
     params.push(afterKey);
@@ -107,7 +117,7 @@ function deleteWhereSql(
   params: unknown[],
   filter: RagScanFilter,
 ): SqlStatement {
-  const conditions: string[] = [];
+  const conditions = ['"fragment_ordinal" = 0'];
   if (params.length > 0) conditions.push('"collection" = $1');
   const strict = scanFilterConditions(filter, params);
   if (strict.length === 0)
@@ -117,7 +127,7 @@ function deleteWhereSql(
     );
   conditions.push(...strict);
   return {
-    sql: `DELETE FROM ${table} WHERE ${conditions.join(' AND ')} RETURNING "id"`,
+    sql: `SELECT "id" FROM ${table} WHERE ${conditions.join(' AND ')} ORDER BY "id" FOR UPDATE`,
     params,
   };
 }
@@ -160,6 +170,18 @@ function filterConditions(
     params.push(filter.identity.userId);
     conditions.push(`${text('userId')} = $${params.length}`);
   }
+  if (filter.identity) {
+    for (const key of ['sessionId', 'userId', 'roleId'] as const) {
+      const required =
+        (key === 'sessionId' && filter.identity.ownerScope === 'session') ||
+        (key === 'userId' && filter.identity.ownerScope === 'user');
+      conditions.push(
+        required
+          ? `${text(key)} ~ '[^[:space:]]'`
+          : `NOT COALESCE(jsonb_exists(${metadata}, '${key}'), false)`,
+      );
+    }
+  }
   if (typeof filter.namespace === 'string') {
     params.push(filter.namespace);
     conditions.push(`${text('namespace')} = $${params.length}`);
@@ -169,6 +191,37 @@ function filterConditions(
     `COALESCE(CASE WHEN jsonb_typeof(${metadata}->'ttl') = 'number' THEN (${metadata}->>'ttl')::float8 END, 'infinity'::float8) >= $${params.length}`,
   );
   return conditions;
+}
+
+/** The ordered candidate scan can use the existing cosine index. */
+function rankedSearch(
+  table: string,
+  lit: string,
+  limit: number,
+  where: string,
+  shared: boolean,
+  candidates?: number,
+): string {
+  const recordScope = shared ? ' AND d."collection" = $1' : '';
+  const distance = `"vector" <=> ${lit}`;
+  const nearest =
+    candidates === undefined ? '' : ` ORDER BY ${distance} LIMIT ${candidates}`;
+  return `WITH candidate_rows AS MATERIALIZED (
+    SELECT "id", ${distance} AS distance FROM ${table}
+    WHERE ${where} AND "vector" IS NOT NULL${nearest}
+  ), ranked AS (
+    SELECT id, MIN(distance) AS distance, COUNT(*) AS fragments
+    FROM candidate_rows GROUP BY id
+  ), stats AS (
+    SELECT COUNT(*) AS records, COALESCE(SUM(fragments), 0) AS candidates FROM ranked
+  ), winners AS (
+    SELECT id, distance FROM ranked ORDER BY distance, id LIMIT ${limit}
+  )
+  SELECT d."id", d."text", d."metadata", w.distance AS score, s.candidates AS "candidateCount"
+  FROM stats AS s
+  LEFT JOIN winners AS w ON ${candidates === undefined ? 'TRUE' : `s.records >= ${limit}`}
+  LEFT JOIN ${table} AS d ON d."id" = w.id AND d."fragment_ordinal" = 0${recordScope}
+  ORDER BY w.distance, w.id`;
 }
 
 /** One table per collection: the 30.1.0 statements. */
@@ -182,21 +235,38 @@ export function perCollectionStoreSql(
       listSql(table, [], after, limit, includeText, filter),
     layout: 'per-collection',
     createTable: () => createTableSql(collection, dimension),
-    search: (lit, limit, filter) => {
+    search: (lit, limit, filter, candidates) => {
       const params: unknown[] = [];
       const where = filterConditions(filter, params, 'metadata').join(' AND ');
       return {
-        sql: `SELECT id, text, metadata, vector <=> ${lit} AS score FROM ${table} WHERE ${where} ORDER BY vector <=> ${lit} LIMIT ${limit}`,
+        sql: rankedSearch(table, lit, limit, where, false, candidates),
         params,
       };
     },
     byId: (id) => ({
-      sql: `SELECT id, text, metadata FROM ${table} WHERE id = $1`,
+      sql: `SELECT id, text, metadata FROM ${table} WHERE id = $1 AND fragment_ordinal = 0`,
       params: [id],
     }),
     upsert: (lit, id, text, metadataJson) => ({
-      sql: `INSERT INTO ${table} (id, text, vector, metadata) VALUES ($1, $2, ${lit}, $3::jsonb) ON CONFLICT (id) DO UPDATE SET text = EXCLUDED.text, vector = EXCLUDED.vector, metadata = EXCLUDED.metadata`,
+      sql: `INSERT INTO ${table} (id, text, vector, metadata) VALUES ($1, $2, ${lit}, $3::jsonb) ON CONFLICT (id, fragment_ordinal) DO UPDATE SET text = EXCLUDED.text, vector = EXCLUDED.vector, metadata = EXCLUDED.metadata`,
       params: [id, text, metadataJson],
+    }),
+    removeFragments: (id) => ({
+      sql: `DELETE FROM ${table} WHERE id = $1 AND fragment_ordinal > 0`,
+      params: [id],
+    }),
+    insertFragments: (id, literals, metadataJson) => ({
+      sql: `INSERT INTO ${table} (id, fragment_ordinal, vector, metadata)
+        SELECT $1, ordinal, fragment::vector, $3::jsonb FROM unnest($2::text[]) WITH ORDINALITY AS vectors(fragment, ordinal)`,
+      params: [id, literals, metadataJson],
+    }),
+    lockById: (id) => ({
+      sql: `SELECT "id" FROM ${table} WHERE id = $1 AND fragment_ordinal = 0 FOR UPDATE`,
+      params: [id],
+    }),
+    deleteByIds: (ids) => ({
+      sql: `DELETE FROM ${table} WHERE id = ANY($1::varchar[])`,
+      params: [ids],
     }),
     deleteById: (id) => ({
       sql: `DELETE FROM ${table} WHERE id = $1`,
@@ -204,7 +274,7 @@ export function perCollectionStoreSql(
     }),
     clear: () => ({ sql: `TRUNCATE ${table}`, params: [] }),
     countRows: () => ({
-      sql: `SELECT COUNT(*) AS n FROM ${table}`,
+      sql: `SELECT COUNT(*) AS n FROM ${table} WHERE fragment_ordinal = 0`,
       params: [],
     }),
     scanPage: (afterKey, limit, filter) =>
@@ -225,35 +295,53 @@ export function sharedStoreSql(
       listSql(table, [collection], after, limit, includeText, filter),
     layout: 'shared',
     createTable: () => undefined,
-    search: (lit, limit, filter) => {
+    search: (lit, limit, filter, candidates) => {
       const params: unknown[] = [collection];
       const where = [
         '"collection" = $1',
         ...filterConditions(filter, params, '"metadata"', true),
       ].join(' AND ');
       return {
-        sql: `SELECT "id", "text", "metadata", "vector" <=> ${lit} AS score FROM ${table} WHERE ${where} ORDER BY "vector" <=> ${lit} LIMIT ${limit}`,
+        sql: rankedSearch(table, lit, limit, where, true, candidates),
         params,
       };
     },
     byId: (id) => ({
-      sql: `SELECT "id", "text", "metadata" FROM ${table} WHERE "collection" = $1 AND "id" = $2`,
+      sql: `SELECT "id", "text", "metadata" FROM ${table} WHERE "collection" = $1 AND "id" = $2 AND "fragment_ordinal" = 0`,
       params: [collection, id],
     }),
     upsert: (lit, id, text, metadataJson) => ({
-      sql: `INSERT INTO ${table} ("collection", "id", "text", "vector", "metadata") VALUES ($1, $2, $3, ${lit}, $4::jsonb) ON CONFLICT ("collection", "id") DO UPDATE SET "text" = EXCLUDED."text", "vector" = EXCLUDED."vector", "metadata" = EXCLUDED."metadata"`,
+      sql: `INSERT INTO ${table} ("collection", "id", "text", "vector", "metadata") VALUES ($1, $2, $3, ${lit}, $4::jsonb) ON CONFLICT ("collection", "id", "fragment_ordinal") DO UPDATE SET "text" = EXCLUDED."text", "vector" = EXCLUDED."vector", "metadata" = EXCLUDED."metadata"`,
       params: [collection, id, text, metadataJson],
+    }),
+    removeFragments: (id) => ({
+      sql: `DELETE FROM ${table} WHERE "collection" = $1 AND "id" = $2 AND "fragment_ordinal" > 0`,
+      params: [collection, id],
+    }),
+    insertFragments: (id, literals, metadataJson) => ({
+      sql: `INSERT INTO ${table} ("collection", "id", "fragment_ordinal", "vector", "metadata")
+        SELECT $1, $2, ordinal, fragment::vector, $4::jsonb FROM unnest($3::text[]) WITH ORDINALITY AS vectors(fragment, ordinal)`,
+      params: [collection, id, literals, metadataJson],
+    }),
+    lockById: (id) => ({
+      sql: `SELECT "id" FROM ${table} WHERE "collection" = $1 AND "id" = $2 AND "fragment_ordinal" = 0 FOR UPDATE`,
+      params: [collection, id],
+    }),
+    deleteByIds: (ids) => ({
+      sql: `DELETE FROM ${table} WHERE "collection" = $1 AND "id" = ANY($2::varchar[])`,
+      params: [collection, ids],
     }),
     deleteById: (id) => ({
       sql: `DELETE FROM ${table} WHERE "collection" = $1 AND "id" = $2`,
       params: [collection, id],
     }),
+    lockForClear: () => `LOCK TABLE ${table} IN EXCLUSIVE MODE`,
     clear: () => ({
       sql: `DELETE FROM ${table} WHERE "collection" = $1`,
       params: [collection],
     }),
     countRows: () => ({
-      sql: `SELECT COUNT(*) AS n FROM ${table} WHERE "collection" = $1`,
+      sql: `SELECT COUNT(*) AS n FROM ${table} WHERE "collection" = $1 AND "fragment_ordinal" = 0`,
       params: [collection],
     }),
     scanPage: (afterKey, limit, filter) =>
@@ -270,7 +358,8 @@ function listSql(
   includeText: boolean,
   filter?: RagScanFilter,
 ): SqlStatement {
-  const conditions: string[] = params.length ? ['"collection" = $1'] : [];
+  const conditions = ['"fragment_ordinal" = 0'];
+  if (params.length) conditions.push('"collection" = $1');
   if (after !== undefined) {
     params.push(after);
     conditions.push(`"id" COLLATE "C" > $${params.length} COLLATE "C"`);

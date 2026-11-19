@@ -86,7 +86,11 @@ describe('qdrant catalog: createCollection', () => {
       assert.ok(result.ok);
       const request = stub.requests.find(is('PUT', `/collections/${STORE}`));
       assert.deepEqual(request?.body, {
-        vectors: { size: 128, distance: 'Cosine' },
+        vectors: {
+          size: 128,
+          distance: 'Cosine',
+          multivector_config: { comparator: 'max_sim' },
+        },
       });
     }));
 

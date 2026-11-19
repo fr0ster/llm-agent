@@ -22,21 +22,26 @@ test('physical embedding requests: totals, retries, overrides, aborts and safe e
   const override = recorder();
   const provider = new OllamaEmbedder({ model: 'model', usage: bound.usage });
   let attempt = 0;
-  t.mock.method(globalThis, 'fetch', async () => {
-    if (attempt++ === 0)
-      return new Response('private provider message', { status: 429 });
-    return Response.json({
-      data: [
-        { embedding: [1], index: 0 },
-        { embedding: [2], index: 1 },
-        { embedding: [3], index: 2 },
-      ],
-      usage: { prompt_tokens: 5, total_tokens: 5 },
-      embeddings: [[1], [2], [3]],
-      embedding: [1],
-      prompt_eval_count: 5,
-    });
-  });
+  t.mock.method(
+    globalThis,
+    'fetch',
+    async (url: URL | Request | string, init?: RequestInit) => {
+      if (String(url).endsWith('/api/show')) return Response.json({});
+      if (attempt++ === 0)
+        return new Response('private provider message', { status: 429 });
+      const body: { input: string[] } = JSON.parse(String(init?.body));
+      return Response.json({
+        data: [
+          { embedding: [1], index: 0 },
+          { embedding: [2], index: 1 },
+          { embedding: [3], index: 2 },
+        ],
+        usage: { prompt_tokens: 5, total_tokens: 5 },
+        embeddings: body.input.map((_, index) => [index + 1]),
+        prompt_eval_count: 5,
+      });
+    },
+  );
   const composed = composeResilientEmbedder(provider, {
     retry: { backoffMs: 0 },
   });
@@ -66,12 +71,14 @@ test('physical embedding requests: totals, retries, overrides, aborts and safe e
   await provider.embed('a', { usage: override.usage });
   assert.equal(bound.records.length, 2);
   assert.equal(override.records.length, 1);
-  t.mock.method(globalThis, 'fetch', async () => {
+  t.mock.method(globalThis, 'fetch', async (url: URL | Request | string) => {
+    if (String(url).endsWith('/api/show')) return Response.json({});
     throw new DOMException('private abort', 'AbortError');
   });
   await assert.rejects(provider.embed('a'));
   assert.equal(bound.records.at(-1)?.outcome, 'aborted');
-  t.mock.method(globalThis, 'fetch', async () => {
+  t.mock.method(globalThis, 'fetch', async (url: URL | Request | string) => {
+    if (String(url).endsWith('/api/show')) return Response.json({});
     throw Object.assign(new Error('private thrown'), { code: 'ECONNRESET' });
   });
   await assert.rejects(provider.embed('a'));

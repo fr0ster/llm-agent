@@ -12,6 +12,9 @@
       "default": "./dist/index.js"
     }
   },
+  "bin": {
+    "qdrant-migrate-multivector": "dist/migrate-multivector-cli.js"
+  },
   "files": [
     "dist",
     "README.md",

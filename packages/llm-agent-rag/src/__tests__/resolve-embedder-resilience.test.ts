@@ -18,12 +18,13 @@ for (const provider of ['openai', 'ollama'] as const) {
       return 'elapsed';
     });
     let requests = 0;
-    t.mock.method(globalThis, 'fetch', async () => {
+    t.mock.method(globalThis, 'fetch', async (url: URL | Request | string) => {
+      if (String(url).endsWith('/api/show')) return Response.json({});
       if (++requests === 1) return new Response('unavailable', { status: 503 });
       return Response.json(
         provider === 'openai'
           ? { data: [{ embedding: [1] }] }
-          : { embedding: [1] },
+          : { embeddings: [[1]] },
       );
     });
     const cfg = { model: 'test' };
