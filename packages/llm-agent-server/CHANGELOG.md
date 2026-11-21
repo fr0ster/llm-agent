@@ -1,5 +1,18 @@
 # @mcp-abap-adt/llm-agent-server
 
+## 33.2.1
+
+### Patch Changes
+
+- 327e4d1: Refresh the MCP SDK dependency tree with security releases for the HTTP adapters, request parsing, and schema validation.
+- Updated dependencies [327e4d1]
+- Updated dependencies [327e4d1]
+- Updated dependencies [327e4d1]
+  - @mcp-abap-adt/hana-vector-rag@33.0.2
+  - @mcp-abap-adt/anthropic-llm@31.0.2
+  - @mcp-abap-adt/openai-llm@30.13.3
+  - @mcp-abap-adt/llm-agent-mcp@30.10.7
+
 ## 33.2.0
 
 ### Minor Changes

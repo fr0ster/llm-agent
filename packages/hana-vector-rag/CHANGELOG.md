@@ -1,5 +1,11 @@
 # @mcp-abap-adt/hana-vector-rag
 
+## 33.0.2
+
+### Patch Changes
+
+- 327e4d1: Update the SAP HANA client to 2.30.32 and update the PostgreSQL usage tests to PGlite 0.5.16.
+
 ## 33.0.1
 
 ### Patch Changes

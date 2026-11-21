@@ -1,6 +1,6 @@
 {
   "name": "@mcp-abap-adt/llm-usage-hana",
-  "version": "1.0.5",
+  "version": "1.0.6",
   "description": "HANA usage analytics sink and reader.",
   "type": "module",
   "main": "dist/index.js",

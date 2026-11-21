@@ -1,5 +1,11 @@
 # @mcp-abap-adt/anthropic-llm
 
+## 31.0.2
+
+### Patch Changes
+
+- 327e4d1: Update Axios to 1.21.1 to require the patched follow-redirects release line for credential handling on redirects.
+
 ## 31.0.1
 
 ### Patch Changes
