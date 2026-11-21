@@ -26,7 +26,7 @@
     "test": "node --import tsx/esm --test --test-reporter=spec 'src/**/*.test.ts'"
   },
   "dependencies": {
-    "@sap/hana-client": "^2.30.27"
+    "@sap/hana-client": "^2.30.32"
   },
   "license": "LGPL-3.0-only",
   "repository": {
