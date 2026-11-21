@@ -37,6 +37,6 @@
     "@mcp-abap-adt/llm-usage": "^1.0.0"
   },
   "dependencies": {
-    "@sap/hana-client": "2.30.27"
+    "@sap/hana-client": "2.30.32"
   }
 }
