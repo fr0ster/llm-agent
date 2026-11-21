@@ -1,5 +1,11 @@
 # @mcp-abap-adt/llm-agent-mcp
 
+## 30.10.7
+
+### Patch Changes
+
+- 327e4d1: Refresh the MCP SDK dependency tree with security releases for the HTTP adapters, request parsing, and schema validation.
+
 ## 30.10.6
 
 ### Patch Changes
