@@ -119,10 +119,7 @@ export function completeUsageCalls(
         covered.set(call.model, bucket);
       }
       addCall(bucket, call);
-    } else if (
-      attribution.model === undefined ||
-      call.model === attribution.model
-    ) {
+    } else {
       addCall(flat, call);
     }
   }
@@ -257,6 +254,44 @@ export async function recordChatAttempt(
   }
 }
 
+async function chatResultWithUsage(
+  llm: ILlm,
+  component: LlmComponent,
+  messages: Message[],
+  tools?: LlmTool[],
+  options?: CallOptions,
+): Promise<Result<LlmResponse, LlmError>> {
+  const scope: ChatUsageScope = { component, calls: [] };
+  try {
+    const result = await chatUsage.run(scope, () =>
+      recordChatAttempt(llm, () => llm.chat(messages, tools, options)),
+    );
+    if (!result.ok)
+      return { ok: false, error: withUsageCalls(result.error, scope.calls) };
+    return {
+      ok: true,
+      value: { ...result.value, usageCalls: scope.calls },
+    };
+  } catch (error) {
+    throw withUsageCalls(error, scope.calls);
+  }
+}
+
+/** Capture chat attempts for a strategy that can also stream. */
+export function llmWithChatUsage(llm: ILlm, component: LlmComponent): ILlm {
+  return {
+    get model() {
+      return llm.model;
+    },
+    chat: (messages, tools, options) =>
+      chatResultWithUsage(llm, component, messages, tools, options),
+    streamChat: (messages, tools, options) =>
+      llm.streamChat(messages, tools, options),
+    healthCheck: llm.healthCheck?.bind(llm),
+    getModels: llm.getModels?.bind(llm),
+  };
+}
+
 /** Capture usage at a non-streaming role or worker call boundary. */
 export async function chatWithUsage(
   llm: ILlm,
@@ -265,19 +300,13 @@ export async function chatWithUsage(
   tools?: LlmTool[],
   options?: CallOptions,
 ) {
-  const scope: ChatUsageScope = { component, calls: [] };
-  try {
-    const result = await chatUsage.run(scope, () =>
-      recordChatAttempt(llm, () => llm.chat(messages, tools, options)),
-    );
-    if (!result.ok) throw result.error;
-    const attribution = { usage: result.value.usage, model: llm.model };
-    return {
-      ...result.value,
-      ...attribution,
-      usageCalls: scope.calls,
-    };
-  } catch (error) {
-    throw withUsageCalls(error, scope.calls);
-  }
+  const result = await chatResultWithUsage(
+    llm,
+    component,
+    messages,
+    tools,
+    options,
+  );
+  if (!result.ok) throw result.error;
+  return { ...result.value, usage: result.value.usage, model: llm.model };
 }

@@ -87,7 +87,11 @@ export {
 
 import type { IPipeline } from './interfaces/pipeline.js';
 import type { ILogger } from './logger/index.js';
-import { mergeUsageCalls, withUsageCalls } from './logger/llm-call-usage.js';
+import {
+  llmWithChatUsage,
+  mergeUsageCalls,
+  withUsageCalls,
+} from './logger/llm-call-usage.js';
 import { NoopRequestLogger } from './logger/noop-request-logger.js';
 import { summaryToUsage } from './logger/session-request-logger.js';
 import {
@@ -1461,7 +1465,7 @@ export class SmartAgent {
       const llmCallStart = Date.now();
       const stream = () =>
         this.defaultLlmCallStrategy.call(
-          this._mainLlm,
+          llmWithChatUsage(this._mainLlm, 'tool-loop'),
           toModelToolMessages(messages, this.config.toolTrust),
           currentTools,
           { ...opts, includeStreamRetryUsage: true },

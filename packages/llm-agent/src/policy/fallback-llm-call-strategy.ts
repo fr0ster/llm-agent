@@ -5,6 +5,7 @@ import {
   LlmError,
   type LlmStreamChunk,
   type LlmTool,
+  type LlmUsageAttribution,
   type Message,
   type Result,
   startOperation,
@@ -48,10 +49,8 @@ export class FallbackLlmCallStrategy implements ILlmCallStrategy {
       return;
     }
 
+    let failure: LlmUsageAttribution | undefined;
     try {
-      const chunks: Result<LlmStreamChunk, LlmError>[] = [];
-      let hadError = false;
-
       for await (const chunk of this.streaming.call(
         llm,
         messages,
@@ -69,21 +68,11 @@ export class FallbackLlmCallStrategy implements ILlmCallStrategy {
             return;
           }
           // Streaming returned a Result error — treat as streaming failure
-          hadError = true;
+          failure = chunk.error;
           this.logFallback(chunk.error.message, chunk.error);
           break;
         }
-        chunks.push(chunk);
         yield chunk;
-      }
-
-      if (hadError) {
-        this.streamingDisabled = true;
-        // Retry the same call non-streaming — chunks already yielded are
-        // partial content that the consumer may have streamed to the client.
-        // We yield a reset signal so the consumer can discard partial state.
-        yield { ok: true, value: { content: '', reset: true } };
-        yield* this.nonStreaming.call(llm, messages, tools, fallbackOptions);
       }
     } catch (err) {
       const terminal = terminalRunError(err);
@@ -99,10 +88,26 @@ export class FallbackLlmCallStrategy implements ILlmCallStrategy {
         return;
       }
       this.logFallback(errMsg, err);
-      this.streamingDisabled = true;
-      yield { ok: true, value: { content: '', reset: true } };
-      yield* this.nonStreaming.call(llm, messages, tools, fallbackOptions);
+      failure =
+        typeof err === 'object' && err !== null
+          ? (err as LlmUsageAttribution)
+          : {};
     }
+
+    if (!failure) return;
+    this.streamingDisabled = true;
+    const { usage, model, usageByModel, usageCalls } = failure;
+    yield {
+      ok: true,
+      value: {
+        content: '',
+        reset: true,
+        ...(usage || model !== undefined || usageByModel || usageCalls
+          ? { retryUsage: { usage, model, usageByModel, usageCalls } }
+          : {}),
+      },
+    };
+    yield* this.nonStreaming.call(llm, messages, tools, fallbackOptions);
   }
 
   private logFallback(message: string, err: unknown): void {

@@ -317,11 +317,10 @@ export interface ModelUsageEntry extends LlmUsage {
   requests: number;
 }
 
-export interface LlmResponse {
+export interface LlmResponse extends LlmUsageAttribution {
   content: string;
   toolCalls?: LlmToolCall[];
   finishReason: LlmFinishReason;
-  usage?: LlmUsage;
   raw?: unknown;
 }
 

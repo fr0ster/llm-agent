@@ -12,7 +12,9 @@ import type {
 import {
   CircuitBreaker,
   CircuitBreakerLlm,
+  FallbackLlmCallStrategy,
   LlmError,
+  NonStreamingLlmCallStrategy,
   OrchestratorError,
 } from '@mcp-abap-adt/llm-agent';
 import { SmartAgent } from '../agent.js';
@@ -341,6 +343,143 @@ test('a custom pipeline worker imports the missing part of returned per-model us
     await worker.close();
   }
 });
+
+test('a worker counts flat usage once when the call used a different model', async () => {
+  const logger = new SessionRequestLogger();
+  const parent = await dagWorker(
+    {
+      name: 'worker',
+      model: 'configured',
+      capabilities: { contextPolicy: 'optional' },
+      async run() {
+        return {
+          output: 'answer',
+          usage: firstUsage,
+          usageCalls: [
+            {
+              ...firstUsage,
+              callId: 'worker-call',
+              component: 'executor',
+              model: 'actual',
+              durationMs: 0,
+            },
+          ],
+        };
+      },
+    },
+    logger,
+  );
+  try {
+    const result = await parent.agent.process(
+      'request',
+      testCallOptions({ trace: { traceId } }),
+    );
+    assert.ok(result.ok);
+    const expected = {
+      actual: { ...firstUsage, requests: 1 },
+      checker: { ...finalizerUsage, requests: 1 },
+    };
+    assert.deepEqual(result.value.usage?.models, expected);
+    assert.deepEqual(logger.getSummary(traceId).byModel, expected);
+  } finally {
+    await parent.close();
+  }
+});
+
+test('the non-streaming pipeline counts failed and successful chat attempts by model', async () => {
+  const logger = new SessionRequestLogger();
+  let attempts = 0;
+  const llm = new RetryLlm(
+    {
+      ...unusedLlm,
+      model: 'success-model',
+      async chat() {
+        attempts++;
+        if (attempts === 1) {
+          return {
+            ok: false,
+            error: Object.assign(new LlmError('retry chat'), {
+              status: 503,
+              model: 'failed-model',
+              usage: firstUsage,
+            }),
+          };
+        }
+        return {
+          ok: true,
+          value: { content: 'answer', finishReason: 'stop', usage: firstUsage },
+        };
+      },
+    },
+    { backoffMs: 0 },
+  );
+  const agent = await builder()
+    .withMainLlm(llm)
+    .withLlmCallStrategy(new NonStreamingLlmCallStrategy())
+    .withRequestLogger(logger)
+    .build()
+    .then(unwrapBuilderResult);
+  try {
+    const result = await agent.agent.process(
+      'request',
+      testCallOptions({ trace: { traceId } }),
+    );
+    assert.ok(result.ok);
+    assert.equal(attempts, 2);
+    const expected = {
+      'failed-model': { ...firstUsage, requests: 1 },
+      'success-model': { ...firstUsage, requests: 1 },
+    };
+    assert.deepEqual(result.value.usage?.models, expected);
+    assert.deepEqual(logger.getSummary(traceId).byModel, expected);
+  } finally {
+    await agent.close();
+  }
+});
+
+for (const failureMode of ['error chunk', 'exception'] as const) {
+  test(`the pipeline keeps failed stream usage on chat fallback after an ${failureMode}`, async () => {
+    const logger = new SessionRequestLogger();
+    const failure = Object.assign(new LlmError('stream failed'), {
+      model: 'failed-model',
+      usage: firstUsage,
+    });
+    const llm: ILlm = {
+      model: 'success-model',
+      async *streamChat() {
+        if (failureMode === 'exception') throw failure;
+        yield { ok: false, error: failure };
+      },
+      async chat() {
+        return {
+          ok: true,
+          value: { content: 'answer', finishReason: 'stop', usage: firstUsage },
+        };
+      },
+    };
+    const agent = await builder()
+      .withMainLlm(llm)
+      .withLlmCallStrategy(new FallbackLlmCallStrategy())
+      .withRequestLogger(logger)
+      .build()
+      .then(unwrapBuilderResult);
+    try {
+      const result = await agent.agent.process(
+        'request',
+        testCallOptions({ trace: { traceId } }),
+      );
+      assert.ok(result.ok);
+      const expected = {
+        'failed-model': { ...firstUsage, requests: 1 },
+        'success-model': { ...firstUsage, requests: 1 },
+      };
+      assert.deepEqual(result.value.usage?.models, expected);
+      assert.deepEqual(logger.getSummary(traceId).byModel, expected);
+    } finally {
+      await agent.close();
+    }
+  });
+}
 
 test('a planner records the usage of every non-streaming retry through a circuit breaker', async () => {
   let attempts = 0;

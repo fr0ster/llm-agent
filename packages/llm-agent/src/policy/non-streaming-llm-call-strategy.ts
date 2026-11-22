@@ -32,6 +32,7 @@ export class NonStreamingLlmCallStrategy implements ILlmCallStrategy {
         finishReason: response.finishReason,
         toolCalls: response.toolCalls,
         usage: response.usage,
+        ...(response.usageCalls && { usageCalls: response.usageCalls }),
       },
     };
   }

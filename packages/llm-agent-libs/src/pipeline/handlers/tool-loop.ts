@@ -6,7 +6,10 @@ import {
 } from '@mcp-abap-adt/llm-agent';
 import { normalizeLoopLimit } from '../../config/normalize-max-iterations.js';
 import { withSubmitReport } from '../../coordinator/dialogue/submit-report-tool.js';
-import { withUsageCalls } from '../../logger/llm-call-usage.js';
+import {
+  llmWithChatUsage,
+  withUsageCalls,
+} from '../../logger/llm-call-usage.js';
 import {
   logToolLoopAttempt,
   recordThrownLlmUsage,
@@ -619,7 +622,7 @@ export class ToolLoopHandler implements IStageHandler {
       // Delegate to ILlmCallStrategy — handles streaming, non-streaming, or fallback
       const llmStream = () =>
         ctx.llmCallStrategy.call(
-          ctx.mainLlm,
+          llmWithChatUsage(ctx.mainLlm, 'tool-loop'),
           toModelToolMessages(messages, ctx.config.toolTrust),
           currentTools,
           {
