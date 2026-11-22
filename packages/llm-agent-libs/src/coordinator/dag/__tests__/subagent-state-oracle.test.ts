@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { ISubAgent, ISubAgentInput } from '@mcp-abap-adt/llm-agent';
+import { testCallOptions } from '../../../testing/index.js';
 import { SubAgentStateOracle } from '../subagent-state-oracle.js';
 
 function stubSubagent(): { sa: ISubAgent; lastInput: { v?: ISubAgentInput } } {
@@ -24,6 +25,7 @@ test('SubAgentStateOracle maps query→task, output→answer', async () => {
   const { sa, lastInput } = stubSubagent();
   const oracle = new SubAgentStateOracle(sa);
   const res = await oracle.query({
+    caller: testCallOptions({ sessionId: 's1' }).caller,
     query: 'is the file deleted',
     sessionId: 's1',
     trace: { traceId: 't1' },
@@ -35,9 +37,16 @@ test('SubAgentStateOracle maps query→task, output→answer', async () => {
   assert.equal(oracle.name, 'inspector');
 });
 
-test('SubAgentStateOracle returns usage:undefined even if inner subagent returns usage (double-count contract)', async () => {
+test('SubAgentStateOracle preserves usage returned by its subagent', async () => {
   const { sa } = stubSubagent();
   const oracle = new SubAgentStateOracle(sa);
-  const res = await oracle.query({ query: 'q' });
-  assert.equal(res.usage, undefined);
+  const res = await oracle.query({
+    caller: testCallOptions().caller,
+    query: 'q',
+  });
+  assert.deepEqual(res.usage, {
+    promptTokens: 9,
+    completionTokens: 1,
+    totalTokens: 10,
+  });
 });

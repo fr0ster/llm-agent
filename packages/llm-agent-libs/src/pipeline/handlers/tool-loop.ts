@@ -6,8 +6,10 @@ import {
 } from '@mcp-abap-adt/llm-agent';
 import { normalizeLoopLimit } from '../../config/normalize-max-iterations.js';
 import { withSubmitReport } from '../../coordinator/dialogue/submit-report-tool.js';
+import { withUsageCalls } from '../../logger/llm-call-usage.js';
 import {
   logToolLoopAttempt,
+  recordThrownLlmUsage,
   StreamAttemptUsage,
 } from '../../logger/stream-attempt-usage.js';
 import { denyRagAccess, ownerBoundQuery } from '../../rag/owner-bound-query.js';
@@ -615,38 +617,42 @@ export class ToolLoopHandler implements IStageHandler {
       ctx.metrics.llmCallCount.add();
       const llmCallStart = Date.now();
       // Delegate to ILlmCallStrategy — handles streaming, non-streaming, or fallback
-      const llmStream = ctx.llmCallStrategy.call(
-        ctx.mainLlm,
-        toModelToolMessages(messages, ctx.config.toolTrust),
-        currentTools,
-        {
-          ...ctx.options,
-          usage: scopedUsage(ctx.options?.usage, { component: 'tool-loop' }),
-          includeStreamRetryUsage: true,
-        },
-      );
-
-      let attemptStartedAt = llmCallStart;
-      let attemptUsage = new StreamAttemptUsage();
-      const logAttempt = (reported?: LlmUsageAttribution, countEmpty = false) =>
-        logToolLoopAttempt(
-          ctx.requestLogger,
-          attemptUsage.resolve(ctx.mainLlm.model, reported),
+      const llmStream = () =>
+        ctx.llmCallStrategy.call(
+          ctx.mainLlm,
+          toModelToolMessages(messages, ctx.config.toolTrust),
+          currentTools,
           {
-            durationMs: Date.now() - attemptStartedAt,
-            requestId,
-            countEmpty,
-            onUsage: addUsage,
+            ...ctx.options,
+            usage: scopedUsage(ctx.options?.usage, { component: 'tool-loop' }),
+            includeStreamRetryUsage: true,
           },
         );
+
+      const attemptUsage = new StreamAttemptUsage();
+      const logAttempt = (
+        reported?: LlmUsageAttribution,
+        countEmpty = true,
+      ) => {
+        const calls = attemptUsage.records(
+          'tool-loop',
+          ctx.mainLlm.model,
+          reported,
+          ctx.options?.signal,
+          countEmpty,
+        );
+        logToolLoopAttempt(ctx.requestLogger, calls, requestId, addUsage);
+        return calls;
+      };
       let chunksSeen = 0;
-      for await (const chunkResult of llmStream) {
+      for await (const chunkResult of recordThrownLlmUsage(
+        llmStream,
+        logAttempt,
+      )) {
         if (!chunkResult.ok) {
           const failure: typeof chunkResult.error & LlmUsageAttribution =
             chunkResult.error;
-          if (logAttempt(failure)) {
-            Object.assign(failure, { usageLogged: true });
-          }
+          const error = withUsageCalls(failure, logAttempt(failure, false));
           llmSpan.setStatus('error', chunkResult.error.message);
           llmSpan.end();
           // The failure gets a response trace too (#290). This is the case the
@@ -669,17 +675,16 @@ export class ToolLoopHandler implements IStageHandler {
             },
             'llm',
           );
-          ctx.error = chunkResult.error;
-          ctx.yield(chunkResult);
+          ctx.error = error;
+          ctx.yield({ ok: false, error });
           return false;
         }
         chunksSeen += 1;
         const chunk = chunkResult.value;
         // Mid-stream retry or fallback reset: discard accumulated state
         if (chunk.reset) {
-          logAttempt(chunk.retryUsage, chunk.retryUsage !== undefined);
-          attemptUsage = new StreamAttemptUsage();
-          attemptStartedAt = Date.now();
+          logAttempt(chunk.retryUsage);
+          attemptUsage.reset();
           ctx.yield({
             ok: true,
             value: { content: '', iterationEnd: 'retry' },
@@ -690,7 +695,7 @@ export class ToolLoopHandler implements IStageHandler {
           finishReason = undefined;
           continue;
         }
-        attemptUsage.add(chunk.usage, ctx.mainLlm.model);
+        attemptUsage.add(chunk.usage, ctx.mainLlm.model, chunk.usageCalls);
         if (chunk.content) {
           content += chunk.content;
           if (!ctx.clientAdapter && ctx.config.streamMode !== 'final') {
@@ -751,7 +756,7 @@ export class ToolLoopHandler implements IStageHandler {
         duration: llmCallDuration,
       });
 
-      logAttempt(undefined, true);
+      logAttempt();
 
       const hasToolCalls =
         finishReason === 'tool_calls' && toolCallsMap.size > 0;

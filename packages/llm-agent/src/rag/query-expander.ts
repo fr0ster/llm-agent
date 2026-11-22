@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import type { ILlm } from '../interfaces/llm.js';
 import type { IRequestLogger } from '../interfaces/request-logger.js';
 import {
@@ -48,6 +49,7 @@ export class LlmQueryExpander implements IQueryExpander {
       );
       if (this.requestLogger) {
         this.requestLogger.logLlmCall({
+          callId: randomUUID(),
           component: 'query-expander',
           model: this.llm.model ?? 'unknown',
           ...addCacheTokenUsage(

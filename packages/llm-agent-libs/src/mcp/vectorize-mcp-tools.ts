@@ -6,6 +6,7 @@
  * Pure coordinators of catalog components — no builder state, no private fields.
  */
 
+import { randomUUID } from 'node:crypto';
 import type {
   CallOptions,
   ILogger,
@@ -94,6 +95,7 @@ async function writeOne(
   if (ok && vector === undefined) {
     const est = Math.ceil(text.length / 4);
     requestLogger.logLlmCall({
+      callId: randomUUID(),
       component: 'embedding',
       model: 'embedder',
       promptTokens: est,
@@ -294,6 +296,7 @@ export async function vectorizeMcpTools(
       // The ONLY usage record for the batch path; writeOne stays silent when
       // it receives a precomputed vector.
       requestLogger.logLlmCall({
+        callId: randomUUID(),
         component: 'embedding',
         model: 'embedder',
         promptTokens: real?.p ?? est,

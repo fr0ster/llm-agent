@@ -5,7 +5,9 @@ import type {
   IFinalizer,
   ILlm,
   IMcpClient,
+  IRequestLogger,
   ISubAgent,
+  LlmCallRecord,
 } from '@mcp-abap-adt/llm-agent';
 import { LlmError } from '@mcp-abap-adt/llm-agent';
 import { SmartAgent } from '../agent.js';
@@ -14,6 +16,7 @@ import { unwrapBuilderResult } from '../builder-types.js';
 import { LlmAdaptiveController } from '../coordinator/adaptive/llm-adaptive-controller.js';
 import { DagPlanInterpreter } from '../coordinator/dag/dag-plan-interpreter.js';
 import { LlmFinalizer } from '../coordinator/dag/llm-finalizer.js';
+import type { IPipeline } from '../interfaces/pipeline.js';
 import { DefaultRequestLogger } from '../logger/default-request-logger.js';
 import { SessionRequestLogger } from '../logger/session-request-logger.js';
 import { WorkerRequestLogger } from '../logger/worker-request-logger.js';
@@ -53,6 +56,160 @@ const finalizer: IFinalizer = {
     return { output: 'final answer', model: 'checker', usage: finalizerUsage };
   },
 };
+
+function dagWorker(
+  worker: ISubAgent,
+  logger: IRequestLogger,
+  synthesize = finalizer,
+) {
+  return builder()
+    .withMainLlm(unusedLlm)
+    .withRequestLogger(logger)
+    .withDagCoordinator({
+      planner: {
+        name: 'planner',
+        async plan() {
+          return {
+            plan: {
+              createdAt: 0,
+              nodes: [{ id: 'work', goal: 'lookup', worker: worker.name }],
+            },
+          };
+        },
+      },
+      interpreter: new DagPlanInterpreter(),
+      workers: new Map([[worker.name, worker]]),
+      finalizer: synthesize,
+    })
+    .build()
+    .then(unwrapBuilderResult);
+}
+
+test('a planner error forwarded by an adaptive DAG worker is imported by call id', async () => {
+  let calls = 0;
+  const logger = new SessionRequestLogger();
+  const controller = new LlmAdaptiveController({
+    ...unusedLlm,
+    model: 'nested-planner',
+    async chat() {
+      calls++;
+      return {
+        ok: false,
+        error: Object.assign(
+          new LlmError('nested planner failed', 'LLM_HTTP_ERROR'),
+          {
+            usage: firstUsage,
+          },
+        ),
+      };
+    },
+  });
+  const worker = await builder()
+    .withMainLlm(unusedLlm)
+    .withRequestLogger(logger)
+    .withStepperCoordinator(
+      new AdaptiveCoordinatorHandler({ controller, workers: new Map() }),
+    )
+    .build()
+    .then(unwrapBuilderResult);
+  const parent = await dagWorker(
+    new SmartAgentSubAgent('worker', worker.agent),
+    logger,
+  );
+  try {
+    const result = await parent.agent.process(
+      'request',
+      testCallOptions({ trace: { traceId } }),
+    );
+    assert.equal(result.ok, false);
+    assert.equal(calls, 1);
+    const expected = { 'nested-planner': { ...firstUsage, requests: 1 } };
+    for (const id of [traceId, undefined]) {
+      const summary = logger.getSummary(id);
+      assert.deepEqual(summary.byModel, expected);
+      assert.deepEqual(summary.byComponent, {
+        planner: expected['nested-planner'],
+      });
+    }
+  } finally {
+    await parent.close();
+    await worker.close();
+  }
+});
+
+for (const loggerMode of [
+  'shared',
+  'separate',
+  'returned usage only',
+] as const) {
+  test(`a custom setPipeline worker contributes once with ${loggerMode}`, async () => {
+    const logger = new SessionRequestLogger();
+    const workerLogger =
+      loggerMode === 'shared' ? logger : new SessionRequestLogger();
+    const models = { 'custom-model': { ...firstUsage, requests: 1 } };
+    let calls = 0;
+    let configuredLogger: IRequestLogger | undefined;
+    const pipeline: IPipeline = {
+      initialize(deps) {
+        configuredLogger = deps.requestLogger;
+      },
+      async execute(_input, _history, options, yieldChunk) {
+        assert.ok(configuredLogger);
+        calls++;
+        if (loggerMode !== 'returned usage only') {
+          configuredLogger.logLlmCall({
+            ...firstUsage,
+            model: 'custom-model',
+            component: 'tool-loop',
+            durationMs: 0,
+            requestId: options?.trace?.traceId,
+          });
+        }
+        yieldChunk({
+          ok: true,
+          value: {
+            content: 'worker answer',
+            finishReason: 'stop',
+            usage: { ...firstUsage, models },
+          },
+        });
+        return { timing: [] };
+      },
+    };
+    const worker = await builder()
+      .withMainLlm(unusedLlm)
+      .withRequestLogger(workerLogger)
+      .setPipeline(pipeline)
+      .build()
+      .then(unwrapBuilderResult);
+    const parent = await dagWorker(
+      new SmartAgentSubAgent('worker', worker.agent),
+      logger,
+    );
+    try {
+      const result = await parent.agent.process(
+        'request',
+        testCallOptions({ trace: { traceId } }),
+      );
+      assert.ok(result.ok);
+      assert.equal(calls, 1);
+      const expected = {
+        ...models,
+        checker: { ...finalizerUsage, requests: 1 },
+      };
+      assert.deepEqual(result.value.usage?.models, expected);
+      assert.deepEqual(logger.getSummary(traceId).byModel, expected);
+      assert.deepEqual(logger.getSummary().byModel, expected);
+      if (loggerMode === 'separate') {
+        assert.deepEqual(workerLogger.getSummary(traceId).byModel, models);
+        assert.deepEqual(workerLogger.getSummary().byModel, models);
+      }
+    } finally {
+      await parent.close();
+      await worker.close();
+    }
+  });
+}
 
 test('adaptive controller reads the LLM model for each request', async () => {
   let model = 'initial';
@@ -101,6 +258,10 @@ for (const mode of ['pipeline', 'smart', 'pass'] as const) {
   test(`a failed SmartAgent worker call is counted once in ${mode} mode`, async () => {
     for (const streamedUsage of [firstUsage, undefined]) {
       const logger = new SessionRequestLogger();
+      const failure = Object.assign(new LlmError('worker failed'), {
+        model: 'worker-model',
+        usage: firstUsage,
+      });
       const mainLlm: ILlm = {
         ...unusedLlm,
         model: 'worker-model',
@@ -110,10 +271,7 @@ for (const mode of ['pipeline', 'smart', 'pass'] as const) {
           }
           yield {
             ok: false,
-            error: Object.assign(new LlmError('worker failed'), {
-              model: 'worker-model',
-              usage: firstUsage,
-            }),
+            error: failure,
           };
         },
       };
@@ -153,16 +311,23 @@ for (const mode of ['pipeline', 'smart', 'pass'] as const) {
         .build()
         .then(unwrapBuilderResult);
       try {
-        const result = await parent.agent.process(
-          'request',
-          testCallOptions({ trace: { traceId } }),
-        );
-        assert.equal(result.ok, false);
-        const expected = {
-          'worker-model': { ...firstUsage, requests: 1 },
-        };
-        assert.deepEqual(logger.getSummary(traceId).byModel, expected);
-        assert.deepEqual(logger.getSummary().byModel, expected);
+        const expected = { 'worker-model': { ...firstUsage, requests: 1 } };
+        for (const id of [traceId, 'another-request']) {
+          const result = await parent.agent.process(
+            'request',
+            testCallOptions({ trace: { traceId: id } }),
+          );
+          assert.equal(result.ok, false);
+          assert.deepEqual(logger.getSummary(id).byModel, expected);
+        }
+        assert.deepEqual(logger.getSummary().byModel, {
+          'worker-model': {
+            promptTokens: 34,
+            completionTokens: 6,
+            totalTokens: 40,
+            requests: 2,
+          },
+        });
       } finally {
         await parent.close();
         if ('close' in worker) await worker.close();
@@ -223,17 +388,25 @@ test('the pipeline tool loop accounts for error-only retry usage and prefers eac
   );
   const handle = await builder()
     .withMainLlm(llm)
-    .withRequestLogger(logger)
     .build()
     .then(unwrapBuilderResult);
+  const parent = await dagWorker(
+    new SmartAgentSubAgent('worker', handle.agent),
+    logger,
+    {
+      name: 'passthrough',
+      async finalize(input) {
+        return { output: input.interpreterOutput };
+      },
+    },
+  );
   try {
-    const result = await handle.agent.process(
+    const result = await parent.agent.process(
       'request',
       testCallOptions({ trace: { traceId } }),
     );
     assert.ok(result.ok);
     assert.equal(calls, 3);
-    assert.equal(result.value.content, 'answer');
     assert.equal(result.value.usage?.totalTokens, 101);
     const expected = {
       ...byModel,
@@ -244,6 +417,7 @@ test('the pipeline tool loop accounts for error-only retry usage and prefers eac
     assert.deepEqual(logger.getSummary(traceId).byModel, expected);
     assert.deepEqual(logger.getSummary().byModel, expected);
   } finally {
+    await parent.close();
     await handle.close();
   }
 });
@@ -266,7 +440,9 @@ for (const mode of ['adaptive', 'dag'] as const) {
               error: Object.assign(new LlmError('retry before streaming'), {
                 status: 503,
                 model: 'error-model',
-                usage: plannerUsage,
+                usageByModel: {
+                  'error-model': { ...plannerUsage, requests: 2 },
+                },
               }),
             };
           } else if (attempt < 4) {
@@ -347,7 +523,7 @@ for (const mode of ['adaptive', 'dag'] as const) {
       assert.ok(result.ok, result.ok ? undefined : result.error.message);
       assert.equal(attempt, 4);
       const expected = {
-        'error-model': { ...plannerUsage, requests: 1 },
+        'error-model': { ...plannerUsage, requests: 2 },
         'retry-model': {
           promptTokens: 34,
           completionTokens: 6,
@@ -365,6 +541,64 @@ for (const mode of ['adaptive', 'dag'] as const) {
     }
   });
 }
+
+test('DAG finalizer cancellation before retry counts only the started attempt', async () => {
+  let calls = 0;
+  const logger = new SessionRequestLogger();
+  const controller = new AbortController();
+  const llm = new RetryLlm(
+    {
+      ...unusedLlm,
+      model: 'retry-model',
+      async *streamChat() {
+        calls++;
+        yield { ok: true, value: { content: 'discarded', usage: firstUsage } };
+        yield { ok: false, error: new LlmError('retry stream') };
+      },
+    },
+    { backoffMs: 0, retryOnMidStream: ['retry stream'] },
+  );
+  const finalizer = new LlmFinalizer(llm);
+  const parent = await dagWorker(
+    {
+      name: 'worker',
+      capabilities: { contextPolicy: 'optional' },
+      async run() {
+        return { output: 'draft' };
+      },
+    },
+    logger,
+    {
+      name: finalizer.name,
+      finalize(input) {
+        return finalizer.finalize({
+          ...input,
+          onPartial(chunk) {
+            if (chunk.kind === 'iteration-end' && chunk.outcome === 'retry')
+              controller.abort();
+            input.onPartial?.(chunk);
+          },
+        });
+      },
+    },
+  );
+  try {
+    const result = await parent.agent.process(
+      'request',
+      testCallOptions({
+        signal: controller.signal,
+        trace: { traceId },
+      }),
+    );
+    assert.equal(result.ok, false);
+    assert.equal(calls, 1);
+    const expected = { 'retry-model': { ...firstUsage, requests: 1 } };
+    assert.deepEqual(logger.getSummary(traceId).byModel, expected);
+    assert.deepEqual(logger.getSummary().byModel, expected);
+  } finally {
+    await parent.close();
+  }
+});
 
 for (const mode of ['adaptive', 'dag'] as const) {
   for (const loggerMode of [
@@ -496,6 +730,7 @@ for (const mode of ['adaptive', 'dag'] as const) {
           checker: { ...finalizerUsage, requests: 1 },
         };
         assert.deepEqual(parentLogger.getSummary(traceId).byModel, expected);
+        assert.deepEqual(parentLogger.getSummary().byModel, expected);
         assert.deepEqual(result.value.usage?.models, expected);
       } finally {
         await parent.close();
@@ -640,6 +875,35 @@ test('adaptive check, revision and stop report each use their call model', async
     });
   } finally {
     await parent.close();
+  }
+});
+
+test('loggers deduplicate ids and count distinct calls with identical usage', () => {
+  const call: LlmCallRecord = {
+    callId: 'first-call',
+    component: 'tool-loop',
+    model: 'worker',
+    ...firstUsage,
+    durationMs: 0,
+  };
+  for (const logger of [
+    new DefaultRequestLogger(),
+    new SessionRequestLogger(),
+  ]) {
+    logger.startRequest(traceId);
+    logger.logLlmCall(call);
+    logger.logLlmCall({ ...call, requestId: traceId });
+    logger.logLlmCall({ ...call, callId: 'second-call', requestId: traceId });
+    const expected = {
+      worker: {
+        promptTokens: 34,
+        completionTokens: 6,
+        totalTokens: 40,
+        requests: 2,
+      },
+    };
+    assert.deepEqual(logger.getSummary(traceId).byModel, expected);
+    assert.deepEqual(logger.getSummary().byModel, expected);
   }
 });
 

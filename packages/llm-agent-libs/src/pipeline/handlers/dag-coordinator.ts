@@ -26,6 +26,7 @@ import {
 import { OrchestratorError } from '../../agent.js';
 import { PassthroughFinalizer } from '../../coordinator/dag/passthrough-finalizer.js';
 import { AbortErrorStrategy } from '../../coordinator/index.js';
+import { withUsageCalls } from '../../logger/llm-call-usage.js';
 import { summaryToUsage } from '../../logger/session-request-logger.js';
 import type { ISpan } from '../../tracer/types.js';
 import type { PipelineContext } from '../context.js';
@@ -185,21 +186,34 @@ export class DagCoordinatorHandler implements IStageHandler {
                 'COORDINATOR_BUDGET_EXHAUSTED',
               );
             }
+            const oracle = this.deps.stateOracle;
             const oracleStart = Date.now();
-            const ans = await this.deps.stateOracle.query({
-              query: (err as NeedInfoSignal).query,
-              sessionId: ctx.sessionId,
-              caller: caller,
-              usage: ctx.options?.usage,
-              signal: ctx.options?.signal,
-              trace: ctx.options?.trace,
-              sessionLogger: ctx.options?.sessionLogger,
-            });
+            const ans = await oracle
+              .query({
+                query: (err as NeedInfoSignal).query,
+                sessionId: ctx.sessionId,
+                caller,
+                usage: ctx.options?.usage,
+                signal: ctx.options?.signal,
+                trace: ctx.options?.trace,
+                requestLogger: ctx.requestLogger,
+                sessionLogger: ctx.options?.sessionLogger,
+              })
+              .catch((error) => {
+                const calls = logRoleUsage(
+                  ctx,
+                  'oracle',
+                  error as LlmUsageAttribution | null,
+                  oracle.model,
+                  Date.now() - oracleStart,
+                );
+                throw withUsageCalls(error, calls);
+              });
             logRoleUsage(
               ctx,
               'oracle',
               ans,
-              this.deps.stateOracle.model,
+              oracle.model,
               Date.now() - oracleStart,
             );
             ancestorContext.oracleObservations.push({
@@ -215,14 +229,14 @@ export class DagCoordinatorHandler implements IStageHandler {
           // in /v1/usage and the per-request delta (otherwise: real spend,
           // invisible).
           const failure = err as LlmUsageAttribution | null;
-          logRoleUsage(
+          const calls = logRoleUsage(
             ctx,
             component,
             failure,
             role?.model,
             Date.now() - start,
           );
-          throw err;
+          throw withUsageCalls(err, calls);
         }
       }
     };

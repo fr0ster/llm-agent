@@ -11,16 +11,25 @@ import { CATEGORY_MAP } from './default-request-logger.js';
 
 interface Bucket {
   llm: LlmCallEntry[];
+  callIds: Set<string>;
   rag: number;
   tool: number;
 }
 
 function emptyBucket(): Bucket {
-  return { llm: [], rag: 0, tool: 0 };
+  return { llm: [], callIds: new Set(), rag: 0, tool: 0 };
+}
+
+function recordCall(bucket: Bucket, entry: LlmCallEntry): void {
+  if (entry.callId !== undefined) {
+    if (bucket.callIds.has(entry.callId)) return;
+    bucket.callIds.add(entry.callId);
+  }
+  bucket.llm.push(entry);
 }
 
 /** Shared aggregation (DRY with DefaultRequestLogger.getSummary). */
-export function aggregate(b: Bucket): RequestSummary {
+export function aggregate(b: Omit<Bucket, 'callIds'>): RequestSummary {
   const byModel: RequestSummary['byModel'] = {};
   const byComponent: RequestSummary['byComponent'] = {};
   const byCategory: RequestSummary['byCategory'] = {};
@@ -146,8 +155,8 @@ export class SessionRequestLogger implements IRequestLogger {
   }
 
   logLlmCall(entry: LlmCallEntry): void {
-    this.cumulative.llm.push(entry);
-    if (entry.requestId) this.deltaFor(entry.requestId).llm.push(entry);
+    recordCall(this.cumulative, entry);
+    if (entry.requestId) recordCall(this.deltaFor(entry.requestId), entry);
   }
 
   logRagQuery(entry: RagQueryEntry & { requestId?: string }): void {
@@ -168,6 +177,7 @@ export class SessionRequestLogger implements IRequestLogger {
 
   reset(): void {
     this.cumulative.llm.length = 0;
+    this.cumulative.callIds.clear();
     this.cumulative.rag = 0;
     this.cumulative.tool = 0;
     this.deltas.clear();

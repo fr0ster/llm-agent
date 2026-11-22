@@ -4,7 +4,7 @@ import type {
   ExecutionReviewResult,
   ILlm,
   IReviewStrategy,
-  LlmUsage,
+  LlmUsageAttribution,
   ReviewInput,
   ReviewResult,
 } from '@mcp-abap-adt/llm-agent';
@@ -16,9 +16,11 @@ import { renderAncestorContext } from './render-ancestor-context.js';
  * Attach LLM usage to a thrown Error so the coordinator's runRole catch can
  * still bill the spend. Same rationale as the planner-side helper.
  */
-function withUsage(err: Error, usage: LlmUsage | undefined): Error {
-  if (usage) (err as Error & { usage?: LlmUsage }).usage = usage;
-  return err;
+function withUsage(
+  error: Error,
+  { usage, model, usageCalls }: LlmUsageAttribution,
+): Error {
+  return Object.assign(error, { usage, model, usageCalls });
 }
 
 // Static critic instructions. The user prompt, plan and catalog are dynamic and
@@ -50,10 +52,12 @@ export class LlmReviewStrategy implements IReviewStrategy {
   constructor(llm: ILlm) {
     this.agent = new DirectLlmSubAgent('reviewer', llm, {
       systemPrompt: REVIEWER_SYSTEM,
+      component: 'reviewer',
       contextPolicy: 'optional',
     });
     this.executionAgent = new DirectLlmSubAgent('recovery-reviewer', llm, {
       systemPrompt: EXECUTION_REVIEW_SYSTEM,
+      component: 'reviewer',
       contextPolicy: 'optional',
     });
   }
@@ -87,7 +91,7 @@ export class LlmReviewStrategy implements IReviewStrategy {
         new Error(
           `Reviewer output did not contain a JSON object: ${res.output.slice(0, 200)}`,
         ),
-        res.usage,
+        res,
       );
     let parsed: {
       pass?: unknown;
@@ -102,23 +106,23 @@ export class LlmReviewStrategy implements IReviewStrategy {
         new Error(
           `Reviewer output contained malformed JSON: ${match[0].slice(0, 200)}`,
         ),
-        res.usage,
+        res,
       );
     }
     if (typeof parsed.needInfo === 'string' && parsed.needInfo.trim()) {
       // Forward LLM usage on the signal path so the coordinator can attribute
       // reviewer spend even when the critic short-circuits with a signal.
-      throw new NeedInfoSignal(parsed.needInfo, res.usage);
+      throw withUsage(new NeedInfoSignal(parsed.needInfo, res.usage), res);
     }
     if (typeof parsed.clarify === 'string' && parsed.clarify.trim()) {
-      throw new ClarifySignal(parsed.clarify, res.usage);
+      throw withUsage(new ClarifySignal(parsed.clarify, res.usage), res);
     }
     if (typeof parsed.pass !== 'boolean') {
       throw withUsage(
         new Error(
           `Reviewer verdict must have a boolean 'pass': ${match[0].slice(0, 200)}`,
         ),
-        res.usage,
+        res,
       );
     }
     if (parsed.pass === false) {
@@ -130,16 +134,22 @@ export class LlmReviewStrategy implements IReviewStrategy {
           new Error(
             `Reviewer rejection must include a non-empty 'feedback' string: ${match[0].slice(0, 200)}`,
           ),
-          res.usage,
+          res,
         );
       }
       return {
         verdict: { pass: false, feedback: parsed.feedback },
         usage: res.usage,
         model: res.model,
+        usageCalls: res.usageCalls,
       };
     }
-    return { verdict: { pass: true }, usage: res.usage, model: res.model };
+    return {
+      verdict: { pass: true },
+      usage: res.usage,
+      model: res.model,
+      usageCalls: res.usageCalls,
+    };
   }
 
   async reviewExecutionFailure(
@@ -174,7 +184,7 @@ export class LlmReviewStrategy implements IReviewStrategy {
         new Error(
           `Recovery reviewer output did not contain a JSON object: ${res.output.slice(0, 200)}`,
         ),
-        res.usage,
+        res,
       );
     let parsed: {
       action?: unknown;
@@ -189,20 +199,21 @@ export class LlmReviewStrategy implements IReviewStrategy {
         new Error(
           `Recovery reviewer output contained malformed JSON: ${match[0].slice(0, 200)}`,
         ),
-        res.usage,
+        res,
       );
     }
     if (typeof parsed.needInfo === 'string' && parsed.needInfo.trim()) {
-      throw new NeedInfoSignal(parsed.needInfo, res.usage);
+      throw withUsage(new NeedInfoSignal(parsed.needInfo, res.usage), res);
     }
     if (typeof parsed.clarify === 'string' && parsed.clarify.trim()) {
-      throw new ClarifySignal(parsed.clarify, res.usage);
+      throw withUsage(new ClarifySignal(parsed.clarify, res.usage), res);
     }
     if (parsed.action === 'abort') {
       return {
         decision: { action: 'abort' },
         usage: res.usage,
         model: res.model,
+        usageCalls: res.usageCalls,
       };
     }
     if (parsed.action !== 'revise') {
@@ -210,7 +221,7 @@ export class LlmReviewStrategy implements IReviewStrategy {
         new Error(
           `Recovery reviewer action must be 'abort' | 'revise': ${match[0].slice(0, 200)}`,
         ),
-        res.usage,
+        res,
       );
     }
     const plan = parsed.plan as { nodes?: unknown } | undefined;
@@ -229,13 +240,14 @@ export class LlmReviewStrategy implements IReviewStrategy {
         new Error(
           `Recovery reviewer revise plan must have non-empty nodes with string id+goal: ${match[0].slice(0, 200)}`,
         ),
-        res.usage,
+        res,
       );
     }
     return {
       decision: { action: 'revise', revisedPlan: plan as DagPlan },
       usage: res.usage,
       model: res.model,
+      usageCalls: res.usageCalls,
     };
   }
 }

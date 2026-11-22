@@ -1,7 +1,7 @@
 import type { Message } from '../types.js';
 import type { EpicFailTrace } from './coordinator.js';
 import type { IDialogueTaskContext } from './dialogue-task-context.js';
-import type { IRequestLogger } from './request-logger.js';
+import type { IRequestLogger, LlmCallRecord } from './request-logger.js';
 import type { OnPartial } from './streaming.js';
 import type { ToolTrace, ToolTraceEntry } from './tool-trace.js';
 import type { LlmTool, LlmToolCall, TokenUsage } from './types.js';
@@ -96,8 +96,8 @@ export interface ISubAgentResult {
   usage?: TokenUsage;
   /** Model for flat usage. Multi-model runs should provide usage.models. */
   model?: string;
-  /** The returned usage was already recorded in the owning request logger. */
-  usageLogged?: true;
+  /** Complete call records. Takes precedence over aggregated usage. */
+  usageCalls?: readonly LlmCallRecord[];
   metadata?: Record<string, unknown>;
   /**
    * When set to 'epicfail', the parent coordinator must not retry/replan.

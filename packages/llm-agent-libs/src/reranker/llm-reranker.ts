@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import type { ILlm, LlmResponse } from '@mcp-abap-adt/llm-agent';
 import {
   addCacheTokenUsage,
@@ -187,6 +188,7 @@ export class LlmReranker implements IReranker {
       const completionTokens =
         usage?.completionTokens ?? Math.ceil(reply.content.length / 4);
       logger.logLlmCall({
+        callId: randomUUID(),
         component: 'rerank',
         ...addCacheTokenUsage(undefined, usage),
         model: this.llm.model ?? 'unknown',

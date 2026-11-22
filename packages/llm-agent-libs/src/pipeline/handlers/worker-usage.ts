@@ -1,57 +1,57 @@
-import type { ISubAgent, ISubAgentResult } from '@mcp-abap-adt/llm-agent';
+import type {
+  ISubAgent,
+  ISubAgentResult,
+  LlmUsageAttribution,
+} from '@mcp-abap-adt/llm-agent';
+import {
+  usageCallRecords,
+  withUsageCalls,
+} from '../../logger/llm-call-usage.js';
 import type { PipelineContext } from '../context.js';
 
-type WorkerUsage = Pick<
-  ISubAgentResult,
-  'usage' | 'model' | 'usageLogged' | 'metadata'
->;
+type WorkerUsage = Pick<ISubAgentResult, 'usage' | 'metadata'> &
+  Omit<LlmUsageAttribution, 'usage'>;
 
 /** Meter each dispatch, including failures and retries, regardless of the interpreter. */
 export function meterWorkers(
   workers: ReadonlyMap<string, ISubAgent>,
   ctx: PipelineContext,
-  logReturnedUsage?: ReadonlySet<string>,
+  logLegacyUsage?: ReadonlySet<string>,
 ): Map<string, ISubAgent> {
-  const requestId = ctx.options?.trace?.traceId;
   const result = new Map<string, ISubAgent>();
 
   for (const [name, worker] of workers) {
     const logUsage = (
       entry: WorkerUsage | null | undefined,
+      requestId: string | undefined,
       durationMs: number,
     ) => {
-      if (
-        !entry?.usage ||
-        entry.usageLogged ||
-        (logReturnedUsage && !logReturnedUsage.has(name))
-      )
-        return;
-      const model =
-        entry.model ??
-        (typeof entry.metadata?.model === 'string'
-          ? entry.metadata.model
-          : worker.model);
-      const models = Object.entries(entry.usage.models ?? {});
-      if (models.length === 0) {
-        ctx.requestLogger.logLlmCall({
-          ...entry.usage,
-          component: 'executor',
-          model: model ?? 'unknown',
-          durationMs,
-          requestId,
-        });
-        return;
-      }
-      // The model breakdown already accounts for the flat total.
-      for (const [usedModel, usage] of models) {
-        ctx.requestLogger.logLlmCall({
-          ...usage,
-          component: 'executor',
-          model: usedModel,
-          durationMs: 0,
-          requestId,
-        });
-      }
+      if (!entry) return;
+      const calls =
+        entry.usageCalls ??
+        (!logLegacyUsage || logLegacyUsage.has(name)
+          ? usageCallRecords(
+              {
+                usage: entry.usage,
+                usageByModel:
+                  entry.usageByModel ??
+                  (entry.usage?.models &&
+                  Object.keys(entry.usage.models).length > 0
+                    ? entry.usage.models
+                    : undefined),
+                model:
+                  entry.model ??
+                  (typeof entry.metadata?.model === 'string'
+                    ? entry.metadata.model
+                    : worker.model),
+              },
+              'executor',
+              durationMs,
+            )
+          : []);
+      for (const call of calls)
+        ctx.requestLogger.logLlmCall({ ...call, requestId });
+      return calls;
     };
 
     result.set(name, {
@@ -63,18 +63,23 @@ export function meterWorkers(
       },
       async run(input) {
         const start = Date.now();
+        const trace = ctx.options?.trace ?? input.trace;
         let value: ISubAgentResult;
         try {
           value = await worker.run({
             ...input,
-            trace: ctx.options?.trace ?? input.trace,
+            trace,
             requestLogger: ctx.requestLogger,
           });
         } catch (error) {
-          logUsage(error as WorkerUsage | null, Date.now() - start);
-          throw error;
+          const calls = logUsage(
+            error as WorkerUsage | null,
+            trace?.traceId,
+            Date.now() - start,
+          );
+          throw withUsageCalls(error, calls ?? []);
         }
-        logUsage(value, Date.now() - start);
+        logUsage(value, trace?.traceId, Date.now() - start);
         return value;
       },
     });

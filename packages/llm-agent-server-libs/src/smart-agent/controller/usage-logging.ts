@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import type {
   IRequestLogger,
   LlmComponent,
@@ -43,6 +44,7 @@ export function makeLogUsage(
             ? 'embedder'
             : ((models as Record<string, string>)[role] ?? 'unknown');
     requestLogger.logLlmCall({
+      callId: randomUUID(),
       component: role as LlmComponent,
       model,
       ...addCacheTokenUsage(undefined, u),

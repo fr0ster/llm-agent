@@ -1,6 +1,7 @@
 import type {
   CallOptions,
   IClientAdapter,
+  IRequestLogger,
   LlmStreamChunk,
   LlmTool,
   Message,
@@ -8,6 +9,8 @@ import type {
 } from '@mcp-abap-adt/llm-agent';
 import { OrchestratorError, terminalRunError } from '@mcp-abap-adt/llm-agent';
 import type { IPipeline } from '../interfaces/pipeline.js';
+import { errorUsage, withUsageAttribution } from '../logger/llm-call-usage.js';
+import { withPipelineRequestLogger } from '../logger/pipeline-request-logger.js';
 
 export async function* pipelineToStream(
   pipeline: IPipeline,
@@ -15,6 +18,7 @@ export async function* pipelineToStream(
   externalTools: LlmTool[],
   opts: CallOptions | undefined,
   clientAdapter?: IClientAdapter,
+  configuredRequestLogger?: IRequestLogger,
 ): AsyncIterable<Result<LlmStreamChunk, OrchestratorError>> {
   if (!pipeline) return;
 
@@ -25,25 +29,37 @@ export async function* pipelineToStream(
   let done = false;
   let yieldedError = false;
 
-  const executorPromise = pipeline
-    .execute(
-      input,
-      history,
-      opts,
-      (chunk) => {
-        if (!chunk.ok) yieldedError = true;
-        chunkQueue.push(chunk);
-        if (resolveWait) {
-          resolveWait();
-          resolveWait = null;
-        }
-      },
-      externalTools,
-      clientAdapter,
-    )
+  const executorPromise = withPipelineRequestLogger(
+    configuredRequestLogger,
+    opts?.requestLogger,
+    () =>
+      pipeline.execute(
+        input,
+        history,
+        opts,
+        (chunk) => {
+          if (!chunk.ok) yieldedError = true;
+          chunkQueue.push(chunk);
+          if (resolveWait) {
+            resolveWait();
+            resolveWait = null;
+          }
+        },
+        externalTools,
+        clientAdapter,
+      ),
+  )
     .then(({ error }) => {
-      if (error && !yieldedError)
-        chunkQueue.push({ ok: false, error: terminalRunError(error) ?? error });
+      if (error && !yieldedError) {
+        const terminal = terminalRunError(error);
+        chunkQueue.push({
+          ok: false,
+          error:
+            terminal && terminal !== error
+              ? withUsageAttribution(terminal, errorUsage(error))
+              : error,
+        });
+      }
       done = true;
       if (resolveWait) {
         resolveWait();
@@ -51,13 +67,16 @@ export async function* pipelineToStream(
       }
     })
     .catch((err) => {
-      if (!yieldedError)
+      if (!yieldedError) {
         chunkQueue.push({
           ok: false,
-          error:
+          error: withUsageAttribution(
             terminalRunError(err) ??
-            new OrchestratorError(String(err), 'PIPELINE_ERROR'),
+              new OrchestratorError(String(err), 'PIPELINE_ERROR'),
+            errorUsage(err),
+          ),
         });
+      }
       done = true;
       if (resolveWait) {
         resolveWait();

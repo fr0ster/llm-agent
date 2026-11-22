@@ -1,6 +1,8 @@
+import { randomUUID } from 'node:crypto';
 import type {
   IRequestLogger,
   LlmCallEntry,
+  LlmCallRecord,
   RagQueryEntry,
   ToolCallEntry,
 } from '@mcp-abap-adt/llm-agent';
@@ -11,6 +13,7 @@ export class WorkerRequestLogger implements IRequestLogger {
   private readonly local = new DefaultRequestLogger();
   private readonly targets: ReadonlySet<IRequestLogger>;
   private readonly owned?: IRequestLogger;
+  private requestId?: string;
 
   constructor(
     private readonly configured: IRequestLogger,
@@ -33,6 +36,7 @@ export class WorkerRequestLogger implements IRequestLogger {
   }
 
   startRequest(requestId?: string): void {
+    this.requestId = requestId;
     this.local.startRequest(requestId);
     this.owned?.startRequest(requestId);
   }
@@ -48,7 +52,18 @@ export class WorkerRequestLogger implements IRequestLogger {
   }
 
   logLlmCall(entry: LlmCallEntry): void {
-    for (const logger of this.targets) logger.logLlmCall(entry);
+    const callId = entry.callId ?? randomUUID();
+    if (this.local.hasCall(callId)) return;
+    const call = {
+      ...entry,
+      callId,
+      requestId: entry.requestId ?? this.requestId,
+    };
+    for (const logger of this.targets) logger.logLlmCall(call);
+  }
+
+  get usageCalls(): readonly LlmCallRecord[] {
+    return this.local.usageCalls;
   }
 
   logRagQuery(entry: RagQueryEntry & { requestId?: string }): void {

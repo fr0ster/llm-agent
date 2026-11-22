@@ -1,7 +1,9 @@
 import type {
+  LlmCallRecord,
   LlmComponent,
   LlmUsageAttribution,
 } from '@mcp-abap-adt/llm-agent';
+import { errorUsage, usageCallRecords } from '../../logger/llm-call-usage.js';
 import type { PipelineContext } from '../context.js';
 
 export function logRoleUsage(
@@ -10,25 +12,18 @@ export function logRoleUsage(
   attribution?: LlmUsageAttribution | null,
   fallbackModel?: string,
   durationMs = 0,
-): void {
-  const requestId = ctx.options?.trace?.traceId;
-  if (attribution?.usageByModel) {
-    for (const [model, usage] of Object.entries(attribution.usageByModel)) {
-      ctx.requestLogger.logLlmCall({
-        ...usage,
-        component,
-        model,
-        durationMs: 0,
-        requestId,
-      });
-    }
-  } else if (attribution?.usage) {
+): readonly LlmCallRecord[] {
+  if (!attribution) return [];
+  const calls = usageCallRecords(
+    { ...errorUsage(attribution), model: attribution.model ?? fallbackModel },
+    component,
+    durationMs,
+  );
+  for (const call of calls) {
     ctx.requestLogger.logLlmCall({
-      ...attribution.usage,
-      component,
-      model: attribution.model ?? fallbackModel ?? 'unknown',
-      durationMs,
-      requestId,
+      ...call,
+      requestId: ctx.options?.trace?.traceId,
     });
   }
+  return calls;
 }

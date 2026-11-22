@@ -5,10 +5,13 @@ import type {
   ControllerPlanInput,
   IAdaptiveController,
   ILlm,
+  LlmComponent,
   LlmUsage,
+  LlmUsageAttribution,
   Verdict,
 } from '@mcp-abap-adt/llm-agent';
 import { OrchestratorError } from '@mcp-abap-adt/llm-agent';
+import { chatWithUsage } from '../../logger/llm-call-usage.js';
 import { lastObject, parsePlan, parseVerdict } from './parse-plan.js';
 
 /** Planning instructions shared by the default adaptive controller. */
@@ -45,8 +48,11 @@ Simple one-work-step example (executor must be registered):
 Create/check/fix/recheck example (executor must be registered):
 {"spec":{"objective":"Create a correct draft"},"steps":[{"id":"create","kind":"work","goal":"Create draft","worker":"executor"},{"id":"check","kind":"check","goal":"Review draft","worker":"self","targets":["create"],"onPass":"answer","onFail":"fix"},{"id":"fix","kind":"work","goal":"Fix draft using review","worker":"executor","context":{"results":["create","check"]}},{"id":"recheck","kind":"check","goal":"Review fixed draft","worker":"self","targets":["fix"],"onPass":"fixedAnswer","onFail":"fix"},{"id":"fixedAnswer","kind":"answer","from":"fix"},{"id":"answer","kind":"answer","from":"create"}]}`;
 
-function withUsage(error: Error, usage?: LlmUsage, model?: string): Error {
-  return usage ? Object.assign(error, { usage, model }) : error;
+function withUsage(
+  error: Error,
+  { usage, model, usageCalls }: LlmUsageAttribution,
+): Error {
+  return Object.assign(error, { usage, model, usageCalls });
 }
 
 /** An ILlm-backed planner and reviewer; execution and fallback stay with callers. */
@@ -65,8 +71,15 @@ export class LlmAdaptiveController implements IAdaptiveController {
     return this.llm.model;
   }
 
-  private async chat(system: string, content: string, options?: CallOptions) {
-    const result = await this.llm.chat(
+  private async chat(
+    component: LlmComponent,
+    system: string,
+    content: string,
+    options?: CallOptions,
+  ) {
+    const result = await chatWithUsage(
+      this.llm,
+      component,
       [
         { role: 'system', content: system },
         { role: 'user', content },
@@ -74,24 +87,22 @@ export class LlmAdaptiveController implements IAdaptiveController {
       undefined,
       options,
     );
-    if (!result.ok) throw result.error;
-    const model = this.model;
-    if (result.value.finishReason === 'length')
+    if (result.finishReason === 'length')
       throw withUsage(
         new OrchestratorError(
           'LLM response was truncated at a token limit.',
           'LLM_OUTPUT_TRUNCATED',
         ),
-        result.value.usage,
-        model,
+        result,
       );
-    return { ...result.value, model };
+    return result;
   }
 
   async plan(input: ControllerPlanInput): Promise<{
     plan: AdaptivePlan;
     usage: LlmUsage | undefined;
     model?: string;
+    usageCalls?: LlmUsageAttribution['usageCalls'];
   }> {
     const history = input.history;
     const previousRun = input.previousRun && {
@@ -108,6 +119,7 @@ export class LlmAdaptiveController implements IAdaptiveController {
       })),
     };
     const response = await this.chat(
+      'planner',
       this.systemPrompt,
       [
         `Workers:\n${input.workers.map((worker) => `${worker.name}: ${worker.description ?? ''}`).join('\n')}`,
@@ -120,18 +132,24 @@ export class LlmAdaptiveController implements IAdaptiveController {
     const parsed = parsePlan(response.content, {
       workers: input.workers.map((worker) => worker.name),
     });
-    if (!parsed.ok)
-      throw withUsage(new Error(parsed.error), response.usage, response.model);
-    return { plan: parsed.value, usage: response.usage, model: response.model };
+    if (!parsed.ok) throw withUsage(new Error(parsed.error), response);
+    return {
+      plan: parsed.value,
+      usage: response.usage,
+      model: response.model,
+      usageCalls: response.usageCalls,
+    };
   }
 
   async check(input: Parameters<IAdaptiveController['check']>[0]): Promise<{
     verdict: Verdict;
     usage: LlmUsage | undefined;
     model?: string;
+    usageCalls?: LlmUsageAttribution['usageCalls'];
   }> {
     const { signal, usage, ...context } = input;
     const response = await this.chat(
+      'reviewer',
       'Judge the target records against the request, spec and check goal. Return JSON only: {"verdict":"pass|fail|partial","reason":"..."}.',
       JSON.stringify(context),
       { signal, usage: usage?.with({ role: 'reviewer' }) },
@@ -143,19 +161,25 @@ export class LlmAdaptiveController implements IAdaptiveController {
           `Check ${input.step.id} failed to retrieve a verdict: Unparsable verdict`,
           'VERDICT_RETRIEVAL_FAILED',
         ),
-        response.usage,
-        response.model,
+        response,
       );
-    return { verdict, usage: response.usage, model: response.model };
+    return {
+      verdict,
+      usage: response.usage,
+      model: response.model,
+      usageCalls: response.usageCalls,
+    };
   }
 
   async revise(input: Parameters<IAdaptiveController['revise']>[0]): Promise<{
     steps: AdaptiveStep[];
     usage: LlmUsage | undefined;
     model?: string;
+    usageCalls?: LlmUsageAttribution['usageCalls'];
   }> {
     const { signal, usage, ...context } = input;
     const response = await this.chat(
+      'planner',
       `${this.systemPrompt}\nFor this call return {"steps":[...]} with steps for the remainder only. Do not reuse executed ids in records or the current revise step's id. References may use retained step ids.`,
       JSON.stringify(context),
       { signal, usage: usage?.with({ role: 'planner' }) },
@@ -166,8 +190,7 @@ export class LlmAdaptiveController implements IAdaptiveController {
     } catch (error) {
       throw withUsage(
         error instanceof Error ? error : new Error(String(error)),
-        response.usage,
-        response.model,
+        response,
       );
     }
     if (
@@ -176,17 +199,14 @@ export class LlmAdaptiveController implements IAdaptiveController {
       !('steps' in parsed) ||
       !Array.isArray(parsed.steps)
     ) {
-      throw withUsage(
-        new Error('Revision requires a steps array'),
-        response.usage,
-        response.model,
-      );
+      throw withUsage(new Error('Revision requires a steps array'), response);
     }
     // The interpreter validates workers, references, and taken ids before execution.
     return {
       steps: parsed.steps as AdaptiveStep[],
       usage: response.usage,
       model: response.model,
+      usageCalls: response.usageCalls,
     };
   }
 
@@ -194,9 +214,11 @@ export class LlmAdaptiveController implements IAdaptiveController {
     text: string;
     usage: LlmUsage | undefined;
     model?: string;
+    usageCalls?: LlmUsageAttribution['usageCalls'];
   }> {
     const { signal, usage, ...context } = input;
     const response = await this.chat(
+      'finalizer',
       "Report in plain text in the request's language: what was done, what was not, and why the run stopped. Ground claims in the records; do not present unfinished work as complete.",
       JSON.stringify(context),
       { signal, usage: usage?.with({ role: 'finalizer' }) },
@@ -205,6 +227,7 @@ export class LlmAdaptiveController implements IAdaptiveController {
       text: response.content,
       usage: response.usage,
       model: response.model,
+      usageCalls: response.usageCalls,
     };
   }
 }

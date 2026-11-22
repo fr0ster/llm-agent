@@ -9,7 +9,7 @@ import type { IUsageRecorder, UsageOperation } from './usage.js';
 
 import type { Message, PromptCacheOptions } from '../types.js';
 import type { StepStatus } from './adaptive-plan.js';
-import type { IRequestLogger } from './request-logger.js';
+import type { IRequestLogger, LlmCallRecord } from './request-logger.js';
 import type { OnPartial } from './streaming.js';
 
 // ---------------------------------------------------------------------------
@@ -130,6 +130,8 @@ export interface TimingEntry {
 }
 
 export interface LlmStreamChunk {
+  /** Individual calls behind the returned usage, when available. */
+  usageCalls?: readonly LlmCallRecord[];
   /** Retroactive boundary for this iteration's text. Tool-round text is progress.
    * Retain it only as a fallback if the call ends without a final iteration.
    * Retry boundaries discard rejected text, including from fallback content. */
@@ -168,6 +170,8 @@ export interface LlmStreamChunk {
 // ---------------------------------------------------------------------------
 
 export class SmartAgentError extends Error {
+  declare usageCalls?: readonly LlmCallRecord[];
+
   constructor(
     message: string,
     public readonly code: string,
@@ -296,6 +300,8 @@ export interface LlmUsage {
 }
 
 export interface LlmUsageAttribution {
+  /** Complete call records. Takes precedence over aggregated usage. */
+  usageCalls?: readonly LlmCallRecord[];
   usage?: LlmUsage;
   /** Model that produced this usage, when resolved per call. */
   model?: string;

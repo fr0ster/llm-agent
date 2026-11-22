@@ -115,6 +115,7 @@ import type {
 } from './interfaces/mcp-connection-strategy.js';
 import type { IPipeline } from './interfaces/pipeline.js';
 import { DefaultRequestLogger } from './logger/default-request-logger.js';
+import { pipelineRequestLogger } from './logger/pipeline-request-logger.js';
 import { ToolCatalogStatusHolder } from './mcp/tool-catalog-status.js';
 import {
   vectorizeMcpTools,
@@ -1575,7 +1576,9 @@ export class SmartAgentBuilder {
         sessionManager: this._sessionManager,
         skillManager: this._skillManager,
         logger: log,
-        requestLogger,
+        requestLogger: this._pipeline
+          ? pipelineRequestLogger(requestLogger)
+          : requestLogger,
         tracer: this._tracer,
         metrics: this._metrics,
         historyMemory,

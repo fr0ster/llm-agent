@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import type { ILlm } from '../interfaces/llm.js';
 import type { IRequestLogger } from '../interfaces/request-logger.js';
 import type { CallOptions, RagError, Result } from '../interfaces/types.js';
@@ -83,6 +84,7 @@ export class TranslatePreprocessor implements IQueryPreprocessor {
       );
       if (this.requestLogger) {
         this.requestLogger.logLlmCall({
+          callId: randomUUID(),
           component: 'translate',
           model: this.llm.model ?? 'unknown',
           ...addCacheTokenUsage(
@@ -144,6 +146,7 @@ export class ExpandPreprocessor implements IQueryPreprocessor {
       );
       if (this.requestLogger) {
         this.requestLogger.logLlmCall({
+          callId: randomUUID(),
           component: 'query-expander',
           model: this.llm.model ?? 'unknown',
           ...addCacheTokenUsage(
@@ -222,6 +225,7 @@ export class IntentEnricher implements IDocumentEnricher {
       );
       if (this.requestLogger) {
         this.requestLogger.logLlmCall({
+          callId: randomUUID(),
           component: 'helper',
           model: this.llm.model ?? 'unknown',
           ...addCacheTokenUsage(

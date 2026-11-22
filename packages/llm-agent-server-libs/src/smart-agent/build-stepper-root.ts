@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import {
   addCacheTokenUsage,
   type CallOptions,
@@ -251,6 +252,7 @@ export async function buildFromComposition(
     return new LoggingLlm(inner, (usage, durationMs) => {
       if (logLlmCall) {
         logLlmCall({
+          callId: randomUUID(),
           component,
           model: inner.model ?? cfgModel ?? 'unknown',
           ...addCacheTokenUsage(undefined, usage),

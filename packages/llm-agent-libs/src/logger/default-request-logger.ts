@@ -1,6 +1,7 @@
 import type {
   IRequestLogger,
   LlmCallEntry,
+  LlmCallRecord,
   LlmComponent,
   RagQueryEntry,
   RequestSummary,
@@ -48,6 +49,8 @@ function addToBucket(bucket: TokenBucket, entry: LlmCallEntry): void {
 export class DefaultRequestLogger implements IRequestLogger {
   private initLlmCalls: LlmCallEntry[] = [];
   private requestLlmCalls: LlmCallEntry[] = [];
+  private readonly initCallIds = new Set<string>();
+  private readonly requestCallIds = new Set<string>();
   private ragQueryEntries: RagQueryEntry[] = [];
   private toolCallEntries: ToolCallEntry[] = [];
   private requestStartMs = 0;
@@ -55,6 +58,7 @@ export class DefaultRequestLogger implements IRequestLogger {
 
   startRequest(_requestId?: string): void {
     this.requestLlmCalls = [];
+    this.requestCallIds.clear();
     this.ragQueryEntries = [];
     this.toolCallEntries = [];
     this.requestDurationMs = 0;
@@ -71,6 +75,15 @@ export class DefaultRequestLogger implements IRequestLogger {
   dropRequest(_requestId?: string): void {}
 
   logLlmCall(entry: LlmCallEntry): void {
+    const { callId } = entry;
+    if (callId !== undefined) {
+      if (this.hasCall(callId)) return;
+      const ids =
+        entry.scope === 'initialization'
+          ? this.initCallIds
+          : this.requestCallIds;
+      ids.add(callId);
+    }
     if (entry.scope === 'initialization') {
       this.initLlmCalls.push(entry);
     } else {
@@ -84,6 +97,16 @@ export class DefaultRequestLogger implements IRequestLogger {
 
   logToolCall(entry: ToolCallEntry & { requestId?: string }): void {
     this.toolCallEntries.push(entry);
+  }
+
+  hasCall(callId: string): boolean {
+    return this.initCallIds.has(callId) || this.requestCallIds.has(callId);
+  }
+
+  get usageCalls(): readonly LlmCallRecord[] {
+    return [...this.initLlmCalls, ...this.requestLlmCalls].filter(
+      (entry): entry is LlmCallRecord => entry.callId !== undefined,
+    );
   }
 
   getSummary(_requestId?: string): RequestSummary {
@@ -131,6 +154,7 @@ export class DefaultRequestLogger implements IRequestLogger {
 
   reset(): void {
     this.requestLlmCalls = [];
+    this.requestCallIds.clear();
     this.ragQueryEntries = [];
     this.toolCallEntries = [];
     this.requestStartMs = 0;

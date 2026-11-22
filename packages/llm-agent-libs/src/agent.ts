@@ -21,6 +21,7 @@ import type {
   IToolLoopContextStrategy,
   IToolNamespace,
   IToolRecordKey,
+  LlmCallRecord,
   LlmFinishReason,
   LlmStreamChunk,
   LlmTool,
@@ -86,10 +87,12 @@ export {
 
 import type { IPipeline } from './interfaces/pipeline.js';
 import type { ILogger } from './logger/index.js';
+import { mergeUsageCalls, withUsageCalls } from './logger/llm-call-usage.js';
 import { NoopRequestLogger } from './logger/noop-request-logger.js';
 import { summaryToUsage } from './logger/session-request-logger.js';
 import {
   logToolLoopAttempt,
+  recordThrownLlmUsage,
   StreamAttemptUsage,
 } from './logger/stream-attempt-usage.js';
 import { WorkerRequestLogger } from './logger/worker-request-logger.js';
@@ -128,6 +131,11 @@ import { NoopTracer } from './tracer/noop-tracer.js';
 import type { ISpan, ITracer } from './tracer/types.js';
 import { NoopValidator } from './validator/noop-validator.js';
 import type { IOutputValidator } from './validator/types.js';
+
+const captureWorkerUsage = Symbol('captureWorkerUsage');
+type InternalAgentCallOptions = AgentCallOptions & {
+  [captureWorkerUsage]?: (logger: WorkerRequestLogger) => void;
+};
 
 export type SmartAgentRagStores<K extends string = string> = Record<
   K,
@@ -671,8 +679,17 @@ export class SmartAgent {
     // Map streaming index → position in collectedToolCalls for delta correlation
     const indexToPosition = new Map<number, number>();
     let executedToolCallCount: number | undefined;
-    const streamOptions: AgentCallOptions = {
+    let workerLogger: WorkerRequestLogger | undefined;
+    const returnedCalls = new Map<string, LlmCallRecord>();
+    const collectedCalls = () =>
+      mergeUsageCalls(workerLogger?.usageCalls ?? [], [
+        ...returnedCalls.values(),
+      ]);
+    const streamOptions: InternalAgentCallOptions = {
       ...options,
+      [captureWorkerUsage]: (logger) => {
+        workerLogger = logger;
+      },
       onToolCallCount: (count, max) => {
         executedToolCallCount = count;
         options?.onToolCallCount?.(count, max);
@@ -682,7 +699,16 @@ export class SmartAgent {
       textOrMessages,
       streamOptions,
     )) {
-      if (!chunk.ok) return chunk;
+      if (!chunk.ok) {
+        return {
+          ok: false,
+          error: withUsageCalls(chunk.error, collectedCalls()),
+        };
+      }
+      for (const call of chunk.value.usageCalls ?? []) {
+        if (!returnedCalls.has(call.callId))
+          returnedCalls.set(call.callId, call);
+      }
       if (chunk.value.content && !chunk.value.ephemeral)
         content += chunk.value.content;
       if (chunk.value.iterationEnd === 'tool_calls') {
@@ -749,6 +775,7 @@ export class SmartAgent {
         }
       }
     }
+    const usageCalls = collectedCalls();
     return {
       ok: true,
       value: {
@@ -763,6 +790,7 @@ export class SmartAgent {
           ? { toolCalls: collectedToolCalls }
           : {}),
         usage: totalUsage,
+        ...(usageCalls.length > 0 ? { usageCalls } : {}),
       },
     };
   }
@@ -801,9 +829,12 @@ export class SmartAgent {
     // options): write the generated traceId into opts.trace and attach the
     // per-request logger, so every downstream logLlmCall is request-scoped and
     // the embedder-boundary wrapper can attribute embedding spend.
-    const requestLogger = options?.parentRequestLogger
+    const workerLogger = options?.parentRequestLogger
       ? new WorkerRequestLogger(this.requestLogger, options.parentRequestLogger)
-      : this.requestLogger;
+      : undefined;
+    const requestLogger = workerLogger ?? this.requestLogger;
+    const internalOptions: InternalAgentCallOptions | undefined = options;
+    if (workerLogger) internalOptions?.[captureWorkerUsage]?.(workerLogger);
     opts = normalizeRequestOptions(opts, traceId, requestLogger);
     // Message-array callers own their context, including request time, unless
     // they explicitly request insertion through call options.
@@ -929,6 +960,7 @@ export class SmartAgent {
             toolAvailability: pipelineToolAvailability,
           },
           detectedAdapter,
+          workerLogger ? this.requestLogger : undefined,
         );
         for await (const chunk of stream) yield chunk;
         rootSpan.setStatus('ok');
@@ -1004,6 +1036,8 @@ export class SmartAgent {
       );
       for await (const chunk of stream) yield chunk;
       rootSpan.setStatus('ok');
+    } catch (error) {
+      throw withUsageCalls(error, workerLogger?.usageCalls ?? []);
     } finally {
       if (ephemeralSession && identity.kind === 'caller') {
         const pendingResults = this.deps.pipeline
@@ -1422,20 +1456,20 @@ export class SmartAgent {
       });
       this.metrics.llmCallCount.add();
       const llmCallStart = Date.now();
-      const stream = this.defaultLlmCallStrategy.call(
-        this._mainLlm,
-        toModelToolMessages(messages, this.config.toolTrust),
-        currentTools,
-        { ...opts, includeStreamRetryUsage: true },
-      );
+      const stream = () =>
+        this.defaultLlmCallStrategy.call(
+          this._mainLlm,
+          toModelToolMessages(messages, this.config.toolTrust),
+          currentTools,
+          { ...opts, includeStreamRetryUsage: true },
+        );
       let content = '';
       let finishReason: LlmFinishReason | undefined;
       const toolCallsMap = new Map<
         number,
         { id: string; name: string; arguments: string }
       >();
-      let attemptStartedAt = llmCallStart;
-      let attemptUsage = new StreamAttemptUsage();
+      const attemptUsage = new StreamAttemptUsage();
       const addUsage = (attempt: LlmUsage): void => {
         Object.assign(usage, addCacheTokenUsage(usage, attempt));
         usage.promptTokens += attempt.promptTokens;
@@ -1443,39 +1477,47 @@ export class SmartAgent {
         usage.totalTokens += attempt.totalTokens;
         this.sessionManager.addTokens(attempt.totalTokens);
       };
-      const logAttempt = (reported?: LlmUsageAttribution, countEmpty = false) =>
+      const logAttempt = (
+        reported?: LlmUsageAttribution,
+        countEmpty = true,
+      ) => {
+        const calls = attemptUsage.records(
+          'tool-loop',
+          this._mainLlm.model,
+          reported,
+          opts?.signal,
+          countEmpty,
+        );
         logToolLoopAttempt(
           requestLogger,
-          attemptUsage.resolve(this._mainLlm.model, reported),
-          {
-            durationMs: Date.now() - attemptStartedAt,
-            requestId: opts?.trace?.traceId,
-            countEmpty,
-            onUsage: addUsage,
-          },
+          calls,
+          opts?.trace?.traceId,
+          addUsage,
         );
+        return calls;
+      };
       // Track which streaming indices belong to external tools so that
       // argument-only continuation deltas (no name field) are forwarded too.
-      for await (const chunkResult of stream) {
+      for await (const chunkResult of recordThrownLlmUsage(
+        stream,
+        logAttempt,
+      )) {
         if (!chunkResult.ok) {
           const failure: typeof chunkResult.error & LlmUsageAttribution =
             chunkResult.error;
-          if (logAttempt(failure)) {
-            Object.assign(failure, { usageLogged: true });
-          }
+          const error = withUsageCalls(failure, logAttempt(failure, false));
           llmSpan.setStatus('error', chunkResult.error.message);
           llmSpan.end();
           toolLoopSpan.setStatus('error', chunkResult.error.message);
           toolLoopSpan.end();
-          yield chunkResult;
+          yield { ok: false, error };
           return;
         }
         const chunk = chunkResult.value;
         // Mid-stream retry: discard accumulated state and restart accumulation
         if (chunk.reset) {
-          logAttempt(chunk.retryUsage, chunk.retryUsage !== undefined);
-          attemptUsage = new StreamAttemptUsage();
-          attemptStartedAt = Date.now();
+          logAttempt(chunk.retryUsage);
+          attemptUsage.reset();
           yield { ok: true, value: { content: '', iterationEnd: 'retry' } };
           opts?.onPartial?.({ kind: 'iteration-end', outcome: 'retry' });
           content = '';
@@ -1484,7 +1526,7 @@ export class SmartAgent {
           finishReason = undefined;
           continue;
         }
-        attemptUsage.add(chunk.usage, this._mainLlm.model);
+        attemptUsage.add(chunk.usage, this._mainLlm.model, chunk.usageCalls);
         if (chunk.content) {
           content += chunk.content;
           // When a client adapter is detected, buffer content — it will be wrapped after the stream completes
@@ -1529,7 +1571,7 @@ export class SmartAgent {
         phase: `llm_call_${iteration + 1}`,
         duration: llmCallDuration,
       });
-      logAttempt(undefined, true);
+      logAttempt();
       const hasToolCalls =
         finishReason === 'tool_calls' && toolCallsMap.size > 0;
       const responseRound = new ToolResponseRound(

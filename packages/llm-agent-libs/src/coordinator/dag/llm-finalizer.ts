@@ -3,15 +3,18 @@ import type {
   FinalizerResult,
   IFinalizer,
   ILlm,
+  LlmCallRecord,
   LlmUsageAttribution,
   Message,
   ModelUsageEntry,
 } from '@mcp-abap-adt/llm-agent';
 import { addTokenUsage, OrchestratorError } from '@mcp-abap-adt/llm-agent';
 import {
-  modelUsageEntries,
-  StreamAttemptUsage,
-} from '../../logger/stream-attempt-usage.js';
+  errorUsage,
+  mergeUsageCalls,
+  withUsageAttribution,
+} from '../../logger/llm-call-usage.js';
+import { StreamAttemptUsage } from '../../logger/stream-attempt-usage.js';
 
 export const FINALIZER_SYSTEM =
   'You synthesize the final user-facing answer for a DAG-coordinated task. ' +
@@ -85,38 +88,34 @@ export class LlmFinalizer implements IFinalizer {
     ];
     const { signal, sessionId, caller } = input;
     let buf = '';
-    let attemptUsage = new StreamAttemptUsage();
-    let awaitingRetry = false;
-    let retryUsageByModel: Map<string, ModelUsageEntry> | undefined;
-    const recordAttempt = (attribution: LlmUsageAttribution): void => {
-      retryUsageByModel ??= new Map();
-      for (const [model, usage] of modelUsageEntries(attribution, true)) {
-        const previous = retryUsageByModel.get(model);
-        retryUsageByModel.set(model, {
-          ...(addTokenUsage(previous, usage) ?? usage),
-          requests: (previous?.requests ?? 0) + usage.requests,
-        });
-      }
-    };
+    const attemptUsage = new StreamAttemptUsage();
+    const retryCalls: LlmCallRecord[] = [];
+    const model = () => this.llm.model ?? this.model;
     const finishUsage = (
       failure?: LlmUsageAttribution,
     ): LlmUsageAttribution => {
-      const attribution = attemptUsage.resolve(
-        this.llm.model ?? this.model,
+      const calls = attemptUsage.records(
+        'finalizer',
+        model(),
         failure,
+        signal,
+        retryCalls.length > 0,
       );
-      if (!retryUsageByModel) return attribution;
-      // A reset closes the failed attempt before the retry starts.
-      if (
-        !awaitingRetry ||
-        !signal?.aborted ||
-        failure?.usage ||
-        failure?.usageByModel ||
-        failure?.model
-      ) {
-        recordAttempt(attribution);
+      if (retryCalls.length === 0) {
+        return { ...attemptUsage.resolve(model(), failure), usageCalls: calls };
       }
-      return { usageByModel: Object.fromEntries(retryUsageByModel) };
+      const usageCalls = mergeUsageCalls(retryCalls, calls);
+      const byModel = new Map<string, ModelUsageEntry>();
+      for (const { model, requests = 1, ...usage } of usageCalls) {
+        const previous = byModel.get(model);
+        const totals = addTokenUsage(previous, usage);
+        if (totals)
+          byModel.set(model, {
+            ...totals,
+            requests: (previous?.requests ?? 0) + requests,
+          });
+      }
+      return { usageCalls, usageByModel: Object.fromEntries(byModel) };
     };
     try {
       const stream = this.llm.streamChat(messages, [], {
@@ -130,18 +129,20 @@ export class LlmFinalizer implements IFinalizer {
         if (!chunk.ok) throw chunk.error;
         const { content, finishReason, reset, retryUsage, usage } = chunk.value;
         if (reset) {
-          recordAttempt(
-            attemptUsage.resolve(this.llm.model ?? this.model, retryUsage),
-          );
-          attemptUsage = new StreamAttemptUsage();
-          awaitingRetry = true;
+          for (const call of attemptUsage.records(
+            'finalizer',
+            model(),
+            retryUsage,
+          )) {
+            retryCalls.push(call);
+          }
+          attemptUsage.reset();
           if (buf)
             input.onPartial?.({ kind: 'iteration-end', outcome: 'retry' });
           buf = '';
           continue;
         }
-        awaitingRetry = false;
-        attemptUsage.add(usage, this.llm.model);
+        attemptUsage.add(usage, this.llm.model, chunk.value.usageCalls);
         if (finishReason === 'length')
           throw new OrchestratorError(
             'LLM response was truncated at a token limit.',
@@ -154,7 +155,10 @@ export class LlmFinalizer implements IFinalizer {
       }
     } catch (error) {
       if (typeof error !== 'object' || error === null) throw error;
-      throw Object.assign(error, finishUsage(error as LlmUsageAttribution));
+      const attribution = finishUsage(errorUsage(error));
+      throw attribution.usageCalls?.length
+        ? withUsageAttribution(error, attribution)
+        : error;
     }
     return { output: buf, ...finishUsage() };
   }

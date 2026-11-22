@@ -266,6 +266,7 @@ export {
 export type {
   IRequestLogger,
   LlmCallEntry,
+  LlmCallRecord,
   LlmComponent,
   RagQueryEntry,
   RequestSummary,

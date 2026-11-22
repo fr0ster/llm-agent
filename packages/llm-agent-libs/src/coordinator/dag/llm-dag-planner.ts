@@ -8,6 +8,7 @@ import type {
   PlannerResult,
 } from '@mcp-abap-adt/llm-agent';
 import { ClarifySignal, NeedInfoSignal } from '@mcp-abap-adt/llm-agent';
+import { withUsageCalls } from '../../logger/llm-call-usage.js';
 import { DirectLlmSubAgent } from '../../subagent/direct-llm-subagent.js';
 import { renderAncestorContext } from './render-ancestor-context.js';
 
@@ -206,6 +207,7 @@ export class LlmDagPlanner implements IPlanner {
   constructor(llm: ILlm) {
     this.agent = new DirectLlmSubAgent('planner', llm, {
       systemPrompt: PLANNER_SYSTEM,
+      component: 'planner',
       contextPolicy: 'optional',
     });
   }
@@ -245,7 +247,12 @@ export class LlmDagPlanner implements IPlanner {
     // decompose the request (e.g. a bare "call external tool X") and returns
     // zero nodes, parseDagPlan synthesizes one node carrying the prompt so a
     // worker still runs and can surface the external tool_call (#171 obs 2c).
-    const plan = parseDagPlan(res.output, res.usage, input.prompt);
+    let plan: DagPlan;
+    try {
+      plan = parseDagPlan(res.output, res.usage, input.prompt);
+    } catch (error) {
+      throw withUsageCalls(error, res.usageCalls ?? []);
+    }
     return {
       plan,
       // Forward the underlying ILlm.chat usage on the WRAPPER (not on the
@@ -254,6 +261,7 @@ export class LlmDagPlanner implements IPlanner {
       // (which the reviewer serializes via JSON.stringify into its prompt).
       usage: res.usage,
       model: res.model,
+      usageCalls: res.usageCalls,
     };
   }
 }

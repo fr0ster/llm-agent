@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import type {
   ILlm,
   IRequestLogger,
@@ -129,6 +130,7 @@ export class LlmClassifier implements ISubpromptClassifier {
       const requestLogger = options?.requestLogger ?? this.requestLogger;
       if (requestLogger) {
         requestLogger.logLlmCall({
+          callId: randomUUID(),
           component: 'classifier',
           model: this.llm.model ?? 'unknown',
           ...addCacheTokenUsage(

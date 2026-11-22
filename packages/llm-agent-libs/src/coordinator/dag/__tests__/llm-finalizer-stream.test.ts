@@ -101,6 +101,28 @@ test('LlmFinalizer preserves the usage and model supplied by an error chunk', as
   );
 });
 
+test('LlmFinalizer preserves an aborted stream error and its usage', async () => {
+  const usage = { promptTokens: 2, completionTokens: 1, totalTokens: 3 };
+  const aborted = new DOMException('Cancelled', 'AbortError');
+  const finalizer = new LlmFinalizer({
+    model: 'model',
+    chat: async () => assert.fail('Unexpected chat'),
+    async *streamChat() {
+      yield { ok: true, value: { content: 'partial', usage } };
+      throw aborted;
+    },
+  });
+  await assert.rejects(
+    finalizer.finalize({
+      prompt: 'p',
+      objective: 'o',
+      interpreterOutput: 'I',
+      executionTrace: [],
+    }),
+    { name: 'AbortError', message: 'Cancelled', usage },
+  );
+});
+
 test('LlmFinalizer includes earlier attempts in the attribution of a terminal error', async () => {
   const initialUsage = { promptTokens: 3, completionTokens: 1, totalTokens: 4 };
   const terminalUsage = {
@@ -179,16 +201,15 @@ test('LlmFinalizer keeps every retry model and its request count when a breakdow
     executionTrace: [],
   });
   assert.equal(calls, 2);
-  assert.deepEqual(result, {
-    output: 'answer',
-    usageByModel: {
-      'first-model': { ...first, cachedInputTokens: 2, requests: 2 },
-      'second-model': {
-        promptTokens: 22,
-        completionTokens: 8,
-        totalTokens: 30,
-        requests: 4,
-      },
+  assert.equal(result.output, 'answer');
+  assert.equal(new Set(result.usageCalls?.map((call) => call.callId)).size, 3);
+  assert.deepEqual(result.usageByModel, {
+    'first-model': { ...first, cachedInputTokens: 2, requests: 2 },
+    'second-model': {
+      promptTokens: 22,
+      completionTokens: 8,
+      totalTokens: 30,
+      requests: 4,
     },
   });
 });

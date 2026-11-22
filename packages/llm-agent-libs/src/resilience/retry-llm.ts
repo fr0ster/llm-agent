@@ -28,6 +28,8 @@ import {
   withOuterAttempt,
 } from '@mcp-abap-adt/llm-agent';
 
+import { errorUsage } from '../logger/llm-call-usage.js';
+
 export interface RetryOptions {
   /** Maximum number of non-429 retries. Unlimited when omitted. */
   maxAttempts?: number;
@@ -49,7 +51,10 @@ function toLlmError<T>(cause: T): LlmError {
   return cause instanceof LlmError
     ? cause
     : (terminalRunError(cause) ??
-        Object.assign(new LlmError(String(cause), 'LLM_ERROR'), { cause }));
+        Object.assign(new LlmError(String(cause), 'LLM_ERROR'), {
+          cause,
+          ...errorUsage(cause),
+        }));
 }
 
 function abortError(signal: AbortSignal): LlmError {
@@ -147,8 +152,14 @@ export class RetryLlm implements ILlm {
         ...options,
         usageOp: withOuterAttempt(op, attempt),
       })) {
-        if (signal?.aborted) {
-          yield { ok: false, error: abortError(signal) };
+        if (signal?.aborted && !(chunk.ok && chunk.value.reset)) {
+          const usage: LlmUsageAttribution = chunk.ok
+            ? { usage: chunk.value.usage, usageCalls: chunk.value.usageCalls }
+            : errorUsage(chunk.error);
+          yield {
+            ok: false,
+            error: Object.assign(abortError(signal), usage),
+          };
           return;
         }
         if (chunk.ok) {
@@ -158,7 +169,10 @@ export class RetryLlm implements ILlm {
         } else {
           const terminal = terminalRunError(chunk.error);
           if (terminal) {
-            yield { ok: false, error: terminal };
+            yield {
+              ok: false,
+              error: Object.assign(terminal, errorUsage(chunk.error)),
+            };
             return;
           }
           const status = httpStatusOf(chunk.error);
@@ -182,6 +196,7 @@ export class RetryLlm implements ILlm {
               model:
                 failure.model ?? (chunksYielded === 0 ? this.model : undefined),
               usageByModel: failure.usageByModel,
+              usageCalls: failure.usageCalls,
             };
           }
           break;

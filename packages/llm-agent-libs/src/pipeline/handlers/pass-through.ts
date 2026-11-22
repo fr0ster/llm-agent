@@ -15,9 +15,11 @@ import {
   toModelToolMessages,
   toToolCallDelta,
 } from '@mcp-abap-adt/llm-agent';
+import { withUsageCalls } from '../../logger/llm-call-usage.js';
 import { summaryToUsage } from '../../logger/session-request-logger.js';
 import {
   logToolLoopAttempt,
+  recordThrownLlmUsage,
   StreamAttemptUsage,
 } from '../../logger/stream-attempt-usage.js';
 import type { CallerResolution } from '../../policy/caller-identity.js';
@@ -38,42 +40,40 @@ export async function* runPassThrough(
   identity: CallerResolution = { kind: 'anonymous' },
 ): AsyncIterable<Result<LlmStreamChunk, OrchestratorError>> {
   for (;;) {
-    const passStart = Date.now();
     const traceId2 = opts?.trace?.traceId;
     opts?.sessionLogger?.logStep(
       'llm_request_pass',
       { messages, tools: externalTools ?? [] },
       'llm',
     );
-    const stream = llm.streamChat(
-      toModelToolMessages(messages, toolTrust),
-      externalTools,
-      {
+    const stream = () =>
+      llm.streamChat(toModelToolMessages(messages, toolTrust), externalTools, {
         ...opts,
         usage: scopedUsage(opts?.usage, { component: 'tool-loop' }),
         includeStreamRetryUsage: true,
-      },
-    );
+      });
     let passContent = '';
     const calls = new Map<
       number,
       { id: string; name: string; arguments: string }
     >();
     let finishReason: LlmStreamChunk['finishReason'];
-    let attemptStartedAt = passStart;
-    let attemptUsage = new StreamAttemptUsage();
-    const logAttempt = (reported?: LlmUsageAttribution, countEmpty = false) =>
-      logToolLoopAttempt(
-        requestLogger,
-        attemptUsage.resolve(llm.model, reported),
-        {
-          durationMs: Date.now() - attemptStartedAt,
-          requestId: traceId2,
-          countEmpty,
-        },
+    const attemptUsage = new StreamAttemptUsage();
+    const logAttempt = (reported?: LlmUsageAttribution, countEmpty = true) => {
+      const calls = attemptUsage.records(
+        'tool-loop',
+        llm.model,
+        reported,
+        opts?.signal,
+        countEmpty,
       );
+      logToolLoopAttempt(requestLogger, calls, traceId2);
+      return calls;
+    };
     let chunksSeen = 0;
-    for await (const chunk of stream) {
+    for await (const chunk of recordThrownLlmUsage(stream, (failure) =>
+      logAttempt(failure, false),
+    )) {
       if (!chunk.ok) {
         // process() returns on the first error chunk → post-loop code never
         // runs. Log accumulated (partial) spend BEFORE yielding the error, and
@@ -94,24 +94,23 @@ export async function* runPassThrough(
           'llm',
         );
         const failure: typeof chunk.error & LlmUsageAttribution = chunk.error;
-        if (logAttempt(failure)) {
-          Object.assign(failure, { usageLogged: true });
-        }
-        yield chunk;
+        yield {
+          ok: false,
+          error: withUsageCalls(failure, logAttempt(failure, false)),
+        };
         return;
       }
       chunksSeen += 1;
       if (chunk.value.reset) {
         const { retryUsage } = chunk.value;
-        logAttempt(retryUsage, retryUsage !== undefined);
-        attemptUsage = new StreamAttemptUsage();
-        attemptStartedAt = Date.now();
+        logAttempt(retryUsage);
+        attemptUsage.reset();
         passContent = '';
         calls.clear();
         finishReason = undefined;
         continue;
       }
-      attemptUsage.add(chunk.value.usage, llm.model);
+      attemptUsage.add(chunk.value.usage, llm.model, chunk.value.usageCalls);
       if (chunk.value.content) passContent += chunk.value.content;
       if (chunk.value.finishReason) finishReason = chunk.value.finishReason;
       if (chunk.value.toolCalls) {

@@ -18,6 +18,7 @@ import {
   runAdaptivePlan,
 } from '../../coordinator/adaptive/adaptive-interpreter.js';
 import { fallbackPlan } from '../../coordinator/adaptive/parse-plan.js';
+import { withUsageCalls } from '../../logger/llm-call-usage.js';
 import {
   callerIdentityKey,
   resolveCallerIdentity,
@@ -37,8 +38,7 @@ export interface AdaptiveCoordinatorDeps {
   runRecords?: IRunRecordStore;
   budget?: Partial<AdaptiveBudget>;
   fallbackWorker?: string;
-  /** Legacy allowlist for returned usage. When omitted, all returned usage is
-   * imported unless the worker already recorded it in the request logger. */
+  /** Optional allowlist for legacy workers that return usage without call ids. */
   logWorkerUsage?: ReadonlySet<string>;
 }
 const message = (error: unknown) =>
@@ -83,8 +83,10 @@ export class AdaptiveCoordinatorHandler implements IStageHandler {
         return value;
       } catch (error) {
         const failed = error as LlmUsageAttribution | null;
-        logRoleUsage(ctx, component, failed, role.model);
-        throw error;
+        throw withUsageCalls(
+          error,
+          logRoleUsage(ctx, component, failed, role.model),
+        );
       }
     };
     try {

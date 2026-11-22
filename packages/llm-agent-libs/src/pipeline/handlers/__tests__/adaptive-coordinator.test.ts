@@ -4,8 +4,10 @@ import type {
   AdaptivePlan,
   ControllerPlanInput,
   IAdaptiveController,
+  ISubAgent,
   ISubAgentInput,
   LlmCallEntry,
+  LlmCallRecord,
   LlmStreamChunk,
   Message,
 } from '@mcp-abap-adt/llm-agent';
@@ -13,6 +15,7 @@ import { SmartAgentBuilder } from '../../../builder.js';
 import { unwrapBuilderResult } from '../../../builder-types.js';
 import { InMemoryRunRecordStore } from '../../../coordinator/adaptive/in-memory-run-record-store.js';
 import { LlmAdaptiveController } from '../../../coordinator/adaptive/llm-adaptive-controller.js';
+import { DefaultRequestLogger } from '../../../logger/default-request-logger.js';
 import { testCallOptions, testRequestAccess } from '../../../testing/index.js';
 import { NoopTracer } from '../../../tracer/noop-tracer.js';
 import type { ISpan } from '../../../tracer/types.js';
@@ -602,32 +605,35 @@ for (const method of ['plan', 'check', 'revise'] as const) {
 }
 
 for (const selfLogs of [false, true]) {
-  test(`worker usage recognizes an already recorded result: selfLogs=${selfLogs}`, async () => {
-    const { ctx, logged } = regressionContext();
+  test(`worker call ids are imported whether or not the worker also forwards them: ${selfLogs}`, async () => {
+    const { ctx } = regressionContext();
+    const logger = new DefaultRequestLogger();
+    ctx.requestLogger = logger;
     const controller = regressionController([
       { id: 'w', kind: 'work', goal: 'work', worker: 'executor' },
       { id: 'a', kind: 'answer', from: 'w' },
     ]);
     const handler = new AdaptiveCoordinatorHandler({
       controller,
-      workers: new Map([
+      workers: new Map<string, ISubAgent>([
         [
           'executor',
           {
             name: 'executor',
-            async run() {
-              if (selfLogs)
-                ctx.requestLogger.logLlmCall({
-                  component: 'executor',
-                  model: 'worker',
-                  ...tokenUsage,
-                  durationMs: 0,
-                });
+            capabilities: { contextPolicy: 'optional' },
+            async run(input) {
+              const call: LlmCallRecord = {
+                callId: 'worker-call',
+                component: 'executor',
+                model: 'worker',
+                ...tokenUsage,
+                durationMs: 0,
+              };
+              if (selfLogs) input.requestLogger?.logLlmCall(call);
               return {
                 output: 'answer',
-                model: 'worker',
                 usage: tokenUsage,
-                usageLogged: selfLogs ? true : undefined,
+                usageCalls: [call],
               };
             },
           },
@@ -635,8 +641,9 @@ for (const selfLogs of [false, true]) {
       ]),
     });
     assert.equal(await handler.execute(ctx, {}, span), true);
-    assert.equal(logged.length, 1);
-    assert.equal(logged[0]?.model, 'worker');
+    assert.deepEqual(logger.getSummary().byModel, {
+      worker: { ...tokenUsage, requests: 1 },
+    });
   });
 }
 
