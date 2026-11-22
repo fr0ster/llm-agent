@@ -1,5 +1,7 @@
 import {
   addCacheTokenUsage,
+  addTokenUsage,
+  type LlmUsage,
   toModelToolMessages,
 } from '@mcp-abap-adt/llm-agent';
 import { normalizeLoopLimit } from '../../config/normalize-max-iterations.js';
@@ -219,12 +221,13 @@ export class ToolLoopHandler implements IStageHandler {
       }),
     );
 
+    const requestId = ctx.options?.trace?.traceId;
     const finalize = (
       content: string,
       finishReason: LlmFinishReason | undefined,
     ): boolean => {
       ctx.assistantText = content;
-      const summary = ctx.requestLogger.getSummary();
+      const summary = ctx.requestLogger.getSummary(requestId);
       ctx.options?.sessionLogger?.logStep('final_response', {
         content,
         usage,
@@ -242,9 +245,9 @@ export class ToolLoopHandler implements IStageHandler {
           finishReason: finishReason || 'stop',
           usage: {
             ...usage,
-            models: ctx.requestLogger.getSummary().byModel,
-            components: ctx.requestLogger.getSummary().byComponent,
-            categories: ctx.requestLogger.getSummary().byCategory,
+            models: ctx.requestLogger.getSummary(requestId).byModel,
+            components: ctx.requestLogger.getSummary(requestId).byComponent,
+            categories: ctx.requestLogger.getSummary(requestId).byCategory,
           },
           timing: timingLog,
         },
@@ -281,9 +284,9 @@ export class ToolLoopHandler implements IStageHandler {
             stopped: true,
             usage: {
               ...usage,
-              models: ctx.requestLogger.getSummary().byModel,
-              components: ctx.requestLogger.getSummary().byComponent,
-              categories: ctx.requestLogger.getSummary().byCategory,
+              models: ctx.requestLogger.getSummary(requestId).byModel,
+              components: ctx.requestLogger.getSummary(requestId).byComponent,
+              categories: ctx.requestLogger.getSummary(requestId).byCategory,
             },
             timing: timingLog,
           },
@@ -301,8 +304,8 @@ export class ToolLoopHandler implements IStageHandler {
             finishReason: 'length',
             usage: {
               ...usage,
-              models: ctx.requestLogger.getSummary().byModel,
-              components: ctx.requestLogger.getSummary().byComponent,
+              models: ctx.requestLogger.getSummary(requestId).byModel,
+              components: ctx.requestLogger.getSummary(requestId).byComponent,
             },
             timing: timingLog,
           },
@@ -518,11 +521,6 @@ export class ToolLoopHandler implements IStageHandler {
         });
       }
 
-      let iterCache: ReturnType<typeof addCacheTokenUsage> = {};
-      let iterPromptTokens = 0;
-      let iterCompletionTokens = 0;
-      let iterTotalTokens = 0;
-
       ctx.options?.sessionLogger?.logStep(
         `llm_request_iter_${iteration + 1}`,
         {
@@ -616,9 +614,22 @@ export class ToolLoopHandler implements IStageHandler {
         },
       );
 
+      let attemptStartedAt = llmCallStart;
+      let attemptUsage: LlmUsage | undefined;
+      let attemptModel: string | undefined;
+      const logAttempt = (usage: LlmUsage): void => {
+        ctx.requestLogger.logLlmCall({
+          component: 'tool-loop',
+          model: attemptModel ?? ctx.mainLlm.model ?? 'unknown',
+          ...usage,
+          durationMs: Date.now() - attemptStartedAt,
+          requestId,
+        });
+      };
       let chunksSeen = 0;
       for await (const chunkResult of llmStream) {
         if (!chunkResult.ok) {
+          if (attemptUsage) logAttempt(attemptUsage);
           llmSpan.setStatus('error', chunkResult.error.message);
           llmSpan.end();
           // The failure gets a response trace too (#290). This is the case the
@@ -657,9 +668,10 @@ export class ToolLoopHandler implements IStageHandler {
           content = '';
           toolCallsMap.clear();
           finishReason = undefined;
-          iterPromptTokens = 0;
-          iterCompletionTokens = 0;
-          iterTotalTokens = 0;
+          if (attemptUsage) logAttempt(attemptUsage);
+          attemptUsage = undefined;
+          attemptModel = undefined;
+          attemptStartedAt = Date.now();
           continue;
         }
         if (chunk.content) {
@@ -716,10 +728,8 @@ export class ToolLoopHandler implements IStageHandler {
           usage.promptTokens += chunk.usage.promptTokens;
           usage.completionTokens += chunk.usage.completionTokens;
           usage.totalTokens += chunk.usage.totalTokens;
-          iterCache = addCacheTokenUsage(iterCache, chunk.usage);
-          iterPromptTokens += chunk.usage.promptTokens;
-          iterCompletionTokens += chunk.usage.completionTokens;
-          iterTotalTokens += chunk.usage.totalTokens;
+          attemptUsage = addTokenUsage(attemptUsage, chunk.usage);
+          attemptModel = ctx.mainLlm.model ?? attemptModel;
           ctx.sessionManager.addTokens(chunk.usage.totalTokens);
         }
       }
@@ -733,16 +743,13 @@ export class ToolLoopHandler implements IStageHandler {
         duration: llmCallDuration,
       });
 
-      ctx.requestLogger.logLlmCall({
-        component: 'tool-loop',
-        model: ctx.mainLlm.model ?? 'unknown',
-        ...iterCache,
-        promptTokens: iterPromptTokens,
-        completionTokens: iterCompletionTokens,
-        totalTokens: iterTotalTokens,
-        durationMs: llmCallDuration,
-        requestId: ctx.options?.trace?.traceId,
-      });
+      logAttempt(
+        attemptUsage ?? {
+          promptTokens: 0,
+          completionTokens: 0,
+          totalTokens: 0,
+        },
+      );
 
       const hasToolCalls =
         finishReason === 'tool_calls' && toolCallsMap.size > 0;
@@ -928,8 +935,8 @@ export class ToolLoopHandler implements IStageHandler {
             finishReason: 'tool_calls',
             usage: {
               ...usage,
-              models: ctx.requestLogger.getSummary().byModel,
-              components: ctx.requestLogger.getSummary().byComponent,
+              models: ctx.requestLogger.getSummary(requestId).byModel,
+              components: ctx.requestLogger.getSummary(requestId).byComponent,
             },
             timing: timingLog,
           },

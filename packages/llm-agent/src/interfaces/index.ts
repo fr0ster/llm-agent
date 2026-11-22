@@ -409,6 +409,7 @@ export type {
   LlmToolCall,
   LlmToolCallDelta,
   LlmUsage,
+  LlmUsageAttribution,
   McpCallResult,
   McpContentBlock,
   McpTool,

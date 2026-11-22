@@ -42,7 +42,7 @@ function addToBucket(bucket: TokenBucket, entry: LlmCallEntry): void {
   bucket.promptTokens += entry.promptTokens;
   bucket.completionTokens += entry.completionTokens;
   bucket.totalTokens += entry.totalTokens;
-  bucket.requests++;
+  bucket.requests += entry.requests ?? 1;
 }
 
 export class DefaultRequestLogger implements IRequestLogger {

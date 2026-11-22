@@ -1,6 +1,6 @@
 import type { ContextPath } from './context-path.js';
 import type { DagPlan } from './dag-plan.js';
-import type { LlmUsage } from './types.js';
+import type { LlmUsageAttribution } from './types.js';
 import type { IUsageRecorder } from './usage.js';
 
 export interface PlannerCatalogEntry {
@@ -24,9 +24,8 @@ export interface PlannerInput {
  *  metadata that would otherwise leak into prompts (the reviewer serializes
  *  `input.plan` via JSON.stringify into the critic prompt) or into
  *  persistence. Non-LLM planners may omit `usage`. */
-export interface PlannerResult {
+export interface PlannerResult extends LlmUsageAttribution {
   plan: DagPlan;
-  usage?: LlmUsage;
 }
 
 export interface IPlanner {

@@ -25,6 +25,8 @@ export interface TokenBucket extends LlmUsage {
 }
 
 export interface LlmCallEntry extends LlmUsage {
+  /** Call count when importing a per-model usage bucket. Defaults to one. */
+  requests?: number;
   component: LlmComponent;
   model: string;
   durationMs: number;

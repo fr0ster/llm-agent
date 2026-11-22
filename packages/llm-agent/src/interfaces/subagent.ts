@@ -1,6 +1,7 @@
 import type { Message } from '../types.js';
 import type { EpicFailTrace } from './coordinator.js';
 import type { IDialogueTaskContext } from './dialogue-task-context.js';
+import type { IRequestLogger } from './request-logger.js';
 import type { OnPartial } from './streaming.js';
 import type { ToolTrace, ToolTraceEntry } from './tool-trace.js';
 import type { LlmTool, LlmToolCall, TokenUsage } from './types.js';
@@ -28,6 +29,8 @@ export interface ISubAgentInput {
   /** Owning request start in epoch milliseconds; preserved across tool rounds and queued tasks. */
   requestStartedAt?: number;
   usage?: IUsageRecorder;
+  /** Owning coordinator's request logger for reporting individual LLM calls. */
+  requestLogger?: IRequestLogger;
   task: string;
   /** Conversation before the current request, selected by the coordinator. */
   history?: Message[];
@@ -91,6 +94,10 @@ export interface ISubAgentResult {
   summary?: string;
   toolCalls?: LlmToolCall[];
   usage?: TokenUsage;
+  /** Model for flat usage. Multi-model runs should provide usage.models. */
+  model?: string;
+  /** The returned usage was already recorded in the owning request logger. */
+  usageLogged?: true;
   metadata?: Record<string, unknown>;
   /**
    * When set to 'epicfail', the parent coordinator must not retry/replan.
@@ -118,6 +125,7 @@ export interface ISubAgentResult {
  */
 export interface ISubAgent {
   readonly name: string;
+  readonly model?: string;
   readonly description?: string;
   readonly capabilities: SubAgentCapabilities;
   run(input: ISubAgentInput): Promise<ISubAgentResult>;

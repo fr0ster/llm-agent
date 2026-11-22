@@ -39,14 +39,14 @@ export function aggregate(b: Bucket): RequestSummary {
     m.promptTokens += c.promptTokens;
     m.completionTokens += c.completionTokens;
     m.totalTokens += c.totalTokens;
-    m.requests++;
+    m.requests += c.requests ?? 1;
     byComponent[c.component] ??= zeroBucket();
     const comp = byComponent[c.component];
     Object.assign(comp, addCacheTokenUsage(comp, c));
     comp.promptTokens += c.promptTokens;
     comp.completionTokens += c.completionTokens;
     comp.totalTokens += c.totalTokens;
-    comp.requests++;
+    comp.requests += c.requests ?? 1;
     // Use the component-keyed CATEGORY_MAP — same semantics as
     // DefaultRequestLogger.getSummary (review MEDIUM #4). Previously this
     // categorized via `c.scope ?? 'request'`, which dropped most aux calls
@@ -62,7 +62,7 @@ export function aggregate(b: Bucket): RequestSummary {
     cat.promptTokens += c.promptTokens;
     cat.completionTokens += c.completionTokens;
     cat.totalTokens += c.totalTokens;
-    cat.requests++;
+    cat.requests += c.requests ?? 1;
   }
   // Derive totals as the faithful sum of byComponent so that /v1/usage always
   // has a non-null rollup regardless of which path (DAG/Stepper/flat) was used.

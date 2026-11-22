@@ -14,14 +14,20 @@ function streamingStubLlm(): {
     chat: async () => ({ ok: true, value: { content: 'NEVER_CALLED' } }),
     async *streamChat(messages, tools, opts) {
       calls.push({ messages, tools: tools as unknown[], opts });
-      yield { ok: true, value: { content: 'A' } };
+      yield {
+        ok: true,
+        value: {
+          content: 'A',
+          usage: { promptTokens: 1, completionTokens: 0, totalTokens: 1 },
+        },
+      };
       yield { ok: true, value: { content: 'B' } };
       yield {
         ok: true,
         value: {
           content: 'C',
           finishReason: 'stop',
-          usage: { promptTokens: 1, completionTokens: 3, totalTokens: 4 },
+          usage: { promptTokens: 0, completionTokens: 3, totalTokens: 3 },
         },
       };
     },
@@ -42,6 +48,7 @@ test('LlmFinalizer streams deltas via onPartial and returns concatenated output 
     onPartial: op,
   });
   assert.equal(res.output, 'ABC');
+  assert.equal(res.model, 'stub-model');
   assert.deepEqual(deltas, ['A', 'B', 'C']);
   assert.deepEqual(res.usage, {
     promptTokens: 1,
@@ -62,6 +69,7 @@ test('LlmFinalizer without onPartial still returns concatenated output + usage',
     executionTrace: [],
   });
   assert.equal(res.output, 'ABC');
+  assert.equal(res.model, 'stub-model');
   assert.deepEqual(res.usage, {
     promptTokens: 1,
     completionTokens: 3,

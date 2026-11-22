@@ -291,6 +291,12 @@ export interface LlmUsage {
   totalTokens: number;
 }
 
+export interface LlmUsageAttribution {
+  usage?: LlmUsage;
+  /** Model that produced this usage, when resolved per call. */
+  model?: string;
+}
+
 export interface TokenUsage extends LlmUsage {
   models?: Record<string, ModelUsageEntry>;
 }

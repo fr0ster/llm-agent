@@ -48,6 +48,10 @@ export class DirectLlmSubAgent implements ISubAgent {
     };
   }
 
+  get model(): string | undefined {
+    return this.llm.model;
+  }
+
   async run(input: ISubAgentInput): Promise<ISubAgentResult> {
     if (
       this.capabilities.contextPolicy === 'required' &&
@@ -98,11 +102,13 @@ export class DirectLlmSubAgent implements ISubAgent {
               'EMPTY_WORKER_OUTPUT',
             )
           : undefined;
-    if (error) throw Object.assign(error, { usage });
+    const model = this.model;
+    if (error) throw Object.assign(error, { usage, model });
 
     return {
       output: content,
       usage,
+      model,
     };
   }
 }

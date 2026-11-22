@@ -14,6 +14,7 @@ import type {
   ISubAgent,
   LlmComponent,
   LlmUsage,
+  LlmUsageAttribution,
   OnPartial,
   PlannerResult,
   ReviewResult,
@@ -31,6 +32,7 @@ import { summaryToUsage } from '../../logger/session-request-logger.js';
 import type { ISpan } from '../../tracer/types.js';
 import type { PipelineContext } from '../context.js';
 import type { IStageHandler } from '../stage-handler.js';
+import { meterWorkers } from './worker-usage.js';
 
 /** Canonical terminal-usage object: flat triple + per-model breakdown. */
 export function terminalUsage(
@@ -152,20 +154,25 @@ export class DagCoordinatorHandler implements IStageHandler {
     // consumed LLM tokens — discarding them was invisible spend). Per-role
     // adapters set `signal.usage` on the signal before throwing; `runRole`
     // reads it here and routes it through the same `logRoleUsage`.
-    const runRole = async <T extends { usage?: LlmUsage }>(
+    const runRole = async <T extends LlmUsageAttribution>(
       component: LlmComponent,
-      model: string | undefined,
+      role: { readonly model?: string } | undefined,
       thunk: () => Promise<T>,
     ): Promise<{ value: T } | { ended: true }> => {
       for (;;) {
         const start = Date.now();
         try {
           const value = await thunk();
-          logRoleUsage(component, model, value.usage, Date.now() - start);
+          logRoleUsage(
+            component,
+            value.model ?? role?.model,
+            value.usage,
+            Date.now() - start,
+          );
           return { value };
         } catch (err) {
           if (err instanceof ClarifySignal) {
-            logRoleUsage(component, model, err.usage, Date.now() - start);
+            logRoleUsage(component, role?.model, err.usage, Date.now() - start);
             ctx.options?.sessionLogger?.logStep('coordinator_clarify', {
               question: (err as ClarifySignalType).question,
             });
@@ -194,7 +201,7 @@ export class DagCoordinatorHandler implements IStageHandler {
             return { ended: true };
           }
           if (err instanceof NeedInfoSignal) {
-            logRoleUsage(component, model, err.usage, Date.now() - start);
+            logRoleUsage(component, role?.model, err.usage, Date.now() - start);
             if (!this.deps.stateOracle) {
               throw new OrchestratorError(
                 `coordinator: role requested info but no stateOracle is configured: ${(err as NeedInfoSignal).query}`,
@@ -219,7 +226,7 @@ export class DagCoordinatorHandler implements IStageHandler {
             });
             logRoleUsage(
               'oracle',
-              this.deps.stateOracle.model,
+              ans.model ?? this.deps.stateOracle.model,
               ans.usage,
               Date.now() - oracleStart,
             );
@@ -235,19 +242,22 @@ export class DagCoordinatorHandler implements IStageHandler {
           // Bill it here before rethrowing so the failed call is still visible
           // in /v1/usage and the per-request delta (otherwise: real spend,
           // invisible).
-          const failedUsage = (err as { usage?: LlmUsage }).usage;
-          if (failedUsage) {
-            logRoleUsage(component, model, failedUsage, Date.now() - start);
-          }
+          const failure = err as LlmUsageAttribution | null;
+          logRoleUsage(
+            component,
+            failure?.model ?? role?.model,
+            failure?.usage,
+            Date.now() - start,
+          );
           throw err;
         }
       }
     };
 
     let planRes: { value: PlannerResult } | { ended: true };
-    const plannerModel = this.deps.planner.model;
+    const workers = meterWorkers(this.deps.workers, ctx);
     try {
-      planRes = await runRole('planner', plannerModel, () =>
+      planRes = await runRole('planner', this.deps.planner, () =>
         this.deps.planner.plan({
           prompt: ctx.inputText,
           agents,
@@ -282,9 +292,8 @@ export class DagCoordinatorHandler implements IStageHandler {
         const reviewer = this.deps.reviewer;
         if (reviewer) {
           let gate: { value: ReviewResult } | { ended: true };
-          const reviewerModel = reviewer.model;
           try {
-            gate = await runRole('reviewer', reviewerModel, () =>
+            gate = await runRole('reviewer', reviewer, () =>
               reviewer.review({
                 prompt: ctx.inputText,
                 plan,
@@ -314,7 +323,7 @@ export class DagCoordinatorHandler implements IStageHandler {
           if ('ended' in gate) return true;
           const verdict = gate.value.verdict;
           if (!verdict.pass) {
-            const replanned = await runRole('planner', plannerModel, () =>
+            const replanned = await runRole('planner', this.deps.planner, () =>
               this.deps.planner.plan({
                 prompt: ctx.inputText,
                 agents,
@@ -394,7 +403,7 @@ export class DagCoordinatorHandler implements IStageHandler {
         try {
           result = await this.deps.interpreter.interpret(plan, {
             inputText: ctx.inputText,
-            workers: this.deps.workers,
+            workers,
             sessionId: ctx.sessionId,
             caller: caller,
             usage: ctx.options?.usage,
@@ -475,26 +484,23 @@ export class DagCoordinatorHandler implements IStageHandler {
             goal: nodeIndex.get(id)?.goal ?? '',
             output: result.nodeResults[id]?.output ?? '',
           }));
-          const finalRes = await runRole(
-            'finalizer',
-            this.finalizer.model,
-            () =>
-              this.finalizer.finalize({
-                prompt: ctx.inputText,
-                objective: executedPlan.objective ?? ctx.inputText,
-                ancestorContext,
-                interpreterOutput: result.output,
-                ...(streamsInterpreterContent
-                  ? { interpreterContentStreamed }
-                  : {}),
-                executionTrace,
-                sessionId: ctx.sessionId,
-                caller: caller,
-                usage: ctx.options?.usage,
-                signal: ctx.options?.signal,
-                trace: ctx.options?.trace,
-                onPartial: finalizerOnPartial,
-              }),
+          const finalRes = await runRole('finalizer', this.finalizer, () =>
+            this.finalizer.finalize({
+              prompt: ctx.inputText,
+              objective: executedPlan.objective ?? ctx.inputText,
+              ancestorContext,
+              interpreterOutput: result.output,
+              ...(streamsInterpreterContent
+                ? { interpreterContentStreamed }
+                : {}),
+              executionTrace,
+              sessionId: ctx.sessionId,
+              caller: caller,
+              usage: ctx.options?.usage,
+              signal: ctx.options?.signal,
+              trace: ctx.options?.trace,
+              onPartial: finalizerOnPartial,
+            }),
           );
           if ('ended' in finalRes) return true;
           // Attach usage ONLY to the terminal `finishReason:'stop'` chunk.
@@ -531,7 +537,7 @@ export class DagCoordinatorHandler implements IStageHandler {
         const failedId = result.failedNodeId ?? execPlan.nodes[0]?.id ?? '';
 
         const recovery: { value: ExecutionReviewResult } | { ended: true } =
-          await runRole('reviewer', reviewer?.model, () =>
+          await runRole('reviewer', reviewer, () =>
             reviewExecutionFailure({
               objective: execPlan.objective,
               plan: execPlan,

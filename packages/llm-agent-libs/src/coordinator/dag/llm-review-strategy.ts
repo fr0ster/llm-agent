@@ -44,14 +44,10 @@ The revised plan MUST treat the current state as the starting point: do not redo
  */
 export class LlmReviewStrategy implements IReviewStrategy {
   readonly name = 'llm-review';
-  /** Best-effort model identifier from the underlying ILlm (for logger
-   *  attribution). May be undefined for ILlm impls that do not expose one. */
-  readonly model?: string;
   private readonly agent: DirectLlmSubAgent;
   private readonly executionAgent: DirectLlmSubAgent;
 
   constructor(llm: ILlm) {
-    this.model = llm.model;
     this.agent = new DirectLlmSubAgent('reviewer', llm, {
       systemPrompt: REVIEWER_SYSTEM,
       contextPolicy: 'optional',
@@ -60,6 +56,10 @@ export class LlmReviewStrategy implements IReviewStrategy {
       systemPrompt: EXECUTION_REVIEW_SYSTEM,
       contextPolicy: 'optional',
     });
+  }
+
+  get model(): string | undefined {
+    return this.agent.model;
   }
 
   async review(input: ReviewInput): Promise<ReviewResult> {
@@ -136,9 +136,10 @@ export class LlmReviewStrategy implements IReviewStrategy {
       return {
         verdict: { pass: false, feedback: parsed.feedback },
         usage: res.usage,
+        model: res.model,
       };
     }
-    return { verdict: { pass: true }, usage: res.usage };
+    return { verdict: { pass: true }, usage: res.usage, model: res.model };
   }
 
   async reviewExecutionFailure(
@@ -198,7 +199,11 @@ export class LlmReviewStrategy implements IReviewStrategy {
       throw new ClarifySignal(parsed.clarify, res.usage);
     }
     if (parsed.action === 'abort') {
-      return { decision: { action: 'abort' }, usage: res.usage };
+      return {
+        decision: { action: 'abort' },
+        usage: res.usage,
+        model: res.model,
+      };
     }
     if (parsed.action !== 'revise') {
       throw withUsage(
@@ -230,6 +235,7 @@ export class LlmReviewStrategy implements IReviewStrategy {
     return {
       decision: { action: 'revise', revisedPlan: plan as DagPlan },
       usage: res.usage,
+      model: res.model,
     };
   }
 }

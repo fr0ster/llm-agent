@@ -283,9 +283,10 @@ export async function runAdaptivePlan(
               worker: step.worker,
               usage: worked.usage,
               model:
-                typeof worked.metadata?.model === 'string'
+                worked.model ??
+                (typeof worked.metadata?.model === 'string'
                   ? worked.metadata.model
-                  : undefined,
+                  : worker.model),
             });
           if (worked.errorClass === 'epicfail') {
             record.status = 'failed';

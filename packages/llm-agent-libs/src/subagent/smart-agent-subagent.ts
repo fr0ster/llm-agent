@@ -65,6 +65,7 @@ export class SmartAgentSubAgent implements ISubAgent {
           caller: input.caller,
           userId: input.caller.userId,
           usage: input.usage,
+          parentRequestLogger: input.requestLogger,
           signal: input.signal,
           stopSignal: input.stopSignal,
           dialogueTask: input.dialogueTask,
@@ -114,6 +115,8 @@ export class SmartAgentSubAgent implements ISubAgent {
           }
         : undefined;
 
+      const usageLogged = input.requestLogger ? true : undefined;
+
       // Issue #171: when the worker tool-loop stops on a client-provided
       // (consumer-executed) external tool call, it surfaces the call instead of
       // executing it. Translate that stop into a typed awaiting-external result
@@ -142,6 +145,7 @@ export class SmartAgentSubAgent implements ISubAgent {
             output,
             summary: resolveWorkerSummary(output, finish?.summary).summary,
             usage: mappedUsage,
+            ...(usageLogged ? { usageLogged } : {}),
             status: 'awaiting-external',
             budgetExhausted: res.value.budgetExhausted,
             toolCallCount: res.value.toolCallCount,
@@ -157,7 +161,7 @@ export class SmartAgentSubAgent implements ISubAgent {
             'Worker returned an empty terminal response.',
             'EMPTY_WORKER_OUTPUT',
           ),
-          { usage: mappedUsage },
+          { usage: mappedUsage, usageLogged },
         );
       }
 
@@ -181,6 +185,7 @@ export class SmartAgentSubAgent implements ISubAgent {
         maxToolCalls: res.value.maxToolCalls,
         toolCalls: mappedToolCalls,
         usage: mappedUsage,
+        ...(usageLogged ? { usageLogged } : {}),
         status: 'complete',
         ...(stopped ? { stopped } : {}),
       };

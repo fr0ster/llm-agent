@@ -5,6 +5,7 @@ import type {
   ControllerPlanInput,
   IAdaptiveController,
   ISubAgentInput,
+  LlmCallEntry,
   LlmStreamChunk,
   Message,
 } from '@mcp-abap-adt/llm-agent';
@@ -470,7 +471,7 @@ for (const live of [false, true]) {
 const tokenUsage = { promptTokens: 10, completionTokens: 5, totalTokens: 15 };
 function regressionContext(signal?: AbortSignal) {
   const chunks: LlmStreamChunk[] = [];
-  const logged: { component: string; totalTokens: number }[] = [];
+  const logged: LlmCallEntry[] = [];
   const ctx = {
     inputText: 'request',
     history: [],
@@ -601,7 +602,7 @@ for (const method of ['plan', 'check', 'revise'] as const) {
 }
 
 for (const selfLogs of [false, true]) {
-  test(`worker usage follows DAG ownership: selfLogs=${selfLogs}`, async () => {
+  test(`worker usage recognizes an already recorded result: selfLogs=${selfLogs}`, async () => {
     const { ctx, logged } = regressionContext();
     const controller = regressionController([
       { id: 'w', kind: 'work', goal: 'work', worker: 'executor' },
@@ -622,14 +623,20 @@ for (const selfLogs of [false, true]) {
                   ...tokenUsage,
                   durationMs: 0,
                 });
-              return { output: 'answer', usage: tokenUsage };
+              return {
+                output: 'answer',
+                model: 'worker',
+                usage: tokenUsage,
+                usageLogged: selfLogs ? true : undefined,
+              };
             },
           },
         ],
       ]),
     });
     assert.equal(await handler.execute(ctx, {}, span), true);
-    assert.equal(logged.length, selfLogs ? 1 : 0);
+    assert.equal(logged.length, 1);
+    assert.equal(logged[0]?.model, 'worker');
   });
 }
 
@@ -752,7 +759,7 @@ for (const mode of ['listed', 'mixed', 'thrown'] as const) {
     assert.equal(logged[0]?.totalTokens, 15);
     assert.equal(logged[0]?.component, 'executor');
     assert.equal(
-      (logged[mode === 'mixed' ? 1 : 0] as unknown as { model: string }).model,
+      logged[0]?.model,
       mode === 'thrown' ? 'unknown' : 'returned-model',
     );
   });

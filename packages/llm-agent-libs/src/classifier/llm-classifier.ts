@@ -126,8 +126,9 @@ export class LlmClassifier implements ISubpromptClassifier {
         options?.signal,
         () => new ClassifierError('Aborted', 'ABORTED'),
       );
-      if (this.requestLogger) {
-        this.requestLogger.logLlmCall({
+      const requestLogger = options?.requestLogger ?? this.requestLogger;
+      if (requestLogger) {
+        requestLogger.logLlmCall({
           component: 'classifier',
           model: this.llm.model ?? 'unknown',
           ...addCacheTokenUsage(

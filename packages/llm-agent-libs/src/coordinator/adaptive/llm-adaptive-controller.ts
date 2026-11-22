@@ -43,22 +43,24 @@ Simple one-work-step example (executor must be registered):
 Create/check/fix/recheck example (executor must be registered):
 {"spec":{"objective":"Create a correct draft"},"steps":[{"id":"create","kind":"work","goal":"Create draft","worker":"executor"},{"id":"check","kind":"check","goal":"Review draft","worker":"self","targets":["create"],"onPass":"answer","onFail":"fix"},{"id":"fix","kind":"work","goal":"Fix draft using review","worker":"executor","context":{"results":["create","check"]}},{"id":"recheck","kind":"check","goal":"Review fixed draft","worker":"self","targets":["fix"],"onPass":"fixedAnswer","onFail":"fix"},{"id":"fixedAnswer","kind":"answer","from":"fix"},{"id":"answer","kind":"answer","from":"create"}]}`;
 
-function withUsage(error: Error, usage?: LlmUsage): Error {
-  return usage ? Object.assign(error, { usage }) : error;
+function withUsage(error: Error, usage?: LlmUsage, model?: string): Error {
+  return usage ? Object.assign(error, { usage, model }) : error;
 }
 
 /** An ILlm-backed planner and reviewer; execution and fallback stay with callers. */
 export class LlmAdaptiveController implements IAdaptiveController {
   readonly name = 'llm-adaptive';
-  readonly model?: string;
   private readonly systemPrompt: string;
 
   constructor(
     private readonly llm: ILlm,
     opts?: { systemPrompt?: string },
   ) {
-    this.model = llm.model;
     this.systemPrompt = opts?.systemPrompt ?? ADAPTIVE_CONTROLLER_SYSTEM;
+  }
+
+  get model(): string | undefined {
+    return this.llm.model;
   }
 
   private async chat(system: string, content: string, options?: CallOptions) {
@@ -71,6 +73,7 @@ export class LlmAdaptiveController implements IAdaptiveController {
       options,
     );
     if (!result.ok) throw result.error;
+    const model = this.model;
     if (result.value.finishReason === 'length')
       throw withUsage(
         new OrchestratorError(
@@ -78,8 +81,9 @@ export class LlmAdaptiveController implements IAdaptiveController {
           'LLM_OUTPUT_TRUNCATED',
         ),
         result.value.usage,
+        model,
       );
-    return result.value;
+    return { ...result.value, model };
   }
 
   async plan(input: ControllerPlanInput) {
@@ -110,8 +114,9 @@ export class LlmAdaptiveController implements IAdaptiveController {
     const parsed = parsePlan(response.content, {
       workers: input.workers.map((worker) => worker.name),
     });
-    if (!parsed.ok) throw withUsage(new Error(parsed.error), response.usage);
-    return { plan: parsed.value, usage: response.usage };
+    if (!parsed.ok)
+      throw withUsage(new Error(parsed.error), response.usage, response.model);
+    return { plan: parsed.value, usage: response.usage, model: response.model };
   }
 
   async check(input: Parameters<IAdaptiveController['check']>[0]) {
@@ -129,8 +134,9 @@ export class LlmAdaptiveController implements IAdaptiveController {
           'VERDICT_RETRIEVAL_FAILED',
         ),
         response.usage,
+        response.model,
       );
-    return { verdict, usage: response.usage };
+    return { verdict, usage: response.usage, model: response.model };
   }
 
   async revise(input: Parameters<IAdaptiveController['revise']>[0]) {
@@ -147,6 +153,7 @@ export class LlmAdaptiveController implements IAdaptiveController {
       throw withUsage(
         error instanceof Error ? error : new Error(String(error)),
         response.usage,
+        response.model,
       );
     }
     if (
@@ -158,10 +165,15 @@ export class LlmAdaptiveController implements IAdaptiveController {
       throw withUsage(
         new Error('Revision requires a steps array'),
         response.usage,
+        response.model,
       );
     }
     // The interpreter validates workers, references, and taken ids before execution.
-    return { steps: parsed.steps as AdaptiveStep[], usage: response.usage };
+    return {
+      steps: parsed.steps as AdaptiveStep[],
+      usage: response.usage,
+      model: response.model,
+    };
   }
 
   async report(input: Parameters<IAdaptiveController['report']>[0]) {
@@ -171,6 +183,10 @@ export class LlmAdaptiveController implements IAdaptiveController {
       JSON.stringify(context),
       { signal, usage: usage?.with({ role: 'finalizer' }) },
     );
-    return { text: response.content, usage: response.usage };
+    return {
+      text: response.content,
+      usage: response.usage,
+      model: response.model,
+    };
   }
 }
