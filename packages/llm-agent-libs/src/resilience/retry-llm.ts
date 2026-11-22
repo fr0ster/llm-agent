@@ -28,7 +28,7 @@ import {
   withOuterAttempt,
 } from '@mcp-abap-adt/llm-agent';
 
-import { errorUsage } from '../logger/llm-call-usage.js';
+import { errorUsage, recordChatAttempt } from '../logger/llm-call-usage.js';
 
 export interface RetryOptions {
   /** Maximum number of non-429 retries. Unlimited when omitted. */
@@ -98,10 +98,15 @@ export class RetryLlm implements ILlm {
 
       let result: Result<LlmResponse, LlmError>;
       try {
-        result = await this.inner.chat(messages, tools, {
-          ...options,
-          usageOp: withOuterAttempt(op, attempt),
-        });
+        result = await recordChatAttempt(
+          this.inner,
+          () =>
+            this.inner.chat(messages, tools, {
+              ...options,
+              usageOp: withOuterAttempt(op, attempt),
+            }),
+          true,
+        );
       } catch (error) {
         result = { ok: false, error: toLlmError(error) };
       }

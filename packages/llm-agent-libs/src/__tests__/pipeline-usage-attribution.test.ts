@@ -9,7 +9,12 @@ import type {
   ISubAgent,
   LlmCallRecord,
 } from '@mcp-abap-adt/llm-agent';
-import { LlmError } from '@mcp-abap-adt/llm-agent';
+import {
+  CircuitBreaker,
+  CircuitBreakerLlm,
+  LlmError,
+  OrchestratorError,
+} from '@mcp-abap-adt/llm-agent';
 import { SmartAgent } from '../agent.js';
 import { SmartAgentBuilder } from '../builder.js';
 import { unwrapBuilderResult } from '../builder-types.js';
@@ -201,7 +206,7 @@ for (const loggerMode of [
       assert.deepEqual(logger.getSummary(traceId).byModel, expected);
       assert.deepEqual(logger.getSummary().byModel, expected);
       if (loggerMode === 'separate') {
-        assert.deepEqual(workerLogger.getSummary(traceId).byModel, models);
+        assert.deepEqual(workerLogger.getSummary(traceId).byModel, {});
         assert.deepEqual(workerLogger.getSummary().byModel, models);
       }
     } finally {
@@ -210,6 +215,272 @@ for (const loggerMode of [
     }
   });
 }
+
+for (const [kind, createLogger] of [
+  ['default', () => new DefaultRequestLogger()],
+  ['session', () => new SessionRequestLogger()],
+] as const) {
+  test(`a legacy worker reconciles returned usage against its own ${kind} logger calls`, async () => {
+    const logger = createLogger();
+    const models = { 'legacy-model': { ...firstUsage, requests: 1 } };
+    const parent = await dagWorker(
+      {
+        name: 'worker',
+        model: 'legacy-model',
+        capabilities: { contextPolicy: 'optional' },
+        async run(input) {
+          if (input.trace?.traceId === traceId) {
+            logger.logLlmCall({
+              ...firstUsage,
+              component: 'executor',
+              model: 'legacy-model',
+              durationMs: 0,
+            });
+          }
+          return {
+            output: 'answer',
+            usage: kind === 'session' ? { ...firstUsage, models } : firstUsage,
+          };
+        },
+      },
+      logger,
+    );
+    try {
+      for (const id of [traceId, 'returned-only']) {
+        const result = await parent.agent.process(
+          'request',
+          testCallOptions({ trace: { traceId: id } }),
+        );
+        assert.ok(result.ok);
+        assert.deepEqual(result.value.usage?.models, {
+          ...models,
+          checker: { ...finalizerUsage, requests: 1 },
+        });
+        assert.deepEqual(
+          logger.getSummary(id).byModel,
+          result.value.usage?.models,
+        );
+      }
+    } finally {
+      await parent.close();
+    }
+  });
+}
+
+test('a custom pipeline worker imports the missing part of returned per-model usage', async () => {
+  const logger = new SessionRequestLogger();
+  const models = {
+    'answer-model': {
+      promptTokens: 40,
+      completionTokens: 10,
+      totalTokens: 50,
+      requests: 2,
+      cachedInputTokens: 5,
+    },
+    'returned-model': { ...finalizerUsage, requests: 1 },
+  };
+  const pipeline: IPipeline = {
+    initialize() {},
+    async execute(_input, _history, options, emit) {
+      assert.ok(options?.requestLogger);
+      options.requestLogger.logLlmCall({
+        ...plannerUsage,
+        component: 'classifier',
+        model: 'classifier-model',
+        durationMs: 0,
+      });
+      options.requestLogger.logLlmCall({
+        ...firstUsage,
+        cachedInputTokens: 2,
+        component: 'tool-loop',
+        model: 'answer-model',
+        durationMs: 0,
+      });
+      emit({
+        ok: true,
+        value: {
+          content: 'answer',
+          finishReason: 'stop',
+          usage: {
+            promptTokens: 71,
+            completionTokens: 21,
+            totalTokens: 92,
+            cachedInputTokens: 5,
+            models,
+          },
+        },
+      });
+      return { timing: [] };
+    },
+  };
+  const worker = await builder()
+    .withMainLlm(unusedLlm)
+    .setPipeline(pipeline)
+    .build()
+    .then(unwrapBuilderResult);
+  const parent = await dagWorker(
+    new SmartAgentSubAgent('worker', worker.agent),
+    logger,
+  );
+  try {
+    const result = await parent.agent.process(
+      'request',
+      testCallOptions({ trace: { traceId } }),
+    );
+    assert.ok(result.ok);
+    const expected = {
+      ...models,
+      'classifier-model': { ...plannerUsage, requests: 1 },
+      checker: { ...finalizerUsage, requests: 1 },
+    };
+    assert.deepEqual(result.value.usage?.models, expected);
+    assert.deepEqual(logger.getSummary(traceId).byModel, expected);
+    assert.deepEqual(logger.getSummary().byModel, expected);
+  } finally {
+    await parent.close();
+    await worker.close();
+  }
+});
+
+test('a planner records the usage of every non-streaming retry through a circuit breaker', async () => {
+  let attempts = 0;
+  const logger = new SessionRequestLogger();
+  const retry = new RetryLlm(
+    {
+      ...unusedLlm,
+      model: 'planner-model',
+      async chat() {
+        attempts++;
+        if (attempts === 1) {
+          return {
+            ok: false,
+            error: Object.assign(new LlmError('retry planner'), {
+              status: 503,
+              model: 'failed-model',
+              usage: firstUsage,
+            }),
+          };
+        }
+        if (attempts === 2) {
+          throw Object.assign(new LlmError('retry again'), {
+            status: 503,
+            usage: secondUsage,
+          });
+        }
+        return {
+          ok: true,
+          value: {
+            content:
+              '{"steps":[{"id":"answer","kind":"answer","text":"answer"}]}',
+            finishReason: 'stop',
+            usage: secondUsage,
+          },
+        };
+      },
+    },
+    { backoffMs: 0 },
+  );
+  const agent = await builder()
+    .withMainLlm(unusedLlm)
+    .withRequestLogger(logger)
+    .withStepperCoordinator(
+      new AdaptiveCoordinatorHandler({
+        controller: new LlmAdaptiveController(
+          new CircuitBreakerLlm(retry, new CircuitBreaker()),
+        ),
+        workers: new Map(),
+      }),
+    )
+    .build()
+    .then(unwrapBuilderResult);
+  try {
+    const result = await agent.agent.process(
+      'request',
+      testCallOptions({ trace: { traceId } }),
+    );
+    assert.ok(result.ok);
+    assert.equal(attempts, 3);
+    const expected = {
+      'failed-model': { ...firstUsage, requests: 1 },
+      'planner-model': {
+        promptTokens: 46,
+        completionTokens: 14,
+        totalTokens: 60,
+        requests: 2,
+      },
+    };
+    assert.deepEqual(result.value.usage?.models, expected);
+    assert.deepEqual(logger.getSummary(traceId).byModel, expected);
+    assert.deepEqual(logger.getSummary().byModel, expected);
+  } finally {
+    await agent.close();
+  }
+});
+
+test('a worker releases its configured request delta after both success and failure', async () => {
+  const parentLogger = new SessionRequestLogger();
+  const workerLogger = new SessionRequestLogger();
+  const model = 'worker-model';
+  const worker = await builder()
+    .withRequestLogger(workerLogger)
+    .withMainLlm(unusedLlm)
+    .setPipeline({
+      initialize() {},
+      async execute(_input, _history, options, emit) {
+        assert.ok(options?.requestLogger);
+        const failed = options.trace?.traceId === 'failed';
+        if (failed) {
+          emit({ ok: false, error: new OrchestratorError('failed') });
+          await new Promise<void>((resolve) => setImmediate(resolve));
+        }
+        options.requestLogger.logLlmCall({
+          ...(failed ? secondUsage : firstUsage),
+          component: 'tool-loop',
+          model,
+          durationMs: 0,
+        });
+        if (!failed)
+          emit({
+            ok: true,
+            value: { content: 'answer', finishReason: 'stop' },
+          });
+        return { timing: [] };
+      },
+    })
+    .build()
+    .then(unwrapBuilderResult);
+  const parent = await dagWorker(
+    new SmartAgentSubAgent('worker', worker.agent),
+    parentLogger,
+  );
+  try {
+    for (const [id, usage] of [
+      ['success', firstUsage],
+      ['failed', secondUsage],
+    ] as const) {
+      const result = await parent.agent.process(
+        'request',
+        testCallOptions({ trace: { traceId: id } }),
+      );
+      assert.equal(result.ok, id === 'success');
+      assert.deepEqual(parentLogger.getSummary(id).byModel[model], {
+        ...usage,
+        requests: 1,
+      });
+      parentLogger.dropRequest(id);
+      assert.deepEqual(workerLogger.getSummary(id).byModel, {});
+    }
+    assert.deepEqual(workerLogger.getSummary().byModel[model], {
+      promptTokens: 40,
+      completionTokens: 10,
+      totalTokens: 50,
+      requests: 2,
+    });
+  } finally {
+    await parent.close();
+    await worker.close();
+  }
+});
 
 test('adaptive controller reads the LLM model for each request', async () => {
   let model = 'initial';
@@ -939,5 +1210,32 @@ test('nested workers sharing a scoped logger contribute each call once', () => {
   assert.deepEqual(parent.getSummary(traceId).byModel, expected);
   assert.deepEqual(child.getSummary(traceId).byModel, {
     worker: expected.worker,
+  });
+});
+
+test('overlapping workers keep their configured delta until the last owner finishes', () => {
+  const parent = new SessionRequestLogger();
+  const configured = new SessionRequestLogger();
+  const first = new WorkerRequestLogger(configured, parent);
+  const second = new WorkerRequestLogger(configured, parent);
+  first.startRequest(traceId);
+  second.startRequest(traceId);
+  first.logLlmCall({
+    ...firstUsage,
+    component: 'executor',
+    model: 'worker',
+    durationMs: 0,
+  });
+  first.endRequest(traceId);
+  first.dropRequest(traceId);
+  assert.deepEqual(first.getSummary(traceId).byModel, {});
+  assert.deepEqual(configured.getSummary(traceId).byModel, {
+    worker: { ...firstUsage, requests: 1 },
+  });
+  second.endRequest(traceId);
+  second.dropRequest(traceId);
+  assert.deepEqual(configured.getSummary(traceId).byModel, {});
+  assert.deepEqual(parent.getSummary(traceId).byModel, {
+    worker: { ...firstUsage, requests: 1 },
   });
 });

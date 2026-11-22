@@ -7,6 +7,13 @@ import type {
   ToolCallEntry,
 } from '@mcp-abap-adt/llm-agent';
 import { DefaultRequestLogger } from './default-request-logger.js';
+import { observeRequestCalls } from './request-call-scope.js';
+
+// Parallel workers may own overlapping scopes in the same configured logger.
+const activeOwnedRequests = new WeakMap<
+  IRequestLogger,
+  Map<string | undefined, number>
+>();
 
 /** Keeps a worker's response usage local while forwarding each call to its ancestors. */
 export class WorkerRequestLogger implements IRequestLogger {
@@ -38,17 +45,41 @@ export class WorkerRequestLogger implements IRequestLogger {
   startRequest(requestId?: string): void {
     this.requestId = requestId;
     this.local.startRequest(requestId);
-    this.owned?.startRequest(requestId);
+    if (this.owned) {
+      this.owned.startRequest(requestId);
+      let requests = activeOwnedRequests.get(this.owned);
+      if (!requests) {
+        requests = new Map();
+        activeOwnedRequests.set(this.owned, requests);
+      }
+      requests.set(requestId, (requests.get(requestId) ?? 0) + 1);
+    }
   }
 
   endRequest(requestId?: string): void {
     this.local.endRequest(requestId);
-    this.owned?.endRequest(requestId);
+    if (this.owned) {
+      this.owned.endRequest(requestId);
+      const requests = activeOwnedRequests.get(this.owned);
+      const count = requests?.get(requestId) ?? 0;
+      if (count > 1) requests?.set(requestId, count - 1);
+      else requests?.delete(requestId);
+    }
   }
 
   dropRequest(requestId?: string): void {
     this.local.dropRequest(requestId);
-    this.owned?.dropRequest(requestId);
+    if (this.owned && !activeOwnedRequests.get(this.owned)?.has(requestId)) {
+      this.owned.dropRequest(requestId);
+    }
+  }
+
+  observeCalls<T>(
+    requestId: string | undefined,
+    calls: Map<string, LlmCallRecord>,
+    run: () => Promise<T>,
+  ): Promise<T> {
+    return observeRequestCalls(this.targets, requestId, calls, run);
   }
 
   logLlmCall(entry: LlmCallEntry): void {

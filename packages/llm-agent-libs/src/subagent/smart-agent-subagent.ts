@@ -26,7 +26,8 @@ export class SmartAgentSubAgent implements ISubAgent {
 
   constructor(
     public readonly name: string,
-    private readonly agent: Pick<SmartAgent, 'process' | 'maxToolCalls'>,
+    private readonly agent: Pick<SmartAgent, 'process' | 'maxToolCalls'> &
+      Partial<Pick<SmartAgent, 'currentMainLlm'>>,
     opts?: { description?: string },
   ) {
     this.description = opts?.description;
@@ -34,6 +35,10 @@ export class SmartAgentSubAgent implements ISubAgent {
       contextPolicy: 'optional',
       maxToolCalls: agent.maxToolCalls,
     };
+  }
+
+  get model(): string | undefined {
+    return this.agent.currentMainLlm?.model;
   }
 
   async run(input: ISubAgentInput): Promise<ISubAgentResult> {

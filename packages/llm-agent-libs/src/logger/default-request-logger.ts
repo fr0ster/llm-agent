@@ -10,6 +10,7 @@ import type {
   ToolCallEntry,
 } from '@mcp-abap-adt/llm-agent';
 import { addCacheTokenUsage } from '@mcp-abap-adt/llm-agent';
+import { identifyRequestCall } from './request-call-scope.js';
 
 /**
  * Component → token category mapping (shared with SessionRequestLogger so
@@ -55,8 +56,10 @@ export class DefaultRequestLogger implements IRequestLogger {
   private toolCallEntries: ToolCallEntry[] = [];
   private requestStartMs = 0;
   private requestDurationMs = 0;
+  private requestId?: string;
 
-  startRequest(_requestId?: string): void {
+  startRequest(requestId?: string): void {
+    this.requestId = requestId;
     this.requestLlmCalls = [];
     this.requestCallIds.clear();
     this.ragQueryEntries = [];
@@ -71,10 +74,12 @@ export class DefaultRequestLogger implements IRequestLogger {
       : 0;
   }
 
-  /** Single-request logger has no nesting/delta map — dropRequest is a no-op. */
-  dropRequest(_requestId?: string): void {}
+  dropRequest(requestId?: string): void {
+    if (requestId === undefined || requestId === this.requestId) this.reset();
+  }
 
   logLlmCall(entry: LlmCallEntry): void {
+    entry = identifyRequestCall(this, entry);
     const { callId } = entry;
     if (callId !== undefined) {
       if (this.hasCall(callId)) return;
@@ -153,6 +158,7 @@ export class DefaultRequestLogger implements IRequestLogger {
   }
 
   reset(): void {
+    this.requestId = undefined;
     this.requestLlmCalls = [];
     this.requestCallIds.clear();
     this.ragQueryEntries = [];

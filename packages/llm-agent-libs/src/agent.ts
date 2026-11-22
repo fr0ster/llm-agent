@@ -134,7 +134,7 @@ import type { IOutputValidator } from './validator/types.js';
 
 const captureWorkerUsage = Symbol('captureWorkerUsage');
 type InternalAgentCallOptions = AgentCallOptions & {
-  [captureWorkerUsage]?: (logger: WorkerRequestLogger) => void;
+  [captureWorkerUsage]?: (calls: readonly LlmCallRecord[]) => void;
 };
 
 export type SmartAgentRagStores<K extends string = string> = Record<
@@ -679,16 +679,13 @@ export class SmartAgent {
     // Map streaming index → position in collectedToolCalls for delta correlation
     const indexToPosition = new Map<number, number>();
     let executedToolCallCount: number | undefined;
-    let workerLogger: WorkerRequestLogger | undefined;
+    let workerCalls: readonly LlmCallRecord[] = [];
+    let streamError: OrchestratorError | undefined;
     const returnedCalls = new Map<string, LlmCallRecord>();
-    const collectedCalls = () =>
-      mergeUsageCalls(workerLogger?.usageCalls ?? [], [
-        ...returnedCalls.values(),
-      ]);
     const streamOptions: InternalAgentCallOptions = {
       ...options,
-      [captureWorkerUsage]: (logger) => {
-        workerLogger = logger;
+      [captureWorkerUsage]: (calls) => {
+        workerCalls = calls;
       },
       onToolCallCount: (count, max) => {
         executedToolCallCount = count;
@@ -700,10 +697,8 @@ export class SmartAgent {
       streamOptions,
     )) {
       if (!chunk.ok) {
-        return {
-          ok: false,
-          error: withUsageCalls(chunk.error, collectedCalls()),
-        };
+        streamError = chunk.error;
+        break;
       }
       for (const call of chunk.value.usageCalls ?? []) {
         if (!returnedCalls.has(call.callId))
@@ -775,7 +770,12 @@ export class SmartAgent {
         }
       }
     }
-    const usageCalls = collectedCalls();
+    const usageCalls = mergeUsageCalls(workerCalls, [
+      ...returnedCalls.values(),
+    ]);
+    if (streamError) {
+      return { ok: false, error: withUsageCalls(streamError, usageCalls) };
+    }
     return {
       ok: true,
       value: {
@@ -834,7 +834,6 @@ export class SmartAgent {
       : undefined;
     const requestLogger = workerLogger ?? this.requestLogger;
     const internalOptions: InternalAgentCallOptions | undefined = options;
-    if (workerLogger) internalOptions?.[captureWorkerUsage]?.(workerLogger);
     opts = normalizeRequestOptions(opts, traceId, requestLogger);
     // Message-array callers own their context, including request time, unless
     // they explicitly request insertion through call options.
@@ -1050,6 +1049,10 @@ export class SmartAgent {
         toolAvailability.clear(callerIdentityKey(identity.caller));
       }
       requestLogger.endRequest(traceId);
+      if (workerLogger) {
+        internalOptions?.[captureWorkerUsage]?.(workerLogger.usageCalls);
+        workerLogger.dropRequest(traceId);
+      }
       rootSpan.end();
       timeoutCleanup?.();
       this.metrics.requestLatency.record(Date.now() - requestStart);

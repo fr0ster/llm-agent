@@ -84,16 +84,20 @@ export async function* pipelineToStream(
       }
     });
 
-  while (!done || chunkQueue.length > 0) {
-    if (chunkQueue.length > 0) {
-      const chunk = chunkQueue.shift();
-      if (chunk !== undefined) yield chunk;
-    } else if (!done) {
-      await new Promise<void>((r) => {
-        resolveWait = r;
-      });
+  try {
+    while (!done || chunkQueue.length > 0) {
+      if (chunkQueue.length > 0) {
+        const chunk = chunkQueue.shift();
+        if (chunk !== undefined) yield chunk;
+      } else if (!done) {
+        await new Promise<void>((r) => {
+          resolveWait = r;
+        });
+      }
     }
+    await executorPromise;
+  } finally {
+    // A worker pipeline can finish logging after emitting an error chunk.
+    if (configuredRequestLogger && !done) await executorPromise;
   }
-
-  await executorPromise;
 }

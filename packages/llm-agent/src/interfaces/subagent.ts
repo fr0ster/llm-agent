@@ -96,7 +96,7 @@ export interface ISubAgentResult {
   usage?: TokenUsage;
   /** Model for flat usage. Multi-model runs should provide usage.models. */
   model?: string;
-  /** Complete call records. Takes precedence over aggregated usage. */
+  /** Identified calls behind returned usage. The coordinator imports any remainder. */
   usageCalls?: readonly LlmCallRecord[];
   metadata?: Record<string, unknown>;
   /**

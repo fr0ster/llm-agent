@@ -8,6 +8,7 @@ import type {
 } from '@mcp-abap-adt/llm-agent';
 import { addCacheTokenUsage } from '@mcp-abap-adt/llm-agent';
 import { CATEGORY_MAP } from './default-request-logger.js';
+import { identifyRequestCall } from './request-call-scope.js';
 
 interface Bucket {
   llm: LlmCallEntry[];
@@ -155,6 +156,7 @@ export class SessionRequestLogger implements IRequestLogger {
   }
 
   logLlmCall(entry: LlmCallEntry): void {
+    entry = identifyRequestCall(this, entry);
     recordCall(this.cumulative, entry);
     if (entry.requestId) recordCall(this.deltaFor(entry.requestId), entry);
   }
