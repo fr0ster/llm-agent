@@ -4,18 +4,24 @@ import type {
   IRequestLogger,
   LlmStreamChunk,
   LlmTool,
+  LlmUsageAttribution,
   Message,
   Result,
 } from '@mcp-abap-adt/llm-agent';
 import {
-  addCacheTokenUsage,
   OrchestratorError,
   scopedUsage,
   type ToolTrust,
   toModelToolMessages,
   toToolCallDelta,
 } from '@mcp-abap-adt/llm-agent';
+import { withUsageCalls } from '../../logger/llm-call-usage.js';
 import { summaryToUsage } from '../../logger/session-request-logger.js';
+import {
+  logToolLoopAttempt,
+  recordThrownLlmUsage,
+  StreamAttemptUsage,
+} from '../../logger/stream-attempt-usage.js';
 import type { CallerResolution } from '../../policy/caller-identity.js';
 import {
   createPendingToolCallsEntry,
@@ -34,49 +40,40 @@ export async function* runPassThrough(
   identity: CallerResolution = { kind: 'anonymous' },
 ): AsyncIterable<Result<LlmStreamChunk, OrchestratorError>> {
   for (;;) {
-    const passStart = Date.now();
     const traceId2 = opts?.trace?.traceId;
     opts?.sessionLogger?.logStep(
       'llm_request_pass',
       { messages, tools: externalTools ?? [] },
       'llm',
     );
-    const stream = llm.streamChat(
-      toModelToolMessages(messages, toolTrust),
-      externalTools,
-      {
+    const stream = () =>
+      llm.streamChat(toModelToolMessages(messages, toolTrust), externalTools, {
         ...opts,
         usage: scopedUsage(opts?.usage, { component: 'tool-loop' }),
-      },
-    );
+        includeStreamRetryUsage: true,
+      });
     let passContent = '';
     const calls = new Map<
       number,
       { id: string; name: string; arguments: string }
     >();
     let finishReason: LlmStreamChunk['finishReason'];
-    let cache: ReturnType<typeof addCacheTokenUsage> = {};
-    let accPrompt = 0;
-    let accCompletion = 0;
-    let accTotal = 0;
-    let hasUsage = false;
-    const logPassUsage = (): void => {
-      // Log only if a usage chunk was actually seen (mirrors
-      // LoggingLlm.streamChat) — avoids creating a zero tool-loop bucket.
-      if (!hasUsage) return;
-      requestLogger.logLlmCall({
-        component: 'tool-loop',
-        model: llm.model ?? 'unknown',
-        ...cache,
-        promptTokens: accPrompt,
-        completionTokens: accCompletion,
-        totalTokens: accTotal,
-        durationMs: Date.now() - passStart,
-        requestId: traceId2,
-      });
+    const attemptUsage = new StreamAttemptUsage();
+    const logAttempt = (reported?: LlmUsageAttribution, countEmpty = true) => {
+      const calls = attemptUsage.records(
+        'tool-loop',
+        llm.model,
+        reported,
+        opts?.signal,
+        countEmpty,
+      );
+      logToolLoopAttempt(requestLogger, calls, traceId2);
+      return calls;
     };
     let chunksSeen = 0;
-    for await (const chunk of stream) {
+    for await (const chunk of recordThrownLlmUsage(stream, (failure) =>
+      logAttempt(failure, false),
+    )) {
       if (!chunk.ok) {
         // process() returns on the first error chunk → post-loop code never
         // runs. Log accumulated (partial) spend BEFORE yielding the error, and
@@ -96,17 +93,24 @@ export async function* runPassThrough(
           },
           'llm',
         );
-        logPassUsage();
-        yield chunk;
+        const failure: typeof chunk.error & LlmUsageAttribution = chunk.error;
+        yield {
+          ok: false,
+          error: withUsageCalls(failure, logAttempt(failure, false)),
+        };
         return;
       }
       chunksSeen += 1;
       if (chunk.value.reset) {
+        const { retryUsage } = chunk.value;
+        logAttempt(retryUsage);
+        attemptUsage.reset();
         passContent = '';
         calls.clear();
         finishReason = undefined;
         continue;
       }
+      attemptUsage.add(chunk.value.usage, llm.model, chunk.value.usageCalls);
       if (chunk.value.content) passContent += chunk.value.content;
       if (chunk.value.finishReason) finishReason = chunk.value.finishReason;
       if (chunk.value.toolCalls) {
@@ -120,13 +124,6 @@ export async function* runPassThrough(
           });
         }
       }
-      if (chunk.value.usage) {
-        cache = addCacheTokenUsage(cache, chunk.value.usage);
-        accPrompt += chunk.value.usage.promptTokens;
-        accCompletion += chunk.value.usage.completionTokens;
-        accTotal += chunk.value.usage.totalTokens;
-        hasUsage = true;
-      }
       // Strip usage from the forwarded chunk: the single usage-bearing chunk
       // is the terminal getSummary chunk below (one usage chunk per request).
       // Buffer tool-call fragments until the suspension has its own returned IDs.
@@ -138,7 +135,7 @@ export async function* runPassThrough(
       } = chunk.value;
       yield { ok: true, value: rest };
     }
-    logPassUsage();
+    logAttempt();
     const hasToolCalls = finishReason === 'tool_calls' && calls.size > 0;
     const round = new ToolResponseRound(
       passContent,

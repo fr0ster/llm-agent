@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import type { ILlm } from '../interfaces/llm.js';
 import type { IRequestLogger } from '../interfaces/request-logger.js';
 import {
@@ -46,8 +47,10 @@ export class LlmQueryExpander implements IQueryExpander {
         [],
         { ...options, usage: options?.usage?.with({ role: 'query-expander' }) },
       );
-      if (this.requestLogger) {
-        this.requestLogger.logLlmCall({
+      const logger = options?.requestLogger ?? this.requestLogger;
+      if (logger) {
+        logger.logLlmCall({
+          callId: randomUUID(),
           component: 'query-expander',
           model: this.llm.model ?? 'unknown',
           ...addCacheTokenUsage(
@@ -60,6 +63,7 @@ export class LlmQueryExpander implements IQueryExpander {
             : 0,
           totalTokens: res.ok ? (res.value.usage?.totalTokens ?? 0) : 0,
           durationMs: Date.now() - chatStart,
+          requestId: options?.trace?.traceId,
         });
       }
 

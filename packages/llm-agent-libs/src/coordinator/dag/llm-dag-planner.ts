@@ -8,6 +8,7 @@ import type {
   PlannerResult,
 } from '@mcp-abap-adt/llm-agent';
 import { ClarifySignal, NeedInfoSignal } from '@mcp-abap-adt/llm-agent';
+import { withUsageCalls } from '../../logger/llm-call-usage.js';
 import { DirectLlmSubAgent } from '../../subagent/direct-llm-subagent.js';
 import { renderAncestorContext } from './render-ancestor-context.js';
 
@@ -201,17 +202,18 @@ export function parseDagPlan(
  */
 export class LlmDagPlanner implements IPlanner {
   readonly name = 'llm-dag';
-  /** Best-effort model identifier from the underlying ILlm (for logger
-   *  attribution). May be undefined for ILlm impls that do not expose one. */
-  readonly model?: string;
   private readonly agent: DirectLlmSubAgent;
 
   constructor(llm: ILlm) {
-    this.model = llm.model;
     this.agent = new DirectLlmSubAgent('planner', llm, {
       systemPrompt: PLANNER_SYSTEM,
+      component: 'planner',
       contextPolicy: 'optional',
     });
+  }
+
+  get model(): string | undefined {
+    return this.agent.model;
   }
 
   async plan(input: PlannerInput): Promise<PlannerResult> {
@@ -245,7 +247,12 @@ export class LlmDagPlanner implements IPlanner {
     // decompose the request (e.g. a bare "call external tool X") and returns
     // zero nodes, parseDagPlan synthesizes one node carrying the prompt so a
     // worker still runs and can surface the external tool_call (#171 obs 2c).
-    const plan = parseDagPlan(res.output, res.usage, input.prompt);
+    let plan: DagPlan;
+    try {
+      plan = parseDagPlan(res.output, res.usage, input.prompt);
+    } catch (error) {
+      throw withUsageCalls(error, res.usageCalls ?? []);
+    }
     return {
       plan,
       // Forward the underlying ILlm.chat usage on the WRAPPER (not on the
@@ -253,6 +260,8 @@ export class LlmDagPlanner implements IPlanner {
       // the session/request logger without polluting the plan domain type
       // (which the reviewer serializes via JSON.stringify into its prompt).
       usage: res.usage,
+      model: res.model,
+      usageCalls: res.usageCalls,
     };
   }
 }

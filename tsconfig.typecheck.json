@@ -137,6 +137,7 @@
     "packages/llm-agent-libs/src/__tests__/pipeline-request-isolation.test.ts",
     "packages/llm-agent-libs/src/coordinator/dialogue/__tests__/task-board.test.ts",
     "packages/llm-agent-libs/src/coordinator/adaptive/__tests__/adaptive-interpreter.test.ts",
+    "packages/llm-agent-libs/src/coordinator/adaptive/__tests__/llm-adaptive-controller.test.ts",
     "packages/llm-agent/src/resilience/input-cap-embedder.test.ts",
     "packages/llm-agent/src/usage/__tests__/hooks.test.ts",
     "packages/sap-aicore-llm/src/__tests__/usage.test.ts",

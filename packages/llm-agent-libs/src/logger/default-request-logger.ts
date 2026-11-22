@@ -1,6 +1,7 @@
 import type {
   IRequestLogger,
   LlmCallEntry,
+  LlmCallRecord,
   LlmComponent,
   RagQueryEntry,
   RequestSummary,
@@ -9,6 +10,7 @@ import type {
   ToolCallEntry,
 } from '@mcp-abap-adt/llm-agent';
 import { addCacheTokenUsage } from '@mcp-abap-adt/llm-agent';
+import { identifyRequestCall } from './request-call-scope.js';
 
 /**
  * Component → token category mapping (shared with SessionRequestLogger so
@@ -42,19 +44,24 @@ function addToBucket(bucket: TokenBucket, entry: LlmCallEntry): void {
   bucket.promptTokens += entry.promptTokens;
   bucket.completionTokens += entry.completionTokens;
   bucket.totalTokens += entry.totalTokens;
-  bucket.requests++;
+  bucket.requests += entry.requests ?? 1;
 }
 
 export class DefaultRequestLogger implements IRequestLogger {
   private initLlmCalls: LlmCallEntry[] = [];
   private requestLlmCalls: LlmCallEntry[] = [];
+  private readonly initCallIds = new Set<string>();
+  private readonly requestCallIds = new Set<string>();
   private ragQueryEntries: RagQueryEntry[] = [];
   private toolCallEntries: ToolCallEntry[] = [];
   private requestStartMs = 0;
   private requestDurationMs = 0;
+  private requestId?: string;
 
-  startRequest(_requestId?: string): void {
+  startRequest(requestId?: string): void {
+    this.requestId = requestId;
     this.requestLlmCalls = [];
+    this.requestCallIds.clear();
     this.ragQueryEntries = [];
     this.toolCallEntries = [];
     this.requestDurationMs = 0;
@@ -67,10 +74,21 @@ export class DefaultRequestLogger implements IRequestLogger {
       : 0;
   }
 
-  /** Single-request logger has no nesting/delta map — dropRequest is a no-op. */
-  dropRequest(_requestId?: string): void {}
+  dropRequest(requestId?: string): void {
+    if (requestId === undefined || requestId === this.requestId) this.reset();
+  }
 
   logLlmCall(entry: LlmCallEntry): void {
+    entry = identifyRequestCall(this, entry);
+    const { callId } = entry;
+    if (callId !== undefined) {
+      if (this.hasCall(callId)) return;
+      const ids =
+        entry.scope === 'initialization'
+          ? this.initCallIds
+          : this.requestCallIds;
+      ids.add(callId);
+    }
     if (entry.scope === 'initialization') {
       this.initLlmCalls.push(entry);
     } else {
@@ -84,6 +102,16 @@ export class DefaultRequestLogger implements IRequestLogger {
 
   logToolCall(entry: ToolCallEntry & { requestId?: string }): void {
     this.toolCallEntries.push(entry);
+  }
+
+  hasCall(callId: string): boolean {
+    return this.initCallIds.has(callId) || this.requestCallIds.has(callId);
+  }
+
+  get usageCalls(): readonly LlmCallRecord[] {
+    return [...this.initLlmCalls, ...this.requestLlmCalls].filter(
+      (entry): entry is LlmCallRecord => entry.callId !== undefined,
+    );
   }
 
   getSummary(_requestId?: string): RequestSummary {
@@ -130,7 +158,9 @@ export class DefaultRequestLogger implements IRequestLogger {
   }
 
   reset(): void {
+    this.requestId = undefined;
     this.requestLlmCalls = [];
+    this.requestCallIds.clear();
     this.ragQueryEntries = [];
     this.toolCallEntries = [];
     this.requestStartMs = 0;

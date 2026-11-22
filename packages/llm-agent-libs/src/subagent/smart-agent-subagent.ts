@@ -13,6 +13,10 @@ import {
 } from '@mcp-abap-adt/llm-agent';
 import type { SmartAgent } from '../agent.js';
 import { resolveWorkerSummary } from '../coordinator/dialogue/submit-report-tool.js';
+import { withUsageAttribution } from '../logger/llm-call-usage.js';
+import { NoopRequestLogger } from '../logger/noop-request-logger.js';
+
+const noopRequestLogger = new NoopRequestLogger();
 
 export class SmartAgentSubAgent implements ISubAgent {
   public readonly description?: string;
@@ -22,7 +26,8 @@ export class SmartAgentSubAgent implements ISubAgent {
 
   constructor(
     public readonly name: string,
-    private readonly agent: Pick<SmartAgent, 'process' | 'maxToolCalls'>,
+    private readonly agent: Pick<SmartAgent, 'process' | 'maxToolCalls'> &
+      Partial<Pick<SmartAgent, 'currentMainLlm'>>,
     opts?: { description?: string },
   ) {
     this.description = opts?.description;
@@ -30,6 +35,10 @@ export class SmartAgentSubAgent implements ISubAgent {
       contextPolicy: 'optional',
       maxToolCalls: agent.maxToolCalls,
     };
+  }
+
+  get model(): string | undefined {
+    return this.agent.currentMainLlm?.model;
   }
 
   async run(input: ISubAgentInput): Promise<ISubAgentResult> {
@@ -41,6 +50,7 @@ export class SmartAgentSubAgent implements ISubAgent {
     const collector = new ToolTraceCollector();
     const assistantTexts: string[] = [];
     let observing = true;
+    let attribution: Pick<ISubAgentResult, 'usage' | 'usageCalls'> | undefined;
     const onToolTrace = (entry: ToolTraceEntry): void => {
       if (!observing) return;
       collector.observe(entry);
@@ -65,6 +75,7 @@ export class SmartAgentSubAgent implements ISubAgent {
           caller: input.caller,
           userId: input.caller.userId,
           usage: input.usage,
+          parentRequestLogger: input.requestLogger ?? noopRequestLogger,
           signal: input.signal,
           stopSignal: input.stopSignal,
           dialogueTask: input.dialogueTask,
@@ -98,7 +109,8 @@ export class SmartAgentSubAgent implements ISubAgent {
         throw res.error;
       }
 
-      const { content, toolCalls, stopReason, usage, stopped } = res.value;
+      const { content, toolCalls, stopReason, usage, usageCalls, stopped } =
+        res.value;
       const finish = input.dialogueTask?.readFinish();
       const output =
         finish?.output ??
@@ -113,6 +125,11 @@ export class SmartAgentSubAgent implements ISubAgent {
             ...(usage.models ? { models: usage.models } : {}),
           }
         : undefined;
+
+      attribution = {
+        usage: mappedUsage,
+        ...(usageCalls ? { usageCalls } : {}),
+      };
 
       // Issue #171: when the worker tool-loop stops on a client-provided
       // (consumer-executed) external tool call, it surfaces the call instead of
@@ -141,7 +158,7 @@ export class SmartAgentSubAgent implements ISubAgent {
             toolTrace: collector.finalize(!hasExternalTraceGap(onToolTrace)),
             output,
             summary: resolveWorkerSummary(output, finish?.summary).summary,
-            usage: mappedUsage,
+            ...attribution,
             status: 'awaiting-external',
             budgetExhausted: res.value.budgetExhausted,
             toolCallCount: res.value.toolCallCount,
@@ -152,12 +169,9 @@ export class SmartAgentSubAgent implements ISubAgent {
       }
 
       if (!stopped && !(finish?.output ?? content).trim()) {
-        throw Object.assign(
-          new OrchestratorError(
-            'Worker returned an empty terminal response.',
-            'EMPTY_WORKER_OUTPUT',
-          ),
-          { usage: mappedUsage },
+        throw new OrchestratorError(
+          'Worker returned an empty terminal response.',
+          'EMPTY_WORKER_OUTPUT',
         );
       }
 
@@ -180,10 +194,12 @@ export class SmartAgentSubAgent implements ISubAgent {
         toolCallCount: res.value.toolCallCount,
         maxToolCalls: res.value.maxToolCalls,
         toolCalls: mappedToolCalls,
-        usage: mappedUsage,
+        ...attribution,
         status: 'complete',
         ...(stopped ? { stopped } : {}),
       };
+    } catch (error) {
+      throw attribution ? withUsageAttribution(error, attribution) : error;
     } finally {
       observing = false;
       collector.finalize(false);

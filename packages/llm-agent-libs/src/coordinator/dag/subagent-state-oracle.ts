@@ -5,17 +5,7 @@ import type {
   StateOracleResult,
 } from '@mcp-abap-adt/llm-agent';
 
-/**
- * Adapter wrapping a raw ISubAgent as an IStateOracle. The wrapped
- * subagent runs a full pipeline whose LLM activity is logged by its
- * own handlers under their own component labels (`tool-loop`,
- * `classifier`, …) via the SHARED session requestLogger keyed on the
- * forwarded traceId. To avoid double-counting, this adapter
- * intentionally returns `usage: undefined`; the handler's
- * `logRoleUsage('oracle', …)` is therefore a no-op for subagent-backed
- * oracles. A pure-LLM IStateOracle implementation that bypasses
- * pipeline logging would populate `usage` normally.
- */
+/** Exposes a subagent's answer and call records as a state-oracle result. */
 export class SubAgentStateOracle implements IStateOracle {
   constructor(private readonly inner: ISubAgent) {}
 
@@ -31,8 +21,15 @@ export class SubAgentStateOracle implements IStateOracle {
       usage: input.usage?.with({ role: 'oracle' }),
       signal: input.signal,
       trace: input.trace,
+      requestLogger: input.requestLogger,
       sessionLogger: input.sessionLogger,
     });
-    return { answer: res.output, usage: undefined };
+    return {
+      answer: res.output,
+      usage: res.usage,
+      usageByModel: res.usage?.models,
+      usageCalls: res.usageCalls,
+      model: res.model ?? this.inner.model,
+    };
   }
 }

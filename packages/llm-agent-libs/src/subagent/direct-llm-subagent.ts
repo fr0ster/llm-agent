@@ -3,16 +3,19 @@ import {
   type ISubAgent,
   type ISubAgentInput,
   type ISubAgentResult,
+  type LlmComponent,
   OrchestratorError,
   type SubAgentCapabilities,
 } from '@mcp-abap-adt/llm-agent';
 
 import { ContextAssembler } from '../context/context-assembler.js';
+import { chatWithUsage } from '../logger/llm-call-usage.js';
 
 export interface DirectLlmSubAgentOptions {
   /** Deployment IANA time zone. Default: UTC. */
   timeZone?: string;
   systemPrompt: string;
+  component?: LlmComponent;
   workerBase?: string;
   description?: string;
   contextPolicy?: 'required' | 'optional' | 'forbidden';
@@ -30,6 +33,7 @@ export class DirectLlmSubAgent implements ISubAgent {
   public readonly description?: string;
   public readonly capabilities: SubAgentCapabilities;
   private readonly assembler: ContextAssembler;
+  private readonly component: LlmComponent;
 
   constructor(
     public readonly name: string,
@@ -37,6 +41,7 @@ export class DirectLlmSubAgent implements ISubAgent {
     opts: DirectLlmSubAgentOptions,
   ) {
     this.description = opts.description;
+    this.component = opts.component ?? 'executor';
     this.assembler = new ContextAssembler({
       timeZone: opts.timeZone,
       systemPromptPreamble: [opts.workerBase, opts.systemPrompt]
@@ -46,6 +51,10 @@ export class DirectLlmSubAgent implements ISubAgent {
     this.capabilities = {
       contextPolicy: opts.contextPolicy ?? 'required',
     };
+  }
+
+  get model(): string | undefined {
+    return this.llm.model;
   }
 
   async run(input: ISubAgentInput): Promise<ISubAgentResult> {
@@ -76,16 +85,13 @@ export class DirectLlmSubAgent implements ISubAgent {
     } catch {
       // Supervision is informational: an observer must never fail the work.
     }
-    const res = await this.llm.chat(assembled.value, [], {
-      caller: input.caller,
-      usage: input.usage,
-      signal: input.signal,
-      sessionId: input.sessionId,
-    });
-    if (!res.ok) {
-      throw res.error;
-    }
-    const { content, finishReason, usage } = res.value;
+    const { content, finishReason, usage, model, usageCalls } =
+      await chatWithUsage(this.llm, this.component, assembled.value, [], {
+        caller: input.caller,
+        usage: input.usage,
+        signal: input.signal,
+        sessionId: input.sessionId,
+      });
     const error =
       finishReason === 'length'
         ? new OrchestratorError(
@@ -98,11 +104,13 @@ export class DirectLlmSubAgent implements ISubAgent {
               'EMPTY_WORKER_OUTPUT',
             )
           : undefined;
-    if (error) throw Object.assign(error, { usage });
+    if (error) throw Object.assign(error, { usage, model, usageCalls });
 
     return {
       output: content,
       usage,
+      model,
+      usageCalls,
     };
   }
 }

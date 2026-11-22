@@ -2,7 +2,7 @@ import type { ContextPath } from './context-path.js';
 import type { DagPlan } from './dag-plan.js';
 import type { NodeResult } from './interpreter.js';
 import type { PlannerCatalogEntry } from './planner.js';
-import type { LlmUsage } from './types.js';
+import type { LlmUsageAttribution } from './types.js';
 import type { IUsageRecorder } from './usage.js';
 
 export interface ReviewInput {
@@ -24,9 +24,8 @@ export type ReviewVerdict = { pass: true } | { pass: false; feedback: string };
 /** Wrapper returned by `IReviewStrategy.review`. Keeps optional LLM-usage
  *  telemetry OUT of the verdict (which is a pure domain decision); the
  *  coordinator forwards `usage` into the session request logger. */
-export interface ReviewResult {
+export interface ReviewResult extends LlmUsageAttribution {
   verdict: ReviewVerdict;
-  usage?: LlmUsage;
 }
 
 /** Input to the reviewer when a node FAILED during execution (slice 4a). */
@@ -51,9 +50,8 @@ export type ExecutionReviewDecision =
   | { action: 'abort' }
   | { action: 'revise'; revisedPlan: DagPlan };
 
-export interface ExecutionReviewResult {
+export interface ExecutionReviewResult extends LlmUsageAttribution {
   decision: ExecutionReviewDecision;
-  usage?: LlmUsage;
 }
 
 export interface IReviewStrategy {

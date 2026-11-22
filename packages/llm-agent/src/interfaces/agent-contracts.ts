@@ -1,5 +1,6 @@
 // src/smart-agent/interfaces/agent-contracts.ts
 import type { AgentStreamChunk, LLMResponse, Message } from '../types.js';
+import type { IRequestLogger, LlmCallRecord } from './request-logger.js';
 import type { CallOptions, TokenUsage } from './types.js';
 import { SmartAgentError } from './types.js';
 
@@ -33,9 +34,13 @@ export interface SmartAgentResponse {
     function: { name: string; arguments: string };
   }>;
   usage?: TokenUsage;
+  /** Individual calls behind usage, when available. */
+  usageCalls?: readonly LlmCallRecord[];
 }
 
 export interface AgentCallOptions extends CallOptions {
+  /** Parent coordinator logger that also receives this run's LLM call entries. */
+  parentRequestLogger?: IRequestLogger;
   externalTools?: unknown[];
   /** Validated `extId → result` map built at the server boundary from the
    *  incoming history's external tool results (#171, review#7). Threaded down

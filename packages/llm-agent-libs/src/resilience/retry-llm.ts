@@ -20,12 +20,15 @@ import {
   type LlmResponse,
   type LlmStreamChunk,
   type LlmTool,
+  type LlmUsageAttribution,
   type Result,
   retryAfterSecondsOf,
   startOperation,
   terminalRunError,
   withOuterAttempt,
 } from '@mcp-abap-adt/llm-agent';
+
+import { errorUsage, recordChatAttempt } from '../logger/llm-call-usage.js';
 
 export interface RetryOptions {
   /** Maximum number of non-429 retries. Unlimited when omitted. */
@@ -48,7 +51,10 @@ function toLlmError<T>(cause: T): LlmError {
   return cause instanceof LlmError
     ? cause
     : (terminalRunError(cause) ??
-        Object.assign(new LlmError(String(cause), 'LLM_ERROR'), { cause }));
+        Object.assign(new LlmError(String(cause), 'LLM_ERROR'), {
+          cause,
+          ...errorUsage(cause),
+        }));
 }
 
 function abortError(signal: AbortSignal): LlmError {
@@ -92,10 +98,15 @@ export class RetryLlm implements ILlm {
 
       let result: Result<LlmResponse, LlmError>;
       try {
-        result = await this.inner.chat(messages, tools, {
-          ...options,
-          usageOp: withOuterAttempt(op, attempt),
-        });
+        result = await recordChatAttempt(
+          this.inner,
+          () =>
+            this.inner.chat(messages, tools, {
+              ...options,
+              usageOp: withOuterAttempt(op, attempt),
+            }),
+          true,
+        );
       } catch (error) {
         result = { ok: false, error: toLlmError(error) };
       }
@@ -140,22 +151,33 @@ export class RetryLlm implements ILlm {
 
       let chunksYielded = 0;
       let retryDelay: number | undefined;
+      let retryUsage: LlmUsageAttribution | undefined;
 
       for await (const chunk of this.attemptStream(messages, tools, {
         ...options,
         usageOp: withOuterAttempt(op, attempt),
       })) {
-        if (signal?.aborted) {
-          yield { ok: false, error: abortError(signal) };
+        if (signal?.aborted && !(chunk.ok && chunk.value.reset)) {
+          const usage: LlmUsageAttribution = chunk.ok
+            ? { usage: chunk.value.usage, usageCalls: chunk.value.usageCalls }
+            : errorUsage(chunk.error);
+          yield {
+            ok: false,
+            error: Object.assign(abortError(signal), usage),
+          };
           return;
         }
         if (chunk.ok) {
-          chunksYielded++;
+          // An inner retry can report an attempt before any response chunk.
+          if (!chunk.value.reset) chunksYielded++;
           yield chunk;
         } else {
           const terminal = terminalRunError(chunk.error);
           if (terminal) {
-            yield { ok: false, error: terminal };
+            yield {
+              ok: false,
+              error: Object.assign(terminal, errorUsage(chunk.error)),
+            };
             return;
           }
           const status = httpStatusOf(chunk.error);
@@ -172,13 +194,30 @@ export class RetryLlm implements ILlm {
             yield chunk;
             return;
           }
+          if (options?.includeStreamRetryUsage) {
+            const failure: LlmError & LlmUsageAttribution = chunk.error;
+            retryUsage = {
+              usage: failure.usage,
+              model:
+                failure.model ?? (chunksYielded === 0 ? this.model : undefined),
+              usageByModel: failure.usageByModel,
+              usageCalls: failure.usageCalls,
+            };
+          }
           break;
         }
       }
 
       if (retryDelay === undefined) return;
-      if (chunksYielded > 0)
-        yield { ok: true, value: { content: '', reset: true } };
+      if (chunksYielded > 0 || retryUsage)
+        yield {
+          ok: true,
+          value: {
+            content: '',
+            reset: true,
+            ...(retryUsage && { retryUsage }),
+          },
+        };
       await this.waitForRetry(retryDelay, signal);
     }
   }

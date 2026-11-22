@@ -1,6 +1,6 @@
 import type { ContextPath } from './context-path.js';
 import type { OnPartial } from './streaming.js';
-import type { LlmUsage } from './types.js';
+import type { LlmUsageAttribution } from './types.js';
 import type { IUsageRecorder } from './usage.js';
 
 export interface FinalizerInput {
@@ -30,9 +30,8 @@ export interface FinalizerInput {
   onPartial?: OnPartial;
 }
 
-export interface FinalizerResult {
+export interface FinalizerResult extends LlmUsageAttribution {
   output: string;
-  usage?: LlmUsage;
 }
 
 export interface IFinalizer {

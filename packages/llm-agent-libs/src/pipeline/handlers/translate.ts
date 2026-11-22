@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { addCacheTokenUsage } from '@mcp-abap-adt/llm-agent';
 /**
  * TranslateHandler — translates non-ASCII RAG query text to English.
@@ -46,6 +47,7 @@ export class TranslateHandler implements IStageHandler {
       },
     );
     ctx.requestLogger.logLlmCall({
+      callId: randomUUID(),
       component: 'translate',
       model: llm.model ?? 'unknown',
       ...addCacheTokenUsage(undefined, res.ok ? res.value.usage : undefined),

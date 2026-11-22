@@ -557,7 +557,7 @@ export class DefaultPipeline implements IPipeline {
       tracer: this.resolvedTracer,
       metrics: this.resolvedMetrics,
       logger: this.deps.logger,
-      requestLogger: this.resolvedRequestLogger,
+      requestLogger: options.requestLogger ?? this.resolvedRequestLogger,
       toolPolicy: this.deps.toolPolicy,
       injectionDetector: this.deps.injectionDetector,
       ...(() => {

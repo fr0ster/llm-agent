@@ -13,13 +13,12 @@ import type {
   IStateOracle,
   ISubAgent,
   LlmComponent,
-  LlmUsage,
+  LlmUsageAttribution,
   OnPartial,
   PlannerResult,
   ReviewResult,
 } from '@mcp-abap-adt/llm-agent';
 import {
-  addCacheTokenUsage,
   ClarifySignal,
   NeedInfoSignal,
   terminalRunError,
@@ -27,10 +26,13 @@ import {
 import { OrchestratorError } from '../../agent.js';
 import { PassthroughFinalizer } from '../../coordinator/dag/passthrough-finalizer.js';
 import { AbortErrorStrategy } from '../../coordinator/index.js';
+import { withUsageCalls } from '../../logger/llm-call-usage.js';
 import { summaryToUsage } from '../../logger/session-request-logger.js';
 import type { ISpan } from '../../tracer/types.js';
 import type { PipelineContext } from '../context.js';
 import type { IStageHandler } from '../stage-handler.js';
+import { logRoleUsage } from './role-usage.js';
+import { meterWorkers } from './worker-usage.js';
 
 /** Canonical terminal-usage object: flat triple + per-model breakdown. */
 export function terminalUsage(
@@ -128,44 +130,21 @@ export class DagCoordinatorHandler implements IStageHandler {
     // delta AND in the session-cumulative buckets (categorized as
     // 'auxiliary' via CATEGORY_MAP). Non-LLM strategies omit `usage`, so
     // this is a no-op for them.
-    const logRoleUsage = (
+    // The role runner also logs usage attached to signals and failures.
+    const runRole = async <T extends LlmUsageAttribution>(
       component: LlmComponent,
-      model: string | undefined,
-      usage: LlmUsage | undefined,
-      durationMs: number,
-    ): void => {
-      if (!usage) return;
-      ctx.requestLogger.logLlmCall({
-        component,
-        model: model ?? 'unknown',
-        ...addCacheTokenUsage(undefined, usage),
-        promptTokens: usage.promptTokens,
-        completionTokens: usage.completionTokens,
-        totalTokens: usage.totalTokens,
-        durationMs,
-        requestId: ctx.options?.trace?.traceId,
-      });
-    };
-
-    // Generic role runner. Owns logging for BOTH happy path AND signal paths
-    // (HIGH finding: a role that throws ClarifySignal/NeedInfoSignal still
-    // consumed LLM tokens — discarding them was invisible spend). Per-role
-    // adapters set `signal.usage` on the signal before throwing; `runRole`
-    // reads it here and routes it through the same `logRoleUsage`.
-    const runRole = async <T extends { usage?: LlmUsage }>(
-      component: LlmComponent,
-      model: string | undefined,
+      role: { readonly model?: string } | undefined,
       thunk: () => Promise<T>,
     ): Promise<{ value: T } | { ended: true }> => {
       for (;;) {
         const start = Date.now();
         try {
           const value = await thunk();
-          logRoleUsage(component, model, value.usage, Date.now() - start);
+          logRoleUsage(ctx, component, value, role?.model, Date.now() - start);
           return { value };
         } catch (err) {
           if (err instanceof ClarifySignal) {
-            logRoleUsage(component, model, err.usage, Date.now() - start);
+            logRoleUsage(ctx, component, err, role?.model, Date.now() - start);
             ctx.options?.sessionLogger?.logStep('coordinator_clarify', {
               question: (err as ClarifySignalType).question,
             });
@@ -194,7 +173,7 @@ export class DagCoordinatorHandler implements IStageHandler {
             return { ended: true };
           }
           if (err instanceof NeedInfoSignal) {
-            logRoleUsage(component, model, err.usage, Date.now() - start);
+            logRoleUsage(ctx, component, err, role?.model, Date.now() - start);
             if (!this.deps.stateOracle) {
               throw new OrchestratorError(
                 `coordinator: role requested info but no stateOracle is configured: ${(err as NeedInfoSignal).query}`,
@@ -207,20 +186,34 @@ export class DagCoordinatorHandler implements IStageHandler {
                 'COORDINATOR_BUDGET_EXHAUSTED',
               );
             }
+            const oracle = this.deps.stateOracle;
             const oracleStart = Date.now();
-            const ans = await this.deps.stateOracle.query({
-              query: (err as NeedInfoSignal).query,
-              sessionId: ctx.sessionId,
-              caller: caller,
-              usage: ctx.options?.usage,
-              signal: ctx.options?.signal,
-              trace: ctx.options?.trace,
-              sessionLogger: ctx.options?.sessionLogger,
-            });
+            const ans = await oracle
+              .query({
+                query: (err as NeedInfoSignal).query,
+                sessionId: ctx.sessionId,
+                caller,
+                usage: ctx.options?.usage,
+                signal: ctx.options?.signal,
+                trace: ctx.options?.trace,
+                requestLogger: ctx.requestLogger,
+                sessionLogger: ctx.options?.sessionLogger,
+              })
+              .catch((error) => {
+                const calls = logRoleUsage(
+                  ctx,
+                  'oracle',
+                  error as LlmUsageAttribution | null,
+                  oracle.model,
+                  Date.now() - oracleStart,
+                );
+                throw withUsageCalls(error, calls);
+              });
             logRoleUsage(
+              ctx,
               'oracle',
-              this.deps.stateOracle.model,
-              ans.usage,
+              ans,
+              oracle.model,
               Date.now() - oracleStart,
             );
             ancestorContext.oracleObservations.push({
@@ -235,19 +228,23 @@ export class DagCoordinatorHandler implements IStageHandler {
           // Bill it here before rethrowing so the failed call is still visible
           // in /v1/usage and the per-request delta (otherwise: real spend,
           // invisible).
-          const failedUsage = (err as { usage?: LlmUsage }).usage;
-          if (failedUsage) {
-            logRoleUsage(component, model, failedUsage, Date.now() - start);
-          }
-          throw err;
+          const failure = err as LlmUsageAttribution | null;
+          const calls = logRoleUsage(
+            ctx,
+            component,
+            failure,
+            role?.model,
+            Date.now() - start,
+          );
+          throw withUsageCalls(err, calls);
         }
       }
     };
 
     let planRes: { value: PlannerResult } | { ended: true };
-    const plannerModel = this.deps.planner.model;
+    const workers = meterWorkers(this.deps.workers, ctx);
     try {
-      planRes = await runRole('planner', plannerModel, () =>
+      planRes = await runRole('planner', this.deps.planner, () =>
         this.deps.planner.plan({
           prompt: ctx.inputText,
           agents,
@@ -282,9 +279,8 @@ export class DagCoordinatorHandler implements IStageHandler {
         const reviewer = this.deps.reviewer;
         if (reviewer) {
           let gate: { value: ReviewResult } | { ended: true };
-          const reviewerModel = reviewer.model;
           try {
-            gate = await runRole('reviewer', reviewerModel, () =>
+            gate = await runRole('reviewer', reviewer, () =>
               reviewer.review({
                 prompt: ctx.inputText,
                 plan,
@@ -314,7 +310,7 @@ export class DagCoordinatorHandler implements IStageHandler {
           if ('ended' in gate) return true;
           const verdict = gate.value.verdict;
           if (!verdict.pass) {
-            const replanned = await runRole('planner', plannerModel, () =>
+            const replanned = await runRole('planner', this.deps.planner, () =>
               this.deps.planner.plan({
                 prompt: ctx.inputText,
                 agents,
@@ -386,6 +382,14 @@ export class DagCoordinatorHandler implements IStageHandler {
         const finalizerOnPartial: OnPartial = (chunk) => {
           if (chunk.kind === 'content') {
             ctx.yield({ ok: true, value: { content: chunk.delta } });
+          } else if (
+            chunk.kind === 'iteration-end' &&
+            chunk.outcome === 'retry'
+          ) {
+            ctx.yield({
+              ok: true,
+              value: { content: '', iterationEnd: 'retry' },
+            });
           }
           ctx.options?.sessionLogger?.logStep('dag_stream', chunk);
         };
@@ -394,7 +398,7 @@ export class DagCoordinatorHandler implements IStageHandler {
         try {
           result = await this.deps.interpreter.interpret(plan, {
             inputText: ctx.inputText,
-            workers: this.deps.workers,
+            workers,
             sessionId: ctx.sessionId,
             caller: caller,
             usage: ctx.options?.usage,
@@ -475,26 +479,23 @@ export class DagCoordinatorHandler implements IStageHandler {
             goal: nodeIndex.get(id)?.goal ?? '',
             output: result.nodeResults[id]?.output ?? '',
           }));
-          const finalRes = await runRole(
-            'finalizer',
-            this.finalizer.model,
-            () =>
-              this.finalizer.finalize({
-                prompt: ctx.inputText,
-                objective: executedPlan.objective ?? ctx.inputText,
-                ancestorContext,
-                interpreterOutput: result.output,
-                ...(streamsInterpreterContent
-                  ? { interpreterContentStreamed }
-                  : {}),
-                executionTrace,
-                sessionId: ctx.sessionId,
-                caller: caller,
-                usage: ctx.options?.usage,
-                signal: ctx.options?.signal,
-                trace: ctx.options?.trace,
-                onPartial: finalizerOnPartial,
-              }),
+          const finalRes = await runRole('finalizer', this.finalizer, () =>
+            this.finalizer.finalize({
+              prompt: ctx.inputText,
+              objective: executedPlan.objective ?? ctx.inputText,
+              ancestorContext,
+              interpreterOutput: result.output,
+              ...(streamsInterpreterContent
+                ? { interpreterContentStreamed }
+                : {}),
+              executionTrace,
+              sessionId: ctx.sessionId,
+              caller: caller,
+              usage: ctx.options?.usage,
+              signal: ctx.options?.signal,
+              trace: ctx.options?.trace,
+              onPartial: finalizerOnPartial,
+            }),
           );
           if ('ended' in finalRes) return true;
           // Attach usage ONLY to the terminal `finishReason:'stop'` chunk.
@@ -531,7 +532,7 @@ export class DagCoordinatorHandler implements IStageHandler {
         const failedId = result.failedNodeId ?? execPlan.nodes[0]?.id ?? '';
 
         const recovery: { value: ExecutionReviewResult } | { ended: true } =
-          await runRole('reviewer', reviewer?.model, () =>
+          await runRole('reviewer', reviewer, () =>
             reviewExecutionFailure({
               objective: execPlan.objective,
               plan: execPlan,

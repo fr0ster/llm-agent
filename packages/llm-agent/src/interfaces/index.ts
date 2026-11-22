@@ -266,6 +266,7 @@ export {
 export type {
   IRequestLogger,
   LlmCallEntry,
+  LlmCallRecord,
   LlmComponent,
   RagQueryEntry,
   RequestSummary,
@@ -409,6 +410,7 @@ export type {
   LlmToolCall,
   LlmToolCallDelta,
   LlmUsage,
+  LlmUsageAttribution,
   McpCallResult,
   McpContentBlock,
   McpTool,

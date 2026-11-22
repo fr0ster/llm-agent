@@ -1,6 +1,6 @@
 import type { Message } from '../types.js';
 import type { ITaskSpec } from './task-spec.js';
-import type { LlmUsage } from './types.js';
+import type { LlmUsageAttribution } from './types.js';
 import type { IUsageRecorder } from './usage.js';
 
 /** The action performed by an adaptive plan step. */
@@ -131,7 +131,7 @@ export interface IAdaptiveController {
   readonly model?: string;
   plan(
     input: ControllerPlanInput,
-  ): Promise<{ plan: AdaptivePlan; usage?: LlmUsage }>;
+  ): Promise<{ plan: AdaptivePlan } & LlmUsageAttribution>;
   check(input: {
     request: string;
     spec?: ITaskSpec;
@@ -141,7 +141,7 @@ export interface IAdaptiveController {
     history?: Message[];
     usage?: IUsageRecorder;
     signal?: AbortSignal;
-  }): Promise<{ verdict: Verdict; usage?: LlmUsage }>;
+  }): Promise<{ verdict: Verdict } & LlmUsageAttribution>;
   revise(input: {
     request: string;
     plan: AdaptivePlan;
@@ -149,7 +149,7 @@ export interface IAdaptiveController {
     reason: string;
     usage?: IUsageRecorder;
     signal?: AbortSignal;
-  }): Promise<{ steps: AdaptiveStep[]; usage?: LlmUsage }>;
+  }): Promise<{ steps: AdaptiveStep[] } & LlmUsageAttribution>;
   report(input: {
     request: string;
     plan: AdaptivePlan;
@@ -157,5 +157,5 @@ export interface IAdaptiveController {
     stopReason: string;
     usage?: IUsageRecorder;
     signal?: AbortSignal;
-  }): Promise<{ text: string; usage?: LlmUsage }>;
+  }): Promise<{ text: string } & LlmUsageAttribution>;
 }

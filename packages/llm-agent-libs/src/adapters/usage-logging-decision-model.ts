@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import type {
   CallOptions,
   DecisionError,
@@ -35,6 +36,7 @@ class UsageLoggingDecisionModel implements IDecisionModel {
       usage?.inputTokens ?? Math.ceil(JSON.stringify(request).length / 4);
     const completionTokens = usage?.outputTokens ?? 0;
     logger.logLlmCall({
+      callId: randomUUID(),
       component: 'decision',
       model: r.value.model,
       promptTokens,

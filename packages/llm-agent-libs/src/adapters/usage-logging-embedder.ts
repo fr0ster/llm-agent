@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import type {
   CallOptions,
   IEmbedder,
@@ -29,6 +30,7 @@ function logEmbed(
   const measured = usage?.totalTokens;
   const totalTokens = measured ?? estimateTokens(text);
   logger.logLlmCall({
+    callId: randomUUID(),
     component: 'embedding',
     model: 'embedder',
     promptTokens: usage?.promptTokens ?? totalTokens,
@@ -96,6 +98,7 @@ class UsageLoggingBatchEmbedder
         }
       });
       logger.logLlmCall({
+        callId: randomUUID(),
         component: 'embedding',
         model: 'embedder',
         promptTokens: prompt,

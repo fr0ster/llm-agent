@@ -8,19 +8,29 @@ import type {
 } from '@mcp-abap-adt/llm-agent';
 import { addCacheTokenUsage } from '@mcp-abap-adt/llm-agent';
 import { CATEGORY_MAP } from './default-request-logger.js';
+import { identifyRequestCall } from './request-call-scope.js';
 
 interface Bucket {
   llm: LlmCallEntry[];
+  callIds: Set<string>;
   rag: number;
   tool: number;
 }
 
 function emptyBucket(): Bucket {
-  return { llm: [], rag: 0, tool: 0 };
+  return { llm: [], callIds: new Set(), rag: 0, tool: 0 };
+}
+
+function recordCall(bucket: Bucket, entry: LlmCallEntry): void {
+  if (entry.callId !== undefined) {
+    if (bucket.callIds.has(entry.callId)) return;
+    bucket.callIds.add(entry.callId);
+  }
+  bucket.llm.push(entry);
 }
 
 /** Shared aggregation (DRY with DefaultRequestLogger.getSummary). */
-export function aggregate(b: Bucket): RequestSummary {
+export function aggregate(b: Omit<Bucket, 'callIds'>): RequestSummary {
   const byModel: RequestSummary['byModel'] = {};
   const byComponent: RequestSummary['byComponent'] = {};
   const byCategory: RequestSummary['byCategory'] = {};
@@ -39,14 +49,14 @@ export function aggregate(b: Bucket): RequestSummary {
     m.promptTokens += c.promptTokens;
     m.completionTokens += c.completionTokens;
     m.totalTokens += c.totalTokens;
-    m.requests++;
+    m.requests += c.requests ?? 1;
     byComponent[c.component] ??= zeroBucket();
     const comp = byComponent[c.component];
     Object.assign(comp, addCacheTokenUsage(comp, c));
     comp.promptTokens += c.promptTokens;
     comp.completionTokens += c.completionTokens;
     comp.totalTokens += c.totalTokens;
-    comp.requests++;
+    comp.requests += c.requests ?? 1;
     // Use the component-keyed CATEGORY_MAP — same semantics as
     // DefaultRequestLogger.getSummary (review MEDIUM #4). Previously this
     // categorized via `c.scope ?? 'request'`, which dropped most aux calls
@@ -62,7 +72,7 @@ export function aggregate(b: Bucket): RequestSummary {
     cat.promptTokens += c.promptTokens;
     cat.completionTokens += c.completionTokens;
     cat.totalTokens += c.totalTokens;
-    cat.requests++;
+    cat.requests += c.requests ?? 1;
   }
   // Derive totals as the faithful sum of byComponent so that /v1/usage always
   // has a non-null rollup regardless of which path (DAG/Stepper/flat) was used.
@@ -146,8 +156,9 @@ export class SessionRequestLogger implements IRequestLogger {
   }
 
   logLlmCall(entry: LlmCallEntry): void {
-    this.cumulative.llm.push(entry);
-    if (entry.requestId) this.deltaFor(entry.requestId).llm.push(entry);
+    entry = identifyRequestCall(this, entry);
+    recordCall(this.cumulative, entry);
+    if (entry.requestId) recordCall(this.deltaFor(entry.requestId), entry);
   }
 
   logRagQuery(entry: RagQueryEntry & { requestId?: string }): void {
@@ -168,6 +179,7 @@ export class SessionRequestLogger implements IRequestLogger {
 
   reset(): void {
     this.cumulative.llm.length = 0;
+    this.cumulative.callIds.clear();
     this.cumulative.rag = 0;
     this.cumulative.tool = 0;
     this.deltas.clear();

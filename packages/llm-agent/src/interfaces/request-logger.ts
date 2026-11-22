@@ -25,6 +25,10 @@ export interface TokenBucket extends LlmUsage {
 }
 
 export interface LlmCallEntry extends LlmUsage {
+  /** Stable identity of this call. Forwarders preserve the original id. */
+  callId?: string;
+  /** Call count when importing a per-model usage bucket. Defaults to one. */
+  requests?: number;
   component: LlmComponent;
   model: string;
   durationMs: number;
@@ -34,6 +38,11 @@ export interface LlmCallEntry extends LlmUsage {
   /** Request correlation id (the server's traceId). Routes the entry to the
    *  per-request delta; absent → session-cumulative only. */
   requestId?: string;
+}
+
+/** Identified usage that can be forwarded and imported independently. */
+export interface LlmCallRecord extends LlmCallEntry {
+  callId: string;
 }
 
 export interface RagQueryEntry {

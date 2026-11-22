@@ -54,6 +54,19 @@ async function drain(
   return out;
 }
 
+test('a thrown chat failure ends the fallback after one chat attempt', async () => {
+  const strategy = new FallbackLlmCallStrategy();
+  const { impl, counts } = llm('error-chunk');
+  const failure = new LlmError('chat failed');
+  impl.chat = async () => {
+    counts.chat++;
+    throw failure;
+  };
+
+  await assert.rejects(drain(strategy, impl), (error) => error === failure);
+  assert.deepEqual(counts, { stream: 1, chat: 1 });
+});
+
 for (const mode of ['error-chunk', 'throw'] as const) {
   for (const error of [
     new LlmError('Output truncated', 'LLM_OUTPUT_TRUNCATED'),

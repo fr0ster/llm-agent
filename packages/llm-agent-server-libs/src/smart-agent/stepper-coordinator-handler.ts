@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import {
   addCacheTokenUsage,
   ClarifySignal,
@@ -109,6 +110,7 @@ export class StepperCoordinatorHandler implements IStageHandler {
     // request delta so getSummary(traceId).byComponent is populated.
     const logLlmCall = (entry: LlmCallEntry): void => {
       ctx.requestLogger.logLlmCall({
+        callId: randomUUID(),
         ...entry,
         requestId: traceId || undefined,
       });

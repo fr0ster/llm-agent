@@ -7,7 +7,7 @@ import type {
   IRunRecordStore,
   ISubAgent,
   LlmComponent,
-  LlmUsage,
+  LlmUsageAttribution,
   RunRecord,
 } from '@mcp-abap-adt/llm-agent';
 import { terminalRunError } from '@mcp-abap-adt/llm-agent';
@@ -18,6 +18,7 @@ import {
   runAdaptivePlan,
 } from '../../coordinator/adaptive/adaptive-interpreter.js';
 import { fallbackPlan } from '../../coordinator/adaptive/parse-plan.js';
+import { withUsageCalls } from '../../logger/llm-call-usage.js';
 import {
   callerIdentityKey,
   resolveCallerIdentity,
@@ -26,6 +27,8 @@ import type { ISpan } from '../../tracer/types.js';
 import type { PipelineContext } from '../context.js';
 import type { IStageHandler } from '../stage-handler.js';
 import { terminalUsage } from './dag-coordinator.js';
+import { logRoleUsage } from './role-usage.js';
+import { meterWorkers } from './worker-usage.js';
 
 /** Optional dependencies for the adaptive coordinator stage. */
 export interface AdaptiveCoordinatorDeps {
@@ -35,7 +38,7 @@ export interface AdaptiveCoordinatorDeps {
   runRecords?: IRunRecordStore;
   budget?: Partial<AdaptiveBudget>;
   fallbackWorker?: string;
-  /** Workers whose returned usage is logged here instead of by the workers themselves. */
+  /** Optional allowlist for legacy workers that return usage without call ids. */
   logWorkerUsage?: ReadonlySet<string>;
 }
 const message = (error: unknown) =>
@@ -69,35 +72,21 @@ export class AdaptiveCoordinatorHandler implements IStageHandler {
     const traceId = ctx.options?.trace?.traceId;
     const log = (key: string, data: Record<string, unknown>) =>
       ctx.options?.sessionLogger?.logStep(key, data);
-    const logUsage = (
-      usage: LlmUsage | undefined,
-      component: LlmComponent,
-      model?: string,
-    ) => {
-      if (usage)
-        ctx.requestLogger.logLlmCall({
-          component,
-          model: model ?? 'unknown',
-          ...usage,
-          durationMs: 0,
-          requestId: traceId,
-        });
-    };
-    const runRole = async <T extends { usage?: LlmUsage }>(
+    const runRole = async <T extends LlmUsageAttribution>(
       component: LlmComponent,
       run: () => Promise<T>,
+      role: { readonly model?: string } = controller,
     ): Promise<T> => {
       try {
         const value = await run();
-        logUsage(value.usage, component, controller.model);
+        logRoleUsage(ctx, component, value, role.model);
         return value;
       } catch (error) {
-        logUsage(
-          (error as { usage?: LlmUsage } | null)?.usage,
-          component,
-          controller.model,
+        const failed = error as LlmUsageAttribution | null;
+        throw withUsageCalls(
+          error,
+          logRoleUsage(ctx, component, failed, role.model),
         );
-        throw error;
       }
     };
     try {
@@ -143,7 +132,7 @@ export class AdaptiveCoordinatorHandler implements IStageHandler {
         request,
         history,
         plan,
-        workers,
+        workers: meterWorkers(workers, ctx, this.deps.logWorkerUsage),
         controller: {
           name: controller.name,
           model: controller.model,
@@ -179,11 +168,6 @@ export class AdaptiveCoordinatorHandler implements IStageHandler {
         fatal = error;
         return error.result;
       });
-      // Default to DAG ownership; only explicitly listed workers delegate accounting here.
-      for (const entry of result.workerUsage) {
-        if (this.deps.logWorkerUsage?.has(entry.worker))
-          logUsage(entry.usage, 'executor', entry.model);
-      }
       log('adaptive_run', {
         outcome: result.outcome,
         stopReason: result.stopReason,
@@ -228,39 +212,50 @@ export class AdaptiveCoordinatorHandler implements IStageHandler {
           },
         });
       } else if (result.outcome === 'answered' && finalizer) {
-        const finalized = await finalizer.finalize({
-          caller,
-          prompt: request,
-          objective: result.plan.spec?.objective ?? request,
-          interpreterOutput: result.output,
-          ...(finalizer.streamsInterpreterContent
-            ? { interpreterContentStreamed: result.answerStreamed }
-            : {}),
-          executionTrace: result.records.map((record) => {
-            const step = result.plan.steps.find((s) => s.id === record.stepId);
-            return {
-              nodeId: record.stepId,
-              goal: step && 'goal' in step ? step.goal : '',
-              output: record.output,
-            };
-          }),
-          sessionId: ctx.sessionId,
-          usage: ctx.options?.usage,
-          signal: ctx.options?.signal,
-          trace: ctx.options?.trace,
-          onPartial: (chunk) => {
-            if (chunk.kind === 'content')
-              ctx.yield({
-                ok: true,
-                value: {
-                  content: chunk.delta,
-                  ...(chunk.ephemeral ? { ephemeral: true } : {}),
-                },
-              });
-          },
-        });
+        const finalized = await runRole(
+          'finalizer',
+          () =>
+            finalizer.finalize({
+              caller,
+              prompt: request,
+              objective: result.plan.spec?.objective ?? request,
+              interpreterOutput: result.output,
+              ...(finalizer.streamsInterpreterContent
+                ? { interpreterContentStreamed: result.answerStreamed }
+                : {}),
+              executionTrace: result.records.map((record) => {
+                const step = result.plan.steps.find(
+                  (s) => s.id === record.stepId,
+                );
+                return {
+                  nodeId: record.stepId,
+                  goal: step && 'goal' in step ? step.goal : '',
+                  output: record.output,
+                };
+              }),
+              sessionId: ctx.sessionId,
+              usage: ctx.options?.usage,
+              signal: ctx.options?.signal,
+              trace: ctx.options?.trace,
+              onPartial: (chunk) => {
+                if (chunk.kind === 'iteration-end' && chunk.outcome === 'retry')
+                  ctx.yield({
+                    ok: true,
+                    value: { content: '', iterationEnd: 'retry' },
+                  });
+                if (chunk.kind === 'content')
+                  ctx.yield({
+                    ok: true,
+                    value: {
+                      content: chunk.delta,
+                      ...(chunk.ephemeral ? { ephemeral: true } : {}),
+                    },
+                  });
+              },
+            }),
+          finalizer,
+        );
         ctx.assistantText = finalized.output;
-        logUsage(finalized.usage, 'finalizer', finalizer.model);
       } else if (result.outcome !== 'answered' || !result.answerStreamed) {
         ctx.yield({ ok: true, value: { content: result.output } });
       }

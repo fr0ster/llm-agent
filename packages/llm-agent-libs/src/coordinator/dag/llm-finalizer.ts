@@ -3,10 +3,18 @@ import type {
   FinalizerResult,
   IFinalizer,
   ILlm,
-  LlmUsage,
+  LlmCallRecord,
+  LlmUsageAttribution,
   Message,
+  ModelUsageEntry,
 } from '@mcp-abap-adt/llm-agent';
-import { OrchestratorError } from '@mcp-abap-adt/llm-agent';
+import { addTokenUsage, OrchestratorError } from '@mcp-abap-adt/llm-agent';
+import {
+  errorUsage,
+  mergeUsageCalls,
+  withUsageAttribution,
+} from '../../logger/llm-call-usage.js';
+import { StreamAttemptUsage } from '../../logger/stream-attempt-usage.js';
 
 export const FINALIZER_SYSTEM =
   'You synthesize the final user-facing answer for a DAG-coordinated task. ' +
@@ -55,7 +63,7 @@ function renderUserMessage(input: FinalizerInput): string {
 }
 
 /**
- * Synthesizes the final answer via a single LLM call. NO tools are wired:
+ * Synthesizes the final answer via an LLM stream. NO tools are wired:
  * the LLM cannot escape into another tool-loop. The user message is a
  * deterministic rendering of prompt + objective + ancestorContext + trace.
  */
@@ -80,27 +88,78 @@ export class LlmFinalizer implements IFinalizer {
     ];
     const { signal, sessionId, caller } = input;
     let buf = '';
-    let usage: LlmUsage | undefined;
-    const stream = this.llm.streamChat(messages, [], {
-      signal,
-      sessionId,
-      caller,
-      usage: input.usage?.with({ role: 'finalizer' }),
-    });
-    for await (const chunk of stream) {
-      if (!chunk.ok) throw chunk.error;
-      if (chunk.value.finishReason === 'length')
-        throw new OrchestratorError(
-          'LLM response was truncated at a token limit.',
-          'LLM_OUTPUT_TRUNCATED',
-        );
-      const content = chunk.value?.content ?? '';
-      if (content) {
-        buf += content;
-        input.onPartial?.({ kind: 'content', delta: content });
+    const attemptUsage = new StreamAttemptUsage();
+    const retryCalls: LlmCallRecord[] = [];
+    const model = () => this.llm.model ?? this.model;
+    const finishUsage = (
+      failure?: LlmUsageAttribution,
+    ): LlmUsageAttribution => {
+      const calls = attemptUsage.records(
+        'finalizer',
+        model(),
+        failure,
+        signal,
+        retryCalls.length > 0,
+      );
+      if (retryCalls.length === 0) {
+        return { ...attemptUsage.resolve(model(), failure), usageCalls: calls };
       }
-      if (chunk.value?.usage) usage = chunk.value.usage;
+      const usageCalls = mergeUsageCalls(retryCalls, calls);
+      const byModel = new Map<string, ModelUsageEntry>();
+      for (const { model, requests = 1, ...usage } of usageCalls) {
+        const previous = byModel.get(model);
+        const totals = addTokenUsage(previous, usage);
+        if (totals)
+          byModel.set(model, {
+            ...totals,
+            requests: (previous?.requests ?? 0) + requests,
+          });
+      }
+      return { usageCalls, usageByModel: Object.fromEntries(byModel) };
+    };
+    try {
+      const stream = this.llm.streamChat(messages, [], {
+        signal,
+        sessionId,
+        caller,
+        usage: input.usage?.with({ role: 'finalizer' }),
+        includeStreamRetryUsage: true,
+      });
+      for await (const chunk of stream) {
+        if (!chunk.ok) throw chunk.error;
+        const { content, finishReason, reset, retryUsage, usage } = chunk.value;
+        if (reset) {
+          for (const call of attemptUsage.records(
+            'finalizer',
+            model(),
+            retryUsage,
+          )) {
+            retryCalls.push(call);
+          }
+          attemptUsage.reset();
+          if (buf)
+            input.onPartial?.({ kind: 'iteration-end', outcome: 'retry' });
+          buf = '';
+          continue;
+        }
+        attemptUsage.add(usage, this.llm.model, chunk.value.usageCalls);
+        if (finishReason === 'length')
+          throw new OrchestratorError(
+            'LLM response was truncated at a token limit.',
+            'LLM_OUTPUT_TRUNCATED',
+          );
+        if (content) {
+          buf += content;
+          input.onPartial?.({ kind: 'content', delta: content });
+        }
+      }
+    } catch (error) {
+      if (typeof error !== 'object' || error === null) throw error;
+      const attribution = finishUsage(errorUsage(error));
+      throw attribution.usageCalls?.length
+        ? withUsageAttribution(error, attribution)
+        : error;
     }
-    return { output: buf, usage };
+    return { output: buf, ...finishUsage() };
   }
 }

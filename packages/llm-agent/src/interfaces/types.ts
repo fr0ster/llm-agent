@@ -9,7 +9,7 @@ import type { IUsageRecorder, UsageOperation } from './usage.js';
 
 import type { Message, PromptCacheOptions } from '../types.js';
 import type { StepStatus } from './adaptive-plan.js';
-import type { IRequestLogger } from './request-logger.js';
+import type { IRequestLogger, LlmCallRecord } from './request-logger.js';
 import type { OnPartial } from './streaming.js';
 
 // ---------------------------------------------------------------------------
@@ -44,6 +44,8 @@ export interface CallOptions extends PromptCacheOptions {
   requestStartedAt?: number;
   usage?: IUsageRecorder;
   usageOp?: UsageOperation;
+  /** Include usage information for stream retries, including attempts that emitted no chunks. */
+  includeStreamRetryUsage?: boolean;
   trace?: TraceContext;
   caller?: RagCaller;
   sessionId?: string;
@@ -128,6 +130,8 @@ export interface TimingEntry {
 }
 
 export interface LlmStreamChunk {
+  /** Individual calls behind the returned usage, when available. */
+  usageCalls?: readonly LlmCallRecord[];
   /** Retroactive boundary for this iteration's text. Tool-round text is progress.
    * Retain it only as a fallback if the call ends without a final iteration.
    * Retry boundaries discard rejected text, including from fallback content. */
@@ -154,6 +158,8 @@ export interface LlmStreamChunk {
   timing?: TimingEntry[];
   /** When true, consumer must discard previously accumulated chunks — stream is being retried from scratch. */
   reset?: boolean;
+  /** Attribution supplied by the failed attempt when this chunk is a retry reset. */
+  retryUsage?: LlmUsageAttribution;
   /** Liveness/progress chunk (e.g. "[SmartAgent: Executing X]"). Streaming clients
    *  see it; non-streaming accumulation MUST skip it so it never lands in the final answer. */
   ephemeral?: boolean;
@@ -164,6 +170,8 @@ export interface LlmStreamChunk {
 // ---------------------------------------------------------------------------
 
 export class SmartAgentError extends Error {
+  declare usageCalls?: readonly LlmCallRecord[];
+
   constructor(
     message: string,
     public readonly code: string,
@@ -291,6 +299,16 @@ export interface LlmUsage {
   totalTokens: number;
 }
 
+export interface LlmUsageAttribution {
+  /** Complete call records. Takes precedence over aggregated usage. */
+  usageCalls?: readonly LlmCallRecord[];
+  usage?: LlmUsage;
+  /** Model that produced this usage, when resolved per call. */
+  model?: string;
+  /** Complete usage breakdown for multiple calls. Takes precedence over flat usage. */
+  usageByModel?: Record<string, ModelUsageEntry>;
+}
+
 export interface TokenUsage extends LlmUsage {
   models?: Record<string, ModelUsageEntry>;
 }
@@ -299,11 +317,10 @@ export interface ModelUsageEntry extends LlmUsage {
   requests: number;
 }
 
-export interface LlmResponse {
+export interface LlmResponse extends LlmUsageAttribution {
   content: string;
   toolCalls?: LlmToolCall[];
   finishReason: LlmFinishReason;
-  usage?: LlmUsage;
   raw?: unknown;
 }
 

@@ -1,6 +1,12 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { type ILlm, LlmError, type RunRecord } from '@mcp-abap-adt/llm-agent';
+import {
+  type ILlm,
+  LlmError,
+  type LlmUsage,
+  type RunRecord,
+  type Verdict,
+} from '@mcp-abap-adt/llm-agent';
 import {
   ADAPTIVE_CONTROLLER_SYSTEM,
   LlmAdaptiveController,
@@ -207,7 +213,7 @@ test('all calls forward signal, omit tools, return usage and propagate LlmError'
     const { controller, calls } = fake(content);
     // Each method receives its own typed argument through this common transport assertion.
     const invoke = controller[method].bind(controller) as (
-      arg: typeof args,
+      arg: typeof args & { signal?: AbortSignal },
     ) => Promise<{ usage?: typeof usage }>;
     assert.deepEqual((await invoke({ ...args, signal })).usage, usage);
     assert.equal(calls.length, 1);
@@ -249,4 +255,39 @@ test('check prompt includes composed task and history', async () => {
   const prompt = JSON.stringify(calls[0][0]);
   assert.ok(prompt.includes('selected evidence'));
   assert.ok(prompt.includes('prior conversation'));
+});
+
+test('subclass overrides can keep returning the original result shapes', async () => {
+  class LegacyController extends LlmAdaptiveController {
+    override async plan(): Promise<{
+      plan: RunRecord['plan'];
+      usage: LlmUsage;
+    }> {
+      return { plan, usage };
+    }
+
+    override async check(): Promise<{ verdict: Verdict; usage: LlmUsage }> {
+      return { verdict: { verdict: 'pass', reason: 'ok' }, usage };
+    }
+
+    override async revise(): Promise<{
+      steps: RunRecord['plan']['steps'];
+      usage: LlmUsage;
+    }> {
+      return { steps: plan.steps, usage };
+    }
+
+    override async report(): Promise<{ text: string; usage: LlmUsage }> {
+      return { text: 'report', usage };
+    }
+  }
+
+  const controller = new LegacyController(fake('unused').llm);
+  assert.deepEqual(await controller.plan(), { plan, usage });
+  assert.deepEqual(await controller.check(), {
+    verdict: { verdict: 'pass', reason: 'ok' },
+    usage,
+  });
+  assert.deepEqual(await controller.revise(), { steps: plan.steps, usage });
+  assert.deepEqual(await controller.report(), { text: 'report', usage });
 });
