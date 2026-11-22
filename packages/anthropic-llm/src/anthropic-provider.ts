@@ -15,6 +15,8 @@ import type {
 import {
   BaseLLMProvider,
   type beginLlmRequest,
+  LlmError,
+  MODEL_CONTEXT_EXCEEDED,
   requestShape,
   type ShapeMessage,
   startOperation,
@@ -107,7 +109,12 @@ export interface WireMessage {
 interface ModelResponse {
   id: string;
   owned_by?: string;
-  max_tokens?: number;
+  max_tokens?: number | null;
+  max_input_tokens?: number | null;
+}
+
+interface AnthropicErrorResponse {
+  error?: { type?: string; message?: string };
 }
 
 interface ModelsListResponse {
@@ -124,8 +131,31 @@ interface ModelAuth {
 
 const fingerprintKey = randomBytes(32);
 
-function isModelOutputLimit(value: number | undefined): value is number {
-  return value !== undefined && Number.isSafeInteger(value) && value > 0;
+function isModelTokenLimit(value: number | null | undefined): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0;
+}
+
+function isContextOverflow(error: AnthropicErrorResponse['error']): boolean {
+  return (
+    error?.type === 'invalid_request_error' &&
+    typeof error.message === 'string' &&
+    /\bprompt is too long\b/i.test(error.message)
+  );
+}
+
+function isContextOverflowBody(text: string): boolean {
+  try {
+    const body: AnthropicErrorResponse | null = JSON.parse(text);
+    return isContextOverflow(body?.error);
+  } catch {
+    return false;
+  }
+}
+
+function contextOverflow(message: string): LlmError {
+  return Object.assign(new LlmError(message, MODEL_CONTEXT_EXCEEDED), {
+    status: 400,
+  });
 }
 
 function normalizeStopReason(
@@ -269,7 +299,7 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
       { model, signal },
     );
     signal.throwIfAborted();
-    if (!isModelOutputLimit(data.max_tokens)) {
+    if (!isModelTokenLimit(data.max_tokens)) {
       throw new Error(
         `Anthropic model "${model}" did not report max_tokens; set maxTokens explicitly`,
       );
@@ -464,14 +494,22 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
       return response;
     } catch (error) {
       options?.signal?.throwIfAborted();
+      const transport = axios.isAxiosError<AnthropicErrorResponse>(error)
+        ? error
+        : undefined;
+      const providerError = transport?.response?.data?.error;
+      const overflow =
+        transport?.response?.status === 400 && isContextOverflow(providerError);
       if (options?.apiKey !== undefined) {
+        if (overflow) throw contextOverflow('Anthropic API error');
         throw this.credentialSafeError(error, 'Anthropic API error');
       }
-      const message = axios.isAxiosError(error)
-        ? `HTTP ${error.response?.status ?? 'unavailable'} ${(error.response?.data as { error?: { type?: string } })?.error?.type ?? error.code ?? 'error'}: ${(error.response?.data as { error?: { message?: string } })?.error?.message ?? error.message}`
+      const message = transport
+        ? `HTTP ${transport.response?.status ?? 'unavailable'} ${providerError?.type ?? transport.code ?? 'error'}: ${providerError?.message ?? transport.message}`
         : error instanceof Error
           ? error.message
           : String(error);
+      if (overflow) throw contextOverflow(`Anthropic API error: ${message}`);
       throw this.preserveThrottled(
         error,
         new Error(`Anthropic API error: ${message}`),
@@ -533,11 +571,21 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
 
         if (!res.ok || !res.body) {
           const text =
-            options?.apiKey === undefined
+            options?.apiKey === undefined || res.status === 400
               ? await res.text().catch(() => '')
               : '';
+          const message = `Anthropic streaming error: HTTP ${res.status} — ${text}`;
+          if (res.status === 400 && isContextOverflowBody(text)) {
+            throw contextOverflow(
+              options?.apiKey === undefined
+                ? message
+                : 'Anthropic streaming error',
+            );
+          }
           const error = new Error(
-            `Anthropic streaming error: HTTP ${res.status} — ${text}`,
+            options?.apiKey === undefined
+              ? message
+              : `Anthropic streaming error: HTTP ${res.status} — `,
           ) as Error & {
             status?: number;
             response?: { status: number; headers: Headers };
@@ -593,7 +641,10 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
         },
       },
     ).catch((error: Error) => {
-      if (options?.apiKey !== undefined) {
+      if (
+        options?.apiKey !== undefined &&
+        !(error instanceof LlmError && error.code === MODEL_CONTEXT_EXCEEDED)
+      ) {
         throw this.credentialSafeError(error, 'Anthropic streaming error');
       }
       throw error;
@@ -750,22 +801,24 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
                   : undefined,
               };
             } else if (eventType === 'error') {
-              const error = parsed.error as
-                | { message?: string; type?: string }
-                | undefined;
-              throw Object.assign(
-                new Error(
-                  `Anthropic stream error: ${error?.type ?? 'error'}: ${error?.message ?? 'unspecified'}`,
-                ),
-                { code: error?.type },
-              );
+              const error: AnthropicErrorResponse['error'] = parsed.error;
+              const message = `Anthropic stream error: ${error?.type ?? 'error'}: ${error?.message ?? 'unspecified'}`;
+              if (isContextOverflow(error)) {
+                throw contextOverflow(
+                  options?.apiKey === undefined
+                    ? message
+                    : 'Anthropic streaming error',
+                );
+              }
+              throw Object.assign(new Error(message), { code: error?.type });
             } else {
               yield { content: '', raw: parsed };
             }
           } catch (e) {
             if (
-              e instanceof Error &&
-              e.message.startsWith('Anthropic stream error:')
+              e instanceof LlmError ||
+              (e instanceof Error &&
+                e.message.startsWith('Anthropic stream error:'))
             ) {
               throw e;
             }
@@ -775,7 +828,10 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
       }
     } catch (error) {
       streamError = error instanceof Error ? error : String(error);
-      if (options?.apiKey !== undefined) {
+      if (
+        options?.apiKey !== undefined &&
+        !(error instanceof LlmError && error.code === MODEL_CONTEXT_EXCEEDED)
+      ) {
         throw this.credentialSafeError(error, 'Anthropic streaming error');
       }
       throw error;
@@ -818,13 +874,20 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
           signal: options?.signal,
           params: { limit: 1000, ...(afterId ? { after_id: afterId } : {}) },
         });
-      for (const { id, owned_by, max_tokens: maxOutputTokens } of page.data) {
-        if (isModelOutputLimit(maxOutputTokens)) {
+      for (const {
+        id,
+        owned_by,
+        max_tokens: maxOutputTokens,
+        max_input_tokens: contextLength,
+      } of page.data) {
+        const model: IModelInfo = { id, owned_by };
+        if (isModelTokenLimit(maxOutputTokens)) {
           this.modelMaxTokens.set(`${auth.fingerprint}:${id}`, maxOutputTokens);
-          models.push({ id, owned_by, maxOutputTokens });
-        } else {
-          models.push({ id, owned_by });
+          model.maxOutputTokens = maxOutputTokens;
         }
+        if (isModelTokenLimit(contextLength))
+          model.contextLength = contextLength;
+        models.push(model);
       }
       if (!page.has_more) return models;
       if (!page.last_id)

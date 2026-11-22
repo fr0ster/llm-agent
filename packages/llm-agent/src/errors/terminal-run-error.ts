@@ -1,4 +1,7 @@
-import { SmartAgentError } from '../interfaces/types.js';
+import {
+  MODEL_CONTEXT_EXCEEDED,
+  SmartAgentError,
+} from '../interfaces/types.js';
 import {
   errorCauseChain,
   httpStatusOf,
@@ -10,6 +13,7 @@ const terminalCodes = new Set([
   'DECISION_ABORTED',
   'LLM_OUTPUT_TRUNCATED',
   'LLM_HTTP_ERROR',
+  MODEL_CONTEXT_EXCEEDED,
   // The worker and check protocols require an answer or a verdict.
   'EMPTY_WORKER_OUTPUT',
   'VERDICT_RETRIEVAL_FAILED',

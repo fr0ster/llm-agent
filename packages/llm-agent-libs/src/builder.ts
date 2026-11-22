@@ -71,6 +71,7 @@ import {
   type IRagProvider,
   type IRagProviderRegistry,
   type IRagRegistry,
+  MODEL_CONTEXT_EXCEEDED,
   normaliseLogger,
   QueryEmbedding,
   type RagCollectionMeta,
@@ -963,8 +964,8 @@ export class SmartAgentBuilder {
       // which only retries specific HTTP status codes): a transient boot-time
       // infra blip — e.g. SAP AI Core's "Failed to fetch the list of deployments"
       // (token/deployment-list hiccup), which carries no retryable status code —
-      // must NOT abort startup. Retry the validation chat on ANY failure a few
-      // times with backoff; abort only if every attempt fails.
+      // must NOT abort startup. Retry validation failures with backoff, except
+      // when the model explicitly rejects the prompt's context length.
       const maxAttempts = Math.max(1, this.cfg.modelValidationAttempts ?? 3);
       const validationBackoffMs = this.cfg.modelValidationBackoffMs ?? 2000;
       for (const [modelName, llm] of modelsToCheck) {
@@ -974,6 +975,8 @@ export class SmartAgentBuilder {
           { maxTokens: 10 },
         );
         for (let attempt = 1; !result.ok && attempt < maxAttempts; attempt++) {
+          if (terminalRunError(result.error)?.code === MODEL_CONTEXT_EXCEEDED)
+            break;
           log?.log({
             type: 'warning',
             traceId: 'builder',
@@ -989,6 +992,8 @@ export class SmartAgentBuilder {
           );
         }
         if (!result.ok) {
+          const terminal = terminalRunError(result.error);
+          if (terminal?.code === MODEL_CONTEXT_EXCEEDED) throw terminal;
           const detail = result.error.message;
           log?.log({
             type: 'pipeline_error',

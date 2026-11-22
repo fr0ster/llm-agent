@@ -436,6 +436,7 @@ export {
   LlmError,
   MCP_UNAVAILABLE_CODES,
   McpError,
+  MODEL_CONTEXT_EXCEEDED,
   RagError,
   SkillError,
   SmartAgentError,

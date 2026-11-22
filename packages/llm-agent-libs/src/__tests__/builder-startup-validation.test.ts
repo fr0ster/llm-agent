@@ -9,7 +9,7 @@ import type {
   LlmTool,
   Result,
 } from '@mcp-abap-adt/llm-agent';
-import { symmetricEmbedder } from '@mcp-abap-adt/llm-agent';
+import { LlmError, symmetricEmbedder } from '@mcp-abap-adt/llm-agent';
 import { testRagAccess } from '@mcp-abap-adt/llm-agent/testing/rag-access-testing';
 import { unwrapBuilderResult } from '../builder-types.js';
 
@@ -60,6 +60,26 @@ function stubEmbedder(): IEmbedder {
 }
 
 describe('SmartAgentBuilder startup model validation — lenient retry', () => {
+  it('stops startup validation after one context overflow', async () => {
+    const { SmartAgentBuilder } = await import('../builder.js');
+    const error = new LlmError('Prompt is too long', 'MODEL_CONTEXT_EXCEEDED');
+    const llm = flakyLlm(0);
+    let attempts = 0;
+    llm.chat = async () => {
+      attempts++;
+      return { ok: false, error };
+    };
+    await assert.rejects(
+      () =>
+        new SmartAgentBuilder({ modelValidationBackoffMs: 0 })
+          .withRagAccess(testRagAccess())
+          .withMainLlm(llm)
+          .build(),
+      (failure) => failure === error,
+    );
+    assert.equal(attempts, 1);
+  });
+
   it('retries a transient validation failure (no status code) and does NOT abort', async () => {
     const { SmartAgentBuilder } = await import('../builder.js');
     const llm = flakyLlm(1); // fails once, then ok

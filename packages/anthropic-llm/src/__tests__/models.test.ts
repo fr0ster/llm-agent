@@ -25,7 +25,7 @@ function notification() {
 }
 
 describe('AnthropicProvider getModels()', () => {
-  it('returns a single page with the existing model info shape', async () => {
+  it('includes token limits only when reported by the model list', async () => {
     const provider = new AnthropicProvider({
       credential: staticApiKey('sk-test'),
       model: 'claude-sonnet-4-6',
@@ -42,12 +42,14 @@ describe('AnthropicProvider getModels()', () => {
               id: 'claude-sonnet-4-6',
               owned_by: 'anthropic',
               max_tokens: 64000,
+              max_input_tokens: 1000000,
             },
             { id: 'claude-opus-4-6', display_name: 'Claude Opus 4.6' },
+            { id: 'another-model', max_tokens: 8192, max_input_tokens: null },
           ],
           has_more: false,
           first_id: 'claude-sonnet-4-6',
-          last_id: 'claude-opus-4-6',
+          last_id: 'another-model',
         },
         status: 200,
         statusText: 'OK',
@@ -61,8 +63,10 @@ describe('AnthropicProvider getModels()', () => {
         id: 'claude-sonnet-4-6',
         owned_by: 'anthropic',
         maxOutputTokens: 64000,
+        contextLength: 1000000,
       },
       { id: 'claude-opus-4-6', owned_by: undefined },
+      { id: 'another-model', owned_by: undefined, maxOutputTokens: 8192 },
     ]);
     assert.equal(calls, 1);
   });

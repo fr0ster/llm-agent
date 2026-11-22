@@ -24,8 +24,10 @@ import {
   BaseLLMProvider,
   type beginLlmRequest,
   httpStatusOf,
+  LlmError,
   type LlmRequestFacts,
   type LlmRequestHandle,
+  MODEL_CONTEXT_EXCEEDED,
   requestShape,
   retryAfterSecondsOf,
   type ShapeMessage,
@@ -413,10 +415,10 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
       return response;
     } catch (error) {
       const detail = SapCoreAIProvider.extractErrorDetail(error);
-      const wrapped = this.preserveThrottled(
-        error,
-        new Error(`SAP AI SDK API error: ${detail}`),
-      );
+      const message = `SAP AI SDK API error: ${detail}`;
+      const wrapped =
+        sapContextOverflow(error, message) ??
+        this.preserveThrottled(error, new Error(message));
       this.log?.error('SAP AI SDK API error', {
         status: httpStatusOf(wrapped),
       });
@@ -638,10 +640,10 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
     } catch (error) {
       failure = error;
       const detail = SapCoreAIProvider.extractErrorDetail(error);
-      const wrapped = this.preserveThrottled(
-        error,
-        new Error(`SAP AI SDK streaming error: ${detail}`),
-      );
+      const message = `SAP AI SDK streaming error: ${detail}`;
+      const wrapped =
+        sapContextOverflow(error, message) ??
+        this.preserveThrottled(error, new Error(message));
       this.log?.error('SAP AI SDK streaming error', {
         model,
         resourceGroup: this.resourceGroup ?? 'default',
@@ -1035,6 +1037,67 @@ function tokenFacts(usage?: {
         tokensSource: 'provider',
       }
     : {};
+}
+
+function sapContextOverflow<T>(
+  error: T,
+  message: string,
+): LlmError | undefined {
+  if (!error || typeof error !== 'object') return;
+  const status = httpStatusOf(error);
+  const cause = 'cause' in error ? error.cause : undefined;
+  for (const current of [error, cause]) {
+    if (!current || typeof current !== 'object') continue;
+    if (status === 400 && 'response' in current) {
+      const response = current.response;
+      if (!response || typeof response !== 'object' || !('data' in response))
+        continue;
+      const body = response.data;
+      if (
+        body &&
+        typeof body === 'object' &&
+        'error' in body &&
+        isProviderContextOverflow(body.error)
+      ) {
+        return Object.assign(new LlmError(message, MODEL_CONTEXT_EXCEEDED), {
+          status: 400,
+        });
+      }
+    }
+    // The SDK serializes the SSE error object into the cause's message.
+    const prefix = 'Error received from the server.\n';
+    if (
+      status === undefined &&
+      current instanceof Error &&
+      current.message.startsWith(prefix)
+    ) {
+      try {
+        if (
+          isProviderContextOverflow(
+            JSON.parse(current.message.slice(prefix.length)),
+          )
+        ) {
+          return Object.assign(new LlmError(message, MODEL_CONTEXT_EXCEEDED), {
+            status: 400,
+          });
+        }
+      } catch {
+        // Keep the SDK error when no structured provider error is available.
+      }
+    }
+  }
+}
+
+function isProviderContextOverflow<T>(error: T): boolean {
+  if (!error || typeof error !== 'object') return false;
+  return (
+    ('code' in error && error.code === 'context_length_exceeded') ||
+    ('type' in error &&
+      error.type === 'invalid_request_error' &&
+      'message' in error &&
+      typeof error.message === 'string' &&
+      /\bprompt is too long\b/i.test(error.message))
+  );
 }
 
 function returnedSdkError(response: { _data?: unknown }): boolean {
