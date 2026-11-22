@@ -24,6 +24,7 @@ import type {
   LlmFinishReason,
   LlmStreamChunk,
   LlmTool,
+  LlmUsageAttribution,
   McpTool,
   Message,
   ModelUsageEntry,
@@ -39,7 +40,6 @@ import type {
 import {
   type AgentCallOptions,
   addCacheTokenUsage,
-  addTokenUsage,
   type IQueryExpander,
   isReadinessReporter,
   type LlmUsage,
@@ -88,6 +88,10 @@ import type { IPipeline } from './interfaces/pipeline.js';
 import type { ILogger } from './logger/index.js';
 import { NoopRequestLogger } from './logger/noop-request-logger.js';
 import { summaryToUsage } from './logger/session-request-logger.js';
+import {
+  logToolLoopAttempt,
+  StreamAttemptUsage,
+} from './logger/stream-attempt-usage.js';
 import { WorkerRequestLogger } from './logger/worker-request-logger.js';
 import { type IMcpToolRegistry, McpToolRegistry } from './mcp/tool-registry.js';
 import { NoopMetrics } from './metrics/noop-metrics.js';
@@ -1422,7 +1426,7 @@ export class SmartAgent {
         this._mainLlm,
         toModelToolMessages(messages, this.config.toolTrust),
         currentTools,
-        opts,
+        { ...opts, includeStreamRetryUsage: true },
       );
       let content = '';
       let finishReason: LlmFinishReason | undefined;
@@ -1431,22 +1435,34 @@ export class SmartAgent {
         { id: string; name: string; arguments: string }
       >();
       let attemptStartedAt = llmCallStart;
-      let attemptUsage: LlmUsage | undefined;
-      let attemptModel: string | undefined;
-      const logAttempt = (usage: LlmUsage): void => {
-        requestLogger.logLlmCall({
-          component: 'tool-loop',
-          model: attemptModel ?? this._mainLlm.model ?? 'unknown',
-          ...usage,
-          durationMs: Date.now() - attemptStartedAt,
-          requestId: opts?.trace?.traceId,
-        });
+      let attemptUsage = new StreamAttemptUsage();
+      const addUsage = (attempt: LlmUsage): void => {
+        Object.assign(usage, addCacheTokenUsage(usage, attempt));
+        usage.promptTokens += attempt.promptTokens;
+        usage.completionTokens += attempt.completionTokens;
+        usage.totalTokens += attempt.totalTokens;
+        this.sessionManager.addTokens(attempt.totalTokens);
       };
+      const logAttempt = (reported?: LlmUsageAttribution, countEmpty = false) =>
+        logToolLoopAttempt(
+          requestLogger,
+          attemptUsage.resolve(this._mainLlm.model, reported),
+          {
+            durationMs: Date.now() - attemptStartedAt,
+            requestId: opts?.trace?.traceId,
+            countEmpty,
+            onUsage: addUsage,
+          },
+        );
       // Track which streaming indices belong to external tools so that
       // argument-only continuation deltas (no name field) are forwarded too.
       for await (const chunkResult of stream) {
         if (!chunkResult.ok) {
-          if (attemptUsage) logAttempt(attemptUsage);
+          const failure: typeof chunkResult.error & LlmUsageAttribution =
+            chunkResult.error;
+          if (logAttempt(failure)) {
+            Object.assign(failure, { usageLogged: true });
+          }
           llmSpan.setStatus('error', chunkResult.error.message);
           llmSpan.end();
           toolLoopSpan.setStatus('error', chunkResult.error.message);
@@ -1457,18 +1473,18 @@ export class SmartAgent {
         const chunk = chunkResult.value;
         // Mid-stream retry: discard accumulated state and restart accumulation
         if (chunk.reset) {
+          logAttempt(chunk.retryUsage, chunk.retryUsage !== undefined);
+          attemptUsage = new StreamAttemptUsage();
+          attemptStartedAt = Date.now();
           yield { ok: true, value: { content: '', iterationEnd: 'retry' } };
           opts?.onPartial?.({ kind: 'iteration-end', outcome: 'retry' });
           content = '';
           iterationBuffer = '';
           toolCallsMap.clear();
           finishReason = undefined;
-          if (attemptUsage) logAttempt(attemptUsage);
-          attemptUsage = undefined;
-          attemptModel = undefined;
-          attemptStartedAt = Date.now();
           continue;
         }
+        attemptUsage.add(chunk.usage, this._mainLlm.model);
         if (chunk.content) {
           content += chunk.content;
           // When a client adapter is detected, buffer content — it will be wrapped after the stream completes
@@ -1504,15 +1520,6 @@ export class SmartAgent {
           }
         }
         if (chunk.finishReason) finishReason = chunk.finishReason;
-        if (chunk.usage) {
-          attemptUsage = addTokenUsage(attemptUsage, chunk.usage);
-          attemptModel = this._mainLlm.model ?? attemptModel;
-          Object.assign(usage, addCacheTokenUsage(usage, chunk.usage));
-          usage.promptTokens += chunk.usage.promptTokens;
-          usage.completionTokens += chunk.usage.completionTokens;
-          usage.totalTokens += chunk.usage.totalTokens;
-          this.sessionManager.addTokens(chunk.usage.totalTokens);
-        }
       }
       llmSpan.setStatus('ok');
       llmSpan.end();
@@ -1522,13 +1529,7 @@ export class SmartAgent {
         phase: `llm_call_${iteration + 1}`,
         duration: llmCallDuration,
       });
-      logAttempt(
-        attemptUsage ?? {
-          promptTokens: 0,
-          completionTokens: 0,
-          totalTokens: 0,
-        },
-      );
+      logAttempt(undefined, true);
       const hasToolCalls =
         finishReason === 'tool_calls' && toolCallsMap.size > 0;
       const responseRound = new ToolResponseRound(

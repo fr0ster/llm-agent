@@ -1,20 +1,20 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import type { ILlm, OnPartial } from '@mcp-abap-adt/llm-agent';
+import type { ILlm, LlmTool, OnPartial } from '@mcp-abap-adt/llm-agent';
 import { LlmError } from '@mcp-abap-adt/llm-agent';
+import { RetryLlm } from '../../../resilience/retry-llm.js';
 import { LlmFinalizer } from '../llm-finalizer.js';
 
 function streamingStubLlm(): {
   llm: ILlm;
-  calls: { messages: unknown; tools: unknown[]; opts: unknown }[];
+  calls: { tools?: LlmTool[] }[];
 } {
-  const calls: { messages: unknown; tools: unknown[]; opts: unknown }[] = [];
+  const calls: { tools?: LlmTool[] }[] = [];
   const llm: ILlm = {
-    name: 'stub',
     model: 'stub-model',
-    chat: async () => ({ ok: true, value: { content: 'NEVER_CALLED' } }),
-    async *streamChat(messages, tools, opts) {
-      calls.push({ messages, tools: tools as unknown[], opts });
+    chat: async () => assert.fail('Unexpected chat'),
+    async *streamChat(_messages, tools) {
+      calls.push({ tools });
       yield {
         ok: true,
         value: {
@@ -32,7 +32,7 @@ function streamingStubLlm(): {
         },
       };
     },
-  } as unknown as ILlm;
+  };
   return { llm, calls };
 }
 
@@ -138,4 +138,93 @@ test('LlmFinalizer includes earlier attempts in the attribution of a terminal er
       },
     },
   );
+});
+
+test('LlmFinalizer keeps every retry model and its request count when a breakdown is supplied', async () => {
+  const streamed = { promptTokens: 1, completionTokens: 2, totalTokens: 3 };
+  const first = { promptTokens: 5, completionTokens: 3, totalTokens: 8 };
+  const second = { promptTokens: 9, completionTokens: 3, totalTokens: 12 };
+  const last = { promptTokens: 13, completionTokens: 5, totalTokens: 18 };
+  let calls = 0;
+  const llm = new RetryLlm(
+    {
+      model: 'second-model',
+      chat: async () => assert.fail('Unexpected chat'),
+      async *streamChat() {
+        calls++;
+        if (calls === 1) {
+          yield { ok: true, value: { content: 'discarded', usage: streamed } };
+          yield {
+            ok: false,
+            error: Object.assign(new LlmError('retry stream'), {
+              usage: streamed,
+              model: 'ignored-flat-model',
+              usageByModel: {
+                'first-model': { ...first, cachedInputTokens: 2, requests: 2 },
+                'second-model': { ...second, requests: 3 },
+              },
+            }),
+          };
+          return;
+        }
+        yield { ok: true, value: { content: 'answer', usage: last } };
+      },
+    },
+    { backoffMs: 0, retryOnMidStream: ['retry stream'] },
+  );
+  const result = await new LlmFinalizer(llm).finalize({
+    prompt: 'p',
+    objective: 'o',
+    interpreterOutput: 'I',
+    executionTrace: [],
+  });
+  assert.equal(calls, 2);
+  assert.deepEqual(result, {
+    output: 'answer',
+    usageByModel: {
+      'first-model': { ...first, cachedInputTokens: 2, requests: 2 },
+      'second-model': {
+        promptTokens: 22,
+        completionTokens: 8,
+        totalTokens: 30,
+        requests: 4,
+      },
+    },
+  });
+});
+
+test('LlmFinalizer counts only the failed attempt when cancelled before a retry', async () => {
+  const controller = new AbortController();
+  const usage = { promptTokens: 8, completionTokens: 2, totalTokens: 10 };
+  let calls = 0;
+  const llm = new RetryLlm(
+    {
+      model: 'first-model',
+      chat: async () => assert.fail('Unexpected chat'),
+      async *streamChat() {
+        calls++;
+        yield { ok: true, value: { content: 'discarded', usage } };
+        yield { ok: false, error: new LlmError('retry stream') };
+      },
+    },
+    { backoffMs: 0, retryOnMidStream: ['retry stream'] },
+  );
+  await assert.rejects(
+    new LlmFinalizer(llm).finalize({
+      prompt: 'p',
+      objective: 'o',
+      interpreterOutput: 'I',
+      executionTrace: [],
+      signal: controller.signal,
+      onPartial(partial) {
+        if (partial.kind === 'iteration-end' && partial.outcome === 'retry')
+          controller.abort();
+      },
+    }),
+    {
+      code: 'ABORTED',
+      usageByModel: { 'first-model': { ...usage, requests: 1 } },
+    },
+  );
+  assert.equal(calls, 1);
 });

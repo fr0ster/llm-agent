@@ -181,6 +181,7 @@ export class RetryLlm implements ILlm {
               usage: failure.usage,
               model:
                 failure.model ?? (chunksYielded === 0 ? this.model : undefined),
+              usageByModel: failure.usageByModel,
             };
           }
           break;

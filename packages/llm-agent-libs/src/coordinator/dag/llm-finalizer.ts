@@ -3,12 +3,15 @@ import type {
   FinalizerResult,
   IFinalizer,
   ILlm,
-  LlmUsage,
   LlmUsageAttribution,
   Message,
   ModelUsageEntry,
 } from '@mcp-abap-adt/llm-agent';
 import { addTokenUsage, OrchestratorError } from '@mcp-abap-adt/llm-agent';
+import {
+  modelUsageEntries,
+  StreamAttemptUsage,
+} from '../../logger/stream-attempt-usage.js';
 
 export const FINALIZER_SYSTEM =
   'You synthesize the final user-facing answer for a DAG-coordinated task. ' +
@@ -82,30 +85,38 @@ export class LlmFinalizer implements IFinalizer {
     ];
     const { signal, sessionId, caller } = input;
     let buf = '';
-    let attemptUsage: LlmUsage | undefined;
-    let attemptModel: string | undefined;
-    const usageByModel = new Map<string, ModelUsageEntry>();
-    const recordAttempt = (usage?: LlmUsage, model?: string): void => {
-      const key = model ?? this.model ?? 'unknown';
-      const previous = usageByModel.get(key);
-      usageByModel.set(key, {
-        ...(addTokenUsage(previous, usage) ?? {
-          promptTokens: 0,
-          completionTokens: 0,
-          totalTokens: 0,
-        }),
-        requests: (previous?.requests ?? 0) + 1,
-      });
+    let attemptUsage = new StreamAttemptUsage();
+    let awaitingRetry = false;
+    let retryUsageByModel: Map<string, ModelUsageEntry> | undefined;
+    const recordAttempt = (attribution: LlmUsageAttribution): void => {
+      retryUsageByModel ??= new Map();
+      for (const [model, usage] of modelUsageEntries(attribution, true)) {
+        const previous = retryUsageByModel.get(model);
+        retryUsageByModel.set(model, {
+          ...(addTokenUsage(previous, usage) ?? usage),
+          requests: (previous?.requests ?? 0) + usage.requests,
+        });
+      }
     };
     const finishUsage = (
       failure?: LlmUsageAttribution,
     ): LlmUsageAttribution => {
-      const usage = failure?.usage ?? attemptUsage;
-      const model =
-        failure?.model ?? attemptModel ?? this.llm.model ?? this.model;
-      if (usageByModel.size === 0) return { usage, model };
-      recordAttempt(usage, model);
-      return { usageByModel: Object.fromEntries(usageByModel) };
+      const attribution = attemptUsage.resolve(
+        this.llm.model ?? this.model,
+        failure,
+      );
+      if (!retryUsageByModel) return attribution;
+      // A reset closes the failed attempt before the retry starts.
+      if (
+        !awaitingRetry ||
+        !signal?.aborted ||
+        failure?.usage ||
+        failure?.usageByModel ||
+        failure?.model
+      ) {
+        recordAttempt(attribution);
+      }
+      return { usageByModel: Object.fromEntries(retryUsageByModel) };
     };
     try {
       const stream = this.llm.streamChat(messages, [], {
@@ -120,18 +131,17 @@ export class LlmFinalizer implements IFinalizer {
         const { content, finishReason, reset, retryUsage, usage } = chunk.value;
         if (reset) {
           recordAttempt(
-            retryUsage?.usage ?? attemptUsage,
-            retryUsage?.model ?? attemptModel ?? this.llm.model,
+            attemptUsage.resolve(this.llm.model ?? this.model, retryUsage),
           );
-          attemptUsage = undefined;
-          attemptModel = undefined;
+          attemptUsage = new StreamAttemptUsage();
+          awaitingRetry = true;
           if (buf)
             input.onPartial?.({ kind: 'iteration-end', outcome: 'retry' });
           buf = '';
           continue;
         }
-        attemptModel = this.llm.model ?? attemptModel;
-        attemptUsage = addTokenUsage(attemptUsage, usage);
+        awaitingRetry = false;
+        attemptUsage.add(usage, this.llm.model);
         if (finishReason === 'length')
           throw new OrchestratorError(
             'LLM response was truncated at a token limit.',

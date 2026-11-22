@@ -4,11 +4,11 @@ import type {
   IRequestLogger,
   LlmStreamChunk,
   LlmTool,
+  LlmUsageAttribution,
   Message,
   Result,
 } from '@mcp-abap-adt/llm-agent';
 import {
-  addCacheTokenUsage,
   OrchestratorError,
   scopedUsage,
   type ToolTrust,
@@ -16,6 +16,10 @@ import {
   toToolCallDelta,
 } from '@mcp-abap-adt/llm-agent';
 import { summaryToUsage } from '../../logger/session-request-logger.js';
+import {
+  logToolLoopAttempt,
+  StreamAttemptUsage,
+} from '../../logger/stream-attempt-usage.js';
 import type { CallerResolution } from '../../policy/caller-identity.js';
 import {
   createPendingToolCallsEntry,
@@ -47,6 +51,7 @@ export async function* runPassThrough(
       {
         ...opts,
         usage: scopedUsage(opts?.usage, { component: 'tool-loop' }),
+        includeStreamRetryUsage: true,
       },
     );
     let passContent = '';
@@ -55,26 +60,18 @@ export async function* runPassThrough(
       { id: string; name: string; arguments: string }
     >();
     let finishReason: LlmStreamChunk['finishReason'];
-    let cache: ReturnType<typeof addCacheTokenUsage> = {};
-    let accPrompt = 0;
-    let accCompletion = 0;
-    let accTotal = 0;
-    let hasUsage = false;
-    const logPassUsage = (): void => {
-      // Log only if a usage chunk was actually seen (mirrors
-      // LoggingLlm.streamChat) — avoids creating a zero tool-loop bucket.
-      if (!hasUsage) return;
-      requestLogger.logLlmCall({
-        component: 'tool-loop',
-        model: llm.model ?? 'unknown',
-        ...cache,
-        promptTokens: accPrompt,
-        completionTokens: accCompletion,
-        totalTokens: accTotal,
-        durationMs: Date.now() - passStart,
-        requestId: traceId2,
-      });
-    };
+    let attemptStartedAt = passStart;
+    let attemptUsage = new StreamAttemptUsage();
+    const logAttempt = (reported?: LlmUsageAttribution, countEmpty = false) =>
+      logToolLoopAttempt(
+        requestLogger,
+        attemptUsage.resolve(llm.model, reported),
+        {
+          durationMs: Date.now() - attemptStartedAt,
+          requestId: traceId2,
+          countEmpty,
+        },
+      );
     let chunksSeen = 0;
     for await (const chunk of stream) {
       if (!chunk.ok) {
@@ -96,17 +93,25 @@ export async function* runPassThrough(
           },
           'llm',
         );
-        logPassUsage();
+        const failure: typeof chunk.error & LlmUsageAttribution = chunk.error;
+        if (logAttempt(failure)) {
+          Object.assign(failure, { usageLogged: true });
+        }
         yield chunk;
         return;
       }
       chunksSeen += 1;
       if (chunk.value.reset) {
+        const { retryUsage } = chunk.value;
+        logAttempt(retryUsage, retryUsage !== undefined);
+        attemptUsage = new StreamAttemptUsage();
+        attemptStartedAt = Date.now();
         passContent = '';
         calls.clear();
         finishReason = undefined;
         continue;
       }
+      attemptUsage.add(chunk.value.usage, llm.model);
       if (chunk.value.content) passContent += chunk.value.content;
       if (chunk.value.finishReason) finishReason = chunk.value.finishReason;
       if (chunk.value.toolCalls) {
@@ -120,13 +125,6 @@ export async function* runPassThrough(
           });
         }
       }
-      if (chunk.value.usage) {
-        cache = addCacheTokenUsage(cache, chunk.value.usage);
-        accPrompt += chunk.value.usage.promptTokens;
-        accCompletion += chunk.value.usage.completionTokens;
-        accTotal += chunk.value.usage.totalTokens;
-        hasUsage = true;
-      }
       // Strip usage from the forwarded chunk: the single usage-bearing chunk
       // is the terminal getSummary chunk below (one usage chunk per request).
       // Buffer tool-call fragments until the suspension has its own returned IDs.
@@ -138,7 +136,7 @@ export async function* runPassThrough(
       } = chunk.value;
       yield { ok: true, value: rest };
     }
-    logPassUsage();
+    logAttempt();
     const hasToolCalls = finishReason === 'tool_calls' && calls.size > 0;
     const round = new ToolResponseRound(
       passContent,

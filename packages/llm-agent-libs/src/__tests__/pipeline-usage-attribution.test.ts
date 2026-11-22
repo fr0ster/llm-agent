@@ -8,6 +8,7 @@ import type {
   ISubAgent,
 } from '@mcp-abap-adt/llm-agent';
 import { LlmError } from '@mcp-abap-adt/llm-agent';
+import { SmartAgent } from '../agent.js';
 import { SmartAgentBuilder } from '../builder.js';
 import { unwrapBuilderResult } from '../builder-types.js';
 import { LlmAdaptiveController } from '../coordinator/adaptive/llm-adaptive-controller.js';
@@ -19,7 +20,11 @@ import { WorkerRequestLogger } from '../logger/worker-request-logger.js';
 import { AdaptiveCoordinatorHandler } from '../pipeline/handlers/adaptive-coordinator.js';
 import { RetryLlm } from '../resilience/retry-llm.js';
 import { SmartAgentSubAgent } from '../subagent/smart-agent-subagent.js';
-import { testCallOptions, testRequestAccess } from '../testing/index.js';
+import {
+  makeDefaultDeps,
+  testCallOptions,
+  testRequestAccess,
+} from '../testing/index.js';
 
 const firstUsage = { promptTokens: 17, completionTokens: 3, totalTokens: 20 };
 const secondUsage = { promptTokens: 23, completionTokens: 7, totalTokens: 30 };
@@ -92,11 +97,11 @@ test('adaptive controller reads the LLM model for each request', async () => {
   }
 });
 
-test('a failed SmartAgent worker call is imported only when the tool loop did not log it', async () => {
-  for (const streamedUsage of [firstUsage, undefined]) {
-    const logger = new SessionRequestLogger();
-    const worker = await builder()
-      .withMainLlm({
+for (const mode of ['pipeline', 'smart', 'pass'] as const) {
+  test(`a failed SmartAgent worker call is counted once in ${mode} mode`, async () => {
+    for (const streamedUsage of [firstUsage, undefined]) {
+      const logger = new SessionRequestLogger();
+      const mainLlm: ILlm = {
         ...unusedLlm,
         model: 'worker-model',
         async *streamChat() {
@@ -111,45 +116,135 @@ test('a failed SmartAgent worker call is imported only when the tool loop did no
             }),
           };
         },
-      })
-      .build()
-      .then(unwrapBuilderResult);
-    const parent = await builder()
-      .withMainLlm(unusedLlm)
-      .withRequestLogger(logger)
-      .withDagCoordinator({
-        planner: {
-          name: 'planner',
-          async plan() {
-            return {
-              plan: {
-                createdAt: 0,
-                nodes: [{ id: 'work', goal: 'lookup', worker: 'worker' }],
-              },
+      };
+      const worker =
+        mode === 'pipeline'
+          ? await builder()
+              .withMainLlm(mainLlm)
+              .build()
+              .then(unwrapBuilderResult)
+          : {
+              agent: new SmartAgent(
+                { ...makeDefaultDeps().deps, mainLlm },
+                { mode },
+              ),
             };
+      const parent = await builder()
+        .withMainLlm(unusedLlm)
+        .withRequestLogger(logger)
+        .withDagCoordinator({
+          planner: {
+            name: 'planner',
+            async plan() {
+              return {
+                plan: {
+                  createdAt: 0,
+                  nodes: [{ id: 'work', goal: 'lookup', worker: 'worker' }],
+                },
+              };
+            },
           },
-        },
-        interpreter: new DagPlanInterpreter(),
-        workers: new Map([
-          ['worker', new SmartAgentSubAgent('worker', worker.agent)],
-        ]),
-        finalizer,
-      })
-      .build()
-      .then(unwrapBuilderResult);
-    try {
-      const result = await parent.agent.process(
-        'request',
-        testCallOptions({ trace: { traceId } }),
-      );
-      assert.equal(result.ok, false);
-      assert.deepEqual(logger.getSummary(traceId).byModel, {
-        'worker-model': { ...firstUsage, requests: 1 },
-      });
-    } finally {
-      await parent.close();
-      await worker.close();
+          interpreter: new DagPlanInterpreter(),
+          workers: new Map([
+            ['worker', new SmartAgentSubAgent('worker', worker.agent)],
+          ]),
+          finalizer,
+        })
+        .build()
+        .then(unwrapBuilderResult);
+      try {
+        const result = await parent.agent.process(
+          'request',
+          testCallOptions({ trace: { traceId } }),
+        );
+        assert.equal(result.ok, false);
+        const expected = {
+          'worker-model': { ...firstUsage, requests: 1 },
+        };
+        assert.deepEqual(logger.getSummary(traceId).byModel, expected);
+        assert.deepEqual(logger.getSummary().byModel, expected);
+      } finally {
+        await parent.close();
+        if ('close' in worker) await worker.close();
+      }
     }
+  });
+}
+
+test('the pipeline tool loop accounts for error-only retry usage and prefers each reported model bucket', async () => {
+  const logger = new SessionRequestLogger();
+  const byModel = {
+    'first-model': { ...firstUsage, cachedInputTokens: 2, requests: 2 },
+    'second-model': { ...secondUsage, requests: 1 },
+  };
+  let calls = 0;
+  const llm = new RetryLlm(
+    {
+      ...unusedLlm,
+      model: 'answer-model',
+      async *streamChat(_messages, _tools, options) {
+        assert.equal(options?.includeStreamRetryUsage, true);
+        calls++;
+        if (calls === 1) {
+          yield {
+            ok: false,
+            error: Object.assign(new LlmError('retry before streaming'), {
+              status: 503,
+              model: 'error-model',
+              usage: plannerUsage,
+            }),
+          };
+        } else if (calls === 2) {
+          yield {
+            ok: true,
+            value: { content: 'discarded', usage: firstUsage },
+          };
+          yield {
+            ok: false,
+            error: Object.assign(new LlmError('retry stream'), {
+              model: 'ignored-flat-model',
+              usage: firstUsage,
+              usageByModel: byModel,
+            }),
+          };
+        } else {
+          yield {
+            ok: true,
+            value: {
+              content: 'answer',
+              finishReason: 'stop',
+              usage: finalizerUsage,
+            },
+          };
+        }
+      },
+    },
+    { backoffMs: 0, retryOnMidStream: ['retry stream'] },
+  );
+  const handle = await builder()
+    .withMainLlm(llm)
+    .withRequestLogger(logger)
+    .build()
+    .then(unwrapBuilderResult);
+  try {
+    const result = await handle.agent.process(
+      'request',
+      testCallOptions({ trace: { traceId } }),
+    );
+    assert.ok(result.ok);
+    assert.equal(calls, 3);
+    assert.equal(result.value.content, 'answer');
+    assert.equal(result.value.usage?.totalTokens, 101);
+    const expected = {
+      ...byModel,
+      'answer-model': { ...finalizerUsage, requests: 1 },
+      'error-model': { ...plannerUsage, requests: 1 },
+    };
+    assert.deepEqual(result.value.usage?.models, expected);
+    assert.deepEqual(logger.getSummary(traceId).byModel, expected);
+    assert.deepEqual(logger.getSummary().byModel, expected);
+  } finally {
+    await handle.close();
   }
 });
 
@@ -194,7 +289,11 @@ for (const mode of ['adaptive', 'dag'] as const) {
     const workers = new Map<string, ISubAgent>([
       [
         'worker',
-        { name: 'worker', run: async () => ({ output: 'worker answer' }) },
+        {
+          name: 'worker',
+          capabilities: { contextPolicy: 'optional' },
+          run: async () => ({ output: 'worker answer' }),
+        },
       ],
     ]);
     const parentBuilder = builder()

@@ -1,12 +1,15 @@
 import {
   addCacheTokenUsage,
-  addTokenUsage,
   type LlmUsage,
   type LlmUsageAttribution,
   toModelToolMessages,
 } from '@mcp-abap-adt/llm-agent';
 import { normalizeLoopLimit } from '../../config/normalize-max-iterations.js';
 import { withSubmitReport } from '../../coordinator/dialogue/submit-report-tool.js';
+import {
+  logToolLoopAttempt,
+  StreamAttemptUsage,
+} from '../../logger/stream-attempt-usage.js';
 import { denyRagAccess, ownerBoundQuery } from '../../rag/owner-bound-query.js';
 import { ToolResponseRound } from './tool-response-round.js';
 /**
@@ -192,6 +195,13 @@ export class ToolLoopHandler implements IStageHandler {
     let lastToolsAvailable: number | undefined;
     let messages = ctx.assembledMessages;
     const usage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
+    const addUsage = (attempt: LlmUsage): void => {
+      Object.assign(usage, addCacheTokenUsage(usage, attempt));
+      usage.promptTokens += attempt.promptTokens;
+      usage.completionTokens += attempt.completionTokens;
+      usage.totalTokens += attempt.totalTokens;
+      ctx.sessionManager.addTokens(attempt.totalTokens);
+    };
     const timingLog: TimingEntry[] = [];
     const loopStart = Date.now();
     let currentTools: LlmTool[] = ctx.activeTools;
@@ -612,29 +622,29 @@ export class ToolLoopHandler implements IStageHandler {
         {
           ...ctx.options,
           usage: scopedUsage(ctx.options?.usage, { component: 'tool-loop' }),
+          includeStreamRetryUsage: true,
         },
       );
 
       let attemptStartedAt = llmCallStart;
-      let attemptUsage: LlmUsage | undefined;
-      let attemptModel: string | undefined;
-      const logAttempt = (usage: LlmUsage): void => {
-        ctx.requestLogger.logLlmCall({
-          component: 'tool-loop',
-          model: attemptModel ?? ctx.mainLlm.model ?? 'unknown',
-          ...usage,
-          durationMs: Date.now() - attemptStartedAt,
-          requestId,
-        });
-      };
+      let attemptUsage = new StreamAttemptUsage();
+      const logAttempt = (reported?: LlmUsageAttribution, countEmpty = false) =>
+        logToolLoopAttempt(
+          ctx.requestLogger,
+          attemptUsage.resolve(ctx.mainLlm.model, reported),
+          {
+            durationMs: Date.now() - attemptStartedAt,
+            requestId,
+            countEmpty,
+            onUsage: addUsage,
+          },
+        );
       let chunksSeen = 0;
       for await (const chunkResult of llmStream) {
         if (!chunkResult.ok) {
-          if (attemptUsage) {
-            const failure: typeof chunkResult.error & LlmUsageAttribution =
-              chunkResult.error;
-            attemptModel = failure.model ?? attemptModel;
-            logAttempt(failure.usage ?? attemptUsage);
+          const failure: typeof chunkResult.error & LlmUsageAttribution =
+            chunkResult.error;
+          if (logAttempt(failure)) {
             Object.assign(failure, { usageLogged: true });
           }
           llmSpan.setStatus('error', chunkResult.error.message);
@@ -667,6 +677,9 @@ export class ToolLoopHandler implements IStageHandler {
         const chunk = chunkResult.value;
         // Mid-stream retry or fallback reset: discard accumulated state
         if (chunk.reset) {
+          logAttempt(chunk.retryUsage, chunk.retryUsage !== undefined);
+          attemptUsage = new StreamAttemptUsage();
+          attemptStartedAt = Date.now();
           ctx.yield({
             ok: true,
             value: { content: '', iterationEnd: 'retry' },
@@ -675,12 +688,9 @@ export class ToolLoopHandler implements IStageHandler {
           content = '';
           toolCallsMap.clear();
           finishReason = undefined;
-          if (attemptUsage) logAttempt(attemptUsage);
-          attemptUsage = undefined;
-          attemptModel = undefined;
-          attemptStartedAt = Date.now();
           continue;
         }
+        attemptUsage.add(chunk.usage, ctx.mainLlm.model);
         if (chunk.content) {
           content += chunk.content;
           if (!ctx.clientAdapter && ctx.config.streamMode !== 'final') {
@@ -730,15 +740,6 @@ export class ToolLoopHandler implements IStageHandler {
           }
         }
         if (chunk.finishReason) finishReason = chunk.finishReason;
-        if (chunk.usage) {
-          Object.assign(usage, addCacheTokenUsage(usage, chunk.usage));
-          usage.promptTokens += chunk.usage.promptTokens;
-          usage.completionTokens += chunk.usage.completionTokens;
-          usage.totalTokens += chunk.usage.totalTokens;
-          attemptUsage = addTokenUsage(attemptUsage, chunk.usage);
-          attemptModel = ctx.mainLlm.model ?? attemptModel;
-          ctx.sessionManager.addTokens(chunk.usage.totalTokens);
-        }
       }
 
       llmSpan.setStatus('ok');
@@ -750,13 +751,7 @@ export class ToolLoopHandler implements IStageHandler {
         duration: llmCallDuration,
       });
 
-      logAttempt(
-        attemptUsage ?? {
-          promptTokens: 0,
-          completionTokens: 0,
-          totalTokens: 0,
-        },
-      );
+      logAttempt(undefined, true);
 
       const hasToolCalls =
         finishReason === 'tool_calls' && toolCallsMap.size > 0;
