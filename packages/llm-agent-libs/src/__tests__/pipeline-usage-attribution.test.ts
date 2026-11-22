@@ -7,14 +7,17 @@ import type {
   IMcpClient,
   ISubAgent,
 } from '@mcp-abap-adt/llm-agent';
+import { LlmError } from '@mcp-abap-adt/llm-agent';
 import { SmartAgentBuilder } from '../builder.js';
 import { unwrapBuilderResult } from '../builder-types.js';
 import { LlmAdaptiveController } from '../coordinator/adaptive/llm-adaptive-controller.js';
 import { DagPlanInterpreter } from '../coordinator/dag/dag-plan-interpreter.js';
+import { LlmFinalizer } from '../coordinator/dag/llm-finalizer.js';
 import { DefaultRequestLogger } from '../logger/default-request-logger.js';
 import { SessionRequestLogger } from '../logger/session-request-logger.js';
 import { WorkerRequestLogger } from '../logger/worker-request-logger.js';
 import { AdaptiveCoordinatorHandler } from '../pipeline/handlers/adaptive-coordinator.js';
+import { RetryLlm } from '../resilience/retry-llm.js';
 import { SmartAgentSubAgent } from '../subagent/smart-agent-subagent.js';
 import { testCallOptions, testRequestAccess } from '../testing/index.js';
 
@@ -88,6 +91,181 @@ test('adaptive controller reads the LLM model for each request', async () => {
     await parent.close();
   }
 });
+
+test('a failed SmartAgent worker call is imported only when the tool loop did not log it', async () => {
+  for (const streamedUsage of [firstUsage, undefined]) {
+    const logger = new SessionRequestLogger();
+    const worker = await builder()
+      .withMainLlm({
+        ...unusedLlm,
+        model: 'worker-model',
+        async *streamChat() {
+          if (streamedUsage) {
+            yield { ok: true, value: { content: '', usage: streamedUsage } };
+          }
+          yield {
+            ok: false,
+            error: Object.assign(new LlmError('worker failed'), {
+              model: 'worker-model',
+              usage: firstUsage,
+            }),
+          };
+        },
+      })
+      .build()
+      .then(unwrapBuilderResult);
+    const parent = await builder()
+      .withMainLlm(unusedLlm)
+      .withRequestLogger(logger)
+      .withDagCoordinator({
+        planner: {
+          name: 'planner',
+          async plan() {
+            return {
+              plan: {
+                createdAt: 0,
+                nodes: [{ id: 'work', goal: 'lookup', worker: 'worker' }],
+              },
+            };
+          },
+        },
+        interpreter: new DagPlanInterpreter(),
+        workers: new Map([
+          ['worker', new SmartAgentSubAgent('worker', worker.agent)],
+        ]),
+        finalizer,
+      })
+      .build()
+      .then(unwrapBuilderResult);
+    try {
+      const result = await parent.agent.process(
+        'request',
+        testCallOptions({ trace: { traceId } }),
+      );
+      assert.equal(result.ok, false);
+      assert.deepEqual(logger.getSummary(traceId).byModel, {
+        'worker-model': { ...firstUsage, requests: 1 },
+      });
+    } finally {
+      await parent.close();
+      await worker.close();
+    }
+  }
+});
+
+for (const mode of ['adaptive', 'dag'] as const) {
+  test(`${mode} attributes finalizer retries to the model used by each attempt`, async () => {
+    const logger = new SessionRequestLogger();
+    let attempt = 0;
+    const llm = new RetryLlm(
+      {
+        ...unusedLlm,
+        get model() {
+          return attempt < 4 ? 'retry-model' : 'answer-model';
+        },
+        async *streamChat() {
+          attempt++;
+          if (attempt === 1) {
+            yield {
+              ok: false,
+              error: Object.assign(new LlmError('retry before streaming'), {
+                status: 503,
+                model: 'error-model',
+                usage: plannerUsage,
+              }),
+            };
+          } else if (attempt < 4) {
+            yield {
+              ok: true,
+              value: { content: 'discarded ', usage: firstUsage },
+            };
+            yield { ok: false, error: new LlmError('retry stream') };
+          } else {
+            yield {
+              ok: true,
+              value: { content: 'answer', usage: secondUsage },
+            };
+          }
+        },
+      },
+      { backoffMs: 0, retryOnMidStream: ['retry stream'] },
+    );
+    const synthesizer = new LlmFinalizer(llm);
+    const workers = new Map<string, ISubAgent>([
+      [
+        'worker',
+        { name: 'worker', run: async () => ({ output: 'worker answer' }) },
+      ],
+    ]);
+    const parentBuilder = builder()
+      .withMainLlm(unusedLlm)
+      .withRequestLogger(logger);
+    if (mode === 'adaptive') {
+      parentBuilder.withStepperCoordinator(
+        new AdaptiveCoordinatorHandler({
+          workers,
+          finalizer: synthesizer,
+          controller: {
+            name: 'controller',
+            async plan() {
+              return {
+                plan: {
+                  createdAt: 0,
+                  steps: [{ kind: 'answer', id: 'answer', text: 'draft' }],
+                },
+              };
+            },
+            check: async () => assert.fail('Unexpected check'),
+            revise: async () => assert.fail('Unexpected revision'),
+            report: async () => assert.fail('Unexpected report'),
+          },
+        }),
+      );
+    } else {
+      parentBuilder.withDagCoordinator({
+        workers,
+        finalizer: synthesizer,
+        planner: {
+          name: 'planner',
+          async plan() {
+            return {
+              plan: {
+                createdAt: 0,
+                nodes: [{ id: 'work', goal: 'draft', worker: 'worker' }],
+              },
+            };
+          },
+        },
+        interpreter: new DagPlanInterpreter(),
+      });
+    }
+    const parent = await parentBuilder.build().then(unwrapBuilderResult);
+    try {
+      const result = await parent.agent.process(
+        'request',
+        testCallOptions({ trace: { traceId } }),
+      );
+      assert.ok(result.ok, result.ok ? undefined : result.error.message);
+      assert.equal(attempt, 4);
+      const expected = {
+        'error-model': { ...plannerUsage, requests: 1 },
+        'retry-model': {
+          promptTokens: 34,
+          completionTokens: 6,
+          totalTokens: 40,
+          requests: 2,
+        },
+        'answer-model': { ...secondUsage, requests: 1 },
+      };
+      assert.deepEqual(result.value.usage?.models, expected);
+      assert.deepEqual(logger.getSummary(traceId).byModel, expected);
+      assert.deepEqual(logger.getSummary().byModel, expected);
+      assert.equal(result.value.content, 'answer');
+    } finally {
+      await parent.close();
+    }
+  });
+}
 
 for (const mode of ['adaptive', 'dag'] as const) {
   for (const loggerMode of [

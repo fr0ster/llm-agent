@@ -7,7 +7,6 @@ import type {
   IRunRecordStore,
   ISubAgent,
   LlmComponent,
-  LlmUsage,
   LlmUsageAttribution,
   RunRecord,
 } from '@mcp-abap-adt/llm-agent';
@@ -27,6 +26,7 @@ import type { ISpan } from '../../tracer/types.js';
 import type { PipelineContext } from '../context.js';
 import type { IStageHandler } from '../stage-handler.js';
 import { terminalUsage } from './dag-coordinator.js';
+import { logRoleUsage } from './role-usage.js';
 import { meterWorkers } from './worker-usage.js';
 
 /** Optional dependencies for the adaptive coordinator stage. */
@@ -72,20 +72,6 @@ export class AdaptiveCoordinatorHandler implements IStageHandler {
     const traceId = ctx.options?.trace?.traceId;
     const log = (key: string, data: Record<string, unknown>) =>
       ctx.options?.sessionLogger?.logStep(key, data);
-    const logUsage = (
-      usage: LlmUsage | undefined,
-      component: LlmComponent,
-      model?: string,
-    ) => {
-      if (usage)
-        ctx.requestLogger.logLlmCall({
-          component,
-          model: model ?? 'unknown',
-          ...usage,
-          durationMs: 0,
-          requestId: traceId,
-        });
-    };
     const runRole = async <T extends LlmUsageAttribution>(
       component: LlmComponent,
       run: () => Promise<T>,
@@ -93,11 +79,11 @@ export class AdaptiveCoordinatorHandler implements IStageHandler {
     ): Promise<T> => {
       try {
         const value = await run();
-        logUsage(value.usage, component, value.model ?? role.model);
+        logRoleUsage(ctx, component, value, role.model);
         return value;
       } catch (error) {
         const failed = error as LlmUsageAttribution | null;
-        logUsage(failed?.usage, component, failed?.model ?? role.model);
+        logRoleUsage(ctx, component, failed, role.model);
         throw error;
       }
     };
@@ -250,6 +236,11 @@ export class AdaptiveCoordinatorHandler implements IStageHandler {
               signal: ctx.options?.signal,
               trace: ctx.options?.trace,
               onPartial: (chunk) => {
+                if (chunk.kind === 'iteration-end' && chunk.outcome === 'retry')
+                  ctx.yield({
+                    ok: true,
+                    value: { content: '', iterationEnd: 'retry' },
+                  });
                 if (chunk.kind === 'content')
                   ctx.yield({
                     ok: true,

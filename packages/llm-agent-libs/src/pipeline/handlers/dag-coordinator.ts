@@ -13,14 +13,12 @@ import type {
   IStateOracle,
   ISubAgent,
   LlmComponent,
-  LlmUsage,
   LlmUsageAttribution,
   OnPartial,
   PlannerResult,
   ReviewResult,
 } from '@mcp-abap-adt/llm-agent';
 import {
-  addCacheTokenUsage,
   ClarifySignal,
   NeedInfoSignal,
   terminalRunError,
@@ -32,6 +30,7 @@ import { summaryToUsage } from '../../logger/session-request-logger.js';
 import type { ISpan } from '../../tracer/types.js';
 import type { PipelineContext } from '../context.js';
 import type { IStageHandler } from '../stage-handler.js';
+import { logRoleUsage } from './role-usage.js';
 import { meterWorkers } from './worker-usage.js';
 
 /** Canonical terminal-usage object: flat triple + per-model breakdown. */
@@ -130,30 +129,7 @@ export class DagCoordinatorHandler implements IStageHandler {
     // delta AND in the session-cumulative buckets (categorized as
     // 'auxiliary' via CATEGORY_MAP). Non-LLM strategies omit `usage`, so
     // this is a no-op for them.
-    const logRoleUsage = (
-      component: LlmComponent,
-      model: string | undefined,
-      usage: LlmUsage | undefined,
-      durationMs: number,
-    ): void => {
-      if (!usage) return;
-      ctx.requestLogger.logLlmCall({
-        component,
-        model: model ?? 'unknown',
-        ...addCacheTokenUsage(undefined, usage),
-        promptTokens: usage.promptTokens,
-        completionTokens: usage.completionTokens,
-        totalTokens: usage.totalTokens,
-        durationMs,
-        requestId: ctx.options?.trace?.traceId,
-      });
-    };
-
-    // Generic role runner. Owns logging for BOTH happy path AND signal paths
-    // (HIGH finding: a role that throws ClarifySignal/NeedInfoSignal still
-    // consumed LLM tokens — discarding them was invisible spend). Per-role
-    // adapters set `signal.usage` on the signal before throwing; `runRole`
-    // reads it here and routes it through the same `logRoleUsage`.
+    // The role runner also logs usage attached to signals and failures.
     const runRole = async <T extends LlmUsageAttribution>(
       component: LlmComponent,
       role: { readonly model?: string } | undefined,
@@ -163,16 +139,11 @@ export class DagCoordinatorHandler implements IStageHandler {
         const start = Date.now();
         try {
           const value = await thunk();
-          logRoleUsage(
-            component,
-            value.model ?? role?.model,
-            value.usage,
-            Date.now() - start,
-          );
+          logRoleUsage(ctx, component, value, role?.model, Date.now() - start);
           return { value };
         } catch (err) {
           if (err instanceof ClarifySignal) {
-            logRoleUsage(component, role?.model, err.usage, Date.now() - start);
+            logRoleUsage(ctx, component, err, role?.model, Date.now() - start);
             ctx.options?.sessionLogger?.logStep('coordinator_clarify', {
               question: (err as ClarifySignalType).question,
             });
@@ -201,7 +172,7 @@ export class DagCoordinatorHandler implements IStageHandler {
             return { ended: true };
           }
           if (err instanceof NeedInfoSignal) {
-            logRoleUsage(component, role?.model, err.usage, Date.now() - start);
+            logRoleUsage(ctx, component, err, role?.model, Date.now() - start);
             if (!this.deps.stateOracle) {
               throw new OrchestratorError(
                 `coordinator: role requested info but no stateOracle is configured: ${(err as NeedInfoSignal).query}`,
@@ -225,9 +196,10 @@ export class DagCoordinatorHandler implements IStageHandler {
               sessionLogger: ctx.options?.sessionLogger,
             });
             logRoleUsage(
+              ctx,
               'oracle',
-              ans.model ?? this.deps.stateOracle.model,
-              ans.usage,
+              ans,
+              this.deps.stateOracle.model,
               Date.now() - oracleStart,
             );
             ancestorContext.oracleObservations.push({
@@ -244,9 +216,10 @@ export class DagCoordinatorHandler implements IStageHandler {
           // invisible).
           const failure = err as LlmUsageAttribution | null;
           logRoleUsage(
+            ctx,
             component,
-            failure?.model ?? role?.model,
-            failure?.usage,
+            failure,
+            role?.model,
             Date.now() - start,
           );
           throw err;
@@ -395,6 +368,14 @@ export class DagCoordinatorHandler implements IStageHandler {
         const finalizerOnPartial: OnPartial = (chunk) => {
           if (chunk.kind === 'content') {
             ctx.yield({ ok: true, value: { content: chunk.delta } });
+          } else if (
+            chunk.kind === 'iteration-end' &&
+            chunk.outcome === 'retry'
+          ) {
+            ctx.yield({
+              ok: true,
+              value: { content: '', iterationEnd: 'retry' },
+            });
           }
           ctx.options?.sessionLogger?.logStep('dag_stream', chunk);
         };

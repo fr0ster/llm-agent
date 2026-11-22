@@ -20,6 +20,7 @@ import {
   type LlmResponse,
   type LlmStreamChunk,
   type LlmTool,
+  type LlmUsageAttribution,
   type Result,
   retryAfterSecondsOf,
   startOperation,
@@ -140,6 +141,7 @@ export class RetryLlm implements ILlm {
 
       let chunksYielded = 0;
       let retryDelay: number | undefined;
+      let retryUsage: LlmUsageAttribution | undefined;
 
       for await (const chunk of this.attemptStream(messages, tools, {
         ...options,
@@ -150,7 +152,8 @@ export class RetryLlm implements ILlm {
           return;
         }
         if (chunk.ok) {
-          chunksYielded++;
+          // An inner retry can report an attempt before any response chunk.
+          if (!chunk.value.reset) chunksYielded++;
           yield chunk;
         } else {
           const terminal = terminalRunError(chunk.error);
@@ -172,13 +175,28 @@ export class RetryLlm implements ILlm {
             yield chunk;
             return;
           }
+          if (options?.includeStreamRetryUsage) {
+            const failure: LlmError & LlmUsageAttribution = chunk.error;
+            retryUsage = {
+              usage: failure.usage,
+              model:
+                failure.model ?? (chunksYielded === 0 ? this.model : undefined),
+            };
+          }
           break;
         }
       }
 
       if (retryDelay === undefined) return;
-      if (chunksYielded > 0)
-        yield { ok: true, value: { content: '', reset: true } };
+      if (chunksYielded > 0 || retryUsage)
+        yield {
+          ok: true,
+          value: {
+            content: '',
+            reset: true,
+            ...(retryUsage && { retryUsage }),
+          },
+        };
       await this.waitForRetry(retryDelay, signal);
     }
   }

@@ -2,6 +2,7 @@ import {
   addCacheTokenUsage,
   addTokenUsage,
   type LlmUsage,
+  type LlmUsageAttribution,
   toModelToolMessages,
 } from '@mcp-abap-adt/llm-agent';
 import { normalizeLoopLimit } from '../../config/normalize-max-iterations.js';
@@ -629,7 +630,13 @@ export class ToolLoopHandler implements IStageHandler {
       let chunksSeen = 0;
       for await (const chunkResult of llmStream) {
         if (!chunkResult.ok) {
-          if (attemptUsage) logAttempt(attemptUsage);
+          if (attemptUsage) {
+            const failure: typeof chunkResult.error & LlmUsageAttribution =
+              chunkResult.error;
+            attemptModel = failure.model ?? attemptModel;
+            logAttempt(failure.usage ?? attemptUsage);
+            Object.assign(failure, { usageLogged: true });
+          }
           llmSpan.setStatus('error', chunkResult.error.message);
           llmSpan.end();
           // The failure gets a response trace too (#290). This is the case the

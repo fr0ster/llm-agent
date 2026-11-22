@@ -4,7 +4,9 @@ import type {
   IFinalizer,
   ILlm,
   LlmUsage,
+  LlmUsageAttribution,
   Message,
+  ModelUsageEntry,
 } from '@mcp-abap-adt/llm-agent';
 import { addTokenUsage, OrchestratorError } from '@mcp-abap-adt/llm-agent';
 
@@ -55,7 +57,7 @@ function renderUserMessage(input: FinalizerInput): string {
 }
 
 /**
- * Synthesizes the final answer via a single LLM call. NO tools are wired:
+ * Synthesizes the final answer via an LLM stream. NO tools are wired:
  * the LLM cannot escape into another tool-loop. The user message is a
  * deterministic rendering of prompt + objective + ancestorContext + trace.
  */
@@ -80,34 +82,70 @@ export class LlmFinalizer implements IFinalizer {
     ];
     const { signal, sessionId, caller } = input;
     let buf = '';
-    let usage: LlmUsage | undefined;
-    const stream = this.llm.streamChat(messages, [], {
-      signal,
-      sessionId,
-      caller,
-      usage: input.usage?.with({ role: 'finalizer' }),
-    });
-    for await (const chunk of stream) {
-      if (!chunk.ok)
-        throw Object.assign(chunk.error, {
-          usage,
-          model: this.llm.model ?? this.model,
-        });
-      usage = addTokenUsage(usage, chunk.value.usage);
-      if (chunk.value.finishReason === 'length')
-        throw Object.assign(
-          new OrchestratorError(
+    let attemptUsage: LlmUsage | undefined;
+    let attemptModel: string | undefined;
+    const usageByModel = new Map<string, ModelUsageEntry>();
+    const recordAttempt = (usage?: LlmUsage, model?: string): void => {
+      const key = model ?? this.model ?? 'unknown';
+      const previous = usageByModel.get(key);
+      usageByModel.set(key, {
+        ...(addTokenUsage(previous, usage) ?? {
+          promptTokens: 0,
+          completionTokens: 0,
+          totalTokens: 0,
+        }),
+        requests: (previous?.requests ?? 0) + 1,
+      });
+    };
+    const finishUsage = (
+      failure?: LlmUsageAttribution,
+    ): LlmUsageAttribution => {
+      const usage = failure?.usage ?? attemptUsage;
+      const model =
+        failure?.model ?? attemptModel ?? this.llm.model ?? this.model;
+      if (usageByModel.size === 0) return { usage, model };
+      recordAttempt(usage, model);
+      return { usageByModel: Object.fromEntries(usageByModel) };
+    };
+    try {
+      const stream = this.llm.streamChat(messages, [], {
+        signal,
+        sessionId,
+        caller,
+        usage: input.usage?.with({ role: 'finalizer' }),
+        includeStreamRetryUsage: true,
+      });
+      for await (const chunk of stream) {
+        if (!chunk.ok) throw chunk.error;
+        const { content, finishReason, reset, retryUsage, usage } = chunk.value;
+        if (reset) {
+          recordAttempt(
+            retryUsage?.usage ?? attemptUsage,
+            retryUsage?.model ?? attemptModel ?? this.llm.model,
+          );
+          attemptUsage = undefined;
+          attemptModel = undefined;
+          if (buf)
+            input.onPartial?.({ kind: 'iteration-end', outcome: 'retry' });
+          buf = '';
+          continue;
+        }
+        attemptModel = this.llm.model ?? attemptModel;
+        attemptUsage = addTokenUsage(attemptUsage, usage);
+        if (finishReason === 'length')
+          throw new OrchestratorError(
             'LLM response was truncated at a token limit.',
             'LLM_OUTPUT_TRUNCATED',
-          ),
-          { usage, model: this.llm.model ?? this.model },
-        );
-      const content = chunk.value?.content ?? '';
-      if (content) {
-        buf += content;
-        input.onPartial?.({ kind: 'content', delta: content });
+          );
+        if (content) {
+          buf += content;
+          input.onPartial?.({ kind: 'content', delta: content });
+        }
       }
+    } catch (error) {
+      if (typeof error !== 'object' || error === null) throw error;
+      throw Object.assign(error, finishUsage(error as LlmUsageAttribution));
     }
-    return { output: buf, usage, model: this.llm.model ?? this.model };
+    return { output: buf, ...finishUsage() };
   }
 }

@@ -1,10 +1,12 @@
 import type {
+  AdaptivePlan,
   AdaptiveStep,
   CallOptions,
   ControllerPlanInput,
   IAdaptiveController,
   ILlm,
   LlmUsage,
+  Verdict,
 } from '@mcp-abap-adt/llm-agent';
 import { OrchestratorError } from '@mcp-abap-adt/llm-agent';
 import { lastObject, parsePlan, parseVerdict } from './parse-plan.js';
@@ -86,7 +88,11 @@ export class LlmAdaptiveController implements IAdaptiveController {
     return { ...result.value, model };
   }
 
-  async plan(input: ControllerPlanInput) {
+  async plan(input: ControllerPlanInput): Promise<{
+    plan: AdaptivePlan;
+    usage: LlmUsage | undefined;
+    model?: string;
+  }> {
     const history = input.history;
     const previousRun = input.previousRun && {
       request: input.previousRun.request,
@@ -119,7 +125,11 @@ export class LlmAdaptiveController implements IAdaptiveController {
     return { plan: parsed.value, usage: response.usage, model: response.model };
   }
 
-  async check(input: Parameters<IAdaptiveController['check']>[0]) {
+  async check(input: Parameters<IAdaptiveController['check']>[0]): Promise<{
+    verdict: Verdict;
+    usage: LlmUsage | undefined;
+    model?: string;
+  }> {
     const { signal, usage, ...context } = input;
     const response = await this.chat(
       'Judge the target records against the request, spec and check goal. Return JSON only: {"verdict":"pass|fail|partial","reason":"..."}.',
@@ -139,7 +149,11 @@ export class LlmAdaptiveController implements IAdaptiveController {
     return { verdict, usage: response.usage, model: response.model };
   }
 
-  async revise(input: Parameters<IAdaptiveController['revise']>[0]) {
+  async revise(input: Parameters<IAdaptiveController['revise']>[0]): Promise<{
+    steps: AdaptiveStep[];
+    usage: LlmUsage | undefined;
+    model?: string;
+  }> {
     const { signal, usage, ...context } = input;
     const response = await this.chat(
       `${this.systemPrompt}\nFor this call return {"steps":[...]} with steps for the remainder only. Do not reuse executed ids in records or the current revise step's id. References may use retained step ids.`,
@@ -176,7 +190,11 @@ export class LlmAdaptiveController implements IAdaptiveController {
     };
   }
 
-  async report(input: Parameters<IAdaptiveController['report']>[0]) {
+  async report(input: Parameters<IAdaptiveController['report']>[0]): Promise<{
+    text: string;
+    usage: LlmUsage | undefined;
+    model?: string;
+  }> {
     const { signal, usage, ...context } = input;
     const response = await this.chat(
       "Report in plain text in the request's language: what was done, what was not, and why the run stopped. Ground claims in the records; do not present unfinished work as complete.",
