@@ -7,6 +7,7 @@ import {
   RagError,
   type RagResult,
   type Result,
+  terminalRunError,
 } from '@mcp-abap-adt/llm-agent';
 import { assertPositiveInteger } from '../util/assert-positive-integer.js';
 import { PASSAGE_QUESTION } from './decision-reranker.js';
@@ -92,13 +93,19 @@ export class LlmReranker implements IReranker {
       const outcomes = await Promise.all(
         slice.map((b) => this._scoreBatch(query, b.items, options)),
       );
+      let failure: RagError | undefined;
       for (let k = 0; k < slice.length; k++) {
         const o = outcomes[k];
-        if (!o.ok) return o;
+        if (!o.ok) {
+          if (terminalRunError(o.error)) return o;
+          failure ??= o.error;
+          continue;
+        }
         o.value.forEach((v, j) => {
           scores[slice[k].offset + j] = v;
         });
       }
+      if (failure) return { ok: false, error: failure };
     }
 
     // Never ok with a missing score: every candidate must have been scored.
@@ -150,7 +157,12 @@ export class LlmReranker implements IReranker {
       if (!res.ok) {
         return {
           ok: false,
-          error: new RagError(res.error.message, 'RERANK_ERROR'),
+          error: Object.assign(
+            new RagError(res.error.message, 'RERANK_ERROR'),
+            {
+              cause: res.error,
+            },
+          ),
         };
       }
       // Meter the call before parsing: an out-of-contract reply is billed too.
@@ -166,7 +178,10 @@ export class LlmReranker implements IReranker {
     } catch (err) {
       return {
         ok: false,
-        error: new RagError(`Reranking failed: ${String(err)}`, 'RERANK_ERROR'),
+        error: Object.assign(
+          new RagError(`Reranking failed: ${String(err)}`, 'RERANK_ERROR'),
+          { cause: err },
+        ),
       };
     }
   }

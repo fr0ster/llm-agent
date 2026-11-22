@@ -14,6 +14,7 @@ import {
   QueryEmbedding,
   RagAccessDeniedError,
   TextOnlyEmbedding,
+  terminalRunError,
   toolNameFromRecord,
 } from '@mcp-abap-adt/llm-agent';
 import { callerResolutionKey } from '../policy/caller-identity.js';
@@ -87,15 +88,21 @@ export class RagOrchestrator implements IRagOrchestrator {
       const translateStores = this.deps.translateQueryStores;
       let translatedText: string | undefined;
       if (translateStores && translateStores.size > 0) {
-        translatedText = await this.toEnglish(
-          {
-            helperLlm: this.deps.helperLlm,
-            mainLlm: this.deps.mainLlm,
-            ragTranslatePrompt: this.deps.config.ragTranslatePrompt,
-          },
-          combinedActionText,
-          opts,
-        );
+        try {
+          translatedText = await this.toEnglish(
+            {
+              helperLlm: this.deps.helperLlm,
+              mainLlm: this.deps.mainLlm,
+              ragTranslatePrompt: this.deps.config.ragTranslatePrompt,
+            },
+            combinedActionText,
+            opts,
+          );
+        } catch (error) {
+          const terminal = terminalRunError(error);
+          if (terminal) return { ok: false, error: terminal };
+          throw error;
+        }
         if (this.deps.config.queryExpansionEnabled) {
           const expandResult = await this.deps.queryExpander.expand(
             translatedText,
@@ -164,13 +171,15 @@ export class RagOrchestrator implements IRagOrchestrator {
               results,
               opts,
             );
-            return { name, results: rr.ok ? rr.value : results };
+            if (rr.ok) return { name, results: rr.value };
+            return { name, results, error: terminalRunError(rr.error) };
           }
           return { name, results };
         }),
       );
       const rerankedMap: Record<string, RagResult[]> = {};
-      for (const { name, results } of rerankedEntries) {
+      for (const { name, results, error } of rerankedEntries) {
+        if (error) return { ok: false, error };
         rerankedMap[name] = results;
       }
 
@@ -455,10 +464,12 @@ export class RagOrchestrator implements IRagOrchestrator {
         classifySpan.end();
         return {
           ok: false,
-          error: new OrchestratorError(
-            classifyResult.error.message,
-            'CLASSIFIER_ERROR',
-          ),
+          error:
+            terminalRunError(classifyResult.error) ??
+            new OrchestratorError(
+              classifyResult.error.message,
+              'CLASSIFIER_ERROR',
+            ),
         };
       }
       classifySpan.setStatus('ok');

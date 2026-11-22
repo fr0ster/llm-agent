@@ -13,6 +13,7 @@
  * their ranking, so an explicit strategy wins over the global reranker.
  */
 
+import { terminalRunError } from '@mcp-abap-adt/llm-agent';
 import { hasRetrievalStrategy } from '../../retrieval/index.js';
 import type { ISpan } from '../../tracer/types.js';
 import type { PipelineContext } from '../context.js';
@@ -37,6 +38,8 @@ export class RerankHandler implements IStageHandler {
             ctx.options,
           );
           if (!rr.ok) {
+            const terminal = terminalRunError(rr.error);
+            if (terminal) throw terminal;
             // Behaviour unchanged (original order), but no longer silent: a
             // reranker that always fails (e.g. a stale key) must be visible.
             span.setAttribute(`${name}.rerank_error`, rr.error.code);

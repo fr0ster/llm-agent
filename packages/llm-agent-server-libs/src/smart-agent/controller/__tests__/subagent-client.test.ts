@@ -1,16 +1,18 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import type { ILlm } from '@mcp-abap-adt/llm-agent';
+import {
+  type ILlm,
+  LlmError,
+  type LlmResponse,
+  type Result,
+} from '@mcp-abap-adt/llm-agent';
 import { makeSubagentClient } from '../subagent-client.js';
 
-// Real LlmToolCall shape: { id: string; name: string; arguments: Record<string, unknown> }
-// LlmError is a class extending Error — fake as plain object with message property
-const llm = (resp: unknown): ILlm =>
-  ({
-    model: 's',
-    chat: async () => resp as never,
-    streamChat: async function* () {},
-  }) as ILlm;
+const llm = (resp: Result<LlmResponse, LlmError>): ILlm => ({
+  model: 's',
+  chat: async () => resp,
+  streamChat: async function* () {},
+});
 
 describe('makeSubagentClient', () => {
   it('content response → kind:content', async () => {
@@ -39,12 +41,11 @@ describe('makeSubagentClient', () => {
   });
 
   it('error result → kind:error', async () => {
-    const c = makeSubagentClient(
-      llm({ ok: false, error: { message: 'boom' } }),
-    );
+    const error = new LlmError('boom');
+    const c = makeSubagentClient(llm({ ok: false, error }));
     assert.deepEqual(await c.send([{ role: 'user', content: 'hi' }]), {
       kind: 'error',
-      error: 'boom',
+      error,
     });
   });
 });

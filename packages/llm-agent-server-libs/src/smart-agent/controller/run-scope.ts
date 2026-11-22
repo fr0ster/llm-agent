@@ -26,7 +26,7 @@ const TERMINAL_ARTIFACT_TYPE = 'controller-terminal';
 
 export type TerminalOutcome =
   | { kind: 'success'; answer: string }
-  | { kind: 'error'; error: string };
+  | { kind: 'error'; error: string; code?: string };
 
 interface TerminalEntry {
   runId: string;

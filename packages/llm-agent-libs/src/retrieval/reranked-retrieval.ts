@@ -8,6 +8,7 @@ import type {
   RagResult,
   Result,
 } from '@mcp-abap-adt/llm-agent';
+import { terminalRunError } from '@mcp-abap-adt/llm-agent';
 import { assertPositiveInteger } from '../util/assert-positive-integer.js';
 import { relevanceQuery } from './relevance-query.js';
 
@@ -32,9 +33,13 @@ async function rerankOrFallback(
       options,
     );
     if (r.ok) return { ok: true, value: r.value.slice(0, k) };
+    const terminal = terminalRunError(r.error);
+    if (terminal) return { ok: false, error: terminal };
     code = r.error.code;
     message = r.error.message;
   } catch (err) {
+    const terminal = terminalRunError(err);
+    if (terminal) return { ok: false, error: terminal };
     code = 'RERANK_THROWN';
     message = String(err).slice(0, MAX_THROWN_MESSAGE);
   }

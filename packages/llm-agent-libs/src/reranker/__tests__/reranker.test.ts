@@ -1,6 +1,12 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import type { ILlm, RagResult } from '@mcp-abap-adt/llm-agent';
+import {
+  type ILlm,
+  LlmError,
+  MODEL_CONTEXT_EXCEEDED,
+  type RagResult,
+  terminalRunError,
+} from '@mcp-abap-adt/llm-agent';
 import { makeLlm } from '../../testing/index.js';
 import { LlmReranker } from '../llm-reranker.js';
 import { NoopReranker } from '../noop-reranker.js';
@@ -63,6 +69,41 @@ describe('LlmReranker', () => {
     ).rerank('test', sampleResults);
     assert.ok(!r.ok);
     assert.equal(r.error.code, 'RERANK_ERROR');
+  });
+
+  for (const failure of ['returned', 'thrown']) {
+    it(`preserves a ${failure} LLM error as the cause`, async () => {
+      const error = new LlmError('Prompt is too long', MODEL_CONTEXT_EXCEEDED);
+      const llm: ILlm = {
+        async chat() {
+          if (failure === 'thrown') throw error;
+          return { ok: false, error };
+        },
+        async *streamChat() {},
+      };
+      const r = await new LlmReranker(llm).rerank('q', sampleResults);
+      assert.ok(!r.ok);
+      assert.equal(r.error.cause, error);
+    });
+  }
+
+  it('returns the terminal error when an earlier parallel batch fails transiently', async () => {
+    const transient = new LlmError('Service unavailable');
+    const terminal = new LlmError('Prompt is too long', MODEL_CONTEXT_EXCEEDED);
+    let attempts = 0;
+    const llm: ILlm = {
+      async chat() {
+        return { ok: false, error: ++attempts === 1 ? transient : terminal };
+      },
+      async *streamChat() {},
+    };
+    const r = await new LlmReranker(llm, {
+      batchSize: 1,
+      concurrency: 2,
+    }).rerank('q', sampleResults);
+    assert.ok(!r.ok);
+    assert.equal(terminalRunError(r.error), terminal);
+    assert.equal(attempts, 2);
   });
 
   for (const [content, why] of [

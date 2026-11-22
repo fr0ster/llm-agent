@@ -54,12 +54,12 @@ export function makeSubagentClient(llm: ILlm): ISubagentClient {
       if (!r.ok) {
         options?.sessionLogger?.logStep(
           `llm_response_${n}`,
-          { error: r.error?.message ?? 'subagent llm error' },
+          { error: r.error.message },
           'llm',
         );
         return {
           kind: 'error',
-          error: r.error?.message ?? 'subagent llm error',
+          error: r.error,
         };
       }
       const v = r.value;

@@ -1,5 +1,6 @@
 import type {
   CallOptions,
+  LlmError,
   LlmUsage,
   Message,
   SerializableStrategyState,
@@ -16,7 +17,7 @@ export type SubagentResult =
       toolCalls: StreamToolCall[];
       usage?: LlmUsage;
     }
-  | { kind: 'error'; error: string; usage?: LlmUsage };
+  | { kind: 'error'; error: LlmError; usage?: LlmUsage };
 
 export interface Step {
   /** Stable plan-time identity (§F). 1:1 with a board entry; assigned at

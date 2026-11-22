@@ -1,7 +1,8 @@
-import type {
-  CallOptions,
-  IQueryEmbedder,
-  LlmUsage,
+import {
+  type CallOptions,
+  type IQueryEmbedder,
+  type LlmUsage,
+  terminalRunError,
 } from '@mcp-abap-adt/llm-agent';
 import { appendHint } from './prompts.js';
 import {
@@ -70,6 +71,10 @@ export async function establishTargetState(
     undefined,
     diagnosticCallOptions(options, 'evaluator'),
   );
+  if (r.kind === 'error') {
+    const terminal = terminalRunError(r.error);
+    if (terminal) throw terminal;
+  }
   const target = r.kind === 'content' ? r.content : '';
 
   if (cfg.strategy === 'consumer-confirm') {

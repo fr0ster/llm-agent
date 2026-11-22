@@ -4,8 +4,11 @@ import {
   type IQueryEmbedding,
   type IRag,
   type IReranker,
+  LlmError,
+  MODEL_CONTEXT_EXCEEDED,
   RagError,
   type RagResult,
+  terminalRunError,
 } from '@mcp-abap-adt/llm-agent';
 import { RerankAllRetrieval, RerankedRetrieval } from '../index.js';
 
@@ -119,6 +122,28 @@ describe('RerankedRetrieval', () => {
     }).retrieve(store, q, 2);
     assert.ok(!r.ok);
   });
+
+  for (const failure of ['returned', 'thrown']) {
+    it(`propagates a ${failure} terminal rerank failure`, async () => {
+      const { store } = fakeStore([hit('a', 0.9)]);
+      const terminal = new LlmError(
+        'Prompt is too long',
+        MODEL_CONTEXT_EXCEEDED,
+      );
+      const error = Object.assign(new RagError('down', 'RERANK_ERROR'), {
+        cause: terminal,
+      });
+      const reranker: IReranker = {
+        async rerank() {
+          if (failure === 'thrown') throw terminal;
+          return { ok: false, error };
+        },
+      };
+      const r = await new RerankedRetrieval(reranker).retrieve(store, q, 1);
+      assert.ok(!r.ok);
+      assert.equal(terminalRunError(r.error), terminal);
+    });
+  }
 
   it('a throwing reranker is treated as a failure', async () => {
     const { store } = fakeStore([hit('a', 0.9)]);

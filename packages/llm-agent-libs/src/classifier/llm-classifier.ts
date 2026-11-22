@@ -11,6 +11,7 @@ import {
   ClassifierError,
   type Result,
   type Subprompt,
+  terminalRunError,
 } from '@mcp-abap-adt/llm-agent';
 import { withAbort } from '../utils/with-abort.js';
 
@@ -150,14 +151,15 @@ export class LlmClassifier implements ISubpromptClassifier {
           requestId: options?.trace?.traceId,
         });
       }
-      if (!llmResult.ok)
+      if (!llmResult.ok) {
+        const terminal = terminalRunError(llmResult.error);
         return {
           ok: false,
-          error: new ClassifierError(
-            llmResult.error.message,
-            llmResult.error.code,
-          ),
+          error:
+            terminal ??
+            new ClassifierError(llmResult.error.message, llmResult.error.code),
         };
+      }
 
       const subprompts = parseSubprompts(llmResult.value.content);
       this.cache?.set(text, subprompts);
@@ -166,7 +168,9 @@ export class LlmClassifier implements ISubpromptClassifier {
       if (err instanceof ClassifierError) return { ok: false, error: err };
       return {
         ok: false,
-        error: new ClassifierError(String(err), 'LLM_ERROR'),
+        error:
+          terminalRunError(err) ??
+          new ClassifierError(String(err), 'LLM_ERROR'),
       };
     }
   }

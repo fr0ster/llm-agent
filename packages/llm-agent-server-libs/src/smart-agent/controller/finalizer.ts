@@ -1,4 +1,8 @@
-import type { CallOptions, LlmUsage } from '@mcp-abap-adt/llm-agent';
+import {
+  type CallOptions,
+  type LlmUsage,
+  terminalRunError,
+} from '@mcp-abap-adt/llm-agent';
 import { appendHint } from './prompts.js';
 import type { ISubagentClient } from './subagent-client.js';
 
@@ -110,11 +114,14 @@ export class LlmFinalizer implements IFinalizer {
       opts.callOptions,
     );
     opts.logUsage?.('finalizer', res.usage);
-    if (res.kind !== 'content') {
-      throw new Error(
-        `finalizer error: ${res.kind === 'error' ? res.error : res.kind}`,
-      );
+    if (res.kind === 'error') {
+      const terminal = terminalRunError(res.error);
+      if (terminal) throw terminal;
+      throw new Error(`finalizer error: ${res.error.message}`, {
+        cause: res.error,
+      });
     }
+    if (res.kind !== 'content') throw new Error(`finalizer error: ${res.kind}`);
     return res.content;
   }
 }

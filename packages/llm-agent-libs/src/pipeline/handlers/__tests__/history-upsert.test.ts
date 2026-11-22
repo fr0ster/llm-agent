@@ -5,11 +5,14 @@ import type {
   IHistoryMemory,
   IHistorySummarizer,
   IRag,
-  LlmError,
   RagError,
   Result,
 } from '@mcp-abap-adt/llm-agent';
-import { InMemoryRag } from '@mcp-abap-adt/llm-agent';
+import {
+  InMemoryRag,
+  LlmError,
+  MODEL_CONTEXT_EXCEEDED,
+} from '@mcp-abap-adt/llm-agent';
 import {
   ownedTestStores,
   testCallOptions,
@@ -76,6 +79,33 @@ function makeFakeRag(): IRag & {
 }
 
 describe('history-upsert: summarizeAndStore', () => {
+  it('propagates a terminal summarizer error without storing fallback text', async () => {
+    const error = new LlmError('Prompt is too long', MODEL_CONTEXT_EXCEEDED);
+    const memory = makeFakeMemory();
+    const rag = makeFakeRag();
+    await assert.rejects(
+      summarizeAndStore({
+        turn: {
+          sessionId: 's1',
+          turnIndex: 0,
+          userText: 'request',
+          assistantText: 'answer',
+          toolCalls: [],
+          toolResults: [],
+          timestamp: 1000,
+        },
+        summarizer: { summarize: async () => ({ ok: false, error }) },
+        memory,
+        rag,
+        sessionId: 's1',
+        options: { userId: 'test-user' },
+      }),
+      { code: MODEL_CONTEXT_EXCEEDED },
+    );
+    assert.equal(rag.upserted.length, 0);
+    assert.equal(memory.entries.size, 0);
+  });
+
   it('summarizes turn, upserts to RAG, pushes to memory', async () => {
     const memory = makeFakeMemory();
     const summarizer = makeFakeSummarizer('Created class ZCL_TEST in ZDEV');

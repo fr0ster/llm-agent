@@ -4,20 +4,67 @@ import { setImmediate } from 'node:timers/promises';
 import {
   type ICoordinatorContext,
   type ILlm,
+  LlmError,
   McpError,
   type Message,
+  MODEL_CONTEXT_EXCEEDED,
   TokenLedger,
   type ToolRound,
 } from '@mcp-abap-adt/llm-agent';
 import { SmartAgent } from '../agent.js';
+import { LlmClassifier } from '../classifier/llm-classifier.js';
 import { ContextAssembler } from '../context/context-assembler.js';
 import { SelfDispatch } from '../coordinator/dispatch/self.js';
 import { CyclicReActExecutor } from '../coordinator/stepper/cyclic-react-executor.js';
 import { LegacyAccumulateContextStrategy } from '../pipeline/context/tool-loop-context/index.js';
 import { DefaultPipeline } from '../pipeline/default-pipeline.js';
-import { makeDefaultDeps, testCallOptions } from '../testing/index.js';
+import { LlmReranker } from '../reranker/llm-reranker.js';
+import { makeDefaultDeps, makeRag, testCallOptions } from '../testing/index.js';
 
 const tool = { name: 'Work', description: 'Work', inputSchema: {} };
+
+for (const pipeline of [false, true]) {
+  for (const stage of ['classifier', 'translation', 'reranker']) {
+    test(`${pipeline ? 'pipeline' : 'direct'} surfaces context overflow from the ${stage}`, async () => {
+      const error = new LlmError('Prompt is too long', MODEL_CONTEXT_EXCEEDED);
+      const failingLlm: ILlm = {
+        async chat() {
+          if (stage === 'classifier') throw error;
+          return { ok: false, error };
+        },
+        async *streamChat() {},
+      };
+      const { deps, llm } = makeDefaultDeps({
+        classifier:
+          stage === 'classifier' ? new LlmClassifier(failingLlm) : undefined,
+        ragStores: { docs: makeRag([{ text: 'doc', metadata: {}, score: 1 }]) },
+        reranker:
+          stage === 'reranker' ? new LlmReranker(failingLlm) : undefined,
+      });
+      if (stage === 'translation') {
+        deps.helperLlm = failingLlm;
+        deps.translateQueryStores = new Set(['docs']);
+      }
+      const config = { classificationEnabled: stage === 'classifier' };
+      if (pipeline) {
+        const flow = new DefaultPipeline();
+        flow.initialize({ ...deps, agentConfig: config });
+        deps.pipeline = flow;
+      }
+      const input =
+        stage === 'translation'
+          ? 'Find the résumé for the program'
+          : 'Find the documentation';
+      const result = await new SmartAgent(deps, config).process(
+        input,
+        testCallOptions(),
+      );
+      assert.ok(!result.ok);
+      assert.equal(result.error, error);
+      assert.equal(llm.callCount, 0);
+    });
+  }
+}
 
 test('self: a terminal exception stops the step after one LLM call', async () => {
   const failure = new McpError('TERMINAL_SENTINEL', 'MCP_NOT_CONNECTED');

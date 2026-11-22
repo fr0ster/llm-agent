@@ -1,4 +1,4 @@
-import { stampRagOwner } from '@mcp-abap-adt/llm-agent';
+import { stampRagOwner, terminalRunError } from '@mcp-abap-adt/llm-agent';
 import {
   type CallerResolution,
   callerResolutionKey,
@@ -12,8 +12,8 @@ import {
  * 2. Upserts the summary to the history RAG store.
  * 3. Pushes the summary to the recency memory buffer.
  *
- * All operations are best-effort — failures are logged but never block the
- * response. The `summarizeAndStore` helper is exported for unit testing.
+ * Recoverable failures are logged and fall back to the original turn text
+ * when summarization fails. Terminal errors are propagated.
  */
 
 import type {
@@ -45,13 +45,14 @@ export async function summarizeAndStore(
   const identity = args.identity ?? resolveCallerIdentity(options, sessionId);
 
   const result = await summarizer.summarize(turn, options);
+  if (!result.ok) {
+    const terminal = terminalRunError(result.error);
+    if (terminal) throw terminal;
+    log?.('history_summarize_failed', { error: result.error.message });
+  }
   const summary = result.ok
     ? result.value
     : `${turn.userText} → ${turn.assistantText}`;
-
-  if (!result.ok) {
-    log?.('history_summarize_failed', { error: result.error.message });
-  }
 
   const ragWriter = rag.writer?.();
   if (!ragWriter) {
@@ -124,7 +125,9 @@ export class HistoryUpsertHandler implements IStageHandler {
       });
 
       span.setStatus('ok');
-    } catch {
+    } catch (error) {
+      const terminal = terminalRunError(error);
+      if (terminal) throw terminal;
       span.setStatus('error', 'history upsert failed');
     }
 

@@ -8,6 +8,7 @@ import {
   RagError,
   type RagResult,
   type Result,
+  terminalRunError,
 } from '@mcp-abap-adt/llm-agent';
 import { assertPositiveInteger } from '../util/assert-positive-integer.js';
 import type { IReranker } from './types.js';
@@ -118,10 +119,16 @@ export class DecisionReranker implements IReranker {
           this.runBatch(query, results, idxs, task, criteria, options),
         ),
       );
+      let failure: RagError | undefined;
       for (const res of settled) {
-        if (!res.ok) return res;
+        if (!res.ok) {
+          if (terminalRunError(res.error)) return res;
+          failure ??= res.error;
+          continue;
+        }
         Object.assign(answers, res.value);
       }
+      if (failure) return { ok: false, error: failure };
     }
 
     const scored: Array<{ r: RagResult; i: number }> = [];
@@ -166,9 +173,12 @@ export class DecisionReranker implements IReranker {
     if (!res.ok) {
       return {
         ok: false,
-        error: new RagError(
-          `decision rerank failed: ${res.error.code}: ${res.error.message}`,
-          'RERANK_ERROR',
+        error: Object.assign(
+          new RagError(
+            `decision rerank failed: ${res.error.code}: ${res.error.message}`,
+            'RERANK_ERROR',
+          ),
+          { cause: res.error },
         ),
       };
     }
