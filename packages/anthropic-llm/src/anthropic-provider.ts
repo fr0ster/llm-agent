@@ -667,7 +667,10 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
     // normalized LlmToolCallDelta chunks.
     const toolBlockIndices = new Map<number, number>();
     let nextToolIndex = 0;
-    const toolInputs = new Map<number, { input: Json; hasDelta: boolean }>();
+    const toolInputs = new Map<
+      number,
+      { input: Json; hasNonEmptyDelta: boolean }
+    >();
 
     try {
       while (true) {
@@ -726,7 +729,7 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
               toolBlockIndices.set(blockIndex, toolIndex);
               toolInputs.set(blockIndex, {
                 input: parsed.content_block.input ?? {},
-                hasDelta: false,
+                hasNonEmptyDelta: false,
               });
               yield {
                 content: '',
@@ -747,14 +750,15 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
               const toolIndex = toolBlockIndices.get(parsed.index as number);
               if (toolIndex !== undefined) {
                 const state = toolInputs.get(parsed.index as number);
-                if (state) state.hasDelta = true;
+                const partialJson: string = parsed.delta.partial_json ?? '';
+                if (state && partialJson) state.hasNonEmptyDelta = true;
                 yield {
                   content: '',
                   raw: parsed,
                   toolCalls: [
                     {
                       index: toolIndex,
-                      arguments: parsed.delta.partial_json ?? '',
+                      arguments: partialJson,
                     },
                   ],
                 };
@@ -763,7 +767,7 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
               const blockIndex = parsed.index as number;
               const toolIndex = toolBlockIndices.get(blockIndex);
               const state = toolInputs.get(blockIndex);
-              if (toolIndex !== undefined && state && !state.hasDelta) {
+              if (toolIndex !== undefined && state && !state.hasNonEmptyDelta) {
                 yield {
                   content: '',
                   raw: parsed,

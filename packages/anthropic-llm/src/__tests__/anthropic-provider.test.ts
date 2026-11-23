@@ -307,6 +307,9 @@ describe('AnthropicProvider — chat() options forwarding', () => {
     const result = await provider.chat([{ role: 'user', content: 'hi' }]);
     assert.equal(result.content, 'Sure, let me check that.');
     assert.equal(result.finishReason, 'tool_calls');
+    assert.deepEqual(result.toolCalls, [
+      { index: 0, id: 'call_1', name: 'search', arguments: '{}' },
+    ]);
   });
 
   it('extracts system message from messages array', async () => {

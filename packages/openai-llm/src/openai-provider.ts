@@ -325,6 +325,7 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
 
       const stream = response.data;
       let buffer = '';
+      const toolArgumentsReceived = new Map<number, boolean>();
 
       for await (const chunk of stream) {
         buffer += chunk.toString();
@@ -362,7 +363,7 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
                     function?: { name?: string; arguments?: string };
                   }>
                 | undefined;
-              const toolCalls = deltaToolCalls?.length
+              let toolCalls: LLMResponse['toolCalls'] = deltaToolCalls?.length
                 ? deltaToolCalls.map((tc) => ({
                     index: tc.index,
                     id: tc.id,
@@ -372,6 +373,21 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
                 : undefined;
               if (choice.delta.content || toolCalls?.length)
                 request.firstToken();
+              for (const { index, arguments: args } of toolCalls ?? []) {
+                toolArgumentsReceived.set(
+                  index,
+                  Boolean(args) || toolArgumentsReceived.get(index) === true,
+                );
+              }
+              if (choice.finish_reason === 'tool_calls') {
+                for (const [index, hasArguments] of toolArgumentsReceived) {
+                  if (!hasArguments) {
+                    toolCalls ??= [];
+                    toolCalls.push({ index, arguments: '{}' });
+                  }
+                }
+                toolArgumentsReceived.clear();
+              }
               yield {
                 content: choice.delta.content || '',
                 finishReason: choice.finish_reason,

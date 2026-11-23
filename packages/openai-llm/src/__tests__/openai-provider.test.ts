@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict';
+import { Readable } from 'node:stream';
 import { describe, it } from 'node:test';
 import {
   gateFor,
   isThrottledError,
+  type LLMResponse,
   type Message,
   resetQuotaGates,
   staticApiKey,
@@ -523,6 +525,67 @@ describe('OpenAIProvider — streamChat() usage', () => {
     assert.deepEqual(toolChunks[2].toolCalls, [
       { index: 0, id: undefined, name: undefined, arguments: '"Kyiv"}' },
     ]);
+  });
+
+  it('supplies empty JSON at tool_calls finish for calls without argument fragments', async (t) => {
+    const provider = new OpenAIProvider({
+      credential: staticApiKey('sk-test'),
+      model: 'gpt-4o',
+    });
+    const choices = [
+      {
+        delta: {
+          tool_calls: [
+            {
+              index: 0,
+              id: 'call_0',
+              function: { name: 'lookup', arguments: '' },
+            },
+            {
+              index: 1,
+              id: 'call_1',
+              function: { name: 'search', arguments: '' },
+            },
+          ],
+        },
+      },
+      {
+        delta: {
+          tool_calls: [
+            { index: 0, function: { arguments: '' } },
+            { index: 1, function: { arguments: '{"query":' } },
+          ],
+        },
+      },
+      {
+        delta: { tool_calls: [{ index: 1, function: { arguments: '"b"}' } }] },
+        finish_reason: 'tool_calls',
+      },
+    ];
+    t.mock.method(provider.client, 'post', async () => ({
+      data: Readable.from([
+        ...choices.map(
+          (choice) => `data: ${JSON.stringify({ choices: [choice] })}\n\n`,
+        ),
+        'data: [DONE]\n\n',
+      ]),
+    }));
+
+    const chunks: LLMResponse[] = [];
+    for await (const chunk of provider.streamChat([])) chunks.push(chunk);
+    assert.equal(chunks.at(-1)?.finishReason, 'tool_calls');
+    assert.deepEqual(
+      chunks.flatMap((chunk) =>
+        (chunk.toolCalls ?? []).flatMap(({ index, arguments: args }) =>
+          args ? [{ index, arguments: args }] : [],
+        ),
+      ),
+      [
+        { index: 1, arguments: '{"query":' },
+        { index: 1, arguments: '"b"}' },
+        { index: 0, arguments: '{}' },
+      ],
+    );
   });
 
   it('yields usage-only chunk at end of stream', async () => {
