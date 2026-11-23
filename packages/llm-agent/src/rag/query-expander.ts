@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { terminalRunError } from '../errors/terminal-run-error.js';
+import { contextExceededError } from '../errors/terminal-run-error.js';
 import type { ILlm } from '../interfaces/llm.js';
 import type { IRequestLogger } from '../interfaces/request-logger.js';
 import {
@@ -72,7 +72,7 @@ export class LlmQueryExpander implements IQueryExpander {
         return {
           ok: false,
           error:
-            terminalRunError(res.error) ??
+            contextExceededError(res.error) ??
             new RagError(res.error.message, 'QUERY_EXPAND_ERROR'),
         };
       }
@@ -88,7 +88,7 @@ export class LlmQueryExpander implements IQueryExpander {
       return {
         ok: false,
         error:
-          terminalRunError(err) ??
+          contextExceededError(err) ??
           new RagError(
             `Query expansion failed: ${String(err)}`,
             'QUERY_EXPAND_ERROR',

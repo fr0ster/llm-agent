@@ -127,7 +127,7 @@ describe('DecisionReranker', () => {
     assert.ok(!r.ok);
     assert.equal(r.error.code, 'RERANK_ERROR');
     assert.match(r.error.message, /DECISION_AUTH/);
-    assert.equal(r.error.cause, error);
+    assert.equal(r.error.cause, undefined);
   });
 
   it('a missing answer → RERANK_ERROR', async () => {

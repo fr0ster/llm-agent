@@ -254,3 +254,16 @@ it('overlay health check preserves returned overflow after a sibling rejection',
     error: overflow,
   });
 });
+
+it('overlay keeps the first returned error when no store reports overflow', async () => {
+  const first = new RagError('First store unavailable');
+  const second = new RagError('Second store aborted', 'ABORTED');
+  const base = stub([]);
+  const overlay = stub([]);
+  base.query = async () => ({ ok: false, error: first });
+  overlay.query = async () => ({ ok: false, error: second });
+  assert.deepEqual(
+    await new OverlayRag(base, overlay).query(new TextOnlyEmbedding('q'), 1),
+    { ok: false, error: first },
+  );
+});

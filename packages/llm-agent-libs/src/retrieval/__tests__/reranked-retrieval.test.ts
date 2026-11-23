@@ -81,7 +81,7 @@ describe('RerankedRetrieval', () => {
     const reranker: IReranker = {
       rerank: async () => ({
         ok: false,
-        error: new RagError('down', 'RERANK_ERROR'),
+        error: new RagError('down', 'ABORTED'),
       }),
     };
     const r = await new RerankedRetrieval(reranker, {
@@ -100,7 +100,7 @@ describe('RerankedRetrieval', () => {
         {
           store: 'tools',
           strategy: 'rerank',
-          code: 'RERANK_ERROR',
+          code: 'ABORTED',
           message: 'down',
         },
       ],
@@ -150,7 +150,7 @@ describe('RerankedRetrieval', () => {
     const steps: Array<[string, Record<string, unknown>]> = [];
     const r = await new RerankedRetrieval({
       rerank: async () => {
-        throw new Error('boom');
+        throw new RagError('boom', 'CONFIG_ERROR');
       },
     }).retrieve(store, q, 1, {
       sessionLogger: {
@@ -163,7 +163,7 @@ describe('RerankedRetrieval', () => {
       ['a'],
     );
     assert.equal(steps[0][1].code, 'RERANK_THROWN');
-    assert.equal(steps[0][1].message, 'Error: boom');
+    assert.equal(steps[0][1].message, 'RagError: boom');
   });
 
   it('truncates a thrown error to 500 characters in the step', async () => {

@@ -76,7 +76,10 @@ for (const thrown of [false, true]) {
       assert.equal(result.error.code, MODEL_CONTEXT_EXCEEDED);
       assert.equal(result.error.cause, wrapped);
 
-      const ordinary = failingLlm(new LlmError('Unavailable'), thrown);
+      const ordinary = failingLlm(
+        new LlmError('Unavailable', 'CONFIG_ERROR'),
+        thrown,
+      );
       const fallback = await run(ordinary.llm);
       assert.equal(ordinary.calls(), 1);
       if (name === 'queryExpansion') {
@@ -98,7 +101,10 @@ for (const thrown of [false, true]) {
     );
     assert.equal(model.calls(), 1);
 
-    const ordinary = failingLlm(new LlmError('Unavailable'), thrown);
+    const ordinary = failingLlm(
+      new LlmError('Unavailable', 'CONFIG_ERROR'),
+      thrown,
+    );
     assert.deepEqual(
       await new IntentToolIndexing(ordinary.llm).prepare(tool),
       [],
@@ -157,7 +163,7 @@ for (const thrown of [false, true]) {
         assert.equal(result.error.code, MODEL_CONTEXT_EXCEEDED);
         assert.equal(embeddings, 0);
 
-        const ordinary = run(new LlmError('Unavailable'));
+        const ordinary = run(new LlmError('Unavailable', 'CONFIG_ERROR'));
         if (thrown && store === 'memory') {
           await assert.rejects(ordinary.result, /Unavailable/);
         } else {

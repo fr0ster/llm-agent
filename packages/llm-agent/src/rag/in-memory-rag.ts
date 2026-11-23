@@ -1,5 +1,5 @@
 import { randomUUID as listStoreId, randomUUID } from 'node:crypto';
-import { terminalRunError } from '../errors/terminal-run-error.js';
+import { contextExceededError } from '../errors/terminal-run-error.js';
 import type { IQueryEmbedding } from '../interfaces/query-embedding.js';
 import type {
   IRag,
@@ -136,12 +136,12 @@ export class InMemoryRag implements IRag, IRagScanner, IRagFilteredDeleter {
         const eResult = await enricher.enrich(enrichedText, options);
         if (eResult.ok) enrichedText = eResult.value;
         else {
-          const terminal = terminalRunError(eResult.error);
+          const terminal = contextExceededError(eResult.error);
           if (terminal) return { ok: false, error: terminal };
         }
       }
     } catch (error) {
-      const terminal = terminalRunError(error);
+      const terminal = contextExceededError(error);
       if (terminal) return { ok: false, error: terminal };
       throw error;
     }
@@ -262,12 +262,12 @@ export class InMemoryRag implements IRag, IRagScanner, IRagFilteredDeleter {
         const ppResult = await pp.process(searchText, options);
         if (ppResult.ok) searchText = ppResult.value;
         else {
-          const terminal = terminalRunError(ppResult.error);
+          const terminal = contextExceededError(ppResult.error);
           if (terminal) return { ok: false, error: terminal };
         }
       }
     } catch (error) {
-      const terminal = terminalRunError(error);
+      const terminal = contextExceededError(error);
       if (terminal) return { ok: false, error: terminal };
       throw error;
     }

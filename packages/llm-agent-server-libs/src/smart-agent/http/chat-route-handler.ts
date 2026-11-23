@@ -3,13 +3,12 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { RagCaller } from '@mcp-abap-adt/llm-agent';
 import {
   buildExternalResults,
+  contextExceededError,
   type IModelProvider,
   type IRequestLogger,
   type Message,
-  MODEL_CONTEXT_EXCEEDED,
   normalizeAndValidateExternalTools,
   type StreamToolCall,
-  terminalRunError,
   toToolCallDelta,
 } from '@mcp-abap-adt/llm-agent';
 import {
@@ -323,10 +322,10 @@ export async function handleChat(
         if (!canWrite(res, abort.signal)) break;
         keepAlive.reset();
         if (!chunk.ok) {
-          const terminal = terminalRunError(chunk.error);
+          const terminal = contextExceededError(chunk.error);
           if (terminal) {
             res.end(
-              `data: ${jsonError(terminal.message, llmFailureType(terminal.code), terminal.code)}\n\n`,
+              `data: ${jsonError(terminal.message, 'invalid_request_error', terminal.code)}\n\n`,
             );
             log({
               event: 'request_done',
@@ -493,18 +492,14 @@ export async function handleChat(
   }
   log({ event: 'request_done', ok: result.ok, durationMs: Date.now() - t0 });
   if (!result.ok) {
-    const terminal = terminalRunError(result.error);
+    const terminal = contextExceededError(result.error);
     if (terminal) {
-      res.writeHead(terminal.code === MODEL_CONTEXT_EXCEEDED ? 400 : 500, {
+      res.writeHead(400, {
         'Content-Type': 'application/json',
         ...invalidToolsHeader,
       });
       res.end(
-        jsonError(
-          terminal.message,
-          llmFailureType(terminal.code),
-          terminal.code,
-        ),
+        jsonError(terminal.message, 'invalid_request_error', terminal.code),
       );
       return;
     }
@@ -556,10 +551,4 @@ export async function handleChat(
       },
     }),
   );
-}
-
-function llmFailureType(code: string): string {
-  return code === MODEL_CONTEXT_EXCEEDED
-    ? 'invalid_request_error'
-    : 'server_error';
 }

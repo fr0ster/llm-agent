@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { ILlm, LlmResponse, Result } from '@mcp-abap-adt/llm-agent';
-import { DefaultWaitStrategy, LlmError } from '@mcp-abap-adt/llm-agent';
+import {
+  DefaultWaitStrategy,
+  LlmError,
+  MODEL_CONTEXT_EXCEEDED,
+} from '@mcp-abap-adt/llm-agent';
 import { RetryLlm } from '../retry-llm.js';
 
 /**
@@ -26,6 +30,43 @@ function makeFailingLlm(error: LlmError, failTimes: number) {
 }
 
 describe('RetryLlm — status classification', () => {
+  for (const code of [MODEL_CONTEXT_EXCEEDED, 'LLM_ERROR']) {
+    it(`handles ${code} returned when chat and stream are aborted`, async () => {
+      const chatAbort = new AbortController();
+      const streamAbort = new AbortController();
+      const reason = new Error('Caller stopped');
+      const error = new LlmError('Model failed', code);
+      const llm: ILlm = {
+        async chat() {
+          chatAbort.abort(reason);
+          return { ok: false, error };
+        },
+        async *streamChat() {
+          streamAbort.abort(reason);
+          yield { ok: false, error };
+        },
+      };
+      const retry = new RetryLlm(llm);
+      const chat = await retry.chat([], undefined, {
+        signal: chatAbort.signal,
+      });
+      const results: { ok: boolean; error?: LlmError }[] = [chat];
+      for await (const chunk of retry.streamChat([], undefined, {
+        signal: streamAbort.signal,
+      })) {
+        results.push(chunk);
+      }
+      assert.equal(results.length, 2);
+      for (const result of results) {
+        assert.ok(!result.ok && result.error);
+        if (code === MODEL_CONTEXT_EXCEEDED) assert.equal(result.error, error);
+        else {
+          assert.equal(result.error.code, 'ABORTED');
+          assert.equal(result.error.cause, reason);
+        }
+      }
+    });
+  }
   it('retries transient failures past the old default cap', async () => {
     const llm = makeFailingLlm(
       Object.assign(new LlmError('Unavailable'), { status: 503 }),

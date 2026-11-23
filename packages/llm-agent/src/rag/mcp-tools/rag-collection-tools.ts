@@ -1,8 +1,5 @@
 import { z } from 'zod';
-import {
-  contextExceededError,
-  terminalRunError,
-} from '../../errors/terminal-run-error.js';
+import { contextExceededError } from '../../errors/terminal-run-error.js';
 import type {
   IRagEditor,
   IRagProviderRegistry,
@@ -79,12 +76,7 @@ function editFailure(error: RagError): Refusal {
       cause: overflow,
     });
   }
-  const terminal = terminalRunError(error);
-  return {
-    ok: false,
-    error: terminal?.message ?? error.message,
-    ...(terminal && { code: terminal.code }),
-  };
+  return { ok: false, error: error.message };
 }
 
 const scopeArg = z

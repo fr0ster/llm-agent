@@ -8,7 +8,6 @@ import {
   type IToolsRagHandle,
   type LlmTool,
   QueryEmbedding,
-  terminalRunError,
   toolNameFromRecord,
 } from '@mcp-abap-adt/llm-agent';
 
@@ -81,7 +80,7 @@ export async function makeToolsRagHandle(
           }
           if (hits.length > 0) return hits;
         } else {
-          const terminal = terminalRunError(ragResult.error);
+          const terminal = contextExceededError(ragResult.error);
           if (terminal) throw terminal;
         }
       }

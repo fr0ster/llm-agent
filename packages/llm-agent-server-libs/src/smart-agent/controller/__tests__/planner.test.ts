@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict';
 import { describe, it, test } from 'node:test';
-import { LlmError } from '@mcp-abap-adt/llm-agent';
 import {
   CREATE_PLAN_SYSTEM,
   ENGLISH_INSTRUCTIONS_RULE,
@@ -307,7 +306,7 @@ describe('SmartExecutorPlanner', () => {
   it('finalizer non-content reply → null (retry, not a fake "completed")', async () => {
     // plan present + cursor at end + no failure → stepAtCursor → finalize.
     const p = new SmartExecutorPlanner(
-      planner([{ kind: 'error', error: new LlmError('boom') }]),
+      planner([{ kind: 'error', error: 'boom' }]),
     );
     const b: SessionBundle = {
       ...bundle(),
@@ -434,7 +433,7 @@ describe('SmartExecutorPlanner', () => {
     const p = new SmartExecutorPlanner(
       planner([
         { kind: 'content', content: JSON.stringify({ plan: [] }) }, // empty replan (done)
-        { kind: 'error', error: new LlmError('finalizer boom') }, // finalize fails → null
+        { kind: 'error', error: 'finalizer boom' }, // finalize fails → null
         { kind: 'content', content: 'FINAL' }, // finalize retry succeeds
       ]),
     );

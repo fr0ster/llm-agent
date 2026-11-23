@@ -33,7 +33,6 @@ import {
   defaultToolNamespace,
   defaultToolRecordKey,
   embedDocumentRecords,
-  terminalRunError,
 } from '@mcp-abap-adt/llm-agent';
 
 /**
@@ -94,7 +93,7 @@ async function writeOne(
       ? await writer.upsertPrecomputedRaw(id, text, vector, metadata, options)
       : await writer.upsertRaw(id, text, metadata, options);
   if (result && !result.ok) {
-    const terminal = terminalRunError(result.error);
+    const terminal = contextExceededError(result.error);
     if (terminal) throw terminal;
   }
   const ok = result?.ok === true;
@@ -337,30 +336,30 @@ export async function vectorizeMcpTools(
   const written: boolean[] = new Array(tools.length).fill(false);
   if (vectors && writer.upsertManyPrecomputedRaw) {
     const precomputed = vectors;
-    const bulk = await writer
-      .upsertManyPrecomputedRaw(
-        tools.map((t, i) => ({
-          id: ids[i],
-          text: texts[i],
-          vector: precomputed[i],
-          // Store the EXPOSED name so retrieval recovers it via
-          // toolNameFromRecord, independent of the key scheme.
-          metadata: { name: t.name },
-        })),
-        options,
-      )
-      .catch((err: unknown) => ({
-        ok: false as const,
-        error:
-          terminalRunError(err) ??
-          (err instanceof Error ? err : new Error(String(err))),
-      }));
-    if (bulk.ok) {
+    const bulkWrite = writer.upsertManyPrecomputedRaw(
+      tools.map((t, i) => ({
+        id: ids[i],
+        text: texts[i],
+        vector: precomputed[i],
+        // Store the EXPOSED name so retrieval recovers it via
+        // toolNameFromRecord, independent of the key scheme.
+        metadata: { name: t.name },
+      })),
+      options,
+    );
+    let bulk: Awaited<typeof bulkWrite> | undefined;
+    try {
+      bulk = await bulkWrite;
+    } catch (error) {
+      const overflow = contextExceededError(error);
+      if (overflow) throw overflow;
+    }
+    if (bulk?.ok) {
       written.fill(true);
       bulkWritten = true;
-    } else {
-      const terminal = terminalRunError(bulk.error);
-      if (terminal) throw terminal;
+    } else if (bulk) {
+      const overflow = contextExceededError(bulk.error);
+      if (overflow) throw overflow;
     }
     // else: fall through to the per-tool loop below.
   }
@@ -381,7 +380,7 @@ export async function vectorizeMcpTools(
           options,
         );
       } catch (error) {
-        const terminal = terminalRunError(error);
+        const terminal = contextExceededError(error);
         if (terminal) throw terminal;
         // A throwing write is this tool's failure, not the client's: the loop
         // continues and the name lands in `failed`.
@@ -498,7 +497,7 @@ export async function vectorizeSkills(
         options,
       );
     } catch (error) {
-      const terminal = terminalRunError(error);
+      const terminal = contextExceededError(error);
       if (terminal) throw terminal;
       ok = false;
     }

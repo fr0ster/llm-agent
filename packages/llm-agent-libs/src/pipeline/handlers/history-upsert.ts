@@ -1,4 +1,4 @@
-import { stampRagOwner, terminalRunError } from '@mcp-abap-adt/llm-agent';
+import { contextExceededError, stampRagOwner } from '@mcp-abap-adt/llm-agent';
 import {
   type CallerResolution,
   callerResolutionKey,
@@ -46,7 +46,7 @@ export async function summarizeAndStore(
 
   const result = await summarizer.summarize(turn, options);
   if (!result.ok) {
-    const terminal = terminalRunError(result.error);
+    const terminal = contextExceededError(result.error);
     if (terminal) throw terminal;
     log?.('history_summarize_failed', { error: result.error.message });
   }
@@ -69,7 +69,7 @@ export async function summarizeAndStore(
       options,
     );
     if (!upsertResult.ok) {
-      const terminal = terminalRunError(upsertResult.error);
+      const terminal = contextExceededError(upsertResult.error);
       if (terminal) throw terminal;
       log?.('history_upsert_failed', { error: upsertResult.error.message });
     }
@@ -128,7 +128,7 @@ export class HistoryUpsertHandler implements IStageHandler {
 
       span.setStatus('ok');
     } catch (error) {
-      const terminal = terminalRunError(error);
+      const terminal = contextExceededError(error);
       if (terminal) throw terminal;
       span.setStatus('error', 'history upsert failed');
     }

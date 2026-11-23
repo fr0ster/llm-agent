@@ -16,7 +16,6 @@ import {
   QueryEmbedding,
   RagAccessDeniedError,
   TextOnlyEmbedding,
-  terminalRunError,
   toolNameFromRecord,
 } from '@mcp-abap-adt/llm-agent';
 import { callerResolutionKey } from '../policy/caller-identity.js';
@@ -107,12 +106,12 @@ export class RagOrchestrator implements IRagOrchestrator {
             );
             if (expandResult.ok) translatedText = expandResult.value;
             else {
-              const terminal = terminalRunError(expandResult.error);
+              const terminal = contextExceededError(expandResult.error);
               if (terminal) return { ok: false, error: terminal };
             }
           }
         } catch (error) {
-          const terminal = terminalRunError(error);
+          const terminal = contextExceededError(error);
           if (terminal) return { ok: false, error: terminal };
           throw error;
         }
@@ -152,14 +151,10 @@ export class RagOrchestrator implements IRagOrchestrator {
           ).then((r) => ({ name, result: r }));
         }),
         ({ result }) => (result.ok ? undefined : result.error),
-      ).finally(() => ragSpan.end());
+      );
+      ragSpan.end();
       if (!queries.ok) return queries;
       const ragQueryResults = queries.value;
-      for (const { result } of ragQueryResults) {
-        if (result.ok) continue;
-        const terminal = terminalRunError(result.error);
-        if (terminal) return { ok: false, error: terminal };
-      }
       const ragResultsMap: Record<string, RagResult[]> = {};
       for (const { name, result: r } of ragQueryResults) {
         if (!r.ok) return r;
@@ -185,7 +180,7 @@ export class RagOrchestrator implements IRagOrchestrator {
               opts,
             );
             if (rr.ok) return { name, results: rr.value };
-            return { name, results, error: terminalRunError(rr.error) };
+            return { name, results, error: rr.error };
           }
           return { name, results };
         }),
@@ -193,8 +188,7 @@ export class RagOrchestrator implements IRagOrchestrator {
       );
       if (!reranked.ok) return reranked;
       const rerankedMap: Record<string, RagResult[]> = {};
-      for (const { name, results, error } of reranked.value) {
-        if (error) return { ok: false, error };
+      for (const { name, results } of reranked.value) {
         rerankedMap[name] = results;
       }
 
@@ -490,7 +484,7 @@ export class RagOrchestrator implements IRagOrchestrator {
         return {
           ok: false,
           error:
-            terminalRunError(classifyResult.error) ??
+            contextExceededError(classifyResult.error) ??
             new OrchestratorError(
               classifyResult.error.message,
               'CLASSIFIER_ERROR',

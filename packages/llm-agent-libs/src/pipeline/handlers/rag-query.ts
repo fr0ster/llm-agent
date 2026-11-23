@@ -23,9 +23,9 @@ import { denyRagAccess, ownerBoundQuery } from '../../rag/owner-bound-query.js';
 
 import type { CallOptions } from '@mcp-abap-adt/llm-agent';
 import {
+  contextExceededError,
   QueryEmbedding,
   TextOnlyEmbedding,
-  terminalRunError,
 } from '@mcp-abap-adt/llm-agent';
 import { withRelevanceQuery } from '../../retrieval/relevance-query.js';
 import type { ISpan } from '../../tracer/types.js';
@@ -109,8 +109,8 @@ export class RagQueryHandler implements IStageHandler {
 
     if (!result.ok) {
       ctx.error =
-        terminalRunError(result.error) ??
-        terminalRunError(ctx.error) ??
+        contextExceededError(result.error) ??
+        contextExceededError(ctx.error) ??
         result.error;
       return false;
     }

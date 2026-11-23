@@ -28,6 +28,7 @@ import {
   LlmError,
   McpError,
   MODEL_CONTEXT_EXCEEDED,
+  RagError,
   symmetricEmbedder,
   toolNameFromRecord,
 } from '@mcp-abap-adt/llm-agent';
@@ -447,6 +448,51 @@ describe('vectorizeMcpTools summary', () => {
 // ---------------------------------------------------------------------------
 
 describe('vectorizeMcpTools bulk upsert', () => {
+  for (const reject of [false, true]) {
+    it(`falls back from ${reject ? 'rejected' : 'returned'} ABORTED and records failed single writes`, async () => {
+      const aborted = new RagError('Write aborted', 'ABORTED');
+      let bulkCalls = 0;
+      const writes: string[] = [];
+      const rag = new InMemoryRag();
+      const writer: IRagBackendWriter = {
+        ...rag.writer(),
+        async upsertManyPrecomputedRaw() {
+          bulkCalls++;
+          if (reject) throw aborted;
+          return { ok: false, error: aborted };
+        },
+        async upsertPrecomputedRaw(id) {
+          writes.push(id);
+          if (id === 'tool:bad') {
+            if (reject) throw aborted;
+            return { ok: false, error: aborted };
+          }
+          return { ok: true, value: undefined };
+        },
+      };
+      const summary = await vectorizeMcpTools(
+        [
+          makeMcpClient(
+            ['bad', 'good'].map((name) => ({
+              name,
+              description: name,
+              inputSchema: {},
+            })),
+          ),
+        ],
+        Object.assign(rag, {
+          embedder: symmetricEmbedder(makeBatchEmbedder()),
+          writer: () => writer,
+        }),
+        new NoopRequestLogger(),
+        undefined,
+      );
+      assert.equal(bulkCalls, 1);
+      assert.deepEqual(writes, ['tool:bad', 'tool:good']);
+      assert.deepEqual(summary?.failed, ['bad']);
+      assert.equal(summary?.vectorized, 1);
+    });
+  }
   it('uses one bulk call instead of one write per tool', async () => {
     const writer = makeWriter({ hasBatchRaw: true, hasBulk: true });
     const rag = makeRagWithEmbedder(makeBatchEmbedder(), writer);

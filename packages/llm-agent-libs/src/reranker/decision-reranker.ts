@@ -1,6 +1,7 @@
 import {
   type CallOptions,
   collectWithContextOverflow,
+  contextExceededError,
   type DecisionAnswer,
   type DecisionEntry,
   formatTrustTag,
@@ -9,7 +10,6 @@ import {
   RagError,
   type RagResult,
   type Result,
-  terminalRunError,
 } from '@mcp-abap-adt/llm-agent';
 import { assertPositiveInteger } from '../util/assert-positive-integer.js';
 import type { IReranker } from './types.js';
@@ -122,17 +122,10 @@ export class DecisionReranker implements IReranker {
         (result) => (result.ok ? undefined : result.error),
       );
       if (!batch.ok) return batch;
-      const settled = batch.value;
-      let failure: RagError | undefined;
-      for (const res of settled) {
-        if (!res.ok) {
-          if (terminalRunError(res.error)) return res;
-          failure ??= res.error;
-          continue;
-        }
+      for (const res of batch.value) {
+        if (!res.ok) return res;
         Object.assign(answers, res.value);
       }
-      if (failure) return { ok: false, error: failure };
     }
 
     const scored: Array<{ r: RagResult; i: number }> = [];
@@ -177,13 +170,12 @@ export class DecisionReranker implements IReranker {
     if (!res.ok) {
       return {
         ok: false,
-        error: Object.assign(
+        error:
+          contextExceededError(res.error) ??
           new RagError(
             `decision rerank failed: ${res.error.code}: ${res.error.message}`,
             'RERANK_ERROR',
           ),
-          { cause: res.error },
-        ),
       };
     }
     return { ok: true, value: res.value.answers };

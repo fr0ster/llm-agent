@@ -41,6 +41,7 @@ import type {
 import {
   type AgentCallOptions,
   addCacheTokenUsage,
+  contextExceededError,
   type IQueryExpander,
   isReadinessReporter,
   type LlmUsage,
@@ -54,7 +55,6 @@ import {
   type StopReason,
   StreamingLlmCallStrategy,
   TextOnlyEmbedding,
-  terminalRunError,
   toModelToolMessages,
   toolNameFromRecord,
   toToolCallDelta,
@@ -1044,7 +1044,7 @@ export class SmartAgent {
       rootSpan.setStatus('ok');
     } catch (error) {
       const calls = workerLogger?.usageCalls ?? [];
-      const terminal = terminalRunError(error);
+      const terminal = contextExceededError(error);
       if (!terminal) throw withUsageCalls(error, calls);
       yield {
         ok: false,

@@ -1,8 +1,4 @@
-import {
-  type CallOptions,
-  type LlmUsage,
-  terminalRunError,
-} from '@mcp-abap-adt/llm-agent';
+import type { CallOptions, LlmUsage } from '@mcp-abap-adt/llm-agent';
 import type { ReviewOutcome } from './outcome.js';
 import { extractJsonObject } from './parser.js';
 import { appendHint } from './prompts.js';
@@ -105,14 +101,13 @@ export class LlmReviewer implements IReviewer {
     );
     opts.logUsage?.('reviewer', res.usage);
     if (res.kind !== 'content') {
-      const terminal =
-        res.kind === 'error' ? terminalRunError(res.error) : undefined;
+      const terminal = res.kind === 'error' ? res.contextOverflow : undefined;
       if (terminal) throw terminal;
       // Provider/transport error → JUDGE failure (the verdict is unknown), NOT a
       // step failure.
       return {
         kind: 'judge-failure',
-        reason: `reviewer error: ${res.kind === 'error' ? res.error.message : res.kind}`,
+        reason: `reviewer error: ${res.kind === 'error' ? res.error : res.kind}`,
       };
     }
     return parseReview(res.content, opts.maxDigestChars ?? 500);

@@ -33,12 +33,12 @@ export function terminalRunError<T>(error: T): SmartAgentError | undefined {
   for (const current of errorCauseChain(details)) {
     const code = 'code' in current ? current.code : undefined;
     if (typeof code === 'string' && terminalCodes.has(code))
-      return typedFailure(current, code, details ?? current);
+      return typedFailure(current, code);
     if ('name' in current && current.name === 'AbortError')
-      return typedFailure(current, 'ABORTED', details ?? current);
+      return typedFailure(current, 'ABORTED');
   }
   if (details && isAuthenticationFailure(details))
-    return typedFailure(details, 'CREDENTIALS_REJECTED', details);
+    return typedFailure(details, 'CREDENTIALS_REJECTED');
   const status = httpStatusOf(details);
   if (
     details &&
@@ -50,7 +50,7 @@ export function terminalRunError<T>(error: T): SmartAgentError | undefined {
     status !== 429
   ) {
     if (details instanceof SmartAgentError) return details;
-    return Object.assign(typedFailure(details, 'LLM_HTTP_ERROR', details), {
+    return Object.assign(typedFailure(details, 'LLM_HTTP_ERROR'), {
       status,
     });
   }
@@ -60,14 +60,14 @@ export function terminalRunError<T>(error: T): SmartAgentError | undefined {
 function typedFailure(
   error: object,
   code: string,
-  original: object,
+  original?: object,
 ): SmartAgentError {
   if (error instanceof SmartAgentError) return error;
   const message =
     'message' in error && typeof error.message === 'string'
       ? error.message
       : code;
-  return new SmartAgentError(message, code, { cause: original });
+  return new SmartAgentError(message, code, original && { cause: original });
 }
 
 /** The terminal error only when it is a model context overflow. */

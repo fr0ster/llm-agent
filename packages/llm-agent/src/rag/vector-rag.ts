@@ -1,5 +1,5 @@
 import { randomUUID as listStoreId, randomUUID } from 'node:crypto';
-import { terminalRunError } from '../errors/terminal-run-error.js';
+import { contextExceededError } from '../errors/terminal-run-error.js';
 import type { IQueryEmbedding } from '../interfaces/query-embedding.js';
 import type {
   IRag,
@@ -254,7 +254,7 @@ export class VectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
         const eResult = await enricher.enrich(enrichedText, options);
         if (eResult.ok) enrichedText = eResult.value;
         else {
-          const terminal = terminalRunError(eResult.error);
+          const terminal = contextExceededError(eResult.error);
           if (terminal) return { ok: false, error: terminal };
         }
       }
@@ -267,7 +267,7 @@ export class VectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
       options?.signal?.throwIfAborted();
       return this.upsertKnownVectors(enrichedText, vectors, metadata);
     } catch (err) {
-      const terminal = terminalRunError(err);
+      const terminal = contextExceededError(err);
       if (terminal) return { ok: false, error: terminal };
       if (options?.signal?.aborted)
         return { ok: false, error: new RagError('Aborted', 'ABORTED') };
@@ -318,7 +318,7 @@ export class VectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
         const ppResult = await pp.process(searchText, options);
         if (ppResult.ok) searchText = ppResult.value;
         else {
-          const terminal = terminalRunError(ppResult.error);
+          const terminal = contextExceededError(ppResult.error);
           if (terminal) return { ok: false, error: terminal };
         }
       }
@@ -390,7 +390,7 @@ export class VectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
 
       return { ok: true, value: scored };
     } catch (err) {
-      const terminal = terminalRunError(err);
+      const terminal = contextExceededError(err);
       if (terminal) return { ok: false, error: terminal };
       if (err instanceof RagError) return { ok: false, error: err };
       return { ok: false, error: new RagError(String(err), 'QUERY_ERROR') };

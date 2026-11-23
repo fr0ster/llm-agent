@@ -1,8 +1,4 @@
 import { collectWithContextOverflow } from '../../errors/collect-with-context-overflow.js';
-import {
-  contextExceededError,
-  terminalRunError,
-} from '../../errors/terminal-run-error.js';
 import type { IQueryEmbedding } from '../../interfaces/query-embedding.js';
 import type { IRag } from '../../interfaces/rag.js';
 import type {
@@ -23,31 +19,15 @@ export class OverlayRag implements IRag {
     k: number,
     options?: CallOptions,
   ): Promise<Result<RagResult[], RagError>> {
-    const baseQuery = this.base.query(embedding, k, options);
-    const overlayQuery = this.overlay.query(embedding, k, options);
-    const [base, overlay, combined] = await Promise.allSettled([
-      baseQuery,
-      overlayQuery,
-      Promise.all([baseQuery, overlayQuery]),
-    ]);
-    const failures = [base, overlay].map((result) =>
-      result.status === 'rejected'
-        ? result.reason
-        : result.value.ok
-          ? undefined
-          : result.value.error,
+    const collected = await collectWithContextOverflow(
+      [
+        this.base.query(embedding, k, options),
+        this.overlay.query(embedding, k, options),
+      ],
+      (result) => (result.ok ? undefined : result.error),
     );
-    for (const error of failures) {
-      const overflow = contextExceededError(error);
-      if (overflow) return { ok: false, error: overflow };
-    }
-    for (const error of failures) {
-      const terminal = terminalRunError(error);
-      if (terminal) return { ok: false, error: terminal };
-    }
-    // Promise.all retains the first ordinary rejection in settlement order.
-    if (combined.status === 'rejected') throw combined.reason;
-    const [baseRes, overlayRes] = combined.value;
+    if (!collected.ok) return collected;
+    const [baseRes, overlayRes] = collected.value;
     if (!baseRes.ok) return baseRes;
     if (!overlayRes.ok) return overlayRes;
 

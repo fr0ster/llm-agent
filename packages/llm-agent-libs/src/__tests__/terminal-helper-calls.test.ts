@@ -21,7 +21,7 @@ for (const thrown of [false, true]) {
   for (const terminal of [false, true]) {
     const error = new LlmError(
       'Probe failed',
-      terminal ? MODEL_CONTEXT_EXCEEDED : 'LLM_ERROR',
+      terminal ? MODEL_CONTEXT_EXCEEDED : 'CONFIG_ERROR',
     );
     test(`health chat probe preserves ${mode} ${error.code}`, async () => {
       let calls = 0;

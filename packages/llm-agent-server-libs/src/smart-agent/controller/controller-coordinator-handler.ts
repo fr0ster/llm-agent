@@ -22,7 +22,6 @@ import {
   SmartAgentError,
   type StepRoundState,
   type ToolLoopContextStrategyFactory,
-  terminalRunError,
   toToolCallDelta,
 } from '@mcp-abap-adt/llm-agent';
 import {
@@ -311,7 +310,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
     try {
       return await this.runScoped(ctx, bundle, rag, now, terminalTtlMs);
     } catch (error) {
-      const terminal = terminalRunError(error);
+      const terminal = contextExceededError(error);
       if (!terminal) throw error;
       if (bundle.runId && bundle.runState !== 'terminal') {
         await this.commitTerminalError(
@@ -1486,7 +1485,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
         }
         if (budget.signal.aborted) {
           const overflow =
-            res.kind === 'error' ? contextExceededError(res.error) : undefined;
+            res.kind === 'error' ? res.contextOverflow : undefined;
           if (overflow) throw overflow;
           return cutControlFailure('step-timeout');
         }
@@ -1588,13 +1587,13 @@ export class ControllerCoordinatorHandler implements IStageHandler {
         }
 
         if (res.kind === 'error') {
-          const terminal = terminalRunError(res.error);
+          const terminal = res.contextOverflow;
           if (terminal) throw terminal;
           retries++;
           if (retries <= cfg.maxRetries) {
             controlHistory.append(messages, {
               role: 'user',
-              content: `The previous attempt failed: ${res.error.message}. Retry the step.`,
+              content: `The previous attempt failed: ${res.error}. Retry the step.`,
             });
             await persistExchange();
             continue;
@@ -1602,9 +1601,9 @@ export class ControllerCoordinatorHandler implements IStageHandler {
           // Retries exhausted — feed the error back as the step result so the
           // planner can replan on the next iteration.
           bundle.budgets.stepsUsed++;
-          const executorErrorReason = `executor error: ${res.error.message}`;
+          const executorErrorReason = `executor error: ${res.error}`;
           await writeControlFailure(executorErrorReason);
-          bundle.plannerPrivate += `\n[step ${step.name} failed] ${res.error.message}`;
+          bundle.plannerPrivate += `\n[step ${step.name} failed] ${res.error}`;
           return settle('failed', executorErrorReason);
         }
 
@@ -2188,7 +2187,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
           }
           answer = composed;
         } catch (e) {
-          const terminal = terminalRunError(e);
+          const terminal = contextExceededError(e);
           if (terminal) throw terminal;
           bundle.finalizeAttempt = (bundle.finalizeAttempt ?? 0) + 1;
           await persistBundle(deps.backend, sessionId, bundle);

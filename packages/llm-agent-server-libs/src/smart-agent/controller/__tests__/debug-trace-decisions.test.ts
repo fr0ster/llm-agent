@@ -19,7 +19,7 @@ import type {
   LlmTool,
   Result,
 } from '@mcp-abap-adt/llm-agent';
-import { LlmError, symmetricEmbedder } from '@mcp-abap-adt/llm-agent';
+import { symmetricEmbedder } from '@mcp-abap-adt/llm-agent';
 import type { PipelineContext } from '@mcp-abap-adt/llm-agent-libs';
 import {
   InMemoryKnowledgeBackend,
@@ -146,7 +146,7 @@ function makeReplanningDeps(
       },
       // Second round: the executor errors out → exhausted immediately
       // (maxRetries: 0) → settle('failed') → replan decision.
-      { kind: 'error', error: new LlmError('boom') },
+      { kind: 'error', error: 'boom' },
     ]),
     backend,
     knowledgeRagFor: () => rag,

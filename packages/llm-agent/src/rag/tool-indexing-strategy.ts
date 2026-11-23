@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { terminalRunError } from '../errors/terminal-run-error.js';
+import { contextExceededError } from '../errors/terminal-run-error.js';
 import type { ILlm } from '../interfaces/llm.js';
 import type { IRequestLogger } from '../interfaces/request-logger.js';
 import type { CallOptions } from '../interfaces/types.js';
@@ -130,7 +130,7 @@ export class IntentToolIndexing implements IToolIndexingStrategy {
         },
       ];
     } catch (error) {
-      const terminal = terminalRunError(error);
+      const terminal = contextExceededError(error);
       if (terminal) throw terminal;
       return [];
     }

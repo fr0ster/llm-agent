@@ -447,6 +447,8 @@ function makeIngestHost(deps: IngestHostDeps): ISkillPluginHost {
         try {
           return await attempt(manifest, options);
         } catch (e) {
+          const overflow = contextExceededError(e);
+          if (overflow) throw overflow;
           if (e instanceof CatalogCasError) continue; // built gens already discarded by finally
           throw e;
         }

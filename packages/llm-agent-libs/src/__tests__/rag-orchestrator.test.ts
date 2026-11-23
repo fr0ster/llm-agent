@@ -146,7 +146,7 @@ for (const thrown of [false, true]) {
   for (const terminal of [false, true]) {
     const error = new LlmError(
       'Expansion failed',
-      terminal ? MODEL_CONTEXT_EXCEEDED : 'LLM_ERROR',
+      terminal ? MODEL_CONTEXT_EXCEEDED : 'CONFIG_ERROR',
     );
     it(`orchestrator handles ${thrown ? 'thrown' : 'returned'} expansion ${error.code}`, async () => {
       let calls = 0;

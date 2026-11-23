@@ -1,8 +1,4 @@
-import {
-  type CallOptions,
-  type LlmUsage,
-  terminalRunError,
-} from '@mcp-abap-adt/llm-agent';
+import type { CallOptions, LlmUsage } from '@mcp-abap-adt/llm-agent';
 import {
   mintCreateStepIds,
   mintReplanStepIds,
@@ -418,7 +414,7 @@ export class SmartExecutorPlanner implements IControllerPlanner {
       );
       logUsage?.('finalizer', res.usage);
       if (res.kind === 'error') {
-        const terminal = terminalRunError(res.error);
+        const terminal = res.contextOverflow;
         if (terminal) throw terminal;
       }
       // Finalizer must produce content; an error or tool_call is NOT a successful
@@ -474,7 +470,7 @@ export class SmartExecutorPlanner implements IControllerPlanner {
     );
     logUsage?.('planner', res.usage);
     if (res.kind === 'error') {
-      const terminal = terminalRunError(res.error);
+      const terminal = res.contextOverflow;
       if (terminal) throw terminal;
     }
     if (res.kind !== 'content') return null;

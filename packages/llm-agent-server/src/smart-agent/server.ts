@@ -6,7 +6,6 @@ import {
   contextExceededError,
   MODEL_CONTEXT_EXCEEDED,
   promptCacheOptions,
-  terminalRunError,
   toToolCallDelta,
 } from '@mcp-abap-adt/llm-agent';
 import type { SmartAgent, StopReason } from '@mcp-abap-adt/llm-agent-libs';
@@ -242,7 +241,7 @@ export class SmartAgentServer {
           opts,
         )) {
           if (!chunk.ok) {
-            const terminal = terminalRunError(chunk.error);
+            const terminal = contextExceededError(chunk.error);
             if (terminal) {
               res.end(
                 `data: ${jsonError(terminal.message, llmFailureType(terminal.code), terminal.code)}\n\n`,
@@ -422,7 +421,7 @@ export class SmartAgentServer {
       const result = await this.agent.process(body.messages, opts);
 
       if (!result.ok) {
-        const error = terminalRunError(result.error) ?? result.error;
+        const error = contextExceededError(result.error) ?? result.error;
         res.writeHead(error.code === MODEL_CONTEXT_EXCEEDED ? 400 : 500, {
           'Content-Type': 'application/json',
         });

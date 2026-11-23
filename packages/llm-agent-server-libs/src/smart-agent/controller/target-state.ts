@@ -1,8 +1,8 @@
 import {
   type CallOptions,
+  collectWithContextOverflow,
   type IQueryEmbedder,
   type LlmUsage,
-  terminalRunError,
 } from '@mcp-abap-adt/llm-agent';
 import { appendHint } from './prompts.js';
 import {
@@ -72,7 +72,7 @@ export async function establishTargetState(
     diagnosticCallOptions(options, 'evaluator'),
   );
   if (r.kind === 'error') {
-    const terminal = terminalRunError(r.error);
+    const terminal = r.contextOverflow;
     if (terminal) throw terminal;
   }
   const target = r.kind === 'content' ? r.content : '';
@@ -93,10 +93,12 @@ export async function establishTargetState(
         `target-state strategy '${cfg.strategy}' requires an embedder; configure rag.embedder or use strategy: consumer-confirm`,
       );
     }
-    const [te, pe] = await Promise.all([
+    const embeddings = await collectWithContextOverflow([
       deps.embedder.embedQuery(target, options),
       deps.embedder.embedQuery(prompt, options),
     ]);
+    if (!embeddings.ok) throw embeddings.error;
+    const [te, pe] = embeddings.value;
     const dist = cosineDistance(te.vector, pe.vector);
     if (dist > cfg.distanceThreshold) {
       return {

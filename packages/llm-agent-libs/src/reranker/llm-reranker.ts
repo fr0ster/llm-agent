@@ -4,11 +4,11 @@ import {
   addCacheTokenUsage,
   type CallOptions,
   collectWithContextOverflow,
+  contextExceededError,
   formatTrustTag,
   RagError,
   type RagResult,
   type Result,
-  terminalRunError,
 } from '@mcp-abap-adt/llm-agent';
 import { assertPositiveInteger } from '../util/assert-positive-integer.js';
 import { PASSAGE_QUESTION } from './decision-reranker.js';
@@ -107,19 +107,13 @@ export class LlmReranker implements IReranker {
         };
       }
       const outcomes = batch.value;
-      let failure: RagError | undefined;
       for (let k = 0; k < slice.length; k++) {
         const o = outcomes[k];
-        if (!o.ok) {
-          if (terminalRunError(o.error)) return o;
-          failure ??= o.error;
-          continue;
-        }
+        if (!o.ok) return o;
         o.value.forEach((v, j) => {
           scores[slice[k].offset + j] = v;
         });
       }
-      if (failure) return { ok: false, error: failure };
     }
 
     // Never ok with a missing score: every candidate must have been scored.
@@ -171,12 +165,9 @@ export class LlmReranker implements IReranker {
       if (!res.ok) {
         return {
           ok: false,
-          error: Object.assign(
+          error:
+            contextExceededError(res.error) ??
             new RagError(res.error.message, 'RERANK_ERROR'),
-            {
-              cause: res.error,
-            },
-          ),
         };
       }
       // Meter the call before parsing: an out-of-contract reply is billed too.
@@ -192,10 +183,9 @@ export class LlmReranker implements IReranker {
     } catch (err) {
       return {
         ok: false,
-        error: Object.assign(
+        error:
+          contextExceededError(err) ??
           new RagError(`Reranking failed: ${String(err)}`, 'RERANK_ERROR'),
-          { cause: err },
-        ),
       };
     }
   }

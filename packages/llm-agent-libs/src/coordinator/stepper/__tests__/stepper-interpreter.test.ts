@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { IExecutor, IStepper, StreamChunk } from '@mcp-abap-adt/llm-agent';
-import { TokenLedger } from '@mcp-abap-adt/llm-agent';
+import {
+  LlmError,
+  MODEL_CONTEXT_EXCEEDED,
+  TokenLedger,
+} from '@mcp-abap-adt/llm-agent';
 import { StepperInterpreter } from '../stepper-interpreter.js';
 
 const ZERO = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
@@ -41,7 +45,7 @@ function spyStepper(name: string): { st: IStepper; runs: number } {
 let counter = 0;
 const baseCtx = (
   over: Partial<Parameters<StepperInterpreter['interpret']>[1]>,
-) => ({
+): Parameters<StepperInterpreter['interpret']>[1] => ({
   prompt: 'p',
   knowledgeRag: {
     async query() {
@@ -54,7 +58,7 @@ const baseCtx = (
     fingerprint() {
       return '';
     },
-  } as never,
+  },
   toolsRag: {
     async query() {
       return [];
@@ -62,7 +66,7 @@ const baseCtx = (
     lookup() {
       return undefined;
     },
-  } as never,
+  },
   childSteppers: new Map(),
   executor: okExecutor().exec,
   budget: { depthRemaining: 3, tokens: new TokenLedger(100000) },
@@ -70,6 +74,35 @@ const baseCtx = (
   maxParallelSteps: 4,
   mintStepperId: () => `s${counter++}`,
   ...over,
+});
+
+test('parallel executor leaves give overflow priority over an earlier rejection', async () => {
+  const failure = new Error('First leaf failed');
+  const overflow = new LlmError('Context is full', MODEL_CONTEXT_EXCEEDED);
+  const plan = {
+    objective: 'Complete both tasks',
+    nodes: [
+      { id: 'a', goal: 'first' },
+      { id: 'b', goal: 'second' },
+    ],
+    createdAt: 0,
+  };
+  for (const secondFailure of [overflow, new Error('Second leaf failed')]) {
+    let calls = 0;
+    const executor: IExecutor = {
+      name: 'parallel-test',
+      async execute() {
+        if (++calls === 1) throw failure;
+        await Promise.resolve();
+        throw secondFailure;
+      },
+    };
+    await assert.rejects(
+      new StepperInterpreter().interpret(plan, baseCtx({ executor })),
+      (error) => error === (secondFailure === overflow ? overflow : failure),
+    );
+    assert.equal(calls, 2);
+  }
 });
 
 test('#167: interpreter threads ctx.externalTools into the executor leaf', async () => {

@@ -62,6 +62,7 @@ import {
   type CircuitBreakerConfig,
   CircuitBreakerLlm,
   collectServerDescriptors,
+  contextExceededError,
   contextOverflowInSettled,
   defaultToolNamespace,
   FallbackRag,
@@ -82,7 +83,6 @@ import {
   resolveClientDescriptors,
   SimpleRagProviderRegistry,
   SimpleRagRegistry,
-  terminalRunError,
 } from '@mcp-abap-adt/llm-agent';
 import { makeConnectionStrategy } from '@mcp-abap-adt/llm-agent-mcp';
 import { SmartAgent, type SmartAgentConfig } from './agent.js';
@@ -883,7 +883,7 @@ export class SmartAgentBuilder {
       const embedding = new QueryEmbedding(text, embedder, callOptions);
       const queryRes = await resolve().query(embedding, k, callOptions);
       if (queryRes.ok) return queryRes.value;
-      const terminal = terminalRunError(queryRes.error);
+      const terminal = contextExceededError(queryRes.error);
       if (terminal) throw terminal;
       return [];
     };
@@ -977,10 +977,10 @@ export class SmartAgentBuilder {
               { maxTokens: 10 },
             );
           } catch (error) {
-            throw terminalRunError(error) ?? error;
+            throw contextExceededError(error) ?? error;
           }
           if (result.ok) break;
-          const terminal = terminalRunError(result.error);
+          const terminal = contextExceededError(result.error);
           if (terminal) throw terminal;
           const detail = result.error.message;
           if (attempt < maxAttempts) {

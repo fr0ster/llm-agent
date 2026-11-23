@@ -9,9 +9,9 @@ import {
   addCacheTokenUsage,
   type CallOptions,
   ClassifierError,
+  contextExceededError,
   type Result,
   type Subprompt,
-  terminalRunError,
 } from '@mcp-abap-adt/llm-agent';
 import { withAbort } from '../utils/with-abort.js';
 
@@ -152,7 +152,7 @@ export class LlmClassifier implements ISubpromptClassifier {
         });
       }
       if (!llmResult.ok) {
-        const terminal = terminalRunError(llmResult.error);
+        const terminal = contextExceededError(llmResult.error);
         return {
           ok: false,
           error:
@@ -169,7 +169,7 @@ export class LlmClassifier implements ISubpromptClassifier {
       return {
         ok: false,
         error:
-          terminalRunError(err) ??
+          contextExceededError(err) ??
           new ClassifierError(String(err), 'LLM_ERROR'),
       };
     }

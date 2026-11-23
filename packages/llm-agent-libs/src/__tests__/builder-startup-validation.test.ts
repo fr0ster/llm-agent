@@ -5,9 +5,6 @@ import type {
   IEmbedder,
   IEmbedResult,
   ILlm,
-  LlmStreamChunk,
-  LlmTool,
-  Result,
 } from '@mcp-abap-adt/llm-agent';
 import {
   LlmError,
@@ -25,34 +22,28 @@ function flakyLlm(failures: number): ILlm & { calls: number } {
     get calls() {
       return calls;
     },
-    async chat(
-      _m: unknown[],
-      _t?: LlmTool[],
-      _o?: CallOptions,
-    ): Promise<Result<{ content: string; finishReason: 'stop' }, Error>> {
+    async chat() {
       calls++;
       if (calls <= failures)
         return {
-          ok: false as const,
-          error: Object.assign(
-            new Error(
-              'SAP AI SDK API error: Failed to fetch the list of deployments.',
-            ),
-            { code: 'MODEL_LIST_FAILED' },
-          ) as never,
+          ok: false,
+          error: new LlmError(
+            'SAP AI SDK API error: Failed to fetch the list of deployments.',
+            'MODEL_LIST_FAILED',
+          ),
         };
       return {
-        ok: true as const,
-        value: { content: 'OK', finishReason: 'stop' as const },
+        ok: true,
+        value: { content: 'OK', finishReason: 'stop' },
       };
     },
-    async *streamChat(): AsyncGenerator<Result<LlmStreamChunk, Error>> {
+    async *streamChat() {
       yield {
-        ok: true as const,
-        value: { content: 'OK', finishReason: 'stop' as const },
+        ok: true,
+        value: { content: 'OK', finishReason: 'stop' },
       };
     },
-  } as ILlm & { calls: number };
+  };
 }
 
 function stubEmbedder(): IEmbedder {
@@ -66,7 +57,7 @@ function stubEmbedder(): IEmbedder {
 describe('SmartAgentBuilder startup model validation — lenient retry', () => {
   for (const thrown of [false, true]) {
     for (const code of [MODEL_CONTEXT_EXCEEDED, 'MODEL_NOT_ALLOWED']) {
-      it(`stops on a ${thrown ? 'thrown' : 'returned'} ${code} validation failure through its cause`, async () => {
+      it(`preserves startup handling for a ${thrown ? 'thrown' : 'returned'} ${code} validation failure`, async () => {
         const { SmartAgentBuilder } = await import('../builder.js');
         const cause = new LlmError('Validation failed', code);
         const error = Object.assign(new LlmError('Provider wrapper'), {
@@ -79,15 +70,18 @@ describe('SmartAgentBuilder startup model validation — lenient retry', () => {
           if (thrown) throw error;
           return { ok: false, error };
         };
-        await assert.rejects(
-          () =>
-            new SmartAgentBuilder({ modelValidationBackoffMs: 0 })
-              .withRagAccess(testRagAccess())
-              .withMainLlm(llm)
-              .build(),
-          (failure) => failure === cause,
-        );
-        assert.equal(attempts, 1);
+        const build = new SmartAgentBuilder({ modelValidationBackoffMs: 0 })
+          .withRagAccess(testRagAccess())
+          .withMainLlm(llm)
+          .build();
+        if (code === MODEL_CONTEXT_EXCEEDED || thrown) {
+          const expected = code === MODEL_CONTEXT_EXCEEDED ? cause : error;
+          await assert.rejects(build, (failure) => failure === expected);
+          assert.equal(attempts, 1);
+        } else {
+          await assert.rejects(build, /Startup aborted: .*after 3 attempts\./);
+          assert.equal(attempts, 3);
+        }
       });
     }
   }

@@ -6,7 +6,11 @@ import type {
   LlmUsage,
   RunIdentity,
 } from '@mcp-abap-adt/llm-agent';
-import { addCacheTokenUsage, terminalRunError } from '@mcp-abap-adt/llm-agent';
+import {
+  addCacheTokenUsage,
+  collectWithContextOverflow,
+  terminalRunError,
+} from '@mcp-abap-adt/llm-agent';
 
 const ZERO: LlmUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
 const addUsage = (a: LlmUsage, b: LlmUsage): LlmUsage => ({
@@ -148,7 +152,10 @@ export class StepperInterpreter implements IStepperInterpreter {
       if (batch.length === 0) break; // dependency deadlock — shouldn't happen with valid plans
       const cap = Math.max(1, ctx.maxParallelSteps || 1);
       for (let i = 0; i < batch.length; i += cap) {
-        await Promise.all(batch.slice(i, i + cap).map(runNode));
+        const outcomes = await collectWithContextOverflow(
+          batch.slice(i, i + cap).map(runNode),
+        );
+        if (!outcomes.ok) throw outcomes.error;
       }
     }
 

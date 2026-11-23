@@ -8,7 +8,7 @@
  * Skipped when `queryExpansionEnabled` is false.
  */
 
-import { terminalRunError } from '@mcp-abap-adt/llm-agent';
+import { contextExceededError } from '@mcp-abap-adt/llm-agent';
 import type { ISpan } from '../../tracer/types.js';
 import type { PipelineContext } from '../context.js';
 import type { IStageHandler } from '../stage-handler.js';
@@ -30,7 +30,7 @@ export class ExpandHandler implements IStageHandler {
       ctx.ragText = result.value;
       span.setAttribute('expanded', true);
     } else {
-      const terminal = terminalRunError(result.error);
+      const terminal = contextExceededError(result.error);
       if (terminal) throw terminal;
     }
 

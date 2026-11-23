@@ -289,7 +289,7 @@ describe('ControllerCoordinatorHandler', () => {
     });
     const sent: Message[][] = [];
     const results: SubagentResult[] = [
-      { kind: 'error', error: new LlmError('Retry sentinel') },
+      { kind: 'error', error: 'Retry sentinel' },
       toolCall('Work', {}),
       { kind: 'content', content: 'converged' },
     ];
@@ -734,9 +734,9 @@ describe('ControllerCoordinatorHandler', () => {
       ],
       // maxRetries = 2 → executor must fail (maxRetries + 1) = 3 times.
       executor: [
-        { kind: 'error', error: new LlmError('boom') },
-        { kind: 'error', error: new LlmError('boom') },
-        { kind: 'error', error: new LlmError('boom') },
+        { kind: 'error', error: 'boom' },
+        { kind: 'error', error: 'boom' },
+        { kind: 'error', error: 'boom' },
       ],
       config: baseConfig({ maxRetries: 2 }),
     });
@@ -1491,9 +1491,9 @@ describe('ControllerCoordinatorHandler', () => {
       ],
       executor: [
         toolCall('Work', { stage: 'before-retry' }),
-        { kind: 'error', error: new LlmError('PERSISTED_RETRY_A') },
+        { kind: 'error', error: 'PERSISTED_RETRY_A' },
         toolCall('Work', { stage: 'after-retry' }),
-        { kind: 'error', error: new LlmError('PERSISTED_RETRY_B') },
+        { kind: 'error', error: 'PERSISTED_RETRY_B' },
         {
           ...toolCall('ExtTool', { q: 'x' }),
           content: 'EXTERNAL_ASSISTANT_SENTINEL',
@@ -2933,7 +2933,7 @@ describe('Phase 2 — Live Digest Board integration', () => {
         },
         { kind: 'content', content: 'FINAL' },
       ],
-      executor: [{ kind: 'error', error: new LlmError('boom') }],
+      executor: [{ kind: 'error', error: 'boom' }],
       config: {
         ...baseConfig(),
         budgets: { ...baseConfig().budgets, maxRetries: 0 },

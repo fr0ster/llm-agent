@@ -4,6 +4,7 @@ import {
   type ILlm,
   LlmError,
   type LlmResponse,
+  MODEL_CONTEXT_EXCEEDED,
   type Result,
 } from '@mcp-abap-adt/llm-agent';
 import { makeSubagentClient } from '../subagent-client.js';
@@ -40,12 +41,20 @@ describe('makeSubagentClient', () => {
     assert.equal(r.kind, 'tool_call');
   });
 
-  it('error result → kind:error', async () => {
-    const error = new LlmError('boom');
+  it('returns the message of a non-overflow error', async () => {
+    const error = new LlmError('boom', 'ABORTED');
     const c = makeSubagentClient(llm({ ok: false, error }));
     assert.deepEqual(await c.send([{ role: 'user', content: 'hi' }]), {
       kind: 'error',
-      error,
+      error: 'boom',
     });
+  });
+
+  it('returns a typed overflow in the error result', async () => {
+    const error = new LlmError('Context is full', MODEL_CONTEXT_EXCEEDED);
+    const c = makeSubagentClient(llm({ ok: false, error }));
+    const res = await c.send([{ role: 'user', content: 'hi' }]);
+    assert.equal(res.kind, 'error');
+    if (res.kind === 'error') assert.equal(res.contextOverflow, error);
   });
 });

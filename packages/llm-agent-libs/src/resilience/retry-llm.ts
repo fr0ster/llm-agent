@@ -12,6 +12,7 @@ import type { ILlm, Message } from '@mcp-abap-adt/llm-agent';
 import {
   type CallOptions,
   CircuitBreakerLlm,
+  contextExceededError,
   DefaultWaitStrategy,
   exponentialBackoffMs,
   findThrottled,
@@ -111,6 +112,10 @@ export class RetryLlm implements ILlm {
         result = { ok: false, error: toLlmError(error) };
       }
 
+      const overflow = result.ok
+        ? undefined
+        : contextExceededError(result.error);
+      if (overflow) return { ok: false, error: overflow };
       if (signal?.aborted) return { ok: false, error: abortError(signal) };
       if (result.ok) return result;
       const terminal = terminalRunError(result.error);
@@ -157,7 +162,10 @@ export class RetryLlm implements ILlm {
         ...options,
         usageOp: withOuterAttempt(op, attempt),
       })) {
-        if (signal?.aborted && !(chunk.ok && chunk.value.reset)) {
+        const overflow = chunk.ok
+          ? undefined
+          : contextExceededError(chunk.error);
+        if (signal?.aborted && !overflow && !(chunk.ok && chunk.value.reset)) {
           const usage: LlmUsageAttribution = chunk.ok
             ? { usage: chunk.value.usage, usageCalls: chunk.value.usageCalls }
             : errorUsage(chunk.error);
@@ -172,7 +180,7 @@ export class RetryLlm implements ILlm {
           if (!chunk.value.reset) chunksYielded++;
           yield chunk;
         } else {
-          const terminal = terminalRunError(chunk.error);
+          const terminal = overflow ?? terminalRunError(chunk.error);
           if (terminal) {
             yield {
               ok: false,

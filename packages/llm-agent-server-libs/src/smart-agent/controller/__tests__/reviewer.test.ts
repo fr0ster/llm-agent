@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict';
 import { describe, it, test } from 'node:test';
-import { LlmError } from '@mcp-abap-adt/llm-agent';
 import { LlmReviewer, parseReview } from '../reviewer.js';
 import type { ISubagentClient } from '../subagent-client.js';
 
@@ -164,7 +163,7 @@ describe('LlmReviewer', () => {
   it('a provider error is a JUDGE FAILURE (NOT a step status:failed)', async () => {
     const errClient: ISubagentClient = {
       async send() {
-        return { kind: 'error', error: new LlmError('boom') };
+        return { kind: 'error', error: 'boom' };
       },
     };
     const r = new LlmReviewer(errClient);

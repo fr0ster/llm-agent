@@ -66,12 +66,10 @@ import {
   type IStepExecutionControl,
   type IWaitStrategy,
   isReadinessReporter,
-  MODEL_CONTEXT_EXCEEDED,
   resolveClientDescriptors,
   SimpleRagProviderRegistry,
   symmetricEmbedder,
   type ToolLoopContextStrategyFactory,
-  terminalRunError,
   withCircuitBreaker,
 } from '@mcp-abap-adt/llm-agent';
 import type {
@@ -2139,8 +2137,8 @@ export class SmartServer {
         adapterMap,
       ).catch((err) => {
         if (!res.headersSent) {
-          const terminal = terminalRunError(err);
-          const contextExceeded = terminal?.code === MODEL_CONTEXT_EXCEEDED;
+          const terminal = contextExceededError(err);
+          const contextExceeded = terminal !== undefined;
           res.writeHead(contextExceeded ? 400 : 500, {
             'Content-Type': 'application/json',
           });

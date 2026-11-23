@@ -496,6 +496,26 @@ test('lost CAS → discard built gens + retry from fresh snapshot, then commit',
   assert.equal(beginCalls, 2); // a FRESH generation per attempt (no reuse)
 });
 
+test('does not retry a catalog conflict that wraps an overflow', async () => {
+  const provider = makeInMemoryStoreProvider({ embed });
+  const overflow = new RagError('Context is full', MODEL_CONTEXT_EXCEEDED);
+  const wrapped = new CatalogCasError('Catalog update failed', {
+    cause: overflow,
+  });
+  let publishCalls = 0;
+  provider.publishCatalog = async () => {
+    publishCalls++;
+    throw wrapped;
+  };
+  const host = makeSkillPluginHost({
+    ...HOST_BASE,
+    storeProvider: provider,
+    sources: [],
+  });
+  await assert.rejects(host.load(), (error) => error === overflow);
+  assert.equal(publishCalls, 1);
+});
+
 // 8 -------------------------------------------------------------------------
 test('exhausted CAS → throw, no orphans', async () => {
   const provider = makeInMemoryStoreProvider({ embed });
