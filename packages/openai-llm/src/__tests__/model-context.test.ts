@@ -83,7 +83,7 @@ for (const apiKey of [undefined, 'override-key']) {
   });
 }
 
-test('getModels carries context length only when the endpoint reports it', async () => {
+test('getModels retains its public metadata fields when an endpoint supplies context length', async () => {
   const provider = makeProvider();
   provider.client.defaults.adapter = async (config) => ({
     config,
@@ -97,8 +97,8 @@ test('getModels carries context length only when the endpoint reports it', async
       ],
     },
   });
-  assert.deepEqual(
-    (await provider.getModels()).map((model) => model.contextLength),
-    [32768, undefined],
-  );
+  assert.deepEqual(await provider.getModels(), [
+    { id: 'compatible-model', owned_by: undefined },
+    { id: 'official-model', owned_by: 'openai' },
+  ]);
 });

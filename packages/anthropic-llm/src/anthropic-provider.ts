@@ -109,8 +109,7 @@ export interface WireMessage {
 interface ModelResponse {
   id: string;
   owned_by?: string;
-  max_tokens?: number | null;
-  max_input_tokens?: number | null;
+  max_tokens?: number;
 }
 
 interface AnthropicErrorResponse {
@@ -131,8 +130,8 @@ interface ModelAuth {
 
 const fingerprintKey = randomBytes(32);
 
-function isModelTokenLimit(value: number | null | undefined): value is number {
-  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0;
+function isModelOutputLimit(value: number | undefined): value is number {
+  return value !== undefined && Number.isSafeInteger(value) && value > 0;
 }
 
 function isContextOverflow(error: AnthropicErrorResponse['error']): boolean {
@@ -299,7 +298,7 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
       { model, signal },
     );
     signal.throwIfAborted();
-    if (!isModelTokenLimit(data.max_tokens)) {
+    if (!isModelOutputLimit(data.max_tokens)) {
       throw new Error(
         `Anthropic model "${model}" did not report max_tokens; set maxTokens explicitly`,
       );
@@ -493,13 +492,13 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
 
       return response;
     } catch (error) {
-      options?.signal?.throwIfAborted();
       const transport = axios.isAxiosError<AnthropicErrorResponse>(error)
         ? error
         : undefined;
       const providerError = transport?.response?.data?.error;
       const overflow =
         transport?.response?.status === 400 && isContextOverflow(providerError);
+      if (!overflow) options?.signal?.throwIfAborted();
       if (options?.apiKey !== undefined) {
         if (overflow) throw contextOverflow('Anthropic API error');
         throw this.credentialSafeError(error, 'Anthropic API error');
@@ -582,20 +581,20 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
                 : 'Anthropic streaming error',
             );
           }
-          const error = new Error(
-            options?.apiKey === undefined
-              ? message
-              : `Anthropic streaming error: HTTP ${res.status} — `,
-          ) as Error & {
-            status?: number;
-            response?: { status: number; headers: Headers };
-          };
           // This is the one path on fetch rather than axios. The shared policy
           // reads the status and Retry-After off the axios shape, so give it one;
           // Headers already answers to the same case-insensitive get().
-          error.status = res.status;
-          error.response = { status: res.status, headers: res.headers };
-          throw error;
+          throw Object.assign(
+            new Error(
+              options?.apiKey === undefined
+                ? message
+                : `Anthropic streaming error: HTTP ${res.status} — `,
+            ),
+            {
+              status: res.status,
+              response: { status: res.status, headers: res.headers },
+            },
+          );
         }
         return res as OpenStream;
       },
@@ -816,7 +815,7 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
             }
           } catch (e) {
             if (
-              e instanceof LlmError ||
+              (e instanceof LlmError && e.code === MODEL_CONTEXT_EXCEEDED) ||
               (e instanceof Error &&
                 e.message.startsWith('Anthropic stream error:'))
             ) {
@@ -874,20 +873,13 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
           signal: options?.signal,
           params: { limit: 1000, ...(afterId ? { after_id: afterId } : {}) },
         });
-      for (const {
-        id,
-        owned_by,
-        max_tokens: maxOutputTokens,
-        max_input_tokens: contextLength,
-      } of page.data) {
-        const model: IModelInfo = { id, owned_by };
-        if (isModelTokenLimit(maxOutputTokens)) {
+      for (const { id, owned_by, max_tokens: maxOutputTokens } of page.data) {
+        if (isModelOutputLimit(maxOutputTokens)) {
           this.modelMaxTokens.set(`${auth.fingerprint}:${id}`, maxOutputTokens);
-          model.maxOutputTokens = maxOutputTokens;
+          models.push({ id, owned_by, maxOutputTokens });
+        } else {
+          models.push({ id, owned_by });
         }
-        if (isModelTokenLimit(contextLength))
-          model.contextLength = contextLength;
-        models.push(model);
       }
       if (!page.has_more) return models;
       if (!page.last_id)

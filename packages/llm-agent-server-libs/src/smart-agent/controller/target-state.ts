@@ -93,10 +93,14 @@ export async function establishTargetState(
         `target-state strategy '${cfg.strategy}' requires an embedder; configure rag.embedder or use strategy: consumer-confirm`,
       );
     }
-    const embeddings = await collectWithContextOverflow([
-      deps.embedder.embedQuery(target, options),
-      deps.embedder.embedQuery(prompt, options),
-    ]);
+    const embeddings = await collectWithContextOverflow(
+      [
+        deps.embedder.embedQuery(target, options),
+        deps.embedder.embedQuery(prompt, options),
+      ],
+      undefined,
+      { rejectImmediately: true },
+    );
     if (!embeddings.ok) throw embeddings.error;
     const [te, pe] = embeddings.value;
     const dist = cosineDistance(te.vector, pe.vector);

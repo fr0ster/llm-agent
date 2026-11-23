@@ -94,6 +94,7 @@ export class LlmReranker implements IReranker {
       const batch = await collectWithContextOverflow(
         slice.map((b) => this._scoreBatch(query, b.items, options)),
         (result) => (result.ok ? undefined : result.error),
+        { rejectImmediately: true },
       );
       if (!batch.ok) {
         return {

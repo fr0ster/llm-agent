@@ -23,6 +23,34 @@ const overflow = {
   message: 'prompt is too long: 210000 tokens > 200000 maximum',
 };
 
+for (const contextExceeded of [true, false]) {
+  test(`chat preserves ${contextExceeded ? 'overflow' : 'abort'} when the request is aborted during an HTTP 400`, async (t) => {
+    const provider = makeProvider();
+    const abort = new AbortController();
+    const reason = new Error('Cancelled');
+    t.mock.method(provider.client, 'post', async () => {
+      abort.abort(reason);
+      throw Object.assign(new AxiosError('Request rejected'), {
+        response: {
+          status: 400,
+          data: {
+            error: contextExceeded
+              ? overflow
+              : { ...overflow, message: 'Invalid max_tokens' },
+          },
+        },
+      });
+    });
+    await assert.rejects(
+      provider.chat([], undefined, { signal: abort.signal }),
+      (error) =>
+        contextExceeded
+          ? error instanceof LlmError && error.code === 'MODEL_CONTEXT_EXCEEDED'
+          : error === reason,
+    );
+  });
+}
+
 for (const stream of [false, true]) {
   for (const [status, error, expectedOverflow] of [
     [400, overflow, true],

@@ -175,9 +175,8 @@ export class SmartAgentError extends Error {
   constructor(
     message: string,
     public readonly code: string,
-    options?: ErrorOptions,
   ) {
-    super(message, options);
+    super(message);
     this.name = 'SmartAgentError';
   }
 }

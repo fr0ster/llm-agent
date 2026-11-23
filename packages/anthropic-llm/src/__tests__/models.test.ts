@@ -25,7 +25,7 @@ function notification() {
 }
 
 describe('AnthropicProvider getModels()', () => {
-  it('includes token limits only when reported by the model list', async () => {
+  it('includes only output token limits from the model list', async () => {
     const provider = new AnthropicProvider({
       credential: staticApiKey('sk-test'),
       model: 'claude-sonnet-4-6',
@@ -63,7 +63,6 @@ describe('AnthropicProvider getModels()', () => {
         id: 'claude-sonnet-4-6',
         owned_by: 'anthropic',
         maxOutputTokens: 64000,
-        contextLength: 1000000,
       },
       { id: 'claude-opus-4-6', owned_by: undefined },
       { id: 'another-model', owned_by: undefined, maxOutputTokens: 8192 },

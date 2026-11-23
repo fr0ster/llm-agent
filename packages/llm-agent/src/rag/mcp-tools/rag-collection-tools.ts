@@ -72,9 +72,11 @@ function editFailure(error: RagError): Refusal {
   const overflow = contextExceededError(error);
   if (overflow) {
     if (overflow.cause !== undefined) throw overflow;
-    throw new SmartAgentError(overflow.message, overflow.code, {
-      cause: overflow,
-    });
+    throw Object.defineProperty(
+      new SmartAgentError(overflow.message, overflow.code),
+      'cause',
+      { value: overflow, configurable: true, writable: true },
+    );
   }
   return { ok: false, error: error.message };
 }

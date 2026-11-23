@@ -14,7 +14,10 @@ import type {
   StepRecord,
   StepStatus,
 } from '@mcp-abap-adt/llm-agent';
-import { terminalRunError } from '@mcp-abap-adt/llm-agent';
+import {
+  contextExceededError,
+  terminalRunError,
+} from '@mcp-abap-adt/llm-agent';
 import { OrchestratorError } from '../../agent.js';
 import { composeStepInput } from './compose-step-input.js';
 import { parseVerdict, validateSteps } from './parse-plan.js';
@@ -135,6 +138,8 @@ export async function runAdaptivePlan(
       collect(report.usage);
       output = report.text;
     } catch (error) {
+      const overflow = contextExceededError(error);
+      if (overflow) return failedRun(overflow);
       input.signal?.throwIfAborted();
       const terminal = terminalRunError(error);
       if (terminal) return failedRun(terminal);
@@ -225,9 +230,10 @@ export async function runAdaptivePlan(
           record.verdict = checked.verdict;
           record.output = JSON.stringify(checked.verdict);
         } catch (error) {
-          input.signal?.throwIfAborted();
+          const overflow = contextExceededError(error);
+          if (!overflow) input.signal?.throwIfAborted();
           collect((error as { usage?: LlmUsage } | null)?.usage);
-          terminalError = terminalRunError(error);
+          terminalError = overflow ?? terminalRunError(error);
           if (terminalError) {
             record.status = 'failed';
             record.error = message(error);
@@ -332,11 +338,12 @@ export async function runAdaptivePlan(
               model: failed.model,
             });
           }
-          input.signal?.throwIfAborted();
+          const overflow = contextExceededError(error);
+          if (!overflow) input.signal?.throwIfAborted();
           record.status = 'failed';
           record.output = '';
           record.error = message(error);
-          terminalError = terminalRunError(error);
+          terminalError = overflow ?? terminalRunError(error);
           if (step.kind === 'check' && !terminalError)
             record.verdict = {
               verdict: 'fail',
@@ -416,12 +423,13 @@ export async function runAdaptivePlan(
         if (!validated.ok) throw new Error(validated.error);
         plan.steps = [...plan.steps.slice(0, cursor + 1), ...validated.value];
       } catch (error) {
-        input.signal?.throwIfAborted();
+        const overflow = contextExceededError(error);
+        if (!overflow) input.signal?.throwIfAborted();
         record.status = 'failed';
         collect((error as { usage?: LlmUsage } | null)?.usage);
         record.error = message(error);
         finish();
-        const terminal = terminalRunError(error);
+        const terminal = overflow ?? terminalRunError(error);
         if (terminal) return failedRun(terminal);
         return stop(`revise failed: ${record.error}`);
       }

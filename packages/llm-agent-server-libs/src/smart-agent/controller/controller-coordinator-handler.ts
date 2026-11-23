@@ -17,6 +17,7 @@ import {
   type McpCallResult,
   McpError,
   type Message,
+  MODEL_CONTEXT_EXCEEDED,
   type ModelUsageEntry,
   mergeOfferedTools,
   SmartAgentError,
@@ -300,15 +301,26 @@ export class ControllerCoordinatorHandler implements IStageHandler {
   }
 
   private async executeScoped(ctx: PipelineContext): Promise<boolean> {
-    const {
-      backend,
-      now = () => new Date().toISOString(),
-      terminalTtlMs = 24 * 60 * 60 * 1000,
-    } = this.deps;
-    const rag = await this.deps.knowledgeRagFor(ctx.sessionId);
-    const bundle = await hydrateBundle(backend, ctx.sessionId);
+    const deps = this.deps;
+    const now = deps.now ?? (() => new Date().toISOString());
+    const mintRunId =
+      deps.runIdMinter ??
+      (() => `run-${now()}-${Math.round(Math.random() * 1e9)}`);
+    const terminalTtlMs = deps.terminalTtlMs ?? 24 * 60 * 60 * 1000;
+    const sessionId = ctx.sessionId;
+    const prompt = extractPrompt(ctx.textOrMessages);
+    const rag = await deps.knowledgeRagFor(sessionId);
+    const bundle = await hydrateBundle(deps.backend, sessionId);
     try {
-      return await this.runScoped(ctx, bundle, rag, now, terminalTtlMs);
+      return await this.runScoped(
+        ctx,
+        bundle,
+        rag,
+        prompt,
+        now,
+        mintRunId,
+        terminalTtlMs,
+      );
     } catch (error) {
       const terminal = contextExceededError(error);
       if (!terminal) throw error;
@@ -329,16 +341,13 @@ export class ControllerCoordinatorHandler implements IStageHandler {
     ctx: PipelineContext,
     bundle: SessionBundle,
     rag: IKnowledgeRagHandle,
+    prompt: string,
     now: () => string,
+    mintRunId: RunIdMinter,
     terminalTtlMs: number,
   ): Promise<boolean> {
     const deps = this.deps;
-    // Seams resolved once per execute(); consumed by Task 11+ (reviewer/finalizer/run-scope).
-    const mintRunId =
-      deps.runIdMinter ??
-      (() => `run-${now()}-${Math.round(Math.random() * 1e9)}`);
     const sessionId = ctx.sessionId;
-    const prompt = extractPrompt(ctx.textOrMessages);
 
     const meta = synthMeta(ctx, sessionId);
 
@@ -2048,8 +2057,10 @@ export class ControllerCoordinatorHandler implements IStageHandler {
     );
     bundle.pending = undefined;
     bundle.inFlightStep = undefined;
-    bundle.evalCallInFlight = false;
-    bundle.plannerCallInFlight = false;
+    if (outcome.code === MODEL_CONTEXT_EXCEEDED) {
+      bundle.evalCallInFlight = false;
+      bundle.plannerCallInFlight = false;
+    }
     bundle.finalizeCallInFlight = false;
     bundle.runState = 'terminal';
     await persistBundle(this.deps.backend, sessionId, bundle);
@@ -2297,7 +2308,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
     outcome: TerminalOutcome,
     usage: TerminalUsage,
   ): boolean {
-    if (outcome.kind === 'error' && outcome.code !== undefined) {
+    if (outcome.kind === 'error' && outcome.code === MODEL_CONTEXT_EXCEEDED) {
       return this.surfaceRunError(
         ctx,
         new SmartAgentError(outcome.error, outcome.code),

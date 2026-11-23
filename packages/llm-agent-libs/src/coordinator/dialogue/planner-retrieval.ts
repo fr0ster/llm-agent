@@ -261,7 +261,9 @@ export async function retrievePlannerContext(
               }
             })(),
           );
-        const results = await collectWithContextOverflow(jobs);
+        const results = await collectWithContextOverflow(jobs, undefined, {
+          rejectImmediately: true,
+        });
         if (!results.ok) throw results.error;
       },
       config.retrievalTimeoutMs,

@@ -120,6 +120,7 @@ export class DecisionReranker implements IReranker {
           this.runBatch(query, results, idxs, task, criteria, options),
         ),
         (result) => (result.ok ? undefined : result.error),
+        { rejectImmediately: true },
       );
       if (!batch.ok) return batch;
       for (const res of batch.value) {

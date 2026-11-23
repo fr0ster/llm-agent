@@ -83,6 +83,7 @@ import {
   resolveClientDescriptors,
   SimpleRagProviderRegistry,
   SimpleRagRegistry,
+  terminalRunError,
 } from '@mcp-abap-adt/llm-agent';
 import { makeConnectionStrategy } from '@mcp-abap-adt/llm-agent-mcp';
 import { SmartAgent, type SmartAgentConfig } from './agent.js';
@@ -883,7 +884,7 @@ export class SmartAgentBuilder {
       const embedding = new QueryEmbedding(text, embedder, callOptions);
       const queryRes = await resolve().query(embedding, k, callOptions);
       if (queryRes.ok) return queryRes.value;
-      const terminal = contextExceededError(queryRes.error);
+      const terminal = terminalRunError(queryRes.error);
       if (terminal) throw terminal;
       return [];
     };
@@ -968,32 +969,36 @@ export class SmartAgentBuilder {
       const maxAttempts = Math.max(1, this.cfg.modelValidationAttempts ?? 3);
       const validationBackoffMs = this.cfg.modelValidationBackoffMs ?? 2000;
       for (const [modelName, llm] of modelsToCheck) {
-        for (let attempt = 1; ; attempt++) {
-          let result: Awaited<ReturnType<ILlm['chat']>>;
+        const probe = async () => {
           try {
-            result = await llm.chat(
+            const result = await llm.chat(
               [{ role: 'user', content: 'Reply with OK' }],
               undefined,
               { maxTokens: 10 },
             );
+            if (!result.ok) {
+              const overflow = contextExceededError(result.error);
+              if (overflow) throw overflow;
+            }
+            return result;
           } catch (error) {
             throw contextExceededError(error) ?? error;
           }
-          if (result.ok) break;
-          const terminal = contextExceededError(result.error);
-          if (terminal) throw terminal;
+        };
+        let result = await probe();
+        for (let attempt = 1; !result.ok && attempt < maxAttempts; attempt++) {
+          log?.log({
+            type: 'warning',
+            traceId: 'builder',
+            message: `Model "${modelName}" validation attempt ${attempt} failed (${result.error.message}); retrying`,
+          });
+          await new Promise((r) =>
+            setTimeout(r, validationBackoffMs * attempt),
+          );
+          result = await probe();
+        }
+        if (!result.ok) {
           const detail = result.error.message;
-          if (attempt < maxAttempts) {
-            log?.log({
-              type: 'warning',
-              traceId: 'builder',
-              message: `Model "${modelName}" validation attempt ${attempt} failed (${detail}); retrying`,
-            });
-            await new Promise((r) =>
-              setTimeout(r, validationBackoffMs * attempt),
-            );
-            continue;
-          }
           log?.log({
             type: 'pipeline_error',
             traceId: 'builder',

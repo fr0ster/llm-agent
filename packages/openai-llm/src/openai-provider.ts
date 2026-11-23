@@ -31,8 +31,6 @@ interface OpenAIErrorResponse {
 interface OpenAIModel {
   id: string;
   owned_by?: string;
-  /** Extension returned by some OpenAI-compatible model endpoints. */
-  context_length?: number;
 }
 
 export interface OpenAIConfig extends LLMProviderConfig {
@@ -250,11 +248,7 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
 
       return response;
     } catch (error) {
-      throw await this.requestError(
-        error,
-        false,
-        options?.apiKey !== undefined,
-      );
+      throw this.requestError(error, false, options?.apiKey !== undefined);
     }
   }
 
@@ -405,7 +399,11 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
               };
             }
           } catch (error) {
-            if (error instanceof LlmError) throw error;
+            if (
+              error instanceof LlmError &&
+              error.code === MODEL_CONTEXT_EXCEEDED
+            )
+              throw error;
             // Ignore parse errors for incomplete chunks
           }
         }
@@ -413,7 +411,22 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
       completed = true;
     } catch (error) {
       failure = error;
-      throw await this.requestError(error, true, options?.apiKey !== undefined);
+      const response = axios.isAxiosError<Readable>(error)
+        ? error.response
+        : undefined;
+      // Axios leaves a rejected streaming request's JSON body as a readable.
+      const streamedBody =
+        response?.status === 400 && response.data instanceof Readable
+          ? await text(response.data)
+              .then((payload): OpenAIErrorResponse => JSON.parse(payload))
+              .catch(() => undefined)
+          : undefined;
+      throw this.requestError(
+        error,
+        true,
+        options?.apiKey !== undefined,
+        streamedBody,
+      );
     } finally {
       request?.end({
         ...facts,
@@ -432,24 +445,18 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
     }
   }
 
-  private async requestError<T>(
+  private requestError<T>(
     error: T,
     streaming: boolean,
     redact: boolean,
-  ): Promise<Error> {
+    streamedBody?: OpenAIErrorResponse,
+  ): Error {
     const operation = streaming ? (redact ? 'streaming' : 'Streaming') : 'API';
     const prefix = `${this.providerName} ${operation} error`;
     const transport = axios.isAxiosError<OpenAIErrorResponse | Readable>(error)
       ? error
       : undefined;
     const body = transport?.response?.data;
-    // Axios leaves a rejected streaming request's JSON body as a readable.
-    const streamedBody =
-      transport?.response?.status === 400 && body instanceof Readable
-        ? await text(body)
-            .then((payload): OpenAIErrorResponse => JSON.parse(payload))
-            .catch(() => undefined)
-        : undefined;
     const providerError =
       body instanceof Readable ? streamedBody?.error : body?.error;
     const overflow =
@@ -472,7 +479,9 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
         status: 400,
       });
     }
-    return this.preserveThrottled(error, new Error(message));
+    return redact
+      ? this.credentialSafeError(error, prefix)
+      : this.preserveThrottled(error, new Error(message));
   }
 
   private async fetchModels(options?: LLMCallOptions) {
@@ -494,15 +503,7 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
 
   async getModels(options?: LLMCallOptions): Promise<IModelInfo[]> {
     const response = await this.fetchModels(options);
-    return response.data.data.map(({ id, owned_by, context_length }) => ({
-      id,
-      owned_by,
-      ...(typeof context_length === 'number' &&
-      Number.isSafeInteger(context_length) &&
-      context_length > 0
-        ? { contextLength: context_length }
-        : {}),
-    }));
+    return response.data.data.map(({ id, owned_by }) => ({ id, owned_by }));
   }
 
   async getEmbeddingModels(options?: LLMCallOptions): Promise<IModelInfo[]> {

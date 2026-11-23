@@ -57,17 +57,13 @@ export function terminalRunError<T>(error: T): SmartAgentError | undefined {
   return undefined;
 }
 
-function typedFailure(
-  error: object,
-  code: string,
-  original?: object,
-): SmartAgentError {
+function typedFailure(error: object, code: string): SmartAgentError {
   if (error instanceof SmartAgentError) return error;
   const message =
     'message' in error && typeof error.message === 'string'
       ? error.message
       : code;
-  return new SmartAgentError(message, code, original && { cause: original });
+  return new SmartAgentError(message, code);
 }
 
 /** The terminal error only when it is a model context overflow. */
@@ -76,8 +72,14 @@ export function contextExceededError<T>(error: T): SmartAgentError | undefined {
   const seen = new Set<object>();
   let current: object = error;
   while (!seen.has(current)) {
-    if ('code' in current && current.code === MODEL_CONTEXT_EXCEEDED)
-      return typedFailure(current, MODEL_CONTEXT_EXCEEDED, error);
+    if ('code' in current && current.code === MODEL_CONTEXT_EXCEEDED) {
+      if (current instanceof SmartAgentError) return current;
+      return Object.defineProperty(
+        typedFailure(current, MODEL_CONTEXT_EXCEEDED),
+        'cause',
+        { value: error, configurable: true, writable: true },
+      );
+    }
     seen.add(current);
     const cause = 'cause' in current ? current.cause : undefined;
     if (typeof cause !== 'object' || cause === null) break;

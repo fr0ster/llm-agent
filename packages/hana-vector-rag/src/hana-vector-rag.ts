@@ -12,6 +12,7 @@ import type {
 import {
   assertNonEmptyFilter,
   assertScanOptions,
+  contextExceededError,
   decodeIdScanCursor,
   decodeListCursor,
   embedRecord,
@@ -331,6 +332,8 @@ export class HanaVectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
         })),
       };
     } catch (err) {
+      const overflow = contextExceededError(err);
+      if (overflow) return { ok: false, error: overflow };
       if (options?.signal?.aborted)
         return { ok: false, error: new RagError('Aborted', 'ABORTED') };
       if (!this.fallbackOnQueryEmbeddingError && err instanceof RagError)
@@ -542,6 +545,8 @@ export class HanaVectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
       options?.signal?.throwIfAborted();
       return this.upsertKnown(text, vectors, metadata, options);
     } catch (err) {
+      const overflow = contextExceededError(err);
+      if (overflow) return { ok: false, error: overflow };
       if (options?.signal?.aborted)
         return { ok: false, error: new RagError('Aborted', 'ABORTED') };
       return { ok: false, error: this.failure(err, 'UPSERT_ERROR') };

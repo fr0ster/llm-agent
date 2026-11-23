@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { setImmediate } from 'node:timers/promises';
 import {
   type ISkill,
   type ISkillManager,
@@ -14,6 +15,8 @@ import {
   testCallOptions,
 } from '../../testing/index.js';
 import { DefaultPipeline } from '../default-pipeline.js';
+import { PipelineExecutor } from '../executor.js';
+import type { StageHandlerRegistry } from '../handlers/index.js';
 
 const overflow = new RagError('Prompt too long', MODEL_CONTEXT_EXCEEDED);
 const doc = { text: 'a skill', metadata: { id: 'skill:example' }, score: 1 };
@@ -85,11 +88,77 @@ for (const phase of ['skill fallback', 'tool fallback', 'parallel retrieval']) {
         },
       );
       assert.equal(result.error, overflow);
-      if (phase === 'parallel retrieval') assert.deepEqual(errors, [overflow]);
+      if (phase === 'parallel retrieval')
+        assert.deepEqual(
+          errors,
+          ordinaryRejects ? [ordinary, overflow] : [overflow],
+        );
       assert.equal(llm.callCount, 0);
     });
   }
 }
+
+test('parallel stages forward an ordinary error before a later content chunk', async () => {
+  const ordinary = new RagError('Aborted', 'ABORTED');
+  const release = Promise.withResolvers<void>();
+  const events: (Error | string)[] = [];
+  const handlers: StageHandlerRegistry = new Map([
+    [
+      'classify',
+      {
+        async execute(ctx) {
+          await Promise.resolve();
+          ctx.error = ordinary;
+          ctx.yield({ ok: false, error: ordinary });
+          return false;
+        },
+      },
+    ],
+    [
+      'translate',
+      {
+        async execute(ctx) {
+          await release.promise;
+          ctx.yield({ ok: true, value: { content: 'content' } });
+          return true;
+        },
+      },
+    ],
+  ]);
+  const pipeline = new DefaultPipeline({
+    stepperCoordinator: {
+      execute(ctx) {
+        return new PipelineExecutor(handlers, ctx.tracer).executeStages(
+          [
+            {
+              type: 'parallel',
+              id: 'parallel',
+              stages: [
+                { type: 'classify', id: 'error' },
+                { type: 'translate', id: 'content' },
+              ],
+            },
+          ],
+          ctx,
+          ctx.tracer.startSpan('parallel-test'),
+        );
+      },
+    },
+  });
+  pipeline.initialize(makeDefaultDeps().deps);
+  const execution = pipeline.execute('work', [], testCallOptions(), (chunk) => {
+    if (!chunk.ok) events.push(chunk.error);
+    else if (chunk.value.content) events.push(chunk.value.content);
+  });
+  try {
+    await setImmediate();
+    assert.deepEqual(events, [ordinary]);
+  } finally {
+    release.resolve();
+  }
+  assert.equal((await execution).error, ordinary);
+  assert.deepEqual(events, [ordinary, 'content']);
+});
 
 for (const operation of ['list', 'content']) {
   test(`pipeline propagates overflow from skill ${operation}`, async () => {

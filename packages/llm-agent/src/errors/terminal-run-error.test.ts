@@ -23,9 +23,8 @@ test('overflow wins through a deeper cause chain and another terminal wrapper', 
   ]) {
     error = new Error(label, { cause: error });
   }
-  const wrapped = new SmartAgentError(
-    'Wrapped transport failure',
-    'LLM_HTTP_ERROR',
+  const wrapped = Object.assign(
+    new SmartAgentError('Wrapped transport failure', 'LLM_HTTP_ERROR'),
     { cause: error },
   );
   assert.equal(contextExceededError(wrapped), overflow);

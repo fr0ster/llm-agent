@@ -25,6 +25,7 @@ export class OverlayRag implements IRag {
         this.overlay.query(embedding, k, options),
       ],
       (result) => (result.ok ? undefined : result.error),
+      { rejectImmediately: true },
     );
     if (!collected.ok) return collected;
     const [baseRes, overlayRes] = collected.value;
@@ -61,6 +62,7 @@ export class OverlayRag implements IRag {
     const checks = await collectWithContextOverflow(
       [this.base, this.overlay].map((store) => store.healthCheck(options)),
       (result) => (result.ok ? undefined : result.error),
+      { rejectImmediately: true },
     );
     if (!checks.ok) return checks;
     const [a, b] = checks.value;

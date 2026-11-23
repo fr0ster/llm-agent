@@ -154,6 +154,8 @@ export class StepperInterpreter implements IStepperInterpreter {
       for (let i = 0; i < batch.length; i += cap) {
         const outcomes = await collectWithContextOverflow(
           batch.slice(i, i + cap).map(runNode),
+          undefined,
+          { rejectImmediately: true },
         );
         if (!outcomes.ok) throw outcomes.error;
       }

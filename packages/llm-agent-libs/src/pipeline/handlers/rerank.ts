@@ -56,6 +56,8 @@ export class RerankHandler implements IStageHandler {
         }
         return { name, results };
       }),
+      undefined,
+      { rejectImmediately: true },
     );
 
     if (!reranked.ok) throw reranked.error;

@@ -151,6 +151,7 @@ export class RagOrchestrator implements IRagOrchestrator {
           ).then((r) => ({ name, result: r }));
         }),
         ({ result }) => (result.ok ? undefined : result.error),
+        { rejectImmediately: true },
       );
       ragSpan.end();
       if (!queries.ok) return queries;
@@ -185,6 +186,7 @@ export class RagOrchestrator implements IRagOrchestrator {
           return { name, results };
         }),
         ({ error }) => error,
+        { rejectImmediately: true },
       );
       if (!reranked.ok) return reranked;
       const rerankedMap: Record<string, RagResult[]> = {};
@@ -295,6 +297,7 @@ export class RagOrchestrator implements IRagOrchestrator {
               );
             }),
             (result) => (result.ok ? undefined : result.error),
+            { rejectImmediately: true },
           );
           if (!fallback.ok) return fallback;
           for (const result of fallback.value) {

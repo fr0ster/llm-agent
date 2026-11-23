@@ -27,7 +27,6 @@
  */
 
 import {
-  collectWithContextOverflow,
   contextExceededError,
   McpError,
   type SmartAgentError,
@@ -131,51 +130,45 @@ export class PipelineExecutor {
   ): Promise<boolean> {
     if (!stage.stages?.length) return true;
 
-    // Child stages share outputs. Hold their error chunks until all siblings
-    // have reported so a recoverable failure cannot win by arriving first.
-    type Chunk = Parameters<PipelineContext['yield']>[0];
-    const failures: Chunk[] = [];
-    let overflow: SmartAgentError | undefined;
-    const yieldChunk: PipelineContext['yield'] = (chunk) => {
-      if (chunk.ok) ctx.yield(chunk);
-      else {
-        overflow ??= contextExceededError(chunk.error);
-        failures.push(chunk);
-      }
-    };
-    const parallelCtx = new Proxy(ctx, {
-      get(target, key, receiver) {
-        return key === 'yield'
-          ? yieldChunk
-          : Reflect.get(target, key, receiver);
-      },
-      set(target, key, value, receiver) {
-        if (key === 'error') {
-          overflow ??= contextExceededError(value);
-          return Reflect.set(target, key, overflow ?? value, receiver);
+    const children = stage.stages;
+    const results = await new Promise<boolean[]>((resolve, reject) => {
+      let overflow: SmartAgentError | undefined;
+      // Let the enclosing stage report the overflow once, even for a nested parallel stage.
+      const stop = (failure: SmartAgentError) => {
+        if (!overflow) {
+          overflow = failure;
+          reject(failure);
         }
-        return Reflect.set(target, key, value, receiver);
-      },
+      };
+      const yieldChunk: PipelineContext['yield'] = (chunk) => {
+        const failure = chunk.ok
+          ? undefined
+          : contextExceededError(chunk.error);
+        if (failure) stop(failure);
+        if (!overflow) ctx.yield(chunk);
+      };
+      const parallelCtx = new Proxy(ctx, {
+        get(target, key, receiver) {
+          return key === 'yield'
+            ? yieldChunk
+            : Reflect.get(target, key, receiver);
+        },
+        set(target, key, value, receiver) {
+          if (key === 'error') {
+            const failure = contextExceededError(value);
+            if (failure) stop(failure);
+            if (overflow) return Reflect.set(target, key, overflow, receiver);
+          }
+          return Reflect.set(target, key, value, receiver);
+        },
+      });
+      void Promise.all(
+        children.map((child) =>
+          this.executeStages([child], parallelCtx, parentSpan),
+        ),
+      ).then(resolve, reject);
     });
-    const children = stage.stages.map((child) =>
-      this.executeStages([child], parallelCtx, parentSpan),
-    );
-    try {
-      const results = await collectWithContextOverflow(
-        children,
-        () => overflow,
-      );
-      if (!results.ok) throw results.error;
-      if (results.value.some((r) => !r)) return false;
-    } catch (error) {
-      overflow ??= contextExceededError(error);
-      if (overflow) throw overflow;
-      throw error;
-    } finally {
-      if (!overflow) {
-        for (const failure of failures) ctx.yield(failure);
-      }
-    }
+    if (results.some((r) => !r)) return false;
 
     // Run sequential `after` stages after all parallel children complete
     if (stage.after?.length) {

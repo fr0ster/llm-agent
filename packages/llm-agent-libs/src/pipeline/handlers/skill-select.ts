@@ -60,6 +60,7 @@ export class SkillSelectHandler implements IStageHandler {
           ),
         ),
         (result) => (result.ok ? undefined : result.error),
+        { rejectImmediately: true },
       );
       if (!queries.ok) {
         ctx.error = queries.error;

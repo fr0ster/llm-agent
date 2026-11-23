@@ -4,6 +4,7 @@ import {
   type AdaptiveStep,
   type ILlm,
   LlmError,
+  MODEL_CONTEXT_EXCEEDED,
 } from '@mcp-abap-adt/llm-agent';
 import { SmartAgentBuilder } from '../../../builder.js';
 import { unwrapBuilderResult } from '../../../builder-types.js';
@@ -105,3 +106,37 @@ for (const role of ['plan', 'check', 'revise', 'report', 'worker'] as const) {
     });
   }
 }
+
+test('adaptive planning exposes overflow when the planner also aborts', async () => {
+  const abort = new AbortController();
+  const overflow = new LlmError('Prompt too long', MODEL_CONTEXT_EXCEEDED);
+  const controller = new LlmAdaptiveController({
+    async chat() {
+      abort.abort();
+      return { ok: false, error: overflow };
+    },
+    streamChat: () => assert.fail('unexpected stream'),
+  });
+  const handle = await new SmartAgentBuilder({ skipModelValidation: true })
+    .withRagAccess(testRequestAccess)
+    .withMainLlm({
+      chat: async () => assert.fail('unexpected chat'),
+      streamChat: () => assert.fail('unexpected stream'),
+    })
+    .withClassification(false)
+    .withStepperCoordinator(
+      new AdaptiveCoordinatorHandler({ controller, workers: new Map() }),
+    )
+    .build()
+    .then(unwrapBuilderResult);
+  try {
+    const result = await handle.agent.process('Work', {
+      ...testCallOptions(),
+      signal: abort.signal,
+    });
+    assert.ok(!result.ok);
+    assert.equal(result.error, overflow);
+  } finally {
+    await handle.close();
+  }
+});
