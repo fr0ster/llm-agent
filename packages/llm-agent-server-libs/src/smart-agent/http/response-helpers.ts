@@ -8,8 +8,11 @@
  */
 
 import type { IncomingMessage } from 'node:http';
-import type { ExternalToolValidationCode } from '@mcp-abap-adt/llm-agent';
-import type { StopReason } from '@mcp-abap-adt/llm-agent-libs';
+import {
+  contextExceededError,
+  type ExternalToolValidationCode,
+} from '@mcp-abap-adt/llm-agent';
+import type { SmartAgent, StopReason } from '@mcp-abap-adt/llm-agent-libs';
 
 export function mapStopReason(r: StopReason): 'stop' | 'length' | 'tool_calls' {
   if (r === 'stop') return 'stop';
@@ -76,4 +79,17 @@ export function writeNotReady(res: {
       },
     }),
   );
+}
+
+/** Normalize overflow before the route or its protocol adapter formats the stream. */
+export async function* streamWithContextOverflow(
+  stream: ReturnType<SmartAgent['streamProcess']>,
+): ReturnType<SmartAgent['streamProcess']> {
+  try {
+    yield* stream;
+  } catch (error) {
+    const overflow = contextExceededError(error);
+    if (!overflow) throw error;
+    yield { ok: false, error: overflow };
+  }
 }

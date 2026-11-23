@@ -87,6 +87,28 @@ describe('LlmReranker', () => {
     });
   }
 
+  it('returns overflow after an earlier parallel batch reports another terminal code', async () => {
+    const firstFailure = new LlmError(
+      'Earlier terminal failure',
+      'LLM_HTTP_ERROR',
+    );
+    const overflow = new LlmError('Prompt is too long', MODEL_CONTEXT_EXCEEDED);
+    let calls = 0;
+    const llm: ILlm = {
+      async chat() {
+        return { ok: false, error: ++calls === 1 ? firstFailure : overflow };
+      },
+      async *streamChat() {},
+    };
+    const result = await new LlmReranker(llm, {
+      batchSize: 1,
+      concurrency: 2,
+    }).rerank('q', sampleResults);
+    assert.ok(!result.ok);
+    assert.equal(result.error.code, 'RERANK_ERROR');
+    assert.equal(result.error.cause, overflow);
+  });
+
   it('returns the terminal error when an earlier parallel batch fails transiently', async () => {
     const transient = new LlmError('Service unavailable');
     const terminal = new LlmError('Prompt is too long', MODEL_CONTEXT_EXCEEDED);

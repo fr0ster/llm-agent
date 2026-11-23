@@ -33,8 +33,9 @@ import {
 } from '@mcp-abap-adt/llm-agent';
 
 // Import from the new module path (RED until 2b)
+import { NoopRequestLogger } from '../logger/noop-request-logger.js';
 import { vectorizeMcpTools } from '../mcp/vectorize-mcp-tools.js';
-import { makeLlm } from '../testing/index.js';
+import { makeLlm, makeMcpClient } from '../testing/index.js';
 
 for (const thrown of [false, true]) {
   it(`tool vectorization stops on ${thrown ? 'thrown' : 'returned'} context overflow`, async () => {
@@ -876,3 +877,23 @@ it('bulk MCP writes store every description fragment through the configured inpu
     fragments.map((_, index) => [index + 1]),
   );
 });
+
+for (const rejects of [false, true]) {
+  it(`tool vectorization propagates ${rejects ? 'rejected' : 'returned'} overflow during discovery`, async () => {
+    const overflow = new McpError('Prompt too long', MODEL_CONTEXT_EXCEEDED);
+    const client = makeMcpClient([]);
+    client.listTools = async () => {
+      if (rejects) throw new Error('Catalog failed', { cause: overflow });
+      return { ok: false, error: overflow };
+    };
+    await assert.rejects(
+      vectorizeMcpTools(
+        [client],
+        new InMemoryRag(),
+        new NoopRequestLogger(),
+        undefined,
+      ),
+      (error) => error === overflow,
+    );
+  });
+}

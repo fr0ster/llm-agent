@@ -3,6 +3,7 @@ import type { ILlm, LlmResponse } from '@mcp-abap-adt/llm-agent';
 import {
   addCacheTokenUsage,
   type CallOptions,
+  collectWithContextOverflow,
   formatTrustTag,
   RagError,
   type RagResult,
@@ -90,9 +91,22 @@ export class LlmReranker implements IReranker {
     const scores: number[] = new Array(results.length);
     for (let s = 0; s < batches.length; s += concurrency) {
       const slice = batches.slice(s, s + concurrency);
-      const outcomes = await Promise.all(
+      const batch = await collectWithContextOverflow(
         slice.map((b) => this._scoreBatch(query, b.items, options)),
+        (result) => (result.ok ? undefined : result.error),
       );
+      if (!batch.ok) {
+        return {
+          ok: false,
+          error: Object.assign(
+            new RagError(batch.error.message, 'RERANK_ERROR'),
+            {
+              cause: batch.error,
+            },
+          ),
+        };
+      }
+      const outcomes = batch.value;
       let failure: RagError | undefined;
       for (let k = 0; k < slice.length; k++) {
         const o = outcomes[k];

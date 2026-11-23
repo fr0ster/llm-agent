@@ -66,6 +66,8 @@ export function guardToolRound(
   try {
     return options?.toolRoundGuard?.(calls);
   } catch (error) {
+    const terminal = contextExceededError(error);
+    if (terminal) throw terminal;
     const message = error instanceof Error ? error.message : String(error);
     return new Map(calls.map((_, index) => [index, message]));
   }

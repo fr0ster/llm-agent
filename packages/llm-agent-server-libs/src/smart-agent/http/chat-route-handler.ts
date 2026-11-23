@@ -28,6 +28,7 @@ import {
   jsonValidationError,
   mapStopReason,
   readBody,
+  streamWithContextOverflow,
 } from './response-helpers.js';
 import { attachSseKeepAlive } from './sse-heartbeat.js';
 
@@ -318,7 +319,7 @@ export async function handleChat(
     } | null = null;
 
     try {
-      for await (const chunk of stream) {
+      for await (const chunk of streamWithContextOverflow(stream)) {
         if (!canWrite(res, abort.signal)) break;
         keepAlive.reset();
         if (!chunk.ok) {

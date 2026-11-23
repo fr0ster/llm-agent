@@ -1,4 +1,8 @@
-import { terminalRunError } from '../../errors/terminal-run-error.js';
+import { collectWithContextOverflow } from '../../errors/collect-with-context-overflow.js';
+import {
+  contextExceededError,
+  terminalRunError,
+} from '../../errors/terminal-run-error.js';
 import type { IQueryEmbedding } from '../../interfaces/query-embedding.js';
 import type { IRag } from '../../interfaces/rag.js';
 import type {
@@ -26,13 +30,18 @@ export class OverlayRag implements IRag {
       overlayQuery,
       Promise.all([baseQuery, overlayQuery]),
     ]);
-    for (const result of [base, overlay]) {
-      const error =
-        result.status === 'rejected'
-          ? result.reason
-          : result.value.ok
-            ? undefined
-            : result.value.error;
+    const failures = [base, overlay].map((result) =>
+      result.status === 'rejected'
+        ? result.reason
+        : result.value.ok
+          ? undefined
+          : result.value.error,
+    );
+    for (const error of failures) {
+      const overflow = contextExceededError(error);
+      if (overflow) return { ok: false, error: overflow };
+    }
+    for (const error of failures) {
       const terminal = terminalRunError(error);
       if (terminal) return { ok: false, error: terminal };
     }
@@ -69,10 +78,12 @@ export class OverlayRag implements IRag {
   }
 
   async healthCheck(options?: CallOptions): Promise<Result<void, RagError>> {
-    const [a, b] = await Promise.all([
-      this.base.healthCheck(options),
-      this.overlay.healthCheck(options),
-    ]);
+    const checks = await collectWithContextOverflow(
+      [this.base, this.overlay].map((store) => store.healthCheck(options)),
+      (result) => (result.ok ? undefined : result.error),
+    );
+    if (!checks.ok) return checks;
+    const [a, b] = checks.value;
     if (!a.ok) return a;
     return b;
   }

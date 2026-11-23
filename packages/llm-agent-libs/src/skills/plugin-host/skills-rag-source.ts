@@ -6,7 +6,7 @@ import type {
   RagResult,
   Result,
 } from '@mcp-abap-adt/llm-agent';
-import { RagError } from '@mcp-abap-adt/llm-agent'; // value (class)
+import { contextExceededError, RagError } from '@mcp-abap-adt/llm-agent';
 
 export interface SkillsRagSourceConfig {
   group: string;
@@ -53,7 +53,9 @@ export function skillsRagSource(
       } catch (e) {
         return {
           ok: false,
-          error: new RagError(`skills source error: ${String(e)}`),
+          error:
+            contextExceededError(e) ??
+            new RagError(`skills source error: ${String(e)}`),
         };
       }
     },
@@ -63,7 +65,10 @@ export function skillsRagSource(
         await handle.activeManifest(options);
         return { ok: true, value: undefined };
       } catch (e) {
-        return { ok: false, error: new RagError(String(e)) };
+        return {
+          ok: false,
+          error: contextExceededError(e) ?? new RagError(String(e)),
+        };
       }
     },
 

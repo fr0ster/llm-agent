@@ -21,6 +21,7 @@ import type {
 } from '@mcp-abap-adt/llm-agent';
 import {
   createDialogueTaskContext,
+  MODEL_CONTEXT_EXCEEDED,
   normalizeToolTrace,
   SmartAgentError,
   ToolTraceCollector,
@@ -721,13 +722,15 @@ export class TaskBoard {
   findTerminalError(
     ownsTask: (id: string) => boolean,
   ): SmartAgentError | undefined {
+    let failure: SmartAgentError | undefined;
     for (const task of this.records.values()) {
-      if (task.terminalErrorCode !== undefined && ownsTask(task.id))
-        return new TerminalDialogueError(
-          task.error ?? task.terminalErrorCode,
-          task.terminalErrorCode,
-        );
+      const code = task.terminalErrorCode;
+      if (code === undefined || !ownsTask(task.id)) continue;
+      if (code === MODEL_CONTEXT_EXCEEDED)
+        return new TerminalDialogueError(task.error ?? code, code);
+      failure ??= new TerminalDialogueError(task.error ?? code, code);
     }
+    return failure;
   }
   list(): TaskRecord[] {
     return [...this.records.keys()].flatMap((id) => {

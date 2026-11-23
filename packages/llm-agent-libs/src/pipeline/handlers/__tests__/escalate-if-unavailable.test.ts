@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { type IMcpFailureClassifier, McpError } from '@mcp-abap-adt/llm-agent';
+import {
+  type IMcpFailureClassifier,
+  McpError,
+  MODEL_CONTEXT_EXCEEDED,
+} from '@mcp-abap-adt/llm-agent';
 import { classifyToolResult } from '../escalate-if-unavailable.js';
 
 // ── Existing tests (updated to await) ────────────────────────────────────────
@@ -102,4 +106,22 @@ test('classify: probe passthrough — does NOT escalate when probeHealth resolve
     'must NOT escalate when probe returns true',
   );
   assert.equal(d.text, 'unreachable');
+});
+
+test('tool result classification rethrows overflow before invoking the classifier', async () => {
+  const overflow = new McpError('Prompt too long', MODEL_CONTEXT_EXCEEDED);
+  let calls = 0;
+  await assert.rejects(
+    classifyToolResult(
+      { ok: false, error: overflow },
+      {
+        async classify() {
+          calls++;
+          return 'tool-error';
+        },
+      },
+    ),
+    (error) => error === overflow,
+  );
+  assert.equal(calls, 0);
 });

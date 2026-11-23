@@ -1,4 +1,5 @@
 import { setImmediate } from 'node:timers/promises';
+import { contextExceededError } from '../errors/terminal-run-error.js';
 import {
   type IDocumentEmbedder,
   type IEmbedResult,
@@ -64,6 +65,8 @@ export async function retryRagThrottle<T>(
     try {
       return await call();
     } catch (error) {
+      const overflow = contextExceededError(error);
+      if (overflow) throw overflow;
       signal?.throwIfAborted();
       const response =
         error !== null && typeof error === 'object' ? error : undefined;

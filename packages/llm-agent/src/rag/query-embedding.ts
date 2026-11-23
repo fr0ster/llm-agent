@@ -1,3 +1,4 @@
+import { contextExceededError } from '../errors/terminal-run-error.js';
 import type { IQueryEmbedding } from '../interfaces/query-embedding.js';
 import type { IEmbedResult, IQueryEmbedder } from '../interfaces/rag.js';
 import type { CallOptions } from '../interfaces/types.js';
@@ -76,14 +77,16 @@ export class FallbackQueryEmbedding implements IQueryEmbedding {
   }
 
   toVector(): Promise<number[]> {
-    this._vector ??= this.inner.toVector().catch(() =>
-      this.fallback
+    this._vector ??= this.inner.toVector().catch((error) => {
+      const overflow = contextExceededError(error);
+      if (overflow) throw overflow;
+      return this.fallback
         .embedQuery(this.text, {
           ...this.options,
           usage: this.options?.usage?.with({ role: 'embedding' }),
         })
-        .then((r) => r.vector),
-    );
+        .then((r) => r.vector);
+    });
     return this._vector;
   }
 }

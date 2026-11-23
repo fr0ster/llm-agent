@@ -11,7 +11,6 @@ import {
   type McpTool,
   type McpToolResult,
   type Result,
-  SmartAgentError,
 } from '@mcp-abap-adt/llm-agent';
 import type { MCPClientWrapper } from './client.js';
 import { toMcpError } from './error-mapping.js';
@@ -51,7 +50,7 @@ export class McpClientAdapter implements IMcpClient {
       this.toolsCache = tools;
       return { ok: true, value: tools };
     } catch (err) {
-      return { ok: false, error: toMcpError(err) };
+      return { ok: false, error: contextExceededError(err) ?? toMcpError(err) };
     }
   }
 
@@ -71,7 +70,7 @@ export class McpClientAdapter implements IMcpClient {
       return { ok: true, value: true };
     } catch (err) {
       this.lastHealthy = false;
-      return { ok: false, error: toMcpError(err) };
+      return { ok: false, error: contextExceededError(err) ?? toMcpError(err) };
     }
   }
 
@@ -134,9 +133,7 @@ export class McpClientAdapter implements IMcpClient {
         },
       };
     } catch (err) {
-      const terminal =
-        err instanceof SmartAgentError && contextExceededError(err);
-      return { ok: false, error: terminal || toMcpError(err) };
+      return { ok: false, error: contextExceededError(err) ?? toMcpError(err) };
     }
   }
 }

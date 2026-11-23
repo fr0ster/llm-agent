@@ -9,6 +9,8 @@ import type {
   Subprompt,
 } from '@mcp-abap-adt/llm-agent';
 import {
+  collectWithContextOverflow,
+  contextExceededError,
   mergeOfferedTools,
   OrchestratorError,
   QueryEmbedding,
@@ -135,7 +137,7 @@ export class RagOrchestrator implements IRagOrchestrator {
           ? mkEmbed(translatedText)
           : originalEmbedding;
 
-      const ragQueryResults = await Promise.all(
+      const queries = await collectWithContextOverflow(
         storeEntries.map(([name, store]) => {
           const emb =
             translateStores?.has(name) && translatedText
@@ -149,8 +151,10 @@ export class RagOrchestrator implements IRagOrchestrator {
             this.deps.ragAccess ?? denyRagAccess,
           ).then((r) => ({ name, result: r }));
         }),
-      );
-      ragSpan.end();
+        ({ result }) => (result.ok ? undefined : result.error),
+      ).finally(() => ragSpan.end());
+      if (!queries.ok) return queries;
+      const ragQueryResults = queries.value;
       for (const { result } of ragQueryResults) {
         if (result.ok) continue;
         const terminal = terminalRunError(result.error);
@@ -168,7 +172,7 @@ export class RagOrchestrator implements IRagOrchestrator {
 
       // Rerank results
       // Rerank all stores in parallel, using matching query text per store
-      const rerankedEntries = await Promise.all(
+      const reranked = await collectWithContextOverflow(
         Object.entries(ragResultsMap).map(async ([name, results]) => {
           if (results.length > 0) {
             const rerankText =
@@ -185,9 +189,11 @@ export class RagOrchestrator implements IRagOrchestrator {
           }
           return { name, results };
         }),
+        ({ error }) => error,
       );
+      if (!reranked.ok) return reranked;
       const rerankedMap: Record<string, RagResult[]> = {};
-      for (const { name, results, error } of rerankedEntries) {
+      for (const { name, results, error } of reranked.value) {
         if (error) return { ok: false, error };
         rerankedMap[name] = results;
       }
@@ -277,7 +283,7 @@ export class RagOrchestrator implements IRagOrchestrator {
         if (ragSkillNames.size === 0) {
           const k = this.deps.config.ragQueryK ?? 15;
           const storeEntries = Object.entries(this.deps.ragStores);
-          const fallbackResults = await Promise.all(
+          const fallback = await collectWithContextOverflow(
             storeEntries.map(([name, store]) => {
               const text =
                 translateStores?.has(name) && translatedText
@@ -294,8 +300,10 @@ export class RagOrchestrator implements IRagOrchestrator {
                 this.deps.ragAccess ?? denyRagAccess,
               );
             }),
+            (result) => (result.ok ? undefined : result.error),
           );
-          for (const result of fallbackResults) {
+          if (!fallback.ok) return fallback;
+          for (const result of fallback.value) {
             if (!result.ok) return result;
             if (result.ok) {
               for (const r of result.value) {
@@ -316,13 +324,19 @@ export class RagOrchestrator implements IRagOrchestrator {
         }
 
         const allSkillsResult = await this.deps.skillManager.listSkills(opts);
-        if (allSkillsResult.ok) {
+        if (!allSkillsResult.ok) {
+          const overflow = contextExceededError(allSkillsResult.error);
+          if (overflow) return { ok: false, error: overflow };
+        } else {
           const allSkills = allSkillsResult.value;
           const matched = allSkills.filter((s) => ragSkillNames.has(s.name));
           const contentParts: string[] = [];
           for (const skill of matched) {
             const contentResult = await skill.getContent(undefined, opts);
-            if (contentResult.ok && contentResult.value) {
+            if (!contentResult.ok) {
+              const overflow = contextExceededError(contentResult.error);
+              if (overflow) return { ok: false, error: overflow };
+            } else if (contentResult.value) {
               contentParts.push(
                 `### Skill: ${skill.name}\n${contentResult.value}`,
               );
@@ -391,10 +405,12 @@ export class RagOrchestrator implements IRagOrchestrator {
       assembleSpan.end();
       return {
         ok: false,
-        error: new OrchestratorError(
-          assembleResult.error.message,
-          'ASSEMBLER_ERROR',
-        ),
+        error:
+          contextExceededError(assembleResult.error) ??
+          new OrchestratorError(
+            assembleResult.error.message,
+            'ASSEMBLER_ERROR',
+          ),
       };
     }
     assembleSpan.setStatus('ok');

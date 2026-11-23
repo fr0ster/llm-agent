@@ -26,7 +26,13 @@
  * The span is passed to the handler for sub-span creation.
  */
 
-import { McpError, terminalRunError } from '@mcp-abap-adt/llm-agent';
+import {
+  collectWithContextOverflow,
+  contextExceededError,
+  McpError,
+  type SmartAgentError,
+  terminalRunError,
+} from '@mcp-abap-adt/llm-agent';
 import { normalizeMaxIterations } from '../config/normalize-max-iterations.js';
 import type { ISpan, ITracer } from '../tracer/types.js';
 import { evaluateCondition } from './condition-evaluator.js';
@@ -125,11 +131,51 @@ export class PipelineExecutor {
   ): Promise<boolean> {
     if (!stage.stages?.length) return true;
 
-    const results = await Promise.all(
-      stage.stages.map((child) => this.executeStages([child], ctx, parentSpan)),
+    // Child stages share outputs. Hold their error chunks until all siblings
+    // have reported so a recoverable failure cannot win by arriving first.
+    type Chunk = Parameters<PipelineContext['yield']>[0];
+    const failures: Chunk[] = [];
+    let overflow: SmartAgentError | undefined;
+    const yieldChunk: PipelineContext['yield'] = (chunk) => {
+      if (chunk.ok) ctx.yield(chunk);
+      else {
+        overflow ??= contextExceededError(chunk.error);
+        failures.push(chunk);
+      }
+    };
+    const parallelCtx = new Proxy(ctx, {
+      get(target, key, receiver) {
+        return key === 'yield'
+          ? yieldChunk
+          : Reflect.get(target, key, receiver);
+      },
+      set(target, key, value, receiver) {
+        if (key === 'error') {
+          overflow ??= contextExceededError(value);
+          return Reflect.set(target, key, overflow ?? value, receiver);
+        }
+        return Reflect.set(target, key, value, receiver);
+      },
+    });
+    const children = stage.stages.map((child) =>
+      this.executeStages([child], parallelCtx, parentSpan),
     );
-
-    if (results.some((r) => !r)) return false;
+    try {
+      const results = await collectWithContextOverflow(
+        children,
+        () => overflow,
+      );
+      if (!results.ok) throw results.error;
+      if (results.value.some((r) => !r)) return false;
+    } catch (error) {
+      overflow ??= contextExceededError(error);
+      if (overflow) throw overflow;
+      throw error;
+    } finally {
+      if (!overflow) {
+        for (const failure of failures) ctx.yield(failure);
+      }
+    }
 
     // Run sequential `after` stages after all parallel children complete
     if (stage.after?.length) {

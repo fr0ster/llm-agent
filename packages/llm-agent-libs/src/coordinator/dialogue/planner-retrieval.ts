@@ -9,6 +9,8 @@ import type {
   PlannerMemoryEntry,
 } from '@mcp-abap-adt/llm-agent';
 import {
+  collectWithContextOverflow,
+  contextExceededError,
   QueryEmbedding,
   scopedUsage,
   terminalRunError,
@@ -170,6 +172,10 @@ export async function retrievePlannerContext(
                   2 * (config.memoryK ?? 8),
                   { ...scoped, ragFilter: { sessionId } },
                 );
+                if (!result.ok) {
+                  const overflow = contextExceededError(result.error);
+                  if (overflow) throw overflow;
+                }
                 signal.throwIfAborted();
                 if (!result.ok) throw result.error;
                 output.memory = result.value
@@ -212,7 +218,9 @@ export async function retrievePlannerContext(
                   })
                   .slice(0, config.memoryK ?? 8);
               } catch (error) {
-                const terminal = !signal.aborted && terminalRunError(error);
+                const terminal =
+                  contextExceededError(error) ??
+                  (!signal.aborted && terminalRunError(error));
                 if (terminal) throw terminal;
                 warn('Planner memory retrieval failed or timed out');
               }
@@ -243,7 +251,9 @@ export async function retrievePlannerContext(
                   .map((entry) => ({ ...entry, collection: source.name }));
                 output.knowledge = knowledgeResults.flat();
               } catch (error) {
-                const terminal = !signal.aborted && terminalRunError(error);
+                const terminal =
+                  contextExceededError(error) ??
+                  (!signal.aborted && terminalRunError(error));
                 if (terminal) throw terminal;
                 warn(
                   `Planner knowledge retrieval failed or timed out: ${source.name}`,
@@ -251,14 +261,17 @@ export async function retrievePlannerContext(
               }
             })(),
           );
-        await Promise.all(jobs);
+        const results = await collectWithContextOverflow(jobs);
+        if (!results.ok) throw results.error;
       },
       config.retrievalTimeoutMs,
       options.signal,
     );
   } catch (error) {
     const terminal =
-      terminalRunError(options.signal?.reason) ?? terminalRunError(error);
+      contextExceededError(error) ??
+      terminalRunError(options.signal?.reason) ??
+      terminalRunError(error);
     if (terminal) throw terminal;
     warn('Planner retrieval deadline reached');
   }

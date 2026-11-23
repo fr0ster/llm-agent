@@ -3,6 +3,7 @@ import type { RagCaller } from '@mcp-abap-adt/llm-agent';
 import {
   AdapterValidationError,
   buildExternalResults,
+  contextExceededError,
   type ILlmApiAdapter,
   MODEL_CONTEXT_EXCEEDED,
   type NormalizedRequest,
@@ -10,7 +11,11 @@ import {
 } from '@mcp-abap-adt/llm-agent';
 import type { SessionGraph, SmartAgent } from '@mcp-abap-adt/llm-agent-libs';
 import { canWrite, createRequestAbort } from './request-abort.js';
-import { jsonError, readBody } from './response-helpers.js';
+import {
+  jsonError,
+  readBody,
+  streamWithContextOverflow,
+} from './response-helpers.js';
 import { attachSseKeepAlive } from './sse-heartbeat.js';
 
 /**
@@ -100,7 +105,9 @@ export async function handleAdapterRequest(
     const keepAlive = attachSseKeepAlive(res, heartbeatIntervalMs);
     try {
       for await (const event of adapter.transformStream(
-        agent.streamProcess(sanitizedMessages, augmentedOptions),
+        streamWithContextOverflow(
+          agent.streamProcess(sanitizedMessages, augmentedOptions),
+        ),
         normalized.context,
       )) {
         if (!canWrite(res, abort.signal)) break;
@@ -128,9 +135,13 @@ export async function handleAdapterRequest(
   try {
     result = await agent.process(sanitizedMessages, augmentedOptions);
   } catch (err) {
-    if (!abort.signal.aborted) throw err;
-    logCancelled();
-    return;
+    const overflow = contextExceededError(err);
+    if (overflow) result = { ok: false, error: overflow };
+    else {
+      if (!abort.signal.aborted) throw err;
+      logCancelled();
+      return;
+    }
   }
   if (!canWrite(res, abort.signal)) {
     logCancelled();

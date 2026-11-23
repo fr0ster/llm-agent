@@ -13,7 +13,6 @@ const terminalCodes = new Set([
   'DECISION_ABORTED',
   'LLM_OUTPUT_TRUNCATED',
   'LLM_HTTP_ERROR',
-  MODEL_CONTEXT_EXCEEDED,
   // The worker and check protocols require an answer or a verdict.
   'EMPTY_WORKER_OUTPUT',
   'VERDICT_RETRIEVAL_FAILED',
@@ -27,6 +26,8 @@ const terminalCodes = new Set([
 
 /** Return the typed failure that must bypass retries, recovery, and fallback. */
 export function terminalRunError<T>(error: T): SmartAgentError | undefined {
+  const overflow = contextExceededError(error);
+  if (overflow) return overflow;
   const details =
     typeof error === 'object' && error !== null ? error : undefined;
   for (const current of errorCauseChain(details)) {
@@ -71,6 +72,16 @@ function typedFailure(
 
 /** The terminal error only when it is a model context overflow. */
 export function contextExceededError<T>(error: T): SmartAgentError | undefined {
-  const terminal = terminalRunError(error);
-  return terminal?.code === MODEL_CONTEXT_EXCEEDED ? terminal : undefined;
+  if (typeof error !== 'object' || error === null) return undefined;
+  const seen = new Set<object>();
+  let current: object = error;
+  while (!seen.has(current)) {
+    if ('code' in current && current.code === MODEL_CONTEXT_EXCEEDED)
+      return typedFailure(current, MODEL_CONTEXT_EXCEEDED, error);
+    seen.add(current);
+    const cause = 'cause' in current ? current.cause : undefined;
+    if (typeof cause !== 'object' || cause === null) break;
+    current = cause;
+  }
+  return undefined;
 }

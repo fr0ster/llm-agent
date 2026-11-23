@@ -10,6 +10,8 @@ import type {
 } from '@mcp-abap-adt/llm-agent';
 import {
   InMemoryRag,
+  MODEL_CONTEXT_EXCEEDED,
+  RagError,
   VectorOnlyStrategy,
   VectorRag,
 } from '@mcp-abap-adt/llm-agent';
@@ -1042,4 +1044,29 @@ test('planner memory precomputes all fragments and retrieves a record by its tai
   assert.ok(result.ok);
   assert.equal(result.value[0]?.text, text);
   assert.equal(result.value[0]?.score, 1);
+});
+
+test('background planner memory reports a typed overflow with its request id', async () => {
+  const overflow = new RagError('Prompt too long', MODEL_CONTEXT_EXCEEDED);
+  const rag = new InMemoryRag();
+  rag.writer = () => ({
+    async upsertRaw() {
+      return { ok: false, error: overflow };
+    },
+    async deleteByIdRaw() {
+      return { ok: true, value: false };
+    },
+  });
+  const failures: Array<{ requestId: string; error: Error }> = [];
+  const writer = new PlannerMemoryWriter(
+    'session',
+    { rag, queryEmbedder, documentEmbedder },
+    warn,
+    (requestId, error) => {
+      failures.push({ requestId, error });
+    },
+  );
+  writer.enqueue('planner-input', 'request', 'input', 'prompt', {});
+  await writer.close();
+  assert.deepEqual(failures, [{ requestId: 'request', error: overflow }]);
 });

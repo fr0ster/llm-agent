@@ -62,6 +62,7 @@ import {
   type CircuitBreakerConfig,
   CircuitBreakerLlm,
   collectServerDescriptors,
+  contextOverflowInSettled,
   defaultToolNamespace,
   FallbackRag,
   InMemoryRag,
@@ -1321,23 +1322,21 @@ export class SmartAgentBuilder {
           resolved.clientDescriptors,
           'MCP connection strategy',
         );
-        const settled = await Promise.all(
-          mcpClients.map(async (client) => {
-            try {
-              const result = await client.listTools();
-              return result.ok
-                ? { ok: true as const, value: result.value }
-                : { ok: false as const };
-            } catch {
-              return { ok: false as const };
-            }
-          }),
+        const listings = await Promise.allSettled(
+          mcpClients.map(async (client) => client.listTools()),
+        );
+        const overflow = contextOverflowInSettled(listings, (result) =>
+          result.ok ? undefined : result.error,
+        );
+        if (overflow) throw overflow;
+        const settled = listings.map((entry) =>
+          entry.status === 'fulfilled' ? entry.value : undefined,
         );
         let clientFailures = 0;
         let total = 0;
         const perClient: NamespaceClientInput[] = settled.flatMap(
           (entry, i) => {
-            if (!entry.ok) {
+            if (!entry?.ok) {
               clientFailures++;
               return [];
             }

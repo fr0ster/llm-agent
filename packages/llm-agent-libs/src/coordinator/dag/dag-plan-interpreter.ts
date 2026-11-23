@@ -9,7 +9,10 @@ import type {
   PlanNode,
   StreamChunk,
 } from '@mcp-abap-adt/llm-agent';
-import { terminalRunError } from '@mcp-abap-adt/llm-agent';
+import {
+  contextExceededError,
+  terminalRunError,
+} from '@mcp-abap-adt/llm-agent';
 import { composeNodeTask } from './compose-node-task.js';
 import { spliceSubPlan } from './splice-sub-plan.js';
 
@@ -207,6 +210,10 @@ export class DagPlanInterpreter
       const failures = outcomes.filter(
         (o): o is Extract<Outcome, { kind: 'failed' }> => o.kind === 'failed',
       );
+      for (const { error } of failures) {
+        const overflow = contextExceededError(error);
+        if (overflow) throw overflow;
+      }
       for (const { error } of failures) {
         const terminal = terminalRunError(error);
         if (terminal) throw terminal;

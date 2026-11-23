@@ -4,7 +4,7 @@ import type {
   IMcpClient,
   IMcpFailureClassifier,
 } from '@mcp-abap-adt/llm-agent';
-import { McpError } from '@mcp-abap-adt/llm-agent';
+import { McpError, MODEL_CONTEXT_EXCEEDED } from '@mcp-abap-adt/llm-agent';
 import { buildMcpBridge } from '../smart-server.js';
 
 test('bridge throws on an availability listTools error (not "Tool not found")', async () => {
@@ -195,4 +195,57 @@ test('bridge passes per-client probe to classifier — UP: returns tool-error te
   } as unknown as IMcpClient;
   const bridge = buildMcpBridge([client], assumeUnavailableWhenNoProbe);
   assert.deepEqual(await bridge('t', {}), { text: 'boom', isError: true });
+});
+
+test('bridge rejects wrapped context overflow from listTools before classification', async () => {
+  const overflow = new McpError('Prompt too long', MODEL_CONTEXT_EXCEEDED);
+  const error = Object.assign(new McpError('Wrapped tool failure'), {
+    cause: overflow,
+  });
+  const client: IMcpClient = {
+    async listTools() {
+      return { ok: false, error };
+    },
+    async callTool() {
+      return { ok: false, error };
+    },
+  };
+  let classifications = 0;
+  const classifier: IMcpFailureClassifier = {
+    async classify() {
+      classifications++;
+      return 'tool-error';
+    },
+  };
+  const bridge = buildMcpBridge([client], classifier);
+  await assert.rejects(bridge('GetTable', {}), (reason) => reason === overflow);
+  assert.equal(classifications, 0);
+});
+
+test('bridge rejects wrapped context overflow from callTool before classification', async () => {
+  const overflow = new McpError('Prompt too long', MODEL_CONTEXT_EXCEEDED);
+  const error = Object.assign(new McpError('Wrapped tool failure'), {
+    cause: overflow,
+  });
+  const client: IMcpClient = {
+    async listTools() {
+      return {
+        ok: true,
+        value: [{ name: 'GetTable', description: '', inputSchema: {} }],
+      };
+    },
+    async callTool() {
+      return { ok: false, error };
+    },
+  };
+  let classifications = 0;
+  const classifier: IMcpFailureClassifier = {
+    async classify() {
+      classifications++;
+      return 'tool-error';
+    },
+  };
+  const bridge = buildMcpBridge([client], classifier);
+  await assert.rejects(bridge('GetTable', {}), (reason) => reason === overflow);
+  assert.equal(classifications, 0);
 });

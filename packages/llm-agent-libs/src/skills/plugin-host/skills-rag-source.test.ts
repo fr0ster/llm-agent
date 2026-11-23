@@ -1,5 +1,10 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import {
+  MODEL_CONTEXT_EXCEEDED,
+  RagError,
+  TextOnlyEmbedding,
+} from '@mcp-abap-adt/llm-agent';
 import { skillsRagSource } from './skills-rag-source.js';
 
 test('query uses IQueryEmbedding.text (NOT toVector) and maps SkillHit→RagResult', async () => {
@@ -71,4 +76,30 @@ test('healthCheck ok when activeManifest resolves; writer undefined; getById ok(
   const byId = await src.getById('x');
   assert.equal(byId.ok, true);
   assert.equal((byId as { value: unknown }).value, null);
+});
+
+test('skills source preserves overflow from an embedding-backed query', async () => {
+  const overflow = new RagError('Prompt too long', MODEL_CONTEXT_EXCEEDED);
+  const source = skillsRagSource(
+    {
+      async query() {
+        throw new Error('Skill lookup failed', { cause: overflow });
+      },
+      async activeManifest() {
+        return {
+          revision: 'g0',
+          manifest: {
+            embeddingSpaceId: 'sp',
+            dimension: 3,
+            retrievalSchemaVersion: 1,
+          },
+        };
+      },
+    },
+    { group: 'g', k: 4 },
+  );
+  assert.deepEqual(await source.query(new TextOnlyEmbedding('goal'), 4), {
+    ok: false,
+    error: overflow,
+  });
 });

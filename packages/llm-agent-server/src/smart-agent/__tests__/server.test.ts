@@ -785,3 +785,45 @@ it('legacy HTTP chat forwards cache controls and rejects invalid values', async 
     await handle.close();
   }
 });
+
+for (const stream of [false, true]) {
+  it(`legacy HTTP preserves overflow rejected by the agent (stream=${stream})`, async () => {
+    const overflow = new LlmError('Prompt is too long', MODEL_CONTEXT_EXCEEDED);
+    const { deps } = makeDefaultDeps();
+    const agent = new SmartAgent(deps, {});
+    agent.process = async () => {
+      throw new Error('Agent failure', { cause: overflow });
+    };
+    agent.streamProcess = async function* () {
+      yield await Promise.reject(
+        new Error('Agent failure', { cause: overflow }),
+      );
+    };
+    const handle = await new SmartAgentServer(agent).start();
+    try {
+      const response = await httpRequest(
+        handle.port,
+        'POST',
+        '/v1/chat/completions',
+        {
+          messages: [{ role: 'user', content: 'test' }],
+          stream,
+        },
+      );
+      assert.equal(response.status, stream ? 200 : 400);
+      const expectedError = {
+        message: overflow.message,
+        type: 'invalid_request_error',
+        code: overflow.code,
+      };
+      if (stream)
+        assert.equal(
+          response.body,
+          `data: ${JSON.stringify({ error: expectedError })}\n\n`,
+        );
+      else assert.deepEqual(response.body, { error: expectedError });
+    } finally {
+      await handle.close();
+    }
+  });
+}

@@ -225,3 +225,32 @@ describe('SessionScopedRag', () => {
     assert.ok(res?.ok && res.value?.text === 'base');
   });
 });
+
+it('overlay query gives overflow priority over another terminal code', async () => {
+  const overflow = new RagError('Prompt too long', MODEL_CONTEXT_EXCEEDED);
+  const base = stub([]);
+  const overlay = stub([]);
+  base.query = async () => ({
+    ok: false,
+    error: new RagError('Earlier failure', 'LLM_HTTP_ERROR'),
+  });
+  overlay.query = async () => ({ ok: false, error: overflow });
+  assert.deepEqual(
+    await new OverlayRag(base, overlay).query(new TextOnlyEmbedding('q'), 1),
+    { ok: false, error: overflow },
+  );
+});
+
+it('overlay health check preserves returned overflow after a sibling rejection', async () => {
+  const overflow = new RagError('Prompt too long', MODEL_CONTEXT_EXCEEDED);
+  const base = stub([]);
+  const overlay = stub([]);
+  base.healthCheck = async () => {
+    throw new Error('Probe unavailable');
+  };
+  overlay.healthCheck = async () => ({ ok: false, error: overflow });
+  assert.deepEqual(await new OverlayRag(base, overlay).healthCheck(), {
+    ok: false,
+    error: overflow,
+  });
+});

@@ -1,5 +1,7 @@
 import {
   type CallOptions,
+  contextExceededError,
+  contextOverflowInSettled,
   type IMcpClient,
   type IQueryEmbedder,
   type IRag,
@@ -38,16 +40,21 @@ export async function makeToolsRagHandle(
         if (!catalog.has(t.name)) catalog.set(t.name, t);
       }
     } else {
-      await Promise.allSettled(
+      const listings = await Promise.allSettled(
         stepperMcpClients.map(async (client) => {
           const result = await client.listTools();
           if (result.ok) {
             for (const t of result.value) {
               if (!catalog.has(t.name)) catalog.set(t.name, t as LlmTool);
             }
+          } else {
+            const overflow = contextExceededError(result.error);
+            if (overflow) throw overflow;
           }
         }),
       );
+      const overflow = contextOverflowInSettled(listings);
+      if (overflow) throw overflow;
     }
     catalogCache = catalog;
     return catalog;
@@ -94,6 +101,8 @@ export async function makeToolsRagHandle(
   try {
     await ensureCatalog();
   } catch (err) {
+    const overflow = contextExceededError(err);
+    if (overflow) throw overflow;
     log?.({
       event: 'tools_catalog_eager_load_failed',
       message:

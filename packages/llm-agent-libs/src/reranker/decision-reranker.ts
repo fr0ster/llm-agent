@@ -1,5 +1,6 @@
 import {
   type CallOptions,
+  collectWithContextOverflow,
   type DecisionAnswer,
   type DecisionEntry,
   formatTrustTag,
@@ -114,11 +115,14 @@ export class DecisionReranker implements IReranker {
     const answers: Record<string, DecisionAnswer> = {};
     for (let s = 0; s < batches.length; s += concurrency) {
       const slice = batches.slice(s, s + concurrency);
-      const settled = await Promise.all(
+      const batch = await collectWithContextOverflow(
         slice.map((idxs) =>
           this.runBatch(query, results, idxs, task, criteria, options),
         ),
+        (result) => (result.ok ? undefined : result.error),
       );
+      if (!batch.ok) return batch;
+      const settled = batch.value;
       let failure: RagError | undefined;
       for (const res of settled) {
         if (!res.ok) {

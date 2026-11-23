@@ -1,6 +1,11 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import type { CallOptions, KnowledgeEntry } from '@mcp-abap-adt/llm-agent';
+import {
+  type CallOptions,
+  type KnowledgeEntry,
+  MODEL_CONTEXT_EXCEEDED,
+  RagError,
+} from '@mcp-abap-adt/llm-agent';
 import {
   InMemoryKnowledgeBackend,
   KnowledgeRag,
@@ -154,4 +159,23 @@ test('#Phase2: hasArtifact + listArtifacts track fetched identities (dedup)', as
     ['GetInclude:{"n":"O01"}', 'GetInclude:{"n":"O02"}'],
     'two distinct identities (the O01 re-fetch deduped to one)',
   );
+});
+
+test('in-memory knowledge indexing surfaces overflow and retains the entry', async () => {
+  const overflow = new RagError('Prompt too long', MODEL_CONTEXT_EXCEEDED);
+  const backend = new InMemoryKnowledgeBackend({
+    async upsert() {
+      throw new Error('Index failure', { cause: overflow });
+    },
+    async query() {
+      return [];
+    },
+    deleteSession() {},
+  });
+  const entry = { content: 'tool output', metadata: META };
+  await assert.rejects(
+    backend.put('session', entry),
+    (error) => error === overflow,
+  );
+  assert.deepEqual(await backend.scan('session'), [entry]);
 });

@@ -26,6 +26,7 @@ import type {
 } from '@mcp-abap-adt/llm-agent';
 import {
   addTokenUsage,
+  contextExceededError,
   type PlannerMessageUsage,
   type SmartAgentError,
   scopedUsage,
@@ -495,6 +496,16 @@ export class DialogueSession {
         opts.id,
         opts.plannerMemory,
         (message) => this.warn(message),
+        (requestId, error) => {
+          const request = this.requests.find(
+            (record) => record.id === requestId,
+          );
+          if (!request) return;
+          request.terminalError = { code: error.code, message: error.message };
+          if (this.plannerCall?.requestId === requestId)
+            this.plannerCall.stop.abort(error);
+          void this.persist();
+        },
       );
     this.contextBuilder =
       opts.plannerContextBuilder ?? new DefaultPlannerContextBuilder();
@@ -1137,7 +1148,7 @@ export class DialogueSession {
               usage: this.turnUsage,
             }),
             onTerminalError: (error) => {
-              toolFailure ??= error;
+              toolFailure = contextExceededError(error) ?? toolFailure ?? error;
               callStop.abort();
             },
             beforeTool: (name) => {
@@ -1214,10 +1225,13 @@ export class DialogueSession {
                   const result = await store.read(task.resultRef, {
                     signal: user?.opts.signal,
                   });
-                  if (!result.ok)
+                  if (!result.ok) {
+                    const overflow = contextExceededError(result.error);
+                    if (overflow) throw overflow;
                     throw new Error(
                       `${result.error.code}: ${result.error.message}`,
                     );
+                  }
                   output = result.value;
                 } catch (error) {
                   const terminal = terminalRunError(error);
@@ -1339,6 +1353,9 @@ export class DialogueSession {
               },
             }),
         ).catch((error: Error) => {
+          const overflow =
+            contextExceededError(toolFailure) ?? contextExceededError(error);
+          if (overflow) throw overflow;
           if (toolFailure) throw toolFailure;
           assertRequestCanContinue();
           const terminal = terminalRunError(error);
@@ -1361,6 +1378,10 @@ export class DialogueSession {
           };
         });
         this.plannerCall = undefined;
+        const overflow =
+          contextExceededError(toolFailure) ??
+          (result.ok ? undefined : contextExceededError(result.error));
+        if (overflow) throw overflow;
         if (toolFailure) throw toolFailure;
         assertRequestCanContinue();
         if (!result.ok) {

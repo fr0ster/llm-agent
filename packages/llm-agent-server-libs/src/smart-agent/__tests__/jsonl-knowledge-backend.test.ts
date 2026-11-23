@@ -3,7 +3,11 @@ import { rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import type { KnowledgeEntry } from '@mcp-abap-adt/llm-agent';
+import {
+  type KnowledgeEntry,
+  MODEL_CONTEXT_EXCEEDED,
+  RagError,
+} from '@mcp-abap-adt/llm-agent';
 import { JsonlKnowledgeBackend } from '../jsonl-knowledge-backend.js';
 
 const TEST_DIR = join(tmpdir(), `stepper-jsonl-test-${process.pid}`);
@@ -171,4 +175,28 @@ test('build() rebuild survives a per-entry embed failure: other entries stay ind
 
 test('cleanup temp dir', async () => {
   await rm(TEST_DIR, { recursive: true, force: true });
+});
+
+test('knowledge index reports overflow on both append and lazy rebuild', async () => {
+  const overflow = new RagError('Prompt too long', MODEL_CONTEXT_EXCEEDED);
+  const backend = new JsonlKnowledgeBackend(TEST_DIR, {
+    async upsert() {
+      throw new Error('Index failure', { cause: overflow });
+    },
+    async query() {
+      return [];
+    },
+    deleteSession() {},
+  });
+  const entry = makeEntry('overflow', 'tool output');
+  const sessionId = 'overflow-index';
+  await assert.rejects(
+    backend.put(sessionId, entry),
+    (error) => error === overflow,
+  );
+  assert.deepEqual(await backend.scan(sessionId), [entry]);
+  await assert.rejects(
+    backend.semanticQuery(sessionId, 'tool'),
+    (error) => error === overflow,
+  );
 });

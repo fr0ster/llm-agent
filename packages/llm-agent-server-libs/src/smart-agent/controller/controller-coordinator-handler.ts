@@ -1,5 +1,6 @@
 import {
   type CallOptions,
+  contextExceededError,
   DefaultWaitStrategy,
   externalToolCallId,
   type IKnowledgeRagHandle,
@@ -1478,10 +1479,17 @@ export class ControllerCoordinatorHandler implements IStageHandler {
             signal: callSignal,
           });
         } catch (e) {
+          const overflow = contextExceededError(e);
+          if (overflow) throw overflow;
           if (budget.signal.aborted) return cutControlFailure('step-timeout');
           throw e;
         }
-        if (budget.signal.aborted) return cutControlFailure('step-timeout');
+        if (budget.signal.aborted) {
+          const overflow =
+            res.kind === 'error' ? contextExceededError(res.error) : undefined;
+          if (overflow) throw overflow;
+          return cutControlFailure('step-timeout');
+        }
         logUsage?.('executor', res.usage);
 
         if (res.kind === 'content') {
@@ -1789,6 +1797,8 @@ export class ControllerCoordinatorHandler implements IStageHandler {
             usage: ctx.options?.usage?.with({ role: 'executor' }),
           });
         } catch (mcpErr) {
+          const terminal = contextExceededError(mcpErr);
+          if (terminal) throw terminal;
           ctx.options?.sessionLogger?.logStep(
             'mcp_tool_call',
             {

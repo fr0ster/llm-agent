@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
+  MODEL_CONTEXT_EXCEEDED,
+  RagError,
   SkillsIncompatibleError,
   symmetricEmbedder,
 } from '@mcp-abap-adt/llm-agent';
@@ -201,4 +203,27 @@ test('lazy dimension probe: no embed at construction; first activeManifest probe
   assert.equal(embeds, 0); // construction did not embed
   await rag.activeManifest();
   assert.equal(embeds, 1); // one probe
+});
+
+test('skills recall preserves overflow wrapped by a cancellation-shaped error', async () => {
+  const overflow = new RagError('Prompt too long', MODEL_CONTEXT_EXCEEDED);
+  const rag = makeCompatibleSkillsRag({
+    backend: {
+      async activeSnapshot() {
+        return { revision: 'g0', manifest: MANIFEST };
+      },
+      async queryRevision() {
+        const wrapper = new Error('Query failed', { cause: overflow });
+        wrapper.name = 'AbortError';
+        throw wrapper;
+      },
+    },
+    embedder: symmetricEmbedder({
+      async embed() {
+        return { vector: [1, 0, 0] };
+      },
+    }),
+    ...MANIFEST,
+  });
+  await assert.rejects(rag.query('q', { k: 1 }), (error) => error === overflow);
 });

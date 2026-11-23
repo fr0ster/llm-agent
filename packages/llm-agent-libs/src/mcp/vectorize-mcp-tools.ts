@@ -28,6 +28,7 @@ import type {
 import {
   assertClientDescriptors,
   buildNamespacedTools,
+  contextExceededError,
   DefaultWaitStrategy,
   defaultToolNamespace,
   defaultToolRecordKey,
@@ -204,11 +205,15 @@ export async function vectorizeMcpTools(
       try {
         const toolsResult = await adapter.listTools(options);
         if (!toolsResult.ok) {
+          const overflow = contextExceededError(toolsResult.error);
+          if (overflow) throw overflow;
           acc.clientFailures++;
           continue;
         }
         clientTools = toolsResult.value;
-      } catch {
+      } catch (error) {
+        const overflow = contextExceededError(error);
+        if (overflow) throw overflow;
         acc.clientFailures++;
         continue;
       }
@@ -313,6 +318,8 @@ export async function vectorizeMcpTools(
         detail: 'tools',
       });
     } catch (err) {
+      const overflow = contextExceededError(err);
+      if (overflow) throw overflow;
       // Falls through to the sequential path below. Chunking and retry
       // already ran inside the embedder, so reaching here means the
       // provider is genuinely unusable for batch work.
@@ -468,7 +475,11 @@ export async function vectorizeSkills(
   const writer = toolsRag.writer?.();
   if (!writer) return;
   const skillsResult = await skillManager.listSkills(options);
-  if (!skillsResult.ok) return;
+  if (!skillsResult.ok) {
+    const overflow = contextExceededError(skillsResult.error);
+    if (overflow) throw overflow;
+    return;
+  }
   // Skills keep their per-item warning: unlike the tool catalog, a skill set is
   // small, so there is no log-flooding problem to solve here, and #236's scope
   // is the tool path.

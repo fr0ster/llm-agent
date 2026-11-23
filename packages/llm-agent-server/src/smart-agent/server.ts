@@ -3,6 +3,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { createServer } from 'node:http';
 import type { CallOptions, Message } from '@mcp-abap-adt/llm-agent';
 import {
+  contextExceededError,
   MODEL_CONTEXT_EXCEEDED,
   promptCacheOptions,
   terminalRunError,
@@ -476,6 +477,20 @@ export class SmartAgentServer {
 
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(response));
+    } catch (error) {
+      const overflow = contextExceededError(error);
+      if (!overflow) throw error;
+      const payload = jsonError(
+        overflow.message,
+        llmFailureType(overflow.code),
+        overflow.code,
+      );
+      if (body.stream) {
+        res.end(`data: ${payload}\n\n`);
+      } else {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(payload);
+      }
     } finally {
       if (timeoutId !== undefined) {
         clearTimeout(timeoutId);

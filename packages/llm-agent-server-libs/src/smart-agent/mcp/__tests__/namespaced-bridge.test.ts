@@ -5,7 +5,7 @@ import type {
   IMcpFailureClassifier,
   McpClientDescriptor,
 } from '@mcp-abap-adt/llm-agent';
-import { McpError } from '@mcp-abap-adt/llm-agent';
+import { McpError, MODEL_CONTEXT_EXCEEDED } from '@mcp-abap-adt/llm-agent';
 import {
   buildNamespacedMcpBridge,
   rebindProvenanceToClients,
@@ -247,4 +247,35 @@ test('bridge: classifier deems the error "tool-error" → returns isError:true w
     text: 'table not found',
     isError: true,
   });
+});
+
+test('bridge rejects wrapped context overflow from callTool before classification', async () => {
+  const overflow = new McpError('Prompt too long', MODEL_CONTEXT_EXCEEDED);
+  const error = Object.assign(new McpError('Wrapped tool failure'), {
+    cause: overflow,
+  });
+  const client: IMcpClient = {
+    async listTools() {
+      return {
+        ok: true,
+        value: [{ name: 'GetTable', description: '', inputSchema: {} }],
+      };
+    },
+    async callTool() {
+      return { ok: false, error };
+    },
+  };
+  let classifications = 0;
+  const classifier: IMcpFailureClassifier = {
+    async classify() {
+      classifications++;
+      return 'tool-error';
+    },
+  };
+  const bridge = buildNamespacedMcpBridge(
+    new Map([['GetTable', client]]),
+    classifier,
+  );
+  await assert.rejects(bridge('GetTable', {}), (reason) => reason === overflow);
+  assert.equal(classifications, 0);
 });

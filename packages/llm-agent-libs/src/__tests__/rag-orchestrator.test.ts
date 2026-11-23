@@ -288,3 +288,125 @@ describe('RagOrchestrator.orchestrate()', () => {
     assert.match(sys.content as string, /STEP 1: call GetProgram/);
   });
 });
+
+for (const fallback of [false, true]) {
+  for (const ordinaryRejects of [false, true]) {
+    for (const overflowRejects of [false, true]) {
+      it(`orchestrator prioritizes ${overflowRejects ? 'rejected' : 'returned'} overflow over an ordinary ${ordinaryRejects ? 'rejection' : 'result'} in ${fallback ? 'skill fallback' : 'initial retrieval'}`, async () => {
+        const ordinary = new RagError('Store unavailable', 'QUERY_ERROR');
+        const overflow = new RagError(
+          'Prompt too long',
+          MODEL_CONTEXT_EXCEEDED,
+        );
+        const first = makeRag([]);
+        const second = makeRag([]);
+        let firstCalls = 0;
+        let secondCalls = 0;
+        first.query = async () => {
+          if (++firstCalls === 1 && fallback) return { ok: true, value: [] };
+          if (ordinaryRejects) throw ordinary;
+          return { ok: false, error: ordinary };
+        };
+        second.query = async () => {
+          if (++secondCalls === 1 && fallback) return { ok: true, value: [] };
+          if (overflowRejects)
+            throw new Error('Vector search failed', { cause: overflow });
+          return { ok: false, error: overflow };
+        };
+        const orchestrator = makeOrchestrator(undefined, [], {
+          ragStores: ownedTestStores({ first, second }),
+        });
+        const result = await orchestrator.orchestrate('read program', {
+          opts: testCallOptions(),
+          rootSpan: new NoopTracer().startSpan('test'),
+          sessionId: 'retrieve',
+          mode: 'hard',
+          externalTools: [],
+        });
+        assert.deepEqual(result, { ok: false, error: overflow });
+      });
+    }
+  }
+}
+
+it('orchestrator still rejects with the first ordinary rejection in settlement order', async () => {
+  const first = makeRag([]);
+  const second = makeRag([]);
+  const ordinary = new RagError('Store unavailable', 'QUERY_ERROR');
+  let release = () => {};
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  first.query = async () => {
+    await gate;
+    throw new Error('Slower rejection');
+  };
+  second.query = async () => {
+    queueMicrotask(release);
+    throw ordinary;
+  };
+  const orchestrator = makeOrchestrator(undefined, [], {
+    ragStores: ownedTestStores({ first, second }),
+  });
+  await assert.rejects(
+    orchestrator.orchestrate('read program', {
+      opts: testCallOptions(),
+      rootSpan: new NoopTracer().startSpan('test'),
+      sessionId: 'retrieve',
+      mode: 'hard',
+      externalTools: [],
+    }),
+    (error) => error === ordinary,
+  );
+});
+
+it('orchestrator prioritizes returned reranker overflow over a sibling rejection', async () => {
+  const overflow = new RagError('Prompt too long', MODEL_CONTEXT_EXCEEDED);
+  const ragStores = ownedTestStores({
+    first: makeRag([{ text: 'ordinary failure', metadata: {}, score: 1 }]),
+    second: makeRag([{ text: 'overflow', metadata: {}, score: 1 }]),
+  });
+  const orchestrator = makeOrchestrator(undefined, [], {
+    ragStores,
+    reranker: {
+      async rerank(_query, results) {
+        if (results[0].text === 'ordinary failure')
+          throw new Error('Reranker unavailable');
+        return { ok: false, error: overflow };
+      },
+    },
+  });
+  const result = await orchestrator.orchestrate('read program', {
+    opts: testCallOptions(),
+    rootSpan: new NoopTracer().startSpan('test'),
+    sessionId: 'rerank',
+    mode: 'hard',
+    externalTools: [],
+  });
+  assert.deepEqual(result, { ok: false, error: overflow });
+});
+
+for (const operation of ['list', 'content']) {
+  it(`orchestrator propagates context overflow from skill ${operation}`, async () => {
+    const overflow = new RagError('Prompt too long', MODEL_CONTEXT_EXCEEDED);
+    const skillManager = makeSkillManager('my-skill', 'content');
+    const originalList = skillManager.listSkills.bind(skillManager);
+    skillManager.listSkills = async () => {
+      if (operation === 'list') return { ok: false, error: overflow };
+      const listed = await originalList();
+      assert.ok(listed.ok);
+      listed.value[0].getContent = async () => ({ ok: false, error: overflow });
+      return listed;
+    };
+    const result = await makeOrchestrator(undefined, ragDocs(), {
+      skillManager,
+    }).orchestrate('read program', {
+      opts: testCallOptions(),
+      rootSpan: new NoopTracer().startSpan('test'),
+      sessionId: 'skills',
+      mode: 'hard',
+      externalTools: [],
+    });
+    assert.deepEqual(result, { ok: false, error: overflow });
+  });
+}
