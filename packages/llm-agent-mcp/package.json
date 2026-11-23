@@ -1,6 +1,6 @@
 {
   "name": "@mcp-abap-adt/llm-agent-mcp",
-  "version": "30.10.7",
+  "version": "30.10.8",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

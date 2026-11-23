@@ -1,5 +1,22 @@
 # @mcp-abap-adt/llm-agent-server
 
+## 33.2.3
+
+### Patch Changes
+
+- d6c7a01: Report provider prompt context overflow as a terminal `MODEL_CONTEXT_EXCEEDED` LLM error. Preserve it through model validation, retrieval, controller calls, and completion responses so retries and fallback stop. Return HTTP 400 for non-streaming requests and a structured error event for streaming requests.
+- Updated dependencies [d6c7a01]
+  - @mcp-abap-adt/llm-agent@35.3.0
+  - @mcp-abap-adt/openai-llm@30.14.0
+  - @mcp-abap-adt/anthropic-llm@31.1.0
+  - @mcp-abap-adt/sap-aicore-llm@31.1.4
+  - @mcp-abap-adt/llm-agent-libs@38.0.1
+  - @mcp-abap-adt/llm-agent-server-libs@34.2.2
+  - @mcp-abap-adt/llm-agent-mcp@30.10.8
+  - @mcp-abap-adt/hana-vector-rag@33.0.3
+  - @mcp-abap-adt/pg-vector-rag@33.0.2
+  - @mcp-abap-adt/qdrant-rag@33.1.1
+
 ## 33.2.2
 
 ### Patch Changes
