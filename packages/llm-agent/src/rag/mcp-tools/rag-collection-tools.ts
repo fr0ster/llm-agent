@@ -1,5 +1,8 @@
 import { z } from 'zod';
-import { terminalRunError } from '../../errors/terminal-run-error.js';
+import {
+  contextExceededError,
+  terminalRunError,
+} from '../../errors/terminal-run-error.js';
 import type {
   IRagEditor,
   IRagProviderRegistry,
@@ -14,7 +17,7 @@ import type {
   RagAccessMode,
   RagCaller,
 } from '../../interfaces/rag-access.js';
-import type { RagError } from '../../interfaces/types.js';
+import { type RagError, SmartAgentError } from '../../interfaces/types.js';
 import { checkRagAccess } from '../access/check-access.js';
 import {
   AmbiguousCollectionError,
@@ -69,6 +72,13 @@ export interface RagCollectionToolOptions {
 type Refusal = { ok: false; error: string; code?: string };
 
 function editFailure(error: RagError): Refusal {
+  const overflow = contextExceededError(error);
+  if (overflow) {
+    if (overflow.cause !== undefined) throw overflow;
+    throw new SmartAgentError(overflow.message, overflow.code, {
+      cause: overflow,
+    });
+  }
   const terminal = terminalRunError(error);
   return {
     ok: false,

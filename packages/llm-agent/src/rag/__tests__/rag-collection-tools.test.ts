@@ -51,24 +51,22 @@ for (const thrown of [false, true]) {
         registry,
       }).find((entry) => entry.toolDefinition.name === name);
       assert.ok(tool);
-      const result = await tool.handler(
-        {},
-        {
-          collection: 'notes',
-          text: 'new entry',
-          canonicalKey: 'note',
-          newText: 'replacement',
-          predecessorCanonicalKey: 'note',
-          predecessorId: 'old',
-          id: 'old',
-          reason: 'corrected',
-        },
+      await assert.rejects(
+        tool.handler(
+          {},
+          {
+            collection: 'notes',
+            text: 'new entry',
+            canonicalKey: 'note',
+            newText: 'replacement',
+            predecessorCanonicalKey: 'note',
+            predecessorId: 'old',
+            id: 'old',
+            reason: 'corrected',
+          },
+        ),
+        { code: MODEL_CONTEXT_EXCEEDED, message: error.message, cause: error },
       );
-      assert.deepEqual(result, {
-        ok: false,
-        error: error.message,
-        code: MODEL_CONTEXT_EXCEEDED,
-      });
       assert.equal(calls, 1);
     });
   }

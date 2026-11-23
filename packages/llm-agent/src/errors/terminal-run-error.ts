@@ -68,3 +68,9 @@ function typedFailure(
       : code;
   return new SmartAgentError(message, code, { cause: original });
 }
+
+/** The terminal error only when it is a model context overflow. */
+export function contextExceededError<T>(error: T): SmartAgentError | undefined {
+  const terminal = terminalRunError(error);
+  return terminal?.code === MODEL_CONTEXT_EXCEEDED ? terminal : undefined;
+}

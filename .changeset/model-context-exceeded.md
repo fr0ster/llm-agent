@@ -6,6 +6,7 @@
 "@mcp-abap-adt/llm-agent-libs": patch
 "@mcp-abap-adt/llm-agent-server-libs": patch
 "@mcp-abap-adt/llm-agent-server": patch
+"@mcp-abap-adt/llm-agent-mcp": patch
 ---
 
 Report provider prompt context overflow as a terminal `MODEL_CONTEXT_EXCEEDED` LLM error with HTTP status 400. Skip streaming fallback, retries, and startup model validation retries for this error. Populate model context length from Anthropic Models API metadata and OpenAI-compatible model endpoints when the response includes it.

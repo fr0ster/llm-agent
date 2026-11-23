@@ -11,6 +11,7 @@ import type {
   ToolResult,
   UsageInput,
 } from '@mcp-abap-adt/llm-agent';
+import { contextExceededError, SmartAgentError } from '@mcp-abap-adt/llm-agent';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
@@ -496,7 +497,11 @@ export class MCPClientWrapper {
           // then retries. Derive from the object BEFORE stripping content.
           isError: obj?.isError === true,
         };
-      } catch (error: unknown) {
+      } catch (error) {
+        if (error instanceof SmartAgentError) {
+          const terminal = contextExceededError(error);
+          if (terminal) throw terminal;
+        }
         const errorMessage =
           error instanceof Error ? error.message : String(error);
         return {

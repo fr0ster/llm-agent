@@ -151,6 +151,11 @@ export class RagOrchestrator implements IRagOrchestrator {
         }),
       );
       ragSpan.end();
+      for (const { result } of ragQueryResults) {
+        if (result.ok) continue;
+        const terminal = terminalRunError(result.error);
+        if (terminal) return { ok: false, error: terminal };
+      }
       const ragResultsMap: Record<string, RagResult[]> = {};
       for (const { name, result: r } of ragQueryResults) {
         if (!r.ok) return r;

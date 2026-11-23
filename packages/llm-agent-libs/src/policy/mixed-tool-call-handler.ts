@@ -4,7 +4,11 @@ import type {
   IToolCache,
   Message,
 } from '@mcp-abap-adt/llm-agent';
-import { recordToolInvocation, scopedUsage } from '@mcp-abap-adt/llm-agent';
+import {
+  contextExceededError,
+  recordToolInvocation,
+  scopedUsage,
+} from '@mcp-abap-adt/llm-agent';
 import type { IMetrics } from '../metrics/types.js';
 import {
   guardToolRound,
@@ -102,6 +106,10 @@ export function fireInternalToolsAsync(
               : result.error.message,
           }),
         );
+        if (!res.ok) {
+          const terminal = contextExceededError(res.error);
+          if (terminal) throw terminal;
+        }
         const text = !res.ok
           ? res.error.message
           : typeof res.value.content === 'string'
@@ -120,6 +128,8 @@ export function fireInternalToolsAsync(
         );
         return { toolCallId: tc.id, toolName: tc.name, text };
       } catch (err) {
+        const terminal = contextExceededError(err);
+        if (terminal) throw terminal;
         return {
           toolCallId: tc.id,
           toolName: tc.name,
@@ -162,6 +172,8 @@ export function fireInternalToolsAsync(
     ),
     createdAt: Date.now(),
   };
+  // A suspended turn may never resume to observe the background rejection.
+  void entry.promise.catch(() => {});
   return identity.kind === 'caller'
     ? registry.set(identity.caller, entry)
     : createPendingToolCallsEntry(entry);

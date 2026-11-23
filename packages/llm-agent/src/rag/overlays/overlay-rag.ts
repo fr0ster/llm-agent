@@ -19,15 +19,26 @@ export class OverlayRag implements IRag {
     k: number,
     options?: CallOptions,
   ): Promise<Result<RagResult[], RagError>> {
-    const [baseRes, overlayRes] = await Promise.all([
-      this.base.query(embedding, k, options),
-      this.overlay.query(embedding, k, options),
+    const baseQuery = this.base.query(embedding, k, options);
+    const overlayQuery = this.overlay.query(embedding, k, options);
+    const [base, overlay, combined] = await Promise.allSettled([
+      baseQuery,
+      overlayQuery,
+      Promise.all([baseQuery, overlayQuery]),
     ]);
-    for (const result of [baseRes, overlayRes]) {
-      if (result.ok) continue;
-      const terminal = terminalRunError(result.error);
+    for (const result of [base, overlay]) {
+      const error =
+        result.status === 'rejected'
+          ? result.reason
+          : result.value.ok
+            ? undefined
+            : result.value.error;
+      const terminal = terminalRunError(error);
       if (terminal) return { ok: false, error: terminal };
     }
+    // Promise.all retains the first ordinary rejection in settlement order.
+    if (combined.status === 'rejected') throw combined.reason;
+    const [baseRes, overlayRes] = combined.value;
     if (!baseRes.ok) return baseRes;
     if (!overlayRes.ok) return overlayRes;
 

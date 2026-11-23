@@ -5,11 +5,13 @@
 import type { IMcpClient } from '@mcp-abap-adt/llm-agent';
 import {
   type CallOptions,
+  contextExceededError,
   type McpContentBlock,
   McpError,
   type McpTool,
   type McpToolResult,
   type Result,
+  SmartAgentError,
 } from '@mcp-abap-adt/llm-agent';
 import type { MCPClientWrapper } from './client.js';
 import { toMcpError } from './error-mapping.js';
@@ -132,7 +134,9 @@ export class McpClientAdapter implements IMcpClient {
         },
       };
     } catch (err) {
-      return { ok: false, error: toMcpError(err) };
+      const terminal =
+        err instanceof SmartAgentError && contextExceededError(err);
+      return { ok: false, error: terminal || toMcpError(err) };
     }
   }
 }
