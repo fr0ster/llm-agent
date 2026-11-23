@@ -1,10 +1,13 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { IRagEditor } from '../../interfaces/rag.js';
+import { LlmError, MODEL_CONTEXT_EXCEEDED } from '../../interfaces/types.js';
+import { makeLlm } from '../../testing/index.js';
 import { testRagAccess } from '../../testing/rag-access-testing.js';
 import { CollectionDataDeleteError } from '../corrections/errors.js';
 import { InMemoryRag } from '../in-memory-rag.js';
 import { buildRagCollectionToolEntries } from '../mcp-tools/rag-collection-tools.js';
+import { IntentEnricher } from '../preprocessor.js';
 import { InMemoryRagProvider } from '../providers/in-memory-rag-provider.js';
 import { SimpleRagProviderRegistry } from '../providers/simple-provider-registry.js';
 import { SimpleRagRegistry } from '../registry/simple-rag-registry.js';
@@ -16,6 +19,60 @@ import { GlobalUniqueIdStrategy } from '../strategies/id/index.js';
 
 /** The caller every entry below is built for. */
 const ALICE = { sessionId: 'S', userId: 'alice', isAdmin: false };
+
+for (const thrown of [false, true]) {
+  for (const name of ['rag_add', 'rag_correct', 'rag_deprecate']) {
+    it(`${name} reports ${thrown ? 'thrown' : 'returned'} enrichment context overflow`, async () => {
+      let calls = 0;
+      const error = new LlmError('Prompt too long', MODEL_CONTEXT_EXCEEDED);
+      const model = makeLlm([]);
+      model.chat = async () => {
+        calls++;
+        if (thrown) throw error;
+        return { ok: false, error };
+      };
+      const rag = new InMemoryRag({
+        documentEnrichers: [new IntentEnricher(model)],
+      });
+      const registry = new SimpleRagRegistry();
+      registry.register(
+        'notes',
+        rag,
+        new DirectEditStrategy(rag.writer(), new GlobalUniqueIdStrategy()),
+        {
+          displayName: 'Notes',
+          scope: 'user',
+          userId: ALICE.userId,
+        },
+      );
+      const tool = buildRagCollectionToolEntries({
+        caller: ALICE,
+        access: testRagAccess([ALICE]),
+        registry,
+      }).find((entry) => entry.toolDefinition.name === name);
+      assert.ok(tool);
+      const result = await tool.handler(
+        {},
+        {
+          collection: 'notes',
+          text: 'new entry',
+          canonicalKey: 'note',
+          newText: 'replacement',
+          predecessorCanonicalKey: 'note',
+          predecessorId: 'old',
+          id: 'old',
+          reason: 'corrected',
+        },
+      );
+      assert.deepEqual(result, {
+        ok: false,
+        error: error.message,
+        code: MODEL_CONTEXT_EXCEEDED,
+      });
+      assert.equal(calls, 1);
+    });
+  }
+}
 
 function makeRegistry() {
   const reg = new SimpleRagRegistry();

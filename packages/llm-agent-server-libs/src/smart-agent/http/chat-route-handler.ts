@@ -6,8 +6,10 @@ import {
   type IModelProvider,
   type IRequestLogger,
   type Message,
+  MODEL_CONTEXT_EXCEEDED,
   normalizeAndValidateExternalTools,
   type StreamToolCall,
+  terminalRunError,
   toToolCallDelta,
 } from '@mcp-abap-adt/llm-agent';
 import {
@@ -320,6 +322,19 @@ export async function handleChat(
         if (!canWrite(res, abort.signal)) break;
         keepAlive.reset();
         if (!chunk.ok) {
+          const terminal = terminalRunError(chunk.error);
+          if (terminal) {
+            res.end(
+              `data: ${jsonError(terminal.message, llmFailureType(terminal.code), terminal.code)}\n\n`,
+            );
+            log({
+              event: 'request_done',
+              ok: false,
+              stream: true,
+              durationMs: Date.now() - t0,
+            });
+            return;
+          }
           const errorChunk = {
             id,
             object: 'chat.completion.chunk',
@@ -476,6 +491,23 @@ export async function handleChat(
     return;
   }
   log({ event: 'request_done', ok: result.ok, durationMs: Date.now() - t0 });
+  if (!result.ok) {
+    const terminal = terminalRunError(result.error);
+    if (terminal) {
+      res.writeHead(terminal.code === MODEL_CONTEXT_EXCEEDED ? 400 : 500, {
+        'Content-Type': 'application/json',
+        ...invalidToolsHeader,
+      });
+      res.end(
+        jsonError(
+          terminal.message,
+          llmFailureType(terminal.code),
+          terminal.code,
+        ),
+      );
+      return;
+    }
+  }
   const finalContent = result.ok
     ? result.value.content || (result.value.toolCalls ? null : '(no response)')
     : `Error: ${result.error.message}`;
@@ -523,4 +555,10 @@ export async function handleChat(
       },
     }),
   );
+}
+
+function llmFailureType(code: string): string {
+  return code === MODEL_CONTEXT_EXCEEDED
+    ? 'invalid_request_error'
+    : 'server_error';
 }

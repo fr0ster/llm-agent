@@ -2,7 +2,12 @@ import { randomUUID } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { createServer } from 'node:http';
 import type { CallOptions, Message } from '@mcp-abap-adt/llm-agent';
-import { promptCacheOptions, toToolCallDelta } from '@mcp-abap-adt/llm-agent';
+import {
+  MODEL_CONTEXT_EXCEEDED,
+  promptCacheOptions,
+  terminalRunError,
+  toToolCallDelta,
+} from '@mcp-abap-adt/llm-agent';
 import type { SmartAgent, StopReason } from '@mcp-abap-adt/llm-agent-libs';
 
 // ---------------------------------------------------------------------------
@@ -45,6 +50,12 @@ function jsonError(message: string, type: string, code?: string): string {
   return JSON.stringify({
     error: { message, type, ...(code !== undefined ? { code } : {}) },
   });
+}
+
+function llmFailureType(code: string): string {
+  return code === MODEL_CONTEXT_EXCEEDED
+    ? 'invalid_request_error'
+    : 'server_error';
 }
 
 // ---------------------------------------------------------------------------
@@ -230,6 +241,13 @@ export class SmartAgentServer {
           opts,
         )) {
           if (!chunk.ok) {
+            const terminal = terminalRunError(chunk.error);
+            if (terminal) {
+              res.end(
+                `data: ${jsonError(terminal.message, llmFailureType(terminal.code), terminal.code)}\n\n`,
+              );
+              return;
+            }
             const errorChunk = {
               id,
               object: 'chat.completion.chunk',
@@ -403,9 +421,12 @@ export class SmartAgentServer {
       const result = await this.agent.process(body.messages, opts);
 
       if (!result.ok) {
-        res.writeHead(500, { 'Content-Type': 'application/json' });
+        const error = terminalRunError(result.error) ?? result.error;
+        res.writeHead(error.code === MODEL_CONTEXT_EXCEEDED ? 400 : 500, {
+          'Content-Type': 'application/json',
+        });
         res.end(
-          jsonError(result.error.message, 'server_error', result.error.code),
+          jsonError(error.message, llmFailureType(error.code), error.code),
         );
         return;
       }

@@ -9,6 +9,7 @@ import type {
   LLMProvider,
   Message,
 } from '@mcp-abap-adt/llm-agent';
+import { terminalRunError } from '@mcp-abap-adt/llm-agent';
 import {
   type MCPClientConfig,
   MCPClientWrapper,
@@ -92,7 +93,9 @@ export class Agent {
         message: llmResponse.content,
         raw: llmResponse.raw,
       };
-    } catch (error: unknown) {
+    } catch (error) {
+      const terminal = terminalRunError(error);
+      if (terminal) throw terminal;
       const errorMessage =
         error instanceof Error ? error.message : String(error);
       return {

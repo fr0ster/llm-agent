@@ -32,6 +32,7 @@ import {
   defaultToolNamespace,
   defaultToolRecordKey,
   embedDocumentRecords,
+  terminalRunError,
 } from '@mcp-abap-adt/llm-agent';
 
 /**
@@ -91,6 +92,10 @@ async function writeOne(
     vector && writer.upsertPrecomputedRaw
       ? await writer.upsertPrecomputedRaw(id, text, vector, metadata, options)
       : await writer.upsertRaw(id, text, metadata, options);
+  if (result && !result.ok) {
+    const terminal = terminalRunError(result.error);
+    if (terminal) throw terminal;
+  }
   const ok = result?.ok === true;
   if (ok && vector === undefined) {
     const est = Math.ceil(text.length / 4);
@@ -339,11 +344,16 @@ export async function vectorizeMcpTools(
       )
       .catch((err: unknown) => ({
         ok: false as const,
-        error: err instanceof Error ? err : new Error(String(err)),
+        error:
+          terminalRunError(err) ??
+          (err instanceof Error ? err : new Error(String(err))),
       }));
     if (bulk.ok) {
       written.fill(true);
       bulkWritten = true;
+    } else {
+      const terminal = terminalRunError(bulk.error);
+      if (terminal) throw terminal;
     }
     // else: fall through to the per-tool loop below.
   }
@@ -363,7 +373,9 @@ export async function vectorizeMcpTools(
           { name: tools[i].name },
           options,
         );
-      } catch {
+      } catch (error) {
+        const terminal = terminalRunError(error);
+        if (terminal) throw terminal;
         // A throwing write is this tool's failure, not the client's: the loop
         // continues and the name lands in `failed`.
         ok = false;
@@ -474,7 +486,9 @@ export async function vectorizeSkills(
         { name: s.name },
         options,
       );
-    } catch {
+    } catch (error) {
+      const terminal = terminalRunError(error);
+      if (terminal) throw terminal;
       ok = false;
     }
     if (!ok) {

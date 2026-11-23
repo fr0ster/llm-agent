@@ -71,7 +71,6 @@ import {
   type IRagProvider,
   type IRagProviderRegistry,
   type IRagRegistry,
-  MODEL_CONTEXT_EXCEEDED,
   normaliseLogger,
   QueryEmbedding,
   type RagCollectionMeta,
@@ -964,37 +963,36 @@ export class SmartAgentBuilder {
       // which only retries specific HTTP status codes): a transient boot-time
       // infra blip — e.g. SAP AI Core's "Failed to fetch the list of deployments"
       // (token/deployment-list hiccup), which carries no retryable status code —
-      // must NOT abort startup. Retry validation failures with backoff, except
-      // when the model explicitly rejects the prompt's context length.
+      // must NOT abort startup. Retry recoverable Result failures with backoff.
       const maxAttempts = Math.max(1, this.cfg.modelValidationAttempts ?? 3);
       const validationBackoffMs = this.cfg.modelValidationBackoffMs ?? 2000;
       for (const [modelName, llm] of modelsToCheck) {
-        let result = await llm.chat(
-          [{ role: 'user', content: 'Reply with OK' }],
-          undefined,
-          { maxTokens: 10 },
-        );
-        for (let attempt = 1; !result.ok && attempt < maxAttempts; attempt++) {
-          if (terminalRunError(result.error)?.code === MODEL_CONTEXT_EXCEEDED)
-            break;
-          log?.log({
-            type: 'warning',
-            traceId: 'builder',
-            message: `Model "${modelName}" validation attempt ${attempt} failed (${result.error.message}); retrying`,
-          });
-          await new Promise((r) =>
-            setTimeout(r, validationBackoffMs * attempt),
-          );
-          result = await llm.chat(
-            [{ role: 'user', content: 'Reply with OK' }],
-            undefined,
-            { maxTokens: 10 },
-          );
-        }
-        if (!result.ok) {
+        for (let attempt = 1; ; attempt++) {
+          let result: Awaited<ReturnType<ILlm['chat']>>;
+          try {
+            result = await llm.chat(
+              [{ role: 'user', content: 'Reply with OK' }],
+              undefined,
+              { maxTokens: 10 },
+            );
+          } catch (error) {
+            throw terminalRunError(error) ?? error;
+          }
+          if (result.ok) break;
           const terminal = terminalRunError(result.error);
-          if (terminal?.code === MODEL_CONTEXT_EXCEEDED) throw terminal;
+          if (terminal) throw terminal;
           const detail = result.error.message;
+          if (attempt < maxAttempts) {
+            log?.log({
+              type: 'warning',
+              traceId: 'builder',
+              message: `Model "${modelName}" validation attempt ${attempt} failed (${detail}); retrying`,
+            });
+            await new Promise((r) =>
+              setTimeout(r, validationBackoffMs * attempt),
+            );
+            continue;
+          }
           log?.log({
             type: 'pipeline_error',
             traceId: 'builder',

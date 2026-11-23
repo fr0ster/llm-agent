@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { terminalRunError } from '../errors/terminal-run-error.js';
 import type { ILlm } from '../interfaces/llm.js';
 import type { IRequestLogger } from '../interfaces/request-logger.js';
 import type { CallOptions } from '../interfaces/types.js';
@@ -119,7 +120,8 @@ export class IntentToolIndexing implements IToolIndexingStrategy {
         });
       }
 
-      if (!res.ok || !res.value.content.trim()) return [];
+      if (!res.ok) throw res.error;
+      if (!res.value.content.trim()) return [];
 
       return [
         {
@@ -127,7 +129,9 @@ export class IntentToolIndexing implements IToolIndexingStrategy {
           text: `${tool.name}: ${res.value.content.trim()}`,
         },
       ];
-    } catch {
+    } catch (error) {
+      const terminal = terminalRunError(error);
+      if (terminal) throw terminal;
       return [];
     }
   }

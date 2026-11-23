@@ -1,3 +1,4 @@
+import { terminalRunError } from '../../errors/terminal-run-error.js';
 import type { IQueryEmbedding } from '../../interfaces/query-embedding.js';
 import type { IRag } from '../../interfaces/rag.js';
 import type {
@@ -22,6 +23,11 @@ export class OverlayRag implements IRag {
       this.base.query(embedding, k, options),
       this.overlay.query(embedding, k, options),
     ]);
+    for (const result of [baseRes, overlayRes]) {
+      if (result.ok) continue;
+      const terminal = terminalRunError(result.error);
+      if (terminal) return { ok: false, error: terminal };
+    }
     if (!baseRes.ok) return baseRes;
     if (!overlayRes.ok) return overlayRes;
 

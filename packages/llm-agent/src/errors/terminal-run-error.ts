@@ -32,12 +32,12 @@ export function terminalRunError<T>(error: T): SmartAgentError | undefined {
   for (const current of errorCauseChain(details)) {
     const code = 'code' in current ? current.code : undefined;
     if (typeof code === 'string' && terminalCodes.has(code))
-      return typedFailure(current, code);
+      return typedFailure(current, code, details ?? current);
     if ('name' in current && current.name === 'AbortError')
-      return typedFailure(current, 'ABORTED');
+      return typedFailure(current, 'ABORTED', details ?? current);
   }
   if (details && isAuthenticationFailure(details))
-    return typedFailure(details, 'CREDENTIALS_REJECTED');
+    return typedFailure(details, 'CREDENTIALS_REJECTED', details);
   const status = httpStatusOf(details);
   if (
     details &&
@@ -49,16 +49,22 @@ export function terminalRunError<T>(error: T): SmartAgentError | undefined {
     status !== 429
   ) {
     if (details instanceof SmartAgentError) return details;
-    return Object.assign(typedFailure(details, 'LLM_HTTP_ERROR'), { status });
+    return Object.assign(typedFailure(details, 'LLM_HTTP_ERROR', details), {
+      status,
+    });
   }
   return undefined;
 }
 
-function typedFailure(error: object, code: string): SmartAgentError {
+function typedFailure(
+  error: object,
+  code: string,
+  original: object,
+): SmartAgentError {
   if (error instanceof SmartAgentError) return error;
   const message =
     'message' in error && typeof error.message === 'string'
       ? error.message
       : code;
-  return new SmartAgentError(message, code);
+  return new SmartAgentError(message, code, { cause: original });
 }

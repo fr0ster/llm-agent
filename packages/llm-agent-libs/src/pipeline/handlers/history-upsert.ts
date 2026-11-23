@@ -69,6 +69,8 @@ export async function summarizeAndStore(
       options,
     );
     if (!upsertResult.ok) {
+      const terminal = terminalRunError(upsertResult.error);
+      if (terminal) throw terminal;
       log?.('history_upsert_failed', { error: upsertResult.error.message });
     }
   }

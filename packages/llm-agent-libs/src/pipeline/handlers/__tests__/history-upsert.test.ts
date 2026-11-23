@@ -10,10 +10,12 @@ import type {
 } from '@mcp-abap-adt/llm-agent';
 import {
   InMemoryRag,
+  IntentEnricher,
   LlmError,
   MODEL_CONTEXT_EXCEEDED,
 } from '@mcp-abap-adt/llm-agent';
 import {
+  makeLlm,
   ownedTestStores,
   testCallOptions,
   testRequestAccess,
@@ -79,6 +81,43 @@ function makeFakeRag(): IRag & {
 }
 
 describe('history-upsert: summarizeAndStore', () => {
+  for (const thrown of [false, true]) {
+    it(`propagates ${thrown ? 'thrown' : 'returned'} context overflow from history enrichment`, async () => {
+      let calls = 0;
+      const error = new LlmError('Prompt too long', MODEL_CONTEXT_EXCEEDED);
+      const model = makeLlm([]);
+      model.chat = async () => {
+        calls++;
+        if (thrown) throw error;
+        return { ok: false, error };
+      };
+      const memory = makeFakeMemory();
+      const rag = new InMemoryRag({
+        documentEnrichers: [new IntentEnricher(model)],
+      });
+      await assert.rejects(
+        summarizeAndStore({
+          turn: {
+            sessionId: 's1',
+            turnIndex: 0,
+            userText: 'request',
+            assistantText: 'answer',
+            toolCalls: [],
+            toolResults: [],
+            timestamp: 1000,
+          },
+          summarizer: makeFakeSummarizer('summary'),
+          memory,
+          rag,
+          sessionId: 's1',
+          options: { userId: 'test-user' },
+        }),
+        { code: MODEL_CONTEXT_EXCEEDED },
+      );
+      assert.equal(calls, 1);
+      assert.equal(memory.entries.size, 0);
+    });
+  }
   it('propagates a terminal summarizer error without storing fallback text', async () => {
     const error = new LlmError('Prompt is too long', MODEL_CONTEXT_EXCEEDED);
     const memory = makeFakeMemory();

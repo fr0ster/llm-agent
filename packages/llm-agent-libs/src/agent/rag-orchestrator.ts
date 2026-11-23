@@ -98,17 +98,21 @@ export class RagOrchestrator implements IRagOrchestrator {
             combinedActionText,
             opts,
           );
+          if (this.deps.config.queryExpansionEnabled) {
+            const expandResult = await this.deps.queryExpander.expand(
+              translatedText,
+              opts,
+            );
+            if (expandResult.ok) translatedText = expandResult.value;
+            else {
+              const terminal = terminalRunError(expandResult.error);
+              if (terminal) return { ok: false, error: terminal };
+            }
+          }
         } catch (error) {
           const terminal = terminalRunError(error);
           if (terminal) return { ok: false, error: terminal };
           throw error;
-        }
-        if (this.deps.config.queryExpansionEnabled) {
-          const expandResult = await this.deps.queryExpander.expand(
-            translatedText,
-            opts,
-          );
-          if (expandResult.ok) translatedText = expandResult.value;
         }
       }
 

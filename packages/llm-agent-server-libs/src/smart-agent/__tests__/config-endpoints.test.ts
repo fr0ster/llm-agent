@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { request } from 'node:http';
 import { describe, it } from 'node:test';
 import type { ILlm, IModelResolver } from '@mcp-abap-adt/llm-agent';
+import { LlmError, MODEL_CONTEXT_EXCEEDED } from '@mcp-abap-adt/llm-agent';
 import { SmartAgent } from '@mcp-abap-adt/llm-agent-libs';
 import {
   makeDefaultDeps,
@@ -72,6 +73,40 @@ function httpRequest(
       req.write(bodyStr);
     }
     req.end();
+  });
+}
+
+for (const thrown of [false, true]) {
+  it(`PUT /v1/config preserves ${thrown ? 'thrown' : 'returned'} context overflow`, async () => {
+    let calls = 0;
+    const error = new LlmError('Prompt is too long', MODEL_CONTEXT_EXCEEDED);
+    const dead: ILlm = {
+      ...makeTestLlm([]),
+      async chat() {
+        calls++;
+        if (thrown) throw error;
+        return { ok: false, error };
+      },
+    };
+    const server = new SmartServer(
+      {
+        port: 0,
+        llm: { model: 'test-model' },
+        modelResolver: makeResolver({ 'too-small': dead }),
+      },
+      makeLlmDeps(),
+    );
+    const handle = await server.start();
+    try {
+      const response = await httpRequest(handle.port, 'PUT', '/v1/config', {
+        models: { mainModel: 'too-small' },
+      });
+      assert.equal(calls, 1);
+      assert.equal(response.status, 400);
+      assert.match(response.raw, /"code":"MODEL_CONTEXT_EXCEEDED"/);
+    } finally {
+      await handle.close();
+    }
   });
 }
 

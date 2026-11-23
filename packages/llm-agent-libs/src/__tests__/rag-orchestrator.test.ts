@@ -10,7 +10,13 @@ import type {
   Result,
   SkillError,
 } from '@mcp-abap-adt/llm-agent';
+import {
+  LlmError,
+  MODEL_CONTEXT_EXCEEDED,
+  RagError,
+} from '@mcp-abap-adt/llm-agent';
 import { RagOrchestrator } from '../agent/rag-orchestrator.js';
+import type { RagOrchestratorDeps } from '../agent/rag-orchestrator-types.js';
 import { NoopRequestLogger } from '../logger/noop-request-logger.js';
 import type {
   IMcpToolRegistry,
@@ -102,6 +108,7 @@ function ragDocs(): RagResult[] {
 function makeOrchestrator(
   mcpToolRegistry?: IMcpToolRegistry,
   documents = ragDocs(),
+  overrides?: Partial<RagOrchestratorDeps>,
 ) {
   return new RagOrchestrator({
     ragAccess: testRequestAccess,
@@ -129,10 +136,78 @@ function makeOrchestrator(
     ]),
     skillManager: makeSkillManager('my-skill', 'STEP 1: call GetProgram'),
     translateQueryStores: undefined,
+    ...overrides,
   });
 }
 
 const opts: { opts: CallOptions | undefined } = { opts: undefined };
+
+for (const thrown of [false, true]) {
+  for (const terminal of [false, true]) {
+    const error = new LlmError(
+      'Expansion failed',
+      terminal ? MODEL_CONTEXT_EXCEEDED : 'LLM_ERROR',
+    );
+    it(`orchestrator handles ${thrown ? 'thrown' : 'returned'} expansion ${error.code}`, async () => {
+      let calls = 0;
+      const llm = makeLlm([]);
+      llm.chat = async () => {
+        calls++;
+        if (thrown) throw error;
+        return { ok: false, error };
+      };
+      const queries: string[] = [];
+      const rag = makeRag([]);
+      const orchestrator = makeOrchestrator(undefined, [], {
+        config: { maxIterations: 5, queryExpansionEnabled: true },
+        translateQueryStores: new Set(['kb']),
+        toEnglishForRag: async () => 'translated query',
+        ragStores: ownedTestStores({
+          kb: {
+            ...rag,
+            async query(embedding, k, options) {
+              queries.push(embedding.text);
+              return rag.query(embedding, k, options);
+            },
+          },
+        }),
+        queryExpander: {
+          async expand(query) {
+            const result = await llm.chat([{ role: 'user', content: query }]);
+            if (result.ok) return { ok: true, value: result.value.content };
+            return {
+              ok: false,
+              error: Object.assign(new RagError(error.message), {
+                cause: result.error,
+              }),
+            };
+          },
+        },
+      });
+      const pending = orchestrator.orchestrate('read program', {
+        opts: testCallOptions(undefined),
+        rootSpan: new NoopTracer().startSpan('root'),
+        sessionId: 'expansion-error',
+        mode: 'hard',
+        externalTools: [],
+      });
+      if (terminal) {
+        const result = await pending;
+        assert.ok(!result.ok);
+        assert.equal(result.error.code, MODEL_CONTEXT_EXCEEDED);
+      } else if (thrown) {
+        await assert.rejects(pending, (failure) => failure === error);
+      } else {
+        assert.ok((await pending).ok);
+      }
+      assert.deepEqual(
+        queries,
+        terminal || thrown ? [] : ['translated query', 'translated query'],
+      );
+      assert.equal(calls, 1);
+    });
+  }
+}
 
 describe('RagOrchestrator.orchestrate()', () => {
   it('hard mode loads no skills without a semantic match', async () => {

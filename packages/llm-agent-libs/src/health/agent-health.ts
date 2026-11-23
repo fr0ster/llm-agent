@@ -1,4 +1,5 @@
 import type { CallOptions, ILlm, IMcpClient } from '@mcp-abap-adt/llm-agent';
+import { terminalRunError } from '@mcp-abap-adt/llm-agent';
 import type { OwnedRagStore } from '../rag/owner-bound-query.js';
 
 export interface AgentHealthSnapshot {
@@ -39,12 +40,18 @@ export const buildAgentHealthSnapshot: IAgentHealthProbe = async (
       );
       results.llm = llmRes.ok;
       if (!llmRes.ok) {
+        const terminal = terminalRunError(llmRes.error);
+        if (terminal) throw terminal;
         options?.sessionLogger?.logStep('health_llm_probe_error', {
           reason: String(llmRes.error?.message ?? llmRes.error),
         });
       }
     }
   } catch (err) {
+    if (!mainLlm.healthCheck) {
+      const terminal = terminalRunError(err);
+      if (terminal) throw terminal;
+    }
     results.llm = false;
     options?.sessionLogger?.logStep('health_llm_probe_error', {
       reason: err instanceof Error ? err.message : String(err),

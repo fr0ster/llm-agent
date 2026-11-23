@@ -2,11 +2,13 @@ import assert from 'node:assert/strict';
 import { request } from 'node:http';
 import { describe, it } from 'node:test';
 import type { CallOptions, Message } from '@mcp-abap-adt/llm-agent';
+import { LlmError, MODEL_CONTEXT_EXCEEDED } from '@mcp-abap-adt/llm-agent';
 import {
   OrchestratorError,
-  type SmartAgent,
+  SmartAgent,
   type SmartAgentResponse,
 } from '@mcp-abap-adt/llm-agent-libs';
+import { makeDefaultDeps, makeLlm } from '@mcp-abap-adt/llm-agent-libs/testing';
 import { SmartAgentServer } from '../server.js';
 
 // ---------------------------------------------------------------------------
@@ -71,6 +73,62 @@ function makeAgent(
       return { ok: true as const, value: result };
     },
   } as unknown as SmartAgent;
+}
+
+for (const stream of [false, true]) {
+  for (const thrown of [false, true]) {
+    it(`exposes ${thrown ? 'thrown' : 'returned'} context overflow (stream=${stream})`, async () => {
+      let calls = 0;
+      const error = new LlmError('Prompt is too long', MODEL_CONTEXT_EXCEEDED);
+      const { deps } = makeDefaultDeps();
+      deps.mainLlm = {
+        ...makeLlm([]),
+        async chat() {
+          calls++;
+          if (thrown) throw error;
+          return { ok: false, error };
+        },
+        async *streamChat() {
+          calls++;
+          if (thrown) throw error;
+          yield { ok: false, error };
+        },
+      };
+      const server = new SmartAgentServer(
+        new SmartAgent(deps, { maxIterations: 5 }),
+      );
+      const handle = await server.start();
+      try {
+        const result = await httpRequest(
+          handle.port,
+          'POST',
+          '/v1/chat/completions',
+          {
+            messages: [{ role: 'user', content: 'test' }],
+            stream,
+          },
+        );
+        assert.equal(calls, 1);
+        assert.equal(result.status, stream ? 200 : 400);
+        if (stream) {
+          assert.equal(typeof result.body, 'string');
+          if (typeof result.body !== 'string') assert.fail('Expected SSE');
+          assert.match(result.body, /"code":"MODEL_CONTEXT_EXCEEDED"/);
+          assert.doesNotMatch(result.body, /"finish_reason":"stop"/);
+        } else {
+          assert.deepEqual(result.body, {
+            error: {
+              message: error.message,
+              type: 'invalid_request_error',
+              code: MODEL_CONTEXT_EXCEEDED,
+            },
+          });
+        }
+      } finally {
+        await handle.close();
+      }
+    });
+  }
 }
 
 // ---------------------------------------------------------------------------
