@@ -4,10 +4,17 @@ import type { IBearerCredential } from '@mcp-abap-adt/interfaces-auth';
 import {
   httpStatusOf,
   isThrottledError,
+  type LLMResponse,
   type Message,
   resetQuotaGates,
   WaitAsTold,
 } from '@mcp-abap-adt/llm-agent';
+import {
+  OrchestrationClient,
+  OrchestrationStream,
+  OrchestrationStreamChunkResponse,
+  OrchestrationStreamResponse,
+} from '@sap-ai-sdk/orchestration';
 import {
   orchestrationModelParams,
   SapCoreAIProvider,
@@ -190,6 +197,84 @@ describe('SapCoreAIProvider — streamChat requestConfig', () => {
     assert.ok(requestConfig, 'requestConfig should be passed to stream()');
     assert.ok(requestConfig.httpsAgent, 'httpsAgent should be set');
   });
+});
+
+it('supplies empty JSON at tool_calls finish for calls without argument fragments', async (t) => {
+  const provider = new SapCoreAIProvider({
+    model: 'test-model',
+    apiBaseUrl,
+    credential: testCredential(),
+  });
+  const choices = [
+    {
+      index: 0,
+      delta: {
+        content: '',
+        tool_calls: [
+          {
+            index: 0,
+            id: 'call_0',
+            function: { name: 'lookup', arguments: '' },
+          },
+          {
+            index: 1,
+            id: 'call_1',
+            function: { name: 'search', arguments: '{"query":' },
+          },
+        ],
+      },
+    },
+    {
+      index: 0,
+      delta: {
+        content: '',
+        tool_calls: [
+          { index: 0, function: { arguments: '' } },
+          { index: 1, function: { arguments: '"b"}' } },
+        ],
+      },
+    },
+    { index: 0, delta: { content: '' }, finish_reason: 'tool_calls' },
+  ];
+  t.mock.method(OrchestrationClient.prototype, 'stream', async () => {
+    const response =
+      new OrchestrationStreamResponse<OrchestrationStreamChunkResponse>({
+        data: {},
+        headers: {},
+        status: 200,
+      });
+    response.stream = new OrchestrationStream(async function* () {
+      for (const choice of choices) {
+        yield new OrchestrationStreamChunkResponse({
+          request_id: 'request',
+          final_result: {
+            id: 'completion',
+            object: 'chat.completion.chunk',
+            created: 1,
+            model: provider.model,
+            choices: [choice],
+          },
+        });
+      }
+    }, new AbortController());
+    return response;
+  });
+
+  const chunks: LLMResponse[] = [];
+  for await (const chunk of provider.streamChat([])) chunks.push(chunk);
+  assert.equal(chunks.at(-1)?.finishReason, 'tool_calls');
+  assert.deepEqual(
+    chunks.flatMap((chunk) =>
+      (chunk.toolCalls ?? []).flatMap(({ index, arguments: args }) =>
+        args ? [{ index, arguments: args }] : [],
+      ),
+    ),
+    [
+      { index: 1, arguments: '{"query":' },
+      { index: 1, arguments: '"b"}' },
+      { index: 0, arguments: '{}' },
+    ],
+  );
 });
 
 // ---------------------------------------------------------------------------

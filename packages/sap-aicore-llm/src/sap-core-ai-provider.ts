@@ -555,6 +555,7 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
         toolCount,
       });
 
+      const toolArgumentsReceived = new Map<number, boolean>();
       for await (const chunk of streamResponse.stream) {
         chunkIndex += 1;
         if (returnedSdkError(chunk)) returnedError = true;
@@ -587,7 +588,7 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
               function?: { name?: string; arguments?: string };
             }>
           | undefined;
-        const toolCalls = sdkToolCalls?.length
+        let toolCalls: LLMResponse['toolCalls'] = sdkToolCalls?.length
           ? sdkToolCalls.map((tc) => ({
               index: tc.index,
               id: tc.id,
@@ -596,6 +597,21 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
             }))
           : undefined;
         if (deltaContent || toolCalls?.length) request.firstToken();
+        for (const { index, arguments: args } of toolCalls ?? []) {
+          toolArgumentsReceived.set(
+            index,
+            Boolean(args) || toolArgumentsReceived.get(index) === true,
+          );
+        }
+        if (finishReason === 'tool_calls') {
+          for (const [index, hasArguments] of toolArgumentsReceived) {
+            if (!hasArguments) {
+              toolCalls ??= [];
+              toolCalls.push({ index, arguments: '{}' });
+            }
+          }
+          toolArgumentsReceived.clear();
+        }
         this.log?.debug('SAP AI SDK streamChat chunk received', {
           model,
           chunkIndex,

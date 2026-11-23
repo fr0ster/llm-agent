@@ -251,6 +251,11 @@ test('stream converts tools/history and assembles fragmented parallel tool calls
       index: 1,
       delta: { type: 'input_json_delta', partial_json: '"b"}' },
     },
+    {
+      type: 'content_block_delta',
+      index: 1,
+      delta: { type: 'input_json_delta', partial_json: '' },
+    },
     { type: 'content_block_stop', index: 1 },
     { type: 'message_delta', delta: { stop_reason: 'tool_use' } },
   ];
@@ -305,6 +310,57 @@ test('stream converts tools/history and assembles fragmented parallel tool calls
   } finally {
     globalThis.fetch = original;
   }
+});
+
+test('stream emits the initial tool input at block stop after empty JSON deltas', async (t) => {
+  const inputs = [{}, { query: 'initial' }];
+  const events = inputs.flatMap((input, index) => [
+    {
+      type: 'content_block_start',
+      index,
+      content_block: {
+        type: 'tool_use',
+        id: `call_${index}`,
+        name: 'search',
+        input,
+      },
+    },
+    {
+      type: 'content_block_delta',
+      index,
+      delta: { type: 'input_json_delta', partial_json: '' },
+    },
+    {
+      type: 'content_block_delta',
+      index,
+      delta: { type: 'input_json_delta', partial_json: '' },
+    },
+    { type: 'content_block_stop', index },
+  ]);
+  const body = events
+    .map((event) => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`)
+    .join('');
+  t.mock.method(globalThis, 'fetch', async () => new Response(body));
+
+  const chunks: LLMResponse[] = [];
+  for await (const chunk of provider().streamChat(history, tools)) {
+    chunks.push(chunk);
+  }
+  assert.deepEqual(
+    chunks
+      .filter((chunk) => chunk.toolCalls?.some((call) => call.arguments))
+      .map(({ raw, toolCalls }) => ({ raw, toolCalls })),
+    [
+      {
+        raw: { type: 'content_block_stop', index: 0 },
+        toolCalls: [{ index: 0, arguments: '{}' }],
+      },
+      {
+        raw: { type: 'content_block_stop', index: 1 },
+        toolCalls: [{ index: 1, arguments: '{"query":"initial"}' }],
+      },
+    ],
+  );
 });
 
 test('chat and stream surface HTTP status, error type, and message', async () => {
