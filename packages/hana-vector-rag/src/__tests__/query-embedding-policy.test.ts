@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { IRetrievalEmbedder } from '@mcp-abap-adt/llm-agent';
 import {
+  MODEL_CONTEXT_EXCEEDED,
   QueryEmbedding,
   RagError,
   staticLogin,
@@ -46,6 +47,28 @@ function makeEmbedder(firstFailure?: Error) {
 }
 
 describe('HanaVectorRag query embedding fallback policy', () => {
+  for (const operation of ['query', 'upsert']) {
+    it(`${operation} preserves embedding overflow when the signal is also aborted`, async () => {
+      const abort = new AbortController();
+      const overflow = new RagError(
+        'Embedding input too long',
+        MODEL_CONTEXT_EXCEEDED,
+      );
+      const fail = async () => {
+        abort.abort();
+        throw overflow;
+      };
+      const embedder = { embedQuery: fail, embedDocument: fail };
+      const rag = makeRag(embedder, true);
+      const options = { signal: abort.signal };
+      const result =
+        operation === 'query'
+          ? await rag.query(new QueryEmbedding('query', embedder), 1, options)
+          : await rag.upsert('document', { id: 'doc' }, options);
+      assert.deepEqual(result, { ok: false, error: overflow });
+    });
+  }
+
   for (const fallbackOnQueryEmbeddingError of [undefined, true, false]) {
     const policy = String(fallbackOnQueryEmbeddingError);
 

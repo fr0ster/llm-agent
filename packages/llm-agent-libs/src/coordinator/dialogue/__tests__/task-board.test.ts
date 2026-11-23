@@ -6,6 +6,7 @@ import type {
   ISubAgentResult,
   TaskEvent,
 } from '@mcp-abap-adt/llm-agent';
+import { LlmError, MODEL_CONTEXT_EXCEEDED } from '@mcp-abap-adt/llm-agent';
 import {
   provisionWorkerInput,
   testCallOptions,
@@ -452,3 +453,18 @@ for (const stallNoticeMs of [0, undefined])
     release();
     await tick();
   });
+
+test('task failure aggregation gives overflow priority over an earlier terminal failure', async () => {
+  const board = fixture(async (input) => {
+    throw input.task === 'overflow'
+      ? new LlmError('Prompt too long', MODEL_CONTEXT_EXCEEDED)
+      : new LlmError('Truncated', 'LLM_OUTPUT_TRUNCATED');
+  });
+  start(board, 'ordinary terminal');
+  start(board, 'overflow');
+  await tick();
+  assert.equal(
+    board.findTerminalError(() => true)?.code,
+    MODEL_CONTEXT_EXCEEDED,
+  );
+});

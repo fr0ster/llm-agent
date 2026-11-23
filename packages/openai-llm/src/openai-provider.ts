@@ -2,6 +2,8 @@
  * OpenAI LLM Provider
  */
 
+import { Readable } from 'node:stream';
+import { text } from 'node:stream/consumers';
 import type { IApiKeyCredential } from '@mcp-abap-adt/interfaces-auth';
 import type {
   IModelInfo,
@@ -13,12 +15,23 @@ import type {
 import {
   BaseLLMProvider,
   type beginLlmRequest,
+  LlmError,
   type LlmRequestFacts,
   type LlmRequestHandle,
+  MODEL_CONTEXT_EXCEEDED,
   requestShape,
   startOperation,
 } from '@mcp-abap-adt/llm-agent';
 import axios, { type AxiosInstance } from 'axios';
+
+interface OpenAIErrorResponse {
+  error?: { message?: string; code?: string | null };
+}
+
+interface OpenAIModel {
+  id: string;
+  owned_by?: string;
+}
 
 export interface OpenAIConfig extends LLMProviderConfig {
   /**
@@ -234,20 +247,8 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
       );
 
       return response;
-    } catch (error: unknown) {
-      if (options?.apiKey !== undefined) {
-        throw this.credentialSafeError(error, `${this.providerName} API error`);
-      }
-      const message = axios.isAxiosError(error)
-        ? (error.response?.data as { error?: { message?: string } })?.error
-            ?.message || error.message
-        : error instanceof Error
-          ? error.message
-          : String(error);
-      throw this.preserveThrottled(
-        error,
-        new Error(`${this.providerName} API error: ${message}`),
-      );
+    } catch (error) {
+      throw this.requestError(error, false, options?.apiKey !== undefined);
     }
   }
 
@@ -339,7 +340,18 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
 
           try {
             const parsed = JSON.parse(data);
-            if (parsed.error) returnedError = true;
+            if (parsed.error) {
+              returnedError = true;
+              const error: OpenAIErrorResponse['error'] = parsed.error;
+              if (error?.code === 'context_length_exceeded') {
+                throw new LlmError(
+                  options?.apiKey === undefined
+                    ? (error.message ?? error.code)
+                    : error.code,
+                  MODEL_CONTEXT_EXCEEDED,
+                );
+              }
+            }
             if (parsed.usage) facts = { ...facts, ...tokenFacts(parsed.usage) };
             const choice = parsed.choices?.[0];
             if (choice?.delta) {
@@ -386,29 +398,34 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
                 },
               };
             }
-          } catch (_e) {
+          } catch (error) {
+            if (
+              error instanceof LlmError &&
+              error.code === MODEL_CONTEXT_EXCEEDED
+            )
+              throw error;
             // Ignore parse errors for incomplete chunks
           }
         }
       }
       completed = true;
-    } catch (error: unknown) {
+    } catch (error) {
       failure = error;
-      if (options?.apiKey !== undefined) {
-        throw this.credentialSafeError(
-          error,
-          `${this.providerName} streaming error`,
-        );
-      }
-      const message = axios.isAxiosError(error)
-        ? (error.response?.data as { error?: { message?: string } })?.error
-            ?.message || error.message
-        : error instanceof Error
-          ? error.message
-          : String(error);
-      throw this.preserveThrottled(
+      const response = axios.isAxiosError<Readable>(error)
+        ? error.response
+        : undefined;
+      // Axios leaves a rejected streaming request's JSON body as a readable.
+      const streamedBody =
+        response?.status === 400 && response.data instanceof Readable
+          ? await text(response.data)
+              .then((payload): OpenAIErrorResponse => JSON.parse(payload))
+              .catch(() => undefined)
+          : undefined;
+      throw this.requestError(
         error,
-        new Error(`${this.providerName} Streaming error: ${message}`),
+        true,
+        options?.apiKey !== undefined,
+        streamedBody,
       );
     } finally {
       request?.end({
@@ -428,9 +445,48 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
     }
   }
 
+  private requestError<T>(
+    error: T,
+    streaming: boolean,
+    redact: boolean,
+    streamedBody?: OpenAIErrorResponse,
+  ): Error {
+    const operation = streaming ? (redact ? 'streaming' : 'Streaming') : 'API';
+    const prefix = `${this.providerName} ${operation} error`;
+    const transport = axios.isAxiosError<OpenAIErrorResponse | Readable>(error)
+      ? error
+      : undefined;
+    const body = transport?.response?.data;
+    const providerError =
+      body instanceof Readable ? streamedBody?.error : body?.error;
+    const overflow =
+      (transport?.response?.status === 400 &&
+        providerError?.code === 'context_length_exceeded') ||
+      (error instanceof LlmError && error.code === MODEL_CONTEXT_EXCEEDED);
+    const providerMessage =
+      body instanceof Readable && !overflow
+        ? undefined
+        : providerError?.message;
+    let message = prefix;
+    if (!redact) {
+      const detail =
+        transport?.message ??
+        (error instanceof Error ? error.message : String(error));
+      message = `${prefix}: ${providerMessage || detail}`;
+    }
+    if (overflow) {
+      return Object.assign(new LlmError(message, MODEL_CONTEXT_EXCEEDED), {
+        status: 400,
+      });
+    }
+    return redact
+      ? this.credentialSafeError(error, prefix)
+      : this.preserveThrottled(error, new Error(message));
+  }
+
   private async fetchModels(options?: LLMCallOptions) {
     try {
-      return await this.client.get('/models', {
+      return await this.client.get<{ data: OpenAIModel[] }>('/models', {
         headers: await this.authHeader(options?.apiKey),
         signal: options?.signal,
       });
@@ -447,14 +503,12 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
 
   async getModels(options?: LLMCallOptions): Promise<IModelInfo[]> {
     const response = await this.fetchModels(options);
-    return (response.data.data as Array<{ id: string; owned_by?: string }>).map(
-      (m) => ({ id: m.id, owned_by: m.owned_by }),
-    );
+    return response.data.data.map(({ id, owned_by }) => ({ id, owned_by }));
   }
 
   async getEmbeddingModels(options?: LLMCallOptions): Promise<IModelInfo[]> {
     const response = await this.fetchModels(options);
-    return (response.data.data as Array<{ id: string; owned_by?: string }>)
+    return response.data.data
       .filter((m) => /embed/i.test(m.id))
       .map((m) => ({ id: m.id, owned_by: m.owned_by }));
   }

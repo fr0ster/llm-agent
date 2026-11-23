@@ -15,9 +15,45 @@ import type {
   ISkillManager,
   LogEvent,
 } from '@mcp-abap-adt/llm-agent';
+import {
+  InMemoryRag,
+  IntentEnricher,
+  LlmError,
+  MODEL_CONTEXT_EXCEEDED,
+} from '@mcp-abap-adt/llm-agent';
 
 // Import from the new module path (RED until 2b)
 import { vectorizeSkills } from '../mcp/vectorize-mcp-tools.js';
+import { makeLlm } from '../testing/index.js';
+
+for (const thrown of [false, true]) {
+  it(`skill vectorization stops on ${thrown ? 'thrown' : 'returned'} context overflow`, async () => {
+    let calls = 0;
+    const error = new LlmError('Prompt too long', MODEL_CONTEXT_EXCEEDED);
+    const model = makeLlm([]);
+    model.chat = async () => {
+      calls++;
+      if (thrown) throw error;
+      return { ok: false, error };
+    };
+    const rag = new InMemoryRag({
+      documentEnrichers: [new IntentEnricher(model)],
+    });
+    await assert.rejects(
+      vectorizeSkills(
+        makeSkillManager([
+          { name: 'first', description: 'First skill' },
+          { name: 'second', description: 'Second skill' },
+        ]),
+        rag,
+        new CapturingRequestLogger(),
+        undefined,
+      ),
+      { code: MODEL_CONTEXT_EXCEEDED },
+    );
+    assert.equal(calls, 1);
+  });
+}
 
 // ---------------------------------------------------------------------------
 // Helpers / stubs

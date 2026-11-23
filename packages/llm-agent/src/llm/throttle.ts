@@ -33,6 +33,7 @@ import {
   ReportThrottling,
   type ThrottleDecision,
 } from '../interfaces/throttle-strategy.js';
+import { MODEL_CONTEXT_EXCEEDED } from '../interfaces/types.js';
 import {
   DefaultWaitStrategy,
   type IWaitStrategy,
@@ -470,6 +471,12 @@ async function attemptWithGate<T>(
     try {
       return await fn();
     } catch (error) {
+      const details =
+        typeof error === 'object' && error !== null ? error : undefined;
+      for (const cause of errorCauseChain(details)) {
+        if ('code' in cause && cause.code === MODEL_CONTEXT_EXCEEDED)
+          throw error;
+      }
       if (!opts.isThrottled(error)) {
         const transient = opts.transient;
         if (

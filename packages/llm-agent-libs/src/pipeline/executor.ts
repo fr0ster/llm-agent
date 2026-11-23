@@ -26,7 +26,12 @@
  * The span is passed to the handler for sub-span creation.
  */
 
-import { McpError, terminalRunError } from '@mcp-abap-adt/llm-agent';
+import {
+  contextExceededError,
+  McpError,
+  type SmartAgentError,
+  terminalRunError,
+} from '@mcp-abap-adt/llm-agent';
 import { normalizeMaxIterations } from '../config/normalize-max-iterations.js';
 import type { ISpan, ITracer } from '../tracer/types.js';
 import { evaluateCondition } from './condition-evaluator.js';
@@ -125,10 +130,44 @@ export class PipelineExecutor {
   ): Promise<boolean> {
     if (!stage.stages?.length) return true;
 
-    const results = await Promise.all(
-      stage.stages.map((child) => this.executeStages([child], ctx, parentSpan)),
-    );
-
+    const children = stage.stages;
+    const results = await new Promise<boolean[]>((resolve, reject) => {
+      let overflow: SmartAgentError | undefined;
+      // Let the enclosing stage report the overflow once, even for a nested parallel stage.
+      const stop = (failure: SmartAgentError) => {
+        if (!overflow) {
+          overflow = failure;
+          reject(failure);
+        }
+      };
+      const yieldChunk: PipelineContext['yield'] = (chunk) => {
+        const failure = chunk.ok
+          ? undefined
+          : contextExceededError(chunk.error);
+        if (failure) stop(failure);
+        if (!overflow) ctx.yield(chunk);
+      };
+      const parallelCtx = new Proxy(ctx, {
+        get(target, key, receiver) {
+          return key === 'yield'
+            ? yieldChunk
+            : Reflect.get(target, key, receiver);
+        },
+        set(target, key, value, receiver) {
+          if (key === 'error') {
+            const failure = contextExceededError(value);
+            if (failure) stop(failure);
+            if (overflow) return Reflect.set(target, key, overflow, receiver);
+          }
+          return Reflect.set(target, key, value, receiver);
+        },
+      });
+      void Promise.all(
+        children.map((child) =>
+          this.executeStages([child], parallelCtx, parentSpan),
+        ),
+      ).then(resolve, reject);
+    });
     if (results.some((r) => !r)) return false;
 
     // Run sequential `after` stages after all parallel children complete

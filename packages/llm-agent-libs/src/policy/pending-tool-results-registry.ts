@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import type { Message } from '@mcp-abap-adt/llm-agent';
+import { contextExceededError, type Message } from '@mcp-abap-adt/llm-agent';
 import {
   type CallerIdentity,
   callerIdentityKey,
@@ -134,7 +134,12 @@ export class PendingToolResultsRegistry {
     const messages: Message[] =
       typeof input === 'string' ? [{ role: 'user', content: input }] : input;
     const index = findPendingAssistant(messages, entry.externalCalls);
-    const localResults = await entry.promise.catch(() => []);
+    const localResults = await entry.promise.catch((error) => {
+      const terminal = contextExceededError(error);
+      if (!terminal) return [];
+      if (this.sessions.get(key) === entry) this.sessions.delete(key);
+      throw terminal;
+    });
     const assistant = entry.assistantMessage;
     const results = (assistant.tool_calls ?? []).map((call): Message => {
       const external = entry.externalCalls.find(
@@ -286,7 +291,11 @@ export class PendingToolResultsRegistry {
       return null;
     }
     this.sessions.delete(key);
-    const results = await entry.promise.catch(() => []);
+    const results = await entry.promise.catch((error) => {
+      const terminal = contextExceededError(error);
+      if (terminal) throw terminal;
+      return [];
+    });
     return {
       exchangeId: entry.exchangeId,
       assistantMessage: entry.assistantMessage,

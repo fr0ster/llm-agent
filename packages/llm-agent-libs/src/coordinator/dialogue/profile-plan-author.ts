@@ -9,7 +9,10 @@ import type {
   PlanRevisionInput,
   Result,
 } from '@mcp-abap-adt/llm-agent';
-import { terminalRunError } from '@mcp-abap-adt/llm-agent';
+import {
+  contextExceededError,
+  terminalRunError,
+} from '@mcp-abap-adt/llm-agent';
 import { z } from 'zod';
 import {
   PLAN_CREATE_SYSTEM,
@@ -143,6 +146,10 @@ export class ProfilePlanAuthor implements IPlanAuthor {
         [message, ...notes].join('\n\n'),
         options,
       );
+      if (!response.ok) {
+        const overflow = contextExceededError(response.error);
+        if (overflow) throw overflow;
+      }
       options?.signal?.throwIfAborted();
       if (!response.ok) throw response.error;
       code = 'invalid';
@@ -182,13 +189,14 @@ export class ProfilePlanAuthor implements IPlanAuthor {
         }),
       };
     } catch (error) {
-      const cause = terminalRunError(error);
+      const overflow = contextExceededError(error);
+      const cause = overflow ?? terminalRunError(error);
       return {
         ok: false,
         error: {
           // A profile source outage is infrastructure, not a bad plan.
           code:
-            options?.signal?.aborted || cause?.code === 'ABORTED'
+            !overflow && (options?.signal?.aborted || cause?.code === 'ABORTED')
               ? 'aborted'
               : error instanceof ProfileSourceError &&
                   error.code === 'unavailable'

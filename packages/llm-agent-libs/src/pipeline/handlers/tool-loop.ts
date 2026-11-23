@@ -52,6 +52,7 @@ import type {
 } from '@mcp-abap-adt/llm-agent';
 import {
   buildNamespacedTools,
+  contextOverflowInSettled,
   defaultToolNamespace,
   mergeOfferedTools,
   scopedUsage,
@@ -345,6 +346,10 @@ export class ToolLoopHandler implements IStageHandler {
             result: await client.listTools(ctx.options),
           })),
         );
+        const overflow = contextOverflowInSettled(settled, ({ result }) =>
+          result.ok ? undefined : result.error,
+        );
+        if (overflow) throw overflow;
         const perClient = settled.flatMap((entry, i) =>
           entry.status === 'fulfilled' && entry.value.result.ok
             ? [

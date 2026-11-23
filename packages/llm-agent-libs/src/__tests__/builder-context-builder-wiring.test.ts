@@ -92,48 +92,60 @@ function makeConstrainedSubAgent(name: string): ISubAgent {
   };
 }
 
-it('stops before dispatch if retrieving subagent context returns a terminal error', async () => {
-  const { SmartAgentBuilder } = await import('../builder.js');
-  const error = new RagError('Rejected', 'CREDENTIALS_REJECTED');
-  const rag = makeRag();
-  rag.query = async () => ({ ok: false, error });
-  const worker: ISubAgent = {
-    ...makeConstrainedSubAgent('leaf'),
-    run: () =>
-      assert.fail('terminal retrieval error must prevent worker execution'),
-  };
-  const handle = await new SmartAgentBuilder({ skipModelValidation: true })
-    .withRagAccess(testRequestAccess)
-    .withMainLlm(stubLlm())
-    .withEmbedder(symmetricEmbedder(stubEmbedder()))
-    .setToolsRag(rag)
-    .withSubAgents(new Map([[worker.name, worker]]))
-    .withCoordinator({
-      planning: {
-        name: 'scripted',
-        async buildInitialPlan() {
-          return {
-            source: 'manual',
-            createdAt: 0,
-            steps: [
-              { id: 's1', goal: 'Work', agent: worker.name, status: 'pending' },
-            ],
-          };
+for (const code of [
+  'CREDENTIALS_REJECTED',
+  'ABORTED',
+  'LLM_HTTP_ERROR',
+  'MODEL_CONTEXT_EXCEEDED',
+]) {
+  it(`stops before dispatch if retrieving subagent context returns ${code}`, async () => {
+    const { SmartAgentBuilder } = await import('../builder.js');
+    const error = new RagError('Rejected', code);
+    const rag = makeRag();
+    rag.query = async () => ({ ok: false, error });
+    const worker: ISubAgent = {
+      ...makeConstrainedSubAgent('leaf'),
+      run: () =>
+        assert.fail('terminal retrieval error must prevent worker execution'),
+    };
+    const handle = await new SmartAgentBuilder({ skipModelValidation: true })
+      .withRagAccess(testRequestAccess)
+      .withMainLlm(stubLlm())
+      .withEmbedder(symmetricEmbedder(stubEmbedder()))
+      .setToolsRag(rag)
+      .withSubAgents(new Map([[worker.name, worker]]))
+      .withCoordinator({
+        planning: {
+          name: 'scripted',
+          async buildInitialPlan() {
+            return {
+              source: 'manual',
+              createdAt: 0,
+              steps: [
+                {
+                  id: 's1',
+                  goal: 'Work',
+                  agent: worker.name,
+                  status: 'pending',
+                },
+              ],
+            };
+          },
+          shouldReplan: () => assert.fail('unexpected replan'),
+          rebuildPlan: () => assert.fail('unexpected replan'),
         },
-        shouldReplan: () => assert.fail('unexpected replan'),
-        rebuildPlan: () => assert.fail('unexpected replan'),
-      },
-    })
-    .build()
-    .then(unwrapBuilderResult);
-  try {
-    const result = await handle.agent.process('Work', testCallOptions());
-    assert.ok(!result.ok);
-    assert.equal(result.error, error);
-  } finally {
-    await handle.close();
-  }
-});
+      })
+      .build()
+      .then(unwrapBuilderResult);
+    try {
+      const result = await handle.agent.process('Work', testCallOptions());
+      assert.ok(!result.ok);
+      assert.equal(result.error, error);
+    } finally {
+      await handle.close();
+    }
+  });
+}
 
 describe('SmartAgentBuilder — auto-toolsRag → subagent context-builder wiring', () => {
   it('wires auto-created toolsRag into SubAgentDispatch.contextBuilder.toolSource even when setToolsRag() was NOT called', async () => {

@@ -5,9 +5,11 @@ import {
   type IKnowledgeRagHandle,
   type IUsageRecorder,
   type KnowledgeEntry,
+  LlmError,
   type LlmStreamChunk,
   type LlmTool,
   type Message,
+  MODEL_CONTEXT_EXCEEDED,
   type Result,
   symmetricEmbedder,
   type UsageContext,
@@ -27,8 +29,14 @@ import {
   type ControllerHandlerDeps,
   parseNextStep,
 } from '../controller-coordinator-handler.js';
+import { LlmFinalizer } from '../finalizer.js';
+import { LlmReviewer } from '../reviewer.js';
+import { readTerminal } from '../run-scope.js';
 import { hydrateBundle, persistBundle } from '../session-bundle.js';
-import type { ISubagentClient } from '../subagent-client.js';
+import {
+  type ISubagentClient,
+  makeSubagentClient,
+} from '../subagent-client.js';
 import type {
   ControllerConfig,
   IControllerPlanner,
@@ -177,6 +185,93 @@ const toolCall = (
 // ---------------------------------------------------------------------------
 
 describe('ControllerCoordinatorHandler', () => {
+  const roles: Array<
+    | 'evaluator'
+    | 'planner'
+    | 'executor'
+    | 'reviewer'
+    | 'finalizer'
+    | 'legacy finalizer'
+  > = [
+    'evaluator',
+    'planner',
+    'executor',
+    'reviewer',
+    'finalizer',
+    'legacy finalizer',
+  ];
+  for (const role of roles) {
+    it(`ends the run after one ${role} attempt when the model context is exceeded`, async () => {
+      const error = Object.assign(
+        new LlmError('Prompt is too long', MODEL_CONTEXT_EXCEEDED),
+        { status: 400, cause: new Error('Provider context limit') },
+      );
+      let attempts = 0;
+      const plan = JSON.stringify({
+        plan: [{ name: 's1', instructions: 'do' }],
+      });
+      let planCreated = false;
+      const client = makeSubagentClient({
+        async chat() {
+          if (role === 'legacy finalizer' && !planCreated) {
+            planCreated = true;
+            return { ok: true, value: { content: plan, finishReason: 'stop' } };
+          }
+          attempts++;
+          return { ok: false, error };
+        },
+        async *streamChat() {},
+      });
+      const h = harness({
+        evaluator: [{ kind: 'content', content: 'Goal' }],
+        planner: [
+          { kind: 'content', content: plan },
+          { kind: 'content', content: 'Legacy answer' },
+        ],
+        executor: [{ kind: 'content', content: 'STEP' }],
+        config: { ...baseConfig(), onFinalizeExhausted: 'best-effort' },
+      });
+      if (role === 'finalizer') {
+        h.deps.finalizer = new LlmFinalizer(client, {
+          budget: 1000,
+          perResultCap: 100,
+        });
+      } else if (role === 'reviewer') h.deps.reviewer = new LlmReviewer(client);
+      else if (role === 'legacy finalizer') h.deps.planner = client;
+      else h.deps[role] = client;
+
+      const handler = new ControllerCoordinatorHandler(h.deps);
+      const { ctx, captured } = fakeCtx();
+      const ok = await handler.execute(ctx, {}, undefined);
+      assert.equal(attempts, 1);
+      assert.equal(ok, false);
+      assert.equal(ctx.error, error);
+      assert.deepEqual(
+        captured.filter((chunk) => !chunk.ok),
+        [{ ok: false, error }],
+      );
+      const storageKey = testStorageKey(ctx.sessionId);
+      const bundle = await hydrateBundle(h.backend, storageKey);
+      assert.equal(bundle.runState, 'terminal');
+      assert.ok(bundle.runId);
+      const terminal = await readTerminal(
+        h.backend,
+        storageKey,
+        bundle.runId,
+        new Date().toISOString(),
+      );
+      assert.deepEqual(terminal, {
+        kind: 'error',
+        error: error.message,
+        code: MODEL_CONTEXT_EXCEEDED,
+      });
+      const replay = fakeCtx({ options: { runId: bundle.runId } });
+      assert.equal(await handler.execute(replay.ctx, {}, undefined), false);
+      assert.equal(replay.ctx.error?.code, MODEL_CONTEXT_EXCEEDED);
+      assert.equal(attempts, 1);
+    });
+  }
+
   it('retains an executor retry correction before a newer successful tool round', async () => {
     const h = harness({
       evaluator: [{ kind: 'content', content: 'Goal' }],

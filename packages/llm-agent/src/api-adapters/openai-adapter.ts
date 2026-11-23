@@ -10,6 +10,7 @@ import type {
   SmartAgentResponse,
   StopReason,
 } from '@mcp-abap-adt/llm-agent';
+import { contextExceededError } from '../errors/terminal-run-error.js';
 import {
   AdapterValidationError,
   type ApiRequestContext,
@@ -151,11 +152,12 @@ export class OpenAiApiAdapter implements ILlmApiAdapter {
   // -------------------------------------------------------------------------
 
   formatError(error: OrchestratorError, _context: ApiRequestContext): unknown {
+    const failure = contextExceededError(error) ?? error;
     return {
       error: {
-        message: error.message,
+        message: failure.message,
         type: 'server_error',
-        code: error.code,
+        code: failure.code,
       },
     };
   }
@@ -193,6 +195,11 @@ export class OpenAiApiAdapter implements ILlmApiAdapter {
     for await (const chunk of source) {
       // Error chunk
       if (!chunk.ok) {
+        const terminal = contextExceededError(chunk.error);
+        if (terminal) {
+          yield { data: JSON.stringify(this.formatError(terminal, context)) };
+          return;
+        }
         const errorPayload = {
           ...baseResponse,
           choices: [

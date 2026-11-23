@@ -110,11 +110,12 @@ export class LlmFinalizer implements IFinalizer {
       opts.callOptions,
     );
     opts.logUsage?.('finalizer', res.usage);
-    if (res.kind !== 'content') {
-      throw new Error(
-        `finalizer error: ${res.kind === 'error' ? res.error : res.kind}`,
-      );
+    if (res.kind === 'error') {
+      const terminal = res.contextOverflow;
+      if (terminal) throw terminal;
+      throw new Error(`finalizer error: ${res.error}`);
     }
+    if (res.kind !== 'content') throw new Error(`finalizer error: ${res.kind}`);
     return res.content;
   }
 }

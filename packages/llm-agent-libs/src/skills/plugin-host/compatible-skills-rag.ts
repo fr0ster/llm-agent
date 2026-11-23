@@ -7,7 +7,10 @@ import type {
   SkillHit,
   SkillsEmbeddingDescriptor,
 } from '@mcp-abap-adt/llm-agent';
-import { SkillsIncompatibleError } from '@mcp-abap-adt/llm-agent'; // value (class)
+import {
+  contextExceededError,
+  SkillsIncompatibleError,
+} from '@mcp-abap-adt/llm-agent'; // value (class)
 
 export interface CompatibleSkillsRagDeps {
   backend: ISkillsRagBackend;
@@ -114,6 +117,8 @@ export function makeCompatibleSkillsRag(
         const threshold = opts.threshold ?? 0.3;
         return hits.filter((h) => h.score >= threshold);
       } catch (e) {
+        const overflow = contextExceededError(e);
+        if (overflow) throw overflow;
         const n = (e as Error)?.name;
         if (n === 'AbortError' || n === 'TimeoutError') return []; // deadline hit → empty, no crash
         throw e;

@@ -1,4 +1,7 @@
-import { RagAccessDeniedError } from '@mcp-abap-adt/llm-agent';
+import {
+  contextExceededError,
+  RagAccessDeniedError,
+} from '@mcp-abap-adt/llm-agent';
 import { normalizeLoopLimit } from '../config/normalize-max-iterations.js';
 import {
   readCallerResolution,
@@ -314,6 +317,8 @@ export class DefaultPipeline implements IPipeline {
     try {
       await this.executor.executeStages(this.stages, ctx, rootSpan);
     } catch (err) {
+      const overflow = contextExceededError(err);
+      if (overflow) ctx.error = overflow;
       rootSpan.setStatus('error', String(err));
     } finally {
       rootSpan.end();

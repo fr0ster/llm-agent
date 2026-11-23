@@ -21,6 +21,8 @@ import { denyRagAccess, ownerBoundQuery } from '../../rag/owner-bound-query.js';
 import type { LlmTool } from '@mcp-abap-adt/llm-agent';
 import {
   buildNamespacedTools,
+  collectWithContextOverflow,
+  contextOverflowInSettled,
   defaultToolNamespace,
   mergeOfferedTools,
   QueryEmbedding,
@@ -48,6 +50,10 @@ export class ToolSelectHandler implements IStageHandler {
           result: await client.listTools(ctx.options),
         })),
       );
+      const overflow = contextOverflowInSettled(settled, ({ result }) =>
+        result.ok ? undefined : result.error,
+      );
+      if (overflow) throw overflow;
       const perClient = settled.flatMap((entry, i) =>
         entry.status === 'fulfilled' && entry.value.result.ok
           ? [
@@ -87,7 +93,7 @@ export class ToolSelectHandler implements IStageHandler {
       const embedding = ctx.embedder
         ? new QueryEmbedding(queryText, ctx.embedder, ctx.options)
         : new TextOnlyEmbedding(queryText);
-      const queryResults = await Promise.all(
+      const queries = await collectWithContextOverflow(
         storeEntries.map(async ([name, store]) => ({
           name,
           result: await ownerBoundQuery(
@@ -98,8 +104,14 @@ export class ToolSelectHandler implements IStageHandler {
             ctx.ragAccess ?? denyRagAccess,
           ),
         })),
+        ({ result }) => (result.ok ? undefined : result.error),
+        { rejectImmediately: true },
       );
-      for (const { name, result } of queryResults) {
+      if (!queries.ok) {
+        ctx.error = queries.error;
+        return false;
+      }
+      for (const { name, result } of queries.value) {
         if (!result.ok) {
           ctx.error = result.error;
           return false;

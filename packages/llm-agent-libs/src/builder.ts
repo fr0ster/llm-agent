@@ -62,6 +62,8 @@ import {
   type CircuitBreakerConfig,
   CircuitBreakerLlm,
   collectServerDescriptors,
+  contextExceededError,
+  contextOverflowInSettled,
   defaultToolNamespace,
   FallbackRag,
   InMemoryRag,
@@ -963,16 +965,27 @@ export class SmartAgentBuilder {
       // which only retries specific HTTP status codes): a transient boot-time
       // infra blip — e.g. SAP AI Core's "Failed to fetch the list of deployments"
       // (token/deployment-list hiccup), which carries no retryable status code —
-      // must NOT abort startup. Retry the validation chat on ANY failure a few
-      // times with backoff; abort only if every attempt fails.
+      // must NOT abort startup. Retry recoverable Result failures with backoff.
       const maxAttempts = Math.max(1, this.cfg.modelValidationAttempts ?? 3);
       const validationBackoffMs = this.cfg.modelValidationBackoffMs ?? 2000;
       for (const [modelName, llm] of modelsToCheck) {
-        let result = await llm.chat(
-          [{ role: 'user', content: 'Reply with OK' }],
-          undefined,
-          { maxTokens: 10 },
-        );
+        const probe = async () => {
+          try {
+            const result = await llm.chat(
+              [{ role: 'user', content: 'Reply with OK' }],
+              undefined,
+              { maxTokens: 10 },
+            );
+            if (!result.ok) {
+              const overflow = contextExceededError(result.error);
+              if (overflow) throw overflow;
+            }
+            return result;
+          } catch (error) {
+            throw contextExceededError(error) ?? error;
+          }
+        };
+        let result = await probe();
         for (let attempt = 1; !result.ok && attempt < maxAttempts; attempt++) {
           log?.log({
             type: 'warning',
@@ -982,11 +995,7 @@ export class SmartAgentBuilder {
           await new Promise((r) =>
             setTimeout(r, validationBackoffMs * attempt),
           );
-          result = await llm.chat(
-            [{ role: 'user', content: 'Reply with OK' }],
-            undefined,
-            { maxTokens: 10 },
-          );
+          result = await probe();
         }
         if (!result.ok) {
           const detail = result.error.message;
@@ -1318,23 +1327,21 @@ export class SmartAgentBuilder {
           resolved.clientDescriptors,
           'MCP connection strategy',
         );
-        const settled = await Promise.all(
-          mcpClients.map(async (client) => {
-            try {
-              const result = await client.listTools();
-              return result.ok
-                ? { ok: true as const, value: result.value }
-                : { ok: false as const };
-            } catch {
-              return { ok: false as const };
-            }
-          }),
+        const listings = await Promise.allSettled(
+          mcpClients.map(async (client) => client.listTools()),
+        );
+        const overflow = contextOverflowInSettled(listings, (result) =>
+          result.ok ? undefined : result.error,
+        );
+        if (overflow) throw overflow;
+        const settled = listings.map((entry) =>
+          entry.status === 'fulfilled' ? entry.value : undefined,
         );
         let clientFailures = 0;
         let total = 0;
         const perClient: NamespaceClientInput[] = settled.flatMap(
           (entry, i) => {
-            if (!entry.ok) {
+            if (!entry?.ok) {
               clientFailures++;
               return [];
             }

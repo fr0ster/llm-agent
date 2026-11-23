@@ -4,11 +4,11 @@ import type {
   IAuxiliaryMcpTools,
   IToolsRagHandle,
   LlmTool,
-  McpError,
   McpTool,
   McpToolResult,
   Result,
 } from '@mcp-abap-adt/llm-agent';
+import { McpError, MODEL_CONTEXT_EXCEEDED } from '@mcp-abap-adt/llm-agent';
 import {
   assertNoAuxCollision,
   composeAuxiliaryBridge,
@@ -201,3 +201,30 @@ test('wrappers do not call aux.listTools at runtime (cached defs)', async () => 
   await select('y');
   assert.equal((await bridge('wait', {})).text, 'W');
 });
+
+for (const operation of ['listTools', 'callTool']) {
+  test(`auxiliary bridge preserves wrapped overflow from ${operation}`, async () => {
+    const overflow = new McpError('Prompt too long', MODEL_CONTEXT_EXCEEDED);
+    const error = Object.assign(new McpError('Wrapped tool failure'), {
+      cause: overflow,
+    });
+    const aux: IAuxiliaryMcpTools = {
+      async listTools() {
+        return { ok: false, error };
+      },
+      async callTool() {
+        return { ok: false, error };
+      },
+    };
+    const bridge = composeAuxiliaryBridge(
+      [waitDef],
+      aux.callTool,
+      async () => ({ text: 'domain', isError: false }),
+    );
+    const pending =
+      operation === 'listTools'
+        ? resolveAuxDefs(aux)
+        : bridge(waitDef.name, {});
+    await assert.rejects(pending, (reason) => reason === overflow);
+  });
+}

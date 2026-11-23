@@ -1,5 +1,6 @@
 import {
   type CallOptions,
+  contextExceededError,
   DefaultWaitStrategy,
   externalToolCallId,
   type IKnowledgeRagHandle,
@@ -16,8 +17,10 @@ import {
   type McpCallResult,
   McpError,
   type Message,
+  MODEL_CONTEXT_EXCEEDED,
   type ModelUsageEntry,
   mergeOfferedTools,
+  SmartAgentError,
   type StepRoundState,
   type ToolLoopContextStrategyFactory,
   toToolCallDelta,
@@ -56,7 +59,7 @@ import {
   runScopedRecall,
 } from './recall.js';
 import type { Evidence, IReviewer, ReviewResult } from './reviewer.js';
-import type { RunIdMinter } from './run-scope.js';
+import type { RunIdMinter, TerminalOutcome } from './run-scope.js';
 import { classifyRequest, readTerminal, writeTerminal } from './run-scope.js';
 import {
   hydrateBundle,
@@ -299,7 +302,6 @@ export class ControllerCoordinatorHandler implements IStageHandler {
 
   private async executeScoped(ctx: PipelineContext): Promise<boolean> {
     const deps = this.deps;
-    // Seams resolved once per execute(); consumed by Task 11+ (reviewer/finalizer/run-scope).
     const now = deps.now ?? (() => new Date().toISOString());
     const mintRunId =
       deps.runIdMinter ??
@@ -309,6 +311,43 @@ export class ControllerCoordinatorHandler implements IStageHandler {
     const prompt = extractPrompt(ctx.textOrMessages);
     const rag = await deps.knowledgeRagFor(sessionId);
     const bundle = await hydrateBundle(deps.backend, sessionId);
+    try {
+      return await this.runScoped(
+        ctx,
+        bundle,
+        rag,
+        prompt,
+        now,
+        mintRunId,
+        terminalTtlMs,
+      );
+    } catch (error) {
+      const terminal = contextExceededError(error);
+      if (!terminal) throw error;
+      if (bundle.runId && bundle.runState !== 'terminal') {
+        await this.commitTerminalError(
+          ctx.sessionId,
+          bundle,
+          { kind: 'error', error: terminal.message, code: terminal.code },
+          terminalTtlMs,
+          now(),
+        );
+      }
+      return this.surfaceRunError(ctx, terminal);
+    }
+  }
+
+  private async runScoped(
+    ctx: PipelineContext,
+    bundle: SessionBundle,
+    rag: IKnowledgeRagHandle,
+    prompt: string,
+    now: () => string,
+    mintRunId: RunIdMinter,
+    terminalTtlMs: number,
+  ): Promise<boolean> {
+    const deps = this.deps;
+    const sessionId = ctx.sessionId;
 
     const meta = synthMeta(ctx, sessionId);
 
@@ -368,12 +407,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
 
     if (cls.kind === 'replay') {
       const out = await readTerminal(deps.backend, sessionId, cls.runId, now());
-      if (out) {
-        if (out.kind === 'success')
-          this.surfaceFinal(ctx, out.answer, usageNow());
-        else this.surfaceFinal(ctx, `Error: ${out.error}`, usageNow());
-        return true;
-      }
+      if (out) return this.surfaceTerminal(ctx, out, usageNow());
       // Expired between classify and read → fall through to a fresh run.
       resetRun(bundle, prompt);
       bundle.runId = mintRunId();
@@ -402,10 +436,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
       if (term) {
         bundle.runState = 'terminal';
         await persistBundle(deps.backend, sessionId, bundle);
-        if (term.kind === 'success')
-          this.surfaceFinal(ctx, term.answer, usageNow());
-        else this.surfaceFinal(ctx, `Error: ${term.error}`, usageNow());
-        return true;
+        return this.surfaceTerminal(ctx, term, usageNow());
       }
       // No terminal → STAGE 2 (consume pending) / STAGE 3 (route by phase) are the
       // existing pending-resume block + the main loop's block (A) below.
@@ -1456,10 +1487,17 @@ export class ControllerCoordinatorHandler implements IStageHandler {
             signal: callSignal,
           });
         } catch (e) {
+          const overflow = contextExceededError(e);
+          if (overflow) throw overflow;
           if (budget.signal.aborted) return cutControlFailure('step-timeout');
           throw e;
         }
-        if (budget.signal.aborted) return cutControlFailure('step-timeout');
+        if (budget.signal.aborted) {
+          const overflow =
+            res.kind === 'error' ? res.contextOverflow : undefined;
+          if (overflow) throw overflow;
+          return cutControlFailure('step-timeout');
+        }
         logUsage?.('executor', res.usage);
 
         if (res.kind === 'content') {
@@ -1558,6 +1596,8 @@ export class ControllerCoordinatorHandler implements IStageHandler {
         }
 
         if (res.kind === 'error') {
+          const terminal = res.contextOverflow;
+          if (terminal) throw terminal;
           retries++;
           if (retries <= cfg.maxRetries) {
             controlHistory.append(messages, {
@@ -1765,6 +1805,8 @@ export class ControllerCoordinatorHandler implements IStageHandler {
             usage: ctx.options?.usage?.with({ role: 'executor' }),
           });
         } catch (mcpErr) {
+          const terminal = contextExceededError(mcpErr);
+          if (terminal) throw terminal;
           ctx.options?.sessionLogger?.logStep(
             'mcp_tool_call',
             {
@@ -1988,20 +2030,40 @@ export class ControllerCoordinatorHandler implements IStageHandler {
     terminalTtlMs: number,
     usage?: TerminalUsage,
   ): Promise<void> {
-    await writeTerminal(
-      this.deps.backend,
+    await this.commitTerminalError(
       sessionId,
-      bundle.runId ?? sessionId,
+      bundle,
       { kind: 'error', error },
       terminalTtlMs,
       now(),
     );
+    this.surfaceFinal(ctx, `Error: ${error}`, usage);
+  }
+
+  private async commitTerminalError(
+    sessionId: string,
+    bundle: SessionBundle,
+    outcome: Extract<TerminalOutcome, { kind: 'error' }>,
+    terminalTtlMs: number,
+    now: string,
+  ): Promise<void> {
+    await writeTerminal(
+      this.deps.backend,
+      sessionId,
+      bundle.runId ?? sessionId,
+      outcome,
+      terminalTtlMs,
+      now,
+    );
     bundle.pending = undefined;
     bundle.inFlightStep = undefined;
+    if (outcome.code === MODEL_CONTEXT_EXCEEDED) {
+      bundle.evalCallInFlight = false;
+      bundle.plannerCallInFlight = false;
+    }
     bundle.finalizeCallInFlight = false;
     bundle.runState = 'terminal';
     await persistBundle(this.deps.backend, sessionId, bundle);
-    this.surfaceFinal(ctx, `Error: ${error}`, usage);
   }
 
   private async finalize(
@@ -2136,6 +2198,8 @@ export class ControllerCoordinatorHandler implements IStageHandler {
           }
           answer = composed;
         } catch (e) {
+          const terminal = contextExceededError(e);
+          if (terminal) throw terminal;
           bundle.finalizeAttempt = (bundle.finalizeAttempt ?? 0) + 1;
           await persistBundle(deps.backend, sessionId, bundle);
           if ((bundle.finalizeAttempt ?? 0) > maxFinalizeRetries) {
@@ -2237,6 +2301,31 @@ export class ControllerCoordinatorHandler implements IStageHandler {
         ...(usage ? { usage } : {}),
       },
     });
+  }
+
+  private surfaceTerminal(
+    ctx: PipelineContext,
+    outcome: TerminalOutcome,
+    usage: TerminalUsage,
+  ): boolean {
+    if (outcome.kind === 'error' && outcome.code === MODEL_CONTEXT_EXCEEDED) {
+      return this.surfaceRunError(
+        ctx,
+        new SmartAgentError(outcome.error, outcome.code),
+      );
+    }
+    this.surfaceFinal(
+      ctx,
+      outcome.kind === 'success' ? outcome.answer : `Error: ${outcome.error}`,
+      usage,
+    );
+    return true;
+  }
+
+  private surfaceRunError(ctx: PipelineContext, error: SmartAgentError): false {
+    ctx.error = error;
+    ctx.yield({ ok: false, error });
+    return false;
   }
 
   private surfaceToolCall(

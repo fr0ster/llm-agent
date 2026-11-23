@@ -9,6 +9,10 @@ import type {
   WorkerProfile,
 } from '@mcp-abap-adt/llm-agent';
 import {
+  MODEL_CONTEXT_EXCEEDED,
+  SmartAgentError,
+} from '@mcp-abap-adt/llm-agent';
+import {
   PLAN_CREATE_SYSTEM,
   PLAN_REVISE_SYSTEM,
 } from '../plan-author-prompt.js';
@@ -65,6 +69,54 @@ function fixture(output: string, prompts: AgentPrompts = {}) {
   };
 }
 const output = '{"steps":[{"id":"s1","goal":"read","worker":"executor"}]}';
+for (const mode of ['create', 'revise'] as const) {
+  for (const throws of [true, false]) {
+    for (const overflow of [true, false]) {
+      test(`${mode} preserves ${overflow ? 'overflow' : 'abort'} from a ${throws ? 'thrown' : 'returned'} failure`, async () => {
+        const host = profileHost(new Map());
+        const abort = new AbortController();
+        const cancelled = new SmartAgentError('Cancelled', 'ABORTED');
+        const failure = new SmartAgentError(
+          'Model request failed',
+          overflow ? MODEL_CONTEXT_EXCEEDED : 'LLM_HTTP_ERROR',
+        );
+        host.profileRunner.preparePlanAuthor = async () => ({
+          ok: true,
+          value: {
+            async process() {
+              abort.abort(cancelled);
+              if (throws) throw failure;
+              return { ok: false, error: failure };
+            },
+            async *streamProcess() {},
+          },
+        });
+        const author = new ProfilePlanAuthor({
+          source: host.profileSource,
+          runner: host.profileRunner,
+        });
+        const options = { signal: abort.signal };
+        const result =
+          mode === 'create'
+            ? await author.create({ goal: 'read' }, options)
+            : await author.revise(
+                {
+                  plan: { version: 1, status: 'active', steps: [] },
+                  change: 'read',
+                },
+                options,
+              );
+        assert.ok(!result.ok);
+        assert.equal(result.error.code, overflow ? 'unavailable' : 'aborted');
+        assert.equal(
+          result.error.cause,
+          overflow || throws ? failure : cancelled,
+        );
+      });
+    }
+  }
+}
+
 for (const mode of ['create', 'revise'] as const) {
   test(`${mode} forwards only its own profile trust map`, async () => {
     const prompts: AgentPrompts = {

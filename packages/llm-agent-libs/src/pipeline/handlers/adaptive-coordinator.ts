@@ -10,7 +10,10 @@ import type {
   LlmUsageAttribution,
   RunRecord,
 } from '@mcp-abap-adt/llm-agent';
-import { terminalRunError } from '@mcp-abap-adt/llm-agent';
+import {
+  contextExceededError,
+  terminalRunError,
+} from '@mcp-abap-adt/llm-agent';
 import { OrchestratorError } from '../../agent.js';
 import {
   AdaptiveEpicFailError,
@@ -115,6 +118,8 @@ export class AdaptiveCoordinatorHandler implements IStageHandler {
         );
         plan = planned.plan;
       } catch (error) {
+        const overflow = contextExceededError(error);
+        if (overflow) throw overflow;
         ctx.options?.signal?.throwIfAborted();
         const terminal = terminalRunError(error);
         if (terminal) throw terminal;

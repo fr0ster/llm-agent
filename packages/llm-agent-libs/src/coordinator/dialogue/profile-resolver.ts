@@ -7,7 +7,11 @@ import type {
   WorkerProfile,
   WorkerProfileSummary,
 } from '@mcp-abap-adt/llm-agent';
-import { SmartAgentError, terminalRunError } from '@mcp-abap-adt/llm-agent';
+import {
+  contextExceededError,
+  SmartAgentError,
+  terminalRunError,
+} from '@mcp-abap-adt/llm-agent';
 import { z } from 'zod';
 import { optionalDeadlineMs } from '../optional-deadline.js';
 
@@ -106,6 +110,7 @@ export class ProfileResolver {
     } catch (error) {
       const reason = options?.signal?.reason;
       const terminal =
+        contextExceededError(reason) ??
         terminalRunError(error) ??
         (reason instanceof SmartAgentError
           ? terminalRunError(reason)

@@ -1,6 +1,11 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import type { ITextLogger, McpConnectionConfig } from '@mcp-abap-adt/llm-agent';
+import {
+  type ITextLogger,
+  type McpConnectionConfig,
+  McpError,
+  MODEL_CONTEXT_EXCEEDED,
+} from '@mcp-abap-adt/llm-agent';
 import { LazyConnectionStrategy } from './lazy-connection-strategy.js';
 
 function recordingTextLogger(): {
@@ -47,3 +52,29 @@ describe('LazyConnectionStrategy with a text logger', () => {
     );
   });
 });
+
+for (const operation of ['connection', 'health check']) {
+  it(`lazy MCP discovery surfaces overflow from ${operation}`, async () => {
+    const overflow = new McpError('Prompt too long', MODEL_CONTEXT_EXCEEDED);
+    const strategy = new LazyConnectionStrategy(
+      [{ type: 'stdio', command: 'unused' }],
+      {},
+      async () => {
+        if (operation === 'connection')
+          throw new Error('Connect failed', { cause: overflow });
+        return {
+          client: {
+            async listTools() {
+              return { ok: false, error: overflow };
+            },
+            async callTool() {
+              return { ok: true, value: { content: 'ok' } };
+            },
+          },
+        };
+      },
+    );
+    if (operation === 'health check') await strategy.resolve([]);
+    await assert.rejects(strategy.resolve([]), (error) => error === overflow);
+  });
+}

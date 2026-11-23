@@ -1,5 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import type { ILlm, IModelResolver } from '@mcp-abap-adt/llm-agent';
+import type { ILlm, IModelResolver, LlmError } from '@mcp-abap-adt/llm-agent';
+import { contextExceededError } from '@mcp-abap-adt/llm-agent';
 import type {
   SmartAgent,
   SmartAgentReconfigureOptions,
@@ -185,21 +186,30 @@ export async function handleConfigUpdate(
       ];
       for (const [name, llm] of checks) {
         if (!llm) continue;
-        const probe = await llm.chat(
-          [{ role: 'user', content: 'Reply with OK' }],
-          undefined,
-          { maxTokens: 10 },
-        );
-        if (!probe.ok) {
-          res.writeHead(400, { 'Content-Type': 'application/json' });
-          res.end(
-            jsonError(
-              `model "${name}" is not available: ${probe.error.message}`,
-              'invalid_request_error',
-            ),
+        let failure: LlmError;
+        try {
+          const probe = await llm.chat(
+            [{ role: 'user', content: 'Reply with OK' }],
+            undefined,
+            { maxTokens: 10 },
           );
-          return;
+          if (probe.ok) continue;
+          failure = probe.error;
+        } catch (error) {
+          const terminal = contextExceededError(error);
+          if (!terminal) throw error;
+          failure = terminal;
         }
+        const terminal = contextExceededError(failure);
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(
+          jsonError(
+            `model "${name}" is not available: ${terminal?.message ?? failure.message}`,
+            'invalid_request_error',
+            terminal?.code,
+          ),
+        );
+        return;
       }
     }
   }

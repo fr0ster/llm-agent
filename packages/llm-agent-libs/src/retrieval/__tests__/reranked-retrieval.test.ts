@@ -4,8 +4,11 @@ import {
   type IQueryEmbedding,
   type IRag,
   type IReranker,
+  LlmError,
+  MODEL_CONTEXT_EXCEEDED,
   RagError,
   type RagResult,
+  terminalRunError,
 } from '@mcp-abap-adt/llm-agent';
 import { RerankAllRetrieval, RerankedRetrieval } from '../index.js';
 
@@ -78,7 +81,7 @@ describe('RerankedRetrieval', () => {
     const reranker: IReranker = {
       rerank: async () => ({
         ok: false,
-        error: new RagError('down', 'RERANK_ERROR'),
+        error: new RagError('down', 'ABORTED'),
       }),
     };
     const r = await new RerankedRetrieval(reranker, {
@@ -97,7 +100,7 @@ describe('RerankedRetrieval', () => {
         {
           store: 'tools',
           strategy: 'rerank',
-          code: 'RERANK_ERROR',
+          code: 'ABORTED',
           message: 'down',
         },
       ],
@@ -120,12 +123,34 @@ describe('RerankedRetrieval', () => {
     assert.ok(!r.ok);
   });
 
+  for (const failure of ['returned', 'thrown']) {
+    it(`propagates a ${failure} terminal rerank failure`, async () => {
+      const { store } = fakeStore([hit('a', 0.9)]);
+      const terminal = new LlmError(
+        'Prompt is too long',
+        MODEL_CONTEXT_EXCEEDED,
+      );
+      const error = Object.assign(new RagError('down', 'RERANK_ERROR'), {
+        cause: terminal,
+      });
+      const reranker: IReranker = {
+        async rerank() {
+          if (failure === 'thrown') throw terminal;
+          return { ok: false, error };
+        },
+      };
+      const r = await new RerankedRetrieval(reranker).retrieve(store, q, 1);
+      assert.ok(!r.ok);
+      assert.equal(terminalRunError(r.error), terminal);
+    });
+  }
+
   it('a throwing reranker is treated as a failure', async () => {
     const { store } = fakeStore([hit('a', 0.9)]);
     const steps: Array<[string, Record<string, unknown>]> = [];
     const r = await new RerankedRetrieval({
       rerank: async () => {
-        throw new Error('boom');
+        throw new RagError('boom', 'CONFIG_ERROR');
       },
     }).retrieve(store, q, 1, {
       sessionLogger: {
@@ -138,7 +163,7 @@ describe('RerankedRetrieval', () => {
       ['a'],
     );
     assert.equal(steps[0][1].code, 'RERANK_THROWN');
-    assert.equal(steps[0][1].message, 'Error: boom');
+    assert.equal(steps[0][1].message, 'RagError: boom');
   });
 
   it('truncates a thrown error to 500 characters in the step', async () => {

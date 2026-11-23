@@ -27,6 +27,7 @@ describe('RetryLlm — mid-stream retry', () => {
       'ABORTED',
       'CREDENTIALS_REJECTED',
       'LLM_OUTPUT_TRUNCATED',
+      'MODEL_CONTEXT_EXCEEDED',
       'CONFIG_ERROR',
     ]) {
       const error = Object.assign(new LlmError('SSE stream failure', code), {

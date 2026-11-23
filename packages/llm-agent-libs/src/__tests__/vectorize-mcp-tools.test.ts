@@ -23,13 +23,46 @@ import {
   CircuitBreaker,
   CircuitBreakerEmbedder,
   composeResilientEmbedder,
+  InMemoryRag,
+  IntentEnricher,
+  LlmError,
   McpError,
+  MODEL_CONTEXT_EXCEEDED,
+  RagError,
   symmetricEmbedder,
   toolNameFromRecord,
 } from '@mcp-abap-adt/llm-agent';
 
 // Import from the new module path (RED until 2b)
+import { NoopRequestLogger } from '../logger/noop-request-logger.js';
 import { vectorizeMcpTools } from '../mcp/vectorize-mcp-tools.js';
+import { makeLlm, makeMcpClient } from '../testing/index.js';
+
+for (const thrown of [false, true]) {
+  it(`tool vectorization stops on ${thrown ? 'thrown' : 'returned'} context overflow`, async () => {
+    let calls = 0;
+    const error = new LlmError('Prompt too long', MODEL_CONTEXT_EXCEEDED);
+    const model = makeLlm([]);
+    model.chat = async () => {
+      calls++;
+      if (thrown) throw error;
+      return { ok: false, error };
+    };
+    const rag = new InMemoryRag({
+      documentEnrichers: [new IntentEnricher(model)],
+    });
+    await assert.rejects(
+      vectorizeMcpTools(
+        [makeClient([makeTool('First'), makeTool('Second')])],
+        rag,
+        new CapturingRequestLogger(),
+        undefined,
+      ),
+      { code: MODEL_CONTEXT_EXCEEDED },
+    );
+    assert.equal(calls, 1);
+  });
+}
 
 // ---------------------------------------------------------------------------
 // Helpers / stubs
@@ -415,6 +448,51 @@ describe('vectorizeMcpTools summary', () => {
 // ---------------------------------------------------------------------------
 
 describe('vectorizeMcpTools bulk upsert', () => {
+  for (const reject of [false, true]) {
+    it(`falls back from ${reject ? 'rejected' : 'returned'} ABORTED and records failed single writes`, async () => {
+      const aborted = new RagError('Write aborted', 'ABORTED');
+      let bulkCalls = 0;
+      const writes: string[] = [];
+      const rag = new InMemoryRag();
+      const writer: IRagBackendWriter = {
+        ...rag.writer(),
+        async upsertManyPrecomputedRaw() {
+          bulkCalls++;
+          if (reject) throw aborted;
+          return { ok: false, error: aborted };
+        },
+        async upsertPrecomputedRaw(id) {
+          writes.push(id);
+          if (id === 'tool:bad') {
+            if (reject) throw aborted;
+            return { ok: false, error: aborted };
+          }
+          return { ok: true, value: undefined };
+        },
+      };
+      const summary = await vectorizeMcpTools(
+        [
+          makeMcpClient(
+            ['bad', 'good'].map((name) => ({
+              name,
+              description: name,
+              inputSchema: {},
+            })),
+          ),
+        ],
+        Object.assign(rag, {
+          embedder: symmetricEmbedder(makeBatchEmbedder()),
+          writer: () => writer,
+        }),
+        new NoopRequestLogger(),
+        undefined,
+      );
+      assert.equal(bulkCalls, 1);
+      assert.deepEqual(writes, ['tool:bad', 'tool:good']);
+      assert.deepEqual(summary?.failed, ['bad']);
+      assert.equal(summary?.vectorized, 1);
+    });
+  }
   it('uses one bulk call instead of one write per tool', async () => {
     const writer = makeWriter({ hasBatchRaw: true, hasBulk: true });
     const rag = makeRagWithEmbedder(makeBatchEmbedder(), writer);
@@ -845,3 +923,23 @@ it('bulk MCP writes store every description fragment through the configured inpu
     fragments.map((_, index) => [index + 1]),
   );
 });
+
+for (const rejects of [false, true]) {
+  it(`tool vectorization propagates ${rejects ? 'rejected' : 'returned'} overflow during discovery`, async () => {
+    const overflow = new McpError('Prompt too long', MODEL_CONTEXT_EXCEEDED);
+    const client = makeMcpClient([]);
+    client.listTools = async () => {
+      if (rejects) throw new Error('Catalog failed', { cause: overflow });
+      return { ok: false, error: overflow };
+    };
+    await assert.rejects(
+      vectorizeMcpTools(
+        [client],
+        new InMemoryRag(),
+        new NoopRequestLogger(),
+        undefined,
+      ),
+      (error) => error === overflow,
+    );
+  });
+}

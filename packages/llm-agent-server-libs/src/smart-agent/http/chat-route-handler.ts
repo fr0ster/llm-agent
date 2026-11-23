@@ -3,6 +3,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { RagCaller } from '@mcp-abap-adt/llm-agent';
 import {
   buildExternalResults,
+  contextExceededError,
   type IModelProvider,
   type IRequestLogger,
   type Message,
@@ -26,6 +27,7 @@ import {
   jsonValidationError,
   mapStopReason,
   readBody,
+  streamWithContextOverflow,
 } from './response-helpers.js';
 import { attachSseKeepAlive } from './sse-heartbeat.js';
 
@@ -316,10 +318,23 @@ export async function handleChat(
     } | null = null;
 
     try {
-      for await (const chunk of stream) {
+      for await (const chunk of streamWithContextOverflow(stream)) {
         if (!canWrite(res, abort.signal)) break;
         keepAlive.reset();
         if (!chunk.ok) {
+          const terminal = contextExceededError(chunk.error);
+          if (terminal) {
+            res.end(
+              `data: ${jsonError(terminal.message, 'invalid_request_error', terminal.code)}\n\n`,
+            );
+            log({
+              event: 'request_done',
+              ok: false,
+              stream: true,
+              durationMs: Date.now() - t0,
+            });
+            return;
+          }
           const errorChunk = {
             id,
             object: 'chat.completion.chunk',
@@ -476,6 +491,19 @@ export async function handleChat(
     return;
   }
   log({ event: 'request_done', ok: result.ok, durationMs: Date.now() - t0 });
+  if (!result.ok) {
+    const terminal = contextExceededError(result.error);
+    if (terminal) {
+      res.writeHead(400, {
+        'Content-Type': 'application/json',
+        ...invalidToolsHeader,
+      });
+      res.end(
+        jsonError(terminal.message, 'invalid_request_error', terminal.code),
+      );
+      return;
+    }
+  }
   const finalContent = result.ok
     ? result.value.content || (result.value.toolCalls ? null : '(no response)')
     : `Error: ${result.error.message}`;

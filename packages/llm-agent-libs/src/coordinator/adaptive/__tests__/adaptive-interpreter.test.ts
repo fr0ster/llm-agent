@@ -11,7 +11,11 @@ import type {
   StepStatus,
   WorkStep,
 } from '@mcp-abap-adt/llm-agent';
-import { McpError } from '@mcp-abap-adt/llm-agent';
+import {
+  LlmError,
+  McpError,
+  MODEL_CONTEXT_EXCEEDED,
+} from '@mcp-abap-adt/llm-agent';
 import { DirectLlmSubAgent } from '../../../subagent/direct-llm-subagent.js';
 import {
   type AdaptiveRunInput,
@@ -88,6 +92,45 @@ function setup(
 }
 const verdict = (value = 'pass', reason = 'ok') =>
   JSON.stringify({ verdict: value, reason });
+
+for (const path of ['worker', 'check', 'revise', 'report']) {
+  for (const overflow of [true, false]) {
+    test(`adaptive ${path} preserves ${overflow ? 'overflow' : 'abort'} when the signal is aborted during the call`, async () => {
+      const abort = new AbortController();
+      const cancelled = new Error('Cancelled');
+      const failure = overflow
+        ? new LlmError('Prompt too long', MODEL_CONTEXT_EXCEEDED)
+        : new LlmError('Request rejected', 'LLM_HTTP_ERROR');
+      const fail = () => {
+        abort.abort(cancelled);
+        throw failure;
+      };
+      const steps: AdaptiveStep[] =
+        path === 'check'
+          ? [{ ...check, worker: 'self' }]
+          : path === 'revise'
+            ? [{ id: 'revise', kind: 'revise', reason: 'Revise' }]
+            : [work, answer];
+      const { input, controller } = setup(steps, [fail]);
+      input.signal = abort.signal;
+      if (path === 'check') controller.check = async () => fail();
+      if (path === 'revise') controller.revise = async () => fail();
+      if (path === 'report') {
+        input.budget.maxSteps = 0;
+        controller.report = async () => fail();
+      }
+
+      if (overflow) {
+        assert.equal((await runAdaptivePlan(input)).error, failure);
+      } else {
+        await assert.rejects(
+          runAdaptivePlan(input),
+          (error) => error === cancelled,
+        );
+      }
+    });
+  }
+}
 
 test('an MCP tool failure goes through check and fix with an alternative worker', async () => {
   const error = new McpError('Tool failed', 'MCP_ERROR');

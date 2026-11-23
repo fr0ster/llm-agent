@@ -28,6 +28,7 @@ import type {
 import {
   assertClientDescriptors,
   buildNamespacedTools,
+  contextExceededError,
   DefaultWaitStrategy,
   defaultToolNamespace,
   defaultToolRecordKey,
@@ -91,6 +92,10 @@ async function writeOne(
     vector && writer.upsertPrecomputedRaw
       ? await writer.upsertPrecomputedRaw(id, text, vector, metadata, options)
       : await writer.upsertRaw(id, text, metadata, options);
+  if (result && !result.ok) {
+    const terminal = contextExceededError(result.error);
+    if (terminal) throw terminal;
+  }
   const ok = result?.ok === true;
   if (ok && vector === undefined) {
     const est = Math.ceil(text.length / 4);
@@ -199,11 +204,15 @@ export async function vectorizeMcpTools(
       try {
         const toolsResult = await adapter.listTools(options);
         if (!toolsResult.ok) {
+          const overflow = contextExceededError(toolsResult.error);
+          if (overflow) throw overflow;
           acc.clientFailures++;
           continue;
         }
         clientTools = toolsResult.value;
-      } catch {
+      } catch (error) {
+        const overflow = contextExceededError(error);
+        if (overflow) throw overflow;
         acc.clientFailures++;
         continue;
       }
@@ -308,6 +317,8 @@ export async function vectorizeMcpTools(
         detail: 'tools',
       });
     } catch (err) {
+      const overflow = contextExceededError(err);
+      if (overflow) throw overflow;
       // Falls through to the sequential path below. Chunking and retry
       // already ran inside the embedder, so reaching here means the
       // provider is genuinely unusable for batch work.
@@ -325,25 +336,30 @@ export async function vectorizeMcpTools(
   const written: boolean[] = new Array(tools.length).fill(false);
   if (vectors && writer.upsertManyPrecomputedRaw) {
     const precomputed = vectors;
-    const bulk = await writer
-      .upsertManyPrecomputedRaw(
-        tools.map((t, i) => ({
-          id: ids[i],
-          text: texts[i],
-          vector: precomputed[i],
-          // Store the EXPOSED name so retrieval recovers it via
-          // toolNameFromRecord, independent of the key scheme.
-          metadata: { name: t.name },
-        })),
-        options,
-      )
-      .catch((err: unknown) => ({
-        ok: false as const,
-        error: err instanceof Error ? err : new Error(String(err)),
-      }));
-    if (bulk.ok) {
+    const bulkWrite = writer.upsertManyPrecomputedRaw(
+      tools.map((t, i) => ({
+        id: ids[i],
+        text: texts[i],
+        vector: precomputed[i],
+        // Store the EXPOSED name so retrieval recovers it via
+        // toolNameFromRecord, independent of the key scheme.
+        metadata: { name: t.name },
+      })),
+      options,
+    );
+    let bulk: Awaited<typeof bulkWrite> | undefined;
+    try {
+      bulk = await bulkWrite;
+    } catch (error) {
+      const overflow = contextExceededError(error);
+      if (overflow) throw overflow;
+    }
+    if (bulk?.ok) {
       written.fill(true);
       bulkWritten = true;
+    } else if (bulk) {
+      const overflow = contextExceededError(bulk.error);
+      if (overflow) throw overflow;
     }
     // else: fall through to the per-tool loop below.
   }
@@ -363,7 +379,9 @@ export async function vectorizeMcpTools(
           { name: tools[i].name },
           options,
         );
-      } catch {
+      } catch (error) {
+        const terminal = contextExceededError(error);
+        if (terminal) throw terminal;
         // A throwing write is this tool's failure, not the client's: the loop
         // continues and the name lands in `failed`.
         ok = false;
@@ -456,7 +474,11 @@ export async function vectorizeSkills(
   const writer = toolsRag.writer?.();
   if (!writer) return;
   const skillsResult = await skillManager.listSkills(options);
-  if (!skillsResult.ok) return;
+  if (!skillsResult.ok) {
+    const overflow = contextExceededError(skillsResult.error);
+    if (overflow) throw overflow;
+    return;
+  }
   // Skills keep their per-item warning: unlike the tool catalog, a skill set is
   // small, so there is no log-flooding problem to solve here, and #236's scope
   // is the tool path.
@@ -474,7 +496,9 @@ export async function vectorizeSkills(
         { name: s.name },
         options,
       );
-    } catch {
+    } catch (error) {
+      const terminal = contextExceededError(error);
+      if (terminal) throw terminal;
       ok = false;
     }
     if (!ok) {

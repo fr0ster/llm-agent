@@ -4,7 +4,7 @@ import { describe, it } from 'node:test';
 import type { IEmbedResult } from '../interfaces/rag.js';
 import { isBatchEmbedder } from '../interfaces/rag.js';
 import type { CallOptions } from '../interfaces/types.js';
-import { RagError } from '../interfaces/types.js';
+import { MODEL_CONTEXT_EXCEEDED, RagError } from '../interfaces/types.js';
 import { extractStatusCode, withRetry } from './retry-embedder.js';
 
 const FAST = { backoffMs: 1 };
@@ -45,6 +45,59 @@ describe('extractStatusCode', () => {
 });
 
 describe('withRetry', () => {
+  it('does not retry a wrapped overflow with a retryable HTTP status', async () => {
+    const overflow = new RagError('Context is full', MODEL_CONTEXT_EXCEEDED);
+    const wrapped = Object.assign(
+      new Error('Embedding failed', { cause: overflow }),
+      {
+        status: 429,
+      },
+    );
+    const inner = new ScriptedEmbedder([wrapped, 'ok']);
+    await assert.rejects(
+      withRetry(inner, { backoffMs: 0 }).embed('x'),
+      (error) => error === wrapped,
+    );
+    assert.equal(inner.calls, 1);
+  });
+
+  it('does not retry an overflow even when its HTTP status is configured for retry', async () => {
+    const overflow = Object.assign(
+      new RagError('Context is full', MODEL_CONTEXT_EXCEEDED),
+      {
+        status: 400,
+      },
+    );
+    const inner = new ScriptedEmbedder([overflow, 'ok']);
+    await assert.rejects(
+      withRetry(inner, { backoffMs: 0, retryOn: [400] }).embed('x'),
+      (error) => error === overflow,
+    );
+    assert.equal(inner.calls, 1);
+  });
+
+  it('preserves overflow when the throttled call also aborts', async () => {
+    const controller = new AbortController();
+    const overflow = Object.assign(
+      new RagError('Context is full', MODEL_CONTEXT_EXCEEDED),
+      {
+        status: 429,
+      },
+    );
+    const retry = withRetry(
+      {
+        async embed() {
+          controller.abort();
+          throw overflow;
+        },
+      },
+      { throttle: { key: 'aborted-embedding-overflow' } },
+    );
+    await assert.rejects(
+      retry.embed('x', { signal: controller.signal }),
+      (error) => error === overflow,
+    );
+  });
   it('retries a 429 and succeeds on the second attempt', async () => {
     const inner = new ScriptedEmbedder([{ status: 429 }, 'ok']);
     const r = await withRetry(inner, FAST).embed('x');

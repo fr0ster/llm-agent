@@ -413,6 +413,10 @@ export class SmartExecutorPlanner implements IControllerPlanner {
         diagnosticCallOptions(options, 'finalizer'),
       );
       logUsage?.('finalizer', res.usage);
+      if (res.kind === 'error') {
+        const terminal = res.contextOverflow;
+        if (terminal) throw terminal;
+      }
       // Finalizer must produce content; an error or tool_call is NOT a successful
       // answer → null so the handler re-asks rather than faking "completed".
       if (res.kind !== 'content') return null;
@@ -465,6 +469,10 @@ export class SmartExecutorPlanner implements IControllerPlanner {
       diagnosticCallOptions(options, 'planner'),
     );
     logUsage?.('planner', res.usage);
+    if (res.kind === 'error') {
+      const terminal = res.contextOverflow;
+      if (terminal) throw terminal;
+    }
     if (res.kind !== 'content') return null;
     return parsePlan(res.content);
   }

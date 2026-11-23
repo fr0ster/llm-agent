@@ -7,6 +7,7 @@ import {
   type ILlm,
   type ISubAgent,
   LlmError,
+  MODEL_CONTEXT_EXCEEDED,
   OrchestratorError,
   SmartAgentError,
 } from '@mcp-abap-adt/llm-agent';
@@ -62,6 +63,39 @@ test('dialogue task result storage preserves terminal failure codes', async () =
   assert.equal(board.get(started.value.id)?.terminalErrorCode, error.code);
 });
 
+test('dialogue task result storage preserves overflow wrapped in a returned abort', async () => {
+  const { caller } = testCallOptions();
+  const overflow = new LlmError('Prompt too long', MODEL_CONTEXT_EXCEEDED);
+  const error = {
+    code: 'aborted' as const,
+    message: 'Cancelled',
+    cause: overflow,
+  };
+  const worker: ISubAgent = {
+    name: 'worker',
+    capabilities: { contextPolicy: 'optional' },
+    async run() {
+      return { output: 'Done' };
+    },
+  };
+  const board = new TaskBoard({
+    caller,
+    workers: new Map([[worker.name, worker]]),
+    resultStore: {
+      async put() {
+        return { ok: false, error };
+      },
+      read: () => assert.fail('unexpected read'),
+    },
+    onEvent() {},
+  });
+  const started = board.start({ worker: worker.name, goal: 'Work' });
+  assert.ok(started.ok);
+  await tick();
+  assert.equal(board.get(started.value.id)?.state, 'failed');
+  assert.equal(board.get(started.value.id)?.terminalErrorCode, overflow.code);
+});
+
 for (const retrieval of ['memory', 'knowledge', 'cancelled'] as const) {
   test(`dialogue planner retrieval preserves terminal failures (${retrieval})`, async () => {
     const error = new LlmError(
@@ -102,6 +136,38 @@ for (const retrieval of ['memory', 'knowledge', 'cancelled'] as const) {
     );
   });
 }
+
+test('planner retrieval reports overflow while another knowledge source is still pending', async () => {
+  const overflow = new LlmError('Prompt too long', MODEL_CONTEXT_EXCEEDED);
+  let started = false;
+  const result = retrievePlannerContext(
+    {
+      plannerKnowledge: [
+        {
+          name: 'pending',
+          search() {
+            started = true;
+            return new Promise(() => {});
+          },
+        },
+        {
+          name: 'overflow',
+          async search() {
+            throw overflow;
+          },
+        },
+      ],
+    },
+    'session',
+    'request',
+    'Work',
+    false,
+    {},
+    () => assert.fail('retrieval should not fall back to empty context'),
+  );
+  await assert.rejects(result, (error) => error === overflow);
+  assert.ok(started);
+});
 
 test('profile lookup keeps an explicit terminal abort', async () => {
   const { caller } = testCallOptions();

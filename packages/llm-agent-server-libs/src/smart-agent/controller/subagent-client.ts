@@ -1,8 +1,9 @@
-import type {
-  CallOptions,
-  ILlm,
-  LlmTool,
-  Message,
+import {
+  type CallOptions,
+  contextExceededError,
+  type ILlm,
+  type LlmTool,
+  type Message,
 } from '@mcp-abap-adt/llm-agent';
 import type { SubagentResult } from './types.js';
 
@@ -52,14 +53,17 @@ export function makeSubagentClient(llm: ILlm): ISubagentClient {
       );
       const r = await llm.chat(messages, tools, options);
       if (!r.ok) {
+        const contextOverflow = contextExceededError(r.error);
+        const message = r.error?.message ?? 'subagent llm error';
         options?.sessionLogger?.logStep(
           `llm_response_${n}`,
-          { error: r.error?.message ?? 'subagent llm error' },
+          { error: message },
           'llm',
         );
         return {
           kind: 'error',
-          error: r.error?.message ?? 'subagent llm error',
+          error: message,
+          ...(contextOverflow && { contextOverflow }),
         };
       }
       const v = r.value;

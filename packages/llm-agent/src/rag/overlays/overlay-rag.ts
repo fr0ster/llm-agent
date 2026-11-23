@@ -1,3 +1,4 @@
+import { collectWithContextOverflow } from '../../errors/collect-with-context-overflow.js';
 import type { IQueryEmbedding } from '../../interfaces/query-embedding.js';
 import type { IRag } from '../../interfaces/rag.js';
 import type {
@@ -18,10 +19,16 @@ export class OverlayRag implements IRag {
     k: number,
     options?: CallOptions,
   ): Promise<Result<RagResult[], RagError>> {
-    const [baseRes, overlayRes] = await Promise.all([
-      this.base.query(embedding, k, options),
-      this.overlay.query(embedding, k, options),
-    ]);
+    const collected = await collectWithContextOverflow(
+      [
+        this.base.query(embedding, k, options),
+        this.overlay.query(embedding, k, options),
+      ],
+      (result) => (result.ok ? undefined : result.error),
+      { rejectImmediately: true },
+    );
+    if (!collected.ok) return collected;
+    const [baseRes, overlayRes] = collected.value;
     if (!baseRes.ok) return baseRes;
     if (!overlayRes.ok) return overlayRes;
 
@@ -52,10 +59,13 @@ export class OverlayRag implements IRag {
   }
 
   async healthCheck(options?: CallOptions): Promise<Result<void, RagError>> {
-    const [a, b] = await Promise.all([
-      this.base.healthCheck(options),
-      this.overlay.healthCheck(options),
-    ]);
+    const checks = await collectWithContextOverflow(
+      [this.base, this.overlay].map((store) => store.healthCheck(options)),
+      (result) => (result.ok ? undefined : result.error),
+      { rejectImmediately: true },
+    );
+    if (!checks.ok) return checks;
+    const [a, b] = checks.value;
     if (!a.ok) return a;
     return b;
   }

@@ -22,7 +22,11 @@ import { denyRagAccess, ownerBoundQuery } from '../../rag/owner-bound-query.js';
  */
 
 import type { CallOptions } from '@mcp-abap-adt/llm-agent';
-import { QueryEmbedding, TextOnlyEmbedding } from '@mcp-abap-adt/llm-agent';
+import {
+  contextExceededError,
+  QueryEmbedding,
+  TextOnlyEmbedding,
+} from '@mcp-abap-adt/llm-agent';
 import { withRelevanceQuery } from '../../retrieval/relevance-query.js';
 import type { ISpan } from '../../tracer/types.js';
 import type { PipelineContext } from '../context.js';
@@ -104,7 +108,10 @@ export class RagQueryHandler implements IStageHandler {
     });
 
     if (!result.ok) {
-      ctx.error = result.error;
+      ctx.error =
+        contextExceededError(result.error) ??
+        contextExceededError(ctx.error) ??
+        result.error;
       return false;
     }
     if (result.ok) {

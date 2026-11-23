@@ -5,6 +5,7 @@ import type {
   KnowledgeEntry,
   KnowledgeFilter,
 } from '@mcp-abap-adt/llm-agent';
+import { contextExceededError } from '@mcp-abap-adt/llm-agent';
 import {
   type KnowledgeBackend,
   matchesKnowledgeFilter,
@@ -72,6 +73,8 @@ export class JsonlKnowledgeBackend implements KnowledgeBackend {
       try {
         await this.semantic.upsert(sid, e, options);
       } catch (err) {
+        const overflow = contextExceededError(err);
+        if (overflow) throw overflow;
         failed = true;
         if (process.env.DEBUG_CONTROLLER)
           console.error(
@@ -109,6 +112,8 @@ export class JsonlKnowledgeBackend implements KnowledgeBackend {
         await this.semantic?.upsert(sid, entry, options);
       } catch (e) {
         this.built.delete(sid);
+        const overflow = contextExceededError(e);
+        if (overflow) throw overflow;
         if (process.env.DEBUG_CONTROLLER)
           console.error(
             `[jsonl-index] upsert failed (will rebuild lazily): ${String(e)}`,

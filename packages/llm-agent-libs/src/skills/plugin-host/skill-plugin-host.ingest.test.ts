@@ -10,7 +10,12 @@ import type {
   SkillIngestResult,
   SkillRecord,
 } from '@mcp-abap-adt/llm-agent';
-import { CatalogCasError, symmetricEmbedder } from '@mcp-abap-adt/llm-agent';
+import {
+  CatalogCasError,
+  MODEL_CONTEXT_EXCEEDED,
+  RagError,
+  symmetricEmbedder,
+} from '@mcp-abap-adt/llm-agent';
 import { makeInMemoryStoreProvider } from './in-memory-store.js';
 import { makeSkillPluginHost } from './skill-plugin-host.js';
 
@@ -491,6 +496,26 @@ test('lost CAS → discard built gens + retry from fresh snapshot, then commit',
   assert.equal(beginCalls, 2); // a FRESH generation per attempt (no reuse)
 });
 
+test('does not retry a catalog conflict that wraps an overflow', async () => {
+  const provider = makeInMemoryStoreProvider({ embed });
+  const overflow = new RagError('Context is full', MODEL_CONTEXT_EXCEEDED);
+  const wrapped = new CatalogCasError('Catalog update failed', {
+    cause: overflow,
+  });
+  let publishCalls = 0;
+  provider.publishCatalog = async () => {
+    publishCalls++;
+    throw wrapped;
+  };
+  const host = makeSkillPluginHost({
+    ...HOST_BASE,
+    storeProvider: provider,
+    sources: [],
+  });
+  await assert.rejects(host.load(), (error) => error === overflow);
+  assert.equal(publishCalls, 1);
+});
+
 // 8 -------------------------------------------------------------------------
 test('exhausted CAS → throw, no orphans', async () => {
   const provider = makeInMemoryStoreProvider({ embed });
@@ -628,3 +653,38 @@ test('ingest: rag(g) is memoised — same reference, and the lazy dimension prob
   await host.rag('c1').query('alpha', { k: 5, threshold: 0 });
   assert.equal(embedCalls - before, 2, 'two query embeds, no repeated probe');
 });
+
+for (const failure of ['source', 'index']) {
+  test(`skills ingestion stops on context overflow from ${failure}`, async () => {
+    const overflow = new RagError('Prompt too long', MODEL_CONTEXT_EXCEEDED);
+    const wrapped = new Error('Skill plugin failure', { cause: overflow });
+    const provider = makeInMemoryStoreProvider({
+      async embed(text) {
+        if (failure === 'index') throw wrapped;
+        return embed(text);
+      },
+    });
+    const host = makeSkillPluginHost({
+      ...HOST_BASE,
+      embedder,
+      storeProvider: provider,
+      sources: [
+        {
+          id: 'source',
+          source: makeStubSource(
+            failure === 'source'
+              ? () => {
+                  throw wrapped;
+                }
+              : {
+                  collections: [info('notes')],
+                  records: [rec('notes:a', 'source', 'notes', 'example')],
+                },
+          ),
+        },
+      ],
+    });
+    await assert.rejects(host.load(), (error) => error === overflow);
+    assert.deepEqual(host.groups(), []);
+  });
+}

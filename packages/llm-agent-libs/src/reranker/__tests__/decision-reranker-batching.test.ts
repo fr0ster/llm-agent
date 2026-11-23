@@ -4,6 +4,8 @@ import {
   DecisionError,
   type DecisionRequest,
   type IDecisionModel,
+  MODEL_CONTEXT_EXCEEDED,
+  RagError,
   type RagResult,
 } from '@mcp-abap-adt/llm-agent';
 import {
@@ -124,4 +126,25 @@ describe('DecisionReranker option validation', () => {
     assert.equal(r.ok, false);
     if (!r.ok) assert.equal(r.error.code, 'RERANK_ERROR');
   });
+});
+
+it('prefers a returned overflow over a rejected batch in the same wave', async () => {
+  const overflow = new RagError('Prompt too long', MODEL_CONTEXT_EXCEEDED);
+  const wrapped = Object.assign(
+    new DecisionError('Decision failed', 'DECISION_UNAVAILABLE'),
+    { cause: overflow },
+  );
+  let calls = 0;
+  const model: IDecisionModel = {
+    async decide() {
+      if (++calls === 1) throw new Error('Decision service unavailable');
+      return { ok: false, error: wrapped };
+    },
+  };
+  const result = await new DecisionReranker(model, {
+    maxBatchTokens: 1_000,
+    concurrency: 2,
+  }).rerank('q', mk(30, 400));
+  assert.deepEqual(result, { ok: false, error: overflow });
+  assert.equal(calls, 2);
 });

@@ -68,6 +68,20 @@ test('a thrown chat failure ends the fallback after one chat attempt', async () 
 });
 
 for (const mode of ['error-chunk', 'throw'] as const) {
+  test(`${mode}: model context overflow spends one stream attempt and no chat attempts`, async () => {
+    const strategy = new FallbackLlmCallStrategy();
+    const { impl, counts } = llm(mode);
+    const error = new LlmError('Prompt is too long', 'MODEL_CONTEXT_EXCEEDED');
+    impl.streamChat = async function* () {
+      counts.stream++;
+      if (mode === 'throw') throw error;
+      yield { ok: false, error };
+    };
+
+    assert.deepEqual(await drain(strategy, impl), [{ ok: false, error }]);
+    assert.deepEqual(counts, { stream: 1, chat: 0 });
+  });
+
   for (const error of [
     new LlmError('Output truncated', 'LLM_OUTPUT_TRUNCATED'),
     new LlmError('Rejected credentials', 'CREDENTIALS_REJECTED'),

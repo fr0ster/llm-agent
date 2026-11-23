@@ -10,6 +10,7 @@ import type {
   SmartAgentResponse,
   StopReason,
 } from '@mcp-abap-adt/llm-agent';
+import { contextExceededError } from '../errors/terminal-run-error.js';
 import {
   AdapterValidationError,
   type ApiRequestContext,
@@ -246,11 +247,13 @@ export class AnthropicApiAdapter implements ILlmApiAdapter {
   // -------------------------------------------------------------------------
 
   formatError(error: OrchestratorError, _context: ApiRequestContext): unknown {
+    const terminal = contextExceededError(error);
     return {
       type: 'error',
       error: {
         type: 'api_error',
-        message: error.message,
+        message: terminal?.message ?? error.message,
+        ...(terminal && { code: terminal.code }),
       },
     };
   }
@@ -316,6 +319,11 @@ export class AnthropicApiAdapter implements ILlmApiAdapter {
     for await (const chunk of source) {
       // Error chunk
       if (!chunk.ok) {
+        const terminal = contextExceededError(chunk.error);
+        if (terminal) {
+          yield sse('error', this.formatError(terminal, context));
+          return;
+        }
         if (!messageStarted) yield emitMessageStart();
         if (blockOpen) yield closeBlock();
 

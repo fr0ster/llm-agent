@@ -11,7 +11,12 @@ import { denyRagAccess, ownerBoundQuery } from '../../rag/owner-bound-query.js';
  * If no `ctx.skillManager` is configured, this handler is a no-op.
  */
 
-import { QueryEmbedding, TextOnlyEmbedding } from '@mcp-abap-adt/llm-agent';
+import {
+  collectWithContextOverflow,
+  contextExceededError,
+  QueryEmbedding,
+  TextOnlyEmbedding,
+} from '@mcp-abap-adt/llm-agent';
 import type { ISpan } from '../../tracer/types.js';
 import type { PipelineContext } from '../context.js';
 import type { IStageHandler } from '../stage-handler.js';
@@ -44,7 +49,7 @@ export class SkillSelectHandler implements IStageHandler {
       const embedding = ctx.embedder
         ? new QueryEmbedding(queryText, ctx.embedder, ctx.options)
         : new TextOnlyEmbedding(queryText);
-      const queryResults = await Promise.all(
+      const queries = await collectWithContextOverflow(
         storeEntries.map(([, store]) =>
           ownerBoundQuery(
             store,
@@ -54,8 +59,14 @@ export class SkillSelectHandler implements IStageHandler {
             ctx.ragAccess ?? denyRagAccess,
           ),
         ),
+        (result) => (result.ok ? undefined : result.error),
+        { rejectImmediately: true },
       );
-      for (const result of queryResults) {
+      if (!queries.ok) {
+        ctx.error = queries.error;
+        return false;
+      }
+      for (const result of queries.value) {
         if (!result.ok) {
           ctx.error = result.error;
           return false;
@@ -80,6 +91,11 @@ export class SkillSelectHandler implements IStageHandler {
 
     const allSkillsResult = await ctx.skillManager.listSkills(ctx.options);
     if (!allSkillsResult.ok) {
+      const overflow = contextExceededError(allSkillsResult.error);
+      if (overflow) {
+        ctx.error = overflow;
+        return false;
+      }
       ctx.options?.sessionLogger?.logStep('skill_select_error', {
         error: allSkillsResult.error.message,
       });
@@ -98,7 +114,13 @@ export class SkillSelectHandler implements IStageHandler {
         ctx.skillArgs || undefined,
         ctx.options,
       );
-      if (contentResult.ok && contentResult.value) {
+      if (!contentResult.ok) {
+        const overflow = contextExceededError(contentResult.error);
+        if (overflow) {
+          ctx.error = overflow;
+          return false;
+        }
+      } else if (contentResult.value) {
         contentParts.push(`### Skill: ${skill.name}\n${contentResult.value}`);
       }
     }

@@ -41,6 +41,7 @@ import type {
 import {
   type AgentCallOptions,
   addCacheTokenUsage,
+  contextExceededError,
   type IQueryExpander,
   isReadinessReporter,
   type LlmUsage,
@@ -88,8 +89,10 @@ export {
 import type { IPipeline } from './interfaces/pipeline.js';
 import type { ILogger } from './logger/index.js';
 import {
+  errorUsage,
   llmWithChatUsage,
   mergeUsageCalls,
+  withUsageAttribution,
   withUsageCalls,
 } from './logger/llm-call-usage.js';
 import { NoopRequestLogger } from './logger/noop-request-logger.js';
@@ -1040,7 +1043,16 @@ export class SmartAgent {
       for await (const chunk of stream) yield chunk;
       rootSpan.setStatus('ok');
     } catch (error) {
-      throw withUsageCalls(error, workerLogger?.usageCalls ?? []);
+      const calls = workerLogger?.usageCalls ?? [];
+      const terminal = contextExceededError(error);
+      if (!terminal) throw withUsageCalls(error, calls);
+      yield {
+        ok: false,
+        error: withUsageCalls(
+          withUsageAttribution(terminal, errorUsage(error)),
+          calls,
+        ),
+      };
     } finally {
       if (ephemeralSession && identity.kind === 'caller') {
         const pendingResults = this.deps.pipeline

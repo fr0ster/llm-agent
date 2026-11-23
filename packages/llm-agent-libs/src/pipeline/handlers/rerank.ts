@@ -13,6 +13,10 @@
  * their ranking, so an explicit strategy wins over the global reranker.
  */
 
+import {
+  collectWithContextOverflow,
+  contextExceededError,
+} from '@mcp-abap-adt/llm-agent';
 import { hasRetrievalStrategy } from '../../retrieval/index.js';
 import type { ISpan } from '../../tracer/types.js';
 import type { PipelineContext } from '../context.js';
@@ -26,7 +30,7 @@ export class RerankHandler implements IStageHandler {
   ): Promise<boolean> {
     const entries = Object.entries(ctx.ragResults);
 
-    const reranked = await Promise.all(
+    const reranked = await collectWithContextOverflow(
       entries.map(async ([name, results]) => {
         const store = ctx.ragStores?.[name];
         if (store && hasRetrievalStrategy(store.rag)) return { name, results };
@@ -37,6 +41,8 @@ export class RerankHandler implements IStageHandler {
             ctx.options,
           );
           if (!rr.ok) {
+            const terminal = contextExceededError(rr.error);
+            if (terminal) throw terminal;
             // Behaviour unchanged (original order), but no longer silent: a
             // reranker that always fails (e.g. a stale key) must be visible.
             span.setAttribute(`${name}.rerank_error`, rr.error.code);
@@ -50,9 +56,12 @@ export class RerankHandler implements IStageHandler {
         }
         return { name, results };
       }),
+      undefined,
+      { rejectImmediately: true },
     );
 
-    for (const { name, results } of reranked) {
+    if (!reranked.ok) throw reranked.error;
+    for (const { name, results } of reranked.value) {
       ctx.ragResults[name] = results;
       span.setAttribute(name, results.length);
     }

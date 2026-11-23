@@ -535,7 +535,10 @@ describe('AnthropicApiAdapter.transformStream', () => {
   });
 
   it('handles error chunks with closing events', async () => {
-    const chunks: ChunkResult[] = [ok({ content: 'Start' }), err('LLM failed')];
+    const chunks: ChunkResult[] = [
+      ok({ content: 'Start' }),
+      err('LLM failed', 'ABORTED'),
+    ];
 
     const events = await collectEvents(adapter, chunks, ctx);
 

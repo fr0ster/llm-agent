@@ -11,6 +11,7 @@ import type {
   ToolResult,
   UsageInput,
 } from '@mcp-abap-adt/llm-agent';
+import { contextExceededError } from '@mcp-abap-adt/llm-agent';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
@@ -430,7 +431,9 @@ export class MCPClientWrapper {
 
     try {
       return await performList();
-    } catch (error: unknown) {
+    } catch (error) {
+      const terminal = contextExceededError(error);
+      if (terminal) throw terminal;
       const errorMessage =
         error instanceof Error ? error.message : String(error);
       try {
@@ -440,7 +443,9 @@ export class MCPClientWrapper {
         await this.disconnect();
         await this.connect();
         return await performList();
-      } catch (_retryError) {
+      } catch (error) {
+        const terminal = contextExceededError(error);
+        if (terminal) throw terminal;
         return this.tools; // Return cached tools if reconnect fails
       }
     }
@@ -496,7 +501,9 @@ export class MCPClientWrapper {
           // then retries. Derive from the object BEFORE stripping content.
           isError: obj?.isError === true,
         };
-      } catch (error: unknown) {
+      } catch (error) {
+        const terminal = contextExceededError(error);
+        if (terminal) throw terminal;
         const errorMessage =
           error instanceof Error ? error.message : String(error);
         return {
@@ -540,7 +547,9 @@ export class MCPClientWrapper {
         result: response.content,
         isError: response.isError === true,
       };
-    } catch (error: unknown) {
+    } catch (error) {
+      const terminal = contextExceededError(error);
+      if (terminal) throw terminal;
       // An abort is not a lost connection. The caller has already been
       // answered by the time this runs, so reconnecting and calling again
       // sends a request nobody is waiting for — and on a write tool that is a
@@ -561,7 +570,9 @@ export class MCPClientWrapper {
           result: response.content,
           isError: response.isError === true,
         };
-      } catch (retryError: unknown) {
+      } catch (retryError) {
+        const terminal = contextExceededError(retryError);
+        if (terminal) throw terminal;
         // Same again before the session-recovery attempt.
         if (signal?.aborted) throw retryError;
         // Resume-with-session failed — the server may have dropped the session.
@@ -579,7 +590,9 @@ export class MCPClientWrapper {
               result: response.content,
               isError: response.isError === true,
             };
-          } catch {
+          } catch (error) {
+            const terminal = contextExceededError(error);
+            if (terminal) throw terminal;
             /* fall through to throw */
           }
         }

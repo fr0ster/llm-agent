@@ -8,6 +8,7 @@ import type {
   Result,
 } from '@mcp-abap-adt/llm-agent';
 import {
+  contextExceededError,
   formatTrustTag,
   OrchestratorError,
   terminalRunError,
@@ -844,15 +845,18 @@ export class PlannerToolsClient implements IMcpClient {
       }
     } catch (error) {
       const scope = currentPlannerScope();
+      const overflow = contextExceededError(error);
       const terminal =
-        error instanceof TerminalDialogueError
+        overflow ??
+        (error instanceof TerminalDialogueError
           ? error
-          : terminalRunError(error);
+          : terminalRunError(error));
       if (terminal) {
         if (name === 'plan_create' || name === 'plan_revise')
           scope?.onPlanAuthorError?.(terminal);
         scope?.onTerminalError?.(terminal);
-        if (!scope?.signal?.aborted) return { ok: false, error: terminal };
+        if (overflow || !scope?.signal?.aborted)
+          return { ok: false, error: terminal };
       }
       return textResult(
         {

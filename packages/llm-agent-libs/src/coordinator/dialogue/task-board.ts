@@ -20,7 +20,9 @@ import type {
   WorkerProfileSummary,
 } from '@mcp-abap-adt/llm-agent';
 import {
+  contextExceededError,
   createDialogueTaskContext,
+  MODEL_CONTEXT_EXCEEDED,
   normalizeToolTrace,
   SmartAgentError,
   ToolTraceCollector,
@@ -507,13 +509,14 @@ export class TaskBoard {
         kind = 'failed';
       } else kind = result.stopped === true ? 'stopped' : 'done';
     } catch (error) {
-      if (hard.signal.aborted) {
+      const overflow = contextExceededError(error);
+      if (!overflow && hard.signal.aborted) {
         kind = 'stopped';
         task.error = `stopped: in-flight work aborted after ${this.hardStopAfterMs} ms`;
-      } else if (task.state === 'stopped') kind = 'stopped';
+      } else if (!overflow && task.state === 'stopped') kind = 'stopped';
       else {
         kind = 'failed';
-        const terminal = terminalRunError(error);
+        const terminal = overflow ?? terminalRunError(error);
         if (terminal) task.terminalErrorCode = terminal.code;
         task.error =
           terminal?.message ??
@@ -592,7 +595,14 @@ export class TaskBoard {
               ),
             ),
           ]);
-          if (
+          const overflow = stored.ok
+            ? undefined
+            : contextExceededError(stored.error);
+          if (overflow) {
+            kind = 'failed';
+            task.terminalErrorCode = overflow.code;
+            task.error = overflow.message;
+          } else if (
             abortedDuringPut ||
             (!stored.ok && stored.error.code === 'aborted')
           ) {
@@ -604,7 +614,12 @@ export class TaskBoard {
             task.error = `result storage failed: ${stored.error.message}`;
           }
         } catch (error) {
-          if (abortedDuringPut) interrupted = kind !== 'stopped';
+          const overflow = contextExceededError(error);
+          if (overflow) {
+            kind = 'failed';
+            task.terminalErrorCode = overflow.code;
+            task.error = overflow.message;
+          } else if (abortedDuringPut) interrupted = kind !== 'stopped';
           else if (kind === 'done') {
             kind = 'failed';
             const terminal = terminalRunError(error);
@@ -721,6 +736,16 @@ export class TaskBoard {
   findTerminalError(
     ownsTask: (id: string) => boolean,
   ): SmartAgentError | undefined {
+    for (const task of this.records.values()) {
+      if (
+        task.terminalErrorCode === MODEL_CONTEXT_EXCEEDED &&
+        ownsTask(task.id)
+      )
+        return new TerminalDialogueError(
+          task.error ?? MODEL_CONTEXT_EXCEEDED,
+          MODEL_CONTEXT_EXCEEDED,
+        );
+    }
     for (const task of this.records.values()) {
       if (task.terminalErrorCode !== undefined && ownsTask(task.id))
         return new TerminalDialogueError(

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { request } from 'node:http';
 import { describe, it } from 'node:test';
 import type { CallOptions, ILlm } from '@mcp-abap-adt/llm-agent';
+import { LlmError, MODEL_CONTEXT_EXCEEDED } from '@mcp-abap-adt/llm-agent';
 import { makeLlm } from '@mcp-abap-adt/llm-agent-libs/testing';
 import { constructionSeams } from './construction-seams.js';
 import { TestSmartServer as SmartServer } from './rag-identity-fixture.js';
@@ -57,6 +58,110 @@ function makeServer() {
       makeLlm: async () => makeLlm([{ content: 'hello there' }]),
     },
   );
+}
+
+for (const thrown of [false, true]) {
+  it(`/health preserves ${thrown ? 'thrown' : 'returned'} context overflow from the chat probe`, async () => {
+    let calls = 0;
+    const error = new LlmError('Prompt is too long', MODEL_CONTEXT_EXCEEDED);
+    const llm: ILlm = {
+      ...makeLlm([]),
+      healthCheck: undefined,
+      async chat() {
+        calls++;
+        if (thrown) throw error;
+        return { ok: false, error };
+      },
+    };
+    const server = new SmartServer(
+      {
+        port: 0,
+        llm: { provider: 'deepseek', model: 'test-model' },
+        skipModelValidation: true,
+      },
+      { ...constructionSeams, makeLlm: async () => llm },
+    );
+    const handle = await server.start();
+    try {
+      const result = await httpRequest(handle.port, 'GET', '/health');
+      assert.equal(calls, 1);
+      assert.equal(result.status, 400);
+      assert.match(result.raw, /"code":"MODEL_CONTEXT_EXCEEDED"/);
+    } finally {
+      await handle.close();
+    }
+  });
+}
+
+for (const path of ['/v1/chat/completions', '/v1/messages']) {
+  for (const stream of [false, true]) {
+    for (const thrown of [false, true]) {
+      for (const code of [MODEL_CONTEXT_EXCEEDED, 'LLM_ERROR']) {
+        it(`${path} handles ${thrown ? 'thrown' : 'returned'} ${code} (stream=${stream})`, async () => {
+          let calls = 0;
+          const failure = new LlmError('Request failed', code);
+          const error = Object.assign(new LlmError('Provider wrapper'), {
+            cause: failure,
+          });
+          const llm: ILlm = {
+            ...makeLlm([]),
+            async chat() {
+              calls++;
+              if (code !== MODEL_CONTEXT_EXCEEDED) {
+                return {
+                  ok: true,
+                  value: { content: 'Fallback answer', finishReason: 'stop' },
+                };
+              }
+              if (thrown) throw error;
+              return { ok: false, error };
+            },
+            async *streamChat() {
+              calls++;
+              if (thrown) throw error;
+              yield { ok: false, error };
+            },
+          };
+          const server = new SmartServer(
+            {
+              port: 0,
+              llm: { provider: 'deepseek', model: 'test-model' },
+              skipModelValidation: true,
+              agent: {
+                classificationEnabled: false,
+                llmCallStrategy: 'fallback',
+              },
+            },
+            { ...constructionSeams, makeLlm: async () => llm },
+          );
+          const handle = await server.start();
+          try {
+            const result = await httpRequest(handle.port, 'POST', path, {
+              model: 'test-model',
+              max_tokens: 128,
+              messages: [{ role: 'user', content: 'hi' }],
+              stream,
+            });
+            if (code !== MODEL_CONTEXT_EXCEEDED) {
+              assert.equal(calls, 2);
+              assert.equal(result.status, 200);
+              assert.match(result.raw, /Fallback answer/);
+              return;
+            }
+            assert.equal(calls, 1);
+            assert.equal(result.status, stream ? 200 : 400);
+            assert.match(result.raw, /"code":"MODEL_CONTEXT_EXCEEDED"/);
+            assert.doesNotMatch(
+              result.raw,
+              /"finish_reason":"stop"|"stop_reason":"end_turn"/,
+            );
+          } finally {
+            await handle.close();
+          }
+        });
+      }
+    }
+  }
 }
 
 describe('SmartServer — POST /v1/chat/completions (handler body)', () => {

@@ -5,6 +5,7 @@
 import type { IMcpClient } from '@mcp-abap-adt/llm-agent';
 import {
   type CallOptions,
+  contextExceededError,
   type McpContentBlock,
   McpError,
   type McpTool,
@@ -49,7 +50,7 @@ export class McpClientAdapter implements IMcpClient {
       this.toolsCache = tools;
       return { ok: true, value: tools };
     } catch (err) {
-      return { ok: false, error: toMcpError(err) };
+      return { ok: false, error: contextExceededError(err) ?? toMcpError(err) };
     }
   }
 
@@ -69,7 +70,7 @@ export class McpClientAdapter implements IMcpClient {
       return { ok: true, value: true };
     } catch (err) {
       this.lastHealthy = false;
-      return { ok: false, error: toMcpError(err) };
+      return { ok: false, error: contextExceededError(err) ?? toMcpError(err) };
     }
   }
 
@@ -132,7 +133,7 @@ export class McpClientAdapter implements IMcpClient {
         },
       };
     } catch (err) {
-      return { ok: false, error: toMcpError(err) };
+      return { ok: false, error: contextExceededError(err) ?? toMcpError(err) };
     }
   }
 }

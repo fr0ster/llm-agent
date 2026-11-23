@@ -1,4 +1,8 @@
-import type { IMcpFailureClassifier, McpError } from '@mcp-abap-adt/llm-agent';
+import {
+  contextExceededError,
+  type IMcpFailureClassifier,
+  type McpError,
+} from '@mcp-abap-adt/llm-agent';
 import { DefaultMcpFailureClassifier } from '@mcp-abap-adt/llm-agent-mcp';
 
 // Loose over the exact tool-result shape (callTool's Result error is structurally
@@ -31,6 +35,8 @@ export async function classifyToolResult(
   probeHealth?: () => Promise<boolean>,
 ): Promise<ToolResultDecision> {
   if (!res.ok) {
+    const overflow = contextExceededError(res.error);
+    if (overflow) throw overflow;
     const kind = await classifier.classify(res.error as McpError, probeHealth);
     if (kind === 'unavailable') return { escalate: res.error as McpError };
     return { text: res.error.message };

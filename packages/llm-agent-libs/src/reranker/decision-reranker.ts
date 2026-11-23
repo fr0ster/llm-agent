@@ -1,5 +1,7 @@
 import {
   type CallOptions,
+  collectWithContextOverflow,
+  contextExceededError,
   type DecisionAnswer,
   type DecisionEntry,
   formatTrustTag,
@@ -113,12 +115,15 @@ export class DecisionReranker implements IReranker {
     const answers: Record<string, DecisionAnswer> = {};
     for (let s = 0; s < batches.length; s += concurrency) {
       const slice = batches.slice(s, s + concurrency);
-      const settled = await Promise.all(
+      const batch = await collectWithContextOverflow(
         slice.map((idxs) =>
           this.runBatch(query, results, idxs, task, criteria, options),
         ),
+        (result) => (result.ok ? undefined : result.error),
+        { rejectImmediately: true },
       );
-      for (const res of settled) {
+      if (!batch.ok) return batch;
+      for (const res of batch.value) {
         if (!res.ok) return res;
         Object.assign(answers, res.value);
       }
@@ -166,10 +171,12 @@ export class DecisionReranker implements IReranker {
     if (!res.ok) {
       return {
         ok: false,
-        error: new RagError(
-          `decision rerank failed: ${res.error.code}: ${res.error.message}`,
-          'RERANK_ERROR',
-        ),
+        error:
+          contextExceededError(res.error) ??
+          new RagError(
+            `decision rerank failed: ${res.error.code}: ${res.error.message}`,
+            'RERANK_ERROR',
+          ),
       };
     }
     return { ok: true, value: res.value.answers };

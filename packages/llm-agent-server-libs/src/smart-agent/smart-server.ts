@@ -55,6 +55,8 @@ import {
   asymmetricEmbedder,
   buildNamespacedTools,
   CircuitBreaker,
+  contextExceededError,
+  contextOverflowInSettled,
   defaultToolNamespace,
   type IAuxiliaryMcpTools,
   type IDecisionModel,
@@ -778,6 +780,8 @@ export function buildMcpBridge(
         : undefined;
       const listed = await client.listTools(opts);
       if (!listed.ok) {
+        const terminal = contextExceededError(listed.error);
+        if (terminal) throw terminal;
         // FAIL LOUD on an availability failure: a transient listTools() outage must
         // NOT make the tool look merely absent (→ "Tool not found"/tool-blind). A
         // benign error (this client genuinely can't list) falls through to the next.
@@ -789,6 +793,8 @@ export function buildMcpBridge(
       if (!owns) continue;
       const result = await client.callTool(name, safeArgs, opts);
       if (!result.ok) {
+        const terminal = contextExceededError(result.error);
+        if (terminal) throw terminal;
         // Availability failure → fail loud; a tool-level error → LLM feedback
         // text WITH isError:true so the caller can see it failed (#213).
         if ((await classifier.classify(result.error, probe)) === 'unavailable')
@@ -2131,8 +2137,18 @@ export class SmartServer {
         adapterMap,
       ).catch((err) => {
         if (!res.headersSent) {
-          res.writeHead(500, { 'Content-Type': 'application/json' });
-          res.end(jsonError(String(err), 'server_error'));
+          const terminal = contextExceededError(err);
+          const contextExceeded = terminal !== undefined;
+          res.writeHead(contextExceeded ? 400 : 500, {
+            'Content-Type': 'application/json',
+          });
+          res.end(
+            jsonError(
+              terminal?.message ?? String(err),
+              contextExceeded ? 'invalid_request_error' : 'server_error',
+              terminal?.code,
+            ),
+          );
         }
       }),
     );
@@ -2677,20 +2693,18 @@ export class SmartServer {
       this._sharedMcpClientDescriptors,
       'SmartServer',
     );
-    const settled = await Promise.all(
-      clients.map(async (client) => {
-        try {
-          const result = await client.listTools();
-          return result.ok
-            ? { ok: true as const, value: result.value }
-            : { ok: false as const };
-        } catch {
-          return { ok: false as const };
-        }
-      }),
+    const listings = await Promise.allSettled(
+      clients.map(async (client) => client.listTools()),
+    );
+    const overflow = contextOverflowInSettled(listings, (result) =>
+      result.ok ? undefined : result.error,
+    );
+    if (overflow) throw overflow;
+    const settled = listings.map((entry) =>
+      entry.status === 'fulfilled' ? entry.value : undefined,
     );
     const perClient: NamespaceClientInput[] = settled.flatMap((entry, i) => {
-      if (!entry.ok) return [];
+      if (!entry?.ok) return [];
       return [
         {
           slotIndex: descs[i]?.slotIndex ?? i,
@@ -2708,7 +2722,7 @@ export class SmartServer {
     // vectorizeMcpTools's `clientFailures` reporting), never a silent drop —
     // this snapshot is the ONLY source when there is no writable tools RAG,
     // in which case vectorizeMcpTools never runs and never logs either.
-    const clientFailures = settled.filter((entry) => !entry.ok).length;
+    const clientFailures = settled.filter((entry) => !entry?.ok).length;
     if (clientFailures > 0) {
       this.cfg.log?.({
         event: 'authoritative_snapshot_client_failures',

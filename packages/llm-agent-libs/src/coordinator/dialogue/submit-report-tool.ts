@@ -1,5 +1,6 @@
 import {
   type CallOptions,
+  contextExceededError,
   finishDialogueTask,
   type IMcpClient,
   type LlmTool,
@@ -95,6 +96,10 @@ export async function withSubmitReport(
       ];
     }
     const listed = await client.listTools(options);
+    if (!listed.ok) {
+      const overflow = contextExceededError(listed.error);
+      if (overflow) throw overflow;
+    }
     const tool = listed.ok
       ? listed.value.find((candidate) => candidate.name === 'submit_report')
       : undefined;

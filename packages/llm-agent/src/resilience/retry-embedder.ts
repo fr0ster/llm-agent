@@ -8,6 +8,7 @@
  * batch-capable to isBatchEmbedder.
  */
 
+import { contextExceededError } from '../errors/terminal-run-error.js';
 import type {
   IEmbedder,
   IEmbedderBatch,
@@ -142,6 +143,7 @@ export class RetryEmbedder implements IEmbedder {
               usageOp: withOuterAttempt(op, physicalAttempt++),
             });
           } catch (error) {
+            if (contextExceededError(error)) throw error;
             // The ordinary retry loop reaches its abort check after a retryable
             // failure with attempts left. Keep that outcome and the caller reason.
             if (
@@ -186,6 +188,7 @@ export class RetryEmbedder implements IEmbedder {
           usageOp: withOuterAttempt(op, attempt),
         });
       } catch (err) {
+        if (contextExceededError(err)) throw err;
         // The store waits out 429s for record fragments when no explicit
         // throttle strategy handled the request.
         if (

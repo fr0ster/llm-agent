@@ -17,6 +17,7 @@ import type {
   RagResult,
   Result,
 } from '@mcp-abap-adt/llm-agent';
+import { contextExceededError } from '../errors/terminal-run-error.js';
 import type { CircuitBreaker } from './circuit-breaker.js';
 
 export class FallbackRag implements IRag, IRagDecorator {
@@ -42,6 +43,10 @@ export class FallbackRag implements IRag, IRagDecorator {
   ): Promise<Result<RagResult | null, RagError>> {
     const res = await this.primary.getById(id, options);
     if (res.ok && res.value !== null) return res;
+    if (!res.ok) {
+      const overflow = contextExceededError(res.error);
+      if (overflow) return { ok: false, error: overflow };
+    }
     return this.fallback.getById(id, options);
   }
 

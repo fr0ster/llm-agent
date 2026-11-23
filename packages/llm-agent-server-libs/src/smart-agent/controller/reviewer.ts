@@ -101,6 +101,8 @@ export class LlmReviewer implements IReviewer {
     );
     opts.logUsage?.('reviewer', res.usage);
     if (res.kind !== 'content') {
+      const terminal = res.kind === 'error' ? res.contextOverflow : undefined;
+      if (terminal) throw terminal;
       // Provider/transport error → JUDGE failure (the verdict is unknown), NOT a
       // step failure.
       return {

@@ -116,16 +116,18 @@ describe('DecisionReranker', () => {
   });
 
   it('a model error → RERANK_ERROR carrying the decision code', async () => {
+    const error = new DecisionError('stale key', 'DECISION_AUTH');
     const model: IDecisionModel = {
       decide: async () => ({
         ok: false,
-        error: new DecisionError('stale key', 'DECISION_AUTH'),
+        error,
       }),
     };
     const r = await new DecisionReranker(model).rerank('q', results);
     assert.ok(!r.ok);
     assert.equal(r.error.code, 'RERANK_ERROR');
     assert.match(r.error.message, /DECISION_AUTH/);
+    assert.equal(r.error.cause, undefined);
   });
 
   it('a missing answer → RERANK_ERROR', async () => {

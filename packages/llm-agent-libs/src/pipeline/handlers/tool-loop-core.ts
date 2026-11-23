@@ -18,6 +18,7 @@ import type {
   TimingEntry,
 } from '@mcp-abap-adt/llm-agent';
 import {
+  contextExceededError,
   markExternalTraceUnavailable,
   OrchestratorError,
   recordToolInvocation,
@@ -65,6 +66,8 @@ export function guardToolRound(
   try {
     return options?.toolRoundGuard?.(calls);
   } catch (error) {
+    const terminal = contextExceededError(error);
+    if (terminal) throw terminal;
     const message = error instanceof Error ? error.message : String(error);
     return new Map(calls.map((_, index) => [index, message]));
   }
@@ -486,6 +489,10 @@ export async function* executeToolBatchWithHeartbeat(
         : JSON.stringify(res.value.content);
     toolSpan.setStatus(res.ok ? 'ok' : 'error', res.ok ? undefined : text);
     toolSpan.end();
+    if (!res.ok) {
+      const terminal = contextExceededError(res.error);
+      if (terminal) throw terminal;
+    }
     return {
       tc,
       text,

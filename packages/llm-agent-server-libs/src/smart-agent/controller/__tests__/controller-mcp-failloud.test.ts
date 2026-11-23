@@ -15,6 +15,7 @@ import {
   type LlmStreamChunk,
   type LlmTool,
   McpError,
+  MODEL_CONTEXT_EXCEEDED,
   type Result,
   symmetricEmbedder,
 } from '@mcp-abap-adt/llm-agent';
@@ -314,4 +315,45 @@ describe('controller MCP fail-loud (Task 3)', () => {
       `Expected a loud "MCP server unavailable" stop chunk (bridge already classified this McpError as unavailable) but got: ${JSON.stringify(captured)}`,
     );
   });
+});
+
+it('controller preserves overflow from the MCP bridge and stops the executor', async () => {
+  const overflow = new McpError('Prompt too long', MODEL_CONTEXT_EXCEEDED);
+  let executorCalls = 0;
+  const handler = new ControllerCoordinatorHandler({
+    evaluator: scriptedClient([
+      { kind: 'content', content: 'Goal: do the thing' },
+    ]),
+    planner: scriptedClient([
+      {
+        kind: 'content',
+        content: JSON.stringify({
+          plan: [{ name: 's1', instructions: 'fetch data' }],
+        }),
+      },
+    ]),
+    executor: {
+      async send() {
+        executorCalls++;
+        return toolCall('GetTable', { table: 'T' });
+      },
+    },
+    backend: new InMemoryKnowledgeBackend(),
+    knowledgeRagFor: () => stubRag(),
+    embedder: stubEmbedder,
+    async callMcp() {
+      throw overflow;
+    },
+    async selectTools() {
+      return [{ name: 'GetTable', description: '', inputSchema: {} }];
+    },
+    isExternalTool: () => false,
+    config: baseConfig(),
+    models: { evaluator: 'm-eval', planner: 'm-plan', executor: 'm-exec' },
+  });
+  const { ctx, captured } = fakeCtx();
+  assert.equal(await handler.execute(ctx, {}, undefined), false);
+  assert.equal(ctx.error?.code, MODEL_CONTEXT_EXCEEDED);
+  assert.equal(executorCalls, 1);
+  assert.ok(captured.some((chunk) => !chunk.ok && chunk.error === overflow));
 });

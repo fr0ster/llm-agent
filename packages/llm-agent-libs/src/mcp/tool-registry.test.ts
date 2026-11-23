@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { IMcpClient, McpTool } from '@mcp-abap-adt/llm-agent';
+import { McpError, MODEL_CONTEXT_EXCEEDED } from '@mcp-abap-adt/llm-agent';
 import type { IMcpConnectionStrategy } from '../interfaces/mcp-connection-strategy.js';
+import { makeMcpClient } from '../testing/index.js';
 import { McpToolRegistry } from './tool-registry.js';
 
 function makeTool(name: string): McpTool {
@@ -76,4 +78,16 @@ describe('McpToolRegistry.resolve() namespacing', () => {
 
     await assert.rejects(() => registry.resolve());
   });
+});
+
+it('registry surfaces discovery overflow alongside a healthy client', async () => {
+  const overflow = new McpError('Prompt too long', MODEL_CONTEXT_EXCEEDED);
+  const client = makeMcpClient([]);
+  client.listTools = async () => ({ ok: false, error: overflow });
+  const registry = new McpToolRegistry(
+    [makeMcpClient([]), client],
+    undefined,
+    {},
+  );
+  await assert.rejects(registry.resolve(), (error) => error === overflow);
 });

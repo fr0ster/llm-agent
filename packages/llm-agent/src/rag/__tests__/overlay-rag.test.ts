@@ -1,7 +1,12 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { IRag } from '../../interfaces/rag.js';
-import type { RagResult } from '../../interfaces/types.js';
+import {
+  LlmError,
+  MODEL_CONTEXT_EXCEEDED,
+  RagError,
+  type RagResult,
+} from '../../interfaces/types.js';
 import { OverlayRag } from '../overlays/overlay-rag.js';
 import { SessionScopedRag } from '../overlays/session-scoped-rag.js';
 import { TextOnlyEmbedding } from '../query-embedding.js';
@@ -14,10 +19,59 @@ function stub(
     query: async () => ({ ok: true, value: results }),
     getById: async (id) => ({ ok: true, value: records[id] ?? null }),
     healthCheck: async () => ({ ok: true, value: undefined }),
-  } as IRag;
+  };
 }
 
 describe('OverlayRag.query', () => {
+  for (const thrown of [false, true]) {
+    it(`prefers ${thrown ? 'rejected' : 'returned'} overlay context overflow to a base rejection`, async () => {
+      const failure = new LlmError(
+        'Prompt is too long',
+        MODEL_CONTEXT_EXCEEDED,
+      );
+      const base: IRag = {
+        ...stub([]),
+        async query() {
+          throw new Error('Base query failed');
+        },
+      };
+      const overlay: IRag = {
+        ...stub([]),
+        async query() {
+          if (thrown) throw failure;
+          return { ok: false, error: failure };
+        },
+      };
+      const result = await new OverlayRag(base, overlay).query(
+        new TextOnlyEmbedding('q'),
+        10,
+      );
+      assert.ok(!result.ok);
+      assert.equal(result.error, failure);
+    });
+  }
+
+  it('rejects with the first ordinary rejection to settle', async () => {
+    const failure = new Error('Overlay query failed');
+    const base: IRag = {
+      ...stub([]),
+      async query() {
+        await Promise.resolve();
+        throw new Error('Base query failed');
+      },
+    };
+    const overlay: IRag = {
+      ...stub([]),
+      async query() {
+        throw failure;
+      },
+    };
+    await assert.rejects(
+      new OverlayRag(base, overlay).query(new TextOnlyEmbedding('q'), 10),
+      (error) => error === failure,
+    );
+  });
+
   it('overlay wins on canonicalKey collision regardless of score', async () => {
     const base = stub([
       { text: 'old', metadata: { id: 'b1', canonicalKey: 'k' }, score: 0.99 },
@@ -86,14 +140,13 @@ describe('OverlayRag.getById', () => {
 describe('OverlayRag.healthCheck', () => {
   it('requires both healthy', async () => {
     const base = stub([]);
-    const overlay = {
-      query: async () => ({ ok: true, value: [] }),
-      getById: async () => ({ ok: true, value: null }),
+    const overlay: IRag = {
+      ...stub([]),
       healthCheck: async () => ({
         ok: false,
-        error: { code: 'FAIL', message: 'x' } as unknown,
+        error: new RagError('x', 'FAIL'),
       }),
-    } as unknown as IRag;
+    };
     const rag = new OverlayRag(base, overlay);
     const res = await rag.healthCheck();
     assert.ok(!res.ok);
@@ -171,4 +224,46 @@ describe('SessionScopedRag', () => {
     const res = await rag.getById?.('x');
     assert.ok(res?.ok && res.value?.text === 'base');
   });
+});
+
+it('overlay query gives overflow priority over another terminal code', async () => {
+  const overflow = new RagError('Prompt too long', MODEL_CONTEXT_EXCEEDED);
+  const base = stub([]);
+  const overlay = stub([]);
+  base.query = async () => ({
+    ok: false,
+    error: new RagError('Earlier failure', 'LLM_HTTP_ERROR'),
+  });
+  overlay.query = async () => ({ ok: false, error: overflow });
+  assert.deepEqual(
+    await new OverlayRag(base, overlay).query(new TextOnlyEmbedding('q'), 1),
+    { ok: false, error: overflow },
+  );
+});
+
+it('overlay health check preserves returned overflow after a sibling rejection', async () => {
+  const overflow = new RagError('Prompt too long', MODEL_CONTEXT_EXCEEDED);
+  const base = stub([]);
+  const overlay = stub([]);
+  base.healthCheck = async () => {
+    throw new Error('Probe unavailable');
+  };
+  overlay.healthCheck = async () => ({ ok: false, error: overflow });
+  assert.deepEqual(await new OverlayRag(base, overlay).healthCheck(), {
+    ok: false,
+    error: overflow,
+  });
+});
+
+it('overlay keeps the first returned error when no store reports overflow', async () => {
+  const first = new RagError('First store unavailable');
+  const second = new RagError('Second store aborted', 'ABORTED');
+  const base = stub([]);
+  const overlay = stub([]);
+  base.query = async () => ({ ok: false, error: first });
+  overlay.query = async () => ({ ok: false, error: second });
+  assert.deepEqual(
+    await new OverlayRag(base, overlay).query(new TextOnlyEmbedding('q'), 1),
+    { ok: false, error: first },
+  );
 });

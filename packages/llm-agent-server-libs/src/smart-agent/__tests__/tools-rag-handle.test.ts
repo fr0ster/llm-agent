@@ -1,5 +1,11 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import {
+  LlmError,
+  MODEL_CONTEXT_EXCEEDED,
+  RagError,
+} from '@mcp-abap-adt/llm-agent';
+import { makeLlm, makeRag } from '@mcp-abap-adt/llm-agent-libs/testing';
 import { makeToolsRagHandle } from '../tools-rag-handle.js';
 
 const ok = <T>(value: T) => ({ ok: true as const, value });
@@ -7,6 +13,59 @@ function fakeClient(tools: { name: string }[]) {
   return { listTools: async () => ok(tools) } as never; // IMcpClient
 }
 const embedder = {} as never; // minimal IEmbedder fake
+
+for (const thrown of [false, true]) {
+  test(`tools lookup preserves ${thrown ? 'thrown' : 'returned'} context overflow and ordinary fallback`, async () => {
+    const query = async (error: LlmError) => {
+      let calls = 0;
+      const model = makeLlm([]);
+      model.chat = async () => {
+        calls++;
+        if (thrown) throw error;
+        return { ok: false, error };
+      };
+      const handle = await makeToolsRagHandle(
+        [],
+        {
+          ...makeRag([]),
+          async query(embedding) {
+            const result = await model.chat([
+              { role: 'user', content: embedding.text },
+            ]);
+            if (result.ok) return { ok: true, value: [] };
+            return {
+              ok: false,
+              error: Object.assign(new RagError('RAG query failed'), {
+                cause: result.error,
+              }),
+            };
+          },
+        },
+        {
+          async embedQuery() {
+            return { vector: [1] };
+          },
+        },
+        undefined,
+        { namespacedTools: [{ name: 'ReadOrders' }] },
+      );
+      return { run: () => handle.query('read orders'), calls: () => calls };
+    };
+    const terminal = await query(
+      new LlmError('Prompt is too long', MODEL_CONTEXT_EXCEEDED),
+    );
+    await assert.rejects(terminal.run, { code: MODEL_CONTEXT_EXCEEDED });
+    assert.equal(terminal.calls(), 1);
+
+    const ordinary = await query(new LlmError('Unavailable'));
+    if (thrown) {
+      await assert.rejects(ordinary.run, /Unavailable/);
+    } else {
+      assert.deepEqual(await ordinary.run(), [{ name: 'ReadOrders' }]);
+    }
+    assert.equal(ordinary.calls(), 1);
+  });
+}
 
 test('lookup() returns a catalog tool after eager load', async () => {
   const h = await makeToolsRagHandle(

@@ -9,6 +9,7 @@ import {
   assertNonEmptyFilter,
   assertScanOptions,
   type CallOptions,
+  contextExceededError,
   decodeListCursor,
   embedRecord,
   encodeListCursor,
@@ -293,6 +294,8 @@ export class QdrantRag implements IRag, IRagScanner, IRagFilteredDeleter {
         options,
       );
     } catch (err) {
+      const overflow = contextExceededError(err);
+      if (overflow) return { ok: false, error: overflow };
       if (options?.signal?.aborted)
         return { ok: false, error: new RagError('Aborted', 'ABORTED') };
       if (err instanceof RagError) return { ok: false, error: err };
@@ -401,7 +404,9 @@ export class QdrantRag implements IRag, IRagScanner, IRagFilteredDeleter {
     } catch (err) {
       return {
         ok: false,
-        error: this._scanFailure(err, 'QUERY_ERROR', options),
+        error:
+          contextExceededError(err) ??
+          this._scanFailure(err, 'QUERY_ERROR', options),
       };
     }
   }

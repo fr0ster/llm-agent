@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { contextExceededError } from '../../errors/terminal-run-error.js';
 import type {
   IRagEditor,
   IRagProviderRegistry,
@@ -13,6 +14,7 @@ import type {
   RagAccessMode,
   RagCaller,
 } from '../../interfaces/rag-access.js';
+import { type RagError, SmartAgentError } from '../../interfaces/types.js';
 import { checkRagAccess } from '../access/check-access.js';
 import {
   AmbiguousCollectionError,
@@ -65,6 +67,19 @@ export interface RagCollectionToolOptions {
 }
 
 type Refusal = { ok: false; error: string; code?: string };
+
+function editFailure(error: RagError): Refusal {
+  const overflow = contextExceededError(error);
+  if (overflow) {
+    if (overflow.cause !== undefined) throw overflow;
+    throw Object.defineProperty(
+      new SmartAgentError(overflow.message, overflow.code),
+      'cause',
+      { value: overflow, configurable: true, writable: true },
+    );
+  }
+  return { ok: false, error: error.message };
+}
 
 const scopeArg = z
   .enum(['session', 'user', 'global'])
@@ -233,9 +248,7 @@ export function buildRagCollectionToolEntries(
         canonicalKey: String(args.canonicalKey),
         tags: args.tags as string[] | undefined,
       });
-      return res.ok
-        ? { ok: true, id: res.value.id }
-        : { ok: false, error: res.error.message };
+      return res.ok ? { ok: true, id: res.value.id } : editFailure(res.error);
     },
   };
 
@@ -263,7 +276,7 @@ export function buildRagCollectionToolEntries(
       const newRes = await r.editor.upsert(String(args.newText), {
         canonicalKey: predecessorMeta.canonicalKey,
       });
-      if (!newRes.ok) return { ok: false, error: newRes.error.message };
+      if (!newRes.ok) return editFailure(newRes.error);
 
       const { predecessor } = buildCorrectionMetadata({
         predecessor: predecessorMeta,
@@ -275,7 +288,7 @@ export function buildRagCollectionToolEntries(
         ...predecessor,
         id: String(args.predecessorId),
       });
-      if (!supRes.ok) return { ok: false, error: supRes.error.message };
+      if (!supRes.ok) return editFailure(supRes.error);
       return {
         ok: true,
         predecessorId: String(args.predecessorId),
@@ -308,9 +321,7 @@ export function buildRagCollectionToolEntries(
         ...meta,
         id: String(args.id),
       });
-      return res.ok
-        ? { ok: true, id: res.value.id }
-        : { ok: false, error: res.error.message };
+      return res.ok ? { ok: true, id: res.value.id } : editFailure(res.error);
     },
   };
 

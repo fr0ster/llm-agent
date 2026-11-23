@@ -8,7 +8,7 @@ import type {
   McpConnectionConfig,
   McpConnectionResult,
 } from '@mcp-abap-adt/llm-agent';
-import { normaliseLogger } from '@mcp-abap-adt/llm-agent';
+import { contextExceededError, normaliseLogger } from '@mcp-abap-adt/llm-agent';
 import { createDefaultMcpClient } from '../factory.js';
 
 interface Slot {
@@ -115,6 +115,8 @@ export class LazyConnectionStrategy
           slot.healthy = true;
         } catch (err) {
           slot.healthy = false;
+          const overflow = contextExceededError(err);
+          if (overflow) throw overflow;
           // Surface WHY a target is down — otherwise operators chase "agent has no
           // tools" with no log line pointing at the cause (unreachable host, bad
           // auth, container-network mismatch, …). Logged through the injected
@@ -159,13 +161,18 @@ export class LazyConnectionStrategy
 
   private async _checkHealth(client: IMcpClient): Promise<boolean> {
     try {
-      if (typeof client.healthCheck === 'function') {
-        const result = await client.healthCheck();
-        return result.ok;
+      const result =
+        typeof client.healthCheck === 'function'
+          ? await client.healthCheck()
+          : await client.listTools();
+      if (!result.ok) {
+        const overflow = contextExceededError(result.error);
+        if (overflow) throw overflow;
       }
-      const result = await client.listTools();
       return result.ok;
-    } catch {
+    } catch (error) {
+      const overflow = contextExceededError(error);
+      if (overflow) throw overflow;
       return false;
     }
   }

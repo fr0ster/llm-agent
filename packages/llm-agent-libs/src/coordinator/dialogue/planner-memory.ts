@@ -2,8 +2,10 @@ import type {
   CallOptions,
   IRagBackendWriter,
   PlannerMemoryEntry,
+  SmartAgentError,
 } from '@mcp-abap-adt/llm-agent';
 import {
+  contextExceededError,
   embedDocumentRecords,
   scopedUsage,
   stampRagOwner,
@@ -25,6 +27,10 @@ export class PlannerMemoryWriter {
     private readonly sessionId: string,
     private readonly config: PlannerMemoryOptions,
     private readonly warn: (message: string) => void,
+    private readonly onOverflow?: (
+      requestId: string,
+      error: SmartAgentError,
+    ) => void,
   ) {
     this.writer = config.rag.writer?.();
     if (!this.writer)
@@ -141,8 +147,16 @@ export class PlannerMemoryWriter {
             if (!result.ok) throw result.error;
           }
         }
-      } catch {
-        this.warn('Planner memory write failed; chunks dropped');
+      } catch (error) {
+        const overflow = contextExceededError(error);
+        if (overflow) {
+          this.onOverflow?.(first.entry.requestId, overflow);
+          this.warn(
+            `Planner memory write failed: ${overflow.code}; chunks dropped`,
+          );
+        } else {
+          this.warn('Planner memory write failed; chunks dropped');
+        }
       }
     }
   }

@@ -2,6 +2,7 @@ import {
   assertClientDescriptors,
   buildNamespacedTools,
   type CallOptions,
+  contextOverflowInSettled,
   defaultToolNamespace,
   type IMcpClient,
   type IRequestLogger,
@@ -122,6 +123,10 @@ export class McpToolRegistry implements IMcpToolRegistry {
         result: await client.listTools(opts),
       })),
     );
+    const overflow = contextOverflowInSettled(settled, ({ result }) =>
+      result.ok ? undefined : result.error,
+    );
+    if (overflow) throw overflow;
     const perClient = settled.flatMap((e, i) =>
       e.status === 'fulfilled' && e.value.result.ok
         ? [

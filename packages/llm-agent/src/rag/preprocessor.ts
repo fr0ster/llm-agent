@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { contextExceededError } from '../errors/terminal-run-error.js';
 import type { ILlm } from '../interfaces/llm.js';
 import type { IRequestLogger } from '../interfaces/request-logger.js';
 import type { CallOptions, RagError, Result } from '../interfaces/types.js';
@@ -50,7 +51,7 @@ const TRANSLATE_SYSTEM_PROMPT =
 /**
  * Translates non-ASCII queries to English via helper LLM.
  * Passes through ASCII-only text and short text (< 15 chars) without LLM call.
- * Falls back to original text on LLM failure.
+ * Falls back to original text on recoverable LLM failures.
  */
 export class TranslatePreprocessor implements IQueryPreprocessor {
   readonly name = 'translate';
@@ -100,12 +101,15 @@ export class TranslatePreprocessor implements IQueryPreprocessor {
         });
       }
 
-      if (!res.ok || !res.value.content.trim()) {
+      if (!res.ok) throw res.error;
+      if (!res.value.content.trim()) {
         return { ok: true, value: text };
       }
 
       return { ok: true, value: res.value.content.trim() };
-    } catch {
+    } catch (error) {
+      const terminal = contextExceededError(error);
+      if (terminal) return { ok: false, error: terminal };
       return { ok: true, value: text };
     }
   }
@@ -162,12 +166,15 @@ export class ExpandPreprocessor implements IQueryPreprocessor {
         });
       }
 
-      if (!res.ok || !res.value.content.trim()) {
+      if (!res.ok) throw res.error;
+      if (!res.value.content.trim()) {
         return { ok: true, value: text };
       }
 
       return { ok: true, value: `${text} ${res.value.content.trim()}` };
-    } catch {
+    } catch (error) {
+      const terminal = contextExceededError(error);
+      if (terminal) return { ok: false, error: terminal };
       return { ok: true, value: text };
     }
   }
@@ -241,7 +248,8 @@ export class IntentEnricher implements IDocumentEnricher {
         });
       }
 
-      if (!res.ok || !res.value.content.trim()) {
+      if (!res.ok) throw res.error;
+      if (!res.value.content.trim()) {
         return { ok: true, value: text };
       }
 
@@ -250,7 +258,9 @@ export class IntentEnricher implements IDocumentEnricher {
         ok: true,
         value: `${text}\nIntent: ${res.value.content.trim()}`,
       };
-    } catch {
+    } catch (error) {
+      const terminal = contextExceededError(error);
+      if (terminal) return { ok: false, error: terminal };
       return { ok: true, value: text };
     }
   }
