@@ -1,5 +1,11 @@
 # @mcp-abap-adt/anthropic-llm
 
+## 31.1.1
+
+### Patch Changes
+
+- 4cf20a8: Complete streamed tool calls with valid JSON arguments when the provider sends only empty argument fragments. Anthropic uses the tool block's initial input. OpenAI, DeepSeek, and SAP AI Core supply an empty JSON object when the tool-call stream finishes.
+
 ## 31.1.0
 
 ### Minor Changes
